@@ -15,12 +15,23 @@ import (
 const planCacheScopeDelim = "\x01"
 
 // planCacheScope builds the VERBATIM (un-normalized) plan-cache scope — the
-// schema identity + metadata version + planner options — that PlanCache prepends to the
+// database path + schema identity + metadata version + planner options — that
+// PlanCache prepends to the
 // normalized query text. A SET SCHEMA switch (connection.go SetSchema mutates
 // only the session schema, never the cache) or a metadata-version bump then
 // keys differently, so the same SQL against a different schema/table set can
 // no longer return a stale plan. Java's QueryCacheKey carries the schema
 // template version for the same reason (RFC-024).
+//
+// The database path is in the scope because a schema NAME is only unique
+// within a database: `/tenant_a` and `/tenant_b` both having a `MAIN` schema
+// is the ordinary multi-tenant shape, and those two schemas are different
+// table sets resolving to different subspaces. Keying on the schema name
+// alone would serve one tenant's compiled plan for the other's query the
+// moment a single cache outlives one DBPath — exactly the cross-schema
+// wrong-plan collision the rest of this scope exists to prevent. The session's
+// schema cache already keys on (dbPath, schema) via session.SchemaCacheKey;
+// the plan cache was the outlier.
 //
 // The scope is kept out of normalizeSQL deliberately: schema names are
 // case-SENSITIVE (the catalog/session preserve them exactly), so normalizing
@@ -67,15 +78,16 @@ const planCacheScopeDelim = "\x01"
 // rather than dropped: an omitted component would make component COUNT
 // content-dependent, which is the same ambiguity one level up.
 //
-// The cost on the plan-cache lookup path is three small decimal renderings
+// The cost on the plan-cache lookup path is four small decimal renderings
 // (strconv.Itoa returns a shared constant for small values, so they do not
 // allocate) into an EXACTLY pre-sized builder — one allocation of the same size
 // the delimiter join used, since the length prefixes replace the separators
 // byte-for-byte for components under ten bytes.
-func planCacheScope(schema string, metaDataVersion int, plannerOpts string) string {
+func planCacheScope(dbPath, schema string, metaDataVersion int, plannerOpts string) string {
 	version := strconv.Itoa(metaDataVersion)
 	var b strings.Builder
-	b.Grow(lengthPrefixedSize(schema) + lengthPrefixedSize(version) + lengthPrefixedSize(plannerOpts))
+	b.Grow(lengthPrefixedSize(dbPath) + lengthPrefixedSize(schema) + lengthPrefixedSize(version) + lengthPrefixedSize(plannerOpts))
+	writeLengthPrefixed(&b, dbPath)
 	writeLengthPrefixed(&b, schema)
 	writeLengthPrefixed(&b, version)
 	writeLengthPrefixed(&b, plannerOpts)

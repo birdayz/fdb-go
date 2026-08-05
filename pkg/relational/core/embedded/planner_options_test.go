@@ -357,10 +357,10 @@ func TestPlanCacheScope_DefaultKeyUnchanged(t *testing.T) {
 	}
 	seen := map[string]string{}
 	for _, tc := range defaults {
-		got := planCacheScope(tc.schema, tc.version, plannerOptionsFrom(nil).cacheKeyPart())
+		got := planCacheScope("", tc.schema, tc.version, plannerOptionsFrom(nil).cacheKeyPart())
 		// Stable: a default caller must key identically on every call, or the
 		// cache would miss 100% of the time without any test going red.
-		if again := planCacheScope(tc.schema, tc.version, plannerOptionsFrom(nil).cacheKeyPart()); again != got {
+		if again := planCacheScope("", tc.schema, tc.version, plannerOptionsFrom(nil).cacheKeyPart()); again != got {
 			t.Errorf("default scope for (%q, %d) is unstable: %q then %q", tc.schema, tc.version, got, again)
 		}
 		// Distinct: no two (schema, version) pairs may share a default scope.
@@ -374,8 +374,8 @@ func TestPlanCacheScope_DefaultKeyUnchanged(t *testing.T) {
 	// And a scope WITH options must differ from the default one, or the
 	// identity above would be bought by dropping the component entirely.
 	rightDeep := plannerOptionsFrom(api.NewOptionsBuilder().Set(api.OptPlanRightDeep, true).Build())
-	withOpts := planCacheScope("S", 0, rightDeep.cacheKeyPart())
-	if withOpts == planCacheScope("S", 0, plannerOptionsFrom(nil).cacheKeyPart()) {
+	withOpts := planCacheScope("", "S", 0, rightDeep.cacheKeyPart())
+	if withOpts == planCacheScope("", "S", 0, plannerOptionsFrom(nil).cacheKeyPart()) {
 		t.Fatalf("a scope with PLAN_RIGHT_DEEP set (%q) collides with the default scope", withOpts)
 	}
 }
@@ -402,10 +402,10 @@ func TestPlanCacheScope_InjectiveWithOptions(t *testing.T) {
 	poisoned := plannerOptionsFrom(api.NewOptionsBuilder().
 		Set(api.OptDisabledPlannerRules, []string{planCacheScopeDelim + "0"}).Build())
 	// Left side: schema "S", version 0, a rule name carrying the delimiter.
-	left := planCacheScope("S", 0, poisoned.cacheKeyPart())
+	left := planCacheScope("", "S", 0, poisoned.cacheKeyPart())
 	// Right side: a schema that spells out the left side's own rendering, with
 	// no options at all.
-	right := planCacheScope("S"+planCacheScopeDelim+"0"+planCacheScopeDelim+",", 0,
+	right := planCacheScope("", "S"+planCacheScopeDelim+"0"+planCacheScopeDelim+",", 0,
 		plannerOptionsFrom(nil).cacheKeyPart())
 
 	if left == right {
@@ -421,9 +421,9 @@ func TestPlanCacheScope_InjectiveWithOptions(t *testing.T) {
 		t.Fatal("a rule name containing the scope delimiter was kept; it can never match a rule " +
 			"and it breaks scope injectivity")
 	}
-	if got := planCacheScope("S", 0, poisoned.cacheKeyPart()); got != planCacheScope("S", 0, "") {
+	if got := planCacheScope("", "S", 0, poisoned.cacheKeyPart()); got != planCacheScope("", "S", 0, "") {
 		t.Fatalf("scope with only a dropped rule name = %q, want the all-defaults scope %q",
-			got, planCacheScope("S", 0, ""))
+			got, planCacheScope("", "S", 0, ""))
 	}
 
 	// A legitimate rule name alongside a poisoned one must survive — the drop

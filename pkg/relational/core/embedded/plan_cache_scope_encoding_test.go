@@ -16,7 +16,7 @@ import (
 // names verbatim — index names are quotable in DDL and are not restricted to
 // identifier characters. The concrete collision:
 //
-//	planCacheScope("S", 0, "i2:\x010") == planCacheScope("S\x010\x01i2:", 0, "")
+//	planCacheScope("", "S", 0, "i2:\x010") == planCacheScope("", "S\x010\x01i2:", 0, "")
 //
 // A scope collision serves one schema/readable-index-set's compiled plan for a
 // DIFFERENT one. The readable-index view is in this key precisely so a plan
@@ -26,40 +26,51 @@ func TestPlanCacheScope_ArbitraryBytesInjective(t *testing.T) {
 	t.Parallel()
 
 	type comps struct {
+		dbPath  string
 		schema  string
 		version int
 		opts    string
 	}
 	// The exact reported pair first, then a spread of tuples whose components
 	// contain the delimiter, other control bytes, and the digits/markers the
-	// encoding itself emits — the shapes that defeat a delimiter join.
+	// encoding itself emits — the shapes that defeat a delimiter join. The
+	// dbPath column carries the same shapes: it is a user-supplied URI, so it
+	// is no more restricted than an index name.
 	cases := []comps{
-		{"S", 0, "i2:\x010"},
-		{"S\x010\x01i2:", 0, ""},
-		{"S", 0, ""},
-		{"S", 0, "rd"},
-		{"", 0, ""},
-		{"\x01", 0, ""},
-		{"A\x011", 2, ""},
-		{"A", 1, "2"},
-		{"A\x011\x012", 0, ""},
-		{"S\x01", 0, "0"},
-		{"S", 10, "i3:a\x01b"},
-		{"S", 10, "i3:a\x00b"},
-		{"S\x00", 10, "i3:ab"},
-		{"i2:", 0, "S"},
-		{"S", 0, "i2:"},
-		{"S", 100, ""},
-		{"S", 1, "00"},
-		{"S1", 0, "0"},
+		{"", "S", 0, "i2:\x010"},
+		{"", "S\x010\x01i2:", 0, ""},
+		{"", "S", 0, ""},
+		{"", "S", 0, "rd"},
+		{"", "", 0, ""},
+		{"", "\x01", 0, ""},
+		{"", "A\x011", 2, ""},
+		{"", "A", 1, "2"},
+		{"", "A\x011\x012", 0, ""},
+		{"", "S\x01", 0, "0"},
+		{"", "S", 10, "i3:a\x01b"},
+		{"", "S", 10, "i3:a\x00b"},
+		{"", "S\x00", 10, "i3:ab"},
+		{"", "i2:", 0, "S"},
+		{"", "S", 0, "i2:"},
+		{"", "S", 100, ""},
+		{"", "S", 1, "00"},
+		{"", "S1", 0, "0"},
+		// Two tenants whose schemas share a name — the multi-tenant shape.
+		{"/tenant_a", "MAIN", 0, ""},
+		{"/tenant_b", "MAIN", 0, ""},
+		// A dbPath that could absorb the following component under a
+		// delimiter join, in both directions.
+		{"/db\x014", "MAIN", 0, ""},
+		{"/db", "\x014MAIN", 0, ""},
+		{"\x01", "", 0, ""},
 	}
 
 	seen := map[string]comps{}
 	for _, c := range cases {
-		got := planCacheScope(c.schema, c.version, c.opts)
+		got := planCacheScope(c.dbPath, c.schema, c.version, c.opts)
 		if prev, dup := seen[got]; dup {
 			t.Fatalf("plan-cache scope collision: %+v and %+v both render %q\n"+
-				"two distinct (schema, metadata version, planner options) triples share a cache entry",
+				"two distinct (database path, schema, metadata version, planner options) tuples share a cache entry",
 				prev, c, got)
 		}
 		seen[got] = c
@@ -85,9 +96,9 @@ func TestPlanCacheScope_Deterministic(t *testing.T) {
 		{"schema with spaces", 42, "i5:INDEX"},
 	}
 	for _, c := range cases {
-		a := planCacheScope(c.schema, c.version, c.opts)
+		a := planCacheScope("", c.schema, c.version, c.opts)
 		for i := 0; i < 4; i++ {
-			b := planCacheScope(c.schema, c.version, c.opts)
+			b := planCacheScope("", c.schema, c.version, c.opts)
 			if a != b {
 				t.Fatalf("planCacheScope is not deterministic for %+v: %q vs %q", c, a, b)
 			}
@@ -96,7 +107,7 @@ func TestPlanCacheScope_Deterministic(t *testing.T) {
 		// identity of the input strings must not leak into the key.
 		schemaCopy := string([]byte(c.schema))
 		optsCopy := string([]byte(c.opts))
-		if b := planCacheScope(schemaCopy, c.version, optsCopy); a != b {
+		if b := planCacheScope("", schemaCopy, c.version, optsCopy); a != b {
 			t.Fatalf("planCacheScope differs for equal-valued copies of %+v: %q vs %q", c, a, b)
 		}
 	}
@@ -140,19 +151,22 @@ func TestPlanCacheScope_SizeEstimateExact(t *testing.T) {
 
 	// And end to end: the pre-sized total must equal the rendered scope.
 	for _, tc := range []struct {
+		dbPath  string
 		schema  string
 		version int
 		opts    string
 	}{
-		{"SCHEMA_A", 17, ""},
-		{"", 0, ""},
-		{strings.Repeat("x", 250), 1234, strings.Repeat("y", 12)},
+		{"", "SCHEMA_A", 17, ""},
+		{"/DB", "SCHEMA_A", 17, ""},
+		{"", "", 0, ""},
+		{strings.Repeat("d", 40), strings.Repeat("x", 250), 1234, strings.Repeat("y", 12)},
 	} {
 		version := strconv.Itoa(tc.version)
-		want := lengthPrefixedSize(tc.schema) + lengthPrefixedSize(version) + lengthPrefixedSize(tc.opts)
-		if got := len(planCacheScope(tc.schema, tc.version, tc.opts)); got != want {
-			t.Errorf("planCacheScope(%d-byte schema, %d, %d-byte opts) rendered %d bytes, pre-sized for %d",
-				len(tc.schema), tc.version, len(tc.opts), got, want)
+		want := lengthPrefixedSize(tc.dbPath) + lengthPrefixedSize(tc.schema) +
+			lengthPrefixedSize(version) + lengthPrefixedSize(tc.opts)
+		if got := len(planCacheScope(tc.dbPath, tc.schema, tc.version, tc.opts)); got != want {
+			t.Errorf("planCacheScope(%d-byte dbPath, %d-byte schema, %d, %d-byte opts) rendered %d bytes, pre-sized for %d",
+				len(tc.dbPath), len(tc.schema), tc.version, len(tc.opts), got, want)
 		}
 	}
 }
@@ -165,7 +179,7 @@ var scopeSink string
 // allocation of the same size the ambiguous delimiter join used.
 func BenchmarkPlanCacheScope(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		scopeSink = planCacheScope("SCHEMA_A", 17, "")
+		scopeSink = planCacheScope("", "SCHEMA_A", 17, "")
 	}
 }
 
@@ -178,39 +192,42 @@ func BenchmarkPlanCacheScope(b *testing.B) {
 // is a collision, and a differing scope from the same triple is
 // non-determinism.
 func FuzzPlanCacheScope_Injective(f *testing.F) {
-	f.Add("S", 0, "i2:\x010")
-	f.Add("S\x010\x01i2:", 0, "")
-	f.Add("", 0, "")
-	f.Add("A\x011", 2, "")
-	f.Add("\x00\x01", 10, "rd\x01")
+	f.Add("", "S", 0, "i2:\x010")
+	f.Add("", "S\x010\x01i2:", 0, "")
+	f.Add("", "", 0, "")
+	f.Add("", "A\x011", 2, "")
+	f.Add("", "\x00\x01", 10, "rd\x01")
+	f.Add("/tenant_a", "MAIN", 0, "")
+	f.Add("/db\x014", "MAIN", 0, "")
 
-	type triple struct {
+	type tuple4 struct {
+		dbPath  string
 		schema  string
 		version int
 		opts    string
 	}
-	seen := map[string]triple{}
-	f.Fuzz(func(t *testing.T, schema string, version int, opts string) {
+	seen := map[string]tuple4{}
+	f.Fuzz(func(t *testing.T, dbPath string, schema string, version int, opts string) {
 		// The version component is an int rendered by the encoder; keep it in a
 		// range the fuzzer can revisit so collisions are actually explored.
 		version %= 1000
 		if version < 0 {
 			version = -version
 		}
-		cur := triple{schema, version, opts}
-		got := planCacheScope(schema, version, opts)
+		cur := tuple4{dbPath, schema, version, opts}
+		got := planCacheScope(dbPath, schema, version, opts)
 		if prev, ok := seen[got]; ok && prev != cur {
 			t.Fatalf("plan-cache scope collision: %+v and %+v both render %q", prev, cur, got)
 		}
 		seen[got] = cur
-		if again := planCacheScope(schema, version, opts); again != got {
+		if again := planCacheScope(dbPath, schema, version, opts); again != got {
 			t.Fatalf("planCacheScope not deterministic for %+v: %q vs %q", cur, got, again)
 		}
 		// The rendered scope must carry every component byte-for-byte: an
 		// encoding that dropped or truncated a component would be neither
 		// injective nor useful, and a length-check here catches a lossy
 		// encoding the collision map might not reach.
-		if len(got) < len(schema)+len(opts)+len(strconv.Itoa(version)) {
+		if len(got) < len(dbPath)+len(schema)+len(opts)+len(strconv.Itoa(version)) {
 			t.Fatalf("scope %q is shorter than its components %+v (lossy encoding)", got, cur)
 		}
 	})
