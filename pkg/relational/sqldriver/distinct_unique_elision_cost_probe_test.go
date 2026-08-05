@@ -486,7 +486,19 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// effect and the null, which is what makes a failure here informative in
 	// either direction.
 	const r3Margin = 0.95
-	if bvdT > r3Margin {
+	// WALL-CLOCK criteria only, and only when the clock means something. Race
+	// instrumentation taxes every memory access on BOTH sides of each pair, so
+	// the shared base inflates and R3's 13-17% margin compresses toward 1.0
+	// (measured 0.968x under -race). That invalidates the REGIME, not the
+	// property -- the same way the paged and sub-10k regimes cannot resolve it.
+	// Everything non-temporal above and below still runs and still asserts.
+	if duecRaceInstrumented {
+		t.Logf("RACE: wall-clock criteria withheld (B/D'=%.3fx s1=%.3fx s50=%.3fx). "+
+			"Instrumentation inflates both sides of every pair and compresses the "+
+			"ratio; the allocation criteria below still run, because the detector "+
+			"does not change how many bytes the seen-set charges.", bvdT, s1T, s50T)
+	}
+	if !duecRaceInstrumented && bvdT > r3Margin {
 		t.Fatalf("R3 timing: B/D' = %.3fx is not strictly faster than the full "+
 			"distinct (B=%v D'=%v). R3's exempt test must run on the row's RAW "+
 			"SLOTS before the dedup key is packed; an implementation that packs "+
@@ -499,12 +511,12 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// worse than full", never "faster" — that asymmetry IS the content of
 	// "strictly dominates" — though it in fact measures 0.87-0.96x, because
 	// half the rows still skip the tuple encoder entirely.
-	if s1T > r3Margin {
+	if !duecRaceInstrumented && s1T > r3Margin {
 		t.Fatalf("sweep 1%%: R3/full = %.3fx is not faster (bound %.2fx, for the same "+
 			"reason as B/D': without the route the two are one plan and the ratio is "+
 			"1.0 plus noise)", s1T, r3Margin)
 	}
-	if s50T > 1.0 {
+	if !duecRaceInstrumented && s50T > 1.0 {
 		t.Fatalf("sweep 50%%: R3/full = %.3fx is WORSE than the full distinct. R3's "+
 			"seen-set is a subset of the full one on every input, so there is no "+
 			"density at which it may cost more.", s50T)
