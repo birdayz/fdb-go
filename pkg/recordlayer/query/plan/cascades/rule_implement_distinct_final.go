@@ -370,6 +370,27 @@ func secondaryUniqueEliminationProof(
 	// index scan, but it may not prove anything from an index's declared
 	// uniqueness. That makes every unwritten planning path safe by construction
 	// rather than safe by everyone remembering to thread a config field.
+	//
+	// THE CEILING ON TESTING THIS, stated because the alternative is someone
+	// reading the branch as untested. The DECLINE below cannot be reached
+	// through the live SQL/FDB path, and that is a fact about the generator
+	// rather than a gap in coverage: cascadesGenerator.fetchIndexStateSnapshot
+	// reads states through FDBRecordStore.GetAllIndexStates, which iterates the
+	// METADATA's indexes and defaults an absent entry to READABLE. The snapshot
+	// is therefore DENSE — exactly one entry per metadata index — so a schema
+	// that has a unique index to prove anything from can never produce the empty
+	// map readableIndexesFrom turns into UNKNOWN. The only route to UNKNOWN
+	// there is a schema with no indexes at all, where there is nothing to prove.
+	//
+	// So the decline is pinned at unit level and the FDB path pins only the
+	// POSITIVE direction — that states ARE established there, observable as the
+	// proof firing at all. Switching the snapshot to the raw index-state
+	// subspace, whose domain is whatever keys happen to exist rather than what
+	// the metadata names, would make the map empty on a healthy fresh store and
+	// silently turn every R2/R3 off everywhere. Losing an optimization is not a
+	// wrong answer, so nothing would fail on correctness; what catches it is the
+	// sqldriver probe's narrowed-by assertions, plus the density fact pinned
+	// directly at its source in store_api_test.go.
 	if !ctx.GetPlannerConfiguration().ReadableIndexes.IndexStatesEstablished() {
 		return secondaryUniqueProof{}
 	}

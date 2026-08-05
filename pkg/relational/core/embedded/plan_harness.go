@@ -498,10 +498,65 @@ func PlanRecordQueryWithMetadataSchema(sql string, md *recordlayer.RecordMetaDat
 	return plan, err
 }
 
+// PlanRecordQueryAssertingAllIndexesReadable is PlanRecordQueryWithMetadata
+// under the AFFIRMATIVE all-indexes-readable view instead of the UNKNOWN one.
+//
+// The plain harness deliberately leaves index state UNKNOWN — it has no store
+// to ask — and RFC-210 §5.1.1 makes that demotion load-bearing: a planning run
+// that never consulted a store may still plan an index scan, but it may not
+// prove anything from an index's declared UNIQUENESS. That is why the harness
+// never yields R2 or R3, and it is a property worth keeping.
+//
+// It also means a metadata-only test cannot obtain a NARROWED plan from the
+// planner. Before this entry existed, the tests that needed one built it by
+// hand — `distinct.WithNarrowedDedup("BY_EMAIL", []int{0})` — which asserts
+// nothing about the mapping from the index's key columns onto dedup-key slot
+// positions (rule_implement_distinct_final.go's exemptSlotsFor). That mapping is
+// the part that can be wrong: aim it at the wrong slot and the operator tests a
+// column the index does not key, retaining rows on a passenger column's NULLs
+// and missing the key column's. A hand-written [0] agrees with a broken
+// exemptSlotsFor on every fixture where the key column happens to be first.
+//
+// The CALLER states the assertion, which is the whole point: this is the same
+// affirmative claim cascadesGenerator mints after fetching a snapshot and
+// finding every index strictly READABLE (readableIndexesFrom), so a caller
+// using it is asserting the store condition rather than being handed it. Use
+// it only where that condition is established independently — a freshly built
+// store whose indexes were never transitioned. Everything the plain harness
+// documents about executing its result applies here unchanged and with more
+// force: this one CAN produce a plan whose correctness rests on an index's
+// state.
+func PlanRecordQueryAssertingAllIndexesReadable(
+	sql string, md *recordlayer.RecordMetaData, stats properties.StatisticsProvider,
+) (plans.RecordQueryPlan, error) {
+	popts := plannerOptionsFrom(nil)
+	popts.config.ReadableIndexes = cascades.AllIndexesReadable()
+	plan, _, err := planRecordQueryAndSubqueriesWithOptions(
+		sql, md, defaultEmbeddedSchema, stats, popts)
+	return plan, err
+}
+
 // planRecordQueryAndSubqueries is the shared body of the record-plan harness
 // entry points: parse → logical build → translate → Cascades-plan the main
 // query AND its collected scalar subqueries.
 func planRecordQueryAndSubqueries(sql string, md *recordlayer.RecordMetaData, schemaName string, stats properties.StatisticsProvider) (plans.RecordQueryPlan, []PlannedScalarSubquery, error) {
+	// No connection here, so no api.Options: the Java-default planner options,
+	// which leave the index-state view UNKNOWN.
+	return planRecordQueryAndSubqueriesWithOptions(sql, md, schemaName, stats, plannerOptionsFrom(nil))
+}
+
+// planRecordQueryAndSubqueriesWithOptions is the body, with the planner options
+// supplied rather than defaulted. Every harness entry funnels through here for
+// the same reason newCascadesPlanner is the package's only planner-construction
+// site: an entry point that assembled its own options could honor one and drop
+// another.
+func planRecordQueryAndSubqueriesWithOptions(
+	sql string,
+	md *recordlayer.RecordMetaData,
+	schemaName string,
+	stats properties.StatisticsProvider,
+	popts plannerOptions,
+) (plans.RecordQueryPlan, []PlannedScalarSubquery, error) {
 	if schemaName == "" {
 		schemaName = defaultEmbeddedSchema
 	}
@@ -570,9 +625,7 @@ func planRecordQueryAndSubqueries(sql string, md *recordlayer.RecordMetaData, sc
 		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
 	}
 
-	// No connection here, so no api.Options: plan under the Java-default
-	// planner options via the shared construction site.
-	planner := newCascadesPlanner(md, plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), stats)
+	planner := newCascadesPlanner(md, popts, cascades.BatchAExpressionRules(), stats)
 
 	bestExpr, _, planErr := planner.PlanWithContext(context.Background(), ref)
 	if planErr != nil {
@@ -600,7 +653,7 @@ func planRecordQueryAndSubqueries(sql string, md *recordlayer.RecordMetaData, sc
 	// the production generator uses; PlanRecordQueryWithSubqueries surfaces
 	// them, the plan-only entry points drop them (execution without the
 	// bindings is loud — values.UnboundScalarSubqueryError).
-	subs, subErr := planScalarSubqueryPlans(context.Background(), scalarSubqueryPlans, md, stats, plannerOptionsFrom(nil))
+	subs, subErr := planScalarSubqueryPlans(context.Background(), scalarSubqueryPlans, md, stats, popts)
 	if subErr != nil {
 		return nil, nil, subErr
 	}

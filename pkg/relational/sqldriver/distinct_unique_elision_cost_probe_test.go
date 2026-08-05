@@ -17,8 +17,13 @@ package sqldriver_test
 //     establishes index states, so only that path can yield an R2/R3 plan.
 //   - TestFDB_DistinctUniqueElisionRetention measures the seen-set's exact
 //     CONTENT through the executor, by reading the hash-distinct's continuation.
-//     That needs a plan object in hand, so it builds the narrowed plan directly.
-//     Whether the planner PRODUCES that plan is the other test's assertion.
+//     That needs a plan OBJECT in hand, which the SQL path does not hand back, so
+//     it plans through the metadata harness — but under the AFFIRMATIVE
+//     all-readable index-state view, so the narrowing and its exempt slots are
+//     the PLANNER's rather than the test's. Whether the live SQL path produces
+//     that plan is the other test's assertion; whether the planner computes the
+//     right SLOTS, and whether the executor then retains the right rows, is this
+//     one's.
 //
 // The fixture carries EMAIL_PLAIN alongside EMAIL: identical values, identical
 // key bytes, no unique index. `SELECT DISTINCT email_plain` is therefore the
@@ -837,6 +842,44 @@ func TestFDB_DistinctUniqueElisionRetention(t *testing.T) {
 		ks := subspace.FromBytes(tuple.Tuple{t.Name(), d.label}.Pack())
 		duecDirectLoad(t, ctx, db, md, desc, ks, d.nullEvery)
 
+		// The exempt SLOTS, as the PLANNER computed them, on a shape where the
+		// answer is not 0. exemptSlotsFor resolves the index's key columns
+		// against the dedup key's slot order, so moving EMAIL out of first
+		// position must move the slot with it. A mapping stuck at 0 would test
+		// PAYLOAD for exemptness — a column that is never NULL — and the
+		// operator would retain NOTHING at 50% NULL density while claiming to
+		// narrow, which is the wrong-slot failure this asserts against.
+		for _, s := range []struct {
+			query string
+			want  []int
+		}{
+			{"SELECT DISTINCT email, payload FROM USERS", []int{0}},
+			{"SELECT DISTINCT payload, email FROM USERS", []int{1}},
+		} {
+			got := duecDistinctIn(duecPlan(t, s.query, md, true)).GetNarrowedExemptSlots()
+			if len(got) != len(s.want) || (len(got) == 1 && got[0] != s.want[0]) {
+				t.Fatalf("density %s: the planner computed exempt slots %v for %q, want %v.\n"+
+					"These are positions in the DEDUP KEY's slot order, and the index "+
+					"keys EMAIL alone. Testing any other position retains rows the "+
+					"index already proves unique and misses the ones it does not.",
+					d.label, got, s.query, s.want)
+			}
+		}
+		// And the mapping is measured, not only asserted: at 50% NULL the
+		// payload-FIRST projection must still admit exactly the NULL-email rows.
+		// Every row packs a distinct key here (PAYLOAD is unique per row), so
+		// the admitted count is the row count. A slot stuck at 0 admits 0.
+		if d.wantNulls > 0 {
+			r3PayloadFirst := duecRetained(t, ctx, db, md, ks,
+				"SELECT DISTINCT payload, email FROM USERS", duecRows, true)
+			if r3PayloadFirst.keys != d.wantNulls {
+				t.Fatalf("density %s: with EMAIL projected SECOND, R3 admitted %d rows, "+
+					"want exactly %d.\nThe exempt test is reading the wrong slot: 0 "+
+					"admitted means it is testing PAYLOAD, which is never NULL.",
+					d.label, r3PayloadFirst.keys, d.wantNulls)
+			}
+		}
+
 		// Keys retained: what the seen-set holds and what rides the continuation.
 		fullKeys := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email FROM USERS", d.outRows, false)
 		r3Keys := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email FROM USERS", d.outRows, true)
@@ -894,15 +937,67 @@ type duecRetention struct {
 	narrowed bool
 }
 
-// duecRetained plans a query, optionally applies R3's narrowing, executes it
-// against ks with a returned-row limit, and reports the seen-set size read off
-// the resulting continuation.
+// duecPlan plans query through one of the two index-state views. narrow=true
+// asks for the affirmative all-readable view, under which the secondary-UNIQUE
+// proof is available and R3 narrows; narrow=false is the plain UNKNOWN-state
+// harness, which refuses the proof and yields the full operator.
+func duecPlan(
+	t *testing.T, query string, md *recordlayer.RecordMetaData, narrow bool,
+) plans.RecordQueryPlan {
+	t.Helper()
+	planner := embedded.PlanRecordQueryWithMetadata
+	if narrow {
+		planner = embedded.PlanRecordQueryAssertingAllIndexesReadable
+	}
+	plan, err := planner(query, md, nil)
+	if err != nil {
+		t.Fatalf("plan %q (narrow=%v): %v", query, narrow, err)
+	}
+	if !narrow {
+		return plan
+	}
+	if d := duecDistinctIn(plan); d == nil {
+		t.Fatalf("plan %q under the all-readable view carries no distinct at all: %s",
+			query, plan.Explain())
+	} else if !d.IsNarrowedDedup() {
+		t.Fatalf("the PLANNER did not narrow %q under the affirmative all-readable "+
+			"view: %s\nThis harness now asks the planner for the narrowing rather "+
+			"than applying one itself, so a rule that stopped firing makes every "+
+			"retention measurement below silently measure the FULL operator instead "+
+			"of failing.", query, plan.Explain())
+	}
+	return plan
+}
+
+func duecDistinctIn(plan plans.RecordQueryPlan) *plans.RecordQueryDistinctPlan {
+	var found *plans.RecordQueryDistinctPlan
+	plans.Walk(plan, func(n plans.RecordQueryPlan) bool {
+		if d, ok := n.(*plans.RecordQueryDistinctPlan); ok && found == nil {
+			found = d
+		}
+		return true
+	})
+	return found
+}
+
+// duecRetained plans a query, executes it against ks with a returned-row limit,
+// and reports the seen-set size read off the resulting continuation.
 //
-// The narrowing is applied HERE rather than taken from the planner because the
-// metadata-only harness deliberately refuses to draw a secondary-UNIQUE proof
-// (see duecAssertVariants). The planner's production of the narrowed plan is
-// asserted through EXPLAIN on the SQL path; this measures what the executor
-// does with it.
+// narrow selects WHICH PLANNER VIEW plans the query, and the narrowing is the
+// planner's own rather than the test's. The plain harness leaves index state
+// UNKNOWN and therefore refuses to draw a secondary-UNIQUE proof at all (see
+// duecAssertVariants, which pins that refusal); the asserting entry mints the
+// affirmative all-readable view the live generator mints after fetching a
+// snapshot, which is a claim this fixture is entitled to make — the store is
+// built here, and none of its indexes is ever transitioned.
+//
+// This used to hand-write the narrowing as WithNarrowedDedup("BY_EMAIL",
+// []int{0}), which measured the executor over a plan the planner had no part
+// in. The slot list is the piece that was going unasserted: exemptSlotsFor maps
+// the index's key columns onto positions in the DEDUP KEY's slot order, and a
+// literal [0] agrees with a broken mapping on every fixture whose key column
+// happens to be projected first. duecExemptSlots asserts the mapping on a shape
+// where it is not first.
 func duecRetained(
 	t *testing.T,
 	ctx context.Context,
@@ -914,17 +1009,7 @@ func duecRetained(
 	narrow bool,
 ) duecRetention {
 	t.Helper()
-	plan, perr := embedded.PlanRecordQueryWithMetadata(query, md, nil)
-	if perr != nil {
-		t.Fatalf("plan %q: %v", query, perr)
-	}
-	if narrow {
-		d, ok := plan.(*plans.RecordQueryDistinctPlan)
-		if !ok {
-			t.Fatalf("root of %q is %T, want a distinct to narrow", query, plan)
-		}
-		plan = d.WithNarrowedDedup("BY_EMAIL", []int{0})
-	}
+	plan := duecPlan(t, query, md, narrow)
 	var out duecRetention
 	plans.Walk(plan, func(n plans.RecordQueryPlan) bool {
 		if d, ok := n.(*plans.RecordQueryDistinctPlan); ok && d.IsNarrowedDedup() {

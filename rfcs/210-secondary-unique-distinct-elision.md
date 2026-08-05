@@ -1140,8 +1140,8 @@ substitute for missing metadata.
 had one.** `SecondaryUniqueKeyGloballyEnforced`'s own doc
 (`physical_equality_shape.go:124-131`) states its purpose as *"used for DISTINCT
 elimination and strict-ordering claims"* — and before this RFC only the
-strict-ordering half had a caller (`indexHasGloballyEnforcedUniqueKey`,
-`rule_implement_sort.go:317`). The DISTINCT half of that sentence had been
+strict-ordering half had a caller (`indexHasStreamEnforcedUniqueKey`,
+`rule_implement_sort.go:355`). The DISTINCT half of that sentence had been
 aspirational since #617 landed it. R1 makes it true.
 
 **And R1 alone leaves it true-but-unreachable on SQL, which is the finding that
@@ -1273,8 +1273,8 @@ executor it picks.
 
 `SecondaryUniqueKeyGloballyEnforced` has **two** consumers, and §5.4 quotes its
 doc naming both: *"used for DISTINCT elimination and strict-ordering claims"*.
-The strict-ordering consumer is `indexHasGloballyEnforcedUniqueKey`
-(`rule_implement_sort.go:317`), and it is dead on the SQL surface for **exactly
+The strict-ordering consumer is `indexHasStreamEnforcedUniqueKey`
+(`rule_implement_sort.go:355`), and it is dead on the SQL surface for **exactly
 the reason R1 is** — the same nullability clause, the same inexpressible `NOT
 NULL` scalar, the same inert predicate. It is not a separate defect; it is the
 same defect with a second consumer, and the refutation test already asserts both
@@ -1444,10 +1444,10 @@ upstream bug. The NULL half is its sibling and belongs beside it.
 
 **Disposition, and it is deliberate:**
 
-- **Go does not port the bug.** `indexHasGloballyEnforcedUniqueKey` keeps its
+- **Go does not port the bug.** `indexHasStreamEnforcedUniqueKey` keeps its
   nullability clause; R2 is wired into it so the claim becomes *reachable* on the
   streams where it is *true*, which is the opposite of relaxing it.
-- **The divergence is documented at the call site**, `rule_implement_sort.go:317`
+- **The divergence is documented at the call site**, `rule_implement_sort.go:355`
   — the site that would otherwise read as an unexplained extra check someone
   could "simplify" back into Java's shape.
 - **A DIVERGENCES.md entry goes beside the NaN/ordering one**, in the *Java
@@ -1895,6 +1895,21 @@ rewrite:
 The test is renamed to say what it now pins: the *boundary* between what R1
 cannot reach and what R2/R3 do, rather than the blanket unreachability it was
 written to record.
+
+**Where each arm landed, because they did not all land in one file and reading
+this section as a file manifest is how (d) and (e) get looked for in the wrong
+place.** Arms (a) and (b) are one function and (c) is a second, both in
+`core/embedded/secondary_unique_proof_reachability_test.go` — the renamed probe.
+Arms (d) and (e) are **not** there, and could not be: they need a *live store*,
+because the metadata-only harness that file uses establishes no index states and
+so draws no proof at all (§5.1.1). They live in
+`sqldriver/distinct_unique_elision_cost_probe_test.go` as that test's row C (R2,
+full elision, `distinct-by:BY_EMAIL`) and row B (R3, narrowed,
+`narrowed-by:BY_EMAIL`), with the R2 half additionally stated over the half-NULL
+`USERS50` fixture, which is the one where §7.1's *retains-the-filter* criterion
+can fail. The split is not an accident of where it was convenient to write them:
+(a)-(c) are claims about what the SQL surface and the metadata *can express*, and
+(d)-(e) are claims about what a run that *asked a store* produces.
 
 ## 8. Must not regress
 

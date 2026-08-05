@@ -352,7 +352,7 @@ func indexScanUnderOrderPreservingWrappers(
 	return nil
 }
 
-// indexHasGloballyEnforcedUniqueKey is the strict-ordering consumer of the same
+// indexHasStreamEnforcedUniqueKey is the strict-ordering consumer of the same
 // gate the DISTINCT elision uses, and the nullability clause inside it is a
 // DELIBERATE DIVERGENCE FROM JAVA rather than an extra check to be simplified
 // away.

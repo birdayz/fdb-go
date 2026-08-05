@@ -1636,7 +1636,57 @@ bound installs an exclusive low at the NULL boundary. Both are pinned in
 `executor/scan_range_null_boundary_test.go`, because a sort claim has no residual
 that could catch either one changing.
 
-**To report upstream.** Not yet filed. The report should cite `:153` and the
-three-NULL-entry witness above; it is a soundness bug in Java's own terms, not a
-Go/Java modelling difference, so it is expected to be fixed upstream rather than
-to persist as a permanent divergence.
+**To report upstream — READY TO FILE, not filed.** It is a soundness bug in
+Java's own terms rather than a Go/Java modelling difference, so it is expected to
+be fixed upstream rather than to persist as a permanent divergence.
+
+It is not filed from here, and the reason is procedural rather than technical:
+filing publishes a defect claim about someone else's project under this repo
+owner's identity, on a repository this project does not control, and no entry in
+this file has ever referenced a filed upstream issue — there is no established
+convention to follow. That is an owner decision. The report is therefore written
+out in full below so that filing it costs one paste, and so the analysis does not
+have to be re-derived by whoever files it.
+
+> **Title:** `RemoveSortRule.strictlyOrderedIfUnique` claims `strictlySorted` for
+> a UNIQUE index on a NULLABLE column, which is unsound under NULLS DISTINCT
+>
+> **Where:** `RemoveSortRule.java:153`
+>
+> ```java
+> return matchCandidate.isUnique() && numKeys >= matchCandidate.getColumnSize();
+> ```
+>
+> **The claim.** `strictlySorted` asserts to downstream consumers that no two
+> rows of the scan compare equal on the sort key, which is what licenses removing
+> a sort and skipping duplicate handling.
+>
+> **Why it is false.** Under `NULLS DISTINCT` the uniqueness check is SKIPPED
+> when an indexed component is NULL, so a `UNIQUE` index on a nullable column
+> legitimately holds
+>
+> ```
+> (NULL, pk=1), (NULL, pk=2), (NULL, pk=3)
+> ```
+>
+> — three entries whose claimed sort key is identical. The path into `:153`
+> carries no nullability term anywhere, so the claim is made for these indexes
+> too. This is not an edge case reached by unusual input: it is false by
+> construction for every unique index over a nullable column, on any store
+> holding two or more NULLs in it.
+>
+> **Consequence.** `strictlySorted` is a proposition the plan asserts so
+> consumers can skip work; there is no partial version of it and no downstream
+> operator that catches it being wrong. A consumer that trusts it is handed
+> duplicate sort keys.
+>
+> **Suggested fix.** Gate the claim on the key components being non-nullable, or
+> on the scan's range excluding the NULL boundary — the latter keeps the claim
+> available on the streams where it is true (a `WHERE col IS NOT NULL` or any
+> lower bound above the NULL boundary compiles to exactly such a range, per
+> `RangeConstraints.java:650-653`).
+>
+> **How it was found.** Porting this rule to a Go reimplementation of the record
+> layer. The Go port declines the claim for nullable keys and re-admits it only
+> when the scan range excludes NULL; that divergence is what surfaced the
+> question.

@@ -2109,6 +2109,50 @@ var _ = Describe("FDBRecordStore API", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 		})
+
+		// The DENSITY of the returned map, which is a different claim from
+		// "non-empty" above and is load-bearing outside this package.
+		//
+		// The relational planner turns this snapshot into its index-state view:
+		// an EMPTY map means "state was never established", which demotes the
+		// view to UNKNOWN and withdraws the licence for any proof drawn from an
+		// index's declared uniqueness (RFC-210 §5.1.1). Because this method
+		// iterates the METADATA's indexes and defaults an absent entry to
+		// READABLE, the map has exactly one entry per metadata index and a store
+		// that has never written a single index-state key still reports a full
+		// one — which is why a healthy fresh store licenses those proofs.
+		//
+		// Answering from the raw index-state subspace instead — whatever keys
+		// happen to exist — would return an EMPTY map on exactly that store, and
+		// every DISTINCT elision and narrowing would silently stop firing
+		// everywhere. Nothing would return a wrong row, so no correctness test
+		// would notice.
+		It("returns one entry per metadata index, on a store with no state keys written", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			builder.AddIndex("Order", NewIndex("dense_price_idx", Field("price")))
+			builder.AddIndex("Order", NewIndex("dense_qty_idx", Field("quantity")))
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				states := store.GetAllIndexStates()
+				Expect(states).To(HaveLen(len(md.GetAllIndexes())),
+					"the snapshot must cover EVERY metadata index. A short map reads as "+
+						"partially-established state to the planner, and an EMPTY one "+
+						"withdraws every uniqueness-derived proof without failing anything")
+				for name := range md.GetAllIndexes() {
+					Expect(states).To(HaveKey(name))
+					Expect(states[name]).To(Equal(IndexStateReadable))
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
 	})
 })
 
