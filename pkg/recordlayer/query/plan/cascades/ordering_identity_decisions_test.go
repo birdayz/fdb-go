@@ -289,8 +289,7 @@ func TestCrossCorrelationIsTheWholeResidualDisagreement(t *testing.T) {
 			provided: {properties.SortedBinding(properties.ProvidedSortOrderAscending)},
 		},
 		[]values.Value{provided},
-		true,
-	)
+		properties.DistinctOverAllKeys())
 	requested := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{{
 			Value:     requestedValue,

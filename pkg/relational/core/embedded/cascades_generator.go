@@ -348,6 +348,14 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, stateErr
 	}
 	popts.config.ReadableIndexes = readableIndexesFrom(md, indexStateSnapshot)
+	// A cross-row uniqueness proof is a statement about an INSTANT, so it only
+	// licenses anything when the WHOLE result comes from one read version.
+	// fetchPage routes on exactly this condition: with an explicit transaction
+	// every page joins it and shares its read version; without one each page
+	// runs its own auto-commit transaction and takes a fresh one, so a value
+	// can move between pages and be emitted twice. See
+	// PlannerConfiguration.SingleReadVersion.
+	popts.config.SingleReadVersion = g.c.activeTx != nil
 	// Plan-cache key parts: a VERBATIM schema+version+planner-options scope
 	// (case-sensitive, never normalized) and the injective canonical query
 	// text. NOT q.GetText() — that concatenated tokens with no separator,
@@ -371,7 +379,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 				// cache entry. A cached plan gets the same guarantee as a freshly
 				// planned one, which is what the cache exists to be transparent
 				// about.
-				indexDependencies: collectPlanIndexDependencies(md, cachedPlan, cachedSubs, nil),
+				indexDependencies: collectPlanIndexDependencies(md, cachedPlan, cachedSubs),
 			}, nil
 		}
 	}
@@ -532,7 +540,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		// than notional: whoever lifts that decline records the proving index
 		// here, and TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof
 		// is what fails if they lift it without doing so.
-		indexDependencies: collectPlanIndexDependencies(md, physPlan, scalarSubs, nil),
+		indexDependencies: collectPlanIndexDependencies(md, physPlan, scalarSubs),
 	}, nil
 }
 
@@ -1084,6 +1092,14 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	planningRules := append(cascades.BatchAExpressionRules(), cascades.DMLImplementationRules()...)
 	popts := plannerOptionsFrom(g.c.Options())
 	popts.config.ReadableIndexes = readableIndexesFrom(md, dmlIndexStateSnapshot)
+	// A cross-row uniqueness proof is a statement about an INSTANT, so it only
+	// licenses anything when the WHOLE result comes from one read version.
+	// fetchPage routes on exactly this condition: with an explicit transaction
+	// every page joins it and shares its read version; without one each page
+	// runs its own auto-commit transaction and takes a fresh one, so a value
+	// can move between pages and be emitted twice. See
+	// PlannerConfiguration.SingleReadVersion.
+	popts.config.SingleReadVersion = g.c.activeTx != nil
 	planner := newCascadesPlanner(md, popts, planningRules, dmlStats)
 
 	bestExpr, _, planErr := planner.PlanWithContext(ctx, ref)
@@ -1133,7 +1149,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		explain:          logicalOp.Explain(""),
 		scalarSubqueries: dmlScalarSubs,
 
-		indexDependencies: collectPlanIndexDependencies(md, physPlan, dmlScalarSubs, nil),
+		indexDependencies: collectPlanIndexDependencies(md, physPlan, dmlScalarSubs),
 		dryRun:            dryRun,
 	}, nil
 }
@@ -2483,17 +2499,25 @@ func (g *cascadesGenerator) fetchIndexStateSnapshot(
 //     the planner may assume uniqueness from a unique index, and a
 //     unique-pending one has not yet proven it.
 //
-// A nil snapshot is the offline convention and yields the unrestricted answer.
+// Only the path that actually FETCHED a snapshot and found every named index
+// READABLE may mint the affirmative AllIndexesReadable form. The degenerate
+// early returns below mint UNKNOWN instead: an affirmative claim manufactured
+// from the absence of information is the same collapse ReadableIndexes' third
+// state exists to prevent, one layer up. Neither changes a plan — UNKNOWN is
+// equally permissive for scanning — but a downstream proof that asks "was
+// index state established?" must not be answered yes by a nil snapshot.
+//
+// A nil snapshot is the offline convention and yields UNKNOWN.
 func readableIndexesFrom(
 	md *recordlayer.RecordMetaData,
 	states map[string]recordlayer.IndexState,
 ) cascades.ReadableIndexes {
-	if md == nil || states == nil || len(states) == 0 {
-		return cascades.AllIndexesReadable()
+	if md == nil || len(states) == 0 {
+		return cascades.IndexStatesUnknown()
 	}
 	allIndexes := md.GetAllIndexes()
 	if len(allIndexes) == 0 {
-		return cascades.AllIndexesReadable()
+		return cascades.IndexStatesUnknown()
 	}
 	allReadable := true
 	for name := range allIndexes {
@@ -2851,6 +2875,22 @@ func (d *metadataIndexDef) IndexIsUnique() bool { return d.idx.IsUnique() }
 // classified differently.
 func (d *metadataIndexDef) IndexPredicateProto() *gen.Predicate {
 	return d.idx.GetPredicateProto()
+}
+
+// IndexHasOpaqueFilter reports the case IndexPredicateProto structurally cannot:
+// the index FILTERS, but through a Go closure with no serialized form, so there
+// is no proto to hand over and nothing the matcher could account for.
+//
+// Both answers come from the same index and they disagree exactly here — proto
+// nil, filter present. Sparseness is the FACT (HasFilteringPredicate, which the
+// candidate loop above already consults for the aggregate/vector families);
+// predicateProto is one REPRESENTATION of it. Reading the second as the first
+// makes a closure-filtered index look complete, which is a wrong-rows failure:
+// its UNIQUE declaration would license a DISTINCT elision covering records it
+// never held, and a scan over it would stand in for a base table it does not
+// cover.
+func (d *metadataIndexDef) IndexHasOpaqueFilter() bool {
+	return d.idx.HasFilteringPredicate() && d.idx.GetPredicateProto() == nil
 }
 
 // IndexKeyComponentTypes derives one authoritative physical tuple type per

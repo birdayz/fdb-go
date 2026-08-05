@@ -37,6 +37,20 @@ type RecordQueryDistinctPlan struct {
 	//     relinks the SAME, identically-ordered inner, not a different one.
 	// Default false is the safe hash-set fallback. See TODO.md C5.
 	Streaming bool
+
+	// The R3 residual dedup. Set together, by WithNarrowedDedup only, and read
+	// by the executor and by EXPLAIN. Both are in structuralKey; see the
+	// wrong-rows argument there.
+	//
+	// narrowedProofIndexName is the secondary UNIQUE index whose uniqueness
+	// licenses retaining ONLY the exempt rows. Empty means the ordinary full
+	// dedup, which is every distinct plan not built over a qualifying index.
+	//
+	// narrowedExemptSlots are the dedup-key slot positions holding that index's
+	// key components; nil means "test every slot" — the conservative form, which
+	// over-approximates the exempt set and so stays sound.
+	narrowedProofIndexName string
+	narrowedExemptSlots    []int
 }
 
 // NewRecordQueryDistinctPlan constructs a distinct plan over the
@@ -111,12 +125,103 @@ func (p *RecordQueryDistinctPlan) GetQuantifiers() []expressions.Quantifier {
 	return []expressions.Quantifier{p.innerQ}
 }
 
-// EqualsWithoutChildren — distinct plans carry only the Streaming mode as
-// operator-specific data; a streaming and a hash-set distinct dedup to the same
-// rows but are NOT execution-interchangeable (streaming assumes ordered input),
-// so they must not be conflated in the memo.
+// EqualsWithoutChildren — distinct plans carry the Streaming mode and the R3
+// narrowing as operator-specific data. A streaming and a hash-set distinct dedup
+// to the same rows but are NOT execution-interchangeable (streaming assumes
+// ordered input), so they must not be conflated in the memo.
+//
+// The NARROWING is in identity for a stronger reason than the streaming mode,
+// and it is a wrong-rows condition rather than a plan-quality one. A narrowed
+// operator's seen-set holds ONLY the exempt keys; a full one holds every key. A
+// re-plan that flipped narrowed↔full while resuming a DistinctHashContinuation
+// would rebuild a set from a serialization written under the other discipline —
+// a full operator resuming from a narrowed continuation believes it has already
+// seen every key the narrowing omitted, and drops rows it must emit. Collapsing
+// the two in the memo is what would let that happen silently.
 func (p *RecordQueryDistinctPlan) structuralKey() *structuralKey {
-	return newStructuralKey().Bool(p.Streaming)
+	k := newStructuralKey().Bool(p.Streaming).
+		Str(p.narrowedProofIndexName).
+		Int(len(p.narrowedExemptSlots))
+	for _, slot := range p.narrowedExemptSlots {
+		k = k.Int(slot)
+	}
+	return k
+}
+
+// WithNarrowedDedup returns a copy whose dedup is RESIDUAL: only rows carrying
+// an exempt key component — NULL or NaN — enter the seen-set, and every other
+// row passes through in O(1) with nothing retained.
+//
+// This is R3, the route taken when neither the metadata proof nor a
+// NULL-rejecting predicate establishes that the index's exempt set is empty. The
+// soundness argument is one line: the index's uniqueness already guarantees at
+// most one row per non-exempt key value, so a non-exempt row can duplicate
+// neither another non-exempt row (uniqueness) nor an exempt one (exemptness is a
+// property of the key value itself, so their keys differ by construction).
+//
+// It STRICTLY DOMINATES the full operator, which is why it needs no cost-model
+// trade-off and no cost formula moves: the narrowed seen-set is a SUBSET of the
+// full one on every input — identical in the worst case where every row is
+// exempt, and EMPTY on the ordinary case of a nullable column holding no NULLs,
+// where the operator degenerates to a pass-through retaining nothing.
+//
+// exemptSlots are positions in the DEDUP KEY's slot order (what distinctKey
+// packs) holding the proving index's key components. A nil slice means "test
+// every slot", which is the conservative form: it over-approximates the exempt
+// set, so it is still a subset of the full seen-set and still sound, just less
+// narrow. That is the fail-safe direction — the alternative, guessing a
+// position, would under-approximate and drop rows.
+//
+// indexName is the proving index, and it is recorded for the SAME reason a full
+// elision records it. R3 reads as unconditional because it removes no operator,
+// and that reading is wrong: R3 rests on the index's uniqueness exactly as R1
+// and R2 do. Withdraw the uniqueness guarantee and a non-exempt row can
+// duplicate another non-exempt row — which is precisely what the narrowed
+// seen-set no longer catches. So the plan carries the stamp, the dependency walk
+// collects it through DistinctProofStamped, and the execution-time revalidation
+// 40001s a statement whose proving index left READABLE.
+// The STREAMING executor is REFUSED the narrowing, and the refusal lives here
+// rather than at the call site because a plan that carries the flag and an
+// executor that ignores it is the worst of the three possible states: EXPLAIN
+// renders `narrowed-by`, an acceptance criterion reads it as fired, and the
+// executor took the streaming branch and dedupped every row exactly as before.
+//
+// Refusing costs nothing. The streaming executor retains ONE key — the previous
+// row's — so there is no seen-set for a narrowing to shrink; the whole benefit
+// is on the hash path, whose set the narrowing empties. And no dependency is
+// lost by not stamping: streaming is only chosen when the inner is ordered by
+// the dedup key, which on these shapes is a scan of the proving index itself, so
+// the plan already names the index and the dependency walk already finds it.
+// That is the same SOLE-LICENSE reasoning the elision arm applies — a stamp
+// records a dependency the plan's correctness rests on and nothing else.
+func (p *RecordQueryDistinctPlan) WithNarrowedDedup(indexName string, exemptSlots []int) *RecordQueryDistinctPlan {
+	if indexName == "" || p.Streaming {
+		return p
+	}
+	cp := *p
+	cp.narrowedProofIndexName = indexName
+	cp.narrowedExemptSlots = append([]int(nil), exemptSlots...)
+	return &cp
+}
+
+// GetDistinctProofIndexName implements DistinctProofStamped. On a distinct plan
+// the stamp does not mean "an operator was elided above this node" — it means
+// "this operator's dedup was NARROWED on the strength of that index". Both are
+// dependencies of the same kind and for the same reason, so the dependency walk
+// asks one capability and gets both.
+func (p *RecordQueryDistinctPlan) GetDistinctProofIndexName() string {
+	return p.narrowedProofIndexName
+}
+
+// GetNarrowedExemptSlots returns the dedup-key slot positions the residual dedup
+// tests, or nil for "every slot".
+func (p *RecordQueryDistinctPlan) GetNarrowedExemptSlots() []int {
+	return p.narrowedExemptSlots
+}
+
+// IsNarrowedDedup reports whether this distinct dedups only the exempt subset.
+func (p *RecordQueryDistinctPlan) IsNarrowedDedup() bool {
+	return p.narrowedProofIndexName != ""
 }
 
 func (p *RecordQueryDistinctPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
@@ -129,15 +234,28 @@ func (p *RecordQueryDistinctPlan) HashCodeWithoutChildren() uint64 {
 	return p.structuralKey().Hash("distinctplan|")
 }
 
-// Explain renders Distinct(inner). The Streaming mode is an execution-only
-// detail (resume-clean adjacent-dedup vs fresh-per-page hash-set) that produces
-// identical rows, so it is deliberately NOT surfaced here — keeping plan-shape
-// assertions stable. The fix it enables is proved by row-level cross-page tests,
-// not EXPLAIN.
+// Explain renders Distinct(inner), plus the R3 narrowing when present.
+//
+// The Streaming mode is an execution-only detail (resume-clean adjacent-dedup vs
+// fresh-per-page hash-set) that produces identical rows, so it is deliberately
+// NOT surfaced here — keeping plan-shape assertions stable. The fix it enables
+// is proved by row-level cross-page tests, not EXPLAIN.
+//
+// The NARROWING is rendered, and the difference from Streaming is the reason.
+// Streaming picks between two executors that retain the same keys; narrowing
+// changes WHICH ROWS THE OPERATOR RETAINS. That is the optimization itself, and
+// an acceptance criterion has to be able to assert it fired — a narrowed
+// distinct that silently degraded to a full one is otherwise indistinguishable
+// from one that never narrowed. Naming the licensing index makes it a positive
+// assertion rather than an absence, for the same reason the elision's own stamp
+// is rendered.
 func (p *RecordQueryDistinctPlan) Explain() string {
 	innerLabel := "<nil>"
 	if inner := p.GetInner(); inner != nil {
 		innerLabel = inner.Explain()
+	}
+	if p.narrowedProofIndexName != "" {
+		return fmt.Sprintf("Distinct(%s) narrowed-by:%s", innerLabel, p.narrowedProofIndexName)
 	}
 	return fmt.Sprintf("Distinct(%s)", innerLabel)
 }

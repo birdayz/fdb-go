@@ -37,8 +37,7 @@ func TestRichOrdering_Satisfies_EmptyRequest(t *testing.T) {
 			fieldVal("a"): {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{fieldVal("a")},
-		false,
-	)
+		NotDistinct())
 	req := PreserveOrdering()
 	if !o.Satisfies(req) {
 		t.Fatal("any ordering should satisfy preserve")
@@ -53,8 +52,7 @@ func TestRichOrdering_Satisfies_SingleKey(t *testing.T) {
 			a: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a},
-		false,
-	)
+		NotDistinct())
 	req := NewRequestedOrdering([]RequestedOrderingPart{
 		{Value: a, SortOrder: RequestedSortOrderAscending},
 	}, DistinctnessNotDistinct, false)
@@ -72,8 +70,7 @@ func TestRichOrdering_Satisfies_DirectionMismatch(t *testing.T) {
 			a: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a},
-		false,
-	)
+		NotDistinct())
 	req := NewRequestedOrdering([]RequestedOrderingPart{
 		{Value: a, SortOrder: RequestedSortOrderDescending},
 	}, DistinctnessNotDistinct, false)
@@ -91,8 +88,7 @@ func TestRichOrdering_Satisfies_AnyDirection(t *testing.T) {
 			a: {SortedBinding(ProvidedSortOrderDescending)},
 		},
 		[]values.Value{a},
-		false,
-	)
+		NotDistinct())
 	req := NewRequestedOrdering([]RequestedOrderingPart{
 		{Value: a, SortOrder: RequestedSortOrderAny},
 	}, DistinctnessNotDistinct, false)
@@ -112,8 +108,7 @@ func TestRichOrdering_Satisfies_SkipsFixedKeys(t *testing.T) {
 			b: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a, b},
-		false,
-	)
+		NotDistinct())
 	req := NewRequestedOrdering([]RequestedOrderingPart{
 		{Value: b, SortOrder: RequestedSortOrderAscending},
 	}, DistinctnessNotDistinct, false)
@@ -134,8 +129,7 @@ func TestRichOrdering_Satisfies_WrongKey(t *testing.T) {
 			b: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a, b},
-		false,
-	)
+		NotDistinct())
 	req := NewRequestedOrdering([]RequestedOrderingPart{
 		{Value: c, SortOrder: RequestedSortOrderAscending},
 	}, DistinctnessNotDistinct, false)
@@ -200,8 +194,7 @@ func TestRichOrdering_IsSingularNonFixedValue(t *testing.T) {
 			b: {FixedBinding("eq")},
 		},
 		[]values.Value{a, b},
-		false,
-	)
+		NotDistinct())
 	if !o.IsSingularNonFixedValue(a) {
 		t.Fatal("a should be singular non-fixed")
 	}
@@ -221,16 +214,14 @@ func TestConcatOrderings_Basic(t *testing.T) {
 			a: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a},
-		true,
-	)
+		DistinctOverAllKeys())
 	inner := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			b: {SortedBinding(ProvidedSortOrderDescending)},
 			c: {FixedBinding("eq")},
 		},
 		[]values.Value{b, c},
-		false,
-	)
+		NotDistinct())
 
 	result := ConcatOrderings(outer, inner)
 	if len(result.GetKeys()) != 3 {
@@ -251,13 +242,11 @@ func TestConcatOrderings_SkipsDuplicates(t *testing.T) {
 	outer := NewRichOrdering(
 		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderAscending)}},
 		[]values.Value{a},
-		true,
-	)
+		DistinctOverAllKeys())
 	inner := NewRichOrdering(
 		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderDescending)}},
 		[]values.Value{a},
-		false,
-	)
+		NotDistinct())
 
 	result := ConcatOrderings(outer, inner)
 	if len(result.GetKeys()) != 1 {
@@ -273,8 +262,7 @@ func TestConcatOrderings_RejectsNonDistinctOuter(t *testing.T) {
 			a: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a},
-		false,
-	)
+		NotDistinct())
 
 	defer func() {
 		if recover() == nil {
@@ -295,16 +283,14 @@ func TestMergeOrderings_CompatibleDirections(t *testing.T) {
 			b: {SortedBinding(ProvidedSortOrderDescending)},
 		},
 		[]values.Value{a, b},
-		false,
-	)
+		NotDistinct())
 	o2 := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {SortedBinding(ProvidedSortOrderAscending)},
 			b: {SortedBinding(ProvidedSortOrderDescending)},
 		},
 		[]values.Value{a, b},
-		false,
-	)
+		NotDistinct())
 
 	merged := MergeOrderings(o1, o2)
 	if len(merged.GetKeys()) != 2 {
@@ -319,13 +305,11 @@ func TestMergeOrderings_IncompatibleDirections(t *testing.T) {
 	o1 := NewRichOrdering(
 		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderAscending)}},
 		[]values.Value{a},
-		false,
-	)
+		NotDistinct())
 	o2 := NewRichOrdering(
 		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderDescending)}},
 		[]values.Value{a},
-		false,
-	)
+		NotDistinct())
 
 	merged := MergeOrderings(o1, o2)
 	if len(merged.GetKeys()) != 0 {
@@ -343,8 +327,7 @@ func TestEnumerateSatisfyingKeys_SimpleMatch(t *testing.T) {
 			b: {SortedBinding(ProvidedSortOrderDescending)},
 		},
 		[]values.Value{a, b},
-		false,
-	)
+		NotDistinct())
 	req := NewRequestedOrdering([]RequestedOrderingPart{
 		{Value: a, SortOrder: RequestedSortOrderAscending},
 	}, DistinctnessNotDistinct, false)
@@ -366,8 +349,7 @@ func TestEnumerateSatisfyingKeys_DirectionMismatch(t *testing.T) {
 			a: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a},
-		false,
-	)
+		NotDistinct())
 	req := NewRequestedOrdering([]RequestedOrderingPart{
 		{Value: a, SortOrder: RequestedSortOrderDescending},
 	}, DistinctnessNotDistinct, false)
@@ -386,8 +368,7 @@ func TestEnumerateSatisfyingKeys_PreserveReturnsAllKeys(t *testing.T) {
 			a: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a},
-		false,
-	)
+		NotDistinct())
 	result := o.EnumerateSatisfyingComparisonKeyValues(PreserveOrdering())
 	if len(result) != 1 || len(result[0]) != 1 {
 		t.Fatal("preserve should return all keys")
@@ -406,8 +387,7 @@ func TestSatisfies_FixedKeyReorderableInPartialOrder(t *testing.T) {
 			c: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a, b, c},
-		false,
-	)
+		NotDistinct())
 
 	// b,c is valid because a is fixed (independent in partial order)
 	req1 := NewRequestedOrdering([]RequestedOrderingPart{
@@ -441,8 +421,7 @@ func TestEnumerateSatisfyingKeys_MultiplePermsWithFixedKeys(t *testing.T) {
 			c: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a, b, c},
-		false,
-	)
+		NotDistinct())
 	req := NewRequestedOrdering([]RequestedOrderingPart{
 		{Value: b, SortOrder: RequestedSortOrderAscending},
 	}, DistinctnessNotDistinct, false)
@@ -468,8 +447,7 @@ func TestDirectionalOrderingParts_Basic(t *testing.T) {
 			b: {FixedBinding("eq")},
 		},
 		[]values.Value{a, b},
-		false,
-	)
+		NotDistinct())
 	req := NewRequestedOrdering(nil, DistinctnessNotDistinct, false)
 	parts := o.DirectionalOrderingParts([]values.Value{a, b}, req, ProvidedSortOrderFixed)
 	if len(parts) != 2 {
@@ -538,8 +516,7 @@ func TestIntersectionOrdering_ExcludesFixedKeysAndPreservesDescendingRequest(t *
 			id:        {SortedBinding(ProvidedSortOrderDescending)},
 		},
 		[]values.Value{leftFixed, sortKey, id},
-		false,
-	)
+		NotDistinct())
 	right := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			rightFixed: {FixedBinding("b = ?")},
@@ -547,8 +524,7 @@ func TestIntersectionOrdering_ExcludesFixedKeysAndPreservesDescendingRequest(t *
 			id:         {SortedBinding(ProvidedSortOrderDescending)},
 		},
 		[]values.Value{rightFixed, sortKey, id},
-		false,
-	)
+		NotDistinct())
 
 	merged := MergeOrderingsForIntersection(left, right)
 	if !merged.IsDistinct() {
@@ -604,16 +580,14 @@ func TestIntersectionOrdering_FixedPrefixFreesPrimaryKey(t *testing.T) {
 			primaryKey: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{prefix, primaryKey},
-		false,
-	)
+		NotDistinct())
 	right := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			prefix:     {FixedBinding("a = ?")},
 			primaryKey: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{prefix, primaryKey},
-		false,
-	)
+		NotDistinct())
 
 	merged := MergeOrderingsForIntersection(left, right)
 	prefixKey := values.ExplainValue(prefix)
@@ -655,8 +629,7 @@ func TestRichOrdering_DoesNotCollapseDifferentBakedOrdinals(t *testing.T) {
 			provided: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{provided},
-		false,
-	)
+		NotDistinct())
 	requested := NewRequestedOrdering(
 		[]RequestedOrderingPart{{
 			Value:     requestedOtherSlot,
@@ -691,15 +664,14 @@ func TestConcatOrderings_DistinctnessComesFromInner(t *testing.T) {
 	a := fieldVal("a")
 	outer := NewRichOrdering(
 		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderAscending)}},
-		[]values.Value{a}, true,
-	)
+		[]values.Value{a}, DistinctOverAllKeys())
 	inner := EmptyOrdering()
 	result := ConcatOrderings(outer, inner)
 	if result.IsDistinct() {
 		t.Fatal("concat must not propagate outer distinctness to duplicate inner rows")
 	}
 
-	innerDistinct := NewRichOrdering(nil, nil, true)
+	innerDistinct := NewRichOrdering(nil, nil, DistinctOverAllKeys())
 	if !ConcatOrderings(outer, innerDistinct).IsDistinct() {
 		t.Fatal("concat should inherit distinctness from the inner ordering")
 	}
@@ -721,8 +693,7 @@ func TestRichOrdering_Satisfies_DistinctRequest(t *testing.T) {
 			a: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a},
-		false,
-	)
+		NotDistinct())
 	if nonDistinct.Satisfies(requested) {
 		t.Fatal("a non-distinct provided ordering must not satisfy a distinct request")
 	}
@@ -731,8 +702,7 @@ func TestRichOrdering_Satisfies_DistinctRequest(t *testing.T) {
 			a: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a},
-		true,
-	)
+		DistinctOverAllKeys())
 	if !distinct.Satisfies(requested) {
 		t.Fatal("a matching distinct provided ordering should satisfy the request")
 	}
@@ -743,8 +713,7 @@ func TestCreateUnionOrdering_DeepCopy(t *testing.T) {
 	a := fieldVal("a")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderAscending)}},
-		[]values.Value{a}, true,
-	)
+		[]values.Value{a}, DistinctOverAllKeys())
 	u := CreateUnionOrdering(o)
 	if !u.IsDistinct() {
 		t.Fatal("union copy should preserve distinct")
@@ -760,12 +729,10 @@ func TestMergeOrderings_DisjointKeys(t *testing.T) {
 	b := fieldVal("b")
 	o1 := NewRichOrdering(
 		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderAscending)}},
-		[]values.Value{a}, false,
-	)
+		[]values.Value{a}, NotDistinct())
 	o2 := NewRichOrdering(
 		map[values.Value][]OrderingBinding{b: {SortedBinding(ProvidedSortOrderAscending)}},
-		[]values.Value{b}, false,
-	)
+		[]values.Value{b}, NotDistinct())
 	merged := MergeOrderings(o1, o2)
 	if len(merged.GetKeys()) != 0 {
 		t.Fatalf("disjoint keys should produce empty merge, got %d keys", len(merged.GetKeys()))
@@ -782,8 +749,7 @@ func TestEnumerateCompatibleRequestedOrderings_Basic(t *testing.T) {
 			b: {SortedBinding(ProvidedSortOrderDescending)},
 		},
 		[]values.Value{a, b},
-		false,
-	)
+		NotDistinct())
 	req := NewRequestedOrdering([]RequestedOrderingPart{
 		{Value: a, SortOrder: RequestedSortOrderAscending},
 	}, DistinctnessNotDistinct, false)
@@ -811,8 +777,7 @@ func TestEnumerateCompatibleRequestedOrderings_IncompatibleDirection(t *testing.
 			a: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a},
-		false,
-	)
+		NotDistinct())
 	req := NewRequestedOrdering([]RequestedOrderingPart{
 		{Value: a, SortOrder: RequestedSortOrderDescending},
 	}, DistinctnessNotDistinct, false)
@@ -835,8 +800,7 @@ func TestSatisfiesGroupingValues_Basic(t *testing.T) {
 			c: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a, b, c},
-		false,
-	)
+		NotDistinct())
 
 	gv := map[string]struct{}{
 		values.ExplainValue(a): {},
@@ -863,8 +827,7 @@ func TestSatisfiesGroupingValues_MissingValue(t *testing.T) {
 			a: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a},
-		false,
-	)
+		NotDistinct())
 	gv := map[string]struct{}{
 		values.ExplainValue(fieldVal("z")): {},
 	}
@@ -883,8 +846,7 @@ func TestSatisfiesGroupingValues_FixedKeysSkippable(t *testing.T) {
 			b: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a, b},
-		false,
-	)
+		NotDistinct())
 	gv := map[string]struct{}{
 		values.ExplainValue(b): {},
 	}
@@ -900,13 +862,11 @@ func TestMergeOrderings_MergesFixedBindings(t *testing.T) {
 	o1 := NewRichOrdering(
 		map[values.Value][]OrderingBinding{a: {FixedBinding("eq-5")}},
 		[]values.Value{a},
-		false,
-	)
+		NotDistinct())
 	o2 := NewRichOrdering(
 		map[values.Value][]OrderingBinding{a: {FixedBinding("eq-5")}},
 		[]values.Value{a},
-		false,
-	)
+		NotDistinct())
 
 	merged := MergeOrderings(o1, o2)
 	if len(merged.GetKeys()) != 1 {
@@ -923,8 +883,7 @@ func TestRichOrdering_PullUp(t *testing.T) {
 			keyA: {SortedBinding(ProvidedSortOrderAscending)},
 			keyB: {SortedBinding(ProvidedSortOrderDescending)},
 		},
-		[]values.Value{keyA, keyB}, false,
-	)
+		[]values.Value{keyA, keyB}, NotDistinct())
 
 	renamed := fieldVal("x")
 	mapping := map[string]values.Value{"a": renamed}
@@ -949,8 +908,7 @@ func TestRichOrdering_PullUp_AllMapped(t *testing.T) {
 		map[values.Value][]OrderingBinding{
 			keyA: {FixedBinding(nil)},
 		},
-		[]values.Value{keyA}, true,
-	)
+		[]values.Value{keyA}, DistinctOverAllKeys())
 
 	mapped := fieldVal("b")
 	pulled := o.PullUp(map[string]values.Value{"a": mapped})
@@ -967,8 +925,7 @@ func TestRichOrdering_PullUp_NoMatch(t *testing.T) {
 	keyA := fieldVal("a")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{keyA: {SortedBinding(ProvidedSortOrderAscending)}},
-		[]values.Value{keyA}, false,
-	)
+		[]values.Value{keyA}, NotDistinct())
 	pulled := o.PullUp(map[string]values.Value{"z": fieldVal("w")})
 	if len(pulled.GetKeys()) != 0 {
 		t.Fatalf("expected 0 keys when no mapping matches, got %d", len(pulled.GetKeys()))
@@ -985,8 +942,7 @@ func TestRichOrdering_PullUpThroughValue_RecordConstructor(t *testing.T) {
 			keyX: {SortedBinding(ProvidedSortOrderAscending)},
 			keyY: {SortedBinding(ProvidedSortOrderDescending)},
 		},
-		[]values.Value{keyX, keyY}, false,
-	)
+		[]values.Value{keyX, keyY}, NotDistinct())
 
 	alias := values.NamedCorrelationIdentifier("q1")
 	resultValue := values.NewRecordConstructorValue(
@@ -1046,8 +1002,7 @@ func TestRichOrdering_PullUpThroughValue_PartialMatch(t *testing.T) {
 			keyX: {SortedBinding(ProvidedSortOrderAscending)},
 			keyZ: {SortedBinding(ProvidedSortOrderDescending)},
 		},
-		[]values.Value{keyX, keyZ}, false,
-	)
+		[]values.Value{keyX, keyZ}, NotDistinct())
 
 	alias := values.NamedCorrelationIdentifier("q1")
 	resultValue := values.NewRecordConstructorValue(
@@ -1075,8 +1030,7 @@ func TestRichOrdering_PullUpThroughValue_PreservesIndependentKeys(t *testing.T) 
 		},
 		[]values.Value{keyX, keyY},
 		combinatorics.NewSetMultimap[string](),
-		false,
-	)
+		NotDistinct())
 	alias := values.NamedCorrelationIdentifier("out")
 	resultValue := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "a", Value: keyX},
@@ -1130,8 +1084,7 @@ func TestRichOrdering_PullUpThroughValue_DropsDependentWithMissingPrerequisite(t
 		},
 		[]values.Value{keyA, keyB, keyC},
 		deps,
-		false,
-	)
+		NotDistinct())
 	alias := values.NamedCorrelationIdentifier("out")
 	resultValue := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "first", Value: keyA},
@@ -1154,8 +1107,7 @@ func TestRichOrdering_PullUpThroughValue_PreservesBindings(t *testing.T) {
 		map[values.Value][]OrderingBinding{
 			keyX: {FixedBinding(nil)},
 		},
-		[]values.Value{keyX}, true,
-	)
+		[]values.Value{keyX}, DistinctOverAllKeys())
 
 	alias := values.NamedCorrelationIdentifier("q1")
 	resultValue := values.NewRecordConstructorValue(
@@ -1182,8 +1134,7 @@ func TestRichOrdering_PushDownThroughValue_RecordConstructor(t *testing.T) {
 			keyA: {SortedBinding(ProvidedSortOrderAscending)},
 			keyB: {SortedBinding(ProvidedSortOrderDescending)},
 		},
-		[]values.Value{keyA, keyB}, false,
-	)
+		[]values.Value{keyA, keyB}, NotDistinct())
 
 	upperAlias := values.NamedCorrelationIdentifier("q1")
 	resultValue := values.NewRecordConstructorValue(
@@ -1216,8 +1167,7 @@ func TestRichOrdering_PullUpPushDown_RoundTrip(t *testing.T) {
 			keyX: {SortedBinding(ProvidedSortOrderAscending)},
 			keyY: {SortedBinding(ProvidedSortOrderDescending)},
 		},
-		[]values.Value{keyX, keyY}, false,
-	)
+		[]values.Value{keyX, keyY}, NotDistinct())
 
 	alias := values.NamedCorrelationIdentifier("q1")
 	resultValue := values.NewRecordConstructorValue(
@@ -1362,8 +1312,7 @@ func TestRichOrdering_GetEqualityBoundValues(t *testing.T) {
 			c: {FixedBinding(nil), FixedBinding(nil)},
 		},
 		[]values.Value{a, b, c},
-		false,
-	)
+		NotDistinct())
 	eq := o.GetEqualityBoundValues()
 	if _, ok := eq[a]; !ok {
 		t.Fatal("a should be equality-bound")
@@ -1387,8 +1336,7 @@ func TestRichOrdering_GetEqualityBoundValues_MixedBindings(t *testing.T) {
 			a: {FixedBinding(nil), SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a},
-		false,
-	)
+		NotDistinct())
 	eq := o.GetEqualityBoundValues()
 	if _, ok := eq[a]; !ok {
 		t.Fatal("a should be equality-bound (has at least one fixed binding, matching Java's filterValues(isFixed))")
@@ -1416,8 +1364,7 @@ func TestRichOrdering_GetOrderingKeys(t *testing.T) {
 			c: {SortedBinding(ProvidedSortOrderDescending)},
 		},
 		[]values.Value{a, b, c},
-		false,
-	)
+		NotDistinct())
 	keys := o.GetOrderingKeys()
 	if len(keys) != 2 {
 		t.Fatalf("expected 2 ordering keys (b, c), got %d", len(keys))
@@ -1435,8 +1382,7 @@ func TestRichOrdering_GetOrderingKeys_AllFixed(t *testing.T) {
 			a: {FixedBinding(nil)},
 		},
 		[]values.Value{a},
-		false,
-	)
+		NotDistinct())
 	keys := o.GetOrderingKeys()
 	if len(keys) != 0 {
 		t.Fatalf("all-fixed ordering should have no ordering keys, got %d", len(keys))

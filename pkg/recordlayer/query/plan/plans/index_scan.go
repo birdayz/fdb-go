@@ -41,6 +41,9 @@ type RecordQueryIndexPlan struct {
 	strictlySorted  bool
 	covering        bool
 	coveringColumns []string
+	// distinctProofIndexName names the secondary UNIQUE index whose uniqueness
+	// licensed eliding a DISTINCT above this scan (distinct_proof_stamp.go).
+	distinctProofIndexName string
 	// keyComponentTypes is aligned with scanComparisons. It carries the
 	// physical index-key width (not the RHS type), which is load-bearing for
 	// FLOAT versus DOUBLE tuple encoding.
@@ -418,7 +421,8 @@ func (p *RecordQueryIndexPlan) structuralKey() *structuralKey {
 		Bool(p.strictlySorted).
 		Bool(p.covering).
 		Strs(p.recordTypes).
-		Type(p.flowedType)
+		Type(p.flowedType).
+		Str(p.distinctProofIndexName)
 }
 
 func (p *RecordQueryIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
@@ -456,6 +460,7 @@ func (p *RecordQueryIndexPlan) Explain() string {
 	} else {
 		b.WriteString(")")
 	}
+	b.WriteString(explainDistinctProofSuffix(p.distinctProofIndexName))
 	return b.String()
 }
 
@@ -484,3 +489,21 @@ func (p *RecordQueryIndexPlan) GetCorrelatedToWithoutChildren() map[values.Corre
 
 // GetRecordQueryPlan returns the plan itself.
 func (p *RecordQueryIndexPlan) GetRecordQueryPlan() RecordQueryPlan { return p }
+
+// GetDistinctProofIndexName implements DistinctProofStamped. An ORDER-BY'd
+// `SELECT DISTINCT <unique column>` elides its DISTINCT over an INDEX scan, so
+// the index plan is a carrier too — and the index it SCANS need not be the index
+// that PROVED the elision, which is why the stamp is its own field rather than
+// being read back off indexName.
+func (p *RecordQueryIndexPlan) GetDistinctProofIndexName() string {
+	return p.distinctProofIndexName
+}
+
+// WithDistinctProofIndexName implements DistinctProofStampable.
+func (p *RecordQueryIndexPlan) WithDistinctProofIndexName(indexName string) RecordQueryPlan {
+	cp := *p
+	cp.distinctProofIndexName = indexName
+	return &cp
+}
+
+var _ DistinctProofStampable = (*RecordQueryIndexPlan)(nil)

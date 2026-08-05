@@ -816,7 +816,7 @@ func adjustedIntersectionOrdering(
 	if len(keys) == 0 {
 		return nil
 	}
-	return properties.NewRichOrdering(bindings, keys, false)
+	return properties.NewRichOrdering(bindings, keys, properties.NotDistinct())
 }
 
 // implicitFixedPrimaryKeyValues returns structural PK components that every

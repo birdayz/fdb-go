@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
@@ -193,6 +194,12 @@ type distinctHashCursor struct {
 	// continuation it mints (each carrying its own prefix length).
 	entry      *distinctResumeState
 	entryToken int64
+	// handed is how much of this cursor's delta charge the entry has taken over.
+	// It is NOT the same as seen.Charged(): the hand-over happens when a
+	// continuation is serialized, and the cursor goes on sighting keys after the
+	// last one. The difference is what the cursor still owns and must release at
+	// close — retirement gives back only what the entry recorded.
+	handed int64
 	// resumeBytes/resumeInner are the continuation this cursor was resumed
 	// from. A page that consumed no row AND left the inner at the byte-identical
 	// position it started at re-emits resumeBytes verbatim instead of minting:
@@ -207,6 +214,90 @@ type distinctHashCursor struct {
 	resumeInner []byte
 	// lastNoNext replays the terminal result on a contract-violating re-call.
 	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
+	// narrowed, when non-nil, restricts the dedup to the EXEMPT SUBSET. See
+	// narrowedDedup.
+	narrowed *narrowedDedup
+}
+
+// narrowedDedup is the R3 residual: the planner proved that a secondary UNIQUE
+// index already guarantees at most one row per key value EXCEPT on its exempt
+// set — the rows carrying a NULL key component (under NULLS DISTINCT the
+// uniqueness check is skipped, so one NULL prefix legitimately holds arbitrarily
+// many entries) or a NaN one (raw encodings the index holds as distinct tuple
+// keys, which packedDedupKey canonicalizes to a single value).
+//
+// So only exempt rows need deduplicating. A non-exempt row can duplicate neither
+// another non-exempt row (the index's uniqueness) nor an exempt one (exemptness
+// is a property of the key value, so their keys differ by construction), and it
+// passes through with nothing retained and no key packed.
+//
+// The seen-set is therefore a SUBSET of the full one on every input — identical
+// where every row is exempt, EMPTY on the ordinary case of a nullable column
+// holding no NULLs. There is no input on which this is worse, which is why it
+// replaces the full dedup unconditionally rather than being costed against it.
+type narrowedDedup struct {
+	// exemptSlots are the dedup-key slot positions holding the proving index's
+	// key components. Nil means test EVERY slot: a conservative
+	// over-approximation of the exempt set, which retains more rows than
+	// necessary and stays sound. Under-approximating would drop rows, so the
+	// unstatable case fails toward the full behaviour.
+	exemptSlots []int
+}
+
+// isExempt reports whether a row falls in the proving index's exempt set and so
+// must enter the seen-set.
+//
+// The test runs on the row's RAW SLOTS, BEFORE any dedup key is packed. That
+// ordering is the whole performance argument: a non-exempt row — every row, on
+// an ordinary table — costs one nil/NaN check and never reaches the tuple
+// encoder or the set. An implementation that packs first and tests after is
+// correct and delivers almost none of the benefit.
+//
+// Signed zero is deliberately NOT exempt. packedDedupKey packs -0.0 and +0.0
+// verbatim and the index holds them as two keys, so the two agree: both the
+// operator and the elision keep the pair. It is only NaN where storage identity
+// is FINER than the dedup key's value identity.
+func (n *narrowedDedup) isExempt(row QueryResult) bool {
+	slots := row.Positional.Slots
+	// len, not a nil check. An EMPTY non-nil slice states "no slot is ever
+	// exempt", which makes every row pass through retaining nothing — the
+	// operator emits duplicates. That is the one direction this type must never
+	// take, and it differs from the nil case by nothing a reader would notice.
+	// Both spellings mean "no statable positions", and both route to the
+	// test-every-slot over-approximation.
+	if len(n.exemptSlots) == 0 {
+		for _, slot := range slots {
+			if slotIsExempt(slot) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, position := range n.exemptSlots {
+		if position < 0 || position >= len(slots) {
+			// A position the row cannot supply states nothing, so the row is
+			// treated as exempt and deduplicated — the full behaviour, which is
+			// the direction that cannot drop a row.
+			return true
+		}
+		if slotIsExempt(slots[position]) {
+			return true
+		}
+	}
+	return false
+}
+
+func slotIsExempt(slot any) bool {
+	switch typed := slot.(type) {
+	case nil:
+		// NULL: the uniqueness check was skipped for this entry entirely.
+		return true
+	case float64:
+		return math.IsNaN(typed)
+	case float32:
+		return math.IsNaN(float64(typed))
+	}
+	return false
 }
 
 func (c *distinctHashCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -234,6 +325,16 @@ func (c *distinctHashCursor) OnNext(ctx context.Context) (recordlayer.RecordCurs
 			return res, nil
 		}
 		row := result.GetValue()
+		// R3: a non-exempt row is provably unique already, so it is emitted
+		// without packing a key or touching the seen-set. This is the residual
+		// dedup's entire cost on an ordinary table.
+		if c.narrowed != nil && !c.narrowed.isExempt(row) {
+			wrapped, werr := c.wrapContinuation(result.GetContinuation())
+			if werr != nil {
+				return recordlayer.RecordCursorResult[QueryResult]{}, werr
+			}
+			return recordlayer.NewResultWithValue(row, wrapped), nil
+		}
 		if c.keyer == nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, fmt.Errorf(
 				"distinct-hash cursor: nil key function",
@@ -318,13 +419,38 @@ func (c *distinctHashCursor) parkSeen() int64 {
 	// so the bytes must stay charged until the entry retires — otherwise an
 	// accumulating shape is invisible to the budget, which is what let a
 	// per-outer-row leak grow silently.
-	c.entry.charged = c.seen.Charged()
+	//
+	// Tracked as a DELTA against handed rather than assigned, so the hand-over
+	// and the close-time release of the remainder always partition the cursor's
+	// charge exactly: a park that runs after the close (an enclosing
+	// continuation serialized late) hands over nothing, instead of claiming
+	// bytes the close already returned.
+	c.entry.charged += c.seen.Charged() - c.handed
+	c.handed = c.seen.Charged()
 	// Re-publish the live slice: append REALLOCATES, so the entry would
 	// otherwise keep pointing at a stale array and a later continuation's
 	// prefix would name keys the entry cannot see. Copying nothing here is the
 	// point — only the slice header is refreshed.
 	c.entry.order = c.order
 	return c.entryToken
+}
+
+// releaseUnhanded returns the delta charge this cursor still OWNS — everything
+// it sighted beyond what its entry took over — and marks it handed so it can be
+// returned exactly once.
+//
+// It is what the close hook releases. A cursor that parked keeps sighting keys
+// after its last continuation was serialized (a filter draining a rejected tail
+// before a correlated inner exhausts is the ordinary way there), and retirement
+// gives back only what the ENTRY recorded, so releasing nothing at all left
+// that tail charged to the statement for its whole life — repeated inners then
+// fail a valid query on the budget for bytes nothing holds. Releasing
+// seen.Charged() instead would free the entry's half too, and an accumulating
+// shape would grow invisibly again; the split is what makes both true at once.
+func (c *distinctHashCursor) releaseUnhanded() int64 {
+	rest := c.seen.Charged() - c.handed
+	c.handed = c.seen.Charged()
+	return rest
 }
 
 // Close does NOT retire this cursor's scratch entry, and must not: closing is a

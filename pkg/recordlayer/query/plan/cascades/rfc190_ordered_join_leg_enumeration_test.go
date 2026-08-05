@@ -268,12 +268,12 @@ func TestRFC190OrderedJoinLegPairsCaseTwoBRetainsEveryOuterPartition(t *testing.
 		{
 			expr:           outerAExpensive,
 			sourceOrdering: rfc190EnumerationOrdering(true, "source-a"),
-			pulledOrdering: properties.NewRichOrdering(nil, nil, true),
+			pulledOrdering: properties.NewRichOrdering(nil, nil, properties.DistinctOverAllKeys()),
 		},
 		{
 			expr:           outerACheap,
 			sourceOrdering: rfc190EnumerationOrdering(true, "source-a"),
-			pulledOrdering: properties.NewRichOrdering(nil, nil, true),
+			pulledOrdering: properties.NewRichOrdering(nil, nil, properties.DistinctOverAllKeys()),
 		},
 		{
 			expr:           outerB,
@@ -332,17 +332,17 @@ func TestRFC190OrderedJoinLegPairsCaseTwoBExhaustiveRetainsInnerPartitions(t *te
 			{
 				expr:           outerAExpensive,
 				sourceOrdering: rfc190EnumerationOrdering(true, "outer-source-a"),
-				pulledOrdering: properties.NewRichOrdering(nil, nil, true),
+				pulledOrdering: properties.NewRichOrdering(nil, nil, properties.DistinctOverAllKeys()),
 			},
 			{
 				expr:           outerACheap,
 				sourceOrdering: rfc190EnumerationOrdering(true, "outer-source-a"),
-				pulledOrdering: properties.NewRichOrdering(nil, nil, true),
+				pulledOrdering: properties.NewRichOrdering(nil, nil, properties.DistinctOverAllKeys()),
 			},
 			{
 				expr:           outerB,
 				sourceOrdering: rfc190EnumerationOrdering(true, "outer-source-b"),
-				pulledOrdering: properties.NewRichOrdering(nil, nil, true),
+				pulledOrdering: properties.NewRichOrdering(nil, nil, properties.DistinctOverAllKeys()),
 			},
 		},
 		[]joinLegOrderingVariant{
@@ -437,7 +437,7 @@ func rfc190EnumerationOrdering(
 		}
 		keys = append(keys, key)
 	}
-	return properties.NewRichOrdering(bindingMap, keys, distinct)
+	return properties.NewRichOrdering(bindingMap, keys, properties.DistinctOverAllKeysIf(distinct))
 }
 
 func rfc190EnumerationFixedPrefixOrdering(
@@ -453,8 +453,7 @@ func rfc190EnumerationFixedPrefixOrdering(
 			sorted: {properties.SortedBinding(properties.ProvidedSortOrderAscending)},
 		},
 		[]values.Value{fixed, sorted},
-		distinct,
-	)
+		properties.DistinctOverAllKeysIf(distinct))
 }
 
 func rfc190EnumerationRequest(

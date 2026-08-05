@@ -138,7 +138,13 @@ func plannerOptionsFrom(o *api.Options) plannerOptions {
 // keeping it is two bytes on every plan-cache lookup.
 func (p plannerOptions) cacheKeyPart() string {
 	readable := p.config.ReadableIndexes
-	if len(p.disabledRules) == 0 && !p.config.ShouldJoinRightDeep && !readable.IsRestricted() {
+	// SingleReadVersion joins the early-return condition because it CHANGES THE
+	// PLAN: it is what licenses the secondary-UNIQUE DISTINCT proof, so two
+	// statements differing only in it plan differently and must not share a
+	// cache entry. Leaving it out of the key is how an explicit transaction's
+	// elided plan gets served to an auto-commit statement that may not have it.
+	if len(p.disabledRules) == 0 && !p.config.ShouldJoinRightDeep &&
+		!p.config.SingleReadVersion && !readable.IndexStatesEstablished() {
 		return ""
 	}
 	names := make([]string, 0, len(p.disabledRules))
@@ -149,6 +155,9 @@ func (p plannerOptions) cacheKeyPart() string {
 	var b strings.Builder
 	if p.config.ShouldJoinRightDeep {
 		b.WriteString("rd")
+	}
+	if p.config.SingleReadVersion {
+		b.WriteString("srv")
 	}
 	for _, n := range names {
 		b.WriteString(strconv.Itoa(len(n)))
@@ -164,17 +173,27 @@ func (p plannerOptions) cacheKeyPart() string {
 	// above, which are user-controlled and length-prefixed for that reason.
 	// A distinct 'i' prefix opens the section, and each index name is
 	// length-prefixed by the same scheme, so no index name can be mistaken for
-	// a rule name, a boundary, or the section marker. The RESTRICTED case is
-	// what emits the section; an unrestricted view emits nothing and therefore
-	// keys exactly as it did before this existed, which is what keeps a healthy
-	// store's cache behaviour unchanged.
-	if readable.IsRestricted() {
+	// a rule name, a boundary, or the section marker.
+	//
+	// All THREE index-state views must key apart, not two: UNKNOWN and
+	// asserted-all-readable can now produce different plans for the same SQL,
+	// because only the latter licenses a metadata-property proof (RFC-210
+	// §5.1.1). UNKNOWN emits no section at all — so a caller that never
+	// consulted a store keys exactly as it did before this existed —
+	// all-readable emits "ir", and restricted emits "i" followed by
+	// length-prefixed names. The three are unambiguous because a restricted
+	// section's first byte after 'i' is always a decimal digit (a length
+	// prefix) and never the letter 'r'.
+	switch {
+	case readable.IsRestricted():
 		b.WriteString("i")
 		for _, n := range readable.SortedNames() {
 			b.WriteString(strconv.Itoa(len(n)))
 			b.WriteByte(':')
 			b.WriteString(n)
 		}
+	case readable.IndexStatesEstablished():
+		b.WriteString("ir")
 	}
 	return b.String()
 }

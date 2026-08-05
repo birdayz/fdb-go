@@ -8,6 +8,7 @@ import (
 	"sort"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer"
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"
@@ -572,5 +573,107 @@ func TestPlannerOptions_CacheKeyPart_InjectiveTable(t *testing.T) {
 			t.Fatalf("%s: cache key part collides different disabled-rule sets %v and %v: both render %q",
 				tc.name, tc.a, tc.b, got)
 		}
+	}
+}
+
+// TestReadableIndexesFrom_MintsAffirmativeOnlyFromASnapshot pins the tri-state
+// at its producer. The affirmative all-readable form is a CLAIM — "I consulted
+// the store and every index came back strictly READABLE" — and only the path
+// that actually fetched a snapshot may make it. The degenerate early returns
+// must mint UNKNOWN, because an affirmative manufactured from the absence of
+// information is the same collapse the third state exists to prevent (RFC-210
+// §5.1.1, corollary 1).
+//
+// Neither degenerate return changes a plan: UNKNOWN is equally permissive for
+// scanning, which is exactly why nothing else in the suite can detect the
+// difference and why this sentinel has to exist.
+func TestReadableIndexesFrom_MintsAffirmativeOnlyFromASnapshot(t *testing.T) {
+	t.Parallel()
+	md := depsMetaData(t)
+
+	for _, tc := range []struct {
+		name   string
+		md     *recordlayer.RecordMetaData
+		states map[string]recordlayer.IndexState
+		// want the three observable answers
+		established bool
+		restricted  bool
+	}{
+		{"nil metadata", nil, allReadable(md), false, false},
+		{"nil snapshot — the offline convention", md, nil, false, false},
+		{"empty snapshot", md, map[string]recordlayer.IndexState{}, false, false},
+		{"fetched snapshot, all readable", md, allReadable(md), true, false},
+	} {
+		got := readableIndexesFrom(tc.md, tc.states)
+		if got.IndexStatesEstablished() != tc.established {
+			t.Errorf("%s: IndexStatesEstablished() = %v, want %v",
+				tc.name, got.IndexStatesEstablished(), tc.established)
+		}
+		if got.IsRestricted() != tc.restricted {
+			t.Errorf("%s: IsRestricted() = %v, want %v",
+				tc.name, got.IsRestricted(), tc.restricted)
+		}
+		// Every state stays permissive for SCANNING — the demotion is of
+		// evidence, never of permission. A degenerate path that started
+		// refusing indexes would delete every index plan the offline harnesses
+		// have.
+		if !tc.restricted && !got.Allows("IDX_CUSTOMER") {
+			t.Errorf("%s: refuses to let IDX_CUSTOMER back a scan", tc.name)
+		}
+	}
+
+	// A real restriction still comes out restricted, and still establishes
+	// state: it was derived from a snapshot.
+	states := allReadable(md)
+	states["IDX_STATUS"] = recordlayer.IndexStateWriteOnly
+	restricted := readableIndexesFrom(md, states)
+	if !restricted.IsRestricted() || !restricted.IndexStatesEstablished() {
+		t.Fatalf("a snapshot with a WRITE_ONLY index yielded restricted=%v established=%v",
+			restricted.IsRestricted(), restricted.IndexStatesEstablished())
+	}
+	if restricted.Allows("IDX_STATUS") {
+		t.Fatal("a WRITE_ONLY index is still allowed to back a scan")
+	}
+}
+
+// TestPlannerOptions_CacheKeyPart_SeparatesAllThreeIndexStateViews pins
+// RFC-210 §5.1.1's third consequence. UNKNOWN and asserted-all-readable can now
+// produce DIFFERENT PLANS for the same SQL — only the latter licenses a
+// metadata-property proof — so a cache key that renders them identically would
+// serve a proof-bearing plan to a run that established nothing, or the reverse.
+// The restricted case already keyed; the affirmative one did not.
+func TestPlannerOptions_CacheKeyPart_SeparatesAllThreeIndexStateViews(t *testing.T) {
+	t.Parallel()
+
+	part := func(v cascades.ReadableIndexes) string {
+		po := plannerOptionsFrom(nil)
+		po.config.ReadableIndexes = v
+		return po.cacheKeyPart()
+	}
+
+	unknown := part(cascades.IndexStatesUnknown())
+	allReadableKey := part(cascades.AllIndexesReadable())
+	restricted := part(cascades.OnlyReadableIndexes(map[string]struct{}{"BY_EMAIL": {}}))
+	restrictedEmpty := part(cascades.OnlyReadableIndexes(nil))
+
+	seen := map[string]string{}
+	for label, got := range map[string]string{
+		"unknown":           unknown,
+		"all-readable":      allReadableKey,
+		"restricted{email}": restricted,
+		"restricted{}":      restrictedEmpty,
+	} {
+		if prev, dup := seen[got]; dup {
+			t.Fatalf("index-state views %q and %q share cache key part %q — one "+
+				"planning run would be served the other's plan", label, prev, got)
+		}
+		seen[got] = label
+	}
+
+	// UNKNOWN specifically must render EMPTY: that is what keeps a caller who
+	// consulted no store keying exactly as it did before any of this existed.
+	if unknown != "" {
+		t.Fatalf("the UNKNOWN index-state view renders %q, not the empty string; "+
+			"every offline planning site's cache scope just moved", unknown)
 	}
 }

@@ -19,7 +19,13 @@ type RichOrdering struct {
 	keys        []values.Value
 	orderingSet *combinatorics.PartiallyOrderedSet[string]
 	keyLookup   map[string]values.Value
-	distinct    bool
+	distinct    CoordinateBoundClaim
+	// storageComplete states that these coordinates are the COMPLETE storage
+	// key of the producer that built the ordering — nothing was truncated away.
+	// Zero value is "not stated", which is the only safe default: a derivation
+	// that reshapes an ordering has no way to know, so it must not inherit the
+	// claim by omission.
+	storageComplete CoordinateBoundClaim
 }
 
 // NewRichOrdering creates a new ordering from bindings, key sequence,
@@ -27,7 +33,7 @@ type RichOrdering struct {
 func NewRichOrdering(
 	bindingMap map[values.Value][]OrderingBinding,
 	keys []values.Value,
-	distinct bool,
+	distinct CoordinateBoundClaim,
 ) *RichOrdering {
 	return NewRichOrderingWithDeps(bindingMap, keys, nil, distinct)
 }
@@ -38,7 +44,7 @@ func NewRichOrderingWithDeps(
 	bindingMap map[values.Value][]OrderingBinding,
 	keys []values.Value,
 	deps combinatorics.SetMultimap[string],
-	distinct bool,
+	distinct CoordinateBoundClaim,
 ) *RichOrdering {
 	bm := make(map[values.Value][]OrderingBinding, len(bindingMap))
 	for k, v := range bindingMap {
@@ -83,7 +89,7 @@ func NewRichOrderingWithDeps(
 		keys:        keysCopy,
 		orderingSet: oset,
 		keyLookup:   lookup,
-		distinct:    distinct,
+		distinct:    distinct.bindTo(keyStrings),
 	}
 }
 
@@ -116,9 +122,64 @@ func (o *RichOrdering) ValueForKey(key string) values.Value {
 	return o.keyLookup[key]
 }
 
-// IsDistinct returns whether the ordering guarantees distinct output.
+// IsDistinct returns whether the ordering guarantees distinct output — that
+// is, whether its carried claim still holds over the coordinates it actually
+// has. A claim proved over a longer key set does not answer for a reduced one.
 func (o *RichOrdering) IsDistinct() bool {
-	return o.distinct
+	return o.distinct.holdsOver(o.keyLookup)
+}
+
+// WithStorageKeyComplete stamps (or withholds) the completeness claim. It is
+// the PRODUCER's call and no one else's: the site that assembled the coordinate
+// list is the site that knows whether it truncated one, and every consumer that
+// re-derived the answer from key component types was asking a second property to
+// agree with this one by hand.
+func (o *RichOrdering) WithStorageKeyComplete(complete bool) *RichOrdering {
+	if o == nil {
+		return nil
+	}
+	// An ordering with NO coordinates cannot be the whole storage key, and the
+	// refusal has to be here rather than in CoordinateBoundClaim.
+	//
+	// holdsOver is a FOR-ALL over the coordinates a claim was proved on, so a
+	// claim bound to the EMPTY set holds over everything — including an ordering
+	// with no coordinates, and including any ordering it is later carried into.
+	// For DISTINCTNESS that is not a defect but the intended coordinate-free
+	// case: "the rows flowed are distinct" is Java's plain boolean, and a
+	// nested-loop join legitimately takes its inner leg's distinctness even when
+	// that leg advertises no order at all (ConcatOrderings). Binding distinctness
+	// to coordinates exists to stop it surviving a REDUCTION, not to require an
+	// ordering before it can be asserted.
+	//
+	// COMPLETENESS has no such reading. "These coordinates are the whole storage
+	// key" is a statement about a specific, non-empty coordinate list; over none
+	// there is nothing to be complete about, and the vacuous answer is the
+	// strongest one the type can give. The two properties share this mechanism
+	// and diverge exactly here, so the guard belongs at the property-specific
+	// stamping site — the one that knows which assertion is being made.
+	if complete && len(o.keys) == 0 {
+		stamped := *o
+		stamped.storageComplete = NotDistinct()
+		return &stamped
+	}
+	keyStrings := make([]string, 0, len(o.keys))
+	for _, k := range o.keys {
+		keyStrings = append(keyStrings, values.ExplainValue(k))
+	}
+	stamped := *o
+	stamped.storageComplete = ClaimOverAllKeysIf(complete).bindTo(keyStrings)
+	return &stamped
+}
+
+// StorageKeyIsComplete reports whether this ordering's coordinates are the whole
+// storage key, answered against the coordinates it actually has. A truncated,
+// prefixed, or reshaped ordering answers false even when the producer's original
+// claim was true.
+func (o *RichOrdering) StorageKeyIsComplete() bool {
+	if o == nil {
+		return false
+	}
+	return o.storageComplete.holdsOver(o.keyLookup)
 }
 
 // GetEqualityBoundValues returns the set of values that have at least
@@ -224,7 +285,7 @@ func (o *RichOrdering) IsSingularNonFixedValue(v values.Value) bool {
 // requested ordering. Uses the partial order to enumerate valid
 // permutations that match the request prefix.
 func (o *RichOrdering) Satisfies(requested *RequestedOrdering) bool {
-	if requested.IsDistinct() && !o.distinct {
+	if requested.IsDistinct() && !o.IsDistinct() {
 		return false
 	}
 	if requested.IsPreserve() {
@@ -435,7 +496,7 @@ func (o *RichOrdering) EnumerateSatisfyingIntersectionComparisonKeyValues(
 	if o == nil || requested == nil {
 		return nil
 	}
-	if requested.IsDistinct() && !o.distinct {
+	if requested.IsDistinct() && !o.IsDistinct() {
 		return nil
 	}
 
@@ -670,7 +731,7 @@ func ConcatOrderings(outer, inner *RichOrdering) *RichOrdering {
 	if outer == nil || inner == nil {
 		panic("ConcatOrderings: both orderings are required")
 	}
-	if !outer.distinct {
+	if !outer.IsDistinct() {
 		panic("ConcatOrderings: outer ordering must be distinct")
 	}
 
@@ -727,7 +788,7 @@ func ConcatOrderings(outer, inner *RichOrdering) *RichOrdering {
 	// without interleaving. The concatenated rows themselves are distinct
 	// exactly when the RIGHT ordering is distinct; outer distinctness alone
 	// does not prevent duplicate rows within one inner run.
-	return NewRichOrderingWithDeps(bm, keys, deps, inner.distinct)
+	return NewRichOrderingWithDeps(bm, keys, deps, inner.DistinctnessClaim())
 }
 
 // PullUp translates this ordering through a string-keyed value mapping.
@@ -908,8 +969,22 @@ func (o *RichOrdering) translateKeysWithOverrides(
 			newBM[mappedValue] = o.bindingMap[oldValue]
 		}
 	}
-	return NewRichOrderingWithDeps(
-		newBM, newKeys, mappedSet.DependencyMap(), o.distinct)
+	// The claim's coordinates are OLD keys; the ordering being built is stated
+	// in NEW ones. Renaming is the one reduction-adjacent operation where a
+	// claim can legitimately be carried in full, and only when it is TOTAL:
+	// every coordinate the claim was proved over must have both a rename and a
+	// surviving place in the mapped set. `translate` drops the claim outright
+	// when one does not, which is the (a) branch of §5.5's rule — the fact that
+	// established distinctness lives at the producer, so it cannot be recomputed
+	// here against a smaller set.
+	survived := make(map[string]string, mappedSet.Size())
+	for _, mappedKey := range mappedSet.Set() {
+		survived[oldKeyByMappedKey[mappedKey]] = mappedKey
+	}
+	translated := NewRichOrderingWithDeps(
+		newBM, newKeys, mappedSet.DependencyMap(), o.distinct.translate(survived))
+	translated.storageComplete = o.storageComplete.translate(survived)
+	return translated
 }
 
 // translateOrderingBindings mirrors Java Ordering.translateBindings for Go's
@@ -1027,13 +1102,14 @@ func CreateUnionOrdering(o *RichOrdering) *RichOrdering {
 	}
 	keys := make([]values.Value, len(o.keys))
 	copy(keys, o.keys)
-	return NewRichOrdering(bm, keys, o.distinct)
+	return NewRichOrdering(bm, keys, o.DistinctnessClaim())
 }
 
 // MergeOrderingsForUnion merges two orderings with union semantics.
 // Uses the full EligibleSet-based merge algorithm from Java.
 func MergeOrderingsForUnion(a, b *RichOrdering) *RichOrdering {
-	return mergeOrderings(a, b, combineBindingsForUnion, a.distinct && b.distinct, false)
+	return mergeOrderings(a, b, combineBindingsForUnion,
+		IntersectClaims(a.DistinctnessClaim(), b.DistinctnessClaim()), false)
 }
 
 // MergeOrderingsForIntersection merges two orderings with intersection semantics.
@@ -1041,7 +1117,8 @@ func MergeOrderingsForIntersection(a, b *RichOrdering) *RichOrdering {
 	// Java passes (left, right) -> true for intersection: rows surviving
 	// every leg are distinct under the comparison contract even when an
 	// individual input ordering does not advertise distinctness.
-	return mergeOrderings(a, b, combineBindingsForIntersection, true, true)
+	return mergeOrderings(a, b, combineBindingsForIntersection,
+		DistinctOverAllKeys(), true)
 }
 
 // MergeOrderings merges two orderings (union semantics, backward-compat alias).
@@ -1054,7 +1131,7 @@ type bindingCombiner func(left, right []OrderingBinding) []OrderingBinding
 func mergeOrderings(
 	a, b *RichOrdering,
 	combine bindingCombiner,
-	distinct bool,
+	distinct CoordinateBoundClaim,
 	normalizeFixedDependencies bool,
 ) *RichOrdering {
 	leftES := a.orderingSet.EligibleSet()

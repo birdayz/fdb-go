@@ -76,8 +76,7 @@ func TestRichOrderingPullUpTranslatesFixedDirectComparisonOperand(t *testing.T) 
 			key: {FixedBinding(comparison)},
 		},
 		[]values.Value{key},
-		false,
-	)
+		NotDistinct())
 	upperAlias := values.NamedCorrelationIdentifier("binding_direct")
 	resultValue := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "renamed_key", Value: key},
@@ -128,8 +127,96 @@ func TestRichOrderingPullUpDropsUntranslatableDynamicFixedBinding(t *testing.T) 
 		t.Fatalf("untranslatable dynamic fixed binding retained ordering keys %v",
 			bindingTranslationExplainValues(pulled.GetKeys()))
 	}
-	if !pulled.IsDistinct() {
-		t.Fatal("pull-up must preserve the ordering's distinct flag")
+	// An ordering that lost every coordinate cannot still claim its rows are
+	// distinct. The claim was proved over `key`; `key` is gone. Java carries
+	// its boolean through this branch unexamined (Ordering.java:185-192
+	// documents the field as not correct to propagate and leaves the
+	// interpretation to the reader), and an earlier revision of this test
+	// imported that behaviour and pinned it as REQUIRED. It is not required,
+	// it is the bug: the claim is bound to its coordinate set, so a total
+	// reduction drops it.
+	if pulled.IsDistinct() {
+		t.Fatal("pull-up that dropped every ordering key still claims distinct")
+	}
+}
+
+// TestRichOrderingPrefixDoesNotInheritDistinctness is the shape §5.5 names as
+// the one most likely to be got wrong, and the one neither Java nor Go pinned:
+// an ordering by (a, b, c) is also an ordering by (a, b), the first may be
+// strict, and the second must not inherit that.
+//
+// The trailing coordinate is what makes the key unique here, so the prefix is
+// not merely unproven — it is genuinely non-distinct, and a carried claim would
+// be a wrong answer rather than a conservative one.
+func TestRichOrderingPrefixDoesNotInheritDistinctness(t *testing.T) {
+	t.Parallel()
+
+	a := bindingTranslationField("a")
+	b := bindingTranslationField("b")
+	c := bindingTranslationField("c")
+	full := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {SortedBinding(ProvidedSortOrderAscending)},
+			b: {SortedBinding(ProvidedSortOrderAscending)},
+			c: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a, b, c},
+		DistinctOverAllKeys())
+	if !full.IsDistinct() {
+		t.Fatal("the full (a, b, c) ordering must keep the claim it was minted with")
+	}
+
+	upperAlias := values.NamedCorrelationIdentifier("prefix_pullup")
+	// A projection that carries only (a, b) forward. The uniqueness-making
+	// coordinate c has no output slot, so it cannot survive the pull-up.
+	prefix := full.PullUpThroughValue(
+		values.NewRecordConstructorValue(
+			values.RecordConstructorField{Name: "a", Value: a},
+			values.RecordConstructorField{Name: "b", Value: b},
+		),
+		upperAlias)
+	if prefix == nil {
+		t.Fatal("PullUpThroughValue returned nil")
+	}
+	if got := len(prefix.GetKeys()); got != 2 {
+		t.Fatalf("prefix ordering has %d keys, want 2 (%v)",
+			got, bindingTranslationExplainValues(prefix.GetKeys()))
+	}
+	if prefix.IsDistinct() {
+		t.Fatal("(a, b) prefix inherited the (a, b, c) distinctness claim")
+	}
+}
+
+// TestRichOrderingCarriedClaimFailsUnderKeyRemoval pins the CONSTRUCTOR-level
+// rule the derivation sites rely on. Several rules rebuild an ordering from a
+// filtered key list and hand the source ordering's claim along —
+// ImplementDistinctUnionRule strips the entries common to every leg, and
+// ImplementInUnionRule rebuilds with the full key set. Both spell the carry
+// identically, and the difference between them is whether keys were dropped, so
+// that difference is what has to decide the answer rather than the call site.
+func TestRichOrderingCarriedClaimFailsUnderKeyRemoval(t *testing.T) {
+	t.Parallel()
+
+	a := bindingTranslationField("a")
+	b := bindingTranslationField("b")
+	bindings := map[values.Value][]OrderingBinding{
+		a: {SortedBinding(ProvidedSortOrderAscending)},
+		b: {SortedBinding(ProvidedSortOrderAscending)},
+	}
+	source := NewRichOrdering(bindings, []values.Value{a, b}, DistinctOverAllKeys())
+
+	rebuiltWhole := NewRichOrdering(
+		bindings, []values.Value{a, b}, source.DistinctnessClaim())
+	if !rebuiltWhole.IsDistinct() {
+		t.Fatal("rebuilding over the SAME key set must keep the carried claim")
+	}
+
+	reduced := NewRichOrdering(
+		map[values.Value][]OrderingBinding{a: bindings[a]},
+		[]values.Value{a},
+		source.DistinctnessClaim())
+	if reduced.IsDistinct() {
+		t.Fatal("rebuilding over a REDUCED key set kept the carried claim")
 	}
 }
 
@@ -198,8 +285,7 @@ func TestRichOrderingPullUpCollapsesDirectionalBindings(t *testing.T) {
 			},
 		},
 		[]values.Value{key},
-		false,
-	)
+		NotDistinct())
 	upperAlias := values.NamedCorrelationIdentifier("binding_directional")
 	resultValue := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "renamed_key", Value: key},
@@ -232,8 +318,7 @@ func TestRichOrderingPullUpPreservesCounterflowDirectionalBinding(t *testing.T) 
 			key: {SortedBinding(ProvidedSortOrderAscendingNullsLast)},
 		},
 		[]values.Value{key},
-		false,
-	)
+		NotDistinct())
 	resultValue := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "renamed_key", Value: key},
 	)
@@ -260,8 +345,7 @@ func TestRichOrderingPullUpDeclinesKeyCollision(t *testing.T) {
 			second: {SortedBinding(ProvidedSortOrderDescending)},
 		},
 		[]values.Value{first, second},
-		false,
-	)
+		NotDistinct())
 	collapsed := &values.FieldValue{Field: "collapsed", Typ: values.UnknownType}
 
 	pulled := ordering.PullUp(map[string]values.Value{
@@ -297,8 +381,7 @@ func bindingTranslationOrdering(
 			key: {FixedBinding(merged.Range)},
 		},
 		[]values.Value{key},
-		distinct,
-	)
+		DistinctOverAllKeysIf(distinct))
 }
 
 func bindingTranslationAssertSingleFixedRange(

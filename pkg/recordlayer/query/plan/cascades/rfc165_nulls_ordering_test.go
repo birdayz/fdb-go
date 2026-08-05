@@ -110,8 +110,7 @@ func TestRichOrdering_Satisfies_CounterflowNulls(t *testing.T) {
 			a: {properties.SortedBinding(properties.ProvidedSortOrderAscending)}, // forward scan = ASC_NULLS_FIRST
 		},
 		[]values.Value{a},
-		false,
-	)
+		properties.NotDistinct())
 
 	ascNullsLast := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
 		{Value: a, SortOrder: properties.RequestedSortOrderAscendingNullsLast},
@@ -140,8 +139,7 @@ func TestEnumerateSatisfyingComparisonKeyValues_RefusesCounterflow(t *testing.T)
 			a: {properties.SortedBinding(properties.ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a},
-		false,
-	)
+		properties.NotDistinct())
 	counterflow := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
 		{Value: a, SortOrder: properties.RequestedSortOrderAscendingNullsLast},
 	}, properties.DistinctnessNotDistinct, false)

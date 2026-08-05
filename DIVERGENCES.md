@@ -1638,6 +1638,118 @@ reach rather than about the producers' soundness.
 
 Scenarios are re-blessed through the factory, never edited in place.
 
+## A nullable UNIQUE key does not make a scan strictly sorted (Java is unsound here)
+
+Sibling of the float-ordering entry above, and the same shape: one rule, one
+absent type consultation, storage distinguishing what the claim says is
+indistinguishable. That entry is about NaN; this one is about NULL.
+
+**Java's claim.** `RemoveSortRule.strictlyOrderedIfUnique`
+(`RemoveSortRule.java:144-156`) decides the whole question at `:153`:
+
+```java
+return matchCandidate.isUnique() && numKeys >= matchCandidate.getColumnSize();
+```
+
+There is **no nullability term** — not in that method, and not on the path into
+it from `:132`. Nothing consults the key columns' types or their nullability.
+
+**Why that is false.** Under `NULLS DISTINCT` the uniqueness check is SKIPPED
+when an indexed component is NULL, so a `UNIQUE` index on a nullable column
+legitimately holds
+
+    (NULL, pk=1), (NULL, pk=2), (NULL, pk=3)
+
+— three entries whose *claimed* sort key is identical. Java stamps
+`strictlySorted` on that scan, and a consumer that reads the flag as "no two rows
+compare equal on the sort key" is being told something false **by construction**,
+not in an edge case. `strictlySorted` is a proposition the plan asserts to its
+consumers so they can skip work; there is no partial version of it, and no
+downstream operator that catches it being wrong.
+
+**What Go does.** `indexHasStreamEnforcedUniqueKey`
+(`cascades/rule_implement_sort.go`) routes through
+`properties.SecondaryUniqueKeyEnforcedOnStream`, whose nullability clause refuses
+exactly this case unless the stream itself rules the NULLs out. The divergence is
+documented at that call site so it is not mistaken for a redundant check and
+"simplified" back into Java's shape.
+
+The cost is a retained sort where Java elides one, on a nullable unique key. That
+shows up in the cross-engine harness as a deliberate plan-shape difference. The
+alternative is a wrong answer, so it is not a close trade.
+
+**Reachability, and the reason the divergence is currently invisible.** The gate
+is `false` for every SQL-expressible secondary unique index today, because the
+SQL DDL rejects a `NOT NULL` scalar column (deliberately, for Java parity — `NOT
+NULL` is accepted only on `ARRAY` types). So Go's claim was not merely stricter
+than Java's, it never fired from SQL at all. RFC-210 §5.7 is what makes it
+reachable on the streams where it is TRUE — a NULL-rejecting predicate empties
+the index's exempt set — and it does so WITHOUT relaxing the clause. Note there
+is deliberately no residual-dedup analogue for the sort claim; the RFC states
+that as a prohibition rather than an omission.
+
+The evidence a *scan range* rejects NULL is not the same evidence a *predicate*
+does, and the difference was carried as an open question before it was settled.
+It is settled: a scan range's admission rests on two binder facts — a NULL-valued
+equality binds to an EMPTY range rather than seeking `[null]`, and a bare upper
+bound installs an exclusive low at the NULL boundary. Both are pinned in
+`executor/scan_range_null_boundary_test.go`, because a sort claim has no residual
+that could catch either one changing.
+
+**To report upstream — READY TO FILE, not filed.** It is a soundness bug in
+Java's own terms rather than a Go/Java modelling difference, so it is expected to
+be fixed upstream rather than to persist as a permanent divergence.
+
+It is not filed from here, and the reason is procedural rather than technical:
+filing publishes a defect claim about someone else's project under this repo
+owner's identity, on a repository this project does not control, and no entry in
+this file has ever referenced a filed upstream issue — there is no established
+convention to follow. That is an owner decision. The report is therefore written
+out in full below so that filing it costs one paste, and so the analysis does not
+have to be re-derived by whoever files it.
+
+> **Title:** `RemoveSortRule.strictlyOrderedIfUnique` claims `strictlySorted` for
+> a UNIQUE index on a NULLABLE column, which is unsound under NULLS DISTINCT
+>
+> **Where:** `RemoveSortRule.java:153`
+>
+> ```java
+> return matchCandidate.isUnique() && numKeys >= matchCandidate.getColumnSize();
+> ```
+>
+> **The claim.** `strictlySorted` asserts to downstream consumers that no two
+> rows of the scan compare equal on the sort key, which is what licenses removing
+> a sort and skipping duplicate handling.
+>
+> **Why it is false.** Under `NULLS DISTINCT` the uniqueness check is SKIPPED
+> when an indexed component is NULL, so a `UNIQUE` index on a nullable column
+> legitimately holds
+>
+> ```
+> (NULL, pk=1), (NULL, pk=2), (NULL, pk=3)
+> ```
+>
+> — three entries whose claimed sort key is identical. The path into `:153`
+> carries no nullability term anywhere, so the claim is made for these indexes
+> too. This is not an edge case reached by unusual input: it is false by
+> construction for every unique index over a nullable column, on any store
+> holding two or more NULLs in it.
+>
+> **Consequence.** `strictlySorted` is a proposition the plan asserts so
+> consumers can skip work; there is no partial version of it and no downstream
+> operator that catches it being wrong. A consumer that trusts it is handed
+> duplicate sort keys.
+>
+> **Suggested fix.** Gate the claim on the key components being non-nullable, or
+> on the scan's range excluding the NULL boundary — the latter keeps the claim
+> available on the streams where it is true (a `WHERE col IS NOT NULL` or any
+> lower bound above the NULL boundary compiles to exactly such a range, per
+> `RangeConstraints.java:650-653`).
+>
+> **How it was found.** Porting this rule to a Go reimplementation of the record
+> layer. The Go port declines the claim for nullable keys and re-admits it only
+> when the scan range excludes NULL; that divergence is what surfaced the
+> question.
 ## Non-integer explicit record type keys now reach the key bytes (RESOLVED — read the migration note)
 
 `RecordType.getRecordTypeKey()` is written verbatim into primary keys and index

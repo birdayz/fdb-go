@@ -2234,7 +2234,18 @@ func executeDistinct(
 		continuation,
 		props,
 		distinctKey,
+		narrowedDedupFor(p),
 	)
+}
+
+// narrowedDedupFor reads the R3 residual off the plan. Nil for every distinct
+// the planner did not narrow, which is every distinct not built over a
+// qualifying secondary UNIQUE index — the full dedup, unchanged.
+func narrowedDedupFor(p *plans.RecordQueryDistinctPlan) *narrowedDedup {
+	if !p.IsNarrowedDedup() {
+		return nil
+	}
+	return &narrowedDedup{exemptSlots: p.GetNarrowedExemptSlots()}
 }
 
 // executeUnorderedPrimaryKeyDistinct removes duplicate records by primary key.
@@ -2260,6 +2271,9 @@ func executeUnorderedPrimaryKeyDistinct(
 		continuation,
 		props,
 		primaryKeyDistinctKey,
+		// The primary-key distinct is never narrowed: a PK is a storage
+		// invariant with no exempt set and no index state to rest on.
+		nil,
 	)
 }
 
@@ -2278,6 +2292,7 @@ func executeHashDistinct(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 	keyer queryResultDistinctKeyer,
+	narrowed *narrowedDedup,
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	seen := newBoundedSet[string](props.State)
 	var order []string
@@ -2361,18 +2376,25 @@ func executeHashDistinct(
 		adoptedToken: adoptedToken,
 		resumeBytes:  resumeBytes,
 		resumeInner:  resumeInner,
+		// RFC-210 R3: the residual narrowing is orthogonal to WHERE the
+		// seen-set lives. It decides WHICH rows enter the set (only those in
+		// the proving index's exempt subset); the scratch decides how the set
+		// crosses a page boundary. Both survive the merge.
+		narrowed: narrowed,
 	}
 	return newCloseHookCursor(
 		applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit),
 		func() {
-			// A cursor that PARKED handed its delta charge to the scratch entry,
-			// which outlives it — releasing here would tell the budget that a
-			// live set is free, and an accumulating shape would grow invisibly.
-			// The entry's own retirement releases it (SweepAfterPage).
-			if cursor.entryToken != 0 {
-				return
-			}
-			props.State.ReleaseMemory(seen.Charged())
+			// Release exactly what this cursor still OWNS. A cursor that PARKED
+			// handed part of its delta charge to the scratch entry, which
+			// outlives it — releasing THAT would tell the budget a live set is
+			// free and an accumulating shape would grow invisibly; the entry's
+			// own retirement returns it (SweepAfterPage). The rest — the keys
+			// sighted after the last continuation was serialized — is held by
+			// nothing once this cursor closes, and used to stay charged to the
+			// statement forever. A cursor that never parked owns all of it, so
+			// this is the same release it always did.
+			props.State.ReleaseMemory(cursor.releaseUnhanded())
 		},
 	), nil
 }

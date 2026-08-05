@@ -190,6 +190,156 @@ func TestDistinctScratchSurvivesRetryAfterSuccessorMinted(t *testing.T) {
 	}
 }
 
+// TestDistinctRetriedAttemptsDoNotStackCharges pins the THIRD failure of the
+// same idempotence rule, and the one that bites while the page is still trying
+// to commit: a page re-attempted from the same bytes must hold the same memory
+// on every attempt.
+//
+// The paging loop re-runs its whole body — BeginPage included — from the
+// UNCHANGED r.continuation after a retryable error, and SweepAfterPage runs only
+// AFTER the commit succeeds. So everything a failed attempt parked stays in the
+// scratch, and charged: the entry hands its delta charge over at park time and
+// the close hook deliberately does not release it. Nothing then reclaims it
+// until the page finally commits, so a conflict storm accumulates one
+// attempt-sized delta per attempt and a statement can fail the memory budget —
+// or exhaust the process — before any attempt commits.
+//
+// The COW base+delta design says a retry starts from the state its predecessor
+// started from. That includes the ACCOUNTING, so the rollback belongs where the
+// failed attempt's parked state is discarded: BeginPage.
+//
+// Measured before the fix on this shape, over five attempts of the same page:
+// 16, 22, 28, 34, 40 bytes charged — one attempt-sized delta added per attempt,
+// none of it reclaimable until the page finally commits.
+func TestDistinctRetriedAttemptsDoNotStackCharges(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	const n, distinct, perPage, attempts = 60, 12, 3, 5
+	evalCtx, plan := distinctFixture(t, n, distinct)
+	scratch := NewExecutionScratch()
+	evalCtx = evalCtx.WithExecutionScratch(scratch)
+	state := recordlayer.NewExecuteState(1 << 30)
+
+	// attempt runs one execution of a page, exactly as the retry loop's closure
+	// does: BeginPage, execute, serialize the surviving continuation, close. It
+	// does NOT sweep — sweeping is the commit path, and these attempts fail.
+	attempt := func(cont []byte) []byte {
+		t.Helper()
+		scratch.BeginPage()
+		props := recordlayer.DefaultExecuteProperties()
+		props.State = state
+		props = props.WithReturnedRowLimit(perPage)
+		cursor, err := ExecutePlan(ctx, plan, nil, evalCtx, cont, props)
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		var last recordlayer.RecordCursorResult[QueryResult]
+		for {
+			res, nerr := cursor.OnNext(ctx)
+			if nerr != nil {
+				t.Fatalf("OnNext: %v", nerr)
+			}
+			last = res
+			if !res.HasNext() {
+				break
+			}
+		}
+		var b []byte
+		if c := last.GetContinuation(); c != nil && !c.IsEnd() {
+			var berr error
+			if b, berr = c.ToBytes(); berr != nil {
+				t.Fatalf("ToBytes: %v", berr)
+			}
+		}
+		_ = cursor.Close()
+		return b
+	}
+
+	// Page 1 commits, so page 2 is a genuine resume with a committed predecessor.
+	c1 := attempt(nil)
+	if c1 == nil {
+		t.Fatal("page 1 produced no continuation; the fixture must span several pages")
+	}
+	scratch.SweepAfterPage(false)
+
+	// Page 2 conflicts, over and over. Every attempt is the same page.
+	charged := make([]int64, 0, attempts)
+	live := make([]int, 0, attempts)
+	for a := 1; a <= attempts; a++ {
+		if c2 := attempt(c1); c2 == nil {
+			t.Fatalf("attempt %d produced no continuation", a)
+		}
+		charged = append(charged, state.MemUsed())
+		live = append(live, scratch.LiveDistinctSets())
+	}
+	for a := 1; a < attempts; a++ {
+		if charged[a] != charged[0] {
+			t.Fatalf(
+				"re-attempting the SAME page charges %v bytes over %d attempts: a failed "+
+					"attempt's parked entry stays live and CHARGED into its retry, so a "+
+					"conflict storm accumulates one attempt-sized delta per attempt and the "+
+					"statement fails the memory budget (or the process) before any attempt "+
+					"commits. A retry must start from the charge its predecessor started from",
+				charged, attempts,
+			)
+		}
+		if live[a] != live[0] {
+			t.Fatalf(
+				"re-attempting the SAME page leaves %v live scratch states: the failed "+
+					"attempt's parked state is not discarded when its retry begins",
+				live,
+			)
+		}
+	}
+
+	// And the retries changed nothing the drain can see: the statement still
+	// returns every distinct value exactly once.
+	emitted := map[any]int{}
+	cont := c1
+	for cont != nil {
+		scratch.BeginPage()
+		props := recordlayer.DefaultExecuteProperties()
+		props.State = state
+		props = props.WithReturnedRowLimit(perPage)
+		cursor, err := ExecutePlan(ctx, plan, nil, evalCtx, cont, props)
+		if err != nil {
+			t.Fatalf("drain ExecutePlan: %v", err)
+		}
+		var last recordlayer.RecordCursorResult[QueryResult]
+		for {
+			res, nerr := cursor.OnNext(ctx)
+			if nerr != nil {
+				t.Fatalf("drain OnNext: %v", nerr)
+			}
+			last = res
+			if !res.HasNext() {
+				break
+			}
+			emitted[res.GetValue().Positional.Slots[0]]++
+		}
+		var b []byte
+		if c := last.GetContinuation(); c != nil && !c.IsEnd() {
+			var berr error
+			if b, berr = c.ToBytes(); berr != nil {
+				t.Fatalf("drain ToBytes: %v", berr)
+			}
+		}
+		_ = cursor.Close()
+		scratch.SweepAfterPage(b == nil)
+		cont = b
+	}
+	for v, count := range emitted {
+		if count != 1 {
+			t.Fatalf("value %v emitted %d times after a retry storm", v, count)
+		}
+	}
+	// Page 1 emitted perPage values before the storm; the rest come from the drain.
+	if len(emitted) != distinct-perPage {
+		t.Fatalf("the drain after the retry storm emitted %d distinct values, want %d",
+			len(emitted), distinct-perPage)
+	}
+}
+
 // TestDistinctScratchEvictionStaysBounded pins that keying eviction on adoption
 // (rather than on parking) did NOT trade the leak away for an unbounded
 // scratch: a long drain must not accumulate one live entry per page.

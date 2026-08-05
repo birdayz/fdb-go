@@ -6,6 +6,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -159,13 +160,13 @@ func TestCollectPlanIndexDependenciesIncludesScalarSubqueryIndexes(t *testing.T)
 	}
 
 	subOnly := map[string]struct{}{}
-	collectScannedIndexNames(subs[0].Plan, subOnly)
+	collectDependedOnIndexNames(subs[0].Plan, subOnly)
 	if len(subOnly) == 0 {
 		t.Fatalf("the scalar subquery scanned no index, so it contributes no "+
 			"dependency to lose: %s", subs[0].Plan.Explain())
 	}
 
-	deps := collectPlanIndexDependencies(md, plan, subs, nil)
+	deps := collectPlanIndexDependencies(md, plan, subs)
 	got := map[string]struct{}{}
 	for _, dep := range deps {
 		got[dep.Name] = struct{}{}
@@ -175,5 +176,60 @@ func TestCollectPlanIndexDependenciesIncludesScalarSubqueryIndexes(t *testing.T)
 			t.Fatalf("index %s is scanned by a scalar subquery but is not a "+
 				"dependency of the statement: deps=%v", name, deps)
 		}
+	}
+}
+
+// The DISTINCT-elision proof is the one dependency kind whose plan names the
+// index NOWHERE — the elision's whole point is that the winning access path is
+// the base-record scan. A scan-only collector looks complete on it and is not,
+// and it fails in the direction that matters: the statement keeps running and
+// returns DUPLICATE ROWS rather than an error.
+//
+// This is what replaced collectPlanIndexDependencies' `proofOnly []string`
+// parameter. That seam had no producer at any of its three call sites nor in any
+// test, so it read as coverage while collecting nothing; the stamp is a producer
+// and this is the test of the walk that reads it.
+func TestCollectPlanIndexDependenciesIncludesDistinctProofStamp(t *testing.T) {
+	t.Parallel()
+	md := depsMetaData(t)
+
+	plan, err := PlanRecordQueryWithMetadata("SELECT id FROM orders", md, nil)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	stampable, ok := plan.(plans.DistinctProofStampable)
+	if !ok {
+		t.Fatalf("the planned root %T cannot carry a proof stamp, so this test "+
+			"cannot observe what it exists to observe: %s", plan, plan.Explain())
+	}
+
+	unstamped := collectPlanIndexDependencies(md, plan, nil)
+	for _, dep := range unstamped {
+		if dep.Name == "IDX_CUSTOMER" {
+			t.Fatalf("IDX_CUSTOMER is already a dependency of the UNSTAMPED plan, "+
+				"so the stamp arm below would pass with the walk never reading it: %v",
+				unstamped)
+		}
+	}
+
+	stamped := stampable.WithDistinctProofIndexName("IDX_CUSTOMER")
+	deps := collectPlanIndexDependencies(md, stamped, nil)
+	found := false
+	for _, dep := range deps {
+		if dep.Name != "IDX_CUSTOMER" {
+			continue
+		}
+		found = true
+		// The stamp records the NAME only; the version is resolved here, from
+		// the same planning metadata that supplies it for a scanned index. Two
+		// authorities for one field is how they drift apart.
+		if want := md.GetIndex("IDX_CUSTOMER").LastModifiedVersion; dep.LastModifiedVersion != want {
+			t.Fatalf("proof dependency carries lastModifiedVersion %d, metadata says %d",
+				dep.LastModifiedVersion, want)
+		}
+	}
+	if !found {
+		t.Fatalf("a plan stamped with a DISTINCT-elision proof over IDX_CUSTOMER "+
+			"does not depend on it: deps=%v plan=%s", deps, stamped.Explain())
 	}
 }

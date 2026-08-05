@@ -129,6 +129,29 @@ type IndexDefWithPredicate interface {
 	IndexPredicateProto() *gen.Predicate
 }
 
+// IndexDefWithOpaqueFilter reports an index that FILTERS records but whose
+// predicate the planner cannot see — it has no proto representation, so there
+// is nothing to attach to the candidate graph and nothing a matcher can
+// account for.
+//
+// This exists because sparseness and its SERIALIZED FORM are two different
+// questions, and reading the second as the first fails in the unsafe
+// direction. Go's Index.SetPredicate installs an evaluator CLOSURE and nils the
+// proto; the index maintainers gate entry creation on that closure, so such an
+// index is exactly as sparse on disk as a proto-defined one while presenting
+// `predicateProto == nil` — which every completeness check reads as "full".
+//
+// It is a Go-only hazard: Java's Index.getPredicate() is parsed from
+// RecordMetaDataProto.Index.predicate and cannot exist without it, so Java has
+// no representation-versus-fact gap to fall through. The obligation is entirely
+// on this side, and the answer is to fail closed — an opaque filter can never
+// be proved tautological, so an index carrying one is never complete and never
+// cardinality-preserving.
+type IndexDefWithOpaqueFilter interface {
+	IndexDef
+	IndexHasOpaqueFilter() bool
+}
+
 // NewPlanContextFromIndexDefs builds a PlanContext with one
 // ValueIndexScanMatchCandidate per index definition. Column names
 // are upper-cased for SQL-convention case-insensitive matching
@@ -228,6 +251,9 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 			if pred := withPred.IndexPredicateProto(); pred != nil {
 				candidate.WithPredicateProto(pred)
 			}
+		}
+		if withOpaque, ok := def.(IndexDefWithOpaqueFilter); ok && withOpaque.IndexHasOpaqueFilter() {
+			candidate.WithOpaqueFilter()
 		}
 		candidates = append(candidates, candidate)
 	}

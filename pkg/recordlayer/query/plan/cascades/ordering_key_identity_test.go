@@ -221,12 +221,12 @@ func TestIntersectionOrderingKeysShareTheCommonRecordLayout(t *testing.T) {
 		map[values.Value][]properties.OrderingBinding{
 			statusPK: {properties.SortedBinding(properties.ProvidedSortOrderAscending)},
 		},
-		[]values.Value{statusPK}, true)
+		[]values.Value{statusPK}, properties.DistinctOverAllKeys())
 	amountOrdering := properties.NewRichOrdering(
 		map[values.Value][]properties.OrderingBinding{
 			amountPK: {properties.SortedBinding(properties.ProvidedSortOrderAscending)},
 		},
-		[]values.Value{amountPK}, true)
+		[]values.Value{amountPK}, properties.DistinctOverAllKeys())
 	merged := properties.MergeOrderingsForIntersection(statusOrdering, amountOrdering)
 	if len(merged.GetKeys()) != 1 {
 		t.Fatalf("merging the two legs' orderings yielded %d keys, want 1.\n\n"+

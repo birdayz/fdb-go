@@ -362,7 +362,7 @@ func computeWrapperRichOrdering(w physicalPlanExpression) *properties.RichOrderi
 		}
 		bm[k] = []properties.OrderingBinding{properties.SortedBinding(dir)}
 	}
-	return properties.NewRichOrdering(bm, o.Keys, false)
+	return properties.NewRichOrdering(bm, o.Keys, properties.NotDistinct())
 }
 
 // computeJoinRichOrdering ports Java OrderingProperty.visitFlatMapPlan for

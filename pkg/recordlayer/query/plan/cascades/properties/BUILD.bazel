@@ -6,6 +6,7 @@ go_library(
         "cardinality.go",
         "cardinality_bounds.go",
         "comparisons_property.go",
+        "coordinate_bound_claim.go",
         "cost.go",
         "cost_formulas.go",
         "derivations_property.go",
@@ -55,6 +56,7 @@ go_test(
         "rich_ordering_binding_translation_test.go",
         "rich_ordering_fuzz_test.go",
         "rich_ordering_test.go",
+        "storage_completeness_empty_ordering_test.go",
     ],
     embed = [":properties"],
     deps = [

@@ -40,8 +40,7 @@ func TestIntersectionResult_NewAndGetters(t *testing.T) {
 	ordering := properties.NewRichOrdering(
 		map[values.Value][]properties.OrderingBinding{},
 		nil,
-		false,
-	)
+		properties.NotDistinct())
 	comp := NoCompensation
 	expr := &stubRelExpr{name: "scan1"}
 

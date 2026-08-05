@@ -199,8 +199,7 @@ func TestPartitionRedundancyProofSeparatesSameSlotDifferentLayouts(t *testing.T)
 			foreignRowKey: {properties.FixedBinding(nil)},
 		},
 		[]values.Value{foreignRowKey},
-		false,
-	)
+		properties.NotDistinct())
 
 	var fixed []values.Value
 	for v := range ordering.GetEqualityBoundValues() {
@@ -230,8 +229,7 @@ func TestPartitionRedundancyProofSeparatesSameSlotDifferentLayouts(t *testing.T)
 			requiredKey: {properties.FixedBinding(nil)},
 		},
 		[]values.Value{requiredKey},
-		false,
-	)
+		properties.NotDistinct())
 	if !orderingContainsEqualityValues(satisfying, []values.Value{requiredKey}) {
 		t.Fatalf("orderingContainsEqualityValues refuses an ordering that fixes "+
 			"exactly the required column %q. A proof that never succeeds makes "+

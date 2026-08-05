@@ -69,6 +69,12 @@ type ValueIndexScanMatchCandidate struct {
 	// nil for a full index. See WithPredicateProto.
 	predicateProto *gen.Predicate
 
+	// opaqueFilter records that this index filters records through a predicate
+	// with no proto representation (Go's Index.SetPredicate closure). Sparseness
+	// and its serialized form are different questions; this carries the FACT so
+	// consumers stop inferring it from the representation. See WithOpaqueFilter.
+	opaqueFilter bool
+
 	createsDuplicates bool
 	// createsDuplicatesKnown reports whether the fan-out status was supplied
 	// by the IndexDef. When false (no signal), the DistinctRecords property
@@ -320,6 +326,35 @@ func (c *ValueIndexScanMatchCandidate) WithPredicateProto(pred *gen.Predicate) *
 	}
 	c.predicateProto = normalized
 	return c
+}
+
+// WithOpaqueFilter marks the candidate as filtering records through a predicate
+// that has NO proto representation, so nothing can be attached to the candidate
+// graph and no matcher can account for it.
+//
+// It is deliberately a SEPARATE flag from predicateProto rather than a synthetic
+// predicate. A synthesized stand-in would have to be some concrete proto, and
+// every such proto is either provably tautological (which normalizes away, back
+// to "complete") or claims a filter shape the index does not actually have,
+// which the matcher would then try to compensate. The honest statement is "a
+// filter exists and its content is unknowable", and that is a different fact
+// from any predicate.
+//
+// The only sound reading of an unknowable filter is the pessimistic one, so this
+// flag is one-way: it can be set, never cleared, and unlike WithPredicateProto
+// there is no tautology escape — a Go closure cannot be proved to reject
+// nothing.
+func (c *ValueIndexScanMatchCandidate) WithOpaqueFilter() *ValueIndexScanMatchCandidate {
+	c.opaqueFilter = true
+	return c
+}
+
+// HasOpaqueFilter reports whether this candidate filters records through a
+// predicate the planner cannot inspect. Such an index is never COMPLETE: it
+// cannot stand in for the base table, and its UNIQUE declaration constrains only
+// the records its filter admitted.
+func (c *ValueIndexScanMatchCandidate) HasOpaqueFilter() bool {
+	return c != nil && c.opaqueFilter
 }
 
 // GetPredicateProto returns a defensive copy of the sparse-index predicate, or

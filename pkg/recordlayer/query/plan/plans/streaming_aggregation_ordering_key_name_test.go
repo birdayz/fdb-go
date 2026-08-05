@@ -104,7 +104,7 @@ func TestStreamingAggregation_ProvidedOrderingMatchesTheSortRebaseSpelling(t *te
 			properties.SortedBinding(properties.ProvidedSortOrderAscending),
 		}
 	}
-	rich := properties.NewRichOrdering(bindings, provided.Keys, false)
+	rich := properties.NewRichOrdering(bindings, provided.Keys, properties.NotDistinct())
 
 	parts := make([]properties.RequestedOrderingPart, len(groupKeys))
 	for i := range groupKeys {

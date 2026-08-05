@@ -95,6 +95,13 @@ import (
 // named. SweepAfterPage is built on that, at the cost of one page of lag, plus
 // the exact case that needs no lag (an exhausted page names nothing at all).
 //
+// "A page adopts exactly what its continuation names" has ONE hole, and it is
+// plugged explicitly rather than argued away: a page can FORWARD a name instead
+// of resolving it, handing bytes it received straight back out without ever
+// building the cursor that would adopt them. holdForwardedName is how the
+// forwarding site says so, and the sweep then judges nothing unreachable that
+// page. A forwarded name is a name.
+//
 // Residency is then bounded by that sweep plus two structural rules:
 //
 //  1. An entry belongs to a CURSOR, not to a continuation (the prefix length
@@ -131,19 +138,87 @@ type ExecutionScratch struct {
 	// adopted is what the page resumed from. See SweepAfterPage.
 	pageStart int64
 	adopted   map[int64]struct{}
+	// settled is the token high-water mark as of the last page that COMMITTED.
+	// Anything parked after it belongs to an attempt that has not committed, so
+	// BeginPage — which only ever runs at the start of an attempt — knows a
+	// re-entry means the previous attempt died and its parks are garbage.
+	settled int64
+	// forwardedNames records that this page handed back continuation bytes it
+	// never resolved, which makes its adoption record incomplete. See
+	// holdForwardedName.
+	forwardedNames bool
 	// state is the statement's memory budget, so a parked entry's bytes stay
 	// charged for exactly as long as the entry lives. Set on first park.
 	state *recordlayer.ExecuteState
+	// peakDistinct is the high-water mark of live entries. Diagnostic only —
+	// see PeakDistinctSets.
+	peakDistinct int
 }
 
-// BeginPage tells the scratch a page's execution is starting: it snapshots the
-// token high-water mark and clears the adoption record. Safe on a nil scratch.
+// BeginPage tells the scratch a page's execution is starting: it DISCARDS what
+// a previous attempt of this same page parked, then snapshots the token
+// high-water mark and clears the page-scoped records. Safe on a nil scratch.
+//
+// THE DISCARD IS THE OTHER HALF OF RETRY IDEMPOTENCE. This runs inside the FDB
+// retry loop's body (cascades_generator.go:2002), so a second call without an
+// intervening SweepAfterPage means the previous attempt's transaction DIED: its
+// rows were dropped and its continuation bytes with them. Everything it parked
+// is therefore named by nothing — and it is CHARGED, because a cursor hands its
+// delta charge to its entry at park time and the close hook deliberately does
+// not release it. Leaving it behind made a conflict storm accumulate one
+// attempt-sized delta per attempt, with nothing reclaiming any of it until the
+// page finally committed, so a statement could fail its memory budget (or the
+// process) before any attempt got through. Measured over five attempts of one
+// page: 16, 22, 28, 34, 40 bytes.
+//
+// Dropping it is safe for exactly the reason the published set is immutable: an
+// attempt only ever EXTENDS a committed layer it adopted read-only, and the
+// retry re-adopts that same layer from the same bytes. It cannot reach the
+// dead attempt's delta, because nothing it holds names it.
+//
+// This is not the eviction rule 2 forbids. Rule 2 is about the entry a retry
+// RESUMES FROM — its predecessor, parked by a committed page and named by the
+// unchanged continuation bytes the retry re-executes; that entry is at or below
+// settled and is never touched here.
 func (s *ExecutionScratch) BeginPage() {
 	if s == nil {
 		return
 	}
+	for token := range s.distinct {
+		if token > s.settled {
+			s.retire(token)
+		}
+	}
 	s.pageStart = s.nextToken
 	s.adopted = nil
+	s.forwardedNames = false
+}
+
+// holdForwardedName records that this page is handing back continuation bytes
+// it RECEIVED and never resolved, so its adoption record is incomplete.
+//
+// Adoption is the sweep's ground truth because a page adopts exactly the
+// entries its own continuation named — which holds only while every name the
+// page's continuation carries passes through a cursor that resolves it. A page
+// can instead FORWARD a name: flatMapCursor.wrapOuterContinuation hands the
+// pending inner bytes straight into this page's continuation when the outer
+// stops before re-reaching the saved outer row, and no inner cursor is built at
+// all, so nothing adopts the entries those bytes name. Retirement follows
+// NAMEABILITY, and a forwarded name is a name.
+//
+// The hold is deliberately coarse — it suspends the sweep's unreachability
+// judgement for the whole page rather than naming a token — because the
+// forwarding site holds BYTES, and the token inside them is only decodable by
+// the operator that consumes them (arbitrarily deep in the inner plan's own
+// continuation envelope). Coarse costs nothing here: a page that forwards its
+// pending inner delivered no outer row, so it built no inner cursors and left
+// no garbage of its own to collect. The most a hold defers is one earlier
+// page's residue, until a page finally resolves the name.
+func (s *ExecutionScratch) holdForwardedName() {
+	if s == nil {
+		return
+	}
+	s.forwardedNames = true
 }
 
 // SweepAfterPage retires the entries the completed page has made unreachable.
@@ -176,20 +251,29 @@ func (s *ExecutionScratch) BeginPage() {
 //
 // Safe on a nil scratch.
 func (s *ExecutionScratch) SweepAfterPage(exhausted bool) {
-	if s == nil || s.distinct == nil {
+	if s == nil {
 		return
 	}
-	for token := range s.distinct {
-		if !exhausted {
-			if token > s.pageStart {
-				continue
+	// A page that FORWARDED a name it never resolved has an INCOMPLETE adoption
+	// record, so nothing may be judged unreachable by it (holdForwardedName). An
+	// EXHAUSTED page is exempt: nothing is resumable at all, so the forwarded
+	// bytes went nowhere either.
+	if s.distinct != nil && (exhausted || !s.forwardedNames) {
+		for token := range s.distinct {
+			if !exhausted {
+				if token > s.pageStart {
+					continue
+				}
+				if _, keep := s.adopted[token]; keep {
+					continue
+				}
 			}
-			if _, keep := s.adopted[token]; keep {
-				continue
-			}
+			s.retire(token)
 		}
-		s.retire(token)
 	}
+	// This page COMMITTED, so what it parked is the state a retry of the NEXT
+	// page must find — BeginPage discards only what is parked after this mark.
+	s.settled = s.nextToken
 	s.adopted = nil
 }
 
@@ -251,6 +335,23 @@ func (s *ExecutionScratch) MintedDistinctSets() int64 {
 		return 0
 	}
 	return s.nextToken
+}
+
+// PeakDistinctSets returns the high-water mark of simultaneously live parked
+// states. Test/diagnostic accessor (like MintedDistinctSets); production code
+// never reads it.
+//
+// It exists because the damage a failed attempt does is INVISIBLE from outside
+// a page: the attempt's leftovers are collected by the page's own sweep once it
+// finally commits, so every between-pages sample — the only kind a statement's
+// caller can take — reads the same as an unfaulted run. The high-water mark is
+// what a retried page actually costs while it is being retried, which is the
+// figure a conflict storm multiplies.
+func (s *ExecutionScratch) PeakDistinctSets() int {
+	if s == nil {
+		return 0
+	}
+	return s.peakDistinct
 }
 
 // LiveDistinctSets returns how many parked states the scratch still holds.
@@ -342,6 +443,9 @@ func (s *ExecutionScratch) parkDistinct(st *distinctResumeState, state *recordla
 	s.nextToken++
 	token := s.nextToken
 	s.distinct[token] = st
+	if len(s.distinct) > s.peakDistinct {
+		s.peakDistinct = len(s.distinct)
+	}
 	if st.base != nil {
 		st.base.refs++
 	}

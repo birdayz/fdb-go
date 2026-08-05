@@ -158,9 +158,25 @@ func (l *transitionPlanLogger) err() error {
 	return l.transErr
 }
 
+// queryIndexStateStrings runs query INSIDE AN EXPLICIT TRANSACTION, which is the
+// only regime in which a secondary-UNIQUE proof is drawn at all.
+//
+// The proof is a statement about the store at one instant, so it is licensed
+// only where the whole result comes from a single read version; in auto-commit
+// each page takes a fresh one and the proof is withheld. Every arm reached
+// through this helper — the affirmative ones that require `narrowed-by:U_EMAIL`
+// and the refusals that require its ABSENCE — therefore has to run in a
+// transaction. The refusals are the reason it matters most: in auto-commit no
+// index proves anything, so "a READABLE_UNIQUE_PENDING index licensed nothing"
+// would hold for a reason that has nothing to do with the index's state.
 func queryIndexStateStrings(t *testing.T, ctx context.Context, conn *sql.Conn, query string) []string {
 	t.Helper()
-	rows, err := conn.QueryContext(ctx, query)
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin for %q: %v", query, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, query)
 	if err != nil {
 		t.Fatalf("query %q: %v", query, err)
 	}
@@ -281,69 +297,125 @@ func TestFDB_IndexStatePlanning_StableStateExecutesNormally(t *testing.T) {
 	}
 }
 
-// PIN OF A NEGATIVE RESULT whose stated unlock condition has SINCE BEEN MET.
+// distinctEmailRun plans and runs one query on the logger-equipped conn and
+// returns the plan text the planner actually chose alongside the rows, so an
+// assertion can name both the shape and the answer. The plan is read from the
+// planning event rather than from EXPLAIN because EXPLAIN is a second planning
+// call: reading the event pins the plan that produced THESE rows.
+func distinctEmailRun(
+	t *testing.T, ctx context.Context, conn *sql.Conn,
+	logger *syncCaptureLogger, query string,
+) (string, []string) {
+	t.Helper()
+	before := len(logger.snapshot())
+	got := queryIndexStateStrings(t, ctx, conn, query)
+	events := logger.snapshot()
+	if len(events) != before+1 {
+		t.Fatalf("planning events for %q = %d, want exactly one more than %d",
+			query, len(events), before)
+	}
+	return events[len(events)-1].PlanExplain, got
+}
+
+// THE SQL-PATH WITNESS for a secondary UNIQUE index used as a distinctness
+// proof. It replaces the pin of the decline that used to stand here: the
+// decline's own comment named this migration in advance, and this is it.
 //
-// This planner does NOT trust a secondary UNIQUE index as a distinctness proof
-// — rule_implement_distinct_final.go declines it explicitly. Its stated reason
-// was that Go built match candidates from metadata alone, so a
-// READABLE_UNIQUE_PENDING index (scannable, carrying a `unique` flag its data
-// contradicts) could back a uniqueness proof; and because eliding a DISTINCT
-// produces a plan that never READS that index, no executor leaf check could
-// catch it. The decline is the ONLY reason duplicate rows cannot flow out of a
-// DISTINCT in that state, and nothing else pins it.
+// What the decline feared was real and is now handled rather than avoided. A
+// READABLE_UNIQUE_PENDING index is scannable and carries a `unique` flag its
+// data contradicts, and eliding a DISTINCT yields a plan that never READS the
+// proving index — so no executor leaf check can catch it. Two mechanisms
+// COMPOSE to cover that, and they do not overlap:
 //
-// That reason no longer holds. The candidate set IS now state-filtered the way
-// Java's is (readableIndexesFrom / cascades.ReadableIndexes, the port of
-// PlanContext.Builder.getReadableIndexes), and it excludes
-// READABLE_UNIQUE_PENDING on Java's strict isReadable. The decline's own
-// comment still says "until then" — the precondition it names is satisfied and
-// the decline was simply never revisited.
+//   - The candidate set is state-filtered exactly as Java's is
+//     (readableIndexesFrom / cascades.ReadableIndexes, the port of
+//     PlanContext.Builder.getReadableIndexes) on Java's strict isReadable, which
+//     excludes READABLE_UNIQUE_PENDING. That is a PLANNING-time exclusion, and
+//     it is what the pending arm below exercises.
+//   - The proving index is stamped onto the yielded plan and becomes a plan
+//     DEPENDENCY revalidated in every execution transaction. That catches a
+//     transition landing AFTER planning, which no plan-time filter and no
+//     plan-cache key can see, and it is what this file's other tests exercise.
 //
-// So this test now pins a CONSERVATIVE LEFTOVER, not a necessity. It is kept
-// because the behaviour it describes is real and current, and because lifting
-// the decline is a query-engine change that must be made deliberately, with its
-// own review — not drifted into. Whoever lifts it replaces this test with
-// coverage of the pending state; they do not delete it to go green.
-//
-// Note the two mechanisms compose rather than overlap: the filter excludes a
-// pending index at PLANNING time, and the signature this file's other tests
-// exercise catches a transition that happens AFTER planning, which no
-// plan-time filter and no plan-cache key can see.
-func TestFDB_IndexStatePlanning_SecondaryUniqueIndexIsNotADistinctnessProof(t *testing.T) {
+// The readable arms assert the two shapes MEASURED on this fixture, because the
+// discharge is a fact about the stream, not about the catalog. EMAIL is
+// nullable, so a bare SELECT DISTINCT cannot be fully elided — a UNIQUE index
+// admits arbitrarily many NULL entries and DISTINCT must collapse them to one
+// row — and the operator is instead KEPT and NARROWED to dedup only that exempt
+// subset. Adding a NULL-rejecting conjunct empties the exempt set on this
+// stream and the operator disappears entirely. Both carry the proving index's
+// name, which is what makes "the rule fired" a positive assertion rather than
+// the absence of an operator.
+func TestFDB_IndexStatePlanning_SecondaryUniqueIndexProvesDistinctnessOnlyWhileReadable(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	f := newIndexStatePlanningFixture(t)
 	logger := &syncCaptureLogger{}
 	conn := installLogger(t, f.db, logger)
 
-	rows, err := conn.QueryContext(ctx, "SELECT DISTINCT EMAIL FROM T")
-	if err != nil {
-		t.Fatalf("query: %v", err)
+	const (
+		bare         = "SELECT DISTINCT EMAIL FROM T"
+		nullRejected = "SELECT DISTINCT EMAIL FROM T WHERE EMAIL IS NOT NULL"
+		wantRows     = "a@example,b@example,c@example"
+	)
+
+	// READABLE, unfiltered: the operator SURVIVES, narrowed by U_EMAIL.
+	explain, got := distinctEmailRun(t, ctx, conn, logger, bare)
+	if strings.Join(got, ",") != wantRows {
+		t.Fatalf("readable/unfiltered rows = %v, want %s", got, wantRows)
 	}
-	var got []string
-	for rows.Next() {
-		var email string
-		if err := rows.Scan(&email); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		got = append(got, email)
+	if !strings.Contains(explain, "Distinct(") {
+		t.Fatalf("a bare SELECT DISTINCT over a NULLABLE unique key lost its "+
+			"operator entirely: %s\nA UNIQUE index admits many NULL entries, so "+
+			"full elision here would emit one row per NULL row.", explain)
 	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows: %v", err)
-	}
-	_ = rows.Close()
-	if len(got) != 3 {
-		t.Fatalf("rows = %v, want 3 distinct emails", got)
+	if !strings.Contains(explain, "narrowed-by:U_EMAIL") {
+		t.Fatalf("the DISTINCT over a READABLE secondary UNIQUE index is not "+
+			"narrowed by it: %s\nEither the index-state filter stopped admitting a "+
+			"READABLE index, or the narrowing stopped firing; the two fail here "+
+			"identically and the pending arm below is what separates them.", explain)
 	}
 
-	events := logger.snapshot()
-	if len(events) != 1 {
-		t.Fatalf("planning events = %d, want 1", len(events))
+	// READABLE, NULL-rejecting: the operator is GONE, licensed by U_EMAIL.
+	explain, got = distinctEmailRun(t, ctx, conn, logger, nullRejected)
+	if strings.Join(got, ",") != wantRows {
+		t.Fatalf("readable/null-rejected rows = %v, want %s", got, wantRows)
 	}
-	if !strings.Contains(events[0].PlanExplain, "Distinct") {
-		t.Fatalf("a READABLE secondary UNIQUE index eliminated DISTINCT — if that "+
-			"was deliberate, the pending-unique state now needs its own coverage "+
-			"here rather than this assertion: %s", events[0].PlanExplain)
+	if strings.Contains(explain, "Distinct(") {
+		t.Fatalf("a NULL-rejecting conjunct on the unique key did not empty the "+
+			"exempt set; the operator is still there: %s", explain)
+	}
+	if !strings.Contains(explain, "distinct-by:U_EMAIL") {
+		t.Fatalf("the elided plan carries no proof stamp: %s\nAn elision without "+
+			"the stamp is an elision whose dependency on the index's state was "+
+			"never recorded, which is the unguarded elision the decline feared.",
+			explain)
+	}
+
+	// READABLE_UNIQUE_PENDING: the declared uniqueness is not yet proven, so the
+	// index licenses NOTHING. This is the arm the metadata-only harness path
+	// structurally cannot make — it plans in the unknown index state, where the
+	// secondary-UNIQUE arm never fires at all, so it pins the fail-closed
+	// default rather than the candidate filter.
+	if err := f.makeUniqueIndexPending(ctx); err != nil {
+		t.Fatalf("transition U_EMAIL to READABLE_UNIQUE_PENDING: %v", err)
+	}
+	for _, query := range []string{bare, nullRejected} {
+		explain, got = distinctEmailRun(t, ctx, conn, logger, query)
+		if strings.Join(got, ",") != wantRows {
+			t.Fatalf("pending %q rows = %v, want %s", query, got, wantRows)
+		}
+		if !strings.Contains(explain, "Distinct(") {
+			t.Fatalf("a READABLE_UNIQUE_PENDING index eliminated the DISTINCT in "+
+				"%q: %s\nThat index is scannable and carries a `unique` flag its "+
+				"data contradicts; trusting it is how duplicate rows leave a "+
+				"DISTINCT.", query, explain)
+		}
+		if strings.Contains(explain, "U_EMAIL") {
+			t.Fatalf("a READABLE_UNIQUE_PENDING index appears in the plan for %q: "+
+				"%s\nIt must license neither an elision, nor a narrowing, nor a "+
+				"scan.", query, explain)
+		}
 	}
 }
 
@@ -528,6 +600,32 @@ func (f *indexStatePlanningFixture) setIndexState(
 		}
 		_, stateErr := store.MarkIndexWriteOnly(name)
 		return nil, stateErr
+	})
+	return err
+}
+
+// setIndexDisabled drives an index to DISABLED, the state setIndexState cannot
+// reach. DISABLED and WRITE_ONLY are both non-READABLE but they are not the same
+// state — DISABLED additionally clears the index data — and a check written
+// against "not readable" must hold for both.
+func (f *indexStatePlanningFixture) setIndexDisabled(ctx context.Context, name string) error {
+	_, err := f.rdb.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		store, openErr := recordlayer.NewStoreBuilder().
+			SetContext(rctx).
+			SetMetaDataProvider(f.md).
+			SetSubspace(f.ss).
+			SetStoreStateCache(recordlayer.PassThroughStoreStateCache()).
+			Open()
+		if openErr != nil {
+			return nil, openErr
+		}
+		if _, stateErr := store.MarkIndexDisabled(name); stateErr != nil {
+			return nil, stateErr
+		}
+		if got := store.GetIndexState(name); got != recordlayer.IndexStateDisabled {
+			return nil, fmt.Errorf("%s state = %s, want DISABLED", name, got)
+		}
+		return nil, nil
 	})
 	return err
 }
