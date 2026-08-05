@@ -503,15 +503,42 @@ func excusedBy(t *testing.T, root, rel string, declared map[string]bool) (outOfB
 	if expr == nil {
 		return outOfBazelLane{}, false
 	}
-	ok, undeclared := satisfiable(expr, declared)
-	if ok {
+	return laneFor(expr, declared)
+}
+
+// laneFor returns the out-of-Bazel lane that actually makes an unsatisfiable
+// constraint compile, or false when no single lane does.
+//
+// The question asked is "does this lane's tag set make the constraint
+// SATISFIABLE", never "does the constraint mention a tag some lane names". The
+// difference is a silent hole of exactly the kind this file exists to close:
+// `//go:build libfdbc && bazelrunfile` MENTIONS libfdbc, so a tag-mention match
+// hands it the libfdbc nightly's exemption — but that nightly runs
+// `go test -tags libfdbc` and never sets the second tag, so gazelle omits the
+// file, the nightly skips it, and it runs in NO lane at all while carrying a
+// sanctioned-looking excuse. That is the one-character typo shape wearing the
+// exemption table as a costume.
+//
+// Re-checking satisfiability under declared ∪ {lane tag} answers the question
+// the exemption is actually claiming. It also gets the multi-lane case right by
+// construction: a file needing two lanes' tags at once is compiled by neither
+// lane alone, so neither excuses it.
+func laneFor(expr constraint.Expr, declared map[string]bool) (outOfBazelLane, bool) {
+	// A constraint that already holds needs no lane; without this guard a
+	// satisfiable expression would match the first lane vacuously.
+	if ok, _ := satisfiable(expr, declared); ok {
 		return outOfBazelLane{}, false
 	}
-	for _, tag := range undeclared {
-		for _, lane := range outOfBazelLanes {
-			if lane.buildTag == tag {
-				return lane, true
-			}
+	for _, lane := range outOfBazelLanes {
+		if lane.buildTag == "" {
+			continue
+		}
+		withLane := map[string]bool{lane.buildTag: true}
+		for tag := range declared {
+			withLane[tag] = true
+		}
+		if ok, _ := satisfiable(expr, withLane); ok {
+			return lane, true
 		}
 	}
 	return outOfBazelLane{}, false
@@ -715,6 +742,62 @@ func TestSatisfiableUnderDeclaredTags(t *testing.T) {
 		}
 		if !tc.want && strings.Join(blocked, ",") != strings.Join(tc.blocked, ",") {
 			t.Errorf("satisfiable(%q) blocked by %v, want %v", tc.line, blocked, tc.blocked)
+		}
+	}
+}
+
+// TestLaneExemptionRequiresTheLaneToCompileTheFile pins the exemption path
+// against the permissive-direction hole it shipped with: excusing a file because
+// its constraint MENTIONS a tag some lane names, rather than because that lane
+// can actually compile it.
+//
+// The permissive direction is the dangerous one. Too strict and the gate demands
+// srcs entries gazelle refuses to write, which is loud and gets fixed; too
+// generous and a file that runs NOWHERE carries a sanctioned-looking excuse and
+// nobody ever looks again. `//go:build libfdbc && bazelrunfile` is the exact
+// shape: it names libfdbc, so the old tag-mention match handed it the nightly's
+// exemption, while the nightly's `go test -tags libfdbc` never sets the second
+// tag and gazelle omits the file — the one-character typo the gate was built to
+// catch, laundered through the exemption table.
+func TestLaneExemptionRequiresTheLaneToCompileTheFile(t *testing.T) {
+	t.Parallel()
+	declared := map[string]bool{"bazelrunfiles": true, "stress": true, "factorycorpus": true}
+
+	cases := []struct {
+		line string
+		// want is the excusing lane's build tag, or "" for no exemption.
+		want string
+		why  string
+	}{
+		{"//go:build libfdbc", "libfdbc", "the nightly's -tags libfdbc compiles it"},
+		{"//go:build cgo && libfdbc", "libfdbc", "cgo is free, so the lane's tag is enough"},
+		{"//go:build yamsql", "yamsql", "the justfile recipe sets it"},
+		{"//go:build stress && realcluster", "realcluster", "stress is declared; the lane supplies realcluster"},
+		{"//go:build libfdbc || yamsql", "libfdbc", "a disjunction one lane does satisfy"},
+
+		// The hole. Each names a real lane tag but needs one no lane sets.
+		{"//go:build libfdbc && bazelrunfile", "", "the typo shape: -tags libfdbc never sets bazelrunfile"},
+		{"//go:build libfdbc && faketag", "", "a second undeclared tag no lane supplies"},
+		{"//go:build yamsql && realcluster", "", "two lanes' tags at once — neither lane sets both"},
+		{"//go:build libfdbc && yamsql", "", "no single lane runs both tags"},
+
+		// Already satisfiable: gazelle lists these, so no exemption may apply.
+		{"//go:build race", "", "free tag — gazelle lists it, an exemption would be vacuous"},
+		{"//go:build stress", "", "declared — gazelle lists it"},
+		{"//go:build !libfdbc", "", "the negation holds under the declared set"},
+	}
+	for _, tc := range cases {
+		expr, err := constraint.Parse(tc.line)
+		if err != nil {
+			t.Fatalf("parse %q: %v", tc.line, err)
+		}
+		lane, ok := laneFor(expr, declared)
+		got := ""
+		if ok {
+			got = lane.buildTag
+		}
+		if got != tc.want {
+			t.Errorf("laneFor(%q) excused by %q, want %q (%s)", tc.line, got, tc.want, tc.why)
 		}
 	}
 }
