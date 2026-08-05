@@ -68,6 +68,20 @@ import (
 //     page into a hard "seen-set not held" failure.) Evicting on adopt keeps
 //     the bound at a couple of live entries per operator all the same.
 //
+// NO COLLECTOR, and none is needed: residency is bounded by construction, not
+// by sweeping. An entry belongs to a CURSOR rather than to a continuation (the
+// prefix length rides the continuation instead), so serializing a child
+// continuation on every emitted row — limitEnvelopeCursor does exactly that —
+// adds one entry, not one per row. Adoption evicts the predecessor and any
+// sibling a failed attempt published from it, so a paging chain keeps two. And
+// a completed inner invocation parks nothing at all: its continuation is an
+// EndContinuation, which never reaches the encoder. A page-boundary sweep was
+// built for this and removed: twelve shapes measured identical residency with
+// and without it, its own test passed with it deleted, and its first design
+// silently dropped rows. The residency assertions are the standing sentinel —
+// if some future operator does park what nothing adopts, they go red first and
+// a collector becomes a response to a measured leak.
+//
 // MEMORY. A committed layer is charged ONCE, permanently, against the
 // statement's ExecuteState when its keys are folded in — it really is held for
 // the statement's lifetime, so releasing it at page teardown would tell the
@@ -82,14 +96,6 @@ import (
 type ExecutionScratch struct {
 	nextToken int64
 	distinct  map[int64]*distinctResumeState
-	// pageStart is the token high-water mark when the current page began, and
-	// adopted is what the page has resumed from. SweepAfterPage keeps entries
-	// newer than pageStart (this page is handing them forward) and entries the
-	// page adopted (its own commit can still fail retryably, and the retry
-	// resumes from the continuation naming them); everything older is
-	// unreachable.
-	pageStart int64
-	adopted   map[int64]struct{}
 }
 
 // NewExecutionScratch mints a scratch for one statement. A nil *ExecutionScratch
@@ -120,56 +126,6 @@ func (s *ExecutionScratch) LiveDistinctSets() int {
 		return 0
 	}
 	return len(s.distinct)
-}
-
-// BeginPage tells the scratch a new page's execution is starting: it snapshots
-// the token high-water mark and clears the adoption record that SweepAfterPage
-// consumes. Safe on a nil scratch.
-func (s *ExecutionScratch) BeginPage() {
-	if s == nil {
-		return
-	}
-	s.pageStart = s.nextToken
-	s.adopted = nil
-}
-
-// SweepAfterPage drops every state parked BEFORE this page began that this page
-// did not adopt.
-//
-// The rule is sound without inspecting a single byte. A page executes from one
-// continuation; every entry that continuation reaches — including entries named
-// by a correlated inner's continuation, adopted lazily part-way through the
-// drain — is adopted during the page. So once the drain is over, an older entry
-// that was never adopted is unreachable: no continuation the statement still
-// holds can name it. Entries parked BY this page are kept, because they are
-// what the page is handing forward.
-//
-// It has to be this rule and not "keep what the surviving continuation names".
-// Marking during that continuation's serialization looks equivalent and is not:
-// enclosing continuation objects cache their own serialized bytes, so the final
-// ToBytes need never call down into the distinct's, the mark is missed, and the
-// live entry is swept. That mistake was measured — `SELECT DISTINCT v FROM t
-// LIMIT 3` under a scanned-rows limit returned 2 rows and then failed with
-// "seen-set 1 ... does not hold".
-//
-// Retry-safe: a retry re-executes the same continuation and adopts the same
-// entries, and this sweep only ever drops entries no adoption reached.
-//
-// Safe on a nil scratch.
-func (s *ExecutionScratch) SweepAfterPage() {
-	if s == nil || s.distinct == nil {
-		return
-	}
-	for token := range s.distinct {
-		if token > s.pageStart {
-			continue // parked by this page: it is what we hand forward
-		}
-		if _, keep := s.adopted[token]; keep {
-			continue
-		}
-		delete(s.distinct, token)
-	}
-	s.adopted = nil
 }
 
 // seenLayer is a committed set of dedup keys, shared by every state that
@@ -307,9 +263,5 @@ func (s *ExecutionScratch) adoptDistinct(
 		}
 		st.foldedN = n
 	}
-	if s.adopted == nil {
-		s.adopted = make(map[int64]struct{}, 2)
-	}
-	s.adopted[token] = struct{}{}
 	return st.base, nil
 }

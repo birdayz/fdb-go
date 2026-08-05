@@ -197,72 +197,101 @@ func TestDistinctScratchDoesNotLeakOnSingleLimitedPage(t *testing.T) {
 	}
 }
 
-// TestDistinctScratchSweepDropsUnreachableStates pins the sweep itself: states
-// a completed page parked but that its surviving continuation does not name are
-// garbage and must not survive the page. Without it a correlated inner — whose
-// invocations complete and are never resumed — grows the scratch without bound
-// for the life of the statement.
-func TestDistinctScratchSweepDropsUnreachableStates(t *testing.T) {
+// TestDistinctEarlyContinuationResumesFromItsOwnPrefix pins that a
+// continuation resumes from the prefix IT named, not from everything its
+// cursor went on to see.
+//
+// A cursor publishes ONE scratch entry and keeps appending to it, so the entry
+// outruns the continuations minted from it. stateDeltaN is what tells them
+// apart, and adoption must fold exactly order[:n]. Folding the whole slice
+// instead passes every other test in the suite while silently dropping rows:
+// the resumed page treats keys the cursor sighted AFTER the continuation was
+// minted as already emitted, and they are never returned by anyone.
+//
+// THE SHAPE IS LOAD-BEARING AND HAS TO BE THIS EXACT ONE. ToBytes must run on
+// EVERY row, because parkSeen re-publishes the cursor's live slice only when it
+// re-runs — that is precisely what limitEnvelopeCursor does (executor.go:2005),
+// and it is what makes the entry outrun the early continuation. A test that
+// serializes once cannot express the defect at all: the entry and the
+// continuation agree, and folding "everything" and folding "the prefix" are the
+// same fold.
+func TestDistinctEarlyContinuationResumesFromItsOwnPrefix(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	const n, distinct = 40, 8
-	evalCtx, plan := distinctFixture(t, n, distinct)
-	scratch := NewExecutionScratch()
-	evalCtx = evalCtx.WithExecutionScratch(scratch)
+	const n = 19
+	evalCtx, plan := distinctFixture(t, n, n) // every value distinct
+	evalCtx = evalCtx.WithExecutionScratch(NewExecutionScratch())
 
-	// Two independent invocations of the same plan, as a correlated inner
-	// produces: each parks its own state, and only the second's continuation is
-	// carried forward.
-	var survivor []byte
-	for i := 0; i < 2; i++ {
-		scratch.BeginPage()
-		props := recordlayer.DefaultExecuteProperties()
-		props.State = recordlayer.NewExecuteState(1 << 30)
-		cur, err := ExecutePlan(ctx, plan, nil, evalCtx, nil, props.WithReturnedRowLimit(2))
-		if err != nil {
-			t.Fatalf("invocation %d: %v", i, err)
-		}
-		var last recordlayer.RecordCursorResult[QueryResult]
-		for {
-			res, nerr := cur.OnNext(ctx)
-			if nerr != nil {
-				t.Fatalf("OnNext: %v", nerr)
-			}
-			last = res
-			if !res.HasNext() {
-				break
-			}
-		}
-		b, berr := last.GetContinuation().ToBytes()
-		if berr != nil {
-			t.Fatalf("ToBytes: %v", berr)
-		}
-		// Only the LAST invocation's continuation is carried forward; the
-		// first's is dropped, exactly as a completed correlated inner's is.
-		survivor = b
-		_ = cur.Close()
-	}
-	before := scratch.LiveDistinctSets()
-	// The page ends: both invocations' states are older than the NEXT page's
-	// high-water mark, and the next page adopts only the survivor.
-	scratch.SweepAfterPage()
-	scratch.BeginPage()
 	props := recordlayer.DefaultExecuteProperties()
 	props.State = recordlayer.NewExecuteState(1 << 30)
-	resumed, err := ExecutePlan(ctx, plan, nil, evalCtx, survivor, props)
+	cursor, err := ExecutePlan(ctx, plan, nil, evalCtx, nil, props)
 	if err != nil {
-		t.Fatalf("resuming the survivor failed: %v", err)
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+
+	// Drain the WHOLE cursor, serializing on every row. Keep the continuation
+	// minted after the FIRST row — by the time the drain ends, the cursor's
+	// entry holds all n keys while that continuation still names just one.
+	var afterFirst []byte
+	var first any
+	rows := 0
+	for {
+		res, nerr := cursor.OnNext(ctx)
+		if nerr != nil {
+			t.Fatalf("OnNext: %v", nerr)
+		}
+		if !res.HasNext() {
+			break
+		}
+		rows++
+		b, berr := res.GetContinuation().ToBytes()
+		if berr != nil {
+			t.Fatalf("row %d ToBytes: %v", rows, berr)
+		}
+		if rows == 1 {
+			afterFirst = b
+			first = res.GetValue().Positional.Slots[0]
+		}
+	}
+	_ = cursor.Close()
+	if rows != n {
+		t.Fatalf("drain emitted %d rows, want %d", rows, n)
+	}
+	if afterFirst == nil {
+		t.Fatal("no continuation after the first row")
+	}
+
+	// Resuming that early continuation must return rows 2..n: only the single
+	// key it named has been emitted as far as it is concerned.
+	resumeProps := recordlayer.DefaultExecuteProperties()
+	resumeProps.State = recordlayer.NewExecuteState(1 << 30)
+	resumed, err := ExecutePlan(ctx, plan, nil, evalCtx, afterFirst, resumeProps)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	got := map[any]bool{}
+	for {
+		res, nerr := resumed.OnNext(ctx)
+		if nerr != nil {
+			t.Fatalf("resumed OnNext: %v", nerr)
+		}
+		if !res.HasNext() {
+			break
+		}
+		got[res.GetValue().Positional.Slots[0]] = true
 	}
 	_ = resumed.Close()
-	scratch.SweepAfterPage()
-	after := scratch.LiveDistinctSets()
-	if after >= before {
-		t.Fatalf("sweep kept %d of %d states: a state no page adopted is unreachable "+
-			"and must be dropped, or an operator that parks per invocation grows the "+
-			"scratch for the whole statement", after, before)
+
+	if len(got) != n-1 {
+		t.Fatalf(
+			"resuming the continuation minted after row 1 returned %d rows, want %d "+
+				"(every value distinct, one already emitted) — adoption folded MORE than "+
+				"the prefix that continuation named (stateDeltaN), so keys the cursor "+
+				"sighted after it was minted were treated as already emitted and are lost: %v",
+			len(got), n-1, got,
+		)
 	}
-	// Resuming the survivor above already proved the sweep did not drop what
-	// the statement still needs — a sweep that over-collected turns the next
-	// page into a hard "seen-set not held" error, which is exactly what a
-	// mark-based sweep did before this rule replaced it.
+	if got[first] {
+		t.Fatalf("resume re-emitted %v, the one value the continuation had already emitted", first)
+	}
 }
