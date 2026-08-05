@@ -129,9 +129,13 @@ func plannerOptionsFrom(o *api.Options) plannerOptions {
 // rendering always starts with a decimal digit (a length prefix), never the
 // letter 'r'.
 //
-// The all-defaults case renders the empty string, which planCacheScope treats
-// as "emit no component at all" — so a caller who sets no options gets exactly
-// the scope it got before planner options were keyed.
+// The all-defaults case renders the empty string. planCacheScope still emits
+// it, as a ZERO-LENGTH component ("0" + delimiter) — it must not be dropped.
+// Omitting a component on emptiness would make the component COUNT depend on
+// component CONTENT, which is the same boundary ambiguity the length prefixes
+// exist to remove, one level up: a decoder could no longer tell a scope with
+// an empty trailing component from one with fewer components. The cost of
+// keeping it is two bytes on every plan-cache lookup.
 func (p plannerOptions) cacheKeyPart() string {
 	readable := p.config.ReadableIndexes
 	if len(p.disabledRules) == 0 && !p.config.ShouldJoinRightDeep && !readable.IsRestricted() {

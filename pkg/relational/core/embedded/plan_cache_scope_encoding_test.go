@@ -63,6 +63,18 @@ func TestPlanCacheScope_ArbitraryBytesInjective(t *testing.T) {
 		{"/db\x014", "MAIN", 0, ""},
 		{"/db", "\x014MAIN", 0, ""},
 		{"\x01", "", 0, ""},
+		// An EMPTY component must still be emitted, as a zero-length one.
+		// Dropping it on emptiness would make the component COUNT depend on
+		// component CONTENT, and what that collides is a pair differing ONLY
+		// in which of two components holds the value. The {"", "\x01", ...} /
+		// {"\x01", "", ...} pair above already reaches it, but it reads as a
+		// probe of delimiter bytes inside components; these spell the same
+		// property with an ordinary string, so the emptiness rule keeps a
+		// sentinel that names it. Partners {"", "S", 0, ""} and
+		// {"", "S", 0, "rd"} are already above — the table rejects any repeat
+		// scope, so neither may be restated here.
+		{"S", "", 0, ""},
+		{"", "", 0, "S"},
 	}
 
 	seen := map[string]comps{}
