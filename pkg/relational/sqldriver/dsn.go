@@ -49,6 +49,46 @@ type DSN struct {
 	Options map[string]string
 }
 
+// RestrictDDLToSessionDatabaseParam is the DSN query parameter that sets
+// api.OptRestrictDDLToSessionDatabase on every connection the DSN opens. It is
+// spelled as the lower-cased option name so the DSN parameter and the option
+// stay obviously the same knob.
+const RestrictDDLToSessionDatabaseParam = "restrict_ddl_to_session_database"
+
+// ConnectionOptions converts the DSN's recognised query parameters into the
+// api.Options installed on each connection.
+//
+// Only options that must be decided before the first statement belong here.
+// Unrecognised parameters stay in the raw Options map and are ignored, matching
+// how cluster_file and schema are handled.
+func (d *DSN) ConnectionOptions() (*api.Options, error) {
+	opts := api.NoOptions()
+	if raw, present := d.Options[RestrictDDLToSessionDatabaseParam]; present {
+		v, err := parseDSNBool(RestrictDDLToSessionDatabaseParam, raw)
+		if err != nil {
+			return nil, err
+		}
+		opts = opts.With(api.OptRestrictDDLToSessionDatabase, v)
+	}
+	return opts, nil
+}
+
+// parseDSNBool reads a boolean DSN parameter. A bare `?name` (empty value)
+// means true, the usual URL-flag convention; anything not recognisable as a
+// boolean is an error rather than a silent false, because silently reading a
+// misspelled security flag as "off" is the failure mode that matters.
+func parseDSNBool(name, raw string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "1", "t", "true", "yes", "on":
+		return true, nil
+	case "0", "f", "false", "no", "off":
+		return false, nil
+	default:
+		return false, api.NewErrorf(api.ErrCodeInvalidParameter,
+			"DSN option %q must be a boolean, got %q", name, raw)
+	}
+}
+
 // ParseDSN parses a DSN string into a DSN.
 //
 // Returns a relational Error with code InvalidPath if the DSN is

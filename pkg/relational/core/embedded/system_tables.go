@@ -102,6 +102,32 @@ func (c *EmbeddedConnection) execSystemTable(ctx context.Context, name string, w
 	}
 }
 
+// listSessionSchemas lists the schemas of the connection's OWN database and
+// nothing else. Every INFORMATION_SCHEMA view goes through here.
+//
+// Java scopes the equivalent catalog reads the same way:
+// CatalogMetaData.getSchemas() calls getSchemas(conn.getPath().getPath(), null),
+// which reaches the per-database catalog.listSchemas(txn, URI, BEGIN) — never the
+// cluster-wide overload. getTables/getColumns/getIndexInfo refuse outright when
+// the database argument is absent ("Cannot scan across Databases yet"). A catalog
+// listing that spans databases is therefore not something Java ever produces, and
+// in a deployment where one database path is one tenant it is a disclosure of
+// every other tenant's schema, table, column and index names.
+//
+// The user's WHERE clause is no substitute: filterSysRows runs AFTER the rows are
+// materialised, so an unscoped listing has already read the whole cluster by the
+// time any predicate is applied.
+//
+// An empty DBPath fails closed rather than falling back to the cluster-wide scan —
+// the fallback is precisely the leak this exists to prevent.
+func (c *EmbeddedConnection) listSessionSchemas(txn api.Transaction) (api.ResultSet, error) {
+	if c.sess.DBPath == "" {
+		return nil, api.NewError(api.ErrCodeInvalidPath,
+			"connection has no database path; INFORMATION_SCHEMA cannot be scoped")
+	}
+	return c.sess.Catalog.ListSchemasInDatabase(txn, c.sess.DBPath, nil)
+}
+
 // filterSysRows applies WHERE filtering to system-table rows (map-based, no proto).
 // Column names are matched case-insensitively against the cols slice.
 func filterSysRows(ctx context.Context, conn *EmbeddedConnection, rows [][]driver.Value, cols []string, where antlrgen.IWhereExprContext) ([][]driver.Value, error) {
@@ -133,7 +159,7 @@ func (c *EmbeddedConnection) execSysSchemata(ctx context.Context, where antlrgen
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil
 		txn := catalog.NewFDBTransaction(rctx)
-		rs, rsErr := c.sess.Catalog.ListSchemas(txn, nil)
+		rs, rsErr := c.listSessionSchemas(txn)
 		if rsErr != nil {
 			return nil, rsErr
 		}
@@ -169,7 +195,7 @@ func (c *EmbeddedConnection) execSysTables(ctx context.Context, where antlrgen.I
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil
 		txn := catalog.NewFDBTransaction(rctx)
-		rs, rsErr := c.sess.Catalog.ListSchemas(txn, nil)
+		rs, rsErr := c.listSessionSchemas(txn)
 		if rsErr != nil {
 			return nil, rsErr
 		}
@@ -230,7 +256,7 @@ func (c *EmbeddedConnection) execSysColumns(ctx context.Context, where antlrgen.
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil
 		txn := catalog.NewFDBTransaction(rctx)
-		rs, rsErr := c.sess.Catalog.ListSchemas(txn, nil)
+		rs, rsErr := c.listSessionSchemas(txn)
 		if rsErr != nil {
 			return nil, rsErr
 		}
@@ -310,7 +336,7 @@ func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil
 		txn := catalog.NewFDBTransaction(rctx)
-		rs, rsErr := c.sess.Catalog.ListSchemas(txn, nil)
+		rs, rsErr := c.listSessionSchemas(txn)
 		if rsErr != nil {
 			return nil, rsErr
 		}
@@ -381,9 +407,18 @@ func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.
 }
 
 func (c *EmbeddedConnection) execShowStatement(ctx context.Context, show antlrgen.IShowStatementContext) (driver.Rows, error) {
-	switch show.(type) {
+	switch t := show.(type) {
 	case *antlrgen.ShowDatabasesStatementContext:
-		return c.execShowDatabases(ctx)
+		// `SHOW DATABASES WITH PREFIX <path>` — the prefix is read off the
+		// typed parse-tree node, never off statement text.
+		prefix := c.sess.DBPath
+		if p := t.Path(); p != nil {
+			prefix = p.GetText()
+			if err := validateDatabasePath(prefix); err != nil {
+				return nil, err
+			}
+		}
+		return c.execShowDatabases(ctx, prefix)
 	case *antlrgen.ShowSchemaTemplatesStatementContext:
 		return c.execShowSchemaTemplates(ctx)
 	default:
@@ -391,7 +426,27 @@ func (c *EmbeddedConnection) execShowStatement(ctx context.Context, show antlrge
 	}
 }
 
-func (c *EmbeddedConnection) execShowDatabases(ctx context.Context) (driver.Rows, error) {
+// databaseInPrefix reports whether dbID lies at or under prefix, compared at
+// path-segment granularity so /tenant-a does not match /tenant-abc.
+func databaseInPrefix(dbID, prefix string) bool {
+	return dbID == prefix || strings.HasPrefix(dbID, strings.TrimSuffix(prefix, "/")+"/")
+}
+
+// execShowDatabases lists databases at or under prefix.
+//
+// Java's MetadataPlanVisitor.visitShowDatabasesStatement already computes
+// exactly this scope — an explicit `WITH PREFIX <path>` wins, and an absent
+// prefix falls back to getDbUri(), the connection's own database. Go previously
+// switched on the statement's context type and never read ctx.path(), so both
+// halves of that decision were discarded and every caller got the whole cluster.
+//
+// Java's own CatalogQueryFactory.getListDatabasesQueryAction then drops the
+// prefix it was handed ("TODO(bfines) make use of this prefix") and calls the
+// unscoped listDatabases, so upstream leaks here too. We do not copy that: the
+// visitor states the intended scope unambiguously, the filter is applied at the
+// boundary where the rows are read, and honouring it is what stops one tenant's
+// connection from enumerating every other tenant's database path.
+func (c *EmbeddedConnection) execShowDatabases(ctx context.Context, prefix string) (driver.Rows, error) {
 	type row = []driver.Value
 	var data []row
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
@@ -407,6 +462,9 @@ func (c *EmbeddedConnection) execShowDatabases(ctx context.Context) (driver.Rows
 			if strErr != nil {
 				return nil, strErr
 			}
+			if !databaseInPrefix(id, prefix) {
+				continue
+			}
 			data = append(data, row{id})
 		}
 		return nil, rs.Err()
@@ -417,6 +475,20 @@ func (c *EmbeddedConnection) execShowDatabases(ctx context.Context) (driver.Rows
 	return &staticRows{cols: []string{"DATABASE_ID"}, rows: data}, nil
 }
 
+// execShowSchemaTemplates lists every schema template on the cluster.
+//
+// This is deliberately NOT scoped to the session's database, and it cannot be.
+// A schema template is a cluster-global object in the catalog wire format: the
+// Templates record carries only TEMPLATE_NAME, TEMPLATE_VERSION and META_DATA,
+// with no owning database. Java agrees on both counts — its
+// getListSchemaTemplatesQueryAction takes no database argument at all and calls
+// getSchemaTemplateCatalog().listTemplates(txn) unscoped, and its Templates
+// record has the same three fields.
+//
+// Giving templates a tenant would mean adding an owner field to a record Java
+// also reads and writes, i.e. a catalog wire-format change — the one line the
+// port does not cross. Callers that need per-tenant templates must namespace the
+// template NAME; the listing itself stays global.
 func (c *EmbeddedConnection) execShowSchemaTemplates(ctx context.Context) (driver.Rows, error) {
 	type row = []driver.Value
 	var data []row

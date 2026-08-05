@@ -142,7 +142,12 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	if c.initErr != nil {
 		return nil, c.initErr
 	}
+	connOpts, optErr := c.dsn.ConnectionOptions()
+	if optErr != nil {
+		return nil, optErr
+	}
 	conn := embedded.New(c.dsn.Path, c.fdbDB, c.cat, c.factory, c.ks)
+	conn.SetOptions(connOpts)
 	if c.dsn.Schema != "" {
 		conn.SetDefaultSchema(c.dsn.Schema)
 	}

@@ -61,6 +61,9 @@ func (c *EmbeddedConnection) execCreateDatabase(ctx context.Context, s *antlrgen
 	if err := validateDatabasePath(dbPath); err != nil {
 		return 0, err
 	}
+	if err := c.checkDDLDatabaseScope("CREATE DATABASE", dbPath); err != nil {
+		return 0, err
+	}
 	action := c.sess.Factory.CreateDatabase(dbPath, *api.NoOptions())
 	return 0, c.runDDL(ctx, action)
 }
@@ -68,6 +71,9 @@ func (c *EmbeddedConnection) execCreateDatabase(ctx context.Context, s *antlrgen
 func (c *EmbeddedConnection) execDropDatabase(ctx context.Context, s *antlrgen.DropDatabaseStatementContext) (int64, error) {
 	dbPath := s.Path().GetText()
 	if err := validateDatabasePath(dbPath); err != nil {
+		return 0, err
+	}
+	if err := c.checkDDLDatabaseScope("DROP DATABASE", dbPath); err != nil {
 		return 0, err
 	}
 	throwIfNotExist := s.IfExists() == nil
@@ -86,6 +92,9 @@ func (c *EmbeddedConnection) execCreateSchema(ctx context.Context, s *antlrgen.C
 	// creates TEST, which is how a `schema=TEST` connection then finds it.
 	// The database PATH is not an identifier and stays verbatim.
 	schemaName = functions.StripIdentifierQuotes(schemaName)
+	if err := c.checkDDLDatabaseScope("CREATE SCHEMA", dbPath); err != nil {
+		return 0, err
+	}
 	templateID := s.SchemaTemplateId().GetText()
 	action := c.sess.Factory.CreateSchema(dbPath, schemaName, templateID, *api.NoOptions())
 	return 0, c.runDDL(ctx, action)
@@ -111,6 +120,9 @@ func (c *EmbeddedConnection) execDropSchema(ctx context.Context, s *antlrgen.Dro
 	if dbPath == "" {
 		return 0, api.NewErrorf(api.ErrCodeUnknownDatabase,
 			"invalid database identifier in %q", schemaText)
+	}
+	if err := c.checkDDLDatabaseScope("DROP SCHEMA", dbPath); err != nil {
+		return 0, err
 	}
 	action := c.sess.Factory.DropSchema(dbPath, schemaName, *api.NoOptions())
 	if err := c.runDDL(ctx, action); err != nil {
@@ -872,6 +884,43 @@ func (c *EmbeddedConnection) runDDL(ctx context.Context, action apiddl.ConstantA
 		return nil, txn.Commit()
 	})
 	return err
+}
+
+// checkDDLDatabaseScope rejects a DDL statement whose resolved database path
+// lies outside the connection's own database, when the connection has
+// RESTRICT_DDL_TO_SESSION_DATABASE set. With the option unset (the default) it
+// is a no-op and behaviour is exactly Java's.
+//
+// This is the single chokepoint for the check, and it takes the ALREADY
+// RESOLVED database path — the value the ConstantAction will act on — rather
+// than the statement text. parseSchemaIdentifier is a lexical split on the last
+// "/", so `CREATE SCHEMA /other/S` and `DROP SCHEMA /other/S` reach the catalog
+// with a database the connection never opened; DROP/CREATE DATABASE take theirs
+// straight off the parse tree. Checking the resolved path covers all four
+// without any string matching on SQL.
+//
+// Java has no equivalent: SemanticAnalyzer.parseSchemaURI splits the identifier
+// and returns it without ever comparing against the connection, and
+// CreateDatabaseConstantAction / DropDatabaseConstantAction guard only /__SYS.
+// Java assumes authorization happens above the SQL engine. This option is for
+// deployments where the connection itself is the trust boundary, which is why
+// it is opt-in rather than the default.
+//
+// Scope is containment, not equality: a connection on /tenant-a may operate on
+// /tenant-a and anything nested under it, the same predicate SHOW DATABASES
+// uses for its prefix. Comparison is at path-segment granularity, so /tenant-a
+// gets no authority over /tenant-abc.
+func (c *EmbeddedConnection) checkDDLDatabaseScope(operation, dbPath string) error {
+	if !optBool(c.Options(), api.OptRestrictDDLToSessionDatabase, false) {
+		return nil
+	}
+	if c.sess.DBPath == "" {
+		return api.NewCrossDatabaseDDLError(operation, "", dbPath)
+	}
+	if databaseInPrefix(dbPath, c.sess.DBPath) {
+		return nil
+	}
+	return api.NewCrossDatabaseDDLError(operation, c.sess.DBPath, dbPath)
 }
 
 // parseSchemaIdentifier splits "/dbpath/schemaname" into its parts.
