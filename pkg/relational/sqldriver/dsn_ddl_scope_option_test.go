@@ -7,6 +7,7 @@ package sqldriver
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/relational/api"
@@ -87,4 +88,47 @@ func TestDSNRestrictDDLOption(t *testing.T) {
 			t.Fatalf("want ErrCodeInvalidParameter, got %v", err)
 		}
 	})
+}
+
+// TestOpenConnectorValidatesOptionsBeforeFDB pins WHERE the option is validated.
+//
+// OpenConnector's contract is that a misconfigured DSN surfaces at sql.Open,
+// not at first query. Validating the option in Connect instead would break it:
+// Connect opens FDB before it would look at the options, so a typo would
+// surface as a cluster-connection failure — misleading exactly when the
+// operator needs a clear message, and a security-relevant option that never
+// took effect.
+//
+// The cluster file points at a path that cannot be an FDB cluster. If the
+// option were validated after FDB init, this test would see that failure (or
+// hang) instead of the DSN error, so it pins the ordering and not merely the
+// existence of the check. No FDB, no Docker — it must run anywhere.
+func TestOpenConnectorValidatesOptionsBeforeFDB(t *testing.T) {
+	t.Parallel()
+
+	const dsn = "fdbsql:///db?cluster_file=/nonexistent/definitely-not-a-cluster" +
+		"&restrict_ddl_to_session_database=ture"
+
+	var d Driver
+	connector, err := d.OpenConnector(dsn)
+	if err == nil {
+		t.Fatalf("OpenConnector accepted a malformed option value; got connector %v", connector)
+	}
+
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error is not an *api.Error: %v", err)
+	}
+	if apiErr.Code != api.ErrCodeInvalidParameter {
+		t.Fatalf("SQLSTATE = %q, want %q (%v)", apiErr.Code, api.ErrCodeInvalidParameter, err)
+	}
+
+	// The message must name the offending key AND value — an operator reading
+	// only the error should be able to find the typo without a source dive.
+	msg := apiErr.Error()
+	for _, want := range []string{RestrictDDLToSessionDatabaseParam, "ture"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message %q does not name %q", msg, want)
+		}
+	}
 }

@@ -118,14 +118,16 @@ func (c *EmbeddedConnection) execSystemTable(ctx context.Context, name string, w
 // materialised, so an unscoped listing has already read the whole cluster by the
 // time any predicate is applied.
 //
-// An empty DBPath fails closed rather than falling back to the cluster-wide scan —
-// the fallback is precisely the leak this exists to prevent.
+// A DBPath that scopes nothing — "" or the bare root "/" — fails closed rather
+// than falling back to the cluster-wide scan; the fallback is precisely the leak
+// this exists to prevent.
 func (c *EmbeddedConnection) listSessionSchemas(txn api.Transaction) (api.ResultSet, error) {
-	if c.sess.DBPath == "" {
+	scope := scopePrefixOrEmpty(c.sess.DBPath)
+	if scope == "" {
 		return nil, api.NewError(api.ErrCodeInvalidPath,
-			"connection has no database path; INFORMATION_SCHEMA cannot be scoped")
+			"connection has no usable database path; INFORMATION_SCHEMA cannot be scoped")
 	}
-	return c.sess.Catalog.ListSchemasInDatabase(txn, c.sess.DBPath, nil)
+	return c.sess.Catalog.ListSchemasInDatabase(txn, scope, nil)
 }
 
 // filterSysRows applies WHERE filtering to system-table rows (map-based, no proto).
@@ -411,7 +413,7 @@ func (c *EmbeddedConnection) execShowStatement(ctx context.Context, show antlrge
 	case *antlrgen.ShowDatabasesStatementContext:
 		// `SHOW DATABASES WITH PREFIX <path>` — the prefix is read off the
 		// typed parse-tree node, never off statement text.
-		prefix := c.sess.DBPath
+		prefix := scopePrefixOrEmpty(c.sess.DBPath)
 		if p := t.Path(); p != nil {
 			prefix = p.GetText()
 			if err := validateDatabasePath(prefix); err != nil {
@@ -421,9 +423,10 @@ func (c *EmbeddedConnection) execShowStatement(ctx context.Context, show antlrge
 		if prefix == "" {
 			// Same fail-closed rule as listSessionSchemas: with no database to
 			// scope to, the only alternative is the cluster-wide listing, which
-			// is the disclosure this scoping exists to prevent.
+			// is the disclosure this scoping exists to prevent. Covers both an
+			// absent session path and the bare root "/", which scopes nothing.
 			return nil, api.NewError(api.ErrCodeInvalidPath,
-				"connection has no database path; SHOW DATABASES cannot be scoped")
+				"connection has no usable database path; SHOW DATABASES cannot be scoped")
 		}
 		return c.execShowDatabases(ctx, prefix)
 	case *antlrgen.ShowSchemaTemplatesStatementContext:
@@ -433,16 +436,39 @@ func (c *EmbeddedConnection) execShowStatement(ctx context.Context, show antlrge
 	}
 }
 
+// scopePrefixOrEmpty normalizes a session database path into a scope prefix,
+// returning "" for any path that cannot scope anything.
+//
+// Both "" (no database) and "/" (the bare root) reduce to no scope. "/" is not
+// a database — validateDatabasePath rejects it — and it is the same fail-open
+// hazard as "" wearing a different spelling: the trailing-slash trim reduces it
+// to "" and every database path on the cluster starts with "/". Callers treat
+// the empty return as "cannot scope, fail closed".
+func scopePrefixOrEmpty(p string) string {
+	if strings.TrimSuffix(p, "/") == "" {
+		return ""
+	}
+	return p
+}
+
 // databaseInPrefix reports whether dbID lies at or under prefix, compared at
 // path-segment granularity so /tenant-a does not match /tenant-abc.
 //
-// An empty prefix matches NOTHING. Without that arm the trailing-slash trim
-// would leave "/", and every database path starts with "/" — so an absent
-// session database would widen the scope to the whole cluster instead of
-// narrowing it. Every caller rejects an empty scope before reaching here; this
-// is the second layer, so a future caller that forgets fails closed.
+// A prefix that names no scope matches NOTHING. Without that arm the
+// trailing-slash trim would leave "/", and every database path starts with "/"
+// — so an absent session database would widen the scope to the whole cluster
+// instead of narrowing it. That applies equally to "" and to the bare root "/",
+// which trims to the same thing; both are rejected here.
+//
+// This guard is the ENFORCEMENT point, not a backstop. checkDDLDatabaseScope
+// relies on it directly and performs no unscopable-path check of its own — a
+// duplicate check there was byte-for-byte indistinguishable in behaviour, so
+// there was no way to test it and it was removed rather than left as an
+// unverifiable claim. The two read paths (listSessionSchemas and
+// execShowStatement) do check first, because they turn an unscopable path into
+// an explicit error instead of a silently empty result.
 func databaseInPrefix(dbID, prefix string) bool {
-	if prefix == "" {
+	if scopePrefixOrEmpty(prefix) == "" {
 		return false
 	}
 	return dbID == prefix || strings.HasPrefix(dbID, strings.TrimSuffix(prefix, "/")+"/")

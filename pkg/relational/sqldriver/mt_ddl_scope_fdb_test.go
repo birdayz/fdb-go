@@ -51,6 +51,35 @@ func mtDDLAssert42501(t *testing.T, what string, err error, wantSession, wantTar
 	}
 }
 
+// mtDDLAssertTemplate42501 requires err to be the schema-template refusal:
+// 42501 on the *api.Error and a *api.SchemaTemplateDDLRestrictedError in the
+// chain. Unlike the cross-database rejection it names no target database,
+// because a template has none.
+func mtDDLAssertTemplate42501(t *testing.T, what string, err error, wantSession string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: expected rejection, got nil error", what)
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("%s: error is not an *api.Error: %v", what, err)
+	}
+	if apiErr.Code != api.ErrCodeInsufficientPrivilege {
+		t.Fatalf("%s: SQLSTATE = %q, want %q (%v)",
+			what, apiErr.Code, api.ErrCodeInsufficientPrivilege, err)
+	}
+	var tmplErr *api.SchemaTemplateDDLRestrictedError
+	if !errors.As(err, &tmplErr) {
+		t.Fatalf("%s: error chain has no *api.SchemaTemplateDDLRestrictedError: %v", what, err)
+	}
+	if tmplErr.Operation != what {
+		t.Errorf("%s: Operation = %q, want %q", what, tmplErr.Operation, what)
+	}
+	if tmplErr.SessionDatabase != wantSession {
+		t.Errorf("%s: SessionDatabase = %q, want %q", what, tmplErr.SessionDatabase, wantSession)
+	}
+}
+
 // mtDDLOpen opens a connection to dbPath, optionally with the restriction on.
 func mtDDLOpen(t *testing.T, dbPath string, restrict bool) *sql.DB {
 	t.Helper()
@@ -144,6 +173,31 @@ func TestFDB_RestrictDDLToSessionDatabase(t *testing.T) {
 		const lookalike = home + "_lookalike"
 		_, err := db.ExecContext(ctx, "CREATE DATABASE "+lookalike)
 		mtDDLAssert42501(t, "CREATE DATABASE lookalike", err, home, lookalike)
+	})
+
+	// Schema-template DDL bypassed the restriction entirely: both handlers
+	// called runDDL directly. Templates are cluster-global (the Templates
+	// record has no owning database) and a schema resolves its stored template
+	// version when it loads, so a restricted tenant could DROP a template
+	// another tenant's schemas were created from — leaving those schemas
+	// unloadable — or re-mint a name at a version they already reference.
+	// Neither is expressible as "inside or outside my database", so a
+	// restricted connection gets no template DDL at all.
+	t.Run("restricted_rejects_schema_template_ddl", func(t *testing.T) {
+		db := mtDDLOpen(t, home, true)
+
+		_, err := db.ExecContext(ctx, "DROP SCHEMA TEMPLATE mt_ddl_tmpl")
+		mtDDLAssertTemplate42501(t, "DROP SCHEMA TEMPLATE", err, home)
+
+		_, err = db.ExecContext(ctx,
+			"CREATE SCHEMA TEMPLATE mt_ddl_intruder_tmpl CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
+		mtDDLAssertTemplate42501(t, "CREATE SCHEMA TEMPLATE", err, home)
+
+		// The refusal must be a refusal: the template the restricted connection
+		// tried to drop is still usable, proven by creating a schema from it on
+		// an unrestricted connection.
+		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+home+"/tmpl_survived WITH TEMPLATE mt_ddl_tmpl")
+		mwjoMustExec(t, setup, ctx, "DROP SCHEMA "+home+"/tmpl_survived")
 	})
 
 	// The Java-parity default. This is a CONTRACT, not an accident.

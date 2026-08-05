@@ -29,6 +29,44 @@ func (e *CrossDatabaseDDLError) Error() string {
 		e.Operation, e.TargetDatabase, e.SessionDatabase)
 }
 
+// SchemaTemplateDDLRestrictedError reports a CREATE / DROP SCHEMA TEMPLATE
+// refused because the connection has OptRestrictDDLToSessionDatabase set.
+//
+// Unlike CrossDatabaseDDLError this names no target database, because there is
+// none to name: a schema template is cluster-global in the catalog wire format
+// (the Templates record carries TEMPLATE_NAME, TEMPLATE_VERSION and META_DATA
+// and nothing that identifies an owner). Templates therefore have no ownership
+// model to check a session database against, and refusal is the only sound
+// semantics — see the guard in checkSchemaTemplateDDLAllowed for why permitting
+// it would let a restricted tenant reach another tenant's schemas.
+//
+// Like CrossDatabaseDDLError it is wrapped in an *Error carrying
+// ErrCodeInsufficientPrivilege, and it has no Java counterpart.
+type SchemaTemplateDDLRestrictedError struct {
+	// Operation names the rejected statement, e.g. "DROP SCHEMA TEMPLATE".
+	Operation string
+	// SessionDatabase is the database path the connection is bound to.
+	SessionDatabase string
+}
+
+func (e *SchemaTemplateDDLRestrictedError) Error() string {
+	return fmt.Sprintf("%s is not permitted on a connection restricted to database %q: "+
+		"schema templates are cluster-global and have no owning database",
+		e.Operation, e.SessionDatabase)
+}
+
+// NewSchemaTemplateDDLRestrictedError builds the 42501 error for schema-template
+// DDL attempted on a connection restricted to its session database.
+func NewSchemaTemplateDDLRestrictedError(operation, sessionDatabase string) *Error {
+	cause := &SchemaTemplateDDLRestrictedError{
+		Operation:       operation,
+		SessionDatabase: sessionDatabase,
+	}
+	return WrapErrorf(cause, ErrCodeInsufficientPrivilege,
+		"%s is not permitted on a connection restricted to its session database", operation).
+		WithContext("session_database", sessionDatabase)
+}
+
 // NewCrossDatabaseDDLError builds the 42501 error for a cross-database DDL
 // attempt, with the CrossDatabaseDDLError as its cause and the same facts
 // mirrored into the error context the way Java's addLogInfo() carries them.

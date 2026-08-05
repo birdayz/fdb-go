@@ -51,6 +51,15 @@ func TestDatabaseInPrefix(t *testing.T) {
 		{"empty prefix rejects rooted path", "/tenant-a", "", false},
 		{"empty prefix rejects system catalog", "/__SYS", "", false},
 		{"empty prefix rejects empty id", "", "", false},
+
+		// Property 2, second spelling: the BARE ROOT is the same fail-open
+		// hazard as "" — it trims to "" and every database path starts with
+		// "/", so admitting it would select the entire cluster. A session bound
+		// to "/" therefore scopes nothing, exactly like a session bound to "".
+		{"root prefix rejects rooted path", "/tenant-a", "/", false},
+		{"root prefix rejects nested path", "/tenant-a/sub", "/", false},
+		{"root prefix rejects system catalog", "/__SYS", "/", false},
+		{"root prefix rejects root id", "/", "/", false},
 	}
 
 	for _, c := range cases {

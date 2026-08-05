@@ -133,6 +133,9 @@ func (c *EmbeddedConnection) execDropSchema(ctx context.Context, s *antlrgen.Dro
 }
 
 func (c *EmbeddedConnection) execDropSchemaTemplate(ctx context.Context, s *antlrgen.DropSchemaTemplateStatementContext) (int64, error) {
+	if err := c.checkSchemaTemplateDDLAllowed("DROP SCHEMA TEMPLATE"); err != nil {
+		return 0, err
+	}
 	templateID := s.Uid().GetText()
 	throwIfNotExist := s.IfExists() == nil
 	action := c.sess.Factory.DropSchemaTemplate(templateID, throwIfNotExist, *api.NoOptions())
@@ -140,6 +143,9 @@ func (c *EmbeddedConnection) execDropSchemaTemplate(ctx context.Context, s *antl
 }
 
 func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *antlrgen.CreateSchemaTemplateStatementContext) (int64, error) {
+	if err := c.checkSchemaTemplateDDLAllowed("CREATE SCHEMA TEMPLATE"); err != nil {
+		return 0, err
+	}
 	templateID := trimIdentifierQuotes(s.SchemaTemplateId().GetText())
 	b := metadata.NewSchemaTemplateBuilder().SetName(templateID)
 
@@ -915,13 +921,43 @@ func (c *EmbeddedConnection) checkDDLDatabaseScope(operation, dbPath string) err
 	if !optBool(c.Options(), api.OptRestrictDDLToSessionDatabase, false) {
 		return nil
 	}
-	if c.sess.DBPath == "" {
-		return api.NewCrossDatabaseDDLError(operation, "", dbPath)
-	}
+	// No separate check for an unscopable session path: databaseInPrefix
+	// rejects "" and the bare root "/" outright, so a session that scopes
+	// nothing confers authority over nothing — not, as a raw prefix test would
+	// have it, authority over every database on the cluster.
 	if databaseInPrefix(dbPath, c.sess.DBPath) {
 		return nil
 	}
 	return api.NewCrossDatabaseDDLError(operation, c.sess.DBPath, dbPath)
+}
+
+// checkSchemaTemplateDDLAllowed refuses CREATE / DROP SCHEMA TEMPLATE outright
+// on a connection with RESTRICT_DDL_TO_SESSION_DATABASE set. With the option
+// unset (the default) it is a no-op and behaviour is exactly Java's.
+//
+// Refusal rather than scoping, because there is nothing to scope against. A
+// schema template is cluster-global in the catalog wire format — the Templates
+// record has no owning database — so checkDDLDatabaseScope has no database to
+// compare and the template namespace is shared by every tenant. That sharing is
+// what makes template DDL a cross-tenant operation even though it names no
+// database:
+//
+//   - DROP SCHEMA TEMPLATE removes ALL versions of the template. A schema
+//     resolves its stored template version when it is loaded, so dropping a
+//     template another tenant's schema was created from leaves that schema
+//     unloadable.
+//   - CREATE SCHEMA TEMPLATE can re-mint a name at a version another tenant's
+//     schemas already reference, changing the metadata those schemas resolve to.
+//
+// Neither is expressible as "inside or outside my database", so a restricted
+// connection gets no template DDL at all. A deployment that needs per-tenant
+// templates namespaces the template NAME and performs template DDL on an
+// unrestricted administrative connection.
+func (c *EmbeddedConnection) checkSchemaTemplateDDLAllowed(operation string) error {
+	if !optBool(c.Options(), api.OptRestrictDDLToSessionDatabase, false) {
+		return nil
+	}
+	return api.NewSchemaTemplateDDLRestrictedError(operation, c.sess.DBPath)
 }
 
 // parseSchemaIdentifier splits "/dbpath/schemaname" into its parts.

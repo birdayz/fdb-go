@@ -101,6 +101,7 @@ go_test(
         "ddl_fail_closed_test.go",
         "ddl_name_collision_test.go",
         "ddl_quoted_dot_pk_test.go",
+        "ddl_scope_guard_test.go",
         "derived_unnest_test.go",
         "duplicate_from_alias_binding_test.go",
         "embedded_test.go",
@@ -314,6 +315,7 @@ go_test(
         "index_state_planning.go",
         "index_state_planning_test.go",
         "database_in_prefix_test.go",
+        "ddl_scope_guard_test.go",
     ],
     deps = [
         "//gen",

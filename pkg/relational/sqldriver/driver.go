@@ -104,12 +104,23 @@ func (d *Driver) Open(name string) (driver.Conn, error) {
 // OpenConnector parses the DSN and returns a lazy Connector.
 // Parsing errors are reported here so misconfigured DSNs surface at
 // sql.Open time, not at first query.
+//
+// Connection options are decoded here too, and the decoded value is kept on the
+// Connector. Deferring the decode to Connect would break the contract this
+// doc-comment states: Connect opens FDB before it would ever look at the
+// options, so a misspelled option value would surface as a cluster-connection
+// failure instead of the DSN error it is — misleading exactly when the operator
+// needs a clear message, and a security-relevant option that never took effect.
 func (d *Driver) OpenConnector(name string) (driver.Connector, error) {
 	dsn, err := ParseDSN(name)
 	if err != nil {
 		return nil, err
 	}
-	return &Connector{driver: d, dsn: dsn}, nil
+	connOpts, err := dsn.ConnectionOptions()
+	if err != nil {
+		return nil, err
+	}
+	return &Connector{driver: d, dsn: dsn, connOpts: connOpts}, nil
 }
 
 // Connector holds a parsed DSN and produces connections on demand.
@@ -119,6 +130,10 @@ func (d *Driver) OpenConnector(name string) (driver.Connector, error) {
 type Connector struct {
 	driver *Driver
 	dsn    *DSN
+	// connOpts are the DSN's connection options, decoded and validated in
+	// OpenConnector so a malformed value is a DSN error rather than a
+	// connect-time failure. Never nil.
+	connOpts *api.Options
 
 	once    sync.Once
 	fdbDB   *recordlayer.FDBDatabase
@@ -142,12 +157,8 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	if c.initErr != nil {
 		return nil, c.initErr
 	}
-	connOpts, optErr := c.dsn.ConnectionOptions()
-	if optErr != nil {
-		return nil, optErr
-	}
 	conn := embedded.New(c.dsn.Path, c.fdbDB, c.cat, c.factory, c.ks)
-	conn.SetOptions(connOpts)
+	conn.SetOptions(c.connOpts)
 	if c.dsn.Schema != "" {
 		conn.SetDefaultSchema(c.dsn.Schema)
 	}
