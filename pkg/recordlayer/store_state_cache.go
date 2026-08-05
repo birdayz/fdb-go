@@ -172,12 +172,21 @@ func getCachedSubspaceKeys(ss subspace.Subspace) *storeSubspaceKeys {
 	now := time.Now().UnixMilli()
 	// Read path: string([]byte) in map index is optimized by the compiler
 	// to avoid allocation (temporary string, not escaped).
+	// The stride counter advances on EVERY lookup, hit or miss. Counting only
+	// hits left the idle horizon unreachable for the workload that needs it
+	// most: churn through ever-new store subspaces below the cap misses every
+	// time, so the over-cap branch never fires either and idle entries pile up
+	// to the hard cap no matter how long they have been untouched.
+	sweepDue := subspaceKeysCalls.Add(1)%subspaceKeysSweepEveryN == 0
+
 	subspaceKeysCacheMu.RLock()
 	ks, ok := subspaceKeysCacheM[string(b)]
 	subspaceKeysCacheMu.RUnlock()
 	if ok {
 		ks.lastUseMs.Store(now)
-		maybeSweepSubspaceKeys(now)
+		if sweepDue {
+			sweepSubspaceKeys(now)
+		}
 		return ks
 	}
 
@@ -189,25 +198,18 @@ func getCachedSubspaceKeys(ss subspace.Subspace) *storeSubspaceKeys {
 	if existing, okRace := subspaceKeysCacheM[key]; okRace {
 		subspaceKeysCacheMu.Unlock()
 		existing.lastUseMs.Store(now)
+		if sweepDue {
+			sweepSubspaceKeys(now)
+		}
 		return existing // raced, use winner
 	}
 	subspaceKeysCacheM[key] = ks
 	overCap := len(subspaceKeysCacheM) > subspaceKeysMaxEntries
 	subspaceKeysCacheMu.Unlock()
-	if overCap {
+	if overCap || sweepDue {
 		sweepSubspaceKeys(now)
 	}
 	return ks
-}
-
-// maybeSweepSubspaceKeys amortizes idle eviction over cache HITS: a hit stream
-// that never misses would otherwise keep entries of departed tenants alive
-// forever, since the over-cap check only runs on insert.
-func maybeSweepSubspaceKeys(nowMs int64) {
-	if subspaceKeysCalls.Add(1)%subspaceKeysSweepEveryN != 0 {
-		return
-	}
-	sweepSubspaceKeys(nowMs)
 }
 
 // sweepSubspaceKeys drops entries idle past the horizon, then enforces the
