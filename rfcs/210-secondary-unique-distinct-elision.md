@@ -188,21 +188,28 @@ the paged unordered regime the criteria are written for (100k rows,
 | A | `SELECT email FROM users` | — (naive baseline, no `DISTINCT`) | 371 ms | 164.9 MiB | `Project([EMAIL#1], Scan(USERS))` |
 | A′ | `SELECT email FROM users WHERE email IS NOT NULL` | — (**R2's denominator**) | 186 ms | 107.9 MiB | `Project([EMAIL#1], IndexScan(BY_EMAIL, [<>] COVERING))` |
 | B | `SELECT DISTINCT email FROM users` | **R3** — nullable key, no NULL-rejecting filter | 372 ms | 175.7 MiB | `Distinct(Project([EMAIL#1], Scan(USERS))) narrowed-by:BY_EMAIL` |
-| C | `SELECT DISTINCT email FROM users WHERE email IS NOT NULL` | **R2** — full elision | 183 ms | 107.9 MiB | `Project(…, IndexScan(BY_EMAIL, [<>] COVERING)) distinct-by:BY_EMAIL` — **no `Distinct` node** |
+| C | `SELECT DISTINCT email FROM users WHERE email IS NOT NULL` | **R2** — full elision (**non-regression guard**) | 183 ms | 107.9 MiB | `Project(…, IndexScan(BY_EMAIL, [<>] COVERING)) distinct-by:BY_EMAIL` — **no `Distinct` node** |
 | D′ | `SELECT DISTINCT email_plain FROM users` | — (in-process stand-in for D) | 580 ms | 432.0 MiB | `Distinct(Project([EMAIL_PLAIN#2], Scan(USERS)))` |
 | D | `SELECT DISTINCT email FROM users` on today's `master` | — | 567 ms | 432.7 MiB | `Distinct(Project([EMAIL#1], Scan(USERS)))`, no stamp |
 
-Ratios: C/A **0.499x** / 0.654x · **C/A′ 0.986x / 1.000x** · **B/D′ 0.659x / 0.407x** ·
-B/A 1.045x / 1.065x. On `master`: B/A 1.583x / 2.618x, C/A′ 1.187x / **1.270x**.
+Timing ratios: C/A **0.523x** · C/A′ **0.980x** · **B/D′ 0.659x** · B/A **1.039x** ·
+sweep R3/full **0.657x** (1%) and **0.780x** (50%). On `master`, B/D′ is **0.997x**.
+
+**Allocation figures are DIAGNOSTIC ONLY and are deliberately not asserted
+anywhere** — `runtime.MemStats.TotalAlloc` is a process-global counter and the
+probe shares its test binary with the rest of the suite (see §7.5). The
+deterministic instrument is the memory budget and the retained counts.
 
 **D′ is licensed as D's stand-in by measurement, not by assumption.** Running both
-on `master` — where neither route exists — gives B/D′ = **0.992x / 1.000x**, i.e.
-the two queries are the same work on the same data. That is what lets the
-comparison stay inside one process on one store instead of straddling two
-worktrees, and D is reported beside it so the substitution is checkable.
+on `master` — where neither route exists — gives B/D′ = **0.997x**, i.e. the two
+queries are the same work on the same data. That is what lets the comparison stay
+inside one process on one store instead of straddling two worktrees, and D is
+reported beside it so the substitution is checkable. It is also the fact that
+forces R3's criterion to be a **margin** bound rather than `< 1.0`: the null
+hypothesis already passes `< 1.0` half the time.
 
 **Headline: R3 cuts the operator's overhead over the no-`DISTINCT` baseline from
-+58% to +4% in time, and from 2.62x to 1.07x in allocation.**
++58% to +4% in time, and takes its retained seen-set from 100 000 keys to zero.**
 
 *(Absolute milliseconds are soft: the measuring box was at 97% disk utilisation,
 which CLAUDE.md flags as a latency-distortion risk. Every criterion below is a
@@ -223,18 +230,24 @@ The comparisons that matter, and what each would mean:
 - **B vs D** is R3's delivered benefit on the bare query — the shape a user
   writes without thinking about NULLs, and the shape that could not be helped at
   all under the RFC as originally drafted.
-- **C vs A′** is R2's delivered benefit: it should be *indistinguishable*, because
-  under R2 they are the same plan with one operator removed.
+- **C vs A′** should be *indistinguishable*, because under R2 they are the same
+  plan with one operator removed. It is a NON-REGRESSION GUARD rather than
+  evidence of benefit: on `master` row C already plans a **streaming** distinct
+  (the `Distinct` sits over index-ordered filtered input, so it holds no seen-set
+  at all), so there is no retained-key difference for R2 to remove and no
+  measurement that separates the two trees. **R2's discriminator is the plan
+  shape** — no `Distinct` node, `distinct-by:BY_EMAIL` — which does red on
+  `master`.
 - **C vs A** is reported but is NOT the criterion, for the reason above.
 - **B vs A** is the residual R3 leaves on the table, and is the honest measure of
   how much R2's reachability matters.
 
-**The allocation ratio is the figure with teeth here, not the runtime.** Removing
-an operator does not change the I/O, so the runtime delta lives inside the
-harness's noise; what the elision provably removes is per-page key retention, and
-that shows up in churn. Measured against the 1.15x band, the branch comes in at
-**0.999x** where `master` is **1.262x** — a result that separates cleanly while
-the timings do not.
+**What the elision provably removes is per-page key RETENTION, and that is what
+gets asserted** — as a memory budget the operator either survives or breaches,
+and as exact retained-key counts. Removing an operator does not change the I/O,
+so the runtime delta lives inside the harness's noise; allocation *looked* like
+the figure with teeth and is not one, because `TotalAlloc` is process-global (see
+§7.5). Retention is local to the query and exact.
 
 Every figure above and below is MEASURED by the §7.5 probe against the delivered
 implementation, on one box in one run, and none is carried over from the
@@ -1604,6 +1617,21 @@ the layer:
   the one that exercises the candidate filter rather than the fail-closed
   default.
 
+  **What the `READABLE` case inverts TO was measured, not assumed.**
+  `SELECT DISTINCT EMAIL FROM T` plans
+  `Distinct(Project([EMAIL#1], Scan(T))) narrowed-by:U_EMAIL` — **R3**, not a full
+  elision, because `EMAIL` is nullable and R2 has nothing to read. Adding
+  `WHERE EMAIL IS NOT NULL` removes the `Distinct` node entirely and carries
+  `distinct-by:U_EMAIL`. Under `READABLE_UNIQUE_PENDING` both shapes fall back to
+  a plain `Distinct(...)` with `U_EMAIL` absent from the plan altogether — it
+  licenses neither an elision, nor a narrowing, nor a scan.
+
+  A consequence worth stating, because it is what gives the transition tests
+  their teeth: the R3 shape is over a **base scan**, so its *only* dependency on
+  `U_EMAIL` is the stamp. The mid-statement, cross-page and cached-plan tests
+  therefore exercise the stamp itself rather than the ordinary index-scan arm,
+  and each asserts that precondition rather than relying on it.
+
   This also converts §8's "unmodified" clause from an unenforceable request into
   an executable property: one witness is pinned byte-for-byte on the harness
   path, the other is deliberately rewritten on the SQL path, and the two cannot
@@ -1619,12 +1647,35 @@ the layer:
   cache the eliding query, transition the index, execute again so the cache hits:
   `40001`. Under a side-channel design this test returns duplicate rows; it is
   what makes §5.2's choice a proved property rather than an argument.
-- **Both licenses hold → NO `40001` (§5.2).** A query whose inner plan is already
-  `PropDistinctRecords`-distinct *and* over which a qualifying unique index
-  covers the projection: the plan must be **unstamped**, and transitioning that
-  index out of `READABLE` must leave the statement running normally. This is the
+- **Both licenses hold → NO `40001` (§5.2).** A query over which a qualifying
+  unique index covers the projection *and* which some unconditional license
+  already justifies: the plan must be **unstamped**, and transitioning that index
+  out of `READABLE` must leave the statement running normally. This is the
   criterion that fails the over-eager implementation — stamp whenever a unique
   index qualifies — which every other test here would pass.
+
+  **Correction, found while building it.** This was drafted as "inner plan
+  already `PropDistinctRecords`-distinct", and that competition is
+  **structurally unreachable through SQL**: a SQL projection sets
+  `PropDistinctRecords = false` unconditionally
+  (`plan_properties.go:75-79`), and the secondary-UNIQUE proof is gathered only
+  from a `LogicalProjectionExpression` member
+  (`rule_implement_distinct_final.go:79-87`) — so a projection-less
+  `SELECT DISTINCT *` computes no proof for an over-eager ordering to prefer.
+  The license that actually competes is the **primary-key** arm, which §5.2 also
+  names. Both are covered; only the PK arms discriminate, and the test says so
+  rather than letting the other arms read as coverage.
+
+  **The first draft of this test was worthless and the mutation check is what
+  said so.** It stayed fully green under "consult the full-elision proof before
+  the unconditional licenses", because with a nullable `EMAIL` the
+  secondary-UNIQUE proof is only R3's *residual* (`FullElision == false`), which
+  the over-eager ordering never reaches. Adding a NULL-rejecting conjunct makes
+  `U_EMAIL` a genuine full-elision candidate while the PK license also holds, and
+  the test then reds:
+
+  > primary-key coverage already licenses this elision, yet the plan records a
+  > dependency on `U_EMAIL`
 
 Note, so an implementation does not mistake one refusal for another: the unit
 test `TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof` passes
@@ -1702,18 +1753,28 @@ the regimes §2.1 could not resolve. Rows A/B/C/D are §2.1's delivered-delta ro
   single pairs on this harness drift enough to fail a clean run.
 
   **A bound against A is very nearly vacuous, and the measurement is what showed
-  it.** C measures **0.499x** of A and clears the 1.15x band with a 2x margin
+  it.** C measures **0.523x** of A and clears the 1.15x band with a 2x margin
   while proving nothing about the elision, because `IS NOT NULL` independently
-  moves the access path onto the covering index. So the criteria have a stated
-  hierarchy rather than a list:
+  moves the access path onto the covering index.
 
-  1. **PRIMARY — C/A′ ALLOCATION ≤ 1.15x.** Branch **1.000x**, `master`
-     **1.270x**. This is the one that separates, and it is the one the probe fails
-     on when run against a tree without the route.
-  2. **SECONDARY — C/A′ TIMING ≤ 1.15x.** Branch 0.986x, so about 7% of headroom
-     — real, but soft on a loaded box, which is why it is not the primary.
-  3. **REPORTED, NOT A CRITERION — C/A.** Kept because a reader reaches for it
-     first, and labelled so nobody mistakes 0.499x for evidence.
+  **R2's only real discriminator is the PLAN SHAPE, and this is a fact about
+  `master` rather than a weakness of the probe.** On `master`, row C plans a
+  **streaming** distinct — the `Distinct` sits over index-ordered filtered input,
+  so equal rows are already adjacent and it holds **no seen-set at all**. There is
+  therefore no retained-key difference to measure for row C, and no memory budget
+  that R2's elision discharges but `master`'s operator breaches. It is also why
+  `master`'s churn ratio for this row was only 1.27x rather than the multiple seen
+  on the bare query: what R2 removes here is an operator that was already cheap.
+
+  So the criterion for R2 is the assertion that row C's plan contains **no
+  `Distinct` node** and carries `distinct-by:BY_EMAIL`, which does red on `master`.
+  The ratios for this row are **non-regression guards**, not evidence of benefit:
+
+  1. **GUARD — C/A ≤ 1.15x.** Branch **0.523x**. Survives on `master` too, and is
+     kept as a guard rail against a regression, not offered as proof.
+  2. **DIAGNOSTIC, NOT A CRITERION — C/A′ timing** (branch **0.980x**) and every
+     churn figure. Both are in the under-10%-separation class; see the note on
+     process-global allocation below.
 - **R3, narrowed distinct (B vs D′).** The bare `SELECT DISTINCT email FROM users`
   must beat today's full distinct on the same shape — the 0%-NULL case, where
   R3's seen-set is empty. The bound is expressed against **D′** (today's
@@ -1723,29 +1784,48 @@ the regimes §2.1 could not resolve. Rows A/B/C/D are §2.1's delivered-delta ro
   **"Strictly faster" cannot be spelled `< 1.0`, and this was caught by the
   mutation check rather than by review.** Without the route, B and D′ are *the
   same plan over the same data*, so their ratio is 1.0 ± noise — `master`
-  measures **0.992x**, which passes a `< 1.0` criterion on a coin flip and on a
+  measures **0.997x**, which passes a `< 1.0` criterion on a coin flip and on a
   tree containing no R3 at all. The criterion is therefore a MARGIN bound,
-  **B/D′ ≤ 0.90**, drawn from the measured effect size (0.62–0.73x across the
-  sweep) and comfortably outside the noise band the null hypothesis occupies. The
-  1% sweep row carries the same bound; the 50% row keeps its asymmetric `≤ 1.0`
-  ("no worse than full"), which is the whole content of *strictly dominates*.
+  **B/D′ ≤ 0.90**, drawn from the measured effect size (branch **0.659x**, and
+  0.657x / 0.780x across the sweep) and comfortably outside the noise band the
+  null hypothesis occupies. The 1% sweep row carries the same **≤ 0.90**; the 50%
+  row keeps its asymmetric **≤ 1.0** ("no worse than full"), which is the whole
+  content of *strictly dominates*.
 
   The exempt test must be evaluated on the row's raw slots **before** the dedup
   key is packed, so a non-exempt row costs a nil/NaN check and nothing else; an
   implementation that packs first and tests after will fail this row while
   passing every correctness test.
-- **Allocation churn**, R2 shape within **1.15x** of the no-`DISTINCT` run (A′),
-  and R3 shape **at or below** today's. This is the criterion that would catch an
-  implementation that elides the operator in `EXPLAIN` while some other path
-  reintroduces per-page key retention — and, for R3, one that narrows the
-  *seen-set* without narrowing what gets serialized into the continuation.
+- **RETENTION, not allocation churn — and this replaced a criterion that could
+  not survive its own test suite.** The draft asserted allocation ratios. Those
+  are measured from `runtime.MemStats.TotalAlloc`, a **process-global** counter,
+  while the probe runs `t.Parallel()` inside a package Bazel builds as ONE test
+  binary — so every concurrently-running FDB test's allocations land inside the
+  measurement window. Standalone the ratio was 1.000x; under the full suite it was
+  **1.156x against a 1.15x band**, and the gate failed. Since `master` sits at
+  1.27x, the whole separation was under 10% on a counter that is not local to the
+  query. **A criterion sitting inside its own noise band is a coin flip, not a
+  sentinel**, so all four churn assertions are deleted and the figures are logged
+  as DIAGNOSTIC ONLY.
 
-  **This is the criterion with teeth, and it is the one that actually separates.**
-  Measured: the branch is at **0.999x** against the 1.15x band, `master` at
-  **1.262x** — the same probe run against `master` fails this row, which is what
-  makes it a regression sentinel rather than a description. The timing rows on
-  the same runs do not separate, and saying so is part of the result: an
-  operator-removal is not an I/O change.
+  What replaces them is exact rather than statistical: a **`MAX_STATEMENT_MEMORY_BYTES`
+  budget (65536) on a second pinned connection**, which turns "how much does the
+  operator retain" into a survive/breach bit. Nine rows are asserted, and the
+  three groups are what make it an instrument rather than an observation:
+
+  - **DISCRIMINATORS** — B, S1-R3, S50-R3 **survive on branch and breach on
+    `master`**. This is R3's benefit, stated as a fact that flips.
+  - **ARMED-INSTRUMENT CONTROLS** — D′, S1-full, S50-full breach on **both**.
+    Without these a budget set too generously would show every row surviving and
+    read as success.
+  - **GUARDS** — C, A, A′ survive on **both**. A budget set too tightly would
+    show every row breaching, and these are what catch that.
+
+  The underlying counts are the ones §2.1 tabulates and they are asserted
+  exactly: rows entered **100 000 / 100 000 / 100 000** for the full operator
+  against **0 / 1 000 / 50 000** for R3, and keys retained **100 000 / 99 001 /
+  50 001** against **0 / 1 / 1**. That is what the allocation criterion was
+  reaching for all along, and it carries no band and no noise argument.
 
 - **A harness fact that is part of the specification, not a limitation of it.**
   `PlanRecordQueryWithMetadata` **cannot observe R2 or R3 at all**, because it

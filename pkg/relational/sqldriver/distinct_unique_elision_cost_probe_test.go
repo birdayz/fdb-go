@@ -290,55 +290,60 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 		t.Logf("RATIO %-9s / %-9s medTime=%.3fx medAlloc=%.3fx", num, den, timeR, allocR)
 		return timeR, allocR
 	}
-	cvaT, cvaA := ratio("C", "A")
-	cva2T, cva2A := ratio("C", "A'")
-	bvdT, bvdA := ratio("B", "D'")
+	cvaT, _ := ratio("C", "A")
+	ratio("C", "A'")
+	bvdT, _ := ratio("B", "D'")
 	ratio("B", "A")
-	s1T, s1A := ratio("S1-R3", "S1-full")
-	s50T, s50A := ratio("S50-R3", "S50-full")
+	s1T, _ := ratio("S1-R3", "S1-full")
+	s50T, _ := ratio("S50-R3", "S50-full")
 
-	// R2, full elision. The RFC's criterion is C within 1.15x of A. It is
-	// asserted as written, and then again against A' — the control that holds
-	// the access path fixed and is therefore the bound that can actually catch a
-	// regression in the elision itself.
+	// ALLOCATION IS LOGGED, NEVER ASSERTED, and the reason is a property of the
+	// instrument rather than a tolerance question. duecRunPaged reads
+	// runtime.MemStats.TotalAlloc, which is a PROCESS-GLOBAL counter, while this
+	// test calls t.Parallel() inside a binary that runs dozens of other FDB
+	// tests concurrently. Their allocations land inside whichever measurement
+	// window happens to be open, so the number attributed to a query is that
+	// query's churn plus an arbitrary share of the suite's.
+	//
+	// That is not noise that averages out. It is unequal across the two sides of
+	// a pair, so it moves the RATIO: measured alone, C/A' is 1.000x; under the
+	// full suite the same pair measured 1.156x against a 1.15x band, with both
+	// sides inflated (+35% and +60%) by traffic neither of them caused. A
+	// criterion whose value moves 16% for reasons outside the code under test
+	// cannot separate 1.00x from master's 1.27x.
+	//
+	// The claim the churn bound was reaching for — that the elided plan retains
+	// NO dedup keys, and that R3 retains only the exempt ones — is instead
+	// asserted below against the statement memory budget, and in
+	// TestFDB_DistinctUniqueElisionRetention as exact counts. Both are
+	// deterministic: they are properties of what the operator stored, not of how
+	// long anything took or of what else was running.
+
+	// R2's timing, as RFC-210 §7.5 words it. This one is a GUARD RAIL, not a
+	// discriminator, and the difference is worth stating so nobody reads a pass
+	// here as evidence: the IS NOT NULL predicate moves the access path to the
+	// covering index on its own, so C beats A outright (0.50-0.60x) whether or
+	// not the elision fired — it measures 0.60x with the operator still present.
+	// It fails only on a gross regression. The evidence that R2 fired is the
+	// plan shape asserted above and the budget survival asserted below.
 	const band = 1.15
 	if cvaT > band {
 		t.Fatalf("R2 timing: C/A = %.3fx exceeds %.2fx (C=%v A=%v)",
 			cvaT, band, series["C"].medianDur(), series["A"].medianDur())
 	}
-	if cva2T > band {
-		t.Fatalf("R2 timing against the access-path-matched control: C/A' = %.3fx "+
-			"exceeds %.2fx (C=%v A'=%v). Unlike C/A this bound DISCRIMINATES: with "+
-			"the operator retained it measures 1.16-1.19x, so it fails.",
-			cva2T, band, series["C"].medianDur(), series["A'"].medianDur())
-	}
-	// Allocation is the criterion that catches an implementation which elides
-	// the operator in EXPLAIN while some other path reintroduces per-page key
-	// retention. It is also the stable one: churn varies by well under 1% run to
-	// run, where wall clock varies by tens of percent.
-	if cvaA > band {
-		t.Fatalf("R2 churn: C/A = %.3fx exceeds %.2fx (C=%.1f MiB A=%.1f MiB)",
-			cvaA, band, float64(series["C"].medianAlloc())/(1<<20),
-			float64(series["A"].medianAlloc())/(1<<20))
-	}
-	if cva2A > band {
-		t.Fatalf("R2 churn against the access-path-matched control: C/A' = %.3fx "+
-			"exceeds %.2fx (C=%.1f MiB A'=%.1f MiB). Measured on master, where the "+
-			"operator survives, this ratio is 1.26x — so this bound is the one that "+
-			"distinguishes an elided operator from a retained one.",
-			cva2A, band, float64(series["C"].medianAlloc())/(1<<20),
-			float64(series["A'"].medianAlloc())/(1<<20))
-	}
 
-	// R3, narrowed distinct, on the 0%-NULL store where its seen-set is empty.
-	// The bound is against the FULL distinct (D'), not against A: R3 does not
-	// remove the operator, so a bound against A would be a criterion on an
-	// outcome R3 never claims.
+	// R3's timing. Unlike the churn ratios these survive a concurrent suite, and
+	// not by luck: both sides of each pair are the SAME access path over the
+	// same store run back-to-back, so shared load scales both and divides out of
+	// the ratio, and the reported figure is the median of 5 such pairs rather
+	// than of 5 absolute times. Load moves the absolute numbers by 2-3x across
+	// runs here while these ratios move by less than 0.12.
+	//
 	// "Strictly faster" cannot be spelled `< 1.0`. With R3 absent, B and D' are
 	// the SAME plan over the same data, so their ratio is 1.0 plus noise and a
 	// `< 1.0` test is a coin flip — measured at 0.992x on a tree without the
 	// route, where it would have passed. The bound is therefore a MARGIN drawn
-	// from the effect's measured size (0.66-0.73x delivered): anything at or
+	// from the effect's measured size (0.62-0.73x delivered): anything at or
 	// above 0.9x is not R3 working, it is R3 missing.
 	const r3Margin = 0.90
 	if bvdT > r3Margin {
@@ -348,14 +353,6 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 			"first and tests after is correct and delivers almost none of this.",
 			bvdT, series["B"].medianDur(), series["D'"].medianDur())
 	}
-	if bvdA > 1.0 {
-		t.Fatalf("R3 churn: B/D' = %.3fx is above the full distinct's (B=%.1f MiB "+
-			"D'=%.1f MiB). Narrowing the seen-set without narrowing what gets "+
-			"SERIALIZED into the continuation would land exactly here.",
-			bvdA, float64(series["B"].medianAlloc())/(1<<20),
-			float64(series["D'"].medianAlloc())/(1<<20))
-	}
-
 	// The sweep's timing criterion. At 1% the seen-set is 1 key against 99 001,
 	// so R3 must be faster. At 50% it is the near-worst case and the criterion
 	// is "no worse than full", never "faster" — that asymmetry IS the content of
@@ -370,8 +367,78 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 			"seen-set is a subset of the full one on every input, so there is no "+
 			"density at which it may cost more.", s50T)
 	}
-	if s1A > 1.0 || s50A > 1.0 {
-		t.Fatalf("sweep churn: R3 allocates more than full (1%%: %.3fx, 50%%: %.3fx)", s1A, s50A)
+
+	// ---- the deterministic discriminator: the memory budget -------------
+	// What both routes actually change is WHAT THE OPERATOR RETAINS, and the
+	// statement memory budget reads that back categorically. The hash
+	// distinct's seen-set is charged against MAX_STATEMENT_MEMORY_BYTES and a
+	// breach fails LOUDLY (TestFDB_SelectDistinct_BudgetLoudFail pins that
+	// mechanism), so a budget far below one page of keys but far above zero
+	// splits the plans in two:
+	//
+	//   survives  <=>  the plan retains (almost) nothing
+	//   breaches  <=>  the plan retains a key per distinct value
+	//
+	// This is what discharges R3, and it is strictly stronger than the
+	// allocation band it replaces: without the route, all three R3 rows below
+	// BREACH — measured on master as "54F01: statement memory budget exceeded:
+	// 65550 bytes buffered exceeds limit 65536 bytes" — while with it they
+	// complete. It is also immune to concurrency, because the budget is charged
+	// per statement by the operator itself, so nothing another test allocates
+	// can move it.
+	//
+	// It does NOT discharge R2, and that has to be said plainly rather than
+	// left for someone to infer from a passing row. Row C survives this budget
+	// on master too. The reason is that master's C is
+	// `Distinct(Project(IndexScan(BY_EMAIL, [<>] COVERING)))` — the filter moves
+	// the input to index order, so the STREAMING distinct fires, and the
+	// streaming variant compares each row against the previous one and holds no
+	// seen-set at all. So row C here is a NON-REGRESSION guard (an "elision"
+	// that reintroduced retention would breach), never evidence that R2 fired.
+	// R2's discriminator is the plan-shape assertion above, which does red on
+	// master with "row C still carries a physical distinct".
+	//
+	// The same fact explains the shape of the churn numbers: master's C
+	// allocates 140 MiB against D''s 432 MiB, because it is paying for a
+	// streaming operator rather than a hash one — which is why the C/A' churn
+	// ratio it produces is 1.27x and not something far larger.
+	const duecBudgetBytes = 65536
+	bconn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptExecutionScannedRowsLimit, int64(duecPageScanLimit)).
+			Set(api.OptMaxStatementMemoryBytes, duecBudgetBytes).Build())
+	})
+	for _, c := range []struct {
+		tag, query string
+		wantBreach bool
+		why        string
+	}{
+		{"A", qA, false, "no operator at all"},
+		{"A'", qA2, false, "no operator at all"},
+		{"C", qC, false, "GUARD ONLY: R2 removed the operator, but master survives this too (streaming variant)"},
+		{"B", qB, false, "DISCRIMINATOR: R3 retains only exempt rows, and this store has none"},
+		{"D'", qD, true, "the full distinct retains one key per distinct value"},
+		{"S1-R3", "SELECT DISTINCT email FROM users1", false, "DISCRIMINATOR: R3 retains the single NULL key"},
+		{"S1-full", "SELECT DISTINCT email_plain FROM users1", true, "full: 99 001 keys"},
+		{"S50-R3", "SELECT DISTINCT email FROM users50", false, "DISCRIMINATOR: R3 retains the single NULL key"},
+		{"S50-full", "SELECT DISTINCT email_plain FROM users50", true, "full: 50 001 keys"},
+	} {
+		err := duecBudgetRun(t, ctx, bconn, c.query)
+		t.Logf("BUDGET %-9s breached=%-5v want=%-5v (%s)", c.tag, err != nil, c.wantBreach, c.why)
+		if c.wantBreach && err == nil {
+			t.Fatalf("BUDGET %s: %q completed inside a %d-byte statement budget, but it "+
+				"should retain a dedup key per distinct value and breach. Either the "+
+				"seen-set stopped being charged against the budget — which would make "+
+				"this whole discriminator blind — or this control acquired a proof it "+
+				"must not have.", c.tag, c.query, duecBudgetBytes)
+		}
+		if !c.wantBreach && err != nil {
+			t.Fatalf("BUDGET %s: %q breached a %d-byte statement budget: %v\n"+
+				"This is the load-independent form of RFC-210's claim (%s). A breach "+
+				"here means the plan is retaining a key per distinct value, whatever "+
+				"EXPLAIN says — an elision or narrowing that did not reach the "+
+				"executor.", c.tag, c.query, duecBudgetBytes, err, c.why)
+		}
 	}
 
 	// ---- rows are identical, whatever the operator ----------------------
@@ -520,6 +587,31 @@ func duecRunPaged(t *testing.T, ctx context.Context, c *sql.Conn, q string) (due
 	var m1 runtime.MemStats
 	runtime.ReadMemStats(&m1)
 	return duecSample{rows: n, dur: d, alloc: m1.TotalAlloc - m0.TotalAlloc}, nulls
+}
+
+// duecBudgetRun executes q and returns the error the statement memory budget
+// produced, or nil if it completed. The driver may surface a budget breach at
+// query time or on the first scan, so both are drained before deciding.
+func duecBudgetRun(t *testing.T, ctx context.Context, c *sql.Conn, q string) error {
+	t.Helper()
+	rows, err := c.QueryContext(ctx, q)
+	if err == nil {
+		for rows.Next() {
+		}
+		err = rows.Err()
+		rows.Close()
+	}
+	if err == nil {
+		return nil
+	}
+	// A breach must be the BUDGET, never some unrelated failure quietly read as
+	// evidence for the claim.
+	msg := err.Error()
+	if !strings.Contains(msg, "limit") && !strings.Contains(msg, "memory") &&
+		!strings.Contains(msg, string(api.ErrCodeExecutionLimitReached)) {
+		t.Fatalf("query %q failed for a reason that is not the memory budget: %v", q, err)
+	}
+	return err
 }
 
 // duecCollect returns the query's values sorted, with SQL NULL as "NULL", so
