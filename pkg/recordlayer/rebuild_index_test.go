@@ -1058,10 +1058,26 @@ var _ = Describe("RebuildIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Phase 2: Change to per-type counting (RecordTypeKey).
+			//
+			// The explicit version bump is load-bearing, not decoration. Both
+			// builders start from baseMetaData() and call SetRecordCountKey once, so
+			// they land on the SAME metadata version despite declaring DIFFERENT
+			// keys — and reconciliation is gated on a transition
+			// (FDBRecordStore.java:4646-4648: no format change and no meta-data
+			// version change means checkRebuild is never reached, so the header's
+			// count key is never compared). Java does not detect a count-key change
+			// that arrives without a version bump either; a real schema evolution
+			// carries one. Without this line the test would be asserting a Go-only
+			// behaviour that only existed because the record-count check used to run
+			// unconditionally on every open — which made the pre-RECORD_COUNT_ADDED
+			// arm rescan a pinned store forever.
 			builder2 := baseMetaData()
 			builder2.SetRecordCountKey(RecordTypeKey())
+			builder2.SetVersion(md1.Version() + 1)
 			md2, err := builder2.Build()
 			Expect(err).NotTo(HaveOccurred())
+			Expect(md2.Version()).To(BeNumerically(">", md1.Version()),
+				"the evolution must actually advance the metadata version, or reconciliation is skipped")
 
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().

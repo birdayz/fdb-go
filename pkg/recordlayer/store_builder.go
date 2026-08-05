@@ -331,18 +331,43 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 		return err
 	}
 
-	// Check record counts BEFORE the version gate — this compares the stored
-	// RecordCountKey proto against the current one, independent of version.
-	// Matches Java's checkRebuild() which always calls checkPossiblyRebuildRecordCounts().
+	// THE TRANSITION GATE. Everything below runs only when something actually
+	// changed — Java returns early otherwise (FDBRecordStore.java:4646-4648):
+	//
+	//	if (!formatVersionChanged && !metaDataVersionChanged) {
+	//	    return AsyncUtil.DONE;
+	//	}
+	//
+	// checkRebuild — and with it checkPossiblyRebuildRecordCounts (:4728) — is
+	// reachable ONLY through that transition. Running the record-count check on
+	// every open instead is not a harmless eagerness: the pre-RECORD_COUNT_ADDED
+	// arm tests `oldFormatVersion < 2`, which for a store PINNED at format 1 is
+	// true on every open, forever. That is a perpetual clear-and-rescan of every
+	// record inside the store-open transaction — a large pinned store would stop
+	// being openable at all — and even with no count key declared it repeats the
+	// range clear and header rewrite on every open. The other arms converge after
+	// one pass because they compare against a header they then update; this one
+	// never can, because the store's format version is exactly what is pinned.
+	//
+	// Gating loses no detection. A change to the metadata's record-count key bumps
+	// the metadata version (RecordMetaDataBuilder.SetRecordCountKey, metadata.go:
+	// "bumps version when value changes", mirroring Java), so any real count-key
+	// change arrives here with metaDataVersionChanged already true.
+	metaDataVersionChanged := newMetaDataVersion != oldMetaDataVersion
+	if !formatUpgraded && !metaDataVersionChanged {
+		return nil
+	}
+
 	rebuildRecordCounts, err := store.checkPossiblyRebuildRecordCounts(storeHeader, oldFormatVersion)
 	if err != nil {
 		return fmt.Errorf("rebuild record counts: %w", err)
 	}
 	needHeaderWrite := formatUpgraded || rebuildRecordCounts
 
-	if newMetaDataVersion == oldMetaDataVersion {
-		// Even when versions match, the record count check may have modified
-		// the header (updated RecordCountKey). Persist if needed.
+	if !metaDataVersionChanged {
+		// Format changed but metadata did not: persist whatever the format upgrade
+		// and the record-count check left on the header, then stop — there are no
+		// indexes to reconcile.
 		if needHeaderWrite {
 			if err := store.writeStoreHeader(storeHeader); err != nil {
 				return fmt.Errorf("update store header after record count rebuild: %w", err)

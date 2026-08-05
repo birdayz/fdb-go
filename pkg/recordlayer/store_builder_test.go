@@ -400,6 +400,93 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	// STEADY STATE. The pre-RECORD_COUNT_ADDED arm tests oldFormatVersion < 2,
+	// which for a store PINNED at format 1 is true on EVERY open, forever — the
+	// one arm that can never converge, because the thing it compares against is
+	// exactly what the pin holds fixed. So it must be reachable only on a
+	// transition (FDBRecordStore.java:4646-4648), never in steady state.
+	//
+	// Two independent observables, because either alone can miss it: the sentinel
+	// proves no clear-and-rescan, and the header BYTES prove the open wrote
+	// nothing at all. A rebuild that cleared counts but happened to leave the
+	// header identical would slip past the second; a header rewrite with no
+	// rebuild would slip past the first.
+	It("does not rebuild or rewrite anything on repeated steady-state opens of a pinned store", func() {
+		ks := specSubspace()
+		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		b.SetRecordCountKey(EmptyKey())
+		md, bErr := b.Build()
+		Expect(bErr).NotTo(HaveOccurred())
+
+		sentinel := func(store *FDBRecordStore) fdb.Key {
+			return fdb.Key(store.subspace.Sub(RecordCountKey).Pack(tuple.Tuple{"zzz_sentinel"}))
+		}
+		const pinned = int32(formatVersionInfoAdded) // 1 — below RECORD_COUNT_ADDED(2)
+
+		_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+			store, oErr := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).
+				SetSubspace(ks).SetFormatVersion(pinned).CreateOrOpen()
+			if oErr != nil {
+				return nil, oErr
+			}
+			if _, sErr := store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(1), Price: proto.Int32(10),
+			}); sErr != nil {
+				return nil, sErr
+			}
+			rtx.Transaction().Set(sentinel(store), []byte("planted"))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Baseline header bytes, read after creation has settled.
+		var baseline []byte
+		_, err = sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+			store, oErr := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).
+				SetSubspace(ks).SetFormatVersion(pinned).Open()
+			if oErr != nil {
+				return nil, oErr
+			}
+			hdr, mErr := proto.Marshal(store.GetStoreHeader())
+			baseline = hdr
+			return nil, mErr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(baseline).NotTo(BeEmpty())
+
+		// Reopen repeatedly with UNCHANGED metadata at the SAME pinned version.
+		for i := 0; i < 3; i++ {
+			_, err = sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+				store, oErr := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).
+					SetSubspace(ks).SetFormatVersion(pinned).Open()
+				if oErr != nil {
+					return nil, oErr
+				}
+
+				planted, gErr := rtx.Transaction().Get(sentinel(store)).Get()
+				Expect(gErr).NotTo(HaveOccurred())
+				Expect(planted).NotTo(BeEmpty(),
+					"reopen #%d of a store pinned at format %d cleared the record-count subspace. The "+
+						"pre-RECORD_COUNT_ADDED arm is true on EVERY open of a pinned store and can never "+
+						"converge, so running it outside a real transition means a perpetual "+
+						"clear-and-rescan of every record inside the store-open transaction — a large "+
+						"pinned store would stop being openable at all", i+1, pinned)
+
+				hdr, mErr := proto.Marshal(store.GetStoreHeader())
+				Expect(mErr).NotTo(HaveOccurred())
+				Expect(hdr).To(Equal(baseline),
+					"reopen #%d rewrote the store header even though neither the format version nor the "+
+						"metadata version changed. A steady-state open must do nothing "+
+						"(FDBRecordStore.java:4646-4648)", i+1)
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+	})
+
 	// The contrast half: at a sufficient version each feature must actually work,
 	// or the gates above would be satisfied by a store that simply rejects
 	// everything.
