@@ -1057,6 +1057,42 @@ func countRecursiveRows(t *testing.T, ctx context.Context, conn *sql.Conn) int {
 	return n
 }
 
+// Measured sizing for the memory-budget test below. These are not round
+// numbers picked for looks — they are the outcome of a threshold sweep, and the
+// test is only meaningful inside the window they describe. All figures are the
+// budget at which the statement first reports "statement memory budget
+// exceeded", for 12 rows of memPayloadBytes each under a 2-row page budget:
+//
+//	                            paired release working   release dropped
+//	one honest pass                  ~49 KiB                 ~132 KiB
+//	every page retried once          ~49 KiB                 ~263 KiB
+//
+// Two things to read off that table. First, with release working the retried
+// column equals the honest column — that IS the property under test, and it is
+// why nothing needs rolling back. Second, the gap only opens when release is
+// dropped, and it opens WIDE: the budget below sits at ~2.7x the honest peak
+// (so the baseline has real headroom and is not passing by a whisker) and at
+// ~0.5x the leaked retried figure (so the mutation fails decisively, not
+// marginally).
+//
+// The earlier version of this test used 12 single-BIGINT rows against a 64 KiB
+// budget. Those rows charge a few hundred bytes in total, so no amount of
+// leakage could ever cross the limit: it passed with the release call deleted
+// and therefore supported nothing. If these numbers drift, re-run the sweep
+// rather than nudging the budget — the margin is the whole point.
+const (
+	// memPayloadBytes makes each row big enough that a page's worth of buffer
+	// is a meaningful fraction of the budget. PAYLOAD SIZE is the lever, not row
+	// count: more rows would mean more pages and a longer runtime for the same
+	// signal.
+	memPayloadBytes = 4096
+	// memBudgetBytes sits between the honest peak and the leaked total.
+	memBudgetBytes = int64(128 << 10) // 131072
+	// memHeadroomBudgetBytes is half of it — the honest peak must fit even here,
+	// which is what makes the margin above a measurement rather than a hope.
+	memHeadroomBudgetBytes = int64(64 << 10) // 65536
+)
+
 // TestPageRetry_MemoryBudgetIsStatementCumulative is the other half of the
 // split, and it is a MEASUREMENT rather than a restatement: the memory budget
 // is deliberately NOT rolled back per attempt, and this checks that choice is
@@ -1076,65 +1112,78 @@ func countRecursiveRows(t *testing.T, ctx context.Context, conn *sql.Conn) int {
 func TestPageRetry_MemoryBudgetIsStatementCumulative(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db, backend := openRetryOnceSchema(t, 9900,
-		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 
-	for i := 0; i < pageRetryRows; i++ {
-		mustExecSQL(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, a) VALUES (%d, %d)", i, i))
-	}
-	// A budget large enough that one honest execution never approaches it, but
-	// small enough that unreleased per-page drift across a dozen retried pages
-	// would cross it.
-	conn := pinSimConn(t, db, func(ec *embedded.EmbeddedConnection) {
-		ec.SetOptions(api.NewOptionsBuilder().
-			Set(api.OptExecutionScannedRowsLimit, pageRetryScanLimit).
-			Set(api.OptMaxStatementMemoryBytes, int64(64*1024)).
-			Build())
-	})
-
-	// An ORDER BY forces a buffering operator, so there are real charges to
-	// leak; a pure streaming scan would charge nothing and prove nothing.
+	// An ORDER BY forces a buffering operator, so there are real charges that
+	// could leak; a pure streaming scan charges nothing and would prove nothing.
 	const q = "SELECT id FROM t ORDER BY a"
 
-	rows, err := conn.QueryContext(ctx, q)
-	if err != nil {
-		t.Fatalf("baseline buffered query: %v", err)
-	}
-	base := 0
-	for rows.Next() {
-		base++
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("baseline rows: %v", err)
-	}
-	rows.Close()
-	if base != pageRetryRows {
-		t.Fatalf("baseline returned %d rows, want %d", base, pageRetryRows)
+	run := func(t *testing.T, seed uint64, budget int64, retryEveryPage bool) error {
+		t.Helper()
+		db, backend := openRetryOnceSchema(t, seed,
+			"CREATE TABLE t (id BIGINT, a BIGINT, payload STRING, PRIMARY KEY (id))")
+		pad := strings.Repeat("x", memPayloadBytes)
+		for i := 0; i < pageRetryRows; i++ {
+			mustExecSQL(t, db, ctx, fmt.Sprintf(
+				"INSERT INTO t (id, a, payload) VALUES (%d, %d, '%s')", i, pageRetryRows-i, pad))
+		}
+		conn := pinSimConn(t, db, func(ec *embedded.EmbeddedConnection) {
+			ec.SetOptions(api.NewOptionsBuilder().
+				Set(api.OptExecutionScannedRowsLimit, pageRetryScanLimit).
+				Set(api.OptMaxStatementMemoryBytes, budget).
+				Build())
+		})
+		if retryEveryPage {
+			backend.armEveryOnce()
+			defer backend.disarm()
+		}
+		rows, err := conn.QueryContext(ctx, q)
+		if err != nil {
+			return err
+		}
+		n := 0
+		for rows.Next() {
+			n++
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		if retryEveryPage && !backend.fired.Load() {
+			t.Fatalf("no page was retried: this arm exercised nothing")
+		}
+		if n != pageRetryRows {
+			t.Fatalf("query returned %d rows, want %d", n, pageRetryRows)
+		}
+		return nil
 	}
 
-	backend.armEveryOnce()
-	defer backend.disarm()
+	// THE PROPERTY: retrying every page must not move the gauge. Charges made by
+	// an attempt that failed are released when that attempt tears down, so the
+	// retried run costs the same as the honest one and the budget is never
+	// approached — which is exactly why memUsed is left out of the per-attempt
+	// rollback that the recursion level gets.
+	if err := run(t, 9902, memBudgetBytes, true); err != nil {
+		t.Fatalf("a buffered query failed under a %d-byte budget when every page was retried: "+
+			"%v.\n\nOne honest pass fits in %d bytes, so this is leaked charge, not real "+
+			"growth: a failed attempt's charges are surviving its teardown and the gauge "+
+			"climbs once per retried page. If that is now true, the memory budget belongs on "+
+			"the PAGE-POSITIONAL side of the split with the recursion level — it must be "+
+			"snapshotted and rolled back in fetchPage — and ExecuteState's documentation of "+
+			"the split is wrong",
+			memBudgetBytes, err, memHeadroomBudgetBytes)
+	}
 
-	rows, err = conn.QueryContext(ctx, q)
-	if err != nil {
-		t.Fatalf("buffered query with every page retried failed: %v.\n\nIf this is a memory "+
-			"budget error, charges are NOT being released when a failed attempt tears down, "+
-			"the gauge drifts up once per retried page, and the memory budget belongs on the "+
-			"page-positional side of the split with the recursion level — not on the "+
-			"statement-cumulative side where it is documented", err)
-	}
-	n := 0
-	for rows.Next() {
-		n++
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows under per-page retries: %v", err)
-	}
-	rows.Close()
-	if !backend.fired.Load() {
-		t.Fatalf("no page was retried: this test exercised nothing")
-	}
-	if n != pageRetryRows {
-		t.Fatalf("buffered query returned %d rows under per-page retries, want %d", n, pageRetryRows)
+	// MARGIN SENTINEL, checked second on purpose. One honest pass must fit in
+	// HALF the budget the arm above uses, so that arm is measuring a leak and not
+	// a margin. It runs AFTER the property so that a change breaking both reports
+	// the property failure — the one that says what actually went wrong — rather
+	// than this one, which would only say the numbers need re-deriving.
+	if err := run(t, 9901, memHeadroomBudgetBytes, false); err != nil {
+		t.Fatalf("an honest pass no longer fits in %d bytes (half the budget the real "+
+			"assertion uses): %v.\n\nThe headroom this test depends on is gone, so the arm "+
+			"below can no longer distinguish a leaked retry charge from ordinary growth. "+
+			"Re-run the threshold sweep and re-derive both constants",
+			memHeadroomBudgetBytes, err)
 	}
 }
