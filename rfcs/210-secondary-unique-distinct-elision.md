@@ -1,6 +1,8 @@
 # RFC-210 — A secondary UNIQUE index may prove DISTINCT elision
 
-- **Status:** DRAFT — awaiting Graefe
+- **Status:** DRAFT — Graefe ACK **with conditions**; C1-C7 folded into this text.
+  Implementation gated on kickoff; the implementation lap is a separate Graefe
+  gate.
 - **Branch:** `rfc/secondary-unique-distinct-lift`
 - **Area:** Cascades planner (`ImplementDistinctFinalRule`), index-state planning,
   plan cache
@@ -29,7 +31,7 @@ two into one carried property (§5.5).
 The measured benefit is narrower than the phrase "use the unique index" suggests,
 and §2.1 leads with the refutation: the elision removes an operator, it does not
 change the access path. Its value is concentrated in one regime — a paged,
-unordered `SELECT DISTINCT <unique column>`, where the redundant dedup is 72% of
+unordered `SELECT DISTINCT <unique column>`, where the redundant dedup is ~68-72% of
 the query's runtime.
 
 ## 2. What is declined today, and what it costs
@@ -88,7 +90,7 @@ operator is more expensive than its CPU suggests:
 | shape | rows | with `DISTINCT` | without | delta |
 |---|---|---|---|---|
 | unordered, single page | 100 000 | 388 ms | 333 ms | **+55 ms (+17%)** |
-| unordered, **paged** (`EXECUTION_SCANNED_ROWS_LIMIT=10000`, ~10 pages) | 100 000 | **559 ms** | **328 ms** | **+235 ms (+72%)** |
+| unordered, **paged** (`EXECUTION_SCANNED_ROWS_LIMIT=10000`, ~10 pages) | 100 000 | **559 ms** | **328 ms** | **+235 ms (+68-72%, band across runs)** |
 | paged allocation churn | 100 000 | **424.9 MiB** | 157.7 MiB | **+267 MiB** |
 | ordered (streaming variant) | 100 000 | 6.95 s | 7.05 s | below noise (±300 ms) |
 | `ORDER BY … LIMIT 10` | 10 | 6 ms | 6 ms | 0 |
@@ -113,17 +115,20 @@ variant's cost is below the noise floor at this scale.
 
 So the case for lifting is narrower than it first looks and rests on one regime:
 **a paged, unordered `SELECT DISTINCT <unique-column>`, where the redundant
-operator costs ~72% of the query's runtime and an allocation load that grows with
+operator costs ~68-72% of the query's runtime and an allocation load that grows with
 the number of distinct values.** That regime is the ordinary one for a
 result-set-paginating client over a unique column, which is exactly the query a
 `UNIQUE` index invites.
 
-## 3. Java, read first — and Java does not do this
+## 3. Java, read first — Java derives the fact and never lets it decide
 
-The Java Cascades planner has **no** notion of a secondary `UNIQUE` index
-proving that a projection is duplicate-free. The finding is stated with its
-sources because it changes what this RFC is: not parity work, but a read-side
-extension.
+The Java Cascades planner never uses a secondary `UNIQUE` index to eliminate a
+`DISTINCT`. It does, however, *derive* uniqueness-based distinctness and carry it
+in the ordering property — so the accurate finding is not "Java lacks the
+concept" but "Java computes the concept and no path connects it to this
+decision". The distinction is drawn precisely below, because it changes what this
+RFC is: not parity work, but a read-side extension that connects two things Java
+keeps apart.
 
 **What licenses eliminating a distinct in Java.** `ImplementDistinctRule` reads
 exactly one thing, `DistinctRecordsProperty`:
@@ -160,19 +165,56 @@ absorption with no fallback plan.
 | `RecordQueryPlanner.java:1570, 2815, 3020` | heuristic planner's `strictlySorted` flag |
 | `{Value,Windowed,Vector,Aggregate}IndexScanMatchCandidate` | plain delegation to `index.isUnique()` |
 | `PrimaryScanMatchCandidate.java:181` | `return true` — the PK is unique by definition |
+| `IndexScanParameters.java:74`, `IndexScanComparisons.java:118`, `MultidimensionalIndexScanComparisons.java:114`, `VectorIndexScanComparisons.java:125` | the `isUnique(Index)` overload family — plumbing that forwards the flag to the sites above, licensing nothing on its own |
 
 Distinctness is absent from that list. The place the proof would have to live is
 `DistinctRecordsProperty.DistinctRecordsVisitor.visitIndexPlan`, and that method
 consults `createsDuplicates()` and nothing else.
 
-**The one chain that looks like it connects, and dead-ends.** `RemoveSortRule`
-sets `strictlySorted` from `isUnique()`; `OrderingProperty.java:366` feeds that
-flag into `Ordering.isDistinct`; and `Ordering.satisfies` consults
-`requestedOrdering.isDistinct()` at four sites. But
-`RequestedOrdering.Distinctness.DISTINCT` **is never constructed anywhere in
-`src/main`** — every producer uses `PRESERVE_DISTINCTNESS`, and `RemoveSortRule`
-explicitly downgrades to it at line 106. Those four branches are dead. Ordering
-never eliminates a distinct in Java.
+**The one chain that looks like it connects — and the precise way it stops.** An
+earlier draft called this chain "dead", which is wrong in a way worth correcting,
+because the accurate version is the stronger position.
+
+The **derived** side is alive. `RemoveSortRule` sets `strictlySorted` from
+`isUnique()`; `OrderingProperty.java:363-366` feeds that flag into the ordering
+via `computeOrderingFromScanComparisons(..., indexPlan.isStrictlySorted())`, so
+`Ordering.isDistinct` genuinely carries a uniqueness-derived fact. It is load
+bearing: `Ordering.java:1134` guards ordering concatenation with a hard
+`Verify.verify(leftOrdering.isDistinct())`, and `:596-604` uses it in the flatMap
+concat case. Java *does* derive distinctness from a unique index.
+
+What is dead is the **requested** side. `Ordering.satisfies` consults
+`requestedOrdering.isDistinct()` at four sites, but
+`RequestedOrdering.Distinctness.DISTINCT` is never constructed anywhere in
+`src/main` — every producer uses `PRESERVE_DISTINCTNESS`, and `RemoveSortRule`
+explicitly downgrades to it at line 106.
+
+So the accurate statement is sharper than "Java lacks the concept": **Java derives
+the concept and never lets it reach the decision.** The derived distinctness
+exists, flows, and is verified — and no path connects it to eliminating a
+`DISTINCT` operator. This RFC connects a fact Java computes to a decision Java
+never permits it to make. That is a smaller and better-founded step than
+inventing the fact, and it is also why §5.5's prefixing hazard is inherited
+rather than novel: the flag Java derives is the one its own javadoc warns must
+not be propagated across coordinate-set changes.
+
+Java's own view of the rule this RFC modifies is worth recording, because it
+concedes the structural point from the other side
+(`ImplementDistinctRule.java:50-57`):
+
+```java
+ * <p>
+ * This rule is somewhat suspect. In particular, if the inner plan that it matches against does not produce duplicates,
+ * this rule will then return that plan. This is fine unless the plan is later modified in such a way that it then
+ * <em>can</em> produce duplicates. … To address that, the plan is to add a mechanism for enforcing properties (e.g.,
+ * distinctness or sort order) on the plans produced by the planner. See Issue #635.
+ * </p>
+```
+
+Java describes eliding a distinct on an unenforced property as *suspect*, and the
+fix it names — a mechanism that makes the plan carry the property it was elided
+under — is structurally what §5.2's plan-carried stamp does for the index-state
+dimension.
 
 **Conformance position.** The principle is *doesn't work in Java → doesn't work
 in Go*, and it governs the **shared query surface** — the answers, not the plans.
@@ -276,40 +318,77 @@ a conjunction, and every clause fails closed.
    `READABLE`. Prevents: trusting the `unique` flag of a
    `READABLE_UNIQUE_PENDING`, `WRITE_ONLY` or `DISABLED` index.
 
+   **The operational route is part of the clause, not an implementation
+   detail.** The rule asks `call.Context.GetMatchCandidates()` and nothing else.
+   That list is the one built in `cascades_generator.go:2510-2560`, where the
+   `ReadableIndexes.Allows` filter (`:2548`) has already removed every
+   non-`READABLE` index *before any candidate is created*. Stating the route
+   matters because an unstated one is exactly where a second, unfiltered
+   authority gets invented — an implementation that reaches for
+   `md.GetAllIndexes()` or `store.GetReadableIndexes()` (which, by its own
+   doc at `store_api.go:33-35`, **includes** `READABLE_UNIQUE_PENDING`) would
+   satisfy every word of this clause's first sentence and reintroduce the exact
+   bug the decline existed for.
+
 2. **`I.IsUnique()`.** The declared intent.
 
-3. **`I` does not create duplicates**, by the candidate's own
-   `createsDuplicates` — the same authority Java's `DistinctRecordsProperty`
-   uses, including the nested-under-a-repeated-parent case that a leaf's own
-   `FanType` does not reveal. Prevents: `UNIQUE` on a fan-out index constrains
-   index *entries*, and a record whose repeated field is empty produces no entry
-   at all, so the key says nothing about base-row distinctness.
+3. **`I` preserves base-record cardinality**, via
+   `candidatePreservesBaseRecordCardinality` (`plan_context.go:255-286`) — not
+   via `createsDuplicates` directly. The distinction is load-bearing:
+   `createsDuplicates` answers only the fan-out question, while the shared gate
+   additionally rejects a candidate whose traversal was refused
+   (`!canProduceScanPlan()` — scalar nesting, unsupported `FAN_OUT` shape,
+   inconsistent metadata) and a candidate carrying a stored predicate (clause 4).
+   Using the narrow signal where the codebase already has the affirmative one is
+   how a second admission authority is born.
 
-4. **`I`'s key columns are the projected columns themselves**, not a derived
+   Prevents (the fan-out part): `UNIQUE` on a fan-out index constrains index
+   *entries*, and a record whose repeated field is empty produces no entry at
+   all, so the key says nothing about base-row distinctness. This includes the
+   nested-under-a-repeated-parent case that a leaf's own `FanType` does not
+   reveal.
+
+4. **`I` is not SPARSE** — `predicateProto == nil`. This is enforced inside
+   clause 3's gate, and it is called out as its own numbered clause because it
+   is the one failure whose consequence is *wrong rows* and whose cause is
+   invisible in the index's key definition.
+
+   A sparse (`WHERE`-filtered) index omits every record its stored predicate
+   rejects (`RecordMetaDataProto.Index.predicate`, via the maintainer's
+   `shouldIndexThisRecord` gate). Its `UNIQUE` declaration therefore constrains
+   **only the rows the predicate admits** — it says nothing whatever about the
+   rows it excludes, which may hold arbitrarily many duplicates of an admitted
+   value. Eliding a `DISTINCT` on that proof emits those duplicates. The failure
+   is not hypothetical in this codebase: the same gate's comment records that
+   `boolean-ddl.yamsql`'s `WHERE NULL` index is an *empty* index, and that
+   `OrderedIndexScanRule` once served it as the whole table.
+
+5. **`I`'s key columns are the projected columns themselves**, not a derived
    value: no function-keyed component (`CARDINALITY(...)` and friends).
    Prevents: a unique index over `f(col)` says nothing about `col`.
 
-5. **Every key column of `I` is projected as a BARE, top-level `FieldValue`**,
+6. **Every key column of `I` is projected as a BARE, top-level `FieldValue`**,
    resolved to an ordinal in the scan row's layout (RFC-197's boundary rule —
    resolve names once, compare ordinals). Prevents two distinct failures: a
    many-to-one projection (`f(pk)`) being credited as injective, and a
    same-named column from a *different* source being credited as covering this
    one's key.
 
-6. **The stream carries exactly one record type.** Prevents: `A`'s and `B`'s
+7. **The stream carries exactly one record type.** Prevents: `A`'s and `B`'s
    unique keys colliding once a shared visible coordinate is projected — the
    same restriction #617 put on the primary-key arm.
 
-7. **`SecondaryUniqueKeyGloballyEnforced` over `I`'s authoritative physical key
+8. **`SecondaryUniqueKeyGloballyEnforced` over `I`'s authoritative physical key
    component types** (§5.4): every key component `NOT NULL` and none
    `FLOAT`/`DOUBLE`/unknown.
 
-Clauses 3-6 are already implemented and pinned — they are what
+Clauses 3 and 5-7 are already implemented and pinned — they are what
 `TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof`'s `TAGS`,
 `SCORE`, `CITY` arms and `TestDistinctFinal_MultiTypeVisiblePrimaryKeyDoesNotEliminate`
-assert, each for a reason that survives independently of this RFC. That test's
-`EMAIL` arm — a plain scalar unique index — is the one whose expectation
-inverts.
+assert, each for a reason that survives independently of this RFC. Clause 4 is
+**not** pinned anywhere today, which is why §7.2 gains an end-to-end row for it.
+That test's `EMAIL` arm — a plain scalar unique index — is the one whose
+expectation inverts.
 
 **Filters and predicates above the scan are transparent.** A filter removes rows;
 it cannot create a duplicate of a key that was unique. The existing walk through
@@ -352,8 +431,19 @@ holds for proof-only dependencies too, unchanged and unqualified.
 
 Four properties follow, and they are the argument for this over the side channel:
 
-- **Cache-transparent.** No cache-entry format change, no second path to keep in
-  step. A cached plan carries its own proof.
+- **Cache-transparent — and the strong form of this is not "no format change".**
+  The weak argument is that a side channel would need a new cache-entry field;
+  that argument is thin, because `planCacheEntry` already carries a second field
+  beside the plan (`scalarSubs`, `plan_cache.go:47-49`), so adding a third is
+  mechanically easy. The real argument is that **the cache is not the only
+  plan-producing path**: `PlanRecordQueryWithMetadata` /
+  `PlanRecordQueryWithMetadataSchema` (`plan_harness.go:469-499`) plan through
+  the same pipeline while bypassing the cache entirely, and it is the path the
+  package-level tests and §2.1's probe use to read facts off a planned plan. A
+  dependency living in the cache entry is absent on that path by construction —
+  so the fact would be unassertable exactly where the unit-level pins are
+  written. A plan-carried stamp is present on every path that produces a plan,
+  which is the property being bought.
 - **Only the winner counts.** A planner-global accumulator would record every
   index whose proof fired during exploration, including proofs on expressions
   that lost on cost. That over-records, and over-recording is not benign: it is
@@ -362,7 +452,9 @@ Four properties follow, and they are the argument for this over the side channel
   A stamp rides on the expression and dies with it if the expression loses.
 - **Continuation-safe by the same route.** Java attaches
   `DatabaseObjectDependenciesPredicate` as the *continuation* plan constraint
-  (`QueryPlan.java:667, 726-735`) so a resumed page is gated too. A plan-carried
+  (`fdb-relational-core/…/recordlayer/query/QueryPlan.java:667, 726-735` — the
+  relational layer, not `fdb-record-layer-core`) so a resumed page is gated too.
+  A plan-carried
   stamp is present on the plan a continuation resumes, with no extra plumbing.
 - **EXPLAIN-visible.** The optimization's evidence is otherwise the *absence* of
   an operator, which is a weak acceptance assertion (a rule that silently died
@@ -393,9 +485,29 @@ cannot carry a proof cannot be handed one.
 **The stamp is part of plan identity — each carrier's `structuralKey` includes
 it.** The
 tempting call is the opposite one, by analogy with
-`RecordQueryProjectionPlan.aliasMinted`, which is deliberately excluded because
-it records who named a slot rather than what the plan computes. The analogy
-fails, and the direction it fails in is the one that matters. The eliding rule
+`RecordQueryProjectionPlan.aliasMinted`, which is deliberately excluded from
+identity — and that exclusion is not merely a precedent, it is an explicit
+prohibition (`expressions/logical_projection.go:180-186`):
+
+> Excluding the marker stays correct (a display tag must not split a memo
+> group). The fix belongs on the READ side … **Do not answer this by folding
+> `aliasMinted` into identity** — that trades a wrong label for a duplicated memo
+> group, and re-creates the recover-instead-of-record pattern the marker was
+> introduced to end.
+
+The distinction that makes this RFC's stamp the opposite case is in that
+comment's own first clause. `aliasMinted` is a **display tag**: two plans
+differing only in it compute identical rows, so splitting the group buys nothing
+and costs a duplicated group. The stamp is a **proved fact that licensed the
+plan's shape**: two plans differing only in it are *not* interchangeable, because
+one is correct only while an index stays `READABLE` and the other is correct
+unconditionally. A display tag must not split a group; a proved fact must. And
+the recover-instead-of-record pattern that comment warns against is precisely
+what a side channel would reintroduce here — recovering the dependency later from
+whatever the memo happened to keep, instead of recording it on the plan.
+
+The analogy fails, and the direction it fails in is the one that matters. The
+eliding rule
 yields a stamped copy of a plan whose unstamped original is already in the memo;
 if the stamp is not identity-bearing, the two collapse and the survivor may be
 the unstamped one — silently dropping the dependency and producing exactly the
@@ -410,6 +522,32 @@ tie-break is already deterministic. Losing a dependency is a wrong-answer bug;
 holding one redundant memo entry is not. It is pinned by §7.4 rather than
 asserted here.
 
+**The stamp records only when the secondary-`UNIQUE` proof is the SOLE
+license.** This is a correctness requirement on the rule's evaluation order, not
+a tidiness preference. `ImplementDistinctFinalRule` already has a property path —
+`partition.IsDistinct()` over `PropDistinctRecords`, Java's mechanism — that
+licenses the elision on its own for many plans. That path **must be evaluated
+first**, and when it succeeds the yielded plan is **UNSTAMPED**, even if a
+qualifying unique index also happens to exist.
+
+Stamping a plan whose elision the property path already justified records a
+dependency the plan's correctness does not rest on. Transitioning that index
+would then `40001` a statement that would have been correct regardless — which is
+precisely the over-scoping this RFC rejects in §9(b), arrived at from the other
+direction. The primary-key arm likewise never stamps: a PK is a storage
+invariant, not an index whose state can move.
+
+So the rule's order is: property path → PK arm → secondary-`UNIQUE` arm, and only
+the last one stamps.
+
+**New acceptance criterion (§7.3).** A query where **both** licenses hold — the
+inner plan is `PropDistinctRecords`-distinct *and* a qualifying unique index
+covers the projection — must yield an **unstamped** plan, and transitioning that
+index out of `READABLE` must **not** produce `40001`. Without this test the
+conservative-looking implementation (stamp whenever a unique index qualifies)
+passes everything else in §7 while turning unrelated index builds into statement
+failures.
+
 **Recorded content:** the index `Name` and its `LastModifiedVersion` at planning
 time — `predicates.UsedIndex`, the same type the ported
 `DatabaseObjectDependenciesPredicate` carries, deliberately not a second
@@ -417,6 +555,15 @@ structurally identical type. `LastModifiedVersion` is not redundant with the
 name: an index can be dropped and recreated under the same name with a different
 definition between planning and execution, and Java checks it for that reason
 (`DatabaseObjectDependenciesPredicate.java:95-97`).
+
+**The predicate makes three checks, not two, and the third is the one §5.3 rests
+on.** Java's `eval` (`DatabaseObjectDependenciesPredicate.java:87-105`) asks:
+does the index still exist; does its `lastModifiedVersion` still match; and —
+`:99` — `recordStoreState.isReadable(currentIndex)`. That third check is the
+mechanism behind every "leaves `READABLE` → `40001`" row in §5.3's table. Without
+naming it, that table reads as an aspiration; with it, the table is a
+consequence of a predicate Go already ports (`storeIndexAvailability.IsIndexReadable`,
+strictly `READABLE`, `index_state_planning.go:207-213`).
 
 **Consequence for the `proofOnly` parameter.** With the stamp collected by the
 walk, `collectPlanIndexDependencies`' fourth parameter has no producer at any of
@@ -495,6 +642,17 @@ component types** (RFC-208's `KeyComponentTypes`), not a declared SQL type or a
 Go carrier: an `Unknown` type fails closed, because a visible literal cannot
 substitute for missing metadata.
 
+**Worth saying out loud: this predicate was written for this caller and has never
+had one.** `SecondaryUniqueKeyGloballyEnforced`'s own doc
+(`physical_equality_shape.go:124-131`) states its purpose as *"used for DISTINCT
+elimination and strict-ordering claims"* — and today only the strict-ordering
+half exists (`indexHasGloballyEnforcedUniqueKey`, `rule_implement_sort.go:317`).
+The DISTINCT half of that sentence has been aspirational since #617 landed it.
+This RFC makes it true, which is a reason to expect the predicate to fit rather
+than to need widening: an implementation that finds itself relaxing
+`SecondaryUniqueKeyGloballyEnforced` to make the arm fire should treat that as
+evidence the arm is wrong, not the predicate.
+
 ### 5.5 One property, not two cross-checked
 
 The #617 review lap raised an architectural note this RFC adopts as mechanism
@@ -535,10 +693,56 @@ produces (it is the site that truncates, so it is the site that knows). Then:
 - `physical_equality_shape.go` remains the single implementation, called once at
   the producer rather than once per consumer.
 
-The migration is behaviour-preserving by construction and is pinned as such: all
-of #617's tests (§8) stay green **unmodified**. That is the acceptance criterion
-for this sub-item — a refactor that needs its pins edited is not the refactor it
-claims to be.
+**Carried completeness MUST NOT survive prefixing, and this is the part of §5.5
+most likely to be got wrong.** A carried flag is a claim about a *specific
+coordinate set*. The moment an ordering is truncated, prefixed, or otherwise
+reduced to fewer coordinates, a completeness claim computed for the longer set is
+no longer about the object carrying it.
+
+Java built this exact mechanism, hit this exact hazard, and left the warning in
+the field's own javadoc (`Ordering.java:184-191`):
+
+```java
+/**
+ * Indicator if the records flowed are to be considered distinct, thus producing a strict order. This field
+ * should get deprecated as it is not correct to assign this property to all enumerated orderings. For instance,
+ * an ordering that produces {@code a, b, c} is also ordered by {@code a, b}. While the former one might be strict,
+ * the latter one may not. …
+ */
+private final boolean isDistinct;
+```
+
+An ordering by `(a, b, c)` is also an ordering by `(a, b)`. The first may be
+strict; the second need not be. Java's own field is documented as *not correct*
+to propagate, with a hand-written interpretation rule bolted on top ("only
+enumerated orderings that contain all values of the ordering are strict"). Go must
+not import the bug along with the mechanism.
+
+So the binding is explicit: **completeness is bound to the coordinate set it was
+computed over.** Any operation that reduces that set either (a) drops the
+completeness claim entirely, or (b) recomputes it against the retained
+coordinates. Never (c) carries it forward unexamined. The same rule applies
+wherever a carried ordering is concatenated or intersected — Java's
+`Ordering.java:1134` guards its concat with a hard `Verify.verify(leftOrdering.isDistinct())`
+precondition rather than deriving it, which is the shape of a claim that cannot
+be safely assumed.
+
+**Pinned by a test on the `(a, b, c)` → `(a, b)` shape**, over an index whose
+trailing coordinate is what makes the key unique: the full ordering may claim
+completeness, the two-coordinate prefix must not. **That test does not exist on
+either side today** — Java has the warning and no pin, Go has neither.
+
+**This is why §8's criterion is necessary but not sufficient.** Every #617 pin
+stays green through this bug: they all exercise a *full* key, so nothing there
+ever prefixes a carried ordering. "All #617 tests green, unmodified" would read
+as *behaviour-preserving* while the refactor was unsound in a dimension none of
+them probes — the dimensional-gap failure the repo's testing rule describes. The
+prefix test is the criterion that closes it, and it is required for §5.5 to be
+considered done.
+
+Subject to that, the migration is behaviour-preserving by construction and pinned
+as such: all of #617's tests (§8) stay green **unmodified**. A refactor that needs
+its pins edited is not the refactor it claims to be.
 
 ### 5.6 Interaction with the physical distinct's own choices
 
@@ -623,13 +827,17 @@ silently emit duplicates.
 | `UNIQUE` on a **fan-out** (repeated) column | constrains entries, not rows; empty repeated → no entry |
 | `UNIQUE` nested under a **repeated parent**, scalar leaf | fan-out whatever the leaf's fan type says |
 | `UNIQUE` on `CARDINALITY(col)` | keys a derived value |
+| **SPARSE** `UNIQUE` (`WHERE`-filtered), with duplicate values among the rows the predicate EXCLUDES | the `unique` declaration constrains only admitted rows (§5.1 clause 4) |
 | **composite** `UNIQUE (a,b)`, only `a` projected | partial coverage |
 | unique column projected only **inside an expression** (`f(email)`) | not injective |
 | **multi-record-type** stream | key unique only within a type |
 
-The nullable and DOUBLE rows are the two that must be **end-to-end with real
-data**, not unit-level: they are the ones where the wrong answer is duplicate
-rows rather than a missed optimization.
+The nullable, DOUBLE and **sparse** rows must be **end-to-end with real data**,
+not unit-level: they are the ones where the wrong answer is duplicate rows rather
+than a missed optimization. The sparse row's fixture is specific and must not be
+weakened into "a sparse index exists" — the table needs **real duplicate values
+sitting outside the predicate**, because a sparse-index test whose excluded rows
+happen to be distinct passes with the bug fully present.
 
 ### 7.3 Index state
 
@@ -650,6 +858,21 @@ rows rather than a missed optimization.
   cache the eliding query, transition the index, execute again so the cache hits:
   `40001`. Under a side-channel design this test returns duplicate rows; it is
   what makes §5.2's choice a proved property rather than an argument.
+- **Both licenses hold → NO `40001` (§5.2).** A query whose inner plan is already
+  `PropDistinctRecords`-distinct *and* over which a qualifying unique index
+  covers the projection: the plan must be **unstamped**, and transitioning that
+  index out of `READABLE` must leave the statement running normally. This is the
+  criterion that fails the over-eager implementation — stamp whenever a unique
+  index qualifies — which every other test here would pass.
+
+Note on the first item, so an implementation does not mistake one refusal for
+another: `TestFDB_UniquePendingIndexDoesNotEliminateDistinct` passes **today**
+only because `distinctEliminatedByUniqueKey` ends in an unconditional
+`return false`. All four of its negative arms have `createsDuplicates == false`,
+so a predicate built from clause 3 alone would return *true* for `EMAIL` and the
+test would go red on the first day of implementation. The decline's blanket
+refusal is currently doing the work the admission predicate must do afterwards;
+they are not the same refusal and the test does not distinguish them.
 
 ### 7.4 Plan identity and continuations
 
@@ -663,6 +886,16 @@ Two assertions that pull in opposite directions, which is why both are pinned:
   produce the same SHA-256 continuation fingerprint, and a continuation minted
   before this change resumes correctly after it. The stamp is planner provenance;
   it describes nothing about the physical scan a continuation resumes.
+
+The pairing is not novel, and the precedent should be followed rather than
+re-derived: `strictlySorted` is already exactly this shape. It **is** in
+`RecordQueryIndexPlan.structuralKey` (`index_scan.go:409-421`, alongside
+`reverse` and `covering`) and **is not** in `indexScanRangeFingerprintSalt`
+(`scan_range_execution_identity.go:367-385`, which takes index name, scan type,
+reverse, covering, covering columns, PK columns, record types, key types, flowed
+type — and no strictness). A proved planning fact that splits the memo group and
+leaves the continuation identity alone is an established pattern here, not a new
+exception being carved for this RFC.
 
 ### 7.5 Performance
 
@@ -695,6 +928,12 @@ The #617 pins are the guard rails on this change, because #617 is where the
 proof predicates this RFC reuses were established. All must stay green, and
 those in the first group must stay green **without being edited** — an edit
 means the refactor in §5.5 changed behaviour it claimed to preserve.
+
+**This list is necessary and NOT sufficient — see §5.5.** Every pin below stays
+green through the prefixing bug §5.5 describes, because each exercises a full
+key and none prefixes a carried ordering. The `(a, b, c)` → `(a, b)` test named
+there is what makes "all #617 pins green" mean *behaviour-preserving* rather than
+*unprobed in the dimension that matters*.
 
 Unmodified:
 
@@ -794,9 +1033,15 @@ efficiently.
 But the finding is real and independent of whether this RFC is accepted, and it
 is recorded here rather than left in a measurement transcript: **the hash-distinct
 continuation's cost grows quadratically in page count**
-(`executor.go:2261-2315`, `distinct_stream.go:259-271`). It wants its own
-investigation with its own reproducer — the probe committed with this RFC is
-already one.
+(`executor.go:2261-2315`, `distinct_stream.go:259-271`).
+
+**That work is in flight now**, on branch `fix/distinct-continuation-growth` (PR
+number to follow). It is tracked there rather than here, and the two are
+independent in both directions: RFC-210 does not wait on it, and it does not wait
+on RFC-210. The probe committed with this RFC is a reproducer for both — which is
+also why §7.5's allocation criterion is written against the no-`DISTINCT`
+baseline rather than against today's absolute MiB figure, so it stays meaningful
+after that fix lands and moves the baseline.
 
 **(i) Extend the proof to joins and unions.** Out of scope, and not because it is
 hard: a `UNIQUE` index proves nothing about a join output, so the extension would
@@ -805,10 +1050,27 @@ discovering it in a bug.
 
 ## 10. Review
 
-- Graefe (Cascades alignment) — **required before implementation.** The specific
-  questions: is §5.1's conjunction the right admission predicate; is §5.2's
-  plan-carried dependency the right seam given it reverses one shape of #616 one
-  commit later; and is §5.5's single-carried-property migration correctly scoped
-  into this RFC rather than left as a follow-on.
-- Torvalds (code quality) — required before implementation.
-- codex + `@claude` — at implementation, one lap at completion.
+**Graefe: ACK with conditions**, on the three questions this RFC was put up to
+answer — §5.1's admission predicate, §5.2's plan-carried dependency (including
+that it reverses one shape of #616 a commit later), and §5.5's migration being
+scoped into this RFC rather than deferred. His measurements reproduced §2.1.
+
+The conditions are folded into the text above rather than listed as an appendix,
+because a condition kept beside the design is a condition the implementer reads.
+Where each landed:
+
+| # | condition | folded into |
+|---|---|---|
+| C1 | admission authority is `candidatePreservesBaseRecordCardinality`, not `createsDuplicates`; sparseness is its own clause; clause 1 states its operational route | §5.1 clauses 1, 3, 4; §7.2 sparse row |
+| C2 | stamp only when the secondary-`UNIQUE` proof is the SOLE license | §5.2; new §7.3 criterion |
+| C3 | carried completeness must not survive prefixing | §5.5; §8 sufficiency note |
+| C4 | `isUnique(Index)` overload family; derived-side-alive / requested-side-dead reframing; `ImplementDistinctRule`'s own fragility caveat | §3 |
+| C5 | the third `eval` check (`isReadable`); `QueryPlan.java` is in `fdb-relational-core`; cache-bypass argument; `aliasMinted` prohibition quoted | §5.2, §5.3 |
+| C6 | paging delta quoted as a band | §1, §2.1 |
+| C7 | name the in-flight O(P²) work | §9(h) |
+
+Three of these — C1, C2, C3 — are blocking on the RFC text, and all three are
+above. C1 and C3 are wrong-rows conditions; C2 is a spurious-failure condition.
+
+Remaining gates: **Torvalds** (code quality) on this text; **Graefe again** on
+the implementation lap; codex + `@claude` at implementation completion.
