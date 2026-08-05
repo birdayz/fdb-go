@@ -246,6 +246,21 @@ type OnlineIndexer struct {
 	// (e.g. to inspect or resume the build).
 	markReadableEnabled bool
 
+	// allowUniquePendingState opts in to leaving a unique index in
+	// READABLE_UNIQUE_PENDING when the build finds duplicates, instead of failing
+	// the build. Java OnlineIndexer.IndexingPolicy.Builder.allowUniquePendingState,
+	// whose field defaults FALSE (OnlineIndexer.java:1220) and whose javadoc states
+	// the contract exactly: "allow=false (default, backward compatible): throw an
+	// exception."
+	//
+	// It is deliberately NOT enough on its own — see shouldAllowUniquePendingState.
+	allowUniquePendingState bool
+
+	// formatVersion pins the format version every store this indexer opens uses;
+	// 0 means the newest this binary knows. Java carries it on the shared
+	// record-store builder rather than as a separate indexer field.
+	formatVersion *int32
+
 	// progressLogIntervalMillis throttles the per-range "Indexer: Built Range"
 	// progress log (see maybeLogBuildProgress). Matches Java
 	// OnlineIndexOperationConfig.progressLogIntervalMillis:
@@ -262,6 +277,24 @@ type OnlineIndexer struct {
 	// zero-config app keeps the standard slog integration and tests never mutate
 	// process globals.
 	logger *slog.Logger
+}
+
+// shouldAllowUniquePendingState reports whether a finished build may leave a
+// unique index in READABLE_UNIQUE_PENDING rather than failing on duplicates.
+//
+// Port of Java's OnlineIndexer.IndexingPolicy.shouldAllowUniquePendingState
+// (OnlineIndexer.java:1117-1120), which is an AND of two independent conditions:
+//
+//	return allowUniquePendingState
+//	        && store.getFormatVersionEnum().isAtLeast(FormatVersion.READABLE_UNIQUE_PENDING);
+//
+// The format-version half is not redundant belt-and-braces. READABLE_UNIQUE_PENDING
+// is format version 9 (FormatVersion.java:145); writing that state into a store an
+// older binary can still open would hand it an index state it cannot interpret. The
+// opt-in alone must therefore never be sufficient.
+func (oi *OnlineIndexer) shouldAllowUniquePendingState(store *FDBRecordStore) bool {
+	return oi.allowUniquePendingState &&
+		store.GetFormatVersion() >= int32(formatVersionReadableUniquePending)
 }
 
 // primaryIndex returns the first target index, which drives range tracking.
@@ -292,6 +325,31 @@ func NewOnlineIndexerBuilder() *OnlineIndexerBuilder {
 			progressLogIntervalMillis: -1,
 		},
 	}
+}
+
+// SetFormatVersion pins the format version the indexer opens its stores at,
+// mirroring StoreBuilder.SetFormatVersion. Java gets this for free by reusing the
+// caller's record-store builder (IndexingCommon.getRecordStoreBuilder).
+func (b *OnlineIndexerBuilder) SetFormatVersion(version int32) *OnlineIndexerBuilder {
+	b.indexer.formatVersion = &version
+	return b
+}
+
+// SetAllowUniquePendingState opts in to leaving a unique index in
+// READABLE_UNIQUE_PENDING when the build finds duplicates, instead of failing the
+// build with a RecordIndexUniquenessViolationError.
+//
+// Java OnlineIndexer.IndexingPolicy.Builder.allowUniquePendingState(boolean)
+// (OnlineIndexer.java:1354). Defaults FALSE here as it does there, and even when
+// set it is honoured only on a store at format version >=
+// READABLE_UNIQUE_PENDING — see OnlineIndexer.shouldAllowUniquePendingState.
+//
+// Java's javadoc carries the warning this option deserves: "This state might not be
+// compatible with older code. Please verify that all instances are up-to-date before
+// allowing it."
+func (b *OnlineIndexerBuilder) SetAllowUniquePendingState(allow bool) *OnlineIndexerBuilder {
+	b.indexer.allowUniquePendingState = allow
+	return b
 }
 
 // SetDatabase sets the FDB database.
@@ -1202,7 +1260,18 @@ func (oi *OnlineIndexer) markReadable(ctx context.Context) error {
 			if err != nil {
 				return nil, err
 			}
-			if _, err = store.MarkIndexReadableOrUniquePending(idx.Name); err != nil {
+			// Java IndexingBase.markIndexReadableForIndex (IndexingBase.java:322-326)
+			// picks between the two marks on the policy, NOT unconditionally:
+			//   policy.shouldAllowUniquePendingState(store)
+			//       ? store.markIndexReadableOrUniquePending(index)
+			//       : store.markIndexReadable(index);
+			// The default policy answers false, so the default outcome of a build that
+			// found duplicates is a failed build, not a quietly pending index.
+			if oi.shouldAllowUniquePendingState(store) {
+				if _, err = store.MarkIndexReadableOrUniquePending(idx.Name); err != nil {
+					return nil, err
+				}
+			} else if _, err = store.MarkIndexReadable(idx.Name); err != nil {
 				return nil, err
 			}
 			// Once the index is readable there is no need for the per-build bookkeeping.
@@ -1611,11 +1680,21 @@ func (oi *OnlineIndexer) shouldIndexRecordForIndex(rec *FDBStoredRecord[proto.Me
 
 // openStore opens an FDBRecordStore for the current transaction.
 func (oi *OnlineIndexer) openStore(rtx *FDBRecordContext) (*FDBRecordStore, error) {
-	return NewStoreBuilder().
+	// The format version rides along with every store this indexer opens. Java
+	// threads it the same way, by reusing the caller's record-store builder
+	// (IndexingCommon.getRecordStoreBuilder), so an indexer cannot silently open a
+	// store at a newer format than the instance that configured it -- which would
+	// defeat the format half of shouldAllowUniquePendingState.
+	sb := NewStoreBuilder().
 		SetContext(rtx).
 		SetMetaDataProvider(oi.metaData).
-		SetSubspace(oi.subspace).
-		Open()
+		SetSubspace(oi.subspace)
+	// Only PASS THROUGH an explicit pin. Calling SetFormatVersion unconditionally
+	// would hand the store builder an explicit 0, which it rejects.
+	if oi.formatVersion != nil {
+		sb = sb.SetFormatVersion(*oi.formatVersion)
+	}
+	return sb.Open()
 }
 
 // BlockIndex sets the block flag on the indexing stamp for all target indexes.

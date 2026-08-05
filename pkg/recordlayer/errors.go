@@ -149,6 +149,28 @@ func (e *UnsupportedFormatVersionError) Error() string {
 	return fmt.Sprintf("unsupported format version %d (max supported: %d)", e.Version, e.MaxVersion)
 }
 
+// UnsupportedFeatureForFormatVersionError is returned when a version-gated store
+// feature is used on a store whose header format version predates it.
+//
+// Java raises a RecordCoreException with LogMessageKeys.FORMAT_VERSION at each
+// such site — e.g. "Store does not support setting a store lock state"
+// (FDBRecordStore.java:3478/:3494), "Store does not support updating record count
+// state" (:3443), "Store does not support incarnation" (:3503/:3517), "cannot
+// access header user fields at current format version" (:3222). The guard exists
+// because these features WRITE new store-header fields: an instance still pinned
+// at the older format can open the store and will simply not understand them, so
+// a lock it cannot see is a lock it will not honour.
+type UnsupportedFeatureForFormatVersionError struct {
+	Feature         string
+	Version         int32
+	RequiredVersion int32
+}
+
+func (e *UnsupportedFeatureForFormatVersionError) Error() string {
+	return fmt.Sprintf("store does not support %s at format version %d (requires >= %d)",
+		e.Feature, e.Version, e.RequiredVersion)
+}
+
 // RecordSerializationError is returned when a record fails to serialize (marshal) to protobuf.
 // Matches Java's com.apple.foundationdb.record.provider.foundationdb.RecordSerializationException.
 type RecordSerializationError struct {

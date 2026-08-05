@@ -256,7 +256,7 @@ var _ = Describe("RebuildIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("tracks violations for unique index rebuild with duplicate values", func() {
+	It("leaves a unique index WRITE_ONLY when the inline rebuild finds duplicates", func() {
 		ks := specSubspace()
 
 		// Phase 1: Insert records WITHOUT the unique index.
@@ -280,8 +280,29 @@ var _ = Describe("RebuildIndex", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		// Phase 2: Add the unique index and rebuild — Java behavior: writes violation
-		// entries to subspace 7 instead of throwing, transitions to READABLE_UNIQUE_PENDING.
+		// Phase 2: Add the unique index and rebuild. Three Java facts compose, and the
+		// outcome is none of the obvious two.
+		//
+		// While the index is WRITE_ONLY, checkUniqueness RECORDS violations rather
+		// than throwing (Java's standardIndexMaintainer.checkUniqueness →
+		// addUniquenessViolation), so the scan completes. The inline rebuild then
+		// calls the ONE-ARGUMENT markIndexReadable(index) (FDBRecordStore.java:4602 →
+		// :3767-3768, allowUniquePending=FALSE), and checkAndUpdateBuiltIndexState
+		// (:3821) throws RecordIndexUniquenessViolation (:3856-3861) — so the index is
+		// NOT made readable, and NOT parked in READABLE_UNIQUE_PENDING either (that
+		// state needs IndexingBase.java:324 under a policy defaulting FALSE,
+		// OnlineIndexer.java:1220).
+		//
+		// But rebuildIndex SWALLOWS that throw: the whole chain is wrapped in
+		// `.handle((b, t) -> { if (t != null) logExceptionAsWarn(...); ...; return
+		// null; })` (:4602-4615), and a handle returning normally completes the future
+		// normally. So the rebuild reports SUCCESS and the index simply stays
+		// WRITE_ONLY, with its violations on disk.
+		//
+		// Java pins exactly this in FDBRecordStoreUniqueIndexTest.
+		// addUniqueIndexViaCheckVersion:615-627 — REBUILD_INDEX ran, the index is
+		// WRITE_ONLY, scanUniquenessViolations holds every conflicting primary key,
+		// and the transaction COMMITS.
 		nameIndex := NewIndex("Customer$name", Field("name"))
 		nameIndex.SetUnique()
 		builder2 := baseMetaData()
@@ -296,16 +317,26 @@ var _ = Describe("RebuildIndex", func() {
 				return nil, err
 			}
 
-			err = store.RebuildIndex(nameIndex)
-			Expect(err).NotTo(HaveOccurred())
+			rebuildErr := store.RebuildIndex(nameIndex)
+			Expect(rebuildErr).NotTo(HaveOccurred(), "the inline rebuild must not propagate the "+
+				"mark-readable failure: Java's .handle logs and swallows it (FDBRecordStore.java:4602-4615), "+
+				"so a metadata evolution that meets bad data leaves ONE index unusable instead of failing "+
+				"the whole store open")
 
-			// Index should be READABLE_UNIQUE_PENDING, not READABLE
-			Expect(store.GetIndexState(nameIndex.Name)).To(Equal(IndexStateReadableUniquePending))
+			// WRITE_ONLY, not readable and not pending: the mark was attempted and
+			// refused, and nothing downgraded it to a pending state nobody asked for.
+			Expect(store.GetIndexState(nameIndex.Name)).To(Equal(IndexStateWriteOnly))
 
-			// Should have violation entries
-			violations, err := store.ScanUniquenessViolations(nameIndex)
-			Expect(err).NotTo(HaveOccurred())
+			// The violations were recorded during the WRITE_ONLY scan, and they are
+			// what makes the failure actionable — the index is unusable until an
+			// operator resolves the pair and runs an explicit build.
+			violations, vErr := store.ScanUniquenessViolations(nameIndex)
+			Expect(vErr).NotTo(HaveOccurred())
 			Expect(len(violations)).To(BeNumerically(">=", 2))
+
+			// Not scannable, so no query can read a half-built index. This is why
+			// swallowing is safe rather than merely convenient.
+			Expect(store.IsIndexScannable(nameIndex.Name)).To(BeFalse())
 
 			return nil, nil
 		})
@@ -1027,10 +1058,26 @@ var _ = Describe("RebuildIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Phase 2: Change to per-type counting (RecordTypeKey).
+			//
+			// The explicit version bump is load-bearing, not decoration. Both
+			// builders start from baseMetaData() and call SetRecordCountKey once, so
+			// they land on the SAME metadata version despite declaring DIFFERENT
+			// keys — and reconciliation is gated on a transition
+			// (FDBRecordStore.java:4646-4648: no format change and no meta-data
+			// version change means checkRebuild is never reached, so the header's
+			// count key is never compared). Java does not detect a count-key change
+			// that arrives without a version bump either; a real schema evolution
+			// carries one. Without this line the test would be asserting a Go-only
+			// behaviour that only existed because the record-count check used to run
+			// unconditionally on every open — which made the pre-RECORD_COUNT_ADDED
+			// arm rescan a pinned store forever.
 			builder2 := baseMetaData()
 			builder2.SetRecordCountKey(RecordTypeKey())
+			builder2.SetVersion(md1.Version() + 1)
 			md2, err := builder2.Build()
 			Expect(err).NotTo(HaveOccurred())
+			Expect(md2.Version()).To(BeNumerically(">", md1.Version()),
+				"the evolution must actually advance the metadata version, or reconciliation is skipped")
 
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
