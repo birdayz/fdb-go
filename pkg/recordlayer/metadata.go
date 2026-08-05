@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"errors"
 	"fmt"
+	"math"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -583,14 +584,22 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 
 	// Validate no duplicate record type keys.
 	// Matches Java's MetaDataValidator which checks for duplicate type keys.
-	// Use normalizeSubspaceKey to handle type mismatches (int vs int64 vs int32).
-	typeKeySeen := make(map[any]string)
+	//
+	// Two record types collide exactly when their keys occupy the same BYTES,
+	// so the seen-set is keyed on the tuple encoding rather than on the value.
+	// Keying on the value missed real collisions — int64(7) and uint(7) are
+	// distinct values with identical encodings, and a record-type-prefixed
+	// primary key built from them puts two types in one key space, where a
+	// save silently overwrites the other type's record.
+	typeKeySeen := make(map[string]string)
 	for name, rt := range b.recordTypes {
-		key := normalizeSubspaceKey(rt.GetRecordTypeKey())
-		if prevName, exists := typeKeySeen[key]; exists {
-			return nil, &MetaDataError{Message: fmt.Sprintf("record types %q and %q have the same record type key %v", prevName, name, key)}
+		key := rt.GetRecordTypeKey()
+		dedup := recordTypeKeyDedupKey(key)
+		if prevName, exists := typeKeySeen[dedup]; exists {
+			return nil, &MetaDataError{Message: fmt.Sprintf(
+				"record types %q and %q have the same record type key %v", prevName, name, key)}
 		}
-		typeKeySeen[key] = name
+		typeKeySeen[dedup] = name
 	}
 
 	types := make(map[string]*RecordType, len(b.recordTypes))
@@ -898,10 +907,131 @@ func (rtb *RecordTypeBuilder) SetPrimaryKey(keyExpr KeyExpression) *RecordTypeBu
 
 // SetRecordTypeKey overrides the auto-derived record type key for this record type.
 // By default, the record type index (proto field number order) is used.
-// Matches Java's RecordTypeBuilder.setRecordTypeKey(Key.Evaluated).
+// Matches Java's RecordTypeBuilder.setRecordTypeKey(Key.Evaluated), which
+// delegates to RecordTypeIndexesBuilder.setRecordTypeKey: reject anything that
+// is not a primitive, then store TupleTypeUtil.toTupleEquivalentValue(key).
+//
+// Canonicalizing HERE, not at every read, is the whole point. The key is read
+// by duplicate-key validation, by proto serialization, by DeleteRecordsWhere's
+// prefix comparison and by the tuple packer, and each of those asks a
+// different question of it — equality, encodability, wire bytes. A value
+// normalized only on the evaluation path leaves the others looking at a
+// different representation of the same key, which is how int64(7) and uint(7)
+// came to be two "distinct" keys that encode to identical bytes.
+//
+// A rejected key is reported from Build() rather than panicking: Java throws
+// MetaDataException from the setter, but a Go builder setter returns the
+// builder for chaining and library code must not panic, so the error is
+// deferred to the one call that already returns one.
 func (rtb *RecordTypeBuilder) SetRecordTypeKey(key any) *RecordTypeBuilder {
-	rtb.recordType.explicitRecordTypeKey = key
+	canonical, err := canonicalRecordTypeKey(key)
+	if err != nil {
+		// Wrapped with %w, not flattened into a message: the caller has to be
+		// able to match the cause with errors.As, which is how Go says
+		// `catch (MetaDataException e)`.
+		rtb.builder.buildErrors = append(rtb.builder.buildErrors,
+			fmt.Errorf("record type %q: %w", rtb.recordType.Name, err))
+		return rtb
+	}
+	rtb.recordType.explicitRecordTypeKey = canonical
 	return rtb
+}
+
+// RecordTypeKeyTypeError reports a record type key whose Go type cannot be a
+// record type key. Java's equivalent is the MetaDataException "Only primitive
+// types are allowed as record type key" thrown by
+// RecordTypeIndexesBuilder.setRecordTypeKey.
+type RecordTypeKeyTypeError struct {
+	// Key is the offending value.
+	Key any
+}
+
+func (e *RecordTypeKeyTypeError) Error() string {
+	return fmt.Sprintf("only primitive types are allowed as record type key, got %T (%v)", e.Key, e.Key)
+}
+
+// canonicalRecordTypeKey validates and canonicalizes a record type key, the
+// port of Java's setRecordTypeKey guard followed by
+// TupleTypeUtil.toTupleEquivalentValue.
+//
+// The accepted set is Java's — null, Number, Boolean, String, byte[] —
+// intersected with what the tuple encoder can actually encode. Everything
+// else is refused HERE, where the caller learns about it from Build(), rather
+// than at pack time: the encoder's default arm panics ("unencodable element"),
+// so a value the builder accepts but the encoder cannot write turns a metadata
+// mistake into a panic on the save path. A named integer type (`type k int`)
+// is refused for that exact reason — it is not one of the encoder's cases.
+//
+// Canonicalization is limited to what leaves the tuple encoding IDENTICAL:
+// every integer that fits in an int64 becomes an int64, because the tuple
+// encoding of an integer does not depend on the signedness or width of the Go
+// type it arrived in. uint/uint64 above math.MaxInt64 stay unsigned — the
+// encoder writes them natively and no int64 can represent them. float32 and
+// float64 are NOT folded together: they have different tuple type codes.
+func canonicalRecordTypeKey(key any) (any, error) {
+	switch k := key.(type) {
+	case nil:
+		return nil, nil
+	case int:
+		return int64(k), nil
+	case int8:
+		return int64(k), nil
+	case int16:
+		return int64(k), nil
+	case int32:
+		return int64(k), nil
+	case int64:
+		return k, nil
+	case uint8:
+		return int64(k), nil
+	case uint16:
+		return int64(k), nil
+	case uint32:
+		return int64(k), nil
+	case uint:
+		if uint64(k) <= math.MaxInt64 {
+			return int64(k), nil
+		}
+		return uint64(k), nil
+	case uint64:
+		if k <= math.MaxInt64 {
+			return int64(k), nil
+		}
+		return k, nil
+	case string:
+		return k, nil
+	case []byte:
+		// Copied, as Java's ByteString.copyFrom copies: the key must not
+		// change under the metadata if the caller reuses its slice.
+		if k == nil {
+			return []byte(nil), nil
+		}
+		return append([]byte(nil), k...), nil
+	case bool:
+		return k, nil
+	case float32:
+		return k, nil
+	case float64:
+		return k, nil
+	default:
+		return nil, &RecordTypeKeyTypeError{Key: key}
+	}
+}
+
+// recordTypeKeyDedupKey renders a record type key as the bytes it will occupy
+// in a key, which is the only thing that decides whether two record types
+// collide. Comparing the values themselves cannot answer that: int64(7) and
+// uint(7) are different values that encode identically (a real collision),
+// while "abc" and []byte("abc") are equal-looking and encode differently
+// (tuple type codes 0x02 and 0x01, not a collision), and []byte is not even
+// comparable in Go.
+// Packing here is safe only because every key has already been through
+// canonicalRecordTypeKey — both doors into the field (SetRecordTypeKey and the
+// proto reader) canonicalize, and Build returns the accumulated builder errors
+// before it reaches the duplicate check, so an unencodable key never gets this
+// far. That ordering is load-bearing: pack panics on a value it cannot write.
+func recordTypeKeyDedupKey(key any) string {
+	return string(tuple.Tuple{key}.Pack())
 }
 
 // GetRecordType returns the record type for the given name.
@@ -990,60 +1120,22 @@ func (rt *RecordType) HasExplicitRecordTypeKey() bool {
 // GetRecordTypeKey returns the explicit record type key if set, or falls back
 // to the record type index. Matches Java's RecordType.getRecordTypeKey().
 //
-// The value is normalized to its tuple-equivalent form, as Java does at both
-// the explicit-key (RecordType.java: this.recordTypeKey = this.explicitRecordTypeKey =
-// TupleTypeUtil.toTupleEquivalentValue(recordTypeKey)) and derived-key sites.
-// Without it the same key would surface as int here and int64 there purely
-// depending on how it was set, and this value is written into index entries
-// and primary keys.
+// The stored value is ALREADY canonical — SetRecordTypeKey and the proto
+// reader canonicalize on the way in, as Java's setter does — so this returns
+// it verbatim. Normalizing on the way out instead would leave every other
+// consumer of the field (duplicate validation, proto export, prefix
+// comparison) looking at the raw value while only the evaluation path saw the
+// canonical one, which is the split that let equal-encoding keys pass
+// validation as distinct.
+//
+// The derived arm converts the record type index because RecordTypeIndex is a
+// declared int field, not a caller-supplied value: the conversion is exact and
+// total, and it gives int and int64 spellings of a key one representation.
 func (rt *RecordType) GetRecordTypeKey() any {
 	if rt.explicitRecordTypeKey != nil {
-		return tupleEquivalentRecordTypeKey(rt.explicitRecordTypeKey)
+		return rt.explicitRecordTypeKey
 	}
-	return tupleEquivalentRecordTypeKey(rt.RecordTypeIndex)
-}
-
-// tupleEquivalentRecordTypeKey ports the arm of Java's
-// TupleTypeUtil.toTupleEquivalentValue that a record type key can reach:
-// every narrower integer widens to int64, and everything else — string, raw
-// bytes — is already what the tuple layer encodes and passes through
-// untouched. Bytes must NOT be folded into a string: the tuple encoding gives
-// them different type codes, so folding would change the key's bytes.
-//
-// "Narrower integer" means Go's narrower integers, not only the signed ones
-// Java happens to have. Java widens Byte/Short/Integer because those are the
-// integer types narrower than Long that a Java caller can hand it; Go's set
-// also includes uint8/uint16/uint32, and SetRecordTypeKey takes an `any`, so a
-// caller can hand over any of them. The tuple encoder handles int, int64,
-// uint, uint64 and NOTHING else in between, so an unwidened uint8/uint16/
-// uint32 reaches it raw and PANICS ("unencodable element") on the save path —
-// a panic in library code, from a metadata value the builder accepted without
-// complaint. Widening them to int64 is lossless (max uint32 < max int64) and
-// byte-identical: the tuple encoding of a non-negative integer does not depend
-// on the signedness of the Go type it came in as.
-//
-// uint and uint64 are deliberately NOT widened: they can exceed max int64, so
-// widening would be lossy. The encoder handles both natively, and for any
-// value that also fits in an int64 it emits the identical bytes.
-func tupleEquivalentRecordTypeKey(key any) any {
-	switch k := key.(type) {
-	case int:
-		return int64(k)
-	case int8:
-		return int64(k)
-	case int16:
-		return int64(k)
-	case int32:
-		return int64(k)
-	case uint8:
-		return int64(k)
-	case uint16:
-		return int64(k)
-	case uint32:
-		return int64(k)
-	default:
-		return k
-	}
+	return int64(rt.RecordTypeIndex)
 }
 
 // PrimaryKeyHasRecordTypePrefix returns true if this record type's primary key
