@@ -252,6 +252,27 @@ func TestFDB_FloatGroupByNaNAuthority(t *testing.T) {
 // If this test ever goes RED, the aggregate index has started merging NaN
 // groups, and that is a WIRE change that needs the same argument #604 needed for
 // vacated groups, not a quiet fix.
+//
+// IT MUST BE A **COUNT** INDEX, and that is a load-bearing detail rather than an
+// arbitrary choice. RFC-209 made a grouped aggregate read prove the group is
+// LIVE. A COUNT index proves that from its own entry — a stored count is the
+// existence fact — so it is read directly (`live_groups_only`) with no extra
+// stream and therefore no ordering requirement. A SUM index cannot, so it is
+// companion-joined to a COUNT index, and that join is a MERGE which needs both
+// streams ordered congruently with the comparison. An UNBOUND raw DOUBLE
+// grouping coordinate is exactly where that fails — its tuple key order is not
+// its value order — so a SUM-over-DOUBLE declines the index entirely and falls
+// back to streaming aggregation.
+//
+// MEASURED on this schema:
+//
+//	SELECT d, COUNT(*) … GROUP BY d -> AggregateIndex(COUNT, …, live_groups_only)
+//	SELECT d, SUM(a)   … GROUP BY d -> StreamingAgg(InMemorySort(Scan))
+//
+// This test used the SUM form until RFC-209 landed, at which point it stopped
+// reaching the producer it exists to pin — and said so LOUDLY rather than
+// skipping, which is the only reason the gap was caught instead of silently
+// becoming a test that proves nothing.
 func TestFDB_FloatAggregateIndexSplitsNaNPayloads(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -262,7 +283,7 @@ func TestFDB_FloatAggregateIndexSplitsNaNPayloads(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_fgnaidx")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE fgnaidx "+
 		"CREATE TABLE t (id BIGINT, d DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
-		"CREATE INDEX sum_by_d AS SELECT SUM(a) FROM t GROUP BY d")
+		"CREATE INDEX cnt_by_d AS SELECT COUNT(*) FROM t GROUP BY d")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fgnaidx/s WITH TEMPLATE fgnaidx")
 	dsn := fmt.Sprintf("fdbsql:///testdb_fgnaidx?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -273,7 +294,7 @@ func TestFDB_FloatAggregateIndexSplitsNaNPayloads(t *testing.T) {
 
 	groupNaNSeed(t, db, ctx, "t")
 
-	q := "SELECT d, SUM(a) FROM t GROUP BY d"
+	q := "SELECT d, COUNT(*) FROM t GROUP BY d"
 	plan := floatOrderingExplain(t, db, ctx, q)
 	groups := readFloatGroups(t, db, ctx, q)
 	nanGroups, _, _, _ := summarize(groups)
