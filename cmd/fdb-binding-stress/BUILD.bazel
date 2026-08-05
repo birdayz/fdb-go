@@ -18,6 +18,15 @@ go_binary(
 # tester. It is a tar rather than a filegroup of loose files so the output path
 # stays a single stable main-repo path (bazel-bin/cmd/fdb-binding-stress/) that
 # does not move when the pinned sdist's file list changes.
+#
+# --dereference is load-bearing. Bazel stages an external repo's srcs as symlinks
+# into the execroot, so without it the archive stores absolute paths instead of
+# content. Such a tar only unpacks correctly on the machine and output_base that
+# built it: anywhere else every member dangles, `fdb/` unpacks as a directory with
+# no importable `__init__.py`, and Python silently resolves `import fdb` to an
+# empty implicit namespace package. The tester then dies on the first attribute it
+# touches, identically for every seed. A build artifact that is only valid next to
+# the tree that produced it is not a build artifact; the tar must carry content.
 genrule(
     name = "python_fdb_tar",
     srcs = ["@fdb_python//:fdb_srcs"],
@@ -25,7 +34,8 @@ genrule(
     cmd = "set -e; " +
           "first=$$(echo $(locations @fdb_python//:fdb_srcs) | cut -d' ' -f1); " +
           "pkg=$$(dirname $$first); " +
-          "tar cf $@ --sort=name --mtime='UTC 1980-01-01' --owner=0 --group=0 " +
+          "tar cf $@ --dereference --sort=name --mtime='UTC 1980-01-01' " +
+          "--owner=0 --group=0 " +
           "--numeric-owner -C $$(dirname $$pkg) $$(basename $$pkg)",
     visibility = ["//visibility:public"],
 )

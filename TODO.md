@@ -7068,43 +7068,63 @@ proto/metadata-builder internals) instead of a clean 42-class user error. Both f
 Pinned by `ddl_errors_probe_test.go` (asserts the clean codes). Other DDL errors were already clean (42F04
 db-exists, 42F63 db-missing, 42601 no-PK, 42F59 dup-template).
 
-### [ ] identifiers: quoted DDL column is created but unreferenceable by name (case-model divergence, found 2026-06-28)
+### [ ] identifiers: Go OVER-resolves a quoted DDL column that Java resolves only by its exact spelling (RFC-181 WS-N Phase D residual)
 
-Unquoted identifiers work correctly (case-insensitive, folded to upper case — `MyCol` resolves as
-MyCol/mycol/MYCOL; pinned by `identifier_case_probe_test.go`). But a column declared with a QUOTED identifier is
-mishandled:
-- `CREATE TABLE t (id BIGINT NOT NULL, "KeepCase" BIGINT, PRIMARY KEY (id))` succeeds; `INSERT INTO t (id,
-  "KeepCase") VALUES (1, 20)` succeeds; `SELECT *` shows the column as `KEEPCASE`.
-- But NO explicit reference resolves it: `SELECT keepcase` / `KEEPCASE` / `KeepCase` / `"KEEPCASE"` / `"KeepCase"`
-  all → `42703 column does not exist`. The column is effectively write-and-`SELECT *`-only — unreferenceable by
-  name in SELECT/WHERE.
+**REWRITTEN 2026-08-05 — the previous framing was REFUTED by measurement.** This entry used to claim
+that a quoted DDL column was "created but unreferenceable by name", with *no* reference form
+resolving it. That is false, and was false in both directions: the column resolves, and Go resolves
+*more* spellings than Java, not fewer. The old claim had never been measured against the Java server;
+it is the folklore case the watch-list contract exists to catch (road-to-prod.md entry 12, CQ-80).
 
-Root cause: an identifier-normalization mismatch across DDL storage, SELECT-* expansion, and explicit-reference
-resolution for quoted identifiers. Java has a consistent case-sensitivity model — `SemanticAnalyzer.normalizeString
-(string, caseSensitive)` ("taken as-is if caseSensitive, upper-cased otherwise") with an `isCaseSensitive` flag set
-per-identifier by quoting — so quoted identifiers round-trip (created and queried by the same quoted name). Fix =
-port Java's normalizeString/isCaseSensitive model so quoting consistently selects case-sensitive handling in DDL +
-resolution + star-expansion. Niche (mixed-case / reserved-word column names are uncommon) but a real divergence;
-deferred (threads through the catalog + semantic analyzer).
+Measured on both engines (`conformance/quoted_identifier_case_java_probe_test.go`), for
+`CREATE TABLE qcase (id BIGINT, "KeepCase" BIGINT, plain BIGINT, PRIMARY KEY (id))`:
 
-**Empirical diagnosis (CORRECTS the earlier framing — verify the real symptom before fixing):**
-- The `SELECT *` "shows KEEPCASE" observation is a RED HERRING — that is the JDBC result-set *display* name
-  (`jdbcColumnName`, select_helpers.go:29, upper-cases unquoted-looking labels; Java does the same). It is NOT the
-  stored column name and not the bug.
-- DDL does NOT fold the quoted case: `DOUBLE_QUOTE_ID` (RelationalLexer.g4:1332 = `'"' ~'"'+ '"'`) keeps the quotes,
-  so `parseTableDefinition` → `StripIdentifierQuotes(Uid().GetText())` (ddl.go:677) yields `"KeepCase"`→`KeepCase`
-  (preserved), and `builder.go:485` writes the proto field as `col.name` = `KeepCase`. So the on-disk proto field
-  IS `KeepCase` (case preserved) — and that should be wire-faithful, but VERIFY what Java's descriptor names it.
-- The real bug is in RESOLUTION: a `Fields().ByName(...)` lookup never matches the preserved-case field. Smoking gun
-  = INCONSISTENT normalization across the lookup sites: `ByName(parseColRef(name).bare())` (preserved) at
-  cascades_generator.go:2552/2627/2889 vs `ByName(strings.ToLower(name))` at :3493 vs the upper-folding SELECT
-  column-ref path. Empirically `SELECT "KeepCase"`, `KeepCase`, `KEEPCASE`, `keepcase`, AND `"KEEPCASE"` ALL →
-  42703 — i.e. no reference form (not even the exact stored/displayed name) resolves, which rules out a simple
-  one-sided case fold and points at the scope/column-registration step, not the reference normalizer alone.
-- Next-session fix: unify ALL column-resolution lookups on ONE Java-faithful `normalizeString` (quoted→as-is,
-  unquoted→upper) AND ensure the record-type→semantic-scope column registration keys columns by that same form;
-  then `SELECT "KeepCase"` resolves and `SELECT KeepCase` (unquoted→KEEPCASE) correctly does not. Add the e2e probe
-  + verify the proto field name matches Java (wire) before landing.
+| reference | Java | Go |
+|---|---|---|
+| `SELECT "KeepCase"` | ACCEPT, label `KeepCase`, 42 | ACCEPT, label `KEEPCASE`, 42 |
+| `SELECT KeepCase` | REJECT 42703 | ACCEPT 42 |
+| `SELECT "KEEPCASE"` | REJECT 42703 | ACCEPT 42 |
+| `SELECT "keepcase"` | REJECT 42703 | ACCEPT 42 |
+| `SELECT "PLAIN"` (unquoted DDL) | ACCEPT 7 | ACCEPT 7 |
+| `SELECT "plain"` (unquoted DDL) | REJECT 42703 | ACCEPT 7 |
+
+So the divergence is that Go's resolution is case-INSENSITIVE where Java treats quoting as
+case-PRESERVING. Go accepts references Java rejects; it never rejects one Java accepts.
+
+**Wire compat is intact, and that is MEASURED, not inferred** (`ddl_quoted_case_wire_test.go`): the
+stored proto descriptor keeps `KeepCase` verbatim off the real `CREATE TABLE` path while the
+unquoted sibling folds to `PLAIN`, so a Go-created and a Java-created table carry the same field
+name and each engine still reads the other's records. This is a read-side name-resolution
+divergence only.
+
+**Where it lives.** The permissive step is the case-insensitive fallback in
+`rlcatalog.recordTypeTable.LookupColumn` (`foldedIndex`), whose comment scopes it to raw-proto
+metadata that never saw DDL normalization but which also swallows the quoted-case distinction.
+Removing that fallback flips all three folded spellings to 42703 (verified as the mutation behind
+the pin). Note the fold is **over-determined** across the read-side name model: mutating
+`PositionalTypeForDescriptor`, the `cascades_translator` field naming, `StripIdentifierQuotes`, or
+`expr.sourceColumnOrdinal`'s `EqualFold` each left the SQL-visible behaviour unchanged. A fix must
+therefore be a name-model change, not a one-site patch — which is RFC-181 WS-N Phase D (the
+case-preserving row layout), already cited by `ddl.go` as the reason case-colliding quoted columns
+are rejected at CREATE.
+
+**The fix, unchanged in direction by the rewrite:** port Java's case-sensitivity model —
+`SemanticAnalyzer.normalizeString(string, caseSensitive)` ("taken as-is if caseSensitive,
+upper-cased otherwise") with an `isCaseSensitive` flag set per-identifier by quoting — so quoting
+consistently selects case-sensitive handling in resolution and star-expansion. Then
+`SELECT "KeepCase"` resolves (as it already does) and `SELECT KeepCase` / `"KEEPCASE"` /
+`"keepcase"` correctly do NOT (as they currently, wrongly, do). Niche — mixed-case quoted column
+names are uncommon, and the failure mode is over-acceptance rather than wrong rows or wrong bytes —
+but a real divergence. Gated on the WS-N name model because of the over-determination noted above.
+
+**What the earlier diagnosis got right, kept because it saves the next reader the re-derivation:**
+DDL does not fold the quoted case — `DOUBLE_QUOTE_ID` (RelationalLexer.g4 = `'"' ~'"'+ '"'`) keeps
+the quotes, so `StripIdentifierQuotes` yields `"KeepCase"`→`KeepCase` and the proto field is written
+preserved. That prediction is now confirmed by `ddl_quoted_case_wire_test.go` against the real DDL
+path rather than asserted from the source. **What it got wrong:** the conclusion that "no reference
+form resolves", including the exact spelling. Every reference form resolves; the exact one also
+resolves on Java. The old bullet listing the inconsistent `ByName` lookup sites was reasoning toward
+a symptom that does not exist.
 
 ### [x] dml: wire DML DRY RUN through to the dry-run store primitives (Java parity) — DONE (RFC-158)
 
@@ -10772,7 +10792,7 @@ None is speculative: each was re-verified against the tree before booking.
   probe kept as a regression, since it is the measurement that proved the current
   gates accidental.
 
-- [ ] **CQ-47 (HIGH) — binding-stress 0/50, every seed, un-root-caused.** · under
+- [x] **CQ-47 (HIGH) — binding-stress 0/50, every seed, un-root-caused.** · under
   investigation
   **Nightly Fuzz binding-stress, runs `30072919663` (07-24) and `30147568953`
   (07-25)** — `binding-stress: 0/50 pass, 50 fail, 0 FDB deaths (1000 ops/seed)`.
@@ -10783,6 +10803,35 @@ None is speculative: each was re-verified against the tree before booking.
   around 07-23, not at seed-specific behaviour.
   DONE = root-caused, fixed, pinned. Reproduce locally first:
   `bazelisk run //cmd/fdb-binding-stress -- -seeds 1 -seed-start 1`.
+
+  **DONE 2026-08-05.** Root cause: `python_fdb_tar` was built without
+  `--dereference`. Bazel stages an external repo's srcs as symlinks into the
+  execroot, so the archive stored absolute paths into the builder's own
+  output_base instead of file content. It therefore unpacked correctly only on
+  the tree that produced it — which is exactly why the lane never reproduced
+  locally while failing on every CI runner. Off that tree every member dangles,
+  `fdb/` unpacks as a directory with no importable `__init__.py`, and Python does
+  not error: it resolves `import fdb` to an empty implicit namespace package. The
+  tester then died on the first attribute it touched,
+  `AttributeError: module 'fdb' has no attribute 'api_version'`, identically for
+  all 50 seeds with the cluster healthy. The 08-04 nightly (job 91913623773)
+  printed the tell directly — `Python FDB client: None`, i.e. `fdb.__file__` was
+  None — after #583 improved the per-seed reporting.
+  The preflight #583 added to catch this class did not: a bare `import fdb`
+  succeeds on a namespace package, so the guard was fake. It now rejects a
+  `__file__`-less package explicitly and touches `fdb.api_version`.
+  Pinned by `TestPinnedPythonClientTarCarriesContentNotSymlinksIntoTheBuildTree`
+  (tar carries content, no link members) and
+  `TestPreflightRejectsAnEmptyNamespacePackage` (stages the exact broken shape).
+  Both go red under independent reverts of their own direction; the pre-existing
+  `TestPinnedPythonClientIsImportableNotTheCMakeTemplateTree` stays green on the
+  broken tar, since it only asserted entry *names* — that is the dimension that
+  was unprobed. Measured after the fix: api 100/100 × 1000 ops, directory
+  30/30 × 500 ops, 0 FDB deaths.
+  NOT part of this failure, seen once in the same 08-04 job and still unexplained:
+  seed 1 died at container start with `unable to apply cgroup configuration …
+  Message recipient disconnected from message bus` (FDB=DEAD) — a runner-side
+  systemd/dbus fault, not a harness or client defect.
 
 - [x] **CQ-48 (MED) — docs authority reconciliation: five living documents assert
   states the code has left behind.** · M
@@ -13675,8 +13724,9 @@ None is speculative: each was re-verified against the tree before booking.
   does, the `:3598` debt entry is DELETED (not moved), and the `dotted` bucket
   header drops accordingly.
 
-- [ ] **CQ-80 (MED, test-contract) — four watch-list entries claim a pin that
-  does not exist or cannot fail.** · S/M
+- [x] **CQ-80 (MED, test-contract) — four watch-list entries claim a pin that
+  does not exist or cannot fail. DONE — all four closed, two of them REFUTED
+  by the measurement.** · S/M
   `road-to-prod.md`'s watch-list states its own contract: *"Every entry is a
   committed test asserting CURRENT behavior; red means fixed."* Verifying that
   contract found four entries that break it. They are MARKED in the watch-list
@@ -13697,21 +13747,37 @@ None is speculative: each was re-verified against the tree before booking.
     log-and-return fake pin is deleted; the real Java-parity pins live in
     `sqldriver/null_pk_java_parity_test.go`, red under both the stores-0 and
     the rejects-NULL mutations. The watch-list entry is retired to REFUTED.
-  - **Entry 8, `UNION ALL` + trailing `ORDER BY` — half-pinned.** Go's side is
-    pinned (`yamsql/testdata/union_columns.yaml`); the Java side rests on a
-    prose record of a live probe in `DIVERGENCES.md`, not a committed
-    cross-engine pin.
-  - **Entry 12, quoted DDL column unreferenceable by name — no test, and partly
-    REFUTED.** `yamsql/testdata/quoted_identifier_pins.yaml` pins that a quoted
-    column DOES resolve in projection, predicate and ORDER BY. The surviving
-    residue is **mixed-case** quoted (`"KeepCase"`), unmeasured since
-    2026-06-28 and mentioned only in a comment saying it is "not exercised
-    here". The entry is narrowed to that residue.
+  - [x] **Entry 8, `UNION ALL` + trailing `ORDER BY` — DONE, divergence
+    CONFIRMED.** Go's side was already pinned; the Java side rested on a prose
+    record of a live probe in `DIVERGENCES.md`. Now measured every run by
+    `conformance/union_trailing_orderby_java_probe_test.go`: Java orders the
+    right leg only, Go the combined result. *Measured while pinning:* Java's
+    `UNION ALL` does not concatenate its legs in a fixed order (`[1 6 2 5]` one
+    run, `[2 1 6 5]` the next), so the pin asserts PER-LEG subsequences — each
+    leg is a PK scan and its own relative order is stable. The
+    "Java did not sort the union" check is restricted to fixtures where no
+    legal right-leg-only interleaving can equal the combined sort (DESC over PK
+    legs; ASC over a non-key column whose natural order descends). ASC over PK
+    legs structurally cannot carry that claim and is marked as such.
+  - [x] **Entry 12, quoted DDL column unreferenceable by name — DONE, and the
+    divergence REFUTED AND INVERTED.** `SELECT "KeepCase"` returns the value on
+    Go exactly as on Java, in projection and in a predicate — the column IS
+    referenceable. The real divergence runs the OTHER way: Go over-resolves
+    (`KeepCase`, `"KEEPCASE"`, `"keepcase"` all bind) where Java raises 42703
+    for every spelling but the exact one. Pinned by
+    `conformance/quoted_identifier_case_java_probe_test.go`; wire compat
+    measured intact by
+    `pkg/relational/core/embedded/ddl_quoted_case_wire_test.go` (the stored
+    descriptor keeps `KeepCase` off the real `CREATE TABLE` path). See the
+    identifier-divergence item above, rewritten to the measured direction.
   **Booked 2026-08-01.** Deliberately not fixed in the pass that found them:
   that pass was docs-only, and four test fixes across three packages are a code
   lap with its own review. Recorded here in full so the next fixer does not have
-  to re-derive which four and why. **Entries 2 and 4 landed 2026-08-01** (see
-  their bullets); 8 and 12 remain.
+  to re-derive which four and why. **Entries 2 and 4 landed 2026-08-01; entries
+  8 and 12 landed 2026-08-05.** Two of the four (2 and 12) were REFUTED by the
+  act of measuring them — which is the argument for the section contract rather
+  than an embarrassment to it. Every entry now cites the pin that would red if
+  its behaviour changed.
   DONE = each of the four has a committed test that goes RED with the
   divergence present, per "EVERY PROOF GETS COMMITTED AS A TEST"; entry 12's
   mixed-case residue is MEASURED before it is pinned (it may be closed already);

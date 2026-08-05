@@ -448,6 +448,7 @@ go_test(
         "sim_sql_autocommit_1021_exhaustion_test.go",
         "sim_sql_explicit_tx_fault_test.go",
         "sim_sql_fault_test.go",
+        "sim_sql_page_commit_retry_test.go",
         "sim_sql_test.go",
         "sim_sql_tx_budget_test.go",
         "sim_sql_workload_test.go",

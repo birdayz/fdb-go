@@ -220,3 +220,70 @@ type MemoryLimitExceededError struct {
 func (e *MemoryLimitExceededError) Error() string {
 	return fmt.Sprintf("statement memory budget exceeded: %d bytes buffered exceeds limit %d bytes", e.Used, e.Limit)
 }
+
+// SnapshotRecursionLevels copies the recursion-level counts so a caller that is
+// about to run a RETRYABLE unit of work can restore them if that work is
+// re-executed. Returns nil when there is nothing tracked (the overwhelmingly
+// common case — no recursive CTE in the statement), which RestoreRecursionLevels
+// handles as "restore to empty".
+//
+// WHY ONLY THIS MEMBER. ExecuteState's two mutable members answer different
+// questions and therefore roll back differently:
+//
+//   - memUsed is a LIVE-OCCUPANCY gauge, not a running total. Every charge has a
+//     matching release on teardown (boundedBuffer.charged →
+//     ReleaseMemory, chargeReleasingCursor.Close), and the SQL layer's page
+//     closure closes its result set on the way out of a failed attempt as well
+//     as a successful one. A re-executed attempt therefore returns the gauge to
+//     its own entry value without help, and rolling it back HERE would be wrong
+//     twice over: it would double-release what teardown already released, and it
+//     would discard charges belonging to buffers that are still live because
+//     they outlive the page. Statement-cumulative by design, deliberately not
+//     rolled back.
+//   - recursionLevels is a POSITION: it counts how far into a resumable
+//     recursion this statement has walked, and a resumed cursor deliberately
+//     does NOT reset it (newRecursiveUnionCursor only resets on a nil
+//     continuation, or a cyclic CTE that pages mid-recursion would never trip
+//     the cap). That is exactly what makes it unsafe under re-execution — an
+//     attempt that walked k levels and then failed leaves those k counted, and
+//     the re-execution walks the same k again. A finite CTE approaching the cap
+//     then fails with a depth error it did not earn. Position, so it rolls back
+//     with the rest of the page's position.
+//
+// A member added later belongs on one of those two sides, and the question to
+// ask is not "is it a counter" but "does re-executing the work that moved it
+// move it again": if yes it is position and belongs here.
+func (s *ExecuteState) SnapshotRecursionLevels() map[any]int {
+	if s == nil || len(s.recursionLevels) == 0 {
+		return nil
+	}
+	snapshot := make(map[any]int, len(s.recursionLevels))
+	for k, v := range s.recursionLevels {
+		snapshot[k] = v
+	}
+	return snapshot
+}
+
+// RestoreRecursionLevels puts the recursion-level counts back to a snapshot
+// taken by SnapshotRecursionLevels, discarding anything counted since. A nil
+// snapshot restores the empty state — which is the correct meaning, not a
+// no-op: it is what a snapshot taken before the first level was counted says.
+//
+// Restoring rather than subtracting is deliberate: an attempt may have both
+// incremented some ids and RESET others (checkDepth frees an entry when an
+// invocation ends or aborts), so only wholesale replacement returns the map to
+// what the retried work will re-derive.
+func (s *ExecuteState) RestoreRecursionLevels(snapshot map[any]int) {
+	if s == nil {
+		return
+	}
+	if len(snapshot) == 0 {
+		s.recursionLevels = nil
+		return
+	}
+	restored := make(map[any]int, len(snapshot))
+	for k, v := range snapshot {
+		restored[k] = v
+	}
+	s.recursionLevels = restored
+}

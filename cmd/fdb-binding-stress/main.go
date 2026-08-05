@@ -407,8 +407,26 @@ func installPythonFDB(btRunDir string) {
 // cannot import its client. Without this the import error surfaces once per
 // seed, as an opaque exec status, after minutes of spinning up FDB containers
 // that never get used.
+//
+// A bare `import fdb` is not enough to establish that, and believing it was cost
+// a fleet-wide lane. When `fdb/` unpacks without an importable `__init__.py`,
+// Python does not fail: it resolves the name to an implicit namespace package,
+// so the import succeeds, `__file__` is None, and the package is empty. The
+// preflight therefore has to touch something the real client defines —
+// api_version is the first thing the tester itself calls — and reject the
+// file-less namespace case explicitly.
+const preflightPythonProgram = `
+import fdb
+if not getattr(fdb, "__file__", None):
+    raise SystemExit(
+        "'import fdb' resolved to an implicit namespace package (__file__ is None): "
+        "the directory exists but has no importable __init__.py, so the package is empty")
+fdb.api_version
+print(fdb.__file__)
+`
+
 func preflightPythonFDB(btRunDir string) {
-	cmd := exec.Command("python3", "-c", "import fdb; print(fdb.__file__)")
+	cmd := exec.Command("python3", "-c", preflightPythonProgram)
 	cmd.Dir = btRunDir
 	cmd.Env = append(os.Environ(), "PYTHONPATH="+btRunDir)
 	out, err := cmd.CombinedOutput()
