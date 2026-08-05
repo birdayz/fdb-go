@@ -485,16 +485,38 @@ func (store *FDBRecordStore) areAllRecordTypesSince(index *Index, oldMetaDataVer
 func (store *FDBRecordStore) checkPossiblyRebuildRecordCounts(storeHeader *gen.DataStoreInfo) (bool, error) {
 	currentKey := store.metaData.GetRecordCountKey()
 
+	// The header's format version, already reconciled by maybeUpgradeFormatVersion
+	// above — the analog of Java's `formatVersion` field, which checkPossiblyRebuild
+	// sets to max(oldFormatVersion, requested) before reaching here.
+	headerFormatVersion := storeHeader.GetFormatVersion()
+
 	var needRebuild bool
 	if currentKey != nil {
 		// Current metadata has a count key — check if header matches.
-		currentKeyProto := currentKey.ToKeyExpression()
-		storedKeyProto := storeHeader.GetRecordCountKey()
-		if storedKeyProto == nil || !proto.Equal(currentKeyProto, storedKeyProto) {
-			needRebuild = true
+		//
+		// GATED, and the gate is load-bearing rather than defensive. Below
+		// RECORD_COUNT_KEY_ADDED(3) the header CANNOT carry a count key (nothing is
+		// allowed to write one — see createStoreHeaderAtFormat and the assignment
+		// below), so an ungated comparison reads that permanent, correct absence as
+		// "the metadata's count key changed" on EVERY open. The consequences
+		// compound: it clears the counters, then scans every record in the store
+		// inline inside the store-open transaction — unbounded work that a large
+		// store cannot reopen past FDB's 5s/10MB limits — and then writes the
+		// v3-only key into a v2 header anyway, undoing the creation gate.
+		//
+		// Java puts the same isAtLeast INSIDE this OR-arm
+		// (FDBRecordStore.java:5117-5118).
+		if headerFormatVersion >= formatVersionRecordCountKeyAdded {
+			currentKeyProto := currentKey.ToKeyExpression()
+			storedKeyProto := storeHeader.GetRecordCountKey()
+			if storedKeyProto == nil || !proto.Equal(currentKeyProto, storedKeyProto) {
+				needRebuild = true
+			}
 		}
 	} else if storeHeader.GetRecordCountKey() != nil {
-		// Current metadata removed count key — clear stale data.
+		// Current metadata removed count key — clear stale data. Deliberately NOT
+		// gated, matching Java's third arm (:5120): a header that HAS a key is by
+		// construction at >= 3 already, and clearing stale counts is always safe.
 		needRebuild = true
 	}
 
@@ -511,11 +533,27 @@ func (store *FDBRecordStore) checkPossiblyRebuildRecordCounts(storeHeader *gen.D
 		store.context.Transaction().ClearRange(countSub)
 	}
 
-	// Update header with the new (or cleared) count key.
-	if currentKey != nil {
-		storeHeader.RecordCountKey = currentKey.ToKeyExpression()
-	} else {
-		storeHeader.RecordCountKey = nil
+	// Update header with the new (or cleared) count key — but only at a format
+	// version that HAS the field. Java wraps both the set and the clear in the same
+	// isAtLeast (FDBRecordStore.java:5130-5136); writing it below 3 would put a
+	// field in the header that an instance honouring that version does not expect,
+	// which is the same wire hazard createStoreHeaderAtFormat guards at birth.
+	//
+	// UNREACHABLE-BY-CONSTRUCTION while the comparison gate above holds, and kept
+	// anyway — do not delete it as dead code. Below version 3 neither arm can set
+	// needRebuild: the first is gated, and the second requires a header that
+	// already HAS a count key, which nothing below 3 is allowed to write. So this
+	// branch only becomes reachable if the gate above is weakened, and then it is
+	// the last thing standing between that weakening and a v3-only field in a v2
+	// header. Mutating the two gates separately shows exactly that split: dropping
+	// the comparison gate alone reds the rescan assertion, dropping both reds the
+	// header assertion that this line is responsible for.
+	if headerFormatVersion >= formatVersionRecordCountKeyAdded {
+		if currentKey != nil {
+			storeHeader.RecordCountKey = currentKey.ToKeyExpression()
+		} else {
+			storeHeader.RecordCountKey = nil
+		}
 	}
 
 	// Rebuild counts by scanning all records (only if key is set and not disabled).

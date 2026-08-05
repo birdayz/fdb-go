@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -205,6 +206,107 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 			int32(formatVersionRecordCountState), true, true),
 		Entry("born at the current version: key yes, state yes",
 			int32(formatVersionCurrent), true, true),
+	)
+
+	// The MIRROR of the creation gate, on the reconciliation path. The two must
+	// agree or they fight: creation correctly withholds the record-count key below
+	// RECORD_COUNT_KEY_ADDED(3), and if checkPossiblyRebuildRecordCounts is not
+	// gated the same way it reads that permanent, correct absence as "the count key
+	// changed" on EVERY reopen — clearing the counters, rescanning every record
+	// INLINE in the store-open transaction (unbounded; a large store then cannot
+	// reopen at all past FDB's 5s/10MB limits), and writing the v3-only key into a
+	// v2 header anyway, undoing the creation gate.
+	//
+	// Java gates both halves: the comparison arm at FDBRecordStore.java:5117-5118
+	// and the assignment at :5130-5136.
+	//
+	// The sentinel is what makes "no rescan" observable. Record saves maintain
+	// counts off the METADATA's key, so the count subspace is non-empty at v2
+	// either way; but a rebuild CLEARS that subspace before re-deriving it, so a
+	// planted key surviving the reopen proves no clear-and-rescan happened.
+	DescribeTable("does not reconcile a record-count key the birth format version cannot hold",
+		func(pinned int32, wantKeyAfterReopen bool, wantSentinelSurvives bool) {
+			ks := specSubspace()
+			cntBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			cntBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			cntBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			cntBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			cntBuilder.SetRecordCountKey(EmptyKey())
+			cntMetaData, bErr := cntBuilder.Build()
+			Expect(bErr).NotTo(HaveOccurred())
+
+			sentinel := func(store *FDBRecordStore) fdb.Key {
+				return fdb.Key(store.subspace.Sub(RecordCountKey).Pack(tuple.Tuple{"zzz_sentinel"}))
+			}
+
+			// Create, save records, and plant the sentinel.
+			_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+				store, oErr := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(cntMetaData).
+					SetSubspace(ks).SetFormatVersion(pinned).CreateOrOpen()
+				if oErr != nil {
+					return nil, oErr
+				}
+				for _, id := range []int64{1, 2} {
+					if _, sErr := store.SaveRecord(&gen.Order{
+						OrderId: proto.Int64(id), Price: proto.Int32(int32(id * 10)),
+					}); sErr != nil {
+						return nil, sErr
+					}
+				}
+				rtx.Transaction().Set(sentinel(store), []byte("planted"))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// REOPEN — this is the path under test.
+			_, err = sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+				store, oErr := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(cntMetaData).
+					SetSubspace(ks).SetFormatVersion(pinned).Open()
+				if oErr != nil {
+					return nil, oErr
+				}
+				header := store.GetStoreHeader()
+				Expect(header.GetFormatVersion()).To(Equal(pinned),
+					"the reopen moved the header's format version, so this case proves nothing")
+
+				if wantKeyAfterReopen {
+					Expect(header.RecordCountKey).NotTo(BeNil(),
+						"at format %d (>= RECORD_COUNT_KEY_ADDED) reconciliation must persist the "+
+							"metadata's record-count key", pinned)
+				} else {
+					Expect(header.RecordCountKey).To(BeNil(),
+						"reopening a store born at format %d wrote a record-count key into a header "+
+							"that predates RECORD_COUNT_KEY_ADDED(%d) — the reconciliation path must "+
+							"be gated exactly like store creation, or it undoes the creation gate on "+
+							"the very next open", pinned, formatVersionRecordCountKeyAdded)
+				}
+
+				planted, gErr := rtx.Transaction().Get(sentinel(store)).Get()
+				Expect(gErr).NotTo(HaveOccurred())
+				if wantSentinelSurvives {
+					Expect(planted).NotTo(BeEmpty(),
+						"the sentinel planted in the record-count subspace was cleared, so reopening a "+
+							"store born at format %d ran a full clear-and-rescan of every record inside "+
+							"the store-open transaction. That is unbounded work: a large store would "+
+							"stop being able to reopen at all", pinned)
+				} else {
+					Expect(planted).To(BeEmpty(),
+						"at format %d the count key genuinely changed (absent in header, present in "+
+							"metadata), so reconciliation SHOULD clear and rebuild — a surviving "+
+							"sentinel means the gate is now suppressing a rebuild that must happen",
+						pinned)
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		},
+		// Below the gate: nothing written, nothing rescanned, ever.
+		Entry("born at 2: no key written, no rescan", int32(2), false, true),
+		// At/above the gate: unchanged pre-existing behaviour. The header is written
+		// at creation, so the reopen finds it already correct and still does not
+		// rebuild; the key must be present either way.
+		Entry("born at 3: key present", int32(formatVersionRecordCountKeyAdded), true, true),
+		Entry("born at the current version: key present", int32(formatVersionCurrent), true, true),
 	)
 
 	// The contrast half: at a sufficient version each feature must actually work,
