@@ -1906,16 +1906,22 @@ func (r *paginatingRows) fetchPage() error {
 	// The invariant is the ordinary transactional one — a result set's position
 	// advances with the transaction that produced it, or not at all — and it is
 	// kept structurally, by the assignment site, rather than by argument about
-	// which failures can reach it. (Today none can: an auto-commit SELECT page
-	// is read-only, so its commit takes FDB's client-side read-only fast path
-	// and never returns not_committed; DML materializes its whole target set and
-	// so is always single-page; and a captured explicit transaction is not
-	// retried at all. Each of those is a property of code elsewhere, which is
-	// exactly why this must not depend on them — the tests that pin them name
-	// what re-arms this if one is relaxed.)
+	// which failures can reach it.
 	//
-	// r.buf needs no staging: the closure truncates it at the top of every
-	// attempt, so it is idempotent by construction.
+	// It is REACHED, not merely defended against. A SELECT page is not
+	// necessarily read-only: storeIn opens the record store per page and does
+	// NOT SetSkipPossiblyRebuild, so every page runs checkPossiblyRebuild, which
+	// WRITES the store header when it upgrades a below-current format version,
+	// when the record-count key changed, or when the metadata version moved (that
+	// arm rebuilds indexes inline). A store written by an older writer — Java at
+	// a lower FormatVersion is the ordinary case — therefore makes the FIRST page
+	// of a plain auto-commit SELECT a write-carrying transaction, whose commit
+	// goes to the resolver and can come back not_committed. Before this staging,
+	// that conflict cost the caller page 1's rows with no error raised.
+	//
+	// r.buf needs no staging on the SUCCESS path: the closure truncates it at the
+	// top of every attempt, so a retry cannot see a previous attempt's rows. It
+	// does need clearing on the FAILURE path — see the error branch below.
 	var pageExhausted bool
 	var pageCont []byte
 
@@ -2043,6 +2049,19 @@ func (r *paginatingRows) fetchPage() error {
 	})
 
 	if txErr != nil {
+		// The page did not happen, so its partial rows are not results. They are
+		// still sitting in r.buf with bufPos at 0, and nextRow SERVES THE BUFFER
+		// BEFORE it consults r.exhausted or r.fetchErr — so a caller that reaches
+		// nextRow again would be handed rows from a transaction that never
+		// committed, as though they were a page.
+		//
+		// Nothing reaches it today only because database/sql stops iterating at
+		// the first error. That is a property of the CALLER, not of this loop,
+		// and it is not something reordering the checks in nextRow would fix:
+		// buffered rows must not outlive the transaction that produced them, and
+		// dropping them here is what makes that true.
+		r.buf = r.buf[:0]
+		r.bufPos = 0
 		return translateExecErrorCtx(r.ctx, txErr)
 	}
 	// The page's transaction committed. Only now does the result set's position

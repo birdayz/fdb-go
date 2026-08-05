@@ -10,50 +10,71 @@ package sqldriver
 // rows the failed attempt drained, having just discarded that attempt's buffer.
 // The rows vanish silently — no error, no duplicate, a short result set.
 //
-// REACHABILITY, MEASURED. On this head no production shape can drive the
-// closure a second time. Three independent properties, each owned elsewhere,
-// close the window — and each is pinned below, because relaxing any ONE of them
-// re-arms the defect:
+// REACHABILITY, MEASURED — and the ordinary shape reaches it.
 //
-//	1. An auto-commit SELECT page is READ-ONLY, and FDB completes a commit with
-//	   no mutations and no write conflict ranges client-side, with no proxy
-//	   round-trip (ReadYourWrites.actor.cpp's read-only fast path, modelled in
-//	   pkg/simfdb/conflict.go). It cannot come back not_committed.
-//	2. DML would carry the writes that make a page's commit fault-able, but DML
-//	   NEVER PAGINATES: executeDelete/executeInsert/executeUpdate each
+// A SELECT page is NOT read-only. fetchPage opens the record store per page
+// through storeIn, which never calls SetSkipPossiblyRebuild, so every page runs
+// StoreBuilder.Open() → checkPossiblyRebuild. That WRITES the store header on
+// three arms: maybeUpgradeFormatVersion (a persisted format version below
+// formatVersionCurrent), checkPossiblyRebuildRecordCounts (the record-count key
+// changed), and the metadata-version-moved arm (which rebuilds indexes inline).
+// A store last written by an older writer — Java pinned at a lower FormatVersion
+// is the everyday case — therefore makes the FIRST page of a plain auto-commit
+// SELECT a WRITE-CARRYING transaction. Its commit goes to the resolver, a
+// concurrent writer can make it not_committed, and before the fix that cost the
+// caller page 1's rows with no error raised. TestPageRetry_StaleFormatHeader…
+// below builds exactly that and is red on the unfixed code end to end.
+//
+// So this was SHIPPED, not latent. Two properties do narrow it, and both are
+// pinned below because each is owned by code elsewhere and relaxing either
+// widens this further:
+//
+//	1. DML NEVER PAGINATES: executeDelete/executeInsert/executeUpdate each
 //	   materialize the whole target set through CollectAllBounded and return a
 //	   list cursor, so a DML statement is always exactly one page and has no
-//	   continuation to advance.
-//	3. An explicit transaction is NOT RETRIED at all — runInCapturedTx calls the
-//	   closure directly when a transaction was captured, so RFC-198's
-//	   write-carrying SELECT pages have no retry loop to inherit anything.
+//	   continuation to advance. (Pinned: TestPageRetry_DMLIsSinglePage.)
+//	2. An explicit transaction is NOT RETRIED — runInCapturedTx calls the closure
+//	   directly when a transaction was captured, so RFC-198's write-carrying
+//	   SELECT pages have no retry loop to inherit anything. (Pinned:
+//	   TestPageRetry_ExplicitTransactionPagesBypassTheRetryLoop.)
 //
-// That makes this a LATENT defect rather than a shipped one, and it is why the
-// regression below drives the retry through a backend wrapper instead of a SQL
-// shape: no black-box query reaches the window today, and a test that cannot go
-// red is not coverage. The wrapper fails ONE page's transaction with a
-// retryable not_committed AFTER the closure completed — precisely the shape of
-// a commit-time conflict — and asserts the paging loop survives it.
+// Coverage here is deliberately two-layer. The e2e above proves the defect on
+// the real production shape with an ordinary injected commit fault, but it can
+// only reach page ONE — the header write happens once, and every later page is
+// read-only again. Pages 2..n are covered by a backend wrapper that fails a
+// chosen page's transaction retryably after its closure completed; that is the
+// same failure the resolver produces, applied where SimFDB's faithful read-only
+// commit fast path would otherwise swallow an injected fault.
 //
 // WHAT LET IT THROUGH. Pagination and commit faults were each well covered, on
 // disjoint axes: the sqlpage oracle (pkg/simfdb/hunt/sqlpage) paginates whole
 // SQL queries hard but runs with faults OFF, and the sim SQL fault tests inject
 // at commit but drive single-page statements. The defect lives only at the
-// crossing, which nothing reached.
+// crossing, which nothing reached. The reason it was first written up as latent
+// is worth keeping: "an auto-commit SELECT is read-only" was inferred from the
+// query path and never checked against the store-open path, which is where the
+// writes are.
 
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
 	"sync/atomic"
 	"testing"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
+	relkeyspace "fdb.dev/pkg/relational/core/keyspace"
+	"fdb.dev/pkg/relational/core/metadata"
 	"fdb.dev/pkg/simfdb"
 )
 
@@ -70,14 +91,16 @@ const pageRetryScanLimit = 2
 //
 // It models a commit-time not_committed: the closure did all its work, the
 // transaction then failed and rolled back, and SimFDB's own Transact loop
-// re-executes the closure. That re-execution is the only thing this test needs
-// and the one thing no SQL shape can currently produce (see the reachability
-// note above). Raising the error from inside fn rather than from commit is
-// deliberate — SimFDB faithfully models FDB's read-only commit fast path, which
-// would swallow an injected commit fault on exactly the read-only page
-// transactions under test, and the failure being modelled is not about WHERE
-// the error is raised but about the closure being re-run with the result set's
-// position already moved.
+// re-executes the closure.
+//
+// It exists to reach pages 2..n, NOT because the defect needs a harness — the
+// stale-format e2e reaches page one with an ordinary injected fault and no
+// wrapper. Later pages are read-only again (the header upgrade happens once),
+// and SimFDB faithfully models FDB's client-side read-only commit fast path, so
+// an injected commit fault on those pages is correctly swallowed. Raising the
+// error from inside fn instead reproduces the same observable — the closure
+// re-run with the result set's position already moved — on pages an injected
+// commit fault cannot reach.
 //
 // Arming is by transaction ORDINAL so a test can choose which page fails.
 // SimDB has no TransactCtx, so overriding Transact covers every route through
@@ -93,12 +116,33 @@ type retryOnceBackend struct {
 	// fired records whether the injection actually happened, so a test fails
 	// loudly rather than passing because nothing was exercised.
 	fired atomic.Bool
+	// permanent keeps the failure armed across the retry loop's attempts, so
+	// the transaction exhausts instead of succeeding on the second try.
+	permanent atomic.Bool
+	// simInjectAt is the ordinal at which to hand the fault to SIMFDB itself
+	// (InjectOnce) rather than raise it from the wrapper, or -1 for none. This
+	// is a PLACEMENT mechanism only: the fault that results is the sim's own
+	// commit-time not_committed, subject to its read-only commit fast path, so
+	// a page that carries no writes still correctly sees nothing.
+	simInjectAt atomic.Int64
 }
 
 func newRetryOnceBackend(sim *simfdb.SimDB) *retryOnceBackend {
 	b := &retryOnceBackend{SimDB: sim}
 	b.failAt.Store(-1)
+	b.simInjectAt.Store(-1)
 	return b
+}
+
+// armSimInjectAt schedules SimFDB's OWN not_committed at the commit of the nth
+// transaction from now. Unlike arm/armPermanent this raises nothing itself — it
+// only places a real injected commit fault on a chosen transaction, which is
+// what lets a test target one specific page without guessing how many
+// transactions the connection makes first.
+func (b *retryOnceBackend) armSimInjectAt(n int64) {
+	b.seen.Store(0)
+	b.fired.Store(false)
+	b.simInjectAt.Store(n)
 }
 
 // arm schedules the failure for the nth transaction started from now.
@@ -108,19 +152,41 @@ func (b *retryOnceBackend) arm(n int64) {
 	b.failAt.Store(n)
 }
 
-func (b *retryOnceBackend) disarm() { b.failAt.Store(-1) }
+// armPermanent makes the nth transaction fail retryably on EVERY attempt, so
+// SimFDB's retry loop exhausts and the error reaches fetchPage as a terminal
+// failure. That is the state in which a page's partial buffer and its
+// unearned exhaustion flag would otherwise survive.
+func (b *retryOnceBackend) armPermanent(n int64) {
+	b.seen.Store(0)
+	b.fired.Store(false)
+	b.permanent.Store(true)
+	b.failAt.Store(n)
+}
+
+func (b *retryOnceBackend) disarm() {
+	b.failAt.Store(-1)
+	b.permanent.Store(false)
+	b.simInjectAt.Store(-1)
+}
 
 func (b *retryOnceBackend) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
 	ordinal := b.seen.Add(1) - 1
+	if target := b.simInjectAt.Load(); target >= 0 && target == ordinal {
+		b.simInjectAt.Store(-1)
+		b.fired.Store(true)
+		b.SimDB.InjectOnce(1020)
+	}
 	return b.SimDB.Transact(func(tx fdb.WritableTransaction) (any, error) {
 		result, err := fn(tx)
 		if err != nil {
 			return result, err
 		}
 		if target := b.failAt.Load(); target >= 0 && target == ordinal {
-			// One shot: clear before returning so the retry succeeds.
-			b.failAt.Store(-1)
 			b.fired.Store(true)
+			if !b.permanent.Load() {
+				// One shot: clear before returning so the retry succeeds.
+				b.failAt.Store(-1)
+			}
 			return nil, fdb.Error{Code: 1020} // not_committed
 		}
 		return result, nil
@@ -288,6 +354,263 @@ func TestPageRetry_NoFailureIsUnchanged(t *testing.T) {
 	}
 }
 
+// staleFormatVersion is one step below formatVersionCurrent (14,
+// FULL_STORE_LOCK). A header carrying it is what a store last written by an
+// older writer looks like, and it is the cheapest way to arm the header-write
+// arm of checkPossiblyRebuild: maybeUpgradeFormatVersion rewrites the header
+// whenever the persisted version differs from current, with no other migration
+// work on this step.
+//
+// If formatVersionCurrent ever moves, this stays one-below by construction only
+// if it is updated with it — TestPageRetry_StoreOpenWritesHeaderOnStaleFormat
+// fails loudly rather than silently measuring a no-op, because it asserts the
+// header actually changed.
+const staleFormatVersion = 13
+
+// pageRetrySchemaSubspace returns the subspace the driver stored the schema
+// under. The driver canonicalises the schema name to upper case, so an
+// out-of-band handle must ask for the same name the driver wrote.
+func pageRetrySchemaSubspace(t *testing.T) subspace.Subspace {
+	t.Helper()
+	ss, err := relkeyspace.New(subspace.Sub()).SchemaSubspace("/simdb", "S")
+	if err != nil {
+		t.Fatalf("schema subspace: %v", err)
+	}
+	return ss
+}
+
+// setStoreFormatVersion rewrites the persisted store header's format version
+// out of band, making the store look like one an older writer left behind.
+func setStoreFormatVersion(t *testing.T, ctx context.Context, rdb *recordlayer.FDBDatabase, ss subspace.Subspace, v int32) {
+	t.Helper()
+	key := ss.Pack(tuple.Tuple{recordlayer.StoreInfoKey})
+	if _, err := rdb.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		raw, err := rctx.Transaction().Get(key).Get()
+		if err != nil {
+			return nil, err
+		}
+		if len(raw) == 0 {
+			return nil, fmt.Errorf("no store header at %x: the schema was not created where "+
+				"this test looks for it", []byte(key))
+		}
+		hdr := &gen.DataStoreInfo{}
+		if err := hdr.UnmarshalVT(raw); err != nil {
+			return nil, err
+		}
+		hdr.FormatVersion = &v
+		out, err := hdr.MarshalVT()
+		if err != nil {
+			return nil, err
+		}
+		rctx.Transaction().Set(key, out)
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("set store format version: %v", err)
+	}
+}
+
+// readStoreFormatVersion reads the persisted store header's format version.
+func readStoreFormatVersion(t *testing.T, ctx context.Context, rdb *recordlayer.FDBDatabase, ss subspace.Subspace) int32 {
+	t.Helper()
+	key := ss.Pack(tuple.Tuple{recordlayer.StoreInfoKey})
+	v, err := rdb.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		raw, err := rctx.Transaction().Get(key).Get()
+		if err != nil {
+			return nil, err
+		}
+		hdr := &gen.DataStoreInfo{}
+		if err := hdr.UnmarshalVT(raw); err != nil {
+			return nil, err
+		}
+		return hdr.GetFormatVersion(), nil
+	})
+	if err != nil {
+		t.Fatalf("read store format version: %v", err)
+	}
+	return v.(int32)
+}
+
+// pageRetryMetaData rebuilds, outside the SQL layer, the metadata the driver
+// created for the one-table schema these tests use. The out-of-band store
+// builder needs the same metadata the SQL page opens with, or checkPossiblyRebuild
+// would be answering a different question than the one under test.
+func pageRetryMetaData(t *testing.T) *recordlayer.RecordMetaData {
+	t.Helper()
+	b := metadata.NewSchemaTemplateBuilder().SetName("tmpl")
+	b.AddTable("T", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("ID", api.NewLongType(true), 1),
+		metadata.NewColumnSpec("A", api.NewLongType(true), 2),
+	}, []string{"ID"})
+	tmpl, err := b.Build()
+	if err != nil {
+		t.Fatalf("build out-of-band metadata: %v", err)
+	}
+	return tmpl.Underlying()
+}
+
+// TestPageRetry_StoreOpenWritesHeaderOnStaleFormat is the fact the whole
+// reachability argument rests on, pinned on its own: opening a record store is
+// not a read. A transaction that does nothing but Open() a store whose
+// persisted format version is below current PERSISTS a header upgrade.
+//
+// That is what makes a plain auto-commit SELECT's first page write-carrying,
+// and therefore what makes its commit able to return not_committed.
+//
+// SCOPE, measured rather than assumed: this pins the RECORD-LAYER fact only. It
+// opens the store through its own builder, so it goes red if
+// checkPossiblyRebuild stops persisting the upgrade, or if formatVersionCurrent
+// moves to or below staleFormatVersion without that constant following it — and
+// it does NOT notice if the SQL layer stops reaching this path. Adding
+// SetSkipPossiblyRebuild to storeIn leaves this test green (verified). The SQL
+// WIRING is guarded instead by the vacuity check inside the e2e below, which
+// asserts the header actually moved during the query and fails with "this test
+// armed nothing" when it did not. Two facts, two guards; neither covers the
+// other.
+func TestPageRetry_StoreOpenWritesHeaderOnStaleFormat(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db, backend := openRetryOnceSchema(t, 9500,
+		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
+	mustExecSQL(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 1)")
+
+	rdb := recordlayer.NewFDBDatabaseWithBackend(backend)
+	ss := pageRetrySchemaSubspace(t)
+
+	if got := readStoreFormatVersion(t, ctx, rdb, ss); got == staleFormatVersion {
+		t.Fatalf("the freshly created store already carries format version %d, which is the "+
+			"value this test writes to make it look STALE. formatVersionCurrent has moved to "+
+			"or below %d and staleFormatVersion must follow it, or this test proves nothing",
+			got, staleFormatVersion)
+	}
+	current := readStoreFormatVersion(t, ctx, rdb, ss)
+
+	setStoreFormatVersion(t, ctx, rdb, ss, staleFormatVersion)
+	if got := readStoreFormatVersion(t, ctx, rdb, ss); got != staleFormatVersion {
+		t.Fatalf("format version is %d after writing %d: the out-of-band header rewrite did "+
+			"not take, so nothing below is armed", got, staleFormatVersion)
+	}
+
+	// A transaction that does nothing but open the store, exactly as a SELECT
+	// page's storeIn does — same builder settings, no SetSkipPossiblyRebuild.
+	if _, err := rdb.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		_, openErr := recordlayer.NewStoreBuilder().
+			SetDatabase(rdb).
+			SetContext(rctx).
+			SetSubspace(ss).
+			SetMetaDataProvider(pageRetryMetaData(t)).
+			SetStoreStateCache(recordlayer.PassThroughStoreStateCache()).
+			Open()
+		return nil, openErr
+	}); err != nil {
+		t.Fatalf("Open()-only transaction: %v", err)
+	}
+
+	if got := readStoreFormatVersion(t, ctx, rdb, ss); got != current {
+		t.Fatalf("after an Open()-ONLY transaction the persisted format version is %d, want %d "+
+			"(it was %d going in). If this is now unchanged at %d, opening a store has become "+
+			"read-only and a SELECT page no longer carries writes — which would make the "+
+			"stale-header e2e below vacuous rather than passing",
+			got, current, staleFormatVersion, staleFormatVersion)
+	}
+}
+
+// TestPageRetry_StaleFormatHeaderPageSurvivesCommitConflict is the REAL
+// end-to-end: the production shape, an ordinary injected commit fault, no
+// wrapper.
+//
+// A store left at an older format version (what a Java writer at a lower
+// FormatVersion leaves behind) + a paged SELECT. The first page's storeIn
+// upgrades the header, so that page's transaction carries mutations and SimFDB
+// does NOT take its read-only commit fast path — an injected not_committed
+// reaches it exactly as a concurrent writer's conflict would. The retry must
+// re-drain page one, not resume past it.
+//
+// This is the arm that makes the defect shipped rather than latent: on the
+// unfixed code the caller loses page one's rows and the query reports success.
+func TestPageRetry_StaleFormatHeaderPageSurvivesCommitConflict(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db, backend := openRetryOnceSchema(t, 9600,
+		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
+	conn := seedPageRetryRows(t, ctx, db)
+
+	rdb := recordlayer.NewFDBDatabaseWithBackend(backend)
+	ss := pageRetrySchemaSubspace(t)
+
+	// Warm the connection first: the one-shot catalog bootstrap and the metadata
+	// load each run their own transaction, and they would otherwise sit between
+	// the injection and the page it is aimed at.
+	warm, err := conn.QueryContext(ctx, "SELECT id FROM t")
+	if err != nil {
+		t.Fatalf("warm-up: %v", err)
+	}
+	for warm.Next() {
+	}
+	warm.Close()
+
+	// Now make the store look like one an older writer left behind. The next
+	// statement's FIRST page must upgrade the header, which is what gives that
+	// page's transaction its mutations.
+	setStoreFormatVersion(t, ctx, rdb, ss, staleFormatVersion)
+
+	// SimFDB's OWN not_committed, placed at the first transaction of the next
+	// statement — the page-one commit. The wrapper only chooses WHERE; the fault
+	// is the sim's ordinary commit-time conflict and is still subject to its
+	// read-only commit fast path. If page one carried no writes it would be
+	// swallowed, and the header assertion below would catch that.
+	backend.armSimInjectAt(0)
+	defer backend.disarm()
+
+	rows, err := conn.QueryContext(ctx, "SELECT id FROM t")
+	if err != nil {
+		t.Fatalf("paged SELECT over a stale-format store under an injected not_committed: %v", err)
+	}
+	if !backend.fired.Load() {
+		t.Fatalf("no fault was placed: the statement made no transaction at the armed ordinal")
+	}
+	seen := map[int64]int{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		seen[id]++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	rows.Close()
+
+	// The header really was upgraded — i.e. the page transaction really did
+	// carry the writes this test depends on. Without this the test could pass
+	// by never arming anything.
+	if got := readStoreFormatVersion(t, ctx, rdb, ss); got == staleFormatVersion {
+		t.Fatalf("the store is still at format version %d after the query: no page upgraded the "+
+			"header, so no page carried writes and the injected not_committed was taken by the "+
+			"read-only fast path. This test armed nothing", got)
+	}
+
+	var missing, duplicated []int64
+	for i := int64(0); i < pageRetryRows; i++ {
+		switch seen[i] {
+		case 1:
+		case 0:
+			missing = append(missing, i)
+		default:
+			duplicated = append(duplicated, i)
+		}
+	}
+	if len(missing) > 0 || len(duplicated) > 0 {
+		t.Fatalf("paged SELECT over a stale-format store returned %d distinct of %d rows "+
+			"(missing %v, duplicated %v) after ONE not_committed at commit, and reported "+
+			"SUCCESS. The first page upgraded the store header, so its transaction carried "+
+			"writes and its commit conflicted; the page had already advanced "+
+			"paginatingRows.continuation, so the retry resumed past it and those rows were "+
+			"silently dropped. This is the production shape, not a harness artifact",
+			len(seen), pageRetryRows, missing, duplicated)
+	}
+}
+
 // TestPageRetry_DMLIsSinglePage pins reachability property 2: DML materializes
 // its whole target set, so it never paginates and its write-carrying page never
 // has a continuation to advance.
@@ -406,5 +729,160 @@ func TestPageRetry_ExplicitTransactionPagesBypassTheRetryLoop(t *testing.T) {
 			"transaction (runInCapturedTx); routing them through a retry loop makes their "+
 			"write-carrying pages re-executable, which is exactly the shape "+
 			"paginatingRows.fetchPage must not be replayed under", got, autoCommitTxns)
+	}
+}
+
+// rawPagedRows opens a paged SELECT through the DRIVER interface, bypassing
+// database/sql, and returns the driver.Rows so a test can call Next again after
+// an error. database/sql stops iterating at the first error, which is the only
+// reason a page's leftover state is unobservable through it — that is a
+// property of the caller, not of the paging loop, so the pin must not depend on
+// it.
+func rawPagedRows(t *testing.T, ctx context.Context, conn *sql.Conn, query string) driver.Rows {
+	t.Helper()
+	var rows driver.Rows
+	if err := conn.Raw(func(dc any) error {
+		q, ok := dc.(driver.QueryerContext)
+		if !ok {
+			t.Fatalf("driver conn is %T, which does not implement driver.QueryerContext", dc)
+		}
+		var err error
+		rows, err = q.QueryContext(ctx, query, nil)
+		return err
+	}); err != nil {
+		t.Fatalf("raw QueryContext(%q): %v", query, err)
+	}
+	return rows
+}
+
+// TestPageRetry_TerminalPageFailureLeavesNothingBehind pins the other half of
+// "a page's outcome belongs to its transaction": when a page's transaction
+// fails TERMINALLY, neither the rows it drained nor the exhaustion it computed
+// may survive it.
+//
+// Both directions are one bug with two faces, and nextRow's check order is why
+// each is silent rather than loud:
+//
+//		buffer → r.exhausted → r.fetchErr
+//
+//	  - Rows left in r.buf (bufPos still 0) are served BEFORE the error is ever
+//	    consulted, so the caller is handed rows from a transaction that never
+//	    committed, as results.
+//	  - An r.exhausted set true by the failed attempt is consulted BEFORE the
+//	    error too, so the caller gets a clean io.EOF and the failure disappears.
+//
+// Reordering those checks would NOT fix either one — buffered rows still would
+// not belong to the caller, and an unearned exhaustion flag would still be
+// wrong. Dropping both on the error path is the fix, and this is its pin.
+func TestPageRetry_TerminalPageFailureLeavesNothingBehind(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Calibrate: how many transactions does the paged query take, unfaulted?
+	// The last one is the page that reports exhaustion; an earlier one is a page
+	// that reports rows. Both arms are derived rather than guessed.
+	db, backend := openRetryOnceSchema(t, 9700,
+		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
+	conn := seedPageRetryRows(t, ctx, db)
+	drainAll := func() int {
+		rows, err := conn.QueryContext(ctx, "SELECT id FROM t")
+		if err != nil {
+			t.Fatalf("calibration SELECT: %v", err)
+		}
+		n := 0
+		for rows.Next() {
+			n++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("calibration rows: %v", err)
+		}
+		rows.Close()
+		return n
+	}
+	drainAll() // warm the one-shot catalog/metadata bootstrap out of the count
+	backend.seen.Store(0)
+	if got := drainAll(); got != pageRetryRows {
+		t.Fatalf("calibration returned %d rows, want %d", got, pageRetryRows)
+	}
+	total := backend.seen.Load()
+	if total < 4 {
+		t.Fatalf("the paged query took only %d transactions; this test needs a first page, at "+
+			"least one middle page and a final page to place its two arms", total)
+	}
+
+	arms := []struct {
+		name string
+		// failing transaction ordinal within the query
+		at int64
+		// what a leftover would look like
+		leak string
+	}{
+		// A middle page: it drains rows, so a surviving buffer is served as data.
+		{"mid_stream_buffer", 1, "rows from the failed attempt's buffer"},
+		// The final page: it computes exhaustion, so a surviving flag is io.EOF.
+		{"final_page_exhaustion", total - 1, "a clean io.EOF that swallowed the error"},
+	}
+
+	for _, arm := range arms {
+		t.Run(arm.name, func(t *testing.T) {
+			t.Parallel()
+			db, backend := openRetryOnceSchema(t, uint64(9710+arm.at),
+				"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
+			conn := seedPageRetryRows(t, ctx, db)
+			// Same warm-up as the calibration, so ordinals line up.
+			warm, err := conn.QueryContext(ctx, "SELECT id FROM t")
+			if err != nil {
+				t.Fatalf("warm-up: %v", err)
+			}
+			for warm.Next() {
+			}
+			warm.Close()
+
+			backend.armPermanent(arm.at)
+			defer backend.disarm()
+
+			rows := rawPagedRows(t, ctx, conn, "SELECT id FROM t")
+			defer rows.Close()
+
+			dest := make([]driver.Value, len(rows.Columns()))
+			var firstErr error
+			for i := 0; i < pageRetryRows+4; i++ {
+				if err := rows.Next(dest); err != nil {
+					firstErr = err
+					break
+				}
+			}
+			if firstErr == nil {
+				t.Fatalf("the paged SELECT never failed even though transaction %d was armed to "+
+					"fail permanently: this arm exercised nothing", arm.at)
+			}
+			if !backend.fired.Load() {
+				t.Fatalf("transaction %d was never reached; the arm is misplaced", arm.at)
+			}
+			if errors.Is(firstErr, io.EOF) {
+				t.Fatalf("the paged SELECT ended with io.EOF instead of the terminal page " +
+					"failure. The failed attempt's exhaustion flag was published before its " +
+					"transaction succeeded, and nextRow consults it before r.fetchErr — so the " +
+					"error vanished and the caller saw a clean, short result set")
+			}
+
+			// THE PIN: after a terminal failure, iterating again must keep
+			// reporting the failure. It must never yield %s.
+			for i := 0; i < 3; i++ {
+				err := rows.Next(dest)
+				if err == nil {
+					t.Fatalf("driver.Rows.Next returned a ROW after the page's transaction "+
+						"failed terminally (%s). Those rows were drained by an attempt that "+
+						"never committed; they are not results. Only database/sql's "+
+						"stop-at-first-error hides this from an ordinary caller",
+						arm.leak)
+				}
+				if errors.Is(err, io.EOF) {
+					t.Fatalf("driver.Rows.Next returned io.EOF after the page's transaction "+
+						"failed terminally (%s), turning a failure into a silent short read",
+						arm.leak)
+				}
+			}
+		})
 	}
 }
