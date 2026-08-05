@@ -98,11 +98,21 @@ func everyPhysicalMemberOfUnaryChildProves(
 
 // expressionStorageOrderingIsComplete proves the stronger fact needed before
 // record distinctness can make an ordering strict: every coordinate that makes
-// the storage key unique is present in the logical ordering topology and agrees
-// with logical equality. For an index this includes both the index key and its
-// appended primary-key suffix. Merely proving the base PK safe is insufficient:
-// a FLOAT/DOUBLE index component can truncate the advertised ordering before a
-// later safe PK suffix, leaving duplicate values in the advertised prefix.
+// the storage key unique is present in the advertised ordering and agrees with
+// logical equality.
+//
+// It READS that fact off the ordering the producer built, and does not compute
+// it. An earlier revision re-derived it here from the plan's key component
+// types, which made it a second property that had to be kept in agreement with
+// the truncation the ordering derivation had actually performed — and the two
+// could disagree. They did: a tail dropped wholesale at a signed-zero equality
+// left the advertised ordering with no sorted coordinates at all, which this
+// function called COMPLETE because the types were fine.
+//
+// What remains here is the part the ordering cannot answer: a memo group holds
+// several physical alternatives and extraction may relink to any of them, so
+// the claim has to hold for EVERY eligible member, not for the representative
+// this walk happens to see first.
 func expressionStorageOrderingIsComplete(expr expressions.RelationalExpression) bool {
 	ph, ok := expr.(physicalPlanExpression)
 	if !ok {
@@ -114,18 +124,9 @@ func expressionStorageOrderingIsComplete(expr expressions.RelationalExpression) 
 func planStorageOrderingIsComplete(plan plans.RecordQueryPlan) bool {
 	switch p := plan.(type) {
 	case *plans.RecordQueryScanPlan:
-		return len(p.GetRecordTypes()) == 1 &&
-			properties.TupleKeyUniquenessMatchesLogicalEquality(
-				p.GetKeyComponentTypes(), len(p.GetPrimaryKeyValues()),
-			)
+		return p.HintRichOrdering().StorageKeyIsComplete()
 	case *plans.RecordQueryIndexPlan:
-		return len(p.GetRecordTypes()) == 1 &&
-			properties.TupleKeyUniquenessMatchesLogicalEquality(
-				p.GetKeyComponentTypes(), len(p.GetColumnNames()),
-			) &&
-			properties.TupleKeyUniquenessMatchesLogicalEquality(
-				p.GetPrimaryKeyComponentTypes(), len(p.GetPKColumnNames()),
-			)
+		return p.HintRichOrdering().StorageKeyIsComplete()
 	case *plans.RecordQueryFirstOrDefaultPlan:
 		return true
 	case *plans.RecordQueryFilterPlan,

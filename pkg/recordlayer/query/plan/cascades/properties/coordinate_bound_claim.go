@@ -6,11 +6,12 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// DistinctnessClaim is an ordering's "the rows flowed are distinct" assertion,
-// BOUND to the coordinate set it was proved over.
+// CoordinateBoundClaim is an assertion about an ordering — "the rows flowed are
+// distinct", or "these coordinates are the COMPLETE storage key" — BOUND to the
+// coordinate set it was proved over.
 //
-// The binding is the whole point. Distinctness is not a property an ordering
-// carries in the abstract: it is a property of a specific set of coordinates.
+// The binding is the whole point. Neither is a property an ordering carries in
+// the abstract: each is a property of a specific set of coordinates.
 // An ordering by (a, b, c) is also an ordering by (a, b); the first may be
 // strict, the second need not be. Java models this as a bare boolean and
 // documents the resulting hazard in the field's own javadoc
@@ -30,10 +31,10 @@ import (
 //
 // A caller that has genuinely PROVED distinctness over the keys it is about to
 // construct mints a fresh claim with DistinctOverAllKeys. A caller that is
-// merely propagating someone else's claim passes the source ordering's
-// DistinctnessClaim, which stays bound to the source's coordinates and
+// merely propagating someone else's claim passes the source ordering's carried
+// claim, which stays bound to the source's coordinates and
 // therefore fails closed under any reduction or rename it does not survive.
-type DistinctnessClaim struct {
+type CoordinateBoundClaim struct {
 	claimed bool
 	// bindAll defers binding to construction time: the claim covers whatever
 	// key set the ordering is built with. Only a producer that proved
@@ -45,31 +46,39 @@ type DistinctnessClaim struct {
 }
 
 // NotDistinct is the absence of a claim.
-func NotDistinct() DistinctnessClaim {
-	return DistinctnessClaim{}
+func NotDistinct() CoordinateBoundClaim {
+	return CoordinateBoundClaim{}
 }
 
 // DistinctOverAllKeys mints a FRESH claim covering exactly the key set of the
 // ordering being constructed. It is the producer's API: use it only where the
 // distinctness of those specific coordinates was just established.
-func DistinctOverAllKeys() DistinctnessClaim {
-	return DistinctnessClaim{claimed: true, bindAll: true}
+func DistinctOverAllKeys() CoordinateBoundClaim {
+	return CoordinateBoundClaim{claimed: true, bindAll: true}
 }
 
 // DistinctOverAllKeysIf is DistinctOverAllKeys guarded by a producer-side fact.
-func DistinctOverAllKeysIf(distinct bool) DistinctnessClaim {
-	if !distinct {
-		return NotDistinct()
-	}
-	return DistinctOverAllKeys()
+func DistinctOverAllKeysIf(distinct bool) CoordinateBoundClaim {
+	return ClaimOverAllKeysIf(distinct)
 }
 
-// DistinctnessClaim returns this ordering's claim still bound to THIS
+// ClaimOverAllKeysIf is the property-neutral guarded producer constructor. The
+// same binding serves the STORAGE-COMPLETENESS claim — "these coordinates are
+// the whole storage key" — a different assertion about the same object that
+// fails under reduction for the same reason.
+func ClaimOverAllKeysIf(holds bool) CoordinateBoundClaim {
+	if !holds {
+		return CoordinateBoundClaim{}
+	}
+	return CoordinateBoundClaim{claimed: true, bindAll: true}
+}
+
+// DistinctnessClaim returns this ordering's distinctness claim still bound to THIS
 // ordering's coordinates, for a consumer that is constructing a derived
 // ordering. Because the coordinates travel with it, a derived ordering that
 // dropped any of them reports IsDistinct false without the deriving site
 // having to notice.
-func (o *RichOrdering) DistinctnessClaim() DistinctnessClaim {
+func (o *RichOrdering) DistinctnessClaim() CoordinateBoundClaim {
 	if o == nil {
 		return NotDistinct()
 	}
@@ -79,25 +88,25 @@ func (o *RichOrdering) DistinctnessClaim() DistinctnessClaim {
 // IsClaimed reports whether a distinctness assertion was ever made. It says
 // nothing about whether the assertion still holds — that is holdsOver's
 // question, and IsDistinct is the only public answer.
-func (c DistinctnessClaim) IsClaimed() bool {
+func (c CoordinateBoundClaim) IsClaimed() bool {
 	return c.claimed
 }
 
 // bindTo resolves a deferred (bindAll) claim against the key set the ordering
 // is actually being constructed with. An already-bound claim is unchanged: its
 // coordinates are the ones it was proved over, not the ones it is landing in.
-func (c DistinctnessClaim) bindTo(keyStrings []string) DistinctnessClaim {
+func (c CoordinateBoundClaim) bindTo(keyStrings []string) CoordinateBoundClaim {
 	if !c.claimed || !c.bindAll {
 		return c
 	}
-	return DistinctnessClaim{claimed: true, over: sortedUniqueKeys(keyStrings)}
+	return CoordinateBoundClaim{claimed: true, over: sortedUniqueKeys(keyStrings)}
 }
 
 // holdsOver reports whether the claim still stands for an ordering whose
 // coordinates are the keys of lookup. Every coordinate the claim was proved
 // over must still be present: this is the (a, b, c) → (a, b) rule, and it is
 // what makes a reduction unable to launder a claim it did not earn.
-func (c DistinctnessClaim) holdsOver(lookup map[string]values.Value) bool {
+func (c CoordinateBoundClaim) holdsOver(lookup map[string]values.Value) bool {
 	if !c.claimed {
 		return false
 	}
@@ -119,7 +128,7 @@ func (c DistinctnessClaim) holdsOver(lookup map[string]values.Value) bool {
 // survive, which drops the claim rather than shrinking it — a claim proved over
 // (a, b, c) says nothing about (a, b), and recomputing it here is not possible
 // because the fact that established it lives at the producer.
-func (c DistinctnessClaim) translate(renamed map[string]string) DistinctnessClaim {
+func (c CoordinateBoundClaim) translate(renamed map[string]string) CoordinateBoundClaim {
 	if !c.claimed || c.bindAll {
 		return c
 	}
@@ -131,7 +140,7 @@ func (c DistinctnessClaim) translate(renamed map[string]string) DistinctnessClai
 		}
 		translated = append(translated, newKey)
 	}
-	return DistinctnessClaim{claimed: true, over: sortedUniqueKeys(translated)}
+	return CoordinateBoundClaim{claimed: true, over: sortedUniqueKeys(translated)}
 }
 
 // IntersectClaims is the claim for a derivation whose distinctness needs BOTH
@@ -139,7 +148,7 @@ func (c DistinctnessClaim) translate(renamed map[string]string) DistinctnessClai
 // `leftOrdering.isDistinct() && rightOrdering.isDistinct()`. The result is
 // bound to the UNION of both coordinate sets, because both proofs have to
 // survive into the merged ordering for the conjunction to mean anything.
-func IntersectClaims(a, b DistinctnessClaim) DistinctnessClaim {
+func IntersectClaims(a, b CoordinateBoundClaim) CoordinateBoundClaim {
 	if !a.claimed || !b.claimed {
 		return NotDistinct()
 	}
@@ -148,7 +157,7 @@ func IntersectClaims(a, b DistinctnessClaim) DistinctnessClaim {
 		// conjunction cannot be stated. Fail closed.
 		return NotDistinct()
 	}
-	return DistinctnessClaim{
+	return CoordinateBoundClaim{
 		claimed: true,
 		over:    sortedUniqueKeys(append(append([]string{}, a.over...), b.over...)),
 	}

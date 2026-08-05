@@ -19,7 +19,13 @@ type RichOrdering struct {
 	keys        []values.Value
 	orderingSet *combinatorics.PartiallyOrderedSet[string]
 	keyLookup   map[string]values.Value
-	distinct    DistinctnessClaim
+	distinct    CoordinateBoundClaim
+	// storageComplete states that these coordinates are the COMPLETE storage
+	// key of the producer that built the ordering — nothing was truncated away.
+	// Zero value is "not stated", which is the only safe default: a derivation
+	// that reshapes an ordering has no way to know, so it must not inherit the
+	// claim by omission.
+	storageComplete CoordinateBoundClaim
 }
 
 // NewRichOrdering creates a new ordering from bindings, key sequence,
@@ -27,7 +33,7 @@ type RichOrdering struct {
 func NewRichOrdering(
 	bindingMap map[values.Value][]OrderingBinding,
 	keys []values.Value,
-	distinct DistinctnessClaim,
+	distinct CoordinateBoundClaim,
 ) *RichOrdering {
 	return NewRichOrderingWithDeps(bindingMap, keys, nil, distinct)
 }
@@ -38,7 +44,7 @@ func NewRichOrderingWithDeps(
 	bindingMap map[values.Value][]OrderingBinding,
 	keys []values.Value,
 	deps combinatorics.SetMultimap[string],
-	distinct DistinctnessClaim,
+	distinct CoordinateBoundClaim,
 ) *RichOrdering {
 	bm := make(map[values.Value][]OrderingBinding, len(bindingMap))
 	for k, v := range bindingMap {
@@ -121,6 +127,35 @@ func (o *RichOrdering) ValueForKey(key string) values.Value {
 // has. A claim proved over a longer key set does not answer for a reduced one.
 func (o *RichOrdering) IsDistinct() bool {
 	return o.distinct.holdsOver(o.keyLookup)
+}
+
+// WithStorageKeyComplete stamps (or withholds) the completeness claim. It is
+// the PRODUCER's call and no one else's: the site that assembled the coordinate
+// list is the site that knows whether it truncated one, and every consumer that
+// re-derived the answer from key component types was asking a second property to
+// agree with this one by hand.
+func (o *RichOrdering) WithStorageKeyComplete(complete bool) *RichOrdering {
+	if o == nil {
+		return nil
+	}
+	keyStrings := make([]string, 0, len(o.keys))
+	for _, k := range o.keys {
+		keyStrings = append(keyStrings, values.ExplainValue(k))
+	}
+	stamped := *o
+	stamped.storageComplete = ClaimOverAllKeysIf(complete).bindTo(keyStrings)
+	return &stamped
+}
+
+// StorageKeyIsComplete reports whether this ordering's coordinates are the whole
+// storage key, answered against the coordinates it actually has. A truncated,
+// prefixed, or reshaped ordering answers false even when the producer's original
+// claim was true.
+func (o *RichOrdering) StorageKeyIsComplete() bool {
+	if o == nil {
+		return false
+	}
+	return o.storageComplete.holdsOver(o.keyLookup)
 }
 
 // GetEqualityBoundValues returns the set of values that have at least
@@ -922,8 +957,10 @@ func (o *RichOrdering) translateKeysWithOverrides(
 	for _, mappedKey := range mappedSet.Set() {
 		survived[oldKeyByMappedKey[mappedKey]] = mappedKey
 	}
-	return NewRichOrderingWithDeps(
+	translated := NewRichOrderingWithDeps(
 		newBM, newKeys, mappedSet.DependencyMap(), o.distinct.translate(survived))
+	translated.storageComplete = o.storageComplete.translate(survived)
+	return translated
 }
 
 // translateOrderingBindings mirrors Java Ordering.translateBindings for Go's
@@ -1070,7 +1107,7 @@ type bindingCombiner func(left, right []OrderingBinding) []OrderingBinding
 func mergeOrderings(
 	a, b *RichOrdering,
 	combine bindingCombiner,
-	distinct DistinctnessClaim,
+	distinct CoordinateBoundClaim,
 	normalizeFixedDependencies bool,
 ) *RichOrdering {
 	leftES := a.orderingSet.EligibleSet()

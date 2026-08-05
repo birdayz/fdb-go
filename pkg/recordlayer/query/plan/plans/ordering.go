@@ -1115,6 +1115,14 @@ func (p *RecordQueryScanPlan) HintRichOrdering() *properties.RichOrdering {
 	// pins one physical point and states no order, so a float there is harmless
 	// and the columns after it stay claimable.
 	limit := prefixLen + claimableKeyLimit(p.GetFlowedType(), resolved[prefixLen:])
+	// The ordering covers the WHOLE storage key exactly when nothing was
+	// truncated away above and the key's physical uniqueness is also logical
+	// uniqueness. Both facts are known here and nowhere else, so both are
+	// stamped here rather than re-derived by whoever consumes the ordering.
+	storageComplete := limit == len(resolved) &&
+		len(p.GetRecordTypes()) == 1 &&
+		properties.TupleKeyUniquenessMatchesLogicalEquality(
+			p.GetKeyComponentTypes(), len(pk))
 	for i, key := range resolved[:limit] {
 		keys = append(keys, key)
 		if i < prefixLen {
@@ -1126,7 +1134,8 @@ func (p *RecordQueryScanPlan) HintRichOrdering() *properties.RichOrdering {
 	if len(keys) == 0 {
 		return properties.EmptyOrdering()
 	}
-	return properties.NewRichOrdering(bm, keys, properties.NotDistinct())
+	return properties.NewRichOrdering(bm, keys, properties.NotDistinct()).
+		WithStorageKeyComplete(storageComplete)
 }
 
 // HintRichOrdering returns the index scan's full ordering with bindings:
@@ -1179,11 +1188,26 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	// type, and the leading prefix keeps its full length.
 	fixedLen := ownOrderPrefixLen(comps, len(columnNames))
 	tail := make([]string, 0, len(columnNames)-fixedLen+len(pkColumnNames))
+	untruncated := 0
 	if fixedLen == prefixLen {
 		tail = append(tail, columnNames[fixedLen:]...)
 		tail = append(tail, TrimmedPKSuffix(columnNames, pkColumnNames)...)
+		untruncated = len(tail)
 		tail = tail[:claimableNameLimit(p.GetFlowedType(), tail)]
 	}
+	// The coordinates below are the whole storage key exactly when the tail was
+	// neither dropped wholesale (fixedLen != prefixLen, a signed-zero equality
+	// that restarts the order at a block boundary) nor truncated at a FLOAT, AND
+	// the index key and its primary-key suffix both make physical uniqueness
+	// mean logical uniqueness. Every one of those facts is settled right here;
+	// stamping it is what keeps a consumer from asking a second property to
+	// agree with this one by hand.
+	storageComplete := fixedLen == prefixLen && len(tail) == untruncated &&
+		len(p.GetRecordTypes()) == 1 &&
+		properties.TupleKeyUniquenessMatchesLogicalEquality(
+			p.GetKeyComponentTypes(), len(columnNames)) &&
+		properties.TupleKeyUniquenessMatchesLogicalEquality(
+			p.GetPrimaryKeyComponentTypes(), len(pkColumnNames))
 	prefixLen = fixedLen
 	for i, col := range columnNames[:prefixLen] {
 		key := orderingColumnOfName(p.GetFlowedType(), col)
@@ -1220,7 +1244,8 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	// the chosen ordering keys cover that uniqueness proof; RemoveSort marks
 	// that exact plan strictly sorted after checking the coverage.
 	return properties.NewRichOrdering(bm, keys,
-		properties.DistinctOverAllKeysIf(p.IsStrictlySorted()))
+		properties.DistinctOverAllKeysIf(p.IsStrictlySorted())).
+		WithStorageKeyComplete(storageComplete)
 }
 
 // HintRichOrdering: an HNSW probe returns its neighbours in distance order,

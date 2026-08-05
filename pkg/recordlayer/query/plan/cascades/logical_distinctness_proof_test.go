@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -149,5 +150,41 @@ func TestLogicalDistinctnessProofQuantifiesLiveChildAlternatives(t *testing.T) {
 	}
 	if !planStorageOrderingIsComplete(singletonFilter) {
 		t.Fatal("singleton safe child should prove complete storage ordering")
+	}
+}
+
+// TestPlanStorageOrderingIsComplete_ReadsTheOrderingNotTheKeyTypes pins WHICH
+// question the sort rule's completeness proof asks.
+//
+// It must ask the ordering the plan actually advertises. Asking the key
+// component types instead is a second property that has to agree with the first
+// by hand, and on an expression-key index they do not agree: the types are
+// ordinary LONGs while the advertised ordering is EMPTY, because the plan cannot
+// synthesize ordering Values from physical column names. A "complete" answer
+// there licenses a strictly-sorted claim over an ordering that has no
+// coordinates at all.
+func TestPlanStorageOrderingIsComplete_ReadsTheOrderingNotTheKeyTypes(t *testing.T) {
+	t.Parallel()
+
+	row := values.NewRecordType("", false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "A", FieldType: values.NullableLong, Ordinal: 1},
+	})
+	build := func() *plans.RecordQueryIndexPlan {
+		return plans.NewRecordQueryIndexPlan(
+			"IDX_A", []*predicates.ComparisonRange{},
+			[]string{"T"}, row, false).
+			WithKeyComponentTypes([]values.Type{values.NullableLong}).
+			WithIndexMetadata([]string{"A"}, []string{"ID"}, false).
+			WithPrimaryKeyComponentTypes([]values.Type{values.NullableLong})
+	}
+
+	if !planStorageOrderingIsComplete(build()) {
+		t.Fatal("an index advertising its full key and PK suffix IS storage-complete")
+	}
+	if planStorageOrderingIsComplete(build().WithOrderingKeyNamesUnavailable()) {
+		t.Fatal("an expression-key index advertises NO ordering, so its storage " +
+			"ordering cannot be complete; answering from the key component types " +
+			"alone says yes and licenses a strict-sort claim over nothing")
 	}
 }
