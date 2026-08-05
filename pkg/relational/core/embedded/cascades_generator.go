@@ -347,7 +347,6 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, stateErr
 	}
 	popts.config.ReadableIndexes = readableIndexesFrom(md, indexStateSnapshot)
-	indexStateSignature := indexStatePlanningSignature(indexStateSnapshot)
 	// Plan-cache key parts: a VERBATIM schema+version+planner-options scope
 	// (case-sensitive, never normalized) and the injective canonical query
 	// text. NOT q.GetText() — that concatenated tokens with no separator,
@@ -361,12 +360,17 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 			ls.setPlan(cachedPlan)
 			ls.setCache(PlanCacheHit)
 			return &cascadesPlan{
-				conn:                g.c,
-				md:                  md,
-				physicalPlan:        cachedPlan,
-				explain:             cachedPlan.Explain(),
-				scalarSubqueries:    cachedSubs,
-				indexStateSignature: indexStateSignature,
+				conn:             g.c,
+				md:               md,
+				physicalPlan:     cachedPlan,
+				explain:          cachedPlan.Explain(),
+				scalarSubqueries: cachedSubs,
+				// Dependencies are a function of the PLAN, so a cache hit derives
+				// them from the cached plan rather than carrying anything in the
+				// cache entry. A cached plan gets the same guarantee as a freshly
+				// planned one, which is what the cache exists to be transparent
+				// about.
+				indexDependencies: collectPlanIndexDependencies(md, cachedPlan, cachedSubs, nil),
 			}, nil
 		}
 	}
@@ -511,12 +515,23 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		ls.setCache(PlanCacheSkip)
 	}
 	return &cascadesPlan{
-		conn:                g.c,
-		md:                  md,
-		physicalPlan:        physPlan,
-		explain:             physPlan.Explain(),
-		scalarSubqueries:    scalarSubs,
-		indexStateSignature: indexStateSignature,
+		conn:             g.c,
+		md:               md,
+		physicalPlan:     physPlan,
+		explain:          physPlan.Explain(),
+		scalarSubqueries: scalarSubs,
+		// The fourth argument is the PROOF-ONLY dependency set: indexes whose
+		// metadata property licensed a transformation without the index being
+		// scanned. It is nil because no rule currently produces one — the only
+		// such proof this engine had, a secondary UNIQUE index licensing a
+		// DISTINCT elision, is declined outright today
+		// (rule_implement_distinct_final.go), and every other consumer of an
+		// index property reads it FOR the index plan it is building, which the
+		// leaf walk already collects. The seam is real and unit-tested rather
+		// than notional: whoever lifts that decline records the proving index
+		// here, and TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof
+		// is what fails if they lift it without doing so.
+		indexDependencies: collectPlanIndexDependencies(md, physPlan, scalarSubs, nil),
 	}, nil
 }
 
@@ -1065,7 +1080,6 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	if dmlStateErr != nil {
 		return nil, dmlStateErr
 	}
-	dmlIndexStateSignature := indexStatePlanningSignature(dmlIndexStateSnapshot)
 	planningRules := append(cascades.BatchAExpressionRules(), cascades.DMLImplementationRules()...)
 	popts := plannerOptionsFrom(g.c.Options())
 	popts.config.ReadableIndexes = readableIndexesFrom(md, dmlIndexStateSnapshot)
@@ -1118,8 +1132,8 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		explain:          logicalOp.Explain(""),
 		scalarSubqueries: dmlScalarSubs,
 
-		indexStateSignature: dmlIndexStateSignature,
-		dryRun:              dryRun,
+		indexDependencies: collectPlanIndexDependencies(md, physPlan, dmlScalarSubs, nil),
+		dryRun:            dryRun,
 	}, nil
 }
 
@@ -1184,11 +1198,11 @@ type cascadesPlan struct {
 	explain          string
 	scalarSubqueries []PlannedScalarSubquery
 
-	// Signature of the index-state snapshot this plan was built against,
-	// revalidated inside every execution transaction — including cache hits and
-	// every continuation page. Java's continuation plan constraint
-	// (QueryPlan.java:726-735) does the same job; see index_state_planning.go.
-	indexStateSignature string
+	// The indexes this plan depends on, revalidated inside every execution
+	// transaction — including cache hits and every continuation page. Java's
+	// continuation plan constraint (QueryPlan.java:726-735) does the same job;
+	// see index_state_planning.go.
+	indexDependencies planIndexDependencies
 
 	// dryRun carries the SQL OPTIONS (DRY RUN) flag from planDML to execution.
 	// Statement-scoped (one cascadesPlan per statement) → paginatingRows.dryRun
@@ -1288,7 +1302,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		md:               p.md,
 		scalarSubqueries: p.scalarSubqueries,
 
-		indexStateSignature: p.indexStateSignature,
+		indexDependencies: p.indexDependencies,
 
 		maxRows:        optInt64(c.Options(), api.OptMaxRows, math.MaxInt32),
 		maxResultBytes: c.maxResultBytes,
@@ -1378,8 +1392,8 @@ type paginatingRows struct {
 	cols             []executor.ColumnDef
 
 	// Carried from cascadesPlan; revalidated at the top of every page's
-	// transaction. Empty means offline planning, which validates nothing.
-	indexStateSignature string
+	// transaction. Empty means the plan depends on no index.
+	indexDependencies planIndexDependencies
 
 	// emitted counts rows actually returned to the caller across all pages.
 	// Shared by the MAX_ROWS cap and pageRowBudget. SQL LIMIT/OFFSET is NOT
@@ -1906,8 +1920,12 @@ func (r *paginatingRows) fetchPage() error {
 		// PAGE rather than once per statement is what makes a resumed page
 		// safe: an auto-commit statement's pages are separate transactions, so
 		// a transition between them would otherwise be invisible.
-		if stateErr := validatePlanningIndexStateSignature(
-			r.indexStateSignature, store.GetAllIndexStates(),
+		//
+		// Validated against the STORE's metadata, not the plan's: execution
+		// opens the store with the connection's current metadata, so this is
+		// where an index dropped or redefined since planning is observable.
+		if stateErr := validatePlanIndexDependencies(
+			r.indexDependencies, store.GetRecordMetaData(), store.GetAllIndexStates(),
 		); stateErr != nil {
 			return nil, stateErr
 		}

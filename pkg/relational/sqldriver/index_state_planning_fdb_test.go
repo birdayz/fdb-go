@@ -20,9 +20,16 @@ import (
 	"fdb.dev/pkg/relational/core/metadata"
 )
 
+// dependentOnUEmail is answered from U_EMAIL, so the plan DEPENDS on that index.
+// Tests that transition U_EMAIL mid-statement must use it: under a scoped
+// dependency check a primary-key scan does not depend on U_EMAIL at all, and
+// asserting 40001 from one would be asserting the bug this scoping removed.
+const dependentOnUEmail = "SELECT EMAIL FROM T WHERE EMAIL > 'a'"
+
 const indexStatePlanningDDL = "CREATE TABLE T (" +
 	"ID BIGINT, EMAIL STRING, PAD BIGINT, PRIMARY KEY (ID)) " +
-	"CREATE UNIQUE INDEX U_EMAIL ON T (EMAIL)"
+	"CREATE UNIQUE INDEX U_EMAIL ON T (EMAIL) " +
+	"CREATE INDEX IDX_PAD ON T (PAD)"
 
 type indexStatePlanningFixture struct {
 	db  *sql.DB
@@ -51,6 +58,7 @@ func newIndexStatePlanningFixture(t *testing.T) *indexStatePlanningFixture {
 		metadata.NewColumnSpec("PAD", api.NewLongType(true), 3),
 	}, []string{"ID"})
 	b.AddIndex("T", "U_EMAIL", []string{"EMAIL"}, true)
+	b.AddIndex("T", "IDX_PAD", []string{"PAD"}, false)
 	tmpl, err := b.Build()
 	if err != nil {
 		t.Fatalf("build matching metadata: %v", err)
@@ -200,7 +208,7 @@ func TestFDB_IndexStatePlanning_TransitionBetweenPagesFails40001(t *testing.T) {
 			Set(api.OptExecutionScannedRowsLimit, 1).Build())
 	})
 
-	rows, err := conn.QueryContext(ctx, "SELECT ID FROM T")
+	rows, err := conn.QueryContext(ctx, dependentOnUEmail)
 	if err != nil {
 		t.Fatalf("query first page: %v", err)
 	}
@@ -211,8 +219,8 @@ func TestFDB_IndexStatePlanning_TransitionBetweenPagesFails40001(t *testing.T) {
 	if !rows.Next() {
 		t.Fatalf("first buffered row missing: %v", rows.Err())
 	}
-	var id int64
-	if err := rows.Scan(&id); err != nil {
+	var email string
+	if err := rows.Scan(&email); err != nil {
 		t.Fatalf("scan first buffered row: %v", err)
 	}
 	if rows.Next() {
@@ -232,7 +240,7 @@ func TestFDB_IndexStatePlanning_TransitionBetweenPlanAndFirstPageFails40001(t *t
 		ec.SetPlanLogger(logger)
 	})
 
-	rows, err := conn.QueryContext(ctx, "SELECT ID FROM T")
+	rows, err := conn.QueryContext(ctx, dependentOnUEmail)
 	if rows != nil {
 		_ = rows.Close()
 	}
@@ -393,7 +401,7 @@ func TestFDB_IndexStatePlanning_StrayIndexStateKeyIsInert(t *testing.T) {
 	// The check is still armed: a REAL transition on an index the metadata DOES
 	// name must still be caught. Without this, deleting the check outright
 	// would satisfy the assertions above.
-	rows, err := conn.QueryContext(ctx, "SELECT ID FROM T")
+	rows, err := conn.QueryContext(ctx, dependentOnUEmail)
 	if err != nil {
 		t.Fatalf("query before transition: %v", err)
 	}
@@ -486,5 +494,176 @@ func TestFDB_IndexStatePlanning_FailedStoreOpenStillLogsOnePlanEvent(t *testing.
 	if events[0].Err == nil {
 		t.Fatalf("the logged event reported success for a planning call that "+
 			"failed with: %v", queryErr)
+	}
+}
+
+// setIndexState drives any index of the fixture's schema to a state, out of
+// band, so a test can move an index the SQL layer is not looking at.
+func (f *indexStatePlanningFixture) setIndexState(
+	ctx context.Context, name string, readable bool,
+) error {
+	_, err := f.rdb.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		store, openErr := recordlayer.NewStoreBuilder().
+			SetContext(rctx).
+			SetMetaDataProvider(f.md).
+			SetSubspace(f.ss).
+			SetStoreStateCache(recordlayer.PassThroughStoreStateCache()).
+			Open()
+		if openErr != nil {
+			return nil, openErr
+		}
+		if readable {
+			// An index cannot be marked readable with unbuilt ranges; a real
+			// build writes the range set, so the test does too.
+			idx := f.md.GetIndex(name)
+			if idx == nil {
+				return nil, fmt.Errorf("%s missing from matching metadata", name)
+			}
+			if _, rangeErr := recordlayer.NewIndexingRangeSet(f.ss, idx).
+				InsertRange(rctx.Transaction(), nil, nil, false); rangeErr != nil {
+				return nil, rangeErr
+			}
+			_, stateErr := store.MarkIndexReadable(name)
+			return nil, stateErr
+		}
+		_, stateErr := store.MarkIndexWriteOnly(name)
+		return nil, stateErr
+	})
+	return err
+}
+
+// planIndexScans reports the index names a logged plan scans, so a test can
+// assert it is exercising the access path it claims to.
+func planIndexScans(explain string) []string {
+	var names []string
+	for _, candidate := range []string{"U_EMAIL", "IDX_PAD"} {
+		if strings.Contains(explain, candidate) {
+			names = append(names, candidate)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// A plan depends on the indexes it USES, not on the store's every index.
+//
+// Signing the whole index-state snapshot made any index transition anywhere in
+// the schema invalidate every in-flight statement — an index build, the most
+// ordinary administrative act there is, would 40001 unrelated queries across the
+// database. That is a self-inflicted outage, and 40001 asks the client to retry
+// into it.
+//
+// Both arms are required. The unrelated arm alone is satisfied by deleting the
+// check; the dependent arm is what proves the scoping narrowed the check rather
+// than removed it.
+func TestFDB_IndexStatePlanning_OnlyDependenciesInvalidate(t *testing.T) {
+	t.Parallel()
+	const query = "SELECT EMAIL FROM T WHERE EMAIL > 'a'"
+
+	t.Run("unrelated index transition keeps pages flowing", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		f := newIndexStatePlanningFixture(t)
+		logger := &syncCaptureLogger{}
+		conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {
+			ec.SetOptions(api.NewOptionsBuilder().
+				Set(api.OptExecutionScannedRowsLimit, 1).Build())
+			ec.SetPlanLogger(logger)
+		})
+
+		rows, err := conn.QueryContext(ctx, query)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer func() { _ = rows.Close() }()
+		if err := f.setIndexState(ctx, "IDX_PAD", false); err != nil {
+			t.Fatalf("take IDX_PAD WRITE_ONLY mid-statement: %v", err)
+		}
+		n := 0
+		for rows.Next() {
+			n++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("an unrelated index transition invalidated the plan: %v", err)
+		}
+		if n != 3 {
+			t.Fatalf("rows = %d, want 3 across separate pages", n)
+		}
+		events := logger.snapshot()
+		if len(events) != 1 {
+			t.Fatalf("planning events = %d, want 1", len(events))
+		}
+		// If the plan never touched U_EMAIL, the arm below is testing a
+		// dependency this one never had, and the pair proves nothing.
+		if got := planIndexScans(events[0].PlanExplain); len(got) == 0 {
+			t.Fatalf("the query scanned no index, so it has no dependency to "+
+				"distinguish from IDX_PAD: %s", events[0].PlanExplain)
+		} else if got[0] == "IDX_PAD" {
+			t.Fatalf("the query scanned IDX_PAD, which this arm transitions: %s",
+				events[0].PlanExplain)
+		}
+	})
+
+	t.Run("dependent index transition still fires", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		f := newIndexStatePlanningFixture(t)
+		conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {
+			ec.SetOptions(api.NewOptionsBuilder().
+				Set(api.OptExecutionScannedRowsLimit, 1).Build())
+		})
+		rows, err := conn.QueryContext(ctx, query)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer func() { _ = rows.Close() }()
+		if err := f.setIndexState(ctx, "U_EMAIL", false); err != nil {
+			t.Fatalf("take U_EMAIL WRITE_ONLY mid-statement: %v", err)
+		}
+		for rows.Next() {
+		}
+		assertSerializationFailure(t, rows.Err())
+	})
+}
+
+// The check is DIRECTIONAL. An index that was EXCLUDED at planning and has since
+// become readable leaves the plan correct — merely less optimal than the one
+// that would be planned now. Invalidating there would mean every completed index
+// build kills the statements running alongside it, which is the same outage as
+// the unscoped check, arriving from the opposite direction.
+//
+// Java reaches this structurally: RecordStoreState.compatibleWith iterates the
+// CURRENT state's index map, which holds only the non-readable exceptions, so an
+// index readable now and excluded then is never examined at all.
+func TestFDB_IndexStatePlanning_IndexBecomingReadableDoesNotInvalidate(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newIndexStatePlanningFixture(t)
+	// Excluded BEFORE planning, so no plan can depend on it.
+	if err := f.setIndexState(ctx, "IDX_PAD", false); err != nil {
+		t.Fatalf("take IDX_PAD WRITE_ONLY before planning: %v", err)
+	}
+	conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptExecutionScannedRowsLimit, 1).Build())
+	})
+
+	rows, err := conn.QueryContext(ctx, "SELECT EMAIL FROM T WHERE EMAIL > 'a'")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	if err := f.setIndexState(ctx, "IDX_PAD", true); err != nil {
+		t.Fatalf("make IDX_PAD readable mid-statement: %v", err)
+	}
+	n := 0
+	for rows.Next() {
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("an index BECOMING readable invalidated a plan that never used it: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("rows = %d, want 3 across separate pages", n)
 	}
 }

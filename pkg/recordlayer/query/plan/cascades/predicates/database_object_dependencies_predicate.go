@@ -5,18 +5,20 @@ import (
 	"strings"
 )
 
-// DatabaseObjectDependenciesPredicate is a leaf predicate that
-// captures database object dependencies (index names, record type
-// names) that a plan depends on. Used for plan cache invalidation
-// when indexes are dropped or rebuilt.
+// DatabaseObjectDependenciesPredicate is a leaf predicate carrying the indexes
+// a plan depends on. It answers one question: may this plan still be executed
+// against the store in front of it?
 //
 // Ports Java's
-// com.apple.foundationdb.record.query.plan.cascades.predicates.DatabaseObjectDependenciesPredicate
+// com.apple.foundationdb.record.query.plan.cascades.predicates.DatabaseObjectDependenciesPredicate.
+// Java attaches it to every planned query as the CONTINUATION plan constraint
+// (QueryPlan.java:667,726-735) and re-evaluates it on every execution, so a
+// resumed page is gated too, not only a first execution.
 //
-// At eval time in Java, this checks that all referenced indexes
-// still exist, have the same lastModifiedVersion, and are readable.
-// In Go, the plan cache is not yet ported, so Eval returns TriTrue
-// unconditionally. The type exists for structural conformance.
+// A dependency is any index whose availability the plan's CORRECTNESS rests on:
+// the indexes it scans, and any index whose metadata property licensed a
+// transformation without being scanned. The second kind is why this cannot be
+// derived from the plan tree alone at evaluation time.
 type DatabaseObjectDependenciesPredicate struct {
 	// UsedIndexes is the set of indexes this plan depends on,
 	// each carrying its name and the lastModifiedVersion at plan
@@ -55,10 +57,81 @@ func (*DatabaseObjectDependenciesPredicate) GetCorrelatedTo() map[CorrelationIde
 	return map[CorrelationIdentifier]struct{}{}
 }
 
-// Eval returns TriTrue. Plan-cache index validation is not yet
-// ported; this predicate exists for structural conformance.
-func (*DatabaseObjectDependenciesPredicate) Eval(_ any) (TriBool, error) {
+// IndexAvailability answers, for one live record store, the two questions a
+// plan's index dependency turns on. Eval's context is opaque by interface
+// (predicates.go:229-237), so this is how a caller that HAS a store supplies
+// one — the record-store types live in a package this one cannot import.
+//
+// present=false means the store's metadata does not name the index at all,
+// which is Java's `!recordMetaData.hasIndex` leg
+// (DatabaseObjectDependenciesPredicate.java:91-93).
+type IndexAvailability interface {
+	// IndexLastModifiedVersion reports the index's current
+	// lastModifiedVersion, and whether the store's metadata names it.
+	IndexLastModifiedVersion(name string) (version int, present bool)
+	// IsIndexReadable reports whether the index is strictly READABLE —
+	// Java's isReadable, which excludes READABLE_UNIQUE_PENDING even though
+	// it is scannable.
+	IsIndexReadable(name string) bool
+}
+
+// Eval reports whether this plan can still be executed against the store
+// described by evalCtx. Port of Java's eval
+// (DatabaseObjectDependenciesPredicate.java:87-105): every used index must
+// still exist, carry the same lastModifiedVersion, and be readable.
+//
+// evalCtx MUST implement IndexAvailability. Java takes a non-null store and
+// dereferences it (`Objects.requireNonNull(store)`), so a context that cannot
+// answer is a programming error, not a case to be lenient about: returning
+// TriTrue there would silently pass every dependency check ever made through
+// the wrong call site. An asserted bridge, never a quiet fallback.
+//
+// A predicate with no dependencies is vacuously TriTrue and needs no context —
+// that is a real absence of dependencies, not an inability to check them.
+func (p *DatabaseObjectDependenciesPredicate) Eval(evalCtx any) (TriBool, error) {
+	if len(p.UsedIndexes) == 0 {
+		return TriTrue, nil
+	}
+	avail, ok := evalCtx.(IndexAvailability)
+	if !ok {
+		return TriUnknown, fmt.Errorf(
+			"databaseObjectDependencies: evaluation context %T cannot answer index "+
+				"availability; it must implement predicates.IndexAvailability", evalCtx)
+	}
+	for _, used := range p.UsedIndexes {
+		version, present := avail.IndexLastModifiedVersion(used.Name)
+		if !present || version != used.LastModifiedVersion {
+			return TriFalse, nil
+		}
+		if !avail.IsIndexReadable(used.Name) {
+			return TriFalse, nil
+		}
+	}
 	return TriTrue, nil
+}
+
+// UnavailableDependency returns the first used index that fails against avail,
+// and why — the diagnostic Eval's TriFalse deliberately does not carry, since a
+// predicate's job is a truth value. ok=false when every dependency holds.
+func (p *DatabaseObjectDependenciesPredicate) UnavailableDependency(
+	avail IndexAvailability,
+) (name string, reason string, ok bool) {
+	if avail == nil {
+		return "", "", false
+	}
+	for _, used := range p.UsedIndexes {
+		version, present := avail.IndexLastModifiedVersion(used.Name)
+		if !present {
+			return used.Name, "it is no longer in the store's metadata", true
+		}
+		if version != used.LastModifiedVersion {
+			return used.Name, "it has been redefined", true
+		}
+		if !avail.IsIndexReadable(used.Name) {
+			return used.Name, "it is no longer readable", true
+		}
+	}
+	return "", "", false
 }
 
 // Explain renders the predicate in a human-readable form matching
