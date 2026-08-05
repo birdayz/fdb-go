@@ -1,7 +1,10 @@
 # Road to production
 
-**Revision 2026-08-04.** Amends the 2026-08-01 revision in place: B1/Tier-1 confirmed at
-`5ab0a87a3`, B2/Tier-2 closed at `d6f635073`. Counts below were measured against `a1d281a63`
+**Revision 2026-08-05.** Amends the 2026-08-04 revision in place: adds the MT-SaaS section
+(`#624`, `#625`, `#626`, `#620`, measured at `2e4b9f930`) and **retires four watch-list claims that
+verification refuted** — entry 13 (inverted), entry 14 (fixed, and it was the page's "one OPEN
+wire-compat divergence"), and both client-side watch claims. B1/Tier-1 confirmed at `5ab0a87a3`,
+B2/Tier-2 closed at `d6f635073`. Counts below were measured against `a1d281a63`
 (= `origin/master` at the 2026-08-01 drafting) unless a later SHA is cited inline. Supersedes
 the 2026-07-29 revision.
 
@@ -363,19 +366,40 @@ they were never listed at all, and they are still live rejections. RFC-202 (#553
 its census tests, not the generator, so nothing was retired.
 
 **Added 2026-08-01 — pinned by the day's merges (#560, #565, #559), same red-means-fixed contract:**
-13. Cross-leg metadata: `ResultSetMetaData.isNullable` reports NOT NULL for a column on the
-    null-supplying leg of a LEFT JOIN when both legs agree on type+cardinality — the agreement
-    gate cannot see null-born identity, and no choice function can (both result slots receive the
-    same candidate list; the correct answer differs per slot). Pinned —
-    `sqldriver/cross_leg_null_born_fdb_test.go` (`TestFDB_CrossLegAgreementGate_NullBornNotCovered`),
-    which asserts the metadata self-contradiction (NoNulls declared, SQL NULL delivered in the same
-    test). Fix is positional/flowed metadata (D3, RFC-204 P4 neighborhood), not a better picker.
-14. Nullable-array wire (RFC-143 §3a): Go writes a plain repeated field where Java wraps nullable
-    arrays in a `{repeated T values = 1}` message — `[]` and NULL collapse on the Go wire, and
-    nullable-array column bytes are NOT Java-interoperable until §3a closes. Pinned —
-    `sqldriver/array_literal_insert_fdb_test.go` (`TestFDB_ArrayLiteralInsertWireBytes` +
-    `empty_array` subtest with move-don't-delete re-arm instructions). This is the one OPEN
-    wire-compat divergence on the hard line; closing it is a schema-generation effort of its own.
+13. **INVERTED by verification 2026-08-05 — the pin now asserts the opposite of what this entry
+    claims.** The entry said `ResultSetMetaData.isNullable` reports NOT NULL for a column on the
+    null-supplying leg of a LEFT JOIN, and that
+    `sqldriver/cross_leg_null_born_fdb_test.go` "asserts the metadata self-contradiction (NoNulls
+    declared, SQL NULL delivered in the same test)". On master that test asserts
+    `nullable == true` (`:108-113`) and its header (`:18-27`) states the hole is UNREACHABLE
+    through the driver metadata surface: the NoNulls derivation keys on proto REQUIRED
+    cardinality, scalar `NOT NULL` is unexpressible in DDL (Java parity — `NOT NULL` is allowed
+    only on ARRAY columns), and an ARRAY `NOT NULL` column is flat REPEATED, not REQUIRED. So no
+    DDL-expressible column ever derives `ColumnNoNulls`. Corroborated by
+    `sqldriver/aggregate_over_mixed_nesting_outer_join_fdb_test.go:154`.
+    The test is now a **negative-result pin** with a named re-arm trigger: make scalar `NOT NULL`
+    expressible and the agreement-gate hole comes back. The honest user-facing statement is
+    "`isNullable` is uniformly nullable for scalars; do not infer a NOT NULL constraint from it",
+    which is what `docs/mt-saas.md` §8 says. D3 positional metadata is still the right fix for the
+    underlying gate; it is no longer a *reachable* divergence.
+14. **REFUTED and RETIRED 2026-08-05 — FIXED by `ba5f78958` (RFC-204 P1+P2+P3, #601).** The entry
+    claimed Go writes a plain repeated field where Java wraps nullable arrays in a
+    `{repeated T values = 1}` message, that `[]` and NULL collapse on the Go wire, and that this was
+    "the one OPEN wire-compat divergence on the hard line". All three clauses are false on master.
+    The wrapper is emitted (`core/metadata/builder.go:929-937`, `wrapperFor` at `:1069-1090`,
+    contract stated at `:760-762`); `[]` and NULL are distinct on read-back
+    (`sqldriver/array_literal_insert_fdb_test.go:143-156` and `:200-207`); and the wire bytes are
+    pinned byte-equal to the directly-protobuf-built message (`:217`, header `:277-282`).
+    One residual, and it is not a compat break: Go derives the wrapper's type NAME deterministically
+    from `(table, element type)` where Java mints a fresh UUID per serialization. Every Java reader
+    is structural (`NullableArrayUtils.isWrappedArrayDescriptor` checks shape, never the name), so
+    any name is wire-valid — recorded at `builder.go:1058-1067`.
+    **Consequence for this page:** there is no longer a known-open wire-compat divergence on the
+    hard line. The nearest live item is entry 15 (struct descriptor emission), which is LATENT —
+    `parseColumnType` rejects structs (`core/embedded/ddl.go:760-801`), so it is unreachable today.
+    *How this survived:* the entry was carried forward across two revisions while the fix landed in
+    a PR that never touched this file. A status page's claims rot in exactly the direction that
+    flatters it least — this one was scarier than the code.
 15. Struct descriptor emission (latent, wire-critical): Go's dormant struct path emits nested
     `.Table.Struct` descriptors with `LABEL_REQUIRED` where Java emits top-level
     `LABEL_OPTIONAL` messages — persisted-catalog bytes the moment structs become reachable.
@@ -425,8 +449,30 @@ its census tests, not the generator, so nothing was retired.
     pre-production means every affected store is dev/test. Superseded not by the trigger firing but
     by the trigger becoming unreachable: production stores are all created fresh. See the appendix.
 
-Unsupported on both engines: `COUNT(DISTINCT)`, `UNION`/`EXCEPT DISTINCT`, `x IN (SELECT …)`,
-`NULLIF`, string functions, `DECIMAL`, FK/CHECK/defaults, window functions.
+Unsupported on both engines: `COUNT(DISTINCT)` (0AF00), `UNION`/`EXCEPT DISTINCT` (0AF00; the
+`UNION`-inside-a-recursive-CTE carve-out DOES work — `logical_predicate.go:6294`),
+`EXCEPT`/`INTERSECT` (42601 — absent from the grammar, not a planner decline),
+`x IN (SELECT …)` (0AF00), `NULLIF` (0AF00), `DECIMAL`/`NUMERIC` (**42601** — lexer tokens absent
+from `primitiveType`, so the PARSER rejects them, not the DDL visitor's 0A000 arm; pinned
+2026-08-05 by `core/parser/decimal_type_rejected_test.go`), FK/CHECK/defaults (42601),
+window functions (0AF00, except the vector K-NN `ROW_NUMBER() OVER (…)` in `QUALIFY`, which works
+on both).
+
+**Corrected 2026-08-05: string functions are NOT in that list.** Go implements the whole family
+(`UPPER`/`LOWER`/`SUBSTRING`/`TRIM`/`CONCAT`/`REPLACE`/`POSITION`/`REVERSE`/the `*_LENGTH` set) as
+an RFC-087 read-side extension (`values/scalar_function_catalog.go:363-370`, rows pinned in
+`yamsql/testdata/string_functions.yaml`, real-FDB `sqldriver/embedded_fdb_test.go:3866`); only Java
+rejects them. Zero wire impact, so it is a sanctioned extension — but it is a **portability**
+caveat, not an unsupported feature: that query will not run on Java.
+
+*Secondary drift found while correcting this line, and FIXED in the same pass:* the ANSI roster
+recorded `COUNT(DISTINCT)` as 0A000 and `NULLIF` as 42883 where the code emits 0AF00 for both, and
+`SQL_CONFORMANCE.md` listed Go's string AND math functions as `N` when both are Go extensions with
+committed row-asserting corpora (`string_functions.yaml`, `trim_concat.yaml`,
+`numeric_functions.yaml`). The roster `Note` fields are free-text prose no test asserts, so the
+corrections are safe; they were made rather than filed, because four documents agreeing with each
+other about an error code none of them had measured is exactly the failure this section exists to
+catch.
 
 ### Rebuild-path correctness (landed with CQ-90, and the reason that work matters)
 
@@ -512,8 +558,16 @@ inline inside the open transaction; above it the index is left DISABLED — not 
 can read stale answers from it — and an explicit `OnlineIndexer` run completes the migration and
 returns it to READABLE. **A real record count requires a COUNT index in the metadata**: without one
 `getRecordCountForRebuildPolicy` falls through to an emptiness probe and reports `MaxInt64` for any
-non-empty store, so the DISABLED + `OnlineIndexer` arm is the path every relational SQL schema takes
-today.
+non-empty store, so the DISABLED + `OnlineIndexer` arm is the path a relational SQL schema takes **by
+default**. *Narrowed 2026-08-05:* "every relational SQL schema" overstated it. SQL can create a COUNT
+index explicitly (`CREATE INDEX … AS SELECT COUNT(*) … GROUP BY …`, `RelationalParser.g4:172` →
+`core/metadata/builder.go:1176`, pinned by `yamsql/testdata/aggregate_index_count_star.yaml:13`) and
+implicitly (the auto-emitted `__GROUP_COUNT` companion beside any grouped aggregate index,
+`builder.go:660`), relational primary keys ARE record-type-prefixed (`builder.go:1232`,
+`:1239-1240`), and a grouped COUNT index still qualifies as a count source
+(`store_builder.go:900`). So a schema carrying one flips to the INLINE arm — which is not
+automatically better, since that rebuild runs inside the store-open transaction. Which arm a store
+takes is a per-schema fact, not a layer-wide one.
 
 ### Correctness-elimination order (2026-08-01)
 
@@ -532,19 +586,42 @@ entry's pin goes red and the entry is retired with the fix cited.
    first, then its own gated lap since it flips answers into errors).
 3. **RFC-202 S7** — covering/DESC plan shapes over generated indexes (KeyWithValue split
    discarded at the planner seam); in the S5-S9 agent's queue.
-4. **D3 positional metadata** (entry 13) — retires the cross-leg nullability class and the
-   #4274 divergence together; sequenced with RFC-204 P4.
-5. **RFC-143 §3a** (entry 14) — the open wire divergence; own design effort, after RFC-204 P1
-   settles the descriptor-emission ground it shares.
+4. **D3 positional metadata** (entry 13) — **demoted 2026-08-05**: the cross-leg nullability class
+   is UNREACHABLE through the driver metadata surface (see entry 13), so this is architectural
+   hygiene sequenced with RFC-204 P4, not a live correctness item. It re-arms the day scalar
+   `NOT NULL` becomes expressible.
+5. ~~**RFC-143 §3a** (entry 14) — the open wire divergence.~~ **DONE** — closed by `ba5f78958`
+   (RFC-204 P1+P2+P3, #601); see entry 14. **No known-open wire-compat divergence remains on the
+   hard line.**
 6. **Error-class divergences** (entry 16) — batch of small Java-parity fixes, each already
    pinned at its rejection.
 
 Everything in "deliberate, documented" (entries 5-8, 11, 17 + the client-side operational list)
 stays: those are Java-parity or standard-vs-Java calls with the reasoning recorded, not defects.
 
-Client-side operational: watches register at read version, not commit-gated; no `too_many_watches`
-limit; no RYW pending-write immediate-fire; special-key space absent; `BYPASS_UNREADABLE` span-wipe
-is the one known committed-byte divergence (deliberate, reviewed).
+Client-side operational — **two of these were REFUTED by verification 2026-08-05 and are corrected
+in place**:
+
+- ~~watches register at read version, not commit-gated~~ **FIXED** (`5a8856e7c`, RFC-170 finding
+  #8). On the async `fdb` facade — the API an application uses — the watch registers at the
+  COMMITTED version, so `Set(k,B); w=Watch(k)` stays pending until the next EXTERNAL change instead
+  of firing on the transaction's own write (`fdb/transaction.go:457-459`,
+  `client/transaction.go:2221-2226`, mirroring C++ `setupWatches`). Pinned cross-client by
+  `fdbgo/bench/differential_watch_test.go:266-272`. The synchronous low-level
+  `client.Transaction.Watch` still registers at the read version, deliberately — it blocks in
+  `WatchPoll` until the watch fires, so it structurally cannot wait for a commit
+  (`client/readpath.go:1150-1155`). That residual is the only surviving half of this entry.
+- ~~no `too_many_watches` limit~~ **FIXED** (`4db86c31b`, `3bc19dba7`, `af364d324`). The per-Database
+  cap exists and 1032 is enforced: default 10 000 (`DEFAULT_MAX_OUTSTANDING_WATCHES`), ceiling
+  1 000 000 (`ABSOLUTE_MAX_WATCHES`), `client/database.go:381-386`, `tryAcquireWatch` at `:388-401`,
+  charged at `client/readpath.go:1236-1238`. Pinned by `client/watch_limit_test.go:10-14`, whose
+  header names this exact gap as what it closes. The user-facing statement inverts: the cap is a
+  real, shared, per-process budget tenants must plan against.
+- Still open: no RYW pending-write immediate-fire; special-key space absent; `BYPASS_UNREADABLE`
+  span-wipe is the one known committed-byte divergence (deliberate, reviewed).
+
+`TODO.md`'s D1 (`:7591`) and D2 (`:7602`) still carry the two fixed items as open under an unchecked
+parent; D3 (`:7607`, RYW pending-write immediate-fire) is genuinely open.
 
 ## Landed since the audit — the two safety nets this page now rests on
 
@@ -651,6 +728,119 @@ Booked by THIS revision, from defects the verification pass found:
   the surviving comment states the corrected fact and cites the probe. Recorded because the shape of
   the error is worth keeping: two code comments and four test pins agreed with each other and all
   five were wrong, none having asked the Java server.
+
+## Multi-tenant SaaS — what landed, and what is still a build
+
+Measured at `2e4b9f930`. The operator-facing page is **[`docs/mt-saas.md`](docs/mt-saas.md)**; it
+carries a `file:line` citation per claim and is the place to look for *how*. This section records
+*what changed* and *what is left*, and does not repeat it.
+
+The deployment shape assessed is: one SQL database path per tenant, one subspace per
+(database, schema), the SQL connection as the trust boundary. Native FDB tenants are **not** used,
+for three independent reasons — the SQL layer has no plumbing to open one
+(`sqldriver/driver.go:211-215`), the pure-Go tenant API is unauthenticated
+(`fdbgo/fdb/options.go:389-392` refuses `authorization_token` outright), and the cgo backend carries
+no tenant ops at all (`fdbgo/fdb/backend.go:35-36`), so adopting them forfeits the `libfdb_c` escape
+hatch. Stated at its sharpest: **the pure-Go client has tenants but no authorization; `libfdb_c` has
+authorization but no tenants.** No single build has both halves of FDB's own tenant-isolation model.
+
+### Landed this arc
+
+**#624 — catalog scoping, cross-database DDL, and the DSN freeze (`aa73be70e`).** Two real
+cross-tenant leaks. (a) All four `INFORMATION_SCHEMA` views and `SHOW DATABASES` called the
+cluster-wide catalog reads, so any connection could enumerate every database's schemas, tables,
+columns and index names — and the user's WHERE clause was no defence, because filtering runs after
+the rows are materialised. All five now scope to the session database and **fail closed** on an
+unscopable path (`core/embedded/system_tables.go:124-131`, `:411-431`), at path-SEGMENT granularity
+(`:470-475`). `SHOW SCHEMA TEMPLATES` stays global by necessity — scoping it would be a catalog
+wire-format change to a record Java also reads (`:520-533`, pinned). (b) A fully-qualified
+`/otherdb/SCHEMA` was accepted from any connection, matching Java, which assumes authorization above
+SQL. The Go-only `RESTRICT_DDL_TO_SESSION_DATABASE` confines DDL to the session database (42501) at
+the four resolution chokepoints, on the ALREADY RESOLVED path — and, after review, also refuses
+schema-TEMPLATE DDL outright, since a template has no owning database and dropping one another
+tenant's schemas resolve against leaves those schemas unloadable. `CREATE DATABASE /__SYS/...`,
+which previously SUCCEEDED, is now refused unconditionally. The Connector additionally deep-clones
+its DSN, closing a split brain in which the option decode was frozen while `Path` and `cluster_file`
+were still read live from a caller-mutable struct.
+
+**#625 — CQ-90: the rebuild path, proven, plus `SetFormatVersion` (`36cb843e9`).** The migration
+half is recorded in entry 18 and its appendix. The part that outlives it is engine behaviour on the
+path **every future index addition under a live tenant takes**: Go was calling
+`MarkIndexReadableOrUniquePending` unconditionally on both the inline and online paths, silently
+downgrading a uniqueness violation into a pending state nobody opted into. Java's semantics are now
+ported 1:1 — including the adjudication that reversed a prior lap's blocking finding, because
+`rebuildIndex`'s `handle(...)` returning normally means the violation never leaves `checkVersion`;
+propagating it would turn any metadata evolution meeting bad data into a store-open OUTAGE Java does
+not have. `StoreBuilder.SetFormatVersion` / `OnlineIndexerBuilder.SetFormatVersion` are ported so a
+rolling upgrade can pin every instance to the OLD format; before this, Go could not express opening
+at anything but its binary's newest.
+
+**#626 — three latent multi-tenancy hazards (`56c0d4865`).** (a) The plan-cache scope carried
+`(schema, metadataVersion, plannerOptions)`, so two databases holding a same-named schema — the
+ordinary multi-tenant shape — shared one entry for identical SQL and whichever planned first had its
+plan served to the other. The database path is now a fourth length-prefixed component. (b)
+`RecordTypeKeyExpression` carried a mutable binding on a SHARED object, so two metadata built from
+one expression graph decided each other's record type key. The chase ended by deleting the state
+entirely and resolving from the record, as Java's stateless singleton does — which then surfaced
+four more defects at the door (unsigned narrow widths panicking the encoder, a `uint64` above max
+int64 that builds and saves but cannot be exported, an empty bytes key vanishing on export, and five
+different comparisons of "same key" that had drifted apart). (c) The process-global
+derived-subspace-keys cache had no TTL and no cap — one entry per tenant store, released never — and
+its first bound only swept on cache HITS, i.e. never on the ever-new-subspace workload it exists for.
+
+**#620 — RFC-210 plus three master-reachable executor bugs (`2e4b9f930`).** The RFC itself is a
+read-side extension (Java does not do secondary-UNIQUE DISTINCT elision at all) and its
+index-state-evidence tri-state matters here for a different reason: `ReadableIndexes`' zero value
+meant "nobody asked" while rendering identically to Java's affirmative "I checked, all readable", and
+that is now fail-closed. The three **pre-existing #621 scratch-lifecycle bugs** are the
+multi-tenancy-relevant part, all reachable on master and all budget-affecting under load: a
+forwarded raw continuation token was not treated as a name, so the sweep retired a token a live
+continuation still held and the next page could not resume; `BeginPage` left a FAILED attempt's
+charge live, so repeated conflicts stacked one attempt-sized delta each until the statement could
+exhaust its budget before any attempt committed; and a cursor released what it last *recorded*
+rather than what it *held*, leaking charge for the statement's life.
+
+### Still a build — booked, not done
+
+- **Per-tenant restore.** Cluster-granular `fdbbackup`/`fdbrestore` only; there is no layer-level
+  backup and none in Java either. Per-tenant restore is *not built* — and, to correct a formulation
+  that has circulated, not *unbuildable*: a tenant is one contiguous subspace and the range
+  primitives are exported. What makes it a project rather than a script is that each scan is one
+  transaction (no cross-transaction snapshot), record versions cannot be written back
+  (`SaveRecordWithOptions` takes no version), and the CLI is lossy as a capture format
+  (`frl store dump` prints value *lengths*; `frl record scan` emits three fields, no version, no
+  index state, no header). If per-tenant PITR is a product promise, budget it as a project.
+- **Index-build fan-out orchestrator.** `frl index build` is one index on one store addressed by
+  scalar flags; N tenants is N invocations. `SetMutualIndexing`/`SetTargetIndexes`/`SetSourceIndex`
+  exist on the builder and are not exposed by the CLI at all.
+- **Schema-evolution fan-out.** `RepairSchema` exists (`api/catalog.go:76`,
+  `core/catalog/fdb_store_catalog.go:472`) and has **zero non-test call sites**; no SQL statement
+  reaches it, and no loop iterates the catalog calling it. There is no `ALTER` (a 42601 syntax
+  error, not an unsupported-feature message) and schema templates are immutable in practice (42F59
+  on a second `CREATE`), so the fleet-migration story is two loops nobody has written.
+- **Post-execution query statistics.** `PlanGenerationLogger` reports planning only — SQL, plan
+  hash, EXPLAIN text, planning duration, cache event, slow flag. No rows scanned, no bytes read, no
+  execution time, anywhere. Per-tenant cost attribution cannot be built from the engine today. There
+  is no `EXPLAIN ANALYZE` (the token appears in no parser rule).
+- **StoreTimer exporter.** `StoreTimer` mirrors Java's `FDBStoreTimer` event set and nothing exports
+  it: no production `SetTimer` call site, no `fdbmetrics` equivalent, and the SQL path never surfaces
+  an `FDBRecordContext` to install one on. `fdbmetrics` covers client-level counters only.
+- **Transaction-tag wire marshalling.** The pure-Go client stores tags but never puts them in
+  `CommitTransactionRequest.TagSet` or the GRV request, so FDB server-side per-tag throttling cannot
+  engage; `libfdb_c` forwards both. Per-tenant throttling is the application's job on the default
+  build.
+- **OTel above the FDB layer.** Tracing exists at the client (`client.WithTracer`, RFC-115 §4 Layer
+  2, `fdbgo/client/options.go:97-114`) and nowhere above it — no spans for planning or execution.
+- **Online index scrubber.** Java has `OnlineIndexScrubber` (`scrubDangling`/`scrubMissing`) —
+  chunked, throttled, resumable, repairing; Go has none and says so at
+  `recordlayer/index_state.go:567`. What exists is **detection only** and unusable at size:
+  `FDBRecordStore.ValidateIndex` (`recordlayer/index_validation.go:39`) repairs nothing, scans every
+  record and every index entry into memory with no continuation and no scan limit
+  (`scanAllRecords`, `:138`), and has zero non-test call sites. So for a store of any real size
+  there is no usable way to detect, and no way at all to repair, dangling or missing index entries.
+- **Default format version.** Unpinned, a new Go store is born at 14 while Java's default is 7
+  (booked in `DIVERGENCES.md` by #625). `SetFormatVersion` now makes alignment expressible; the
+  remaining work is a decision about the default, not a missing capability.
 
 ## Sequence
 

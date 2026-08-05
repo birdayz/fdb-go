@@ -16,6 +16,12 @@ releases yet** — cutting the first `v0.x` tag is the maintainer's decision (`R
 ## [Unreleased]
 
 ### Added
+- **Multi-tenant SaaS operator guide** (`docs/mt-saas.md`): the tenancy model (one database path per
+  tenant, subspace-per-database, and why native FDB tenants are not used), the trust boundary and
+  `RESTRICT_DDL_TO_SESSION_DATABASE`, the five per-statement quotas and how to arm them (none is
+  DSN-settable), per-tenant observability, the pure-Go TLS certificate requirement, and the
+  tenant-facing SQL contract. Every claim carries a `file:line` citation; the page is on
+  `pkg/docscheck`'s `livingDocs` list so its version anchors are drift-guarded.
 - Statement-wide **memory byte budget** for the SQL executor: opt-in `OptMaxStatementMemoryBytes`
   bounds every cardinality-growing buffer by bytes (not just the 100k-row `MaterializationLimit`);
   breach → SQLSTATE `54F01`. Default `0` = unlimited (RFC-130).

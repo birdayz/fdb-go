@@ -23,11 +23,11 @@ Java fdb-relational **4.12.11.0** vs Go implementation vs ANSI SQL standard.
 | Simple CASE (`CASE expr WHEN val`) | N | Y | Y | Java accepts the syntax but mis-evaluates: `visitCaseExpressionFunctionCall` is a no-op that always falls through to ELSE; Go evaluates correctly (`case_simple_int_match` divergence) |
 | CAST | Y | Y | Y | Overflow detection aligned |
 | COALESCE | Y | Y | Y | |
-| NULLIF | N | N | Y | Both reject (42883 — no function-registry entry); shared ANSI gap F261-03 |
+| NULLIF | N | N | Y | Both reject; shared ANSI gap F261-03. Go's code is **0AF00** (`coalesce_nullif.yaml:26-28`), not 42883 |
 | GREATEST / LEAST | Y | Y | Y | |
 | CARDINALITY (array length, `ln`) | Y | Y | Y | Added in Java 4.12 (scalar fn + index support); Go ports both (RFC-143) |
-| String functions (UPPER etc.) | N | N | Y | Both reject -- Java has no function catalog entry |
-| Math functions (ABS etc.) | N | N | Y | Both reject |
+| String functions (UPPER etc.) | N | Ext | Y | Go extension (RFC-087): UPPER/LOWER/SUBSTRING/TRIM/CONCAT/REPLACE/POSITION/REVERSE/`*_LENGTH` (`string_functions.yaml`, `trim_concat.yaml`). Java has no function-catalog entry and rejects; read-side only, zero wire impact |
+| Math functions (ABS etc.) | N | Ext | Y | Go extension: ABS/MOD/FLOOR/CEIL(ING)/ROUND/SQRT (`numeric_functions.yaml`), with typed error channels (ABS(MinInt64)→22003, MOD(x,0)→22012, SQRT(<0)→22023). Java rejects |
 | CURRENT_TIMESTAMP / CURRENT_DATE | N | Ext | Y | Go extension: proper TIMESTAMP/DATE types, comparisons, CAST |
 | Date-part functions (YEAR etc.) | N | Ext | Y | Go extension: YEAR/MONTH/DAY/HOUR/MINUTE/SECOND/DAYOFWEEK/DAYOFYEAR |
 
