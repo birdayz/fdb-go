@@ -163,6 +163,7 @@ go_test(
         "sort_projection_layering_test.go",
         "sort_pullup_test.go",
         "sparse_aggregate_candidate_test.go",
+        "sparse_unique_index_ddl_test.go",
         "sql_plan_fuzz_test.go",
         "struct_ddl_test.go",
         "system_rows_test.go",
@@ -316,6 +317,7 @@ go_test(
         "index_state_planning_test.go",
         "ddl_quoted_case_wire_test.go",
         "secondary_unique_proof_reachability_test.go",
+        "sparse_unique_index_ddl_test.go",
     ],
     deps = [
         "//gen",

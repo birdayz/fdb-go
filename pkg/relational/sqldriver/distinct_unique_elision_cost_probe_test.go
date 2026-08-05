@@ -58,8 +58,14 @@ const duecRows = 100000
 
 // duecReps is the pair count RFC-209 §7 settled on: a single pair on this
 // harness drifts enough to fail a clean run, and every ratio below is the
-// MEDIAN of the per-rep ratios rather than a ratio of medians — the two sides
-// of a pair run back-to-back, so a slow moment lands on both and divides out.
+// MEDIAN of the per-rep ratios rather than a ratio of medians.
+//
+// The pairing is per REP, not back-to-back. Each rep runs all nine shapes in a
+// fixed order, so the two sides of a pair are separated by the other seven
+// rather than adjacent — what divides out is a slow moment lasting a whole rep,
+// which is the drift this harness actually shows. A sub-rep spike lands on one
+// side only and survives into that rep's ratio; taking the MEDIAN across reps
+// is what discards it, and that is the reason there are five of them.
 const duecReps = 5
 
 // duecPageScanLimit forces the 100k query to span ~10 pages. Unbounded runs
@@ -483,7 +489,79 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 		t.Logf("ROWS %-8s rows=%d nullRows=%d identical=true", c.table, len(r3), nulls)
 	}
 
+	// ---- R2's fourth assertion, on a fixture that can fail it -----------
+	// §7.1 requires that an R2 plan RETAIN the predicate that made the exempt
+	// set empty: an implementation that proved the set empty and then dropped
+	// the predicate returns exactly the NULL rows it licensed itself to ignore.
+	//
+	// Every other R2 fixture in this file is the ZERO-NULL table, where that
+	// criterion cannot fail — drop the predicate there and the same 100 000 rows
+	// come back, because there were no NULLs to leak. USERS50 is half NULL, so
+	// the criterion becomes falsifiable for the first time: 50 000 rows if the
+	// predicate survives, 50 001 if it was dropped after the proof was drawn.
+	//
+	// The predicate survives as a SCAN RANGE rather than as a filter node — it
+	// is SARGable, so the planner pushes it into the range and leaves no
+	// residual — which is why the plan assertion below reads the range and not a
+	// PredicatesFilter. The row count is the assertion that does not care which
+	// form it takes: whichever way the NULL-rejection is carried, losing it
+	// shows up here.
+	const r2Filtered = "SELECT DISTINCT email FROM users50 WHERE email IS NOT NULL"
+	r2Explain := ex(r2Filtered)
+	t.Logf("EXPLAIN %-56s => %s", r2Filtered, r2Explain)
+	if strings.Contains(r2Explain, "Distinct(") {
+		t.Fatalf("R2 did not fully elide on the half-NULL table: %s", r2Explain)
+	}
+	if !strings.Contains(r2Explain, "distinct-by:BY_EMAIL50") {
+		t.Fatalf("the elided plan names no proving index: %s", r2Explain)
+	}
+	if !strings.Contains(r2Explain, "IndexScan(BY_EMAIL50, [<>]") {
+		t.Fatalf("the R2 plan no longer carries the NULL-rejecting range: %s\n"+
+			"A full [*] range over BY_EMAIL50 reaches the 50 000 NULL entries the "+
+			"proof assumed were unreachable, and the DISTINCT that would have "+
+			"collapsed them is gone.", r2Explain)
+	}
+	if rows := duecCollect(t, ctx, pconn, r2Filtered); len(rows) != 50000 {
+		t.Fatalf("R2 over the half-NULL table returned %d rows, want exactly 50000.\n"+
+			"USERS50 holds 50 000 distinct non-NULL emails and 50 000 NULLs. Any "+
+			"count above 50 000 means the NULL-rejecting predicate was dropped after "+
+			"licensing the elision, and the rows it was holding back are now flowing "+
+			"past an operator that is no longer there.", len(rows))
+	}
+
 	// ---- ordered and LIMIT shapes: shape only, never timed --------------
+	// The STREAMING variant is REFUSED the narrowing, and this is the SQL-level
+	// half of that refusal. The ordered shapes plan a streaming distinct, whose
+	// dedup compares each row against the LAST EMITTED one and holds no seen-set
+	// at all — so there is nothing for a narrowing to shrink, and rendering
+	// `narrowed-by` on it would advertise an optimization the executor does not
+	// perform. An acceptance criterion reading that rendering would report R3 as
+	// firing on a shape where it does not.
+	//
+	// The plan-level and executor-level halves are pinned in
+	// plans/distinct_streaming_refuses_narrowing_test.go and the executor's
+	// narrowedDedupFor test; neither observes what the PLANNER emits for real
+	// SQL, which is the gap this closes.
+	for _, ordered := range []string{
+		"SELECT DISTINCT email FROM users ORDER BY email",
+		"SELECT DISTINCT email FROM users ORDER BY email LIMIT 10",
+	} {
+		if !strings.Contains(explains[ordered], "Distinct(") {
+			t.Fatalf("the ordered shape lost its distinct operator: %s\n%s",
+				ordered, explains[ordered])
+		}
+		if strings.Contains(explains[ordered], "narrowed-by") {
+			t.Fatalf("the ordered shape renders a NARROWING: %s\n%s\n"+
+				"The streaming executor never consults the flag — it returns before "+
+				"narrowedDedupFor is reached — so this rendering claims a residual "+
+				"dedup that no code performs.", ordered, explains[ordered])
+		}
+	}
+
+	// RFC-210 §2.1 could not resolve a delta on these — the spreads overlap
+	// heavily — and a bound on an unresolvable delta measures the harness. They
+	// are still pinned for SHAPE, because which executor variant fires decides
+	// which cost the operator pays and EXPLAIN does not render it.
 	// RFC-210 §2.1 could not resolve a delta on these — the spreads overlap
 	// heavily — and a bound on an unresolvable delta measures the harness. They
 	// are still pinned for SHAPE, because which executor variant fires decides
