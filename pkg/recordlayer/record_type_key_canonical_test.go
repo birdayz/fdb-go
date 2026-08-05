@@ -1,7 +1,9 @@
 package recordlayer
 
 import (
+	"bytes"
 	"errors"
+	"math"
 	"testing"
 
 	"fdb.dev/gen"
@@ -337,7 +339,6 @@ func TestRecordTypeKey_CanonicalKeyPacksIdenticalBytes(t *testing.T) {
 		{int64(-1), int64(-1)},
 		{-2, -2},
 		{int8(-3), int64(-3)},
-		{uint64(1) << 63, uint64(1) << 63}, // above max int64: must stay unsigned
 		{"k", "k"},
 		{[]byte("k"), []byte("k")},
 		{true, true},
@@ -363,34 +364,115 @@ func TestRecordTypeKey_CanonicalKeyPacksIdenticalBytes(t *testing.T) {
 	}
 }
 
-// TestRecordTypeKey_HugeUnsignedStaysUnsigned pins the one integer that must
-// NOT be widened: a uint64 above max int64 has no int64 representation, so
-// folding it would either wrap to a negative key or lose the value.
-func TestRecordTypeKey_HugeUnsignedStaysUnsigned(t *testing.T) {
+// TestRecordTypeKey_HugeUnsignedIsRejected pins that a uint64 above max int64
+// is refused at the door rather than accepted and broken later.
+//
+// It has no int64 form, so canonicalization cannot widen it, and the metadata
+// proto has no unsigned field to carry it: RecordKeyExpressionProto.Value
+// offers double/float/int64/bool/string/bytes/int32 and nothing else. Storing
+// it verbatim therefore built and SAVED fine while ToProto failed with
+// "unsupported value type uint64" — the accepted-here / broken-there split
+// canonicalizing at the door exists to remove.
+//
+// Java cannot express it either. Its only unsigned-capable Number is
+// BigInteger, and LiteralKeyExpression.toProtoValue (:184-185) funnels every
+// non-Integer Number through longValue(), which silently TRUNCATES a value
+// above max long into a different key. Refusing is strictly better than
+// either failure.
+func TestRecordTypeKey_HugeUnsignedIsRejected(t *testing.T) {
 	t.Parallel()
 
-	huge := uint64(1) << 63
-	canonical, err := canonicalRecordTypeKey(huge)
-	if err != nil {
-		t.Fatalf("canonicalRecordTypeKey(%d): %v", huge, err)
-	}
-	got, ok := canonical.(uint64)
-	if !ok || got != huge {
-		t.Fatalf("canonicalRecordTypeKey(%d) = %v (%T), want the value unchanged as uint64", huge, canonical, canonical)
+	for _, tc := range []struct {
+		name string
+		key  any
+	}{
+		{"uint64 above max int64", uint64(1) << 63},
+		{"uint64 max", uint64(math.MaxUint64)},
+		{"uint above max int64", uint(1) << 63},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := keyMetaData(map[string]any{"Order": tc.key})
+			var typeErr *RecordTypeKeyTypeError
+			if !errors.As(err, &typeErr) {
+				t.Fatalf("Build accepted record type key %v (%T), which no metadata proto can carry — "+
+					"the save path takes it and ToProto then fails, so the metadata cannot be exported "+
+					"or persisted; got err=%v", tc.key, tc.key, err)
+			}
+		})
 	}
 
-	// And it is still a usable key end to end.
-	md, err := keyMetaData(map[string]any{"Order": huge})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
+	// The boundary itself is still accepted: max int64 has an int64 form.
+	if _, err := keyMetaData(map[string]any{"Order": uint64(math.MaxInt64)}); err != nil {
+		t.Fatalf("Build rejected uint64(MaxInt64), which is representable as int64: %v", err)
 	}
-	order := &gen.Order{OrderId: proto.Int64(1)}
-	stored := &FDBStoredRecord[proto.Message]{RecordType: md.GetRecordType("Order"), Record: order}
-	pk, err := md.GetRecordType("Order").PrimaryKey.Evaluate(stored, order)
-	if err != nil {
-		t.Fatalf("primary key evaluation: %v", err)
+}
+
+// TestRecordTypeKey_EveryStoredKeyExports pins the invariant the four
+// subsystems are supposed to share, on the axis that had no coverage: a key
+// Build accepts must also SERIALIZE. The existing accepted-set test proves
+// only that the stored value packs, which is a different question — uint64
+// above max int64 packed perfectly well and still could not be exported.
+func TestRecordTypeKey_EveryStoredKeyExports(t *testing.T) {
+	t.Parallel()
+
+	for _, key := range []any{
+		int8(101), int16(102), int32(103), int64(104), 105,
+		uint8(106), uint16(107), uint32(108), uint(109), uint64(110),
+		"k", []byte("k"), true, float32(1.5), float64(2.5),
+	} {
+		md, err := keyMetaData(map[string]any{"Order": key})
+		if err != nil {
+			t.Fatalf("Build rejected encodable record type key %v (%T): %v", key, key, err)
+		}
+		if _, err := md.ToProto(); err != nil {
+			t.Fatalf("Build accepted record type key %v (%T) but ToProto rejected the metadata: %v — "+
+				"the key is usable on the save path and cannot be exported", key, key, err)
+		}
 	}
-	if len(pk) != 1 || len(pk[0]) != 2 || pk[0][0] != any(huge) {
-		t.Fatalf("primary key = %v, want the uint64 key followed by the order id", pk)
+}
+
+// TestRecordTypeKey_ExportBytesAreCanonical pins the byte-level half of the
+// claim that storing the canonical value keeps the export Java-compatible.
+//
+// Java canonicalizes in setRecordTypeKey (RecordTypeIndexesBuilder.java:86-91),
+// so by the time RecordMetaData.toProto reads getExplicitRecordTypeKey it holds
+// a Long and LiteralKeyExpression.toProtoValue writes long_value — NOT the
+// int_value its Integer branch would have produced. Go storing the raw int32
+// wrote int_value and diverged; storing canonical makes every spelling of one
+// key produce one export, byte for byte.
+func TestRecordTypeKey_ExportBytesAreCanonical(t *testing.T) {
+	t.Parallel()
+
+	exportBytes := func(key any) []byte {
+		md, err := keyMetaData(map[string]any{"Order": key})
+		if err != nil {
+			t.Fatalf("Build(%v): %v", key, err)
+		}
+		mdProto, err := md.ToProto()
+		if err != nil {
+			t.Fatalf("ToProto(%v): %v", key, err)
+		}
+		raw, err := proto.Marshal(mdProto)
+		if err != nil {
+			t.Fatalf("Marshal(%v): %v", key, err)
+		}
+		return raw
+	}
+
+	want := exportBytes(int64(42))
+	for _, key := range []any{42, int8(42), int16(42), int32(42), uint8(42), uint16(42), uint32(42), uint(42), uint64(42)} {
+		if got := exportBytes(key); !bytes.Equal(got, want) {
+			t.Errorf("record type key %v (%T) exports different metadata BYTES than int64(42) — "+
+				"the same key spelled two ways serializes two ways, and a narrow int lands in the "+
+				"proto's int_value where Java writes long_value", key, key)
+		}
+	}
+
+	// A bytes key exports stably too, and NOT as the string of the same bytes:
+	// the two occupy different tuple type codes and different proto fields.
+	if bytes.Equal(exportBytes([]byte("k")), exportBytes("k")) {
+		t.Error("a []byte key and the string of the same bytes exported identical metadata — " +
+			"they are different keys (tuple type codes 0x01 and 0x02)")
 	}
 }

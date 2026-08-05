@@ -944,9 +944,19 @@ func (rtb *RecordTypeBuilder) SetRecordTypeKey(key any) *RecordTypeBuilder {
 type RecordTypeKeyTypeError struct {
 	// Key is the offending value.
 	Key any
+	// Reason distinguishes the two ways a key is refused. Empty means the Go
+	// TYPE is not one a record type key may have, which is Java's wording
+	// verbatim. A non-empty reason means the type is fine but this VALUE
+	// cannot be represented, where Java's message would be actively
+	// misleading — a uint64 above max int64 is a primitive, and saying
+	// otherwise sends the reader looking for the wrong mistake.
+	Reason string
 }
 
 func (e *RecordTypeKeyTypeError) Error() string {
+	if e.Reason != "" {
+		return fmt.Sprintf("record type key %v (%T) cannot be used: %s", e.Key, e.Key, e.Reason)
+	}
 	return fmt.Sprintf("only primitive types are allowed as record type key, got %T (%v)", e.Key, e.Key)
 }
 
@@ -955,12 +965,31 @@ func (e *RecordTypeKeyTypeError) Error() string {
 // TupleTypeUtil.toTupleEquivalentValue.
 //
 // The accepted set is Java's — null, Number, Boolean, String, byte[] —
-// intersected with what the tuple encoder can actually encode. Everything
-// else is refused HERE, where the caller learns about it from Build(), rather
-// than at pack time: the encoder's default arm panics ("unencodable element"),
-// so a value the builder accepts but the encoder cannot write turns a metadata
-// mistake into a panic on the save path. A named integer type (`type k int`)
-// is refused for that exact reason — it is not one of the encoder's cases.
+// intersected with what the tuple encoder can encode AND what the metadata
+// proto can carry. Everything else is refused HERE, where the caller learns
+// about it from Build(), rather than at pack time: the encoder's default arm
+// panics ("unencodable element"), so a value the builder accepts but the
+// encoder cannot write turns a metadata mistake into a panic on the save path.
+// A named integer type (`type k int`) is refused for that exact reason — it is
+// not one of the encoder's cases.
+//
+// The proto clause is the second half of that rule and is what excludes two
+// values the ENCODER would take. RecordKeyExpressionProto.Value has exactly
+// one integer field per width (double, float, int64, bool, string, bytes,
+// int32) and no unsigned or big-integer field, so:
+//
+//   - a big.Int is refused even though the encoder writes it, because no
+//     metadata carrying one could ever be exported or read back; and
+//   - a uint/uint64 above math.MaxInt64 is refused for the same reason. It
+//     packs, and it used to build and save — but ToProto then failed on it
+//     ("unsupported value type uint64"), which is the accepted-here /
+//     broken-there split this whole function exists to remove. Java cannot
+//     express it either: its only unsigned-capable Number is BigInteger, and
+//     LiteralKeyExpression.toProtoValue funnels every non-Integer Number
+//     through longValue(), silently TRUNCATING it to a wrong key.
+//
+// Refusing at the door is what keeps validation, serialization, prefix
+// comparison and packing looking at one representation.
 //
 // Canonicalization is limited to what leaves the tuple encoding IDENTICAL:
 // every integer that fits in an int64 becomes an int64, because the tuple
@@ -989,15 +1018,15 @@ func canonicalRecordTypeKey(key any) (any, error) {
 	case uint32:
 		return int64(k), nil
 	case uint:
-		if uint64(k) <= math.MaxInt64 {
-			return int64(k), nil
+		if uint64(k) > math.MaxInt64 {
+			return nil, &RecordTypeKeyTypeError{Key: key, Reason: "above max int64, and the metadata proto has no unsigned field to carry it"}
 		}
-		return uint64(k), nil
+		return int64(k), nil
 	case uint64:
-		if k <= math.MaxInt64 {
-			return int64(k), nil
+		if k > math.MaxInt64 {
+			return nil, &RecordTypeKeyTypeError{Key: key, Reason: "above max int64, and the metadata proto has no unsigned field to carry it"}
 		}
-		return k, nil
+		return int64(k), nil
 	case string:
 		return k, nil
 	case []byte:
