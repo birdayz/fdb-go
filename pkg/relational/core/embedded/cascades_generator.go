@@ -1892,6 +1892,60 @@ func materializeDriverValue(v any) any {
 func (r *paginatingRows) fetchPage() error {
 	c := r.conn
 
+	// The page's OUTCOME is staged in locals and published to r only after the
+	// page's transaction has succeeded.
+	//
+	// In auto-commit the closure below is the body of a DB.Run retry loop, so it
+	// may run more than once, and it RESUMES FROM r.continuation while clearing
+	// r.buf at its top. Any position it writes to r before its transaction
+	// commits is therefore position a re-execution inherits — and a re-execution
+	// that inherits an already-advanced continuation resumes PAST the rows the
+	// failed attempt drained, whose buffer it has just discarded. Those rows are
+	// silently gone: no error, no duplicate, a short result set.
+	//
+	// The invariant is the ordinary transactional one — a result set's position
+	// advances with the transaction that produced it, or not at all — and it is
+	// kept structurally, by the assignment site, rather than by argument about
+	// which failures can reach it.
+	//
+	// It is REACHED, not merely defended against. A SELECT page is not
+	// necessarily read-only: storeIn opens the record store per page and does
+	// NOT SetSkipPossiblyRebuild, so every page runs checkPossiblyRebuild, which
+	// WRITES the store header when it upgrades a below-current format version,
+	// when the record-count key changed, or when the metadata version moved (that
+	// arm rebuilds indexes inline). A store written by an older writer — Java at
+	// a lower FormatVersion is the ordinary case — therefore makes the FIRST page
+	// of a plain auto-commit SELECT a write-carrying transaction, whose commit
+	// goes to the resolver and can come back not_committed. Before this staging,
+	// that conflict cost the caller page 1's rows with no error raised.
+	//
+	// r.buf needs no staging on the SUCCESS path: the closure truncates it at the
+	// top of every attempt, so a retry cannot see a previous attempt's rows. It
+	// does need clearing on the FAILURE path — see the error branch below.
+	var pageExhausted bool
+	var pageCont []byte
+
+	// The statement-wide ExecuteState carries one more piece of PAGE POSITION,
+	// and it lives too deep in the executor to stage as an outcome: the
+	// recursive-CTE level count. A resumed recursive cursor deliberately does not
+	// reset it (newRecursiveUnionCursor resets only on a nil continuation, or a
+	// cyclic CTE that pages mid-recursion would never trip its cap), so an
+	// attempt that walks k levels and then fails leaves those k counted and the
+	// re-execution walks the same k again. A finite CTE near the 1000-level cap
+	// then fails 54F01 with a depth it never actually reached.
+	//
+	// So it is snapshotted here and rolled back at the top of every attempt —
+	// the same treatment r.buf gets, and for the same reason. The rollback must
+	// be INSIDE the closure: the retry loop re-enters the closure without ever
+	// returning here, so an error-path rollback would never run.
+	//
+	// The state's other member, the memory budget, is deliberately NOT rolled
+	// back: it gauges LIVE bytes with paired release on teardown, so a failed
+	// attempt returns it to its entry value on its own. See
+	// ExecuteState.SnapshotRecursionLevels for the full statement-cumulative vs
+	// page-positional split and where a future member belongs.
+	recursionAtPageStart := r.execState.SnapshotRecursionLevels()
+
 	// Every statement kind joins the explicit transaction captured at Execute
 	// time (r.tx) — SELECT included, which is what gives an explicit
 	// transaction read-your-writes and read conflict ranges (RFC-198
@@ -1907,6 +1961,7 @@ func (r *paginatingRows) fetchPage() error {
 		}
 		r.buf = r.buf[:0]
 		r.bufPos = 0
+		r.execState.RestoreRecursionLevels(recursionAtPageStart)
 
 		// One store per subspace per transaction, reused by every page
 		// (RFC-198 Decision 10) — in auto-commit this still builds a fresh
@@ -2008,14 +2063,33 @@ func (r *paginatingRows) fetchPage() error {
 			return nil, api.NewError(api.ErrCodeExecutionLimitReached,
 				"query cannot progress under the configured per-page resource limits (a page produced no rows and no continuation advance); raise the scan/row limits")
 		}
-		r.exhausted = exhausted
-		r.continuation = contBytes
+		// Staged, NOT published: pageExhausted/pageCont are locals that the
+		// caller copies onto r only after the transaction succeeded. See the
+		// comment above the declarations.
+		pageExhausted, pageCont = exhausted, contBytes
 		return nil, nil
 	})
 
 	if txErr != nil {
+		// The page did not happen, so its partial rows are not results. They are
+		// still sitting in r.buf with bufPos at 0, and nextRow SERVES THE BUFFER
+		// BEFORE it consults r.exhausted or r.fetchErr — so a caller that reaches
+		// nextRow again would be handed rows from a transaction that never
+		// committed, as though they were a page.
+		//
+		// Nothing reaches it today only because database/sql stops iterating at
+		// the first error. That is a property of the CALLER, not of this loop,
+		// and it is not something reordering the checks in nextRow would fix:
+		// buffered rows must not outlive the transaction that produced them, and
+		// dropping them here is what makes that true.
+		r.buf = r.buf[:0]
+		r.bufPos = 0
 		return translateExecErrorCtx(r.ctx, txErr)
 	}
+	// The page's transaction committed. Only now does the result set's position
+	// move — this is the assignment that must not happen anywhere else.
+	r.exhausted = pageExhausted
+	r.continuation = pageCont
 	return nil
 }
 
