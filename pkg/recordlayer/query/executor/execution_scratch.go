@@ -103,12 +103,23 @@ import (
 //  2. Adoption evicts the predecessor and any sibling a failed attempt
 //     published from it, so a paging chain keeps two.
 //
-// MEMORY. A parked entry holds its byte weight against the statement budget for
-// exactly as long as it lives: the producing cursor hands its page charge over
-// at park time instead of releasing it at close, and retirement releases it.
-// That is what makes an accumulating shape LOUD — the earlier design released
-// at cursor close, so leaked entries were invisible to the budget and grew in
-// silence.
+// MEMORY. The statement is charged for exactly what the scratch holds: the
+// COMMITTED BASE plus the LIVE DELTAS. A parked entry holds its delta's bytes
+// for as long as it lives — the producing cursor hands its page charge over at
+// park time instead of releasing it at close — and retirement gives them back.
+// Folding charges the committed layer permanently, because that layer really is
+// held for the statement.
+//
+// Both halves are load-bearing and they cancel if only one is present, which is
+// how they were both wrong at once while every test passed. Without the fold
+// charge the committed set weighs nothing, so a high-cardinality DISTINCT can
+// never trip the budget and the loud-failure promise is empty. Without every
+// removal returning its bytes — and there are three doors out of s.distinct, so
+// they all go through retire — the charge tracks how many PAGES a statement
+// took rather than how much data it holds, and a retry-heavy or finely-paged
+// statement fails for memory it does not have. Measured on 40 distinct values
+// before the fix: 77 bytes at 1 row/page, 71 at 3, 59 at 10, and 0 in a single
+// page.
 //
 // Concurrency: the executor is single-threaded per statement (zero goroutine
 // launches in this package, pinned by package_invariant_test.go), so the maps
@@ -168,7 +179,7 @@ func (s *ExecutionScratch) SweepAfterPage(exhausted bool) {
 	if s == nil || s.distinct == nil {
 		return
 	}
-	for token, st := range s.distinct {
+	for token := range s.distinct {
 		if !exhausted {
 			if token > s.pageStart {
 				continue
@@ -177,10 +188,22 @@ func (s *ExecutionScratch) SweepAfterPage(exhausted bool) {
 				continue
 			}
 		}
-		s.releaseEntry(st)
-		delete(s.distinct, token)
+		s.retire(token)
 	}
 	s.adopted = nil
+}
+
+// retire removes an entry and returns its bytes to the statement budget. It is
+// the ONLY door out of s.distinct: an entry removed with a bare delete keeps
+// its charge forever, and the budget then grows with the number of pages a
+// statement happened to take rather than with the data it holds.
+func (s *ExecutionScratch) retire(token int64) {
+	st, ok := s.distinct[token]
+	if !ok {
+		return
+	}
+	s.releaseEntry(st)
+	delete(s.distinct, token)
 }
 
 // releaseEntry returns a retired entry's bytes to the statement budget.
@@ -295,10 +318,7 @@ func (s *ExecutionScratch) discardDistinct(token int64) {
 	if s == nil || s.distinct == nil {
 		return
 	}
-	if st, ok := s.distinct[token]; ok {
-		s.releaseEntry(st)
-	}
-	delete(s.distinct, token)
+	s.retire(token)
 }
 
 // adoptDistinct returns the committed set named by token, extended with the
@@ -341,10 +361,10 @@ func (s *ExecutionScratch) adoptDistinct(
 	// state was the one that committed. Dropping the siblings is what lets the
 	// fold below extend the shared base safely.
 	if st.prev != 0 {
-		delete(s.distinct, st.prev)
+		s.retire(st.prev)
 		for other, cand := range s.distinct {
 			if other != token && cand.prev == st.prev {
-				delete(s.distinct, other)
+				s.retire(other)
 			}
 		}
 	}
@@ -360,15 +380,23 @@ func (s *ExecutionScratch) adoptDistinct(
 		)
 	}
 	if n > st.foldedN {
-		// Fold this continuation's keys into the committed layer, ONCE. No
-		// charge here: these bytes were charged when the producing cursor
-		// parked them, and the entry has held that charge ever since. Charging
-		// again would double-count every key on every page.
+		// Fold this continuation's keys into the committed layer, ONCE, and
+		// charge them PERMANENTLY: the committed layer really is held for the
+		// whole statement, so it must carry its own weight. The entry's park
+		// charge covers the same keys only while the entry lives, and is
+		// released when it retires — so the steady state is exactly
+		// "committed base + live deltas", independent of how many pages or
+		// retries produced it.
+		var folded int64
 		for _, key := range st.order[st.foldedN:n] {
 			if _, dup := st.base.m[key]; dup {
 				continue
 			}
 			st.base.m[key] = struct{}{}
+			folded += int64(len(key))
+		}
+		if err := state.ChargeMemory(folded); err != nil {
+			return nil, err
 		}
 		st.foldedN = n
 	}

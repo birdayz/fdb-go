@@ -32,6 +32,69 @@ import (
 // unmarked and was collected. Every other DISTINCT test stayed green. The
 // LIMIT is load-bearing: it is what puts an operator above the DISTINCT that
 // serializes a child continuation per row.
+// TestExhaustedDistinctStatementLeavesNoScratchState is the STATEMENT-LEVEL
+// wiring pin: after a SELECT DISTINCT runs to exhaustion through the real
+// driver, the statement's scratch holds nothing.
+//
+// It exists because this dimension escaped three times. Every other pin here is
+// an API-level test that drives BeginPage/SweepAfterPage itself, so it passes
+// whether or not fetchPage calls them at all — dropping the sweep from the
+// paging loop, or passing the wrong exhausted flag, left the whole suite green
+// while a real statement accumulated a seen-set per page. Only a query run
+// end-to-end through paginatingRows can see that.
+func TestExhaustedDistinctStatementLeavesNoScratchState(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	c := newSimConnection(t, 6613)
+	const rows, distinct = 60, 6
+	for i := 0; i < rows; i++ {
+		if _, err := c.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO t (id, v) VALUES (%d, %d)", i, i%distinct), nil); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+	// Small pages, so the statement takes many of them and every page both
+	// adopts and parks.
+	c.SetOptions(api.NewOptionsBuilder().Set(api.OptExecutionScannedRowsLimit, 2).Build())
+
+	result, err := c.QueryContext(ctx, "SELECT DISTINCT v FROM t", nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	pr, ok := result.(*paginatingRows)
+	if !ok {
+		t.Fatalf("query returned %T, want *paginatingRows", result)
+	}
+	defer pr.Close() //nolint:errcheck
+
+	seen := map[int64]bool{}
+	dest := make([]driver.Value, 1)
+	for {
+		if err := pr.Next(dest); err != nil {
+			if err == io.EOF {
+				break
+			}
+			t.Fatalf("iterate: %v", err)
+		}
+		seen[dest[0].(int64)] = true
+	}
+	if len(seen) != distinct {
+		t.Fatalf("paged DISTINCT returned %d values, want %d", len(seen), distinct)
+	}
+	if minted := pr.scratch.MintedDistinctSets(); minted < 2 {
+		t.Fatalf("statement parked %d seen-sets; the shape must actually page", minted)
+	}
+	if live := pr.scratch.LiveDistinctSets(); live != 0 {
+		t.Fatalf(
+			"%d live scratch states after the statement ran to EXHAUSTION (want 0): the "+
+				"paging loop must retire at the page boundary and must tell the scratch the "+
+				"page exhausted — an exhausted statement can name nothing, so nothing may "+
+				"survive it",
+			live,
+		)
+	}
+}
+
 func TestPagedDistinctWithLimitReturnsEveryRow(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
