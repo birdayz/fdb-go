@@ -134,6 +134,79 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 			"incarnation", int32(formatVersionIncarnation)),
 	)
 
+	// CREATION-TIME gates, which the table above does not reach: it exercises
+	// runtime writes on an already-created store, while these two fields are
+	// written once by createStoreHeaderAtFormat when the store is born. They are
+	// wire-affecting in the same way and gated independently, exactly as Java does
+	// at FDBRecordStore.java:5950-5957 — the record-count KEY needs
+	// RECORD_COUNT_KEY_ADDED(3), the record-count STATE needs
+	// RECORD_COUNT_STATE(11).
+	//
+	// Format 8 is the discriminating version: above the key's gate, below the
+	// state's. A store born there must carry the key and must NOT carry the state.
+	// Presence is asserted on the raw pointer rather than through the getter,
+	// because the getter cannot tell "absent" from a valid enum value.
+	DescribeTable("writes only the record-count header fields its birth format version has",
+		func(pinned int32, wantKey bool, wantState bool) {
+			ks := specSubspace()
+			cntBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			cntBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			cntBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			cntBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			cntBuilder.SetRecordCountKey(EmptyKey())
+			cntMetaData, bErr := cntBuilder.Build()
+			Expect(bErr).NotTo(HaveOccurred())
+			Expect(cntMetaData.GetRecordCountKey()).NotTo(BeNil(),
+				"the metadata must actually declare a record-count key, or neither field is ever a candidate")
+
+			_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+				store, oErr := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(cntMetaData).
+					SetSubspace(ks).SetFormatVersion(pinned).CreateOrOpen()
+				if oErr != nil {
+					return nil, oErr
+				}
+				header := store.GetStoreHeader()
+				Expect(header).NotTo(BeNil())
+				Expect(header.GetFormatVersion()).To(Equal(pinned),
+					"the store was not born at the pinned version, so this case proves nothing")
+
+				if wantKey {
+					Expect(header.RecordCountKey).NotTo(BeNil(),
+						"a store born at format %d is at or above RECORD_COUNT_KEY_ADDED(%d), so the "+
+							"declared record-count key must be persisted", pinned,
+						formatVersionRecordCountKeyAdded)
+				} else {
+					Expect(header.RecordCountKey).To(BeNil(),
+						"a store born at format %d predates RECORD_COUNT_KEY_ADDED(%d); writing the key "+
+							"puts a field in the header that an instance honouring that version does not "+
+							"expect", pinned, formatVersionRecordCountKeyAdded)
+				}
+
+				if wantState {
+					Expect(header.RecordCountState).NotTo(BeNil(),
+						"a store born at format %d is at or above RECORD_COUNT_STATE(%d), so the state "+
+							"must be persisted", pinned, formatVersionRecordCountState)
+				} else {
+					Expect(header.RecordCountState).To(BeNil(),
+						"a store born at format %d predates RECORD_COUNT_STATE(%d), so the state enum "+
+							"must be ABSENT from the header — an older instance cannot interpret it, and "+
+							"absence is not the same as any valid value (READABLE is 1, not 0)",
+						pinned, formatVersionRecordCountState)
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		},
+		// The discriminating case: between the two gates.
+		Entry("born at 8: key yes (>=3), state no (<11)",
+			int32(formatVersionHeaderUserFields), true, false),
+		// At or above both gates.
+		Entry("born at 11: key yes, state yes",
+			int32(formatVersionRecordCountState), true, true),
+		Entry("born at the current version: key yes, state yes",
+			int32(formatVersionCurrent), true, true),
+	)
+
 	// The contrast half: at a sufficient version each feature must actually work,
 	// or the gates above would be satisfied by a store that simply rejects
 	// everything.
