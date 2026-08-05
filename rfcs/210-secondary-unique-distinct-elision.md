@@ -1192,6 +1192,45 @@ produces (it is the site that truncates, so it is the site that knows). Then:
 - `physical_equality_shape.go` remains the single implementation, called once at
   the producer rather than once per consumer.
 
+**SUPERSEDED — the second bullet only, and by §5.1.2 rather than by a descope.**
+The bullet was written when clause 8 was still the metadata question, where what
+a consumer needs is one boolean: *is this key's uniqueness globally enforced?* A
+`UniquenessProof` carrying "(a) globally enforced (b) over which coordinates"
+answers that exactly.
+
+§5.1.2 then reformulated clause 8 into the **exempt-set** proof, and the
+reformulation is what invalidates the carrier. R2 overrides nullability
+**per key component** — component *i* may be NULL-rejected by the stream while
+component *j* is not — and R3 needs to know **which** components are exempt in
+order to compute the operator's exempt slots. A single carried boolean can
+express neither. Implementing this bullet as written would force R2 and R3
+through a value strictly weaker than the question they ask, which is a
+regression, not the completion of §5.5.
+
+So the distinct arm calls `properties.SecondaryUniqueKeyEnforcedOnStream`
+directly on the candidate's authoritative key component types, and that is **not
+a third re-derivation** in the sense this section objects to. The hazard §5.5
+exists to prevent is *two derivations of one fact drifting across a reduction* —
+concretely, `expressionStorageOrderingIsComplete` re-deriving from
+`KeyComponentTypes` whether the **ordering derivation** had truncated, which is a
+downstream observable of a decision taken elsewhere, and which did in fact
+disagree (the signed-zero wholesale tail-drop). That consumer is migrated: it now
+reads `HintRichOrdering().StorageKeyIsComplete()`. The distinct arm consumes no
+ordering, sits behind no reduction, and calls the *single implementation* this
+section's third bullet names — there is no second copy of the logic for it to
+drift from. `GetKeyComponentTypes` is the codebase's authoritative physical-type
+accessor at roughly thirty sites; reading it is supplying the input, not
+re-deriving the property.
+
+**What is owed instead, and where it is.** The residual assumption at that call
+is POSITIONAL: the gate pairs component *i*'s declared type with component *i*'s
+stream evidence, so key columns, key component types and the null-rejection flags
+must all be stated in the index's own key-column order. It is documented at both
+call sites (`rule_implement_sort.go`'s and `rule_implement_distinct_final.go`'s)
+rather than at one. The multi-position read — that clause 8 consults **every**
+component and not just the first — is pinned; a mutation truncating that loop to
+position 0 turns both the cascades and the properties suites red.
+
 **Carried completeness MUST NOT survive prefixing, and this is the part of §5.5
 most likely to be got wrong.** A carried flag is a claim about a *specific
 coordinate set*. The moment an ordering is truncated, prefixed, or otherwise
@@ -1589,6 +1628,32 @@ the layer:
   pin on *that* fact (with the reachability re-armed the moment the DDL accepts
   it) — which is a different test, and must not be silently substituted for this
   one.
+
+**SETTLED: the smoke check came back ACCEPTED, so clause 4 is REACHABLE and the
+row is the real end-to-end test, not the substitute.** This is recorded because
+the bullet above is written as a fork and a later reader cannot otherwise tell
+which branch was taken — and because "clause 4 is unreachable" is exactly the
+kind of claim that gets assumed rather than re-checked.
+
+`CREATE UNIQUE INDEX SPARSE_U AS SELECT EMAIL FROM SP WHERE KEEP > 0 ORDER BY
+EMAIL` is accepted and yields an index carrying **both** `unique=true` and a
+non-nil `predicateProto`. The two tests are therefore:
+
+- the smoke check itself, `embedded/sparse_unique_index_ddl_test.go` — it fails
+  if the DDL surface ever moves back, which is what re-arms the fork above;
+- the end-to-end row, `sqldriver/sparse_unique_distinct_fdb_test.go`, with the
+  duplicate values sitting outside the predicate that §7.2 demands (three rows
+  share `'a@x'` and only one is inside `WHERE keep > 0`), plus a full-unique
+  control on a sibling table so the refusal is specific rather than vacuous.
+
+**The e2e is deliberately UNORDERED and sorts in Go.** Admitting the sparse
+candidate does not only narrow the unordered operator — it also makes `SPARSE_U`
+reachable as an ORDERED access path, and the executor's filtered-index guard then
+rejects that scan outright. That is a second and independent defence, but it
+means an `ORDER BY` here would measure the GUARD: the statement errors before it
+can return the duplicate rows this row exists to catch. Measured under exactly
+the clause-4 mutation — with the guard in the way the query raises `0AF00`;
+unordered, it returns five rows where three are correct.
 
 ### 7.3 Index state
 

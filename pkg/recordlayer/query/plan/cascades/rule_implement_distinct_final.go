@@ -530,6 +530,16 @@ func secondaryUniqueEliminationProof(
 		// That claim needs nothing about the stream, so this candidate is
 		// remembered unconditionally and used if no other candidate proves
 		// better.
+		//
+		// All three arguments are stated in the index's own KEY COLUMN ORDER,
+		// and the gate reads them POSITIONALLY — component i's declared type is
+		// paired with component i's stream evidence. keyColumns comes from
+		// candidatePlainFieldColumnsForShortcut and the types from the same
+		// candidate's GetKeyComponentTypes, so the two are the same list read
+		// twice; nullRejectionPerKeyColumn is built by walking keyColumns in
+		// order for exactly that reason. A source that supplied either in some
+		// other order would not be caught here, which is why neither is ever
+		// re-ordered, filtered, or compacted between here and the candidate.
 		if !properties.SecondaryUniqueKeyEnforcedOnStream(
 			keyComponentTypesOf(candidate), len(keyColumns),
 			nullRejectionPerKeyColumn(keyColumns, layoutType, nullRejected),

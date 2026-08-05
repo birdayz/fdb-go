@@ -567,10 +567,6 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// heavily — and a bound on an unresolvable delta measures the harness. They
 	// are still pinned for SHAPE, because which executor variant fires decides
 	// which cost the operator pays and EXPLAIN does not render it.
-	// RFC-210 §2.1 could not resolve a delta on these — the spreads overlap
-	// heavily — and a bound on an unresolvable delta measures the harness. They
-	// are still pinned for SHAPE, because which executor variant fires decides
-	// which cost the operator pays and EXPLAIN does not render it.
 	duecAssertVariants(t, explains)
 }
 
@@ -996,8 +992,11 @@ func duecDistinctIn(plan plans.RecordQueryPlan) *plans.RecordQueryDistinctPlan {
 // in. The slot list is the piece that was going unasserted: exemptSlotsFor maps
 // the index's key columns onto positions in the DEDUP KEY's slot order, and a
 // literal [0] agrees with a broken mapping on every fixture whose key column
-// happens to be projected first. duecExemptSlots asserts the mapping on a shape
-// where it is not first.
+// happens to be projected first. TestFDB_DistinctUniqueElisionRetention asserts
+// the mapping directly — reading GetNarrowedExemptSlots off the planner's own
+// plan for `SELECT DISTINCT payload, email`, a shape where the key column is
+// NOT first — and then measures it, since at 50% NULL density a slot stuck at 0
+// would test PAYLOAD and admit nothing.
 func duecRetained(
 	t *testing.T,
 	ctx context.Context,
