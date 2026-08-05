@@ -138,6 +138,30 @@ func (o *RichOrdering) WithStorageKeyComplete(complete bool) *RichOrdering {
 	if o == nil {
 		return nil
 	}
+	// An ordering with NO coordinates cannot be the whole storage key, and the
+	// refusal has to be here rather than in CoordinateBoundClaim.
+	//
+	// holdsOver is a FOR-ALL over the coordinates a claim was proved on, so a
+	// claim bound to the EMPTY set holds over everything — including an ordering
+	// with no coordinates, and including any ordering it is later carried into.
+	// For DISTINCTNESS that is not a defect but the intended coordinate-free
+	// case: "the rows flowed are distinct" is Java's plain boolean, and a
+	// nested-loop join legitimately takes its inner leg's distinctness even when
+	// that leg advertises no order at all (ConcatOrderings). Binding distinctness
+	// to coordinates exists to stop it surviving a REDUCTION, not to require an
+	// ordering before it can be asserted.
+	//
+	// COMPLETENESS has no such reading. "These coordinates are the whole storage
+	// key" is a statement about a specific, non-empty coordinate list; over none
+	// there is nothing to be complete about, and the vacuous answer is the
+	// strongest one the type can give. The two properties share this mechanism
+	// and diverge exactly here, so the guard belongs at the property-specific
+	// stamping site — the one that knows which assertion is being made.
+	if complete && len(o.keys) == 0 {
+		stamped := *o
+		stamped.storageComplete = NotDistinct()
+		return &stamped
+	}
 	keyStrings := make([]string, 0, len(o.keys))
 	for _, k := range o.keys {
 		keyStrings = append(keyStrings, values.ExplainValue(k))

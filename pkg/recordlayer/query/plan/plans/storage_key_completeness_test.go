@@ -161,6 +161,57 @@ func TestStorageKeyCompleteness_ExpressionKeyIndexIsIncomplete(t *testing.T) {
 	}
 }
 
+// TestStorageKeyCompleteness_ZeroCoordinateScanIsIncomplete is the SCAN-side
+// half of the shape TestStorageKeyCompleteness_ExpressionKeyIndexIsIncomplete
+// pins for index scans, and it is a NEGATIVE RESULT: it records the fact that
+// makes an otherwise-live vacuity unreachable.
+//
+// The vacuity is in CoordinateBoundClaim: holdsOver is a for-all over the
+// coordinates a claim was proved on, so a claim proved over NO coordinates holds
+// over anything. WithStorageKeyComplete(true) applied to an ordering with no
+// keys used to mint exactly that value; it now refuses (pinned in properties'
+// TestStorageCompleteness_EmptyOrderingCannotBeComplete) — but the reason it was
+// never reachable in the first place is HERE, at the producers, and nothing
+// pinned this half:
+//
+//   - a coordinate list that collapses to empty returns EmptyOrdering() BEFORE
+//     the stamp is applied, so the stamping call is never made; and
+//   - the storageComplete formula would be false anyway, because `limit ==
+//     len(resolved)` cannot hold when limit is 0 and the key is non-empty.
+//
+// Both are barriers, and this asserts the observable they jointly produce. If
+// either is relaxed — a stamp moved above the guard, a formula rewritten to
+// treat "nothing truncated" as vacuously satisfied — this goes red, which is
+// exactly when the type-level guard stops being defence in depth and becomes
+// load-bearing.
+func TestStorageKeyCompleteness_ZeroCoordinateScanIsIncomplete(t *testing.T) {
+	t.Parallel()
+
+	// A DOUBLE leading primary-key column terminates the ordering claim at
+	// position 0, so the scan advertises no coordinates at all.
+	plan := NewRecordQueryScanPlan([]string{"T"}, completenessRow(), false).
+		WithPrimaryKey([]values.Value{
+			values.NewFieldValueWithResolvedOrdinal("D", 2, values.NullableDouble),
+		}).
+		WithKeyComponentTypes([]values.Type{values.NullableDouble})
+
+	ordering := plan.HintRichOrdering()
+	if got := len(ordering.GetKeys()); got != 0 {
+		t.Fatalf("the fixture advertises %d coordinates, want none — a DOUBLE "+
+			"leading PK column must terminate the claim at position 0, and if it "+
+			"no longer does this test is pinning nothing", got)
+	}
+	if ordering.StorageKeyIsComplete() {
+		t.Fatal("an ordering with NO coordinates reported itself as the WHOLE " +
+			"storage key. That is the vacuous claim CoordinateBoundClaim's " +
+			"empty-set guard exists to refuse, and reaching it here means a " +
+			"producer now stamps completeness onto a coordinate list it emptied")
+	}
+	if ordering.IsDistinct() {
+		t.Fatal("an ordering with NO coordinates reported itself DISTINCT")
+	}
+}
+
 // TestStorageKeyCompleteness_DoesNotSurvivePrefixing binds completeness the same
 // way distinctness is bound: to the coordinate set it was stamped over. A
 // projection that carries only the leading coordinate forward leaves an ordering
