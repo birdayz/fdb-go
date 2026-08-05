@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -129,6 +131,96 @@ func TestPinnedPythonClientIsImportableNotTheCMakeTemplateTree(t *testing.T) {
 				"ships CMake/vexillographer templates, not a usable package. Have: %v",
 				want, keys(found))
 		}
+	}
+}
+
+// Presence of an entry name proves nothing about whether the tar can be unpacked
+// anywhere: Bazel stages an external repo's srcs as symlinks into the execroot,
+// so an archive built without --dereference names every file correctly while
+// storing an absolute path to the builder's own output_base instead of content.
+// That tar unpacks into dangling links on any other machine, `fdb/` ends up a
+// directory with no importable __init__.py, and `import fdb` then quietly yields
+// an empty implicit namespace package rather than an error — which is why the
+// symptom reached the tester as an AttributeError on the first call it made, on
+// every seed, with the cluster healthy.
+func TestPinnedPythonClientTarCarriesContentNotSymlinksIntoTheBuildTree(t *testing.T) {
+	t.Parallel()
+
+	f, err := os.Open("python-fdb.tar")
+	if err != nil {
+		t.Fatalf("python client tar not staged: %v", err)
+	}
+	defer f.Close()
+
+	sawInit := false
+	r := tar.NewReader(f)
+	for {
+		h, err := r.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read tar: %v", err)
+		}
+
+		if h.Typeflag == tar.TypeSymlink || h.Typeflag == tar.TypeLink {
+			t.Fatalf("%s is archived as a link to %q, not as content.\n"+
+				"The tar must be built with --dereference: a link into the build tree "+
+				"resolves only on the machine and output_base that produced the archive, "+
+				"and dangles everywhere else. The harness then unpacks an empty fdb/ "+
+				"directory, Python treats it as an implicit namespace package, and every "+
+				"seed dies on a missing attribute with FDB alive.", h.Name, h.Linkname)
+		}
+		if h.Typeflag != tar.TypeReg {
+			continue
+		}
+		if h.Size == 0 {
+			t.Errorf("%s is archived with no content (size 0)", h.Name)
+		}
+		if h.Name == "fdb/__init__.py" {
+			sawInit = true
+		}
+	}
+
+	// Without this the loop above is vacuously satisfied by an empty archive,
+	// and the package that must exist for `import fdb` to bind to anything real
+	// is exactly fdb/__init__.py.
+	if !sawInit {
+		t.Fatal("tar contains no fdb/__init__.py regular file")
+	}
+}
+
+// The preflight exists to convert a broken client into one loud failure before
+// any container starts. It was previously a bare `import fdb`, which does not
+// fail on the shape that actually broke the lane — an fdb/ directory with no
+// __init__.py imports fine as a namespace package. This reproduces that exact
+// shape and requires the preflight program to reject it.
+func TestPreflightRejectsAnEmptyNamespacePackage(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	// The defect's shape: the directory exists, nothing importable inside it.
+	if err := os.Mkdir(filepath.Join(dir, "fdb"), 0o755); err != nil {
+		t.Fatalf("stage namespace package: %v", err)
+	}
+
+	// -S drops site-packages, and `python3 -c` already puts the cwd first on
+	// sys.path. Both matter: a regular package found anywhere on the path beats
+	// a namespace portion, so a host with `pip install foundationdb` would
+	// otherwise satisfy the import from site-packages and hide the shape under
+	// test. The program itself is passed unmodified — it is what ships.
+	cmd := exec.Command("python3", "-S", "-c", preflightPythonProgram)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+
+	if err == nil {
+		t.Fatalf("preflight accepted an empty namespace package — it would let all "+
+			"seeds through to fail one by one on an opaque exec status.\noutput: %s", out)
+	}
+	if !strings.Contains(string(out), "namespace package") {
+		t.Fatalf("preflight failed without naming the cause; a preflight that says "+
+			"only that something went wrong is what sent this lane to triage as a "+
+			"client regression.\noutput: %s", out)
 	}
 }
 
