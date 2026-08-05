@@ -46,6 +46,63 @@ func TestDefaultPlannerConfiguration_JavaDefaults(t *testing.T) {
 	if !cfg.ReadableIndexes.Allows("ANY_INDEX_NAME") {
 		t.Fatal("the default readable-index view rejects an index name")
 	}
+	// The default is PERMISSIVE but not AFFIRMATIVE. A planning run that never
+	// consulted a record store has established nothing about index state, so it
+	// may scan every index and prove nothing from any of them (RFC-210 §5.1.1).
+	// Without this assertion the tri-state re-collapses to two the moment
+	// AllIndexesReadable is made the zero value again — which is exactly how
+	// the collapse survived review the first time.
+	if cfg.ReadableIndexes.IndexStatesEstablished() {
+		t.Fatal("the default readable-index view claims index state was ESTABLISHED; " +
+			"the zero value means nobody consulted the store, and treating it as an " +
+			"affirmative all-readable assertion lets an unchecked index license a " +
+			"uniqueness proof")
+	}
+}
+
+// TestReadableIndexes_TriStateIsThreeStates pins that the three views are
+// mutually distinguishable on both axes that matter — whether an index may back
+// a SCAN, and whether it may back a PROOF. The two axes are independent, and
+// the whole design rests on their independence: UNKNOWN is permissive on the
+// first and refusing on the second. A two-valued rendering necessarily agrees
+// with this test on exactly one of the three rows.
+func TestReadableIndexes_TriStateIsThreeStates(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		view        ReadableIndexes
+		allows      bool
+		established bool
+		restricted  bool
+	}{
+		{"unknown", IndexStatesUnknown(), true, false, false},
+		{"unknown-is-the-zero-value", ReadableIndexes{}, true, false, false},
+		{"all-readable", AllIndexesReadable(), true, true, false},
+		{"restricted-including", OnlyReadableIndexes(map[string]struct{}{"BY_EMAIL": {}}), true, true, true},
+		{"restricted-excluding", OnlyReadableIndexes(map[string]struct{}{"OTHER": {}}), false, true, true},
+		{"restricted-empty", OnlyReadableIndexes(nil), false, true, true},
+	} {
+		if got := tc.view.Allows("BY_EMAIL"); got != tc.allows {
+			t.Errorf("%s: Allows(BY_EMAIL) = %v, want %v", tc.name, got, tc.allows)
+		}
+		if got := tc.view.IndexStatesEstablished(); got != tc.established {
+			t.Errorf("%s: IndexStatesEstablished() = %v, want %v", tc.name, got, tc.established)
+		}
+		if got := tc.view.IsRestricted(); got != tc.restricted {
+			t.Errorf("%s: IsRestricted() = %v, want %v", tc.name, got, tc.restricted)
+		}
+	}
+	// The property that makes IsRestricted the WRONG gate for a proof, stated
+	// as an assertion rather than a comment: a healthy store yields the
+	// UNRESTRICTED affirmative form, so "restricted" and "established" are not
+	// the same question.
+	if AllIndexesReadable().IsRestricted() {
+		t.Fatal("AllIndexesReadable is restricted")
+	}
+	if !AllIndexesReadable().IndexStatesEstablished() {
+		t.Fatal("AllIndexesReadable does not establish index state; then no healthy " +
+			"store could ever license a proof, and the gate is backwards")
+	}
 }
 
 // stubMatchCandidate is a minimal MatchCandidate impl for verifying

@@ -89,31 +89,75 @@ type PlannerConfiguration struct {
 	// as `indexList.removeIf(index -> !allowedIndexes.contains(index.getName()))`
 	// — a filter on the INDEX LIST, before any match candidate is created.
 	//
-	// The zero value permits every index, so a construction site that never
-	// learned about index states plans exactly as it did before.
+	// The zero value is UNKNOWN: it permits every index to back a scan, so a
+	// construction site that never learned about index states plans exactly as
+	// it did before, but it proves nothing about index state.
 	ReadableIndexes ReadableIndexes
 }
 
-// ReadableIndexes is the planner's allow-list of index names, modelling Java's
-// `Optional<Set<String>>`: absent means "every index is readable", present
-// means "only these are". The distinction matters and a nil Go map cannot
-// carry it — an empty allow-list ("nothing is readable", a store mid-rebuild)
-// and an absent one ("everything is") are opposite instructions that a nil map
-// would render identically.
+// ReadableIndexes is the planner's view of index state. It models Java's
+// `Optional<Set<String>>` — absent means "every index is readable", present
+// means "only these are" — plus a THIRD state Java does not need, because
+// Java's filter is reached by every planning path and Go's is not.
 //
-// The zero value is the ABSENT case on purpose. Planning happens from unit
-// tests, offline harnesses and the DDL front end as well as from a live
-// session, and only a live session can know index states; defaulting those
-// other callers to "nothing is readable" would silently delete every index
-// plan they have.
+// Java's `Optional.empty()` is an affirmative assertion derived from
+// `RecordStoreState`: *I consulted the store and every index is readable*. A Go
+// planning run that never consulted a store has a different fact to state:
+// *nobody asked*. Those are opposite epistemic states, and collapsing them onto
+// one value is how an index whose state nobody checked comes to license a
+// uniqueness proof (RFC-210 §5.1.1 — the collapse produced duplicate rows in
+// review).
+//
+// So the three states, and what each licenses:
+//
+//	unknown      (zero value, IndexStatesUnknown) — may back a scan, may NOT prove
+//	all-readable (AllIndexesReadable)             — may back a scan, may prove
+//	restricted   (OnlyReadableIndexes)            — the named ones may do both
+//
+// The zero value stays PERMISSIVE for scanning on purpose. Planning happens
+// from unit tests, offline harnesses and the DDL front end as well as from a
+// live session, and only a live session can know index states; defaulting those
+// other callers to "nothing is readable" would silently delete every index plan
+// they have. It is demoted only as EVIDENCE, never as PERMISSION — which is
+// what makes every unwritten planning path safe by construction rather than
+// safe by everyone remembering to thread a config field.
+//
+// An empty restricted allow-list ("nothing is readable", a store mid-rebuild)
+// and an absent one are opposite instructions that a nil map would render
+// identically, which is why the state is an explicit field rather than
+// `names == nil`.
 type ReadableIndexes struct {
-	restricted bool
-	names      map[string]struct{}
+	state readableIndexesState
+	names map[string]struct{}
 }
 
-// AllIndexesReadable is Java's `Optional.empty()` — no restriction. It is also
-// the zero value, stated explicitly so a caller can say what it means.
-func AllIndexesReadable() ReadableIndexes { return ReadableIndexes{} }
+// readableIndexesState is the tri-state discriminant. Its zero value is
+// deliberately the unknown one: a ReadableIndexes nobody constructed asserts
+// nothing.
+type readableIndexesState uint8
+
+const (
+	// indexStatesUnknown — nobody consulted the store.
+	indexStatesUnknown readableIndexesState = iota
+	// indexStatesAllReadable — consulted; every index is strictly READABLE.
+	indexStatesAllReadable
+	// indexStatesRestricted — consulted; only the named indexes are readable.
+	indexStatesRestricted
+)
+
+// IndexStatesUnknown is the zero value, stated explicitly so a caller can say
+// what it means: this planning run never consulted a record store, so its
+// indexes may be scanned but may not prove anything about their own state.
+func IndexStatesUnknown() ReadableIndexes { return ReadableIndexes{} }
+
+// AllIndexesReadable is Java's `Optional.empty()` — no restriction, and an
+// AFFIRMATIVE claim that the store was consulted and every index came back
+// strictly READABLE. Only a caller that actually read index state may mint it;
+// manufacturing it from the absence of information re-creates the collapse the
+// third state exists to prevent.
+func AllIndexesReadable() ReadableIndexes {
+	return ReadableIndexes{state: indexStatesAllReadable}
+}
 
 // OnlyReadableIndexes restricts planning to the named indexes, Java's
 // `Optional.of(set)`. A nil or empty set is a real restriction meaning "no
@@ -123,26 +167,40 @@ func OnlyReadableIndexes(names map[string]struct{}) ReadableIndexes {
 	for n := range names {
 		copied[n] = struct{}{}
 	}
-	return ReadableIndexes{restricted: true, names: copied}
+	return ReadableIndexes{state: indexStatesRestricted, names: copied}
 }
 
 // Allows reports whether an index of this name may back a match candidate.
+// UNKNOWN allows everything: the zero value is permissive for scanning.
 func (r ReadableIndexes) Allows(indexName string) bool {
-	if !r.restricted {
+	if r.state != indexStatesRestricted {
 		return true
 	}
 	_, ok := r.names[indexName]
 	return ok
 }
 
+// IndexStatesEstablished reports whether this planning run affirmatively
+// established index state — i.e. whether an index it admits may be trusted to
+// carry the state the store reported, and so may back a metadata-property
+// proof (RFC-210 §5.1 clause 1). False for the zero value.
+//
+// Note this is NOT the negation of IsRestricted: a healthy store yields the
+// UNRESTRICTED form (readableIndexesFrom returns AllIndexesReadable when every
+// index is readable), so gating a proof on IsRestricted would enable it only
+// while some unrelated index was mid-build. Exactly backwards.
+func (r ReadableIndexes) IndexStatesEstablished() bool {
+	return r.state != indexStatesUnknown
+}
+
 // IsRestricted reports whether an allow-list is present at all.
-func (r ReadableIndexes) IsRestricted() bool { return r.restricted }
+func (r ReadableIndexes) IsRestricted() bool { return r.state == indexStatesRestricted }
 
 // SortedNames returns the allow-listed names in a deterministic order, or nil
 // when unrestricted. Used to key the plan cache: two planning runs that differ
 // in which indexes were readable must not share a cached plan.
 func (r ReadableIndexes) SortedNames() []string {
-	if !r.restricted {
+	if r.state != indexStatesRestricted {
 		return nil
 	}
 	out := make([]string, 0, len(r.names))

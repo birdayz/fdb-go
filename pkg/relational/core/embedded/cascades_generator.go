@@ -2451,17 +2451,25 @@ func (g *cascadesGenerator) fetchIndexStateSnapshot(
 //     the planner may assume uniqueness from a unique index, and a
 //     unique-pending one has not yet proven it.
 //
-// A nil snapshot is the offline convention and yields the unrestricted answer.
+// Only the path that actually FETCHED a snapshot and found every named index
+// READABLE may mint the affirmative AllIndexesReadable form. The degenerate
+// early returns below mint UNKNOWN instead: an affirmative claim manufactured
+// from the absence of information is the same collapse ReadableIndexes' third
+// state exists to prevent, one layer up. Neither changes a plan — UNKNOWN is
+// equally permissive for scanning — but a downstream proof that asks "was
+// index state established?" must not be answered yes by a nil snapshot.
+//
+// A nil snapshot is the offline convention and yields UNKNOWN.
 func readableIndexesFrom(
 	md *recordlayer.RecordMetaData,
 	states map[string]recordlayer.IndexState,
 ) cascades.ReadableIndexes {
-	if md == nil || states == nil || len(states) == 0 {
-		return cascades.AllIndexesReadable()
+	if md == nil || len(states) == 0 {
+		return cascades.IndexStatesUnknown()
 	}
 	allIndexes := md.GetAllIndexes()
 	if len(allIndexes) == 0 {
-		return cascades.AllIndexesReadable()
+		return cascades.IndexStatesUnknown()
 	}
 	allReadable := true
 	for name := range allIndexes {
