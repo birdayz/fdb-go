@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // drainNarrowed runs a hash distinct over rows with the given narrowing and
@@ -180,5 +182,34 @@ func TestNarrowedDedup_ExemptSlotsAimAtTheKeyColumns(t *testing.T) {
 	if !outOfRange.isExempt(qr("e", "a")) {
 		t.Fatal("a key position the row does not supply must fall back to exempt, " +
 			"which is the full behaviour and cannot drop a row")
+	}
+}
+
+// TestNarrowedDedupFor_StreamingPlanNeverNarrows is the executor-side half of
+// the refusal, and it is here rather than only on the plan because this is the
+// code that would silently ignore the flag.
+//
+// executeDistinct returns from its Streaming branch before narrowedDedupFor is
+// ever called. So a streaming plan carrying a narrowing is not a plan whose
+// optimization is weaker — it is a plan whose EXPLAIN is WRONG, which is the
+// failure that survives a green suite. The plan refuses to carry it; this pins
+// that the refusal reaches the reader the executor would have used, so nothing
+// re-arms by a caller setting the fields some other way.
+func TestNarrowedDedupFor_StreamingPlanNeverNarrows(t *testing.T) {
+	t.Parallel()
+
+	inner := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+
+	streaming := plans.NewRecordQueryDistinctPlan(inner)
+	streaming.Streaming = true
+	if narrowedDedupFor(streaming.WithNarrowedDedup("IDX_EMAIL", []int{0})) != nil {
+		t.Fatal("the executor read a narrowing off a streaming distinct; the " +
+			"streaming branch returns before this reader is reached, so the " +
+			"narrowing would be advertised and never performed")
+	}
+
+	hash := plans.NewRecordQueryDistinctPlan(inner)
+	if narrowedDedupFor(hash.WithNarrowedDedup("IDX_EMAIL", []int{0})) == nil {
+		t.Fatal("the hash path must still read its narrowing")
 	}
 }

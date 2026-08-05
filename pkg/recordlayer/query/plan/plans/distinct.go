@@ -180,8 +180,22 @@ func (p *RecordQueryDistinctPlan) structuralKey() *structuralKey {
 // seen-set no longer catches. So the plan carries the stamp, the dependency walk
 // collects it through DistinctProofStamped, and the execution-time revalidation
 // 40001s a statement whose proving index left READABLE.
+// The STREAMING executor is REFUSED the narrowing, and the refusal lives here
+// rather than at the call site because a plan that carries the flag and an
+// executor that ignores it is the worst of the three possible states: EXPLAIN
+// renders `narrowed-by`, an acceptance criterion reads it as fired, and the
+// executor took the streaming branch and dedupped every row exactly as before.
+//
+// Refusing costs nothing. The streaming executor retains ONE key — the previous
+// row's — so there is no seen-set for a narrowing to shrink; the whole benefit
+// is on the hash path, whose set the narrowing empties. And no dependency is
+// lost by not stamping: streaming is only chosen when the inner is ordered by
+// the dedup key, which on these shapes is a scan of the proving index itself, so
+// the plan already names the index and the dependency walk already finds it.
+// That is the same SOLE-LICENSE reasoning the elision arm applies — a stamp
+// records a dependency the plan's correctness rests on and nothing else.
 func (p *RecordQueryDistinctPlan) WithNarrowedDedup(indexName string, exemptSlots []int) *RecordQueryDistinctPlan {
-	if indexName == "" {
+	if indexName == "" || p.Streaming {
 		return p
 	}
 	cp := *p
