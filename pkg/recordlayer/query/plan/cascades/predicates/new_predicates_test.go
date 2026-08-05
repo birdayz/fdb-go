@@ -254,8 +254,11 @@ func TestCompatibleTypeEvolutionPredicate_LeafBehavior(t *testing.T) {
 	if len(p.Children()) != 0 {
 		t.Fatal("should be a leaf predicate")
 	}
-	if got, _ := p.Eval(nil); got != TriTrue {
-		t.Fatal("Eval should return TriTrue (plan cache not ported)")
+	// No dependencies is a real ABSENCE of dependencies, so it is vacuously
+	// true and needs no context — unlike a predicate WITH dependencies, which
+	// requires one that can answer.
+	if got, err := p.Eval(nil); got != TriTrue || err != nil {
+		t.Fatalf("empty Eval = %v, %v; want TriTrue, nil", got, err)
 	}
 }
 
@@ -401,5 +404,90 @@ func TestFoldPredicateWithRanges_NonConstantNoFold(t *testing.T) {
 	got := SimplifyPredicateValues(p)
 	if _, ok := got.(*PredicateWithValueAndRanges); !ok {
 		t.Fatalf("non-constant LHS should not fold, got %T", got)
+	}
+}
+
+// stubIndexAvailability answers the two questions the dependency predicate asks.
+type stubIndexAvailability struct {
+	versions map[string]int
+	readable map[string]bool
+}
+
+func (s stubIndexAvailability) IndexLastModifiedVersion(name string) (int, bool) {
+	v, ok := s.versions[name]
+	return v, ok
+}
+
+func (s stubIndexAvailability) IsIndexReadable(name string) bool { return s.readable[name] }
+
+// Eval is the plan-validity check itself, and it was inert: it returned TriTrue
+// unconditionally while its own doc said Java checks existence, version and
+// readability. A predicate that always holds is not a weaker check, it is no
+// check — and it read as covered.
+func TestDatabaseObjectDependenciesPredicate_EvalChecksTheStore(t *testing.T) {
+	t.Parallel()
+	deps := []UsedIndex{{Name: "idx_a", LastModifiedVersion: 5}}
+	p := NewDatabaseObjectDependenciesPredicate(deps)
+
+	live := stubIndexAvailability{
+		versions: map[string]int{"idx_a": 5},
+		readable: map[string]bool{"idx_a": true},
+	}
+	if got, err := p.Eval(live); got != TriTrue || err != nil {
+		t.Fatalf("healthy dependency = %v, %v; want TriTrue, nil", got, err)
+	}
+
+	for _, test := range []struct {
+		name  string
+		avail stubIndexAvailability
+	}{
+		{
+			name: "index no longer in metadata",
+			avail: stubIndexAvailability{
+				versions: map[string]int{},
+				readable: map[string]bool{"idx_a": true},
+			},
+		},
+		{
+			name: "index redefined under the same name",
+			avail: stubIndexAvailability{
+				versions: map[string]int{"idx_a": 6},
+				readable: map[string]bool{"idx_a": true},
+			},
+		},
+		{
+			name: "index no longer readable",
+			avail: stubIndexAvailability{
+				versions: map[string]int{"idx_a": 5},
+				readable: map[string]bool{},
+			},
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got, err := p.Eval(test.avail); got != TriFalse || err != nil {
+				t.Fatalf("Eval = %v, %v; want TriFalse, nil", got, err)
+			}
+			if _, _, found := p.UnavailableDependency(test.avail); !found {
+				t.Fatal("the diagnostic did not name the failing dependency")
+			}
+		})
+	}
+}
+
+// A context that cannot answer is a programming error, not a case to be lenient
+// about: returning TriTrue there would silently pass every dependency check made
+// through the wrong call site. Java dereferences a non-null store for the same
+// reason.
+func TestDatabaseObjectDependenciesPredicate_EvalRefusesAnUnusableContext(t *testing.T) {
+	t.Parallel()
+	p := NewDatabaseObjectDependenciesPredicate([]UsedIndex{{Name: "idx_a", LastModifiedVersion: 1}})
+	got, err := p.Eval("not an availability source")
+	if err == nil {
+		t.Fatal("an evaluation context that cannot answer was accepted")
+	}
+	if got != TriUnknown {
+		t.Fatalf("Eval = %v, want TriUnknown alongside the error", got)
 	}
 }

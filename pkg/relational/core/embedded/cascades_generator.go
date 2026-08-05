@@ -295,44 +295,66 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	if err := contextCancellationError(ctx); err != nil {
 		return nil, err
 	}
+	// The logging scope opens FIRST, before anything that can fail.
+	//
+	// PlanGenerationLogger's contract is ONE callback per Plan() call
+	// (plan_logging.go:73-77), and a contract that holds only on the paths that
+	// reach the end of the function is not a contract — an operator watching for
+	// planning failures would see silence from exactly the failures worth
+	// watching. The store open below is the first fallible step and it fails
+	// CLOSED, so opening the scope after it would have made every one of those
+	// failures invisible. planDML already orders it this way.
+	//
+	// Consequence, and it is the correct one: PlanningDuration now includes the
+	// index-state store open. That open IS planning work — it decides which
+	// indexes may back the plan — and excluding the dominant cost on this path
+	// from the metric that exists to report planning cost would be the bug.
+	//
+	// Log the original whitespace-preserved SQL (canonicalTextOf), not
+	// q.GetText() — the latter concatenates tokens without whitespace
+	// ("SELECTid=1FROMorders"), which is useless to an operator. The plan-cache
+	// key below is built off canonicalTextOf too, so both are injective.
+	var ls *planLogScope
+	if logMetrics {
+		ls = g.beginPlanLog(ctx, canonicalTextOf(q))
+	}
+	defer func() { ls.finish(err) }()
+
+	popts := plannerOptionsFrom(g.c.Options())
+	// ONE index-state read serves both the readable-index VIEW and the plan's
+	// index DEPENDENCIES, and it is taken before the cache key is built.
+	//
+	// The view decides which indexes may back a plan and is PART of the cache
+	// key; Java keys its plan cache the same way (PlannerConfiguration carries
+	// readableIndexes, QueryCacheKey carries the whole configuration —
+	// QueryCacheKey.java:127,142). The dependencies are the indexes the finished
+	// plan's correctness rests on, revalidated inside every execution
+	// transaction; the cache key cannot do that job, because an auto-commit
+	// statement's pages are separate transactions and the key is consulted once
+	// per statement. See index_state_planning.go.
+	//
+	// One open, not two: the open is the dominant cost on this path
+	// (TestFDB_ReadableIndexViewLatency measures ~1.28 ms of a 2.71 ms cached
+	// point-lookup SELECT), and it must be one read anyway — the view decides
+	// which indexes become candidates, and the dependencies are read off the
+	// plan those candidates produce, so two reads could have the plan built
+	// against one moment's states and its dependencies pinned to another's.
+	//
+	// Opening the store, rather than reading the index-state subspace directly,
+	// is what makes the state the one checkVersion has already reconciled — see
+	// fetchIndexStateSnapshot.
+	indexStateSnapshot, stateErr := g.fetchIndexStateSnapshot(ctx, md)
+	if stateErr != nil {
+		return nil, stateErr
+	}
+	popts.config.ReadableIndexes = readableIndexesFrom(md, indexStateSnapshot)
 	// Plan-cache key parts: a VERBATIM schema+version+planner-options scope
 	// (case-sensitive, never normalized) and the injective canonical query
 	// text. NOT q.GetText() — that concatenated tokens with no separator,
 	// colliding `SELECT AB` with `SELECT A B`. PlanCache normalizes only the
 	// query text (see planCacheScope / PlanCache.Get).
-	popts := plannerOptionsFrom(g.c.Options())
-	// The readable-index view is resolved BEFORE the cache key and is PART of
-	// it, because it decides which indexes may back a plan. Java keys its plan
-	// cache the same way — PlannerConfiguration carries readableIndexes and
-	// QueryCacheKey carries the whole configuration
-	// (QueryCacheKey.java:127,142). Without it, a plan built while an index was
-	// readable would keep being served after the index went WRITE_ONLY, and the
-	// gate below would be defeated for exactly the queries that run often
-	// enough to be cached.
-	//
-	// This OPENS the store, as Java does before planning begins, so the state
-	// consulted is the one checkVersion has reconciled — see
-	// fetchReadableIndexes. That open is the cost of the readable-index view
-	// on this path, and it is a small REGRESSION against the speculative
-	// index-state read it replaces — see TestFDB_ReadableIndexViewLatency,
-	// which is the harness those numbers come from and the way to re-derive
-	// them: ~1.28 ms of a 2.71 ms cached point-lookup SELECT, against ~1.21 ms
-	// for the speculative read. About 70 microseconds, ~2.6%, and it buys a
-	// view that reconciliation has already settled rather than one execution
-	// is relied upon to make true afterwards.
-	popts.config.ReadableIndexes = g.fetchReadableIndexes(ctx, md)
 	cacheScope := planCacheScope(g.c.sess.Schema, md.Version(), popts.cacheKeyPart())
 	cacheSQL := canonicalTextOf(q)
-	var ls *planLogScope
-	if logMetrics {
-		// Log the original whitespace-preserved SQL (canonicalTextOf), not
-		// q.GetText() — the latter concatenates tokens without whitespace
-		// ("SELECTid=1FROMorders"), which is useless to an operator. The cache
-		// key (cacheScope + cacheSQL, built above) is also off canonicalTextOf,
-		// so both are injective.
-		ls = g.beginPlanLog(ctx, canonicalTextOf(q))
-	}
-	defer func() { ls.finish(err) }()
 
 	if g.cache != nil {
 		if cachedPlan, cachedSubs, ok := g.cache.Get(cacheScope, cacheSQL); ok {
@@ -344,6 +366,12 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 				physicalPlan:     cachedPlan,
 				explain:          cachedPlan.Explain(),
 				scalarSubqueries: cachedSubs,
+				// Dependencies are a function of the PLAN, so a cache hit derives
+				// them from the cached plan rather than carrying anything in the
+				// cache entry. A cached plan gets the same guarantee as a freshly
+				// planned one, which is what the cache exists to be transparent
+				// about.
+				indexDependencies: collectPlanIndexDependencies(md, cachedPlan, cachedSubs, nil),
 			}, nil
 		}
 	}
@@ -493,6 +521,18 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		physicalPlan:     physPlan,
 		explain:          physPlan.Explain(),
 		scalarSubqueries: scalarSubs,
+		// The fourth argument is the PROOF-ONLY dependency set: indexes whose
+		// metadata property licensed a transformation without the index being
+		// scanned. It is nil because no rule currently produces one — the only
+		// such proof this engine had, a secondary UNIQUE index licensing a
+		// DISTINCT elision, is declined outright today
+		// (rule_implement_distinct_final.go), and every other consumer of an
+		// index property reads it FOR the index plan it is building, which the
+		// leaf walk already collects. The seam is real and unit-tested rather
+		// than notional: whoever lifts that decline records the proving index
+		// here, and TestDistinctFinal_SecondaryUniqueIndexIsNeverAnEliminationProof
+		// is what fails if they lift it without doing so.
+		indexDependencies: collectPlanIndexDependencies(md, physPlan, scalarSubs, nil),
 	}, nil
 }
 
@@ -1032,12 +1072,18 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	}
 
 	dmlStats := g.fetchTableStatistics(ctx, md)
-	planningRules := append(cascades.BatchAExpressionRules(), cascades.DMLImplementationRules()...)
-	popts := plannerOptionsFrom(g.c.Options())
 	// DML reads through the same match candidates a SELECT does (the WHERE of an
 	// UPDATE/DELETE is planned identically), so it needs the same readable-index
-	// view. Java applies the filter in MetaDataPlanContext, below both.
-	popts.config.ReadableIndexes = g.fetchReadableIndexes(ctx, md)
+	// view — Java applies the filter in MetaDataPlanContext, below both — and it
+	// carries the same index-state dependency and the same staleness check. One
+	// snapshot supplies both, as on the SELECT path.
+	dmlIndexStateSnapshot, dmlStateErr := g.fetchIndexStateSnapshot(ctx, md)
+	if dmlStateErr != nil {
+		return nil, dmlStateErr
+	}
+	planningRules := append(cascades.BatchAExpressionRules(), cascades.DMLImplementationRules()...)
+	popts := plannerOptionsFrom(g.c.Options())
+	popts.config.ReadableIndexes = readableIndexesFrom(md, dmlIndexStateSnapshot)
 	planner := newCascadesPlanner(md, popts, planningRules, dmlStats)
 
 	bestExpr, _, planErr := planner.PlanWithContext(ctx, ref)
@@ -1086,7 +1132,9 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		physicalPlan:     physPlan,
 		explain:          logicalOp.Explain(""),
 		scalarSubqueries: dmlScalarSubs,
-		dryRun:           dryRun,
+
+		indexDependencies: collectPlanIndexDependencies(md, physPlan, dmlScalarSubs, nil),
+		dryRun:            dryRun,
 	}, nil
 }
 
@@ -1150,6 +1198,12 @@ type cascadesPlan struct {
 	physicalPlan     plans.RecordQueryPlan
 	explain          string
 	scalarSubqueries []PlannedScalarSubquery
+
+	// The indexes this plan depends on, revalidated inside every execution
+	// transaction — including cache hits and every continuation page. Java's
+	// continuation plan constraint (QueryPlan.java:726-735) does the same job;
+	// see index_state_planning.go.
+	indexDependencies planIndexDependencies
 
 	// dryRun carries the SQL OPTIONS (DRY RUN) flag from planDML to execution.
 	// Statement-scoped (one cascadesPlan per statement) → paginatingRows.dryRun
@@ -1248,12 +1302,15 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		plan:             p.physicalPlan,
 		md:               p.md,
 		scalarSubqueries: p.scalarSubqueries,
-		maxRows:          optInt64(c.Options(), api.OptMaxRows, math.MaxInt32),
-		maxResultBytes:   c.maxResultBytes,
-		cols:             cols,
-		tx:               c.activeTx,
-		isUpdate:         p.IsUpdate(),
-		dryRun:           p.dryRun,
+
+		indexDependencies: p.indexDependencies,
+
+		maxRows:        optInt64(c.Options(), api.OptMaxRows, math.MaxInt32),
+		maxResultBytes: c.maxResultBytes,
+		cols:           cols,
+		tx:             c.activeTx,
+		isUpdate:       p.IsUpdate(),
+		dryRun:         p.dryRun,
 		// The statement-stable CURRENT_TIMESTAMP-family instant is stamped
 		// ONCE here, while the statement is in flight (the driver entry
 		// point's session-clock stamp is still live). It must be captured on
@@ -1334,6 +1391,10 @@ type paginatingRows struct {
 	md               *recordlayer.RecordMetaData
 	scalarSubqueries []PlannedScalarSubquery
 	cols             []executor.ColumnDef
+
+	// Carried from cascadesPlan; revalidated at the top of every page's
+	// transaction. Empty means the plan depends on no index.
+	indexDependencies planIndexDependencies
 
 	// emitted counts rows actually returned to the caller across all pages.
 	// Shared by the MAX_ROWS cap and pageRowBudget. SQL LIMIT/OFFSET is NOT
@@ -1854,6 +1915,21 @@ func (r *paginatingRows) fetchPage() error {
 		if storeErr != nil {
 			return nil, storeErr
 		}
+		// The plan's index-state dependency is checked HERE, inside the page's
+		// own transaction and before any row is produced — Java's continuation
+		// plan constraint position (QueryPlan.java:667,726-735). Doing it per
+		// PAGE rather than once per statement is what makes a resumed page
+		// safe: an auto-commit statement's pages are separate transactions, so
+		// a transition between them would otherwise be invisible.
+		//
+		// Validated against the STORE's metadata, not the plan's: execution
+		// opens the store with the connection's current metadata, so this is
+		// where an index dropped or redefined since planning is observable.
+		if stateErr := validatePlanIndexDependencies(
+			r.indexDependencies, store.GetRecordMetaData(), store.GetAllIndexStates(),
+		); stateErr != nil {
+			return nil, stateErr
+		}
 
 		evalCtx := executor.EmptyEvaluationContext().WithStatementTime(r.statementTime)
 		// The statement-stable CURRENT_TIMESTAMP-family instant was stamped
@@ -2185,7 +2261,102 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 	return properties.MapStatistics{PerType: counts}
 }
 
-// fetchReadableIndexes reads the store's index states and returns the planner's
+// fetchIndexStateSnapshot opens the record store and returns the state of every
+// index the METADATA names, with an index carrying no stored state defaulted to
+// READABLE — Java's RecordStoreState default. The domain is the metadata's
+// index set, deliberately and load-bearingly so; see the invariant at the
+// GetAllIndexStates call below. A nil map means there is no authoritative
+// snapshot (offline planning, or a schema with no indexes at all).
+//
+// This is the ONE store open on the planning path, shared by the readable-index
+// view and the plan's index-state signature. Both must come from the same read:
+// two reads could straddle a transition and disagree, and a view that disagrees
+// with the signature guarding it is worse than either alone.
+//
+// WHERE THE STATE COMES FROM, and why it must be an OPENED store. Java reads
+// the state off a store that is already open: PlanContext.Builder.fromRecordStore
+// (PlanContext.java:249-252) passes recordStore.getRecordStoreState(), and the
+// store reached that call through checkVersion, which has already reconciled
+// every index added since the header's recorded metadata version
+// (FDBRecordStore.checkRebuildIndexes, FDBRecordStore.java:4743-4767). So in
+// Java the planner never sees an index whose state is still undecided.
+//
+// Reading the index-state subspace directly instead — cheaper — reproduces
+// Java's answer only for indexes the metadata has already been reconciled
+// against. An index added by a metadata EVOLUTION has no state key at all until
+// some store open writes one, and "no stored state" means READABLE, so the
+// planner would hand the query an index that holds no entries. Opening the
+// store makes that structurally impossible.
+//
+// It also runs through the same storeIn as execution, so an explicit
+// transaction reuses one open store across planning and every page rather than
+// opening a second one.
+//
+// A FAILED OPEN IS AN ERROR, not a best-effort empty like fetchTableStatistics.
+// It costs no availability: fetchPage opens this exact store in this exact way
+// before it can return a row, so a store that cannot be opened here is a query
+// that fails one step later regardless. Planning against a GUESSED all-readable
+// state is precisely what the signature exists to prevent, so guessing it here
+// and then validating the guess downstream would be incoherent.
+func (g *cascadesGenerator) fetchIndexStateSnapshot(
+	ctx context.Context,
+	md *recordlayer.RecordMetaData,
+) (map[string]recordlayer.IndexState, error) {
+	c := g.c
+	// planSelectCascades is also the package's DB-less planning harness entry
+	// point. The public live SELECT/DML routes reject or divert before reaching
+	// it when no DB exists, so nil here is an explicitly offline convention,
+	// never a production fallback after an FDB failure.
+	if c == nil || c.sess == nil || c.sess.DB == nil || md == nil {
+		return nil, nil
+	}
+	// No indexes means no index-state dependency and nothing to restrict, so
+	// the open is skipped entirely — the healthy fast path this had before.
+	if len(md.GetAllIndexes()) == 0 {
+		return nil, nil
+	}
+	ss, err := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
+	if err != nil {
+		return nil, err
+	}
+	result, runErr := c.runInCapturedTx(ctx, c.activeTx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		store, storeErr := c.storeIn(rctx, c.activeTx, ss)
+		if storeErr != nil {
+			return nil, storeErr
+		}
+		// GetAllIndexStates, NOT GetAllIndexStatesMap. The two answer in
+		// different DOMAINS: this one iterates the METADATA's indexes and
+		// defaults an absent entry to READABLE; the raw map returns whatever
+		// keys the index-state subspace happens to hold, including a key for a
+		// name the metadata no longer has.
+		//
+		// THE INVARIANT: the signature comparison is ONE function evaluated
+		// TWICE — here and again at execution — never two functions that
+		// usually agree. Two domains that agree on healthy stores is not a
+		// weaker version of that property, it is a different property, and the
+		// disagreement is unbounded in consequence: a single stray state key
+		// for a dropped index appears on the planning side and never on the
+		// execution side, so EVERY query fails 40001, forever. 40001 tells the
+		// client to retry, and the replan re-derives the same mismatch.
+		//
+		// Java scopes its equivalent to metadata objects for the same reason —
+		// DatabaseObjectDependenciesPredicate.eval walks the plan's used
+		// indexes and asks recordMetaData.hasIndex first
+		// (DatabaseObjectDependenciesPredicate.java:90-101). Storage that
+		// metadata does not name is not part of the dependency.
+		return store.GetAllIndexStates(), nil
+	})
+	if runErr != nil {
+		return nil, runErr
+	}
+	states, ok := result.(map[string]recordlayer.IndexState)
+	if !ok || states == nil {
+		return nil, errors.New("embedded planner: record store returned no index-state snapshot")
+	}
+	return states, nil
+}
+
+// readableIndexesFrom turns an index-state snapshot into the planner's
 // allow-list of scannable index names. Port of Java's
 // PlanContext.Builder.getReadableIndexes (PlanContext.java:236-247):
 //
@@ -2206,67 +2377,16 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 //     the planner may assume uniqueness from a unique index, and a
 //     unique-pending one has not yet proven it.
 //
-// A store that cannot be opened or read yields the unrestricted answer, which
-// is the pre-existing behaviour: this function is best-effort exactly like
-// fetchTableStatistics, and a query against a store this broken fails at
-// execution with its own diagnostic rather than being silently re-planned into
-// a full scan here.
-//
-// WHERE THE STATE COMES FROM, and why it must be an OPENED store. Java reads
-// the state off a store that is already open: PlanContext.Builder.fromRecordStore
-// (PlanContext.java:249-252) passes recordStore.getRecordStoreState(), and the
-// store reached that call through checkVersion, which has already reconciled
-// every index added since the header's recorded metadata version
-// (FDBRecordStore.checkRebuildIndexes, FDBRecordStore.java:4743-4767). So in
-// Java the planner never sees an index whose state is still undecided.
-//
-// Reading the index-state subspace directly instead — cheaper, and what this
-// did — reproduces Java's answer only for indexes the metadata has already
-// been reconciled against. An index added by a metadata EVOLUTION has no state
-// key at all until some store open writes one, and "no stored state" means
-// READABLE, so the planner would hand the query an index that holds no
-// entries. Opening the store here makes that structurally impossible: the
-// state consulted is the state reconciliation has already settled and
-// committed, not a guess that execution's own store open is then relied upon
-// to make true.
-//
-// It also runs through the same storeIn as execution, so an explicit
-// transaction reuses one open store across planning and every page rather than
-// opening a second one.
-func (g *cascadesGenerator) fetchReadableIndexes(ctx context.Context, md *recordlayer.RecordMetaData) cascades.ReadableIndexes {
-	c := g.c
-	if c == nil || c.sess == nil || c.sess.DB == nil || md == nil {
+// A nil snapshot is the offline convention and yields the unrestricted answer.
+func readableIndexesFrom(
+	md *recordlayer.RecordMetaData,
+	states map[string]recordlayer.IndexState,
+) cascades.ReadableIndexes {
+	if md == nil || states == nil || len(states) == 0 {
 		return cascades.AllIndexesReadable()
 	}
 	allIndexes := md.GetAllIndexes()
 	if len(allIndexes) == 0 {
-		return cascades.AllIndexesReadable()
-	}
-	ss, err := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
-	if err != nil {
-		return cascades.AllIndexesReadable()
-	}
-
-	result, runErr := c.runInCapturedTx(ctx, c.activeTx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
-		store, storeErr := c.storeIn(rctx, c.activeTx, ss)
-		if storeErr != nil {
-			return nil, storeErr
-		}
-		// The raw map holds only the states that DIFFER from READABLE, the
-		// same contract LoadIndexStates has and the same one Java's
-		// RecordStoreState applies: an absent index is readable.
-		return store.GetAllIndexStatesMap(), nil
-	})
-	if runErr != nil || result == nil {
-		return cascades.AllIndexesReadable()
-	}
-	states, ok := result.(map[string]recordlayer.IndexState)
-	if !ok {
-		return cascades.AllIndexesReadable()
-	}
-	// An index with no stored state is READABLE — Java's RecordStoreState
-	// default, and the state store only ever holds the exceptions.
-	if len(states) == 0 {
 		return cascades.AllIndexesReadable()
 	}
 	allReadable := true
