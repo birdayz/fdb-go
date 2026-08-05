@@ -14007,8 +14007,22 @@ None is speculative: each was re-verified against the tree before booking.
   now throws, and `OnlineIndexerBuilder.SetAllowUniquePendingState` ports the
   policy with Java's default and format-version gate. Both SIDES of the policy
   are pinned, since a flag tested only in its ON position is not a policy.
-  Three pre-existing specs that had encoded the divergence were corrected in
+  FOUR pre-existing specs that had encoded the divergence were corrected in
   the same change rather than left to rot.
+  **A second divergence fell out of covering the format-version conjunct.**
+  The gate is an AND, and its second half needs a store BELOW format 9 — which
+  Go could not produce: `maybeUpgradeFormatVersion` unconditionally raised any
+  store to `formatVersionCurrent` on every open, so a forced-down header was
+  undone by the next open. Java does not do that; the target comes off the
+  BUILDER (`FDBRecordStoreBase.BaseBuilder.setFormatVersion`, :2245/:2266),
+  whose javadoc gives the reason: during a rolling upgrade you pin every
+  instance to the OLD format so none starts writing a layout the
+  not-yet-upgraded instances cannot read. Go now has
+  `StoreBuilder.SetFormatVersion` (and `OnlineIndexerBuilder.SetFormatVersion`,
+  since Java gets it free by reusing the caller's record-store builder), the
+  upgrade targets it instead of a constant, and it is a ceiling that never
+  downgrades. Default behaviour is unchanged. Pinned by
+  `TestFDB_CardinalityUniquePendingBlockedByFormatVersion`.
 
   Original booking, kept for the reasoning it records:
 

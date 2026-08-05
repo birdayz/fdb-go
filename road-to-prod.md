@@ -471,9 +471,18 @@ backward compatible): throw an exception"*) that also requires format version >=
 `READABLE_UNIQUE_PENDING` (`FormatVersion.java:145`). Go now mirrors that exactly, via
 `OnlineIndexerBuilder.SetAllowUniquePendingState`; before this change Go called
 `MarkIndexReadableOrUniquePending` unconditionally on both the inline and online paths, which
-silently downgraded a violation into a pending state nobody asked for. Both sides of the policy are
-pinned. The failure all of this excludes is the quiet one — a rebuild that "succeeds" by discarding
-an entry.
+silently downgraded a violation into a pending state nobody asked for. **Both conjuncts** of the
+gate are pinned, the opt-in and the format version. The failure all of this excludes is the quiet
+one — a rebuild that "succeeds" by discarding an entry.
+
+*A second divergence fell out of covering that format conjunct, and is fixed here too.* Proving the
+format half needs a store below format 9, which Go could not produce: `maybeUpgradeFormatVersion`
+raised every store to the newest version the binary knew, on every open. Java takes that target from
+the **builder** (`FDBRecordStoreBase.BaseBuilder.setFormatVersion`, `:2245`/`:2266`) precisely so a
+rolling upgrade can pin every instance to the OLD format and stop any one of them writing a layout
+the others cannot read. Go now has `StoreBuilder.SetFormatVersion` (plus the `OnlineIndexerBuilder`
+twin, which Java gets free by reusing the caller's store builder); the upgrade targets it rather
+than a constant, and it is a ceiling that never downgrades. Default behaviour is unchanged.
 
 Unsupported on both engines: `COUNT(DISTINCT)`, `UNION`/`EXCEPT DISTINCT`, `x IN (SELECT …)`,
 `NULLIF`, string functions, `DECIMAL`, FK/CHECK/defaults, window functions.

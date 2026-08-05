@@ -102,16 +102,28 @@ type FDBRecordStore struct {
 	context            *FDBRecordContext
 	metaData           *RecordMetaData
 	subspace           subspace.Subspace
-	recordsSubspace    subspace.Subspace        // Cached subspace.Sub(RecordKey) — avoids alloc per method call
-	storeHeader        *gen.DataStoreInfo       // Cached store header, loaded on Open/Create or lazily
-	indexStates        map[string]IndexState    // Cached index states, loaded on Open/Create or lazily
-	indexRebuildPolicy IndexRebuildPolicy       // Policy for rebuilding indexes on metadata version change
-	storeStateCache    FDBRecordStoreStateCache // Cache for store state across transactions
-	stateMu            sync.RWMutex             // protects storeHeader + indexStates
-	stateLoadOnce      sync.Once                // ensures lazy store state load happens exactly once (Build() path)
-	stateLoadErr       error                    // error from lazy load (nil if loaded successfully or not yet attempted)
-	versionChanged     bool                     // true if checkPossiblyRebuild detected a version change
-	maintainerCache    sync.Map                 // string → IndexMaintainer, cached per-transaction
+	recordsSubspace    subspace.Subspace     // Cached subspace.Sub(RecordKey) — avoids alloc per method call
+	storeHeader        *gen.DataStoreInfo    // Cached store header, loaded on Open/Create or lazily
+	indexStates        map[string]IndexState // Cached index states, loaded on Open/Create or lazily
+	indexRebuildPolicy IndexRebuildPolicy    // Policy for rebuilding indexes on metadata version change
+	// targetFormatVersion is the format version this store opens AT — the
+	// ceiling maybeUpgradeFormatVersion upgrades toward, not necessarily the
+	// newest the binary knows. 0 means formatVersionCurrent.
+	//
+	// Java's equivalent is a builder property, not a constant
+	// (FDBRecordStoreBase.BaseBuilder.setFormatVersion, :2245/:2266), and its
+	// javadoc spells out the reason it must be settable: during a rolling
+	// upgrade you arrange "for setFormatVersion to be called with the OLD format
+	// version" everywhere, so that no instance starts writing a format the
+	// not-yet-upgraded instances cannot read. A store that always jumped to the
+	// newest version its binary knew would make that impossible.
+	targetFormatVersion int32
+	storeStateCache     FDBRecordStoreStateCache // Cache for store state across transactions
+	stateMu             sync.RWMutex             // protects storeHeader + indexStates
+	stateLoadOnce       sync.Once                // ensures lazy store state load happens exactly once (Build() path)
+	stateLoadErr        error                    // error from lazy load (nil if loaded successfully or not yet attempted)
+	versionChanged      bool                     // true if checkPossiblyRebuild detected a version change
+	maintainerCache     sync.Map                 // string → IndexMaintainer, cached per-transaction
 }
 
 // ensureStoreStateLoaded lazily loads store state (header + index states) from

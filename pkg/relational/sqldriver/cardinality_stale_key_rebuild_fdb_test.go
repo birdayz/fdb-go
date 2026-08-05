@@ -590,6 +590,130 @@ func TestFDB_CardinalityWholeSchemaBumpDisablesEvenTinyStore(t *testing.T) {
 	}
 }
 
+// TestFDB_CardinalityUniquePendingBlockedByFormatVersion pins the SECOND
+// conjunct of Java's policy gate, the one the opt-in cannot override.
+//
+// shouldAllowUniquePendingState is an AND (OnlineIndexer.java:1117-1120):
+//
+//	return allowUniquePendingState
+//	        && store.getFormatVersionEnum().isAtLeast(FormatVersion.READABLE_UNIQUE_PENDING);
+//
+// READABLE_UNIQUE_PENDING is format version 9 (FormatVersion.java:145). Writing
+// that state into a store an older binary can still open would hand it an index
+// state it cannot interpret, so the opt-in alone must never be sufficient — and
+// a gate whose second condition is never exercised is a gate on paper only.
+//
+// The store is OPENED at format 8 throughout, via StoreBuilder.SetFormatVersion —
+// the port of Java's FDBRecordStoreBase.BaseBuilder.setFormatVersion
+// (FDBRecordStoreBase.java:2245). Writing the header to 8 after the fact does not
+// work and is worth recording: maybeUpgradeFormatVersion upgrades any store below
+// the target back to it on the very next open, so a store can only BE at format 8
+// if every instance opening it is pinned there. That is exactly the rolling-upgrade
+// situation Java's javadoc describes, and the only shape in which this gate matters.
+func TestFDB_CardinalityUniquePendingBlockedByFormatVersion(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	fdb.MustAPIVersion(730)
+	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	db := recordlayer.NewFDBDatabase(rawDB)
+	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
+
+	const belowPending = int32(8)
+	// Every open in this test is pinned at format 8, including the CREATE.
+	pinnedRun := func(md *recordlayer.RecordMetaData, create bool,
+		fn func(store *recordlayer.FDBRecordStore) error,
+	) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			sb := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).
+				SetSubspace(ks).SetFormatVersion(belowPending)
+			var store *recordlayer.FDBRecordStore
+			var oErr error
+			if create {
+				store, oErr = sb.CreateOrOpen()
+			} else {
+				store, oErr = sb.Open()
+			}
+			if oErr != nil {
+				return nil, oErr
+			}
+			return nil, fn(store)
+		})
+		return err
+	}
+
+	md := cq90MetaData(t, "cq90fmtgate", false) // no COUNT index → DISABLED, indexer reachable
+	desc := md.GetRecordType("T_STALE").Descriptor
+	if rErr := pinnedRun(md, true, func(store *recordlayer.FDBRecordStore) error {
+		for _, id := range []int32{1, 2} {
+			if _, sErr := store.SaveRecord(cq90Rec(desc, id, nil)); sErr != nil {
+				return sErr
+			}
+		}
+		return nil
+	}); rErr != nil {
+		t.Fatalf("seed the colliding pair: %v", rErr)
+	}
+
+	md2 := cq90BumpIndexVersion(t, md, "T_STALE_CARD")
+	md2.GetIndex("T_STALE_CARD").SetUnique()
+
+	if rErr := pinnedRun(md2, false, func(store *recordlayer.FDBRecordStore) error {
+		if got := store.GetFormatVersion(); got != belowPending {
+			return fmt.Errorf("store format version is %d, want %d — the pin did not hold, so this test "+
+				"would prove nothing about the format conjunct", got, belowPending)
+		}
+		if st := store.GetIndexState("T_STALE_CARD"); st != recordlayer.IndexStateDisabled {
+			return fmt.Errorf("index is %v, want DISABLED so the OnlineIndexer is reachable", st)
+		}
+		return nil
+	}); rErr != nil {
+		t.Fatal(rErr)
+	}
+
+	// Policy explicitly ON, yet the format conjunct must still block the pending
+	// state and make the build fail.
+	indexer, bErr := recordlayer.NewOnlineIndexerBuilder().
+		SetDatabase(db).SetMetaData(md2).SetIndex(md2.GetIndex("T_STALE_CARD")).
+		SetSubspace(ks).SetLimit(50).SetAllowUniquePendingState(true).
+		SetFormatVersion(belowPending).Build()
+	if bErr != nil {
+		t.Fatalf("build online indexer: %v", bErr)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	_, iErr := indexer.BuildIndex(ctx)
+	if iErr == nil {
+		t.Fatalf("the build completed with allowUniquePendingState=true on a store at format version %d. "+
+			"READABLE_UNIQUE_PENDING is format version 9 (FormatVersion.java:145) and the policy is an AND "+
+			"(OnlineIndexer.java:1117-1120), so the format conjunct must veto the opt-in — otherwise Go "+
+			"writes an index state an older binary opening this store cannot interpret", belowPending)
+	}
+	var uvErr *recordlayer.RecordIndexUniquenessViolationError
+	if !errors.As(iErr, &uvErr) {
+		t.Fatalf("format-gated build failed with %v, want a RecordIndexUniquenessViolationError — the veto "+
+			"must fall through to the ordinary throwing path, not fail some other way", iErr)
+	}
+
+	var st recordlayer.IndexState
+	if rErr := pinnedRun(md2, false, func(store *recordlayer.FDBRecordStore) error {
+		st = store.GetIndexState("T_STALE_CARD")
+		return nil
+	}); rErr != nil {
+		t.Fatal(rErr)
+	}
+	if st == recordlayer.IndexStateReadableUniquePending {
+		t.Fatalf("the index reached READABLE_UNIQUE_PENDING on a store at format version %d — exactly the "+
+			"state the format conjunct exists to prevent", belowPending)
+	}
+}
+
 // TestFDB_CardinalityStaleNullKeyDisabledThenOnlineIndexer is the same
 // migration on a store ABOVE MAX_RECORDS_FOR_REBUILD — the production shape.
 // checkVersion must refuse to rebuild inline (a full index build inside the
@@ -839,6 +963,38 @@ func TestFDB_CardinalityStaleNullKeyRebuildSurfacesUniquenessViolation(t *testin
 		t.Fatalf("uniqueness violation is on key %v, want the single column [0] — that is the key the two "+
 			"empty NOT NULL arrays now share, and the whole point of the migration", uv.IndexKey)
 	}
+	// The error must NAME a colliding record, not just the key. Java's javadoc is
+	// explicit that with multiple duplicates "the exception will only refer to an
+	// arbitrary one", so the assertion is that it names ONE OF the two — that both
+	// are recorded is pinned in the opt-in test, where the violations survive.
+	// A relational primary key carries the record-type key ahead of the declared
+	// columns, so ID is the LAST element.
+	if len(uv.PrimaryKey) == 0 {
+		t.Fatalf("uniqueness violation carries an empty primary key (%+v) — an operator cannot act on a "+
+			"violation that names no record", uv)
+	}
+	namedID, ok := uv.PrimaryKey[len(uv.PrimaryKey)-1].(int64)
+	if !ok || (namedID != 1 && namedID != 2) {
+		t.Fatalf("uniqueness violation names primary key %v, want one ending in 1 or 2 — the two records "+
+			"whose empty NOT NULL arrays collide on key 0", uv.PrimaryKey)
+	}
+
+	// ATOMICITY, the header half stated outright rather than inferred from a later
+	// error: the store header must still carry the OLD metadata version, so the
+	// migration is a clean re-attempt rather than a resume of something partial.
+	var headerVersion int32
+	if rErr := cq90Run(t, db, md, ks, false, func(store *recordlayer.FDBRecordStore) error {
+		headerVersion = store.GetMetaDataVersion()
+		return nil
+	}); rErr != nil {
+		t.Fatalf("reopen at the OLD metadata version to inspect the header: %v", rErr)
+	}
+	if headerVersion != int32(md.Version()) {
+		t.Fatalf("after the FAILED rebuild the store header carries metadata version %d, want the ORIGINAL "+
+			"%d — checkVersion advances the header in the same transaction as the rebuild, so a header that "+
+			"moved means the throw did not roll everything back and the migration is half-applied",
+			headerVersion, md.Version())
+	}
 
 	// THE FAILED MIGRATION IS ATOMIC, which is the half a bare "it threw"
 	// assertion misses. checkVersion runs inside the store-open transaction, so
@@ -980,15 +1136,56 @@ func TestFDB_CardinalityUniquePendingPolicyBothSides(t *testing.T) {
 			"so this build completes instead of throwing", iErr)
 	}
 	var pendingState recordlayer.IndexState
+	var violations []recordlayer.UniquenessViolation
 	if rErr := cq90Run(t, db, md2, ks, false, func(store *recordlayer.FDBRecordStore) error {
 		pendingState = store.GetIndexState("T_STALE_CARD")
-		return nil
+		vs, vErr := store.ScanUniquenessViolations(md2.GetIndex("T_STALE_CARD"))
+		violations = vs
+		return vErr
 	}); rErr != nil {
 		t.Fatal(rErr)
 	}
 	if pendingState != recordlayer.IndexStateReadableUniquePending {
 		t.Fatalf("with allowUniquePendingState=true the index is %v, want READABLE_UNIQUE_PENDING — the "+
 			"policy opt-in is not reaching MarkIndexReadableOrUniquePending", pendingState)
+	}
+
+	// THE VIOLATIONS ARE DURABLE, AND BOTH RECORDS ARE NAMED. This is the state
+	// whose entire justification is that the conflict remains enumerable, so the
+	// violations subspace is the thing to check — a pending index whose violations
+	// were not recorded is unexplainable and unresolvable.
+	//
+	// Java writes the pair in BOTH directions, one call per conflicting primary
+	// key (StandardIndexMaintainer.java:497-498):
+	//     addUniquenessViolation(valueKey, primaryKey, existingKey);
+	//     addUniquenessViolation(valueKey, existingKey, primaryKey);
+	// so an operator can look up either record and find the other. Recording only
+	// one direction would leave half the pair invisible to a lookup keyed on it.
+	if len(violations) == 0 {
+		t.Fatal("the build landed READABLE_UNIQUE_PENDING but recorded NO uniqueness violation — that state " +
+			"exists so the conflict stays enumerable, and without the records it is a dead end")
+	}
+	for _, v := range violations {
+		if len(v.IndexKey) != 1 || v.IndexKey[0] != int64(0) {
+			t.Fatalf("recorded violation is on key %v, want the single column [0]", v.IndexKey)
+		}
+	}
+	named := map[int64]bool{}
+	for _, v := range violations {
+		if len(v.PrimaryKey) == 0 {
+			t.Fatalf("recorded violation has an empty primary key: %+v", v)
+		}
+		id, ok := v.PrimaryKey[len(v.PrimaryKey)-1].(int64)
+		if !ok {
+			t.Fatalf("recorded violation primary key %v does not end in an integer ID", v.PrimaryKey)
+		}
+		named[id] = true
+	}
+	if !named[1] || !named[2] {
+		t.Fatalf("the recorded violations name primary keys %v, want BOTH 1 and 2 — Java calls "+
+			"addUniquenessViolation once per conflicting primary key (StandardIndexMaintainer.java:497-498), "+
+			"so a lookup keyed on either record finds the other; one direction leaves half the pair invisible",
+			named)
 	}
 
 	// The pending index is scannable (Java IndexState.java:95) and agrees with the

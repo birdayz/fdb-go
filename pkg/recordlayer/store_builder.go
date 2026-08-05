@@ -166,6 +166,15 @@ func (store *FDBRecordStore) validateFormatVersion(storeHeader *gen.DataStoreInf
 	return nil
 }
 
+// effectiveFormatVersion is the format version this store opens at: the pinned
+// target when the builder set one, else the newest this binary knows.
+func (store *FDBRecordStore) effectiveFormatVersion() int32 {
+	if store.targetFormatVersion > 0 {
+		return store.targetFormatVersion
+	}
+	return int32(formatVersionCurrent)
+}
+
 // maybeUpgradeFormatVersion upgrades the persisted format version in the store header
 // to the current version, performing the same on-disk layout migrations Java performs
 // in checkRebuild() before reading any data. Returns true if the header was modified.
@@ -183,11 +192,18 @@ func (store *FDBRecordStore) validateFormatVersion(storeHeader *gen.DataStoreInf
 // updates what useOldVersionFormat() derives.
 func (store *FDBRecordStore) maybeUpgradeFormatVersion(storeHeader *gen.DataStoreInfo) (bool, error) {
 	oldFormat := storeHeader.GetFormatVersion()
-	if oldFormat == int32(formatVersionCurrent) {
+	// The target is the version this store was OPENED at, which is the newest the
+	// binary knows only when the caller did not pin one. Java takes the same value
+	// off the builder rather than a constant (FDBRecordStoreBase:2245).
+	target := store.effectiveFormatVersion()
+	// Never DOWNGRADE a store: a header already past the target was written by an
+	// instance opening at a higher version, and rewriting it backwards would claim
+	// a layout the existing data may not match.
+	if oldFormat >= target {
 		return false, nil
 	}
 
-	newFormat := int32(formatVersionCurrent)
+	newFormat := target
 	storeHeader.FormatVersion = &newFormat
 
 	if oldFormat >= formatVersionMinimum &&
@@ -378,8 +394,12 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 	// Matches Java's checkRebuild() which sets info.setFormatVersion(formatVersion).
 	newVersion := int32(newMetaDataVersion)
 	storeHeader.MetaDataversion = &newVersion
-	fmtVersion := int32(formatVersionCurrent)
-	storeHeader.FormatVersion = &fmtVersion
+	// The format version this store OPENED at, not the newest the binary knows —
+	// otherwise a reconciliation would silently undo a deliberately pinned format
+	// (see maybeUpgradeFormatVersion). Never downgrade a header already past it.
+	if fmtVersion := store.effectiveFormatVersion(); storeHeader.GetFormatVersion() < fmtVersion {
+		storeHeader.FormatVersion = &fmtVersion
+	}
 	lastUpdateTime := uint64(store.context.Env().Now().UnixMilli())
 	storeHeader.LastUpdateTime = &lastUpdateTime
 	if err := store.writeStoreHeader(storeHeader); err != nil {
@@ -864,7 +884,15 @@ func (store *FDBRecordStore) recordCountStateIsReadable() bool {
 // Includes RecordCountKey from metadata if present, matching Java's
 // checkPossiblyRebuildRecordCounts which sets it during store creation.
 func createStoreHeader(metaDataVersion int32, metaData *RecordMetaData, env *dst.Env) *gen.DataStoreInfo {
-	formatVersion := int32(formatVersionCurrent)
+	return createStoreHeaderAtFormat(metaDataVersion, metaData, env, int32(formatVersionCurrent))
+}
+
+// createStoreHeaderAtFormat is createStoreHeader with the format version the
+// builder pinned. A store created by an instance opening at an older format must
+// be BORN at that format, not created new and immediately upgraded past it --
+// Java threads the builder's formatVersion into store creation the same way.
+func createStoreHeaderAtFormat(metaDataVersion int32, metaData *RecordMetaData, env *dst.Env, formatVersionIn int32) *gen.DataStoreInfo {
+	formatVersion := formatVersionIn
 	userVersion := int32(0) // Default user version
 	lastUpdateTime := uint64(env.Now().UnixMilli())
 
@@ -1010,6 +1038,7 @@ type StoreBuilder struct {
 	skipPossiblyRebuild       bool                     // skip checkPossiblyRebuild on open
 	cachedSSKeys              *storeSubspaceKeys       // cached from getCachedSubspaceKeys; avoids sync.Map lookup per Open
 	assumeAllIndexesReadable  bool                     // pre-populate empty indexStates so ensureStoreStateLoaded is a no-op
+	formatVersion             int32                    // 0 = formatVersionCurrent; see SetFormatVersion
 }
 
 // NewStoreBuilder creates a new store builder
@@ -1032,6 +1061,35 @@ func (b *StoreBuilder) SetMetaDataProvider(metaData *RecordMetaData) *StoreBuild
 // SetSubspace sets the subspace for this store
 func (b *StoreBuilder) SetSubspace(subspace subspace.Subspace) *StoreBuilder {
 	b.subspace = subspace
+	return b
+}
+
+// effectiveFormatVersion is the builder-side twin of the store accessor: the
+// pinned format version, or the newest this binary knows.
+func (b *StoreBuilder) effectiveFormatVersion() int32 {
+	if b.formatVersion > 0 {
+		return b.formatVersion
+	}
+	return int32(formatVersionCurrent)
+}
+
+// SetFormatVersion pins the format version this store opens at, instead of
+// defaulting to the newest version this binary knows.
+//
+// Port of Java's FDBRecordStoreBase.BaseBuilder.setFormatVersion
+// (FDBRecordStoreBase.java:2245, :2266). Its javadoc gives the reason the value
+// has to be a builder property rather than a constant: during a rolling upgrade
+// you arrange "for setFormatVersion to be called with the OLD format version"
+// on every instance, so no upgraded instance starts writing a layout the
+// not-yet-upgraded ones cannot read. A store that always jumped to its binary's
+// newest version would make a staged rollout impossible.
+//
+// The version is a CEILING, never a downgrade: a store whose header is already
+// past it keeps what it has, because the data on disk may already be in that
+// layout. Values outside [formatVersionMinimum, formatVersionCurrent] are
+// rejected when the store is opened.
+func (b *StoreBuilder) SetFormatVersion(version int32) *StoreBuilder {
+	b.formatVersion = version
 	return b
 }
 
@@ -1122,6 +1180,8 @@ func (b *StoreBuilder) newStore() *FDBRecordStore {
 		recordsSubspace:    recSS,
 		indexRebuildPolicy: policy,
 		storeStateCache:    b.resolveCache(),
+
+		targetFormatVersion: b.formatVersion,
 	}
 	if b.assumeAllIndexesReadable {
 		store.indexStates = make(map[string]IndexState)
@@ -1139,6 +1199,10 @@ func (b *StoreBuilder) validateBuilder() error {
 	}
 	if b.subspace == nil || b.subspace.Bytes() == nil {
 		return fmt.Errorf("subspace is required")
+	}
+	if b.formatVersion != 0 &&
+		(b.formatVersion < formatVersionMinimum || b.formatVersion > int32(formatVersionCurrent)) {
+		return &UnsupportedFormatVersionError{Version: b.formatVersion, MaxVersion: int32(formatVersionCurrent)}
 	}
 	return nil
 }
@@ -1162,7 +1226,7 @@ func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
 	}
 
 	// Create and write store header
-	storeHeader := createStoreHeader(int32(b.metaData.Version()), b.metaData, b.context.Env())
+	storeHeader := createStoreHeaderAtFormat(int32(b.metaData.Version()), b.metaData, b.context.Env(), b.effectiveFormatVersion())
 	if err := store.writeStoreHeader(storeHeader); err != nil {
 		return nil, err
 	}
@@ -1234,7 +1298,7 @@ func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 
 	if !exists {
 		// Create store header if it doesn't exist
-		storeHeader := createStoreHeader(int32(b.metaData.Version()), b.metaData, b.context.Env())
+		storeHeader := createStoreHeaderAtFormat(int32(b.metaData.Version()), b.metaData, b.context.Env(), b.effectiveFormatVersion())
 		if err := store.writeStoreHeader(storeHeader); err != nil {
 			return nil, err
 		}

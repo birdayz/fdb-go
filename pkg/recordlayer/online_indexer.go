@@ -256,6 +256,11 @@ type OnlineIndexer struct {
 	// It is deliberately NOT enough on its own — see shouldAllowUniquePendingState.
 	allowUniquePendingState bool
 
+	// formatVersion pins the format version every store this indexer opens uses;
+	// 0 means the newest this binary knows. Java carries it on the shared
+	// record-store builder rather than as a separate indexer field.
+	formatVersion int32
+
 	// progressLogIntervalMillis throttles the per-range "Indexer: Built Range"
 	// progress log (see maybeLogBuildProgress). Matches Java
 	// OnlineIndexOperationConfig.progressLogIntervalMillis:
@@ -320,6 +325,14 @@ func NewOnlineIndexerBuilder() *OnlineIndexerBuilder {
 			progressLogIntervalMillis: -1,
 		},
 	}
+}
+
+// SetFormatVersion pins the format version the indexer opens its stores at,
+// mirroring StoreBuilder.SetFormatVersion. Java gets this for free by reusing the
+// caller's record-store builder (IndexingCommon.getRecordStoreBuilder).
+func (b *OnlineIndexerBuilder) SetFormatVersion(version int32) *OnlineIndexerBuilder {
+	b.indexer.formatVersion = version
+	return b
 }
 
 // SetAllowUniquePendingState opts in to leaving a unique index in
@@ -1667,10 +1680,16 @@ func (oi *OnlineIndexer) shouldIndexRecordForIndex(rec *FDBStoredRecord[proto.Me
 
 // openStore opens an FDBRecordStore for the current transaction.
 func (oi *OnlineIndexer) openStore(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+	// The format version rides along with every store this indexer opens. Java
+	// threads it the same way, by reusing the caller's record-store builder
+	// (IndexingCommon.getRecordStoreBuilder), so an indexer cannot silently open a
+	// store at a newer format than the instance that configured it -- which would
+	// defeat the format half of shouldAllowUniquePendingState.
 	return NewStoreBuilder().
 		SetContext(rtx).
 		SetMetaDataProvider(oi.metaData).
 		SetSubspace(oi.subspace).
+		SetFormatVersion(oi.formatVersion).
 		Open()
 }
 
