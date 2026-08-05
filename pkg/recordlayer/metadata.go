@@ -1009,6 +1009,22 @@ func (rt *RecordType) GetRecordTypeKey() any {
 // bytes — is already what the tuple layer encodes and passes through
 // untouched. Bytes must NOT be folded into a string: the tuple encoding gives
 // them different type codes, so folding would change the key's bytes.
+//
+// "Narrower integer" means Go's narrower integers, not only the signed ones
+// Java happens to have. Java widens Byte/Short/Integer because those are the
+// integer types narrower than Long that a Java caller can hand it; Go's set
+// also includes uint8/uint16/uint32, and SetRecordTypeKey takes an `any`, so a
+// caller can hand over any of them. The tuple encoder handles int, int64,
+// uint, uint64 and NOTHING else in between, so an unwidened uint8/uint16/
+// uint32 reaches it raw and PANICS ("unencodable element") on the save path —
+// a panic in library code, from a metadata value the builder accepted without
+// complaint. Widening them to int64 is lossless (max uint32 < max int64) and
+// byte-identical: the tuple encoding of a non-negative integer does not depend
+// on the signedness of the Go type it came in as.
+//
+// uint and uint64 are deliberately NOT widened: they can exceed max int64, so
+// widening would be lossy. The encoder handles both natively, and for any
+// value that also fits in an int64 it emits the identical bytes.
 func tupleEquivalentRecordTypeKey(key any) any {
 	switch k := key.(type) {
 	case int:
@@ -1018,6 +1034,12 @@ func tupleEquivalentRecordTypeKey(key any) any {
 	case int16:
 		return int64(k)
 	case int32:
+		return int64(k)
+	case uint8:
+		return int64(k)
+	case uint16:
+		return int64(k)
+	case uint32:
 		return int64(k)
 	default:
 		return k

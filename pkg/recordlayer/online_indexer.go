@@ -641,15 +641,17 @@ func (oi *OnlineIndexer) computeRecordsRange() (begin, end []byte, ok bool) {
 		if !rt.PrimaryKeyHasRecordTypePrefix() || rt.IsSynthetic() {
 			return nil, nil, false
 		}
-		// Give up for non-integer record-type keys, and normalize integer keys to int64 before
-		// packing. Go's RecordTypeKeyExpression only binds integer keys (int/int32/int64) — as
-		// int64 (metadata.go bindTypeKeys) — and falls back to the message type NAME for string/
-		// bytes explicit keys at save time (key_expression.go Evaluate). So (a) bounds from a
-		// non-integer key would not match where records are stored (the preset could mark the
-		// real records built and skip them), and (b) the tuple encoder panics on a raw int32 (it
-		// handles only int/int64). Normalizing to int64 matches bindTypeKeys exactly, so the
-		// bounds match record placement, and avoids the int32 panic. (Java encodes every key
-		// type; the RecordTypeKeyExpression int-only limitation is a separate, pre-existing gap.)
+		// Give up for non-integer record-type keys. The bound below is a single
+		// contiguous [low, high] derived by ORDERING the keys, which only means
+		// anything for integers; a string or bytes key is a perfectly valid key
+		// (GetRecordTypeKey passes it through to the key bytes, as Java's
+		// TupleTypeUtil does) whose range this simply declines to compute. Giving
+		// up returns ok=false, which widens the scan to the whole records space —
+		// conservative in the safe direction, never a scan too narrow.
+		//
+		// GetRecordTypeKey has already widened every narrower integer to int64,
+		// so the int and int32 arms below cannot fire today; they are kept as a
+		// cheap total switch rather than an assumption about that normalization.
 		var keyInt int64
 		switch k := rt.GetRecordTypeKey().(type) {
 		case int:

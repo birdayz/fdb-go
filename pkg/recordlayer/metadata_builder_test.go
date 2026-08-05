@@ -5,8 +5,10 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 var _ = Describe("RecordMetaDataBuilder advanced features", func() {
@@ -137,6 +139,87 @@ var _ = Describe("RecordMetaDataBuilder advanced features", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(md.GetRecordType("Order").GetRecordTypeKey()).To(Equal(int64(99)))
+		})
+	})
+
+	// GetRecordTypeKey's value is written into primary keys and index entries,
+	// so what matters is the BYTES it packs to, not the Go type it returns.
+	// The specs above assert only the returned value, which cannot distinguish
+	// a key that packs like Java's from one that panics or picks a different
+	// tuple type code.
+	Describe("record type key packs to Java's bytes", func() {
+		// One expression, one record, evaluated exactly as the save path does.
+		packedKeyFor := func(explicit any) []byte {
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			if explicit != nil {
+				builder.GetRecordType("Order").SetRecordTypeKey(explicit)
+			}
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			rt := md.GetRecordType("Order")
+			order := newOrder(1, 10)
+			values, err := evaluateKeyFlat(rt.PrimaryKey, &FDBStoredRecord[proto.Message]{
+				RecordType: rt,
+				Record:     order,
+			}, order)
+			Expect(err).NotTo(HaveOccurred())
+			pk := make(tuple.Tuple, len(values))
+			for i, v := range values {
+				pk[i] = v
+			}
+			return pk.Pack()
+		}
+
+		// Java's TupleTypeUtil.toTupleEquivalentValue widens every narrower
+		// integer to Long, so all of these are ONE key on the wire. Go's tuple
+		// encoder accepts only int/int64/uint/uint64, so the unsigned narrow
+		// types must be widened too or they panic on the save path — a panic
+		// in library code from a value the builder accepted.
+		DescribeTable("narrower integers widen to one canonical key",
+			func(explicit any) {
+				Expect(packedKeyFor(explicit)).To(Equal(packedKeyFor(int64(7))),
+					"this integer width packs to different bytes than int64 — "+
+						"records of one type would live under two different record type keys")
+			},
+			Entry("int", 7),
+			Entry("int8", int8(7)),
+			Entry("int16", int16(7)),
+			Entry("int32", int32(7)),
+			Entry("int64", int64(7)),
+			Entry("uint8", uint8(7)),
+			Entry("uint16", uint16(7)),
+			Entry("uint32", uint32(7)),
+			Entry("uint", uint(7)),
+			Entry("uint64", uint64(7)),
+		)
+
+		// The behaviour change this pins: a non-integer explicit key used to be
+		// dropped on the floor — the build-time map held only integers, so the
+		// evaluation fell back to the proto message's type NAME and wrote
+		// "Order" where the key belongs. Java writes the explicit key itself,
+		// so the old bytes were unreadable to Java AND disagreed with Go's own
+		// GetRecordTypeKey. Nothing pinned the corrected bytes.
+		It("a STRING explicit key reaches the key bytes, not the message type name", func() {
+			got := packedKeyFor("custom_order_key")
+			Expect(got).To(Equal(tuple.Tuple{"custom_order_key", int64(1)}.Pack()),
+				"the explicit string key did not reach the primary key")
+			Expect(got).NotTo(Equal(tuple.Tuple{"Order", int64(1)}.Pack()),
+				"the message type NAME was written where the record type key belongs — "+
+					"bytes Java reads as a different key entirely")
+		})
+
+		// Bytes and strings are different tuple type codes (0x01 vs 0x02), so
+		// folding one into the other changes the key. Java keeps them apart by
+		// converting byte[] to ByteString rather than to String.
+		It("a BYTES explicit key keeps the bytes type code", func() {
+			got := packedKeyFor([]byte("k"))
+			Expect(got).To(Equal(tuple.Tuple{[]byte("k"), int64(1)}.Pack()))
+			Expect(got).NotTo(Equal(tuple.Tuple{"k", int64(1)}.Pack()),
+				"a bytes key was folded into a string key — different type code, different bytes")
 		})
 	})
 
