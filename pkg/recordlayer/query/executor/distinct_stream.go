@@ -194,6 +194,12 @@ type distinctHashCursor struct {
 	// continuation it mints (each carrying its own prefix length).
 	entry      *distinctResumeState
 	entryToken int64
+	// handed is how much of this cursor's delta charge the entry has taken over.
+	// It is NOT the same as seen.Charged(): the hand-over happens when a
+	// continuation is serialized, and the cursor goes on sighting keys after the
+	// last one. The difference is what the cursor still owns and must release at
+	// close — retirement gives back only what the entry recorded.
+	handed int64
 	// resumeBytes/resumeInner are the continuation this cursor was resumed
 	// from. A page that consumed no row AND left the inner at the byte-identical
 	// position it started at re-emits resumeBytes verbatim instead of minting:
@@ -413,13 +419,38 @@ func (c *distinctHashCursor) parkSeen() int64 {
 	// so the bytes must stay charged until the entry retires — otherwise an
 	// accumulating shape is invisible to the budget, which is what let a
 	// per-outer-row leak grow silently.
-	c.entry.charged = c.seen.Charged()
+	//
+	// Tracked as a DELTA against handed rather than assigned, so the hand-over
+	// and the close-time release of the remainder always partition the cursor's
+	// charge exactly: a park that runs after the close (an enclosing
+	// continuation serialized late) hands over nothing, instead of claiming
+	// bytes the close already returned.
+	c.entry.charged += c.seen.Charged() - c.handed
+	c.handed = c.seen.Charged()
 	// Re-publish the live slice: append REALLOCATES, so the entry would
 	// otherwise keep pointing at a stale array and a later continuation's
 	// prefix would name keys the entry cannot see. Copying nothing here is the
 	// point — only the slice header is refreshed.
 	c.entry.order = c.order
 	return c.entryToken
+}
+
+// releaseUnhanded returns the delta charge this cursor still OWNS — everything
+// it sighted beyond what its entry took over — and marks it handed so it can be
+// returned exactly once.
+//
+// It is what the close hook releases. A cursor that parked keeps sighting keys
+// after its last continuation was serialized (a filter draining a rejected tail
+// before a correlated inner exhausts is the ordinary way there), and retirement
+// gives back only what the ENTRY recorded, so releasing nothing at all left
+// that tail charged to the statement for its whole life — repeated inners then
+// fail a valid query on the budget for bytes nothing holds. Releasing
+// seen.Charged() instead would free the entry's half too, and an accumulating
+// shape would grow invisibly again; the split is what makes both true at once.
+func (c *distinctHashCursor) releaseUnhanded() int64 {
+	rest := c.seen.Charged() - c.handed
+	c.handed = c.seen.Charged()
+	return rest
 }
 
 // Close does NOT retire this cursor's scratch entry, and must not: closing is a

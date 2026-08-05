@@ -133,6 +133,82 @@ func TestDistinctBudgetIsRetryIndependent(t *testing.T) {
 	}
 }
 
+// TestDistinctTailAfterTheLastSnapshotIsReleased pins that the charge a closing
+// cursor gives back covers what the CURSOR holds, not what its last published
+// snapshot recorded.
+//
+// A cursor hands its page charge to its scratch entry at PARK time, and parking
+// happens when a continuation of its is serialized. A cursor that then keeps
+// consuming keys without any further continuation being serialized — a filter
+// draining a rejected tail before a correlated inner exhausts is the ordinary
+// way to get there — holds MORE than the entry records. The close hook returned
+// early for any cursor that had parked, so that tail was released by nobody:
+// retirement gives back exactly entry.charged, and the difference stayed
+// charged against the statement for its whole life. Repeated inners then fail a
+// valid query on the budget for bytes nothing holds.
+//
+// Measured before the fix on this shape: 38 bytes still charged after the
+// cursor closed and every scratch entry retired.
+func TestDistinctTailAfterTheLastSnapshotIsReleased(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	const n = 20
+	evalCtx, plan := distinctFixture(t, n, n) // every value distinct
+	scratch := NewExecutionScratch()
+	evalCtx = evalCtx.WithExecutionScratch(scratch)
+	state := recordlayer.NewExecuteState(1 << 30)
+
+	scratch.BeginPage()
+	props := recordlayer.DefaultExecuteProperties()
+	props.State = state
+	cursor, err := ExecutePlan(ctx, plan, nil, evalCtx, nil, props)
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	rows := 0
+	for {
+		res, nerr := cursor.OnNext(ctx)
+		if nerr != nil {
+			t.Fatalf("OnNext: %v", nerr)
+		}
+		if !res.HasNext() {
+			break
+		}
+		rows++
+		// Serialize ONCE, early. Everything after this row is the tail the
+		// cursor holds but no published snapshot names — the shape is
+		// load-bearing: serializing on every row keeps the entry in step with
+		// the cursor and the defect cannot appear at all.
+		if rows == 1 {
+			if _, berr := res.GetContinuation().ToBytes(); berr != nil {
+				t.Fatalf("ToBytes: %v", berr)
+			}
+		}
+	}
+	_ = cursor.Close()
+	if rows != n {
+		t.Fatalf("drain emitted %d rows, want %d", rows, n)
+	}
+	if scratch.MintedDistinctSets() == 0 {
+		t.Fatal("nothing was parked; the shape no longer exercises the hand-over")
+	}
+	// The page ended exhausted, so every entry is unreachable and retires.
+	scratch.SweepAfterPage(true)
+	if live := scratch.LiveDistinctSets(); live != 0 {
+		t.Fatalf("%d live scratch states after an exhausted page, want 0", live)
+	}
+	if used := state.MemUsed(); used != 0 {
+		t.Fatalf(
+			"the statement still holds %d bytes after the cursor closed and every scratch "+
+				"entry retired: the cursor kept sighting keys after its last snapshot was "+
+				"published, and the close hook released nothing because it had parked — so "+
+				"the tail is charged to the statement forever and repeated inners fail a "+
+				"valid query on the budget",
+			used,
+		)
+	}
+}
+
 // TestDistinctHighCardinalityTripsTheBudget pins the promise the whole
 // by-reference design rests on: a DISTINCT whose seen-set outgrows the
 // statement budget fails LOUDLY, never silently.

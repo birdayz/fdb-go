@@ -906,6 +906,16 @@ func (c *flatMapCursor) wrapOuterContinuation(outerCont recordlayer.RecordCursor
 		// saved one is no longer first).
 		cont.pendingInner = c.initialInnerCont
 		cont.checkValue = c.pendingCheckValue
+		// These bytes are a NAME this page never resolved: no inner cursor was
+		// built (the outer stopped before re-delivering the saved row), so
+		// nothing adopted whatever statement-scoped resume state they name —
+		// yet the statement keeps them in the continuation it hands back. The
+		// scratch retires on nameability and reads ADOPTION as its ground
+		// truth, so it has to be told that record is incomplete here, or it
+		// retires an entry this very continuation still names and the next page
+		// fails with "seen-set ... which this execution's scratch does not
+		// hold".
+		c.evalCtx.Scratch().holdForwardedName()
 	}
 	return cont
 }

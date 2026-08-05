@@ -103,6 +103,7 @@ go_test(
         "ddl_quoted_case_wire_test.go",
         "ddl_quoted_dot_pk_test.go",
         "derived_unnest_test.go",
+        "distinct_scratch_retry_charge_test.go",
         "distinct_scratch_wiring_test.go",
         "duplicate_from_alias_binding_test.go",
         "embedded_test.go",
@@ -322,6 +323,7 @@ go_test(
         "sparse_unique_index_ddl_test.go",
         "distinct_scratch_wiring_test.go",
         "closure_sparse_unique_candidate_test.go",
+        "distinct_scratch_retry_charge_test.go",
     ],
     deps = [
         "//gen",
@@ -331,6 +333,7 @@ go_test(
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/fdbgo/wire",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/chaos",
         "//pkg/recordlayer/query/executor",
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/expressions",
