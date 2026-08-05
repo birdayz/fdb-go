@@ -2229,7 +2229,18 @@ func executeDistinct(
 		continuation,
 		props,
 		distinctKey,
+		narrowedDedupFor(p),
 	)
+}
+
+// narrowedDedupFor reads the R3 residual off the plan. Nil for every distinct
+// the planner did not narrow, which is every distinct not built over a
+// qualifying secondary UNIQUE index — the full dedup, unchanged.
+func narrowedDedupFor(p *plans.RecordQueryDistinctPlan) *narrowedDedup {
+	if !p.IsNarrowedDedup() {
+		return nil
+	}
+	return &narrowedDedup{exemptSlots: p.GetNarrowedExemptSlots()}
 }
 
 // executeUnorderedPrimaryKeyDistinct removes duplicate records by primary key.
@@ -2251,6 +2262,9 @@ func executeUnorderedPrimaryKeyDistinct(
 		continuation,
 		props,
 		primaryKeyDistinctKey,
+		// The primary-key distinct is never narrowed: a PK is a storage
+		// invariant with no exempt set and no index state to rest on.
+		nil,
 	)
 }
 
@@ -2266,6 +2280,7 @@ func executeHashDistinct(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 	keyer queryResultDistinctKeyer,
+	narrowed *narrowedDedup,
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	seen := newBoundedSet[string](props.State)
 	var order []string
@@ -2304,10 +2319,11 @@ func executeHashDistinct(
 		return nil, err
 	}
 	cursor := &distinctHashCursor{
-		inner: innerCursor,
-		seen:  seen,
-		order: order,
-		keyer: keyer,
+		inner:    innerCursor,
+		seen:     seen,
+		order:    order,
+		keyer:    keyer,
+		narrowed: narrowed,
 	}
 	return newCloseHookCursor(
 		applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit),

@@ -403,6 +403,7 @@ go_test(
         "rule_distinct_over_groupby_elim_test.go",
         "rule_distinct_over_sort_elim_test.go",
         "rule_distinct_over_union_dedup_test.go",
+        "rule_distinct_r3_narrowed_test.go",
         "rule_eliminate_null_on_empty_test.go",
         "rule_filter_dedup_predicates_test.go",
         "rule_filter_drop_true_test.go",
@@ -1038,6 +1039,7 @@ go_test(
         "logical_distinctness_proof_test.go",
         "null_rejecting_conjuncts.go",
         "null_rejecting_conjuncts_test.go",
+        "rule_distinct_r3_narrowed_test.go",
     ],
     deps = [
         "//gen",

@@ -104,6 +104,7 @@ go_test(
         "merged_outer_leg_binding_bench_test.go",
         "merged_outer_leg_binding_test.go",
         "name_oracle_test.go",
+        "narrowed_dedup_test.go",
         "nlj_continuation_test.go",
         "nlj_hash_key_test.go",
         "ordinal_join_clock_test.go",
@@ -250,6 +251,7 @@ go_test(
         "agg_continuation_group_key_rederive_test.go",
         "merge_child_width_assertion_test.go",
         "distinct_proof_stamp_identity_test.go",
+        "narrowed_dedup_test.go",
     ],
     tags = ["resources:memory:400"],
     deps = [

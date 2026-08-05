@@ -1058,11 +1058,12 @@ func TestDistinctFinal_BothLicensesHoldYieldsUnstampedPlan(t *testing.T) {
 		candidates:      secondaryUniqueTestCandidates(),
 		readableIndexes: AllIndexesReadable(),
 	}
-	if name, ok := secondaryUniqueEliminationProof(
+	if p := secondaryUniqueEliminationProof(
 		soleUniqueProjectionFor(t, "EMAIL"), soleLicenseCtx,
-	); !ok || name != "T$email_unique" {
-		t.Fatalf("the secondary-UNIQUE proof does not fire on this projection on its "+
-			"own (%q, %v), so asserting it does not STAMP proves nothing", name, ok)
+	); !p.FullElision || p.IndexName != "T$email_unique" {
+		t.Fatalf("the secondary-UNIQUE proof does not fully elide on this projection "+
+			"on its own (%q, elision=%v), so asserting it does not STAMP proves nothing",
+			p.IndexName, p.FullElision)
 	}
 
 	results := fireDistinctOverT(t, ctx, "EMAIL")

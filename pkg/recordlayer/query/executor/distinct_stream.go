@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
@@ -165,6 +166,84 @@ type distinctHashCursor struct {
 	closed bool
 	// lastNoNext replays the terminal result on a contract-violating re-call.
 	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
+	// narrowed, when non-nil, restricts the dedup to the EXEMPT SUBSET. See
+	// narrowedDedup.
+	narrowed *narrowedDedup
+}
+
+// narrowedDedup is the R3 residual: the planner proved that a secondary UNIQUE
+// index already guarantees at most one row per key value EXCEPT on its exempt
+// set — the rows carrying a NULL key component (under NULLS DISTINCT the
+// uniqueness check is skipped, so one NULL prefix legitimately holds arbitrarily
+// many entries) or a NaN one (raw encodings the index holds as distinct tuple
+// keys, which packedDedupKey canonicalizes to a single value).
+//
+// So only exempt rows need deduplicating. A non-exempt row can duplicate neither
+// another non-exempt row (the index's uniqueness) nor an exempt one (exemptness
+// is a property of the key value, so their keys differ by construction), and it
+// passes through with nothing retained and no key packed.
+//
+// The seen-set is therefore a SUBSET of the full one on every input — identical
+// where every row is exempt, EMPTY on the ordinary case of a nullable column
+// holding no NULLs. There is no input on which this is worse, which is why it
+// replaces the full dedup unconditionally rather than being costed against it.
+type narrowedDedup struct {
+	// exemptSlots are the dedup-key slot positions holding the proving index's
+	// key components. Nil means test EVERY slot: a conservative
+	// over-approximation of the exempt set, which retains more rows than
+	// necessary and stays sound. Under-approximating would drop rows, so the
+	// unstatable case fails toward the full behaviour.
+	exemptSlots []int
+}
+
+// isExempt reports whether a row falls in the proving index's exempt set and so
+// must enter the seen-set.
+//
+// The test runs on the row's RAW SLOTS, BEFORE any dedup key is packed. That
+// ordering is the whole performance argument: a non-exempt row — every row, on
+// an ordinary table — costs one nil/NaN check and never reaches the tuple
+// encoder or the set. An implementation that packs first and tests after is
+// correct and delivers almost none of the benefit.
+//
+// Signed zero is deliberately NOT exempt. packedDedupKey packs -0.0 and +0.0
+// verbatim and the index holds them as two keys, so the two agree: both the
+// operator and the elision keep the pair. It is only NaN where storage identity
+// is FINER than the dedup key's value identity.
+func (n *narrowedDedup) isExempt(row QueryResult) bool {
+	slots := row.Positional.Slots
+	if n.exemptSlots == nil {
+		for _, slot := range slots {
+			if slotIsExempt(slot) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, position := range n.exemptSlots {
+		if position < 0 || position >= len(slots) {
+			// A position the row cannot supply states nothing, so the row is
+			// treated as exempt and deduplicated — the full behaviour, which is
+			// the direction that cannot drop a row.
+			return true
+		}
+		if slotIsExempt(slots[position]) {
+			return true
+		}
+	}
+	return false
+}
+
+func slotIsExempt(slot any) bool {
+	switch typed := slot.(type) {
+	case nil:
+		// NULL: the uniqueness check was skipped for this entry entirely.
+		return true
+	case float64:
+		return math.IsNaN(typed)
+	case float32:
+		return math.IsNaN(float64(typed))
+	}
+	return false
 }
 
 func (c *distinctHashCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -192,6 +271,16 @@ func (c *distinctHashCursor) OnNext(ctx context.Context) (recordlayer.RecordCurs
 			return res, nil
 		}
 		row := result.GetValue()
+		// R3: a non-exempt row is provably unique already, so it is emitted
+		// without packing a key or touching the seen-set. This is the residual
+		// dedup's entire cost on an ordinary table.
+		if c.narrowed != nil && !c.narrowed.isExempt(row) {
+			wrapped, werr := c.wrapContinuation(result.GetContinuation())
+			if werr != nil {
+				return recordlayer.RecordCursorResult[QueryResult]{}, werr
+			}
+			return recordlayer.NewResultWithValue(row, wrapped), nil
+		}
 		if c.keyer == nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, fmt.Errorf(
 				"distinct-hash cursor: nil key function",

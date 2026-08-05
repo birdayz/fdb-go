@@ -74,13 +74,13 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 	// not just innerRef.Get() which might return a Filter or other
 	// expression merged into the same Reference during REWRITING.
 	pkDistinct := false
-	proofIndex := ""
+	var proof secondaryUniqueProof
 	if call.Context != nil {
 		for _, m := range innerRef.Members() {
 			if proj, ok := m.(*expressions.LogicalProjectionExpression); ok {
 				pkDistinct = distinctEliminatedByUniqueKey(proj, call.Context)
 				if !pkDistinct {
-					proofIndex, _ = secondaryUniqueEliminationProof(proj, call.Context)
+					proof = secondaryUniqueEliminationProof(proj, call.Context)
 				}
 				break
 			}
@@ -104,7 +104,7 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 		for _, expr := range partition.GetExpressions() {
 			r.yieldElidedOrWrapped(call, expr,
 				partition.IsDistinct() && expressionRecordIdentityMatchesLogicalEquality(expr),
-				pkDistinct, proofIndex)
+				pkDistinct, proof)
 		}
 	}
 
@@ -114,12 +114,12 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 	// PLANNING, or when the fallback partitioner doesn't set properties).
 	if !handled {
 		allDistinct := false
-		fallbackProof := ""
+		var fallbackProof secondaryUniqueProof
 		if call.Context != nil {
 			innerExpr := innerRef.Get()
 			allDistinct = distinctEliminatedByUniqueKey(innerExpr, call.Context)
 			if !allDistinct {
-				fallbackProof, _ = secondaryUniqueEliminationProof(innerExpr, call.Context)
+				fallbackProof = secondaryUniqueEliminationProof(innerExpr, call.Context)
 			}
 		}
 
@@ -154,26 +154,89 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 // and the physical distinct is kept: a proof whose dependency cannot be recorded
 // is a proof that survives an index transition unguarded, which is worse than
 // the redundant operator it would have removed.
+//
+// The last arm is R3, and it is a FLOOR rather than a fallback that can fail.
+// When clauses 1-7 hold but the exempt set could not be proved empty, the
+// operator is kept and NARROWED: only rows carrying an exempt key component
+// enter the seen-set. That needs no fact about the stream at all, so it always
+// applies where a qualifying index exists — and it still records the dependency,
+// because its soundness rests on the index's uniqueness exactly as the elision's
+// does.
 func (r *ImplementDistinctFinalRule) yieldElidedOrWrapped(
 	call *ImplementationRuleCall,
 	expr expressions.RelationalExpression,
 	propertyLicensed bool,
 	pkLicensed bool,
-	proofIndex string,
+	proof secondaryUniqueProof,
 ) {
 	if propertyLicensed || pkLicensed {
 		call.YieldFinalExpression(expr)
 		return
 	}
-	if proofIndex != "" {
-		if stamped := stampDistinctProof(expr, proofIndex); stamped != nil {
+	if proof.FullElision {
+		if stamped := stampDistinctProof(expr, proof.IndexName); stamped != nil {
 			call.YieldFinalExpression(stamped)
 			return
 		}
 	}
-	if w := newPhysicalDistinctFor(call, expr); w != nil {
-		call.YieldFinalExpression(w)
+	w := newPhysicalDistinctFor(call, expr)
+	if w == nil {
+		return
 	}
+	if proof.IndexName != "" {
+		if distinct, ok := w.(*plans.RecordQueryDistinctPlan); ok {
+			w = distinct.WithNarrowedDedup(
+				proof.IndexName, exemptSlotsFor(distinct.GetInner(), proof))
+		}
+	}
+	call.YieldFinalExpression(w)
+}
+
+// exemptSlotsFor maps the proving index's key columns onto positions in the
+// DEDUP KEY's slot order — the order distinctKey packs, which distinctKeyColumns
+// is the authority for ("distinctKey packs exactly these positional slots").
+//
+// Resolving against that list rather than re-deriving a position is what keeps
+// the executor's test aimed at the right slots: a projection may carry columns
+// the index does not key, and testing those would retain rows the index already
+// proves unique.
+//
+// nil is returned whenever ANY key column has no statable position — an
+// expression-valued projection, a lazy or foreign-domain reference, a
+// non-projection inner whose schema the walk cannot line up. nil means "test
+// every slot", which OVER-approximates the exempt set: more rows are
+// deduplicated than necessary, which costs performance and cannot drop a row.
+// Under-approximating would drop rows, so the unstatable case has exactly one
+// safe direction and this is it.
+func exemptSlotsFor(inner plans.RecordQueryPlan, proof secondaryUniqueProof) []int {
+	if inner == nil || len(proof.KeyOrdinals) == 0 || !proof.Layout.IsKnown() {
+		return nil
+	}
+	slotColumns := distinctKeyColumns(inner)
+	if len(slotColumns) == 0 {
+		return nil
+	}
+	positionOfOrdinal := map[int]int{}
+	for position, column := range slotColumns {
+		fv, isField := column.(*values.FieldValue)
+		if !isField {
+			continue
+		}
+		ord, stated := fv.OrdinalIn(proof.Layout)
+		if !stated {
+			continue
+		}
+		positionOfOrdinal[ord] = position
+	}
+	slots := make([]int, 0, len(proof.KeyOrdinals))
+	for _, keyOrdinal := range proof.KeyOrdinals {
+		position, found := positionOfOrdinal[keyOrdinal]
+		if !found {
+			return nil
+		}
+		slots = append(slots, position)
+	}
+	return slots
 }
 
 // stampDistinctProof returns a copy of a physical expression carrying the name
@@ -273,10 +336,19 @@ func distinctEliminatedByUniqueKey(
 // or for the store's GetReadableIndexes (which by its own contract INCLUDES
 // READABLE_UNIQUE_PENDING), would satisfy every word written here and
 // reintroduce the exact bug the arm was declined for.
+//
+// The result is a THREE-WAY answer, not a boolean, because clause 8 has three
+// outcomes rather than two. Clauses 1-7 are about the index and the projection
+// and either hold or do not. Clause 8 asks whether the index's EXEMPT SET is
+// empty on this stream, and when it is not, the right response is not to walk
+// away — it is R3, which keeps the operator and narrows it to exactly that
+// exempt subset. So a proof with IndexName set and FullElision false is a
+// positive result: the caller narrows rather than elides, and records the same
+// dependency either way.
 func secondaryUniqueEliminationProof(
 	innerExpr expressions.RelationalExpression,
 	ctx PlanContext,
-) (string, bool) {
+) secondaryUniqueProof {
 	// Clause 1, first half. "It is a match candidate, therefore the store called
 	// it READABLE" holds only on planning runs that ASKED. Go's filter is fed by
 	// the SELECT and DML generator paths; every other entry point — the
@@ -291,7 +363,7 @@ func secondaryUniqueEliminationProof(
 	// uniqueness. That makes every unwritten planning path safe by construction
 	// rather than safe by everyone remembering to thread a config field.
 	if !ctx.GetPlannerConfiguration().ReadableIndexes.IndexStatesEstablished() {
-		return "", false
+		return secondaryUniqueProof{}
 	}
 
 	// The proof is stated in ONE layout — the scan row that both the projected
@@ -299,11 +371,11 @@ func secondaryUniqueEliminationProof(
 	// resolve names once, compare ordinals). An unstatable layout fails closed.
 	layoutType, layout := scanRowLayout(innerExpr)
 	if !layout.IsKnown() {
-		return "", false
+		return secondaryUniqueProof{}
 	}
 	projectedOrds, statable := collectProjectedOrdinals(innerExpr, layout)
 	if !statable {
-		return "", false
+		return secondaryUniqueProof{}
 	}
 
 	// Clause 7. A secondary key is unique only WITHIN a record type: A's and B's
@@ -311,7 +383,7 @@ func secondaryUniqueEliminationProof(
 	// The same restriction the primary-key arm carries.
 	recordTypes := findRecordTypes(innerExpr)
 	if len(recordTypes) != 1 {
-		return "", false
+		return secondaryUniqueProof{}
 	}
 	recordType := recordTypes[0]
 
@@ -320,6 +392,11 @@ func secondaryUniqueEliminationProof(
 	// DISTINCT. Empty on an unfiltered query, which leaves clause 8 exactly as
 	// strict as R1 alone.
 	nullRejected := nullRejectedOrdinals(innerExpr, layout)
+
+	// R3's carrier. The FIRST candidate to satisfy clauses 1-7 is remembered
+	// here; if a later one also discharges clause 8 the full elision wins, which
+	// is why the loop keeps going rather than returning the residual on sight.
+	var residual secondaryUniqueProof
 
 	for _, candidate := range ctx.GetMatchCandidates() {
 		// Clause 1, second half.
@@ -416,15 +493,78 @@ func secondaryUniqueEliminationProof(
 		// R2's soundness rests entirely on three-valued semantics: the row whose
 		// key column is NULL evaluates the conjunct to UNKNOWN and is DROPPED by
 		// the filter executor, not passed through as TRUE.
+		//
+		// The THIRD outcome — R3 — is what happens when neither route
+		// discharges it. The obligation is not abandoned; it is redirected. The
+		// index still guarantees at most one row per NON-exempt key value, so
+		// the operator is kept and narrowed to dedup exactly the exempt subset.
+		// That claim needs nothing about the stream, so this candidate is
+		// remembered unconditionally and used if no other candidate proves
+		// better.
 		if !properties.SecondaryUniqueKeyEnforcedOnStream(
 			keyComponentTypesOf(candidate), len(keyColumns),
 			nullRejectionPerKeyColumn(keyColumns, layoutType, nullRejected),
 		) {
+			if residual.IndexName == "" {
+				residual = secondaryUniqueProof{
+					IndexName:   candidate.CandidateName(),
+					KeyOrdinals: keyColumnOrdinals(keyColumns, layoutType),
+					Layout:      layout,
+				}
+			}
 			continue
 		}
-		return candidate.CandidateName(), true
+		return secondaryUniqueProof{
+			IndexName:   candidate.CandidateName(),
+			FullElision: true,
+			KeyOrdinals: keyColumnOrdinals(keyColumns, layoutType),
+			Layout:      layout,
+		}
 	}
-	return "", false
+	return residual
+}
+
+// secondaryUniqueProof is clause 8's three-way answer.
+//
+//	IndexName == ""                    — no qualifying index; the operator is
+//	                                     the ordinary full distinct.
+//	IndexName != "", FullElision       — R1 or R2 proved the exempt set EMPTY on
+//	                                     this stream; the operator is removed.
+//	IndexName != "", !FullElision      — R3: the exempt set could not be proved
+//	                                     empty, so the operator is kept and
+//	                                     NARROWED to dedup exactly that subset.
+//
+// The dependency is recorded in BOTH positive cases and for the same reason.
+// R3 reads as unconditional because it removes nothing, and that reading is
+// wrong: withdraw the index's uniqueness and a non-exempt row can duplicate
+// another non-exempt row, which is precisely what the narrowed seen-set no
+// longer catches.
+type secondaryUniqueProof struct {
+	IndexName   string
+	FullElision bool
+	// KeyOrdinals are the proving index's key columns as ordinals in Layout —
+	// resolved here, at the layer whose right it is to name them (RFC-197), so
+	// the executor's exempt test can be aimed at exactly those slots instead of
+	// at the whole row.
+	KeyOrdinals []int
+	Layout      values.OrdinalDomain
+}
+
+// keyColumnOrdinals resolves an index's key column NAMES into the scan row's
+// layout, once. A name the layout does not declare drops the whole list: a
+// partial mapping would aim the exempt test at some of the key columns and
+// silently exclude the rest, which under-approximates the exempt set and drops
+// rows. Returning nil instead makes the executor test every slot.
+func keyColumnOrdinals(keyColumns []string, layout values.Type) []int {
+	ordinals := make([]int, 0, len(keyColumns))
+	for _, col := range keyColumns {
+		id, resolved := values.OrdinalOfNameIn(layout, col)
+		if !resolved {
+			return nil
+		}
+		ordinals = append(ordinals, id.Ordinal)
+	}
+	return ordinals
 }
 
 // nullRejectionPerKeyColumn projects a set of NULL-rejected scan-row ordinals
