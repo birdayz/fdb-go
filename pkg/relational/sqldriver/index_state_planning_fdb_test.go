@@ -444,3 +444,47 @@ func TestFDB_IndexStatePlanning_MissingStoreFailsClosed(t *testing.T) {
 			"while the SELECT it claims to describe cannot run")
 	}
 }
+
+// PlanGenerationLogger's contract is ONE callback per Plan() call
+// (plan_logging.go:73-77). "One per call that SUCCEEDS" would be a different and
+// much weaker promise, and the difference is not academic: an operator installs
+// this logger to see planning failures, so a failure path that emits nothing is
+// silent about exactly what the logger exists to report.
+//
+// The index-state store open is the first fallible step on the planning path and
+// it fails CLOSED, so it is the failure most likely to be observed — and it was
+// the one that emitted nothing, because the logging scope was opened after it.
+//
+// EXACTLY one, in both directions: zero means the failure was invisible, and
+// more than one means a caller counting plans would double-count.
+func TestFDB_IndexStatePlanning_FailedStoreOpenStillLogsOnePlanEvent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newIndexStatePlanningFixture(t)
+	logger := &syncCaptureLogger{}
+	conn := installLogger(t, f.db, logger)
+
+	if _, err := f.rdb.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		return nil, recordlayer.DeleteStore(rctx, f.ss)
+	}); err != nil {
+		t.Fatalf("clear the schema's store subspace: %v", err)
+	}
+
+	rows, queryErr := conn.QueryContext(ctx, "SELECT ID FROM T")
+	if rows != nil {
+		_ = rows.Close()
+	}
+	if queryErr == nil {
+		t.Fatal("SELECT against a nonexistent store succeeded; this test can no " +
+			"longer reach the planning failure it exists to observe")
+	}
+
+	events := logger.snapshot()
+	if len(events) != 1 {
+		t.Fatalf("planning events = %d, want exactly 1 for one Plan() call", len(events))
+	}
+	if events[0].Err == nil {
+		t.Fatalf("the logged event reported success for a planning call that "+
+			"failed with: %v", queryErr)
+	}
+}

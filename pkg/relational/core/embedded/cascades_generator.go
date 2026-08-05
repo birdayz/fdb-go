@@ -295,11 +295,31 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	if err := contextCancellationError(ctx); err != nil {
 		return nil, err
 	}
-	// Plan-cache key parts: a VERBATIM schema+version+planner-options scope
-	// (case-sensitive, never normalized) and the injective canonical query
-	// text. NOT q.GetText() — that concatenated tokens with no separator,
-	// colliding `SELECT AB` with `SELECT A B`. PlanCache normalizes only the
-	// query text (see planCacheScope / PlanCache.Get).
+	// The logging scope opens FIRST, before anything that can fail.
+	//
+	// PlanGenerationLogger's contract is ONE callback per Plan() call
+	// (plan_logging.go:73-77), and a contract that holds only on the paths that
+	// reach the end of the function is not a contract — an operator watching for
+	// planning failures would see silence from exactly the failures worth
+	// watching. The store open below is the first fallible step and it fails
+	// CLOSED, so opening the scope after it would have made every one of those
+	// failures invisible. planDML already orders it this way.
+	//
+	// Consequence, and it is the correct one: PlanningDuration now includes the
+	// index-state store open. That open IS planning work — it decides which
+	// indexes may back the plan — and excluding the dominant cost on this path
+	// from the metric that exists to report planning cost would be the bug.
+	//
+	// Log the original whitespace-preserved SQL (canonicalTextOf), not
+	// q.GetText() — the latter concatenates tokens without whitespace
+	// ("SELECTid=1FROMorders"), which is useless to an operator. The plan-cache
+	// key below is built off canonicalTextOf too, so both are injective.
+	var ls *planLogScope
+	if logMetrics {
+		ls = g.beginPlanLog(ctx, canonicalTextOf(q))
+	}
+	defer func() { ls.finish(err) }()
+
 	popts := plannerOptionsFrom(g.c.Options())
 	// The readable-index view and the plan's index-state signature are BOTH
 	// derived from one store open, taken before the cache key is built.
@@ -328,18 +348,13 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	}
 	popts.config.ReadableIndexes = readableIndexesFrom(md, indexStateSnapshot)
 	indexStateSignature := indexStatePlanningSignature(indexStateSnapshot)
+	// Plan-cache key parts: a VERBATIM schema+version+planner-options scope
+	// (case-sensitive, never normalized) and the injective canonical query
+	// text. NOT q.GetText() — that concatenated tokens with no separator,
+	// colliding `SELECT AB` with `SELECT A B`. PlanCache normalizes only the
+	// query text (see planCacheScope / PlanCache.Get).
 	cacheScope := planCacheScope(g.c.sess.Schema, md.Version(), popts.cacheKeyPart())
 	cacheSQL := canonicalTextOf(q)
-	var ls *planLogScope
-	if logMetrics {
-		// Log the original whitespace-preserved SQL (canonicalTextOf), not
-		// q.GetText() — the latter concatenates tokens without whitespace
-		// ("SELECTid=1FROMorders"), which is useless to an operator. The cache
-		// key (cacheScope + cacheSQL, built above) is also off canonicalTextOf,
-		// so both are injective.
-		ls = g.beginPlanLog(ctx, canonicalTextOf(q))
-	}
-	defer func() { ls.finish(err) }()
 
 	if g.cache != nil {
 		if cachedPlan, cachedSubs, ok := g.cache.Get(cacheScope, cacheSQL); ok {
