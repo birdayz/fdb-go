@@ -132,7 +132,7 @@ var ansiCoreRoster = []AnsiFeature{
 	{ID: "E091-04", Name: "MIN", Core: true, Java: SupportFull},
 	{ID: "E091-05", Name: "SUM", Core: true, Java: SupportFull},
 	{ID: "E091-06", Name: "ALL quantifier", Core: true, Java: SupportFull},
-	{ID: "E091-07", Name: "DISTINCT quantifier", Core: true, Java: SupportNone, Note: "COUNT(DISTINCT) rejected (0A000) in both engines"},
+	{ID: "E091-07", Name: "DISTINCT quantifier", Core: true, Java: SupportNone, Note: "COUNT(DISTINCT) rejected in both engines; Go's code is 0AF00 (count_distinct.yaml:16)"},
 
 	// ── E101 Basic data manipulation ──
 	{
@@ -292,7 +292,7 @@ var ansiCoreRoster = []AnsiFeature{
 	// fidelity, not acceptance — hence Partial.
 	{ID: "F261-01", Name: "Simple CASE", Core: true, Java: SupportPartial, Note: "Java accepts (live-JVM measured); visitCaseExpressionFunctionCall evaluation gap — Go evaluates correctly"},
 	{ID: "F261-02", Name: "Searched CASE", Core: true, Java: SupportFull},
-	{ID: "F261-03", Name: "NULLIF", Core: true, Java: SupportNone, Note: "rejected 42883 — no function-registry entry (both engines)"},
+	{ID: "F261-03", Name: "NULLIF", Core: true, Java: SupportNone, Note: "no function-registry entry (both engines); Go's code is 0AF00 (coalesce_nullif.yaml:28)"},
 	{ID: "F261-04", Name: "COALESCE", Core: true, Java: SupportFull},
 
 	// ── F311 Schema definition statement ── Java: fdb CREATE SCHEMA (TEMPLATE) variant.

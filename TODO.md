@@ -7587,12 +7587,21 @@ no-op — matches api≥630 default, not a real divergence), D4 (`ParseClusterSt
 collapsed like C++ `trim()`), D5 (IPv6 coordinator round-trip not re-normalized in `ClusterFile.String`;
 first-vs-last `@` split on malformed input) are low-impact edges.
 
-### [ ] fdbgo/client: watch-path divergences (D1/D2/D3/D5) — found by the quality-grind watch audit (2026-06-19); D4 fixed
+### [~] fdbgo/client: watch-path divergences — D1/D2/D4 FIXED; D3/D5 remain (audit 2026-06-19)
 
 The watch audit fixed **D4** (WatchPoll now retries the SS poll-signals — watch_cancelled/process_behind/
-timed_out/future_version — instead of breaking the watch). Four remaining, ranked:
+timed_out/future_version — instead of breaking the watch). **D1 and D2 are now fixed too** — verified
+2026-08-05 while writing `docs/mt-saas.md`, which needed the user-facing watch contract and found
+this item, and `road-to-prod.md`'s client-side operational list, still asserting both as open.
+**D3 and D5 remain.** Ranked:
 
-- **D1 [concrete, fixable] — no `too_many_watches` (1032) limit.** C++ `Transaction::watch`
+- **D1 — DONE** (`4db86c31b`, `3bc19dba7`, `af364d324`; re-verified 2026-08-05 at `2e4b9f930`).
+  The counter and the 1032 throw exist: `defaultMaxOutstandingWatches = 10000` /
+  `absoluteMaxWatches = 1_000_000` (`client/database.go:381-386`), `tryAcquireWatch`
+  (`:388-401`) charged on the registration path (`client/readpath.go:1236-1238`) and released at
+  `readpath.go:1259`/`:1288` and `transaction.go:2247`. Pinned by `client/watch_limit_test.go:10-14`,
+  whose header quotes the gap this entry described. Original description retained below.
+  ~~no `too_many_watches` (1032) limit.~~ C++ `Transaction::watch`
   (`NativeAPI.actor.cpp:5694`) calls `increaseWatchCounter()` (`:2175`) which throws `too_many_watches`
   when `outstandingWatches >= DEFAULT_MAX_OUTSTANDING_WATCHES = 1e4` (`ClientKnobs.cpp:120`, settable to
   `ABSOLUTE_MAX_WATCHES=1e6` via `MAX_WATCHES`); `decreaseWatchCounter()` runs when the watch resolves/
@@ -7600,7 +7609,16 @@ timed_out/future_version — instead of breaking the watch). Four remaining, ran
   `MAX_WATCHES` is a no-op. Fix: a `db.outstandingWatches atomic.Int64` + `maxOutstandingWatches`,
   increment at `WatchSetup` (return 1032 if at the limit), decrement on EVERY watch exit (fire/error/
   cancel) — the lifecycle is the tricky part. Test with a low limit via a `MAX_WATCHES` option.
-- **D2 [architectural — RFC] — watch registered at READ version, not commit-gated.** C++ defers the
+- **D2 — DONE for the async facade** (`5a8856e7c`, RFC-170 finding #8; re-verified 2026-08-05 at
+  `2e4b9f930`). `fdb.Transaction.Watch` captures the commit-completion signal synchronously inside
+  the `Transact` body and registers at the COMMITTED version (`fdb/transaction.go:457-459`,
+  `client/transaction.go:2221-2226`, mirroring C++ `setupWatches`' `committedVersion > 0 ?
+  committedVersion : readVersion`). Pinned cross-client by
+  `bench/differential_watch_test.go:266-272` (`TestDifferential_WatchSelfWriteStaysPending`).
+  **Residual, deliberate:** the synchronous low-level `client.Transaction.Watch` still registers at
+  the read version — it blocks in `WatchPoll` until the watch fires, so it structurally cannot wait
+  for a commit (`client/readpath.go:1150-1155`). Original description retained below.
+  ~~watch registered at READ version, not commit-gated.~~ C++ defers the
   SS-side watch to AFTER commit via `setupWatches()` in `commitAndWatch` (`NativeAPI.actor.cpp:6418`,
   `:6909`), at `committedVersion>0 ? committedVersion : readVersion`. Go's `WatchPoll` registers at
   `tx.readVersion` immediately, with ZERO commit coordination (`commitpath.go` has no watch handling).
@@ -13468,10 +13486,16 @@ None is speculative: each was re-verified against the tree before booking.
     array comparison (`SELECT [1] = [1]` → NULL, arrays-operators), array
     subscript under CAST (0AF00, cast-tests), JOIN mixed into
     comma-separated FROM (right-deep-plan-tests), DML RETURNING result set
-    (prepared). NOTE: Go stores a nullable array as a PLAIN repeated field
+    (prepared). ~~NOTE: Go stores a nullable array as a PLAIN repeated field
     (RFC-143 §3a divergence) where Java wraps it in a `values` wrapper
     message — so `[]` and NULL collapse on the Go wire, and the stored bytes
-    for an array column are NOT Java-interoperable until §3a closes.
+    for an array column are NOT Java-interoperable until §3a closes.~~
+    **STALE — §3a CLOSED by `ba5f78958` (RFC-204 P1+P2+P3, #601); struck
+    2026-08-05.** The wrapper is emitted (`core/metadata/builder.go:929-937`),
+    `[]` and NULL are distinct on read-back
+    (`array_literal_insert_fdb_test.go:143-156`, `:200-207`), and the wire
+    bytes are pinned byte-equal (`:217`). See the §3a follow-up above, already
+    marked done.
   - **catalog system tables (2)** — `select … from "TEMPLATES"` / `schemas`
     from a user connection: `0AF00: no schema metadata available`.
   - **width-suffixed integer literals `1I` / `2L` (1)** — the constant folder

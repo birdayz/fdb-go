@@ -8,6 +8,12 @@ policy and `PRODUCTION_READINESS.md` for the current readiness snapshot.
 The one hard line: **the FDB wire format is byte-compatible with Java `fdb-record-layer-core`
 4.12.11.0** in every release. Go, C, and Java apps can share one cluster and read each other's data.
 
+**Running this as a multi-tenant SaaS?** Read [`mt-saas.md`](mt-saas.md) alongside this page. It
+covers only what changes when one database path is one tenant — the tenancy model, the trust
+boundary and `RESTRICT_DDL_TO_SESSION_DATABASE`, per-statement quotas (none of which is on by
+default), per-tenant observability, the TLS certificate requirement, and the tenant-facing SQL
+contract. It links back here rather than repeating the basics below.
+
 ---
 
 ## 1. Connecting to a cluster
@@ -23,7 +29,7 @@ fdbsql:///<database-path>?cluster_file=/etc/foundationdb/fdb.cluster&schema=<nam
 ```
 
 ```go
-import _ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
+import _ "fdb.dev/pkg/relational/sqldriver"
 
 db, err := sql.Open("fdbsql", "fdbsql:///myapp?cluster_file=/etc/foundationdb/fdb.cluster&schema=app")
 ```
