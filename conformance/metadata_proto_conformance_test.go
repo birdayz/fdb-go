@@ -240,7 +240,13 @@ func extractGoSummary(md *recordlayer.RecordMetaData) metaDataSummary {
 			sv := rt.SinceVersion
 			rts.SinceVersion = &sv
 		}
-		if rt.GetRecordTypeKey() != rt.RecordTypeIndex {
+		// Whether the key is EXPLICIT is a property the metadata records, not
+		// something to infer by comparing the resolved key against the union
+		// field number: the resolved key is tuple-normalized (int64, as Java's
+		// TupleTypeUtil.toTupleEquivalentValue makes it) while RecordTypeIndex
+		// is an int, so an any-to-int comparison reports every type as
+		// explicit regardless of what was set.
+		if rt.HasExplicitRecordTypeKey() {
 			rts.ExplicitTypeKey = rt.GetRecordTypeKey()
 		}
 		s.RecordTypes = append(s.RecordTypes, rts)

@@ -13,27 +13,56 @@ import (
 // =============================================================================
 
 // =============================================================================
-// BUG #1: bindRecordTypeKeyExpressions is shallow — misses GroupingKE, NestingKE,
-//         KeyWithValueKE, and deeply nested CompositeKE.
+// BUG #1: a RecordTypeKeyExpression nested inside GroupingKE, NestingKE,
+//         KeyWithValueKE, or a deeply nested CompositeKE evaluated to the
+//         string type NAME instead of the integer record type key.
 //
-// File:line: metadata.go:575-589
-// Severity: incorrect behavior ($100) — index entries get string type name
-//           instead of integer type key, breaking Java compatibility
+// Severity: incorrect behavior — index entries get the string type name
+//           instead of the integer type key, breaking Java compatibility.
 //
-// Description: Build() calls bindRecordTypeKeyExpressions to populate typeKeys
-// maps on RecordTypeKeyExpression instances. But the function only walks 2 levels:
-// (1) direct RecordTypeKeyExpression, (2) CompositeKeyExpression with direct
-// RecordTypeKeyExpression children. It does NOT descend into GroupingKE, NestingKE,
-// KeyWithValueKE, or nested CompositeKE.
+// The original cause was a metadata-build walk that populated a type-key map
+// on each RecordTypeKeyExpression and only descended two levels, so nested
+// expressions stayed unbound and fell back to the message type name.
 //
-// Impact: COUNT/SUM/MIN_EVER/MAX_EVER indexes using GroupAll(Concat(RecordTypeKey(), ...))
-// will have unbound RecordTypeKeyExpressions. These evaluate to the string type name
-// (e.g. "Order") instead of the integer type key (e.g. 1). Index entries written with
-// string keys are incompatible with Java.
-//
-// Fix: Make bindRecordTypeKeyExpressions recursive, walking into all expression types
-// that can contain children (GroupingKE, NestingKE, KeyWithValueKE, etc.).
+// That walk no longer exists: the expression resolves the key from the
+// evaluated record's own type, as Java's does, so depth of nesting cannot
+// affect the result — there is nothing to reach and populate. These tests
+// therefore assert the PROPERTY the walk existed to provide (the integer key
+// reaches the evaluation, at any nesting depth) rather than the mechanism.
+// They keep failing for the original bug and would also fail if a resolution
+// path silently reverted to the type-name fallback.
 // =============================================================================
+
+// recordTypeKeyOfEvaluated evaluates expr against a record of the given type
+// and returns the first tuple's first element — the record type key.
+func recordTypeKeyOfEvaluated(t *testing.T, md *RecordMetaData, expr KeyExpression, msg proto.Message, typeName string) any {
+	t.Helper()
+	rt := md.GetRecordType(typeName)
+	if rt == nil {
+		t.Fatalf("record type %q missing from metadata", typeName)
+	}
+	results, err := expr.Evaluate(&FDBStoredRecord[proto.Message]{RecordType: rt, Record: msg}, msg)
+	if err != nil {
+		t.Fatalf("Evaluate failed: %v", err)
+	}
+	if len(results) == 0 || len(results[0]) == 0 {
+		t.Fatal("Evaluate returned empty results")
+	}
+	return results[0][0]
+}
+
+// assertIntegerRecordTypeKey fails when the evaluated key is the string type
+// name — the exact shape of the original bug — or any non-integer type.
+func assertIntegerRecordTypeKey(t *testing.T, typeKey any, where string) {
+	t.Helper()
+	if s, ok := typeKey.(string); ok {
+		t.Fatalf("BUG: RecordTypeKeyExpression inside %s evaluated to the string type name %q "+
+			"instead of the integer record type key — index entries written this way are unreadable by Java.", where, s)
+	}
+	if _, ok := typeKey.(int64); !ok {
+		t.Fatalf("Expected int64 type key inside %s, got %T (%v)", where, typeKey, typeKey)
+	}
+}
 
 func TestBug1_BindRecordTypeKeyExpressionsShallow_GroupingKE(t *testing.T) {
 	t.Parallel()
@@ -51,34 +80,22 @@ func TestBug1_BindRecordTypeKeyExpressionsShallow_GroupingKE(t *testing.T) {
 	builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
 	builder.AddUniversalIndex(countIdx)
-	_, err := builder.Build()
+	md, err := builder.Build()
 	if err != nil {
 		t.Fatalf("Build() failed: %v", err)
 	}
 
-	// Now check if the RecordTypeKeyExpression was bound.
-	// If bound, the type-key map should be populated.
-	if rtKey.typeKeyMap() == nil {
-		t.Fatal("BUG: RecordTypeKeyExpression inside GroupingKeyExpression was NOT bound by Build(). " +
-			"It will evaluate to string type name instead of integer key, breaking Java compatibility.")
-	}
-
-	// Verify it evaluates to integer, not string
+	// The whole index expression is evaluated, not just the leaf, so the
+	// nesting the original bug could not descend through is on the path.
 	order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
-	results, err := rtKey.Evaluate(nil, order)
-	if err != nil {
-		t.Fatalf("Evaluate failed: %v", err)
-	}
-	if len(results) == 0 || len(results[0]) == 0 {
-		t.Fatal("Evaluate returned empty results")
-	}
-	typeKey := results[0][0]
-	if _, ok := typeKey.(string); ok {
-		t.Fatalf("BUG: RecordTypeKeyExpression evaluated to string %q instead of integer. "+
-			"This means bindRecordTypeKeyExpressions didn't walk into GroupingKeyExpression.", typeKey)
-	}
-	if _, ok := typeKey.(int64); !ok {
-		t.Fatalf("Expected int64 type key, got %T (%v)", typeKey, typeKey)
+	typeKey := recordTypeKeyOfEvaluated(t, md, md.GetIndex("count_by_type_price").RootExpression, order, "Order")
+	assertIntegerRecordTypeKey(t, typeKey, "GroupingKeyExpression")
+
+	// The leaf itself, evaluated directly, must agree with what the index saw.
+	leafKey := recordTypeKeyOfEvaluated(t, md, rtKey, order, "Order")
+	if leafKey != typeKey {
+		t.Fatalf("leaf RecordTypeKeyExpression gave %v (%T) but the index expression gave %v (%T)",
+			leafKey, leafKey, typeKey, typeKey)
 	}
 }
 
@@ -97,25 +114,24 @@ func TestBug1_BindRecordTypeKeyExpressionsShallow_KeyWithValueKE(t *testing.T) {
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 	builder.AddIndex("Order", idx)
-	_, err := builder.Build()
+	md, err := builder.Build()
 	if err != nil {
 		t.Fatalf("Build() failed: %v", err)
 	}
 
-	if rtKey.typeKeyMap() == nil {
-		t.Fatal("BUG: RecordTypeKeyExpression inside KeyWithValueExpression was NOT bound by Build(). " +
-			"bindRecordTypeKeyExpressions doesn't walk into KeyWithValueExpression.")
-	}
+	order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(2)}
+	typeKey := recordTypeKeyOfEvaluated(t, md, md.GetIndex("covering_idx").RootExpression, order, "Order")
+	assertIntegerRecordTypeKey(t, typeKey, "KeyWithValueExpression")
+	_ = rtKey
 }
 
 func TestBug1_BindRecordTypeKeyExpressionsShallow_NestedComposite(t *testing.T) {
 	t.Parallel()
 
-	// RecordTypeKey inside Concat(Concat(RecordTypeKey(), Field("price")), Field("quantity"))
-	// The outer Concat has children: [inner Concat, Field("quantity")]
-	// The inner Concat has children: [RecordTypeKey, Field("price")]
-	// bindRecordTypeKeyExpressions only walks into the outer Concat's direct children,
-	// not the inner Concat.
+	// RecordTypeKey inside Concat(Concat(RecordTypeKey(), Field("price")), Field("quantity")).
+	// The outer Concat has children: [inner Concat, Field("quantity")]; the
+	// inner Concat has children: [RecordTypeKey, Field("price")] — two levels
+	// down, which is what the original binder could not reach.
 	rtKey := RecordTypeKey()
 	innerConcat := Concat(rtKey, Field("price"))
 	outerConcat := Concat(innerConcat, Field("quantity"))
@@ -127,15 +143,15 @@ func TestBug1_BindRecordTypeKeyExpressionsShallow_NestedComposite(t *testing.T) 
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 	builder.AddIndex("Order", idx)
-	_, err := builder.Build()
+	md, err := builder.Build()
 	if err != nil {
 		t.Fatalf("Build() failed: %v", err)
 	}
 
-	if rtKey.typeKeyMap() == nil {
-		t.Fatal("BUG: RecordTypeKeyExpression inside nested CompositeKeyExpression was NOT bound. " +
-			"bindRecordTypeKeyExpressions only walks one level of Concat.")
-	}
+	order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(2)}
+	typeKey := recordTypeKeyOfEvaluated(t, md, md.GetIndex("nested_concat_idx").RootExpression, order, "Order")
+	assertIntegerRecordTypeKey(t, typeKey, "nested CompositeKeyExpression")
+	_ = rtKey
 }
 
 // =============================================================================

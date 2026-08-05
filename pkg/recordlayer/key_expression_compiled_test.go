@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"errors"
 	"testing"
 
 	"fdb.dev/gen"
@@ -171,65 +172,97 @@ func TestCompiledKeyEvaluator_CompositeKeyTwoFields(t *testing.T) {
 	g.Expect(compiledResult.Pack()).To(Equal(standardResult.Pack()))
 }
 
+// storedOfType builds metadata with the given explicit record type keys and
+// returns a stored record of typeName wrapping msg. The record type key comes
+// from the record's own type, so a test that wants a specific key states it
+// on the type rather than on the expression.
+func storedOfType(t *testing.T, msg proto.Message, typeName string, keys map[string]any) *FDBStoredRecord[proto.Message] {
+	t.Helper()
+	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	for name, key := range keys {
+		b.GetRecordType(name).SetRecordTypeKey(key)
+	}
+	md, err := b.Build()
+	if err != nil {
+		t.Fatalf("metadata build failed: %v", err)
+	}
+	rt := md.GetRecordType(typeName)
+	if rt == nil {
+		t.Fatalf("record type %q missing", typeName)
+	}
+	return &FDBStoredRecord[proto.Message]{RecordType: rt, Record: msg}
+}
+
 func TestCompiledKeyEvaluator_RecordTypeKeyWithField(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
-	rtk := newRecordTypeKeyExpression(nil, map[string]int64{"Order": 1, "Customer": 2})
-	expr := Concat(rtk, Field("order_id"))
+	expr := Concat(RecordTypeKey(), Field("order_id"))
 	compiled := compileKeyExpression(expr)
 	g.Expect(compiled).NotTo(BeNil())
 
 	msg := &gen.Order{OrderId: proto.Int64(42)}
-	record := &FDBStoredRecord[proto.Message]{Record: msg}
+	record := storedOfType(t, msg, "Order", map[string]any{"Order": 1, "Customer": 2})
 
 	compiledResult := evalCompiled(t, compiled, record, msg)
 	standardResult := evalStandard(t, expr, record, msg)
 
 	g.Expect(compiledResult).To(HaveLen(2))
-	g.Expect(compiledResult[0]).To(Equal(int64(1))) // "Order" -> 1
+	g.Expect(compiledResult[0]).To(Equal(int64(1))) // Order's record type key
 	g.Expect(compiledResult[1]).To(Equal(int64(42)))
 	g.Expect(compiledResult.Pack()).To(Equal(standardResult.Pack()))
 }
 
-func TestCompiledKeyEvaluator_RecordTypeKeyNoMapping(t *testing.T) {
+// A record whose type was never resolved cannot yield a record type key. The
+// compiled and standard paths must refuse it the SAME way — a compiled path
+// that packed a guess (the message type name, as it once did) would write key
+// bytes the standard path never produces.
+func TestCompiledKeyEvaluator_RecordTypeKeyUnresolvedType(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
-	// No typeKeys mapping - should fall back to type name string.
 	rtk := &RecordTypeKeyExpression{}
 	compiled := compileKeyExpression(rtk)
 	g.Expect(compiled).NotTo(BeNil())
 
 	msg := &gen.Order{OrderId: proto.Int64(1)}
-	record := &FDBStoredRecord[proto.Message]{Record: msg}
+	record := &FDBStoredRecord[proto.Message]{Record: msg} // no RecordType
 
-	compiledResult := evalCompiled(t, compiled, record, msg)
-	standardResult := evalStandard(t, rtk, record, msg)
+	var appender tupleAppender
+	compiledErr := compiled.evaluate(&appender, record, msg)
+	_, standardErr := rtk.Evaluate(record, msg)
 
-	g.Expect(compiledResult).To(HaveLen(1))
-	g.Expect(compiledResult[0]).To(Equal("Order"))
-	g.Expect(compiledResult.Pack()).To(Equal(standardResult.Pack()))
+	var wantCompiled, wantStandard *RecordTypeKeyUnresolvedError
+	g.Expect(errors.As(compiledErr, &wantCompiled)).To(BeTrue(),
+		"compiled path accepted a record with no resolved type: %v", compiledErr)
+	g.Expect(errors.As(standardErr, &wantStandard)).To(BeTrue(),
+		"standard path accepted a record with no resolved type: %v", standardErr)
 }
 
-func TestCompiledKeyEvaluator_RecordTypeKeyUnknownType(t *testing.T) {
+// The key follows the RECORD's type, not anything captured on the expression:
+// one expression, two record types, two different keys.
+func TestCompiledKeyEvaluator_RecordTypeKeyFollowsTheRecord(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
-	// typeKeys has entries but not for Customer - should fall back to type name string.
-	rtk := newRecordTypeKeyExpression(nil, map[string]int64{"Order": 1})
+	rtk := &RecordTypeKeyExpression{}
 	compiled := compileKeyExpression(rtk)
 	g.Expect(compiled).NotTo(BeNil())
 
-	msg := &gen.Customer{CustomerId: proto.Int64(1)}
-	record := &FDBStoredRecord[proto.Message]{Record: msg}
+	keys := map[string]any{"Order": 1, "Customer": 2}
 
-	compiledResult := evalCompiled(t, compiled, record, msg)
-	standardResult := evalStandard(t, rtk, record, msg)
+	orderMsg := &gen.Order{OrderId: proto.Int64(1)}
+	orderRec := storedOfType(t, orderMsg, "Order", keys)
+	g.Expect(evalCompiled(t, compiled, orderRec, orderMsg)[0]).To(Equal(int64(1)))
 
-	g.Expect(compiledResult).To(HaveLen(1))
-	g.Expect(compiledResult[0]).To(Equal("Customer"))
-	g.Expect(compiledResult.Pack()).To(Equal(standardResult.Pack()))
+	customerMsg := &gen.Customer{CustomerId: proto.Int64(1)}
+	customerRec := storedOfType(t, customerMsg, "Customer", keys)
+	customerResult := evalCompiled(t, compiled, customerRec, customerMsg)
+	g.Expect(customerResult[0]).To(Equal(int64(2)))
+	g.Expect(customerResult.Pack()).To(Equal(evalStandard(t, rtk, customerRec, customerMsg).Pack()))
 }
 
 func TestCompiledKeyEvaluator_UnsetOptionalField(t *testing.T) {
@@ -284,7 +317,7 @@ func TestCompiledKeyEvaluator_NilMessageRecordTypeKey(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
-	rtk := newRecordTypeKeyExpression(nil, map[string]int64{"Order": 1})
+	rtk := RecordTypeKey()
 	compiled := compileKeyExpression(rtk)
 	g.Expect(compiled).NotTo(BeNil())
 
@@ -605,13 +638,12 @@ func TestCompiledKeyEvaluator_ThreeFieldComposite(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
-	rtk := newRecordTypeKeyExpression(nil, map[string]int64{"Order": 7})
-	expr := Concat(rtk, Field("order_id"), Field("price"))
+	expr := Concat(RecordTypeKey(), Field("order_id"), Field("price"))
 	compiled := compileKeyExpression(expr)
 	g.Expect(compiled).NotTo(BeNil())
 
 	msg := &gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(250)}
-	record := &FDBStoredRecord[proto.Message]{Record: msg}
+	record := storedOfType(t, msg, "Order", map[string]any{"Order": 7})
 
 	compiledResult := evalCompiled(t, compiled, record, msg)
 	standardResult := evalStandard(t, expr, record, msg)

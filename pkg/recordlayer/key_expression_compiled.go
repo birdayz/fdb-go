@@ -57,23 +57,27 @@ func (a *tupleAppender) packWithPrefix(prefix []byte) []byte {
 
 // --- Compiled step implementations ---
 
-type recordTypeKeyStep struct {
-	typeKeys map[string]int64
-}
+// recordTypeKeyStep carries no compiled-in type key: the key belongs to the
+// record being packed, not to the expression, so it is read from the record's
+// resolved type on every pack — the same source RecordTypeKeyExpression uses.
+// A step that captured a map at compile time would go stale against any other
+// metadata built from the same expression graph.
+type recordTypeKeyStep struct{}
 
 func (s *recordTypeKeyStep) packInto(a *tupleAppender, record *FDBStoredRecord[proto.Message], msg proto.Message) error {
 	if msg == nil {
 		a.appendAny(nil)
 		return nil
 	}
-	typeName := string(msg.ProtoReflect().Descriptor().Name())
-	if s.typeKeys != nil {
-		if k, ok := s.typeKeys[typeName]; ok {
-			a.appendInt64(k)
-			return nil
-		}
+	typeKey, ok, err := recordTypeKeyOf(record, msg)
+	if err != nil {
+		return err
 	}
-	a.appendString(typeName)
+	if !ok {
+		a.appendAny(nil)
+		return nil
+	}
+	a.appendAny(typeKey)
 	return nil
 }
 
@@ -179,7 +183,7 @@ func compileStep(expr KeyExpression) compiledStep {
 		if e.nested != nil {
 			return nil
 		}
-		return &recordTypeKeyStep{typeKeys: e.typeKeyMap()}
+		return &recordTypeKeyStep{}
 	case *EmptyKeyExpression:
 		return &emptyKeyStep{}
 	case *GroupingKeyExpression:

@@ -111,7 +111,8 @@ var _ = Describe("RecordMetaDataBuilder advanced features", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			orderType := md.GetRecordType("Order")
-			Expect(orderType.GetRecordTypeKey()).To(Equal(orderType.RecordTypeIndex))
+			Expect(orderType.GetRecordTypeKey()).To(Equal(int64(orderType.RecordTypeIndex)),
+				"the derived key must be tuple-normalized to int64, as Java normalizes it via TupleTypeUtil.toTupleEquivalentValue")
 		})
 
 		It("overrides with explicit key", func() {
@@ -124,7 +125,7 @@ var _ = Describe("RecordMetaDataBuilder advanced features", func() {
 
 			Expect(md.GetRecordType("Order").GetRecordTypeKey()).To(Equal("custom_order_key"))
 			// Customer still uses default
-			Expect(md.GetRecordType("Customer").GetRecordTypeKey()).To(Equal(md.GetRecordType("Customer").RecordTypeIndex))
+			Expect(md.GetRecordType("Customer").GetRecordTypeKey()).To(Equal(int64(md.GetRecordType("Customer").RecordTypeIndex)))
 		})
 
 		It("supports integer keys", func() {

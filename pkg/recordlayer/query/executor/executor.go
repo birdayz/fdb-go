@@ -3841,7 +3841,11 @@ func executeInsert(
 			// record size alone — still a conservative ceiling for the dominant payload).
 			pkBytes := int64(0)
 			if rt := store.GetMetaData().GetRecordType(p.GetTargetRecordType()); rt != nil && rt.PrimaryKey != nil {
-				if kt, kerr := rt.PrimaryKey.Evaluate(nil, msg); kerr == nil && len(kt) > 0 {
+				// The record type is supplied because a record-type-prefixed
+				// primary key resolves its leading component from it; without
+				// it the estimate would miss that component entirely.
+				stored := &recordlayer.FDBStoredRecord[proto.Message]{RecordType: rt, Record: msg}
+				if kt, kerr := rt.PrimaryKey.Evaluate(stored, msg); kerr == nil && len(kt) > 0 {
 					pk := make(tuple.Tuple, len(kt[0]))
 					for i, e := range kt[0] {
 						pk[i] = e

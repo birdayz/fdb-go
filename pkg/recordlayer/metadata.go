@@ -797,60 +797,12 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		}
 	}
 
-	// Build type keys map (message name → record type key as int64) and bind
-	// all RecordTypeKeyExpression instances so they evaluate to the correct
-	// integer type key instead of the string name. Matches Java's
-	// RecordTypeKeyExpression.evaluateMessage() → record.getRecordType().getRecordTypeKey().
-	typeKeys := make(map[string]int64, len(types))
-	for _, rt := range types {
-		key := rt.GetRecordTypeKey()
-		switch k := key.(type) {
-		case int:
-			typeKeys[rt.Name] = int64(k)
-		case int32:
-			typeKeys[rt.Name] = int64(k)
-		case int64:
-			typeKeys[rt.Name] = k
-		}
-	}
-	var bindRecordTypeKeyExpressions func(KeyExpression)
-	bindRecordTypeKeyExpressions = func(expr KeyExpression) {
-		if expr == nil {
-			return
-		}
-		switch e := expr.(type) {
-		case *RecordTypeKeyExpression:
-			e.bindTypeKeys(typeKeys)
-			bindRecordTypeKeyExpressions(e.nested)
-		case *CompositeKeyExpression:
-			for _, child := range e.expressions {
-				bindRecordTypeKeyExpressions(child)
-			}
-		case *GroupingKeyExpression:
-			bindRecordTypeKeyExpressions(e.wholeKey)
-		case *KeyWithValueExpression:
-			bindRecordTypeKeyExpressions(e.innerKey)
-		case *NestingKeyExpression:
-			bindRecordTypeKeyExpressions(e.child)
-		case *SplitKeyExpression:
-			bindRecordTypeKeyExpressions(e.joined)
-		case *ListKeyExpression:
-			for _, child := range e.children {
-				bindRecordTypeKeyExpressions(child)
-			}
-		case *FunctionKeyExpression:
-			bindRecordTypeKeyExpressions(e.arguments)
-		}
-	}
-	for _, rt := range types {
-		bindRecordTypeKeyExpressions(rt.PrimaryKey)
-	}
-	if b.recordCountKey != nil {
-		bindRecordTypeKeyExpressions(b.recordCountKey)
-	}
-	for _, idx := range indexes {
-		bindRecordTypeKeyExpressions(idx.RootExpression)
-	}
+	// No record-type-key binding happens here, deliberately. A key expression
+	// graph can be shared by more than one metadata build, so anything this
+	// builder wrote onto a RecordTypeKeyExpression would be visible to the
+	// OTHER metadata built from the same graph — last build wins, for both.
+	// RecordTypeKeyExpression resolves the key from the record's own type at
+	// evaluation time, exactly as Java's does, which needs no binding at all.
 
 	// Compute primaryKeyComponentPositions for each index.
 	// For each record type that has this index, compute the overlap between
@@ -1037,11 +989,39 @@ func (rt *RecordType) HasExplicitRecordTypeKey() bool {
 
 // GetRecordTypeKey returns the explicit record type key if set, or falls back
 // to the record type index. Matches Java's RecordType.getRecordTypeKey().
+//
+// The value is normalized to its tuple-equivalent form, as Java does at both
+// the explicit-key (RecordType.java: this.recordTypeKey = this.explicitRecordTypeKey =
+// TupleTypeUtil.toTupleEquivalentValue(recordTypeKey)) and derived-key sites.
+// Without it the same key would surface as int here and int64 there purely
+// depending on how it was set, and this value is written into index entries
+// and primary keys.
 func (rt *RecordType) GetRecordTypeKey() any {
 	if rt.explicitRecordTypeKey != nil {
-		return rt.explicitRecordTypeKey
+		return tupleEquivalentRecordTypeKey(rt.explicitRecordTypeKey)
 	}
-	return rt.RecordTypeIndex
+	return tupleEquivalentRecordTypeKey(rt.RecordTypeIndex)
+}
+
+// tupleEquivalentRecordTypeKey ports the arm of Java's
+// TupleTypeUtil.toTupleEquivalentValue that a record type key can reach:
+// every narrower integer widens to int64, and everything else — string, raw
+// bytes — is already what the tuple layer encodes and passes through
+// untouched. Bytes must NOT be folded into a string: the tuple encoding gives
+// them different type codes, so folding would change the key's bytes.
+func tupleEquivalentRecordTypeKey(key any) any {
+	switch k := key.(type) {
+	case int:
+		return int64(k)
+	case int8:
+		return int64(k)
+	case int16:
+		return int64(k)
+	case int32:
+		return int64(k)
+	default:
+		return k
+	}
 }
 
 // PrimaryKeyHasRecordTypePrefix returns true if this record type's primary key

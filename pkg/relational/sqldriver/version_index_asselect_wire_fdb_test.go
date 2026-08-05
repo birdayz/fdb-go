@@ -109,7 +109,7 @@ func TestFDB_AsSelectVersionIndex_WireEntries(t *testing.T) {
 		// The committed record versions, from the record store itself.
 		versionStamp := func(id int64) tuple.Versionstamp {
 			rt := md.GetRecordType("T")
-			pkVals, evalErr := rt.PrimaryKey.Evaluate(&recordlayer.FDBStoredRecord[proto.Message]{Record: rec(id, "", 0, 0)}, rec(id, "", 0, 0))
+			pkVals, evalErr := rt.PrimaryKey.Evaluate(&recordlayer.FDBStoredRecord[proto.Message]{RecordType: rt, Record: rec(id, "", 0, 0)}, rec(id, "", 0, 0))
 			if evalErr != nil {
 				t.Fatalf("pk eval: %v", evalErr)
 			}
@@ -131,7 +131,7 @@ func TestFDB_AsSelectVersionIndex_WireEntries(t *testing.T) {
 		}
 		pkTuple := func(id int64) tuple.Tuple {
 			rt := md.GetRecordType("T")
-			pkVals, evalErr := rt.PrimaryKey.Evaluate(&recordlayer.FDBStoredRecord[proto.Message]{Record: rec(id, "", 0, 0)}, rec(id, "", 0, 0))
+			pkVals, evalErr := rt.PrimaryKey.Evaluate(&recordlayer.FDBStoredRecord[proto.Message]{RecordType: rt, Record: rec(id, "", 0, 0)}, rec(id, "", 0, 0))
 			if evalErr != nil {
 				t.Fatalf("pk eval: %v", evalErr)
 			}

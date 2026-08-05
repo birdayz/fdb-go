@@ -415,7 +415,7 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 
 	// Decrement record count
 	if store.metaData.GetRecordCountKey() != nil && oldMsg != nil {
-		if err := store.addRecordCount(oldMsg, littleEndianInt64MinusOne); err != nil {
+		if err := store.addRecordCount(oldRecordType, oldMsg, littleEndianInt64MinusOne); err != nil {
 			return false, fmt.Errorf("failed to decrement record count: %w", err)
 		}
 	}
@@ -510,7 +510,15 @@ func (store *FDBRecordStore) saveRecordInternal(
 	}
 
 	// Extract primary key values using the flat evaluator (avoids [][]any alloc).
-	keyValues, err := evaluateKeyFlat(recordType.PrimaryKey, nil, record)
+	// The record type is supplied to the evaluation because a record-type-prefixed
+	// primary key reads its leading component off the record's own type. Java has
+	// the same ordering constraint and solves it the same way: saveTypedRecord
+	// builds FDBStoredRecord.newBuilder(rec).setRecordType(recordType) FIRST, then
+	// evaluates the primary key against that builder (FDBRecordStore.java).
+	keyValues, err := evaluateKeyFlat(recordType.PrimaryKey, &FDBStoredRecord[proto.Message]{
+		RecordType: recordType,
+		Record:     record,
+	}, record)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract primary key: %w", err)
 	}
@@ -654,7 +662,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 
 	// Only increment record count for new inserts (not updates).
 	if !oldRecordExists {
-		if err := store.addRecordCount(record, littleEndianInt64One); err != nil {
+		if err := store.addRecordCount(recordType, record, littleEndianInt64One); err != nil {
 			return nil, fmt.Errorf("failed to increment record count: %w", err)
 		}
 	}
