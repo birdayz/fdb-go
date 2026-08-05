@@ -9,6 +9,7 @@ go_library(
         "cost.go",
         "cost_formulas.go",
         "derivations_property.go",
+        "distinctness_claim.go",
         "expression_count_property.go",
         "field_with_comparison_count_property.go",
         "ordering.go",

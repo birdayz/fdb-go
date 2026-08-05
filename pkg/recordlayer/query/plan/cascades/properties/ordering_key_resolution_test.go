@@ -35,8 +35,7 @@ func orderingOverOneKey(key values.Value) *RichOrdering {
 			key: {SortedBinding(ProvidedSortOrderAscending)},
 		},
 		[]values.Value{key},
-		true,
-	)
+		DistinctOverAllKeys())
 }
 
 // TestOrderingKeyForRefusesTwoStatedOrdinals is the conflation net.

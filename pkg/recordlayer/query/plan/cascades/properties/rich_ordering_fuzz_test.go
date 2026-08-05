@@ -34,7 +34,7 @@ func FuzzRichOrdering_Satisfies(f *testing.F) {
 			}
 		}
 
-		o := NewRichOrdering(bm, keys, false)
+		o := NewRichOrdering(bm, keys, NotDistinct())
 
 		parts := make([]RequestedOrderingPart, numReqParts)
 		for i := range parts {
@@ -79,7 +79,7 @@ func FuzzMergeOrderings_NoPanic(f *testing.F) {
 				bmA[keysA[i]] = []OrderingBinding{FixedBinding("eq")}
 			}
 		}
-		oA := NewRichOrdering(bmA, keysA, false)
+		oA := NewRichOrdering(bmA, keysA, NotDistinct())
 
 		keysB := make([]values.Value, numB)
 		bmB := make(map[values.Value][]OrderingBinding, numB)
@@ -92,7 +92,7 @@ func FuzzMergeOrderings_NoPanic(f *testing.F) {
 				bmB[keysB[i]] = []OrderingBinding{FixedBinding("eq")}
 			}
 		}
-		oB := NewRichOrdering(bmB, keysB, false)
+		oB := NewRichOrdering(bmB, keysB, NotDistinct())
 
 		result := MergeOrderings(oA, oB)
 		if result == nil {

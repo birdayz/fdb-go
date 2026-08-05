@@ -128,7 +128,7 @@ func (r *ImplementDistinctUnionRule) OnMatch(call *ImplementationRuleCall) {
 					for _, k := range o.Keys {
 						bm[k] = []properties.OrderingBinding{properties.SortedBinding(properties.ProvidedSortOrderAscending)}
 					}
-					ro = properties.NewRichOrdering(bm, o.Keys, false)
+					ro = properties.NewRichOrdering(bm, o.Keys, properties.NotDistinct())
 				}
 				orderings[i] = ro
 			}
@@ -616,7 +616,8 @@ func removeCommonEqualityBoundParts(orderings []*properties.RichOrdering) []*pro
 				filteredBindings[key] = bs
 			}
 		}
-		result[i] = properties.NewRichOrdering(filteredBindings, filteredKeys, o.IsDistinct())
+		result[i] = properties.NewRichOrdering(filteredBindings, filteredKeys,
+			o.DistinctnessClaim())
 	}
 	return result
 }

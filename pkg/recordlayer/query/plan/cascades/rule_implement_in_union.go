@@ -435,7 +435,8 @@ func adjustBindingsForInUnion(
 		}
 	}
 
-	return properties.NewRichOrdering(adjustedBM, ordering.GetKeys(), ordering.IsDistinct())
+	return properties.NewRichOrdering(adjustedBM, ordering.GetKeys(),
+		ordering.DistinctnessClaim())
 }
 
 var _ ImplementationRule = (*ImplementInUnionRule)(nil)

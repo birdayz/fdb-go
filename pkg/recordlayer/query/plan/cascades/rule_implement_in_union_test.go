@@ -148,8 +148,7 @@ func TestAdjustBindingsForInUnion_PromotesExplodeAlias(t *testing.T) {
 			a: {properties.FixedBinding(eqRange)},
 		},
 		[]values.Value{a},
-		false,
-	)
+		properties.NotDistinct())
 
 	req := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
 		{Value: a, SortOrder: properties.RequestedSortOrderAscending},
@@ -182,8 +181,7 @@ func TestAdjustBindingsForInUnion_KeepsNonExplodeFixed(t *testing.T) {
 			a: {properties.FixedBinding(nil)},
 		},
 		[]values.Value{a},
-		false,
-	)
+		properties.NotDistinct())
 
 	req := properties.NewRequestedOrdering(nil, properties.DistinctnessNotDistinct, false)
 	adjusted := adjustBindingsForInUnion(ordering, explodeAliases, req)

@@ -1126,7 +1126,7 @@ func (p *RecordQueryScanPlan) HintRichOrdering() *properties.RichOrdering {
 	if len(keys) == 0 {
 		return properties.EmptyOrdering()
 	}
-	return properties.NewRichOrdering(bm, keys, false)
+	return properties.NewRichOrdering(bm, keys, properties.NotDistinct())
 }
 
 // HintRichOrdering returns the index scan's full ordering with bindings:
@@ -1219,7 +1219,8 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	// metadata's UNIQUE bit. A unique index is only a distinct ordering once
 	// the chosen ordering keys cover that uniqueness proof; RemoveSort marks
 	// that exact plan strictly sorted after checking the coverage.
-	return properties.NewRichOrdering(bm, keys, p.IsStrictlySorted())
+	return properties.NewRichOrdering(bm, keys,
+		properties.DistinctOverAllKeysIf(p.IsStrictlySorted()))
 }
 
 // HintRichOrdering: an HNSW probe returns its neighbours in distance order,

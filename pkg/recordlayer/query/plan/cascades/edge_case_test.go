@@ -344,8 +344,7 @@ func TestEdge_RichOrdering_MultiKeyOrdering(t *testing.T) {
 			c: {properties.SortedBinding(properties.ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a, b, c},
-		false,
-	)
+		properties.NotDistinct())
 
 	// Request only first 2 keys — should be satisfied because the
 	// provided ordering is a superset (covers the prefix).

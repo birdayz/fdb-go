@@ -524,7 +524,7 @@ func TestPartitionRedundancy_UnmatchedMetadata(t *testing.T) {
 				properties.FixedBinding(nil),
 			}
 		}
-		return properties.NewRichOrdering(bindings, fixed, false)
+		return properties.NewRichOrdering(bindings, fixed, properties.NotDistinct())
 	}
 
 	x := values.UniqueCorrelationIdentifier()
