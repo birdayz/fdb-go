@@ -203,7 +203,26 @@ func (s *ExecutionScratch) retire(token int64) {
 		return
 	}
 	s.releaseEntry(st)
+	s.releaseLayer(st.base)
 	delete(s.distinct, token)
+}
+
+// releaseLayer drops one reference to a committed layer and, when the last one
+// goes, returns the layer's fold charge to the statement. A layer with live
+// referencers KEEPS its charge — that is what lets a high-cardinality DISTINCT
+// still fail loudly while it is being built.
+func (s *ExecutionScratch) releaseLayer(l *seenLayer) {
+	if l == nil {
+		return
+	}
+	l.refs--
+	if l.refs > 0 {
+		return
+	}
+	if l.charged > 0 {
+		s.state.ReleaseMemory(l.charged)
+		l.charged = 0
+	}
 }
 
 // releaseEntry returns a retired entry's bytes to the statement budget.
@@ -251,6 +270,20 @@ func (s *ExecutionScratch) LiveDistinctSets() int {
 // key is folded once, never re-copied per page.
 type seenLayer struct {
 	m map[string]struct{}
+	// charged is the fold charge this layer OWNS. The layer is what actually
+	// holds the committed keys, so it is what must pay for them — and it lives
+	// exactly as long as some parked state still references it, which refs
+	// counts. A fold charge released any earlier would let a live layer look
+	// free; released any later (or never) and every completed inner of a
+	// correlated statement leaves its weight behind, so a valid query trips the
+	// budget on accounting for sets it no longer holds. Measured before refs
+	// existed, on FlatMap(outer, Distinct(inner)) drained to completion with
+	// live state at 0: 20 bytes at 4 outer rows, 38 at 8, 80 at 16, 158 at 32.
+	charged int64
+	// refs is the number of parked states pointing at this layer. Several do:
+	// the COW fold extends one layer in place across a whole paging chain, so
+	// each page's state shares its predecessor's.
+	refs int
 }
 
 func newSeenLayer() *seenLayer {
@@ -309,6 +342,9 @@ func (s *ExecutionScratch) parkDistinct(st *distinctResumeState, state *recordla
 	s.nextToken++
 	token := s.nextToken
 	s.distinct[token] = st
+	if st.base != nil {
+		st.base.refs++
+	}
 	return token
 }
 
@@ -395,6 +431,7 @@ func (s *ExecutionScratch) adoptDistinct(
 			st.base.m[key] = struct{}{}
 			folded += int64(len(key))
 		}
+		st.base.charged += folded
 		if err := state.ChargeMemory(folded); err != nil {
 			return nil, err
 		}
