@@ -372,12 +372,20 @@ func memoryTagMB(tags []string) (int, bool) {
 	return 0, false
 }
 
-// buildRule is the slice of a BUILD rule this gate needs.
+// buildRule is the slice of a BUILD rule the gates in this package need.
 type buildRule struct {
 	kind  string
 	label string
+	pkg   string
 	deps  []string
 	tags  []string
+	// srcs are the literal srcs entries, package-relative as written.
+	// TestEveryTestFileIsInABuildTarget reads these to answer "is this file on
+	// disk actually compiled by anything?"; srcsCalls records any function
+	// (glob, …) used to build the list, since a computed srcs means the literal
+	// entries are not the whole set.
+	srcs      []string
+	srcsCalls []string
 }
 
 // containerBackedTests returns the go_test targets that transitively depend on
@@ -502,7 +510,9 @@ func parseBuildFile(t *testing.T, path, pkg, content string) []buildRule {
 		if !ok {
 			continue
 		}
-		rule := buildRule{kind: kind, label: pkg + ":" + name}
+		rule := buildRule{kind: kind, label: pkg + ":" + name, pkg: pkg}
+		rule.srcs = listAttr(body, "srcs")
+		rule.srcsCalls = attrCalls(body, "srcs")
 		// rules_go routes a go_test's library through `embed`, not `deps`, so a
 		// walk that reads only `deps` misses the edge that matters most here.
 		for _, attr := range []string{"deps", "embed"} {
