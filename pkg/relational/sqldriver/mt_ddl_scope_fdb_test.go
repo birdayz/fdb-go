@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/sqldriver"
 )
 
 // mtDDLAssert42501 requires err to be the cross-database DDL rejection: SQLSTATE
@@ -219,6 +220,66 @@ func TestFDB_RestrictDDLToSessionDatabase(t *testing.T) {
 		mwjoMustExec(t, db, ctx, "DROP SCHEMA "+target+"/cross")
 		mwjoMustExec(t, db, ctx, "DROP DATABASE "+target)
 	})
+}
+
+// TestFDB_RestrictDDLSurvivesDSNMutation is the end-to-end half of the DSN
+// freeze: the unit tests pin that the snapshot is not shared, this one pins
+// that a REAL connection built after a mutation still enforces the
+// OpenConnector-time restriction.
+//
+// The attack it forecloses: obtain the Connector's *DSN, set
+// restrict_ddl_to_session_database=false, then open the pool. If any read were
+// live, the connection would come up unrestricted and cross-tenant DROP
+// DATABASE would go through.
+func TestFDB_RestrictDDLSurvivesDSNMutation(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	const (
+		home    = "/mt_freeze_home"
+		foreign = "/mt_freeze_foreign"
+	)
+
+	setup := openTestDB(t, home)
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+home)
+	t.Cleanup(func() { _, _ = setup.ExecContext(ctx, "DROP DATABASE "+home) })
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+foreign)
+	t.Cleanup(func() { _, _ = setup.ExecContext(ctx, "DROP DATABASE "+foreign) })
+
+	dsnStr := fmt.Sprintf("fdbsql://%s?cluster_file=%s&restrict_ddl_to_session_database=true",
+		home, clusterFilePath)
+	var d sqldriver.Driver
+	connector, err := d.OpenConnector(dsnStr)
+	if err != nil {
+		t.Fatalf("OpenConnector: %v", err)
+	}
+
+	// Mutate everything reachable through the accessor, between OpenConnector
+	// and the first Connect.
+	handed := connector.(*sqldriver.Connector).DSN()
+	handed.Path = foreign
+	handed.Options[sqldriver.RestrictDDLToSessionDatabaseParam] = "false"
+	handed.Options["cluster_file"] = "/tmp/does-not-exist.cluster"
+
+	db := sql.OpenDB(connector)
+	t.Cleanup(func() { db.Close() })
+
+	// The restriction is still ON, and still scoped to the ORIGINAL database.
+	_, err = db.ExecContext(ctx, "DROP DATABASE "+foreign)
+	mtDDLAssert42501(t, "DROP DATABASE after DSN mutation", err, home, foreign)
+
+	// The foreign database survives, and the connection really did open against
+	// the original cluster file and database (a leaked cluster_file would have
+	// failed the connection outright).
+	fdb := mtDDLOpen(t, foreign, false)
+	if _, e := fdb.ExecContext(ctx, "CREATE SCHEMA TEMPLATE mt_freeze_tmpl "+
+		"CREATE TABLE t (id BIGINT, PRIMARY KEY (id))"); e != nil {
+		t.Fatalf("foreign database did not survive: %v", e)
+	}
+	t.Cleanup(func() { _, _ = fdb.ExecContext(ctx, "DROP SCHEMA TEMPLATE mt_freeze_tmpl") })
 }
 
 // TestFDB_CreateDatabaseRefusesSystemCatalogSpace pins the unconditional guard.

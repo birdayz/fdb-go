@@ -49,6 +49,29 @@ type DSN struct {
 	Options map[string]string
 }
 
+// Clone returns a deep copy of d, including its Options map. Callers may
+// mutate the result without affecting the original.
+//
+// This is what makes a Connector's DSN a snapshot rather than a shared handle.
+// Every field a Connector reads after construction — Path, Schema, Mode, Host
+// and the Options map that carries cluster_file — must come from the same
+// frozen value as the connection options decoded at OpenConnector time.
+// Anything else is a split brain: the security option validated and frozen up
+// front while the fields around it stay live and mutable, so a mutation between
+// OpenConnector and the first Connect would be honoured by some reads and
+// ignored by others.
+func (d *DSN) Clone() *DSN {
+	if d == nil {
+		return nil
+	}
+	out := *d
+	out.Options = make(map[string]string, len(d.Options))
+	for k, v := range d.Options {
+		out.Options[k] = v
+	}
+	return &out
+}
+
 // RestrictDDLToSessionDatabaseParam is the DSN query parameter that sets
 // api.OptRestrictDDLToSessionDatabase on every connection the DSN opens. It is
 // spelled as the lower-cased option name so the DSN parameter and the option

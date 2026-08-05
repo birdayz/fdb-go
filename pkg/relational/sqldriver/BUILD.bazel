@@ -120,6 +120,7 @@ go_test(
         "compound_index_oracle_test.go",
         "computed_correlated_scalar_subquery_fdb_test.go",
         "conditional_aggregation_probe_test.go",
+        "connector_dsn_freeze_test.go",
         "constant_predicate_probe_test.go",
         "constraint_validation_probe_test.go",
         "correlated_exists_crossjoin_test.go",
