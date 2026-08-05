@@ -963,10 +963,17 @@ func TestFDB_CardinalityStaleNullKeyRebuildSurfacesUniquenessViolation(t *testin
 		t.Fatalf("uniqueness violation is on key %v, want the single column [0] — that is the key the two "+
 			"empty NOT NULL arrays now share, and the whole point of the migration", uv.IndexKey)
 	}
-	// The error must NAME a colliding record, not just the key. Java's javadoc is
-	// explicit that with multiple duplicates "the exception will only refer to an
-	// arbitrary one", so the assertion is that it names ONE OF the two — that both
-	// are recorded is pinned in the opt-in test, where the violations survive.
+	// The error must NAME a colliding record, not just the key. WHICH one it names
+	// comes from checkAndUpdateBuiltIndexState's limit-1 scan,
+	// scanUniquenessViolations(index, 1).first() (FDBRecordStore.java:3832): the
+	// winner is simply the first entry in violations-subspace order, so it is
+	// deterministic and both engines name the same record.
+	//
+	// The assertion is still ONE OF the two on purpose. Pinning the exact primary
+	// key here would harden violations-subspace key ordering into a contract this
+	// test does not exist to defend, and the property that actually matters —
+	// that BOTH records are recorded and reachable — is pinned where the
+	// violations survive, in the opt-in test below.
 	// A relational primary key carries the record-type key ahead of the declared
 	// columns, so ID is the LAST element.
 	if len(uv.PrimaryKey) == 0 {

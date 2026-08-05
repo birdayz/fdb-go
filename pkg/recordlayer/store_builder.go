@@ -176,8 +176,11 @@ func (store *FDBRecordStore) effectiveFormatVersion() int32 {
 }
 
 // maybeUpgradeFormatVersion upgrades the persisted format version in the store header
-// to the current version, performing the same on-disk layout migrations Java performs
-// in checkRebuild() before reading any data. Returns true if the header was modified.
+// to this store's TARGET version — effectiveFormatVersion(), i.e. whatever the builder
+// pinned, and only otherwise the newest this binary knows — performing the same on-disk
+// layout migrations Java performs in checkRebuild() before reading any data. A header
+// already at or past the target is left alone; this never downgrades. Returns true if
+// the header was modified.
 //
 // The order matters and mirrors Java exactly: the format version is bumped FIRST so that
 // useOldVersionFormat()/omitUnsplitRecordSuffix() reflect the new version, then:

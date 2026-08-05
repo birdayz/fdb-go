@@ -11,6 +11,43 @@ live 4.12 in `just test` with a stale-annotation guard, and the suite is green).
 
 ## Intentional Architectural Decisions (no functional difference)
 
+### Default format version for a NEW store: Go writes 14, Java writes 7 (OPEN, mechanically unblocked)
+
+Java's default is **`CACHEABLE_STATE` (7)** — `FormatVersion.getDefaultFormatVersion()`
+(`FormatVersion.java:215-217`), which `FDBRecordStore.Builder` seeds itself with
+(`FDBRecordStore.java:5437`). Go's default is `formatVersionCurrent = 14`, which is
+`FULL_STORE_LOCK(14)` (`FormatVersion.java:173`) — the same value as Java's
+`MAX_SUPPORTED_VERSION` (`:182`, `getMaximumSupportedVersion()` at `:203`). So a new store
+created by Go declares a **newer on-disk format than a new store created by Java**, and Go
+also upgrades any store it opens to that version.
+
+This is deliberate for the moment, not an oversight, and it is **not** a wire-compat
+break in the read/write sense: format versions 8–14 gate store-header features
+(user fields, `READABLE_UNIQUE_PENDING`, record-count state, store locks, incarnation),
+not record or index key encoding. The risk it carries is narrower and specific: a Java
+instance pinned at its default 7 opening a Go-created store sees a format it did not
+expect, and `validateFormatVersion` (`FormatVersion.java:225`) is the gate that decides
+what happens. Java notes it has **no policy for advancing this default**
+(`FormatVersion.java:210-213`, issue #709), which is exactly why aligning it is a
+judgement call rather than a typo fix.
+
+**Why it is not changed here.** Changing the default alters what *every* new Go store
+writes to disk, and every existing Go store was created under the current default — so
+it needs its own reviewed change with its own compatibility argument, not a drive-by
+edit inside a cardinality-migration PR.
+
+**What changed: alignment is now mechanically possible.** Until CQ-90, Go had no way to
+express "open at a version other than the newest this binary knows" —
+`maybeUpgradeFormatVersion` raised every store to `formatVersionCurrent` on every open,
+so even writing an older version into the header was undone by the next open. Java takes
+the target from the builder (`FDBRecordStoreBase.BaseBuilder.setFormatVersion`,
+`:2245`/`:2266`) precisely so a rolling upgrade can pin every instance to the OLD format
+and stop any one of them writing a layout the others cannot read. Go now has
+`StoreBuilder.SetFormatVersion` (plus the `OnlineIndexerBuilder` twin); the upgrade
+targets it rather than a constant, new stores are born at it, and it is a ceiling that
+never downgrades. The remaining work is a decision about the DEFAULT, not a missing
+capability.
+
 ### PK-intersection declines a needed non-ForMatch compensation (conservative)
 
 **Java:** `createIntersectionAndCompensation` reapplies ANY compensation
