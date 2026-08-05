@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -132,38 +134,116 @@ type storeSubspaceKeys struct {
 	indexStatePrefixLen int
 	expectedInfoKey     fdb.Key
 	recordsSubspace     subspace.Subspace // cached subspace.Sub(RecordKey)
+	// lastUseMs is the eviction clock: touched on every hit, read by the
+	// sweeper. Atomic because hits hold only the read lock.
+	lastUseMs atomic.Int64
 }
 
 // subspaceKeysCache caches derived subspace keys across all store instances.
 // Uses map+RWMutex instead of sync.Map so the compiler can optimize
 // string([]byte) in map lookup (no allocation on the read path).
+//
+// The cache is BOUNDED. Every value is a pure function of its key, so there
+// is no staleness to expire and an unbounded map is correct in a process that
+// serves a fixed set of stores — but one entry per store subspace, never
+// released, is a leak in a process serving many tenants, and tenants come and
+// go. Java bounds its analogous per-store cache the same way:
+// ReadVersionRecordStoreStateCache is an AsyncLoadingCache with
+// maximumSize (DEFAULT_MAX_SIZE = 1000) plus expireAfterWrite. Only the SIZE
+// half of that carries over — Java's expiry is for staleness of store STATE,
+// while the idle horizon here reclaims the memory of tenants that stopped
+// being served.
 var (
 	subspaceKeysCacheMu sync.RWMutex
 	subspaceKeysCacheM  = make(map[string]*storeSubspaceKeys)
+
+	// Eviction policy, matching the shape the SPFresh routing cache uses for
+	// the same many-tenant problem. Vars, not consts, so a test can drive the
+	// bound without materializing thousands of entries.
+	subspaceKeysIdleTTLMs   int64 = 15 * 60 * 1000 // idle eviction horizon
+	subspaceKeysMaxEntries        = 4096           // hard cap across tenants
+	subspaceKeysSweepEveryN int64 = 256            // amortization stride
+
+	subspaceKeysCalls atomic.Int64 // getCachedSubspaceKeys call counter
 )
 
 func getCachedSubspaceKeys(ss subspace.Subspace) *storeSubspaceKeys {
 	b := ss.Bytes()
+	now := time.Now().UnixMilli()
 	// Read path: string([]byte) in map index is optimized by the compiler
 	// to avoid allocation (temporary string, not escaped).
 	subspaceKeysCacheMu.RLock()
-	if ks, ok := subspaceKeysCacheM[string(b)]; ok {
-		subspaceKeysCacheMu.RUnlock()
+	ks, ok := subspaceKeysCacheM[string(b)]
+	subspaceKeysCacheMu.RUnlock()
+	if ok {
+		ks.lastUseMs.Store(now)
+		maybeSweepSubspaceKeys(now)
 		return ks
 	}
-	subspaceKeysCacheMu.RUnlock()
 
 	// Slow path: create and store.
-	ks := newStoreSubspaceKeys(ss)
+	ks = newStoreSubspaceKeys(ss)
+	ks.lastUseMs.Store(now)
 	key := string(b) // must allocate for map store
 	subspaceKeysCacheMu.Lock()
-	if existing, ok := subspaceKeysCacheM[key]; ok {
+	if existing, okRace := subspaceKeysCacheM[key]; okRace {
 		subspaceKeysCacheMu.Unlock()
+		existing.lastUseMs.Store(now)
 		return existing // raced, use winner
 	}
 	subspaceKeysCacheM[key] = ks
+	overCap := len(subspaceKeysCacheM) > subspaceKeysMaxEntries
 	subspaceKeysCacheMu.Unlock()
+	if overCap {
+		sweepSubspaceKeys(now)
+	}
 	return ks
+}
+
+// maybeSweepSubspaceKeys amortizes idle eviction over cache HITS: a hit stream
+// that never misses would otherwise keep entries of departed tenants alive
+// forever, since the over-cap check only runs on insert.
+func maybeSweepSubspaceKeys(nowMs int64) {
+	if subspaceKeysCalls.Add(1)%subspaceKeysSweepEveryN != 0 {
+		return
+	}
+	sweepSubspaceKeys(nowMs)
+}
+
+// sweepSubspaceKeys drops entries idle past the horizon, then enforces the
+// cross-tenant cap oldest-first. Evicting is always safe — every value is a
+// pure function of its key, so a re-miss recomputes an identical one.
+func sweepSubspaceKeys(nowMs int64) {
+	subspaceKeysCacheMu.Lock()
+	defer subspaceKeysCacheMu.Unlock()
+
+	for k, ks := range subspaceKeysCacheM {
+		if nowMs-ks.lastUseMs.Load() > subspaceKeysIdleTTLMs {
+			delete(subspaceKeysCacheM, k)
+		}
+	}
+	if len(subspaceKeysCacheM) <= subspaceKeysMaxEntries {
+		return
+	}
+	// Over cap even after the idle pass: drop oldest-first down to 90% of the
+	// cap. The hysteresis matters — evicting to exactly the cap would re-run a
+	// full sweep on every subsequent miss while the fleet hovers at the bound.
+	type entry struct {
+		key     string
+		lastUse int64
+	}
+	entries := make([]entry, 0, len(subspaceKeysCacheM))
+	for k, ks := range subspaceKeysCacheM {
+		entries = append(entries, entry{key: k, lastUse: ks.lastUseMs.Load()})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].lastUse < entries[j].lastUse })
+	target := subspaceKeysMaxEntries - subspaceKeysMaxEntries/10
+	for _, e := range entries {
+		if len(subspaceKeysCacheM) <= target {
+			break
+		}
+		delete(subspaceKeysCacheM, e.key)
+	}
 }
 
 func newStoreSubspaceKeys(ss subspace.Subspace) *storeSubspaceKeys {
