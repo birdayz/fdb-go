@@ -1,7 +1,6 @@
 package recordlayer
 
 import (
-	"bytes"
 	"fmt"
 	"slices"
 
@@ -227,33 +226,15 @@ func (store *FDBRecordStore) findMatchingRecordTypes(prefix tuple.Tuple) []strin
 // []byte, which an explicit bytes record type key makes reachable from an
 // ordinary DeleteRecordsWhere.
 func recordTypeKeyEquals(prefixVal, typeKey any) bool {
-	prefixBytes, ok := encodableKeyBytes(prefixVal)
+	prefixID, ok := recordTypeKeyIdentity(prefixVal)
 	if !ok {
 		return false
 	}
-	typeBytes, ok := encodableKeyBytes(typeKey)
+	typeID, ok := recordTypeKeyIdentity(typeKey)
 	if !ok {
 		return false
 	}
-	return bytes.Equal(prefixBytes, typeBytes)
-}
-
-// encodableKeyBytes packs a single value as a record type key would be packed,
-// reporting false for anything that cannot BE a record type key.
-//
-// The gate is canonicalRecordTypeKey, the same function that decides what
-// SetRecordTypeKey accepts, so the two can never drift apart. That also makes
-// the false answer the right one rather than a dodge: a prefix value of a type
-// no record type key can hold — a UUID, a nested tuple — is not equal to any
-// record type key, so refusing to compare it is the correct verdict, not a
-// swallowed error. Checking the type up front is also what keeps this function
-// panic-free without recovering from the packer.
-func encodableKeyBytes(v any) ([]byte, bool) {
-	canonical, err := canonicalRecordTypeKey(v)
-	if err != nil {
-		return nil, false
-	}
-	return tuple.Tuple{canonical}.Pack(), true
+	return prefixID == typeID
 }
 
 // hasRecordTypeKeyPrefix returns true if the expression starts with

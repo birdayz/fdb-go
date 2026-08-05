@@ -594,7 +594,14 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	typeKeySeen := make(map[string]string)
 	for name, rt := range b.recordTypes {
 		key := rt.GetRecordTypeKey()
-		dedup := recordTypeKeyDedupKey(key)
+		dedup, ok := recordTypeKeyIdentity(key)
+		if !ok {
+			// Unreachable while both doors canonicalize and Build reports
+			// builder errors before this loop; stated as an error rather than
+			// left to pack, which would panic.
+			return nil, &MetaDataError{Message: fmt.Sprintf(
+				"record type %q: record type key %v (%T) cannot be used as a key", name, key, key)}
+		}
 		if prevName, exists := typeKeySeen[dedup]; exists {
 			return nil, &MetaDataError{Message: fmt.Sprintf(
 				"record types %q and %q have the same record type key %v", prevName, name, key)}
@@ -1030,12 +1037,30 @@ func canonicalRecordTypeKey(key any) (any, error) {
 	case string:
 		return k, nil
 	case []byte:
+		// A nil slice is Java's null byte[] reference, which its setter's
+		// `recordTypeKey == null` arm accepts as "no explicit key" — so it
+		// must land as an untyped nil here. Returning a typed-nil []byte
+		// instead made HasExplicitRecordTypeKey report true for a key that
+		// proto serialization then dropped, so the type silently fell back to
+		// its union field number on reload.
+		if k == nil {
+			return nil, nil
+		}
 		// Copied, as Java's ByteString.copyFrom copies: the key must not
 		// change under the metadata if the caller reuses its slice.
-		if k == nil {
-			return []byte(nil), nil
-		}
-		return append([]byte(nil), k...), nil
+		//
+		// make+copy, NOT append([]byte(nil), k...): append returns a NIL
+		// slice for an empty input, and nil is how this field spells "absent".
+		// An empty bytes key is a real key — Java's ByteString.EMPTY is
+		// non-null and its reader tests hasBytesValue(), field PRESENCE, not
+		// emptiness — and the proto layer here preserves that presence too (a
+		// non-nil empty slice marshals to the tag with length 0). Nilling it
+		// in the copy is what made the key vanish across ToProto/FromProto,
+		// leaving every record written under the empty-bytes prefix
+		// unreachable.
+		out := make([]byte, len(k))
+		copy(out, k)
+		return out, nil
 	case bool:
 		return k, nil
 	case float32:
@@ -1054,13 +1079,33 @@ func canonicalRecordTypeKey(key any) (any, error) {
 // while "abc" and []byte("abc") are equal-looking and encode differently
 // (tuple type codes 0x02 and 0x01, not a collision), and []byte is not even
 // comparable in Go.
-// Packing here is safe only because every key has already been through
-// canonicalRecordTypeKey — both doors into the field (SetRecordTypeKey and the
-// proto reader) canonicalize, and Build returns the accumulated builder errors
-// before it reaches the duplicate check, so an unencodable key never gets this
-// far. That ordering is load-bearing: pack panics on a value it cannot write.
-func recordTypeKeyDedupKey(key any) string {
-	return string(tuple.Tuple{key}.Pack())
+// recordTypeKeyIdentity renders a record type key as the bytes it occupies in
+// a key. It is the ONE identity every comparison of record type keys goes
+// through — duplicate detection at Build, lookup by key, and the evolution
+// validator's old-vs-new matching — because those questions are the same
+// question and answering them with different functions is how they came to
+// disagree.
+//
+// Two keys are the same key exactly when they encode to the same bytes. That
+// is what Java compares, by a different route: it stores a byte[] key as a
+// ByteString and asks .equals(), so a ByteString never equals a String and
+// int64(7) never coexists with a colliding spelling. Folding bytes into a
+// string to make them comparable — which the general-purpose subspace-key
+// normalizer does — merges "k" and []byte("k"), two keys with DIFFERENT tuple
+// type codes that live in different key spaces. Build admits both, so any
+// comparison that folds them lets a lookup return either type depending on map
+// iteration order.
+//
+// Reports false for a value that cannot be a record type key, so callers can
+// answer "no match" instead of packing something the encoder would panic on.
+// Every stored key is already canonical (both doors into the field
+// canonicalize), so false here means the CALLER supplied a non-key value.
+func recordTypeKeyIdentity(key any) (string, bool) {
+	canonical, err := canonicalRecordTypeKey(key)
+	if err != nil {
+		return "", false
+	}
+	return string(tuple.Tuple{canonical}.Pack()), true
 }
 
 // GetRecordType returns the record type for the given name.
@@ -1258,13 +1303,23 @@ func (m *RecordMetaData) GetFormerIndexes() []*FormerIndex {
 }
 
 // GetRecordTypeFromRecordTypeKey returns the record type with the given type key.
-// The key is compared after normalizing integer types (int/int32/int64 → int64).
 // Returns nil if no record type matches.
-// Matches Java's RecordMetaData.getRecordTypeFromRecordTypeKey().
+// Matches Java's RecordMetaData.getRecordTypeFromRecordTypeKey(), which scans
+// the record types comparing getRecordTypeKey().equals(recordTypeKey).
+//
+// Comparison goes through recordTypeKeyIdentity — the same identity the
+// duplicate check uses — so a lookup can never answer a question Build did not
+// already settle. Comparing through the general subspace-key normalizer folded
+// a []byte key into the string of the same bytes, and Build admits that pair
+// as two distinct types, so the lookup returned whichever of them the map
+// happened to yield first.
 func (m *RecordMetaData) GetRecordTypeFromRecordTypeKey(key any) *RecordType {
-	normalized := normalizeSubspaceKey(key)
+	wanted, ok := recordTypeKeyIdentity(key)
+	if !ok {
+		return nil
+	}
 	for _, rt := range m.recordTypes {
-		if normalizeSubspaceKey(rt.GetRecordTypeKey()) == normalized {
+		if id, idOK := recordTypeKeyIdentity(rt.GetRecordTypeKey()); idOK && id == wanted {
 			return rt
 		}
 	}

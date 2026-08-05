@@ -295,6 +295,7 @@ go_test(
         "record_count_streaming_test.go",
         "record_count_test.go",
         "record_type_key_canonical_test.go",
+        "record_type_key_identity_test.go",
         "record_version_test.go",
         "record_version_unit_test.go",
         "recordlayer_suite_test.go",

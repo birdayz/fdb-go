@@ -143,7 +143,7 @@ func TestRecordTypeKey_NonEncodableRejectedAtBuild(t *testing.T) {
 		}
 		// And what it stored must actually pack.
 		got := md.GetRecordType("Order").GetRecordTypeKey()
-		if _, ok := encodableKeyBytes(got); !ok {
+		if _, ok := recordTypeKeyIdentity(got); !ok {
 			t.Fatalf("record type key %v (%T) was stored as %v (%T), which the tuple encoder cannot write",
 				key, key, got, got)
 		}
@@ -350,13 +350,13 @@ func TestRecordTypeKey_CanonicalKeyPacksIdenticalBytes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("canonicalRecordTypeKey(%v (%T)): %v", tc.key, tc.key, err)
 		}
-		want := tuple.Tuple{tc.reference}.Pack()
-		got, ok := encodableKeyBytes(canonical)
+		want := string(tuple.Tuple{tc.reference}.Pack())
+		got, ok := recordTypeKeyIdentity(canonical)
 		if !ok {
 			t.Fatalf("canonicalizing %v (%T) produced %v (%T), which the tuple encoder cannot write",
 				tc.key, tc.key, canonical, canonical)
 		}
-		if string(got) != string(want) {
+		if got != want {
 			t.Fatalf("canonicalizing %v (%T) to %v (%T) changed its key bytes: %x, want %x — "+
 				"existing records of that type would move to a different key space",
 				tc.key, tc.key, canonical, canonical, got, want)
