@@ -1235,6 +1235,36 @@ R2's analysis is written once and consumed twice.
 
 **R1 stays**, unchanged, for the direct-API caller exactly as in §5.1.2.
 
+**But R2's two routes are NOT interchangeable, and the difference is a soundness
+trap rather than a detail of plumbing.** This is stated here because the natural
+implementation of the sort half reads the index scan's own range — which is the
+right instinct, and is where a pushed-down `IS NOT NULL` actually ends up — and
+because getting it wrong produces a false `strictlySorted` that nothing
+downstream can catch.
+
+The DISTINCT route reads **filter conjuncts**, and there three-valued semantics
+does the work unconditionally: `col = <anything that turns out to be NULL>`
+evaluates to UNKNOWN and the row is dropped, whatever the operand is. That is why
+`Equals` is on the allow-list without a condition on its operand.
+
+An index scan's `ComparisonRange` is **not a predicate evaluation** — it is a
+physical key enclosure, and `comparison_range.go:196-203` classifies
+`ComparisonEquals`, `ComparisonIsNull` and `ComparisonNotDistinctFrom` alike as
+scan-range equality types. `IsNull` and `NotDistinctFrom` are already refused by
+the allow-list. The open case is an `Equals` whose operand is a NULL literal or a
+NULL-bound parameter: it would compile to a singleton range **enclosing the NULL
+boundary**, and if no residual filter survives, the scan emits the NULL entries
+while the rule claims strict sorting over genuine ties.
+
+**Whether that shape is constructible in this engine is UNESTABLISHED**, and it
+is recorded as unestablished rather than assumed either way. It must be settled
+with evidence — a probe, committed as a test whichever way it comes out — before
+a scan range is permitted to license the claim. If it is constructible, the
+allow-list needs an operand condition on the scan-range route that the filter
+route does not need. The asymmetry is the finding; the conservative reading of it
+is that the sort half's R2 admits a comparison from a scan range only when the
+operand is provably non-NULL.
+
 **There is NO R3 analogue, and inventing one would be a soundness bug.** This is
 the part most likely to be got wrong by symmetry, so it is stated as a
 prohibition rather than an omission. R3 works for `DISTINCT` because a `DISTINCT`

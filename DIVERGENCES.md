@@ -1577,3 +1577,57 @@ permanently, not provisionally, and the zero is evidence about the corpus's
 reach rather than about the producers' soundness.
 
 Scenarios are re-blessed through the factory, never edited in place.
+
+## A nullable UNIQUE key does not make a scan strictly sorted (Java is unsound here)
+
+Sibling of the float-ordering entry above, and the same shape: one rule, one
+absent type consultation, storage distinguishing what the claim says is
+indistinguishable. That entry is about NaN; this one is about NULL.
+
+**Java's claim.** `RemoveSortRule.strictlyOrderedIfUnique`
+(`RemoveSortRule.java:144-156`) decides the whole question at `:153`:
+
+```java
+return matchCandidate.isUnique() && numKeys >= matchCandidate.getColumnSize();
+```
+
+There is **no nullability term** — not in that method, and not on the path into
+it from `:132`. Nothing consults the key columns' types or their nullability.
+
+**Why that is false.** Under `NULLS DISTINCT` the uniqueness check is SKIPPED
+when an indexed component is NULL, so a `UNIQUE` index on a nullable column
+legitimately holds
+
+    (NULL, pk=1), (NULL, pk=2), (NULL, pk=3)
+
+— three entries whose *claimed* sort key is identical. Java stamps
+`strictlySorted` on that scan, and a consumer that reads the flag as "no two rows
+compare equal on the sort key" is being told something false **by construction**,
+not in an edge case. `strictlySorted` is a proposition the plan asserts to its
+consumers so they can skip work; there is no partial version of it, and no
+downstream operator that catches it being wrong.
+
+**What Go does.** `indexHasGloballyEnforcedUniqueKey`
+(`cascades/rule_implement_sort.go`) routes through
+`properties.SecondaryUniqueKeyGloballyEnforced`, whose nullability clause refuses
+exactly this case. The divergence is documented at that call site so it is not
+mistaken for a redundant check and "simplified" back into Java's shape.
+
+The cost is a retained sort where Java elides one, on a nullable unique key. That
+shows up in the cross-engine harness as a deliberate plan-shape difference. The
+alternative is a wrong answer, so it is not a close trade.
+
+**Reachability, and the reason the divergence is currently invisible.** The gate
+is `false` for every SQL-expressible secondary unique index today, because the
+SQL DDL rejects a `NOT NULL` scalar column (deliberately, for Java parity — `NOT
+NULL` is accepted only on `ARRAY` types). So Go's claim is not merely stricter
+than Java's, it never fires from SQL at all. RFC-210 §5.7 is what makes it
+reachable on the streams where it is TRUE — a NULL-rejecting predicate empties
+the index's exempt set — and it does so WITHOUT relaxing the clause. Note there
+is deliberately no residual-dedup analogue for the sort claim; the RFC states
+that as a prohibition rather than an omission.
+
+**To report upstream.** Not yet filed. The report should cite `:153` and the
+three-NULL-entry witness above; it is a soundness bug in Java's own terms, not a
+Go/Java modelling difference, so it is expected to be fixed upstream rather than
+to persist as a permanent divergence.

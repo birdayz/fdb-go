@@ -313,6 +313,42 @@ func strictlyOrderedIfUnique(expr expressions.RelationalExpression, numKeys int)
 	return false
 }
 
+// indexHasGloballyEnforcedUniqueKey is the strict-ordering consumer of the same
+// gate the DISTINCT elision uses, and the nullability clause inside it is a
+// DELIBERATE DIVERGENCE FROM JAVA rather than an extra check to be simplified
+// away.
+//
+// Java decides the whole question at RemoveSortRule.java:153 —
+//
+//	return matchCandidate.isUnique() && numKeys >= matchCandidate.getColumnSize();
+//
+// with NO nullability term anywhere on the path into it. Over a UNIQUE index on
+// a NULLABLE column that claim is FALSE: under NULLS DISTINCT the uniqueness
+// check is skipped when a component is NULL, so the index legitimately holds
+// (NULL, pk=1), (NULL, pk=2), (NULL, pk=3) — three entries whose claimed sort
+// key is identical. A consumer trusting strictlySorted to mean "no two rows
+// compare equal on the sort key" is being told something false by construction,
+// not in an edge case. Upstream soundness bug; see DIVERGENCES.md.
+//
+// The gate is therefore NOT relaxed to match Java. What makes the claim reachable
+// on the streams where it is TRUE is a NULL-rejecting predicate emptying the
+// index's exempt set, exactly as for the DISTINCT consumer.
+//
+// A CONSTRAINT on wiring that in, recorded because the two routes are not
+// interchangeable and the difference is a soundness trap. The DISTINCT route
+// reads FILTER conjuncts, where three-valued semantics does the work: `col =
+// <anything NULL>` evaluates to UNKNOWN and the row is dropped whatever the
+// operand turns out to be. An index scan's ComparisonRange is not a predicate
+// evaluation — it is a PHYSICAL KEY ENCLOSURE, and comparison_range.go:196-203
+// classifies ComparisonEquals, ComparisonIsNull and ComparisonNotDistinctFrom
+// alike as scan-range equality types. IsNull and NotDistinctFrom are refused by
+// the NULL-rejection allow-list already, but an Equals whose operand is a NULL
+// literal or a NULL-bound parameter would compile to a singleton range ENCLOSING
+// the NULL boundary; with no residual filter left, the scan emits the NULL
+// entries while this function claims strict sorting over genuine ties. Whether
+// that shape is constructible here is UNESTABLISHED. It must be settled with
+// evidence before a scan range is allowed to license this claim, because a sort
+// claim — unlike a DISTINCT — has no residual that could catch the error.
 func indexHasGloballyEnforcedUniqueKey(p *plans.RecordQueryIndexPlan) bool {
 	return p != nil && p.IsUnique() && properties.SecondaryUniqueKeyGloballyEnforced(
 		p.GetKeyComponentTypes(), len(p.GetColumnNames()),
