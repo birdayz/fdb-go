@@ -86,11 +86,23 @@ FDB the tests run against).
     Hourly with a 10 min jitter closes that; at/below target the script is a
     single `df` and exits.
 
-  Safety against live Bazel traffic: `tmp/` and `gc/` are excluded (in-flight uploads
-  land in `tmp/` before rename; Bazel's own `DiskCacheGarbageCollector` excludes both),
-  and `-mmin +15` keeps anything touched inside the scan-to-unlink window. A *completed*
-  entry unlinked while a reader has it open is harmless — the open FD survives the
-  unlink; Bazel treats the next lookup as a cache miss.
+  Safety against live Bazel traffic: `tmp/` and `gc/` are excluded from eviction
+  (in-flight uploads land in `tmp/` before rename; Bazel's own
+  `DiskCacheGarbageCollector` excludes both), `-mmin +15` keeps young entries out of
+  the candidate scan, and each candidate's mtime is rechecked immediately before the
+  unlink — `sort` buffers the whole scan, so an entry hit (= touched, Bazel ≥ 7)
+  between scan and deletion would otherwise still be on the list. The recheck
+  compares whole seconds deliberately: `find`'s `%T@` and `stat`'s fractional `%.Y`
+  print different precisions, and a strict string compare would skip every file and
+  turn the prune into a silent no-op. A *completed* entry unlinked while a reader
+  has it open is harmless — the open FD survives the unlink; Bazel treats the next
+  lookup as a cache miss.
+
+  `tmp/` itself is not immortal: interrupted uploads (Bazel killed, host reboot)
+  leave UUID-named partials there that nothing else reaps — startup only recreates
+  the directory. The prune deletes `tmp/` files older than a day, far beyond any
+  live upload's lifetime, before the usage check so a tmp-flooded volume still
+  recovers.
 
 ### The wedged-listener gap (open, deliberately)
 

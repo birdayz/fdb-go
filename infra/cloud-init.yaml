@@ -148,13 +148,10 @@ write_files:
       chmod 0755 "$VOL"
       mkdir -p "$CI/docker" "$CI/bazel"
 
-  # Re-decide on EVERY boot whether Docker may run, once the mounts are up. See the bootcmd
-  # note: this is the only place that both runs every boot and can see the fstab mount.
-  # Fail CLOSED -- Docker runs only when /mnt/ci-data really is the volume symlink with its
-  # data-root on it, because an unmasked Docker without the volume silently refills the
-  # 75 GB root disk, which is worse than a box that visibly cannot run containers.
-  # A FILE, not an ExecStart one-liner, so infra/link_ci_volume_test.sh runs this exact
-  # code; ROOT defaults to "" and the test passes a fixture prefix.
+  # Re-decide EVERY boot whether Docker may run (only place that runs each boot
+  # AND sees the fstab mount). Fail CLOSED: unmasked Docker without the volume
+  # silently refills the 75 GB root disk — worse than visibly no containers.
+  # A FILE so link_ci_volume_test.sh runs this exact code (fixture ROOT arg).
   - path: /usr/local/bin/ci-docker-gate.sh
     permissions: "0755"
     content: |
@@ -336,13 +333,17 @@ write_files:
       #!/bin/sh
       V=/mnt/ci-data
       use() { df --output=pcent "$V" | tail -1 | tr -dc 0-9; }
+      # Day-old tmp/ partials are dead uploads nothing else reaps.
+      find "$V/bazel-disk-cache/tmp" -type f -mmin +1440 -delete 2>/dev/null
       [ "$(use)" -le 60 ] && exit 0
-      # tmp/ and gc/ hold in-flight writes; -mmin +15 covers the scan-to-unlink
-      # race. Unlink under a reader is safe (open FDs survive).
+      # tmp/,gc/ = in-flight writes. Recheck mtime (whole secs) pre-unlink:
+      # sort buffers the scan, so -mmin cannot see a hit's touch. README.
       find "$V/bazel-disk-cache" -type f \
         -not -path "$V/bazel-disk-cache/tmp/*" -not -path "$V/bazel-disk-cache/gc/*" \
-        -mmin +15 -printf '%T@ %p\n' 2>/dev/null | sort -n | cut -d' ' -f2- | \
-      while IFS= read -r f; do
+        -mmin +15 -printf '%T@ %p\n' 2>/dev/null | sort -n | \
+      while read -r ts f; do
+        cur=$(stat -c %Y "$f" 2>/dev/null) || continue
+        [ "$cur" -gt "$${ts%.*}" ] && continue
         rm -f "$f"
         i=$((i+1))
         [ $((i % 5000)) -eq 0 ] && [ "$(use)" -le 60 ] && break
