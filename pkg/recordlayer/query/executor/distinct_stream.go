@@ -211,7 +211,13 @@ type narrowedDedup struct {
 // is FINER than the dedup key's value identity.
 func (n *narrowedDedup) isExempt(row QueryResult) bool {
 	slots := row.Positional.Slots
-	if n.exemptSlots == nil {
+	// len, not a nil check. An EMPTY non-nil slice states "no slot is ever
+	// exempt", which makes every row pass through retaining nothing — the
+	// operator emits duplicates. That is the one direction this type must never
+	// take, and it differs from the nil case by nothing a reader would notice.
+	// Both spellings mean "no statable positions", and both route to the
+	// test-every-slot over-approximation.
+	if len(n.exemptSlots) == 0 {
 		for _, slot := range slots {
 			if slotIsExempt(slot) {
 				return true

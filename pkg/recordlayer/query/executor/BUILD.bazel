@@ -64,6 +64,7 @@ go_test(
         "executor_test.go",
         "existential_datum_binding_test.go",
         "explode_element_row_test.go",
+        "filter_drops_unknown_rows_test.go",
         "filtered_index_execution_guard_test.go",
         "first_or_default_continuation_test.go",
         "flat_map_continuation_test.go",
@@ -254,6 +255,7 @@ go_test(
         "distinct_proof_stamp_identity_test.go",
         "narrowed_dedup_test.go",
         "scan_range_null_boundary_test.go",
+        "filter_drops_unknown_rows_test.go",
     ],
     tags = ["resources:memory:400"],
     deps = [

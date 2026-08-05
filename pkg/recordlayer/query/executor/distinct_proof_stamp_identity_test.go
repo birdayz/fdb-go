@@ -66,6 +66,57 @@ func TestDistinctProofStampSplitsIdentityButNotContinuation(t *testing.T) {
 		}
 	})
 
+	// The projection is the carrier §7.1 actually names: the elided shape is
+	// `Project([EMAIL#1], Scan(USERS)) distinct-by:BY_EMAIL`, so on the query
+	// the acceptance criteria are written over, this is the plan node holding
+	// the dependency. Omitting it from this test left the identity split pinned
+	// on the two carriers the criteria do NOT produce.
+	t.Run("projection", func(t *testing.T) {
+		t.Parallel()
+		inner := plans.NewRecordQueryScanPlan([]string{"T"}, flowed, false)
+		projections := []values.Value{
+			values.NewFieldValueWithResolvedOrdinal("EMAIL", 0, values.TypeString),
+		}
+		plain := plans.NewRecordQueryProjectionPlan(projections, inner)
+		stamped, ok := plain.WithDistinctProofIndexName("BY_EMAIL").(*plans.RecordQueryProjectionPlan)
+		if !ok {
+			t.Fatal("WithDistinctProofIndexName did not return a projection plan")
+		}
+		if stamped.GetDistinctProofIndexName() != "BY_EMAIL" {
+			t.Fatalf("stamp did not stick: %q", stamped.GetDistinctProofIndexName())
+		}
+		if plain.GetDistinctProofIndexName() != "" {
+			t.Fatal("WithDistinctProofIndexName mutated the receiver instead of copying")
+		}
+		if plain.EqualsPlanWithoutChildren(stamped) {
+			t.Fatal("a stamped projection and its unstamped original are the same memo " +
+				"member. This is the carrier the SELECT DISTINCT elision produces, so " +
+				"collapsing them here is the concrete route by which the memo keeps " +
+				"the unstamped survivor and the index dependency vanishes")
+		}
+		if plain.HashCodeWithoutChildren() == stamped.HashCodeWithoutChildren() {
+			t.Fatal("stamped and unstamped projections hash alike, so the split above " +
+				"rests on the equality check alone")
+		}
+
+		// A projection mints no continuation of its own — the resume identity on
+		// this shape is the inner scan's, and WithDistinctProofIndexName is a
+		// shallow struct copy that SHARES that inner. So the continuation half of
+		// this test reads through the stamped projection to the scan it did not
+		// copy: the stamp must leave it byte-identical, for the same reason it
+		// must not enter the index scan's own salt above.
+		stampedInner, ok := stamped.GetInner().(*plans.RecordQueryScanPlan)
+		if !ok {
+			t.Fatalf("stamped projection's inner is %T, want the shared scan", stamped.GetInner())
+		}
+		if got, want := mustPrimaryScanIdentity(t, stampedInner),
+			mustPrimaryScanIdentity(t, inner); got != want {
+			t.Fatalf("stamping the projection changed the continuation fingerprint of "+
+				"the scan beneath it (%s vs %s). A continuation minted before the "+
+				"elision shipped must still resume after it", got, want)
+		}
+	})
+
 	t.Run("primary scan", func(t *testing.T) {
 		t.Parallel()
 		plain := plans.NewRecordQueryScanPlan([]string{"T"}, flowed, false)

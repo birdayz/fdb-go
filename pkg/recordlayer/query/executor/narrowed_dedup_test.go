@@ -177,6 +177,21 @@ func TestNarrowedDedup_ExemptSlotsAimAtTheKeyColumns(t *testing.T) {
 			"meaning and this is it")
 	}
 
+	// An EMPTY non-nil slice means the same thing as nil and must land in the
+	// same place. It reads as "no slot is exempt", and taking that reading makes
+	// EVERY row pass through retaining nothing — the operator emits duplicates,
+	// which is R3's one wrong-rows direction. Unreachable today only because
+	// WithNarrowedDedup's append yields nil for an empty input and exemptSlotsFor
+	// declines before it can produce a zero-length list; that is a property of
+	// two callers, not of this type, and it is what this pin holds still.
+	emptySlots := &narrowedDedup{exemptSlots: []int{}}
+	if !emptySlots.isExempt(row) {
+		t.Fatal("an EMPTY exemptSlots list reported the row NON-exempt, so the " +
+			"narrowed operator would retain nothing at all and emit every duplicate " +
+			"it exists to catch. Empty and nil both mean \"no statable positions\" " +
+			"and both must over-approximate")
+	}
+
 	// A position the row cannot supply is treated as exempt for the same reason.
 	outOfRange := &narrowedDedup{exemptSlots: []int{7}}
 	if !outOfRange.isExempt(qr("e", "a")) {
