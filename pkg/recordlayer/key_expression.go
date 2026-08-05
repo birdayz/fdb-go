@@ -419,20 +419,77 @@ func (f *FieldKeyExpression) ColumnSize() int {
 // Matches Java's RecordTypeKeyExpression: evaluates to the record type key
 // (an integer derived from the union descriptor field number).
 type RecordTypeKeyExpression struct {
-	// cachedResults caches the Evaluate return for each type name.
-	// RecordTypeKey is deterministic per record type, so cache is safe.
-	// Uses sync.Map for concurrent access safety.
-	cachedResults sync.Map // string → [][]any
+	// binding holds the type-key map TOGETHER WITH the results memoized from
+	// it, swapped as one unit by bindTypeKeys.
+	//
+	// Java's RecordTypeKeyExpression is stateless — a singleton that reads
+	// record.getRecordType().getRecordTypeKey() off the record on every
+	// evaluation, so it cannot carry a stale key across metadata. Go binds the
+	// map onto the expression instead and memoizes the derived tuple, which
+	// makes the memo metadata-scoped state: the SAME expression graph can be
+	// handed to two RecordMetaData builds with different record-type keys
+	// (RecordMetaDataBuilder does not copy the expressions), and a memo that
+	// outlives its map serves the first schema's type key into the second
+	// schema's index entries and primary keys — wrong bytes on the wire, and
+	// unreadable by Java.
+	//
+	// Pairing the two in one immutable value is what makes the invalidation
+	// total: an evaluation that raced a rebind can only deposit its result in
+	// the generation it read the map from, and that generation is already
+	// unreachable. A memo cleared separately from the map has a window where
+	// the new map is visible but a stale result is still memoized.
+	binding atomic.Pointer[recordTypeKeyBinding]
 	// nested is the optional nested key expression
 	nested KeyExpression
-	// typeKeys maps proto message full name → record type key (int64).
-	// Populated by metadata builder. Matches Java's record.getRecordType().getRecordTypeKey().
+}
+
+// recordTypeKeyBinding is one generation of the type-key binding: the map
+// populated by the metadata builder (proto message name → record type key,
+// matching Java's record.getRecordType().getRecordTypeKey()) and the results
+// memoized from THAT map. Immutable except for the memo, which only ever
+// gains entries derived from this generation's map.
+type recordTypeKeyBinding struct {
 	typeKeys map[string]int64
+	// memo caches the Evaluate return per type name. Deterministic for a
+	// fixed typeKeys map, which is why it may live no longer than one.
+	memo sync.Map // string → [][]any
 }
 
 // RecordTypeKey creates a key expression that prefixes with the record type
 func RecordTypeKey() *RecordTypeKeyExpression {
 	return &RecordTypeKeyExpression{}
+}
+
+// newRecordTypeKeyExpression builds an expression already bound to typeKeys.
+// Used where a bound expression is rewritten into a new one (field renaming)
+// so the rewrite inherits the binding rather than reaching into the struct.
+func newRecordTypeKeyExpression(nested KeyExpression, typeKeys map[string]int64) *RecordTypeKeyExpression {
+	e := &RecordTypeKeyExpression{nested: nested}
+	if typeKeys != nil {
+		e.bindTypeKeys(typeKeys)
+	}
+	return e
+}
+
+// lookupTypeKey resolves a proto message name to its record type key.
+// Reports false when the expression is unbound or the type is absent, in
+// which case callers fall back to the type NAME (see Evaluate).
+func (r *RecordTypeKeyExpression) lookupTypeKey(typeName string) (int64, bool) {
+	b := r.binding.Load()
+	if b == nil {
+		return 0, false
+	}
+	k, ok := b.typeKeys[typeName]
+	return k, ok
+}
+
+// typeKeyMap returns the bound map (nil when unbound) for callers that carry
+// the whole binding forward rather than resolving a single name.
+func (r *RecordTypeKeyExpression) typeKeyMap() map[string]int64 {
+	if b := r.binding.Load(); b != nil {
+		return b.typeKeys
+	}
+	return nil
 }
 
 // Nest adds a nested key expression after the record type prefix
@@ -442,8 +499,11 @@ func (r *RecordTypeKeyExpression) Nest(expr KeyExpression) KeyExpression {
 }
 
 // bindTypeKeys populates the type key lookup map. Called by metadata builder.
+// Installing a NEW generation is what discards results memoized from the
+// previous map — including the type-NAME fallback an evaluation before any
+// bind would otherwise have memoized permanently.
 func (r *RecordTypeKeyExpression) bindTypeKeys(typeKeys map[string]int64) {
-	r.typeKeys = typeKeys
+	r.binding.Store(&recordTypeKeyBinding{typeKeys: typeKeys})
 }
 
 // Evaluate returns the record type key (integer), optionally followed by nested values.
@@ -455,28 +515,35 @@ func (r *RecordTypeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message
 	}
 	typeName := string(msg.ProtoReflect().Descriptor().Name())
 
-	// Check cache — RecordTypeKey is deterministic per type name
-	if r.nested == nil {
-		if cached, ok := r.cachedResults.Load(typeName); ok {
+	// The memo is read from the SAME binding generation the type key is
+	// resolved from, so a rebind between the two can only send this result
+	// into a generation nothing will read again.
+	binding := r.binding.Load()
+
+	// Check memo — RecordTypeKey is deterministic per type name within a generation.
+	if r.nested == nil && binding != nil {
+		if cached, ok := binding.memo.Load(typeName); ok {
 			return cached.([][]any), nil
 		}
 	}
 
 	// Look up the integer record type key (proto field number from union descriptor).
-	var typeKey any
-	if r.typeKeys != nil {
-		if k, ok := r.typeKeys[typeName]; ok {
+	var typeKey any = typeName
+	if binding != nil {
+		if k, ok := binding.typeKeys[typeName]; ok {
 			typeKey = k
-		} else {
-			typeKey = typeName
 		}
-	} else {
-		typeKey = typeName
 	}
 
 	if r.nested == nil {
 		result := [][]any{{typeKey}}
-		r.cachedResults.Store(typeName, result)
+		// An UNBOUND expression memoizes nothing: its result is the type NAME,
+		// which is not what the metadata will bind, and a memo with no
+		// generation to be discarded with would outlive the bind and write the
+		// string into index keys.
+		if binding != nil {
+			binding.memo.Store(typeName, result)
+		}
 		return result, nil
 	}
 
@@ -504,10 +571,8 @@ func (r *RecordTypeKeyExpression) EvaluateScalar(record *FDBStoredRecord[proto.M
 		return nil, nil
 	}
 	typeName := string(msg.ProtoReflect().Descriptor().Name())
-	if r.typeKeys != nil {
-		if k, ok := r.typeKeys[typeName]; ok {
-			return k, nil
-		}
+	if k, ok := r.lookupTypeKey(typeName); ok {
+		return k, nil
 	}
 	return typeName, nil
 }
@@ -518,15 +583,9 @@ func (r *RecordTypeKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Mes
 		return []any{nil}, nil
 	}
 	typeName := string(msg.ProtoReflect().Descriptor().Name())
-	var typeKey any
-	if r.typeKeys != nil {
-		if k, ok := r.typeKeys[typeName]; ok {
-			typeKey = k
-		} else {
-			typeKey = typeName
-		}
-	} else {
-		typeKey = typeName
+	var typeKey any = typeName
+	if k, ok := r.lookupTypeKey(typeName); ok {
+		typeKey = k
 	}
 	return []any{typeKey}, nil
 }
@@ -537,11 +596,9 @@ func (r *RecordTypeKeyExpression) PackDirect(pk *tuple.Packer, record *FDBStored
 		return false
 	}
 	typeName := string(msg.ProtoReflect().Descriptor().Name())
-	if r.typeKeys != nil {
-		if k, ok := r.typeKeys[typeName]; ok {
-			pk.EncodeElement(k)
-			return true
-		}
+	if k, ok := r.lookupTypeKey(typeName); ok {
+		pk.EncodeElement(k)
+		return true
 	}
 	pk.EncodeElement(typeName)
 	return true

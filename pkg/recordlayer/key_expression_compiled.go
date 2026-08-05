@@ -179,7 +179,7 @@ func compileStep(expr KeyExpression) compiledStep {
 		if e.nested != nil {
 			return nil
 		}
-		return &recordTypeKeyStep{typeKeys: e.typeKeys}
+		return &recordTypeKeyStep{typeKeys: e.typeKeyMap()}
 	case *EmptyKeyExpression:
 		return &emptyKeyStep{}
 	case *GroupingKeyExpression:

@@ -237,6 +237,117 @@ var _ = Describe("KeyExpression unit tests", func() {
 			Expect(result).To(Equal([][]any{{"Order"}}))
 		})
 
+		// Java's RecordTypeKeyExpression is stateless: a singleton whose
+		// evaluateMessage reads record.getRecordType().getRecordTypeKey() off
+		// the record, so it cannot carry a key from one metadata into another.
+		// Go binds the map onto the expression and memoizes the result derived
+		// from it, so the memo has to be discarded whenever the map is
+		// replaced — otherwise the SECOND metadata's index entries and primary
+		// keys are written with the FIRST metadata's type key.
+		It("re-binding replaces a memoized type key", func() {
+			expr := RecordTypeKey()
+			order := newOrder(1, 10)
+
+			expr.bindTypeKeys(map[string]int64{"Order": 5})
+			first, err := expr.Evaluate(asStored(order), order)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(first).To(Equal([][]any{{int64(5)}}))
+
+			// Same expression object, second metadata, different key for the
+			// same record type.
+			expr.bindTypeKeys(map[string]int64{"Order": 9})
+			second, err := expr.Evaluate(asStored(order), order)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(second).To(Equal([][]any{{int64(9)}}),
+				"second binding was ignored — index keys would be written with the first schema's record type key")
+
+			// And the memo is still doing its job within the new generation.
+			again, err := expr.Evaluate(asStored(order), order)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(again).To(Equal([][]any{{int64(9)}}))
+		})
+
+		// The unbound fallback is the type NAME (a string). Java never writes
+		// one: its key is always the record type's key. A memoized string that
+		// survived the subsequent bind would put a STRING where the integer
+		// type key belongs, which Java reads as a different key entirely.
+		It("evaluating before any bind does not poison the later binding", func() {
+			expr := RecordTypeKey()
+			order := newOrder(1, 10)
+
+			unbound, err := expr.Evaluate(asStored(order), order)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(unbound).To(Equal([][]any{{"Order"}}))
+
+			expr.bindTypeKeys(map[string]int64{"Order": 5})
+			bound, err := expr.Evaluate(asStored(order), order)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(bound).To(Equal([][]any{{int64(5)}}),
+				"the pre-bind type NAME was memoized permanently — Java-incompatible index bytes")
+		})
+
+		// Rebinding must reach every evaluation entry point, not just the
+		// memoized one: index maintenance goes through Evaluate, primary-key
+		// packing through PackDirect, and the scalar/flat fast paths are used
+		// by the compiled key path.
+		It("re-binding is visible on every evaluation entry point", func() {
+			expr := RecordTypeKey()
+			order := newOrder(1, 10)
+
+			expr.bindTypeKeys(map[string]int64{"Order": 5})
+			scalar, err := expr.EvaluateScalar(asStored(order), order)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(scalar).To(Equal(int64(5)))
+
+			expr.bindTypeKeys(map[string]int64{"Order": 9})
+
+			scalar, err = expr.EvaluateScalar(asStored(order), order)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(scalar).To(Equal(int64(9)))
+
+			flat, err := expr.EvaluateFlat(asStored(order), order)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(flat).To(Equal([]any{int64(9)}))
+
+			pk := tuple.GetPacker()
+			defer tuple.PutPacker(pk)
+			Expect(expr.PackDirect(pk, asStored(order), order)).To(BeTrue())
+			var packed []byte
+			Expect(pk.AppendInto(&packed, nil)).To(Equal(tuple.Tuple{int64(9)}.Pack()))
+		})
+
+		// The reachable shape: one expression graph handed to two metadata
+		// builds. RecordMetaDataBuilder does not copy key expressions, so both
+		// builds bind the SAME object — and the second build's record type key
+		// is what its records must be indexed under.
+		It("two metadata builds sharing one expression graph each see their own type keys", func() {
+			shared := RecordTypeKey()
+			order := newOrder(1, 10)
+
+			build := func(orderTypeKey int64) *RecordMetaData {
+				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+				b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+				b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+				b.GetRecordType("Order").SetRecordTypeKey(orderTypeKey)
+				b.AddIndex("Order", NewIndex("by_type", shared))
+				md, err := b.Build()
+				Expect(err).NotTo(HaveOccurred())
+				return md
+			}
+
+			mdFirst := build(5)
+			firstEntry, err := mdFirst.GetIndex("by_type").RootExpression.Evaluate(asStored(order), order)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(firstEntry).To(Equal([][]any{{int64(5)}}))
+
+			mdSecond := build(9)
+			secondEntry, err := mdSecond.GetIndex("by_type").RootExpression.Evaluate(asStored(order), order)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(secondEntry).To(Equal([][]any{{int64(9)}}),
+				"the second metadata indexed its records under the first metadata's record type key")
+		})
+
 		It("nil message returns [[nil]]", func() {
 			expr := RecordTypeKey()
 			result, err := expr.Evaluate(nil, nil)

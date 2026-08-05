@@ -175,7 +175,7 @@ func TestCompiledKeyEvaluator_RecordTypeKeyWithField(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
-	rtk := &RecordTypeKeyExpression{typeKeys: map[string]int64{"Order": 1, "Customer": 2}}
+	rtk := newRecordTypeKeyExpression(nil, map[string]int64{"Order": 1, "Customer": 2})
 	expr := Concat(rtk, Field("order_id"))
 	compiled := compileKeyExpression(expr)
 	g.Expect(compiled).NotTo(BeNil())
@@ -217,7 +217,7 @@ func TestCompiledKeyEvaluator_RecordTypeKeyUnknownType(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	// typeKeys has entries but not for Customer - should fall back to type name string.
-	rtk := &RecordTypeKeyExpression{typeKeys: map[string]int64{"Order": 1}}
+	rtk := newRecordTypeKeyExpression(nil, map[string]int64{"Order": 1})
 	compiled := compileKeyExpression(rtk)
 	g.Expect(compiled).NotTo(BeNil())
 
@@ -284,7 +284,7 @@ func TestCompiledKeyEvaluator_NilMessageRecordTypeKey(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
-	rtk := &RecordTypeKeyExpression{typeKeys: map[string]int64{"Order": 1}}
+	rtk := newRecordTypeKeyExpression(nil, map[string]int64{"Order": 1})
 	compiled := compileKeyExpression(rtk)
 	g.Expect(compiled).NotTo(BeNil())
 
@@ -605,7 +605,7 @@ func TestCompiledKeyEvaluator_ThreeFieldComposite(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 
-	rtk := &RecordTypeKeyExpression{typeKeys: map[string]int64{"Order": 7}}
+	rtk := newRecordTypeKeyExpression(nil, map[string]int64{"Order": 7})
 	expr := Concat(rtk, Field("order_id"), Field("price"))
 	compiled := compileKeyExpression(expr)
 	g.Expect(compiled).NotTo(BeNil())

@@ -156,7 +156,7 @@ func renameFields(expr KeyExpression, sourceDesc, targetDesc protoreflect.Messag
 		if newNested == e.nested {
 			return e, nil
 		}
-		return &RecordTypeKeyExpression{nested: newNested, typeKeys: e.typeKeys}, nil
+		return newRecordTypeKeyExpression(newNested, e.typeKeyMap()), nil
 
 	case *VersionKeyExpression, *LiteralKeyExpression, *EmptyKeyExpression:
 		// Invariant to field renamings (Java treats these as KeyExpressionWithValue /

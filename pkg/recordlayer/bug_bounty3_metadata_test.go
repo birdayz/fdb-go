@@ -57,8 +57,8 @@ func TestBug1_BindRecordTypeKeyExpressionsShallow_GroupingKE(t *testing.T) {
 	}
 
 	// Now check if the RecordTypeKeyExpression was bound.
-	// If bound, rtKey.typeKeys should be populated.
-	if rtKey.typeKeys == nil {
+	// If bound, the type-key map should be populated.
+	if rtKey.typeKeyMap() == nil {
 		t.Fatal("BUG: RecordTypeKeyExpression inside GroupingKeyExpression was NOT bound by Build(). " +
 			"It will evaluate to string type name instead of integer key, breaking Java compatibility.")
 	}
@@ -102,7 +102,7 @@ func TestBug1_BindRecordTypeKeyExpressionsShallow_KeyWithValueKE(t *testing.T) {
 		t.Fatalf("Build() failed: %v", err)
 	}
 
-	if rtKey.typeKeys == nil {
+	if rtKey.typeKeyMap() == nil {
 		t.Fatal("BUG: RecordTypeKeyExpression inside KeyWithValueExpression was NOT bound by Build(). " +
 			"bindRecordTypeKeyExpressions doesn't walk into KeyWithValueExpression.")
 	}
@@ -132,7 +132,7 @@ func TestBug1_BindRecordTypeKeyExpressionsShallow_NestedComposite(t *testing.T) 
 		t.Fatalf("Build() failed: %v", err)
 	}
 
-	if rtKey.typeKeys == nil {
+	if rtKey.typeKeyMap() == nil {
 		t.Fatal("BUG: RecordTypeKeyExpression inside nested CompositeKeyExpression was NOT bound. " +
 			"bindRecordTypeKeyExpressions only walks one level of Concat.")
 	}
