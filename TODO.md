@@ -14833,6 +14833,71 @@ None is speculative: each was re-verified against the tree before booking.
   measuring 0 cannot have its wiring guarded by the corpus; and the measurement is
   written into this item, replacing any prose figure it contradicts.
 
+  **MEASURED (`values/qualifier_recovery_census.go`, six sites — the parseColRef
+  family is three DIFFERENT decisions with three different counterparties).
+  THREE corpora, and the third one is the finding.** Classes answer "was the
+  identity already in hand?": CARRIED (structured identity decided, nothing
+  sliced), AGREED (split ran, identity in hand, agrees — CONVERSION-READY),
+  DIVERGED (split contradicts the identity — a wrong answer, asserted ZERO),
+  MANUFACTURED (split ran with NO counterparty — the hard debt, not convertible
+  by a local edit), LEAF-ONLY, BARE, HEURISTIC-DECLINE.
+
+  | site | sqldriver real-FDB | translator corpus | embedded corpus |
+  |---|---|---|---|
+  | recursiveRemap | 101: leafOnly 2, bare 99 | 13: carried 4, **MANUF 3**, leafOnly 2, bare 4 | 2: bare 2 |
+  | existsSortSplit | 44: **AGREED 44** | 5 (fixture) | 0 |
+  | derivedUnnestSource | 13: bare 13 | 4 (fixture) | 8: **AGREED 1**, bare 7 |
+  | projScopeClassify | 71: carried 11, bare 60 | 0 (structural) | 18: carried 1, bare 16, +1 fixture |
+  | projQualVsScan | 4: bare 4 | 0 (structural) | 4 (all fixture) |
+  | displayLabelStrip | 750: **AGREED 722**, MANUF 6, bare 22 | 0 (structural) | 11: **heurDecline 2**, **MANUF 4**, bare 3, +2 fixture |
+
+  **DIVERGED is 0 in PRODUCTION traffic at every site on every corpus.** That is
+  the one zero this census asserts, and unlike the population zeros it is a zero
+  over a real population: 767+ calls manufactured a qualifier with an identity in
+  hand and not one disagreed with it.
+
+  **THE THIRD CORPUS REFUTED TWO READINGS THE FIRST TWO AGREED ON**, which is
+  this workstream's pattern holding for the fourth time. `core/embedded` had no
+  census gate; it now has one, and a panic probe at its reach immediately broke
+  two conclusions the sqldriver+translator pair supported:
+  - `derivedUnnestSource`'s DOTTED arm reads bare 13 / dotted 0 over the SQL
+    corpus. It is LIVE here — `TestDerivedUnnest_QualifiedPassthrough` drives
+    `TD.ARR`, and the slot's triple AGREES.
+  - the display-label PARENTHESIS HEURISTIC (`colref.go:41-47`) reads 0 over 750
+    SQL-corpus calls — the reading that would have licensed deleting it. It FIRES
+    here on the aggregate label `MAX(E.SALARY)`. **DELETION REFUTED**: without the
+    guard that label's display name is stripped to `SALARY)`. Two corpora agreeing
+    is not two pieces of evidence when both are blind in the same direction.
+
+  **CONVERSION-READINESS, per site:**
+  - `existsSortSplit` — **MECHANICAL, and the cleanest conversion on this path.**
+    44/44 AGREED, zero MANUFACTURED. It is a pure ROUND TRIP: `sortKeyFieldRef`
+    RENDERS `LEG.COL` out of a `FieldValue{Field, Child:QOV}` and `splitQualifier`
+    slices that rendering straight back apart. The identity was never lost. Not
+    converted this round — query-engine change, needs RFC + Graefe ACK.
+  - `derivedUnnestSource` — looks mechanical (1/1 AGREED, no production
+    MANUFACTURED) but the population is ONE. Under-measured, not ready.
+  - `displayLabelStrip` — **NOT mechanical despite 722 agreements.** There is a
+    real no-counterparty population: MANUF 6 (sqldriver) plus production
+    `E.SALARY` / `E.SAL-ARY` here. And its paren guard is load-bearing.
+  - `recursiveRemap` — **PRODUCER CHANGE, not a local edit**, and the census
+    confirms it is the worst of the four. Its input is `[]string`; there is no
+    counterparty at the site to convert TO, which is why its MANUFACTURED bucket
+    (3, translator corpus, witness `B.ID`) can only be retired by teaching the
+    producer to carry segments. Its LEAF-ONLY witness `"(B.ID#0 + 1)"` shows a
+    COMPUTED rendering being leaf-split — harmless only because an ordinal
+    decides the read.
+  - `projScopeClassify` / `projQualVsScan` — their manufacturing arms are
+    unreached by production traffic on all three corpora, and a panic probe over
+    the whole embedded suite and the whole sqldriver suite did not fire either.
+    **NOT a deletion warrant**: that reach is not the full `./pkg/relational/...`
+    + `./pkg/recordlayer/query/...` the warrant rule requires — the full run could
+    not be completed (the 32G `/tmp` tmpfs the Go build uses for `$WORK` exhausts
+    and the key packages fail to link). Stated as unmeasured rather than assumed.
+    Note also that projQualVsScan's arm RAISES `ErrCodeUndefinedColumn`; its
+    silence most likely means semantic analysis rejects the shape earlier, which
+    makes it dead code rather than an unnecessary check.
+
 - [ ] **CQ-95 (L, gated — the name-model seed converts to the windowed/ordinal
   seed).** The successor CQ-79 stops at. CQ-79's finding is that
   `rebaseUnnestOuterLegPredicate` cannot re-anchor by ordinal as a local edit: it

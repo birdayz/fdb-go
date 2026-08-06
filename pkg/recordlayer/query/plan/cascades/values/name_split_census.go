@@ -28,8 +28,11 @@ import (
 // opposite of what was measured.
 //
 // THE DARK SIBLINGS — sites that recover a qualifier from a rendered name and
-// are NOT counted here. Named rather than merely admitted, because an
-// uninstrumented site with no name is one nobody can go and instrument:
+// are NOT counted here. They are no longer DARK: naming them is what made them
+// instrumentable, and they are now measured by the QUALIFIER RECOVERY census
+// (qualifier_recovery_census.go, six sites over three corpora). They stay listed
+// here because this census's zeros still say nothing about them — the two
+// instruments have disjoint populations and neither one's reading transfers:
 //
 //   - cascades_translator.go:9547, recursiveRemapValues. STRICTLY WORSE than
 //     SPLIT-QUALIFIED: it does not merely manufacture a qualifier STRING to look
@@ -55,8 +58,13 @@ import (
 // is pinned by the SEED-WINDOW READER census (its QUALIFIED-NO-IDENTITY hard
 // zero), not by this one.
 //
-// Instrumenting or converting those sites is booked as CQ-94; the parseColRef
-// family in particular is a new measured front, not a widening of this one.
+// Instrumenting those sites was CQ-94's first deliverable and is done; the
+// parseColRef family turned out to be THREE decisions with three different
+// counterparties, not one. Converting them is not — and the measurement says
+// which of them even can be: `splitQualifier` is a pure render-then-re-split
+// round trip (44/44 AGREED, the identity in hand every time), while
+// recursiveRemapValues has no counterparty at its site at all and can only be
+// retired by changing its producer.
 //
 // WHY THIS CENSUS EXISTS AT ALL. The "110 calls → 3 → 0" progression quoted for
 // the projection-channel conversion, in TODO.md, in road-to-prod.md and in the
