@@ -851,10 +851,36 @@ func (f *FieldValue) descendResolvedPath(rootVal any) (any, error) {
 			cur = v
 		case proto.Message:
 			// A STRUCT column materializes as its raw proto message (the
-			// executor's row layer flows nested records verbatim) — descend
-			// by field NAME, Java's FieldValue.eval →
-			// MessageHelpers.getFieldOnMessage. Unset singular field = NULL
-			// (proto3 presence rules ride protoreflect.Has).
+			// executor's row layer flows nested records verbatim). Go descends it
+			// by field NAME. That is the DIVERGENCE this step carries on the
+			// `.Field` ratchet (RFC-197's `boundary` bucket) — it is not the port,
+			// and this comment used to claim it was.
+			//
+			// Java descends by ORDINAL. FieldValue.eval calls
+			// MessageHelpers.getFieldValueForFieldOrdinals (FieldValue.java:169),
+			// which reaches the descriptor through
+			// findFieldDescriptorOnMessageByOrdinal — a bounds check and
+			// `getFields().get(ordinal)` (MessageHelpers.java:170-175), throwing
+			// InvalidExpressionException out of range rather than missing quietly.
+			// The NAME is consumed exactly ONCE, at construction: resolveFieldPath
+			// maps it through recordType.getFieldNameToOrdinalMap() and raises
+			// RECORD_DOES_NOT_CONTAIN_FIELD when it is absent, storing
+			// ResolvedAccessor.of(field, ordinal) (FieldValue.java:284-290). The
+			// name-taking overloads (getFieldOnMessage(msg, String)) exist in
+			// MessageHelpers but FieldValue.eval is not a caller.
+			//
+			// So this is RFC-197's own thesis, in the reference implementation, at
+			// precisely the boundary Go still asks the name — which is why the two
+			// debt entries on protoFieldByName's spelling attempts retire together
+			// on ONE fix (resolve the nested path to field numbers at the
+			// boundary), and why "it may well be correct" no longer holds.
+			// Deliberately NOT converted here: ResolvedAccessor already carries an
+			// Ordinal, but whether that ordinal equals the proto descriptor's
+			// DECLARATION INDEX at every producer is the nested-descent audit the
+			// debt entry names, and getting it wrong is a silent wrong-column read.
+			//
+			// Unset singular field = NULL (proto3 presence rules ride
+			// protoreflect.Has).
 			v, found := protoFieldByName(rec.ProtoReflect(), acc.Field)
 			if !found {
 				if f.Resolved.FrontierPinned {
