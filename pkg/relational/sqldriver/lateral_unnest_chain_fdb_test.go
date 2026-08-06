@@ -352,8 +352,14 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		// chained inner unnest over an empty/NULL owner element is a no-op.
 		_, rows := queryRows(t, `SELECT "ID", "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y"`)
 		// ID is the FIRST projected column, so it is slot 0 — read by position.
+		// The width is asserted rather than assumed for the same reason as the
+		// shadow probe below: "slot 0 is ID" is a claim about the projection, and
+		// an unchecked `[0]` keeps reading SOMETHING after the projection moves.
 		for _, r := range rows {
 			row := positionalPipeSprint(r)
+			if parts := strings.Split(row, "|"); len(parts) != 2 {
+				t.Fatalf("row %q is not the 2-column (ID, Y) projection — slot 0 is only ID at that width", row)
+			}
 			if id := strings.Split(row, "|")[0]; id == "3" || id == "4" {
 				t.Fatalf("ID 3/4 (empty owner) leaked a row: %v", row)
 			}
@@ -413,7 +419,21 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		for _, r := range rows {
 			row := positionalPipeSprint(r)
 			parts := strings.Split(row, "|")
-			if len(parts) == 2 && parts[1] == "999" {
+			// Width FIRST, and fatal. Guarding the 999 check behind `len == 2`
+			// makes THIS LOOP fail open: a projection-width change silently skips
+			// the shadow check entirely.
+			//
+			// Measured honestly, that is a DIAGNOSIS gap, not a coverage gap —
+			// the whole-row expectation below is width-sensitive and fails too,
+			// so the subtest as a whole was never blind. What it reported was
+			// "shadow-precedence rows got=… want=…", which sends the reader after
+			// a value mismatch when the row shape moved. The sibling in
+			// chained_unnest_ordinal_fdb_test.go already has this shape.
+			if len(parts) != 2 {
+				t.Fatalf("row %q is not the 2-column (ID, Y) projection — the shadow check "+
+					"below only means anything at that width", row)
+			}
+			if parts[1] == "999" {
 				t.Fatalf("x.SUB read the shadowing outer column T4.SUB (999) instead of the element field: %v", row)
 			}
 		}

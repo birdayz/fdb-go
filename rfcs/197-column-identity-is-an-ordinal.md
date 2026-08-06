@@ -710,9 +710,14 @@ Two of the three are display, one is not, and the arm table above is wrong.
   booked as **CQ-55** with the reviewed shape (`PartiallyOrderedSet[string]` →
   `[ColumnIdentity]` under `SameColumnPath`, domains minted at the `HintOrdering`
   providers and at composition, `orderingKeyFor`'s three bridge arms deleted,
-  lazy providers failing closed). The ordinal-domain half it depends on is
-  **CQ-56**: `NewFieldValueWithPinnedOrdinal` mints `Domain: unknown` at both
-  composition sites, where `OrdinalDomainOfColumnNames` would derive it.
+  lazy providers failing closed). The ordinal-domain half it depended on,
+  **CQ-56**, is DONE and is no longer a dependency: every pinned mint now states
+  its layout, derived by `OrdinalDomainOfColumnNames` /`OrdinalDomainOfType` from
+  the same enumeration that chose the slot, at four composition sites rather than
+  the two originally scoped. The domain-less convenience constructor is deleted,
+  and `pkg/docscheck`'s `TestPinnedOrdinalAlwaysStatesItsDomain` fails the build
+  on any route back to a pinned ordinal against an unstated row. So CQ-55 inherits
+  a domain it can compare on; what remains open is CQ-55's own work.
 
 THE GROUP-KEY ARM IS OPEN, corroborated a second way so the count above is not
 the only evidence. Guarding that arm alone with a panic reds five targets
