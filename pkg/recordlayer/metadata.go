@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -72,6 +73,48 @@ type RecordMetaData struct {
 	// fieldNumberToRecordType maps union field numbers to record types for
 	// direct wire format decoding (avoids UnionDescriptor allocation).
 	fieldNumberToRecordType map[protowire.Number]*RecordType
+
+	// subspaceKeyCounter / usesSubspaceKeyCounter are the counter-based
+	// subspace-key ASSIGNMENT SCHEME state (proto fields 10 and 11). They are
+	// not decoration: they decide the on-disk prefix every future index gets.
+	//
+	// Per-index subspace keys round-trip on their own, so existing data is safe
+	// either way. What is lost by dropping these is the SCHEME: a metadata that
+	// went through a Go round-trip without them comes back with the counter
+	// disabled, and the next index added — by Java or by Go — is keyed by NAME
+	// instead of by counter. Nothing errors; the assignment discipline just
+	// silently changes underneath the store.
+	// Java: RecordMetaData.subspaceKeyCounter / usesSubspaceKeyCounter.
+	subspaceKeyCounter     int64
+	usesSubspaceKeyCounter bool
+
+	// preserved holds the proto fields this port does not model, kept verbatim
+	// so a Go round-trip re-emits them. See preservedMetaDataFields.
+	preserved preservedMetaDataFields
+}
+
+// preservedMetaDataFields carries the MetaData proto fields the Go port does
+// not model (12: joined_record_types, 13: unnested_record_types,
+// 14: user_defined_functions, 15: views), so that ToProto re-emits exactly what
+// FromProto was given.
+//
+// This is CLAUDE.md's promise made real rather than a new feature. The port
+// scopes out synthetic record types, user-defined functions and views on the
+// stated grounds that protobuf "round-trips them via unknown-field
+// preservation" — but these are KNOWN fields of a message the port parses, so
+// unknown-field preservation never applied to them and they were being dropped
+// on the floor. A Go tool that loaded a Java application's metadata and saved it
+// back deleted the application's joined types.
+//
+// Carrying them opaquely is deliberately NOT the same as supporting them. The
+// contents are never interpreted, and anything whose behaviour would depend on
+// interpreting them must refuse rather than proceed — see
+// RecordMetaData.DeclaresSyntheticRecordTypes and its callers.
+type preservedMetaDataFields struct {
+	joinedRecordTypes    []*gen.JoinedRecordType
+	unnestedRecordTypes  []*gen.UnnestedRecordType
+	userDefinedFunctions []*gen.PUserDefinedFunction
+	views                []*gen.PView
 }
 
 // FormerIndex tracks a deleted index for schema evolution safety.
@@ -169,6 +212,9 @@ type RecordMetaDataBuilder struct {
 	subspaceKeyCounter       int64
 	buildErrors              []error
 	unionDescriptor          protoreflect.MessageDescriptor
+	// preserved carries the unmodelled proto fields through to the built
+	// metadata. See preservedMetaDataFields.
+	preserved preservedMetaDataFields
 }
 
 // NewRecordMetaDataBuilder creates a new builder
@@ -319,6 +365,44 @@ func (b *RecordMetaDataBuilder) EnableCounterBasedSubspaceKeys() *RecordMetaData
 	return b
 }
 
+// UsesSubspaceKeyCounter reports whether counter-based subspace-key assignment
+// is in effect. Matches Java's RecordMetaDataBuilder.usesSubspaceKeyCounter().
+func (b *RecordMetaDataBuilder) UsesSubspaceKeyCounter() bool {
+	return b.counterBasedSubspaceKeys
+}
+
+// GetSubspaceKeyCounter returns the current counter value; 0 when the scheme is
+// not enabled. Matches Java's RecordMetaDataBuilder.getSubspaceKeyCounter().
+func (b *RecordMetaDataBuilder) GetSubspaceKeyCounter() int64 {
+	return b.subspaceKeyCounter
+}
+
+// SetSubspaceKeyCounter sets the counter's starting value, for callers whose
+// indexes already carry keys that would collide with counter-based assignment.
+// Matches Java's RecordMetaDataBuilder.setSubspaceKeyCounter(long), including
+// both of its refusals: the scheme must already be enabled, and the counter may
+// only move FORWARD. Moving it backwards would hand a fresh index a key some
+// existing index already owns, which is a silent data collision rather than an
+// error, so the guard is not a convenience.
+func (b *RecordMetaDataBuilder) SetSubspaceKeyCounter(counter int64) *RecordMetaDataBuilder {
+	if !b.counterBasedSubspaceKeys {
+		b.buildErrors = append(b.buildErrors, &MetaDataError{
+			Message: "Counter-based subspace keys not enabled",
+		})
+		return b
+	}
+	if counter <= b.subspaceKeyCounter {
+		b.buildErrors = append(b.buildErrors, &MetaDataError{
+			Message: fmt.Sprintf(
+				"Subspace key counter must be set to a value greater than its current value: expected greater than %d, actual %d",
+				b.subspaceKeyCounter, counter),
+		})
+		return b
+	}
+	b.subspaceKeyCounter = counter
+	return b
+}
+
 // SetVersion sets the metadata schema version.
 // This should be bumped when the schema changes for evolution tracking.
 // Matches Java's RecordMetaDataBuilder.setVersion(int).
@@ -380,9 +464,23 @@ func (b *RecordMetaDataBuilder) AddIndex(recordTypeName string, index *Index) *R
 	return b
 }
 
-// assignSubspaceKey sets a counter-based subspace key if enabled.
+// assignSubspaceKey sets a counter-based subspace key if enabled AND the index
+// does not already carry a chosen one.
+//
+// Matches Java's RecordMetaDataBuilder.addIndexCommon (:1101-1102):
+//
+//	if (usesSubspaceKeyCounter && !index.hasExplicitSubspaceKey()) {
+//	    index.setSubspaceKey(++subspaceKeyCounter);
+//	}
+//
+// The hasExplicitSubspaceKey half is load-bearing twice over, and Go had
+// neither. A caller who set a key on an index and then added it to a
+// counter-based builder had that key OVERWRITTEN — the index's on-disk prefix
+// silently moved off its data. And every index deserialized from proto counts
+// as explicit, so reloading a counter-keyed metadata would otherwise re-number
+// all of them and orphan every entry in the store.
 func (b *RecordMetaDataBuilder) assignSubspaceKey(index *Index) {
-	if b.counterBasedSubspaceKeys {
+	if b.counterBasedSubspaceKeys && !index.HasExplicitSubspaceKey() {
 		b.subspaceKeyCounter++
 		index.SetSubspaceKey(b.subspaceKeyCounter)
 	}
@@ -880,6 +978,9 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		formerIndexes:           b.formerIndexes,
 		unionDescriptor:         b.unionDescriptor,
 		fieldNumberToRecordType: fnToRT,
+		subspaceKeyCounter:      b.subspaceKeyCounter,
+		usesSubspaceKeyCounter:  b.counterBasedSubspaceKeys,
+		preserved:               b.preserved,
 	}, nil
 }
 
@@ -1225,8 +1326,59 @@ func (rt *RecordType) PrimaryKeyHasRecordTypePrefix() bool {
 // types — they are out of scope (see CLAUDE.md) — so this is always false. Kept as
 // a method for 1:1 fidelity with Java's RecordType.isSynthetic() so callers (e.g.
 // the typed-records range preset) read identically to the Java algorithm.
+//
+// The constant false is SOUND ONLY BECAUSE no synthetic type can reach a
+// *RecordType. Record types are built from the union descriptor's fields, and a
+// joined or unnested type is declared in the metadata proto rather than in the
+// union — so it never becomes one of these. The dangerous reading is that
+// synthetic types are absent from the METADATA, which is not what this says and
+// is not true once fields 12/13 are carried. Callers that need the metadata-level
+// question must ask RecordMetaData.DeclaresSyntheticRecordTypes.
 func (rt *RecordType) IsSynthetic() bool {
 	return false
+}
+
+// DeclaresSyntheticRecordTypes reports whether the metadata DECLARES joined or
+// unnested record types — types this port carries verbatim (see
+// preservedMetaDataFields) but does not model.
+//
+// It exists so that "Go does not model synthetic types" cannot be silently
+// mistaken for "this metadata has none". Those are different claims, and only
+// the second one licenses treating the record-type set as complete. A caller
+// that computes over "all record types" — a scan range, a coverage decision, a
+// count — is computing over a set that omits the synthetic ones, and must
+// refuse rather than answer from the partial set.
+func (m *RecordMetaData) DeclaresSyntheticRecordTypes() bool {
+	return len(m.preserved.joinedRecordTypes) > 0 || len(m.preserved.unnestedRecordTypes) > 0
+}
+
+// SyntheticRecordTypeNames returns the declared joined/unnested type names, for
+// diagnostics. The port does not model these types; this reads their names off
+// the carried protos so an error can say which ones it refused for.
+func (m *RecordMetaData) SyntheticRecordTypeNames() []string {
+	names := make([]string, 0,
+		len(m.preserved.joinedRecordTypes)+len(m.preserved.unnestedRecordTypes))
+	for _, jt := range m.preserved.joinedRecordTypes {
+		names = append(names, jt.GetName())
+	}
+	for _, ut := range m.preserved.unnestedRecordTypes {
+		names = append(names, ut.GetName())
+	}
+	sort.Strings(names)
+	return names
+}
+
+// GetSubspaceKeyCounter returns the counter-based subspace-key counter value.
+// Matches Java's RecordMetaData.getSubspaceKeyCounter().
+func (m *RecordMetaData) GetSubspaceKeyCounter() int64 {
+	return m.subspaceKeyCounter
+}
+
+// UsesSubspaceKeyCounter reports whether index subspace keys are assigned from a
+// counter rather than from index names.
+// Matches Java's RecordMetaData.usesSubspaceKeyCounter().
+func (m *RecordMetaData) UsesSubspaceKeyCounter() bool {
+	return m.usesSubspaceKeyCounter
 }
 
 // GetIndexesForRecordType returns the indexes defined for a specific record type,
