@@ -865,7 +865,8 @@ func (f *FieldValue) descendResolvedPath(rootVal any) (any, error) {
 			// The NAME is consumed exactly ONCE, at construction: resolveFieldPath
 			// maps it through recordType.getFieldNameToOrdinalMap() and raises
 			// RECORD_DOES_NOT_CONTAIN_FIELD when it is absent, storing
-			// ResolvedAccessor.of(field, ordinal) (FieldValue.java:284-290). The
+			// ResolvedAccessor.of(field, ordinal) (FieldValue.java:272-300 —
+			// the name branch is :283-290, the store :297). The
 			// name-taking overloads (getFieldOnMessage(msg, String)) exist in
 			// MessageHelpers but FieldValue.eval is not a caller.
 			//
@@ -874,10 +875,20 @@ func (f *FieldValue) descendResolvedPath(rootVal any) (any, error) {
 			// debt entries on protoFieldByName's spelling attempts retire together
 			// on ONE fix (resolve the nested path to field numbers at the
 			// boundary), and why "it may well be correct" no longer holds.
-			// Deliberately NOT converted here: ResolvedAccessor already carries an
-			// Ordinal, but whether that ordinal equals the proto descriptor's
-			// DECLARATION INDEX at every producer is the nested-descent audit the
-			// debt entry names, and getting it wrong is a silent wrong-column read.
+			// Deliberately NOT converted here, and the reason is stronger than an
+			// unaudited maybe: on the producers that actually reach this arm the
+			// Ordinal is KNOWN NOT to be the descriptor's declaration index.
+			// unnest_seed.go and unnest_gather.go mint their struct-descent
+			// suffixes as `ResolvedAccessor{Field: ..., Ordinal: -1}` on the
+			// stated grounds that the ordinal is never consulted here, so an
+			// ordinal descent would index at -1; and expr.fuseNestedAccessors
+			// copies a position in the SQL struct type's declared field list,
+			// which equals the emitted descriptor's declaration index only by
+			// convention. Converting the read before the producers is a silent
+			// wrong-column read. Pinned by
+			// TestFieldValue_DescendProtoMessage_MustNotConsultTheOrdinal, which
+			// is what must be updated when the producers become ordinal-true —
+			// that edit is the signal these two debt entries are retirable.
 			//
 			// Unset singular field = NULL (proto3 presence rules ride
 			// protoreflect.Has).

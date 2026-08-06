@@ -216,8 +216,16 @@ Two further corrections to the migration's bookkeeping, both found by reading th
   normalization mints output labels with no parse tree behind them, so their absent segment triple
   is STRUCTURAL and permanent; the remaining producers are machinery mints whose names are
   aggregate renderings (`MAX(E.SALARY)`), where a dot is deliberately not a qualifier. **STOPPED on
-  an owner decision** — Java offers no guidance because it has no projection whose output labels
-  lack an `Identifier` (`Identifier.java:34-58`, `IdentifierVisitor.java:56-64`). Caveat recorded
+  an owner decision** — but NOT because Java is silent, which an earlier draft of this bullet
+  claimed. Java *does* have projection outputs carrying no `Identifier`: `Expression.name` is an
+  `Optional<Identifier>` (`Expression.java:100-113`) and `Expression.ofUnnamed`
+  (`:305-322`) mints empty ones throughout. Its answer to those is that they are **not
+  name-resolvable at all** — `SemanticAnalyzer.lookup` skips an attribute with no name outright
+  (`SemanticAnalyzer.java:459-461`), never matching it positionally or through a synthesized
+  string. What is genuinely Go-side is the *re-split*: Java never re-parses a dotted string
+  (identity is `name` + `List<String> qualifier`, `Identifier.java:34-58`, built segment-by-segment
+  at `IdentifierVisitor.java:56-64`, joined only for display at `:61-63`), so it has no analogue of
+  the arm that would answer the question by accident. Caveat recorded
   at `:6239-6250`: nothing instruments the split population, so the "110 → 0" figures are scratch
   measurements, not instrument readings.
 - **CQ-53 is marked done but has a surviving producer.** `TODO.md:10590` closes it as subsumed by

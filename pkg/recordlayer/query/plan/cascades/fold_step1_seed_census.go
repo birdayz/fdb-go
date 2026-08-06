@@ -441,9 +441,11 @@ type foldStep1LegDecline struct {
 //
 // That matters beyond a cosmetic log line. This witness is the instrument the
 // bare-untyped-QOV residue is measured with — the population Java cannot even
-// express, since QuantifiedObjectValue.of has no untyped overload
-// (QuantifiedObjectValue.java:187) and Quantifier.getFlowedObjectValue types
-// unconditionally (Quantifier.java:801-810). An instrument that reports the target
+// express. Both of QuantifiedObjectValue's factory overloads resolve a Type:
+// of(alias, Type) takes one outright (QuantifiedObjectValue.java:187) and
+// of(Quantifier) derives it (`:182`) through Quantifier.getFlowedObjectType,
+// which is a Verify.verify plus requireNonNull (Quantifier.java:805-810). An
+// instrument that reports the target
 // state before any work is done would have reported that sweep complete on the day
 // it started, with the whole population untouched underneath.
 //

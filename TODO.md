@@ -10971,16 +10971,25 @@ None is speculative: each was re-verified against the tree before booking.
   designed — is refuted. Java's mechanism is three pieces:
   - `CascadesRule.java:66-77` — every rule carries
     `Set<PlannerConstraint<?>> requirementDependencies`, **empty by default**;
-    only the ~30 `PushRequestedOrdering*` / `PushReferencedFields*` /
-    `Implement*Union` / `AbstractDataAccessRule` rules declare one.
+    exactly **24** declaration sites declare one, all through the 2-arg
+    constructor (`getConstraintDependencies` is never overridden anywhere in the
+    tree): 13 `PushRequestedOrdering*`, 4 `PushReferencedFields*`, 6 `Implement*`
+    (`Unique`, `InUnion`, `StreamingAggregation`, `InJoin`, `NestedLoopJoin`,
+    `DistinctUnion`), and `AbstractDataAccessRule:122` — the only two-constraint
+    set, inherited by its two concrete subclasses for 25 concrete rule classes.
   - `CascadesPlanner.java:891-908` — `ReExploreExpression.shouldPushRule` returns
     `group.isFullyExploring() || !group.isExploredForAttributes(rule.getConstraintDependencies())`,
     against `ExploreExpression.shouldPushRule`'s unconditional `true` (`:929-932`).
   - `ConstraintsMap.java:246-261` — `isExploredForAttributes` compares each
     interesting key's `lastUpdatedTick` against `watermarkCommittedTick`.
-  Routing at `CascadesPlanner.java:528-538`: a fresh yield gets `ExploreExpression`;
-  every RE-exploration, including the ones a constraint push schedules at
-  `:1088-1090`, gets `ReExploreExpression`. Net effect: a constraint-driven round
+  Routing at `CascadesPlanner.java:528-538` is on a `forceExploration` flag:
+  `true` → `ExploreExpression`, `false` → `ReExploreExpression`. A fresh yield
+  passes `true` (`:1073`, over `ruleCall.getNewExploratoryExpressions()`). A
+  constraint push does NOT push a task variant directly — `:1088-1090` pushes
+  `ExploreGroup` for each reference whose requirements moved, and only for ones
+  already explored (`!reference.hasNeverBeenExplored()`); it is that group task's
+  member loop that re-enters with `forceExploration=false`, which is where
+  `ReExploreExpression` comes from. Net effect: a constraint-driven round
   re-fires only the rules that DECLARED a dependency on the constraint that moved
   — an empty dependency set means not pushed at all after first exploration.
 
@@ -11110,9 +11119,23 @@ None is speculative: each was re-verified against the tree before booking.
   triple there is STRUCTURAL and permanent. Those labels are bare by construction
   today, so the class is not firing — but a quoted identifier carrying a dot is
   legal SQL, and the re-split arm would answer the question BY ACCIDENT if it were
-  converted without the decision being made. Java gives no guidance: it has no
-  projection whose output labels lack an `Identifier`, so this is a contract
-  question about a Go-side normalization, not a port.
+  converted without the decision being made.
+
+  **Correction to an earlier draft of this paragraph, which said "Java gives no
+  guidance: it has no projection whose output labels lack an `Identifier`". That
+  is false.** `Expression.name` is an `Optional<Identifier>`
+  (`Expression.java:100-113`) and `Expression.ofUnnamed` (`:305-322`) mints empty
+  ones at roughly twenty in-tree call sites. Java's guidance is therefore
+  positive, not absent: an output with no name is **not name-resolvable** —
+  `SemanticAnalyzer.lookup` skips it before any comparison
+  (`SemanticAnalyzer.java:459-461`) rather than matching it positionally or
+  synthesizing a string for it. The part that really has no Java analogue is the
+  RE-SPLIT: Java's identity is `name` + `List<String> qualifier`
+  (`Identifier.java:34-58`), built segment-by-segment from the ANTLR `FullId`
+  (`IdentifierVisitor.java:56-64`) and joined only for display
+  (`Identifier.java:61-63`), so no dotted string is ever re-parsed and the
+  accidental-answer arm cannot exist there. The owner decision stands; its basis
+  is a Go-only normalization, not Java's silence.
 
   One honest caveat recorded at `:6239-6250`: nothing instruments the split
   population (the census beside these bakers counts qualifier MATCHES, never
