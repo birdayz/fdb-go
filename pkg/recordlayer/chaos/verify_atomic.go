@@ -20,7 +20,7 @@ func verifyAtomicIndexes(ctx context.Context, store *recordlayer.FDBRecordStore,
 	md := model.metadata
 
 	for _, idx := range md.GetAllIndexes() {
-		switch idx.Type {
+		switch idx.CanonicalType() {
 		case recordlayer.IndexTypeCount, recordlayer.IndexTypeCountNotNull:
 			violations = append(violations, verifyCountIndex(ctx, store, model, md, idx)...)
 		case recordlayer.IndexTypeSum:

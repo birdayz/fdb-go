@@ -102,7 +102,11 @@ func (store *FDBRecordStore) findIndexForRecordFunction(
 // canEvaluateRecordFunction checks if an index can evaluate the given record function.
 // Matches Java's RankIndexMaintainer.canEvaluateRecordFunction().
 func canEvaluateRecordFunction(fn *IndexRecordFunction, idx *Index) bool {
-	switch idx.Type {
+	// Canonicalized like every other behaviour-deriving switch. Neither type here
+	// has a deprecated alias today, so this is a no-op — kept uniform because the
+	// way the bare _EVER spellings were missed was a switch that looked like it
+	// did not need it.
+	switch canonicalIndexType(idx.Type) {
 	case IndexTypeRank:
 		return fn.Name == FunctionNameRank &&
 			keyExpressionEquals(idx.RootExpression, fn.Operand)

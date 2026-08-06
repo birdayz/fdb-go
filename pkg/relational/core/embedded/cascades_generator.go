@@ -3503,7 +3503,12 @@ func (c *metadataPlanContext) GetPrimaryKeyColumns(recordType string) []string {
 // or nil if the index is not an aggregate type.
 func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaData) *cascades.AggregateIndexMatchCandidate {
 	var aggFunc expressions.AggregateFunction
-	switch idx.Type {
+	// Canonicalized like every other behaviour-deriving switch on an index type.
+	// A no-op for the arms below (the deprecated bare _EVER spellings fold onto
+	// _LONG, which is equally unmatched here, and deliberately so per the note in
+	// the PermutedMax arm) — uniform because a switch that looks like it does not
+	// need canonicalizing is exactly how the bare spellings were missed.
+	switch idx.CanonicalType() {
 	case recordlayer.IndexTypeSum:
 		aggFunc = expressions.AggSum
 	case recordlayer.IndexTypeCount, recordlayer.IndexTypeCountNotNull:

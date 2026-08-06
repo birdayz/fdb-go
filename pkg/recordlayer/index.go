@@ -74,6 +74,19 @@ const (
 // mis-judged by the idempotency check, the grouping validator and the aggregate
 // matcher. Routing every one of those switches through here keeps the alias in a
 // single place, which is the property Java gets for free from its registry.
+// CanonicalType is canonicalIndexType for callers outside this package — the
+// chaos model and its verifier, which re-derive an index's behaviour from its
+// type exactly as the five in-package switches do.
+//
+// They are the same hazard with a worse failure mode. A model that does not
+// resolve the alias simply DROPS the index: it tracks no min/max for it, the
+// verifier's own switch skips it too, and the pair agrees perfectly about an
+// index neither one looked at. That is a safety net reporting green on the
+// thing it was not checking, which is worse than a wrong answer.
+func (idx *Index) CanonicalType() string {
+	return canonicalIndexType(idx.Type)
+}
+
 func canonicalIndexType(indexType string) string {
 	switch indexType {
 	case IndexTypeMinEver:

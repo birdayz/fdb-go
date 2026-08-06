@@ -107,7 +107,7 @@ func (m *StoreModel) Save(msg proto.Message) {
 			continue
 		}
 
-		switch idx.Type {
+		switch idx.CanonicalType() {
 		case recordlayer.IndexTypeCountUpdates:
 			groupingKeys := m.evaluateGroupingKeys(idx, msg)
 			for _, gk := range groupingKeys {
