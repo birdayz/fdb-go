@@ -168,10 +168,12 @@ func (t *indexingThrottle) waitTimeMillis() int {
 		t.forcedDelayTimestamp = time.Time{}
 		return 0
 	}
-	if t.recordsScannedSinceForcedDelay == 0 {
-		return 0
-	}
-
+	// No early return for a zero record count: Java has none either, and the
+	// difference is not the returned wait (both give 0) but the limiter clock.
+	// Java falls through and re-anchors forcedDelayTimestamp at now, so a range
+	// that scanned nothing does not leave a stale anchor behind for the NEXT
+	// range to measure a too-large delta against — which would cancel that
+	// range's pacing wait and under-throttle relative to Java.
 	now := time.Now()
 
 	// Calculate how long we should have spent on the records we've processed
