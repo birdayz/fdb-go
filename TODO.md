@@ -11143,6 +11143,55 @@ None is speculative: each was re-verified against the tree before booking.
   scratch measurements, not instrument readings. If this item is resumed, an
   actual counter is the first deliverable.
 
+  **THE FIRST DELIVERABLE IS DONE (2026-08-06). The counter exists, and the
+  measurement changes what the remainder is.** `name_split_census.go` counts both
+  splitting arms per resolution decision, bucketed by which representation
+  DECIDED (segmented / SPLIT-QUALIFIED / splitBare); `AssertNameSplitCensus` is
+  wired into the sqldriver `TestMain` beside its siblings. Measured over the
+  real-FDB corpus, STABLE across two consecutive full-suite runs:
+
+  | arm | calls | segmented | SPLIT-QUALIFIED | splitBare |
+  |---|---|---|---|---|
+  | `legQOVSegmentsOf` | 9 | 9 | **0** | 0 |
+  | `flatColumnBake` | 2 | 0 | **0** | 2 |
+
+  - The "110 → 3 → 0" ZERO is CONFIRMED — for the first time by an instrument.
+    No qualifier is being manufactured from a rendered name anywhere in
+    production traffic.
+  - **The POPULATION refutes the scale the prose implied.** Eleven calls between
+    the two arms, not ~110. `legQOVSegmentsOf` takes the segmented path on all
+    nine of its calls — its fallback split is not merely producing no qualifiers,
+    it is not being ENTERED. `flatColumnBake`'s re-split arm is reached twice,
+    both by a BARE name that falls through unbaked; it has never been handed a
+    dotted name at all.
+  - So the hard zero is nearly vacuous on its own and the FLOORS carry the
+    weight. Both are 1 — there is no order of magnitude below 9 and 2 — and what
+    they detect is the arms going from nearly-dark to DARK, the only way the zero
+    goes quietly false. Proven red by dropping the recorder from an arm.
+  - The `flatColumnBake calls 102` in the dotted-leg qualifier census is NOT in
+    conflict: that counts `legWindowSlot` calls, which the SEGMENTED caller
+    (`bakeSegmentedColumnRef`) also makes. 102 against 2 is the converted channel
+    carrying essentially all the traffic.
+
+  **The four debt entries are NOT retired — they are re-keyed and restated.**
+  `:5811`→`:5815`, `:5813`→`:5819`, `:6139`→`:6145`, `:6171`→`:6177` (plus
+  `:6103`→`:6109`, `:6199`→`:6205`); ratchet unchanged at 53. They cannot retire,
+  and the reason is now measured rather than argued: the arms serve the carrier
+  that states NO segments, and one class of such carrier — a projection MACHINERY
+  mint, star-body normalization in `translateScan` — structurally never can.
+  Deleting the arms would convert those carriers' behaviour by accident.
+
+  **The PARKED question is NOT resolved, and it is genuinely the owner's.** What
+  changed is that it can no longer be answered BY ACCIDENT. Java's guidance is
+  positive and unambiguous — an output with no `Identifier` is not
+  name-resolvable at all (`SemanticAnalyzer.java:459-461`) — so "what should
+  happen" has an answer. What has no answer here is whether Go's star-body
+  normalization should be CHANGED to match, which moves a live projection channel.
+  The census makes the day a dotted machinery label first reaches either arm a RED
+  test whose failure text names the decision, instead of the arm silently reading
+  the dot as a qualifier and settling it. That is the honest boundary: the
+  question stays open, the accident is closed.
+
   Not query-engine machinery: no cost model, no rule, no executor contract. The
   segments already exist and are already correct; this is deleting a join and a
   split. Pin with a `"A.B"`-quoted-column-vs-`A.B`-qualified-reference pair that
@@ -13950,6 +13999,32 @@ None is speculative: each was re-verified against the tree before booking.
   would let either close while the other's survived — but neither is startable as
   a local edit, and CQ-79's `S/M` should be read as `L, gated on the executor
   widening`, sequenced WITH CQ-68 rather than before it.
+
+  **RE-CONFIRMED AT `7335ad283` (2026-08-06), and the third correction is now
+  MEASURED rather than inferred.** Nothing has touched
+  `cascades_translator.go` since `041838856`, so all three corrections stand
+  verbatim; the mint is live at `:3667` and its debt entry is live at test line
+  `:454`. Two things are now instrument readings:
+  - **The "NLJ precedent" does not run.** The leg-local bake census reports its
+    `MergedReAnchor` partition VACUOUS over the whole real-FDB sqldriver corpus
+    (`LEG-LOCAL BAKE CENSUS VACUOUS: … MergedReAnchor, which is 0`). So "re-anchor
+    by ordinal as the NLJ path already does" points at an arm measured at zero
+    calls. It is a structural template, not an exercised precedent, and any plan
+    that cites it as proven-in-traffic is citing dead code.
+  - **The reader it feeds is live at 2.** The leg-column provenance census reports
+    dotted hits available 2 (`C.CV`, `I.QTY`), unstated 0, diverged 0 — so the
+    executor's dotted arm cannot be deleted, and the acceptance condition
+    "dotted hits → 0" is not reachable from the translator side.
+
+  The blocker, stated in the plainest available form:
+  `rebaseUnnestOuterLegPredicate` **takes no layout parameter at all**, while its
+  ordinal twin takes two (`ordType`, `mergedType`) precisely because it needs
+  them. Every surviving call site (`:3059`, `:3400`, `:3569`, `:3590`, `:3742`)
+  is the `!seedWindowed` / `!ordinalSeed` arm, whose merged row is BUILT with
+  qualified `LEG.COL` keys at `:475`. The ordinal twin is already selected
+  wherever a windowed seed makes it correct. So this is not a mint that someone
+  forgot to convert; it is the name-model arm's rebase, and it converts when the
+  seed does. **STOP confirmed — do not attempt this as a local re-anchor.**
 
 - [x] **CQ-80 (MED, test-contract) — four watch-list entries claim a pin that
   does not exist or cannot fail. DONE — all four closed, two of them REFUTED

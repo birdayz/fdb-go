@@ -154,6 +154,9 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	if failed := assertSeedWindowReaderCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
+	if failed := assertNameSplitCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
 	if failed := assertLegIdentityCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
@@ -544,17 +547,34 @@ var legLocalBakeFloors = cascades.LegLocalBakeFloors{
 // legColumnProvenanceFloors is the minimum population the leg-column provenance
 // census must report over the whole suite.
 //
-// MEASURED over this corpus: calls 52 (flatHit 40, notDotted 8, noLegs 0,
-// dottedMiss 0), dotted hits available 4, unstated 0, diverged 0. The
-// retirement decision this census feeds rests on the SMALL number — four dotted
-// hits, all four with a stated identity naming the same leg — and a small number
-// is exactly the kind that reads the same whether it is measured or absent.
+// RE-MEASURED over this corpus, 2026-08-06: dotted hits available 2 (`C.CV`,
+// `I.QTY`), unstated 0, diverged 0 — STABLE across three full-suite runs. The
+// CALL total is not stable and is given as a range: 2554, 2554, 2674 across
+// those same three runs (flatHit 120 every time; the movement is all in
+// notDotted). Quote the range or quote nothing, for the reason the leg-identity
+// census states at its own population line — this site is sampled inside
+// readers that rules drive, and the memo may explore a rule once or many times
+// for one query depending on exploration order.
+//
+// The number the retirement decision rests on is the DOTTED-HIT count, and that
+// one is stable at 2.
+//
+// The previous reading in this block — "calls 52 (flatHit 40, notDotted 8),
+// dotted hits available 4" — was wrong in BOTH directions and is kept here as
+// the history it is: the call total was low by a factor of fifty (the corpus
+// grew under it) while the dotted-hit count was HIGH by two. The second error is
+// the dangerous one. This census's retirement decision rests entirely on the
+// dotted-hit population, so a stale 4 overstates the reader's remaining reach by
+// double, and nothing read the instrument to notice. The floors held throughout,
+// which is the point of flooring rather than pinning — and also why a floor is
+// no protection at all against a comment.
 //
 // Both floors are 1, not an order of magnitude below the measurement, because
-// there is no order of magnitude below 4. What is being detected here is
+// there is no order of magnitude below 2. What is being detected here is
 // DISAPPEARANCE: the shapes that drive the dotted arm ceasing to be planned, or
 // the reader ceasing to be reached. DottedHitIdentityAvailable is floored
-// separately from Calls because the flat arm carries 40 of the 52 calls, so the
+// separately from Calls because the non-dotted arms carry all but 2 of the
+// calls, so the
 // denominator can look healthy while the arm the census exists for goes silent.
 var legColumnProvenanceFloors = executor.LegColumnProvenanceFloors{
 	Calls:                      1,
@@ -647,6 +667,47 @@ func assertSeedWindowReaderCensus(w io.Writer) bool {
 		floors = nil
 	}
 	return values.AssertSeedWindowReaderCensus(w, floors)
+}
+
+// nameSplitFloors is the minimum population each splitting arm must report over
+// the whole suite.
+//
+// MEASURED 2026-08-06 over this corpus: legQOVSegmentsOf 9 calls (segmented 9,
+// SPLIT-QUALIFIED 0, splitBare 0); flatColumnBake 2 calls (segmented 0,
+// SPLIT-QUALIFIED 0, splitBare 2).
+//
+// The floors exist for ONE reason and it is not drift: this census's whole
+// content is a HARD ZERO on SPLIT-QUALIFIED, and a hard zero over an empty
+// population is the fake-green shape every instrument on this path was rebuilt
+// to end. If the shapes that drive these arms stop being planned, or the
+// recorder is dropped from an arm, SPLIT-QUALIFIED stays 0 and the gate stays
+// green while measuring nothing. The floors are what make that red.
+//
+// Both floors are 1, because neither measurement has an order of magnitude
+// below it to drop to — 9 and 2. That is the honest reading of a nearly-dark
+// pair of arms, and it is deliberately NOT dressed up as a healthy population:
+// what these floors detect is DISAPPEARANCE, the arms ceasing to be reached at
+// all, which is the only way this census's hard zero can go quietly false.
+var nameSplitFloors = func() values.NameSplitFloors {
+	var f values.NameSplitFloors
+	f.Calls[values.NameSplitSiteLegQOVSegmentsOf] = 1 // measured 9
+	f.Calls[values.NameSplitSiteFlatColumnBake] = 1   // measured 2
+	return f
+}()
+
+// assertNameSplitCensus checks the translator name-split census, dropping the
+// population floors when -test.run narrows the corpus — the same split its
+// siblings make, for the same reason.
+func assertNameSplitCensus(w io.Writer) bool {
+	floors := &nameSplitFloors
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		fmt.Fprintf(w, "translator name split census: population floors NOT checked "+
+			"(-test.run=%q narrowed the corpus). The SPLIT-QUALIFIED hard zero still "+
+			"runs, over whatever population this filter reached — at zero it holds "+
+			"VACUOUSLY.\n", f.Value.String())
+		floors = nil
+	}
+	return values.AssertNameSplitCensus(w, floors)
 }
 
 // assertDottedLegQualifierCensus checks the translator dotted-leg census,

@@ -5801,6 +5801,8 @@ func bakeDottedRefsToLegQOVWithRef(v values.Value, ref logical.ColumnRef, input 
 	// whether it is qualified at all.
 	segmentsOf := func(fv *values.FieldValue, isRoot bool) (qual, leaf string, qualified bool) {
 		if isRoot && ref.Present {
+			values.RecordNameSplit(values.NameSplitSiteLegQOVSegmentsOf,
+				values.NameSplitSegmented, fv.Field)
 			if !ref.Qualified {
 				return "", ref.Bare, false
 			}
@@ -5808,8 +5810,12 @@ func bakeDottedRefsToLegQOVWithRef(v values.Value, ref logical.ColumnRef, input 
 		}
 		dot := strings.IndexByte(fv.Field, '.')
 		if dot <= 0 {
+			values.RecordNameSplit(values.NameSplitSiteLegQOVSegmentsOf,
+				values.NameSplitBare, fv.Field)
 			return "", fv.Field, false
 		}
+		values.RecordNameSplit(values.NameSplitSiteLegQOVSegmentsOf,
+			values.NameSplitQualified, fv.Field)
 		return strings.ToUpper(fv.Field[:dot]), fv.Field[dot+1:], true
 	}
 	sel := peelToSelectExpression(input)
@@ -6236,18 +6242,40 @@ func bakeFlatRefsAgainstColumns(v values.Value, cols []string, legs ...values.Re
 		// standing and the question stated, rather than converted by guesswork,
 		// which would settle it silently.
 		//
-		// NOTHING STANDS GUARD OVER THE SPLIT POPULATION, and that is the part
-		// to distrust: the census beside these bakers counts qualifier MATCHES,
-		// never splits, so a regrown splitter raises no counter anywhere. The
-		// 110-to-zero figures are scratch measurements, not instrument readings.
-		// A DATED POINT MEASUREMENT of what the unit corpus reaches:
-		// `go test -count=1 -v ./pkg/relational/core/...` hits the two re-split
-		// arms (this one and bakeDottedRefsToLegQOVWithRef's segmentsOf
-		// fallback) 13 times, every one a HAND-BUILT fixture — eight are the
-		// probes that pin the splitting behaviour itself, the rest construct a
-		// LogicalProject directly and so carry no triple where the SQL builder
-		// would. That number measures fixtures, not production traffic.
-		if dot := strings.IndexByte(fv.Field, '.'); dot > 0 {
+		// THE SPLIT POPULATION NOW HAS A GUARD, and the numbers below are
+		// instrument readings rather than the scratch figures they replace.
+		// values.RecordNameSplit counts this arm and segmentsOf per resolution
+		// decision, bucketed by which representation DECIDED; the standing
+		// assertion is values.AssertNameSplitCensus, wired into the sqldriver
+		// TestMain beside its siblings. Measured over the real-FDB corpus,
+		// 2026-08-06, STABLE across two consecutive full-suite runs:
+		//
+		//	legQOVSegmentsOf   calls 9 | segmented 9 | SPLIT-QUALIFIED 0 | splitBare 0
+		//	flatColumnBake     calls 2 | segmented 0 | SPLIT-QUALIFIED 0 | splitBare 2
+		//
+		// So the "110 → 3 → 0" progression's ZERO is confirmed, and the
+		// POPULATION is far smaller than that progression implied: this arm is
+		// reached twice over the whole corpus, both times by a BARE name that
+		// falls through unbaked. It has never been handed a dotted name here.
+		// The hard zero is therefore nearly vacuous on its own and the FLOORS
+		// are what carry the weight — they fail when these arms go from
+		// nearly-dark to dark, which is the only way the zero goes quietly
+		// false.
+		//
+		// That is also what keeps the open question above from being settled by
+		// accident: the day a machinery-minted label arrives here carrying a
+		// dot, SPLIT-QUALIFIED leaves zero and the assertion fires with the
+		// decision named in its message, rather than this arm silently reading
+		// the dot as a qualifier.
+		dot := strings.IndexByte(fv.Field, '.')
+		if dot > 0 {
+			values.RecordNameSplit(values.NameSplitSiteFlatColumnBake,
+				values.NameSplitQualified, fv.Field)
+		} else {
+			values.RecordNameSplit(values.NameSplitSiteFlatColumnBake,
+				values.NameSplitBare, fv.Field)
+		}
+		if dot > 0 {
 			if k, found := legWindowSlot(fv.Field[:dot], fv.Field[dot+1:], cols, legs,
 				values.DottedLegSiteFlatColumnBake); found {
 				// k indexes the WHOLE flat row (the leg window is a range

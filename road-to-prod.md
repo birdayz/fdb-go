@@ -225,9 +225,16 @@ Two further corrections to the migration's bookkeeping, both found by reading th
   string. What is genuinely Go-side is the *re-split*: Java never re-parses a dotted string
   (identity is `name` + `List<String> qualifier`, `Identifier.java:34-58`, built segment-by-segment
   at `IdentifierVisitor.java:56-64`, joined only for display at `:61-63`), so it has no analogue of
-  the arm that would answer the question by accident. Caveat recorded
-  at `:6239-6250`: nothing instruments the split population, so the "110 → 0" figures are scratch
-  measurements, not instrument readings.
+  the arm that would answer the question by accident. The caveat that used to sit here — "nothing
+  instruments the split population, so the 110 → 0 figures are scratch measurements" — is
+  CLOSED: `name_split_census.go` counts both arms per resolution decision and
+  `AssertNameSplitCensus` gates them in the sqldriver `TestMain`. Measured, stable across two
+  consecutive full-suite runs: `legQOVSegmentsOf` 9 calls (segmented 9, **SPLIT-QUALIFIED 0**),
+  `flatColumnBake` 2 calls (splitBare 2, **SPLIT-QUALIFIED 0**). The zero is confirmed; the
+  population is 11, not the ~110 the scratch figure implied, so the FLOORS rather than the zero are
+  what carry the guarantee. The question itself stays open and stays the owner's — what is closed
+  is the possibility of answering it by accident, since a dotted machinery label reaching either arm
+  is now a red test naming the decision.
 - **CQ-53 is marked done but has a surviving producer.** `TODO.md`'s CQ-53 closes it as subsumed by
   CQ-67 (#549) "carrying no separate remainder", while
   `pkg/docscheck/field_name_decision_test.go:447` pins `cascades_translator.go:3598` as "dotted:
