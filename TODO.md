@@ -10964,6 +10964,62 @@ None is speculative: each was re-verified against the tree before booking.
   separates "constraint widened" from "re-push required", the separation is the
   port. Planner machinery, so it takes a Graefe-gated RFC + lap of its own.
 
+  **JAVA READ, AT `041838856`. The answer is the branch this item treated as
+  unlikely: Java DOES separate them, and Go already contains half the port as
+  DEAD CODE.** The item's measurements and its description of the coupling are
+  all still true; its implied conclusion — that the decoupling is machinery to be
+  designed — is refuted. Java's mechanism is three pieces:
+  - `CascadesRule.java:66-77` — every rule carries
+    `Set<PlannerConstraint<?>> requirementDependencies`, **empty by default**;
+    exactly **24** declaration sites declare one, all through the 2-arg
+    constructor (`getConstraintDependencies` is never overridden anywhere in the
+    tree): 13 `PushRequestedOrdering*`, 4 `PushReferencedFields*`, 6 `Implement*`
+    (`Unique`, `InUnion`, `StreamingAggregation`, `InJoin`, `NestedLoopJoin`,
+    `DistinctUnion`), and `AbstractDataAccessRule:122` — the only two-constraint
+    set, inherited by its two concrete subclasses for 25 concrete rule classes.
+  - `CascadesPlanner.java:891-908` — `ReExploreExpression.shouldPushRule` returns
+    `group.isFullyExploring() || !group.isExploredForAttributes(rule.getConstraintDependencies())`,
+    against `ExploreExpression.shouldPushRule`'s unconditional `true` (`:929-932`).
+  - `ConstraintsMap.java:246-261` — `isExploredForAttributes` compares each
+    interesting key's `lastUpdatedTick` against `watermarkCommittedTick`.
+  Routing at `CascadesPlanner.java:528-538` is on a `forceExploration` flag:
+  `true` → `ExploreExpression`, `false` → `ReExploreExpression`. A fresh yield
+  passes `true` (`:1073`, over `ruleCall.getNewExploratoryExpressions()`). A
+  constraint push does NOT push a task variant directly — `:1088-1090` pushes
+  `ExploreGroup` for each reference whose requirements moved, and only for ones
+  already explored (`!reference.hasNeverBeenExplored()`); it is that group task's
+  member loop that re-enters with `forceExploration=false`, which is where
+  `ReExploreExpression` comes from. Net effect: a constraint-driven round
+  re-fires only the rules that DECLARED a dependency on the constraint that moved
+  — an empty dependency set means not pushed at all after first exploration.
+
+  **Go's state, measured:** `expressions/constraints_map.go:114`
+  `IsExploredForAttributes` is already a faithful port of
+  `ConstraintsMap.java:246` — and its ONLY callers are
+  `expressions/constraints_map_test.go:49,58`. It is dead in production.
+  `grep -rn ConstraintDependencies pkg/` returns ZERO hits, and
+  `unified_tasks.go:230-286` pushes every matching rule on every round with no
+  constraint filter. So the port is: (1) add a constraint-dependency declaration
+  to the rule interfaces, empty by default, declared where Java declares it;
+  (2) split the explore task into forced and re-explore variants, the latter gated
+  on the already-ported `IsExploredForAttributes`; (3) route yields to forced and
+  `ExploreGroupTask`'s member loops to re-explore.
+
+  Also correct in passing: `Set` is now `planner_constraint.go:76-94` and
+  `combineForKey` `:107-124` (the booked `:80-95` names neither), and the cap that
+  fired is `ErrPlannerRoundCapHit` (`unified_tasks.go:106-109`, `maxRoundsPerRef
+  = 100`), not `ErrPlannerCapHit`. The reverted experiment was never committed —
+  the measurements survive only in `c2ad0f445`'s message and the debt entry's
+  reason string, which is the argument for landing the port with the budget pins
+  re-measured rather than re-deriving the numbers from memory.
+
+  **STILL a Graefe-gated RFC + lap** — it moves two ±2% budget pins
+  (`partition_select_interning_baseline_test.go:291`,
+  `ordinal_star_planning_budget_test.go:112`) and the round cap. But the RFC
+  RECORDS a port and is graded against `CascadesPlanner.java:891-908` /
+  `CascadesRule.java:66-77` / `ConstraintsMap.java:246-261`; it does not design a
+  mechanism.
+
 - [ ] **CQ-52 (MED, S/M, RFC-197 follow-on) — the parser HAS the qualifier/leaf
   segments, joins them into one string, and the resolver splits them back
   apart.** · **PARTIALLY LANDED (#540, `f50cee43e`) — STAYS OPEN.**
@@ -11019,6 +11075,73 @@ None is speculative: each was re-verified against the tree before booking.
   qualified `A.B` reference are the same bytes — the ambiguity that was already
   a live defect once on the cluster-attribution path (see
   `cluster_ref_attribution_test.go`).
+
+  **RE-VERIFIED AT `041838856`. Far more has landed than the status text says, and
+  the residual is NOT four line-keyed sites — it is ONE BEHAVIOUR DECISION.**
+  - The four keys named above and in `road-to-prod.md` (`:5742`, `:5744`, `:6070`,
+    `:6102`) no longer exist. The surviving entries carrying those same reason
+    strings are `cascades_translator.go:5811`, `:5813`, `:6139`, `:6171`. (Two of
+    those reason strings still cross-reference the OLD keys `5742`/`6070`
+    internally.)
+  - The parsed channels are DONE. `logical.ColumnRef` (`logical/operators.go:287-292`)
+    and `LogicalProject.ProjectionRefs` (`:280`) carry the triple, minted only
+    through `ColumnRefFor` (`:311`), which reconciles the triple against the
+    rendered name and returns the ZERO value on mismatch — the invariant behind
+    "absent means unknown, never unqualified". Projection, nested projection,
+    GROUP BY keys and aggregate operands all take the segmented path.
+  - **Java confirms the direction unambiguously.** `Identifier.java:34-58` holds
+    `name` + `List<String> qualifier`, built segment-by-segment off the ANTLR
+    `FullId` in `IdentifierVisitor.java:56-64`; the join exists ONLY as
+    `toString` for error text (`Identifier.java:61-63`), and
+    `SemanticAnalyzer.lookup` (`:445-486`) compares whole `Identifier` objects
+    with structural `withQualifier`/`withoutQualifier`. There is no `split("\\.")`
+    or substring slice anywhere in Java's resolution path.
+  - **But the eight remaining `LogicalProject` producers that carry no refs are
+    NOT a closable list, and two of them are not "migratable" as a prior pass
+    classified them.** `plan_visitor.go:539` and `logical_builder.go:706` are the
+    post-sort strip projections, and their names are COPIED verbatim from
+    `buildPostAggregateProjection` (`logical_builder.go:509`) — aggregate
+    renderings like `MAX(E.SALARY)`, where `:526-533` DELIBERATELY aliases a
+    dotted rendering precisely so the dot is not read as a qualifier. Handing
+    those a segment triple would be inventing one, which
+    `cascades_translator.go:2517-2535` names as the forbidden move ("an invented
+    triple is trusted exactly like a real one, which is why the honest value is
+    the zero one"). The rest are machinery mints with pre-baked ordinals. So
+    `:5811`'s retirement condition as literally written — "when the remaining
+    `LogicalProject` producers carry `ProjectionRefs`" — is UNSATISFIABLE, and
+    should be reworded to name the structural class it must exclude.
+
+  **STOP — this item's remainder is an owner behaviour decision, stated in the
+  tree and deliberately left open.** `cascades_translator.go:6218-6237` (mirrored
+  at the producer, `:2517-2535`) asks: **should a star-projected body column be
+  leg-addressable at all?** The star-body normalization in `translateScan`
+  (`:2536`) mints output labels that have NO parse tree behind them, so an absent
+  triple there is STRUCTURAL and permanent. Those labels are bare by construction
+  today, so the class is not firing — but a quoted identifier carrying a dot is
+  legal SQL, and the re-split arm would answer the question BY ACCIDENT if it were
+  converted without the decision being made.
+
+  **Correction to an earlier draft of this paragraph, which said "Java gives no
+  guidance: it has no projection whose output labels lack an `Identifier`". That
+  is false.** `Expression.name` is an `Optional<Identifier>`
+  (`Expression.java:100-113`) and `Expression.ofUnnamed` (`:305-322`) mints empty
+  ones at roughly twenty in-tree call sites. Java's guidance is therefore
+  positive, not absent: an output with no name is **not name-resolvable** —
+  `SemanticAnalyzer.lookup` skips it before any comparison
+  (`SemanticAnalyzer.java:459-461`) rather than matching it positionally or
+  synthesizing a string for it. The part that really has no Java analogue is the
+  RE-SPLIT: Java's identity is `name` + `List<String> qualifier`
+  (`Identifier.java:34-58`), built segment-by-segment from the ANTLR `FullId`
+  (`IdentifierVisitor.java:56-64`) and joined only for display
+  (`Identifier.java:61-63`), so no dotted string is ever re-parsed and the
+  accidental-answer arm cannot exist there. The owner decision stands; its basis
+  is a Go-only normalization, not Java's silence.
+
+  One honest caveat recorded at `:6239-6250`: nothing instruments the split
+  population (the census beside these bakers counts qualifier MATCHES, never
+  splits), so the "110 → 3 → 0" figures quoted here and in `road-to-prod.md` are
+  scratch measurements, not instrument readings. If this item is resumed, an
+  actual counter is the first deliverable.
 
   Not query-engine machinery: no cost model, no rule, no executor contract. The
   segments already exist and are already correct; this is deleting a join and a
@@ -12908,6 +13031,51 @@ None is speculative: each was re-verified against the tree before booking.
   typing change touching the executor's row contract: Graefe-gated RFC of its
   own, with the stress/golden comparison.
 
+  **RE-VERIFIED AT `041838856`. Four corrections; the premise STRENGTHENS.**
+  - **The number is 102, not 94.** The live gate is
+    `sqldriver/embedded_fdb_test.go:253-266`: denominator 572, ACCEPT 160,
+    `ReconstructNil` 102, `ReconstructNilBareQOV` 102, `ReconstructNilMerge` 0.
+    The RFC-200 gate-(a) fixtures added 30 firings (`+8` reconstruct-nil, all
+    bare-QOV) — attributed at `:236-252`. `102 > 60` holds a fortiori. The
+    prose in `leg_local_bake_census.go:130,148` and DIVERGENCES.md's
+    "60 closed / 94 open / 108 permanent" carry the stale 94 and need restating.
+    `ReconstructNilMerge` is still hard 0, so CQ-67 held.
+  - **All five producer sites confirmed live**, at rotated line numbers:
+    `rule_implement_nested_loop_join.go` `:4124` (the one true MINT, was `:3901`),
+    `:4175` (was `:3952`), `:1383` and `:1797` (unmoved), `:4419` (was `:4196`);
+    `cascades_translator.go:4166` (was `:4097`). The file is at
+    `pkg/recordlayer/query/plan/cascades/`, NOT under a `rules/` directory.
+  - **"Type it at the FlatMap" is the WRONG PORT.** Java's
+    `RecordQueryFlatMapPlan` does not construct a result value either — it stores
+    what it is handed (`RecordQueryFlatMapPlan.java:91,100,205`), and all three
+    constructions in `ImplementNestedLoopJoinRule.java:187,201,214` flow
+    `selectExpression.getResultValue()` verbatim, exactly as Go's `:1383`/`:1797`/
+    `:4419` do. The divergence is UPSTREAM: Java's select result value is built by
+    `GraphExpansion.java:401` as `overQuantifier.getFlowedObjectValue()`, which is
+    typed unconditionally. So the producer to fix is whatever fills
+    `sel.GetResultValue()` — and Java's guarantee is structural, not disciplinary:
+    `QuantifiedObjectValue.of` has NO untyped overload
+    (`QuantifiedObjectValue.java:187`) and `getFlowedObjectType` is a
+    `Verify.verify` + `requireNonNull` (`Quantifier.java:801-810`). Java cannot
+    express Go's bare QOV at all.
+  - **`describeSeedEscape` is not the classifier of the 102** — `classifyDeclinedLeg`
+    (`fold_step1_seed_census.go`) is; deliverable (1) instruments that.
+    Deliverable (2) is cheaper than booked: on the correlated arm
+    `ordinalWindows != nil` iff `sel.GetResultValue()` is already a pristine
+    ordinal seed, so the conjunction is structurally REACHABLE (not dead), and
+    measuring it is one counter at the `ordinalSeedLegWindowsAcceptingNestedOf`
+    call site.
+
+  **One prerequisite defect is FIXED ahead of this item** (see the commit adding
+  `quantifiedObjectValueIsTyped`): the witness printed `typed=%t` from
+  `Typ != nil`, which no constructible QOV can make false — `NewQuantifiedObjectValue`
+  stamps `UnknownType` and `NewQuantifiedObjectValueOfType` degrades nil to it, and
+  `UnknownType` is a non-nil `*PrimitiveType`. So the instrument reported
+  `typed=true` for all 102, and a typing sweep would have read as complete on the
+  day it started. Pinned by
+  `TestFoldStep1Census_BareQOVWitnessSeparatesTypedFromUntyped` in both
+  directions.
+
 - [ ] **CQ-69 (L, multi-phase, per-phase gates) — build the RFC-201 layered test
   corpus ladder.** Design: `rfcs/201-layered-test-corpus.md` (merged, #542),
   which this item cites rather than restates. Layer 1 is Java's own acceptance
@@ -13747,6 +13915,41 @@ None is speculative: each was re-verified against the tree before booking.
   DONE = the unnest-merge path re-anchors by ordinal as the NLJ path already
   does, the `:3598` debt entry is DELETED (not moved), and the `dotted` bucket
   header drops accordingly.
+
+  **RE-VERIFIED AT `041838856`, AND THE SIZING IS REFUTED. This is NOT S/M and it
+  is NOT independently closable.** Three corrections, the third structural:
+  - The debt entry is keyed `cascades_translator.go:3667` (test line `:454`), not
+    `:3598`/`:447`. The ratchet totals **53**, not 52 (a second `boundary` entry
+    arrived with #601).
+  - "Its NLJ twin was deleted" is imprecise. `rebaseOuterLegRefsToMerged` is alive
+    with five call sites; what `df0c73e5b` deleted is the dotted MINT inside
+    `rebaseOuterLegValue`. And the ARM-1 ordinal re-anchor the booking points at
+    as precedent is DEAD-IN-EFFECT on every covered surface (reached only by
+    `TestRebaseOuterLegValue_OrdinalFirst`), so "as the NLJ path already does" is
+    a structural template, not an exercised one.
+  - **The mint cannot re-anchor by ordinal in isolation, because the row it reads
+    is name-keyed BY CONSTRUCTION.** The ordinal twin already exists and is
+    already taken wherever it can be: `rebaseUnnestOuterLegPredicateOrdinal`
+    (`cascades_translator.go:3849`) is selected at `:3547` and `:3740` whenever
+    the seed is windowed. Every surviving call of the name mint (`:3059`, `:3400`,
+    `:3569`, `:3590`, `:3742`) sits in the `!seedWindowed` / `!ordinalSeed`
+    arm — the NAME-MODEL seed, whose merged row carries qualified `LEG.COL` keys
+    (built at `:475`). The code says so at `:3736-3738`: a positional bake against
+    the name-keyed row "would strand DEEP ordinal -1". So converting the mint
+    alone produces a stranded read, not a fix.
+
+  The work is therefore to make those seeds ORDINAL, which is
+  `unnestExistsSeedSafe`'s scope gate (`cascades_translator.go:1317`), and that
+  gate is coupled to the executor's below-FOD hoist — `:3841-3843` states the
+  multi-alias branch is "WIRED but scope-gated OFF end-to-end … it goes live only
+  when that guard lifts (channel 2, coupled with the RULE-level below-FOD executor
+  hoist)". That is the SAME `executor.bindMergedOuterLegs` runtime
+  binding-namespace widening (DIVERGENCES.md) that CQ-68 owns on the read axis.
+  **CQ-79 and CQ-68 are two axes of one executor-widening piece of work.** They
+  stay booked separately — the residues are genuinely different, and folding them
+  would let either close while the other's survived — but neither is startable as
+  a local edit, and CQ-79's `S/M` should be read as `L, gated on the executor
+  widening`, sequenced WITH CQ-68 rather than before it.
 
 - [x] **CQ-80 (MED, test-contract) — four watch-list entries claim a pin that
   does not exist or cannot fail. DONE — all four closed, two of them REFUTED
