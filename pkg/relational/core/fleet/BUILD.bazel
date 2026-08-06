@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "fleet",
+    srcs = [
+        "build.go",
+        "fleet.go",
+        "migrate.go",
+    ],
+    importpath = "fdb.dev/pkg/relational/core/fleet",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+        "//pkg/relational/core/catalog",
+        "//pkg/relational/core/ddl",
+        "//pkg/relational/core/keyspace",
+    ],
+)
+
+go_test(
+    name = "fleet_test",
+    srcs = [
+        "build_test.go",
+        "guard_test.go",
+    ],
+    embed = [":fleet"],
+    deps = [
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/recordlayer",
+        "//pkg/relational/core/catalog",
+        "//pkg/relational/core/keyspace",
+    ],
+)

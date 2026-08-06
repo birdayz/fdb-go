@@ -37,15 +37,21 @@ func newMetaCatalogCmd() *cobra.Command {
 			"`meta_store_keyspace`; plain-core clusters (no relational " +
 			"layer) return an empty-catalog error so you know to fall " +
 			"back to --meta-file.\n\n" +
-			"Never writes to `__SYS/CATALOG` — that namespace is owned " +
-			"by the relational layer and mutating it from `frl` would " +
-			"corrupt the cluster for real relational clients.",
+			"Never writes RAW bytes into `__SYS/CATALOG` — that namespace " +
+			"is owned by the relational layer, and scribbling on it from " +
+			"`frl` would corrupt the cluster for real relational clients. " +
+			"Every subcommand here is a read except `repair`, which does " +
+			"not bypass the relational layer either: it rebinds schemas " +
+			"through the catalog's own RepairSchema operation, the same " +
+			"call the relational layer makes, and it refuses to target the " +
+			"catalog's own schema.",
 	}
 	c.AddCommand(
 		newMetaCatalogDatabasesCmd(),
 		newMetaCatalogSchemasCmd(),
 		newMetaCatalogTemplatesCmd(),
 		newMetaCatalogGetCmd(),
+		newMetaCatalogRepairCmd(),
 	)
 	return c
 }
