@@ -1,0 +1,351 @@
+package embedded
+
+// The QUALIFIER RECOVERY census's recorder wiring at the THREE parseColRef dark
+// splitters, pinned PER SITE and PER CLASS.
+//
+// WHY parseColRef IS THREE SITES AND NOT ONE. It has 27 production call sites.
+// The overwhelming majority are display or lookup — they take `.bare()` and
+// never ask whether the name was qualified — and instrumenting those would
+// measure a helper's popularity rather than any decision. Three call sites
+// MANUFACTURE a qualifier that then DECIDES something, and they are three
+// different decisions with three different counterparties:
+//
+//	projScopeClassify  inner- vs outer-scoping of a projection field.
+//	                   Counterparty: a QuantifiedObjectValue child — but the
+//	                   split arm runs only where there ISN'T one, so this site
+//	                   can never report AGREED. Its debt is a producer change.
+//	projQualVsScan     a projected column's qualifier against the scan's
+//	                   name/alias, raising ErrCodeUndefinedColumn on a mismatch.
+//	                   Counterparty: the slot's ProjectionRefs triple.
+//	displayLabelStrip  the machinery-alias display label, guarded by the
+//	                   PARENTHESIS HEURISTIC. Counterparty: the projected
+//	                   value's correlation.
+//
+// A single merged "parseColRef" number could answer the conversion question for
+// none of them.
+//
+// WHAT THE CORPORA CANNOT SEE — and the list is SHORTER than it was, which is
+// the point of stating it from measurement instead of from the last revision.
+//
+// This package used to have no census gate, and that is what the paragraph here
+// said. It has one now (qualifier_recovery_census_main_test.go), so there are
+// two corpora over these three sites rather than one, and they do not agree.
+// Production traffic per site, with THIS FILE'S OWN FIXTURES SUBTRACTED, because
+// a fixture cannot be evidence that its own recorder is reached by anything real:
+//
+//	site               sqldriver real-FDB        embedded (production only)
+//	projScopeClassify  71: carried 11, bare 60   15: bare 15
+//	projQualVsScan     4: bare 4                 0 — not reached at all
+//	displayLabelStrip  750: AGREED 722,          6: MANUFACTURED 3, bare 2,
+//	                   MANUF 6, bare 22             heuristicDecline 1
+//
+// So the unobservable set is now:
+//
+//   - projScopeClassify's AGREED (structurally impossible, see below) and its
+//     MANUFACTURED — 0 on both corpora.
+//   - EVERY dotted class at projQualVsScan. This site's qualified arm is entered
+//     by no production traffic anywhere.
+//   - DIVERGED at all three. It is the one class this census asserts at zero, and
+//     the only proof it can be reached at all is in this file.
+//
+// And displayLabelStrip's MANUFACTURED and heuristicDecline have LEFT that set:
+// both are live production traffic in this very package (`E.SALARY` /
+// `E.SAL-ARY`, and `MAX(E.SALARY)` on the paren guard). They were 0 over 750
+// sqldriver calls, and the reading that made of them — "these arms never fire" —
+// was wrong. That is the standing lesson about this census's zeros, arriving
+// here for the fourth time: a zero is a fact about the CORPUS, and two corpora
+// agreeing is one piece of evidence when both are blind in the same direction.
+//
+// The pins below stay anyway, all of them. A class covered by production traffic
+// is covered only as long as that traffic exists, and the traffic that covers
+// these two is a single aggregate label in a single test.
+//
+// The per-site deltas also pin ATTRIBUTION: all six census sites share one class
+// enum, so a copy-paste filing one site's calls under another keeps every total
+// plausible and every floor green while destroying the only thing the census
+// reports — WHICH splitter recovered a qualifier and whether it had an identity
+// to check it against.
+
+import (
+	"sync"
+	"testing"
+
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/relational/core/query/logical"
+)
+
+// qualRecProbeMu serializes the census-gate flip; the gate is a process-global
+// atomic and two parallel probes toggling it would let one turn it off under the
+// other and read a delta of zero from a perfectly wired recorder.
+var qualRecProbeMu sync.Mutex
+
+// qualRecDelta runs fn with the census gate ON and returns the DELTA at one
+// (site, class) counter. Deltas, and ">= 1" rather than "== 1", because the
+// counters are process-global and this package's other tests drive the same
+// sites: a delta FLOOR is immune to their traffic and still fails hard on a
+// bucket that never moves, which is the mutation being pinned.
+func qualRecDelta(t *testing.T, site values.QualifierRecoverySite, class values.QualifierRecoveryClass, fn func()) int {
+	t.Helper()
+	qualRecProbeMu.Lock()
+	defer qualRecProbeMu.Unlock()
+
+	restore := values.LegIdentityCensusEnabled()
+	values.SetLegIdentityCensusEnabled(true)
+	defer values.SetLegIdentityCensusEnabled(restore)
+
+	before, _ := values.QualifierRecoveryCensus()
+	fn()
+	after, _ := values.QualifierRecoveryCensus()
+	return after[site][class] - before[site][class]
+}
+
+func qov(name string) values.Value {
+	return values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(name))
+}
+
+// TestQualRecWiring_ProjScopeClassifyCountsEveryArm pins the three classes
+// projScopeAlias can reach.
+//
+// AGREED is structurally impossible here and that is the site's finding, not an
+// omission: the split runs in the ELSE of the correlation check, so a call that
+// splits is by construction a call with no identity to agree with. This site
+// cannot be converted by a local edit — there is nothing local to convert TO.
+func TestQualRecWiring_ProjScopeClassifyCountsEveryArm(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		fv    *values.FieldValue
+		class values.QualifierRecoveryClass
+		want  string
+		why   string
+	}{
+		{
+			name:  "carried",
+			fv:    values.NewFieldValue(qov("T2"), "SK", values.UnknownType),
+			class: values.QualRecCarried,
+			want:  "T2",
+			why: "the correlation IS the alias — carried, no string sliced. Counted so " +
+				"the site's converted share is visible: a census reporting only the " +
+				"split arm could not tell a site that mostly carries from one that " +
+				"mostly manufactures, and that is the difference between a mechanical " +
+				"conversion and a producer change",
+		},
+		{
+			name:  "MANUFACTURED",
+			fv:    values.NewFlatFieldValue("T2.SK", values.UnknownType),
+			class: values.QualRecManufactured,
+			want:  "T2",
+			why: "a dotted rendered name with NO correlation on it: the alias that " +
+				"decides inner- vs outer-scoping is manufactured out of the bytes " +
+				"before the last dot. BOTH corpora report 0 here — 71 sqldriver calls " +
+				"and 15 production calls in this package — so nothing but this pin goes " +
+				"red when the recorder leaves this branch",
+		},
+		{
+			name:  "bare",
+			fv:    values.NewFlatFieldValue("SK", values.UnknownType),
+			class: values.QualRecBare,
+			want:  "",
+			why: "no dot, nothing manufactured — and it is this site's whole production " +
+				"population on both corpora (60 of 71 sqldriver calls, all 15 here), so " +
+				"it is the bucket whose floor would go quietly false",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var got string
+			delta := qualRecDelta(t, values.QualRecSiteProjScopeClassify, tc.class, func() {
+				got = projScopeAlias(tc.fv)
+			})
+			if delta < 1 {
+				t.Fatalf("projScopeClassify recorded %d %v decision(s) for %q — want at least 1.\n%s",
+					delta, tc.class, tc.fv.Field, tc.why)
+			}
+			// The recorder must sit inside the branch that DECIDES, not beside
+			// it: pinning the class without the alias would pass for a recorder
+			// moved to the far side of the if.
+			if got != tc.want {
+				t.Fatalf("projScopeAlias(%q) = %q, want %q — the recorder and the decision "+
+					"have come apart", tc.fv.Field, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestQualRecWiring_ProjQualVsScanCountsEveryArm pins the classes at the site
+// with the sharpest consequence in the family.
+//
+// A disagreement here does not merely resolve the wrong row: the mismatch arm
+// raises ErrCodeUndefinedColumn on a column the parser saw perfectly well. Over
+// the real-FDB corpus this site reports 4 calls, ALL BARE, and this package's own
+// corpus does not reach it with production traffic at all — the qualified arm is
+// entered by nothing anywhere, so every dotted class is an unpinned zero without
+// this file. Every call the embedded census reports at this site is driven from
+// right here.
+func TestQualRecWiring_ProjQualVsScanCountsEveryArm(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		proj  *logical.LogicalProject
+		upper string
+		class values.QualifierRecoveryClass
+		why   string
+	}{
+		{
+			name: "AGREED",
+			proj: &logical.LogicalProject{
+				Projections:    []string{"T.COL"},
+				ProjectionRefs: []logical.ColumnRef{{Present: true, Bare: "COL", Qualifier: "T", Qualified: true}},
+			},
+			upper: "T.COL",
+			class: values.QualRecAgreed,
+			why: "the slot's parse-tree triple states qualifier T and the split recovered " +
+				"T. CONVERSION-READY over this shape",
+		},
+		{
+			name: "DIVERGED",
+			proj: &logical.LogicalProject{
+				Projections:    []string{"T.COL"},
+				ProjectionRefs: []logical.ColumnRef{{Present: true, Bare: "T.COL", Qualified: false}},
+			},
+			upper: "T.COL",
+			class: values.QualRecDiverged,
+			why: "the triple says ONE segment — a delimited `\"T.COL\"` — and the split " +
+				"manufactured the qualifier T. Here that does not silently read the " +
+				"wrong row, it REJECTS the query with ErrCodeUndefinedColumn. The " +
+				"census asserts this bucket at zero, and a zero nothing has shown can " +
+				"be non-zero is not a measurement",
+		},
+		{
+			name: "MANUFACTURED",
+			proj: &logical.LogicalProject{
+				Projections:    []string{"T.COL"},
+				ProjectionRefs: nil,
+			},
+			upper: "T.COL",
+			class: values.QualRecManufactured,
+			why: "no triple captured. An ABSENT ColumnRef means UNKNOWN, never " +
+				"UNQUALIFIED — the triple's own contract — so it must bucket as " +
+				"no-counterparty and never as a disagreement",
+		},
+		{
+			name: "bare",
+			proj: &logical.LogicalProject{
+				Projections:    []string{"COL"},
+				ProjectionRefs: []logical.ColumnRef{{Present: true, Bare: "COL"}},
+			},
+			upper: "COL",
+			class: values.QualRecBare,
+			why: "no dot; this is the site's ENTIRE production population anywhere — 4 " +
+				"sqldriver calls, and nothing at all from this package",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := qualRecDelta(t, values.QualRecSiteProjQualVsScan, tc.class, func() {
+				recordProjQualVsScan(tc.proj, 0, tc.upper, parseColRef(tc.upper))
+			})
+			if got < 1 {
+				t.Fatalf("projQualVsScan recorded %d %v decision(s) for %q — want at least 1.\n%s",
+					got, tc.class, tc.upper, tc.why)
+			}
+		})
+	}
+}
+
+// TestQualRecWiring_DisplayLabelStripCountsEveryArm pins the four classes at the
+// site the CQ-94 entry singles out for its PARENTHESIS HEURISTIC.
+//
+// The heuristicDecline bucket is the reason that class exists at all. Folded
+// into `bare` it would be invisible, and the two are opposite findings: bare
+// means the site was handed a name with no qualifier in it, while a heuristic
+// decline means the site WAS handed a dotted name, had to decide whether the dot
+// was a qualifier boundary, and decided by looking for parentheses in a
+// rendering. A census that reported them together would show this site's
+// riskiest population as its cleanest.
+//
+// That bucket is 0 across 750 sqldriver calls, and for one revision this file
+// read that as "the heuristic never fires". It fires: this package's own corpus
+// drives it once from production traffic, on the aggregate label
+// `MAX(E.SALARY)`, and without the guard that label's display name is stripped to
+// `SALARY)`. The pin below is no longer the only thing separating "unreachable"
+// from "unexercised" at this class — but it is still the only thing that holds
+// if that one label stops being planned.
+func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		label string
+		v     values.Value
+		class values.QualifierRecoveryClass
+		why   string
+	}{
+		{
+			name:  "AGREED",
+			label: "A.NAME",
+			v:     values.NewFieldValue(qov("A"), "NAME", values.UnknownType),
+			class: values.QualRecAgreed,
+			why: "the machinery minted this alias from correlation A and the split " +
+				"recovered A. 722 of the site's 750 corpus calls land here — the " +
+				"largest conversion-ready population in the family",
+		},
+		{
+			name:  "DIVERGED",
+			label: "A.NAME",
+			v:     values.NewFieldValue(qov("Z"), "NAME", values.UnknownType),
+			class: values.QualRecDiverged,
+			why: "the value names correlation Z and the label's bytes name A. The one " +
+				"population this census asserts at zero, and it must be reachable for " +
+				"that zero to mean anything",
+		},
+		{
+			name:  "MANUFACTURED",
+			label: "A.NAME",
+			v:     values.NewFlatFieldValue("NAME", values.UnknownType),
+			class: values.QualRecManufactured,
+			why: "a dotted label over a value carrying no correlation at all: the " +
+				"qualifier is stripped with nothing to check it against. The sqldriver " +
+				"corpus reports 6 and this package's production traffic 3 more " +
+				"(`E.SALARY`, `E.SAL-ARY`), which is why this site is NOT a mechanical " +
+				"conversion despite 722 agreements",
+		},
+		{
+			name:  "heuristicDecline",
+			label: "SUM(A.VAL).X",
+			v:     values.NewFieldValue(qov("A"), "VAL", values.UnknownType),
+			class: values.QualRecHeuristicDecline,
+			why: "a dotted label containing parentheses. isPlainQualifiedColumnReference " +
+				"rejects it by looking for `()` in the RENDERING — a heuristic, not a " +
+				"parse — and that decision is bucketed apart from `bare` so it cannot " +
+				"be read as a site that simply saw no dot. Not a hypothetical arm: " +
+				"this package plans `MAX(E.SALARY)` through it for real",
+		},
+		{
+			name:  "bare",
+			label: "NAME",
+			v:     values.NewFlatFieldValue("NAME", values.UnknownType),
+			class: values.QualRecBare,
+			why:   "no dot in the label; 22 of the sqldriver corpus's 750 calls and 2 of this package's 6",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := qualRecDelta(t, values.QualRecSiteDisplayLabelStrip, tc.class, func() {
+				recordDisplayLabelStrip(tc.label, tc.v)
+			})
+			if got < 1 {
+				t.Fatalf("displayLabelStrip recorded %d %v decision(s) for %q — want at least 1.\n%s",
+					got, tc.class, tc.label, tc.why)
+			}
+		})
+	}
+}

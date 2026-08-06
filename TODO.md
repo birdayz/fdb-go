@@ -14833,6 +14833,118 @@ None is speculative: each was re-verified against the tree before booking.
   measuring 0 cannot have its wiring guarded by the corpus; and the measurement is
   written into this item, replacing any prose figure it contradicts.
 
+  **MEASURED (`values/qualifier_recovery_census.go`, six sites — the parseColRef
+  family is three DIFFERENT decisions with three different counterparties).
+  THREE corpora, and the third one is the finding.** Classes answer "was the
+  identity already in hand?": CARRIED (structured identity decided, nothing
+  sliced), AGREED (split ran, identity in hand, agrees — CONVERSION-READY),
+  DIVERGED (split contradicts the identity — a wrong answer, asserted ZERO),
+  MANUFACTURED (split ran with NO counterparty — the hard debt, not convertible
+  by a local edit), LEAF-ONLY, BARE, HEURISTIC-DECLINE.
+
+  | site | sqldriver real-FDB | translator corpus | embedded corpus |
+  |---|---|---|---|
+  | recursiveRemap | 101: leafOnly 2, bare 99 | 13: carried 4, **MANUF 3**, leafOnly 2, bare 4 | 2: bare 2 |
+  | existsSortSplit | 44: **AGREED 44** | 5 (fixture) | 0 |
+  | derivedUnnestSource | 13: bare 13 | 4 (fixture) | 8: **AGREED 1**, bare 7 |
+  | projScopeClassify | 71: carried 11, bare 60 | 0 (structural) | 18 = prod 15 (bare 15) + fixture 3 (carried/MANUF/bare) |
+  | projQualVsScan | 4: bare 4 | 0 (structural) | 4 = prod 0 + fixture 4 (AGREED/DIVERGED/MANUF/bare) |
+  | displayLabelStrip | 750: **AGREED 722**, MANUF 6, bare 22 | 0 (structural) | 11 = **prod 6 (MANUF 3, bare 2, heurDecline 1)** + fixture 5 |
+
+  The `+ fixture N` splits are not bookkeeping. A fixture call proves the RECORDER
+  is wired; it cannot prove the SITE is reached by anything real, and a merged
+  total lets the second claim ride on the first. `projQualVsScan`'s entire
+  embedded population is its own pins — production reaches that site zero times
+  on every corpus — and reading its 4 as coverage is exactly the error this
+  column exists to prevent.
+
+  **DIVERGED is 0 in PRODUCTION traffic at every site on every corpus.** That is
+  the one zero this census asserts, and unlike the population zeros it is a zero
+  over a real population — but the population is smaller than the headline total
+  and the difference is structural, not rounding. Of the 767 calls that
+  manufactured a qualifier with an identity in hand, **44 are `existsSortSplit`
+  and CANNOT disagree**: `sortKeyFieldRef` renders `LEG.COL` out of the very
+  `FieldValue{Field, Child:QOV}` that `sortKeyQualifierIdentity` reads the
+  identity back out of one call later, so the split re-parses a string joined
+  from its own counterparty. Their AGREED is a tautology — worth counting,
+  because it is what makes the round trip measurable and it IS that site's
+  conversion answer, but it is not evidence anything survived a lossy rendering.
+  **The real-population zero is ~723**, and `displayLabelStrip`'s 722 is
+  essentially all of it: 722 machinery-minted display labels sliced at a dot and
+  checked against the correlation the alias was minted from, none disagreeing.
+  That is the genuine core result, and it is one site's.
+
+  **THE THIRD CORPUS REFUTED TWO READINGS THE FIRST TWO AGREED ON**, which is
+  this workstream's pattern holding for the fourth time. `core/embedded` had no
+  census gate; it now has one, and a panic probe at its reach immediately broke
+  two conclusions the sqldriver+translator pair supported:
+  - `derivedUnnestSource`'s DOTTED arm reads bare 13 / dotted 0 over the SQL
+    corpus. It is LIVE here — `TestDerivedUnnest_QualifiedPassthrough` drives
+    `TD.ARR`, and the slot's triple AGREES.
+  - the display-label PARENTHESIS HEURISTIC (`isPlainQualifiedColumnReference`,
+    `colref.go`) reads 0 over 750 SQL-corpus calls. It FIRES here, on the
+    aggregate label `MAX(E.SALARY)` — without the guard that label's display name
+    is stripped to `SALARY)`.
+
+    **What the census did NOT do is refute a deletion, and the first writing of
+    this bullet claimed it did.** Deleting the guard was already impossible:
+    `logical_builder_test.go`'s
+    `TestDeriveProjectionColumnDefDoesNotDequalifyExpressionLabel` pins
+    `MAX(E.SALARY)` → label `MAX(E.SALARY)` on master, and has since before this
+    census existed. So the "0 over 750 calls" reading could never have LICENSED a
+    deletion; it could only have made one look harmless right up until that test
+    went red.
+
+    The census's actual contribution is the one it is built for: measuring the
+    guard LIVE on production traffic, 2 heuristic declines including
+    `MAX(E.SALARY)`, where before there was a number that said "never reached".
+    And the corpus-blindness lesson survives intact and is the durable part — two
+    corpora agreeing is one piece of evidence when both are blind in the same
+    direction, and a zero is a fact about the CORPUS until some corpus that could
+    contradict it has run.
+
+  **CONVERSION-READINESS, per site:**
+  - `existsSortSplit` — **MECHANICAL, and the cleanest conversion on this path.**
+    44/44 AGREED, zero MANUFACTURED. It is a pure ROUND TRIP: `sortKeyFieldRef`
+    RENDERS `LEG.COL` out of a `FieldValue{Field, Child:QOV}` and `splitQualifier`
+    slices that rendering straight back apart. The identity was never lost. Not
+    converted this round — query-engine change, needs RFC + Graefe ACK.
+
+    **CONSTRAINT THE RFC MUST CARRY: the conversion removes the SPLIT, not the
+    RENDER.** The rendered `LEG.COL` string is not merely an intermediate the
+    split consumes — it is also the RFC-141 hidden-sort-column output-naming
+    contract. `collectExtraSortColumns` names each appended remainingOrderBy
+    column by `sortKeyFieldRef(k)`, the qualified rendering, precisely so it
+    cannot collide with an output alias, and `resolveKeyName` returns that same
+    `up` for the join arm. Convert the split to read the structured identity and
+    the render must STAY, producing the identical bytes, or the hidden column
+    changes name and the fold's output shape changes with it. An RFC that
+    proposes "replace the join-and-reparse with the correlation" and stops there
+    is proposing a wire-visible rename it has not noticed.
+  - `derivedUnnestSource` — looks mechanical (1/1 AGREED, no production
+    MANUFACTURED) but the population is ONE. Under-measured, not ready.
+  - `displayLabelStrip` — **NOT mechanical despite 722 agreements.** There is a
+    real no-counterparty population: MANUF 6 (sqldriver) plus 3 more from
+    embedded production traffic, spelled `E.SALARY` and `E.SAL-ARY`. And its
+    paren guard is load-bearing.
+  - `recursiveRemap` — **PRODUCER CHANGE, not a local edit**, and the census
+    confirms it is the worst of the four. Its input is `[]string`; there is no
+    counterparty at the site to convert TO, which is why its MANUFACTURED bucket
+    (3, translator corpus, witness `B.ID`) can only be retired by teaching the
+    producer to carry segments. Its LEAF-ONLY witness `"(B.ID#0 + 1)"` shows a
+    COMPUTED rendering being leaf-split — harmless only because an ordinal
+    decides the read.
+  - `projScopeClassify` / `projQualVsScan` — their manufacturing arms are
+    unreached by production traffic on all three corpora, and a panic probe over
+    the whole embedded suite and the whole sqldriver suite did not fire either.
+    **NOT a deletion warrant**: that reach is not the full `./pkg/relational/...`
+    + `./pkg/recordlayer/query/...` the warrant rule requires — the full run could
+    not be completed (the 32G `/tmp` tmpfs the Go build uses for `$WORK` exhausts
+    and the key packages fail to link). Stated as unmeasured rather than assumed.
+    Note also that projQualVsScan's arm RAISES `ErrCodeUndefinedColumn`; its
+    silence most likely means semantic analysis rejects the shape earlier, which
+    makes it dead code rather than an unnecessary check.
+
 - [ ] **CQ-95 (L, gated — the name-model seed converts to the windowed/ordinal
   seed).** The successor CQ-79 stops at. CQ-79's finding is that
   `rebaseUnnestOuterLegPredicate` cannot re-anchor by ordinal as a local edit: it

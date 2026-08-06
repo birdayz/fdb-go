@@ -159,6 +159,8 @@ go_test(
         "planner_options_test.go",
         "proj_col_ref_test.go",
         "push_filter_covered_columns_test.go",
+        "qualifier_recovery_census_main_test.go",
+        "qualifier_recovery_wiring_test.go",
         "query_hash_test.go",
         "resource_limits_test.go",
         "rfc152_outer_join_materialization_test.go",
@@ -330,6 +332,8 @@ go_test(
         "closure_sparse_unique_candidate_test.go",
         "distinct_scratch_retry_charge_test.go",
         "execution_logging.go",
+        "qualifier_recovery_wiring_test.go",
+        "qualifier_recovery_census_main_test.go",
     ],
     deps = [
         "//gen",

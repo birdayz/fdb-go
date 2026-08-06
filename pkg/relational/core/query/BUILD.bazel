@@ -62,6 +62,7 @@ go_test(
         "name_split_recorder_wiring_test.go",
         "plan_test.go",
         "projection_segments_test.go",
+        "qualifier_recovery_wiring_test.go",
         "recursive_cte_test.go",
         "rotation_guard_test.go",
         "scalar_subquery_seed_test.go",

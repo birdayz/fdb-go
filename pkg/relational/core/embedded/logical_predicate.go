@@ -10323,12 +10323,8 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// column arm so both spellings of the same reference classify
 		// identically.
 		classifyProjFieldValue := func(fv *values.FieldValue) {
-			innerScoped, alias := true, ""
-			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
-				alias = strings.ToUpper(qov.Correlation.Name())
-			} else if ref := parseColRef(fv.Field); ref.isQualified() {
-				alias = strings.ToUpper(ref.table)
-			}
+			innerScoped := true
+			alias := projScopeAlias(fv)
 			if alias != "" {
 				_, innerScoped = innerSourceAliases(op)[alias]
 			}
