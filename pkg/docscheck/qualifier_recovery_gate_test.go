@@ -91,6 +91,134 @@ var censusGateRecorders = []censusGateFunc{
 	},
 }
 
+// A CENSUS CALL THAT COUNTS "REACHED" MUST PRECEDE EVERY RETURN IN ITS FUNCTION.
+//
+// Different property from the gate table above, same failure mode. Those pin
+// that the census being OFF costs nothing; these pin that the census being ON
+// counts the right thing. A counter placed after an early return still compiles,
+// still reports, and still passes every test — it just reports a DIFFERENT
+// population than the one its report claims, and the two are indistinguishable
+// once the numbers are printed.
+//
+// This is not hypothetical here. The unnest leg-mint census's first reading put
+// RecordUnnestLegMintCall AFTER `if p == nil || len(outerLegs) == 0 { return p }`
+// and reported all five call sites at 0. The corrected ordering reported 23 and 5
+// at the two live sites. Those two readings support opposite conclusions about
+// whether the arm is dead code, and nothing in the suite could tell them apart —
+// a per-site zero is a legal reading under both orderings.
+//
+// The pin is the ORDERING, exactly as its sibling above pins the gate's ordering,
+// and for the identical reason: the property is positional, it is deterministic,
+// and no counter-delta probe can observe it (both orderings report a
+// self-consistent census).
+type censusReachedCall struct {
+	file string
+	fn   string
+	call string
+	why  string
+}
+
+var censusReachedCalls = []censusReachedCall{
+	{
+		file: "pkg/relational/core/query/cascades_translator.go",
+		fn:   "rebaseUnnestOuterLegPredicate",
+		call: "RecordUnnestLegMintCall",
+		why: "its per-site counts are the whole basis for calling three of the five " +
+			"sites DARK and two LIVE-but-inert. Below the inert guard every site reads " +
+			"0 and the DARK/inert distinction disappears — which is the reading the " +
+			"first measurement took",
+	},
+	{
+		file: "pkg/relational/core/query/cascades_translator.go",
+		fn:   "rebaseUnnestOuterLegPredicateOrdinal",
+		call: "RecordUnnestLegOrdinalTwinCall",
+		why: "it is the INDEPENDENT denominator the per-arm ordinal counts are read " +
+			"against; below the inert guard it stops counting the calls that find " +
+			"nothing to rebase, which is exactly the population that separates " +
+			"'reached and converted here' from 'never reached'",
+	},
+}
+
+// TestCensusReachedCallPrecedesEveryReturn pins that each named census call sits
+// ahead of every return statement in its function body.
+func TestCensusReachedCallPrecedesEveryReturn(t *testing.T) {
+	t.Parallel()
+	root := sourceTreeRoot(t)
+
+	for _, rec := range censusReachedCalls {
+		t.Run(rec.fn+"/"+rec.call, func(t *testing.T) {
+			t.Parallel()
+			fset, f := parseSource(t, root, rec.file)
+			fd := findFunc(f, rec.fn)
+			if fd == nil || fd.Body == nil {
+				t.Fatalf("%s: function %s not found — this pin names its subjects by "+
+					"hand, so a rename must come here too rather than silently retiring "+
+					"the check", rec.file, rec.fn)
+			}
+
+			// The census call's position. Nested function literals are excluded:
+			// a recorder inside a closure runs per rewritten node, not per call,
+			// and comparing its position to the outer body's returns would compare
+			// two different populations.
+			var callPos token.Pos = token.NoPos
+			var calls int
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				if _, isLit := n.(*ast.FuncLit); isLit {
+					return false
+				}
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				id, ok := call.Fun.(*ast.Ident)
+				if !ok || id.Name != rec.call {
+					return true
+				}
+				calls++
+				if callPos == token.NoPos || call.Pos() < callPos {
+					callPos = call.Pos()
+				}
+				return true
+			})
+			if calls == 0 {
+				t.Fatalf("%s: %s does not call %s at all.\n"+
+					"  The census this pin protects reports a per-site population that "+
+					"nothing would then be counting, and an absent counter prints exactly "+
+					"like a site the corpus never reaches.\n  %s",
+					rec.file, rec.fn, rec.call, rec.why)
+			}
+
+			// Every return in the same body — again excluding closures, whose
+			// returns are the closure's, not this function's.
+			var early []string
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				if _, isLit := n.(*ast.FuncLit); isLit {
+					return false
+				}
+				ret, ok := n.(*ast.ReturnStmt)
+				if !ok {
+					return true
+				}
+				if ret.Pos() < callPos {
+					early = append(early, fset.Position(ret.Pos()).String())
+				}
+				return true
+			})
+			if len(early) != 0 {
+				t.Fatalf("%s: %s returns at %v BEFORE it calls %s.\n"+
+					"  A census call placed after an early return still compiles, still "+
+					"reports, and still passes every test — it simply counts a different "+
+					"population than its report names, and the two readings are "+
+					"indistinguishable once printed.\n"+
+					"  MEASURED PRECEDENT: this census's first reading had exactly this "+
+					"bug and reported all five call sites at 0; corrected, two sites "+
+					"report 23 and 5. The two readings support opposite conclusions.\n"+
+					"  %s", rec.file, rec.fn, early, rec.call, rec.why)
+			}
+		})
+	}
+}
+
 // isCensusGateCall reports whether e is a call to LegIdentityCensusEnabled,
 // qualified or bare. The package qualifier is deliberately NOT pinned to
 // "values": an import alias names the same function, and a gate a rename could

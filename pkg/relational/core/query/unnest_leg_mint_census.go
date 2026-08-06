@@ -39,20 +39,29 @@ import (
 // the sets ever intersect, that claim is re-armed and has to be re-derived; the
 // failure message says so.
 //
-// WHAT IT MEASURED — whole real-FDB sqldriver corpus, master at 6692ac268,
-// uncached, three consecutive runs agreeing on the shape:
+// WHAT IT MEASURED — whole real-FDB sqldriver corpus, uncached, one run:
 //
 //	nonChainedMerge(no seed test)      calls 23 | minted names 0
 //	anchoredNonExists(no seed test)    calls  5 | minted names 0
 //	buried(!seedWindowed)              calls  0 | minted names 0
 //	joinPredicate(!seedWindowed)       calls  0 | minted names 0
 //	chained(name-model seed)           calls  0 | minted names 0
+//	  buried(!seedWindowed)        reached  10 | name 0 | ordinal-twin  9 | planTimeBake  1 | leg-relative  0
+//	  joinPredicate(!seedWindowed) reached 165 | name 0 | ordinal-twin  0 | planTimeBake 92 | leg-relative 73
+//	  chained(name-model seed)     reached  33 | name 0 | ordinal-twin 33 | planTimeBake  0 | leg-relative  0
+//	rebaseUnnestOuterLegPredicateOrdinal calls 133 (42 attributed to a branch arm)
 //	distinct minted names: NONE
 //
-// The split is the finding. The two sites that apply NO seed test are LIVE and
-// mint nothing; the three sites a seed-gate flip would convert are DARK. So a
-// conversion driven by making the seed windowed moves arms nothing reaches, and
-// the qualified-name channel this mint is supposed to feed carries no name at
+// The ARM rows are the finding, and the per-site call counts alone do NOT
+// support it. All three seed-tested branch points are REACHED and take the name
+// arm ZERO times: the seed over them is already windowed, so the conversion a
+// lifted seed gate would perform has already happened on the other side of each
+// branch. Read without the arms, those three zeros say "never reached" — the
+// opposite claim, with the opposite follow-up — and a prior revision of this
+// header said exactly that.
+//
+// The other two sites apply no seed test, are reached 28 times, and mint nothing.
+// So the qualified-name channel this mint is supposed to feed carries no name at
 // all over this corpus.
 //
 // NO FLOOR IS ASSERTED, deliberately, and the direction is why. Every other
@@ -116,12 +125,87 @@ func (s UnnestLegMintSite) String() string {
 	return "unknown"
 }
 
+// UnnestLegMintArm is WHICH arm a seed-tested branch point took.
+//
+// It exists because a per-site call count of ZERO at a `!seedWindowed`
+// else-branch is AMBIGUOUS on its own, and the ambiguity has opposite
+// consequences. "Never reached" says the shape is not planned; "reached, took
+// the ordinal arm" says the shape IS planned and its conversion has already
+// happened on the other side of the branch. Both readings support demoting a
+// conversion booked against the name arm, and they imply different follow-ups —
+// so the census must not leave the reader to pick one.
+//
+// The arm is recorded AT the arm rather than derived by subtracting the arms
+// that were recorded from a branch-reached counter. Arithmetic cannot see an arm
+// added without a counter; a per-arm record can, because the arms are asserted
+// to sum to the branch total.
+type UnnestLegMintArm int
+
+const (
+	// UnnestLegMintArmName: the branch took the name-keyed rebase — the arm the
+	// mint counters above measure.
+	UnnestLegMintArmName UnnestLegMintArm = iota
+
+	// UnnestLegMintArmOrdinalTwin: the branch took
+	// rebaseUnnestOuterLegPredicateOrdinal. This is the reading that turns a zero
+	// on the name arm from "dead shape" into "already converted here".
+	UnnestLegMintArmOrdinalTwin
+
+	// UnnestLegMintArmPlanTimeBake: the branch took the E-1a plan-time bake
+	// (bakeInnerExistsPredicateOrdinal), which reaches the ordinal twin one level
+	// down. Counted apart from the twin arm because the two are different
+	// DECISIONS that happen to share a callee, and folding them would report an
+	// inner-cluster bake as a seed-test outcome.
+	UnnestLegMintArmPlanTimeBake
+
+	// UnnestLegMintArmLegRelative: the JoinPredicate channel's windowed,
+	// non-plan-time-bake fall-through, which rebases NOTHING and leaves the refs
+	// leg-relative for the executor's below-FOD hoist. It is an arm of the branch
+	// and therefore counted; without it the branch's arms do not partition and a
+	// zero elsewhere cannot be read.
+	UnnestLegMintArmLegRelative
+
+	unnestLegMintArmCount
+)
+
+// hasSeedBranch reports whether this site sits on a seed test with arms to take.
+//
+// Two of the five do not: they are unconditional calls, so their arm row would
+// be zeros forever. Printing that as a measurement is the same defect the arm
+// sub-report exists to fix one level up — a structural zero reading exactly like
+// an observed one.
+func (s UnnestLegMintSite) hasSeedBranch() bool {
+	switch s {
+	case UnnestLegMintSiteBuriedNotWindowed,
+		UnnestLegMintSiteJoinPredNotWindowed,
+		UnnestLegMintSiteChainedNameModel:
+		return true
+	}
+	return false
+}
+
+func (a UnnestLegMintArm) String() string {
+	switch a {
+	case UnnestLegMintArmName:
+		return "name"
+	case UnnestLegMintArmOrdinalTwin:
+		return "ordinal-twin"
+	case UnnestLegMintArmPlanTimeBake:
+		return "planTimeBake"
+	case UnnestLegMintArmLegRelative:
+		return "leg-relative"
+	}
+	return "unknown"
+}
+
 const unnestLegMintWitnessCap = 128
 
 var (
 	unnestLegMintMu      sync.Mutex
 	unnestLegMintCalls   [unnestLegMintSiteCount]int
 	unnestLegMintRewrote [unnestLegMintSiteCount]int
+	unnestLegMintArms    [unnestLegMintSiteCount][unnestLegMintArmCount]int
+	unnestLegOrdinalTwin int
 	unnestLegMintNames   []string
 )
 
@@ -162,6 +246,32 @@ func RecordUnnestLegMintName(site UnnestLegMintSite, name string) {
 	unnestLegMintNames = append(unnestLegMintNames, name)
 }
 
+// RecordUnnestLegMintArm counts ONE arm taken at a seed-tested branch point.
+// Callers must guard on values.LegIdentityCensusEnabled().
+func RecordUnnestLegMintArm(site UnnestLegMintSite, arm UnnestLegMintArm) {
+	if site < 0 || site >= unnestLegMintSiteCount || arm < 0 || arm >= unnestLegMintArmCount {
+		return
+	}
+	unnestLegMintMu.Lock()
+	defer unnestLegMintMu.Unlock()
+	unnestLegMintArms[site][arm]++
+}
+
+// RecordUnnestLegOrdinalTwinCall counts ONE invocation of
+// rebaseUnnestOuterLegPredicateOrdinal, from any caller.
+//
+// It is the DENOMINATOR the per-arm counts are read against, and it is counted
+// inside the twin rather than summed from the arms for the reason the fold-step1
+// census states about its own independent denominator: a sum over the recorded
+// arms is true by construction and cannot see a caller that reaches the twin
+// without passing a branch point this census instruments. The twin has four
+// callers and this census names three.
+func RecordUnnestLegOrdinalTwinCall() {
+	unnestLegMintMu.Lock()
+	defer unnestLegMintMu.Unlock()
+	unnestLegOrdinalTwin++
+}
+
 // UnnestLegMintCensus reports per-site calls, per-site mints, and the distinct
 // minted names.
 func UnnestLegMintCensus() (calls, mints [unnestLegMintSiteCount]int, names []string) {
@@ -172,23 +282,76 @@ func UnnestLegMintCensus() (calls, mints [unnestLegMintSiteCount]int, names []st
 	return unnestLegMintCalls, unnestLegMintRewrote, out
 }
 
+// UnnestLegMintArms reports the per-site arm matrix and the twin's independent
+// total.
+func UnnestLegMintArms() ([unnestLegMintSiteCount][unnestLegMintArmCount]int, int) {
+	unnestLegMintMu.Lock()
+	defer unnestLegMintMu.Unlock()
+	return unnestLegMintArms, unnestLegOrdinalTwin
+}
+
 // ResetUnnestLegMintCensus clears the counters.
 func ResetUnnestLegMintCensus() {
 	unnestLegMintMu.Lock()
 	defer unnestLegMintMu.Unlock()
 	unnestLegMintCalls = [unnestLegMintSiteCount]int{}
 	unnestLegMintRewrote = [unnestLegMintSiteCount]int{}
+	unnestLegMintArms = [unnestLegMintSiteCount][unnestLegMintArmCount]int{}
+	unnestLegOrdinalTwin = 0
 	unnestLegMintNames = nil
 }
 
 // FormatUnnestLegMintCensus renders the census for a harness to log.
 func FormatUnnestLegMintCensus() string {
 	calls, mints, names := UnnestLegMintCensus()
+	arms, twinCalls := UnnestLegMintArms()
+	return formatUnnestLegMintCounters(calls, mints, arms, twinCalls, names)
+}
+
+// formatUnnestLegMintCounters is the renderer, split from the process-global
+// counters so the report's two load-bearing readings — an unreached branch and a
+// branch that took another arm — can be driven from a test without racing the
+// package's other parallel tests, which run under an enabled census.
+func formatUnnestLegMintCounters(
+	calls, mints [unnestLegMintSiteCount]int,
+	arms [unnestLegMintSiteCount][unnestLegMintArmCount]int,
+	twinCalls int,
+	names []string,
+) string {
 	var b strings.Builder
 	b.WriteString("unnest leg-mint (rebaseUnnestOuterLegPredicate, per call):")
 	for s := UnnestLegMintSite(0); s < unnestLegMintSiteCount; s++ {
 		fmt.Fprintf(&b, "\n  %-34s calls %d | minted names %d", s, calls[s], mints[s])
 	}
+	attributed := 0
+	b.WriteString("\n  ARM taken at the three seed-tested branch points — a name-arm ZERO beside" +
+		"\n  a non-zero ordinal/planTimeBake arm means CONVERTED HERE, not dead:")
+	for s := UnnestLegMintSite(0); s < unnestLegMintSiteCount; s++ {
+		total := 0
+		for a := 0; a < int(unnestLegMintArmCount); a++ {
+			total += arms[s][a]
+		}
+		attributed += arms[s][UnnestLegMintArmOrdinalTwin]
+		if !s.hasSeedBranch() {
+			// STRUCTURAL, not measured. These two sites are unconditional calls
+			// with no arm to take, so a row of zeros here would be a tautology
+			// wearing the shape of a reading — the exact ambiguity this whole
+			// sub-report exists to remove.
+			fmt.Fprintf(&b, "\n    %-34s NO SEED BRANCH EXISTS (unconditional call site)", s)
+			continue
+		}
+		if total == 0 {
+			fmt.Fprintf(&b, "\n    %-34s BRANCH POINT NEVER REACHED", s)
+			continue
+		}
+		fmt.Fprintf(&b, "\n    %-34s reached %d", s, total)
+		for a := UnnestLegMintArm(0); a < unnestLegMintArmCount; a++ {
+			fmt.Fprintf(&b, " | %s %d", a, arms[s][a])
+		}
+	}
+	fmt.Fprintf(&b, "\n  rebaseUnnestOuterLegPredicateOrdinal calls %d (counted INSIDE the twin, "+
+		"independently of\n  the arms; %d attributed to an instrumented branch arm, the rest reach "+
+		"it from\n  bakeInnerExistsPredicateOrdinal or the chained ordinal path)", twinCalls, attributed)
 	if len(names) > 0 {
 		sorted := append([]string{}, names...)
 		sort.Strings(sorted)

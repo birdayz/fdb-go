@@ -72,6 +72,55 @@ func TestUnnestLegMintCensus_EmptyPopulationsDoNotFail(t *testing.T) {
 	}
 }
 
+// The ARM report exists to disambiguate a zero on a `!seedWindowed` else-branch.
+// Its two readings must be visibly different in the rendered text, because the
+// text is what a reader quotes.
+func TestUnnestLegMintCensus_ArmsRenderApart(t *testing.T) {
+	t.Parallel()
+	seen := map[string]struct{}{}
+	for a := UnnestLegMintArm(0); a < unnestLegMintArmCount; a++ {
+		name := a.String()
+		if name == "unknown" {
+			t.Fatalf("arm %d renders as %q — an arm the census cannot name is an arm "+
+				"whose reading is unquotable", int(a), name)
+		}
+		if _, dup := seen[name]; dup {
+			t.Fatalf("two arms render as %q; the two readings a zero has to be told "+
+				"apart by would print the same", name)
+		}
+		seen[name] = struct{}{}
+	}
+}
+
+// A branch point nobody reached must SAY SO, and must not print as a row of
+// zeros beside branch points that were reached and took another arm. Those are
+// the two readings F2 exists to separate, and a reader gets them from this text.
+func TestUnnestLegMintCensus_UnreachedBranchSaysSo(t *testing.T) {
+	t.Parallel()
+	// Driven through the pure renderer, not the process globals: this package's
+	// TestMain runs the whole suite under an ENABLED census, so parallel
+	// translator tests record into those globals concurrently.
+	var calls, mints [unnestLegMintSiteCount]int
+	var arms [unnestLegMintSiteCount][unnestLegMintArmCount]int
+	arms[UnnestLegMintSiteBuriedNotWindowed][UnnestLegMintArmOrdinalTwin] = 1
+
+	out := formatUnnestLegMintCounters(calls, mints, arms, 1, nil)
+	if !strings.Contains(out, "BRANCH POINT NEVER REACHED") {
+		t.Fatalf("a branch point with no recorded arm did not announce itself; an "+
+			"unreached branch would then print as a row of zeros, which is exactly the "+
+			"reading it must be told apart from.\n%s", out)
+	}
+	if !strings.Contains(out, "ordinal-twin 1") {
+		t.Fatalf("the ordinal-twin arm did not render its count; without it a name-arm "+
+			"zero cannot be read as CONVERTED HERE.\n%s", out)
+	}
+	if !strings.Contains(out, "rebaseUnnestOuterLegPredicateOrdinal calls 1") {
+		t.Fatalf("the twin's INDEPENDENT total did not render. It is the denominator the "+
+			"arm counts are read against, and summing the arms instead would be true by "+
+			"construction and blind to the twin's uninstrumented callers.\n%s", out)
+	}
+}
+
 func TestUnnestLegMintCensus_SitesRenderApart(t *testing.T) {
 	t.Parallel()
 	seen := map[string]struct{}{}

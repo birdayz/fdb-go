@@ -3532,7 +3532,11 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 				len(lf.ExistsSubqueries) == 0 && len(lf.ScalarSubqueries) == 0 &&
 				predicateIsOuterOnly(lf.Predicate, outerBoundAliases(lf.Input)) {
 				var rebased predicates.QueryPredicate
+				armCensus := unnestLegMintEnabled()
 				if planTimeBake {
+					if armCensus {
+						RecordUnnestLegMintArm(UnnestLegMintSiteBuriedNotWindowed, UnnestLegMintArmPlanTimeBake)
+					}
 					// E-1a: a BURIED outer-only predicate over the INNER cluster (or a
 					// multi-esq peel box) may reference a leg OR the ELEMENT (`… WHERE
 					// X = 7` — an outer-only conjunct with no inner-table ref that
@@ -3544,6 +3548,9 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 					}
 					rebased = baked
 				} else if seedWindowed {
+					if armCensus {
+						RecordUnnestLegMintArm(UnnestLegMintSiteBuriedNotWindowed, UnnestLegMintArmOrdinalTwin)
+					}
 					baked, ok := rebaseUnnestOuterLegPredicateOrdinal(lf.Predicate, t.ordinalLegType(join.Left), ordMergedType, outerLegs, mergedCorr)
 					if !ok {
 						// CORRECT-or-LOUD: an outer ref the seed's outer leg type
@@ -3566,6 +3573,9 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 					}
 					rebased = baked
 				} else {
+					if armCensus {
+						RecordUnnestLegMintArm(UnnestLegMintSiteBuriedNotWindowed, UnnestLegMintArmName)
+					}
 					rebased = rebaseUnnestOuterLegPredicate(lf.Predicate, outerLegs, mergedCorr, UnnestLegMintSiteBuriedNotWindowed)
 				}
 				esq.Plan = &logical.LogicalFilter{
@@ -3586,9 +3596,16 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 			// the translator BAKES the leg ref alias-aware over the seed's windows
 			// here, exactly as the buried refs above (ordinalSlotInLegWindow resolves
 			// each dup-named leg's own slot).
+			jpCensus := unnestLegMintEnabled()
 			if !seedWindowed {
+				if jpCensus {
+					RecordUnnestLegMintArm(UnnestLegMintSiteJoinPredNotWindowed, UnnestLegMintArmName)
+				}
 				esq.JoinPredicate = rebaseUnnestOuterLegPredicate(esq.JoinPredicate, outerLegs, mergedCorr, UnnestLegMintSiteJoinPredNotWindowed)
 			} else if planTimeBake {
+				if jpCensus {
+					RecordUnnestLegMintArm(UnnestLegMintSiteJoinPredNotWindowed, UnnestLegMintArmPlanTimeBake)
+				}
 				// Bake the existential correlation's LEG refs (alias-aware, dup-named
 				// disambiguation) AND the ELEMENT ref (`EEV.VK = X` — the merged
 				// corr's own slot, only merged-corr/bare refs, NOT an inner-table
@@ -3599,6 +3616,12 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 					return nil
 				}
 				esq.JoinPredicate = baked
+			} else if jpCensus {
+				// The windowed, non-plan-time-bake fall-through: this channel rebases
+				// NOTHING and leaves the refs leg-relative for the executor's below-FOD
+				// hoist. Recorded so the branch's arms PARTITION — without it a zero on
+				// the name arm cannot be told from a branch nothing reaches.
+				RecordUnnestLegMintArm(UnnestLegMintSiteJoinPredNotWindowed, UnnestLegMintArmLegRelative)
 			}
 			existsSubqueries[i] = esq
 		}
@@ -3755,8 +3778,15 @@ func rebaseChainedOuterLegPredicate(
 	// would strand ordinal -1). Over a NAME-MODEL seed (a declined 3+-link fallback), the merged
 	// row carries qualified `leg.col` keys — use the NAME-KEY rebase (a positional bake against
 	// the name-keyed row would strand DEEP ordinal -1).
+	chainCensus := unnestLegMintEnabled()
 	if ordinalSeed {
+		if chainCensus {
+			RecordUnnestLegMintArm(UnnestLegMintSiteChainedNameModel, UnnestLegMintArmOrdinalTwin)
+		}
 		return rebaseUnnestOuterLegPredicateOrdinal(p, ordType, ordType, outerLegs, mergedCorr)
+	}
+	if chainCensus {
+		RecordUnnestLegMintArm(UnnestLegMintSiteChainedNameModel, UnnestLegMintArmName)
 	}
 	return rebaseUnnestOuterLegPredicate(p, outerLegs, mergedCorr, UnnestLegMintSiteChainedNameModel), true
 }
@@ -3871,6 +3901,13 @@ func rebaseUnnestOuterLegPredicateOrdinal(
 	outerLegs map[string]struct{},
 	mergedCorr values.CorrelationIdentifier,
 ) (predicates.QueryPredicate, bool) {
+	// Counted BEFORE the inert guard, for the same reason its name-keyed twin is:
+	// a call that finds nothing to rebase and a call that never happens print the
+	// same zero afterwards, and the two mean opposite things about whether this
+	// arm is the one the corpus takes.
+	if unnestLegMintEnabled() {
+		RecordUnnestLegOrdinalTwinCall()
+	}
 	if p == nil || len(outerLegs) == 0 {
 		return p, true // genuinely nothing to rebase
 	}
