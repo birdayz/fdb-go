@@ -2,7 +2,7 @@
 
 Comprehensive list of Go vs Java differences. All Cascades planner subsystems
 fully ported: ~65 PlanningRuleSet rule instances, 5/5 RewritingRuleSet rules,
-34/34 physical plan types, 48/48 value types, 18/18 properties, 12/12 match
+34/34 physical plan types, 48/48 value types, 19/19 properties, 12/12 match
 candidate types, 24/24 comparison operators, 9/9 predicates. Remaining items
 are execution-layer, wire-format, or intentional architectural choices.
 
@@ -666,7 +666,7 @@ Go has **no such correctness problem**: Go's outer join is a `SelectExpression{j
 
 **Companion divergence — `RewriteOuterJoinRule` runs in Go's PLANNING phase (`PlanningExplorationRules`); Java's `PlanningRuleSet` does not contain it.** Because Go keeps the un-rewritten outer-join select as the prune survivor (above), PLANNING re-fires the canonicalizer to re-derive the rewritten form and keep the correlated-FlatMap alternative available alongside the materialized NLJ. Kept as an intentional divergence (Java can drop it precisely because `outerJoinCount` makes the rewritten form the sole survivor — the guard Go must not adopt). Empirically the full outer-join FDB suite is green whether or not this PLANNING re-fire is present (the correlated FlatMap is also derivable directly by `ImplementNestedLoopJoinRule.yieldGeneralFlatMap`), so a future cleanup could remove it — but only after pinning the correlated-LEFT-OUTER index-nested-loop (RFC-042) path with a dedicated plan-shape test.
 
-### Properties: 18/18
+### Properties: 19/19
 
 | Java Property | Go Implementation | Status |
 |---|---|---|
@@ -688,6 +688,49 @@ Go has **no such correctness problem**: Go's outer join is a `SelectExpression{j
 | ExpressionDepthProperty | `expressionDepth()` inline in cost model | Aligned (inline) |
 | TypeFilterCountProperty | `walkExpressionTree()` counter inline in cost model | Aligned (inline) |
 | UnmatchedFieldsCountProperty | `walkExpressionTree()` counter inline in cost model | Aligned (inline) |
+| ContinuableWithoutDuplicatesProperty | `plans/continuable_without_duplicates_property.go` | Invariant aligned; **false set diverges** (see below) |
+
+#### `ContinuableWithoutDuplicatesProperty` — same invariant, empty false set
+
+**The invariant is identical and is ported exactly:** never stream-aggregate over a plan that
+can re-emit a row across a continuation. An aggregate FOLDS each input row into an accumulator,
+so a row delivered twice is counted twice — it is the one consumer for which a re-emitted row is
+wrong rather than merely redundant. Wired into `ImplementStreamingAggregationRule` at Java's own
+filter point (`ImplementStreamingAggregationRule.java:68-78`, upstream of the ordering check at
+`:118-119`).
+
+**The FALSE SET diverges, and that is the point.** Java's visitor returns `false` for exactly two
+plans — `RecordQueryUnorderedPrimaryKeyDistinctPlan` and `RecordQueryUnorderedDistinctPlan` —
+because *Java's executor* rebuilds their dedup set per execution
+(`RecordQueryUnorderedPrimaryKeyDistinctPlan.java:100-104` mints a fresh `HashSet` and passes the
+inner's continuation through untouched), so a duplicate spanning a resume is silently re-admitted.
+That is a fact about Java's executor, not about what a DISTINCT plan means. **#621 removed that
+premise in Go:** the seen-set is carried across pages BY REFERENCE through the statement-scoped
+`ExecutionScratch`, with an adoption/retirement lifecycle keyed on continuation nameability. Go's
+counterparts are therefore continuation-safe and answer `true`, at exactly the arms Java overrides
+so the divergence is recorded at the decision site. Importing Java's *conclusion* while Go had
+removed its *premise* is the same error the `strictlySorted` refusal already names.
+
+**Go's false set is consequently EMPTY**, audited rather than assumed across every plan the rule
+can sit over: each either resumes positionally (scan, index, nested-loop join and flat-map restore
+an exact index and verify it against a saved key), serializes its whole state into the continuation
+(in-memory sort carries its remaining sorted buffer; unordered union a per-child slot; the recursive
+union its temp-table frontier on every emitted row), parks state in the scratch (the two distincts),
+or refuses to resume rather than restarting (the buffered union fallback returns
+`UnsupportedContinuationError`). The admission filter is therefore **vacuously true today** and is
+kept as a correct-by-construction guard; the emptiness is pinned as a negative result
+(`TestContinuableWithoutDuplicates_FalseSetIsEmpty`) naming what re-arms it.
+
+**Open, and load-bearing: Go has no hash aggregation.** Streaming aggregation is Go's only
+aggregation strategy, and the rule's in-memory-sort path is a sort, not a fallback — the property's
+default-from-children declines a sort over a re-emitting inner too. So if the false set ever becomes
+non-empty, `GROUP BY` over the declined shape would **fail to plan** rather than fall back. A hash
+aggregation has to land before anything is added to the false set. Stated at the rule, and asserted
+at the point of failure by the emptiness test.
+
+**Placement divergence:** Java files this under `cascades/properties`; Go cannot, because `plans`
+imports `properties` (`cardinality_bounds.go`), so a property dispatching on plan types would be an
+import cycle. It lives beside the other plan-level properties in `plans/`.
 
 ### Predicate Simplification: 12/12 Rules Covered
 

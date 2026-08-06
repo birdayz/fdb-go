@@ -72,14 +72,24 @@ func TestContinuableWithoutDuplicates_NilIsSafe(t *testing.T) {
 	}
 }
 
-// TestContinuableWithoutDuplicates_FoldsChildren pins Java's visitDefault →
-// fromChildren composition: the verdict is over the whole TREE, not the root.
-// This is what makes the empty false set safe to extend — the day a plan is
-// added to the false set, every operator stacked above it inherits the verdict
-// without anyone editing those operators.
+// TestContinuableWithoutDuplicates_FoldsChildren pins Java's fromChildren
+// helper, and is deliberately explicit about the ONE thing it cannot pin.
 //
-// It is pinned through the visitor's own fold rather than through a false plan,
-// because no plan is false today — see TestContinuableWithoutDuplicates_FalseSetIsEmpty.
+// WHAT IT PINS: fromChildren itself — the all-children conjunction, including
+// the empty case. Mutating the visitor's default arm to false reds this.
+//
+// WHAT IT DOES NOT PIN, measured rather than assumed: that Visit actually CALLS
+// fromChildren. Replacing `return v.fromChildren(p.GetChildren())` in Visit with
+// a bare `return true` leaves this whole file GREEN. That is not a hole in the
+// test — it is the empty false set again. With no node anywhere answering false,
+// a fold and a no-op are behaviourally identical, so no test over real plans can
+// separate them. The day the false set gains a member, the fold becomes
+// observable and this is the test that should grow the case; until then, saying
+// so is more useful than an assertion that would pass either way.
+//
+// The composition still matters, because it is what makes the empty set safe to
+// extend: adding one plan to the false set must make every operator stacked
+// above it unsafe without anyone editing those operators.
 func TestContinuableWithoutDuplicates_FoldsChildren(t *testing.T) {
 	t.Parallel()
 
@@ -92,9 +102,9 @@ func TestContinuableWithoutDuplicates_FoldsChildren(t *testing.T) {
 		t.Fatal("fromChildren over two safe children = false, want true")
 	}
 
-	// A stack of operators over a safe leaf stays safe, and the fold really does
-	// descend: the distinct wrapper is the node whose Java twin would have
-	// stopped the walk with false.
+	// A stack of operators over a safe leaf stays safe. Under Java's false set
+	// this exact shape is doubly false, so reading false here means Go imported
+	// that conclusion.
 	stacked := NewRecordQueryUnorderedPrimaryKeyDistinctPlan(
 		NewRecordQueryDistinctPlan(cwdScanFixture()))
 	if !EvaluateContinuableWithoutDuplicates(stacked) {
@@ -103,8 +113,7 @@ func TestContinuableWithoutDuplicates_FoldsChildren(t *testing.T) {
 			"Go imported that conclusion")
 	}
 	if n := Size(stacked); n != 3 {
-		t.Fatalf("the stacked fixture has %d nodes, want 3 — if the tree collapsed, the fold "+
-			"assertion above stopped proving that the walk descends", n)
+		t.Fatalf("the stacked fixture has %d nodes, want 3 — the shape under test collapsed", n)
 	}
 }
 
@@ -113,9 +122,18 @@ func TestContinuableWithoutDuplicates_FoldsChildren(t *testing.T) {
 //
 // The claim: no plan type in this package is currently continuation-unsafe, so
 // the streaming-aggregation rule's admission filter is VACUOUSLY TRUE. That is
-// load-bearing in an unobvious direction — it is exactly why removing the
-// filter cannot be caught by any behavioural test today, and why the filter is
-// justified as correct-by-construction rather than by a red test.
+// load-bearing in an unobvious direction, and both consequences were MEASURED
+// rather than reasoned about:
+//
+//   - Removing the rule's admission filter entirely leaves the suite GREEN.
+//   - Removing the child fold from ContinuableWithoutDuplicatesVisitor.Visit
+//     also leaves it GREEN.
+//
+// Neither is a gap in coverage; both are the emptiness showing through. With no
+// node answering false, a filter and a pass-through are the same function. This
+// is why the filter is justified as correct-by-construction rather than by a red
+// test — and why the mutation that DOES bite is inverting the two DISTINCT arms,
+// which is the ruling this property exists to record.
 //
 // WHAT RE-ARMS THIS: a cursor whose resume can re-emit an already-emitted row —
 // one that restarts an inner instead of resuming it, or holds emission state in
