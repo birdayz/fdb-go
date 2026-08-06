@@ -989,7 +989,21 @@ bucket had when it was written. `pkg/docscheck` remains the authority for all
 of them.
 
 0. Domain accessor (fail-closed) — nothing else may land first.
-1. boundary (0, MIGRATED): metadata names died at candidate construction.
+1. boundary (2, REOPENED — was 0, MIGRATED): metadata names died at candidate
+   construction, and that part holds. The bucket is non-empty again for two
+   reasons, neither a regression: the call-boundary taint made a always-present
+   site visible (a name crossing a plain string parameter), and a second spelling
+   attempt was added inside the same descent. Both are `protoFieldByName`'s arms
+   and both retire on ONE fix. Reading the reference settled what that fix is —
+   Java descends nested proto records by ORDINAL (`FieldValue.eval` →
+   `MessageHelpers.getFieldValueForFieldOrdinals`, `FieldValue.java:169`;
+   `getFields().get(ordinal)` with a throw out of range,
+   `MessageHelpers.java:170-175`), consuming the name exactly once at construction
+   (`FieldValue.java:284-290`). So this is not "the boundary shape, probably
+   fine": it is this RFC's own thesis, already implemented in Java, at the last
+   step Go still asks the name. Gated on the nested-descent audit, since
+   `ResolvedAccessor` carries an `Ordinal` whose equality with the descriptor's
+   declaration index is unproven per producer.
 2. escape (0, MIGRATED): key structs; killed the caller-side blindness the gate
    cannot reach.
 3. name-keyed (3, was 15): including the 4151 probe-first defect check; 6188 is
