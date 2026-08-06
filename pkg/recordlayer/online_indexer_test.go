@@ -432,10 +432,10 @@ var _ = Describe("OnlineIndexer", func() {
 			mdWithIndex, err := builder2.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			// limit=2 → ~3 chunks, 40ms enforced delay each. Crucially NO SetMaxRetries
-			// (default 0): proves the enforced delay applies in the DEFAULT config and only
-			// AFTER each committed range. Without the wiring fix the throttle was gated
-			// behind retries and the delay never fired — this build would finish in ~ms.
+			// limit=2 → ~3 chunks, 40ms enforced delay each. Crucially NO SetMaxRetries:
+			// proves the enforced delay applies in the DEFAULT config and only AFTER each
+			// committed range. Throttling must never depend on the retry budget — Java
+			// takes the inter-range wait regardless of it (IndexingBase.java:512).
 			indexer, err := NewOnlineIndexerBuilder().
 				SetDatabase(sharedDB).SetMetaData(mdWithIndex).SetIndex(priceIndex).
 				SetSubspace(ks).SetLimit(2).SetEnforcedPostTransactionDelay(40).Build()

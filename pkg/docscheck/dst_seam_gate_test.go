@@ -71,7 +71,7 @@ var seamAllowlist = map[string]string{
 	// ---- (B) Scheduling and in-memory bookkeeping. A simulated clock here would freeze LRU
 	// eviction or a rate limiter without changing any byte on disk, so the wall clock is the
 	// correct source.
-	"pkg/recordlayer/indexing_throttle.go:waitForRateLimit: time.Now":      "inter-transaction rate limiting, wall-clock by definition",
+	"pkg/recordlayer/indexing_throttle.go:waitTimeMillis: time.Now":        "inter-transaction rate limiting, wall-clock by definition",
 	"pkg/recordlayer/store_state_cache.go:addToCache: time.Now":            "in-memory LRU access stamp",
 	"pkg/recordlayer/store_state_cache.go:getIfPresent: time.Now":          "in-memory LRU access stamp",
 	"pkg/recordlayer/store_state_cache.go:getIfPresent: time.Since":        "in-memory LRU entry expiry; evicting an entry re-reads it from FDB, it never writes",
