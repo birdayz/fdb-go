@@ -11997,8 +11997,53 @@ None is speculative: each was re-verified against the tree before booking.
   compile is that this consumer renders the label INTO a match key, and no
   render exit placed in `embedded` can reach a site that lives in `plans`.
 
-- [ ] **CQ-56 (MED/S, S) — `NewFieldValueWithPinnedOrdinal` mints its FieldPath
-  with `Domain: unknown`, and the domain is derivable at both call sites.** The
+- [x] **CQ-56 (MED/S, S) — `NewFieldValueWithPinnedOrdinal` mints its FieldPath
+  with `Domain: unknown`, and the domain is derivable at both call sites.**
+  **DONE — and it had ALREADY SHIPPED when this box was re-examined on
+  2026-08-06. The entry, not the code, was stale.**
+
+  The fix landed in `3ec53d1ac` ("CQ-56 lands; CQ-55's true shape measured;
+  RFC-198 review-complete", #529, 2026-07-29) and the commit did not check this
+  box. Measured at `cb9bc5225`: `NewFieldValueWithPinnedOrdinal` had **zero
+  callers anywhere in the repo** — every site goes through
+  `NewFieldValueWithPinnedOrdinalInDomain`, and the token is derived by
+  `aggregateNativeOutputDomain`, which builds it from `aggregateNativeOutputName`
+  over the SAME `[keys..., calls...]` enumeration that names each slot, so a
+  slot's name and the layout signature containing it cannot drift.
+
+  It also did MORE than this entry scoped: **four** composition sites, not the
+  two named below — the projection bake, the aggregate-call bind, the group-key
+  bind, and the post-aggregate group-key rebase, which minted through the raw
+  `FieldPath` constructor and so never appeared as a
+  `NewFieldValueWithPinnedOrdinal` caller at all.
+
+  **The verification obligation is met, and re-confirmed by mutation on
+  2026-08-06** against `TestPinnedAggregateReferenceStatesTheLayoutItsOrdinal
+  Indexes` (`embedded/aggregate_output_slot_domain_test.go`), which asserts the
+  previously-unprobed dimension in BOTH directions:
+  - domain **unknown** → all four subcases RED ("pinned reference \"SUM(W)\"
+    carries domain(unknown)");
+  - domain **known but WRONG** (the source layout) → all four RED, and the
+    source-specific diagnostic fires ("That is the SOURCE table's layout").
+    A known-but-wrong token is strictly worse than none — it makes the
+    comparison the element exists to refuse SUCCEED — so both directions matter.
+
+  **Residue closed in this pass:** the domain-less constructor was still
+  *present* with zero callers, i.e. the last remaining route to mint a pinned
+  ordinal against an unstated row. It is deleted, and
+  `pkg/docscheck/pinned_ordinal_domain_test.go`
+  (`TestPinnedOrdinalAlwaysStatesItsDomain`) now fails the build on any
+  reintroduction — no allowlist, mutation-checked in three directions
+  (reintroduced constructor; a real site passing `OrdinalDomain{}`;
+  `NewFieldPathOfSingle(..., true)`), with a companion precision test pinning the
+  six shapes that must stay LEGAL so the gate cannot become the thing that
+  removes the correct mint.
+
+  **No census or pin population moved** — the change deletes a zero-caller
+  function and adds a test, so no production path is altered; re-measured to
+  confirm rather than argued.
+
+  *Original entry below, kept as the record of what was scoped.* The
   ordinal domain is RFC-197 step 0's third element of identity, and the
   constructor that pins an ordinal is the one place it must not be blank.
 
@@ -12029,6 +12074,42 @@ None is speculative: each was re-verified against the tree before booking.
   `rule_push_filter_through_groupby.go` declines by NAME AMBIGUITY rather than
   resolving the reference by its recorded slot. With the domain minted, that
   refusal can become a decision.
+
+- [ ] **CQ-95 (MED/S, query-engine — needs its own RFC + Graefe ACK) — the
+  ambiguous-grouping-key decline's stated blocker EXPIRED when CQ-56 landed, and
+  nothing noticed for a week.** · S/M
+  `rule_push_filter_through_groupby.go`'s `rebindGroupKeyRefToInner` refuses to
+  rebind a pushed HAVING reference when two grouping keys answer to the same
+  accessor path — `GROUP BY o.k, i.k` renders both keys as `["K"]` because
+  `AccessorNamePath` stops at the QOV root. The refusal is CORRECT and must not
+  be removed by taking the first match: that is a wrong-rows read whenever the
+  reference denoted the other key. `buildGroupKeySet` refuses pushdown for the
+  whole GroupBy on the same shape.
+
+  Its comment justified declining with "the reference's recorded ordinal is not
+  usable as that identity while its domain is still unknown". **That premise is
+  now false.** CQ-56 (#529, `3ec53d1ac`) minted the domain: a post-aggregate
+  reference carries the aggregate's native output layout on its `FieldPath`,
+  derived from the same enumeration that names each slot, pinned in both
+  directions by `TestPinnedAggregateReferenceStatesTheLayoutItsOrdinalIndexes`.
+  The structural identity the decline says it needs EXISTS. The comment is
+  corrected in place to say so; the BEHAVIOUR is untouched.
+
+  **This is a missed optimization, not a correctness risk** — the decline leaves
+  the predicate a residual filter above the aggregate, which is correct rows by
+  the slower path. That is why it is booked rather than rushed.
+
+  **Why this is booked and not implemented in the pass that found it:** it is a
+  change to a Cascades rule's decision, which under this repo's standing gate
+  needs an RFC and a Graefe ACK before merge. That is an owner decision, not a
+  deferral of work anyone here could have done.
+
+  DONE = the rebind decides by `(ordinal, domain)` via `OrdinalIn` on both sides
+  instead of declining on name ambiguity, `buildGroupKeySet` keys by column
+  identity rather than by a path a SET collapses, and the `GROUP BY o.k, i.k
+  HAVING i.k > N` shape is pinned red→green — the predicate reaching the scan
+  with the RIGHT key, plus the negative case where the domains genuinely differ
+  and the decline must survive.
 
 - [ ] **CQ-57 (MED/S, S) — `rule_decorrelate_values`'s two Select rebuilds drop
   `quantifiersSwapped`, and whether that is CORRECT is a semantics question

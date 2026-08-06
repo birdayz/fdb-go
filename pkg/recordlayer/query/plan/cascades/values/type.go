@@ -504,11 +504,13 @@ type RecordTypeLeg struct {
 	// claim that matters and the one that does not depend on the population.
 	//
 	// The POPULATION is a dated point measurement and is deliberately given as a
-	// range: two consecutive full-suite runs on 2026-08-06 reported 39169 and
-	// 39889. It is not stable run to run and must not be quoted as a fixed
-	// number — the memo may explore a rule once or many times for one query
-	// depending on exploration order, and this site is sampled inside readers
-	// that rules drive. (This line previously read "every one of the 3320 legs",
+	// range: three full-suite runs on 2026-08-06 reported 39169, 39889 and
+	// 35029 — a spread of roughly 14%, on an unchanged tree. It is not stable
+	// run to run and must not be quoted as a fixed number: the memo may explore
+	// a rule once or many times for one query depending on exploration order,
+	// and this site is sampled inside readers that rules drive. Quote the RANGE
+	// or quote nothing; a single sample from this site has been wrong every time
+	// anyone has written one down. (This line previously read "every one of the 3320 legs",
 	// a single sample from a much smaller corpus, stated as if it were a
 	// standing fact; it was an order of magnitude low and nothing caught it,
 	// because prose carrying a number carries no instrument.)

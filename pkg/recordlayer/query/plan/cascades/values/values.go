@@ -1296,39 +1296,41 @@ func NewFieldValueWithResolvedOrdinalInDomain(field string, ordinal int, typ Typ
 	return &FieldValue{Field: field, Typ: typ, Resolved: NewFieldPathOfSingleInDomain(field, ordinal, false, domain)}
 }
 
-// NewFieldValueWithPinnedOrdinal constructs a flat FieldValue whose ordinal is
-// FINAL against an executor-assembled row rather than relative to any source's
-// declared column order — the composition-recorded slot (Java's loop-index
-// pull-up, CompensateRecordConstructorRule.java:92, over Column.unnamedOf
-// columns). Use it where the SLOT WAS DECIDED BY THE COMPOSITION doing the
-// construction: an aggregate's [keys..., calls...] output row, a join's
-// assembled frontier. The pin is what tells a downstream binder that the
-// ordinal is a recorded fact, not a bake to be re-derived from the display
-// name — the difference between reading the slot the composition chose and
-// recovering a slot from a last-wins name map.
+// NewFieldValueWithPinnedOrdinalInDomain constructs a flat FieldValue whose
+// ordinal is FINAL against an executor-assembled row rather than relative to any
+// source's declared column order — the composition-recorded slot (Java's
+// loop-index pull-up, CompensateRecordConstructorRule.java:92, over
+// Column.unnamedOf columns) — TOGETHER WITH the layout that ordinal indexes
+// (RFC-197 step 0), the assembled row the composition numbered the slot against.
+//
+// Use it where the SLOT WAS DECIDED BY THE COMPOSITION doing the construction:
+// an aggregate's [keys..., calls...] output row, a join's assembled frontier.
+// The pin is what tells a downstream binder that the ordinal is a recorded fact,
+// not a bake to be re-derived from the display name — the difference between
+// reading the slot the composition chose and recovering a slot from a last-wins
+// name map.
 //
 // Distinct from NewFieldValueWithResolvedOrdinal, whose ordinal is
 // SOURCE-RELATIVE and therefore dead on any row the source's own layout does
 // not describe.
-// Carries no domain token; use NewFieldValueWithPinnedOrdinalInDomain wherever
-// the composition can state the layout it numbered against — which is
-// everywhere it decided the slot, since deciding a slot means holding the
-// layout.
-func NewFieldValueWithPinnedOrdinal(field string, ordinal int, typ Type) *FieldValue {
-	return NewFieldValueWithPinnedOrdinalInDomain(field, ordinal, typ, OrdinalDomain{})
-}
-
-// NewFieldValueWithPinnedOrdinalInDomain is NewFieldValueWithPinnedOrdinal plus
-// the layout the ordinal indexes (RFC-197 step 0) — the assembled row the
-// composition numbered the slot against.
 //
-// A pinned ordinal without a domain is the shape no consumer may act on: the
-// pin says "this slot is a recorded fact", and the missing domain says "against
-// an unstated row". Those two claims together are exactly the comparison
-// FieldPath.Domain exists to refuse — a group key's source-relative ordinal and
-// an aggregate's output-row ordinal matching because the integers coincided.
-// The composition that pinned the ordinal is holding the layout by definition,
-// so this is the constructor those sites use.
+// THERE IS DELIBERATELY NO DOMAIN-LESS VARIANT OF THIS CONSTRUCTOR. A pinned
+// ordinal without a domain is the shape no consumer may act on: the pin says
+// "this slot is a recorded fact", and a missing domain says "against an unstated
+// row". Those two claims together are exactly the comparison FieldPath.Domain
+// exists to refuse — a group key's source-relative ordinal and an aggregate's
+// output-row ordinal matching because the integers coincided, which is a defect
+// this codebase has actually shipped (logical_predicate.go documents it from
+// production). The composition that pinned the ordinal is holding the layout by
+// definition, so a caller that cannot state one is a caller that has not in fact
+// decided the slot.
+//
+// A NewFieldValueWithPinnedOrdinal without the domain parameter used to exist
+// alongside this one and defaulted the token to unknown. Every one of its call
+// sites was migrated here, it was left with no callers, and it is now removed
+// rather than kept as a convenience — a convenience that mints an
+// unactionable identity is a loaded gun for the next caller.
+// TestPinnedOrdinalAlwaysStatesItsDomain keeps it from growing back.
 func NewFieldValueWithPinnedOrdinalInDomain(field string, ordinal int, typ Type, domain OrdinalDomain) *FieldValue {
 	return &FieldValue{Field: field, Typ: typ, Resolved: NewFieldPathOfSingleInDomain(field, ordinal, true, domain)}
 }
