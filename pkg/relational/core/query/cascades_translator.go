@@ -6257,25 +6257,35 @@ func bakeFlatRefsAgainstColumns(v values.Value, cols []string, legs ...values.Re
 		// POPULATION is far smaller than that progression implied: this arm is
 		// reached twice over the whole corpus, both times by a BARE name that
 		// falls through unbaked. It has never been handed a dotted name here.
-		// The hard zero is therefore nearly vacuous on its own and the FLOORS
-		// are what carry the weight — they fail when these arms go from
-		// nearly-dark to dark, which is the only way the zero goes quietly
-		// false.
+		// The hard zero is therefore nearly vacuous on its own, and what
+		// carries the weight is the floors PLUS a unit wiring pin — a weaker
+		// and more honest statement than the floors alone. THIS arm's split
+		// population is 2, so its floor is real. segmentsOf's is 0, so its
+		// floor is a DECLARATION (watched, not proven) and the recorder wiring
+		// on its splitting arms is pinned by unit test instead; see the census
+		// header.
 		//
-		// That is also what keeps the open question above from being settled by
-		// accident: the day a machinery-minted label arrives here carrying a
-		// dot, SPLIT-QUALIFIED leaves zero and the assertion fires with the
-		// decision named in its message, rather than this arm silently reading
-		// the dot as a qualifier.
+		// Both numbers scope to THESE TWO ARMS. They are not a statement about
+		// re-splitting in Go: the census header names four uninstrumented
+		// siblings (recursiveRemapValues, parseColRef, splitQualifier, and the
+		// derived-unnest base-column split), and nothing counts those.
+		//
+		// The parked question above cannot be settled by accident here, and it
+		// is not this arm's to settle in any case: the day a machinery-minted
+		// label arrives carrying a dot, SPLIT-QUALIFIED leaves zero and the
+		// assertion fires with the RULING in its message — Java resolves a
+		// projection output that carries no Identifier by no spelling at all
+		// (SemanticAnalyzer.java:459-461), so this arm DECLINES and the zero is
+		// not widened.
+		// ONE if/else, with the recorder INSIDE the arm it reports. Counting in a
+		// separate `if dot > 0` that merely happened to test the same expression
+		// let an edit to the split condition leave the census measuring the other
+		// predicate — reporting SPLIT-QUALIFIED for calls that took the bare path,
+		// which is the one way a hard zero can be both green and meaningless.
 		dot := strings.IndexByte(fv.Field, '.')
 		if dot > 0 {
 			values.RecordNameSplit(values.NameSplitSiteFlatColumnBake,
 				values.NameSplitQualified, fv.Field)
-		} else {
-			values.RecordNameSplit(values.NameSplitSiteFlatColumnBake,
-				values.NameSplitBare, fv.Field)
-		}
-		if dot > 0 {
 			if k, found := legWindowSlot(fv.Field[:dot], fv.Field[dot+1:], cols, legs,
 				values.DottedLegSiteFlatColumnBake); found {
 				// k indexes the WHOLE flat row (the leg window is a range
@@ -6283,6 +6293,9 @@ func bakeFlatRefsAgainstColumns(v values.Value, cols []string, legs ...values.Re
 				return values.NewFieldValueWithResolvedOrdinalInDomain(
 					fv.Field, k, fv.Typ, values.OrdinalDomainOfColumnNames(cols))
 			}
+		} else {
+			values.RecordNameSplit(values.NameSplitSiteFlatColumnBake,
+				values.NameSplitBare, fv.Field)
 		}
 		return node
 	}

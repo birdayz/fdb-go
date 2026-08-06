@@ -227,14 +227,25 @@ Two further corrections to the migration's bookkeeping, both found by reading th
   at `IdentifierVisitor.java:56-64`, joined only for display at `:61-63`), so it has no analogue of
   the arm that would answer the question by accident. The caveat that used to sit here — "nothing
   instruments the split population, so the 110 → 0 figures are scratch measurements" — is
-  CLOSED: `name_split_census.go` counts both arms per resolution decision and
-  `AssertNameSplitCensus` gates them in the sqldriver `TestMain`. Measured, stable across two
-  consecutive full-suite runs: `legQOVSegmentsOf` 9 calls (segmented 9, **SPLIT-QUALIFIED 0**),
-  `flatColumnBake` 2 calls (splitBare 2, **SPLIT-QUALIFIED 0**). The zero is confirmed; the
-  population is 11, not the ~110 the scratch figure implied, so the FLOORS rather than the zero are
-  what carry the guarantee. The question itself stays open and stays the owner's — what is closed
-  is the possibility of answering it by accident, since a dotted machinery label reaching either arm
-  is now a red test naming the decision.
+  CLOSED **for the two leg bakers, and for nothing else**: `name_split_census.go` counts those two
+  arms per resolution decision and `AssertNameSplitCensus` gates them in the sqldriver `TestMain`.
+  Measured, stable across two consecutive full-suite runs: `legQOVSegmentsOf` 9 calls (segmented 9,
+  **SPLIT-QUALIFIED 0**), `flatColumnBake` 2 calls (splitBare 2, **SPLIT-QUALIFIED 0**). The zero is
+  confirmed; the population is 11, not the ~110 the scratch figure implied. Four splitting siblings
+  remain uninstrumented by anything — `recursiveRemapValues` (`cascades_translator.go:9547`, which
+  manufactures a `CorrelationIdentifier` outright), `parseColRef` (`core/embedded/colref.go:18`, 27
+  production call sites), `splitQualifier` (`:5016`) and the derived-unnest base-column split
+  (`derived_unnest.go:107`) — named in the census header and booked as **CQ-94**; do not read
+  these zeros as global. What carries the guarantee is the floors PLUS a unit wiring pin, not the
+  floors alone: the split population is floored per site (`flatColumnBake` 1, measured 2), and
+  `legQOVSegmentsOf`'s is a declared **0** — "watched, not proven", checked in the stale direction —
+  because that arm is measured empty over the corpus while being demonstrably LIVE (a panic there is
+  reached with a dotted name), so its recorder wiring is pinned by unit test instead. And the
+  behaviour question at the arm is **RULED, not open**: Java skips a projection output carrying no
+  `Identifier` before any comparison, so a machinery label is not name-resolvable by any spelling and
+  the arm DECLINES — the gate's failure text now states that instead of telling the tripper to
+  escalate. What stays the owner's is only whether the star-body normalization should stop minting
+  such labels at all, which is upstream of this arm.
 - **CQ-53 is marked done but has a surviving producer.** `TODO.md`'s CQ-53 closes it as subsumed by
   CQ-67 (#549) "carrying no separate remainder", while
   `pkg/docscheck/field_name_decision_test.go:447` pins `cascades_translator.go:3598` as "dotted:

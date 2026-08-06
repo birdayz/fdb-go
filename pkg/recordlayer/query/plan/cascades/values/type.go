@@ -612,9 +612,13 @@ type RecordTypeLeg struct {
 	//     blocked on an executor widening. Its mint is the unnest-merge path's
 	//     `leg + "." + col` (query.rebaseUnnestOuterLegPredicate). That mint
 	//     cannot re-anchor by ordinal in isolation: it holds no layout parameter,
-	//     and every one of its surviving call sites is the `!seedWindowed` /
-	//     `!ordinalSeed` arm, whose merged row is built with qualified `LEG.COL`
-	//     keys — so a positional bake against it strands. The ordinal twin
+	//     and every one of its surviving call sites reaches it over a merged row
+	//     built with qualified `LEG.COL` keys — so a positional bake against it
+	//     strands. Three of the five sit in an explicit `!seedWindowed` /
+	//     `!ordinalSeed` else-branch; the other two apply no seed test at all
+	//     (one is the else of the chained-unnest check, one the plain non-chained
+	//     merge), which makes them the name-keyed rebase's only domain rather
+	//     than an unconverted arm of a seed decision. The ordinal twin
 	//     already exists and is already selected wherever a windowed seed makes
 	//     it correct. Making those seeds ordinal is a scope gate coupled to the
 	//     executor's below-FOD hoist, the same binding-namespace widening the
@@ -633,8 +637,11 @@ type RecordTypeLeg struct {
 	//
 	// The SPLIT population these bakers sit on is now instrumented
 	// (name_split_census.go) and reads SPLIT-QUALIFIED 0 at both arms over 11
-	// calls. That closes the question of whether a qualifier is still being
-	// MANUFACTURED from a rendered name — it is not — without touching either
+	// calls. Scope that to the TWO LEG BAKERS: the census's own header names four
+	// uninstrumented splitting siblings, so this is not a statement about
+	// re-splitting in Go. Within that scope it closes the question of whether a
+	// qualifier is still being MANUFACTURED from a rendered name at the bakers
+	// these two readers sit behind — it is not — without touching either
 	// blocker above, because manufacturing a qualifier and matching one against
 	// Name are different steps and only the first was ever a text-channel defect.
 	//
