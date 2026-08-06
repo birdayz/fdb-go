@@ -241,6 +241,23 @@ rdb := recordlayer.NewFDBDatabase(fdb.WrapDatabase(cdb))
 
 `fdbmetrics.Handler` accepts any `MetricsSource` (`interface{ Metrics() client.ClientMetricsSnapshot }`).
 
+**Record-layer metrics.** One layer up, `StoreTimer` (the port of Java's `FDBStoreTimer`) counts
+record-layer operations — records saved/loaded/deleted, index scans, commit timings, key and value
+bytes. `rlmetrics.Handler` exports it in the same zero-dependency Prometheus text format, under
+`fdb_recordlayer_`. Timed events render as summaries in seconds; counts and byte totals as
+counters. Install the timer on the database and every context it opens inherits it:
+
+```go
+timer := recordlayer.NewStoreTimer()
+rdb.SetTimer(timer)
+http.Handle("/metrics/recordlayer", rlmetrics.Handler(timer))
+```
+
+From `database/sql`, where the driver owns the database handle, arm it by cluster-file key instead:
+`sqldriver.EnableStoreTimer(clusterFile)` returns the timer. Scope is one timer per key, with no
+tenant label by design — see [`mt-saas.md` §4](mt-saas.md#4-observability). `StoreTimer.KeysAndValues()`
+gives Java's `_count`/`_micros` log-key form for `KeyValueLogMessage`-style logging instead.
+
 **Logs.** Diagnostics route through the standard `log/slog`. Apps set their own handler with
 `slog.SetDefault(...)` (no record-layer logging API to learn), or pass a per-handle logger with the
 client's `WithLogger(...)` option. Serious (panic-recovery) events log at Error; per-code retry

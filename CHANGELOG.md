@@ -16,6 +16,16 @@ releases yet** — cutting the first `v0.x` tag is the maintainer's decision (`R
 ## [Unreleased]
 
 ### Added
+- **Record-layer metrics exporter** (`pkg/recordlayer/rlmetrics`): `StoreTimer` (the port of Java's
+  `FDBStoreTimer`) rendered in the Prometheus text exposition format under `fdb_recordlayer_`, with
+  zero new dependencies — the record-layer counterpart to `pkg/fdbgo/fdbmetrics`. Timed events are
+  summaries in seconds, counts and byte totals are counters. `recordlayer.Event` gains a `Kind`
+  (timed / count / size) porting Java's `Event`-vs-`Count(isSize)` split, and `StoreTimer` gains
+  `Add` and `KeysAndValues` from Java. Reachable from the SQL layer via
+  `FDBDatabase.SetTimer` or, for `database/sql`-only deployments,
+  `sqldriver.EnableStoreTimer(clusterFile)` — one timer per cluster-file key (per process), with no
+  per-tenant label by design; see `docs/mt-saas.md` §4 for the cardinality reasoning.
+
 - **Multi-tenant SaaS operator guide** (`docs/mt-saas.md`): the tenancy model (one database path per
   tenant, subspace-per-database, and why native FDB tenants are not used), the trust boundary and
   `RESTRICT_DDL_TO_SESSION_DATABASE`, the five per-statement quotas and how to arm them (none is
@@ -48,6 +58,16 @@ releases yet** — cutting the first `v0.x` tag is the maintainer's decision (`R
   envelope, including for nested derived tables (RFC-128).
 
 ### Fixed
+- **Record-layer instrumentation was measuring the wrong things, or nothing at all.**
+  `Counter.Increment` wrote its amount into the cumulative-value field as well as the count, so every
+  count event reported a bogus duration (Java's `Counter.increment` touches `count` alone). The scan
+  events timed cursor *construction* rather than each record produced, which for a lazy cursor
+  measures an allocation and reports one occurrence per scan regardless of size (Java instruments the
+  cursor's `onNext`). Scan events also sat on entry points the query engine does not use, leaving the
+  executor's record scans, aggregate/group index scans, vector scans and primary index scans
+  uncounted. And `EventCommit` was recorded only by `CommitWithVersionstamp`, so every commit on the
+  SQL path — autocommit and explicit `BeginTx` alike — went unrecorded. Instrumentation only; no
+  wire-format, plan or result change.
 - **Legacy Java store layouts are now fully readable, writable, and auto-upgraded** — closes the
   `FormatVersion` < 6 / `omit_unsplit_record_suffix` wire-compatibility gap that was previously a
   *silent* data-correctness bug (Go accepted an old-format store header but only understood the modern

@@ -406,7 +406,11 @@ func executeIndexScan(
 			innerContinuation []byte,
 			childProperties recordlayer.ScanProperties,
 		) (recordlayer.RecordCursor[*recordlayer.IndexEntry], error) {
-			return maintainer.Scan(scanRange, innerContinuation, childProperties), nil
+			// Instrumented here because this path never touches FDBRecordStore.ScanIndex:
+			// the per-range factory needs the maintainer directly, so the store method
+			// that would otherwise count the scan is bypassed entirely.
+			return recordlayer.InstrumentIndexScanCursor(store.Context().Timer(),
+				maintainer.Scan(scanRange, innerContinuation, childProperties)), nil
 		},
 	)
 	if err != nil {

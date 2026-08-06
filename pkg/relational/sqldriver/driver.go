@@ -83,7 +83,62 @@ var fdbDBCache sync.Map // clusterFile string -> *recordlayer.FDBDatabase
 // population that connect() already performs internally — production behavior is unchanged.
 func RegisterBackend(key string, db *recordlayer.FDBDatabase) (unregister func()) {
 	fdbDBCache.Store(key, db)
+	applyStoreTimer(key, db)
 	return func() { fdbDBCache.Delete(key) }
+}
+
+// storeTimers holds the record-layer StoreTimer armed for each cluster-file key, so a
+// timer can be installed before the corresponding FDBDatabase exists. Keyed the same way
+// as fdbDBCache and never removed: a scrape endpoint outlives any single *sql.DB, and
+// dropping the timer when the last connection closed would silently reset an operator's
+// counters mid-flight.
+var storeTimers sync.Map // clusterFile string -> *recordlayer.StoreTimer
+
+// applyStoreTimer installs the armed timer, if any, on a database just entered into the
+// cache. Called from both directions (here and EnableStoreTimer) precisely because either
+// can happen first; both write the same pointer, so the overlap is idempotent rather than
+// a race, and the two orderings between them leave no window where a database ends up
+// uninstrumented.
+func applyStoreTimer(clusterFile string, db *recordlayer.FDBDatabase) {
+	if t, ok := storeTimers.Load(clusterFile); ok {
+		db.SetTimer(t.(*recordlayer.StoreTimer))
+	}
+}
+
+// EnableStoreTimer arms record-layer instrumentation for the given cluster_file key and
+// returns the StoreTimer that collects it. Idempotent: repeat calls for the same key
+// return the same timer, so an operator never has to reason about who called first.
+//
+// This is the inversion the SQL path needs. The driver opens the record-layer database
+// itself and caches it privately (fdbDBCache), so a tenant service that speaks only
+// database/sql has no *recordlayer.FDBDatabase to call SetTimer on — and record-layer
+// counters were, in consequence, unobservable from SQL. Arming by key instead of by handle
+// works before the lazy Connect that opens the database:
+//
+//	timer := sqldriver.EnableStoreTimer("/etc/foundationdb/fdb.cluster")
+//	http.Handle("/metrics/recordlayer", rlmetrics.Handler(timer))
+//	db, _ := sql.Open("fdbsql", "fdbsql:///t/1?cluster_file=/etc/foundationdb/fdb.cluster")
+//
+// SCOPE — and this is the part that decides what the numbers mean. One timer per
+// cluster-file key means one timer per process, aggregating EVERY tenant, connection and
+// transaction that runs against that cluster. It is deliberately not per-tenant: tenant
+// count in a SaaS deployment is unbounded and operator-driven, so a tenant label would
+// make the cardinality of every record-layer metric grow with the customer list — the
+// classic way to take down a Prometheus. Per-tenant attribution is already available at a
+// layer that can afford it, because it is sampled and log-shaped rather than a live time
+// series: PlanGenerationLogger and ExecutionStatsLogger are installed per connection and
+// close over the tenant ID (see docs/mt-saas.md §4).
+//
+// A caller who genuinely wants finer scope has it without a label: build the
+// *recordlayer.FDBDatabase, call SetTimer on it, and RegisterBackend it under a key of its
+// own. That keeps the cardinality decision explicit and in the caller's hands.
+func EnableStoreTimer(clusterFile string) *recordlayer.StoreTimer {
+	actual, _ := storeTimers.LoadOrStore(clusterFile, recordlayer.NewStoreTimer())
+	timer := actual.(*recordlayer.StoreTimer)
+	if db, ok := fdbDBCache.Load(clusterFile); ok {
+		db.(*recordlayer.FDBDatabase).SetTimer(timer)
+	}
+	return timer
 }
 
 // Driver is the database/sql/driver.Driver for fdbsql.
@@ -225,6 +280,12 @@ func (c *Connector) initialize(_ context.Context) error {
 			c.fdbDB = newDB
 		}
 	}
+
+	// Install the armed StoreTimer, if any. This runs AFTER the database is in the
+	// cache on every branch, which is what closes the ordering window against a
+	// concurrent EnableStoreTimer: that call stores the timer before it looks in the
+	// cache, so if it missed this database then this read cannot miss its timer.
+	applyStoreTimer(cacheKey, c.fdbDB)
 
 	// root subspace is the empty subspace — all catalog and schema data lives
 	// under well-known tuple prefixes via RelationalKeyspace.

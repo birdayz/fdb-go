@@ -795,7 +795,13 @@ func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
 			}
 		}
 	}
-	rctx := recordlayer.NewFDBRecordContext(fdbTx, c.sess.DB.Env())
+	// NewRecordContext, not NewFDBRecordContext: it threads every piece of
+	// per-database state the record layer expects a context to inherit — the DST
+	// env AND the StoreTimer — so an explicit BeginTx transaction is instrumented
+	// on exactly the same terms as an autocommit statement (which goes through
+	// FDBDatabase.Run and inherits the timer there). Naming the fields one by one
+	// here is what previously left this path running with env==nil.
+	rctx := c.sess.DB.NewRecordContext(fdbTx)
 	tx := &embeddedTx{conn: c, rctx: rctx}
 	c.activeTx = tx
 	return tx, nil

@@ -28,6 +28,7 @@ go_test(
         "plan_proto_schema_test.go",
         "race_lane_scope_test.go",
         "source_hygiene_test.go",
+        "store_timer_event_taxonomy_test.go",
         "unknown_type_mint_census_test.go",
         "vuln_gate_test.go",
     ],

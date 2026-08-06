@@ -37,11 +37,16 @@ var _ = Describe("StoreTimer", func() {
 			Expect(c.CumulativeValue()).To(Equal(int64(600)))
 		})
 
-		It("increments count and value equally", func() {
+		// Java's Counter.increment adds to `count` alone and never touches
+		// cumulativeValue (StoreTimer.java:484-487) — which is what lets Java use
+		// getTimeNanos()==0 as proof that an event is a counter and not a timer
+		// (RecordLayerMetricCollector.java:90). Go used to add the amount to BOTH,
+		// so every count event reported a "duration" equal to its own count.
+		It("increments only the count, leaving the cumulative value at zero", func() {
 			c := &Counter{}
 			c.Increment(5)
 			Expect(c.Count()).To(Equal(int64(5)))
-			Expect(c.CumulativeValue()).To(Equal(int64(5)))
+			Expect(c.CumulativeValue()).To(Equal(int64(0)))
 		})
 
 		It("resets to zero", func() {
@@ -82,8 +87,13 @@ var _ = Describe("StoreTimer", func() {
 			t := NewStoreTimer()
 			t.IncrementBy(CountBytesWritten, 1024)
 			t.IncrementBy(CountBytesWritten, 2048)
+			// A size Count carries its byte total in the COUNT field — Java's
+			// getKeysAndValues emits a size Count as a plain `_count` key and never
+			// a `_micros` one (StoreTimer.java:753-758). GetTimeNanos on a count
+			// event must therefore read 0; it previously echoed the byte total,
+			// which would have exported 3072 bytes as a 3.072-microsecond duration.
 			Expect(t.GetCount(CountBytesWritten)).To(Equal(int64(3072)))
-			Expect(t.GetTimeNanos(CountBytesWritten)).To(Equal(int64(3072)))
+			Expect(t.GetTimeNanos(CountBytesWritten)).To(Equal(int64(0)))
 		})
 
 		It("returns nil counter for unrecorded event", func() {
@@ -104,6 +114,122 @@ var _ = Describe("StoreTimer", func() {
 			Expect(c).NotTo(BeNil())
 			Expect(c.Count()).To(Equal(int64(1)))
 			Expect(c.CumulativeValue()).To(Equal(int64(999)))
+		})
+
+		It("carries the classified event in the snapshot", func() {
+			t := NewStoreTimer()
+			t.Record(EventSaveRecord, 100)
+			t.Increment(CountSaveRecordKey)
+			t.IncrementBy(CountSaveRecordKeyBytes, 32)
+
+			snap := t.Snapshot()
+			// Without the Kind a consumer cannot tell 32 bytes from a
+			// 32-nanosecond duration — the numbers alone are not self-describing.
+			Expect(snap["save_record"].Event.Kind).To(Equal(KindTimed))
+			Expect(snap["save_record_key"].Event.Kind).To(Equal(KindCount))
+			Expect(snap["save_record_key_bytes"].Event.Kind).To(Equal(KindSize))
+			Expect(snap["save_record"].Event.Title).To(Equal("Save Record"))
+		})
+
+		It("folds another timer with Add, matching Java's StoreTimer.add", func() {
+			dst := NewStoreTimer()
+			dst.Record(EventSaveRecord, 100)
+			dst.Increment(CountSaveRecordKey)
+
+			src := NewStoreTimer()
+			src.Record(EventSaveRecord, 250)
+			src.Increment(CountSaveRecordKey)
+			src.IncrementBy(CountSaveRecordKeyBytes, 64)
+
+			dst.Add(src)
+
+			// Both fields of every counter add — count AND cumulative value.
+			Expect(dst.GetCount(EventSaveRecord)).To(Equal(int64(2)))
+			Expect(dst.GetTimeNanos(EventSaveRecord)).To(Equal(int64(350)))
+			Expect(dst.GetCount(CountSaveRecordKey)).To(Equal(int64(2)))
+			// An event present only in the source is created in the destination,
+			// classified — a fold that dropped the Kind would export bytes as a
+			// duration.
+			Expect(dst.GetCount(CountSaveRecordKeyBytes)).To(Equal(int64(64)))
+			Expect(dst.Snapshot()["save_record_key_bytes"].Event.Kind).To(Equal(KindSize))
+			// The source is untouched: Java's add() only reads `other`.
+			Expect(src.GetCount(EventSaveRecord)).To(Equal(int64(1)))
+		})
+
+		It("ignores nil and self in Add", func() {
+			t := NewStoreTimer()
+			t.Record(EventSaveRecord, 100)
+			Expect(func() { t.Add(nil) }).NotTo(Panic())
+			// Self-add would double every counter, and Range-while-mutating the
+			// same sync.Map is not a shape worth having in the first place.
+			t.Add(t)
+			Expect(t.GetCount(EventSaveRecord)).To(Equal(int64(1)))
+			var nilTimer *StoreTimer
+			Expect(func() { nilTimer.Add(t) }).NotTo(Panic())
+		})
+
+		It("resolves a runner's timer from the config first, then the database", func() {
+			// No FDB needed: contextTimer is a pure read of the two fields, and the
+			// precedence between them is the whole behaviour. A runner that ignored
+			// the database's timer would leave every retry uncounted by a
+			// process-wide exporter; one that ignored its own config's timer would
+			// silently merge an isolated measurement back into the process total.
+			dbTimer := NewStoreTimer()
+			db := &FDBDatabase{}
+			db.SetTimer(dbTimer)
+			runner := NewFDBDatabaseRunner(db)
+
+			// No config: inherit the database's.
+			Expect(runner.contextTimer()).To(BeIdenticalTo(dbTimer))
+
+			// Config present but its timer unset: still inherit. Nil means
+			// "inherit", not "uninstrumented" — Java's runner and its context
+			// config cannot disagree because they are the same field.
+			runner.SetContextConfig(&RecordContextConfig{})
+			Expect(runner.contextTimer()).To(BeIdenticalTo(dbTimer))
+
+			// Config timer set: the more specific statement of intent wins.
+			ownTimer := NewStoreTimer()
+			runner.SetContextConfig(&RecordContextConfig{Timer: ownTimer})
+			Expect(runner.contextTimer()).To(BeIdenticalTo(ownTimer))
+
+			// An uninstrumented database resolves to nil, which every StoreTimer
+			// method tolerates.
+			Expect(NewFDBDatabaseRunner(&FDBDatabase{}).contextTimer()).To(BeNil())
+		})
+
+		It("returns a nil timer from a nil context rather than panicking", func() {
+			// The whole instrumentation chain is nil-tolerant by design, and the
+			// accessor at its head must not be the one link that panics — the same
+			// contract FDBRecordContext.Env carries. Call sites read
+			// store.context.Timer().RecordSince(...), so a panic here would have to
+			// be pre-empted by a nil check at every one of them.
+			var rc *FDBRecordContext
+			Expect(func() { rc.Timer().Increment(CountReads) }).NotTo(Panic())
+			Expect(rc.Timer()).To(BeNil())
+		})
+
+		It("renders Java's log keys from KeysAndValues", func() {
+			t := NewStoreTimer()
+			t.Record(EventCommit, 1_500_000) // 1.5ms
+			t.Increment(CountSaveRecordKey)
+			t.IncrementBy(CountBytesWritten, 4096)
+
+			kv := t.KeysAndValues()
+			// Java: every event emits _count; only a timed event also emits
+			// _micros, as nanos/1000 with integer truncation
+			// (StoreTimer.java:747-780).
+			Expect(kv).To(HaveKeyWithValue("commit_count", int64(1)))
+			Expect(kv).To(HaveKeyWithValue("commit_micros", int64(1500)))
+			Expect(kv).To(HaveKeyWithValue("save_record_key_count", int64(1)))
+			Expect(kv).NotTo(HaveKey("save_record_key_micros"))
+			// A size Count carries its byte total in the _count key, exactly as
+			// Java does — there is no _bytes suffix in Java's output.
+			Expect(kv).To(HaveKeyWithValue("bytes_written_count", int64(4096)))
+			Expect(kv).NotTo(HaveKey("bytes_written_micros"))
+
+			var nilTimer *StoreTimer
+			Expect(nilTimer.KeysAndValues()).To(BeNil())
 		})
 
 		It("produces a snapshot", func() {
@@ -245,7 +371,7 @@ var _ = Describe("StoreTimer", func() {
 			timer := NewStoreTimer()
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				rtx.SetTimer(timer)
-				Expect(rtx.Timer()).To(Equal(timer))
+				Expect(rtx.Timer()).To(BeIdenticalTo(timer))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())

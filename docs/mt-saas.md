@@ -478,12 +478,54 @@ wrapped record-layer database under a key, and open `fdbsql:///t/<id>?cluster_fi
 doc frames it as a deterministic-simulation seam, not a metrics API — it works, but you are using
 it off-label.
 
-The same applies to record-layer counters. `StoreTimer` exists and mirrors Java's `FDBStoreTimer`
-event set (`pkg/recordlayer/store_timer.go:99`, event set `:17-53`, `Snapshot()` at `:199`), but **nothing
-exports it** — no production code calls `SetTimer` (`pkg/recordlayer/database.go:1023`), there is no
-`fdbmetrics` equivalent for it, and the SQL path never surfaces an `FDBRecordContext` to install one
-on. `fdbmetrics` covers client-level transaction counters only. Record-layer counters on the SQL
-path are, today, not observable.
+### Record-layer counters: arm the StoreTimer by cluster-file key
+
+`fdbmetrics` covers client-level transaction counters only. The record layer's own counters —
+records saved and loaded, index scans, commit timings, bytes written — live in `StoreTimer`
+(`pkg/recordlayer/store_timer.go`), the port of Java's `FDBStoreTimer`, and they have their own
+exporter: `rlmetrics.Handler` (`pkg/recordlayer/rlmetrics/rlmetrics.go`), same zero-dependency
+Prometheus text exposition as `fdbmetrics`, under the `fdb_recordlayer_` namespace.
+
+The SQL path needs one extra step, because the driver opens the record-layer database itself and
+keeps it in a package-private cache. `EnableStoreTimer`
+(`pkg/relational/sqldriver/driver.go`) arms instrumentation **by cluster-file key** rather than by
+handle, so it works before the lazy `Connect` that opens the database:
+
+```go
+timer := sqldriver.EnableStoreTimer("/etc/foundationdb/fdb.cluster")
+http.Handle("/metrics/recordlayer", rlmetrics.Handler(timer))
+
+db, _ := sql.Open("fdbsql", "fdbsql:///t/42?cluster_file=/etc/foundationdb/fdb.cluster")
+```
+
+Order does not matter — arming before or after the first connection both work, and repeat calls
+for the same key return the same timer. Both statement paths are covered: autocommit statements
+inherit the timer through `FDBDatabase.Run`, and explicit `BeginTx`→`COMMIT` transactions through
+`FDBDatabase.NewRecordContext`.
+
+**The aggregation level is one timer per cluster-file key, which in practice means one per
+process.** It aggregates every tenant, connection and transaction against that cluster. This is
+deliberate and it is the part to internalise before building dashboards on it: **there is no
+tenant label, and you should not add one.** Tenant count here is unbounded and grows with the
+customer list, so a `tenant` label on `fdb_recordlayer_*` would multiply the cardinality of every
+record-layer series by that list — the standard way to take a Prometheus down. Per-tenant
+attribution belongs to the two hooks below (`PlanGenerationLogger`, `ExecutionStatsLogger`), which
+are log-shaped and sampled and can afford it.
+
+If you genuinely need a narrower scope, take it without a label: build the
+`*recordlayer.FDBDatabase` yourself, call `SetTimer` on it, and `RegisterBackend` it under its own
+key. That keeps the cardinality decision explicit and in your hands.
+
+Two caveats on reading the numbers:
+
+- **Only events that actually fired appear.** Counters are created on first use, so an event with
+  no call site is absent from the scrape rather than exported as `0`. That is on purpose: `0`
+  reads "nothing happened", absence reads "not counted", and those call for opposite responses.
+  Several events Java populates from its instrumented transaction wrappers — `reads`, `writes`,
+  `bytes_read`, `bytes_written` — have no Go call site yet and are therefore absent.
+- **Timed events are Prometheus summaries in seconds** (`fdb_recordlayer_commit_seconds_sum` /
+  `_count`), not Java's `_micros` log keys. `StoreTimer.KeysAndValues()` gives the Java-shaped
+  log-key form if you want that instead.
 
 ### Per-tenant plan logging
 
@@ -583,8 +625,10 @@ Four properties matter operationally:
 Same threading contract as `SetPlanLogger`: not safe to call concurrently with execution on the
 same connection. Same sampling split too — the engine always emits, the handler decides volume.
 
-Record-layer `StoreTimer` counters remain unexported on the SQL path (see above); `ExecutionStats`
-is the SQL-layer surface, and it is a Go-only read-side extension. Java has no equivalent —
+`ExecutionStats` is the per-statement, per-tenant surface; record-layer `StoreTimer` counters (see
+above) are the process-wide one. Use them for different questions: `ExecutionStats` answers "which
+tenant's query was expensive", `fdb_recordlayer_*` answers "how much work is this process doing".
+`ExecutionStats` is a Go-only read-side extension. Java has no equivalent —
 `fdb-relational-api`, `-jdbc` and `-grpc` carry no metric surface at all, and although
 `fdb-relational-core` configures scan limits it never reads the consumed counts back. See
 `rfcs/211-post-execution-query-stats.md` for the Java survey behind that claim.

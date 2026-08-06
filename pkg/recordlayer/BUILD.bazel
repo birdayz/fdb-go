@@ -41,6 +41,7 @@ go_library(
         "indexing_mutual.go",
         "indexing_range_set.go",
         "indexing_throttle.go",
+        "instrumented_cursor.go",
         "key_expression.go",
         "key_expression_cardinality.go",
         "key_expression_compiled.go",
