@@ -10381,16 +10381,58 @@ to nothing.)
   comparison went wrong on this branch (`PushValueThroughFetch` per RFC-179 F12,
   `correlatedInnerField`, `correlatedFieldOf`, `fieldValueAliasAndCol`,
   `buriedLegOrdinalLayout`, `rebaseOuterLegValue`, and the unique-key proof), each
-  found by a different route. Measured: **107 non-test `.Field` reads outside the
-  values package, 98 of them DECISION-class**, and roughly half live in the SQL
-  translator/generator layer (`cascades_translator.go` 30, `cascades_generator.go`
-  11, `logical_predicate.go` 8). `FieldValue.Resolved` (the construction-time
+  found by a different route.
+
+  **THIS ITEM IS THE UMBRELLA, AND IT CLOSES LAST.** It is not a unit of work —
+  it is the condition that every RFC-197 bucket has been retired. Do not pick it
+  up directly; pick up the bucket items (CQ-51, CQ-52, CQ-79, and the dotted /
+  translator tail), and this box goes when the ratchet reads zero.
+
+  **Measurement — the live ratchet, not a survey.** The item used to cite "107
+  non-test `.Field` reads outside the values package, 98 of them DECISION-class"
+  with a per-file breakdown. That was a hand survey taken in 2026-06, it named no
+  instrument, nothing could re-derive it, and it is now dead: it counted READS,
+  the gate counts DECISIONS, and no run of anything reproduces either figure. It
+  is deleted rather than updated, because an updated number with no instrument
+  behind it would rot the same way. The live measurement, re-read on demand with
+
+      go test ./pkg/docscheck -run TestFieldDebtBucketsArePartition -v
+
+  stood at **53** on 2026-08-06 (`cb9bc5225`): boundary 2, contract 16, dotted
+  14, harness 1, name-keyed 5, translator 15. `TestFieldNameNeverDecides` and
+  `TestFieldDebtBucketsArePartition` are the authority; this line is a dated
+  point measurement and the gate is not.
+
+  **ENFORCEMENT ALREADY EXISTS AND HAS BEEN GREEN SINCE IT LANDED.** The item's
+  own ask — "a `pkg/docscheck`-style build check that `.Field` cannot feed a
+  comparison outside an allowlisted display site" — was built and merged as
+  `f9b3c129c` ("Make an eighth FieldValue.Field bug fail the build", #520,
+  2026-07-29). It is not an open ask; it is the instrument the rest of this
+  workstream is measured by. What remains open is the DEBT the gate records, not
+  the gate.
+
+  **THE ALLOWLIST HAS NEVER BEEN USED, AND THAT IS THE STRONGEST SINGLE FACT
+  ABOUT THIS WORKSTREAM.** `allowedFieldDecisions` has been the empty literal
+  `[]fieldDecisionSite{}` in every one of the 34 commits that have touched
+  `pkg/docscheck/field_name_decision_test.go`, from the commit that introduced it
+  to HEAD. Verify with:
+
+      for c in (git log --format=%h --follow -- pkg/docscheck/field_name_decision_test.go)
+          git show $c:pkg/docscheck/field_name_decision_test.go | grep -c 'allowedFieldDecisions = \[\]fieldDecisionSite{}'
+      end
+
+  Not one of the original 68 sites was exempted. Every one was either FIXED or
+  recorded as debt carrying its decision COUNT and a reason answering "why can
+  this not be an identity today" — and the count arithmetic is itself checked, so
+  a half-fixed site cannot hide behind a stale entry. The escape hatch was built,
+  documented, and never taken. No document said this before; it is the fact that
+  distinguishes a real migration from a ratchet that has been quietly relaxed.
+
+  `FieldValue.Resolved` (the construction-time
   resolved accessor, Java's `ResolvedAccessor`) and `SemanticEqualsUnderAliasMap`
   already exist and are the correct inputs. CockroachDB assigns a column id during
   name resolution and the optimizer never sees a name again;
-  `ColumnMeta.Alias` is documented as display-only. **Enforcement is the point** —
-  a `pkg/docscheck`-style build check that `.Field` cannot feed a comparison
-  outside an allowlisted display site, or an eighth instance is certain.
+  `ColumnMeta.Alias` is documented as display-only.
   (This item previously cited "RFC-193 §5.1". **That document was never
   committed** — no such file exists in the repo or its history, so the citation
   pointed at nothing. The measurements above are the actual specification; they
@@ -10970,10 +11012,14 @@ None is speculative: each was re-verified against the tree before booking.
   **Status correction, 2026-08-01.** #540 landed the **PROJECTION channel only**:
   `LogicalProject` now carries the segments through to the bakers, and the ratchet
   learned to see through helpers. It did NOT close the item, and the commit did not
-  check this box. The live residual is named in the ratchet's own debt entries —
-  `cascades_translator.go:5742` and `:5744` retire "when the remaining
-  `LogicalProject` producers carry `ProjectionRefs`"; `:6070` and `:6102` retire
-  "when the last caller stops slicing a rendered name".
+  check this box. The live residual is named in the ratchet's own debt entries.
+  **Re-pointed 2026-08-06 at `cb9bc5225`; all four cited lines had drifted**
+  (`:5742`/`:5744`/`:6070`/`:6102` name nothing now). The live entries are
+  `cascades_translator.go:5811` and `:5813`, which retire "when the remaining
+  `LogicalProject` producers carry `ProjectionRefs`", and `:6139` and `:6171`,
+  which retire "when the last caller stops slicing a rendered name". Each pair is
+  the QUALIFIER and the LEAF half of ONE slice; they retire together, and citing
+  one half alone is how a half-closed conversion reads as closed.
   Also note the arithmetic in the sentence below is superseded: the call-boundary
   taint added in #540/#544 changed which sites are visible, so the `translator`
   bucket now stands at **15** (`pkg/docscheck/field_name_decision_test.go:462`),
@@ -11024,6 +11070,43 @@ None is speculative: each was re-verified against the tree before booking.
   segments already exist and are already correct; this is deleting a join and a
   split. Pin with a `"A.B"`-quoted-column-vs-`A.B`-qualified-reference pair that
   the joined representation cannot tell apart.
+
+  **PARKED OPEN QUESTION, and it is on this item's critical path — it was stated
+  at the code and named by no entry until now.** The fix above says "delete the
+  four re-splits", and that is not reachable for one class of carrier. The
+  question is stated in full at
+  `pkg/relational/core/query/cascades_translator.go:6205-6243` (the leg-window
+  re-split arm) and is repeated here because a decision parked only at a call
+  site is a decision nobody will be handed:
+
+  Every PARSED channel is already converted — projections, ORDER BY keys, GROUP
+  BY keys and aggregate operands all carry the parser's segment triple, and the
+  dotted re-split over them went to zero. What keeps the arm standing is the
+  UNCAPTURED carrier (`ColumnRef.Present` false), which `ProjectionRefs`' own
+  contract requires be read as "unknown", never as "unqualified". Some of those
+  producers are merely un-migrated. **One class never can be:** a projection
+  MACHINERY mint, whose names are BODY OUTPUT COLUMNS with no `FullId` anywhere
+  behind them (the star-body normalization in `translateScan`). There is no
+  segment count to capture there, so an absent triple is STRUCTURAL, and
+  "capturing" one would mean inventing it.
+
+  Those labels are BARE by construction today, so the class is not currently
+  firing — but a quoted identifier carrying a dot is legal SQL, and then the
+  behaviour is undecided: **should a star-projected body column be leg-addressable
+  at all?** If NOT, this arm must not answer for such a label. If SO, the
+  addressing belongs to the boundary schema's leg identities — which that
+  normalization already holds — and not to a dot in a label it constructed.
+  Converting the arm by guesswork would settle this silently, which is why it was
+  left standing.
+
+  **And nothing stands guard over the split population.** The census beside these
+  bakers counts qualifier MATCHES, never SPLITS, so a regrown splitter raises no
+  counter anywhere; the "110 → zero" figures quoted at the site are scratch
+  measurements, not instrument readings. So this item carries a second
+  deliverable beyond deleting the splits: either the behaviour decision above,
+  or an instrument that counts splits so the decision cannot be pre-empted by
+  drift. DONE for CQ-52 requires the question ANSWERED, not merely the migrated
+  channels converted.
 
 - [x] **CQ-53 (MED/L, M/L, executor-gated, query-engine review gate) — give the
   FlatMap inner binder Java's parent-chained per-alias bindings, and the
@@ -13729,11 +13812,11 @@ None is speculative: each was re-verified against the tree before booking.
 
 - [ ] **CQ-79 (MED, RFC-197) — CQ-53's surviving producer mint is owned by no
   item.** · S/M · query-engine review gate
-  `pkg/docscheck/field_name_decision_test.go:447` pins
-  `cascades_translator.go:3598` as *"dotted: MINT. **CQ-53's surviving
-  producer** — turns QOV(leg).COL into QOV(merged).\"LEG.COL\" so the FlatMap
-  inner's binder can resolve the merged row by that string … this one is on the
-  unnest-merge path and dies with the same work"*. Its NLJ twin was deleted (the
+  `pkg/docscheck/field_name_decision_test.go:454` pins
+  `pkg/relational/core/query/cascades_translator.go:3667` as *"dotted: MINT.
+  **CQ-53's surviving producer** — turns QOV(leg).COL into QOV(merged).\"LEG.COL\"
+  so the FlatMap inner's binder can resolve the merged row by that string … this
+  one is on the unnest-merge path and dies with the same work"*. Its NLJ twin was deleted (the
   re-anchor now carries Java's null-named ordinal accessor,
   `FieldValue.java:335-338`); this one was not.
   **CQ-53 is marked `- [x]`** as subsumed by CQ-67 "carrying no separate
@@ -13742,11 +13825,63 @@ None is speculative: each was re-verified against the tree before booking.
   94 FlatMap result values being a bare UNTYPED QOV, not about a display name
   being manufactured into a row key. Booked separately rather than folded, so
   neither item can close while the other's residue survives.
-  **Booked 2026-08-01** by the B6 docs-authority pass; re-verified at
-  `a1d281a63` — the pin still stands verbatim and the ratchet still totals 52.
+  **Booked 2026-08-01** by the B6 docs-authority pass. **Re-verified 2026-08-06
+  at `cb9bc5225`:** the mint at `:3667` still stands VERBATIM —
+
+      values.NewFieldValue(mergedQOV, leg+"."+strings.ToUpper(fv.Field), fv.Typ)
+
+  — the debt entry still pins it, and the ratchet now totals **53** (was 52).
+  All three of this entry's earlier cites had rotted: the pin moved
+  `cascades_translator.go:3598` → `:3667`, the debt entry moved
+  `field_name_decision_test.go:447` → `:454` (`:447` is now a comment), and the
+  total moved 52 → 53.
   DONE = the unnest-merge path re-anchors by ordinal as the NLJ path already
-  does, the `:3598` debt entry is DELETED (not moved), and the `dotted` bucket
+  does, the `:3667` debt entry is DELETED (not moved), and the `dotted` bucket
   header drops accordingly.
+
+- [ ] **CQ-94 (SMALL, instrument honesty) — the leg-local bake census's
+  three-way layout partition is VACUOUS at HEAD, the census says so itself, and
+  nothing books re-arming it.** · S · no review gate (test/instrument only)
+  `LegLocalBakeCensus` asserts `UntypedLeg + ColumnAbsent + LayoutAvailable ==
+  MergedReAnchor`. **`MergedReAnchor` is 0** — measured over the full real-FDB
+  sqldriver corpus, 2026-08-06 at `cb9bc5225`:
+
+      leg-local bakeability: total 190 (baked 190, mergedReAnchor 0, declined 0);
+      mergedReAnchor residue: untypedLeg 0, columnAbsent 0, layoutAvailable 0
+
+  So that assertion holds as `0 == 0` and would keep holding if all three
+  counters were deleted. This is recorded plainly rather than as an alarm,
+  because the honest state has two halves and both matter:
+
+  - **The census is NOT vacuous overall.** A SECOND partition over `Total` was
+    added for exactly this reason and IS live: `IdentityInLegDomain +
+    IdentityOtherDomain + LazyNameOnly == Total` (190 + 0 + 0 = 190), as is
+    `Baked + MergedReAnchor + Declined == Total`. The source
+    (`leg_local_bake_census.go:314-321`) states the correction in its own words —
+    "an instrument aimed at the population that left is not an instrument" — and
+    `leg_local_bake_census_gate_test.go:369` asserts that the report SAYS
+    "partitions MergedReAnchor, which is 0". The vacuity is disclosed by the
+    instrument, not hidden by it. That is the good case, and it is why this is a
+    SMALL item and not a defect.
+  - **What is missing is the re-arm.** `MergedReAnchor` is neither FLOORED (it
+    is absent from `LegLocalBakeFloors`, which floors `Total`, `SiteExists`,
+    `LegDerivations` and `MergeSlots`) nor ASSERTED AT ZERO. So it is the one
+    counter that can move in either direction without any gate reacting: at 0 the
+    layout partition is decoration, and if it goes nonzero the three reason
+    counters silently resume carrying weight with nobody told.
+
+  **What re-arms suspicion:** `MergedReAnchor` becoming nonzero — a read that
+  must be re-anchored onto the merge correlation reappearing at the leg-match
+  arm. Today every read keeps its own leg alias and its own ordinal, which is
+  why it is 0. The whole `reconstruct-nil`-by-refused-leg-shape population (190,
+  all `rv=bare QuantifiedObjectValue`) is CQ-68's axis, so a CQ-68 landing is the
+  most likely thing to move it.
+
+  DONE = `MergedReAnchor` is pinned in ONE of the two honest directions — either
+  asserted at zero (making the layout partition's vacuity a stated, enforced
+  fact) or floored (making it a live measurement) — with the choice argued from
+  which one is true after CQ-68, not from which is easier. Mutation-check it: the
+  pin must go red on a counter state where `MergedReAnchor` moves.
 
 - [x] **CQ-80 (MED, test-contract) — four watch-list entries claim a pin that
   does not exist or cannot fail. DONE — all four closed, two of them REFUTED

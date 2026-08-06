@@ -62,6 +62,15 @@ import (
 // suite. The standing instrument is `AssertDottedLegQualifierCensus`, wired into
 // the sqldriver `TestMain`, and it is what keeps these numbers honest.
 //
+// Re-measured 2026-08-06 at cb9bc5225, and STABLE across two consecutive
+// full-suite runs (the previous reading, 106 | 98 | 8, is kept below it as the
+// history it is):
+//
+//	flatColumnBake     calls 102 | matchAliasIsQualifier 98 | noMatch 4
+//	legQOVBake         calls   4 | matchAliasIsQualifier  3 | matchViaTableName 1
+//
+// Previously (dated to the addition of the third site):
+//
 //	flatColumnBake     calls 106 | matchAliasIsQualifier 98 | noMatch 8
 //	legQOVBake         calls   4 | matchAliasIsQualifier  3 | matchViaTableName 1
 //
