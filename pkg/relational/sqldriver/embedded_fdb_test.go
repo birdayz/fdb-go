@@ -748,6 +748,18 @@ var nameSplitFloors = func() values.NameSplitFloors {
 // assertNameSplitCensus checks the translator name-split census, dropping the
 // population floors when -test.run narrows the corpus — the same split its
 // siblings make, for the same reason.
+func assertNameSplitCensus(w io.Writer) bool {
+	floors := &nameSplitFloors
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		fmt.Fprintf(w, "translator name split census: population floors NOT checked "+
+			"(-test.run=%q narrowed the corpus). The SPLIT-QUALIFIED hard zero still "+
+			"runs, over whatever population this filter reached — at zero it holds "+
+			"VACUOUSLY.\n", f.Value.String())
+		floors = nil
+	}
+	return values.AssertNameSplitCensus(w, floors)
+}
+
 // qualifierRecoveryFloors is the minimum population each DARK SPLITTER must
 // report over the whole real-FDB corpus. Filled from the measurement, an order
 // of magnitude below it where the population allows, so the floor detects a site
@@ -762,8 +774,24 @@ var nameSplitFloors = func() values.NameSplitFloors {
 //	displayLabelStrip   calls 750 | carried   0 | AGREED 722 | MANUFACTURED 6 | bare 22
 //
 // DIVERGED is 0 at every site, and unlike the population zeros that is a zero
-// over a real population: 766 calls actually manufactured a qualifier with an
-// identity in hand and none of them disagreed with it.
+// over a REAL population. How real is a smaller number than the total, and the
+// total — 766 — is what an earlier revision of this comment quoted. Of those:
+//
+//   - 44 are existsSortSplit, and they CANNOT disagree. sortKeyFieldRef RENDERS
+//     `LEG.COL` out of the very FieldValue{Field, Child:QOV} that
+//     sortKeyQualifierIdentity reads the identity back out of one call later, so
+//     the split is re-parsing a string joined from its own counterparty. That
+//     AGREED is a TAUTOLOGY. It is worth counting — it is what makes the round
+//     trip visible rather than arguable, and it is this site's conversion answer
+//     — but it is not evidence that anything survived a lossy rendering, because
+//     nothing at that site was ever at risk of not surviving one.
+//   - 722 are displayLabelStrip, and those are the result. A machinery-minted
+//     display label sliced at its dot, checked against the correlation the alias
+//     was actually minted from, 722 times, no disagreement.
+//
+// So the zero over a population that could have been non-zero is ~723 — the 722
+// here plus the embedded corpus's single production `TD.ARR` at
+// derivedUnnestSource — and displayLabelStrip carries essentially all of it.
 var qualifierRecoveryFloors = values.QualifierRecoveryFloors{
 	Calls: [6]int{
 		values.QualRecSiteRecursiveRemap:      10,
@@ -809,18 +837,6 @@ func assertQualifierRecoveryCensus(w io.Writer) bool {
 	return values.AssertQualifierRecoveryCensus(w,
 		&values.QualifierRecoveryExpectations{Floors: floors},
 		"sqldriver real-FDB corpus")
-}
-
-func assertNameSplitCensus(w io.Writer) bool {
-	floors := &nameSplitFloors
-	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
-		fmt.Fprintf(w, "translator name split census: population floors NOT checked "+
-			"(-test.run=%q narrowed the corpus). The SPLIT-QUALIFIED hard zero still "+
-			"runs, over whatever population this filter reached — at zero it holds "+
-			"VACUOUSLY.\n", f.Value.String())
-		floors = nil
-	}
-	return values.AssertNameSplitCensus(w, floors)
 }
 
 // assertDottedLegQualifierCensus checks the translator dotted-leg census,

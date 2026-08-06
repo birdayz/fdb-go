@@ -14,7 +14,15 @@ import (
 // A ColumnRef that is not Present is "unknown", never "unqualified" — the
 // triple's own documented contract — so an absent triple is reported as NO
 // counterparty rather than as an empty one that would read as a disagreement.
+//
+// The gate is read FIRST, before any classification. RecordQualifierRecovery
+// re-checks it, so this is not needed for correctness — it is what keeps the
+// census-off cost at the atomic load instead of two ToUpper allocations per
+// derived-unnest classification.
 func recordDerivedUnnestSplit(proj *logical.LogicalProject, slot int, source string) {
+	if !values.LegIdentityCensusEnabled() {
+		return
+	}
 	ident, present := "", false
 	if slot < len(proj.ProjectionRefs) {
 		if ref := proj.ProjectionRefs[slot]; ref.Present {

@@ -4814,7 +4814,14 @@ func (s sortSource) sortKeyName(k logical.SortKey) string {
 	if field == "" {
 		return ""
 	}
-	ident, present := sortKeyQualifierIdentity(k)
+	// The identity is read for the CENSUS alone — resolveKeyName's answer does
+	// not depend on it — so the gate is hoisted above it. Census-off this is one
+	// atomic load; the call it guards allocates a ToUpper per sort key.
+	var ident string
+	var present bool
+	if values.LegIdentityCensusEnabled() {
+		ident, present = sortKeyQualifierIdentity(k)
+	}
 	return s.resolveKeyName(field, ident, present)
 }
 
@@ -4901,8 +4908,12 @@ func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
 		return nil
 	}
 	if s.isJoin {
-		ident, identPresent := sortKeyQualifierIdentity(k)
-		recordExistsSortSplit(strings.ToUpper(field), ident, identPresent)
+		// Census-only: the gate is hoisted above sortKeyQualifierIdentity so the
+		// ToUpper it allocates is not paid on a path that then discards it.
+		if values.LegIdentityCensusEnabled() {
+			ident, identPresent := sortKeyQualifierIdentity(k)
+			recordExistsSortSplit(strings.ToUpper(field), ident, identPresent)
+		}
 		if qual, col, ok := splitQualifier(field); ok {
 			for li, leg := range s.legAliases {
 				if leg != "" && strings.ToUpper(leg) == qual {
@@ -5053,7 +5064,16 @@ func stripSortQualifier(field string) string {
 //
 // The classification is delegated so this site cannot bucket its own
 // disagreement as "no counterparty".
+//
+// The gate is read FIRST. Unlike its siblings this helper's own body is
+// allocation-free, so the gate here buys little; the cost this site actually
+// imposes census-off is sortKeyQualifierIdentity's ToUpper at the two CALLERS,
+// and that is why both of them hoist the gate above it rather than relying on
+// this one.
 func recordExistsSortSplit(up, ident string, identPresent bool) {
+	if !values.LegIdentityCensusEnabled() {
+		return
+	}
 	class, _ := values.ClassifyQualifierRecovery(up, ident, identPresent)
 	witnessIdent := ident
 	if !identPresent {

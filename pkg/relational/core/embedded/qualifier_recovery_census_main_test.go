@@ -76,16 +76,25 @@ func TestMain(m *testing.M) {
 //     dotted buckets are reachable at the two embedded sites no corpus
 //     populates. Those calls make the floors below say "the pins still run";
 //     they say nothing about production reach.
+//
+// recursiveRemap's floor is 1 against a measured 2, and it is the one that had
+// to be argued rather than halved. Its population is the smallest here, so
+// "below the measured value" leaves exactly one rung — and an earlier revision
+// set it AT the measured 2, which is the shape this block's own policy exists to
+// forbid: a floor equal to the measurement is a drift detector wearing a
+// collapse detector's clothes, and it reds when the corpus grows a second
+// recursive body or the memo explores one fewer time. 1 still detects the only
+// thing this floor is for, the site ceasing to be reached at all.
 var embeddedQualifierRecoveryFloors = values.QualifierRecoveryFloors{
 	Calls: [6]int{
-		values.QualRecSiteRecursiveRemap:      2,
+		values.QualRecSiteRecursiveRemap:      1,
 		values.QualRecSiteDerivedUnnestSource: 4,
 		values.QualRecSiteProjScopeClassify:   6,
 		values.QualRecSiteProjQualVsScan:      2,
 		values.QualRecSiteDisplayLabelStrip:   4,
 	},
 	Split: [6]int{
-		values.QualRecSiteRecursiveRemap:      2,
+		values.QualRecSiteRecursiveRemap:      1,
 		values.QualRecSiteDerivedUnnestSource: 4,
 		values.QualRecSiteProjScopeClassify:   6,
 		values.QualRecSiteProjQualVsScan:      2,

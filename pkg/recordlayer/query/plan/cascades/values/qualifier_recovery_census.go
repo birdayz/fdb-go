@@ -66,9 +66,19 @@ import (
 // reporting MANUFACTURED is a producer change. That distinction is the
 // deliverable, and it is measured rather than asserted.
 //
-// GATED by LegIdentityCensusEnabled — the same gate its siblings ride, so
-// production never pays an atomic on a resolution path. Counts are per CALL, one
-// call per resolution DECISION.
+// GATED by LegIdentityCensusEnabled — the same gate its siblings ride. What
+// production pays census-off is ONE ATOMIC LOAD per decision, and that is the
+// whole of it: every recorder helper at every site reads the gate as its first
+// statement and returns, so no name is parsed, no qualifier is upper-cased and
+// no counterparty is looked up to build an argument the disabled recorder would
+// discard. The two callers that must compute an identity BEFORE calling a
+// recorder (the EXISTS fold's sortKeyName and sortKeySourceValue) hoist the gate
+// above that computation for the same reason.
+//
+// An earlier revision of this line claimed production "never pays an atomic",
+// which was false in both directions: it does pay exactly one, and at the time
+// it was written it also paid the classification behind it. Counts are per
+// CALL, one call per resolution DECISION.
 
 // QualifierRecoverySite is one of the four dark splitters named in
 // name_split_census.go's header. The parseColRef family contributes THREE sites

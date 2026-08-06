@@ -24,17 +24,41 @@ package embedded
 // A single merged "parseColRef" number could answer the conversion question for
 // none of them.
 //
-// WHAT THE CORPUS CANNOT SEE. This package has no TestMain census gate — the
-// real-FDB sqldriver suite is its only corpus — and over that corpus every one
-// of these classes is 0:
+// WHAT THE CORPORA CANNOT SEE — and the list is SHORTER than it was, which is
+// the point of stating it from measurement instead of from the last revision.
 //
-//	projScopeClassify  MANUFACTURED 0 of 71 calls (carried 11, bare 60)
-//	projQualVsScan     every dotted class 0 of 4 calls (bare 4)
-//	displayLabelStrip  DIVERGED 0, heuristicDecline 0 of 750 calls
+// This package used to have no census gate, and that is what the paragraph here
+// said. It has one now (qualifier_recovery_census_main_test.go), so there are
+// two corpora over these three sites rather than one, and they do not agree.
+// Production traffic per site, with THIS FILE'S OWN FIXTURES SUBTRACTED, because
+// a fixture cannot be evidence that its own recorder is reached by anything real:
 //
-// So each of those buckets reads identically whether the recorder is wired,
-// misbucketed, or absent. That is what this file covers, and it is the only
-// thing that does.
+//	site               sqldriver real-FDB        embedded (production only)
+//	projScopeClassify  71: carried 11, bare 60   15: bare 15
+//	projQualVsScan     4: bare 4                 0 — not reached at all
+//	displayLabelStrip  750: AGREED 722,          6: MANUFACTURED 3, bare 2,
+//	                   MANUF 6, bare 22             heuristicDecline 1
+//
+// So the unobservable set is now:
+//
+//   - projScopeClassify's AGREED (structurally impossible, see below) and its
+//     MANUFACTURED — 0 on both corpora.
+//   - EVERY dotted class at projQualVsScan. This site's qualified arm is entered
+//     by no production traffic anywhere.
+//   - DIVERGED at all three. It is the one class this census asserts at zero, and
+//     the only proof it can be reached at all is in this file.
+//
+// And displayLabelStrip's MANUFACTURED and heuristicDecline have LEFT that set:
+// both are live production traffic in this very package (`E.SALARY` /
+// `E.SAL-ARY`, and `MAX(E.SALARY)` on the paren guard). They were 0 over 750
+// sqldriver calls, and the reading that made of them — "these arms never fire" —
+// was wrong. That is the standing lesson about this census's zeros, arriving
+// here for the fourth time: a zero is a fact about the CORPUS, and two corpora
+// agreeing is one piece of evidence when both are blind in the same direction.
+//
+// The pins below stay anyway, all of them. A class covered by production traffic
+// is covered only as long as that traffic exists, and the traffic that covers
+// these two is a single aggregate label in a single test.
 //
 // The per-site deltas also pin ATTRIBUTION: all six census sites share one class
 // enum, so a copy-paste filing one site's calls under another keeps every total
@@ -114,16 +138,18 @@ func TestQualRecWiring_ProjScopeClassifyCountsEveryArm(t *testing.T) {
 			want:  "T2",
 			why: "a dotted rendered name with NO correlation on it: the alias that " +
 				"decides inner- vs outer-scoping is manufactured out of the bytes " +
-				"before the last dot. The corpus reports 0 here over 71 calls, so " +
-				"nothing but this pin goes red when the recorder leaves this branch",
+				"before the last dot. BOTH corpora report 0 here — 71 sqldriver calls " +
+				"and 15 production calls in this package — so nothing but this pin goes " +
+				"red when the recorder leaves this branch",
 		},
 		{
 			name:  "bare",
 			fv:    values.NewFlatFieldValue("SK", values.UnknownType),
 			class: values.QualRecBare,
 			want:  "",
-			why: "no dot, nothing manufactured — and this is 60 of the site's 71 measured " +
-				"calls, so it is the bucket whose floor would go quietly false",
+			why: "no dot, nothing manufactured — and it is this site's whole production " +
+				"population on both corpora (60 of 71 sqldriver calls, all 15 here), so " +
+				"it is the bucket whose floor would go quietly false",
 		},
 	}
 
@@ -154,8 +180,11 @@ func TestQualRecWiring_ProjScopeClassifyCountsEveryArm(t *testing.T) {
 //
 // A disagreement here does not merely resolve the wrong row: the mismatch arm
 // raises ErrCodeUndefinedColumn on a column the parser saw perfectly well. Over
-// the real-FDB corpus this site reports 4 calls, ALL BARE — the qualified arm
-// is never entered — so every dotted class is an unpinned zero without this.
+// the real-FDB corpus this site reports 4 calls, ALL BARE, and this package's own
+// corpus does not reach it with production traffic at all — the qualified arm is
+// entered by nothing anywhere, so every dotted class is an unpinned zero without
+// this file. Every call the embedded census reports at this site is driven from
+// right here.
 func TestQualRecWiring_ProjQualVsScanCountsEveryArm(t *testing.T) {
 	t.Parallel()
 
@@ -211,7 +240,8 @@ func TestQualRecWiring_ProjQualVsScanCountsEveryArm(t *testing.T) {
 			},
 			upper: "COL",
 			class: values.QualRecBare,
-			why:   "no dot; this is the site's ENTIRE measured population (4 calls)",
+			why: "no dot; this is the site's ENTIRE production population anywhere — 4 " +
+				"sqldriver calls, and nothing at all from this package",
 		},
 	}
 
@@ -240,9 +270,13 @@ func TestQualRecWiring_ProjQualVsScanCountsEveryArm(t *testing.T) {
 // rendering. A census that reported them together would show this site's
 // riskiest population as its cleanest.
 //
-// Over the real-FDB corpus that bucket is 0 across 750 calls — the heuristic
-// never fires — so nothing but this pin can distinguish "no label ever needed
-// it" from "the guard is unreachable" from "the recorder is not there".
+// That bucket is 0 across 750 sqldriver calls, and for one revision this file
+// read that as "the heuristic never fires". It fires: this package's own corpus
+// drives it once from production traffic, on the aggregate label
+// `MAX(E.SALARY)`, and without the guard that label's display name is stripped to
+// `SALARY)`. The pin below is no longer the only thing separating "unreachable"
+// from "unexercised" at this class — but it is still the only thing that holds
+// if that one label stops being planned.
 func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
 	t.Parallel()
 
@@ -277,8 +311,9 @@ func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
 			v:     values.NewFlatFieldValue("NAME", values.UnknownType),
 			class: values.QualRecManufactured,
 			why: "a dotted label over a value carrying no correlation at all: the " +
-				"qualifier is stripped with nothing to check it against. The corpus " +
-				"reports 6 of these, which is why this site is NOT a mechanical " +
+				"qualifier is stripped with nothing to check it against. The sqldriver " +
+				"corpus reports 6 and this package's production traffic 3 more " +
+				"(`E.SALARY`, `E.SAL-ARY`), which is why this site is NOT a mechanical " +
 				"conversion despite 722 agreements",
 		},
 		{
@@ -289,14 +324,15 @@ func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
 			why: "a dotted label containing parentheses. isPlainQualifiedColumnReference " +
 				"rejects it by looking for `()` in the RENDERING — a heuristic, not a " +
 				"parse — and that decision is bucketed apart from `bare` so it cannot " +
-				"be read as a site that simply saw no dot",
+				"be read as a site that simply saw no dot. Not a hypothetical arm: " +
+				"this package plans `MAX(E.SALARY)` through it for real",
 		},
 		{
 			name:  "bare",
 			label: "NAME",
 			v:     values.NewFlatFieldValue("NAME", values.UnknownType),
 			class: values.QualRecBare,
-			why:   "no dot in the label; 22 of the site's 750 corpus calls",
+			why:   "no dot in the label; 22 of the sqldriver corpus's 750 calls and 2 of this package's 6",
 		},
 	}
 

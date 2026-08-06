@@ -9,9 +9,17 @@ package query
 // they miss are precisely the ones the census was built to watch:
 //
 //	site                 sqldriver corpus                 translator corpus
-//	recursiveRemap       MANUFACTURED 0, carried 0        MANUFACTURED 2, carried 3
-//	existsSortSplit      AGREED 44, everything else 0     site not reached at all
-//	derivedUnnestSource  bare 13, everything else 0       site not reached at all
+//	recursiveRemap       MANUFACTURED 0, carried 0        MANUFACTURED 3, carried 4
+//	existsSortSplit      AGREED 44, everything else 0     5 calls, FIXTURE traffic only
+//	derivedUnnestSource  bare 13, everything else 0       4 calls, FIXTURE traffic only
+//
+// The right-hand column's last two entries are THIS FILE. Stating them as "the
+// site is reached" would be circular — the pins below are what reaches it — so
+// they are named as fixture traffic and carry no claim about production. The
+// production coverage of those two sites is the sqldriver column and nothing
+// else; recursiveRemap is the one site whose translator-corpus population is
+// real planning traffic, and it is the only corpus anywhere that reports this
+// family's MANUFACTURED bucket from a producer.
 //
 // So MANUFACTURED at existsSortSplit, DIVERGED anywhere, and every dotted class
 // at derivedUnnestSource are invisible to every corpus that runs: the counter is
@@ -145,10 +153,11 @@ func TestQualRecWiring_RecursiveRemapCountsEveryArm(t *testing.T) {
 // whose ENTIRE measured population is a single class.
 //
 // existsSortSplit reports AGREED 44 and every other class 0 over the real-FDB
-// corpus, and the translator corpus does not reach it at all. So this file is
-// the only thing standing between "MANUFACTURED and DIVERGED are genuinely
-// empty here" and "the recorder never reaches those branches" — the two read
-// identically in every report.
+// corpus, and no other corpus reaches it with production traffic — the 5 calls
+// the translator corpus reports are the fixtures below. So this file is the only
+// thing standing between "MANUFACTURED and DIVERGED are genuinely empty here"
+// and "the recorder never reaches those branches" — the two read identically in
+// every report.
 //
 // There is no CARRIED class at this site by construction: the recorder sits on
 // the join arm, which always splits. That zero is structure, not a finding.
@@ -238,17 +247,25 @@ func TestQualRecWiring_ExistsSortSplitCountsTheOtherCaller(t *testing.T) {
 }
 
 // TestQualRecWiring_DerivedUnnestSourceCountsEveryArm pins the classification at
-// the site whose dotted population is EMPTY on every corpus that runs.
+// the site whose dotted population is the thinnest in the family: ONE production
+// call, on one corpus.
+//
+// That one call is the embedded corpus's `TD.ARR`
+// (TestDerivedUnnest_QualifiedPassthrough), and it AGREES. It arrived after this
+// file did, and it is why the header's "empty on every corpus" reading is gone:
+// the dotted arm is live, it is just barely so. DIVERGED and MANUFACTURED remain
+// unreached by production anywhere.
 //
 // SCOPE, stated because it is narrower than the two pins above and the
 // difference matters. This exercises the CLASSIFIER
 // (recordDerivedUnnestSplit), not the call from classifyDerivedUnnestArray:
 // reaching that call needs a translator with live metadata and a derived-table
 // body, and the real-FDB corpus already drives it 13 times, so the call-site
-// wiring is what the corpus floor guards. What the corpus cannot guard is the
-// BUCKETING, because all 13 of its calls are bare — AGREED, DIVERGED and
-// MANUFACTURED are unreached, and an inverted comparison there would be
-// invisible in every report.
+// wiring is what the corpus floor guards. What the corpora cannot guard is the
+// BUCKETING: all 13 sqldriver calls are bare, and the embedded corpus's 8 add
+// exactly one non-bare call. DIVERGED and MANUFACTURED are unreached by
+// production anywhere, and an inverted comparison there would be invisible in
+// every report.
 func TestQualRecWiring_DerivedUnnestSourceCountsEveryArm(t *testing.T) {
 	t.Parallel()
 
@@ -269,7 +286,9 @@ func TestQualRecWiring_DerivedUnnestSourceCountsEveryArm(t *testing.T) {
 			class: values.QualRecAgreed,
 			why: "the slot's parse-tree triple states qualifier T and the split recovered " +
 				"T. CONVERSION-READY: the split is redundant over this shape and " +
-				"replacing it with the triple is provably behaviour-preserving",
+				"replacing it with the triple is provably behaviour-preserving. The " +
+				"embedded corpus's `TD.ARR` is the one production instance of it, which " +
+				"is a population of ONE and not a conversion warrant",
 		},
 		{
 			name: "DIVERGED",
@@ -304,7 +323,8 @@ func TestQualRecWiring_DerivedUnnestSourceCountsEveryArm(t *testing.T) {
 			},
 			src:   "ARR",
 			class: values.QualRecBare,
-			why:   "no dot; this is the site's ENTIRE measured population (13 calls)",
+			why: "no dot; this is nearly the site's entire production population — all 13 " +
+				"sqldriver calls and 7 of the embedded corpus's 8",
 		},
 	}
 

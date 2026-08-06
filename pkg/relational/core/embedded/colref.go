@@ -31,7 +31,16 @@ func parseColRef(s string) colRef {
 // It records the split's OWN verdict (parseColRef's), never the shared
 // classifier's, because the two disagree on a trailing dot and an instrument
 // must report the decision the site actually made.
+//
+// The gate is read FIRST, before any classification. RecordQualifierRecovery
+// re-checks it, so a gate here is not needed for CORRECTNESS — it is needed so
+// the census-off cost is the atomic load and nothing else. Classifying first
+// and filing second would make production pay the ToUpper on every projected
+// column to build an argument that is then discarded.
 func recordProjQualVsScan(proj *logical.LogicalProject, slot int, upper string, ref colRef) {
+	if !values.LegIdentityCensusEnabled() {
+		return
+	}
 	ident, present := "", false
 	// A ColumnRef that is not Present means "unknown", never "unqualified" —
 	// the triple's own contract — so an absent one is NO counterparty rather
@@ -114,7 +123,18 @@ func projScopeAlias(fv *values.FieldValue) string {
 // bare: the site WAS handed a dotted name and declined by inspecting
 // punctuation in a rendering, which is the opposite finding from never having
 // seen a dot.
+//
+// The gate is read FIRST, and this is the site where that matters most. The
+// production line beside it already calls parseColRef and
+// isPlainQualifiedColumnReference (which calls parseColRef AGAIN, plus a
+// ContainsAny) to make its own decision; a recorder that classified before
+// consulting the gate would DOUBLE all of it on every projected column of every
+// query — 750 calls over the real-FDB corpus — to build an argument nothing
+// reads.
 func recordDisplayLabelStrip(label string, v values.Value) {
+	if !values.LegIdentityCensusEnabled() {
+		return
+	}
 	ref := parseColRef(label)
 	if !ref.isQualified() {
 		values.RecordQualifierRecovery(values.QualRecSiteDisplayLabelStrip,
