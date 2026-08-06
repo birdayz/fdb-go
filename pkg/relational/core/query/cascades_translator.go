@@ -9622,16 +9622,26 @@ func recursiveRemapValues(cols []string, verbatimField []bool, ordinalReads, pos
 			//     diagnostics only (it matched the body's qualified output key
 			//     under name-based resolution).
 			bare := cu
-			if dot := strings.IndexByte(cu, '.'); dot >= 0 {
+			dot := strings.IndexByte(cu, '.')
+			if dot >= 0 {
 				bare = cu[dot+1:]
-				// LEAF-ONLY: the qualifier is sliced off and DISCARDED — slot i
-				// is the authoritative read. Not debt, and counted apart from
-				// the debt classes so it is not banked as one.
-				values.RecordQualifierRecovery(values.QualRecSiteRecursiveRemap,
-					values.QualRecLeafOnly, cu, "ordinal "+strconv.Itoa(i))
-			} else {
-				values.RecordQualifierRecovery(values.QualRecSiteRecursiveRemap,
-					values.QualRecBare, cu, "")
+			}
+			// Recording gated as a BLOCK so the leaf-only arm's witness string
+			// ("ordinal "+Itoa) is never built while the census is off — the
+			// header's no-argument-built-for-a-disabled-recorder claim holds
+			// here too, where the recording is inline rather than a helper the
+			// AST pin can see.
+			if values.LegIdentityCensusEnabled() {
+				if dot >= 0 {
+					// LEAF-ONLY: the qualifier is sliced off and DISCARDED —
+					// slot i is the authoritative read. Not debt, and counted
+					// apart from the debt classes so it is not banked as one.
+					values.RecordQualifierRecovery(values.QualRecSiteRecursiveRemap,
+						values.QualRecLeafOnly, cu, "ordinal "+strconv.Itoa(i))
+				} else {
+					values.RecordQualifierRecovery(values.QualRecSiteRecursiveRemap,
+						values.QualRecBare, cu, "")
+				}
 			}
 			out[i] = &values.FieldValue{
 				Field:    bare,
