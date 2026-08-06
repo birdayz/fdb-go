@@ -37,7 +37,7 @@ const redundantReaderAlias = "ST"
 // through the binder: the EXISTS folds constant-true, so all three ST×OT pairs
 // survive. These are the rows TestFDB_ExistsInnerShadow pins as the live Java
 // 4.12.11.0 behaviour.
-var mergedLegReaderShapeWant = []string{"map[K:50]", "map[K:50]", "map[K:50]"}
+var mergedLegReaderShapeWant = []string{"K=50", "K=50", "K=50"}
 
 // mergedLegReaderShape is a live store and plan for the ONE merged-row reader
 // shape the corpus produces — a faithful reproduction of

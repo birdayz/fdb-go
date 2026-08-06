@@ -170,7 +170,7 @@ func TestFDB_ForkCollidingSubfield(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, fmt.Sprintf("%v", executor.RowValue(r)))
+				out = append(out, positionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -186,17 +186,17 @@ func TestFDB_ForkCollidingSubfield(t *testing.T) {
 	// The colliding fork, unfiltered and filtered: W must carry X's SUB2 {1,2}.
 	want("colliding_fork",
 		`SELECT "W" FROM TC, TC."ARR" AS "X", "X"."SS" AS "Y", "X"."SUB2" AS "W"`,
-		[]string{"map[W:1]", "map[W:2]"})
+		[]string{"W=1", "W=2"})
 	want("colliding_fork_filtered",
 		`SELECT "W" FROM TC, TC."ARR" AS "X", "X"."SS" AS "Y", "X"."SUB2" AS "W" WHERE TC."ID" = 1`,
-		[]string{"map[W:1]", "map[W:2]"})
+		[]string{"W=1", "W=2"})
 	// The straddle over the colliding fork: TC.ID = W → ID=1 matches W=1.
 	want("colliding_fork_straddle",
 		`SELECT "W" FROM TC, TC."ARR" AS "X", "X"."SS" AS "Y", "X"."SUB2" AS "W" WHERE TC."ID" = "W"`,
-		[]string{"map[W:1]"})
+		[]string{"W=1"})
 	// The LINEAR read of the same colliding field name on the MID element must
 	// still read Y's OWN SUB2 (owner-slot rooting resolves Y, not X): {100}.
 	want("linear_mid_element_read",
 		`SELECT "V" FROM TC, TC."ARR" AS "X", "X"."SS" AS "Y", "Y"."SUB2" AS "V"`,
-		[]string{"map[V:100]"})
+		[]string{"V=100"})
 }

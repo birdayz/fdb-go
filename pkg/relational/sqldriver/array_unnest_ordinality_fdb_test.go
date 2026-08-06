@@ -4901,8 +4901,46 @@ func unnestSprint(v any) string {
 	case string:
 		return x
 	default:
-		return fmt.Sprint(x)
+		return unnestCollapseSpaces(fmt.Sprint(x))
 	}
+}
+
+// unnestCollapseSpaces makes the non-string rendering STABLE ACROSS BUILDS.
+//
+// A row slot can hold a protobuf message (an unnested struct element, a nested
+// repeated field), and fmt renders those through prototext, whose whitespace is
+// deliberately unstable: google.golang.org/protobuf/internal/detrand varies the
+// separator width so that callers cannot depend on the exact bytes. The seed is
+// derived from the binary, so the output is stable WITHIN one test binary and
+// flips the moment anything changes the binary — an expectation written against
+// it passes locally and fails on the next unrelated edit.
+//
+// That instability is why the duplicate-name star row in
+// buried_chained_rotation_fdb_test.go could only be pinned by COUNT: its slots
+// are messages, so no literal could survive a rebuild. Collapsing runs of two or
+// more spaces removes exactly that degree of freedom and nothing else — a slot
+// holding a plain string never reaches here (the string case returns it raw), so
+// real text is never touched.
+func unnestCollapseSpaces(s string) string {
+	if !strings.Contains(s, "  ") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	prevSpace := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == ' ' {
+			if prevSpace {
+				continue
+			}
+			prevSpace = true
+		} else {
+			prevSpace = false
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 func unnestEqualStrs(a, b []string) bool {

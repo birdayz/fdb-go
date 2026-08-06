@@ -145,7 +145,7 @@ func TestFDB_NestedLeftBoxChained(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, fmt.Sprintf("%v", executor.RowValue(r)))
+				out = append(out, positionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -191,10 +191,10 @@ func TestFDB_NestedLeftBoxChained(t *testing.T) {
 	want("chained_elements",
 		`SELECT "Y" `+nested+`, "A"."SARR" AS "X", "X"."SUB" AS "Y"`,
 		[]string{
-			"map[Y:1]", "map[Y:2]", "map[Y:10]", "map[Y:3]",
-			"map[Y:4]", "map[Y:5]", "map[Y:6]",
-			"map[Y:3]", "map[Y:9]",
-			"map[Y:7]",
+			"Y=1", "Y=2", "Y=10", "Y=3",
+			"Y=4", "Y=5", "Y=6",
+			"Y=3", "Y=9",
+			"Y=7",
 		})
 
 	// Leg projection with the null-supplied legs: A=10 carries B=20/C=NULL,
@@ -202,23 +202,23 @@ func TestFDB_NestedLeftBoxChained(t *testing.T) {
 	want("chained_leg_projection",
 		`SELECT "A"."ID", "B"."ID", "C"."ID", "Y" `+nested+`, "A"."SARR" AS "X", "X"."SUB" AS "Y"`,
 		[]string{
-			"map[A.ID:10 B.ID:20 C.ID:<nil> Y:1]",
-			"map[A.ID:10 B.ID:20 C.ID:<nil> Y:2]",
-			"map[A.ID:10 B.ID:20 C.ID:<nil> Y:10]",
-			"map[A.ID:10 B.ID:20 C.ID:<nil> Y:3]",
-			"map[A.ID:20 B.ID:<nil> C.ID:110 Y:4]",
-			"map[A.ID:20 B.ID:<nil> C.ID:110 Y:5]",
-			"map[A.ID:20 B.ID:<nil> C.ID:110 Y:6]",
-			"map[A.ID:3 B.ID:<nil> C.ID:<nil> Y:3]",
-			"map[A.ID:3 B.ID:<nil> C.ID:<nil> Y:9]",
-			"map[A.ID:110 B.ID:<nil> C.ID:<nil> Y:7]",
+			"A.ID=10|B.ID=20|C.ID=<nil>|Y=1",
+			"A.ID=10|B.ID=20|C.ID=<nil>|Y=2",
+			"A.ID=10|B.ID=20|C.ID=<nil>|Y=10",
+			"A.ID=10|B.ID=20|C.ID=<nil>|Y=3",
+			"A.ID=20|B.ID=<nil>|C.ID=110|Y=4",
+			"A.ID=20|B.ID=<nil>|C.ID=110|Y=5",
+			"A.ID=20|B.ID=<nil>|C.ID=110|Y=6",
+			"A.ID=3|B.ID=<nil>|C.ID=<nil>|Y=3",
+			"A.ID=3|B.ID=<nil>|C.ID=<nil>|Y=9",
+			"A.ID=110|B.ID=<nil>|C.ID=<nil>|Y=7",
 		})
 
 	// Element WHERE: Y>3 → A=10 keeps {10}, A=20 keeps {4,5,6}, A=3 keeps {9},
 	// A=110 keeps {7}.
 	want("chained_element_filter",
 		`SELECT "Y" `+nested+`, "A"."SARR" AS "X", "X"."SUB" AS "Y" WHERE "Y" > 3`,
-		[]string{"map[Y:10]", "map[Y:4]", "map[Y:5]", "map[Y:6]", "map[Y:9]", "map[Y:7]"})
+		[]string{"Y=10", "Y=4", "Y=5", "Y=6", "Y=9", "Y=7"})
 
 	// Box-leg WHERE — the un-ordinalizable straddle, LOUD-REJECTED
 	// (preserved leg, first null-supplying leg, second null-supplying leg).
@@ -233,8 +233,8 @@ func TestFDB_NestedLeftBoxChained(t *testing.T) {
 	want("threelink",
 		`SELECT "Z" `+nested+`, "A"."SARR" AS "X", "X"."SUBSTRUCT" AS "Y2", "Y2"."DEEP" AS "Z"`,
 		[]string{
-			"map[Z:11]", "map[Z:12]", "map[Z:13]",
-			"map[Z:20]", "map[Z:5]", "map[Z:7]", "map[Z:8]",
+			"Z=11", "Z=12", "Z=13",
+			"Z=20", "Z=5", "Z=7", "Z=8",
 		})
 
 	// SINGLE-link scalar-array unnest over the nested box, with leg projection
@@ -243,20 +243,20 @@ func TestFDB_NestedLeftBoxChained(t *testing.T) {
 	want("singlelink_scarr_legs",
 		`SELECT "A"."ID", "B"."ID", "C"."ID", "X" `+nested+`, "A"."SCARR" AS "X"`,
 		[]string{
-			"map[A.ID:10 B.ID:20 C.ID:<nil> X:100]",
-			"map[A.ID:10 B.ID:20 C.ID:<nil> X:200]",
-			"map[A.ID:20 B.ID:<nil> C.ID:110 X:300]",
-			"map[A.ID:110 B.ID:<nil> C.ID:<nil> X:400]",
+			"A.ID=10|B.ID=20|C.ID=<nil>|X=100",
+			"A.ID=10|B.ID=20|C.ID=<nil>|X=200",
+			"A.ID=20|B.ID=<nil>|C.ID=110|X=300",
+			"A.ID=110|B.ID=<nil>|C.ID=<nil>|X=400",
 		})
 
 	// SINGLE-link struct-array unnest over the nested box.
 	want("singlelink_sarr",
 		`SELECT "A"."ID", "B"."ID" `+nested+`, "A"."SARR" AS "X"`,
 		[]string{
-			"map[A.ID:10 B.ID:20]", "map[A.ID:10 B.ID:20]",
-			"map[A.ID:20 B.ID:<nil>]",
-			"map[A.ID:3 B.ID:<nil>]",
-			"map[A.ID:110 B.ID:<nil>]",
+			"A.ID=10|B.ID=20", "A.ID=10|B.ID=20",
+			"A.ID=20|B.ID=<nil>",
+			"A.ID=3|B.ID=<nil>",
+			"A.ID=110|B.ID=<nil>",
 		})
 
 	// AT ordinal on the FIRST link over the nested box: A=10 has TWO SARR
@@ -264,9 +264,9 @@ func TestFDB_NestedLeftBoxChained(t *testing.T) {
 	want("at_first_link",
 		`SELECT "P", "Y" `+nested+`, "A"."SARR" AS "X" AT "P", "X"."SUB" AS "Y"`,
 		[]string{
-			"map[P:1 Y:1]", "map[P:1 Y:2]", "map[P:1 Y:10]", "map[P:2 Y:3]",
-			"map[P:1 Y:4]", "map[P:1 Y:5]", "map[P:1 Y:6]",
-			"map[P:1 Y:3]", "map[P:1 Y:9]",
-			"map[P:1 Y:7]",
+			"P=1|Y=1", "P=1|Y=2", "P=1|Y=10", "P=2|Y=3",
+			"P=1|Y=4", "P=1|Y=5", "P=1|Y=6",
+			"P=1|Y=3", "P=1|Y=9",
+			"P=1|Y=7",
 		})
 }

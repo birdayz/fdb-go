@@ -2,7 +2,6 @@ package sqldriver_test
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -126,7 +125,7 @@ func TestFDB_ChainedUnnestFilterPlacement(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, fmt.Sprintf("%v", executor.RowValue(r)))
+				out = append(out, positionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -154,7 +153,7 @@ func TestFDB_ChainedUnnestFilterPlacement(t *testing.T) {
 	t.Run("unfiltered_control", func(t *testing.T) {
 		t.Parallel()
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y"`,
-			[]string{"map[Y:1]", "map[Y:2]", "map[Y:3]", "map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]", "map[Y:9]"}, "")
+			[]string{"Y=1", "Y=2", "Y=3", "Y=3", "Y=4", "Y=5", "Y=6", "Y=9"}, "")
 	})
 
 	// OUTER-column-only equality → pushed to Scan(T4) as a SARG (the ⊆-outerLegs gate leaves
@@ -162,9 +161,9 @@ func TestFDB_ChainedUnnestFilterPlacement(t *testing.T) {
 	t.Run("outer_col_eq_sargs_scan", func(t *testing.T) {
 		t.Parallel()
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" = 10`,
-			[]string{"map[Y:1]", "map[Y:2]", "map[Y:3]"}, "Scan(T4, [=])")
+			[]string{"Y=1", "Y=2", "Y=3"}, "Scan(T4, [=])")
 		wantSet(t, `SELECT T4."ID", "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" = 20`,
-			[]string{"map[ID:20 Y:4]", "map[ID:20 Y:5]", "map[ID:20 Y:6]"}, "Scan(T4, [=])")
+			[]string{"ID=20|Y=4", "ID=20|Y=5", "ID=20|Y=6"}, "Scan(T4, [=])")
 	})
 
 	// STRADDLING (`T4.ID = y`): references the inner element y → keeps the rebase → the whole
@@ -173,14 +172,14 @@ func TestFDB_ChainedUnnestFilterPlacement(t *testing.T) {
 	t.Run("straddling_inner_filter", func(t *testing.T) {
 		t.Parallel()
 		wantSet(t, `SELECT T4."ID", "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" = "Y"`,
-			[]string{"map[ID:3 Y:3]"}, "inner=PredicatesFilter")
+			[]string{"ID=3|Y=3"}, "inner=PredicatesFilter")
 	})
 
 	// INNER-element-only filter (`y > 2`) → PredicatesFilter on the inner Explode.
 	t.Run("inner_element_filter", func(t *testing.T) {
 		t.Parallel()
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE "Y" > 2`,
-			[]string{"map[Y:3]", "map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]", "map[Y:9]"}, "inner=PredicatesFilter")
+			[]string{"Y=3", "Y=3", "Y=4", "Y=5", "Y=6", "Y=9"}, "inner=PredicatesFilter")
 	})
 
 	// SEPARATE conjuncts (`T4.ID=10 AND y>2`): the AND splits — T4.ID=10 to the outer level
@@ -188,7 +187,7 @@ func TestFDB_ChainedUnnestFilterPlacement(t *testing.T) {
 	t.Run("separate_conjuncts_split", func(t *testing.T) {
 		t.Parallel()
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" = 10 AND "Y" > 2`,
-			[]string{"map[Y:3]"}, "")
+			[]string{"Y=3"}, "")
 	})
 
 	// The full spread of NON-subquery outer-column filter shapes — each must ordinalize with
@@ -197,19 +196,19 @@ func TestFDB_ChainedUnnestFilterPlacement(t *testing.T) {
 		t.Parallel()
 		// IN-list (not subquery).
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" IN (10, 3)`,
-			[]string{"map[Y:1]", "map[Y:2]", "map[Y:3]", "map[Y:3]", "map[Y:9]"}, "")
+			[]string{"Y=1", "Y=2", "Y=3", "Y=3", "Y=9"}, "")
 		// BETWEEN.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" BETWEEN 5 AND 25`,
-			[]string{"map[Y:1]", "map[Y:2]", "map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]"}, "")
+			[]string{"Y=1", "Y=2", "Y=3", "Y=4", "Y=5", "Y=6"}, "")
 		// Arithmetic on the outer column.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" + 1 = 11`,
-			[]string{"map[Y:1]", "map[Y:2]", "map[Y:3]"}, "")
+			[]string{"Y=1", "Y=2", "Y=3"}, "")
 		// IS NOT NULL (all rows).
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" IS NOT NULL`,
-			[]string{"map[Y:1]", "map[Y:2]", "map[Y:3]", "map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]", "map[Y:9]"}, "")
+			[]string{"Y=1", "Y=2", "Y=3", "Y=3", "Y=4", "Y=5", "Y=6", "Y=9"}, "")
 		// NOT of an outer comparison.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE NOT (T4."ID" = 10)`,
-			[]string{"map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]", "map[Y:9]"}, "")
+			[]string{"Y=3", "Y=4", "Y=5", "Y=6", "Y=9"}, "")
 		// NOT(AND) mixing outer + inner → not scan-pushable → the positional bake places its
 		// outer-col ref (ofOrdinal over the outer QOV's type) and it resolves at the inner Explode.
 		// Safe at any level because NormalizePredicatesRule does NOT De Morgan it (DeMorganRule is
@@ -217,10 +216,10 @@ func TestFDB_ChainedUnnestFilterPlacement(t *testing.T) {
 		// pure-outer clause is extracted to push. T4(10) y≤2 → {1,2}; T4(20),T4(3) (ID≠10) → all →
 		// {4,5,6}∪{3,9}. → {1,2,3,4,5,6,9}.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE NOT (T4."ID" = 10 AND "Y" > 2)`,
-			[]string{"map[Y:1]", "map[Y:2]", "map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]", "map[Y:9]"}, "")
+			[]string{"Y=1", "Y=2", "Y=3", "Y=4", "Y=5", "Y=6", "Y=9"}, "")
 		// Three-conjunct AND: T4.ID=10 AND y>1 AND y<3 → {2}.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" = 10 AND "Y" > 1 AND "Y" < 3`,
-			[]string{"map[Y:2]"}, "")
+			[]string{"Y=2"}, "")
 	})
 
 	// An OR in a filter over a 2-CHAIN unnest resolves by ordinal (ordinalLegType)
@@ -235,28 +234,28 @@ func TestFDB_ChainedUnnestFilterPlacement(t *testing.T) {
 		t.Parallel()
 		// Flat OR mixing outer + inner: T4(10)→{1,2,3} (ID=10) ∪ y=5 from T4(20) → {1,2,3,5}.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" = 10 OR "Y" = 5`,
-			[]string{"map[Y:1]", "map[Y:2]", "map[Y:3]", "map[Y:5]"}, "")
+			[]string{"Y=1", "Y=2", "Y=3", "Y=5"}, "")
 		// Flat OR of two outer conjuncts → {1,2,3,4,5,6}.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" = 10 OR T4."ID" = 20`,
-			[]string{"map[Y:1]", "map[Y:2]", "map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]"}, "")
+			[]string{"Y=1", "Y=2", "Y=3", "Y=4", "Y=5", "Y=6"}, "")
 		// NESTED-outer OR (the regressing shape): (ID=10 AND y>2)→T4(10) y=3; (ID=3 AND y<5)→T4(3)
 		// y=3 (y=9 fails <5). → {3,3}.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE (T4."ID" = 10 AND "Y" > 2) OR (T4."ID" = 3 AND "Y" < 5)`,
-			[]string{"map[Y:3]", "map[Y:3]"}, "")
+			[]string{"Y=3", "Y=3"}, "")
 		// (ID=10 AND y>2)→{3}; (ID=20)→all T4(20) {4,5,6}. → {3,4,5,6}.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE (T4."ID" = 10 AND "Y" > 2) OR (T4."ID" = 20)`,
-			[]string{"map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]"}, "")
+			[]string{"Y=3", "Y=4", "Y=5", "Y=6"}, "")
 		// (ID=10 AND y=1)→{1}; (ID=3 AND y=9)→{9}. → {1,9}.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE (T4."ID" = 10 AND "Y" = 1) OR (T4."ID" = 3 AND "Y" = 9)`,
-			[]string{"map[Y:1]", "map[Y:9]"}, "")
+			[]string{"Y=1", "Y=9"}, "")
 		// Straddling INSIDE a disjunct (`t.id = y` OR outer): T4(3) id=3=y=3 → {3}; (ID=20)→{4,5,6}.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE (T4."ID" = "Y") OR (T4."ID" = 20)`,
-			[]string{"map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]"}, "")
+			[]string{"Y=3", "Y=4", "Y=5", "Y=6"}, "")
 		// NOT(OR) over a 2-chain: pure-outer (references only T4), so it stays scan-pushable
 		// (⊆-outerLegs) → lazy SARG on Scan(T4), ordinalizes. NOT(ID=10 OR ID=3) = ID∉{10,3} →
 		// T4(20) → {4,5,6}.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE NOT (T4."ID" = 10 OR T4."ID" = 3)`,
-			[]string{"map[Y:4]", "map[Y:5]", "map[Y:6]"}, "")
+			[]string{"Y=4", "Y=5", "Y=6"}, "")
 	})
 
 	// SCALAR-SUBQUERY residual → clean 0A000 (the silent-wrong-`[]` sentinel). Java answers

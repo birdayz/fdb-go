@@ -21,9 +21,12 @@ import (
 // exist to prevent are precisely mis-bound windows, i.e. a permutation.
 //
 // The blindness is systemic rather than local — the same map-keyed loop was
-// copied into eight files — so the fix is one shared renderer and
+// copied across the suite — so the fix is one shared renderer and
 // order-sensitive expectations everywhere, not a second assertion bolted onto
-// one site.
+// one site. MEASURED population as of the last sweep: 21 files render rows
+// through positionalNamedPipeSprint (24 call sites), 6 through
+// positionalPipeSprint, 1 through positionalSprint; no test file renders a
+// multi-slot row through executor.RowValue any more.
 //
 // Both renderers route a row that carries NO positional row through
 // unnestSprint(executor.RowValue(r)). Calling that a "name-keyed fallback" would
@@ -97,7 +100,7 @@ func positionalNamedPipeSprint(r executor.QueryResult) string {
 // on it passes with every slot moved. The positional renderers must differ.
 //
 // Without this, "the map renderer is blind in the ORDER dimension" would be a
-// claim in a comment, and the eight converted sites would be churn with no stated
+// claim in a comment, and the converted sites would be churn with no stated
 // benefit.
 func TestPositionalRenderersSeeAPermutation(t *testing.T) {
 	t.Parallel()
@@ -194,5 +197,41 @@ func TestPositionalRenderersSeeAPermutation(t *testing.T) {
 	}
 	if got, want := positionalSprint(executor.QueryResult{}), "<nil>"; got != want {
 		t.Errorf("positionalSprint on an empty QueryResult = %q, want %q", got, want)
+	}
+}
+
+// unnestUnstableSprintf stands in for a protobuf message: a value whose fmt
+// rendering carries the extra separator width that prototext's detrand adds.
+type unnestUnstableSprintf struct{}
+
+func (unnestUnstableSprintf) String() string { return "SUB:5  K:0  SUBSTRUCT:{DEEP:11  LEAF:0}" }
+
+// TestUnnestSprintIsStableAcrossBuilds pins that a slot holding a protobuf
+// message renders to bytes an expectation can be written against.
+//
+// prototext varies its whitespace ON PURPOSE (internal/detrand), seeded from the
+// binary — so the rendering of a message-valued slot is constant within one test
+// binary and flips on the next build that perturbs it. That is worse than plain
+// nondeterminism: an expectation written against it passes locally, passes in
+// CI, and then fails on an unrelated edit. It is the reason the duplicate-name
+// SELECT * row in buried_chained_rotation_fdb_test.go was pinned only by COUNT
+// for as long as it was, and that row's values are now asserted BECAUSE this
+// normalization exists.
+//
+// A slot holding a real string must be untouched: unnestSprint returns those
+// verbatim, so text with its own double spaces never reaches the collapse.
+func TestUnnestSprintIsStableAcrossBuilds(t *testing.T) {
+	t.Parallel()
+	if got, want := unnestSprint(unnestUnstableSprintf{}), "SUB:5 K:0 SUBSTRUCT:{DEEP:11 LEAF:0}"; got != want {
+		t.Errorf("unnestSprint of a message-like value = %q, want %q — the separator width\n"+
+			"  prototext randomizes per build must be collapsed, or no expectation over a\n"+
+			"  message-valued slot survives a rebuild", got, want)
+	}
+	if got, want := unnestSprint("a  b"), "a  b"; got != want {
+		t.Errorf("unnestSprint of a STRING slot = %q, want %q — string slots are returned\n"+
+			"  verbatim; collapsing them would corrupt real data", got, want)
+	}
+	if got, want := unnestSprint([]any{"x", 1}), "[x 1]"; got != want {
+		t.Errorf("unnestSprint of a slice = %q, want %q", got, want)
 	}
 }

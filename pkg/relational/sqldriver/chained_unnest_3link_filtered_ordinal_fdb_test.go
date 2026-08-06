@@ -129,7 +129,7 @@ func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, fmt.Sprintf("%v", executor.RowValue(r)))
+				out = append(out, positionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -177,7 +177,7 @@ func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	if !strings.Contains(ex0, "Scan(T4, [=") {
 		t.Fatalf("threelink_outer_filter_SARGs: lone outer conjunct must SARG the scan; plan=%s", ex0)
 	}
-	wantRows("threelink_outer_filter_SARGs", r0, []string{"map[Z:11]", "map[Z:12]", "map[Z:13]"}, q0)
+	wantRows("threelink_outer_filter_SARGs", r0, []string{"Z=11", "Z=12", "Z=13"}, q0)
 
 	// MIXED-inner-ref OR: ID=1 → {11,12,13}; Z=20 from ID=2 → {20}. → {11,12,13,20}.
 	// The mixed clause lands as a PredicatesFilter at the INNERMOST Explode (the
@@ -188,7 +188,7 @@ func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	if !strings.Contains(ex1, "inner=PredicatesFilter(Explode") {
 		t.Fatalf("threelink_mixed_OR: mixed clause must land at the innermost Explode; plan=%s", ex1)
 	}
-	wantRows("threelink_mixed_OR", r1, []string{"map[Z:11]", "map[Z:12]", "map[Z:13]", "map[Z:20]"}, q1)
+	wantRows("threelink_mixed_OR", r1, []string{"Z=11", "Z=12", "Z=13", "Z=20"}, q1)
 
 	// STRADDLING over a 3-link — a single AND-free comparison mixing outer + the DEEPEST
 	// element. T4(11) Z=11 matches ID=11. Innermost-Explode placement — the mixed clause resolves at the deepest level.
@@ -198,7 +198,7 @@ func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	if !strings.Contains(ex2, "inner=PredicatesFilter(Explode") {
 		t.Fatalf("threelink_straddling_match: straddle must land at the innermost Explode; plan=%s", ex2)
 	}
-	wantRows("threelink_straddling_match", r2, []string{"map[ID:11 Z:11]"}, q2)
+	wantRows("threelink_straddling_match", r2, []string{"ID=11|Z=11"}, q2)
 
 	// AND with inner ref: ID=1 ∩ Z>11 → {12,13}. AND-splits: the inner conjunct Z>11
 	// lands at the innermost Explode; the outer conjunct ID=1 lands as a mid-chain
@@ -210,13 +210,13 @@ func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	if !strings.Contains(ex3, "inner=PredicatesFilter(Explode") {
 		t.Fatalf("threelink_and_inner: inner conjunct must land at the innermost Explode; plan=%s", ex3)
 	}
-	wantRows("threelink_and_inner", r3, []string{"map[Z:12]", "map[Z:13]"}, q3)
+	wantRows("threelink_and_inner", r3, []string{"Z=12", "Z=13"}, q3)
 
 	// PURE-outer OR (scan-pushable): ID=1 OR ID=2 → {11,12,13,20}.
 	q4 := `SELECT "Z" ` + base + ` WHERE T4."ID" = 1 OR T4."ID" = 2`
 	ex4, r4 := run("threelink_pure_outer_OR", q4)
 	assertOrdinal3Link("threelink_pure_outer_OR", ex4)
-	wantRows("threelink_pure_outer_OR", r4, []string{"map[Z:11]", "map[Z:12]", "map[Z:13]", "map[Z:20]"}, q4)
+	wantRows("threelink_pure_outer_OR", r4, []string{"Z=11", "Z=12", "Z=13", "Z=20"}, q4)
 
 	// BOX-BASE chain — the STRADDLE crux. The first link's base is a 2-source
 	// INNER box (T4, T4C), which chainedSpineWalk now ADMITS (bottomInnerBox):
@@ -234,9 +234,9 @@ func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 		t.Fatalf("boxbase_unfiltered: must ordinalize with 3 per-link Explodes; plan=%s", exU)
 	}
 	wantRows("boxbase_unfiltered_ordinalizes", rU, []string{
-		"map[Z:11]", "map[Z:11]", "map[Z:11]", "map[Z:11]", "map[Z:11]", "map[Z:11]",
-		"map[Z:12]", "map[Z:12]", "map[Z:12]", "map[Z:13]", "map[Z:13]", "map[Z:13]",
-		"map[Z:20]", "map[Z:20]", "map[Z:20]",
+		"Z=11", "Z=11", "Z=11", "Z=11", "Z=11", "Z=11",
+		"Z=12", "Z=12", "Z=12", "Z=13", "Z=13", "Z=13",
+		"Z=20", "Z=20", "Z=20",
 	}, `SELECT "Z" `+boxBase)
 	q5 := `SELECT T4."ID", "Z" ` + boxBase + ` WHERE T4."ID" = "Z"`
 	ex5, r5 := run("boxbase_straddle_ordinalizes", q5)
@@ -248,14 +248,14 @@ func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	}
 	// T4(11) Z=11 matches ID=11, × 3 T4C rows.
 	wantRows("boxbase_straddle_ordinalizes", r5,
-		[]string{"map[ID:11 Z:11]", "map[ID:11 Z:11]", "map[ID:11 Z:11]"}, q5)
+		[]string{"ID=11|Z=11", "ID=11|Z=11", "ID=11|Z=11"}, q5)
 
 	// A 2-CHAIN buried behind a trailing table (join.Right is a SCAN, not an unnest →
 	// never reaches the chained ordinal dispatch): stays on the buried-unnest path.
 	// T4(1) Y∈{1,7}, ID=1=Y=1 → {Y:1} × 3 T4C rows = {1,1,1}.
 	q6 := `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y", T4 AS "T4C" WHERE T4."ID" = "Y"`
 	ex6, r6 := run("buried_2chain_straddle", q6)
-	wantRows("buried_2chain_straddle", r6, []string{"map[Y:1]", "map[Y:1]", "map[Y:1]"}, q6)
+	wantRows("buried_2chain_straddle", r6, []string{"Y=1", "Y=1", "Y=1"}, q6)
 	// POSITIONAL even on the buried path: the output column bakes to an ORDINAL
 	// slot (`Y.Y#0`, the ofOrdinal) over nested FlatMap-over-Explode links — a
 	// name-model row would render `Y.Y` with no `#N`. (Distinct from the
@@ -280,21 +280,21 @@ func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	q7 := `SELECT "W" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "Y", "X"."SUB" AS "W"`
 	_, r7 := run("fork_projection_ordinalizes", q7)
 	wantRows("fork_projection_ordinalizes", r7,
-		[]string{"map[W:1]", "map[W:1]", "map[W:5]", "map[W:7]", "map[W:7]", "map[W:9]"}, q7)
+		[]string{"W=1", "W=1", "W=5", "W=7", "W=7", "W=9"}, q7)
 
 	// The FILTERED fork: the outer conjunct rides the ⊆-outerLegs lazy path over
 	// the ordinalized fork spine (pure bottom → the box-leg-conjunct arm exempt).
 	q8 := `SELECT "W" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "Y", "X"."SUB" AS "W" WHERE T4."ID" = 1`
 	_, r8 := run("fork_filtered_ordinalizes", q8)
 	wantRows("fork_filtered_ordinalizes", r8,
-		[]string{"map[W:1]", "map[W:1]", "map[W:7]", "map[W:7]"}, q8)
+		[]string{"W=1", "W=1", "W=7", "W=7"}, q8)
 
 	// A FILTERED fork STRADDLE mixing the base column with the FORKED element —
 	// the positional bake over the fork spine's merged row: T4.ID = W matches
 	// T4(1)'s W=1 (× Y's 2 SUBSTRUCT elems) → {1,1}.
 	q8b := `SELECT "W" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "Y", "X"."SUB" AS "W" WHERE T4."ID" = "W"`
 	_, r8b := run("fork_straddle_ordinalizes", q8b)
-	wantRows("fork_straddle_ordinalizes", r8b, []string{"map[W:1]", "map[W:1]"}, q8b)
+	wantRows("fork_straddle_ordinalizes", r8b, []string{"W=1", "W=1"}, q8b)
 
 	// DEPTH-3 SHADOW-SLOT straddle: T4.SUB (the outer shadow scalar, slot 3 of the
 	// ordinal row) = Z. Exactly T4(2) matches (sub=20, Z=20) → {20}. THE positive
@@ -303,14 +303,14 @@ func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	// element's SUB array errors — each failure mode is distinguishable.
 	q9 := `SELECT "Z" ` + base + ` WHERE T4."SUB" = "Z"`
 	_, r9 := run("threelink_shadow_slot_straddle", q9)
-	wantRows("threelink_shadow_slot_straddle", r9, []string{"map[Z:20]"}, q9)
+	wantRows("threelink_shadow_slot_straddle", r9, []string{"Z=20"}, q9)
 
 	// The shadow straddle under OR (rides the CNF/pushdown path): (T4.SUB=Z) OR
 	// (T4.ID=1) → {20} ∪ {11,12,13}.
 	q10 := `SELECT "Z" ` + base + ` WHERE T4."SUB" = "Z" OR T4."ID" = 1`
 	_, r10 := run("threelink_shadow_in_or", q10)
 	wantRows("threelink_shadow_in_or", r10,
-		[]string{"map[Z:11]", "map[Z:12]", "map[Z:13]", "map[Z:20]"}, q10)
+		[]string{"Z=11", "Z=12", "Z=13", "Z=20"}, q10)
 
 	// AT-ordinality rows at depth 3: AT on the FIRST link (every T4 has one SARR
 	// element → P=1 throughout) and AT on the MID link (T4(1) has two SUBSTRUCT
@@ -318,11 +318,11 @@ func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	q11 := `SELECT "P", "Z" FROM T4, T4."SARR" AS "X" AT "P", "X"."SUBSTRUCT" AS "Y", "Y"."DEEP" AS "Z"`
 	_, r11 := run("threelink_at_first_link", q11)
 	wantRows("threelink_at_first_link", r11,
-		[]string{"map[P:1 Z:11]", "map[P:1 Z:11]", "map[P:1 Z:12]", "map[P:1 Z:13]", "map[P:1 Z:20]"}, q11)
+		[]string{"P=1|Z=11", "P=1|Z=11", "P=1|Z=12", "P=1|Z=13", "P=1|Z=20"}, q11)
 	q12 := `SELECT "P", "Z" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "Y" AT "P", "Y"."DEEP" AS "Z"`
 	_, r12 := run("threelink_at_mid_link", q12)
 	wantRows("threelink_at_mid_link", r12,
-		[]string{"map[P:1 Z:11]", "map[P:1 Z:11]", "map[P:1 Z:12]", "map[P:1 Z:20]", "map[P:2 Z:13]"}, q12)
+		[]string{"P=1|Z=11", "P=1|Z=11", "P=1|Z=12", "P=1|Z=20", "P=2|Z=13"}, q12)
 
 	// The FULL-BOX-BOTTOM chained spine with a box-leg WHERE — the un-ordinalizable
 	// straddle: the spine bottoms in a FULL box, and the box-leg predicate cannot yet

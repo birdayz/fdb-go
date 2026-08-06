@@ -122,14 +122,14 @@ func TestFDB_ChainedUnnestOrdinal(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	queryRows := func(t *testing.T, sql string) (string, []map[string]any) {
+	queryRows := func(t *testing.T, sql string) (string, []executor.QueryResult) {
 		t.Helper()
 		plan, perr := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
 		if perr != nil {
 			t.Fatalf("plan %q: %v", sql, perr)
 		}
 		explain := plan.Explain()
-		var out []map[string]any
+		var out []executor.QueryResult
 		_, eerr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, sErr := recordlayer.NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
@@ -146,10 +146,7 @@ func TestFDB_ChainedUnnestOrdinal(t *testing.T) {
 			if rErr != nil {
 				return nil, rErr
 			}
-			for _, r := range rows {
-				m, _ := executor.RowValue(r).(map[string]any)
-				out = append(out, m)
-			}
+			out = append(out, rows...)
 			return nil, nil
 		})
 		if eerr != nil {
@@ -174,14 +171,19 @@ func TestFDB_ChainedUnnestOrdinal(t *testing.T) {
 		}
 	}
 
-	collect := func(rows []map[string]any, cols ...string) []string {
+	// collect renders each row in SLOT order. It used to index the row's
+	// name→value map with a hand-written column list, which produced the same
+	// "a|b" string while asserting nothing about where those values actually
+	// sat: permute (Fields, Slots) together — a mis-bound leg window — and every
+	// name still resolves to its own value, so the string is unchanged. The
+	// column list also silently decided the display order independently of the
+	// SELECT list, so the two could disagree without anything saying so. Reading
+	// the slots directly removes both degrees of freedom: these expectations now
+	// pin the projection's ORDER, not just its contents.
+	collect := func(rows []executor.QueryResult) []string {
 		got := make([]string, 0, len(rows))
-		for _, m := range rows {
-			parts := make([]string, len(cols))
-			for i, c := range cols {
-				parts[i] = fmt.Sprintf("%v", m[c])
-			}
-			got = append(got, strings.Join(parts, "|"))
+		for _, r := range rows {
+			got = append(got, positionalPipeSprint(r))
 		}
 		sort.Strings(got)
 		return got
@@ -191,7 +193,7 @@ func TestFDB_ChainedUnnestOrdinal(t *testing.T) {
 		const q = `SELECT "ID", "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y"`
 		explain, rows := queryRows(t, q)
 		assertNestedOrdinalShape(t, explain)
-		got := collect(rows, "ID", "Y")
+		got := collect(rows)
 		// Each (ID, Y) is unique: ID=10 → SUB {1,2,3}; ID=20 → SUB {4,5,6}.
 		// ID=30 (empty SUB) and ID=40 (empty SARR) contribute NOTHING. A
 		// mis-window on the outer column would scramble the IDs; a mis-bind on
@@ -206,10 +208,19 @@ func TestFDB_ChainedUnnestOrdinal(t *testing.T) {
 		// `X.SUB` reads the ELEMENT's SUB array (via the ordinal collection's
 		// ofOrdinal(owner)+name-suffix descent), NEVER the same-named outer-row
 		// scalar SUB=777. A collapsed root read would surface 777.
+		// Y is the SECOND projected column, so it is slot 1 — read by position,
+		// because reading it by name is what a shadow bug would defeat: the outer
+		// SUB and the element's SUB share a name, and a name-keyed read resolves
+		// whichever one the projection happens to have kept.
 		_, rows := queryRows(t, `SELECT "ID", "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y"`)
-		for _, m := range rows {
-			if fmt.Sprintf("%v", m["Y"]) == "777" {
-				t.Fatalf("x.SUB read the shadow outer column SUB=777: %v", m)
+		for _, r := range rows {
+			row := positionalPipeSprint(r)
+			parts := strings.Split(row, "|")
+			if len(parts) != 2 {
+				t.Fatalf("row %q is not the 2-column (ID, Y) projection", row)
+			}
+			if parts[1] == "777" {
+				t.Fatalf("x.SUB read the shadow outer column SUB=777: %v", row)
 			}
 		}
 	})
@@ -225,7 +236,7 @@ func TestFDB_ChainedUnnestOrdinal(t *testing.T) {
 		const q = `SELECT "ID", "Y" FROM T4, T4."SARR" AS "SUB", "SUB"."SUB" AS "Y"`
 		explain, rows := queryRows(t, q)
 		assertNestedOrdinalShape(t, explain)
-		got := collect(rows, "ID", "Y")
+		got := collect(rows)
 		want := []string{"10|1", "10|2", "10|3", "20|4", "20|5", "20|6"}
 		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
 			t.Fatalf("root-shadow chained rows (must ignore the shadow SUB=777)\n got=%v\nwant=%v", got, want)
@@ -236,7 +247,7 @@ func TestFDB_ChainedUnnestOrdinal(t *testing.T) {
 		const q = `SELECT "ID", "Y", "O" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" AT "O"`
 		explain, rows := queryRows(t, q)
 		assertNestedOrdinalShape(t, explain)
-		got := collect(rows, "ID", "Y", "O")
+		got := collect(rows)
 		// ID=10 elem0 SUB[1,2] → O 1,2; elem1 SUB[3] → O 1. ID=20 SUB[4,5,6] → O 1,2,3.
 		want := []string{"10|1|1", "10|2|2", "10|3|1", "20|4|1", "20|5|2", "20|6|3"}
 		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
@@ -247,7 +258,7 @@ func TestFDB_ChainedUnnestOrdinal(t *testing.T) {
 	t.Run("WITH ORDINALITY at BOTH links binds independent ordinals", func(t *testing.T) {
 		const q = `SELECT "ID", "Y", "OX", "OY" FROM T4, T4."SARR" AS "X" AT "OX", "X"."SUB" AS "Y" AT "OY"`
 		_, rows := queryRows(t, q)
-		got := collect(rows, "ID", "Y", "OX", "OY")
+		got := collect(rows)
 		// ID=10: elem OX=1 (SUB 1,2 → OY 1,2); elem OX=2 (SUB 3 → OY 1).
 		// ID=20: elem OX=1 (SUB 4,5,6 → OY 1,2,3).
 		want := []string{
@@ -308,7 +319,7 @@ func TestFDB_ChainedUnnestOrdinal(t *testing.T) {
 		if strings.Count(explain, "Explode(") != 3 {
 			t.Fatalf("3-link must have exactly 3 Explode legs; plan=%s", explain)
 		}
-		got := collect(rows, "ID", "Z")
+		got := collect(rows)
 		// ID=10 elem0 SUBSTRUCT[DEEP 7,8],[DEEP 9]; ID=20 elem SUBSTRUCT[DEEP 100].
 		want := []string{"10|7", "10|8", "10|9", "20|100"}
 		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
@@ -328,7 +339,7 @@ func TestFDB_ChainedUnnestOrdinal(t *testing.T) {
 		if !strings.Contains(explain, "Scan(T4, [=") {
 			t.Fatalf("3-link outer filter must SARG the scan; plan=%s", explain)
 		}
-		got := collect(rows, "ID", "Z")
+		got := collect(rows)
 		want := []string{"10|7", "10|8", "10|9"}
 		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
 			t.Fatalf("3-link outer-filter rows\n got=%v\nwant=%v", got, want)

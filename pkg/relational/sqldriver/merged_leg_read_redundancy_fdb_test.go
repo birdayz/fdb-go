@@ -145,7 +145,7 @@ func TestFDB_MergedLegBinding_ReaderShapeIsRedundant(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, fmt.Sprintf("%v", executor.RowValue(r)))
+				out = append(out, positionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		}); eerr != nil {

@@ -12594,11 +12594,11 @@ None is speculative: each was re-verified against the tree before booking.
   pass. It is listed here because it is the same defect as this item (an untyped
   quantifier read as something it is not) and should be fixed with it.
 
-- [ ] **CQ-64 (S/M, test-fidelity residue: 14 files still assert rows through a
-  name-keyed projection) — convert the remaining `unnestSprint(executor.RowValue(r))`
-  row renderings to a positional renderer.** Not a product defect: the row VALUES
-  those files assert are correct. What is missing is that the assertions cannot see
-  the failure they exist to police.
+- [x] **CQ-64 (S/M, test-fidelity residue: files asserting rows through a
+  name-keyed projection) — convert the remaining `executor.RowValue(r)` row
+  renderings to a positional renderer.** DONE. Not a product defect: the row
+  VALUES those files asserted were correct. What was missing is that the
+  assertions could not see the failure they exist to police.
 
   `executor.RowValue` projects a PositionalRow through `positionalToMap` (see the
   lossiness note at its definition), which loses slot ORDER and collapses duplicate
@@ -12609,30 +12609,71 @@ None is speculative: each was re-verified against the tree before booking.
   `TestPositionalRenderersSeeAPermutation` in pkg/relational/sqldriver pins that
   blindness as a measured fact.
 
-  Two rounds are already done and are the pattern to follow. The eight `map[...]`
-  sites converted to `positionalPipeSprint` (values in slot order); the six
-  sorted-map-key `k=v|k=v` loops converted to `positionalNamedPipeSprint` (names
-  kept, slot order). Prefer the NAMED renderer: keeping the names lets the
-  expectation rewrite be verified as a pure slot REORDERING (same multiset of
-  NAME=value pairs per row, same multiset of rows) instead of resting on a value
-  multiset plus a manual read of the SELECT list. Do the rewrite with that verifier
-  in the loop and refuse any diff it cannot prove is a reordering — a rewrite that
-  silently changes a value is precisely the failure the conversion is meant to
-  expose.
+  **What was converted.** All 15 named files, plus 8 literals in three files the
+  inventory had missed (struct_multisegment_unnest 3,
+  merged_leg_reader_shape_fixture 3, merged_leg_binding_live_shape 2).
+  **573 expectations**, from **196 distinct rows**.
 
-  The files, with their multi-key `map[...]` expectation counts (measured):
-  star_body_cte_join_leg_fdb_test.go 128, chained_unnest_predicate_pushdown_fdb_test.go 82,
-  chained_unnest_3link_filtered_ordinal_fdb_test.go 62, nested_left_box_chained_unnest_fdb_test.go 52,
-  buried_chained_rotation_fdb_test.go 52, exists_scope_shadow_fdb_test.go 41,
-  fullbox_chained_spine_fdb_test.go 29, cross_leg_duplicate_column_box_unnest_fdb_test.go 27,
-  baretwin_gather_fdb_test.go 26, orderby_gather_fdb_test.go 20, withinbox_dup_fdb_test.go 19,
-  buried_element_predicate_fdb_test.go 10, nullsupply_barrier_fdb_test.go 9,
-  fork_colliding_subfield_fdb_test.go 6, projected_exists_enclosure_lift_fdb_test.go 1
-  (all under pkg/relational/sqldriver/). ~564 expectations.
+  The per-file counts re-measured to the inventory's numbers with ONE exception:
+  baretwin_gather is 27, not 26. The inventory was built with a grep for a literal
+  opening `"map[`, which only sees a DOUBLE-QUOTED literal; that file has one
+  expectation written as a BACKTICK raw string. The rewrite was driven off the Go
+  AST rather than a grep, so it saw all 27 — and the item's own DONE grep would
+  have called the file finished while that literal was still there. Corpus-wide
+  both the double-quoted and the backtick-inclusive greps are now zero, and no
+  test file renders a multi-slot row through `executor.RowValue` any more.
 
-  DONE when `grep -rn "executor.RowValue(" pkg/relational/sqldriver/*_test.go`
-  returns only the renderer definitions themselves and sites whose rows are
-  single-slot (no order to assert).
+  **How it was verified.** Refusal-style, machine-checked, log at
+  `pkg/relational/sqldriver/testdata/cq64-verifier.log`. Each new
+  `NAME=value|...` string was parsed back, collapsed LAST-WINS by name (what
+  `positionalToMap` does) and re-rendered in Go's map form; that had to be
+  BYTE-IDENTICAL to the literal it replaced, or the rewrite was refused. Two
+  distinct positional rows collapsing to one map rendering was also a refusal —
+  that is the "the old expectation was already ambiguous" case. **196 proven, 0
+  refused, 0 collisions, 0 unmapped.** So no expectation was WRONG under the
+  collapse; 39 of the 196 rows had a slot order differing from the alphabetical
+  one, i.e. 39 rows' order was previously unasserted and now is.
+
+  **Finding 1 — the duplicate-name row, and why it was pinned only by a COUNT.**
+  Exactly one shape in the corpus projects repeated output names:
+  `buried_chained_rotation`'s `SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS
+  "Y", T4 AS "T4C"`, labels `[ID SARR SCARR SUB ID SARR SCARR SUB X Y]` — T4's
+  four columns twice. The map form collapsed four of its ten slots, so the test
+  asserted the label list and `len(rows) == 12` and nothing else; a count cannot
+  distinguish a correctly bound leg pair from a swapped one. The 12 rows' values
+  are now asserted in slot order.
+
+  **Finding 2 — those rows could not have been asserted before, for a second
+  reason.** Their slots hold protobuf messages, and fmt renders those through
+  prototext, whose whitespace `internal/detrand` varies ON PURPOSE, seeded from
+  the binary. Measured directly: two runs of the same test, differing only in an
+  unrelated edit, produced those 12 rows with different space widths and the
+  other 184 rows byte-identical. A literal written against that passes locally
+  and fails on the next rebuild. `unnestSprint` now collapses runs of spaces in
+  the non-string branch (string slots are returned verbatim and never reach it),
+  pinned by `TestUnnestSprintIsStableAcrossBuilds`.
+
+  **Finding 3 — a THIRD blind form the inventory did not count.** Three files
+  rendered rows by indexing the name-keyed map with a hand-written column list
+  (`fmt.Sprintf("%v|%v", m["ID"], m["Y"])`, `collect(rows, "ID", "Y")`). It
+  produces the same `a|b` string while asserting nothing about where the values
+  sat, and it lets the assertion choose a display order independent of the SELECT
+  list. Converted in `chained_unnest_ordinal` (6 sites, expectations UNCHANGED —
+  which is now proof that slot order equals SELECT order there, previously
+  unasserted) and `lateral_unnest_chain` (7 sites, two expectations changed:
+  `SELECT "V"."Y", "T2"."ID"` was being rendered `m["T2.ID"]|m["V.Y"]`, the
+  REVERSE of its own SELECT list, and the shadow-precedence site rendered only
+  the Y column of a two-column projection, leaving ID unasserted).
+
+  **Remainder (measured, honest).** Three files still read row columns by NAME
+  for TYPED assertions rather than for rendering — `array_unnest_struct` (2
+  multi-column sites, `m["ID"]`/`m["X"]`/`m["O"]`),
+  `aggregate_index_signed_zero_range_set` (1 site, `G`/`W`/`SUM(VAL)` with type
+  asserts) and `vector_multipartition_e2e` (1 site, `ID`/`REGION`). Four sites
+  total. They carry the same order-blindness, but converting them needs a TYPED
+  slot accessor (the value, not its rendering), which no test helper provides
+  yet; every other `executor.RowValue` site left in the package reads a SINGLE
+  named column, where there is no order to assert.
 
 - [ ] **CQ-66 (M/L, gated) — the unnest ELEMENT quantifier states no type, and
   750 positional-merge slots inherit that.** MEASURED over the real-FDB corpus

@@ -2,7 +2,6 @@ package sqldriver_test
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -137,7 +136,7 @@ func TestFDB_ProjectedExistsEnclosureLift(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, fmt.Sprintf("%v", executor.RowValue(r)))
+				out = append(out, positionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -156,7 +155,7 @@ func TestFDB_ProjectedExistsEnclosureLift(t *testing.T) {
 		if err != nil {
 			t.Fatalf("direct enclosed-unnest must plan+run (gathered path): %v", err)
 		}
-		if len(rows) != 1 || rows[0] != "map[X:7]" {
+		if len(rows) != 1 || rows[0] != "X=7" {
 			t.Fatalf("direct enclosed-unnest rows = %v, want [map[X:7]] (the gathered, spanning-conjunct-correct row)", rows)
 		}
 	})
