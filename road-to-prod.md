@@ -206,12 +206,20 @@ buckets and together are 56% of the list.
 Two further corrections to the migration's bookkeeping, both found by reading the ratchet against
 `TODO.md`:
 
-- **CQ-52 is not done.** #540 landed the PROJECTION channel only; `TODO.md:10541` is still
-  unchecked, and the live residual is explicit in the debt entries (`cascades_translator.go:5742`
-  and `:5744` "retire when the remaining `LogicalProject` producers carry `ProjectionRefs`";
-  `:6070`/`:6102` "retires when the last caller stops slicing a rendered name"). The previous
-  revision's "CQ-52 retires four translator sites" arithmetic no longer holds — the call-boundary
-  taint changed what those four sites are.
+- **CQ-52 is not done, but its residual is not what this page said.** #540 landed the PROJECTION
+  channel; the parsed channels (ORDER BY keys, GROUP BY keys, aggregate operands) followed. The
+  four debt keys this page cited (`cascades_translator.go:5742`/`:5744`/`:6070`/`:6102`) NO LONGER
+  EXIST — the surviving entries carrying those reason strings are `:5811`, `:5813`, `:6139`,
+  `:6171`. More importantly the framing was wrong: the residual is **one behaviour decision**, not
+  four line-keyed sites. `cascades_translator.go:6218-6237` states it and deliberately leaves it
+  open — *should a star-projected body column be leg-addressable at all?* The star-body
+  normalization mints output labels with no parse tree behind them, so their absent segment triple
+  is STRUCTURAL and permanent; the remaining producers are machinery mints whose names are
+  aggregate renderings (`MAX(E.SALARY)`), where a dot is deliberately not a qualifier. **STOPPED on
+  an owner decision** — Java offers no guidance because it has no projection whose output labels
+  lack an `Identifier` (`Identifier.java:34-58`, `IdentifierVisitor.java:56-64`). Caveat recorded
+  at `:6239-6250`: nothing instruments the split population, so the "110 → 0" figures are scratch
+  measurements, not instrument readings.
 - **CQ-53 is marked done but has a surviving producer.** `TODO.md:10590` closes it as subsumed by
   CQ-67 (#549) "carrying no separate remainder", while
   `pkg/docscheck/field_name_decision_test.go:447` pins `cascades_translator.go:3598` as "dotted:
@@ -220,12 +228,34 @@ Two further corrections to the migration's bookkeeping, both found by reading th
   nothing. **This is a real gap between a closed checkbox and the gate.** Now booked as **CQ-79**,
   and deliberately NOT folded into CQ-68 — CQ-68 is a different axis (94 bare untyped QOVs, not a
   display name manufactured into a row key), and folding them would let either close while the
-  other's residue survived. Re-verified at `a1d281a63`: the pin stands verbatim.
+  other's residue survived. Re-verified at `a1d281a63`: the pin stands verbatim. **Re-verified
+  again at `041838856`: the entry has moved to `cascades_translator.go:3667` (test line `:454`),
+  and the item's `S/M` sizing is REFUTED — see below.**
 
 RFC-197 itself is **IN IMPLEMENTATION** (`rfcs/197-column-identity-is-an-ordinal.md:3`): step 0 and
-items 2, 3, 5 and 6 have landed; the remaining items are unstarted and still gated. **CQ-68**
-(`TODO.md:12347`, open, gated on CQ-67) is the largest addressable block: 94 FlatMap result values
-are a bare untyped QOV where Java types unconditionally. It carries a REOPEN TRIGGER on CQ-67.
+items 2, 3, 5 and 6 have landed; the remaining items are unstarted and still gated.
+
+### The RFC-197 tail, re-verified at `041838856` — none of the four is startable as a local edit
+
+The sequence below (item 4) booked CQ-52's producers, then CQ-51 and CQ-79, then CQ-68. Verifying
+each against the tree found **no genuinely-open local work in any of them**; every one is either an
+owner decision or gated on a Graefe-reviewed RFC. Each item's TODO entry now carries the full
+measurement. In summary:
+
+| Item | Verified state at `041838856` |
+|---|---|
+| CQ-52 | **STOP — owner behaviour decision.** Parsed channels are done; residual is the star-body leg-addressability question at `cascades_translator.go:6218-6237`, plus structural mints that correctly carry no segments. Its two "migratable" producers are not: their names come from `buildPostAggregateProjection`, where a dot is deliberately not a qualifier |
+| CQ-51 | **STOP — Graefe-gated RFC**, but the diagnosis is corrected and the RFC is now a PORT, not a design. Java DOES separate "constraint widened" from "re-push required" (`CascadesRule.java:66-77`, `CascadesPlanner.java:891-908`, `ConstraintsMap.java:246-261`), and Go already contains half of it: `expressions/constraints_map.go:114` `IsExploredForAttributes` is a faithful port whose only callers are its own tests. `ConstraintDependencies` appears nowhere in `pkg/` |
+| CQ-79 | **BLOCKED, and the `S/M` sizing is refuted.** The ordinal twin already exists (`cascades_translator.go:3849`) and is already taken wherever the seed is windowed; every surviving call of the name mint sits in the `!seedWindowed` arm, whose merged row is name-keyed BY CONSTRUCTION. Converting the mint alone strands the read (`:3736-3738`). The work is lifting `unnestExistsSeedSafe`'s scope gate, which `:3841-3843` couples to the executor's below-FOD hoist — the SAME `bindMergedOuterLegs` widening CQ-68 owns. CQ-79 and CQ-68 are two axes of one piece of work |
+| CQ-68 | **STOP — Graefe-gated RFC.** Premise strengthens: the count is **102**, not 94 (`sqldriver/embedded_fdb_test.go:253-266`; denominator 572, ACCEPT 160, merge still hard 0). But "type it at the FlatMap" is the wrong port — Java's `RecordQueryFlatMapPlan` also flows `selectExpression.getResultValue()` verbatim (`ImplementNestedLoopJoinRule.java:187,201,214`); the typing happens upstream at `GraphExpansion.java:401`, and is structural (`QuantifiedObjectValue.of` has no untyped overload) |
+
+**One defect from this pass IS fixed**, because it would have made CQ-68 unfalsifiable: the census
+witness that separates typed from untyped result values printed `typed=%t` from `Typ != nil`, which
+no constructible QOV can make false (`NewQuantifiedObjectValue` stamps `UnknownType`;
+`NewQuantifiedObjectValueOfType` degrades nil to it; `UnknownType` is a non-nil `*PrimitiveType`).
+It reported `typed=true` for all 102, so a typing sweep would have read as complete on the day it
+started with the whole population untouched. Now `quantifiedObjectValueIsTyped`, pinned in both
+directions by `TestFoldStep1Census_BareQOVWitnessSeparatesTypedFromUntyped`.
 
 ## Watch-list — pinned divergences a prod user must be told about
 
@@ -862,8 +892,15 @@ rather than what it *held*, leaking charge for the statement's life.
 3. **~~CQ-80~~ DONE** — every watch-list entry now carries the committed test the section contract
    claims for it (entries 2, 4, 8 and 12 closed; 2 and 12 REFUTED by the measurement). The list is
    handable to an adopter.
-4. **RFC-197 tail**, sequenced behind the machinery each stop waits on: CQ-52's remaining producers,
-   then CQ-51 and CQ-79 (the CQ-53 mint), then CQ-68 (the largest block). All review-gated.
+4. **RFC-197 tail — RE-SEQUENCED, because verification refuted the old order.** It read "CQ-52's
+   remaining producers, then CQ-51 and CQ-79 (the CQ-53 mint), then CQ-68". CQ-52 has no remaining
+   migratable producers, and CQ-79 is not a local mint rewrite — it is one axis of CQ-68's executor
+   widening. The real order is: **(a) an owner ruling on CQ-52's star-body leg-addressability
+   question** (one decision, blocks nothing else); **(b) CQ-51's RFC**, which is now a bounded port
+   of `getConstraintDependencies` + `ReExploreExpression` onto Go's already-present
+   `IsExploredForAttributes`, and which unblocks the value-keyed `ReferencedFields` conversion;
+   **(c) CQ-68 and CQ-79 TOGETHER**, as the two axes of the `bindMergedOuterLegs` widening. All
+   review-gated; see the Tier-3 table above for the per-item measurement.
 5. **CQ-46**, index candidacy inverted to opt-in per maintainer factory, with the adjacent opt-out
    leaks measured for reachability. Query-engine gated.
 6. **CQ-75 — DONE via RFC-208.** `v IN (-0.0, 0.0)` now returns both signs in either element order;
