@@ -21,7 +21,17 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <unordered_map>
+#include <utility>
 #include <algorithm>
+
+// TransactionTagMap<V> is std::unordered_map<TransactionTag, V>, which serializes
+// as a vector of std::pair<TransactionTag, V> — and std::pair has
+// serializable_traits, so each entry is a flatbuffer object with two slots
+// (slot 0 = tag bytes, slot 1 = value). Naming the pair instantiations here lets
+// the macros below register them without tripping over the template comma.
+using TransactionTagCountPair = std::pair<TransactionTag, uint32_t>;
+using TransactionTagThrottlePair = std::pair<TransactionTag, ClientTagThrottleLimits>;
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -71,6 +81,13 @@ REGISTER_GO_TYPE(ReplyPromise<CachedSerialization<ClientDBInfo>>, "ReplyPromise"
 REGISTER_GO_TYPE(ReplyPromise<StorageMetrics>, "ReplyPromise");
 REGISTER_GO_TYPE(ReplyPromise<SplitRangeReply>, "ReplyPromise");
 
+// Entries of a TransactionTagMap. Without these the map degrades to the
+// VectorLike fallback below, which emits an opaque []byte that cannot express a
+// vector of objects — silently wrong for any non-empty map.
+REGISTER_GO_TYPE(ClientTagThrottleLimits, "ClientTagThrottleLimits");
+REGISTER_GO_TYPE(TransactionTagCountPair, "TransactionTagCount");
+REGISTER_GO_TYPE(TransactionTagThrottlePair, "TransactionTagThrottle");
+
 // ============================================================
 // 2. FieldNames — explicit per-type, indexed by field position
 // ============================================================
@@ -107,6 +124,12 @@ REGISTER_FIELD_NAMES(CommitID, "version", "txnBatchId", "metadataVersion", "conf
 REGISTER_FIELD_NAMES(OpenDatabaseCoordRequest, "issues", "supportedVersions", "traceLogGroup", "knownClientInfoID", "clusterKey", "coordinators", "reply", "hostnames", "internal");
 REGISTER_FIELD_NAMES(CommitTransactionRef, "readConflictRanges", "writeConflictRanges", "mutations", "readSnapshot", "report_conflicting_keys", "lock_aware", "read_conflict_ranges_disabled", "write_conflict_ranges_disabled");
 REGISTER_FIELD_NAMES(KeyValueRef, "key", "value");
+// ClientTagThrottleLimits::serialize sends the expiration as a RELATIVE duration
+// (expiration - now()) to stay immune to clock skew between client and proxy, so
+// the wire field is "duration", not "expiration".
+REGISTER_FIELD_NAMES(ClientTagThrottleLimits, "tpsRate", "duration");
+REGISTER_FIELD_NAMES(TransactionTagCountPair, "tag", "count");
+REGISTER_FIELD_NAMES(TransactionTagThrottlePair, "tag", "limits");
 REGISTER_FIELD_NAMES(TenantInfo, "tenantId", "token", "arena");
 REGISTER_FIELD_NAMES(MutationRef, "mutType", "param1", "param2");
 REGISTER_FIELD_NAMES(Error, "errorCode");
@@ -231,6 +254,21 @@ template <class T> struct VectorElementGoType {
 template <class T, VecSerStrategy S> struct VectorElementGoType<VectorRef<T, S>> {
     static constexpr bool registered = GoTypeName<T>::registered;
     static const char* name() { return GoTypeName<T>::name(); }
+};
+// std::unordered_map / std::map are vector-like with value_type std::pair<K,V>
+// (flat_buffers.h). Their element is the pair, so resolve the Go name through it
+// rather than falling through to the opaque []byte VectorLike case.
+template <class K, class V, class H, class P, class A>
+struct VectorElementGoType<std::unordered_map<K, V, H, P, A>> {
+    using Elem = std::pair<K, V>;
+    static constexpr bool registered = GoTypeName<Elem>::registered;
+    static const char* name() { return GoTypeName<Elem>::name(); }
+};
+template <class K, class V, class C, class A>
+struct VectorElementGoType<std::map<K, V, C, A>> {
+    using Elem = std::pair<K, V>;
+    static constexpr bool registered = GoTypeName<Elem>::registered;
+    static const char* name() { return GoTypeName<Elem>::name(); }
 };
 
 // Classify a field type into FieldKind.

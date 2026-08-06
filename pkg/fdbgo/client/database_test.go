@@ -200,7 +200,7 @@ func TestAddConflictRanges(t *testing.T) {
 
 	// tx1: add explicit read conflict range, then write a different key.
 	tx1 := db.CreateTransaction()
-	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}

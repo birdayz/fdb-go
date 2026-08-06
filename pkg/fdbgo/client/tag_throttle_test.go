@@ -1,57 +1,41 @@
 package client
 
 import (
-	"encoding/binary"
-	"math"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
+
+// The GRV reply's tagThrottleInfo is TransactionTagMap<ClientTagThrottleLimits>
+// — an unordered_map, which flat_buffers.h serializes as a VECTOR OF PAIR
+// OBJECTS, not a length-prefixed byte blob. These tests therefore exercise the
+// decoded entries; the byte framing itself is pinned against real C++ output by
+// the ground-truth tests in pkg/fdbgo/wire/types.
+//
+// The tests these replaced hand-built a `count | tagLen | tag | f64 | f64` byte
+// stream and asserted the old parser round-tripped it. That layout is not what a
+// proxy sends, so the suite was green against an encoding the server never uses
+// — self-consistency, not coverage.
 
 func TestParseTagThrottleInfoEmpty(t *testing.T) {
 	t.Parallel()
-	// nil data
 	if got := parseTagThrottleInfo(nil); got != nil {
-		t.Fatalf("expected nil, got %v", got)
+		t.Fatalf("expected nil for nil entries, got %v", got)
 	}
-	// too short
-	if got := parseTagThrottleInfo([]byte{1, 2}); got != nil {
-		t.Fatalf("expected nil for short data, got %v", got)
-	}
-	// count=0
-	data := make([]byte, 4)
-	binary.LittleEndian.PutUint32(data, 0)
-	if got := parseTagThrottleInfo(data); got != nil {
-		t.Fatalf("expected nil for count=0, got %v", got)
+	if got := parseTagThrottleInfo([]types.TransactionTagThrottle{}); got != nil {
+		t.Fatalf("expected nil for empty entries, got %v", got)
 	}
 }
 
 func TestParseTagThrottleInfoSingleTag(t *testing.T) {
 	t.Parallel()
-	tag := "myTag"
-	tpsRate := 100.0
-	duration := 5.0 // 5 seconds
-
-	// Build wire data: count(4) + tagLen(4) + tag(5) + tpsRate(8) + duration(8)
-	data := make([]byte, 4+4+len(tag)+8+8)
-	off := 0
-	binary.LittleEndian.PutUint32(data[off:], 1) // count
-	off += 4
-	binary.LittleEndian.PutUint32(data[off:], uint32(len(tag))) // tagLen
-	off += 4
-	copy(data[off:], tag) // tag bytes
-	off += len(tag)
-	binary.LittleEndian.PutUint64(data[off:], math.Float64bits(tpsRate)) // tpsRate
-	off += 8
-	binary.LittleEndian.PutUint64(data[off:], math.Float64bits(duration)) // duration
-	// off += 8
-
 	before := time.Now()
-	result := parseTagThrottleInfo(data)
+	result := parseTagThrottleInfo([]types.TransactionTagThrottle{
+		{Tag: []byte("myTag"), Limits: types.ClientTagThrottleLimits{TpsRate: 100.0, Duration: 5.0}},
+	})
 	after := time.Now()
 
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
 	if len(result) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(result))
 	}
@@ -59,113 +43,50 @@ func TestParseTagThrottleInfoSingleTag(t *testing.T) {
 	if !ok {
 		t.Fatal("missing 'myTag' entry")
 	}
-	if entry.tpsRate != tpsRate {
-		t.Fatalf("expected tpsRate=%f, got %f", tpsRate, entry.tpsRate)
+	if entry.tpsRate != 100.0 {
+		t.Errorf("tpsRate = %v, want 100.0", entry.tpsRate)
 	}
-	// Expiration should be ~5 seconds from now (between before+5s and after+5s).
-	expectedMin := before.Add(5 * time.Second)
-	expectedMax := after.Add(5 * time.Second)
-	if entry.expiration.Before(expectedMin) || entry.expiration.After(expectedMax) {
-		t.Fatalf("expiration %v not in expected range [%v, %v]", entry.expiration, expectedMin, expectedMax)
+	// ClientTagThrottleLimits carries a RELATIVE duration on the wire; the
+	// parser re-anchors it to the local clock, so the expiration must land
+	// 5s after the instant the call was made.
+	if entry.expiration.Before(before.Add(5*time.Second)) || entry.expiration.After(after.Add(5*time.Second)) {
+		t.Errorf("expiration %v not within [%v, %v]", entry.expiration,
+			before.Add(5*time.Second), after.Add(5*time.Second))
 	}
 }
 
 func TestParseTagThrottleInfoMultipleTags(t *testing.T) {
 	t.Parallel()
-	tags := []struct {
-		name     string
-		tpsRate  float64
-		duration float64
-	}{
-		{"tag_a", 50.0, 3.0},
-		{"tag_b", 0.0, 10.0},
-		{"x", 200.0, 0.5},
-	}
-
-	// Calculate total size.
-	size := 4 // count
-	for _, tg := range tags {
-		size += 4 + len(tg.name) + 8 + 8
-	}
-	data := make([]byte, size)
-	off := 0
-	binary.LittleEndian.PutUint32(data[off:], uint32(len(tags)))
-	off += 4
-	for _, tg := range tags {
-		binary.LittleEndian.PutUint32(data[off:], uint32(len(tg.name)))
-		off += 4
-		copy(data[off:], tg.name)
-		off += len(tg.name)
-		binary.LittleEndian.PutUint64(data[off:], math.Float64bits(tg.tpsRate))
-		off += 8
-		binary.LittleEndian.PutUint64(data[off:], math.Float64bits(tg.duration))
-		off += 8
-	}
-
-	result := parseTagThrottleInfo(data)
+	result := parseTagThrottleInfo([]types.TransactionTagThrottle{
+		{Tag: []byte("alpha"), Limits: types.ClientTagThrottleLimits{TpsRate: 1.5, Duration: 1.0}},
+		{Tag: []byte("beta"), Limits: types.ClientTagThrottleLimits{TpsRate: 2.5, Duration: 2.0}},
+		{Tag: []byte("gamma"), Limits: types.ClientTagThrottleLimits{TpsRate: 3.5, Duration: 3.0}},
+	})
 	if len(result) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(result))
 	}
-	for _, tg := range tags {
-		entry, ok := result[tg.name]
+	for tag, wantRate := range map[string]float64{"alpha": 1.5, "beta": 2.5, "gamma": 3.5} {
+		entry, ok := result[tag]
 		if !ok {
-			t.Fatalf("missing tag %q", tg.name)
+			t.Fatalf("missing %q entry", tag)
 		}
-		if entry.tpsRate != tg.tpsRate {
-			t.Fatalf("tag %q: expected tpsRate=%f, got %f", tg.name, tg.tpsRate, entry.tpsRate)
+		if entry.tpsRate != wantRate {
+			t.Errorf("%s tpsRate = %v, want %v", tag, entry.tpsRate, wantRate)
 		}
 	}
 }
 
-func TestParseTagThrottleInfoTruncated(t *testing.T) {
+// An empty tag is a legal StringRef; it must not be confused with "no entry".
+func TestParseTagThrottleInfoEmptyTagName(t *testing.T) {
 	t.Parallel()
-	// count=2 but only 1 entry's worth of data.
-	tag := "abc"
-	data := make([]byte, 4+4+len(tag)+8+8)
-	off := 0
-	binary.LittleEndian.PutUint32(data[off:], 2) // claim 2 entries
-	off += 4
-	binary.LittleEndian.PutUint32(data[off:], uint32(len(tag)))
-	off += 4
-	copy(data[off:], tag)
-	off += len(tag)
-	binary.LittleEndian.PutUint64(data[off:], math.Float64bits(10.0))
-	off += 8
-	binary.LittleEndian.PutUint64(data[off:], math.Float64bits(1.0))
-
-	// Should parse the first entry and stop gracefully.
-	result := parseTagThrottleInfo(data)
+	result := parseTagThrottleInfo([]types.TransactionTagThrottle{
+		{Tag: nil, Limits: types.ClientTagThrottleLimits{TpsRate: 7.0, Duration: 1.0}},
+	})
 	if len(result) != 1 {
-		t.Fatalf("expected 1 entry from truncated data, got %d", len(result))
+		t.Fatalf("expected 1 entry, got %d", len(result))
 	}
-}
-
-func TestParseTagThrottleInfoTruncatedAfterTagLen(t *testing.T) {
-	t.Parallel()
-	// count=1, tagLen=100 but only 3 bytes of tag data — tagLen exceeds available bytes.
-	data := make([]byte, 4+4+3)                  // count + tagLen + 3 tag bytes (need 100)
-	binary.LittleEndian.PutUint32(data[0:], 1)   // count=1
-	binary.LittleEndian.PutUint32(data[4:], 100) // tagLen=100 (but only 3 bytes available)
-	result := parseTagThrottleInfo(data)
-	if len(result) != 0 {
-		t.Fatalf("expected 0 entries from truncated tag data, got %d", len(result))
-	}
-}
-
-func TestParseTagThrottleInfoTruncatedAfterTag(t *testing.T) {
-	t.Parallel()
-	// count=1, tag="ab" (2 bytes), but rate/duration data truncated after tag bytes.
-	tag := "ab"
-	data := make([]byte, 4+4+len(tag)+4) // count + tagLen + tag + 4 bytes (need 16)
-	off := 0
-	binary.LittleEndian.PutUint32(data[off:], 1)
-	off += 4
-	binary.LittleEndian.PutUint32(data[off:], uint32(len(tag)))
-	off += 4
-	copy(data[off:], tag)
-	result := parseTagThrottleInfo(data)
-	if len(result) != 0 {
-		t.Fatalf("expected 0 entries from truncated rate data, got %d", len(result))
+	if entry, ok := result[""]; !ok || entry.tpsRate != 7.0 {
+		t.Fatalf("empty-named tag not preserved: %#v", result)
 	}
 }
 

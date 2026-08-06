@@ -39,6 +39,7 @@ written with or without the leading setter prefix.
 `EnsureMutationCapacity`, `WriteConflictsDisabled`, `AccessSystemKeys`,
 `ReadSystemKeys`, `LockAware`, `ReadLockAware`, `SizeLimit`, `MaxRetryDelay`,
 `SnapshotRywEnable`, `SnapshotRywDisable`, `UseGrvCache`, `SkipGrvCache`, `Tag`,
+`AutoThrottleTag`,
 `BypassUnreadable`, `SpanParent`.
 
 ### Rejected — returns `*UnsupportedOptionError` (FDB `invalid_option`, 2007)
@@ -69,7 +70,7 @@ These are tracing/hints/priority, or relaxations whose absence keeps the
 durability / strong consistency). They are accepted as no-ops:
 
 `DebugTransactionIdentifier`, `LogTransaction`, `TransactionLoggingEnable`,
-`TransactionLoggingMaxFieldLength`, `AutoThrottleTag`,
+`TransactionLoggingMaxFieldLength`,
 `DebugRetryLogging`, `IncludePortInAddress`, `ServerRequestTracing`,
 `ReadAheadDisable`, `ReadPriorityHigh`, `ReadPriorityLow`, `ReadPriorityNormal`,
 `ReadServerSideCacheEnable`, `ReadServerSideCacheDisable`, `UseProvisionalProxies`,

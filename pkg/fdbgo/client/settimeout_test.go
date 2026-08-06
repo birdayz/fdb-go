@@ -39,7 +39,7 @@ func TestSetTimeout_BoundsHungRead(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("warm read: %v", err)
 	}
-	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestSetTimeout_BoundsHungPipelinedRead(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("warm read: %v", err)
 	}
-	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestSetTimeout_BoundsHungLocate(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("warm read: %v", err)
 	}
-	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}

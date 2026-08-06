@@ -37,14 +37,14 @@ var GetReadVersionRequestTemplate = wire.NewMessageTemplate(
 const GetReadVersionRequestMaxAlign = 8
 
 type GetReadVersionRequest struct {
-	TransactionCount uint32       // slot 0
-	Flags            uint32       // slot 1
-	Tags             []byte       // slot 2
-	HasDebugID       bool         // slot 3, optional tag
-	DebugID          [16]byte     // slot 4, optional scalar value
-	Reply            ReplyPromise // slot 5, nested
-	SpanContext      SpanContext  // slot 6, nested
-	MaxVersion       int64        // slot 7
+	TransactionCount uint32                // slot 0
+	Flags            uint32                // slot 1
+	Tags             []TransactionTagCount // slot 2, vector of struct
+	HasDebugID       bool                  // slot 3, optional tag
+	DebugID          [16]byte              // slot 4, optional scalar value
+	Reply            ReplyPromise          // slot 5, nested
+	SpanContext      SpanContext           // slot 6, nested
+	MaxVersion       int64                 // slot 7
 }
 
 func (m *GetReadVersionRequest) UnmarshalFromReader(r *wire.Reader) {
@@ -54,8 +54,15 @@ func (m *GetReadVersionRequest) UnmarshalFromReader(r *wire.Reader) {
 	if r.FieldPresent(GetReadVersionRequestSlotFlags) {
 		m.Flags = r.ReadUint32(GetReadVersionRequestSlotFlags)
 	}
-	if r.FieldPresent(GetReadVersionRequestSlotTags) {
-		m.Tags = r.ReadBytes(GetReadVersionRequestSlotTags)
+	if count, err := r.ReadVectorCount(GetReadVersionRequestSlotTags); err == nil && count > 0 {
+		m.Tags = make([]TransactionTagCount, 0, count)
+		for i := 0; i < count; i++ {
+			if elemR, err := r.ReadVectorElementReader(GetReadVersionRequestSlotTags, i); err == nil {
+				var elem TransactionTagCount
+				elem.UnmarshalFromReader(elemR)
+				m.Tags = append(m.Tags, elem)
+			}
+		}
 	}
 	if r.FieldPresent(GetReadVersionRequestSlotDebugID) && r.ReadUint8(GetReadVersionRequestSlotDebugID) > 0 {
 		copy(m.DebugID[:], r.ReadRelOffRaw(GetReadVersionRequestSlotDebugID+1, 16))
@@ -83,8 +90,15 @@ func (m *GetReadVersionRequest) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(GetReadVersionRequestSlotFlags) {
 		m.Flags = r.ReadUint32(GetReadVersionRequestSlotFlags)
 	}
-	if r.FieldPresent(GetReadVersionRequestSlotTags) {
-		m.Tags = r.ReadBytes(GetReadVersionRequestSlotTags)
+	if count, err := r.ReadVectorCount(GetReadVersionRequestSlotTags); err == nil && count > 0 {
+		m.Tags = make([]TransactionTagCount, 0, count)
+		for i := 0; i < count; i++ {
+			if elemR, err := r.ReadVectorElementReader(GetReadVersionRequestSlotTags, i); err == nil {
+				var elem TransactionTagCount
+				elem.UnmarshalFromReader(elemR)
+				m.Tags = append(m.Tags, elem)
+			}
+		}
 	}
 	if r.FieldPresent(GetReadVersionRequestSlotDebugID) && r.ReadUint8(GetReadVersionRequestSlotDebugID) > 0 {
 		copy(m.DebugID[:], r.ReadRelOffRaw(GetReadVersionRequestSlotDebugID+1, 16))
@@ -106,7 +120,20 @@ func (m *GetReadVersionRequest) UnmarshalFDB(data []byte) error {
 // Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *GetReadVersionRequest) precomputeSize(ps *wire.PrecomputeSize) int {
-	ps.VisitDynamicSize(len(m.Tags))
+	{
+		n := len(m.Tags)
+		if n > 0 {
+			self := ps.GetMessageWriter(n * 4)
+			for i := 0; i < n; i++ {
+				m.Tags[i].precomputeSize(ps)
+			}
+			start := wire.RightAlign(ps.CurrentBufferSize+n*4, 4) + 4
+			ps.Write(start)             // count at start (4 bytes)
+			self.WriteToAt(ps, start-4) // reloff array at start-4
+		} else {
+			ps.VisitDynamicSize(0)
+		}
+	}
 	if m.HasDebugID {
 		ps.Write(ps.CurrentBufferSize + 16)
 	}
@@ -127,7 +154,21 @@ func (m *GetReadVersionRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStar
 	var debugIDOff int
 	var replyStart int
 	var spanContextStart int
-	tagsOff, _ = wb.VisitDynamicSize(m.Tags)
+	{
+		n := len(m.Tags)
+		if n > 0 {
+			self := wb.GetMessageWriter(n*4, false)
+			for i := 0; i < n; i++ {
+				elemStart := m.Tags[i].writeToBuffer(wb, vtableStart, tmpl)
+				self.WriteRelativeOffset(elemStart, i*4)
+			}
+			wb.WriteUint32(uint32(n), self.FinalLocation+4)
+			self.WriteToAt(self.FinalLocation)
+			tagsOff = wb.CurrentBufferSize
+		} else {
+			tagsOff, _ = wb.VisitDynamicSize(nil)
+		}
+	}
 	if m.HasDebugID {
 		wb.Write(m.DebugID[:], wb.CurrentBufferSize+16)
 		debugIDOff = wb.CurrentBufferSize

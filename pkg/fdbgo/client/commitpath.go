@@ -463,6 +463,13 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID, mu
 		TenantInfo:  types.TenantInfo{TenantId: tx.tenantId},
 		SpanContext: tx.currentSpan(), // RFC-115 §4
 	}
+	// tagSet is Optional<TagSet>; C++ assigns it only when the set is non-empty
+	// (NativeAPI.actor.cpp:6815-6816), leaving the field absent otherwise rather
+	// than sending an empty one.
+	if ts := encodeTagSet(tx.tags); ts != nil {
+		req.HasTagSet = true
+		req.TagSet = ts
+	}
 
 	// Marshal with pooled buffer.
 	bufp := marshalBufPool.Get().(*[]byte)

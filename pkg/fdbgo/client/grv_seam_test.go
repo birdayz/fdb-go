@@ -42,7 +42,7 @@ func TestSeam_FlushRefusesAReplyOvertakenByAnInvalidation(t *testing.T) {
 
 	b := db.db.grvBatchers[grvBatcherDefault]
 	// Warm: learn the proxies and establish the connection the intercept arms.
-	if _, _, _, err := b.getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false); err != nil {
+	if _, _, _, err := b.getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false); err != nil {
 		t.Fatalf("warm GRV: %v", err)
 	}
 	proxies, _ := db.db.getGRVProxies()
@@ -62,7 +62,7 @@ func TestSeam_FlushRefusesAReplyOvertakenByAnInvalidation(t *testing.T) {
 	sd.armAddr(proxies[0].Address)
 
 	db.db.grvCache.invalidate() // start from an empty cache
-	v, _, _, err := b.getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	v, _, _, err := b.getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
 	if err != nil {
 		t.Fatalf("GRV through the armed connection: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestSeam_BackgroundRefresherRefusesAReplyOvertakenByAnInvalidation(t *testi
 	db, sd := newSimTestDB(t, ctx)
 
 	b := db.db.grvBatchers[grvBatcherDefault]
-	if _, _, _, err := b.getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false); err != nil {
+	if _, _, _, err := b.getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false); err != nil {
 		t.Fatalf("warm GRV: %v", err)
 	}
 	proxies, _ := db.db.getGRVProxies()
@@ -117,7 +117,7 @@ func TestSeam_BackgroundRefresherRefusesAReplyOvertakenByAnInvalidation(t *testi
 	// An opted-in request starts the background refresher (C++ launches its
 	// updater inside the same gate). The cache stays empty, so the refresher's
 	// budget is exhausted and it re-refreshes at its 1ms clamp.
-	if _, _, _, err := b.getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, true, false); err != nil {
+	if _, _, _, err := b.getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, true, false); err != nil {
 		t.Fatalf("opted-in GRV: %v", err)
 	}
 	if !b.refresherStarted.Load() {
@@ -165,7 +165,7 @@ func TestSeam_GRVRetryCarriesTheEpochOfTheAttemptThatSucceeded(t *testing.T) {
 	db, sd := newSimTestDB(t, ctx)
 
 	b := db.db.grvBatchers[grvBatcherDefault]
-	if _, _, _, err := b.getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false); err != nil {
+	if _, _, _, err := b.getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false); err != nil {
 		t.Fatalf("warm GRV: %v", err)
 	}
 	proxies, _ := db.db.getGRVProxies()
@@ -192,7 +192,7 @@ func TestSeam_GRVRetryCarriesTheEpochOfTheAttemptThatSucceeded(t *testing.T) {
 	sd.armAddr(proxies[0].Address)
 
 	db.db.grvCache.lastProxyContact.Store(0)
-	if _, _, _, err := b.getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false); err != nil {
+	if _, _, _, err := b.getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false); err != nil {
 		t.Fatalf("GRV across the handoff: %v", err)
 	}
 

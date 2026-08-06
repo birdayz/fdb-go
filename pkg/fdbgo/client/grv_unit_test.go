@@ -230,7 +230,7 @@ func TestBuildGetReadVersionRequest_RoundTrip(t *testing.T) {
 		Flags:   traceFlagSampled,
 	}
 
-	body := buildGetReadVersionRequest(replyToken, flags, txnCount, span)
+	body := buildGetReadVersionRequest(replyToken, flags, txnCount, span, nil)
 
 	var req types.GetReadVersionRequest
 	if err := req.UnmarshalFDB(body); err != nil {

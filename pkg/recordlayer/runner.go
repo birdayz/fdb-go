@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"math/rand/v2"
+	"sort"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -33,6 +34,133 @@ type RecordContextConfig struct {
 	// size exceeds this threshold. Zero disables the check.
 	// Setting this below FDB's 10MB limit lets callers commit early.
 	TransactionSizeErrorBytes int64
+
+	// Tags are transaction tags used for tag-based throttling, applied to every
+	// transaction this config creates. Matches Java's FDBRecordContextConfig
+	// tags (FDBRecordContextConfig.java:60), which are applied one at a time via
+	// transaction.options().setTag (FDBRecordContext.java:205-207) — the plain
+	// TAG option, never AUTO_THROTTLE_TAG.
+	//
+	// Java models this as a Set<String>, so duplicates collapse and iteration
+	// order is arbitrary. ValidateTags dedups; SetTags sorts, because the commit
+	// request's TagSet is a length-prefixed concatenation in insertion order and
+	// an arbitrary order would make the commit bytes vary run to run for the
+	// same config. Order is not a wire contract on either side.
+	Tags []string
+}
+
+// Java's tag limits (FDBRecordContextConfig.java:661-672). These are STRICTER
+// than the FDB client's own 5/255 (TagThrottle.actor.cpp:35-39): the record
+// layer caps a tag at 16 characters, so a tag the client would accept can still
+// be rejected here. Validation happens at config time, as in Java, so a bad tag
+// fails before any transaction is opened rather than mid-commit.
+const (
+	MaxRecordContextTags   = 5
+	MaxRecordContextTagLen = 16
+)
+
+// TagValidationError reports a tag set rejected by the record layer's limits.
+// Java throws IllegalArgumentException with these exact messages.
+type TagValidationError struct {
+	Message string
+	// Tag is the offending tag for a length violation, empty for a count violation.
+	Tag string
+}
+
+func (e *TagValidationError) Error() string { return e.Message }
+
+// ValidateTags applies Java's setTags checks in Java's order — the COUNT first,
+// then each tag's length (FDBRecordContextConfig.java:662-669). The order is
+// observable: an over-long tag in an over-large set reports the count error.
+// Note this is the opposite of the FDB client's TagSet::addTag, which checks
+// length first because it validates one tag at a time rather than a whole set.
+//
+// Returns the deduplicated tag set; Java's Set<String> collapses duplicates
+// before the size check, so ("a","a","b") is two tags, not three.
+func ValidateTags(tags []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(tags))
+	uniq := make([]string, 0, len(tags))
+	for _, t := range tags {
+		if _, dup := seen[t]; dup {
+			continue
+		}
+		seen[t] = struct{}{}
+		uniq = append(uniq, t)
+	}
+	if len(uniq) > MaxRecordContextTags {
+		return nil, &TagValidationError{Message: "At most 5 tags allowed"}
+	}
+	for _, t := range uniq {
+		// Java uses String.length(), which counts UTF-16 code units — not bytes
+		// and not code points. A character outside the BMP is stored as a
+		// surrogate PAIR and therefore costs TWO, so a 16-code-point tag of
+		// astral characters is length 32 in Java and rejected. Counting runes
+		// would accept it: rune count is a LOWER bound on the UTF-16 count, so
+		// it is more permissive than Java, never less.
+		if utf16Len(t) > MaxRecordContextTagLen {
+			return nil, &TagValidationError{
+				Message: "Tag must be 16 characters or shorter",
+				Tag:     t,
+			}
+		}
+	}
+	return uniq, nil
+}
+
+// utf16Len returns the length of s in UTF-16 code units — what Java's
+// String.length() reports. Equivalent to len(utf16.Encode([]rune(s))) without
+// the two intermediate allocations.
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		n++
+		if r > 0xFFFF {
+			n++ // surrogate pair
+		}
+	}
+	return n
+}
+
+// SetTags validates and stores the tag set, returning an error rather than
+// panicking where Java throws. Tags are sorted so the resulting commit bytes are
+// deterministic for a given config.
+func (c *RecordContextConfig) SetTags(tags []string) error {
+	uniq, err := ValidateTags(tags)
+	if err != nil {
+		return err
+	}
+	sort.Strings(uniq)
+	c.Tags = uniq
+	return nil
+}
+
+// tagSetter is the narrow slice of the transaction options surface that tag
+// application needs. Naming it keeps applyTagsTo testable without standing up a
+// whole fdb.TransactionOptions.
+type tagSetter interface {
+	SetTag(tag string) error
+}
+
+// applyTagsTo issues one SetTag per tag, in order, matching
+// FDBRecordContext.java:205-207 — the record layer sets each tag individually
+// via the plain TAG option, never AUTO_THROTTLE_TAG.
+func applyTagsTo(o tagSetter, tags []string) error {
+	for _, tag := range tags {
+		if err := o.SetTag(tag); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applyTags sets the config's tags on a transaction. Java guards the whole
+// block on a non-empty set (FDBRecordContext.java:205), so an untagged config
+// touches the options surface not at all.
+func applyTags(tx interface{ Options() fdb.TransactionOptions }, tags []string) error {
+	if len(tags) == 0 {
+		return nil
+	}
+	return applyTagsTo(tx.Options(), tags)
 }
 
 // FDBDatabaseRunner provides configurable retry logic for FDB transactions.
@@ -157,6 +285,10 @@ func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordC
 				return nil, err
 			}
 		}
+		if err := applyTags(tx, r.ContextConfig.Tags); err != nil {
+			tx.Cancel()
+			return nil, err
+		}
 	}
 
 	result, err := fn(recordCtx)
@@ -217,6 +349,10 @@ func (r *FDBDatabaseRunner) OpenContext(ctx context.Context) (*FDBRecordContext,
 				tx.Cancel()
 				return nil, err
 			}
+		}
+		if err := applyTags(tx, r.ContextConfig.Tags); err != nil {
+			tx.Cancel()
+			return nil, err
 		}
 		recordCtx.txSizeWarnBytes = r.ContextConfig.TransactionSizeWarnBytes
 		recordCtx.txSizeErrorBytes = r.ContextConfig.TransactionSizeErrorBytes

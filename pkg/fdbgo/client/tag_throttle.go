@@ -1,10 +1,10 @@
 package client
 
 import (
-	"encoding/binary"
-	"math"
 	"sync"
 	"time"
+
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // Tag throttle knobs — matching C++ CLIENT_KNOBS defaults from NativeAPI.actor.cpp.
@@ -45,49 +45,31 @@ func (t *clientTagThrottleLimits) throttleDuration() time.Duration {
 	return delay
 }
 
-// parseTagThrottleInfo deserializes the TagThrottleInfo bytes from a GRV reply.
-// Wire format: FDB standard serialization of unordered_map<StringRef, ClientTagThrottleLimits>:
-//   - uint32 count (LE)
-//   - For each entry: uint32 tagLen (LE) + tagLen bytes (tag) + float64 tpsRate (LE) + float64 duration (LE)
-func parseTagThrottleInfo(data []byte) map[string]clientTagThrottleLimits {
-	if len(data) < 4 {
+// parseTagThrottleInfo converts the GRV reply's tagThrottleInfo entries into the
+// client-side throttle map.
+//
+// The field is TransactionTagMap<ClientTagThrottleLimits>
+// (CommitProxyInterface.h:272) — std::unordered_map, which flat_buffers.h gives
+// vector_like_traits with value_type std::pair<Key,T>. On the wire it is
+// therefore a vector of two-slot objects, NOT a length-prefixed byte blob, and
+// the wire layer decodes it as such. A hand-rolled byte parser here previously
+// read the vector's leading element COUNT as if it were a byte LENGTH; that only
+// ever agreed with C++ for the empty map, where both encodings degenerate to a
+// bare four-byte zero.
+//
+// ClientTagThrottleLimits::serialize sends the expiration as a relative duration
+// (expiration - now(), TagThrottle.actor.h:215-227) so client and proxy need no
+// clock agreement; we re-anchor it against the local clock on arrival.
+func parseTagThrottleInfo(entries []types.TransactionTagThrottle) map[string]clientTagThrottleLimits {
+	if len(entries) == 0 {
 		return nil
 	}
-	count := binary.LittleEndian.Uint32(data[:4])
-	if count == 0 {
-		return nil
-	}
-	off := 4
-	// Don't pass `count` as the make() hint: count is wire-controlled, and a
-	// hostile or corrupt server can set it to ~4B → make() would reserve tens
-	// of GB and freeze the host. C++ uses unordered_map::insert without any
-	// pre-reserve (NativeAPI.actor.cpp), and the server hard-caps the set at
-	// SERVER_KNOBS->GLOBAL_TAG_THROTTLING_MAX_TAGS_TRACKED = 10 entries. We
-	// match: let the map grow naturally; the real safety bound is len(data)
-	// via the per-entry length checks below.
-	result := make(map[string]clientTagThrottleLimits)
+	result := make(map[string]clientTagThrottleLimits, len(entries))
 	now := time.Now()
-	for i := uint32(0); i < count; i++ {
-		if off+4 > len(data) {
-			break
-		}
-		tagLen := binary.LittleEndian.Uint32(data[off : off+4])
-		off += 4
-		if off+int(tagLen) > len(data) {
-			break
-		}
-		tag := string(data[off : off+int(tagLen)])
-		off += int(tagLen)
-		if off+16 > len(data) {
-			break
-		}
-		tpsRate := math.Float64frombits(binary.LittleEndian.Uint64(data[off : off+8]))
-		off += 8
-		duration := math.Float64frombits(binary.LittleEndian.Uint64(data[off : off+8]))
-		off += 8
-		result[tag] = clientTagThrottleLimits{
-			tpsRate:    tpsRate,
-			expiration: now.Add(time.Duration(duration * float64(time.Second))),
+	for _, e := range entries {
+		result[string(e.Tag)] = clientTagThrottleLimits{
+			tpsRate:    e.Limits.TpsRate,
+			expiration: now.Add(time.Duration(e.Limits.Duration * float64(time.Second))),
 		}
 	}
 	return result

@@ -41,18 +41,18 @@ var GetReadVersionReplyTemplate = wire.NewMessageTemplate(
 const GetReadVersionReplyMaxAlign = 8
 
 type GetReadVersionReply struct {
-	ProcessBusyTime           int32    // slot 0
-	Version                   int64    // slot 1
-	Locked                    bool     // slot 2
-	HasMetadataVersion        bool     // slot 3, optional tag
-	MetadataVersion           []byte   // slot 4, optional value
-	TagThrottleInfo           []byte   // slot 5
-	MidShardSize              int64    // slot 6
-	RkDefaultThrottled        bool     // slot 7
-	RkBatchThrottled          bool     // slot 8
-	SsVersionVectorDelta      []byte   // slot 9
-	ProxyId                   [16]byte // slot 10
-	ProxyTagThrottledDuration float64  // slot 11
+	ProcessBusyTime           int32                    // slot 0
+	Version                   int64                    // slot 1
+	Locked                    bool                     // slot 2
+	HasMetadataVersion        bool                     // slot 3, optional tag
+	MetadataVersion           []byte                   // slot 4, optional value
+	TagThrottleInfo           []TransactionTagThrottle // slot 5, vector of struct
+	MidShardSize              int64                    // slot 6
+	RkDefaultThrottled        bool                     // slot 7
+	RkBatchThrottled          bool                     // slot 8
+	SsVersionVectorDelta      []byte                   // slot 9
+	ProxyId                   [16]byte                 // slot 10
+	ProxyTagThrottledDuration float64                  // slot 11
 }
 
 func (m *GetReadVersionReply) UnmarshalFromReader(r *wire.Reader) {
@@ -69,8 +69,15 @@ func (m *GetReadVersionReply) UnmarshalFromReader(r *wire.Reader) {
 		m.MetadataVersion = r.ReadBytes(GetReadVersionReplySlotMetadataVersion + 1)
 		m.HasMetadataVersion = true
 	}
-	if r.FieldPresent(GetReadVersionReplySlotTagThrottleInfo) {
-		m.TagThrottleInfo = r.ReadBytes(GetReadVersionReplySlotTagThrottleInfo)
+	if count, err := r.ReadVectorCount(GetReadVersionReplySlotTagThrottleInfo); err == nil && count > 0 {
+		m.TagThrottleInfo = make([]TransactionTagThrottle, 0, count)
+		for i := 0; i < count; i++ {
+			if elemR, err := r.ReadVectorElementReader(GetReadVersionReplySlotTagThrottleInfo, i); err == nil {
+				var elem TransactionTagThrottle
+				elem.UnmarshalFromReader(elemR)
+				m.TagThrottleInfo = append(m.TagThrottleInfo, elem)
+			}
+		}
 	}
 	if r.FieldPresent(GetReadVersionReplySlotMidShardSize) {
 		m.MidShardSize = r.ReadInt64(GetReadVersionReplySlotMidShardSize)
@@ -110,8 +117,15 @@ func (m *GetReadVersionReply) UnmarshalFDB(data []byte) error {
 		m.MetadataVersion = r.ReadBytes(GetReadVersionReplySlotMetadataVersion + 1)
 		m.HasMetadataVersion = true
 	}
-	if r.FieldPresent(GetReadVersionReplySlotTagThrottleInfo) {
-		m.TagThrottleInfo = r.ReadBytes(GetReadVersionReplySlotTagThrottleInfo)
+	if count, err := r.ReadVectorCount(GetReadVersionReplySlotTagThrottleInfo); err == nil && count > 0 {
+		m.TagThrottleInfo = make([]TransactionTagThrottle, 0, count)
+		for i := 0; i < count; i++ {
+			if elemR, err := r.ReadVectorElementReader(GetReadVersionReplySlotTagThrottleInfo, i); err == nil {
+				var elem TransactionTagThrottle
+				elem.UnmarshalFromReader(elemR)
+				m.TagThrottleInfo = append(m.TagThrottleInfo, elem)
+			}
+		}
 	}
 	if r.FieldPresent(GetReadVersionReplySlotMidShardSize) {
 		m.MidShardSize = r.ReadInt64(GetReadVersionReplySlotMidShardSize)
@@ -141,7 +155,20 @@ func (m *GetReadVersionReply) precomputeSize(ps *wire.PrecomputeSize) int {
 	if m.HasMetadataVersion {
 		ps.VisitDynamicSize(len(m.MetadataVersion))
 	}
-	ps.VisitDynamicSize(len(m.TagThrottleInfo))
+	{
+		n := len(m.TagThrottleInfo)
+		if n > 0 {
+			self := ps.GetMessageWriter(n * 4)
+			for i := 0; i < n; i++ {
+				m.TagThrottleInfo[i].precomputeSize(ps)
+			}
+			start := wire.RightAlign(ps.CurrentBufferSize+n*4, 4) + 4
+			ps.Write(start)             // count at start (4 bytes)
+			self.WriteToAt(ps, start-4) // reloff array at start-4
+		} else {
+			ps.VisitDynamicSize(0)
+		}
+	}
 	ps.VisitDynamicSize(len(m.SsVersionVectorDelta))
 	{
 		n := ps.GetMessageWriter(int(GetReadVersionReplyVTable[1]))
@@ -160,7 +187,21 @@ func (m *GetReadVersionReply) writeToBuffer(wb *wire.WriteToBuffer, vtableStart 
 	if m.HasMetadataVersion {
 		metadataVersionOff, _ = wb.VisitDynamicSize(m.MetadataVersion)
 	}
-	tagThrottleInfoOff, _ = wb.VisitDynamicSize(m.TagThrottleInfo)
+	{
+		n := len(m.TagThrottleInfo)
+		if n > 0 {
+			self := wb.GetMessageWriter(n*4, false)
+			for i := 0; i < n; i++ {
+				elemStart := m.TagThrottleInfo[i].writeToBuffer(wb, vtableStart, tmpl)
+				self.WriteRelativeOffset(elemStart, i*4)
+			}
+			wb.WriteUint32(uint32(n), self.FinalLocation+4)
+			self.WriteToAt(self.FinalLocation)
+			tagThrottleInfoOff = wb.CurrentBufferSize
+		} else {
+			tagThrottleInfoOff, _ = wb.VisitDynamicSize(nil)
+		}
+	}
 	ssVersionVectorDeltaOff, _ = wb.VisitDynamicSize(m.SsVersionVectorDelta)
 	selfW := wb.GetMessageWriter(int(GetReadVersionReplyVTable[1]), true)
 	selfStart := selfW.FinalLocation

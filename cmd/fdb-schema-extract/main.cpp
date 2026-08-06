@@ -124,10 +124,10 @@ struct GoEmitterV5 {
             fprintf(f, "import (\n");
             if (needsBinary) fprintf(f, "\t\"encoding/binary\"\n");
             if (needsMath) fprintf(f, "\t\"math\"\n");
-            fprintf(f, "\n\t\"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire\"\n");
+            fprintf(f, "\n\t\"fdb.dev/pkg/fdbgo/wire\"\n");
             fprintf(f, ")\n\n");
         } else {
-            fprintf(f, "import \"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire\"\n\n");
+            fprintf(f, "import \"fdb.dev/pkg/fdbgo/wire\"\n\n");
         }
 
         // Slot constants.
@@ -1187,6 +1187,26 @@ void generateTestVectors(const char* outDir) {
         pinReply(req.reply, 0x1000000000000000ULL + 18, 0x2000000000000000ULL + 9);
         comma(); emitTestVector(out, "CommitTransactionRequest_empty", req, getReplyToken(req.reply));
     }
+    // Commit carrying a tag set. Unlike GRV's tag map, CommitTransactionRequest::
+    // tagSet is Optional<TagSet>, and TagSet has dynamic_size_traits — a flat
+    // [len:1][tag bytes] concatenation, so a byte blob IS the correct model here.
+    // Insertion order is the wire order (TagSet keeps a vector), so multiple tags
+    // are byte-deterministic.
+    {
+        CommitTransactionRequest req;
+        req.transaction.read_snapshot = 7;
+        req.transaction.mutations.push_back(
+            req.arena, MutationRef(MutationRef::SetValue, "tk"_sr, "tv"_sr));
+        req.transaction.write_conflict_ranges.push_back(
+            req.arena, KeyRangeRef("tk"_sr, "tk\x00"_sr));
+        TagSet tagSet;
+        tagSet.addTag("tenant-a"_sr);
+        tagSet.addTag("bulk"_sr);
+        req.tagSet = tagSet;
+        req.tenantInfo.tenantId = -1;
+        pinReply(req.reply, 0x1000000000000000ULL + 32, 0x2000000000000000ULL + 14);
+        comma(); emitTestVector(out, "CommitTransactionRequest_tagged", req, getReplyToken(req.reply));
+    }
     {
         // 3 system key mutations + lock_aware — matches tenant CRUD pattern
         CommitTransactionRequest req;
@@ -1225,6 +1245,36 @@ void generateTestVectors(const char* outDir) {
 
         pinReply(req.reply, 0x1000000000000000ULL + 22, 0x2000000000000000ULL + 11);
         comma(); emitTestVector(out, "GetReadVersionRequest_causal_risky", req, getReplyToken(req.reply));
+    }
+
+    // GRV with a non-empty tag map. GetReadVersionRequest::tags is
+    // TransactionTagMap<uint32_t> — a vector of pair objects, NOT a byte blob.
+    // An empty map and an empty byte string both serialize to a bare 4-byte zero,
+    // so only a NON-empty vector distinguishes the two encodings. Exactly one
+    // entry here: std::unordered_map iteration order is not part of the wire
+    // contract, so a byte-exact golden must not depend on it.
+    {
+        GetReadVersionRequest req;
+        req.transactionCount = 1;
+        req.priority = TransactionPriority::DEFAULT;
+        req.tags["tenant-a"_sr] = 3;
+
+        pinReply(req.reply, 0x1000000000000000ULL + 28, 0x2000000000000000ULL + 12);
+        comma(); emitTestVector(out, "GetReadVersionRequest_tagged", req, getReplyToken(req.reply));
+    }
+
+    // Multi-tag GRV. Byte order here follows unordered_map iteration, so the Go
+    // test parses this one and asserts set equality rather than exact bytes.
+    {
+        GetReadVersionRequest req;
+        req.transactionCount = 4;
+        req.priority = TransactionPriority::BATCH;
+        req.tags["alpha"_sr] = 1;
+        req.tags["beta"_sr] = 2;
+        req.tags["gamma"_sr] = 7;
+
+        pinReply(req.reply, 0x1000000000000000ULL + 30, 0x2000000000000000ULL + 13);
+        comma(); emitTestVector(out, "GetReadVersionRequest_tagged_multi", req, getReplyToken(req.reply));
     }
 
     // ============================================================
@@ -1405,6 +1455,11 @@ int main(int argc, char** argv) {
     extractType<TenantMapEntry>(outDir, "TenantMapEntry");
     extractType<Error>(outDir, "Error");
     extractType<KeyValueRef>(outDir, "KeyValueRef");
+    // Entry objects of the TransactionTagMap fields on GetReadVersionRequest
+    // (tags) and GetReadVersionReply (tagThrottleInfo).
+    extractType<ClientTagThrottleLimits>(outDir, "ClientTagThrottleLimits");
+    extractType<TransactionTagCountPair>(outDir, "TransactionTagCount");
+    extractType<TransactionTagThrottlePair>(outDir, "TransactionTagThrottle");
 
     extractType<ClientDBInfo>(outDir, "ClientDBInfo");
     extractType<GrvProxyInterface, true>(outDir, "GrvProxyInterface");

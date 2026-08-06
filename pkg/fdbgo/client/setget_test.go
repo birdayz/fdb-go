@@ -36,7 +36,7 @@ func TestTransactRetry(t *testing.T) {
 
 	// tx1 reads and writes the key, but doesn't commit yet.
 	tx1 := db.CreateTransaction()
-	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
