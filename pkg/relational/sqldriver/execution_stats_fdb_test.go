@@ -494,6 +494,55 @@ func TestFDB_ExecutionStats_SlowQueryFiresOnExecutionTime(t *testing.T) {
 	})
 }
 
+// TestFDB_ExecutionStats_DDLEmitsNoRecord pins the scope BOUNDARY that
+// docs/mt-saas.md states as a bullet ("DDL is not covered ... SELECT and DML
+// both do"). DDL routes through execStatement, never through cascadesPlan's
+// paged path, so no paginatingRows exists and nothing calls finish.
+//
+// A documented negative with no test is the shape CLAUDE.md singles out: the
+// claim is what lets an operator conclude a missing record means a missing
+// query rather than an uncovered statement kind, and if DDL ever started
+// emitting, the doc would be wrong with every test green.
+//
+// The SELECT at the end is the anti-vacuity half and is not optional. Without
+// it "zero events" is equally consistent with the logger never having been
+// installed, which would make the assertion pass for the wrong reason forever.
+func TestFDB_ExecutionStats_DDLEmitsNoRecord(t *testing.T) {
+	t.Parallel()
+	db := setupExecStatsDB(t, "xstatsddl")
+	ctx := context.Background()
+
+	conn, cap := pinStatsConn(t, db, nil)
+	cap.reset()
+
+	if _, err := conn.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE xstatsddl_probe_tmpl "+
+			"CREATE TABLE u (id BIGINT, PRIMARY KEY (id))"); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, "DROP SCHEMA TEMPLATE xstatsddl_probe_tmpl"); err != nil {
+		t.Fatalf("DROP SCHEMA TEMPLATE: %v", err)
+	}
+	if ev := cap.snapshot(); len(ev) != 0 {
+		t.Fatalf("DDL emitted %d execution-stats record(s), want 0 — docs/mt-saas.md tells operators "+
+			"DDL is not covered: %+v", len(ev), ev)
+	}
+
+	// The same connection, the same logger: a SELECT must still report. This is
+	// what makes the zero above a property of DDL rather than of the fixture.
+	rows, err := conn.QueryContext(ctx, "SELECT id FROM t")
+	if err != nil {
+		t.Fatalf("SELECT after DDL: %v", err)
+	}
+	if got := drain(t, rows); got != execStatsRows {
+		t.Fatalf("returned %d rows, want %d", got, execStatsRows)
+	}
+	if s := cap.only(t); s.RecordsScanned != execStatsRows {
+		t.Errorf("RecordsScanned = %d, want %d — the logger installed before the DDL is still live",
+			s.RecordsScanned, execStatsRows)
+	}
+}
+
 // TestFDB_ExecutionStats_NilLoggerIsSilentAndHarmless pins the production
 // default. Every nil-guard in the scope is on this path, and the whole
 // zero-overhead claim rests on the statement behaving identically without a
