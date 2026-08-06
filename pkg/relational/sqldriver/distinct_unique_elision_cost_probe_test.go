@@ -865,13 +865,44 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 				"from a green one, which is worse than a withheld run.", name, v)
 		}
 		// The per-rep ratios are logged on the ACCEPTING path too, not only when
-		// withholding. Detector B currently reads one statistic — the median's
-		// deviation from 1.0 — because that is the only one RFC-210 §2.1 records a
-		// quiet envelope for. A DISPERSION arm would be sharper (it would catch a
-		// run whose reps swing 3x while their median lands near 1.0 by luck), and
-		// it is not asserted here for exactly one reason: no quiet per-rep spread
-		// has ever been recorded, so any bound on it would be invented rather than
-		// derived. This line is what accumulates that record.
+		// withholding. Detector B reads ONE statistic — the median's deviation
+		// from 1.0. A DISPERSION arm would be sharper in principle (it would catch
+		// a run whose reps swing while the median lands near 1.0 by luck), and this
+		// line existed to accumulate the record that would let one be derived.
+		//
+		// THE RECORD NOW EXISTS, AND IT REFUSES THE ARM. It was gathered because a
+		// CI run on #638 produced exactly the anticipated blind spot: null pair
+		// C/A′ = 0.995x — dead centred, comfortably inside the envelope, no window
+		// loss, so wall-clock criteria were ASSERTED — over per-rep ratios
+		//
+		//	[0.728 1.271 0.791 1.747 0.979 1.153 0.87 1.082 0.995]
+		//
+		// whose max/min is 2.400. Against that, SEVENTEEN runs on a quiet local box
+		// (this instrument's own named lane; every one of them ACCEPTED, medians
+		// 0.927-0.989):
+		//
+		//	max/min  1.113 1.133 1.159 1.245 1.255 1.256 1.373 1.391 1.396
+		//	         1.406 1.439 1.445 1.520 1.633 1.673 1.682 2.084
+		//
+		// The quiet band runs to 2.084 — ONE observation short of the 2.400 that a
+		// bound would have to exclude, a separation of 1.15x. There is no gap to
+		// place a bound in: anything below 2.084 fires on a run measured as quiet
+		// and accepted, and anything in (2.084, 2.400) rests on a single failure
+		// observation while the quiet tail is visibly not exhausted — run 16 was
+		// the first above 1.7 and it took fifteen runs to appear.
+		//
+		// The two other natural statistics are worse, not better. q3/q1 INVERTS
+		// (quiet reaches 1.416 against the failure's 1.325 — it would rank the
+		// failure as calmer than a quiet run), and the coefficient of variation
+		// separates by 1.067x, which is nothing.
+		//
+		// So the original refusal stands, and now it stands on data instead of on
+		// the absence of it: a bound here would be invented, and its only measured
+		// effect would be to convert one red B/D′ assertion into a withheld one.
+		// An instrument change whose sole demonstrated consequence is suppressing a
+		// failure needs a HIGHER evidentiary bar than a normal one, not a lower
+		// one. What would actually earn the arm is a statistic that separates the
+		// two populations with real margin — not a threshold slid into a 15% gap.
 		t.Logf("REGIME: null pair C/A' = %.3fx, inside the %.2f quiet envelope, and no "+
 			"timed run lost its window — wall-clock criteria ASSERTED. Per-rep "+
 			"ratios %v (logged so a quiet box's DISPERSION becomes recorded data; "+

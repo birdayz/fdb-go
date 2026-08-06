@@ -51,9 +51,91 @@ func duecLoadedNullPair() (c, aPrime []duecSample) {
 // The QUIET null pair, built from RFC-210 §2.1's recorded in-transaction
 // figures (C 178 ms, A′ 174 ms) with the per-rep jitter a healthy box shows.
 // Median per-rep ratio ~1.02x, inside the recorded 0.88-1.02 envelope.
+//
+// CAVEAT, AND IT MATTERS FOR ANYONE READING DISPERSION OFF THIS FIXTURE: only
+// the two MEDIANS above are recorded data. The per-rep jitter is invented, and
+// it is far calmer than a real quiet box — this fixture's per-rep max/min is
+// 1.035, where seventeen measured runs on a quiet box span 1.113 to 2.084 (see
+// the dispersion note in distinct_unique_elision_cost_probe_test.go). It is
+// therefore a fine fixture for exercising the MEDIAN arm, which is all it was
+// built for, and a badly misleading one for calibrating anything about spread.
+// Deriving a dispersion bound from these numbers would have put it around 1.1
+// and withheld on nearly every genuinely quiet run.
 func duecQuietNullPair() (c, aPrime []duecSample) {
 	return duecSamplesMs(178, 181, 175, 183, 177, 180, 174, 179, 176),
 		duecSamplesMs(174, 177, 176, 178, 172, 175, 173, 176, 171)
+}
+
+// duecMeasuredQuietDispersion is the measured per-rep max/min of the null pair
+// over seventeen consecutive runs on a quiet box, every one of which the median
+// arm ACCEPTED. It is recorded as data rather than prose because it is the
+// evidence that refuses a dispersion arm, and the next person to propose one
+// should have to look at it.
+//
+// Anchors: this quiet band tops out at 2.084; the CI run on #638 that motivated
+// the proposal — median 0.995x, accepted — measured 2.400. A 1.15x separation
+// is not a band to place a bound in.
+var duecMeasuredQuietDispersion = []float64{
+	1.113, 1.133, 1.159, 1.245, 1.255, 1.256, 1.373, 1.391, 1.396,
+	1.406, 1.439, 1.445, 1.520, 1.633, 1.673, 1.682, 2.084,
+}
+
+// duecCIBlindSpotRatios is the #638 CI run's per-rep null-pair array verbatim:
+// the anticipated blind spot, median 0.995x (accepted), max/min 2.400.
+var duecCIBlindSpotRatios = []float64{
+	0.728, 1.271, 0.791, 1.747, 0.979, 1.153, 0.87, 1.082, 0.995,
+}
+
+// TestDuecDispersionArmIsNotDerivable pins the NEGATIVE RESULT that keeps the
+// dispersion arm out, so that "we looked and there was no bound" survives as a
+// checkable fact rather than as a paragraph someone deletes.
+//
+// The proposal was principled: the median arm has a known blind spot (a run
+// whose reps swing while the median lands near 1.0), #638's CI run hit it
+// exactly, and the probe had been logging per-rep arrays for precisely this
+// derivation. What the accumulated record then showed is that the two
+// populations do not separate on any natural statistic.
+//
+// If a future change makes them separate — a lower-variance fixture, a quieter
+// lane, more reps per run — this test fails, and that failure is the signal
+// that the arm has become derivable. Until then it is the guard against sliding
+// a threshold into a 15% gap and calling it measurement.
+func TestDuecDispersionArmIsNotDerivable(t *testing.T) {
+	t.Parallel()
+
+	maxMin := func(rs []float64) float64 {
+		lo, hi := rs[0], rs[0]
+		for _, r := range rs {
+			if r < lo {
+				lo = r
+			}
+			if r > hi {
+				hi = r
+			}
+		}
+		return hi / lo
+	}
+
+	quietMax := duecMeasuredQuietDispersion[len(duecMeasuredQuietDispersion)-1]
+	failure := maxMin(duecCIBlindSpotRatios)
+
+	if failure <= quietMax {
+		t.Fatalf("the #638 blind-spot run's dispersion (%.3f) is at or below the measured quiet "+
+			"maximum (%.3f) — the two populations have inverted, and a dispersion arm would "+
+			"withhold on quiet runs while admitting the loaded one", failure, quietMax)
+	}
+
+	// The separation is the whole question. A bound needs room between the
+	// populations; 1.15x is not room, it is one unlucky quiet run.
+	const duecDispersionSeparationNeeded = 1.5
+	if sep := failure / quietMax; sep >= duecDispersionSeparationNeeded {
+		t.Fatalf("quiet dispersion now tops out at %.3f against the blind-spot run's %.3f — a "+
+			"separation of %.3fx, at or beyond the %.1fx this test treats as the point where a "+
+			"bound stops being invented. The dispersion arm has become DERIVABLE: place it "+
+			"between the two populations, wire it as a withholding arm beside the null-pair and "+
+			"1007 detectors, and delete this test",
+			quietMax, failure, sep, duecDispersionSeparationNeeded)
+	}
 }
 
 func TestDuecRegimeVerdict_WithholdsUnderSyntheticOverload(t *testing.T) {
