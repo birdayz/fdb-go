@@ -31,6 +31,12 @@ package docscheck
 // allowlist. If a composition genuinely cannot state the layout it numbered a
 // slot against, it has not decided the slot, and the honest mint is an UNPINNED
 // ordinal — which is a legal, supported, domain-optional shape.
+//
+// There is exactly one structural exemption, and it is not an allowlist of
+// offending SITES: `theDomainLessConstructor`'s own body may forward the unknown
+// token, because forwarding it is the function's definition. Its callers are
+// policed instead. The precision/recall fixtures pin that the exemption is by
+// NAME and does not extend to a wrapper that copies the body.
 
 import (
 	"fmt"
@@ -70,14 +76,32 @@ func callName(call *ast.CallExpr) string {
 	return ""
 }
 
-// isLiteralTrue reports whether e is the untyped boolean literal `true`.
-// A VARIABLE carrying true is deliberately not matched: the gate's claim is
-// about mints that are pinned UNCONDITIONALLY and stated no domain, which is
-// the shape a human writes by hand. A computed pin (pullup.go threads one) is
-// paired with a computed domain and is not this class.
+// isLiteralTrue / isLiteralFalse report whether e is the untyped boolean literal.
+//
+// Only `false` proves a mint UNPINNED. `true` and every computed expression are
+// treated alike once the domain is provably the zero token — see the DOMAIN-FIRST
+// note on scanPinnedOrdinalMints for why the pin's shape stopped being the thing
+// that decides.
 func isLiteralTrue(e ast.Expr) bool {
 	id, ok := e.(*ast.Ident)
 	return ok && id.Name == "true"
+}
+
+func isLiteralFalse(e ast.Expr) bool {
+	id, ok := e.(*ast.Ident)
+	return ok && id.Name == "false"
+}
+
+// isOrdinalDomainType reports whether e names the `OrdinalDomain` type, bare or
+// package-qualified.
+func isOrdinalDomainType(e ast.Expr) bool {
+	switch t := e.(type) {
+	case *ast.Ident:
+		return t.Name == "OrdinalDomain"
+	case *ast.SelectorExpr:
+		return t.Sel.Name == "OrdinalDomain"
+	}
+	return false
 }
 
 // isEmptyOrdinalDomainLiteral reports whether e is `OrdinalDomain{}` or
@@ -88,53 +112,199 @@ func isEmptyOrdinalDomainLiteral(e ast.Expr) bool {
 	if !ok || len(lit.Elts) != 0 {
 		return false
 	}
-	switch t := lit.Type.(type) {
-	case *ast.Ident:
-		return t.Name == "OrdinalDomain"
-	case *ast.SelectorExpr:
-		return t.Sel.Name == "OrdinalDomain"
+	return isOrdinalDomainType(lit.Type)
+}
+
+// zeroDomainIdents returns the identifiers in f that are PROVABLY the zero
+// OrdinalDomain — every binding the file gives the name is the unknown token.
+//
+// Writing `OrdinalDomain{}` at the call site is the obvious shape and the one the
+// gate first matched. It is not the only one, and the alternatives are not exotic:
+// `d := OrdinalDomain{}` one line above the call, a package-level `var
+// emptyDomain = OrdinalDomain{}` shared by several mints, or `var d
+// OrdinalDomain` — a zero VALUE declared with no literal at all, which carries
+// the unknown token while containing none of the syntax the gate looked for.
+//
+// Provably means ALL bindings, not any: a name bound once to the token and later
+// to `OrdinalDomainOfType(...)` is not a zero-domain variable, and flagging it
+// would make the gate fire on a correct mint. That is the direction the
+// precision half of the test below exists to hold.
+func zeroDomainIdents(f *ast.File) map[string]bool {
+	bindings, zeroBindings := map[string]int{}, map[string]int{}
+	bind := func(lhs, rhs []ast.Expr) {
+		if len(lhs) != len(rhs) {
+			return // a multi-value call; nothing here is a domain literal
+		}
+		for i, l := range lhs {
+			id, ok := l.(*ast.Ident)
+			if !ok || id.Name == "_" {
+				continue
+			}
+			bindings[id.Name]++
+			if isEmptyOrdinalDomainLiteral(rhs[i]) {
+				zeroBindings[id.Name]++
+			}
+		}
 	}
-	return false
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.ValueSpec:
+			if len(x.Values) == 0 {
+				// `var d OrdinalDomain` — the zero value, no literal written.
+				if isOrdinalDomainType(x.Type) {
+					for _, id := range x.Names {
+						if id.Name != "_" {
+							bindings[id.Name]++
+							zeroBindings[id.Name]++
+						}
+					}
+				}
+				return true
+			}
+			lhs := make([]ast.Expr, len(x.Names))
+			for i, id := range x.Names {
+				lhs[i] = id
+			}
+			bind(lhs, x.Values)
+		case *ast.AssignStmt:
+			bind(x.Lhs, x.Rhs)
+		}
+		return true
+	})
+	zero := map[string]bool{}
+	for name, n := range bindings {
+		if zeroBindings[name] == n {
+			zero[name] = true
+		}
+	}
+	return zero
+}
+
+// isProvablyZeroDomain reports whether e is the unknown token, written inline or
+// carried by a variable this file only ever binds to it.
+func isProvablyZeroDomain(e ast.Expr, zero map[string]bool) bool {
+	if isEmptyOrdinalDomainLiteral(e) {
+		return true
+	}
+	id, ok := e.(*ast.Ident)
+	return ok && zero[id.Name]
 }
 
 // scanPinnedOrdinalMints reports every production mint of a PINNED FieldPath
 // that states no domain. Split out from the test so both its precision and its
 // recall can be pinned against synthetic source: a detector that matches nothing
 // is green forever while the class regrows underneath it.
+//
+// IT ASKS ABOUT THE DOMAIN FIRST, and only then about the pin. The first version
+// did the reverse — it required a literal `true` in the pin position — and two
+// shapes walked straight through it:
+//
+//	NewFieldPathOfSingleInDomain(f, i, computedPin, OrdinalDomain{})
+//	NewFieldValueWithPinnedOrdinalInDomain(f, i, typ, someEmptyDomainVar)
+//
+// Neither is a stretch. The first is what any mint threading a pin through a
+// parameter looks like, and the rationale for exempting it — "a computed pin is
+// paired with a computed domain" — was an observation about the call sites that
+// happened to exist, asserted as if it were a property. It is not one, and the
+// call site right next to it is the counterexample. The second needs only a
+// `d := OrdinalDomain{}` on the line above.
+//
+// So the ordering inverts. A provably-zero domain is the offence; the pin is
+// consulted only to see whether the mint is EXEMPT, and only a literal `false`
+// exempts it. `true`, a variable, a function call, a field read — all flagged,
+// because the gate cannot see what they carry, and a mint that MIGHT be pinned
+// against an unstated row is exactly what it refuses. That also makes the gate
+// fail CLOSED on a constructor nobody has written yet: any future `...InDomain`
+// name whose last argument is the unknown token is reported unless it is
+// classified here.
 func scanPinnedOrdinalMints(f *ast.File, report func(token.Pos, string)) {
-	ast.Inspect(f, func(n ast.Node) bool {
+	zero := zeroDomainIdents(f)
+	for _, decl := range f.Decls {
+		enclosing := ""
+		if fd, isFunc := decl.(*ast.FuncDecl); isFunc && fd.Name != nil {
+			enclosing = fd.Name.Name
+		}
+		scanDeclForPinnedOrdinalMints(decl, enclosing, zero, report)
+	}
+}
+
+// theDomainLessConstructor is the ONE function whose body may forward the
+// unknown token, because forwarding it is what the function IS.
+//
+// `NewFieldPathOfSingle(f, i, pinned)` is `...InDomain(f, i, pinned, OrdinalDomain{})`
+// and nothing else. It is a legal, supported shape — an UNPINNED ordinal needs no
+// layout — so it is policed at its CALL SITES (`NewFieldPathOfSingle(..., true)`),
+// which is where the pin becomes a literal and the mint becomes a false claim.
+// Reporting the delegation itself would report one unchanging fact forever, and a
+// gate whose only finding is its own definition is a gate someone deletes.
+//
+// `NewFieldValueWithPinnedOrdinal` is deliberately NOT exempt. It is deleted, and
+// there is no correct version of that name — a reintroduction would be pinned
+// unconditionally, so its body must be flagged even before it has a single
+// caller. That zero-caller window is precisely the state CQ-56 found it in.
+const theDomainLessConstructor = "NewFieldPathOfSingle"
+
+func scanDeclForPinnedOrdinalMints(decl ast.Decl, enclosing string, zero map[string]bool, report func(token.Pos, string)) {
+	ast.Inspect(decl, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
-		switch callName(call) {
+		name := callName(call)
+		switch name {
 		// The removed convenience constructor. Its whole body was
 		// `...InDomain(field, ordinal, typ, OrdinalDomain{})`, so any
 		// reintroduction is a domain-less pinned mint by construction — there is
 		// no correct version of this name.
 		case "NewFieldValueWithPinnedOrdinal":
 			report(call.Lparen, "NewFieldValueWithPinnedOrdinal (removed: mints Domain unknown)")
+			return true
 
 		// The raw FieldPath constructor with the pin argument hard-coded true.
-		// Signature: (field string, ordinal int, frontierPinned bool).
+		// Signature: (field string, ordinal int, frontierPinned bool). It cannot
+		// state a domain at all, so there is nothing to inspect but the pin.
 		case "NewFieldPathOfSingle":
 			if len(call.Args) == 3 && isLiteralTrue(call.Args[2]) {
 				report(call.Lparen, "NewFieldPathOfSingle(..., true) — pinned, and this "+
 					"constructor cannot state a domain")
 			}
+			return true
+		}
 
-		// Pinned through the domain-taking constructor, with the domain written
-		// as the unknown token. This is the hole the deletion above does NOT
-		// close: the correct constructor, called with a token that says nothing.
-		case "NewFieldPathOfSingleInDomain":
-			if len(call.Args) == 4 && isLiteralTrue(call.Args[2]) &&
-				isEmptyOrdinalDomainLiteral(call.Args[3]) {
-				report(call.Lparen, "NewFieldPathOfSingleInDomain(..., true, OrdinalDomain{})")
+		// Every domain-taking constructor takes the token LAST.
+		if !strings.HasSuffix(name, "InDomain") || len(call.Args) == 0 {
+			return true
+		}
+		if enclosing == theDomainLessConstructor {
+			return true
+		}
+		domainArg := call.Args[len(call.Args)-1]
+		if !isProvablyZeroDomain(domainArg, zero) {
+			return true
+		}
+		how := "OrdinalDomain{}"
+		if id, isIdent := domainArg.(*ast.Ident); isIdent {
+			how = id.Name + " (a variable this file only ever binds to OrdinalDomain{})"
+		}
+
+		switch {
+		// A RESOLVED ordinal is source-relative and unpinned: it makes no claim
+		// about a composed row, so it needs no layout and an unknown token is
+		// honest. This is the legal alternative the gate steers toward, and
+		// flagging it would leave no way to mint an undecided slot.
+		case strings.Contains(name, "Resolved"):
+			return true
+
+		// The pin is an ARGUMENT here, so it can exempt the call — but only when
+		// it is literally `false`.
+		case name == "NewFieldPathOfSingleInDomain":
+			if len(call.Args) == 4 && isLiteralFalse(call.Args[2]) {
+				return true
 			}
-		case "NewFieldValueWithPinnedOrdinalInDomain":
-			if len(call.Args) == 4 && isEmptyOrdinalDomainLiteral(call.Args[3]) {
-				report(call.Lparen, "NewFieldValueWithPinnedOrdinalInDomain(..., OrdinalDomain{})")
-			}
+			report(call.Lparen, name+"(..., <pin not provably false>, "+how+")")
+
+		default:
+			report(call.Lparen, name+"(..., "+how+")")
 		}
 		return true
 	})
@@ -153,9 +323,13 @@ func TestPinnedOrdinalAlwaysStatesItsDomain(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", rel, err)
 		}
-		// Cheap pre-filter; the parse below is the authority.
+		// Cheap pre-filter; the parse below is the authority. It must admit every
+		// file the scan could report on — the scan now reaches ANY `...InDomain`
+		// constructor, so filtering on the two original names would have made the
+		// generalization unreachable in exactly the files it was added for.
 		if !strings.Contains(string(src), "PinnedOrdinal") &&
-			!strings.Contains(string(src), "NewFieldPathOfSingle") {
+			!strings.Contains(string(src), "NewFieldPathOfSingle") &&
+			!strings.Contains(string(src), "InDomain") {
 			continue
 		}
 		fset := token.NewFileSet()
@@ -245,6 +419,49 @@ func TestPinnedOrdinalDetectorPrecisionAndRecall(t *testing.T) {
 			name: "the domain-taking value constructor called with the unknown token",
 			body: `func f() { _ = NewFieldValueWithPinnedOrdinalInDomain("K", 1, typ, OrdinalDomain{}) }`,
 		},
+
+		// The two shapes that walked through the pin-first version of this gate,
+		// plus the variants of each that share their mechanism.
+		{
+			name: "COMPUTED pin with the unknown token — pin-first missed this entirely",
+			body: `func f() { _ = NewFieldPathOfSingleInDomain("K", 1, inPinned, OrdinalDomain{}) }`,
+		},
+		{
+			name: "computed pin from a call, with the unknown token",
+			body: `func f() { _ = NewFieldPathOfSingleInDomain("K", 1, rc.Pinned(), values.OrdinalDomain{}) }`,
+		},
+		{
+			name: "empty domain via a PACKAGE-SCOPE variable",
+			body: "var emptyDomain = OrdinalDomain{}\n" +
+				`func f() { _ = NewFieldValueWithPinnedOrdinalInDomain("K", 1, typ, emptyDomain) }`,
+		},
+		{
+			name: "empty domain via a local short declaration",
+			body: `func f() { d := OrdinalDomain{}; _ = NewFieldPathOfSingleInDomain("K", 1, true, d) }`,
+		},
+		{
+			name: "empty domain via a ZERO-VALUE var declaration, no literal written at all",
+			body: "var d OrdinalDomain\n" +
+				`func f() { _ = NewFieldValueWithPinnedOrdinalInDomain("K", 1, typ, d) }`,
+		},
+		{
+			name: "a pinned mint whose pin is a variable AND whose domain is a variable",
+			body: "var d values.OrdinalDomain\n" +
+				`func f() { _ = NewFieldPathOfSingleInDomain("K", 1, p, d) }`,
+		},
+		{
+			// The other half of the theDomainLessConstructor exemption. The
+			// exemption is by the ENCLOSING FUNCTION'S NAME, so a new helper that
+			// forwards the unknown token is a fresh domain-less mint and is
+			// caught — otherwise the exemption would be a way to reopen the class
+			// by writing one wrapper.
+			name: "a NEW helper forwarding the unknown token, byte-identical to the exempt body",
+			body: `func mintPinned(f string, i int) *FieldPath { return NewFieldPathOfSingleInDomain(f, i, true, OrdinalDomain{}) }`,
+		},
+		{
+			name: "the REMOVED constructor reintroduced with zero callers, caught by its BODY",
+			body: `func NewFieldValueWithPinnedOrdinal(f string, i int, typ Type) *FieldValue { return NewFieldValueWithPinnedOrdinalInDomain(f, i, typ, OrdinalDomain{}) }`,
+		},
 	}
 	for _, tc := range caught {
 		t.Run("caught/"+tc.name, func(t *testing.T) {
@@ -288,12 +505,43 @@ func TestPinnedOrdinalDetectorPrecisionAndRecall(t *testing.T) {
 			name: "a computed pin paired with a computed domain",
 			body: `func f() { _ = NewFieldPathOfSingleInDomain(n, i, inPinned, OrdinalDomainOfType(rc.Type())) }`,
 			why: "pullup.go's real shape — the pin is threaded, and the domain is derived " +
-				"from the same type the reference flows",
+				"from the same type the reference flows. This is the case whose EXISTENCE was " +
+				"once used to exempt every computed pin; the domain is what makes it legal",
 		},
 		{
 			name: "an unrelated constructor that merely mentions an ordinal",
 			body: `func f() { _ = NewFieldValueWithResolvedOrdinal("K", 1, typ) }`,
 			why:  "source-relative ordinals are a different class and are not this gate's business",
+		},
+		{
+			name: "the RESOLVED domain-taking constructor with the unknown token",
+			body: `func f() { _ = NewFieldValueWithResolvedOrdinalInDomain("K", 1, typ, OrdinalDomain{}) }`,
+			why: "an unpinned ordinal states no claim about a composed row, so an unknown " +
+				"token is honest — the domain-first ordering must not swallow the whole " +
+				"resolved family along with the pinned one",
+		},
+		{
+			name: "the CORRELATED resolved domain-taking constructor with the unknown token",
+			body: `func f() { _ = NewCorrelatedFieldValueWithResolvedOrdinalInDomain(child, "K", 1, typ, OrdinalDomain{}) }`,
+			why:  "same family, and its domain sits at a different argument index — matched as LAST, not as [3]",
+		},
+		{
+			name: "the domain-less constructor's OWN body forwarding the unknown token",
+			body: `func NewFieldPathOfSingle(field string, ordinal int, frontierPinned bool) *FieldPath {
+	return NewFieldPathOfSingleInDomain(field, ordinal, frontierPinned, OrdinalDomain{})
+}`,
+			why: "forwarding the token is what this function IS, and it is a legal shape " +
+				"because an UNPINNED ordinal needs no layout. It is policed at its call " +
+				"sites, where the pin becomes a literal. Flagging the definition would make " +
+				"the gate's only standing finding be its own premise — see the caught case " +
+				"that proves the exemption is by NAME and does not generalize to a wrapper",
+		},
+		{
+			name: "a domain variable REASSIGNED to a derived token",
+			body: `func f() { d := OrdinalDomain{}; d = OrdinalDomainOfType(rt); _ = NewFieldPathOfSingleInDomain("K", 1, true, d) }`,
+			why: "provably-zero means EVERY binding is the token. One that is later derived " +
+				"is not proven, and flagging it would fire the gate on a correct mint — which " +
+				"is how a gate earns its deletion",
 		},
 	}
 	for _, tc := range legal {

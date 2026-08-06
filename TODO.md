@@ -12033,11 +12033,32 @@ None is speculative: each was re-verified against the tree before booking.
   ordinal against an unstated row. It is deleted, and
   `pkg/docscheck/pinned_ordinal_domain_test.go`
   (`TestPinnedOrdinalAlwaysStatesItsDomain`) now fails the build on any
-  reintroduction — no allowlist, mutation-checked in three directions
-  (reintroduced constructor; a real site passing `OrdinalDomain{}`;
-  `NewFieldPathOfSingle(..., true)`), with a companion precision test pinning the
-  six shapes that must stay LEGAL so the gate cannot become the thing that
-  removes the correct mint.
+  reintroduction — no allowlist, with a companion precision test pinning the
+  shapes that must stay LEGAL so the gate cannot become the thing that removes
+  the correct mint.
+
+  **The gate's FIRST version was too narrow, and the review lap found it.** It
+  asked about the PIN first — a literal `true` in the pin position — so two
+  shapes walked through: `NewFieldPathOfSingleInDomain(f, i, computedPin,
+  OrdinalDomain{})`, and any call whose empty domain arrived by VARIABLE
+  (`d := OrdinalDomain{}`, a package-level `var emptyDomain = OrdinalDomain{}`,
+  or `var d OrdinalDomain` — a zero value with no literal syntax at all). The
+  exemption for a computed pin rested on "a computed pin is paired with a
+  computed domain", which was an observation about the call sites that happened
+  to exist, stated as a property.
+
+  It now asks about the DOMAIN first and consults the pin only to EXEMPT: only a
+  literal `false` does. It also reaches any `...InDomain` constructor by name
+  suffix, taking the token as the last argument, so it fails closed on a
+  constructor nobody has written yet. Widening it immediately reported a real
+  mint the narrow version could not see (`values.go:440`) — which turned out to
+  be `NewFieldPathOfSingle`'s OWN body forwarding the token, the one structural
+  exemption, policed at its call sites instead and pinned in both directions
+  (the exempt body stays legal; a byte-identical wrapper under a new name is
+  caught). Mutation-checked in three independent directions — pin-first ordering
+  restored (3 fixtures red); variable resolution dropped (4 red); the exemption
+  repointed at another name (2 red, one in each direction). 15 caught fixtures,
+  10 legal.
 
   **No census or pin population moved** — the change deletes a zero-caller
   function and adds a test, so no production path is altered; re-measured to
