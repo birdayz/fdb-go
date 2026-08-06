@@ -182,8 +182,12 @@ func TestQualifierRecoveryCensusGateIsFirstStatement(t *testing.T) {
 // rather than a simplification: the hoist gate below matched only *ast.Ident, so
 // EVERY cross-package census helper was invisible to it by construction. A
 // recorder exported from `values` and called as `values.RecordX(expensive())`
-// could not be named in the table at all — the gate would report zero call sites
-// and pass vacuously, which is the one failure mode a hand-named gate has.
+// would have found zero call sites and failed LOUDLY on the minCalls arm below
+// — but with the WRONG DIAGNOSIS. That arm's message is "clearing an empty
+// population", which reads as "the helper was renamed away, come update the
+// table", and the correct response to it (delete or rename the entry) is
+// precisely the one that abandons the check. A gate that fails for a reason it
+// misnames sends its reader in the opposite direction from the defect.
 //
 // The package qualifier is deliberately not pinned, exactly as isCensusGateCall
 // does it: an import alias names the same function, and a gate a rename could

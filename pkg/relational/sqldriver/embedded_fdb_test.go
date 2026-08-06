@@ -282,6 +282,57 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 // because a range would absorb the next four firings silently — and it was this
 // gate going red on a test the author had just written that produced the
 // attribution above, from a run rather than from memory.
+//
+// WHY THESE SIX ARE EQUALITIES WHILE THEIR SIBLINGS A FEW HUNDRED LINES DOWN ARE
+// FLOORED "because the totals move run to run". That asymmetry is real, it is
+// measured, and it is NOT the one it looks like.
+//
+// Measured over FOUR consecutive full-suite runs, the split is by BUCKET and not
+// by census or by site:
+//
+//	STABLE 4/4   foldStep1 denominator 572 (and all five class/shape equalities);
+//	             implementJoinWithExistential calls 431 / untyped 249 / other 182;
+//	             yieldExistsFlatMap 449 / 130 / 269 / 50;
+//	             buildCorrelatedFlatMapPlan typedQOV 476, mergeRC 6732;
+//	             implementExistentialSelect other 145
+//	VARIES       buildCorrelatedFlatMapPlan other  18198 / 17840 / 18219 / 18391
+//	             implementExistentialSelect untyped 1609 / 1413 / 1613 / 1698
+//	             translator mint                    1086 / 1004 / 1092 / 1123
+//
+// The reading that does NOT survive the code is "these count accepted rule
+// applications while those count explored alternatives". Both recorders sit at
+// once-per-OnMatch positions in the same rule — recordFoldStep1Denominator at
+// the seed-decision call site and recordFlatMapResultValue at the FlatMap
+// construction — with no plan-partition or requested-ordering loop between the
+// dispatch and either one. They are the same KIND of number.
+//
+// What the split actually tracks is that buildCorrelatedFlatMapPlan's typed and
+// merge buckets are pinned while its `other` bucket moves, IN THE SAME CALL.
+// A site being invoked a variable number of times would move all of its buckets
+// together; these move one. So the variance is SHAPE-LOCALISED — a fixed set of
+// query shapes produces the pinned buckets and a variable set produces the rest
+// — and it is driven from upstream of the planner: `EmbeddedConnection` caches
+// physical plans keyed by normalized SQL and invalidates on DDL, so how many
+// times a given query is translated and planned across a suite run depends on
+// cache hits, on invalidation order, and on the retry tests. Every bucket these
+// six equalities count is in the pinned family; the untyped mint that drives the
+// varying family reaches none of them.
+//
+// THE HONEST STATUS: that is an OBSERVATION about which tests exercise the
+// three-quantifier EXISTS shape, not a theorem that they must. Nothing
+// structural forbids a future cached-or-retried test from planning that shape a
+// variable number of times, and on the day one does, these equalities become
+// flakes. They are kept as equalities anyway, deliberately: a floor cannot
+// detect silent absorption of new firings, which is the one thing this gate has
+// actually caught, so trading a proven instrument for an unproven risk is the
+// wrong side of the bet. What the discovery DOES change is the diagnosis, and
+// that is why it is written here — on a deviation, RE-RUN FIRST. Run-to-run
+// movement is now a known failure mode for the sibling counters and has never
+// once been observed for these. If a re-run reproduces the same new number, it
+// is corpus growth: identify the fixture and restate the total, as every entry
+// above does. If it does not reproduce, the shape has entered the cache-
+// sensitive family, and THEN these convert to floors with their siblings'
+// collapse-detection calibration — as a measured change, not a precaution.
 var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 	n := func(v int) *int { return &v }
 	return cascades.FoldStep1SeedGates{
