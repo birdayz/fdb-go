@@ -155,6 +155,14 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// an author — so every attribution of this population written down so far was
 	// an inference. This measures it.
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatFlatMapProducerCensus())
+	// The SELECT RESULT-VALUE MINT census: the site that BUILDS a select's result
+	// value, as against the three that flow it verbatim. The producer census
+	// above can only name the FlatMap construction that handed a value over, and
+	// three of its four sites pass sel.GetResultValue() through unchanged —
+	// exactly as Java's three constructions do
+	// (ImplementNestedLoopJoinRule.java:187,201,214). Their untyped counts are a
+	// count of couriers; this is the author.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatSelectResultMintCensus())
 	if failed := assertDottedLegQualifierCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
@@ -202,6 +210,9 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 		code = 1
 	}
 	if failed := assertFlatMapProducerCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
+	if failed := assertSelectResultMintCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
 	return code
@@ -284,6 +295,16 @@ var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 		// satisfied by any 94, including a mix that had let merge legs back in.
 		ReconstructNilBareQOV: n(102),
 		ReconstructNilMerge:   n(0),
+		// A FLOOR, not an equality, and the only one in this set. It floors the
+		// DENOMINATOR of the `correlatedStep1 && ordinalWindows != nil`
+		// reachability measurement — the wall any conversion of the reconstruct-nil
+		// residue contacts. The NUMERATOR is a measured zero and is deliberately
+		// ungated: the day it moves is a finding to read, not a regression to
+		// block. The denominator going to zero is the thing that must not happen
+		// silently, because then the numerator measures an absence of traffic while
+		// reading as an absence of the shape. Floored an order of magnitude below
+		// the measurement.
+		CorrelatedStep1FiringsFloor: n(20),
 	}
 }()
 
@@ -10258,25 +10279,90 @@ func assertOrientationGateCensus(w io.Writer) bool {
 // the reconstruct-nil residue, is checked at zero unconditionally inside
 // cascades.AssertFlatMapProducerCensus. That zero is the measured refutation of
 // the "the residue is an untyped-QOV typing gap" reading: the declined legs
-// carry real RecordTypes (arity 1-3, witnessed in the outcome census beside
-// this one), and the refusal is on SHAPE. A configurable refutation is not one.
+// carry real RecordTypes (arity 1-3 on the FlatMap legs and 1-4 counting the
+// NestedLoopJoin leg — both witnessed in the outcome census beside this one),
+// and the refusal is on SHAPE. A configurable refutation is not one.
 //
 // The OTHER three sites do emit untyped QOVs, in bulk, and that is a separate
 // live Java divergence rather than an assertion failure — floored below so it
 // stays counted. See AssertFlatMapProducerCensus for why a floor and not a zero.
+//
+// TWO OF THOSE THREE ARE COURIERS, NOT AUTHORS, and the mint census beside this
+// one is what says so: implementExistentialSelect and yieldExistsFlatMap flow
+// sel.GetResultValue() verbatim (Java's three constructions do the same,
+// ImplementNestedLoopJoinRule.java:187,201,214), and 1086 of their untyped
+// traffic is minted by the SQL translator. These floors keep the traffic
+// counted; selectResultMintFloors is where the divergence itself is booked.
 var flatMapProducerFloors = func() cascades.FlatMapProducerFloors {
 	var f cascades.FlatMapProducerFloors
-	// Measured over the whole real-FDB corpus:
-	//   buildCorrelatedFlatMapPlan          calls 25489 | typedQOV 476 | UNTYPED 0
-	//   implementExistentialSelect          calls  1764 | typedQOV   0 | UNTYPED 1619
+	// Measured over the whole real-FDB corpus, one run:
+	//   buildCorrelatedFlatMapPlan          calls 25406 | typedQOV 476 | UNTYPED 0
+	//   implementExistentialSelect          calls  1754 | typedQOV   0 | UNTYPED 1609
 	//   implementJoinWithExistential(MINT)  calls   431 | typedQOV   0 | UNTYPED  249
 	//   yieldExistsFlatMap                  calls   449 | typedQOV 130 | UNTYPED  269
 	// Floored an order of magnitude below, like every other per-site floor here:
-	// these catch a site going dark, not corpus churn.
+	// these catch a site going dark, not corpus churn — and "churn" here includes
+	// RUN-TO-RUN variance, not only added tests: a second consecutive full-suite
+	// run measured buildCorrelatedFlatMapPlan at 25048 rather than 25406. These
+	// are rule FIRINGS and the memo explores a rule a different number of times
+	// per query. The outcome census's equalities did not move across the same two
+	// runs; only the firing totals did.
 	f.Calls = [4]int{2000, 150, 40, 40}
 	f.UntypedQOVFloor = [4]int{0, 150, 20, 20}
 	return f
 }()
+
+// selectResultMintFloors gates the select result-value MINT census.
+//
+// This is the site that actually BUILDS the untyped QuantifiedObjectValue Java
+// cannot express. The producer census beside it reported that population at
+// implementExistentialSelect and yieldExistsFlatMap — both of which flow
+// sel.GetResultValue() verbatim and build nothing, exactly as Java's three
+// RecordQueryFlatMapPlan constructions do
+// (ImplementNestedLoopJoinRule.java:187,201,214). Booking the divergence against
+// a courier is what this census corrects.
+//
+// Java's own guarantee is structural: a simple select's result value is
+// overQuantifier.getFlowedObjectValue() (GraphExpansion.java:401),
+// QuantifiedObjectValue.of has no untyped overload
+// (QuantifiedObjectValue.java:187), and Quantifier.getFlowedObjectType is a
+// Verify.verify plus requireNonNull (Quantifier.java:801-810).
+//
+// FLOORED an order of magnitude below the measurement, like every per-site floor
+// here — including the UNTYPED one, whose drop direction is the failing one. See
+// values.SelectResultMintFloors for why a floor on a divergence is not backwards.
+var selectResultMintFloors = func() values.SelectResultMintFloors {
+	var f values.SelectResultMintFloors
+	// Measured over the whole real-FDB corpus (see the mint census in the
+	// TestMain report):
+	//   translator buildExistsSelect(MINT)  calls 1086 | typedQOV 0 | UNTYPED 1086
+	// Every mint is untyped: this site has no typed arm at all, which is the
+	// divergence stated as a measurement rather than as a reading.
+	//
+	// THE TOTAL IS NOT DETERMINISTIC AND THE RATIO IS. Two consecutive full-suite
+	// runs measured 1086 and 1004 — these are RULE FIRINGS, and the memo explores
+	// a rule a different number of times per query run to run, exactly as the
+	// FlatMap producer census's own totals move (25406 / 25048 across the same two
+	// runs). What did NOT move either time is 100% untyped, nor did any outcome
+	// census equality (572/160/108/202/102) or the leg-local bake total (190).
+	// So the floor is calibrated an order of magnitude below the SMALLER
+	// observation, and anyone re-measuring should expect a different digit and
+	// check the RATIO.
+	f.Calls = [values.SelectResultMintSiteCount]int{100}
+	f.UntypedQOVFloor = [values.SelectResultMintSiteCount]int{100}
+	return f
+}()
+
+func assertSelectResultMintCensus(w io.Writer) bool {
+	floors := &selectResultMintFloors
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		fmt.Fprintf(w, "select mint census: per-site floors NOT checked "+
+			"(-test.run=%q narrowed the corpus). The partition still runs — it holds "+
+			"over ANY population.\n", f.Value.String())
+		floors = nil
+	}
+	return values.AssertSelectResultMintCensus(w, floors)
+}
 
 func assertFlatMapProducerCensus(w io.Writer) bool {
 	floors := &flatMapProducerFloors

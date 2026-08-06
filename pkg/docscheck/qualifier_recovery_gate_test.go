@@ -166,80 +166,116 @@ func TestQualifierRecoveryCensusGateIsFirstStatement(t *testing.T) {
 	}
 }
 
-// TestQualifierRecoveryCensusGateIsHoistedAboveIdentity pins the half of the
-// EXISTS-fold gate that actually costs something.
+// censusOnlyHelper is a function computed FOR a census and for nothing else,
+// whose every call must therefore sit inside a positive census guard.
 //
-// sortKeyQualifierIdentity exists for the census and for nothing else: neither
-// resolveKeyName's answer nor sortKeySourceValue's value depends on the identity
-// it returns. It upper-cases a qualifier per sort key. So every call to it must
-// sit inside a positive LegIdentityCensusEnabled guard; a gate that lives only
-// inside recordExistsSortSplit leaves this allocation exactly where it was, on
-// every sort key of every EXISTS fold over a join.
-func TestQualifierRecoveryCensusGateIsHoistedAboveIdentity(t *testing.T) {
+// The gate above pins the RECORDER's first statement. This one pins the callers,
+// and it is the half that carries the cost: a gate inside the recorder cannot
+// recover work that was already done to build the recorder's ARGUMENT, or work
+// done inline by a production function that merely happens to print a census
+// witness. Both entries below were found by reading, and both were live.
+type censusOnlyHelper struct {
+	file string
+	fn   string
+	// minCalls asserts the population is not empty. A hand-named helper that has
+	// been renamed away would otherwise clear an empty set and say nothing.
+	minCalls int
+	why      string
+}
+
+var censusOnlyHelpers = []censusOnlyHelper{
+	{
+		file:     "pkg/relational/core/query/cascades_translator.go",
+		fn:       "sortKeyQualifierIdentity",
+		minCalls: 2,
+		why: "it is computed for the census and for nothing else — neither resolveKeyName's " +
+			"answer nor sortKeySourceValue's value depends on it — and it upper-cases a " +
+			"qualifier per sort key. Ungated, every sort key of every EXISTS fold over a join " +
+			"pays that allocation with the census off, and a gate inside recordExistsSortSplit " +
+			"cannot recover it: the cost is incurred building the ARGUMENT",
+	},
+	{
+		file:     "pkg/recordlayer/query/plan/cascades/fold_step1_seed_census.go",
+		fn:       "describeFlatMapResultOrigin",
+		minCalls: 1,
+		why: "it takes flatMapProducerMu, a PROCESS-GLOBAL mutex, and its only reader is " +
+			"classifyDeclinedLeg — which is not a census function at all. classifyDeclinedLeg " +
+			"runs inside reconstructFoldStep1Seed on the production seed path, for every " +
+			"declined leg of every EXISTS-over-join firing, census on or off. Read ungated it " +
+			"put a global lock acquisition on that path to build a witness string that the " +
+			"disabled census then dropped. This is the SAME class as the recorders above and " +
+			"a DIFFERENT shape: not a recorder classifying ahead of its gate, but a " +
+			"production function reading a census instrument inline",
+	},
+}
+
+// TestCensusOnlyHelpersAreCalledUnderTheGate pins the half of each census gate
+// that actually costs something.
+//
+// A census-only helper called outside a positive LegIdentityCensusEnabled guard
+// is paid for on every production firing, and NOTHING can see it: the census is
+// off, so its counters read zero either way, and a census-delta probe reports no
+// difference between the guarded and the unguarded spelling. The ordering is the
+// property, it is deterministic, and it is what this gate reads off the AST —
+// the same argument TestQualifierRecoveryCensusGateIsFirstStatement records for
+// why this is structural and not measured.
+func TestCensusOnlyHelpersAreCalledUnderTheGate(t *testing.T) {
 	t.Parallel()
 	root := sourceTreeRoot(t)
 
-	const rel = "pkg/relational/core/query/cascades_translator.go"
-	fset, f := parseSource(t, root, rel)
+	for _, h := range censusOnlyHelpers {
+		t.Run(h.fn, func(t *testing.T) {
+			t.Parallel()
+			fset, f := parseSource(t, root, h.file)
 
-	// Every range covered by the body of an `if <gate>()` — the regions in which
-	// the identity may legally be computed. The DECLARATION of
-	// sortKeyQualifierIdentity is excluded by construction: it is a FuncDecl, and
-	// only CallExprs are collected below.
-	type span struct{ lo, hi token.Pos }
-	var guarded []span
-	ast.Inspect(f, func(n ast.Node) bool {
-		if ifStmt, ok := n.(*ast.IfStmt); ok && isCensusGateCall(ifStmt.Cond) {
-			guarded = append(guarded, span{ifStmt.Body.Pos(), ifStmt.Body.End()})
-		}
-		return true
-	})
-
-	var unguarded []string
-	ast.Inspect(f, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		id, ok := call.Fun.(*ast.Ident)
-		if !ok || id.Name != "sortKeyQualifierIdentity" {
-			return true
-		}
-		for _, g := range guarded {
-			if call.Pos() >= g.lo && call.End() <= g.hi {
+			// Every range covered by the body of an `if <gate>()` — the regions in
+			// which the helper may legally be called. The helper's own DECLARATION is
+			// excluded by construction: it is a FuncDecl, and only CallExprs are
+			// collected below.
+			type span struct{ lo, hi token.Pos }
+			var guarded []span
+			ast.Inspect(f, func(n ast.Node) bool {
+				if ifStmt, ok := n.(*ast.IfStmt); ok && isCensusGateCall(ifStmt.Cond) {
+					guarded = append(guarded, span{ifStmt.Body.Pos(), ifStmt.Body.End()})
+				}
 				return true
-			}
-		}
-		unguarded = append(unguarded, fset.Position(call.Pos()).String())
-		return true
-	})
+			})
 
-	if len(unguarded) != 0 {
-		t.Fatalf("%s: sortKeyQualifierIdentity is called outside a LegIdentityCensusEnabled "+
-			"guard at %v.\n"+
-			"  It is computed for the census and for nothing else — neither resolveKeyName's "+
-			"answer nor sortKeySourceValue's value depends on it — and it upper-cases a "+
-			"qualifier per sort key. Ungated, every sort key of every EXISTS fold over a join "+
-			"pays that allocation with the census off, and a gate inside recordExistsSortSplit "+
-			"cannot recover it: the cost is incurred building the ARGUMENT.\n"+
-			"  If a production reader ever genuinely needs this identity, that is a real "+
-			"change and this gate is where it gets argued — not routed around.",
-			rel, unguarded)
-	}
-	// A gate that found no calls at all would pass vacuously, and this one is
-	// pinned by hand to a function name, so the population is asserted.
-	var found int
-	ast.Inspect(f, func(n ast.Node) bool {
-		if call, ok := n.(*ast.CallExpr); ok {
-			if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "sortKeyQualifierIdentity" {
+			var unguarded []string
+			var found int
+			ast.Inspect(f, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				id, ok := call.Fun.(*ast.Ident)
+				if !ok || id.Name != h.fn {
+					return true
+				}
 				found++
+				for _, g := range guarded {
+					if call.Pos() >= g.lo && call.End() <= g.hi {
+						return true
+					}
+				}
+				unguarded = append(unguarded, fset.Position(call.Pos()).String())
+				return true
+			})
+
+			if len(unguarded) != 0 {
+				t.Fatalf("%s: %s is called outside a LegIdentityCensusEnabled guard at %v.\n"+
+					"  %s.\n"+
+					"  If a production reader ever genuinely needs this value, that is a real "+
+					"change and this gate is where it gets argued — not routed around.",
+					h.file, h.fn, unguarded, h.why)
 			}
-		}
-		return true
-	})
-	if found < 2 {
-		t.Fatalf("%s: found %d call(s) to sortKeyQualifierIdentity, want the 2 EXISTS-fold "+
-			"readers (sortKeyName and sortKeySourceValue). Below that this gate is clearing "+
-			"an empty population and says nothing about either caller", rel, found)
+			// A gate that found no calls at all would pass vacuously, and this one is
+			// pinned by hand to a function name, so the population is asserted.
+			if found < h.minCalls {
+				t.Fatalf("%s: found %d call(s) to %s, want >= %d. Below that this gate is "+
+					"clearing an empty population and says nothing about any caller",
+					h.file, found, h.fn, h.minCalls)
+			}
+		})
 	}
 }

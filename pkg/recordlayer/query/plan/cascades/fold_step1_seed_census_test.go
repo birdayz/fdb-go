@@ -390,3 +390,84 @@ func TestOrientationGateCensus_AssertionArmsGoRed(t *testing.T) {
 			"hold over ANY population, including a -test.run-narrowed one")
 	}
 }
+
+// The correlatedStep1-with-windows reachability counter.
+//
+// It answers the one conjunction on the EXISTS arm that RFC-200 could not
+// establish by reading, and that any conversion of the reconstruct-nil residue
+// contacts: `:4124`'s mint and its FlatMap construction run on BOTH the
+// correlated and the materialized arm, so a positionable leg result value
+// produces a baked ordinal where a name-keyed row context raises
+// values.BakedNameContextError.
+//
+// The NUMERATOR is deliberately not asserted at a value. It is a measured zero
+// today, and a zero pinned as an equality would go red on the day a corpus query
+// legitimately reaches the conjunction — which is a FINDING to read, not a
+// regression to block. What is asserted is that the pair stays a coherent ratio
+// and that the denominator cannot go dark silently, because a zero denominator
+// makes the numerator measure an absence of TRAFFIC while reading as an absence
+// of the SHAPE.
+func TestFoldStep1Census_CorrelatedStep1WindowsReachability(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the numerator exceeding the denominator is RED", func(t *testing.T) {
+		t.Parallel()
+		var c foldStep1SeedCounters
+		c.CorrelatedStep1Firings = 3
+		c.CorrelatedStep1WithWindows = 4
+		var b strings.Builder
+		if !assertFoldStep1SeedCounters(&b, c, nil, nil) {
+			t.Fatal("a with-windows count larger than the firing count must fail. They are " +
+				"recorded by ONE call at ONE site, so a gap means the two stopped being the " +
+				"numerator and denominator of one ratio and the printed fraction is fiction.")
+		}
+	})
+
+	t.Run("a coherent ratio PASSES", func(t *testing.T) {
+		t.Parallel()
+		var c foldStep1SeedCounters
+		c.CorrelatedStep1Firings = 108
+		c.CorrelatedStep1WithWindows = 0
+		var b strings.Builder
+		if assertFoldStep1SeedCounters(&b, c, nil, nil) {
+			t.Fatalf("the measured shape (a live denominator, a zero numerator) must pass, "+
+				"or the red above is measuring the gate rather than the population:\n%s", b.String())
+		}
+	})
+
+	t.Run("the DENOMINATOR going dark is RED", func(t *testing.T) {
+		t.Parallel()
+		n := func(v int) *int { return &v }
+		var c foldStep1SeedCounters
+		var b strings.Builder
+		if !assertFoldStep1SeedCounters(&b, c, nil, &FoldStep1SeedGates{CorrelatedStep1FiringsFloor: n(50)}) {
+			t.Fatal("zero correlatedStep1 firings reaching the layout read must fail. With the " +
+				"denominator at zero the reachability measurement says nothing, and a " +
+				"conversion of the residue would be planned against a number that only " +
+				"looks like evidence.")
+		}
+		if !strings.Contains(b.String(), "absence of TRAFFIC") {
+			t.Fatalf("the failure message must say what the zero actually means: %s", b.String())
+		}
+	})
+
+	t.Run("the recorder counts both halves", func(t *testing.T) {
+		// NOT parallel: it writes the process-global census.
+		ResetFoldStep1SeedCensus()
+		defer ResetFoldStep1SeedCensus()
+		recordCorrelatedStep1Windows(false)
+		recordCorrelatedStep1Windows(true)
+		recordCorrelatedStep1Windows(false)
+		c, _ := FoldStep1SeedCensus()
+		if c.CorrelatedStep1Firings != 3 || c.CorrelatedStep1WithWindows != 1 {
+			t.Fatalf("firings=%d withWindows=%d, want 3 and 1. The denominator must count "+
+				"EVERY correlated firing at the layout read and the numerator only those the "+
+				"layout answered; collapsing either makes the ratio unreadable",
+				c.CorrelatedStep1Firings, c.CorrelatedStep1WithWindows)
+		}
+		if !strings.Contains(FormatFoldStep1SeedCensus(), "1 of 3") {
+			t.Fatalf("the census must PRINT the ratio, not just hold it — a counter no "+
+				"harness renders is a measurement nobody reads:\n%s", FormatFoldStep1SeedCensus())
+		}
+	})
+}

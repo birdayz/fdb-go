@@ -196,6 +196,33 @@ type foldStep1SeedCounters struct {
 	// windows. The hazard is specifically a MERGE row, so that is what is zeroed.
 	DeclinedStep1RVIsMerge int
 
+	// CorrelatedStep1Firings and CorrelatedStep1WithWindows measure the
+	// REACHABILITY of the `correlatedStep1 && ordinalWindows != nil` conjunction
+	// at implementJoinWithExistential's layout read.
+	//
+	// It is the one conjunction on this arm that could not be established BY
+	// READING, and it is the wall any conversion of the reconstruct-nil residue
+	// contacts: `:4124`'s mint and its FlatMap construction run on BOTH the
+	// correlated and the materialized arm — the correlatedStep1 block only
+	// selects step1Expr — so giving a leg a positionable result value means
+	// producing a baked ordinal on an arm where a name-keyed row context raises
+	// values.BakedNameContextError. That arm carries a two-revert history.
+	//
+	// Structurally the conjunction is REACHABLE, not dead: on the correlated arm
+	// ordinalWindows is non-nil exactly when sel.GetResultValue() is ALREADY a
+	// pristine ordinal seed, which nothing forbids. "Reachable in principle" and
+	// "reached by the corpus" are different claims, and only the second one tells
+	// a conversion whether it will meet the wall on day one or on the day some
+	// unrelated query changes shape. WithWindows is the count that answers it.
+	//
+	// CorrelatedStep1Firings is the DENOMINATOR for that ratio, counted at the
+	// same site. It is deliberately NOT Class[foldStep1DeclineCorrelatedStep1]:
+	// that one is counted inside foldStep1Seed and this one at the layout read,
+	// and the two being counted apart is what would make a firing that reaches
+	// one and not the other visible instead of arithmetic.
+	CorrelatedStep1Firings     int
+	CorrelatedStep1WithWindows int
+
 	// ReconstructNilBothLegsUnsafe counts firings where BOTH legs were
 	// ordinal-unsafe.
 	//
@@ -221,8 +248,6 @@ func recordFoldStep1Denominator() {
 	foldStep1Counts.Denominator++
 }
 
-// recordFoldStep1Outcome counts ONE classified firing. Callers must guard on
-// values.LegIdentityCensusEnabled().
 // recordFoldStep1DeclinedMergeRV counts a DECLINED firing whose step1RV is
 // itself a positional merge. Callers must guard on
 // values.LegIdentityCensusEnabled().
@@ -232,6 +257,20 @@ func recordFoldStep1DeclinedMergeRV() {
 	foldStep1Counts.DeclinedStep1RVIsMerge++
 }
 
+// recordCorrelatedStep1Windows counts ONE correlated-arm firing at the layout
+// read, and whether the layout answered. Callers must guard on
+// values.LegIdentityCensusEnabled(). See CorrelatedStep1WithWindows.
+func recordCorrelatedStep1Windows(hasWindows bool) {
+	foldStep1Mu.Lock()
+	defer foldStep1Mu.Unlock()
+	foldStep1Counts.CorrelatedStep1Firings++
+	if hasWindows {
+		foldStep1Counts.CorrelatedStep1WithWindows++
+	}
+}
+
+// recordFoldStep1Outcome counts ONE classified firing. Callers must guard on
+// values.LegIdentityCensusEnabled().
 func recordFoldStep1Outcome(class foldStep1Class, decline foldStep1LegDecline) {
 	if class <= foldStep1ClassNone || class >= foldStep1ClassCount {
 		return
@@ -294,6 +333,8 @@ func FormatFoldStep1SeedCensus() string {
 		fmt.Fprintf(&b, "\n    %-46s %d", s, c.ReconstructNilLegShape[s])
 	}
 	fmt.Fprintf(&b, "\n    %-46s %d", "firings with BOTH legs unsafe", c.ReconstructNilBothLegsUnsafe)
+	fmt.Fprintf(&b, "\n  %-48s %d of %d", "correlatedStep1 firings WITH a merged layout",
+		c.CorrelatedStep1WithWindows, c.CorrelatedStep1Firings)
 	for _, w := range witnesses {
 		fmt.Fprintf(&b, "\n    witness %s", w)
 	}
@@ -317,6 +358,19 @@ type FoldStep1SeedGates struct {
 	ReconstructNil        *int
 	ReconstructNilBareQOV *int
 	ReconstructNilMerge   *int
+
+	// CorrelatedStep1FiringsFloor is a FLOOR, not an equality, and it is the only
+	// one in this struct — which is why it is named for what it is.
+	//
+	// It floors the DENOMINATOR of the correlatedStep1-with-windows measurement.
+	// The interesting number is CorrelatedStep1WithWindows, and that one is
+	// deliberately not gated at all: it is currently a measured zero, and a zero
+	// asserted as an equality would go red on the day a corpus query legitimately
+	// reaches the conjunction — which is a FINDING to read, not a regression to
+	// block. What must not happen silently is the denominator going to zero,
+	// because then the ratio is measuring an absence of traffic and reads exactly
+	// like an absence of the shape.
+	CorrelatedStep1FiringsFloor *int
 }
 
 // AssertFoldStep1SeedCensus checks the partition, the structural zeros, and any
@@ -383,8 +437,28 @@ func assertFoldStep1SeedCounters(w io.Writer, c foldStep1SeedCounters, witnesses
 			"  sub-partition per LEG before reading any of them again.\n"+
 			"  witnesses: %v\n", c.ReconstructNilBothLegsUnsafe, witnesses)
 	}
+	if c.CorrelatedStep1WithWindows > c.CorrelatedStep1Firings {
+		failed = true
+		fmt.Fprintf(w, "FOLD-STEP1 SEED CENSUS FAIL: correlatedStep1 firings WITH a merged\n"+
+			"  layout (%d) exceeds the correlatedStep1 firings counted at the same site\n"+
+			"  (%d). They are recorded by one call; a gap means the two stopped being the\n"+
+			"  numerator and denominator of one ratio.\n",
+			c.CorrelatedStep1WithWindows, c.CorrelatedStep1Firings)
+	}
 	if gates == nil {
 		return failed
+	}
+	if gates.CorrelatedStep1FiringsFloor != nil && c.CorrelatedStep1Firings < *gates.CorrelatedStep1FiringsFloor {
+		failed = true
+		fmt.Fprintf(w, "FOLD-STEP1 SEED CENSUS FAIL: %d correlatedStep1 firing(s) reached the\n"+
+			"  layout read, want >= %d.\n"+
+			"  This is the DENOMINATOR of the `correlatedStep1 && ordinalWindows != nil`\n"+
+			"  reachability measurement — the wall any conversion of the reconstruct-nil\n"+
+			"  residue contacts. With it at zero the companion count is measuring an\n"+
+			"  absence of TRAFFIC while reading as an absence of the SHAPE, and the\n"+
+			"  conversion would be planned against a number that says nothing.\n"+
+			"  census: %s\n", c.CorrelatedStep1Firings, *gates.CorrelatedStep1FiringsFloor,
+			FormatFoldStep1SeedCensus())
 	}
 	type eq struct {
 		name string
@@ -475,11 +549,37 @@ func describeQOVType(qov *values.QuantifiedObjectValue) string {
 	return qov.Typ.Code().String()
 }
 
+// declinedLegOriginSuffix is the producer attribution appended to a bare-QOV
+// witness, and it is GATED because its reader is not free.
+//
+// describeFlatMapResultOrigin takes flatMapProducerMu — a process-global mutex —
+// on every call. classifyDeclinedLeg is NOT a census-only function: it runs
+// inside reconstructFoldStep1Seed, on the production seed path, for every
+// declined leg of every EXISTS-over-join firing, whether or not any census is
+// collecting. Reading the attribution there put a global lock acquisition on
+// that path for a string nothing consumes with the census off.
+//
+// The gate is here rather than inside describeFlatMapResultOrigin so that the
+// ARGUMENT is not built either: a helper that returns "" after locking has
+// already paid the cost this gate exists to remove. That is the same shape the
+// qualifier-recovery recorders were hoisted into, for the same reason.
+func declinedLegOriginSuffix(rv values.Value) string {
+	if values.LegIdentityCensusEnabled() {
+		return " " + describeFlatMapResultOrigin(rv)
+	}
+	return ""
+}
+
 // classifyDeclinedLeg describes the node legOrdinalSafety refused.
 //
 // The result-value shapes it separates are the ones RFC-200's gates are stated
 // against; anything else is Other with a witness naming the plan type, so a new
 // population arrives as a named witness rather than as movement in a bucket.
+//
+// It is called from the PRODUCTION path (reconstructFoldStep1Seed), not from a
+// census recorder, so anything it does costs something with the census off. The
+// shape classification itself is a type switch over a value already in hand; the
+// producer attribution is not, and is gated — see declinedLegOriginSuffix.
 func classifyDeclinedLeg(node plans.RecordQueryPlan) (foldStep1LegShape, string) {
 	if node == nil {
 		return foldStep1LegShapeNone, ""
@@ -498,8 +598,8 @@ func classifyDeclinedLeg(node plans.RecordQueryPlan) (foldStep1LegShape, string)
 	}
 	switch t := rv.(type) {
 	case *values.QuantifiedObjectValue:
-		return foldStep1LegShapeBareQOV, fmt.Sprintf("%T rv=bare QOV (typed=%t rvtype=%s %s)",
-			node, quantifiedObjectValueIsTyped(t), describeQOVType(t), describeFlatMapResultOrigin(rv))
+		return foldStep1LegShapeBareQOV, fmt.Sprintf("%T rv=bare QOV (typed=%t rvtype=%s%s)",
+			node, quantifiedObjectValueIsTyped(t), describeQOVType(t), declinedLegOriginSuffix(rv))
 	case *values.RecordConstructorValue:
 		return foldStep1LegShapeRCNotMerge, fmt.Sprintf("%T rv=RC(%d) NOT a positional merge", node, len(t.Fields))
 	default:
@@ -884,7 +984,20 @@ func flatMapResultOriginOf(rv values.Value) (flatMapProducerSite, bool) {
 }
 
 // describeFlatMapResultOrigin spells the producing site for a census witness.
+//
+// The MINT is reported ahead of the FlatMap site when one is known, because they
+// answer different questions and the second was being read as an answer to the
+// first. A FlatMap construction that flows sel.GetResultValue() verbatim is a
+// COURIER; the author is whatever filled that field, and the SQL translator's
+// mint registers itself so the witness can say so. Both are printed when both
+// are known — the courier is still the thing that put the value in a plan.
 func describeFlatMapResultOrigin(rv values.Value) string {
+	if mint, minted := values.SelectResultMintOriginOf(rv); minted {
+		if site, ok := flatMapResultOriginOf(rv); ok {
+			return "mint=" + mint.String() + " via=" + site.String()
+		}
+		return "mint=" + mint.String()
+	}
 	site, ok := flatMapResultOriginOf(rv)
 	switch {
 	case !ok:
@@ -900,7 +1013,30 @@ func describeFlatMapResultOrigin(rv values.Value) string {
 func FlatMapProducerCensus() flatMapProducerCounters {
 	flatMapProducerMu.Lock()
 	defer flatMapProducerMu.Unlock()
-	return flatMapProducerCounts
+	return copyFlatMapProducerCounters(flatMapProducerCounts)
+}
+
+// copyFlatMapProducerCounters DEEP-copies the per-site shape maps.
+//
+// Returning the struct by value copies the ARRAYS and shares the MAPS inside
+// them, which defeats the whole reason assertFlatMapProducerCounters takes an
+// explicit state: the caller was handed a live view of a map the planner is
+// still writing. The failure message then renders state that has moved since the
+// assertion read it — and iterating it while a concurrent planner writes is not
+// a stale number, it is a fatal concurrent map iteration and map write.
+func copyFlatMapProducerCounters(c flatMapProducerCounters) flatMapProducerCounters {
+	out := c
+	for s := range out.Shapes {
+		if c.Shapes[s] == nil {
+			continue
+		}
+		m := make(map[string]int, len(c.Shapes[s]))
+		for k, v := range c.Shapes[s] {
+			m[k] = v
+		}
+		out.Shapes[s] = m
+	}
+	return out
 }
 
 // ResetFlatMapProducerCensus clears the producer counters.
@@ -942,6 +1078,17 @@ func formatFlatMapProducerCounters(c flatMapProducerCounters) string {
 // Calls is a FLOOR (a site going dark must be visible). UntypedQOVFloor is a
 // FLOOR TOO, and that is not the polarity this census was first written with —
 // see AssertFlatMapProducerCensus.
+//
+// ZERO MEANS NOT FLOORED, for both fields, and the overload is worth stating
+// because the two fields read differently under it. For Calls a zero is
+// harmless: a floor of zero is satisfied by every state, so "not floored" and
+// "floored at zero" are the same assertion. For UntypedQOVFloor they are NOT the
+// same in intent — a site legitimately expected to emit zero untyped values
+// cannot be expressed here, and buildCorrelatedFlatMapPlan's zero is precisely
+// such a claim. That is why its zero lives in the UNCONDITIONAL arm of
+// assertFlatMapProducerCounters rather than in this struct: a configurable
+// refutation is not one, and encoding it as a floor of zero would make it
+// indistinguishable from "nobody calibrated this site".
 type FlatMapProducerFloors struct {
 	Calls           [flatMapProducerSiteCount]int
 	UntypedQOVFloor [flatMapProducerSiteCount]int
@@ -953,12 +1100,13 @@ type FlatMapProducerFloors struct {
 // THE POLARITY HERE WAS WRONG ON FIRST WRITING AND ITS OWN FIRST RUN SAID SO.
 // This census was built asserting UntypedQOV == 0 at EVERY site, on the reading
 // that Go should never build a value Java cannot express. Measured over the
-// real-FDB corpus, three of the four sites emit untyped QOVs in bulk — 1619,
+// real-FDB corpus, three of the four sites emit untyped QOVs in bulk — 1609,
 // 249 and 269 — so a blanket zero is not a defended invariant, it is a wish.
 //
 // What IS measured, and what this census actually defends, is a sharper and more
 // useful fact: the site producing the reconstruct-nil residue emits ZERO of them.
-// The declined legs carry real RecordTypes of arity 1-3; the untyped population
+// The declined legs carry real RecordTypes — arity 1-3 on the FlatMap legs, and
+// 1-4 counting the two NestedLoopJoin-legged declines; the untyped population
 // lives entirely at the other three sites and never reaches the decline
 // classifier. So the residue is not a typing gap, and typing cannot convert it —
 // legOrdinalSafety refuses a FlatMap leg on values.IsPositionalMergeRC, which
@@ -971,6 +1119,16 @@ type FlatMapProducerFloors struct {
 // express any of them. It is floored rather than zeroed so that it is COUNTED
 // while it stands: a divergence nobody is measuring is how a population becomes
 // invisible, and a zero nobody can satisfy is how an assertion becomes noise.
+//
+// TWO OF THOSE THREE SITES DID NOT BUILD WHAT THEY WERE CREDITED WITH.
+// implementExistentialSelect and yieldExistsFlatMap flow sel.GetResultValue()
+// verbatim — the same thing Java's three constructions do
+// (ImplementNestedLoopJoinRule.java:187,201,214) — so their untyped counts are a
+// count of TRAFFIC through a courier. The author is whatever fills that field,
+// and 1086 of it is minted by the SQL translator
+// (values.SelectResultMintExistsSelect). Reading a courier's throughput as
+// production is exactly the inference this census family exists to replace, and
+// it is why describeFlatMapResultOrigin now reports the mint ahead of the site.
 func AssertFlatMapProducerCensus(w io.Writer, floors *FlatMapProducerFloors) bool {
 	return assertFlatMapProducerCounters(w, FlatMapProducerCensus(), floors)
 }

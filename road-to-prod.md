@@ -252,11 +252,19 @@ Two further corrections to the migration's bookkeeping, both found by reading th
   MINT. **CQ-53's surviving producer**" — and the mint is live at that line, on the unnest-merge
   path. Its NLJ twin was deleted; this one "dies with the same work", and that work was owned by
   nothing. **This is a real gap between a closed checkbox and the gate.** Now booked as **CQ-79**,
-  and deliberately NOT folded into CQ-68 — CQ-68 is a different axis (94 bare untyped QOVs, not a
-  display name manufactured into a row key), and folding them would let either close while the
-  other's residue survived. Re-verified at `a1d281a63`: the pin stands verbatim. **Re-verified
-  again at `041838856`: the entry has moved to `cascades_translator.go:3667` (test line `:454`),
-  and the item's `S/M` sizing is REFUTED — see below.**
+  and deliberately NOT folded into CQ-68 — a different axis, and folding them would let either
+  close while the other's residue survived. Re-verified at `a1d281a63`: the pin stands verbatim.
+  **Re-verified again at `041838856`: the entry has moved to `cascades_translator.go:3667` (test
+  line `:454`), and the item's `S/M` sizing is REFUTED — see below.**
+
+  **The CQ-68 axis is stated wrong above and the correction is measured.** This text called it
+  "94 bare untyped QOVs". CQ-68's premise has since been REFUTED by a real-FDB corpus run: the
+  population is **102**, it is **100% typed** (every declined leg carries a real `RecordType` —
+  arity 1-3 on the FlatMap legs, 1-4 counting the `RecordQueryNestedLoopJoinPlan`-legged ones),
+  and typing cannot convert any of it, because `legOrdinalSafety` refuses on
+  `values.IsPositionalMergeRC` — a `*RecordConstructorValue` assertion no `QuantifiedObjectValue`
+  satisfies at any typing. It is a SHAPE residue, and the target now lives on **CQ-95**. Nothing
+  about CQ-79's separateness changes; only the axis it is being distinguished FROM.
 
 RFC-197 itself is **IN IMPLEMENTATION** (`rfcs/197-column-identity-is-an-ordinal.md:3`): step 0 and
 items 2, 3, 5 and 6 have landed; the remaining items are unstarted and still gated.

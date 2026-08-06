@@ -286,11 +286,25 @@ type SeedWindowReaderFloors struct {
 	// that stated.
 	//
 	// Without this assertion, activation day changes nothing visible. Whoever
-	// lands CQ-68 (typing the 94 bare-QOV result values) or otherwise produces a
-	// query whose reference reaches a buried leg would see a green suite, a
-	// printed NESTED-HIT that nobody diffs, and gate (a) left unwritten BY
-	// DEFAULT rather than by decision. This is what turns that day into a red
+	// produces a query whose reference reaches a buried leg would see a green
+	// suite, a printed NESTED-HIT that nobody diffs, and gate (a) left unwritten
+	// BY DEFAULT rather than by decision. This is what turns that day into a red
 	// test with the hand-over in its failure message.
+	//
+	// THE ROUTE TO THAT DAY IS NOT THE ONE THIS COMMENT USED TO NAME. It said
+	// "typing the 94 bare-QOV result values", which was a plan that has since
+	// been REFUTED by measurement: the population is 102 and it is 100% typed
+	// already — every declined leg carries a real RecordType (arity 1-3 on the
+	// FlatMap legs, 1-4 counting the NestedLoopJoin-legged ones) — and typing
+	// could not convert one of them in any case, because legOrdinalSafety refuses
+	// on values.IsPositionalMergeRC, which needs a *RecordConstructorValue that no
+	// QuantifiedObjectValue is at any typing. `bare` there meant identity
+	// PASS-THROUGH, never untyped.
+	//
+	// What would actually trip this tripwire is the SHAPE conversion: giving the
+	// declined leg an RC(_i: QOV(leg_i)) result value, so a reference can reach a
+	// leg inside the merge. That is a different change with a different risk
+	// surface, and it is booked separately.
 	NestedHitMustBeZero bool
 }
 

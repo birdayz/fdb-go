@@ -87,10 +87,14 @@ func TestFlatMapProducerCensus_OriginIsMeasuredNotInferred(t *testing.T) {
 	rowType := &values.RecordType{Fields: []values.Field{{Name: "ID", Ordinal: 0}}}
 	corr := values.NamedCorrelationIdentifier("A")
 
-	// The census keys a package-global map, so this test cannot run in parallel
-	// with another that records into it. It records values it constructs itself
-	// and asserts only about those, so a concurrent recorder adds entries without
-	// changing any answer below.
+	// The census keys a package-global map, and this test IS parallel-safe
+	// anyway — the earlier note claiming it "cannot run in parallel" contradicted
+	// the t.Parallel() above it and then argued the opposite in its own next
+	// sentence. The reason it is safe: every value below is constructed here and
+	// asserted about only here, so a concurrent recorder can add entries to the
+	// map but cannot change the answer for a value it has never seen. What would
+	// break that is an assertion about the map's SIZE or about a value this test
+	// did not build; there is none.
 	recorded := values.NewQuantifiedObjectValueOfType(corr, rowType)
 	shared := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("B"), rowType)
 	absent := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("C"), rowType)
@@ -133,10 +137,15 @@ func TestFlatMapProducerCensus_AssertionArmsGoRed(t *testing.T) {
 
 	base := func() flatMapProducerCounters {
 		var c flatMapProducerCounters
-		c.Calls = [flatMapProducerSiteCount]int{25644, 1830, 431, 449}
+		// One real-FDB corpus run, verbatim — including OtherRV, so the state
+		// PARTITIONS. An earlier copy of these figures had calls that did not equal
+		// the sum of the arms at any site, which made "the measured state passes"
+		// an assertion about a state the planner has never been in.
+		c.Calls = [flatMapProducerSiteCount]int{25406, 1754, 431, 449}
 		c.TypedQOV = [flatMapProducerSiteCount]int{476, 0, 0, 130}
-		c.UntypedQOV = [flatMapProducerSiteCount]int{0, 1685, 249, 269}
+		c.UntypedQOV = [flatMapProducerSiteCount]int{0, 1609, 249, 269}
 		c.MergeRC = [flatMapProducerSiteCount]int{6732, 0, 0, 0}
+		c.OtherRV = [flatMapProducerSiteCount]int{18198, 145, 182, 50}
 		return c
 	}
 	floors := &FlatMapProducerFloors{
@@ -194,4 +203,96 @@ func TestFlatMapProducerCensus_AssertionArmsGoRed(t *testing.T) {
 				"population.")
 		}
 	})
+}
+
+// The MINT must win over the courier in a producer attribution.
+//
+// The FlatMap producer census names the construction that handed a value to a
+// plan. Three of its four sites BUILD nothing: implementExistentialSelect,
+// yieldExistsFlatMap and buildCorrelatedFlatMapPlan flow sel.GetResultValue()
+// verbatim, exactly as Java's three RecordQueryFlatMapPlan constructions flow
+// selectExpression.getResultValue() (ImplementNestedLoopJoinRule.java:187, 201,
+// 214). So their counts are a count of TRAFFIC through a courier, and reading
+// them as production is what booked the untyped-QOV divergence against sites
+// that only carried it.
+//
+// The author is whatever fills sel.GetResultValue(), which on the EXISTS path is
+// the SQL translator's mint. This asserts the witness says so — and that it
+// still names the courier too, because the courier is what put the value in a
+// plan and the two are different facts.
+func TestFlatMapProducerCensus_MintOutranksTheCourier(t *testing.T) {
+	// NOT parallel: it drives the process-global census flag.
+	restore := values.LegIdentityCensusEnabled()
+	values.SetLegIdentityCensusEnabled(true)
+	defer values.SetLegIdentityCensusEnabled(restore)
+
+	minted := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("MINTED"))
+	values.RecordSelectResultMint(values.SelectResultMintExistsSelect, minted)
+	recordFlatMapResultValue(flatMapSiteExistentialSelect, minted)
+
+	got := describeFlatMapResultOrigin(minted)
+	if !strings.Contains(got, "mint=") {
+		t.Fatalf("origin of a MINTED value = %q, want it to name the mint.\n"+
+			"A site that flows sel.GetResultValue() verbatim did not build the value it "+
+			"passed on. Crediting it is the inference-instead-of-measurement this census "+
+			"family exists to kill: it names a courier as the author, and the divergence "+
+			"then gets booked against a site that cannot fix it.", got)
+	}
+	if !strings.Contains(got, "via=implementExistentialSelect") {
+		t.Fatalf("origin of a MINTED value = %q, want the courier named too.\n"+
+			"The mint says who built it and the courier says what put it in a plan. "+
+			"Dropping the second would trade one incomplete attribution for another.", got)
+	}
+
+	// A value with NO mint still reports its courier — the population that reaches
+	// the decline classifier is exactly this kind, and it must not go dark when
+	// the mint lookup is added ahead of it.
+	unminted := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("UNMINTED"))
+	recordFlatMapResultValue(flatMapSiteCorrelated, unminted)
+	if got := describeFlatMapResultOrigin(unminted); got != "origin=buildCorrelatedFlatMapPlan" {
+		t.Fatalf("origin of an UNMINTED value = %q, want origin=buildCorrelatedFlatMapPlan. "+
+			"Every FlatMap-legged decline in the corpus is this shape; if the mint lookup "+
+			"shadowed it, the one attribution the residue rests on would silently vanish", got)
+	}
+}
+
+// The producer counters must be a SNAPSHOT, maps included.
+//
+// assertFlatMapProducerCounters takes an explicit state so a failure message
+// quotes the state that FAILED rather than re-reading globals a concurrent run
+// has moved. Returning the struct by value copies the arrays and SHARES the maps
+// inside them, which defeats that silently — and iterating a shared map while a
+// planner writes it is not a stale number, it is a fatal concurrent map
+// iteration and map write.
+func TestFlatMapProducerCensus_SnapshotDeepCopiesShapes(t *testing.T) {
+	// NOT parallel: it records into the process-global census.
+	restore := values.LegIdentityCensusEnabled()
+	values.SetLegIdentityCensusEnabled(true)
+	defer values.SetLegIdentityCensusEnabled(restore)
+
+	rowType := &values.RecordType{Fields: []values.Field{{Name: "ID", Ordinal: 0}}}
+	recordFlatMapResultValue(flatMapSiteYieldExistsFlatMap,
+		values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("SNAPA"), rowType))
+
+	snap := FlatMapProducerCensus()
+	shapes := snap.Shapes[flatMapSiteYieldExistsFlatMap]
+	if len(shapes) == 0 {
+		t.Fatal("no shape recorded, so this test is asserting about an empty map")
+	}
+	var key string
+	for k := range shapes {
+		key = k
+		break
+	}
+	was := shapes[key]
+
+	recordFlatMapResultValue(flatMapSiteYieldExistsFlatMap,
+		values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("SNAPB"), rowType))
+
+	if got := snap.Shapes[flatMapSiteYieldExistsFlatMap][key]; got != was {
+		t.Fatalf("shape %q in a SNAPSHOT moved %d -> %d when the census was written again.\n"+
+			"The snapshot shares the live map, so the 'renders an EXPLICIT counter state' "+
+			"split buys nothing for the shapes and a concurrent planner turns the same "+
+			"sharing into a fatal concurrent map iteration and map write", key, was, got)
+	}
 }
