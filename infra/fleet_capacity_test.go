@@ -57,8 +57,64 @@ const dedicatedRunners = 1
 type workflowFile struct {
 	On   yaml.Node `yaml:"on"`
 	Jobs map[string]struct {
-		RunsOn yaml.Node `yaml:"runs-on"`
+		RunsOn   yaml.Node `yaml:"runs-on"`
+		Strategy struct {
+			Matrix yaml.Node `yaml:"matrix"`
+		} `yaml:"strategy"`
 	} `yaml:"jobs"`
+}
+
+// A MATRIX JOB CONSUMES ONE SLOT PER ENTRY, NOT ONE PER JOB.
+//
+// No workflow in this repo uses `strategy.matrix` today — verified across all 14
+// files, where the only occurrence of the word is prose in a comment. So the
+// count this gate reports is correct as it stands, and this code changes no
+// number now.
+//
+// It exists because the direction of the error matters. A parser that counts a
+// matrix job as ONE slot UNDER-states the fan-out, so the gate would go on
+// passing while the fleet is oversubscribed — the failure mode is silent and it
+// is exactly the one the gate was written to catch. Adding a 3-entry matrix to
+// any push-triggered lane would take the real fan-out to 7 against 5 slots with
+// this file still green. A gate wrong in the safe direction is noise; wrong in
+// the unsafe direction it is worse than absent, because it reads as coverage.
+//
+// matrixEntries returns how many jobs a matrix expands to, and ok=false when the
+// expansion is not statically decidable. Callers FAIL on !ok rather than assuming
+// 1 — CORRECT-or-LOUD, the same shape the planner's ordinal paths use. The
+// undecidable case is real: `matrix: ${{ fromJSON(needs.x.outputs.y) }}` is
+// resolved at run time from another job's output and no static reader can size
+// it.
+//
+// The supported form is the common one: literal dimension lists, whose product
+// is the entry count. `include` and `exclude` are deliberately NOT approximated
+// — GitHub's rules for them are subtle (an include entry that matches an existing
+// combination extends it in place rather than adding one; one that matches
+// nothing is appended; exclude removes before include is applied), and a
+// half-right expansion of a rule that decides capacity is the kind of "close
+// enough" this gate exists to refuse. They are reported as undecidable so the
+// author extends this function deliberately.
+func matrixEntries(n *yaml.Node) (int, bool) {
+	if n == nil || n.Kind == 0 {
+		return 1, true // no matrix: the job is one slot
+	}
+	if n.Kind != yaml.MappingNode {
+		// A scalar here is an expression (`matrix: ${{ fromJSON(...) }}`).
+		return 0, false
+	}
+	total := 1
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		key, val := n.Content[i].Value, n.Content[i+1]
+		if key == "include" || key == "exclude" {
+			return 0, false
+		}
+		if val.Kind != yaml.SequenceNode {
+			// A dimension whose values are an expression rather than a literal list.
+			return 0, false
+		}
+		total *= len(val.Content)
+	}
+	return total, true
 }
 
 // hasPushTrigger reports whether the workflow runs on `push`.
@@ -155,10 +211,22 @@ func TestPushFanOutFitsTheRunnerPool(t *testing.T) {
 			continue
 		}
 		n := 0
-		for _, job := range wf.Jobs {
-			if usesLabel(&job.RunsOn, runnerLabel) {
-				n++
+		for jobName, job := range wf.Jobs {
+			if !usesLabel(&job.RunsOn, runnerLabel) {
+				continue
 			}
+			entries, ok := matrixEntries(&job.Strategy.Matrix)
+			if !ok {
+				t.Fatalf("%s: job %q runs on %s with a matrix this gate cannot size "+
+					"statically (an expression, or include/exclude).\n"+
+					"  It is FAILED rather than counted as one slot, deliberately: guessing low "+
+					"here under-states the fan-out, and the gate would keep passing while the "+
+					"fleet is oversubscribed — silently, in the one direction that matters.\n"+
+					"  Extend matrixEntries to expand this shape, or pin the job's entry count "+
+					"here explicitly. Do not relax the check.",
+					filepath.Base(p), jobName, runnerLabel)
+			}
+			n += entries
 		}
 		if n > 0 {
 			perWorkflow[filepath.Base(p)] = n
@@ -215,4 +283,84 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b)
+}
+
+// The matrix sizer, exercised against synthetic YAML.
+//
+// Synthetic because no workflow in this repo has a matrix — which is precisely
+// why the sizer needs its own test. Its whole job is to be correct on the day
+// someone adds the first one, and until then nothing else in this file executes
+// a single branch of it. An untested expansion would be discovered wrong by the
+// oversubscription it failed to catch.
+func TestMatrixEntriesSizesOrRefuses(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		yml  string
+		want int
+		ok   bool
+	}{
+		{
+			// The overwhelmingly common shape, and the one that makes the whole
+			// gate wrong if it is counted as 1: three entries, three slots.
+			name: "one literal dimension is its length",
+			yml:  "matrix:\n  scale: [10K, 100K, 1M]\n",
+			want: 3, ok: true,
+		},
+		{
+			// Dimensions MULTIPLY. Summing them (3+2=5) instead of multiplying
+			// (3*2=6) is the obvious wrong implementation and it errs low.
+			name: "two dimensions are their PRODUCT, not their sum",
+			yml:  "matrix:\n  scale: [10K, 100K, 1M]\n  backend: [purego, libfdbc]\n",
+			want: 6, ok: true,
+		},
+		{
+			name: "a job with no matrix is one slot",
+			yml:  "other: {}\n",
+			want: 1, ok: true,
+		},
+		{
+			// Statically undecidable: sized at run time from another job's output.
+			name: "an expression matrix is REFUSED, not guessed",
+			yml:  "matrix: ${{ fromJSON(needs.plan.outputs.combos) }}\n",
+			ok:   false,
+		},
+		{
+			name: "include is REFUSED rather than approximated",
+			yml:  "matrix:\n  scale: [10K, 1M]\n  include:\n    - scale: 100K\n      slow: true\n",
+			ok:   false,
+		},
+		{
+			name: "exclude is REFUSED rather than approximated",
+			yml:  "matrix:\n  scale: [10K, 1M]\n  backend: [purego, libfdbc]\n  exclude:\n    - scale: 10K\n      backend: libfdbc\n",
+			ok:   false,
+		},
+		{
+			name: "a dimension that is an expression is REFUSED",
+			yml:  "matrix:\n  scale: ${{ fromJSON(env.SCALES) }}\n",
+			ok:   false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var doc struct {
+				Matrix yaml.Node `yaml:"matrix"`
+			}
+			if err := yaml.Unmarshal([]byte(tc.yml), &doc); err != nil {
+				t.Fatalf("parse fixture: %v", err)
+			}
+			got, ok := matrixEntries(&doc.Matrix)
+			if ok != tc.ok {
+				t.Fatalf("ok = %t, want %t. A matrix this sizer cannot expand must be REFUSED "+
+					"so the caller fails loudly; silently returning a count is how the fan-out "+
+					"gets under-stated and the gate keeps passing over an oversubscribed fleet",
+					ok, tc.ok)
+			}
+			if tc.ok && got != tc.want {
+				t.Fatalf("entries = %d, want %d. A matrix job consumes one runner slot PER "+
+					"ENTRY; under-counting here is the unsafe direction", got, tc.want)
+			}
+		})
+	}
 }
