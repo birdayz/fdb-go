@@ -12689,6 +12689,15 @@ None is speculative: each was re-verified against the tree before booking.
   Files rendering through `positionalPipeSprint` (bare values, no names) carry no
   names to check and are outside this instrument by construction —
   `lateral_unnest_chain` and `chained_unnest_ordinal` are the notable ones.
+  A second, larger disclosed gap: 140 AMBIGUOUS rows — rows in scopes holding
+  more than one query, where the pairing declines rather than guess — get only
+  the cross-row check. Two files are materially uncovered by the ORDER check
+  through this category: `chained_unnest_3link_filtered_ordinal` (0 derived,
+  62 ambiguous — the whole file) and `star_body_cte_join_leg` (45 derived,
+  57 ambiguous). The instrument's per-file census surfaces both numbers every
+  run; this paragraph exists so the entry matches its own census. (Cite
+  bookkeeping for the re-baseline: the diff touched 12 cite tokens — five
+  TODO item cites, four debt-entry keys, both mint cites, the ratchet cite.)
 
   **Mutation-checked in three directions.** Permuting a real expectation
   (`baretwin_gather:260`, `K=100|M=55|X=7` → `X=7|K=100|M=55`) reds it with the

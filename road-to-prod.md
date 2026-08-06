@@ -221,7 +221,7 @@ Two further corrections to the migration's bookkeeping, both found by reading th
 
 RFC-197 itself is **IN IMPLEMENTATION** (`rfcs/197-column-identity-is-an-ordinal.md:3`): step 0 and
 items 2, 3, 5 and 6 have landed; the remaining items are unstarted and still gated. **CQ-68**
-(`TODO.md:13017`, open, gated on CQ-67) is the largest addressable block: 94 FlatMap result values
+(`TODO.md:13110`, open, gated on CQ-67) is the largest addressable block: 94 FlatMap result values
 are a bare untyped QOV where Java types unconditionally. It carries a REOPEN TRIGGER on CQ-67.
 
 ## Watch-list — pinned divergences a prod user must be told about
