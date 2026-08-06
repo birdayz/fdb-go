@@ -7,6 +7,31 @@ import (
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
+// recordDerivedUnnestSplit files one classifyDerivedUnnestArray decision into
+// the qualifier recovery census, cut by whether the projection's parse-tree
+// triple for the SAME SLOT states a qualifier and whether it agrees.
+//
+// A ColumnRef that is not Present is "unknown", never "unqualified" — the
+// triple's own documented contract — so an absent triple is reported as NO
+// counterparty rather than as an empty one that would read as a disagreement.
+func recordDerivedUnnestSplit(proj *logical.LogicalProject, slot int, source string) {
+	ident, present := "", false
+	if slot < len(proj.ProjectionRefs) {
+		if ref := proj.ProjectionRefs[slot]; ref.Present {
+			ident, present = strings.ToUpper(ref.Qualifier), true
+		}
+	}
+	class, _ := values.ClassifyQualifierRecovery(strings.ToUpper(source), ident, present)
+	witness := ident
+	if !present {
+		witness = ""
+	} else if ident == "" {
+		witness = "<unqualified>"
+	}
+	values.RecordQualifierRecovery(values.QualRecSiteDerivedUnnestSource, class,
+		strings.ToUpper(source), witness)
+}
+
 // A lateral array unnest whose OWNER is a CTE / derived-table output (`FROM
 // (SELECT ...) AS d, d.arr AS x`, `WITH c AS (...) SELECT ... FROM c, c.arr AS
 // x`). Java resolves the array field against the derived quantifier's flowed
@@ -103,6 +128,12 @@ func (t *cascadesTranslator) classifyDerivedUnnestArray(outerLeft logical.Logica
 		return values.UnknownType, "", derivedUnnestUnsupported
 	}
 	// A qualified source (`t.arr`) must name that scan; a bare source binds it.
+	//
+	// The census records what the SPLIT decided against what the parse-tree
+	// triple in the same slot states — this projection carries ProjectionRefs,
+	// so unlike recursiveRemapValues there IS a counterparty here, and whether
+	// the two agree is the whole conversion-readiness question for this site.
+	recordDerivedUnnestSplit(proj, slot, source)
 	baseCol := source
 	if dot := strings.LastIndexByte(source, '.'); dot >= 0 {
 		qual := source[:dot]

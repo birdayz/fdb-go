@@ -102,6 +102,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	values.ResetLegIdentityCensus()
 	values.ResetDottedLegQualifierCensus()
 	values.ResetSeedWindowReaderCensus()
+	values.ResetQualifierRecoveryCensus()
 	cascades.ResetFoldStep1SeedCensus()
 	cascades.ResetOrientationGateCensus()
 	values.SetLegIdentityCensusEnabled(true)
@@ -155,6 +156,14 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 		code = 1
 	}
 	if failed := assertNameSplitCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
+	// The QUALIFIER RECOVERY census — the four DARK SPLITTERS the name-split
+	// census names in its header and does not watch. Six sites, because the
+	// parseColRef family contributes three DIFFERENT decisions with three
+	// different counterparties and one merged number could answer the
+	// conversion question for none of them.
+	if failed := assertQualifierRecoveryCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
 	if failed := assertLegIdentityCensus(os.Stderr); failed && code == 0 {
@@ -739,6 +748,69 @@ var nameSplitFloors = func() values.NameSplitFloors {
 // assertNameSplitCensus checks the translator name-split census, dropping the
 // population floors when -test.run narrows the corpus — the same split its
 // siblings make, for the same reason.
+// qualifierRecoveryFloors is the minimum population each DARK SPLITTER must
+// report over the whole real-FDB corpus. Filled from the measurement, an order
+// of magnitude below it where the population allows, so the floor detects a site
+// going DARK rather than drift.
+// Measured over this corpus:
+//
+//	recursiveRemap      calls 101 | carried   0 | AGREED   0 | MANUFACTURED 0 | leafOnly 2 | bare 99
+//	existsSortSplit     calls  44 | carried   0 | AGREED  44 | MANUFACTURED 0 | bare 0
+//	derivedUnnestSource calls  13 | carried   0 | AGREED   0 | MANUFACTURED 0 | bare 13
+//	projScopeClassify   calls  71 | carried  11 | AGREED   0 | MANUFACTURED 0 | bare 60
+//	projQualVsScan      calls   4 | carried   0 | AGREED   0 | MANUFACTURED 0 | bare 4
+//	displayLabelStrip   calls 750 | carried   0 | AGREED 722 | MANUFACTURED 6 | bare 22
+//
+// DIVERGED is 0 at every site, and unlike the population zeros that is a zero
+// over a real population: 766 calls actually manufactured a qualifier with an
+// identity in hand and none of them disagreed with it.
+var qualifierRecoveryFloors = values.QualifierRecoveryFloors{
+	Calls: [6]int{
+		values.QualRecSiteRecursiveRemap:      10,
+		values.QualRecSiteExistsSortSplit:     4,
+		values.QualRecSiteDerivedUnnestSource: 2,
+		values.QualRecSiteProjScopeClassify:   8,
+		values.QualRecSiteProjQualVsScan:      1,
+		values.QualRecSiteDisplayLabelStrip:   70,
+	},
+	// The SPLIT floors, which are the ones that carry the weight: five of the six
+	// sites do all their work in a splitting arm, so their Calls and Split floors
+	// coincide. projScopeClassify is the one site where they diverge (11 of its
+	// 71 calls are carried by a correlation), and its split floor is what says
+	// the arm this census measures is still reached.
+	Split: [6]int{
+		values.QualRecSiteRecursiveRemap:      10,
+		values.QualRecSiteExistsSortSplit:     4,
+		values.QualRecSiteDerivedUnnestSource: 2,
+		values.QualRecSiteProjScopeClassify:   6,
+		values.QualRecSiteProjQualVsScan:      1,
+		values.QualRecSiteDisplayLabelStrip:   70,
+	},
+}
+
+// assertQualifierRecoveryCensus checks the dark-splitter census, dropping the
+// population floors when -test.run narrows the corpus. The DIVERGED hard zero
+// and the witness saturation guards still run — they are defects over any
+// population — while the floors describe the unfiltered suite and are
+// meaningless under a filter.
+func assertQualifierRecoveryCensus(w io.Writer) bool {
+	floors := &qualifierRecoveryFloors
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		fmt.Fprintf(w, "qualifier recovery census: population floors NOT checked "+
+			"(-test.run=%q narrowed the corpus). The DIVERGED hard zero and the witness "+
+			"saturation guards still run, over whatever population this filter reached — "+
+			"at zero the former holds VACUOUSLY.\n", f.Value.String())
+		floors = nil
+	}
+	// No AllowedDiverged: every split in this corpus comes from a production
+	// producer because its input is SQL, so a disagreement here is a defect and
+	// the zero is a BARE zero. The translator harness needs an allowlist; this
+	// one must never grow one.
+	return values.AssertQualifierRecoveryCensus(w,
+		&values.QualifierRecoveryExpectations{Floors: floors},
+		"sqldriver real-FDB corpus")
+}
+
 func assertNameSplitCensus(w io.Writer) bool {
 	floors := &nameSplitFloors
 	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {

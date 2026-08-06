@@ -41,6 +41,7 @@ import (
 // assertion belongs after m.Run() and nowhere else.
 func TestMain(m *testing.M) {
 	values.ResetLegIdentityCensus()
+	values.ResetQualifierRecoveryCensus()
 	values.SetLegIdentityCensusEnabled(true)
 	code := m.Run()
 	values.SetLegIdentityCensusEnabled(false)
@@ -49,7 +50,123 @@ func TestMain(m *testing.M) {
 	if failed := assertTranslatorLegIdentityCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
+	// The QUALIFIER RECOVERY census — the four DARK SPLITTERS. It runs on BOTH
+	// corpora, and this one is not the junior partner: three of its six sites
+	// live in the translator and two of those are reached by shapes this
+	// package builds from logical operators directly. A census asserted only
+	// over the SQL suite would report them dark and be believed.
+	if failed := assertTranslatorQualifierRecoveryCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
 	os.Exit(code)
+}
+
+// translatorQualifierRecoveryFloors is the minimum population this corpus must
+// report at the sites it actually drives.
+//
+// Floors only those. A floor on a site this package never reaches would assert
+// something about a different corpus; the sqldriver harness floors over its own,
+// and the two sets together are what keeps every zero non-vacuous SOMEWHERE.
+//
+// Set well below the measured populations for the same reason its siblings are:
+// these totals vary run to run (several sites sit inside Cascades rules and the
+// memo may explore a rule once or many times for one query), so a floor at the
+// measured value would fail on exploration order. The floor detects COLLAPSE —
+// the shapes stopping, a recorder being routed around — not drift.
+// Measured over this corpus: recursiveRemap 13 calls (carried 4, MANUFACTURED 3,
+// leafOnly 2, bare 4), existsSortSplit 5, derivedUnnestSource 4.
+//
+// THE PROVENANCE OF EACH FLOOR IS NOT THE SAME, and reading them as one kind of
+// number is how a floor comes to guarantee something it does not:
+//
+//   - recursiveRemap's population is PRODUCTION traffic — this package's tests
+//     plan recursive CTE bodies and the site is reached through them. Its floor
+//     says the shapes still plan. It is also the ONLY corpus that reports this
+//     site's MANUFACTURED bucket at all: the real-FDB corpus reports 0.
+//   - existsSortSplit's and derivedUnnestSource's populations here are FIXTURE
+//     traffic, driven entirely by qualifier_recovery_wiring_test.go. Their
+//     floors say THE PINS STILL RUN — nothing more. Production coverage of
+//     these two sites lives in the sqldriver corpus (44 and 13 calls), and it
+//     is that corpus's floors that carry it.
+//
+// They are declared rather than omitted because the split floor is checked in
+// the STALE direction: a site whose split population went non-zero cannot keep a
+// "watched, not proven" 0. That check is what forced these two lines to be
+// written when the pins landed, which is the mechanism working.
+//
+// The remaining three sites are 0 here and their zero is STRUCTURAL:
+// projScopeClassify, projQualVsScan and displayLabelStrip live in core/embedded,
+// which this package does not import. No floor on them could ever be anything
+// but 0, and their production coverage is the sqldriver corpus's alone.
+//
+// Set below the measured values because these totals vary run to run — several
+// sites sit inside Cascades rules and the memo may explore one once or many
+// times for a single query. The floor detects COLLAPSE, not drift.
+var translatorQualifierRecoveryFloors = values.QualifierRecoveryFloors{
+	Calls: [6]int{
+		values.QualRecSiteRecursiveRemap:      4,
+		values.QualRecSiteExistsSortSplit:     2,
+		values.QualRecSiteDerivedUnnestSource: 2,
+	},
+	Split: [6]int{
+		values.QualRecSiteRecursiveRemap:      3,
+		values.QualRecSiteExistsSortSplit:     2,
+		values.QualRecSiteDerivedUnnestSource: 2,
+	},
+}
+
+// assertTranslatorQualifierRecoveryCensus checks this corpus's dark-splitter
+// census, dropping the population floors when -test.run narrows the corpus.
+//
+// Same split as every gate on this path: the DIVERGED zero and the saturation
+// guards run over whatever population the filter reached, the floors describe
+// the unfiltered corpus and are meaningless under one.
+func assertTranslatorQualifierRecoveryCensus(w io.Writer) bool {
+	floors := &translatorQualifierRecoveryFloors
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		fmt.Fprintf(w, "qualifier recovery census: population floors NOT checked "+
+			"(-test.run=%q narrowed the corpus). The DIVERGED hard zero and the witness "+
+			"saturation guards still run, over whatever population this filter reached — "+
+			"at zero the former holds VACUOUSLY.\n", f.Value.String())
+		floors = nil
+	}
+	return values.AssertQualifierRecoveryCensus(w, &values.QualifierRecoveryExpectations{
+		Floors:          floors,
+		AllowedDiverged: qualifierRecoveryNegativeControls,
+	}, "translator corpus")
+}
+
+// qualifierRecoveryNegativeControls is every DIVERGED witness this package's
+// test FIXTURES deliberately drive, and it is complete: any witness outside it
+// is a real producer manufacturing a qualifier that contradicts an identity it
+// was holding.
+//
+// They exist because the census asserts DIVERGED at ZERO, and a zero that
+// nothing has ever shown could be non-zero is not a measurement. These fixtures
+// are what make it one — each is an asserted reach of the bucket in
+// qualifier_recovery_wiring_test.go:
+//
+//	existsSortSplit     "T2.SK" vs identity "T9"
+//	    a sort key whose parse-tree triple names T9 while its rendering names T2,
+//	    driven from BOTH callers (sortKeySourceValue and sortKeyName) so the
+//	    second caller's wiring is pinned too.
+//	derivedUnnestSource "T.ARR" vs identity "<unqualified>"
+//	    a projection slot whose triple states ONE segment — the delimited
+//	    `"T.ARR"` — against a split that manufactured the qualifier T. The
+//	    canonical misread this whole workstream is about.
+//
+// The residual, stated rather than smoothed: a REAL divergence spelled exactly
+// like one of these would be absorbed, because witnesses dedup by spelling. That
+// is why each is listed individually with the fixture that drives it — a new
+// anomaly at a new spelling, which is what a producer change looks like, cannot
+// hide.
+var qualifierRecoveryNegativeControls = map[values.QualifierRecoverySite]map[string]struct{}{
+	values.QualRecSiteExistsSortSplit: {
+		`"T2.SK" vs identity "T9"`: {},
+	},
+	values.QualRecSiteDerivedUnnestSource: {
+		`"T.ARR" vs identity "<unqualified>"`: {},
+	},
 }
 
 // translatorLegIdentityFloors is the minimum population this corpus must report

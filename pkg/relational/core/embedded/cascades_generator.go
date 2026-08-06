@@ -4473,6 +4473,14 @@ func deriveProjectionColumnDef(v values.Value, alias string, aliasMinted bool, i
 		// structural qualifier LIST, and a delimited `"U.NAME"` is one
 		// Identifier with an EMPTY qualifier list), so no spelling can be the
 		// discriminator.
+		// The counterparty is the projected VALUE: a FieldValue over a
+		// QuantifiedObjectValue names the source the machinery minted this
+		// alias FROM, so whether the qualifier sliced out of the label equals
+		// that correlation is exactly this site's conversion question. The
+		// parenthesis heuristic is recorded as its own DECLINE rather than
+		// folded into "bare", because a rejection made by looking for `()` in a
+		// rendering is the thing under measurement, not a clean non-split.
+		recordDisplayLabelStrip(label, v)
 		if ref := parseColRef(label); isPlainQualifiedColumnReference(label) && ref.isQualified() {
 			displayLabel = strings.ToUpper(ref.bare())
 		}
@@ -6374,6 +6382,13 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 					}
 					upper := strings.ToUpper(col)
 					ref := parseColRef(upper)
+					// This projection carries ProjectionRefs, so the split has a
+					// counterparty and the census can say whether it is
+					// redundant. It matters more here than anywhere else in the
+					// family: a disagreement does not merely resolve the wrong
+					// row, it RAISES ErrCodeUndefinedColumn on a column the
+					// parser saw perfectly well.
+					recordProjQualVsScan(proj, i, upper, ref)
 					if ref.isQualified() {
 						qual := ref.table
 						scanName := strings.ToUpper(scan.Table)

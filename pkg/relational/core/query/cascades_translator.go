@@ -4814,7 +4814,37 @@ func (s sortSource) sortKeyName(k logical.SortKey) string {
 	if field == "" {
 		return ""
 	}
-	return s.resolveKeyName(field)
+	ident, present := sortKeyQualifierIdentity(k)
+	return s.resolveKeyName(field, ident, present)
+}
+
+// sortKeyQualifierIdentity returns the STRUCTURED qualifier a sort key carries,
+// and whether it carries one at all. Those are different facts and the second is
+// not derivable from the first: a key that states an UNQUALIFIED reference
+// carries the identity "" and a key that states nothing also carries "", and
+// they mean opposite things — the first says "the parser saw one segment", the
+// second says "nobody captured what the parser saw".
+//
+// Two channels, in precedence order, because they are two different strengths of
+// evidence:
+//
+//   - A resolved FieldValue over a QuantifiedObjectValue. This is the STRONGEST,
+//     and it is the one that makes the EXISTS fold's split a round trip:
+//     sortKeyFieldRef RENDERS `LEG.COL` out of exactly this correlation, and
+//     splitQualifier then slices that rendering back apart. The identity was
+//     never lost — it was joined and re-parsed.
+//   - The parse-tree triple the key carries (Bare/Qualifier/Qualified), under
+//     SortKey's own convention that a populated Bare marks a captured triple.
+func sortKeyQualifierIdentity(k logical.SortKey) (string, bool) {
+	if fv, ok := k.Value.(*values.FieldValue); ok && fv.Child != nil {
+		if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
+			return strings.ToUpper(qov.Correlation.Name()), true
+		}
+	}
+	if k.Bare != "" {
+		return strings.ToUpper(k.Qualifier), true
+	}
+	return "", false
 }
 
 // sortKeyFieldRef returns the RAW (possibly-qualified) upper-cased field reference
@@ -4871,6 +4901,8 @@ func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
 		return nil
 	}
 	if s.isJoin {
+		ident, identPresent := sortKeyQualifierIdentity(k)
+		recordExistsSortSplit(strings.ToUpper(field), ident, identPresent)
 		if qual, col, ok := splitQualifier(field); ok {
 			for li, leg := range s.legAliases {
 				if leg != "" && strings.ToUpper(leg) == qual {
@@ -4924,11 +4956,12 @@ func (s sortSource) sortKeyInOutput(k logical.SortKey, fields []values.RecordCon
 
 // resolveKeyName maps a (possibly qualified) sort-key field reference to the name
 // it resolves against the folded output record, per the source's key shape.
-func (s sortSource) resolveKeyName(field string) string {
+func (s sortSource) resolveKeyName(field string, ident string, identPresent bool) string {
 	up := strings.ToUpper(field)
 	if !s.isJoin {
 		return stripSortQualifier(up)
 	}
+	recordExistsSortSplit(up, ident, identPresent)
 	// JOIN source: keep the qualified `LEG.COL` key when the qualifier names a
 	// known leg (it resolves the authoritative merged-row qualified key). A bare
 	// key, or one whose qualifier is not a leg, falls back to the bare column.
@@ -5011,6 +5044,29 @@ func stripSortQualifier(field string) string {
 // A bare name, an empty string, or a trailing/leading dot yields ("", "", false).
 // Only a SINGLE qualifier is split (the LAST dot) — a deeper `A.B.C` is uncommon
 // in the EXISTS fold and is treated as qualifier `A.B`, column `C`.
+// recordExistsSortSplit files one splitQualifier decision into the qualifier
+// recovery census. It is a free function rather than a wrapper around
+// splitQualifier itself because the two callers reach the split through
+// different paths and only they hold the sort key whose structured identity is
+// the counterparty; a recorder inside splitQualifier would have to report every
+// call as MANUFACTURED and would erase the one thing this site is measured for.
+//
+// The classification is delegated so this site cannot bucket its own
+// disagreement as "no counterparty".
+func recordExistsSortSplit(up, ident string, identPresent bool) {
+	class, _ := values.ClassifyQualifierRecovery(up, ident, identPresent)
+	witnessIdent := ident
+	if !identPresent {
+		witnessIdent = ""
+	} else if ident == "" {
+		// An identity that is PRESENT and unqualified is not the same as an
+		// absent one, and a witness rendering both as "" would hide exactly the
+		// pair a DIVERGED reading turns on.
+		witnessIdent = "<unqualified>"
+	}
+	values.RecordQualifierRecovery(values.QualRecSiteExistsSortSplit, class, up, witnessIdent)
+}
+
 func splitQualifier(field string) (string, string, bool) {
 	up := strings.ToUpper(field)
 	i := strings.LastIndex(up, ".")
@@ -9548,6 +9604,14 @@ func recursiveRemapValues(cols []string, verbatimField []bool, ordinalReads, pos
 			bare := cu
 			if dot := strings.IndexByte(cu, '.'); dot >= 0 {
 				bare = cu[dot+1:]
+				// LEAF-ONLY: the qualifier is sliced off and DISCARDED — slot i
+				// is the authoritative read. Not debt, and counted apart from
+				// the debt classes so it is not banked as one.
+				values.RecordQualifierRecovery(values.QualRecSiteRecursiveRemap,
+					values.QualRecLeafOnly, cu, "ordinal "+strconv.Itoa(i))
+			} else {
+				values.RecordQualifierRecovery(values.QualRecSiteRecursiveRemap,
+					values.QualRecBare, cu, "")
 			}
 			out[i] = &values.FieldValue{
 				Field:    bare,
@@ -9557,7 +9621,27 @@ func recursiveRemapValues(cols []string, verbatimField []bool, ordinalReads, pos
 			continue
 		}
 		identName := verbatimField == nil || verbatimField[i]
-		if dot := strings.IndexByte(cu, '.'); dot >= 0 && identName {
+		dot := strings.IndexByte(cu, '.')
+		switch {
+		case dot < 0:
+			values.RecordQualifierRecovery(values.QualRecSiteRecursiveRemap,
+				values.QualRecBare, cu, "")
+		case !identName:
+			// CARRIED: the NAME-PROVENANCE classification declined the split. No
+			// qualifier was manufactured because verbatimField said this name is
+			// a computed rendering or an alias, not an identifier — a structured
+			// fact deciding the outcome, which is exactly what "carried" means.
+			values.RecordQualifierRecovery(values.QualRecSiteRecursiveRemap,
+				values.QualRecCarried, cu, "verbatimField=false")
+		default:
+			// MANUFACTURED, and the hardest instance of it in the family: the
+			// bytes before the FIRST dot become a CorrelationIdentifier with no
+			// counterparty anywhere at this site to check them against. cols is
+			// []string; there is no identity here to convert TO.
+			values.RecordQualifierRecovery(values.QualRecSiteRecursiveRemap,
+				values.QualRecManufactured, cu, "")
+		}
+		if dot >= 0 && identName {
 			out[i] = &values.FieldValue{
 				Field: cu[dot+1:],
 				Typ:   values.UnknownType,
