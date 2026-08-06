@@ -346,6 +346,7 @@ go_test(
         "spfresh_stress_test.go",
         "spfresh_sweeper_test.go",
         "spfresh_worker_test.go",
+        "split_corruption_errors_test.go",
         "split_helper_test.go",
         "split_key_expression_test.go",
         "split_record_test.go",

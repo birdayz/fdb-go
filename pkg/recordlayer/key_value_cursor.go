@@ -633,11 +633,36 @@ func (c *keyValueCursor) readSplitRecord(
 	// where FDB returns chunks in descending suffix order)
 	sortSplitChunks(chunks)
 
-	// Validate sequential indices
+	// Validate sequential indices. The two ways this can break are DIFFERENT
+	// damage and Java reports them as different exceptions
+	// (SplitHelper.java:824-834, selecting on whether a start-or-later segment
+	// has already been seen):
+	//
+	//   i == 0 mismatch — the lowest segment present is not the start, so the
+	//   record is TRUNCATED at the front. FoundSplitWithoutStartException.
+	//
+	//   i > 0 mismatch — the start is present and the sequence breaks later, so
+	//   the pieces are there but mis-sequenced. FoundSplitOutOfOrderException.
+	//
+	// Go raised one untyped error for both, which made a truncated record and a
+	// scrambled one indistinguishable to callers and in logs — on a data
+	// corruption path, where telling them apart is most of the diagnosis.
 	for i, chunk := range chunks {
 		expected := startSplitRecord + int64(i)
-		if chunk.suffix != expected {
-			return nil, nil, fmt.Errorf("split record segments out of order: expected %d, got %d", expected, chunk.suffix)
+		if chunk.suffix == expected {
+			continue
+		}
+		if i == 0 {
+			return nil, nil, &FoundSplitWithoutStartError{
+				NextIndex: chunk.suffix,
+				Reverse:   c.scanProperties.IsReverse(),
+				KeyTuple:  primaryKey,
+			}
+		}
+		return nil, nil, &FoundSplitOutOfOrderError{
+			Expected: expected,
+			Found:    chunk.suffix,
+			KeyTuple: primaryKey,
 		}
 	}
 

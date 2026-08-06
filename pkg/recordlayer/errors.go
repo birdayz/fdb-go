@@ -303,6 +303,68 @@ func (e *RecordCoreStorageError) Error() string {
 		e.Message, e.IndexName, e.PrimaryKey, e.IndexKey)
 }
 
+// FoundSplitOutOfOrderError is raised when a split record's segments are present
+// but not in sequence — segment N+1 was expected and something else was found.
+//
+// Ports Java's SplitHelper.FoundSplitOutOfOrderException
+// (SplitHelper.java:1225-1231), which extends RecordCoreStorageException and
+// carries LogMessageKeys.SPLIT_EXPECTED / SPLIT_FOUND. Java additionally attaches
+// KEY_TUPLE and SUBSPACE at the throw site (SplitHelper.java:826-828); KeyTuple
+// carries the first of those, and the subspace is implicit in it here.
+//
+// It is a distinct type from FoundSplitWithoutStartError on purpose, because the
+// two describe different damage: this one says the record's pieces are all
+// there but mis-sequenced, which points at a writer that interleaved or a range
+// that spans two records. A caller that wants to tell "corrupt but complete"
+// from "truncated" cannot do it from a formatted string.
+type FoundSplitOutOfOrderError struct {
+	Expected int64       // LogMessageKeys.SPLIT_EXPECTED
+	Found    int64       // LogMessageKeys.SPLIT_FOUND
+	KeyTuple tuple.Tuple // LogMessageKeys.KEY_TUPLE — the key whose suffix broke the sequence
+}
+
+func (e *FoundSplitOutOfOrderError) Error() string {
+	return fmt.Sprintf("Split record segments out of order (split_expected=%d, split_found=%d, key_tuple=%v)",
+		e.Expected, e.Found, e.KeyTuple)
+}
+
+// Unwrap reports this as storage corruption. Java's exception IS a
+// RecordCoreStorageException; Go spells that relationship out so a caller
+// matching the general storage-corruption type keeps working, the way
+// `catch (RecordCoreStorageException)` does.
+func (e *FoundSplitOutOfOrderError) Unwrap() error {
+	return &RecordCoreStorageError{Message: "Split record segments out of order"}
+}
+
+// FoundSplitWithoutStartError is raised when a split record's continuation
+// segments are found with no start segment — the record is truncated at the
+// front, not merely mis-ordered.
+//
+// Ports Java's SplitHelper.FoundSplitWithoutStartException
+// (SplitHelper.java:1213-1219), carrying LogMessageKeys.SPLIT_NEXT_INDEX and
+// SPLIT_REVERSE, plus KEY_TUPLE from the throw sites.
+//
+// Java chooses between this and FoundSplitOutOfOrderException by whether any
+// start-or-later segment has already been seen — `lastIndex >= START_SPLIT_RECORD`
+// picks out-of-order, otherwise without-start (SplitHelper.java:824-834). Go
+// raised one untyped error for both, so a truncated record and a scrambled one
+// were indistinguishable to every caller and to every log.
+//
+// Reverse matters for reading the report: under a reverse scan the segments
+// arrive highest-first, so "no start yet" is the expected intermediate state
+// rather than evidence of damage, and Java records which direction produced the
+// judgement.
+type FoundSplitWithoutStartError struct {
+	NextIndex int64       // LogMessageKeys.SPLIT_NEXT_INDEX — the segment found instead of the start
+	Reverse   bool        // LogMessageKeys.SPLIT_REVERSE — direction of the scan that found it
+	KeyTuple  tuple.Tuple // LogMessageKeys.KEY_TUPLE
+}
+
+func (e *FoundSplitWithoutStartError) Error() string {
+	return fmt.Sprintf("Found split record without start (next_index=%d, reverse=%t, key_tuple=%v)",
+		e.NextIndex, e.Reverse, e.KeyTuple)
+}
+
 // PartlyBuiltError is returned when an OnlineIndexer encounters an index that was
 // partly built by another method or is blocked from continuing.
 // Matches Java's com.apple.foundationdb.record.provider.foundationdb.IndexingBase.PartlyBuiltException.
