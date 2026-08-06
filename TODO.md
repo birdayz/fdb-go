@@ -12665,15 +12665,22 @@ None is speculative: each was re-verified against the tree before booking.
   REVERSE of its own SELECT list, and the shadow-precedence site rendered only
   the Y column of a two-column projection, leaving ID unasserted).
 
-  **Remainder (measured, honest).** Three files still read row columns by NAME
-  for TYPED assertions rather than for rendering — `array_unnest_struct` (2
-  multi-column sites, `m["ID"]`/`m["X"]`/`m["O"]`),
-  `aggregate_index_signed_zero_range_set` (1 site, `G`/`W`/`SUM(VAL)` with type
-  asserts) and `vector_multipartition_e2e` (1 site, `ID`/`REGION`). Four sites
-  total. They carry the same order-blindness, but converting them needs a TYPED
-  slot accessor (the value, not its rendering), which no test helper provides
-  yet; every other `executor.RowValue` site left in the package reads a SINGLE
-  named column, where there is no order to assert.
+  **Finding 4 — and the typed read, which needed a helper that did not exist.**
+  A fourth shape reads row columns by NAME for TYPED assertions rather than for
+  rendering: `row["G"].(float64)`, `row["ID"].(int64)`, `structPair(m["X"])`. A
+  renderer cannot serve those, so they kept the name-keyed map and with it the
+  full order-blindness — a permuted row type-asserts cleanly and answers
+  correctly. The missing capability was a typed slot accessor, so it was built:
+  `positionalSlots` returns the slot values in order, untyped and unrendered.
+  Converted at all four sites — `array_unnest_struct` (3),
+  `aggregate_index_signed_zero_range_set` (1), `vector_multipartition_e2e` (1) —
+  with expectations UNCHANGED, which is itself the proof that slot order matched
+  the projection order at each.
+
+  **Remainder: none.** Every `executor.RowValue` site left in
+  pkg/relational/sqldriver reads a SINGLE named column, where there is no order
+  to assert, or is one of the renderer definitions themselves — which is the
+  item's stated DONE condition.
 
 - [ ] **CQ-66 (M/L, gated) — the unnest ELEMENT quantifier states no type, and
   750 positional-merge slots inherit that.** MEASURED over the real-FDB corpus

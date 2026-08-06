@@ -90,6 +90,26 @@ func positionalNamedPipeSprint(r executor.QueryResult) string {
 	return strings.Join(parts, "|")
 }
 
+// positionalSlots returns a row's slot VALUES in slot order, untyped and
+// unrendered.
+//
+// The renderers above cover assertions that compare a row as a STRING. The other
+// consumer shape needs the value itself — a test that type-asserts a slot
+// (`.(int64)`, `math.Signbit(...)`, a struct-field read) cannot go through a
+// renderer. Those sites reached for the name-keyed map instead, which reintroduces
+// the whole defect for a typed read: `row["G"]` resolves by name, so a permuted
+// (Fields, Slots) pair still hands back G's own value, and a duplicate output
+// name hands back whichever one survived the last-wins collapse.
+//
+// It returns nil for a row with no positional row, so a caller that indexes it
+// gets a bounds panic at the test rather than a silently wrong value.
+func positionalSlots(r executor.QueryResult) []any {
+	if r.Positional == nil {
+		return nil
+	}
+	return r.Positional.Slots
+}
+
 // TestPositionalRenderersSeeAPermutation is the proof that converting these
 // assertions bought something.
 //
