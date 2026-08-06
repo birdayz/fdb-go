@@ -298,12 +298,21 @@ var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 		// A FLOOR, not an equality, and the only one in this set. It floors the
 		// DENOMINATOR of the `correlatedStep1 && ordinalWindows != nil`
 		// reachability measurement — the wall any conversion of the reconstruct-nil
-		// residue contacts. The NUMERATOR is a measured zero and is deliberately
-		// ungated: the day it moves is a finding to read, not a regression to
-		// block. The denominator going to zero is the thing that must not happen
-		// silently, because then the numerator measures an absence of traffic while
-		// reading as an absence of the shape. Floored an order of magnitude below
-		// the measurement.
+		// residue contacts.
+		//
+		// MEASURED, three consecutive real-FDB corpus runs, verbatim:
+		//   correlatedStep1 firings WITH a merged layout     108 of 108
+		// The conjunction is UNIVERSAL on that arm, not occasional. An earlier
+		// version of this comment called the numerator "a measured zero"; that
+		// number was drafted before the counter had ever run and was wrong.
+		//
+		// The NUMERATOR stays ungated: at 100% the only movement available is a
+		// DROP, and a drop is a finding to read (the corpus moved, or the layout
+		// stopped being derived) rather than a regression to block. The denominator
+		// going to zero is the thing that must not happen silently, because then
+		// the numerator measures an absence of traffic while reading as an absence
+		// of the shape. Floored ~5x below the measurement, in family with the other
+		// per-site floors here (2000 vs 25406, 150 vs 1754).
 		CorrelatedStep1FiringsFloor: n(20),
 	}
 }()
@@ -10348,7 +10357,21 @@ var selectResultMintFloors = func() values.SelectResultMintFloors {
 	// So the floor is calibrated an order of magnitude below the SMALLER
 	// observation, and anyone re-measuring should expect a different digit and
 	// check the RATIO.
-	f.Calls = [values.SelectResultMintSiteCount]int{100}
+	//
+	// Calls IS DELIBERATELY LEFT UNSET, and that is a decision rather than an
+	// omission. The partition (typed + untyped + other == calls) is asserted
+	// unconditionally, so calls >= untyped >= UntypedQOVFloor: with the untyped
+	// floor at 100, a call floor of 100 cannot fire under ANY admissible state —
+	// the untyped floor gets there first, every time, including on the dark-site
+	// path where calls goes to zero and drags untyped down with it. A floor that
+	// cannot fail is not coverage; it is a line that reads like a guard while
+	// something else does the work.
+	//
+	// It comes back the moment a mint site is added whose untyped floor is 0 or
+	// below its call floor — a TYPED mint site, which is what CQ-96 is trying to
+	// produce. Both halves are pinned in the census's own tests: the call floor
+	// firing alone where no untyped floor covers it, and the exhaustive
+	// subsumption over every admissible (calls, untyped) pair below the floors.
 	f.UntypedQOVFloor = [values.SelectResultMintSiteCount]int{100}
 	return f
 }()

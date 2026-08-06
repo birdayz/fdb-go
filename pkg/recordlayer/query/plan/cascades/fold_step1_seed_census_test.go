@@ -400,13 +400,18 @@ func TestOrientationGateCensus_AssertionArmsGoRed(t *testing.T) {
 // produces a baked ordinal where a name-keyed row context raises
 // values.BakedNameContextError.
 //
-// The NUMERATOR is deliberately not asserted at a value. It is a measured zero
-// today, and a zero pinned as an equality would go red on the day a corpus query
-// legitimately reaches the conjunction — which is a FINDING to read, not a
-// regression to block. What is asserted is that the pair stays a coherent ratio
-// and that the denominator cannot go dark silently, because a zero denominator
-// makes the numerator measure an absence of TRAFFIC while reading as an absence
-// of the SHAPE.
+// MEASURED: 108 of 108 over the whole real-FDB corpus, on three consecutive
+// runs. The conjunction is UNIVERSAL on the correlated arm — every firing
+// arrives at the layout read with a merged layout already derived — so the
+// conversion meets the wall on day one, on 100% of that population.
+//
+// The NUMERATOR is deliberately not asserted at a value even so. At 100% the
+// only movement available is a DROP, and a drop is a FINDING to read (the corpus
+// moved, or the layout stopped being derived on that arm — two different causes
+// needing to be told apart) rather than a regression to block. What IS asserted
+// is that the pair stays a coherent ratio and that the denominator cannot go
+// dark silently, because a zero denominator makes the numerator measure an
+// absence of TRAFFIC while reading as an absence of the SHAPE.
 func TestFoldStep1Census_CorrelatedStep1WindowsReachability(t *testing.T) {
 	t.Parallel()
 
@@ -423,15 +428,22 @@ func TestFoldStep1Census_CorrelatedStep1WindowsReachability(t *testing.T) {
 		}
 	})
 
-	t.Run("a coherent ratio PASSES", func(t *testing.T) {
+	t.Run("the MEASURED shape PASSES", func(t *testing.T) {
 		t.Parallel()
+		// The real-FDB corpus, verbatim: `correlatedStep1 firings WITH a merged
+		// layout 108 of 108`. This fixture read 108/0 on first writing — a value
+		// drafted from the expectation that the correlated wall leaves nothing
+		// positioned, never run. A fixture named "the measured shape" holding a
+		// number nobody measured is worse than no fixture: it makes the census's
+		// own prediction look like its result.
 		var c foldStep1SeedCounters
 		c.CorrelatedStep1Firings = 108
-		c.CorrelatedStep1WithWindows = 0
+		c.CorrelatedStep1WithWindows = 108
 		var b strings.Builder
 		if assertFoldStep1SeedCounters(&b, c, nil, nil) {
-			t.Fatalf("the measured shape (a live denominator, a zero numerator) must pass, "+
-				"or the red above is measuring the gate rather than the population:\n%s", b.String())
+			t.Fatalf("the measured shape (108 of 108 — the conjunction is UNIVERSAL on the "+
+				"correlated arm) must pass, or the red above is measuring the gate rather "+
+				"than the population:\n%s", b.String())
 		}
 	})
 

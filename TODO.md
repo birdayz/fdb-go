@@ -13261,7 +13261,10 @@ None is speculative: each was re-verified against the tree before booking.
      leg is attributed by its result value's own IDENTITY (not by matching arity
      histograms, which closes only the arities unique to one site). Every
      FlatMap-legged decline reports `origin=buildCorrelatedFlatMapPlan`. That
-     site emits **UNTYPED-QOV 0** across 25,644 constructions. The two NLJ-legged
+     site emits **UNTYPED-QOV 0** across 25,644 constructions. (SUPERSEDED
+     FIGURE, kept as the reading of the day: that total is a RULE-FIRING count
+     and is not deterministic — later runs read 25,406 and 25,048. The
+     **UNTYPED-QOV 0** is the claim and it has held on every run.) The two NLJ-legged
      declines report `origin=UNRECORDED`, correctly — an NLJ result value never
      passes a FlatMap constructor. Pinned by
      `TestFlatMapProducerCensus_OriginIsMeasuredNotInferred` (three directions:
@@ -13276,7 +13279,13 @@ None is speculative: each was re-verified against the tree before booking.
   **WHAT SURVIVES, RELOCATED — a real Java divergence on a DIFFERENT
   population.** Three of the four sites DO hand FlatMap an untyped QOV:
   `implementExistentialSelect` **1,685**, `yieldExistsFlatMap` **269**,
-  `implementJoinWithExistential` (the `:4124` mint) **249**. Java cannot express
+  `implementJoinWithExistential` (the `:4124` mint) **249**. (SUPERSEDED FIGURES,
+  kept as the reading of the day, and superseded TWICE over: these are
+  rule-firing counts and are not deterministic — `implementExistentialSelect`
+  later read 1,609 — and the ATTRIBUTION is wrong besides. The first two sites
+  flow `sel.GetResultValue()` verbatim and build nothing; the author is the
+  translator mint, measured at 1,086. See CQ-96, which owns the corrected
+  population.) Java cannot express
   any of them — `QuantifiedObjectValue.of` has no untyped overload
   (`QuantifiedObjectValue.java:187`), `Quantifier.getFlowedObjectType` is a
   `Verify.verify` + `requireNonNull` (`Quantifier.java:801-810`). **None of those
@@ -15261,8 +15270,14 @@ None is speculative: each was re-verified against the tree before booking.
       documented two-revert history. CQ-68's own re-verification predicted the
       conjunction would be "structurally REACHABLE (not dead)".
 
-      **Measured over the whole real-FDB corpus: 108 of 108.** Not occasionally
-      reachable — UNIVERSAL. Every correlated firing arrives at the layout read
+      **Measured over the whole real-FDB corpus, three consecutive uncached
+      runs, the census line verbatim:**
+
+      ```
+      correlatedStep1 firings WITH a merged layout     108 of 108
+      ```
+
+      Not occasionally reachable — UNIVERSAL. Every correlated firing arrives at the layout read
       with a merged layout already derived, because on that arm `step1RV` is
       `sel.GetResultValue()` handed back unchanged and it is already a pristine
       ordinal seed. **The conversion meets the wall on day one, on 100% of the
@@ -15275,8 +15290,18 @@ None is speculative: each was re-verified against the tree before booking.
       `CorrelatedStep1Firings`, printed by `FormatFoldStep1SeedCensus` and with
       the DENOMINATOR floored in the sqldriver harness
       (`FoldStep1SeedGates.CorrelatedStep1FiringsFloor`). The numerator is
-      deliberately ungated: it is a ratio to read, and pinning it would convert a
-      finding into a blocker.
+      deliberately ungated: at 100% the only movement available is a DROP, and a
+      drop is a finding to read (the corpus moved, or the layout stopped being
+      derived on that arm) rather than a regression to block.
+
+      **Two copies of this number shipped saying the opposite and are corrected.**
+      The floor's own doc comment and the "measured shape" test fixture both read
+      the numerator as ZERO. Neither was ever run: both were drafted from the
+      reasoning that the correlated wall leaves nothing positioned, written before
+      the counter's first execution, and not revisited when the run came back
+      108 of 108. Recorded rather than quietly fixed because it is exactly the
+      failure this census family exists to prevent — a prediction shipped in the
+      voice of a measurement — committed inside the census.
     - **Two live Java divergences are booked OUT of this item** so CQ-95 does not
       inherit them by proximity: **CQ-96** (the translator mints an untyped
       `QuantifiedObjectValue` as a select result value — 1,086 measured, and the

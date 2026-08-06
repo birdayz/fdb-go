@@ -363,13 +363,31 @@ type FoldStep1SeedGates struct {
 	// one in this struct — which is why it is named for what it is.
 	//
 	// It floors the DENOMINATOR of the correlatedStep1-with-windows measurement.
-	// The interesting number is CorrelatedStep1WithWindows, and that one is
-	// deliberately not gated at all: it is currently a measured zero, and a zero
-	// asserted as an equality would go red on the day a corpus query legitimately
-	// reaches the conjunction — which is a FINDING to read, not a regression to
-	// block. What must not happen silently is the denominator going to zero,
-	// because then the ratio is measuring an absence of traffic and reads exactly
-	// like an absence of the shape.
+	//
+	// THE NUMERATOR IS 108 OF 108 — UNIVERSAL, not occasional, measured over the
+	// whole real-FDB corpus on three consecutive runs. Every correlated firing
+	// arrives at the layout read with a merged layout already derived, because on
+	// that arm step1RV is sel.GetResultValue() handed back unchanged and it is
+	// already a pristine ordinal seed. So any conversion of the reconstruct-nil
+	// residue meets the BakedNameContextError wall on day one, on 100% of the
+	// correlated population — not on some future corpus shape.
+	//
+	// THIS COMMENT SAID "currently a measured zero" AND THAT WAS NEVER MEASURED.
+	// It was drafted from the reasoning that the correlated wall means nothing is
+	// positioned, written BEFORE the counter's first run, and not revisited when
+	// the run came back 108 of 108. It is recorded rather than quietly corrected
+	// because it is the exact failure this census family exists to prevent,
+	// committed inside the census: a prediction shipped in the voice of a
+	// measurement, in a comment nothing could contradict.
+	//
+	// The numerator stays UNGATED, and the reason has flipped with the number.
+	// While it read as zero, the argument was "a rise is a finding". At 100% the
+	// only movement available is a DROP, and a drop is still a finding rather
+	// than a regression — it means either the corpus moved or the layout stopped
+	// being derived on that arm, and those need reading apart, not blocking. What
+	// must not happen silently is the DENOMINATOR going to zero, because then the
+	// ratio measures an absence of traffic and reads exactly like an absence of
+	// the shape.
 	CorrelatedStep1FiringsFloor *int
 }
 

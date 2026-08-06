@@ -77,7 +77,17 @@ var censusGateRecorders = []censusGateFunc{
 		fn:   "recordExistsSortSplit",
 		why: "its own body is allocation-free, so this gate is the cheap half of the " +
 			"pair; the half that carries the cost is the hoist at its two callers, " +
-			"pinned by TestQualifierRecoveryCensusGateIsHoistedAboveIdentity",
+			"pinned by TestCensusOnlyHelpersAreCalledUnderTheGate",
+	},
+	{
+		file: "pkg/recordlayer/query/plan/cascades/values/select_result_mint_census.go",
+		fn:   "RecordSelectResultMint",
+		why: "it Sprintf's a shape spelling — and for a QOV a second one for the flowed " +
+			"type — per SELECT EXPRESSION BUILT, on the planning path, before it ever " +
+			"reaches the mutex. Classifying ahead of the gate hands all of that to a " +
+			"disabled sink. It is also the only recorder here that is EXPORTED and called " +
+			"across a package boundary, so its caller cannot be inspected by the same file " +
+			"parse the hoist gate does — the gate on the recorder is the whole defence",
 	},
 }
 
@@ -166,6 +176,79 @@ func TestQualifierRecoveryCensusGateIsFirstStatement(t *testing.T) {
 	}
 }
 
+// isNamedCall reports whether a call target is `name` — BARE or QUALIFIED.
+//
+// The qualified form is the half that was missing, and its absence was a hole
+// rather than a simplification: the hoist gate below matched only *ast.Ident, so
+// EVERY cross-package census helper was invisible to it by construction. A
+// recorder exported from `values` and called as `values.RecordX(expensive())`
+// could not be named in the table at all — the gate would report zero call sites
+// and pass vacuously, which is the one failure mode a hand-named gate has.
+//
+// The package qualifier is deliberately not pinned, exactly as isCensusGateCall
+// does it: an import alias names the same function, and a gate a rename could
+// bypass is not a gate.
+func isNamedCall(fun ast.Expr, name string) bool {
+	switch f := fun.(type) {
+	case *ast.Ident:
+		return f.Name == name
+	case *ast.SelectorExpr:
+		return f.Sel != nil && f.Sel.Name == name
+	}
+	return false
+}
+
+// TestIsNamedCallSeesQualifiedCalls pins the matcher extension itself.
+//
+// It is pinned directly rather than through a table entry because there is no
+// cross-package entry in censusOnlyHelpers TODAY — values.SelectResultMintOriginOf
+// is the one qualified census-only reader, and it is called only from
+// describeFlatMapResultOrigin, which the table already guards; adding it would
+// demand a redundant inner gate rather than catch anything. So the extension's
+// whole value is prospective, and a prospective capability with no test is a
+// capability nobody will find out is broken. The negative direction is asserted
+// too: matching on the SELECTOR name alone must not start matching neighbours.
+func TestIsNamedCallSeesQualifiedCalls(t *testing.T) {
+	t.Parallel()
+
+	const src = `package p
+func f() {
+	bare()
+	pkg.Qualified()
+	pkg.Other()
+	x.y.Deep()
+}`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "s.go", src, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	seen := map[string]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		for _, name := range []string{"bare", "Qualified", "Other", "Deep"} {
+			if isNamedCall(call.Fun, name) {
+				seen[name] = true
+			}
+		}
+		return true
+	})
+	for _, name := range []string{"bare", "Qualified", "Deep"} {
+		if !seen[name] {
+			t.Fatalf("isNamedCall did not match %q. Before this matcher accepted "+
+				"*ast.SelectorExpr, every cross-package census helper was invisible to the "+
+				"hoist gate and any table entry naming one would have passed vacuously on a "+
+				"population of zero", name)
+		}
+	}
+	if isNamedCall(&ast.Ident{Name: "Qualified"}, "Other") {
+		t.Fatal("isNamedCall matched a name it was not asked for")
+	}
+}
+
 // censusOnlyHelper is a function computed FOR a census and for nothing else,
 // whose every call must therefore sit inside a positive census guard.
 //
@@ -245,11 +328,7 @@ func TestCensusOnlyHelpersAreCalledUnderTheGate(t *testing.T) {
 			var found int
 			ast.Inspect(f, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				id, ok := call.Fun.(*ast.Ident)
-				if !ok || id.Name != h.fn {
+				if !ok || !isNamedCall(call.Fun, h.fn) {
 					return true
 				}
 				found++

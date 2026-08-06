@@ -111,11 +111,64 @@ func TestSelectResultMintCensus_AssertionArmsGoRed(t *testing.T) {
 
 	t.Run("the site going DARK is RED", func(t *testing.T) {
 		t.Parallel()
+		// THE CALL FLOOR IS ONLY REACHABLE WHERE THE UNTYPED FLOOR IS UNSET, and
+		// this subtest has to be configured for that or it tests nothing.
+		//
+		// The partition (typed + untyped + other == calls) is asserted
+		// unconditionally, so calls >= untyped >= UntypedQOVFloor. Wherever a site
+		// carries an untyped floor at least as large as its call floor, the call
+		// floor cannot fire under ANY admissible state — the untyped floor fires
+		// first, every time. That is the harness's calibration exactly (see
+		// selectResultMintFloors, which therefore leaves Calls unset), and it is
+		// why zeroing both counters against the shared `floors` above would prove
+		// nothing about this arm.
+		//
+		// So the arm is driven at the configuration where it IS live: a site with
+		// no untyped floor, which is what a future TYPED mint site would look like.
+		callFloorOnly := &SelectResultMintFloors{
+			Calls: [SelectResultMintSiteCount]int{10},
+		}
 		var c SelectResultMintCounters
 		var b strings.Builder
-		if !assertSelectResultMintCounters(&b, c, floors) {
-			t.Fatal("a mint site making zero constructions must fail — otherwise every zero " +
-				"recorded beside it reads as an absent SHAPE when it is an absent population.")
+		if !assertSelectResultMintCounters(&b, c, callFloorOnly) {
+			t.Fatal("a mint site making zero constructions must fail when nothing else " +
+				"floors it — otherwise every zero recorded beside it reads as an absent " +
+				"SHAPE when it is an absent population.")
+		}
+		if !strings.Contains(b.String(), "gone dark") {
+			t.Fatalf("the CALL floor must be the arm that fired:\n%s", b.String())
+		}
+	})
+
+	t.Run("the call floor is SUBSUMED where an untyped floor covers it", func(t *testing.T) {
+		t.Parallel()
+		// The negative half of the subtest above, and the reason
+		// selectResultMintFloors leaves Calls unset. This is not a nice-to-have
+		// property note: a floor that cannot fail under any admissible state reads
+		// as coverage and is not, and this one would have sat in the harness
+		// looking like a dark-site guard while the untyped floor did all the work.
+		both := &SelectResultMintFloors{
+			Calls:           [SelectResultMintSiteCount]int{10},
+			UntypedQOVFloor: [SelectResultMintSiteCount]int{10},
+		}
+		for calls := 0; calls < 10; calls++ {
+			for untyped := 0; untyped <= calls; untyped++ {
+				var c SelectResultMintCounters
+				c.Calls[SelectResultMintExistsSelect] = calls
+				c.UntypedQOV[SelectResultMintExistsSelect] = untyped
+				c.OtherRV[SelectResultMintExistsSelect] = calls - untyped
+				var b strings.Builder
+				if !assertSelectResultMintCounters(&b, c, both) {
+					t.Fatalf("calls=%d untyped=%d must fail SOMETHING", calls, untyped)
+				}
+				if !strings.Contains(b.String(), "want >= 10. This is a FLOOR on a DIVERGENCE") {
+					t.Fatalf("calls=%d untyped=%d: the UNTYPED floor must be the arm that "+
+						"fires wherever it is >= the call floor. If a state exists where the "+
+						"call floor fires alone, the subsumption argument is wrong and "+
+						"selectResultMintFloors should carry a real Calls value:\n%s",
+						calls, untyped, b.String())
+				}
+			}
 		}
 	})
 

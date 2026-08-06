@@ -193,14 +193,24 @@ func TestFlatMapProducerCensus_AssertionArmsGoRed(t *testing.T) {
 
 	t.Run("a site going DARK is RED", func(t *testing.T) {
 		t.Parallel()
+		// The untyped count is held ABOVE its floor (20) while the call count is
+		// dropped BELOW its own (40), so the CALL floor is the only arm that can
+		// fire. Zeroing both — which this subtest did on first writing — trips the
+		// untyped floor first and passes without ever reaching the call floor: the
+		// test would stay green with the dark-site arm deleted outright.
 		c := base()
-		c.Calls[flatMapSiteJoinWithExistential] = 0
-		c.UntypedQOV[flatMapSiteJoinWithExistential] = 0
+		c.Calls[flatMapSiteJoinWithExistential] = 30
+		c.UntypedQOV[flatMapSiteJoinWithExistential] = 25
 		var b strings.Builder
 		if !assertFlatMapProducerCounters(&b, c, floors) {
-			t.Fatal("a producer site making zero constructions must fail — otherwise every " +
+			t.Fatal("a producer site making too few constructions must fail — otherwise every " +
 				"zero recorded beside it reads as an absent SHAPE when it is an absent " +
 				"population.")
+		}
+		if !strings.Contains(b.String(), "gone dark") {
+			t.Fatalf("the CALL floor must be the arm that fired, not the untyped floor "+
+				"standing in for it — that substitution is what made this subtest vacuous:\n%s",
+				b.String())
 		}
 	})
 }
