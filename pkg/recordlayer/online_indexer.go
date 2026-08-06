@@ -317,7 +317,13 @@ type OnlineIndexerBuilder struct {
 func NewOnlineIndexerBuilder() *OnlineIndexerBuilder {
 	return &OnlineIndexerBuilder{
 		indexer: OnlineIndexer{
-			limit:               100,
+			limit: 100,
+			// Java OnlineIndexOperationConfig.Builder defaults maxRetries to
+			// DEFAULT_MAX_RETRIES = 100 (OnlineIndexOperationConfig.java:52,251). A 0
+			// default would leave every caller that never touches the builder without
+			// the adaptive limit-halving, so one transaction_too_large escaping the
+			// client's own retry loop aborts an otherwise-resumable build.
+			maxRetries:          100,
 			recordsPerSecond:    10000, // matches Java DEFAULT_RECORDS_PER_SECOND
 			markReadableEnabled: true,  // Java buildIndex() defaults markReadable=true
 			// Java DEFAULT_PROGRESS_LOG_INTERVAL = -1 → progress logging is OFF by
@@ -952,20 +958,14 @@ func (oi *OnlineIndexer) buildRangeWithRetries(ctx context.Context, buildFn func
 		return buildFn(ctx)
 	}
 
-	enforcedDelay := oi.enforcedPostTransactionDelay > 0
 	for attempt := 0; ; attempt++ {
 		// Apply adaptive limit from throttle
 		oi.limit = oi.throttle.getLimit()
 
-		// Records-per-second rate limit between transactions. Go applies this (and the
-		// adaptive limit/retry machinery) only when retries are enabled — a pre-existing
-		// limitation tracked separately. The enforced post-transaction delay REPLACES the
-		// records-per-second throttle (Java returns one or the other), so skip rps when it
-		// is set rather than stacking both.
-		if oi.maxRetries > 0 && !enforcedDelay {
-			oi.throttle.waitForRateLimit()
-		}
-
+		// No pacing wait here. Java takes the whole inter-range wait once per RANGE in
+		// doneOrThrottleDelayAndMaybeLogProgress (IndexingBase.java:512) — i.e. in
+		// throttleBetweenRanges — not once per retry ATTEMPT, so a range that retries
+		// does not pay the rate-limit wait repeatedly.
 		n, hasMore, err := buildFn(ctx)
 		if err == nil {
 			oi.throttle.handleSuccess(int(n))
@@ -992,28 +992,18 @@ func (oi *OnlineIndexer) buildRangeWithRetries(ctx context.Context, buildFn func
 // when more ranges remain, so the final range pays no delay (Java returns READY_FALSE when
 // done). With no enforced delay configured it reduces to the prior plain time-limit check.
 func (oi *OnlineIndexer) throttleBetweenRanges(ctx context.Context, startTime time.Time, totalRecords, rangeRecords int64) error {
-	// Clamp a non-positive delay to 0 so a negative value behaves exactly like "disabled":
-	// it must not be subtracted from elapsed and loosen the time-limit check.
-	delayMs := oi.enforcedPostTransactionDelay
-	if delayMs < 0 {
-		delayMs = 0
+	// One wait per range, computed once and then both logged and slept — exactly Java's
+	// `long toWait = throttle.waitTimeMilliseconds()`. It is the enforced
+	// post-transaction delay when set, otherwise the records-per-second pacing; a
+	// negative enforced delay is not a wait, so it falls through to the rps path
+	// rather than being subtracted from elapsed and loosening the time-limit check.
+	delayMs := 0
+	if oi.throttle != nil {
+		delayMs = oi.throttle.waitTimeMillis()
 	}
 	// Java emits the progress log (with DELAY=toWait) BEFORE validateTimeLimit + the
 	// delay, so the final range that trips the time limit still reports progress.
-	// Report the ACTUAL inter-range throttle wait: the enforced delay if set,
-	// otherwise the records-per-second wait the throttle last slept (rps builds
-	// have enforcedPostTransactionDelay==0 and spend their time there — logging
-	// delayMs alone would always show 0). Mirrors Java DELAY=throttle.waitTimeMilliseconds().
-	logDelayMs := delayMs
-	if logDelayMs == 0 && oi.throttle != nil {
-		// lastWaitMillis is the rps wait slept at the TOP of the next range's build
-		// (waitForRateLimit), so for rps builds this logs the wait applied BEFORE
-		// this range, lagging Java by one range (Java computes toWait once and both
-		// logs + sleeps it for the same range). Cosmetic only — logging, no
-		// correctness/wire impact — and the values converge on a steady-state build.
-		logDelayMs = oi.throttle.lastWaitMillis
-	}
-	oi.maybeLogBuildProgress(ctx, totalRecords, rangeRecords, logDelayMs)
+	oi.maybeLogBuildProgress(ctx, totalRecords, rangeRecords, delayMs)
 	if oi.timeLimit > 0 {
 		// Same clock the anchor was minted on. Measuring a sim-clock anchor against the wall
 		// clock does not merely lose determinism — it compares two unrelated epochs, so the
@@ -1023,7 +1013,7 @@ func (oi *OnlineIndexer) throttleBetweenRanges(ctx context.Context, startTime ti
 		}
 	}
 	if oi.throttle != nil {
-		oi.throttle.applyEnforcedPostTransactionDelay(ctx)
+		oi.throttle.sleepMillis(ctx, delayMs)
 	}
 	return nil
 }

@@ -737,19 +737,18 @@ strength of "the data is just a key range".
 ### Index builds are N CLI invocations
 
 `frl index build <name>` builds **one index on one store**: the positional argument is the index
-name (`cmd/frl/internal/cmd/index_write.go:36`, `:56`), the store is addressed by scalar
+name (`cmd/frl/internal/cmd/index_write.go:40`, `:60`), the store is addressed by scalar
 `--database`/`--schema`/`--keyspace-tuple` flags (`cmd/frl/internal/cmd/openstore.go:42-49`, all
 `StringVar` — there is no slice form anywhere in `cmd/frl`), and the driver builds one indexer for
-one target (`index_write.go:215`, single `BuildIndex` call at `:263`).
+one target (`index_write.go:219`, single `BuildIndex` call at `:267`).
 
 There is no orchestrator in the repo. Rolling one new index across N tenants is N invocations, or a
 Go driver you write. If you write one, note the CLI does not expose everything the builder has —
-`SetTargetIndexes` (`pkg/recordlayer/online_indexer.go:414`), `SetSourceIndex` (`:444`) and
-`SetMutualIndexing` / `SetMutualIndexingBoundaries` (`:496`, `:505`, the closest thing to a
+`SetTargetIndexes` (`pkg/recordlayer/online_indexer.go:420`), `SetSourceIndex` (`:450`) and
+`SetMutualIndexing` / `SetMutualIndexingBoundaries` (`:502`, `:511`, the closest thing to a
 multi-worker distributed build) are Go-API only. Knobs that *are* exposed:
-`--limit`, `--rps`, `--max-retries`, `--time-limit` (`index_write.go:79-82`); the semantics are in
-[`operations.md` §4](operations.md#4-online-index-lifecycle), including the trap that
-`SetRecordsPerSecond` only takes effect when `maxRetries > 0`.
+`--limit`, `--rps`, `--max-retries`, `--time-limit` (`index_write.go:83-86`); the semantics are in
+[`operations.md` §4](operations.md#4-online-index-lifecycle).
 
 ### A new index on an existing tenant usually lands DISABLED
 
@@ -850,7 +849,7 @@ index is wrong, the remedy is a full rebuild.
 ### Format version: Go's default is not Java's
 
 `SetFormatVersion` now exists on both builders (`pkg/recordlayer/store_builder.go:1219`,
-`pkg/recordlayer/online_indexer.go:333`) and on the store (`pkg/recordlayer/store_api.go:84`). It is
+`pkg/recordlayer/online_indexer.go:339`) and on the store (`pkg/recordlayer/store_api.go:84`). It is
 a **ceiling, never a downgrade**, and it exists for exactly the rolling-upgrade case: pin every
 instance to the OLD version so no upgraded instance starts writing a layout the not-yet-upgraded
 ones cannot read (`store_builder.go:1209-1218`). An explicit `0` is an error, not "give me the

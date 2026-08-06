@@ -15,12 +15,16 @@ import (
 // This is the operator task the read surface can see (`index ls` shows
 // WRITE_ONLY) but couldn't fix before the write wave.
 
-// defaultBuildMaxRetries is Java's OnlineIndexer default. The Go
-// builder's own default is 0, which silently disables the rps throttle
-// AND the adaptive limit-halving (`online_indexer.go`: both engage only
-// when maxRetries > 0) — a single transaction_too_large escaping the
-// client retry loop would abort the whole build with no back-off
-// (FDB C++ dev review, RFC-174 C1).
+// defaultBuildMaxRetries is Java's OnlineIndexer default
+// (OnlineIndexOperationConfig.DEFAULT_MAX_RETRIES). It now merely restates the
+// library default rather than correcting it: the Go builder used to default to 0,
+// which disabled the adaptive limit-halving, so a single transaction_too_large
+// escaping the client retry loop aborted the whole build with no back-off. The CLI
+// papered over that for its own users while every library caller stayed exposed, so
+// the default moved into NewOnlineIndexerBuilder where it belongs.
+//
+// Kept explicit anyway: an operator reading `--help` should see the retry budget the
+// build will actually use, not have to infer it from the library.
 const defaultBuildMaxRetries = 100
 
 func newIndexBuildCmd() *cobra.Command {
@@ -45,10 +49,10 @@ func newIndexBuildCmd() *cobra.Command {
 			"whole range is built. Safe to interrupt — per-range progress " +
 			"commits atomically, and a rerun resumes from the ranges already " +
 			"done. A build interrupted by --time-limit resumes the same way.\n\n" +
-			"--max-retries defaults to 100 (Java's default; the throttle and " +
-			"adaptive batch-halving only engage when retries are enabled). " +
-			"--rps caps records scanned per second; --limit is the per-" +
-			"transaction record batch.\n\n" +
+			"--max-retries defaults to 100 (Java's default), bounding the " +
+			"adaptive batch-halving on transient errors. --rps caps records " +
+			"scanned per second and applies regardless of the retry budget; " +
+			"--limit is the per-transaction record batch.\n\n" +
 			"Resuming with different indexing settings than the interrupted " +
 			"build fails with the saved vs requested stamps — rerun with " +
 			"matching settings to take over, or `frl index rebuild` to start " +
@@ -78,7 +82,7 @@ func newIndexBuildCmd() *cobra.Command {
 	c.Flags().BoolVar(&yes, "yes", false, "skip the interactive confirmation")
 	c.Flags().IntVar(&limit, "limit", 0, "records per transaction (0 = indexer default)")
 	c.Flags().IntVar(&rps, "rps", 0, "records-per-second throttle (0 = indexer default)")
-	c.Flags().IntVar(&maxRetries, "max-retries", defaultBuildMaxRetries, "retry budget; enables throttling + adaptive batch-halving")
+	c.Flags().IntVar(&maxRetries, "max-retries", defaultBuildMaxRetries, "retry budget for adaptive batch-halving on transient errors")
 	c.Flags().DurationVar(&timeLimit, "time-limit", 0, "stop after this duration (partial build; rerun resumes)")
 	return c
 }
@@ -135,7 +139,7 @@ func newIndexRebuildCmd() *cobra.Command {
 	c.Flags().BoolVar(&yes, "yes", false, "skip the interactive confirmation")
 	c.Flags().IntVar(&limit, "limit", 0, "records per transaction (0 = indexer default)")
 	c.Flags().IntVar(&rps, "rps", 0, "records-per-second throttle (0 = indexer default)")
-	c.Flags().IntVar(&maxRetries, "max-retries", defaultBuildMaxRetries, "retry budget; enables throttling + adaptive batch-halving")
+	c.Flags().IntVar(&maxRetries, "max-retries", defaultBuildMaxRetries, "retry budget for adaptive batch-halving on transient errors")
 	return c
 }
 

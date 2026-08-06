@@ -139,8 +139,7 @@ idxer, _ := recordlayer.NewOnlineIndexerBuilder().
     SetIndex(myIndex).
     SetSubspace(ss).
     SetLimit(100).                       // records per transaction (default 100)
-    SetMaxRetries(3).                     // REQUIRED for SetRecordsPerSecond to take effect (see below)
-    SetRecordsPerSecond(10000).          // inter-tx rate limit (only applied when maxRetries > 0)
+    SetRecordsPerSecond(10000).          // inter-tx rate limit (applies on its own)
     SetProgressLogIntervalMillis(10000). // log "Indexer: Built Range" at most every 10s (default -1 = off)
     SetLogger(slog.Default()).
     Build()
@@ -153,10 +152,10 @@ Key knobs (defaults in parentheses):
 | Setter | Effect |
 |---|---|
 | `SetLimit(n)` (100) | records per build transaction; auto-lowered on transient `too_large`/`too_old` errors |
-| `SetRecordsPerSecond(n)` (10000) | inter-transaction rate limit; `0` = unlimited. **Only takes effect when `SetMaxRetries(n>0)` is also set** — the rps wait lives on the retry/throttle path (default `maxRetries=0` ⇒ no throttling). Use `SetEnforcedPostTransactionDelay` for an unconditional delay. |
+| `SetRecordsPerSecond(n)` (10000) | inter-transaction rate limit; `0` = unlimited. Applied once per range, independent of the retry budget (`pkg/recordlayer/online_indexer.go`, `throttleBetweenRanges`), matching Java `IndexingBase.java:512`. |
 | `SetEnforcedPostTransactionDelay(ms)` (0) | fixed delay between ranges, **instead of** the rate limit; applied unconditionally (no retries needed) |
 | `SetTimeLimit(d)` (unlimited) | abort with `TimeLimitExceededError` after the wall-clock budget |
-| `SetMaxRetries(n)` (0) | retries per range on transient errors; also gates `SetRecordsPerSecond` throttling |
+| `SetMaxRetries(n)` (100) | retries per range on transient errors, bounding the adaptive limit-halving. Matches Java's `DEFAULT_MAX_RETRIES`; set `0` to disable retries (throttling is unaffected either way) |
 | `SetProgressLogIntervalMillis(n)` (-1) | `<0` off · `0` every range · `>0` throttle the progress log |
 | `SetLogger(l)` (`slog.Default()`) | where progress events go (INFO) |
 | `SetMarkReadable(bool)` (true) | mark the index readable when the build completes |
