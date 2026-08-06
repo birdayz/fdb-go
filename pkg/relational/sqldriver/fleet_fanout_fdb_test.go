@@ -586,3 +586,159 @@ func assertCatalogRefused(t *testing.T, what string, res fleet.Result, err error
 		t.Fatalf("%s tally = %+v, want no target touched", what, res)
 	}
 }
+
+// TestFDB_FleetMigrateRefusesARebindThatDidNotAdvance pins the asserted
+// read-back — the one property of migration mode that has no other observable.
+//
+// RepairSchema rebinds a schema to whatever its template's LATEST stored
+// version happens to be; it cannot be asked for a particular version. So if the
+// template save silently did not land, every RepairSchema call still SUCCEEDS,
+// rebinding each tenant to the version it already held. Without reading the
+// landed version back and asserting it advanced, the pass reports the whole
+// fleet "migrated" while every tenant is still on the old metadata — the
+// worst possible outcome, because it is indistinguishable from success.
+//
+// The scenario is constructed directly: ask for a version that was never
+// saved. Every tenant must FAIL, none may be counted migrated, and the
+// catalog must be unchanged because the failing assertion aborts each
+// transaction before it commits.
+func TestFDB_FleetMigrateRefusesARebindThatDidNotAdvance(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	h := newFleetHarness(t)
+	const dbPath = "/testdb_fleet_noadvance"
+	const tmplName = "FLEETNOADVANCE"
+	schemas := []string{"S1", "S2", "S3"}
+	fleetSetup(t, h, dbPath, tmplName, schemas)
+
+	// Deliberately do NOT save v2 — this models the template save that did not
+	// land. Everything else about the pass is a normal migration.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	trace := newFleetTrace()
+	res, err := fleet.Migrate(ctx, h.db, h.cat, h.ks,
+		fleetTargets(t, h, dbPath), 2, fleet.Options{Progress: trace.record})
+
+	if err == nil {
+		t.Fatalf("Migrate reported success with target version 2 that was never saved (%+v).\n"+
+			"RepairSchema rebinds to the catalog's latest, so every tenant 'succeeded' while "+
+			"staying on v1. The landed version must be read back and asserted to have advanced.", res)
+	}
+	if res.Migrated != 0 || res.Failed != len(schemas) {
+		t.Fatalf("tally = %+v, want Migrated=0 Failed=%d — a rebind that did not advance is a "+
+			"FAILURE, not a migration", res, len(schemas))
+	}
+	for _, s := range schemas {
+		if got := trace.outcome(dbPath + "/" + s); got != fleet.OutcomeFailed {
+			t.Errorf("schema %s outcome = %q, want %q", s, got, fleet.OutcomeFailed)
+		}
+	}
+	// The catalog is untouched: the assertion fires inside the transaction, so
+	// nothing commits.
+	for s, v := range fleetVersions(t, h, dbPath) {
+		if v != 1 {
+			t.Errorf("schema %s is bound to version %d after a rejected rebind, want 1 — "+
+				"the assertion must abort the transaction, not report after committing", s, v)
+		}
+	}
+}
+
+// TestFDB_FleetMigrateToLatestResolvesVersionPerTemplate pins that a database
+// mixing schema templates migrates correctly.
+//
+// Templates advance independently. Resolving ONE destination version for the
+// whole database — the maximum across templates, the obvious implementation —
+// is wrong in the most damaging direction: a tenant whose own template has not
+// reached that number cannot be rebound to it (RepairSchema only ever moves a
+// schema to ITS OWN template's latest), so the asserted read-back correctly
+// rejects it, the tenant is reported FAILED, and it never migrates at all.
+// The tenants that most need the pass are exactly the ones it drops.
+func TestFDB_FleetMigrateToLatestResolvesVersionPerTemplate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	h := newFleetHarness(t)
+	const dbPath = "/testdb_fleet_mixed"
+	const tmplAhead = "FLEETMIXEDAHEAD"   // reaches v2
+	const tmplBehind = "FLEETMIXEDBEHIND" // stays at v1
+
+	// Two templates in ONE database: S1/S2 on the one that will advance, S3 on
+	// the one that will not.
+	tmplA1 := fleetTemplate(t, tmplAhead, 1, false)
+	tmplB1 := fleetTemplate(t, tmplBehind, 1, false)
+	h.mustRun(t, "bootstrap mixed", func(txn api.Transaction) error {
+		if err := h.cat.Initialize(txn); err != nil {
+			return err
+		}
+		if err := ddl.NewCreateDatabaseConstantAction(dbPath, h.cat).Execute(txn); err != nil {
+			return err
+		}
+		if err := ddl.NewSaveSchemaTemplateConstantAction(tmplA1, h.cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
+			return err
+		}
+		if err := ddl.NewSaveSchemaTemplateConstantAction(tmplB1, h.cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
+			return err
+		}
+		for _, s := range []string{"S1", "S2"} {
+			if err := ddl.NewCreateSchemaConstantAction(dbPath, s, tmplAhead, h.cat, h.ks).Execute(txn); err != nil {
+				return err
+			}
+		}
+		return ddl.NewCreateSchemaConstantAction(dbPath, "S3", tmplBehind, h.cat, h.ks).Execute(txn)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// Only the AHEAD template gets a v2.
+	if err := fleet.SaveTemplate(ctx, h.db, h.cat, fleetTemplate(t, tmplAhead, 2, true)); err != nil {
+		t.Fatalf("save %s@2: %v", tmplAhead, err)
+	}
+
+	// Pre-state: the destinations really do differ. Without this the test would
+	// also pass on a fleet where both templates sat at the same version, which
+	// is precisely the case that cannot express the defect.
+	targets := fleetTargets(t, h, dbPath)
+	latest, err := fleet.LatestVersions(ctx, h.db, h.cat, targets)
+	if err != nil {
+		t.Fatalf("LatestVersions: %v", err)
+	}
+	if latest[tmplAhead] != 2 || latest[tmplBehind] != 1 {
+		t.Fatalf("pre-state: latest versions = %v, want %s@2 and %s@1 — the two templates must "+
+			"sit at DIFFERENT versions or this test cannot detect a fleet-wide resolution",
+			latest, tmplAhead, tmplBehind)
+	}
+
+	trace := newFleetTrace()
+	res, err := fleet.MigrateToLatest(ctx, h.db, h.cat, h.ks, targets,
+		fleet.Options{Progress: trace.record})
+	if err != nil {
+		t.Fatalf("MigrateToLatest on a mixed-template database failed: %v\n"+
+			"Resolving one fleet-wide destination version fails every tenant whose own template "+
+			"has not reached it. Each template must be resolved separately.", err)
+	}
+	if res.Failed != 0 {
+		t.Fatalf("tally = %+v, want Failed=0", res)
+	}
+	// S1/S2 advance to their template's v2; S3 is already at ITS template's
+	// latest and must be skipped, not failed and not pushed to v2.
+	if res.Migrated != 2 || res.Skipped != 1 {
+		t.Fatalf("tally = %+v, want Migrated=2 (on %s) Skipped=1 (on %s, already at its own latest)",
+			res, tmplAhead, tmplBehind)
+	}
+	if got := trace.outcome(dbPath + "/S3"); got != fleet.OutcomeSkipped {
+		t.Errorf("S3 (bound to %s, already at its latest v1) outcome = %q, want %q",
+			tmplBehind, got, fleet.OutcomeSkipped)
+	}
+	after := fleetVersions(t, h, dbPath)
+	if after["S1"] != 2 || after["S2"] != 2 {
+		t.Errorf("versions after = %v, want S1=S2=2", after)
+	}
+	if after["S3"] != 1 {
+		t.Errorf("S3 is bound to version %d, want 1 — a schema must never be pushed past its "+
+			"OWN template's latest version by another template's progress", after["S3"])
+	}
+}

@@ -168,6 +168,13 @@ What replaces atomicity is convergence:
   rebinds to whatever the catalog's latest version happens to be, so without
   this check a template save that silently did not land would report every
   tenant as "migrated" while all of them stayed on the old metadata.
+- **Per-template destination** — a database may hold schemas bound to
+  different templates, which advance independently. The destination version is
+  resolved per template (`LatestVersions` / `MigrateToLatest`), never once for
+  the database: `RepairSchema` can only move a schema to ITS OWN template's
+  latest, so one fleet-wide number makes the asserted bridge above reject
+  every tenant whose template has not reached it — and those are precisely the
+  tenants the pass exists to move.
 - **Catalog guard** — the catalog self-registers (`Initialize` writes `/__SYS`
   and `/__SYS/CATALOG` rows), so an unfiltered enumeration really does hand
   the catalog back as an ordinary target. It is refused. Note that a

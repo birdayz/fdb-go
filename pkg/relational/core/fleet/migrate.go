@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"fdb.dev/pkg/recordlayer"
@@ -117,6 +118,87 @@ func Migrate(
 			ToVersion:   landed,
 		}, nil
 	})
+}
+
+// LatestVersions resolves, for each distinct template among targets, the
+// latest version stored in the catalog.
+//
+// A template with no stored version is an error rather than a silent zero: it
+// means the fleet listing and the template catalog disagree, and rebinding
+// onto "version 0" would either fail per tenant or, worse, pass an assertion
+// no tenant can violate.
+func LatestVersions(
+	ctx context.Context,
+	db *recordlayer.FDBDatabase,
+	cat api.StoreCatalog,
+	targets []Target,
+) (map[string]int, error) {
+	out := make(map[string]int)
+	for _, t := range targets {
+		if _, ok := out[t.TemplateName]; ok {
+			continue
+		}
+		next, err := NextTemplateVersion(ctx, db, cat, t.TemplateName)
+		if err != nil {
+			return nil, fmt.Errorf("resolve latest version of template %q: %w", t.TemplateName, err)
+		}
+		// NextTemplateVersion returns one PAST the latest stored version.
+		latest := next - 1
+		if latest <= 0 {
+			return nil, fmt.Errorf("template %q has no stored version to rebind onto", t.TemplateName)
+		}
+		out[t.TemplateName] = latest
+	}
+	return out, nil
+}
+
+// MigrateToLatest rebinds every target onto the latest stored version of the
+// template THAT TARGET is bound to.
+//
+// Version resolution is per TEMPLATE, never fleet-wide, and that is the whole
+// point of this function existing rather than callers computing one number.
+// A database may hold schemas bound to different templates, and those
+// templates advance independently. Judging every tenant against a single
+// fleet-wide number — the maximum across templates, say — breaks every tenant
+// whose own template has not reached it: RepairSchema can only move a schema
+// to ITS OWN template's latest, so the asserted read-back in Migrate correctly
+// rejects the rebind, the tenant is reported as failed, and it never migrates
+// at all. The tenants that need the pass most are exactly the ones it drops.
+//
+// So the fan-out is executed as one Migrate pass per template, and the tallies
+// are merged.
+func MigrateToLatest(
+	ctx context.Context,
+	db *recordlayer.FDBDatabase,
+	cat api.StoreCatalog,
+	ks *keyspace.RelationalKeyspace,
+	targets []Target,
+	opts Options,
+) (Result, error) {
+	latest, err := LatestVersions(ctx, db, cat, targets)
+	if err != nil {
+		return Result{}, err
+	}
+	byTemplate := make(map[string][]Target, len(latest))
+	order := make([]string, 0, len(latest))
+	for _, t := range targets {
+		if _, seen := byTemplate[t.TemplateName]; !seen {
+			order = append(order, t.TemplateName)
+		}
+		byTemplate[t.TemplateName] = append(byTemplate[t.TemplateName], t)
+	}
+	var (
+		total Result
+		errs  []error
+	)
+	for _, name := range order {
+		res, migErr := Migrate(ctx, db, cat, ks, byTemplate[name], latest[name], opts)
+		total.merge(res)
+		if migErr != nil {
+			errs = append(errs, migErr)
+		}
+	}
+	return total, errors.Join(errs...)
 }
 
 // MigrateTemplate is the whole migration in one call: save tmpl as a new

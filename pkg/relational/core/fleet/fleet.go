@@ -129,6 +129,20 @@ type Result struct {
 	Failures []*TargetError
 }
 
+// merge folds another pass's tally into r. Used when one logical fan-out is
+// executed as several Migrate passes — one per template — because the target
+// version is a property of the template, not of the fleet.
+func (r *Result) merge(o Result) {
+	r.Total += o.Total
+	r.Migrated += o.Migrated
+	r.Skipped += o.Skipped
+	r.Built += o.Built
+	r.NoWork += o.NoWork
+	r.Failed += o.Failed
+	r.Refused += o.Refused
+	r.Failures = append(r.Failures, o.Failures...)
+}
+
 func (r *Result) record(ev Event) {
 	switch ev.Outcome {
 	case OutcomeMigrated:

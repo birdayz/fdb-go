@@ -1,10 +1,10 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -181,8 +181,12 @@ func newMetaCatalogRepairCmd() *cobra.Command {
 			"A tenant that fails is reported and does NOT stop the fleet; the " +
 			"command exits non-zero with every failure listed. The relational " +
 			"catalog itself is never a target.\n\n" +
-			"The destination is always the LATEST stored version of the " +
-			"template — there is deliberately no --to-version flag, because " +
+			"The destination is the LATEST stored version of the template " +
+			"EACH SCHEMA IS BOUND TO, resolved per template rather than once " +
+			"for the database: templates advance independently, and a database " +
+			"mixing them must not judge every tenant against whichever template " +
+			"happens to be furthest ahead.\n\n" +
+			"There is deliberately no --to-version flag, because " +
 			"RepairSchema has no 'rebind to version N' form. A flag that " +
 			"appeared to pin an older version would silently rebind to the " +
 			"latest anyway.",
@@ -212,22 +216,23 @@ func newMetaCatalogRepairCmd() *cobra.Command {
 				return fmt.Errorf("no schemas found in database %q", databaseID)
 			}
 
-			// Resolve the target version once, from the template the fleet
-			// shares, so every tenant is judged against the SAME number.
-			// Resolving per tenant would make "skipped" mean different
-			// things for different tenants in one pass.
-			target, err := fleetLatestVersion(ctx, db, cat, targets)
+			// Destinations are resolved PER TEMPLATE, not once for the
+			// database. A database may hold schemas bound to different
+			// templates, which advance independently; one fleet-wide
+			// number would fail every tenant whose own template has not
+			// reached it, and those tenants would never migrate.
+			latest, err := fleet.LatestVersions(ctx, db, cat, targets)
 			if err != nil {
 				return err
 			}
 
 			if err := confirmWrite(cmd, yes, fmt.Sprintf(
-				"rebind %s in %s to template version %d",
-				fleetDescribeTargets(targets), databaseID, target)); err != nil {
+				"rebind %s in %s to %s",
+				fleetDescribeTargets(targets), databaseID, fleetDescribeVersions(latest))); err != nil {
 				return err
 			}
 
-			res, runErr := fleet.Migrate(ctx, db, cat, relationalKeyspace(), targets, target, fleet.Options{
+			res, runErr := fleet.MigrateToLatest(ctx, db, cat, relationalKeyspace(), targets, fleet.Options{
 				Concurrency: concurrency,
 				Progress:    fleetProgressPrinter(cmd),
 			})
@@ -244,34 +249,15 @@ func newMetaCatalogRepairCmd() *cobra.Command {
 	return c
 }
 
-// fleetLatestVersion resolves the highest available version across the
-// templates the targets are bound to. Targets normally share one template; a
-// database mixing templates takes the max, so a pass never reports a tenant as
-// "migrated" against a version lower than one it already holds.
-func fleetLatestVersion(
-	ctx context.Context,
-	db *recordlayer.FDBDatabase,
-	cat *catalog.RecordLayerStoreCatalog,
-	targets []fleet.Target,
-) (int, error) {
-	seen := map[string]struct{}{}
-	best := 0
-	for _, t := range targets {
-		if _, ok := seen[t.TemplateName]; ok {
-			continue
-		}
-		seen[t.TemplateName] = struct{}{}
-		next, err := fleet.NextTemplateVersion(ctx, db, cat, t.TemplateName)
-		if err != nil {
-			return 0, fmt.Errorf("resolve latest version of template %q: %w", t.TemplateName, err)
-		}
-		// NextTemplateVersion returns one PAST the latest stored version.
-		if latest := next - 1; latest > best {
-			best = latest
-		}
+// fleetDescribeVersions renders the per-template destinations for the
+// confirmation prompt, so an operator confirming a mixed-template database
+// sees that each template has its OWN destination rather than one number the
+// whole fleet is being pushed to.
+func fleetDescribeVersions(latest map[string]int) string {
+	parts := make([]string, 0, len(latest))
+	for name, v := range latest {
+		parts = append(parts, fmt.Sprintf("%s@%d", name, v))
 	}
-	if best <= 0 {
-		return 0, fmt.Errorf("could not resolve a template version to rebind onto")
-	}
-	return best, nil
+	sort.Strings(parts)
+	return "template version " + strings.Join(parts, ", ")
 }

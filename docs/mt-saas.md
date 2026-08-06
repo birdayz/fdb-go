@@ -753,6 +753,11 @@ The properties that matter operationally, because a fleet job is not a transacti
 - **Resumable.** Re-run after an interruption: migration skips schemas already at the target
   `TEMPLATE_VERSION`, and an index build skips indexes that are no longer pending. There is no
   "resume from checkpoint" state to manage — running it again *is* the resume.
+- **Each template has its own destination.** A database may mix schema
+  templates, and they advance independently. The rebind resolves the latest
+  version per *template*, never one number for the database — pushing every
+  tenant at whichever template is furthest ahead fails exactly the tenants that
+  still need the pass.
 - **The catalog is never a target.** It self-registers as a schema (`/__SYS/CATALOG`), so an
   unfiltered enumeration really does return it; the fan-out refuses it.
 - **No atomic cutover.** Deliberately. Between passes tenants straddle template versions, which is
