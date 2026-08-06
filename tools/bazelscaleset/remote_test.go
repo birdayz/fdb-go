@@ -147,6 +147,18 @@ func newRemoteScaler(t *testing.T, client scalerClient, pool *slotPool, sshBin s
 	s.sshConnectTimeout = 2 * time.Second
 	s.remoteCfg = remoteProcConfig{pollInterval: 30 * time.Millisecond, probeTimeout: 5 * time.Second, unreachableLimit: 3}
 	s.unhealthyCooldown = 150 * time.Millisecond
+	// The scaler's watcher goroutines (wait, watchJobStart, watchTerminal)
+	// poll over the fake ssh, which appends to argv.log on every invocation.
+	// Without waiting them out, a poll in flight when the test returns can
+	// re-create files under fakeSSH's t.TempDir between RemoveAll's readdir
+	// and its rmdir — "TempDir RemoveAll cleanup: ... directory not empty".
+	// LIFO ordering runs this cleanup before the TempDir removals. The
+	// explicit wg.Wait covers shutdown's empty-runners early return: watchers
+	// can still be draining for a runner already reaped out of s.running.
+	t.Cleanup(func() {
+		s.shutdown()
+		s.wg.Wait()
+	})
 	return s
 }
 
