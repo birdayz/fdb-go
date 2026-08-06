@@ -217,6 +217,56 @@ var requestBuilders = map[string]func(tok [16]byte) []byte{
 			Reply:            ReplyPromise{Token: tok},
 		}).MarshalFDB()
 	},
+	// GetReadVersionRequest::tags is TransactionTagMap<uint32_t> — a vector of
+	// {tag, count} objects. An empty map and an empty byte string both encode to
+	// a bare four-byte zero, so only this NON-empty case can tell the correct
+	// encoding from the opaque-blob one that preceded it.
+	"GetReadVersionRequest_tagged": func(tok [16]byte) []byte {
+		return (&GetReadVersionRequest{
+			TransactionCount: 1,
+			MaxVersion:       -1,
+			Tags:             []TransactionTagCount{{Tag: []byte("tenant-a"), Count: 3}},
+			Reply:            ReplyPromise{Token: tok},
+		}).MarshalFDB()
+	},
+	// Three entries, which is what actually exercises the vector's offset table
+	// — a single-element vector can hide an off-by-one there. The ELEMENT ORDER
+	// below is libstdc++'s std::unordered_map iteration order for these keys
+	// under the pinned toolchain; it is not part of the wire contract, so if a
+	// toolchain bump reorders it, re-read the order off the emitted vector and
+	// update this literal. What the comparison pins is the framing, not the order.
+	"GetReadVersionRequest_tagged_multi": func(tok [16]byte) []byte {
+		return (&GetReadVersionRequest{
+			TransactionCount: 4,
+			MaxVersion:       -1,
+			Tags: []TransactionTagCount{
+				{Tag: []byte("gamma"), Count: 7},
+				{Tag: []byte("beta"), Count: 2},
+				{Tag: []byte("alpha"), Count: 1},
+			},
+			Reply: ReplyPromise{Token: tok},
+		}).MarshalFDB()
+	},
+	// CommitTransactionRequest::tagSet is Optional<TagSet>, and TagSet has
+	// dynamic_size_traits — a flat [len:1][tag bytes] concatenation in insertion
+	// order. A byte blob IS the right model here, unlike the GRV map above.
+	"CommitTransactionRequest_tagged": func(tok [16]byte) []byte {
+		return (&CommitTransactionRequest{
+			Transaction: CommitTransactionRef{
+				ReadSnapshot: 7,
+				Mutations: []MutationRef{
+					{MutType: 0, Param1: []byte("tk"), Param2: []byte("tv")},
+				},
+				WriteConflictRanges: []KeyRangeRef{
+					{Begin: []byte("tk"), End: []byte("tk\x00")},
+				},
+			},
+			HasTagSet:  true,
+			TagSet:     []byte("\x08tenant-a\x04bulk"),
+			Reply:      ReplyPromise{Token: tok},
+			TenantInfo: TenantInfo{TenantId: -1},
+		}).MarshalFDB()
+	},
 }
 
 // requestRoundTrip parses the C++ bytes with the generated UnmarshalFDB for

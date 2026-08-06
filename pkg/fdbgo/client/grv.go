@@ -886,7 +886,7 @@ func (b *grvBatcher) flush(db *database) {
 	// by a reply it was meant to retire.
 	tok := db.grvCache.token()
 	requestTime := time.Now()
-	version, locked, rkDefault, rkBatch, tagThrottleInfoBytes, _, attemptEpoch, err := b.sendGRVRequest(db, batchCtx, flags, uint32(len(batch)), batchGRVSpanContext(spans))
+	version, locked, rkDefault, rkBatch, tagThrottleInfoEntries, _, attemptEpoch, err := b.sendGRVRequest(db, batchCtx, flags, uint32(len(batch)), batchGRVSpanContext(spans))
 	elapsed := time.Since(requestTime)
 
 	if err == nil {
@@ -894,7 +894,7 @@ func (b *grvBatcher) flush(db *database) {
 		// BEFORE the per-transaction locked throw (NativeAPI.actor.cpp:7409
 		// precedes :7425). `locked` is returned to waiters below but no longer
 		// rides the cache (RFC-104).
-		b.applyGRVReply(db, tok.withEpoch(attemptEpoch), requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
+		b.applyGRVReply(db, tok.withEpoch(attemptEpoch), requestTime, version, rkDefault, rkBatch, tagThrottleInfoEntries)
 		// C++ counts per-transaction in extractReadVersion (:7428-7440) — one
 		// batched reply serves len(batch) transactions. Cache hits never reach
 		// here (C++ parity: its cached path returns before the counters); the
@@ -1075,7 +1075,7 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 				// No tx waiters on a background refresh, so the batcher span has no
 				// links: batchGRVSpanContext(nil) = {traceID 0, random spanID,
 				// unsampled} — the no-sampled-link case, matching a C++ updater GRV.
-				version, _, rkDefault, rkBatch, tagThrottleInfoBytes, _, attemptEpoch, err := b.sendGRVRequest(db, refreshCtx, b.priority, 1, batchGRVSpanContext(nil))
+				version, _, rkDefault, rkBatch, tagThrottleInfoEntries, _, attemptEpoch, err := b.sendGRVRequest(db, refreshCtx, b.priority, 1, batchGRVSpanContext(nil))
 				if err == nil {
 					// The refresher ignores the reply's `locked` flag — equivalent
 					// to C++'s background updater, whose non-lock-aware txn THROWS
@@ -1083,7 +1083,7 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 					// :7425) and is caught by its own onError loop. Nothing surfaces
 					// to users from a background refresh, and the cached path
 					// fail-opens anyway (RFC-104).
-					b.applyGRVReply(db, tok.withEpoch(attemptEpoch), requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
+					b.applyGRVReply(db, tok.withEpoch(attemptEpoch), requestTime, version, rkDefault, rkBatch, tagThrottleInfoEntries)
 					// EMA update: grvDelay = (grvDelay + measured_latency) / 2.
 					grvDelay = (grvDelay + time.Since(requestTime)) / 2
 				}
@@ -1098,7 +1098,7 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 // version cache, proxy contact time, minAcceptableReadVersion, ratekeeper
 // throttle state, and tag throttle info.
 // Called from both flush() (batched request) and backgroundRefresher().
-func (b *grvBatcher) applyGRVReply(db *database, tok cacheToken, requestTime time.Time, version int64, rkDefault, rkBatch bool, tagThrottleInfoBytes []byte) {
+func (b *grvBatcher) applyGRVReply(db *database, tok cacheToken, requestTime time.Time, version int64, rkDefault, rkBatch bool, tagThrottleInfoEntries []types.TransactionTagThrottle) {
 	// ONE publication for everything tryCache consults. Serving is decided by
 	// freshness AND cooldown together, so publishing them separately — in
 	// either order — leaves a state a concurrent reader can catch. Renewing
@@ -1178,8 +1178,8 @@ func (b *grvBatcher) applyGRVReply(db *database, tok cacheToken, requestTime tim
 	// Outside the gate above ON PURPOSE — it carries its own, applied at the CAS.
 	db.updateMinAcceptable(tok.epoch(), version)
 
-	if len(tagThrottleInfoBytes) > 0 {
-		parsed := parseTagThrottleInfo(tagThrottleInfoBytes)
+	if len(tagThrottleInfoEntries) > 0 {
+		parsed := parseTagThrottleInfo(tagThrottleInfoEntries)
 		if parsed != nil {
 			priority := grvPriorityToPriority(b.priority)
 			db.tagThrottles.replace(priority, parsed)
@@ -1199,7 +1199,7 @@ const (
 // proxy. On FDB application error, propagates immediately. If all proxies
 // fail, applies exponential backoff and retries — loops until success or
 // db.ctx cancellation (matching C++ infinite loop + quorum(ok,1) wait).
-func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32, span types.SpanContext) (version int64, locked bool, rkDefaultThrottled, rkBatchThrottled bool, tagThrottleInfo []byte, proxyTagThrottledDuration float64, attemptEpoch int64, err error) {
+func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32, span types.SpanContext) (version int64, locked bool, rkDefaultThrottled, rkBatchThrottled bool, tagThrottleInfo []types.TransactionTagThrottle, proxyTagThrottledDuration float64, attemptEpoch int64, err error) {
 	var backoff time.Duration
 
 	for {
@@ -1331,7 +1331,7 @@ func buildGetReadVersionRequest(replyToken transport.UID, flags uint32, txnCount
 // database-locked flag the proxy reports unconditionally
 // (GrvProxyServer.actor.cpp:673); enforcement is client-side, per
 // transaction (RFC-096).
-func parseGetReadVersionReply(data []byte) (int64, bool, bool, bool, []byte, float64, error) {
+func parseGetReadVersionReply(data []byte) (int64, bool, bool, bool, []types.TransactionTagThrottle, float64, error) {
 	var r wire.Reader
 	if err := wire.ReadErrorOrInto(data, &r); err != nil {
 		return 0, false, false, false, nil, 0, fmt.Errorf("GRV: %w", err)
