@@ -220,14 +220,14 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	queryRows := func(t *testing.T, sql string) (string, []map[string]any) {
+	queryRows := func(t *testing.T, sql string) (string, []executor.QueryResult) {
 		t.Helper()
 		plan, perr := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
 		if perr != nil {
 			t.Fatalf("plan %q: %v", sql, perr)
 		}
 		explain := plan.Explain()
-		var out []map[string]any
+		var out []executor.QueryResult
 		_, eerr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, sErr := recordlayer.NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
@@ -244,10 +244,7 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 			if rErr != nil {
 				return nil, rErr
 			}
-			for _, r := range rows {
-				m, _ := executor.RowValue(r).(map[string]any)
-				out = append(out, m)
-			}
+			out = append(out, rows...)
 			return nil, nil
 		})
 		if eerr != nil {
@@ -292,11 +289,17 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		const q = `WITH "V" AS (SELECT "ID" AS "VID", "Y" FROM T4, T4."SARR", "SARR"."SUB" AS "Y") SELECT "V"."Y", "T2"."ID" FROM "V" LEFT JOIN T4 AS "T2" ON "V"."VID" = "T2"."ID"`
 		_, rows := queryRows(t, q)
 		got := make([]string, 0, len(rows))
-		for _, m := range rows {
-			got = append(got, fmt.Sprintf("%v|%v", m["T2.ID"], m["V.Y"]))
+		for _, r := range rows {
+			got = append(got, positionalPipeSprint(r))
 		}
 		sort.Strings(got)
-		want := []string{"1|100", "1|200", "1|300", "2|400"}
+		// Slot order, which is the SELECT order: V.Y first, T2.ID second. The
+		// name-keyed rendering this replaced emitted them the OTHER way round
+		// (m["T2.ID"] then m["V.Y"]) and nothing noticed, because indexing by name
+		// lets the assertion pick any order it likes — the values are the same
+		// multiset either way. That freedom is the blindness: a row whose slots
+		// were permuted reads back identically through the names.
+		want := []string{"100|1", "200|1", "300|1", "400|2"}
 		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
 			t.Fatalf("rows = %v, want %v", got, want)
 		}
@@ -319,8 +322,8 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 			t.Fatalf("2-chain must have exactly 2 Explode legs (one per link); plan=%s", explain)
 		}
 		got := make([]string, 0, len(rows))
-		for _, m := range rows {
-			got = append(got, fmt.Sprintf("%v|%v", m["ID"], m["Y"]))
+		for _, r := range rows {
+			got = append(got, positionalPipeSprint(r))
 		}
 		sort.Strings(got)
 		want := []string{"1|100", "1|200", "1|300", "2|400"}
@@ -334,8 +337,8 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		assertColumns(t, q, []string{"ID", "Z"})
 		_, rows := queryRows(t, q)
 		got := make([]string, 0, len(rows))
-		for _, m := range rows {
-			got = append(got, fmt.Sprintf("%v|%v", m["ID"], m["Z"]))
+		for _, r := range rows {
+			got = append(got, positionalPipeSprint(r))
 		}
 		sort.Strings(got)
 		want := []string{"1|11", "1|12", "1|13", "2|20"}
@@ -348,9 +351,17 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		// ID=3 (empty SUB) and ID=4 (empty SARR) must contribute NO rows — the
 		// chained inner unnest over an empty/NULL owner element is a no-op.
 		_, rows := queryRows(t, `SELECT "ID", "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y"`)
-		for _, m := range rows {
-			if fmt.Sprintf("%v", m["ID"]) == "3" || fmt.Sprintf("%v", m["ID"]) == "4" {
-				t.Fatalf("ID 3/4 (empty owner) leaked a row: %v", m)
+		// ID is the FIRST projected column, so it is slot 0 — read by position.
+		// The width is asserted rather than assumed for the same reason as the
+		// shadow probe below: "slot 0 is ID" is a claim about the projection, and
+		// an unchecked `[0]` keeps reading SOMETHING after the projection moves.
+		for _, r := range rows {
+			row := positionalPipeSprint(r)
+			if parts := strings.Split(row, "|"); len(parts) != 2 {
+				t.Fatalf("row %q is not the 2-column (ID, Y) projection — slot 0 is only ID at that width", row)
+			}
+			if id := strings.Split(row, "|")[0]; id == "3" || id == "4" {
+				t.Fatalf("ID 3/4 (empty owner) leaked a row: %v", row)
 			}
 		}
 	})
@@ -360,8 +371,8 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		assertColumns(t, q, []string{"ID", "Y", "O"})
 		_, rows := queryRows(t, q)
 		got := make([]string, 0, len(rows))
-		for _, m := range rows {
-			got = append(got, fmt.Sprintf("%v|%v|%v", m["ID"], m["Y"], m["O"]))
+		for _, r := range rows {
+			got = append(got, positionalPipeSprint(r))
 		}
 		sort.Strings(got)
 		// id1 elem0 SUB[100,200] → O 1,2; id1 elem1 SUB[300] → O 1; id2 SUB[400] → O 1.
@@ -376,8 +387,8 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		assertColumns(t, q, []string{"ID", "Y", "OX", "OY"})
 		_, rows := queryRows(t, q)
 		got := make([]string, 0, len(rows))
-		for _, m := range rows {
-			got = append(got, fmt.Sprintf("%v|%v|%v|%v", m["ID"], m["Y"], m["OX"], m["OY"]))
+		for _, r := range rows {
+			got = append(got, positionalPipeSprint(r))
 		}
 		sort.Strings(got)
 		// id1: elem OX=1 (SUB 100,200 → OY 1,2); elem OX=2 (SUB 300 → OY 1).
@@ -402,19 +413,41 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		// the ELEMENT's SUB array — NEVER the outer-row SUB. A shadow bug
 		// (collapsing to a bare [SUB] read) would surface 999s.
 		_, rows := queryRows(t, `SELECT "ID", "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y"`)
-		for _, m := range rows {
-			if fmt.Sprintf("%v", m["Y"]) == "999" {
-				t.Fatalf("x.SUB read the shadowing outer column T4.SUB (999) instead of the element field: %v", m)
+		// Y is the SECOND projected column, so it is slot 1 — read by position,
+		// because a name-keyed read is exactly what the shadow defeats: the outer
+		// SUB and the element SUB share a name.
+		for _, r := range rows {
+			row := positionalPipeSprint(r)
+			parts := strings.Split(row, "|")
+			// Width FIRST, and fatal. Guarding the 999 check behind `len == 2`
+			// makes THIS LOOP fail open: a projection-width change silently skips
+			// the shadow check entirely.
+			//
+			// Measured honestly, that is a DIAGNOSIS gap, not a coverage gap —
+			// the whole-row expectation below is width-sensitive and fails too,
+			// so the subtest as a whole was never blind. What it reported was
+			// "shadow-precedence rows got=… want=…", which sends the reader after
+			// a value mismatch when the row shape moved. The sibling in
+			// chained_unnest_ordinal_fdb_test.go already has this shape.
+			if len(parts) != 2 {
+				t.Fatalf("row %q is not the 2-column (ID, Y) projection — the shadow check "+
+					"below only means anything at that width", row)
+			}
+			if parts[1] == "999" {
+				t.Fatalf("x.SUB read the shadowing outer column T4.SUB (999) instead of the element field: %v", row)
 			}
 		}
 		// And the element values are exactly the SUB arrays (not the outer 999).
 		got := make([]string, 0, len(rows))
-		for _, m := range rows {
-			got = append(got, fmt.Sprintf("%v", m["Y"]))
+		for _, r := range rows {
+			got = append(got, positionalPipeSprint(r))
 		}
 		sort.Strings(got)
-		if want := "[100 200 300 400]"; fmt.Sprintf("%v", got) != want {
-			t.Fatalf("shadow-precedence Y values\n got=%v\nwant=%v", got, want)
+		// The WHOLE row, not just Y: the projection is (ID, Y), and rendering only
+		// the Y column left the ID unasserted — a shadow bug that also mis-bound
+		// the outer column would have shown nothing here. Both slots are pinned.
+		if want := "[1|100 1|200 1|300 2|400]"; fmt.Sprintf("%v", got) != want {
+			t.Fatalf("shadow-precedence rows\n got=%v\nwant=%v", got, want)
 		}
 	})
 

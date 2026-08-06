@@ -114,7 +114,7 @@ func TestFDB_StructMultiSegmentUnnest(t *testing.T) {
 			return nil, rErr
 		}
 		for _, r := range rows {
-			got = append(got, fmt.Sprintf("%v", executor.RowValue(r)))
+			got = append(got, positionalNamedPipeSprint(r))
 		}
 		return nil, nil
 	})
@@ -123,7 +123,7 @@ func TestFDB_StructMultiSegmentUnnest(t *testing.T) {
 	}
 	// One row per element of each row's nested.vals; the empty array
 	// contributes none (unnest of [] is empty, distinct from NULL).
-	want := []string{"map[X:7]", "map[X:8]", "map[X:9]"}
+	want := []string{"X=7", "X=8", "X=9"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("rows = %v, want %v (plan: %s)", got, want, plan.Explain())
 	}

@@ -86,7 +86,7 @@ func TestFDB_BuriedChainedRotation(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, fmt.Sprintf("%v", executor.RowValue(r)))
+				out = append(out, positionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -110,68 +110,79 @@ func TestFDB_BuriedChainedRotation(t *testing.T) {
 
 	// UNFILTERED: every (T4, Y) pair × 3 T4C rows = 12.
 	want("unfiltered", `SELECT "Y" `+buried, []string{
-		"map[Y:1]", "map[Y:1]", "map[Y:1]", "map[Y:7]", "map[Y:7]", "map[Y:7]",
-		"map[Y:9]", "map[Y:9]", "map[Y:9]", "map[Y:5]", "map[Y:5]", "map[Y:5]",
+		"Y=1", "Y=1", "Y=1", "Y=7", "Y=7", "Y=7",
+		"Y=9", "Y=9", "Y=9", "Y=5", "Y=5", "Y=5",
 	})
 
 	// OUTER⋈ELEMENT straddle: T4.ID = Y matches only T4(1)'s Y=1, × 3 T4C rows.
 	want("straddle", `SELECT "Y" `+buried+` WHERE T4."ID" = "Y"`,
-		[]string{"map[Y:1]", "map[Y:1]", "map[Y:1]"})
+		[]string{"Y=1", "Y=1", "Y=1"})
 
 	// TRAILING-leg-only conjunct: T4C.ID = 2 keeps one T4C row → each (T4, Y) once.
 	want("trailing_only", `SELECT "Y" `+buried+` WHERE "T4C"."ID" = 2`,
-		[]string{"map[Y:1]", "map[Y:7]", "map[Y:9]", "map[Y:5]"})
+		[]string{"Y=1", "Y=7", "Y=9", "Y=5"})
 
 	// MIXED: straddle AND trailing conjunct.
 	want("mixed", `SELECT "Y" `+buried+` WHERE T4."ID" = "Y" AND "T4C"."ID" = 2`,
-		[]string{"map[Y:1]"})
+		[]string{"Y=1"})
 
 	// CROSS-LEG straddle: T4C.ID = Y — only Y=1 has a matching T4C row (ID 1).
 	want("crossleg_straddle", `SELECT "Y" `+buried+` WHERE "T4C"."ID" = "Y"`,
-		[]string{"map[Y:1]"})
+		[]string{"Y=1"})
 
 	// ELEMENT-only filter: Y > 4 → {7,9,5} × 3.
 	want("element_filter", `SELECT "Y" `+buried+` WHERE "Y" > 4`, []string{
-		"map[Y:7]", "map[Y:7]", "map[Y:7]",
-		"map[Y:9]", "map[Y:9]", "map[Y:9]",
-		"map[Y:5]", "map[Y:5]", "map[Y:5]",
+		"Y=7", "Y=7", "Y=7",
+		"Y=9", "Y=9", "Y=9",
+		"Y=5", "Y=5", "Y=5",
 	})
 
 	// LEG PROJECTION over the two IDENTICALLY-TYPED legs — the dup-window
 	// discriminator: a mis-window between T4 and T4C would swap the IDs.
 	want("dup_leg_projection", `SELECT T4."ID", "T4C"."ID", "Y" `+buried+` WHERE "Y" = 7`, []string{
-		"map[T4.ID:1 T4C.ID:1 Y:7]", "map[T4.ID:1 T4C.ID:2 Y:7]", "map[T4.ID:1 T4C.ID:11 Y:7]",
+		"T4.ID=1|T4C.ID=1|Y=7", "T4.ID=1|T4C.ID=2|Y=7", "T4.ID=1|T4C.ID=11|Y=7",
 	})
 
 	// THREE-link buried chain.
 	want("threelink_buried",
 		`SELECT "Z" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "Y2", "Y2"."DEEP" AS "Z", T4 AS "T4C" WHERE "T4C"."ID" = 2`,
-		[]string{"map[Z:11]", "map[Z:11]", "map[Z:12]", "map[Z:13]", "map[Z:20]"})
+		[]string{"Z=11", "Z=11", "Z=12", "Z=13", "Z=20"})
 
 	// FORK buried chain: W's owner is X (two links back). Per T4: T4(1) has 2
 	// SUBSTRUCT elements × SUB {1,7}; T4(2) 1 × {9}; T4(11) 1 × {5}.
 	want("fork_buried",
 		`SELECT "W" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "Y2", "X"."SUB" AS "W", T4 AS "T4C" WHERE "T4C"."ID" = 2`,
-		[]string{"map[W:1]", "map[W:1]", "map[W:7]", "map[W:7]", "map[W:9]", "map[W:5]"})
+		[]string{"W=1", "W=1", "W=7", "W=7", "W=9", "W=5"})
 
 	// AT ordinality on the first link, buried: every row has ONE SARR element.
 	want("at_buried",
 		`SELECT "P", "Y" FROM T4, T4."SARR" AS "X" AT "P", "X"."SUB" AS "Y", T4 AS "T4C" WHERE "T4C"."ID" = 2`,
-		[]string{"map[P:1 Y:1]", "map[P:1 Y:7]", "map[P:1 Y:9]", "map[P:1 Y:5]"})
+		[]string{"P=1|Y=1", "P=1|Y=7", "P=1|Y=9", "P=1|Y=5"})
 
 	// LEFT-box spine bottom + trailing leg: A(1)→B(2); A(2)/A(11) null-supplied.
 	want("leftbox_bottom_trailing",
 		`SELECT "A"."ID", "B"."ID", "Y" FROM T4 AS "A" LEFT JOIN T4 AS "B" ON "A"."ID" + 1 = "B"."ID", "A"."SARR" AS "X", "X"."SUB" AS "Y", T4 AS "T4C" WHERE "T4C"."ID" = 2`,
 		[]string{
-			"map[A.ID:1 B.ID:2 Y:1]", "map[A.ID:1 B.ID:2 Y:7]",
-			"map[A.ID:2 B.ID:<nil> Y:9]", "map[A.ID:11 B.ID:<nil> Y:5]",
+			"A.ID=1|B.ID=2|Y=1", "A.ID=1|B.ID=2|Y=7",
+			"A.ID=2|B.ID=<nil>|Y=9", "A.ID=11|B.ID=<nil>|Y=5",
 		})
 
 	// SELECT * over the buried chain: STRANDED before the rotation ("best
 	// expression is not a physical plan"); now plans and executes. Column order
 	// follows the ROTATED form (trailing legs before the elements — the same
 	// element-last convention the single-link rotation established), pinned via
-	// the label list; the row COUNT pins execution.
+	// the label list AND by the rows themselves.
+	//
+	// This is the ONE shape in this suite whose output names REPEAT — the label
+	// list is [ID SARR SCARR SUB ID SARR SCARR SUB X Y], T4's four columns twice
+	// (T4 and the trailing T4C). Under the name-keyed rendering these rows could
+	// not be asserted at all: the projection to a name->value map collapses each
+	// repeated name last-wins, so four of the ten slots vanished and two rows
+	// differing ONLY in their first leg rendered identically. A row COUNT was all
+	// that survived, and a count cannot tell a correctly bound leg pair from a
+	// swapped one. The slot-ordered rendering keeps all ten, so the binding of
+	// BOTH legs is now asserted: every row's first four slots are T4's and its
+	// next four are T4C's, and a rotation that crossed them would show up here.
 	t.Run("star_now_plans", func(t *testing.T) {
 		q := `SELECT * ` + buried
 		plan, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
@@ -182,8 +193,38 @@ func TestFDB_BuriedChainedRotation(t *testing.T) {
 		if labels != "[ID SARR SCARR SUB ID SARR SCARR SUB X Y]" {
 			t.Fatalf("SELECT * labels = %s (rotated element-last layout expected)", labels)
 		}
-		if got := run("star_rows", q); len(got) != 12 {
-			t.Fatalf("SELECT * rows = %d, want 12", len(got))
+		// T4 rows: 1 (SARR elements SUB{1,7}), 2 (SUB{9}), 11 (SUB{5}). The chain
+		// yields 4 (T4,X,Y) combinations, each crossed with the 3 T4C rows = 12.
+		const t4_1 = `SARR=[SUB:1 SUB:7 K:0 SUBSTRUCT:{DEEP:11 DEEP:12 LEAF:0} SUBSTRUCT:{DEEP:13 LEAF:0}]|SCARR=[]|SUB=999`
+		const t4_2 = `SARR=[SUB:9 K:0 SUBSTRUCT:{DEEP:20 LEAF:0}]|SCARR=[]|SUB=20`
+		const t4_11 = `SARR=[SUB:5 K:0 SUBSTRUCT:{DEEP:11 LEAF:0}]|SCARR=[]|SUB=999`
+		const x1 = `X=SUB:1 SUB:7 K:0 SUBSTRUCT:{DEEP:11 DEEP:12 LEAF:0} SUBSTRUCT:{DEEP:13 LEAF:0}`
+		const x2 = `X=SUB:9 K:0 SUBSTRUCT:{DEEP:20 LEAF:0}`
+		const x11 = `X=SUB:5 K:0 SUBSTRUCT:{DEEP:11 LEAF:0}`
+		want := []string{}
+		for _, seed := range []struct{ id, cols, x string }{
+			{"1", t4_1, x1}, {"2", t4_2, x2}, {"11", t4_11, x11},
+		} {
+			ys := []string{"1", "7"}
+			switch seed.id {
+			case "2":
+				ys = []string{"9"}
+			case "11":
+				ys = []string{"5"}
+			}
+			for _, y := range ys {
+				for _, tc := range []struct{ id, cols string }{
+					{"1", t4_1}, {"2", t4_2}, {"11", t4_11},
+				} {
+					want = append(want,
+						"ID="+seed.id+"|"+seed.cols+"|ID="+tc.id+"|"+tc.cols+"|"+seed.x+"|Y="+y)
+				}
+			}
+		}
+		want2 := append([]string(nil), want...)
+		sort.Strings(want2)
+		if got := run("star_rows", q); !unnestEqualStrs(got, want2) {
+			t.Fatalf("SELECT * rows =\n  %v\nwant\n  %v", got, want2)
 		}
 	})
 }

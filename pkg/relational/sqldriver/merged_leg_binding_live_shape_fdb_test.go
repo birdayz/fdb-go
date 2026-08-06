@@ -173,7 +173,7 @@ func TestFDB_MergedLegBinding_LiveBoxGatherShape(t *testing.T) {
 			return nil, rErr
 		}
 		for _, r := range rows {
-			out = append(out, fmt.Sprintf("%v", executor.RowValue(r)))
+			out = append(out, positionalNamedPipeSprint(r))
 		}
 		return nil, nil
 	}); eerr != nil {
@@ -183,7 +183,7 @@ func TestFDB_MergedLegBinding_LiveBoxGatherShape(t *testing.T) {
 
 	// (0) ROWS CORRECT. A.K and B.K are the SAME column name in two legs, so a
 	// window that resolved to the wrong leg shows up here as 200-where-100.
-	want := []string{"map[MLBA.K:100 MLBB.K:200 X:7]", "map[MLBA.K:100 MLBB.K:200 X:8]"}
+	want := []string{"MLBA.K=100|MLBB.K=200|X=7", "MLBA.K=100|MLBB.K=200|X=8"}
 	if fmt.Sprint(out) != fmt.Sprint(want) {
 		t.Fatalf("rows = %v, want %v\n  sql: %s\n  plan: %s", out, want, q, plan.Explain())
 	}

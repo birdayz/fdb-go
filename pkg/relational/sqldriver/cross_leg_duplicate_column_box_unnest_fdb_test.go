@@ -2,7 +2,6 @@ package sqldriver_test
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -142,7 +141,7 @@ func TestFDB_CrossLegDuplicateColumnBoxUnnest(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, fmt.Sprintf("%v", executor.RowValue(r)))
+				out = append(out, positionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -182,7 +181,7 @@ func TestFDB_CrossLegDuplicateColumnBoxUnnest(t *testing.T) {
 	// and never show NULL. A.K distinct 100/300 disambiguates the buried read.
 	t.Run("full_null_grouped", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", COUNT(*) FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" GROUP BY A."K"`,
-			[]string{"map[COUNT(*):1 K:300]", "map[COUNT(*):1 K:<nil>]", "map[COUNT(*):2 K:100]"}, ".K#")
+			[]string{"K=100|COUNT(*)=2", "K=300|COUNT(*)=1", "K=<nil>|COUNT(*)=1"}, ".K#")
 	})
 
 	// CROSS-LEG buried predicate: `A.K <> B.K` spans the buried A.K and the scan B.K — it
@@ -190,7 +189,7 @@ func TestFDB_CrossLegDuplicateColumnBoxUnnest(t *testing.T) {
 	// B.K=200: <> keeps 100 & 300 (NULL<>200=NULL drops); = keeps none (100/300≠200, NULL).
 	t.Run("cross_leg_buried_predicate", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" WHERE A."K" <> B."K"`,
-			[]string{"map[K:100 X:7]", "map[K:100 X:8]", "map[K:300 X:9]"}, "")
+			[]string{"K=100|X=7", "K=100|X=8", "K=300|X=9"}, "")
 		wantSet(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" WHERE A."K" = B."K"`,
 			nil, "")
 	})
@@ -200,9 +199,9 @@ func TestFDB_CrossLegDuplicateColumnBoxUnnest(t *testing.T) {
 	// sorts LAST (DESC) / FIRST (ASC) — nulls-smallest, matching single-source.
 	t.Run("order_by_buried_dup", func(t *testing.T) {
 		wantOrdered(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" ORDER BY A."K" DESC, "X"`,
-			[]string{"map[K:300 X:9]", "map[K:100 X:7]", "map[K:100 X:8]", "map[K:<nil> X:55]"}, ".K#")
+			[]string{"K=300|X=9", "K=100|X=7", "K=100|X=8", "K=<nil>|X=55"}, ".K#")
 		wantOrdered(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" ORDER BY A."K" ASC, "X"`,
-			[]string{"map[K:<nil> X:55]", "map[K:100 X:7]", "map[K:100 X:8]", "map[K:300 X:9]"}, ".K#")
+			[]string{"K=<nil>|X=55", "K=100|X=7", "K=100|X=8", "K=300|X=9"}, ".K#")
 	})
 
 	// COMPOUND ORDER BY over buried A.K + scan B.K: both leaves bake (recursion over a
@@ -210,7 +209,7 @@ func TestFDB_CrossLegDuplicateColumnBoxUnnest(t *testing.T) {
 	// leaf fails to bake → element order → this fails.
 	t.Run("order_by_compound_buried_scan", func(t *testing.T) {
 		wantOrdered(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" ORDER BY A."K" + B."K" DESC, "X"`,
-			[]string{"map[K:300 X:9]", "map[K:100 X:7]", "map[K:100 X:8]", "map[K:<nil> X:55]"}, ".K#")
+			[]string{"K=300|X=9", "K=100|X=7", "K=100|X=8", "K=<nil>|X=55"}, ".K#")
 	})
 
 	// Three axes the ORDER BY fix never touched, pinned as their own
@@ -218,14 +217,14 @@ func TestFDB_CrossLegDuplicateColumnBoxUnnest(t *testing.T) {
 	// referencing the buried A.K, and the gather nested in a derived table.
 	t.Run("distinct_buried_scan_dup", func(t *testing.T) {
 		wantSet(t, `SELECT DISTINCT A."K", B."K" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X"`,
-			[]string{"map[A.K:100 B.K:200]", "map[A.K:300 B.K:200]", "map[A.K:<nil> B.K:200]"}, "")
+			[]string{"A.K=100|B.K=200", "A.K=300|B.K=200", "A.K=<nil>|B.K=200"}, "")
 	})
 	t.Run("correlated_exists_buried", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM D WHERE D."DK" = A."K")`,
-			[]string{"map[K:100 X:7]", "map[K:100 X:8]"}, "")
+			[]string{"K=100|X=7", "K=100|X=8"}, "")
 	})
 	t.Run("subquery_wrapped", func(t *testing.T) {
 		wantSet(t, `SELECT "T"."AK", "T"."X" FROM (SELECT A."K" AS "AK", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X") AS "T"`,
-			[]string{"map[AK:100 X:7]", "map[AK:100 X:8]", "map[AK:300 X:9]", "map[AK:<nil> X:55]"}, "")
+			[]string{"AK=100|X=7", "AK=100|X=8", "AK=300|X=9", "AK=<nil>|X=55"}, "")
 	})
 }

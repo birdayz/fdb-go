@@ -127,7 +127,7 @@ func TestFDB_BareTwinGather(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, fmt.Sprintf("%v", executor.RowValue(r)))
+				out = append(out, positionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -151,7 +151,7 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	// via the RAW seed — a SINGLE user projection, NO positional wrap.
 	t.Run("qualified_bare_twin_resolves_by_quantifier", func(t *testing.T) {
 		explain := wantRows(t, `SELECT A."K", B."K", "X" FROM A, B, A."ARR" AS "X"`,
-			[]string{"map[A.K:100 B.K:200 X:7]", "map[A.K:100 B.K:200 X:8]"})
+			[]string{"A.K=100|B.K=200|X=7", "A.K=100|B.K=200|X=8"})
 		// RAW seed: one user projection, no nested positional wrap.
 		if strings.Count(explain, "Project(") != 1 {
 			t.Fatalf("bare-twin must gather via the raw seed (single Project, no wrap); plan=%s", explain)
@@ -161,7 +161,7 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	// The BARE element X resolves through the raw seed even though the leg columns are
 	// dup-named (the element quantifier is distinct from A and B).
 	t.Run("bare_element_resolves", func(t *testing.T) {
-		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X"`, []string{"map[X:7]", "map[X:8]"})
+		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X"`, []string{"X=7", "X=8"})
 	})
 
 	// A WHERE on a QUALIFIED bare-twin column resolves against its own quantifier — on
@@ -169,13 +169,13 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	// pins the regression a positional wrap introduced: the wrap's bare pass-through
 	// key made `WHERE B.K=200` resolve to first-match (A.K=100) and drop every row.
 	t.Run("where_on_qualified_bare_twin_resolves", func(t *testing.T) {
-		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" = 100`, []string{"map[X:7]", "map[X:8]"})
+		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" = 100`, []string{"X=7", "X=8"})
 		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" = 999`, nil)
 		// The wrap-regression cases: a filter on the SECOND leg's dup column, and a
 		// cross-leg dup predicate. Both must route B.K to Scan(B) (=200), not A.K.
-		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE B."K" = 200`, []string{"map[X:7]", "map[X:8]"})
+		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE B."K" = 200`, []string{"X=7", "X=8"})
 		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE B."K" = 999`, nil)
-		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" <> B."K"`, []string{"map[X:7]", "map[X:8]"})
+		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" <> B."K"`, []string{"X=7", "X=8"})
 	})
 
 	// GROUPED bare-twin: DECLINES and falls back to name-based resolution. The
@@ -186,7 +186,7 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	// group key correctly. COUNT over the 2 unnest rows.
 	t.Run("grouped_bare_twin", func(t *testing.T) {
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, B, A."ARR" AS "X" GROUP BY A."K"`,
-			[]string{"map[COUNT(*):2 K:100]"})
+			[]string{"K=100|COUNT(*)=2"})
 	})
 
 	// GROUPED bare-twin with a cross-leg WHERE — the outer-filter-under-aggregate
@@ -200,7 +200,7 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	// This pins that the grouped path does not ship those wrong rows.
 	t.Run("grouped_bare_twin_cross_leg_where", func(t *testing.T) {
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, B, A."ARR" AS "X" WHERE B."K" = 200 GROUP BY A."K"`,
-			[]string{"map[COUNT(*):2 K:100]"})
+			[]string{"K=100|COUNT(*)=2"})
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, B, A."ARR" AS "X" WHERE B."K" = 999 GROUP BY A."K"`, nil)
 	})
 
@@ -211,7 +211,7 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	// is 100+200=300 → SUM=600 (a top-level-only bug would give 100+100=200 → 400).
 	t.Run("grouped_compound_operand_on_dup_column", func(t *testing.T) {
 		wantRows(t, `SELECT A."K", SUM(A."K" + B."K") AS "TOT" FROM A, B, A."ARR" AS "X" GROUP BY A."K"`,
-			[]string{`map[K:100 TOT:600]`})
+			[]string{"K=100|TOT=600"})
 	})
 
 	// MID-LIST element grouped bare-twin (`FROM A, A.arr AS X, B` — the unnest is NOT
@@ -223,9 +223,9 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	// cross-leg dup WORKS (not the fail-open decline — the authority windows it).
 	t.Run("mid_list_element_grouped_bare_twin", func(t *testing.T) {
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, A."ARR" AS "X", B GROUP BY A."K"`,
-			[]string{"map[COUNT(*):2 K:100]"})
+			[]string{"K=100|COUNT(*)=2"})
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, A."ARR" AS "X", B WHERE B."K" = 200 GROUP BY A."K"`,
-			[]string{"map[COUNT(*):2 K:100]"})
+			[]string{"K=100|COUNT(*)=2"})
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, A."ARR" AS "X", B WHERE B."K" = 999 GROUP BY A."K"`, nil)
 	})
 
@@ -239,9 +239,9 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	// TestFDB_OrderByGather. Keep this as the bare-twin A/B/C-schema resolution pin.
 	t.Run("order_by_bare_twin_resolves", func(t *testing.T) {
 		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X" ORDER BY A."K", "X"`,
-			[]string{"map[X:7]", "map[X:8]"})
+			[]string{"X=7", "X=8"})
 		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X" ORDER BY B."K", "X"`,
-			[]string{"map[X:7]", "map[X:8]"})
+			[]string{"X=7", "X=8"})
 	})
 
 	// A BARE ambiguous reference errors 42702 at semantic analysis — BEFORE the
@@ -258,7 +258,7 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	// byte-identical to today (a single user projection, no nested positional Project).
 	t.Run("non_ambiguous_gather_is_byte_identical_raw_seed", func(t *testing.T) {
 		explain := wantRows(t, `SELECT A."K", C."M", "X" FROM A, C, A."ARR" AS "X"`,
-			[]string{"map[K:100 M:55 X:7]", "map[K:100 M:55 X:8]"})
+			[]string{"K=100|M=55|X=7", "K=100|M=55|X=8"})
 		if strings.Count(explain, "Project(") != 1 {
 			t.Fatalf("non-ambiguous gather must keep the raw seed (single Project, no wrap); plan=%s", explain)
 		}
@@ -271,7 +271,7 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	// TestFDB_WithinBoxDup.
 	t.Run("within_box_buried_dup_gathers", func(t *testing.T) {
 		wantRows(t, `SELECT A."K", B."K", "X" FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X"`,
-			[]string{"map[A.K:100 B.K:200 X:7]", "map[A.K:100 B.K:200 X:8]"})
+			[]string{"A.K=100|B.K=200|X=7", "A.K=100|B.K=200|X=8"})
 	})
 
 	// GROUPED over a GATHERED subquery-conjunct box: `A.K > (SELECT MAX(M) FROM
@@ -289,7 +289,7 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	// pin covers the gathered-correctness side.
 	t.Run("grouped_subquery_conjunct_gathers", func(t *testing.T) {
 		explain := wantRows(t, `SELECT "X", COUNT(*) FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE A."K" > (SELECT MAX("M") FROM C) GROUP BY "X"`,
-			[]string{"map[COUNT(*):1 X:7]", "map[COUNT(*):1 X:8]"})
+			[]string{"X=7|COUNT(*)=1", "X=8|COUNT(*)=1"})
 		// PROOF of POSITIONAL gather (not name-model): the GROUP BY key bakes to
 		// an ORDINAL slot (`X#5` — the ofOrdinal positional bake), and the FULL
 		// box gathers as a FlatMap-over-Explode. A name-model row would key the
@@ -314,6 +314,6 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	// box) remains its own declining case — sentineled by TestClassifierDeadForGated.
 	t.Run("box_involved_cross_leg_dup_gathers_correct_rows", func(t *testing.T) {
 		wantRows(t, `SELECT "X" FROM A LEFT OUTER JOIN C ON A."AID" = C."CID", B, A."ARR" AS "X"`,
-			[]string{"map[X:7]", "map[X:8]"})
+			[]string{"X=7", "X=8"})
 	})
 }

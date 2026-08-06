@@ -168,21 +168,25 @@ func runAggregateSignedZeroRangeSet(t *testing.T, width string) {
 				return nil, collectErr
 			}
 			for _, result := range results {
-				row, ok := executor.RowValue(result).(map[string]any)
-				if !ok {
-					return nil, fmt.Errorf("aggregate row is %T, want map[string]any", executor.RowValue(result))
+				// Slots by POSITION, matching the projection (G, W, SUM(VAL)).
+				// Reading them by name would resolve each one regardless of which
+				// slot it actually occupies, so a permuted row — a mis-bound window
+				// — would type-assert cleanly and answer correctly here.
+				slots := positionalSlots(result)
+				if len(slots) != 3 {
+					return nil, fmt.Errorf("aggregate row has %d slots, want 3 (G, W, SUM(VAL))", len(slots))
 				}
-				group, ok := row["G"].(float64)
+				group, ok := slots[0].(float64)
 				if !ok {
-					return nil, fmt.Errorf("aggregate G is %T, want float64", row["G"])
+					return nil, fmt.Errorf("aggregate G is %T, want float64", slots[0])
 				}
-				w, ok := row["W"].(int64)
+				w, ok := slots[1].(int64)
 				if !ok || w != 5 {
-					return nil, fmt.Errorf("aggregate suffix W is %T(%v), want int64(5)", row["W"], row["W"])
+					return nil, fmt.Errorf("aggregate suffix W is %T(%v), want int64(5)", slots[1], slots[1])
 				}
-				sum, ok := row["SUM(VAL)"].(int64)
+				sum, ok := slots[2].(int64)
 				if !ok {
-					return nil, fmt.Errorf("aggregate SUM(VAL) is %T, want int64", row["SUM(VAL)"])
+					return nil, fmt.Errorf("aggregate SUM(VAL) is %T, want int64", slots[2])
 				}
 				out = append(out, aggregateRow{negative: math.Signbit(group), sum: sum})
 			}

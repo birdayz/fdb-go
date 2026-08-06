@@ -132,7 +132,7 @@ func TestFDB_FullBoxChainedSpine(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, fmt.Sprintf("%v", executor.RowValue(r)))
+				out = append(out, positionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -191,16 +191,16 @@ func TestFDB_FullBoxChainedSpine(t *testing.T) {
 	want("unfiltered",
 		`SELECT "Y" `+fullBox+`, "A"."SARR" AS "X", "X"."SUB" AS "Y"`,
 		[]string{
-			"map[Y:1]", "map[Y:2]", "map[Y:10]", "map[Y:3]",
-			"map[Y:4]", "map[Y:5]", "map[Y:6]",
-			"map[Y:3]", "map[Y:9]",
+			"Y=1", "Y=2", "Y=10", "Y=3",
+			"Y=4", "Y=5", "Y=6",
+			"Y=3", "Y=9",
 		})
 
 	// INNER-only WHERE (no box-leg ref → the box-leg-conjunct flag never sets →
 	// stays ordinal over the admitted FULL box): Y>8 → {10, 9}.
 	want("inner_only_filter",
 		`SELECT "Y" `+fullBox+`, "A"."SARR" AS "X", "X"."SUB" AS "Y" WHERE "Y" > 8`,
-		[]string{"map[Y:10]", "map[Y:9]"})
+		[]string{"Y=10", "Y=9"})
 
 	// AT on the FIRST link with a MULTI-element owner: T4(10) has two SARR
 	// elements, so the first-link ordinal carries a discriminating P=2 row — a
@@ -209,9 +209,9 @@ func TestFDB_FullBoxChainedSpine(t *testing.T) {
 	want("at_first_link_p2",
 		`SELECT "P", "Y" FROM T4, T4."SARR" AS "X" AT "P", "X"."SUB" AS "Y"`,
 		[]string{
-			"map[P:1 Y:1]", "map[P:1 Y:2]", "map[P:1 Y:10]", "map[P:2 Y:3]",
-			"map[P:1 Y:4]", "map[P:1 Y:5]", "map[P:1 Y:6]",
-			"map[P:1 Y:3]", "map[P:1 Y:9]",
+			"P=1|Y=1", "P=1|Y=2", "P=1|Y=10", "P=2|Y=3",
+			"P=1|Y=4", "P=1|Y=5", "P=1|Y=6",
+			"P=1|Y=3", "P=1|Y=9",
 		})
 
 	// The FORK admission composing with the impure bottom: a FORK spine over
@@ -228,9 +228,9 @@ func TestFDB_FullBoxChainedSpine(t *testing.T) {
 	want("fork_over_box_unfiltered",
 		`SELECT "W" `+fullBox+`, "A"."SARR" AS "X", "X"."SUBSTRUCT" AS "Y2", "X"."SUB" AS "W"`,
 		[]string{
-			"map[W:1]", "map[W:2]", "map[W:10]", "map[W:3]",
-			"map[W:4]", "map[W:5]", "map[W:6]",
-			"map[W:3]", "map[W:9]",
+			"W=1", "W=2", "W=10", "W=3",
+			"W=4", "W=5", "W=6",
+			"W=3", "W=9",
 		})
 	// NESTED-outer-box bottom — `(A LEFT B) FULL C`: the outermost box is a FULL
 	// join, so the chained spine bottoms in a FULL box and LOUD-REJECTS (Java

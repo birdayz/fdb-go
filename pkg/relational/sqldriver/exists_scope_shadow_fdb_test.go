@@ -169,7 +169,7 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, fmt.Sprintf("%v", executor.RowValue(r)))
+				out = append(out, positionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -192,7 +192,7 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 	// FirstOrDefault), not as an outer pre-filter.
 	want("colliding_unnest",
 		`SELECT "X" FROM ST, ST."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM ST WHERE ST."C" < "X")`,
-		[]string{"map[X:10]", "map[X:200]", "map[X:20]", "map[X:300]"},
+		[]string{"X=10", "X=200", "X=20", "X=300"},
 		"FirstOrDefault(PredicatesFilter(Scan(ST)")
 
 	// NOT EXISTS polarity twin: X <= min(C)=5 → only R3's element 4. Was
@@ -200,7 +200,7 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 	// pinned so the mint can't regress the polarity that worked.
 	want("colliding_unnest_notexists",
 		`SELECT "X" FROM ST, ST."ARR" AS "X" WHERE NOT EXISTS (SELECT 1 FROM ST WHERE ST."C" < "X")`,
-		[]string{"map[X:4]"},
+		[]string{"X=4"},
 		"")
 
 	// Plain-table colliding twin (no unnest): every ST×OT pair keeps
@@ -208,7 +208,7 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 	// pre-mint; pinned as rows-invariance for the mint.
 	want("colliding_plain",
 		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM ST WHERE ST."C" < OT."K")`,
-		[]string{"map[K:50]", "map[K:50]", "map[K:50]"},
+		[]string{"K=50", "K=50", "K=50"},
 		"")
 
 	// Non-correlated colliding inner (clean-build path, JoinPredicate nil):
@@ -217,7 +217,7 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 	// inner plan); pinned as the mint's no-op boundary.
 	want("colliding_noncorrelated",
 		`SELECT "X" FROM ST, ST."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM ST WHERE ST."C" < 50) AND "X" > 15`,
-		[]string{"map[X:200]", "map[X:20]", "map[X:300]"},
+		[]string{"X=200", "X=20", "X=300"},
 		"")
 
 	// Non-colliding control (inner ST vs outer {OT, S2}): the mint must not
@@ -225,7 +225,7 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 	// constant-true per pair → 3 rows.
 	want("noncolliding_control",
 		`SELECT OT."K" FROM OT, ST AS "S2" WHERE EXISTS (SELECT 1 FROM ST WHERE ST."C" < OT."K")`,
-		[]string{"map[K:50]", "map[K:50]", "map[K:50]"},
+		[]string{"K=50", "K=50", "K=50"},
 		"")
 
 	// NESTED EXISTS with a COLLIDING middle — the nestedOuterScopes
@@ -237,7 +237,7 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 	// (ST.C=5<11), C=5 does not (no ST.C<5) → 11 < X → {12,20,21}.
 	want("nested_colliding_middle",
 		`SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM MA WHERE MA."C" < "X" AND EXISTS (SELECT 1 FROM ST WHERE ST."C" < MA."C"))`,
-		[]string{"map[X:12]", "map[X:20]", "map[X:21]"},
+		[]string{"X=12", "X=20", "X=21"},
 		"")
 
 	// Nested EXISTS, non-colliding middle: middle ST correlates to outer
@@ -256,7 +256,7 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 	// correctness was twin-only until the mint.
 	want("notexists_around_nested_colliding",
 		`SELECT "X" FROM MA, MA."ARR" AS "X" WHERE NOT EXISTS (SELECT 1 FROM MA WHERE MA."C" < "X" AND EXISTS (SELECT 1 FROM ST WHERE ST."C" < MA."C"))`,
-		[]string{"map[X:10]", "map[X:11]"},
+		[]string{"X=10", "X=11"},
 		"")
 
 	// Nested colliding middle where the inner-inner correlates on ID — a
@@ -266,7 +266,7 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 	// all 5. Pre-mint this answered {12,20,21} (per-outer-row).
 	want("nested_colliding_shared_id_col",
 		`SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM MA WHERE MA."C" < "X" AND EXISTS (SELECT 1 FROM ST WHERE ST."ID" < MA."ID" + 10))`,
-		[]string{"map[X:10]", "map[X:11]", "map[X:12]", "map[X:20]", "map[X:21]"},
+		[]string{"X=10", "X=11", "X=12", "X=20", "X=21"},
 		"")
 
 	// An outer leg legally QUOTED as "Q$44" — the alias spelling the mint's
@@ -275,7 +275,7 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 	// Java live: ∃OT.K=50 > C holds only for the C=5 row → [5].
 	want("qdollar_quoted_outer_alias",
 		`SELECT "Q$44"."C" FROM ST AS "Q$44" WHERE EXISTS (SELECT 1 FROM OT WHERE OT."K" > "Q$44"."C")`,
-		[]string{"map[C:5]"},
+		[]string{"C=5"},
 		"")
 
 	// TRIPLE-nested colliding chain (Java live: 0
@@ -296,7 +296,7 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 	// unit tests in the query package.
 	want("cleanpath_nowhere_colliding",
 		`SELECT "X" FROM ST, ST."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM ST)`,
-		[]string{"map[X:10]", "map[X:200]", "map[X:20]", "map[X:300]", "map[X:4]"},
+		[]string{"X=10", "X=200", "X=20", "X=300", "X=4"},
 		"")
 
 	// Quoted user aliases spelling the mint
@@ -309,7 +309,7 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 	// identity and a VALID query would fail to plan (best-expression error).
 	want("qdollar_cte_counter_shift",
 		`WITH "Q$1" AS (SELECT MA."ID" FROM MA) SELECT "Q$3" FROM ST, ST."ARR" AS "Q$3" WHERE EXISTS (SELECT 1 FROM OT WHERE OT."K" > "Q$3")`,
-		[]string{"map[Q$3:10]", "map[Q$3:20]", "map[Q$3:4]"},
+		[]string{"Q$3=10", "Q$3=20", "Q$3=4"},
 		"")
 
 	// MULTI-SOURCE colliding inner — the FORWARD SENTINEL for mint-per-leg.
@@ -370,7 +370,7 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 	// comparison flips its minted-middle case red).
 	want("minted_middle_local_shadow_answers",
 		`SELECT OT."K" FROM OT WHERE EXISTS (SELECT 1 FROM MA AS "MID" WHERE "MID"."C" < OT."K" AND EXISTS (SELECT 1 FROM MA AS "MID", ST WHERE "MID"."C" < 100))`,
-		[]string{"map[K:50]"},
+		[]string{"K=50"},
 		"")
 
 	// The CORRELATED minted-middle variant — the ERROR-CLASS discriminator
@@ -411,7 +411,7 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 	// the shape answers (Java live: constant-true ∃ → 3 rows)…
 	want("foldable_colliding_answers",
 		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(1, ST."C") = 1)`,
-		[]string{"map[K:50]", "map[K:50]", "map[K:50]"},
+		[]string{"K=50", "K=50", "K=50"},
 		"")
 
 	// …while a GENUINELY-READ colliding ref still declines (Java live
@@ -428,7 +428,7 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 	// ∃ non-empty → both MA rows → {11,12}.
 	want("case1_exists_positive_answers",
 		`SELECT MA."ID" FROM MA, OT WHERE EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE OT."K" > 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0))`,
-		[]string{"map[ID:11]", "map[ID:12]"},
+		[]string{"ID=11", "ID=12"},
 		"")
 
 	// A REFERENCE-FREE conjunct (1 = 0) carries the identical polarity
@@ -498,6 +498,6 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 	// 2 MA × 1 OT rows → [50, 50].
 	want("multisource_noncolliding_answers",
 		`SELECT OT."K" FROM MA, OT WHERE EXISTS (SELECT 1 FROM ST, MA AS "MI" WHERE ST."C" < OT."K")`,
-		[]string{"map[K:50]", "map[K:50]"},
+		[]string{"K=50", "K=50"},
 		"")
 }

@@ -2,6 +2,7 @@ package sqldriver_test
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -444,8 +445,14 @@ func planExplainAndRun(t *testing.T, ctx context.Context, db *recordlayer.FDBDat
 			return nil, rErr
 		}
 		for _, r := range results {
-			row := executor.RowValue(r).(map[string]any)
-			out = append(out, idRegion{row["ID"].(int64), row["REGION"].(string)})
+			// Slots by POSITION: every caller projects (id, region) in that order.
+			// A name-keyed read hands back each column whatever slot it sits in, so
+			// it cannot see a projection whose two columns were swapped.
+			slots := positionalSlots(r)
+			if len(slots) != 2 {
+				return nil, fmt.Errorf("row has %d slots, want 2 (id, region)", len(slots))
+			}
+			out = append(out, idRegion{slots[0].(int64), slots[1].(string)})
 		}
 		return nil, nil
 	})

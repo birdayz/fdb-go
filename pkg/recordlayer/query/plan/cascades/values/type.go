@@ -499,9 +499,26 @@ type RecordTypeLeg struct {
 	// each producer: both spellings come from sourceAlias/sourceBinding, which
 	// upper-fold at a single chokepoint, and the seed-window authority's own
 	// identities are correlations minted from that same fold. Measured, the
-	// text-vs-identity census reports Name == Alias.Name() on every one of the 3320
-	// legs any reader walks over the real-FDB corpus, and no converted comparison
-	// decides differently from the text comparison it replaced.
+	// text-vs-identity census reports Name == Alias.Name() on EVERY leg any reader
+	// walks over the real-FDB sqldriver corpus — divergences zero, which is the
+	// claim that matters and the one that does not depend on the population.
+	//
+	// The POPULATION is a dated point measurement and is deliberately given as a
+	// range: three full-suite runs on 2026-08-06 reported 39169, 39889 and
+	// 35029 — a spread of roughly 14%, on an unchanged tree. It is not stable
+	// run to run and must not be quoted as a fixed number: the memo may explore
+	// a rule once or many times for one query depending on exploration order,
+	// and this site is sampled inside readers that rules drive. Quote the RANGE
+	// or quote nothing; a single sample from this site has been wrong every time
+	// anyone has written one down. (This line previously read "every one of the 3320 legs",
+	// a single sample from a much smaller corpus, stated as if it were a
+	// standing fact; it was an order of magnitude low and nothing caught it,
+	// because prose carrying a number carries no instrument.)
+	//
+	// The STANDING instrument is LegSiteTextVsIdentity in leg_identity_census.go,
+	// asserted every full sqldriver run: its divergence counters are held at zero
+	// unconditionally, and its population is floored (not pinned) in
+	// legIdentityFloors so that COLLAPSE fails while drift does not.
 	Alias CorrelationIdentifier
 
 	// Name is the leg's binding as TEXT, conventionally UPPER.
@@ -516,9 +533,16 @@ type RecordTypeLeg struct {
 	//
 	//   - executor.rowSlotForLegColumn's dotted arm (`EqualFold(leg.Name, qual)`
 	//     in executor/ordinal_join.go). The leg-column provenance census measures
-	//     it answering FOUR times over the real-FDB sqldriver corpus — `C.CV`,
-	//     `I.QTY`, `O.ID` — every one over a leg that also states an identity, so
-	//     the leg TABLE is ready. The READER is blocked at its PRODUCER, not at
+	//     it answering TWICE over the real-FDB sqldriver corpus — `C.CV` and
+	//     `I.QTY` — every one over a leg that also states an identity, so
+	//     the leg TABLE is ready. (Dated point measurement, 2026-08-06, STABLE
+	//     across two consecutive full-suite runs; the standing instrument is
+	//     executor.AssertLegColumnProvenanceCensus, whose `unstated` and
+	//     `diverged` zeros are what actually gate the conversion. This line read
+	//     "FOUR times" while listing THREE witnesses — the count and the witness
+	//     list disagreed with each other as well as with the census, which is how
+	//     long a prose number can rot before anyone re-reads the instrument.)
+	//     The READER is blocked at its PRODUCER, not at
 	//     the comparison: the qualifier is split out of a column name a producer
 	//     PACKED, and those producers are CQ-53's booked mints (the join rule's
 	//     `corr + "." + field` and the translator's merged-QOV twin). They delete
@@ -526,10 +550,14 @@ type RecordTypeLeg struct {
 	//     per-alias bindings, and this reader retires with them — producer-first.
 	//   - query.legWindowSlot, the translator's flat leg-window lookup (serving
 	//     both bakeFlatRefsAgainstColumns' re-split arm and the segment-carrying
-	//     caller). The dotted-leg qualifier census measured 106 calls over the
-	//     same corpus: 98 matched a leg whose stated Alias IS the qualifier, 8
+	//     caller). The dotted-leg qualifier census measures 102 calls over the
+	//     same corpus: 98 matched a leg whose stated Alias IS the qualifier, 4
 	//     matched nothing, and neither blocking class (MATCH-ALIAS-DIFFERS,
-	//     MATCH-NO-ALIAS) appeared. CQ-52 converted this reader's COUNTERPARTY —
+	//     MATCH-NO-ALIAS) appeared. (Dated point measurement, 2026-08-06, STABLE
+	//     across two consecutive full-suite runs; was 106/98/8. The standing
+	//     instrument is values.AssertDottedLegQualifierCensus, which asserts the
+	//     two blocking classes at zero — that assertion, not the call count, is
+	//     the retirement condition.) CQ-52 converted this reader's COUNTERPARTY —
 	//     a qualifier now arrives as a parse-tree segment instead of a slice of a
 	//     rendered name — and that fixes a different defect: it decides
 	//     QUALIFICATION correctly (a quoted `"A.B"` is one leaf, not a reference

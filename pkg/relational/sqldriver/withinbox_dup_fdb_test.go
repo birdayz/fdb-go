@@ -2,7 +2,6 @@ package sqldriver_test
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"sort"
 	"testing"
@@ -151,7 +150,7 @@ func TestFDB_WithinBoxDup(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				got = append(got, fmt.Sprintf("%v", executor.RowValue(r)))
+				got = append(got, positionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -171,17 +170,17 @@ func TestFDB_WithinBoxDup(t *testing.T) {
 	// C.arr has 3 elements → COUNT 3 per group.
 	t.Run("doubly_null_group_by_A_K", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", COUNT(*) FROM A FULL OUTER JOIN B ON A."AID" = B."BID", C, C."ARR" AS "X" GROUP BY A."K"`,
-			[]string{"map[COUNT(*):3 K:10]", "map[COUNT(*):3 K:30]", "map[COUNT(*):3 K:<nil>]"})
+			[]string{"K=10|COUNT(*)=3", "K=30|COUNT(*)=3", "K=<nil>|COUNT(*)=3"})
 	})
 	t.Run("doubly_null_group_by_B_K", func(t *testing.T) {
 		wantSet(t, `SELECT B."K", COUNT(*) FROM A FULL OUTER JOIN B ON A."AID" = B."BID", C, C."ARR" AS "X" GROUP BY B."K"`,
-			[]string{"map[COUNT(*):3 K:20]", "map[COUNT(*):3 K:40]", "map[COUNT(*):3 K:<nil>]"})
+			[]string{"K=20|COUNT(*)=3", "K=40|COUNT(*)=3", "K=<nil>|COUNT(*)=3"})
 	})
 	// SELECT DISTINCT both dup columns — each routes to its own window (matched {10,20},
 	// A-only {30,NULL}, B-only {NULL,40}). DISTINCT dedups the C×unnest cross product.
 	t.Run("select_both_dup_columns", func(t *testing.T) {
 		wantSet(t, `SELECT DISTINCT A."K", B."K" FROM A FULL OUTER JOIN B ON A."AID" = B."BID", C, C."ARR" AS "X"`,
-			[]string{"map[A.K:10 B.K:20]", "map[A.K:30 B.K:<nil>]", "map[A.K:<nil> B.K:40]"})
+			[]string{"A.K=10|B.K=20", "A.K=30|B.K=<nil>", "A.K=<nil>|B.K=40"})
 	})
 
 	// COMPOSITION (the load-bearing pin): a within-box dup column IN a buried-element
@@ -192,7 +191,7 @@ func TestFDB_WithinBoxDup(t *testing.T) {
 	// drop. A.K=10 matched (B.K=20): {10,10} iff A.K read (not B.K=20). The B twin → [].
 	t.Run("compose_within_box_buried_element", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN B ON A."AID" = B."BID", C, C."ARR" AS "X" WHERE A."K" = "X"`,
-			[]string{"map[K:10 X:10]", "map[K:30 X:30]"})
+			[]string{"K=10|X=10", "K=30|X=30"})
 		wantSet(t, `SELECT B."K", "X" FROM A FULL OUTER JOIN B ON A."AID" = B."BID", C, C."ARR" AS "X" WHERE B."K" = "X"`, nil)
 	})
 
@@ -202,17 +201,17 @@ func TestFDB_WithinBoxDup(t *testing.T) {
 	// A.K=30→[9] (1).
 	t.Run("owner_side_buried_box_leaf", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", COUNT(*) FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" GROUP BY A."K"`,
-			[]string{"map[COUNT(*):1 K:30]", "map[COUNT(*):2 K:10]"})
+			[]string{"K=10|COUNT(*)=2", "K=30|COUNT(*)=1"})
 	})
 
 	// NESTED box-in-box within-box dup: (A FULL B) FULL D (chained, left-assoc).
 	// buriedLegBounds RECURSES — inner (A,B) + outer (D) each get their own distinct window.
 	t.Run("nested_box_in_box_group_A_K", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", COUNT(*) FROM A FULL OUTER JOIN B ON A."AID" = B."BID" FULL OUTER JOIN D ON A."AID" = D."DID", C, C."ARR" AS "X" GROUP BY A."K"`,
-			[]string{"map[COUNT(*):3 K:10]", "map[COUNT(*):3 K:30]", "map[COUNT(*):3 K:<nil>]"})
+			[]string{"K=10|COUNT(*)=3", "K=30|COUNT(*)=3", "K=<nil>|COUNT(*)=3"})
 	})
 	t.Run("nested_box_in_box_select_all_leaves", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", B."K", D."DK" FROM A FULL OUTER JOIN B ON A."AID" = B."BID" FULL OUTER JOIN D ON A."AID" = D."DID"`,
-			[]string{"map[A.K:10 B.K:20 DK:50]", "map[A.K:30 B.K:<nil> DK:60]", "map[A.K:<nil> B.K:40 DK:<nil>]"})
+			[]string{"A.K=10|B.K=20|DK=50", "A.K=30|B.K=<nil>|DK=60", "A.K=<nil>|B.K=40|DK=<nil>"})
 	})
 }

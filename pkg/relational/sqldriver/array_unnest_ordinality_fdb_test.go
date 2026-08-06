@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -4900,9 +4901,78 @@ func unnestSprint(v any) string {
 		return "<nil>"
 	case string:
 		return x
-	default:
-		return fmt.Sprint(x)
 	}
+	// A SLICE slot is rendered element-wise rather than handed to fmt whole.
+	//
+	// fmt.Sprint flattens a composite to one blob — `[]any{"a  b"}` becomes
+	// `[a  b]` — and at that point unnestCollapseSpaces cannot tell a prototext
+	// separator from a string's OWN double space, so it rewrites the DATA. That
+	// is reachable here: SARR and STRARR are STRING arrays, and `SELECT *` puts
+	// the whole array in a slot. Rendering element-wise reproduces fmt's exact
+	// slice form ("[" + elements joined by one space + "]") while routing each
+	// element back through this function, so a nested string stays verbatim and
+	// a nested message is still collapsed.
+	//
+	// A Stringer/error is excluded because fmt would call its String method
+	// rather than walk it, and reproducing fmt means deferring to that too.
+	switch v.(type) {
+	case fmt.Stringer, error:
+	default:
+		if rv := reflect.ValueOf(v); rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
+			parts := make([]string, rv.Len())
+			for i := range parts {
+				parts[i] = unnestSprint(rv.Index(i).Interface())
+			}
+			return "[" + strings.Join(parts, " ") + "]"
+		}
+	}
+	return unnestCollapseSpaces(fmt.Sprint(v))
+}
+
+// unnestCollapseSpaces makes the non-string rendering STABLE ACROSS BUILDS.
+//
+// A row slot can hold a protobuf message (an unnested struct element, a nested
+// repeated field), and fmt renders those through prototext, whose whitespace is
+// deliberately unstable: google.golang.org/protobuf/internal/detrand varies the
+// separator width so that callers cannot depend on the exact bytes. The seed is
+// derived from the binary, so the output is stable WITHIN one test binary and
+// flips the moment anything changes the binary — an expectation written against
+// it passes locally and fails on the next unrelated edit.
+//
+// That instability is why the duplicate-name star row in
+// buried_chained_rotation_fdb_test.go could only be pinned by COUNT: its slots
+// are messages, so no literal could survive a rebuild.
+//
+// WHAT IT CANNOT DISTINGUISH, stated rather than assumed. This collapse operates
+// on a RENDERED string, so a double space that came from the DATA is
+// indistinguishable from one prototext inserted. unnestSprint keeps that reach as
+// small as it can: a top-level string slot is returned raw, and a slice slot is
+// rendered element-wise so its string elements are raw too (both pinned in
+// TestUnnestSprintIsStableAcrossBuilds). What remains is a string nested inside a
+// value fmt renders as ONE blob — a proto message's own string field, a struct
+// field. Its spacing IS collapsed. An earlier version of this note claimed no
+// real text was ever touched; that was false for composites, and this is the
+// honest boundary.
+func unnestCollapseSpaces(s string) string {
+	if !strings.Contains(s, "  ") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	prevSpace := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == ' ' {
+			if prevSpace {
+				continue
+			}
+			prevSpace = true
+		} else {
+			prevSpace = false
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 func unnestEqualStrs(a, b []string) bool {

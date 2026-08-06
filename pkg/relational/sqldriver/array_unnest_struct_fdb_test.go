@@ -209,14 +209,14 @@ func TestFDB_ArrayUnnestStruct(t *testing.T) {
 
 	// queryRows plans + executes a SELECT and returns the per-row datum maps in
 	// execution order.
-	queryRows := func(t *testing.T, sql string) (string, []map[string]any) {
+	queryRows := func(t *testing.T, sql string) (string, []executor.QueryResult) {
 		t.Helper()
 		plan, perr := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
 		if perr != nil {
 			t.Fatalf("plan %q: %v", sql, perr)
 		}
 		explain := plan.Explain()
-		var out []map[string]any
+		var out []executor.QueryResult
 		_, eerr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, sErr := recordlayer.NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
@@ -233,10 +233,7 @@ func TestFDB_ArrayUnnestStruct(t *testing.T) {
 			if rErr != nil {
 				return nil, rErr
 			}
-			for _, r := range rows {
-				m, _ := executor.RowValue(r).(map[string]any)
-				out = append(out, m)
-			}
+			out = append(out, rows...)
 			return nil, nil
 		})
 		if eerr != nil {
@@ -267,10 +264,10 @@ func TestFDB_ArrayUnnestStruct(t *testing.T) {
 		assertColumns(t, `SELECT "X" FROM TS, TS."ITEMS" AS "X"`, []string{"X"})
 		_, rows := queryRows(t, `SELECT "X" FROM TS, TS."ITEMS" AS "X"`)
 		got := make([]string, 0, len(rows))
-		for _, m := range rows {
+		for _, r := range rows {
 			// The element datum is the WHOLE struct (SKU+QTY together) — both
-			// fields present in a single column value.
-			got = append(got, structPair(m["X"]))
+			// fields present in a single column value. One column, so slot 0.
+			got = append(got, structPair(positionalSlots(r)[0]))
 		}
 		sort.Strings(got)
 		want := []string{"a:10", "b:20", "c:30"}
@@ -283,8 +280,10 @@ func TestFDB_ArrayUnnestStruct(t *testing.T) {
 		assertColumns(t, `SELECT "ID", "X" FROM TS, TS."ITEMS" AS "X"`, []string{"ID", "X"})
 		_, rows := queryRows(t, `SELECT "ID", "X" FROM TS, TS."ITEMS" AS "X"`)
 		got := make([]string, 0, len(rows))
-		for _, m := range rows {
-			got = append(got, fmt.Sprintf("%v|%s", m["ID"], structPair(m["X"])))
+		// Slots by POSITION, matching the projection (ID, X).
+		for _, r := range rows {
+			s := positionalSlots(r)
+			got = append(got, fmt.Sprintf("%v|%s", s[0], structPair(s[1])))
 		}
 		sort.Strings(got)
 		want := []string{"1|a:10", "1|b:20", "2|c:30"}
@@ -309,8 +308,10 @@ func TestFDB_ArrayUnnestStruct(t *testing.T) {
 			[]string{"ID", "X", "O"})
 		_, rows := queryRows(t, `SELECT "ID", "X", "O" FROM TS, TS."ITEMS" AS "X" AT "O"`)
 		got := make([]string, 0, len(rows))
-		for _, m := range rows {
-			got = append(got, fmt.Sprintf("%v|%s|%v", m["ID"], structPair(m["X"]), m["O"]))
+		// Slots by POSITION, matching the projection (ID, X, O).
+		for _, r := range rows {
+			s := positionalSlots(r)
+			got = append(got, fmt.Sprintf("%v|%s|%v", s[0], structPair(s[1]), s[2]))
 		}
 		sort.Strings(got)
 		want := []string{"1|a:10|1", "1|b:20|2", "2|c:30|1"}

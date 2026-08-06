@@ -94,7 +94,7 @@ func TestFDB_NullSupplyBarrier(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, fmt.Sprintf("%v", executor.RowValue(r)))
+				out = append(out, positionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -111,17 +111,17 @@ func TestFDB_NullSupplyBarrier(t *testing.T) {
 	// LEFT: exactly ONE row (A=1,B=11). Null-padded A=2,3,11 excluded by B.SUB=50.
 	run("left_where_nullsupplying",
 		`SELECT "A"."ID", "B"."ID" FROM T4 AS "A" LEFT JOIN T4 AS "B" ON "A"."ID" + 10 = "B"."ID" WHERE "B"."SUB" = 50`,
-		[]string{"map[A.ID:1 B.ID:11]"})
+		[]string{"A.ID=1|B.ID=11"})
 	// FULL: same expectation (B-null and A-null rows all excluded).
 	run("full_where_nullsupplying",
 		`SELECT "A"."ID", "B"."ID" FROM T4 AS "A" FULL OUTER JOIN T4 AS "B" ON "A"."ID" + 10 = "B"."ID" WHERE "B"."SUB" = 50`,
-		[]string{"map[A.ID:1 B.ID:11]"})
+		[]string{"A.ID=1|B.ID=11"})
 	// Control: unfiltered LEFT — A={1,2,3,11}: A=1→B=11; A=2,3,11 null-padded.
 	run("left_unfiltered",
 		`SELECT "A"."ID", "B"."ID" FROM T4 AS "A" LEFT JOIN T4 AS "B" ON "A"."ID" + 10 = "B"."ID"`,
-		[]string{"map[A.ID:1 B.ID:11]", "map[A.ID:11 B.ID:<nil>]", "map[A.ID:2 B.ID:<nil>]", "map[A.ID:3 B.ID:<nil>]"})
+		[]string{"A.ID=1|B.ID=11", "A.ID=11|B.ID=<nil>", "A.ID=2|B.ID=<nil>", "A.ID=3|B.ID=<nil>"})
 	// IS NULL variant — the sharpest discriminator: ONLY the null-padded rows.
 	run("left_where_is_null",
 		`SELECT "A"."ID" FROM T4 AS "A" LEFT JOIN T4 AS "B" ON "A"."ID" + 10 = "B"."ID" WHERE "B"."ID" IS NULL`,
-		[]string{"map[ID:11]", "map[ID:2]", "map[ID:3]"})
+		[]string{"ID=11", "ID=2", "ID=3"})
 }
