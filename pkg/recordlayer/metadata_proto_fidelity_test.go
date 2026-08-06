@@ -1,11 +1,14 @@
 package recordlayer
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/encoding/prototext"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/gen"
 )
@@ -573,5 +576,77 @@ func assertEveryMetaDataFieldPopulated(t *testing.T, p *gen.MetaData) {
 			"An unset field is a field this test cannot prove survives ToProto/FromProto, "+
 			"and every field dropped by the port was dropped in exactly that silence. "+
 			"Populate them in fidelityMetaDataProto.", missing)
+	}
+}
+
+// TestMetaDataExtensionRangeSurvivesRoundTrip covers the half of the message the
+// field-by-field test above cannot see: the declared extension range
+// (`extensions 1000 to 2000`), which the generated Go type has no fields for.
+//
+// These are genuinely unknown fields, and the intuition that protobuf therefore
+// preserves them is wrong HERE specifically. Unknown-field preservation keeps
+// the bytes attached to the message they were parsed into; ToProto constructs a
+// fresh MetaData and copies modelled fields onto it, so the original's unknown
+// bytes have no route to the result. They were being dropped exactly as fields
+// 12-15 were — the same defect reached from the opposite direction, one assumed
+// unknown and not, the other genuinely unknown and still not carried.
+//
+// The extension range is where applications and downstream layers hang their own
+// metadata, so a Go tool round-tripping another engine's metadata deleted it.
+//
+// The fixture-completeness check cannot catch this: it walks the descriptor's
+// declared FIELDS, and an extension is by construction not one of them.
+func TestMetaDataExtensionRangeSurvivesRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := fidelityMetaDataProto(t)
+
+	// Two extension fields inside the declared 1000-2000 range, of different
+	// wire types, so a carry that mishandles length-delimited data is caught.
+	var raw []byte
+	raw = protowire.AppendTag(raw, 1001, protowire.VarintType)
+	raw = protowire.AppendVarint(raw, 12345)
+	raw = protowire.AppendTag(raw, 1002, protowire.BytesType)
+	raw = protowire.AppendBytes(raw, []byte("tenant-owned metadata"))
+	original.ProtoReflect().SetUnknown(protoreflect.RawFields(raw))
+
+	md, err := RecordMetaDataFromProto(original)
+	if err != nil {
+		t.Fatalf("RecordMetaDataFromProto: %v", err)
+	}
+	got, err := md.ToProto()
+	if err != nil {
+		t.Fatalf("ToProto: %v", err)
+	}
+
+	gotRaw := []byte(got.ProtoReflect().GetUnknown())
+	if len(gotRaw) == 0 {
+		t.Fatalf("the MetaData extension range did NOT survive the round trip: %d bytes "+
+			"in, 0 bytes out. ToProto builds a fresh message, so protobuf's unknown-field "+
+			"preservation never reaches these — a Go tool that loads and saves another "+
+			"application's metadata deletes everything it hung on the extension range",
+			len(raw))
+	}
+	if !bytes.Equal(gotRaw, raw) {
+		t.Errorf("extension bytes changed across the round trip:\n got %x\nwant %x", gotRaw, raw)
+	}
+
+	// And the whole message, which is what the round trip actually promises.
+	if !proto.Equal(original, got) {
+		t.Errorf("metadata with extension fields did not survive the round trip.\nwant:\n%s\ngot:\n%s",
+			prototext.Format(original), prototext.Format(got))
+	}
+
+	// The carried bytes must be a COPY, on both sides — the same requirement the
+	// carried messages have, and easier to get wrong for a slice.
+	original.ProtoReflect().SetUnknown(protoreflect.RawFields(nil))
+	again, err := md.ToProto()
+	if err != nil {
+		t.Fatalf("second ToProto: %v", err)
+	}
+	if !bytes.Equal([]byte(again.ProtoReflect().GetUnknown()), raw) {
+		t.Errorf("clearing the caller's unknown fields reached the metadata's own state: "+
+			"second ToProto returned %x, want %x",
+			[]byte(again.ProtoReflect().GetUnknown()), raw)
 	}
 }

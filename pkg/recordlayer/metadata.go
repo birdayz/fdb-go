@@ -115,6 +115,23 @@ type preservedMetaDataFields struct {
 	unnestedRecordTypes  []*gen.UnnestedRecordType
 	userDefinedFunctions []*gen.PUserDefinedFunction
 	views                []*gen.PView
+
+	// unknown holds everything the generated Go type has no field for —
+	// principally the MetaData extension range (1000-2000), which is where
+	// applications and downstream layers hang their own metadata.
+	//
+	// These really are unknown fields, but that does NOT mean protobuf carries
+	// them across this round trip on its own. Unknown-field preservation keeps
+	// them attached to the message they were parsed into; ToProto constructs a
+	// FRESH gen.MetaData and copies modelled fields onto it, so the original's
+	// unknown bytes have no route to the result and were being dropped. That is
+	// the same defect as fields 12-15, arrived at from the opposite direction:
+	// there the fields were assumed unknown and were not, here they are genuinely
+	// unknown and the mechanism still does not reach them.
+	//
+	// The bytes-level path (FDBMetaDataStore) never had this problem, because it
+	// stores the serialized proto verbatim and never builds a RecordMetaData.
+	unknown []byte
 }
 
 // FormerIndex tracks a deleted index for schema evolution safety.

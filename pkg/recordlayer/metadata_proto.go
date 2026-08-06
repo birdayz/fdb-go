@@ -44,10 +44,17 @@ import (
 // must refuse rather than proceed on the partial view — see
 // RecordMetaData.DeclaresSyntheticRecordTypes.
 //
-// Extension ranges (1000-2000) are genuine unknown fields and survive by
-// protobuf's own unknown-field preservation, which is the mechanism these six
-// were mistakenly assumed to be covered by. It never applied: they are declared
-// fields of a message this code parses, so nothing preserved them but this.
+// Extension ranges (1000-2000) are genuine unknown fields, and they are carried
+// here too — as preservedMetaDataFields.unknown. Protobuf's own unknown-field
+// preservation does NOT cover them across this round trip: it keeps unknown
+// bytes attached to the message they were parsed into, and ToProto builds a
+// FRESH MetaData, so nothing carries them over unless this does.
+//
+// Unknown-field preservation is also the mechanism fields 12-15 were mistakenly
+// assumed to be covered by, where it never applied for the opposite reason —
+// they are declared fields of a message this code parses, so they were never
+// unknown in the first place. Both halves of the message therefore need explicit
+// carrying, and neither gets it for free.
 func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 	md := &gen.MetaData{}
 
@@ -180,6 +187,13 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 	}
 	for _, vw := range m.preserved.views {
 		md.Views = append(md.Views, proto.Clone(vw).(*gen.PView))
+	}
+
+	// 10. Whatever the generated type has no field for — the extension range
+	// above all. Copied, for the same reason the messages above are cloned.
+	if len(m.preserved.unknown) > 0 {
+		md.ProtoReflect().SetUnknown(
+			protoreflect.RawFields(append([]byte(nil), m.preserved.unknown...)))
 	}
 
 	return md, nil
@@ -383,6 +397,9 @@ func preservedMetaDataFieldsFromProto(md *gen.MetaData) preservedMetaDataFields 
 	}
 	for _, vw := range md.Views {
 		p.views = append(p.views, proto.Clone(vw).(*gen.PView))
+	}
+	if u := md.ProtoReflect().GetUnknown(); len(u) > 0 {
+		p.unknown = append([]byte(nil), u...)
 	}
 	return p
 }
