@@ -47,6 +47,17 @@ type RecordContextConfig struct {
 	// an arbitrary order would make the commit bytes vary run to run for the
 	// same config. Order is not a wire contract on either side.
 	Tags []string
+
+	// Timer is the StoreTimer every context this config creates records into.
+	// Matches Java's FDBRecordContextConfig.timer (FDBRecordContextConfig.java:42,
+	// Builder.setTimer :357-368), which likewise defaults to null/nil.
+	//
+	// Nil does NOT mean uninstrumented: it means "inherit the database's timer",
+	// which is the same relationship Java has between FDBDatabaseRunner.setTimer and
+	// the context config it delegates to (FDBDatabaseRunner.java:105-119). Set it only
+	// to give one runner's transactions a timer separate from the rest of the process
+	// — an index build measured on its own, say.
+	Timer *StoreTimer
 }
 
 // Java's tag limits (FDBRecordContextConfig.java:661-672). These are STRICTER
@@ -215,6 +226,22 @@ func (r *FDBDatabaseRunner) SetContextConfig(config *RecordContextConfig) *FDBDa
 	return r
 }
 
+// contextTimer resolves the StoreTimer for a context this runner is about to open:
+// the context config's timer when one is set, otherwise the database's.
+//
+// The fallback is what makes a runner's retries visible to a process-wide exporter
+// without every caller configuring one, and it is Java's arrangement read the other
+// way round — there, FDBDatabaseRunner.getTimer/setTimer ARE the context config's
+// timer (FDBDatabaseRunner.java:105-119), so a runner and the contexts it opens can
+// never disagree. Go keeps the two objects separate, so the tie has to be broken
+// explicitly; the config wins because it is the more specific statement of intent.
+func (r *FDBDatabaseRunner) contextTimer() *StoreTimer {
+	if r.ContextConfig != nil && r.ContextConfig.Timer != nil {
+		return r.ContextConfig.Timer
+	}
+	return r.db.Timer()
+}
+
 // RunWithRetry executes fn with configurable retry logic and exponential backoff.
 // Retries on FDB retryable errors (conflict, etc.) up to MaxAttempts times.
 // Non-retryable errors are returned immediately.
@@ -264,6 +291,7 @@ func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordC
 		ctx: ctx,
 		env: r.db.env,
 	}
+	recordCtx.SetTimer(r.contextTimer())
 
 	// Apply context config
 	if r.ContextConfig != nil {
@@ -330,6 +358,7 @@ func (r *FDBDatabaseRunner) OpenContext(ctx context.Context) (*FDBRecordContext,
 		ctx: ctx,
 		env: r.db.env,
 	}
+	recordCtx.SetTimer(r.contextTimer())
 
 	if r.ContextConfig != nil {
 		if r.ContextConfig.TransactionTimeout > 0 {

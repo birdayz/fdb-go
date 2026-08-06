@@ -30,6 +30,7 @@ go_test(
         "race_lane_scope_test.go",
         "source_hygiene_test.go",
         "status_page_crossref_test.go",
+        "store_timer_event_taxonomy_test.go",
         "unknown_type_mint_census_test.go",
         "vuln_gate_test.go",
     ],

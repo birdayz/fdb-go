@@ -14,15 +14,15 @@ package recordlayer
 // skips). Scrape via StoreTimer.Snapshot().
 var (
 	// Query path.
-	EventSPFreshSearch = Event{"spfresh_search", "SPFresh Search"}
+	EventSPFreshSearch = Event{"spfresh_search", "SPFresh Search", KindTimed}
 	// Probed/pruned: the Eq.(3) pruning decomposition per search — probed
 	// lists cost range reads, pruned ones were skipped.
-	CountSPFreshPostingsProbed  = Event{"spfresh_postings_probed", "SPFresh Postings Probed"}
-	CountSPFreshPostingsPruned  = Event{"spfresh_postings_pruned", "SPFresh Postings Pruned"}
-	CountSPFreshEntriesScanned  = Event{"spfresh_entries_scanned", "SPFresh Entries Scanned"}
-	CountSPFreshRerankReads     = Event{"spfresh_rerank_reads", "SPFresh Rerank Reads"}
-	CountSPFreshStarvationWiden = Event{"spfresh_starvation_widenings", "SPFresh Starvation Widenings"}
-	CountSPFreshForwardFollows  = Event{"spfresh_forward_follows", "SPFresh Forward Follows"}
+	CountSPFreshPostingsProbed  = Event{"spfresh_postings_probed", "SPFresh Postings Probed", KindCount}
+	CountSPFreshPostingsPruned  = Event{"spfresh_postings_pruned", "SPFresh Postings Pruned", KindCount}
+	CountSPFreshEntriesScanned  = Event{"spfresh_entries_scanned", "SPFresh Entries Scanned", KindCount}
+	CountSPFreshRerankReads     = Event{"spfresh_rerank_reads", "SPFresh Rerank Reads", KindCount}
+	CountSPFreshStarvationWiden = Event{"spfresh_starvation_widenings", "SPFresh Starvation Widenings", KindCount}
+	CountSPFreshForwardFollows  = Event{"spfresh_forward_follows", "SPFresh Forward Follows", KindCount}
 	// Phase 2 reached: the VBASE relaxed-monotonicity termination (M_q^s > R_q)
 	// latched during a one-shot search's traversal — the recently-traversed cells
 	// no longer beat the running k-th best (RFC-156 Phase A). PURE TELEMETRY on
@@ -34,54 +34,54 @@ var (
 	// query (the SHARED searchInit probe still feeds observe(), but the streaming
 	// WIDEN bursts gate it off — scoreCells, f.reranked==nil — since those queues
 	// are dead weight once nothing will read phase2).
-	CountSPFreshPhase2Reached = Event{"spfresh_phase2_reached", "SPFresh Phase 2 Reached"}
+	CountSPFreshPhase2Reached = Event{"spfresh_phase2_reached", "SPFresh Phase 2 Reached", KindCount}
 	// Capped posting reads: a search's posting fetch returned exactly the
 	// 4×Lmax+1 cap — the posting is PAST the split-dispatch envelope and its
 	// tail is invisible to queries. Nonzero means a split trigger was lost
 	// (the read path re-files it; see CountSPFreshReadPathSplitFiles).
-	CountSPFreshCappedPostingReads = Event{"spfresh_capped_posting_reads", "SPFresh Capped Posting Reads"}
+	CountSPFreshCappedPostingReads = Event{"spfresh_capped_posting_reads", "SPFresh Capped Posting Reads", KindCount}
 	// Split tasks re-filed from the read path after a capped read found an
 	// over-envelope posting with no pending split.
-	CountSPFreshReadPathSplitFiles = Event{"spfresh_readpath_split_files", "SPFresh Read-Path Split Files"}
+	CountSPFreshReadPathSplitFiles = Event{"spfresh_readpath_split_files", "SPFresh Read-Path Split Files", KindCount}
 	// Stream widen batches: each demand-driven widening step of the RFC-156
 	// Phase C ordered-stream cursor (a batch of ε-pruned/re-routed cells admitted
 	// in d2 order because the consumer above drained the finalized prefix and
 	// pulled for more). Batched, never one-cell-serial.
-	CountSPFreshStreamWiden = Event{"spfresh_stream_widenings", "SPFresh Stream Widenings"}
+	CountSPFreshStreamWiden = Event{"spfresh_stream_widenings", "SPFresh Stream Widenings", KindCount}
 	// Filtered truncation: the RFC-156 Phase C ordered-stream cursor hit its
 	// budget cap (max cells probed / max candidates) BEFORE the consumer was
 	// satisfied, and returned NoNextReason.ScanLimitReached + a positional
 	// continuation rather than a silent < k. This is telemetry IN ADDITION to the
 	// reason (RFC-156 §C) — the reason is the contract, this counts
 	// how often the budget bound a filtered KNN.
-	CountSPFreshFilteredTruncated = Event{"spfresh_filtered_truncated", "SPFresh Filtered Truncations"}
+	CountSPFreshFilteredTruncated = Event{"spfresh_filtered_truncated", "SPFresh Filtered Truncations", KindCount}
 
 	// Write path.
-	EventSPFreshInsert           = Event{"spfresh_insert", "SPFresh Insert"}
-	CountSPFreshInsertFenceReads = Event{"spfresh_insert_fence_reads", "SPFresh Insert Fence Reads"}
-	CountSPFreshInsertReplicas   = Event{"spfresh_insert_replicas", "SPFresh Insert Replicas"}
-	CountSPFreshStaleRouteRetry  = Event{"spfresh_stale_route_retries", "SPFresh Stale Route Retries"}
+	EventSPFreshInsert           = Event{"spfresh_insert", "SPFresh Insert", KindTimed}
+	CountSPFreshInsertFenceReads = Event{"spfresh_insert_fence_reads", "SPFresh Insert Fence Reads", KindCount}
+	CountSPFreshInsertReplicas   = Event{"spfresh_insert_replicas", "SPFresh Insert Replicas", KindCount}
+	CountSPFreshStaleRouteRetry  = Event{"spfresh_stale_route_retries", "SPFresh Stale Route Retries", KindCount}
 
 	// Maintenance (rebalancer / sweeper).
-	CountSPFreshSplits       = Event{"spfresh_splits", "SPFresh Splits"}
-	CountSPFreshMerges       = Event{"spfresh_merges", "SPFresh Merges"}
-	CountSPFreshCSplits      = Event{"spfresh_csplits", "SPFresh Coarse Splits"}
-	CountSPFreshNPAs         = Event{"spfresh_npas", "SPFresh NPA Reassignments"}
-	CountSPFreshZombieCleans = Event{"spfresh_zombie_cleans", "SPFresh Zombie Cleanups"}
-	CountSPFreshCSplitDefers = Event{"spfresh_csplit_defers", "SPFresh Coarse Split Deferrals"}
-	CountSPFreshLeaseSkips   = Event{"spfresh_lease_skips", "SPFresh Lease Skips"}
+	CountSPFreshSplits       = Event{"spfresh_splits", "SPFresh Splits", KindCount}
+	CountSPFreshMerges       = Event{"spfresh_merges", "SPFresh Merges", KindCount}
+	CountSPFreshCSplits      = Event{"spfresh_csplits", "SPFresh Coarse Splits", KindCount}
+	CountSPFreshNPAs         = Event{"spfresh_npas", "SPFresh NPA Reassignments", KindCount}
+	CountSPFreshZombieCleans = Event{"spfresh_zombie_cleans", "SPFresh Zombie Cleanups", KindCount}
+	CountSPFreshCSplitDefers = Event{"spfresh_csplit_defers", "SPFresh Coarse Split Deferrals", KindCount}
+	CountSPFreshLeaseSkips   = Event{"spfresh_lease_skips", "SPFresh Lease Skips", KindCount}
 	// Assignment refinement (RFC-104) fleet pass: vectors re-routed against the
 	// converged topology, and tenants whose cursor wrapped a full cycle moving
 	// nothing. Moves trending to zero while Converged rises = the fleet has
 	// recovered ingest recall-drift and is quiescing; sustained nonzero Moves =
 	// ongoing drift (e.g. a steady fast-ingest tenant) the refinement loop is
 	// absorbing.
-	CountSPFreshRefineMoves     = Event{"spfresh_refine_moves", "SPFresh Refinement Moves"}
-	CountSPFreshRefineConverged = Event{"spfresh_refine_converged", "SPFresh Refinement Converged Tenants"}
+	CountSPFreshRefineMoves     = Event{"spfresh_refine_moves", "SPFresh Refinement Moves", KindCount}
+	CountSPFreshRefineConverged = Event{"spfresh_refine_converged", "SPFresh Refinement Converged Tenants", KindCount}
 	// Task handler errors in a rebalance pass: the pass SKIPS the failed
 	// task and continues (a poisoned task at the deterministic queue head
 	// must not starve everything behind it), then surfaces the joined
 	// errors. Nonzero here with a stable queue depth = a poisoned task; the
 	// runbook's "task queue growing" playbook keys off it.
-	CountSPFreshTaskErrors = Event{"spfresh_task_errors", "SPFresh Task Errors"}
+	CountSPFreshTaskErrors = Event{"spfresh_task_errors", "SPFresh Task Errors", KindCount}
 )
