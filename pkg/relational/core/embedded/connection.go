@@ -71,9 +71,19 @@ type EmbeddedConnection struct {
 	// log-level policy live in the handler, not the engine.
 	planLogger PlanGenerationLogger
 
+	// execStatsLogger receives one ExecutionStats per statement execution
+	// (RFC-211) — the post-execution counterpart to planLogger. nil = silent
+	// (the default). Kept a separate hook rather than a second method on
+	// PlanGenerationLogger: Go has no default methods, so growing that
+	// interface would break every existing implementer, and a cached plan is
+	// planned once but executed many times, so the two records do not pair
+	// up 1:1.
+	execStatsLogger ExecutionStatsLogger
+
 	// slowQueryThresholdMicros marks a planning call as slow when its
-	// duration exceeds this many microseconds. Defaults to the canonical
-	// api.OptLogSlowQueryThresholdMicros value (see New).
+	// duration exceeds this many microseconds, and independently marks a
+	// statement EXECUTION slow on the same threshold (RFC-211). Defaults to
+	// the canonical api.OptLogSlowQueryThresholdMicros value (see New).
 	slowQueryThresholdMicros int64
 
 	// options carries the per-connection api.Options that drive
@@ -116,6 +126,27 @@ func (c *EmbeddedConnection) Options() *api.Options {
 		return api.NoOptions()
 	}
 	return c.options
+}
+
+// ActiveTransactionTags reports the FDB transaction tags carried by the
+// connection's currently-open explicit transaction, or nil when there is none.
+//
+// Operational introspection: with OptTransactionTags driving per-tenant
+// throttling, "which tag is this session actually running under" is a question
+// an operator asks of a stuck connection, and the answer is otherwise invisible
+// once the option has been translated into transaction state.
+//
+// Returns nil on the libfdb_c backend, whose options surface is write-only and
+// so cannot report tags back.
+func (c *EmbeddedConnection) ActiveTransactionTags() []string {
+	if c.activeTx == nil || c.activeTx.rctx == nil {
+		return nil
+	}
+	tagged, ok := c.activeTx.rctx.Transaction().Options().(interface{ Tags() []string })
+	if !ok {
+		return nil
+	}
+	return tagged.Tags()
 }
 
 // SetOptions installs the per-connection api.Options (RFC-106a scan-limit
@@ -166,8 +197,18 @@ func (c *EmbeddedConnection) SetPlanLogger(l PlanGenerationLogger) {
 	c.planLogger = l
 }
 
+// SetExecutionStatsLogger installs a post-execution statistics logger
+// (RFC-211). Passing nil disables execution logging. Not safe to call
+// concurrently with statement execution on the same connection (matches
+// database/sql's per-Conn threading contract, same as SetPlanLogger).
+func (c *EmbeddedConnection) SetExecutionStatsLogger(l ExecutionStatsLogger) {
+	c.execStatsLogger = l
+}
+
 // SetSlowQueryThresholdMicros sets the slow-query threshold in microseconds.
-// A non-positive value disables the slow-query flag.
+// A non-positive value disables the slow-query flag. The threshold governs
+// both dimensions independently: PlanGenerationInfo.SlowQuery reports that
+// PLANNING exceeded it, ExecutionStats.SlowQuery that EXECUTION did.
 func (c *EmbeddedConnection) SetSlowQueryThresholdMicros(micros int64) {
 	c.slowQueryThresholdMicros = micros
 }
@@ -743,7 +784,24 @@ func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
 		return nil, err
 	}
 	fdbTx.Options().SetReadSystemKeys()
-	rctx := recordlayer.NewFDBRecordContext(fdbTx, c.sess.DB.Env())
+	// Tag the transaction for the cluster's ratekeeper. This is the single
+	// transaction-creation seam in the SQL layer, so tagging here covers both
+	// explicit BeginTx transactions and autocommit statements.
+	if tags, ok := c.Options().Get(api.OptTransactionTags).([]string); ok {
+		for _, tag := range tags {
+			if err := fdbTx.Options().SetTag(tag); err != nil {
+				fdbTx.Cancel()
+				return nil, err
+			}
+		}
+	}
+	// NewRecordContext, not NewFDBRecordContext: it threads every piece of
+	// per-database state the record layer expects a context to inherit — the DST
+	// env AND the StoreTimer — so an explicit BeginTx transaction is instrumented
+	// on exactly the same terms as an autocommit statement (which goes through
+	// FDBDatabase.Run and inherits the timer there). Naming the fields one by one
+	// here is what previously left this path running with env==nil.
+	rctx := c.sess.DB.NewRecordContext(fdbTx)
 	tx := &embeddedTx{conn: c, rctx: rctx}
 	c.activeTx = tx
 	return tx, nil

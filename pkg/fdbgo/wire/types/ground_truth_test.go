@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 type testVectorEntry struct {
@@ -217,6 +219,56 @@ var requestBuilders = map[string]func(tok [16]byte) []byte{
 			Reply:            ReplyPromise{Token: tok},
 		}).MarshalFDB()
 	},
+	// GetReadVersionRequest::tags is TransactionTagMap<uint32_t> — a vector of
+	// {tag, count} objects. An empty map and an empty byte string both encode to
+	// a bare four-byte zero, so only this NON-empty case can tell the correct
+	// encoding from the opaque-blob one that preceded it.
+	"GetReadVersionRequest_tagged": func(tok [16]byte) []byte {
+		return (&GetReadVersionRequest{
+			TransactionCount: 1,
+			MaxVersion:       -1,
+			Tags:             []TransactionTagCount{{Tag: []byte("tenant-a"), Count: 3}},
+			Reply:            ReplyPromise{Token: tok},
+		}).MarshalFDB()
+	},
+	// Three entries, which is what actually exercises the vector's offset table
+	// — a single-element vector can hide an off-by-one there. The ELEMENT ORDER
+	// below is libstdc++'s std::unordered_map iteration order for these keys
+	// under the pinned toolchain; it is not part of the wire contract, so if a
+	// toolchain bump reorders it, re-read the order off the emitted vector and
+	// update this literal. What the comparison pins is the framing, not the order.
+	"GetReadVersionRequest_tagged_multi": func(tok [16]byte) []byte {
+		return (&GetReadVersionRequest{
+			TransactionCount: 4,
+			MaxVersion:       -1,
+			Tags: []TransactionTagCount{
+				{Tag: []byte("gamma"), Count: 7},
+				{Tag: []byte("beta"), Count: 2},
+				{Tag: []byte("alpha"), Count: 1},
+			},
+			Reply: ReplyPromise{Token: tok},
+		}).MarshalFDB()
+	},
+	// CommitTransactionRequest::tagSet is Optional<TagSet>, and TagSet has
+	// dynamic_size_traits — a flat [len:1][tag bytes] concatenation in insertion
+	// order. A byte blob IS the right model here, unlike the GRV map above.
+	"CommitTransactionRequest_tagged": func(tok [16]byte) []byte {
+		return (&CommitTransactionRequest{
+			Transaction: CommitTransactionRef{
+				ReadSnapshot: 7,
+				Mutations: []MutationRef{
+					{MutType: 0, Param1: []byte("tk"), Param2: []byte("tv")},
+				},
+				WriteConflictRanges: []KeyRangeRef{
+					{Begin: []byte("tk"), End: []byte("tk\x00")},
+				},
+			},
+			HasTagSet:  true,
+			TagSet:     []byte("\x08tenant-a\x04bulk"),
+			Reply:      ReplyPromise{Token: tok},
+			TenantInfo: TenantInfo{TenantId: -1},
+		}).MarshalFDB()
+	},
 }
 
 // requestRoundTrip parses the C++ bytes with the generated UnmarshalFDB for
@@ -287,6 +339,86 @@ func diffBytes(t *testing.T, name string, got, want []byte) {
 	if t.Failed() {
 		t.Logf("Go  hex: %s", hex.EncodeToString(got))
 		t.Logf("C++ hex: %s", hex.EncodeToString(want))
+	}
+}
+
+// encodeVTable renders a vtable the way it appears in a serialized message's
+// vtable region: uint16 little-endian entries, the first of which is the
+// vtable's own byte length.
+func encodeVTable(vt wire.VTable) []byte {
+	out := make([]byte, 0, len(vt)*2)
+	for _, e := range vt {
+		var b [2]byte
+		binary.LittleEndian.PutUint16(b[:], e)
+		out = append(out, b[:]...)
+	}
+	return out
+}
+
+// TestGroundTruthReplyVTables pins the object LAYOUTS of the GRV reply's
+// tagThrottleInfo element types against real C++ bytes.
+//
+// The request vectors above pin TransactionTagCount byte-exactly, but its
+// sibling TransactionTagThrottle is structurally different — its second slot is
+// a nested OBJECT (ClientTagThrottleLimits), not a scalar — and no emitted C++
+// vector carries a non-empty tagThrottleInfo, so the reply direction has no
+// byte-exact golden. That direction is the one production actually parses, so
+// leaving it entirely unpinned would repeat the failure this whole area was
+// fixed for: a decoder green only against itself.
+//
+// What makes a pin possible anyway: a serialized message carries the vtables of
+// its whole type closure regardless of which fields are populated, so the C++
+// bytes for GetReadVersionReply contain the exact vtables of both types even
+// though its map is empty. A vtable IS the layout — object size and per-slot
+// offsets — so matching the generated constants against the region is a real
+// C++-derived check on the only degrees of freedom the decode has.
+//
+// This also documents why GetReadVersionReply_locked's bytes are permitted to
+// move without its C++ constructor changing: the region's vtable ORDER is an
+// artifact of the emitting binary's instantiation order, not of the protocol
+// (readers resolve a vtable by the offset stored in each object). Order is what
+// this test deliberately does not assert.
+func TestGroundTruthReplyVTables(t *testing.T) {
+	t.Parallel()
+
+	var vec *testVectorEntry
+	for _, v := range loadTestVectors(t) {
+		if v.Name == "GetReadVersionReply_locked" {
+			v := v
+			vec = &v
+			break
+		}
+	}
+	if vec == nil {
+		t.Fatal("GetReadVersionReply_locked vector missing from testdata.json")
+	}
+	raw := vectorBytes(t, *vec)
+
+	// The vtable region is a leading uint32 byte-count followed by the region
+	// itself at offset 8. Bounding the search there keeps this from passing on
+	// a coincidental byte run inside the payload.
+	if len(raw) < 8 {
+		t.Fatalf("reply vector too short: %d bytes", len(raw))
+	}
+	regionEnd := 8 + int(binary.LittleEndian.Uint32(raw[0:4]))
+	if regionEnd > len(raw) {
+		t.Fatalf("vtable region length %d overruns the %d-byte vector", regionEnd-8, len(raw))
+	}
+	region := raw[:regionEnd]
+
+	for _, tc := range []struct {
+		name string
+		vt   wire.VTable
+	}{
+		{"ClientTagThrottleLimits", ClientTagThrottleLimitsVTable},
+		{"TransactionTagThrottle", TransactionTagThrottleVTable},
+	} {
+		if !bytes.Contains(region, encodeVTable(tc.vt)) {
+			t.Errorf("%s vtable %v is not in the C++ vtable region of "+
+				"GetReadVersionReply_locked — the generated layout does not match "+
+				"what the real ObjectWriter emitted\nregion hex: %s",
+				tc.name, tc.vt, hex.EncodeToString(region))
+		}
 	}
 }
 

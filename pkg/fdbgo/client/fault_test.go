@@ -155,7 +155,7 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 
 	// Manual commit with fault: ADD 5, then kill connection.
 	tx := db.CreateTransaction()
-	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -437,7 +437,7 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 	}
 
 	// Pre-fetch read version so no GRV request during the fault window.
-	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -485,7 +485,7 @@ func TestWrongShardServer_GetKey(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("warm: %v", err)
 	}
-	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -535,7 +535,7 @@ func TestWrongShardServer_GetRange(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("warm: %v", err)
 	}
-	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -590,7 +590,7 @@ func TestPipelinedGet_WrongShardRetry(t *testing.T) {
 	}
 
 	// Pre-fetch read version so no GRV request during the fault window.
-	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -1017,7 +1017,7 @@ func TestRead_BoundedByTimeout_NoHang(t *testing.T) {
 
 	// Pre-fetch a read version while the dialer is clean, so the bounded read lands in
 	// the location / load-balance loop rather than blocking in GRV.
-	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}

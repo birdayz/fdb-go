@@ -406,7 +406,7 @@ func TestWaitForRateLimit(t *testing.T) {
 		th := newIndexingThrottle(100, 3, 0, 0)
 		th.recordsScannedSinceForcedDelay = 1000 // should be ignored
 		start := time.Now()
-		th.waitForRateLimit()
+		th.sleepMillis(context.Background(), th.waitTimeMillis())
 		elapsed := time.Since(start)
 		if elapsed > 50*time.Millisecond {
 			t.Errorf("should return immediately, took %v", elapsed)
@@ -418,48 +418,69 @@ func TestWaitForRateLimit(t *testing.T) {
 		th := newIndexingThrottle(100, 3, 100, 0) // 100 records/sec
 		th.recordsScannedSinceForcedDelay = 0
 		start := time.Now()
-		th.waitForRateLimit()
+		th.sleepMillis(context.Background(), th.waitTimeMillis())
 		elapsed := time.Since(start)
 		if elapsed > 50*time.Millisecond {
 			t.Errorf("should return immediately, took %v", elapsed)
 		}
 	})
 
-	t.Run("applyEnforcedPostTransactionDelay sleeps for the configured delay", func(t *testing.T) {
+	t.Run("the enforced delay REPLACES the records-per-second pacing", func(t *testing.T) {
 		t.Parallel()
-		// The enforced delay is unconditional and independent of the records-per-second
-		// path — it does not look at recordsScannedSinceForcedDelay at all.
+		// Java Booker.waitTimeMilliseconds returns the enforced delay before it looks at
+		// recordsPerSecond at all, so the two never stack and the rps bookkeeping is
+		// left untouched.
 		th := newIndexingThrottle(100, 3, 100, 50) // 50ms enforced delay, rps also set
+		th.recordsScannedSinceForcedDelay = 1000   // would be a long rps wait if consulted
+		if got := th.waitTimeMillis(); got != 50 {
+			t.Errorf("waitTimeMillis = %d, want the enforced delay 50", got)
+		}
 		start := time.Now()
-		th.applyEnforcedPostTransactionDelay(context.Background())
+		th.sleepMillis(context.Background(), 50)
 		if elapsed := time.Since(start); elapsed < 40*time.Millisecond {
 			t.Errorf("enforced delay should wait ~50ms, took only %v", elapsed)
 		}
-		// It does not touch the records-per-second bookkeeping.
 		if !th.forcedDelayTimestamp.IsZero() {
 			t.Errorf("enforced delay must not set forcedDelayTimestamp")
 		}
+		if th.recordsScannedSinceForcedDelay != 1000 {
+			t.Errorf("enforced delay must not consume the rps record count, got %d", th.recordsScannedSinceForcedDelay)
+		}
 	})
 
-	t.Run("applyEnforcedPostTransactionDelay is a no-op when delay is 0", func(t *testing.T) {
+	t.Run("no wait is a no-op when the enforced delay is 0 and nothing was scanned", func(t *testing.T) {
 		t.Parallel()
 		th := newIndexingThrottle(100, 3, 100, 0) // enforced=0
 		start := time.Now()
-		th.applyEnforcedPostTransactionDelay(context.Background())
+		th.sleepMillis(context.Background(), th.waitTimeMillis())
 		if elapsed := time.Since(start); elapsed > 30*time.Millisecond {
 			t.Errorf("enforced=0 should be a no-op, took %v", elapsed)
 		}
 	})
 
-	t.Run("applyEnforcedPostTransactionDelay returns early when the context is cancelled", func(t *testing.T) {
+	t.Run("sleepMillis returns early when the context is cancelled", func(t *testing.T) {
 		t.Parallel()
 		th := newIndexingThrottle(100, 3, 0, 5000) // 5s delay — must NOT block a cancelled build
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // already cancelled
 		start := time.Now()
-		th.applyEnforcedPostTransactionDelay(ctx)
+		th.sleepMillis(ctx, th.waitTimeMillis())
 		if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
 			t.Errorf("cancelled context should interrupt the delay, took %v", elapsed)
+		}
+	})
+
+	t.Run("the rps pacing wait is independent of the retry budget", func(t *testing.T) {
+		t.Parallel()
+		// The wait computation must not consult maxRetries: Java's Booker never sees it,
+		// and gating pacing behind retries would silently disable SetRecordsPerSecond.
+		for _, maxRetries := range []int{0, 1, 100} {
+			th := newIndexingThrottle(100, maxRetries, 10, 0) // 10 records/sec
+			th.recordsScannedSinceForcedDelay = 10
+			th.forcedDelayTimestamp = time.Now()
+			if got := th.waitTimeMillis(); got < 900 {
+				t.Errorf("maxRetries=%d: waitTimeMillis = %d, want the ~999ms rps wait", maxRetries, got)
+			}
 		}
 	})
 
@@ -468,7 +489,7 @@ func TestWaitForRateLimit(t *testing.T) {
 		th := newIndexingThrottle(100, 3, -1, 0)
 		th.recordsScannedSinceForcedDelay = 1000
 		start := time.Now()
-		th.waitForRateLimit()
+		th.sleepMillis(context.Background(), th.waitTimeMillis())
 		elapsed := time.Since(start)
 		if elapsed > 50*time.Millisecond {
 			t.Errorf("should return immediately with negative rate, took %v", elapsed)
@@ -482,7 +503,7 @@ func TestWaitForRateLimit(t *testing.T) {
 		// Set forced delay far in the past so elapsed > expected
 		th.forcedDelayTimestamp = time.Now().Add(-5 * time.Second)
 		start := time.Now()
-		th.waitForRateLimit()
+		th.sleepMillis(context.Background(), th.waitTimeMillis())
 		elapsed := time.Since(start)
 		if elapsed > 50*time.Millisecond {
 			t.Errorf("should not sleep when enough time elapsed, took %v", elapsed)
@@ -500,7 +521,7 @@ func TestWaitForRateLimit(t *testing.T) {
 		th.forcedDelayTimestamp = time.Now() // just now, 0ms elapsed
 		// 10 records at 10/sec = 1000ms expected, but capped at 999ms
 		start := time.Now()
-		th.waitForRateLimit()
+		th.sleepMillis(context.Background(), th.waitTimeMillis())
 		elapsed := time.Since(start)
 		// Should sleep close to 999ms (capped)
 		if elapsed < 900*time.Millisecond {
@@ -522,7 +543,7 @@ func TestWaitForRateLimit(t *testing.T) {
 		th.forcedDelayTimestamp = time.Now()
 		// 100 records at 1/sec = 100,000ms expected, but capped at 999ms
 		start := time.Now()
-		th.waitForRateLimit()
+		th.sleepMillis(context.Background(), th.waitTimeMillis())
 		elapsed := time.Since(start)
 		if elapsed > 1200*time.Millisecond {
 			t.Errorf("should be capped at 999ms, slept %v", elapsed)
@@ -534,7 +555,7 @@ func TestWaitForRateLimit(t *testing.T) {
 		th := newIndexingThrottle(100, 3, 1000000, 0) // very high rate
 		th.recordsScannedSinceForcedDelay = 1         // 1 record at 1M/sec = ~0ms
 		start := time.Now()
-		th.waitForRateLimit()
+		th.sleepMillis(context.Background(), th.waitTimeMillis())
 		elapsed := time.Since(start)
 		if elapsed > 50*time.Millisecond {
 			t.Errorf("should return immediately for trivial rate, took %v", elapsed)

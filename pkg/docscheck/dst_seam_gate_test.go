@@ -46,9 +46,15 @@ var seamAllowlist = map[string]string{
 	// ---- (A) Latency and duration measurement. These values feed a StoreTimer or a log line
 	// and are never written to FDB. Seaming them would make a simulation report zero elapsed
 	// time for every operation, which is worse than useless for the metrics.
-	"pkg/recordlayer/database.go:CommitWithVersionstamp: time.Now":        "commit-latency metric",
+	"pkg/recordlayer/database.go:CommitWithVersionstamp: time.Now": "commit-latency metric",
+	"pkg/recordlayer/database.go:Commit: time.Now":                 "commit-latency metric; the sibling of CommitWithVersionstamp, and every commit path has to record or the metric becomes a function of which API the caller picked",
+	"pkg/recordlayer/database.go:CommitWithHooks: time.Now":        "commit-latency metric; same span as Java's commitAsync, which starts before the pre-commit checks",
+	"pkg/recordlayer/database.go:Run: time.Now":                    "commit-latency metric for the transactor's retry loop, where nothing calls Commit and the commit would otherwise go uncounted",
+	"pkg/recordlayer/database.go:RunWithWeakReads: time.Now":       "commit-latency metric; the Run case, weak-read variant",
+	"pkg/recordlayer/database.go:RunWithVersionstamp: time.Now":    "commit-latency metric; the Run case, versionstamp variant",
+	"pkg/recordlayer/instrumented_cursor.go:OnNext: time.Now": "per-record scan-latency metric. This is the one that MUST stay wall-clock: it is the port of Java's " +
+		"StoreTimer.instrument(Event, RecordCursor), whose whole value is the real elapsed time of each onNext — a seamed clock would report a zero-cost scan",
 	"pkg/recordlayer/database.go:GetReadVersion: time.Now":                "GRV-latency metric",
-	"pkg/recordlayer/index_scan.go:ScanIndex: time.Now":                   "scan-latency metric",
 	"pkg/recordlayer/online_indexer.go:shouldLogBuildProgress: time.Now":  "progress-log throttle",
 	"pkg/recordlayer/spfresh_write.go:spfreshInsert: time.Now":            "insert-latency metric",
 	"pkg/recordlayer/store.go:saveRecordInternal: time.Now":               "save-latency metric",
@@ -56,18 +62,21 @@ var seamAllowlist = map[string]string{
 	"pkg/recordlayer/store_builder.go:Open: time.Now":                     "store-open-latency metric",
 	"pkg/recordlayer/store_builder.go:RebuildIndex: time.Now":             "rebuild-latency metric",
 	"pkg/relational/core/embedded/plan_logging.go:beginPlanLog: time.Now": "plan-log timestamp; log output, not persisted rows",
-	"pkg/recordlayer/spfresh_query.go:search: time.Now":                   "search-latency metric",
-	"pkg/recordlayer/store_timer.go:RecordSince: time.Since":              "the StoreTimer's own latency accounting; the whole point of the type is real elapsed time",
-	"pkg/relational/core/embedded/plan_logging.go:finish: time.Since":     "planning duration on a log line; the log is not a persisted row",
-	"pkg/recordlayer/store.go:DeleteRecord: time.Now":                     "delete-latency metric",
-	"pkg/recordlayer/store.go:LoadRecord: time.Now":                       "load-latency metric",
-	"pkg/recordlayer/store.go:ScanRecords: time.Now":                      "scan-latency metric",
-	"pkg/recordlayer/store_builder.go:CreateOrOpen: time.Now":             "store-open-latency metric",
+	"pkg/relational/core/embedded/execution_logging.go:beginExecLog: time.Now": "execution-stats timestamp; the same log-output-not-persisted-rows case as beginPlanLog one layer over. " +
+		"Deliberately NOT the seamed clock ScanLimiterState uses: that one DECIDES where a page ends and which continuation the caller gets, so a wall-clock anchor changes what a seeded run produces. This one is read once at the start of Execute and once at the end, and the only thing derived from the difference is ExecutionDuration and the SlowQuery boolean beside it on a log line — no byte written, no page boundary, no plan choice",
+	"pkg/recordlayer/spfresh_query.go:search: time.Now":               "search-latency metric",
+	"pkg/recordlayer/store_timer.go:RecordSince: time.Since":          "the StoreTimer's own latency accounting; the whole point of the type is real elapsed time",
+	"pkg/relational/core/embedded/plan_logging.go:finish: time.Since": "planning duration on a log line; the log is not a persisted row",
+	"pkg/relational/core/embedded/execution_logging.go:finish: time.Since": "execution duration on a log line; the log is not a persisted row. " +
+		"Pairs with the beginExecLog entry above — same clock, same reasoning",
+	"pkg/recordlayer/store.go:DeleteRecord: time.Now":         "delete-latency metric",
+	"pkg/recordlayer/store.go:LoadRecord: time.Now":           "load-latency metric",
+	"pkg/recordlayer/store_builder.go:CreateOrOpen: time.Now": "store-open-latency metric",
 
 	// ---- (B) Scheduling and in-memory bookkeeping. A simulated clock here would freeze LRU
 	// eviction or a rate limiter without changing any byte on disk, so the wall clock is the
 	// correct source.
-	"pkg/recordlayer/indexing_throttle.go:waitForRateLimit: time.Now":      "inter-transaction rate limiting, wall-clock by definition",
+	"pkg/recordlayer/indexing_throttle.go:waitTimeMillis: time.Now":        "inter-transaction rate limiting, wall-clock by definition",
 	"pkg/recordlayer/store_state_cache.go:addToCache: time.Now":            "in-memory LRU access stamp",
 	"pkg/recordlayer/store_state_cache.go:getIfPresent: time.Now":          "in-memory LRU access stamp",
 	"pkg/recordlayer/store_state_cache.go:getIfPresent: time.Since":        "in-memory LRU entry expiry; evicting an entry re-reads it from FDB, it never writes",

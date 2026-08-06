@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -89,6 +90,81 @@ func TestFoldStep1Census_ClassifiesTheRefusedLegByItsResultValue(t *testing.T) {
 			if witness == "" {
 				t.Fatal("every classified decline must carry a witness naming the plan type — a " +
 					"bucket that moves with no witness is a number with nothing to attribute it to")
+			}
+		})
+	}
+}
+
+// The bare-QOV witness must separate TYPED from UNTYPED, which is the whole
+// reason it prints a `typed=` flag at all.
+//
+// The dimension is the one the shape test above cannot reach: both cases below
+// land in foldStep1LegShapeBareQOV, correctly — the bucket is about the result
+// value's SHAPE (a QOV rather than a record constructor), and the typing is the
+// cut WITHIN it. So a test that only asserts the bucket passes with the flag
+// stuck at any constant value, which is exactly the state this found the witness
+// in: it read `Typ != nil`, and no constructible QOV has a nil Typ
+// (NewQuantifiedObjectValue stamps UnknownType; NewQuantifiedObjectValueOfType
+// degrades nil to it), so it printed typed=true for the entire untyped
+// population.
+//
+// This is the instrument the bare-untyped-QOV residue is measured with. Java has
+// no untyped QOV to measure — QuantifiedObjectValue.of requires a Type
+// (QuantifiedObjectValue.java:187) and Quantifier.getFlowedObjectValue derives
+// one unconditionally (Quantifier.java:801-810) — so the Go-side count is the
+// entire statement of the gap, and a witness that cannot see the gap would report
+// it closed while every site still stood.
+func TestFoldStep1Census_BareQOVWitnessSeparatesTypedFromUntyped(t *testing.T) {
+	t.Parallel()
+
+	legA := &values.RecordType{Fields: []values.Field{{Name: "ID", Ordinal: 0}}}
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, legA, false)
+	corr := values.NamedCorrelationIdentifier("A")
+
+	for _, tc := range []struct {
+		name      string
+		rv        values.Value
+		wantTyped bool
+	}{
+		{
+			// The population CQ-68 is about: a result value nobody ever typed.
+			name:      "bare QOV is UNTYPED",
+			rv:        values.NewQuantifiedObjectValue(corr),
+			wantTyped: false,
+		},
+		{
+			// The state a typing sweep moves them to. Without this direction the
+			// flag could be stuck at false and still pass the case above.
+			name:      "QOV carrying a real row type is TYPED",
+			rv:        values.NewQuantifiedObjectValueOfType(corr, legA),
+			wantTyped: true,
+		},
+		{
+			// An explicit UnknownType is untyped for the same reason the implicit
+			// one is; the placeholder is the absence of a type, not a type.
+			name:      "QOV explicitly carrying UnknownType is UNTYPED",
+			rv:        values.NewQuantifiedObjectValueOfType(corr, values.UnknownType),
+			wantTyped: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fm := plans.NewRecordQueryFlatMapPlan(scan, scan,
+				values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), tc.rv, false)
+
+			shape, witness := classifyDeclinedLeg(fm)
+			if shape != foldStep1LegShapeBareQOV {
+				t.Fatalf("shape = %v, want foldStep1LegShapeBareQOV — the typed/untyped cut is "+
+					"WITHIN the bare-QOV bucket, so a case that leaves the bucket is not "+
+					"exercising the flag at all (witness %q)", shape, witness)
+			}
+
+			want := "typed=" + strconv.FormatBool(tc.wantTyped)
+			if !strings.Contains(witness, want) {
+				t.Fatalf("witness %q does not report %q. This flag is how the bare-untyped-QOV "+
+					"population is counted; if it cannot distinguish a typed result value from "+
+					"an untyped one, the residue reads as closed while every site still stands",
+					witness, want)
 			}
 		})
 	}

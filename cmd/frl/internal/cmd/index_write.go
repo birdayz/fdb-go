@@ -15,29 +15,37 @@ import (
 // This is the operator task the read surface can see (`index ls` shows
 // WRITE_ONLY) but couldn't fix before the write wave.
 
-// defaultBuildMaxRetries is Java's OnlineIndexer default. The Go
-// builder's own default is 0, which silently disables the rps throttle
-// AND the adaptive limit-halving (`online_indexer.go`: both engage only
-// when maxRetries > 0) — a single transaction_too_large escaping the
-// client retry loop would abort the whole build with no back-off
-// (FDB C++ dev review, RFC-174 C1).
+// defaultBuildMaxRetries is Java's OnlineIndexer default
+// (OnlineIndexOperationConfig.DEFAULT_MAX_RETRIES). It now merely restates the
+// library default rather than correcting it: the Go builder used to default to 0,
+// which disabled the adaptive limit-halving, so a single transaction_too_large
+// escaping the client retry loop aborted the whole build with no back-off. The CLI
+// papered over that for its own users while every library caller stayed exposed, so
+// the default moved into NewOnlineIndexerBuilder where it belongs.
+//
+// Kept explicit anyway: an operator reading `--help` should see the retry budget the
+// build will actually use, not have to infer it from the library.
 const defaultBuildMaxRetries = 100
 
 func newIndexBuildCmd() *cobra.Command {
 	var (
-		addr       storeAddressFlags
-		yes        bool
-		limit      int
-		rps        int
-		maxRetries int
-		timeLimit  time.Duration
+		addr        storeAddressFlags
+		yes         bool
+		limit       int
+		rps         int
+		maxRetries  int
+		timeLimit   time.Duration
+		allSchemas  bool
+		concurrency int
 	)
 	c := &cobra.Command{
-		Use:   "build <name>",
+		Use:   "build [name]",
 		Short: "Build an index online (write)",
 		Example: `  frl index build Order$price --yes
   frl index build Order$price --rps 5000 --limit 200 --yes
-  frl index build IDX --time-limit 30s --yes   # partial pass; rerun resumes`,
+  frl index build IDX --time-limit 30s --yes   # partial pass; rerun resumes
+  frl index build --database /tenants --all-schemas --yes          # whole fleet
+  frl index build IDX --database /tenants --all-schemas --yes      # one index, whole fleet`,
 		ValidArgsFunction: indexNameCompletion,
 		Long: "Drives the online indexer over the store: scans records in " +
 			"batched transactions, writes index entries, tracks progress in " +
@@ -45,16 +53,40 @@ func newIndexBuildCmd() *cobra.Command {
 			"whole range is built. Safe to interrupt — per-range progress " +
 			"commits atomically, and a rerun resumes from the ranges already " +
 			"done. A build interrupted by --time-limit resumes the same way.\n\n" +
-			"--max-retries defaults to 100 (Java's default; the throttle and " +
-			"adaptive batch-halving only engage when retries are enabled). " +
-			"--rps caps records scanned per second; --limit is the per-" +
-			"transaction record batch.\n\n" +
+			"--max-retries defaults to 100 (Java's default), bounding the " +
+			"adaptive batch-halving on transient errors. --rps caps records " +
+			"scanned per second and applies regardless of the retry budget; " +
+			"--limit is the per-transaction record batch.\n\n" +
 			"Resuming with different indexing settings than the interrupted " +
 			"build fails with the saved vs requested stamps — rerun with " +
 			"matching settings to take over, or `frl index rebuild` to start " +
-			"over from scratch.",
-		Args: cobra.ExactArgs(1),
+			"over from scratch.\n\n" +
+			"--all-schemas builds across every schema in --database instead of " +
+			"one store, with the index name optional: given, it rolls that one " +
+			"index across the fleet; omitted, each tenant builds whatever it " +
+			"owes. The fan-out uses ONE TRANSACTION PER TENANT — a fleet build " +
+			"cannot fit in a single transaction, and one poisoned tenant must " +
+			"not roll back the healthy ones. Failures are reported per tenant " +
+			"and do not stop the pass; rerun to resume, since a completed index " +
+			"is simply no longer pending.",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if allSchemas {
+				if addr.schema != "" {
+					return fmt.Errorf("--all-schemas fans out over every schema in --database — " +
+						"drop --schema (it addresses a single store)")
+				}
+				if addr.database == "" {
+					return fmt.Errorf("--all-schemas needs --database to know which fleet to build")
+				}
+				return runFleetIndexBuild(cmd, &addr, addr.database, args, yes, indexBuildOptions{
+					limit: limit, rps: rps, maxRetries: maxRetries, timeLimit: timeLimit,
+				}, concurrency)
+			}
+			if len(args) != 1 {
+				return fmt.Errorf("accepts 1 arg (the index name), received %d — "+
+					"or pass --all-schemas to build across a whole database", len(args))
+			}
 			target, err := addr.resolve()
 			if err != nil {
 				return err
@@ -78,8 +110,10 @@ func newIndexBuildCmd() *cobra.Command {
 	c.Flags().BoolVar(&yes, "yes", false, "skip the interactive confirmation")
 	c.Flags().IntVar(&limit, "limit", 0, "records per transaction (0 = indexer default)")
 	c.Flags().IntVar(&rps, "rps", 0, "records-per-second throttle (0 = indexer default)")
-	c.Flags().IntVar(&maxRetries, "max-retries", defaultBuildMaxRetries, "retry budget; enables throttling + adaptive batch-halving")
+	c.Flags().IntVar(&maxRetries, "max-retries", defaultBuildMaxRetries, "retry budget for adaptive batch-halving on transient errors")
 	c.Flags().DurationVar(&timeLimit, "time-limit", 0, "stop after this duration (partial build; rerun resumes)")
+	c.Flags().BoolVar(&allSchemas, "all-schemas", false, "build across every schema in --database (fleet fan-out)")
+	c.Flags().IntVar(&concurrency, "concurrency", 0, "schemas built in parallel with --all-schemas (0 = default)")
 	return c
 }
 
@@ -135,7 +169,7 @@ func newIndexRebuildCmd() *cobra.Command {
 	c.Flags().BoolVar(&yes, "yes", false, "skip the interactive confirmation")
 	c.Flags().IntVar(&limit, "limit", 0, "records per transaction (0 = indexer default)")
 	c.Flags().IntVar(&rps, "rps", 0, "records-per-second throttle (0 = indexer default)")
-	c.Flags().IntVar(&maxRetries, "max-retries", defaultBuildMaxRetries, "retry budget; enables throttling + adaptive batch-halving")
+	c.Flags().IntVar(&maxRetries, "max-retries", defaultBuildMaxRetries, "retry budget for adaptive batch-halving on transient errors")
 	return c
 }
 

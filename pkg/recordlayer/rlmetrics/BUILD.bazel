@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "rlmetrics",
+    srcs = ["rlmetrics.go"],
+    importpath = "fdb.dev/pkg/recordlayer/rlmetrics",
+    visibility = ["//visibility:public"],
+    deps = ["//pkg/recordlayer"],
+)
+
+go_test(
+    name = "rlmetrics_test",
+    srcs = ["rlmetrics_test.go"],
+    deps = [
+        ":rlmetrics",
+        "//pkg/recordlayer",
+    ],
+)

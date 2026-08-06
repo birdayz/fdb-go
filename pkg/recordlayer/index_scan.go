@@ -3,7 +3,6 @@ package recordlayer
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -264,7 +263,6 @@ func (store *FDBRecordStore) ScanIndex(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
-	startTime := time.Now()
 	if !store.IsIndexScannable(index.Name) {
 		return &errorCursor[*IndexEntry]{
 			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)},
@@ -297,9 +295,12 @@ func (store *FDBRecordStore) ScanIndex(
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: err}
 	}
-	cursor := maintainer.Scan(scanRange, continuation, scanProperties)
-	store.context.Timer().RecordSince(EventScanIndex, startTime)
-	return cursor
+	// Instrument the CURSOR, not the call that builds it. Java wraps the
+	// maintainer's cursor here (FDBRecordStore.java:1479-1481) so the event times
+	// each entry produced; timing the construction of a lazy cursor measures
+	// allocation and reports one occurrence for a scan of any size.
+	return instrumentCursor(store.context.Timer(), EventScanIndex,
+		maintainer.Scan(scanRange, continuation, scanProperties))
 }
 
 // ScanIndexByType scans a secondary index with an explicit scan type.
@@ -307,6 +308,24 @@ func (store *FDBRecordStore) ScanIndex(
 // range to score range and scans the B-tree.
 // Matches Java's FDBRecordStore.scanIndex(index, scanType, range, ...).
 func (store *FDBRecordStore) ScanIndexByType(
+	index *Index,
+	scanType IndexScanType,
+	scanRange TupleRange,
+	continuation []byte,
+	scanProperties ScanProperties,
+) RecordCursor[*IndexEntry] {
+	// EventScanIndex covers EVERY scan type, not just BY_VALUE. Java has a single
+	// scanIndex entry point that takes the scan type inside its IndexScanBounds and
+	// instruments there (FDBRecordStore.java:1479-1481); Go split the by-type
+	// dispatch into its own method, and instrumenting only the other one left the
+	// query executor's aggregate/group scans (executor_new_plans.go BY_GROUP) and
+	// every vector scan invisible. Wrapping the dispatch once, here, restores Java's
+	// property that no index scan can happen without the event.
+	return instrumentCursor(store.context.Timer(), EventScanIndex,
+		store.scanIndexByType(index, scanType, scanRange, continuation, scanProperties))
+}
+
+func (store *FDBRecordStore) scanIndexByType(
 	index *Index,
 	scanType IndexScanType,
 	scanRange TupleRange,
@@ -391,6 +410,23 @@ func (store *FDBRecordStore) ScanIndexByType(
 //
 // Matches Java's FDBRecordStore.scanIndex() with TimeWindowScanRange.
 func (store *FDBRecordStore) ScanTimeWindowLeaderboard(
+	index *Index,
+	scanType IndexScanType,
+	leaderboardType int,
+	leaderboardTimestamp int64,
+	scanRange TupleRange,
+	continuation []byte,
+	scanProperties ScanProperties,
+) RecordCursor[*IndexEntry] {
+	// Instrumented for the same reason ScanIndexByType is: it is a third entry
+	// point into an index scan, and an entry point that skips the event makes the
+	// metric a function of which index type the query happened to use.
+	return instrumentCursor(store.context.Timer(), EventScanIndex,
+		store.scanTimeWindowLeaderboard(index, scanType, leaderboardType, leaderboardTimestamp,
+			scanRange, continuation, scanProperties))
+}
+
+func (store *FDBRecordStore) scanTimeWindowLeaderboard(
 	index *Index,
 	scanType IndexScanType,
 	leaderboardType int,

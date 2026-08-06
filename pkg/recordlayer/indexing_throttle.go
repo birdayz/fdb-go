@@ -27,13 +27,6 @@ type indexingThrottle struct {
 	// Rate limiter state (matches Java's Booker.waitTimeMilliseconds)
 	forcedDelayTimestamp           time.Time // next allowed transaction start
 	recordsScannedSinceForcedDelay int       // records since last delay reset
-
-	// lastWaitMillis is the most recent records-per-second wait actually slept by
-	// waitForRateLimit (0 when no wait occurred). The build loop's progress log
-	// reports it as the inter-range DELAY for rps-throttled builds, where the
-	// enforced post-transaction delay is 0 — otherwise the log would always show
-	// delay=0 even while rps-throttling (Java logs throttle.waitTimeMilliseconds()).
-	lastWaitMillis int
 }
 
 // newIndexingThrottle creates a throttle with the given initial parameters.
@@ -52,18 +45,16 @@ func (t *indexingThrottle) getLimit() int {
 	return t.recordsLimit
 }
 
-// applyEnforcedPostTransactionDelay sleeps for the configured enforced delay (if > 0)
-// AFTER a committed build transaction. Unlike the records-per-second limiter, this is a
-// fixed, unconditional per-transaction delay (Java OnlineIndexOperationConfig
-// enforcedPostTransactionDelay) — applied independently of the records-per-second path
-// and of whether retries are enabled. The build loop calls it after each successful range.
-func (t *indexingThrottle) applyEnforcedPostTransactionDelay(ctx context.Context) {
-	if t.enforcedPostTransactionDelay <= 0 {
+// sleepMillis blocks for ms milliseconds, or until ctx is done. Non-positive ms
+// returns immediately. Java expresses the same thing as
+// MoreAsyncUtil.delayedFuture(toWait) chained onto the build loop, which the
+// runner cancels along with the rest of the build — so a cancelled or
+// deadline-hit build must never sit out the full delay here either.
+func (t *indexingThrottle) sleepMillis(ctx context.Context, ms int) {
+	if ms <= 0 {
 		return
 	}
-	// Context-aware so a cancelled/deadline-hit build does not block for the full delay
-	// before the next transaction observes ctx.
-	timer := time.NewTimer(time.Duration(t.enforcedPostTransactionDelay) * time.Millisecond)
+	timer := time.NewTimer(time.Duration(ms) * time.Millisecond)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
@@ -153,15 +144,36 @@ func (t *indexingThrottle) increaseLimit() {
 	t.recordsLimit = newLimit
 }
 
-// waitForRateLimit blocks until the rate limiter allows the next transaction.
-// Returns immediately if recordsPerSecond is 0 (unlimited).
-// Matches Java's IndexingThrottle.Booker.waitTimeMilliseconds().
-func (t *indexingThrottle) waitForRateLimit() {
-	t.lastWaitMillis = 0
-	if t.recordsPerSecond <= 0 || t.recordsScannedSinceForcedDelay == 0 {
-		return
+// waitTimeMillis computes the inter-range throttle wait and advances the rate
+// limiter's clock. Port of Java IndexingThrottle.Booker.waitTimeMilliseconds()
+// (IndexingThrottle.java:104-131), including its precedence: an enforced
+// post-transaction delay REPLACES the records-per-second pacing rather than
+// stacking with it, and an unlimited rate resets the bookkeeping so a config
+// that flips back to a finite rate does not credit the unlimited stretch.
+//
+// It is deliberately independent of maxRetries. Java calls it from
+// doneOrThrottleDelayAndMaybeLogProgress (IndexingBase.java:512) on every
+// non-final range regardless of the retry budget; gating pacing behind retries
+// would silently disable the operator's only rate control.
+//
+// This mutates the limiter clock, so call it exactly once per range and reuse
+// the returned value for both the progress log and the sleep — which is also
+// what makes the logged DELAY the wait actually taken for THIS range.
+func (t *indexingThrottle) waitTimeMillis() int {
+	if t.enforcedPostTransactionDelay > 0 {
+		return t.enforcedPostTransactionDelay
 	}
-
+	if t.recordsPerSecond <= 0 {
+		t.recordsScannedSinceForcedDelay = 0
+		t.forcedDelayTimestamp = time.Time{}
+		return 0
+	}
+	// No early return for a zero record count: Java has none either, and the
+	// difference is not the returned wait (both give 0) but the limiter clock.
+	// Java falls through and re-anchors forcedDelayTimestamp at now, so a range
+	// that scanned nothing does not leave a stale anchor behind for the NEXT
+	// range to measure a too-large delta against — which would cancel that
+	// range's pacing wait and under-throttle relative to Java.
 	now := time.Now()
 
 	// Calculate how long we should have spent on the records we've processed
@@ -178,22 +190,19 @@ func (t *indexingThrottle) waitForRateLimit() {
 	}
 
 	waitMs := int64(expectedMs) - deltaMs
-	if waitMs <= 0 {
-		// Already spent enough time — reset and continue
-		t.forcedDelayTimestamp = now
-		t.recordsScannedSinceForcedDelay = 0
-		return
+	if waitMs < 0 {
+		waitMs = 0
 	}
-
 	// Cap wait at 999ms (matching Java's min(999, ...))
 	if waitMs > 999 {
 		waitMs = 999
 	}
 
-	time.Sleep(time.Duration(waitMs) * time.Millisecond)
-	t.lastWaitMillis = int(waitMs)
-	t.forcedDelayTimestamp = time.Now()
+	// Java assumes the next chunk starts at now+toWait rather than re-reading the
+	// clock after the sleep, so the pacing target does not drift with scheduler jitter.
+	t.forcedDelayTimestamp = now.Add(time.Duration(waitMs) * time.Millisecond)
 	t.recordsScannedSinceForcedDelay = 0
+	return int(waitMs)
 }
 
 // oneToNineFactor returns a limit multiplier (1-9) based on consecutive failures.

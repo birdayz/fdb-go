@@ -104,13 +104,25 @@ func (i *Index) CreatesDuplicates() bool {
 }
 
 type Index struct {
-	Name                string
-	Type                string
-	RootExpression      KeyExpression
-	subspaceKey         any
-	Options             map[string]string
-	AddedVersion        int
-	LastModifiedVersion int
+	Name           string
+	Type           string
+	RootExpression KeyExpression
+	subspaceKey    any
+	// useExplicitSubspaceKey records that subspaceKey was CHOSEN rather than
+	// defaulted from the name. Java carries the same bit
+	// (Index.useExplicitSubspaceKey) and it is not bookkeeping: the builder's
+	// counter-based assignment consults it to decide whether it may overwrite
+	// the key, and a subspace key is the on-disk prefix of every entry the
+	// index owns. Overwriting a chosen one orphans that data.
+	//
+	// Go could not previously express the distinction, because every
+	// constructor seeds subspaceKey with the index name — so "unset" and
+	// "deliberately set to the name" are the same value and only a separate
+	// bit tells them apart.
+	useExplicitSubspaceKey bool
+	Options                map[string]string
+	AddedVersion           int
+	LastModifiedVersion    int
 
 	// Predicate filters which records are included in this index.
 	// If nil, all records are indexed. If set, only records where
@@ -408,10 +420,19 @@ func (idx *Index) SubspaceTupleKey() any {
 }
 
 // SetSubspaceKey overrides the default subspace key (index name).
-// Matches Java's Index.setSubspaceKey().
+// Matches Java's Index.setSubspaceKey(), including its side effect of MARKING
+// the key explicit — see useExplicitSubspaceKey.
 func (idx *Index) SetSubspaceKey(key any) *Index {
+	idx.useExplicitSubspaceKey = true
 	idx.subspaceKey = key
 	return idx
+}
+
+// HasExplicitSubspaceKey reports whether the subspace key was chosen rather
+// than defaulted from the index name.
+// Matches Java's Index.hasExplicitSubspaceKey().
+func (idx *Index) HasExplicitSubspaceKey() bool {
+	return idx.useExplicitSubspaceKey
 }
 
 // IsUnique returns whether this index enforces a uniqueness constraint.

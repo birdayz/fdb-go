@@ -710,14 +710,9 @@ Two of the three are display, one is not, and the arm table above is wrong.
   booked as **CQ-55** with the reviewed shape (`PartiallyOrderedSet[string]` →
   `[ColumnIdentity]` under `SameColumnPath`, domains minted at the `HintOrdering`
   providers and at composition, `orderingKeyFor`'s three bridge arms deleted,
-  lazy providers failing closed). The ordinal-domain half it depended on,
-  **CQ-56**, is DONE and is no longer a dependency: every pinned mint now states
-  its layout, derived by `OrdinalDomainOfColumnNames` /`OrdinalDomainOfType` from
-  the same enumeration that chose the slot, at four composition sites rather than
-  the two originally scoped. The domain-less convenience constructor is deleted,
-  and `pkg/docscheck`'s `TestPinnedOrdinalAlwaysStatesItsDomain` fails the build
-  on any route back to a pinned ordinal against an unstated row. So CQ-55 inherits
-  a domain it can compare on; what remains open is CQ-55's own work.
+  lazy providers failing closed). The ordinal-domain half it depends on is
+  **CQ-56**: `NewFieldValueWithPinnedOrdinal` mints `Domain: unknown` at both
+  composition sites, where `OrdinalDomainOfColumnNames` would derive it.
 
 THE GROUP-KEY ARM IS OPEN, corroborated a second way so the count above is not
 the only evidence. Guarding that arm alone with a panic reds five targets
@@ -988,73 +983,44 @@ audited separately rather than being waved through with the engine work.
 
 ## Order
 
-**This table is a DATED POINT MEASUREMENT, and the gate is the authority.**
-The numbers below were read off `TestFieldDebtBucketsArePartition` on
-**2026-08-06**; `pkg/docscheck` is where the live figures live, and a
-disagreement between this table and the gate is always this table being stale.
-Re-read it with:
+Sizes below are LIVE as of this revision — read off `knownFieldDecisionDebt`'s
+group headers, not off the per-item paragraphs above, which carry the size each
+bucket had when it was written. `pkg/docscheck` remains the authority for all
+of them.
 
-    go test ./pkg/docscheck -run TestFieldDebtBucketsArePartition -v
+0. Domain accessor (fail-closed) — nothing else may land first.
+1. boundary (2, REOPENED — was 0, MIGRATED): metadata names died at candidate
+   construction, and that part holds. The bucket is non-empty again for two
+   reasons, neither a regression: the call-boundary taint made a always-present
+   site visible (a name crossing a plain string parameter), and a second spelling
+   attempt was added inside the same descent. Both are `protoFieldByName`'s arms
+   and both retire on ONE fix. Reading the reference settled what that fix is —
+   Java descends nested proto records by ORDINAL (`FieldValue.eval` →
+   `MessageHelpers.getFieldValueForFieldOrdinals`, `FieldValue.java:169`;
+   `getFields().get(ordinal)` with a throw out of range,
+   `MessageHelpers.java:170-175`), consuming the name exactly once at construction
+   (`FieldValue.java:284-290`). So this is not "the boundary shape, probably
+   fine": it is this RFC's own thesis, already implemented in Java, at the last
+   step Go still asks the name. Gated on the nested-descent audit, since
+   `ResolvedAccessor` carries an `Ordinal` whose equality with the descriptor's
+   declaration index is unproven per producer.
+2. escape (0, MIGRATED): key structs; killed the caller-side blindness the gate
+   cannot reach.
+3. name-keyed (3, was 15): including the 4151 probe-first defect check; 6188 is
+   the same two-Values shape and travels with it. The three that remain are each
+   blocked on something outside the bucket — memo interning of lazy carriers,
+   constraint-growth coupling in the planner, and resolver-side baking of a
+   projection-output reference.
+4. translator (15, was 17): boundary demonstrations. The allowlist did NOT grow —
+   all eleven remaining sites were read against the two legs and none passes
+   both; two more left by deletion as unreachable.
+5. contract (15, was 11): the coordinated naming-contract change. It GREW: the
+   launderer widening surfaced the readers the original sizing had missed, and
+   the JDBC label site left by being fixed rather than exempted.
+6. dotted (7, was 15): producer-side channel removal. Four sites were retagged
+   `translator:` and four migrated with item 6's producers.
 
-**Standing rule, and it was learned the hard way here.** The previous revision
-of this table summed to **41** while the gate stood at **53** — a twelve-site
-gap, in the one document that DEFINES when this workstream is complete. Every
-other document that carried a total (`road-to-prod.md`, the TODO entries) was
-merely out of date by one or two; this one was materially wrong about the size
-of the remaining work, and it is the document a sequencing decision is made
-from. So: any per-bucket figure written into this RFC cites the gate as its
-authority and carries the date it was taken. A number in prose is a claim about
-a moment; the instrument is the claim about now. Writing the figure without the
-date is what let 41 read as current for as long as it did.
-
-The per-item paragraphs above carry the size each bucket had WHEN THAT ITEM WAS
-WRITTEN and are deliberately not restated — they are the record of what each
-item was scoped against.
-
-0. Domain accessor (fail-closed) — nothing else may land first. **LANDED.**
-1. boundary (**2**): was reported 0/MIGRATED, and that was the false green this
-   pass exists to end. Metadata names died at candidate construction, but the
-   call-boundary taint added later made two sites visible that were always
-   there — a name handed to a helper as a plain string parameter. A bucket
-   reported migrated while the walk could not reach one of its members is not
-   migrated.
-2. escape (**0**, MIGRATED): key structs; killed the caller-side blindness the
-   gate cannot reach. The one bucket whose zero has held.
-3. name-keyed (**5**, was 3, was 15): the three that remain from the original
-   sizing are each blocked on something outside the bucket — memo interning of
-   lazy carriers, constraint-growth coupling in the planner (CQ-51), and
-   resolver-side baking of a projection-output reference. Two more are newly
-   VISIBLE rather than new.
-4. translator (**15**): boundary demonstrations. Unchanged in count since the
-   previous revision, which is not the same as unchanged in membership.
-5. contract (**16**, was 15, was 11): the coordinated naming-contract change. It
-   has GROWN twice: the launderer widening surfaced the readers the original
-   sizing had missed, and the group-by output name's CONSUMERS were laundered
-   through one helper.
-6. dotted (**14**, was 7, was 15): producer-side channel removal. The WRITERS
-   are resolved; what remains are READERS that decline, each probe-pinned, plus
-   newly-visible MINTs.
-
-harness stays at **1** and is out of scope for the engine work.
-
-**Total: 53.** The count ROSE from 41, and that is the gate working, not the
-migration regressing — the detector learned to follow a display name across a
-call boundary and through helpers, and sites that were always making the
-decision became reportable. A ratchet whose count only ever falls is a ratchet
-that has stopped looking.
-
-**The tail's two largest blocks are `dotted` (14) and `translator` (15)** —
-together 55% of the list. Any sequencing that names some other item as "the
-largest block" of the RFC-197 tail is reading a bucket table that no longer
-holds.
-
-**The allowlist has never been used.** `allowedFieldDecisions` has been the
-empty literal in every one of the 34 commits that have touched the gate file,
-from the commit that introduced it (`f9b3c129c`, 2026-07-29) to HEAD. Not one
-site in the migration has been exempted — every one of the 68 was either fixed
-or recorded as debt with its count and its reason. That is the strongest single
-fact about this workstream: the escape hatch was built, documented, and never
-taken.
+harness stays at 1 and is out of scope for the engine work.
 
 ## Rejected alternatives
 

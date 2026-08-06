@@ -146,6 +146,27 @@ const (
 	// An unset option reads back as false through optBool, keeping the default
 	// option set byte-identical to Java's.
 	OptRestrictDDLToSessionDatabase OptionName = "RESTRICT_DDL_TO_SESSION_DATABASE"
+
+	// OptTransactionTags sets FDB transaction tags on every transaction the
+	// connection opens, for tag-based throttling. Value is a []string.
+	//
+	// This is the read/write-path counterpart to the DDL restriction above and
+	// exists for the same deployment: a multi-tenant service where one database
+	// path is one tenant. Tagging each connection with its tenant lets the
+	// cluster's ratekeeper throttle a noisy tenant without starving the others,
+	// which is the only mechanism that acts on load the SQL layer cannot see.
+	//
+	// The tags reach the wire as the commit request's tagSet and as the GRV
+	// request's per-tag counts; the record layer's 5-tag / 16-character limits
+	// (recordlayer.ValidateTags, matching Java's FDBRecordContextConfig) apply,
+	// and a violation fails at connect time rather than mid-statement.
+	//
+	// Go-only in the sense that Java's SQL layer exposes no such connection
+	// option — but the underlying tags are plain FDB transaction tags that Java
+	// sets via FDBRecordContextConfig, so nothing here is wire-novel. Like the
+	// option above it stays out of defaultOptionValues so the default option set
+	// remains byte-identical to Java's.
+	OptTransactionTags OptionName = "TRANSACTION_TAGS"
 )
 
 // IndexFetchMethod mirrors Java's Options.IndexFetchMethod enum.

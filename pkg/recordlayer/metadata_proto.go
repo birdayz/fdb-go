@@ -15,6 +15,46 @@ import (
 
 // ToProto serializes RecordMetaData to its protobuf representation.
 // Matches Java's RecordMetaData.toProto().
+//
+// EVERY field of the MetaData message is accounted for here, in one of two
+// ways, and the distinction is the point of this comment — the previous version
+// said only "Matches Java's RecordMetaData.toProto()", which read as a
+// completeness claim it did not have. Six fields were being dropped silently.
+//
+// MODELLED — parsed into Go structures and re-serialized from them:
+//
+//	1  records                    9  dependencies
+//	2  indexes                   10  subspace_key_counter
+//	3  record_types              11  uses_subspace_key_counter
+//	4  split_long_records
+//	5  version
+//	6  former_indexes
+//	7  record_count_key
+//	8  store_record_versions
+//
+// CARRIED VERBATIM — held as opaque protos and re-emitted unchanged, never
+// interpreted (see preservedMetaDataFields):
+//
+//	12  joined_record_types      14  user_defined_functions
+//	13  unnested_record_types    15  views
+//
+// Carried is not supported. The port does not model synthetic record types,
+// user-defined functions or views; it declines to DELETE them from metadata it
+// did not author. Anything whose behaviour would depend on interpreting them
+// must refuse rather than proceed on the partial view — see
+// RecordMetaData.DeclaresSyntheticRecordTypes.
+//
+// Extension ranges (1000-2000) are genuine unknown fields, and they are carried
+// here too — as preservedMetaDataFields.unknown. Protobuf's own unknown-field
+// preservation does NOT cover them across this round trip: it keeps unknown
+// bytes attached to the message they were parsed into, and ToProto builds a
+// FRESH MetaData, so nothing carries them over unless this does.
+//
+// Unknown-field preservation is also the mechanism fields 12-15 were mistakenly
+// assumed to be covered by, where it never applied for the opposite reason —
+// they are declared fields of a message this code parses, so they were never
+// unknown in the first place. Both halves of the message therefore need explicit
+// carrying, and neither gets it for free.
 func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 	md := &gen.MetaData{}
 
@@ -112,6 +152,50 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 		md.RecordCountKey = m.recordCountKey.ToKeyExpression()
 	}
 
+	// 8. Subspace-key counter (fields 10, 11). Emitted as a PAIR and only when
+	// the scheme is enabled — Java's RecordMetaData.toProto():710-713:
+	//
+	//	if (usesSubspaceKeyCounter()) {
+	//	    builder.setSubspaceKeyCounter(subspaceKeyCounter);
+	//	    builder.setUsesSubspaceKeyCounter(true);
+	//	}
+	//
+	// Emitting one without the other is not a lesser version of this; Java's
+	// loader REJECTS either half alone (RecordMetaDataBuilder.java:279-285), so
+	// a half-written pair is metadata Java cannot read back.
+	if m.usesSubspaceKeyCounter {
+		md.SubspaceKeyCounter = proto.Int64(m.subspaceKeyCounter)
+		md.UsesSubspaceKeyCounter = proto.Bool(true)
+	}
+
+	// 9. The fields this port carries but does not model (12-15). Re-emitted
+	// verbatim so a Go round-trip is not a silent deletion of another
+	// application's joined types, functions or views. See
+	// preservedMetaDataFields.
+	//
+	// Cloned rather than aliased: ToProto's result is the caller's to mutate,
+	// and sharing these would let a caller edit the metadata's own state through
+	// a proto it believes it owns.
+	for _, jt := range m.preserved.joinedRecordTypes {
+		md.JoinedRecordTypes = append(md.JoinedRecordTypes, proto.Clone(jt).(*gen.JoinedRecordType))
+	}
+	for _, ut := range m.preserved.unnestedRecordTypes {
+		md.UnnestedRecordTypes = append(md.UnnestedRecordTypes, proto.Clone(ut).(*gen.UnnestedRecordType))
+	}
+	for _, fn := range m.preserved.userDefinedFunctions {
+		md.UserDefinedFunctions = append(md.UserDefinedFunctions, proto.Clone(fn).(*gen.PUserDefinedFunction))
+	}
+	for _, vw := range m.preserved.views {
+		md.Views = append(md.Views, proto.Clone(vw).(*gen.PView))
+	}
+
+	// 10. Whatever the generated type has no field for — the extension range
+	// above all. Copied, for the same reason the messages above are cloned.
+	if len(m.preserved.unknown) > 0 {
+		md.ProtoReflect().SetUnknown(
+			protoreflect.RawFields(append([]byte(nil), m.preserved.unknown...)))
+	}
+
 	return md, nil
 }
 
@@ -147,6 +231,17 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 	unionName := findUnionDescriptorName(fd)
 	builder := NewRecordMetaDataBuilder().setRecordsWithUnionName(fd, unionName)
 	builder.SetRecordsSourceProto(recordsSource)
+
+	// 2a. Subspace-key settings, BEFORE any index is added. Ordering is
+	// behavioural, not cosmetic: addIndexCommon consults the scheme to decide
+	// whether an index gets a counter-assigned key, so loading the settings
+	// afterwards would apply them to nothing.
+	if err := builder.loadSubspaceKeySettingsFromProto(md); err != nil {
+		return nil, err
+	}
+
+	// 2b. The unmodelled fields, carried verbatim for re-emission.
+	builder.preserved = preservedMetaDataFieldsFromProto(md)
 
 	// 3. Load indexes first (need them before record type association)
 	indexMap := make(map[string]*Index)
@@ -248,6 +343,67 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 	return builder.Build()
 }
 
+// loadSubspaceKeySettingsFromProto ports Java's
+// RecordMetaDataBuilder.loadSubspaceKeySettingsFromProto (:278-292) exactly,
+// including both halves of its pair validation.
+//
+// The pair is validated rather than tolerated because either half alone is
+// ambiguous in a way that decides on-disk key assignment. A counter with the
+// flag clear would be read as "name-based, and here is a number nobody uses";
+// the flag set with no counter would restart assignment from 0 and hand a new
+// index a key an existing one already owns. Java refuses both, so metadata Go
+// accepted leniently would be metadata Java cannot load — a one-way door.
+//
+// The counter takes the MAX of what the caller already set and what the proto
+// carries, and the flag is only adopted when the caller has not already enabled
+// it: Java's comment is "User might have set the counter already", and the
+// asymmetry means loading can raise the counter but never lower it.
+func (b *RecordMetaDataBuilder) loadSubspaceKeySettingsFromProto(md *gen.MetaData) error {
+	hasCounter := md.SubspaceKeyCounter != nil
+	usesCounter := md.GetUsesSubspaceKeyCounter()
+	if hasCounter && !usesCounter {
+		return &MetaDataError{
+			Message: "subspaceKeyCounter is set but usesSubspaceKeyCounter is not set in the meta-data proto",
+		}
+	}
+	if usesCounter && !hasCounter {
+		return &MetaDataError{
+			Message: "usesSubspaceKeyCounter is set but subspaceKeyCounter is not set in the meta-data proto",
+		}
+	}
+	if !b.counterBasedSubspaceKeys {
+		// Only read from the proto if the caller has not already enabled it.
+		b.counterBasedSubspaceKeys = usesCounter
+	}
+	if c := md.GetSubspaceKeyCounter(); c > b.subspaceKeyCounter {
+		b.subspaceKeyCounter = c
+	}
+	return nil
+}
+
+// preservedMetaDataFieldsFromProto captures the proto fields this port does not
+// model, cloned so that later mutation of the caller's proto cannot reach into
+// the built metadata. See preservedMetaDataFields.
+func preservedMetaDataFieldsFromProto(md *gen.MetaData) preservedMetaDataFields {
+	var p preservedMetaDataFields
+	for _, jt := range md.JoinedRecordTypes {
+		p.joinedRecordTypes = append(p.joinedRecordTypes, proto.Clone(jt).(*gen.JoinedRecordType))
+	}
+	for _, ut := range md.UnnestedRecordTypes {
+		p.unnestedRecordTypes = append(p.unnestedRecordTypes, proto.Clone(ut).(*gen.UnnestedRecordType))
+	}
+	for _, fn := range md.UserDefinedFunctions {
+		p.userDefinedFunctions = append(p.userDefinedFunctions, proto.Clone(fn).(*gen.PUserDefinedFunction))
+	}
+	for _, vw := range md.Views {
+		p.views = append(p.views, proto.Clone(vw).(*gen.PView))
+	}
+	if u := md.ProtoReflect().GetUnknown(); len(u) > 0 {
+		p.unknown = append([]byte(nil), u...)
+	}
+	return p
+}
+
 // buildIndexRecordTypeMap returns a map of index name → record type names.
 // Universal indexes are NOT included (they have no record type association).
 func (m *RecordMetaData) buildIndexRecordTypeMap() map[string][]string {
@@ -334,6 +490,15 @@ func indexFromProto(p *gen.Index) (*Index, error) {
 	if idx.subspaceKey == nil {
 		idx.subspaceKey = idx.Name // Default
 	}
+	// EVERY index loaded from proto has an explicit subspace key, whether the
+	// proto carried one or the name was defaulted in just above. Java sets the
+	// bit unconditionally at the same point (Index.java:227), and the
+	// unconditional part is what makes a round-trip safe: the builder's
+	// counter-based assignment skips indexes whose key is explicit, so
+	// reloading a counter-keyed metadata must not re-number the indexes it just
+	// read. Setting this only when the proto carried a key would re-number every
+	// index that had defaulted to its name — silently moving live data.
+	idx.useExplicitSubspaceKey = true
 
 	if p.LastModifiedVersion != nil {
 		idx.LastModifiedVersion = int(p.GetLastModifiedVersion())

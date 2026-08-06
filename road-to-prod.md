@@ -82,7 +82,7 @@ stays open as a booked item, not a tier gate. Two items:
   been given against the band it declares) is the axis the old gate could not see.
   *Found and fixed while verifying this paragraph:* `nightly-factory.yml`'s two jobs still carried
   the old inlined band and made master red against #556's new gate — see "Landed since the audit".
-- **Index candidacy is opt-OUT in Go where Java is opt-IN (CQ-46, `TODO.md:10825`, open).** The
+- **Index candidacy is opt-OUT in Go where Java is opt-IN (CQ-46 in `TODO.md`, open).** The
   07-17 nightly-stress failure was root-caused: `tryExistsFlatMap` matched candidates by
   first-column NAME with no index-type check, so a SUM aggregate index was built into a
   record-fetching scan; `getEntryPrimaryKey` returns an empty tuple for the short aggregate entry
@@ -108,7 +108,7 @@ because an unguarded count in a status doc is a claim with a shelf life:
 | SQL corpus coverage | **342 scenarios · 2740 cases · 2401 supported (87.6%)**, 109 unsupported-feature pins, 230 error-path pins | **Yes** — `TestSQLCoverageUpToDate` regenerates `SQL_COVERAGE.md`; `FEATURE_MATRIX.md` carries the same generated totals |
 | Java yamsql corpus (RFC-201, NEW since the audit) | **238** files vendored · **32** pass · **0** fail · **206** on the skip ledger · **487** asserted queries | **Yes** — `pinnedLedger` + `pinnedFileTotal` + `pinnedAssignmentDigest` in `pkg/relational/conformance/javacorpus/pinned_ledger_test.go` |
 | Generation factory corpus (NEW, #555) | **5000** scenarios · **20000** tests · **4952** feature vectors; blessings **4469 `metamorphic` + 531 `metamorphic-tlp-only`**, labeled in every header | **Yes** — componentwise census ratchet over scenario/test totals and each feature vector, plus per-scenario authority keyed by dedup key; `ByBlessing` is report-only (`factorycorpus/census_baseline.json`) |
-| `.Field`-decides ratchet (RFC-197) | **53** sites, per-bucket totals gate-checked; allowlist empty and never used | **Yes** — `TestFieldNameNeverDecides` + `TestFieldDebtBucketsArePartition` |
+| `.Field`-decides ratchet (RFC-197) | **53** sites, per-bucket totals gate-checked | **Yes** — `TestFieldNameNeverDecides` + `TestFieldDebtBucketsArePartition`, and `TestStatusPageQuotesTheLiveFieldDebt` for the numbers ON THIS PAGE |
 
 The first four run per-PR. Both former P0s of the client prod-readiness RFC are verified CLOSED in
 code: cluster-file rotation (`pkg/fdbgo/client/database.go:614` re-reads the file when the
@@ -159,22 +159,31 @@ entries mean the same query returns different rows or different errors on the tw
 |---|---|---|---|---|
 | B1 | Nightly safety nets were fake-green (window gates anchored to cron hours GitHub dispatches 2-4h late; 12 fake-green stress nights; rowdiff window unreachable by construction; oracles never ran) | Unknown-risk factory | S → M | **DONE — confirmed genuinely green 2026-08-02 and 08-03 (reconcile runs 30744450066, 30814146026, all eleven nets artifact-backed inside limits).** Detection merged (#523); the window shape fixed and merged (#556). #523 gave every windowed job a heartbeat and made the reconciler fail on silence — which then correctly exposed that three fuzz lanes had never recorded one. #556 found the cause was the band's shape, not the lanes (a non-wrapping band calling 18:00–24:00 "daytime"), fixed it across all five nets, and published the honest history: **107 of 177 scheduled runs were fake-green**. Stress 07-17 root-caused (see Tier 1, CQ-46); binding-stress 0/50 root-caused and fixed 2026-08-05 (CQ-47) |
 | B2 | No read-your-writes in explicit transactions; SELECTs take no read locks → silent lost updates | Wrong data | L | **DONE — merged 2026-08-04 (#607, `d6f635073`), Tier 2 confirmed.** RFC-198 all five phases; joint Graefe+Torvalds lap ACK'd; 1M stress clean; the OQ-1 GRV-cache span survived a C++-client + Torvalds design review (fence reshape) and fifteen codex rounds, every finding folded before merge |
-| B3 | RFC-195: cost estimates contradict proven cardinality bounds; comparator uses a private cardinality walk | Wrong plans (perf), not wrong rows | M | **DONE, merged (#547.)** `rfcs/195-cost-must-not-contradict-proof.md:3` — "ACCEPTED, revision 3 … implemented". Seven shapes fixed in the end, not six; zero exclusions and no mechanism to add one (`cardinality_cost_bound_test.go:36-45`). **Residual: CQ-30 (`TODO.md:10294`, open)** — criterion 2's data-access maxima are still forked; held visible by a standing test |
+| B3 | RFC-195: cost estimates contradict proven cardinality bounds; comparator uses a private cardinality walk | Wrong plans (perf), not wrong rows | M | **DONE, merged (#547.)** `rfcs/195-cost-must-not-contradict-proof.md:3` — "ACCEPTED, revision 3 … implemented". Seven shapes fixed in the end, not six; zero exclusions and no mechanism to add one (`cardinality_cost_bound_test.go:36-45`). **Residual: CQ-30 in `TODO.md`, open** — criterion 2's data-access maxima are still forked; held visible by a standing test |
 | B4 | RFC-197 identity migration residual (see per-bucket table) | Plan/decline-direction only; wrong-rows channels closed | M | Active; ratchet-enforced; **68 at inception → 53 now** |
 | B5 | WS-N Phase D: metadata re-derived by name instead of flowing from the type (~347 UnknownType mints repo-wide; three named guessers) | Wrong client VALUES on cross-leg same-name-different-type | L | Booked; gates the typed-row-representation work |
 | B6 | Documentation authority contradictory/stale | Trust/decision risk, not code | S | **This revision.** Authority headers added to `PRODUCTION_READINESS.md` and `rfcs/prod-readiness-go-client.md`; stale TODO entries fixed; `TestProductionStatusAuthority` added so the redirects cannot silently rot |
 
-### B4 residual, per bucket — MEASURED 2026-08-06 at `cb9bc5225`
+### B4 residual, per bucket — MEASURED at `041838856`
 
 These are the gate-enforced group headers in `pkg/docscheck/field_name_decision_test.go`, which
 `TestFieldDebtBucketsArePartition` checks against the entries they advertise. The buckets are a
-partition, so they sum to the list: **53**. Re-read with
-`go test ./pkg/docscheck -run TestFieldDebtBucketsArePartition -v`; the gate is the authority and
-this table is a dated point measurement.
+partition, so they sum to the list: **53**.
+
+**The numbers in this table and the totals quoted around it are now gate-checked ON THIS PAGE**
+(`TestStatusPageQuotesTheLiveFieldDebt`). They were not before, and the guarantee column above
+said they were: the two ratchet tests check the debt list against ITSELF — entries against group
+headers, headers against entries — and neither one reads this file. So the quote could drift from
+its source, and it had. This table said `boundary 1` / total **52** while the list held
+`boundary 2` / **53**; the second `boundary` entry arrived with `#601` (RFC-204 struct types,
+`protoFieldByName` learning the escaped spelling) after the `a1d281a63` measurement this section
+was written against, and nothing existed to notice. The figure being stale was survivable. The
+figure being stale *under a column reading "drift-guarded: Yes"* is the fake-green shape B1 was
+about, one level up and in the page an adopter is handed first.
 
 | Bucket | Audit-day | Now | Wrong rows reachable in prod? |
 |---|---:|---:|---|
-| boundary | 0 | **2** | No. Not a regression: the call-boundary taint made sites visible that were always there (a name handed to a helper as a plain string parameter). Reporting the bucket migrated while the walk could not reach one of its members is the false green the pass existed to end |
+| boundary | 0 | **2** | No. Not a regression: the call-boundary taint made a site visible that was always there (a name handed to a helper as a plain string parameter). Reporting the bucket migrated while the walk could not reach one of its members is the false green the pass existed to end. It rose 1 → 2 for a SECOND spelling attempt inside that same nested descent, not a second site; both retire on the same ordinal resolution |
 | escape | 0 | **0** | Migrated (found + fixed a live wrong-type defect on the way) |
 | contract | 11 | **16** | Not alone — single naming authorities. The four newly-visible entries are the group-by output name's CONSUMERS, laundered through one helper; the bucket had listed eleven producers and not one consumer, and a migration plan written against producers alone cannot close it |
 | dotted | 6 | **14** | The WRITERS are resolved; what remains are READERS that decline, each probe-pinned, plus five newly-visible MINTs |
@@ -189,40 +198,72 @@ ratchet that has stopped looking.
 
 *Refuted while verifying:* the previous revision's "68 at inception → 38" and its `dotted 6 /
 translator 17` cells were audit-day figures presented as current. Measured trajectory of the list:
-**68** at inception (#520) → **41** (#527/#528/#529) → **54** (#544) → **52** → **53** (HEAD,
-2026-08-06). More consequentially, the previous revision's sequencing said the remaining ratchet
-was the boundary/contract tail. **It is not:** `dotted` (14) and `translator` (15) are the two
-largest buckets and together are 55% of the list.
-
-*Also refuted, in the Sequence section below rather than here:* the RFC-197 tail's step named
-**CQ-68** as "the largest block". CQ-68 is not an RFC-197 item at all — it is the RFC-200 residue
-(94 FlatMap result values that are a bare untyped QOV), and CQ-79's entry explicitly disowns the
-ownership ("**Checked and NOT owned by CQ-68**, which is a different axis"). The tail's largest
-blocks are the two buckets named directly above. Corrected in place.
+**68** at inception (#520) → **41** (#527/#528/#529) → **54** (#544) → **52** (#556) → **53** (HEAD). More
+consequentially, the previous revision's sequencing said the remaining ratchet was the
+boundary/contract tail. **It is not:** `dotted` (14) and `translator` (15) are the two largest
+buckets and together are 56% of the list.
 
 Two further corrections to the migration's bookkeeping, both found by reading the ratchet against
 `TODO.md`:
 
-- **CQ-52 is not done.** #540 landed the PROJECTION channel only; `TODO.md:11009` is still
-  unchecked, and the live residual is explicit in the debt entries (`cascades_translator.go:5811`
-  and `:5813` "retire when the remaining `LogicalProject` producers carry `ProjectionRefs`";
-  `:6139`/`:6171` "retires when the last caller stops slicing a rendered name"). The previous
-  revision's "CQ-52 retires four translator sites" arithmetic no longer holds — the call-boundary
-  taint changed what those four sites are.
-- **CQ-53 is marked done but has a surviving producer.** `TODO.md:11111` closes it as subsumed by
+- **CQ-52 is not done, but its residual is not what this page said.** #540 landed the PROJECTION
+  channel; the parsed channels (ORDER BY keys, GROUP BY keys, aggregate operands) followed. The
+  four debt keys this page cited (`cascades_translator.go:5742`/`:5744`/`:6070`/`:6102`) NO LONGER
+  EXIST — the surviving entries carrying those reason strings are `:5811`, `:5813`, `:6139`,
+  `:6171`. More importantly the framing was wrong: the residual is **one behaviour decision**, not
+  four line-keyed sites. `cascades_translator.go:6218-6237` states it and deliberately leaves it
+  open — *should a star-projected body column be leg-addressable at all?* The star-body
+  normalization mints output labels with no parse tree behind them, so their absent segment triple
+  is STRUCTURAL and permanent; the remaining producers are machinery mints whose names are
+  aggregate renderings (`MAX(E.SALARY)`), where a dot is deliberately not a qualifier. **STOPPED on
+  an owner decision** — but NOT because Java is silent, which an earlier draft of this bullet
+  claimed. Java *does* have projection outputs carrying no `Identifier`: `Expression.name` is an
+  `Optional<Identifier>` (`Expression.java:100-113`) and `Expression.ofUnnamed`
+  (`:305-322`) mints empty ones throughout. Its answer to those is that they are **not
+  name-resolvable at all** — `SemanticAnalyzer.lookup` skips an attribute with no name outright
+  (`SemanticAnalyzer.java:459-461`), never matching it positionally or through a synthesized
+  string. What is genuinely Go-side is the *re-split*: Java never re-parses a dotted string
+  (identity is `name` + `List<String> qualifier`, `Identifier.java:34-58`, built segment-by-segment
+  at `IdentifierVisitor.java:56-64`, joined only for display at `:61-63`), so it has no analogue of
+  the arm that would answer the question by accident. Caveat recorded
+  at `:6239-6250`: nothing instruments the split population, so the "110 → 0" figures are scratch
+  measurements, not instrument readings.
+- **CQ-53 is marked done but has a surviving producer.** `TODO.md`'s CQ-53 closes it as subsumed by
   CQ-67 (#549) "carrying no separate remainder", while
-  `pkg/docscheck/field_name_decision_test.go:454` pins `cascades_translator.go:3667` as "dotted:
+  `pkg/docscheck/field_name_decision_test.go:447` pins `cascades_translator.go:3598` as "dotted:
   MINT. **CQ-53's surviving producer**" — and the mint is live at that line, on the unnest-merge
   path. Its NLJ twin was deleted; this one "dies with the same work", and that work was owned by
   nothing. **This is a real gap between a closed checkbox and the gate.** Now booked as **CQ-79**,
   and deliberately NOT folded into CQ-68 — CQ-68 is a different axis (94 bare untyped QOVs, not a
   display name manufactured into a row key), and folding them would let either close while the
-  other's residue survived. Re-verified at `a1d281a63`: the pin stands verbatim.
+  other's residue survived. Re-verified at `a1d281a63`: the pin stands verbatim. **Re-verified
+  again at `041838856`: the entry has moved to `cascades_translator.go:3667` (test line `:454`),
+  and the item's `S/M` sizing is REFUTED — see below.**
 
 RFC-197 itself is **IN IMPLEMENTATION** (`rfcs/197-column-identity-is-an-ordinal.md:3`): step 0 and
-items 2, 3, 5 and 6 have landed; the remaining items are unstarted and still gated. **CQ-68**
-(`TODO.md:13110`, open, gated on CQ-67) is the largest addressable block: 94 FlatMap result values
-are a bare untyped QOV where Java types unconditionally. It carries a REOPEN TRIGGER on CQ-67.
+items 2, 3, 5 and 6 have landed; the remaining items are unstarted and still gated.
+
+### The RFC-197 tail, re-verified at `041838856` — none of the four is startable as a local edit
+
+The sequence below (item 4) booked CQ-52's producers, then CQ-51 and CQ-79, then CQ-68. Verifying
+each against the tree found **no genuinely-open local work in any of them**; every one is either an
+owner decision or gated on a Graefe-reviewed RFC. Each item's TODO entry now carries the full
+measurement. In summary:
+
+| Item | Verified state at `041838856` |
+|---|---|
+| CQ-52 | **STOP — owner behaviour decision.** Parsed channels are done; residual is the star-body leg-addressability question at `cascades_translator.go:6218-6237`, plus structural mints that correctly carry no segments. Its two "migratable" producers are not: their names come from `buildPostAggregateProjection`, where a dot is deliberately not a qualifier |
+| CQ-51 | **STOP — Graefe-gated RFC**, but the diagnosis is corrected and the RFC is now a PORT, not a design. Java DOES separate "constraint widened" from "re-push required" (`CascadesRule.java:66-77`, `CascadesPlanner.java:891-908`, `ConstraintsMap.java:246-261`), and Go already contains half of it: `expressions/constraints_map.go:114` `IsExploredForAttributes` is a faithful port whose only callers are its own tests. `ConstraintDependencies` appears nowhere in `pkg/` |
+| CQ-79 | **BLOCKED, and the `S/M` sizing is refuted.** The ordinal twin already exists (`cascades_translator.go:3849`) and is already taken wherever the seed is windowed; every surviving call of the name mint sits in the `!seedWindowed` arm, whose merged row is name-keyed BY CONSTRUCTION. Converting the mint alone strands the read (`:3736-3738`). The work is lifting `unnestExistsSeedSafe`'s scope gate, which `:3841-3843` couples to the executor's below-FOD hoist — the SAME `bindMergedOuterLegs` widening CQ-68 owns. CQ-79 and CQ-68 are two axes of one piece of work |
+| CQ-68 | **STOP — Graefe-gated RFC.** Premise strengthens: the count is **102**, not 94 (`sqldriver/embedded_fdb_test.go:253-266`; denominator 572, ACCEPT 160, merge still hard 0). But "type it at the FlatMap" is the wrong port — Java's `RecordQueryFlatMapPlan` also flows `selectExpression.getResultValue()` verbatim (`ImplementNestedLoopJoinRule.java:187,201,214`); the typing happens upstream at `GraphExpansion.java:401`, and is structural (`QuantifiedObjectValue.of` has no untyped overload) |
+
+**One defect from this pass IS fixed**, because it would have made CQ-68 unfalsifiable: the census
+witness that separates typed from untyped result values printed `typed=%t` from `Typ != nil`, which
+no constructible QOV can make false (`NewQuantifiedObjectValue` stamps `UnknownType`;
+`NewQuantifiedObjectValueOfType` degrades nil to it; `UnknownType` is a non-nil `*PrimitiveType`).
+It reported `typed=true` for all 102, so a typing sweep would have read as complete on the day it
+started with the whole population untouched. Now `quantifiedObjectValueIsTyped`, pinned in both
+directions by `TestFoldStep1Census_BareQOVWitnessSeparatesTypedFromUntyped`.
 
 ## Watch-list — pinned divergences a prod user must be told about
 
@@ -728,7 +769,7 @@ Booked by THIS revision, from defects the verification pass found:
   spellings Java rejects, with wire compat measured intact. This was a code/test lap, deliberately
   not done in the docs-only pass that found it; each entry now cites its pin so the next fixer does
   not re-derive which and why.
-- **CQ-79** — CQ-53's surviving producer mint (`cascades_translator.go:3667`) is owned by no open
+- **CQ-79** — CQ-53's surviving producer mint (`cascades_translator.go:3598`) is owned by no open
   item: CQ-53 is marked `[x]` as carrying no remainder while the ratchet pins the mint as "CQ-53's
   surviving producer". Checked and NOT owned by CQ-68, which is a different axis (untyped QOV, not a
   manufactured row key). Re-verified at `a1d281a63`: the pin stands verbatim.
@@ -859,14 +900,15 @@ rather than what it *held*, leaking charge for the statement's life.
 3. **~~CQ-80~~ DONE** — every watch-list entry now carries the committed test the section contract
    claims for it (entries 2, 4, 8 and 12 closed; 2 and 12 REFUTED by the measurement). The list is
    handable to an adopter.
-4. **RFC-197 tail**, sequenced behind the machinery each stop waits on: CQ-52's remaining producers,
-   then CQ-51 and CQ-79 (the CQ-53 mint). All review-gated. **The tail's largest blocks are the
-   `dotted` (14) and `translator` (15) buckets** — see the B4 per-bucket table. This step used to
-   end "then CQ-68 (the largest block)"; that was wrong twice over. CQ-68 names no RFC-197 item —
-   it is the RFC-200 residue, 94 FlatMap result values that are a bare untyped QOV — and CQ-79's
-   entry explicitly disowns it as a different axis. Sequencing the RFC-197 tail off CQ-68 would
-   have parked the two buckets that are actually 55% of the list behind an item that retires none
-   of them.
+4. **RFC-197 tail — RE-SEQUENCED, because verification refuted the old order.** It read "CQ-52's
+   remaining producers, then CQ-51 and CQ-79 (the CQ-53 mint), then CQ-68". CQ-52 has no remaining
+   migratable producers, and CQ-79 is not a local mint rewrite — it is one axis of CQ-68's executor
+   widening. The real order is: **(a) an owner ruling on CQ-52's star-body leg-addressability
+   question** (one decision, blocks nothing else); **(b) CQ-51's RFC**, which is now a bounded port
+   of `getConstraintDependencies` + `ReExploreExpression` onto Go's already-present
+   `IsExploredForAttributes`, and which unblocks the value-keyed `ReferencedFields` conversion;
+   **(c) CQ-68 and CQ-79 TOGETHER**, as the two axes of the `bindMergedOuterLegs` widening. All
+   review-gated; see the Tier-3 table above for the per-item measurement.
 5. **CQ-46**, index candidacy inverted to opt-in per maintainer factory, with the adjacent opt-out
    leaks measured for reachability. Query-engine gated.
 6. **CQ-75 — DONE via RFC-208.** `v IN (-0.0, 0.0)` now returns both signs in either element order;

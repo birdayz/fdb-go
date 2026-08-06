@@ -4,6 +4,7 @@ go_library(
     name = "types",
     srcs = [
         "clientdbinfo_generated.go",
+        "clienttagthrottlelimits_generated.go",
         "commitid_generated.go",
         "commitproxyinterface_generated.go",
         "committransactionref_generated.go",
@@ -42,6 +43,8 @@ go_library(
         "storageserverinterface_generated.go",
         "tenantinfo_generated.go",
         "tenantmapentry_generated.go",
+        "transactiontagcount_generated.go",
+        "transactiontagthrottle_generated.go",
         "waitmetricsrequest_generated.go",
         "watchvaluereply_generated.go",
         "watchvaluerequest_generated.go",

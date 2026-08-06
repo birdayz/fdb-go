@@ -10381,58 +10381,16 @@ to nothing.)
   comparison went wrong on this branch (`PushValueThroughFetch` per RFC-179 F12,
   `correlatedInnerField`, `correlatedFieldOf`, `fieldValueAliasAndCol`,
   `buriedLegOrdinalLayout`, `rebaseOuterLegValue`, and the unique-key proof), each
-  found by a different route.
-
-  **THIS ITEM IS THE UMBRELLA, AND IT CLOSES LAST.** It is not a unit of work —
-  it is the condition that every RFC-197 bucket has been retired. Do not pick it
-  up directly; pick up the bucket items (CQ-51, CQ-52, CQ-79, and the dotted /
-  translator tail), and this box goes when the ratchet reads zero.
-
-  **Measurement — the live ratchet, not a survey.** The item used to cite "107
-  non-test `.Field` reads outside the values package, 98 of them DECISION-class"
-  with a per-file breakdown. That was a hand survey taken in 2026-06, it named no
-  instrument, nothing could re-derive it, and it is now dead: it counted READS,
-  the gate counts DECISIONS, and no run of anything reproduces either figure. It
-  is deleted rather than updated, because an updated number with no instrument
-  behind it would rot the same way. The live measurement, re-read on demand with
-
-      go test ./pkg/docscheck -run TestFieldDebtBucketsArePartition -v
-
-  stood at **53** on 2026-08-06 (`cb9bc5225`): boundary 2, contract 16, dotted
-  14, harness 1, name-keyed 5, translator 15. `TestFieldNameNeverDecides` and
-  `TestFieldDebtBucketsArePartition` are the authority; this line is a dated
-  point measurement and the gate is not.
-
-  **ENFORCEMENT ALREADY EXISTS AND HAS BEEN GREEN SINCE IT LANDED.** The item's
-  own ask — "a `pkg/docscheck`-style build check that `.Field` cannot feed a
-  comparison outside an allowlisted display site" — was built and merged as
-  `f9b3c129c` ("Make an eighth FieldValue.Field bug fail the build", #520,
-  2026-07-29). It is not an open ask; it is the instrument the rest of this
-  workstream is measured by. What remains open is the DEBT the gate records, not
-  the gate.
-
-  **THE ALLOWLIST HAS NEVER BEEN USED, AND THAT IS THE STRONGEST SINGLE FACT
-  ABOUT THIS WORKSTREAM.** `allowedFieldDecisions` has been the empty literal
-  `[]fieldDecisionSite{}` in every one of the 34 commits that have touched
-  `pkg/docscheck/field_name_decision_test.go`, from the commit that introduced it
-  to HEAD. Verify with:
-
-      for c in (git log --format=%h --follow -- pkg/docscheck/field_name_decision_test.go)
-          git show $c:pkg/docscheck/field_name_decision_test.go | grep -c 'allowedFieldDecisions = \[\]fieldDecisionSite{}'
-      end
-
-  Not one of the original 68 sites was exempted. Every one was either FIXED or
-  recorded as debt carrying its decision COUNT and a reason answering "why can
-  this not be an identity today" — and the count arithmetic is itself checked, so
-  a half-fixed site cannot hide behind a stale entry. The escape hatch was built,
-  documented, and never taken. No document said this before; it is the fact that
-  distinguishes a real migration from a ratchet that has been quietly relaxed.
-
-  `FieldValue.Resolved` (the construction-time
+  found by a different route. Measured: **107 non-test `.Field` reads outside the
+  values package, 98 of them DECISION-class**, and roughly half live in the SQL
+  translator/generator layer (`cascades_translator.go` 30, `cascades_generator.go`
+  11, `logical_predicate.go` 8). `FieldValue.Resolved` (the construction-time
   resolved accessor, Java's `ResolvedAccessor`) and `SemanticEqualsUnderAliasMap`
   already exist and are the correct inputs. CockroachDB assigns a column id during
   name resolution and the optimizer never sees a name again;
-  `ColumnMeta.Alias` is documented as display-only.
+  `ColumnMeta.Alias` is documented as display-only. **Enforcement is the point** —
+  a `pkg/docscheck`-style build check that `.Field` cannot feed a comparison
+  outside an allowlisted display site, or an eighth instance is certain.
   (This item previously cited "RFC-193 §5.1". **That document was never
   committed** — no such file exists in the repo or its history, so the citation
   pointed at nothing. The measurements above are the actual specification; they
@@ -11006,20 +10964,72 @@ None is speculative: each was re-verified against the tree before booking.
   separates "constraint widened" from "re-push required", the separation is the
   port. Planner machinery, so it takes a Graefe-gated RFC + lap of its own.
 
+  **JAVA READ, AT `041838856`. The answer is the branch this item treated as
+  unlikely: Java DOES separate them, and Go already contains half the port as
+  DEAD CODE.** The item's measurements and its description of the coupling are
+  all still true; its implied conclusion — that the decoupling is machinery to be
+  designed — is refuted. Java's mechanism is three pieces:
+  - `CascadesRule.java:66-77` — every rule carries
+    `Set<PlannerConstraint<?>> requirementDependencies`, **empty by default**;
+    exactly **24** declaration sites declare one, all through the 2-arg
+    constructor (`getConstraintDependencies` is never overridden anywhere in the
+    tree): 13 `PushRequestedOrdering*`, 4 `PushReferencedFields*`, 6 `Implement*`
+    (`Unique`, `InUnion`, `StreamingAggregation`, `InJoin`, `NestedLoopJoin`,
+    `DistinctUnion`), and `AbstractDataAccessRule:122` — the only two-constraint
+    set, inherited by its two concrete subclasses for 25 concrete rule classes.
+  - `CascadesPlanner.java:891-908` — `ReExploreExpression.shouldPushRule` returns
+    `group.isFullyExploring() || !group.isExploredForAttributes(rule.getConstraintDependencies())`,
+    against `ExploreExpression.shouldPushRule`'s unconditional `true` (`:929-932`).
+  - `ConstraintsMap.java:246-261` — `isExploredForAttributes` compares each
+    interesting key's `lastUpdatedTick` against `watermarkCommittedTick`.
+  Routing at `CascadesPlanner.java:528-538` is on a `forceExploration` flag:
+  `true` → `ExploreExpression`, `false` → `ReExploreExpression`. A fresh yield
+  passes `true` (`:1073`, over `ruleCall.getNewExploratoryExpressions()`). A
+  constraint push does NOT push a task variant directly — `:1088-1090` pushes
+  `ExploreGroup` for each reference whose requirements moved, and only for ones
+  already explored (`!reference.hasNeverBeenExplored()`); it is that group task's
+  member loop that re-enters with `forceExploration=false`, which is where
+  `ReExploreExpression` comes from. Net effect: a constraint-driven round
+  re-fires only the rules that DECLARED a dependency on the constraint that moved
+  — an empty dependency set means not pushed at all after first exploration.
+
+  **Go's state, measured:** `expressions/constraints_map.go:114`
+  `IsExploredForAttributes` is already a faithful port of
+  `ConstraintsMap.java:246` — and its ONLY callers are
+  `expressions/constraints_map_test.go:49,58`. It is dead in production.
+  `grep -rn ConstraintDependencies pkg/` returns ZERO hits, and
+  `unified_tasks.go:230-286` pushes every matching rule on every round with no
+  constraint filter. So the port is: (1) add a constraint-dependency declaration
+  to the rule interfaces, empty by default, declared where Java declares it;
+  (2) split the explore task into forced and re-explore variants, the latter gated
+  on the already-ported `IsExploredForAttributes`; (3) route yields to forced and
+  `ExploreGroupTask`'s member loops to re-explore.
+
+  Also correct in passing: `Set` is now `planner_constraint.go:76-94` and
+  `combineForKey` `:107-124` (the booked `:80-95` names neither), and the cap that
+  fired is `ErrPlannerRoundCapHit` (`unified_tasks.go:106-109`, `maxRoundsPerRef
+  = 100`), not `ErrPlannerCapHit`. The reverted experiment was never committed —
+  the measurements survive only in `c2ad0f445`'s message and the debt entry's
+  reason string, which is the argument for landing the port with the budget pins
+  re-measured rather than re-deriving the numbers from memory.
+
+  **STILL a Graefe-gated RFC + lap** — it moves two ±2% budget pins
+  (`partition_select_interning_baseline_test.go:291`,
+  `ordinal_star_planning_budget_test.go:112`) and the round cap. But the RFC
+  RECORDS a port and is graded against `CascadesPlanner.java:891-908` /
+  `CascadesRule.java:66-77` / `ConstraintsMap.java:246-261`; it does not design a
+  mechanism.
+
 - [ ] **CQ-52 (MED, S/M, RFC-197 follow-on) — the parser HAS the qualifier/leaf
   segments, joins them into one string, and the resolver splits them back
   apart.** · **PARTIALLY LANDED (#540, `f50cee43e`) — STAYS OPEN.**
   **Status correction, 2026-08-01.** #540 landed the **PROJECTION channel only**:
   `LogicalProject` now carries the segments through to the bakers, and the ratchet
   learned to see through helpers. It did NOT close the item, and the commit did not
-  check this box. The live residual is named in the ratchet's own debt entries.
-  **Re-pointed 2026-08-06 at `cb9bc5225`; all four cited lines had drifted**
-  (`:5742`/`:5744`/`:6070`/`:6102` name nothing now). The live entries are
-  `cascades_translator.go:5811` and `:5813`, which retire "when the remaining
-  `LogicalProject` producers carry `ProjectionRefs`", and `:6139` and `:6171`,
-  which retire "when the last caller stops slicing a rendered name". Each pair is
-  the QUALIFIER and the LEAF half of ONE slice; they retire together, and citing
-  one half alone is how a half-closed conversion reads as closed.
+  check this box. The live residual is named in the ratchet's own debt entries —
+  `cascades_translator.go:5742` and `:5744` retire "when the remaining
+  `LogicalProject` producers carry `ProjectionRefs`"; `:6070` and `:6102` retire
+  "when the last caller stops slicing a rendered name".
   Also note the arithmetic in the sentence below is superseded: the call-boundary
   taint added in #540/#544 changed which sites are visible, so the `translator`
   bucket now stands at **15** (`pkg/docscheck/field_name_decision_test.go:462`),
@@ -11066,47 +11076,77 @@ None is speculative: each was re-verified against the tree before booking.
   a live defect once on the cluster-attribution path (see
   `cluster_ref_attribution_test.go`).
 
+  **RE-VERIFIED AT `041838856`. Far more has landed than the status text says, and
+  the residual is NOT four line-keyed sites — it is ONE BEHAVIOUR DECISION.**
+  - The four keys named above and in `road-to-prod.md` (`:5742`, `:5744`, `:6070`,
+    `:6102`) no longer exist. The surviving entries carrying those same reason
+    strings are `cascades_translator.go:5811`, `:5813`, `:6139`, `:6171`. (Two of
+    those reason strings still cross-reference the OLD keys `5742`/`6070`
+    internally.)
+  - The parsed channels are DONE. `logical.ColumnRef` (`logical/operators.go:287-292`)
+    and `LogicalProject.ProjectionRefs` (`:280`) carry the triple, minted only
+    through `ColumnRefFor` (`:311`), which reconciles the triple against the
+    rendered name and returns the ZERO value on mismatch — the invariant behind
+    "absent means unknown, never unqualified". Projection, nested projection,
+    GROUP BY keys and aggregate operands all take the segmented path.
+  - **Java confirms the direction unambiguously.** `Identifier.java:34-58` holds
+    `name` + `List<String> qualifier`, built segment-by-segment off the ANTLR
+    `FullId` in `IdentifierVisitor.java:56-64`; the join exists ONLY as
+    `toString` for error text (`Identifier.java:61-63`), and
+    `SemanticAnalyzer.lookup` (`:445-486`) compares whole `Identifier` objects
+    with structural `withQualifier`/`withoutQualifier`. There is no `split("\\.")`
+    or substring slice anywhere in Java's resolution path.
+  - **But the eight remaining `LogicalProject` producers that carry no refs are
+    NOT a closable list, and two of them are not "migratable" as a prior pass
+    classified them.** `plan_visitor.go:539` and `logical_builder.go:706` are the
+    post-sort strip projections, and their names are COPIED verbatim from
+    `buildPostAggregateProjection` (`logical_builder.go:509`) — aggregate
+    renderings like `MAX(E.SALARY)`, where `:526-533` DELIBERATELY aliases a
+    dotted rendering precisely so the dot is not read as a qualifier. Handing
+    those a segment triple would be inventing one, which
+    `cascades_translator.go:2517-2535` names as the forbidden move ("an invented
+    triple is trusted exactly like a real one, which is why the honest value is
+    the zero one"). The rest are machinery mints with pre-baked ordinals. So
+    `:5811`'s retirement condition as literally written — "when the remaining
+    `LogicalProject` producers carry `ProjectionRefs`" — is UNSATISFIABLE, and
+    should be reworded to name the structural class it must exclude.
+
+  **STOP — this item's remainder is an owner behaviour decision, stated in the
+  tree and deliberately left open.** `cascades_translator.go:6218-6237` (mirrored
+  at the producer, `:2517-2535`) asks: **should a star-projected body column be
+  leg-addressable at all?** The star-body normalization in `translateScan`
+  (`:2536`) mints output labels that have NO parse tree behind them, so an absent
+  triple there is STRUCTURAL and permanent. Those labels are bare by construction
+  today, so the class is not firing — but a quoted identifier carrying a dot is
+  legal SQL, and the re-split arm would answer the question BY ACCIDENT if it were
+  converted without the decision being made.
+
+  **Correction to an earlier draft of this paragraph, which said "Java gives no
+  guidance: it has no projection whose output labels lack an `Identifier`". That
+  is false.** `Expression.name` is an `Optional<Identifier>`
+  (`Expression.java:100-113`) and `Expression.ofUnnamed` (`:305-322`) mints empty
+  ones at roughly twenty in-tree call sites. Java's guidance is therefore
+  positive, not absent: an output with no name is **not name-resolvable** —
+  `SemanticAnalyzer.lookup` skips it before any comparison
+  (`SemanticAnalyzer.java:459-461`) rather than matching it positionally or
+  synthesizing a string for it. The part that really has no Java analogue is the
+  RE-SPLIT: Java's identity is `name` + `List<String> qualifier`
+  (`Identifier.java:34-58`), built segment-by-segment from the ANTLR `FullId`
+  (`IdentifierVisitor.java:56-64`) and joined only for display
+  (`Identifier.java:61-63`), so no dotted string is ever re-parsed and the
+  accidental-answer arm cannot exist there. The owner decision stands; its basis
+  is a Go-only normalization, not Java's silence.
+
+  One honest caveat recorded at `:6239-6250`: nothing instruments the split
+  population (the census beside these bakers counts qualifier MATCHES, never
+  splits), so the "110 → 3 → 0" figures quoted here and in `road-to-prod.md` are
+  scratch measurements, not instrument readings. If this item is resumed, an
+  actual counter is the first deliverable.
+
   Not query-engine machinery: no cost model, no rule, no executor contract. The
   segments already exist and are already correct; this is deleting a join and a
   split. Pin with a `"A.B"`-quoted-column-vs-`A.B`-qualified-reference pair that
   the joined representation cannot tell apart.
-
-  **PARKED OPEN QUESTION, and it is on this item's critical path — it was stated
-  at the code and named by no entry until now.** The fix above says "delete the
-  four re-splits", and that is not reachable for one class of carrier. The
-  question is stated in full at
-  `pkg/relational/core/query/cascades_translator.go:6205-6243` (the leg-window
-  re-split arm) and is repeated here because a decision parked only at a call
-  site is a decision nobody will be handed:
-
-  Every PARSED channel is already converted — projections, ORDER BY keys, GROUP
-  BY keys and aggregate operands all carry the parser's segment triple, and the
-  dotted re-split over them went to zero. What keeps the arm standing is the
-  UNCAPTURED carrier (`ColumnRef.Present` false), which `ProjectionRefs`' own
-  contract requires be read as "unknown", never as "unqualified". Some of those
-  producers are merely un-migrated. **One class never can be:** a projection
-  MACHINERY mint, whose names are BODY OUTPUT COLUMNS with no `FullId` anywhere
-  behind them (the star-body normalization in `translateScan`). There is no
-  segment count to capture there, so an absent triple is STRUCTURAL, and
-  "capturing" one would mean inventing it.
-
-  Those labels are BARE by construction today, so the class is not currently
-  firing — but a quoted identifier carrying a dot is legal SQL, and then the
-  behaviour is undecided: **should a star-projected body column be leg-addressable
-  at all?** If NOT, this arm must not answer for such a label. If SO, the
-  addressing belongs to the boundary schema's leg identities — which that
-  normalization already holds — and not to a dot in a label it constructed.
-  Converting the arm by guesswork would settle this silently, which is why it was
-  left standing.
-
-  **And nothing stands guard over the split population.** The census beside these
-  bakers counts qualifier MATCHES, never SPLITS, so a regrown splitter raises no
-  counter anywhere; the "110 → zero" figures quoted at the site are scratch
-  measurements, not instrument readings. So this item carries a second
-  deliverable beyond deleting the splits: either the behaviour decision above,
-  or an instrument that counts splits so the decision cannot be pre-empted by
-  drift. DONE for CQ-52 requires the question ANSWERED, not merely the migrated
-  channels converted.
 
 - [x] **CQ-53 (MED/L, M/L, executor-gated, query-engine review gate) — give the
   FlatMap inner binder Java's parent-chained per-alias bindings, and the
@@ -11997,74 +12037,8 @@ None is speculative: each was re-verified against the tree before booking.
   compile is that this consumer renders the label INTO a match key, and no
   render exit placed in `embedded` can reach a site that lives in `plans`.
 
-- [x] **CQ-56 (MED/S, S) — `NewFieldValueWithPinnedOrdinal` mints its FieldPath
-  with `Domain: unknown`, and the domain is derivable at both call sites.**
-  **DONE — and it had ALREADY SHIPPED when this box was re-examined on
-  2026-08-06. The entry, not the code, was stale.**
-
-  The fix landed in `3ec53d1ac` ("CQ-56 lands; CQ-55's true shape measured;
-  RFC-198 review-complete", #529, 2026-07-29) and the commit did not check this
-  box. Measured at `cb9bc5225`: `NewFieldValueWithPinnedOrdinal` had **zero
-  callers anywhere in the repo** — every site goes through
-  `NewFieldValueWithPinnedOrdinalInDomain`, and the token is derived by
-  `aggregateNativeOutputDomain`, which builds it from `aggregateNativeOutputName`
-  over the SAME `[keys..., calls...]` enumeration that names each slot, so a
-  slot's name and the layout signature containing it cannot drift.
-
-  It also did MORE than this entry scoped: **four** composition sites, not the
-  two named below — the projection bake, the aggregate-call bind, the group-key
-  bind, and the post-aggregate group-key rebase, which minted through the raw
-  `FieldPath` constructor and so never appeared as a
-  `NewFieldValueWithPinnedOrdinal` caller at all.
-
-  **The verification obligation is met, and re-confirmed by mutation on
-  2026-08-06** against `TestPinnedAggregateReferenceStatesTheLayoutItsOrdinal
-  Indexes` (`embedded/aggregate_output_slot_domain_test.go`), which asserts the
-  previously-unprobed dimension in BOTH directions:
-  - domain **unknown** → all four subcases RED ("pinned reference \"SUM(W)\"
-    carries domain(unknown)");
-  - domain **known but WRONG** (the source layout) → all four RED, and the
-    source-specific diagnostic fires ("That is the SOURCE table's layout").
-    A known-but-wrong token is strictly worse than none — it makes the
-    comparison the element exists to refuse SUCCEED — so both directions matter.
-
-  **Residue closed in this pass:** the domain-less constructor was still
-  *present* with zero callers, i.e. the last remaining route to mint a pinned
-  ordinal against an unstated row. It is deleted, and
-  `pkg/docscheck/pinned_ordinal_domain_test.go`
-  (`TestPinnedOrdinalAlwaysStatesItsDomain`) now fails the build on any
-  reintroduction — no allowlist, with a companion precision test pinning the
-  shapes that must stay LEGAL so the gate cannot become the thing that removes
-  the correct mint.
-
-  **The gate's FIRST version was too narrow, and the review lap found it.** It
-  asked about the PIN first — a literal `true` in the pin position — so two
-  shapes walked through: `NewFieldPathOfSingleInDomain(f, i, computedPin,
-  OrdinalDomain{})`, and any call whose empty domain arrived by VARIABLE
-  (`d := OrdinalDomain{}`, a package-level `var emptyDomain = OrdinalDomain{}`,
-  or `var d OrdinalDomain` — a zero value with no literal syntax at all). The
-  exemption for a computed pin rested on "a computed pin is paired with a
-  computed domain", which was an observation about the call sites that happened
-  to exist, stated as a property.
-
-  It now asks about the DOMAIN first and consults the pin only to EXEMPT: only a
-  literal `false` does. It also reaches any `...InDomain` constructor by name
-  suffix, taking the token as the last argument, so it fails closed on a
-  constructor nobody has written yet. Widening it immediately reported a real
-  mint the narrow version could not see (`values.go:440`) — which turned out to
-  be `NewFieldPathOfSingle`'s OWN body forwarding the token, the one structural
-  exemption, policed at its call sites instead and pinned in both directions
-  (the exempt body stays legal; a byte-identical wrapper under a new name is
-  caught). Mutation-checked in three independent directions — pin-first ordering
-  restored (3 fixtures red); variable resolution dropped (4 red); the exemption
-  repointed at another name (2 red, one in each direction). 15 caught fixtures,
-  10 legal.
-
-  **No census or pin population moved** — the change deletes a zero-caller
-  function and adds a test, so no production path is altered; re-measured to
-  confirm rather than argued.
-
-  *Original entry below, kept as the record of what was scoped.* The
+- [ ] **CQ-56 (MED/S, S) — `NewFieldValueWithPinnedOrdinal` mints its FieldPath
+  with `Domain: unknown`, and the domain is derivable at both call sites.** The
   ordinal domain is RFC-197 step 0's third element of identity, and the
   constructor that pins an ordinal is the one place it must not be blank.
 
@@ -12095,42 +12069,6 @@ None is speculative: each was re-verified against the tree before booking.
   `rule_push_filter_through_groupby.go` declines by NAME AMBIGUITY rather than
   resolving the reference by its recorded slot. With the domain minted, that
   refusal can become a decision.
-
-- [ ] **CQ-95 (MED/S, query-engine — needs its own RFC + Graefe ACK) — the
-  ambiguous-grouping-key decline's stated blocker EXPIRED when CQ-56 landed, and
-  nothing noticed for a week.** · S/M
-  `rule_push_filter_through_groupby.go`'s `rebindGroupKeyRefToInner` refuses to
-  rebind a pushed HAVING reference when two grouping keys answer to the same
-  accessor path — `GROUP BY o.k, i.k` renders both keys as `["K"]` because
-  `AccessorNamePath` stops at the QOV root. The refusal is CORRECT and must not
-  be removed by taking the first match: that is a wrong-rows read whenever the
-  reference denoted the other key. `buildGroupKeySet` refuses pushdown for the
-  whole GroupBy on the same shape.
-
-  Its comment justified declining with "the reference's recorded ordinal is not
-  usable as that identity while its domain is still unknown". **That premise is
-  now false.** CQ-56 (#529, `3ec53d1ac`) minted the domain: a post-aggregate
-  reference carries the aggregate's native output layout on its `FieldPath`,
-  derived from the same enumeration that names each slot, pinned in both
-  directions by `TestPinnedAggregateReferenceStatesTheLayoutItsOrdinalIndexes`.
-  The structural identity the decline says it needs EXISTS. The comment is
-  corrected in place to say so; the BEHAVIOUR is untouched.
-
-  **This is a missed optimization, not a correctness risk** — the decline leaves
-  the predicate a residual filter above the aggregate, which is correct rows by
-  the slower path. That is why it is booked rather than rushed.
-
-  **Why this is booked and not implemented in the pass that found it:** it is a
-  change to a Cascades rule's decision, which under this repo's standing gate
-  needs an RFC and a Graefe ACK before merge. That is an owner decision, not a
-  deferral of work anyone here could have done.
-
-  DONE = the rebind decides by `(ordinal, domain)` via `OrdinalIn` on both sides
-  instead of declining on name ambiguity, `buildGroupKeySet` keys by column
-  identity rather than by a path a SET collapses, and the `GROUP BY o.k, i.k
-  HAVING i.k > N` shape is pinned red→green — the predicate reaching the scan
-  with the RIGHT key, plus the negative case where the domains genuinely differ
-  and the decline must survive.
 
 - [ ] **CQ-57 (MED/S, S) — `rule_decorrelate_values`'s two Select rebuilds drop
   `quantifiersSwapped`, and whether that is CORRECT is a semantics question
@@ -12615,11 +12553,11 @@ None is speculative: each was re-verified against the tree before booking.
   pass. It is listed here because it is the same defect as this item (an untyped
   quantifier read as something it is not) and should be fixed with it.
 
-- [x] **CQ-64 (S/M, test-fidelity residue: files asserting rows through a
-  name-keyed projection) — convert the remaining `executor.RowValue(r)` row
-  renderings to a positional renderer.** DONE. Not a product defect: the row
-  VALUES those files asserted were correct. What was missing is that the
-  assertions could not see the failure they exist to police.
+- [ ] **CQ-64 (S/M, test-fidelity residue: 14 files still assert rows through a
+  name-keyed projection) — convert the remaining `unnestSprint(executor.RowValue(r))`
+  row renderings to a positional renderer.** Not a product defect: the row VALUES
+  those files assert are correct. What is missing is that the assertions cannot see
+  the failure they exist to police.
 
   `executor.RowValue` projects a PositionalRow through `positionalToMap` (see the
   lossiness note at its definition), which loses slot ORDER and collapses duplicate
@@ -12630,159 +12568,30 @@ None is speculative: each was re-verified against the tree before booking.
   `TestPositionalRenderersSeeAPermutation` in pkg/relational/sqldriver pins that
   blindness as a measured fact.
 
-  **What was converted.** All 15 named files, plus 8 literals in three files the
-  inventory had missed (struct_multisegment_unnest 3,
-  merged_leg_reader_shape_fixture 3, merged_leg_binding_live_shape 2).
-  **573 expectations**, from **196 distinct rows**.
+  Two rounds are already done and are the pattern to follow. The eight `map[...]`
+  sites converted to `positionalPipeSprint` (values in slot order); the six
+  sorted-map-key `k=v|k=v` loops converted to `positionalNamedPipeSprint` (names
+  kept, slot order). Prefer the NAMED renderer: keeping the names lets the
+  expectation rewrite be verified as a pure slot REORDERING (same multiset of
+  NAME=value pairs per row, same multiset of rows) instead of resting on a value
+  multiset plus a manual read of the SELECT list. Do the rewrite with that verifier
+  in the loop and refuse any diff it cannot prove is a reordering — a rewrite that
+  silently changes a value is precisely the failure the conversion is meant to
+  expose.
 
-  The per-file counts re-measured to the inventory's numbers with ONE exception:
-  baretwin_gather is 27, not 26. The inventory was built with a grep for a literal
-  opening `"map[`, which only sees a DOUBLE-QUOTED literal; that file has one
-  expectation written as a BACKTICK raw string. The rewrite was driven off the Go
-  AST rather than a grep, so it saw all 27 — and the item's own DONE grep would
-  have called the file finished while that literal was still there. Corpus-wide
-  both the double-quoted and the backtick-inclusive greps are now zero, and no
-  test file renders a multi-slot row through `executor.RowValue` any more.
+  The files, with their multi-key `map[...]` expectation counts (measured):
+  star_body_cte_join_leg_fdb_test.go 128, chained_unnest_predicate_pushdown_fdb_test.go 82,
+  chained_unnest_3link_filtered_ordinal_fdb_test.go 62, nested_left_box_chained_unnest_fdb_test.go 52,
+  buried_chained_rotation_fdb_test.go 52, exists_scope_shadow_fdb_test.go 41,
+  fullbox_chained_spine_fdb_test.go 29, cross_leg_duplicate_column_box_unnest_fdb_test.go 27,
+  baretwin_gather_fdb_test.go 26, orderby_gather_fdb_test.go 20, withinbox_dup_fdb_test.go 19,
+  buried_element_predicate_fdb_test.go 10, nullsupply_barrier_fdb_test.go 9,
+  fork_colliding_subfield_fdb_test.go 6, projected_exists_enclosure_lift_fdb_test.go 1
+  (all under pkg/relational/sqldriver/). ~564 expectations.
 
-  **How it was verified — RESTATED, because the first account overclaimed.**
-
-  The conversion was checked by a program that parsed each new `NAME=value|...`
-  string, collapsed it LAST-WINS by name, re-rendered it in Go's map form and
-  required byte-identity with the literal it replaced. **196 proven, 0 refused, 0
-  collisions.** That is a real and useful result — no VALUE was corrupted at
-  conversion time — but it is the ONLY thing it establishes, and two problems
-  came out of the review lap:
-
-  1. **The method is permutation-invariant BY CONSTRUCTION.** Its collapse IS
-     `positionalToMap`, so any reordering of the same pairs collapses to the same
-     map and is "proven". It was therefore silent on the exact dimension the
-     conversion existed to add. It could not have detected a wrong slot order,
-     and describing it as verifying the conversion was wrong.
-  2. **The program was never committed.** Only the log it printed was, so the
-     repository carried a conclusion with no instrument behind it and no way to
-     re-run it — the same shape as a deleted probe whose conclusion survives.
-
-  The log is DELETED (with its BUILD `data` attribute), and the standing property
-  is now a committed test:
-  `pkg/docscheck/slot_order_derivation_test.go`,
-  `TestConvertedRowExpectationsAgreeWithTheirSelectList`. It mechanises the
-  by-hand method a reviewer used: parse the query's SELECT list, derive the
-  output column names in source order, and require the expectation's `NAME=`
-  tokens to appear in that order. It needs no database — the SELECT list IS the
-  slot-order contract.
-
-  **MEASURED at the time it landed: 943 row expectations over 330 sites in 20
-  files have their slot order derived and checked; all agree.** Two spellings are
-  accepted because they are planner-decided and are about spelling rather than
-  order: the qualifier (`SELECT A."K", B."K"` renders `A.K|B.K`, while
-  `SELECT A."K", COUNT(*)` renders plain `K`) and case (a quoted lowercase
-  identifier renders lowercase).
-
-  **Where it cannot derive, it says so per file rather than passing quietly** —
-  25 fallback sites, each with a stated reason in the census the test logs:
-  `SELECT *` and `T.*` (no written column list), an unaliased expression (named
-  by the planner, not the text), and queries assembled by Go string
-  concatenation where the FROM boundary is not in the literal
-  (`nested_left_box_chained_unnest` 7, `buried_chained_rotation` 7,
-  `fullbox_chained_spine` 3). Those sites keep the CROSS-ROW check, which holds
-  everywhere: every row of one query must carry the identical name sequence.
-  Files rendering through `positionalPipeSprint` (bare values, no names) carry no
-  names to check and are outside this instrument by construction —
-  `lateral_unnest_chain` and `chained_unnest_ordinal` are the notable ones.
-  A second, larger disclosed gap: 140 AMBIGUOUS rows — rows in scopes holding
-  more than one query, where the pairing declines rather than guess — get only
-  the cross-row check. Two files are materially uncovered by the ORDER check
-  through this category: `chained_unnest_3link_filtered_ordinal` (0 derived,
-  62 ambiguous — the whole file) and `star_body_cte_join_leg` (45 derived,
-  57 ambiguous). The instrument's per-file census surfaces both numbers every
-  run; this paragraph exists so the entry matches its own census. (Cite
-  bookkeeping for the re-baseline: the diff touched 12 cite tokens — five
-  TODO item cites, four debt-entry keys, both mint cites, the ratchet cite.)
-
-  **Mutation-checked in three directions.** Permuting a real expectation
-  (`baretwin_gather:260`, `K=100|M=55|X=7` → `X=7|K=100|M=55`) reds it with the
-  site named. Making the comparison ORDER-INSENSITIVE — which is what the old
-  collapse-and-compare method did — makes that same permuted expectation pass
-  unreported, which is the old verifier's blindness reproduced directly. Making
-  the derivation decline everything trips the population floor rather than
-  reporting a clean census.
-
-  39 of the 196 rows had a slot order differing from the alphabetical one, i.e.
-  39 rows' order was previously unasserted. That count came from the original
-  program and is retained as history, not as a standing claim.
-
-  **Finding 1 — the duplicate-name row, and why it was pinned only by a COUNT.**
-  Exactly one shape in the corpus projects repeated output names:
-  `buried_chained_rotation`'s `SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS
-  "Y", T4 AS "T4C"`, labels `[ID SARR SCARR SUB ID SARR SCARR SUB X Y]` — T4's
-  four columns twice. The map form collapsed four of its ten slots, so the test
-  asserted the label list and `len(rows) == 12` and nothing else; a count cannot
-  distinguish a correctly bound leg pair from a swapped one. The 12 rows' values
-  are now asserted in slot order.
-
-  **Finding 2 — those rows could not have been asserted before, for a second
-  reason.** Their slots hold protobuf messages, and fmt renders those through
-  prototext, whose whitespace `internal/detrand` varies ON PURPOSE, seeded from
-  the binary. Measured directly: two runs of the same test, differing only in an
-  unrelated edit, produced those 12 rows with different space widths and the
-  other 184 rows byte-identical. A literal written against that passes locally
-  and fails on the next rebuild. `unnestSprint` now collapses runs of spaces in
-  the non-string branch (string slots are returned verbatim and never reach it),
-  pinned by `TestUnnestSprintIsStableAcrossBuilds`.
-
-  **Finding 3 — a THIRD blind form the inventory did not count.** Three files
-  rendered rows by indexing the name-keyed map with a hand-written column list
-  (`fmt.Sprintf("%v|%v", m["ID"], m["Y"])`, `collect(rows, "ID", "Y")`). It
-  produces the same `a|b` string while asserting nothing about where the values
-  sat, and it lets the assertion choose a display order independent of the SELECT
-  list. Converted in `chained_unnest_ordinal` (6 sites, expectations UNCHANGED —
-  which is now proof that slot order equals SELECT order there, previously
-  unasserted) and `lateral_unnest_chain` (7 sites, two expectations changed:
-  `SELECT "V"."Y", "T2"."ID"` was being rendered `m["T2.ID"]|m["V.Y"]`, the
-  REVERSE of its own SELECT list, and the shadow-precedence site rendered only
-  the Y column of a two-column projection, leaving ID unasserted).
-
-  **Finding 4 — and the typed read, which needed a helper that did not exist.**
-  A fourth shape reads row columns by NAME for TYPED assertions rather than for
-  rendering: `row["G"].(float64)`, `row["ID"].(int64)`, `structPair(m["X"])`. A
-  renderer cannot serve those, so they kept the name-keyed map and with it the
-  full order-blindness — a permuted row type-asserts cleanly and answers
-  correctly. The missing capability was a typed slot accessor, so it was built:
-  `positionalSlots` returns the slot values in order, untyped and unrendered.
-  Converted at all four sites — `array_unnest_struct` (3),
-  `aggregate_index_signed_zero_range_set` (1), `vector_multipartition_e2e` (1) —
-  with expectations UNCHANGED, which is itself the proof that slot order matched
-  the projection order at each.
-
-  **Remainder: none, and it is now CHECKED rather than grepped.** Every
-  `executor.RowValue` site left in pkg/relational/sqldriver reads a SINGLE named
-  column, where there is no order to assert, or is a renderer definition. That
-  was originally closed with a grep, which cannot tell a multi-slot row being
-  ASSERTED through the map from one named column being READ out of it — so it
-  either reports the legal remainder as debt or is loose enough to miss the next
-  offender. `pkg/docscheck/rowvalue_map_expectation_test.go`
-  (`TestSqlDriverRowsAreNotAssertedThroughTheNameKeyedMap`) makes it an AST fact
-  at build time, classifying by CONSUMPTION: one string-literal key is legal, two
-  or more distinct keys is not, and consuming the map whole is not unless the
-  scope proves it holds one entry (`len(m) != 1`, fanout_exists_index's COUNT
-  shape). MEASURED: 17 files scanned, 0 findings; the 13 files holding legal
-  single-column reads all stay legal. Mutation-checked in four directions,
-  including one that removes the single-column distinction and reds six legal
-  fixtures — the half that keeps the gate from being deleted as unusable.
-
-  **Two per-file facts the old log could not carry.** It listed 18 files; the
-  conversion touched 26. The 8 absent from it are `array_unnest_ordinality`,
-  `chained_unnest_ordinal`, `lateral_unnest_chain`, `merged_leg_read_redundancy`,
-  `merged_leg_wrong_window`, `array_unnest_struct`,
-  `aggregate_index_signed_zero_range_set` and `vector_multipartition_e2e` —
-  Findings 3 and 4's shapes, which are not map-literal rewrites and so were
-  outside what that program compared. And the two `lateral_unnest_chain`
-  expectations that changed were CORRECTIONS, not reorderings: one was rendering
-  `SELECT "V"."Y", "T2"."ID"` in the REVERSE of its own SELECT list
-  (`"1|100"` → `"100|1"`), the other rendered one column of a two-column
-  projection (`"[100 200 300 400]"` → `"[1|100 1|200 1|300 2|400]"`). A
-  reordering-only proof could not have covered either, which is consistent with
-  the file's absence from the log.
+  DONE when `grep -rn "executor.RowValue(" pkg/relational/sqldriver/*_test.go`
+  returns only the renderer definitions themselves and sites whose rows are
+  single-slot (no order to assert).
 
 - [ ] **CQ-66 (M/L, gated) — the unnest ELEMENT quantifier states no type, and
   750 positional-merge slots inherit that.** MEASURED over the real-FDB corpus
@@ -13221,6 +13030,51 @@ None is speculative: each was re-verified against the tree before booking.
   for — either accepted or re-classified with the reason measured. Planner-wide
   typing change touching the executor's row contract: Graefe-gated RFC of its
   own, with the stress/golden comparison.
+
+  **RE-VERIFIED AT `041838856`. Four corrections; the premise STRENGTHENS.**
+  - **The number is 102, not 94.** The live gate is
+    `sqldriver/embedded_fdb_test.go:253-266`: denominator 572, ACCEPT 160,
+    `ReconstructNil` 102, `ReconstructNilBareQOV` 102, `ReconstructNilMerge` 0.
+    The RFC-200 gate-(a) fixtures added 30 firings (`+8` reconstruct-nil, all
+    bare-QOV) — attributed at `:236-252`. `102 > 60` holds a fortiori. The
+    prose in `leg_local_bake_census.go:130,148` and DIVERGENCES.md's
+    "60 closed / 94 open / 108 permanent" carry the stale 94 and need restating.
+    `ReconstructNilMerge` is still hard 0, so CQ-67 held.
+  - **All five producer sites confirmed live**, at rotated line numbers:
+    `rule_implement_nested_loop_join.go` `:4124` (the one true MINT, was `:3901`),
+    `:4175` (was `:3952`), `:1383` and `:1797` (unmoved), `:4419` (was `:4196`);
+    `cascades_translator.go:4166` (was `:4097`). The file is at
+    `pkg/recordlayer/query/plan/cascades/`, NOT under a `rules/` directory.
+  - **"Type it at the FlatMap" is the WRONG PORT.** Java's
+    `RecordQueryFlatMapPlan` does not construct a result value either — it stores
+    what it is handed (`RecordQueryFlatMapPlan.java:91,100,205`), and all three
+    constructions in `ImplementNestedLoopJoinRule.java:187,201,214` flow
+    `selectExpression.getResultValue()` verbatim, exactly as Go's `:1383`/`:1797`/
+    `:4419` do. The divergence is UPSTREAM: Java's select result value is built by
+    `GraphExpansion.java:401` as `overQuantifier.getFlowedObjectValue()`, which is
+    typed unconditionally. So the producer to fix is whatever fills
+    `sel.GetResultValue()` — and Java's guarantee is structural, not disciplinary:
+    `QuantifiedObjectValue.of` has NO untyped overload
+    (`QuantifiedObjectValue.java:187`) and `getFlowedObjectType` is a
+    `Verify.verify` + `requireNonNull` (`Quantifier.java:801-810`). Java cannot
+    express Go's bare QOV at all.
+  - **`describeSeedEscape` is not the classifier of the 102** — `classifyDeclinedLeg`
+    (`fold_step1_seed_census.go`) is; deliverable (1) instruments that.
+    Deliverable (2) is cheaper than booked: on the correlated arm
+    `ordinalWindows != nil` iff `sel.GetResultValue()` is already a pristine
+    ordinal seed, so the conjunction is structurally REACHABLE (not dead), and
+    measuring it is one counter at the `ordinalSeedLegWindowsAcceptingNestedOf`
+    call site.
+
+  **One prerequisite defect is FIXED ahead of this item** (see the commit adding
+  `quantifiedObjectValueIsTyped`): the witness printed `typed=%t` from
+  `Typ != nil`, which no constructible QOV can make false — `NewQuantifiedObjectValue`
+  stamps `UnknownType` and `NewQuantifiedObjectValueOfType` degrades nil to it, and
+  `UnknownType` is a non-nil `*PrimitiveType`. So the instrument reported
+  `typed=true` for all 102, and a typing sweep would have read as complete on the
+  day it started. Pinned by
+  `TestFoldStep1Census_BareQOVWitnessSeparatesTypedFromUntyped` in both
+  directions.
 
 - [ ] **CQ-69 (L, multi-phase, per-phase gates) — build the RFC-201 layered test
   corpus ladder.** Design: `rfcs/201-layered-test-corpus.md` (merged, #542),
@@ -14043,11 +13897,11 @@ None is speculative: each was re-verified against the tree before booking.
 
 - [ ] **CQ-79 (MED, RFC-197) — CQ-53's surviving producer mint is owned by no
   item.** · S/M · query-engine review gate
-  `pkg/docscheck/field_name_decision_test.go:454` pins
-  `pkg/relational/core/query/cascades_translator.go:3667` as *"dotted: MINT.
-  **CQ-53's surviving producer** — turns QOV(leg).COL into QOV(merged).\"LEG.COL\"
-  so the FlatMap inner's binder can resolve the merged row by that string … this
-  one is on the unnest-merge path and dies with the same work"*. Its NLJ twin was deleted (the
+  `pkg/docscheck/field_name_decision_test.go:447` pins
+  `cascades_translator.go:3598` as *"dotted: MINT. **CQ-53's surviving
+  producer** — turns QOV(leg).COL into QOV(merged).\"LEG.COL\" so the FlatMap
+  inner's binder can resolve the merged row by that string … this one is on the
+  unnest-merge path and dies with the same work"*. Its NLJ twin was deleted (the
   re-anchor now carries Java's null-named ordinal accessor,
   `FieldValue.java:335-338`); this one was not.
   **CQ-53 is marked `- [x]`** as subsumed by CQ-67 "carrying no separate
@@ -14056,63 +13910,46 @@ None is speculative: each was re-verified against the tree before booking.
   94 FlatMap result values being a bare UNTYPED QOV, not about a display name
   being manufactured into a row key. Booked separately rather than folded, so
   neither item can close while the other's residue survives.
-  **Booked 2026-08-01** by the B6 docs-authority pass. **Re-verified 2026-08-06
-  at `cb9bc5225`:** the mint at `:3667` still stands VERBATIM —
-
-      values.NewFieldValue(mergedQOV, leg+"."+strings.ToUpper(fv.Field), fv.Typ)
-
-  — the debt entry still pins it, and the ratchet now totals **53** (was 52).
-  All three of this entry's earlier cites had rotted: the pin moved
-  `cascades_translator.go:3598` → `:3667`, the debt entry moved
-  `field_name_decision_test.go:447` → `:454` (`:447` is now a comment), and the
-  total moved 52 → 53.
+  **Booked 2026-08-01** by the B6 docs-authority pass; re-verified at
+  `a1d281a63` — the pin still stands verbatim and the ratchet still totals 52.
   DONE = the unnest-merge path re-anchors by ordinal as the NLJ path already
-  does, the `:3667` debt entry is DELETED (not moved), and the `dotted` bucket
+  does, the `:3598` debt entry is DELETED (not moved), and the `dotted` bucket
   header drops accordingly.
 
-- [ ] **CQ-94 (SMALL, instrument honesty) — the leg-local bake census's
-  three-way layout partition is VACUOUS at HEAD, the census says so itself, and
-  nothing books re-arming it.** · S · no review gate (test/instrument only)
-  `LegLocalBakeCensus` asserts `UntypedLeg + ColumnAbsent + LayoutAvailable ==
-  MergedReAnchor`. **`MergedReAnchor` is 0** — measured over the full real-FDB
-  sqldriver corpus, 2026-08-06 at `cb9bc5225`:
+  **RE-VERIFIED AT `041838856`, AND THE SIZING IS REFUTED. This is NOT S/M and it
+  is NOT independently closable.** Three corrections, the third structural:
+  - The debt entry is keyed `cascades_translator.go:3667` (test line `:454`), not
+    `:3598`/`:447`. The ratchet totals **53**, not 52 (a second `boundary` entry
+    arrived with #601).
+  - "Its NLJ twin was deleted" is imprecise. `rebaseOuterLegRefsToMerged` is alive
+    with five call sites; what `df0c73e5b` deleted is the dotted MINT inside
+    `rebaseOuterLegValue`. And the ARM-1 ordinal re-anchor the booking points at
+    as precedent is DEAD-IN-EFFECT on every covered surface (reached only by
+    `TestRebaseOuterLegValue_OrdinalFirst`), so "as the NLJ path already does" is
+    a structural template, not an exercised one.
+  - **The mint cannot re-anchor by ordinal in isolation, because the row it reads
+    is name-keyed BY CONSTRUCTION.** The ordinal twin already exists and is
+    already taken wherever it can be: `rebaseUnnestOuterLegPredicateOrdinal`
+    (`cascades_translator.go:3849`) is selected at `:3547` and `:3740` whenever
+    the seed is windowed. Every surviving call of the name mint (`:3059`, `:3400`,
+    `:3569`, `:3590`, `:3742`) sits in the `!seedWindowed` / `!ordinalSeed`
+    arm — the NAME-MODEL seed, whose merged row carries qualified `LEG.COL` keys
+    (built at `:475`). The code says so at `:3736-3738`: a positional bake against
+    the name-keyed row "would strand DEEP ordinal -1". So converting the mint
+    alone produces a stranded read, not a fix.
 
-      leg-local bakeability: total 190 (baked 190, mergedReAnchor 0, declined 0);
-      mergedReAnchor residue: untypedLeg 0, columnAbsent 0, layoutAvailable 0
-
-  So that assertion holds as `0 == 0` and would keep holding if all three
-  counters were deleted. This is recorded plainly rather than as an alarm,
-  because the honest state has two halves and both matter:
-
-  - **The census is NOT vacuous overall.** A SECOND partition over `Total` was
-    added for exactly this reason and IS live: `IdentityInLegDomain +
-    IdentityOtherDomain + LazyNameOnly == Total` (190 + 0 + 0 = 190), as is
-    `Baked + MergedReAnchor + Declined == Total`. The source
-    (`leg_local_bake_census.go:314-321`) states the correction in its own words —
-    "an instrument aimed at the population that left is not an instrument" — and
-    `leg_local_bake_census_gate_test.go:369` asserts that the report SAYS
-    "partitions MergedReAnchor, which is 0". The vacuity is disclosed by the
-    instrument, not hidden by it. That is the good case, and it is why this is a
-    SMALL item and not a defect.
-  - **What is missing is the re-arm.** `MergedReAnchor` is neither FLOORED (it
-    is absent from `LegLocalBakeFloors`, which floors `Total`, `SiteExists`,
-    `LegDerivations` and `MergeSlots`) nor ASSERTED AT ZERO. So it is the one
-    counter that can move in either direction without any gate reacting: at 0 the
-    layout partition is decoration, and if it goes nonzero the three reason
-    counters silently resume carrying weight with nobody told.
-
-  **What re-arms suspicion:** `MergedReAnchor` becoming nonzero — a read that
-  must be re-anchored onto the merge correlation reappearing at the leg-match
-  arm. Today every read keeps its own leg alias and its own ordinal, which is
-  why it is 0. The whole `reconstruct-nil`-by-refused-leg-shape population (190,
-  all `rv=bare QuantifiedObjectValue`) is CQ-68's axis, so a CQ-68 landing is the
-  most likely thing to move it.
-
-  DONE = `MergedReAnchor` is pinned in ONE of the two honest directions — either
-  asserted at zero (making the layout partition's vacuity a stated, enforced
-  fact) or floored (making it a live measurement) — with the choice argued from
-  which one is true after CQ-68, not from which is easier. Mutation-check it: the
-  pin must go red on a counter state where `MergedReAnchor` moves.
+  The work is therefore to make those seeds ORDINAL, which is
+  `unnestExistsSeedSafe`'s scope gate (`cascades_translator.go:1317`), and that
+  gate is coupled to the executor's below-FOD hoist — `:3841-3843` states the
+  multi-alias branch is "WIRED but scope-gated OFF end-to-end … it goes live only
+  when that guard lifts (channel 2, coupled with the RULE-level below-FOD executor
+  hoist)". That is the SAME `executor.bindMergedOuterLegs` runtime
+  binding-namespace widening (DIVERGENCES.md) that CQ-68 owns on the read axis.
+  **CQ-79 and CQ-68 are two axes of one executor-widening piece of work.** They
+  stay booked separately — the residues are genuinely different, and folding them
+  would let either close while the other's survived — but neither is startable as
+  a local edit, and CQ-79's `S/M` should be read as `L, gated on the executor
+  widening`, sequenced WITH CQ-68 rather than before it.
 
 - [x] **CQ-80 (MED, test-contract) — four watch-list entries claim a pin that
   does not exist or cannot fail. DONE — all four closed, two of them REFUTED

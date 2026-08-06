@@ -1239,7 +1239,6 @@ func (store *FDBRecordStore) isKeyInIndexBuildRange(index *Index, primaryKey tup
 // For reverse scans, continuation sets the high endpoint (end before last returned key).
 // Matches Java's KeyValueCursorBase behavior.
 func (store *FDBRecordStore) ScanRecords(continuation []byte, scanProperties ScanProperties) RecordCursor[*FDBStoredRecord[proto.Message]] {
-	startTime := time.Now()
 	lowEndpoint := EndpointTypeTreeStart
 	highEndpoint := EndpointTypeTreeEnd
 	if continuation != nil {
@@ -1249,9 +1248,9 @@ func (store *FDBRecordStore) ScanRecords(continuation []byte, scanProperties Sca
 			lowEndpoint = EndpointTypeContinuation
 		}
 	}
-	cursor := store.ScanRecordsInRange(nil, nil, lowEndpoint, highEndpoint, continuation, scanProperties)
-	store.context.Timer().RecordSince(EventScanRecords, startTime)
-	return cursor
+	// EventScanRecords is recorded by ScanRecordsInRange, not here — see its
+	// doc-comment for why the innermost method is the only recording site.
+	return store.ScanRecordsInRange(nil, nil, lowEndpoint, highEndpoint, continuation, scanProperties)
 }
 
 // ScanRecordsByType scans records filtered to a specific record type.
@@ -1315,7 +1314,16 @@ func KeyExpressionHasRecordTypePrefix(expr KeyExpression) bool {
 	return primaryKeyHasRecordTypePrefix(expr)
 }
 
-// ScanRecordsInRange scans records in a key range
+// ScanRecordsInRange scans records in a key range.
+//
+// This is the ONE place EventScanRecords is recorded, because it is the one
+// method every record scan funnels through — ScanRecords, ScanRecordsByType and
+// the query executor's range scans all end here. Java makes the same choice for
+// the same reason: its single recording site is the innermost private
+// scanTypedRecords (FDBRecordStore.java:1441), never the outer convenience
+// wrappers, so no entry point can scan records without the event and none can
+// record it twice. Instrumenting the outer wrapper instead left the executor's
+// own scans — which enter here directly — entirely uncounted.
 func (store *FDBRecordStore) ScanRecordsInRange(
 	low, high tuple.Tuple,
 	lowEndpoint, highEndpoint EndpointType,
@@ -1327,7 +1335,7 @@ func (store *FDBRecordStore) ScanRecordsInRange(
 	recordsSubspace := store.recordsSubspace
 	prefixLength := len(recordsSubspace.FDBKey())
 
-	return &keyValueCursor{
+	return instrumentCursor(store.context.Timer(), EventScanRecords, &keyValueCursor{
 		store:               store,
 		low:                 low,
 		high:                high,
@@ -1344,7 +1352,7 @@ func (store *FDBRecordStore) ScanRecordsInRange(
 		// Java's scan logic, which gates the bare-key path on !isSplitLongRecords().
 		omitUnsplitRecordSuffix: store.omitUnsplitRecordSuffix() && !store.metaData.IsSplitLongRecords(),
 		useOldVersionFormat:     store.useOldVersionFormat(),
-	}
+	})
 }
 
 // CountRecords counts records in a range by scanning the records subspace.

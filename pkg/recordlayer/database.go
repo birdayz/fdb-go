@@ -63,6 +63,47 @@ type FDBDatabase struct {
 	// buggify off) — the nil-safe *dst.Env accessors handle that. A simulation sets a
 	// seeded env via SetEnv so persisted timestamps/nonces are reproducible (RFC-199 Tier 0).
 	env *dst.Env
+
+	// timer is the StoreTimer inherited by every FDBRecordContext this database opens,
+	// and therefore the aggregation point for record-layer instrumentation across all
+	// transactions in the process. Nil (the default) means uninstrumented — the
+	// nil-receiver-safe StoreTimer methods make that a single nil check per site, and it
+	// matches Java, where FDBRecordContextConfig's timer defaults to null
+	// (FDBRecordContextConfig.java:266).
+	//
+	// Sharing ONE timer instance across many contexts is Java's own aggregation model,
+	// not a Go shortcut: FDBDatabaseRunner.setTimer installs a timer on the shared
+	// context-config builder and every context the retry loop opens writes into that same
+	// instance (FDBDatabaseRunner.java:105-119). Java's other model — a fresh timer per
+	// transaction folded into a process-level registry (RecordLayerTransactionManager.java:62-70
+	// with MetricRegistryStoreTimer) — needs a per-commit fold and a second registry type to
+	// aggregate into; sharing the instance gets the same operator-visible totals with neither.
+	// StoreTimer.Add ports the fold for callers who want the first model anyway.
+	//
+	// atomic.Pointer because SetTimer may be called on a database other goroutines are
+	// already opening contexts against.
+	timer atomic.Pointer[StoreTimer]
+}
+
+// SetTimer installs the StoreTimer that every context this database opens will record
+// into, replacing any previous one. Passing nil disables instrumentation.
+//
+// Matches Java's FDBDatabaseRunner.setTimer / FDBRecordContextConfig.Builder.setTimer
+// (FDBDatabaseRunner.java:112-119, FDBRecordContextConfig.java:357-368): the timer is a
+// caller-supplied object whose lifetime and scope the caller chooses, never something the
+// database owns or creates for you. Contexts already open keep the timer they were built
+// with — the read happens once at context construction, as in Java.
+func (d *FDBDatabase) SetTimer(timer *StoreTimer) {
+	d.timer.Store(timer)
+}
+
+// Timer returns the StoreTimer installed by SetTimer, or nil when the database is
+// uninstrumented. Matches Java's FDBDatabaseRunner.getTimer (FDBDatabaseRunner.java:105-110).
+func (d *FDBDatabase) Timer() *StoreTimer {
+	if d == nil {
+		return nil
+	}
+	return d.timer.Load()
 }
 
 // SetEnv installs the DST environment inherited by every context this database opens. A
@@ -229,6 +270,7 @@ func (d *FDBDatabase) applyReadSystemKeys(o fdb.TransactionOptions) {
 // Matches Java's FDBRecordContext.commitAsync() behavior.
 func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
 	var lastCtx *FDBRecordContext
+	var commitStart time.Time
 	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.WritableTransaction) (any, error) {
 		d.applyReadSystemKeys(tx.Options())
 		recordCtx := &FDBRecordContext{
@@ -237,12 +279,26 @@ func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (a
 			ctx:           ctx,
 			env:           d.env,
 		}
+		recordCtx.SetTimer(d.Timer())
 		lastCtx = recordCtx
 
 		result, err := fn(recordCtx)
 		if err != nil {
 			return nil, err
 		}
+
+		// EventCommit spans the pre-commit checks plus the commit itself, which is
+		// the interval Java measures: startTimeNanos is taken at the first line of
+		// commitAsync, before runCommitChecks, and the event is recorded when the
+		// commit future completes (FDBRecordContext.java:478, :513-533; the
+		// FDBStoreTimer javadoc at :81-86 says so explicitly). Post-commit hooks
+		// are outside the span in Java and are outside it here.
+		//
+		// It has to be recorded out here rather than in FDBRecordContext.Commit
+		// because on this path the commit belongs to the transactor's retry loop —
+		// nothing ever calls Commit, which is why the whole autocommit SQL path
+		// reported zero commits while committing on every statement.
+		commitStart = time.Now()
 
 		// Run pre-commit checks before flushing
 		if err := recordCtx.runCommitChecks(); err != nil {
@@ -257,12 +313,36 @@ func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (a
 	if err != nil {
 		return result, err
 	}
+	recordCommitSince(lastCtx, commitStart)
 
 	// Run post-commit callbacks after successful commit
 	if lastCtx != nil {
 		lastCtx.runPostCommits()
 	}
 	return result, nil
+}
+
+// recordCommitSince records EventCommit for a transaction that committed inside
+// the transactor's retry loop. On a retry, commitStart is overwritten by each
+// attempt, so the recorded span is the successful attempt's — the same one Java
+// records, since Java's per-attempt commitAsync only reaches its success arm on
+// the attempt that commits.
+//
+// Zero commitStart means the closure returned before reaching the commit (fn
+// failed), so there was no commit to time.
+//
+// Java's other two commit outcomes are NOT ported here, deliberately.
+// COMMIT_READ_ONLY needs the committed version to tell a write-free transaction
+// apart (FDBRecordContext.java:492, :524) and COMMIT_FAILURE needs the commit's
+// own exception (:517); on this path the transactor owns the commit and surfaces
+// neither. Recording a plain COMMIT for those cases would be worse than
+// recording nothing — it would inflate the commit count with transactions that
+// did not commit.
+func recordCommitSince(rc *FDBRecordContext, commitStart time.Time) {
+	if rc == nil || commitStart.IsZero() {
+		return
+	}
+	rc.Timer().RecordSince(EventCommit, commitStart)
 }
 
 // runTransactCtx threads ctx into the transactor's retry loop + backoff + reads when
@@ -306,6 +386,7 @@ func (d *FDBDatabase) RunRead(ctx context.Context, fn func(rtx fdb.ReadTransacti
 // Matches Java's FDBDatabase.openContext(config, timer, weakReadSemantics, ...).
 func (d *FDBDatabase) RunWithWeakReads(ctx context.Context, weak WeakReadSemantics, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
 	var lastCtx *FDBRecordContext
+	var commitStart time.Time
 	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.WritableTransaction) (any, error) {
 		d.applyReadSystemKeys(tx.Options())
 		if weak.IsCausalReadRisky {
@@ -317,6 +398,7 @@ func (d *FDBDatabase) RunWithWeakReads(ctx context.Context, weak WeakReadSemanti
 			ctx:           ctx,
 			env:           d.env,
 		}
+		recordCtx.SetTimer(d.Timer())
 		lastCtx = recordCtx
 
 		result, err := fn(recordCtx)
@@ -324,6 +406,7 @@ func (d *FDBDatabase) RunWithWeakReads(ctx context.Context, weak WeakReadSemanti
 			return nil, err
 		}
 
+		commitStart = time.Now()
 		if err := recordCtx.runCommitChecks(); err != nil {
 			return nil, err
 		}
@@ -333,6 +416,7 @@ func (d *FDBDatabase) RunWithWeakReads(ctx context.Context, weak WeakReadSemanti
 	if err != nil {
 		return result, err
 	}
+	recordCommitSince(lastCtx, commitStart)
 	if lastCtx != nil {
 		lastCtx.runPostCommits()
 	}
@@ -346,6 +430,7 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 	var vsFuture fdb.FutureKey
 	var hasVersionMutations bool
 	var lastCtx *FDBRecordContext
+	var commitStart time.Time
 
 	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.WritableTransaction) (any, error) {
 		// Reset on retry — previous attempt's future is stale
@@ -359,12 +444,15 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 			ctx:           ctx,
 			env:           d.env,
 		}
+		recordCtx.SetTimer(d.Timer())
 		lastCtx = recordCtx
 
 		result, err := fn(recordCtx)
 		if err != nil {
 			return nil, err
 		}
+
+		commitStart = time.Now()
 
 		// Run pre-commit checks
 		if err := recordCtx.runCommitChecks(); err != nil {
@@ -383,6 +471,7 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 	if err != nil {
 		return nil, nil, err
 	}
+	recordCommitSince(lastCtx, commitStart)
 
 	// Run post-commit callbacks after successful commit
 	if lastCtx != nil {
@@ -627,13 +716,32 @@ func (rc *FDBRecordContext) PutSession(key string, value any) {
 // semantics RFC needs to replay, so it was the one path the seam did not cover. A default here
 // would reintroduce the same silence; passing nil is allowed but has to be written down.
 //
-// Callers holding an *FDBDatabase should pass db.Env().
+// Callers holding an *FDBDatabase should NOT call this — call db.NewRecordContext(tx),
+// which threads every piece of per-database state at once. Enumerating the fields at each
+// call site is what let env go unthreaded here in the first place, and a second such field
+// (the StoreTimer) would have repeated it exactly.
 func NewFDBRecordContext(tx fdb.WritableTransaction, env *dst.Env) *FDBRecordContext {
 	return &FDBRecordContext{
 		tx:  tx,
 		ctx: context.Background(),
 		env: env,
 	}
+}
+
+// NewRecordContext wraps an externally-created FDB transaction in a context that inherits
+// everything this database gives the contexts it opens itself: the DST environment and the
+// StoreTimer. It is the form every caller holding an *FDBDatabase should use — SQL's
+// explicit BeginTx→COMMIT path among them.
+//
+// The point is that per-database state is threaded in ONE place. NewFDBRecordContext takes
+// the fields one by one, which is why env was silently dropped on the explicit-transaction
+// path until someone noticed; adding the timer as a second such parameter would have set up
+// the identical failure for instrumentation, where the symptom is even quieter (a metric
+// that reads zero looks exactly like a workload that did nothing).
+func (d *FDBDatabase) NewRecordContext(tx fdb.WritableTransaction) *FDBRecordContext {
+	rc := NewFDBRecordContext(tx, d.Env())
+	rc.SetTimer(d.Timer())
+	return rc
 }
 
 // Transaction returns the underlying FDB transaction
@@ -739,15 +847,32 @@ func (e *TransactionSizeWarningError) Error() string {
 	return fmt.Sprintf("transaction size %d bytes exceeds warning threshold %d bytes", e.CurrentBytes, e.LimitBytes)
 }
 
-// Commit commits the transaction
+// Commit commits the transaction.
+//
+// Records EventCommit, as every commit path must. Java has ONE commit method
+// (FDBRecordContext.commitAsync) and it records the event unconditionally
+// (FDBRecordContext.java:513-533); Go splits that method three ways — here,
+// CommitWithHooks and CommitWithVersionstamp — and a split where only one arm
+// records turns the metric into a function of which API the caller happened to
+// pick. Only CommitWithVersionstamp recorded, which is why explicit SQL
+// transactions committed on every COMMIT statement and reported none.
 func (rc *FDBRecordContext) Commit() error {
-	return rc.tx.Commit().Get()
+	commitStart := time.Now()
+	err := rc.tx.Commit().Get()
+	rc.Timer().RecordSince(EventCommit, commitStart)
+	return err
 }
 
 // CommitWithHooks runs pre-commit checks, flushes pending version mutations,
 // commits the FDB transaction, and runs post-commit callbacks.
 // Use this instead of Commit() when the context was created manually (not via Run()).
+//
+// The EventCommit span starts before the pre-commit checks and ends when the
+// commit resolves, which is Java's interval — its startTimeNanos is taken at the
+// first line of commitAsync, ahead of runCommitChecks, and the post-commit hooks
+// are chained after the event is recorded (FDBRecordContext.java:478, :513-533).
 func (rc *FDBRecordContext) CommitWithHooks() error {
+	commitStart := time.Now()
 	if err := rc.runCommitChecks(); err != nil {
 		return err
 	}
@@ -755,6 +880,7 @@ func (rc *FDBRecordContext) CommitWithHooks() error {
 	if err := rc.tx.Commit().Get(); err != nil {
 		return err
 	}
+	rc.Timer().RecordSince(EventCommit, commitStart)
 	rc.runPostCommits()
 	return nil
 }
@@ -1013,7 +1139,16 @@ func (rc *FDBRecordContext) HasVersionMutations() bool {
 // Timer returns the instrumentation timer for this context, or nil if not set.
 // Goroutine-safe via atomic.Pointer.
 // Matches Java's FDBRecordContext.getTimer().
+// Nil-safe on the receiver, for the same reason FDBRecordContext.Env is: every
+// StoreTimer method tolerates a nil timer, so "no instrumentation" is a supported
+// state all the way down — and an accessor at the head of that chain must not be
+// the one call in it that panics. Call sites are of the form
+// store.context.Timer().RecordSince(...), where the nil check would otherwise have
+// to be repeated at each one.
 func (rc *FDBRecordContext) Timer() *StoreTimer {
+	if rc == nil {
+		return nil
+	}
 	return rc.timer.Load()
 }
 

@@ -428,6 +428,34 @@ type foldStep1LegDecline struct {
 	Witness        string
 }
 
+// quantifiedObjectValueIsTyped reports whether a QOV carries a REAL flowed type,
+// as opposed to the UnknownType placeholder that stands for "nobody typed this".
+//
+// It exists because the obvious spelling is a tautology. `Typ != nil` is TRUE for
+// every QOV that can be constructed: NewQuantifiedObjectValue stamps
+// `Typ: UnknownType` and NewQuantifiedObjectValueOfType degrades a nil argument to
+// the same, and UnknownType is a non-nil Type (a `*PrimitiveType` with
+// TypeCodeUnknown). So a nil check answers a question nothing can make false, and
+// the witness that was supposed to separate the untyped population from the typed
+// one printed `typed=true` for all of it.
+//
+// That matters beyond a cosmetic log line. This witness is the instrument the
+// bare-untyped-QOV residue is measured with — the population Java cannot even
+// express. Both of QuantifiedObjectValue's factory overloads resolve a Type:
+// of(alias, Type) takes one outright (QuantifiedObjectValue.java:187) and
+// of(Quantifier) derives it (`:182`) through Quantifier.getFlowedObjectType,
+// which is a Verify.verify plus requireNonNull (Quantifier.java:805-810). An
+// instrument that reports the target
+// state before any work is done would have reported that sweep complete on the day
+// it started, with the whole population untouched underneath.
+//
+// The discriminator is the type CODE, not pointer identity against the UnknownType
+// singleton: an equivalent unknown built elsewhere is just as untyped, and keying on
+// the shared variable would call it typed.
+func quantifiedObjectValueIsTyped(qov *values.QuantifiedObjectValue) bool {
+	return qov.Typ != nil && qov.Typ.Code() != values.TypeCodeUnknown
+}
+
 // classifyDeclinedLeg describes the node legOrdinalSafety refused.
 //
 // The result-value shapes it separates are the ones RFC-200's gates are stated
@@ -451,7 +479,7 @@ func classifyDeclinedLeg(node plans.RecordQueryPlan) (foldStep1LegShape, string)
 	}
 	switch t := rv.(type) {
 	case *values.QuantifiedObjectValue:
-		return foldStep1LegShapeBareQOV, fmt.Sprintf("%T rv=bare QOV (typed=%t)", node, t.Typ != nil)
+		return foldStep1LegShapeBareQOV, fmt.Sprintf("%T rv=bare QOV (typed=%t)", node, quantifiedObjectValueIsTyped(t))
 	case *values.RecordConstructorValue:
 		return foldStep1LegShapeRCNotMerge, fmt.Sprintf("%T rv=RC(%d) NOT a positional merge", node, len(t.Fields))
 	default:

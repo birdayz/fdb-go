@@ -1,10 +1,12 @@
 package sqldriver
 
 import (
+	"fmt"
 	"net/url"
 	"sort"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -93,7 +95,49 @@ func (d *DSN) ConnectionOptions() (*api.Options, error) {
 		}
 		opts = opts.With(api.OptRestrictDDLToSessionDatabase, v)
 	}
+	if raw, present := d.Options[TransactionTagsParam]; present {
+		tags, err := parseDSNTags(raw)
+		if err != nil {
+			return nil, err
+		}
+		opts = opts.With(api.OptTransactionTags, tags)
+	}
 	return opts, nil
+}
+
+// TransactionTagsParam is the DSN query parameter that sets
+// api.OptTransactionTags on every connection the DSN opens. Multiple tags are
+// comma-separated: `?transaction_tags=tenant-a,bulk`.
+const TransactionTagsParam = "transaction_tags"
+
+// parseDSNTags splits and validates the comma-separated tag list. Validation
+// happens here, at DSN parse time, so a malformed tag fails when the pool is
+// opened rather than on the first statement of some later request — the same
+// reasoning that makes parseDSNBool reject an unrecognised boolean instead of
+// reading it as false.
+//
+// Empty elements are dropped rather than becoming empty tags, so a trailing
+// comma is not an error; an entirely empty value yields no tags at all, which
+// is indistinguishable from omitting the parameter.
+func parseDSNTags(raw string) ([]string, error) {
+	var tags []string
+	for _, part := range strings.Split(raw, ",") {
+		if t := strings.TrimSpace(part); t != "" {
+			tags = append(tags, t)
+		}
+	}
+	if len(tags) == 0 {
+		return nil, nil
+	}
+	// The record layer's limits are the binding ones — stricter than the FDB
+	// client's own 5/255 — so applying them here means the DSN and a
+	// programmatic RecordContextConfig reject exactly the same sets.
+	uniq, err := recordlayer.ValidateTags(tags)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", TransactionTagsParam, err)
+	}
+	sort.Strings(uniq)
+	return uniq, nil
 }
 
 // parseDSNBool reads a boolean DSN parameter. A bare `?name` (empty value)

@@ -478,12 +478,54 @@ wrapped record-layer database under a key, and open `fdbsql:///t/<id>?cluster_fi
 doc frames it as a deterministic-simulation seam, not a metrics API — it works, but you are using
 it off-label.
 
-The same applies to record-layer counters. `StoreTimer` exists and mirrors Java's `FDBStoreTimer`
-event set (`pkg/recordlayer/store_timer.go:99`, event set `:17-53`, `Snapshot()` at `:199`), but **nothing
-exports it** — no production code calls `SetTimer` (`pkg/recordlayer/database.go:1023`), there is no
-`fdbmetrics` equivalent for it, and the SQL path never surfaces an `FDBRecordContext` to install one
-on. `fdbmetrics` covers client-level transaction counters only. Record-layer counters on the SQL
-path are, today, not observable.
+### Record-layer counters: arm the StoreTimer by cluster-file key
+
+`fdbmetrics` covers client-level transaction counters only. The record layer's own counters —
+records saved and loaded, index scans, commit timings, bytes written — live in `StoreTimer`
+(`pkg/recordlayer/store_timer.go`), the port of Java's `FDBStoreTimer`, and they have their own
+exporter: `rlmetrics.Handler` (`pkg/recordlayer/rlmetrics/rlmetrics.go`), same zero-dependency
+Prometheus text exposition as `fdbmetrics`, under the `fdb_recordlayer_` namespace.
+
+The SQL path needs one extra step, because the driver opens the record-layer database itself and
+keeps it in a package-private cache. `EnableStoreTimer`
+(`pkg/relational/sqldriver/driver.go`) arms instrumentation **by cluster-file key** rather than by
+handle, so it works before the lazy `Connect` that opens the database:
+
+```go
+timer := sqldriver.EnableStoreTimer("/etc/foundationdb/fdb.cluster")
+http.Handle("/metrics/recordlayer", rlmetrics.Handler(timer))
+
+db, _ := sql.Open("fdbsql", "fdbsql:///t/42?cluster_file=/etc/foundationdb/fdb.cluster")
+```
+
+Order does not matter — arming before or after the first connection both work, and repeat calls
+for the same key return the same timer. Both statement paths are covered: autocommit statements
+inherit the timer through `FDBDatabase.Run`, and explicit `BeginTx`→`COMMIT` transactions through
+`FDBDatabase.NewRecordContext`.
+
+**The aggregation level is one timer per cluster-file key, which in practice means one per
+process.** It aggregates every tenant, connection and transaction against that cluster. This is
+deliberate and it is the part to internalise before building dashboards on it: **there is no
+tenant label, and you should not add one.** Tenant count here is unbounded and grows with the
+customer list, so a `tenant` label on `fdb_recordlayer_*` would multiply the cardinality of every
+record-layer series by that list — the standard way to take a Prometheus down. Per-tenant
+attribution belongs to the two hooks below (`PlanGenerationLogger`, `ExecutionStatsLogger`), which
+are log-shaped and sampled and can afford it.
+
+If you genuinely need a narrower scope, take it without a label: build the
+`*recordlayer.FDBDatabase` yourself, call `SetTimer` on it, and `RegisterBackend` it under its own
+key. That keeps the cardinality decision explicit and in your hands.
+
+Two caveats on reading the numbers:
+
+- **Only events that actually fired appear.** Counters are created on first use, so an event with
+  no call site is absent from the scrape rather than exported as `0`. That is on purpose: `0`
+  reads "nothing happened", absence reads "not counted", and those call for opposite responses.
+  Several events Java populates from its instrumented transaction wrappers — `reads`, `writes`,
+  `bytes_read`, `bytes_written` — have no Go call site yet and are therefore absent.
+- **Timed events are Prometheus summaries in seconds** (`fdb_recordlayer_commit_seconds_sum` /
+  `_count`), not Java's `_micros` log keys. `StoreTimer.KeysAndValues()` gives the Java-shaped
+  log-key form if you want that instead.
 
 ### Per-tenant plan logging
 
@@ -518,18 +560,78 @@ _ = conn.Raw(func(driverConn any) error {
 
 **It reports planning only.** The complete field set is `SQL`, `PlanHash`, `PlanExplain`,
 `PlanningDuration`, `Cache`, `CacheNumEntries`, `SlowQuery`, `Err`
-(`plan_logging.go:50-70`), the record is built entirely in `finish()` from the planning clock and
-the plan tree (`plan_logging.go:142-166`), and the callback fires once per `Plan()` call
-(`plan_logging.go:73`). **There are no post-execution statistics anywhere in the engine** — no rows
-scanned, no bytes read, no execution time. Per-tenant cost attribution therefore has to be built
-from what your application can see (wall clock around the query, rows returned), not from the
-engine.
+(`plan_logging.go:50-71`), the record is built entirely in `finish()` from the planning clock and
+the plan tree, and the callback fires once per `Plan()` call. For what the statement then *did*,
+see the next section.
 
 Sampling and log volume are the handler's problem: the engine always emits
 (`plan_logging.go:73-77`). At tenant-fleet scale, sample.
 
-`SetPlanLogger` is not safe to call concurrently with planning on the same connection
-(`connection.go:162`).
+`SetPlanLogger` is not safe to call concurrently with planning on the same connection.
+
+### Per-tenant execution statistics
+
+`ExecutionStatsLogger` (`pkg/relational/core/embedded/execution_logging.go`) is the
+post-execution counterpart, installed the same way — per connection, via `conn.Raw` →
+`SetExecutionStatsLogger`. It is a **separate** interface from `PlanGenerationLogger`, not a second
+method on it, because a cached plan is planned once and executed many times: the two records do not
+pair up 1:1, and `PlanHash` is the join key between them.
+
+One `ExecutionStats` is emitted per statement execution, carrying `SQL`, `PlanHash`,
+`ExecutionDuration`, `RowsReturned`, `RowsAffected`, `RecordsScanned`, `BytesScanned`, `Pages`,
+`Retries`, `SlowQuery` and `Err`. This is what per-tenant cost attribution needs: `RecordsScanned`
+and `BytesScanned` are what the *cluster* served, which is not the same number as the rows the
+tenant received — a filtered `LIMIT 1` over a million-row table returns one row and scans a
+million.
+
+```go
+type tenantExecLogger struct{ tenantID string }
+
+func (l tenantExecLogger) LogExecutionStats(ctx context.Context, s embedded.ExecutionStats) {
+	slog.InfoContext(ctx, "query",
+		"tenant", l.tenantID,               // yours; the engine carries no tenant identity
+		"plan_hash", s.PlanHash,            // joins to the PlanGenerationInfo
+		"duration", s.ExecutionDuration,
+		"rows_returned", s.RowsReturned,
+		"records_scanned", s.RecordsScanned, // the cluster-load number
+		"bytes_scanned", s.BytesScanned,
+		"retries", s.Retries,
+		"slow", s.SlowQuery,
+		"err", s.Err)
+}
+
+_ = conn.Raw(func(driverConn any) error {
+	ec := driverConn.(*embedded.EmbeddedConnection)
+	ec.SetExecutionStatsLogger(tenantExecLogger{tenantID: tenantID})
+	return nil
+})
+```
+
+Four properties matter operationally:
+
+- **Failed statements still report.** A statement killed by `EXECUTION_SCANNED_ROWS_LIMIT` emits a
+  record carrying `Err` *and* the counters it consumed on the way to being killed. The statements
+  worth accounting for are disproportionately the ones that blew a budget, so a surface that only
+  reported on success would go quiet exactly where it is needed.
+- **Retried attempts are charged.** A page whose transaction conflicts and re-executes counts both
+  attempts' scans. The cluster served both reads; billing one would understate the tenants worth
+  knowing about. `Retries` tells you how much of the number that is.
+- **`SlowQuery` now has two independent meanings.** `SetSlowQueryThresholdMicros` governs both:
+  `PlanGenerationInfo.SlowQuery` says planning exceeded it, `ExecutionStats.SlowQuery` says
+  execution did. One knob, and the pair tells you which half was slow.
+- **DDL is not covered.** DDL routes through `execStatement` rather than the paged execution path,
+  so it emits no execution record. SELECT and DML both do.
+
+Same threading contract as `SetPlanLogger`: not safe to call concurrently with execution on the
+same connection. Same sampling split too — the engine always emits, the handler decides volume.
+
+`ExecutionStats` is the per-statement, per-tenant surface; record-layer `StoreTimer` counters (see
+above) are the process-wide one. Use them for different questions: `ExecutionStats` answers "which
+tenant's query was expensive", `fdb_recordlayer_*` answers "how much work is this process doing".
+`ExecutionStats` is a Go-only read-side extension. Java has no equivalent —
+`fdb-relational-api`, `-jdbc` and `-grpc` carry no metric surface at all, and although
+`fdb-relational-core` configures scan limits it never reads the consumed counts back. See
+`rfcs/211-post-execution-query-stats.md` for the Java survey behind that claim.
 
 ### No `EXPLAIN ANALYZE`
 
@@ -676,22 +778,44 @@ strength of "the data is just a key range".
 
 ## 7. Operational gaps to know before you sell this
 
-### Index builds are N CLI invocations
+### Index builds fan out across a fleet — but not within one tenant
 
-`frl index build <name>` builds **one index on one store**: the positional argument is the index
-name (`cmd/frl/internal/cmd/index_write.go:36`, `:56`), the store is addressed by scalar
-`--database`/`--schema`/`--keyspace-tuple` flags (`cmd/frl/internal/cmd/openstore.go:42-49`, all
-`StringVar` — there is no slice form anywhere in `cmd/frl`), and the driver builds one indexer for
-one target (`index_write.go:215`, single `BuildIndex` call at `:263`).
+**This gap is now partly closed.** `frl index build --all-schemas --database /tenants` builds every
+pending index across every schema in a database in one invocation, and
+`frl meta catalog repair --all-schemas --database /tenants` is the migration equivalent (rebind
+every tenant onto the latest template version). Passing an index name narrows the roll-out to that
+one index; omitting it builds whatever each tenant owes. The library primitive is
+`pkg/relational/core/fleet` if you want it in your own control plane rather than via the CLI.
 
-There is no orchestrator in the repo. Rolling one new index across N tenants is N invocations, or a
-Go driver you write. If you write one, note the CLI does not expose everything the builder has —
-`SetTargetIndexes` (`pkg/recordlayer/online_indexer.go:414`), `SetSourceIndex` (`:444`) and
-`SetMutualIndexing` / `SetMutualIndexingBoundaries` (`:496`, `:505`, the closest thing to a
-multi-worker distributed build) are Go-API only. Knobs that *are* exposed:
-`--limit`, `--rps`, `--max-retries`, `--time-limit` (`index_write.go:79-82`); the semantics are in
-[`operations.md` §4](operations.md#4-online-index-lifecycle), including the trap that
-`SetRecordsPerSecond` only takes effect when `maxRetries > 0`.
+The properties that matter operationally, because a fleet job is not a transaction:
+
+- **One transaction per tenant**, never one for the fleet. A fleet-wide rebind does not fit in
+  FDB's 5 s / 10 MB budget, and a single transaction would also mean one bad tenant rolls back
+  every healthy one.
+- **Per-tenant failure isolation.** A poisoned tenant is reported by name and does not stop the
+  pass; the command exits non-zero with every failure listed.
+- **Resumable.** Re-run after an interruption: migration skips schemas already at the target
+  `TEMPLATE_VERSION`, and an index build skips indexes that are no longer pending. There is no
+  "resume from checkpoint" state to manage — running it again *is* the resume.
+- **Each template has its own destination.** A database may mix schema
+  templates, and they advance independently. The rebind resolves the latest
+  version per *template*, never one number for the database — pushing every
+  tenant at whichever template is furthest ahead fails exactly the tenants that
+  still need the pass.
+- **The catalog is never a target.** It self-registers as a schema (`/__SYS/CATALOG`), so an
+  unfiltered enumeration really does return it; the fan-out refuses it.
+- **No atomic cutover.** Deliberately. Between passes tenants straddle template versions, which is
+  fine — each schema resolves metadata at its own pinned version — but there is no instant where
+  the fleet is atomically "all on v2". Do not build a release process that assumes one.
+
+Still Go-API only, still not exposed by the CLI: `SetTargetIndexes`
+(`pkg/recordlayer/online_indexer.go:420`), `SetSourceIndex` (`:450`) and `SetMutualIndexing` /
+`SetMutualIndexingBoundaries` (`:502`, `:511`). Note what the fan-out does *not* do: it
+parallelises **across** tenants (`--concurrency`), not **within** one. A single enormous tenant is
+still one sequential `OnlineIndexer` run — `SetMutualIndexing` is the multi-worker path for that,
+and nothing drives it yet. Per-build knobs exposed on both the single-store and fleet forms:
+`--limit`, `--rps`, `--max-retries`, `--time-limit`; the semantics are in
+[`operations.md` §4](operations.md#4-online-index-lifecycle).
 
 ### A new index on an existing tenant usually lands DISABLED
 
@@ -735,7 +859,7 @@ limits. Know which arm each tenant's schema takes; do not assume it is uniform a
 `:236` → `clearIndexData`, `:456`), so a DISABLED index holds no stale entries — nothing can read a
 wrong answer from it, it simply is not there.
 
-### No `ALTER`, and the fan-out loop for the workaround does not ship
+### No `ALTER` — but the fan-out loop for the workaround now ships
 
 `ALTER` is a lexer token that no parser rule references
 (`pkg/relational/core/parser/grammar/RelationalLexer.g4:47`; `ddlStatement` is
@@ -753,14 +877,27 @@ no `CREATE OR REPLACE` for templates — that exists only for temp functions
 
 `RepairSchema` exists — `pkg/relational/api/catalog.go:76`, implemented at
 `pkg/relational/core/catalog/fdb_store_catalog.go:472`: load the schema, load its template's latest
-version, save the regenerated schema. It is a **Go catalog API, not SQL**; no grammar rule reaches
-it (`pkg/relational/sqldriver/evolution_added_index_gate_fdb_test.go:56`). And it has **zero
-non-test call sites** — no loop iterates `ListDatabases`/`ListSchemas` calling it. No fan-out ships; the
-per-tenant Go-API loop is described as the status quo at `docs/rfc-schema-migration.md:306-311`.
+version, save the regenerated schema. It is still a **Go catalog API, not SQL**; no grammar rule
+reaches it (`pkg/relational/sqldriver/evolution_added_index_gate_fdb_test.go:56`).
 
-So the fleet-migration story today is: bump the template version → call `RepairSchema` per tenant
-through the Go API, in a loop you write → run `frl index build` per tenant per index, in a shell
-loop you write. **Neither loop ships.** Plan for building both.
+What changed is the fan-out around it. `pkg/relational/core/fleet` iterates `ListSchemasInDatabase`
+and calls `RepairSchema` per tenant in its own transaction, and
+`frl meta catalog repair --all-schemas` exposes that to operators. So the *rebind* half of a
+migration ships.
+
+The half that still does not ship is **producing the new template version from SQL**. Templates
+remain immutable through the SQL surface for the reason above (the DDL visitor never sets a version,
+the builder hardcodes 1, so a second `CREATE SCHEMA TEMPLATE` always fails 42F59). A new version has
+to be built through the Go metadata builder and saved with
+`fleet.SaveTemplate` / `SaveSchemaTemplateConstantAction`. `ALTER SCHEMA TEMPLATE` — the DDL that
+would close this — is specified in [`rfc-schema-migration.md`](rfc-schema-migration.md) Phases 1–3
+and is not implemented.
+
+So the fleet-migration story today is: bump the template version through the Go metadata builder
+and `fleet.SaveTemplate` → `frl meta catalog repair --database <db> --all-schemas` to rebind every
+tenant → `frl index build --database <db> --all-schemas` to build what the rebind left DISABLED.
+**Both fan-out loops now ship.** What you still write yourself is only the first step — producing
+the new template version — because no SQL DDL reaches it.
 
 ### No online index scrubber — a detection API, not a fleet tool
 
@@ -792,7 +929,7 @@ index is wrong, the remedy is a full rebuild.
 ### Format version: Go's default is not Java's
 
 `SetFormatVersion` now exists on both builders (`pkg/recordlayer/store_builder.go:1219`,
-`pkg/recordlayer/online_indexer.go:333`) and on the store (`pkg/recordlayer/store_api.go:84`). It is
+`pkg/recordlayer/online_indexer.go:339`) and on the store (`pkg/recordlayer/store_api.go:84`). It is
 a **ceiling, never a downgrade**, and it exists for exactly the rolling-upgrade case: pin every
 instance to the OLD version so no upgraded instance starts writing a layout the not-yet-upgraded
 ones cannot read (`store_builder.go:1209-1218`). An explicit `0` is an error, not "give me the
