@@ -547,10 +547,28 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/conformance/rowdiff/ordering.go:241": {1, "harness: conformance oracle compares plan sort keys to SQL ORDER BY text; engine identity rules do not apply, but the entry stays until the harness is separately audited"},
 }
 
+// fieldDebtBuckets is the RFC-197 migration partition, and the ONE place the seven
+// bucket names are written down. Every other form of them — the reason-tag prefix,
+// the group-header pattern, the completeness sweeps here and on the status page — is
+// derived from this slice.
+//
+// It is one authority because it was three. The names were spelled out separately in
+// the tag regexp, the header regexp and the header-completeness loop, which is the
+// same "two authorities on one fact" pathology this whole workstream exists to end,
+// sitting in the gate that enforces it: adding a bucket to two of the three would
+// have produced a list the tag matcher accepted and the completeness sweep never
+// asked about.
+var fieldDebtBuckets = []string{"boundary", "escape", "contract", "dotted", "name-keyed", "translator", "harness"}
+
+// fieldDebtBucketAlternation renders the buckets as a regexp alternation group.
+func fieldDebtBucketAlternation() string {
+	return `(` + strings.Join(fieldDebtBuckets, `|`) + `)`
+}
+
 // fieldDebtBucketTag is the mandatory prefix on every knownFieldDecisionDebt
 // reason. The seven buckets are the migration partition (RFC-197): a site has
 // exactly ONE owning bucket, so the per-bucket counts sum to the list.
-var fieldDebtBucketTag = regexp.MustCompile(`^(boundary|escape|contract|dotted|name-keyed|translator|harness): `)
+var fieldDebtBucketTag = regexp.MustCompile(`^` + fieldDebtBucketAlternation() + `: `)
 
 // bucketTagOf returns the single owning bucket named at the head of a debt
 // reason, and whether the reason carries one at all.
@@ -589,7 +607,7 @@ func bucketCounts(m map[string]fieldDebt) (counts map[string]int, untagged []str
 // bucketHeaderPattern matches a group-header comment: `// <bucket> (N)` at the
 // start of the comment's own text. WHERE the comment sits is decided
 // structurally rather than by indentation — see bucketHeaderCounts.
-var bucketHeaderPattern = regexp.MustCompile(`^// (boundary|escape|contract|dotted|name-keyed|translator|harness) \((\d+)\)`)
+var bucketHeaderPattern = regexp.MustCompile(`^// ` + fieldDebtBucketAlternation() + ` \((\d+)\)`)
 
 // debtLiteralSpan returns the byte span of the knownFieldDecisionDebt composite
 // literal's braces. Everything outside it — the doc comment above the var,
@@ -694,7 +712,7 @@ func bucketHeaderCounts(src []byte) (map[string]int, []string) {
 // a site that arrived.
 func bucketHeaderMismatches(header, live map[string]int) []string {
 	var bad []string
-	for _, b := range []string{"boundary", "escape", "contract", "dotted", "name-keyed", "translator", "harness"} {
+	for _, b := range fieldDebtBuckets {
 		h, declared := header[b]
 		if !declared {
 			bad = append(bad, fmt.Sprintf("bucket %q has no `// %s (N)` group header — "+
