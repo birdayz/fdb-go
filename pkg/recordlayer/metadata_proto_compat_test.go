@@ -222,6 +222,33 @@ func TestIndexFromProto_DeprecatedIndexTypeEnum(t *testing.T) {
 					"alone — losing it here permits the duplicates Java rejects",
 					got, tc.wantUnique)
 			}
+
+			// Re-serializing MIGRATES the index to the modern encoding, exactly as
+			// Java's toProto does: it writes `type` and the options list and never
+			// `index_type` (Index.java:656-672). That makes the read above the ONLY
+			// place the enum is ever interpreted, so a reader that drops it drops
+			// the uniqueness permanently the next time the metadata is written.
+			back, err := indexToProto(idx)
+			if err != nil {
+				t.Fatalf("indexToProto: %v", err)
+			}
+			if back.IndexType != nil {
+				t.Errorf("re-serialized with index_type=%v still set; Java's toProto emits only "+
+					"`type` + options, so the deprecated enum must not be written back", back.GetIndexType())
+			}
+			if back.GetType() != tc.wantType {
+				t.Errorf("re-serialized type = %q, want %q", back.GetType(), tc.wantType)
+			}
+			roundTripped, err := indexFromProto(back)
+			if err != nil {
+				t.Fatalf("re-read: %v", err)
+			}
+			if got := roundTripped.IsUnique(); got != tc.wantUnique {
+				t.Errorf("uniqueness did not survive the migration round-trip: IsUnique() = %t, "+
+					"want %t. The enum is gone from the modern encoding, so if it was not "+
+					"translated into the unique OPTION on read, the constraint is lost for good",
+					got, tc.wantUnique)
+			}
 		})
 	}
 }
