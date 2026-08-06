@@ -369,6 +369,43 @@ func LegColumnProvenanceCensus() (legColumnProvenanceCounters, []string) {
 	return legColumnProvenanceCounts, out
 }
 
+// LegColumnProvenanceDottedNames returns the distinct COLUMN NAMES the dotted
+// arm ANSWERED on — the qualified labels, not the witness prose.
+//
+// It exists so a cross-population claim can be checked rather than eyeballed.
+// The retirement condition booked for this reader is "the dotted-hit count goes
+// to 0", booked against converting a mint in the TRANSLATOR; whether that is
+// reachable depends on whether the names that mint produces are these names.
+// Comparing the two sets needs both as data, and this census's witnesses are
+// sentences.
+func LegColumnProvenanceDottedNames() []string {
+	legColumnProvenanceMu.Lock()
+	defer legColumnProvenanceMu.Unlock()
+	var out []string
+	seen := map[string]struct{}{}
+	for _, w := range legColumnProvenanceWitnesses {
+		if !strings.HasPrefix(w, "DOTTED-HIT") {
+			continue
+		}
+		i := strings.IndexByte(w, '"')
+		if i < 0 {
+			continue
+		}
+		j := strings.IndexByte(w[i+1:], '"')
+		if j < 0 {
+			continue
+		}
+		name := w[i+1 : i+1+j]
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // FormatLegColumnProvenanceCensus renders the census for a harness to log.
 func FormatLegColumnProvenanceCensus() string {
 	c, witnesses := LegColumnProvenanceCensus()

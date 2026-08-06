@@ -25,6 +25,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
+	corequery "fdb.dev/pkg/relational/core/query"
 	_ "fdb.dev/pkg/relational/sqldriver"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
@@ -104,6 +105,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	values.ResetSeedWindowReaderCensus()
 	values.ResetQualifierRecoveryCensus()
 	cascades.ResetFoldStep1SeedCensus()
+	corequery.ResetUnnestLegMintCensus()
 	cascades.ResetOrientationGateCensus()
 	values.SetLegIdentityCensusEnabled(true)
 	code := m.Run()
@@ -163,6 +165,18 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// (ImplementNestedLoopJoinRule.java:187,201,214). Their untyped counts are a
 	// count of couriers; this is the author.
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatSelectResultMintCensus())
+	// The UNNEST LEG-MINT census: which of the five call sites of the surviving
+	// qualified-name unnest rebase the corpus reaches, and what names it mints.
+	// Reported beside the leg-column provenance census because the assertion
+	// below is a claim about BOTH populations at once — the acceptance condition
+	// booked for retiring the executor's dotted arm ("dotted hits -> 0") was
+	// booked against converting this mint, and whether that is even reachable
+	// depends on whether these two name sets meet.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", corequery.FormatUnnestLegMintCensus())
+	if failed := corequery.AssertUnnestLegMintCensus(os.Stderr,
+		executor.LegColumnProvenanceDottedNames()); failed && code == 0 {
+		code = 1
+	}
 	if failed := assertDottedLegQualifierCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}

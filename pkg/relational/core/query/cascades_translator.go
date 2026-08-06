@@ -3056,7 +3056,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 					}
 					pred = baked
 				} else {
-					pred = rebaseUnnestOuterLegPredicate(pred, outerLegs, mergedCorr)
+					pred = rebaseUnnestOuterLegPredicate(pred, outerLegs, mergedCorr, UnnestLegMintSiteNonChainedMerge)
 				}
 			}
 			toMerge := []predicates.QueryPredicate{pred}
@@ -3397,7 +3397,7 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 			mergedCorr := values.NamedCorrelationIdentifier(sourceAlias(join.Left))
 			outerLegs := unnestOuterLegAliases(join.Left, mergedCorr)
 			for _, p := range nonExists {
-				rebased := rebaseUnnestOuterLegPredicate(rewriteUnnestPredicate(p, u), outerLegs, mergedCorr)
+				rebased := rebaseUnnestOuterLegPredicate(rewriteUnnestPredicate(p, u), outerLegs, mergedCorr, UnnestLegMintSiteAnchoredNonExists)
 				merged = append(merged, rebased)
 			}
 		}
@@ -3566,7 +3566,7 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 					}
 					rebased = baked
 				} else {
-					rebased = rebaseUnnestOuterLegPredicate(lf.Predicate, outerLegs, mergedCorr)
+					rebased = rebaseUnnestOuterLegPredicate(lf.Predicate, outerLegs, mergedCorr, UnnestLegMintSiteBuriedNotWindowed)
 				}
 				esq.Plan = &logical.LogicalFilter{
 					Input:                      lf.Input,
@@ -3587,7 +3587,7 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 			// here, exactly as the buried refs above (ordinalSlotInLegWindow resolves
 			// each dup-named leg's own slot).
 			if !seedWindowed {
-				esq.JoinPredicate = rebaseUnnestOuterLegPredicate(esq.JoinPredicate, outerLegs, mergedCorr)
+				esq.JoinPredicate = rebaseUnnestOuterLegPredicate(esq.JoinPredicate, outerLegs, mergedCorr, UnnestLegMintSiteJoinPredNotWindowed)
 			} else if planTimeBake {
 				// Bake the existential correlation's LEG refs (alias-aware, dup-named
 				// disambiguation) AND the ELEMENT ref (`EEV.VK = X` — the merged
@@ -3635,11 +3635,26 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 // off the existential outer's merged binding. References to the unnest element
 // (the merged corr itself) or to the existential inner pass through untouched.
 // RFC-142.
+// site names WHICH of the five callers reached it, so the unnest leg-mint
+// census can report them apart. The five are not one arm — three sit in an
+// explicit `!seedWindowed` / `!ordinalSeed` else-branch and two apply no seed
+// test at all — and a conversion driven by flipping a seed test moves only the
+// first three. It is a PARAMETER rather than a call-site counter so that a new
+// caller has to state which population it joins.
 func rebaseUnnestOuterLegPredicate(
 	p predicates.QueryPredicate,
 	outerLegs map[string]struct{},
 	mergedCorr values.CorrelationIdentifier,
+	site UnnestLegMintSite,
 ) predicates.QueryPredicate {
+	// Counted BEFORE the inert guard, deliberately. A site that is reached with
+	// nothing to rewrite and a site that is never reached print the same zero
+	// once the guard has run, and they mean opposite things: the first is a live
+	// arm carrying no traffic, the second is dead code.
+	census := unnestLegMintEnabled()
+	if census {
+		RecordUnnestLegMintCall(site)
+	}
 	if p == nil || len(outerLegs) == 0 {
 		return p
 	}
@@ -3664,7 +3679,11 @@ func rebaseUnnestOuterLegPredicate(
 			// Read the qualified "LEG.COL" key off the merged unnest output. The
 			// field already carries a bare column name here (resolved against the
 			// outer table source), so prefix it with the leg alias.
-			return values.NewFieldValue(mergedQOV, leg+"."+strings.ToUpper(fv.Field), fv.Typ)
+			minted := leg + "." + strings.ToUpper(fv.Field)
+			if census {
+				RecordUnnestLegMintName(site, minted)
+			}
+			return values.NewFieldValue(mergedQOV, minted, fv.Typ)
 		})
 	}
 	return mapPredicateValues(p, rewrite)
@@ -3739,7 +3758,7 @@ func rebaseChainedOuterLegPredicate(
 	if ordinalSeed {
 		return rebaseUnnestOuterLegPredicateOrdinal(p, ordType, ordType, outerLegs, mergedCorr)
 	}
-	return rebaseUnnestOuterLegPredicate(p, outerLegs, mergedCorr), true
+	return rebaseUnnestOuterLegPredicate(p, outerLegs, mergedCorr, UnnestLegMintSiteChainedNameModel), true
 }
 
 // chainedPredScanPushable reports whether every correlation the conjunct references is an
