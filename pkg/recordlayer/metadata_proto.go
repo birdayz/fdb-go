@@ -464,9 +464,28 @@ func indexToProto(idx *Index) (*gen.Index, error) {
 // indexFromProto deserializes an Index from protobuf.
 func indexFromProto(p *gen.Index) (*Index, error) {
 	idx := &Index{
-		Name:    p.GetName(),
-		Type:    p.GetType(),
+		Name: p.GetName(),
+		// An ABSENT type means VALUE, exactly as Java reads it:
+		// `type = proto.hasType() ? proto.getType() : IndexTypes.VALUE`
+		// (Index.java:203). The `type` field carries no protobuf default, so an
+		// index serialized by a Java app that never set it arrives here as nil,
+		// and GetType() would flatten that to "".
+		//
+		// Presence, not emptiness, is the test — a type EXPLICITLY set to "" is a
+		// type no maintainer implements, and it must reach the dispatch and be
+		// refused there rather than be quietly promoted to VALUE. Java draws the
+		// line in the same place, via hasType().
+		//
+		// This was invisible while the maintainer dispatch answered every
+		// unrecognised type with the value-index maintainer: "" landed on the
+		// default arm and came back correct by accident. With that arm failing
+		// closed, the accident becomes a refusal to open Java-authored metadata,
+		// so the default has to be stated where Java states it.
+		Type:    IndexTypeValue,
 		Options: make(map[string]string),
+	}
+	if p.Type != nil {
+		idx.Type = p.GetType()
 	}
 
 	if p.RootExpression != nil {

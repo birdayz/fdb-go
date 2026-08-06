@@ -64,7 +64,13 @@ func TestIndexScanCandidacy_EveryTypeClassified(t *testing.T) {
 		IndexTypeMaxEverTuple:   "atomic (_EVER)",
 		IndexTypeMinEverTuple:   "atomic (_EVER)",
 		IndexTypeMaxEverVersion: "atomic (_EVER)",
-		IndexTypeBitmapValue:    "atomic (bitmap)",
+		// The deprecated bare spellings canonicalize to their _LONG twins
+		// (canonicalIndexType), so they divert for exactly the same reason and
+		// MUST NOT be value candidates: an atomic-mutation index reached by a
+		// value scan is the F35 bug class, and an alias is not a loophole in it.
+		IndexTypeMaxEver:     "atomic (_EVER, deprecated bare spelling)",
+		IndexTypeMinEver:     "atomic (_EVER, deprecated bare spelling)",
+		IndexTypeBitmapValue: "atomic (bitmap)",
 		// Permuted MIN/MAX are diverted via tryAggregateIndexCandidate, which
 		// requires a grouping (returns nil for groupingCount==0). A permuted index is
 		// always constructed WITH a grouping (a permuted_min/max is meaningless
@@ -106,7 +112,7 @@ func TestIndexScanCandidacy_EveryTypeClassified(t *testing.T) {
 	// IndexType constant into a forced failure here — bump wantCount AND classify the
 	// new type in one of the two maps below (the loop's exactly-one-bucket check then
 	// also fires until it is bucketed).
-	const wantCount = 20
+	const wantCount = 22
 	if len(matches) != wantCount {
 		t.Fatalf("extracted %d IndexType* constants, want %d — a constant was added/removed or the "+
 			"const syntax changed. Bump wantCount and classify the new type below (F45); a silent "+

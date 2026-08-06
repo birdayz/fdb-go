@@ -54,14 +54,19 @@ var leafIsolationDeclaration = map[string]leafIsolationVerdict{
 	// aggregate value, which is fetched by the aggregate machinery (its
 	// snapshot reads are paired with explicit conflict keys — the sanctioned
 	// SNAPSHOT + targeted conflict pattern, not a query leaf).
-	"IndexTypeCount":          {reason: "aggregate value, not a scannable entry stream"},
-	"IndexTypeCountNotNull":   {reason: "aggregate value, not a scannable entry stream"},
-	"IndexTypeCountUpdates":   {reason: "aggregate value, not a scannable entry stream"},
-	"IndexTypeSum":            {reason: "aggregate value, not a scannable entry stream"},
-	"IndexTypeMaxEverLong":    {reason: "aggregate value, not a scannable entry stream"},
-	"IndexTypeMinEverLong":    {reason: "aggregate value, not a scannable entry stream"},
-	"IndexTypeMaxEverTuple":   {reason: "aggregate value, not a scannable entry stream"},
-	"IndexTypeMinEverTuple":   {reason: "aggregate value, not a scannable entry stream"},
+	"IndexTypeCount":        {reason: "aggregate value, not a scannable entry stream"},
+	"IndexTypeCountNotNull": {reason: "aggregate value, not a scannable entry stream"},
+	"IndexTypeCountUpdates": {reason: "aggregate value, not a scannable entry stream"},
+	"IndexTypeSum":          {reason: "aggregate value, not a scannable entry stream"},
+	"IndexTypeMaxEverLong":  {reason: "aggregate value, not a scannable entry stream"},
+	"IndexTypeMinEverLong":  {reason: "aggregate value, not a scannable entry stream"},
+	"IndexTypeMaxEverTuple": {reason: "aggregate value, not a scannable entry stream"},
+	"IndexTypeMinEverTuple": {reason: "aggregate value, not a scannable entry stream"},
+	// Deprecated bare spellings; canonicalIndexType folds them onto the _LONG
+	// twins above before any dispatch, so they reach the identical maintainer and
+	// inherit its verdict verbatim.
+	"IndexTypeMaxEver":        {reason: "aggregate value, not a scannable entry stream"},
+	"IndexTypeMinEver":        {reason: "aggregate value, not a scannable entry stream"},
 	"IndexTypeMaxEverVersion": {reason: "aggregate value, not a scannable entry stream"},
 
 	// Scannable through their own scan types, all of which reach the same

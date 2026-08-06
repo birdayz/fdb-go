@@ -753,3 +753,281 @@ func CompareMinMaxEverIndexEntries(goEntries, javaEntries []MinMaxEverIndexEntry
 	}
 	return nil
 }
+
+// BareEverIndexConformanceStore wraps record operations with an index whose
+// metadata carries the DEPRECATED bare type spelling — "max_ever" / "min_ever"
+// rather than "max_ever_long" / "min_ever_long".
+//
+// It holds TWO metadata objects over the SAME index name, and that is the whole
+// design. Because both spellings produce the same index name and therefore the
+// same subspace key, records written through the bare metadata can be read back
+// through the _LONG metadata against the identical subspace. If the bare
+// spelling reaches the same atomic maintainer, that read succeeds and returns
+// one aggregate entry. If it reaches any other maintainer, the bytes in that
+// subspace are a different format and the _LONG read cannot reproduce them.
+//
+// That is the assertion the pre-existing suite could not make: it built _LONG
+// indexes only, so a bare-spelled index falling through Go's maintainer dispatch
+// to the VALUE maintainer — writing one per-record entry per record instead of a
+// single aggregate — was invisible.
+type BareEverIndexConformanceStore struct {
+	RecordDB *recordlayer.FDBDatabase
+	// MetaData declares the index with the bare spelling.
+	MetaData *recordlayer.RecordMetaData
+	// LongMetaData declares the SAME index name with the canonical _LONG
+	// spelling, so a read through it proves the bare writer produced _LONG bytes.
+	LongMetaData *recordlayer.RecordMetaData
+	BareIndex    *recordlayer.Index
+	LongIndex    *recordlayer.Index
+	isMax        bool
+	Keyspace     subspace.Subspace
+	java         *JavaInvoker
+	clusterFile  string
+	tenantName   string
+}
+
+func NewBareEverIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile, tenantName string, isMax bool) (*BareEverIndexConformanceStore, error) {
+	name := "min_ever_price"
+	newLong := recordlayer.NewMinEverLongIndex
+	bareType := recordlayer.IndexTypeMinEver
+	if isMax {
+		name = "max_ever_price"
+		newLong = recordlayer.NewMaxEverLongIndex
+		bareType = recordlayer.IndexTypeMaxEver
+	}
+
+	build := func(idx *recordlayer.Index) (*recordlayer.RecordMetaData, error) {
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+		builder.AddIndex("Order", idx)
+		return builder.Build()
+	}
+
+	// The bare index is the _LONG constructor with the type re-stamped. That is
+	// deliberately the only way to build one here: there is no bare-spelling
+	// constructor to call, because nothing in this port should ever WRITE the
+	// deprecated spelling. This is metadata as a Java app would have authored it.
+	bareIdx := newLong(name, recordlayer.Ungrouped(recordlayer.Field("price")))
+	bareIdx.Type = bareType
+	bareMD, err := build(bareIdx)
+	if err != nil {
+		return nil, err
+	}
+
+	longIdx := newLong(name, recordlayer.Ungrouped(recordlayer.Field("price")))
+	longMD, err := build(longIdx)
+	if err != nil {
+		return nil, err
+	}
+
+	ks := keyspace
+	if tenantName != "" {
+		ks = subspace.Sub(tuple.Tuple{})
+	}
+
+	return &BareEverIndexConformanceStore{
+		RecordDB:     recordDB,
+		MetaData:     bareMD,
+		LongMetaData: longMD,
+		BareIndex:    bareIdx,
+		LongIndex:    longIdx,
+		isMax:        isMax,
+		Keyspace:     ks,
+		java:         NewJavaInvoker(),
+		clusterFile:  clusterFile,
+		tenantName:   tenantName,
+	}, nil
+}
+
+func (s *BareEverIndexConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
+		"clusterFile": s.clusterFile,
+		"subspace":    BytesToIntArray(s.Keyspace.Bytes()),
+		"isMax":       s.isMax,
+	}
+	if s.tenantName != "" {
+		params["tenantName"] = s.tenantName
+	}
+	return params
+}
+
+// SaveOrderGo saves through the BARE-spelled metadata.
+func (s *BareEverIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+		_, err = store.SaveRecord(order)
+		return nil, err
+	})
+	return err
+}
+
+func (s *BareEverIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+	params := s.buildJavaParams()
+	params["order"] = order
+	return s.java.InvokeAs(ctx, "saveOrderWithBareEverIndex", params, nil)
+}
+
+// scanGoWith scans the index using whichever metadata/index pair is handed in,
+// so the same subspace can be read as bare-spelled or as _LONG.
+func (s *BareEverIndexConformanceStore) scanGoWith(ctx context.Context, md *recordlayer.RecordMetaData, idx *recordlayer.Index) ([]MinMaxEverIndexEntryResult, error) {
+	var results []MinMaxEverIndexEntryResult
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(s.Keyspace).Open()
+		if err != nil {
+			return nil, err
+		}
+		entries, err := recordlayer.AsList(ctx, store.ScanIndex(idx, recordlayer.TupleRangeAll, nil, recordlayer.ForwardScan()))
+		if err != nil {
+			return nil, err
+		}
+		results = nil
+		for _, e := range entries {
+			val := int64(0)
+			if len(e.Value) > 0 {
+				val = e.Value[0].(int64)
+			}
+			results = append(results, MinMaxEverIndexEntryResult{Key: tupleToSlice(e.Key), Value: val})
+		}
+		return nil, nil
+	})
+	return results, err
+}
+
+// ScanBareGo reads the index through the BARE-spelled metadata.
+func (s *BareEverIndexConformanceStore) ScanBareGo(ctx context.Context) ([]MinMaxEverIndexEntryResult, error) {
+	return s.scanGoWith(ctx, s.MetaData, s.BareIndex)
+}
+
+// ScanAsLongGo reads the SAME subspace through the canonical _LONG metadata.
+func (s *BareEverIndexConformanceStore) ScanAsLongGo(ctx context.Context) ([]MinMaxEverIndexEntryResult, error) {
+	return s.scanGoWith(ctx, s.LongMetaData, s.LongIndex)
+}
+
+func (s *BareEverIndexConformanceStore) ScanBareJava(ctx context.Context) ([]MinMaxEverIndexEntryResult, error) {
+	var javaResults []map[string]any
+	if err := s.java.InvokeAs(ctx, "scanBareEverIndex", s.buildJavaParams(), &javaResults); err != nil {
+		return nil, fmt.Errorf("java scanBareEverIndex failed: %w", err)
+	}
+	var results []MinMaxEverIndexEntryResult
+	for _, m := range javaResults {
+		entry := MinMaxEverIndexEntryResult{}
+		if keyRaw, ok := m["key"]; ok {
+			entry.Key = toInterfaceSlice(keyRaw)
+		}
+		if valRaw, ok := m["value"]; ok {
+			entry.Value = int64(valRaw.(float64))
+		}
+		results = append(results, entry)
+	}
+	return results, nil
+}
+
+// The DEPRECATED bare spellings, cross-engine.
+//
+// Java keeps IndexTypes.MIN_EVER / MAX_EVER because old meta-data contains them
+// (IndexTypes.java:67-81) and folds each onto its _LONG behaviour unconditionally
+// in AtomicMutationIndexMaintainer.getAtomicMutation. On a shared cluster that is
+// not a legacy curiosity: it is metadata a Java app can hand this port today.
+//
+// Go answered an unrecognised index type with the VALUE maintainer, so a
+// bare-spelled index was not rejected — it was maintained as a value index, one
+// entry per record written into the aggregate index's own subspace. The existing
+// specs in this file could not see it because every one of them builds a _LONG
+// index. The bare spelling is the dimension that was missing, not the volume.
+var _ = Describe("Deprecated bare MIN_EVER / MAX_EVER index conformance", func() {
+	var (
+		ctx context.Context
+		env *TenantEnvironment
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		var err error
+		env, err = SetupTenantEnvironment(ctx, sharedContainer, fmt.Sprintf("bareever_%s", uuid.New().String()))
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		if env != nil {
+			_ = env.Cleanup(ctx)
+		}
+	})
+
+	for _, tc := range []struct {
+		name  string
+		isMax bool
+		// prices are written in an order where the extreme is not last, so a
+		// maintainer that merely keeps the newest value cannot pass.
+		prices []int32
+		want   int64
+	}{
+		{name: "max_ever", isMax: true, prices: []int32{100, 300, 200}, want: 300},
+		{name: "min_ever", isMax: false, prices: []int32{300, 100, 200}, want: 100},
+	} {
+		It("routes bare "+tc.name+" to the _LONG maintainer, provably on the bytes", func() {
+			store, err := NewBareEverIndexConformanceStore(env.RecordDB, env.Keyspace, env.ClusterFile, env.TenantName, tc.isMax)
+			Expect(err).NotTo(HaveOccurred())
+
+			for i, price := range tc.prices {
+				Expect(store.SaveOrderGo(ctx, &gen.Order{
+					OrderId: proto.Int64(int64(i + 1)),
+					Price:   proto.Int32(price),
+				})).To(Succeed())
+			}
+
+			// ONE aggregate entry, not one per record. A value index over three
+			// records yields three entries with the primary key in the key, which
+			// is the exact shape the old fail-open default produced.
+			bareEntries, err := store.ScanBareGo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(bareEntries).To(HaveLen(1),
+				"a bare-spelled _EVER index must maintain ONE aggregate entry; %d entries means it "+
+					"reached a per-record maintainer, which is the value-index fail-open", len(bareEntries))
+			Expect(bareEntries[0].Key).To(BeEmpty())
+			Expect(bareEntries[0].Value).To(Equal(tc.want))
+
+			// The bytes are _LONG bytes: the same subspace read through metadata
+			// that spells the type the canonical way returns the same entry.
+			longEntries, err := store.ScanAsLongGo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(longEntries).To(Equal(bareEntries),
+				"records written under the bare spelling must be byte-compatible with the _LONG "+
+					"spelling — Java folds the two onto one maintainer, so the index contents cannot differ")
+
+			// Cross-engine: Java reads what Go wrote through bare metadata.
+			javaEntries, err := store.ScanBareJava(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(CompareMinMaxEverIndexEntries(bareEntries, javaEntries)).To(Succeed())
+		})
+
+		It("reads bare "+tc.name+" written by Java", func() {
+			store, err := NewBareEverIndexConformanceStore(env.RecordDB, env.Keyspace, env.ClusterFile, env.TenantName, tc.isMax)
+			Expect(err).NotTo(HaveOccurred())
+
+			// The direction that matters most for a shared cluster: the metadata
+			// AND the writes are Java's, and this port has to read them.
+			for i, price := range tc.prices {
+				Expect(store.SaveOrderJava(ctx, &gen.Order{
+					OrderId: proto.Int64(int64(i + 1)),
+					Price:   proto.Int32(price),
+				})).To(Succeed())
+			}
+
+			goEntries, err := store.ScanBareGo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goEntries).To(HaveLen(1))
+			Expect(goEntries[0].Value).To(Equal(tc.want))
+
+			javaEntries, err := store.ScanBareJava(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(CompareMinMaxEverIndexEntries(goEntries, javaEntries)).To(Succeed())
+		})
+	}
+})

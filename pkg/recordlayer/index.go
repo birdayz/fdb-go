@@ -38,7 +38,52 @@ const (
 	// Java app fails maintainer lookup for the unknown type). Records remain
 	// fully Java-readable — the index writes only under its own subspace.
 	IndexTypeVectorSPFresh = "vector_spfresh"
+
+	// IndexTypeMinEver and IndexTypeMaxEver are the DEPRECATED bare spellings
+	// that predate the _long/_tuple split. Java still accepts them and says
+	// exactly why it cannot stop: "Deprecated for new usage, but this can't
+	// really be removed because old meta-data might include it"
+	// (IndexTypes.java:67-81). They are declared here for the same reason —
+	// Java-authored metadata on a shared cluster may carry them, and this port
+	// has to READ that metadata correctly.
+	//
+	// Java resolves each to its _LONG behaviour UNCONDITIONALLY:
+	// getAtomicMutation returns MIN_EVER_LONG for `MIN_EVER_LONG || MIN_EVER` and
+	// MAX_EVER_LONG for `MAX_EVER_LONG || MAX_EVER`
+	// (AtomicMutationIndexMaintainer.java:100-106). There is no dependence on the
+	// key type, and the doc comment on IndexTypes.MIN_EVER says the same thing
+	// declaratively — "Compatible name for MIN_EVER_LONG".
+	//
+	// Never WRITE these. New metadata uses the _long or _tuple spelling; these
+	// exist so old and Java-authored metadata resolves to the right maintainer
+	// instead of falling off the end of a switch.
+	IndexTypeMinEver = "min_ever"
+	IndexTypeMaxEver = "max_ever"
 )
+
+// canonicalIndexType resolves a deprecated index-type alias to the type whose
+// behaviour it names, and returns every other type unchanged.
+//
+// One function rather than two more `case` labels on each switch, because Java
+// only ever answers this question ONCE. There, the type string picks a maintainer
+// out of the factory registry and every later question — is it idempotent, does
+// it validate grouping, can it serve this aggregate — is a method call on the
+// maintainer that was already chosen. Go flattened that into several independent
+// switches over `idx.Type`, so an alias handled at the dispatch and nowhere else
+// would produce an index that builds with the right maintainer and is then
+// mis-judged by the idempotency check, the grouping validator and the aggregate
+// matcher. Routing every one of those switches through here keeps the alias in a
+// single place, which is the property Java gets for free from its registry.
+func canonicalIndexType(indexType string) string {
+	switch indexType {
+	case IndexTypeMinEver:
+		return IndexTypeMinEverLong
+	case IndexTypeMaxEver:
+		return IndexTypeMaxEverLong
+	default:
+		return indexType
+	}
+}
 
 // Index option keys matching Java's IndexOptions.
 const (
@@ -466,7 +511,7 @@ func (idx *Index) IsClearWhenZero() bool {
 // PERMUTED_MIN/MAX types are deliberately excluded here: they are genuinely
 // value-scannable (their Java maintainers support BY_VALUE).
 func (idx *Index) IsAtomicMutationIndex() bool {
-	switch idx.Type {
+	switch canonicalIndexType(idx.Type) {
 	case IndexTypeCount, IndexTypeCountNotNull, IndexTypeCountUpdates,
 		IndexTypeSum,
 		IndexTypeMaxEverLong, IndexTypeMinEverLong,

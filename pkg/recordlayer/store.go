@@ -1142,7 +1142,12 @@ func (store *FDBRecordStore) getIndexMaintainer(index *Index) (IndexMaintainer, 
 func (store *FDBRecordStore) createIndexMaintainer(index *Index) (IndexMaintainer, error) {
 	idxSubspace := store.indexSubspace(index)
 	tx := store.context.Transaction()
-	switch index.Type {
+	switch canonicalIndexType(index.Type) {
+	case IndexTypeValue:
+		// Spelled out rather than left to the default arm. It used to BE the
+		// default arm, which is what made an unknown type indistinguishable from
+		// a value index — see UnknownIndexTypeError.
+		return newStandardIndexMaintainer(index, idxSubspace, tx, store), nil
 	case IndexTypeCount:
 		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &countMutation{index: index}), nil
 	case IndexTypeCountNotNull:
@@ -1195,7 +1200,15 @@ func (store *FDBRecordStore) createIndexMaintainer(index *Index) (IndexMaintaine
 		// primary index subspace, generation-prefixed.
 		return newSPFreshIndexMaintainer(index, idxSubspace, tx, store, store.context, store.context.Timer())
 	default:
-		return newStandardIndexMaintainer(index, idxSubspace, tx, store), nil
+		// FAIL CLOSED. Java's registry lookup throws MetaDataException here
+		// (IndexMaintainerFactoryRegistryImpl.java:78-82) and so does this.
+		//
+		// The arm this replaces returned the standard (value-index) maintainer,
+		// which meant an index type this build does not implement was maintained
+		// as a value index — the wrong key bytes written into that index's own
+		// subspace, silently, with the write succeeding. Refusing costs an
+		// unmaintainable index; guessing costs the index's contents.
+		return nil, &UnknownIndexTypeError{IndexName: index.Name, IndexType: index.Type}
 	}
 }
 

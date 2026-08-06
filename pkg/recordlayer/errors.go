@@ -92,6 +92,43 @@ func (e *MetaDataError) Error() string {
 	return e.Message
 }
 
+// UnknownIndexTypeError is raised when no index maintainer implements an index's
+// type. It is the port of Java's registry miss:
+// IndexMaintainerFactoryRegistryImpl.getIndexMaintainerFactory looks the type up
+// and throws MetaDataException("Unknown index type for " + index) when the lookup
+// returns null (IndexMaintainerFactoryRegistryImpl.java:78-82).
+//
+// It FAILS CLOSED, and the reason is a wire-format one rather than a tidiness
+// one. Go used to answer an unrecognised type with the STANDARD maintainer — the
+// VALUE-index one. An index whose type this build does not implement was
+// therefore not rejected: it was silently maintained as a value index, writing
+// value-index key bytes into that index's own subspace. Nothing surfaces at write
+// time, because a value index is perfectly happy to serve those writes. The
+// damage appears when a build that DOES implement the type reads that subspace
+// and finds another format's entries, or when Java reads it and finds entries its
+// maintainer never wrote. An index this process cannot maintain must stop the
+// write, not receive a guess.
+//
+// Unwraps to *MetaDataError so `errors.As` for the general metadata failure
+// matches — the Go equivalent of Java's `catch (MetaDataException)`, which is
+// what callers of the registry actually catch — while a caller that wants the
+// index identity can match this type directly.
+type UnknownIndexTypeError struct {
+	IndexName string
+	IndexType string
+}
+
+func (e *UnknownIndexTypeError) Error() string {
+	return fmt.Sprintf("Unknown index type %q for index %q", e.IndexType, e.IndexName)
+}
+
+// Unwrap reports this as a metadata failure. Java's exception IS a
+// MetaDataException; in Go the identity fields need their own struct, so the
+// relationship Java gets from inheritance is spelled out here.
+func (e *UnknownIndexTypeError) Unwrap() error {
+	return &MetaDataError{Message: e.Error()}
+}
+
 // IndexVersionKind names which of an index's two version stamps a
 // IndexVersionTooNewError refers to.
 type IndexVersionKind string

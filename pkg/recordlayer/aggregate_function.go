@@ -256,7 +256,7 @@ func (store *FDBRecordStore) findIndexForAggregateFunction(
 // canEvaluateAggregate checks if an index can serve a given aggregate function.
 // Matches Java's IndexMaintainer.canEvaluateAggregateFunction().
 func canEvaluateAggregate(fn *IndexAggregateFunction, idx *Index) bool {
-	switch idx.Type {
+	switch canonicalIndexType(idx.Type) {
 	case IndexTypeCount:
 		return fn.Name == FunctionNameCount && isGroupPrefix(fn.Operand, idx.RootExpression)
 	case IndexTypeCountNotNull:
