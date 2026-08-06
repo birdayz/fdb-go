@@ -225,7 +225,12 @@ func (t *StoreTimer) RecordSince(event Event, startTime time.Time) {
 	t.getOrCreateCounter(event).Record(time.Since(startTime).Nanoseconds())
 }
 
-// Increment increments the event's count and cumulative value by 1.
+// Increment adds one occurrence of event and leaves its cumulative value at
+// zero. That a count event carries no duration is load-bearing, not
+// incidental: Java uses getTimeNanos()==0 as the proof that an event is a
+// counter rather than a timer (RecordLayerMetricCollector.java:90), and the
+// exporter renders any non-zero cumulative value as a duration in seconds.
+// See Counter.Increment.
 func (t *StoreTimer) Increment(event Event) {
 	if t == nil {
 		return
@@ -233,7 +238,9 @@ func (t *StoreTimer) Increment(event Event) {
 	t.getOrCreateCounter(event).Increment(1)
 }
 
-// IncrementBy increments the event's count and cumulative value by amount.
+// IncrementBy adds amount occurrences of event, leaving its cumulative value
+// at zero (see Increment). For a KindSize event the amount IS the byte total,
+// which is why it accumulates in Count() — the same place Java keeps it.
 func (t *StoreTimer) IncrementBy(event Event, amount int64) {
 	if t == nil {
 		return
