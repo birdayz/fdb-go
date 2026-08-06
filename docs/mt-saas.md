@@ -734,20 +734,43 @@ strength of "the data is just a key range".
 
 ## 7. Operational gaps to know before you sell this
 
-### Index builds are N CLI invocations
+### Index builds fan out across a fleet — but not within one tenant
 
-`frl index build <name>` builds **one index on one store**: the positional argument is the index
-name (`cmd/frl/internal/cmd/index_write.go:40`, `:60`), the store is addressed by scalar
-`--database`/`--schema`/`--keyspace-tuple` flags (`cmd/frl/internal/cmd/openstore.go:42-49`, all
-`StringVar` — there is no slice form anywhere in `cmd/frl`), and the driver builds one indexer for
-one target (`index_write.go:219`, single `BuildIndex` call at `:267`).
+**This gap is now partly closed.** `frl index build --all-schemas --database /tenants` builds every
+pending index across every schema in a database in one invocation, and
+`frl meta catalog repair --all-schemas --database /tenants` is the migration equivalent (rebind
+every tenant onto the latest template version). Passing an index name narrows the roll-out to that
+one index; omitting it builds whatever each tenant owes. The library primitive is
+`pkg/relational/core/fleet` if you want it in your own control plane rather than via the CLI.
 
-There is no orchestrator in the repo. Rolling one new index across N tenants is N invocations, or a
-Go driver you write. If you write one, note the CLI does not expose everything the builder has —
-`SetTargetIndexes` (`pkg/recordlayer/online_indexer.go:420`), `SetSourceIndex` (`:450`) and
-`SetMutualIndexing` / `SetMutualIndexingBoundaries` (`:502`, `:511`, the closest thing to a
-multi-worker distributed build) are Go-API only. Knobs that *are* exposed:
-`--limit`, `--rps`, `--max-retries`, `--time-limit` (`index_write.go:83-86`); the semantics are in
+The properties that matter operationally, because a fleet job is not a transaction:
+
+- **One transaction per tenant**, never one for the fleet. A fleet-wide rebind does not fit in
+  FDB's 5 s / 10 MB budget, and a single transaction would also mean one bad tenant rolls back
+  every healthy one.
+- **Per-tenant failure isolation.** A poisoned tenant is reported by name and does not stop the
+  pass; the command exits non-zero with every failure listed.
+- **Resumable.** Re-run after an interruption: migration skips schemas already at the target
+  `TEMPLATE_VERSION`, and an index build skips indexes that are no longer pending. There is no
+  "resume from checkpoint" state to manage — running it again *is* the resume.
+- **Each template has its own destination.** A database may mix schema
+  templates, and they advance independently. The rebind resolves the latest
+  version per *template*, never one number for the database — pushing every
+  tenant at whichever template is furthest ahead fails exactly the tenants that
+  still need the pass.
+- **The catalog is never a target.** It self-registers as a schema (`/__SYS/CATALOG`), so an
+  unfiltered enumeration really does return it; the fan-out refuses it.
+- **No atomic cutover.** Deliberately. Between passes tenants straddle template versions, which is
+  fine — each schema resolves metadata at its own pinned version — but there is no instant where
+  the fleet is atomically "all on v2". Do not build a release process that assumes one.
+
+Still Go-API only, still not exposed by the CLI: `SetTargetIndexes`
+(`pkg/recordlayer/online_indexer.go:420`), `SetSourceIndex` (`:450`) and `SetMutualIndexing` /
+`SetMutualIndexingBoundaries` (`:502`, `:511`). Note what the fan-out does *not* do: it
+parallelises **across** tenants (`--concurrency`), not **within** one. A single enormous tenant is
+still one sequential `OnlineIndexer` run — `SetMutualIndexing` is the multi-worker path for that,
+and nothing drives it yet. Per-build knobs exposed on both the single-store and fleet forms:
+`--limit`, `--rps`, `--max-retries`, `--time-limit`; the semantics are in
 [`operations.md` §4](operations.md#4-online-index-lifecycle).
 
 ### A new index on an existing tenant usually lands DISABLED
@@ -792,7 +815,7 @@ limits. Know which arm each tenant's schema takes; do not assume it is uniform a
 `:236` → `clearIndexData`, `:456`), so a DISABLED index holds no stale entries — nothing can read a
 wrong answer from it, it simply is not there.
 
-### No `ALTER`, and the fan-out loop for the workaround does not ship
+### No `ALTER` — but the fan-out loop for the workaround now ships
 
 `ALTER` is a lexer token that no parser rule references
 (`pkg/relational/core/parser/grammar/RelationalLexer.g4:47`; `ddlStatement` is
@@ -810,14 +833,27 @@ no `CREATE OR REPLACE` for templates — that exists only for temp functions
 
 `RepairSchema` exists — `pkg/relational/api/catalog.go:76`, implemented at
 `pkg/relational/core/catalog/fdb_store_catalog.go:472`: load the schema, load its template's latest
-version, save the regenerated schema. It is a **Go catalog API, not SQL**; no grammar rule reaches
-it (`pkg/relational/sqldriver/evolution_added_index_gate_fdb_test.go:56`). And it has **zero
-non-test call sites** — no loop iterates `ListDatabases`/`ListSchemas` calling it. No fan-out ships; the
-per-tenant Go-API loop is described as the status quo at `docs/rfc-schema-migration.md:306-311`.
+version, save the regenerated schema. It is still a **Go catalog API, not SQL**; no grammar rule
+reaches it (`pkg/relational/sqldriver/evolution_added_index_gate_fdb_test.go:56`).
 
-So the fleet-migration story today is: bump the template version → call `RepairSchema` per tenant
-through the Go API, in a loop you write → run `frl index build` per tenant per index, in a shell
-loop you write. **Neither loop ships.** Plan for building both.
+What changed is the fan-out around it. `pkg/relational/core/fleet` iterates `ListSchemasInDatabase`
+and calls `RepairSchema` per tenant in its own transaction, and
+`frl meta catalog repair --all-schemas` exposes that to operators. So the *rebind* half of a
+migration ships.
+
+The half that still does not ship is **producing the new template version from SQL**. Templates
+remain immutable through the SQL surface for the reason above (the DDL visitor never sets a version,
+the builder hardcodes 1, so a second `CREATE SCHEMA TEMPLATE` always fails 42F59). A new version has
+to be built through the Go metadata builder and saved with
+`fleet.SaveTemplate` / `SaveSchemaTemplateConstantAction`. `ALTER SCHEMA TEMPLATE` — the DDL that
+would close this — is specified in [`rfc-schema-migration.md`](rfc-schema-migration.md) Phases 1–3
+and is not implemented.
+
+So the fleet-migration story today is: bump the template version through the Go metadata builder
+and `fleet.SaveTemplate` → `frl meta catalog repair --database <db> --all-schemas` to rebind every
+tenant → `frl index build --database <db> --all-schemas` to build what the rebind left DISABLED.
+**Both fan-out loops now ship.** What you still write yourself is only the first step — producing
+the new template version — because no SQL DDL reaches it.
 
 ### No online index scrubber — a detection API, not a fleet tool
 

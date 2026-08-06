@@ -1,6 +1,9 @@
 # RFC: Schema Migration for the Relational Layer
 
-**Status:** Draft
+**Status:** Partially implemented — the tenant-fleet fan-out primitive has
+landed (`pkg/relational/core/fleet`, `frl index build --all-schemas`,
+`frl meta catalog repair --all-schemas`). The `ALTER SCHEMA TEMPLATE` DDL
+surface (Phases 1–3 below) has not.
 **Author:** Johannes Bruederl
 **Date:** 2026-05-20
 
@@ -109,11 +112,82 @@ ALTER SCHEMA TEMPLATE tmpl
    - `DROP INDEX`: `builder.RemoveIndex(indexName)` (creates FormerIndex)
 4. **Validate evolution** — `MetaDataEvolutionValidator.Validate(old, new)`
    and `RelationalSchemaEvolutionValidator.Validate(old, new)`
-5. **Save new template version** — `catalog.CreateTemplate(txn, newTemplate)`
+5. **Save new template version + commit** — one catalog transaction, via
+   `SaveSchemaTemplateConstantAction` (not `CreateTemplate` directly: only the
+   constant action applies the version-monotonicity gate and the
+   metadata-evolution validator). This transaction writes a SINGLE catalog
+   row, so its size is independent of tenant count.
 6. **Rebind all schemas using this template** — for each schema bound to
-   `tmpl`, call `RepairSchema(txn, dbURI, schemaName)` (already implemented)
-7. **Commit catalog transaction**
-8. **Schedule index jobs** — for each new index, enqueue a build job
+   `tmpl`, call `RepairSchema` in **its own transaction**, one per schema.
+7. **Schedule index jobs** — for each new index, enqueue a build job
+
+### Why the fleet rebind is not one transaction
+
+An earlier draft of this RFC put step 6 *inside* the step-5 transaction: every
+`RepairSchema` call took the same `txn`, and one commit covered the template
+save and the whole fleet. That is wrong on two independent axes, and both get
+worse as the fleet grows — which is exactly the direction this feature exists
+to serve.
+
+**It does not fit.** FDB caps a transaction at 5 seconds and 10 MB. A rebind
+writes a catalog row per schema and reconciles a store header per schema. At a
+few tenants this commits; at a few thousand it cannot, and the failure mode is
+`transaction_too_old` / `transaction_too_large` on the *whole* migration, after
+doing all the work.
+
+**It inverts failure isolation.** In one transaction, a single unreadable or
+concurrently-deleted tenant aborts the commit and rolls back every healthy
+tenant with it. The blast radius of one bad tenant becomes the entire fleet —
+the opposite of what a multi-tenant control plane needs. Fleet maintenance
+elsewhere in this repo already takes the other position: `SweepSPFreshIndexes`
+collects per-tenant failures and continues, on the stated grounds that "one
+corrupt tenant must not halt fleet maintenance".
+
+**So atomicity is deliberately forfeited, and idempotence replaces it.** This
+is a real trade, not a free win, and the cost is stated plainly: there is no
+instant at which the fleet is atomically "all on v2". A pass can be
+interrupted, and between passes tenants straddle two template versions. That
+is acceptable *because* the straddle is exactly the state the system already
+tolerates — a schema is pinned to its own `TEMPLATE_VERSION`, reads and writes
+resolve metadata at that pinned version, and a v1 tenant is not broken by the
+existence of v2.
+
+What replaces atomicity is convergence:
+
+- **Resume key** — `ListSchemasInDatabase` already returns each schema's
+  `TEMPLATE_VERSION`. A schema already at or above the target version is
+  skipped without opening a transaction. Re-running an interrupted migration
+  costs one catalog read per finished tenant.
+- **Idempotent unit** — the per-schema unit is a single-row rebind. Re-applying
+  it is a no-op (`SaveSchema` short-circuits when template name and version
+  are unchanged), so a crash between two tenants loses nothing.
+- **Failure isolation** — a failed tenant is recorded against its own target
+  and reported by name; the pass continues.
+- **Asserted bridge** — after each rebind the landed version is read back
+  *inside the same transaction* and asserted to have advanced. `RepairSchema`
+  rebinds to whatever the catalog's latest version happens to be, so without
+  this check a template save that silently did not land would report every
+  tenant as "migrated" while all of them stayed on the old metadata.
+- **Per-template destination** — a database may hold schemas bound to
+  different templates, which advance independently. The destination version is
+  resolved per template (`LatestVersions` / `MigrateToLatest`), never once for
+  the database: `RepairSchema` can only move a schema to ITS OWN template's
+  latest, so one fleet-wide number makes the asserted bridge above reject
+  every tenant whose template has not reached it — and those are precisely the
+  tenants the pass exists to move.
+- **Catalog guard** — the catalog self-registers (`Initialize` writes `/__SYS`
+  and `/__SYS/CATALOG` rows), so an unfiltered enumeration really does hand
+  the catalog back as an ordinary target. It is refused. Note that a
+  subspace-overlap check alone does **not** catch this: `CatalogSubspace` is
+  the 3-tuple `("__SYS","__SYS","CATALOG")` while a schema store is the
+  2-tuple `(dbPath, schemaName)`, so the two share no byte prefix. The guard
+  is a name check, with the subspace check kept as defence in depth.
+
+The same reasoning applies unchanged to the index-build fan-out, which is
+strictly larger: an `OnlineIndexer` run is already multi-transaction per
+tenant, so it could never have been folded into a catalog transaction at all.
+
+This is implemented in `pkg/relational/core/fleet`.
 
 ### Index Build Orchestration
 
@@ -243,6 +317,27 @@ Both validators run before the new template is persisted. Invalid
 migrations fail atomically — no partial state.
 
 ## Implementation Plan
+
+### Phase 0: Tenant-fleet fan-out — **DONE**
+
+The multi-tenant execution substrate the phases below all depend on, built
+against the amended per-schema-transaction design above. It is usable today
+without any `ALTER` grammar, because the operations it fans out
+(`SaveSchemaTemplate`, `RepairSchema`, `OnlineIndexer`) already exist.
+
+- `pkg/relational/core/fleet` — `ListTargets` / `FilterByTemplate`,
+  `SaveTemplate`, `Migrate` / `MigrateTemplate` (migration mode),
+  `PendingIndexes` / `BuildIndexes` / `BuildAll` (index-build mode).
+  Per-schema transactions, per-tenant failure isolation, progress callback,
+  `TEMPLATE_VERSION` resume skip, bounded concurrency, catalog guard.
+- CLI: `frl index build --all-schemas [name]` and
+  `frl meta catalog repair --all-schemas`.
+- Tests: `pkg/relational/sqldriver/fleet_fanout_fdb_test.go` (real FDB,
+  multi-schema fixture) and `pkg/relational/core/fleet/*_test.go`.
+
+Not yet done, and deliberately out of this phase: distributing one tenant's
+build across workers (`SetMutualIndexing`) — the fan-out parallelises ACROSS
+tenants, not within one.
 
 ### Phase 1: Grammar + Catalog (estimated: 1 shift)
 

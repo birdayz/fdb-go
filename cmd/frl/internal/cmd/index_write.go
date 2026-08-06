@@ -29,19 +29,23 @@ const defaultBuildMaxRetries = 100
 
 func newIndexBuildCmd() *cobra.Command {
 	var (
-		addr       storeAddressFlags
-		yes        bool
-		limit      int
-		rps        int
-		maxRetries int
-		timeLimit  time.Duration
+		addr        storeAddressFlags
+		yes         bool
+		limit       int
+		rps         int
+		maxRetries  int
+		timeLimit   time.Duration
+		allSchemas  bool
+		concurrency int
 	)
 	c := &cobra.Command{
-		Use:   "build <name>",
+		Use:   "build [name]",
 		Short: "Build an index online (write)",
 		Example: `  frl index build Order$price --yes
   frl index build Order$price --rps 5000 --limit 200 --yes
-  frl index build IDX --time-limit 30s --yes   # partial pass; rerun resumes`,
+  frl index build IDX --time-limit 30s --yes   # partial pass; rerun resumes
+  frl index build --database /tenants --all-schemas --yes          # whole fleet
+  frl index build IDX --database /tenants --all-schemas --yes      # one index, whole fleet`,
 		ValidArgsFunction: indexNameCompletion,
 		Long: "Drives the online indexer over the store: scans records in " +
 			"batched transactions, writes index entries, tracks progress in " +
@@ -56,9 +60,33 @@ func newIndexBuildCmd() *cobra.Command {
 			"Resuming with different indexing settings than the interrupted " +
 			"build fails with the saved vs requested stamps — rerun with " +
 			"matching settings to take over, or `frl index rebuild` to start " +
-			"over from scratch.",
-		Args: cobra.ExactArgs(1),
+			"over from scratch.\n\n" +
+			"--all-schemas builds across every schema in --database instead of " +
+			"one store, with the index name optional: given, it rolls that one " +
+			"index across the fleet; omitted, each tenant builds whatever it " +
+			"owes. The fan-out uses ONE TRANSACTION PER TENANT — a fleet build " +
+			"cannot fit in a single transaction, and one poisoned tenant must " +
+			"not roll back the healthy ones. Failures are reported per tenant " +
+			"and do not stop the pass; rerun to resume, since a completed index " +
+			"is simply no longer pending.",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if allSchemas {
+				if addr.schema != "" {
+					return fmt.Errorf("--all-schemas fans out over every schema in --database — " +
+						"drop --schema (it addresses a single store)")
+				}
+				if addr.database == "" {
+					return fmt.Errorf("--all-schemas needs --database to know which fleet to build")
+				}
+				return runFleetIndexBuild(cmd, &addr, addr.database, args, yes, indexBuildOptions{
+					limit: limit, rps: rps, maxRetries: maxRetries, timeLimit: timeLimit,
+				}, concurrency)
+			}
+			if len(args) != 1 {
+				return fmt.Errorf("accepts 1 arg (the index name), received %d — "+
+					"or pass --all-schemas to build across a whole database", len(args))
+			}
 			target, err := addr.resolve()
 			if err != nil {
 				return err
@@ -84,6 +112,8 @@ func newIndexBuildCmd() *cobra.Command {
 	c.Flags().IntVar(&rps, "rps", 0, "records-per-second throttle (0 = indexer default)")
 	c.Flags().IntVar(&maxRetries, "max-retries", defaultBuildMaxRetries, "retry budget for adaptive batch-halving on transient errors")
 	c.Flags().DurationVar(&timeLimit, "time-limit", 0, "stop after this duration (partial build; rerun resumes)")
+	c.Flags().BoolVar(&allSchemas, "all-schemas", false, "build across every schema in --database (fleet fan-out)")
+	c.Flags().IntVar(&concurrency, "concurrency", 0, "schemas built in parallel with --all-schemas (0 = default)")
 	return c
 }
 
