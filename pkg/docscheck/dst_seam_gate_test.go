@@ -56,13 +56,17 @@ var seamAllowlist = map[string]string{
 	"pkg/recordlayer/store_builder.go:Open: time.Now":                     "store-open-latency metric",
 	"pkg/recordlayer/store_builder.go:RebuildIndex: time.Now":             "rebuild-latency metric",
 	"pkg/relational/core/embedded/plan_logging.go:beginPlanLog: time.Now": "plan-log timestamp; log output, not persisted rows",
-	"pkg/recordlayer/spfresh_query.go:search: time.Now":                   "search-latency metric",
-	"pkg/recordlayer/store_timer.go:RecordSince: time.Since":              "the StoreTimer's own latency accounting; the whole point of the type is real elapsed time",
-	"pkg/relational/core/embedded/plan_logging.go:finish: time.Since":     "planning duration on a log line; the log is not a persisted row",
-	"pkg/recordlayer/store.go:DeleteRecord: time.Now":                     "delete-latency metric",
-	"pkg/recordlayer/store.go:LoadRecord: time.Now":                       "load-latency metric",
-	"pkg/recordlayer/store.go:ScanRecords: time.Now":                      "scan-latency metric",
-	"pkg/recordlayer/store_builder.go:CreateOrOpen: time.Now":             "store-open-latency metric",
+	"pkg/relational/core/embedded/execution_logging.go:beginExecLog: time.Now": "execution-stats timestamp; the same log-output-not-persisted-rows case as beginPlanLog one layer over. " +
+		"Deliberately NOT the seamed clock ScanLimiterState uses: that one DECIDES where a page ends and which continuation the caller gets, so a wall-clock anchor changes what a seeded run produces. This one is read once at the start of Execute and once at the end, and the only thing derived from the difference is ExecutionDuration and the SlowQuery boolean beside it on a log line — no byte written, no page boundary, no plan choice",
+	"pkg/recordlayer/spfresh_query.go:search: time.Now":               "search-latency metric",
+	"pkg/recordlayer/store_timer.go:RecordSince: time.Since":          "the StoreTimer's own latency accounting; the whole point of the type is real elapsed time",
+	"pkg/relational/core/embedded/plan_logging.go:finish: time.Since": "planning duration on a log line; the log is not a persisted row",
+	"pkg/relational/core/embedded/execution_logging.go:finish: time.Since": "execution duration on a log line; the log is not a persisted row. " +
+		"Pairs with the beginExecLog entry above — same clock, same reasoning",
+	"pkg/recordlayer/store.go:DeleteRecord: time.Now":         "delete-latency metric",
+	"pkg/recordlayer/store.go:LoadRecord: time.Now":           "load-latency metric",
+	"pkg/recordlayer/store.go:ScanRecords: time.Now":          "scan-latency metric",
+	"pkg/recordlayer/store_builder.go:CreateOrOpen: time.Now": "store-open-latency metric",
 
 	// ---- (B) Scheduling and in-memory bookkeeping. A simulated clock here would freeze LRU
 	// eviction or a rate limiter without changing any byte on disk, so the wall clock is the

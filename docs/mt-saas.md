@@ -518,18 +518,76 @@ _ = conn.Raw(func(driverConn any) error {
 
 **It reports planning only.** The complete field set is `SQL`, `PlanHash`, `PlanExplain`,
 `PlanningDuration`, `Cache`, `CacheNumEntries`, `SlowQuery`, `Err`
-(`plan_logging.go:50-70`), the record is built entirely in `finish()` from the planning clock and
-the plan tree (`plan_logging.go:142-166`), and the callback fires once per `Plan()` call
-(`plan_logging.go:73`). **There are no post-execution statistics anywhere in the engine** — no rows
-scanned, no bytes read, no execution time. Per-tenant cost attribution therefore has to be built
-from what your application can see (wall clock around the query, rows returned), not from the
-engine.
+(`plan_logging.go:50-71`), the record is built entirely in `finish()` from the planning clock and
+the plan tree, and the callback fires once per `Plan()` call. For what the statement then *did*,
+see the next section.
 
 Sampling and log volume are the handler's problem: the engine always emits
 (`plan_logging.go:73-77`). At tenant-fleet scale, sample.
 
-`SetPlanLogger` is not safe to call concurrently with planning on the same connection
-(`connection.go:162`).
+`SetPlanLogger` is not safe to call concurrently with planning on the same connection.
+
+### Per-tenant execution statistics
+
+`ExecutionStatsLogger` (`pkg/relational/core/embedded/execution_logging.go`) is the
+post-execution counterpart, installed the same way — per connection, via `conn.Raw` →
+`SetExecutionStatsLogger`. It is a **separate** interface from `PlanGenerationLogger`, not a second
+method on it, because a cached plan is planned once and executed many times: the two records do not
+pair up 1:1, and `PlanHash` is the join key between them.
+
+One `ExecutionStats` is emitted per statement execution, carrying `SQL`, `PlanHash`,
+`ExecutionDuration`, `RowsReturned`, `RowsAffected`, `RecordsScanned`, `BytesScanned`, `Pages`,
+`Retries`, `SlowQuery` and `Err`. This is what per-tenant cost attribution needs: `RecordsScanned`
+and `BytesScanned` are what the *cluster* served, which is not the same number as the rows the
+tenant received — a filtered `LIMIT 1` over a million-row table returns one row and scans a
+million.
+
+```go
+type tenantExecLogger struct{ tenantID string }
+
+func (l tenantExecLogger) LogExecutionStats(ctx context.Context, s embedded.ExecutionStats) {
+	slog.InfoContext(ctx, "query",
+		"tenant", l.tenantID,               // yours; the engine carries no tenant identity
+		"plan_hash", s.PlanHash,            // joins to the PlanGenerationInfo
+		"duration", s.ExecutionDuration,
+		"rows_returned", s.RowsReturned,
+		"records_scanned", s.RecordsScanned, // the cluster-load number
+		"bytes_scanned", s.BytesScanned,
+		"retries", s.Retries,
+		"slow", s.SlowQuery,
+		"err", s.Err)
+}
+
+_ = conn.Raw(func(driverConn any) error {
+	ec := driverConn.(*embedded.EmbeddedConnection)
+	ec.SetExecutionStatsLogger(tenantExecLogger{tenantID: tenantID})
+	return nil
+})
+```
+
+Four properties matter operationally:
+
+- **Failed statements still report.** A statement killed by `EXECUTION_SCANNED_ROWS_LIMIT` emits a
+  record carrying `Err` *and* the counters it consumed on the way to being killed. The statements
+  worth accounting for are disproportionately the ones that blew a budget, so a surface that only
+  reported on success would go quiet exactly where it is needed.
+- **Retried attempts are charged.** A page whose transaction conflicts and re-executes counts both
+  attempts' scans. The cluster served both reads; billing one would understate the tenants worth
+  knowing about. `Retries` tells you how much of the number that is.
+- **`SlowQuery` now has two independent meanings.** `SetSlowQueryThresholdMicros` governs both:
+  `PlanGenerationInfo.SlowQuery` says planning exceeded it, `ExecutionStats.SlowQuery` says
+  execution did. One knob, and the pair tells you which half was slow.
+- **DDL is not covered.** DDL routes through `execStatement` rather than the paged execution path,
+  so it emits no execution record. SELECT and DML both do.
+
+Same threading contract as `SetPlanLogger`: not safe to call concurrently with execution on the
+same connection. Same sampling split too — the engine always emits, the handler decides volume.
+
+Record-layer `StoreTimer` counters remain unexported on the SQL path (see above); `ExecutionStats`
+is the SQL-layer surface, and it is a Go-only read-side extension. Java has no equivalent —
+`fdb-relational-api`, `-jdbc` and `-grpc` carry no metric surface at all, and although
+`fdb-relational-core` configures scan limits it never reads the consumed counts back. See
+`rfcs/211-post-execution-query-stats.md` for the Java survey behind that claim.
 
 ### No `EXPLAIN ANALYZE`
 

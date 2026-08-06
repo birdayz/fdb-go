@@ -9,6 +9,7 @@ go_library(
         "ddl.go",
         "eval_map.go",
         "eval_predicate_map.go",
+        "execution_logging.go",
         "index_name_guard.go",
         "index_onsource.go",
         "index_state_planning.go",
@@ -328,6 +329,7 @@ go_test(
         "distinct_scratch_wiring_test.go",
         "closure_sparse_unique_candidate_test.go",
         "distinct_scratch_retry_charge_test.go",
+        "execution_logging.go",
     ],
     deps = [
         "//gen",

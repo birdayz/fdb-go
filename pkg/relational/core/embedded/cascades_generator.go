@@ -374,6 +374,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 				physicalPlan:     cachedPlan,
 				explain:          cachedPlan.Explain(),
 				scalarSubqueries: cachedSubs,
+				sql:              g.c.execLogSQL(q),
 				// Dependencies are a function of the PLAN, so a cache hit derives
 				// them from the cached plan rather than carrying anything in the
 				// cache entry. A cached plan gets the same guarantee as a freshly
@@ -529,6 +530,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		physicalPlan:     physPlan,
 		explain:          physPlan.Explain(),
 		scalarSubqueries: scalarSubs,
+		sql:              g.c.execLogSQL(q),
 		// The fourth argument is the PROOF-ONLY dependency set: indexes whose
 		// metadata property licensed a transformation without the index being
 		// scanned. It is nil because no rule currently produces one — the only
@@ -1148,6 +1150,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		physicalPlan:     physPlan,
 		explain:          logicalOp.Explain(""),
 		scalarSubqueries: dmlScalarSubs,
+		sql:              g.c.execLogSQL(dml),
 
 		indexDependencies: collectPlanIndexDependencies(md, physPlan, dmlScalarSubs),
 		dryRun:            dryRun,
@@ -1221,6 +1224,14 @@ type cascadesPlan struct {
 	// see index_state_planning.go.
 	indexDependencies planIndexDependencies
 
+	// sql is the canonical whitespace-preserved query text, carried from
+	// planning to execution so an ExecutionStats record can name its statement
+	// (RFC-211). It is "" whenever no execution-stats logger is installed —
+	// execLogSQL gates the substring materialization, so the disabled path
+	// pays nothing. Never GetText(): that concatenates tokens without
+	// separators.
+	sql string
+
 	// dryRun carries the SQL OPTIONS (DRY RUN) flag from planDML to execution.
 	// Statement-scoped (one cascadesPlan per statement) → paginatingRows.dryRun
 	// → ExecuteProperties.DryRun, so the DML executor previews via the store
@@ -1292,6 +1303,12 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 
 	cols := deriveColumnsFromPlan(p.physicalPlan, p.md)
 
+	// RFC-211: start the execution-stats scope BEFORE the first page, so the
+	// duration spans the work rather than reporting on it afterwards. nil when
+	// no logger is installed. It is handed to the paginatingRows below, whose
+	// Close is the single emission funnel every path reaches.
+	execLog := c.beginExecLog(ctx, p.sql, p.physicalPlan)
+
 	// Statement timeout: bound this whole Execute (all its pages). cancel
 	// is carried on the paginatingRows so it fires on Close (the result-set
 	// lifetime), not when Execute returns.
@@ -1314,6 +1331,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		ctx:              ctx,
 		cancel:           cancel,
 		conn:             c,
+		execLog:          execLog,
 		ss:               ss,
 		plan:             p.physicalPlan,
 		md:               p.md,
@@ -1364,6 +1382,11 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	// Eagerly fetch the first page so execution errors (type mismatches,
 	// plan failures) surface at QueryContext time, not during row iteration.
 	if err := pr.fetchPage(); err != nil {
+		// The statement is over and it FAILED; Close is the emission funnel,
+		// so the error has to reach it. A statement killed here by a scan
+		// limit still reports what it consumed — the counters were charged
+		// per attempt on the way out, not at a success-only checkpoint.
+		pr.statsErr = err
 		pr.Close()
 		return query.Result{}, err
 	}
@@ -1374,6 +1397,11 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	// The mutations have already run inside fetchPage's transaction(s).
 	if p.IsUpdate() {
 		n, err := pr.countAll()
+		// DML never passes through Next, so its row outcome is the affected
+		// count, not RowsReturned (RFC-211). Recorded before Close, which is
+		// where the record is emitted.
+		pr.execLog.setRows(0, n)
+		pr.statsErr = err
 		pr.Close()
 		if err != nil {
 			return query.Result{}, err
@@ -1421,6 +1449,19 @@ type paginatingRows struct {
 	// Carried from cascadesPlan; revalidated at the top of every page's
 	// transaction. Empty means the plan depends on no index.
 	indexDependencies planIndexDependencies
+
+	// execLog accumulates this statement's execution record (RFC-211) and is
+	// emitted from Close, the one funnel every completion path reaches. nil
+	// when no execution-stats logger is installed, and every method on it is
+	// nil-safe.
+	execLog *execLogScope
+
+	// statsErr is the error the statement ended with, staged for the
+	// execLog.finish that Close performs. It exists because Close is the
+	// emission point but takes no error: Next records its own failures here,
+	// and Execute's two early-return paths set it before closing. io.EOF is
+	// never recorded — exhaustion is how a successful result set ends.
+	statsErr error
 
 	// emitted counts rows actually returned to the caller across all pages.
 	// Shared by the MAX_ROWS cap and pageRowBudget. SQL LIMIT/OFFSET is NOT
@@ -1522,6 +1563,17 @@ func (r *paginatingRows) Close() error {
 		r.cancel()
 		r.cancel = nil
 	}
+	// RFC-211: the statement is over, so its execution record goes out here.
+	// Close is the single funnel — database/sql closes an exhausted or
+	// abandoned result set, and Execute's error and DML paths close
+	// explicitly — and execLogScope.finish is idempotent, so the repeated
+	// Close database/sql may issue emits once. A DML statement recorded its
+	// affected count in Execute; it never passes through Next, so r.emitted
+	// would overwrite that with a zero.
+	if !r.isUpdate {
+		r.execLog.setRows(r.emitted, 0)
+	}
+	r.execLog.finish(r.statsErr)
 	return nil
 }
 
@@ -1586,6 +1638,13 @@ func (r *paginatingRows) Next(dest []driver.Value) (err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			err = recoveredPanicError(rec)
+		}
+		// RFC-211: stage whatever ended this statement for the record Close
+		// emits. io.EOF is exhaustion, not failure. Registered in the SAME
+		// defer as the panic recovery and AFTER it, so a recovered panic is
+		// recorded as the statement's outcome too.
+		if err != nil && err != io.EOF && r.statsErr == nil {
+			r.statsErr = err
 		}
 	}()
 	if r.closed {
@@ -1924,6 +1983,15 @@ func materializeDriverValue(v any) any {
 func (r *paginatingRows) fetchPage() error {
 	c := r.conn
 
+	// RFC-211 page/retry accounting. attempts counts CLOSURE ENTRIES, which is
+	// what DB.Run's retry loop re-executes; everything past the first is a
+	// retry. runInCapturedTx calls the closure directly for an explicit
+	// transaction (no retry loop), so that path always contributes 0 — and if
+	// the closure never runs at all (a terminated transaction), attempts stays
+	// 0 and the subtraction below cannot go negative.
+	r.execLog.addPage()
+	attempts := 0
+
 	// The page's OUTCOME is staged in locals and published to r only after the
 	// page's transaction has succeeded.
 	//
@@ -1986,6 +2054,7 @@ func (r *paginatingRows) fetchPage() error {
 	// transaction that has since ended is a loud 25F01, never a silent fresh
 	// transaction (Decision 3).
 	_, txErr := c.runInCapturedTx(r.ctx, r.tx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		attempts++
 		if r.tx != nil {
 			if err := r.preflightTxBudget(rctx); err != nil {
 				return nil, err
@@ -2040,6 +2109,32 @@ func (r *paginatingRows) fetchPage() error {
 		// cap while the outer plan would fail/paginate. (The statement timeout
 		// already reaches them via r.ctx.)
 		props := r.executeProps()
+		// RFC-211: charge this ATTEMPT's scan consumption to the statement's
+		// stats, as a DELTA rather than an absolute read.
+		//
+		// The delta is not defensive bookkeeping — the two lifetimes demand
+		// it. In auto-commit executeProps mints a fresh ScanLimiterState per
+		// call, so the entry counts are 0 and delta == absolute. Inside an
+		// explicit transaction it assigns the TRANSACTION-scoped state
+		// (RFC-198 Decision 5), which is cumulative across every page of every
+		// statement — reading the absolute counter per page there would
+		// re-charge all previous pages on each one.
+		//
+		// The defer is what makes the error path honest: it fires on EVERY
+		// exit from this attempt, including the 54F01 a scan limit raises and
+		// a retryable failure that discards the attempt. So a statement killed
+		// by EXECUTION_SCANNED_ROWS_LIMIT still reports what it consumed, and
+		// a retried page reports both attempts — the cluster served both. This
+		// is Java's guarantee too: the limiter object lives on the caller's
+		// ExecuteState and outlives ScanLimitReachedException, so
+		// getRecordsScanned() still reads after the trip (ExecuteState.java:114).
+		scanRecordsAtEntry := int64(props.ScanState.RecordsScanned())
+		scanBytesAtEntry := props.ScanState.BytesScanned()
+		defer func() {
+			r.execLog.addScanned(
+				int64(props.ScanState.RecordsScanned())-scanRecordsAtEntry,
+				props.ScanState.BytesScanned()-scanBytesAtEntry)
+		}()
 		if len(r.scalarSubqueries) > 0 {
 			scalarResults := make(map[values.CorrelationIdentifier]any, len(r.scalarSubqueries))
 			for _, ssq := range r.scalarSubqueries {
@@ -2109,6 +2204,9 @@ func (r *paginatingRows) fetchPage() error {
 		pageExhausted, pageCont = exhausted, contBytes
 		return nil, nil
 	})
+
+	// RFC-211: every closure entry past the first was a retry.
+	r.execLog.addRetries(attempts - 1)
 
 	if txErr != nil {
 		// The page did not happen, so its partial rows are not results. They are
