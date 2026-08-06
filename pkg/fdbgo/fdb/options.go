@@ -235,13 +235,27 @@ func (o goTransactionOptions) SetSkipGrvCache() error {
 	return nil
 }
 
-func (o goTransactionOptions) SetAutoThrottleTag(_ string) error {
-	return nil
+// SetAutoThrottleTag adds a tag eligible for ratekeeper auto-throttling. C++
+// puts such a tag in BOTH the transaction tag set and the read tag set
+// (NativeAPI.actor.cpp:7120-7124); the plain TAG option only sets the former.
+func (o goTransactionOptions) SetAutoThrottleTag(tag string) error {
+	return o.tx.inner.SetAutoThrottleTag(tag)
 }
 
 func (o goTransactionOptions) SetTag(tag string) error {
-	o.tx.inner.SetTag(tag)
-	return nil
+	return o.tx.inner.SetTag(tag)
+}
+
+// Tags reads back the transaction's tag set, in the order the tags were set.
+//
+// Deliberately NOT on the TransactionOptions interface: libfdb_c's
+// fdb_transaction_set_option is write-only, so the CGo backend could not
+// implement this without shadowing state the C client owns. Callers that want
+// it type-assert for it, the same optional-capability pattern used elsewhere
+// for pure-Go-only surface. Its purpose is to let a layer that SETS tags prove
+// they landed, rather than merely proving tagging did not break anything.
+func (o goTransactionOptions) Tags() []string {
+	return o.tx.inner.Tags()
 }
 
 func (o goTransactionOptions) SetReportConflictingKeys() error {

@@ -118,6 +118,27 @@ func (c *EmbeddedConnection) Options() *api.Options {
 	return c.options
 }
 
+// ActiveTransactionTags reports the FDB transaction tags carried by the
+// connection's currently-open explicit transaction, or nil when there is none.
+//
+// Operational introspection: with OptTransactionTags driving per-tenant
+// throttling, "which tag is this session actually running under" is a question
+// an operator asks of a stuck connection, and the answer is otherwise invisible
+// once the option has been translated into transaction state.
+//
+// Returns nil on the libfdb_c backend, whose options surface is write-only and
+// so cannot report tags back.
+func (c *EmbeddedConnection) ActiveTransactionTags() []string {
+	if c.activeTx == nil || c.activeTx.rctx == nil {
+		return nil
+	}
+	tagged, ok := c.activeTx.rctx.Transaction().Options().(interface{ Tags() []string })
+	if !ok {
+		return nil
+	}
+	return tagged.Tags()
+}
+
 // SetOptions installs the per-connection api.Options (RFC-106a scan-limit
 // + MAX_ROWS wiring). Passing nil resets to defaults. Not safe to call
 // concurrently with query execution on the same connection (matches
@@ -743,6 +764,17 @@ func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
 		return nil, err
 	}
 	fdbTx.Options().SetReadSystemKeys()
+	// Tag the transaction for the cluster's ratekeeper. This is the single
+	// transaction-creation seam in the SQL layer, so tagging here covers both
+	// explicit BeginTx transactions and autocommit statements.
+	if tags, ok := c.Options().Get(api.OptTransactionTags).([]string); ok {
+		for _, tag := range tags {
+			if err := fdbTx.Options().SetTag(tag); err != nil {
+				fdbTx.Cancel()
+				return nil, err
+			}
+		}
+	}
 	rctx := recordlayer.NewFDBRecordContext(fdbTx, c.sess.DB.Env())
 	tx := &embeddedTx{conn: c, rctx: rctx}
 	c.activeTx = tx

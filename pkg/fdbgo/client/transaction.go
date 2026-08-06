@@ -274,6 +274,11 @@ type txOptions struct {
 	// C++ keeps tags across retries (not cleared by internal reset).
 	tags []string
 
+	// readTags: the AUTO_THROTTLE_TAG subset of tags. C++ keeps this as a
+	// separate TagSet (trState->options.readTags) because only auto-throttle
+	// tags ride along on per-storage-server read requests.
+	readTags []string
+
 	// spanParent, set by SetSpanParent (FDBTransactionOptions::SPAN_PARENT), links the
 	// transaction's wire span to a caller-injected parent trace, persisting that
 	// linkage across retries (regenerateSpan honors it). atomic.Pointer with immutable
@@ -739,7 +744,7 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 	}
 	if !tx.hasReadVersion {
 		flags := tx.grvFlags()
-		rv, locked, rvAt, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.useGrvCache, tx.skipGrvCache)
+		rv, locked, rvAt, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.tags, tx.useGrvCache, tx.skipGrvCache)
 		if err != nil {
 			tx.readVersionMu.Unlock()
 			return tx.mapTimeout(parentCtx, err)
@@ -786,7 +791,7 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 		if tx.db.minAcceptable() == 0 {
 			// Bootstrap: fetch a version to establish the baseline.
 			flags := tx.grvFlags()
-			_, _, _, _ = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.useGrvCache, tx.skipGrvCache)
+			_, _, _, _ = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.tags, tx.useGrvCache, tx.skipGrvCache)
 		}
 		if err := tx.db.validateVersion(rv); err != nil {
 			return err
@@ -3175,11 +3180,85 @@ func (tx *Transaction) TenantId() int64 {
 	return tx.tenantId
 }
 
-// SetTag adds a tag to this transaction for tag-based throttling.
-// Tags are used for throttle backoff calculation on tag_throttled errors.
-// Matches C++ FDB_TR_OPTION_AUTO_THROTTLE_TAG / FDB_TR_OPTION_DEBUG_TRANSACTION_IDENTIFIER usage.
-func (tx *Transaction) SetTag(tag string) {
+// Tag limits, matching C++ CLIENT_KNOBS (ClientKnobs.cpp:290-291). TagSet::addTag
+// asserts both fit in a single byte, since the wire encoding length-prefixes each
+// tag with one byte and the server counts tags with one byte.
+const (
+	maxTagsPerTransaction   = 5
+	maxTransactionTagLength = 255
+)
+
+// SetTag adds a tag to this transaction for tag-based throttling, matching
+// FDBTransactionOptions::TAG (NativeAPI.actor.cpp:7115-7118).
+//
+// Check order follows TagSet::addTag (TagThrottle.actor.cpp:35-39) exactly:
+// length is validated first, then the count — and the count is checked BEFORE
+// the duplicate test, so adding a duplicate to an already-full set still fails
+// with too_many_tags rather than silently succeeding.
+func (tx *Transaction) SetTag(tag string) error {
+	if len(tag) > maxTransactionTagLength {
+		return &wire.FDBError{Code: 2110} // tag_too_long
+	}
+	if len(tx.tags) >= maxTagsPerTransaction {
+		return &wire.FDBError{Code: 2109} // too_many_tags
+	}
+	for _, t := range tx.tags {
+		if t == tag {
+			return nil // already present; C++ pushes only when absent
+		}
+	}
 	tx.tags = append(tx.tags, tag)
+	return nil
+}
+
+// SetAutoThrottleTag adds a tag that is additionally eligible for ratekeeper
+// auto-throttling, matching FDBTransactionOptions::AUTO_THROTTLE_TAG
+// (NativeAPI.actor.cpp:7120-7124): the tag goes into BOTH the transaction tag
+// set and the read tag set. The transaction set drives the GRV request and the
+// commit tagSet; the read set is what C++ samples onto per-storage-server read
+// requests.
+func (tx *Transaction) SetAutoThrottleTag(tag string) error {
+	if err := tx.SetTag(tag); err != nil {
+		return err
+	}
+	// readTags is a distinct TagSet in C++ and gets its own limit check. It can
+	// only trail tags, so the length check above already covers it, but the
+	// duplicate suppression must be repeated here.
+	for _, t := range tx.readTags {
+		if t == tag {
+			return nil
+		}
+	}
+	tx.readTags = append(tx.readTags, tag)
+	return nil
+}
+
+// Tags returns the transaction tag set in insertion order. Insertion order is
+// the wire order for the commit tagSet, so tests can assert it directly.
+func (tx *Transaction) Tags() []string { return tx.tags }
+
+// ReadTags returns the auto-throttle (read) tag subset in insertion order.
+func (tx *Transaction) ReadTags() []string { return tx.readTags }
+
+// encodeTagSet serializes tags the way TagSet's dynamic_size_traits does
+// (TagThrottle.actor.h): each tag as a single length byte followed by its bytes,
+// concatenated, with no count prefix. Returns nil for an empty set so the caller
+// leaves the optional field absent, as C++ does (NativeAPI.actor.cpp:6815-6816
+// only assigns tagSet when the set is non-empty).
+func encodeTagSet(tags []string) []byte {
+	if len(tags) == 0 {
+		return nil
+	}
+	n := 0
+	for _, t := range tags {
+		n += 1 + len(t)
+	}
+	out := make([]byte, 0, n)
+	for _, t := range tags {
+		out = append(out, byte(len(t)))
+		out = append(out, t...)
+	}
+	return out
 }
 
 // GetTagThrottledDuration returns the total time this transaction was delayed
@@ -3461,6 +3540,7 @@ func (tx *Transaction) applyOptionDefaults(userReset bool) {
 	tx.rywDisabled = false
 	tx.snapshotRYWDisableCount = 0
 	tx.tags = nil
+	tx.readTags = nil
 	// useGrvCache/skipGrvCache (USE_GRV_CACHE 1101 / SKIP_GRV_CACHE 1102) are non-persistent, reset by
 	// TransactionOptions::clear (NativeAPI.actor.cpp:6148-6149) — leaving them set would serve a stale
 	// cached GRV on a retried-or-reset txn where C++ starts fresh. writeConflictsDisabled has no C++

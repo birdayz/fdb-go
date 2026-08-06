@@ -91,7 +91,7 @@ func TestSnapshot_GetDoesNotConflict(t *testing.T) {
 
 	// tx1: snapshot-read the key, then write a different key.
 	tx1 := db.CreateTransaction()
-	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -419,7 +419,7 @@ func TestSnapshot_GetRangeDoesNotConflict(t *testing.T) {
 
 	// tx1: snapshot range read, then write an unrelated key.
 	tx1 := db.CreateTransaction()
-	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -526,7 +526,7 @@ func TestSnapshot_ConflictAsymmetry(t *testing.T) {
 	}
 
 	// Part 1: Snapshot read path — should NOT conflict.
-	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -556,7 +556,7 @@ func TestSnapshot_ConflictAsymmetry(t *testing.T) {
 	}
 
 	// Part 2: Regular read path — SHOULD conflict.
-	rv2, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	rv2, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
 	if err != nil {
 		t.Fatalf("GRV2: %v", err)
 	}

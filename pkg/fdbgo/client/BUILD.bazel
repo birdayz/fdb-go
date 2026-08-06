@@ -156,6 +156,7 @@ go_test(
         "topology_unit_test.go",
         "transaction_concurrent_unit_test.go",
         "transaction_options_test.go",
+        "transaction_tags_test.go",
         "transaction_unit_test.go",
         "unbounded_default_pin_test.go",
         "unreadable_test.go",
