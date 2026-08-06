@@ -129,6 +129,23 @@ func TestExecutionStats_RetryIsCountedAndCharged(t *testing.T) {
 	if base.RecordsScanned != pageRetryRows {
 		t.Fatalf("baseline RecordsScanned = %d, want %d", base.RecordsScanned, pageRetryRows)
 	}
+	// Pages, pinned EXACTLY and only reachable from a multi-page fixture. Every
+	// other test in the RFC-211 set runs a single page, where `Pages >= 1` and
+	// `Pages == 1` are the same assertion and an under-counting collector — one
+	// that charges the first page and then stops — reports the correct number by
+	// accident.
+	//
+	// The count is fixture math, not an observation: pageRetryScanLimit records
+	// per page over pageRetryRows records is six data pages, and the sixth is
+	// stopped BY the budget at exactly the budget, so it cannot know the cursor
+	// is exhausted and hands back a continuation. The seventh page resumes,
+	// finds nothing, and reports exhaustion. One page per budget, plus the page
+	// that discovers the end.
+	const wantPages = pageRetryRows/pageRetryScanLimit + 1
+	if base.Pages != wantPages {
+		t.Fatalf("baseline Pages = %d, want %d (%d rows at %d per page, plus the page that finds the end)",
+			base.Pages, wantPages, pageRetryRows, pageRetryScanLimit)
+	}
 
 	sawRetry := false
 	for n := int64(0); n < 8; n++ {
