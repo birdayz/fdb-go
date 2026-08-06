@@ -263,6 +263,7 @@ go_test(
         "fanout_candidate_distinct_test.go",
         "fetch_transparency_test.go",
         "fk_chain_cardinality_test.go",
+        "flat_map_producer_census_test.go",
         "fold_step1_seed_census_test.go",
         "fused_max_match_fuzz_test.go",
         "fuzz_cte_test.go",
@@ -1046,6 +1047,7 @@ go_test(
         "null_rejecting_scan_range.go",
         "null_rejecting_scan_range_test.go",
         "distinct_license_order_partition_test.go",
+        "flat_map_producer_census_test.go",
     ],
     deps = [
         "//gen",

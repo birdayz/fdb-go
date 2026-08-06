@@ -127,7 +127,7 @@ func (s legRebaseSite) String() string {
 // RFC-200 gate (d) is denominated in. The two instruments in play count
 // different events at different sites — the bakeability census counts READS
 // (once per leg-correlated FieldValue the walk matches), the foldStep1Seed
-// outcome census counts RULE FIRINGS — so `60 + 94 + 108 = 262 ≠ 174` and
+// outcome census counts RULE FIRINGS — so `102 + 108 = 210 ≠ 190` and
 // neither can be apportioned into the other by arithmetic. The only thing that
 // maps one onto the other is carrying the firing's class down to the read, which
 // is what Step1 does.
@@ -143,13 +143,19 @@ type legRebaseOrigin struct {
 	// refused, meaningful only when Step1 is foldStep1DeclineReconstructNil.
 	//
 	// The class alone is not enough for RFC-200 gate (d), and the measurement
-	// that showed why is worth stating: over the real-FDB corpus ALL 174
-	// leg-local reads occur under a reconstruct-nil firing — but that class
-	// splits 94 bare-QOV / 60 positional-merge at the FIRING level, and only the
-	// positional-merge half is in RFC-200's scope. Denominating the gate in the
-	// class would demand that the fenced bare-QOV residue (§Residues, explicitly
-	// out of scope and LARGER) also reach zero, which this change cannot and does
-	// not claim to do.
+	// that showed why is worth stating: over the real-FDB corpus EVERY
+	// leg-local read occurs under a reconstruct-nil firing — but that class
+	// splits by leg SHAPE at the FIRING level, and only the positional-merge half
+	// was ever in RFC-200's scope. Denominating the gate in the class would demand
+	// that the bare-QOV residue (§Residues, explicitly out of scope and LARGER)
+	// also reach zero, which that change could not and did not claim to do.
+	//
+	// The split it was measured against was 94 bare-QOV / 60 positional-merge.
+	// Both halves have since moved and the CURRENT measurement is 102 bare-QOV /
+	// 0 positional-merge: RFC-200 converted its 60, and its own gate fixtures
+	// added 8 more bare-QOV firings. The shape dimension is what makes that
+	// legible — in the CLASS alone the total went 154 to 102 and the composition
+	// change would have been invisible.
 	Step1LegShape foldStep1LegShape
 }
 
@@ -158,7 +164,9 @@ type legLocalBakeCounters struct {
 	Total int
 	// SiteExists / SiteBuried partition Total by WHICH lowering reached the arm.
 	//
-	// Measured 174 / 0. The zero is the load-bearing half and it is the half a
+	// Measured 190 / 0 — and only the ZERO is durable; the denominator is a
+	// corpus-sized number that has already moved once (174 → 190) without any
+	// claim here changing. The zero is the half a
 	// census cannot prove on its own — an unreached site and a site measured
 	// empty print identically — so SiteExists is FLOORED and SiteBuried is
 	// asserted zero with its re-arm condition named at the assertion.
@@ -180,7 +188,8 @@ type legLocalBakeCounters struct {
 	// Step1ReconstructNilShape cuts the reconstruct-nil reads by the SHAPE of the
 	// leg their firing refused. This is the number RFC-200 gate (d) is stated
 	// against, and it is a strictly finer cut than Step1 above: the class holds
-	// the whole 174 while only its positional-merge share is in scope.
+	// the whole reconstruct-nil population while only its positional-merge share
+	// is in scope.
 	Step1ReconstructNilShape [foldStep1LegShapeCount]int
 	// Baked: reads that KEPT their own leg alias and their own leg-local ordinal
 	// — the pass-through. The arm's live population.
@@ -355,8 +364,8 @@ type legLocalBakeCounters struct {
 	// as three numbers that happen to be printed together.
 	//
 	// Without it, "underivable 82" is a count with no denominator: it reads as
-	// small next to 846 and would read exactly the same if the derivation had
-	// stopped running on all but 82 legs. The acceptance number for CQ-63 is a
+	// small next to a four-figure leg count and would read exactly the same if the
+	// derivation had stopped running on all but 82 legs. The acceptance number for CQ-63 is a
 	// RATIO, so the ratio's other half has to be measured too.
 	LegDerivations int
 }
@@ -1031,7 +1040,7 @@ func assertLegLocalBakeCounters(w io.Writer, c legLocalBakeCounters, floors *Leg
 	// It is a partition and not a floor because the mapping it carries is the
 	// whole point: the two censuses on this path count different events (reads
 	// here, rule firings there) and their totals do not sum, so "this change
-	// moves N of the 174 reads" is only answerable by carrying the firing's class
+	// moves N of the leg-local reads" is only answerable by carrying the firing's class
 	// down to the read. A gap here means a read arrived under a firing whose
 	// class was not threaded, and every apportionment of this census's population
 	// is then arithmetic over an unknown remainder — which is exactly the
@@ -1099,10 +1108,13 @@ func assertLegLocalBakeCounters(w io.Writer, c legLocalBakeCounters, floors *Leg
 		fmt.Fprintf(w, "LEG-LOCAL BAKE CENSUS FAIL: SiteBuried = %d, want 0.\n"+
 			"  A leg-correlated read reached the leg-match arm from the RFC-153\n"+
 			"  BURIED-leg lowering (buildCorrelatedFlatMapPlan). Measured over the whole\n"+
-			"  real-FDB corpus that population is ZERO: all 174 firings are the EXISTS\n"+
-			"  site, and the buried site reaches no matching leaf at all even though it\n"+
-			"  DOES compute a layout (buriedLegOrdinalLayout answers on 314 of 362\n"+
-			"  firings).\n"+
+			"  real-FDB corpus that population is ZERO: EVERY read is the EXISTS site,\n"+
+			"  and the buried site reaches no matching leaf at all even though it DOES\n"+
+			"  compute a layout (buriedLegOrdinalLayout answers on most of its firings).\n"+
+			"  The EXISTS total itself is a corpus-sized number that moves — it read 174\n"+
+			"  when this message was written and 190 on re-measurement — so this message\n"+
+			"  states the ZERO, which is the durable claim, and not a denominator that\n"+
+			"  would be stale by the time anyone read it here.\n"+
 			"  THIS IS NOT NECESSARILY A BUG — it is a REFUTED PREMISE RE-ARMING. Two\n"+
 			"  documents now assert this zero in prose: DIVERGENCES.md's sibling-alias\n"+
 			"  entry (\"there is no buried-leg work in this retirement\") and TODO.md's\n"+

@@ -4163,7 +4163,24 @@ func (t *cascadesTranslator) buildExistentialSelect(
 
 	resultValue := resultOverride
 	if resultValue == nil {
+		// THE UNTYPED-QOV DIVERGENCE IS MINTED HERE, not at the FlatMap
+		// constructions that were previously credited with it.
+		//
+		// Java builds a simple select's result value as
+		// overQuantifier.getFlowedObjectValue() (GraphExpansion.java:401), which is
+		// typed unconditionally — QuantifiedObjectValue.of has no untyped overload
+		// (QuantifiedObjectValue.java:187) and Quantifier.getFlowedObjectType is a
+		// Verify.verify plus requireNonNull (Quantifier.java:801-810). Java cannot
+		// express what this line builds.
+		//
+		// The three cascades sites that hand this value to a RecordQueryFlatMapPlan
+		// flow it verbatim, exactly as Java's three constructions flow
+		// selectExpression.getResultValue() (ImplementNestedLoopJoinRule.java:187,
+		// 201, 214), so their untyped counts are a count of COURIERS. This mint is
+		// the author, and it is counted here so the divergence is booked against a
+		// measurement instead of against an inference.
 		resultValue = values.NewQuantifiedObjectValue(outerQ.GetAlias())
+		values.RecordSelectResultMint(values.SelectResultMintExistsSelect, resultValue)
 	}
 	return expressions.NewSelectExpressionWithAliases(
 		resultValue,

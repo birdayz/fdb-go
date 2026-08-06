@@ -1380,6 +1380,9 @@ func buildCorrelatedFlatMapPlan(
 	// diverge. The correlated inner leg is a frozen final singleton (the fod/filter
 	// disentangle), so extraction resolves it faithfully and the correlation the
 	// FlatMap binds is preserved.
+	if values.LegIdentityCensusEnabled() {
+		recordFlatMapResultValue(flatMapSiteCorrelated, resultValue)
+	}
 	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		outerQ, innerQ,
 		outerCorr, innerCorr,
@@ -1794,6 +1797,9 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// lockstep with what executes, so the plan and its quantifiers no longer
 	// diverge. The correlated inner is a frozen final singleton, so extraction
 	// resolves it faithfully and the EXISTS correlation is preserved.
+	if values.LegIdentityCensusEnabled() {
+		recordFlatMapResultValue(flatMapSiteExistentialSelect, resultValue)
+	}
 	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		outerQ, innerQ,
 		outerCorr, innerCorr,
@@ -2018,8 +2024,21 @@ func legOrdinalSafety(p plans.RecordQueryPlan) (bool, plans.RecordQueryPlan) {
 			//
 			// NOT ordinal-safe merely because a FlatMap is a FlatMap: an ordinary
 			// FlatMap flows a projection or a bare identity QOV, and neither states
-			// a positionable layout. That population — the 94 bare-QOV legs — is
-			// the LARGER residue and is explicitly out of scope.
+			// a positionable layout. That population — 102 firings over the
+			// real-FDB corpus — is the LARGER residue and is out of scope here.
+			//
+			// `bare` MEANS IDENTITY PASS-THROUGH, NOT UNTYPED, and this line used to
+			// be read the other way. That reading booked a conversion whose whole
+			// plan was to TYPE those result values; measured, the population is 100%
+			// typed — every declined leg carries a real RecordType, arity 1-3 on the
+			// FlatMap legs and 1-4 counting the two NestedLoopJoin-legged declines.
+			// There is nothing to type, and typing could not convert one of them
+			// anyway: the refusal below is values.IsPositionalMergeRC, which opens
+			// with a *RecordConstructorValue assertion that no QuantifiedObjectValue
+			// satisfies at ANY typing. The residue is a SHAPE residue — the leg
+			// states one opaque row where the layout authority needs a positional
+			// merge — and the only thing that converts it is giving the leg an
+			// RC(_i: QOV(leg_i)) result value.
 			if !values.IsPositionalMergeRC(pl.GetResultValue()) {
 				return false, pl
 			}
@@ -4002,6 +4021,25 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		recordFoldStep1DeclinedMergeRV()
 	}
 	ordinalWindows, mergedRowType := ordinalSeedLegWindowsAcceptingNestedOf(step1RV)
+	// The `correlatedStep1 && ordinalWindows != nil` reachability measurement.
+	//
+	// This conjunction is the wall any conversion of the reconstruct-nil residue
+	// contacts, and it could not be established by reading: the mint above and the
+	// FlatMap construction below run on BOTH arms, so a positionable leg result
+	// value produces a baked ordinal on the correlated arm, where a name-keyed row
+	// context raises values.BakedNameContextError. Structurally it is reachable —
+	// on the correlated arm ordinalWindows is non-nil exactly when
+	// sel.GetResultValue() is already a pristine ordinal seed — and "reachable in
+	// principle" is not "reached by the corpus". Only the second tells the
+	// conversion whether it meets the wall on day one.
+	//
+	// Recorded here rather than derived from the outcome census's
+	// correlatedStep1 class: that class is counted inside foldStep1Seed, before
+	// this read exists, so a firing that reaches one and not the other has to be
+	// VISIBLE rather than arithmetic.
+	if values.LegIdentityCensusEnabled() && correlatedStep1 {
+		recordCorrelatedStep1Windows(ordinalWindows != nil)
+	}
 	var mergedQOV *values.QuantifiedObjectValue
 	if ordinalWindows != nil {
 		mergedQOV = values.NewQuantifiedObjectValueOfType(mergedOuterCorr, mergedRowType)
@@ -4172,6 +4210,9 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// FlatMap is its own cascades expression carrying its outer edge (over
 	// step1Expr) and its inner edge (innerQ) directly (no physicalFlatMapWrapper).
 	leftMemoRef := call.MemoizeExpression(step1Expr)
+	if values.LegIdentityCensusEnabled() {
+		recordFlatMapResultValue(flatMapSiteJoinWithExistential, flatMapResult)
+	}
 	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		expressions.NamedForEachQuantifier(mergedOuterCorr, leftMemoRef),
 		innerQ,
@@ -4416,6 +4457,9 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 
 	// The EXISTS FlatMap is its own cascades expression carrying its outer (leftQ)
 	// and inner (rightQ) memo edges directly (RFC-184 W2, no physicalFlatMapWrapper).
+	if values.LegIdentityCensusEnabled() {
+		recordFlatMapResultValue(flatMapSiteYieldExistsFlatMap, resultValue)
+	}
 	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		leftQ, rightQ,
 		outerCorrelation, innerCorrelation,
