@@ -29,6 +29,7 @@ go_test(
         "plan_proto_schema_test.go",
         "race_lane_scope_test.go",
         "rowvalue_map_expectation_test.go",
+        "slot_order_derivation_test.go",
         "source_hygiene_test.go",
         "unknown_type_mint_census_test.go",
         "vuln_gate_test.go",

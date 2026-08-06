@@ -12644,16 +12644,63 @@ None is speculative: each was re-verified against the tree before booking.
   both the double-quoted and the backtick-inclusive greps are now zero, and no
   test file renders a multi-slot row through `executor.RowValue` any more.
 
-  **How it was verified.** Refusal-style, machine-checked, log at
-  `pkg/relational/sqldriver/testdata/cq64-verifier.log`. Each new
-  `NAME=value|...` string was parsed back, collapsed LAST-WINS by name (what
-  `positionalToMap` does) and re-rendered in Go's map form; that had to be
-  BYTE-IDENTICAL to the literal it replaced, or the rewrite was refused. Two
-  distinct positional rows collapsing to one map rendering was also a refusal —
-  that is the "the old expectation was already ambiguous" case. **196 proven, 0
-  refused, 0 collisions, 0 unmapped.** So no expectation was WRONG under the
-  collapse; 39 of the 196 rows had a slot order differing from the alphabetical
-  one, i.e. 39 rows' order was previously unasserted and now is.
+  **How it was verified — RESTATED, because the first account overclaimed.**
+
+  The conversion was checked by a program that parsed each new `NAME=value|...`
+  string, collapsed it LAST-WINS by name, re-rendered it in Go's map form and
+  required byte-identity with the literal it replaced. **196 proven, 0 refused, 0
+  collisions.** That is a real and useful result — no VALUE was corrupted at
+  conversion time — but it is the ONLY thing it establishes, and two problems
+  came out of the review lap:
+
+  1. **The method is permutation-invariant BY CONSTRUCTION.** Its collapse IS
+     `positionalToMap`, so any reordering of the same pairs collapses to the same
+     map and is "proven". It was therefore silent on the exact dimension the
+     conversion existed to add. It could not have detected a wrong slot order,
+     and describing it as verifying the conversion was wrong.
+  2. **The program was never committed.** Only the log it printed was, so the
+     repository carried a conclusion with no instrument behind it and no way to
+     re-run it — the same shape as a deleted probe whose conclusion survives.
+
+  The log is DELETED (with its BUILD `data` attribute), and the standing property
+  is now a committed test:
+  `pkg/docscheck/slot_order_derivation_test.go`,
+  `TestConvertedRowExpectationsAgreeWithTheirSelectList`. It mechanises the
+  by-hand method a reviewer used: parse the query's SELECT list, derive the
+  output column names in source order, and require the expectation's `NAME=`
+  tokens to appear in that order. It needs no database — the SELECT list IS the
+  slot-order contract.
+
+  **MEASURED at the time it landed: 943 row expectations over 330 sites in 20
+  files have their slot order derived and checked; all agree.** Two spellings are
+  accepted because they are planner-decided and are about spelling rather than
+  order: the qualifier (`SELECT A."K", B."K"` renders `A.K|B.K`, while
+  `SELECT A."K", COUNT(*)` renders plain `K`) and case (a quoted lowercase
+  identifier renders lowercase).
+
+  **Where it cannot derive, it says so per file rather than passing quietly** —
+  25 fallback sites, each with a stated reason in the census the test logs:
+  `SELECT *` and `T.*` (no written column list), an unaliased expression (named
+  by the planner, not the text), and queries assembled by Go string
+  concatenation where the FROM boundary is not in the literal
+  (`nested_left_box_chained_unnest` 7, `buried_chained_rotation` 7,
+  `fullbox_chained_spine` 3). Those sites keep the CROSS-ROW check, which holds
+  everywhere: every row of one query must carry the identical name sequence.
+  Files rendering through `positionalPipeSprint` (bare values, no names) carry no
+  names to check and are outside this instrument by construction —
+  `lateral_unnest_chain` and `chained_unnest_ordinal` are the notable ones.
+
+  **Mutation-checked in three directions.** Permuting a real expectation
+  (`baretwin_gather:260`, `K=100|M=55|X=7` → `X=7|K=100|M=55`) reds it with the
+  site named. Making the comparison ORDER-INSENSITIVE — which is what the old
+  collapse-and-compare method did — makes that same permuted expectation pass
+  unreported, which is the old verifier's blindness reproduced directly. Making
+  the derivation decline everything trips the population floor rather than
+  reporting a clean census.
+
+  39 of the 196 rows had a slot order differing from the alphabetical one, i.e.
+  39 rows' order was previously unasserted. That count came from the original
+  program and is retained as history, not as a standing claim.
 
   **Finding 1 — the duplicate-name row, and why it was pinned only by a COUNT.**
   Exactly one shape in the corpus projects repeated output names:
@@ -12698,10 +12745,35 @@ None is speculative: each was re-verified against the tree before booking.
   with expectations UNCHANGED, which is itself the proof that slot order matched
   the projection order at each.
 
-  **Remainder: none.** Every `executor.RowValue` site left in
-  pkg/relational/sqldriver reads a SINGLE named column, where there is no order
-  to assert, or is one of the renderer definitions themselves — which is the
-  item's stated DONE condition.
+  **Remainder: none, and it is now CHECKED rather than grepped.** Every
+  `executor.RowValue` site left in pkg/relational/sqldriver reads a SINGLE named
+  column, where there is no order to assert, or is a renderer definition. That
+  was originally closed with a grep, which cannot tell a multi-slot row being
+  ASSERTED through the map from one named column being READ out of it — so it
+  either reports the legal remainder as debt or is loose enough to miss the next
+  offender. `pkg/docscheck/rowvalue_map_expectation_test.go`
+  (`TestSqlDriverRowsAreNotAssertedThroughTheNameKeyedMap`) makes it an AST fact
+  at build time, classifying by CONSUMPTION: one string-literal key is legal, two
+  or more distinct keys is not, and consuming the map whole is not unless the
+  scope proves it holds one entry (`len(m) != 1`, fanout_exists_index's COUNT
+  shape). MEASURED: 17 files scanned, 0 findings; the 13 files holding legal
+  single-column reads all stay legal. Mutation-checked in four directions,
+  including one that removes the single-column distinction and reds six legal
+  fixtures — the half that keeps the gate from being deleted as unusable.
+
+  **Two per-file facts the old log could not carry.** It listed 18 files; the
+  conversion touched 26. The 8 absent from it are `array_unnest_ordinality`,
+  `chained_unnest_ordinal`, `lateral_unnest_chain`, `merged_leg_read_redundancy`,
+  `merged_leg_wrong_window`, `array_unnest_struct`,
+  `aggregate_index_signed_zero_range_set` and `vector_multipartition_e2e` —
+  Findings 3 and 4's shapes, which are not map-literal rewrites and so were
+  outside what that program compared. And the two `lateral_unnest_chain`
+  expectations that changed were CORRECTIONS, not reorderings: one was rendering
+  `SELECT "V"."Y", "T2"."ID"` in the REVERSE of its own SELECT list
+  (`"1|100"` → `"100|1"`), the other rendered one column of a two-column
+  projection (`"[100 200 300 400]"` → `"[1|100 1|200 1|300 2|400]"`). A
+  reordering-only proof could not have covered either, which is consistent with
+  the file's absence from the log.
 
 - [ ] **CQ-66 (M/L, gated) — the unnest ELEMENT quantifier states no type, and
   750 positional-merge slots inherit that.** MEASURED over the real-FDB corpus
