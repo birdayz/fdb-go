@@ -201,6 +201,8 @@ go_test(
         "enclosed_middle_unnest_exists_fdb_test.go",
         "escaped_identifier_sql_surface_fdb_test.go",
         "evolution_added_index_gate_fdb_test.go",
+        "execution_stats_fdb_test.go",
+        "execution_stats_retry_test.go",
         "exists_aggregate_scope_leak_fdb_test.go",
         "exists_alias_binding_fdb_test.go",
         "exists_alias_shadow_fdb_test.go",

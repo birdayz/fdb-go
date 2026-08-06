@@ -211,17 +211,27 @@ configured), `Inconclusive` (errored before any cache decision; zero value).
 cached). Only `planDML` itself logs — `planDMLExplainOnly` and the
 `buildLogicalPlanFor*` EXPLAIN-DML paths never reach it.
 
-**Reachability note (honest scope).** `planDML` (the Cascades DML planning
-step) is entered only via `QueryContext`. `ExecContext` sets `execMode` and
-routes DML through the non-Cascades `execStatement` path (`planOne:125`), which
-this hook does not cover. And `QueryContext` plans the DML — firing the hook —
-then rejects the resulting update plan (`connection.go:359`, "only SHOW and
-SELECT"). So today `planDML`'s output is a throwaway: its plan is never
-executed. Instrumenting it is still correct and minimal: it is a genuine
-planning funnel, consistent with the SELECT path, and becomes live for free
-once the DML execution path is unified onto Cascades (CLAUDE.md's "one query
-path" direction). The hook is *not* claimed to make DML execution observable —
-only the Cascades DML *planning* step.
+**Reachability note (honest scope) — SUPERSEDED, and recorded rather than
+deleted because the conclusion it licensed no longer holds.** As written, this
+RFC stated that `planDML` was entered only via `QueryContext`, that
+`ExecContext` routed DML through the non-Cascades `execStatement` path, and that
+`planDML`'s output was therefore "a throwaway: its plan is never executed" — so
+the hook was *not* claimed to make DML execution observable.
+
+That is no longer true, and the unification the note anticipated is the reason.
+`execStatement` now handles only DDL and transaction statements
+(`connection.go`, "DML (INSERT/UPDATE/DELETE) no longer routes here — it
+executes through the Cascades path (planDML)"), so `ExecContext` reaches
+`planDML` and executes the plan it produces via `cascadesPlan.Execute`. A
+`planDML` planning record therefore describes a plan that really runs, and the
+post-execution counterpart is RFC-211:
+`TestFDB_ExecutionStats_DMLReportsAffectedNotReturned` issues a `DELETE` through
+`ExecContext` and reads back the affected count and the records the statement
+scanned, which is only possible because the Cascades DML plan is the one that
+executed.
+
+The standing claim is the narrower one that survives: this hook covers DML
+*planning*. Execution is RFC-211's surface.
 
 Note: the `defer func() { ls.finish(err) }()` closure is allocated even when
 `ls == nil`, so "zero overhead" is one nil-compare in `finish` plus a cheap

@@ -71,9 +71,19 @@ type EmbeddedConnection struct {
 	// log-level policy live in the handler, not the engine.
 	planLogger PlanGenerationLogger
 
+	// execStatsLogger receives one ExecutionStats per statement execution
+	// (RFC-211) — the post-execution counterpart to planLogger. nil = silent
+	// (the default). Kept a separate hook rather than a second method on
+	// PlanGenerationLogger: Go has no default methods, so growing that
+	// interface would break every existing implementer, and a cached plan is
+	// planned once but executed many times, so the two records do not pair
+	// up 1:1.
+	execStatsLogger ExecutionStatsLogger
+
 	// slowQueryThresholdMicros marks a planning call as slow when its
-	// duration exceeds this many microseconds. Defaults to the canonical
-	// api.OptLogSlowQueryThresholdMicros value (see New).
+	// duration exceeds this many microseconds, and independently marks a
+	// statement EXECUTION slow on the same threshold (RFC-211). Defaults to
+	// the canonical api.OptLogSlowQueryThresholdMicros value (see New).
 	slowQueryThresholdMicros int64
 
 	// options carries the per-connection api.Options that drive
@@ -166,8 +176,18 @@ func (c *EmbeddedConnection) SetPlanLogger(l PlanGenerationLogger) {
 	c.planLogger = l
 }
 
+// SetExecutionStatsLogger installs a post-execution statistics logger
+// (RFC-211). Passing nil disables execution logging. Not safe to call
+// concurrently with statement execution on the same connection (matches
+// database/sql's per-Conn threading contract, same as SetPlanLogger).
+func (c *EmbeddedConnection) SetExecutionStatsLogger(l ExecutionStatsLogger) {
+	c.execStatsLogger = l
+}
+
 // SetSlowQueryThresholdMicros sets the slow-query threshold in microseconds.
-// A non-positive value disables the slow-query flag.
+// A non-positive value disables the slow-query flag. The threshold governs
+// both dimensions independently: PlanGenerationInfo.SlowQuery reports that
+// PLANNING exceeded it, ExecutionStats.SlowQuery that EXECUTION did.
 func (c *EmbeddedConnection) SetSlowQueryThresholdMicros(micros int64) {
 	c.slowQueryThresholdMicros = micros
 }
