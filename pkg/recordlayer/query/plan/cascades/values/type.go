@@ -604,6 +604,47 @@ type RecordTypeLeg struct {
 	// rather than a segment; and this field goes when the last of the two does.
 	// Until then, a new comparison against Name is a regression, full stop.
 	//
+	// BOTH READERS SURVIVE, re-measured 2026-08-06 and STABLE across two
+	// consecutive full-suite runs, and the two are blocked for DIFFERENT reasons
+	// — which is why neither can be retired by finishing the other:
+	//
+	//   - The EXECUTOR reader is blocked at its PRODUCER, and the producer is
+	//     blocked on an executor widening. Its mint is the unnest-merge path's
+	//     `leg + "." + col` (query.rebaseUnnestOuterLegPredicate). That mint
+	//     cannot re-anchor by ordinal in isolation: it holds no layout parameter,
+	//     and every one of its surviving call sites reaches it over a merged row
+	//     built with qualified `LEG.COL` keys — so a positional bake against it
+	//     strands. Three of the five sit in an explicit `!seedWindowed` /
+	//     `!ordinalSeed` else-branch; the other two apply no seed test at all
+	//     (one is the else of the chained-unnest check, one the plain non-chained
+	//     merge), which makes them the name-keyed rebase's only domain rather
+	//     than an unconverted arm of a seed decision. The ordinal twin
+	//     already exists and is already selected wherever a windowed seed makes
+	//     it correct. Making those seeds ordinal is a scope gate coupled to the
+	//     executor's below-FOD hoist, the same binding-namespace widening the
+	//     bare-untyped-QOV residue needs. The NLJ path is a structural template
+	//     for the shape, not an exercised precedent: its ordinal re-anchor arm
+	//     measures ZERO over the whole real-FDB corpus (the leg-local bake census
+	//     reports its MergedReAnchor partition vacuous), so "as the NLJ path
+	//     already does" describes code that does not run.
+	//   - The TRANSLATOR reader (legWindowSlot) is blocked at the COMPARISON, not
+	//     at its counterparty. The counterparty conversion has already happened
+	//     for every parsed channel; a segment is still text, and this reader
+	//     holds no CorrelationIdentifier to key an identity lookup with. One of
+	//     its two key kinds names a TABLE rather than a quantifier
+	//     (matchViaTableName, measured 1), so the map cannot be re-keyed by
+	//     identity even in principle.
+	//
+	// The SPLIT population these bakers sit on is now instrumented
+	// (name_split_census.go) and reads SPLIT-QUALIFIED 0 at both arms over 11
+	// calls. Scope that to the TWO LEG BAKERS: the census's own header names four
+	// uninstrumented splitting siblings, so this is not a statement about
+	// re-splitting in Go. Within that scope it closes the question of whether a
+	// qualifier is still being MANUFACTURED from a rendered name at the bakers
+	// these two readers sit behind — it is not — without touching either
+	// blocker above, because manufacturing a qualifier and matching one against
+	// Name are different steps and only the first was ever a text-channel defect.
+	//
 	// Consumers whose counterparty is a correlation must use Alias. A comparison
 	// against Name is a text match dressed as an identity check, and text
 	// matching is what folds the deliberately case-DISJOINT alias namespaces

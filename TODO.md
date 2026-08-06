@@ -11143,6 +11143,97 @@ None is speculative: each was re-verified against the tree before booking.
   scratch measurements, not instrument readings. If this item is resumed, an
   actual counter is the first deliverable.
 
+  **THE FIRST DELIVERABLE IS DONE (2026-08-06). The counter exists, and the
+  measurement changes what the remainder is.** `name_split_census.go` counts both
+  splitting arms per resolution decision, bucketed by which representation
+  DECIDED (segmented / SPLIT-QUALIFIED / splitBare); `AssertNameSplitCensus` is
+  wired into the sqldriver `TestMain` beside its siblings. Measured over the
+  real-FDB corpus, STABLE across two consecutive full-suite runs:
+
+  | arm | calls | segmented | SPLIT-QUALIFIED | splitBare |
+  |---|---|---|---|---|
+  | `legQOVSegmentsOf` | 9 | 9 | **0** | 0 |
+  | `flatColumnBake` | 2 | 0 | **0** | 2 |
+
+  **SCOPE FIRST, because every number below is scoped and the previous revision
+  of this block was not.** The census watches TWO arms — the two leg bakers in
+  `cascades_translator.go` — and nothing else. It is not a census of re-splitting
+  in Go. Four splitting siblings are UNINSTRUMENTED by anything, and they are
+  named in the census header and booked as **CQ-94**:
+  `recursiveRemapValues` (`cascades_translator.go:9547`, which
+  manufactures a `CorrelationIdentifier` outright and is strictly worse than
+  SPLIT-QUALIFIED), `parseColRef` (`core/embedded/colref.go:18`, 27 production
+  call sites), `splitQualifier` (`cascades_translator.go:5016`) and the
+  derived-unnest base-column split (`derived_unnest.go:107`). A fifth near
+  sibling, `unnest_gather.go:391`, IS instrumented — by the seed-window reader
+  census, not this one.
+
+  - The "110 → 3 → 0" ZERO is CONFIRMED — for the first time by an instrument.
+    No qualifier is being manufactured from a rendered name AT THESE TWO ARMS in
+    production traffic. Read globally, that sentence is false; the dark siblings
+    above are uncounted.
+  - **The POPULATION refutes the scale the prose implied.** Eleven calls between
+    the two arms, not ~110. `legQOVSegmentsOf` takes the segmented path on all
+    nine of its calls — its fallback split is not merely producing no qualifiers,
+    it is not being ENTERED. `flatColumnBake`'s re-split arm is reached twice,
+    both by a BARE name that falls through unbaked; it has never been handed a
+    dotted name at all.
+  - So the hard zero is nearly vacuous on its own, and what carries the weight is
+    the floors PLUS a unit wiring pin. **The CALL floors are not the floors that
+    matter, and saying they were was the weaker claim this block used to make.**
+    This census's zero is a zero over the SPLIT population, and at
+    `legQOVSegmentsOf` the two numbers do not move together at all: 9 calls, 0
+    splits. A Calls floor there measures the CONVERTED channel and would sit
+    green through the splitting arm losing its recorder entirely. So the split
+    population is floored SEPARATELY and per site:
+    - `flatColumnBake` — split floor **1** (measured 2; both its calls are
+      splits). A real floor.
+    - `legQOVSegmentsOf` — split floor **0**. A DECLARATION, not an absent floor:
+      "measured empty over this corpus, covered by a unit wiring pin instead".
+      The assertion checks it in the STALE direction — if the arm ever acquires a
+      split population, the declaration reds so somebody raises it to a real
+      number rather than leaving a permanent exemption.
+  - **That zero is a corpus fact, not a dead arm, and it was MEASURED.** A panic
+    at the arm's entry is reached with a DOTTED name — `TestRecursiveBodyGatesOrdinal`
+    drives it as `C.ORDER_ID`, so the SPLIT-QUALIFIED bucket itself is reachable.
+    It therefore cannot be deleted the way `singleForEachBake`'s qualifier arm was
+    (whose panic probe came back EMPTY at the same reach). The consequence is
+    stated rather than smoothed: a recorder dropped from either SPLIT arm of
+    `legQOVSegmentsOf` is INVISIBLE to this corpus, so it is pinned per arm and
+    per class by `core/query/name_split_recorder_wiring_test.go` — five mutation
+    directions verified red (each of the four recorders removed; the site
+    constant swapped).
+  - The `flatColumnBake calls 102` in the dotted-leg qualifier census is NOT in
+    conflict: that counts `legWindowSlot` calls, which the SEGMENTED caller
+    (`bakeSegmentedColumnRef`) also makes. 102 against 2 is the converted channel
+    carrying essentially all the traffic.
+
+  **The four debt entries are NOT retired — they are re-keyed and restated.**
+  `:5811`→`:5815`, `:5813`→`:5819`, `:6139`→`:6145`, `:6171`→`:6177` (plus
+  `:6103`→`:6109`, `:6199`→`:6205`); ratchet unchanged at 53. They cannot retire,
+  and the reason is now measured rather than argued: the arms serve the carrier
+  that states NO segments, and one class of such carrier — a projection MACHINERY
+  mint, star-body normalization in `translateScan` — structurally never can.
+  Deleting the arms would convert those carriers' behaviour by accident.
+
+  **WHAT THE ARM SHOULD DO IS RULED, AND THE GATE NOW SAYS SO.** The previous
+  revision of this block called the whole thing an open owner question and had
+  the failure text tell the tripper to escalate. That was too weak by exactly one
+  step. Java rules it: `SemanticAnalyzer.lookup` skips a projection output that
+  carries no `Identifier` before any name comparison
+  (`SemanticAnalyzer.java:459-461`), so a machinery-minted label is NOT
+  name-resolvable and must not resolve by ANY spelling — least of all by this arm
+  reading a dot inside it as a qualifier boundary. Widening the SPLIT-QUALIFIED
+  zero is therefore the one fix that is known-wrong, and the failure text now
+  states that plus the correct behaviour (DECLINE) rather than handing the
+  tripper an escalation. A gate that describes a settled question without stating
+  its answer gets closed by whoever trips it, in the wrong direction.
+
+  What remains owner-owned is narrower and is NOT this arm's question: whether
+  Go's star-body normalization should stop minting resolvable-looking labels in
+  the first place, which moves a live projection channel. Until it does, the
+  behaviour at the arm is settled.
+
   Not query-engine machinery: no cost model, no rule, no executor contract. The
   segments already exist and are already correct; this is deleting a join and a
   split. Pin with a `"A.B"`-quoted-column-vs-`A.B`-qualified-reference pair that
@@ -13951,6 +14042,52 @@ None is speculative: each was re-verified against the tree before booking.
   a local edit, and CQ-79's `S/M` should be read as `L, gated on the executor
   widening`, sequenced WITH CQ-68 rather than before it.
 
+  **RE-CONFIRMED AT `7335ad283` (2026-08-06), and the third correction is now
+  MEASURED rather than inferred.** Nothing has touched
+  `cascades_translator.go` since `041838856`, so all three corrections stand
+  verbatim; the mint is live at `:3667` and its debt entry is live at test line
+  `:454`. Two things are now instrument readings:
+  - **The "NLJ precedent" does not run.** The leg-local bake census reports its
+    `MergedReAnchor` partition VACUOUS over the whole real-FDB sqldriver corpus
+    (`LEG-LOCAL BAKE CENSUS VACUOUS: … MergedReAnchor, which is 0`). So "re-anchor
+    by ordinal as the NLJ path already does" points at an arm measured at zero
+    calls. It is a structural template, not an exercised precedent, and any plan
+    that cites it as proven-in-traffic is citing dead code.
+  - **The reader it feeds is live at 2.** The leg-column provenance census reports
+    dotted hits available 2 (`C.CV`, `I.QTY`), unstated 0, diverged 0 — so the
+    executor's dotted arm cannot be deleted, and the acceptance condition
+    "dotted hits → 0" is not reachable from the translator side.
+
+  The blocker, stated in the plainest available form:
+  `rebaseUnnestOuterLegPredicate` **takes no layout parameter at all**, while its
+  ordinal twin takes two (`ordType`, `mergedType`) precisely because it needs
+  them. Every surviving call site reaches it over a merged row that is BUILT
+  with qualified `LEG.COL` keys at `:475` — but the *reason* differs across the
+  five, and an earlier revision of this line flattened them all into "the
+  `!seedWindowed` / `!ordinalSeed` arm", which is wrong for two of them:
+  - `:3569`, `:3590`, `:3742` ARE that arm — an explicit `!seedWindowed` /
+    `!ordinalSeed` else-branch, with the ordinal twin selected on the other side.
+  - `:3059` is the else of `isChainedUnnest` (`:3034`), not a seed test at all.
+    The `ordinalSeed` check lives INSIDE the chained arm (`:3048`), on the other
+    side of the branch this call sits on.
+  - `:3400` is the plain non-chained unnest merge, which likewise applies no
+    seed test.
+
+  The conclusion is unchanged, and it is the two untested sites that make it
+  stronger rather than weaker: `:3059` and `:3400` are the name-keyed rebase's
+  ONLY domain (`:3396-3398` says so), so they do not convert when a seed test
+  flips — there is no seed test on them to flip. The ordinal twin is already
+  selected wherever a windowed seed makes it correct. So this is not a mint that
+  someone forgot to convert; it is the name-model arm's rebase, and it converts
+  when the seed does. **STOP confirmed — do not attempt this as a local
+  re-anchor.**
+
+  **The successor is booked as CQ-95** ("the name-model seed converts to the
+  windowed/ordinal seed"), carrying this round's three acceptance numbers —
+  `MergedReAnchor` vacuous, executor dotted hits 2, name-split population 11 with
+  SPLIT-QUALIFIED 0 — as its baseline, and the CQ-95/CQ-68 coupling. CQ-79 is the
+  residue CQ-95 retires; it does not close on its own.
+
 - [x] **CQ-80 (MED, test-contract) — four watch-list entries claim a pin that
   does not exist or cannot fail. DONE — all four closed, two of them REFUTED
   by the measurement.** · S/M
@@ -14641,3 +14778,109 @@ None is speculative: each was re-verified against the tree before booking.
   DONE = Go returns `{_0: 3}` for `SELECT (1+2)` and `{VAL: 10}` for
   `SELECT (val)`, while `SELECT (val) + 1` still returns BIGINT `11` and
   `WHERE (val) = 10` still matches — with the corpus run showing the cost.
+
+- [ ] **CQ-94 (MED, instrumentation): the DARK SPLITTERS — four sites recover a
+  qualifier from a rendered name and NOTHING counts them.** The name-split
+  census (`values/name_split_census.go`) reports SPLIT-QUALIFIED 0 over 11 calls,
+  and that reading is worth exactly its scope: it watches the TWO leg bakers in
+  `cascades_translator.go` and nothing else. Read as a statement about
+  re-splitting in Go it is false, and the sites it misses include one that is
+  strictly worse than anything it measures. Booked separately from CQ-52 because
+  this is a NEW measured front, not a widening of that one — the `parseColRef`
+  family in particular is a different package, a different call shape, and a
+  different question (a display/lookup helper that three call sites have quietly
+  promoted into a resolution decision).
+
+  The sites, each with what it manufactures:
+  - `cascades_translator.go:9547` `recursiveRemapValues` — **the worst one.** It
+    does not manufacture a qualifier STRING to look up in a leg table; it
+    manufactures a `CorrelationIdentifier` directly out of the bytes before the
+    first dot, and hands it to a `QuantifiedObjectValue`. Its own header (~`:9515`)
+    already admits the break — the lazy dotted `Field` "spells both the qualified
+    `B.ID` and a QUOTED identifier containing a dot" — and notes master's
+    unconditional split breaks the quoted class identically.
+  - `core/embedded/colref.go:18` `parseColRef` — a LAST-dot split with **27
+    production call sites**. Most are display or lookup and are not decisions;
+    three MANUFACTURE a qualifier that then decides something:
+    `logical_predicate.go:10329` (inner- vs outer-scoping of a projection field),
+    `cascades_generator.go:6376` (a projected column's qualifier matched against
+    the scan's name/alias), and `:4476` (the display label, guarded by the
+    PARENTHESIS HEURISTIC at `colref.go:41-47` — `isPlainQualifiedColumnReference`
+    rejects on `()` because "parentheses identify the rendered aggregate/function
+    label at issue", which is a heuristic over a rendering, not a parse).
+  - `cascades_translator.go:5016` `splitQualifier` — the EXISTS fold's LAST-dot
+    split. Its own doc concedes the deeper case: `A.B.C` is treated as qualifier
+    `A.B`, column `C`.
+  - `derived_unnest.go:107` — a LAST-dot split of the unnest body's source column,
+    compared against the base scan's alias/table name.
+
+  NOT in scope, listed so it is not re-counted: `unnest_gather.go:391` splits too,
+  but it IS instrumented — by the SEED-WINDOW READER census's QUALIFIED-NO-IDENTITY
+  hard zero, a different instrument with a different population.
+
+  Order of work: INSTRUMENT before converting, exactly as CQ-52's first deliverable
+  was a counter. Every conversion argument on this path has so far been made against
+  scratch figures and then refuted by the first real measurement — the "110 → 3 → 0"
+  progression turned out to be a population of 11, and the leg-column provenance
+  block's "calls 52, dotted hits 4" was low by 50x on one number and HIGH by two on
+  the one the decision rested on.
+
+  DONE = each of the four sites records per resolution decision into a census with
+  a standing assertion in the sqldriver `TestMain` (same shape as
+  `AssertNameSplitCensus`: per-site, per-class, floors declared per site with any
+  zero-population site's disposition stated and checked in the stale direction);
+  the recorder wiring is pinned per arm and per class by unit test, since a site
+  measuring 0 cannot have its wiring guarded by the corpus; and the measurement is
+  written into this item, replacing any prose figure it contradicts.
+
+- [ ] **CQ-95 (L, gated — the name-model seed converts to the windowed/ordinal
+  seed).** The successor CQ-79 stops at. CQ-79's finding is that
+  `rebaseUnnestOuterLegPredicate` cannot re-anchor by ordinal as a local edit: it
+  takes no layout parameter, its ordinal twin takes two because it needs them, and
+  every surviving call site reaches it over a merged row BUILT with qualified
+  `LEG.COL` keys at `:475`. The mint converts when the SEED does, and that is this
+  item.
+
+  **ENTRY CONDITIONS** (this is not startable before them, which is why it is
+  booked rather than attempted):
+  - `unnestExistsSeedSafe`'s scope gate (`cascades_translator.go:1317`) lifts. That
+    gate is coupled to the executor's below-FOD hoist — `:3841-3843` states the
+    multi-alias branch is "WIRED but scope-gated OFF end-to-end … it goes live only
+    when that guard lifts".
+  - The same `executor.bindMergedOuterLegs` runtime binding-namespace widening that
+    CQ-68 owns on the read axis. **CQ-95 and CQ-68 are two axes of one executor
+    widening; CQ-79 is the residue CQ-95 retires.** They stay booked separately —
+    the residues are genuinely different and folding them lets either close while
+    the other's survives — but they SEQUENCE together, CQ-68 first.
+  - Query-engine review gate: RFC + Graefe ACK before implementation.
+
+  **ACCEPTANCE INSTRUMENTS, with this round's numbers as the baseline** — all three
+  are already measured, and two of them refute acceptance conditions an earlier
+  plan would have written:
+  - **`MergedReAnchor` is VACUOUS** — the leg-local bake census reports 0 calls for
+    that partition over the whole real-FDB sqldriver corpus. So the NLJ ordinal
+    re-anchor is a structural template, NOT an exercised precedent: this conversion
+    may not cite it as proven-in-traffic, and "do it as the NLJ path already does"
+    is a description of dead code. If the conversion is right, this partition
+    stops being vacuous — that is the acceptance signal, and it is the one the
+    census's own vacuity assertion will announce.
+  - **Executor dotted hits = 2** (`C.CV`, `I.QTY`; unstated 0, diverged 0, stable
+    across five full-suite runs while the census's own call total swung 2394–2674
+    — presence holds, multiplicity moves). That is reader one's entire remaining
+    reach. An
+    acceptance condition of "dotted hits → 0" is NOT reachable from the translator
+    side — CQ-79 measured that — but it IS the acceptance condition here, because
+    this item converts the producer those 2 hits come from. Two, not the four an
+    earlier revision of that floor block claimed.
+  - **Name-split population 11, SPLIT-QUALIFIED 0** at the two leg bakers. Reader
+    two (`legWindowSlot`) is blocked at the COMPARISON, not at the channel: the
+    counterparty conversion has already happened for every parsed channel, and one
+    of the map's two key kinds names a TABLE rather than a quantifier
+    (`matchViaTableName`, measured 1), so the map cannot be re-keyed by identity
+    even in principle. This item does not unblock reader two, and must not claim to.
+
+  DONE = the seeds those five call sites sit over are ORDINAL, the name-keyed
+  `rebaseUnnestOuterLegPredicate` is DELETED (not wrapped), the debt entry at
+  `cascades_translator.go:3667` / test line `:454` is deleted and the ratchet drops,
+  `MergedReAnchor` stops being vacuous, and the leg-column provenance dotted-hit
+  count goes to 0 with its census retiring alongside the arm it measured.

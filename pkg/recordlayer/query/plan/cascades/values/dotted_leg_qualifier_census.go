@@ -82,12 +82,17 @@ import (
 // The counterparty conversion has HAPPENED for all four parsed channels: the
 // qualifier arrives segmented, so the two spellings no longer have to survive a
 // join and a re-split to reach each other. The measured effect is on the SPLIT
-// population, not on these totals — over the sqldriver corpus the dotted
-// re-split fell from 110 calls to ZERO. It fell to 3 when the projection channel
-// converted, and the three survivors were the sort-key and aggregate-operand
-// channels; the commit that converted those took the remainder. A comment still
-// naming them as survivors describes a tree two commits old, and it is the shape
-// of claim this file exists to keep honest.
+// population, not on these totals.
+//
+// THAT POPULATION NOW HAS ITS OWN INSTRUMENT — name_split_census.go — and this
+// paragraph used to be the admission that it did not. The "fell from 110 calls
+// to ZERO" figure quoted here was scratch measurement, re-quoted rather than
+// re-read, which is the exact shape of claim this file exists to keep honest and
+// was making about its own blind spot. The zero is now CONFIRMED by
+// AssertNameSplitCensus, and the population it is a zero over is 11 calls
+// between the two arms, not the ~110 this sentence implied. Read the numbers
+// there; do not re-quote them here, because one census quoting another is how
+// the 110 survived.
 //
 // The re-split arms survive that zero, and not as leftovers: they serve the
 // carrier that states NO segments, which the segment triple's own contract
