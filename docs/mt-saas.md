@@ -849,9 +849,11 @@ to be built through the Go metadata builder and saved with
 would close this — is specified in [`rfc-schema-migration.md`](rfc-schema-migration.md) Phases 1–3
 and is not implemented.
 
-So the fleet-migration story today is: bump the template version → call `RepairSchema` per tenant
-through the Go API, in a loop you write → run `frl index build` per tenant per index, in a shell
-loop you write. **Neither loop ships.** Plan for building both.
+So the fleet-migration story today is: bump the template version through the Go metadata builder
+and `fleet.SaveTemplate` → `frl meta catalog repair --database <db> --all-schemas` to rebind every
+tenant → `frl index build --database <db> --all-schemas` to build what the rebind left DISABLED.
+**Both fan-out loops now ship.** What you still write yourself is only the first step — producing
+the new template version — because no SQL DDL reaches it.
 
 ### No online index scrubber — a detection API, not a fleet tool
 
