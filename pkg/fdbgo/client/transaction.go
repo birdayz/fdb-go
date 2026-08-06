@@ -277,6 +277,14 @@ type txOptions struct {
 	// readTags: the AUTO_THROTTLE_TAG subset of tags. C++ keeps this as a
 	// separate TagSet (trState->options.readTags) because only auto-throttle
 	// tags ride along on per-storage-server read requests.
+	//
+	// Go tracks the set but does NOT yet stamp it onto read requests: C++ gates
+	// that on sampleReadTags() (NativeAPI.actor.cpp), a per-request sampling
+	// decision that has no Go counterpart yet. The consequence is that an
+	// auto-throttle tag currently reaches the ratekeeper only through the GRV
+	// occurrence counts and the commit tagSet — the same carriage a plain TAG
+	// gets — so read-side attribution for such a tag is missing, not merely
+	// unsampled. Everything else about the option is honored.
 	readTags []string
 
 	// spanParent, set by SetSpanParent (FDBTransactionOptions::SPAN_PARENT), links the

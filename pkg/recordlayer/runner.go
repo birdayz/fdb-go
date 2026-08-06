@@ -91,12 +91,13 @@ func ValidateTags(tags []string) ([]string, error) {
 		return nil, &TagValidationError{Message: "At most 5 tags allowed"}
 	}
 	for _, t := range uniq {
-		// Java uses String.length(), which counts UTF-16 code units, not bytes.
-		// For the ASCII tenant identifiers this is used for the two agree; the
-		// rune count is the closer analogue for anything else, and it is the
-		// conservative choice since it never exceeds the byte length the client
-		// checks against its own 255 limit.
-		if len([]rune(t)) > MaxRecordContextTagLen {
+		// Java uses String.length(), which counts UTF-16 code units — not bytes
+		// and not code points. A character outside the BMP is stored as a
+		// surrogate PAIR and therefore costs TWO, so a 16-code-point tag of
+		// astral characters is length 32 in Java and rejected. Counting runes
+		// would accept it: rune count is a LOWER bound on the UTF-16 count, so
+		// it is more permissive than Java, never less.
+		if utf16Len(t) > MaxRecordContextTagLen {
 			return nil, &TagValidationError{
 				Message: "Tag must be 16 characters or shorter",
 				Tag:     t,
@@ -104,6 +105,20 @@ func ValidateTags(tags []string) ([]string, error) {
 		}
 	}
 	return uniq, nil
+}
+
+// utf16Len returns the length of s in UTF-16 code units — what Java's
+// String.length() reports. Equivalent to len(utf16.Encode([]rune(s))) without
+// the two intermediate allocations.
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		n++
+		if r > 0xFFFF {
+			n++ // surrogate pair
+		}
+	}
+	return n
 }
 
 // SetTags validates and stores the tag set, returning an error rather than

@@ -106,6 +106,32 @@ func TestValidateTagsCountsCharactersNotBytes(t *testing.T) {
 	}
 }
 
+// The dimension the BMP case above cannot reach: String.length() counts UTF-16
+// CODE UNITS, so a character outside the BMP is a surrogate pair and costs TWO.
+// Nine astral characters are length 18 in Java and rejected; a code-POINT count
+// sees nine and accepts, which is more permissive than Java rather than less.
+// "日" cannot express this — it is BMP, where units and code points agree.
+func TestValidateTagsCountsUTF16UnitsNotCodePoints(t *testing.T) {
+	t.Parallel()
+	// U+1D11E MUSICAL SYMBOL G CLEF: one code point, two UTF-16 code units.
+	const clef = "\U0001D11E"
+
+	over := strings.Repeat(clef, MaxRecordContextTagLen/2+1) // 9 points, 18 units
+	if len([]rune(over)) > MaxRecordContextTagLen {
+		t.Fatalf("test is not exercising the code-point/unit difference: %d runes", len([]rune(over)))
+	}
+	if _, err := ValidateTags([]string{over}); err == nil {
+		t.Error("a tag of 18 UTF-16 code units must be rejected — Java's String.length() " +
+			"counts surrogate pairs as two, so counting code points diverges")
+	}
+
+	// The boundary case must still be accepted: exactly 16 units.
+	atLimit := strings.Repeat(clef, MaxRecordContextTagLen/2) // 8 points, 16 units
+	if _, err := ValidateTags([]string{atLimit}); err != nil {
+		t.Errorf("a tag of exactly 16 UTF-16 code units must be accepted, got %v", err)
+	}
+}
+
 func TestSetTagsSortsForDeterministicCommitBytes(t *testing.T) {
 	t.Parallel()
 	var cfg RecordContextConfig

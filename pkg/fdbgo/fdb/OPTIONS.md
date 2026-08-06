@@ -85,7 +85,7 @@ C++ references are into the FoundationDB 7.3.77 source: `T::setOption` =
 | `SetTransactionLoggingMaxFieldLength` | accept & ignore | T:7037 trace field cap | safe (telemetry) | |
 | `SetServerRequestTracing` | accept & ignore | T:7051 trace id | safe (telemetry) | |
 | `SetDebugRetryLogging` | accept & ignore | RYW:2580 retry-log name | safe (telemetry) | |
-| `SetAutoThrottleTag` | **honored** | T:7120 add to tags + readTags | n/a | adds to both the txn tag set and the read tag set |
+| `SetAutoThrottleTag` | **honored** | T:7120 add to tags + readTags | n/a | adds to both the txn tag set and the read tag set; the read set is tracked but not yet stamped onto per-storage-server read requests (C++ gates that on `sampleReadTags()`), so read-side attribution for the tag is still missing |
 | `SetIncludePortInAddress` | accept & ignore | deprecated / default-on ≥630 | safe | |
 | `SetSpecialKeySpaceRelaxed` | **rejected** (`*UnsupportedOptionError`) | RYW:2602-2605 relaxes special-key-space READ restriction | fails unsafe | Go has no special-key-space module — silently "granting" the relaxation for reads that cannot succeed is the SetReportConflictingKeys migration trap |
 | `SetSpecialKeySpaceEnableWrites` | **rejected** (`*UnsupportedOptionError`) | RYW:2607-2610 arms specialKeySpace->commit translation | fails unsafe | same — without the module the `\xff\xff/management/...` write is dropped or shipped literally; the cluster change silently does not happen |
