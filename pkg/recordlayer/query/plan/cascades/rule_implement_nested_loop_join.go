@@ -1380,6 +1380,9 @@ func buildCorrelatedFlatMapPlan(
 	// diverge. The correlated inner leg is a frozen final singleton (the fod/filter
 	// disentangle), so extraction resolves it faithfully and the correlation the
 	// FlatMap binds is preserved.
+	if values.LegIdentityCensusEnabled() {
+		recordFlatMapResultValue(flatMapSiteCorrelated, resultValue)
+	}
 	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		outerQ, innerQ,
 		outerCorr, innerCorr,
@@ -1794,6 +1797,9 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// lockstep with what executes, so the plan and its quantifiers no longer
 	// diverge. The correlated inner is a frozen final singleton, so extraction
 	// resolves it faithfully and the EXISTS correlation is preserved.
+	if values.LegIdentityCensusEnabled() {
+		recordFlatMapResultValue(flatMapSiteExistentialSelect, resultValue)
+	}
 	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		outerQ, innerQ,
 		outerCorr, innerCorr,
@@ -4172,6 +4178,9 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// FlatMap is its own cascades expression carrying its outer edge (over
 	// step1Expr) and its inner edge (innerQ) directly (no physicalFlatMapWrapper).
 	leftMemoRef := call.MemoizeExpression(step1Expr)
+	if values.LegIdentityCensusEnabled() {
+		recordFlatMapResultValue(flatMapSiteJoinWithExistential, flatMapResult)
+	}
 	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		expressions.NamedForEachQuantifier(mergedOuterCorr, leftMemoRef),
 		innerQ,
@@ -4416,6 +4425,9 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 
 	// The EXISTS FlatMap is its own cascades expression carrying its outer (leftQ)
 	// and inner (rightQ) memo edges directly (RFC-184 W2, no physicalFlatMapWrapper).
+	if values.LegIdentityCensusEnabled() {
+		recordFlatMapResultValue(flatMapSiteYieldExistsFlatMap, resultValue)
+	}
 	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		leftQ, rightQ,
 		outerCorrelation, innerCorrelation,

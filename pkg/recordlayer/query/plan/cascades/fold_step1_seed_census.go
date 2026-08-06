@@ -456,6 +456,25 @@ func quantifiedObjectValueIsTyped(qov *values.QuantifiedObjectValue) bool {
 	return qov.Typ != nil && qov.Typ.Code() != values.TypeCodeUnknown
 }
 
+// describeQOVType spells the flowed type the boolean above collapses.
+//
+// The boolean answers "is there a type"; this answers "WHICH", and the two are
+// different questions in exactly the way that matters here. A residue counted as
+// untyped and a residue counted as typed-but-not-a-row shape are different
+// defects with different fixes, and a %t cannot tell them apart — which is how a
+// population can be re-measured, found typed, and still be the same residue.
+// For a record type the ARITY is what the layout authority needs, so it is what
+// is printed.
+func describeQOVType(qov *values.QuantifiedObjectValue) string {
+	if qov.Typ == nil {
+		return "<nil>"
+	}
+	if rt, ok := qov.Typ.(*values.RecordType); ok {
+		return fmt.Sprintf("RecordType(%d)", len(rt.Fields))
+	}
+	return qov.Typ.Code().String()
+}
+
 // classifyDeclinedLeg describes the node legOrdinalSafety refused.
 //
 // The result-value shapes it separates are the ones RFC-200's gates are stated
@@ -479,7 +498,8 @@ func classifyDeclinedLeg(node plans.RecordQueryPlan) (foldStep1LegShape, string)
 	}
 	switch t := rv.(type) {
 	case *values.QuantifiedObjectValue:
-		return foldStep1LegShapeBareQOV, fmt.Sprintf("%T rv=bare QOV (typed=%t)", node, quantifiedObjectValueIsTyped(t))
+		return foldStep1LegShapeBareQOV, fmt.Sprintf("%T rv=bare QOV (typed=%t rvtype=%s %s)",
+			node, quantifiedObjectValueIsTyped(t), describeQOVType(t), describeFlatMapResultOrigin(rv))
 	case *values.RecordConstructorValue:
 		return foldStep1LegShapeRCNotMerge, fmt.Sprintf("%T rv=RC(%d) NOT a positional merge", node, len(t.Fields))
 	default:
@@ -675,6 +695,334 @@ func assertOrientationGateCounters(w io.Writer, c orientationGateCounters, floor
 			"  the same clean result as a live, agreeing check. Find out why the box-leg\n"+
 			"  seed shapes stopped being planned before concluding anything from the\n"+
 			"  zero declines beside it.\n", c.MapCountDiffers, floors.MapCountDiffers)
+	}
+	return failed
+}
+
+// The FLATMAP RESULT-VALUE PRODUCER census.
+//
+// It answers the question the outcome census above structurally cannot: WHICH
+// construction site emits the result value a declined leg carries, and what that
+// value IS at the moment it is handed to the plan.
+//
+// The outcome census classifies the leg it REFUSED. That is the right cut for
+// "why was this seed declined" and the wrong cut for "who built the thing" — a
+// refused node names its shape, never its author. So an attribution stated from
+// the outcome census is an inference, and this file's whole discipline is that an
+// inference about a population is not a measurement of it.
+//
+// IT ALSO CARRIES A HARD ZERO THAT IS A REFUTATION, NOT A PREDICTION.
+// `UntypedQOV` counts result values handed to a FlatMap that are a
+// QuantifiedObjectValue carrying UnknownType — the shape Java cannot express at
+// all (QuantifiedObjectValue.of requires a Type, QuantifiedObjectValue.java:187;
+// Quantifier.getFlowedObjectType is a Verify.verify plus requireNonNull,
+// Quantifier.java:801-810). It measures ZERO over the real-FDB corpus, and that
+// zero is why the reconstruct-nil residue is NOT a typing gap: those legs carry
+// real RecordTypes of arity 1-4, and legOrdinalSafety refuses them on SHAPE
+// (values.IsPositionalMergeRC needs a *RecordConstructorValue, which no QOV can
+// be, typed or not), never on typing.
+//
+// A non-zero here re-arms the typing argument and is a finding on its own — hence
+// an assertion rather than a printed number.
+//
+// GATED by values.LegIdentityCensusEnabled, like every census on this path.
+
+// flatMapProducerSite names one non-test RecordQueryFlatMapPlan construction.
+// The identity is the SITE, not the file position, so the census survives the
+// line-number rotation that has already invalidated three written-down
+// attributions of this population.
+type flatMapProducerSite int
+
+const (
+	// flatMapSiteCorrelated: buildCorrelatedFlatMapPlan, which passes its
+	// resultValue parameter straight through.
+	flatMapSiteCorrelated flatMapProducerSite = iota
+	// flatMapSiteExistentialSelect: implementExistentialSelect, flowing
+	// sel.GetResultValue().
+	flatMapSiteExistentialSelect
+	// flatMapSiteJoinWithExistential: the 3-quantifier join+EXISTS arm — the one
+	// site that MINTS a result value rather than flowing one
+	// (values.NewQuantifiedObjectValue over the merged outer correlation).
+	flatMapSiteJoinWithExistential
+	// flatMapSiteYieldExistsFlatMap: yieldExistsFlatMap, flowing
+	// sel.GetResultValue().
+	flatMapSiteYieldExistsFlatMap
+
+	flatMapProducerSiteCount
+)
+
+func (s flatMapProducerSite) String() string {
+	switch s {
+	case flatMapSiteCorrelated:
+		return "buildCorrelatedFlatMapPlan"
+	case flatMapSiteExistentialSelect:
+		return "implementExistentialSelect"
+	case flatMapSiteJoinWithExistential:
+		return "implementJoinWithExistential(MINT)"
+	case flatMapSiteYieldExistsFlatMap:
+		return "yieldExistsFlatMap"
+	}
+	return "unknown"
+}
+
+// flatMapProducerCounters is the producer census's state.
+type flatMapProducerCounters struct {
+	// Calls counts every construction, per site.
+	Calls [flatMapProducerSiteCount]int
+	// TypedQOV / UntypedQOV split the QOV-shaped result values by whether they
+	// carry a real flowed type. UntypedQOV is a HARD ZERO; see the header.
+	TypedQOV   [flatMapProducerSiteCount]int
+	UntypedQOV [flatMapProducerSiteCount]int
+	// MergeRC counts positional-merge result values — the shape legOrdinalSafety
+	// ACCEPTS, and therefore the only shape a conversion of this residue could
+	// aim at.
+	MergeRC [flatMapProducerSiteCount]int
+	// OtherRV counts everything else (projections, named record constructors).
+	OtherRV [flatMapProducerSiteCount]int
+	// Shapes records the distinct spellings per site, for the same reason the
+	// outcome census keeps witnesses: a bucket that moves without a spelling
+	// change is a different event from one that gains a spelling.
+	Shapes [flatMapProducerSiteCount]map[string]int
+}
+
+var (
+	flatMapProducerMu     sync.Mutex
+	flatMapProducerCounts flatMapProducerCounters
+)
+
+// recordFlatMapResultValue counts ONE FlatMap construction. Callers must guard
+// on values.LegIdentityCensusEnabled().
+func recordFlatMapResultValue(site flatMapProducerSite, rv values.Value) {
+	if site < 0 || site >= flatMapProducerSiteCount {
+		return
+	}
+	shape := "rv=nil"
+	switch {
+	case rv == nil:
+	case values.IsPositionalMergeRC(rv):
+		shape = fmt.Sprintf("POSITIONAL-MERGE RC(%d)", len(rv.(*values.RecordConstructorValue).Fields))
+	default:
+		if qov, isQOV := rv.(*values.QuantifiedObjectValue); isQOV {
+			shape = fmt.Sprintf("QOV(typed=%t %s)", quantifiedObjectValueIsTyped(qov), describeQOVType(qov))
+		} else {
+			shape = fmt.Sprintf("%T", rv)
+		}
+	}
+
+	flatMapProducerMu.Lock()
+	defer flatMapProducerMu.Unlock()
+	c := &flatMapProducerCounts
+	c.Calls[site]++
+	switch v := rv.(type) {
+	case nil:
+		c.OtherRV[site]++
+	case *values.QuantifiedObjectValue:
+		if quantifiedObjectValueIsTyped(v) {
+			c.TypedQOV[site]++
+		} else {
+			c.UntypedQOV[site]++
+		}
+	default:
+		if values.IsPositionalMergeRC(rv) {
+			c.MergeRC[site]++
+		} else {
+			c.OtherRV[site]++
+		}
+	}
+	if c.Shapes[site] == nil {
+		c.Shapes[site] = map[string]int{}
+	}
+	if _, known := c.Shapes[site][shape]; known || len(c.Shapes[site]) < foldStep1WitnessCap {
+		c.Shapes[site][shape]++
+	}
+	if rv != nil {
+		if flatMapResultOrigin == nil {
+			flatMapResultOrigin = map[values.Value]flatMapProducerSite{}
+		}
+		if prior, seen := flatMapResultOrigin[rv]; seen && prior != site {
+			flatMapResultOrigin[rv] = flatMapProducerSiteAmbiguous
+		} else if !seen {
+			flatMapResultOrigin[rv] = site
+		}
+	}
+}
+
+// flatMapResultOrigin maps a result value BACK to the site that handed it to a
+// FlatMap, keyed by the value's own identity.
+//
+// It is what turns deliverable-style producer attribution from an inference into
+// a measurement. The alternative — reading the arity signature of the declined
+// legs and matching it against the per-site shape histogram — closes only the
+// arities that appear at exactly one site, and leaves the rest to the reader's
+// judgement. That is the same class of argument this census family exists to
+// replace.
+//
+// Keying on the VALUE rather than on the plan is deliberate: a result value is
+// stored in the plan unchanged, so its identity survives the memo's copies of
+// the plan, while a plan-level tag would have to be threaded through
+// WithQuantifiers and every rewrite. Every Value implementation reaching this
+// map is a pointer type, so interface identity is pointer identity.
+//
+// A value handed to TWO different sites records as ambiguous rather than
+// last-writer-wins — an attribution that silently picks one of two answers is
+// worse than one that says it cannot tell.
+var flatMapResultOrigin map[values.Value]flatMapProducerSite
+
+// flatMapProducerSiteAmbiguous marks a result value seen at more than one site.
+const flatMapProducerSiteAmbiguous flatMapProducerSite = -2
+
+// flatMapResultOriginOf reports the site that produced rv, and whether it is
+// known at all. Callers must guard on values.LegIdentityCensusEnabled().
+func flatMapResultOriginOf(rv values.Value) (flatMapProducerSite, bool) {
+	if rv == nil {
+		return 0, false
+	}
+	flatMapProducerMu.Lock()
+	defer flatMapProducerMu.Unlock()
+	site, ok := flatMapResultOrigin[rv]
+	return site, ok
+}
+
+// describeFlatMapResultOrigin spells the producing site for a census witness.
+func describeFlatMapResultOrigin(rv values.Value) string {
+	site, ok := flatMapResultOriginOf(rv)
+	switch {
+	case !ok:
+		return "origin=UNRECORDED"
+	case site == flatMapProducerSiteAmbiguous:
+		return "origin=AMBIGUOUS(>1 site)"
+	default:
+		return "origin=" + site.String()
+	}
+}
+
+// FlatMapProducerCensus reports the producer counters.
+func FlatMapProducerCensus() flatMapProducerCounters {
+	flatMapProducerMu.Lock()
+	defer flatMapProducerMu.Unlock()
+	return flatMapProducerCounts
+}
+
+// ResetFlatMapProducerCensus clears the producer counters.
+func ResetFlatMapProducerCensus() {
+	flatMapProducerMu.Lock()
+	defer flatMapProducerMu.Unlock()
+	flatMapProducerCounts = flatMapProducerCounters{}
+	flatMapResultOrigin = nil
+}
+
+// FormatFlatMapProducerCensus renders the producer census for a harness to log.
+func FormatFlatMapProducerCensus() string {
+	return formatFlatMapProducerCounters(FlatMapProducerCensus())
+}
+
+// formatFlatMapProducerCounters renders an EXPLICIT counter state, so a failure
+// message quotes the state that failed rather than re-reading the globals — which
+// a concurrent run can have moved by the time the message is built.
+func formatFlatMapProducerCounters(c flatMapProducerCounters) string {
+	var b strings.Builder
+	b.WriteString("FlatMap result-value producers (per construction):")
+	for s := flatMapProducerSite(0); s < flatMapProducerSiteCount; s++ {
+		fmt.Fprintf(&b, "\n  %-34s calls %d | typedQOV %d | UNTYPED-QOV %d | mergeRC %d | other %d",
+			s, c.Calls[s], c.TypedQOV[s], c.UntypedQOV[s], c.MergeRC[s], c.OtherRV[s])
+		shapes := make([]string, 0, len(c.Shapes[s]))
+		for sh, n := range c.Shapes[s] {
+			shapes = append(shapes, fmt.Sprintf("x%d %s", n, sh))
+		}
+		sort.Strings(shapes)
+		for _, sh := range shapes {
+			fmt.Fprintf(&b, "\n      shape %s", sh)
+		}
+	}
+	return b.String()
+}
+
+// FlatMapProducerFloors is the producer census's gate.
+//
+// Calls is a FLOOR (a site going dark must be visible). UntypedQOVFloor is a
+// FLOOR TOO, and that is not the polarity this census was first written with —
+// see AssertFlatMapProducerCensus.
+type FlatMapProducerFloors struct {
+	Calls           [flatMapProducerSiteCount]int
+	UntypedQOVFloor [flatMapProducerSiteCount]int
+}
+
+// AssertFlatMapProducerCensus checks the residue producer's hard zero, the
+// untyped-population floors, and the per-site call floors.
+//
+// THE POLARITY HERE WAS WRONG ON FIRST WRITING AND ITS OWN FIRST RUN SAID SO.
+// This census was built asserting UntypedQOV == 0 at EVERY site, on the reading
+// that Go should never build a value Java cannot express. Measured over the
+// real-FDB corpus, three of the four sites emit untyped QOVs in bulk — 1619,
+// 249 and 269 — so a blanket zero is not a defended invariant, it is a wish.
+//
+// What IS measured, and what this census actually defends, is a sharper and more
+// useful fact: the site producing the reconstruct-nil residue emits ZERO of them.
+// The declined legs carry real RecordTypes of arity 1-3; the untyped population
+// lives entirely at the other three sites and never reaches the decline
+// classifier. So the residue is not a typing gap, and typing cannot convert it —
+// legOrdinalSafety refuses a FlatMap leg on values.IsPositionalMergeRC, which
+// needs a *RecordConstructorValue and which no QOV satisfies at any typing.
+//
+// The untyped population at the other three sites is a REAL and separate Java
+// divergence — QuantifiedObjectValue.of has no untyped overload
+// (QuantifiedObjectValue.java:187) and Quantifier.getFlowedObjectType is a
+// Verify.verify plus requireNonNull (Quantifier.java:801-810), so Java cannot
+// express any of them. It is floored rather than zeroed so that it is COUNTED
+// while it stands: a divergence nobody is measuring is how a population becomes
+// invisible, and a zero nobody can satisfy is how an assertion becomes noise.
+func AssertFlatMapProducerCensus(w io.Writer, floors *FlatMapProducerFloors) bool {
+	return assertFlatMapProducerCounters(w, FlatMapProducerCensus(), floors)
+}
+
+// assertFlatMapProducerCounters is the assertion logic over an EXPLICIT counter
+// state, so each arm can be driven from a test without driving the whole planner
+// into the defective state that would produce it — the same split every census on
+// this path makes between its gate and its collection.
+func assertFlatMapProducerCounters(w io.Writer, c flatMapProducerCounters, floors *FlatMapProducerFloors) bool {
+	failed := false
+	if n := c.UntypedQOV[flatMapSiteCorrelated]; n != 0 {
+		failed = true
+		fmt.Fprintf(w, "FLATMAP PRODUCER CENSUS FAIL: %s emitted %d result value(s) that are an\n"+
+			"  UNTYPED QuantifiedObjectValue, want 0.\n"+
+			"  This is the site that produces the reconstruct-nil residue (attributed by\n"+
+			"  result-value identity, not by arity signature), and its zero is what the\n"+
+			"  refutation of the residue-is-a-typing-gap reading rests on: every declined\n"+
+			"  leg carries a real RecordType, so there is nothing to type.\n"+
+			"  WHAT A NON-ZERO RE-ARMS: that reading. It still would not convert a declined\n"+
+			"  leg on its own — legOrdinalSafety refuses on values.IsPositionalMergeRC,\n"+
+			"  which needs a *RecordConstructorValue that no QOV is at any typing — but the\n"+
+			"  population would no longer be uniformly typed and every statement below\n"+
+			"  about it would need re-measuring.\n"+
+			"  census: %s\n", flatMapSiteCorrelated, n, formatFlatMapProducerCounters(c))
+	}
+	if floors == nil {
+		return failed
+	}
+	for s := flatMapProducerSite(0); s < flatMapProducerSiteCount; s++ {
+		if floors.UntypedQOVFloor[s] == 0 || c.UntypedQOV[s] >= floors.UntypedQOVFloor[s] {
+			continue
+		}
+		failed = true
+		fmt.Fprintf(w, "FLATMAP PRODUCER CENSUS FAIL: %s emitted %d UNTYPED QOV result value(s),\n"+
+			"  want >= %d. This is a FLOOR on a DIVERGENCE, which reads backwards until you\n"+
+			"  know why: Java cannot build an untyped QOV at all, so this population is a\n"+
+			"  genuine gap, and the floor is here to keep it COUNTED rather than to bless it.\n"+
+			"  A DROP is the good direction and still fails, because it means either the gap\n"+
+			"  is closing (say so, re-measure, and move the floor down deliberately) or the\n"+
+			"  site stopped being reached — and those two look identical from a smaller\n"+
+			"  number. Do not lower it without deciding which happened.\n"+
+			"  census: %s\n", s, c.UntypedQOV[s], floors.UntypedQOVFloor[s], formatFlatMapProducerCounters(c))
+	}
+	for s := flatMapProducerSite(0); s < flatMapProducerSiteCount; s++ {
+		if c.Calls[s] >= floors.Calls[s] {
+			continue
+		}
+		failed = true
+		fmt.Fprintf(w, "FLATMAP PRODUCER CENSUS FAIL: %s made %d construction(s), want >= %d —\n"+
+			"  the site has gone dark, so every zero recorded beside it is measuring an\n"+
+			"  absence of traffic rather than an absence of the shape.\n"+
+			"  census: %s\n", s, c.Calls[s], floors.Calls[s], formatFlatMapProducerCounters(c))
 	}
 	return failed
 }

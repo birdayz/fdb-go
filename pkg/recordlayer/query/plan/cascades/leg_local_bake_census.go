@@ -127,7 +127,7 @@ func (s legRebaseSite) String() string {
 // RFC-200 gate (d) is denominated in. The two instruments in play count
 // different events at different sites — the bakeability census counts READS
 // (once per leg-correlated FieldValue the walk matches), the foldStep1Seed
-// outcome census counts RULE FIRINGS — so `60 + 94 + 108 = 262 ≠ 174` and
+// outcome census counts RULE FIRINGS — so `102 + 108 = 210 ≠ 174` and
 // neither can be apportioned into the other by arithmetic. The only thing that
 // maps one onto the other is carrying the firing's class down to the read, which
 // is what Step1 does.
@@ -145,11 +145,17 @@ type legRebaseOrigin struct {
 	// The class alone is not enough for RFC-200 gate (d), and the measurement
 	// that showed why is worth stating: over the real-FDB corpus ALL 174
 	// leg-local reads occur under a reconstruct-nil firing — but that class
-	// splits 94 bare-QOV / 60 positional-merge at the FIRING level, and only the
-	// positional-merge half is in RFC-200's scope. Denominating the gate in the
-	// class would demand that the fenced bare-QOV residue (§Residues, explicitly
-	// out of scope and LARGER) also reach zero, which this change cannot and does
-	// not claim to do.
+	// splits by leg SHAPE at the FIRING level, and only the positional-merge half
+	// was ever in RFC-200's scope. Denominating the gate in the class would demand
+	// that the bare-QOV residue (§Residues, explicitly out of scope and LARGER)
+	// also reach zero, which that change could not and did not claim to do.
+	//
+	// The split it was measured against was 94 bare-QOV / 60 positional-merge.
+	// Both halves have since moved and the CURRENT measurement is 102 bare-QOV /
+	// 0 positional-merge: RFC-200 converted its 60, and its own gate fixtures
+	// added 8 more bare-QOV firings. The shape dimension is what makes that
+	// legible — in the CLASS alone the total went 154 to 102 and the composition
+	// change would have been invisible.
 	Step1LegShape foldStep1LegShape
 }
 

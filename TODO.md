@@ -12918,7 +12918,9 @@ None is speculative: each was re-verified against the tree before booking.
   necessary STRUCTURAL step — the layout authority can now express a nested row at
   all, and the executor twin agrees with it bit-for-bit — but on the read axis the
   divergence is exactly where it was. DIVERGENCES.md is updated with the
-  60-closed / 94-open / 108-permanent decomposition.
+  60-closed / 94-open / 108-permanent decomposition. (The open block re-measured to
+  102 under CQ-68, whose TYPING premise that entry then refuted: the block is a
+  SHAPE residue and every leg in it is already typed.)
 
   **3a deliverable (ii): all 60 declined positional-merge legs DO satisfy
   `IsPositionalMergeRC`**, not merely "two bare QOVs over record types" — the
@@ -13037,7 +13039,9 @@ None is speculative: each was re-verified against the tree before booking.
   for the runtime binding-namespace widening
   (`executor.bindMergedOuterLegs`, DIVERGENCES.md) therefore rests on THIS item
   alone on the read axis; CQ-67 advanced it by zero reads. DIVERGENCES.md now
-  states that decomposition (60 closed / 94 open / 108 permanent), and CQ-67's
+  states that decomposition (60 closed / 102 open / 108 permanent — the open block
+  was booked at 94 and re-measured; see CQ-68, which REFUTED its own typing
+  premise), and CQ-67's
   gate (d) is documented as holding VACUOUSLY.
 
   The instrument that answers this is standing, not a probe: `legRebaseOrigin`
@@ -13166,6 +13170,102 @@ None is speculative: each was re-verified against the tree before booking.
   day it started. Pinned by
   `TestFoldStep1Census_BareQOVWitnessSeparatesTypedFromUntyped` in both
   directions.
+
+  ---
+
+  **THE PREMISE IS REFUTED. THIS ITEM DOES NOT CONVERT AND MUST NOT BE
+  ATTEMPTED AS WRITTEN.** Measured over the whole real-FDB sqldriver corpus at
+  `6692ac268`; every number below is a run, not a reading.
+
+  The item is stated as "the 102 FlatMap result values are a BARE UNTYPED QOV
+  where Java types unconditionally" with DONE = "the five producers type their
+  result value the way Java does". **The population is 100% TYPED, and typing
+  cannot convert it in principle.** Four independent measurements, each pinned:
+
+  1. **Every declined leg carries a real `RecordType`.** The outcome census's
+     witness now spells the flowed TYPE rather than a boolean:
+     `RecordType(2) ×30`, `RecordType(3) ×66`, `RecordType(1) ×4` on FlatMap
+     legs, plus `RecordType(4) ×2` on a `RecordQueryNestedLoopJoinPlan` leg.
+     Zero untyped. The prerequisite fix above made `typed=%t` honest; it did not
+     make it INFORMATIVE, and `typed=true` is equally compatible with a real row
+     and with a scalar. The arity is the fact. Pinned by
+     `TestFlatMapProducerCensus_WitnessSpellsTheFlowedType` in both directions
+     (RED when the arity spelling is removed: witness prints `rvtype=RECORD`).
+
+  2. **Typing cannot convert a single one of them, structurally.**
+     `legOrdinalSafety`'s FlatMap arm refuses on
+     `!values.IsPositionalMergeRC(pl.GetResultValue())`, and
+     `IsPositionalMergeRC` opens with a `*RecordConstructorValue` type
+     assertion. A `QuantifiedObjectValue` fails it at any typing whatsoever.
+     The residue is a SHAPE residue: the leg states one opaque row where the
+     layout authority needs a positional merge. The code comment at that arm
+     already said "bare identity QOV" — **`bare` there means IDENTITY
+     PASS-THROUGH, not UNTYPED**, and reading it as untyped is where this item
+     came from.
+
+  3. **Producer attribution is now MEASURED, and confirms the item's own
+     structural hypothesis while removing its fix.** All four non-test
+     `RecordQueryFlatMapPlan` constructions are instrumented, and each declined
+     leg is attributed by its result value's own IDENTITY (not by matching arity
+     histograms, which closes only the arities unique to one site). Every
+     FlatMap-legged decline reports `origin=buildCorrelatedFlatMapPlan`. That
+     site emits **UNTYPED-QOV 0** across 25,644 constructions. The two NLJ-legged
+     declines report `origin=UNRECORDED`, correctly — an NLJ result value never
+     passes a FlatMap constructor. Pinned by
+     `TestFlatMapProducerCensus_OriginIsMeasuredNotInferred` (three directions:
+     attributed / ambiguous / unrecorded).
+
+  4. **Java is not diverged from on this population.** Java's select result
+     value is `overQuantifier.getFlowedObjectValue()` — a TYPED QOV
+     (`GraphExpansion.java:401`, `Quantifier.java:801-803`). Go's is also a typed
+     QOV here. Java's `legOrdinalSafety` equivalent does not exist because Java
+     has no ordinal seed; the shape gap is Go-side architecture, not a port gap.
+
+  **WHAT SURVIVES, RELOCATED — a real Java divergence on a DIFFERENT
+  population.** Three of the four sites DO hand FlatMap an untyped QOV:
+  `implementExistentialSelect` **1,685**, `yieldExistsFlatMap` **269**,
+  `implementJoinWithExistential` (the `:4124` mint) **249**. Java cannot express
+  any of them — `QuantifiedObjectValue.of` has no untyped overload
+  (`QuantifiedObjectValue.java:187`), `Quantifier.getFlowedObjectType` is a
+  `Verify.verify` + `requireNonNull` (`Quantifier.java:801-810`). **None of those
+  values reaches the decline classifier**, so typing them moves this item's 102
+  by ZERO and moves DIVERGENCES.md's 174 reads by zero. It is floored in the
+  producer census (a floor on a DIVERGENCE — the drop direction fails too,
+  because a shrinking count cannot be told from a darkening site) so the
+  population stays counted while it stands.
+
+  A fifth divergence was found in passing and is NOT actioned here:
+  `RecordQueryFlatMapPlan.GetResultType()` (`plans/flat_map.go:86`) returns
+  `values.UnknownType` unconditionally, where Java derives it from the result
+  value (`RelationalExpression.java:195-196`). That is a planner-wide typing
+  change with its own blast radius; it is stated, not attempted.
+
+  **THE CQ-67 REOPEN TRIGGER DID NOT FIRE.** `NestedHitMustBeZero` stayed armed
+  and green across every corpus run here. No conversion was made, so no reference
+  reaching a leg inside the merge was produced. CQ-67 stays parked exactly as it
+  was; gate (a) is not this item's work after all.
+
+  **THE CENSUS EQUALITIES DID NOT MOVE.** denominator 572, ACCEPT 160,
+  correlatedStep1 108, rv-no-exist-ref 202, reconstruct-nil 102, bare-QOV 102,
+  merge 0 — identical before and after, as they must be for a change that adds
+  only instruments. `ReconstructNilMerge` still hard 0, so CQ-67 still holds.
+
+  **ONE OF THIS WORK'S OWN ASSERTIONS WAS REFUTED BY ITS FIRST RUN**, which is
+  the reason it is recorded rather than quietly corrected: the producer census
+  was written asserting UNTYPED-QOV == 0 at EVERY site, on the reading that Go
+  should never build what Java cannot express. Three sites failed it immediately,
+  in bulk. The blanket zero was a wish; the zero that is actually defended is the
+  one at the residue's own producer, and it is a sharper claim than the one it
+  replaced.
+
+  **WHAT REPLACES THIS ITEM.** The residue is convertible only by giving the
+  declined leg a positional-merge result value — i.e. by making
+  `buildCorrelatedFlatMapPlan`'s accumulated-inner leg flow
+  `RC(_i: QOV(leg_i))` where it currently flows the identity QOV. That is a
+  different change with a different risk surface from the one booked here, it
+  contacts the same `correlatedStep1` wall (108, permanent), and it needs its own
+  RFC and Graefe ACK. **Do not re-open this item by re-reading `bare` as
+  `untyped`** — the producer census's zero exists to make that re-reading go red.
 
 - [ ] **CQ-69 (L, multi-phase, per-phase gates) — build the RFC-201 layered test
   corpus ladder.** Design: `rfcs/201-layered-test-corpus.md` (merged, #542),
@@ -14964,6 +15064,29 @@ None is speculative: each was re-verified against the tree before booking.
     widening; CQ-79 is the residue CQ-95 retires.** They stay booked separately —
     the residues are genuinely different and folding them lets either close while
     the other's survives — but they SEQUENCE together, CQ-68 first.
+
+    **THIS CONDITION IS NOW UNSATISFIABLE AS WRITTEN, and CQ-95 must not wait on
+    it.** CQ-68 was run and its premise REFUTED: the 102 open firings are not
+    untyped, typing converts none of them, and the item has no conversion to
+    perform. So "CQ-68 first" cannot be satisfied by CQ-68 completing — there is
+    nothing for it to complete. What CQ-95 actually inherits is:
+    - **The read axis is NOT advanced and will not be by CQ-68.**
+      `LegLocalBakeCensus` still reports 174/174 leg-alias pass-through and
+      `MergedReAnchor` is still 0 — unchanged, because only instruments were
+      added. CQ-95's acceptance signal (`MergedReAnchor` stops being vacuous)
+      is therefore still entirely CQ-95's to produce, exactly as its own entry
+      says. Nothing here may be claimed against it.
+    - **Two standing instruments CQ-95 can use rather than rebuild.** The
+      FlatMap producer census attributes any declined leg to its constructing
+      site by result-value identity, and the outcome census's witness now spells
+      the flowed TYPE (arity), not a boolean. If CQ-95's seed conversion changes
+      which site produces a leg, or changes a leg's row shape, both move
+      visibly and both are asserted.
+    - **The real conversion target, now named.** The residue converts by giving
+      `buildCorrelatedFlatMapPlan`'s accumulated-inner leg a positional-merge
+      result value in place of the identity QOV — a shape change, not a typing
+      change. That is adjacent to CQ-95's own seed conversion and the two should
+      be scoped together in CQ-95's RFC rather than sequenced behind a dead item.
   - Query-engine review gate: RFC + Graefe ACK before implementation.
 
   **ACCEPTANCE INSTRUMENTS, with this round's numbers as the baseline** — all three

@@ -149,6 +149,12 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// reaching it at all). A printed zero cannot tell those apart; MapCountDiffers
 	// can.
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatOrientationGateCensus())
+	// The FLATMAP PRODUCER census: which construction site emits a declined leg's
+	// result value, and what that value IS when it is handed over. The outcome
+	// census above classifies the node it REFUSED, which names a shape and never
+	// an author — so every attribution of this population written down so far was
+	// an inference. This measures it.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatFlatMapProducerCensus())
 	if failed := assertDottedLegQualifierCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
@@ -193,6 +199,9 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 		code = 1
 	}
 	if failed := assertOrientationGateCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
+	if failed := assertFlatMapProducerCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
 	return code
@@ -10236,4 +10245,46 @@ func assertOrientationGateCensus(w io.Writer) bool {
 		floors = nil
 	}
 	return cascades.AssertOrientationGateCensus(w, floors)
+}
+
+// flatMapProducerFloors gates the FlatMap result-value producer census.
+//
+// The floors are ORDER-OF-MAGNITUDE below the measurement, like every other
+// per-site floor on this path: they exist to catch a site going dark, not to
+// re-bless a corpus count that moves whenever a test file is added.
+//
+// The census's load-bearing assertion is NOT floored and is not listed here —
+// the untyped-QOV count at buildCorrelatedFlatMapPlan, the site that produces
+// the reconstruct-nil residue, is checked at zero unconditionally inside
+// cascades.AssertFlatMapProducerCensus. That zero is the measured refutation of
+// the "the residue is an untyped-QOV typing gap" reading: the declined legs
+// carry real RecordTypes (arity 1-3, witnessed in the outcome census beside
+// this one), and the refusal is on SHAPE. A configurable refutation is not one.
+//
+// The OTHER three sites do emit untyped QOVs, in bulk, and that is a separate
+// live Java divergence rather than an assertion failure — floored below so it
+// stays counted. See AssertFlatMapProducerCensus for why a floor and not a zero.
+var flatMapProducerFloors = func() cascades.FlatMapProducerFloors {
+	var f cascades.FlatMapProducerFloors
+	// Measured over the whole real-FDB corpus:
+	//   buildCorrelatedFlatMapPlan          calls 25489 | typedQOV 476 | UNTYPED 0
+	//   implementExistentialSelect          calls  1764 | typedQOV   0 | UNTYPED 1619
+	//   implementJoinWithExistential(MINT)  calls   431 | typedQOV   0 | UNTYPED  249
+	//   yieldExistsFlatMap                  calls   449 | typedQOV 130 | UNTYPED  269
+	// Floored an order of magnitude below, like every other per-site floor here:
+	// these catch a site going dark, not corpus churn.
+	f.Calls = [4]int{2000, 150, 40, 40}
+	f.UntypedQOVFloor = [4]int{0, 150, 20, 20}
+	return f
+}()
+
+func assertFlatMapProducerCensus(w io.Writer) bool {
+	floors := &flatMapProducerFloors
+	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+		fmt.Fprintf(w, "FlatMap producer census: per-site floors NOT checked "+
+			"(-test.run=%q narrowed the corpus). The UNTYPED-QOV zero still runs — it "+
+			"holds over ANY population.\n", f.Value.String())
+		floors = nil
+	}
+	return cascades.AssertFlatMapProducerCensus(w, floors)
 }
