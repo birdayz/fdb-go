@@ -82,7 +82,7 @@ stays open as a booked item, not a tier gate. Two items:
   been given against the band it declares) is the axis the old gate could not see.
   *Found and fixed while verifying this paragraph:* `nightly-factory.yml`'s two jobs still carried
   the old inlined band and made master red against #556's new gate — see "Landed since the audit".
-- **Index candidacy is opt-OUT in Go where Java is opt-IN (CQ-46, `TODO.md:10404`, open).** The
+- **Index candidacy is opt-OUT in Go where Java is opt-IN (CQ-46 in `TODO.md`, open).** The
   07-17 nightly-stress failure was root-caused: `tryExistsFlatMap` matched candidates by
   first-column NAME with no index-type check, so a SUM aggregate index was built into a
   record-fetching scan; `getEntryPrimaryKey` returns an empty tuple for the short aggregate entry
@@ -159,7 +159,7 @@ entries mean the same query returns different rows or different errors on the tw
 |---|---|---|---|---|
 | B1 | Nightly safety nets were fake-green (window gates anchored to cron hours GitHub dispatches 2-4h late; 12 fake-green stress nights; rowdiff window unreachable by construction; oracles never ran) | Unknown-risk factory | S → M | **DONE — confirmed genuinely green 2026-08-02 and 08-03 (reconcile runs 30744450066, 30814146026, all eleven nets artifact-backed inside limits).** Detection merged (#523); the window shape fixed and merged (#556). #523 gave every windowed job a heartbeat and made the reconciler fail on silence — which then correctly exposed that three fuzz lanes had never recorded one. #556 found the cause was the band's shape, not the lanes (a non-wrapping band calling 18:00–24:00 "daytime"), fixed it across all five nets, and published the honest history: **107 of 177 scheduled runs were fake-green**. Stress 07-17 root-caused (see Tier 1, CQ-46); binding-stress 0/50 root-caused and fixed 2026-08-05 (CQ-47) |
 | B2 | No read-your-writes in explicit transactions; SELECTs take no read locks → silent lost updates | Wrong data | L | **DONE — merged 2026-08-04 (#607, `d6f635073`), Tier 2 confirmed.** RFC-198 all five phases; joint Graefe+Torvalds lap ACK'd; 1M stress clean; the OQ-1 GRV-cache span survived a C++-client + Torvalds design review (fence reshape) and fifteen codex rounds, every finding folded before merge |
-| B3 | RFC-195: cost estimates contradict proven cardinality bounds; comparator uses a private cardinality walk | Wrong plans (perf), not wrong rows | M | **DONE, merged (#547.)** `rfcs/195-cost-must-not-contradict-proof.md:3` — "ACCEPTED, revision 3 … implemented". Seven shapes fixed in the end, not six; zero exclusions and no mechanism to add one (`cardinality_cost_bound_test.go:36-45`). **Residual: CQ-30 (`TODO.md:10046`, open)** — criterion 2's data-access maxima are still forked; held visible by a standing test |
+| B3 | RFC-195: cost estimates contradict proven cardinality bounds; comparator uses a private cardinality walk | Wrong plans (perf), not wrong rows | M | **DONE, merged (#547.)** `rfcs/195-cost-must-not-contradict-proof.md:3` — "ACCEPTED, revision 3 … implemented". Seven shapes fixed in the end, not six; zero exclusions and no mechanism to add one (`cardinality_cost_bound_test.go:36-45`). **Residual: CQ-30 in `TODO.md`, open** — criterion 2's data-access maxima are still forked; held visible by a standing test |
 | B4 | RFC-197 identity migration residual (see per-bucket table) | Plan/decline-direction only; wrong-rows channels closed | M | Active; ratchet-enforced; **68 at inception → 53 now** |
 | B5 | WS-N Phase D: metadata re-derived by name instead of flowing from the type (~347 UnknownType mints repo-wide; three named guessers) | Wrong client VALUES on cross-leg same-name-different-type | L | Booked; gates the typed-row-representation work |
 | B6 | Documentation authority contradictory/stale | Trust/decision risk, not code | S | **This revision.** Authority headers added to `PRODUCTION_READINESS.md` and `rfcs/prod-readiness-go-client.md`; stale TODO entries fixed; `TestProductionStatusAuthority` added so the redirects cannot silently rot |
@@ -228,7 +228,7 @@ Two further corrections to the migration's bookkeeping, both found by reading th
   the arm that would answer the question by accident. Caveat recorded
   at `:6239-6250`: nothing instruments the split population, so the "110 → 0" figures are scratch
   measurements, not instrument readings.
-- **CQ-53 is marked done but has a surviving producer.** `TODO.md:10590` closes it as subsumed by
+- **CQ-53 is marked done but has a surviving producer.** `TODO.md`'s CQ-53 closes it as subsumed by
   CQ-67 (#549) "carrying no separate remainder", while
   `pkg/docscheck/field_name_decision_test.go:447` pins `cascades_translator.go:3598` as "dotted:
   MINT. **CQ-53's surviving producer**" — and the mint is live at that line, on the unnest-merge
