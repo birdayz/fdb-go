@@ -104,6 +104,8 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	values.ResetDottedLegQualifierCensus()
 	values.ResetSeedWindowReaderCensus()
 	values.ResetAccessorPathCensus()
+	values.ResetFieldValueMintCensus()
+	values.ResetOrderingBridgeDottedCensus()
 	values.ResetDottedRowTypeProducerCensus()
 	values.ResetQualifierRecoveryCensus()
 	cascades.ResetFoldStep1SeedCensus()
@@ -120,6 +122,11 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// ratchet's accessor_name_path entry, and zero vs non-zero there mean opposite
 	// things about where that debt actually lives.
 	values.DumpAccessorPathCensus(os.Stderr, "sqldriver real-FDB corpus")
+	// The MINT census: who builds a lazy FieldValue and what they put in its
+	// Field. The consumer census says a rendered Explain label reaches the
+	// match-domain identity; this is the half that can name who wrote it.
+	values.DumpFieldValueMintCensus(os.Stderr, "sqldriver real-FDB corpus")
+	values.DumpOrderingBridgeDottedCensus(os.Stderr, "sqldriver real-FDB corpus")
 	// The leg-local bakeability census rides the same gate: it measures whether
 	// the one surviving qualified-name mint is carrying anything a leg-local bake
 	// could not carry. Reported beside the identity census because the two answer

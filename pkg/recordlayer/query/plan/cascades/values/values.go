@@ -1301,6 +1301,7 @@ func (f *FieldValue) RootIsLegRelativeUnpinned() bool {
 // NewFieldValue constructs a FieldValue with a child (base) value.
 // Mirrors Java's FieldValue(childValue, FieldPath).
 func NewFieldValue(child Value, field string, typ Type) *FieldValue {
+	NoteFieldValueMint(field, false)
 	return &FieldValue{Field: field, Typ: typ, Child: child}
 }
 
@@ -1310,6 +1311,7 @@ func NewFieldValue(child Value, field string, typ Type) *FieldValue {
 // ordering-hint carriers (compared by name, never evaluated) and resolver/
 // translator trees the bake walks rewrite before the plan finalizes.
 func NewFlatFieldValue(field string, typ Type) *FieldValue {
+	NoteFieldValueMint(field, false)
 	return &FieldValue{Field: field, Typ: typ}
 }
 
@@ -1330,6 +1332,7 @@ func NewFieldValueWithResolvedOrdinal(field string, ordinal int, typ Type) *Fiel
 // plus the layout the ordinal indexes (RFC-197 step 0) — the source's declared
 // column order the caller resolved the name against.
 func NewFieldValueWithResolvedOrdinalInDomain(field string, ordinal int, typ Type, domain OrdinalDomain) *FieldValue {
+	NoteFieldValueMint(field, true)
 	return &FieldValue{Field: field, Typ: typ, Resolved: NewFieldPathOfSingleInDomain(field, ordinal, false, domain)}
 }
 
@@ -1369,6 +1372,7 @@ func NewFieldValueWithResolvedOrdinalInDomain(field string, ordinal int, typ Typ
 // unactionable identity is a loaded gun for the next caller.
 // TestPinnedOrdinalAlwaysStatesItsDomain keeps it from growing back.
 func NewFieldValueWithPinnedOrdinalInDomain(field string, ordinal int, typ Type, domain OrdinalDomain) *FieldValue {
+	NoteFieldValueMint(field, true)
 	return &FieldValue{Field: field, Typ: typ, Resolved: NewFieldPathOfSingleInDomain(field, ordinal, true, domain)}
 }
 
@@ -1395,6 +1399,7 @@ func NewCorrelatedFieldValueWithResolvedOrdinal(child Value, field string, ordin
 // plus the layout the ordinal indexes (RFC-197 step 0): the SOURCE's declared
 // column order — the row the correlation binds — not the enclosing frontier.
 func NewCorrelatedFieldValueWithResolvedOrdinalInDomain(child Value, field string, ordinal int, typ Type, domain OrdinalDomain) *FieldValue {
+	NoteFieldValueMint(field, true)
 	return &FieldValue{Field: field, Typ: typ, Child: child, Resolved: NewFieldPathOfSingleInDomain(field, ordinal, false, domain)}
 }
 
@@ -1407,6 +1412,7 @@ func NewCorrelatedFieldValueWithResolvedOrdinalInDomain(child Value, field strin
 // bind the AS alias to field 0 (element) and the AT alias to field 1 (the INT
 // NOT NULL ordinal).
 func NewOrdinalFieldValue(child Value, ordinal int, typ Type) *FieldValue {
+	NoteFieldValueMint(OrdinalFieldName(ordinal), true)
 	return &FieldValue{Field: OrdinalFieldName(ordinal), Typ: typ, Child: child, Resolved: NewFieldPathOfSingle(OrdinalFieldName(ordinal), ordinal, false)}
 }
 
@@ -1758,7 +1764,10 @@ func CanBridgeOrderingFieldValues(left, right Value) bool {
 	}
 	leftName := ColumnNameValue(left)
 	rightName := ColumnNameValue(right)
-	return leftName != "" && strings.EqualFold(leftName, rightName)
+	answer := leftName != "" && strings.EqualFold(leftName, rightName)
+	// Census: this is the ANSWERING comparison a flat-dotted name can reach.
+	NoteOrderingBridgeDotted(leftName, rightName, answer)
+	return answer
 }
 
 func explainValueOrdinals(v Value, withOrdinals bool) string {
