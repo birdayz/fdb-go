@@ -2263,6 +2263,15 @@ func (r *paginatingRows) fetchPage() error {
 //     without it an exhausted budget produces a rowless unadvanced page and a
 //     54F01 telling the user to raise limits that are not the problem.
 //
+// The code being SHARED with a genuine conflict is what makes the retry logic
+// uniform, and it is also what makes the code alone insufficient to identify this
+// condition — a conflict is retried as-is and usually succeeds, an exhausted
+// window is retried identically forever. So the error carries a typed cause,
+// api.TransactionTimeLimitError, which is what code matches; the message is for
+// the human. Because the driver pre-empts at four seconds, this — not FDB's own
+// 1007 — is the carrier a caller inside an explicit transaction actually sees when
+// the MVCC window is spent.
+//
 // INTERIM, by RFC-198 Decision 6: the end state is Java's clean stop — a
 // transaction-bound continuation with reason TRANSACTION_LIMIT_REACHED and the
 // transaction left open — which needs RFC-203's in-transaction continuation
@@ -2280,9 +2289,8 @@ func (r *paginatingRows) preflightTxBudget(rctx *recordlayer.FDBRecordContext) e
 	}
 	env := r.env()
 	r.tx.scanStateIn(env).AnchorAt(instant)
-	if env.Since(instant) >= txPageTimeLimit {
-		return api.NewError(api.ErrCodeSerializationFailure,
-			"transaction read budget exhausted: the explicit transaction's reads are bound to FDB's 5-second MVCC window, which opened at the transaction's first read; commit sooner or decompose the work into smaller transactions")
+	if elapsed := env.Since(instant); elapsed >= txPageTimeLimit {
+		return api.NewTransactionTimeLimitError(elapsed, txPageTimeLimit)
 	}
 	return nil
 }

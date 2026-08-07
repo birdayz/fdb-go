@@ -979,7 +979,14 @@ func translateFDBCode(code int, err error) error {
 	case 1020: // not_committed
 		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction conflict", err)
 	case 1007: // transaction_too_old
-		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction too old", err)
+		// SAME condition as paginatingRows.preflightTxBudget's pre-emption — the
+		// transaction outlived FDB's 5-second MVCC window — reached by the other
+		// of its two producers, so it carries the SAME marker. 40001 alone cannot
+		// say which condition occurred, because 1020 above maps here too; the
+		// marker is what separates a lost window from a genuine conflict, and
+		// attaching it at both producers is what stops a consumer from having to
+		// enumerate spellings (api.TransactionTimeLimitError).
+		return api.MarkFDBTransactionTooOld(err)
 	case 1021: // commit_unknown_result
 		// 40003, NOT 40001: the transaction may or may not have committed and
 		// the client cannot tell. The application must determine the outcome

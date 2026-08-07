@@ -192,11 +192,27 @@ func duecAllocOf(s duecSample) float64 { return float64(s.alloc) }
 //
 // TWO detectors, because either alone is insufficient.
 //
-// DETECTOR A — PROOF OF INVALIDITY. If any timed run dies on FDB's
-// transaction_too_old (1007), the measurement window was demonstrably not held:
-// the query ran past the 5-second MVCC horizon on a fixture that completes in
-// 215-554 ms when the box is healthy. That is not a slow sample, it is a
-// truncated one, and no statistic over the surviving samples repairs it.
+// DETECTOR A — PROOF OF INVALIDITY. If any timed run dies because its
+// transaction outlived FDB's MVCC window, the measurement window was
+// demonstrably not held: the query ran past the horizon on a fixture that
+// completes in 215-554 ms when the box is healthy. That is not a slow sample, it
+// is a truncated one, and no statistic over the surviving samples repairs it.
+//
+// THE WINDOW IS LOST IN TWO SPELLINGS, and taking only the obvious one is how
+// this detector spent its first weeks unable to fire. FDB's own
+// transaction_too_old (1007) is the spelling everyone reaches for, and inside an
+// explicit transaction on this driver it is very nearly unreachable: the SQL
+// layer PRE-EMPTS at four seconds (paginatingRows.preflightTxBudget, anchored on
+// the read-version instant) precisely so FDB's five-second wall is never hit. So
+// the carrier that actually arrives is the driver's own pre-emption, and a
+// detector that knows only 1007 sees a healthy run and lets duecRunInTx fatal —
+// taking every load-INDEPENDENT arm of this probe down with the timing.
+//
+// Both spellings are recognised TYPED. The pre-emption is matched on
+// api.TransactionTimeLimitError, not on its SQLSTATE: 40001 is shared with a
+// genuine read/write conflict, and a detector that withheld on any 40001 would
+// read a real conflict bug as weather — the same trap the 1020/1031 near misses
+// below are excluded for.
 //
 // It is deliberately NOT a retry. Re-running until the window holds converts a
 // broken regime into a green one by resampling, which is the precise fudge this
@@ -247,8 +263,12 @@ const (
 	// absolute milliseconds behind it do not and are never consulted.
 	duecNullPairQuietDev = 0.12
 
-	// duecTransactionTooOld is FDB's 1007. Named rather than inlined because
-	// the whole of Detector A is "this exact code, from any timed run".
+	// duecTransactionTooOld is FDB's 1007 — the SECOND of Detector A's two
+	// carriers, and on this driver the rarer one. Kept rather than dropped
+	// because the driver's pre-emption is a CLIENT-side ceiling: anything that
+	// reads outside paginatingRows' preflight, or a future backend that reports
+	// no read-version instant (the cgo escape hatch does not), still meets FDB's
+	// wall directly.
 	duecTransactionTooOld = 1007
 )
 
@@ -260,20 +280,23 @@ const (
 // (duec_regime_detector_test.go). A detector nothing ever exercises is a
 // detector nobody knows is dead.
 func duecRegimeVerdict(
-	raceInstrumented, sawTooOld bool, nullNum, nullDen []duecSample,
+	raceInstrumented, sawWindowLost bool, nullNum, nullDen []duecSample,
 ) (ok bool, why string) {
 	if raceInstrumented {
 		return false, "the race detector taxes every memory access on BOTH sides of " +
 			"every pair, which inflates the shared base and compresses R3's margin " +
 			"toward 1.0 (measured 0.968x under -race against 0.82-0.91x without it)"
 	}
-	if sawTooOld {
+	if sawWindowLost {
 		return false, fmt.Sprintf(
-			"a timed run died on transaction_too_old (%d): the query ran past FDB's "+
-				"5-second MVCC horizon on a fixture that completes in 215-554 ms when "+
-				"the box is healthy, so the measurement window was demonstrably not "+
-				"held. This is never retried — resampling until the window holds would "+
-				"turn a broken regime into a green one",
+			"a timed run LOST ITS MEASUREMENT WINDOW — either the driver's own "+
+				"read-budget pre-emption (api.TransactionTimeLimitError, which fires at "+
+				"4s) or FDB's transaction_too_old (%d) behind it. The query ran past the "+
+				"MVCC horizon on a fixture that completes in 215-554 ms when the box is "+
+				"healthy, so the window was demonstrably not held. That is a TRUNCATED "+
+				"sample, not a slow one, and no statistic over the survivors repairs it. "+
+				"This is never retried — resampling until the window holds would turn a "+
+				"broken regime into a green one",
 			duecTransactionTooOld)
 	}
 	rs := duecPerRepRatios(nullNum, nullDen, duecDurOf)
@@ -296,6 +319,28 @@ func duecRegimeVerdict(
 	return true, ""
 }
 
+// duecUnmeasuredRatio returns the first ratio that is not a finite number, which
+// is how "the regime was accepted but nothing was actually measured" looks.
+//
+// Extracted from the probe so it can be driven without FDB. The hazard it guards
+// is silent by construction — every timing criterion is spelled `ratio > bound`
+// and NaN > anything is FALSE in Go, so an unmeasured run passes all three and
+// logs ASSERTED. Keeping the check inline would have made it the one arm of this
+// mechanism that no test could reach, in a file whose whole subject is detectors
+// nobody knows are dead.
+//
+// Iteration order over a map is randomised, so the NAME returned for a run with
+// several bad ratios is arbitrary; the verdict is not, which is all the caller
+// uses.
+func duecUnmeasuredRatio(ratios map[string]float64) (name string, value float64, bad bool) {
+	for n, v := range ratios {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return n, v, true
+		}
+	}
+	return "", 0, false
+}
+
 // duecRoundRatios renders per-rep ratios at three digits, so a withholding log
 // line shows the shape of the dispersion and not just its median.
 func duecRoundRatios(rs []float64) []float64 {
@@ -306,20 +351,41 @@ func duecRoundRatios(rs []float64) []float64 {
 	return out
 }
 
-// duecIsTransactionTooOld reports whether err carries FDB's transaction_too_old
-// anywhere in its chain.
+// duecMeasurementWindowLost reports whether err says this run's transaction
+// outlived FDB's MVCC window — in EITHER spelling. See Detector A above for why
+// both are required and why the driver's pre-emption is the one that actually
+// arrives.
 //
-// Typed, never a string match on the rendered message. The relational layer
-// wraps 1007 as api.Error{Code: 40001} and keeps the cause
-// (connection.go's translateFDBCode), so the original survives errors.As at this
-// distance. Both carriers are checked for the same reason connection.go checks
-// both: the pure-Go client surfaces a value-typed fdb.Error and the wire reader
-// a pointer-typed *wire.FDBError, and a run that hit the other one would be read
-// as healthy.
-func duecIsTransactionTooOld(err error) bool {
+// Typed throughout, never a string match on a rendered message. api.Error's own
+// doc forbids parsing its wording, and both the 1007 path and the pre-emption
+// path arrive wrapped: the relational layer turns 1007 into
+// api.Error{Code: 40001} keeping the cause (connection.go's translateFDBCode),
+// and the pre-emption is an api.Error{Code: 40001} whose cause is the marker.
+// errors.As reaches through both.
+//
+// Both FDB carriers are checked for the same reason connection.go checks both:
+// the pure-Go client surfaces a value-typed fdb.Error and the wire reader a
+// pointer-typed *wire.FDBError, and a run that hit the other one would be read as
+// healthy.
+func duecMeasurementWindowLost(err error) bool {
 	if err == nil {
 		return false
 	}
+	// ONE question, asked of the product. api.IsTransactionTimeLimit is true for
+	// BOTH producers because both attach the marker — the driver's pre-emption at
+	// 4s and translateFDBCode's 1007 arm at 5s. This test deliberately does not
+	// re-enumerate them: a list kept here is a list that drifts from the guards,
+	// which is precisely how the 1007-only version of this function shipped while
+	// the condition arrived as something else.
+	if api.IsTransactionTimeLimit(err) {
+		return true
+	}
+	// The belt for an error that never reached translateFDBError — a raw 1007
+	// straight off the client, with no relational wrapping. The SQL path funnels
+	// everything through that translator (its own comment records that the typed
+	// lanes are exhaustive and there is no string fallback), so this arm should be
+	// unreachable from here; it is kept because "should be unreachable" is what
+	// the previous version of this detector believed about 1007 arriving at all.
 	var valErr fdb.Error
 	if errors.As(err, &valErr) && valErr.Code == duecTransactionTooOld {
 		return true
@@ -514,13 +580,55 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// all — see the auto-commit assertions immediately above, which are what
 	// make a timed auto-commit pair meaningless rather than merely noisy.
 	//
-	// UNPAGED, because paging inside a transaction is bounded by FDB's
-	// 5-second MVCC window. A page costs ~140 ms of fixed overhead there, so
-	// ten pages burn the window at roughly 25 000 rows and every shape —
-	// elided, narrowed and control alike — dies above it. Unpaged
-	// in-transaction has no such ceiling: 100 000 rows completes in 215-554 ms.
-	// The paged transactional pair was separately measured at 0.906-1.045x
-	// even at sizes it survives, so there is no win there to assert.
+	// UNPAGED, because a paged transactional scan is bounded by the same budget
+	// with none of the headroom. The CONCLUSION recorded here has always been
+	// right; its stated MECHANISM was wrong, and the correction is kept rather
+	// than the sentence deleted, because the wrong mechanism is re-derivable and
+	// someone will otherwise re-derive it.
+	//
+	// What it used to say: "a page costs ~140 ms of fixed overhead there, so ten
+	// pages burn the window at roughly 25 000 rows." The FIGURE does not hold
+	// here. An in-transaction scan of 20 000 rows under
+	// OptExecutionScannedRowsLimit took 1.619 s, 1.630 s and 1.647 s at limits of
+	// 50, 10 and 1 — the same total across a 50x span of page COUNT (400 to
+	// 20 000 pages), so in that range the cost is dominated by per-ROW work and is
+	// not a fixed charge per page.
+	//
+	// The OUTCOME holds exactly, and is now observed rather than estimated: run
+	// beside the rest of the suite, that same 20 000-row paged scan died on the
+	// budget at 4 s having returned 5 289 rows. Partial rows followed by the
+	// pre-emption is itself the proof that it pages — an unpaged scan has no
+	// mid-query point at which the per-page preflight could fire. So paging is
+	// available, it is simply not worth having: 20 000 paged rows cost more than
+	// 100 000 unpaged ones (160-413 ms), and both answer to the same 4 s ceiling.
+	//
+	// AN EARLIER REVISION OF THIS COMMENT CLAIMED THE OPTION DOES NOT PAGE THIS
+	// PATH AT ALL. That was inferred from the page-size invariance above and it is
+	// false: invariance shows the per-page OVERHEAD is negligible, which is not
+	// the same as no pages. The claim was written as a test, and the test refuted
+	// it on the first suite run. What survives as a pin is the load-INDEPENDENT
+	// half — TestFDB_DuecScannedRowsLimitDoesNotSilentlyTruncate — because whether
+	// a given box finishes 20 000 paged rows inside 4 s is precisely the
+	// load-dependent timing question this whole mechanism exists to stop asserting.
+	//
+	// The paged transactional pair was separately measured at 0.906-1.045x even
+	// at sizes it survives, so there is no win there to assert either way.
+	//
+	// UNPAGED IS SUBJECT TO THE SAME CEILING — it buys HEADROOM, not exemption,
+	// and an earlier revision of this comment claimed "no such ceiling", which is
+	// false and cost a CI red. Every shape here runs inside one transaction whose
+	// reads are pre-empted at 4 s (txPageTimeLimit, anchored on the read-version
+	// instant). Unpaged merely avoids the per-page overhead: the shapes measure
+	// 160-413 ms on a healthy box, so the margin is roughly 10x and load spends
+	// it. CI has spent it — `SELECT DISTINCT email_plain FROM users1` (S1-full,
+	// 411 ms here) died on the pre-emption in a lane whose loads ran 7-10x slow.
+	//
+	// That is the regime failing, not the property, so it is Detector A's input
+	// rather than a fatal: see duecMeasurementWindowLost. Shrinking the fixture
+	// would buy margin and is REFUSED — the null pair's ±0.12 envelope and R3's
+	// 0.82-0.91x effect are both recorded at 100 000 rows in RFC-210 §2.1, so a
+	// smaller fixture would leave every bound below asserting against numbers
+	// taken on a population it no longer runs.
 	//
 	// The former PAGED AUTO-COMMIT timings are gone rather than relaxed. A
 	// bound over two runs of one plan is not a weak criterion, it is a
@@ -542,18 +650,18 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	for _, o := range order {
 		series[o.tag] = &duecSeries{tag: o.tag, query: o.query}
 	}
-	// sawTooOld is Detector A's whole state: whether ANY timed run in ANY rep
+	// sawWindowLost is Detector A's whole state: whether ANY timed run in ANY rep
 	// lost its measurement window. It is sticky rather than per-shape because a
 	// window that failed once failed during a period this run was also timing
 	// everything else.
-	sawTooOld := false
+	sawWindowLost := false
 	for rep := 0; rep < duecReps; rep++ {
 		for _, o := range order {
 			s := series[o.tag]
-			sample, nulls, tooOld := duecRunInTx(t, ctx, tconn, o.query)
-			if tooOld {
-				sawTooOld = true
-				t.Logf("REGIME rep=%d %s: transaction_too_old after %d rows in %v",
+			sample, nulls, windowLost := duecRunInTx(t, ctx, tconn, o.query)
+			if windowLost {
+				sawWindowLost = true
+				t.Logf("REGIME rep=%d %s: MEASUREMENT WINDOW LOST after %d rows in %v",
 					rep, o.tag, sample.rows, sample.dur.Round(time.Millisecond))
 			}
 			s.samples = append(s.samples, sample)
@@ -722,7 +830,7 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// the shape-and-count set listed above, which is load-independent by
 	// construction.
 	timingResolvable, withheldWhy := duecRegimeVerdict(
-		duecRaceInstrumented, sawTooOld, series["C"].samples, series["A'"].samples)
+		duecRaceInstrumented, sawWindowLost, series["C"].samples, series["A'"].samples)
 	if !timingResolvable {
 		t.Logf("REGIME: wall-clock criteria WITHHELD (B/D'=%.3fx s1=%.3fx s50=%.3fx). %s.\n"+
 			"Everything non-temporal still runs and still asserts — shapes, row counts, "+
@@ -730,6 +838,32 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 			"than durations, and load does not move them.",
 			bvdT, s1T, s50T, withheldWhy)
 	} else {
+		// AN ACCEPTED REGIME MUST ACTUALLY HAVE MEASURED SOMETHING. Every timing
+		// criterion below is spelled `ratio > bound`, and NaN > anything is FALSE
+		// in Go — so a run that produced no usable per-rep ratios would sail
+		// through all three while reporting the regime as ASSERTED. That is the
+		// exact shape this whole mechanism exists to refuse (a criterion that
+		// abstains while reading as enforced), arriving through the ACCEPTING door
+		// rather than the withholding one, and nothing else on this path would
+		// notice it.
+		// nullT is deliberately NOT in this set, and the reason is a dependency
+		// two functions away that nothing else states. It gates the accept/withhold
+		// decision itself rather than a criterion — duecRegimeVerdict recomputes
+		// the null pair internally and returns FALSE on an empty ratio slice, so a
+		// NaN there withholds instead of sailing through. That safety rests
+		// entirely on duecPerRepRatios skipping zero DENOMINATORS (`if d == 0 {
+		// continue }`), which is what keeps a 0/0 out of the median. If that skip
+		// is ever removed, nullT becomes NaN-able, math.Abs(NaN-1.0) > bound is
+		// FALSE, and the detector ACCEPTS every run it can no longer measure —
+		// so this comment is the pin on that `continue`.
+		if name, v, bad := duecUnmeasuredRatio(map[string]float64{
+			"B/D'": bvdT, "S1-R3/S1-full": s1T, "S50-R3/S50-full": s50T,
+		}); bad {
+			t.Fatalf("the regime was ACCEPTED but %s is %v: the criteria below compare "+
+				"it with `>`, and a non-finite value passes every such comparison "+
+				"silently. An accepted run that measured nothing is indistinguishable "+
+				"from a green one, which is worse than a withheld run.", name, v)
+		}
 		// The per-rep ratios are logged on the ACCEPTING path too, not only when
 		// withholding. Detector B currently reads one statistic — the median's
 		// deviation from 1.0 — because that is the only one RFC-210 §2.1 records a
@@ -809,6 +943,24 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// transaction cannot reach this fixture's size. The budget does not need
 	// paging to bite — the seen-set is charged as it grows, not as it is
 	// serialized — so the discriminator survives the move intact.
+	// budgetArmsRan and rowArmsRan are the ANTI-SILENCE tally, and they are
+	// counted rather than assumed for a specific reason.
+	//
+	// Detector A now makes a loaded box WITHHOLD the three wall-clock criteria
+	// where it previously fatalled. That trade is only sound while the
+	// load-independent arms keep asserting on exactly the runs that withhold —
+	// otherwise a mechanism sold as "abstain from the timing" has quietly become
+	// "abstain from everything", and a green run would mean nothing at all. The
+	// arms below are deliberately NOT gated on the verdict; these two counters are
+	// what make that structural fact checkable instead of merely intended, so a
+	// future edit that tucks one of them behind `if timingResolvable` reds here
+	// rather than silently halving the probe.
+	//
+	// They are compared against a FLOOR, never an exact count: an exact number
+	// reds every time someone adds a legitimate case, which trains people to
+	// update the constant without reading it.
+	budgetArmsRan, rowArmsRan := 0, 0
+
 	const duecBudgetBytes = 65536
 	bconn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
@@ -829,6 +981,7 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 		{"S50-R3", "SELECT DISTINCT email FROM users50", false, "DISCRIMINATOR: R3 retains the single NULL key"},
 		{"S50-full", "SELECT DISTINCT email_plain FROM users50", true, "full: 50 001 keys"},
 	} {
+		budgetArmsRan++
 		err := duecBudgetRun(t, ctx, bconn, c.query)
 		t.Logf("BUDGET %-9s breached=%-5v want=%-5v (%s)", c.tag, err != nil, c.wantBreach, c.why)
 		if c.wantBreach && err == nil {
@@ -906,6 +1059,7 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 					"key component is EXEMPT, which is exactly why it still has to be "+
 					"deduplicated down to one row", regime.name, c.table, nulls, wantNulls)
 			}
+			rowArmsRan++
 			t.Logf("ROWS %-11s %-8s rows=%d nullRows=%d identical=true",
 				regime.name, c.table, len(r3), nulls)
 		}
@@ -991,6 +1145,35 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// are still pinned for SHAPE, because which executor variant fires decides
 	// which cost the operator pays and EXPLAIN does not render it.
 	duecAssertVariants(t, explains)
+
+	// THE ANTI-SILENCE CHECK, run unconditionally — on the withheld path as much
+	// as the asserted one, which is the only path where it says anything.
+	//
+	// The floors are what the fixture structurally produces: nine memory-budget
+	// rows (three shapes x three tables) and six row-identity rows (three tables x
+	// two regimes). Falling below either means arms that load cannot move — counts
+	// and shapes, not durations — stopped running, and the probe is reporting
+	// green for a smaller claim than it advertises.
+	//
+	// Before Detector A learned the driver's pre-emption, a loaded box reached
+	// NEITHER of these: it fatalled inside the timing loop, which runs first, so
+	// every budget row and every row-identity comparison was skipped. The counters
+	// are what stop that from being reintroduced as an abstention instead of a
+	// failure.
+	const (
+		wantBudgetArms = 9
+		wantRowArms    = 6
+	)
+	if budgetArmsRan < wantBudgetArms || rowArmsRan < wantRowArms {
+		t.Fatalf("the LOAD-INDEPENDENT arms did not all run: %d/%d statement-memory-budget "+
+			"rows, %d/%d row-identity rows (wall-clock criteria resolvable=%v).\n"+
+			"These are the arms that gate RFC-210 in CI, and they are counts and shapes "+
+			"rather than durations — no amount of load moves them by one byte, so nothing "+
+			"about the machine may excuse skipping them. If a regime detector now gates "+
+			"one of them, that is the bug: withholding must cost the three timing bounds "+
+			"and nothing else.",
+			budgetArmsRan, wantBudgetArms, rowArmsRan, wantRowArms, timingResolvable)
+	}
 }
 
 // duecLoad fills one table; every nullEvery-th row gets a NULL email (and the
@@ -1064,19 +1247,21 @@ func duecLoad(t *testing.T, ctx context.Context, db *sql.DB, table string, nullE
 // it is the only regime in which a timing here is about RFC-210 at all; the
 // timing covers QueryContext plus the drain, never BeginTx.
 //
-// transaction_too_old is RETURNED rather than fatal, and that asymmetry is the
-// whole of Detector A. A 1007 here is not a bug in the code under test — it is
-// the box telling this run that its 5-second measurement window did not hold —
-// so it must reach the caller as EVIDENCE ABOUT THE REGIME instead of killing
-// the test and taking every non-temporal assertion down with it. Every OTHER
-// error still fatals: a genuine failure must stay loud, and reading an unrelated
-// break as "the box was busy" is exactly how a real defect would hide here.
+// A LOST MEASUREMENT WINDOW is RETURNED rather than fatal, and that asymmetry is
+// the whole of Detector A. It is not a bug in the code under test — it is the box
+// telling this run that its MVCC window did not hold — so it must reach the
+// caller as EVIDENCE ABOUT THE REGIME instead of killing the test and taking
+// every non-temporal assertion down with it. Every OTHER error still fatals: a
+// genuine failure must stay loud, and reading an unrelated break as "the box was
+// busy" is exactly how a real defect would hide here. That is why the recogniser
+// is duecMeasurementWindowLost rather than "the SQLSTATE was 40001" — the code
+// this arrives under is shared with a genuine conflict.
 //
 // The partial sample is returned as measured rather than zeroed, so the ratios
 // the withholding path logs are finite and show what the run actually saw.
 func duecRunInTx(
 	t *testing.T, ctx context.Context, c *sql.Conn, q string,
-) (sample duecSample, nulls int, tooOld bool) {
+) (sample duecSample, nulls int, windowLost bool) {
 	t.Helper()
 	tx, err := c.BeginTx(ctx, nil)
 	if err != nil {
@@ -1095,7 +1280,7 @@ func duecRunInTx(
 	}
 	rows, err := tx.QueryContext(ctx, q)
 	if err != nil {
-		if duecIsTransactionTooOld(err) {
+		if duecMeasurementWindowLost(err) {
 			return finish(0, 0, true)
 		}
 		t.Fatalf("query %q: %v", q, err)
@@ -1104,7 +1289,7 @@ func duecRunInTx(
 	var s sql.NullString
 	for rows.Next() {
 		if err := rows.Scan(&s); err != nil {
-			if duecIsTransactionTooOld(err) {
+			if duecMeasurementWindowLost(err) {
 				rows.Close()
 				return finish(n, nulls, true)
 			}
@@ -1117,7 +1302,7 @@ func duecRunInTx(
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		if duecIsTransactionTooOld(err) {
+		if duecMeasurementWindowLost(err) {
 			return finish(n, nulls, true)
 		}
 		t.Fatalf("rows.Err %q: %v", q, err)
