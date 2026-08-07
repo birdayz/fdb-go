@@ -19,6 +19,14 @@ package plans
 // (physical_equality_properties.go, cardinality_bounds.go).
 //
 // THE FALSE SET IS EMPTY IN GO, AND THAT IS A DERIVED RESULT, NOT AN OMISSION.
+// WHAT THIS PROPERTY DOES NOT COVER, stated first because the name invites the
+// wrong reading: it is not a duplicate-freeness proof. It answers only whether
+// RESUMING can re-emit a row already emitted before the continuation. A plan
+// that produces duplicates WITHIN a single page — an unordered union over two
+// overlapping index scans, say, which double-counts with no continuation
+// involved — answers TRUE here and is correct to. Java draws the same line and
+// owns that case with a separate DistinctRecordsProperty.
+//
 // Java's visitor returns false for exactly two plans —
 // RecordQueryUnorderedPrimaryKeyDistinctPlan and RecordQueryUnorderedDistinctPlan
 // — because JAVA rebuilds their dedup set per execution:
@@ -36,6 +44,21 @@ package plans
 // answer TRUE here. Both are still listed explicitly below, at exactly the arms
 // Java overrides, so the divergence is visible at the decision site rather than
 // inferred from an absence.
+//
+// THIS IS THE ONE WRONG-ANSWER DIRECTION IN THIS FILE — Go says TRUE where Java
+// says FALSE — so the premise is named by the tests that HOLD it rather than by
+// a PR number, and a reader can check it in one hop:
+//
+//	executor/executor_test.go:259
+//	  TestExecuteUnorderedPrimaryKeyDistinct_ContinuationCarriesSeenSet
+//	executor/distinct_scratch_lifecycle_test.go     (adoption + retirement)
+//	executor/distinct_continuation_growth_test.go   (the set survives paging)
+//	executor/distinct_nameability_test.go           (a retried page cannot
+//	                                                 observe a dying attempt)
+//	executor/distinct_proof_stamp_identity_test.go  (the token names THAT set)
+//
+// If any of those five stops holding, this file's TRUE for the two distinct
+// plans becomes a wrong answer, not a divergence.
 //
 // Importing Java's conclusion instead of its reasoning would have been the
 // error the strictlySorted refusal already named: never import a conclusion
@@ -62,6 +85,18 @@ package plans
 // ImplementStreamingAggregationRule: with a non-empty false set, GROUP BY over
 // the declined shape would fail to plan rather than fall back, so the fallback
 // has to land first.
+//
+// A SECOND GAP SITS BESIDE THAT ONE, and it is recorded here because it becomes
+// live under the same condition. Java uses this property in TWO roles at
+// ImplementStreamingAggregationRule.java:67-78: as a FILTER, and as part of the
+// partition ROLL-UP KEY — `Set.of(continuable, ordering)` — so continuable and
+// non-continuable plans can never be rolled into a single partition. Go ports
+// only the filter. That is harmless while the false set is empty, because one
+// class means the key has nothing to separate; the moment a plan answers FALSE,
+// Go would merge plans Java keeps apart and the filter would be deciding over a
+// partition that should never have been formed. Both gaps — the missing
+// fallback and the missing roll-up key — have to close together with the first
+// false entry.
 
 // ContinuableWithoutDuplicatesVisitor is Java's
 // ContinuableWithoutDuplicatesPropertyVisitor: a per-plan-type override point
