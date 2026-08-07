@@ -9,19 +9,47 @@ import (
 )
 
 // ImplementStreamingAggregationRule implements a GroupByExpression as a
-// physical RecordQueryStreamingAggregationPlan when the inner Reference
-// has at least one member whose ordering satisfies the grouping keys.
+// physical RecordQueryStreamingAggregationPlan.
 //
 //	GroupBy(keys=[k1, k2], aggs=[...], inner)
 //	  → StreamingAggPlan(inner-physical)   [when inner ordered by k1, k2, ...]
 //
 // The streaming aggregation is the cheapest aggregation strategy when
 // the input is already sorted — it processes rows in one pass with
-// O(1) memory per group. When the inner is NOT ordered, this rule
-// does not fire; a future hash-aggregation rule would handle that case.
+// O(1) memory per group.
 //
-// Java equivalent: ImplementStreamingAggregationRule in the OPTIMIZE
-// phase, which requires OrderingProperty satisfaction.
+// TWO PRECONDITIONS on the inner, and Java enforces both
+// (ImplementStreamingAggregationRule.java:68-78 filters the plan partitions on
+// the second before consulting the first at :118-119):
+//
+//  1. ORDERING. The inner must deliver equal grouping keys ADJACENTLY, or a
+//     group is split across runs and aggregated twice. Where no inner provides
+//     it, this rule inserts an in-memory sort (a Go extension — Java refuses
+//     GROUP BY without sorted input).
+//
+//  2. CONTINUABLE WITHOUT DUPLICATES. The inner must never re-emit, across a
+//     continuation, a row it already emitted. An aggregate FOLDS each row into
+//     an accumulator, so a row delivered twice is counted twice and COUNT/SUM/AVG
+//     come out wrong — this is the one consumer for which a re-emitted row is
+//     incorrect rather than merely redundant. Checked by
+//     plans.EvaluateContinuableWithoutDuplicates.
+//
+// Precondition 2's false set is EMPTY in Go, so its filter currently admits
+// everything — see the property for the audit and for what would re-arm it.
+// The guard is kept because it is correct-by-construction: it is the wrong
+// thing to add reactively, after a cursor that re-emits has already shipped
+// with an aggregate silently over-counting on top of it.
+//
+// IF THE FALSE SET EVER BECOMES NON-EMPTY, THIS RULE IS NOT ENOUGH ON ITS OWN.
+// Go has no hash-aggregation rule or plan; streaming aggregation is the only
+// aggregation strategy, and the in-memory-sort path below is a sort, not a
+// fallback — a sort over a re-emitting inner buffers the duplicates, so the
+// property (default-from-children) declines that path too. Declining the only
+// path means GROUP BY over the offending shape FAILS TO PLAN rather than
+// falling back. A hash aggregation has to land before anything is added to the
+// false set.
+//
+// Java equivalent: ImplementStreamingAggregationRule in the OPTIMIZE phase.
 type ImplementStreamingAggregationRule struct {
 	matcher matching.BindingMatcher
 }
@@ -33,6 +61,33 @@ func NewImplementStreamingAggregationRule() *ImplementStreamingAggregationRule {
 }
 
 func (r *ImplementStreamingAggregationRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+// admissibleStreamingAggInner is Java's plan-partition filter on
+// ContinuableWithoutDuplicatesProperty (ImplementStreamingAggregationRule.java:
+// 68-78). Java filters the candidate partitions once, upstream of the ordering
+// check it then applies per partition at :118-119; Go's rule reaches into the
+// inner Reference at several selection sites instead of binding one filtered
+// partition, so the same filter is applied at each of them — every point where
+// a physical member is admitted as the aggregation's inner passes through here.
+//
+// A member that is not a physical plan is not admissible as an inner at all,
+// which is the caller's existing precondition; returning false for it keeps
+// that decision in one place.
+func admissibleStreamingAggInner(expr expressions.RelationalExpression) bool {
+	if expr == nil {
+		return false
+	}
+	var p plans.RecordQueryPlan
+	if ph, ok := expr.(physicalPlanExpression); ok {
+		p = ph.GetRecordQueryPlan()
+	} else if bare, ok := expr.(plans.RecordQueryPlan); ok {
+		p = bare
+	}
+	if p == nil {
+		return false
+	}
+	return plans.EvaluateContinuableWithoutDuplicates(p)
+}
 
 func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	gb := matching.Get[*expressions.GroupByExpression](call.Bindings, r.matcher)
@@ -51,6 +106,7 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	if len(groupingKeys) == 0 {
 		if isCountOnlyAggregation(gb.GetAggregates()) {
 			if idxPlan := findIndexScanPlan(innerRef); idxPlan != nil &&
+				admissibleStreamingAggInner(idxPlan) &&
 				idxPlan.ProducesDistinctRecords() && !idxPlan.IsCovering() {
 				// The covering index scan is its own cascades expression (RFC-184 W2);
 				// WithCovering preserves the metadata already on the plan (struct copy).
@@ -72,6 +128,9 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 		// alternative.
 		for _, m := range innerRef.AllMembers() {
 			if _, ok := m.(physicalPlanExpression); !ok {
+				continue
+			}
+			if !admissibleStreamingAggInner(m) {
 				continue
 			}
 			// Count-only, no grouping keys → no ordering precondition, so carry the
@@ -134,7 +193,7 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	// When an ordered index also exists, both alternatives are yielded
 	// and the cost model picks the cheaper one.
 	rawExpr := findPhysicalExpr(innerRef)
-	if rawExpr != nil {
+	if rawExpr != nil && admissibleStreamingAggInner(rawExpr) {
 		// The InMemorySort is now its own cascades expression (RFC-184 W2, no
 		// physicalInMemorySortWrapper): a self-contained PRODUCER that provides the
 		// grouping-key order intrinsically. Build the bare sort over the first
@@ -152,7 +211,7 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	// InMemorySort(FullScan). Selective Fetches (WHERE predicate
 	// consumed by the index) are kept — they read fewer rows.
 	orderedExpr := findOrderedPhysicalExpr(innerRef, orderingKeys)
-	if orderedExpr != nil {
+	if orderedExpr != nil && admissibleStreamingAggInner(orderedExpr) {
 		if fw, isFetch := orderedExpr.(*plans.RecordQueryFetchFromPartialRecordPlan); isFetch && isFullRangeFetch(fw) {
 			// Skip — InMemorySort(FullScan) is cheaper than Fetch(IndexScan(full-range)).
 		} else if _, ok := orderedExpr.(physicalPlanExpression); ok {

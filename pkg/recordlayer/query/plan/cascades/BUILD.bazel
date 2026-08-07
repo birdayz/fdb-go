@@ -432,6 +432,7 @@ go_test(
         "rule_implement_projection_final_test.go",
         "rule_implement_simple_select_test.go",
         "rule_implement_sort_test.go",
+        "rule_implement_streaming_agg_continuable_test.go",
         "rule_implement_streaming_agg_test.go",
         "rule_implement_table_function_test.go",
         "rule_implement_typefilter_test.go",
@@ -1052,6 +1053,7 @@ go_test(
         "flat_map_producer_census_test.go",
         "projection_merge_census.go",
         "referenced_fields_readers_test.go",
+        "rule_implement_streaming_agg_continuable_test.go",
     ],
     deps = [
         "//gen",
