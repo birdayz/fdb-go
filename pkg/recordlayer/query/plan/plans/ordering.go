@@ -723,6 +723,7 @@ func orderingColumnOfName(layout values.Type, name string) values.Value {
 		return values.NewFieldValueWithResolvedOrdinalInDomain(
 			name, ident.Ordinal, values.UnknownType, ident.Domain)
 	}
+	values.NoteFieldValueMint(name, false)
 	return &values.FieldValue{Field: name, Typ: values.UnknownType}
 }
 
@@ -792,6 +793,7 @@ func (p *RecordQueryInMemorySortPlan) HintOrdering() properties.Ordering {
 	desc := make([]bool, len(sks))
 	nullsFirst := make([]bool, len(sks))
 	for i, sk := range sks {
+		values.NoteFieldValueMint(sk.Field, false)
 		keys[i] = &values.FieldValue{Field: sk.Field, Typ: values.UnknownType}
 		desc[i] = sk.Desc
 		nullsFirst[i] = sk.NullsFirst

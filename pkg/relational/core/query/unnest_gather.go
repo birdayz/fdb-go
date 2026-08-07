@@ -396,6 +396,7 @@ func bakeGatheredGroupValue(v values.Value, windows map[values.CorrelationIdenti
 				// The positional read (Resolved ordinal) is authoritative; Field is
 				// display-only. Preserve the ORIGINAL reference's display name so the
 				// group-by OUTPUT column matches what the SELECT projects (`EL`, `A.K`).
+				values.NoteFieldValueMint(fv.Field, baked.Resolved != nil)
 				baked.Field = fv.Field
 				return baked
 			}

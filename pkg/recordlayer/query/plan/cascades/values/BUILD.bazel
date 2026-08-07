@@ -4,12 +4,14 @@ go_library(
     name = "values",
     srcs = [
         "accessor_name_path.go",
+        "accessor_name_path_census.go",
         "coercion.go",
         "column_identity.go",
         "compare_ordered.go",
         "correlation.go",
         "dotted_leg_qualifier_census.go",
         "dotted_row_type_producer_census.go",
+        "field_value_mint_census.go",
         "folder.go",
         "functional_dependency.go",
         "leaf_value.go",
@@ -111,6 +113,7 @@ go_library(
 go_test(
     name = "values_test",
     srcs = [
+        "accessor_name_path_census_test.go",
         "accessor_name_path_test.go",
         "baked_field_value_identity_test.go",
         "baked_ordinal_unification_test.go",
@@ -128,6 +131,7 @@ go_test(
         "dotted_row_type_producer_census_test.go",
         "equals_without_children_test.go",
         "eval_must_test.go",
+        "field_value_mint_census_test.go",
         "field_value_ordinal_resolution_test.go",
         "fieldpath_compose_test.go",
         "fold_error_test.go",
