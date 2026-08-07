@@ -270,6 +270,42 @@ const (
 	// no read-version instant (the cgo escape hatch does not), still meets FDB's
 	// wall directly.
 	duecTransactionTooOld = 1007
+
+	// duecWallClockEnv opts THIS INVOCATION into asserting the wall-clock
+	// criteria. Unset — which is every CI lane and every plain `just test` — the
+	// timing arms LOG and do not fail.
+	//
+	// THIS IS THE PROBE'S OWN DOCUMENTED POSITION, IMPLEMENTED. The comment above
+	// the regime verdict has always said the timing arms are "a QUIET-MACHINE /
+	// LOCAL instrument ... not a PR gate and must not be quoted as one" — and they
+	// were asserted on every lane anyway. A local instrument used as a merge gate
+	// is the defect; every downstream symptom follows from it. The regime
+	// detectors narrowed the gap without closing it: they catch the states they
+	// were derived for, and the run that motivated this got past all three because
+	// its null pair landed at 0.995x while its per-rep ratios spanned 0.728-1.747.
+	// A dispersion arm would have been the natural fourth detector and the measured
+	// record REFUSES it (#641), so the remaining honest move is to stop asserting a
+	// quiet-machine instrument on lanes that are not quiet.
+	//
+	// WHAT THIS DOES NOT WEAKEN, and the split is the whole point: everything
+	// non-temporal still asserts everywhere, unconditionally — plan shapes, the
+	// elision decisions, row counts, NULL counts, the nine statement-memory-budget
+	// rows, and the allocation criteria. Those are counts rather than durations and
+	// load does not move them; they are the PR gate for RFC-210 and this flag does
+	// not touch them. The budgetArmsRan/rowArmsRan anti-silence tally below is what
+	// keeps that structural claim checkable rather than merely intended.
+	//
+	// MEASURED BEFORE CHANGING ANYTHING, because "the assertion is noisy" is also
+	// what a real regression sounds like. RE-DERIVED AT HEAD rather than inherited:
+	// three runs on this tree at load average 30 gave B/D' 0.871x, 0.878x, 0.858x
+	// (s1 0.825-0.882x, s50 0.905-0.916x), every one with the regime resolvable and
+	// every one comfortably under the 0.95 bound. The figures this change was first
+	// written against agree — 17 runs at 0c7c57bf1 measured 0.766-0.904x and 9 on a
+	// later master 0.820-0.902x — so R3's margin is intact and the CI miss at 0.951x
+	// was THE REGIME, NOT THE CODE. That is the fact #638 has been blocked on.
+	//
+	// Three runs is not seventeen, and it is stated as three.
+	duecWallClockEnv = "DUEC_ASSERT_WALLCLOCK"
 )
 
 // duecRegimeVerdict reports whether this run's WALL CLOCK may carry a criterion,
@@ -831,6 +867,18 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// construction.
 	timingResolvable, withheldWhy := duecRegimeVerdict(
 		duecRaceInstrumented, sawWindowLost, series["C"].samples, series["A'"].samples)
+	// The opt-in is checked SEPARATELY from the regime verdict, and BOTH still
+	// run, so an opted-out lane still reports whether its box could have carried
+	// the criteria. That keeps the log useful as the record it has always been —
+	// silencing the detectors along with the assertions would have thrown away the
+	// very data that settled the dispersion question in #641.
+	wallClockAsserted := timingResolvable && duecAssertWallClock()
+	if !duecAssertWallClock() {
+		t.Logf("REGIME: wall-clock criteria NOT ASSERTED — %s is unset, so the timing "+
+			"arms LOG only (B/D'=%.3fx s1=%.3fx s50=%.3fx; regime resolvable=%t). "+
+			"Everything non-temporal still asserts. Set %s=1 on a quiet box to arm them.",
+			duecWallClockEnv, bvdT, s1T, s50T, timingResolvable, duecWallClockEnv)
+	}
 	if !timingResolvable {
 		t.Logf("REGIME: wall-clock criteria WITHHELD (B/D'=%.3fx s1=%.3fx s50=%.3fx). %s.\n"+
 			"Everything non-temporal still runs and still asserts — shapes, row counts, "+
@@ -910,7 +958,7 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 			nullT, duecNullPairQuietDev,
 			duecRoundRatios(duecPerRepRatios(series["C"].samples, series["A'"].samples, duecDurOf)))
 	}
-	if timingResolvable && bvdT > r3Margin {
+	if wallClockAsserted && bvdT > r3Margin {
 		t.Fatalf("R3 timing: B/D' = %.3fx is not strictly faster than the full "+
 			"distinct (B=%v D'=%v). R3's exempt test must run on the row's RAW "+
 			"SLOTS before the dedup key is packed; an implementation that packs "+
@@ -923,12 +971,12 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// worse than full", never "faster" — that asymmetry IS the content of
 	// "strictly dominates" — though it in fact measures 0.87-0.96x, because
 	// half the rows still skip the tuple encoder entirely.
-	if timingResolvable && s1T > r3Margin {
+	if wallClockAsserted && s1T > r3Margin {
 		t.Fatalf("sweep 1%%: R3/full = %.3fx is not faster (bound %.2fx, for the same "+
 			"reason as B/D': without the route the two are one plan and the ratio is "+
 			"1.0 plus noise)", s1T, r3Margin)
 	}
-	if timingResolvable && s50T > 1.0 {
+	if wallClockAsserted && s50T > 1.0 {
 		t.Fatalf("sweep 50%%: R3/full = %.3fx is WORSE than the full distinct. R3's "+
 			"seen-set is a subset of the full one on every input, so there is no "+
 			"density at which it may cost more.", s50T)

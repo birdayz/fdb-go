@@ -18,6 +18,7 @@ go_test(
         "copy_method_rebuild_test.go",
         "docs_consistency_test.go",
         "dst_seam_gate_test.go",
+        "duec_wallclock_gate_scope_test.go",
         "field_debt_authority_test.go",
         "field_name_decision_detector_test.go",
         "field_name_decision_test.go",
