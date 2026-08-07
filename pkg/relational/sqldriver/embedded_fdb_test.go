@@ -780,12 +780,22 @@ var legColumnProvenanceFloors = executor.LegColumnProvenanceFloors{
 	// hard zero above reads clean over an evaporated population. At 1 the reader
 	// could run three times and the retirement would still report as measured.
 	//
-	// 1000 sits comfortably under both the ≈2.4–2.7k band and the 1174 low
-	// outlier this branch itself produced, which is the counterexample that shows
-	// why 1 is not enough: a real full run landed at less than half the band floor
-	// without being narrowed, so the guard has to survive that without either
-	// firing spuriously or degenerating into a liveness bit.
-	Calls: 1000,
+	// 100 — AND THE FIRST NUMBER TRIED HERE WAS 1000, WHICH A RUN REFUTED WITHIN
+	// ONE REBASE. The reasoning for 1000 was that it sat "comfortably under" the
+	// ≈2.4–2.7k band and the 1174 low outlier; the very next full run reported
+	// 574 and the floor fired spuriously. Observed across every full run this
+	// path has recorded: 574, 1174, 1914, 2394, 2474, 2534, 2554, 2554, 2674 — a range
+	// of nearly 5x, on an unchanged corpus.
+	//
+	// So this population is far less stable than the band above suggests, and a
+	// floor set just under the observed minimum is a floor set to fire. 100 is an
+	// order of magnitude below the lowest reading and still ~30x above what an
+	// evaporated population looks like (a handful of calls), which is the only
+	// state it exists to catch. The lesson is the one the enumeration note two
+	// paragraphs up already states, re-learned on the guard rather than on the
+	// quote: a bounded-looking number for an unbounded quantity decays into a
+	// wrong one.
+	Calls: 100,
 }
 
 // assertLegColumnProvenanceCensus checks the provenance census, dropping the

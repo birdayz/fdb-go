@@ -1332,12 +1332,25 @@ again naming a quantifier's flowed column with a dot-containing title. The floor
 retires and a **hard zero** replaces it, whose message names the direction and
 points at `unqualifiedScalarTitle`.
 
-`Calls` is floored at a **magnitude (1000)**, not at 1. It is the floor that
+`Calls` is floored at a **magnitude (100)**, not at 1. It is the floor that
 forecloses "the producers register and the reader is dark" — the state in which
 the hard zero reads clean over an evaporated population. At 1 the reader could
-run three times and the retirement would still report as measured. 1000 sits
-under both the band and the 1174 outlier this branch itself produced, which is
-the counterexample showing why a liveness bit is not enough.
+run three times and the retirement would still report as measured.
+
+**The first magnitude tried was 1000, and a run refuted it within one rebase.**
+The reasoning was that 1000 sat comfortably under the ≈2.4–2.7k band and the
+1174 low outlier; the next full run reported **574** and the floor fired
+spuriously. Every full run this path has recorded: 574, 1174, 2394, 2474, 2534,
+2554, 2554, 2674 — nearly 5x, on an unchanged corpus. A floor set just under the
+observed minimum is a floor set to fire. 100 is an order of magnitude below the
+lowest reading and still ~30x above an evaporated population, which is the only
+state it exists to catch.
+
+That 574 run is also a THIRD confirmation of §12.2: `flatHit` read **122** there
+too, against `notDotted` moving 2412 → 452. The discriminating statistic held at
+its post-change value across a 4.4x swing in the denominator. A fourth run at 1914 calls read 122 as
+well: flatHit has now held at its post-change value on every reading taken,
+while the denominator ranged 574–2534.
 
 The attribution census keeps its **Minted** floor — which is what keeps the zero
 honest, proving the producers still register — and drops its **Observed** floor
