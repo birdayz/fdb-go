@@ -12,6 +12,61 @@ reproducibility/supply-chain rationale.
 > runs on GitHub-hosted `ubuntu-latest` via `.github/workflows/hosted-smoke.yml`, so a fork
 > gets a green signal it can reproduce without this box. This runner is the *heavy* gates.
 
+## The fleet, and what `gh-runner-drain-*` is NOT
+
+Five runners, all carrying the single label `hetzner-fdb-vm`:
+
+| name | Terraform resource | notes |
+|---|---|---|
+| `gh-runner-fdb` | `hcloud_server.runner` | the grandfathered dedicated box |
+| `gh-runner-drain-0..3` | `hcloud_server.runner_pool` (`count = var.runner_count`) | the pool |
+
+**`drain` is a historical provisioning name, not a lifecycle state.** The pool was stood
+up on 2026-08-01 to *drain* a CI backlog (`#566`, "the 2026-08-01 drain-fleet provision")
+and the name stuck. These boxes are ordinary durable runners: `runner_mode` defaults to
+`classic` — "register-and-listen, one durable registration per box" — and **`bazelscaleset`
+is not deployed on any of them** (verified: zero scaler units fleet-wide). There is no
+draining, no teardown path, and no autoscaler that could leave phantom capacity behind.
+
+This is written down because the name has already cost one investigation an evening: a
+runner named `drain` that is `online` and `busy=false` in the API reads exactly like a box
+parked in a draining state that would accept no work. It is not. If you are debugging an
+unacquired job, **`drain` is not your lead.**
+
+### Reading a red lane that never ran
+
+A self-hosted job GitHub cannot place is cancelled after a fixed **~10 minutes** with the
+annotation *"The job was not acquired by Runner of type self-hosted even after multiple
+attempts"* and — the part that matters — **`steps: []`**. Nothing executed. A lane in that
+state is not red about what it tests; it never tested anything.
+
+```sh
+gh api repos/birdayz/fdb-go/actions/runs/<id>/jobs -q '.jobs[] | "steps=\(.steps|length) \(.conclusion)"'
+```
+
+`steps=0` ⇒ classify as placement, not regression, before reading any further. That
+10-minute window is **GitHub's and is not configurable**; it bears no relation to any
+`timeout-minutes` in our workflows (the `libfdb_c` lane allows 40 minutes and its inner
+`go test` 30, against a worst-observed green of 2m38s).
+
+Two causes produce that signature, and they are distinguishable:
+
+- **Upstream dispatch failure.** Check the pool journals for the window
+  (`journalctl -u 'actions.runner.*' --since ... --until ...` on each box). If a runner
+  was *idle and listening* while the job went unacquired, the placement failure was
+  GitHub's — nothing here can prevent it. This is what happened on 2026-08-06.
+- **Oversubscription.** If every runner was busy, the job queued out. That one *is* ours,
+  and `//infra:infra_test`'s `TestPushFanOutFitsTheRunnerPool` is the gate that keeps it
+  from arriving silently: one push currently starts **5** self-hosted jobs (`ci.yml` 4 +
+  `nightly-libfdbc.yml` 1) against **5** slots. That 1:1 has no margin — adding a sixth
+  push-triggered `hetzner-fdb-vm` job without raising `var.runner_count` turns a wire-format
+  safety net red for reasons unrelated to wire format. The gate reads both numbers from
+  source so capacity and budget move in one edit.
+
+Scheduled lanes are deliberately outside that budget (`nightly-fuzz.yml` alone is 5 jobs):
+they are not racing a merge, and a nightly overlapping a push is a queueing cost rather
+than a gate. If nightlies start being cancelled unacquired, revisit that.
+
 ## Prerequisites
 
 - `tofu` (or `terraform`) ≥ 1.7, the `hcloud` + `minio` providers (`tofu init`).

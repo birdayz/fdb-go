@@ -13,12 +13,18 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "infra_test",
     srcs = [
+        "fleet_capacity_test.go",
         "infra_test.go",
         "render_test.go",
         "template_model_test.go",
     ],
     data = [
         "README.md",
+        # The push fan-out gate reads the workflow definitions and main.tf
+        # together: it counts self-hosted jobs one push starts and compares them
+        # against var.runner_count. Without this the glob finds nothing under
+        # bazel and the gate's own zero-population guard fires.
+        "//:github_workflows",
         "cloud-init.yaml",
         "link_ci_volume_test.sh",
         "main.tf",
