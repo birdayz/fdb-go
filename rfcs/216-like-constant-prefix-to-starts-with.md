@@ -1,13 +1,19 @@
-# RFC-213 — `LIKE 'prefix%'` reaches an index via an implied `STARTS_WITH` conjunct
+# RFC-216 — `LIKE 'prefix%'` reaches an index via an implied `STARTS_WITH` conjunct
 
 Status: DESIGN ONLY — no production code lands with this RFC
+
+Numbering note: this document was drafted as "RFC-213". That number was already
+claimed by an unrelated in-flight RFC ("the result type derives from the result
+value", branch `feat/cq97-rfc`), so it is renumbered to 216 — the next free slot
+above the merged RFC-215. The companion dead-twin retirement referenced below as
+"RFC-214" is likewise renumbered to **RFC-217**.
 
 **Read §4.0 first.** The implementation described below was written, measured,
 and REMOVED. It returned wrong rows (§4.0), and the pieces that were correct
 (`values.LikeConstantPrefix` and its soundness fuzz) are not committed either,
 because with the rule gone their only callers would be tests — the precise
 dead-code shape this RFC's own investigation exposed elsewhere in the tree. They
-return together, on top of RFC-214, when CQ-33 is actually implemented.
+return together, on top of RFC-217, when CQ-33 is actually implemented.
 
 What DOES land now is the one fact that is load-bearing regardless of whether
 the rule is ever built, expressed against the live matcher rather than against a
@@ -239,9 +245,18 @@ Reachability: **latent, not live on master.** Every production producer of
 `index_expansion.go:144-153`, which adds the converted predicate to the
 CANDIDATE side gated on `*ValueIndexScanMatchCandidate` — it can never reach a
 primary-scan binder. `ddl/generator_predicate.go` is index-predicate DDL.
-`ResolveStartsWith` still has zero callers. So only this (unregistered) rule can
-reach the defect. `TestLikePrefixToStartsWithRule_NotRegistered` pins the fact
-that makes it unreachable.
+`ResolveStartsWith` still has zero production callers (only `expr_test.go:530`).
+So only this (unregistered) rule can reach the defect.
+
+The pin for that negative result is NOT a new test: it already exists as the
+standing comment and assertions in
+`pkg/relational/sqldriver/sargability_differential_oracle_fdb_test.go:25-26`,
+which record that the tree has zero non-test callers of `ResolveStartsWith` and
+no rewrite rule that produces `ComparisonStartsWith` on a primary-scan binder.
+An earlier draft of this RFC credited a
+`TestLikePrefixToStartsWithRule_NotRegistered`; no such test exists, and none is
+added, because with the rule removed there is no rule whose non-registration
+could be asserted. That claim is withdrawn.
 
 FOUR BLOCKERS that must be confronted before the rule is ever registered.
 
@@ -269,7 +284,7 @@ index, `:655`, `executor_new_plans.go:105`). So `:1379` is not "unreachable from
 SQL pending a producer" — it is unreachable from anything, and no planner rule
 could ever have reached it. Whether the live binder implements the same
 STARTS_WITH behaviour is an OPEN QUESTION, not an assumption. Retiring the dead
-twin is its own change and lands before RFC-214.
+twin is its own change and lands as RFC-217.
 
 Note this corrects §1.1's characterisation: `like_prefix_pushdown.yaml` cannot
 detect whether the optimization FIRES, but its rows-only assertions DID catch

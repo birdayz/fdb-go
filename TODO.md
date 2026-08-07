@@ -10426,6 +10426,35 @@ to nothing.)
   `makeSpansForSingleColumnDatum`). Guard the rewrite on a constant prefix with no
   further wildcards and no ESCAPE ambiguity.
 
+  **STILL OPEN — attempted, measured, and deliberately not shipped. See
+  `rfcs/216-like-constant-prefix-to-starts-with.md` (design only).** The rule and
+  its prefix extractor were written and REMOVED; do not re-add them without
+  reading RFC-216 §4.0 and §4.1 first. Three corrections to the text above:
+
+  - The rewrite as usually stated is **UNSOUND**. `%` compiles to `.*` with no
+    DOTALL, so it cannot cross a Java line terminator: `'abc\ndef' LIKE 'abc%'`
+    is FALSE while `HasPrefix("abc\ndef","abc")` is TRUE. **No LIKE pattern
+    yields a tight prefix range**, so a residual LIKE filter must ALWAYS be
+    retained — augment the predicate, never replace it. Pinned by
+    `TestLikeMatch_NoPatternYieldsATightPrefixRange`
+    (`cascades/predicates/comparisons_test.go`), mutation-verified.
+  - The "RFC-179 F11 is unreachable from SQL" claim above is **RETRACTED**. F11's
+    STARTS_WITH behaviour is live — it just does not run through
+    `scanComparisonsToTupleRange`, which has zero production callers. The live
+    binder is `bindScanComparisonsToRangeSet`. See RFC-217.
+  - Registering the rule as written returned **ZERO rows** for every primary-key
+    prefix LIKE (empty range on the primary-scan binder, root cause not
+    diagnosed). Four blockers are enumerated in RFC-216 §4.0, including the
+    UNVERIFIED question of whether the logical `TypeCodeString` gate can disagree
+    with the physical key type for string-backed DATE/TIMESTAMP/ENUM carriers.
+
+  Blocked on the **covering-stamp defect of RFC-216 §4.1** (a pre-existing,
+  independently observable physical-plan bug: `MergeProjectionAndFetchRule` loses
+  the covering flag when a residual sits between the fetch and the index scan,
+  which drops the decision onto cost criterion #7 and makes secondary indexes
+  lose). That is its own change with its own plan-movement blast radius; it is
+  NOT the dead-code gate of RFC-218.
+
 - [ ] **CQ-34 (MED) — the sargable gate and the range builder are kept in manual
   lockstep.** `isSargableComparisonForMatch` (`match_max_match_map.go:67`) decides
   what may be consumed into a scan range; `scanComparisonsToTupleRange`
