@@ -31,6 +31,7 @@ go_test(
         "plan_proto_schema_test.go",
         "qualifier_recovery_gate_test.go",
         "race_lane_scope_test.go",
+        "result_type_stub_census_test.go",
         "rowvalue_map_expectation_test.go",
         "slot_order_derivation_test.go",
         "source_hygiene_test.go",
