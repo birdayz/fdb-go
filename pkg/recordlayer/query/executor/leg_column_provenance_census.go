@@ -320,6 +320,10 @@ func recordLegColumnProvenance(rt *values.RecordType, name string, flatHit bool,
 	legColumnProvenanceCounts.Calls++
 	switch class {
 	case legColumnProvenanceIdentityAvailable, legColumnProvenanceIdentityUnstated, legColumnProvenanceIdentityDiverged:
+		// RFC-212 §10.3 deliverable 1: report the answered NAME with the OWNER
+		// correlation, so the attribution census can decide BY IDENTITY whether
+		// this leg type was built by the correlated-scalar seed's inner leg.
+		values.RecordDottedArmAnswer(name, owner)
 		switch classifyLegColumnOwner(rt, matched, owner) {
 		case legColumnOwnerSameLeg:
 			legColumnProvenanceCounts.DottedHitOwnerSelectsSameLeg++

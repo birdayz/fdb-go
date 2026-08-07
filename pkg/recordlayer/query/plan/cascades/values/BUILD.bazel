@@ -11,6 +11,7 @@ go_library(
         "correlation.go",
         "dotted_leg_qualifier_census.go",
         "dotted_row_type_producer_census.go",
+        "dotted_witness_attribution_census.go",
         "field_value_mint_census.go",
         "folder.go",
         "functional_dependency.go",

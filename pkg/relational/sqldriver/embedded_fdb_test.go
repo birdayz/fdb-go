@@ -107,6 +107,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	values.ResetFieldValueMintCensus()
 	values.ResetOrderingBridgeDottedCensus()
 	values.ResetDottedRowTypeProducerCensus()
+	values.ResetDottedWitnessAttribution()
 	values.ResetQualifierRecoveryCensus()
 	cascades.ResetFoldStep1SeedCensus()
 	corequery.ResetUnnestLegMintCensus()
@@ -192,6 +193,13 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// it is a second producer of the row a leg-table population would target.
 	// refineRowTypes declines a populated table against an empty one, so the
 	// producer SET is what decides where that population may be attached.
+	// RFC-212 §10.3 DELIVERABLE 1, gate-before-conversion: which producer named
+	// the leg-type column each dotted-arm answer comes from. Decided BY IDENTITY
+	// (owner correlation), not by name match.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedWitnessAttribution())
+	if failed := values.AssertDottedWitnessAttribution(os.Stderr, 1); failed && code == 0 {
+		code = 1
+	}
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedRowTypeProducerCensus())
 	if failed := values.AssertDottedRowTypeProducerCensus(os.Stderr,
 		&values.DottedRowTypeProducerFloor{Derivations: 100}); failed && code == 0 {

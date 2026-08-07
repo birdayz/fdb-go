@@ -501,6 +501,14 @@ func clusteredOuterOrdinalSeed(pu *clusterPullUp, innerCorr values.CorrelationId
 	innerType := &values.RecordType{Fields: []values.Field{
 		{Name: scalarCol, FieldType: values.WithNullability(values.UnknownType, true), Ordinal: 0},
 	}}
+	// RFC-212 §10.3 deliverable 1: register the (correlation, TITLE) pair so the
+	// executor's dotted-arm answers can be attributed to this producer BY
+	// IDENTITY rather than by a name coincidence. `scalarCol` is the subquery's
+	// output title, and a title that already contains a dot is what reaches the
+	// dotted arm looking like a leg-qualified reference.
+	if values.LegIdentityCensusEnabled() {
+		values.RecordInnerScalarLegTitle(innerCorr, scalarCol)
+	}
 	innerQOV := values.NewQuantifiedObjectValueOfType(innerCorr, innerType)
 	innerFV, err := values.NewFieldValueOfOrdinal(innerQOV, 0)
 	if err != nil {
