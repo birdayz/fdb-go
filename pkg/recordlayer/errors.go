@@ -346,7 +346,7 @@ func (e *FoundSplitOutOfOrderError) Unwrap() error {
 //
 // Java chooses between this and FoundSplitOutOfOrderException by whether any
 // start-or-later segment has already been seen — `lastIndex >= START_SPLIT_RECORD`
-// picks out-of-order, otherwise without-start (SplitHelper.java:824-834). Go
+// picks out-of-order, otherwise without-start (SplitHelper.java:824-835). Go
 // raised one untyped error for both, so a truncated record and a scrambled one
 // were indistinguishable to every caller and to every log.
 //

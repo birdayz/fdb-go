@@ -18,7 +18,7 @@ import (
 // it is.
 //
 // Java raises two distinct exceptions from one decision
-// (SplitHelper.java:824-834): FoundSplitOutOfOrderException when a start segment
+// (SplitHelper.java:824-835): FoundSplitOutOfOrderException when a start segment
 // was already seen and the sequence then breaks, FoundSplitWithoutStartException
 // when the lowest segment present is not the start. They describe different
 // damage — mis-sequenced versus truncated-at-the-front — and a reader diagnosing
@@ -207,7 +207,7 @@ var _ = Describe("split record corruption errors", func() {
 				"a truncated record must NOT report as out-of-order: that says the "+
 					"segments are all present and merely mis-sequenced, which is the "+
 					"opposite of the damage. Java separates these at "+
-					"SplitHelper.java:824-834")
+					"SplitHelper.java:824-835")
 		})
 
 		It("records the scan DIRECTION, which decides how the report reads", func() {

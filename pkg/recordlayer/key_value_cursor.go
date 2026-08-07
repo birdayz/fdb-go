@@ -635,7 +635,7 @@ func (c *keyValueCursor) readSplitRecord(
 
 	// Validate sequential indices. The two ways this can break are DIFFERENT
 	// damage and Java reports them as different exceptions
-	// (SplitHelper.java:824-834, selecting on whether a start-or-later segment
+	// (SplitHelper.java:824-835, selecting on whether a start-or-later segment
 	// has already been seen):
 	//
 	//   i == 0 mismatch — the lowest segment present is not the start, so the

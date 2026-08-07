@@ -13436,6 +13436,39 @@ None is speculative: each was re-verified against the tree before booking.
   comment restated as a deliberate choice rather than a workaround, and the
   affected call sites are enumerated from a re-run count.
 
+- [ ] **CQ-98 (LOW/MED, record-layer metadata — U4): Java rejects an unknown
+  index type at METADATA VALIDATION; Go only refuses it on the WRITE path, so Go
+  opens and reads a store Java would refuse to validate.** Found in #640's review
+  lap, which landed the fail-closed maintainer dispatch that this entry is the
+  remainder of.
+
+  **Java:** `MetaDataValidator.validateIndex` calls
+  `indexRegistry.getIndexValidator(index).validate(this)`
+  (`MetaDataValidator.java:118`); an unregistered type has no validator and the
+  registry raises `MetaDataException`. So the metadata is refused **before any
+  record is read or written** — a store carrying an index type this build does
+  not know is simply not a valid store.
+
+  **Go:** the fail-closed dispatch (#640) refuses the unknown type when a
+  maintainer is actually requested, i.e. on the write path. Reads and store
+  opening succeed.
+
+  **The direction is SAFE and that is why this is not urgent**: Go refuses
+  strictly later than Java, never earlier, so Go cannot write something Java
+  would accept. Nothing is corrupted by the gap. What diverges is **WHEN the two
+  engines agree a store is valid** — Go will happily open, scan and serve reads
+  from a store Java rejects outright at validation. An operator running both
+  engines gets two different answers to "is this metadata valid", which is the
+  same class of disagreement #640 closed for uniqueness, one layer up.
+
+  DONE = metadata validation refuses an index type with no registered maintainer,
+  at open/validate time, matching `MetaDataValidator.java:118`'s ordering; with a
+  test that a store carrying an unknown index type fails to validate rather than
+  failing later at first write. Check while there whether Go has a registry
+  equivalent to hang the validator off, or whether the dispatch's type switch is
+  the de facto registry — if the latter, that is the thing to give a validate
+  entry point rather than inventing a second list that can drift from it.
+
 - [ ] **CQ-69 (L, multi-phase, per-phase gates) — build the RFC-201 layered test
   corpus ladder.** Design: `rfcs/201-layered-test-corpus.md` (merged, #542),
   which this item cites rather than restates. Layer 1 is Java's own acceptance
