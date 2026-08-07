@@ -370,8 +370,8 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// One entry became TWO because the walk that was a slice is now an explicit
 	// scan. The arithmetic got worse and the code got right, and that is recorded
 	// rather than hidden by keeping the comparison fused onto one line.
-	"pkg/relational/core/query/clustered_outer_scalar.go:670": {1, "dotted: clusterFieldResolvable matches a flat projection name against the inner SCALAR key -- the constructed `INNER.SCALARCOL` spelling of the seed's last column. Retires with the dotted seed representation itself: when the seed's columns carry leg identity plus a bare name instead of a joined one, this becomes an identity lookup"},
-	"pkg/relational/core/query/clustered_outer_scalar.go:683": {1, "dotted: clusterSeedSlotByName scans the seed's OWN constructed `LEG.COL` names for a flat projection name. It replaced a first-dot SLICE of the reference, which is the difference between reading the producer's spelling and inventing a qualifier -- but the spelling is still dotted text, so it retires with the seed representation, not before"},
+	"pkg/relational/core/query/clustered_outer_scalar.go:678": {1, "dotted: clusterFieldResolvable matches a flat projection name against the inner SCALAR key -- the constructed `INNER.SCALARCOL` spelling of the seed's last column. Retires with the dotted seed representation itself: when the seed's columns carry leg identity plus a bare name instead of a joined one, this becomes an identity lookup"},
+	"pkg/relational/core/query/clustered_outer_scalar.go:691": {1, "dotted: clusterSeedSlotByName scans the seed's OWN constructed `LEG.COL` names for a flat projection name. It replaced a first-dot SLICE of the reference, which is the difference between reading the producer's spelling and inventing a qualifier -- but the spelling is still dotted text, so it retires with the seed representation, not before"},
 	//
 	// value_correlation.go:57 MIGRATED (RFC-197 item 6). It keyed a correlation
 	// set by the QUALIFIER sliced off a flat 'ALIAS.col' collection name — a

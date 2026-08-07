@@ -15448,10 +15448,13 @@ None is speculative: each was re-verified against the tree before booking.
     and the corollary that the reader takes it was wrong — derivation is not
     readership.
 
-    **The corrected target is a RETITLING**, and it is UNREVIEWED: the inner leg's
+    **The corrected target is a RETITLING** (producer corrected again in RFC-212
+    §11.3 to `scalarSubqueryOrdinalSeed`, the SINGLE-SOURCE outer seed —
+    attribution measured, both witnesses), UNREVIEWED: the inner leg's
     flowed column is named by the subquery's OUTPUT TITLE
-    (`clusteredOuterOrdinalSeed`'s `innerType := &RecordType{Fields:
-    [{Name: scalarCol}]}`), and a title that already contains a dot arrives at the
+    (`scalarSubqueryOrdinalSeed`'s `innerType := &RecordType{Fields:
+    [{Name: scalarCol}]}`; the same shape in `clusteredOuterOrdinalSeed` is NOT
+    what the corpus drives to this reader), and a title that already contains a dot arrives at the
     dotted arm indistinguishable from a leg-qualified reference. Do NOT implement
     before its own Graefe+Torvalds lap — the target changed, so the gate applies
     again.
