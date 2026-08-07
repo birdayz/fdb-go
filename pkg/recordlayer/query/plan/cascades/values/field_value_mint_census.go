@@ -293,10 +293,17 @@ func (c BridgeDottedClass) String() string {
 }
 
 var (
-	bridgeDottedMu        sync.Mutex
-	bridgeDottedAttempts  int
-	bridgeDottedCounts    [bridgeDottedClassCount]int
-	bridgeDottedWitnesses = map[string]int{}
+	bridgeDottedMu       sync.Mutex
+	bridgeDottedAttempts int
+	bridgeDottedCounts   [bridgeDottedClassCount]int
+	// PER-CLASS, for the reason RFC-215 section 6.2 states as a law: a bounded
+	// diagnostic sample shared across classes lets the common case evict the
+	// finding. AnsweredFalse is the common class by this census's own thesis, and
+	// AnsweredTrue -- a dotted comparison that SUCCEEDED -- is the rare, surprising
+	// one. A shared cap would fill with 64 declines before recording a single
+	// success. Same severity as the fieldMintOrigins bug: counts stay true, the
+	// diagnosis is what goes missing.
+	bridgeDottedWitnesses = map[BridgeDottedClass]map[string]int{}
 )
 
 // NoteOrderingBridgeDotted records a bridge attempt in which at least one side
@@ -316,8 +323,11 @@ func NoteOrderingBridgeDotted(leftName, rightName string, answered bool) {
 	defer bridgeDottedMu.Unlock()
 	bridgeDottedAttempts++
 	bridgeDottedCounts[class]++
-	if len(bridgeDottedWitnesses) < fieldMintOriginCap {
-		bridgeDottedWitnesses[leftName+"  <=>  "+rightName]++
+	if bridgeDottedWitnesses[class] == nil {
+		bridgeDottedWitnesses[class] = map[string]int{}
+	}
+	if w := bridgeDottedWitnesses[class]; len(w) < fieldMintOriginCap {
+		w[leftName+"  <=>  "+rightName]++
 	}
 }
 
@@ -325,9 +335,11 @@ func NoteOrderingBridgeDotted(leftName, rightName string, answered bool) {
 func OrderingBridgeDottedCensus() (int, [bridgeDottedClassCount]int, map[string]int) {
 	bridgeDottedMu.Lock()
 	defer bridgeDottedMu.Unlock()
-	ws := make(map[string]int, len(bridgeDottedWitnesses))
-	for k, v := range bridgeDottedWitnesses {
-		ws[k] = v
+	ws := make(map[string]int, 8)
+	for class, m := range bridgeDottedWitnesses {
+		for k, v := range m {
+			ws[class.String()+" :: "+k] = v
+		}
 	}
 	return bridgeDottedAttempts, bridgeDottedCounts, ws
 }
@@ -338,7 +350,7 @@ func ResetOrderingBridgeDottedCensus() {
 	defer bridgeDottedMu.Unlock()
 	bridgeDottedAttempts = 0
 	bridgeDottedCounts = [bridgeDottedClassCount]int{}
-	bridgeDottedWitnesses = map[string]int{}
+	bridgeDottedWitnesses = map[BridgeDottedClass]map[string]int{}
 }
 
 // DumpOrderingBridgeDottedCensus renders it, vacuity guard first.

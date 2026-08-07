@@ -1,6 +1,7 @@
 package values
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -164,6 +165,45 @@ func TestOrderingBridgeDottedCensus_OnlyCountsDottedAttempts(t *testing.T) {
 	if len(ws) != 3 {
 		t.Fatalf("witnesses = %v, want 3 pairs — the pair is what identifies which "+
 			"two spellings failed to meet", ws)
+	}
+}
+
+// TestOrderingBridgeDottedCensus_RareClassSurvivesTheCommonOne pins the per-class
+// witness cap, which RFC-215 section 6.2 states as a law after the same bug was
+// found and fixed in the mint census.
+//
+// ANSWERED-FALSE is the common class by this census's own thesis; ANSWERED-TRUE --
+// a dotted comparison that SUCCEEDED -- is the rare and surprising one, and it is
+// the reason to look at witnesses at all. Under a cap shared across classes, the
+// common class fills the map and the finding is never recorded. Counts stay
+// correct throughout, which is what makes the failure quiet: the numbers look
+// right and the diagnosis is simply absent.
+func TestOrderingBridgeDottedCensus_RareClassSurvivesTheCommonOne(t *testing.T) {
+	mintCensusOn(t)
+	// Flood the COMMON class well past the cap.
+	for i := 0; i < fieldMintOriginCap*3; i++ {
+		NoteOrderingBridgeDotted(fmt.Sprintf("q$%d.A#0", i), "A", false)
+	}
+	// One witness of the RARE class, arriving last — the worst case.
+	NoteOrderingBridgeDotted("T.CITY", "T.CITY", true)
+
+	_, counts, ws := OrderingBridgeDottedCensus()
+	if counts[BridgeDottedAnsweredTrue] != 1 {
+		t.Fatalf("the rare class COUNT was lost: %v", counts)
+	}
+	found := false
+	for k := range ws {
+		if strings.HasPrefix(k, BridgeDottedAnsweredTrue.String()+" :: ") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the rare class produced a COUNT but no WITNESS: %d witnesses, none "+
+			"of class %v.\nA cap shared across classes lets %d common-class pairs "+
+			"evict the one observation the census exists to explain. The counts stay "+
+			"true, so nothing looks wrong — which is exactly how this went unnoticed "+
+			"in the mint census until it was audited.",
+			len(ws), BridgeDottedAnsweredTrue, fieldMintOriginCap*3)
 	}
 }
 

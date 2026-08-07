@@ -45,6 +45,19 @@ instrumentation is now part of the method: **a small consumption population is
 not evidence of a small production population.** The first version of this
 investigation inferred exactly that and was wrong by 3,592x.
 
+It has a dual already in the method, and the pair is worth stating together
+because they are the same mistake at opposite ends of a pipeline:
+
+- **Reachability is not volume.** A panic probe proves a site is reached; it says
+  nothing about how much traffic it takes, and the planner has no `recover()` so
+  it dies at the first hit. Use a counter for anything but "is this reachable".
+- **Consumption is not production.** A consumer-side counter measures what
+  survives to be looked at, not what is made. Use a producer-side counter for
+  anything about volume at the source.
+
+Both are true measurements whose authority does not transfer to the corollary
+someone wants to draw from them.
+
 ### 1.2 `FieldValue.Field` is mutable after construction
 
 Found while building the instrument, and it is a structural constraint rather
@@ -66,11 +79,17 @@ enforce "a `Field` is never a rendering" at any constructor, because a node can
 acquire a name its constructor never saw.
 
 **Decision:** `Field` should become unexported with a read accessor, and the four
-assignment sites should go through an explicit rename method. That is not part of
-this RFC's day one — it is a mechanical change across every `&FieldValue{…}`
-literal (57 non-test sites, §6) and it should follow the conversion rather than
-precede it, so the literals are converted once rather than twice. Booked as
-§8 follow-up F1, with its cost stated rather than left to be discovered.
+assignment sites should go through an explicit rename method. Booked as §8
+follow-up F1, AFTER the conversion.
+
+The sequencing has two justifications and the obvious one is the weaker one.
+Efficiency — converting 57 non-test literals once rather than twice — is real but
+not load-bearing. **The load-bearing reason is SAFETY: the mint census hooks all
+four post-construction mutation sites, so while it stands, a new
+rendering-into-`Field` mint appearing anywhere it can see shows up as a census
+delta.** Doing F1 first would remove the very sites the census watches and leave
+the conversion window unguarded — the window in which a regression is both most
+likely and least visible. The instrument goes away last.
 
 ## 2. Java is the spec, and it settles the design
 
@@ -103,19 +122,36 @@ Three facts, and together they are the whole design:
 3. **The rendering exists only in `toString`** (`:109`) — the exact separation Go
    inverted at `ordering.go:796`.
 
-And Java keys maps by the `Value` directly:
+Precise spans, since these are the citations the design rests on: `equals` is
+`:85-96` with `:94` the comparison line; the ordering-lookup map is declared
+`Map<Value, O>` at `:126` and `:129` is the `put` into it:
 
 ```java
 resultMapBuilder.put(orderingPart.getValue(), orderingPart);   // :129
 ```
 
-so `Map<Value, O>` (`:127`) is the ordering-lookup type. There is no string
-anywhere in the identity path.
+There is no string anywhere in the identity path. `toString()` (`:109`) is the
+ONLY place a `Value` becomes a `String` in `OrderingPart.java`, and neither
+`Ordering.java` nor `RequestedOrdering.java` has a String field at all — Java's
+ordering identity is `Value`-based end to end.
 
-This is consistent with the accessor-level rule already cited in the consumer
-census: `ResolvedAccessor.equals` compares `getOrdinal()` and nothing else
-(`FieldValue.java:684`), `hashCode` is `Objects.hash(getOrdinal())` (`:689`), and
-the name survives only for rendering (`:431`, `:695`).
+### 2.1 Java's name-insensitivity is specific to the RESOLVED form
+
+The accessor-level rule is sharper than "Java ignores names", and the sharper
+version is the one that supports this RFC.
+
+`ResolvedAccessor.equals` (`FieldValue.java:675-685`, comparison at `:684`)
+compares `getOrdinal()` and nothing else; `hashCode` is
+`Objects.hash(getOrdinal())` (`:689`); the name survives only for rendering
+(`:431`, `:695`). **But the UNRESOLVED `Accessor.equals` (`:633`) DOES compare the
+name.**
+
+That is not a complication, it is the principle stated exactly: **before
+resolution the name is all the identity there is; after resolution it is
+decoration.** Go's lazy `FieldValue` is the unresolved form and its name-based
+comparison is legitimate there. The defect at `ordering.go:796` is that a key
+which HAS a resolved `Value` in scope is deliberately downgraded to the
+unresolved form — and to a rendering of it rather than even a name.
 
 **The RFC is therefore a port, not a design.** Go must carry the `Value`.
 
@@ -140,6 +176,16 @@ type SortKey struct {
 Go spelling of Java's `OrderingPart.value`. `HintOrdering` ignores it, renders
 `Field`, and wraps the rendering — so the correct object is in scope at the defect
 site and is being discarded in favour of its own `toString`.
+
+**The two are minted on the same line, from the same source, into the same
+struct.** Both non-test `SortKey` constructions
+(`rule_implement_in_memory_sort.go:135`, `rule_implement_streaming_agg.go:128`)
+set `ValueExpr` unconditionally, and directly above each, `Field` is built as
+`values.ExplainValue(sk.Value)`. The witness in §1 —
+`(q$3728.K#1 + q$3728.K#5)` — is `ExplainValue` applied to the very expression
+sitting in `ValueExpr` beside it. There is no availability question to resolve and
+no migration to stage: the conversion drops a rendering in favour of the object it
+was rendered from.
 
 `Ordering.Keys` is already `[]values.Value`, so the container needs no change.
 This is a one-expression change at the defect site plus whatever the change in
@@ -191,6 +237,41 @@ project requires a Graefe lap and a stress comparison for.
 Fixing it inline would have been the third "small and safe" of this session. The
 first two each cost a full cycle.
 
+### 4.1 What gates the merge, and what does not
+
+**The goldens gate the merge. The stress comparison is a secondary control and
+waits for disk headroom.**
+
+Stated explicitly because the opposite is the natural assumption for a change that
+alters plan selection. The repo's stress-comparison workflow requires a baseline
+worktree and this branch on the SAME filesystem, and records that ext4
+point-lookup latency degrades sharply above ~95% utilisation and reports as a
+planner regression. `/home` has been at 99% throughout this investigation,
+oscillating between 5G and 16G free as concurrent agents build and caches are
+reclaimed. A stress run taken there measures the disk — and it measures it in the
+direction that manufactures a false regression.
+
+The goldens are the better primary control regardless: they are STRUCTURAL rather
+than timed, §5 already requires one per distinct changed shape, and a changed plan
+is exactly what a golden is for. The stress comparison adds a latency check no
+golden gives, so it is not dropped — it is sequenced after headroom exists. Left
+implicit, this invites someone to run it at 99% and read noise as a regression.
+
+### 4.2 A plan-time nil the executor guard cannot catch
+
+`HintOrdering` runs at PLAN TIME, ahead of the executor. `SortKey.ValueExpr` is
+documented REQUIRED and `TestSortCursor_UnbakedKeyIsLoud` pins a loud rejection
+for a nil one — but that guard lives in the CURSOR, so after the conversion a nil
+`ValueExpr` would yield a nil ordering key and a silently degraded ordering claim
+long before the cursor is reached.
+
+Production cannot reach it: both non-test `SortKey` constructions
+(`rule_implement_in_memory_sort.go:135`, `rule_implement_streaming_agg.go:128`)
+set `ValueExpr` unconditionally. So this is ONE ASSERTION at the conversion site,
+not a redesign — a nil `ValueExpr` in `HintOrdering` is a planner bug and must say
+so where it happens, rather than becoming a missing ordering key that costs a sort
+and explains nothing.
+
 ## 5. Deliverable 1 — the gate, before the conversion
 
 **Booked first, gate-before-conversion, following the CQ-95 erratum pattern: an
@@ -215,9 +296,44 @@ The classes partition every comparison, with an independent denominator:
 
 Readings and what each licenses:
 
-- **`DIVERGE-would-now-differ` must be 0.** A non-zero means the conversion
-  *loses* a match that exists today, i.e. the rendering was carrying information
-  the `Value` does not. That refutes the design and this RFC stops.
+- **`DIVERGE-would-now-differ` must be 0** — and a non-zero must be DIAGNOSABLE,
+  not merely counted. This class has two causes with opposite implications:
+
+  1. **The rendering carried information the `Value` does not.** Refutes the
+     design; this RFC stops.
+  2. **Today's match is a name-based conflation** — two different columns whose
+     renderings collide — **and the baked `Value`s correctly refuse it.** That is
+     RFC-197 working exactly as intended, and stopping on it would be stopping on
+     success.
+
+  A bare count cannot separate them, and an undiagnosable kill condition is one
+  that gets argued away the first time it fires: someone proposes cause 2, nobody
+  can refute it, and the gate quietly becomes advisory. That is the precise
+  failure the gate exists to prevent, so it must not be reachable.
+
+  **Every `would-now-differ` therefore records a witness**: both renderings, both
+  `Value`s, and both ordinals with their `OrdinalDomain`s. Cause 2 is then visible
+  directly — two different ordinals under one rendering is a conflation the
+  conversion fixes; the same ordinal under two renderings is cause 1 and stops the
+  work. The witness set is capped PER CLASS (§6.2).
+
+### 5.1 The shadow evaluation must not perturb what it measures
+
+Argued rather than assumed, because §1.2 establishes that `Field` is mutable at
+four sites — so "a second comparison is obviously harmless" is not available.
+
+**Both evaluations must be pure, and that is a constraint on the instrument
+rather than an observation about it.** `ColumnNamePathsEqual`, `AccessorNamePath`
+and `CanBridgeOrderingFieldValues` read `Field`, `Child` and `Resolved` and assign
+to none of them; the four mutation sites of §1.2 all sit in translator/gather
+paths that no comparison calls. The shadow arm may call only those three, and must
+not route through any rebase, bake or pull-up walk — every one of which can
+rename.
+
+This is checkable rather than asserted: the mint census already counts every
+`Field` write it can see, so **the shadow census's own acceptance criterion is
+that enabling it moves no mint-census class.** If it does, the shadow arm is
+mutating the tree it is measuring, and it is withdrawn rather than explained.
 - **`DIVERGE-would-now-match` = 0** would mean the conversion is inert on this
   corpus: no plan changes, and the change is a pure hygiene fix that can land with
   goldens unchanged.
