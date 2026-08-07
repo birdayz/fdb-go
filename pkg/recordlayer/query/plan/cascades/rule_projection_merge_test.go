@@ -122,8 +122,12 @@ func TestProjectionMergeRule_LazyOuterReadDeclines(t *testing.T) {
 //
 // It asserts a DELTA rather than an absolute, and does not Reset: the counters
 // are package-scoped and sibling tests in this binary fire the same rule in
-// parallel. Concurrent firings can only ADD, so a delta assertion is exact under
-// them; an absolute one would not be.
+// parallel. Concurrent firings can only ADD, so a strictly-increased assertion is
+// SAFE under them where an absolute one would not be. Safe is not exact — if this
+// test's own read recorded nothing and a sibling recorded one, `after > before`
+// still passes. What it does catch deterministically is the mutation that
+// matters: a counter that cannot rise at all, or one wired behind the guard it is
+// meant to observe, never moves for anybody.
 func TestProjectionMergeCensus_CountsTheLazyArmItGuards(t *testing.T) {
 	t.Parallel()
 

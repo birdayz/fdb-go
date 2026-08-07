@@ -108,6 +108,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	cascades.ResetFoldStep1SeedCensus()
 	corequery.ResetUnnestLegMintCensus()
 	cascades.ResetOrientationGateCensus()
+	cascades.ResetProjectionMergeCensus()
 	values.SetLegIdentityCensusEnabled(true)
 	code := m.Run()
 	values.SetLegIdentityCensusEnabled(false)
@@ -238,6 +239,10 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 		code = 1
 	}
 	if failed := assertSelectResultMintCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatProjectionMergeCensus())
+	if failed := assertProjectionMergeCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
 	return code

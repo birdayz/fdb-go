@@ -35,7 +35,7 @@ package cascades
 // a leaf-name collision CAN change an answer somebody looks at.
 //
 // If you need one of these in production, that is legitimate and the process is:
-// move it, then correct the referenced_fields.go:125 debt entry, which currently
+// move it, then correct the referenced_fields.go:100 debt entry, which currently
 // says in as many words that the conflation is plan-direction only.
 
 // Contains reports whether the given field name is referenced.

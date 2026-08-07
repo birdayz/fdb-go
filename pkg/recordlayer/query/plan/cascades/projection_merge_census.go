@@ -1,6 +1,10 @@
 package cascades
 
-import "sync/atomic"
+import (
+	"fmt"
+	"io"
+	"sync/atomic"
+)
 
 // This file is the MEASUREMENT half of ProjectionMergeRule's slot composition,
 // and it exists because the entry it retired was WRONG on a probe.
@@ -57,9 +61,18 @@ type ProjectionMergeCensus struct {
 	// all firings — including the ones that made it decline.
 	SlotCompositions int64
 
-	// BakedSingleAccessor is the slots composed by ORDINAL: the outer read
+	// BakedSingleAccessor is the slots that TOOK the ordinal arm: the outer read
 	// carried a resolved single-accessor path, so it named the inner's output
 	// slot structurally. This is the arm that carries all real traffic.
+	//
+	// "Took the arm", not "was composed" — the increment precedes the
+	// ordinal-range check, so a baked read whose ordinal falls outside the
+	// inner's slot list is counted here and then declines. That placement is
+	// deliberate: counting after the range check would leave such a slot in no
+	// arm at all, and the arms-sum cross-check below is worth more than the
+	// finer distinction. The population it names is "reads that arrived with an
+	// ordinal", which is exactly the population the LazyOuterReads zero is the
+	// complement of.
 	BakedSingleAccessor int64
 
 	// LazyOuterReads is the slots where the outer read was a childless FieldValue
@@ -109,6 +122,76 @@ func ProjectionMergeCensusSnapshot() ProjectionMergeCensus {
 		LazyOuterReads:        atomic.LoadInt64(&c.LazyOuterReads),
 		DeclinedNotComposable: atomic.LoadInt64(&c.DeclinedNotComposable),
 	}
+}
+
+// ProjectionMergeFloors is the population floor for one corpus.
+//
+// ORDER-OF-MAGNITUDE below the measurement, like every other per-site floor on
+// this path: it exists to catch the rule going dark, not to re-bless a count
+// that moves whenever a test file is added. The load-bearing assertion is the
+// LazyOuterReads ZERO, which is not configurable and is checked unconditionally.
+type ProjectionMergeFloors struct {
+	RuleFirings         int64
+	BakedSingleAccessor int64
+}
+
+// FormatProjectionMergeCensus renders the counts for a corpus report.
+func FormatProjectionMergeCensus() string {
+	c := ProjectionMergeCensusSnapshot()
+	return fmt.Sprintf("projection-merge census: firings=%d slots=%d baked=%d lazy=%d notComposable=%d",
+		c.RuleFirings, c.SlotCompositions, c.BakedSingleAccessor,
+		c.LazyOuterReads, c.DeclinedNotComposable)
+}
+
+// AssertProjectionMergeCensus checks the claim the name-arm deletion rests on.
+// It reports whether anything failed.
+//
+// The ZERO is the claim; the floors and the partition check are what keep the
+// zero from being vacuous. Both are needed, and in this order: a zero over a
+// population nothing reached, and a zero produced by a counter that stopped
+// being wired, are indistinguishable in a printed report.
+func AssertProjectionMergeCensus(w io.Writer, floors *ProjectionMergeFloors) bool {
+	c := ProjectionMergeCensusSnapshot()
+	failed := false
+
+	if floors != nil {
+		if c.RuleFirings < floors.RuleFirings {
+			fmt.Fprintf(w, "projection-merge census: RuleFirings=%d below floor %d.\n"+
+				"The rule has gone dark over this corpus, so the LazyOuterReads zero "+
+				"below it is vacuous.\n", c.RuleFirings, floors.RuleFirings)
+			failed = true
+		}
+		if c.BakedSingleAccessor < floors.BakedSingleAccessor {
+			fmt.Fprintf(w, "projection-merge census: BakedSingleAccessor=%d below floor %d.\n"+
+				"The ordinal arm is the only composing arm left; a corpus that stops "+
+				"taking it cannot testify about whether the removed NAME arm was needed, "+
+				"because it never merged a projection at all.\n",
+				c.BakedSingleAccessor, floors.BakedSingleAccessor)
+			failed = true
+		}
+	}
+
+	if c.LazyOuterReads != 0 {
+		fmt.Fprintf(w, "projection-merge census: %d LAZY outer read(s), want 0.\n"+
+			"A lazy outer read is a childless FieldValue with no resolved path — a "+
+			"display name and nothing else. The resolver bakes a projection-output "+
+			"reference to its output ordinal before it reaches ProjectionMergeRule, "+
+			"and this count going nonzero means it stopped. Nothing is silently "+
+			"wrong: the rule DECLINES such a read, so the cost is a lost merge (an "+
+			"extra Projection operator), never a wrong column. The fix belongs at "+
+			"the resolver — restoring a name-matching arm at the rule is the RFC-197 "+
+			"defect, not its repair.\n", c.LazyOuterReads)
+		failed = true
+	}
+
+	if sum := c.BakedSingleAccessor + c.LazyOuterReads + c.DeclinedNotComposable; sum != c.SlotCompositions {
+		fmt.Fprintf(w, "projection-merge census: arms sum to %d but %d slots were examined.\n"+
+			"An unclassified slot is a hole in the instrument: the lazy-read zero is "+
+			"only meaningful if every slot lands in exactly one arm.\n",
+			sum, c.SlotCompositions)
+		failed = true
+	}
+	return failed
 }
 
 // The recorders are unconditional — no enable gate. Each is one relaxed atomic

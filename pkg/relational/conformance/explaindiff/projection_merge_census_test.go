@@ -12,11 +12,19 @@ import (
 // is gone (RFC-197, name-keyed): a name cannot select a slot, because two inner
 // slots may share one output name and one slot may be addressed by two names.
 //
-// Removing it rather than converting it rests on a claim about the whole corpus —
-// every outer read arriving at this rule carries its output ordinal, so the arm
-// served nobody. That claim is counted here rather than argued, and it is counted
-// here rather than beside the rule because this harness imports the planner, so a
-// test inside the planner package could not import the harness back.
+// Removing it rather than converting it rests on a claim about the whole
+// relational surface — every outer read arriving at this rule carries its output
+// ordinal, so the arm served nobody. That claim is counted rather than argued,
+// and counted here rather than beside the rule because this harness imports the
+// planner, so a test inside the planner package could not import the harness
+// back.
+//
+// THIS FILE IS ONE HALF OF THE GUARD, and says so because a reader who takes it
+// for the whole would over-trust it. It covers the explaindiff corpus, which is a
+// minority of the population the deletion was measured over; the sqldriver
+// real-FDB corpus is covered by the twin assertion in that package's TestMain
+// (projection_merge_census_gate_test.go). A resolver-baking regression reachable
+// only from sqldriver shapes reds there, not here.
 //
 // It is counted rather than PANICKED for the reason the census header records at
 // length: the debt entry this deletion retired said the arm was "HEAVILY LIVE"
