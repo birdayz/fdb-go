@@ -62,7 +62,7 @@ func TestRebaseUnnestOuterLegPredicate_MintIsIntentional(t *testing.T) {
 	pred := predicates.NewComparisonPredicate(elemRead,
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: legRead})
 
-	out := rebaseUnnestOuterLegPredicate(pred, outerLegs, mergedCorr)
+	out := rebaseUnnestOuterLegPredicate(pred, outerLegs, mergedCorr, UnnestLegMintSiteAnchoredNonExists)
 
 	cmp, ok := out.(*predicates.ComparisonPredicate)
 	if !ok {
@@ -101,7 +101,7 @@ func TestRebaseUnnestOuterLegPredicate_MintIsIntentional(t *testing.T) {
 		values.NewQuantifiedObjectValueOfType(otherAlias, legRowType), "ID", values.UnknownType)
 	otherPred := predicates.NewComparisonPredicate(elemRead,
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: otherRead})
-	otherOut := rebaseUnnestOuterLegPredicate(otherPred, outerLegs, mergedCorr)
+	otherOut := rebaseUnnestOuterLegPredicate(otherPred, outerLegs, mergedCorr, UnnestLegMintSiteAnchoredNonExists)
 	otherOperand := otherOut.(*predicates.ComparisonPredicate).Comparison.Operand.(*values.FieldValue)
 	if otherOperand.Field != "ID" {
 		t.Fatalf("a non-outer-leg correlation must be left alone, got Field=%q — "+

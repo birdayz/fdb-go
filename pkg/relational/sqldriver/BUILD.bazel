@@ -584,6 +584,7 @@ go_test(
         "//pkg/relational/core/fleet",
         "//pkg/relational/core/keyspace",
         "//pkg/relational/core/metadata",
+        "//pkg/relational/core/query",
         "//pkg/simfdb",
         "//pkg/testcontainers/foundationdb",
         "@com_github_onsi_gomega//:gomega",

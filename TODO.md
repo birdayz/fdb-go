@@ -15214,16 +15214,60 @@ None is speculative: each was re-verified against the tree before booking.
     silence most likely means semantic analysis rejects the shape earlier, which
     makes it dead code rather than an unnecessary check.
 
-- [ ] **CQ-95 (L, gated — the name-model seed converts to the windowed/ordinal
-  seed).** The successor CQ-79 stops at. CQ-79's finding is that
-  `rebaseUnnestOuterLegPredicate` cannot re-anchor by ordinal as a local edit: it
-  takes no layout parameter, its ordinal twin takes two because it needs them, and
-  every surviving call site reaches it over a merged row BUILT with qualified
-  `LEG.COL` keys at `:475`. The mint converts when the SEED does, and that is this
-  item.
+- [ ] **CQ-95 — RE-SCOPED AND SPLIT BY MEASUREMENT (RFC-212). It is no longer
+  "the name-model seed converts to the windowed/ordinal seed"; on this corpus
+  that seed has ALREADY converted, and the item's real content is two other
+  things.** The old framing is kept below only where it is refuted, so the
+  refutations are readable against what they refute.
 
-  **ENTRY CONDITIONS** (this is not startable before them, which is why it is
-  booked rather than attempted):
+  RFC-212 (`rfcs/212-the-name-model-seed-is-not-what-feeds-the-dotted-readers.md`)
+  instrumented the mint per call site and per branch ARM. The reading that
+  re-scopes this item, whole real-FDB sqldriver corpus, uncached:
+
+  - the three sites a lifted seed gate would convert are **reached** — buried 10,
+    joinPredicate 165, chained 33 — and the **name arm is 0 on all three**. They
+    take the ordinal twin, the plan-time bake, or the leg-relative fall-through.
+    So the conversion this item books is not blocked; on this corpus it has
+    already happened on the other side of each branch.
+  - the two sites that DO reach the name mint apply no seed test at all (23 + 5
+    calls) and mint **zero** qualified names.
+  - the executor dotted reader's two live hits (`C.CV`, `I.QTY`) are minted by
+    `clustered_outer_scalar.go`'s correlated-scalar seed, NOT by this mint —
+    pinned by a disjointness assertion in the new census.
+
+  **A PRIOR REVISION OF THIS ENTRY ASSERTED THE OPPOSITE OF THE FIRST BULLET**
+  ("the three sites are DARK"), on a reading taken with the census counter placed
+  BELOW the function's inert guard, where every site reads 0. That ordering bug is
+  now AST-pinned (`docscheck.TestCensusReachedCallPrecedesEveryReturn`); the two
+  readings support opposite follow-ups and nothing could tell them apart.
+
+  **WHAT IS NOW BOOKED HERE**, in priority order:
+  1. **Retire `RecordTypeLeg.Name`'s EXECUTOR reader** (`rowSlotForLegColumn`'s
+     dotted arm) by having the correlated-scalar seed's derived type carry its
+     leg table. Buildable on master; does NOT need the executor widening. The
+     preconditions are measured, not assumed — see the acceptance block below.
+  2. **Retire `RecordTypeLeg.Name`'s TRANSLATOR reader** (`legWindowSlot`) in two
+     parts: the ALIAS route (carry the resolver's already-selected
+     `ScopeSource.CorrelationName` on `logical.ColumnRef`; 98+3 of 106 calls) and
+     the TABLE-NAME route (a scope capability Go must define; 1 call). RFC-212 §4.
+  3. **The seed conversion / `rebaseUnnestOuterLegPredicate` deletion is
+     DEMOTED**, not scheduled. It has no measured subject. It also carries NO
+     deletion warrant: the three branch points are reached, so "unreached name
+     arm over one corpus" is not a licence to delete the function.
+
+  **ENTRY CONDITIONS — RESTATED. The old ones are refuted or unsatisfiable:**
+  - ~~`unnestExistsSeedSafe`'s scope gate lifts~~ — item 1 above does not depend
+    on it, and for item 3 the gate is not what is holding anything: the arms it
+    would flip already run ordinal.
+  - ~~"they SEQUENCE together, CQ-68 first"~~ — **UNSATISFIABLE AS WRITTEN and
+    removed.** A gate on another item's *completion* can never be discharged if
+    that item does not complete by being done. Items 1 and 2 are ungated. Item 3
+    stays coupled to the executor widening, but as a COUPLING to be re-derived
+    when that widening lands, not as a precondition on starting this item.
+  - Query-engine review gate: RFC + Graefe ACK before implementation. **STANDS.**
+
+  The original entry conditions, preserved because two of them are what the
+  measurement refuted:
   - `unnestExistsSeedSafe`'s scope gate (`cascades_translator.go:1317`) lifts. That
     gate is coupled to the executor's below-FOD hoist — `:3841-3843` states the
     multi-alias branch is "WIRED but scope-gated OFF end-to-end … it goes live only
@@ -15322,14 +15366,26 @@ None is speculative: each was re-verified against the tree before booking.
     is a description of dead code. If the conversion is right, this partition
     stops being vacuous — that is the acceptance signal, and it is the one the
     census's own vacuity assertion will announce.
+  - **REFUTED BY RFC-212 — `MergedReAnchor` vacuity is not this item's acceptance
+    signal.** It was booked as "if the conversion is right, this partition stops
+    being vacuous". The conversion has no measured subject (the name arm is 0 on
+    every reached branch because the ordinal side already runs), so the partition
+    would stay vacuous through a correct outcome. Kept as a standing instrument,
+    dropped as an acceptance condition.
   - **Executor dotted hits = 2** (`C.CV`, `I.QTY`; unstated 0, diverged 0, stable
     across five full-suite runs while the census's own call total swung 2394–2674
     — presence holds, multiplicity moves). That is reader one's entire remaining
     reach. An
     acceptance condition of "dotted hits → 0" is NOT reachable from the translator
-    side — CQ-79 measured that — but it IS the acceptance condition here, because
-    this item converts the producer those 2 hits come from. Two, not the four an
+    side — CQ-79 measured that — but it IS the acceptance condition here, ~~because
+    this item converts the producer those 2 hits come from~~. Two, not the four an
     earlier revision of that floor block claimed.
+    **REFUTED BY RFC-212 on the struck clause only: this item does NOT convert
+    that producer.** The 2 hits are minted by `clustered_outer_scalar.go`'s
+    correlated-scalar seed leg labels, not by `rebaseUnnestOuterLegPredicate`,
+    which mints zero names over the whole corpus. "Dotted hits → 0" remains the
+    acceptance condition — it just belongs to item 1 above, which is a different
+    and ungated piece of work.
   - **Name-split population 11, SPLIT-QUALIFIED 0** at the two leg bakers. Reader
     two (`legWindowSlot`) is blocked at the COMPARISON, not at the channel: the
     counterparty conversion has already happened for every parsed channel, and one
@@ -15337,8 +15393,41 @@ None is speculative: each was re-verified against the tree before booking.
     (`matchViaTableName`, measured 1), so the map cannot be re-keyed by identity
     even in principle. This item does not unblock reader two, and must not claim to.
 
-  DONE = the seeds those five call sites sit over are ORDINAL, the name-keyed
+  ~~DONE = the seeds those five call sites sit over are ORDINAL, the name-keyed
   `rebaseUnnestOuterLegPredicate` is DELETED (not wrapped), the debt entry at
   `cascades_translator.go:3667` / test line `:454` is deleted and the ratchet drops,
   `MergedReAnchor` stops being vacuous, and the leg-column provenance dotted-hit
-  count goes to 0 with its census retiring alongside the arm it measured.
+  count goes to 0 with its census retiring alongside the arm it measured.~~
+
+  **DONE — RESTATED (RFC-212).** The struck list above is kept because three of
+  its five clauses are refuted rather than merely superseded: the seeds ARE
+  already ordinal on every reached branch, the dotted-hit clause belongs to a
+  different producer, and a deletion clause cannot be discharged by a census that
+  measures one corpus.
+
+  - **Item 1 DONE** = the correlated-scalar seed's leg table is carried on the
+    RecordConstructorValue and PROPAGATED by `RecordConstructorValue.Type()`
+    (never inferred there from field names); the leg-column provenance census
+    reports `dotted HITS by identity availability: available 0` with `Calls`
+    above its floor; AND the single-producer precondition is RE-CHECKED at the
+    implementation head rather than assumed — `values.FormatDottedRowTypeProducerCensus`
+    still reports the seed's row shapes (`[K C.CV]`, `[ID NAME O.I.QTY]`) from
+    that one derivation path and no other path derives them.
+    The check is named because the penalty is not evidence: `refineRowTypes`
+    DECLINING a populated-vs-empty pair
+    (`expressions.TestLegTablePopulation_PopulatedAgainstEmptyIsAConflict`) is
+    what happens when the precondition is VIOLATED, not a demonstration that it
+    holds. An earlier revision of this clause cited the decline as the proof,
+    which would have let the box be ticked without checking anything.
+    "`Equals`/`Hash` ignore `Legs`" establishes type IDENTITY only and is NOT a
+    blast-radius argument.
+  - **Item 2 DONE** = `AssertDottedLegQualifierCensus` reports `flatColumnBake`
+    and `legQOVBake` at zero matched calls, in two steps whose populations are
+    stated separately (98+3 alias route, 1 table-name route).
+  - **Item 3 DONE** = not defined here. It gets a fresh acceptance statement when
+    the executor widening lands and the arm readings are re-taken; the old one
+    rested on numbers this round refuted.
+  - `RecordTypeLeg.Name` goes when items 1 and 2 are both done. The debt entry at
+    `cascades_translator.go:3711` (was `:3667`; the line moved with the census
+    site parameter) does NOT drop with item 1 — it is the mint's entry, and the
+    mint survives item 1 untouched.

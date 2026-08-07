@@ -28,6 +28,7 @@ go_test(
         "integration_test.go",
         "parse_bridge_test.go",
         "qualified_name_test.go",
+        "resolver_at_mint_capability_test.go",
         "scope_build_test.go",
         "scope_nested_test.go",
         "scope_test.go",

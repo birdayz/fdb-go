@@ -4519,6 +4519,14 @@ func (r *RecordConstructorValue) Type() Type {
 			Ordinal:   i,
 		}
 	}
+	// Measured here rather than reasoned about at the call sites: this is the
+	// GENERIC derivation path, and whether it ever derives a DOTTED `LEG.COL`
+	// row decides whether it is a second producer of the row a leg-table
+	// population would target. refineRowTypes declines a populated table against
+	// an empty one, so a second unpopulated producer is a plan-level conflict.
+	if LegIdentityCensusEnabled() {
+		RecordDottedRowTypeDerivation(fields)
+	}
 	// A named struct literal carries its declared name into the result type,
 	// exactly as Java's ofColumnsAndName resolves the type through
 	// Type.Record.withName (RecordConstructorValue.java:485-487).
