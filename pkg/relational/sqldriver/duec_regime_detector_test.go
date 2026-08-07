@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -513,5 +514,60 @@ func TestDuecRegimeVerdict_WithholdsOnTheDriverPreemption(t *testing.T) {
 		if !strings.Contains(why, want) {
 			t.Fatalf("the withholding reason does not mention %q: %s", want, why)
 		}
+	}
+}
+
+// duecAssertWallClock reports whether this invocation opted into ASSERTING the
+// wall-clock criteria. See duecWallClockEnv for why the default is off.
+//
+// Deliberately strict about what counts as opting in: only "1" or "true".
+// Accepting any non-empty value would let a stray `DUEC_ASSERT_WALLCLOCK=0`
+// turn the arms back on, which is the opposite of what the operator wrote.
+func duecAssertWallClock() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(duecWallClockEnv))) {
+	case "1", "true":
+		return true
+	default:
+		return false
+	}
+}
+
+// TestDuecWallClockOptIn pins the gate in BOTH directions, because a default-off
+// gate that is stuck off is indistinguishable from a deleted assertion, and one
+// stuck on defeats the change.
+//
+// The values are not decorative. "0" and "false" must NOT arm — an operator who
+// writes DUEC_ASSERT_WALLCLOCK=0 is asking for the arms to stay off, and an
+// any-non-empty check would silently do the reverse.
+func TestDuecWallClockOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		set  bool
+		val  string
+		want bool
+	}{
+		{set: false, want: false},
+		{set: true, val: "", want: false},
+		{set: true, val: "1", want: true},
+		{set: true, val: "true", want: true},
+		{set: true, val: "TRUE", want: true},
+		{set: true, val: " 1 ", want: true},
+		{set: true, val: "0", want: false},
+		{set: true, val: "false", want: false},
+		{set: true, val: "yes", want: false},
+	} {
+		name := "unset"
+		if tc.set {
+			name = fmt.Sprintf("%q", tc.val)
+			t.Setenv(duecWallClockEnv, tc.val)
+		}
+		t.Run(name, func(t *testing.T) {
+			if got := duecAssertWallClock(); got != tc.want {
+				t.Fatalf("duecAssertWallClock() = %t, want %t for %s.\n"+
+					"  Default-off is the whole change: unset must NOT arm, or every CI lane "+
+					"goes back to asserting a quiet-machine instrument. And an explicit 0/false "+
+					"must not arm either — an any-non-empty check would turn an operator's "+
+					"opt-OUT into an opt-in.", got, tc.want, name)
+			}
+		})
 	}
 }
