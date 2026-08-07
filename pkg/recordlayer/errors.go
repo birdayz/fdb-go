@@ -92,6 +92,43 @@ func (e *MetaDataError) Error() string {
 	return e.Message
 }
 
+// UnknownIndexTypeError is raised when no index maintainer implements an index's
+// type. It is the port of Java's registry miss:
+// IndexMaintainerFactoryRegistryImpl.getIndexMaintainerFactory looks the type up
+// and throws MetaDataException("Unknown index type for " + index) when the lookup
+// returns null (IndexMaintainerFactoryRegistryImpl.java:78-82).
+//
+// It FAILS CLOSED, and the reason is a wire-format one rather than a tidiness
+// one. Go used to answer an unrecognised type with the STANDARD maintainer — the
+// VALUE-index one. An index whose type this build does not implement was
+// therefore not rejected: it was silently maintained as a value index, writing
+// value-index key bytes into that index's own subspace. Nothing surfaces at write
+// time, because a value index is perfectly happy to serve those writes. The
+// damage appears when a build that DOES implement the type reads that subspace
+// and finds another format's entries, or when Java reads it and finds entries its
+// maintainer never wrote. An index this process cannot maintain must stop the
+// write, not receive a guess.
+//
+// Unwraps to *MetaDataError so `errors.As` for the general metadata failure
+// matches — the Go equivalent of Java's `catch (MetaDataException)`, which is
+// what callers of the registry actually catch — while a caller that wants the
+// index identity can match this type directly.
+type UnknownIndexTypeError struct {
+	IndexName string
+	IndexType string
+}
+
+func (e *UnknownIndexTypeError) Error() string {
+	return fmt.Sprintf("Unknown index type %q for index %q", e.IndexType, e.IndexName)
+}
+
+// Unwrap reports this as a metadata failure. Java's exception IS a
+// MetaDataException; in Go the identity fields need their own struct, so the
+// relationship Java gets from inheritance is spelled out here.
+func (e *UnknownIndexTypeError) Unwrap() error {
+	return &MetaDataError{Message: e.Error()}
+}
+
 // IndexVersionKind names which of an index's two version stamps a
 // IndexVersionTooNewError refers to.
 type IndexVersionKind string
@@ -264,6 +301,68 @@ type RecordCoreStorageError struct {
 func (e *RecordCoreStorageError) Error() string {
 	return fmt.Sprintf("%s (index_name=%s, primary_key=%v, index_key=%v)",
 		e.Message, e.IndexName, e.PrimaryKey, e.IndexKey)
+}
+
+// FoundSplitOutOfOrderError is raised when a split record's segments are present
+// but not in sequence — segment N+1 was expected and something else was found.
+//
+// Ports Java's SplitHelper.FoundSplitOutOfOrderException
+// (SplitHelper.java:1225-1231), which extends RecordCoreStorageException and
+// carries LogMessageKeys.SPLIT_EXPECTED / SPLIT_FOUND. Java additionally attaches
+// KEY_TUPLE and SUBSPACE at the throw site (SplitHelper.java:826-828); KeyTuple
+// carries the first of those, and the subspace is implicit in it here.
+//
+// It is a distinct type from FoundSplitWithoutStartError on purpose, because the
+// two describe different damage: this one says the record's pieces are all
+// there but mis-sequenced, which points at a writer that interleaved or a range
+// that spans two records. A caller that wants to tell "corrupt but complete"
+// from "truncated" cannot do it from a formatted string.
+type FoundSplitOutOfOrderError struct {
+	Expected int64       // LogMessageKeys.SPLIT_EXPECTED
+	Found    int64       // LogMessageKeys.SPLIT_FOUND
+	KeyTuple tuple.Tuple // LogMessageKeys.KEY_TUPLE — the key whose suffix broke the sequence
+}
+
+func (e *FoundSplitOutOfOrderError) Error() string {
+	return fmt.Sprintf("Split record segments out of order (split_expected=%d, split_found=%d, key_tuple=%v)",
+		e.Expected, e.Found, e.KeyTuple)
+}
+
+// Unwrap reports this as storage corruption. Java's exception IS a
+// RecordCoreStorageException; Go spells that relationship out so a caller
+// matching the general storage-corruption type keeps working, the way
+// `catch (RecordCoreStorageException)` does.
+func (e *FoundSplitOutOfOrderError) Unwrap() error {
+	return &RecordCoreStorageError{Message: "Split record segments out of order"}
+}
+
+// FoundSplitWithoutStartError is raised when a split record's continuation
+// segments are found with no start segment — the record is truncated at the
+// front, not merely mis-ordered.
+//
+// Ports Java's SplitHelper.FoundSplitWithoutStartException
+// (SplitHelper.java:1213-1219), carrying LogMessageKeys.SPLIT_NEXT_INDEX and
+// SPLIT_REVERSE, plus KEY_TUPLE from the throw sites.
+//
+// Java chooses between this and FoundSplitOutOfOrderException by whether any
+// start-or-later segment has already been seen — `lastIndex >= START_SPLIT_RECORD`
+// picks out-of-order, otherwise without-start (SplitHelper.java:824-834). Go
+// raised one untyped error for both, so a truncated record and a scrambled one
+// were indistinguishable to every caller and to every log.
+//
+// Reverse matters for reading the report: under a reverse scan the segments
+// arrive highest-first, so "no start yet" is the expected intermediate state
+// rather than evidence of damage, and Java records which direction produced the
+// judgement.
+type FoundSplitWithoutStartError struct {
+	NextIndex int64       // LogMessageKeys.SPLIT_NEXT_INDEX — the segment found instead of the start
+	Reverse   bool        // LogMessageKeys.SPLIT_REVERSE — direction of the scan that found it
+	KeyTuple  tuple.Tuple // LogMessageKeys.KEY_TUPLE
+}
+
+func (e *FoundSplitWithoutStartError) Error() string {
+	return fmt.Sprintf("Found split record without start (next_index=%d, reverse=%t, key_tuple=%v)",
+		e.NextIndex, e.Reverse, e.KeyTuple)
 }
 
 // PartlyBuiltError is returned when an OnlineIndexer encounters an index that was

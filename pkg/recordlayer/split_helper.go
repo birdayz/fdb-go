@@ -264,7 +264,16 @@ func loadWithSplit(
 		}
 
 		if suffix != expectedIndex {
-			return nil, fmt.Errorf("split record segments out of order: expected %d, got %d", expectedIndex, suffix)
+			// Always OUT-OF-ORDER here, never without-start. Java picks between
+			// the two on `lastIndex >= START_SPLIT_RECORD`
+			// (SplitHelper.java:824-834), and this loop only runs after the start
+			// segment has already been read (expectedIndex begins at
+			// startSplitRecord+1), so the start is known present.
+			return nil, &FoundSplitOutOfOrderError{
+				Expected: expectedIndex,
+				Found:    suffix,
+				KeyTuple: keyTuple,
+			}
 		}
 
 		result = append(result, kv.Value...)

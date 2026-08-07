@@ -1614,7 +1614,7 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 // because re-applying the same operation produces the same result.
 // Matches Java's IndexMaintainer.isIdempotent().
 func isIndexIdempotent(index *Index) bool {
-	switch index.Type {
+	switch canonicalIndexType(index.Type) {
 	case IndexTypeValue,
 		IndexTypeMinEverLong, IndexTypeMaxEverLong,
 		IndexTypeMinEverTuple, IndexTypeMaxEverTuple,

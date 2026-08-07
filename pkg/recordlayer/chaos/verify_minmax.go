@@ -13,7 +13,7 @@ func verifyMinMaxEverIndexes(ctx context.Context, store *recordlayer.FDBRecordSt
 	md := model.metadata
 
 	for _, idx := range md.GetAllIndexes() {
-		switch idx.Type {
+		switch idx.CanonicalType() {
 		case recordlayer.IndexTypeMaxEverLong:
 			violations = append(violations, verifyMaxEverIndex(ctx, store, model, idx)...)
 		case recordlayer.IndexTypeMinEverLong:

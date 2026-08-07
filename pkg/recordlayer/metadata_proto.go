@@ -461,12 +461,141 @@ func indexToProto(idx *Index) (*gen.Index, error) {
 	return p, nil
 }
 
+// legacyIndexTypeToType ports Java's Index.indexTypeToType (Index.java:269-279):
+// the deprecated `index_type` enum names only two behaviours, RANK and VALUE.
+//
+//	case RANK: case RANK_UNIQUE:      return IndexTypes.RANK;
+//	case INDEX: case UNIQUE: default: return IndexTypes.VALUE;
+//
+// The `default` arm is Java's and is kept: this enum is frozen deprecated
+// metadata, so an unrecognised member can only come from a future writer, and
+// Java reads it as VALUE. Failing closed HERE would be a divergence, not a
+// safety improvement — the fail-closed judgement belongs to the maintainer
+// dispatch, which sees the resulting type string.
+func legacyIndexTypeToType(t gen.Index_Type) string {
+	switch t {
+	case gen.Index_RANK, gen.Index_RANK_UNIQUE:
+		return IndexTypeRank
+	default:
+		return IndexTypeValue
+	}
+}
+
+// legacyIndexTypeIsUnique ports Java's Index.indexTypeToOptions
+// (Index.java:281-291): UNIQUE and RANK_UNIQUE carry IndexOptions.UNIQUE_OPTIONS,
+// everything else carries EMPTY_OPTIONS. The uniqueness of a legacy index lives
+// in the enum and NOWHERE else, so a reader that ignores it turns a unique index
+// into an ordinary one and silently permits the duplicates Java rejects.
+func legacyIndexTypeIsUnique(t gen.Index_Type) bool {
+	switch t {
+	case gen.Index_UNIQUE, gen.Index_RANK_UNIQUE:
+		return true
+	default:
+		return false
+	}
+}
+
+// groupingFixupForOldMetaData applies Java's compatibility wrap for aggregate
+// index types whose serialized root expression is not a GroupingKeyExpression:
+//
+//	if (!(expr instanceof GroupingKeyExpression) &&
+//	        (type.equals(RANK) || type.equals(COUNT) || type.equals(MAX_EVER) ||
+//	         type.equals(MIN_EVER) || type.equals(SUM))) {
+//	    expr = new GroupingKeyExpression(expr,
+//	            type.equals(COUNT) ? expr.getColumnSize() : 1);
+//	}
+//
+// (Index.java:205-215, under the same "Compatibility with old serialized
+// meta-data" heading as the VALUE default two lines above it.)
+//
+// It belongs on the PROTO path and nowhere else, exactly as in Java: the
+// programmatic constructors do not wrap, so an index built in code with a
+// non-grouping root is still rejected by the validator. This is only for reading
+// metadata somebody else already wrote.
+//
+// The type list is Java's, verbatim, and it is deliberately the BARE _EVER
+// spellings rather than the canonical ones. Java compares the raw type string
+// here, so `min_ever_long` with a non-grouping root is NOT wrapped and DOES get
+// rejected downstream — which is right, because the wrap exists to repair the
+// old metadata that used the old spellings, not to paper over new metadata that
+// is simply wrong. Canonicalizing here would silently accept the second.
+//
+// Without this, canonicalizing the grouping validator turns a silent
+// mis-dispatch into a REFUSAL to open Java-authored metadata: a bare
+// `min_ever` index with an unwrapped root is precisely the shape the bare
+// spellings exist to read, Java loads it by wrapping, and Go would reject it.
+func groupingFixupForOldMetaData(indexType string, expr KeyExpression) KeyExpression {
+	if _, already := expr.(*GroupingKeyExpression); already {
+		return expr
+	}
+	switch indexType {
+	case IndexTypeRank, IndexTypeCount, IndexTypeMaxEver, IndexTypeMinEver, IndexTypeSum:
+	default:
+		return expr
+	}
+	groupedCount := 1
+	if indexType == IndexTypeCount {
+		// Java: `expr.getColumnSize()` — every column is aggregated, none groups.
+		groupedCount = expr.ColumnSize()
+	}
+	return &GroupingKeyExpression{wholeKey: expr, groupedCount: groupedCount}
+}
+
 // indexFromProto deserializes an Index from protobuf.
 func indexFromProto(p *gen.Index) (*Index, error) {
 	idx := &Index{
-		Name:    p.GetName(),
-		Type:    p.GetType(),
+		Name: p.GetName(),
+		// An ABSENT type means VALUE, exactly as Java reads it:
+		// `type = proto.hasType() ? proto.getType() : IndexTypes.VALUE`
+		// (Index.java:203). The `type` field carries no protobuf default, so an
+		// index serialized by a Java app that never set it arrives here as nil,
+		// and GetType() would flatten that to "".
+		//
+		// Presence, not emptiness, is the test — a type EXPLICITLY set to "" is a
+		// type no maintainer implements, and it must reach the dispatch and be
+		// refused there rather than be quietly promoted to VALUE. Java draws the
+		// line in the same place, via hasType().
+		//
+		// This was invisible while the maintainer dispatch answered every
+		// unrecognised type with the value-index maintainer: "" landed on the
+		// default arm and came back correct by accident. With that arm failing
+		// closed, the accident becomes a refusal to open Java-authored metadata,
+		// so the default has to be stated where Java states it.
+		Type:    IndexTypeValue,
 		Options: make(map[string]string),
+	}
+	// The DEPRECATED `index_type` enum wins when present, and it supplies the
+	// options too — Java checks it FIRST and takes the `type`/`options` branch
+	// only in its else (Index.java:199-204):
+	//
+	//	if (proto.hasIndexType()) {
+	//	    type = indexTypeToType(proto.getIndexType());
+	//	    options = indexTypeToOptions(proto.getIndexType());
+	//	} else {
+	//	    type = proto.hasType() ? proto.getType() : IndexTypes.VALUE;
+	//	    options = buildOptions(proto.getOptionsList(), false);
+	//	}
+	//
+	// Skipping this branch is not cosmetic and it fails OPEN in the same
+	// direction the dispatch used to. `index_type = UNIQUE` carries its
+	// uniqueness in the ENUM, not in the options list, so reading only `type`
+	// yields a plain value index and the uniqueness constraint silently
+	// disappears — duplicate entries where Java raises. `RANK`/`RANK_UNIQUE`
+	// are worse: they name a maintainer, and with `type` absent the index would
+	// default to VALUE and be maintained in the wrong format, which is exactly
+	// the corruption the fail-closed dispatch exists to stop, arriving through
+	// the other door.
+	// Java takes options from the enum ALONE on this branch and never reads
+	// getOptionsList(), so neither does this — the options loop below belongs
+	// to the else-branch.
+	legacyIndexType := p.IndexType != nil
+	if legacyIndexType {
+		idx.Type = legacyIndexTypeToType(p.GetIndexType())
+		if legacyIndexTypeIsUnique(p.GetIndexType()) {
+			idx.Options[IndexOptionUnique] = "true"
+		}
+	} else if p.Type != nil {
+		idx.Type = p.GetType()
 	}
 
 	if p.RootExpression != nil {
@@ -474,7 +603,7 @@ func indexFromProto(p *gen.Index) (*Index, error) {
 		if err != nil {
 			return nil, fmt.Errorf("root expression: %w", err)
 		}
-		idx.RootExpression = expr
+		idx.RootExpression = groupingFixupForOldMetaData(idx.Type, expr)
 	}
 
 	// SubspaceKey: decode tuple-packed bytes
@@ -507,8 +636,10 @@ func indexFromProto(p *gen.Index) (*Index, error) {
 		idx.AddedVersion = int(p.GetAddedVersion())
 	}
 
-	for _, opt := range p.Options {
-		idx.Options[opt.GetKey()] = opt.GetValue()
+	if !legacyIndexType {
+		for _, opt := range p.Options {
+			idx.Options[opt.GetKey()] = opt.GetValue()
+		}
 	}
 
 	// Predicate: store proto and build evaluator

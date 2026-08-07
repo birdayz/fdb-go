@@ -20,7 +20,7 @@ func verifyPermutedIndexes(ctx context.Context, store *recordlayer.FDBRecordStor
 	md := model.metadata
 
 	for _, idx := range md.GetAllIndexes() {
-		switch idx.Type {
+		switch idx.CanonicalType() {
 		case recordlayer.IndexTypePermutedMin, recordlayer.IndexTypePermutedMax:
 		default:
 			continue

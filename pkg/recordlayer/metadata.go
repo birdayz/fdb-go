@@ -821,7 +821,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// Without this, indexGroupingCount() silently treats all columns as "grouping" and
 	// zero as "grouped/aggregated", causing the index to malfunction (bugs #26-28).
 	for _, idx := range indexes {
-		switch idx.Type {
+		switch canonicalIndexType(idx.Type) {
 		case IndexTypeCount, IndexTypeCountNotNull, IndexTypeCountUpdates,
 			IndexTypeSum,
 			IndexTypeMinEverLong, IndexTypeMaxEverLong,
