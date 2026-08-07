@@ -8,7 +8,7 @@ package sqldriver_test
 // therefore runs on BOTH the index-eligible and full-scan connections and
 // requires the same rows from each.
 //
-// Root cause (fixed): scanComparisonsToTupleRange (executor.go) packed a
+// Root cause (fixed): bindScanComparisonsToRangeSet (scan_range_binding.go) packed a
 // zero comparand with whatever sign it happened to carry. FDB tuple encoding
 // preserves the IEEE sign bit (pkg/fdbgo/fdb/tuple's adjustFloatBytes), so
 // +0.0 and -0.0 are two DISTINCT, adjacent index keys — but the
@@ -136,7 +136,7 @@ func TestFDB_NegativeZeroIndexSargProbe(t *testing.T) {
 	}
 	// notEqProbe checks `<>` WITHOUT requiring an IndexScan: NOT_EQUALS is
 	// ComparisonType.NONE in Java (residual, never sargable — see
-	// scanComparisonsToTupleRange's default-arm comment) and, with no other
+	// bindScanComparisonsToRangeSet's default-arm comment) and, with no other
 	// predicate to justify visiting the secondary index at all, the planner
 	// takes a full PRIMARY scan here rather than IndexScan(D_V)/IndexScan(F_V)
 	// — there is no SARG-vs-residual disagreement to prove for this operator,

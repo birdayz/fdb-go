@@ -4,7 +4,7 @@ package sqldriver_test
 // range index probe whose outer comparand is NULL. `b.k > NULL`, `b.k BETWEEN
 // NULL AND x` etc. are UNKNOWN for every row → the probe must match nothing (the
 // outer row null-extends under LEFT). Exercises the inequality NULL-comparand
-// branch of scanComparisonsToTupleRange on the correlated-probe path.
+// branch of bindScanComparisonsToRangeSet on the correlated-probe path.
 
 import (
 	"context"

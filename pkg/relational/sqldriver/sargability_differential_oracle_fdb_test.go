@@ -7,7 +7,7 @@ package sqldriver_test
 //
 // The motivating example is RFC-179 finding F11: STARTS_WITH was consumed
 // into the index scan range (so the planner dropped the residual filter) but
-// scanComparisonsToTupleRange (pkg/recordlayer/query/executor/executor.go)
+// bindScanComparisonsToRangeSet (pkg/recordlayer/query/executor/scan_range_binding.go)
 // had no switch arm for it, so the bound silently vanished and the index scan
 // returned extra rows a full scan + WHERE-clause filter would have rejected.
 // Any arm of that switch (or of the SARG-extraction/span-construction path
@@ -270,7 +270,7 @@ var intCmpOps = []struct{ sym, tag string }{
 // asks for, over col: comparisons at every boundary constant, IS [NOT] NULL,
 // IN (present / absent-from-domain / NULL-containing), BETWEEN, NOT(...),
 // and the `= NULL` / `< NULL` degenerate-comparand shapes that exercise the
-// explicit empty-range branches in scanComparisonsToTupleRange.
+// explicit empty-range branches in bindScanComparisonsToRangeSet.
 func intAtoms(col intColModel) []sargCase {
 	var cs []sargCase
 	for _, b := range col.boundaries() {
@@ -650,7 +650,7 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 	// copy), and signed zero (TODO.md CQ-27, FIXED: an indexed column's SARG
 	// range/probe construction used to disagree with the residual-filter
 	// path — cmpAny's IEEE equality (-0.0 == +0.0) — on a query landing
-	// exactly on zero; scanComparisonsToTupleRange now widens the zero
+	// exactly on zero; bindScanComparisonsToRangeSet now widens the zero
 	// endpoint of a range to span both adjacent keys, so the two physical
 	// plans this file's differential mechanism compares AGREE. floatAtoms'
 	// bare-integer-literal sweep already runs `= 0`, `>= 0`, `< 0`, … against

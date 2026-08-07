@@ -991,7 +991,7 @@ func uuidToTupleElement(v any) any {
 
 // toFloat32Scalar narrows any admitted numeric runtime value to float32.
 // Companion to toFloat64Scalar, used only at the tuple-packing boundary
-// (coerceTupleElement) where the declared comparand type says FLOAT.
+// (coerceTupleElementForKey) where the resolved comparand type says FLOAT.
 func toFloat32Scalar(v any) (float32, bool) {
 	f, ok := toFloat64Scalar(v)
 	if !ok {
@@ -1000,10 +1000,18 @@ func toFloat32Scalar(v any) (float32, bool) {
 	return float32(f), true
 }
 
-// coerceTupleElement adapts a scan-comparand's EVALUATED Go value to the
-// wire representation its DECLARED type (opType, the Comparison operand's
-// own values.Type — not the raw Go type Evaluate happened to return) needs
-// at the FDB tuple-packing boundary. Two independent coercions land here:
+// coerceTupleElementForKey adapts an evaluated scan comparand to the physical
+// tuple representation of its key component. physicalType is authoritative
+// whenever it is known: comparison operands frequently carry UnknownType
+// (parameters, correlated values, and IN legs), and using that erased RHS type
+// can pack a FLOAT key as DOUBLE or a DOUBLE key as an integer. Only when the
+// physical plan genuinely lacks key metadata do we fall back to the operand's
+// declared type and finally to the evaluated Go value.
+//
+// This is deliberately a packing-boundary conversion, not a SQL cast. The
+// planner has already established comparison compatibility; this function
+// merely selects the tuple wire width that the indexed/primary key was written
+// with. Two independent coercions land here:
 //
 //   - UUID: unchanged, delegates to uuidToTupleElement (kept as a single
 //     choke point rather than duplicated at both call sites below).
@@ -1030,22 +1038,6 @@ func toFloat32Scalar(v any) (float32, bool) {
 //     (expr.promoteColumnColumnNumeric, the column-vs-column cross-type
 //     join case: Evaluate returns the row-domain float64, and THIS is
 //     where it finally narrows to match the index's wire type).
-func coerceTupleElement(v any, opType values.Type) any {
-	return coerceTupleElementForKey(v, nil, opType)
-}
-
-// coerceTupleElementForKey adapts an evaluated scan comparand to the physical
-// tuple representation of its key component. physicalType is authoritative
-// whenever it is known: comparison operands frequently carry UnknownType
-// (parameters, correlated values, and IN legs), and using that erased RHS type
-// can pack a FLOAT key as DOUBLE or a DOUBLE key as an integer. Only when the
-// physical plan genuinely lacks key metadata do we fall back to the operand's
-// declared type and finally to the evaluated Go value.
-//
-// This is deliberately a packing-boundary conversion, not a SQL cast. The
-// planner has already established comparison compatibility; this function
-// merely selects the tuple wire width that the indexed/primary key was written
-// with.
 func coerceTupleElementForKey(v any, physicalType, operandType values.Type) any {
 	v = uuidToTupleElement(v)
 	if v == nil {
@@ -1161,7 +1153,7 @@ func tupleElementToRowValue(v any) any {
 }
 
 // isZeroFloatBound reports whether a scan comparand v — already run through
-// coerceTupleElement, so it carries the wire Go type (float32 for FLOAT,
+// coerceTupleElementForKey, so it carries the wire Go type (float32 for FLOAT,
 // float64 for DOUBLE) — is a zero of either sign. Only FLOAT/DOUBLE need the
 // signed-zero range widening below: FDB tuple encoding preserves the IEEE
 // sign bit (adjustFloatBytes, pkg/fdbgo/fdb/tuple/tuple.go), so +0.0 and
@@ -1172,7 +1164,7 @@ func tupleElementToRowValue(v any) any {
 // IEEE/SQL numeric equality, where -0.0 == +0.0. A single-key probe or a
 // range endpoint pinned to the comparand's own sign therefore silently
 // disagrees with the residual-filter semantics the planner promises for an
-// unmatched predicate — see scanComparisonsToTupleRange's callers.
+// unmatched predicate — see bindScanComparisonsToRangeSet's callers.
 //
 // Dispatches on v's OWN Go runtime type, not the Comparison operand's
 // declared values.Type: an IN-list element reaches this comparand already
@@ -1260,289 +1252,6 @@ func anyLaterComparisonConstrains(comparisons []*predicates.ComparisonRange, i i
 		}
 	}
 	return false
-}
-
-func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, binder values.ParameterBinder) (recordlayer.TupleRange, error) {
-	if len(comparisons) == 0 {
-		return recordlayer.TupleRangeAllOf(nil), nil
-	}
-
-	var prefix tuple.Tuple
-	for i, cr := range comparisons {
-		if !cr.IsEquality() {
-			break
-		}
-		comp := cr.GetEqualityComparison()
-		// IS NULL is an equality range on the NULL value (Java's
-		// getComparisonType(IS_NULL)==EQUALITY): it has no RHS Operand, and the
-		// sought key element is NULL itself. Append nil to seek the single
-		// [null] index entry, rather than Evaluate'ing a nil Operand.
-		if comp.Type == predicates.ComparisonIsNull {
-			prefix = append(prefix, nil)
-			continue
-		}
-		val, err := comp.Operand.Evaluate(binder)
-		if err != nil {
-			return recordlayer.TupleRange{}, err
-		}
-		val = coerceTupleElement(val, comp.Operand.Type())
-		// `col = <NULL>` (a regular equality whose comparand evaluates to NULL —
-		// NOT `IS NULL`, handled above): SQL `NULL = x` is UNKNOWN for every row,
-		// so the probe matches NOTHING. Appending nil here would instead seek the
-		// [.., null] index entries and WRONGLY match NULL-keyed rows — e.g. a
-		// correlated index-nested-loop probe `A.K = B.K` where the outer B.K is
-		// NULL would match A's NULL-keyed rows (NULL=NULL must not match). Return
-		// an explicit empty range (begin == end), mirroring the inequality
-		// NULL-comparand handling below. IS NULL and IS NOT DISTINCT FROM
-		// (null-safe equality) intentionally still seek the null entry.
-		//
-		// (Java's ScanComparisons.toTupleRange does NOT special-case this — it
-		// packs null as a tuple element; Java avoids the wrong rows because its
-		// planner never feeds a null equality comparand into a bare index probe.
-		// Go's correlated index-nested-loop does, so the SQL invariant must be
-		// enforced here.)
-		if val == nil && comp.Type == predicates.ComparisonEquals {
-			return recordlayer.TupleRange{
-				Low:          prefix,
-				High:         prefix,
-				LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
-				HighEndpoint: recordlayer.EndpointTypeRangeExclusive,
-			}, nil
-		}
-		// A zero-valued FLOAT/DOUBLE equality that terminates the prefix (the
-		// whole comparisons list is equality — nothing follows this column) widens
-		// to a subtree spanning BOTH zero keys rather than pinning the single sign
-		// the comparand happened to carry: -0.0 and +0.0 are adjacent index keys
-		// (see isZeroFloatBound) with nothing representable between them, so
-		// [prefix+(-0.0) .. prefix+(+0.0)] inclusive-inclusive is the EXACT set of
-		// keys an IEEE `= 0` (or an IN-list sub-probe on a zero element, which
-		// reaches this same equality path once per element) must match — neither
-		// more nor fewer.
-		//
-		// "Terminal" means NOTHING AFTER THIS CONSTRAINS THE KEY, which is not
-		// the same as being the last element of the slice. A candidate index
-		// contributes one ComparisonRange per indexed column, so an equality on
-		// the leading column of a composite index is followed by an EMPTY range
-		// for every column the query does not constrain. Testing
-		// `i == len(comparisons)-1` skipped the widening in exactly that case:
-		// `v = 0` planned against index (v, w) produced comparisons
-		// [equality(v), empty(w)], the equality sat at i=0 with len-1 == 1, and
-		// the probe found only its own signed zero. That is a wrong-rows bug
-		// whenever the chosen index happens to be composite — the same query
-		// answered correctly through a single-column index and incorrectly
-		// through a composite one.
-		//
-		// A trailing CONSTRAINING comparison is different and still correctly
-		// excluded: with `v = 0 AND w = 5` the union of (-0.0,5) and (+0.0,5) is
-		// not a contiguous interval — the span between them also admits
-		// (-0.0, w>5) and (+0.0, w<5) — so a single TupleRange cannot express it
-		// and widening here would return WRONG rows rather than missing ones.
-		// That case needs a genuine two-probe union (TODO CQ-28) and is left
-		// alone deliberately.
-		if isZeroFloatBound(val) && !anyLaterComparisonConstrains(comparisons, i) {
-			low := append(append(tuple.Tuple{}, prefix...), negativeZeroLike(val))
-			high := append(append(tuple.Tuple{}, prefix...), positiveZeroLike(val))
-			return recordlayer.TupleRange{
-				Low:          low,
-				High:         high,
-				LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
-				HighEndpoint: recordlayer.EndpointTypeRangeInclusive,
-			}, nil
-		}
-		prefix = append(prefix, val)
-	}
-
-	eqCount := len(prefix)
-	if eqCount >= len(comparisons) {
-		return recordlayer.TupleRangeAllOf(prefix), nil
-	}
-
-	nextRange := comparisons[eqCount]
-	if nextRange.IsEmpty() {
-		return recordlayer.TupleRangeAllOf(prefix), nil
-	}
-
-	if !nextRange.IsInequality() {
-		return recordlayer.TupleRangeAllOf(prefix), nil
-	}
-
-	// STARTS_WITH is a single-comparison PREFIX_STRING range, handled BEFORE the
-	// general low/high combiner — mirrors Java ScanComparisons.toTupleRange
-	// (ScanComparisons.java ~302-308): when the sole inequality is STARTS_WITH,
-	// build startTuple = equality prefix + comparand and return
-	// new TupleRange(startTuple, startTuple, PREFIX_STRING, PREFIX_STRING). The
-	// PREFIX_STRING endpoints strip the tuple-packed trailing null on the low and
-	// strinc past it on the high, bounding the scan to keys with that string
-	// prefix. Without this arm STARTS_WITH matches neither the low nor the high
-	// switch below, sets no bound, and the scan degenerates to the full
-	// equality-prefix range — silently returning every row under the prefix.
-	if ineqs := nextRange.GetInequalityComparisons(); len(ineqs) == 1 && ineqs[0].Type == predicates.ComparisonStartsWith {
-		startsWith := ineqs[0]
-		if startsWith.Operand == nil {
-			// No prefix operand to bound against: fall back to the equality prefix
-			// rather than fabricate a bound (defensive — the planner always binds a
-			// prefix operand for STARTS_WITH).
-			return recordlayer.TupleRangeAllOf(prefix), nil
-		}
-		val, err := startsWith.Operand.Evaluate(binder)
-		if err != nil {
-			return recordlayer.TupleRange{}, err
-		}
-		// A NULL prefix operand makes `col STARTS_WITH NULL` UNKNOWN for every row
-		// (SQL 3VL) → unsatisfiable → empty result, consistent with the ordered-
-		// inequality NULL-comparand handling below. Return an explicit empty range
-		// (begin == end) rather than PREFIX_STRING over a null element.
-		if val == nil {
-			return recordlayer.TupleRange{
-				Low:          prefix,
-				High:         prefix,
-				LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
-				HighEndpoint: recordlayer.EndpointTypeRangeExclusive,
-			}, nil
-		}
-		val = uuidToTupleElement(val)
-		startTuple := append(append(tuple.Tuple{}, prefix...), val)
-		return recordlayer.TupleRange{
-			Low:          startTuple,
-			High:         startTuple,
-			LowEndpoint:  recordlayer.EndpointTypePrefixString,
-			HighEndpoint: recordlayer.EndpointTypePrefixString,
-		}, nil
-	}
-
-	var lowEndpoint, highEndpoint recordlayer.EndpointType
-	var lowItem, highItem any
-	hasLow := false
-	hasHigh := false
-	lowIsNullBoundary := false // low bound is the NULL exclusion (prefix + null, exclusive)
-
-	if len(prefix) == 0 {
-		lowEndpoint = recordlayer.EndpointTypeTreeStart
-		highEndpoint = recordlayer.EndpointTypeTreeEnd
-	} else {
-		lowEndpoint = recordlayer.EndpointTypeRangeInclusive
-		highEndpoint = recordlayer.EndpointTypeRangeInclusive
-	}
-
-	// Java's InequalityRangeCombiner keeps the *tightest* of multiple low (or
-	// high) comparisons via Comparisons.compare(); here a later >/>= simply
-	// wins last. That is harmless because upstream ComparisonRange merging has
-	// already combined comparisons on the same column into one tightest range
-	// before we get here, so this loop never sees two competing low bounds.
-	for _, ineq := range nextRange.GetInequalityComparisons() {
-		var comparand any
-		if ineq.Operand != nil {
-			var err error
-			comparand, err = ineq.Operand.Evaluate(binder)
-			if err != nil {
-				return recordlayer.TupleRange{}, err
-			}
-			comparand = coerceTupleElement(comparand, ineq.Operand.Type())
-			comparand = canonicalizeZeroSignedBound(comparand, ineq.Type)
-		}
-		// A NULL comparand makes an ordered inequality (<, <=, >, >=) UNKNOWN
-		// for every row (SQL 3VL) → unsatisfiable → empty result. We must NOT
-		// fall through to the endpoint logic: a `< NULL` would otherwise install
-		// the NULL low boundary with a nil high, producing an inverted FDB range
-		// (begin strinc(prefix,NULL) > end prefix). Return an explicit empty
-		// range (begin == end). IS NOT NULL has no operand and is the legitimate
-		// null-boundary case, handled below.
-		switch ineq.Type {
-		case predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq,
-			predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
-			if comparand == nil {
-				return recordlayer.TupleRange{
-					Low:          prefix,
-					High:         prefix,
-					LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
-					HighEndpoint: recordlayer.EndpointTypeRangeExclusive,
-				}, nil
-			}
-		}
-		switch ineq.Type {
-		case predicates.ComparisonGreaterThan:
-			lowItem = comparand
-			lowEndpoint = recordlayer.EndpointTypeRangeExclusive
-			hasLow = true
-		case predicates.ComparisonGreaterThanEq:
-			lowItem = comparand
-			lowEndpoint = recordlayer.EndpointTypeRangeInclusive
-			hasLow = true
-		case predicates.ComparisonLessThan:
-			highItem = comparand
-			highEndpoint = recordlayer.EndpointTypeRangeExclusive
-			hasHigh = true
-			// An upper-only range must EXCLUDE NULL index entries: NULL sorts
-			// first in the index, and `col < v` is UNKNOWN (not TRUE) on NULL,
-			// so those rows must not appear. Mirror Java
-			// ScanComparisons.InequalityRangeCombiner: when no low bound is set,
-			// pin the low to the NULL boundary (lowItem stays nil) RANGE_EXCLUSIVE,
-			// which strinc's past the null prefix and skips every null entry.
-			if !hasLow {
-				lowEndpoint = recordlayer.EndpointTypeRangeExclusive
-				lowIsNullBoundary = true
-				hasLow = true
-			}
-		case predicates.ComparisonLessThanOrEq:
-			highItem = comparand
-			highEndpoint = recordlayer.EndpointTypeRangeInclusive
-			hasHigh = true
-			if !hasLow {
-				lowEndpoint = recordlayer.EndpointTypeRangeExclusive
-				lowIsNullBoundary = true
-				hasLow = true
-			}
-		case predicates.ComparisonIsNotNull:
-			// IS NOT NULL is the pure NULL-boundary range: everything strictly
-			// after the null entries (Java: lowItem null, RANGE_EXCLUSIVE).
-			if !hasLow {
-				lowEndpoint = recordlayer.EndpointTypeRangeExclusive
-				lowIsNullBoundary = true
-				hasLow = true
-			}
-		default:
-			// Mirror Java ScanComparisons.InequalityRangeCombiner.addComparison
-			// (ScanComparisons.java:648) `default: throw`. The only INEQUALITY-typed
-			// comparison the endpoint combiner cannot turn into a low/high bound is
-			// STARTS_WITH: it is a PREFIX_STRING range handled ABOVE as the sole
-			// inequality (len(ineqs)==1). If STARTS_WITH arrives here it was merged
-			// with a second inequality on the same column — that intersection is not
-			// a representable single scan range, so fail LOUD rather than drop the
-			// bound and silently return a superset. (NOT_EQUALS is ComparisonType.NONE
-			// in Java — residual, never sargable into a scan range — so it does not
-			// reach this combiner; any other type arriving here is likewise an
-			// unexpected-invariant bug to surface, not to paper over.)
-			return recordlayer.TupleRange{}, fmt.Errorf(
-				"scanComparisonsToTupleRange: unexpected inequality comparison %v combined with another inequality on the same column (not a representable single scan range)",
-				ineq.Type)
-		}
-	}
-
-	// Build the endpoint tuples, mirroring Java's buildEndpointTuple:
-	//   hasX  -> prefix + [item]; item==nil with a null boundary appends the
-	//            NULL element (a low of (…,null) RANGE_EXCLUSIVE skips nulls).
-	//   !hasX -> the prefix itself (if any), else unbounded (TREE_START/END).
-	var low, high tuple.Tuple
-	switch {
-	case hasLow && lowItem != nil:
-		low = append(append(tuple.Tuple{}, prefix...), lowItem)
-	case hasLow && lowIsNullBoundary:
-		low = append(append(tuple.Tuple{}, prefix...), nil)
-	case len(prefix) > 0:
-		low = prefix
-	}
-	if hasHigh && highItem != nil {
-		high = append(append(tuple.Tuple{}, prefix...), highItem)
-	} else if len(prefix) > 0 {
-		high = prefix
-	}
-
-	return recordlayer.TupleRange{
-		Low:          low,
-		High:         high,
-		LowEndpoint:  lowEndpoint,
-		HighEndpoint: highEndpoint,
-	}, nil
 }
 
 type indexFetchCursor struct {

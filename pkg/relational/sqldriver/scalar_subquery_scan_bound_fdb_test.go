@@ -4,7 +4,7 @@ import "testing"
 
 // TestFDB_ScalarSubqueryAsScanBound pins that an uncorrelated scalar subquery
 // pushed into a PK/index scan as a range bound is evaluated with its pre-computed
-// result, not NULL. Bug: scanComparisonsToTupleRange got the bare
+// result, not NULL. Bug: bindScanComparisonsToRangeSet got the bare
 // *EvaluationContext, but ScalarSubqueryValue.Evaluate only reads its result from
 // a *RowEvalContext — so `WHERE id = (SELECT MIN(id) FROM t2)` built an `id = NULL`
 // bound and returned 0 rows. Fixed via evalCtx.RowContext(nil) for scan bounds.

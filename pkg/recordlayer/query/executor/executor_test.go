@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -823,15 +824,35 @@ func TestProjection_MultiColumnFieldValue(t *testing.T) {
 	}
 }
 
+// assertIsAllRange pins that a materialized range denotes the WHOLE subspace.
+// The live binder spells that as an inclusive/inclusive range over the EMPTY
+// tuple prefix rather than TREE_START/TREE_END, so the claim is checked where
+// it is observable — the FDB key range — instead of on the endpoint spelling.
+func assertIsAllRange(t *testing.T, got recordlayer.TupleRange) {
+	t.Helper()
+	ss := subspace.FromBytes([]byte{0x42})
+	gotRange := got.ToFDBRange(ss)
+	wantRange := recordlayer.TupleRangeAll.ToFDBRange(ss)
+	if !bytes.Equal(gotRange.Begin.FDBKey(), wantRange.Begin.FDBKey()) ||
+		!bytes.Equal(gotRange.End.FDBKey(), wantRange.End.FDBKey()) {
+		t.Fatalf("range %v..%v (endpoints %d/%d), want the ALL range %v..%v",
+			gotRange.Begin.FDBKey(), gotRange.End.FDBKey(),
+			got.LowEndpoint, got.HighEndpoint,
+			wantRange.Begin.FDBKey(), wantRange.End.FDBKey())
+	}
+}
+
 func TestScanComparisonsToTupleRange_Empty(t *testing.T) {
 	t.Parallel()
-	r, err := scanComparisonsToTupleRange(nil, nil)
+	spec, err := bindScanComparisonsToRangeSet(nil, nil, nil, false, "executor-empty-comparisons")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Low != nil || r.High != nil {
-		t.Fatalf("empty comparisons should give ALL range, got low=%v high=%v", r.Low, r.High)
+	ranges := materializeAllRanges(t, spec)
+	if len(ranges) != 1 {
+		t.Fatalf("opened %d ranges, want 1", len(ranges))
 	}
+	assertIsAllRange(t, ranges[0])
 }
 
 func TestScanComparisonsToTupleRange_EqualityOnly(t *testing.T) {
@@ -848,10 +869,19 @@ func TestScanComparisonsToTupleRange_EqualityOnly(t *testing.T) {
 		t.Fatal("merge2 failed")
 	}
 
-	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range, res2.Range}, nil)
+	spec, err := bindScanComparisonsToRangeSet(
+		[]*predicates.ComparisonRange{res.Range, res2.Range},
+		[]values.Type{values.NullableString, values.NullableLong},
+		nil, false, "executor-equality-only",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	ranges := materializeAllRanges(t, spec)
+	if len(ranges) != 1 {
+		t.Fatalf("opened %d ranges, want 1", len(ranges))
+	}
+	r := ranges[0]
 
 	wantPrefix := tuple.Tuple{"alice", int64(42)}
 	if len(r.Low) != len(wantPrefix) {
@@ -888,10 +918,19 @@ func TestScanComparisonsToTupleRange_EqualityPlusInequality(t *testing.T) {
 		t.Fatal("merge lt failed")
 	}
 
-	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range, res3.Range}, nil)
+	spec, err := bindScanComparisonsToRangeSet(
+		[]*predicates.ComparisonRange{res.Range, res3.Range},
+		[]values.Type{values.NullableString, values.NullableLong},
+		nil, false, "executor-equality-plus-inequality",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	ranges := materializeAllRanges(t, spec)
+	if len(ranges) != 1 {
+		t.Fatalf("opened %d ranges, want 1", len(ranges))
+	}
+	r := ranges[0]
 
 	if len(r.Low) != 2 || r.Low[0] != "users" || r.Low[1] != int64(10) {
 		t.Fatalf("low=%v, want [users, 10]", r.Low)
@@ -917,10 +956,19 @@ func TestScanComparisonsToTupleRange_InequalityOnly(t *testing.T) {
 		t.Fatal("merge gte failed")
 	}
 
-	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range}, nil)
+	spec, err := bindScanComparisonsToRangeSet(
+		[]*predicates.ComparisonRange{res.Range},
+		[]values.Type{values.NullableLong},
+		nil, false, "executor-inequality-only",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	ranges := materializeAllRanges(t, spec)
+	if len(ranges) != 1 {
+		t.Fatalf("opened %d ranges, want 1", len(ranges))
+	}
+	r := ranges[0]
 
 	if len(r.Low) != 1 || r.Low[0] != int64(5) {
 		t.Fatalf("low=%v, want [5]", r.Low)
@@ -947,10 +995,19 @@ func TestScanComparisonsToTupleRange_EmptyRangeStops(t *testing.T) {
 
 	empty := predicates.EmptyComparisonRange()
 
-	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range, empty}, nil)
+	spec, err := bindScanComparisonsToRangeSet(
+		[]*predicates.ComparisonRange{res.Range, empty},
+		[]values.Type{values.NullableString, values.NullableLong},
+		nil, false, "executor-empty-range-stops",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	ranges := materializeAllRanges(t, spec)
+	if len(ranges) != 1 {
+		t.Fatalf("opened %d ranges, want 1", len(ranges))
+	}
+	r := ranges[0]
 
 	wantPrefix := tuple.Tuple{"x"}
 	if len(r.Low) != 1 || r.Low[0] != "x" {
@@ -971,10 +1028,19 @@ func TestScanComparisonsToTupleRange_LessThanOnly(t *testing.T) {
 		t.Fatal("merge lte failed")
 	}
 
-	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range}, nil)
+	spec, err := bindScanComparisonsToRangeSet(
+		[]*predicates.ComparisonRange{res.Range},
+		[]values.Type{values.NullableLong},
+		nil, false, "executor-less-than-only",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	ranges := materializeAllRanges(t, spec)
+	if len(ranges) != 1 {
+		t.Fatalf("opened %d ranges, want 1", len(ranges))
+	}
+	r := ranges[0]
 
 	// Upper-only `<= 50` excludes nulls: low is the NULL boundary (one nil
 	// tuple element) RANGE_EXCLUSIVE, not TreeStart. Mirrors Java ScanComparisons.
@@ -998,10 +1064,10 @@ func TestScanComparisonsToTupleRange_LessThanOnly(t *testing.T) {
 // Java ScanComparisons.toTupleRange building
 // new TupleRange(startTuple, startTuple, PREFIX_STRING, PREFIX_STRING).
 //
-// Revert-proof: without the STARTS_WITH arm in scanComparisonsToTupleRange the
-// comparison matches neither the low nor the high switch, sets no bound, and the
-// range degenerates to TREE_START..TREE_END — silently returning every row
-// instead of only the prefix-matching ones.
+// Revert-proof: without the STARTS_WITH arm in the range binder the comparison
+// matches neither the low nor the high switch, sets no bound, and the range
+// degenerates to TREE_START..TREE_END — silently returning every row instead of
+// only the prefix-matching ones.
 func TestScanComparisonsToTupleRange_StartsWith(t *testing.T) {
 	t.Parallel()
 
@@ -1011,10 +1077,19 @@ func TestScanComparisonsToTupleRange_StartsWith(t *testing.T) {
 		t.Fatal("merge STARTS_WITH failed")
 	}
 
-	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range}, nil)
+	spec, err := bindScanComparisonsToRangeSet(
+		[]*predicates.ComparisonRange{res.Range},
+		[]values.Type{values.NullableString},
+		nil, false, "executor-starts-with",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	ranges := materializeAllRanges(t, spec)
+	if len(ranges) != 1 {
+		t.Fatalf("opened %d ranges, want 1", len(ranges))
+	}
+	r := ranges[0]
 
 	if len(r.Low) != 1 || r.Low[0] != "abc" {
 		t.Fatalf("low=%v, want [abc]", r.Low)
@@ -1049,10 +1124,19 @@ func TestScanComparisonsToTupleRange_EqualityPlusStartsWith(t *testing.T) {
 		t.Fatal("merge STARTS_WITH failed")
 	}
 
-	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{resEq.Range, resSw.Range}, nil)
+	spec, err := bindScanComparisonsToRangeSet(
+		[]*predicates.ComparisonRange{resEq.Range, resSw.Range},
+		[]values.Type{values.NullableLong, values.NullableString},
+		nil, false, "executor-equality-plus-starts-with",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	ranges := materializeAllRanges(t, spec)
+	if len(ranges) != 1 {
+		t.Fatalf("opened %d ranges, want 1", len(ranges))
+	}
+	r := ranges[0]
 
 	if len(r.Low) != 2 || r.Low[0] != int64(7) || r.Low[1] != "abc" {
 		t.Fatalf("low=%v, want [7, abc]", r.Low)
@@ -1070,14 +1154,14 @@ func TestScanComparisonsToTupleRange_EqualityPlusStartsWith(t *testing.T) {
 // len(ineqs)==1 PREFIX_STRING fast-path is skipped and STARTS_WITH reaches the
 // endpoint combiner) must FAIL LOUD, mirroring Java
 // ScanComparisons.InequalityRangeCombiner.addComparison's `default: throw`.
-// STARTS_WITH ∩ (> v) is not a representable single scan range; the old code had
-// no STARTS_WITH case and no default in the endpoint switch, so it silently
-// dropped the STARTS_WITH bound and returned a superset (every row matching the
-// bare `> v`, ignoring the prefix).
+// STARTS_WITH ∩ (> v) is not a representable single scan range; a binder with no
+// STARTS_WITH case and no default in the endpoint switch silently drops the
+// STARTS_WITH bound and returns a superset (every row matching the bare `> v`,
+// ignoring the prefix).
 //
-// Revert-proof: without the `default: return error` arm, scanComparisonsToTupleRange
-// returns (range, nil) with only the `> v` bound applied — err==nil and the prefix
-// silently lost. The test asserts a non-nil error naming the STARTS_WITH type.
+// Revert-proof: without the shape rejection the binder returns (spec, nil) with
+// only the `> v` bound applied — err==nil and the prefix silently lost. The test
+// asserts the typed InvalidScanComparisonShapeError, not its wording.
 func TestScanComparisonsToTupleRange_StartsWithPlusInequality_Loud(t *testing.T) {
 	t.Parallel()
 
@@ -1095,12 +1179,17 @@ func TestScanComparisonsToTupleRange_StartsWithPlusInequality_Loud(t *testing.T)
 		t.Fatalf("expected 2 inequalities in the merged range, got %d", got)
 	}
 
-	_, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{resBoth.Range}, nil)
+	_, err := bindScanComparisonsToRangeSet(
+		[]*predicates.ComparisonRange{resBoth.Range},
+		[]values.Type{values.NullableString},
+		nil, false, "executor-starts-with-plus-inequality",
+	)
 	if err == nil {
 		t.Fatal("STARTS_WITH combined with a second inequality must fail loud (Java default: throw), got nil error")
 	}
-	if !strings.Contains(err.Error(), "unexpected inequality comparison") {
-		t.Fatalf("error=%q, want it to mention the unexpected inequality comparison", err.Error())
+	var shape *InvalidScanComparisonShapeError
+	if !errors.As(err, &shape) || shape.Component != 0 {
+		t.Fatalf("error = %T(%v), want InvalidScanComparisonShapeError at component 0", err, err)
 	}
 }
 
@@ -1115,10 +1204,19 @@ func TestParameterBinding_ScanComparison(t *testing.T) {
 	}
 
 	binder := EmptyEvaluationContext().WithParams([]any{int64(42)})
-	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range}, binder)
+	spec, err := bindScanComparisonsToRangeSet(
+		[]*predicates.ComparisonRange{res.Range},
+		[]values.Type{values.NullableLong},
+		binder, false, "executor-parameter-binding",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	ranges := materializeAllRanges(t, spec)
+	if len(ranges) != 1 {
+		t.Fatalf("opened %d ranges, want 1", len(ranges))
+	}
+	r := ranges[0]
 
 	if len(r.Low) != 1 || r.Low[0] != int64(42) {
 		t.Fatalf("low=%v, want [42] (param resolved via binder)", r.Low)
@@ -2135,7 +2233,7 @@ func TestGoToProtoValue_Bytes(t *testing.T) {
 	}
 }
 
-// --- scanComparisonsToTupleRange unit tests ---
+// --- bindScanComparisonsToRangeSet unit tests ---
 
 func eqRange(val any) *predicates.ComparisonRange {
 	r := predicates.EmptyComparisonRange()
@@ -2159,37 +2257,45 @@ func ineqRange(comps ...predicates.Comparison) *predicates.ComparisonRange {
 	return r
 }
 
-func TestScanComparisons_Empty(t *testing.T) {
-	t.Parallel()
-	tr, err := scanComparisonsToTupleRange(nil, nil)
+// bindOneRange binds the comparisons and asserts the resulting range set opens
+// exactly one physical range, returning it. Most of these cases describe a
+// single contiguous key interval; a case that genuinely opens more than one
+// asserts the leaf count itself instead of using this helper.
+func bindOneRange(
+	t *testing.T,
+	comparisons []*predicates.ComparisonRange,
+	keyTypes []values.Type,
+	salt string,
+) recordlayer.TupleRange {
+	t.Helper()
+	spec, err := bindScanComparisonsToRangeSet(comparisons, keyTypes, nil, false, salt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if tr.LowEndpoint != recordlayer.EndpointTypeTreeStart || tr.HighEndpoint != recordlayer.EndpointTypeTreeEnd {
-		t.Fatalf("expected TupleRangeAll, got low=%d high=%d", tr.LowEndpoint, tr.HighEndpoint)
+	ranges := materializeAllRanges(t, spec)
+	if len(ranges) != 1 {
+		t.Fatalf("opened %d ranges, want 1", len(ranges))
 	}
-	if tr.Low != nil || tr.High != nil {
-		t.Fatalf("expected nil tuples, got low=%v high=%v", tr.Low, tr.High)
-	}
+	return ranges[0]
+}
+
+func TestScanComparisons_Empty(t *testing.T) {
+	t.Parallel()
+	assertIsAllRange(t, bindOneRange(t, nil, nil, "scan-comparisons-empty"))
 }
 
 func TestScanComparisons_EmptySlice(t *testing.T) {
 	t.Parallel()
-	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{}, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tr.LowEndpoint != recordlayer.EndpointTypeTreeStart || tr.HighEndpoint != recordlayer.EndpointTypeTreeEnd {
-		t.Fatalf("expected TupleRangeAll, got low=%d high=%d", tr.LowEndpoint, tr.HighEndpoint)
-	}
+	assertIsAllRange(t, bindOneRange(
+		t, []*predicates.ComparisonRange{}, nil, "scan-comparisons-empty-slice"))
 }
 
 func TestScanComparisons_SingleEquality(t *testing.T) {
 	t.Parallel()
-	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{eqRange("alice")}, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	tr := bindOneRange(t,
+		[]*predicates.ComparisonRange{eqRange("alice")},
+		[]values.Type{values.NullableString},
+		"scan-comparisons-single-equality")
 	if tr.LowEndpoint != recordlayer.EndpointTypeRangeInclusive || tr.HighEndpoint != recordlayer.EndpointTypeRangeInclusive {
 		t.Fatalf("expected inclusive/inclusive, got low=%d high=%d", tr.LowEndpoint, tr.HighEndpoint)
 	}
@@ -2203,13 +2309,13 @@ func TestScanComparisons_SingleEquality(t *testing.T) {
 
 func TestScanComparisons_MultiEquality(t *testing.T) {
 	t.Parallel()
-	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
-		eqRange("alice"),
-		eqRange(int64(42)),
-	}, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	tr := bindOneRange(t,
+		[]*predicates.ComparisonRange{
+			eqRange("alice"),
+			eqRange(int64(42)),
+		},
+		[]values.Type{values.NullableString, values.NullableLong},
+		"scan-comparisons-multi-equality")
 	if len(tr.Low) != 2 || tr.Low[0] != "alice" || tr.Low[1] != int64(42) {
 		t.Fatalf("expected low=[alice 42], got %v", tr.Low)
 	}
@@ -2220,13 +2326,13 @@ func TestScanComparisons_MultiEquality(t *testing.T) {
 
 func TestScanComparisons_EqualityThenEmpty(t *testing.T) {
 	t.Parallel()
-	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
-		eqRange("alice"),
-		predicates.EmptyComparisonRange(),
-	}, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	tr := bindOneRange(t,
+		[]*predicates.ComparisonRange{
+			eqRange("alice"),
+			predicates.EmptyComparisonRange(),
+		},
+		[]values.Type{values.NullableString, values.NullableLong},
+		"scan-comparisons-equality-then-empty")
 	if len(tr.Low) != 1 || tr.Low[0] != "alice" {
 		t.Fatalf("expected prefix [alice], got low=%v", tr.Low)
 	}
@@ -2234,12 +2340,12 @@ func TestScanComparisons_EqualityThenEmpty(t *testing.T) {
 
 func TestScanComparisons_GreaterThanNoPrefix(t *testing.T) {
 	t.Parallel()
-	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
-		ineqRange(predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(10))),
-	}, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	tr := bindOneRange(t,
+		[]*predicates.ComparisonRange{
+			ineqRange(predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(10))),
+		},
+		[]values.Type{values.NullableLong},
+		"scan-comparisons-gt-no-prefix")
 	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
 		t.Fatalf("expected low exclusive, got %d", tr.LowEndpoint)
 	}
@@ -2256,12 +2362,12 @@ func TestScanComparisons_GreaterThanNoPrefix(t *testing.T) {
 
 func TestScanComparisons_GreaterThanOrEqNoPrefix(t *testing.T) {
 	t.Parallel()
-	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
-		ineqRange(predicates.NewLiteralComparison(predicates.ComparisonGreaterThanEq, int64(10))),
-	}, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	tr := bindOneRange(t,
+		[]*predicates.ComparisonRange{
+			ineqRange(predicates.NewLiteralComparison(predicates.ComparisonGreaterThanEq, int64(10))),
+		},
+		[]values.Type{values.NullableLong},
+		"scan-comparisons-gte-no-prefix")
 	if tr.LowEndpoint != recordlayer.EndpointTypeRangeInclusive {
 		t.Fatalf("expected low inclusive, got %d", tr.LowEndpoint)
 	}
@@ -2275,12 +2381,12 @@ func TestScanComparisons_GreaterThanOrEqNoPrefix(t *testing.T) {
 
 func TestScanComparisons_LessThanNoPrefix(t *testing.T) {
 	t.Parallel()
-	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
-		ineqRange(predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(50))),
-	}, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	tr := bindOneRange(t,
+		[]*predicates.ComparisonRange{
+			ineqRange(predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(50))),
+		},
+		[]values.Type{values.NullableLong},
+		"scan-comparisons-lt-no-prefix")
 	// An upper-only range must EXCLUDE NULL index entries (NULL sorts first;
 	// `a < 50` is UNKNOWN, not TRUE, on NULL). The low bound is therefore the
 	// NULL boundary — one nil tuple element, RANGE_EXCLUSIVE — not TreeStart,
@@ -2301,12 +2407,12 @@ func TestScanComparisons_LessThanNoPrefix(t *testing.T) {
 
 func TestScanComparisons_LessThanOrEqNoPrefix(t *testing.T) {
 	t.Parallel()
-	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
-		ineqRange(predicates.NewLiteralComparison(predicates.ComparisonLessThanOrEq, int64(50))),
-	}, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	tr := bindOneRange(t,
+		[]*predicates.ComparisonRange{
+			ineqRange(predicates.NewLiteralComparison(predicates.ComparisonLessThanOrEq, int64(50))),
+		},
+		[]values.Type{values.NullableLong},
+		"scan-comparisons-lte-no-prefix")
 	// Upper-only range excludes nulls via the NULL boundary low (see LT case).
 	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
 		t.Fatalf("expected low RangeExclusive (null boundary) for LTE-only, got %d", tr.LowEndpoint)
@@ -2325,44 +2431,47 @@ func TestScanComparisons_LessThanOrEqNoPrefix(t *testing.T) {
 func TestScanComparisons_NullComparand_EmptyRange(t *testing.T) {
 	t.Parallel()
 	// `a < NULL` (and >, >=, <=) is UNKNOWN for every row (SQL 3VL) →
-	// unsatisfiable → empty result. Must be an empty range (begin == end),
-	// NOT the null-boundary low with an unbounded high (which would strinc to
-	// an inverted FDB range begin > end).
+	// unsatisfiable → empty result. The live range set says so structurally:
+	// spec.empty with no materializer at all, so no range is ever opened. It
+	// must NOT be the null-boundary low with an unbounded high, which would
+	// strinc to an inverted FDB range (begin > end).
 	for _, typ := range []predicates.ComparisonType{
 		predicates.ComparisonLessThan,
 		predicates.ComparisonLessThanOrEq,
 		predicates.ComparisonGreaterThan,
 		predicates.ComparisonGreaterThanEq,
 	} {
-		tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
-			ineqRange(predicates.Comparison{Type: typ, Operand: &values.NullValue{}}),
-		}, nil)
+		spec, err := bindScanComparisonsToRangeSet(
+			[]*predicates.ComparisonRange{
+				ineqRange(predicates.Comparison{Type: typ, Operand: &values.NullValue{}}),
+			},
+			[]values.Type{values.NullableLong},
+			nil, false, "scan-comparisons-null-comparand",
+		)
 		if err != nil {
 			t.Fatalf("%v: unexpected error: %v", typ, err)
 		}
-		// Empty range: Low == High with inclusive/exclusive endpoints → begin == end.
-		if len(tr.Low) != len(tr.High) {
-			t.Fatalf("%v: expected empty range (Low==High), got Low=%v High=%v", typ, tr.Low, tr.High)
+		if !spec.empty || spec.materialize != nil {
+			t.Fatalf("%v: expected an empty range set, got empty=%v materialize!=nil=%v",
+				typ, spec.empty, spec.materialize != nil)
 		}
-		if tr.LowEndpoint != recordlayer.EndpointTypeRangeInclusive ||
-			tr.HighEndpoint != recordlayer.EndpointTypeRangeExclusive {
-			t.Fatalf("%v: expected empty range endpoints (Inclusive/Exclusive on equal bounds), got low=%d high=%d",
-				typ, tr.LowEndpoint, tr.HighEndpoint)
+		if got := materializeAllRanges(t, spec); len(got) != 0 {
+			t.Fatalf("%v: empty range set opened %d ranges: %v", typ, len(got), got)
 		}
 	}
 }
 
 func TestScanComparisons_BetweenGTAndLT(t *testing.T) {
 	t.Parallel()
-	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
-		ineqRange(
-			predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(10)),
-			predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(50)),
-		),
-	}, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	tr := bindOneRange(t,
+		[]*predicates.ComparisonRange{
+			ineqRange(
+				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(10)),
+				predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(50)),
+			),
+		},
+		[]values.Type{values.NullableLong},
+		"scan-comparisons-between-gt-lt")
 	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
 		t.Fatalf("expected low exclusive, got %d", tr.LowEndpoint)
 	}
@@ -2379,15 +2488,15 @@ func TestScanComparisons_BetweenGTAndLT(t *testing.T) {
 
 func TestScanComparisons_BetweenGTEAndLTE(t *testing.T) {
 	t.Parallel()
-	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
-		ineqRange(
-			predicates.NewLiteralComparison(predicates.ComparisonGreaterThanEq, int64(10)),
-			predicates.NewLiteralComparison(predicates.ComparisonLessThanOrEq, int64(50)),
-		),
-	}, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	tr := bindOneRange(t,
+		[]*predicates.ComparisonRange{
+			ineqRange(
+				predicates.NewLiteralComparison(predicates.ComparisonGreaterThanEq, int64(10)),
+				predicates.NewLiteralComparison(predicates.ComparisonLessThanOrEq, int64(50)),
+			),
+		},
+		[]values.Type{values.NullableLong},
+		"scan-comparisons-between-gte-lte")
 	if tr.LowEndpoint != recordlayer.EndpointTypeRangeInclusive {
 		t.Fatalf("expected low inclusive, got %d", tr.LowEndpoint)
 	}
@@ -2398,13 +2507,13 @@ func TestScanComparisons_BetweenGTEAndLTE(t *testing.T) {
 
 func TestScanComparisons_EqualityPrefixThenGT(t *testing.T) {
 	t.Parallel()
-	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
-		eqRange("alice"),
-		ineqRange(predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(10))),
-	}, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	tr := bindOneRange(t,
+		[]*predicates.ComparisonRange{
+			eqRange("alice"),
+			ineqRange(predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(10))),
+		},
+		[]values.Type{values.NullableString, values.NullableLong},
+		"scan-comparisons-equality-prefix-gt")
 	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
 		t.Fatalf("expected low exclusive, got %d", tr.LowEndpoint)
 	}
@@ -2421,13 +2530,13 @@ func TestScanComparisons_EqualityPrefixThenGT(t *testing.T) {
 
 func TestScanComparisons_EqualityPrefixThenLT(t *testing.T) {
 	t.Parallel()
-	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
-		eqRange("alice"),
-		ineqRange(predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(50))),
-	}, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	tr := bindOneRange(t,
+		[]*predicates.ComparisonRange{
+			eqRange("alice"),
+			ineqRange(predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(50))),
+		},
+		[]values.Type{values.NullableString, values.NullableLong},
+		"scan-comparisons-equality-prefix-lt")
 	// With an equality prefix [alice] and an upper-only `a < 50`, the low bound
 	// is the NULL boundary for the next column: [alice, null] RANGE_EXCLUSIVE,
 	// which excludes rows where x=alice and a IS NULL. Mirrors Java
@@ -2448,16 +2557,16 @@ func TestScanComparisons_EqualityPrefixThenLT(t *testing.T) {
 
 func TestScanComparisons_EqualityPrefixThenBetween(t *testing.T) {
 	t.Parallel()
-	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
-		eqRange("alice"),
-		ineqRange(
-			predicates.NewLiteralComparison(predicates.ComparisonGreaterThanEq, int64(10)),
-			predicates.NewLiteralComparison(predicates.ComparisonLessThanOrEq, int64(50)),
-		),
-	}, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	tr := bindOneRange(t,
+		[]*predicates.ComparisonRange{
+			eqRange("alice"),
+			ineqRange(
+				predicates.NewLiteralComparison(predicates.ComparisonGreaterThanEq, int64(10)),
+				predicates.NewLiteralComparison(predicates.ComparisonLessThanOrEq, int64(50)),
+			),
+		},
+		[]values.Type{values.NullableString, values.NullableLong},
+		"scan-comparisons-equality-prefix-between")
 	if tr.LowEndpoint != recordlayer.EndpointTypeRangeInclusive {
 		t.Fatalf("expected low inclusive, got %d", tr.LowEndpoint)
 	}
@@ -2474,12 +2583,12 @@ func TestScanComparisons_EqualityPrefixThenBetween(t *testing.T) {
 
 func TestScanComparisons_IsNotNullNoPrefix(t *testing.T) {
 	t.Parallel()
-	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
-		ineqRange(predicates.Comparison{Type: predicates.ComparisonIsNotNull}),
-	}, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	tr := bindOneRange(t,
+		[]*predicates.ComparisonRange{
+			ineqRange(predicates.Comparison{Type: predicates.ComparisonIsNotNull}),
+		},
+		[]values.Type{values.NullableLong},
+		"scan-comparisons-is-not-null")
 	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
 		t.Fatalf("expected low exclusive (IS NOT NULL sets low exclusive), got %d", tr.LowEndpoint)
 	}
@@ -2497,19 +2606,44 @@ func TestScanComparisons_IsNotNullNoPrefix(t *testing.T) {
 
 func TestScanComparisons_MultiEqualityThenInequality(t *testing.T) {
 	t.Parallel()
-	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
-		eqRange("alice"),
-		eqRange(int64(1)),
-		ineqRange(predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, float64(3.14))),
-	}, nil)
+	spec, err := bindScanComparisonsToRangeSet(
+		[]*predicates.ComparisonRange{
+			eqRange("alice"),
+			eqRange(int64(1)),
+			ineqRange(predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, float64(3.14))),
+		},
+		[]values.Type{values.NullableString, values.NullableLong, values.NullableDouble},
+		nil, false, "scan-comparisons-multi-equality-then-inequality",
+	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	// `> 3.14` on a DOUBLE key coordinate is TWO physical ranges, not one: the
+	// finite/+Inf/positive-NaN tail above the comparand, plus the negative-NaN
+	// block, which is logically greatest (all NaNs are) but sorts BELOW -Inf in
+	// FDB tuple order. Ascending, the finite tail comes first.
+	ranges := materializeAllRanges(t, spec)
+	if len(ranges) != 2 {
+		t.Fatalf("opened %d ranges, want 2 (finite tail + negative-NaN block): %v", len(ranges), ranges)
+	}
+	tr := ranges[0]
 	if len(tr.Low) != 3 || tr.Low[0] != "alice" || tr.Low[1] != int64(1) || tr.Low[2] != float64(3.14) {
 		t.Fatalf("expected low=[alice 1 3.14], got %v", tr.Low)
 	}
+	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
+		t.Fatalf("expected low exclusive, got %d", tr.LowEndpoint)
+	}
 	if len(tr.High) != 2 || tr.High[0] != "alice" || tr.High[1] != int64(1) {
 		t.Fatalf("expected high=[alice 1] (prefix only), got %v", tr.High)
+	}
+	nan := ranges[1]
+	if len(nan.Low) != 3 || nan.Low[0] != "alice" || nan.Low[1] != int64(1) ||
+		!math.IsNaN(nan.Low[2].(float64)) || !math.Signbit(nan.Low[2].(float64)) {
+		t.Fatalf("expected negative-NaN block low=[alice 1 -NaN], got %v", nan.Low)
+	}
+	if len(nan.High) != 3 || nan.High[0] != "alice" || nan.High[1] != int64(1) ||
+		nan.High[2] != math.Inf(-1) {
+		t.Fatalf("expected negative-NaN block high=[alice 1 -Inf], got %v", nan.High)
 	}
 }
 

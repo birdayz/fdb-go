@@ -1047,7 +1047,7 @@ func genRows(rng *rand.Rand, table TableDef) []Row {
 				// indexed column's SARG range/probe construction used to
 				// disagree with the residual-filter path — cmpAny's IEEE
 				// equality (-0.0 == +0.0) — on a query landing exactly on
-				// zero; scanComparisonsToTupleRange now widens the zero
+				// zero; bindScanComparisonsToRangeSet now widens the zero
 				// endpoint of a range to span both adjacent keys, so the two
 				// physical plans agree and this domain can include -0.0 like
 				// any other boundary value. The dedicated deterministic pin

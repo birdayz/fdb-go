@@ -10457,8 +10457,13 @@ to nothing.)
 
 - [ ] **CQ-34 (MED) — the sargable gate and the range builder are kept in manual
   lockstep.** `isSargableComparisonForMatch` (`match_max_match_map.go:67`) decides
-  what may be consumed into a scan range; `scanComparisonsToTupleRange`
-  (`executor.go:693`) decides what actually becomes a bound. They are two
+  what may be consumed into a scan range; `bindScanComparisonsToRangeSet`
+  (`scan_range_binding.go:256`) decides what actually becomes a bound. (This
+  entry originally named `scanComparisonsToTupleRange`, `executor.go:693`. That
+  function was a DEAD TWIN with zero production callers and has been deleted —
+  see RFC-217. The lockstep concern below is unaffected and remains open; only
+  the citation moved. The line numbers quoted further down refer to the deleted
+  function and should be re-derived against the live binder before use.) They are two
   functions in two files with no compiler-enforced tie, which is exactly the F11
   shape (a comparison accepted as sargable whose bound is then never applied —
   wrong rows, with the residual filter already removed). The inequality switch now
