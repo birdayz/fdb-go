@@ -12284,6 +12284,87 @@ None is speculative: each was re-verified against the tree before booking.
   (k.Value == nil && k.Pos > 0 arm), measured 0/2481 because
   upgradeSortKeyValues resolves positional keys upstream — pin THAT.
 
+
+  **SEQUENCING — RFC-215 LANDS FIRST, THEN THE CENSUS IS RE-RUN, THEN THIS.**
+  Evidence below verified on `origin/master` @ `a0958983a`; every count is
+  scoped to the command that produced it.
+
+  THE NUMBERS ABOVE ARE STALE, not merely imprecise. They were measured over a
+  tree in which every in-memory-sort ordering key is a `*FieldValue` BY
+  CONSTRUCTION, and RFC-215 removes that construction. The chain is unbroken
+  and still unconverted on master:
+
+    - `rule_implement_in_memory_sort.go:126-130` — a sort key that is not a
+      plain childless FieldValue gets `field = values.ExplainValue(sk.Value)`;
+      `:135` then writes BOTH into one struct,
+      `plans.SortKey{Field: field, …, ValueExpr: sk.Value}`.
+    - `ordering.go:796` — `keys[i] = &values.FieldValue{Field: sk.Field, …}`
+      keeps the rendering and drops `ValueExpr`. #653 merged RFC-215's RFC and
+      its instruments, NOT the fix; this line is unchanged on master.
+    - `plan_properties.go:326` → `:367` passes `o.Keys` unchanged into
+      `properties.NewRichOrdering`.
+    - `properties/rich_ordering.go` keys the ordering SET by
+      `values.ExplainValue(v)` — 11 occurrences
+      (`grep -c ExplainValue pkg/recordlayer/query/plan/cascades/properties/rich_ordering.go`),
+      the set contract stated at `:14` and `orderingKeyFor` opening with it at
+      `:365`.
+
+  So a key minted at `:796` is a `*FieldValue` whose `Field` is ALREADY a
+  rendering, and the ordering set renders it AGAIN. `plan_properties.go:367` is
+  simultaneously RFC-215's downstream consumer and the site this item names as
+  its dominant unaddressable producer (1218 keys): one defect, two
+  instrumentation points, one pipeline.
+
+  THE GATE IS UNSATISFIABLE UNTIL RFC-215 LANDS. `values.OrderingFieldPair`
+  (`column_identity.go:221-225`) is a pure Go type test — `a.(*FieldValue)` on
+  both sides and nothing else. A `:796` key for an arithmetic sort expression
+  IS a `*FieldValue` by type while carrying `(q$3728.K#1 + q$3728.K#5)`, so
+  under this item's binding condition — dispatch by VALUE TYPE, the FieldValue
+  arm returning identity-or-DECLINE and never falling through to structural —
+  it DECLINES, though it denotes an `ArithmeticValue` that belongs on the
+  structural arm. Today `orderingValuesEqualIn`
+  (`abstract_data_access_rule.go:1103-1115`) does fall through, which masks it;
+  closing that fall-through is precisely what this item does. "Decline must
+  measure zero before implementing" therefore cannot be reached while the
+  producer misrepresents the type.
+
+  THE ORDER, then:
+    1. RFC-215's conversion lands (`HintOrdering` carries `sk.ValueExpr`).
+    2. `ordering_identity_decisions_test.go`'s corpus census is RE-RUN, to
+       re-derive the FieldValue/structural split and the decline count against
+       the CONVERTED tree.
+    3. This item is implemented against numbers describing the tree it will
+       actually run on.
+
+  WHAT MOVES AND WHAT DOES NOT. The 94.8% FieldValue-arm figure partitions a
+  population RFC-215 redistributes: arithmetic sort keys relocate from the
+  FieldValue population into the structural one, which are exactly the two
+  sides of that percentage. The 126 `*RecordTypeValue` discriminators are
+  themselves untouched — they never pass through `:796` — but their DENOMINATOR
+  is not, so "126 of N" changes even though 126 does not.
+
+  WHAT THIS IS NOT: a joint scope. Different files, different producers, and
+  RFC-215 is strictly smaller and strictly upstream. RFC-215's producer is
+  `RecordQueryInMemorySortPlan.HintOrdering()` — a physical plan's PROVIDED
+  ordering. This item's comparator is `orderingValuesEqual`, on the data-access
+  MATCH path; its non-test callers are `abstract_data_access_rule.go:1020` and
+  the recursive `:1119`, both via `orderingValuesEqualIn`, with the `:1093`
+  wrapper called only from tests
+  (`grep -rn "orderingValuesEqual" pkg/ | grep -v _test.go`). They are not one
+  producer under two names. What they share is the MEASUREMENT — they converge
+  downstream at `ExplainValue`-keyed set membership — not the implementation.
+
+  OPEN QUESTION, recorded as open rather than resolved: does RFC-215's F3
+  population — the 599 ordinary dotted mints from
+  `cascades_translator.go:6940`, `cascades_translator.go:6628` and
+  `pullup.go:76` — overlap this item's territory? The evidence is PARTIAL and
+  the disambiguation was not finished. What is known: one of the two translator
+  sites mints from `k.Expr`, which is sort-key-shaped and would be this item's
+  territory; the other sits inside a `for i, col := range p.Projections` loop,
+  which is projection territory and would not be. That is one site classified
+  either way and one unexamined (`pullup.go:76`). Finish it by measurement —
+  the mint census already captures these three producers by stack — and do NOT
+  settle it by inference from the two data points above.
 - [ ] **CQ-59 (M, gated) — GroupByExpression.GetResultValue returns the INPUT
   row where Java constructs the grouping+aggregate output row**
   (GroupByExpression.java:129,:756-759 vs Go's inner.GetFlowedObjectValue()).
