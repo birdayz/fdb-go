@@ -20,8 +20,8 @@ import (
 //
 // So this measures it instead of assuming it. The question is narrow:
 //
-//	for each name the dotted arm answers, was the leg type that carried it
-//	built by clusteredOuterOrdinalSeed's INNER SCALAR LEG?
+//	for each name the dotted arm answers, WHICH producer built the leg type
+//	that carried it?
 //
 // ATTRIBUTION IS BY IDENTITY, NOT BY NAME MATCH, which is the whole point of
 // doing it this way. The producer registers the (correlation, title) pair it
@@ -40,59 +40,98 @@ import (
 //   - NEITHER → the corrected target is wrong too, and that is a third refutation
 //     rather than a surprise.
 //
-// WHAT IT MEASURED, and it is the third branch. Whole real-FDB sqldriver corpus,
-// uncached, EXIT=0:
+// WHAT IT MEASURED — TWO ROUNDS, and the first one is kept because it is the
+// finding, not a false start.
 //
-//	dotted-witness attribution (RFC-212 §10.3 deliverable 1): inner-leg titles minted 19; dotted-arm names observed 2
+// ROUND 1 instrumented only `clusteredOuterOrdinalSeed`, the producer RFC-212
+// §10.3 v1 named. Whole real-FDB sqldriver corpus, uncached, EXIT=0:
+//
+//	inner-leg titles minted 19; dotted-arm names observed 2
 //	  NOT attributed (2):
-//	    C.CV (owner q$3122 was NOT minted by clusteredOuterOrdinalSeed's inner leg — a different producer names this leg type's column)
-//	    I.QTY (owner q$395174 was NOT minted by clusteredOuterOrdinalSeed's inner leg — a different producer names this leg type's column)
+//	    C.CV (owner q$3122 ...), I.QTY (owner q$395174 ...)
 //
-// NEITHER witness originates at `clusteredOuterOrdinalSeed`. That producer minted
-// 19 inner-leg titles over the same run, so the instrument is live and the zero
-// is a reading rather than an absence — the two populations simply do not meet.
+// NEITHER witness came from it, over a run where it minted 19 titles — so the
+// instrument was live and the zero was a reading, not an absence. That refuted
+// §10.3 v1 BEFORE any retitling was written, which is the entire purpose of
+// gating the conversion on this deliverable.
 //
-// The reason is that there are TWO correlated-scalar seeds, and RFC-212 §10.3
-// named the wrong one. `clusteredOuterOrdinalSeed` serves the GATED MULTI-TABLE
-// outer; the SINGLE-SOURCE outer (`clusterArity == 1`) is served by
-// `scalarSubqueryOrdinalSeed` in cascades_translator.go, which
-// clustered_outer_scalar.go's own comment calls "the single-source seed" and
-// whose inner leg is built the same way. The dotted arm's two witnesses come
-// from that one.
+// ROUND 2 instrumented BOTH seeds. There are two: `clusteredOuterOrdinalSeed`
+// serves the GATED MULTI-TABLE outer, and `scalarSubqueryOrdinalSeed`
+// (scalar_subquery_seed.go) serves the SINGLE-SOURCE outer (clusterArity == 1) —
+// the one clustered_outer_scalar.go's own comment calls "the single-source
+// seed". Same corpus, uncached, EXIT=0:
 //
-// So the retitling target is right in KIND — a producer naming a quantifier's
-// flowed column with a title that can contain a dot — and wrong in WHICH
-// PRODUCER. §10.3 must be corrected again before implementation, and the scope
-// question it asked ("do both witnesses retire together?") is unanswered until
-// the attribution is re-run against the right producer. THIS IS EXACTLY WHY THE
-// DELIVERABLE GATES THE CONVERSION: retitling `clusteredOuterOrdinalSeed` would
-// have moved nothing, for the third time.
+//	inner-leg titles minted 274; dotted-arm names observed 2
+//	  ATTRIBUTED to a correlated-scalar seed inner leg (2):
+//	    C.CV (owner q$3122) -> scalarSubqueryOrdinalSeed, minted title "C.CV"
+//	    I.QTY (owner q$336732) -> scalarSubqueryOrdinalSeed, minted title "I.QTY"
+//
+// BOTH witnesses attribute to `scalarSubqueryOrdinalSeed`, by IDENTITY. So the
+// retitling target is a producer SWAP from §10.3 v1, and the scope question is
+// answered in the same breath: both witnesses share one producer, so the
+// retitling retires the whole arm rather than half of it.
+//
+// The machine-minted `q$N` counter differs between runs (q$395174 in round 1,
+// q$336732 in round 2 for the same logical leg), which is why attribution is
+// computed WITHIN a run and never by quoting an id across runs.
 //
 // GATED by LegIdentityCensusEnabled, like every census on this path.
 
+// mintedLeg is one inner-leg registration: who minted it, and the title given.
+type mintedLeg struct {
+	producer InnerLegProducer
+	title    string
+}
+
 var (
 	dottedAttrMu sync.Mutex
-	// dottedAttrMinted maps a correlation minted by the correlated-scalar seed's
-	// inner leg to the TITLE that leg's flowed column was given.
-	dottedAttrMinted map[string]string
+	// dottedAttrMinted maps a correlation minted by EITHER correlated-scalar seed
+	// to the producer that minted it and the TITLE its flowed column was given.
+	dottedAttrMinted map[string]mintedLeg
 	// dottedAttrObserved records one dotted-arm answer: the name, and the owner
 	// correlation the reader held.
 	dottedAttrObserved map[string]string
 )
 
-// RecordInnerScalarLegTitle registers one (correlation, title) pair minted for a
-// correlated-scalar seed's inner leg flowed column. Callers must guard on
+// InnerLegProducer names WHICH correlated-scalar seed minted an inner leg.
+//
+// There are TWO, and RFC-212 §10.3 v1 named only one of them — which is exactly
+// the error this census exists to catch, so the producer is recorded rather than
+// assumed.
+type InnerLegProducer int
+
+const (
+	// InnerLegProducerClusteredOuter is clusteredOuterOrdinalSeed, serving the
+	// GATED MULTI-TABLE outer.
+	InnerLegProducerClusteredOuter InnerLegProducer = iota
+	// InnerLegProducerSingleSource is scalarSubqueryOrdinalSeed, serving the
+	// SINGLE-SOURCE outer (clusterArity == 1).
+	InnerLegProducerSingleSource
+)
+
+func (p InnerLegProducer) String() string {
+	switch p {
+	case InnerLegProducerClusteredOuter:
+		return "clusteredOuterOrdinalSeed"
+	case InnerLegProducerSingleSource:
+		return "scalarSubqueryOrdinalSeed"
+	}
+	return "unknown"
+}
+
+// RecordInnerScalarLegTitleAt registers one (correlation, title) pair minted for
+// a correlated-scalar seed inner leg, naming the producer. Callers must guard on
 // LegIdentityCensusEnabled().
-func RecordInnerScalarLegTitle(corr CorrelationIdentifier, title string) {
+func RecordInnerScalarLegTitleAt(producer InnerLegProducer, corr CorrelationIdentifier, title string) {
 	if corr.IsZero() || title == "" {
 		return
 	}
 	dottedAttrMu.Lock()
 	defer dottedAttrMu.Unlock()
 	if dottedAttrMinted == nil {
-		dottedAttrMinted = map[string]string{}
+		dottedAttrMinted = map[string]mintedLeg{}
 	}
-	dottedAttrMinted[corr.Name()] = title
+	dottedAttrMinted[corr.Name()] = mintedLeg{producer: producer, title: title}
 }
 
 // RecordDottedArmAnswer records one name the executor's dotted arm answered on,
@@ -128,21 +167,20 @@ func DottedWitnessAttribution() (attributed, unattributed []string, mintedCount 
 	defer dottedAttrMu.Unlock()
 	mintedCount = len(dottedAttrMinted)
 	for name, owner := range dottedAttrObserved {
-		title, minted := dottedAttrMinted[owner]
+		m, minted := dottedAttrMinted[owner]
 		switch {
-		case minted && title == name:
+		case minted && m.title == name:
 			attributed = append(attributed,
-				fmt.Sprintf("%s (owner %s, minted title %q)", name, owner, title))
+				fmt.Sprintf("%s (owner %s) -> %s, minted title %q", name, owner, m.producer, m.title))
 		case minted:
 			unattributed = append(unattributed,
-				fmt.Sprintf("%s (owner %s IS a seed inner leg but its title is %q — the "+
-					"owner matches and the NAME does not, so this leg was retitled or "+
-					"renamed between mint and read)", name, owner, title))
+				fmt.Sprintf("%s (owner %s IS an inner leg minted by %s, but its title is %q — "+
+					"the owner matches and the NAME does not, so this leg was retitled or "+
+					"renamed between mint and read)", name, owner, m.producer, m.title))
 		default:
 			unattributed = append(unattributed,
-				fmt.Sprintf("%s (owner %s was NOT minted by clusteredOuterOrdinalSeed's "+
-					"inner leg — a different producer names this leg type's column)",
-					name, owner))
+				fmt.Sprintf("%s (owner %s was minted by NEITHER correlated-scalar seed — a "+
+					"third producer names this leg type's column)", name, owner))
 		}
 	}
 	sort.Strings(attributed)
@@ -158,7 +196,9 @@ func FormatDottedWitnessAttribution() string {
 		"inner-leg titles minted %d; dotted-arm names observed %d",
 		minted, len(attributed)+len(unattributed))
 	if len(attributed) > 0 {
-		fmt.Fprintf(&b, "\n  ATTRIBUTED to clusteredOuterOrdinalSeed's inner scalar leg (%d):\n    %s",
+		// The producer is named PER ROW, never in this header: there are two seeds
+		// and naming one here would state a conclusion the rows may contradict.
+		fmt.Fprintf(&b, "\n  ATTRIBUTED to a correlated-scalar seed inner leg (%d):\n    %s",
 			len(attributed), strings.Join(attributed, "\n    "))
 	}
 	if len(unattributed) > 0 {

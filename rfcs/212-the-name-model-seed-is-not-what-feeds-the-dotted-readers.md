@@ -1,9 +1,10 @@
 # RFC-212 — The name-model seed is not what feeds either dotted reader
 
 Status: **ACCEPTED, revision 3** (Graefe + Torvalds ACK on revision 2), **with
-§1.1 WITHDRAWN AND RETARGETED — see §10, the erratum.** §1.1 was implemented,
+§1.1 WITHDRAWN AND RETARGETED TWICE — see §10 (erratum 1) and §11 (erratum 2).
+The current target is §11.3 and it is UNREVIEWED.** §1.1 was implemented,
 measured INERT over two uncached corpus runs, and reverted; the retirement it
-was for needs a different producer. The corrected target is stated in §10.3 and
+was for needs a different producer. The corrected target is stated in §11.3 and
 is UNREVIEWED — it needs its own Graefe+Torvalds lap before implementation.
 Every other section stands as ACK'd.
 
@@ -988,6 +989,13 @@ single-derivation finding holds; only the corollary was wrong.
 
 ### 10.3 The corrected target: the inner leg's flowed-column TITLE
 
+> **SUPERSEDED BY §11.** This section named `clusteredOuterOrdinalSeed`. Identity
+> attribution measured that NEITHER dotted witness comes from it, refuting this
+> target before any code was written — which is what the deliverable below was
+> gated for. The corrected producer is `scalarSubqueryOrdinalSeed` (§11.3). The
+> KIND of target described here — a producer naming a quantifier's flowed column
+> with a title that can contain a dot — survived unchanged.
+
 The dotted names reach the reader as `qov.Type()` COLUMN NAMES, which means a
 producer named a quantifier's flowed column with a label.
 `clusteredOuterOrdinalSeed` builds
@@ -1145,3 +1153,106 @@ NEGATIVE result gets pinned with what re-arms it, namely a rewrite site becoming
 reachable from a named struct literal. `liftConstructor` needs its own answer
 either way: it RESHAPES the row, so it is the one site where carrying properties
 across is not automatically correct.
+
+---
+
+## 11. ERRATUM 2 — §10.3 named the wrong producer. The gate caught it before implementation.
+
+Status: **§10.3's target is CORRECTED, again.** §1.1 and §10.3 v1 are both
+withdrawn; the corrected target is §11.3. **Unreviewed — it needs its own
+Graefe+Torvalds lap, same as erratum 1.** No implementation has been attempted
+against it.
+
+### 11.1 Three targets, and why each failed
+
+This is the third redirect on one item. That is not a failure to bury — it is
+the record of a target that was genuinely hard to locate, and **each refutation
+was cheaper than the one before it.** The method is what made that true.
+
+| Target | Claim | How it failed | Cost |
+| --- | --- | --- | --- |
+| **§1.1** — `RecordConstructorValue.Type()` | Carry the leg table on the constructor and propagate it | **Not on the read path.** The reader takes `qov.Type()`. §3.5 correctly measured `Type()` as the sole DERIVATION path and then inferred readership from it — *derivation is not readership* | Full build → measure → revert cycle |
+| **§10.3 v1** — `clusteredOuterOrdinalSeed` | Retitle the inner leg's flowed column | **Right kind, wrong producer.** Identity attribution: neither witness came from it, over a run where it minted 19 titles | One corpus run, refuted *before* any code was written |
+| **§11.3** — `scalarSubqueryOrdinalSeed` | Retitle the inner leg's flowed column | *(current — unreviewed)* | — |
+
+The progression is the argument for gate-before-conversion: §1.1 cost an
+implementation, §10.3 v1 cost a measurement, and the difference is entirely that
+the second one was gated on a deliverable that had to produce a reading before
+any code could be written.
+
+### 11.2 The measurement
+
+Same identity-based method as deliverable 1, both producers instrumented. Whole
+real-FDB sqldriver corpus, uncached, `EXIT=0`:
+
+```
+bazelisk test //pkg/relational/sqldriver:sqldriver_test \
+  --cache_test_results=no --test_output=streamed --test_timeout=3600
+```
+
+```
+[sqldriver real-FDB corpus] dotted-witness attribution (RFC-212 §10.3 deliverable 1): inner-leg titles minted 274; dotted-arm names observed 2
+  ATTRIBUTED to a correlated-scalar seed inner leg (2):
+    C.CV (owner q$3122) -> scalarSubqueryOrdinalSeed, minted title "C.CV"
+    I.QTY (owner q$336732) -> scalarSubqueryOrdinalSeed, minted title "I.QTY"
+```
+
+**BOTH witnesses attribute to `scalarSubqueryOrdinalSeed`**, by identity: the
+producer registered the `(correlation, title)` pair it minted, the reader
+reported the owner correlation it was handed, and a hit required both to agree.
+A name match would have proved only that two strings agree — which is precisely
+how the earlier corollary errors were made.
+
+The prior round, with only `clusteredOuterOrdinalSeed` instrumented, reported
+`NOT attributed (2)` over a run where that producer minted 19 titles. Both
+readings are kept in the census header: the first is the refutation of §10.3 v1,
+not a false start.
+
+The `q$N` counter differs run to run (`q$395174` then `q$336732` for the same
+logical leg), which is why attribution is computed WITHIN a run and never by
+quoting an id across runs.
+
+### 11.3 The corrected target
+
+**`scalarSubqueryOrdinalSeed` (`scalar_subquery_seed.go:50`), the SINGLE-SOURCE
+outer's correlated-scalar seed**, which builds
+
+```go
+innerType := &values.RecordType{Fields: []values.Field{
+    {Name: scalarCol, FieldType: scalarType, Ordinal: 0},
+}}
+innerQOV := values.NewQuantifiedObjectValueOfType(innerCorr, innerType)
+```
+
+`scalarCol` is the subquery's output title. When it already contains a dot, it
+becomes the leg type's only column name and reaches the dotted arm
+indistinguishable from a leg-qualified reference. Its multi-table twin
+`clusteredOuterOrdinalSeed` builds the same shape but is not what the corpus
+drives to this reader.
+
+- **The scope question is ANSWERED, not rounded up.** Both witnesses share one
+  producer, so the retitling retires the whole arm. This is the "BOTH
+  attributed" branch the deliverable enumerated in advance, and it is stated
+  because it was measured — had only one attributed, day-one scope would have
+  been one witness.
+- **Identity comes from `innerCorr`**, already threaded into the function,
+  already unique, already the span's key. Nothing is minted. A mint here is how a
+  leg acquires a second spelling.
+- **The retirement condition is unchanged**: `AssertLegColumnProvenanceCensus`
+  reporting `dotted HITS by identity availability: available 0` with `Calls`
+  above its floor, uncached, before and after. It is the same measurement that
+  refuted §1.1, which is what makes it a fair test.
+- **§10.4's brancher checklist still applies unchanged**, and the structural
+  argument survives the producer swap: `innerType` sets `Fields` only and never
+  `Legs`, so no table becomes non-empty and none of the 16 decision sites changes
+  its answer.
+
+### 11.4 What is NOT settled
+
+The RFC's framing — "a producer naming a quantifier's flowed column with a title
+that can contain a dot" — survived this redirect, and that is the third time the
+KIND held while the instance moved. It is evidence for the framing, not proof:
+the corrected target has been attributed but not yet exercised, and the only
+thing that will settle it is the retirement condition moving to `available 0`.
+If it does not, revert and report — that response is now demonstrated to cost
+far less than shipping inert code.

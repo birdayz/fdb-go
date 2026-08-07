@@ -89,6 +89,15 @@ func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerO
 	innerType := &values.RecordType{Fields: []values.Field{
 		{Name: scalarCol, FieldType: scalarType, Ordinal: 0},
 	}}
+	// RFC-212 §10.3 deliverable 1, SECOND producer: register the (correlation,
+	// TITLE) pair so the executor's dotted-arm answers can be attributed BY
+	// IDENTITY. This is the SINGLE-SOURCE outer's seed; its multi-table twin
+	// (clusteredOuterOrdinalSeed) registers the same way, and the attribution
+	// census reports which — if either — named the leg type each dotted answer
+	// comes from.
+	if values.LegIdentityCensusEnabled() {
+		values.RecordInnerScalarLegTitleAt(values.InnerLegProducerSingleSource, innerCorr, scalarCol)
+	}
 	innerQOV := values.NewQuantifiedObjectValueOfType(innerCorr, innerType)
 	innerFV, err := values.NewFieldValueOfOrdinal(innerQOV, 0)
 	if err != nil {

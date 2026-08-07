@@ -507,7 +507,7 @@ func clusteredOuterOrdinalSeed(pu *clusterPullUp, innerCorr values.CorrelationId
 	// output title, and a title that already contains a dot is what reaches the
 	// dotted arm looking like a leg-qualified reference.
 	if values.LegIdentityCensusEnabled() {
-		values.RecordInnerScalarLegTitle(innerCorr, scalarCol)
+		values.RecordInnerScalarLegTitleAt(values.InnerLegProducerClusteredOuter, innerCorr, scalarCol)
 	}
 	innerQOV := values.NewQuantifiedObjectValueOfType(innerCorr, innerType)
 	innerFV, err := values.NewFieldValueOfOrdinal(innerQOV, 0)
