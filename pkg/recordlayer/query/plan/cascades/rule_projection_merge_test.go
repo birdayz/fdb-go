@@ -112,6 +112,71 @@ func TestProjectionMergeRule_LazyOuterReadDeclines(t *testing.T) {
 	}
 }
 
+// TestProjectionMergeCensus_CountsTheLazyArmItGuards keeps the corpus-level zero
+// in explaindiff from being a broken detector reading as coverage.
+//
+// That test asserts LazyOuterReads == 0 over the whole corpus. A counter that is
+// mis-wired, or wired behind the guard it is meant to observe, produces the same
+// zero and reads as good news. So this drives a lazy outer read deliberately and
+// requires the count to MOVE.
+//
+// It asserts a DELTA rather than an absolute, and does not Reset: the counters
+// are package-scoped and sibling tests in this binary fire the same rule in
+// parallel. Concurrent firings can only ADD, so a delta assertion is exact under
+// them; an absolute one would not be.
+func TestProjectionMergeCensus_CountsTheLazyArmItGuards(t *testing.T) {
+	t.Parallel()
+
+	before := ProjectionMergeCensusSnapshot()
+
+	outerVals := []values.Value{
+		&values.FieldValue{Field: "id", Typ: values.UnknownType}, // LAZY
+	}
+	innerVals := []values.Value{
+		&values.FieldValue{Field: "id", Typ: values.UnknownType},
+	}
+	FireExpressionRule(NewProjectionMergeRule(), expressions.InitialOf(stackedProjections(outerVals, innerVals)))
+
+	after := ProjectionMergeCensusSnapshot()
+	if after.LazyOuterReads <= before.LazyOuterReads {
+		t.Fatalf("LazyOuterReads did not move (%d -> %d) after a LAZY outer read "+
+			"reached the rule. The corpus census in explaindiff asserts this count "+
+			"is ZERO; if the counter cannot rise, that zero proves nothing",
+			before.LazyOuterReads, after.LazyOuterReads)
+	}
+	if after.RuleFirings <= before.RuleFirings {
+		t.Fatalf("RuleFirings did not move (%d -> %d). It is the denominator that "+
+			"keeps the lazy zero from being vacuous; a denominator that cannot rise "+
+			"cannot do that job", before.RuleFirings, after.RuleFirings)
+	}
+}
+
+// TestProjectionMergeCensus_CountsTheOrdinalArmToo pins the other half. A census
+// that only ever moves on the arm expected to be empty cannot distinguish "the
+// rule composed nothing" from "the rule composed everything by ordinal", which is
+// the exact confusion the explaindiff vacuity guards exist to prevent.
+func TestProjectionMergeCensus_CountsTheOrdinalArmToo(t *testing.T) {
+	t.Parallel()
+
+	before := ProjectionMergeCensusSnapshot()
+
+	outerVals := []values.Value{outerRead("id", 0)}
+	innerVals := []values.Value{
+		&values.FieldValue{Field: "id", Typ: values.UnknownType},
+		&values.FieldValue{Field: "name", Typ: values.UnknownType},
+	}
+	FireExpressionRule(NewProjectionMergeRule(), expressions.InitialOf(stackedProjections(outerVals, innerVals)))
+
+	after := ProjectionMergeCensusSnapshot()
+	if after.BakedSingleAccessor <= before.BakedSingleAccessor {
+		t.Fatalf("BakedSingleAccessor did not move (%d -> %d) after an ORDINAL-baked "+
+			"outer read composed. explaindiff fails when this arm reads zero over the "+
+			"corpus, on the grounds that a corpus which never merges cannot testify "+
+			"about the removed name arm; that guard needs a counter that rises",
+			before.BakedSingleAccessor, after.BakedSingleAccessor)
+	}
+}
+
 // TestProjectionMergeRule_DuplicateInnerSlotNames_OrdinalPicksTheRightSlot is
 // the DIMENSION the removed name arm could never handle and never had a test
 // for: two inner slots sharing ONE output name.
