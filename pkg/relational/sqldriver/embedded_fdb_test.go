@@ -197,7 +197,13 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// the leg-type column each dotted-arm answer comes from. Decided BY IDENTITY
 	// (owner correlation), not by name match.
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedWitnessAttribution())
-	if failed := values.AssertDottedWitnessAttribution(os.Stderr, 1); failed && code == 0 {
+	if failed := values.AssertDottedWitnessAttribution(os.Stderr,
+		// The OBSERVED floor is retired with the arm: RFC-212 §11.3's retitling drove
+		// the dotted arm to ZERO answers, so a floor on observed names is now
+		// unsatisfiable by construction. The MINTED floor stays and is what keeps the
+		// zero honest — it proves the producers are still registering, so an empty
+		// observed population means the arm is quiet rather than the instrument dead.
+		&values.DottedWitnessFloors{Minted: 1}); failed && code == 0 {
 		code = 1
 	}
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedRowTypeProducerCensus())
@@ -738,9 +744,22 @@ var legLocalBakeFloors = cascades.LegLocalBakeFloors{
 // separately from Calls because the non-dotted arms carry all but 2 of the
 // calls, so the
 // denominator can look healthy while the arm the census exists for goes silent.
+// RFC-212 §11.3 RETITLED the producer, and the dotted arm now answers ZERO
+// times over the whole corpus (measured: available 2 -> 0). The
+// DottedHitIdentityAvailable FLOOR is therefore retired with the population it
+// guarded — it is unsatisfiable by construction now, and a floor that cannot be
+// met is a build break rather than a guard.
+//
+// THE DANGEROUS DIRECTION HAS FLIPPED, and that is the whole point: this
+// population was watched for COLLAPSE while the arm was live, because a zero read
+// like good news. Now zero IS the news, so growth is the alarm — a non-zero means
+// some producer is again naming a leg type's column with a dot-containing title,
+// and the arm the retitling emptied is answering again. AssertLegColumnProvenanceCensus
+// holds that at a hard zero; only the Calls floor remains, because the reader
+// itself is still live on its FLAT arm and a census reaching it zero times would
+// make that zero vacuous.
 var legColumnProvenanceFloors = executor.LegColumnProvenanceFloors{
-	Calls:                      1,
-	DottedHitIdentityAvailable: 1,
+	Calls: 1,
 }
 
 // assertLegColumnProvenanceCensus checks the provenance census, dropping the

@@ -83,14 +83,32 @@ type mintedLeg struct {
 	title    string
 }
 
+// attributionState is the census's whole state, passed EXPLICITLY to every
+// decision below.
+//
+// It is split out from the process globals for the reason this path's other
+// censuses give: a corpus run exercises only the arms the corpus happens to
+// take, so an arm that is rare today — or that a pending conversion will make
+// reachable tomorrow — ships untested and its first real firing reads as a
+// finding rather than as an untested branch. The MIDDLE arm below is exactly
+// that case: it fires when a leg's title changed between mint and read, which is
+// what the RFC-212 §11.3 retitling does by definition, and no corpus run has
+// ever reached it.
+type attributionState struct {
+	// minted maps a correlation to the producer that minted its inner leg and
+	// the title that leg's flowed column was given.
+	minted map[string]mintedLeg
+	// observed maps a name the dotted arm answered on to the OWNER correlation
+	// the reader held.
+	observed map[string]string
+	// collisions records a name answered under a SECOND owner. See
+	// RecordDottedArmAnswer.
+	collisions []string
+}
+
 var (
-	dottedAttrMu sync.Mutex
-	// dottedAttrMinted maps a correlation minted by EITHER correlated-scalar seed
-	// to the producer that minted it and the TITLE its flowed column was given.
-	dottedAttrMinted map[string]mintedLeg
-	// dottedAttrObserved records one dotted-arm answer: the name, and the owner
-	// correlation the reader held.
-	dottedAttrObserved map[string]string
+	dottedAttrMu    sync.Mutex
+	dottedAttrState attributionState
 )
 
 // InnerLegProducer names WHICH correlated-scalar seed minted an inner leg.
@@ -128,28 +146,43 @@ func RecordInnerScalarLegTitleAt(producer InnerLegProducer, corr CorrelationIden
 	}
 	dottedAttrMu.Lock()
 	defer dottedAttrMu.Unlock()
-	if dottedAttrMinted == nil {
-		dottedAttrMinted = map[string]mintedLeg{}
+	if dottedAttrState.minted == nil {
+		dottedAttrState.minted = map[string]mintedLeg{}
 	}
-	dottedAttrMinted[corr.Name()] = mintedLeg{producer: producer, title: title}
+	dottedAttrState.minted[corr.Name()] = mintedLeg{producer: producer, title: title}
 }
 
 // RecordDottedArmAnswer records one name the executor's dotted arm answered on,
 // with the OWNER correlation the reader held. Callers must guard on
 // LegIdentityCensusEnabled().
+//
+// First writer wins for the map, and a LATER, DIFFERENT owner for the same name
+// is RECORDED as a collision rather than dropped. That is not tidiness: a name
+// answered under two owners, one attributed and one not, would otherwise report
+// as cleanly attributed and the second owner would never appear anywhere. The
+// census's whole claim is per-name, so a name with two owners invalidates the
+// claim for that name.
 func RecordDottedArmAnswer(name string, owner CorrelationIdentifier) {
 	if name == "" {
 		return
 	}
 	dottedAttrMu.Lock()
 	defer dottedAttrMu.Unlock()
-	if dottedAttrObserved == nil {
-		dottedAttrObserved = map[string]string{}
+	if dottedAttrState.observed == nil {
+		dottedAttrState.observed = map[string]string{}
 	}
-	// First writer wins: the population is two names, and a later owner for the
-	// same name would itself be a finding rather than an overwrite.
-	if _, seen := dottedAttrObserved[name]; !seen {
-		dottedAttrObserved[name] = owner.Name()
+	prev, seen := dottedAttrState.observed[name]
+	switch {
+	case !seen:
+		dottedAttrState.observed[name] = owner.Name()
+	case prev != owner.Name():
+		c := fmt.Sprintf("%s answered under owner %s AND owner %s", name, prev, owner.Name())
+		for _, existing := range dottedAttrState.collisions {
+			if existing == c {
+				return
+			}
+		}
+		dottedAttrState.collisions = append(dottedAttrState.collisions, c)
 	}
 }
 
@@ -157,17 +190,48 @@ func RecordDottedArmAnswer(name string, owner CorrelationIdentifier) {
 func ResetDottedWitnessAttribution() {
 	dottedAttrMu.Lock()
 	defer dottedAttrMu.Unlock()
-	dottedAttrMinted, dottedAttrObserved = nil, nil
+	dottedAttrState = attributionState{}
+}
+
+func snapshotAttribution() attributionState {
+	dottedAttrMu.Lock()
+	defer dottedAttrMu.Unlock()
+	out := attributionState{
+		minted:     make(map[string]mintedLeg, len(dottedAttrState.minted)),
+		observed:   make(map[string]string, len(dottedAttrState.observed)),
+		collisions: append([]string(nil), dottedAttrState.collisions...),
+	}
+	for k, v := range dottedAttrState.minted {
+		out.minted[k] = v
+	}
+	for k, v := range dottedAttrState.observed {
+		out.observed[k] = v
+	}
+	return out
 }
 
 // DottedWitnessAttribution reports, per observed name, whether it is attributed
-// to the correlated-scalar seed's inner leg BY IDENTITY.
+// to a correlated-scalar seed inner leg BY IDENTITY.
 func DottedWitnessAttribution() (attributed, unattributed []string, mintedCount int) {
-	dottedAttrMu.Lock()
-	defer dottedAttrMu.Unlock()
-	mintedCount = len(dottedAttrMinted)
-	for name, owner := range dottedAttrObserved {
-		m, minted := dottedAttrMinted[owner]
+	a, u, m, _ := classifyAttribution(snapshotAttribution())
+	return a, u, m
+}
+
+// classifyAttribution is the three-way partition, over EXPLICIT state.
+//
+// The three arms are genuinely different findings and the middle one is the
+// reason attribution is keyed by owner rather than by name:
+//
+//   - ATTRIBUTED: the owner IS a minted inner leg and the title it was minted
+//     with IS the name the reader answered on.
+//   - RETITLED: the owner is a minted inner leg and the title is NOT that name —
+//     the leg was retitled or renamed between mint and read. A name-only matcher
+//     has no such state and cannot express this arm at all.
+//   - THIRD PRODUCER: the owner was minted by neither seed.
+func classifyAttribution(s attributionState) (attributed, unattributed []string, mintedCount int, collisions []string) {
+	mintedCount = len(s.minted)
+	for name, owner := range s.observed {
+		m, minted := s.minted[owner]
 		switch {
 		case minted && m.title == name:
 			attributed = append(attributed,
@@ -185,12 +249,16 @@ func DottedWitnessAttribution() (attributed, unattributed []string, mintedCount 
 	}
 	sort.Strings(attributed)
 	sort.Strings(unattributed)
-	return attributed, unattributed, mintedCount
+	return attributed, unattributed, mintedCount, append([]string(nil), s.collisions...)
 }
 
 // FormatDottedWitnessAttribution renders the census for a harness to log.
 func FormatDottedWitnessAttribution() string {
-	attributed, unattributed, minted := DottedWitnessAttribution()
+	return formatAttribution(snapshotAttribution())
+}
+
+func formatAttribution(s attributionState) string {
+	attributed, unattributed, minted, collisions := classifyAttribution(s)
 	var b strings.Builder
 	fmt.Fprintf(&b, "dotted-witness attribution (RFC-212 §10.3 deliverable 1): "+
 		"inner-leg titles minted %d; dotted-arm names observed %d",
@@ -198,6 +266,8 @@ func FormatDottedWitnessAttribution() string {
 	if len(attributed) > 0 {
 		// The producer is named PER ROW, never in this header: there are two seeds
 		// and naming one here would state a conclusion the rows may contradict.
+		// Substituting the currently-right one would go stale the first time a
+		// third producer attributed; omitting it removes the class.
 		fmt.Fprintf(&b, "\n  ATTRIBUTED to a correlated-scalar seed inner leg (%d):\n    %s",
 			len(attributed), strings.Join(attributed, "\n    "))
 	}
@@ -207,32 +277,79 @@ func FormatDottedWitnessAttribution() string {
 	}
 	if len(attributed)+len(unattributed) == 0 {
 		b.WriteString("\n  NO dotted-arm answers observed — the attribution is VACUOUS and " +
-			"decides nothing; see the floor below.")
+			"decides nothing; see the floors below.")
+	}
+	if len(collisions) > 0 {
+		sorted := append([]string(nil), collisions...)
+		sort.Strings(sorted)
+		fmt.Fprintf(&b, "\n  OWNER COLLISIONS (%d) — the per-name claim does not hold for these:\n    %s",
+			len(sorted), strings.Join(sorted, "\n    "))
 	}
 	return b.String()
 }
 
-// AssertDottedWitnessAttribution floors the OBSERVED population.
-//
-// The finding this census produces is a partition of the dotted-arm names, and a
-// partition over an empty population reads exactly like a clean one. The floor is
-// the observed-name count, not the minted count: a run where the producer minted
-// titles but the reader answered on none of them decides nothing about scope,
-// which is the only question this census exists to settle.
-func AssertDottedWitnessAttribution(w io.Writer, floor int) bool {
-	attributed, unattributed, minted := DottedWitnessAttribution()
-	if floor <= 0 || len(attributed)+len(unattributed) >= floor {
-		return false
+// DottedWitnessFloors are the two populations that must be non-trivial for this
+// census's finding to mean anything.
+type DottedWitnessFloors struct {
+	// Observed floors the dotted-arm names. A partition over an empty observed
+	// population reads exactly like a decided one.
+	Observed int
+	// Minted floors the registrations. This is the direction the census's first
+	// round rested on and nothing checked: the NEITHER finding was only load
+	// bearing because the producers minted titles on that run, so the instrument
+	// was demonstrably live. A run minting ZERO reports NOT attributed for every
+	// name, vacuously, and looks identical to a real refutation.
+	Minted int
+}
+
+// AssertDottedWitnessAttribution checks both floors and the owner-collision zero.
+func AssertDottedWitnessAttribution(w io.Writer, floors *DottedWitnessFloors) bool {
+	return assertAttribution(w, snapshotAttribution(), floors)
+}
+
+func assertAttribution(w io.Writer, s attributionState, floors *DottedWitnessFloors) bool {
+	attributed, unattributed, minted, collisions := classifyAttribution(s)
+	observed := len(attributed) + len(unattributed)
+	failed := false
+
+	if len(collisions) > 0 {
+		failed = true
+		fmt.Fprintf(w, "DOTTED-WITNESS ATTRIBUTION FAIL: %d name(s) answered under MORE THAN ONE\n"+
+			"  owner: %s\n"+
+			"  This census's claim is PER NAME — 'the leg type carrying this name was built\n"+
+			"  by producer X' — and a name with two owners has two answers, of which the\n"+
+			"  report shows one. First-writer-wins would have printed such a name as\n"+
+			"  cleanly attributed while its second owner appeared nowhere.\n"+
+			"  WHAT THIS RE-ARMS: the scoping decision. 'Both witnesses share one producer'\n"+
+			"  is only true if each witness HAS one producer.\n",
+			len(collisions), strings.Join(collisions, "; "))
 	}
-	fmt.Fprintf(w, "DOTTED-WITNESS ATTRIBUTION FAIL: %d dotted-arm name(s) observed, want >= %d\n"+
-		"  (inner-leg titles minted this run: %d).\n"+
-		"  This census answers ONE question — whether the names the executor's dotted arm\n"+
-		"  answers on originate at clusteredOuterOrdinalSeed's inner scalar leg — and that\n"+
-		"  answer is what scopes RFC-212 §10.3's retitling. Over an empty observed\n"+
-		"  population the partition is vacuous and prints exactly like a decided one.\n"+
-		"  WHAT A COLLAPSE RE-ARMS: the scoping decision. With no reading, 'both witnesses\n"+
-		"  retire together' becomes an assumption again — which is the corollary error\n"+
-		"  that already cost this workstream a full implementation cycle.\n",
-		len(attributed)+len(unattributed), floor, minted)
-	return true
+	if floors == nil {
+		return failed
+	}
+	if floors.Observed > 0 && observed < floors.Observed {
+		failed = true
+		fmt.Fprintf(w, "DOTTED-WITNESS ATTRIBUTION FAIL: %d dotted-arm name(s) observed, want >= %d\n"+
+			"  (inner-leg titles minted this run: %d).\n"+
+			"  The finding is a PARTITION of the dotted-arm names, and a partition over an\n"+
+			"  empty observed population is vacuous while printing exactly like a decided one.\n"+
+			"  WHAT A COLLAPSE RE-ARMS: the scoping decision. With no reading, 'both\n"+
+			"  witnesses retire together' becomes an assumption again — the corollary error\n"+
+			"  that already cost this workstream a full implementation cycle.\n",
+			observed, floors.Observed, minted)
+	}
+	if floors.Minted > 0 && minted < floors.Minted {
+		failed = true
+		fmt.Fprintf(w, "DOTTED-WITNESS ATTRIBUTION FAIL: %d inner-leg title(s) minted, want >= %d\n"+
+			"  (dotted-arm names observed this run: %d).\n"+
+			"  This is the direction a NOT-attributed finding rests on and it was read from a\n"+
+			"  log rather than asserted: the round that refuted RFC-212 §10.3 v1 was load\n"+
+			"  bearing ONLY because the producers minted titles on that run, so the\n"+
+			"  instrument was demonstrably live.\n"+
+			"  WHAT A COLLAPSE RE-ARMS: every NOT-attributed row. With zero registrations\n"+
+			"  every name reports as unattributed, vacuously, and reads identically to a real\n"+
+			"  refutation of whichever producer the RFC currently names.\n",
+			minted, floors.Minted, observed)
+	}
+	return failed
 }

@@ -522,6 +522,20 @@ func assertLegColumnProvenanceCounters(w io.Writer, c legColumnProvenanceCounter
 			"  re-keyed by identity — is then a share of an unknown whole.\n", got, c.Calls)
 	}
 	dottedHits := c.DottedHitIdentityAvailable + c.DottedHitIdentityUnstated + c.DottedHitIdentityDiverged
+	if dottedHits != 0 {
+		failed = true
+		fmt.Fprintf(w, "LEG-COLUMN PROVENANCE CENSUS FAIL: the dotted arm ANSWERED %d time(s), want 0.\n"+
+			"  RFC-212 §11.3 retitled the producer that was naming a leg type's only column\n"+
+			"  with a dot-containing title, and this arm went from 2 answers to 0 over the\n"+
+			"  whole real-FDB corpus. Zero is now the STEADY STATE, so the dangerous\n"+
+			"  direction is GROWTH: this population was watched for collapse while the arm\n"+
+			"  was live, and is watched for revival now.\n"+
+			"  WHAT A NON-ZERO MEANS: some producer is again naming a quantifier's flowed\n"+
+			"  column with a title that splits at a dot, so a reference resolves through a\n"+
+			"  LEG and COLUMN this leg does not have. Find the producer and give it an\n"+
+			"  unqualified title (query.unqualifiedScalarTitle); do NOT relax this zero.\n",
+			dottedHits)
+	}
 	owners := c.DottedHitOwnerSelectsSameLeg + c.DottedHitOwnerUnstated +
 		c.DottedHitOwnerNamesNoLeg + c.DottedHitOwnerSelectsOtherLeg
 	if owners != dottedHits {

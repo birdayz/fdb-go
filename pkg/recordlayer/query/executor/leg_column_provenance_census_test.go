@@ -94,16 +94,16 @@ func TestLegColumnProvenanceClassification(t *testing.T) {
 func TestLegColumnProvenanceGate(t *testing.T) {
 	t.Parallel()
 
-	floors := &LegColumnProvenanceFloors{Calls: 1, DottedHitIdentityAvailable: 1}
+	// The DottedHitIdentityAvailable FLOOR is gone: RFC-212 §11.3 retitled the
+	// producer and the dotted arm now answers ZERO times over the corpus, so a
+	// floor on that population is unsatisfiable. It is replaced by a HARD ZERO —
+	// the direction flipped, and growth is the alarm now.
+	floors := &LegColumnProvenanceFloors{Calls: 1}
 
-	// A state that HOLDS: the seven outcomes partition Calls, nothing diverged, and
-	// the OWNER sub-partition accounts for every dotted hit. The owner numbers are
-	// the corpus's own — four hits, none of which an identity-keyed selection could
-	// have resolved, because the identity the reader holds names no leg of the
-	// source row.
+	// A state that HOLDS: the seven outcomes partition Calls, nothing diverged,
+	// and the dotted arm answers NOTHING — the post-retitling steady state.
 	ok := legColumnProvenanceCounters{
-		Calls: 52, FlatHit: 40, NotDotted: 8, DottedHitIdentityAvailable: 4,
-		DottedHitOwnerNamesNoLeg: 4,
+		Calls: 52, FlatHit: 44, NotDotted: 8,
 	}
 	var b strings.Builder
 	if assertLegColumnProvenanceCounters(&b, ok, floors) {
@@ -114,14 +114,38 @@ func TestLegColumnProvenanceGate(t *testing.T) {
 	// was recorded for them. Without this the sub-partition can quietly stop being
 	// filled and its zeros — including "no dotted hit could have been resolved by
 	// identity", the finding that blocks the conversion — hold over nothing.
+	// A state that must FAIL: the dotted arm ANSWERED. Zero is the steady state
+	// after the retitling, so any answer means a producer is again naming a leg
+	// type's only column with a dot-containing title.
 	b.Reset()
-	ownerGap := ok
+	revived := ok
+	revived.FlatHit = 40
+	revived.DottedHitIdentityAvailable = 4
+	revived.DottedHitOwnerNamesNoLeg = 4
+	if !assertLegColumnProvenanceCounters(&b, revived, floors) {
+		t.Fatal("the dotted arm answered 4 times and the gate PASSED.\n" +
+			"  RFC-212 §11.3 drove this population to zero by retitling the producer;\n" +
+			"  zero is now the steady state and the dangerous direction is GROWTH.\n" +
+			"  WHAT THIS RE-ARMS: a producer naming a quantifier's flowed column with a\n" +
+			"  title that splits at a dot, so a reference resolves through a LEG and\n" +
+			"  COLUMN the leg does not have — silently, because the arm answers.")
+	}
+
+	// The OWNER sub-partition must still be checked, and it is only meaningful
+	// over a state that HAS dotted hits — so it is built from the revived one.
+	// Such a state also trips the new hard zero, which is why the MESSAGE is
+	// asserted rather than just the boolean: otherwise this case would pass on
+	// the zero alone and stop testing the sub-partition entirely.
+	b.Reset()
+	ownerGap := revived
 	ownerGap.DottedHitOwnerNamesNoLeg = 0
 	if !assertLegColumnProvenanceCounters(&b, ownerGap, floors) {
-		t.Fatal("the gate accepted 4 dotted hits with no owner verdict recorded for any " +
-			"of them. The owner sub-partition is what says whether an identity-keyed " +
-			"selection would resolve the same window; unfilled, it reads as all-zero, " +
-			"which is indistinguishable from a measured all-miss.")
+		t.Fatal("the gate accepted dotted hits with no owner verdict recorded for any " +
+			"of them.")
+	}
+	if !strings.Contains(b.String(), "owner sub-partition") {
+		t.Fatalf("the gate failed, but NOT on the owner sub-partition — so that check\n"+
+			"  is no longer exercised and could stop being filled unnoticed:\n%s", b.String())
 	}
 
 	// A state that must FAIL: a call left the reader by a path with no counter.
