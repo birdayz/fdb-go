@@ -14,13 +14,38 @@ import (
 
 // THE `GetResultType() == UnknownType` STUB INVENTORY (RFC-213).
 //
-// Java has no stub. `RelationalExpression.getResultType()` is a DEFAULT method
-// deriving `new Type.Relation(getResultValue().getResultType())`
-// (RelationalExpression.java:195-196), and it is the ONLY definition of that
-// method in the entire Java tree — no plan overrides it, RecordQueryFlatMapPlan
-// included. It cannot return unknown because `Value getResultValue()` is
-// ABSTRACT on the same interface (`:200`): every relational expression is
-// required to have a result value, so the type is always derivable.
+// JAVA HAS A STUB TOO — IT JUST PUTS IT SOMEWHERE ELSE, and getting that
+// backwards is what RFC-213 rev 1 was NAK'd for. This header carried the wrong
+// version until rev 2; it is corrected here rather than quietly deleted, because
+// an instrument that still argues a withdrawn premise is the thing the RFC's own
+// §8 asks about.
+//
+// Both ends of Java's chain are DEFAULTS, and the terminal one is a SENTINEL:
+//
+//	RelationalExpression.java:194-196   default Type.Relation getResultType()
+//	                                     -> new Type.Relation(getResultValue().getResultType())
+//	values/Value.java:107-111           default Type getResultType()
+//	                                     -> Type.primitiveType(Type.TypeCode.UNKNOWN)
+//
+// TypeCode.UNKNOWN is a first-class constant (typing/Type.java:774) and
+// Type.isUnresolved() (`:298-300`) is exactly that check — Java has an erased
+// type AND a predicate for asking about it. It is REACHED in production:
+// values/EmptyValue.java declares no override, so it answers UNKNOWN, and it is
+// planted by KeyExpressionExpansionVisitor.java:124,
+// ScalarTranslationVisitor.java:116 and AggregateIndexExpansionVisitor.java:238.
+//
+// SCOPED, because the unscoped version was the other withdrawn claim: within the
+// `cascades/expressions` RelationalExpression hierarchy, `:195` is the sole
+// definition and RecordQueryFlatMapPlan overrides nothing. Tree-wide there are
+// 60 definitions of getResultType (50 on Value, one on typing/Typed.java:38
+// which `:194` overrides with a covariant return, plus Reference, InSource and
+// four on relational QueryPlan/CopyPlan).
+//
+// SO THE DIFFERENCE IS WHERE THE SENTINEL LIVES, NOT WHETHER ONE EXISTS. Java
+// puts it at the VALUE level, names it (EmptyValue) and gives it a predicate; a
+// plan that flows no row SAYS SO. Go puts it at the PLAN level, unnamed, as a
+// method that opts out — indistinguishable from an unfinished one, which is how
+// twelve of them accumulated without anyone deciding to.
 //
 // GO INVERTED THAT DEPENDENCY, and every symptom follows from the inversion.
 // `plans.RecordQueryPlan` requires `GetResultType()` (plan.go:70) and does NOT

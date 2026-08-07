@@ -207,6 +207,13 @@ account have nothing to return. **Tier 3 gates the interface change, not the rev
 - **Phase 0 — the `EmptyValue` analogue.** Port Java's named "no row" value plus an
   `IsUnresolved()` predicate on `values.Type` (Java has both; Go has neither by name). This
   is what lets all twelve satisfy the interface on day one.
+  *Companion (EE2): the consumer classifier has no unit pin over explicit state — all
+  four gates in `result_type_stub_census_test.go` run over `sourceTreeRoot`, so §3's
+  20/7/21/0 split and RAW's reachability were both established by hand and nothing keeps
+  either established. Add a synthetic-source pin, one site per arm, in the shape of
+  `TestIsNamedCallSeesQualifiedCalls`. Cheap, and it makes the 8/20 → 7/21 correction
+  reproducible rather than anecdotal — which matters because that correction is the one
+  fact §4's framing rests on.*
 - **Phase 1 — `GetResultValue()` joins `RecordQueryPlan`.** Tier 3 returns the empty value;
   tiers 1–2 already have one or can forward. Compiles only after phase 0.
 - **Phase 2 — derive.** `GetResultType()` becomes a shared derivation; tier 1 derives from
