@@ -1,7 +1,6 @@
 package docscheck
 
 import (
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -51,7 +50,7 @@ func scanSnippetInPackage(t *testing.T, pkg, body string) (forms []string, lines
 	if err != nil {
 		t.Fatalf("parse snippet: %v\n---\n%s", err, src)
 	}
-	scanFieldDecisions(f, func(pos token.Pos, form string) {
+	scanFieldDecisions(f, func(pos token.Pos, form, _ string) {
 		forms = append(forms, form)
 		lines = append(lines, fset.Position(pos).Line)
 	})
@@ -858,8 +857,8 @@ func TestFieldDecisionDetectorCountsEveryDecisionOnAPackedLine(t *testing.T) {
 func TestTallyCountsRepeatedDecisionsOnOneDebtLine(t *testing.T) {
 	t.Parallel()
 
-	// Line 4 of the source below hosts two map-key decisions; line 5 hosts one
-	// that nothing covers, so the offense path is exercised in the same pass.
+	// Two map-key decisions inside ONE declaration, plus a third the debt list
+	// does not cover so the offense path runs in the same pass.
 	const body = `package p
 
 func f(m map[string]bool, a, b, c *values.FieldValue) bool {
@@ -873,32 +872,62 @@ func f(m map[string]bool, a, b, c *values.FieldValue) bool {
 		t.Fatalf("parse: %v", err)
 	}
 
-	debt := map[string]fieldDebt{"x.go:4": {2, "name-keyed: two lookups packed onto one line"}}
+	// WHAT THIS TEST USED TO PIN, AND WHY IT CHANGED. Under the old
+	// `path/file.go:LINE` key these three decisions collapsed onto two keys —
+	// two on line 4, one on line 5 — and the load-bearing property was that the
+	// tally INCREMENTED rather than merely marking a line seen, because a line
+	// hosting three decisions under a boolean would accept one, two or three of
+	// them and a deletion would pass silently.
+	//
+	// The site key is now unique per DECISION (TestFieldDecisionSiteKeysAreUnique
+	// checks that over the whole tree), so no key can host two and the counter can
+	// no longer be driven above 1 by any input. The anti-suppression property did
+	// not go away with it — it moved: each decision now carries its own entry, so
+	// deleting one of a pair leaves that entry STALE and debtMismatches reports it.
+	// That is a strictly sharper signal than a count, because it names which of the
+	// pair went away.
+	//
+	// So this pins the three facts the new scheme rests on: the twins get distinct
+	// keys, each tallies exactly once, and an entry claiming a count no key can
+	// host is a mismatch rather than a silent pass.
+	base := "x.go # f # a map key"
+	k1, k2, k3 := base+" # 1", base+" # 2", base+" # 3"
+
+	debt := map[string]fieldDebt{
+		k1: {1, "name-keyed: first lookup"},
+		k2: {1, "name-keyed: second lookup"},
+	}
 	seenAllowed, seenDebt := map[string]int{}, map[string]int{}
 	offenses := tallyFieldDecisions("x.go", fset, f, nil, debt, seenAllowed, seenDebt)
 
-	if seenDebt["x.go:4"] != 2 {
-		t.Fatalf("a debt line hosting two decisions tallied %d.\n\n"+
-			"The tally must COUNT, not merely mark the line seen: with a bare assignment every "+
-			"site reads as 1, and then a second violation landing on a listed line — or one of a "+
-			"pair being deleted — passes the ratchet silently.", seenDebt["x.go:4"])
+	if seenDebt[k1] != 1 || seenDebt[k2] != 1 {
+		t.Fatalf("the two twins tallied %d and %d, want 1 each.\nseenDebt = %v\n"+
+			"Twins in one declaration must get DISTINCT ordinals; if they share a key "+
+			"one entry covers both and fixing one silently discharges the other.",
+			seenDebt[k1], seenDebt[k2], seenDebt)
 	}
-	if len(offenses) != 1 || !strings.Contains(offenses[0], "x.go:5") {
-		t.Fatalf("offenses = %v, want exactly the unlisted x.go:5 decision", offenses)
+	if len(seenDebt) != 2 {
+		t.Fatalf("seenDebt has %d keys, want exactly 2: %v", len(seenDebt), seenDebt)
+	}
+	if len(offenses) != 1 || !strings.Contains(offenses[0], k3) {
+		t.Fatalf("offenses = %v, want exactly the uncovered third decision %q", offenses, k3)
 	}
 	if len(seenAllowed) != 0 {
 		t.Fatalf("seenAllowed = %v, want empty against an empty allowlist", seenAllowed)
 	}
 
-	// And the tally must now AGREE with the entry that declared two.
-	if got := debtMismatches(debt, seenDebt); len(got) > 0 {
-		t.Fatalf("an entry recording 2 decisions on a line that hosts 2 was reported stale: %v", got)
+	// An entry claiming a count no key can host must be reported, not accepted.
+	overclaim := map[string]fieldDebt{k1: {2, "name-keyed: claims two"}, k2: {1, "name-keyed: ok"}}
+	seen2 := map[string]int{}
+	tallyFieldDecisions("x.go", fset, f, nil, overclaim, map[string]int{}, seen2)
+	stale := debtMismatches(overclaim, seen2)
+	if len(stale) != 1 || !strings.Contains(stale[0], k1) {
+		t.Fatalf("an entry claiming 2 decisions on a key that hosts 1 was not reported: %v\n"+
+			"The count is now structurally 1 everywhere, so a claim above it is a typo "+
+			"or a stale merge and must red.", stale)
 	}
 }
 
-// The detector must not depend on a snippet parsing into anything exotic — if
-// scanSnippet ever silently produced an empty file, every RECALL case above
-// would pass by matching nothing and every PRECISION case by finding nothing.
 func TestFieldDecisionDetectorSnippetHarnessIsLive(t *testing.T) {
 	t.Parallel()
 	src := "package p\n\nfunc f(fv *values.FieldValue, s string) bool { return fv.Field == s }\n"
@@ -1123,37 +1152,37 @@ func TestAllowlistShapeValidatorRejectsNonSites(t *testing.T) {
 		},
 		{
 			name:  "per-site entry",
-			entry: fieldDecisionSite{site: "pkg/relational/core/query/cascades_translator.go:12", n: 1, why: why},
+			entry: fieldDecisionSite{site: "pkg/relational/core/query/cascades_translator.go # bakeRef # a map key # 1", n: 1, why: why},
 			valid: true,
 		},
 		{
 			name:  "multi-decision per-site entry",
-			entry: fieldDecisionSite{site: "pkg/x/file.go:4151", n: 3, why: why},
+			entry: fieldDecisionSite{site: "pkg/x/file.go # Decide # a == comparison # 2", n: 3, why: why},
 			valid: true,
 		},
 		{
 			name:  "zero count",
-			entry: fieldDecisionSite{site: "pkg/x/file.go:12", n: 0, why: why},
+			entry: fieldDecisionSite{site: "pkg/x/file.go # Decide # a == comparison # 1", n: 0, why: why},
 		},
 		{
 			name:  "negative count",
-			entry: fieldDecisionSite{site: "pkg/x/file.go:12", n: -1, why: why},
+			entry: fieldDecisionSite{site: "pkg/x/file.go # Decide # a == comparison # 1", n: -1, why: why},
 		},
 		{
 			name:  "blank reason",
-			entry: fieldDecisionSite{site: "pkg/x/file.go:12", n: 1, why: "   "},
+			entry: fieldDecisionSite{site: "pkg/x/file.go # Decide # a == comparison # 1", n: 1, why: "   "},
 		},
 		{
-			name:  "non-numeric line",
-			entry: fieldDecisionSite{site: "pkg/x/file.go:top", n: 1, why: why},
+			name:  "non-numeric ordinal",
+			entry: fieldDecisionSite{site: "pkg/x/file.go # Decide # a == comparison # top", n: 1, why: why},
 		},
 		{
-			name:  "colon with no line after it",
-			entry: fieldDecisionSite{site: "pkg/x/file.go:", n: 1, why: why},
+			name:  "separator with no ordinal after it",
+			entry: fieldDecisionSite{site: "pkg/x/file.go # Decide # a == comparison # ", n: 1, why: why},
 		},
 		{
 			name:  "not a Go file",
-			entry: fieldDecisionSite{site: "pkg/x/file.proto:12", n: 1, why: why},
+			entry: fieldDecisionSite{site: "pkg/x/file.proto # Decide # a == comparison # 1", n: 1, why: why},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1419,11 +1448,21 @@ func TestFieldDecisionsInsideClosuresAreReported(t *testing.T) {
 			}
 			return true
 		})
-		scanFieldDecisions(f, func(pos token.Pos, _ string) {
+		// The keyer must be per FILE and must see EVERY decision, not only the
+		// ones inside closures — the ordinal counts occurrences of a triple in
+		// source order, so skipping the non-closure ones would number the closure
+		// ones differently from the way tallyFieldDecisions numbers them and this
+		// test would look up keys that do not exist.
+		//
+		// This used to carry its own copy of the key formula. That is the failure
+		// the shared keyer removes: two independent spellings of one identity,
+		// silently diverging the moment either changed.
+		keyer := newFieldDecisionKeyer()
+		scanFieldDecisions(f, func(pos token.Pos, form, fn string) {
+			key := keyer.key(rel, fn, form)
 			for _, s := range lits {
 				if pos >= s.lo && pos <= s.hi {
-					engineSites = append(engineSites,
-						fmt.Sprintf("%s:%d", rel, fset.Position(pos).Line))
+					engineSites = append(engineSites, key)
 					return
 				}
 			}
