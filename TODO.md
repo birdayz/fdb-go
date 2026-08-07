@@ -15405,22 +15405,29 @@ None is speculative: each was re-verified against the tree before booking.
   different producer, and a deletion clause cannot be discharged by a census that
   measures one corpus.
 
-  - **Item 1 DONE** = the correlated-scalar seed's leg table is carried on the
-    RecordConstructorValue and PROPAGATED by `RecordConstructorValue.Type()`
-    (never inferred there from field names); the leg-column provenance census
-    reports `dotted HITS by identity availability: available 0` with `Calls`
-    above its floor; AND the single-producer precondition is RE-CHECKED at the
-    implementation head rather than assumed — `values.FormatDottedRowTypeProducerCensus`
-    still reports the seed's row shapes (`[K C.CV]`, `[ID NAME O.I.QTY]`) from
-    that one derivation path and no other path derives them.
-    The check is named because the penalty is not evidence: `refineRowTypes`
-    DECLINING a populated-vs-empty pair
-    (`expressions.TestLegTablePopulation_PopulatedAgainstEmptyIsAConflict`) is
-    what happens when the precondition is VIOLATED, not a demonstration that it
-    holds. An earlier revision of this clause cited the decline as the proof,
-    which would have let the box be ticked without checking anything.
-    "`Equals`/`Hash` ignore `Legs`" establishes type IDENTITY only and is NOT a
-    blast-radius argument.
+  - **Item 1 — MECHANISM WITHDRAWN, RETARGETED (RFC-212 §10).** ~~the
+    correlated-scalar seed's leg table is carried on the RecordConstructorValue
+    and PROPAGATED by `RecordConstructorValue.Type()`~~ — that was BUILT, measured
+    INERT over two uncached corpus runs (`available 2` before and after, same two
+    witnesses, nothing else moved), and REVERTED. The reader takes `qov.Type()`,
+    the quantifier's own flowed type; the constructor's derived type is not on its
+    path. §3.5's measurement was right that `Type()` is the sole DERIVATION path
+    and the corollary that the reader takes it was wrong — derivation is not
+    readership.
+
+    **The corrected target is a RETITLING**, and it is UNREVIEWED: the inner leg's
+    flowed column is named by the subquery's OUTPUT TITLE
+    (`clusteredOuterOrdinalSeed`'s `innerType := &RecordType{Fields:
+    [{Name: scalarCol}]}`), and a title that already contains a dot arrives at the
+    dotted arm indistinguishable from a leg-qualified reference. Do NOT implement
+    before its own Graefe+Torvalds lap — the target changed, so the gate applies
+    again.
+
+    **Item 1 DONE** (unchanged, and it is what refuted the old mechanism) = the
+    leg-column provenance census reports `dotted HITS by identity availability:
+    available 0` with `Calls` above its floor over an uncached full-corpus run.
+    Whether `C.CV` retires with the same change as `I.QTY` is to be MEASURED, not
+    assumed — assuming it is the same corollary error.
   - **Item 2 DONE** = `AssertDottedLegQualifierCensus` reports `flatColumnBake`
     and `legQOVBake` at zero matched calls, in two steps whose populations are
     stated separately (98+3 alias route, 1 table-name route).

@@ -1,8 +1,14 @@
 # RFC-212 — The name-model seed is not what feeds either dotted reader
 
-Status: **ACCEPTED, revision 3** (Graefe + Torvalds ACK on revision 2). This is
-CQ-95's RFC. Revision 3 folds the four post-ACK findings; none was blocking, and
-two of them moved a claim:
+Status: **ACCEPTED, revision 3** (Graefe + Torvalds ACK on revision 2), **with
+§1.1 WITHDRAWN AND RETARGETED — see §10, the erratum.** §1.1 was implemented,
+measured INERT over two uncached corpus runs, and reverted; the retirement it
+was for needs a different producer. The corrected target is stated in §10.3 and
+is UNREVIEWED — it needs its own Graefe+Torvalds lap before implementation.
+Every other section stands as ACK'd.
+
+This is CQ-95's RFC. Revision 3 folds the four post-ACK findings; none was
+blocking, and two of them moved a claim:
 
 - **§1.1 named a derivation site that is the very method it said to avoid.**
   §3.5 enumerates the producers of the seed's row and finds `RecordConstructorValue.Type()`
@@ -139,7 +145,8 @@ on the executor widening it is booked behind.
 buildable on `master` today.**
 
 1. **Reader one (`executor.rowSlotForLegColumn`'s dotted arm) is decoupled from
-   the seed conversion and retired ADDITIVELY.** Its two live hits come from a
+   the seed conversion and retired ADDITIVELY.** *(The decoupling stands; the
+   MECHANISM below is withdrawn — see §10. Read §10.3 for the corrected target.)* Its two live hits come from a
    producer that already holds the ordinal it is making the reader re-derive
    from text: `clustered_outer_scalar.go:487-495` builds each leg column as
    `RecordConstructorField{Name: leg.binding+"."+COL, Value:
@@ -901,3 +908,183 @@ pinned it.
 - **The `noMatch 4` share of `flatColumnBake`.** Four calls resolve no leg and
   fall through unbaked; whether those are references that should have resolved is
   a separate question this RFC does not open.
+
+---
+
+## 10. ERRATUM — §1.1's target was wrong. Built, measured inert, reverted.
+
+Status: **§1.1 is WITHDRAWN and RETARGETED.** Everything else in this RFC stands:
+the three-way split (§1), the Java citation (§2), the demotion of the seed
+conversion (§3.2), the `legWindowSlot` analysis (§4), and the rejected
+alternatives (§5) are unaffected. This section does not rewrite them — it records
+what §1.1 claimed, what happened when it was built, and what the corrected target
+is. **The corrected design has NOT been reviewed and must not be implemented
+before its own Graefe+Torvalds lap.**
+
+### 10.1 What §1.1 said, and why it could not work
+
+§1.1 directed: carry the leg table on the record constructor VALUE and propagate
+it through `RecordConstructorValue.Type()`, so `rowSlotForLegColumn`'s dotted arm
+resolves the two live hits through a leg WINDOW instead of by splitting a label.
+
+It cannot work, because **that method is not on the reader's path**.
+`ordinalJoinBuild.legType` consults `b.Spans` first whenever `WindowsOK`, and a
+span's leg type comes from `resolveSpanLeaf`, which reads the baked reference's
+`qov.Type()` — the QUANTIFIER's own flowed type. The constructor's derived type
+is never consulted. This was already pinned in
+`executor/leg_type_channel_test.go` and already written down in
+`leg_column_provenance_census.go` before this RFC was drafted; that file also
+contradicted itself two paragraphs later, and §1.1 followed the wrong half. The
+contradiction is now deleted at the source rather than left for the next reader.
+
+**The error has a shape, and naming it is the point.** §3.5's measurement was
+CORRECT — `RecordConstructorValue.Type()` really is the sole DERIVATION path for
+that row. The false step was the corollary: that the reader therefore takes it.
+**Derivation is not readership.** A row can be derived in exactly one place and
+read through another entirely. This is the same failure mode as two earlier
+overclaims on this workstream (the panic-probe reach, the "exactly one hit" Java
+search): a true measurement carrying a false corollary, where the measurement's
+authority is silently transferred to a claim it does not support.
+
+### 10.2 The refutation, measured
+
+Two uncached corpus runs at `d2e2b9190`, the change applied and then reverted via
+`git apply -R`, same command both sides, both `EXIT=0`:
+
+```
+bazelisk test //pkg/relational/sqldriver:sqldriver_test \
+  --cache_test_results=no --test_output=streamed --test_timeout=3600
+```
+
+BEFORE:
+```
+[sqldriver real-FDB corpus] leg-column provenance: calls 1174 (flatHit 120, notDotted 1052, noLegs 0, dottedMiss 0); dotted HITS by identity availability: available 2, unstated 0, diverged 0
+  dotted HITS by OWNER selection: sameLeg 0, ownerUnstated 0, ownerNamesNoLeg 2, ownerSelectsOtherLeg 0
+```
+
+AFTER:
+```
+[sqldriver real-FDB corpus] leg-column provenance: calls 1414 (flatHit 120, notDotted 1292, noLegs 0, dottedMiss 0); dotted HITS by identity availability: available 2, unstated 0, diverged 0
+  dotted HITS by OWNER selection: sameLeg 0, ownerUnstated 0, ownerNamesNoLeg 2, ownerSelectsOtherLeg 0
+    DOTTED-HIT "C.CV": leg "C", alias stated and equal
+    DOTTED-HIT "I.QTY": leg "I", alias stated and equal
+```
+
+The retirement condition is `available 0`. It read `2` on both sides, with the
+same two witnesses. Denominators moved (1174 → 1414) within the documented
+run-to-run band for this path.
+
+**The plan-shape diff is therefore also answered, and the answer is that nothing
+moved.** No census class changed, no hard zero tripped, no golden moved, both
+runs green. The change was behaviourally INERT: it neither broke anything nor
+achieved anything. It was reverted rather than kept, because shipping inert code
+that carries the decline risk catalogued in §10.4, for a purpose it does not
+serve, is a fix that passes by coincidence.
+
+The producer census was re-read at the implementation head rather than quoted
+from §3.5: `DOTTED 721, plain 157630` before, `DOTTED 745, plain 157691` after,
+and `grep "RecordConstructorValue) Type()"` still returns a single hit. The
+single-derivation finding holds; only the corollary was wrong.
+
+### 10.3 The corrected target: the inner leg's flowed-column TITLE
+
+The dotted names reach the reader as `qov.Type()` COLUMN NAMES, which means a
+producer named a quantifier's flowed column with a label.
+`clusteredOuterOrdinalSeed` builds
+
+```go
+innerType := &values.RecordType{Fields: []values.Field{
+    {Name: scalarCol, FieldType: values.WithNullability(values.UnknownType, true), Ordinal: 0},
+}}
+innerQOV := values.NewQuantifiedObjectValueOfType(innerCorr, innerType)
+```
+
+`scalarCol` is the subquery's OUTPUT TITLE. When that title already contains a
+dot, it becomes the leg type's only column name and arrives at the dotted arm
+indistinguishable from a leg-qualified reference. The measured span tables show
+one channel carrying four titles — `I.QTY`, `SUM(QTY)`, `COUNT(*)`, `NAME` — of
+which only the dotted one is answered. The dotted row-type producer census
+witnesses the same fact from the other side: `[TID K C.C.CV]`, a title that was
+already qualified being qualified again.
+
+**So the retirement is a RETITLING, not a layout carrier.** The design the
+implementation lap must review:
+
+- **What the title should be.** The inner leg's flowed column is the subquery's
+  single scalar output. Its name should be a title that cannot be parsed as a
+  qualifier — the bare scalar column, with any qualification carried by the leg
+  boundary rather than inside the string. The RC field name
+  (`UPPER(innerAlias) + "." + scalarCol`) is a separate arm and is NOT in scope:
+  `replaceScalarSubqueryRef` reads that label, and this RFC's §1 split already
+  separates the row-key and result-label arms from the derived-type one.
+- **Where the identity comes from.** `innerCorr` — already threaded into
+  `clusteredOuterOrdinalSeed`, already unique, already the span's key. Nothing is
+  minted.
+- **What happens to the two live witnesses.** `I.QTY` stops being a leg-type
+  column name and the dotted arm stops answering it. `C.CV` is the OTHER shape —
+  it arrives from the outer leg run, and whether it retires with the same change
+  or needs its own is the first thing the implementation lap must measure, not
+  assume. This RFC does NOT claim both retire together; assuming that is the
+  same corollary error as §10.1.
+- **The retirement condition.** `executor.AssertLegColumnProvenanceCensus`
+  reporting `dotted HITS by identity availability: available 0` with `Calls`
+  above its floor, over an uncached full-corpus run — the same measurement that
+  refuted the old target, which is what makes it a fair test of the new one.
+
+### 10.4 The branchers walk, for whoever implements the corrected design
+
+Assembled as evidence and reusable as a checklist. What each does when a
+previously-empty `Legs` becomes populated, in three groups:
+
+**Would DECLINE (the risk group).** `ordinal_join.go:234`
+(`len(legType.Legs) > 0` → `return nil, nil, false`, "no layout at all"),
+`ordinal_join.go:187` (→ `return false`), `ordinal_seed_layout.go:391` and
+`:528` (→ `return nil, nil, nil`). Each turns a populated table into *no ordinal
+layout*, silently falling back to the name model. None fired over the corpus
+under the withdrawn change — a statement about today's shapes, not about safety.
+
+**Would change the RUNTIME path.** `evaluation_context.go:243` and
+`executor.go:3552` select the leg-aware binder / row context on
+`len(Legs) > 0`; `flat_map_cursor.go:493` (`bindMergedOuterLegs`) and `:646`
+become live; `positional_row.go:69,72` (`MultiLeg()`) flips.
+
+**Would re-derive windows.** `ordinal_join.go:461` and `:1249`,
+`ordinal_seed_layout.go:587` walk sub-legs; `ordinal_join.go:1945`
+(`rowLegsBinder`) and `left_outer_existential.go:95` iterate the table.
+
+**The plan-level one.** `expressions/quantifier.go:413` `legTablesAgree` —
+unchanged from §3.4, and the reason a populated table must be populated
+consistently by every producer of that row.
+
+A retitling touches none of these, which is a further argument for it over a
+layout carrier: it changes a string in one producer rather than turning on
+sixteen branches.
+
+### 10.5 What was landed from the withdrawn attempt
+
+Two negative results, because they outlive the target that was wrong
+(`query/clustered_outer_seed_contract_test.go`):
+
+- **`TestClusteredOuterSeed_NonContiguousLegsAreRejectedAtTheSeed`** retracts a
+  finding this RFC's own review promoted to load-bearing. The claim was that
+  emitting a leg window from `leg.start` — which indexes the SOURCE concat —
+  could be a silently wrong window against the row being BUILT. It cannot:
+  `AssertOrdinalJoinSeed` groups baked references by QOV correlation, every outer
+  leg bakes over the same `outerQOV`, so the whole outer block is one run whose
+  ordinals must be `0..N-1` ascending, which forces `leg.start+i == k`. The
+  padded fixture does not fail an assertion, it panics at the seed. Mutating the
+  code to use `leg.start` passed every test, correctly. The test pins the
+  contract that makes the hazard unconstructable, and names what re-arms it.
+- **`TestRecordConstructorType_NeverInfersLegsFromDottedNames`** pins the
+  propagation/inference line, which the corrected target must also respect
+  whatever channel it uses.
+
+### 10.6 Open, not fixed here
+
+Four value-rewrite sites rebuild a record constructor with a bare
+`&RecordConstructorValue{Fields: …}` literal and so drop the declared struct type
+name: `replace.go:198`, `map_field_values.go:88`, `simplifier_value.go:446`, and
+the reshaping `liftConstructor` at `:532`. Whether a named struct literal
+(`STRUCT GEO (…)`) observably loses its type name through a rewrite is
+**SUSPECTED, not established** — it is stated here as an open probe rather than a
+bug, and it is owed an end-to-end decision either way.

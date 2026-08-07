@@ -83,13 +83,28 @@ import (
 // which is the producer-first conclusion above, arrived at a second way.
 // leg_column_owner_selection_test.go pins both halves.
 //
-// CORRECTION, MEASURED: the paragraph below names the wrong channel, and it is
-// kept because the wrong answer is the one everybody reaches first.
+// THE READER'S CHANNEL IS `qov.Type()`, NOT `RecordConstructorValue.Type()`.
 // `ordinalJoinBuild.legType` consults `b.Spans` FIRST whenever WindowsOK, and a
 // span's leg type comes from `resolveSpanLeaf`, which reads the baked reference's
 // `qov.Type()` — the quantifier's OWN flowed type, never the RC field label. So
 // RecordConstructorValue.Type() is NOT on this reader's path and a leg table
 // attached there would not be read. Pinned in leg_type_channel_test.go.
+//
+// THAT SENTENCE COST A FULL IMPLEMENTATION CYCLE, because this comment used to
+// contradict itself two paragraphs later and the contradiction was not labelled.
+// RFC-212 §1.1 was written against the wrong half, built, and measured INERT: the
+// leg table was attached to the constructor and propagated through
+// RecordConstructorValue.Type(), and the dotted-hit count did not move
+// (`available 2` before, `available 2` after, same two witnesses, over two
+// uncached corpus runs). The wrong paragraphs are now deleted rather than kept
+// as a curiosity — a reader who follows the wrong one builds the wrong thing,
+// which is exactly what happened.
+//
+// The error had a specific shape worth naming, because it recurs on this path: a
+// TRUE measurement carrying a FALSE COROLLARY. RFC-212 §3.5 measured correctly
+// that RecordConstructorValue.Type() is the SOLE DERIVATION path for this row —
+// and then inferred that the reader therefore takes it. Derivation is not
+// readership. The row is derived in one place and read through another.
 //
 // The dotted names arrive as `qov.Type()` COLUMN NAMES, which means a producer
 // named a quantifier's flowed column with a label: the correlated-scalar seed
@@ -108,24 +123,35 @@ import (
 // there is no identity to name, and the retirement is a producer that must stop
 // naming a TYPE by a LABEL.
 //
-// WHERE THE ANSWER IS DROPPED, precisely, because it is not missing upstream —
-// only here. The seed builds each leg column as
-// `RecordConstructorField{Name: leg.binding+"."+COL, Value: FieldValueOfOrdinal(
-// outerQOV, leg.start+i)}` (clustered_outer_scalar.go). The VALUE already states
-// the source correlation and the ABSOLUTE slot — `leg.start+i` is the very
-// arithmetic this reader re-derives from the label. It is
-// RecordConstructorValue.Type() that throws it away: it synthesises
-// `&RecordType{Nullable: true, Fields: fields}` carrying Name/FieldType/Ordinal
-// and no leg table, and that stripped type is what widenLegTypesFromPlan stores
-// and adaptLegPositional adapts against.
+// WHERE THE FIX HAS TO GO: the TITLE, not the derived type. The retirement of
+// this arm is a producer that must stop naming a quantifier's flowed column with
+// a label that can contain a dot — `clusteredOuterOrdinalSeed` builds
+// `innerType := &RecordType{Fields: [{Name: scalarCol}]}` and hands it to
+// NewQuantifiedObjectValueOfType, so when the subquery's output title is already
+// qualified that title becomes the leg type's only column name and arrives here
+// indistinguishable from a leg-qualified reference. The doubled-qualifier
+// witness `[TID K C.C.CV]` in the dotted row-type producer census is the same
+// fact seen from the other side: a title that was already qualified, qualified
+// again.
 //
-// So the reader is recomputing by text something the producer had as an ordinal
-// two hops earlier. Restoring it is additive — RecordType.Legs is layout metadata
-// that Equals and Hash IGNORE, so populating it moves no name, no label and no
-// type identity (pinned in leg_column_owner_selection_test.go). That is the
-// DERIVED-TYPE arm of the RecordConstructorField.Name triple, and it is separable
-// from the row-key and result-label arms: this reader needs only the derived type
-// to carry what the Value already knows.
+// TWO PARAGRAPHS THAT USED TO SIT HERE ARE DELETED, and what they claimed is
+// recorded so nobody re-derives them:
+//
+//   - "RecordConstructorValue.Type() throws the leg table away, and that stripped
+//     type is what widenLegTypesFromPlan stores and adaptLegPositional adapts
+//     against." The first clause is true and the second is false; the reader's
+//     type comes from `qov.Type()`. This is the sentence RFC-212 §1.1 was written
+//     against.
+//   - "Restoring it is additive — RecordType.Legs is layout metadata that Equals
+//     and Hash IGNORE, so populating it moves no name, no label and no type
+//     identity." Refuted twice over. Equals/Hash ignoring Legs establishes TYPE
+//     IDENTITY only, never behaviour: `expressions.refineRowTypes` checks
+//     `legTablesAgree` BEFORE the Equals fast path and treats a populated table
+//     against an empty one as a CONFLICT, declining the refinement (RFC-212 §3.4,
+//     pinned in expressions.TestLegTablePopulation_*). And four of the readers
+//     that branch on `len(Legs) > 0` DECLINE their layout outright when it
+//     becomes non-empty (ordinal_join.go:234 and :187, ordinal_seed_layout.go:391
+//     and :528).
 //
 // GATED by values.LegIdentityCensusEnabled, like every other census on this
 // path: a disabled census costs the reader one predicate. The counts are per
