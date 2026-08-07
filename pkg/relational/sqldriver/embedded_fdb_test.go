@@ -103,6 +103,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	values.ResetLegIdentityCensus()
 	values.ResetDottedLegQualifierCensus()
 	values.ResetSeedWindowReaderCensus()
+	values.ResetAccessorPathCensus()
 	values.ResetDottedRowTypeProducerCensus()
 	values.ResetQualifierRecoveryCensus()
 	cascades.ResetFoldStep1SeedCensus()
@@ -114,6 +115,11 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	values.SetLegIdentityCensusEnabled(false)
 
 	values.ReportLegIdentityCensus(os.Stderr, "sqldriver real-FDB corpus")
+	// The ACCESSOR-NAME-PATH census: which arm of the one match-domain column
+	// identity carries traffic. Its DECLINE-lazy-dotted class is the field-decision
+	// ratchet's accessor_name_path entry, and zero vs non-zero there mean opposite
+	// things about where that debt actually lives.
+	values.DumpAccessorPathCensus(os.Stderr, "sqldriver real-FDB corpus")
 	// The leg-local bakeability census rides the same gate: it measures whether
 	// the one surviving qualified-name mint is carrying anything a leg-local bake
 	// could not carry. Reported beside the identity census because the two answer

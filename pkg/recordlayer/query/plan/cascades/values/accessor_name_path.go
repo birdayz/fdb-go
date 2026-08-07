@@ -32,6 +32,18 @@ import "strings"
 // different, evaluation-domain concern; unifying them by ordinalizing the
 // candidate is the RFC-187 §8 / RFC-173-endgame follow-up.
 func AccessorNamePath(v Value) ([]string, bool) {
+	// Census: which arm carried this call. See accessor_name_path_census.go for
+	// why the '.' decline in particular is worth counting rather than reasoning
+	// about. Disabled, this is one atomic load per call.
+	census := LegIdentityCensusEnabled()
+	sawLazyAccessor := false
+	decline := func(c AccessorPathClass) ([]string, bool) {
+		if census {
+			RecordAccessorPathCall(c)
+		}
+		return nil, false
+	}
+
 	var rev []string // collected leaf→root, reversed to root→leaf before return
 	cur := v
 	for {
@@ -50,7 +62,7 @@ func AccessorNamePath(v Value) ([]string, bool) {
 			accs := fv.Resolved.Accessors
 			for i := len(accs) - 1; i >= 0; i-- {
 				if accs[i].Field == "" {
-					return nil, false // pure-ordinal accessor: no name to compare
+					return decline(AccessorPathDeclinePureOrdinal)
 				}
 				rev = append(rev, strings.ToUpper(accs[i].Field))
 			}
@@ -58,21 +70,36 @@ func AccessorNamePath(v Value) ([]string, bool) {
 			continue
 		}
 		// Lazy.
+		sawLazyAccessor = true
 		if strings.Contains(fv.Field, ".") {
-			return nil, false // ambiguous flat-dotted (form c): do not split
+			// Ambiguous flat-dotted (form c): do not split. THE RATCHET ARM.
+			if census {
+				RecordAccessorPathDottedWitness(fv.Field)
+			}
+			return decline(AccessorPathDeclineDotted)
 		}
 		if fv.Field == "" {
-			return nil, false // no name to compare
+			return decline(AccessorPathDeclineEmptyName)
 		}
 		rev = append(rev, strings.ToUpper(fv.Field))
 		cur = fv.Child
 	}
 	if len(rev) == 0 {
-		return nil, false // not a column reference (reached a root with no accessors)
+		return decline(AccessorPathDeclineNotAColumn)
 	}
 	// Reverse leaf→root into root→leaf.
 	for i, j := 0, len(rev)-1; i < j; i, j = i+1, j-1 {
 		rev[i], rev[j] = rev[j], rev[i]
+	}
+	if census {
+		// The success split is what says how much of this function's traffic
+		// COULD be ordinal-compared today (all-baked) versus how much is waiting
+		// on resolve-at-mint (has-lazy).
+		if sawLazyAccessor {
+			RecordAccessorPathCall(AccessorPathOKHasLazy)
+		} else {
+			RecordAccessorPathCall(AccessorPathOKAllBaked)
+		}
 	}
 	return rev, true
 }

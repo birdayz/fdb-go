@@ -4,6 +4,7 @@ go_library(
     name = "values",
     srcs = [
         "accessor_name_path.go",
+        "accessor_name_path_census.go",
         "coercion.go",
         "column_identity.go",
         "compare_ordered.go",
@@ -111,6 +112,7 @@ go_library(
 go_test(
     name = "values_test",
     srcs = [
+        "accessor_name_path_census_test.go",
         "accessor_name_path_test.go",
         "baked_field_value_identity_test.go",
         "baked_ordinal_unification_test.go",

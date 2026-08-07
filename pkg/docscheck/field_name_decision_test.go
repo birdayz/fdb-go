@@ -430,9 +430,28 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// executor, this bucket's retirement waits on the wrong file.
 	"pkg/recordlayer/query/plan/cascades/left_outer_existential.go:143":           {1, "dotted: leg-relative vs qualified ref probed via '.' in the name"},
 	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2956": {1, "dotted: declines re-qualifying an already-dotted ref; Child is a live QOV, so this is the qualified-name channel, not the legacy flat shape"},
-	"pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go:61":         {1, "dotted: accessor path derived by splitting the name on dots"},
-	"pkg/relational/core/query/box_conjunct.go:149":                               {1, "dotted: frontier read attributed by '.' probe; the only dotted site actually gated on Child == nil"},
-	"pkg/relational/core/query/ordinal_seed.go:795":                               {1, "dotted: leg-ref detection via '.' probe on the merged-QOV leg.col channel"},
+	// MEASURED, not inferred: 3 declines in 269 979 calls over the sqldriver
+	// real-FDB corpus, 2 distinct witnesses, both of the form `q$N.AID#0`. The
+	// census that produced those numbers is accessor_name_path_census.go and it
+	// is standing, so this entry no longer rests on a reading of the code.
+	//
+	// THE PREVIOUS DESCRIPTION HERE WAS WRONG, and it inverted the site. It read
+	// "accessor path derived by splitting the name on dots". The site does the
+	// OPPOSITE: it refuses to split and declines the comparison, because a real
+	// nested path (addr.city) and an alias-qualified leaf (T.city) are
+	// indistinguishable as strings. Removing the arm makes the dotted value an
+	// ordinary lazy name and MATCHES it — the conflation this ratchet exists to
+	// stop — which is what its mutation test now demonstrates.
+	//
+	// It is still debt, and the debt is UPSTREAM. The witnesses are not column
+	// names: they are rendered Explain labels — correlation, dot, column,
+	// #ordinal, exactly the shape values.go:1796-1827 emits. Something stores a
+	// display rendering in a lazy Field and it reaches the one match-domain
+	// identity function. Retiring this entry means finding that producer; editing
+	// this guard would only re-arm the conflation.
+	"pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go:74": {1, "dotted: REFUSES to split a flat-dotted lazy name and declines — see the note above; the debt is whatever mints one"},
+	"pkg/relational/core/query/box_conjunct.go:149":                       {1, "dotted: frontier read attributed by '.' probe; the only dotted site actually gated on Child == nil"},
+	"pkg/relational/core/query/ordinal_seed.go:795":                       {1, "dotted: leg-ref detection via '.' probe on the merged-QOV leg.col channel"},
 
 	// THE MINTS. Five sites, all newly VISIBLE rather than new — every one of
 	// them predates this entry by many commits. The detector had no arm for name
