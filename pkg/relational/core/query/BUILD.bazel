@@ -46,6 +46,7 @@ go_test(
         "cluster_ref_attribution_test.go",
         "clustered_outer_scalar_merge_row_pin_test.go",
         "clustered_outer_scalar_test.go",
+        "clustered_outer_seed_contract_test.go",
         "duplicate_alias_binding_test.go",
         "exists_enclosure_lift_test.go",
         "exists_gathered_bare_read_test.go",
