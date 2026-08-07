@@ -1263,6 +1263,23 @@ func TestComparisonPredicate_Like_FieldValueRHS(t *testing.T) {
 // scan and DROP the LIKE as redundant. That rewrite is unsound here, and
 // nothing else in the tree records why. This test is the reason it must
 // not be written that way.
+//
+// EDITING HAZARD - READ BEFORE TOUCHING THE SUBJECT LIST BELOW.
+// Three of the six subjects contain a RAW, INVISIBLE UTF-8 line
+// terminator rather than a backslash escape: NEL (U+0085, bytes c2 85),
+// LS (U+2028, e2 80 a8) and PS (U+2029, e2 80 a9). In a diff, a terminal
+// or a review UI they render as nothing at all, so `"abc<NEL>def"` looks
+// exactly like a plain `"abcdef"` -- which would be a subject that DOES
+// match `abc%`, making the loop's assertion look like an obvious bug and
+// inviting a "fix" that silently deletes three of the five terminators
+// this test exists to cover.
+//
+// They are deliberately raw: the point is that the MATCHER must treat
+// these code points as terminators, and writing them as backslash-u escapes
+// in the Go source would test the same runes but hide that the hazard is
+// unreadable input. Verify with a hexdump, never by eye, and copy this
+// block byte-exactly -- a search-and-replace or an editor that
+// normalises Unicode will destroy it without any test turning red.
 func TestLikeMatch_NoPatternYieldsATightPrefixRange(t *testing.T) {
 	t.Parallel()
 	const pattern = "abc%"
