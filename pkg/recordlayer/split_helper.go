@@ -266,7 +266,7 @@ func loadWithSplit(
 		if suffix != expectedIndex {
 			// Always OUT-OF-ORDER here, never without-start. Java picks between
 			// the two on `lastIndex >= START_SPLIT_RECORD`
-			// (SplitHelper.java:824-834), and this loop only runs after the start
+			// (SplitHelper.java:824-835), and this loop only runs after the start
 			// segment has already been read (expectedIndex begins at
 			// startSplitRecord+1), so the start is known present.
 			return nil, &FoundSplitOutOfOrderError{
