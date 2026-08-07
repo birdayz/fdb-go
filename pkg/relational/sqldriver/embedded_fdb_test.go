@@ -202,6 +202,11 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 		executor.LegColumnProvenanceDottedNames()); failed && code == 0 {
 		code = 1
 	}
+	// The RFC-213 payoff census: how often a consumer that must decide on a plan's
+	// result type is handed an UNRESOLVED one and declines. Declining is invisible
+	// — it costs a proof or an optimization, never a wrong row — so the size of the
+	// loss has to be counted rather than argued.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatUnresolvedResultTypeCensus())
 	if failed := assertDottedLegQualifierCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
@@ -256,6 +261,14 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	}
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatProjectionMergeCensus())
 	if failed := assertProjectionMergeCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
+	// RFC-213: the consumers must stay REACHED. There is no zero to defend — the
+	// unresolved reads ARE the defect and their count is a measurement, not a
+	// contract — but if these sites go dark, a later "unresolved is 0" would be
+	// indistinguishable from having fixed it. Floored an order of magnitude below
+	// the measured 15,909 classified reads.
+	if failed := cascades.AssertUnresolvedResultTypeCensus(os.Stderr, 1000); failed && code == 0 {
 		code = 1
 	}
 	return code

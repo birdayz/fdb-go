@@ -1,6 +1,7 @@
 package docscheck
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -253,5 +254,252 @@ func TestRecordQueryPlanStillDoesNotRequireGetResultValue(t *testing.T) {
 			"  If this was deliberate, RFC-213 needs updating and the stub inventory above "+
 			"should be shrinking in the same change. If it was incidental, it is a much larger "+
 			"change than its author probably intended.", rel)
+	}
+}
+
+// THE CONSUMER CLASSIFIER (RFC-213 §3).
+//
+// The stub inventory above watches the PRODUCERS. This watches the CONSUMERS,
+// and it is the more dangerous axis: RFC-213's claim that the divergence is not
+// a wrong-results bug rests entirely on every consumer of a result type failing
+// CLOSED on an unresolved one. That was established by reading 28 sites. Reading
+// does not survive the 29th.
+//
+// A consumer that fails closed declines an optimization — invisible, because a
+// worse plan is not red. A consumer that reads an unresolved type RAW gets a
+// `*PrimitiveType` where it expected a row and is a wrong-results bug. Nothing
+// else in the suite distinguishes those two, which is exactly why the classifier
+// is committed rather than the count being quoted.
+//
+// FORWARD vs DECIDE is STRUCTURAL, not correlated: a forward is the call being
+// the sole operand of a `return` inside a `GetResultType` method — that is the
+// definition of pass-through, not a proxy for it. Everything else consumes the
+// value somehow and is a DECIDE.
+type resultTypeSite struct {
+	file, fn, kind string
+	line           int
+}
+
+// classifyResultTypeSites walks the non-test tree and classifies every call to
+// `.GetResultType()`.
+//
+// GUARDED  the result is immediately type-asserted or type-switched, so an
+//
+//	unresolved type takes the else branch — fail-closed by construction.
+//
+// PROPAGATED the result is handed to a constructor, returned, or stored without
+//
+//	being branched on here. It cannot decide wrongly at THIS site; it
+//	carries the sentinel onward, which is a separate concern (§3).
+//
+// RAW      anything else: the value is used directly. This class must be EMPTY.
+func classifyResultTypeSites(t *testing.T, root string) []resultTypeSite {
+	t.Helper()
+	var out []resultTypeSite
+	fset := token.NewFileSet()
+	err := filepath.Walk(filepath.Join(root, "pkg"), func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+			return nil
+		}
+		f, perr := parser.ParseFile(fset, p, nil, parser.SkipObjectResolution)
+		if perr != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, p)
+		var stack []ast.Node
+		ast.Inspect(f, func(n ast.Node) bool {
+			if n == nil {
+				if len(stack) > 0 {
+					stack = stack[:len(stack)-1]
+				}
+				return false
+			}
+			stack = append(stack, n)
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel == nil || sel.Sel.Name != "GetResultType" {
+				return true
+			}
+			out = append(out, resultTypeSite{
+				file: rel, line: fset.Position(call.Pos()).Line,
+				fn:   enclosingFuncName(stack),
+				kind: classifyOneSite(stack, call),
+			})
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	return out
+}
+
+func enclosingFuncName(stack []ast.Node) string {
+	for i := len(stack) - 1; i >= 0; i-- {
+		if fd, ok := stack[i].(*ast.FuncDecl); ok {
+			return fd.Name.Name
+		}
+	}
+	return "(closure)"
+}
+
+func classifyOneSite(stack []ast.Node, call *ast.CallExpr) string {
+	// Immediate parent decides GUARDED; a TypeAssertExpr or a TypeSwitch on the
+	// call is a fail-closed read.
+	for i := len(stack) - 2; i >= 0; i-- {
+		switch p := stack[i].(type) {
+		case *ast.TypeAssertExpr:
+			if p.X == call {
+				return "GUARDED"
+			}
+		case *ast.TypeSwitchStmt:
+			return "GUARDED"
+		case *ast.ReturnStmt:
+			if len(p.Results) == 1 && p.Results[0] == call {
+				for j := i; j >= 0; j-- {
+					if fd, ok := stack[j].(*ast.FuncDecl); ok {
+						if fd.Name.Name == "GetResultType" {
+							return "FORWARD"
+						}
+						break
+					}
+				}
+			}
+			return "PROPAGATED"
+		case *ast.CallExpr:
+			// A call whose ONLY consumer is the RFC-213 payoff census is not a
+			// consumer of the result type — it is the instrument measuring the
+			// consumers. Counting it would let the census inflate its own
+			// denominator, which is the "summed denominator, true by construction"
+			// failure this file's siblings record at length.
+			if s, ok := p.Fun.(*ast.Ident); ok && s.Name == "recordResultTypeRead" {
+				return "CENSUS"
+			}
+			if p != call {
+				return "PROPAGATED" // an argument to something else
+			}
+		case *ast.KeyValueExpr, *ast.AssignStmt:
+			// Assigned or used as a struct field value: propagated unless a later
+			// assertion catches it, which the GUARDED arms above already saw.
+			return "PROPAGATED"
+		}
+	}
+	return "RAW"
+}
+
+// TestResultTypeConsumersFailClosed is RFC-213 §3's committed basis.
+func TestResultTypeConsumersFailClosed(t *testing.T) {
+	t.Parallel()
+	root := sourceTreeRoot(t)
+	sites := classifyResultTypeSites(t, root)
+
+	counts := map[string]int{}
+	var raw []string
+	for _, s := range sites {
+		if s.kind == "CENSUS" {
+			continue
+		}
+		counts[s.kind]++
+		if s.kind == "RAW" {
+			raw = append(raw, fmt.Sprintf("%s:%d in %s", s.file, s.line, s.fn))
+		}
+	}
+	sort.Strings(raw)
+
+	if len(sites) == 0 {
+		t.Fatal("classified ZERO GetResultType call sites. The walk found no population, so " +
+			"every assertion below is vacuous — check classifyResultTypeSites against the tree.")
+	}
+
+	// THE LOAD-BEARING ASSERTION. RFC-213 is an RFC and not a bug report because
+	// no consumer reads an unresolved result type raw.
+	if len(raw) != 0 {
+		t.Fatalf("%d GetResultType consumer(s) read the result RAW — neither type-asserted nor "+
+			"propagated:\n    %s\n"+
+			"  RFC-213 §3 rests on every consumer failing CLOSED on an unresolved type. Twelve "+
+			"plans return values.UnknownType (a *PrimitiveType), and a raw read gets that where "+
+			"it expected a row.\n"+
+			"  THIS IS THE LINE BETWEEN AN RFC AND A BUG. A fail-closed consumer declines an "+
+			"optimization, which is invisible because a worse plan is not red. A raw consumer "+
+			"returns wrong data. If this fired, RFC-213's framing is wrong and the site above "+
+			"is a live defect to fix NOW, ahead of the RFC.",
+			len(raw), strings.Join(raw, "\n    "))
+	}
+
+	// The split is an inventory: it moves only by a deliberate edit, so a new
+	// consumer arrives as a decision rather than as drift.
+	// MEASURED, not guessed: the first draft of this line said 8/20 from reading and
+	// the classifier corrected it. GUARDED means asserted AT THE CALL SITE; a site
+	// that assigns and guards on the NEXT line — planning_cost_model.go:2552 does
+	// exactly that, via OrdinalDomainOfType(layout).IsKnown() — reads as PROPAGATED.
+	// This classifier is per-site syntax and deliberately does no dataflow, so
+	// PROPAGATED means "not decided HERE", never "unguarded".
+	const wantForward, wantGuarded, wantPropagated = 20, 7, 21
+	if counts["FORWARD"] != wantForward || counts["GUARDED"] != wantGuarded || counts["PROPAGATED"] != wantPropagated {
+		t.Fatalf("consumer split moved: FORWARD=%d (want %d) GUARDED=%d (want %d) "+
+			"PROPAGATED=%d (want %d), total %d.\n"+
+			"  These are RFC-213 §3's numbers. A change here is a real change to the consumer "+
+			"population and the RFC's blast-radius argument is stated against them — update "+
+			"both together, and say which site moved and why.",
+			counts["FORWARD"], wantForward, counts["GUARDED"], wantGuarded,
+			counts["PROPAGATED"], wantPropagated, len(sites))
+	}
+}
+
+// A STUB CAN BE CREATED AT THE CALL SITE, WHERE NO METHOD-BODY GATE CAN SEE IT.
+//
+// RecordQueryAggregateIndexPlan's GetResultType returns a stored field, so the
+// inventory above correctly does not list it — and yet every aggregate index
+// plan the planner builds carries values.UnknownType, because all three
+// production callers pass the singleton EXPLICITLY and the constructor also
+// defaults nil to it. It is a thirteenth stub, made one layer up.
+//
+// This gate exists because the first version of RFC-213 asserted these plans
+// "return a stored real type" and was wrong: it had inspected the method and not
+// the callers. A producer census that reads only method bodies is blind to
+// exactly this construction, and the blindness is not theoretical — it already
+// produced a false claim in a reviewed document.
+func TestResultTypeStubsCreatedAtCallSites(t *testing.T) {
+	t.Parallel()
+	root := sourceTreeRoot(t)
+
+	const rel = "pkg/recordlayer/query/plan/cascades/rule_aggregate_data_access.go"
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, filepath.Join(root, rel), nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse %s: %v", rel, err)
+	}
+	var unknownArgs int
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel == nil || sel.Sel.Name != "NewRecordQueryAggregateIndexPlan" {
+			return true
+		}
+		for _, a := range call.Args {
+			if s, ok := a.(*ast.SelectorExpr); ok && s.Sel != nil && s.Sel.Name == "UnknownType" {
+				unknownArgs++
+			}
+		}
+		return true
+	})
+
+	const want = 3
+	if unknownArgs != want {
+		t.Fatalf("%s: %d NewRecordQueryAggregateIndexPlan call(s) pass values.UnknownType as the "+
+			"result type, want %d.\n"+
+			"  MORE means another aggregate construction joined the call-site stub population. "+
+			"FEWER means one started passing a real type — good news, and RFC-213's tier list "+
+			"plus the continuation-fingerprint note in §3 both need updating, because that note "+
+			"says the aggregate `result-type` field contributes ZERO entropy precisely BECAUSE "+
+			"it is always the same singleton.\n"+
+			"  Either way this is a deliberate edit, not drift.", rel, unknownArgs, want)
 	}
 }

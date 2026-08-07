@@ -1,35 +1,36 @@
 # RFC-213 — A plan's result TYPE derives from its result VALUE
 
-**Status:** DRAFT — awaiting Graefe + Torvalds
+**Status:** DRAFT rev 2 — awaiting Graefe + Torvalds (rev 1 NAK'd; §1 was wrong)
 **Item:** CQ-97
-**Scope:** `pkg/recordlayer/query/plan/plans` (interface + 12 plans), read-only impact on 28 consumer sites
+**Scope:** `pkg/recordlayer/query/plan/plans` (interface + 12 plans), read-only impact on 48 consumer sites
 
 ---
 
-## 0. The booking was wrong, and the correction is the design
+## 0. Two corrections, one of them to this RFC
 
-CQ-97 books this as: *"`RecordQueryFlatMapPlan.GetResultType()` returns `values.UnknownType`
-unconditionally where Java derives it from the result value"*, with
-`RecordQueryNestedLoopJoinPlan` mentioned in passing and a blast radius of "50 call sites,
-21 forwarders / 29 deciders".
+CQ-97 books this as *"`RecordQueryFlatMapPlan.GetResultType()` returns `values.UnknownType`
+unconditionally where Java derives it from the result value"*, blast radius "50 call sites,
+21 forwarders / 29 deciders". Measured, the item is six times larger and a different shape:
+**12 plans** stub it (13 counting one made at the call site, §3a), and the split is
+**20 forward / 28 decide** over 48 sites.
 
-Three of those claims moved under measurement. **The item is real and it is six times
-larger than booked, in a different shape.**
+**Rev 1 of this RFC was then wrong in its own §1**, and the error was the same class it was
+correcting — a claim made from reading one level of a chain and not the next.
 
-| booked | measured |
-|---|---|
-| FlatMap (+NLJ in passing) | **12 plans** stub `GetResultType` unconditionally |
-| "50 call sites, 21/29" | **48 sites, 20 forward / 28 decide** (AST, not grep) |
-| a `GetResultType` defect | a **`GetResultValue` defect** — see §2 |
+> Rev 1: *"Java's result type cannot be unknown, and not by discipline — structurally…
+> there is no code path to a stub because there is no stub to reach."*
 
-The last row is the design. Everything else follows from it.
+**False.** Java has a stub, one level down, and it is reached in production. §1 is rewritten
+around what Java actually does, and the design in §4 changes its claimed mechanism as a
+result. The direction survives; the reason for it is different and better.
 
 ---
 
-## 1. Java is the spec, and it has no stub anywhere
+## 1. Java is the spec — and Java has a sentinel, at the VALUE level
 
 ```java
-// RelationalExpression.java:195-196
+// RelationalExpression.java:194-196   (in cascades/expressions/)
+@Override
 default Type.Relation getResultType() {
     return new Type.Relation(getResultValue().getResultType());
 }
@@ -39,21 +40,50 @@ default Type.Relation getResultType() {
 Value getResultValue();
 ```
 
-Two facts, both verified at 4.12.11.0:
+```java
+// values/Value.java:107-111
+@Nonnull
+@Override
+default Type getResultType() {
+    return Type.primitiveType(Type.TypeCode.UNKNOWN);
+}
+```
 
-- **`:195` is the only definition of `getResultType()` in the entire Java tree.** No plan
-  overrides it — `RecordQueryFlatMapPlan` included, which defines only `getResultValue()`
-  (`RecordQueryFlatMapPlan.java:205`) and inherits the derivation.
-- **`getResultValue()` is ABSTRACT** on the same interface. Every relational expression is
-  *required* to have a result value.
+**Both ends of the chain are defaults, and the terminal one is a SENTINEL.** The relational
+end derives from the value; the value end falls back to `UNKNOWN`. That fallback is
+first-class, not an accident:
 
-So Java's result type cannot be unknown, and not by discipline — **structurally**. The
-value is mandatory, so the type is always derivable. There is no code path to a stub
-because there is no stub to reach.
+- `TypeCode.UNKNOWN` is an enum constant (`typing/Type.java:774`), and so is a second erased
+  code `ANY` (`:775`), used deliberately in built-in signatures and as `Type.fromObject`'s
+  fallback (`:728-729`).
+- `Type.isUnresolved()` (`:298-300`) is defined as exactly `typeCode == TypeCode.UNKNOWN`.
+  Java has an erased type **and a predicate for asking about it**.
+- It is **reached**: `values/EmptyValue.java` declares no `getResultType()` override, so it
+  answers `UNKNOWN`, and it is planted into the expression graph by
+  `KeyExpressionExpansionVisitor.java:124`, `ScalarTranslationVisitor.java:116` and
+  `AggregateIndexExpansionVisitor.java:238`.
 
----
+So Java is not "totally typed". **It puts the sentinel at the value level, gives it a name
+(`EmptyValue`), and gives it a predicate (`isUnresolved()`).** Go puts it at the plan level,
+unnamed, as a method that opts out.
 
-## 2. Go inverted the dependency, and every symptom follows
+That is the whole difference, and it is what makes one of them a *statement* and the other
+an *absence*. `EmptyValue` says "this expression yields no row" and travels with the
+expression; `GetResultType() { return UnknownType }` says "nobody implemented this here" and
+is indistinguishable from an oversight — which is precisely how twelve of them accumulated
+without anyone deciding to.
+
+**Scope note on a claim rev 1 overstated.** Rev 1 said `:195` is "the only definition of
+`getResultType()` in the entire Java tree". Tree-wide there are 60 definitions (50 on
+`Value`, one on `Typed` at `typing/Typed.java:38` which `:194` overrides with a covariant
+return, plus `Reference`, `InSource`/`InComparandSource`, four on relational
+`QueryPlan`/`CopyPlan`, and an unrelated `TypeCode` overload). **Scoped to the
+`RelationalExpression` hierarchy the claim holds exactly**: within `cascades/expressions/`,
+`:195` is the sole definition, every other hit is a call, `RecordQueryFlatMapPlan.java` has
+zero definitions and only `getResultValue()` at `:205`, and there are no test overrides.
+The scoped claim is the one this RFC uses.
+
+## 2. Go inverted the dependency
 
 ```go
 // plans/plan.go:70 — RecordQueryPlan
@@ -61,155 +91,231 @@ GetResultType() values.Type      // required
 // GetResultValue()              — NOT on the interface
 ```
 
-Go requires the **type** and leaves the **value** optional (28 of the plans implement one
-voluntarily). With no mandatory source to derive from, a plan that cannot answer returns
-the `UnknownType` singleton.
-
-**That single inversion is the whole divergence.** The 12 stubs, the three standing
-workarounds, and the 28 fail-closed consumers are all downstream of it. This is why the
-fix is not "make FlatMap derive its type": closing FlatMap alone leaves the inversion in
-place, so a thirteenth stub still arrives silently and the workarounds still stand.
+Java requires the **value** and derives the **type**. Go requires the **type** and leaves
+the value optional — 28 plans implement one voluntarily. With no mandatory source, a plan
+that cannot answer opts out. Every symptom below is downstream of that inversion.
 
 ### The 12, by what they could derive from
 
-Measured by `TestResultTypeStubInventoryIsCurrent` (AST, not grep — 22 further plans
-mention `UnknownType` inside `GetResultType` as a *nil-guard* before forwarding, and are
-correct forwarders; a textual gate reports 34 and describes neither population).
+Measured by `TestResultTypeStubInventoryIsCurrent` (AST, not grep — 22 further plans mention
+`UnknownType` inside `GetResultType` as a *nil-guard* before forwarding and are correct
+forwarders; a textual gate reports 34 and describes neither population).
 
 | tier | plans | derivable from |
 |---|---|---|
-| **1** | `FlatMap`, `NestedLoopJoin`, `StreamingAggregation`, `TempTableScan`, `Values` | **`GetResultValue()`** — Java's derivation applies verbatim |
-| **2** | `Limit`, `Projection`, `TempTableInsert` | **`GetInner()`** — pass-throughs that change no row shape |
-| **3** | `LoadByKeys`, `RecursiveDfsJoin`, `RecursiveLevelUnion`, `TextIndex` | nothing yet — §5 |
+| **1** | `FlatMap`, `NestedLoopJoin`, `StreamingAggregation`, `TempTableScan`, `Values` | `GetResultValue()` — Java's derivation applies verbatim |
+| **2** | `Limit`, `Projection`, `TempTableInsert` | `GetInner()` — pass-throughs that change no row shape |
+| **3** | `LoadByKeys`, `RecursiveDfsJoin`, `RecursiveLevelUnion`, `TextIndex` | **`EmptyValue`'s analogue** — see §5 |
 
-`RecordQueryLimitPlan` is the sharpest case in the file: a LIMIT cannot alter a type, its
-inner is one call away, and it answers unknown anyway. It is in tier 2 rather than tier 1
-purely because nobody gave it a value to derive from — which is the inversion, stated in
-one plan.
+`RecordQueryLimitPlan` is the sharpest case: a LIMIT cannot alter a row type, its inner is
+one call away, and it answers unknown anyway.
 
 ---
 
-## 3. This is NOT a wrong-results bug. Measured, not assumed.
+## 3. Not a wrong-results bug — and this half is now a committed instrument
 
-The brief asked whether the stub reaches a decider that decides *wrongly*, and whether
-that is reachable from SQL. **All 28 deciders fail CLOSED.** Enumerated:
+Every consumer of a result type fails **CLOSED** on an unresolved one. Rev 1 established
+that by reading 28 sites; reading does not survive the 29th, so it is now
+`TestResultTypeConsumersFailClosed`, an AST classifier over the whole non-test tree:
 
-- **7 type-assert** `.(*values.RecordType)` and decline — `UnknownType` is a
-  `*PrimitiveType`, so the assertion simply fails: `executor.go:3045`, `executor.go:4423`,
-  `intersector_primary_key.go:1223`, `rule_implement_distinct_final.go:903`,
-  `rule_implement_nested_loop_join.go:2067` and `:2423`,
-  `rule_implement_unordered_union.go:187`.
-- **1 guards on the ordinal domain** and declines with the reason written down —
-  `planning_cost_model.go:2552`: *"Unknown means there is no declared column order to
-  state the proof in, so the probe declines rather than falling back to the names it still
-  has."*
-- **2 route through `bakeMergeComparisonKeys`**, which itself type-asserts and, on a miss,
-  passes the key through lazily — *"loud at runtime, never a wrong slot"*
-  (`rule_implement_in_union.go:61-95`).
-- **2 fingerprint sites** (`scan_range_execution_identity.go:414,447`) take **concrete**
-  `*RecordQueryAggregateIndexPlan` / `*RecordQueryVectorIndexPlan` parameters, both of
-  which return a stored real type. **No stub can reach a fingerprint** — statically, by
-  the parameter type. There is no continuation-collision exposure.
-- The remainder **store or propagate** the type into a constructor without branching on
-  it.
+```
+FORWARD 20   GUARDED 7   PROPAGATED 21   RAW 0     (48 sites)
+```
 
-**So the cost is lost optimizations and lost proofs, never a wrong row.** That is what
-makes this an RFC item rather than a bug to fix immediately — and it is also why it has
-been invisible: declining costs a plan, and a worse plan is not red.
+`FORWARD` is structural, not a proxy: the call is the sole operand of a `return` inside a
+`GetResultType` method — the definition of pass-through. `GUARDED` is type-asserted or
+type-switched **at the call site**. `PROPAGATED` means *not decided here* — handed to a
+constructor, returned, or assigned — and explicitly **not** "unguarded": the classifier does
+no dataflow, so `planning_cost_model.go:2552`, which assigns and then guards on the next
+line via `OrdinalDomainOfType(layout).IsKnown()`, reads as PROPAGATED. **`RAW` is the class
+that must stay empty**, and it is the assertion that separates this RFC from a bug report:
+a fail-closed consumer declines an optimization (invisible — a worse plan is not red), a raw
+consumer returns wrong data.
 
-### Three standing workarounds are the actual damage
+*(Rev 1 guessed 8/20 for GUARDED/PROPAGATED from reading; the classifier corrected it to
+7/21. That is the second time in this item that reading lost to an instrument.)*
 
-Each exists *because* the type cannot be asked for, and each is a place someone already
-paid this cost:
+### 3a. A thirteenth stub, made at the call site
 
-1. **`planBuriedLegConcat`** (`rule_implement_nested_loop_join.go:2067`) walks the plan to
-   its scan leaves, with the comment saying outright that `GetResultType` "cannot be used
-   for a join leg".
-2. **`distinctKeyColumns`** (`rule_implement_distinct_final.go:903`) special-cases
-   `*RecordQueryProjectionPlan` to call `GetProjections()` *before* it tries the type —
-   a route around a tier-2 stub.
-3. **`planColumnNamesWithMD`** (`executor.go:3045`) descends through `innerPlanAccessor`
-   to the innermost plan and then falls back to the metadata descriptor.
+`RecordQueryAggregateIndexPlan.GetResultType()` returns a stored field, so the method-body
+inventory correctly does not list it — **and every aggregate index plan the planner builds
+still carries `UnknownType`**: the constructor defaults nil to it (`aggregate_index.go:84-86`)
+and all three production callers pass the singleton *explicitly*
+(`rule_aggregate_data_access.go:129`, `:299`, `:724`).
 
-A comment describing a substitute for a capability Java has is a standing admission that
-the capability is the answer. There are three.
+Rev 1 asserted these plans "return a stored real type" — false, because it inspected the
+method and not the callers. **A producer census that reads only method bodies is blind to
+this construction, and the blindness already produced a false claim in a reviewed
+document**, so it is now pinned by `TestResultTypeStubsCreatedAtCallSites`.
+
+Consequence for the continuation fingerprint (`scan_range_execution_identity.go:414`): the
+`result-type` field is hashed unconditionally and is **always the same singleton**, so it
+contributes **zero entropy**. This is not a collision — the surrounding fields (index name,
+index type, scan type, reverse, record type, aggregate function, group columns, aggregate
+column, canonical aggregate column, both grouping counts, physical key types) already
+determine an aggregate plan's result type, and the vector twin passes a real
+candidate-derived type (`vector_index_match_candidate.go:331`). It is **dead weight that
+reads as load-bearing**, which will mislead whoever later introduces a case where the result
+type varies independently. Rev 1's static-unreachability argument stands as written
+(concrete pointer parameters, no subtyping, both plans leaves returning stored fields).
+
+### 3b. Two standing workarounds — one fewer than rev 1 claimed
+
+1. **`legOrdinalSafety`** (`rule_implement_nested_loop_join.go:2019`) says outright that
+   `GetResultType()` "cannot be used for a join leg", which is why `planBuriedLegConcat`
+   walks to the scan leaves instead. *(Rev 1 placed this comment inside
+   `planBuriedLegConcat`; it is one function up.)*
+2. **`planColumnNamesWithMD`** (`executor.go:3045`) descends through `innerPlanAccessor` to
+   the innermost plan and falls back to the metadata descriptor.
+
+**Withdrawn:** rev 1 called `distinctKeyColumns`' `*RecordQueryProjectionPlan` branch "a
+route around a tier-2 stub". It is not. Its own comment (`rule_implement_distinct_final.go:896-898`)
+says it returns `GetProjections()` to obtain the projected **values** (`g/2`, `f(g)`), which
+the generic path structurally cannot produce because it synthesises one `FieldValue` per
+`RecordType` field. Fixing `RecordQueryProjectionPlan.GetResultType()` perfectly would not
+retire that branch. The claim inflated the case and is dropped.
 
 ---
 
 ## 4. Decision
 
-**Port Java's dependency direction: make `GetResultValue()` a requirement of
-`RecordQueryPlan` and derive `GetResultType()` from it.** Not "fix FlatMap", not "fix
-twelve plans" — invert the inversion, so the stub becomes unrepresentable for any plan that
-has a value, and the residue is a named, argued list rather than an open set. Java's
-`getResultType()` is a *default* on the interface precisely so no plan can forget; Go's
-analogue is a shared derivation on the embedded plan base, with `GetResultValue()` on the
-interface so the compiler enforces the precondition the way Java's abstract method does.
-Phasing is by tier, because the tiers differ in what they can answer, not in how they are
-implemented: tier 1 derives immediately, tier 2 forwards (and `Limit` is the proof that
-forwarding is a one-line correctness win with no design content), and tier 3 is the part
-that needs an argument rather than a patch. The blast radius is bounded and known — 20
-forwarders propagate whatever they are given and change with no edit, and all 28 deciders
-currently fail closed, so every plan they *start* accepting is a strict improvement over
-declining. The risk is therefore not wrong answers but newly-*enabled* optimizations firing
-on shapes that never reached them, which is exactly what the stress/golden comparison and
-the census equalities exist to catch.
+**Port Java's arrangement: give the sentinel a name at the VALUE level, put
+`GetResultValue()` on `RecordQueryPlan`, and derive `GetResultType()` from it.**
+
+Rev 1 claimed inverting the dependency makes the stub "unrepresentable". **That is false and
+Java disproves it** — `Value.getResultType()` defaults to `UNKNOWN` and `EmptyValue` reaches
+it in production. Inverting does not delete the sentinel; it **relocates** it from plan level
+to value level, which is exactly what Java did and is the actual argument for the change:
+
+- At plan level the sentinel is an **opt-out**. `GetResultType() { return UnknownType }` is
+  indistinguishable from an unfinished method, which is how twelve accumulated silently.
+- At value level it is a **statement**. A plan that flows no row says so by flowing Go's
+  `EmptyValue` analogue, and a consumer asks `isUnresolved()` rather than pattern-matching a
+  failed type assertion. The information is the same; its *provenance* is the difference,
+  and provenance is what makes a new one a decision instead of drift.
+
+The compiler enforces the precondition the way Java's abstract method does: once
+`GetResultValue()` is on the interface, a new plan cannot forget it, and the derivation lives
+in one place instead of forty.
+
+### Sequence — corrected, because rev 1's was not executable
+
+Rev 1 called the interface change "phase 0". In Go an interface method is a **compile-time
+requirement on every implementation**, including tier 3's four plans which by rev 1's own
+account have nothing to return. **Tier 3 gates the interface change, not the reverse.**
+
+- **Phase 0 — the `EmptyValue` analogue.** Port Java's named "no row" value plus an
+  `IsUnresolved()` predicate on `values.Type` (Java has both; Go has neither by name). This
+  is what lets all twelve satisfy the interface on day one.
+- **Phase 1 — `GetResultValue()` joins `RecordQueryPlan`.** Tier 3 returns the empty value;
+  tiers 1–2 already have one or can forward. Compiles only after phase 0.
+- **Phase 2 — derive.** `GetResultType()` becomes a shared derivation; tier 1 derives from
+  its value, tier 2 forwards. The 20 forwarders change with no edit.
+- **Phase 3 — the call-site stub (§3a)** and the fingerprint's dead field.
 
 ### Rejected
 
-- **Fix `RecordQueryFlatMapPlan` only** (what CQ-97 booked). Closes 1 of 12, leaves the
-  inversion, so a thirteenth stub arrives silently and all three workarounds stand. It
-  would also let CQ-97 be checked off with the divergence intact — the failure mode this
-  workstream has hit repeatedly.
-- **Twelve independent local fixes, no interface change.** Treats symptoms. Nothing
-  prevents a new plan from stubbing, tier 3 still has nowhere to derive from, and the
-  next reader has twelve unrelated one-liners instead of one rule.
-- **Teach consumers to tolerate `UnknownType` better.** Entrenches the divergence and
-  points the fix at the wrong end: the deciders are already correct — they fail closed,
-  deliberately, with the reasoning written down. The defect is upstream of every one of
-  them.
-- **Return `Type.Relation`-shaped types to match Java exactly.** Go's `GetResultType`
-  returns the ROW type where Java returns `Relation(rowType)`; every Go consumer expects
-  the row. Matching Java's *wrapper* here changes 48 call sites for no behavioural gain
-  and is a wire-irrelevant cosmetic difference. Java's derivation is ported; its wrapper
-  is not.
+- **Fix `RecordQueryFlatMapPlan` only** (what CQ-97 books). Closes 1 of 13, leaves the
+  inversion so a fourteenth arrives silently, and lets CQ-97 be checked off with the
+  divergence intact — the failure mode this workstream has hit twice in two days.
+- **Twelve independent local fixes, no interface change.** Treats symptoms; nothing prevents
+  a new stub, tier 3 still has nowhere to derive from, and the next reader inherits twelve
+  unrelated one-liners instead of one rule.
+- **Teach consumers to tolerate `UnknownType` better.** Points the fix at the wrong end. The
+  consumers are already correct — they fail closed, deliberately, with their reasoning
+  written down. The defect is upstream of all 28.
+- **Match Java's `Type.Relation` wrapper.** Go's `GetResultType` returns the ROW type where
+  Java returns `Relation(rowType)`, and every Go consumer expects the row. Porting the
+  wrapper changes 48 sites for no behavioural gain and is wire-irrelevant. Java's
+  *derivation* is ported; its *wrapper* is not.
 
 ---
 
-## 5. Tier 3 is the part that is not obvious
+## 5. Tier 3 is no longer an open question
 
-`LoadByKeys`, `RecursiveDfsJoin`, `RecursiveLevelUnion` and `TextIndex` have neither a
-result value nor an inner. They cannot be fixed by rule and each needs its own answer —
-which is why this RFC does **not** claim a zero. The inventory gate is a *debt list*, and
-a list that asserts a zero nobody can satisfy is a wish, not an invariant. Implementation
-proposes tier 1 and tier 2 in one phase each, and tier 3 as a separate argued phase whose
-outcome may legitimately be "this plan states no row and here is why".
+Rev 1 left `LoadByKeys`, `RecursiveDfsJoin`, `RecursiveLevelUnion` and `TextIndex` as "an
+argued set", because it believed Java had no answer for a plan that states no row. **Java
+has exactly that answer**: `EmptyValue` + `TypeCode.UNKNOWN`, a value-level statement of "no
+row" rather than a plan-level opt-out (§1). Tier 3 is phase 0's consumer, not a residue —
+which is also what makes the phasing executable.
+
+This RFC therefore claims no zero on the stub inventory, but for a narrower reason than rev 1
+gave: the inventory shrinks to the plans that legitimately flow an empty value, and those
+remain listed *with that as their stated reason* rather than as unfinished work.
 
 ---
 
-## 6. Acceptance
+## 6. The payoff, MEASURED — rev 1 inferred it
+
+Rev 1's §7 admitted that "closing tiers 1–2 will *enable* optimizations rather than merely
+stop declining" was inferred, and owed the census to implementation. Since phase 0 is blocked
+by §4's corrected sequence anyway, the census was run now. One uncached real-FDB corpus run
+(`go clean -testcache && go test ./pkg/relational/sqldriver/ -count=1 -v`), verbatim:
+
+```
+[sqldriver real-FDB corpus] result-type reads by consumer (RFC-213 payoff):
+  bakedIntersectionKeys                    resolved 412    UNRESOLVED 0
+  distinctKeyColumns                       resolved 4      UNRESOLVED 31
+  planBuriedLegConcat                      resolved 252    UNRESOLVED 0
+  planRowRecordType                        resolved 620    UNRESOLVED 104
+  predicatesFilterIsFullPKPointProbe       resolved 14486  UNRESOLVED 0
+  TOTAL                                    resolved 15774  UNRESOLVED 135
+```
+
+**135 unresolved reads, and the distribution is the finding — not the total.**
+
+- **`distinctKeyColumns` declines 31 of 35 reads — 89%.** This is the concentrated payoff.
+  A DISTINCT whose inner is a stubbed plan cannot derive its key columns and is left on the
+  hash-set path.
+- **`planRowRecordType` declines 104 of 724 — 14%.**
+- **`predicatesFilterIsFullPKPointProbe` declines ZERO of 14,486.** This refutes the natural
+  assumption — which rev 1 came close to making — that the cost model is losing point-probe
+  proofs to the stub. It is not; not once over the corpus. **Whatever this RFC is worth, it
+  is not worth a cost-model argument**, and that is now measured rather than assumed.
+- **`planBuriedLegConcat` declines zero of 252** — the walk workaround (§3b) *succeeds* at
+  finding real types, because it descends to scan leaves that have them. Its cost is the walk
+  itself, not lost information. Retiring it is a simplification, not a correctness win.
+- **`physicalPlanColumnNames` does not appear: zero reads.** The consumer is never reached by
+  any corpus query. Stated because a silent absence and a zero are different facts.
+
+So the honest payoff claim is narrow and specific: **DISTINCT key derivation is the one place
+where the stub demonstrably and repeatedly costs a plan.** Everything else is coherence.
+
+`AssertUnresolvedResultTypeCensus` floors the *classified reads* at 1,000 (measured 15,909).
+There is deliberately **no floor on the unresolved count** — RFC-213 is unimplemented, so
+those reads are the defect and their number is a measurement, not a contract. What must not
+happen silently is the consumers going dark, because a later "unresolved is now 0" would then
+be indistinguishable from success.
+
+---
+
+## 7. Acceptance
 
 - `TestResultTypeStubInventoryIsCurrent` shrinks by exactly the tier being closed, as a
   deliberate edit. It fails in **both** directions today — a new stub is unnamed growth, a
-  removed stub is unattributed shrinkage.
-- `TestRecordQueryPlanStillDoesNotRequireGetResultValue` **goes red on purpose** when phase 0
-  lands. It is written so that whoever adds `GetResultValue()` to the interface — for any
-  reason — is told they have landed this RFC's precondition.
-- At least one of the three workarounds in §3 is retired, or its comment is restated as a
-  deliberate choice rather than a description of a missing capability.
-- Stress + golden comparison, because newly-enabled optimizations are the expected effect
-  and the census equalities on the EXISTS path are stated against populations that
-  currently decline.
+  removed stub is unattributed shrinkage (the inventory is keyed by type name, so a rename
+  and a fix are indistinguishable without a human saying which).
+- `TestResultTypeConsumersFailClosed` keeps `RAW == 0`. If it ever fires, **RFC-213's framing
+  is wrong and the named site is a live defect to fix ahead of this RFC.**
+- `TestResultTypeStubsCreatedAtCallSites` keeps the call-site stub population named.
+- `TestRecordQueryPlanStillDoesNotRequireGetResultValue` **goes red on purpose** when phase 1
+  lands, handing the context to whoever landed it.
+- The unresolved census moves: `distinctKeyColumns`' 31 declines are the number to watch, and
+  a DISTINCT golden/plandiff comparison is the acceptance evidence — not a stress run.
+- At least one of §3b's two workarounds is retired, or its comment restated as a deliberate
+  choice rather than a description of a missing capability.
 
-## 7. What is measured vs. inferred
+## 8. Measured vs. inferred
 
-**Measured:** the 12-plan inventory and the 20/28 split (AST, uncached, gate committed);
-every consumer's fail-closed disposition (read individually, enumerated in §3); the
-fingerprint sites' static unreachability (parameter types); Java's two citations.
+**Measured:** Java's chain in both directions (§1, file:line); the 12-plan inventory and the
+13th at its call site; the 20/7/21/0 consumer split; the 135 unresolved reads and their
+distribution; the fingerprint's zero-entropy field.
 
-**Inferred, and flagged as such:** that closing tiers 1–2 will *enable* optimizations
-rather than merely stop declining. Nothing here measures how many corpus firings currently
-decline on an unknown type. That number is implementation's first deliverable, and it
-should be a census on the decline path before any plan is changed — the same
-gate-before-conversion order CQ-68 established, and for the same reason: a conversion
-whose "before" was never measured cannot show it moved anything.
+**Inferred, and flagged:** that relocating the sentinel to value level will keep new stubs
+from accumulating. That is a claim about *future* human behaviour, and no instrument can
+measure it — the inventory gate is the closest available proxy, and it is committed.
+
+**Withdrawn from rev 1:** "Java structurally cannot express an unknown result type" (§1);
+"inverting makes the stub unrepresentable" (§4); "`distinctKeyColumns`' projection branch is a
+stub workaround" (§3b); "the only definition in the entire Java tree" (unscoped, §1);
+"aggregate index plans return a stored real type" (§3a).

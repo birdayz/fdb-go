@@ -80,6 +80,15 @@ var censusGateRecorders = []censusGateFunc{
 			"pinned by TestCensusOnlyHelpersAreCalledUnderTheGate",
 	},
 	{
+		file: "pkg/recordlayer/query/plan/cascades/unresolved_result_type_census.go",
+		fn:   "recordResultTypeRead",
+		why: "it is called from six PRODUCTION deciders on the planning path — the cost " +
+			"model's probe alone reads 14,486 times over the corpus — and it writes a " +
+			"process-global map keyed by a site string. A recorder that locks and " +
+			"classifies before checking its gate puts that on every plan of every query " +
+			"with the census off",
+	},
+	{
 		file: "pkg/recordlayer/query/plan/cascades/values/select_result_mint_census.go",
 		fn:   "RecordSelectResultMint",
 		why: "it Sprintf's a shape spelling — and for a QOV a second one for the flowed " +

@@ -2064,6 +2064,7 @@ func planBuriedLegConcat(p plans.RecordQueryPlan, alias values.CorrelationIdenti
 	for {
 		switch pl := inner.(type) {
 		case *plans.RecordQueryScanPlan, *plans.RecordQueryIndexPlan:
+			recordResultTypeRead("planBuriedLegConcat", inner.GetResultType())
 			rt, isRT := inner.GetResultType().(*values.RecordType)
 			if !isRT || len(rt.Fields) == 0 {
 				return nil, nil, false
@@ -2420,6 +2421,7 @@ func planRowRecordType(p plans.RecordQueryPlan) *values.RecordType {
 	if p == nil {
 		return nil
 	}
+	recordResultTypeRead("planRowRecordType", p.GetResultType())
 	switch t := p.GetResultType().(type) {
 	case *values.RecordType:
 		return t
