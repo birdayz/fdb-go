@@ -3533,6 +3533,9 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 				predicateIsOuterOnly(lf.Predicate, outerBoundAliases(lf.Input)) {
 				var rebased predicates.QueryPredicate
 				armCensus := unnestLegMintEnabled()
+				if armCensus {
+					RecordUnnestLegMintBranchReached(UnnestLegMintSiteBuriedNotWindowed)
+				}
 				if planTimeBake {
 					if armCensus {
 						RecordUnnestLegMintArm(UnnestLegMintSiteBuriedNotWindowed, UnnestLegMintArmPlanTimeBake)
@@ -3597,6 +3600,9 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 			// here, exactly as the buried refs above (ordinalSlotInLegWindow resolves
 			// each dup-named leg's own slot).
 			jpCensus := unnestLegMintEnabled()
+			if jpCensus {
+				RecordUnnestLegMintBranchReached(UnnestLegMintSiteJoinPredNotWindowed)
+			}
 			if !seedWindowed {
 				if jpCensus {
 					RecordUnnestLegMintArm(UnnestLegMintSiteJoinPredNotWindowed, UnnestLegMintArmName)
@@ -3779,6 +3785,9 @@ func rebaseChainedOuterLegPredicate(
 	// row carries qualified `leg.col` keys — use the NAME-KEY rebase (a positional bake against
 	// the name-keyed row would strand DEEP ordinal -1).
 	chainCensus := unnestLegMintEnabled()
+	if chainCensus {
+		RecordUnnestLegMintBranchReached(UnnestLegMintSiteChainedNameModel)
+	}
 	if ordinalSeed {
 		if chainCensus {
 			RecordUnnestLegMintArm(UnnestLegMintSiteChainedNameModel, UnnestLegMintArmOrdinalTwin)

@@ -73,6 +73,7 @@ go_test(
         "unnest_gather_test.go",
         "unnest_leg_mint_census_test.go",
         "unnest_leg_mint_disposition_test.go",
+        "unnest_leg_mint_partition_test.go",
         "unnest_seed_test.go",
     ],
     embed = [":query"],

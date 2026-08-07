@@ -1,7 +1,30 @@
 # RFC-212 — The name-model seed is not what feeds either dotted reader
 
-Status: **PROPOSED, revision 2** — awaiting Graefe + Torvalds ACK. This is
-CQ-95's RFC.
+Status: **ACCEPTED, revision 3** (Graefe + Torvalds ACK on revision 2). This is
+CQ-95's RFC. Revision 3 folds the four post-ACK findings; none was blocking, and
+two of them moved a claim:
+
+- **§1.1 named a derivation site that is the very method it said to avoid.**
+  §3.5 enumerates the producers of the seed's row and finds `RecordConstructorValue.Type()`
+  deriving it and nothing else — so "at the seed's derivation, not at `Type()`"
+  named one place twice. §1.1 is restated: carry the leg table on the constructor
+  VALUE, propagate it through `Type()`. The producer set has size ONE, which
+  makes §3.4's precondition satisfiable by construction.
+- **The arm matrix asserted an invariant it did not have.** Its doc claimed the
+  arms sum to the branch total; nothing counted that total independently, and the
+  renderer computed it AS the sum. There is now a reach counter at each branch
+  point and a partition assertion — verified by inserting a phantom arm ahead of
+  the `jpCensus` guard, which drops `leg-relative` 73 → 26 and now fails the run
+  instead of quietly reprinting `reached 118`.
+- The twin reconciliation is upgraded from "consistent with" to determined
+  (§3.2), by enumerating the twin's three call sites and
+  `bakeInnerExistsPredicateOrdinal`'s two callers: `nilCount = 2` exactly.
+- §4.3 gains case (d), nameless sources; `RecordUnnestLegOrdinalTwinCall`'s doc
+  said "four callers" and there are three.
+
+Revision 2's history follows.
+
+Status was: **PROPOSED, revision 2** — awaiting Graefe + Torvalds ACK.
 
 Closes nothing on its own. It **re-derives CQ-95's acceptance conditions against
 measurement**, splits the item along the seam the measurement found, and states
@@ -27,8 +50,10 @@ this document's own §3.2:
   substantive claim survives; §2 states what was actually searched. In an RFC
   about predictions shipped in the voice of measurements, that correction is not
   cosmetic.
-- **The table-name capability had three unstated ambiguity cases.** §4.3 decides
-  all three.
+- **The table-name capability had unstated ambiguity cases.** §4.3 now decides
+  four: alias-wins as a ranked pass, leaf-collision poisoning, no poisoning from
+  a losing candidate, and nameless sources (derived tables, CTEs, VALUES) being
+  outside the route entirely.
 - Citation ranges corrected (§2).
 
 ---
@@ -126,11 +151,19 @@ buildable on `master` today.**
    preconditions §6.1 states and §3.4 measures — the second of which corrects an
    earlier revision of this line.
 
-   Not by changing `RecordConstructorValue.Type()`: that method serves every
-   record constructor in the system, so a leg table attached there would populate
-   types across the whole planner. The change belongs where this seed's type is
-   derived and stored for this reader (`widenLegTypesFromPlan` /
-   `adaptLegPositional`), which is what keeps its reach the seed's.
+   **§3.5 measures where that derivation actually is, and it is not where an
+   earlier revision of this line put it.** The seed's row type is derived by
+   `RecordConstructorValue.Type()` — there is no other path — so "attach it at the
+   seed's own derivation, NOT at `RecordConstructorValue.Type()`" was not
+   implementable as written. The two halves of that sentence name the same place.
+
+   The resolution is a level down, and the measurement is what points at it:
+   attach the leg table to the RECORD CONSTRUCTOR VALUE, where
+   `clusteredOuterOrdinalSeed` already holds `leg.start` and the width, and have
+   `Type()` PROPAGATE whatever the constructor carries. Every other constructor
+   carries nothing and derives exactly the type it derives today. That keeps the
+   reach to the one producer that states a leg table, without inferring one inside
+   a method that runs 158,776 times a corpus.
 
 2. **The seed conversion (CQ-79's residue, `rebaseUnnestOuterLegPredicate`) is
    DEMOTED, not scheduled**, and the demotion's reason is now the strong one: the
@@ -382,10 +415,23 @@ Read it in four parts.
 - **The twin's INDEPENDENT total is 133**, counted inside
   `rebaseUnnestOuterLegPredicateOrdinal` rather than summed from the arms, and 42
   of those are attributable to an instrumented branch arm (9 buried + 33
-  chained). The other 91 arrive through `bakeInnerExistsPredicateOrdinal`, which
-  is consistent with the 93 plan-time-bake arms minus the two whose predicate is
-  nil. A summed denominator would have been true by construction and blind to
-  that fourth caller.
+  chained). The remaining 91 are not merely *consistent with* the plan-time-bake
+  arms — the call graph **determines** them, and the enumeration is what makes it
+  determined:
+
+  - the twin has exactly THREE call sites: `cascades_translator.go:3557` (the
+    buried `seedWindowed` arm, an instrumented ordinal-twin arm),
+    `:3795` (the chained `ordinalSeed` arm, likewise), and `:4098`, inside
+    `bakeInnerExistsPredicateOrdinal`;
+  - `bakeInnerExistsPredicateOrdinal` has exactly TWO callers, `:3548` and
+    `:3620` — the two `planTimeBake` arms, and nothing else;
+  - its body returns on `p == nil` before reaching the twin, and then calls the
+    twin ONCE, unconditionally.
+
+  So `133 = 42 + (93 − nilCount)` with no third term, which closes uniquely at
+  **`nilCount = 2`**: exactly two of the 93 plan-time-bake arms carried a nil
+  predicate. A summed denominator would have been true by construction and blind
+  to the whole 91.
 - **Nothing is minted at all.** 28 live calls, zero qualified names — every one
   arrives with an empty outer-leg set or a nil predicate. The channel this mint
   is supposed to feed is carrying no name.
@@ -462,6 +508,54 @@ the same tests assert the premise the additive claim rests on (the two types ARE
 must be populated CONSISTENTLY by every producer of that row. A half-populated
 row does not merely fail to help — it turns a refinement that used to succeed
 into one that declines.
+
+### 3.5 The producer enumeration: there is exactly ONE, and it is the generic path
+
+§3.4 proves the precondition NECESSARY. This measures whether it is SATISFIABLE,
+which is a different question and one that needed nothing to exist first.
+
+`RecordConstructorValue.Type()` is instrumented (`dotted_row_type_producer_census.go`)
+to record every derivation, cut by whether the row it describes carries a dotted
+`LEG.COL` field name — the shape `clustered_outer_scalar.go` mints and the shape
+the executor's dotted reader answers on. The dot test excludes rendered
+composites (`{_0: C.ID#0}`) for the reason `executor.isDottedQualifiedName`
+states. Same run as §3.1:
+
+```
+[sqldriver real-FDB corpus] dotted row-type producers (RecordConstructorValue.Type derivations): DOTTED 841, plain 157935
+  distinct dotted row shapes (64, cap 64):
+    ...
+    [AID K C.CV]
+    ...
+    [ID NAME O.I.QTY]
+    ...
+    [K C.CV]
+    [TID K C.C.CV]
+```
+
+**The generic path derives the seed's own rows.** `[K C.CV]`, `[AID K C.CV]`,
+`[TID K C.C.CV]` and `[ID NAME O.I.QTY]` carry exactly the two labels the
+executor's dotted arm answers on. This settles both halves of the question, in
+opposite directions:
+
+- **The precondition IS satisfiable, and trivially so.** The producer set has
+  size ONE. `clusteredOuterOrdinalSeed` returns a `RecordConstructorValue`, and
+  the only thing that turns a constructor into a `RecordType` is `Type()`. There
+  is no second path deriving the same row with an empty leg table, so the
+  mixed-producer conflict §3.4 identifies is not reachable by construction —
+  *provided* the population is attached to that one path.
+- **§6.1's "leave `RecordConstructorValue.Type()` untouched" was wrong**, because
+  the seed's derivation IS that method. §1.1 is restated accordingly: carry the
+  leg table on the constructor VALUE and propagate it through `Type()`, which
+  reaches the one producer without inferring anything from field names.
+
+Two honest limits on this reading. The witness list **hit its cap** (64 of 64),
+so the shapes are a sample and not the population; the counts are complete. And
+`DOTTED 841` is a count of derivations of dotted-shaped rows generally, not of
+the seed's rows specifically — what the witnesses establish is membership, which
+is the claim being made.
+
+---
 
 **What this RFC does NOT have** is a corpus plan-shape diff of §1.1 itself, and
 the reason is a correction to the review note rather than an omission: the diff
@@ -573,7 +667,7 @@ puts it into the SAME `matches` list that `ResolveQualifiedColumnNested`'s
 per-attribute rule counts at `scope.go:365-368` — so `len(matches) > 1` becomes
 `AmbiguousColumnError`. Since Java has no table-name addressing route at all, Go
 is DEFINING this resolution, and a definition with unstated ambiguity cases is
-not a definition. Three cases, decided:
+not a definition. Four cases, decided:
 
 **(a) An alias match and a table-name match at the same scope level: ALIAS WINS,
 and the table-name match is not a candidate at all.** `FROM users AS u, orders AS
@@ -604,10 +698,28 @@ table-name pass only runs when the alias pass found nothing at that level. This
 falls out of (a) being a ranked pass rather than a merged list, which is the
 main reason to prefer that structure.
 
-All three are consequences of one decision — **ranked second pass, leaf-keyed,
-poisoning only within the pass** — and each is separately checkable. What the
-one-line mutation does NOT yet handle is any of (a), (b) or (c) — it merges the
-table-name candidate into `matches` and therefore gets (a) and (c) wrong. The
+**(d) A source with NO table name is not addressable by this route at all.**
+Derived tables, CTEs and `VALUES` sources carry no schema-level table to name, so
+the table-name pass simply skips them — they remain addressable by their alias
+only, which is the sole spelling SQL gives them anyway. This is stated as part of
+the definition rather than left to a nil-guard on
+`src.Table.Name().LeafIdentifier()`, because Go is defining this resolution and a
+definition that only says what it does for the easy case is not one. A skipped
+source is also not a candidate for (b)'s ambiguity: two CTEs cannot collide under
+a route neither of them enters.
+
+All four are consequences of one decision — **ranked second pass, leaf-keyed,
+skipping nameless sources, poisoning only within the pass** — and each is
+separately checkable.
+
+The ranked structure is also what makes the extension standard-conforming by
+construction rather than by inspection: in standard SQL `FROM t AS a` makes `t`
+unavailable as a qualifier, so every standard query resolves entirely in the
+alias pass and a pass that runs only when the alias pass finds nothing cannot
+change the meaning of any of them. What the
+one-line mutation does NOT yet handle is any of (a) through (d) — it merges the
+table-name candidate into `matches` (so it gets (a) and (c) wrong) and it
+dereferences `src.Table.Name()` unconditionally (so it gets (d) wrong). The
 build is the ranked second pass plus a test per case. Both directions of the
 capability's PRESENCE are already pinned by the two tests this RFC adds — the
 negative one carries the failure message naming what gets re-armed if the scope
@@ -683,14 +795,20 @@ Only §1.1 and the instruments. Explicitly NOT in scope: any change to
    built from the `leg.start`/width the seed's own values already state, so
    `rowSlotForLegColumn` resolves the two live hits through a leg WINDOW rather
    than by splitting a label. Under two stated preconditions:
-   - it is applied at the seed's own type derivation, NOT at
-     `RecordConstructorValue.Type()`, which serves every record constructor in
-     the planner;
+   - it is carried on the RECORD CONSTRUCTOR VALUE and PROPAGATED by
+     `RecordConstructorValue.Type()`, never inferred inside `Type()` from field
+     names. §3.5 measures why: that method is the seed's only derivation path,
+     and it also derives 158,776 other row types a corpus, of which 841 are
+     dotted-shaped for unrelated reasons. Propagation reaches the one producer
+     that states a table; inference would reach all 841.
    - it is applied CONSISTENTLY across every producer of that row, because
      `refineRowTypes` declines a populated table against an empty one (§3.4).
-     The implementation lap owes the plan-shape and golden diff that checks it —
-     that diff is not runnable before the change exists, which is why it is owed
-     here rather than presented here.
+     §3.5 measures the producer set at size ONE, so this is satisfiable by
+     construction under the first precondition — but it stops being satisfiable
+     the moment a second derivation path for that row appears, which is what the
+     implementation lap's plan-shape and golden diff is checking for. That diff
+     is not runnable before the change exists, which is why it is owed there
+     rather than presented here.
 2. The census family gains the unnest leg-mint census (landed with this RFC) and
    keeps its disjointness assertion as the standing guard on §3.3, its ARM
    sub-report as the guard on §3.2's readability, and the docscheck AST pin as
@@ -736,8 +854,10 @@ Each step names what pins it and what a failure re-arms.
 | §0(1) — the merged-layout reading is not on `master` and its own doc reads the other way | recorded here with the `git grep` that produced it; no code pin is possible for a fact about another branch | n/a — stated as unmeasurable on this tree, deliberately |
 | §3.2 — the census call precedes every return, so its per-site counts measure the population its report names | `docscheck.TestCensusReachedCallPrecedesEveryReturn`, an AST pin over both `rebaseUnnestOuterLegPredicate`/`RecordUnnestLegMintCall` and `rebaseUnnestOuterLegPredicateOrdinal`/`RecordUnnestLegOrdinalTwinCall` | move either counter below its inert guard — the pin names the offending return's position; `//pkg/relational/core/query:query_test` stays GREEN under the same mutation, which is why this pin has to live in docscheck. Deleting the call entirely is a second RED direction |
 | §3.2 — a name-arm zero is readable, i.e. "never reached" is separable from "reached, converted on the other arm" | the ARM sub-report; `TestUnnestLegMintCensus_UnreachedBranchSaysSo` and `_ArmsRenderApart` drive the renderer through its pure entry point | collapse the `BRANCH POINT NEVER REACHED` line into a row of zeros — the two readings print identically, which is the ambiguity that produced this RFC's first (wrong) §3.2 |
-| §3.2 — the twin's denominator is independent of the arms | `TestUnnestLegMintCensus_UnreachedBranchSaysSo` asserts the twin total renders | sum the arms instead — true by construction, and blind to the twin's fourth caller (91 of its 133 calls) |
+| §3.2 — the twin's denominator is independent of the arms | `TestUnnestLegMintCensus_UnreachedBranchSaysSo` asserts the twin total renders | sum the arms instead — true by construction, and blind to the twin's third call site (91 of its 133 calls, which the call-graph enumeration closes at nilCount=2) |
 | §3.2 — the two unconditional sites do not print a structural zero as a reading | `NO SEED BRANCH EXISTS`, keyed off `hasSeedBranch` | let them fall through to the zero row — a tautology then reads as a measurement |
+| §3.2 — the arms account for every arrival at a branch point | `AssertUnnestLegMintArmPartition`, wired into the sqldriver `TestMain` against an INDEPENDENT reach counter recorded at the branch point; `TestUnnestLegMintPartition_*` drive the phantom arm, the reverse gap, the branchless site and the renderer's gap marker | insert an `else if` ahead of the `jpCensus` guard — measured: `leg-relative` drops 73 → 26, the renderer prints `<<< ARM GAP: arms sum to 118` beside `reached 165`, and the corpus run FAILS. Under the old summed total it printed `reached 118` and looked clean |
+| §3.5 — the producer set for the seed's row has size ONE, and it is `RecordConstructorValue.Type()` | `values.FormatDottedRowTypeProducerCensus` with its derivation floor; `TestNameIsQualified` and `TestDottedRowTypeProducerCensus_*` pin the discriminator and the floor's message | make the dot test a bare `strings.Contains(name, ".")` — rendered composites (`{_0: C.ID#0}`) classify as dotted and the census reports the generic path as a producer of every ordinary one-column leg |
 | §3.4 — populating a leg table is NOT behaviour-neutral | `expressions.TestLegTablePopulation_{EmptyBothSidesRefines,PopulatedAgainstEmptyIsAConflict,DifferentTablesSameFieldsConflict}`; the middle one also asserts the two types ARE `Equals`, which is the premise the additive claim rested on | delete `legTablesAgree` from `refineRowTypes` — two of the three go RED, and the "additive" claim silently becomes true again |
 | §3.2 — an empty mint population is announced, not passed over | `TestUnnestLegMintCensus_EmptyPopulationsDoNotFail` asserts the `VACUOUS` line | drop the announcement — the check passes silently and reads as "the sets do not meet" |
 | §3.3 — the mint's names and the executor reader's names are disjoint | `AssertUnnestLegMintCensus`, wired into the sqldriver `TestMain`; `TestUnnestLegMintCensus_*` drive both directions and the case fold | feed the assertion an overlapping pair — `TestUnnestLegMintCensus_OverlapFailsAndSaysWhatItReArms` fails if it passes |
@@ -773,7 +893,7 @@ pinned it.
 - **Anything about the field-name ratchet's debt entries.** Threading the site
   parameter and the arm records moved all eleven `cascades_translator.go` line
   keys in `pkg/docscheck/field_name_decision_test.go`, including CQ-95's own debt
-  entry (`:3667` → `:3705`). Those are mechanical re-keys of an unchanged debt
+  entry (`:3667` → `:3711`). Those are mechanical re-keys of an unchanged debt
   list — nothing retired, nothing added, count unchanged. The ratchet's
   line-number keying is why they had to move twice during this RFC; that is a
   property of the ratchet, not a finding here.

@@ -135,10 +135,19 @@ func (s UnnestLegMintSite) String() string {
 // conversion booked against the name arm, and they imply different follow-ups —
 // so the census must not leave the reader to pick one.
 //
-// The arm is recorded AT the arm rather than derived by subtracting the arms
-// that were recorded from a branch-reached counter. Arithmetic cannot see an arm
-// added without a counter; a per-arm record can, because the arms are asserted
-// to sum to the branch total.
+// The arm is recorded AT the arm, and the branch's REACH is recorded
+// INDEPENDENTLY at the branch point, before any arm is chosen. Both halves are
+// necessary and the second one was missing when this census first shipped: the
+// renderer computed the branch total AS the sum of the arms, so an arm added
+// without a `RecordUnnestLegMintArm` call would silently SHRINK the printed
+// `reached N` instead of showing up as a gap. That is the summed denominator this
+// RFC's own text calls "true by construction", one field over from the twin
+// counter that was given a real one.
+//
+// It bites hardest at the joinPredicate branch, where the census guard doubles as
+// the third arm (`else if jpCensus`): inserting an `else if` ahead of it steals
+// silently from `leg-relative`. With an independent reach counter that theft is
+// an ARM PARTITION FAIL, not a quieter number.
 type UnnestLegMintArm int
 
 const (
@@ -205,6 +214,7 @@ var (
 	unnestLegMintCalls   [unnestLegMintSiteCount]int
 	unnestLegMintRewrote [unnestLegMintSiteCount]int
 	unnestLegMintArms    [unnestLegMintSiteCount][unnestLegMintArmCount]int
+	unnestLegMintReached [unnestLegMintSiteCount]int
 	unnestLegOrdinalTwin int
 	unnestLegMintNames   []string
 )
@@ -246,6 +256,22 @@ func RecordUnnestLegMintName(site UnnestLegMintSite, name string) {
 	unnestLegMintNames = append(unnestLegMintNames, name)
 }
 
+// RecordUnnestLegMintBranchReached counts ONE arrival at a seed-tested branch
+// point, BEFORE any arm is chosen. Callers must guard on
+// values.LegIdentityCensusEnabled().
+//
+// It is the INDEPENDENT denominator for the arm matrix. Summing the arms instead
+// is true by construction and cannot see an arm that was added without a
+// counter — see the UnnestLegMintArm doc.
+func RecordUnnestLegMintBranchReached(site UnnestLegMintSite) {
+	if site < 0 || site >= unnestLegMintSiteCount {
+		return
+	}
+	unnestLegMintMu.Lock()
+	defer unnestLegMintMu.Unlock()
+	unnestLegMintReached[site]++
+}
+
 // RecordUnnestLegMintArm counts ONE arm taken at a seed-tested branch point.
 // Callers must guard on values.LegIdentityCensusEnabled().
 func RecordUnnestLegMintArm(site UnnestLegMintSite, arm UnnestLegMintArm) {
@@ -264,8 +290,16 @@ func RecordUnnestLegMintArm(site UnnestLegMintSite, arm UnnestLegMintArm) {
 // inside the twin rather than summed from the arms for the reason the fold-step1
 // census states about its own independent denominator: a sum over the recorded
 // arms is true by construction and cannot see a caller that reaches the twin
-// without passing a branch point this census instruments. The twin has four
-// callers and this census names three.
+// without passing a branch point this census instruments.
+//
+// The twin has THREE call sites: the buried `seedWindowed` arm, the chained
+// `ordinalSeed` arm, and `bakeInnerExistsPredicateOrdinal`. This census
+// instruments the first two directly as ARMS; the third is reached only through
+// the two planTimeBake arms, so its calls are attributed to no arm and show up
+// as the gap between this total and the summed ordinal-twin arms. (An earlier
+// revision of this comment said "four callers", counting the two planTimeBake
+// arms as separate callers of the twin — they are two callers of
+// `bakeInnerExistsPredicateOrdinal`, which is one caller of the twin.)
 func RecordUnnestLegOrdinalTwinCall() {
 	unnestLegMintMu.Lock()
 	defer unnestLegMintMu.Unlock()
@@ -284,10 +318,10 @@ func UnnestLegMintCensus() (calls, mints [unnestLegMintSiteCount]int, names []st
 
 // UnnestLegMintArms reports the per-site arm matrix and the twin's independent
 // total.
-func UnnestLegMintArms() ([unnestLegMintSiteCount][unnestLegMintArmCount]int, int) {
+func UnnestLegMintArms() ([unnestLegMintSiteCount][unnestLegMintArmCount]int, [unnestLegMintSiteCount]int, int) {
 	unnestLegMintMu.Lock()
 	defer unnestLegMintMu.Unlock()
-	return unnestLegMintArms, unnestLegOrdinalTwin
+	return unnestLegMintArms, unnestLegMintReached, unnestLegOrdinalTwin
 }
 
 // ResetUnnestLegMintCensus clears the counters.
@@ -297,6 +331,7 @@ func ResetUnnestLegMintCensus() {
 	unnestLegMintCalls = [unnestLegMintSiteCount]int{}
 	unnestLegMintRewrote = [unnestLegMintSiteCount]int{}
 	unnestLegMintArms = [unnestLegMintSiteCount][unnestLegMintArmCount]int{}
+	unnestLegMintReached = [unnestLegMintSiteCount]int{}
 	unnestLegOrdinalTwin = 0
 	unnestLegMintNames = nil
 }
@@ -304,8 +339,8 @@ func ResetUnnestLegMintCensus() {
 // FormatUnnestLegMintCensus renders the census for a harness to log.
 func FormatUnnestLegMintCensus() string {
 	calls, mints, names := UnnestLegMintCensus()
-	arms, twinCalls := UnnestLegMintArms()
-	return formatUnnestLegMintCounters(calls, mints, arms, twinCalls, names)
+	arms, reached, twinCalls := UnnestLegMintArms()
+	return formatUnnestLegMintCounters(calls, mints, arms, reached, twinCalls, names)
 }
 
 // formatUnnestLegMintCounters is the renderer, split from the process-global
@@ -315,6 +350,7 @@ func FormatUnnestLegMintCensus() string {
 func formatUnnestLegMintCounters(
 	calls, mints [unnestLegMintSiteCount]int,
 	arms [unnestLegMintSiteCount][unnestLegMintArmCount]int,
+	reached [unnestLegMintSiteCount]int,
 	twinCalls int,
 	names []string,
 ) string {
@@ -327,9 +363,13 @@ func formatUnnestLegMintCounters(
 	b.WriteString("\n  ARM taken at the three seed-tested branch points — a name-arm ZERO beside" +
 		"\n  a non-zero ordinal/planTimeBake arm means CONVERTED HERE, not dead:")
 	for s := UnnestLegMintSite(0); s < unnestLegMintSiteCount; s++ {
-		total := 0
+		// The branch total is the INDEPENDENT counter, not the arm sum. The two
+		// are compared by assertUnnestLegMintArmPartition; printing the sum here
+		// would hide exactly the gap that assertion exists to surface.
+		total := reached[s]
+		armSum := 0
 		for a := 0; a < int(unnestLegMintArmCount); a++ {
-			total += arms[s][a]
+			armSum += arms[s][a]
 		}
 		attributed += arms[s][UnnestLegMintArmOrdinalTwin]
 		if !s.hasSeedBranch() {
@@ -347,6 +387,9 @@ func formatUnnestLegMintCounters(
 		fmt.Fprintf(&b, "\n    %-34s reached %d", s, total)
 		for a := UnnestLegMintArm(0); a < unnestLegMintArmCount; a++ {
 			fmt.Fprintf(&b, " | %s %d", a, arms[s][a])
+		}
+		if armSum != total {
+			fmt.Fprintf(&b, "  <<< ARM GAP: arms sum to %d", armSum)
 		}
 	}
 	fmt.Fprintf(&b, "\n  rebaseUnnestOuterLegPredicateOrdinal calls %d (counted INSIDE the twin, "+
@@ -382,7 +425,60 @@ func formatUnnestLegMintCounters(
 // pinned rather than written down.
 func AssertUnnestLegMintCensus(w io.Writer, executorDottedNames []string) bool {
 	_, _, minted := UnnestLegMintCensus()
-	return assertUnnestLegMintNames(w, minted, executorDottedNames)
+	failed := assertUnnestLegMintNames(w, minted, executorDottedNames)
+	arms, reached, _ := UnnestLegMintArms()
+	return assertUnnestLegMintArmPartition(w, arms, reached) || failed
+}
+
+// assertUnnestLegMintArmPartition checks each seed-tested branch point's arms
+// against its INDEPENDENT reach counter, and checks that a branchless site
+// records neither.
+//
+// This is the check the arm matrix's own doc claimed and did not have. Without
+// it, an arm added to one of these branches without a recorder does not surface
+// as a gap — it silently shrinks the branch total, because the renderer used to
+// compute that total AS the arm sum. The joinPredicate branch is the sharp case:
+// its census guard doubles as the third arm, so an `else if` inserted ahead of
+// that guard steals from `leg-relative` with nothing to notice.
+func assertUnnestLegMintArmPartition(
+	w io.Writer,
+	arms [unnestLegMintSiteCount][unnestLegMintArmCount]int,
+	reached [unnestLegMintSiteCount]int,
+) bool {
+	failed := false
+	for s := UnnestLegMintSite(0); s < unnestLegMintSiteCount; s++ {
+		armSum := 0
+		for a := 0; a < int(unnestLegMintArmCount); a++ {
+			armSum += arms[s][a]
+		}
+		if !s.hasSeedBranch() {
+			if armSum != 0 || reached[s] != 0 {
+				failed = true
+				fmt.Fprintf(w, "UNNEST LEG-MINT ARM PARTITION FAIL: %s is an UNCONDITIONAL call\n"+
+					"  site with no seed branch, but recorded %d arm(s) and %d branch arrival(s).\n"+
+					"  Either the site grew a branch — in which case hasSeedBranch must say so, or\n"+
+					"  its report will keep printing a structural line where a reading now exists —\n"+
+					"  or a recorder was wired to the wrong site.\n", s, armSum, reached[s])
+			}
+			continue
+		}
+		if armSum == reached[s] {
+			continue
+		}
+		failed = true
+		fmt.Fprintf(w, "UNNEST LEG-MINT ARM PARTITION FAIL: %s was reached %d time(s) but its\n"+
+			"  arms sum to %d.\n"+
+			"  The reach counter is recorded at the branch point BEFORE any arm is chosen and\n"+
+			"  the arms are recorded inside each arm, deliberately, so exactly this gap is\n"+
+			"  visible. A gap means an arm exists with no RecordUnnestLegMintArm call.\n"+
+			"  WHAT A GAP RE-ARMS: every reading of this matrix. Its whole purpose is to tell\n"+
+			"  a name-arm ZERO that means 'never reached' apart from one that means 'reached,\n"+
+			"  converted on the other arm', and an unrecorded arm silently moves traffic out\n"+
+			"  of both. At joinPredicate the census guard IS the third arm (`else if\n"+
+			"  jpCensus`), so an `else if` inserted ahead of it steals from leg-relative.\n"+
+			"  Add the recorder; do NOT widen this check.\n", s, reached[s], armSum)
+	}
+	return failed
 }
 
 // assertUnnestLegMintNames is the decision, split from the process-global

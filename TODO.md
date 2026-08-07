@@ -15405,13 +15405,20 @@ None is speculative: each was re-verified against the tree before booking.
   different producer, and a deletion clause cannot be discharged by a census that
   measures one corpus.
 
-  - **Item 1 DONE** = the correlated-scalar seed's derived type carries
-    `RecordType.Legs`; the leg-column provenance census reports `dotted HITS by
-    identity availability: available 0` with `Calls` above its floor; and the
-    leg-table population precondition holds — every producer of that row states
-    the same table, because `refineRowTypes` treats a populated table against an
-    empty one as a CONFLICT and declines the refinement
-    (`expressions.TestLegTablePopulation_PopulatedAgainstEmptyIsAConflict`).
+  - **Item 1 DONE** = the correlated-scalar seed's leg table is carried on the
+    RecordConstructorValue and PROPAGATED by `RecordConstructorValue.Type()`
+    (never inferred there from field names); the leg-column provenance census
+    reports `dotted HITS by identity availability: available 0` with `Calls`
+    above its floor; AND the single-producer precondition is RE-CHECKED at the
+    implementation head rather than assumed — `values.FormatDottedRowTypeProducerCensus`
+    still reports the seed's row shapes (`[K C.CV]`, `[ID NAME O.I.QTY]`) from
+    that one derivation path and no other path derives them.
+    The check is named because the penalty is not evidence: `refineRowTypes`
+    DECLINING a populated-vs-empty pair
+    (`expressions.TestLegTablePopulation_PopulatedAgainstEmptyIsAConflict`) is
+    what happens when the precondition is VIOLATED, not a demonstration that it
+    holds. An earlier revision of this clause cited the decline as the proof,
+    which would have let the box be ticked without checking anything.
     "`Equals`/`Hash` ignore `Legs`" establishes type IDENTITY only and is NOT a
     blast-radius argument.
   - **Item 2 DONE** = `AssertDottedLegQualifierCensus` reports `flatColumnBake`
@@ -15421,6 +15428,6 @@ None is speculative: each was re-verified against the tree before booking.
     the executor widening lands and the arm readings are re-taken; the old one
     rested on numbers this round refuted.
   - `RecordTypeLeg.Name` goes when items 1 and 2 are both done. The debt entry at
-    `cascades_translator.go:3705` (was `:3667`; the line moved with the census
+    `cascades_translator.go:3711` (was `:3667`; the line moved with the census
     site parameter) does NOT drop with item 1 — it is the mint's entry, and the
     mint survives item 1 untouched.

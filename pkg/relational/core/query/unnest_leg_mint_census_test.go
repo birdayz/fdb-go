@@ -103,8 +103,10 @@ func TestUnnestLegMintCensus_UnreachedBranchSaysSo(t *testing.T) {
 	var calls, mints [unnestLegMintSiteCount]int
 	var arms [unnestLegMintSiteCount][unnestLegMintArmCount]int
 	arms[UnnestLegMintSiteBuriedNotWindowed][UnnestLegMintArmOrdinalTwin] = 1
+	var reached [unnestLegMintSiteCount]int
+	reached[UnnestLegMintSiteBuriedNotWindowed] = 1
 
-	out := formatUnnestLegMintCounters(calls, mints, arms, 1, nil)
+	out := formatUnnestLegMintCounters(calls, mints, arms, reached, 1, nil)
 	if !strings.Contains(out, "BRANCH POINT NEVER REACHED") {
 		t.Fatalf("a branch point with no recorded arm did not announce itself; an "+
 			"unreached branch would then print as a row of zeros, which is exactly the "+

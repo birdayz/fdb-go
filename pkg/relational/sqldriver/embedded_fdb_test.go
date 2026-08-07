@@ -103,6 +103,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	values.ResetLegIdentityCensus()
 	values.ResetDottedLegQualifierCensus()
 	values.ResetSeedWindowReaderCensus()
+	values.ResetDottedRowTypeProducerCensus()
 	values.ResetQualifierRecoveryCensus()
 	cascades.ResetFoldStep1SeedCensus()
 	corequery.ResetUnnestLegMintCensus()
@@ -172,6 +173,16 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// booked for retiring the executor's dotted arm ("dotted hits -> 0") was
 	// booked against converting this mint, and whether that is even reachable
 	// depends on whether these two name sets meet.
+	// The DOTTED ROW-TYPE PRODUCER census: whether the GENERIC
+	// RecordConstructorValue.Type path derives a LEG.COL-shaped row, i.e. whether
+	// it is a second producer of the row a leg-table population would target.
+	// refineRowTypes declines a populated table against an empty one, so the
+	// producer SET is what decides where that population may be attached.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedRowTypeProducerCensus())
+	if failed := values.AssertDottedRowTypeProducerCensus(os.Stderr,
+		&values.DottedRowTypeProducerFloor{Derivations: 100}); failed && code == 0 {
+		code = 1
+	}
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", corequery.FormatUnnestLegMintCensus())
 	if failed := corequery.AssertUnnestLegMintCensus(os.Stderr,
 		executor.LegColumnProvenanceDottedNames()); failed && code == 0 {
