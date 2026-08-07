@@ -86,6 +86,29 @@ var duecCIBlindSpotRatios = []float64{
 	0.728, 1.271, 0.791, 1.747, 0.979, 1.153, 0.87, 1.082, 0.995,
 }
 
+// duecSecondBlindSpotRatios is a SECOND blind-spot observation, recorded on a
+// heavily loaded box (load average 42) while four agents shared the machine.
+// Quiet-gate verdict: null pair 0.956x, inside the 0.12 envelope, ACCEPTED —
+// the same miss as #638, on a different run and a different tree.
+//
+// max/min 2.642, against #638's 2.400 and a quiet ceiling of 2.084.
+//
+// WHICH OBJECTION THIS ANSWERS, AND WHICH IT DOES NOT. The refusal below rested
+// on two legs. The first was that a bound in (2.084, 2.400) would rest on a
+// SINGLE failure observation — that leg is now half gone: there are two, and
+// both sit above the quiet ceiling, so the failure population is no longer a
+// single point. The second leg STANDS UNCHANGED: the quiet tail is not
+// exhausted at seventeen runs. Run 16 was the first above 1.7 and the band
+// reached 2.084 only at run 17, so the ceiling is still moving, and a bound
+// placed under a moving ceiling fires on quiet runs later.
+//
+// The verdict is therefore unchanged, and it is worth being explicit that this
+// datum was recorded because it COULD have changed it. Separation is now
+// 2.642/2.084 = 1.268x, up from 1.151x and still under the 1.5x bar below.
+var duecSecondBlindSpotRatios = []float64{
+	0.581, 0.975, 1.145, 0.933, 0.956, 1.489, 0.9, 0.941, 1.535,
+}
+
 // TestDuecDispersionArmIsNotDerivable pins the NEGATIVE RESULT that keeps the
 // dispersion arm out, so that "we looked and there was no bound" survives as a
 // checkable fact rather than as a paragraph someone deletes.
@@ -117,7 +140,29 @@ func TestDuecDispersionArmIsNotDerivable(t *testing.T) {
 	}
 
 	quietMax := duecMeasuredQuietDispersion[len(duecMeasuredQuietDispersion)-1]
+
+	// BOTH recorded blind-spot runs are evaluated, and the test is stated against
+	// the one CLOSEST to the quiet band. Taking the larger would flatter the
+	// separation: a bound has to clear the nearest failure, not the friendliest.
+	for _, obs := range []struct {
+		name   string
+		ratios []float64
+	}{
+		{"#638 CI run", duecCIBlindSpotRatios},
+		{"loaded-box run (load avg 42)", duecSecondBlindSpotRatios},
+	} {
+		if d := maxMin(obs.ratios); d <= quietMax {
+			t.Fatalf("blind-spot observation %q has dispersion %.3f, at or below the measured "+
+				"quiet maximum (%.3f) — the populations have inverted, and a dispersion arm "+
+				"would withhold on quiet runs while admitting the loaded one",
+				obs.name, d, quietMax)
+		}
+	}
+
 	failure := maxMin(duecCIBlindSpotRatios)
+	if d := maxMin(duecSecondBlindSpotRatios); d < failure {
+		failure = d
+	}
 
 	if failure <= quietMax {
 		t.Fatalf("the #638 blind-spot run's dispersion (%.3f) is at or below the measured quiet "+
