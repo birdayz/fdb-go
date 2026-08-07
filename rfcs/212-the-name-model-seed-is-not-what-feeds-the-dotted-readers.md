@@ -1020,12 +1020,29 @@ implementation lap must review:
 - **Where the identity comes from.** `innerCorr` — already threaded into
   `clusteredOuterOrdinalSeed`, already unique, already the span's key. Nothing is
   minted.
-- **What happens to the two live witnesses.** `I.QTY` stops being a leg-type
-  column name and the dotted arm stops answering it. `C.CV` is the OTHER shape —
-  it arrives from the outer leg run, and whether it retires with the same change
-  or needs its own is the first thing the implementation lap must measure, not
-  assume. This RFC does NOT claim both retire together; assuming that is the
-  same corollary error as §10.1.
+- **What happens to the two live witnesses — DELIVERABLE 1, and it gates the
+  conversion.** `I.QTY` stops being a leg-type column name and the dotted arm
+  stops answering it. `C.CV` is the OTHER shape, and this RFC does NOT claim both
+  retire together: the census already reports them under DIFFERENT owners
+  (`owner "q$3122" names no leg of [C E]` versus `owner "q$236051" names no leg
+  of [O I]`), so asserting they share a producer would be the §10.1 corollary
+  error a third time.
+
+  Restraint alone is not a plan, so it is SCHEDULED rather than left open. The
+  attribution needs nothing new to exist — the leg-column provenance census
+  already carries each witness's owner — so it runs BEFORE any retitling, in the
+  gate-before-conversion order this workstream uses elsewhere:
+
+  1. Attribute each of `C.CV` and `I.QTY` to the producer that named its
+     leg-type column, from an uncached full-corpus run.
+  2. If BOTH originate at `clusteredOuterOrdinalSeed`, the retitling retires the
+     whole arm and day-one scope is the whole arm.
+  3. If only `I.QTY` does, say so and scope to it; `C.CV` gets its own producer
+     and its own booking. **The convenient answer must not become the assumed
+     one** — that is precisely the step that failed twice already.
+
+  Until step 1 has a reading, the retirement condition below is stated over the
+  arm as a whole and no per-witness claim is licensed.
 - **The retirement condition.** `executor.AssertLegColumnProvenanceCensus`
   reporting `dotted HITS by identity availability: available 0` with `Calls`
   above its floor, over an uncached full-corpus run — the same measurement that
@@ -1034,7 +1051,27 @@ implementation lap must review:
 ### 10.4 The branchers walk, for whoever implements the corrected design
 
 Assembled as evidence and reusable as a checklist. What each does when a
-previously-empty `Legs` becomes populated, in three groups:
+previously-empty `Legs` becomes populated, in three groups.
+
+**WHAT WAS COUNTED, because a reader re-running a grep gets a different number
+and would be right to.** The sixteen below are branch DECISIONS at curated
+sites — distinct places where a populated table changes what the code does. A
+grep counts REFERENCES, and there are far more:
+
+```
+$ grep -rn --include='*.go' -E '\.Legs\b' pkg/ | grep -v '_test\.go' | grep -vE 'census' | wc -l
+69
+$ grep -rn --include='*.go' -E 'len\([^)]*\.Legs\)|range [^ ]*\.Legs\b|\.Legs\[' pkg/ \
+    | grep -v '_test\.go' | grep -vE 'census' | grep -vE ':[0-9]+:\s*//' | wc -l
+36
+```
+
+69 references, 36 branch-SHAPED (a `len()` test, a `range`, or an index), 16
+decision SITES — the 36 collapse because several sites test and then immediately
+walk the same table, and a few are belt-and-braces re-reads inside one decision.
+Neither number is wrong; they count different things. The sixteen are the unit a
+change has to reason about, and they are named individually below so the
+reconciliation is checkable rather than asserted.
 
 **Would DECLINE (the risk group).** `ordinal_join.go:234`
 (`len(legType.Legs) > 0` → `return nil, nil, false`, "no layout at all"),
@@ -1058,7 +1095,9 @@ consistently by every producer of that row.
 
 A retitling touches none of these, which is a further argument for it over a
 layout carrier: it changes a string in one producer rather than turning on
-sixteen branches.
+sixteen decision sites. The structural reason it touches none of them is that
+`innerType` sets `Fields` only and never `Legs`, so no table becomes non-empty
+and not one of the sixteen changes its answer.
 
 ### 10.5 What was landed from the withdrawn attempt
 
@@ -1086,5 +1125,23 @@ Four value-rewrite sites rebuild a record constructor with a bare
 name: `replace.go:198`, `map_field_values.go:88`, `simplifier_value.go:446`, and
 the reshaping `liftConstructor` at `:532`. Whether a named struct literal
 (`STRUCT GEO (…)`) observably loses its type name through a rewrite is
-**SUSPECTED, not established** — it is stated here as an open probe rather than a
-bug, and it is owed an end-to-end decision either way.
+**SUSPECTED, not established.**
+
+**The probe is defined here so the scheduled work is a task rather than a
+topic.** For each of the four sites: build a `RecordConstructorValue` carrying a
+declared `typeName` (the shape `SetTypeName` records for `STRUCT GEO (1 AS lat,
+2 AS lon)`), drive it through that site's rewrite with a walker that actually
+changes a child — an identity walker short-circuits `Replace` and the probe
+passes with the bug fully present, which is a mistake already made once in this
+workstream — and assert `Type().(*RecordType).RecordName` survives. Then the
+end-to-end half: a SQL round-trip over a named struct whose plan is rewritten,
+asserting the declared name reaches the driver.
+
+Both outcomes are committed. If the name is lost, it is a bug: fix it (the
+withdrawn attempt's `RebuildRecordConstructor` helper in
+`cq95-item1-refuted.diff` is one shape of fix) and pin it. If it survives — for
+instance because no rewrite reaches a named literal on any real plan — that
+NEGATIVE result gets pinned with what re-arms it, namely a rewrite site becoming
+reachable from a named struct literal. `liftConstructor` needs its own answer
+either way: it RESHAPES the row, so it is the one site where carrying properties
+across is not automatically correct.
