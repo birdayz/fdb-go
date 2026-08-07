@@ -1246,6 +1246,59 @@ func TestComparisonPredicate_Like_FieldValueRHS(t *testing.T) {
 	}
 }
 
+// TestLikeMatch_NoPatternYieldsATightPrefixRange pins a NEGATIVE result:
+// there is NO LIKE pattern whose matching set equals a byte-prefix range,
+// not even the `<literal>%` shape that looks exactly like a prefix
+// predicate.
+//
+// The reason is the no-DOTALL rule in likeMatch's contract. `%` maps to
+// `.*` compiled with no flags, so it cannot consume a Java line
+// terminator (`\n`, `\r`, NEL, LS, PS). A subject that starts with the
+// literal prefix but then contains one of those does NOT match the
+// pattern, while a byte-prefix range contains it. The range is therefore
+// a STRICT SUPERSET of the predicate for every pattern shape.
+//
+// Why this is worth a test rather than a comment: the obvious index
+// optimization for `col LIKE 'abc%'` is to rewrite it to a prefix range
+// scan and DROP the LIKE as redundant. That rewrite is unsound here, and
+// nothing else in the tree records why. This test is the reason it must
+// not be written that way.
+func TestLikeMatch_NoPatternYieldsATightPrefixRange(t *testing.T) {
+	t.Parallel()
+	const pattern = "abc%"
+	const prefix = "abc"
+
+	for _, subject := range []string{
+		"abc\ndef",
+		"abc\rdef",
+		"abc\r\ndef",
+		"abcdef",
+		"abc def",
+		"abc def",
+	} {
+		if !strings.HasPrefix(subject, prefix) {
+			t.Fatalf("subject %q does not start with %q — test setup is wrong",
+				subject, prefix)
+		}
+		if likeMatch(pattern, subject, 0) {
+			t.Fatalf("likeMatch(%q, %q) = true, want false.\n"+
+				"A trailing `%%` would then be TIGHT, and a prefix-range "+
+				"rewrite that drops the LIKE residual filter would be sound. "+
+				"It is not sound today: the range contains this subject and "+
+				"the predicate rejects it, so dropping the residual returns "+
+				"WRONG ROWS. If this assertion is genuinely obsolete, "+
+				"re-derive the tightness argument before relying on it.",
+				pattern, subject)
+		}
+	}
+
+	// Control: the same prefix without a terminator DOES match, so the
+	// test is not passing merely because likeMatch rejects everything.
+	if !likeMatch(pattern, "abcdef", 0) {
+		t.Fatal("likeMatch(\"abc%\", \"abcdef\") = false, want true")
+	}
+}
+
 // FuzzLikeMatch cross-checks likeMatch against a regex-based oracle.
 // `%` → `.*`, `_` → `.`, all other chars are regex-escaped. Both
 // anchored with `^...$`. Mismatch = likeMatch bug.
