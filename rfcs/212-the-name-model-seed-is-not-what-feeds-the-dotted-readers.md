@@ -1256,3 +1256,107 @@ the corrected target has been attributed but not yet exercised, and the only
 thing that will settle it is the retirement condition moving to `available 0`.
 If it does not, revert and report — that response is now demonstrated to cost
 far less than shipping inert code.
+
+---
+
+## 12. §11.3 IMPLEMENTED — the dotted arm goes from 2 answers to 0
+
+Status: **the retitling is BUILT and the retirement condition is MET.** The
+executor's dotted leg-column arm is deliberately NOT deleted; §12.4 says why.
+Query-engine change — it gets its own Graefe+Torvalds lap.
+
+### 12.1 The change
+
+`scalarSubqueryOrdinalSeed` titles its inner leg's flowed column with the
+subquery's OUTPUT TITLE, and a title that already contains a dot reaches
+`rowSlotForLegColumn`'s dotted arm indistinguishable from a leg-qualified
+reference — the arm splits it and resolves a LEG and COLUMN the leg does not
+have. `unqualifiedScalarTitle` strips the qualifier off that LABEL only.
+
+The identity is `innerCorr`, already threaded, and nothing is minted. The RC
+FIELD name keeps its qualified spelling: that is the row-key arm,
+`replaceScalarSubqueryRef` reads it, and it is deliberately out of scope.
+
+The census registers `innerTitle` — the same variable that names `innerType`'s
+field three lines up — so the registered title and the carried title cannot
+drift. There is only one.
+
+### 12.2 The retirement condition, and why it is a DRAIN not a REROUTE
+
+Same command both sides, uncached, neither side narrowed:
+
+```
+bazelisk test //pkg/relational/sqldriver:sqldriver_test \
+  --cache_test_results=no --test_output=streamed --test_timeout=3600
+```
+
+BEFORE:
+```
+[sqldriver real-FDB corpus] leg-column provenance: calls 1174 (flatHit 120, notDotted 1052, noLegs 0, dottedMiss 0); dotted HITS by identity availability: available 2, unstated 0, diverged 0
+  dotted HITS by OWNER selection: sameLeg 0, ownerUnstated 0, ownerNamesNoLeg 2, ownerSelectsOtherLeg 0
+```
+
+AFTER:
+```
+[sqldriver real-FDB corpus] leg-column provenance: calls 2534 (flatHit 122, notDotted 2412, noLegs 0, dottedMiss 0); dotted HITS by identity availability: available 0, unstated 0, diverged 0
+  dotted HITS by OWNER selection: sameLeg 0, ownerUnstated 0, ownerNamesNoLeg 0, ownerSelectsOtherLeg 0
+```
+
+**A zero can be produced by draining a population or by rerouting it, and the
+statistic that separates them here is `flatHit`.** It read **120 on all five**
+of the full-suite runs the harness enumerates (calls 2394 / 2474 / 2554 / 2554 /
+2674) — the one number on this census that did not move while the call total
+swung by nearly 300. It is now **122**. Exactly +2, exactly the two dotted hits
+that disappeared, landing in the arm they must land in once the name stops
+splitting: the FLAT lookup answers them instead. A reroute would show no
+compensating +2 in any sibling arm.
+
+**The drift also runs the safe way.** The AFTER run's 2534 calls is inside the
+≈2.4–2.7k band; the BEFORE run's 1174 is an unexplained low outlier at less than
+half the band floor. It was **not** a narrowed run — no `-test.run`, and the
+harness printed none of the narrowing notices it emits when filtered — so it is
+genuine run-to-run variance. The consequence is the direction that matters: the
+zero was measured on the **larger** population, 2.16× the before side. A
+shrinking population can manufacture a zero; a growing one cannot.
+
+Nothing else moved: no test, no golden, no row. The only two failures on the
+first AFTER run were this branch's own floors, guarding the population the
+retirement deliberately drains.
+
+### 12.3 The guarded direction FLIPS, and the floors are reconciled not relaxed
+
+While the arm was live, `DottedHitIdentityAvailable` was floored because a zero
+would have read like good news while meaning the instrument died. Zero is now
+the steady state, so the danger is **growth**: a non-zero means some producer is
+again naming a quantifier's flowed column with a dot-containing title. The floor
+retires and a **hard zero** replaces it, whose message names the direction and
+points at `unqualifiedScalarTitle`.
+
+`Calls` is floored at a **magnitude (1000)**, not at 1. It is the floor that
+forecloses "the producers register and the reader is dark" — the state in which
+the hard zero reads clean over an evaporated population. At 1 the reader could
+run three times and the retirement would still report as measured. 1000 sits
+under both the band and the 1174 outlier this branch itself produced, which is
+the counterexample showing why a liveness bit is not enough.
+
+The attribution census keeps its **Minted** floor — which is what keeps the zero
+honest, proving the producers still register — and drops its **Observed** floor
+as unsatisfiable by construction.
+
+### 12.4 The arm is NOT deleted, and that is not a deferral
+
+The dotted arm now answers zero and could be deleted on that warrant. It stays,
+because **the arm at zero plus the hard zero is a live tripwire**: it catches a
+future producer re-introducing a dot-containing title. Delete it and that
+reference resolves through the flat path silently, with nothing watching.
+
+This is not the deferral the project forbids. The work is not merely postponed —
+it is not yet correct to do, and it becomes correct only when `RecordTypeLeg.Name`'s
+other reader (`legWindowSlot`, §4) also retires and the field goes with it.
+
+### 12.5 Enumeration, per the counting rule
+
+`.Legs` references: 69 total, 36 branch-shaped, 16 decision sites — commands in
+§10.4. §10.4's checklist is re-verified for this producer and unchanged:
+`innerType` sets `Fields` only and never `Legs`, so none of the 16 changes its
+answer. The retitling touches a string on a single-field type and nothing else.

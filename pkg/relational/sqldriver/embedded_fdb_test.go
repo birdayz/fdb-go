@@ -703,6 +703,22 @@ var legLocalBakeFloors = cascades.LegLocalBakeFloors{
 // legColumnProvenanceFloors is the minimum population the leg-column provenance
 // census must report over the whole suite.
 //
+// RETIREMENT MEASURED, AND IT IS A DRAIN RATHER THAN A REROUTE. RFC-212 §11.3
+// retitled the producer and the dotted arm went from 2 answers to 0. The
+// statistic that separates those two readings is flatHit, which was 120 on ALL
+// FIVE of the runs enumerated below — the one number on this census that did not
+// move while the call total swung by nearly 300 — and is now 122. Exactly +2,
+// exactly the two dotted hits that disappeared, landing in the arm they must land
+// in when the name stops splitting: the FLAT lookup answers them instead. A
+// reroute would show no compensating +2 in any sibling arm.
+//
+// The drift also runs the SAFE way. The AFTER run reported 2534 calls, inside the
+// magnitude below; the BEFORE run reported 1174, an unexplained low outlier at
+// less than half the band floor — and NOT a narrowed run (no -test.run, and the
+// harness printed none of its narrowing notices). So the zero was measured on the
+// LARGER population, 2.16x the before side, which is the direction that cannot
+// manufacture a zero.
+//
 // RE-MEASURED over this corpus, 2026-08-06: dotted hits available 2 (`C.CV`,
 // `I.QTY`), unstated 0, diverged 0 — STABLE across five full-suite runs. The
 // CALL total is not stable and is quoted as a MAGNITUDE, ≈2.4–2.7k: 2394, 2474,
@@ -759,7 +775,17 @@ var legLocalBakeFloors = cascades.LegLocalBakeFloors{
 // itself is still live on its FLAT arm and a census reaching it zero times would
 // make that zero vacuous.
 var legColumnProvenanceFloors = executor.LegColumnProvenanceFloors{
-	Calls: 1,
+	// A MAGNITUDE, not a liveness check. Calls is the floor that forecloses
+	// "the producers register and the reader is dark" — the state in which the
+	// hard zero above reads clean over an evaporated population. At 1 the reader
+	// could run three times and the retirement would still report as measured.
+	//
+	// 1000 sits comfortably under both the ≈2.4–2.7k band and the 1174 low
+	// outlier this branch itself produced, which is the counterexample that shows
+	// why 1 is not enough: a real full run landed at less than half the band floor
+	// without being narrowed, so the guard has to survive that without either
+	// firing spuriously or degenerating into a liveness bit.
+	Calls: 1000,
 }
 
 // assertLegColumnProvenanceCensus checks the provenance census, dropping the
