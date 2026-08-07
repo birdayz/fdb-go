@@ -191,6 +191,7 @@ go_test(
         "duec_race_off_test.go",
         "duec_race_on_test.go",
         "duec_regime_detector_test.go",
+        "duec_window_loss_reproducer_test.go",
         "duplicate_alias_keybinding_exists_fdb_test.go",
         "duplicate_from_aliases_fdb_test.go",
         "duplicate_groupby_fdb_test.go",
@@ -556,6 +557,7 @@ go_test(
         "zz_join_selpred_repro_test.go",
         "zz_sarg_comparand_guard_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":sqldriver"],
     tags = ["resources:memory:700"],
     deps = [

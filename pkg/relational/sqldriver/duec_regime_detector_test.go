@@ -199,16 +199,31 @@ func TestDuecRegimeVerdict_WithholdsWithoutSamples(t *testing.T) {
 	}
 }
 
-// TestDuecIsTransactionTooOld pins Detector A's recogniser against both carriers
-// AND against the wrapping the relational layer actually applies.
+// TestDuecMeasurementWindowLost pins Detector A's recogniser against BOTH
+// spellings of a lost window, against the wrapping the relational layer actually
+// applies, and against the near misses that must not trip it.
 //
-// The wrapping half is the load-bearing one. The probe never sees a bare
-// fdb.Error: connection.go's translateFDBCode turns 1007 into
+// THE PRE-EMPTION CASE IS THE ONE THAT COST A CI RED. This recogniser originally
+// knew only FDB's 1007, and inside an explicit transaction on this driver a 1007
+// essentially never arrives: paginatingRows.preflightTxBudget stops the query at
+// four seconds so FDB's five-second wall is never reached. The carrier that does
+// arrive is api.TransactionTimeLimitError under a 40001, which the 1007-only
+// recogniser read as healthy — so duecRunInTx fatalled and took every
+// load-INDEPENDENT arm of the probe down with the timing. A detector that cannot
+// see the condition it guards is worse than no detector: it reads as armed.
+//
+// The wrapping half is load-bearing for both spellings. The probe never sees a
+// bare fdb.Error: connection.go's translateFDBCode turns 1007 into
 // api.Error{Code: 40001} and keeps the original as the cause, and database/sql
-// hands that through. A recogniser that only matched the bare error would report
-// every real 1007 as healthy, and Detector A would be dead on the exact input it
-// exists for.
-func TestDuecIsTransactionTooOld(t *testing.T) {
+// hands that through.
+//
+// THE 40001 NEAR MISS IS THE OTHER HALF OF THE CLAIM, and it is why this matches
+// on the typed cause rather than on the SQLSTATE. A genuine read/write conflict
+// surfaces as 40001 too. A recogniser widened to "the code was 40001" would
+// withhold the timing criteria on every conflict — turning a real concurrency bug
+// in the code under test into "the box was busy", which is precisely the
+// rationalisation this repo forbids.
+func TestDuecMeasurementWindowLost(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
@@ -216,6 +231,30 @@ func TestDuecIsTransactionTooOld(t *testing.T) {
 		want bool
 	}{
 		{"nil", nil, false},
+
+		// --- spelling 1: the driver's own pre-emption (the common carrier) ---
+		{
+			"the driver's read-budget pre-emption, exactly as it is minted",
+			api.NewTransactionTimeLimitError(4100*time.Millisecond, 4*time.Second),
+			true,
+		},
+		{
+			"the pre-emption behind a fmt.Errorf tail",
+			fmt.Errorf("page fetch: %w",
+				api.NewTransactionTimeLimitError(4100*time.Millisecond, 4*time.Second)),
+			true,
+		},
+
+		// --- spelling 2: FDB's own 1007 (the residual carrier) ---
+		// As the relational layer now delivers it: translateFDBCode's 1007 arm
+		// attaches the SAME marker the pre-emption carries, so both producers
+		// answer the one predicate and this test does not have to know that 1007
+		// is a number.
+		{
+			"FDB's 1007, marked at translateFDBCode",
+			api.MarkFDBTransactionTooOld(fdb.Error{Code: 1007}),
+			true,
+		},
 		{"bare value-typed fdb.Error", fdb.Error{Code: 1007}, true},
 		{"bare pointer-typed wire.FDBError", &wire.FDBError{Code: 1007}, true},
 		{
@@ -231,13 +270,25 @@ func TestDuecIsTransactionTooOld(t *testing.T) {
 					fdb.Error{Code: 1007})),
 			true,
 		},
-		// The near misses. not_committed and transaction_timed_out are also
-		// load symptoms and also map to a 4xxxx SQLSTATE, but neither proves
-		// the measurement window was held-then-lost the way 1007 does, and
-		// widening Detector A to "any retryable FDB error" would let it fire on
-		// a genuine conflict bug and call it weather.
+
+		// --- the near misses ---
+		// not_committed and transaction_timed_out are also load symptoms and also
+		// map to a 4xxxx SQLSTATE, but neither proves the measurement window was
+		// held-then-lost, and widening Detector A to "any retryable FDB error"
+		// would let it fire on a genuine conflict bug and call it weather.
 		{"not_committed (1020)", fdb.Error{Code: 1020}, false},
 		{"transaction_timed_out (1031)", fdb.Error{Code: 1031}, false},
+		{
+			"a genuine conflict, which shares the pre-emption's SQLSTATE",
+			api.WrapError(api.ErrCodeSerializationFailure,
+				"transaction not committed due to conflict", fdb.Error{Code: 1020}),
+			false,
+		},
+		{
+			"a bare 40001 carrying no cause at all",
+			api.NewError(api.ErrCodeSerializationFailure, "serialization failure"),
+			false,
+		},
 		{"an unrelated plain error", errors.New("syntax error"), false},
 		{
 			"a relational error with no FDB cause",
@@ -247,9 +298,93 @@ func TestDuecIsTransactionTooOld(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := duecIsTransactionTooOld(tc.err); got != tc.want {
-				t.Fatalf("duecIsTransactionTooOld(%v) = %v, want %v", tc.err, got, tc.want)
+			if got := duecMeasurementWindowLost(tc.err); got != tc.want {
+				t.Fatalf("duecMeasurementWindowLost(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestDuecUnmeasuredRatio pins the ACCEPTING door's own failure mode, which is
+// the one the two detectors cannot see.
+//
+// Detectors A and B decide whether the wall clock may carry a criterion. Neither
+// asks whether a criterion was actually EVALUATED. Every timing bound in the
+// probe is spelled `ratio > bound`, and in Go `NaN > 0.95` is FALSE — so a run
+// that produced no usable per-rep ratios passes all three bounds, logs the regime
+// as ASSERTED, and is indistinguishable from a run that measured R3 correctly.
+// That is the same "reads as enforced while asserting nothing" failure this file
+// exists to prevent, arriving through the door nobody was watching.
+//
+// The +Inf cases are not decoration: duecPerRepRatios drops zero DENOMINATORS but
+// nothing rejects a zero numerator or a partially-truncated series, and division
+// is where a non-finite value gets in without anyone writing one down.
+func TestDuecUnmeasuredRatio(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		ratios  map[string]float64
+		wantBad bool
+	}{
+		{"a fully measured run", map[string]float64{"B/D'": 0.873, "s1": 0.877, "s50": 0.933}, false},
+		{"one ratio NaN", map[string]float64{"B/D'": math.NaN(), "s1": 0.877, "s50": 0.933}, true},
+		{"every ratio NaN", map[string]float64{"B/D'": math.NaN(), "s1": math.NaN()}, true},
+		{"positive infinity", map[string]float64{"B/D'": math.Inf(1)}, true},
+		{"negative infinity", map[string]float64{"B/D'": math.Inf(-1)}, true},
+		// A ratio of exactly 0 is a MEASUREMENT, not an absence: it means the
+		// numerator finished instantly, which is a real (if alarming) result and
+		// the bounds below are entitled to judge it.
+		{"a zero ratio is measured, not missing", map[string]float64{"B/D'": 0}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			name, v, bad := duecUnmeasuredRatio(tc.ratios)
+			if bad != tc.wantBad {
+				t.Fatalf("duecUnmeasuredRatio(%v) reported bad=%v (%s=%v), want %v.\n"+
+					"A false negative here lets an ACCEPTED regime assert three "+
+					"criteria over values that passed only because they are not "+
+					"numbers; a false positive reds a healthy run.",
+					tc.ratios, bad, name, v, tc.wantBad)
+			}
+		})
+	}
+}
+
+// TestDuecRegimeVerdict_WithholdsOnTheDriverPreemption drives the WHOLE verdict —
+// not just the recogniser — with the carrier CI actually produced, and pins that
+// the withheld reason names it.
+//
+// The recogniser table above and this are not redundant: a recogniser that
+// returns true is useless if the verdict never consults it, and the probe's own
+// wiring (duecRunInTx -> sawWindowLost -> duecRegimeVerdict) is what turns one
+// into the other. This drives the far end of that wire.
+func TestDuecRegimeVerdict_WithholdsOnTheDriverPreemption(t *testing.T) {
+	t.Parallel()
+	c, aPrime := duecQuietNullPair()
+	// Isolate Detector A: Detector B must be happy with this pair on its own.
+	if ok, _ := duecRegimeVerdict(false, false, c, aPrime); !ok {
+		t.Fatal("the quiet null pair must be acceptable on its own, or this case " +
+			"cannot isolate Detector A")
+	}
+	windowLost := duecMeasurementWindowLost(
+		api.NewTransactionTimeLimitError(4100*time.Millisecond, 4*time.Second))
+	if !windowLost {
+		t.Fatal("the recogniser does not see the driver's read-budget pre-emption, so " +
+			"the verdict below cannot be driven by it. This is the exact blind spot " +
+			"that let a loaded CI box fatal the probe instead of withholding its " +
+			"wall-clock criteria.")
+	}
+	ok, why := duecRegimeVerdict(false, windowLost, c, aPrime)
+	if ok {
+		t.Fatal("the regime detector ACCEPTED a run whose transaction was pre-empted " +
+			"for outliving its read budget. Every duration taken in that window is a " +
+			"truncated sample rather than a slow one.")
+	}
+	// The log line is the only artefact a CI reader gets from a withheld run, so
+	// it must name the mechanism rather than just say "load".
+	for _, want := range []string{"LOST ITS MEASUREMENT WINDOW", "TransactionTimeLimitError"} {
+		if !strings.Contains(why, want) {
+			t.Fatalf("the withholding reason does not mention %q: %s", want, why)
+		}
 	}
 }

@@ -125,6 +125,33 @@ func TestSimTxBudget_ExhaustedBudgetPreemptsWith40001(t *testing.T) {
 			"the caller to raise limits that cannot help): %v",
 			apiErr.Code, api.ErrCodeSerializationFailure, err)
 	}
+	// THE TYPED IDENTITY, and it is the load-bearing arm of this test — the
+	// SQLSTATE above cannot carry it, because 40001 is shared with a genuine
+	// read/write conflict and the two demand opposite responses (retry as-is vs
+	// decompose the work). Java draws this distinction as a first-class value
+	// (Continuation.Reason.TRANSACTION_LIMIT_REACHED, Continuation.java:38);
+	// api.TransactionTimeLimitError is its Go spelling.
+	//
+	// It replaces a strings.Contains on the remedy sentence. That was the only
+	// handle anyone had, api.Error's own doc forbids parsing its wording, and the
+	// absence of a typed handle had a cost: the DISTINCT cost probe's regime
+	// detector could not recognise this error at all, so a loaded CI box fatalled
+	// the probe instead of withholding its wall-clock criteria.
+	if !api.IsTransactionTimeLimit(err) {
+		t.Fatalf("the pre-emption carries no api.TransactionTimeLimitError: %v (%T).\n"+
+			"Without it no caller can distinguish an exhausted MVCC window from a "+
+			"genuine conflict — both are 40001 — so one of the two is always handled "+
+			"wrongly, and every consumer is pushed back onto matching the message.", err, err)
+	}
+	var ttl *api.TransactionTimeLimitError
+	if errors.As(err, &ttl); ttl.Limit != 4*time.Second || ttl.Elapsed < ttl.Limit {
+		t.Fatalf("the pre-emption reports elapsed=%v limit=%v; the limit must be the "+
+			"driver's own budget and the elapsed time must be at least it, or the "+
+			"marker is being minted somewhere other than the budget check",
+			ttl.Elapsed, ttl.Limit)
+	}
+	// The human-facing remedy still names the window, because the marker tells
+	// code what happened and the message tells the operator what to do.
 	if !strings.Contains(err.Error(), "5-second") {
 		t.Fatalf("the pre-emption must name the 5-second window; got: %v", err)
 	}

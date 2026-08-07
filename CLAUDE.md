@@ -30,6 +30,8 @@ Before treating a TODO "vs Java gap" as parity work, **verify Java actually supp
 
 **Never paper over a problem.** If a test fails, the fix is in the code, not in the test expectations. If an error code is wrong, trace it to the root cause — don't add a string check at the surface. If a column doesn't resolve, fix the resolution infrastructure — don't strip qualifiers with string hacks.
 
+**SCOPE EVERY COUNT, or paste the command that produced it.** "Exactly one hit", "the only definition in the tree", "five call sites", "nowhere else" — this shape keeps being wrong even when the argument resting on it is right, because a grep run over one directory gets written up as a fact about the repo. Say the claim that is actually true ("three `instanceof` in non-test main sources") or show the command and its output. An unscoped enumeration is a load-bearing number nobody can check, and the conclusion surviving does not make the count true.
+
 **"For now" is a red flag.** If you're about to write "for now" or "pragmatic approach" or "we'll fix this later" — STOP. That means you're about to create technical debt. Either do it properly or document it as the FIRST priority in TODO.md so it gets done next. No deferred hacks.
 
 **DFS IS ABSOLUTELY CRITICAL. NEVER DEFER — FIX IT NOW.** This is the single most important working rule in this file. When a fix uncovers a second problem, fix that one too, in the same change. When a sweep surfaces something adjacent, chase it to ground. Take as long as it takes. The instinct to write it up and move on is always wrong, and it is strongest exactly when the finding is real — because a real finding looks like scope, and scope looks like something to schedule.

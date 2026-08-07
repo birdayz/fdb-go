@@ -1,0 +1,36 @@
+The CI failure this fix addresses, verbatim.
+
+Source: GitHub Actions run 31131571948, PR #646 ("ci: the drain-fleet red was
+placement, not capacity"), job "Build, Lint & Test". The PR was infra-only and
+could not have caused this; master had passed the same lane 21 minutes earlier
+(run 31130860635, sha 4a9fbf4d5), which is what makes it intermittent and
+load-dependent rather than a regression.
+
+Kept as a committed golden because it is the ONLY substrate against which the
+claim "the fix addresses the observed defect rather than a cousin of it" can be
+checked. Reverting the typed marker makes the driver produce this exact string
+again (see duec_regime_detector_test.go and the marker's own tests); with no
+copy of it in the tree, that identity would rest on a commit message.
+
+If the pre-emption's wording is deliberately changed, this file is what goes
+stale, and updating it is the moment to re-confirm that the reworded error is
+still the same condition.
+
+--- the loads that preceded it (7-10x slower than a healthy box) -------------
+LOAD users    rows=100000 nullEmails=0 in 1m11.687s
+LOAD users1   rows=100000 nullEmails=1000 in 52.289s
+LOAD users50  rows=100000 nullEmails=50000 in 1m9.526s
+
+--- the plan the failing query ran (an unindexed full scan) ------------------
+EXPLAIN SELECT DISTINCT email_plain FROM users1 => Distinct(Project([EMAIL_PLAIN#2], Scan(USERS)))
+
+--- the failure --------------------------------------------------------------
+distinct_unique_elision_cost_probe_test.go:553: rows.Err "SELECT DISTINCT email_plain FROM users1": 40001: transaction read budget exhausted: the explicit transaction's reads are bound to FDB's 5-second MVCC window, which opened at the transaction's first read; commit sooner or decompose the work into smaller transactions
+--- FAIL: TestFDB_DistinctUniqueElisionCostProbe (211.78s)
+
+--- what that line number was ------------------------------------------------
+At the failing revision, :553 is the timed loop's call
+    sample, nulls, tooOld := duecRunInTx(t, ctx, tconn, o.query)
+and NOT the `rows.Err` fatal inside duecRunInTx, because duecRunInTx calls
+t.Helper(). The shape "S1-full" is SELECT DISTINCT email_plain FROM users1 —
+411 ms on a healthy box, against a 4 s budget.
