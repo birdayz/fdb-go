@@ -186,6 +186,14 @@ jobs:
             # ROWDIFF_TALLY carries the counts, ROWDIFF_VACUOUS says the sweep
             # measured nothing at all, and MISMATCH lines are pulled out of the
             # noise into their own block.
+            #
+            # The general shape, because it recurs: a SHARED witness budget lets
+            # the COMMON outcome class evict the RARE one, and the rare one is
+            # always the one worth reading. One 60-line cap across MISMATCH,
+            # INFRA and DECLINE is arithmetically guaranteed to show only INFRA
+            # once infra failures pass 60. Per-class budgets are the fix
+            # wherever a capped sample spans classes of wildly different
+            # frequency — the cap must be per class, never per report.
             echo "### Outcome tally"
             echo '```'
             grep -m 10 -E 'ROWDIFF_TALLY|ROWDIFF_VACUOUS' rowdiff-output.txt rowdiff-paging-output.txt 2>/dev/null \

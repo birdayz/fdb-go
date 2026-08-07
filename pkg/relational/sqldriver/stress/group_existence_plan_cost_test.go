@@ -142,17 +142,33 @@ func TestFDB_GroupExistenceMerge_VsStreamingAggregation(t *testing.T) {
 //	run A (passed)      465.83ms           166.85ms          2.71
 //	run B (failed)      469.08ms           128.90ms          3.52
 //
+// Do not multiply that last column out of the first two: medianRatio is the
+// MEDIAN OF THE PER-PAIR RATIOS, not the ratio of the medians, and the two are
+// different statistics. Dividing the medians gives 2.79 and 3.64, and both are
+// the wrong number — pairing exists precisely so each ratio is formed from two
+// measurements taken against the same machine moment, which a ratio of
+// separately-taken medians throws away.
+//
 // The numerator moved +0.7%. The DENOMINATOR moved -22.7%, and that alone
 // carried the ratio past 3.5. Within a single run the reference is the noisier
 // side by a wide margin — its five pairs spanned 1.72x in run A (115.26 ..
 // 198.52ms) against the merge's 1.08x (444.58 .. 480.94ms) — so the statistic
 // the bound reads is dominated by the variance of the thing it divides BY.
 //
-// That is a polarity defect, not a tightness one, and more pairs cannot fix it:
-// the criterion fails when the merge is slow OR when the reference is fast, and
-// only the first is a regression. A genuine improvement to the single-BY_GROUP
-// scan reds this gate. Nothing had touched the merge path, the aggregate data
-// access rule or the cost model between those two runs.
+// That is a polarity defect, not a tightness one, and more pairs cannot fix it.
+// More pairs shrinks the VARIANCE of the estimate; it cannot change which
+// DIRECTION the criterion is sensitive to. The criterion fails when the merge
+// is slow OR when the reference is fast, and only the first is a regression, so
+// a genuine improvement to the single-BY_GROUP scan reds this gate at any
+// sample size. §7's prescribed remedy is inapplicable by construction, not by
+// degree.
+//
+// Between those two runs — and the ordering is the load-bearing part of this
+// claim — nothing touched the merge path, the aggregate data access rule or the
+// cost model. Commits after run B did: RFC-213 adds a census recorder to the
+// cost model, which lands later than both runs and is gated off besides, and no
+// gated recorder can make a query 22.7% FASTER, which is the direction that
+// actually moved.
 //
 // So the number keeps its full force where it can be read honestly — a quiet
 // box, opted in — and elsewhere it LOGS. See gemergeWallClockEnv.
@@ -437,6 +453,14 @@ func runGroupExistenceRegime(t *testing.T, name, suffix string, rows, groups int
 	// They are compared against a FLOOR, never an exact count: an exact number
 	// reds every time someone adds a legitimate case, which trains people to
 	// update the constant without reading it.
+	//
+	// A counter incremented BEFORE its arm would normally prove only that the
+	// arm was reached, not that it passed — the usual weakness of this pattern.
+	// It is sound here because of how the arms terminate: every one of them
+	// either falls through having asserted, or calls t.Fatalf and ends the
+	// regime before any later increment can run. So reaching the check below
+	// with shapeArmsRan == 4 means four arms asserted AND passed, and no
+	// opt-out can skip them while still arriving here.
 	shapeArmsRan, rowArmsRan := 0, 0
 
 	shapeArmsRan++
