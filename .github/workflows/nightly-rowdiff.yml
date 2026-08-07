@@ -178,6 +178,27 @@ jobs:
             echo ""
             echo "Seeds \`${{ steps.seeds.outputs.start }}\`..\`$(( ${{ steps.seeds.outputs.start }} + ${{ steps.seeds.outputs.seeds }} - 1 ))\`"
             echo ""
+            # THE VERDICT LINES COME FIRST, and this ordering is the fix for a
+            # real triage failure. On 2026-08-07 this sweep logged 257 INFRA
+            # lines and 16 MISMATCH lines; the capped grep below showed 60 lines
+            # of INFRA, the mismatches never appeared, and four seeds' worth of a
+            # genuine ordering finding read as "the cluster died" for a week.
+            # ROWDIFF_TALLY carries the counts, ROWDIFF_VACUOUS says the sweep
+            # measured nothing at all, and MISMATCH lines are pulled out of the
+            # noise into their own block.
+            echo "### Outcome tally"
+            echo '```'
+            grep -m 10 -E 'ROWDIFF_TALLY|ROWDIFF_VACUOUS' rowdiff-output.txt rowdiff-paging-output.txt 2>/dev/null \
+              || echo "(no tally line — the sweep did not reach the end of a lane)"
+            echo '```'
+            echo ""
+            echo "### Soundness findings (MISMATCH — these are engine bugs, not infrastructure)"
+            echo '```'
+            grep -m 40 -E 'MISMATCH' rowdiff-output.txt rowdiff-paging-output.txt 2>/dev/null \
+              || echo "(none — no row divergence found)"
+            echo '```'
+            echo ""
+            echo "### Full log slice"
             echo '```'
             # grep -m N (NOT `grep | head -N`): head closes the pipe early on
             # more matches → grep SIGPIPEs → under `bash -eo pipefail` the
