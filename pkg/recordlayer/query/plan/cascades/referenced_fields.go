@@ -30,26 +30,9 @@ func EmptyReferencedFields() *ReferencedFields {
 	return &ReferencedFields{fields: map[string]struct{}{}}
 }
 
-// Contains reports whether the given field name is referenced.
-func (r *ReferencedFields) Contains(field string) bool {
-	if r == nil {
-		return false
-	}
-	_, ok := r.fields[field]
-	return ok
-}
-
 // IsEmpty reports whether no fields are referenced.
 func (r *ReferencedFields) IsEmpty() bool {
 	return r == nil || len(r.fields) == 0
-}
-
-// Size returns the number of referenced fields.
-func (r *ReferencedFields) Size() int {
-	if r == nil {
-		return 0
-	}
-	return len(r.fields)
 }
 
 // CombineReferencedFields is the ReferencedFields lattice combine (Java
@@ -81,14 +64,6 @@ func CombineReferencedFields(current, added *ReferencedFields) (*ReferencedField
 		union[f] = struct{}{}
 	}
 	return &ReferencedFields{fields: union}, true
-}
-
-// Fields returns the referenced field names.
-func (r *ReferencedFields) Fields() map[string]struct{} {
-	if r == nil {
-		return nil
-	}
-	return r.fields
 }
 
 // Union returns a new ReferencedFields containing all fields from
