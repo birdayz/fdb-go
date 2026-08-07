@@ -900,6 +900,7 @@ func distinctKeyColumns(inner plans.RecordQueryPlan) []values.Value {
 	if proj, ok := inner.(*plans.RecordQueryProjectionPlan); ok {
 		return proj.GetProjections()
 	}
+	recordResultTypeRead("distinctKeyColumns", inner.GetResultType())
 	if rt, ok := inner.GetResultType().(*values.RecordType); ok && len(rt.Fields) > 0 {
 		cols := make([]values.Value, len(rt.Fields))
 		for i, f := range rt.Fields {

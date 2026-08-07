@@ -429,7 +429,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// `O.I.QTY`). The distinction is the whole of producer-first — pointed at the
 	// executor, this bucket's retirement waits on the wrong file.
 	"pkg/recordlayer/query/plan/cascades/left_outer_existential.go:143":           {1, "dotted: leg-relative vs qualified ref probed via '.' in the name"},
-	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2956": {1, "dotted: declines re-qualifying an already-dotted ref; Child is a live QOV, so this is the qualified-name channel, not the legacy flat shape"},
+	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2958": {1, "dotted: declines re-qualifying an already-dotted ref; Child is a live QOV, so this is the qualified-name channel, not the legacy flat shape"},
 	// MEASURED, not inferred: 3 declines in 269 979 calls over the sqldriver
 	// real-FDB corpus, 2 distinct witnesses, both of the form `q$N.AID#0`. The
 	// census that produced those numbers is accessor_name_path_census.go and it
