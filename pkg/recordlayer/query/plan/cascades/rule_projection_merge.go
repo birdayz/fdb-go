@@ -1,8 +1,6 @@
 package cascades
 
 import (
-	"strings"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -16,8 +14,8 @@ import (
 //	Projection(P1 ∘ P2) over X
 //
 // Each outer slot that reads inner output k is substituted with P2[k]
-// (baked-ordinal reads by ordinal; lazy flat names by unique
-// output-name match). The pre-composition version kept P1 verbatim on
+// (baked-ordinal reads by ordinal; a lazy read carries no ordinal and
+// declines). The pre-composition version kept P1 verbatim on
 // the name-era contract that "the projection list is a side channel;
 // rows pass through" — FALSE under the ordinal model, where P1's reads
 // are baked against P2's OUTPUT row: dropping P2 reshaped the row
@@ -74,20 +72,6 @@ func (r *ProjectionMergeRule) OnMatch(call *ExpressionRuleCall) {
 	if innerAliases != nil && len(innerAliases) != len(innerVals) {
 		return // malformed alias list — decline rather than misname a slot
 	}
-	// Alias-preferring slot names — the SAME authority the executor's
-	// runtime name resolution applies (values.OutputColumnName; its doc
-	// records a prior hand-rolled copy of this rule causing an
-	// OrdinalResolutionError). Matching bare ProjectionColumnName here
-	// composed the WRONG COLUMN for `[a AS b, b AS c]` + outer lazy `b`:
-	// runtime resolves `b` to the ALIAS slot (value a), the name-only match
-	// picked value b.
-	innerSlotName := func(j int) string {
-		alias := ""
-		if innerAliases != nil {
-			alias = innerAliases[j]
-		}
-		return values.OutputColumnName(innerVals[j], alias)
-	}
 	outerVals := outer.GetProjectedValues()
 	composed := make([]values.Value, len(outerVals))
 	for i, v := range outerVals {
@@ -103,25 +87,17 @@ func (r *ProjectionMergeRule) OnMatch(call *ExpressionRuleCall) {
 				return
 			}
 			composed[i] = innerVals[ord]
-		case fv.Resolved == nil:
-			// LAZY flat name: compose by UNIQUE output-name match. Sound
-			// because the composed value REPLACES the read outright — no
-			// runtime name resolution survives the merge. Ambiguous or
-			// missing → decline.
-			match := -1
-			for j, iv := range innerVals {
-				if iv != nil && strings.EqualFold(innerSlotName(j), fv.Field) {
-					if match >= 0 {
-						return
-					}
-					match = j
-				}
-			}
-			if match < 0 {
-				return
-			}
-			composed[i] = innerVals[match]
 		default:
+			// A LAZY outer read (Resolved == nil) carries only a display
+			// name, and a name cannot select a slot: two inner slots may
+			// share one output name, and one slot may be addressed by two
+			// names. DECLINE — both projections remain, which is the
+			// behaviour this function's contract has always claimed for an
+			// "unresolved lazy name". The resolver bakes a projection-output
+			// reference to its output ordinal before it reaches here, so the
+			// decline costs nothing on real traffic; if that upstream baking
+			// regresses, the observable is a LOST merge (an extra Projection
+			// operator), never a wrong column.
 			return
 		}
 	}

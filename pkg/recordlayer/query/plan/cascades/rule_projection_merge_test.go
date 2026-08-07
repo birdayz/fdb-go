@@ -16,11 +16,19 @@ func stackedProjections(outerVals, innerVals []values.Value) *expressions.Logica
 	return expressions.NewLogicalProjectionExpression(outerVals, outerQ)
 }
 
+// outerRead is an outer projection slot reading the inner projection's output
+// slot `ord`. It is BAKED, because that is the only shape the resolver hands
+// this rule: an outer read of a projection output arrives carrying its output
+// ordinal. Tests used to build these LAZY (name only), which exercised a
+// composition arm no query could reach — see
+// TestProjectionMergeRule_LazyOuterReadDeclines.
+func outerRead(name string, ord int) *values.FieldValue {
+	return values.NewFieldValueWithResolvedOrdinal(name, ord, values.UnknownType)
+}
+
 func TestProjectionMergeRule_Fires(t *testing.T) {
 	t.Parallel()
-	outerVals := []values.Value{
-		&values.FieldValue{Field: "id", Typ: values.UnknownType},
-	}
+	outerVals := []values.Value{outerRead("id", 0)}
 	innerVals := []values.Value{
 		&values.FieldValue{Field: "id", Typ: values.UnknownType},
 		&values.FieldValue{Field: "name", Typ: values.UnknownType},
@@ -37,7 +45,7 @@ func TestProjectionMergeRule_Fires(t *testing.T) {
 	if !ok {
 		t.Fatalf("yielded %T, want *LogicalProjectionExpression", yielded[0])
 	}
-	// Outer projection list preserved — exactly one entry, FieldValue("id").
+	// Outer projection list preserved — exactly one entry, the inner's slot 0.
 	pv := flat.GetProjectedValues()
 	if len(pv) != 1 {
 		t.Fatalf("flat projected values len=%d, want 1", len(pv))
@@ -68,6 +76,87 @@ func TestProjectionMergeRule_DeclinesOnNonProjectionInner(t *testing.T) {
 	}
 }
 
+// TestProjectionMergeRule_LazyOuterReadDeclines is the pin that earns the
+// removal of this rule's name-matching composition arm (RFC-197, name-keyed).
+//
+// A LAZY outer read carries a display name and nothing else. The removed arm
+// selected an inner slot by unique output-name match, which is the RFC's
+// forbidden move in its purest form: a name choosing a slot. The arm was
+// MEASURED to take ZERO real traffic — over the whole ./pkg/relational/...
+// suite (FDB sqldriver, all four conformance corpora, yamsql, rowdiff) the
+// rule fires 897 times and the lazy arm is entered on none of them; every
+// outer read arrives baked, because the resolver bakes a projection-output
+// reference to its output ordinal. So the arm is now a fail-closed DECLINE.
+//
+// If this goes red, the arm has come back and a display name is selecting a
+// slot again. If instead a LOST merge shows up in a plan golden, the upstream
+// resolver-side baking regressed and the decline started costing something —
+// that is the recoverable direction, and it is the one this rule chooses.
+func TestProjectionMergeRule_LazyOuterReadDeclines(t *testing.T) {
+	t.Parallel()
+	outerVals := []values.Value{
+		&values.FieldValue{Field: "id", Typ: values.UnknownType}, // LAZY: Resolved == nil
+	}
+	innerVals := []values.Value{
+		&values.FieldValue{Field: "id", Typ: values.UnknownType},
+		&values.FieldValue{Field: "name", Typ: values.UnknownType},
+	}
+	ref := expressions.InitialOf(stackedProjections(outerVals, innerVals))
+	yielded := FireExpressionRule(NewProjectionMergeRule(), ref)
+	if got := len(yielded); got != 0 {
+		t.Fatalf("rule yielded %d on a LAZY outer read, want 0 (decline). "+
+			"A lazy read carries only a display name; composing it means a name "+
+			"selecting an inner slot, which RFC-197 forbids and which this rule "+
+			"no longer does. Re-armed by restoring the unique-output-name match arm",
+			got)
+	}
+}
+
+// TestProjectionMergeRule_DuplicateInnerSlotNames_OrdinalPicksTheRightSlot is
+// the DIMENSION the removed name arm could never handle and never had a test
+// for: two inner slots sharing ONE output name.
+//
+// Under the name arm this shape was ambiguous and the whole merge declined —
+// so a perfectly composable projection lost its merge because two unrelated
+// slots happened to spell the same. Under ordinal composition the outer read's
+// own ordinal answers, and the merge fires on the RIGHT slot. Both halves are
+// asserted: that it fires at all, and that it picked slot 1's value rather
+// than slot 0's.
+func TestProjectionMergeRule_DuplicateInnerSlotNames_OrdinalPicksTheRightSlot(t *testing.T) {
+	t.Parallel()
+	// Two inner slots, both named K, distinguishable ONLY by ordinal.
+	innerVals := []values.Value{
+		&values.FieldValue{Field: "LEFT_SOURCE", Typ: values.UnknownType},
+		&values.FieldValue{Field: "RIGHT_SOURCE", Typ: values.UnknownType},
+	}
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	innerProj := expressions.NewLogicalProjectionExpressionWithAliases(innerVals, []string{"K", "K"}, innerQ)
+
+	outerVals := []values.Value{outerRead("K", 1)} // the SECOND K
+	outerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerProj))
+	outer := expressions.NewLogicalProjectionExpression(outerVals, outerQ)
+
+	yielded := FireExpressionRule(NewProjectionMergeRule(), expressions.InitialOf(outer))
+	if len(yielded) != 1 {
+		t.Fatalf("rule yielded %d on duplicate inner slot names, want 1 — an "+
+			"ordinal-composed merge does not care that two slots spell the same",
+			len(yielded))
+	}
+	flat := yielded[0].(*expressions.LogicalProjectionExpression)
+	pv := flat.GetProjectedValues()
+	if len(pv) != 1 {
+		t.Fatalf("flat projected values len=%d, want 1", len(pv))
+	}
+	got, ok := pv[0].(*values.FieldValue)
+	if !ok || got.Field != "RIGHT_SOURCE" {
+		t.Fatalf("merged slot 0 composed to %v, want FieldValue(RIGHT_SOURCE) — "+
+			"the outer read is baked at ordinal 1, so it must substitute the "+
+			"SECOND inner slot; picking LEFT_SOURCE is the same-leaf-name "+
+			"conflation RFC-197 exists to stop", pv[0])
+	}
+}
+
 func TestProjectionMergeRule_TriplyNested_FlattensInTwoFires(t *testing.T) {
 	t.Parallel()
 	// Project([id]) over Project([id, name]) over Project([id, name, age]) over Scan
@@ -76,13 +165,8 @@ func TestProjectionMergeRule_TriplyNested_FlattensInTwoFires(t *testing.T) {
 		&values.FieldValue{Field: "name", Typ: values.UnknownType},
 		&values.FieldValue{Field: "age", Typ: values.UnknownType},
 	}
-	middle := []values.Value{
-		&values.FieldValue{Field: "id", Typ: values.UnknownType},
-		&values.FieldValue{Field: "name", Typ: values.UnknownType},
-	}
-	top := []values.Value{
-		&values.FieldValue{Field: "id", Typ: values.UnknownType},
-	}
+	middle := []values.Value{outerRead("id", 0), outerRead("name", 1)}
+	top := []values.Value{outerRead("id", 0)}
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	deepProj := expressions.NewLogicalProjectionExpression(deepest, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
@@ -117,14 +201,20 @@ func TestProjectionMergeRule_TriplyNested_FlattensInTwoFires(t *testing.T) {
 
 // TestProjectionMergeRule_PinsOuterEffectiveNames pins the merged
 // projection's OUTPUT SCHEMA: an outer projection whose output names come
-// from its VALUES' own field names (lazy reads, alias list nil) must keep
-// those names after composition substitutes the inner's values — the field
-// name rides the replaced value, so the merge must pin each slot's
-// effective name (OutputColumnName) as the merged alias. Pre-fix the
-// merged output regressed to the INNER values' names — for a CTE
+// from its VALUES' own field names (alias list nil) must keep those names
+// after composition substitutes the inner's values — the field name rides the
+// replaced value, so the merge must pin each slot's effective name
+// (OutputColumnName) as the merged alias. Pre-fix the merged output regressed
+// to the INNER values' names — for a CTE
 // `WITH c AS (SELECT la.k AS ak, lb.k AS bk ...) SELECT ak, bk FROM c`
 // the output schema became the dup-bare [K, K] and the consumer's column
 // VANISHED (the RFC-186 winner-flip triage's wrong-rows case).
+//
+// The CTE-consumer reads are BAKED here, which is what that consumer actually
+// produces today; the earlier lazy spelling exercised a composition arm no
+// query reaches (see TestProjectionMergeRule_LazyOuterReadDeclines). The
+// schema hazard is unchanged by that: the inner's dup-bare [K, K] must still
+// not leak.
 func TestProjectionMergeRule_PinsOuterEffectiveNames(t *testing.T) {
 	t.Parallel()
 
@@ -132,18 +222,15 @@ func TestProjectionMergeRule_PinsOuterEffectiveNames(t *testing.T) {
 	// aliased apart as AK / BK — the CTE-body shape.
 	innerVals := []values.Value{
 		&values.FieldValue{Field: "K", Typ: values.UnknownType},
-		&values.FieldValue{Field: "K2", Typ: values.UnknownType},
+		&values.FieldValue{Field: "K", Typ: values.UnknownType},
 	}
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	innerProj := expressions.NewLogicalProjectionExpressionWithAliases(innerVals, []string{"AK", "BK"}, innerQ)
 
-	// Outer projection: LAZY reads of the aliased names, NO alias list —
-	// the CTE-consumer shape (`SELECT "AK", "BK" FROM "C"`).
-	outerVals := []values.Value{
-		&values.FieldValue{Field: "AK", Typ: values.UnknownType},
-		&values.FieldValue{Field: "BK", Typ: values.UnknownType},
-	}
+	// Outer projection: the CTE-consumer shape (`SELECT "AK", "BK" FROM "C"`),
+	// reading the body's output slots 0 and 1, with NO alias list.
+	outerVals := []values.Value{outerRead("AK", 0), outerRead("BK", 1)}
 	outerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerProj))
 	outer := expressions.NewLogicalProjectionExpression(outerVals, outerQ)
 
@@ -167,7 +254,7 @@ func TestProjectionMergeRule_PinsOuterEffectiveNames(t *testing.T) {
 			alias = al[i]
 		}
 		if got := values.OutputColumnName(pv[i], alias); got != want {
-			t.Fatalf("merged output name[%d] = %q, want %q (outer effective name must survive the merge; inner names [K K2] must not leak)", i, got, want)
+			t.Fatalf("merged output name[%d] = %q, want %q (outer effective name must survive the merge; inner names [K K] must not leak)", i, got, want)
 		}
 	}
 }
