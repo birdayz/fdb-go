@@ -73,6 +73,7 @@ func pullUpThroughRecordConstructor(v Value, rc *RecordConstructorValue, alias C
 		_, fieldOwnedByAlias := GetCorrelatedToOfValue(field.Value)[alias]
 		if semanticEqual(v, field.Value) ||
 			(fieldOwnedByAlias && CanBridgeOrderingValueRoots(v, field.Value)) {
+			NoteFieldValueMint(field.Name, false)
 			out := &FieldValue{
 				Field: field.Name,
 				Typ:   field.Value.Type(),
@@ -141,6 +142,7 @@ func pullUpThroughPassthrough(
 	// identity result value (same record flows), so the baked position stays
 	// valid; dropping it would silently degrade a BAKED node to lazy (the
 	// conflation hazard).
+	NoteFieldValueMint(fv.Field, fv.Resolved != nil)
 	return &FieldValue{
 		Field:    fv.Field,
 		Typ:      fv.Typ,
@@ -245,6 +247,7 @@ func pushDownThroughPassthrough(
 	}
 	if fv.Child == nil {
 		// Preserve the baked-ordinal marker — see pullUpThroughPassthrough.
+		NoteFieldValueMint(fv.Field, fv.Resolved != nil)
 		return &FieldValue{
 			Field:    fv.Field,
 			Typ:      fv.Typ,
@@ -255,6 +258,7 @@ func pushDownThroughPassthrough(
 	if !ok || qov == nil || qov.Correlation != upperAlias {
 		return nil
 	}
+	NoteFieldValueMint(fv.Field, fv.Resolved != nil)
 	return &FieldValue{
 		Field:    fv.Field,
 		Typ:      fv.Typ,

@@ -1484,6 +1484,7 @@ func NewFieldValueOfOrdinal(child Value, ordinal int) (*FieldValue, error) {
 	// against rt itself, so rt IS the layout the ordinal indexes — the one
 	// place a derived domain is a proof rather than a claim. A caller that
 	// resolved elsewhere must state its own domain explicitly.
+	NoteFieldValueMint(fld.Name, true)
 	return &FieldValue{
 		Field:    fld.Name,
 		Typ:      typ,
@@ -5076,6 +5077,7 @@ func NewFusedFieldValueOfNestedOrdinal(child Value, slotOrdinal int, legType *Re
 	if slot.Typ != nil && slot.Typ.IsNullable() && typ != nil && !typ.IsNullable() {
 		typ = WithNullability(typ, true)
 	}
+	NoteFieldValueMint(leaf.Field, true)
 	return &FieldValue{
 		// The DISPLAY name is the LEAF's, matching what a one-step bake would
 		// have rendered. It is rendering only — a baked node's identity is its

@@ -31,12 +31,30 @@ import (
 //
 //	grep -rn '&FieldValue{\|values\.FieldValue{' pkg/ | grep -v '_test\.go' | wc -l
 //
-// there are 57 such literals in non-test code, concentrated in
-// cascades_translator.go (12), values.go (8) and pullup.go (4). NONE of them are
-// counted here. A class reading zero therefore means "no CONSTRUCTOR mint of
-// this shape", never "no mint of this shape" — and if the dotted witnesses do
-// not appear in this census, that is itself the finding: it localises them to
-// the literal surface and says which files to look at next.
+// there are 57 such literals in non-test code. SIX of them are the constructor
+// bodies themselves and are already counted through the constructor hook;
+// hooking those again would double-count and corrupt the denominator.
+//
+// TWENTY-THREE LITERALS ARE HOOKED DIRECTLY: all 12 in cascades_translator.go,
+// all 4 in pullup.go, the 2 non-constructor literals in values.go, the 3 in
+// logical_predicate.go, and the 2 in plans/ordering.go. The last two are where
+// the Explain-rendered producer turned out to live.
+//
+// FOUR POST-CONSTRUCTION MUTATIONS are hooked too, and finding them is the
+// reason this census cannot be described as a MINT census without qualification:
+// FieldValue.Field is a plain exported string field and four sites ASSIGN to it
+// after construction (logical_predicate.go:9417, cascades_translator.go:4016 and
+// :7335, unnest_gather.go:399). A node can therefore acquire a name its
+// constructor never saw, which no hook at construction can observe. Enumerate
+// them with: grep -rn '\.Field = ' pkg/ | grep -v '_test\.go'
+//
+// TWENTY-EIGHT LITERALS REMAIN UNHOOKED and are OUT OF SCOPE for this pass, not
+// covered by it: replace.go (3), max_match_map.go (3), match_info_merge.go (3),
+// index_onsource.go (2), primary_key_translation.go (2), and singletons
+// elsewhere. A zero class means "no mint of this shape among the 33 sites this
+// census can see", never "no mint of this shape" -- the same trap one level down
+// from the one this census exists to avoid, so the dump states it on every run
+// rather than leaving it in a comment nobody reads with the numbers.
 //
 // THE DENOMINATOR IS COUNTED INDEPENDENTLY of the classes, so the two can
 // disagree and the disagreement is visible rather than absorbed. A class vector
@@ -110,7 +128,7 @@ var (
 	// fieldMintOrigins keeps one stack per distinct (class, name) for the two
 	// dotted classes only. Those are rare by every measurement so far; capturing
 	// stacks for lazy-bare would be a profiler, not a census.
-	fieldMintOrigins = map[string]struct{}{}
+	fieldMintOrigins = map[FieldMintClass]map[string]struct{}{}
 )
 
 // fieldMintOriginCap bounds the stack set. Anything approaching it means the
@@ -155,8 +173,14 @@ func NoteFieldValueMint(field string, baked bool) {
 	// Denominator first, before any guard that could skip it.
 	fieldMintTotal++
 	fieldMintCounts[class]++
-	if origin != "" && len(fieldMintOrigins) < fieldMintOriginCap {
-		fieldMintOrigins[origin] = struct{}{}
+	if origin != "" {
+		// PER-CLASS cap. A shared cap lets a common class crowd out a rare one:
+		if fieldMintOrigins[class] == nil {
+			fieldMintOrigins[class] = map[string]struct{}{}
+		}
+		if len(fieldMintOrigins[class]) < fieldMintOriginCap {
+			fieldMintOrigins[class][origin] = struct{}{}
+		}
 	}
 }
 
@@ -172,9 +196,11 @@ func FieldValueMintCensus() (total int, counts [fieldMintClassCount]int) {
 func FieldValueMintOrigins() []string {
 	fieldMintMu.Lock()
 	defer fieldMintMu.Unlock()
-	out := make([]string, 0, len(fieldMintOrigins))
-	for k := range fieldMintOrigins {
-		out = append(out, k)
+	out := make([]string, 0, 16)
+	for class, m := range fieldMintOrigins {
+		for k := range m {
+			out = append(out, class.String()+" :: "+k)
+		}
 	}
 	sort.Strings(out)
 	return out
@@ -186,14 +212,14 @@ func ResetFieldValueMintCensus() {
 	defer fieldMintMu.Unlock()
 	fieldMintTotal = 0
 	fieldMintCounts = [fieldMintClassCount]int{}
-	fieldMintOrigins = map[string]struct{}{}
+	fieldMintOrigins = map[FieldMintClass]map[string]struct{}{}
 }
 
 // DumpFieldValueMintCensus renders the census, with the partition check and the
 // vacuity guard ahead of any zero-class claim.
 func DumpFieldValueMintCensus(w io.Writer, label string) {
 	total, counts := FieldValueMintCensus()
-	fmt.Fprintf(w, "\n[%s] field-value MINT census (constructor mints only; 57 struct literals uncounted): total %d\n",
+	fmt.Fprintf(w, "\n[%s] field-value MINT census (33 hook sites: 6 constructors + 23 literals + 4 post-construction Field mutations; 28 literals elsewhere OUT OF SCOPE and uncounted): total %d\n",
 		label, total)
 	sum := 0
 	for i := FieldMintClass(0); i < fieldMintClassCount; i++ {
@@ -212,10 +238,11 @@ func DumpFieldValueMintCensus(w io.Writer, label string) {
 		return
 	}
 	if counts[FieldMintLazyExplainRendered] == 0 && counts[FieldMintLazyDotted] == 0 {
-		fmt.Fprintf(w, "  no dotted mint reached a CONSTRUCTOR over %d mints — the dotted "+
-			"witnesses the consumer census sees are therefore minted by one of the 57 "+
-			"struct literals this census cannot hook (cascades_translator.go 12, "+
-			"values.go 8, pullup.go 4), which is where to look next\n", total)
+		fmt.Fprintf(w, "  no dotted mint among the 33 hooked sites over %d mints. The "+
+			"consumer census sees flat-dotted values reach AccessorNamePath, so if this "+
+			"stays zero the producer is in the 28 UNHOOKED literals listed in this "+
+			"file's header — this census does not cover them and its zero is not "+
+			"evidence about them\n", total)
 	}
 	for _, o := range FieldValueMintOrigins() {
 		fmt.Fprintf(w, "  dotted mint origin:\n%s\n", o)

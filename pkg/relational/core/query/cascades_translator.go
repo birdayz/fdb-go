@@ -4013,6 +4013,7 @@ func bakeUnnestElementRefOrdinal(
 			if err != nil {
 				return node
 			}
+			values.NoteFieldValueMint(fv.Field, baked.Resolved != nil)
 			baked.Field = fv.Field
 			return baked
 		})
@@ -4628,6 +4629,7 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 			// ordinary projection path (text fallback) handles it.
 			return nil
 		} else {
+			values.NoteFieldValueMint(strings.ToUpper(col), false)
 			v = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
 		}
 		name := strings.ToUpper(col)
@@ -5015,6 +5017,7 @@ func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
 				}
 			}
 		}
+		values.NoteFieldValueMint(stripSortQualifier(field), false)
 		return &values.FieldValue{Field: stripSortQualifier(field), Typ: values.UnknownType}
 	}
 	// Single-table: the outer scan row carries bare keys, so the source column is
@@ -5026,6 +5029,7 @@ func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
 			return values.NewFieldValueWithResolvedOrdinal(bare, idx, values.UnknownType)
 		}
 	}
+	values.NoteFieldValueMint(bare, false)
 	return &values.FieldValue{Field: bare, Typ: values.UnknownType}
 }
 
@@ -5215,6 +5219,7 @@ func (t *cascadesTranslator) applySortOverRef(s *logical.LogicalSort, ref *expre
 				outputFieldDomain(fields))
 		}
 		if v == nil {
+			values.NoteFieldValueMint(k.Expr, false)
 			v = &values.FieldValue{Field: k.Expr, Typ: values.UnknownType}
 		}
 		v = pullUpSortKeyValue(k, v, fields, src)
@@ -6621,6 +6626,7 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 		// rebase pass below rewrites, is not it, and pointer identity says so.
 		var minted *values.FieldValue
 		if v == nil {
+			values.NoteFieldValueMint(k.Expr, false)
 			minted = &values.FieldValue{Field: k.Expr, Typ: values.UnknownType}
 			v = minted
 		}
@@ -6932,6 +6938,7 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 		if i < len(p.IsComputed) && p.IsComputed[i] {
 			return nil
 		}
+		values.NoteFieldValueMint(strings.ToUpper(col), false)
 		fv := &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
 		projected[i] = fv
 		minted[i] = fv
@@ -7251,6 +7258,7 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 		if i < len(p.IsComputed) && p.IsComputed[i] {
 			return nil
 		}
+		values.NoteFieldValueMint(strings.ToUpper(col), false)
 		fv := &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
 		projected[i] = fv
 		minted[i] = fv
@@ -7300,8 +7308,10 @@ func replaceScalarSubqueryRef(v values.Value, csq logical.CorrelatedScalarSubque
 			// bind to. Mint the lazy carrier the un-migrated path produced: it
 			// resolves to nothing and is loud at eval, which is what happens
 			// today and is the correct outcome for a row nobody can address.
+			mintField := strings.ToUpper(innerCorr.Name()) + "." + strings.ToUpper(csq.ScalarCol)
+			values.NoteFieldValueMint(mintField, false)
 			return &values.FieldValue{
-				Field: strings.ToUpper(innerCorr.Name()) + "." + strings.ToUpper(csq.ScalarCol),
+				Field: mintField,
 				Typ:   values.UnknownType,
 			}
 		}
@@ -7745,6 +7755,7 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		if key.Value != nil {
 			groupKeys[i] = key.Value
 		} else {
+			values.NoteFieldValueMint(key.Display, false)
 			minted = &values.FieldValue{Field: key.Display, Typ: values.UnknownType}
 			groupKeys[i] = minted
 		}
@@ -7826,6 +7837,7 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		case call.Star:
 			spec.Operand = &values.ConstantValue{Value: nil, Typ: values.UnknownType}
 		case call.BareColumn:
+			values.NoteFieldValueMint(strings.ToUpper(call.Operand), false)
 			operandMinted = &values.FieldValue{Field: strings.ToUpper(call.Operand), Typ: values.UnknownType}
 			spec.Operand = operandMinted
 		default:
@@ -9725,6 +9737,7 @@ func recursiveRemapValues(cols []string, verbatimField []bool, ordinalReads, pos
 						values.QualRecBare, cu, "")
 				}
 			}
+			values.NoteFieldValueMint(bare, true)
 			out[i] = &values.FieldValue{
 				Field:    bare,
 				Typ:      values.UnknownType,
@@ -9754,6 +9767,7 @@ func recursiveRemapValues(cols []string, verbatimField []bool, ordinalReads, pos
 				values.QualRecManufactured, cu, "")
 		}
 		if dot >= 0 && identName {
+			values.NoteFieldValueMint(cu[dot+1:], false)
 			out[i] = &values.FieldValue{
 				Field: cu[dot+1:],
 				Typ:   values.UnknownType,

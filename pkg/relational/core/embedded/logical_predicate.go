@@ -3974,6 +3974,7 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 					continue
 				}
 				explain := strings.ToUpper(values.ColumnNameValue(gk.Value))
+				values.NoteFieldValueMint(explain, false)
 				ref := &values.FieldValue{Field: explain, Typ: values.UnknownType}
 				groupKeyExplains[explain] = ref
 				groupKeyExplains[strings.ToUpper(gk.Display)] = ref
@@ -4860,8 +4861,10 @@ func rewriteAggregateValue(v values.Value, agg *logical.LogicalAggregate) values
 	// report the type of its referent. (Previously discarded as UnknownType,
 	// which left every downstream type query on a rewritten projection blind;
 	// the INSERT…SELECT promotion guard relies on this carrying e.g. AVG→DOUBLE.)
+	aggName := canonicalAggName(av.Op.Symbol(), av.Operand)
+	values.NoteFieldValueMint(aggName, false)
 	return &values.FieldValue{
-		Field: canonicalAggName(av.Op.Symbol(), av.Operand),
+		Field: aggName,
 		Typ:   av.Type(),
 	}
 }
@@ -6653,6 +6656,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 						break
 					}
 				}
+				values.NoteFieldValueMint(explain, false)
 				sort.Keys[i].Value = &values.FieldValue{Field: explain, Typ: values.UnknownType}
 			}
 		}
@@ -9410,6 +9414,7 @@ func qualifyBareFieldValue(v values.Value, qualifier string) {
 			if !ref.isQualified() {
 				fv.Child = values.NewQuantifiedObjectValue(corr)
 			} else {
+				values.NoteFieldValueMint(ref.col, fv.Resolved != nil)
 				fv.Field = ref.col
 				fv.Child = values.NewQuantifiedObjectValue(
 					values.NamedCorrelationIdentifier(ref.table),
