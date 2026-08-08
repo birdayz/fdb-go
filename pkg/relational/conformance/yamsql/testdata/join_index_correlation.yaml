@@ -3,6 +3,13 @@
 # Tests that joins on indexed columns use correlated index probes
 # (FlatMap) rather than NLJ with full scan. The plan should show
 # FlatMap when the join predicate matches an index/PK on the inner table.
+#
+# Every case below asserts that shape. `plan_not_contains: NestedLoopJoin` is
+# the load-bearing half: rows are identical either way, so without it the file
+# passed against a planner that had lost the correlated probe entirely.
+# Which side ends up outer is cost-driven, so the cases whose claim is only
+# "a FlatMap, not an NLJ" assert just `FlatMap(`; the cases whose claim is the
+# INDEX probe name IDX_DEPT.
 name: join_index_correlation
 schema_template: |
   CREATE TABLE departments (
@@ -32,6 +39,8 @@ tests:
       SELECT d.name, e.name FROM departments d, employees e
       WHERE e.dept_id = d.id
       ORDER BY d.name, e.name
+    plan_contains: "FlatMap(outer=Scan(DEPARTMENTS), inner=Fetch(IndexScan(IDX_DEPT, [=])))"
+    plan_not_contains: NestedLoopJoin
     rows:
       - ['Engineering', 'Alice']
       - ['Engineering', 'Bob']
@@ -44,6 +53,8 @@ tests:
       SELECT d.name, e.name FROM departments d, employees e
       WHERE e.dept_id = d.id AND e.salary > 90
       ORDER BY d.name, e.name
+    plan_contains: "FlatMap("
+    plan_not_contains: NestedLoopJoin
     rows:
       - ['Engineering', 'Alice']
       - ['Engineering', 'Bob']
@@ -55,6 +66,8 @@ tests:
       WHERE e.dept_id = d.id
       GROUP BY d.name
       ORDER BY d.name
+    plan_contains: "FlatMap("
+    plan_not_contains: NestedLoopJoin
     rows:
       - ['Engineering', 2]
       - ['HR', 1]
@@ -65,6 +78,8 @@ tests:
       SELECT e1.name, e2.name FROM employees e1, employees e2
       WHERE e1.id = e2.id
       ORDER BY e1.id
+    plan_contains: "FlatMap(outer=Scan(EMPLOYEES), inner=Scan(EMPLOYEES, [=]))"
+    plan_not_contains: NestedLoopJoin
     rows:
       - ['Alice', 'Alice']
       - ['Bob', 'Bob']
@@ -77,6 +92,8 @@ tests:
       SELECT d.name, e.name FROM departments d
       LEFT JOIN employees e ON e.dept_id = d.id AND e.salary > 200
       ORDER BY d.name
+    plan_contains: "FlatMap(outer=Scan(DEPARTMENTS), inner=DefaultOnEmpty(PredicatesFilter(Fetch(IndexScan(IDX_DEPT, [=]))"
+    plan_not_contains: NestedLoopJoin
     rows:
       - ['Engineering', null]
       - ['HR', null]
@@ -87,6 +104,8 @@ tests:
       SELECT d.id, e.name FROM departments d, employees e
       WHERE e.dept_id = d.id
       ORDER BY d.id, e.name
+    plan_contains: "FlatMap(outer=Scan(DEPARTMENTS), inner=Fetch(IndexScan(IDX_DEPT, [=])))"
+    plan_not_contains: NestedLoopJoin
     rows:
       - [1, 'Alice']
       - [1, 'Bob']

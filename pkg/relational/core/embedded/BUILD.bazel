@@ -137,6 +137,7 @@ go_test(
         "join_using_quoted_alias_test.go",
         "key_component_types_test.go",
         "lazy_leg_mint_winner_test.go",
+        "like_prefix_not_sargable_test.go",
         "logical_builder_test.go",
         "logical_predicate_test.go",
         "logical_qualify_test.go",
@@ -337,6 +338,7 @@ go_test(
         "qualifier_recovery_wiring_test.go",
         "qualifier_recovery_census_main_test.go",
         "tx_time_limit_marker_test.go",
+        "like_prefix_not_sargable_test.go",
         "plan_harness_exists_guard_test.go",
     ],
     deps = [

@@ -8,7 +8,7 @@ package sqldriver_test
 // therefore runs on BOTH the index-eligible and full-scan connections and
 // requires the same rows from each.
 //
-// Root cause (fixed): scanComparisonsToTupleRange (executor.go) packed a
+// Root cause (fixed): bindScanComparisonsToRangeSet (scan_range_binding.go) packed a
 // zero comparand with whatever sign it happened to carry. FDB tuple encoding
 // preserves the IEEE sign bit (pkg/fdbgo/fdb/tuple's adjustFloatBytes), so
 // +0.0 and -0.0 are two DISTINCT, adjacent index keys — but the
@@ -32,8 +32,13 @@ package sqldriver_test
 // already-reviewed Go extension beyond Java), needed to change.
 //
 // This test asserts the selected physical path and the residual reference path
-// agree on both DOUBLE and FLOAT. Equality and NULL probes stay indexed;
-// inequalities are required to use the NaN-safe residual path.
+// agree on both DOUBLE and FLOAT. Equality and NULL probes stay indexed, and so
+// do the ORDERED inequalities (`<`, `<=`, `>`, `>=`): each is required to plan
+// as an IndexScan and to come back through the exact, NaN-aware range-set path,
+// with its zero endpoint canonicalized so both zero encodings land on the same
+// logical side. An earlier revision of this file required inequalities to fall
+// back to the residual full scan; that expectation was removed, because
+// declining the index cost a plan without fixing a row.
 
 import (
 	"context"
@@ -135,8 +140,13 @@ func TestFDB_NegativeZeroIndexSargProbe(t *testing.T) {
 		}
 	}
 	// notEqProbe checks `<>` WITHOUT requiring an IndexScan: NOT_EQUALS is
-	// ComparisonType.NONE in Java (residual, never sargable — see
-	// scanComparisonsToTupleRange's default-arm comment) and, with no other
+	// ComparisonType.NONE in Java — residual, never sargable into a scan
+	// range. On the Go side that is decided upstream of the binder, by
+	// isScanRangeCompatible (scan_match_helpers.go:37-48), which does not
+	// admit ComparisonNotEquals, so a `<>` can never bind a placeholder and
+	// never reaches the binder's range-tail switch at all. (The comment that
+	// used to be cited here lived on the retired scanComparisonsToTupleRange
+	// twin's default arm; the live binder has no such comment.) With no other
 	// predicate to justify visiting the secondary index at all, the planner
 	// takes a full PRIMARY scan here rather than IndexScan(D_V)/IndexScan(F_V)
 	// — there is no SARG-vs-residual disagreement to prove for this operator,

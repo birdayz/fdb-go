@@ -6,6 +6,11 @@
 #
 # Java equivalent: RemoveSortRule (ImplementationCascadesRule) checks
 # strictlySorted property on the plan partition.
+#
+# `plan_not_contains: InMemorySort` is what makes that claim checkable. Five
+# rows come back in the right order whether the ordering came from the access
+# path or from a sort bolted on top, so the rows alone pass against a tree
+# where sort elimination does not happen at all.
 name: order_by_index
 schema_template: |
   CREATE TABLE Products (id BIGINT, price BIGINT, name STRING, PRIMARY KEY (id))
@@ -19,6 +24,8 @@ setup:
 tests:
   # ORDER BY indexed column ASC.
   - query: SELECT id, price FROM Products ORDER BY price
+    plan_contains: "IndexScan(IDX_PRODUCTS_PRICE, [*])"
+    plan_not_contains: InMemorySort
     rows:
       - [2, 10]
       - [4, 20]
@@ -27,6 +34,8 @@ tests:
       - [3, 50]
   # ORDER BY indexed column DESC (reverse scan).
   - query: SELECT id, price FROM Products ORDER BY price DESC
+    plan_contains: "IndexScan(IDX_PRODUCTS_PRICE, [*]) REVERSE"
+    plan_not_contains: InMemorySort
     rows:
       - [3, 50]
       - [5, 40]
@@ -35,6 +44,8 @@ tests:
       - [2, 10]
   # ORDER BY PK (always available via scan order).
   - query: SELECT id, name FROM Products ORDER BY id
+    plan_contains: "Scan(PRODUCTS)"
+    plan_not_contains: InMemorySort
     rows:
       - [1, 'banana']
       - [2, 'apple']
@@ -43,6 +54,8 @@ tests:
       - [5, 'elderberry']
   # ORDER BY PK DESC.
   - query: SELECT id, name FROM Products ORDER BY id DESC
+    plan_contains: "Scan(PRODUCTS) REVERSE"
+    plan_not_contains: InMemorySort
     rows:
       - [5, 'elderberry']
       - [4, 'date']

@@ -970,7 +970,7 @@ These are the dangerous entries, because nothing tells the tenant.
 - **`LIKE` does not treat a trailing newline as content.** `WHERE name LIKE 'abc'` matches the
   stored value `"abc\n"` — no DOTALL, and `$` matches before one final line terminator. Deliberate
   Java parity, derived against a live JDK. `_` and `%` do *not* match a line terminator. Pinned:
-  `pkg/recordlayer/query/plan/cascades/values/like_match_test.go:120`, `:117`, `:118`, `:133`; the
+  `pkg/recordlayer/query/plan/cascades/values/like_match_test.go:130`, `:127`, `:128`, `:143`; the
   semantics are spelled out at
   `pkg/recordlayer/query/plan/cascades/values/like_match.go:23-31`.
 - **NaN is a total order, not IEEE.** `WHERE (v/z) = (v/z)` returns **every** row, and NaN sorts

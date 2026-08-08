@@ -49,6 +49,8 @@ tests:
   # id=2). Java's RemoveSortRule emits the same order: scan natural
   # order is the index-tuple order, scan direction flips both keys.
   - query: SELECT id, v FROM t ORDER BY 2 DESC
+    plan_contains: "IndexScan(IDX_V, [*]) REVERSE"
+    plan_not_contains: "InMemorySort"
     rows:
       - [3, 4]
       - [1, 3]
@@ -67,6 +69,7 @@ tests:
   # ORDER BY on an aggregate query — position 2 refers to SUM(v).
   # Groups: a → 3+1+2=6, b → 4+1=5. DESC puts a first.
   - query: SELECT grp, SUM(v) FROM t GROUP BY grp ORDER BY 2 DESC
+    plan_contains: "InMemorySort([SUM(V) DESC], StreamingAgg("
     rows:
       - ['a', 6]
       - ['b', 5]
@@ -82,6 +85,8 @@ tests:
   # swingshift-38: aliasToCol map routes alias-referenced sort keys
   # back to the already-projected column without an extra scan field.
   - query: SELECT id AS n FROM t ORDER BY n DESC
+    plan_contains: "Scan(T) REVERSE"
+    plan_not_contains: "InMemorySort"
     rows:
       - [5]
       - [4]

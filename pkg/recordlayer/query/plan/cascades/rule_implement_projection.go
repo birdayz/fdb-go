@@ -35,11 +35,18 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 	}
 
 	// Try covering merge: if inner has a Fetch wrapper and all
-	// projected values can push through, yield a covering IndexScan
-	// directly (no Projection, no Fetch). This fires during EXPLORE
-	// (not PLANNING like Java's MergeProjectionAndFetchRule) because
-	// Go's ExpressionRules see the Fetch wrapper in the inner
-	// Reference before PLANNING runs. The EXPLORE-phase covering
+	// projected values can push through, yield a Projection over a
+	// covering IndexScan — the Fetch is dropped, the Projection is
+	// retained (see rule_merge_projection_and_fetch.go: Go's covering
+	// plans carry the FULL partial-record result value, so dropping the
+	// Projection would leak the whole record).
+	//
+	// This is an ExpressionRule from BatchAExpressionRules, so it fires
+	// during PLANNING, the same phase as Java's
+	// MergeProjectionAndFetchRule and the same phase as Go's own
+	// MergeProjectionAndFetchRule implementation rule — the difference
+	// between the two Go stampers is expression-rule versus
+	// implementation-rule, not phase. Firing here means the covering
 	// scan participates in sort elimination and cost comparison.
 	projectedValues := proj.GetProjectedValues()
 	for _, m := range innerRef.AllMembers() {

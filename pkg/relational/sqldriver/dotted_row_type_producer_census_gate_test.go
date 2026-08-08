@@ -25,32 +25,45 @@ import (
 // ignore it, which costs exactly the signal the floor exists to give.
 //
 // What is NOT skipped: nothing, today, and that is worth stating rather than
-// leaving implicit. AssertDottedRowTypeProducerCensus asserts ONLY the floor —
-// with a nil floor it is a no-op by construction, pinned by
+// leaving implicit. AssertDottedRowTypeProducerCensus asserts ONLY floors — with
+// a nil floor it is a no-op by construction, pinned by
 // TestDottedRowTypeProducerCensus_NoFloorNeverFails.
 //
-// Its failure text calls the census's "usable finding" a ZERO on its DOTTED
-// counter, no code anywhere asserts that zero, AND THE ZERO IS FALSE. Measured
-// over this corpus, one full run: `DOTTED 683, plain 157511`. The census header
-// says it exists because the producer-set claim — that
-// `RecordConstructorValue.Type()` is NOT a producer of dotted `LEG.COL` rows —
-// "was asserted rather than measured". It has now been measured, 683 times, and
-// it does not hold. Nothing surfaces that, because the floor is the only
-// assertion and 683 clears it comfortably.
+// THE SECOND FLOOR, AND WHY IT IS A FLOOR RATHER THAN A ZERO. This gate used to
+// pass one number, Derivations, and record in prose that the census's "usable
+// finding" — a ZERO on the DOTTED counter — was both unasserted and FALSE:
+// measured over this corpus, `DOTTED 683, plain 157511`. A live finding written
+// into a comment is unreachable work, so it is now asserted instead.
 //
-// That is a live finding about the leg-table population plan, not a defect in
-// this gate, so it is recorded here rather than converted into an assertion: a
-// zero asserted now would red the build without deciding what the producer set
-// should be, which is a design question. Were the zero ever asserted, it would
-// belong OUTSIDE this narrowing skip — a zero over a sum of non-negative
-// counters is exact under any filter, so narrowing can only make it fail, never
-// falsely pass. The floor is the opposite and must go.
+// It is asserted in the direction the measurement left it. The claim the census
+// was built to check was DOTTED == 0 (that `RecordConstructorValue.Type()` is not
+// a producer of dotted `LEG.COL` rows); the measurement refuted it, so zero
+// stopped being the steady state and the alarm flipped from "growth above zero"
+// to COLLAPSE toward it. A hard zero here would now be unsatisfiable — it would
+// red every full run against a fact nobody disputes.
+//
+// Because it is a floor over a traffic-dependent count and not a zero, it is
+// withheld under narrowing with its sibling: a zero over a sum of non-negative
+// counters is exact under any filter, but a floor of 50 over a corpus the filter
+// just cut down is a red produced by the filter. The Derivations floor cannot
+// stand in for it — plain outnumbers dotted about 230:1, so DOTTED can fall to
+// zero with the total still three orders of magnitude clear.
 func assertDottedRowTypeProducerCensus(w io.Writer) bool {
-	floor := &values.DottedRowTypeProducerFloor{Derivations: 100}
+	// Both floored an order of magnitude below their full-corpus measurements.
+	// Four readings, DOTTED then plain: 683/157511, 841/157935, 681/157699 and
+	// 743/157905 — an observed DOTTED spread of 681..841, which is what "the
+	// integer is corpus-traffic dependent" looks like and why 50 has that much
+	// headroom below it.
+	//
+	// The last of those is the run that first exercised the DOTTED floor rather
+	// than merely supplying a number for it: whole corpus, floors NOT withheld,
+	// 1487 tests passed. A floor justified only by readings taken before it
+	// existed has never been shown to pass anything.
+	floor := &values.DottedRowTypeProducerFloor{Derivations: 100, Dotted: 50}
 	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
-		fmt.Fprintf(w, "dotted row-type producer census: population floor NOT checked "+
+		fmt.Fprintf(w, "dotted row-type producer census: population floors NOT checked "+
 			"(-test.run=%q narrowed the corpus). The census still reports its counts "+
-			"above; only the whole-corpus floor is withheld.\n", f.Value.String())
+			"above; only the whole-corpus floors are withheld.\n", f.Value.String())
 		floor = nil
 	}
 	return values.AssertDottedRowTypeProducerCensus(w, floor)

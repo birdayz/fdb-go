@@ -5,31 +5,42 @@ package sqldriver_test
 // EXACTLY the rows a full-scan-plus-residual-filter plan returns — same
 // multiset, and same sequence when the query carries an ORDER BY.
 //
-// The motivating example is RFC-179 finding F11: STARTS_WITH was consumed
-// into the index scan range (so the planner dropped the residual filter) but
-// scanComparisonsToTupleRange (pkg/recordlayer/query/executor/executor.go)
-// had no switch arm for it, so the bound silently vanished and the index scan
-// returned extra rows a full scan + WHERE-clause filter would have rejected.
-// Any arm of that switch (or of the SARG-extraction/span-construction path
-// feeding it) that drops a bound the same way makes this oracle RED — proven
-// below by deliberately breaking the ComparisonGreaterThan arm and confirming
-// the resulting extra-rows mismatch.
+// The motivating example is RFC-179 finding F11: STARTS_WITH is consumed
+// into the index scan range (so the planner drops the residual filter), and a
+// range binder with no switch arm for it would let the bound silently vanish,
+// making the index scan return extra rows a full scan + WHERE-clause filter
+// would have rejected. That missing-arm state was real, but in the DEAD twin
+// `scanComparisonsToTupleRange`, now retired (RFC-217). The live binder,
+// bindScanComparisonsToRangeSet (pkg/recordlayer/query/executor/scan_range_binding.go),
+// HAS the STARTS_WITH arm — see :929 and the PREFIX_STRING endpoints it feeds —
+// and RFC-217 §2 retracts the earlier claim that F11's fix lived in the twin.
+// The oracle's obligation is unchanged: any arm of that switch (or of the
+// SARG-extraction/span-construction path feeding it) that drops a bound makes
+// this oracle RED. That was established by a MANUAL, one-off mutation — the
+// ComparisonGreaterThan arm was broken by hand and the resulting extra-rows
+// mismatch observed — and NOT retained: there is no such mutation anywhere in
+// this file, and nothing here re-derives it. Treat it as a historical
+// observation, not as evidence this file carries.
 //
-// F11's OWN arm is not actually reachable that way: the fix commit
-// (89a930a7f) documents it as "latent (not SQL-reachable through today's
-// surface — no live producer)... becomes wrong-rows the moment its enabling
-// feature (a LIKE->STARTS_WITH rewrite) lands", and this file independently
-// confirms that by direct EXPLAIN inspection — `s LIKE 'prefix%'` NEVER
-// produces an IndexScan on any table size tried (6 through 150 rows), because
+// What is genuinely unreachable is the LIKE side: no producer turns a LIKE into
+// a STARTS_WITH, so the arm cannot be exercised from SQL at all. This file
+// confirms that by direct EXPLAIN inspection on its ONE LIKE fixture — the
+// indexed `str_col` table, seeded at exactly 100 rows (see the seeding comment
+// below) — where `s LIKE 'prefix%'` never produces an IndexScan. The 6-to-150
+// row spread covers this file's OTHER tables, none of which carries a LIKE
+// case, so it is not evidence about LIKE. The mechanism is size-independent:
 // walk.go's LikePredicateContext arm always calls ResolveLikeWithEscape, never
 // ResolveStartsWith/ComparisonStartsWith; grepping the whole tree turns up
 // zero non-test callers of ResolveStartsWith and no rewrite rule that
-// produces STARTS_WITH from a LIKE pattern. So the LIKE/NOT LIKE cases below
-// are still valid full-scan-vs-index-scan differential cases in general (kept
-// for the day a LIKE->STARTS_WITH rewrite lands, at which point they start
-// actually exercising the index path) but they do not, today, exercise F11's
-// arm specifically — the demonstration mutation below uses a comparison the
-// SQL surface DOES reach instead.
+// produces STARTS_WITH from a LIKE pattern (TODO.md CQ-33, pinned by
+// TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost). So the LIKE/NOT LIKE
+// cases below are still valid full-scan-vs-index-scan differential cases in
+// general (kept for the day a LIKE->STARTS_WITH rewrite lands, at which point
+// they start actually exercising the index path) but they do not, today, reach
+// the STARTS_WITH arm at all. That is also why the historical one-off mutation
+// described above broke the ComparisonGreaterThan arm rather than the
+// STARTS_WITH one: it needed a comparison the SQL surface DOES reach. There is
+// no demonstration mutation anywhere in this file, below or above.
 //
 // Mechanism: DISABLED_PLANNER_RULES=[MatchLeafRule] removes index-candidate
 // matching from the Cascades rule set (proven in
@@ -268,9 +279,11 @@ var intCmpOps = []struct{ sym, tag string }{
 
 // intAtoms generates the single-column predicate shapes item 2 of the RFC
 // asks for, over col: comparisons at every boundary constant, IS [NOT] NULL,
-// IN (present / absent-from-domain / NULL-containing), BETWEEN, NOT(...),
+// IN (present / absent-from-domain — NOT NULL-containing, which the file
+// header explains is rejected at semantic analysis and is deliberately
+// generated nowhere here), NOT IN, BETWEEN, NOT(...),
 // and the `= NULL` / `< NULL` degenerate-comparand shapes that exercise the
-// explicit empty-range branches in scanComparisonsToTupleRange.
+// explicit empty-range branches in bindScanComparisonsToRangeSet.
 func intAtoms(col intColModel) []sargCase {
 	var cs []sargCase
 	for _, b := range col.boundaries() {
@@ -295,7 +308,8 @@ func intAtoms(col intColModel) []sargCase {
 		sargCase{name: col.name + "_not_eq_interior", where: fmt.Sprintf("NOT (%s = %d)", col.name, interior)},
 		// `col = NULL` / `col < NULL`: a NULL COMPARAND (not IS NULL) is
 		// UNKNOWN for every row in SQL 3VL — the explicit empty-range guards
-		// at executor.go:732 and :840.
+		// at scan_range_binding.go:321-325 (equality prefix) and :981-983
+		// (range tail).
 		sargCase{name: col.name + "_eq_null_literal", where: col.name + " = NULL"},
 		sargCase{name: col.name + "_lt_null_literal", where: col.name + " < NULL"},
 	)
@@ -650,7 +664,7 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 	// copy), and signed zero (TODO.md CQ-27, FIXED: an indexed column's SARG
 	// range/probe construction used to disagree with the residual-filter
 	// path — cmpAny's IEEE equality (-0.0 == +0.0) — on a query landing
-	// exactly on zero; scanComparisonsToTupleRange now widens the zero
+	// exactly on zero; bindScanComparisonsToRangeSet now widens the zero
 	// endpoint of a range to span both adjacent keys, so the two physical
 	// plans this file's differential mechanism compares AGREE. floatAtoms'
 	// bare-integer-literal sweep already runs `= 0`, `>= 0`, `< 0`, … against
@@ -684,7 +698,7 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 	// flt_col: nullable indexed FLOAT (32-bit). The model's authoritative
 	// values are the ROUNDED (float64(float32(x))) copies — the exact value
 	// the column actually stores and reads back (row-domain convention, see
-	// executor.coerceTupleElement) — including the float32 mantissa-
+	// executor.coerceTupleElementForKey) — including the float32 mantissa-
 	// exactness boundary 2^24 (DOUBLE's 2^53 one width narrower) and 0.1
 	// (NOT exactly representable in float32 — the width-narrowing boundary
 	// that hid the original bug: see indexed_float_sarg_probe_test.go and

@@ -18,6 +18,17 @@
 # trailing cols (equality on c in PK (a,b,c) without b equated,
 # equality on non-PK cols, etc.) are handled identically to the
 # pre-pushdown path.
+#
+# Because that re-application makes the ROWS identical whether or not the
+# prefix narrowed anything, every SELECT asserts the scan shape instead:
+# `Scan(KV, [=])` is a one-column prefix, `[=, =]` two, `[=, =, =]` full
+# equality, and a bare `Scan(KV)` is the full type scan the branch exists to
+# avoid. The negatives are the load-bearing half — `[=, =]` on the
+# skip-a-middle-column case would be a real bug that rows cannot see.
+#
+# The UPDATE/DELETE steps cannot carry plan assertions (the loader rejects
+# them on non-queries); their shapes are pinned by the corpus-wide baseline
+# in conformance/explaindiff/testdata/plan_shape.golden.
 name: composite_pk_prefix_pushdown
 schema_template: |
   CREATE TABLE kv (
@@ -49,6 +60,8 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT a, b, c FROM kv WHERE a = 1 ORDER BY b, c
+    plan_contains: "Scan(KV, [=])"
+    plan_not_contains: InMemorySort
     rows:
       - [1, 10, 100]
       - [1, 10, 200]
@@ -58,6 +71,8 @@ tests:
   # Leading-col prefix with residual on a non-PK col: the prefix
   # narrows by a; v > 1500 is post-filtered by evalPredicate.
   - query: SELECT a, b, c FROM kv WHERE a = 1 AND v > 1500 ORDER BY b, c
+    plan_contains: "PredicatesFilter(Scan(KV, [=])"
+    plan_not_contains: "[=, =]"
     rows:
       - [1, 10, 200]
       - [1, 20, 100]
@@ -68,6 +83,8 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT a, b, c FROM kv WHERE a = 1 AND b = 10 ORDER BY c
+    plan_contains: "Scan(KV, [=, =])"
+    plan_not_contains: InMemorySort
     rows:
       - [1, 10, 100]
       - [1, 10, 200]
@@ -75,6 +92,8 @@ tests:
   # Leading two equated + equality on non-PK column: prefix narrows
   # by (a, b); v = 1000 post-filters.
   - query: SELECT c FROM kv WHERE a = 1 AND b = 10 AND v = 1000
+    plan_contains: "PredicatesFilter(Scan(KV, [=, =])"
+    plan_not_contains: "[=, =, =]"
     rows:
       - [100]
 
@@ -85,6 +104,8 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT a, b, c FROM kv WHERE a = 1 AND c = 100 ORDER BY b
+    plan_contains: "PredicatesFilter(Scan(KV, [=])"
+    plan_not_contains: "[=, =]"
     rows:
       - [1, 10, 100]
       - [1, 20, 100]
@@ -96,6 +117,8 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT a, b, c FROM kv WHERE b = 10 ORDER BY a, c
+    plan_contains: "PredicatesFilter(Scan(KV)"
+    plan_not_contains: "Scan(KV, ["
     rows:
       - [1, 10, 100]
       - [1, 10, 200]
@@ -108,6 +131,8 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT v FROM kv WHERE a = 1 AND b = 10 AND c = 100
+    plan_contains: "Scan(KV, [=, =, =])"
+    plan_not_contains: PredicatesFilter
     rows:
       - [1000]
 
@@ -117,6 +142,8 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT a, b, label FROM kv2 WHERE a = 2 ORDER BY b
+    plan_contains: "Scan(KV2, [=])"
+    plan_not_contains: InMemorySort
     rows:
       - [2, 10, 'c']
       - [2, 20, 'd']
@@ -125,6 +152,8 @@ tests:
   # the sort is eliminated. (LIMIT was incidental; rejected at parse
   # time as of fdb-relational 4.11.1.0.)
   - query: SELECT a, b, label FROM kv2 WHERE a = 1 ORDER BY a, b
+    plan_contains: "Scan(KV2, [=])"
+    plan_not_contains: InMemorySort
     rows:
       - [1, 10, 'a']
       - [1, 20, 'b']
@@ -135,6 +164,8 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT a, b FROM kv2 WHERE a = 99
+    plan_contains: "Scan(KV2, [=])"
+    plan_not_contains: PredicatesFilter
     rows: []
 
   # -------------------------------------------------------------------
@@ -152,6 +183,8 @@ tests:
 
   - query: UPDATE kv2 SET label = 'updated' WHERE a = 1
   - query: SELECT a, b, label FROM kv2 WHERE a = 1 ORDER BY b
+    plan_contains: "Scan(KV2, [=])"
+    plan_not_contains: InMemorySort
     rows:
       - [1, 10, 'updated']
       - [1, 20, 'updated']

@@ -326,7 +326,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `like` | 16 | 16 | 0 | 0 | LIKE pattern matching with SQL wildcards (% and _). |
 | `like_patterns` | 5 | 5 | 0 | 0 | LIKE pattern matching |
 | `like_patterns_java` | 10 | 10 | 0 | 0 | LIKE/NOT LIKE pattern matching. |
-| `like_prefix_pushdown` | 41 | 41 | 0 | 0 | LIKE prefix pushdown: `WHERE col LIKE 'foo%'` on a STRING column |
+| `like_prefix_pushdown` | 41 | 41 | 0 | 0 | No LIKE prefix pushdown exists — every LIKE query here is a full scan. |
 | `null_arithmetic` | 5 | 5 | 0 | 0 | NULL propagation in arithmetic expressions |
 | `null_arithmetic_java` | 9 | 9 | 0 | 0 | NULL propagation through arithmetic |
 | `null_in_expressions` | 6 | 5 | 1 | 0 | NULL behavior in various expression contexts |

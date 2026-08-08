@@ -521,7 +521,17 @@ func (r *RecordTypeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message
 }
 
 // EvaluateScalar returns the type key directly — zero alloc.
+//
+// Only the bare record-type key is a scalar. Nest() is a Go-only extension
+// (Java's RecordTypeKeyExpression is KeyExpressionWithoutChildren with
+// getColumnSize() == 1), and a nested expression makes ColumnSize() > 1, so
+// there is no single value to return. Erroring routes every caller to
+// Evaluate; returning just the type key would silently drop the nested
+// columns and pack a short key.
 func (r *RecordTypeKeyExpression) EvaluateScalar(record *FDBStoredRecord[proto.Message], msg proto.Message) (any, error) {
+	if r.nested != nil {
+		return nil, &KeyExpressionError{Message: "EvaluateScalar on a record type key with a nested expression"}
+	}
 	if msg == nil {
 		return nil, nil
 	}
@@ -532,8 +542,24 @@ func (r *RecordTypeKeyExpression) EvaluateScalar(record *FDBStoredRecord[proto.M
 	return typeKey, nil
 }
 
-// EvaluateFlat returns the type key as a single-element []any.
+// EvaluateFlat returns the type key as a single-element []any, or the type key
+// followed by the nested expression's columns when Nest() was used.
+//
+// evaluateKeyFlat propagates this result directly with no fallback to
+// Evaluate, and store.go computes every record's primary key through it, so
+// the nested columns must be produced here rather than declined — returning
+// only the type key collapses every record of the type onto one primary key.
 func (r *RecordTypeKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
+	if r.nested != nil {
+		tuples, err := r.Evaluate(record, msg)
+		if err != nil {
+			return nil, err
+		}
+		if len(tuples) != 1 {
+			return nil, fmt.Errorf("EvaluateFlat: nested record type key produced %d tuples, expected 1", len(tuples))
+		}
+		return tuples[0], nil
+	}
 	if msg == nil {
 		return []any{nil}, nil
 	}
@@ -550,7 +576,13 @@ func (r *RecordTypeKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Mes
 // PackDirect encodes the record type key directly into a Packer. Reports false
 // when the type cannot be resolved from the record, which routes the caller to
 // the erroring Evaluate path rather than packing a guess.
+//
+// A nested expression is declined for the same reason: this packer emits one
+// element, so accepting a Nest() would write a key short of ColumnSize().
 func (r *RecordTypeKeyExpression) PackDirect(pk *tuple.Packer, record *FDBStoredRecord[proto.Message], msg proto.Message) bool {
+	if r.nested != nil {
+		return false
+	}
 	if msg == nil {
 		return false
 	}

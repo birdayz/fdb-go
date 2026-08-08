@@ -62,7 +62,7 @@ func buildMatchMaxMatchMap(
 // isScanRangeCompatible, which the NLJ path also consults): the index-match
 // path runs them through ComparisonRange.Merge (which classifies IS NULL as
 // equality, IS NOT NULL as inequality) and the executor's
-// scanComparisonsToTupleRange (which builds the [null]/(null,+inf) ranges),
+// bindScanComparisonsToRangeSet (which builds the [null]/(null,+inf) ranges),
 // both of which handle the null cases correctly.
 func isSargableComparisonForMatch(t predicates.ComparisonType) bool {
 	if isScanRangeCompatible(t) {

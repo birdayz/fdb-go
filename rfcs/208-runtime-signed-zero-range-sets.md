@@ -42,8 +42,10 @@ FlatMap(Scan(O), Fetch(IndexScan(T_VW, [=, =])))
 
 At runtime the inner comparison tuple is packed as (+0.0,5), so it misses
 (-0.0,5). The reverse sign direction fails the same way. A terminal equality
-works only because scanComparisonsToTupleRange already widens a terminal zero
-to the contiguous subtree [-0.0,+0.0].
+works only because the range binder already widens a terminal zero
+to the contiguous subtree [-0.0,+0.0]. (At the time of writing that was
+scanComparisonsToTupleRange; it has since been retired as a dead twin — RFC-217 —
+and the widening now lives only in bindScanComparisonsToRangeSet.)
 
 The non-terminal answer is not contiguous. The interval from (-0.0,5) to
 (+0.0,5) also contains keys such as (-0.0,9) and (+0.0,1). Returning that
@@ -244,9 +246,11 @@ cannot drift back to RHS-only coercion.
 
 `bindScanComparisonsToRangeSet` is the plural range binder. It produces an
 evaluated `boundScanRangeSet`, evaluates each operand once, and coerces it using
-the aligned physical type. The legacy singular
-`scanComparisonsToTupleRange` remains only for its isolated compatibility unit
-tests; production scan leaves use the plural binder.
+the aligned physical type. It (with its `...WithTerminalWidening` sibling, which
+shares the same body) is now the only range-binding implementation in the executor:
+the legacy singular `scanComparisonsToTupleRange`, which this RFC left in place for
+its isolated compatibility unit tests, has since been deleted and those tests
+re-pointed at the plural binder (RFC-217).
 
 The range set stores:
 

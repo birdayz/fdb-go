@@ -13,6 +13,8 @@ setup:
   - INSERT INTO t VALUES (1, 10), (2, null), (3, 5), (4, null), (5, 20)
 tests:
   - query: SELECT v FROM t ORDER BY v ASC
+    plan_contains: "IndexScan(IDX_V, [*])"
+    plan_not_contains: "InMemorySort"
     rows:
       - [~]
       - [~]
@@ -20,6 +22,8 @@ tests:
       - [10]
       - [20]
   - query: SELECT v FROM t ORDER BY v DESC
+    plan_contains: "IndexScan(IDX_V, [*]) REVERSE"
+    plan_not_contains: "InMemorySort"
     rows:
       - [20]
       - [10]
@@ -29,6 +33,8 @@ tests:
   # Explicit NULLS LAST on ASC — Go extension: in-memory sort handles
   # NULL placement that index scans can't provide.
   - query: SELECT v FROM t ORDER BY v ASC NULLS LAST
+    plan_contains: "InMemorySort([V ASC]"
+    plan_not_contains: "IndexScan"
     rows:
       - [5]
       - [10]
@@ -37,6 +43,8 @@ tests:
       - [~]
   # Explicit NULLS FIRST on DESC — Go extension: in-memory sort.
   - query: SELECT v FROM t ORDER BY v DESC NULLS FIRST
+    plan_contains: "InMemorySort([V DESC]"
+    plan_not_contains: "IndexScan"
     rows:
       - [~]
       - [~]

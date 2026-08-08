@@ -2297,7 +2297,10 @@ closed rather than silently alter rows or output schema.
   indexed DOUBLE/FLOAT columns, 2026-07-26; FIXED 2026-07-27) — an indexed
   DOUBLE/FLOAT column's equality/IN/range SARG DISAGREES with the full-scan
   residual-filter path on a value stored as -0.0 (negative zero).**
-  `scanComparisonsToTupleRange` (executor.go) packed a comparand into the raw
+  The scan-range builder of the day (`scanComparisonsToTupleRange`, executor.go
+  — since retired as a dead twin, RFC-217; the live builder is
+  `bindScanComparisonsToRangeSet`, `scan_range_binding.go:256`) packed a
+  comparand into the raw
   FDB tuple encoding and compared byte ranges, and that encoding preserves
   the IEEE sign bit — so -0.0 sorts strictly BELOW +0.0 as two DISTINCT,
   physically ADJACENT keys with nothing else representable between them. The
@@ -2331,17 +2334,25 @@ closed rather than silently alter rows or output schema.
   keys depending on which engine inserted the row. Range-widening only
   changes how Go's OWN executor builds a scan boundary; it touches no wire
   byte anyone else reads.
-  **Fix:** `scanComparisonsToTupleRange` widens a zero-valued FLOAT/DOUBLE
+  **Fix (live code: `bindScanComparisonsToRangeSetWithTerminalWidening`,
+  `scan_range_binding.go:273`, reached through `bindScanComparisonsToRangeSet`
+  at `:256`; the fix originally landed in the since-retired
+  `scanComparisonsToTupleRange`, RFC-217):** the binder widens a
+  zero-valued FLOAT/DOUBLE
   bound to cover BOTH adjacent keys wherever it terminates the range: an
   equality (or IN-list per-element sub-probe) that is the LAST comparison
   widens to an inclusive `[-0.0, +0.0]` subtree; `>=`/`<` canonicalize their
   bound to whichever of the two adjacent keys makes the IEEE-correct
   endpoint (`>=` pins to -0.0, `<` pins to -0.0 as the exclusive stop); `>`
   and `<=` are canonicalized too (pin to +0.0) for symmetry, closing a
-  latent `col > -0.0`-literal gap the bug report didn't call out. A
-  zero-valued equality that is NOT the terminal comparison in a composite
-  index's equality prefix (more columns follow it) is deliberately left
-  UNWIDENED — see CQ-28 below. `expr.promoteColumnColumnNumeric`
+  latent `col > -0.0`-literal gap the bug report didn't call out.
+  (HISTORICAL, as of CQ-27's fix: a zero-valued equality that is NOT the
+  terminal comparison in a composite index's equality prefix — more columns
+  follow it — was at that time deliberately left UNWIDENED, which is what
+  CQ-28 below was filed against. That is NO LONGER current behaviour: the
+  live binder emits BOTH signed zeros as range-set alternatives for the
+  non-terminal case too, `scan_range_binding.go:390-406`. See the CQ-28
+  entry's own HISTORICAL-STATE note.) `expr.promoteColumnColumnNumeric`
   (`pkg/relational/core/query/expr/expr.go`) — a SEPARATE bug in the same
   introducing commit — no longer wraps an INT-vs-LONG column-vs-column
   comparison in `PromoteValue` (`sharesIntegerWireEncoding`): the two codes
@@ -2445,7 +2456,13 @@ closed rather than silently alter rows or output schema.
   equality is left un-widened when it is NOT the terminal column of a
   composite index's equality prefix** (e.g. index `(a DOUBLE, b BIGINT)`,
   predicate `a = 0 AND b = 5`, where `a`'s stored value is `-0.0`).
-  `scanComparisonsToTupleRange`'s CQ-27 fix only widens a zero bound at the
+  (HISTORICAL STATE — superseded by the FIXED/CQ-83 notes below; the live
+  binder `bindScanComparisonsToRangeSetWithTerminalWidening`
+  (`scan_range_binding.go:273`) now also handles the NON-terminal case, by
+  emitting both signed zeros as range-set ALTERNATIVES at `:390-406` rather
+  than leaving the column un-widened.) As of CQ-28's filing,
+  the CQ-27 fix — then in `scanComparisonsToTupleRange`, since retired,
+  RFC-217 — only widened a zero bound at the
   position that terminates the range (nothing pinned after it), because
   widening a MIDDLE column requires either a genuine two-way range union
   (not expressible as a single `TupleRange` low/high pair — verified: the
@@ -2454,7 +2471,7 @@ closed rather than silently alter rows or output schema.
   matcher (`abstract_data_access_rule.go`/`match_candidate_index.go`) to
   keep a residual filter for the abandoned trailing predicates when it
   decides a composite equality prefix is "fully sarg'd, no residual
-  needed" — infra that does not exist today. Needs its own RFC (this is
+  needed" — infra that did not exist at CQ-28's filing. Needs its own RFC (this is
   matching/data-access infra, milestone-level Graefe/Torvalds ACK) deciding
   between (a) multi-range union execution (reusing the same per-element
   fan-out the IN-list path already has) or (b) matcher-side residual-filter
@@ -6931,8 +6948,9 @@ place; a reminder that a stale gate note outlives the code it describes if nobod
    non-exact equality → left unpromoted (mismatched tuple type codes make the SARG naturally empty, which
    coincides with the true answer, same reasoning the int-narrowing fix already relied on). `ResolveIn` got the
    matching per-element treatment. The executor's tuple-packing boundary needed a companion fix
-   (`coerceTupleElement` in `pkg/recordlayer/query/executor/executor.go`, replacing the narrower
-   `uuidToTupleElement`): the row-domain convention deliberately keeps a FLOAT-typed value as float64 everywhere
+   (`coerceTupleElementForKey` in `pkg/recordlayer/query/executor/executor.go:1041` — landed under the name
+   `coerceTupleElement`, wrapping rather than replacing the narrower `uuidToTupleElement`, which it still
+   delegates to at `:1042`): the row-domain convention deliberately keeps a FLOAT-typed value as float64 everywhere
    else (`tupleElementToRowValue`'s doc comment), but the FDB tuple encoder dispatches on the Go RUNTIME type
    (float32 → tuple code 0x20, float64 → 0x21), so a comparand whose declared type says FLOAT must be downcast
    to a genuine `float32` at the exact point it gets packed into the scan range — the mirror image of
@@ -6946,7 +6964,7 @@ place; a reminder that a stale gate note outlives the code it describes if nobod
    CONSTANT gets unwrapped/ignored by the matcher, turned out to be irrelevant here — that finding was about
    retyping a literal, which the sibling constant-side functions already handle without Promote; wrapping a
    genuine non-constant FieldValue/CorrelatedFieldValue works because there is no bare value to extract instead).
-   The same `coerceTupleElement` packer fix from (1) makes the FLOAT variant of this case work at the wire
+   The same `coerceTupleElementForKey` packer fix from (1) makes the FLOAT variant of this case work at the wire
    boundary too.
 
 **FIXED (2026-07-27) — a FIFTH category this item claimed did not exist.** The header above said "all four
@@ -7420,7 +7438,10 @@ be queried by `WHERE v='…'`.
 **ARCHITECTURE RESOLVED — Graefe DECISION: (b).** A UUID flows as a neutral `[16]byte` inside the
 Cascades value layer (`values` stays wire-agnostic — NO `tuple` import there). The `tuple.UUID`
 conversion lives ONLY at the wire boundaries that already import `tuple`: the scan-range packing
-(`scanComparisonsToTupleRange`, executor) and the index-entry write (`scalarToInterface`, recordlayer —
+(`uuidToTupleElement`, reached from the scan-range binder through `coerceTupleElementForKey`,
+`executor.go:985`/`:1041` — the decision was written against the since-retired
+`scanComparisonsToTupleRange`, RFC-217) and the index-entry write (`scalarToInterface`,
+`recordlayer/key_expression.go:350` —
 already landed). Rationale: matches the `IndexEntryObjectValue` no-wire-coupling precedent + Java's
 neutral `java.util.UUID`; `[16]byte` and `tuple.UUID` compare identically (unsigned big-endian) in
 `cmpAny`, so zero semantic cost. CONCRETE TYPES this fixes:
@@ -10528,24 +10549,132 @@ to nothing.)
   alias-identity hazard and should change. Needs the audit, not a drive-by.
 
 - [ ] **CQ-33 (MED) — `LIKE 'prefix%'` on an indexed column does a FULL SCAN.**
-  `ResolveStartsWith` (`pkg/relational/core/query/expr/expr.go:876`) has **zero
-  production callers**; `walk.go`'s LIKE arm always calls `ResolveLikeWithEscape`,
-  and no rule rewrites a constant-prefix LIKE into `ComparisonStartsWith`.
-  Measured by direct EXPLAIN: `s LIKE 'prefix%'` never produces an `IndexScan` at
-  any table size tried (6–150 rows). Two consequences: a common query shape scans
-  the whole table, and RFC-179's F11 fix (the `STARTS_WITH` arm in
-  `scanComparisonsToTupleRange`) is unreachable from SQL and therefore provable
-  only by unit test. This matches Java's non-exposure (`STARTS_WITH` is a
-  QueryComponent-only API there), so it is a permitted read-side extension rather
-  than a parity gap — and CockroachDB has exactly this optimisation
-  (`idxconstraint/index_constraints.go`, the `LikeOp` case in
-  `makeSpansForSingleColumnDatum`). Guard the rewrite on a constant prefix with no
-  further wildcards and no ESCAPE ambiguity.
+  MEASURED, pinned by `TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost`
+  (`pkg/relational/core/embedded/like_prefix_not_sargable_test.go`): with
+  `CREATE INDEX idx_status ON t2 (status)`, `WHERE status LIKE 'act%'` plans
+  `Project([ID#0], PredicatesFilter(Scan(T2), [1 preds]))` while the `=` control
+  plans `Project([ID#0], IndexScan(IDX_STATUS, [=] COVERING))` — so the full scan
+  is about the comparison type, not the schema. Cause (INSPECTION):
+  `ComparisonLike` is admitted by neither `isSargableComparisonForMatch`
+  (`match_max_match_map.go:67`) nor `isScanRangeCompatible`
+  (`scan_match_helpers.go:37`), and `ResolveStartsWith` (`expr.go:1437`), which
+  builds the comparison the scan machinery does accept, has no production caller.
+
+  *Every Java claim in this item is against **Java 4.12.11.0** — the tree at
+  `fdb-record-layer/` in the REPO ROOT (gitignored, so it is absent from
+  `git ls-files` and from any worktree; the version is pinned in `MODULE.bazel:117`
+  as `org.foundationdb:fdb-record-layer-core:4.12.11.0`). That names exactly what
+  to check out to re-verify. The two backing `file:line` citations, both
+  re-verified at that tag: `PatternForLikeValue.java:111-112` (the escape table's
+  only two entries, `<esc>_` and `<esc>%`, layered over `REPLACE_MAP` at `:62-79`
+  where `%` → `.*`), and `:116` (the `^…$` wrap) evaluated by
+  `LikeOperatorValue.likeOperation` (`LikeOperatorValue.java:93-99`:
+  `Pattern.compile(rhs)` with NO flags, then `.find()`).*
+
+  **Tightness — MEASURED; it constrains every possible design.** Java (4.12.11.0)
+  compiles `%` to `.*` inside a `^…$` wrap with no DOTALL, so a wildcard cannot
+  cross a line terminator: a subject that starts with the literal prefix but
+  then carries a terminator lies in the byte-prefix range and does NOT match the
+  pattern, so the range is NOT contained in the predicate and **the residual
+  LIKE may never be dropped.** That is the only direction the witnesses
+  establish; the STRICT-SUPERSET claim additionally needs containment the other
+  way — every match lying inside the range — which nothing here proves and which
+  `comparisons_test.go:1285-1290` explicitly leaves open. A witness of that
+  separation needs an
+  INTERNAL terminator, because Java's `$` tolerates exactly one FINAL one
+  (`LikeMatch("abc%", "abc\n")` = TRUE) — which also makes a wildcard-free LIKE
+  not an equality: its match set is the literal plus the literal-then-one-
+  terminator, so an equality range is a strict SUBSET and LOSES rows. That
+  tolerance is NOT universal: for `L` ending in `"\r"`, `LikeMatch(L, L+"\n")` is
+  FALSE, because the subject then ends in a `"\r\n"` unit and `$` never matches
+  between its two runes (`values/like_match_test.go:139`). Pinned by
+  `TestLikeMatch_NoPatternYieldsATightPrefixRange`
+  (`cascades/predicates/comparisons_test.go`) and
+  `TestLikeMatch_ConstantPrefixBoundary` (`cascades/values/like_match_test.go`).
+
+  **ESCAPE — corrected.** Java installs exactly two entries, `<esc>_` and
+  `<esc>%`; elsewhere the escape rune falls through to the ORDINARY rules and thus
+  to the METACHARACTER rules, so an escape rune that is ITSELF `%` or `_` stays a
+  WILDCARD where it opens no entry. "Escape before another escape is fallthrough"
+  is therefore FALSE for `"%%" ESCAPE '%'` and `"__" ESCAPE '_'`, where the pair
+  IS the entry and denotes ONE literal wildcard. Both hazards are pinned only
+  since `TestLikeMatch_CrossCheckSQLPatternToRegex` gained an escape rune of `_`
+  and an uppercase subject rune: before that, a matcher declining `<esc>_` when
+  `escape == '_'` left the whole values package green. The guard is a NON-EMPTY
+  prefix on a constant pattern, NOT the absence of later wildcards.
+
+  **Blockers.** (1) *Empty primary-key range — HISTORICAL, NOT REPRODUCIBLE, a
+  LEAD AND NOT A FACT:* a prototyped producer
+  returned zero rows for every primary-key prefix LIKE (`expected [apple]
+  [apricot], actual 0 rows`), STARTS_WITH bound present and range empty; DELETED
+  rather than fixed, loss point NEVER diagnosed. The code that produced this
+  observation is not in the tree or its history and there is no committed
+  artifact, so nothing here can be re-run and none of it may be relied on as a
+  property of the current tree — it is a hypothesis to RE-DERIVE against a new
+  prototype, and it must fail on its own terms again before it counts.
+  Diagnosing it is step one of any
+  retry. (2) *Covering stamp lost through an intervening residual — MEASURED at
+  HEAD, pinned by the same test:* `WHERE status > 'act'` gives
+  `Project([ID#0], IndexScan(IDX_STATUS, [<>] COVERING))`; adding
+  `AND status LIKE '%zz%'` gives
+  `Project([ID#0], PredicatesFilter(IndexScan(IDX_STATUS, [<>]), [1 preds]))` —
+  two rules stamp covering redundantly and neither descends through a
+  `RecordQueryPredicatesFilterPlan` (see CQ-39). Prerequisite only for a SCOPED
+  shape, INFERRED and never measured: the secondary index, default `PreferScan`,
+  covering-capable projection, where the lost stamp drops the decision onto cost
+  criterion #7. Under `PreferIndex` the penalty falls on the primary scan; a
+  non-covering projection has no stamp to lose; a query separated on an earlier
+  criterion never reaches #7. (3) *Logical-vs-physical type gate — INFERRED,
+  UNVERIFIED (a reading of the code, never executed):* the logical LIKE gate (`expr.go:1415-1427`) admits
+  Unknown/Null/Enum/Date/Timestamp alongside String while the physical layer
+  accepts STRING; whether a disagreement demotes to residual or errors at
+  execution was never measured. `ResolveStartsWith` also has no LHS type gate
+  where `ResolveLikeWithEscape` raises 42804, so giving it a caller means adding
+  that gate first. (4) *The prototype's other failures — HISTORICAL, NOT
+  REPRODUCIBLE, a LEAD AND NOT A FACT (same deleted, uncommitted prototype as
+  (1)):* it also
+  broke `TestRuleTypes_EveryProductionRuleHasDirectBehavioralTest`,
+  `TestPartitionSelect_ChainInterningBaseline` and `TestJavaCorpusRuns/files`,
+  none diagnosed before deletion. All three pass at this head; the entry says
+  only that a producer of that shape once broke them, which is a place to LOOK
+  on a retry, not a defect anyone has established in the current tree.
+
+  **`yamsql/testdata/like_prefix_pushdown.yaml` cannot detect this optimization,
+  and contradicts itself — OUTSTANDING, on master, untouched by this branch.** 41
+  `- query:` steps, `grep -cE 'plan_contains|plan_not_contains'` = 0: no step
+  asserts plan shape, and a correct pushdown returns the same rows by
+  construction, so nothing separates its presence from its absence. (Rows-only
+  assertions DO catch a WRONG optimization — they are reported to have caught the
+  deleted prototype on its first run, which is the same NOT-REPRODUCIBLE lead as
+  blocker (1) and not a re-runnable demonstration — so the gap is dimensional,
+  not total.) It also states two
+  incompatible contracts: the header at `:11`/`:13` says ESCAPE and interior
+  wildcards BAIL, while `:297-325` say they NARROW at the first unescaped
+  wildcard with the post-filter enforcing full semantics.
+
+  **No producer design is recorded here, deliberately** — two attempts to state a
+  contract both proved satisfiable by a rule that never fires. RFC-216 carried
+  this material and was DELETED: as a document claiming to BE the design record it
+  could not be kept true, because its prototype results have no committed artifact
+  and nothing in the repo could be diffed against them. That standard does not
+  transfer to this file. A TODO entry is a work list, and "a prototype produced
+  zero rows and the code is gone" is exactly the lead the next attempt needs — so
+  the material is kept here, explicitly labelled NOT REPRODUCIBLE (blockers (1)
+  and (4)). Its Java citations are likewise kept: Java is this port's spec, the
+  tree is `fdb-record-layer/` at tag 4.12.11.0 pinned in `MODULE.bazel`, and
+  citing it is the repo's established practice (`DIVERGENCES.md` rests entirely
+  on such citations). Gitignored is not uncheckable when the pin says what to
+  check out.
 
 - [ ] **CQ-34 (MED) — the sargable gate and the range builder are kept in manual
   lockstep.** `isSargableComparisonForMatch` (`match_max_match_map.go:67`) decides
-  what may be consumed into a scan range; `scanComparisonsToTupleRange`
-  (`executor.go:693`) decides what actually becomes a bound. They are two
+  what may be consumed into a scan range; `bindScanComparisonsToRangeSet`
+  (`scan_range_binding.go:256`) decides what actually becomes a bound. (This
+  entry originally named `scanComparisonsToTupleRange`, `executor.go:693`. That
+  function was a DEAD TWIN with zero production callers and has been deleted —
+  see RFC-217. The lockstep concern below is unaffected and remains open; only
+  the citation moved. The line numbers quoted further down refer to the deleted
+  function and should be re-derived against the live binder before use.) They are two
   functions in two files with no compiler-enforced tie, which is exactly the F11
   shape (a comparison accepted as sargable whose bound is then never applied —
   wrong rows, with the residual filter already removed). The inequality switch now
@@ -10596,20 +10725,38 @@ to nothing.)
   carried that number — the NaN-total-order semantics item earlier in this phase
   and this covering-label item; the later one was renumbered. Any external
   reference to "CQ-38 covering" means this item.)*
-  `MergeProjectionAndFetchRule` marks the inner scan
+  **TWO rules stamp covering for this shape, and BOTH miss the same way — a fix
+  has two sites, not one.** `MergeProjectionAndFetchRule` marks the inner scan
   covering only in its direct `fetchInnerExpr.(*RecordQueryIndexPlan)` arm
   (`rule_merge_projection_and_fetch.go:91`); with a residual `PredicatesFilter`
   between projection and fetch it takes the `:103-126` fallback, which yields
   the projection over the fetch's inner group and leaves the scan unmarked.
-  Rows are CORRECT (pinned: `covering_index_pushdown.yaml#25`, 26/26 on real
+  `ImplementProjectionRule` stamps the same shape redundantly and independently,
+  via `findIndexScanPlan` (`rule_implement_projection.go:73`), and fails on the
+  identical structural condition: neither descends through a
+  `RecordQueryPredicatesFilterPlan`. Both are PLANNING-phase rules (the first an
+  implementation rule, the second an expression rule from
+  `BatchAExpressionRules`). Measured and pinned by
+  `TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost`'s
+  `two_rules_stamp_covering_redundantly` subtest: on the no-residual covering
+  control, disabling either rule alone leaves the stamp and disabling both drops
+  it. Rows are CORRECT (pinned: `covering_index_pushdown.yaml#25`, 26/26 on real
   FDB, with `plan_not_contains: Fetch` as the sharp pin) — this is a
   labeling/costing gap, not wrong results: the plan renders and is costed
-  without the covering marker it earned. Found during the RFC-197 step-0
-  review fold; deferred from that fold because marking the scan moves plan
-  shapes corpus-wide and is a query-engine change needing its own RFC-gated
-  lap. Read Java's MergeProjectionAndFetchRule counterpart first — if Java
-  marks covering through a residual, this is a divergence; if not, it is a
-  shared gap and the fix is an extension.
+  without the covering marker it earned. CQ-33's covering-stamp blocker is the
+  writeup; why it becomes load-bearing for CQ-33 on secondary indexes is the
+  INFERRED criterion-#7 chain recorded under CQ-33 above. Found during
+  the RFC-197 step-0 review fold; deferred from that fold because marking the
+  scan moves plan shapes corpus-wide and is a query-engine change needing its own
+  RFC-gated lap. Read Java's MergeProjectionAndFetchRule counterpart first — if
+  Java marks covering through a residual, this is a divergence; if not, it is a
+  shared gap and the fix is an extension. (INSPECTION, not re-checkable from this
+  tree — the Java checkout is a gitignored sibling absent from `git ls-files`:
+  Java 4.12.11.0 appears to have no such failure mode, because coveringness is a
+  separate class there, `RecordQueryCoveringIndexPlan`, which HOLDS the index plan
+  as a field rather than flagging it, and its `MergeProjectionAndFetchRule` yields
+  the fetch plan's child with no shape check. Re-derive against the checkout
+  before relying on it.)
 
 ## Phase 12: Audit bookings — found-but-unbooked
 
@@ -14846,18 +14993,45 @@ None is speculative: each was re-verified against the tree before booking.
   wanted key set {(-0.0,5), (+0.0,5)} is not a contiguous interval, so neither
   a single probe nor a widened one can serve it.
   **Mechanism — execution-time probe split (executor, no plan change).**
-  `scanComparisonsToTupleRange` already evaluates the correlated comparand
+  (SYMBOLS AS OF LANDING — every name in this paragraph has since been
+  replaced. `scanComparisonsToTupleRange`/`...Ranges` were retired (RFC-217);
+  the live binder is `bindScanComparisonsToRangeSet`
+  (`scan_range_binding.go:256`), a `zeroFork` is now a per-component
+  `alternatives` pair emitted at `scan_range_binding.go:390-406`, and
+  `multiRangeScanCursor` is now `scanRangeSetCursor`
+  (`scan_range_set_cursor.go:200`). The unit pins moved from
+  `zero_fork_scan_ranges_test.go` to `scan_range_binding_test.go` /
+  `scan_range_set_cursor_test.go`; the sentinel
+  `correlated_zero_composite_sentinel_test.go` kept its name. The behaviour
+  described below is unchanged.)
+  The binder already evaluates the correlated comparand
   per-probe with the value in hand; the only missing piece was that one
-  `TupleRange` cannot express the two-key union. `scanComparisonsToTupleRanges`
-  now records a `zeroFork` for each non-terminal zero-float equality and
-  expands it into one range per signed zero (2^k for k forks, ascending key
-  order); `multiRangeScanCursor` scans them as an ordered `ConcatCursors`
-  chain (existing Java-wire-compatible continuations). Disjoint ranges make
+  `TupleRange` cannot express the two-key union. In the live code the binder
+  records, for each non-terminal zero-float equality, a two-element
+  `alternatives` pair on that component (`scan_range_binding.go:390-406`);
+  the choices expand to one range per signed-zero combination (2^k for k such
+  components; on a FORWARD scan the alternatives are emitted in ascending key
+  order, and on a REVERSE scan descending — the `if reverse` branch emits
+  `+0, -0` at `scan_range_binding.go:402-403` — so odometer order tracks scan
+  direction). `scanRangeSetCursor` walks them as a LAZY
+  mixed-radix odometer (`scan_range_set_cursor.go:405`,
+  `advanceScanRangeChoices`) — one child cursor open at a time, advanced only
+  on `SourceExhausted` (`:307`) — rather than materializing a concatenated
+  chain, and wraps each child's continuation so resume is exact. The WRAPPER is
+  **Go-only** and deliberately so: `ScanRangeSetContinuation`
+  (`proto/relational/scan_range_set_continuation.proto`, RFC-208 §3) is a
+  Go-internal read-side execution detail that Java has no counterpart for, which
+  is why it lives in the relational proto set and not the Apple mirror. Only its
+  embedded `inner_continuation` — the active physical leaf scan cursor's own
+  token, carried through opaquely — is the Java-compatible part. Nothing on the
+  wire-compat hard line changes: no stored key, no record/index format, and no
+  continuation format shared with the Java Record Layer. Disjoint ranges make
   the union duplicate-free with NO dedup layer — the IN-rewrite direction
   CQ-28 twice reverted stays dead. The full composite prefix stays sarg'd:
   no de-sarg, no residual filter, plan shape unchanged (EXPLAIN-pinned).
-  Wired into all three scan-comparison consumers: index scan, PK scan,
-  aggregate index scan (incl. permuted). Terminal-zero widening (CQ-27) and
+  Wired into all FOUR scan-comparison consumers: PK scan
+  (`executor.go:268`), index scan (`:383`), vector-index partition prefix
+  (`:655`), aggregate index scan incl. permuted (`executor_new_plans.go:105`). Terminal-zero widening (CQ-27) and
   constant-zero match-time termination (CQ-28) are untouched.
   **Java citation.** Java needs none of this: `Comparisons.compareEquals`
   (Comparisons.java:241-247) → `toClassWithRealEquals(...).equals(...)` →
@@ -14871,11 +15045,32 @@ None is speculative: each was re-verified against the tree before booking.
   fail), in-between guard rows on BOTH sides (naive widening fails), terminal
   and constant-zero controls, correlated-nonzero control, unindexed-table
   residual-path agreement (sargability differential principle), and an
-  EXPLAIN pin that the composite index probe survives. Unit pins in
-  `zero_fork_scan_ranges_test.go`: fork expansion (order, signs, float32
-  typing, cartesian 2-fork, trailing-inequality fork), terminal stays single,
-  single-range projection errors loudly on forks, multiRangeScanCursor
-  forward/reverse ordering and continuation resume at every stop point.
+  EXPLAIN pin that the composite index probe survives. Unit pins (originally
+  in `zero_fork_scan_ranges_test.go`, since split across two files as the
+  symbols moved): alternatives expansion — order, signs, float32 typing,
+  cartesian 2-component, reverse order — in `scan_range_binding_test.go`
+  (`TestBindScanComparisonsToRangeSet_NonTerminalFloatingZero:42`,
+  `_ReverseZeroOrder:108`, `_TwoZerosCartesianWithoutMaterialization:135`),
+  terminal-stays-single in `_TerminalZeroUsesOneInclusiveRange:175`; and
+  `scanRangeSetCursor` odometer ordering plus continuation resume at every stop
+  point in `scan_range_set_cursor_test.go`
+  (`...OdometerOrderAndSingleLiveChild:258`, `...ContinuationSweep:496`) —
+  those two construct `recordlayer.ForwardScan()`, so they pin the FORWARD
+  odometer only. The file DOES have a reverse test — `:879` builds
+  `ScanProperties{Reverse: true}`, passes it at `:893` and asserts propagation at
+  `:908-909` — but that checks the property reaches the leaf, not the odometer's
+  ordering. (An earlier draft said "every `newScanRangeSetCursor` call in that
+  file" is forward; that was a `grep -c ReverseScan` result, and the struct
+  literal at `:879` does not contain that token. A grep proving a negative is
+  only as good as the spellings it knows.)
+  The reverse direction is covered where the direction is actually decided, in
+  the binder: `_ReverseZeroOrder:108` above passes `reverse=true` and asserts the
+  alternatives come out `+0` then `-0`.
+  One claim from the original list is NOT carried over and has no
+  replacement: "single-range projection errors loudly on forks" pinned a
+  single-range projection helper that no longer exists (the range SET is now
+  the only shape a consumer receives), so there is nothing left to error on
+  and nothing covers it.
   **Mutation-verified, three directions, all quoted RED:** fork disabled →
   `returned [5], want [1 5]` / `returned [1], want [1 5]`; naive contiguous
   widening → `returned [1 3 4 5], want [1 5]`; overlapping probes →

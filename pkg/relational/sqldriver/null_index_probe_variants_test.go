@@ -2,7 +2,7 @@ package sqldriver_test
 
 // Follow-up to the NULL-equality-SARG fix: exercise NULL keys through other
 // index-probe shapes — multi-column index probe, correlated EXISTS / NOT EXISTS
-// — all of which build equality SARGs via scanComparisonsToTupleRange. NULL keys
+// — all of which build equality SARGs via bindScanComparisonsToRangeSet. NULL keys
 // must never match (NULL = x is UNKNOWN). >=100 rows to force the index-probe
 // plan.
 

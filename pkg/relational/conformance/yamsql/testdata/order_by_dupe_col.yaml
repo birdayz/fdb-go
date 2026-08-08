@@ -6,18 +6,20 @@
 # accept it (second key is a no-op).
 #
 # Multi-column ORDER BY (`ORDER BY b, id`, `ORDER BY b + 1, b + 1`) is
-# also rejected by Java's Cascades planner: there is no
-# `ImplementSortRule` for multi-key sorts in the SQL stack, so when no
-# inner plan satisfies the requested ordering the planner raises
-# `UnableToPlan` (CLAUDE.md gotcha: "Multi-column ORDER BY is
-# unsupported by fdb-relational 4.11.1.0's Cascades planner"). Go's
-# embedded engine matches structurally — every PK / index branch is
-# gated on natural-order satisfiability and a multi-key requested
-# order is not satisfied by any single-column index, so rejection
-# emerges from "no scan satisfies".
+# rejected by Java's Cascades planner: there is no `ImplementSortRule` for
+# multi-key sorts in the SQL stack, so when no inner plan satisfies the
+# requested ordering the planner raises `UnableToPlan`.
 #
-# Per project conformance principle: doesn't work in Java → doesn't
-# work in Go.
+# Go does NOT match there, and the two stanzas below say so in their own
+# comments while the paragraph that used to sit here claimed the opposite —
+# that Go "matches structurally" and also rejects. It does not: both
+# multi-key queries plan and return rows, via `RecordQueryInMemorySortPlan`,
+# the sanctioned read-side fallback for orderings no access path provides.
+# That is an allowed read-side extension, not a divergence to close, so the
+# assertions pin the sort rather than an error — and they pin something the
+# rows cannot see: `ORDER BY b + 1, b + 1` DEDUPLICATES to a single sort key.
+# The duplicate-COLUMN form never gets that far (42701 first), which is why
+# the dedup only shows up on the expression form.
 name: order_by_dupe_col
 schema_template: |
   CREATE TABLE t (id BIGINT, b BIGINT, PRIMARY KEY (id))
@@ -29,6 +31,7 @@ tests:
     error_code: "42701"
   # Multi-column ORDER BY — Go extension: in-memory sort handles this.
   - query: SELECT id, b FROM t ORDER BY b, id
+    plan_contains: "InMemorySort([B ASC, ID ASC], Scan(T))"
     rows:
       - [1, 10]
       - [2, 20]
@@ -39,6 +42,8 @@ tests:
     error_code: "42701"
   # Multi-column ORDER BY with expression — Go extension: in-memory sort.
   - query: SELECT b FROM t ORDER BY b + 1, b + 1
+    plan_contains: "InMemorySort([(B#1 + 1) ASC], Scan(T))"
+    plan_not_contains: "(B#1 + 1) ASC, (B#1 + 1) ASC"
     rows:
       - [10]
       - [20]

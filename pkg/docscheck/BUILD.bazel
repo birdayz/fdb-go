@@ -42,8 +42,10 @@ go_test(
         "source_hygiene_test.go",
         "status_page_crossref_test.go",
         "store_timer_event_taxonomy_test.go",
+        "test_filter_resolution_test.go",
         "unknown_type_mint_census_test.go",
         "vuln_gate_test.go",
+        "yamsql_plan_claim_gate_test.go",
     ],
     # keep: living docs + archived snapshots staged into runfiles so the guard can read
     # them under Bazel (the same files `go test` reads from the repo tree). RFC-131.
@@ -56,6 +58,13 @@ go_test(
         "//:RELEASE.md",
         "//:TODO.md",
         "//:go.mod",
+        # keep: the yamsql corpus and the corpus-wide plan rendering, staged so
+        # TestYamsqlPlanClaimsAreAsserted can read the scenarios it gates and
+        # derive its operator vocabulary from the rendered plans. Without these
+        # the test finds no files and its population guard fails loudly rather
+        # than passing on an empty set.
+        "//pkg/relational/conformance/explaindiff:plan_shape_golden",
+        "//pkg/relational/conformance/yamsql:testdata",
         # keep: the pre-commit hook body is extracted from the install-hooks recipe,
         # which is its tracked source of truth (TestPreCommitHookNamesTheConditionItDetected).
         "//:justfile",
