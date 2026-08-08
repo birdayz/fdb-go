@@ -347,6 +347,26 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/query/cascades_translator.go # groupByOutputBaker # a map key via local key derived from the name # 2": {1, "contract: same binder, the GROUP-KEY output-name map — the READ side of AggregateKeyColumnName (group_by.go:118). Java binds here by ordinal instead: the SELECT list is pulled up through the group-by result row by loop index (CompensateRecordConstructorRule.java:92) over columns built with Column.unnamedOf (GroupByExpression.java:754,758)"},
 	"pkg/relational/core/query/cascades_translator.go # groupByOutputBaker # a map key via local key derived from the name # 3": {1, "contract: same binder, the final group-key lookup that actually emits the baked ordinal. Its map is last-wins on a duplicated output name (groupByOutputOrdinals `keys[full] = ord`), so two group keys sharing a leaf collapse to one slot; today they are separated only because the name channel happens to carry the qualifier, which is the dotted bucket's debt propping up this one"},
 
+	// The three binder entries above are RULED STOP, on an ordering dependency
+	// rather than a missing capability — worth stating precisely, because "the
+	// reference must arrive resolved" reads like a capability that has to be built
+	// and is not one.
+	//
+	// Java's equivalent binding is structural: Expression.pullUp maps a SELECT or
+	// HAVING expression onto the group-by result through a map keyed by the
+	// sub-Value itself (a LinkedIdentityMap, CompensateRecordConstructorRule
+	// .java:63-64,73-95), so no text is involved at any point. Go HAS that matcher
+	// — aggregateCallOutputSlot, shared with bindPostAggregateValueToNativeOrdinals
+	// — and it is what drained the aggregate arm from 1014 hits to 1.
+	//
+	// What the surviving group-key traffic cannot use it for is the flat qualified
+	// name: a parser-originated `HAVING a.id` arrives as ONE accessor whose Field
+	// is the string "I.K", qualifier and leaf fused. A structural matcher has
+	// nothing to match on a value whose structure was spelled into its own leaf.
+	// So these retire with the dotted bucket's qualified-name MINTS, not before,
+	// and converting them first would replace a name lookup that works with an
+	// ordinal comparison across two spellings that cannot meet.
+
 	// AggregateResultColumnName's six switch arms were HERE and are RETIRED, by
 	// deleting the `case *values.FieldValue: opName = v.Field` arm that tainted
 	// the local the six returns formatted. What replaces it is not a relocation:
@@ -378,12 +398,29 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// withOrdinals form appends `#ordinal` precisely so two reads of
 	// duplicate-named slots do not render alike. The naming caller is the one that
 	// passes false.
+	//
+	// RULED STOP, and the two-faces fact above is the reason rather than a
+	// colourful description of it. The display face would be allowlistable on its
+	// own — Java's counterpart, FieldPath.toString, is debug output and names
+	// nothing. The naming face has no Java counterpart AT ALL: Java's column names
+	// are stored on the Field at construction (Column.java:81-82) and never
+	// rendered out of a path. Since one function serves both, any entry admitting
+	// the display face exempts the naming face, so the prerequisite is SPLITTING
+	// the renderer — a display-only form no output-naming authority can call —
+	// and only then is there a face to exempt. Splitting alone retires no escape:
+	// the naming copy still reads `.Field`. It is what makes the eventual allow
+	// honest, not what earns it.
 	"pkg/recordlayer/query/plan/cascades/values/values.go # explainValueOrdinals # a dotted-name MINT (qualifier joined to the name) via local name derived from the name # 1": {1, "contract: FieldPath.toString rendering joins the child's rendering to the field name. Debt through ColumnNameValue (withOrdinals=false), which is an output-NAMING authority, not through ExplainValue beside it; retires when a projected column takes its name from a resolved slot rather than from a rendered path"},
 
-	"pkg/recordlayer/query/plan/cascades/values/values.go # ProjectionColumnName # the name escaping as a bare string (return) # 1":          {1, "contract: ProjectionColumnName IS the projection output-column naming contract -- the key the executor writes a projected slot under and every re-reader reads it by; the naming authority the other contract sites delegate to, and invisible until the gate could see unqualified *FieldValue inside the values package"},
-	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go # AggregateKeyColumnName # the name escaping as a bare string (return) # 1": {1, "contract: AggregateKeyColumnName is THE group-key naming contract with the executor; moves only when the contract becomes an ordinal slot"},
-	"pkg/relational/core/embedded/logical_predicate.go # aggregateGroupKeyOutputName # the name escaping as a bare string (return) # 1":      {1, "contract: aggregate group-key output name, same contract family"},
-	"pkg/relational/core/query/cascades_translator.go # sortKeyFieldRef # the name escaping as a bare string (return) # 1":                   {1, "contract: sort-key hidden-field naming (RFC-141), same output-naming contract family"},
+	// The four single-escape authorities below were each ruled convert / allow /
+	// stop against the Java source rather than against the family they were filed
+	// under, and NONE of them is an allow. The ruling is recorded on the entry
+	// because "same contract family" is a statement about Go's call graph and says
+	// nothing about whether the contract should exist.
+	"pkg/recordlayer/query/plan/cascades/values/values.go # ProjectionColumnName # the name escaping as a bare string (return) # 1":          {1, "contract: ProjectionColumnName IS the projection output-column naming contract -- the key the executor writes a projected slot under and every re-reader reads it by; the naming authority the other contract sites delegate to, and invisible until the gate could see unqualified *FieldValue inside the values package. RULED CONVERT, and Java names the shape: a projected column's name is stored AS DATA on the column at construction (Column.of(Optional<String>, value) -> Field.of(value.getResultType(), fieldNameOptional), Column.java:81-82, Type.java:2908-2910) and read back by getter (Type.java:2750-2763, DataTypeUtils.java:76) -- never re-derived from the Value, which is what this function does on every read. What it costs is a name carried on the projected column through every copy/rebuild/rebase, the same preserve-on-copy contract Resolved already imposes; the executor then WRITES the stored name instead of both sides re-deriving and agreeing by convention"},
+	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go # AggregateKeyColumnName # the name escaping as a bare string (return) # 1": {1, "contract: AggregateKeyColumnName is THE group-key naming contract with the executor; moves only when the contract becomes an ordinal slot. RULED STOP, on a blocker that is already booked rather than a new one: its text is a MATCH key at plans/ordering.go, where RichOrdering addresses its ordering set by rendering, so the provided and requested keys meet only as strings -- CQ-55 (ordering matched on structural identity) over CQ-56 (the ordinal domain). Not an allow, and Java is why the direction is settled: Java's group-key output columns carry NO name to be a contract with (Column.unnamedOf, GroupByExpression.java:754,758 -> the positional _0, Type.java:2645-2651) and the pull-up binds by loop index (CompensateRecordConstructorRule.java:73-95)"},
+	"pkg/relational/core/embedded/logical_predicate.go # aggregateGroupKeyOutputName # the name escaping as a bare string (return) # 1":      {1, "contract: aggregate group-key output name, the exact mirror of the executor's aggKeyName. RULED STOP, travelling with AggregateKeyColumnName above and blocked on the same CQ-55/CQ-56: two renderings of one slot cannot stop being renderings one at a time, because the agreement between them is the only thing keeping the emitted slot name and the re-read name in lockstep"},
+	"pkg/relational/core/query/cascades_translator.go # sortKeyFieldRef # the name escaping as a bare string (return) # 1":                   {1, "contract: sort-key hidden-field naming (RFC-141), same output-naming contract family. RULED CONVERT -- and this one is NOT gated on another bucket, so it is the next piece of work here. Java appends the same hidden columns for an ORDER BY key absent from the SELECT list (LogicalOperator.java:389-399) and then finds and drops them PURELY BY ORDINAL: the extras go on the end, the final projection re-uses the original output list through Expressions.rewireQov's FieldValue.ofOrdinalNumber counter (Expressions.java:87-96), and membership is value-derivability (Expressions.difference -> canBeDerivedFrom, Expressions.java:124-146, Expression.java:254-264), never name equality. Go already ports the membership half (sortKeySourceValue is VALUE-based, RFC-141 R4 P2b) and not the addressing half: collectExtraSortColumns names each appended column by this rendering and dedups on `seen[name]`, so two keys that render alike collapse to one appended column, and pullUpSortKeyValue then recovers them by scanning the folded projection's field names. The append index is known at composition -- it is len(fields)+i -- so the conversion is to carry it instead of recovering it"},
 
 	// dotted (14)
 	//
