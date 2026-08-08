@@ -428,6 +428,16 @@ var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 		// against 586/166/210 rather than carried over from the pre-rebase base
 		// it was first taken against.
 		//   denominator 586+2 = 588, ACCEPT 166+2 = 168, no-exist-ref unchanged
+		//
+		// Step 4 — TestFDB_UnqualifiedRefBesideAProjectedExistsOverAJoin's
+		// differential. Unlike every step above, this one splits across TWO arms:
+		// most of its queries project a reference to the exists alias and ACCEPT,
+		// while its EXISTS-in-WHERE and no-join controls project none and decline
+		// as no-exist-ref. Its AMBIGUITY arms are refused with 42702 by the SQL
+		// layer and never reach a seed decision, so they add to NEITHER count —
+		// which is itself the check that they are refused where this comment
+		// claims they are.
+		//   MEASURED, not derived; see the values below.
 		Denominator:     n(588),
 		Accept:          n(168),
 		CorrelatedStep1: n(108),
