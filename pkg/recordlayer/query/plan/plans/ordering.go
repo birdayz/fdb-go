@@ -358,19 +358,44 @@ func ownOrderPrefixLen(comps []*predicates.ComparisonRange, n int) int {
 
 // indexColumnCouldBeFloat resolves each index key column against the scan's
 // flowed record layout and reports whether it can hold a signed zero. It is the
-// per-position input equalityPrefixLenOnColumns needs, and it inverts
-// values.ColumnCanExtendOrderingClaim so both questions keep asking the ONE
-// float predicate rather than growing a second copy of it.
+// per-position input equalityPrefixLenOnColumns needs, and it delegates to
+// values.ColumnCouldBeFloat so the float classification stays in the one file
+// that owns it.
 //
-// A layout that cannot resolve the name answers "not a float", matching the
-// burden-of-proof direction values/ordering_claim.go documents: an
-// unidentifiable column keeps whatever claim the producer would otherwise make.
-func indexColumnCouldBeFloat(layout values.Type, columnNames []string) func(int) bool {
+// It asks that predicate rather than NEGATING ColumnCanExtendOrderingClaim, and
+// the difference is not cosmetic. The two disagree exactly when the layout
+// cannot resolve the column, which happens on real plans — NewRecordQueryIndexPlan
+// defaults a nil flowedType to UnknownType and AggregateIndexMatchCandidate
+// passes UnknownType explicitly, neither of which is a *RecordType. Negating the
+// permissive answer there yields "not a float" -> "pins" -> assume-sound, which
+// makes this whole fix INERT on such a plan. ColumnCouldBeFloat fails closed
+// instead; see its comment for why a burden-of-proof direction cannot be
+// inverted.
+func indexColumnCouldBeFloat(
+	keyTypes []values.Type, layout values.Type, columnNames []string,
+) func(int) bool {
 	return func(i int) bool {
 		if i < 0 || i >= len(columnNames) {
+			// No such coordinate: there is nothing to widen.
 			return false
 		}
-		return !values.ColumnCanExtendOrderingClaim(layout, columnNames[i])
+		// The PHYSICAL key component type is the authority and is asked first:
+		// it is aligned with scanComparisons positionally, so it needs no name
+		// resolution and it is present on plans whose flowed layout is not a
+		// record at all. Those plans are the ones that made the layout-only
+		// reading inert — NewRecordQueryIndexPlan defaults a nil flowedType to
+		// UnknownType and AggregateIndexMatchCandidate passes UnknownType
+		// explicitly — while WithKeyComponentTypes still carries the real
+		// coordinate types.
+		if i < len(keyTypes) && keyTypes[i] != nil &&
+			keyTypes[i].Code() != values.TypeCodeUnknown {
+			return values.TypeTerminatesOrderingClaim(keyTypes[i])
+		}
+		// No physical type for this coordinate: fall back to resolving the
+		// column name against the flowed layout, which fails CLOSED when it
+		// cannot answer. See values.ColumnCouldBeFloat for why this must not be
+		// written as the negation of ColumnCanExtendOrderingClaim.
+		return values.ColumnCouldBeFloat(layout, columnNames[i])
 	}
 }
 
@@ -437,6 +462,22 @@ func EqualityPinsSinglePhysicalKey(cr *predicates.ComparisonRange) bool {
 // one row of lookahead per leg, so those rows land after the entire result.
 // `ORDER BY id` returned [4 17 20 26 29 30 32 42 45 47 69 103 119 14 80] —
 // sorted except for the two +0.0 rows, 14 and 80, appended at the end.
+//
+// This DIVERGES from Java, and the divergence is systematic rather than a patch
+// over one Java slip. Java derives its ordering prefix from
+// scanComparisons.getEqualitySize() with no signed-zero exemption anywhere, in
+// four places built the identical way (4.12.11.0):
+//
+//	ValueIndexLikeMatchCandidate.java:166
+//	WindowedIndexScanMatchCandidate.java:363
+//	VectorIndexScanMatchCandidate.java:345
+//	AggregateIndexMatchCandidate.java:340
+//
+// all of them `for (i = scanComparisons.getEqualitySize(); i < …; i++)`. So Java
+// makes the same unsound claim on every one of those candidate kinds, and the
+// query above reproduces against it. Citing a single site would read as a local
+// bug worth patching around; four identical sites say Go is knowingly declining
+// a Java-wide behaviour, which is the claim DIVERGENCES.md has to carry.
 func EqualityPinsSinglePhysicalKeyOnColumn(cr *predicates.ComparisonRange, columnCouldBeFloat bool) bool {
 	if cr == nil || !cr.IsEquality() {
 		return false
@@ -504,6 +545,19 @@ func EqualityPinsSinglePhysicalKeyOnColumn(cr *predicates.ComparisonRange, colum
 	}
 	// A constant this function cannot read as a number — it cannot be shown
 	// nonzero, so it does not pin.
+	//
+	// This is also what makes the two NULL arms above safe against a THIRD
+	// spelling nobody has found, and the argument is structural rather than a
+	// hope that the enumeration is complete. Any further way to say NULL would
+	// have to be a constant that IsConstantValue accepts and EvaluateConstant
+	// returns with ok=true and a NON-nil value that nonetheless means NULL. Such
+	// a value misses every numeric case and lands exactly here, on `return
+	// false` — it does NOT pin, so the claim is refused and a sort is kept.
+	//
+	// The asymmetry is the point: an unrecognised operand costs a materialised
+	// sort that was not needed, never a row in the wrong order. The unknown
+	// degrades toward latency by construction, which is the direction this
+	// predicate must fail in.
 	return false
 }
 
@@ -725,7 +779,7 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()
 	comps := p.GetScanComparisons()
 	firstNonEq := equalityPrefixLenOnColumns(comps, len(columnNames),
-		indexColumnCouldBeFloat(p.GetFlowedType(), columnNames))
+		indexColumnCouldBeFloat(p.GetKeyComponentTypes(), p.GetFlowedType(), columnNames))
 	rev := p.IsReverse()
 	// The SORTED coordinates, in order: the non-equality-bound index columns
 	// followed by the trimmed PK suffix. The claim is truncated at the first
@@ -1300,7 +1354,7 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()
 	comps := p.GetScanComparisons()
 	prefixLen := equalityPrefixLenOnColumns(comps, len(columnNames),
-		indexColumnCouldBeFloat(p.GetFlowedType(), columnNames))
+		indexColumnCouldBeFloat(p.GetKeyComponentTypes(), p.GetFlowedType(), columnNames))
 	bm := make(map[values.Value][]properties.OrderingBinding)
 	keys := make([]values.Value, 0, len(columnNames)+len(pkColumnNames))
 

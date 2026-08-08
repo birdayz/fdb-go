@@ -152,6 +152,49 @@ func ColumnCanExtendOrderingClaim(layout Type, name string) bool {
 	return true
 }
 
+// ColumnCouldBeFloat resolves name against layout and reports whether that
+// coordinate COULD hold a float — the question a signed-zero widening decision
+// needs, and deliberately NOT the negation of ColumnCanExtendOrderingClaim.
+//
+// The two differ exactly where the layout cannot answer, and the difference is
+// the whole reason this exists. ColumnCanExtendOrderingClaim is permissive on an
+// unresolvable layout (nil, not a *RecordType, no fields, name absent) because
+// its own use is "may this coordinate extend a claim?", where permissive means
+// GRANT and the burden of proof sits on the float side.
+//
+// Inverted into a float test that answer flips meaning: "not a float" becomes
+// "no signed zero", which becomes "this equality PINS", which is assume-SOUND —
+// the unsound direction. A burden-of-proof direction does not survive an
+// inversion, and reading one predicate backwards to answer the other silently
+// turned a conservative default into an optimistic one.
+//
+// That state is not hypothetical. plans.NewRecordQueryIndexPlan defaults a nil
+// flowedType to UnknownType, and AggregateIndexMatchCandidate passes UnknownType
+// explicitly; UnknownType is a *PrimitiveType, so it takes the not-a-record arm
+// and every coordinate on such a plan reads as non-float. MEASURED live: a
+// reachability probe in that arm fired under the planner suite.
+//
+// So this asks positively and fails CLOSED — an unresolvable coordinate could be
+// a float, so a zero-capable equality on it does not pin and the claim is
+// refused. The cost is a sort that may not have been needed; the alternative
+// cost is a wrong row order.
+func ColumnCouldBeFloat(layout Type, name string) bool {
+	if layout == nil || name == "" {
+		return true
+	}
+	rt, isRecord := layout.(*RecordType)
+	if !isRecord || rt == nil || len(rt.Fields) == 0 {
+		return true
+	}
+	for _, f := range rt.Fields {
+		if strings.EqualFold(f.Name, name) {
+			return TypeTerminatesOrderingClaim(f.FieldType)
+		}
+	}
+	// Name absent from a layout that otherwise resolved: still unproven.
+	return true
+}
+
 // ClaimableOrderingPrefix returns how many of names (resolved against layout,
 // in order) may be claimed as an ordering — the count of leading columns before
 // the first one that terminates the claim.
