@@ -1,6 +1,6 @@
 # RFC-218 — The projected-EXISTS fold must read the sort key's resolved path, not a re-derived name
 
-**Status:** DRAFT rev 4 — rev 3 NAK'd on §2b's primitives (both cited mechanisms refuse the target population, so "fail closed" degenerated to §3's rejected alternative). Rev 4 exercises them, measures what declining produces, and specifies a derived-and-asserted re-anchor. Awaiting Graefe + Torvalds.
+**Status:** DRAFT rev 5 — §2e is no longer a specification: the arity-tolerant root accessor and the derive-and-assert re-anchor are BUILT and EXERCISED against WW2, WW3 and the coincidence pair (§2f). Awaiting Graefe + Torvalds.
 **Origin:** RFC-197 ratchet entry `cascades_translator.go # sortKeyFieldRef`, whose stated
 mechanisms were measured false; the live bug behind it is this one
 **Scope:** `pkg/relational/core/query/cascades_translator.go` (the `sortSource` helpers), plus
@@ -92,11 +92,26 @@ precisely the unscoped negative this repo's rules forbid.
 
 ## 2. Shape A — `ORDER BY n.sk`: fold-local, and BOTH arms are affected
 
-> **This section was reworked.** An earlier draft confined the fix to the `fv.Child == nil`
-> arm and justified it by analogy to `bakeFlatRefsAgainstColumns`. Measurement killed both the
-> confinement and the analogy; what follows is the measured version. The narrow design is
-> recorded as rejected at the end of this section, because *why* it was wrong is the useful
-> part.
+> **THIS SECTION COST THREE REVISIONS, AND IMPLEMENTATION REVIEW SHOULD LOOK HARDEST HERE.**
+> §2 has been NAK'd three times running — **never on its direction, always on its mechanism**:
+> rev 1 confined the fix to one arm and justified it by analogy; rev 2's "carry the value"
+> ignored that the carried ordinals are stated in a pre-merge domain; rev 3 named two guards
+> that both refuse the entire target population. Every other section of this RFC has survived
+> review unchanged. That asymmetry is evidence, not bad luck: **the fold's re-anchoring surface
+> is genuinely less understood than the rest of this document**, and the reviewer's prior on any
+> claim made about it should be correspondingly lower.
+>
+> Two rules were bought with those three revisions, and they govern the rest of this RFC:
+>
+> 1. **A cited mechanism is not evidence until it has been run against the shape in question.**
+>    This series went 0-for-5 on "the other path already does this" — two accessors that
+>    differed, a predicate whose polarity inverted, a guard collapsing two cases, and a rebase
+>    excluding the shape entirely.
+> 2. **A decline is uninterpretable until a control succeeds.** A harness defect and a genuine
+>    refusal are the same observation. §2c's first run had two failing controls and its declines
+>    proved nothing until they were fixed.
+>
+> Accordingly §2's mechanism is no longer specified — it is built and exercised (§2f).
 
 The resolver does the right thing. `ResolveIdentifier` recognises `N` as a struct column
 (`semantic/scope.go` Rule 5) and `fuseNestedAccessors` (`query/expr/expr.go`) fuses the
@@ -274,10 +289,51 @@ also happens to put `N` at 1 makes the re-anchor a no-op that is correct **by ac
 passes a token comparison. Deriving-and-asserting confirms the coincidence instead of assuming
 it; a disagreement declines the fold (§2d: loudly).
 
-Since `OrdinalIn` cannot serve (§2c), the domain check the design needs is the assertion above,
-not that function. If a shared helper is wanted, it is a new one — an arity-tolerant
-`RootOrdinalIn(frontier)` that answers for a multi-accessor path's root — and building it is
-part of this work.
+Since `OrdinalIn` cannot serve (§2c), the design needs a new arity-tolerant
+`RootOrdinalIn(frontier)`. Building it is part of this work — and it, and the re-anchor, were
+built and exercised before this revision was sent to review (§2f), because a specified-not-run
+mechanism is exactly what the previous three revisions were NAK'd for.
+
+### 2f. The mechanism is BUILT and EXERCISED — it is not a specification any more
+
+`RootOrdinalIn` differs from `OrdinalIn` in one line — it drops the arity gate and keeps the
+domain gate — and that is precisely the separation §2c showed was missing:
+
+```
+BBB2  RootOrdinalIn multi vs MATCHING   domain -> ordinal=1 ok=true
+      RootOrdinalIn multi vs MISMATCHED domain -> ordinal=0 ok=false
+      (OrdinalIn, for contrast)  MATCHING -> 0,false   MISMATCHED -> 0,false
+```
+
+The re-anchor, run against the real flowed layouts:
+
+```
+BBB1  WW2 single-table flowed [ID N]            -> OK  path={N@1}{SK@0}  slot 1 -> column "N"
+BBB1  WW3 JOIN flowed [ID T1_ID ID2 N]          -> OK  path={N@3}{SK@0}  slot 3 -> column "N"
+BBB3  COINCIDENCE flowed [ID N X Y]             -> OK  path={N@1}{SK@0}  slot 1 -> column "N"
+BBB3  MISMATCH flowed [ID Q] (root absent)      -> DECLINE (root column absent)
+BBB3  carried ordinal disagrees in SAME domain  -> DECLINE (disagrees with the flowed layout)
+```
+
+Reading these in the order that matters:
+
+- **WW2 succeeds.** This is the case §2 exists to fix, and it is the one that would have proved
+  the design had collapsed back into fail-closed-always. It does not: it derives root `N` at
+  slot 1 and yields the struct.
+- **WW3 re-anchors** to merged slot 3 — column `N`, the struct. It does **not** read slot 1
+  (`T1_ID`). The rev-2 silent-wrong-column hazard is averted by construction, not by luck.
+- **The coincidence case is confirmed, not assumed** — and the mechanism deserves a precise
+  statement rather than a flattering one. The flowed layout `[ID N X Y]` puts `N` at 1, the
+  same slot the carried ordinal names. The result is correct because `FieldIndex` **derived** 1
+  from that layout. The *assertion* did not fire here at all: the carried ordinal's domain is
+  the 2-column `t1` layout, so it is not comparable and is correctly not compared. Derivation
+  is what carries correctness; the assertion is a separate tripwire for the same-domain case,
+  and the last line above shows it firing when a carried ordinal contradicts the layout it
+  claims to index.
+
+Both declines are loud (§2d: a clean `0AF00`), and both positive controls succeed — which, per
+§2c's rule, is what makes the declines interpretable at all rather than possible harness
+defects.
 
 **Why the discriminator is multi-accessor, stated as a principle rather than a threshold:** a
 single-accessor `Resolved` is fully expressible by `Field`, so rendering it loses nothing.
