@@ -658,14 +658,67 @@ handed to a background hunter.
 A DST driver's job is to FIND bugs; the loop only closes when they're fixed (or proven not-bugs). This
 is the process the RFC-199 sqlpage/metamorphic findings went through — four "bugs" became two clean
 fixes, one retraction, and one deferral. **Read Java first, every time — it changes the verdict.**
+(That tally is kept as written, but one of its entries did not hold: the retraction was the
+index-served `SUM` all-NULL group, and the project later shipped RFC-209 fixing it. See step 1 — a
+classification is a claim with a shelf life, not a result.)
 
 1. **Classify against Java before writing any fix.** For each finding, read the Java source for the
    same path. Three outcomes: (a) **real Go divergence** → fix it; (b) **Java-parity** — Java does the
-   same thing, so the metamorphic "equivalence" was a WRONG CLAIM (e.g. index-served `SUM` drops an
-   all-NULL group in BOTH engines because the atomic `SUM_LONG` mutation skips NULL) → **retract the
-   corpus entry, don't change code**; (c) **Go-only extension gap** (value-`DISTINCT` — Java doesn't
-   implement it) → a net-new read-side extension, allowed, but fix it faithfully to the *mechanism* Java
-   uses for the analogous operator. Getting (b) wrong ships a "fix" that DIVERGES from Java.
+   same thing → **this does NOT settle it, see below**; (c) **Go-only extension gap**
+   (value-`DISTINCT` — Java doesn't implement it) → a net-new read-side extension, allowed, but fix it
+   faithfully to the *mechanism* Java uses for the analogous operator.
+
+   **(b) is a fork, not a verdict, and reading it as a verdict is how you retract a live finding.**
+   Java sharing a defect tells you what Java does; it does not tell you what this port should do. Ask
+   the second question — *is the shared behaviour WIRE-VISIBLE or READ-SIDE?*
+
+   - **Wire-visible** (key encoding, record/index/version format, continuations, what gets written to
+     FDB): Java is the spec and parity BINDS. The metamorphic "equivalence" was a wrong claim →
+     retract the corpus entry, don't change code.
+   - **Read-side** (which rows a query returns, which plan answers it): this project explicitly
+     permits exceeding Java, provided wire compat is untouched and the extension carries deep
+     coverage. Java-parity is then an *argument* for the current behaviour, never a proof that it is
+     correct. Decide on the merits.
+
+   **The worked example is the one this step used to cite as settled.** Index-served `SUM` drops an
+   all-NULL group in BOTH engines, because the atomic `SUM_LONG` mutation writes no entry for a NULL
+   value (`AtomicMutation.java:181-189`, 4.12.11.0) — genuine Java-parity, and this recipe once
+   concluded "retract the corpus entry, don't change code". **The project decided the opposite and
+   shipped the fix.** RFC-209 repaired group existence with a structurally-discovered `COUNT(*)`
+   companion, declining fail-closed to streaming aggregation when no companion is readable, and it
+   frames itself as *"a sanctioned read-side extension, not a divergence on shared [wire]"*
+   (`rfcs/209-aggregate-index-group-existence.md:79`). Nothing on the wire moved; the rows got right.
+   Anyone who had followed the old advice would have retracted a live wrong-answer finding while
+   citing this file as authority.
+
+   Getting the fork wrong is costly in BOTH directions: call a wire-visible parity "read-side" and you
+   ship a divergence Java can observe through the store; call a read-side defect "parity" and you
+   retract a real bug and teach the corpus that wrong answers are expected.
+
+   **The general failure this step guards is classifying a finding away before measuring it, and it
+   is not confined to the Java question.** The worked example here is a nightly rowdiff red, and it
+   is worth following all the way down because the triage went wrong in BOTH directions.
+
+   It was first waved off as "probably infrastructure". Someone then looked and reported **16 real
+   MISMATCHes underneath 257 INFRA lines**, which is how the red was understood for about a week.
+   Measured properly afterwards, that count was inflated by an order of magnitude: **12** of the 16
+   were the DETECTOR's own false positives on float orderings, **3** were seeds where the ENGINE was
+   right and the oracle's expectation was wrong (zero-float equality spans two physical key blocks; a
+   float range never delivers `CompareFloat64` order, because NaN packs into two disjoint blocks),
+   and exactly **one** was a genuine engine defect — a row-order bug where two `+0.0` rows landed
+   past the end of a sorted result. That one is fixed and merged.
+
+   So the red was CORRECT and the count was wrong, and both readings — "probably infra" and "16 real
+   bugs" — were labels applied ahead of the measurement. **The reason nobody could tell was that the
+   report showed neither:** a `grep -m 60` filled all sixty lines with INFRA before reaching a single
+   MISMATCH, so the evidence for the claim and the evidence against it were both off the bottom of
+   the page.
+
+   INFRA noise and real findings COEXIST in one log, and a truncating filter hides whichever class
+   sorts last. Enumerate the mismatch lines and classify each, **or say plainly that you sampled** —
+   a sample reported as a census is what turned one bug into sixteen and kept it that way for a week.
+   Same instinct as reading (b) as a verdict: a cheap label applied early, then trusted as if it had
+   been measured.
 2. **Size the fix honestly — contained vs planner vs RFC.** A finding's symptom often mis-states its
    root cause. The MIN/MAX "null-group drop" was really "Go maps SQL `MIN`/`MAX` to the wrong index type
    (`*_ever` vs Java's `permuted_*`)" — a wire/metadata-correctness bug, broader than the symptom. Some
