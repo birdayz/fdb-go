@@ -26,7 +26,8 @@ package sqldriver_test
 // walk.go's LikePredicateContext arm always calls ResolveLikeWithEscape, never
 // ResolveStartsWith/ComparisonStartsWith; grepping the whole tree turns up
 // zero non-test callers of ResolveStartsWith and no rewrite rule that
-// produces STARTS_WITH from a LIKE pattern (RFC-216 §1). So the LIKE/NOT LIKE
+// produces STARTS_WITH from a LIKE pattern (TODO.md CQ-33, pinned by
+// TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost). So the LIKE/NOT LIKE
 // cases below are still valid full-scan-vs-index-scan differential cases in
 // general (kept for the day a LIKE->STARTS_WITH rewrite lands, at which point
 // they start actually exercising the index path) but they do not, today, reach

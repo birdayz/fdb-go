@@ -176,14 +176,19 @@ func TestLikeMatch_JavaNewlineSemantics(t *testing.T) {
 func TestLikeMatch_CrossCheckSQLPatternToRegex(t *testing.T) {
 	t.Parallel()
 	patAlpha := []string{"a", "b", "%", "_", `\`, ".", "\n", "\r"}
-	subjAlpha := []string{"a", "b", `\`, ".", "\n", "\r", "\u0085"}
+	// "A" is here so that literal comparison is checked for CASE
+	// SENSITIVITY: without an uppercase subject rune, a matcher that
+	// case-folded its literal comparison would agree with the regex on
+	// every cell of this grid.
+	subjAlpha := []string{"a", "A", "b", `\`, ".", "\n", "\r", "\u0085"}
 	escapes := []struct {
 		esc string
 		r   rune
 	}{
 		{"", 0},
 		{`\`, '\\'},
-		{"%", '%'}, // escape colliding with a wildcard
+		{"%", '%'}, // escape colliding with the `%` wildcard
+		{"_", '_'}, // escape colliding with the `_` wildcard
 	}
 	patterns := enumerateStrings(patAlpha, 3)
 	subjects := enumerateStrings(subjAlpha, 3)
@@ -207,37 +212,41 @@ func TestLikeMatch_CrossCheckSQLPatternToRegex(t *testing.T) {
 	}
 }
 
-// TestLikeMatch_ConstantPrefixBoundary pins, on the live matcher, WHERE a LIKE
-// pattern's constant literal prefix ends — the longest string P such that every
-// subject the pattern matches begins with P.
+// TestLikeMatch_ConstantPrefixBoundary pins matcher behaviour a constant-prefix
+// claim would rest on, for the seven patterns listed below and their own three
+// subjects each. It does NOT establish a universal: it is not a statement about
+// all pattern classes, and it cannot check any extractor's return value —
+// nothing in the tree derives a prefix (there is no extractor and no rule that
+// wants one; TODO.md CQ-33), so P is ASSERTED here rather than computed, and a
+// future extractor returning "" for everything would leave this file green.
 //
-// Nothing in the tree derives P: there is no prefix extractor and no rule that
-// wants one (RFC-216). P is therefore not computed here either; it is the
-// asserted value, and each case witnesses it from three directions so that no
-// wrong P can pass:
+// What each case does prove, scoped to itself:
 //
-//	SOUNDNESS    both matched subjects begin with P. A P that is TOO LONG fails
-//	             here — this is the direction that would emit a key range
-//	             excluding rows the predicate accepts (dropped rows).
-//	MAXIMALITY   the two matched subjects DIVERGE at byte offset len(P): they
-//	             differ there, or one ends exactly there. No longer common
-//	             prefix can exist, so a P that is TOO SHORT fails here —
-//	             including P = "", which is what makes soundness non-vacuous.
-//	RESIDUAL     a subject INSIDE P's byte range that the pattern REJECTS. A
-//	             byte-prefix range is a strict superset of the predicate, so a
-//	             LIKE-derived range may never drop the LIKE (RFC-216 §3).
+//	MAXIMALITY   the two matched subjects DIVERGE at byte offset len(P) — they
+//	             differ there, or one ends exactly there. No longer prefix is
+//	             common to THESE TWO, so a P too SHORT for this pattern fails
+//	             here, P = "" included. This half is airtight for the fixture.
+//	RESIDUAL     a subject INSIDE P's byte range that the pattern REJECTS. The
+//	             byte range is therefore a STRICT superset of the predicate for
+//	             this pattern, which is what forbids dropping the residual LIKE
+//	             after emitting such a range.
 //
-// Soundness is witnessed, not quantified: two subjects cannot prove that EVERY
-// match begins with P. An extractor, when one exists, needs a fuzz against this
-// matcher for that. What is pinned here is the matcher behaviour the prefix
-// claim rests on, which is the part that can silently move.
+// SOUNDNESS — that every match begins with P — is only SAMPLED here: the two
+// matched subjects are checked, and two subjects cannot quantify over all
+// matches, so a P that is too long survives unless one of them witnesses it.
+// Mutating the matcher makes that concrete: folding case in the literal
+// comparison makes LikeMatch("a_b%","AXB",0) true, so the asserted "a" is
+// unsound while every assertion in this file still passes. Quantified soundness
+// belongs to the exhaustive grid instead — which is why
+// TestLikeMatch_CrossCheckSQLPatternToRegex carries an uppercase subject rune
+// and an escape rune of `_`: those were its two blind spots, and matcher
+// mutations of exactly that shape passed through both tests before they existed.
 //
 // The ESCAPE shapes are the ones a hand-rolled scanner gets wrong, because
 // Java's replacement table has exactly TWO escape entries, `<esc>_` and
-// `<esc>%` (PatternForLikeValue.java:110-113 over REPLACE_MAP at :62-78). An
-// escape rune not followed by `_`/`%` falls through to the ORDINARY rules —
-// which for `%` means falling through to the METACHARACTER rules, so the SAME
-// rune is a literal in `'%%abc'` and a wildcard in `'%abc'`.
+// `<esc>%`. An escape rune not followed by `_`/`%` falls through to the
+// ORDINARY rules — which for `%` means falling through to the METACHARACTER
+// rules, so the SAME rune is a literal in `'%%abc'` and a wildcard in `'%abc'`.
 func TestLikeMatch_ConstantPrefixBoundary(t *testing.T) {
 	t.Parallel()
 
@@ -271,7 +280,7 @@ func TestLikeMatch_ConstantPrefixBoundary(t *testing.T) {
 			why: "`!%` is the `<esc>%` entry, so the `%` is a LITERAL and belongs IN the " +
 				"prefix. A scanner that stopped at the first `%` byte would derive \"a\" " +
 				"— sound but three bytes shorter, i.e. a needlessly wide range. The " +
-				"rejected subject is the RFC-216 §3 superset witness: the trailing `%` " +
+				"rejected subject is the strict-superset witness: the trailing `%` " +
 				"is `.*` with no DOTALL, so it cannot cross the internal \\n.",
 		},
 		{
@@ -342,13 +351,15 @@ func TestLikeMatch_ConstantPrefixBoundary(t *testing.T) {
 			n := len(c.prefix)
 			if byteAt(c.matchA, n) == byteAt(c.matchB, n) {
 				t.Fatalf("MAXIMALITY: %q and %q both match %q (escape %q) and agree at byte "+
-					"offset %d, so every match shares a LONGER prefix than the asserted %q — "+
-					"the asserted prefix is TOO SHORT, or these two witnesses no longer "+
-					"straddle the boundary\n  %s",
+					"offset %d, so THESE TWO share a longer prefix than the asserted %q and "+
+					"no longer straddle its boundary. That does not by itself mean every "+
+					"match shares a longer prefix — two agreeing witnesses cannot show that "+
+					"— so either the asserted prefix is TOO SHORT or the witnesses need "+
+					"re-picking to diverge at it again\n  %s",
 					c.matchA, c.matchB, c.pattern, c.escape, n, c.prefix, c.why)
 			}
 
-			// RESIDUAL NECESSITY (RFC-216 §3).
+			// RESIDUAL NECESSITY. See TODO.md CQ-33.
 			if !strings.HasPrefix(c.rejectInRange, c.prefix) {
 				t.Fatalf("setup is wrong: %q is not inside the byte-prefix range of %q, so it "+
 					"witnesses nothing about the residual", c.rejectInRange, c.prefix)

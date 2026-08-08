@@ -2,11 +2,11 @@ package embedded
 
 import "testing"
 
-// The schema RFC-216 measures against: one STRING column with a
-// value index on it, so an equality or inequality on that column has
-// a covering access path available and a LIKE has the same one
-// available in principle.
-const rfc216Schema = `CREATE TABLE t2 (id BIGINT, status STRING, PRIMARY KEY(id))
+// The schema these measurements are taken against: one STRING column
+// with a value index on it, so an equality or inequality on that
+// column has a covering access path available and a LIKE has the same
+// one available in principle.
+const likePrefixSchema = `CREATE TABLE t2 (id BIGINT, status STRING, PRIMARY KEY(id))
 CREATE INDEX idx_status ON t2 (status)`
 
 // The two rules the PART 3 disabling experiment names. Hoisted because
@@ -20,15 +20,16 @@ const (
 )
 
 // TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost pins the two
-// MEASUREMENTS RFC-216 rests on. Both are NEGATIVE results — they
+// MEASUREMENTS behind TODO.md CQ-33. Both are NEGATIVE results — they
 // record defects that are live at HEAD — so each assertion's failure
 // message names what a fix means rather than claiming a bug.
 //
-// A negative result cited only in prose is the exact defect class
-// RFC-216 documents in `like_prefix_pushdown.yaml`, which asserts a
+// A negative result carried only in prose is the exact defect class
+// `yamsql/testdata/like_prefix_pushdown.yaml` exhibits: it asserts a
 // pushdown that never existed and carries no assertion able to detect
-// one. These two facts are what make RFC-216's design question live,
-// so they are asserted against the planner rather than described.
+// one either way. These two facts are what make CQ-33's design
+// question live, so they are asserted against the planner here rather
+// than described somewhere.
 //
 // PART 1 — `LIKE 'prefix%'` is not sargable. `predicates.ComparisonLike`
 // is admitted by neither `isSargableComparisonForMatch` nor
@@ -52,12 +53,15 @@ const (
 // Once `PushFilterThroughFetchRule` has pushed a residual below the
 // fetch, the fetch's inner is a `RecordQueryPredicatesFilterPlan`, and
 // neither the direct assertion nor `findIndexScanPlan` descends through
-// it, so the flag is dropped. Java has no such failure mode:
+// it, so the flag is dropped. Java (4.12.11.0) has no such failure mode:
 // coveringness there is a distinct class,
 // `RecordQueryCoveringIndexPlan`, which does not implement
-// `RecordQueryPlanWithIndex` but HOLDS one as a field
-// (RecordQueryCoveringIndexPlan.java:74-78), so an intervening
-// `Filter` cannot lose it.
+// `RecordQueryPlanWithIndex` but HOLDS one as a field, so an
+// intervening `Filter` cannot lose it. Go collapsed the two into a
+// `covering bool` on `RecordQueryIndexPlan`, which is what makes the
+// flag droppable at all. (The Java source is a gitignored sibling
+// checkout, absent from `git ls-files` — that reading cannot be
+// re-checked from this tree, so it is INSPECTION, not a measurement.)
 //
 // PART 3 (subtest) — the disabling experiment that makes "TWO rules,
 // redundantly" a measurement rather than a reading of the source.
@@ -83,7 +87,7 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 			name: "like_prefix_full_scans",
 			sql:  "SELECT id FROM t2 WHERE status LIKE 'act%'",
 			want: "Project([ID#0], PredicatesFilter(Scan(T2), [1 preds]))",
-			why: "RFC-216's defect: a LIKE conjunct cannot bind an index placeholder. " +
+			why: "CQ-33's defect: a LIKE conjunct cannot bind an index placeholder. " +
 				"If this now plans an IndexScan, SOMETHING has given the LIKE an access " +
 				"path — but an IndexScan alone does not establish that a LIKE->range " +
 				"producer landed, and does not by itself establish a bug either: an " +
@@ -130,15 +134,16 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 			why: "The defect itself: same index, same projected columns, same covering " +
 				"entry — but a residual now sits between the fetch and the scan and the " +
 				"COVERING stamp is gone. If this string gains COVERING the stamp is being " +
-				"preserved through the residual — the fix RFC-216's covering-stamp " +
-				"blocker asks for, so update the RFC rather than this expectation.",
+				"preserved through the residual — the fix CQ-33's covering-stamp " +
+				"blocker asks for, so update TODO.md CQ-33 and CQ-39 rather than " +
+				"this expectation.",
 		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := PlanQueryForTest(c.sql, rfc216Schema, nil)
+			got, err := PlanQueryForTest(c.sql, likePrefixSchema, nil)
 			if err != nil {
 				t.Fatalf("planning %q failed: %v", c.sql, err)
 			}
@@ -154,7 +159,7 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 
 		// PART 3. The cases above pin the OBSERVABLE (this shape has the
 		// stamp, that shape lost it). They cannot pin the CAUSAL claim
-		// RFC-216's covering-stamp blocker rests on — that TWO rules
+		// CQ-33's covering-stamp blocker rests on — that TWO rules
 		// stamp it and either one alone suffices — because they stay
 		// green if one of the two redundant stampers disappears
 		// entirely. A causal claim needs a disabling experiment, so
@@ -183,7 +188,7 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 				name: "merge_alone_off_stamp_survives", disabled: []string{ruleMergeProjectionAndFetch},
 				want: stamped,
 				why: "ImplementProjectionRule stamps it independently. If this now " +
-					"differs, the two stampers are no longer redundant and RFC-216's " +
+					"differs, the two stampers are no longer redundant and CQ-33's " +
 					"two-rule attribution needs re-deriving — the covering-stamp fix " +
 					"then has one site to change, not two.",
 			},
@@ -211,7 +216,7 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 		for _, e := range exps {
 			t.Run(e.name, func(t *testing.T) {
 				t.Parallel()
-				got, err := PlanQueryForTestWithDisabledRules(sql, rfc216Schema, nil, e.disabled)
+				got, err := PlanQueryForTestWithDisabledRules(sql, likePrefixSchema, nil, e.disabled)
 				if err != nil {
 					t.Fatalf("planning %q with %v disabled failed: %v", sql, e.disabled, err)
 				}

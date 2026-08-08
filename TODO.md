@@ -10412,85 +10412,85 @@ to nothing.)
   alias-identity hazard and should change. Needs the audit, not a drive-by.
 
 - [ ] **CQ-33 (MED) — `LIKE 'prefix%'` on an indexed column does a FULL SCAN.**
-  `ResolveStartsWith` (`pkg/relational/core/query/expr/expr.go:1437`) has **zero
-  production callers**; `walk.go`'s LIKE arm always calls `ResolveLikeWithEscape`,
-  and no rule rewrites a constant-prefix LIKE into `ComparisonStartsWith`.
-  Measured by direct EXPLAIN: `s LIKE 'prefix%'` never produces an `IndexScan` at
-  any table size tried (6–150 rows). Two consequences: a common query shape scans
-  the whole table, and RFC-179's F11 fix (the `STARTS_WITH` arm in
-  `scanComparisonsToTupleRange`) is unreachable from SQL and therefore provable
-  only by unit test. This matches Java's non-exposure (`STARTS_WITH` is a
-  QueryComponent-only API there), so it is a permitted read-side extension rather
-  than a parity gap — and CockroachDB has exactly this optimisation
-  (`idxconstraint/index_constraints.go`, the `LikeOp` case in
-  `makeSpansForSingleColumnDatum`). Guard the rewrite on a constant prefix with no
-  further wildcards and no ESCAPE ambiguity.
+  MEASURED, pinned by `TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost`
+  (`pkg/relational/core/embedded/like_prefix_not_sargable_test.go`): with
+  `CREATE INDEX idx_status ON t2 (status)`, `WHERE status LIKE 'act%'` plans
+  `Project([ID#0], PredicatesFilter(Scan(T2), [1 preds]))` while the `=` control
+  plans `Project([ID#0], IndexScan(IDX_STATUS, [=] COVERING))` — so the full scan
+  is about the comparison type, not the schema. Cause (INSPECTION):
+  `ComparisonLike` is admitted by neither `isSargableComparisonForMatch`
+  (`match_max_match_map.go:67`) nor `isScanRangeCompatible`
+  (`scan_match_helpers.go:37`), and `ResolveStartsWith` (`expr.go:1437`), which
+  builds the comparison the scan machinery does accept, has no production caller.
 
-  **STILL OPEN — attempted, measured, and deliberately not shipped. See
-  `rfcs/216-like-constant-prefix-to-starts-with.md`, which records the measured
-  defect and the blockers and deliberately specifies NO producer: an unimplemented
-  contract has no test that can fail.** The rule and its prefix extractor were
-  written and REMOVED; do not re-add them without reading RFC-216 §5 (the four
-  blockers) first. Four corrections to the text above:
+  **Tightness — MEASURED; it constrains every possible design.** Java (4.12.11.0)
+  compiles `%` to `.*` inside a `^…$` wrap with no DOTALL, so a wildcard cannot
+  cross a line terminator: a byte-prefix range is a STRICT SUPERSET and **the
+  residual LIKE may never be dropped.** A witness of that strictness needs an
+  INTERNAL terminator, because Java's `$` tolerates exactly one FINAL one
+  (`LikeMatch("abc%", "abc\n")` = TRUE) — which also makes a wildcard-free LIKE
+  not an equality: its match set is the literal plus the literal-then-one-
+  terminator, so an equality range is a strict SUBSET and LOSES rows. That
+  tolerance is NOT universal: for `L` ending in `"\r"`, `LikeMatch(L, L+"\n")` is
+  FALSE, because the subject then ends in a `"\r\n"` unit and `$` never matches
+  between its two runes (`values/like_match_test.go:139`). Pinned by
+  `TestLikeMatch_NoPatternYieldsATightPrefixRange`
+  (`cascades/predicates/comparisons_test.go`) and
+  `TestLikeMatch_ConstantPrefixBoundary` (`cascades/values/like_match_test.go`).
 
-  - The rewrite as usually stated is **UNSOUND**. `%` compiles to `.*` with no
-    DOTALL, so it cannot cross a Java line terminator: `'abc\ndef' LIKE 'abc%'`
-    is FALSE while `HasPrefix("abc\ndef","abc")` is TRUE. **No LIKE pattern
-    yields a tight prefix range**, so a residual LIKE filter must ALWAYS be
-    retained — augment the predicate, never replace it. Pinned by
-    `TestLikeMatch_NoPatternYieldsATightPrefixRange`
-    (`cascades/predicates/comparisons_test.go`), mutation-verified.
-  - The "RFC-179 F11 is unreachable from SQL" claim above is **RETRACTED**. F11's
-    STARTS_WITH behaviour is live — it just does not run through
-    `scanComparisonsToTupleRange`, which has zero production callers. The live
-    binder is `bindScanComparisonsToRangeSet`. See RFC-217.
-  - Registering the rule as written returned **ZERO rows** for every primary-key
-    prefix LIKE (empty range, loss point NOT diagnosed — no claim is made about
-    which component drops it). Four blockers are enumerated in RFC-216 §5,
-    including the UNVERIFIED question of whether the logical `TypeCodeString` gate
-    can disagree with the physical key type for string-backed
-    DATE/TIMESTAMP/ENUM carriers.
-  - "Guard the rewrite on a constant prefix with no further wildcards and no
-    ESCAPE ambiguity" above is **too strict, in a way that would make the
-    optimization inert on most patterns.** The guard is on a NON-EMPTY prefix and a
-    constant pattern, not on the absence of later wildcards: the prefix simply
-    stops at the first unescaped wildcard, so `'a_b%'` yields prefix `a` and keeps
-    the LIKE residual. ESCAPE is not ambiguous either — Java's table has exactly
-    two escape entries, `<esc>_` and `<esc>%`; everywhere else (escape before an
-    ordinary char, before another escape, dangling) the rune falls through to the
-    ORDINARY rules, which makes it a literal UNLESS the escape rune is itself `%`
-    or `_`, in which case it stays that WILDCARD. Sharing `escapedLiteralAt` with
-    the matcher is what makes that fall out. The hazards are pinned on the live
-    matcher by `TestLikeMatch_ConstantPrefixBoundary`
-    (`cascades/values/like_match_test.go`), which locates each pattern's
-    constant-prefix boundary from both sides.
+  **ESCAPE — corrected.** Java installs exactly two entries, `<esc>_` and
+  `<esc>%`; elsewhere the escape rune falls through to the ORDINARY rules and thus
+  to the METACHARACTER rules, so an escape rune that is ITSELF `%` or `_` stays a
+  WILDCARD where it opens no entry. "Escape before another escape is fallthrough"
+  is therefore FALSE for `"%%" ESCAPE '%'` and `"__" ESCAPE '_'`, where the pair
+  IS the entry and denotes ONE literal wildcard. Both hazards are pinned only
+  since `TestLikeMatch_CrossCheckSQLPatternToRegex` gained an escape rune of `_`
+  and an uppercase subject rune: before that, a matcher declining `<esc>_` when
+  `escape == '_'` left the whole values package green. The guard is a NON-EMPTY
+  prefix on a constant pattern, NOT the absence of later wildcards.
 
-  Gated — for its principal target shape — on **RFC-216's covering-stamp
-  blocker** (a pre-existing, independently observable physical-plan bug).
-  "Blocked" full stop would overstate it; see the scoping below. TWO rules stamp
-  covering for this shape, redundantly — `ImplementProjectionRule` via `findIndexScanPlan`
-  (`rule_implement_projection.go:73`) and `MergeProjectionAndFetchRule` via a
-  direct type assertion (`rule_merge_projection_and_fetch.go:91`) — and BOTH lose
-  the flag when a residual sits between the fetch and the index scan, because
-  neither descends through a `RecordQueryPredicatesFilterPlan`. Naming only the
-  Merge rule, as an earlier revision of this entry did, understates the fix: there
-  are two sites, not one. Measured by disabling each in turn on the no-residual
-  covering control (either alone leaves the stamp; both together drop it), pinned
-  by `TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost`'s
-  `two_rules_stamp_covering_redundantly` subtest.
+  **Blockers.** (1) *Empty primary-key range — HISTORICAL:* a prototyped producer
+  returned zero rows for every primary-key prefix LIKE (`expected [apple]
+  [apricot], actual 0 rows`), STARTS_WITH bound present and range empty; DELETED
+  rather than fixed, loss point NEVER diagnosed. Diagnosing it is step one of any
+  retry. (2) *Covering stamp lost through an intervening residual — MEASURED at
+  HEAD, pinned by the same test:* `WHERE status > 'act'` gives
+  `Project([ID#0], IndexScan(IDX_STATUS, [<>] COVERING))`; adding
+  `AND status LIKE '%zz%'` gives
+  `Project([ID#0], PredicatesFilter(IndexScan(IDX_STATUS, [<>]), [1 preds]))` —
+  two rules stamp covering redundantly and neither descends through a
+  `RecordQueryPredicatesFilterPlan` (see CQ-39). Prerequisite only for a SCOPED
+  shape, INFERRED and never measured: the secondary index, default `PreferScan`,
+  covering-capable projection, where the lost stamp drops the decision onto cost
+  criterion #7. Under `PreferIndex` the penalty falls on the primary scan; a
+  non-covering projection has no stamp to lose; a query separated on an earlier
+  criterion never reaches #7. (3) *Logical-vs-physical type gate — INFERRED,
+  UNVERIFIED:* the logical LIKE gate (`expr.go:1415-1427`) admits
+  Unknown/Null/Enum/Date/Timestamp alongside String while the physical layer
+  accepts STRING; whether a disagreement demotes to residual or errors at
+  execution was never measured. `ResolveStartsWith` also has no LHS type gate
+  where `ResolveLikeWithEscape` raises 42804, so giving it a caller means adding
+  that gate first. (4) *The prototype's other failures — HISTORICAL:* it also
+  broke `TestRuleTypes_EveryProductionRuleHasDirectBehavioralTest`,
+  `TestPartitionSelect_ChainInterningBaseline` and `TestJavaCorpusRuns/files`,
+  none diagnosed before deletion.
 
-  INFERRED, never measured (the augmented form it would compare does not exist):
-  the lost stamp drops the decision onto cost criterion #7 and makes secondary
-  indexes lose — for the pure-LIKE query, under the default `PreferScan`, with a
-  covering-capable projection. Outside that shape it is not a prerequisite: under
-  `PreferIndex` the penalty falls on the primary scan instead, a genuinely
-  non-covering projection has no stamp to lose, and a query separated on an
-  earlier criterion never reaches #7. That last case is a possibility, not a rule
-  — "extra predicates separate the candidates" is NOT general, since a predicate
-  residual on BOTH sides (as the LIKE is by construction) moves neither.
-  That is its own change with its own plan-movement blast radius; it is NOT the
-  dead-twin retirement of RFC-217, and not the unexported-dead-code gate, which
-  has no RFC number and is not built.
+  **`yamsql/testdata/like_prefix_pushdown.yaml` cannot detect this optimization,
+  and contradicts itself — OUTSTANDING, on master, untouched by this branch.** 41
+  `- query:` steps, `grep -cE 'plan_contains|plan_not_contains'` = 0: no step
+  asserts plan shape, and a correct pushdown returns the same rows by
+  construction, so nothing separates its presence from its absence. (Rows-only
+  assertions DO catch a WRONG optimization — they caught the deleted prototype on
+  its first run — so the gap is dimensional, not total.) It also states two
+  incompatible contracts: the header at `:11`/`:13` says ESCAPE and interior
+  wildcards BAIL, while `:297-325` say they NARROW at the first unescaped
+  wildcard with the post-filter enforcing full semantics.
+
+  **No producer design is recorded here, deliberately** — two attempts to state a
+  contract both proved satisfiable by a rule that never fires. RFC-216 carried
+  this material and was DELETED: its Java `file:line` citations resolve only in a
+  gitignored sibling checkout absent from `git ls-files` and its prototype results
+  have no committed artifact, so it could not be kept true.
 
 - [ ] **CQ-34 (MED) — the sargable gate and the range builder are kept in manual
   lockstep.** `isSargableComparisonForMatch` (`match_max_match_map.go:67`) decides
@@ -10569,18 +10569,20 @@ to nothing.)
   it. Rows are CORRECT (pinned: `covering_index_pushdown.yaml#25`, 26/26 on real
   FDB, with `plan_not_contains: Fetch` as the sharp pin) — this is a
   labeling/costing gap, not wrong results: the plan renders and is costed
-  without the covering marker it earned. RFC-216's covering-stamp blocker is the
+  without the covering marker it earned. CQ-33's covering-stamp blocker is the
   writeup; why it becomes load-bearing for CQ-33 on secondary indexes is the
   INFERRED criterion-#7 chain recorded under CQ-33 above. Found during
   the RFC-197 step-0 review fold; deferred from that fold because marking the
   scan moves plan shapes corpus-wide and is a query-engine change needing its own
   RFC-gated lap. Read Java's MergeProjectionAndFetchRule counterpart first — if
   Java marks covering through a residual, this is a divergence; if not, it is a
-  shared gap and the fix is an extension. (RFC-216 reads Java as having no
-  such failure mode: coveringness is a separate class there,
-  `RecordQueryCoveringIndexPlan.java:74-78`, and
-  `MergeProjectionAndFetchRule.java:62-78` yields `fetchPlan.getChild()` with no
-  shape check.)
+  shared gap and the fix is an extension. (INSPECTION, not re-checkable from this
+  tree — the Java checkout is a gitignored sibling absent from `git ls-files`:
+  Java 4.12.11.0 appears to have no such failure mode, because coveringness is a
+  separate class there, `RecordQueryCoveringIndexPlan`, which HOLDS the index plan
+  as a field rather than flagging it, and its `MergeProjectionAndFetchRule` yields
+  the fetch plan's child with no shape check. Re-derive against the checkout
+  before relying on it.)
 
 ## Phase 12: Audit bookings — found-but-unbooked
 

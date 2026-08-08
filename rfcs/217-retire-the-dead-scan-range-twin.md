@@ -1,7 +1,7 @@
 # RFC-217 — retire the dead scan-range twin
 
 Status: implementing
-Item: TODO.md CQ-34 neighbourhood (see §6); companion to RFC-216
+Item: TODO.md CQ-34 neighbourhood (see §6)
 Area: query executor — scan range binding
 
 ## 1. The fact
