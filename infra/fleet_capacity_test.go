@@ -10,7 +10,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// THE SELF-HOSTED FAN-OUT OF ONE PUSH MUST FIT THE PROVISIONED POOL.
+// THE SELF-HOSTED FAN-OUT OF ONE PUSH NO LONGER FITS THE PROVISIONED POOL, AND
+// THAT IS DELIBERATE — SO THIS FILE REPORTS THE RATIO RATHER THAN ENFORCING IT.
 //
 // This gate exists because of a red `libfdb_c differential` on master that cost
 // a full investigation and turned out to be nothing we own — and the one thing
@@ -89,7 +90,7 @@ type workflowFile struct {
 // matrix job as ONE slot UNDER-states the fan-out, so the gate would go on
 // passing while the fleet is oversubscribed — the failure mode is silent and it
 // is exactly the one the gate was written to catch. Adding a 3-entry matrix to
-// any push-triggered lane would take the real fan-out to 7 against 5 slots with
+// any push-triggered lane would take the real fan-out to 7 against 2 slots with
 // this file still green. A gate wrong in the safe direction is noise; wrong in
 // the unsafe direction it is worse than absent, because it reads as coverage.
 //
