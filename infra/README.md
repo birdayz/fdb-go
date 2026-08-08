@@ -14,12 +14,16 @@ reproducibility/supply-chain rationale.
 
 ## The fleet, and what `gh-runner-drain-*` is NOT
 
-Five runners, all carrying the single label `hetzner-fdb-vm`:
+Two runners, both carrying the single label `hetzner-fdb-vm`:
 
 | name | Terraform resource | notes |
 |---|---|---|
 | `gh-runner-fdb` | `hcloud_server.runner` | the grandfathered dedicated box |
-| `gh-runner-drain-0..3` | `hcloud_server.runner_pool` (`count = var.runner_count`) | the pool |
+| `gh-runner-drain-0` | `hcloud_server.runner_pool` (`count = var.runner_count`) | the pool |
+
+The pool ran `gh-runner-drain-0..3` until the fleet was cut to `runner_count = 1`; the
+pool resource is unchanged and count-parameterized, so raising the variable and applying
+brings the other indices back.
 
 **`drain` is a historical provisioning name, not a lifecycle state.** The pool was stood
 up on 2026-08-01 to *drain* a CI backlog (`#566`, "the 2026-08-01 drain-fleet provision")
@@ -56,12 +60,16 @@ Two causes produce that signature, and they are distinguishable:
   was *idle and listening* while the job went unacquired, the placement failure was
   GitHub's — nothing here can prevent it. This is what happened on 2026-08-06.
 - **Oversubscription.** If every runner was busy, the job queued out. That one *is* ours,
-  and `//infra:infra_test`'s `TestPushFanOutFitsTheRunnerPool` is the gate that keeps it
-  from arriving silently: one push currently starts **5** self-hosted jobs (`ci.yml` 4 +
-  `nightly-libfdbc.yml` 1) against **5** slots. That 1:1 has no margin — adding a sixth
-  push-triggered `hetzner-fdb-vm` job without raising `var.runner_count` turns a wire-format
-  safety net red for reasons unrelated to wire format. The gate reads both numbers from
-  source so capacity and budget move in one edit.
+  and it is now the **expected** state: one push starts **5** self-hosted jobs (`ci.yml` 4 +
+  `nightly-libfdbc.yml` 1) against **2** slots, so three of them queue and a slow one can
+  age out of the ~10-minute window. This is the accepted cost of the one-box pool.
+  `//infra:infra_test`'s `TestPushFanOutVersusTheRunnerPool` no longer fails on it — it
+  computes the ratio from source (workflows + `var.runner_count`) and logs it, so
+  `--test_output=all` on that target tells you the current fan-out and how far
+  `var.runner_count` is from a 1:1 fit. **Check that ratio before reading a zero-step red
+  lane as a regression**; above 1, queueing is the boring explanation. What still fails
+  hard there is an untrustworthy count: a parse that finds no jobs, or a `strategy.matrix`
+  it cannot size statically.
 
 Scheduled lanes are deliberately outside that budget (`nightly-fuzz.yml` alone is 5 jobs):
 they are not racing a merge, and a nightly overlapping a push is a queueing cost rather
@@ -248,7 +256,7 @@ from this template, three reboots):
   re-attach the volume, reboot, and the gate passes, Docker comes back with its data-root
   on the volume, and the listener starts.
 
-> **The live fleet does not have any of this yet.** All five boxes predate
+> **The live fleet does not have any of this yet.** Every live box predates
 > `ci-docker-gate.service` entirely (checked: no gate unit, no fstab ordering, no drop-in),
 > so they still have the reboot-with-no-Docker failure this section describes. `user_data`
 > is pinned by `ignore_changes`, so the fix reaches a box only via

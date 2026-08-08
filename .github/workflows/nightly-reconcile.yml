@@ -2,7 +2,7 @@ name: Nightly Reconcile
 
 # THE PROBLEM THIS EXISTS FOR.
 #
-# Every heavy nightly runs on `hetzner-fdb-vm`, a fleet of five independently
+# Every heavy nightly runs on `hetzner-fdb-vm`, a small fleet of independently
 # registered self-hosted boxes serving one job each, and each
 # opens with a "Check nightly window" step: if the runner is finally allocated
 # outside the job's window, the step sets `ok=false`, every subsequent step is
