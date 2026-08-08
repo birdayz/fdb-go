@@ -7,7 +7,7 @@ import "testing"
 // result, not NULL. Bug: bindScanComparisonsToRangeSet got the bare
 // *EvaluationContext, but ScalarSubqueryValue.Evaluate only reads its result from
 // a *RowEvalContext — so `WHERE id = (SELECT MIN(id) FROM t2)` built an `id = NULL`
-// bound and returned 0 rows. Fixed via evalCtx.RowContext(nil) for scan bounds.
+// bound and returned 0 rows. Fixed via evalCtx.RowContext() for scan bounds.
 func TestFDB_ScalarSubqueryAsScanBound(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {

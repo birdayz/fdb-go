@@ -16,13 +16,19 @@ package sqldriver_test
 // and RFC-217 §2 retracts the earlier claim that F11's fix lived in the twin.
 // The oracle's obligation is unchanged: any arm of that switch (or of the
 // SARG-extraction/span-construction path feeding it) that drops a bound makes
-// this oracle RED — proven below by deliberately breaking the
-// ComparisonGreaterThan arm and confirming the resulting extra-rows mismatch.
+// this oracle RED. That was established by a MANUAL, one-off mutation — the
+// ComparisonGreaterThan arm was broken by hand and the resulting extra-rows
+// mismatch observed — and NOT retained: there is no such mutation anywhere in
+// this file, and nothing here re-derives it. Treat it as a historical
+// observation, not as evidence this file carries.
 //
 // What is genuinely unreachable is the LIKE side: no producer turns a LIKE into
 // a STARTS_WITH, so the arm cannot be exercised from SQL at all. This file
-// confirms that by direct EXPLAIN inspection — `s LIKE 'prefix%'` NEVER
-// produces an IndexScan on any table size tried (6 through 150 rows), because
+// confirms that by direct EXPLAIN inspection on its ONE LIKE fixture — the
+// indexed `str_col` table, seeded at exactly 100 rows (see the seeding comment
+// below) — where `s LIKE 'prefix%'` never produces an IndexScan. The 6-to-150
+// row spread covers this file's OTHER tables, none of which carries a LIKE
+// case, so it is not evidence about LIKE. The mechanism is size-independent:
 // walk.go's LikePredicateContext arm always calls ResolveLikeWithEscape, never
 // ResolveStartsWith/ComparisonStartsWith; grepping the whole tree turns up
 // zero non-test callers of ResolveStartsWith and no rewrite rule that
@@ -271,7 +277,9 @@ var intCmpOps = []struct{ sym, tag string }{
 
 // intAtoms generates the single-column predicate shapes item 2 of the RFC
 // asks for, over col: comparisons at every boundary constant, IS [NOT] NULL,
-// IN (present / absent-from-domain / NULL-containing), BETWEEN, NOT(...),
+// IN (present / absent-from-domain — NOT NULL-containing, which the file
+// header explains is rejected at semantic analysis and is deliberately
+// generated nowhere here), NOT IN, BETWEEN, NOT(...),
 // and the `= NULL` / `< NULL` degenerate-comparand shapes that exercise the
 // explicit empty-range branches in bindScanComparisonsToRangeSet.
 func intAtoms(col intColModel) []sargCase {
@@ -298,7 +306,8 @@ func intAtoms(col intColModel) []sargCase {
 		sargCase{name: col.name + "_not_eq_interior", where: fmt.Sprintf("NOT (%s = %d)", col.name, interior)},
 		// `col = NULL` / `col < NULL`: a NULL COMPARAND (not IS NULL) is
 		// UNKNOWN for every row in SQL 3VL — the explicit empty-range guards
-		// at executor.go:732 and :840.
+		// at scan_range_binding.go:321-325 (equality prefix) and :981-983
+		// (range tail).
 		sargCase{name: col.name + "_eq_null_literal", where: col.name + " = NULL"},
 		sargCase{name: col.name + "_lt_null_literal", where: col.name + " < NULL"},
 	)

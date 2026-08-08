@@ -286,8 +286,8 @@ func TestLikeMatch_ConstantPrefixBoundary(t *testing.T) {
 			why: "`!%` is the `<esc>%` entry, so the `%` is a LITERAL and belongs IN the " +
 				"prefix. A scanner that stopped at the first `%` byte would derive \"a\" " +
 				"— sound but three bytes shorter, i.e. a needlessly wide range. The " +
-				"rejected subject is the strict-superset witness: the trailing `%` " +
-				"is `.*` with no DOTALL, so it cannot cross the internal \\n.",
+				"rejected subject separates the range from the predicate: the trailing " +
+				"`%` is `.*` with no DOTALL, so it cannot cross the internal \\n.",
 		},
 		{
 			name:    "escape_before_an_ordinary_char_is_itself_the_literal",
@@ -373,7 +373,8 @@ func TestLikeMatch_ConstantPrefixBoundary(t *testing.T) {
 			if LikeMatch(c.pattern, c.rejectInRange, c.escape) {
 				t.Fatalf("RESIDUAL: LikeMatch(%q, %q, escape %q) = true, want false — this "+
 					"subject is inside the byte-prefix range of %q, so its rejection is what "+
-					"makes the range a STRICT superset and the residual LIKE mandatory\n  %s",
+					"separates the range from the predicate and proves the residual LIKE "+
+					"mandatory\n  %s",
 					c.pattern, c.rejectInRange, c.escape, c.prefix, c.why)
 			}
 		})

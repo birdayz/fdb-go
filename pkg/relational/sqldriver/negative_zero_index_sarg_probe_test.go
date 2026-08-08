@@ -32,8 +32,13 @@ package sqldriver_test
 // already-reviewed Go extension beyond Java), needed to change.
 //
 // This test asserts the selected physical path and the residual reference path
-// agree on both DOUBLE and FLOAT. Equality and NULL probes stay indexed;
-// inequalities are required to use the NaN-safe residual path.
+// agree on both DOUBLE and FLOAT. Equality and NULL probes stay indexed, and so
+// do the ORDERED inequalities (`<`, `<=`, `>`, `>=`): each is required to plan
+// as an IndexScan and to come back through the exact, NaN-aware range-set path,
+// with its zero endpoint canonicalized so both zero encodings land on the same
+// logical side. An earlier revision of this file required inequalities to fall
+// back to the residual full scan; that expectation was removed, because
+// declining the index cost a plan without fixing a row.
 
 import (
 	"context"

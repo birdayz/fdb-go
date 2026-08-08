@@ -2261,10 +2261,14 @@ closed rather than silently alter rows or output schema.
   bound to whichever of the two adjacent keys makes the IEEE-correct
   endpoint (`>=` pins to -0.0, `<` pins to -0.0 as the exclusive stop); `>`
   and `<=` are canonicalized too (pin to +0.0) for symmetry, closing a
-  latent `col > -0.0`-literal gap the bug report didn't call out. A
-  zero-valued equality that is NOT the terminal comparison in a composite
-  index's equality prefix (more columns follow it) is deliberately left
-  UNWIDENED — see CQ-28 below. `expr.promoteColumnColumnNumeric`
+  latent `col > -0.0`-literal gap the bug report didn't call out.
+  (HISTORICAL, as of CQ-27's fix: a zero-valued equality that is NOT the
+  terminal comparison in a composite index's equality prefix — more columns
+  follow it — was at that time deliberately left UNWIDENED, which is what
+  CQ-28 below was filed against. That is NO LONGER current behaviour: the
+  live binder emits BOTH signed zeros as range-set alternatives for the
+  non-terminal case too, `scan_range_binding.go:390-406`. See the CQ-28
+  entry's own HISTORICAL-STATE note.) `expr.promoteColumnColumnNumeric`
   (`pkg/relational/core/query/expr/expr.go`) — a SEPARATE bug in the same
   introducing commit — no longer wraps an INT-vs-LONG column-vs-column
   comparison in `PromoteValue` (`sharesIntegerWireEncoding`): the two codes
@@ -2339,7 +2343,7 @@ closed rather than silently alter rows or output schema.
   (HISTORICAL STATE — superseded by the FIXED/CQ-83 notes below; the live
   binder `bindScanComparisonsToRangeSetWithTerminalWidening`
   (`scan_range_binding.go:273`) now also handles the NON-terminal case, by
-  emitting both signed zeros as range-set ALTERNATIVES at `:396-405` rather
+  emitting both signed zeros as range-set ALTERNATIVES at `:390-406` rather
   than leaving the column un-widened.) As of CQ-28's filing,
   the CQ-27 fix — then in `scanComparisonsToTupleRange`, since retired,
   RFC-217 — only widened a zero bound at the
@@ -2351,7 +2355,7 @@ closed rather than silently alter rows or output schema.
   matcher (`abstract_data_access_rule.go`/`match_candidate_index.go`) to
   keep a residual filter for the abandoned trailing predicates when it
   decides a composite equality prefix is "fully sarg'd, no residual
-  needed" — infra that does not exist today. Needs its own RFC (this is
+  needed" — infra that did not exist at CQ-28's filing. Needs its own RFC (this is
   matching/data-access infra, milestone-level Graefe/Torvalds ACK) deciding
   between (a) multi-range union execution (reusing the same per-element
   fan-out the IN-list path already has) or (b) matcher-side residual-filter
@@ -14662,7 +14666,7 @@ None is speculative: each was re-verified against the tree before booking.
   replaced. `scanComparisonsToTupleRange`/`...Ranges` were retired (RFC-217);
   the live binder is `bindScanComparisonsToRangeSet`
   (`scan_range_binding.go:256`), a `zeroFork` is now a per-component
-  `alternatives` pair emitted at `scan_range_binding.go:396-405`, and
+  `alternatives` pair emitted at `scan_range_binding.go:390-406`, and
   `multiRangeScanCursor` is now `scanRangeSetCursor`
   (`scan_range_set_cursor.go:200`). The unit pins moved from
   `zero_fork_scan_ranges_test.go` to `scan_range_binding_test.go` /
@@ -14671,16 +14675,22 @@ None is speculative: each was re-verified against the tree before booking.
   described below is unchanged.)
   The binder already evaluates the correlated comparand
   per-probe with the value in hand; the only missing piece was that one
-  `TupleRange` cannot express the two-key union. `scanComparisonsToTupleRanges`
-  now records a `zeroFork` for each non-terminal zero-float equality and
-  expands it into one range per signed zero (2^k for k forks, ascending key
-  order); `multiRangeScanCursor` scans them as an ordered `ConcatCursors`
-  chain (existing Java-wire-compatible continuations). Disjoint ranges make
+  `TupleRange` cannot express the two-key union. In the live code the binder
+  records, for each non-terminal zero-float equality, a two-element
+  `alternatives` pair on that component (`scan_range_binding.go:390-406`);
+  the choices expand to one range per signed-zero combination (2^k for k such
+  components, ascending key order). `scanRangeSetCursor` walks them as a LAZY
+  mixed-radix odometer (`scan_range_set_cursor.go:405`,
+  `advanceScanRangeChoices`) — one child cursor open at a time, advanced only
+  on `SourceExhausted` (`:307`) — rather than materializing a concatenated
+  chain, and wraps each child's continuation so resume is
+  Java-wire-compatible. Disjoint ranges make
   the union duplicate-free with NO dedup layer — the IN-rewrite direction
   CQ-28 twice reverted stays dead. The full composite prefix stays sarg'd:
   no de-sarg, no residual filter, plan shape unchanged (EXPLAIN-pinned).
-  Wired into all three scan-comparison consumers: index scan, PK scan,
-  aggregate index scan (incl. permuted). Terminal-zero widening (CQ-27) and
+  Wired into all FOUR scan-comparison consumers: PK scan
+  (`executor.go:268`), index scan (`:383`), vector-index partition prefix
+  (`:655`), aggregate index scan incl. permuted (`executor_new_plans.go:105`). Terminal-zero widening (CQ-27) and
   constant-zero match-time termination (CQ-28) are untouched.
   **Java citation.** Java needs none of this: `Comparisons.compareEquals`
   (Comparisons.java:241-247) → `toClassWithRealEquals(...).equals(...)` →
@@ -14694,11 +14704,21 @@ None is speculative: each was re-verified against the tree before booking.
   fail), in-between guard rows on BOTH sides (naive widening fails), terminal
   and constant-zero controls, correlated-nonzero control, unindexed-table
   residual-path agreement (sargability differential principle), and an
-  EXPLAIN pin that the composite index probe survives. Unit pins in
-  `zero_fork_scan_ranges_test.go`: fork expansion (order, signs, float32
-  typing, cartesian 2-fork, trailing-inequality fork), terminal stays single,
-  single-range projection errors loudly on forks, multiRangeScanCursor
-  forward/reverse ordering and continuation resume at every stop point.
+  EXPLAIN pin that the composite index probe survives. Unit pins (originally
+  in `zero_fork_scan_ranges_test.go`, since split across two files as the
+  symbols moved): alternatives expansion — order, signs, float32 typing,
+  cartesian 2-component, reverse order — in `scan_range_binding_test.go`
+  (`TestBindScanComparisonsToRangeSet_NonTerminalFloatingZero:42`,
+  `_ReverseZeroOrder:108`, `_TwoZerosCartesianWithoutMaterialization:135`),
+  terminal-stays-single in `_TerminalZeroUsesOneInclusiveRange:175`; and
+  `scanRangeSetCursor` forward/reverse odometer ordering plus continuation
+  resume at every stop point in `scan_range_set_cursor_test.go`
+  (`...OdometerOrderAndSingleLiveChild:258`, `...ContinuationSweep:496`).
+  One claim from the original list is NOT carried over and has no
+  replacement: "single-range projection errors loudly on forks" pinned a
+  single-range projection helper that no longer exists (the range SET is now
+  the only shape a consumer receives), so there is nothing left to error on
+  and nothing covers it.
   **Mutation-verified, three directions, all quoted RED:** fork disabled →
   `returned [5], want [1 5]` / `returned [1], want [1 5]`; naive contiguous
   widening → `returned [1 3 4 5], want [1 5]`; overlapping probes →

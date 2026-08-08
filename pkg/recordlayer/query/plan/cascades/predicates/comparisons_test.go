@@ -1281,8 +1281,13 @@ func TestComparisonPredicate_Like_FieldValueRHS(t *testing.T) {
 // `.*` compiled with no flags, so it cannot consume a Java line
 // terminator (`\n`, `\r`, NEL, LS, PS). A subject that starts with the
 // literal prefix but then contains one of those does NOT match the
-// pattern, while a byte-prefix range contains it. The range is therefore
-// a STRICT SUPERSET of the predicate for every pattern shape.
+// pattern, while a byte-prefix range contains it. Such a witness therefore
+// separates the range from the predicate for every pattern shape: the
+// range is NOT contained in the predicate, which is the direction that
+// makes the residual mandatory. It is not the STRICT-SUPERSET claim --
+// that additionally needs containment the other way, every match lying
+// inside the range, which these sampled fixtures do not establish and
+// this file leaves unproven.
 //
 // Why this is worth a test rather than a comment: the obvious index
 // optimization for `col LIKE 'abc%'` is to rewrite it to a prefix range
@@ -1327,12 +1332,15 @@ func TestLikeMatch_NoPatternYieldsATightPrefixRange(t *testing.T) {
 	// predicate.
 	//
 	//	inRange  a subject the byte-prefix range CONTAINS and the predicate
-	//	         REJECTS. Its existence makes the range a STRICT SUPERSET of
-	//	         the predicate, which is what forbids dropping the residual
-	//	         LIKE filter after emitting the range.
+	//	         REJECTS. Its existence separates the range from the
+	//	         predicate -- the range is provably not contained in it --
+	//	         which is what forbids dropping the residual LIKE filter
+	//	         after emitting the range. It is NOT the strict-superset
+	//	         claim, which additionally needs every match to lie inside
+	//	         the range; that direction stays unproven here.
 	//	matched  a control the predicate ACCEPTS, so the class is not
 	//	         vacuous -- a pattern that matched nothing would satisfy the
-	//	         superset assertion for free and prove nothing.
+	//	         separation assertion for free and prove nothing.
 	//
 	// The witnesses are NOT interchangeable across classes: each class
 	// escapes the prefix range for a different reason (a wildcard that
@@ -1408,7 +1416,7 @@ func TestLikeMatch_NoPatternYieldsATightPrefixRange(t *testing.T) {
 		}
 		if !likeMatch(c.pattern, c.matched, c.escape) {
 			t.Fatalf("%s: likeMatch(%q, %q, %q) = false, want true — the class is vacuous, "+
-				"so its superset assertion above proves nothing",
+				"so its separation assertion above proves nothing",
 				c.name, c.pattern, c.matched, c.escape)
 		}
 	}
