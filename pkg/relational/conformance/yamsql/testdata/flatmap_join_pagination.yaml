@@ -43,6 +43,8 @@ tests:
       FROM parents p, children c
       WHERE c.parent_id = p.id
       ORDER BY p.id, c.id
+    plan_contains: "FlatMap("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - [1, "child_1"]
       - [1, "child_2"]
@@ -111,6 +113,8 @@ tests:
       FROM parents p, children c
       WHERE c.parent_id = p.id AND p.id <= 5
       ORDER BY p.id, c.id
+    plan_contains: "FlatMap("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - [1, "child_1"]
       - [1, "child_2"]
@@ -134,6 +138,8 @@ tests:
       FROM parents p LEFT JOIN children c ON c.parent_id = p.id
       WHERE p.id <= 3
       ORDER BY p.id, c.id
+    plan_contains: "NestedLoopJoin(LEFT OUTER"
+    plan_not_contains: "FlatMap"
     rows:
       - [1, "child_1"]
       - [1, "child_2"]
@@ -151,6 +157,8 @@ tests:
       FROM parents p
       WHERE EXISTS (SELECT 1 FROM children c WHERE c.parent_id = p.id AND c.label = 'child_1')
       ORDER BY p.id
+    plan_contains: "FlatMap(outer=Scan(PARENTS)"
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - [1]
       - [2]
@@ -179,6 +187,8 @@ tests:
       FROM parents p
       WHERE NOT EXISTS (SELECT 1 FROM children c WHERE c.parent_id = p.id)
       ORDER BY p.id
+    plan_contains: "FlatMap(outer=Scan(PARENTS)"
+    plan_not_contains: "NestedLoopJoin"
     rows: []
 
   # Inner join with LIMIT — first 10 rows of the full join
@@ -188,6 +198,8 @@ tests:
       WHERE c.parent_id = p.id
       ORDER BY p.id, c.id
       LIMIT 10
+    plan_contains: "FlatMap("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - [1, "child_1"]
       - [1, "child_2"]

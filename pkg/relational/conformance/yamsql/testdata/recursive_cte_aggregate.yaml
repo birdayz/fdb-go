@@ -1,8 +1,12 @@
 # recursive_cte_aggregate.yaml
 #
 # Recursive CTE combined with aggregation — exercises the interaction
-# between RecursiveLevelUnionPlan and the hash/streaming aggregation
-# operators.
+# between the recursive join and the streaming aggregation operator.
+#
+# The operator is `RecursiveDfsJoin(PREORDER, ...)`, feeding a
+# `StreamingAgg` for the aggregate cases. The header named
+# RecursiveLevelUnionPlan, the breadth-first sibling, which this file has
+# never planned — an unchecked operator claim, now asserted both ways.
 name: recursive_cte_aggregate
 schema_template: |
   CREATE TABLE tree (id BIGINT, parent_id BIGINT, v BIGINT, PRIMARY KEY (id))
@@ -17,6 +21,8 @@ tests:
         SELECT c.id, c.v FROM tree c, descendants d WHERE c.parent_id = d.id
       )
       SELECT COUNT(*) FROM descendants
+    plan_contains: "StreamingAgg(keys=[], RecursiveDfsJoin(PREORDER,"
+    plan_not_contains: "RecursiveLevelUnion"
     rows:
       - [5]
   # Sum all values in the tree.
@@ -27,6 +33,8 @@ tests:
         SELECT c.id, c.v FROM tree c, all_nodes a WHERE c.parent_id = a.id
       )
       SELECT SUM(v) FROM all_nodes
+    plan_contains: "StreamingAgg(keys=[], RecursiveDfsJoin(PREORDER,"
+    plan_not_contains: "RecursiveLevelUnion"
     rows:
       - [150]
   # Recursive CTE with ORDER BY on the result.
@@ -37,6 +45,8 @@ tests:
         SELECT c.id FROM tree c, all_nodes a WHERE c.parent_id = a.id
       )
       SELECT id FROM all_nodes ORDER BY id
+    plan_contains: "InMemorySort([ID ASC], RecursiveDfsJoin(PREORDER,"
+    plan_not_contains: "RecursiveLevelUnion"
     rows:
       - [1]
       - [2]

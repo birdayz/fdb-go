@@ -1,5 +1,15 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+# keep: the corpus-wide plan rendering, exported so //pkg/docscheck can stage it
+# into runfiles. TestYamsqlPlanClaimsAreAsserted DERIVES its plan-operator
+# vocabulary from these rendered plans rather than maintaining a word list, so
+# the baseline is that gate's input, not just this package's golden.
+filegroup(
+    name = "plan_shape_golden",
+    srcs = ["testdata/plan_shape.golden"],
+    visibility = ["//visibility:public"],
+)
+
 go_library(
     name = "explaindiff",
     srcs = ["explaindiff.go"],

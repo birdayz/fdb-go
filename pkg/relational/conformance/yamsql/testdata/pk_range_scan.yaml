@@ -10,11 +10,15 @@ setup:
 tests:
   # PK equality
   - query: SELECT val FROM t WHERE id = 5
+    plan_contains: "Scan(T, [=])"
+    plan_not_contains: "PredicatesFilter"
     rows:
       - ["e"]
 
   # PK range: >
   - query: SELECT id FROM t WHERE id > 7 ORDER BY id
+    plan_contains: "Scan(T, [<>])"
+    plan_not_contains: "PredicatesFilter"
     rows:
       - [8]
       - [9]
@@ -22,6 +26,8 @@ tests:
 
   # PK range: >=
   - query: SELECT id FROM t WHERE id >= 8 ORDER BY id
+    plan_contains: "Scan(T, [<>])"
+    plan_not_contains: "PredicatesFilter"
     rows:
       - [8]
       - [9]
@@ -29,12 +35,16 @@ tests:
 
   # PK range: <
   - query: SELECT id FROM t WHERE id < 3 ORDER BY id
+    plan_contains: "Scan(T, [<>])"
+    plan_not_contains: "PredicatesFilter"
     rows:
       - [1]
       - [2]
 
   # PK range: <=
   - query: SELECT id FROM t WHERE id <= 3 ORDER BY id
+    plan_contains: "Scan(T, [<>])"
+    plan_not_contains: "PredicatesFilter"
     rows:
       - [1]
       - [2]
@@ -42,6 +52,8 @@ tests:
 
   # PK range: BETWEEN
   - query: SELECT id FROM t WHERE id BETWEEN 3 AND 7 ORDER BY id
+    plan_contains: "PredicatesFilter(Scan(T, [<>])"
+    plan_not_contains: "InMemorySort"
     rows:
       - [3]
       - [4]
@@ -51,6 +63,8 @@ tests:
 
   # PK combined with non-PK predicate
   - query: SELECT id, val FROM t WHERE id > 5 AND val > 'g' ORDER BY id
+    plan_contains: "PredicatesFilter(Scan(T, [<>])"
+    plan_not_contains: "InMemorySort"
     rows:
       - [8, "h"]
       - [9, "i"]

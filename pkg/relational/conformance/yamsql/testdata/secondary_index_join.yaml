@@ -16,6 +16,8 @@ tests:
       SELECT c.name, o.total FROM customers c, orders o
       WHERE o.customer_id = c.id
       ORDER BY c.name, o.total
+    plan_contains: "FlatMap(outer=Scan(CUSTOMERS), inner=Fetch(IndexScan(IDX_CUSTOMER, [=])))"
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ["Alice", 100]
       - ["Alice", 200]
@@ -29,6 +31,8 @@ tests:
       FROM customers c, orders o
       WHERE o.customer_id = c.id
       GROUP BY c.name ORDER BY c.name
+    plan_contains: "FlatMap("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ["Alice", 2, 300]
       - ["Bob", 1, 150]
@@ -39,6 +43,8 @@ tests:
       SELECT c.name FROM customers c
       WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.total > 100)
       ORDER BY c.name
+    plan_contains: "IndexScan(IDX_CUSTOMER, [=])"
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ["Alice"]
       - ["Bob"]

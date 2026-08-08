@@ -10,17 +10,25 @@ setup:
 tests:
   # Empty inner table — INNER JOIN returns 0 rows.
   - query: SELECT p.name, c.name FROM parents p, children c WHERE c.parent_id = p.id ORDER BY p.name
+    plan_contains: "FlatMap("
+    plan_not_contains: "NestedLoopJoin"
     rows: []
   # Empty inner table — LEFT JOIN returns all outer rows with NULL.
   - query: SELECT p.name, c.name FROM parents p LEFT JOIN children c ON c.parent_id = p.id ORDER BY p.name
+    plan_contains: "NestedLoopJoin(LEFT OUTER"
+    plan_not_contains: "FlatMap"
     rows:
       - ["Alice", null]
       - ["Bob", null]
   # Empty inner table — EXISTS returns 0.
   - query: SELECT p.name FROM parents p WHERE EXISTS (SELECT 1 FROM children c WHERE c.parent_id = p.id) ORDER BY p.name
+    plan_contains: "FlatMap(outer=Scan(PARENTS)"
+    plan_not_contains: "NestedLoopJoin"
     rows: []
   # Empty inner table — NOT EXISTS returns all outer.
   - query: SELECT p.name FROM parents p WHERE NOT EXISTS (SELECT 1 FROM children c WHERE c.parent_id = p.id) ORDER BY p.name
+    plan_contains: "FlatMap(outer=Scan(PARENTS)"
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ["Alice"]
       - ["Bob"]

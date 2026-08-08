@@ -17,6 +17,8 @@ tests:
   - query: >
       SELECT c.name, COUNT(p.id) FROM categories c, products p
       WHERE p.cat_id = c.id GROUP BY c.name ORDER BY c.name
+    plan_contains: "FlatMap("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ["Books", 2]
       - ["Clothing", 1]
@@ -28,6 +30,8 @@ tests:
       WHERE p.cat_id = c.id
       GROUP BY c.name HAVING COUNT(p.id) > 1
       ORDER BY c.name
+    plan_contains: "FlatMap("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ["Books"]
       - ["Electronics"]
@@ -36,6 +40,8 @@ tests:
   - query: >
       SELECT c.name, SUM(p.price) FROM categories c, products p
       WHERE p.cat_id = c.id GROUP BY c.name ORDER BY c.name
+    plan_contains: "FlatMap("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ["Books", 48]
       - ["Clothing", 49]
@@ -50,6 +56,8 @@ tests:
         AND EXISTS (SELECT 1 FROM reviews r WHERE r.product_id = p.id)
       )
       ORDER BY c.name
+    plan_contains: "FirstOrDefault(PredicatesFilter(FlatMap("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ["Books"]
       - ["Clothing"]
@@ -63,6 +71,8 @@ tests:
         WHERE p.cat_id = c.id AND p.price > 100
       )
       ORDER BY c.name
+    plan_contains: "FlatMap(outer=Scan(CATEGORIES)"
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ["Electronics"]
 
@@ -78,6 +88,8 @@ tests:
         AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.product_id = p.id)
       )
       ORDER BY c.name
+    plan_contains: "FirstOrDefault(PredicatesFilter(FlatMap("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ["Clothing"]
       - ["Electronics"]

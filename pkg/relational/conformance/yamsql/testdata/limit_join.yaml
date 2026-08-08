@@ -10,14 +10,20 @@ setup:
   - INSERT INTO orders VALUES (10, 1, 100), (20, 1, 200), (30, 2, 300), (40, 3, 50), (50, 3, 75)
 tests:
   - query: SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id ORDER BY o.id LIMIT 3
+    plan_contains: "Limit(3, FlatMap("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - [10, "Alice"]
       - [20, "Alice"]
       - [30, "Bob"]
   - query: SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id ORDER BY o.id LIMIT 2 OFFSET 2
+    plan_contains: "Limit(2, offset=2,"
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - [30, "Bob"]
       - [40, "Charlie"]
   - query: SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.amount > 100 ORDER BY o.id LIMIT 1
+    plan_contains: "Limit(1, FlatMap("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - [20, "Alice"]

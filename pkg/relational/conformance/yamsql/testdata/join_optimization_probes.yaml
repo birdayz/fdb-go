@@ -16,6 +16,8 @@ tests:
       INNER JOIN dept AS d ON e.did = d.did
       WHERE d.dname = 'eng'
       ORDER BY e.ename
+    plan_contains: "FlatMap(outer=Scan(EMP), inner=PredicatesFilter(Scan(DEPT, [=])"
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ['Alice']
       - ['Bob']
@@ -28,6 +30,8 @@ tests:
       INNER JOIN dept AS d ON e.did = d.did
       WHERE e.salary > d.did * 50
       ORDER BY e.ename
+    plan_contains: "FlatMap("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ['Alice']
       - ['Bob']
@@ -39,6 +43,8 @@ tests:
       INNER JOIN dept AS d ON e.did = d.did
       WHERE d.dname = 'eng' AND e.salary >= 95
       ORDER BY e.ename
+    plan_contains: "FlatMap(outer=PredicatesFilter(Scan(EMP)"
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ['Alice']
 
@@ -48,6 +54,8 @@ tests:
       INNER JOIN dept AS d ON e.did = d.did
       WHERE d.dname != 'hr'
       ORDER BY e.salary DESC
+    plan_contains: "FlatMap("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ['Diana', 'sales']
       - ['Alice', 'eng']
@@ -69,6 +77,8 @@ tests:
       INNER JOIN emp AS b ON a.did = b.did
       WHERE a.eid < b.eid
       ORDER BY a.eid, b.eid
+    plan_contains: "FlatMap(outer=Scan(EMP), inner=PredicatesFilter(Scan(EMP, [<>])"
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ['Alice', 'Bob']
       - ['Charlie', 'Diana']
@@ -79,6 +89,8 @@ tests:
       INNER JOIN dept AS d ON e.did = d.did
       GROUP BY d.dname
       ORDER BY d.dname
+    plan_contains: "FlatMap(outer=Scan(DEPT), inner=Fetch(IndexScan(IDX_EMP_DID, [=])))"
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ['eng', 2, 100]
       - ['hr', 1, 95]
