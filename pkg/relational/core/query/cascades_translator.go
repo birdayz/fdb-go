@@ -4619,7 +4619,6 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 	}
 
 	fields := make([]values.RecordConstructorField, len(p.Projections))
-	outputNames := make(map[string]struct{}, len(p.Projections))
 	for i, col := range p.Projections {
 		var v values.Value
 		if i < len(p.ProjectedValues) && p.ProjectedValues[i] != nil {
@@ -4649,7 +4648,6 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 			name = "_" + strconv.Itoa(i)
 		}
 		fields[i] = values.RecordConstructorField{Name: name, Value: v}
-		outputNames[name] = struct{}{}
 	}
 	outputCount := len(fields)
 
@@ -4725,7 +4723,6 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 		// rebaseOuterLegValue rewrites onto the merged row's `LEG.COL` key). The sort
 		// above resolves the key to this field; the final cleanup pull-up drops it.
 		fields = append(fields, values.RecordConstructorField{Name: ec.name, Value: ec.val})
-		outputNames[ec.name] = struct{}{}
 	}
 
 	resultValue := values.NewRecordConstructorValue(fields...)
