@@ -1,6 +1,6 @@
 # RFC-218 — The projected-EXISTS fold must read the sort key's resolved path, not a re-derived name
 
-**Status:** rev 9 — PARTIALLY IMPLEMENTED. The single-table arm is fixed and mutation-verified in four directions. **§5 deliverable 2 is NOT fully met:** it requires both arms to assert row order and mutation-red independently, and the JOIN arm asserts a REFUSAL, not an order — the leg-window re-anchor is unbuilt and booked in TODO.md. Awaiting the implementation review lap.
+**Status:** rev 11 — IMPLEMENTED; **§6's corpus gate is SATISFIED (§6-GATE)**. The single-table arm is fixed and mutation-verified in four directions, and the plan-shape corpus now reaches the fold (5 entries, run-confirmed) instead of passing vacuously over it. **§5 deliverable 2 is still NOT fully met:** it requires both arms to assert row order and mutation-red independently, and the JOIN arm asserts a REFUSAL, not an order — the leg-window re-anchor is unbuilt and booked in TODO.md. Two defects were found by reaching the fold and fixed here (the SELECT plan harness skipped both RFC-141 §8 guards; the corpus comparator could not express a STRUCT column). One rev-10 figure did NOT survive re-measurement — see §5-RESULT. Awaiting the implementation review lap.
 **Origin:** RFC-197 ratchet entry `cascades_translator.go # sortKeyFieldRef`, whose stated
 mechanisms were measured false; the live bug behind it is this one
 **Scope:** `pkg/relational/core/query/cascades_translator.go` (the `sortSource` helpers), plus
@@ -583,10 +583,38 @@ existsSortSplit  calls 44 | carried 0 | AGREED 44 | DIVERGED 0 | MANUFACTURED 0 
 
 `DIVERGED 0` over a real 44-call population, identical to the committed pre-fix baseline: the
 zero was **not widened**. An earlier revision quoted `calls 0 | DIVERGED 0` from a NARROWED
-`--test.run` run, where every site read 0 — including `displayLabelStrip`, measured at 560 calls
-on the same unfiltered run — and where the census printed its own warning that at zero the check holds VACUOUSLY.
-The conclusion was right and the measurement proved nothing; that is the corollary error this
-document keeps catching, committed by this document.
+`--test.run` run, where every site read 0 — including the `displayLabelStrip` control — and
+where the census printed its own warning that at zero the check holds VACUOUSLY. The conclusion
+was right and the measurement proved nothing; that is the corollary error this document keeps
+catching, committed by this document.
+
+**RE-CONFIRMED, AND THE CONTROL FIGURE DID NOT SURVIVE — a finding, not a correction.** The §6
+gate work re-ran the full `sqldriver_test` unfiltered, `--nocache_test_results`, TWICE
+back-to-back on the same tree (5808 `=== RUN` subtests each, 0 failures):
+
+```
+run 1:  existsSortSplit    calls 44 | carried 0 | AGREED 44 | DIVERGED 0 | MANUFACTURED 0 | leafOnly 0 | bare 0 | heuristicDecline 0
+        displayLabelStrip  calls 702 | carried 0 | AGREED 674 | DIVERGED 0 | MANUFACTURED 6 | leafOnly 0 | bare 22 | heuristicDecline 0
+run 2:  existsSortSplit    calls 44 | carried 0 | AGREED 44 | DIVERGED 0 | MANUFACTURED 0 | leafOnly 0 | bare 0 | heuristicDecline 0
+        displayLabelStrip  calls 660 | carried 0 | AGREED 632 | DIVERGED 0 | MANUFACTURED 6 | leafOnly 0 | bare 22 | heuristicDecline 0
+```
+
+The claim under test holds exactly: `existsSortSplit` is **bit-stable at 44 | AGREED 44 |
+DIVERGED 0** across both runs, matching what rev 10 recorded.
+
+The control does not. Rev 10 wrote **560, "measured on the unfiltered run"**, and it is not
+reproducible — 702, then 660, same tree, same command. This is the FOURTH value this one figure
+has carried (750 → "700+" → 624 → 560 → 702/660), and the pattern is now legible: the earlier
+disagreements were never sloppiness being corrected, they were a **run-varying quantity being
+written down as a property of the tree**. The variance is confined to the AGREED arm (674 vs
+632); `bare` (22) and `MANUFACTURED` (6) were identical in both runs, so it is the health arm —
+the one §6-RESULT already flags as carrying a documented tautology — that moves.
+
+What the control is FOR is unaffected and is what should have been recorded in the first place:
+it must be **far from zero**, so that `existsSortSplit`'s own zero reads as clean rather than as
+a dead instrument. 702 and 660 both satisfy that overwhelmingly. The fixed figure is therefore
+removed from `qualifier_recovery_census.go` rather than updated to today's reading — updating it
+would only reset the clock on the same error.
 
 **The JOIN arm declines rather than shipping.** The leg-window re-anchor
 (`rebaseOuterLegValueOrdinal`) refuses multi-accessor paths (§2c AAA2), so building it is
@@ -610,7 +638,12 @@ resolver fact the fold fix does not touch.
 
 ---
 
-## 6-RESULT. The run happened, and the corpus CANNOT verify this fix
+## 6-RESULT. The run happened, and the corpus COULD NOT verify this fix
+
+> **Superseded by §6-GATE below, which closes this.** The diagnosis in this section is retained
+> because it is the reasoning that produced the gate, and because the zero it reports is the one
+> a future reader is most likely to "correct" back to a wrong non-zero.
+
 
 Disk was cleared (93%, 68G free), so §6's precondition was satisfied and the run was performed.
 
@@ -669,6 +702,181 @@ owes it.
 
 ---
 
+## 6-GATE. SATISFIED — the corpus reaches the fold, and reaching it found two more holes
+
+The fifth gate condition is **met**. What follows is the reading, the commands that produced it,
+and the per-record justification for every golden that moved.
+
+### The zero, re-derived — and the greedy trap that hides it
+
+**Do not "correct" this zero.** The select list ends at the FIRST `FROM`; a projected EXISTS
+embeds a subquery with its own `FROM`, so a greedy `SELECT.*FROM` runs past it and reports 119
+false hits on the same file. Both forms, on the pre-extension golden:
+
+```
+$ cd pkg/relational/conformance/explaindiff/testdata
+$ sed -n '2p' plan_shape.golden
+# files=348 queries=2506 dml=157 non_query=104 plan_errors=260 unexpected_errors=4
+
+$ grep -oP '^sql:\s+SELECT.*FROM'  plan_shape.golden | grep -c 'EXISTS'    # GREEDY  (wrong)
+119
+$ grep -oP '^sql:\s+SELECT.*?FROM' plan_shape.golden | grep -c 'EXISTS'    # NON-GREEDY (right)
+0
+$ grep -oP '^sql:\s+SELECT.*?FROM' plan_shape.golden | wc -l               # the pattern DOES match
+2373
+$ grep -P '^sql:' plan_shape.golden | grep -P 'JOIN' | grep -oP '^sql:\s+SELECT.*?FROM' | grep -c 'EXISTS'
+0
+```
+
+The third command is the point: a pattern that matches nothing reports zero for the same reason
+a real zero does. 2373 matched lines say this zero is a reading, not a broken regex. That check
+is now a committed test (`TestSelectListOfEndsAtTheFirstFrom`), so the distinction cannot be
+"simplified" away.
+
+### The extension, and what it is FOR
+
+`pkg/relational/conformance/yamsql/testdata/projected_exists_nested_sort_key.yaml` — five
+stanzas, each a distinct arm rather than a restatement:
+
+| # | shape | what only this one can catch |
+|---|---|---|
+| 0 | `SELECT id, EXISTS(...) ORDER BY n.sk` | the base fold: nested key not projected |
+| 1 | `SELECT id, n, EXISTS(...) ORDER BY n.sk` | struct root ALSO projected — broke as a planning error, not as #0's comparison error |
+| 2 | `SELECT id, n AS nn, EXISTS(...) ORDER BY n.sk` | aliased root: cannot be matched to the key by output name even incidentally |
+| 3 | JOIN + projected EXISTS + nested `ORDER BY` | the decline is RECORDED, so a later silent regression to a wrong-order plan moves the golden |
+| 4 | projected EXISTS + SINGLE-accessor `ORDER BY` | the control: must NOT gain a hidden column |
+
+`sk` is anti-correlated with `id` (50,40,30) and `co` is correlated (1,2,3), so ordering by the
+wrong member of the same struct surfaces as `[1 2 3]` instead of hiding behind a tie. A
+single-member struct would have made `ORDER BY n` and `ORDER BY n.sk` indistinguishable.
+
+### The gate is "the run REACHED it", not "the corpus CONTAINS it"
+
+Those are different facts and only the second one is easy. It ships as a standing census
+(`TestCorpusCoversTheProjectedExistsFold`) rather than as a number in this document:
+
+```
+$ bazelisk test //pkg/relational/conformance/explaindiff:explaindiff_test \
+    --nocache_test_results --test_arg="--test.run=TestCorpusCoversTheProjectedExistsFold" --test_arg="--test.v"
+projected-EXISTS coverage: selectListExists=5 fixture=5 folded=3 declined=1 control=1
+  unpinnedFailures=0 (corpus: 349 files, 2511 queries)
+--- PASS
+```
+
+Every floor, and the empty-corpus vacuity guard, is driven from synthetic state by
+`TestFoldCoverageGateDrivesEveryArm` — a corpus run only exercises the arms the corpus reaches,
+and an arm first fired in anger reads as a *finding* rather than as an untested branch. Removing
+the fixture reds five floors by name, verified:
+
+```
+projected (SELECT-list) EXISTS entries = 0, want >= 5 — the RFC-218 fold would again be
+  exercised by NO corpus query, and TestPlanShapeGolden would pass VACUOUSLY for any change to it
+projected_exists_nested_sort_key.yaml contributed 0 entries, want >= 5 — the fixture is not
+  being REACHED by the baseline run
+folded-with-hidden-sort-column entries = 0, want >= 3
+recorded declines = 0, want >= 1
+single-accessor controls = 0, want >= 1
+```
+
+### Every moved golden record, justified individually
+
+**Zero pre-existing records moved.** Measured, not asserted:
+
+```
+$ diff plan_shape.golden.committed plan_shape.golden.new | grep -E '^[<>] === ' | grep -vc 'projected_exists_nested_sort_key'
+0
+```
+
+Header: `files=348 queries=2506 … plan_errors=260 unexpected_errors=4` →
+`files=349 queries=2511 … plan_errors=261 unexpected_errors=4`. +5 queries, +1 pinned plan error
+(record 3), unexpected errors unchanged — no query stopped planning.
+
+The five added records, each with the reason it looks the way it does. The right-hand column is
+the pre-fix reading from a **mutation run** (production change reverted, fixture kept), which is
+what makes these entries evidence rather than decoration:
+
+| record | post-fix | pre-fix (fix reverted) | justification |
+|---|---|---|---|
+| `#0` | `Project([ID#0, H#1], InMemorySort([N ASC], FlatMap(…)))` | **identical** | See the caveat below — this record is NOT sensitive at plan-shape level. |
+| `#1` | `Project([ID#0, N#1, H#2], InMemorySort([N ASC], FlatMap(…)))` | `<PLAN-ERROR: best expression is not a physical plan: *expressions.LogicalSortExpression>` | The arm MMM-B predicted: a query that did not plan at all now plans, with the hidden sort column appended and dropped by the cleanup `Project`. Strictly better. |
+| `#2` | `Project([ID#0, NN#1, H#2], InMemorySort([N ASC], FlatMap(…)))` | same `<PLAN-ERROR>` as `#1` | Same movement, independent arm: the root is aliased, so no incidental name match can be doing the work. |
+| `#3` | `<PLAN-ERROR: 0AF00: projected EXISTS in this query shape is not yet supported>` | `Project([T1.ID#0, H#1], InMemorySort([T1.N.SK ASC], FlatMap(outer=NestedLoopJoin(…, Scan(T3), Scan(T1)), …)))` | The pre-fix plan is the defect itself, on the record: the fold FIRED on the join and its key is the last-dot split `T1.N.SK` — a column no row has, which is what produced `malformed plan` at execution. Post-fix the fold declines and the corpus records the same clean `0AF00` the driver returns. |
+| `#4` | `FlatMap(outer=Scan(T1), inner=FirstOrDefault(…))` — **no** `Project` wrapper | identical | The control, and it must not move: a single-accessor key already in the output appends no hidden column, so no cleanup projection appears. This is what makes "a cleanup `Project` appears" discriminating in `#1`/`#2` rather than true of every folded query. |
+
+**One record's insensitivity, stated rather than glossed.** Record `#0` is byte-identical before
+and after the fix. Pre-fix the key was re-derived as the struct ROOT `N` and the query failed at
+EXECUTION with a struct/struct ordering comparison; post-fix it sorts by `n.sk`. Both render as
+`InMemorySort([N ASC])`, because the fold's appended hidden column is *named* `N` and the
+renderer prints the field name without the ordinal. **The plan-shape golden is therefore blind to
+the wrong-column bug in this particular arm**; its sentinel is the row assertion in the corpus
+stanza and in `TestFDB_NestedSortKeyThroughTheProjectedExistsFold`, both of which pin ids
+`[3 2 1]` and both of which red pre-fix. Recording this is the point: a green from `#0` alone
+would be exactly the "invariance is not absence" error this document keeps catching.
+
+### Reaching the fold found two more holes, both invisible for as long as the gap lasted
+
+Neither was in scope when this work started; both were unreachable until a corpus query finally
+projected an EXISTS.
+
+**1. The SELECT plan harness skipped the guards production runs.** `planPhysicalForTest` ran
+`FindUnsupportedFunction`, `findDistinctAggregate` and `ValidateCTEAliasArities` but **neither
+half** of the RFC-141 §8 projected-EXISTS guard — while its DML twin `planPhysicalDMLForTest` had
+run both since it was written, with a comment explaining exactly why ("so an error-pinned corpus
+stanza renders the same `<PLAN-ERROR>` marker instead of a bogus plan"). So the harness planned
+record `#3`, and the plan it recorded carried a projected `ExistsValue` sitting where its
+existential binding is dead — the precise shape the guard exists to keep out — under a stanza
+pinned to `0AF00`. Fixed in `plan_harness.go`; blast radius is exactly one record, because no
+corpus query could reach the missing check before. Pinned by
+`TestPlanPhysicalForTest_RunsTheProjectedExistsGuards`, which calls `PlanPhysicalForTest` **by
+name** (the symbol the corpus dump goes through), with a four-shape control so a harness that
+refused *every* projected EXISTS could not satisfy it.
+
+**2. The corpus row comparator could not express a STRUCT column at all.** `normalizeValue` fell
+through to `%T:%v`, which for a driver struct value prints a POINTER ADDRESS, so no scenario could
+ever assert one — the entire struct-valued-column axis was unassertable, which is why shapes `#1`
+and `#2` could not have been written before. Struct columns now normalise POSITIONALLY (Java's own
+`MessageTuple` contract) against a nested YAML sequence, and `valueEqual` grew a slice arm because
+the old `default: a == b` would have panicked on an uncomparable type rather than answered.
+
+### Utilisation at run time, as §6 requires — and why it does not contaminate this reading
+
+`/home` was at **97%** (898G of 932G, 34G free) throughout. §6 requires the figure to be recorded
+beside the result, so it is recorded: this is ABOVE the ~95% threshold §6 names.
+
+It does not contaminate this measurement, and the reason is specific rather than convenient. The
+~95% rule exists because ext4 point-lookup LATENCY degrades sharply near-full and reports as a
+planner regression — it is a rule about *timing* measurements against a live store. The
+plan-shape comparison is neither: `explaindiff` plans metadata-only with no FDB and no
+statistics fetch, and its output is a byte-for-byte text baseline whose determinism is itself
+asserted by `TestBaselineIsDeterministic` (green in the same run). No assertion anywhere in this
+gate is a duration. The FDB-backed corpus run that accompanies it (`TestYamsqlConformance`, 398
+`=== RUN`, green) asserts ROWS and SQLSTATEs, not latency.
+
+**The 1M stress gate remains CLOSED** at this utilisation and is not claimed here. It is a
+separate deliverable and this section does not stand in for it.
+
+### Commands, and the state they ran against
+
+```
+$ git rev-parse --abbrev-ref HEAD
+feat/cq-sortkey-ordinal
+
+# the golden, re-blessed and then asserted fresh
+$ go run ./cmd/explain-differ dump -out pkg/relational/conformance/explaindiff/testdata/plan_shape.golden
+explain-differ: wrote … — 349 files, 2511 queries + 157 DML planned, 261 plan errors
+  (4 without a corpus error pin), 104 non-query stanzas skipped
+$ bazelisk test //pkg/relational/conformance/explaindiff:explaindiff_test --nocache_test_results
+Executed 1 out of 1 test: 1 test passes.
+
+# the corpus itself, against real FDB, unfiltered
+$ bazelisk test //pkg/relational/conformance/yamsql:yamsql_test --nocache_test_results
+Executed 1 out of 1 test: 1 test passes.        # 398 `=== RUN` lines
+```
+
+`SQL_COVERAGE.md` and `FEATURE_MATRIX.md` are regenerated: 348→349 scenarios, 2767→2772 cases,
++4 supported and +1 unsupported-feature pin — which reconciles exactly with the five stanzas.
+
+---
 ## 6. Precondition as originally stated (retained for the record)
 
 This is translator surgery in the RFC-141 fold and it has plan-shape exposure, so the corpus
