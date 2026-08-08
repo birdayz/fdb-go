@@ -68,25 +68,51 @@ tests:
       - [2, [40, 2], false]
       - [1, [50, 1], true]
 
-  # THE JOIN ARM DECLINES, AND THE DECLINE IS THE PIN. A nested key over a
-  # merged row needs the leg-window re-anchor, which refuses multi-accessor
-  # paths today, so the fold bails and the query is rejected as unsupported
-  # rather than planned with a key that reads a pre-merge ordinal against the
-  # merged row. Recording the decline here is what makes a future SILENT
-  # regression to a wrong-order plan visible: if this ever returns rows, the
-  # re-anchor has landed and this becomes ids [3 2 1].
+  # THE JOIN ARM NOW PLANS. This stanza previously pinned a clean `0AF00`
+  # decline, and it is converted here PER RECORD, deliberately: the leg-window
+  # re-anchor landed (RFC-222), so the decline is no longer the behaviour and
+  # keeping it would pin a capability gap that no longer exists.
+  #
+  # THE CONVERSION IS SAFE IN THE DIRECTION THAT MATTERS. Declining was always
+  # the second-best outcome — the RFC-218 booking recorded that deleting the
+  # early bail made this query plan and order by ID, silently. What replaces the
+  # decline is therefore not "it returns rows" but a specific ORDER that only
+  # the right column produces: `sk` is anti-correlated with `id`, so [3 2 1] is
+  # reachable by ordering on `n.sk` and by nothing else in this row set.
   #
   # This stanza is also what first REACHED the RFC-141 §8 guards from the
   # plan-shape harness: no corpus query projected an EXISTS before it, so the
   # SELECT harness had been skipping both halves of the guard unnoticed while
-  # its DML twin ran them. It planned this query — recording, under an
-  # error-pinned stanza, a plan carrying an ExistsValue whose binding is dead.
-  # The harness now runs the guards production runs, so the golden records the
-  # same decline the driver gives here.
+  # its DML twin ran them.
   - query: |
       SELECT t1.id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h
       FROM t1 JOIN t3 ON t3.t1_id = t1.id ORDER BY n.sk
-    error_code: "0AF00"
+    rows:
+      - [3, true]
+      - [2, false]
+      - [1, true]
+
+  # THE OTHER STRUCT MEMBER, over the same join. Converted alongside the stanza
+  # above rather than added as decoration: `co` is CORRELATED with id, so its
+  # expected order is the OPPOSITE one, and a fused suffix naming the wrong
+  # member reds whichever of the two it lands away from.
+  #
+  # WHAT IT CATCHES, STATED AGAINST A MEASUREMENT rather than a guess — an
+  # earlier version of this comment claimed it caught "a constant suffix ORDINAL"
+  # and that is FALSE. Forcing the suffix ordinal to 0 at either production site
+  # leaves both stanzas green and the plan byte-identical, because the executor
+  # descends a struct column by per-step NAME (values.go's proto.Message arm,
+  # itself pinned by TestFieldValue_DescendProtoMessage_MustNotConsultTheOrdinal).
+  # The field this pair guards is the suffix NAME: swapping it reds both stanzas,
+  # in opposite directions. The ordinal is guarded one layer down, by
+  # FuseNestedSuffix's unit pins, which is where it is observable at all.
+  - query: |
+      SELECT t1.id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h
+      FROM t1 JOIN t3 ON t3.t1_id = t1.id ORDER BY n.co
+    rows:
+      - [1, true]
+      - [2, false]
+      - [3, true]
 
   # CONTROL — a projected EXISTS whose ORDER BY key is a SINGLE accessor and
   # is already in the output. No hidden column is appended, so no cleanup

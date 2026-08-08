@@ -4699,8 +4699,19 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 			// That is a SILENT wrong order, which is strictly worse than the loud
 			// failure it replaces. Declining yields a clean unsupported error.
 			if fv, isFV := k.Value.(*values.FieldValue); isFV && fv.Resolved != nil &&
-				len(fv.Resolved.Accessors) > 1 && src.sortKeySourceValue(k) == nil {
-				return nil
+				len(fv.Resolved.Accessors) > 1 {
+				if src.sortKeySourceValue(k) == nil {
+					return nil
+				}
+				// SETTLED, and it must not fall through to the rendered name.
+				// A nested key over a join renders THREE segments (`T1.N.SK`) and
+				// sortKeyName's split takes the LAST dot, manufacturing the
+				// qualifier `T1.N` — which contradicts the identity the key is
+				// holding (`T1`) and is the wrong-answer population the qualifier
+				// recovery census asserts at zero. The key's own correlation is
+				// that identity, sortKeySourceValue used it, and there is nothing
+				// left for a rendering to decide.
+				continue
 			}
 			if src.sortKeyName(k) != "" {
 				continue // a nameable column — appended as a hidden field or already in output
@@ -5019,12 +5030,33 @@ func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
 		}
 		return &values.FieldValue{Field: fv.Field, Typ: fv.Typ, Resolved: rebased}
 	}
-	// A nested key over a JOIN needs the leg-window re-anchor, which currently
-	// refuses multi-accessor paths; decline the fold rather than emit a plan whose
-	// key reads a pre-merge ordinal against the merged row.
+	// A NESTED key over a JOIN. The single-table arm above re-anchors the root
+	// itself, because there the fold's flowed row IS the source row. Over a join
+	// it must NOT: the merged row's layout is decided by the NLJ rule, which is
+	// downstream, and a root ordinal derived here would be stated in a layout the
+	// translator is only guessing at.
+	//
+	// So the key is emitted LEG-RELATIVE — root re-anchored in its own leg's row,
+	// suffix intact, hung off the leg's correlation — and the leg-window rebase
+	// re-states the root on the merged row and fuses the suffix back on. That is
+	// the same division of labour the FLAT join arm below already uses, extended
+	// to carry a path instead of a bare column name.
 	if fv, ok := k.Value.(*values.FieldValue); ok && fv.Resolved != nil &&
 		len(fv.Resolved.Accessors) > 1 && s.isJoin {
-		return nil
+		li, ok := s.legIndexOfNestedKey(fv)
+		if !ok || s.legTypes[li] == nil {
+			// No leg layout to derive the root against — decline rather than guess.
+			// A wrong root ordinal lands on a real merged column and mis-orders
+			// silently; a decline is a clean unsupported error.
+			return nil
+		}
+		reanchored, _, ok := fv.Resolved.ReAnchorRootInto(s.legTypes[li])
+		if !ok {
+			return nil
+		}
+		qov := values.NewQuantifiedObjectValue(
+			values.NamedCorrelationIdentifier(strings.ToUpper(s.legAliases[li])))
+		return &values.FieldValue{Field: fv.Field, Typ: fv.Typ, Child: qov, Resolved: reanchored}
 	}
 	field := sortKeyFieldRef(k)
 	if field == "" {
@@ -5070,6 +5102,36 @@ func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
 	}
 	values.NoteFieldValueMint(bare, false)
 	return &values.FieldValue{Field: bare, Typ: values.UnknownType}
+}
+
+// legIndexOfNestedKey attributes a nested sort key to one of the join's legs.
+//
+// IDENTITY, never the rendered name. A nested key's own reference hangs off the
+// leg's QuantifiedObjectValue, so the correlation IS the answer — and it is the
+// only channel that survives a duplicate display alias, which classifySortSource
+// collects BINDING correlations precisely to handle. Splitting a rendered
+// `T1.N.SK` on a dot would be the RFC-197 channel this whole surface removes: the
+// last-dot split yields `SK`, and the first yields a qualifier that a self-join
+// spells identically for both legs.
+//
+// Declines (ok=false) when the key states no correlation. That is not a
+// theoretical arm — an unqualified nested key over a single-table source carries
+// no QOV at all — and there is no correct guess: the bare-name fallback the flat
+// arm uses is last-leg-wins, which is the silent wrong-column read.
+func (s sortSource) legIndexOfNestedKey(fv *values.FieldValue) (int, bool) {
+	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+	if !isQOV {
+		return 0, false
+	}
+	for li, leg := range s.legAliases {
+		if leg == "" {
+			continue
+		}
+		if values.SameLeg(values.NamedCorrelationIdentifier(leg), qov.Correlation) {
+			return li, true
+		}
+	}
+	return 0, false
 }
 
 // sortKeyInOutput reports whether some output field genuinely PROJECTS the source

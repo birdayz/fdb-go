@@ -10765,32 +10765,76 @@ standing rule is that a finding without a booking is a finding that evaporates,
 so each is recorded here with its evidence refs, a size, and what "done" means.
 None is speculative: each was re-verified against the tree before booking.
 
-- [ ] **RFC-218 remainder — the leg-window re-anchor: a nested ORDER BY key over a
-  JOIN declines instead of planning.** · M · **query-engine change — needs a Graefe
-  ACK before merge**
-  RFC-218 fixed the projected-EXISTS fold for nested sort keys on a SINGLE-TABLE
-  source: the key carries its resolved path and the re-anchor re-states the root
-  ordinal in the flowed layout. The JOIN arm is NOT fixed — it declines with a
-  clean `0AF00`, because `rebaseOuterLegValueOrdinal`
-  (`left_outer_existential.go`) refuses multi-accessor paths outright
-  (`fv.Resolved.Single()`, `!single -> failed`). Exercised, both leg kinds:
-  `ok=false, unchanged` for a multi-accessor path, `ok=true` for a single-accessor
-  control.
-  WHY IT MUST BE BOOKED RATHER THAN LEFT TO THE TRIPWIRE: the test
-  `nested_key_over_a_join_declines_cleanly` asserts the refusal and tells a future
-  reader what to do when it changes, but a tripwire is a SENTINEL, not a booking —
-  it fires only if someone happens to fix the thing, and nothing schedules that.
-  DIVERGENCE FROM JAVA, still open: Java has no SQL-layer rejection for this
-  shape. It attempts the plan and fails downstream in `RemoveSortRule.onMatch`, so
-  Go's clean refusal is a divergence in FORM, not a narrower behaviour.
-  DONE = the JOIN arm plans, `nested_key_over_a_join_declines_cleanly` is replaced
-  by a row assertion (ids `[3 2 1]` ordered by `n.sk`), that arm mutation-reds
-  independently of the three single-table arms, and `existsSortSplit` stays at
-  `DIVERGED 0` on the UNFILTERED suite.
-  Refs: `rfcs/218-sort-keys-carry-resolved-paths-not-rendered-names.md` §5-RESULT;
-  `pkg/relational/sqldriver/nested_sort_key_fold_fdb_test.go`;
-  `pkg/recordlayer/query/plan/cascades/values/nested_root_reanchor_test.go`.
+- [x] **RFC-218 remainder — the leg-window re-anchor. THE BOOKING UNDERSTATED IT:
+  the decline was only ONE of the rebase's two arms, and the other silently
+  returned WRONG ROWS.** · was M, actually L · RFC-222 · **query-engine change —
+  needs a Graefe ACK before merge**
+  `rebaseOuterLegValueOrdinal` dispatches on a reference's frontier PIN, and arity
+  is orthogonal to it, so a multi-accessor reference took whichever arm its pin
+  selected. PINNED it declined (`Single()`) — the booked behaviour. UNPINNED it took
+  the NAME arm, looked up `fv.Field` (for a nested reference, the struct ROOT), found
+  it, baked the merged address of the whole struct and DROPPED the descent. That is a
+  real merged column of the wrong type, so nothing downstream rejects it.
+  REACHED FROM SQL WITH NO `ORDER BY` AND NO PROJECTED `EXISTS`, measured on master
+  with a row-preserving inner join that cannot change the answer:
+  `WHERE EXISTS (... t2.t1_id = n.co)` returned `[]` where the single-table form
+  returned `[1 3]`, and its `NOT EXISTS` twin returned `[1 2 3]` where the
+  single-table form returned `[2]`.
+  FIXED by dispatching on ARITY above the pin: re-anchor the root in the leg's own
+  layout (`ReAnchorRootInto`), bake the merged address per leg KIND, then fuse the
+  remaining accessors with `FieldPath.WithSuffix` — Java's `ofFieldsAndFuseIfPossible`
+  (`FieldValue.java:525-534`). The root is DERIVED and the suffix CARRIED — and the
+  carried suffix's identity is its NAME, not its ordinal: a struct column materialises
+  as a `proto.Message`, whose descent arm reads the per-step name and never the ordinal
+  (`values.go`'s standing divergence from Java, pinned by
+  `TestFieldValue_DescendProtoMessage_MustNotConsultTheOrdinal`). Measured one mutation
+  per site × field: forcing either suffix ORDINAL is undetectable end-to-end, while
+  swapping either suffix NAME reds — the wrong-rows pin at the rebase, both sort arms in
+  opposite directions at the translator. An earlier version of this booking justified the
+  design by "a suffix ordinal indexes a struct's own declared field order"; that is true
+  and nearly irrelevant, because nothing on the reachable paths reads it.
+  Neither the merged row nor the leg window carries a struct column's type (both state
+  UNKNOWN, measured), so a design requiring the type declines every real nested reference.
+  DONE, all four parts: the JOIN arm plans; `nested_key_over_a_join_declines_cleanly`
+  is replaced by COLUMN assertions (`n.sk`→[3 2 1] and `n.co`→[1 2 3], opposite orders
+  so the wrong member is visible); the arms mutation-red INDEPENDENTLY — reverting the
+  rebase reds only the wrong-rows pin, reverting the translator reds only the sort arms;
+  and `existsSortSplit` stays at DIVERGED 0 with its population REMOVED rather than the
+  zero widened (the multi-accessor key is settled by identity and never reaches the
+  rendered-name split).
+  The corpus stanza was converted per record: the `0AF00` decline became a row
+  assertion, `n.co` was added beside it, and the wrong-rows shape got its own file
+  (`nested_correlation_over_a_join.yaml`) so the fold-coverage census is not inflated
+  by entries the fold never sees. The coverage gate's decline count was RECONCILED,
+  not relaxed — it was a floor and is now a ceiling, because zero is the steady state
+  and a reappearing decline means a shape stopped planning.
 
+- [ ] **A struct column projected ALONGSIDE a projected EXISTS through a JOIN's
+  merged row fails LOUDLY.** · S · **query-engine change — needs a Graefe ACK
+  before merge**
+  Found while closing the item above; measured with that entire change REVERTED, so
+  it is independent of it. No `ORDER BY` involved:
+  `SELECT t1.id, n, EXISTS(...) FROM t1 JOIN t3 ON ...` fails
+  `ordinal resolution: field "N" not resolvable in the runtime row (ordinal -1, row
+  columns [ID T1_ID ID N]) — malformed plan`.
+  RETRACTED, AND THE RETRACTION IS THE POINT: an earlier version of this booking
+  ALSO claimed `SELECT t1.id, n FROM t1 JOIN t3 ON ...` (no EXISTS) "returns rows
+  with the first column 0 instead of the ids", sized the item M on that basis, and
+  escalated it as a live SILENT wrong-rows defect. It does not reproduce — that
+  query returns 1, 2, 3, correctly. The zeros were an artifact of a throwaway probe
+  that scanned a two-column result into one destination and ignored the `Scan`
+  error. There is ONE defect here, it is loud, and nothing silent is outstanding.
+  ROOT CAUSE, measured: the positional merge does not model a struct-typed column —
+  the merged row and the leg window both state UNKNOWN for that slot — so the
+  reference stays lazy (ordinal -1) and resolves by a name the runtime row does not
+  answer to. Same gap RFC-222 §2a works around, and why the projected-root shape
+  over a join still cannot be asserted as rows.
+  Pinned as a tripwire that reds when the merge learns struct columns:
+  `nested_sort_key_fold_fdb_test.go`'s
+  `projected_struct_root_over_a_join_still_fails_for_a_reason_that_predates_this`,
+  whose message names the replacement assertion.
+  DONE = the merged layout carries struct column types, the query above returns
+  correct rows, and the tripwire is replaced by the row assertion it names.
 - [ ] **RFC-218 adjacent — Go appends a hidden sort column where Java derives
   instead (plan-shape only).** · S
   Java's `Expression.canBeDerivedFrom` (`Expression.java:254-264`) decides

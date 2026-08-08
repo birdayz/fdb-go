@@ -311,6 +311,7 @@ go_test(
         "memo_reexplore_test.go",
         "memo_test.go",
         "memo_wsb_no_collapse_test.go",
+        "nested_leg_window_rebase_test.go",
         "normalize_size_overflow_test.go",
         "null_rejecting_conjuncts_test.go",
         "null_rejecting_scan_range_test.go",
@@ -1061,6 +1062,7 @@ go_test(
         "unresolved_result_type_census.go",
         "rfc219_criterion2_asymmetry_probe_test.go",
         "rfc219_index_width_invariant_test.go",
+        "nested_leg_window_rebase_test.go",
         "unresolved_result_type_census_test.go",
     ],
     deps = [

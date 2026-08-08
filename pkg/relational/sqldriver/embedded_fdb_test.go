@@ -399,10 +399,31 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 	n := func(v int) *int { return &v }
 	return cascades.FoldStep1SeedGates{
-		Denominator:     n(572),
-		Accept:          n(160),
+		// RFC-222 GROWTH, ATTRIBUTED PER THE PARAGRAPH ABOVE rather than absorbed,
+		// in the TWO steps it actually happened in.
+		//
+		// Step 1 — the leg-window re-anchor made a nested key over a JOIN plan, and
+		// two sqldriver fixtures grew with it: the fold test gained its two
+		// converted join sort arms (n.sk, n.co) plus the projected-struct-root
+		// tripwire, and TestFDB_NestedCorrelationThroughAJoinsMergedRow was new
+		// (two single-table controls, two join forms).
+		//   denominator 572+10 = 582, ACCEPT 160+6 = 166, no-exist-ref 202+4 = 206
+		// The added ACCEPTs were the point rather than noise: each is a
+		// projected-EXISTS fold over ordinal-safe legs threading a MULTI-ACCESSOR
+		// reference, which is the shape that used to decline.
+		//
+		// Step 2 — review found that the correlation pins carried no `n.co` query,
+		// so a co-only substitution of the fused suffix had nothing to land on.
+		// Closing that added a `co` polarity pair (single-table control + join form
+		// each). Those are WHERE-EXISTS, not projected-EXISTS, so they decline as
+		// no-exist-ref and add NO ACCEPTs.
+		//   denominator 582+4 = 586, no-exist-ref 206+4 = 210, ACCEPT unchanged 166
+		// ACCEPT holding still across step 2 is the check that those four firings
+		// are the shape they claim to be rather than four more folds.
+		Denominator:     n(586),
+		Accept:          n(166),
 		CorrelatedStep1: n(108),
-		NoExistRef:      n(202),
+		NoExistRef:      n(210),
 		ReconstructNil:  n(102),
 		// The residue is now ENTIRELY bare-QOV, and the two entries below say so
 		// separately on purpose. A single "reconstruct-nil == 94" would be

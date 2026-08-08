@@ -5170,6 +5170,194 @@ func NewFusedFieldValueOfNestedOrdinal(child Value, slotOrdinal int, legType *Re
 	}, nil
 }
 
+// FuseNestedSuffix extends an already-baked address by the accessors a NESTED
+// reference still has to travel INSIDE the column that address reads, returning
+// the single fused FieldValue for the whole descent.
+//
+// This is Java's FieldPath.withSuffix (FieldValue.java:525-534) reached the same
+// way as NewFusedFieldValueOfNestedOrdinal: composition is a path FUSION, never
+// a flattening — nothing is materialized and nothing is re-offset.
+//
+// WHY THE SUFFIX IS CARRIED RATHER THAN RE-DERIVED, and it is the opposite
+// disposition from the ROOT deliberately. A root ordinal is stated in the layout
+// the reference was resolved against, and a merge RESTATES that layout — which
+// is why the root must be derived from the target and the carried one used only
+// as a tripwire. A suffix ordinal indexes a STRUCT's own declared field order,
+// which the schema fixes and which no merge, projection or re-ordering can
+// touch: the same struct value has the same internal layout wherever the column
+// happens to sit. Re-deriving it would be re-deriving a constant.
+//
+// `into` is that constant when it is knowable, and it is a TRIPWIRE, not a
+// source. Neither the merged row's per-slot types nor the leg window's carry a
+// struct column's type today — both state UNKNOWN, measured — so a design that
+// REQUIRED the type would decline every real nested reference while looking like
+// it was being careful. When a record type IS available every step is asserted
+// against it and a disagreement declines; when it is not, the carried accessors
+// stand on their own and the reference's own leaf type answers.
+//
+// THE LEAF TYPE COMES FROM THE REFERENCE, promoted nullable if the merged slot
+// is. The reference's Typ was computed by the resolver against the real schema,
+// which is strictly better information than either layout holds. Taking the
+// root SLOT's type instead is the bug NewFusedFieldValueOfNestedOrdinal's doc
+// records: it reports the whole STRUCT as the type of a single-column read, and
+// a sort built on that compares records.
+func FuseNestedSuffix(root *FieldValue, into *RecordType, suffix []ResolvedAccessor, leafTyp Type) (*FieldValue, error) {
+	if root == nil || root.Resolved == nil {
+		return nil, &OrdinalBakeError{Reason: "no baked root address to fuse a nested suffix onto"}
+	}
+	if len(suffix) == 0 {
+		return root, nil
+	}
+	// A column read through a nullable record is nullable, because a
+	// null-supplied row serves NULL in every slot. An UNKNOWN slot type reads as
+	// nullable, which over-promotes rather than under-promotes — the safe
+	// direction, since a wrongly-NOT-NULL leaf is what silently drops a
+	// LEFT-outer NULL.
+	nullable := root.Typ != nil && root.Typ.IsNullable()
+	acc := make([]ResolvedAccessor, 0, len(suffix))
+	leafName := root.Field
+	typ := leafTyp
+	// NOT `var walk Type = into`: a nil *RecordType stored in a Type interface is
+	// a non-nil interface, so the type assertion below would SUCCEED with a nil
+	// receiver and the assert arm would dereference it. The typed-nil trap is
+	// exactly the shape that makes "no layout available" — the common case here —
+	// crash instead of taking the carry arm.
+	var walk Type
+	if into != nil {
+		walk = into
+	}
+	for _, want := range suffix {
+		step := want
+		if walk == terminalLeafMarker {
+			return nil, &OrdinalBakeError{
+				Ordinal: want.Ordinal,
+				Reason:  "nested suffix step " + want.Field + " descends into a stated non-record (leaf) type",
+			}
+		}
+		if rt, isRec := walk.(*RecordType); isRec && rt != nil {
+			ord, err := assertSuffixStep(rt, want)
+			if err != nil {
+				return nil, err
+			}
+			fld := rt.Fields[ord]
+			step = ResolvedAccessor{Field: fld.Name, Ordinal: ord}
+			if rt.Nullable {
+				nullable = true
+			}
+			if nested, isRec := fld.FieldType.(*RecordType); isRec && nested != nil {
+				walk = nested
+			} else if isDescendableUnknown(fld.FieldType) {
+				// The type is not stated, so a further step is carried (see the doc).
+				walk = nil
+			} else {
+				// The type IS stated and it is a LEAF. A further step would descend
+				// into a scalar, which no row can answer — and carrying it would
+				// produce an address that looks like a valid deeper path. Mark the
+				// walk as terminal so the next iteration declines instead.
+				walk = terminalLeafMarker
+			}
+			typ = fld.FieldType
+		} else {
+			// No type to descend: the carried accessor stands alone and the
+			// reference's own leaf type answers for the whole descent.
+			walk = nil
+		}
+		if step.Ordinal < 0 {
+			return nil, &OrdinalBakeError{
+				Ordinal: step.Ordinal,
+				Reason:  "nested suffix step " + want.Field + " states no ordinal and no layout to derive one from",
+			}
+		}
+		acc = append(acc, step)
+		if step.Field != "" {
+			leafName = step.Field
+		}
+	}
+	if nullable && typ != nil && !typ.IsNullable() {
+		typ = WithNullability(typ, true)
+	}
+	NoteFieldValueMint(leafName, true)
+	return &FieldValue{
+		// The DISPLAY name is the LEAF's, matching what a one-step bake would
+		// have rendered. Rendering only: a baked node's identity is its ordinal
+		// path (Java's ResolvedAccessor equality compares getOrdinal() alone).
+		Field: leafName,
+		Typ:   typ,
+		Child: root.Child,
+		// The frontier pin and the domain come from the RECEIVER — the root
+		// step — because both govern the ROOT read context, and the root of
+		// this path is still the read against the merged row.
+		Resolved: root.Resolved.WithSuffix(&FieldPath{Accessors: acc}),
+	}, nil
+}
+
+// terminalLeafMarker stands for "the walk reached a type that is STATED and is
+// not a record". It is distinct from a nil walk, which means "no type is stated
+// here" — and the two must not collapse, because they license opposite answers:
+// an unstated type carries the next accessor, a stated leaf declines it.
+var terminalLeafMarker Type = &RecordType{}
+
+// isDescendableUnknown reports whether a field type is the "not yet inferred"
+// placeholder rather than a real leaf.
+//
+// This is the case that makes the carry arm necessary at all: the positional
+// merge does not model a struct-typed column, so the leg window states
+// UnknownType for exactly the fields a nested reference descends into.
+func isDescendableUnknown(t Type) bool {
+	if t == nil {
+		return true
+	}
+	p, isPrim := t.(*PrimitiveType)
+	return isPrim && p.TypeCode == TypeCodeUnknown
+}
+
+// assertSuffixStep resolves ONE suffix accessor against the record type actually
+// reached, deriving the ordinal from the name where there is one and declining
+// when the carried ordinal contradicts it.
+//
+// A duplicate name declines rather than first-matching: a first match is
+// indistinguishable from a correct answer, and disambiguating needs an identity
+// no caller on this path carries.
+func assertSuffixStep(rt *RecordType, want ResolvedAccessor) (int, error) {
+	if want.Field == "" {
+		if want.Ordinal < 0 || want.Ordinal >= len(rt.Fields) {
+			return 0, &OrdinalBakeError{
+				Ordinal: want.Ordinal, ChildType: rt,
+				Reason: fmt.Sprintf("unnamed nested suffix step out of range for a %d-field record type", len(rt.Fields)),
+			}
+		}
+		return want.Ordinal, nil
+	}
+	dupes, derived := 0, -1
+	for i, f := range rt.Fields {
+		if f.Name == want.Field {
+			dupes++
+			if derived < 0 {
+				derived = i
+			}
+		}
+	}
+	switch {
+	case dupes == 0:
+		return 0, &OrdinalBakeError{
+			Ordinal: want.Ordinal, ChildType: rt,
+			Reason: "nested suffix step " + want.Field + " is absent from the record it descends into",
+		}
+	case dupes > 1:
+		return 0, &OrdinalBakeError{
+			Ordinal: want.Ordinal, ChildType: rt,
+			Reason: "nested suffix step " + want.Field + " is ambiguous in the record it descends into",
+		}
+	}
+	if want.Ordinal >= 0 && want.Ordinal != derived {
+		return 0, &OrdinalBakeError{
+			Ordinal: want.Ordinal, ChildType: rt,
+			Reason: "nested suffix step " + want.Field + " carries an ordinal that disagrees with the record it descends into",
+		}
+	}
+	return derived, nil
+}
+
 // legAliasOf names the quantifier the leaf bake resolves against. It is
 // cosmetic — the leaf's correlation never survives into the fused node, whose
 // child is the MERGED quantifier — but a stated identifier keeps the

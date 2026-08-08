@@ -31,23 +31,49 @@ CREATE TABLE T3 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id))
 // and emitted a plan whose projected ExistsValue sits where its existential
 // binding is dead — the precise shape the guard exists to keep out — under a
 // corpus stanza pinned to 0AF00.
+// THE FIXTURE CHANGED WITH RFC-222, and the reason matters more than the query.
+// This test used to drive the INNER-join nested-sort-key shape, which the fold
+// declined because the leg-window re-anchor refused a multi-accessor path. That
+// arm plans now, so the old fixture would have asserted a refusal that no longer
+// exists — a test that reds on a capability being ADDED.
+//
+// Two shapes still hit the RFC-141 §8 guard for reasons unrelated to the
+// re-anchor, and BOTH are driven, because a single fixture would leave this pin
+// one capability-fix away from being wrong again:
+//
+//   - a LEFT source carrying any ORDER BY (Java's Cascades cannot plan it either)
+//   - a COMPUTED key that is not among the projected outputs
 func TestPlanPhysicalForTest_RunsTheProjectedExistsGuards(t *testing.T) {
 	t.Parallel()
 
-	const q = "SELECT t1.id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h " +
-		"FROM t1 JOIN t3 ON t3.t1_id = t1.id ORDER BY n.sk"
-
-	plan, err := PlanPhysicalForTest(q, nestedStructExistsSchema, nil)
-	if err == nil {
-		t.Fatalf("the harness PLANNED a projected EXISTS the driver refuses with "+
-			"0AF00: %v — the plan-shape golden would record a plan that cannot be "+
-			"executed, and an error-pinned corpus stanza would render a bogus shape",
-			plan)
-	}
-	if !strings.Contains(err.Error(), "projected EXISTS in this query shape is not yet supported") {
-		t.Fatalf("refused for the wrong reason: %v — this must be the RFC-141 §8 "+
-			"guard's message, the same one the driver returns, not an incidental "+
-			"planning failure that happens to also be an error", err)
+	for _, tc := range []struct{ name, q string }{
+		{
+			"left_source_with_an_order_by",
+			"SELECT t1.id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h " +
+				"FROM t1 LEFT JOIN t3 ON t3.t1_id = t1.id ORDER BY t1.id",
+		},
+		{
+			"computed_key_absent_from_the_projection",
+			"SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h " +
+				"FROM t1 ORDER BY id + 1",
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			plan, err := PlanPhysicalForTest(tc.q, nestedStructExistsSchema, nil)
+			if err == nil {
+				t.Fatalf("the harness PLANNED a projected EXISTS the driver refuses with "+
+					"0AF00: %v — the plan-shape golden would record a plan that cannot be "+
+					"executed, and an error-pinned corpus stanza would render a bogus shape",
+					plan)
+			}
+			if !strings.Contains(err.Error(), "projected EXISTS in this query shape is not yet supported") {
+				t.Fatalf("refused for the wrong reason: %v — this must be the RFC-141 §8 "+
+					"guard's message, the same one the driver returns, not an incidental "+
+					"planning failure that happens to also be an error", err)
+			}
+		})
 	}
 }
 
@@ -77,6 +103,21 @@ func TestPlanPhysicalForTest_GuardDoesNotRefuseTheFoldableShapes(t *testing.T) {
 		{
 			"single_accessor_key_already_in_output",
 			"SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h FROM t1 ORDER BY id",
+		},
+		// RFC-222: the INNER-join nested-key arm. It moved from the refusal test
+		// above to here, which is the whole point of keeping both lists — the
+		// harness must track the driver in BOTH directions, and a shape that
+		// starts planning has to be re-pinned as accepted rather than merely
+		// deleted from the refusal side.
+		{
+			"nested_key_over_an_inner_join",
+			"SELECT t1.id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h " +
+				"FROM t1 JOIN t3 ON t3.t1_id = t1.id ORDER BY n.sk",
+		},
+		{
+			"nested_key_over_an_inner_join_other_member",
+			"SELECT t1.id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h " +
+				"FROM t1 JOIN t3 ON t3.t1_id = t1.id ORDER BY n.co",
 		},
 	} {
 		tc := tc
