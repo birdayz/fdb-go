@@ -174,6 +174,39 @@ type fieldDecisionSite struct {
 // file-wide holes were standing open to cover zero sites.
 //
 // So the list stays empty until a site earns a line, and the line is a SITE.
+//
+// THE `contract:` BUCKET WAS READ AGAINST THIS LIST AND EARNED NOTHING. It is the
+// bucket most likely to, because its sites are naming AUTHORITIES — the argument
+// writes itself: `SELECT COUNT(*)` has to label its column something, and that
+// text is an API contract with the user, so the render decides nothing. Two
+// measurements refuse it.
+//
+//   - Java has no such contract. An unaliased aggregate is Column.unnamedOf
+//     (GroupByExpression.java:754) and surfaces as the positional `_0`
+//     (Type.java:2645-2651, RelationalStructMetaData.java:81-89); nothing in
+//     fdb-relational-core renders an aggregate expression back to text for a
+//     column name, and nothing matches that label back — lookupAlias skips
+//     unnamed expressions outright (SemanticAnalyzer.java:521-523) and the
+//     group-by pull-up binds by loop index (CompensateRecordConstructorRule
+//     .java:73-95). Go's `COUNT(X)` spelling is a Go-only display convention.
+//     A site cannot be exempted as "the name IS the identity at this layer"
+//     when the reference implementation keeps no name at that layer at all.
+//   - Every renderer in the bucket also FEEDS A MATCH. AggregateKeyColumnName's
+//     text is a match key in plans/ordering.go and in the translator's keyOrds;
+//     AggregateResultColumnName's fed aggOrds; ColumnNameValue's rendering is
+//     compared in CanBridgeOrderingFieldValues and indexed in
+//     rule_implement_in_union.go; ProjectionColumnName is the key the executor
+//     writes a slot under and the planner reads it back by. So the honest split
+//     — legitimate where RENDERED, debt where MATCHED — does not partition these
+//     sites. It partitions their CALLERS, and one declaration serves both.
+//
+// That last point is the mechanism, and it is what any future entry has to
+// defeat: values.go's explainValueOrdinals is ONE function behind two faces,
+// ExplainValue (display, could never confuse two columns) and ColumnNameValue
+// (which NAMES OUTPUT COLUMNS). Allowlisting the display face would exempt the
+// naming face, because they are the same lines. Nothing structural stops it
+// today — so the prerequisite for ever admitting a renderer here is a display
+// renderer no naming authority can reach, not a better-worded reason.
 var allowedFieldDecisions = []fieldDecisionSite{}
 
 func fieldDecisionAllowed(sites []fieldDecisionSite, site string) (fieldDecisionSite, bool) {
@@ -289,7 +322,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// than argument: name and ordinal answered identically on all 8358
 	// aggregate operands the relational suite produces.
 
-	// contract (16)
+	// contract (10)
 	//
 	// The four `contract:` entries below with a `normalizeAggOutputName` note
 	// were INVISIBLE when this bucket was sized, and their absence is the
@@ -310,20 +343,28 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/recordlayer/query/plan/cascades/values/values.go # explainValueOrdinals # the name escaping as a bare string (return) via local name derived from the name # 1": {1, "contract: explainValueOrdinals returns the rendered DISPLAY text of a value, and for a FieldValue that text is its leaf name — the rendering ProjectionColumnName (:1492) and every output-naming authority above it delegate to. Same producer family; surfaced once ReplaceAll joined nameLaunderers, since the '#'-doubling escape is what carried the name past the walk"},
 	"pkg/recordlayer/query/plan/cascades/values/values.go # explainValueOrdinals # the name escaping as a bare string (return) via local name derived from the name # 2": {1, "contract: same renderer, the un-suffixed (ColumnNameValue) arm — which DROPS the '#ordinal' discriminator, so two baked reads of duplicate-named slots render identically. That is the collision this bucket is about, in the authority itself"},
 
-	"pkg/relational/core/query/cascades_translator.go # groupByOutputBaker # a map key via local key derived from the name # 1": {1, "contract: groupByOutputBaker matches a post-aggregate reference's rendered name against the AGGREGATE output-name map to pick its slot — the READ side of AggregateResultColumnName (group_by.go:147-157). Laundered through normalizeAggOutputName, which is why it was absent from this bucket while all six of its producer arms were on it"},
+	"pkg/relational/core/query/cascades_translator.go # groupByOutputBaker # a map key via local key derived from the name # 1": {1, "contract: groupByOutputBaker matches a post-aggregate reference's rendered name against the AGGREGATE output-name map to pick its slot — the READ side of AggregateResultColumnName. Laundered through normalizeAggOutputName, which is why it was absent from this bucket while all six of its producer arms were on it"},
 	"pkg/relational/core/query/cascades_translator.go # groupByOutputBaker # a map key via local key derived from the name # 2": {1, "contract: same binder, the GROUP-KEY output-name map — the READ side of AggregateKeyColumnName (group_by.go:118). Java binds here by ordinal instead: the SELECT list is pulled up through the group-by result row by loop index (CompensateRecordConstructorRule.java:92) over columns built with Column.unnamedOf (GroupByExpression.java:754,758)"},
 	"pkg/relational/core/query/cascades_translator.go # groupByOutputBaker # a map key via local key derived from the name # 3": {1, "contract: same binder, the final group-key lookup that actually emits the baked ordinal. Its map is last-wins on a duplicated output name (groupByOutputOrdinals `keys[full] = ord`), so two group keys sharing a leaf collapse to one slot; today they are separated only because the name channel happens to carry the qualifier, which is the dotted bucket's debt propping up this one"},
+
+	// AggregateResultColumnName's six switch arms were HERE and are RETIRED, by
+	// deleting the `case *values.FieldValue: opName = v.Field` arm that tainted
+	// the local the six returns formatted. What replaces it is not a relocation:
+	// the operand's text now comes only from AggregateSpec.OperandName (the parse
+	// text captured once at the sole production mint) or, absent that, from
+	// values.ColumnNameValue — the ONE Value→name rendering every output-naming
+	// site is required to share. The leaf read was a SECOND copy of that rendering
+	// rule and disagreed with it on exactly the shape that decides something: a
+	// qualified operand rendered BARE, so SUM(t.v) and SUM(u.v) both spelled
+	// SUM(V) and collapsed in the last-wins aggregate half of
+	// groupByOutputOrdinals — one output slot unaddressable. Pinned on both sides,
+	// producer and map, by aggregate_operand_name_is_data_test.go and
+	// aggregate_output_ordinal_leaf_collision_test.go.
 	//
-	// AggregateResultColumnName renders one canonical output name per aggregate
-	// function, so the SAME escape appears once per switch arm. Six lines, six
-	// entries: the ratchet is per SITE, and collapsing them to one would let five
-	// of the six change shape unnoticed.
-	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go # AggregateResultColumnName # the name escaping as a bare string (return) via local opName derived from the name # 1": {1, "contract: AggregateResultColumnName bakes the operand's DISPLAY name into the canonical aggregate output-column name the SELECT list references; same naming-authority family as AggregateKeyColumnName at :118, COUNT arm"},
-	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go # AggregateResultColumnName # the name escaping as a bare string (return) via local opName derived from the name # 2": {1, "contract: same authority, SUM arm"},
-	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go # AggregateResultColumnName # the name escaping as a bare string (return) via local opName derived from the name # 3": {1, "contract: same authority, MIN arm"},
-	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go # AggregateResultColumnName # the name escaping as a bare string (return) via local opName derived from the name # 4": {1, "contract: same authority, MAX arm"},
-	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go # AggregateResultColumnName # the name escaping as a bare string (return) via local opName derived from the name # 5": {1, "contract: same authority, AVG arm"},
-	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go # AggregateResultColumnName # the name escaping as a bare string (return) via local opName derived from the name # 6": {1, "contract: same authority, default arm"},
+	// The conversion is the Java axis, not a Go convenience: Java stores a kept
+	// name AS DATA at construction (Column.of(Optional<String>, value) ->
+	// Field.of, Column.java:81-82, Type.java:2908-2910) and reads it back with a
+	// getter (Type.java:2750-2763), never re-deriving it from the Value.
 
 	// Newly VISIBLE with the MINT arm (see the dotted bucket's note on the hole),
 	// and filed under contract rather than dotted because of WHO CALLS IT. The
@@ -644,11 +685,18 @@ func bucketCounts(m map[string]fieldDebt) (counts map[string]int, untagged []str
 //	an ESCAPE   is one site where a name can leave typed context — one entry.
 //	an AUTHORITY is the declaration that owns it — `file.go # declaration`.
 //
-// Currently 52 escapes across 34 authorities. The gap is real concentration
-// rather than noise: four authorities carry 18 of the 52
-// (AggregateResultColumnName 6, groupByOutputBaker 5,
+// Currently 46 escapes across 33 authorities. The gap is real concentration
+// rather than noise: three authorities carry 12 of the 46 (groupByOutputBaker 5,
 // deriveColumnsFromProjection 4, explainValueOrdinals 3) and the other thirty sit
 // near 1:1.
+//
+// The concentration is also where the retirements come from, and the last one is
+// the argument for keeping both numbers: AggregateResultColumnName's six arms
+// were the largest single authority and they retired TOGETHER, on one deleted
+// line, because six escapes shared one taint source. Six off the escape count,
+// one off the authority count — which is exactly what "a fix lands on a
+// declaration" predicts, and what a list collapsed to authorities could not have
+// shown was six holes rather than one.
 //
 // WHY BOTH, and why the list is not collapsed to authorities:
 //
@@ -683,7 +731,7 @@ func bucketCounts(m map[string]fieldDebt) (counts map[string]int, untagged []str
 // headers were introduced; the authority count is the figure that now LEADS the
 // report, so it needs it more, not less. Changing this constant is how a change
 // to the authority count becomes deliberate.
-const fieldDebtAuthorityTotal = 34
+const fieldDebtAuthorityTotal = 33
 
 func bucketAuthorityCounts(m map[string]fieldDebt) map[string]int {
 	perBucket := map[string]map[string]struct{}{}
