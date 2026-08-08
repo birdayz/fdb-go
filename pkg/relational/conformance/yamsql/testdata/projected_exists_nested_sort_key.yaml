@@ -67,7 +67,7 @@ tests:
 
   # THE JOIN ARM NOW PLANS. This stanza previously pinned a clean `0AF00`
   # decline, and it is converted here PER RECORD, deliberately: the leg-window
-  # re-anchor landed (RFC-220), so the decline is no longer the behaviour and
+  # re-anchor landed (RFC-222), so the decline is no longer the behaviour and
   # keeping it would pin a capability gap that no longer exists.
   #
   # THE CONVERSION IS SAFE IN THE DIRECTION THAT MATTERS. Declining was always

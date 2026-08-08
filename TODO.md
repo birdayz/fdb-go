@@ -10620,7 +10620,7 @@ None is speculative: each was re-verified against the tree before booking.
 
 - [x] **RFC-218 remainder — the leg-window re-anchor. THE BOOKING UNDERSTATED IT:
   the decline was only ONE of the rebase's two arms, and the other silently
-  returned WRONG ROWS.** · was M, actually L · RFC-220 · **query-engine change —
+  returned WRONG ROWS.** · was M, actually L · RFC-222 · **query-engine change —
   needs a Graefe ACK before merge**
   `rebaseOuterLegValueOrdinal` dispatches on a reference's frontier PIN, and arity
   is orthogonal to it, so a multi-accessor reference took whichever arm its pin
@@ -10680,7 +10680,7 @@ None is speculative: each was re-verified against the tree before booking.
   ROOT CAUSE, measured: the positional merge does not model a struct-typed column —
   the merged row and the leg window both state UNKNOWN for that slot — so the
   reference stays lazy (ordinal -1) and resolves by a name the runtime row does not
-  answer to. Same gap RFC-220 §2a works around, and why the projected-root shape
+  answer to. Same gap RFC-222 §2a works around, and why the projected-root shape
   over a join still cannot be asserted as rows.
   Pinned as a tripwire that reds when the merge learns struct columns:
   `nested_sort_key_fold_fdb_test.go`'s

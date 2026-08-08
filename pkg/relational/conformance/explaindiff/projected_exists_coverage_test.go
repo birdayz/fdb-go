@@ -116,7 +116,7 @@ func assertFoldCoverage(t *testing.T, got, floors projectedExistsCensus) {
 		t.Errorf("recorded declines = %d, want <= %d — THE ALARM ON THIS COUNT HAS "+
 			"INVERTED. It was a FLOOR while the JOIN arm refused a nested key: a "+
 			"recorded decline was the only thing making a later silent wrong-order "+
-			"regression visible. The leg-window re-anchor landed (RFC-220), the arm "+
+			"regression visible. The leg-window re-anchor landed (RFC-222), the arm "+
 			"plans, and the fixture asserts an ORDER instead — so zero is now the "+
 			"steady state and the danger is GROWTH: a decline reappearing means a "+
 			"shape that used to plan has gone back to refusing, and the query it "+
@@ -206,7 +206,7 @@ func TestFoldCoverageGateDrivesEveryArm(t *testing.T) {
 			c.FoldedWithHiddenSortColumn = 2
 			return c
 		}()},
-		// The alarm on this count INVERTED with RFC-220: zero is the steady
+		// The alarm on this count INVERTED with RFC-222: zero is the steady
 		// state now that the JOIN arm plans, so the case that must red is a
 		// decline REAPPEARING — a shape that used to plan going back to refusing.
 		{"a_decline_reappeared", func() projectedExistsCensus {

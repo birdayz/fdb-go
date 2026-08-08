@@ -31,7 +31,7 @@ CREATE TABLE T3 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id))
 // and emitted a plan whose projected ExistsValue sits where its existential
 // binding is dead — the precise shape the guard exists to keep out — under a
 // corpus stanza pinned to 0AF00.
-// THE FIXTURE CHANGED WITH RFC-220, and the reason matters more than the query.
+// THE FIXTURE CHANGED WITH RFC-222, and the reason matters more than the query.
 // This test used to drive the INNER-join nested-sort-key shape, which the fold
 // declined because the leg-window re-anchor refused a multi-accessor path. That
 // arm plans now, so the old fixture would have asserted a refusal that no longer
@@ -104,7 +104,7 @@ func TestPlanPhysicalForTest_GuardDoesNotRefuseTheFoldableShapes(t *testing.T) {
 			"single_accessor_key_already_in_output",
 			"SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h FROM t1 ORDER BY id",
 		},
-		// RFC-220: the INNER-join nested-key arm. It moved from the refusal test
+		// RFC-222: the INNER-join nested-key arm. It moved from the refusal test
 		// above to here, which is the whole point of keeping both lists — the
 		// harness must track the driver in BOTH directions, and a shape that
 		// starts planning has to be re-pinned as accepted rather than merely

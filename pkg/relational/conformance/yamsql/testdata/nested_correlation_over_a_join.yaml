@@ -2,7 +2,7 @@
 #
 # A CORRELATED EXISTS whose correlation is a NESTED struct path, over a JOIN.
 # Nothing here involves ORDER BY or a projected EXISTS — this is the wrong-rows
-# half of the leg-window re-anchor (RFC-220), and it lives in its own file
+# half of the leg-window re-anchor (RFC-222), and it lives in its own file
 # precisely because it is NOT the projected-EXISTS fold: mixing it into
 # projected_exists_nested_sort_key.yaml would have inflated that file's
 # fold-coverage census with entries the fold never sees.

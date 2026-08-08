@@ -1,4 +1,4 @@
-# RFC-220 — A leg reference is NESTED or FLAT before it is PINNED or LAZY
+# RFC-222 — A leg reference is NESTED or FLAT before it is PINNED or LAZY
 
 **Status:** rev 3 — IMPLEMENTED and exercised. Rev 2 corrected rev 1's mechanism; rev 3 corrects rev 2's §3c, which stated the wrong mutation DIRECTION and the wrong reason. The fixture change it justified is unchanged and correct. Also here: the retracted §4 negative result is now a committed test rather than a comment, the census attribution is restated to rev 2's arithmetic, and §3d's reported-but-unfixed fixture blind spot is FIXED. No production code has changed since rev 1. Awaiting final confirmation.
 **Origin:** TODO.md's "RFC-218 remainder — the leg-window re-anchor". That booking
@@ -7,7 +7,7 @@ described a capability gap. **It is a wrong-rows defect**, and the correction is
 primitive, and the join arm of `sortKeySourceValue` (`cascades_translator.go`).
 
 > **Numbering.** 216 and 217 are taken by open PR #658 and do not appear in `rfcs/`.
-> 218 and 219 are merged. 220 is the next free number.
+> 218 and 219 are merged. 220 and 221 are claimed by other branches; 222 is the next free number.
 
 ---
 

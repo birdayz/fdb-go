@@ -198,7 +198,7 @@ ratchet that has stopped looking.
 
 *Refuted while verifying:* the previous revision's "68 at inception → 38" and its `dotted 6 /
 translator 17` cells were audit-day figures presented as current. Measured trajectory of the list:
-**68** at inception (#520) → **41** (#527/#528/#529) → **54** (#544) → **52** (#556) → **53** (#601) → **52** (`b3ac5fe31`) → **46** (`46a00357a`) → **47** (`f599685d2`, RFC-218 adds the nested-key re-anchor's name match) → **48** (HEAD, RFC-220 adds its nested-SUFFIX sibling). More
+**68** at inception (#520) → **41** (#527/#528/#529) → **54** (#544) → **52** (#556) → **53** (#601) → **52** (`b3ac5fe31`) → **46** (`46a00357a`) → **47** (`f599685d2`, RFC-218 adds the nested-key re-anchor's name match) → **48** (HEAD, RFC-222 adds its nested-SUFFIX sibling). More
 consequentially, the previous revision's sequencing said the remaining ratchet was the
 boundary/contract tail. **It is not:** `dotted` (14) and `translator` (15) are the two largest
 buckets and together are 63% of the list.

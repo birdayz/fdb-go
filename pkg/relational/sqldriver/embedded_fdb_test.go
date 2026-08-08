@@ -399,7 +399,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 	n := func(v int) *int { return &v }
 	return cascades.FoldStep1SeedGates{
-		// RFC-220 GROWTH, ATTRIBUTED PER THE PARAGRAPH ABOVE rather than absorbed,
+		// RFC-222 GROWTH, ATTRIBUTED PER THE PARAGRAPH ABOVE rather than absorbed,
 		// in the TWO steps it actually happened in.
 		//
 		// Step 1 — the leg-window re-anchor made a nested key over a JOIN plan, and
