@@ -1,10 +1,15 @@
-# RFC-216 — The projected-EXISTS fold must read the sort key's resolved path, not a re-derived name
+# RFC-218 — The projected-EXISTS fold must read the sort key's resolved path, not a re-derived name
 
 **Status:** DRAFT — awaiting Graefe + Torvalds
 **Origin:** RFC-197 ratchet entry `cascades_translator.go # sortKeyFieldRef`, whose stated
 mechanisms were measured false; the live bug behind it is this one
 **Scope:** `pkg/relational/core/query/cascades_translator.go` (the `sortSource` helpers), plus
 one negative pin outside it
+
+> **Numbering.** This was drafted as RFC-216 and renumbered. **216 and 217 are both taken by
+> PR #658**, which is open and not yet on master, so `ls rfcs/` showed them free. The
+> directory lists only what has MERGED — check `gh pr list --state open` and the RFC files in
+> each open PR's diff before claiming a number.
 
 ---
 
@@ -136,11 +141,21 @@ those sites receive.
 ## 5. Deliverables
 
 1. The fix in §2, in `cascades_translator.go` only.
-2. **The earning test on the unprobed dimension.** There is no test anywhere under
-   `pkg/relational` that orders by a nested struct field — on either path. The one
-   `ORDER BY <qual>.<col>` conformance case uses a table alias, not a struct. So the dimension
-   is not thin, it is absent, which is why this shipped green. The test asserts correct row
-   order for `ORDER BY n.sk` in the fold, and mutation-verifies red against the reverted fix.
+2. **The earning test, on a dimension that is ABSENT, not thin.** This is the strongest
+   available statement of why the bug shipped green and it should be read literally: **no test
+   anywhere under `pkg/relational` orders by a nested struct field, on either path.** Not one
+   that is shallow, not one that covers the easy half — the axis does not exist. The single
+   `ORDER BY <qual>.<col>` conformance case uses a table alias, not a struct, so it exercises
+   the qualifier dimension and says nothing about nesting.
+
+   That distinction is the whole point. "Coverage was light" invites topping up an existing
+   test; "the axis did not exist" says no amount of adding cases along the axes already present
+   would have caught this, because the defect cannot be *expressed* in them. It is the same
+   finding shape as the twin whose 692 tests could not express its defect: volume is not
+   coverage when the missing thing is a dimension.
+
+   The test asserts correct row order for `ORDER BY n.sk` in the fold, and mutation-verifies
+   red against the reverted fix.
 3. **A companion test on the non-fold path** asserting `SELECT id FROM t1 ORDER BY n.sk` is
    correct. This is currently a code-path *reading*, not a measurement, and an unmeasured
    "the other path is fine" is exactly the corollary-inherits-authority error.
@@ -150,17 +165,29 @@ those sites receive.
 
 ---
 
-## 6. Precondition: the plan-shape run is not runnable at present disk
+## 6. BLOCKER — the corpus plan-shape run is OWED and UNRUN
 
 This is translator surgery in the RFC-141 fold and it has plan-shape exposure, so the corpus
-comparison is a required deliverable, not an optional one. **It cannot be run right now and was
-not run.** `df -h .` reports the filesystem at 100% with 8.8G free, and the repo's own rule is
-that ext4 above ~95% degrades point-lookup latency sharply and reports as a planner regression.
-A run taken now would measure the disk.
+comparison is a required deliverable, not an optional one.
 
-Stating it here rather than skipping it silently: the comparison is owed before implementation
-merges, and if goldens move, every changed record gets reviewed individually rather than
-re-blessed in bulk. "Nothing moved" is a result to state, not a step to skip.
+**It was not run. It could not be run. It is a precondition on implementation, not a step that
+was skipped.**
+
+The numbers, because a precondition without one is a sentence anybody can wave through.
+`/home` during this work: **11G free → 8.8G → 5.4G**, then reclaimed to **15G**. That is
+**99% utilisation** on a 932G ext4 filesystem. The repo's own rule is that ext4 above **~95%**
+degrades point-lookup latency sharply and reports as a planner regression, so a comparison run
+at 99% measures the disk, not this change. A green run taken there would be worse than no run:
+it would launder a disk artefact into a plan-shape result.
+
+**Gate on implementation, stated so it cannot be misread as done:**
+
+- The comparison MUST be run before any implementation of §2 merges.
+- It MUST be run below ~95% utilisation, and the utilisation at run time MUST be recorded
+  beside the result.
+- If goldens move, **every changed record gets reviewed individually** — no bulk re-blessing.
+- **"Nothing moved" is a result to state, not a step to skip.** An un-run precondition and a
+  run that found no movement are different outcomes and must never be reported the same way.
 
 ---
 
