@@ -1914,3 +1914,13 @@ func (c *rywCache) setBypassUnreadable(v bool) {
 	defer c.mu.Unlock()
 	c.bypassUnreadable = v
 }
+
+// hasModificationsInRange reports whether the write map holds ANY set, atomic,
+// or clear overlapping [begin, end). It is the Go form of C++ `!is_unmodified_range()`
+// over a range (ReadYourWrites.actor.cpp:326, :340), which is the condition
+// getMappedRange raises get_mapped_range_reads_your_writes on.
+func (c *rywCache) hasModificationsInRange(begin, end []byte) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.hasWritesInRangeLocked(begin, end) || c.hasClearsInRangeLocked(begin, end)
+}

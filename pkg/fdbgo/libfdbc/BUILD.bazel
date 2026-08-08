@@ -4,8 +4,23 @@ load("@rules_go//go:def.bzl", "go_library")
 # and the differential test are //go:build cgo && libfdbc, and bazel does not set the
 # `libfdbc` tag — so a default `bazelisk build/test //...` never compiles the cgo backend or
 # links libfdb_c. The real backend and the cross-client differential are exercised by
-# `go test -tags libfdbc ./pkg/fdbgo/libfdbc/...`, run in the nightly cgo workflow (which has
-# libfdb_c installed). The stub here just keeps the package importable in the default build.
+# `go test -tags libfdbc ./pkg/fdbgo/libfdbc/...`, which .github/workflows/nightly-libfdbc.yml
+# runs on `push` to master and on EVERY `pull_request` as the check "Cross-client wire
+# differential (-tags libfdbc)", with the cron kept only as a backstop. The file name says
+# nightly; the triggers say per-PR, and the triggers are what gate a merge.
+# The stub here just keeps the package importable in the default build.
+#
+# The excludes below are load-bearing, not cosmetic. mappedrange_cref.go carries `import "C"`,
+# and gazelle infers `cgo = True` on this go_library from the mere presence of that import —
+# even though the file is tag-excluded from srcs and the only src is the non-cgo stub. That
+# attribute would pull a C toolchain into the default `//...` build for a target that compiles
+# no C at all. Excluding the tag-gated files tells gazelle what the build tags already say:
+# bazel never builds them. Without these lines `just gazelle` re-adds `cgo = True` on every
+# run, so a hand-revert does not survive the next invocation.
+#
+# gazelle:exclude backend.go
+# gazelle:exclude options.go
+# gazelle:exclude mappedrange_cref.go
 go_library(
     name = "libfdbc",
     srcs = ["backend_stub.go"],

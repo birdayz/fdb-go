@@ -634,7 +634,39 @@ func (e *RangeMaterializationLimitError) Error() string {
 		e.ReachedBytes, e.LimitBytes)
 }
 
+// rangeScanOps supplies the only four things the shard-walking scan loop needs
+// to know about its element type. C++ reaches the same factoring through
+// templates: getExactRange is one templated ACTOR over GetKeyValuesRequest /
+// GetMappedKeyValuesRequest (NativeAPI.actor.cpp), and there is exactly one
+// shared getRangeFallback rather than a mapped-specific copy. Keeping ONE loop
+// here means the shard-boundary walk, the wrong_shard_server relocate, the
+// reply-timeout re-send, the reverse "fix more" heuristic and the limit
+// semantics cannot drift between the plain and mapped paths — which is the
+// whole reason this is generic rather than duplicated.
+type rangeScanOps[T any] struct {
+	// send issues one shard-local request and parses its reply.
+	send func(ctx context.Context, begin, end []byte, limit int, reverse bool, servers []ServerInfo) ([]T, bool, error)
+	// key returns the PRIMARY key of an element. For a mapped row this is the
+	// primary (index) row's key, never a secondary key: it drives shard
+	// re-query bounds, which are bounds in the primary range only.
+	key func(*T) []byte
+	// sizeBytes is the element's contribution to the WithRangeByteCeiling
+	// accounting. Called only when that opt-in ceiling is armed.
+	sizeBytes func(*T) int64
+}
+
+var plainRangeScanOps = rangeScanOps[KeyValue]{
+	key:       func(kv *KeyValue) []byte { return kv.Key },
+	sizeBytes: func(kv *KeyValue) int64 { return int64(len(kv.Key) + len(kv.Value)) },
+}
+
 func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	ops := plainRangeScanOps
+	ops.send = tx.sendGetRange
+	return rangeScanImpl(tx, ctx, begin, end, limit, reverse, ops)
+}
+
+func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byte, limit int, reverse bool, ops rangeScanOps[T]) ([]T, bool, error) {
 	tx.hadRead.Store(true) // a read was issued (RFC-059 poison signal)
 	// getRangeShardLimit is locations fetched per locateRange RPC. NOT C++ GET_RANGE_SHARD_LIMIT
 	// (=2, ClientKnobs.cpp:101) — a deliberate Go perf deviation: pre-fetch up to 100 shard locations
@@ -643,7 +675,7 @@ func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limi
 	const getRangeShardLimit = 100
 	const maxRelocateRetries = 5 // Bound retry loop; C++ relies on transaction timeout (default 5s)
 
-	var allKVs []KeyValue
+	var allKVs []T
 	var materializedBytes int64 // RFC-115 §2: bound total materialized bytes vs WithRangeByteCeiling
 	remaining := limit
 	if remaining <= 0 {
@@ -687,7 +719,7 @@ func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limi
 			// Inner loop: re-query same shard while more=true (C++ stays on same
 			// shard index, mutates locations[shard].range in-place).
 			for remaining > 0 {
-				kvs, more, err := tx.sendGetRange(ctx, shardBegin, shardEnd, remaining, reverse, loc.Servers)
+				kvs, more, err := ops.send(ctx, shardBegin, shardEnd, remaining, reverse, loc.Servers)
 				if err != nil {
 					// Reply timeout (a slow-but-alive server): the location is
 					// fine — re-send the SAME shard (no relocate), matching
@@ -745,8 +777,8 @@ func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limi
 				// runaway unbounded scan errors instead of OOM-ing; the overshoot is at
 				// most one reply (~80 KB). 0 = unlimited (default, oracle-matching).
 				if ceiling := tx.db.rangeByteCeiling; ceiling > 0 {
-					for _, kv := range kvs {
-						materializedBytes += int64(len(kv.Key) + len(kv.Value))
+					for i := range kvs {
+						materializedBytes += ops.sizeBytes(&kvs[i])
 					}
 					if materializedBytes > ceiling {
 						return nil, false, &RangeMaterializationLimitError{LimitBytes: ceiling, ReachedBytes: materializedBytes}
@@ -765,7 +797,7 @@ func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limi
 				// If reverse scan's last returned key equals shard begin, the
 				// shard is exhausted regardless of what more says.
 				if more && reverse && len(kvs) > 0 &&
-					bytes.Equal(kvs[len(kvs)-1].Key, shardBegin) {
+					bytes.Equal(ops.key(&kvs[len(kvs)-1]), shardBegin) {
 					more = false
 				}
 
@@ -781,10 +813,11 @@ func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limi
 
 				// Narrow range and re-query same shard (C++ mutates
 				// locations[shard].range in-place, lines 2349-2354).
+				lastKey := ops.key(&kvs[len(kvs)-1])
 				if reverse {
-					shardEnd = kvs[len(kvs)-1].Key // [shardBegin, smallestReturnedKey)
+					shardEnd = lastKey // [shardBegin, smallestReturnedKey)
 				} else {
-					shardBegin = append(append([]byte{}, kvs[len(kvs)-1].Key...), 0) // keyAfter(lastKey)
+					shardBegin = append(append([]byte{}, lastKey...), 0) // keyAfter(lastKey)
 				}
 			}
 
@@ -820,6 +853,30 @@ func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limi
 }
 
 func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limit int, reverse bool, servers []ServerInfo) ([]KeyValue, bool, error) {
+	return sendRangeRPC(tx, ctx, begin, end, limit, reverse, servers, rangeRPCOps[KeyValue]{
+		endpoint: EndpointGetKeyValues,
+		build:    buildGetKeyValuesRequest,
+		putBuf:   func(bufp *[]byte) { getKeyValuesBufPool.Put(bufp) },
+		parse:    parseGetKeyValuesReply,
+	})
+}
+
+// rangeRPCOps is the per-request-kind half of the shard-local range RPC: which
+// storage endpoint to hit, how to build the request, which pool its scratch
+// buffer came from, and how to parse the reply. Everything else — hedging,
+// QueueModel accounting, the connection-error and reply-timeout arms — is
+// identical between getKeyValues and getMappedKeyValues in C++ (both go through
+// the same loadBalance), so it is shared here rather than copied. A copy is how
+// the QueueModel delta-leak fix (RFC-010 #5) would end up applied to one path
+// and not the other.
+type rangeRPCOps[T any] struct {
+	endpoint int
+	build    func(begin, end []byte, version int64, limit int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, serverToken transport.UID) ([]byte, *[]byte)
+	putBuf   func(*[]byte)
+	parse    func([]byte) ([]T, bool, float64, error)
+}
+
+func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end []byte, limit int, reverse bool, servers []ServerInfo, ops rangeRPCOps[T]) ([]T, bool, error) {
 	wl := limit
 	if wl > math.MaxInt32 {
 		wl = math.MaxInt32
@@ -850,8 +907,8 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			replyToken, replyCh, replyHandle := conn.PrepareReply()
-			body, poolBuf := buildGetKeyValuesRequest(begin, end, readVersion, wireLimit, lockAware, tenantId, span, replyToken, server.Token)
-			gkvToken := getAdjustedEndpoint(server.Token, EndpointGetKeyValues)
+			body, poolBuf := ops.build(begin, end, readVersion, wireLimit, lockAware, tenantId, span, replyToken, server.Token)
+			gkvToken := getAdjustedEndpoint(server.Token, ops.endpoint)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
@@ -865,7 +922,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 				tx.db.handleConnError(server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
-			getKeyValuesBufPool.Put(poolBuf)
+			ops.putBuf(poolBuf)
 			return inFlightRPC{
 				replyCh:     replyCh,
 				replyHandle: replyHandle,
@@ -904,7 +961,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 		return nil, false, result.err
 	}
 
-	kvs, more, penalty, err := parseGetKeyValuesReply(result.body)
+	kvs, more, penalty, err := ops.parse(result.body)
 	tx.db.queueModel.endRequestFull(result.addr, result.delta, time.Since(result.start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
 	return kvs, more, err
 }
