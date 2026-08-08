@@ -1570,15 +1570,29 @@ func (store *FDBRecordStore) requireFormatVersion(feature string, required int32
 // GetIncarnation returns the incarnation counter from the store header.
 // Used for cross-cluster data migration versioning.
 // Goroutine-safe via stateMu (read lock).
-// Matches Java's FDBRecordStore.getIncarnation().
-func (store *FDBRecordStore) GetIncarnation() int32 {
+//
+// GATED like Java. FDBRecordStore.getIncarnation() (`:3502-3506`) throws when the
+// format version is below INCARNATION(13), and Go returned 0 — which a caller
+// cannot tell apart from a store whose incarnation genuinely is 0. That is not a
+// leniency, it is an AMBIGUITY: "this store has no incarnation yet" and "this
+// store's format is too old to HAVE one" are different facts that were returning
+// the same value. A migration keyed off incarnation reads a too-old store as a
+// never-migrated one.
+//
+// The error is the write gate's twin (UnsupportedFeatureForFormatVersionError),
+// not a new type: read and write are gated on the same version by the same
+// predicate, so a caller that can write the field can read it back.
+func (store *FDBRecordStore) GetIncarnation() (int32, error) {
 	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
-	if store.storeHeader != nil {
-		return store.storeHeader.GetIncarnation()
+	if err := store.requireFormatVersion("incarnation", formatVersionIncarnation); err != nil {
+		return 0, err
 	}
-	return 0
+	if store.storeHeader != nil {
+		return store.storeHeader.GetIncarnation(), nil
+	}
+	return 0, nil
 }
 
 // UpdateIncarnation atomically updates the incarnation counter using the provided
@@ -1606,23 +1620,37 @@ func (store *FDBRecordStore) UpdateIncarnation(updater func(current int32) int32
 	return store.writeStoreHeader(store.storeHeader)
 }
 
-// GetHeaderUserField returns a user-defined field from the store header.
-// Returns nil if the field is not set.
+// GetHeaderUserField returns a user-defined field from the store header, or nil
+// if the field is not set.
 // Goroutine-safe via stateMu (read lock).
-// Matches Java's FDBRecordStore.getHeaderUserField().
-func (store *FDBRecordStore) GetHeaderUserField(key string) []byte {
+//
+// GATED like Java. getHeaderUserField() routes through
+// validateCanAccessHeaderUserFields() — the SHARED validator at `:3221-3226`,
+// reached from getHeaderUserField at `:3249` — which throws below
+// HEADER_USER_FIELDS(8); Go returned nil, which a caller cannot tell apart from
+// an unset field. Same ambiguity as GetIncarnation, and the same fix: "not set"
+// and "this format cannot hold user fields at all" are different answers.
+//
+// SetHeaderUserField already gated on this exact version, so the pair was
+// ASYMMETRIC — a write that refused loudly beside a read that answered "absent",
+// which is the shape that makes a caller conclude its write silently failed to
+// persist.
+func (store *FDBRecordStore) GetHeaderUserField(key string) ([]byte, error) {
 	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
+	if err := store.requireFormatVersion("header user fields", formatVersionHeaderUserFields); err != nil {
+		return nil, err
+	}
 	if store.storeHeader == nil {
-		return nil
+		return nil, nil
 	}
 	for _, entry := range store.storeHeader.GetUserField() {
 		if entry.GetKey() == key {
-			return entry.GetValue()
+			return entry.GetValue(), nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // SetHeaderUserField sets a user-defined field in the store header.

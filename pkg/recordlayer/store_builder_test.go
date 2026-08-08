@@ -133,7 +133,89 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 				return s.UpdateIncarnation(func(cur int32) int32 { return cur + 1 })
 			},
 			"incarnation", int32(formatVersionIncarnation)),
+
+		// THE READ SIDE, in the SAME table as the writes on purpose: one version,
+		// one predicate, one error type, so the two ends cannot drift apart.
+		//
+		// Java gates both — getIncarnation() throws at FDBRecordStore.java:3502-3506
+		// and getHeaderUserField() routes through validateCanAccessHeaderUserFields()
+		// via validateCanAccessHeaderUserFields at `:3221-3226` (called from
+		// getHeaderUserField at `:3249`) — while Go returned a zero and a nil. That
+		// was an
+		// AMBIGUITY, not a leniency: a caller could not tell "no incarnation yet"
+		// from "this format cannot hold one", nor "field unset" from "this format
+		// has no user fields".
+		Entry("READ incarnation below 13",
+			int32(formatVersionStoreLockState),
+			func(s *FDBRecordStore) error { _, err := s.GetIncarnation(); return err },
+			"incarnation", int32(formatVersionIncarnation)),
+		Entry("READ header user field below 8",
+			int32(formatVersionCacheableState),
+			func(s *FDBRecordStore) error { _, err := s.GetHeaderUserField("k"); return err },
+			"header user fields", int32(formatVersionHeaderUserFields)),
 	)
+
+	// THE CONTRAST, without which the table above is satisfied by a reader that
+	// ALWAYS errors — a test that can only fail one way is not testing the axis it
+	// names. At a format version that HAS these features the same two reads must
+	// succeed, and the absent-value must stay REACHABLE: separating "absent" from
+	// "your format is too old" is the entire point of the change.
+	It("reads version-gated header fields without error once the format version has them", func() {
+		ks := specSubspace()
+		_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+			store, oErr := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(fvMetaData).
+				SetSubspace(ks).SetFormatVersion(int32(formatVersionDefault)).CreateOrOpen()
+			if oErr != nil {
+				return nil, oErr
+			}
+
+			inc, iErr := store.GetIncarnation()
+			Expect(iErr).NotTo(HaveOccurred(),
+				"the incarnation read errored at a format version that supports it; the "+
+					"gate is firing on the wrong side, and the table above would pass on a "+
+					"reader that always fails")
+			Expect(inc).To(Equal(int32(0)),
+				"a fresh store's incarnation is 0, and 0 must remain REACHABLE as a value — "+
+					"that is what makes 'no incarnation yet' distinguishable from 'this "+
+					"format cannot hold one'")
+
+			val, hErr := store.GetHeaderUserField("never-set")
+			Expect(hErr).NotTo(HaveOccurred(),
+				"the user-field read errored at a format version that supports it")
+			Expect(val).To(BeNil(),
+				"an unset user field is nil WITHOUT an error; nil-with-error is the "+
+					"too-old-format case and the two must not collapse")
+
+			Expect(store.SetHeaderUserField("k", []byte("v"))).To(Succeed())
+			roundTrip, rErr := store.GetHeaderUserField("k")
+			Expect(rErr).NotTo(HaveOccurred())
+			Expect(roundTrip).To(Equal([]byte("v")),
+				"the write and the read are gated on one version by one predicate, so a "+
+					"value that can be written must read back")
+
+			// Two WRITE entries in the table above had no positive case of their
+			// own and could therefore be satisfied by an implementation that always
+			// errored — the same one-way-failure gap the reads had. They are closed
+			// here rather than left inherited.
+			Expect(store.ClearHeaderUserField("k")).To(Succeed(),
+				"clearing a user field must SUCCEED at a version that has them; the "+
+					"gate table's clear entry only ever asserted the failure direction")
+			cleared, cErr := store.GetHeaderUserField("k")
+			Expect(cErr).NotTo(HaveOccurred())
+			Expect(cleared).To(BeNil(), "the cleared field must actually be gone")
+
+			Expect(store.UpdateIncarnation(func(cur int32) int32 { return cur + 1 })).To(Succeed(),
+				"incarnation must be writable at a version that has it; the gate table's "+
+					"incarnation entry only ever asserted the failure direction")
+			bumped, bErr := store.GetIncarnation()
+			Expect(bErr).NotTo(HaveOccurred())
+			Expect(bumped).To(Equal(int32(1)),
+				"the incarnation write must be observable through the read — which is "+
+					"only checkable now that the read has a non-error path")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 
 	// CREATION-TIME gates, which the table above does not reach: it exercises
 	// runtime writes on an already-created store, while these two fields are

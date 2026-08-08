@@ -88,7 +88,30 @@ Until one of those holds, 14 stays. Callers that need Java's conservative defaul
 `StoreBuilder.SetFormatVersion` — the mechanism, unlike the decision, was never the
 missing piece.
 
-### Version-gated header features: WRITES gated like Java, READS still lenient (OPEN, narrow)
+### Version-gated header features: WRITES and READS both gated like Java (CLOSED)
+
+**The gap was an AMBIGUITY, not a leniency — which is why this entry's own defence was
+the wrong test.** It used to argue "the read paths write nothing, so no bytes diverge",
+reasoning from bytes on disk when the hazard was a CALLER'S INFERENCE. A caller could
+not distinguish:
+
+- "this store has no incarnation yet" from "this store's format is too old to have one"
+  — both were `0`. A migration keyed off incarnation reads a too-old store as a
+  never-migrated one;
+- "this user field is unset" from "this format cannot hold user fields at all" — both
+  were `nil`.
+
+**And the pair was ASYMMETRIC.** `SetHeaderUserField` refused loudly at exactly the
+version where `GetHeaderUserField` answered "absent" — the shape that makes a caller
+conclude its own write silently failed to persist. A write that errors beside a read
+that shrugs is worse than either alone.
+
+**The concrete cost was one call site away from a real index defect.**
+`key_expression.go:1480`, the incarnation key expression, swallowed the missing gate into
+a `0`: every record in a too-old store would have keyed under a single index entry. That
+is not "match Java's strictness" — that is a live defect the gate prevents.
+
+---
 
 Java guards every version-gated store-header feature at its site with
 `if (!getFormatVersionEnum().isAtLeast(V)) throw` — header user fields
@@ -96,20 +119,30 @@ Java guards every version-gated store-header feature at its site with
 (`:3478`/`:3494`), incarnation (`:3503`/`:3517`) — and gates the record-count key/state
 written at store creation independently (`:5950-5957`).
 
-Go now ports **every WRITE gate** (`FDBRecordStore.requireFormatVersion`, returning
+Go ports **every WRITE gate** (`FDBRecordStore.requireFormatVersion`, returning
 `UnsupportedFeatureForFormatVersionError`), because those are the wire-compat hazard: a
 v12 store lock written into a header that still declares 11 is a lock a correctly-behaved
 older reader does not understand and therefore silently ignores. Pinned by a table-driven
 spec per feature plus a contrast case at the current version.
 
-**Still divergent, deliberately and narrowly: the READ side.** Java also throws from
-`getIncarnation()` (`:3503`) and `validateCanAccessHeaderUserFields()` (`:3222`) when the
-format is too old; Go's `GetIncarnation()` returns 0 and `GetHeaderUserField()` returns
-nil. Those read paths write nothing, so no bytes diverge and no older instance is misled —
-the gap is strictness (catching programmer error early) rather than compatibility. Closing
-it changes two public signatures from value-returning to `(value, error)`, which is an API
-break worth its own change rather than a rider on a migration PR. Recorded here so it is a
-known gap and not an oversight.
+**The READ side is now gated too, and the previous objection is dissolved.** This entry
+used to record the gap as deliberate, on the grounds that closing it "changes two public
+signatures from value-returning to `(value, error)`, which is an API break worth its own
+change." The project is pre-release and Go API breaks are acceptable, so that objection
+does not survive contact with the actual cost.
+
+`GetIncarnation()` now returns `(int32, error)` and `GetHeaderUserField()` returns
+`([]byte, error)`, both gated through the same `requireFormatVersion` the writes use —
+Java's `getIncarnation()` (`:3502-3506`) and `validateCanAccessHeaderUserFields()`
+(the shared validator at `:3221-3226`, reached from getHeaderUserField at
+`:3249`).
+
+
+The read entries live in the same table as the writes, deliberately, so the two ends
+cannot drift apart on a version. The contrast case asserts the absent-value stays
+REACHABLE at a supporting version — an incarnation of `0` and a `nil` field with no error
+— because separating the absent-value from the error is the entire point; a reader that
+always errored would satisfy the gate table on its own.
 
 ### PK-intersection declines a needed non-ForMatch compensation (conservative)
 
