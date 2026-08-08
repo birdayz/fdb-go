@@ -239,6 +239,13 @@ ahead of #4 (data-access operator count):
   no golden churn on the hundreds of existing unindexed LIKE queries.
 - **Usable index**: the `STARTS_WITH` is consumed into the scan range, so the
   augmented form is back to 1 residual conjunct and wins on the scan criteria.
+  **This half is MEASURED FALSE for secondary indexes — see §4.1.** It holds for
+  primary-key prefix scans only. On a secondary index the residual counts do NOT
+  separate (both sides carry the LIKE), criteria #2/#3/#4 tie structurally, and
+  the decision falls to criterion #7, which the index form loses because the
+  covering stamp is dropped. The design below is stated as it was reasoned; §4.1
+  records the measurement that refuted this bullet and the covering-stamp defect
+  that must land first.
 
 The selection is emergent from properties the cost model already derives
 (design principle 10), not an `if hasIndex` heuristic in the rule.
@@ -288,7 +295,13 @@ returns zero rows where the equivalent LIKE raises 42804.
 In a rewrite path proper the LHS would already be LIKE-gated, so it is String,
 Unknown, Null, Enum, Date or Timestamp. Of those only `TypeCodeString` survives
 the physical veto (`physical_key_types.go:182-184`); the rest are demoted to
-residual and the plan is merely the unaugmented one. Sound in every case.
+residual and the plan is merely the unaugmented one. Sound in every case **IF**
+the logical gate and the physical veto agree on which types survive — which is
+exactly blocker 0 in §4.0's blocker list, and it is UNVERIFIED. If a logical `TypeCodeString`
+can ever reach a non-STRING physical key component, the binder fails closed
+(`UnsupportedPhysicalStartsWithError`) on a case this paragraph assumes was
+demoted to residual, and "sound in every case" does not hold. Do not read this
+sentence as settled; it is contingent on a check nobody has run.
 
 ## 4. Proof obligations
 
@@ -419,7 +432,8 @@ its own STARTS_WITH tail arm (`scan_range_binding.go:929-965`) producing
 `UnsupportedPhysicalStartsWithError` on a non-STRING physical key component
 rather than silently degrading. It also deliberately diverges from the twin (and
 from Java) on the negative-NaN bound, which RFC-217 §1a documents as sanctioned.
-The remaining STARTS_WITH uncertainty for this RFC is blocker 0 below — a
+The remaining STARTS_WITH uncertainty for this RFC is blocker 0 above (§4.0's
+blocker list, line ~398) — a
 logical-vs-physical type question about the RULE's gate, not about the binder.
 
 Note this corrects §1.1's characterisation: `like_prefix_pushdown.yaml` cannot

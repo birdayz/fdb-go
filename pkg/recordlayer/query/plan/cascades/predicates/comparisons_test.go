@@ -1251,7 +1251,7 @@ func TestComparisonPredicate_Like_FieldValueRHS(t *testing.T) {
 // not even the `<literal>%` shape that looks exactly like a prefix
 // predicate.
 //
-// The name quantifies over ALL patterns, so the test is in three parts and
+// The name quantifies over ALL patterns, so the test is in four parts and
 // only the last is about `<literal>%`:
 //
 //	PART 1  one witness per PATTERN CLASS -- wildcard-free, trailing `%`,
@@ -1265,8 +1265,15 @@ func TestComparisonPredicate_Like_FieldValueRHS(t *testing.T) {
 //	        line terminator, so the counterexample needs an INTERNAL one.
 //	        The same tolerance is why a wildcard-free LIKE is NOT a plain
 //	        equality: its match set is the literal plus the literal with
-//	        any one trailing terminator, so an equality range over it
-//	        would LOSE rows -- the opposite failure direction from PART 1.
+//	        one trailing terminator, so an equality range over it would
+//	        LOSE rows -- the opposite failure direction from PART 1.
+//	        NOT "any" terminator: final CRLF is stripped as a single unit,
+//	        so a literal already ending in `\r` does NOT match literal+`\n`
+//	        (`like_match_test.go:129`, "$ never between \r and \n"). The
+//	        match set is therefore literal-plus-one-terminator MINUS that
+//	        case. The universal is unaffected -- the set still is not a
+//	        single value, so no equality range is exact -- but the set is
+//	        not uniformly six or seven members either.
 //	PART 4  the raw-terminator deep dive on `abc%` (see the EDITING
 //	        HAZARD note below before touching its subject list).
 //
