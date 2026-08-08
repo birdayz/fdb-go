@@ -1,6 +1,11 @@
 # RFC-209 — Group existence for aggregate indexes
 
-- **Status:** PROPOSED
+- **Status:** **ACCEPTED AND IMPLEMENTED.** This document landed as PR #605
+  (`329db80fd`); the design it describes landed as PR #612 (`a56472861`),
+  companion discovery and the `GroupExistenceMerge` operator included. It read
+  `PROPOSED` for some time after that — the rot this port names explicitly, a
+  status field claiming a shipped design is unstarted, and it was found by
+  someone sent to build a feature that already existed.
 - **Branch:** `rfc/209-aggregate-index-group-existence`
 - **Area:** Cascades planner / execution, aggregate (materialized-view) indexes
 - **Depends on:** PR #604 (`fix/agg-index-vacated-group`) — the maintainer parity

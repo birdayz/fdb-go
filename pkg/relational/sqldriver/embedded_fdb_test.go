@@ -197,18 +197,11 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// the leg-type column each dotted-arm answer comes from. Decided BY IDENTITY
 	// (owner correlation), not by name match.
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedWitnessAttribution())
-	if failed := values.AssertDottedWitnessAttribution(os.Stderr,
-		// The OBSERVED floor is retired with the arm: RFC-212 §11.3's retitling drove
-		// the dotted arm to ZERO answers, so a floor on observed names is now
-		// unsatisfiable by construction. The MINTED floor stays and is what keeps the
-		// zero honest — it proves the producers are still registering, so an empty
-		// observed population means the arm is quiet rather than the instrument dead.
-		&values.DottedWitnessFloors{Minted: 1}); failed && code == 0 {
+	if failed := assertDottedWitnessAttributionCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedRowTypeProducerCensus())
-	if failed := values.AssertDottedRowTypeProducerCensus(os.Stderr,
-		&values.DottedRowTypeProducerFloor{Derivations: 100}); failed && code == 0 {
+	if failed := assertDottedRowTypeProducerCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", corequery.FormatUnnestLegMintCensus())
@@ -282,7 +275,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// contract — but if these sites go dark, a later "unresolved is 0" would be
 	// indistinguishable from having fixed it. Floored an order of magnitude below
 	// the measured 15,909 classified reads.
-	if failed := cascades.AssertUnresolvedResultTypeCensus(os.Stderr, 1000); failed && code == 0 {
+	if failed := assertUnresolvedResultTypeCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
 	return code
