@@ -124,12 +124,14 @@ var unreferencedFuncLedger = map[string]unreferencedFuncDisposition{
 		tag: dispositionKeep,
 		why: "zero production references BY CONSTRUCTION rather than by rot: Dial forwards no options, so a dial " +
 			"option can only ever have test callers. What keeps it here is that the connection monitor's real " +
-			"cadence (750ms loop, 2s timeout) puts its minimum kill at 3.5s, and the one test that genuinely " +
-			"depends on the monitor firing waits 2s — so at production cadence that test would go red, and the " +
-			"knob is what makes the monitor testable at all rather than a decoration. Read the ten call sites " +
-			"with care though: three are inert (the handshake fails and returns before the monitor goroutine " +
-			"starts), and several exercise a monitor that never pings because SendFrame does not populate the " +
-			"pending set. Two real divergences from the C++ client sit under this knob and are NOT covered by it",
+			"cadence (1s loop, 2s timeout — both now the non-simulated column of flow/Knobs.cpp:102-103) puts " +
+			"its minimum kill several seconds out, and the one test that genuinely depends on the monitor " +
+			"firing waits 2s — so at production cadence that test would go red, and the knob is what makes the " +
+			"monitor testable at all rather than a decoration. Read the ten call sites with care though: three " +
+			"are inert (the handshake fails and returns before the monitor goroutine starts), and several " +
+			"exercise a monitor that never pings because SendFrame does not populate the pending set. The " +
+			"mixed-column cadence divergence that used to be listed here is FIXED, not pending: Go ran the " +
+			"loop time's SIMULATED 0.75s against the timeout's REAL 2s, a pair the C client never uses",
 	},
 	// DEFECT (2). Both are the shape this gate was built to find: a declared
 	// safety net pointed at the dead twin instead of the live path, so the net
@@ -152,21 +154,14 @@ var unreferencedFuncLedger = map[string]unreferencedFuncDisposition{
 			"fallback needs. Note TODO.md CQ-30 is stale on this function: it lists it among four to delete via " +
 			"plan-stamping work, but it is ALREADY dead and its deletion is gated only on the red above",
 	},
-	"pkg/relational/core/embedded/plan_harness.go # planAndVerifyOneFinal": {
-		tag: dispositionDefect,
-		why: "TestOneFinalPlanPerReference certifies at most one physical final member per Reference and is green, " +
-			"and the invariant is false in the first query it runs. The verifier descends only through FINAL " +
-			"members' quantifiers, so a reference with an empty final set both counts nothing and terminates the " +
-			"walk: measured across its 20 subtests, 43 reference visits of which 21 were dead ends, and for 18 " +
-			"of 20 queries the root is the only non-empty-final reference the walk ever sees. On its own join " +
-			"case the verifier visits 2 references where plan extraction visits 5, and the memo holds three " +
-			"groups with multiple physical finals and no winner. Repoint the walk at the graph extraction " +
-			"actually traverses and join goes red on a group with four physical finals. Deeper than a test bug: " +
-			"Java prunes to exactly one member (Reference.pruneWith clears then inserts), while Go's " +
-			"OptimizeGroupTask prunes to a KEEP SET of best-plus-one-per-requested-ordering, so multi-final " +
-			"groups are Go's design and the invariant contradicts it. Five planner comments cite this test as " +
-			"proof of a property it cannot see. No wrong plan demonstrated today",
-	},
+	// The one-final-invariant defect that used to sit here is NOT resolved; the
+	// function simply left this gate's population when plan_harness.go moved
+	// into the test build, where it belonged all along. Deleting the entry
+	// without rehoming the finding would have been the invisible-work failure
+	// this ledger exists to prevent, so the full measurement now lives at the
+	// two sites that can act on it: the doc comments on
+	// VerifyOneFinalPlanPerReference (cascades/final_member_invariant.go) and on
+	// TestOneFinalPlanPerReference itself, both pointing at RFC-224.
 }
 
 // unreferencedFuncScanRoots are the trees the gate reads. Everything tracked
@@ -246,16 +241,8 @@ func TestUnexportedFuncsAreReferenced(t *testing.T) {
 
 	// A green from an empty set is the dominant false positive: if the file
 	// walk broke, this loop would examine nothing and pass silently.
-	if candidates < unexportedFuncPopulationMin {
-		t.Fatalf("scanned only %d unexported no-receiver funcs across %d packages, expected at least %d — "+
-			"the walk, the parse, or the candidacy filter broke, so a clean result here would be a statement "+
-			"about the instrument and not about the tree",
-			candidates, packages, unexportedFuncPopulationMin)
-	}
-	if packages < unexportedFuncPackageMin {
-		t.Fatalf("scanned %d packages, expected at least %d — the population floor can be met by a few large "+
-			"packages while the walk misses every other directory, so both axes are guarded",
-			packages, unexportedFuncPackageMin)
+	if problems := checkScanVacuity(candidates, packages); len(problems) > 0 {
+		t.Fatal(strings.Join(problems, "\n"))
 	}
 
 	unlisted, stale := reconcileLedger(violations, testRefs, unreferencedFuncLedger)
@@ -395,27 +382,75 @@ func TestUnreferencedFuncLedgerEntriesAreJustified(t *testing.T) {
 	// above guards against the SCAN collapsing; this one guards against the
 	// LEDGER emptying, which would make every arm below vacuous while reporting
 	// a clean bill of health for a list nobody is keeping.
-	if len(unreferencedFuncLedger) == 0 {
-		t.Fatal("the ledger is empty — if every exception was genuinely retired that is good news, but this test " +
-			"then checks nothing, so reconcile it with the new expected value rather than leaving the floor " +
-			"pointing at the old one: the alarm has flipped from 'an entry is unjustified' to 'an entry came back'")
-	}
-
-	var defects []string
 	for key, d := range unreferencedFuncLedger {
 		if problems := checkLedgerEntry(key, d); len(problems) > 0 {
 			t.Errorf("ledger entry %q:\n  - %s", key, strings.Join(problems, "\n  - "))
 		}
+	}
+	for _, problem := range checkLedgerShape(unreferencedFuncLedger) {
+		t.Error(problem)
+	}
+}
+
+// checkScanVacuity guards the two populations whose collapse would make a clean
+// gate result a statement about the INSTRUMENT rather than about the tree. Both
+// axes are separate because the first can be satisfied by a handful of enormous
+// packages while the walk misses every other directory.
+//
+// A pure function over explicit counts, not an inline check on the process
+// globals, so the FAILING side of each floor is driven by a unit pin. The
+// corpus only ever exercises these in their passing state, which is precisely
+// how a reversed comparison or a dead branch survives until the day the scan
+// actually collapses — the one day it is read as "the fix was clean".
+func checkScanVacuity(candidates, packages int) []string {
+	var problems []string
+	if candidates < unexportedFuncPopulationMin {
+		problems = append(problems, fmt.Sprintf(
+			"scanned only %d unexported no-receiver funcs across %d packages, expected at least %d — "+
+				"the walk, the parse, or the candidacy filter broke, so a clean result here would be a "+
+				"statement about the instrument and not about the tree",
+			candidates, packages, unexportedFuncPopulationMin))
+	}
+	if packages < unexportedFuncPackageMin {
+		problems = append(problems, fmt.Sprintf(
+			"scanned %d packages, expected at least %d — the population floor can be met by a few large "+
+				"packages while the walk misses every other directory, so both axes are guarded",
+			packages, unexportedFuncPackageMin))
+	}
+	return problems
+}
+
+// checkLedgerShape guards the ledger itself: that it has not emptied (which
+// would make every per-entry arm vacuous) and that the defect queue has not
+// grown past its cap.
+//
+// Split out for the same reason as checkScanVacuity — and with more urgency,
+// because the empty-ledger arm is UNREACHABLE from the corpus by construction:
+// it can only fire on a tree whose ledger is empty, which is never the tree the
+// suite runs against while any entry exists.
+func checkLedgerShape(ledger map[string]unreferencedFuncDisposition) []string {
+	var problems []string
+	if len(ledger) == 0 {
+		return []string{"the ledger is empty — if every exception was genuinely retired that is good news, " +
+			"but this test then checks nothing, so reconcile it with the new expected value rather than " +
+			"leaving the floor pointing at the old one: the alarm has flipped from 'an entry is unjustified' " +
+			"to 'an entry came back'"}
+	}
+	var defects []string
+	for key, d := range ledger {
 		if d.tag == dispositionDefect {
 			defects = append(defects, key)
 		}
 	}
 	sort.Strings(defects)
 	if len(defects) > unreferencedFuncDefectMax {
-		t.Errorf("%d entries tagged %q, the cap is %d:\n  %s\n\n"+
-			"Each one is a known bug whose fix this ledger is deferring. A list that can absorb an unbounded "+
-			"number of those has stopped being a ratchet and become a filing cabinet — fix one before adding "+
-			"another, or raise the cap deliberately and say in the diff why the queue is allowed to grow.",
-			len(defects), dispositionDefect, unreferencedFuncDefectMax, strings.Join(defects, "\n  "))
+		problems = append(problems, fmt.Sprintf(
+			"%d entries tagged %q, the cap is %d:\n  %s\n\n"+
+				"Each one is a known bug whose fix this ledger is deferring. A list that can absorb an "+
+				"unbounded number of those has stopped being a ratchet and become a filing cabinet — fix "+
+				"one before adding another, or raise the cap deliberately and say in the diff why the "+
+				"queue is allowed to grow.",
+			len(defects), dispositionDefect, unreferencedFuncDefectMax, strings.Join(defects, "\n  ")))
 	}
+	return problems
 }

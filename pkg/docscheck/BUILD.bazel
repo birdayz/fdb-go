@@ -13,6 +13,7 @@ go_test(
         "api_parity_options_test.go",
         "build_constrained_filename_test.go",
         "build_membership_test.go",
+        "cli_error_first_word_gate_test.go",
         "container_memory_tag_test.go",
         "copy_method_rebuild_detector_test.go",
         "copy_method_rebuild_test.go",
@@ -47,6 +48,7 @@ go_test(
         "unreferenced_func_detector_pins_test.go",
         "unreferenced_func_detector_test.go",
         "unreferenced_func_gate_test.go",
+        "unreferenced_func_guard_pins_test.go",
         "unreferenced_func_ledger_pins_test.go",
         "vuln_gate_test.go",
         "yamsql_plan_claim_gate_test.go",
@@ -106,5 +108,7 @@ go_test(
         "//pkg/linters/norecover",
         "@in_gopkg_yaml_v3//:yaml_v3",
         "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_x_text//cases",
+        "@org_golang_x_text//language",
     ],
 )

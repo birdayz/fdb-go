@@ -822,6 +822,14 @@ func isNaNFloatBound(value any) bool {
 // running to the end of the subspace. A `floatWireHighestNaN` terminator would
 // be redundant with that end, never an additional one, so the asymmetry here is
 // the decomposition being exact rather than a missing case.
+//
+// That reachability is ASSERTED, not merely argued: TestOrderedFloatRangeSet-
+// SelectsExactlyTheLogicalRows materializes the ranges and checks physical
+// selection against the predicate evaluator over a domain carrying both
+// positive-NaN encodings. Bounding the open-high range at +Inf makes it report
+// "MISSES a qualifying key (silent data loss)" for every `>`/`>=` threshold. So
+// if the encoding ever stops putting positive NaNs above +Inf, this asymmetry
+// fails loudly there rather than silently dropping rows here.
 func floatWireLowestNaN(physicalType values.Type) any {
 	if physicalType != nil && physicalType.Code() == values.TypeCodeFloat {
 		return math.Float32frombits(0xFFFFFFFF)

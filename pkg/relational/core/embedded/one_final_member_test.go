@@ -18,21 +18,51 @@ import (
 // merely absent — there is no second storage location to disagree with the
 // first. Go can only adopt that shape while the same property holds here.
 //
-// It does hold, and this test is what keeps it holding. Measured at the time
-// it was written: zero violations across all 2407 yamsql corpus queries and
-// the whole Go test suite.
+// THIS TEST IS GREEN AND THE INVARIANT IT NAMES IS FALSE. Read RFC-224 before
+// trusting a pass here, and do not cite this test as evidence for P5.
+//
+// Two independent reasons, both measured:
+//
+//  1. The walk is BLIND. VerifyOneFinalPlanPerReference descends only through
+//     FINAL members' quantifiers, so a reference holding an empty final set is
+//     simultaneously a non-violation and a walk terminator. Across the 20
+//     subtests below: 43 reference visits, 21 of them dead ends, and for 18 of
+//     the 20 queries the root is the only non-empty-final reference the walk
+//     ever reaches. On the `join` case the verifier visits 2 references where
+//     plan extraction visits 5, and the memo holds three groups with multiple
+//     physical finals and no winner. Repointing the walk at the graph
+//     extraction actually traverses turns `join` red on a group with four
+//     physical finals.
+//
+//  2. The property is not Go's. Java prunes to exactly one member
+//     (Reference.pruneWith clears then inserts), while Go's OptimizeGroupTask
+//     prunes to a KEEP SET of best-plus-one-per-requested-ordering. Multi-final
+//     groups are Go's DESIGN — a group retaining one winner per required
+//     physical property is textbook Cascades — so the invariant as stated
+//     contradicts the planner rather than describing it.
+//
+// So the fix is not "make the walk honest and let this go red": that would
+// assert a property Go deliberately does not have. RFC-224 decides what Go
+// should assert instead (one final per REQUIRED PHYSICAL PROPERTY) and this
+// test changes with it. No wrong plan has been demonstrated from either half.
+//
+// The original claim, kept because it is what a reader will otherwise assume:
+// "zero violations across all 2407 yamsql corpus queries and the whole Go test
+// suite." That number is real and means less than it sounds — it counts
+// violations the walk could see.
 //
 // A NOTE ON WHERE IT IS MEASURED, because getting this wrong inverts the
 // answer. Counting final members while RULES ARE FIRING finds plenty of
 // references holding many (1186, max 52) — mid-planning groups legitimately
 // hold alternatives, and that number says nothing about P5. What matters is
 // the state at EXTRACTION, after the task stack drains and OptimizeGroup has
-// pruned each group to its winner. This test walks the reference graph the
-// way extraction does: final members only, descending through their
-// quantifiers.
+// pruned each group to its winner. This test walks final members only,
+// descending through their quantifiers — which it does INSTEAD of walking the
+// graph extraction walks, and that gap is defect 1 above.
 //
 // If this test goes red, P5 is blocked and any plan-holds-a-quantifier work
-// must stop until the group that grew a second final is understood.
+// must stop until the group that grew a second final is understood. If it
+// stays green, nothing follows: it is green today with the invariant false.
 func TestOneFinalPlanPerReference(t *testing.T) {
 	t.Parallel()
 

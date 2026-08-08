@@ -2,6 +2,7 @@ package docscheck
 
 import (
 	"go/ast"
+	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"path/filepath"
@@ -133,10 +134,18 @@ func scanPackageSources(sources map[string]string) (scanOutcome, error) {
 				continue
 			}
 			name := fd.Name.Name
-			// `init` is called by the runtime and `main` by the linker; `_` is
-			// a compile-time-only declaration. None is reachable by name, so a
-			// reference count says nothing about any of them.
-			if name == "init" || name == "main" || name == "_" || ast.IsExported(name) {
+			// `init` is called by the runtime and `_` is a compile-time-only
+			// declaration; neither is reachable by name, so a reference count
+			// says nothing about them.
+			if name == "init" || name == "_" || ast.IsExported(name) {
+				continue
+			}
+			// `main` is linker-invoked ONLY in package main. In a library
+			// package `func main()` is an ordinary unexported function, and
+			// exempting it unconditionally would hide exactly the kind of dead
+			// helper this gate exists to find — under a name nobody would think
+			// to grep for.
+			if name == "main" && pf.file.Name != nil && pf.file.Name.Name == "main" {
 				continue
 			}
 			if _, seen := candidates[name]; seen {
@@ -249,17 +258,76 @@ func buildIgnored(f *ast.File) bool {
 			break
 		}
 		for _, c := range group.List {
-			text := c.Text
-			if !strings.HasPrefix(text, "//go:build") && !strings.HasPrefix(text, "// +build") {
+			expr, err := constraint.Parse(c.Text)
+			if err != nil {
+				// Not a build constraint (an ordinary comment), or one the
+				// toolchain itself would reject. Either way it excludes nothing.
 				continue
 			}
-			for _, tok := range strings.FieldsFunc(text, func(r rune) bool {
-				return r == ' ' || r == '\t' || r == ',' || r == '(' || r == ')' || r == '!' || r == '|' || r == '&'
-			}) {
-				if tok == "ignore" {
-					return true
-				}
+			// The constraint is PARSED, not token-scanned. A scan for the word
+			// `ignore` drops `//go:build ignore || tools`, which IS built under
+			// `-tags tools` — and dropping a built file loses both its
+			// candidates and, worse, the references it makes to candidates
+			// elsewhere, so the gate's answer would depend on which tags
+			// happened to be in the scan.
+			//
+			// The test is "does ANY tag assignment with `ignore` unset build
+			// this file?". It has to be a real satisfiability question, not a
+			// single evaluation: fixing every other tag to true reports
+			// `//go:build !race` as unbuildable, which is exactly backwards.
+			if !buildableWithoutIgnoreTag(expr) {
+				return true
 			}
+		}
+	}
+	return false
+}
+
+// buildableWithoutIgnoreTag reports whether some assignment of build tags with
+// `ignore` FALSE satisfies expr — i.e. whether the file is real package code
+// under any configuration a normal build could use.
+//
+// Exhaustive over the constraint's own tags rather than a single evaluation,
+// because build expressions contain negations and a fixed assignment answers
+// the wrong question in both directions: all-true reports `!race` as
+// unbuildable, all-false reports `linux` as unbuildable. Real constraints carry
+// a handful of tags; the cap below keeps a pathological one from being
+// exponential, and it fails toward KEEPING the file, which only ever makes the
+// gate stricter.
+func buildableWithoutIgnoreTag(expr constraint.Expr) bool {
+	var tags []string
+	seen := map[string]bool{"ignore": true}
+	var collect func(constraint.Expr)
+	collect = func(e constraint.Expr) {
+		switch t := e.(type) {
+		case *constraint.TagExpr:
+			if !seen[t.Tag] {
+				seen[t.Tag] = true
+				tags = append(tags, t.Tag)
+			}
+		case *constraint.NotExpr:
+			collect(t.X)
+		case *constraint.AndExpr:
+			collect(t.X)
+			collect(t.Y)
+		case *constraint.OrExpr:
+			collect(t.X)
+			collect(t.Y)
+		}
+	}
+	collect(expr)
+
+	const maxTags = 16
+	if len(tags) > maxTags {
+		return true
+	}
+	for mask := 0; mask < 1<<len(tags); mask++ {
+		set := map[string]bool{}
+		for i, tag := range tags {
+			set[tag] = mask&(1<<i) != 0
+		}
+		if expr.Eval(func(tag string) bool { return set[tag] }) {
+			return true
 		}
 	}
 	return false

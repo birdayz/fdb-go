@@ -314,6 +314,38 @@ func TestUnreferencedFuncSiteKeyIsLineIndependent(t *testing.T) {
 	}
 }
 
+// `main` is linker-invoked only in package main. Exempting the NAME rather than
+// the (name, package) pair hides an unreferenced library helper called `main` —
+// a dead function under a name no one would grep for, which is the worst case
+// for a gate whose whole job is finding those.
+func TestMainIsExemptOnlyInPackageMain(t *testing.T) {
+	t.Parallel()
+
+	inMain, err := scanPackageSources(map[string]string{
+		"p/a.go": "package main\n\nfunc main() {}\n",
+	})
+	if err != nil {
+		t.Fatalf("scan package main: %v", err)
+	}
+	if inMain.Candidates != 0 {
+		t.Errorf("package main's main() is a candidate (%d); the linker calls it, "+
+			"so a reference count says nothing about it", inMain.Candidates)
+	}
+
+	inLib, err := scanPackageSources(map[string]string{
+		"p/a.go": "package p\n\nfunc main() {}\n",
+	})
+	if err != nil {
+		t.Fatalf("scan library package: %v", err)
+	}
+	if inLib.Candidates != 1 {
+		t.Fatalf("a library package's main() must be a candidate; Candidates = %d", inLib.Candidates)
+	}
+	if len(inLib.Unreferenced) != 1 || inLib.Unreferenced[0].Name != "main" {
+		t.Errorf("library main() must be reported unreferenced, got %+v", inLib.Unreferenced)
+	}
+}
+
 // buildIgnored decides whether a file is package code at all, so a regression in
 // it either silently drops a whole file's references (loud, but for the wrong
 // reason) or silently drops candidates (quiet, and the gate goes blind).
@@ -326,7 +358,16 @@ func TestBuildIgnoredConstraint(t *testing.T) {
 	}{
 		{"go:build ignore", "//go:build ignore\n\npackage main\n", true},
 		{"legacy +build ignore", "// +build ignore\n\npackage main\n", true},
-		{"go:build ignore in a disjunction", "//go:build ignore || tools\n\npackage main\n", true},
+		// `ignore || tools` IS built, under `-tags tools`. This case asserted
+		// the opposite while the detector token-scanned for the word `ignore`,
+		// which made the gate's answer depend on the tag set: dropping a file
+		// that is really built loses its candidates AND the references it makes
+		// to candidates elsewhere. The constraint is now parsed and evaluated
+		// with `ignore` unset, so only an expression that CANNOT be true
+		// excludes a file.
+		{"ignore in a disjunction is still buildable", "//go:build ignore || tools\n\npackage main\n", false},
+		{"ignore in a conjunction cannot be built", "//go:build ignore && tools\n\npackage main\n", true},
+		{"a negated ignore is not an exclusion", "//go:build !ignore\n\npackage p\n", false},
 		{"no constraint", "package p\n", false},
 		{"a GOOS constraint is not an exclusion", "//go:build linux\n\npackage p\n", false},
 		{"a negated tag is not an exclusion", "//go:build !race\n\npackage p\n", false},

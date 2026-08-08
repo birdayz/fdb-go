@@ -46,31 +46,49 @@ func TestOrderFunctionDirection(t *testing.T) {
 	}
 }
 
-// The case-folding is a Go-side LENIENCY, not parity, and it is pinned here so
-// it is a visible decision rather than an accident of a ToLower nobody meant.
+// Order-function classification is EXACT, and this is the arm that used to be
+// inverted: OrderFunctionDirection folded case, so `ORDER_ASC_NULLS_FIRST` read
+// as the built-in ascending-nulls-first tuple encoding.
 //
-// Java resolves these names through an exact-match registry: the factory builds
-// one entry per Direction from Direction.values() and looks the name up by
-// equality (OrderFunctionKeyExpressionFactory), so `ORDER_ASC_NULLS_FIRST` does
-// not resolve to an order function there. Go accepts it.
+// The old pin called that an unreachable Go-side leniency, on the grounds that
+// "every producer of these names in this tree mints the lowercase constant".
+// That argument scoped the wrong population: RegisterFunction
+// (key_expression.go) is public API over a case-sensitive map, so an
+// application can register its OWN evaluator under the upper-case spelling.
+// The record layer then encodes that column with the application's function
+// while the planner believes it is tuple-order bytes — and derives ordered
+// ranges, or drops a sort, from an ordering nothing produced.
 //
-// It is unreachable today because every producer of these names in this tree
-// mints the lowercase constant above, so no metadata Go writes can carry the
-// upper-case spelling. If that ever stops being true — a name arriving from
-// externally authored metadata, or from a SQL identifier that is upper-cased on
-// the way in — the two engines will disagree about whether a column is ordered,
-// and Go will be the one that plans an ordered scan Java does not. This test is
-// what makes that a decision someone can find.
-func TestOrderFunctionDirectionAcceptsUpperCaseUnlikeJava(t *testing.T) {
+// Java cannot reach this state at all: it dispatches on the
+// OrderFunctionKeyExpression TYPE, which carries the direction as a field, and
+// its factory registers names already lowercased.
+func TestOrderFunctionDirectionIsExactMatch(t *testing.T) {
 	t.Parallel()
 
-	got, ok := OrderFunctionDirection("ORDER_ASC_NULLS_FIRST")
-	if !ok {
-		t.Fatal("OrderFunctionDirection no longer folds case. If that was deliberate — it matches Java's " +
-			"exact-match registry — delete this test and say so; if it was not, an upper-case order-function " +
-			"name now silently reads as 'not an order function' and the column loses its direction")
+	for _, name := range []string{
+		"ORDER_ASC_NULLS_FIRST",
+		"Order_Asc_Nulls_First",
+		"ORDER_DESC_NULLS_LAST",
+	} {
+		if _, ok := OrderFunctionDirection(name); ok {
+			t.Errorf("OrderFunctionDirection(%q) classified a non-registered spelling as a built-in "+
+				"order function. RegisterFunction is case-sensitive, so this name can belong to an "+
+				"application's own evaluator, and treating it as tuple-order encoding lets the planner "+
+				"derive an ordering from bytes that evaluator never wrote", name)
+		}
 	}
-	if got != values.OrderedBytesAscNullsFirst {
-		t.Fatalf("folded lookup = %v, want %v", got, values.OrderedBytesAscNullsFirst)
+
+	// The control: the registered spellings must still resolve, or the check
+	// above would be satisfied by a function that classifies nothing at all.
+	for name, want := range map[string]values.OrderedBytesDirection{
+		FunctionKindOrderAscNullsFirst:  values.OrderedBytesAscNullsFirst,
+		FunctionKindOrderAscNullsLast:   values.OrderedBytesAscNullsLast,
+		FunctionKindOrderDescNullsFirst: values.OrderedBytesDescNullsFirst,
+		FunctionKindOrderDescNullsLast:  values.OrderedBytesDescNullsLast,
+	} {
+		got, ok := OrderFunctionDirection(name)
+		if !ok || got != want {
+			t.Errorf("OrderFunctionDirection(%q) = (%v, %v), want (%v, true)", name, got, ok, want)
+		}
 	}
 }

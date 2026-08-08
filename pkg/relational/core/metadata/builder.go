@@ -773,17 +773,20 @@ const relationalUnionName = "RecordTypeUnion"
 // definitions): whether any NullableArrayWrapper was emitted, gating the
 // index key-expression wrap pass.
 //
-// UNMEASURED, and recorded here rather than lost: the flag's SCOPE may not
-// match Java's. Java accumulates it as it visits column definitions in
-// declaration order, so a column can be visited while the flag is still false;
-// Go computes it template-wide and hands one answer to every index. The two
-// can only disagree for a type that has both a nullable array and a NOT NULL
-// repeated field literally named `values`, where the wrap pass would rewrite
-// the flat repeated field's key expression as though it were wrapped. Nobody
-// has built that schema and compared the stored key expression against Java's,
-// so this is a suspicion with a named reproducer, not a known divergence — but
-// it is wire-affecting if real, which is why it is written at the site that
-// would have to change rather than filed somewhere it would rot.
+// The flag's SCOPE matches Java's, and this is CHECKED rather than assumed —
+// an earlier note here recorded a suspicion that it might not, on the reasoning
+// that Java accumulates the flag while visiting columns in declaration order
+// and so could build an index while it was still false. Reading
+// DdlVisitor.visitCreateSchemaTemplateStatement settles it the other way: the
+// visitor first partitions every templateClause into per-kind lists, then
+// visits structs and tables (`:422-423`, which is where `:162` sets the flag),
+// and only afterwards visits the index clauses (`:434`), whose generator reads
+// it at `:218`. So by the time ANY index is built the flag has accumulated over
+// every column in the template — template-wide, exactly like Go's.
+//
+// The suspicion's named reproducer (a type with both a nullable array and a
+// NOT NULL repeated field called `values`) therefore cannot separate the two
+// engines on the index path, and no schema needs to be built to find that out.
 func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descriptorpb.FileDescriptorProto, bool, error) {
 	fdp := &descriptorpb.FileDescriptorProto{}
 	fdp.Name = proto.String(b.name)

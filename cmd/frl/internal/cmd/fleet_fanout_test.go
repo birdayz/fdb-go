@@ -45,7 +45,11 @@ func TestFleetFanoutFlagContract(t *testing.T) {
 		{
 			name: "meta catalog repair requires a database",
 			args: []string{"meta", "catalog", "repair", "--all-schemas"},
-			want: "--database is required",
+			// The flag name, not the surrounding prose — same as the cases
+			// above. The wording cannot lead with the flag (docscheck's
+			// TestCLIErrorMessagesDoNotLeadWithAFlag), so pinning a phrase
+			// here would put two gates in conflict over one sentence.
+			want: "--database",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

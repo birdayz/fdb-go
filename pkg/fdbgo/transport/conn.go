@@ -103,16 +103,19 @@ type Conn struct {
 	// goroutine starts. Tests inject small values for deterministic, fast
 	// monitor-death assertions (see withMonitorCadence).
 	//
-	// UNMEASURED divergence from the C++ client, recorded here rather than
-	// lost: these two defaults are read from DIFFERENT columns of
-	// Knobs.cpp. C++ declares each knob with a real value and a simulation
-	// value; 0.75s is CONNECTION_MONITOR_LOOP_TIME's SIMULATED value while 2s
-	// is CONNECTION_MONITOR_TIMEOUT's REAL one, so the pair Go runs in
-	// production is a combination the C client never uses in either mode.
-	// C++ is the spec for this package, so if that reading holds it is a Go
-	// bug, not a tuning choice. Confirming it means diffing against
-	// libfdb_c 7.3.77's Knobs.cpp and deciding the pair deliberately — work
-	// that belongs to the FDB C++ client review gate, not to a dead-code sweep.
+	// These were MEASURED against flow/Knobs.cpp:102-103 and the reading held:
+	// C++ declares each knob with a simulation value and a real one,
+	//
+	//	CONNECTION_MONITOR_LOOP_TIME  isSimulated ? 0.75 : 1.0
+	//	CONNECTION_MONITOR_TIMEOUT    isSimulated ? 1.50 : 2.0
+	//
+	// and Go used to run 0.75s alongside 2s — the loop time's SIMULATED value
+	// paired with the timeout's REAL one, a combination the C client never uses
+	// in either mode. Both are now taken from the real column. C++ is the spec
+	// for this package, so the mixed pair was a Go bug and not a tuning choice.
+	//
+	// Tests inject small values through withMonitorCadence rather than relying
+	// on these, which is why tightening the loop to 1s does not slow any test.
 	monitorLoopInterval time.Duration
 	monitorTimeout      time.Duration
 
@@ -363,8 +366,12 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		pending: make(map[UID]chan Response, 16),
 		ctx:     connCtx,
 		cancel:  cancel,
-		// C++ CONNECTION_MONITOR_LOOP_TIME / CONNECTION_MONITOR_TIMEOUT defaults.
-		monitorLoopInterval: 750 * time.Millisecond,
+		// C++ CONNECTION_MONITOR_LOOP_TIME / CONNECTION_MONITOR_TIMEOUT, both
+		// taken from the NON-simulated column of flow/Knobs.cpp:102-103:
+		//
+		//	init( CONNECTION_MONITOR_LOOP_TIME, isSimulated ? 0.75 : 1.0 );
+		//	init( CONNECTION_MONITOR_TIMEOUT,   isSimulated ? 1.50 : 2.0 );
+		monitorLoopInterval: 1 * time.Second,
 		monitorTimeout:      2 * time.Second,
 	}
 	// Apply test-only knobs BEFORE any loop goroutine starts (no data race).

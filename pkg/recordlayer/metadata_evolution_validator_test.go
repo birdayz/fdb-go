@@ -2239,6 +2239,14 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		})
 
 		It("rejects TEXT tokenizer name change", func() {
+			// Both names must name REGISTERED tokenizers now that meta-data
+			// validation resolves them (Java does the same in
+			// TextIndexMaintainerFactory's IndexValidator). Before that
+			// validation existed these specs could name any string at all,
+			// which is the hole it closes — the evolution rule under test is
+			// about the option CHANGING, not about the names being real.
+			registerTestTokenizers()
+
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
 				idx := NewIndex("idx_text", Field("price"))
 				idx.Type = IndexTypeText
@@ -2260,17 +2268,23 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		})
 
 		It("allows TEXT tokenizer version upgrade", func() {
+			// A multi-version tokenizer: the default has MinVersion == MaxVersion,
+			// so versions 1 and 2 are only both in range for a registered
+			// tokenizer that spans them. Meta-data validation checks the range
+			// now, and without this the spec would pass on the wrong rejection.
+			registerTestTokenizers()
+
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
 				idx := NewIndex("idx_text", Field("price"))
 				idx.Type = IndexTypeText
-				idx.Options = map[string]string{IndexOptionTextTokenizerVersion: "1"}
+				idx.Options = map[string]string{IndexOptionTextTokenizerName: "english", IndexOptionTextTokenizerVersion: "1"}
 				b.AddIndex("Order", idx)
 			})
 
 			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
 				idx := NewIndex("idx_text", Field("price"))
 				idx.Type = IndexTypeText
-				idx.Options = map[string]string{IndexOptionTextTokenizerVersion: "2"}
+				idx.Options = map[string]string{IndexOptionTextTokenizerName: "english", IndexOptionTextTokenizerVersion: "2"}
 				b.AddIndex("Order", idx)
 			})
 
@@ -2279,17 +2293,19 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		})
 
 		It("rejects TEXT tokenizer version downgrade", func() {
+			registerTestTokenizers()
+
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
 				idx := NewIndex("idx_text", Field("price"))
 				idx.Type = IndexTypeText
-				idx.Options = map[string]string{IndexOptionTextTokenizerVersion: "3"}
+				idx.Options = map[string]string{IndexOptionTextTokenizerName: "english", IndexOptionTextTokenizerVersion: "3"}
 				b.AddIndex("Order", idx)
 			})
 
 			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
 				idx := NewIndex("idx_text", Field("price"))
 				idx.Type = IndexTypeText
-				idx.Options = map[string]string{IndexOptionTextTokenizerVersion: "1"}
+				idx.Options = map[string]string{IndexOptionTextTokenizerName: "english", IndexOptionTextTokenizerVersion: "1"}
 				b.AddIndex("Order", idx)
 			})
 
