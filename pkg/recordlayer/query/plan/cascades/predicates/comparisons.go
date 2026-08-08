@@ -555,8 +555,10 @@ func (c Comparison) EvalAgainst(left, right any) (TriBool, error) {
 //     may be a line terminator
 //   - `_` matches exactly one non-line-terminator character (rune)
 //   - every other character matches itself
-//   - a non-zero `escape` rune makes a following `%` or `_` literal
-//     (and is an ordinary character in every other position)
+//   - a non-zero `escape` rune makes a following `%` or `_` literal;
+//     in every other position it falls through to the ordinary
+//     per-character rules, so it is a literal UNLESS the escape rune
+//     is itself `%` or `_`, in which case it is still that wildcard
 //
 // Delegates to values.LikeMatch — the canonical LIKE matcher shared
 // between the QueryPredicate-layer ComparisonLike and the

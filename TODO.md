@@ -10427,11 +10427,11 @@ to nothing.)
   further wildcards and no ESCAPE ambiguity.
 
   **STILL OPEN — attempted, measured, and deliberately not shipped. See
-  `rfcs/216-like-constant-prefix-to-starts-with.md` (the PRODUCER is design-only;
-  its §1-§3 measurements are live).** The rule and its prefix extractor were
-  written and REMOVED; do not re-add them without reading RFC-216 §3 (the four
-  blockers) and §4 (the extraction contract, including the maximality requirement
-  and the ESCAPE hazard table) first. Four corrections to the text above:
+  `rfcs/216-like-constant-prefix-to-starts-with.md`, which records the measured
+  defect and the blockers and deliberately specifies NO producer: an unimplemented
+  contract has no test that can fail.** The rule and its prefix extractor were
+  written and REMOVED; do not re-add them without reading RFC-216 §5 (the four
+  blockers) first. Four corrections to the text above:
 
   - The rewrite as usually stated is **UNSOUND**. `%` compiles to `.*` with no
     DOTALL, so it cannot cross a Java line terminator: `'abc\ndef' LIKE 'abc%'`
@@ -10446,7 +10446,7 @@ to nothing.)
     binder is `bindScanComparisonsToRangeSet`. See RFC-217.
   - Registering the rule as written returned **ZERO rows** for every primary-key
     prefix LIKE (empty range, loss point NOT diagnosed — no claim is made about
-    which component drops it). Four blockers are enumerated in RFC-216 §3,
+    which component drops it). Four blockers are enumerated in RFC-216 §5,
     including the UNVERIFIED question of whether the logical `TypeCodeString` gate
     can disagree with the physical key type for string-backed
     DATE/TIMESTAMP/ENUM carriers.
@@ -10456,16 +10456,20 @@ to nothing.)
     constant pattern, not on the absence of later wildcards: the prefix simply
     stops at the first unescaped wildcard, so `'a_b%'` yields prefix `a` and keeps
     the LIKE residual. ESCAPE is not ambiguous either — Java's table has exactly
-    two escape entries, `<esc>_` and `<esc>%`, and everything else (escape before
-    an ordinary char, before another escape, dangling) is a literal. Sharing
-    `escapedLiteralAt` with the matcher is what makes that fall out. RFC-216 §4 has
-    the hazard table.
+    two escape entries, `<esc>_` and `<esc>%`; everywhere else (escape before an
+    ordinary char, before another escape, dangling) the rune falls through to the
+    ORDINARY rules, which makes it a literal UNLESS the escape rune is itself `%`
+    or `_`, in which case it stays that WILDCARD. Sharing `escapedLiteralAt` with
+    the matcher is what makes that fall out. The hazards are pinned on the live
+    matcher by `TestLikeMatch_ConstantPrefixBoundary`
+    (`cascades/values/like_match_test.go`), which locates each pattern's
+    constant-prefix boundary from both sides.
 
-  Gated — for its principal target shape — on the **covering-stamp defect of
-  RFC-216 §3.2** (a pre-existing, independently observable physical-plan bug).
+  Gated — for its principal target shape — on **RFC-216's covering-stamp
+  blocker** (a pre-existing, independently observable physical-plan bug).
   "Blocked" full stop would overstate it; see the scoping below. TWO rules stamp
   covering for this shape, redundantly — `ImplementProjectionRule` via `findIndexScanPlan`
-  (`rule_implement_projection.go:66`) and `MergeProjectionAndFetchRule` via a
+  (`rule_implement_projection.go:73`) and `MergeProjectionAndFetchRule` via a
   direct type assertion (`rule_merge_projection_and_fetch.go:91`) — and BOTH lose
   the flag when a residual sits between the fetch and the index scan, because
   neither descends through a `RecordQueryPredicatesFilterPlan`. Naming only the
@@ -10475,11 +10479,15 @@ to nothing.)
   by `TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost`'s
   `two_rules_stamp_covering_redundantly` subtest.
 
-  The lost stamp drops the decision onto cost criterion #7 and makes secondary
+  INFERRED, never measured (the augmented form it would compare does not exist):
+  the lost stamp drops the decision onto cost criterion #7 and makes secondary
   indexes lose — for the pure-LIKE query, under the default `PreferScan`, with a
-  covering-capable projection. Outside that shape it is not a prerequisite (see
-  RFC-216 §3.2's scope limits; in particular "extra predicates separate the
-  candidates" is NOT general — a predicate residual on both sides moves neither).
+  covering-capable projection. Outside that shape it is not a prerequisite: under
+  `PreferIndex` the penalty falls on the primary scan instead, a genuinely
+  non-covering projection has no stamp to lose, and a query separated on an
+  earlier criterion never reaches #7. That last case is a possibility, not a rule
+  — "extra predicates separate the candidates" is NOT general, since a predicate
+  residual on BOTH sides (as the LIKE is by construction) moves neither.
   That is its own change with its own plan-movement blast radius; it is NOT the
   dead-twin retirement of RFC-217, and not the unexported-dead-code gate, which
   has no RFC number and is not built.
@@ -10550,7 +10558,7 @@ to nothing.)
   between projection and fetch it takes the `:103-126` fallback, which yields
   the projection over the fetch's inner group and leaves the scan unmarked.
   `ImplementProjectionRule` stamps the same shape redundantly and independently,
-  via `findIndexScanPlan` (`rule_implement_projection.go:66`), and fails on the
+  via `findIndexScanPlan` (`rule_implement_projection.go:73`), and fails on the
   identical structural condition: neither descends through a
   `RecordQueryPredicatesFilterPlan`. Both are PLANNING-phase rules (the first an
   implementation rule, the second an expression rule from
@@ -10561,13 +10569,14 @@ to nothing.)
   it. Rows are CORRECT (pinned: `covering_index_pushdown.yaml#25`, 26/26 on real
   FDB, with `plan_not_contains: Fetch` as the sharp pin) — this is a
   labeling/costing gap, not wrong results: the plan renders and is costed
-  without the covering marker it earned. RFC-216 §3.2 is the writeup, including
-  why the gap becomes load-bearing for CQ-33 on secondary indexes. Found during
+  without the covering marker it earned. RFC-216's covering-stamp blocker is the
+  writeup; why it becomes load-bearing for CQ-33 on secondary indexes is the
+  INFERRED criterion-#7 chain recorded under CQ-33 above. Found during
   the RFC-197 step-0 review fold; deferred from that fold because marking the
   scan moves plan shapes corpus-wide and is a query-engine change needing its own
   RFC-gated lap. Read Java's MergeProjectionAndFetchRule counterpart first — if
   Java marks covering through a residual, this is a divergence; if not, it is a
-  shared gap and the fix is an extension. (RFC-216 §3.2 reads Java as having no
+  shared gap and the fix is an extension. (RFC-216 reads Java as having no
   such failure mode: coveringness is a separate class there,
   `RecordQueryCoveringIndexPlan.java:74-78`, and
   `MergeProjectionAndFetchRule.java:62-78` yields `fetchPlan.getChild()` with no

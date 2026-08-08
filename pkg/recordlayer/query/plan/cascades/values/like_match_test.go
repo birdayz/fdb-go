@@ -55,6 +55,16 @@ func TestLikeMatch(t *testing.T) {
 		{"dangling escape matches the escape rune", `ab\`, `ab\`, '\\', true},
 		// No escaped-escape entry exists, so `\\` is two literals.
 		{"no escaped-escape", `a\\b`, `a\\b`, '\\', true},
+		// Escape before an ordinary character opens no escape entry:
+		// the escape rune itself is the literal and the next character
+		// is read normally, so `a\b` demands the backslash.
+		{"escape before an ordinary char is itself the literal", `a\b`, `a\b`, '\\', true},
+		{"escape before an ordinary char does not make it literal", `a\b`, "ab", '\\', false},
+		// The escape rune falling through to the ORDINARY rules means
+		// falling through to the METACHARACTER rules too, so an escape
+		// rune of `%` is still the wildcard where it opens no entry.
+		{"dangling escape equal to % still wildcards", "a%", "aXY", '%', true},
+		{"escaped % when the escape rune is itself %", "%%b", "%b", '%', true},
 		{"_ with escape=0", "a_c", "abc", 0, true},
 
 		// Unicode.
@@ -197,99 +207,169 @@ func TestLikeMatch_CrossCheckSQLPatternToRegex(t *testing.T) {
 	}
 }
 
-// TestLikeMatch_EscapeFallthroughFixesTheConstantPrefix pins, on the live
-// matcher, the four ESCAPE fallthrough shapes that decide where a pattern's
-// CONSTANT LITERAL PREFIX ends — the longest initial literal run before the
-// first UNESCAPED `%` or `_`.
+// TestLikeMatch_ConstantPrefixBoundary pins, on the live matcher, WHERE a LIKE
+// pattern's constant literal prefix ends — the longest string P such that every
+// subject the pattern matches begins with P.
 //
-// Nothing derives such a prefix today. RFC-216 §4 designs the extractor that
-// would (`values.LikeConstantPrefix`) and tabulates the required prefix per
-// ESCAPE hazard. That table is a claim about THIS matcher's semantics, and a
-// table in a design document cannot fail — these assertions are what make it
-// checkable, and what goes red if the matcher's ESCAPE handling moves under it.
-// If that happens, the RFC's table is what needs re-deriving, not this test.
+// Nothing in the tree derives P: there is no prefix extractor and no rule that
+// wants one (RFC-216). P is therefore not computed here either; it is the
+// asserted value, and each case witnesses it from three directions so that no
+// wrong P can pass:
 //
-// Each case is a PAIR: a subject inside the claimed prefix's byte range that the
-// pattern MATCHES, and one it REJECTS. One direction alone cannot locate a
-// boundary — only the rejection rules out the boundary being somewhere else.
+//	SOUNDNESS    both matched subjects begin with P. A P that is TOO LONG fails
+//	             here — this is the direction that would emit a key range
+//	             excluding rows the predicate accepts (dropped rows).
+//	MAXIMALITY   the two matched subjects DIVERGE at byte offset len(P): they
+//	             differ there, or one ends exactly there. No longer common
+//	             prefix can exist, so a P that is TOO SHORT fails here —
+//	             including P = "", which is what makes soundness non-vacuous.
+//	RESIDUAL     a subject INSIDE P's byte range that the pattern REJECTS. A
+//	             byte-prefix range is a strict superset of the predicate, so a
+//	             LIKE-derived range may never drop the LIKE (RFC-216 §3).
 //
-// The `escape == '%'` pair is the sharpest, and was the unpinned one. Java's
-// replacement table has exactly two escape entries, `<esc>_` and `<esc>%`, so an
-// escape rune not followed by `_`/`%` falls through to the ORDINARY rules — which
-// for `%` means falling through to the METACHARACTER rules. The same rune is
-// therefore a literal in `'%%abc'` and a wildcard in `'%abc'`, giving prefixes
-// `%abc` and empty. TestLikeMatch's ESCAPE rows cover the DANGLING `%` direction
-// (`"a%"` with escape `%` still wildcards); the before-an-ordinary-character
-// direction is pinned here.
-func TestLikeMatch_EscapeFallthroughFixesTheConstantPrefix(t *testing.T) {
+// Soundness is witnessed, not quantified: two subjects cannot prove that EVERY
+// match begins with P. An extractor, when one exists, needs a fuzz against this
+// matcher for that. What is pinned here is the matcher behaviour the prefix
+// claim rests on, which is the part that can silently move.
+//
+// The ESCAPE shapes are the ones a hand-rolled scanner gets wrong, because
+// Java's replacement table has exactly TWO escape entries, `<esc>_` and
+// `<esc>%` (PatternForLikeValue.java:110-113 over REPLACE_MAP at :62-78). An
+// escape rune not followed by `_`/`%` falls through to the ORDINARY rules —
+// which for `%` means falling through to the METACHARACTER rules, so the SAME
+// rune is a literal in `'%%abc'` and a wildcard in `'%abc'`.
+func TestLikeMatch_ConstantPrefixBoundary(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
 		name    string
 		pattern string
 		escape  rune
-		// prefix is the constant literal prefix RFC-216 §4 requires an
-		// extractor to derive from pattern. Nothing computes it — no
-		// extractor exists — it is the value the two subjects witness.
-		prefix  string
-		matches string
-		rejects string
-		why     string
+		// prefix is the asserted constant literal prefix. Nothing
+		// computes it; the three witnesses below locate it.
+		prefix string
+		// matchA and matchB both match, and must diverge at byte
+		// offset len(prefix) — that is the maximality witness.
+		matchA string
+		matchB string
+		// rejectInRange starts with prefix and does NOT match.
+		rejectInRange string
+		why           string
 	}{
+		{
+			name:    "underscore_ends_the_prefix",
+			pattern: "a_b%", escape: 0, prefix: "a",
+			matchA: "aXb", matchB: "aYb", rejectInRange: "aXXb",
+			why: "The scan stops at the first unescaped wildcard, so only \"a\" is " +
+				"constant. `_` consumes exactly one rune and it is not pinned to any " +
+				"value, which is what the two matched subjects show.",
+		},
+		{
+			name:    "escaped_wildcard_stays_inside_the_prefix",
+			pattern: "a!%b%", escape: '!', prefix: "a%b",
+			matchA: "a%b", matchB: "a%bZ", rejectInRange: "a%b\nZ",
+			why: "`!%` is the `<esc>%` entry, so the `%` is a LITERAL and belongs IN the " +
+				"prefix. A scanner that stopped at the first `%` byte would derive \"a\" " +
+				"— sound but three bytes shorter, i.e. a needlessly wide range. The " +
+				"rejected subject is the RFC-216 §3 superset witness: the trailing `%` " +
+				"is `.*` with no DOTALL, so it cannot cross the internal \\n.",
+		},
+		{
+			name:    "escape_before_an_ordinary_char_is_itself_the_literal",
+			pattern: "a!b%", escape: '!', prefix: "a!b",
+			matchA: "a!b", matchB: "a!bZ", rejectInRange: "a!b\nZ",
+			why: "`!` before an ordinary character opens no escape entry, so the `!` " +
+				"itself is the literal and the `b` is read normally. A scanner using the " +
+				"usual \"escape makes the next character literal\" reading derives \"ab\", " +
+				"which no matched subject begins with — the dropped-rows direction.",
+		},
 		{
 			name:    "escape_rune_is_percent_escaped_pair_is_literal",
 			pattern: "%%abc", escape: '%', prefix: "%abc",
-			matches: "%abc", rejects: "abc",
-			why: "`%%` is the `<esc>%` entry, so a LITERAL `%` opens the prefix. If the " +
-				"two subjects swap verdicts, `%%` is behaving as a wildcard and the " +
-				"derived prefix is empty rather than \"%abc\".",
+			matchA: "%abc", matchB: "%abc\n", rejectInRange: "%abcZ",
+			why: "`%%` is the `<esc>%` entry, so a LITERAL `%` opens the prefix. If `%%` " +
+				"were behaving as a wildcard the prefix would be empty, and matchA/matchB " +
+				"would no longer be pinned to a common \"%abc\". matchB is the ONE final " +
+				"line terminator Java's `$` tolerates, which is also why a wildcard-free " +
+				"pattern is not an equality.",
 		},
 		{
 			name:    "escape_rune_is_percent_before_ordinary_char_still_wildcards",
 			pattern: "%abc", escape: '%', prefix: "",
-			matches: "xabc", rejects: "xabd",
+			matchA: "xabc", matchB: "abc", rejectInRange: "xabd",
 			why: "`%` before an ordinary character matches no escape entry and falls " +
-				"through to the metacharacter rules, so it is the WILDCARD and the " +
-				"constant prefix is EMPTY. A rewrite must bail out here: deriving " +
-				"\"%abc\" would emit a range that excludes the matched subject, which " +
-				"the predicate accepts — dropped rows, the LOSING direction.",
+				"through to the METACHARACTER rules, so it is the WILDCARD and the " +
+				"constant prefix is EMPTY. Deriving \"%abc\" here would emit a range that " +
+				"excludes matchA, which the predicate accepts — dropped rows.",
 		},
 		{
 			name:    "no_escaped_escape_both_runes_stay_literal",
 			pattern: "a!!b%", escape: '!', prefix: "a!!b",
-			matches: "a!!bZZ", rejects: "ab",
+			matchA: "a!!b", matchB: "a!!bZ", rejectInRange: "a!!b\nZ",
 			why: "Java installs no `<esc><esc>` entry, so NEITHER `!` is consumed as an " +
-				"escape and both are literals: the prefix is \"a!!b\", four runes, not " +
-				"the three an escape-collapsing scanner would produce.",
+				"escape and both are literals: the prefix is \"a!!b\", four runes, not the " +
+				"three an escape-collapsing scanner would produce.",
 		},
 		{
 			name:    "dangling_escape_is_a_literal_in_the_prefix",
 			pattern: "abc!", escape: '!', prefix: "abc!",
-			matches: "abc!", rejects: "abc",
+			matchA: "abc!", matchB: "abc!\n", rejectInRange: "abc!Z",
 			why: "A dangling escape is neither malformed nor a no-match: it is a literal, " +
-				"so it belongs IN the prefix. Truncating to \"abc\" would emit a range " +
-				"containing the rejected subject — which is the superset direction the " +
-				"mandatory residual covers (RFC-216 §2).",
+				"so it belongs IN the prefix. Truncating to \"abc\" would leave matchA and " +
+				"matchB agreeing at offset 3, i.e. it is not maximal.",
 		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			if !strings.HasPrefix(c.matches, c.prefix) {
-				t.Fatalf("setup is wrong: matched subject %q is not in the byte-prefix "+
-					"range of %q", c.matches, c.prefix)
+
+			// SOUNDNESS. Fails when prefix is too long.
+			for _, m := range []string{c.matchA, c.matchB} {
+				if !LikeMatch(c.pattern, m, c.escape) {
+					t.Fatalf("LikeMatch(%q, %q, escape %q) = false, want true\n"+
+						"  asserted prefix: %q\n  %s", c.pattern, m, c.escape, c.prefix, c.why)
+				}
+				if !strings.HasPrefix(m, c.prefix) {
+					t.Fatalf("SOUNDNESS: %q matches %q (escape %q) but does not begin with "+
+						"the asserted prefix %q, so that prefix is TOO LONG — a range built "+
+						"from it would drop this row\n  %s",
+						m, c.pattern, c.escape, c.prefix, c.why)
+				}
 			}
-			if !LikeMatch(c.pattern, c.matches, c.escape) {
-				t.Fatalf("LikeMatch(%q, %q, %q) = false, want true\n  prefix under test: %q\n  %s",
-					c.pattern, c.matches, c.escape, c.prefix, c.why)
+
+			// MAXIMALITY. Fails when prefix is too short, including "".
+			n := len(c.prefix)
+			if byteAt(c.matchA, n) == byteAt(c.matchB, n) {
+				t.Fatalf("MAXIMALITY: %q and %q both match %q (escape %q) and agree at byte "+
+					"offset %d, so every match shares a LONGER prefix than the asserted %q — "+
+					"the asserted prefix is TOO SHORT, or these two witnesses no longer "+
+					"straddle the boundary\n  %s",
+					c.matchA, c.matchB, c.pattern, c.escape, n, c.prefix, c.why)
 			}
-			if LikeMatch(c.pattern, c.rejects, c.escape) {
-				t.Fatalf("LikeMatch(%q, %q, %q) = true, want false\n  prefix under test: %q\n  %s",
-					c.pattern, c.rejects, c.escape, c.prefix, c.why)
+
+			// RESIDUAL NECESSITY (RFC-216 §3).
+			if !strings.HasPrefix(c.rejectInRange, c.prefix) {
+				t.Fatalf("setup is wrong: %q is not inside the byte-prefix range of %q, so it "+
+					"witnesses nothing about the residual", c.rejectInRange, c.prefix)
+			}
+			if LikeMatch(c.pattern, c.rejectInRange, c.escape) {
+				t.Fatalf("RESIDUAL: LikeMatch(%q, %q, escape %q) = true, want false — this "+
+					"subject is inside the byte-prefix range of %q, so its rejection is what "+
+					"makes the range a STRICT superset and the residual LIKE mandatory\n  %s",
+					c.pattern, c.rejectInRange, c.escape, c.prefix, c.why)
 			}
 		})
 	}
+}
+
+// byteAt returns s[i], or -1 when i is past the end, so that "one subject ends
+// exactly at the prefix boundary" counts as divergence from one that continues.
+func byteAt(s string, i int) int {
+	if i >= len(s) {
+		return -1
+	}
+	return int(s[i])
 }
 
 // enumerateStrings returns every concatenation of alphabet elements

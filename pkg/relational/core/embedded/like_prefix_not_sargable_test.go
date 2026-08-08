@@ -9,16 +9,26 @@ import "testing"
 const rfc216Schema = `CREATE TABLE t2 (id BIGINT, status STRING, PRIMARY KEY(id))
 CREATE INDEX idx_status ON t2 (status)`
 
+// The two rules the PART 3 disabling experiment names. Hoisted because
+// DisabledRules treats an unrecognized name as INERT: a typo in one row's
+// literal turns that row into "disabling nothing changes nothing", which is
+// green. Sharing one constant per rule means a typo cannot be isolated to a
+// single-rule row — it also hits the both-off row, which then fails.
+const (
+	ruleMergeProjectionAndFetch = "MergeProjectionAndFetchRule"
+	ruleImplementProjection     = "ImplementProjectionRule"
+)
+
 // TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost pins the two
 // MEASUREMENTS RFC-216 rests on. Both are NEGATIVE results — they
 // record defects that are live at HEAD — so each assertion's failure
 // message names what a fix means rather than claiming a bug.
 //
 // A negative result cited only in prose is the exact defect class
-// RFC-216 §1.1 documents (`like_prefix_pushdown.yaml` asserts a
-// pushdown that never existed and cannot detect one). These two facts
-// are what make RFC-216's design question live, so they are asserted
-// against the planner rather than described.
+// RFC-216 documents in `like_prefix_pushdown.yaml`, which asserts a
+// pushdown that never existed and carries no assertion able to detect
+// one. These two facts are what make RFC-216's design question live,
+// so they are asserted against the planner rather than described.
 //
 // PART 1 — `LIKE 'prefix%'` is not sargable. `predicates.ComparisonLike`
 // is admitted by neither `isSargableComparisonForMatch` nor
@@ -33,30 +43,33 @@ CREATE INDEX idx_status ON t2 (status)`
 // the same structural condition:
 //
 //   - `ImplementProjectionRule` — a PLANNING-phase expression rule, via
-//     `findIndexScanPlan` (rule_implement_projection.go:66);
+//     `findIndexScanPlan` (rule_implement_projection.go:73);
 //   - `MergeProjectionAndFetchRule` — a PLANNING-phase implementation
 //     rule, via a direct `*RecordQueryIndexPlan` type assertion
 //     (rule_merge_projection_and_fetch.go:91), falling through to the
-//     :117-126 fallback when the assertion misses.
+//     :103 fallback when the assertion misses.
 //
 // Once `PushFilterThroughFetchRule` has pushed a residual below the
 // fetch, the fetch's inner is a `RecordQueryPredicatesFilterPlan`, and
 // neither the direct assertion nor `findIndexScanPlan` descends through
 // it, so the flag is dropped. Java has no such failure mode:
 // coveringness there is a distinct class,
-// `RecordQueryCoveringIndexPlan`, which deliberately does not implement
-// `RecordQueryPlanWithIndex`, so `Filter(CoveringIndexPlan)` keeps it.
+// `RecordQueryCoveringIndexPlan`, which does not implement
+// `RecordQueryPlanWithIndex` but HOLDS one as a field
+// (RecordQueryCoveringIndexPlan.java:74-78), so an intervening
+// `Filter` cannot lose it.
 //
 // PART 3 (subtest) — the disabling experiment that makes "TWO rules,
 // redundantly" a measurement rather than a reading of the source.
 //
-// This matters beyond cosmetics because `isSingularIndexScanWithFetch`
-// keys on `indexScanCount==1`, so an unstamped index scan counts as
-// "singular index scan with fetch" even at `fetchCount==0` and loses
-// cost-model criterion #7 to a primary scan. It does not change THIS
-// query's plan — criterion #3 separates the two candidates on residual
-// count long before #7 — which is precisely why the defect has stayed
-// invisible.
+// It matters beyond cosmetics because `isSingularIndexScanWithFetch`
+// (planning_cost_model.go:1389) returns true on `indexScanCount == 1`
+// before it ever consults `fetchCount`, so an unstamped index scan
+// counts as "singular index scan with fetch" at `fetchCount == 0` and
+// enters the cost model's contested tier. Whether that flips any
+// particular comparison is NOT asserted here and was never measured.
+// It does not change THIS query's plan, which is why the lost stamp
+// has stayed invisible.
 func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 	t.Parallel()
 
@@ -75,7 +88,9 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 				"path — but an IndexScan alone does not establish that a LIKE->range " +
 				"producer landed, and does not by itself establish a bug either: an " +
 				"all-residual match over a full index scan is a legal plan " +
-				"(rule_match_intermediate.go:1082). Check what the scan's BOUND is and " +
+				"(rule_match_intermediate.go:1082-1089 says so in as many words; the " +
+				"match is created at :1178 however many predicates stayed residual). " +
+				"Check what the scan's BOUND is and " +
 				"whether the residual LIKE is still applied above it — " +
 				"TestLikeMatch_NoPatternYieldsATightPrefixRange in " +
 				"cascades/predicates/comparisons_test.go says no LIKE pattern yields a " +
@@ -115,9 +130,8 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 			why: "The defect itself: same index, same projected columns, same covering " +
 				"entry — but a residual now sits between the fetch and the scan and the " +
 				"COVERING stamp is gone. If this string gains COVERING the stamp is being " +
-				"preserved through the residual, which is the fix RFC-216 §3.2 names as a " +
-				"prerequisite for CQ-33 on secondary indexes; update that section rather " +
-				"than this expectation.",
+				"preserved through the residual — the fix RFC-216's covering-stamp " +
+				"blocker asks for, so update the RFC rather than this expectation.",
 		},
 	}
 
@@ -140,10 +154,11 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 
 		// PART 3. The cases above pin the OBSERVABLE (this shape has the
 		// stamp, that shape lost it). They cannot pin the CAUSAL claim
-		// RFC-216 §3.2 rests on — that TWO rules stamp it and either one
-		// alone suffices — because they stay green if one of the two
-		// redundant stampers disappears entirely. A causal claim needs a
-		// disabling experiment, so this is one.
+		// RFC-216's covering-stamp blocker rests on — that TWO rules
+		// stamp it and either one alone suffices — because they stay
+		// green if one of the two redundant stampers disappears
+		// entirely. A causal claim needs a disabling experiment, so
+		// this is one.
 		//
 		// SCOPE: the direct, no-residual covering control ONLY. On the
 		// residual query the experiment measures something else —
@@ -165,15 +180,15 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 			why      string
 		}{
 			{
-				name: "merge_alone_off_stamp_survives", disabled: []string{"MergeProjectionAndFetchRule"},
+				name: "merge_alone_off_stamp_survives", disabled: []string{ruleMergeProjectionAndFetch},
 				want: stamped,
 				why: "ImplementProjectionRule stamps it independently. If this now " +
-					"differs, the two stampers are no longer redundant and RFC-216 " +
-					"§3.2's two-rule attribution needs re-deriving — the covering-stamp " +
-					"fix then has one site to change, not two.",
+					"differs, the two stampers are no longer redundant and RFC-216's " +
+					"two-rule attribution needs re-deriving — the covering-stamp fix " +
+					"then has one site to change, not two.",
 			},
 			{
-				name: "implement_projection_alone_off_stamp_survives", disabled: []string{"ImplementProjectionRule"},
+				name: "implement_projection_alone_off_stamp_survives", disabled: []string{ruleImplementProjection},
 				want: stamped,
 				why: "MergeProjectionAndFetchRule stamps it independently. Same " +
 					"consequence as above in the other direction.",
@@ -181,7 +196,7 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 			{
 				name: "both_off_stamp_is_gone",
 				disabled: []string{
-					"MergeProjectionAndFetchRule", "ImplementProjectionRule",
+					ruleMergeProjectionAndFetch, ruleImplementProjection,
 				},
 				want: unstamped,
 				why: "The load-bearing half: it is these TWO rules and nothing else that " +
