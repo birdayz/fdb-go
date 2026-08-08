@@ -55,6 +55,11 @@ permissions:
   contents: read
   # Required to list workflow-run artifacts via the REST API.
   actions: read
+  # Required by the pr-checks job to read pull requests and the check runs /
+  # commit statuses on their head commits.
+  pull-requests: read
+  checks: read
+  statuses: read
 
 jobs:
   reconcile:
@@ -157,3 +162,63 @@ jobs:
             exit 1
           fi
           echo "All $CHECKED nightly nets genuinely executed inside their limits."
+
+  pr-checks:
+    name: Every pull request carries the checks it claims
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # THE SAME DISEASE AS THE HEARTBEAT JOB ABOVE, one layer out.
+    #
+    # That job exists because a nightly that never ran looked identical to a
+    # nightly that ran clean. This one exists because a PULL REQUEST whose checks
+    # never ran looks identical to one whose checks passed — and it looks that way
+    # to GitHub itself, which is why no amount of care at the merge button fixes
+    # it. A pull request with zero concluded checks reports
+    # `mergeStateStatus: UNSTABLE`, not blocked, and `gh pr checks` prints
+    # "no checks reported on the '<branch>' branch". Nothing in either signal is
+    # an error, so the merge decision reads "nothing failed" out of "nothing ran".
+    #
+    # It has already cost this repository a merge. PR #637 (bot/frl-pin-bump) went
+    # into master with all six required checks ABSENT. Its runs were not missing;
+    # they were HELD at `action_required` by the repository's
+    # `all_external_contributors` approval policy, which covers github-actions[bot]
+    # because the bot is not a repository contributor. A held run never surfaces as
+    # a check run. And the bot's pull requests are not safe-by-construction just
+    # because they are small: #611, the same branch, merged with `Build, Lint &
+    # Test` concluded FAILURE.
+    #
+    # WHY THIS RUNS HERE and not as a check on the pull request itself. A gate that
+    # runs as a PR check cannot detect the state it is looking for: if runs are
+    # held, the gate is held too, and it reports nothing exactly when it has
+    # something to report. This job is `schedule`-triggered on the default branch,
+    # so the approval policy never touches it, and it makes assertions about OTHER
+    # pull requests. That is what keeps it from being a gate that can only pass when
+    # it is the thing running.
+    #
+    # WHAT IT CANNOT DO: it cannot block a merge. It is an alarm, not an interlock.
+    # The interlock is branch protection with required status checks, and this
+    # repository currently has NONE — `/branches/master/protection` returns 404 and
+    # `/rulesets` returns `[]`, so nothing has ever been required of any pull
+    # request, bot or human. Only the repository owner can change that. Until they
+    # do, this job is the detector and the owner is the interlock.
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Audit open and recently-merged pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # The expected check set is DERIVED from the workflow files rather than
+        # listed here, so a new pull_request-triggered job is required the moment
+        # it exists and nobody has to remember a second list. cmd/verify-pr-checks
+        # fails if that derivation ever comes back empty, because an empty
+        # expected set makes every pull request trivially compliant — the same
+        # fail-open shape this job exists to catch.
+        run: go run ./cmd/verify-pr-checks -merged-days 14
