@@ -253,6 +253,8 @@ jobs:
             -out "$GITHUB_WORKSPACE/pkg/relational/conformance/factorycorpus/testdata" \
             -findings "$GITHUB_WORKSPACE/factory-findings" \
             -manifest "$GITHUB_WORKSPACE/factory-manifest.json" \
+            -pr-body "$GITHUB_WORKSPACE/factory-pr-body.md" \
+            -run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             -seeds ${{ steps.params.outputs.seeds }} \
             -seed-start ${{ steps.params.outputs.start }} \
             -quota ${{ steps.params.outputs.quota }} \
@@ -313,13 +315,37 @@ jobs:
             echo "no new scenarios — the feature-vector frontier has flattened for this seed range"
             exit 0
           fi
-          {
-            echo "RFC-201 §5 factory batch ${{ steps.params.outputs.date }}."
-            echo
-            echo '```json'
-            cat factory-manifest.json
-            echo '```'
-          } > pr-body.md
-          git commit -F pr-body.md
+          # The body is RENDERED BY THE TOOL (cmd/factory-run -pr-body), not
+          # assembled here. This step used to inline the whole manifest, and the
+          # manifest embeds the census's two per-scenario maps — whole-corpus
+          # state, one entry per committed scenario. That crossed GitHub's 65536
+          # character limit at roughly 500 scenarios and reached ~640KB at 5000,
+          # so every run died on "GraphQL: Body is too long (createPullRequest)"
+          # AFTER committing and pushing the branch. Dropping the maps needed
+          # jq, which nothing else in this repo depends on; a typed renderer with
+          # tests (factory.Manifest.SummaryMarkdown) is the durable answer.
+          if [ ! -s factory-pr-body.md ]; then
+            echo "::error::factory-pr-body.md is missing or empty — the tool did not render a PR body, and a batch PR with no description is not reviewable"
+            exit 1
+          fi
+          # Belt and braces, and deliberately NOT redundant with the renderer's
+          # own budget: this guard is what holds if someone later widens a field
+          # the renderer treats as bounded. Cut by CHARACTER (GitHub counts
+          # characters) and leave a marker — a body that stops mid-sentence with
+          # no marker reads as a generator bug.
+          LIMIT=65536
+          CHARS=$(wc -m < factory-pr-body.md)
+          if [ "$CHARS" -gt "$LIMIT" ]; then
+            echo "::warning::PR body is ${CHARS} characters, over GitHub's ${LIMIT}; truncating with a marker. The full manifest is in the factory-findings artifact."
+            {
+              head -c 60000 factory-pr-body.md
+              printf '\n\n---\n\n**[truncated: body exceeded GitHub'"'"'s %s-character limit. Full `factory-manifest.json` is in the factory-findings artifact of this run.]**\n' "$LIMIT"
+            } > pr-body.trunc.md
+            mv pr-body.trunc.md factory-pr-body.md
+          fi
+          # The COMMIT message is a short subject line, not the body: a 640KB
+          # commit message is its own defect, and it survived only because git
+          # has no limit where the GitHub API does.
+          git commit -m "factory: batch ${{ steps.params.outputs.date }} (${{ steps.params.outputs.seeds }} seeds from ${{ steps.params.outputs.start }})"
           git push -u origin "$BRANCH"
-          gh pr create --title "factory: batch ${{ steps.params.outputs.date }}" --body-file pr-body.md
+          gh pr create --title "factory: batch ${{ steps.params.outputs.date }}" --body-file factory-pr-body.md

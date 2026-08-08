@@ -436,6 +436,7 @@ go_test(
         "row_version_pseudofield_fdb_test.go",
         "row_version_star_mixed_sources_fdb_test.go",
         "rowdiff_smoke_test.go",
+        "rowdiff_tally_test.go",
         "rows_affected_probe_test.go",
         "runtime_integer_float_projection_fdb_test.go",
         "runtime_signed_zero_range_set_fdb_test.go",

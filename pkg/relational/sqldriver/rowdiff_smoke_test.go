@@ -11,6 +11,7 @@ package sqldriver_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strconv"
 	"testing"
@@ -106,9 +107,11 @@ func TestFDB_RowDiff_Smoke(t *testing.T) {
 		start := time.Now()
 		histogram := map[string]int{}
 		executed := 0
+		var tally rowdiffTally
 		for i := uint64(0); i < seedCount; i++ {
 			res := rowdiff.RunSeed(ctx, setup, dbPath, clusterFilePath, seedStart+i)
 			reportRowdiff(t, res)
+			tally.add(res)
 			for fam, n := range res.Histogram {
 				histogram[fam] += n
 			}
@@ -118,6 +121,7 @@ func TestFDB_RowDiff_Smoke(t *testing.T) {
 		t.Logf("rowdiff: seeds %d..%d (%d), %d comparisons in %s (%.1f seeds/s); plan-family histogram: %v",
 			seedStart, seedStart+seedCount-1, seedCount, executed, elapsed.Round(time.Millisecond),
 			float64(seedCount)/elapsed.Seconds(), histogram)
+		tally.report(t, "random_seeds", executed)
 	})
 }
 
@@ -152,9 +156,11 @@ func TestFDB_RowDiff_Paging(t *testing.T) {
 	start := time.Now()
 	histogram := map[string]int{}
 	executed := 0
+	var tally rowdiffTally
 	for i := uint64(0); i < seedCount; i++ {
 		res := rowdiff.RunSeedPaged(ctx, setup, dbPath, clusterFilePath, seedStart+i, scanLimit)
 		reportRowdiff(t, res)
+		tally.add(res)
 		for fam, n := range res.Histogram {
 			histogram[fam] += n
 		}
@@ -163,6 +169,93 @@ func TestFDB_RowDiff_Paging(t *testing.T) {
 	t.Logf("rowdiff PAGED(scanLimit=%d): seeds %d..%d (%d), %d comparisons in %s; plan-family histogram: %v",
 		scanLimit, seedStart, seedStart+seedCount-1, seedCount, executed,
 		time.Since(start).Round(time.Millisecond), histogram)
+	tally.report(t, "paging", executed)
+}
+
+// rowdiffTally counts the sweep's TYPED outcomes, which nothing downstream of
+// RunSeed was reading.
+//
+// rowdiff already classifies every seed as OK / MISMATCH / INFRA
+// (rowdiff.OutcomeKind, RFC-182 §4) and cmd/sql-diff-stress already spends that
+// distinction as exit 0/1/2. The Go test — which is what the nightly actually
+// runs — collapsed all of it into t.Errorf, so the job conclusion could not
+// distinguish "the cluster died" from "the engine returned wrong rows", and a
+// reader faced with a wall of INFRA lines reasonably concludes the former.
+//
+// Measured on the 2026-08-07 nightly (run 31143737482): 257 INFRA lines and 16
+// MISMATCH lines in the same log. The mismatches were real — four seeds, a
+// redundant in-memory sort the ordering oracle caught — and they were invisible
+// under the infra noise, in a sweep that had been red every night for a week
+// with nobody reading it. This tally is what makes the finding count a number
+// somebody can see rather than a grep somebody has to think to run.
+type rowdiffTally struct {
+	seeds, ok, mismatch, infra int
+	mismatchRows, declines     int
+	mismatchSeeds              []uint64
+}
+
+func (a *rowdiffTally) add(res *rowdiff.SeedResult) {
+	a.seeds++
+	a.declines += len(res.Declines)
+	// Read the TYPED kind rather than re-deriving it from the message text:
+	// finalizeResult already made this decision and a second, independent
+	// derivation here is how the two drift apart.
+	switch res.Kind {
+	case rowdiff.OutcomeMismatch:
+		a.mismatch++
+		a.mismatchRows += len(res.Mismatches)
+		a.mismatchSeeds = append(a.mismatchSeeds, res.Seed)
+	case rowdiff.OutcomeInfra:
+		a.infra++
+	default:
+		a.ok++
+	}
+}
+
+// report emits the one greppable line the workflow summary leads with, and
+// enforces the VACUITY FLOOR.
+//
+// The floor is the half that has no equivalent anywhere in this harness today:
+// a sweep whose cluster died at seed 3 executes zero comparisons and reports
+// red in a way indistinguishable from a sweep that found a soundness bug. Those
+// are opposite states — one is the instrument dark, the other is the instrument
+// working — and a net that cannot tell them apart trains people to read every
+// red as the first. The framing is borrowed rather than invented:
+// cmd/factory-run's batchExit already says "a factory run that writes no test
+// is a broken pipeline, not a quiet success", and cmd/fuzzrun's summary already
+// flips to an error when its benign class swallows the run.
+//
+// Deliberately NOT an abstain/decline: with real mismatches present in the very
+// run that motivated this, a mechanism that downgraded an all-INFRA sweep to
+// "declined" would have been the wrong fix and would not have made this red go
+// away. The red is CORRECT. What was broken is that it said nothing about why.
+func (a *rowdiffTally) report(t *testing.T, lane string, executed int) {
+	t.Helper()
+	t.Logf("ROWDIFF_TALLY lane=%s seeds=%d ok=%d mismatch=%d infra=%d comparisons=%d "+
+		"mismatchRows=%d declines=%d mismatchSeeds=%v",
+		lane, a.seeds, a.ok, a.mismatch, a.infra, executed,
+		a.mismatchRows, a.declines, a.mismatchSeeds)
+
+	if msg := a.vacuous(lane, executed); msg != "" {
+		t.Errorf("%s", msg)
+	}
+}
+
+// vacuous returns the vacuity complaint, or "" when the sweep measured
+// something. Split out as a PURE function of explicit state so the floor can be
+// pinned from a unit test rather than only from a live sweep: the arm only
+// fires when a cluster dies, which is precisely the condition a corpus run
+// cannot be relied on to reach.
+func (a *rowdiffTally) vacuous(lane string, executed int) string {
+	if a.seeds == 0 || executed > 0 {
+		return ""
+	}
+	return fmt.Sprintf("ROWDIFF_VACUOUS lane=%s: %d seeds ran and NOT ONE comparison was executed "+
+		"(%d infra, %d mismatch). The sweep proved nothing about the engine — this is the "+
+		"instrument dark, not the engine clean, and it is a different failure from a "+
+		"soundness finding even though both land as a red job. Fix the cluster and re-run; "+
+		"do not read this run as evidence either way.",
+		lane, a.seeds, a.infra, a.mismatch)
 }
 
 func reportRowdiff(t *testing.T, res *rowdiff.SeedResult) {
