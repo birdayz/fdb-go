@@ -1,6 +1,6 @@
 # RFC-218 — The projected-EXISTS fold must read the sort key's resolved path, not a re-derived name
 
-**Status:** DRAFT rev 3 — rev 2 ACKed; rev 3 adds the YY1 measurement, which changes §2's decision from "carry the value" to "carry the path, re-anchor the ordinal". Awaiting Graefe + Torvalds on the reworked §2b.
+**Status:** DRAFT rev 4 — rev 3 NAK'd on §2b's primitives (both cited mechanisms refuse the target population, so "fail closed" degenerated to §3's rejected alternative). Rev 4 exercises them, measures what declining produces, and specifies a derived-and-asserted re-anchor. Awaiting Graefe + Torvalds.
 **Origin:** RFC-197 ratchet entry `cascades_translator.go # sortKeyFieldRef`, whose stated
 mechanisms were measured false; the live bug behind it is this one
 **Scope:** `pkg/relational/core/query/cascades_translator.go` (the `sortSource` helpers), plus
@@ -195,18 +195,89 @@ silently wrong on the join. A design validated on the shape you happen to have i
 defect has now nearly survived three laps.
 
 **Decision.** The fold carries the resolved **path**, and **re-anchors its root ordinal in the
-layout the fold actually evaluates against**, failing closed when that layout cannot be stated.
-It does not carry the value's ordinals verbatim. Concretely, in both arms: when `k.Value` is a
-`*FieldValue` whose `Resolved` carries more than one accessor, take the accessor *path* and
-re-state the root ordinal against the fold's flowed row (the same re-anchoring the NLJ rule's
-`rebaseOuterLegValue` performs for leg references), rather than re-minting from a rendered
-string **or** trusting a source-relative ordinal.
+layout the fold actually evaluates against**, deriving that ordinal rather than trusting the
+carried one. What follows is the exercised version; rev 3 named two mechanisms and both were
+wrong.
 
-The machinery for the check already exists and is the right shape: `FieldPath.Domain` records
-the layout the root ordinal indexes, and `FieldPath.OrdinalIn(frontier)` is documented to
-**fail closed** — including, explicitly, on a multi-accessor fused path whose root addresses an
-outer layout. The design must consult it rather than assume; a path whose domain cannot be
-reconciled with the fold's frontier must decline the fold, not guess.
+### 2c. Neither guard I cited can perform the operation — exercised
+
+Rev 3 cited `OrdinalIn` for the domain check and `rebaseOuterLegValue` for the re-anchor. Both
+were read, not run. Run, on the exact WW3 shape (`{N@1}{SK@0}`, root stated in the `t1` domain):
+
+```
+AAA1  OrdinalIn  multi  vs MATCHING   domain -> ordinal=0 ok=false   (accessors=2)
+      OrdinalIn  multi  vs MISMATCHED domain -> ordinal=0 ok=false
+      OrdinalIn  single vs MATCHING   domain -> ordinal=1 ok=true    [CONTROL]
+
+AAA2  rebaseOuterLegValueOrdinal[FlatRun] multi-accessor -> ok=false (unchanged)
+      rebaseOuterLegValueOrdinal[Nested]  multi-accessor -> ok=false (unchanged)
+      rebaseOuterLegValueOrdinal[FlatRun] single-accessor -> ok=true  [CONTROL]
+```
+
+`OrdinalIn` refuses on **arity before it ever reads the domain** (`values.go:487-489`,
+`len(p.Accessors) != 1` precedes `p.Domain != frontier`). So it returns `false` for the entire
+target population and **cannot distinguish WW2 — where the domain matches and the answer should
+succeed — from WW3, where it must decline.** The rev 3 citation was true and vacuously so.
+
+`rebaseOuterLegValueOrdinal` — the *ordinal* twin, which is the one the lazy rebase's own panic
+points to for pinned references, and which rev 3 did not cite at all — **also declines every
+multi-accessor path**, under both leg kinds, for a naming-collision reason unrelated to domains.
+Both controls pass, so the harness is exercising the real path and the declines are the
+functions' own.
+
+That is now **five** instances in this series of "the other path already does this" failing on
+contact. The rule I am adopting for the rest of this RFC: **a cited mechanism is not evidence
+until it has been run against the shape in question, with a control that passes.**
+
+**Consequence, and it is disqualifying for rev 3 as written:** since both mechanisms refuse the
+whole population unconditionally, "fail closed when the layout cannot be stated" degenerates to
+**fail closed always** — which is §3's rejected alternative, applied to every input, arrived at
+by accident.
+
+### 2d. What fail-closed produces — measured, not assumed
+
+Three outcomes were possible and they are not interchangeable. Measured against the two declines
+that exist today (LEFT-join-with-ORDER-BY, and a computed non-projected key):
+
+```
+DECLINE -> ERROR: 0AF00: projected EXISTS in this query shape is not yet supported
+DECLINE -> ERROR: 0AF00: projected EXISTS in this query shape is not yet supported
+```
+
+A **clean error**, not a silently-dropped `ORDER BY` and not rows in arbitrary order. §3's
+objection to declining therefore rests on the outcome it assumed, and that assumption holds: a
+decline is loud. Had it been a dropped ordering, declining would have been disqualifying
+outright — a silently-wrong order is worse than the wrong-column hazard §2b exists to avoid,
+since both are quiet and the wrong column at least yields a stable answer.
+
+### 2e. The re-anchor: derived and asserted, not carried
+
+The capability does exist; what does not exist is an entry path to it, and that is code to
+write, not a wall. `NewFusedFieldValueOfNestedOrdinal` builds exactly the required shape —
+exercised:
+
+```
+AAA3  NewFusedFieldValueOfNestedOrdinal(mergedQOV, slot=3, t1Type, legOrd=1)
+      -> accessors={N@3}{N@1}  domain=domain(4;2:ID;5:T1_ID;3:ID2;1:N)
+```
+
+A two-step path whose **root ordinal addresses the merged row** and whose **domain is the merged
+domain**. That is the re-anchor, constructed by an existing primitive. The build for
+`{N@1}{SK@0}` is the same composition: bake the root against the fold's flowed layout, then
+`FieldPath.WithSuffix` the surviving accessors.
+
+**The rule, and it is a design requirement rather than a test obligation:** the re-anchor must
+**derive** the root ordinal from the flowed layout by name-or-identity lookup and then **assert
+agreement** with the carried one — never accept the carried ordinal because a domain token
+compared equal. The coincidence case is why: `[ID N]` puts `N` at 1, and any merged layout that
+also happens to put `N` at 1 makes the re-anchor a no-op that is correct **by accident** and
+passes a token comparison. Deriving-and-asserting confirms the coincidence instead of assuming
+it; a disagreement declines the fold (§2d: loudly).
+
+Since `OrdinalIn` cannot serve (§2c), the domain check the design needs is the assertion above,
+not that function. If a shared helper is wanted, it is a new one — an arity-tolerant
+`RootOrdinalIn(frontier)` that answers for a multi-accessor path's root — and building it is
+part of this work.
 
 **Why the discriminator is multi-accessor, stated as a principle rather than a threshold:** a
 single-accessor `Resolved` is fully expressible by `Field`, so rendering it loses nothing.
