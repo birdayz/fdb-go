@@ -32,8 +32,7 @@ import (
 // THE SECOND FLOOR, AND WHY IT IS A FLOOR RATHER THAN A ZERO. This gate used to
 // pass one number, Derivations, and record in prose that the census's "usable
 // finding" — a ZERO on the DOTTED counter — was both unasserted and FALSE:
-// measured over this corpus, `DOTTED 683, plain 157511` (and 681/157699 on the
-// run that added the assertion). A live finding written
+// measured over this corpus, `DOTTED 683, plain 157511`. A live finding written
 // into a comment is unreachable work, so it is now asserted instead.
 //
 // It is asserted in the direction the measurement left it. The claim the census
@@ -50,9 +49,16 @@ import (
 // stand in for it — plain outnumbers dotted about 230:1, so DOTTED can fall to
 // zero with the total still three orders of magnitude clear.
 func assertDottedRowTypeProducerCensus(w io.Writer) bool {
-	// Both floored an order of magnitude below their full-corpus measurements:
-	// three full-corpus readings of 157511+683, 157935+841 and 157699+681 total
-	// derivations, of which 683, 841 and 681 respectively were dotted.
+	// Both floored an order of magnitude below their full-corpus measurements.
+	// Four readings, DOTTED then plain: 683/157511, 841/157935, 681/157699 and
+	// 743/157905 — an observed DOTTED spread of 681..841, which is what "the
+	// integer is corpus-traffic dependent" looks like and why 50 has that much
+	// headroom below it.
+	//
+	// The last of those is the run that first exercised the DOTTED floor rather
+	// than merely supplying a number for it: whole corpus, floors NOT withheld,
+	// 1487 tests passed. A floor justified only by readings taken before it
+	// existed has never been shown to pass anything.
 	floor := &values.DottedRowTypeProducerFloor{Derivations: 100, Dotted: 50}
 	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
 		fmt.Fprintf(w, "dotted row-type producer census: population floors NOT checked "+

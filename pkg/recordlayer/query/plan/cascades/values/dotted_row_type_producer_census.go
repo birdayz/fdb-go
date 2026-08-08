@@ -24,8 +24,9 @@ import (
 // the producer set — that the generic constructor path is not one of them.
 //
 // THE ANSWER, MEASURED. That claim is false, and the counter says so: DOTTED is
-// NOT zero. Three full-corpus runs read DOTTED 683 (plain 157511), DOTTED 841
-// (plain 157935) and DOTTED 681 (plain 157699), and the witness shapes (`[K C.CV]`, `[AID K C.CV]`,
+// NOT zero. Four full-corpus runs read DOTTED 683 (plain 157511), DOTTED 841
+// (plain 157935), DOTTED 681 (plain 157699) and DOTTED 743 (plain 157905) — an
+// observed spread of 681..841 — and the witness shapes (`[K C.CV]`, `[AID K C.CV]`,
 // `[TID K C.C.CV]`, `[ID NAME O.I.QTY]`) carry exactly the labels the executor's
 // dotted arm answers on. `RecordConstructorValue.Type()` IS a producer of the
 // dotted row. The integer is corpus-traffic dependent and both readings are
@@ -258,7 +259,7 @@ func assertDottedRowTypeProducerCensusState(w io.Writer, c dottedRowTypeCounters
 			"  ALARM DIRECTION: collapse — and note the direction INVERTED from what this census\n"+
 			"  was built to check. The original claim was that RecordConstructorValue.Type is NOT\n"+
 			"  a producer of the LEG.COL-shaped row, i.e. that DOTTED would be ZERO. It was\n"+
-			"  measured at 681, 683 and 841 over three full-corpus runs, refuting it, and RFC-212 §1.1\n"+
+			"  measured at 681..841 over four full-corpus runs, refuting it, and RFC-212 §1.1\n"+
 			"  relocated the leg-table population onto this path on exactly that evidence.\n"+
 			"  WHAT A COLLAPSE RE-ARMS: that placement decision. The total-derivations floor\n"+
 			"  CANNOT see this — plain outnumbers dotted roughly 230:1, so DOTTED can fall to\n"+

@@ -139,7 +139,10 @@ func TestDottedRowTypeProducerCensus_DottedFloorWatchesTheFinding(t *testing.T) 
 		t.Fatalf("the total-derivations floor also fired, so this case does not isolate the DOTTED "+
 			"floor: %s", msg)
 	}
-	for _, want := range []string{"ALARM DIRECTION: collapse", "INVERTED", "683"} {
+	// The measured spread must appear in the text, not just the alarm direction: a
+	// reader deciding whether a low DOTTED is a collapse or normal drift needs the
+	// range the corpus actually produces.
+	for _, want := range []string{"ALARM DIRECTION: collapse", "INVERTED", "681..841"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("the DOTTED floor's failure text omits %q. A guard whose direction and measured "+
 				"expectation are unstated gets relaxed to match the run rather than "+
@@ -153,6 +156,7 @@ func TestDottedRowTypeProducerCensus_DottedFloorWatchesTheFinding(t *testing.T) 
 		{Dotted: 683, Plain: 157511},
 		{Dotted: 841, Plain: 157935},
 		{Dotted: 681, Plain: 157699},
+		{Dotted: 743, Plain: 157905},
 	} {
 		var w strings.Builder
 		if assertDottedRowTypeProducerCensusState(&w, ok, floor) {
@@ -185,8 +189,8 @@ func TestDottedRowTypeProducerCensus_TotalFloorStillWatchesTheInstrument(t *test
 }
 
 // The floor's failure text has to say what a collapse re-arms. The census's
-// finding is already in and it is NOT a zero — DOTTED came back 681, 683 and 841 over
-// three full-corpus runs, so this path IS the producer of the dotted row. What the
+// finding is already in and it is NOT a zero — DOTTED came back 681..841 over
+// four full-corpus runs, so this path IS the producer of the dotted row. What the
 // floor still guards is the READING: an unreached counter prints identically to a
 // measured one, so a collapse would silently un-measure the producer set rather
 // than report a quiet corpus.
