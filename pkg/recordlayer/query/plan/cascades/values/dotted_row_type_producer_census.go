@@ -24,12 +24,18 @@ import (
 // the producer set — that the generic constructor path is not one of them.
 //
 // THE ANSWER, MEASURED. That claim is false, and the counter says so: DOTTED is
-// NOT zero. Two full-corpus runs read DOTTED 683 (plain 157511) and DOTTED 841
-// (plain 157935), and the witness shapes (`[K C.CV]`, `[AID K C.CV]`,
+// NOT zero. Three full-corpus runs read DOTTED 683 (plain 157511), DOTTED 841
+// (plain 157935) and DOTTED 681 (plain 157699), and the witness shapes (`[K C.CV]`, `[AID K C.CV]`,
 // `[TID K C.C.CV]`, `[ID NAME O.I.QTY]`) carry exactly the labels the executor's
 // dotted arm answers on. `RecordConstructorValue.Type()` IS a producer of the
 // dotted row. The integer is corpus-traffic dependent and both readings are
 // legitimate; the load-bearing fact is "not zero".
+//
+// AND THAT FACT IS NOW ASSERTED, by DottedRowTypeProducerFloor.Dotted. It was not,
+// for as long as the only floor was the total: plain runs ~230x dotted, so DOTTED
+// could return to zero with the total still three orders of magnitude clear, and
+// the refutation the placement decision below rests on would have evaporated
+// against a green build.
 //
 // WHAT THAT SETTLES. It does not make the population unsafe — it relocates it.
 // The seed sites do not derive this row themselves; they build
@@ -68,11 +74,48 @@ import (
 
 const dottedRowTypeWitnessCap = 64
 
+// dottedRowTypeCounters is the census state, held apart from the process globals
+// so every arm below — both classes, the witness cap, the witness dedup, and both
+// floors — can be driven from a unit test over state it states literally.
+type dottedRowTypeCounters struct {
+	Dotted    int
+	Plain     int
+	Witnesses []string
+}
+
+// record classifies ONE derivation and folds it in.
+func (c *dottedRowTypeCounters) record(fields []Field) {
+	dotted := false
+	for i := range fields {
+		if nameIsQualified(fields[i].Name) {
+			dotted = true
+			break
+		}
+	}
+	if !dotted {
+		c.Plain++
+		return
+	}
+	c.Dotted++
+	if len(c.Witnesses) >= dottedRowTypeWitnessCap {
+		return
+	}
+	names := make([]string, 0, len(fields))
+	for i := range fields {
+		names = append(names, fields[i].Name)
+	}
+	w := "[" + strings.Join(names, " ") + "]"
+	for _, seen := range c.Witnesses {
+		if seen == w {
+			return
+		}
+	}
+	c.Witnesses = append(c.Witnesses, w)
+}
+
 var (
-	dottedRowTypeMu        sync.Mutex
-	dottedRowTypeDotted    int
-	dottedRowTypePlain     int
-	dottedRowTypeWitnesses []string
+	dottedRowTypeMu     sync.Mutex
+	dottedRowTypeCounts dottedRowTypeCounters
 )
 
 // nameIsQualified reports whether a field name carries a dotted qualifier, as
@@ -90,56 +133,44 @@ func nameIsQualified(name string) bool {
 // record-constructor path, cut by whether the row it describes is the DOTTED
 // `LEG.COL` shape. Callers must guard on LegIdentityCensusEnabled().
 func RecordDottedRowTypeDerivation(fields []Field) {
-	dotted := false
-	for i := range fields {
-		if nameIsQualified(fields[i].Name) {
-			dotted = true
-			break
-		}
-	}
 	dottedRowTypeMu.Lock()
 	defer dottedRowTypeMu.Unlock()
-	if !dotted {
-		dottedRowTypePlain++
-		return
-	}
-	dottedRowTypeDotted++
-	if len(dottedRowTypeWitnesses) >= dottedRowTypeWitnessCap {
-		return
-	}
-	names := make([]string, 0, len(fields))
-	for i := range fields {
-		names = append(names, fields[i].Name)
-	}
-	w := "[" + strings.Join(names, " ") + "]"
-	for _, seen := range dottedRowTypeWitnesses {
-		if seen == w {
-			return
-		}
-	}
-	dottedRowTypeWitnesses = append(dottedRowTypeWitnesses, w)
+	dottedRowTypeCounts.record(fields)
+}
+
+// dottedRowTypeSnapshot deep-copies the process counters.
+func dottedRowTypeSnapshot() dottedRowTypeCounters {
+	dottedRowTypeMu.Lock()
+	defer dottedRowTypeMu.Unlock()
+	out := dottedRowTypeCounts
+	out.Witnesses = make([]string, len(dottedRowTypeCounts.Witnesses))
+	copy(out.Witnesses, dottedRowTypeCounts.Witnesses)
+	return out
 }
 
 // DottedRowTypeProducerCensus reports the counts and the distinct dotted row
 // shapes the generic path derived.
 func DottedRowTypeProducerCensus() (dotted, plain int, witnesses []string) {
-	dottedRowTypeMu.Lock()
-	defer dottedRowTypeMu.Unlock()
-	out := make([]string, len(dottedRowTypeWitnesses))
-	copy(out, dottedRowTypeWitnesses)
-	return dottedRowTypeDotted, dottedRowTypePlain, out
+	c := dottedRowTypeSnapshot()
+	return c.Dotted, c.Plain, c.Witnesses
 }
 
 // ResetDottedRowTypeProducerCensus clears the counters.
 func ResetDottedRowTypeProducerCensus() {
 	dottedRowTypeMu.Lock()
 	defer dottedRowTypeMu.Unlock()
-	dottedRowTypeDotted, dottedRowTypePlain, dottedRowTypeWitnesses = 0, 0, nil
+	dottedRowTypeCounts = dottedRowTypeCounters{}
 }
 
-// FormatDottedRowTypeProducerCensus renders the census for a harness to log.
+// FormatDottedRowTypeProducerCensus renders the process census for a harness to
+// log.
 func FormatDottedRowTypeProducerCensus() string {
-	dotted, plain, witnesses := DottedRowTypeProducerCensus()
+	return formatDottedRowTypeProducerCensus(dottedRowTypeSnapshot())
+}
+
+// formatDottedRowTypeProducerCensus renders EXPLICIT state.
+func formatDottedRowTypeProducerCensus(c dottedRowTypeCounters) string {
+	dotted, plain, witnesses := c.Dotted, c.Plain, c.Witnesses
 	var b strings.Builder
 	fmt.Fprintf(&b, "dotted row-type producers (RecordConstructorValue.Type derivations): "+
 		"DOTTED %d, plain %d", dotted, plain)
@@ -155,48 +186,91 @@ func FormatDottedRowTypeProducerCensus() string {
 	return b.String()
 }
 
-// DottedRowTypeProducerFloor is the minimum number of derivations this census
-// must see over a whole run.
+// DottedRowTypeProducerFloor carries the two populations this census refuses to
+// let collapse silently. They are DIFFERENT claims and neither can stand in for
+// the other.
 //
-// The floor guards the INSTRUMENT, not the finding. The finding is already in:
-// DOTTED is non-zero (683 and 841 over two full-corpus runs), so this path is a
-// producer of the dotted row. What the floor still protects is the reading
-// itself — a run reporting no derivations at all is reporting a broken counter,
-// not a quiet corpus. `plain` is what floors it: `RecordConstructorValue.Type()`
-// is called constantly by any query that constructs a record, and both readings
-// clear a floor of 100 by three orders of magnitude, which is the floor working.
+//   - Derivations floors the TOTAL traffic (dotted + plain) and guards the
+//     INSTRUMENT. A run reporting no derivations at all is reporting a broken
+//     counter, not a quiet corpus. `plain` is what floors it in practice:
+//     `RecordConstructorValue.Type()` is called by any query that constructs a
+//     record, and both full-corpus readings clear 100 by three orders of
+//     magnitude.
+//
+//   - Dotted floors the FINDING, and it is the reason this struct has two fields.
+//     The finding is "DOTTED is not zero" — that `RecordConstructorValue.Type()`
+//     IS a producer of the `LEG.COL`-shaped row, refuting the producer-set claim
+//     RFC-212 §3.4 originally asserted rather than measured, and relocating the
+//     leg-table population to this path (§1.1, §3.5). Derivations cannot watch
+//     that: plain outnumbers dotted about 230:1 (157699 to 681), so DOTTED could return to zero
+//     and the total floor would still pass by three orders of magnitude. The
+//     finding was live, load-bearing and unasserted; this is the assertion.
+//
+// ALARM DIRECTION ON Dotted: COLLAPSE, and it is that way round precisely because
+// the expected value moved. The claim this census was built to test was DOTTED ==
+// 0; the measurement refuted it, so zero stopped being the steady state and a
+// floor — not a hard zero — is what a refuted zero turns into. A return to zero
+// now means either the corpus stopped reaching the dotted path or the
+// discriminator broke, and in both cases §1.1's placement decision has quietly
+// lost the evidence it rests on while the build stays green.
+//
+// If a later change makes zero legitimate again — the dotted `LEG.COL` row
+// retired, the executor's dotted arm gone — the direction INVERTS with it: the
+// alarm becomes growth and the guard becomes a hard zero. Reconcile it with the
+// new expected value; do not lower it to whatever the run produced, and do not
+// delete it, which would leave the revival unwatched.
+//
+// A nil floor, and equally a zero-valued one, is a NO-OP by construction: the
+// shape a `-test.run`-narrowed corpus needs, where a whole-run population claim
+// has nothing it can honestly decide.
 type DottedRowTypeProducerFloor struct {
 	Derivations int
+	Dotted      int
 }
 
-// AssertDottedRowTypeProducerCensus checks the floor and reports the finding.
-//
-// It does NOT hard-zero the DOTTED counter, and the measurement is why that is
-// the right shape rather than a concession: DOTTED came back non-zero (683 and
-// 841). A non-zero is not a defect — it is the answer to a design question, and
-// the answer determines WHERE a leg table must be attached (at `Type()`, the one
-// producer), not whether the tree is broken. Asserting on it would convert a
-// measurement into a veto on a change nobody has made yet.
+// AssertDottedRowTypeProducerCensus checks the process census against a floor.
 func AssertDottedRowTypeProducerCensus(w io.Writer, floor *DottedRowTypeProducerFloor) bool {
-	dotted, plain, _ := DottedRowTypeProducerCensus()
-	if floor == nil || floor.Derivations == 0 {
+	return assertDottedRowTypeProducerCensusState(w, dottedRowTypeSnapshot(), floor)
+}
+
+// assertDottedRowTypeProducerCensusState is the whole decision over EXPLICIT
+// state.
+func assertDottedRowTypeProducerCensusState(w io.Writer, c dottedRowTypeCounters, floor *DottedRowTypeProducerFloor) bool {
+	if floor == nil {
 		return false
 	}
-	if dotted+plain >= floor.Derivations {
-		return false
+	failed := false
+	if floor.Derivations > 0 && c.Dotted+c.Plain < floor.Derivations {
+		failed = true
+		fmt.Fprintf(w, "DOTTED ROW-TYPE PRODUCER CENSUS FAIL: %d derivation(s) over the whole\n"+
+			"  run, want >= %d.\n"+
+			"  ALARM DIRECTION: collapse. This floor guards the READING, not the finding. A\n"+
+			"  collapse to near-zero total traffic means the counter stopped being reached, so\n"+
+			"  any later re-measurement of the producer set is reporting a broken instrument.\n"+
+			"  WHAT A COLLAPSE RE-ARMS: the ability to re-check WHERE RecordType.Legs must be\n"+
+			"  populated. refineRowTypes DECLINES a populated table against an empty one, so a\n"+
+			"  population attached anywhere but this path is a plan-level conflict.\n",
+			c.Dotted+c.Plain, floor.Derivations)
 	}
-	fmt.Fprintf(w, "DOTTED ROW-TYPE PRODUCER CENSUS FAIL: %d derivation(s) over the whole\n"+
-		"  run, want >= %d.\n"+
-		"  This census has already returned its finding: DOTTED is NOT zero (683 and 841\n"+
-		"  over two full-corpus runs), so RecordConstructorValue.Type IS a producer of\n"+
-		"  the LEG.COL-shaped row a leg-table population would target — and, since the\n"+
-		"  seed sites reach a RecordType only THROUGH it, the one producer of that row.\n"+
-		"  This floor no longer guards that finding; it guards the READING. A collapse to\n"+
-		"  near-zero total traffic means the counter stopped being reached, so any later\n"+
-		"  re-measurement of the producer set is reporting a broken instrument.\n"+
-		"  WHAT A COLLAPSE RE-ARMS: the ability to re-check WHERE RecordType.Legs must be\n"+
-		"  populated. refineRowTypes DECLINES a populated table against an empty one, so a\n"+
-		"  population attached anywhere but this path is a plan-level conflict.\n",
-		dotted+plain, floor.Derivations)
-	return true
+	if floor.Dotted > 0 && c.Dotted < floor.Dotted {
+		failed = true
+		fmt.Fprintf(w, "DOTTED ROW-TYPE PRODUCER CENSUS FAIL: DOTTED %d, want >= %d.\n"+
+			"  ALARM DIRECTION: collapse — and note the direction INVERTED from what this census\n"+
+			"  was built to check. The original claim was that RecordConstructorValue.Type is NOT\n"+
+			"  a producer of the LEG.COL-shaped row, i.e. that DOTTED would be ZERO. It was\n"+
+			"  measured at 681, 683 and 841 over three full-corpus runs, refuting it, and RFC-212 §1.1\n"+
+			"  relocated the leg-table population onto this path on exactly that evidence.\n"+
+			"  WHAT A COLLAPSE RE-ARMS: that placement decision. The total-derivations floor\n"+
+			"  CANNOT see this — plain outnumbers dotted roughly 230:1, so DOTTED can fall to\n"+
+			"  zero with the total still three orders of magnitude clear. Either the corpus\n"+
+			"  stopped reaching the dotted path or nameIsQualified stopped recognising it; find\n"+
+			"  out which before touching this number. If a change made a zero LEGITIMATE, invert\n"+
+			"  this guard to a hard zero rather than lowering it — a lowered floor watches\n"+
+			"  nothing and a deleted one leaves the revival unseen.\n",
+			c.Dotted, floor.Dotted)
+	}
+	if failed {
+		fmt.Fprintf(w, "  census: %s\n", formatDottedRowTypeProducerCensus(c))
+	}
+	return failed
 }
