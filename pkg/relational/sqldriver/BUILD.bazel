@@ -474,6 +474,7 @@ go_test(
         "sim_sql_test.go",
         "sim_sql_tx_budget_test.go",
         "sim_sql_workload_test.go",
+        "sim_tx_budget_midpage_test.go",
         "sort_key_label_collision_fdb_test.go",
         "sparse_index_asselect_wire_fdb_test.go",
         "sparse_unique_distinct_fdb_test.go",

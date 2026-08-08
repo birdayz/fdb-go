@@ -463,7 +463,12 @@ func TestResultTypeConsumersFailClosed(t *testing.T) {
 	// exactly that, via OrdinalDomainOfType(layout).IsKnown() — reads as PROPAGATED.
 	// This classifier is per-site syntax and deliberately does no dataflow, so
 	// PROPAGATED means "not decided HERE", never "unguarded".
-	const wantForward, wantGuarded, wantPropagated = 20, 7, 21
+	// FORWARD moved 20 -> 21 for RFC-220's `plans.RecordQueryCoveringIndexPlan`
+	// (`covering_index_scan.go`), which forwards its inner index plan's result
+	// type unchanged. It is a FORWARD rather than a GUARDED site by design: the
+	// covering plan is a wrapper whose result type IS the inner's, so asserting
+	// on it here would duplicate the inner scan's own guard rather than add one.
+	const wantForward, wantGuarded, wantPropagated = 21, 7, 21
 	if counts["FORWARD"] != wantForward || counts["GUARDED"] != wantGuarded || counts["PROPAGATED"] != wantPropagated {
 		t.Fatalf("consumer split moved: FORWARD=%d (want %d) GUARDED=%d (want %d) "+
 			"PROPAGATED=%d (want %d), total %d.\n"+
