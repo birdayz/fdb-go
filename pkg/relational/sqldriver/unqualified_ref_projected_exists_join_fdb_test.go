@@ -207,6 +207,31 @@ func TestFDB_UnqualifiedRefBesideAProjectedExistsOverAJoin(t *testing.T) {
 				"FROM t3 AS a JOIN t3 AS a ON true",
 			"42702",
 		},
+		// MULTI-ACCESSOR ambiguity. Every arm above is a SINGLE-accessor bare
+		// column, but the population a widened bare guard newly admits is the
+		// multi-accessor one — RootIsLegRelativeUnpinned carries no
+		// single-accessor requirement, unlike SourceRelativeBaked. An ambiguity
+		// arm that only covers single accessors would therefore leave the
+		// newly-admitted population unguarded while reading as complete.
+		//
+		// A self-join of t1 puts a struct `n` in BOTH legs, so bare `n.sk` names
+		// two legs through a descent rather than at the root.
+		{
+			"ambiguous_bare_MULTI_ACCESSOR_selfjoin_projectedExists",
+			"SELECT a.id, n.sk, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = a.id) AS h " +
+				"FROM t1 AS a JOIN t1 AS b ON a.id = b.id",
+			"42702",
+		},
+		{
+			"ambiguous_bare_MULTI_ACCESSOR_selfjoin_noExists",
+			"SELECT a.id, n.sk FROM t1 AS a JOIN t1 AS b ON a.id = b.id",
+			"42702",
+		},
+		{
+			"ambiguous_bare_MULTI_ACCESSOR_structRoot_selfjoin",
+			"SELECT a.id, n FROM t1 AS a JOIN t1 AS b ON a.id = b.id",
+			"42702",
+		},
 	}
 	for _, tc := range ambiguous {
 		t.Run("AMBIGUITY_"+tc.name, func(t *testing.T) {

@@ -20,8 +20,10 @@ import (
 // "rows with the FIRST column 0 instead of the ids". It does not. It returns
 // ids 1,2,3 with the struct intact, identical to the unjoined control. The
 // assertions below pin the ID COLUMN'S VALUES and the STRUCT'S MEMBER VALUES,
-// not the row count or the row order: the alleged defect is a wrong COLUMN, and
-// a count or an order reads identically whether the column is right or wrong.
+// in order. The alleged defect is a wrong COLUMN, and a row COUNT reads
+// identically whether the column is right or wrong. Order is asserted too, since
+// these fixtures are deterministic; the claim is that a count ALONE is
+// insufficient, not that order goes unchecked.
 //
 // CONFIRMED — adding a projected EXISTS to that same SELECT list makes the
 // query fail to execute. That half is a tripwire on the current loud failure.

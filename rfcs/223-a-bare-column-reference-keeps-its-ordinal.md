@@ -1,8 +1,18 @@
 # RFC-223 — A bare column reference keeps its ordinal, exactly as a qualified one does
 
-**Status:** rev 1 — awaiting Graefe + Torvalds ACK. NOT implemented; the one-line
-change below has been applied and reverted as a measurement probe only.
-**Scope:** one guard in `pkg/relational/core/embedded/plan_visitor.go`.
+**Status:** rev 3 — **ACK'd by Graefe and Torvalds**, ready to implement. NOT yet
+implemented: the change below has been applied and reverted as a measurement
+probe only, and the tree carries no production change.
+**Scope:** one shape predicate, shared by two sites in
+`pkg/relational/core/embedded/plan_visitor.go`.
+
+Rev 2 folded Graefe's three conditions and Torvalds' three blockers; rev 3 folds
+Graefe's delta items (gate (f), the leg-attribution half of the precondition, and
+multi-accessor ambiguity coverage) and Torvalds' last stale comment. The
+substantive finding of the lap was **Torvalds' blocker 1**: the widened predicate
+is imported without its explicit-qualifier precondition, and the one dimension
+where a wrong bake reads SILENTLY was the one dimension unmeasured. It is now
+nine pinned arms.
 **Origin:** an escalation from the leg-reference RFC's §4, whose premise this
 document refutes.
 
@@ -245,7 +255,25 @@ That is a NEGATIVE result and it is the fact the widening's safety rests on, so
 it is pinned rather than reported (the `AMBIGUITY_*` arms), with a failure
 message naming what gets re-armed if the rejection is ever relaxed: an ambiguous
 bare reference reaching a widened guard would bake one leg's ordinal and read
-that slot **silently**. Mutating the expected code to `42703` reds all six.
+that slot **silently**.
+
+**Ambiguity is only HALF the precondition, and the other half is shown by the
+golden.** An explicit qualifier buys two things: no ambiguity, *and* a
+determinate leg. The `42702` arms discharge the first. The second is visible in
+the one moving golden record: the bare references re-render as `LO.LI#0` and
+`HI.HI_ID#0` — **leg-attributed**, not merely leg-relative. A bare-resolved value
+that had lost its leg identity could not render a leg qualifier it does not
+carry. So the bare path reaches the bake site with the same two properties the
+qualified path guarantees, one pinned by tests and one by the golden.
+
+**The ambiguity arms cover the MULTI-ACCESSOR population too, and that is not
+incidental.** The population the widening newly admits is precisely the
+multi-accessor one (`RootIsLegRelativeUnpinned` carries no single-accessor
+requirement), so six arms of single-accessor columns would have left the
+newly-admitted population unguarded while reading as complete coverage. A
+self-join of `t1` puts a struct `n` in both legs; bare `n.sk` and bare `n` over
+it are refused with `42702` as well. **Nine arms, and mutating the expected code
+to `42703` reds every one.**
 
 ---
 
@@ -306,8 +334,14 @@ it is restated at the gate rather than left standing.
       movement attributed by the move-out/move-back control.
 - (e) No change to `FieldTypeForProtoField`. The type erasure is out of scope and
       stays a separate, documented divergence.
+- (f) **`resolveBaked` exists as ONE function and BOTH sites call it.** §4's
+      structural claim — that Go gets one resolution rule because Java has one
+      resolution function — is otherwise unchecked at implementation review, and
+      an inlined disjunction would satisfy the prose while leaving two rules.
+      The gate is mechanical: the bare site and `resolveQualifiedBaked` contain
+      no shape predicate of their own.
 
-### (f) The ONE golden record that moves, justified individually
+### (g) The ONE golden record that moves, justified individually
 
 **A first draft of this section predicted no golden would move. That prediction
 was wrong, and the measurement is recorded here rather than quietly corrected.**
