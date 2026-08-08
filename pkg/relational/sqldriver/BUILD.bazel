@@ -497,6 +497,7 @@ go_test(
         "struct_multisegment_unnest_fdb_test.go",
         "struct_ordering_gate_fdb_test.go",
         "struct_star_and_named_literal_fdb_test.go",
+        "structcol_repro_fdb_test.go",
         "subquery_in_on_crossproduct_fdb_test.go",
         "subquery_in_on_jointypes_probe_test.go",
         "tautology_and_index_execution_fdb_test.go",

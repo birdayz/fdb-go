@@ -420,8 +420,16 @@ var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 		//   denominator 582+4 = 586, no-exist-ref 206+4 = 210, ACCEPT unchanged 166
 		// ACCEPT holding still across step 2 is the check that those four firings
 		// are the shape they claim to be rather than four more folds.
-		Denominator:     n(586),
-		Accept:          n(166),
+		//
+		// Step 3 — TestFDB_ProjectedStructColumnThroughAJoin adds two
+		// projected-EXISTS queries, one over a join and one without, and both
+		// seed decisions ACCEPT. Attributed by CONTROL, not arithmetic: this
+		// rebase landed on top of step 2, so the increment was RE-MEASURED
+		// against 586/166/210 rather than carried over from the pre-rebase base
+		// it was first taken against.
+		//   denominator 586+2 = 588, ACCEPT 166+2 = 168, no-exist-ref unchanged
+		Denominator:     n(588),
+		Accept:          n(168),
 		CorrelatedStep1: n(108),
 		NoExistRef:      n(210),
 		ReconstructNil:  n(102),
