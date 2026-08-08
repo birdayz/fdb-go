@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -16,14 +17,42 @@ import (
 // class of bug — the plan returns the right rows the wrong (needlessly
 // expensive) way — that the row diff cannot see.
 //
-// The invariant is deliberately FALSE-POSITIVE-FREE. It fires ONLY when the
-// ordering an input stream provides can be PROVEN from the physical plan types
-// plus the generator's fixed schema, and that provided ordering exactly covers
-// (as a prefix) the query's ORDER BY — same column, same direction, same NULL
-// placement per key. Nothing is inferred from EXPLAIN text; the derivation reads
-// structure (scan direction, index key columns, equality-bound prefix) directly.
-// A shape whose ordering cannot be proven yields NO finding (observe-only), so a
-// missed redundancy is the worst case — never a false alarm in a nightly net.
+// THE INVARIANT IS FALSE-POSITIVE-FREE AND INCOMPLETE, and the second half is
+// as deliberate as the first.
+//
+// It fires ONLY when the ordering an input stream provides can be PROVEN, and it
+// proves it by asking the SAME TWO PREDICATES THE PLANNER ASKS — never a local
+// re-statement of either:
+//
+//	plans.EqualityPinsSinglePhysicalKey  — may LATER coordinates claim order
+//	                                       THROUGH this one?
+//	values.TypeTerminatesOrderingClaim   — may THIS coordinate claim its OWN
+//	                                       order at all?
+//
+// Consulting them is what makes the detector honest, and it is also what makes it
+// incomplete. Both are CONSERVATIVE BY DESIGN: TypeTerminatesOrderingClaim is a
+// function of the TYPE alone, so it terminates on any FLOAT/DOUBLE coordinate,
+// including one whose scanned range could not actually reach both NaN blocks
+// (plans/ordering.go:420 states this outright — NaN intrudes for an "unbound OR
+// RANGE-BOUND float coordinate"). So this detector INHERITS THE PLANNER'S
+// CONSERVATISM AND UNDER-REPORTS BY CONSTRUCTION.
+//
+// That is the correct trade, and the reason is the whole point of the axis. This
+// detector's job is to find where the engine kept a sort ITS OWN RULES SAY IT DID
+// NOT NEED — that is a bug. Where the engine keeps a sort its rules say it DOES
+// need, and those rules are more conservative than reality permits, that is a
+// MISSED OPTIMIZATION: real, worth recording, and categorically not a nightly-net
+// red. A detector that knew more than the planner would report the planner's
+// documented conservatism as a defect, and a safety net that alarms on
+// documented conservatism trains people to ignore it.
+//
+// Measured: of 16 mismatch occurrences this axis reported across 4 seeds, 12 were
+// its own false positives, produced by two hand-rolled copies of rules that had
+// drifted from the canonical ones. Nothing is inferred from EXPLAIN text; the
+// derivation reads structure (scan direction, index key columns, per-coordinate
+// binding and key-component TYPE) directly. A shape whose ordering cannot be
+// proven yields NO finding, so a missed redundancy is the worst case — never a
+// false alarm in a nightly net.
 //
 // Derivation rules (per the physical plan types the harness has; properties.
 // EstimateOrdering operates on Cascades expressions, not this physical tree):
@@ -152,24 +181,72 @@ func providedOrdering(p plans.RecordQueryPlan) []ordCol {
 		if len(cols) == 0 || len(pk) == 0 {
 			return nil
 		}
-		// Drop the LEADING equality-bound prefix: those index columns are held
-		// constant by the scan (col = literal), so they contribute nothing to
-		// the output ordering. The first non-equality column onward, then the
-		// primary key, is the ordered suffix.
-		k := leadingEqualityCount(n.GetScanComparisons())
-		if k > len(cols) {
-			k = len(cols)
-		}
-		ordered := make([]string, 0, len(cols)-k+len(pk))
-		ordered = append(ordered, cols[k:]...)
-		ordered = append(ordered, pk...)
 		rev := n.IsReverse()
+		comps := n.GetScanComparisons()
+		keyTypes := n.GetKeyComponentTypes()
+		pkTypes := n.GetPrimaryKeyComponentTypes()
+
+		// Walk the key columns left to right, asking the CANONICAL predicates the
+		// two questions the planner asks — never a local re-statement of either.
+		// This walk used to hand-roll one of them (count the leading equalities,
+		// drop them, assume everything after is ordered) and got both wrong:
+		//
+		//   plans.EqualityPinsSinglePhysicalKey — may LATER coordinates claim
+		//     order THROUGH this one? A zero-valued float equality answers NO: it
+		//     widens across both signed-zero blocks, so the suffix RESTARTS at the
+		//     block boundary. The old leadingEqualityCount counted it as pinning,
+		//     dropped the column, and then claimed the PK suffix was ordered.
+		//
+		//   values.TypeTerminatesOrderingClaim — may THIS coordinate claim its own
+		//     order at all? A FLOAT/DOUBLE answers NO: NaN packs into two disjoint
+		//     blocks at opposite ends of the key space while the comparator ranks
+		//     all NaN payloads as one greatest value, so key order and value order
+		//     disagree and the tie class spans two ranges. The old walk never asked.
+		ordered := make([]string, 0, len(cols)+len(pk))
+		suffixClaimable := true
+		for i, c := range cols {
+			var cr *predicates.ComparisonRange
+			if i < len(comps) {
+				cr = comps[i]
+			}
+			if plans.EqualityPinsSinglePhysicalKey(cr) {
+				// FIXED coordinate: contributes no order of its own, and the
+				// columns after it remain claimable.
+				continue
+			}
+			if i < len(keyTypes) && values.TypeTerminatesOrderingClaim(keyTypes[i]) {
+				// This coordinate cannot claim its own order, so neither can
+				// anything after it. Everything proven BEFORE it still stands.
+				suffixClaimable = false
+				break
+			}
+			ordered = append(ordered, c)
+			// A binding that CONSTRAINS but does not pin a single key (an
+			// inequality, or a zero-float equality) leaves this column ordered but
+			// stops the suffix: later coordinates restart within each admitted
+			// block. A nil or EMPTY range is an ABSENT binding — it constrains
+			// nothing, so the scan is fully ordered on this column and the suffix
+			// survives. (The canonical rule says the same of nil at
+			// plans.EqualityPinsSinglePhysicalKey; Empty is the same case reached
+			// through a different constructor.)
+			if cr != nil && !cr.IsEmpty() {
+				suffixClaimable = false
+				break
+			}
+		}
+		if suffixClaimable {
+			for j, c := range pk {
+				if j < len(pkTypes) && values.TypeTerminatesOrderingClaim(pkTypes[j]) {
+					break
+				}
+				ordered = append(ordered, c)
+			}
+		}
 		out := make([]ordCol, 0, len(ordered))
 		for _, c := range ordered {
 			out = append(out, ordCol{col: c, desc: rev, nullsFirst: !rev})
 		}
 		return out
-
 	case *plans.RecordQueryPredicatesFilterPlan,
 		*plans.RecordQueryFetchFromPartialRecordPlan,
 		*plans.RecordQueryTypeFilterPlan:
@@ -181,20 +258,6 @@ func providedOrdering(p plans.RecordQueryPlan) []ordCol {
 		return providedOrdering(ch[0])
 	}
 	return nil
-}
-
-// leadingEqualityCount counts the leading comparison ranges that are exact
-// equalities (col = literal). Sargable index matching binds a left-to-right
-// prefix, so the equality-bound columns are always the leading ones.
-func leadingEqualityCount(ranges []*predicates.ComparisonRange) int {
-	k := 0
-	for _, r := range ranges {
-		if r == nil || r.GetRangeType() != predicates.ComparisonRangeEquality {
-			break
-		}
-		k++
-	}
-	return k
 }
 
 // orderingCoversPrefix reports whether the requested ordering is a PREFIX of the
