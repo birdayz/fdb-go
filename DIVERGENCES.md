@@ -1460,6 +1460,99 @@ tightest integer predicate — exact at every magnitude. Go-right
 divergence, verified live by the bigint_eq_double_above_2p53 corpus
 entry (DivergenceJavaWrongRowsGoCorrect).
 
+## INT-vs-LONG stays sargable in Go; Java promotes and loses the probe
+
+**Direction: Java is correct-by-its-own-lights but plans WORSE, and Go
+proves strictly MORE. This is a sanctioned read-side extension, NOT a
+gap to close.** Anyone "fixing" Go to match Java here would be deleting
+a working index probe.
+
+Read this beside "Criterion 2 — max data access cardinality" (the
+RFC-219 entry above, "Java is correct here and Go proves strictly
+less"). Same shape, opposite sign: both are read-side plan choice only,
+both touch no wire byte, and in one Go proves less than Java while here
+Go proves more. The pair is what makes either legible — a lone entry in
+this family reads as a parity gap someone should close, which is
+exactly how the INT/LONG item got filed as open work in the first
+place. It also belongs with "Go-Only Extensions" (Java rejects
+outright) and "Java Upstream Bugs (Go is correct, Java is wrong)"
+(Java is plainly wrong); this is the third case — Java is internally
+consistent and simply plans a worse access path.
+
+Java injects the promotion unconditionally on the sargability path.
+Not in `RelOpValue.encapsulate` (which leaves INT/LONG alone and
+dispatches a mixed-type physical operator, `EQ_IL` at
+`RelOpValue.java:566`), but in `promoteOperands`, reached from
+`toQueryPredicate`: `Type.maximumType(leftType, rightType)` then
+`PromoteValue.inject` on BOTH operands (`RelOpValue.java:209,217-218`).
+`inject`'s only escape hatches are type identity and a
+nullability-only `canResultInType` (`PromoteValue.java:444-449`), which
+`FieldValue` does not override — so INT→LONG over a column always
+mints a real node. Nothing removes it later:
+`DefaultValueSimplificationRuleSet.java:39-54` holds four rules, none
+promote-related, and `EvaluateConstantPromotionRule` covers only
+NULL / untyped-`[]` / nullability and is not in the default set.
+
+On the match side `Value.matchAndCompensateComparisonMaybe`
+(`Value.java:763-785`) sees through CANDIDATE-side `InvertableValue`
+wrappers only. `PromoteValue` overrides neither `equalsWithoutChildren`
+nor `semanticEquals`, so the class-identity default
+(`Value.java:480-486`) rejects `PromoteValue` against the placeholder's
+bare `FieldValue`. The wrapper is transparent on the COMPARAND side
+only, via `PromoteValue implements Value.RangeMatchableValue`
+(`PromoteValue.java:70`).
+
+Consequence in Java, from its own checked-in plan baseline, on a schema
+where `col3` (INTEGER) leads an index (`sql-functions.yamsql:24,27`):
+
+```
+sql-functions.metrics.yaml:204
+ISCAN(T1_IDX1 <,>) | FILTER promote(_.COL3 AS LONG) EQUALS promote(@c9 AS LONG) | FLATMAP …
+```
+
+Unbounded scan plus a residual filter — `T1_IDX2` unused. Same shape at
+`:180, :192, :218, :232, :246`.
+
+Go instead declines to insert the promotion at all
+(`sharesIntegerWireEncoding` in `expr.promoteColumnColumnNumeric`): INT
+and LONG funnel to the SAME FDB tuple encoding, so the wrapper cannot
+change a single wire byte and only costs the match. On
+`intCol <op> <long-typed expr>` Go produces an index probe where Java
+produces a full scan. **Wire compat is untouched** — identical encoding
+is the entire premise of the guard — so this is read-side reach, which
+is explicitly allowed.
+
+The asymmetry matters and is easy to misread: `maximumType(INT,LONG)`
+is LONG, so the wrapper always lands on the INT side. It costs the
+probe only when the INT side IS the indexed column. `bigintCol = 5`
+promotes the LITERAL and stays sargable in both engines; a promoted
+COMPARAND stays range-matchable in both. A bare integer literal that
+fits int32 is typed INT (`expr.intLiteralType`), so the only literal
+spelling that can express the defect is an explicitly-LONG one (`20L`,
+or a magnitude exceeding int32).
+
+Pinned by `pkg/relational/sqldriver/int_long_sarg_matrix_probe_test.go`
+(25 cells: literal and correlated-column comparands × both directions ×
+`=`,`>`,`>=`,`<`,`<=`, each asserting the `IndexScan` AND the rows —
+the degradation returns correct rows, so only the plan is the alarm).
+10 of those cells are mutation-proven: removing the
+`sharesIntegerWireEncoding` skip reddens the 5 `correlated_bigint`
+cells; removing that plus the `IsConstantValue` early return also
+reddens the 5 `long_literal` cells. The remaining 15 are
+regression coverage this mechanism structurally cannot reach, which the
+test file states rather than leaving as accidental green.
+
+**Evidence class — read this before acting on the comparison.** The Go
+half is MEASURED (live FDB, `--nocache_test_results`, red-green
+mutation both ways). The JAVA half is INFERRED from 4.12.11.0 sources
+plus the checked-in plan golden above. That golden is Java's own
+recorded planner output, which makes it strong, but **the Java planner
+was not run**. What would upgrade it: reproducing
+`sql-functions.metrics.yaml:204` from an actual Java run. That was
+deliberately not done — nothing is blocked on it, and the cost is not
+justified by the claim's current use, which is only to explain why Go's
+guard must not be "fixed" back toward Java.
+
 ## Bound parameters stay Unknown-typed at the plan gates
 
 The plan-time promotion and cast-pair gates exempt UNKNOWN-typed

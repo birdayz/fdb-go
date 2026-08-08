@@ -2348,6 +2348,38 @@ closed rather than silently alter rows or output schema.
   pack to byte-identical tuple encodings, and the wrapper was defeating the
   SARG matcher's `AccessorNamePath` (only unwraps `*FieldValue` chains),
   degrading a BIGINT=INTEGER point lookup to a residual full scan.
+  **RE-INVESTIGATED AND REFUTED — do not re-open as "item #28".** A later
+  board carried this INT/LONG sub-finding forward as a live item, "Stop
+  INTEGER-to-LONG promotion killing index probes". Two things are wrong with
+  that line. (1) The number: this text is CQ-**27**; CQ-28 is the zero-valued
+  FLOAT/DOUBLE item further down and has nothing to do with INT/LONG. (2) The
+  tense: the defect was already fixed by the `sharesIntegerWireEncoding` skip
+  above, landed in `41ecb95d1` (#517) and on master. Measured at
+  `f648bb96e` on live FDB: all 25 cells of
+  `pkg/relational/sqldriver/int_long_sarg_matrix_probe_test.go` (literal and
+  correlated-column comparands × both directions × `=`,`>`,`>=`,`<`,`<=`)
+  produce an `IndexScan` with correct rows. The cells are split into two
+  NAMED groups so the count is honest at a glance rather than resting on a
+  comment: `mutation_proven` (10) go RED when the guard is removed;
+  `inert_regression` (15) stay GREEN with both guards removed and are
+  coverage against OTHER regressions, which their failure message says.
+  Verified per group, not asserted — dropping both guards yields exactly
+  `10 FAIL mutation_proven / 15 PASS inert_regression`, and dropping only
+  `sharesIntegerWireEncoding` reddens exactly the 5 `correlated_bigint`
+  cells while `long_literal` stays green behind the `IsConstantValue` early
+  return. The item's "both directions" framing is also wrong:
+  `maximumType(INT,LONG)` is LONG, so the wrapper always lands on the INT
+  side and costs the probe ONLY when the INT side is the indexed column —
+  `bigintCol = 5` promotes the literal and is structurally immune.
+  Java 4.12.11.0 is the loser here, not the spec to converge on: it injects
+  the promote unconditionally (`RelOpValue.java:209,217-218`; no INT/LONG
+  fast path in `PromoteValue.inject`, `PromoteValue.java:444-449`; no
+  simplification rule removes it) and its own checked-in baseline shows the
+  probe lost — `sql-functions.metrics.yaml:204`,
+  `ISCAN(T1_IDX1 <,>) | FILTER promote(_.COL3 AS LONG) EQUALS promote(@c9 AS LONG)`.
+  Go's guard is therefore a sanctioned read-side extension, recorded in
+  DIVERGENCES.md ("INT-vs-LONG stays sargable in Go"). The Java half of that
+  comparison is INFERRED from source plus that golden, not from a Java run.
   Pinned by `pkg/relational/sqldriver/negative_zero_index_sarg_probe_test.go`
   (rewritten to assert CORRECT behavior across `=`,`<>`,`<`,`<=`,`>`,`>=`,
   `IN`, `IS [NOT] NULL` on indexed DOUBLE and FLOAT — was the buggy-boundary
