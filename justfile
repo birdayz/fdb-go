@@ -501,18 +501,61 @@ verify:
         -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s
     echo "=== All verification passed ==="
 
-# Install pre-commit hook (lint + gazelle + build + test)
+# Install pre-commit hook (generate drift check + lint + build + test)
 install-hooks:
     #!/usr/bin/env bash
     set -euo pipefail
-    cat > .git/hooks/pre-commit << 'HOOK'
+    # `.git` is a FILE in a linked worktree, not a directory, so a literal
+    # `.git/hooks` path silently fails everywhere except the main checkout.
+    # --git-common-dir resolves to the one hooks dir every worktree shares.
+    hooks_dir="$(git rev-parse --git-common-dir)/hooks"
+    mkdir -p "$hooks_dir"
+    cat > "$hooks_dir/pre-commit" << 'HOOK'
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "Running pre-commit: just lint && just gazelle && just build && just test"
-    just lint && just gazelle && just build && just test
+    echo "Running pre-commit: just generate && just lint && just build && just test"
+
+    # An untracked .go file still reaches the BUILD, but not the commit. Surfaced
+    # here rather than left to `just build`, because a test file that is present
+    # on disk and absent from its Bazel test target fails minutes later with a
+    # message about the target, not about the file being uncommitted.
+    untracked_go="$(git ls-files --others --exclude-standard -- '*.go' || true)"
+    if [ -n "$untracked_go" ]; then
+      echo "NOTE: untracked .go file(s) present — these are BUILT but will NOT be committed:"
+      echo "$untracked_go" | sed 's/^/  /'
+      echo "  If 'just build' fails below on a missing Bazel target, stage these and their"
+      echo "  BUILD.bazel entries together — a test file in no test target fails the build."
+    fi
+
+    # Snapshot the tree BEFORE codegen. `git diff --exit-code` alone cannot tell a
+    # dirty tree from genuine codegen drift: it reports both identically, so a
+    # message naming either one is confidently wrong half the time.
+    before="$(git diff)"
+
+    just generate
+
+    after="$(git diff)"
+
+    if [ "$before" != "$after" ]; then
+      echo "ERROR: 'just generate' produced changes — generated files are out of date."
+      echo "  Stage the regenerated files and retry."
+      git diff --stat
+      exit 1
+    fi
+
+    if [ -n "$before" ]; then
+      echo "ERROR: unstaged changes in tracked files — the tree was already dirty BEFORE"
+      echo "  'just generate' ran, and codegen did not change anything. This is NOT"
+      echo "  codegen drift. Stage what belongs in this commit, or stash/revert the rest."
+      echo "  (Committing with a dirty tree would test content the commit does not carry.)"
+      git diff --stat
+      exit 1
+    fi
+
+    just lint && just build && just test
     HOOK
-    chmod +x .git/hooks/pre-commit
-    echo "Pre-commit hook installed."
+    chmod +x "$hooks_dir/pre-commit"
+    echo "Pre-commit hook installed at $hooks_dir/pre-commit"
 
 # Run a specific test with forced rebuild (no stale binary)
 test-fresh target *args:
