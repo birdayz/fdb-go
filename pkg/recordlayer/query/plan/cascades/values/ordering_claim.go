@@ -60,6 +60,57 @@ import "strings"
 // absent, including paths where the column is provably an integer. The
 // soundness that matters is enforced where the type system is actually
 // engaged, which on the SQL path is everywhere a column comes from a table.
+//
+// KNOWN CONSERVATISM, and it is a missed optimisation rather than a wrong
+// answer. The predicate is keyed on the TYPE alone, so it cannot see the scan
+// RANGE — and the two defects above are not reachable from every range.
+//
+// The recoverable case is a range with a FINITE LOWER BOUND. Both defects are
+// really about the NEGATIVE-NaN block, which packs below -Inf: it is the one
+// that is physically FIRST and logically LAST, and it is what splits the NaN
+// tie class across two disjoint ranges. A scan starting at a finite value can
+// never reach it. The positive block remains reachable — a range open at the
+// top runs past +Inf — but there it is harmless on both counts: positive NaN is
+// physically LAST and CompareFloat64 ranks NaN GREATEST, so the orders agree,
+// and with only one block in range the tie class is contiguous, so later
+// columns stay ordered within it. Over such a scan the claim could soundly
+// extend through the float column and on into the primary-key suffix; today it
+// terminates anyway and the query materialises a sort it does not need.
+//
+// Measured on rowdiff seed 3943842, and the measurement corrected the reasoning
+// once already — do not restate this as "a bounded range excludes NaN". That
+// seed reads `e BETWEEN 2.0 AND 5.0`, but only the LOWER bound is pushed into
+// the index; the upper stays a residual predicate, so the scanned range is
+// [2.0, +Inf] and does include the positive-NaN block. The finite LOWER bound
+// is what makes it sound, not the BETWEEN.
+//
+// Three sibling seeds look identical from the outside and are NOT this case:
+// 3943193 and 3944227 are zero-valued float EQUALITIES, which genuinely span
+// two signed-zero key blocks, and 3943308 is `d IS NOT NULL`, whose range
+// covers the whole non-null domain and so reaches the negative-NaN block.
+// Those three must keep their sort.
+//
+// The range-aware refinement is UNBUILT, deliberately, and if it is ever built
+// it goes HERE. Closing it needs the ComparisonRange threaded to this decision
+// — the same shape of fix as EqualityPinsSinglePhysicalKeyOnColumn, which
+// threads the COLUMN type to a decision that previously guessed from the
+// operand — and it must land as the ONE authority both consumers already ask,
+// never as a second copy in either. The planner asks it for sort elimination;
+// the rowdiff harness's ordering axis asks it to decide whether a scan provides
+// the order a sort re-imposes. A copy that knew about ranges in only one of them
+// would put the two derivations back out of step, which is the exact drift these
+// shared predicates exist to prevent.
+//
+// That is also why the harness UNDER-REPORTS by construction here, and why that
+// is correct rather than a gap in it. `d IS NOT NULL` and `e >= 2.0` plan the
+// identical shape — a float leading key under an inequality — so a type-only
+// predicate cannot separate the recoverable case from the unrecoverable one.
+// The detector inherits this conservatism instead of growing its own range-aware
+// rule, so `WHERE e >= 2.0 ORDER BY e, id` is recorded as a missed optimization
+// at the place the rule lives rather than kept alive as a nightly red.
+//
+// It is not built because, unlike the column-type fix, nothing about it is a
+// soundness defect: it buys latency, not correctness.
 func TypeTerminatesOrderingClaim(t Type) bool {
 	if t == nil {
 		return false
@@ -98,6 +149,49 @@ func ColumnCanExtendOrderingClaim(layout Type, name string) bool {
 			return false
 		}
 	}
+	return true
+}
+
+// ColumnCouldBeFloat resolves name against layout and reports whether that
+// coordinate COULD hold a float — the question a signed-zero widening decision
+// needs, and deliberately NOT the negation of ColumnCanExtendOrderingClaim.
+//
+// The two differ exactly where the layout cannot answer, and the difference is
+// the whole reason this exists. ColumnCanExtendOrderingClaim is permissive on an
+// unresolvable layout (nil, not a *RecordType, no fields, name absent) because
+// its own use is "may this coordinate extend a claim?", where permissive means
+// GRANT and the burden of proof sits on the float side.
+//
+// Inverted into a float test that answer flips meaning: "not a float" becomes
+// "no signed zero", which becomes "this equality PINS", which is assume-SOUND —
+// the unsound direction. A burden-of-proof direction does not survive an
+// inversion, and reading one predicate backwards to answer the other silently
+// turned a conservative default into an optimistic one.
+//
+// That state is not hypothetical. plans.NewRecordQueryIndexPlan defaults a nil
+// flowedType to UnknownType, and AggregateIndexMatchCandidate passes UnknownType
+// explicitly; UnknownType is a *PrimitiveType, so it takes the not-a-record arm
+// and every coordinate on such a plan reads as non-float. MEASURED live: a
+// reachability probe in that arm fired under the planner suite.
+//
+// So this asks positively and fails CLOSED — an unresolvable coordinate could be
+// a float, so a zero-capable equality on it does not pin and the claim is
+// refused. The cost is a sort that may not have been needed; the alternative
+// cost is a wrong row order.
+func ColumnCouldBeFloat(layout Type, name string) bool {
+	if layout == nil || name == "" {
+		return true
+	}
+	rt, isRecord := layout.(*RecordType)
+	if !isRecord || rt == nil || len(rt.Fields) == 0 {
+		return true
+	}
+	for _, f := range rt.Fields {
+		if strings.EqualFold(f.Name, name) {
+			return TypeTerminatesOrderingClaim(f.FieldType)
+		}
+	}
+	// Name absent from a layout that otherwise resolved: still unproven.
 	return true
 }
 

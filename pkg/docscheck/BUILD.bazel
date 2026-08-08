@@ -28,6 +28,7 @@ go_test(
         "mixed_seed_element_authority_test.go",
         "nightly_window_gate_test.go",
         "nightly_window_landing_test.go",
+        "ordering_claim_authority_test.go",
         "panic_boundary_test.go",
         "pinned_ordinal_domain_test.go",
         "plan_proto_schema_test.go",

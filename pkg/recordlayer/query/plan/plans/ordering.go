@@ -299,9 +299,29 @@ func (p *RecordQueryScanPlan) HintOrdering() properties.Ordering {
 // equality past a gap), but the helper defines it anyway rather than leaving
 // it to whichever caller's loop happens to run first.
 func equalityPrefixLen(comps []*predicates.ComparisonRange, n int) int {
+	return equalityPrefixLenOnColumns(comps, n, nil)
+}
+
+// equalityPrefixLenOnColumns is equalityPrefixLen for a caller that can resolve
+// each coordinate's type. columnCouldBeFloat reports, per key position, whether
+// that coordinate can hold a signed zero; a nil func means "unknown", which
+// falls back to the operand-only reading.
+//
+// Threading the column type is what lets a FLOAT coordinate bound by an
+// UNKNOWN-typed operand (an IN-list binding) stop the prefix while an INT
+// coordinate bound by the same untyped operand keeps it. Deciding that from the
+// operand alone cannot separate the two — see
+// EqualityPinsSinglePhysicalKeyOnColumn.
+func equalityPrefixLenOnColumns(comps []*predicates.ComparisonRange, n int, columnCouldBeFloat func(int) bool) int {
 	prefix := 0
 	for i := 0; i < n && i < len(comps); i++ {
-		if !EqualityPinsSinglePhysicalKey(comps[i]) {
+		var pins bool
+		if columnCouldBeFloat == nil {
+			pins = EqualityPinsSinglePhysicalKey(comps[i])
+		} else {
+			pins = EqualityPinsSinglePhysicalKeyOnColumn(comps[i], columnCouldBeFloat(i))
+		}
+		if !pins {
 			break
 		}
 		prefix = i + 1
@@ -334,6 +354,49 @@ func ownOrderPrefixLen(comps []*predicates.ComparisonRange, n int) int {
 		prefix = i + 1
 	}
 	return prefix
+}
+
+// indexColumnCouldBeFloat resolves each index key column against the scan's
+// flowed record layout and reports whether it can hold a signed zero. It is the
+// per-position input equalityPrefixLenOnColumns needs, and it delegates to
+// values.ColumnCouldBeFloat so the float classification stays in the one file
+// that owns it.
+//
+// It asks that predicate rather than NEGATING ColumnCanExtendOrderingClaim, and
+// the difference is not cosmetic. The two disagree exactly when the layout
+// cannot resolve the column, which happens on real plans — NewRecordQueryIndexPlan
+// defaults a nil flowedType to UnknownType and AggregateIndexMatchCandidate
+// passes UnknownType explicitly, neither of which is a *RecordType. Negating the
+// permissive answer there yields "not a float" -> "pins" -> assume-sound, which
+// makes this whole fix INERT on such a plan. ColumnCouldBeFloat fails closed
+// instead; see its comment for why a burden-of-proof direction cannot be
+// inverted.
+func indexColumnCouldBeFloat(
+	keyTypes []values.Type, layout values.Type, columnNames []string,
+) func(int) bool {
+	return func(i int) bool {
+		if i < 0 || i >= len(columnNames) {
+			// No such coordinate: there is nothing to widen.
+			return false
+		}
+		// The PHYSICAL key component type is the authority and is asked first:
+		// it is aligned with scanComparisons positionally, so it needs no name
+		// resolution and it is present on plans whose flowed layout is not a
+		// record at all. Those plans are the ones that made the layout-only
+		// reading inert — NewRecordQueryIndexPlan defaults a nil flowedType to
+		// UnknownType and AggregateIndexMatchCandidate passes UnknownType
+		// explicitly — while WithKeyComponentTypes still carries the real
+		// coordinate types.
+		if i < len(keyTypes) && keyTypes[i] != nil &&
+			keyTypes[i].Code() != values.TypeCodeUnknown {
+			return values.TypeTerminatesOrderingClaim(keyTypes[i])
+		}
+		// No physical type for this coordinate: fall back to resolving the
+		// column name against the flowed layout, which fails CLOSED when it
+		// cannot answer. See values.ColumnCouldBeFloat for why this must not be
+		// written as the negation of ColumnCanExtendOrderingClaim.
+		return values.ColumnCouldBeFloat(layout, columnNames[i])
+	}
 }
 
 // EqualityPinsSinglePhysicalKey reports whether cr binds its coordinate to ONE
@@ -371,6 +434,131 @@ func ownOrderPrefixLen(comps []*predicates.ComparisonRange, n int) int {
 // parameter-binding map, where a miss yields nil and IsEquality would panic.
 func EqualityPinsSinglePhysicalKey(cr *predicates.ComparisonRange) bool {
 	return cr != nil && cr.IsEquality() && !isZeroFloatEqualityRange(cr)
+}
+
+// EqualityPinsSinglePhysicalKeyOnColumn is EqualityPinsSinglePhysicalKey for a
+// caller that knows the INDEXED COORDINATE's type — the one fact the range
+// alone cannot supply, and the one couldBeFloatOperand documents as the right
+// discriminator it did not have.
+//
+// The operand's declared type is not a usable proxy for it. An operand carries
+// FLOAT only when the literal was coerced to the column; an IN-list binding
+// reaches here as an UNKNOWN-typed correlation, and couldBeFloatOperand answers
+// "not a float" for it. On an INT column that answer is right and load-bearing
+// (it is what keeps an untyped IN-join binding's ascending claim). On a FLOAT
+// column it is wrong, and wrong in the unsound direction: the binding can be
+// zero at runtime, the executor widens the probe across both signed-zero
+// blocks, and the coordinate pins no single key.
+//
+// Splitting the question by COLUMN type keeps both answers: an int coordinate
+// always pins (it has no signed zero to widen, whatever the operand), and a
+// float coordinate pins only when the operand is a constant that is provably
+// nonzero.
+//
+// MEASURED, this is the whole of the InUnion defect. `e IN (5, 7, 0)` over a
+// FLOAT column plans InUnion over a per-binding leg that advertises PK order.
+// The zero binding widens at runtime to the -0.0 and +0.0 blocks, so that leg
+// emits its +0.0 rows only after all of its -0.0 rows; the ordered merge reads
+// one row of lookahead per leg, so those rows land after the entire result.
+// `ORDER BY id` returned [4 17 20 26 29 30 32 42 45 47 69 103 119 14 80] —
+// sorted except for the two +0.0 rows, 14 and 80, appended at the end.
+//
+// This DIVERGES from Java, and the divergence is systematic rather than a patch
+// over one Java slip. Java derives its ordering prefix from
+// scanComparisons.getEqualitySize() with no signed-zero exemption anywhere, in
+// four places built the identical way (4.12.11.0):
+//
+//	ValueIndexLikeMatchCandidate.java:166
+//	WindowedIndexScanMatchCandidate.java:363
+//	VectorIndexScanMatchCandidate.java:345
+//	AggregateIndexMatchCandidate.java:340
+//
+// all of them `for (i = scanComparisons.getEqualitySize(); i < …; i++)`. So Java
+// makes the same unsound claim on every one of those candidate kinds, and the
+// query above reproduces against it. Citing a single site would read as a local
+// bug worth patching around; four identical sites say Go is knowingly declining
+// a Java-wide behaviour, which is the claim DIVERGENCES.md has to carry.
+func EqualityPinsSinglePhysicalKeyOnColumn(cr *predicates.ComparisonRange, columnCouldBeFloat bool) bool {
+	if cr == nil || !cr.IsEquality() {
+		return false
+	}
+	if !columnCouldBeFloat {
+		// No signed zero exists on this coordinate, so no widening can occur
+		// whatever the operand's declared type is.
+		return true
+	}
+	// A float coordinate pins only on a provably-nonzero CONSTANT. A
+	// non-constant operand (parameter, correlation, or an IN binding) could be
+	// zero at runtime and would widen, so it does not pin.
+	cmp := cr.GetEqualityComparison()
+	if cmp == nil || cmp.Operand == nil {
+		// An equality range carrying no operand is how `IS NULL` arrives. NULL is
+		// not a zero and has no signed twin: it packs to ONE distinct tuple key
+		// below every number, so the coordinate is genuinely pinned and the
+		// suffix after it stays ordered.
+		//
+		// Treating this as "not provably nonzero" put a materialized sort back on
+		// every `<float> IS NULL … ORDER BY <pk>` — measured on rowdiff seed 224,
+		// 4 plans, and caught by the committed pure-planner ordering sweep, not
+		// by the targeted test. The widening this function guards is driven by a
+		// zero VALUE; a range with no value cannot trigger it.
+		return true
+	}
+	if !values.IsConstantValue(cmp.Operand) {
+		return false
+	}
+	v, ok := values.EvaluateConstant(cmp.Operand)
+	if !ok {
+		// Not evaluable here, so it cannot be shown nonzero.
+		return false
+	}
+	if v == nil {
+		// A NULL-VALUED constant operand — the other spelling of `IS NULL`,
+		// where the comparison carries a null Value rather than no comparison at
+		// all. Same conclusion as the nil-comparison arm above and for the same
+		// reason: NULL is not a zero, has no signed twin, and packs to ONE key.
+		//
+		// Kept as its own arm rather than folded into the "not provably nonzero"
+		// return because that is precisely how the nil-comparison spelling
+		// regressed once already, and the two spellings must not diverge. No
+		// generated seed in the ordering sweep's range reaches this one, so a
+		// sweep that stays green is not evidence it is unreachable.
+		return true
+	}
+	// Any NUMERIC constant settles it, not just a float-typed one: an integer
+	// literal against a float column is coerced before the probe is built, so
+	// `e = 5` pins exactly as `e = 5.0` does, and `e = 0` widens exactly as
+	// `e = 0.0` does. Judging on the VALUE rather than the declared type is the
+	// same discipline isZeroFloatEqualityRange applies, and for the same
+	// reason: the executor decides to widen from the runtime value.
+	switch n := v.(type) {
+	case float64:
+		return n != 0
+	case float32:
+		return n != 0
+	case int64:
+		return n != 0
+	case int32:
+		return n != 0
+	case int:
+		return n != 0
+	}
+	// A constant this function cannot read as a number — it cannot be shown
+	// nonzero, so it does not pin.
+	//
+	// This is also what makes the two NULL arms above safe against a THIRD
+	// spelling nobody has found, and the argument is structural rather than a
+	// hope that the enumeration is complete. Any further way to say NULL would
+	// have to be a constant that IsConstantValue accepts and EvaluateConstant
+	// returns with ok=true and a NON-nil value that nonetheless means NULL. Such
+	// a value misses every numeric case and lands exactly here, on `return
+	// false` — it does NOT pin, so the claim is refused and a sort is kept.
+	//
+	// The asymmetry is the point: an unrecognised operand costs a materialised
+	// sort that was not needed, never a row in the wrong order. The unknown
+	// degrades toward latency by construction, which is the direction this
+	// predicate must fail in.
+	return false
 }
 
 // EqualityBoundCoordinateClaimsOwnOrder answers a DIFFERENT question from
@@ -590,7 +778,8 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 	}
 	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()
 	comps := p.GetScanComparisons()
-	firstNonEq := equalityPrefixLen(comps, len(columnNames))
+	firstNonEq := equalityPrefixLenOnColumns(comps, len(columnNames),
+		indexColumnCouldBeFloat(p.GetKeyComponentTypes(), p.GetFlowedType(), columnNames))
 	rev := p.IsReverse()
 	// The SORTED coordinates, in order: the non-equality-bound index columns
 	// followed by the trimmed PK suffix. The claim is truncated at the first
@@ -1164,7 +1353,8 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	}
 	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()
 	comps := p.GetScanComparisons()
-	prefixLen := equalityPrefixLen(comps, len(columnNames))
+	prefixLen := equalityPrefixLenOnColumns(comps, len(columnNames),
+		indexColumnCouldBeFloat(p.GetKeyComponentTypes(), p.GetFlowedType(), columnNames))
 	bm := make(map[values.Value][]properties.OrderingBinding)
 	keys := make([]values.Value, 0, len(columnNames)+len(pkColumnNames))
 
