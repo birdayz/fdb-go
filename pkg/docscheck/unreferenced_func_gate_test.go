@@ -91,15 +91,6 @@ type unreferencedFuncDisposition struct {
 
 // unreferencedFuncLedger is keyed by funcSite.key() — "<repo-relative path> # <name>".
 var unreferencedFuncLedger = map[string]unreferencedFuncDisposition{
-	"pkg/recordlayer/key_expression_compiled.go # compileKeyExpression": {
-		tag: dispositionInFlight,
-		why: "the whole of key_expression_compiled.go is deleted by the in-review change that fixes the bug its " +
-			"own tests were pinning as correct: a test asserted that a nested record-type key returns nil, which " +
-			"made RecordTypeKey().Nest() collapsing every record of a type onto ONE primary key read as intended " +
-			"behaviour. That is the second of the three dead twins that motivated this gate, and it is the reason " +
-			"the entry is in-flight rather than keep — when that change lands, this line must go with it, and the " +
-			"stale-entry arm below fails until it does",
-	},
 	"pkg/recordlayer/tuple_ordering.go # tupleOrderingUnpack": {
 		tag: dispositionKeep,
 		why: "not dead — NOT-YET-CONNECTED, and deleting it would delete the answer rather than the problem. It is " +
