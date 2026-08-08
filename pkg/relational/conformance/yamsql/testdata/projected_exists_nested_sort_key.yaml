@@ -91,9 +91,18 @@ tests:
 
   # THE OTHER STRUCT MEMBER, over the same join. Converted alongside the stanza
   # above rather than added as decoration: `co` is CORRELATED with id, so its
-  # expected order is the OPPOSITE one. A fix that fused a constant suffix
-  # ordinal — or dropped the suffix and landed on a column that happens to be
-  # ordered like `sk` — satisfies the stanza above and fails this one.
+  # expected order is the OPPOSITE one, and a fused suffix naming the wrong
+  # member reds whichever of the two it lands away from.
+  #
+  # WHAT IT CATCHES, STATED AGAINST A MEASUREMENT rather than a guess — an
+  # earlier version of this comment claimed it caught "a constant suffix ORDINAL"
+  # and that is FALSE. Forcing the suffix ordinal to 0 at either production site
+  # leaves both stanzas green and the plan byte-identical, because the executor
+  # descends a struct column by per-step NAME (values.go's proto.Message arm,
+  # itself pinned by TestFieldValue_DescendProtoMessage_MustNotConsultTheOrdinal).
+  # The field this pair guards is the suffix NAME: swapping it reds both stanzas,
+  # in opposite directions. The ordinal is guarded one layer down, by
+  # FuseNestedSuffix's unit pins, which is where it is observable at all.
   - query: |
       SELECT t1.id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h
       FROM t1 JOIN t3 ON t3.t1_id = t1.id ORDER BY n.co

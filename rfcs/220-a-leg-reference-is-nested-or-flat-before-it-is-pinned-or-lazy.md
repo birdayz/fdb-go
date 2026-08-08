@@ -1,6 +1,6 @@
 # RFC-220 — A leg reference is NESTED or FLAT before it is PINNED or LAZY
 
-**Status:** rev 1 — IMPLEMENTED and exercised; awaiting Graefe + Torvalds review.
+**Status:** rev 2 — IMPLEMENTED and exercised; rev 1 was NAK'd on mechanism and record. §2a answered the suffix question about the ORDINAL when the executor reads the NAME; §2b understated where the emitted value goes; §3's fourth mutation conflated two fields; §4's silent variant was a probe artifact and is RETRACTED. No production behaviour changed as a result — the wrong-rows fix stands and is unaltered — but one real coverage hole (§3c) was found and closed. Awaiting the delta lap.
 **Origin:** TODO.md's "RFC-218 remainder — the leg-window re-anchor". That booking
 described a capability gap. **It is a wrong-rows defect**, and the correction is §1.
 **Scope:** `rebaseOuterLegValueOrdinal` (`left_outer_existential.go`), one new values
@@ -90,51 +90,114 @@ path; composition is a **fusion**, never a flattening — nothing is materialise
 nothing is re-offset. Go already had the two-step form of this and used it for the
 nested leg kind; what was missing was the general form.
 
-### 2a. The suffix is CARRIED, the root is DERIVED — and that asymmetry is the design
+### 2a. The root is DERIVED; the suffix is CARRIED — and the suffix's IDENTITY IS ITS NAME
 
 A root ordinal is stated in the layout the reference was resolved against, and a merge
-RESTATES that layout. That is the whole reason RFC-218 insisted on derive-and-assert.
+RESTATES that layout. That is the whole reason RFC-218 insisted on derive-and-assert, and
+it is why the root is derived here.
 
-A suffix ordinal indexes a **struct's own declared field order**, which the schema fixes
-and which no merge, projection or re-ordering can touch. Re-deriving it would be
-re-deriving a constant. `FuseNestedSuffix` therefore ASSERTS the suffix against a record
-type when one is available and CARRIES it when one is not.
+**A suffix step is a different question, and rev 1 answered it about the wrong field.**
+Rev 1 argued that the suffix ORDINAL is safe to carry because it indexes a struct's own
+declared field order, which no merge restates. That is true and it is nearly irrelevant,
+because **on every path this code reaches, the executor does not read the suffix ordinal
+at all.** `FieldValue.descendResolvedPath` dispatches on what the value materialises as:
 
-**That is not a hedge, and the measurement is why it cannot be.** Neither the merged
-row nor the leg window carries a struct column's type — both state `UNKNOWN`:
+| the nested step lands on | what is consumed |
+|---|---|
+| `proto.Message` — a STRUCT column, the shape every case here produces | the per-step **NAME** (`protoFieldByName`) |
+| `OrdinalRow` — a positional row | the **ordinal** |
+
+A struct column materialises as its raw proto message, so the descent is by name. That is
+not an accident of this change: `values.go` documents it as a standing divergence from
+Java (Java descends by ordinal via `MessageHelpers.getFieldValueForFieldOrdinals`,
+`FieldValue.java:169`) and pins it with
+`TestFieldValue_DescendProtoMessage_MustNotConsultTheOrdinal`, whose whole point is that
+the ordinal must NOT be consulted there.
+
+**Measured, four mutations, one per (site × field), every run with its `=== RUN` count
+checked:**
+
+```
+values.go FuseNestedSuffix   suffix ORDINAL forced   -> GREEN, plan unchanged
+values.go FuseNestedSuffix   suffix NAME swapped     -> RED: the wrong-rows pin
+translator sortKeySourceValue suffix ORDINAL zeroed  -> GREEN, plan unchanged
+translator sortKeySourceValue suffix NAME swapped    -> RED: BOTH sort arms, opposite directions
+```
+
+So the field that carries correctness end-to-end is the **name**, and the ordinal is inert
+on the reachable paths. Both are carried; `FuseNestedSuffix` validates whichever it can —
+when a record type is available it derives the ordinal FROM the name and declines on a
+disagreement, an absent name, or a duplicate one, which is a check on the load-bearing
+field and not merely on the inert one.
+
+**The ordinal is carried unvalidated into a path that COULD consume it**, and that is the
+honest residual rather than a solved problem: the `OrdinalRow` arm is live for a
+`LegKindNested` window's first step. No corpus query reaches it with a struct suffix
+today, so no end-to-end pin can be written for it — a fabricated one would assert a
+reachability that does not exist. It is guarded where it is observable, in
+`FuseNestedSuffix`'s unit pins (`fused path [{N 11} {CO 0}], want [{N 11} {CO 1}]`), and
+the inertness is recorded as a negative result rather than left as folklore. What re-arms
+it: any producer that makes a struct column materialise as an `OrdinalRow`, or the
+conversion of the proto descent to ordinals that `values.go`'s two `protoFieldByName` debt
+entries retire on.
+
+**The type story, which rev 1 got right.** Neither the merged row nor the leg window
+carries a struct column's type — both state `UNKNOWN`:
 
 ```
 ZZREBASE field="N" accs={N@1}{SK@0} kind=flatRun off=0
          legfields=[ID:LONG NULL, N:UNKNOWN NULL]   ok=true
 ```
 
-A first implementation of this RFC descended against the merged slot's type and failed
-on **every real nested reference** while looking careful:
+A first implementation descended against the merged slot's type and failed on **every real
+nested reference** while looking careful:
 
 ```
 ordinal bake: cannot resolve ordinal 0: a nested suffix step descends
 into a non-record type (child type UNKNOWN NULL)
 ```
 
-The leaf TYPE comes from the reference itself, which the resolver computed against the
-real schema — strictly better information than either layout holds — promoted nullable
-if the merged slot is. Taking the root SLOT's type instead is the bug
-`NewFusedFieldValueOfNestedOrdinal`'s own doc records: it reports the whole struct as
-the type of a single-column read.
+The leaf TYPE therefore comes from the reference itself, which the resolver computed
+against the real schema — strictly better information than either layout holds — promoted
+nullable if the merged slot is. Taking the root SLOT's type instead is the bug
+`NewFusedFieldValueOfNestedOrdinal`'s own doc records: it reports the whole struct as the
+type of a single-column read.
 
-### 2b. The translator does NOT re-anchor for a join, deliberately
+### 2b. The translator emits the key leg-relative, and that value IS the sorted data
 
 `sortKeySourceValue`'s single-table arm re-anchors the root itself, because there the
 fold's flowed row IS the source row. The join arm must not: the merged layout is decided
 by the NLJ rule, downstream, and a root ordinal derived in the translator would be stated
-against a layout it is guessing at — RFC-218 §2b's silent-wrong-column hazard, arriving
-by a third route.
+against a layout it is guessing at — RFC-218 §2b's silent-wrong-column hazard, arriving by
+a third route. So the join arm emits the key **leg-relative** and lets the merged half
+happen downstream.
 
-So the join arm emits the key **leg-relative** — root re-anchored in its own leg's row,
-suffix intact, hung off the leg's correlation — and the leg-window rebase does the merged
-half. That is the same division of labour the flat join arm already used, extended to
-carry a path instead of a bare column name.
+**WHERE THAT VALUE GOES, because it is not obvious and rev 1 did not say.** It is not only
+a membership probe. `collectExtraSortColumns` takes `sortKeySourceValue(k)` as the hidden
+sort column's **value** (`cascades_translator.go:5206`) and appends it to the fold's
+`RecordConstructorValue`; the re-applied sort then resolves its key to that appended
+column. So the emitted value is what the executor EVALUATES to produce the column being
+sorted on — it is the sorted data, not a gate.
 
+That is measurable and was measured: swapping the suffix NAME on the value this arm
+returns reds **both** join sort arms, in opposite directions —
+
+```
+ORDER BY n.co -> got ids [3 2 1], want [1 2 3]
+ORDER BY n.sk -> got ids [1 2 3], want [3 2 1]
+```
+
+— which is the wrong-COLUMN signal, not a decline. A reading that this arm is "a capability
+gate whose value never reaches the sort" follows from mutating the ORDINAL, which §2a shows
+is inert everywhere; the value itself is load-bearing.
+
+**The two halves are still independent, and that is the point of the disjoint reds.** The
+sort path does NOT go through the ordinal rebase: the hidden column's leg-relative
+reference is multi-accessor, so the LAZY rebase declines to rewrite it and the executor
+binds each leg under its own correlation. Reverting the entire arity arm in
+`rebaseOuterLegValueOrdinal` leaves both sort arms green and reds only the wrong-rows pin.
+Reverting the translator arm reds only the sort arms. Two fixes, two paths, one shared
+primitive.
 ### 2c. The leg is chosen by IDENTITY, and the rendering is not consulted at all
 
 A nested key over a join renders THREE segments (`T1.N.SK`). `sortKeyName`'s split takes
@@ -174,69 +237,120 @@ reclassified.
 
 ## 3. What is pinned, and how each pin was proven able to go red
 
-Every mutation below reverted a real hunk and was run with the `=== RUN` count checked,
-because a narrowed filter that matches nothing reports green. (One run during this work
-did exactly that: reverting the whole diff also reverted `BUILD.bazel`, the filter matched
-no function, and Bazel printed a pass over **zero** `=== RUN` lines.)
+Every mutation below was run with the `=== RUN` count checked, because a narrowed filter
+that matches nothing reports green. (One run during this work did exactly that: reverting
+the whole diff also reverted `BUILD.bazel`, the filter matched no function, and Bazel
+printed a pass over **zero** `=== RUN` lines.)
+
+### 3a. The two halves, and why their reds must be disjoint
 
 | direction reverted | what reds | verbatim |
 |---|---|---|
-| the rebase's fusion arm | the wrong-rows pin only | `adding a row-preserving inner JOIN changed the answer: [] vs the single-table [1 3]` and `[1 2 3] vs the single-table [2]` |
-| `sortKeySourceValue`'s join arm | both sort arms only | `0AF00: projected EXISTS in this query shape is not yet supported` |
+| the rebase's fusion arm | the wrong-rows pin ONLY | `adding a row-preserving inner JOIN changed the answer: [] vs the single-table [1 3]` and `[1 2 3] vs the single-table [2]` |
+| `sortKeySourceValue`'s join arm | both sort arms ONLY | `0AF00: projected EXISTS in this query shape is not yet supported` |
 | the identity-not-rendering `continue` | the census hard zero | `FAIL: existsSortSplit manufactured a qualifier that CONTRADICTS the structured identity` |
-| the suffix forced to member 0 | the `n.co` arm only | `got ids [3 2 1], want [1 2 3]` |
 
-The first two red **disjoint** sets, which is the evidence that the two halves are
-independent fixes and not one fix tested twice.
+The first two red **disjoint** sets, which is the evidence that these are two fixes on two
+paths and not one fix tested twice (§2b explains why the paths differ).
 
-The fourth is the one that matters for the "row order cannot catch a wrong column"
-rule. `sk` is anti-correlated with `id` (50,40,30) and `co` correlated (1,2,3), so
-forcing the suffix to `sk` leaves `ORDER BY n.co` returning a perfectly sorted `[3 2 1]`
-— plausible output, wrong column, caught.
+### 3b. The fused suffix: which FIELD each pin actually guards
 
-The unit pin drives the production symbol **by name** (`rebaseOuterLegValueOrdinal`),
-not a local copy — the defect that NAK'd RFC-218's implementation. It covers both leg
-kinds × both pin states × both type-knownness states, with four single-accessor controls,
-because a decline whose control also fails is uninterpretable.
+**Rev 1 claimed a fourth direction — "the suffix forced to member 0 reds the `n.co` arm" —
+and that claim conflated two fields.** The mutation it ran replaced the accessor wholesale
+with `{Field:"SK", Ordinal:0}`, changing the NAME as well as the ordinal. It does red, but
+not for the stated reason, and forcing the ordinal ALONE reds nothing anywhere. Split
+properly, one mutation per (site × field):
 
-**A dimension this RFC's own first implementation missed, and the pin now covers.** All
-four typed arms passed while every real query crashed: `into` was a typed-nil
-`*RecordType` in a `Type` interface, so the assertion arm succeeded with a nil receiver.
-The fixture only ever stated a type. The `UNKNOWN leg column type` cases are the arm the
-planner actually takes, and they exist because that gap shipped a nil dereference past a
-green unit test.
+| site | field | result |
+|---|---|---|
+| `FuseNestedSuffix` | suffix ordinal forced | **GREEN**, plan byte-identical |
+| `FuseNestedSuffix` | suffix name swapped | **RED** — the wrong-rows pin |
+| `sortKeySourceValue` | suffix ordinal zeroed | **GREEN**, plan byte-identical |
+| `sortKeySourceValue` | suffix name swapped | **RED** — both sort arms, opposite directions |
+
+The name is load-bearing and the ordinal is inert, for the structural reason in §2a: a
+struct column materialises as a `proto.Message` and the descent reads the per-step name.
+The ordinal is guarded one layer down, by `FuseNestedSuffix`'s unit pins
+(`fused path [{N 11} {CO 0}], want [{N 11} {CO 1}]`), which is the only layer at which it
+is observable.
+
+**The wrong-COLUMN claim is delivered, on the field that carries it.** `sk` is
+anti-correlated with `id` (50,40,30) and `co` correlated (1,2,3), so a wrong member yields
+plausibly-ordered output rather than an error:
+
+```
+ORDER BY n.co -> got ids [3 2 1], want [1 2 3]
+ORDER BY n.sk -> got ids [1 2 3], want [3 2 1]
+```
+
+### 3c. A hole this review found in the correlation pins, now closed
+
+The wrong-rows pin used only `n.sk`, and in its fixture `co` matched no `t2` row. So
+swapping the suffix member in ONE direction (`SK`→`CO`) left every pin green — both sides
+read empty — and detection required swapping BOTH ways, which is a stronger mutation than
+a real defect would be: a producer that emits the wrong member emits it one way. A third
+`t2` row now makes the two members answer **disjointly** (`sk`→ids 1,3; `co`→id 2) and the
+`co` polarity pair is added, so a one-directional substitution reds whichever arm it lands
+away from.
+
+### 3d. The unit pins
+
+The leg-window pin drives the production symbol **by name**
+(`rebaseOuterLegValueOrdinal`), not a local copy — the defect that NAK'd RFC-218's
+implementation. It covers both leg kinds × both pin states × both type-knownness states,
+with four single-accessor controls, because a decline whose control also fails is
+uninterpretable.
+
+**Two dimensions this RFC's own work missed, both now covered.** First, all four typed
+arms passed while every real query crashed: `into` was a typed-nil `*RecordType` in a
+`Type` interface, so the assertion arm succeeded with a nil receiver — the fixture only
+ever stated a type. Second, and it is this RFC's own rule landing on its own fixture: the
+leg-window pin's reference is `L.N.SK` with `SK` at struct ordinal **0**, so forcing a
+suffix ordinal to 0 is a NO-OP against it. It stayed green under a mutation
+`values_test` caught. A fixture whose discriminating value is the mutation's target
+cannot discriminate.
 
 ---
 
-## 4. A SEPARATE PRE-EXISTING DEFECT, found here and NOT fixed here
+## 4. A SEPARATE PRE-EXISTING DEFECT — one, not two, and the second was MY error
 
-Projecting a struct column through a join's merged row is broken, with no `ORDER BY`
-and no `EXISTS` involved. Measured with this entire change **reverted**, so it is not a
-consequence of it:
+Projecting a struct column alongside a projected `EXISTS` through a join's merged row
+fails, with no `ORDER BY` involved. Measured with this entire change **reverted**, so it
+is not a consequence of it:
 
 ```
 SELECT t1.id, n, EXISTS(...) FROM t1 JOIN t3 ON ...   (no ORDER BY at all)
   -> ordinal resolution: field "N" not resolvable in the runtime row
      (ordinal -1, row columns [ID T1_ID ID N]) — malformed plan
-
-SELECT t1.id, n FROM t1 JOIN t3 ON ...                (no EXISTS either)
-  -> returns rows, with the FIRST column 0 instead of the ids
 ```
 
-The second is a **silent wrong answer** and is the more dangerous. Both point at the same
-root cause §2a measured: the positional merge does not model a struct-typed column, so the
+Root cause: the positional merge does not model a struct-typed column (§2a), so the
 reference stays lazy (`ordinal -1`) and resolves by a name the runtime row does not answer
-to.
-
-It is pinned as a tripwire
+to. It is pinned as a tripwire
 (`projected_struct_root_over_a_join_still_fails_for_a_reason_that_predates_this`) that
-reds when the merge learns struct columns, with the replacement assertion named. **It is
-escalated rather than filed:** it is a live silent wrong-rows defect on master on a
-different mechanism (merge layout derivation, not the leg-window re-anchor), and it wants
-its own RFC and its own review lap.
+reds when the merge learns struct columns, with the replacement assertion named.
+
+**RETRACTED — and recorded rather than deleted, because a withdrawn measurement is the
+part of this section worth reading.** Rev 1 also reported a SECOND, silent form:
+
+```
+SELECT t1.id, n FROM t1 JOIN t3 ON ...   (no EXISTS either)
+  -> "returns rows, with the FIRST column 0 instead of the ids"
+```
+
+and escalated it as a live silent wrong-rows defect on master. **It does not reproduce.**
+Re-measured on `426cbcea1` with the same schema and inserts, it returns `1, 2, 3` —
+correct. The zeros came from the throwaway probe that produced them: it scanned a
+TWO-column result into ONE destination and ignored the `Scan` error, leaving the `int64`
+at its zero value. The engine was never wrong there; the instrument was, and it was a
+probe I had already deleted, which is exactly the failure the "every proof gets committed
+as a test" rule exists to prevent — a deleted instrument cannot be re-read when its
+conclusion is challenged.
+
+There is therefore ONE defect on this shape and it is LOUD. It is booked, and the booking
+carries this correction rather than the retracted claim.
 
 ---
-
 ## 5. Java
 
 `FieldPath.withSuffix` — `FieldValue.java:525-534`. `ofFieldsAndFuseIfPossible` recomputes

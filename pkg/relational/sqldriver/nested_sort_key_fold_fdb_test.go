@@ -273,22 +273,29 @@ func TestFDB_NestedSortKeyThroughTheProjectedExistsFold(t *testing.T) {
 	// found and because it is what stops the leg-window re-anchor from covering
 	// the projected-root shape over a join.
 	//
-	// PROJECTING A STRUCT COLUMN THROUGH A JOIN'S MERGED ROW IS BROKEN, and it has
-	// nothing to do with ORDER BY, with the nested key, or with this fix. Measured
-	// on the production code with this whole change REVERTED, so it is not a
-	// consequence of it:
+	// PROJECTING A STRUCT COLUMN ALONGSIDE A PROJECTED EXISTS THROUGH A JOIN'S
+	// MERGED ROW fails, and it has nothing to do with ORDER BY, with the nested
+	// key, or with this fix. Measured on the production code with this whole
+	// change REVERTED, so it is not a consequence of it:
 	//
 	//	SELECT t1.id, n, EXISTS(...) FROM t1 JOIN t3 ON ...   (no ORDER BY at all)
 	//	  -> ordinal resolution: field "N" not resolvable in the runtime row
 	//	     (ordinal -1, row columns [ID T1_ID ID N]) — malformed plan
-	//	SELECT t1.id, n FROM t1 JOIN t3 ON ...   (no EXISTS either)
-	//	  -> returns rows, with the FIRST column 0 instead of the ids
 	//
-	// The second is a SILENT wrong answer and the more dangerous of the two. Both
-	// point at the same root cause the re-anchor had to work around: the positional
-	// merge does not model a struct-typed column — the merged row and the leg
-	// window both state UNKNOWN for that slot (measured), so the reference stays
-	// LAZY (ordinal -1) and resolves by a name the runtime row does not answer to.
+	// A RETRACTED CLAIM, kept because a withdrawn measurement is worth more than a
+	// silent deletion. An earlier version of this comment also reported that
+	// `SELECT t1.id, n FROM t1 JOIN t3 ON ...` — no EXISTS at all — "returns rows
+	// with the first column 0 instead of the ids", and escalated that as a silent
+	// wrong-rows defect. IT DOES NOT. Re-measured, it returns 1, 2, 3, correctly.
+	// The zeros were an artifact of the throwaway probe that produced them: it
+	// scanned a TWO-column result into ONE destination and ignored the Scan error,
+	// so the int64 kept its zero value. The engine was never wrong there; the
+	// instrument was. There is ONE defect on this shape, and it is loud.
+	//
+	// Root cause of the loud one: the positional merge does not model a
+	// struct-typed column — the merged row and the leg window both state UNKNOWN
+	// for that slot (measured) — so the reference stays LAZY (ordinal -1) and
+	// resolves by a name the runtime row does not answer to.
 	//
 	// This asserts the CURRENT loud failure so the shape is not silently forgotten.
 	// It is a tripwire, not an endorsement: when the merge learns struct columns
@@ -367,8 +374,17 @@ func TestFDB_NestedCorrelationThroughAJoinsMergedRow(t *testing.T) {
 	// t2.t1_id matches n.sk for ids 1 (sk=50) and 3 (sk=30), not for 2 (sk=40).
 	// The values are deliberately NOT ids, so a reference that lost its `.sk` and
 	// fell back to anything id-shaped cannot match by accident.
+	//
+	// THE THIRD t2 ROW MAKES THE TWO MEMBERS ANSWER DISJOINTLY, and that is what
+	// closes a real hole rather than adding a case. `co` is (1,2,3) and matching
+	// on it selects id 2 alone, while `sk` selects ids 1 and 3 — no overlap. With
+	// only the `sk` arm present, swapping the fused suffix's member in ONE
+	// direction (SK→CO) left every pin green, because `co` matched nothing in this
+	// data and both sides read empty. Detection required swapping BOTH ways, which
+	// is a stronger mutation than a real defect would be: a producer that emits
+	// the wrong member emits it one way.
 	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, (50, 1)), (2, (40, 2)), (3, (30, 3))")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 30), (200, 50)")
+	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 30), (200, 50), (300, 2)")
 	// One t3 row per t1 row: the join is row-preserving, so it CANNOT change the
 	// answer. That is what licenses comparing the two sides directly.
 	mustExec(t, db, ctx, "INSERT INTO t3 VALUES (900, 1), (901, 2), (902, 3)")
@@ -416,6 +432,27 @@ func TestFDB_NestedCorrelationThroughAJoinsMergedRow(t *testing.T) {
 			"SELECT t1.id FROM t1 JOIN t3 ON t3.t1_id = t1.id " +
 				"WHERE NOT EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = n.sk)",
 			[]int64{2},
+		},
+		{
+			// THE OTHER MEMBER, and it is what makes a ONE-DIRECTIONAL wrong-member
+			// mutation visible. `co` selects id 2 where `sk` selects 1 and 3, so
+			// the two arms cannot both be satisfied by one answer: emitting the
+			// wrong member reds whichever arm it lands away from, whichever way the
+			// substitution goes. The runtime descends a struct column by per-step
+			// NAME (values.go's proto.Message arm), so the member the fused suffix
+			// names is the field this pair actually guards.
+			"exists_on_the_other_member",
+			"SELECT t1.id FROM t1 WHERE EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = n.co)",
+			"SELECT t1.id FROM t1 JOIN t3 ON t3.t1_id = t1.id " +
+				"WHERE EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = n.co)",
+			[]int64{2},
+		},
+		{
+			"not_exists_on_the_other_member",
+			"SELECT t1.id FROM t1 WHERE NOT EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = n.co)",
+			"SELECT t1.id FROM t1 JOIN t3 ON t3.t1_id = t1.id " +
+				"WHERE NOT EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = n.co)",
+			[]int64{1, 3},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -10655,27 +10655,32 @@ None is speculative: each was re-verified against the tree before booking.
   not relaxed — it was a floor and is now a ceiling, because zero is the steady state
   and a reappearing decline means a shape stopped planning.
 
-- [ ] **A struct column projected through a JOIN's merged row is broken, and one
-  form of it is a SILENT wrong answer.** · M · **query-engine change — needs a
-  Graefe ACK before merge**
+- [ ] **A struct column projected ALONGSIDE a projected EXISTS through a JOIN's
+  merged row fails LOUDLY.** · S · **query-engine change — needs a Graefe ACK
+  before merge**
   Found while closing the item above; measured with that entire change REVERTED, so
-  it is independent of it. No `ORDER BY` and, in the second case, no `EXISTS` either:
+  it is independent of it. No `ORDER BY` involved:
   `SELECT t1.id, n, EXISTS(...) FROM t1 JOIN t3 ON ...` fails
   `ordinal resolution: field "N" not resolvable in the runtime row (ordinal -1, row
-  columns [ID T1_ID ID N]) — malformed plan`, and `SELECT t1.id, n FROM t1 JOIN t3 ON ...`
-  RETURNS ROWS with the first column 0 instead of the ids.
+  columns [ID T1_ID ID N]) — malformed plan`.
+  RETRACTED, AND THE RETRACTION IS THE POINT: an earlier version of this booking
+  ALSO claimed `SELECT t1.id, n FROM t1 JOIN t3 ON ...` (no EXISTS) "returns rows
+  with the first column 0 instead of the ids", sized the item M on that basis, and
+  escalated it as a live SILENT wrong-rows defect. It does not reproduce — that
+  query returns 1, 2, 3, correctly. The zeros were an artifact of a throwaway probe
+  that scanned a two-column result into one destination and ignored the `Scan`
+  error. There is ONE defect here, it is loud, and nothing silent is outstanding.
   ROOT CAUSE, measured: the positional merge does not model a struct-typed column —
   the merged row and the leg window both state UNKNOWN for that slot — so the
   reference stays lazy (ordinal -1) and resolves by a name the runtime row does not
-  answer to. This is the same gap RFC-220 §2a had to work around, and it is why the
-  projected-root shape over a join still cannot be asserted as rows.
+  answer to. Same gap RFC-220 §2a works around, and why the projected-root shape
+  over a join still cannot be asserted as rows.
   Pinned as a tripwire that reds when the merge learns struct columns:
   `nested_sort_key_fold_fdb_test.go`'s
   `projected_struct_root_over_a_join_still_fails_for_a_reason_that_predates_this`,
   whose message names the replacement assertion.
-  DONE = the merged layout carries struct column types, both queries above return
+  DONE = the merged layout carries struct column types, the query above returns
   correct rows, and the tripwire is replaced by the row assertion it names.
-
 - [ ] **RFC-218 adjacent — Go appends a hidden sort column where Java derives
   instead (plan-shape only).** · S
   Java's `Expression.canBeDerivedFrom` (`Expression.java:254-264`) decides

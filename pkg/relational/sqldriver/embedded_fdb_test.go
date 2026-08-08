@@ -409,10 +409,10 @@ var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 		// The added ACCEPTs are the point rather than noise: each is a
 		// projected-EXISTS fold over ordinal-safe legs threading a MULTI-ACCESSOR
 		// reference, which is the shape that used to decline.
-		Denominator:     n(582),
+		Denominator:     n(586),
 		Accept:          n(166),
 		CorrelatedStep1: n(108),
-		NoExistRef:      n(206),
+		NoExistRef:      n(210),
 		ReconstructNil:  n(102),
 		// The residue is now ENTIRELY bare-QOV, and the two entries below say so
 		// separately on purpose. A single "reconstruct-nil == 94" would be
