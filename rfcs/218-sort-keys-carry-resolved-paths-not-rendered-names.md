@@ -1,6 +1,6 @@
 # RFC-218 — The projected-EXISTS fold must read the sort key's resolved path, not a re-derived name
 
-**Status:** DRAFT rev 2 — NAK on rev 1 (§2 too narrow, §5 absence claim false); reworked against measurement, awaiting Graefe + Torvalds
+**Status:** DRAFT rev 3 — rev 2 ACKed; rev 3 adds the YY1 measurement, which changes §2's decision from "carry the value" to "carry the path, re-anchor the ordinal". Awaiting Graefe + Torvalds on the reworked §2b.
 **Origin:** RFC-197 ratchet entry `cascades_translator.go # sortKeyFieldRef`, whose stated
 mechanisms were measured false; the live bug behind it is this one
 **Scope:** `pkg/relational/core/query/cascades_translator.go` (the `sortSource` helpers), plus
@@ -166,12 +166,54 @@ justification that would have earned the narrow fix (that the JOIN arm's nested 
 reachable at three segments, hence out of scope under §3) is therefore **false**, and it was
 available to check.
 
-**Decision.** The fold stops re-deriving a name from a Value that already carries the answer,
-**in both arms**. The predicate is the presence of a multi-accessor resolved path, not which
-arm the value happens to sit in: when `k.Value` is a `*FieldValue` whose `Resolved` carries more
-than one accessor, `sortKeySourceValue` uses that value's path rather than re-minting from a
-rendered string. This is a rework, not an extension — the discriminator changes from "which arm"
-to "does the value carry a path", which is the property that was actually load-bearing all along.
+### 2b. The ordinals are stated in the WRONG DOMAIN — so "carry the value" is not the fix
+
+Every failure in §1 and §2a is **loud**: a type error or a `malformed plan`. The fix's own
+residual risk is **silent**, and it had to be measured before designing around it. Carrying
+`k.Value` carries its `Resolved` *ordinals*, and an ordinal resolved against the wrong layout
+does not error — it returns the wrong column.
+
+Instrumenting the resolved path and its stated domain at the fold:
+
+```
+WW2  fold, single-table   accessors={N@1}{SK@0}  domain=domain(2;2:ID;1:N)
+     fold's flowed row:   [ID N]              -> 2 columns, MATCHES the domain
+
+WW3  fold, JOIN           accessors={N@1}{SK@0}  domain=domain(2;2:ID;1:N)
+     fold's flowed row:   [ID T1_ID ID N]     -> 4 columns, DOES NOT MATCH
+```
+
+The join key's root ordinal is `N@1`, stated in a **2-column `[ID, N]` domain — the pre-merge
+`t1` source row**. The fold evaluates against the merged row, where **slot 1 is `T1_ID`**. So a
+naive "return `k.Value`" would, in the join arm, read a `BIGINT` foreign key where the sort
+expects a struct — and the sort would order by that column with no error at all. The bug it
+replaces at least announced itself.
+
+**This is the same trap as §2a, one layer down**, and it is worth naming as such: the
+single-table domain *matches*, so "carry the value" passes the single-table reproducer and is
+silently wrong on the join. A design validated on the shape you happen to have is how this
+defect has now nearly survived three laps.
+
+**Decision.** The fold carries the resolved **path**, and **re-anchors its root ordinal in the
+layout the fold actually evaluates against**, failing closed when that layout cannot be stated.
+It does not carry the value's ordinals verbatim. Concretely, in both arms: when `k.Value` is a
+`*FieldValue` whose `Resolved` carries more than one accessor, take the accessor *path* and
+re-state the root ordinal against the fold's flowed row (the same re-anchoring the NLJ rule's
+`rebaseOuterLegValue` performs for leg references), rather than re-minting from a rendered
+string **or** trusting a source-relative ordinal.
+
+The machinery for the check already exists and is the right shape: `FieldPath.Domain` records
+the layout the root ordinal indexes, and `FieldPath.OrdinalIn(frontier)` is documented to
+**fail closed** — including, explicitly, on a multi-accessor fused path whose root addresses an
+outer layout. The design must consult it rather than assume; a path whose domain cannot be
+reconciled with the fold's frontier must decline the fold, not guess.
+
+**Why the discriminator is multi-accessor, stated as a principle rather than a threshold:** a
+single-accessor `Resolved` is fully expressible by `Field`, so rendering it loses nothing.
+Multi-accessor is precisely the case where **the rendered name cannot express the path**. The
+rule is therefore *"act when the rendered name is lossy"*, not *"act when there are ≥2
+accessors"* — which is why it does not need widening to single-accessor references, and why it
+is not a constant fitted to two reproducers.
 
 **Rejected: confining the fix to `fv.Child == nil`.** It would have left the JOIN shape above
 failing with an unchanged error message, and — worse for review — it would have looked correct,
@@ -238,7 +280,16 @@ those sites receive.
    - JOIN fold (`fv.Child != nil`, two segments): the same with `JOIN t3 ON …`
 
    Each asserts row order and mutation-verifies red **independently** — a mutation that only
-   reds one arm has not earned the other.
+   reds one arm has not earned the other. **This deliverable is SPECIFIED, NOT WRITTEN**, and
+   the distinction matters at implementation review: "each arm mutation-reds independently" is
+   currently a property of an artifact that does not exist. A single fixture exercising both
+   arms would satisfy the sentence and *not* the property — the arms must be separately
+   mutable and separately red, and that gets checked against the code, not against this line.
+
+   It must also cover the §2b hazard, which no row-order assertion on a *correct* fix will
+   catch by itself: a test that pins the join key resolving to the right **column** (not merely
+   a sorted result) is what would fail if the root ordinal were carried un-re-anchored. Ordering
+   by the wrong column can still produce a plausibly-ordered result set.
 3. **A companion test on the non-fold path** asserting `SELECT id FROM t1 ORDER BY n.sk` is
    correct. This is currently a code-path *reading*, not a measurement, and an unmeasured
    "the other path is fine" is exactly the corollary-inherits-authority error.
@@ -273,6 +324,11 @@ it would launder a disk artefact into a plan-shape result.
 - It MUST be run below ~95% utilisation, and the utilisation at run time MUST be recorded
   beside the result.
 - If goldens move, **every changed record gets reviewed individually** — no bulk re-blessing.
+- **The corpus must contain a JOIN + fold + nested-`ORDER BY` shape**, and the run must confirm
+  it was actually exercised. With both arms in scope (§2a) the plan-shape exposure now includes
+  join-rooted sorts, so a single-table-only verification would repeat §2 rev 1's error one
+  layer up — passing on the reproducer the corpus happens to contain while saying nothing about
+  the arm that broke. A corpus run only exercises the arms the corpus reaches.
 - **"Nothing moved" is a result to state, not a step to skip.** An un-run precondition and a
   run that found no movement are different outcomes and must never be reported the same way.
 
@@ -293,7 +349,12 @@ citation known current:
 | `Expressions.java:124-146` | `difference`, comparing only against `that` — no self-dedup |
 | `Expression.java:254-264` | `canBeDerivedFrom` via `simplify` + `pullUp` + `containsKey` |
 
-All five hold as cited.
+All five hold as cited. **Status of this table: verified twice by the author, never
+independently.** The review lap did not re-check the Java sites and said so rather than
+implying otherwise, so this is an unchallenged claim, not a confirmed one. Anyone relying on
+the Java argument in §0 should re-read the five sites rather than inherit this table's
+authority — it is the author's own measurement restated, and a fact true when observed is not
+current merely because it was written down.
 
 ---
 
