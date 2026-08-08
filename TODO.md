@@ -14730,8 +14730,14 @@ None is speculative: each was re-verified against the tree before booking.
   `scanRangeSetCursor` odometer ordering plus continuation resume at every stop
   point in `scan_range_set_cursor_test.go`
   (`...OdometerOrderAndSingleLiveChild:258`, `...ContinuationSweep:496`) —
-  those two, and in fact every `newScanRangeSetCursor` call in that file,
-  construct `recordlayer.ForwardScan()`, so they pin the FORWARD odometer only.
+  those two construct `recordlayer.ForwardScan()`, so they pin the FORWARD
+  odometer only. The file DOES have a reverse test — `:879` builds
+  `ScanProperties{Reverse: true}`, passes it at `:893` and asserts propagation at
+  `:908-909` — but that checks the property reaches the leaf, not the odometer's
+  ordering. (An earlier draft said "every `newScanRangeSetCursor` call in that
+  file" is forward; that was a `grep -c ReverseScan` result, and the struct
+  literal at `:879` does not contain that token. A grep proving a negative is
+  only as good as the spellings it knows.)
   The reverse direction is covered where the direction is actually decided, in
   the binder: `_ReverseZeroOrder:108` above passes `reverse=true` and asserts the
   alternatives come out `+0` then `-0`.
