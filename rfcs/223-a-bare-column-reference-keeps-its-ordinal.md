@@ -56,8 +56,9 @@ large divergence for no fix, and this RFC does not touch it.
 
 Schema `nst(sk BIGINT, co BIGINT)`, `t1(id, n nst)`, `t3(id, t1_id)`; `t3` holds
 exactly one row per `t1` id, so the join is row-preserving. Every case asserts
-COLUMN VALUES, never a row count — the escalation reported a wrong column, and a
-count reads identically whether the column is right or wrong.
+COLUMN VALUES in order — the escalation reported a wrong column, and a row COUNT
+reads identically whether the column is right or wrong. Order is asserted too;
+the claim is that a count ALONE is insufficient, not that order goes unchecked.
 
 | second projected column | join | projected `EXISTS` | result |
 |---|---|---|---|
@@ -152,13 +153,21 @@ divergence in structure, and converging them removes it.
 
 ## 4. The decision: relax the bare guard. One guard, one rule.
 
-**Chosen — accept at the source, in `plan_visitor.go:706`,** the union of the two
-shapes, so a bare reference and a qualified one resolve by the same rule:
+**Chosen — accept at the source,** the union of the two shapes, so a bare
+reference and a qualified one resolve by the same rule:
 
 ```go
 isFV && ((fv.Child == nil && fv.SourceRelativeBaked()) ||
          (fv.Child != nil && fv.RootIsLegRelativeUnpinned()))
 ```
+
+**This is extracted as a shared `resolveBaked` predicate called from BOTH sites,
+not inlined at `plan_visitor.go:706`.** A disjunction of two shape tests written
+out at one call site is two rules spelled as one boolean, and leaving the other
+site with its own copy would preserve exactly the asymmetry this RFC faults the
+alternative for leaving standing. §3's argument is that Java has ONE resolution
+*function*; the Go change has to be one function too, or it is not the same
+argument. Implementation extracts the predicate first and converts both callers.
 
 The added disjunct is **`resolveQualifiedBaked`'s existing predicate, unchanged**.
 It is not a new trust boundary: `resolveQualifiedBaked`'s own doc comment already
@@ -201,6 +210,43 @@ Every previously-failing arm returns **exactly the values its qualified twin
 already returns**, including the `structLast` ordering
 `[[1 true struct[50 1]] [2 false struct[40 2]] [3 true struct[30 3]]]`.
 
+**The bare MULTI-ACCESSOR case keeps passing, and that is not implied — it is
+stated because the predicate change reaches it.** `RootIsLegRelativeUnpinned`
+carries no `len(Accessors)==1` requirement, so at the bare site it newly admits
+fused multi-accessor paths that today pass through a *different* arm. `n.sk`
+bare over the join with a projected `EXISTS` returns `[[1 50 true] [2 40 false]
+[3 30 true]]` both before and after, and it is a standing control
+(`CONTROL_unqualified_structMember_join_projectedExists`) rather than a one-off
+observation.
+
+**Two consumers could in principle turn a nil→non-nil slot into an operator-tree
+change rather than a rendering change**, and they are named so the single-record
+golden result is read as evidence about them:
+`rule_push_requested_ordering_through_projection` (a projection whose slots are
+known Values can push an ordering it previously could not) and
+`rule_projection_elim` (elimination is only provable when the slots are
+inspectable). Across the whole corpus **neither produced an operator-tree
+change** — the one golden record that moves keeps a byte-identical operator tree
+— so both rules' extra reach is either unexercised or ordering-neutral on this
+corpus.
+
+**Ambiguity cannot ride in on the widened predicate, and the reason is measured,
+not assumed.** `resolveQualifiedBaked`'s safety rests on two things: the shape
+predicate AND the fact that resolution ran with an explicit qualifier. Moving the
+predicate onto a value produced by the bare correlated arm imports the first
+without the second, so the question is whether a bare reference naming more than
+one leg can reach the bake site at all. **It cannot.** Six shapes — an ambiguous
+bare column with and without the fold, a self-join whose bare column exists in
+both legs, and the duplicate-plain-alias case `resolveQualifiedBaked`'s own doc
+comment names — are all refused with **42702 by the SQL layer, identically with
+and without the change**.
+
+That is a NEGATIVE result and it is the fact the widening's safety rests on, so
+it is pinned rather than reported (the `AMBIGUITY_*` arms), with a failure
+message naming what gets re-armed if the rejection is ever relaxed: an ambiguous
+bare reference reaching a widened guard would bake one leg's ordinal and read
+that slot **silently**. Mutating the expected code to `42703` reds all six.
+
 ---
 
 ## 5. The regression pins the ASYMMETRY, not the failing query
@@ -232,7 +278,7 @@ regression. Its replacement assertion is named in its own message.
 ### Census bookkeeping, so a reader does not re-derive it
 
 `foldStep1Seed`'s equalities moved twice, each time proven by moving the fixture
-file out of the package and back rather than asserted: `572/162/202 → 574/162/202`,
+file out of the package and back rather than asserted: `572/160/202 → 574/162/202`,
 then `→ 588/174/204`. **The second round split +14 across TWO arms** — ACCEPT +12
 and `rv-no-exist-ref` +2 — because two of the new controls project no reference
 to the exists alias at all. The first round landed wholly in ACCEPT. The first
@@ -244,16 +290,24 @@ it is restated at the gate rather than left standing.
 ## 6. Gates
 
 - (a) Every arm of `TestFDB_UnqualifiedRefBesideAProjectedExistsOverAJoin` green
-      with the three tripwires converted to value assertions matching their
-      qualified twins.
-- (b) `just test` green, with the only expected movements being (a) and the leg-reference
-      RFC's named tripwire.
-- (c) `foldStep1Seed` and every other census green with no equality relaxed; any
+      with its three tripwires converted to value assertions matching their
+      qualified twins, and the six `AMBIGUITY_*` arms still green **unchanged** —
+      those must NOT move, and a change there is a blocker, never a re-bless.
+- (b) **FOUR tripwires convert, not three.** The fourth is in a different file:
+      `structcol_repro_fdb_test.go`'s
+      `struct_root_beside_a_projected_exists_over_a_join_still_fails`. §4's
+      "exactly 4 failures" counts it, while an earlier draft of this gate named
+      only the three in one file — which would have flagged the fourth as an
+      unexpected movement. It converts to the values its own failure message
+      already names.
+- (c) `just test` green, with the only expected movements being (a), (b), the
+      single golden record in (e), and the leg-reference RFC's named tripwire.
+- (d) `foldStep1Seed` and every other census green with no equality relaxed; any
       movement attributed by the move-out/move-back control.
-- (d) No change to `FieldTypeForProtoField`. The type erasure is out of scope and
+- (e) No change to `FieldTypeForProtoField`. The type erasure is out of scope and
       stays a separate, documented divergence.
 
-### (e) The ONE golden record that moves, justified individually
+### (f) The ONE golden record that moves, justified individually
 
 **A first draft of this section predicted no golden would move. That prediction
 was wrong, and the measurement is recorded here rather than quietly corrected.**

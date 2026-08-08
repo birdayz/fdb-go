@@ -37,9 +37,11 @@ import (
 // fails is uninterpretable, and each failing case here has a control that
 // differs from it in exactly one factor.
 //
-// Every case asserts the COLUMN VALUES, never a row count — the escalation that
-// produced this investigation reported a wrong first column, and a count or an
-// order reads identically whether the column is right or wrong.
+// Every case asserts the COLUMN VALUES in order — the escalation that produced
+// this investigation reported a wrong first column, and a row COUNT reads
+// identically whether the column is right or wrong. Order is asserted too
+// because these fixtures are deterministic; the claim is that a count alone is
+// insufficient, not that order is unchecked.
 func TestFDB_UnqualifiedRefBesideAProjectedExistsOverAJoin(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -148,6 +150,82 @@ func TestFDB_UnqualifiedRefBesideAProjectedExistsOverAJoin(t *testing.T) {
 			q:            "SELECT t1.id, " + exists + ", n" + join,
 			wantErrField: "N",
 		},
+	}
+
+	// AMBIGUITY IS REJECTED UPSTREAM OF THE BAKE SITE, AND THAT IS WHAT MAKES
+	// WIDENING THE BARE GUARD SAFE.
+	//
+	// resolveQualifiedBaked accepts a child-bearing leg-relative value, and its
+	// safety rests on TWO things: the shape predicate, and the fact that
+	// resolution ran with an explicit qualifier. Converging the bare arm onto
+	// that predicate imports the first without the second, so the question is
+	// whether a bare reference that names more than one leg can ever reach the
+	// bake site. It cannot: every shape below is refused with 42702 by the SQL
+	// layer first, both with and without a join, and with and without a
+	// projected EXISTS.
+	//
+	// This is a NEGATIVE result and it is load-bearing rather than decorative.
+	// It is the fact that classifies the guard widening as safe, and nothing
+	// else in the tree states it. If this rejection is ever relaxed — an
+	// ambiguous bare reference allowed to resolve to a first match — then a
+	// widened bare guard would bake a real ordinal for it and read ONE leg's
+	// slot silently, which is a wrong-column bug of exactly the kind this whole
+	// investigation exists to prevent. These arms are what would go red first.
+	ambiguous := []struct{ name, q, wantCode string }{
+		{
+			"ambiguous_bare_column_over_a_join_projectedExists",
+			"SELECT id, " + exists + join,
+			"42702",
+		},
+		{
+			"ambiguous_bare_column_over_a_join_noExists",
+			"SELECT id" + join,
+			"42702",
+		},
+		{
+			"selfjoin_bare_column_present_in_both_legs_projectedExists",
+			"SELECT a.id, t1_id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = a.id) AS h " +
+				"FROM t3 AS a JOIN t3 AS b ON a.id = b.id",
+			"42702",
+		},
+		{
+			"selfjoin_bare_column_present_in_both_legs_noExists",
+			"SELECT a.id, t1_id FROM t3 AS a JOIN t3 AS b ON a.id = b.id",
+			"42702",
+		},
+		{
+			// The DUPLICATE PLAIN ALIAS shape resolveQualifiedBaked's own doc
+			// comment names as declining. It is refused earlier still.
+			"duplicate_plain_alias_qualified_projectedExists",
+			"SELECT a.id, a.t1_id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = a.id) AS h " +
+				"FROM t3 AS a JOIN t3 AS a ON true",
+			"42702",
+		},
+		{
+			"duplicate_plain_alias_bare_projectedExists",
+			"SELECT t1_id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = 1) AS h " +
+				"FROM t3 AS a JOIN t3 AS a ON true",
+			"42702",
+		},
+	}
+	for _, tc := range ambiguous {
+		t.Run("AMBIGUITY_"+tc.name, func(t *testing.T) {
+			t.Parallel()
+			rows, err := db.QueryContext(ctx, tc.q)
+			if err == nil {
+				rows.Close()
+				t.Fatalf("%q now RESOLVES. An ambiguous bare reference reaching the "+
+					"bake site is what makes a widened bare guard unsafe: it would "+
+					"bake one leg's ordinal and read that slot silently. Either "+
+					"restore the %s rejection or narrow the bare guard back to the "+
+					"childless shape", tc.q, tc.wantCode)
+			}
+			if !strings.Contains(err.Error(), tc.wantCode) {
+				t.Fatalf("expected %s for %q, got: %v — a different refusal means "+
+					"the upstream rejection this guard's safety rests on has moved",
+					tc.wantCode, tc.q, err)
+			}
+		})
 	}
 
 	for _, tc := range cases {
