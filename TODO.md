@@ -209,6 +209,53 @@ Related: `pkg/docscheck`'s `TestNightlyRaceStepsDeclareTheirJobCount` currently 
 every race-instrumented nightly step to WRITE `--local_test_jobs`. If the tags land, that
 gate should be revisited — the point of the tags is that the number stops needing to be
 restated at each call site.
+## CI flake — `bazelscaleset` remote tests race their own fake `ssh` binary
+
+### [ ] Create the fake `ssh` once, before any parallel test starts forking
+
+MEASURED, 1 of 20 consecutive `GOWORK=off go test ./... -count=1` runs in
+`tools/bazelscaleset` (the `Test the standalone runner-supervisor module` step of the
+required `Build, Lint & Test` lane):
+
+```
+--- FAIL: TestRemoteLaunchArgvAndJitDelivery (0.01s)
+    remote_test.go:279: remote launch: remote launch on runner@<fake-host> failed (exit -1):
+    : fork/exec /tmp/TestRemoteLaunchArgvAndJitDelivery3456571678/001/ssh: text file busy
+```
+
+(The host is the test's dotted-quad placeholder, elided here only because
+`TestLivingDocsCiteCurrentJavaTarget` cannot tell a fake IP from a stale 4-part
+version string. Nothing else in the output is altered.)
+
+Mechanism: the test writes a fake `ssh` into its own temp dir, and a *parallel* test's
+`fork` duplicates the still-open write fd into a child that has not yet `exec`'d. O_CLOEXEC
+does not help — it clears at exec, so the fd is live for the whole fork→exec window — and
+Go's `ForkLock` is held across fork+exec by `os/exec` but is not taken by `os.OpenFile`.
+While any process holds a write fd, executing the file fails ETXTBSY. Same fork/exec race
+`startLocal` already retries past (`scaler.go`, and `copyFile`'s comment in `slots.go`
+describes the sibling unlink-first cure).
+
+**Do NOT "fix" this by adding a retry to `launchRemote`.** The missing retry is the correct
+discrimination, not an inconsistency:
+
+- `startLocal` execs `run.sh` out of a per-slot clone that this process itself wrote —
+  `slots.go` `copyFile` copies `run.sh` with its 0755 perms into every slot dir. ETXTBSY is
+  genuinely reachable in production there, which is why the retry exists and is pinned by
+  `TestStartLocalRetriesETXTBSY` (`lifecycle_test.go:623`).
+- `launchRemote` execs `/usr/bin/ssh`, which this tool never writes. A retry there could
+  never fire in production; it would exist solely to mask a test-harness race.
+
+Correct fix direction: build the fake `ssh` **once** — `sync.Once` or a `TestMain` step —
+into a shared dir, before any parallel test begins forking, so no write is ever concurrent
+with a fork. That removes the race at its source without putting unreachable code in the
+production path.
+
+**Not mutation-verified, and that is the first job.** It did not recur in 25 later runs, so
+at ~1/20 there is no reproducer on demand yet. Build the harness first (a deliberate write-fd
+hold on the fake `ssh` at exec time is how `TestStartLocalRetriesETXTBSY` forces the sibling
+shape), prove it red, then fix. Booking rather than fixing was a scope call, not a judgement
+that it is unimportant: it is live on a required lane.
+
 ## Wire divergence — first-or-default continuation bytes (blocked on Java issue 3220)
 
 ### [ ] Reconcile the RecordQueryFirstOrDefaultPlan continuation format with Java
