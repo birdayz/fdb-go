@@ -593,7 +593,7 @@ test-fresh target *args:
 # Only NESTED Go modules need a stub page; the root module is covered by the go-import
 # meta on / via Go's prefix walk. See scripts/gen-vanity-modules.sh.
 vanity-modules:
-    ./scripts/gen-vanity-modules.sh
+    bash scripts/gen-vanity-modules.sh
 
 # Convenience wrapper for the frl CLI (Phase A skeleton — see cmd/frl/).
 # Example: `just frl version` or `just frl config schema`.

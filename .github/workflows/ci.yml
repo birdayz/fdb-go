@@ -83,7 +83,10 @@ jobs:
             echo "::error::website/data/gomodules.yaml is not tracked; this gate cannot see it."
             exit 1
           }
-          ./scripts/gen-vanity-modules.sh >/dev/null
+          # Invoked via `bash`, not as an executable: this repo sets core.fileMode=false,
+          # so a plain `chmod +x` never reaches the index and the script lands 100644 —
+          # which fails only in CI (exit 126), never locally, where the on-disk bit is set.
+          bash scripts/gen-vanity-modules.sh >/dev/null
           # Diff against HEAD, not the index: `git diff` alone compares worktree-vs-index
           # and goes quiet if the drift happens to be staged.
           if ! git diff --exit-code HEAD -- website/data/gomodules.yaml; then
