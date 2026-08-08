@@ -45,6 +45,7 @@ go_test(
         "group_key_coverage_test.go",
         "left_join_oracle_test.go",
         "num_fn_oracle_test.go",
+        "ordering_canonical_test.go",
         "ordering_test.go",
         "outer_three_way_oracle_test.go",
         "right_join_oracle_test.go",
