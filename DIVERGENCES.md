@@ -441,7 +441,7 @@ explicit sort-count, NLJ-predicate, and statistics-cost rungs. Criterion-by-crit
 | Criterion | Java | Go | Status |
 |---|---|---|---|
 | 1. Physical beats non-physical | `instanceof RecordQueryPlan` | `isPhysical` | Aligned |
-| 2. Max data access cardinality | CardinalitiesProperty gate + comparison | Data-access cardinality gate | Functionally equivalent |
+| 2. Max data access cardinality | CardinalitiesProperty gate + comparison — index arm has TWO criteria: PK-bound-by-equalities, falling through to unique-index | Data-access cardinality gate — implements the uniqueness criterion only | **Deliberate divergence — Go's sargable surface excludes the PK, so Java's criterion 1 has no constructible input (see below)** |
 | 3. Residual predicate count | NormalizedResidualPredicateProperty (CNF size) | `countResidualPredicates` using `cnfSize()` | Aligned |
 | 4. Data access count | count(Scan, Index, Covering) | `scanCount + indexScanCount + coveringIndexCount` | Aligned |
 | 5. Recursive CTE DFS > level | flipFlop(compareRecursiveCte) | `compareRecursiveCTE` | Aligned |
@@ -462,6 +462,59 @@ explicit sort-count, NLJ-predicate, and statistics-cost rungs. Criterion-by-crit
 | 17. Plan hash tiebreak | planHash(CURRENT_FOR_CONTINUATION) | `costExprHash`→`concretePlanHash`/`exprConcreteHash` (FNV-flavored) | **Shape-aligned, NOT byte-aligned** (RFC-167 §5) — both break cost ties by a structural plan hash so each engine is *intra-engine* stable, but Go uses an FNV-flavored hash (RFC-024 cache key) ≠ Java's `planHash(CURRENT_FOR_CONTINUATION)`, so Go and Java may pick **different** tie-winner indexes for the same query (rows identical; EXPLAIN may differ). Convergence is deferred until cross-engine continuation re-planning is a requirement (RFC-167 OQ#5). |
 
 Criterion 15b (`compareFlatMapVsNLJ`) is RETIRED (RFC-181 WS-P stage (d)): under the epoch convergence with finals-only physical yields and prune-to-winner, its recorded JOIN regression no longer reproduces — deleted with its tests. 15c is RECLASSIFIED: Java's PlanningCostModel is self-described heuristic — its rungs end in a planHash tiebreak and no statistics rung exists — so 15c is a Go statistics EXTENSION occupying that role slot (cost discriminator before the hash tiebreak), not a literal Java rung; the stage-(d) retirement probe regressed equality-index preference and vector outer-limit folding, proving it load-bearing. The maxRoundsPerRef load cap (10) is obsolete under epoch convergence (both constraint lattices are finite chains, so rounds are structurally bounded); it remains only as a loud divergence tripwire at 100. RFC-190 removed the five Go-specific per-rung sort gates and promoted sort count. The GROUP BY/covering-index flip exposed the missing `RecordQueryScanPlan` unmatched-fields arm; porting Java's scan branch fixed the apples-to-oranges comparison, so it is not evidence for retaining the gate.
+
+#### Criterion 2 — max data access cardinality — DELIBERATE DIVERGENCE (Go candidate-model constraint)
+
+**Unlike criteria 6 and 7, this is NOT a Java defect. Java is correct here and Go proves strictly
+less. Read-side plan choice only — nothing here touches the wire.**
+
+Java's `CardinalitiesProperty.visitRecordQueryIndexPlan` (`CardinalitiesProperty.java:313-355`) has
+**two** criteria for an index plan, the first falling through to the second on a miss:
+
+1. `:329-337` — if the candidate is a `WithPrimaryKeyMatchCandidate` and the scan's
+   `equalityBoundValues` contain all of `primaryKeyValues`, return `atMostOne()`. This applies to
+   value-index candidates: `ValueIndexScanMatchCandidate` implements `ScanWithFetchMatchCandidate`
+   (`:52`), which extends `WithPrimaryKeyMatchCandidate` (`ScanWithFetchMatchCandidate.java:44`).
+2. `:339-352` — if the candidate `isUnique()` and is a `ValueIndexScanMatchCandidate`, rebase the
+   index key values and trim to `getColumnSize()`; if the equality-bound set covers them, return
+   `atMostOne()`.
+
+Go implements **only criterion 2** (`indexProvableMaxCard`, `planning_cost_model.go:503`).
+
+**Cause — the sargable-surface invariant.** Criterion 1 requires equalities *binding primary-key
+positions*. Java can express that because its `indexKeyValues` span index key **plus** the PK suffix
+— which is exactly why criterion 2 must call `.limit(getColumnSize())` to trim the PK back off. Go's
+candidates deliberately never fold the PK into the sargable surface
+(`match_candidate_index.go:678-681`: "The PK is NOT part of the sargable surface … that invariant
+must hold"), so a constructed index plan's comparison count never exceeds its index key column
+count and criterion 1 has **no constructible input**. Note the two criteria compare in the same
+value domain, so this is a genuine gap and not a Java no-op: `primaryKeyValues` come from
+`ScalarTranslationVisitor.translateKeyExpression` rooted at `Quantifier.current()`
+(`ScalarTranslationVisitor.java:230`), and `equalityBoundValues` are built through the same
+`toResultValue(Quantifier.current(), …)` (`ValueIndexLikeMatchCandidate.java:139-141`) — which is
+why criterion 1 needs no rebase while criterion 2 does.
+
+**Cost — this is decisive, not silent.** `PlanningCostModel.java:127-132` returns on one-sided
+abstention: the side whose max-of-max data-access cardinality is unknown **loses outright**. The
+outer guards at `:121`/`:125` are disjunctive, so they tolerate only the both-abstain case. For a
+PK-bound non-unique index scan, Java ranks the plan first on this rung and Go ranks it last, and the
+comparison never reaches the structural tie-breakers below.
+
+**Why it is not closed here.** Folding the PK into the sargable surface is the only way to make
+criterion 1 reachable, and it re-opens a regression this repo already paid for: counting the PK
+suffix in `unmatchedFieldsForIndex` over-counts a fully-bound index probe and mis-ranks criterion
+#12 toward a full-scan join driver (`planning_cost_model.go:2833-2835`). That change belongs to its
+own RFC with its own plan-diff, not to a cost-model unification. Pinned by
+`TestRFC219_IndexPlanWidthInvariant`, which drives all four production index-plan construction sites
+and fails if any can exceed the index key width — the event that would make criterion 1 reachable
+and this entry stale. Measured `len(comps)/len(columnNames)` per site: `match_candidate_index` 3/3,
+`windowed_index_match_candidate` 2/2, `aggregate_index_candidate` 2/2 (clamp proven by feeding
+`physicalGroupingPrefixCount = 5`), `rule_implement_nested_loop_join` 1/2, plus a positive control
+at 2/1 confirming the predicate fires. Three of the four are structural; the **windowed** site is a
+caller contract — `columnNames` and `groupingAliases` are independent constructor parameters with no
+clamp. That arm is additionally unreachable today (`NewWindowedIndexScanMatchCandidate` has no
+non-test caller), so its unclamped parameter space is not exploitable; it is nonetheless the first
+arm to re-check if a production caller ever appears or if criterion 1 ever looks reachable.
 
 #### Criterion 6 — IN-plan SARG penalty — DELIBERATE DIVERGENCE (Java upstream defect)
 
