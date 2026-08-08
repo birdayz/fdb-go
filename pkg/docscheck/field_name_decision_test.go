@@ -344,7 +344,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// than argument: name and ordinal answered identically on all 8358
 	// aggregate operands the relational suite produces.
 
-	// contract (11)
+	// contract (12)
 	//
 	// The four `contract:` entries below with a `normalizeAggOutputName` note
 	// were INVISIBLE when this bucket was sized, and their absence is the
@@ -677,6 +677,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/query/cascades_translator.go # legWindowSlot # a EqualFold call via local qual derived from the name # 1":          {1, "translator: QUALIFIER match inside legWindowSlot -- the leg the qualifier selects, matched against leg.Name TEXT. Reached through a plain string parameter, and tainted by the SPLITTING caller only: the converted projection path passes ref.Qualifier (parse-tree segments, not a display name) and does not taint it. So this entry is precisely the un-migrated channels' debt, and it retires when the last caller stops slicing a rendered name. The comparison itself converts separately, when the leg table is matched by identity rather than by Name"},
 	"pkg/relational/core/query/cascades_translator.go # legWindowSlot # a EqualFold call via local leaf derived from the name # 1":          {1, "translator: LEAF match inside legWindowSlot -- the column within the selected leg window, by name. Same parameter provenance as :6070, and the half that was never on the ratchet at all before the call-boundary taint: it was the LEAF of an identifier whose qualifier half was recorded, which is the split-across-buckets misfiling the dotted-bucket note describes"},
 
+	"pkg/recordlayer/query/plan/cascades/values/values.go # assertSuffixStep # a == comparison # 1":             {1, "contract: the sibling of ReAnchorRootInto above, one step further down. FuseNestedSuffix asserts a nested suffix accessor against the record type it descends into by matching the accessor's per-step NAME, because the question being asked is 'which slot of THIS record does this named step denote' and only that record's field names can answer it -- Resolved is what is being read, not what is missing. Two things keep it from being the conflation this ratchet exists to catch. It DECLINES on a duplicate name rather than first-matching, so the failure is a refused fold and never a wrong-column read. And the comparison is a TRIPWIRE, not the source: the suffix ordinals are CARRIED, because a suffix indexes a struct's own declared field order which no merge restates -- this arm only fires when a record type happens to be available, and on the production path it is not (the positional merge states UNKNOWN for a struct column). Retires with the merged-layout struct-typing work booked in TODO.md, at which point the assert arm becomes the live one and the question of leg provenance arrives with it"},
 	"pkg/recordlayer/query/plan/cascades/values/values.go # (FieldPath).ReAnchorRootInto # a == comparison # 1": {1, "contract: the nested-key re-anchor derives a root ordinal by matching the carried root accessor NAME against the flowed layout (RFC-218). It is debt by construction and the RFC says so: the correct discriminator is leg IDENTITY -- which correlation the root belongs to, against which leg each merged slot came from -- and the name is a stand-in until a caller supplies it. What keeps it honest meanwhile is that it DECLINES on a duplicate name rather than first-matching, so the failure is a refused fold and never a wrong-column read; RecordType.FieldIndex would have first-matched. Retires when the merged layout carries per-slot leg provenance the re-anchor can match on"},
 
 	// harness (1)
@@ -792,7 +793,7 @@ func bucketCounts(m map[string]fieldDebt) (counts map[string]int, untagged []str
 // headers were introduced; the authority count is the figure that now LEADS the
 // report, so it needs it more, not less. Changing this constant is how a change
 // to the authority count becomes deliberate.
-const fieldDebtAuthorityTotal = 34
+const fieldDebtAuthorityTotal = 35
 
 func bucketAuthorityCounts(m map[string]fieldDebt) map[string]int {
 	perBucket := map[string]map[string]struct{}{}

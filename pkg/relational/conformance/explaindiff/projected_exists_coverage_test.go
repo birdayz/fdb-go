@@ -41,8 +41,11 @@ type projectedExistsCensus struct {
 	// appended and dropped again.
 	FoldedWithHiddenSortColumn int
 	// DeclinedUnsupported counts fixture entries recorded as a plan error under
-	// a corpus stanza that pins one. A decline that the corpus RECORDS is what
-	// makes a later silent regression to a wrong-order plan visible.
+	// a corpus stanza that pins one. WATCHED FOR GROWTH, NOT COLLAPSE: while the
+	// JOIN arm refused a nested key this was a floor, because a recorded decline
+	// was the only thing keeping a later wrong-order regression visible. The arm
+	// plans now, so zero is the steady state and a reappearing decline means a
+	// shape stopped planning.
 	DeclinedUnsupported int
 	// ControlNoCleanupProjection counts fixture entries that planned with NO
 	// cleanup projection — the single-accessor control. Without a non-zero here
@@ -83,7 +86,13 @@ func censusProjectedExists(entries []explaindiff.Entry) projectedExistsCensus {
 }
 
 // assertFoldCoverage drives the verdict off explicit state so the decision is
-// testable without a corpus. floors are the minimum acceptable readings.
+// testable without a corpus.
+//
+// `floors` is the acceptable reading, and it is NOT uniformly a minimum: most
+// counts are populations whose COLLAPSE is the alarm, while DeclinedUnsupported
+// and UnpinnedFailures are populations whose GROWTH is. Each check states its
+// own direction rather than sharing one, because the direction of this gate has
+// already inverted once.
 func assertFoldCoverage(t *testing.T, got, floors projectedExistsCensus) {
 	t.Helper()
 	if got.SelectListExists < floors.SelectListExists {
@@ -103,11 +112,15 @@ func assertFoldCoverage(t *testing.T, got, floors projectedExistsCensus) {
 			"the fold threads a multi-accessor key through",
 			got.FoldedWithHiddenSortColumn, floors.FoldedWithHiddenSortColumn)
 	}
-	if got.DeclinedUnsupported < floors.DeclinedUnsupported {
-		t.Errorf("recorded declines = %d, want >= %d — if the JOIN arm started "+
-			"PLANNING, the leg-window re-anchor has landed and the fixture must be "+
-			"converted to a row assertion (ids [3 2 1]); if it merely stopped being "+
-			"recorded, a wrong-order regression there is now silent",
+	if got.DeclinedUnsupported > floors.DeclinedUnsupported {
+		t.Errorf("recorded declines = %d, want <= %d — THE ALARM ON THIS COUNT HAS "+
+			"INVERTED. It was a FLOOR while the JOIN arm refused a nested key: a "+
+			"recorded decline was the only thing making a later silent wrong-order "+
+			"regression visible. The leg-window re-anchor landed (RFC-220), the arm "+
+			"plans, and the fixture asserts an ORDER instead — so zero is now the "+
+			"steady state and the danger is GROWTH: a decline reappearing means a "+
+			"shape that used to plan has gone back to refusing, and the query it "+
+			"refuses is a capability regression, not a safety net",
 			got.DeclinedUnsupported, floors.DeclinedUnsupported)
 	}
 	if got.ControlNoCleanupProjection < floors.ControlNoCleanupProjection {
@@ -154,10 +167,10 @@ func TestCorpusCoversTheProjectedExistsFold(t *testing.T) {
 		st.Files, st.Queries)
 
 	assertFoldCoverage(t, got, projectedExistsCensus{
-		SelectListExists:           5,
-		FoldFixture:                5,
-		FoldedWithHiddenSortColumn: 3,
-		DeclinedUnsupported:        1,
+		SelectListExists:           6,
+		FoldFixture:                6,
+		FoldedWithHiddenSortColumn: 5,
+		DeclinedUnsupported:        0,
 		ControlNoCleanupProjection: 1,
 		UnpinnedFailures:           0,
 	})
@@ -171,8 +184,8 @@ func TestFoldCoverageGateDrivesEveryArm(t *testing.T) {
 	t.Parallel()
 
 	full := projectedExistsCensus{
-		SelectListExists: 5, FoldFixture: 5, FoldedWithHiddenSortColumn: 3,
-		DeclinedUnsupported: 1, ControlNoCleanupProjection: 1, UnpinnedFailures: 0,
+		SelectListExists: 6, FoldFixture: 6, FoldedWithHiddenSortColumn: 5,
+		DeclinedUnsupported: 0, ControlNoCleanupProjection: 1, UnpinnedFailures: 0,
 	}
 	for _, tc := range []struct {
 		name string
@@ -193,9 +206,12 @@ func TestFoldCoverageGateDrivesEveryArm(t *testing.T) {
 			c.FoldedWithHiddenSortColumn = 2
 			return c
 		}()},
-		{"decline_no_longer_recorded", func() projectedExistsCensus {
+		// The alarm on this count INVERTED with RFC-220: zero is the steady
+		// state now that the JOIN arm plans, so the case that must red is a
+		// decline REAPPEARING — a shape that used to plan going back to refusing.
+		{"a_decline_reappeared", func() projectedExistsCensus {
 			c := full
-			c.DeclinedUnsupported = 0
+			c.DeclinedUnsupported = 1
 			return c
 		}()},
 		{"control_gone", func() projectedExistsCensus {

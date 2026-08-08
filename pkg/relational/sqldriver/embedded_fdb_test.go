@@ -399,10 +399,20 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 	n := func(v int) *int { return &v }
 	return cascades.FoldStep1SeedGates{
-		Denominator:     n(572),
-		Accept:          n(160),
+		// RFC-220 GROWTH, ATTRIBUTED PER THE PARAGRAPH ABOVE rather than absorbed.
+		// The leg-window re-anchor made a nested key over a JOIN plan, and two
+		// sqldriver fixtures grew with it: the fold test gained its two converted
+		// join sort arms (n.sk, n.co) plus the projected-struct-root tripwire, and
+		// TestFDB_NestedCorrelationThroughAJoinsMergedRow is new (two single-table
+		// controls, two join forms). Denominator 572+10 = 582, ACCEPT 160+6 = 166,
+		// no-exist-ref 202+4 = 206; the two deltas partition the ten.
+		// The added ACCEPTs are the point rather than noise: each is a
+		// projected-EXISTS fold over ordinal-safe legs threading a MULTI-ACCESSOR
+		// reference, which is the shape that used to decline.
+		Denominator:     n(582),
+		Accept:          n(166),
 		CorrelatedStep1: n(108),
-		NoExistRef:      n(202),
+		NoExistRef:      n(206),
 		ReconstructNil:  n(102),
 		// The residue is now ENTIRELY bare-QOV, and the two entries below say so
 		// separately on purpose. A single "reconstruct-nil == 94" would be

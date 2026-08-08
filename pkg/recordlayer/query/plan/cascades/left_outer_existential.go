@@ -36,10 +36,35 @@ func ordinalSeedLegWindows(rc *values.RecordConstructorValue) (map[values.Correl
 	return values.OrdinalSeedLegWindows(rc)
 }
 
+// descendOrFail travels a nested reference's remaining accessors from the merged
+// address its root landed on, and marks the whole rebase FAILED rather than
+// returning a half-travelled path.
+//
+// A dropped suffix is the failure mode this exists to prevent and it is silent:
+// the root address alone is a real merged column — the enclosing STRUCT — so the
+// plan builds, executes, and compares the wrong thing. Declining costs a clean
+// unsupported error; a truncated path costs wrong rows.
+func descendOrFail(root *values.FieldValue, into *values.RecordType, suffix []values.ResolvedAccessor, leafTyp values.Type, failed *bool, node values.Value) values.Value {
+	if len(suffix) == 0 {
+		return root
+	}
+	fused, err := values.FuseNestedSuffix(root, into, suffix, leafTyp)
+	if err != nil {
+		*failed = true
+		return node
+	}
+	return fused
+}
+
 // rebaseOuterLegValueOrdinal rewrites leg references in v to baked ordinals
-// over mergedQOV. ok=false when a leg reference exists that the windows
-// cannot map (multi-accessor path, dotted field, unknown column) — the
+// over mergedQOV. ok=false when a leg reference exists that the windows cannot
+// map (dotted field, unknown column, a root the leg layout cannot state) — the
 // caller must DECLINE rather than ship a half-rebased tree.
+//
+// A MULTI-ACCESSOR path is NOT in that list. It used to be, in the sense that
+// one of the two arms below refused it while the other truncated it; both are
+// now handled by the arity arm, which re-anchors the root and FUSES the
+// remaining accessors on.
 func rebaseOuterLegValueOrdinal(
 	v values.Value,
 	windows map[values.CorrelationIdentifier]ordinalLegWindow,
@@ -123,7 +148,50 @@ func rebaseOuterLegValueOrdinal(
 			return node
 		}
 		var legOrdinal int
+		// The suffix a NESTED leg reference still has to travel after its root
+		// lands on the merged row. Empty for every flat reference.
+		var suffix []values.ResolvedAccessor
+		var suffixInto *values.RecordType
 		switch {
+		case fv.Resolved != nil && len(fv.Resolved.Accessors) > 1:
+			// A NESTED leg reference — `leg.n.sk`, ONE FieldValue whose root
+			// accessor is the leg column and whose remaining accessors descend
+			// inside it. It is the SAME shape under both bake kinds, which is why
+			// this arm sits above the pinned/name dispatch rather than inside
+			// either: the two arms below split on the frontier pin, and arity is
+			// orthogonal to it, so a multi-accessor path used to take whichever
+			// arm its pin selected and be mishandled in a DIFFERENT way by each.
+			// The pinned arm declined it (Single() on a fused path). The name arm
+			// did something worse — it looked up fv.Field, found the ROOT column,
+			// baked the merged address of the STRUCT and dropped the descent. That
+			// address is a real merged column, so nothing downstream rejects it:
+			// `WHERE EXISTS (SELECT 1 FROM t2 WHERE t2.k = t1.n.sk)` over a join
+			// compared a BIGINT against a whole struct and quietly matched nothing.
+			//
+			// The root ordinal is DERIVED from the leg's own layout and the carried
+			// one is asserted against it, never taken: a carried ordinal is stated
+			// in the layout the reference was resolved against, and reading it
+			// against a different one lands on whatever column occupies that slot.
+			// ReAnchorRootInto is that derive-and-assert, and it declines when the
+			// root name is absent or DUPLICATED in the leg — an opaque box leg can
+			// expose two buried columns of one name, where a first match is
+			// indistinguishable from a correct answer and disambiguating needs the
+			// leg identity this site does not carry.
+			reanchored, _, reOK := fv.Resolved.ReAnchorRootInto(w.Typ)
+			if !reOK {
+				failed = true
+				return node
+			}
+			legOrdinal = reanchored.Root().Ordinal
+			suffix = reanchored.Accessors[1:]
+			// The record the suffix descends into is the LEG column's own type.
+			// The merged row states only WHERE the column sits; its per-slot
+			// types are derived from the seed's baked columns and are UNKNOWN
+			// for a struct column (measured), so descending against them would
+			// fail on every real nested reference.
+			if legOrdinal >= 0 && legOrdinal < len(w.Typ.Fields) {
+				suffixInto, _ = w.Typ.Fields[legOrdinal].FieldType.(*values.RecordType)
+			}
 		case fv.Resolved != nil && fv.Resolved.FrontierPinned:
 			// A LEG-LOCAL baked ref (`ofOrdinal(QOV(A), i)` — child a SOURCE LEG, not
 			// the merged QOV, so the precise guard above passed it through to here).
@@ -132,8 +200,13 @@ func rebaseOuterLegValueOrdinal(
 			// where FieldIndex("K") would remap the already-baked ref to the FIRST match
 			// and silently probe the WRONG column (wrong rows). acc.Ordinal is the exact
 			// leg-local slot; w.Offset + it = the merged slot. (Empirically no shape
-			// produces such a ref — the arm is CORRECT-or-LOUD defensive: a
-			// multi-accessor path declines the yield.)
+			// produces such a ref — the arm is CORRECT-or-LOUD defensive.)
+			//
+			// Single() can no longer be the discriminator it once was: a fused path
+			// is handled ABOVE, by arity, before the pin is consulted. What remains
+			// here is a single-accessor pinned ref, so a !single answer means a
+			// path with ZERO accessors — the non-empty invariant violated by a
+			// hand-built FieldPath — and declining is the only safe reading.
 			acc, single := fv.Resolved.Single()
 			if !single {
 				failed = true
@@ -209,7 +282,7 @@ func rebaseOuterLegValueOrdinal(
 			// about the slot step, so taking it here would drop a LEFT-outer
 			// null-supplied column's nullability.
 			if err == nil {
-				return rebased
+				return descendOrFail(rebased, suffixInto, suffix, fv.Typ, &failed, node)
 			}
 		default:
 			failed = true
@@ -218,6 +291,14 @@ func rebaseOuterLegValueOrdinal(
 		if err != nil {
 			failed = true
 			return node
+		}
+		if len(suffix) > 0 {
+			// A NESTED reference under a FLAT window: the address above reaches
+			// the leg COLUMN, which is itself a record, and the rest of the path
+			// descends inside it. The descent recomputes the type, so fv.Typ is
+			// not taken — the merged row's slot may be nullable and only the
+			// descent knows that.
+			return descendOrFail(rebased, suffixInto, suffix, fv.Typ, &failed, node)
 		}
 		// Keep the reference's own column type (the merged layout's field
 		// type IS the leg column's — same fv.Typ lineage). FLAT arm only; the

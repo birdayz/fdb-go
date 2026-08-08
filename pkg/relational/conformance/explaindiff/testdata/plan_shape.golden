@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=349 queries=2511 dml=157 non_query=104 plan_errors=261 unexpected_errors=4
+# files=350 queries=2516 dml=157 non_query=104 plan_errors=260 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -10976,6 +10976,52 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
+=== nested_correlation_over_a_join.yaml#0
+sql:   SELECT id FROM t1 WHERE EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = n.co) ORDER BY id
+plan:  Project([ID#0], FlatMap(outer=Scan(T1), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
+=== nested_correlation_over_a_join.yaml#1
+sql:   SELECT id FROM t1 WHERE NOT EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = n.co) ORDER BY id
+plan:  Project([ID#0], FlatMap(outer=Scan(T1), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
+=== nested_correlation_over_a_join.yaml#2
+sql:   SELECT t1.id FROM t1 JOIN t3 ON t3.t1_id = t1.id WHERE EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = n.co) ORDER BY t1.id
+plan:  Project([T1.ID#0], InMemorySort([T1.ID#0 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Scan(T1), Scan(T3)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryNestedLoopJoinPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryFirstOrDefaultPlan
+shape:           RecordQueryPredicatesFilterPlan
+shape:             RecordQueryScanPlan
+=== nested_correlation_over_a_join.yaml#3
+sql:   SELECT t1.id FROM t1 JOIN t3 ON t3.t1_id = t1.id WHERE NOT EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = n.co) ORDER BY t1.id
+plan:  Project([T1.ID#0], InMemorySort([T1.ID#0 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Scan(T1), Scan(T3)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryNestedLoopJoinPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryFirstOrDefaultPlan
+shape:           RecordQueryPredicatesFilterPlan
+shape:             RecordQueryScanPlan
 === nested_derived_table.yaml#0
 sql:   SELECT * FROM (SELECT * FROM (SELECT * FROM t1) AS x WHERE id IS NOT NULL) AS y ORDER BY id
 plan:  Scan(T1, [<>])
@@ -13521,10 +13567,31 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryFirstOrDefaultPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
-=== projected_exists_nested_sort_key.yaml#3 expect-error=0AF00
+=== projected_exists_nested_sort_key.yaml#3
 sql:   SELECT t1.id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h FROM t1 JOIN t3 ON t3.t1_id = t1.id ORDER BY n.sk
-plan:  <PLAN-ERROR: 0AF00: projected EXISTS in this query shape is not yet supported>
+plan:  Project([T1.ID#0, H#1], InMemorySort([T1.N.SK ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Scan(T3), Scan(T1)), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryNestedLoopJoinPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === projected_exists_nested_sort_key.yaml#4
+sql:   SELECT t1.id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h FROM t1 JOIN t3 ON t3.t1_id = t1.id ORDER BY n.co
+plan:  Project([T1.ID#0, H#1], InMemorySort([T1.N.CO ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Scan(T3), Scan(T1)), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryNestedLoopJoinPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
+=== projected_exists_nested_sort_key.yaml#5
 sql:   SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h FROM t1 ORDER BY id
 plan:  FlatMap(outer=Scan(T1), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])))
 shape: RecordQueryFlatMapPlan
