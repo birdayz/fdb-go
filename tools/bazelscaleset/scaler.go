@@ -314,6 +314,16 @@ func (s *Scaler) launch(ctx context.Context, sl *slot) error {
 // file fails with "text file busy" — the well-known Go fork/exec race. The
 // window is microseconds; a bounded retry is the standard cure. A Cmd is not
 // reusable after a failed Start, so each attempt builds a fresh one.
+//
+// The retry stays even though the write side is fixable elsewhere. Callers that
+// write a file they will exec can close the window outright, by writing before
+// anything forks or by holding syscall.ForkLock across the write. Neither
+// transfers here: cloneRunnerDir copies the whole runner tree on every startup,
+// deliberately while live runners are running, so the write cannot be hoisted
+// ahead of the forks, and holding ForkLock for the length of a full-tree copy
+// would stall every launch in the process for as long as the copy takes. This
+// is the one exec whose write genuinely cannot be taken out of the racing
+// window, which is why it is also the only one that retries.
 func (s *Scaler) startLocal(sl *slot, jitConfig string) (runnerProc, error) {
 	var err error
 	for deadline := time.Now().Add(2 * time.Second); ; {

@@ -307,7 +307,16 @@ func slicesContainsPID(hs []stdoutHolder, pid int) bool {
 // expiry that names neither the process nor the test, which is how this cost
 // several people a full cycle each.
 func TestMain(m *testing.M) {
+	// Before m.Run, and therefore before this process forks for the first time:
+	// the shared fake ssh binaries must be fully written and closed while no
+	// child can be holding a duplicated write fd on them. See the comment on
+	// setupFakeSSHBinaries for why this ordering is the fix for ETXTBSY.
+	if err := setupFakeSSHBinaries(); err != nil {
+		fmt.Fprintf(os.Stderr, "creating the shared fake ssh binaries: %v\n", err)
+		os.Exit(1)
+	}
 	code := m.Run()
+	_ = os.RemoveAll(fakeSSHDir)
 	if holders, err := processesHoldingOurStdout(); err == nil && len(holders) > 0 {
 		for _, h := range holders {
 			fmt.Fprintf(os.Stderr, "leaked child: pid %d (%s) still holds this test binary's "+

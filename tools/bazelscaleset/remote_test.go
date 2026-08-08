@@ -16,57 +16,142 @@ import (
 	"github.com/actions/scaleset"
 )
 
-// fakeSSH writes a fake "ssh" binary that records every invocation's argv (one
-// line per call) and then EXECUTES the final argument (the remote command)
-// locally with /bin/sh — simulating a pool box whose filesystem is this
-// machine's. Remote runner/work dirs in these tests are therefore local temp
-// dirs, and the real wrapper/liveness/kill/reconcile scripts run for real.
-func fakeSSH(t *testing.T) (bin, argvLog string) {
-	t.Helper()
-	dir := t.TempDir()
-	argvLog = filepath.Join(dir, "argv.log")
-	bin = filepath.Join(dir, "ssh")
-	// One line per invocation (newlines in the remote script flattened), so
-	// assertions can match host + script content of a single call.
-	script := `#!/bin/sh
-printf '%s' "$*" | tr '\n' ' ' >> ` + shQuote(argvLog) + `
-printf '\n' >> ` + shQuote(argvLog) + `
-for a in "$@"; do last=$a; done
+// The fake "ssh" binaries are written ONCE, by setupFakeSSHBinaries from
+// TestMain, before m.Run starts the first test — and therefore before this
+// process has forked at all. Each test then reaches them through a private
+// symlink named "ssh".
+//
+// Writing a file that is about to be exec'd, while the package's parallel tests
+// are forking, is the ETXTBSY race: a fork duplicates the open write fd into
+// the child, and until that child execs (which clears it, O_CLOEXEC) execve on
+// that file fails with "text file busy". The cure is to take the write out of
+// the racing window, not to retry the exec — a retry leaves the window open and
+// merely hides how often it is hit.
+//
+// The symlink is safe because ETXTBSY is a property of the TARGET inode, and
+// nothing writes the target after setup. It also buys each test a private argv
+// log without a per-test write: the script derives its log path from "$0",
+// which is the per-test symlink path exec'd by the caller.
+var (
+	sharedFakeSSH        string
+	sharedFakeSSHFailing string
+	fakeSSHDir           string
+	// fakeSSHReadyAt is stamped when setup finishes, before any test runs. The
+	// structural pin compares the binaries' mtimes against it to prove no test
+	// rewrote them.
+	fakeSSHReadyAt time.Time
+)
+
+// fakeSSHLogPrelude records the invocation's argv, one line per call (newlines
+// in the remote script flattened), so assertions can match host + script
+// content of a single call.
+const fakeSSHLogPrelude = `#!/bin/sh
+printf '%s' "$*" | tr '\n' ' ' >> "$0.log"
+printf '\n' >> "$0.log"
+`
+
+// fakeSSHScript EXECUTES the final argument (the remote command) locally with
+// /bin/sh — simulating a pool box whose filesystem is this machine's. Remote
+// runner/work dirs in these tests are therefore local temp dirs, and the real
+// wrapper/liveness/kill/reconcile scripts run for real.
+const fakeSSHScript = fakeSSHLogPrelude + `for a in "$@"; do last=$a; done
 exec /bin/sh -c "$last"
 `
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
+
+// fakeSSHFailingScript simulates an unreachable host: every invocation exits
+// 255 (ssh's transport-failure code) without running anything.
+const fakeSSHFailingScript = fakeSSHLogPrelude + `exit 255
+`
+
+// setupFakeSSHBinaries writes both fake ssh binaries. It MUST be called from
+// TestMain before m.Run: that is the whole fix, and calling it any later puts
+// the write back in a window where parallel tests are forking.
+func setupFakeSSHBinaries() error {
+	dir, err := os.MkdirTemp("", "bazelscaleset-fakessh")
+	if err != nil {
+		return err
 	}
-	return bin, argvLog
+	fakeSSHDir = dir
+	sharedFakeSSH = filepath.Join(dir, "ssh-ok")
+	sharedFakeSSHFailing = filepath.Join(dir, "ssh-fail")
+	for _, b := range []struct{ path, script string }{
+		{sharedFakeSSH, fakeSSHScript},
+		{sharedFakeSSHFailing, fakeSSHFailingScript},
+	} {
+		// os.WriteFile closes the fd before it returns, so by the time m.Run
+		// forks anything no writer remains on either inode.
+		if err := os.WriteFile(b.path, []byte(b.script), 0o755); err != nil {
+			return err
+		}
+	}
+	fakeSSHReadyAt = time.Now()
+	return nil
 }
 
-// fakeSSHFailing simulates an unreachable host: every invocation exits 255
-// (ssh's transport-failure code) without running anything.
-func fakeSSHFailing(t *testing.T) (bin, argvLog string) {
+// linkFakeSSH gives the calling test a private "ssh" symlink to one of the
+// shared binaries, plus the argv log that binary will append to ("$0.log").
+func linkFakeSSH(t *testing.T, target string) (bin, argvLog string) {
 	t.Helper()
-	dir := t.TempDir()
-	argvLog = filepath.Join(dir, "argv.log")
-	bin = filepath.Join(dir, "ssh")
-	script := `#!/bin/sh
-printf '%s' "$*" | tr '\n' ' ' >> ` + shQuote(argvLog) + `
-printf '\n' >> ` + shQuote(argvLog) + `
-exit 255
-`
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+	if target == "" {
+		t.Fatal("the shared fake ssh binaries do not exist: setupFakeSSHBinaries must run in TestMain before m.Run")
+	}
+	bin = filepath.Join(t.TempDir(), "ssh")
+	if err := os.Symlink(target, bin); err != nil {
 		t.Fatal(err)
 	}
-	return bin, argvLog
+	return bin, bin + ".log"
+}
+
+func fakeSSH(t *testing.T) (bin, argvLog string) {
+	t.Helper()
+	return linkFakeSSH(t, sharedFakeSSH)
+}
+
+func fakeSSHFailing(t *testing.T) (bin, argvLog string) {
+	t.Helper()
+	return linkFakeSSH(t, sharedFakeSSHFailing)
+}
+
+// writeExecutable writes a file that will later be handed to execve, without
+// leaving an ETXTBSY window open behind it.
+//
+// The window is a fork landing between this open and its close: the child
+// inherits the write fd, and until it execs (clearing it, O_CLOEXEC) execve on
+// the file fails "text file busy". os/exec takes syscall.ForkLock around
+// forkExec, so holding it exclusively here means no fork in this process can be
+// in flight while the fd is open. The window is not narrowed, it is closed.
+//
+// The other two shapes that look like cures are not. Writing to a temp name and
+// renaming into place keeps the inode the writer had open, and chmod'ing +x only
+// after the close leaves the inode's writer count untouched — ETXTBSY follows
+// that count, not the name and not the mode. Both are pinned as negative results
+// in etxtbsy_test.go.
+//
+// Sharing one pristine inode between tests — what the fake ssh binaries do — is
+// the other real cure, but it is NOT usable for run.sh: several helpers
+// legitimately overwrite a runner dir's run.sh, and a link would send those
+// writes through to every other test's copy. Holding the lock keeps each test's
+// file on its own inode.
+//
+// Deliberately not a retry around the exec: a retry leaves the window open and
+// only hides how often it is hit.
+func writeExecutable(path string, content []byte) error {
+	syscall.ForkLock.Lock()
+	defer syscall.ForkLock.Unlock()
+	return os.WriteFile(path, content, 0o755)
 }
 
 // remoteRunnerDir creates a "pool box" actions/runner dir whose run.sh runs
-// the given body.
+// the given body. The remote launch path execve's this run.sh ("exec ./run.sh"
+// in remote.go) and, unlike startLocal, has no ETXTBSY retry to absorb a fork
+// that caught the write fd — so the write goes through writeExecutable.
 func remoteRunnerDir(t *testing.T, body string) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "actions-runner")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "run.sh"), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+	if err := writeExecutable(filepath.Join(dir, "run.sh"), []byte("#!/bin/sh\n"+body+"\n")); err != nil {
 		t.Fatal(err)
 	}
 	return dir

@@ -1,6 +1,7 @@
 package docscheck
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -46,6 +47,8 @@ func readDoc(t *testing.T, root, rel string) string {
 
 var (
 	// fourPartVersion matches a Java-style x.y.z.w version (the record-layer scheme).
+	// A dotted-quad IPv4 address has the identical shape, so every hit is filtered
+	// through versionCitations before it is judged — see there.
 	fourPartVersion = regexp.MustCompile(`\b\d+\.\d+\.\d+\.\d+\b`)
 	// recordLayerPin extracts the fdb-record-layer-core version from MODULE.bazel.
 	recordLayerPin = regexp.MustCompile(`fdb-record-layer-core:(\d+\.\d+\.\d+\.\d+)`)
@@ -68,6 +71,74 @@ var (
 	// between) does NOT match — no false positive.
 	goCited = regexp.MustCompile("(?i)\\bGo\\b[*`|\\s]{0,12}?(\\d+\\.\\d+)")
 )
+
+// reservedIPv4Blocks are the IPv4 ranges that documentation actually uses for addresses:
+// loopback, the three private ranges, CGNAT, link-local, the RFC 5737 documentation
+// ranges, benchmarking, "this network", and multicast/reserved (which covers the
+// 255.255.255.255 broadcast). None of them can be a published artifact version, so a
+// dotted quad inside one is an address, not a stale record-layer version.
+//
+// Range membership, not IPv4 *validity*, is the discriminator: "4.12.11.0" — the current
+// pin — parses as a perfectly valid IPv4 address, so "is it a valid address" would
+// classify every version as an address and silently retire the whole check.
+var reservedIPv4Blocks = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),       // "this network"
+	netip.MustParsePrefix("10.0.0.0/8"),      // private
+	netip.MustParsePrefix("100.64.0.0/10"),   // carrier-grade NAT
+	netip.MustParsePrefix("127.0.0.0/8"),     // loopback
+	netip.MustParsePrefix("169.254.0.0/16"),  // link-local
+	netip.MustParsePrefix("172.16.0.0/12"),   // private
+	netip.MustParsePrefix("192.0.2.0/24"),    // RFC 5737 documentation (TEST-NET-1)
+	netip.MustParsePrefix("192.168.0.0/16"),  // private
+	netip.MustParsePrefix("198.18.0.0/15"),   // benchmarking
+	netip.MustParsePrefix("198.51.100.0/24"), // RFC 5737 documentation (TEST-NET-2)
+	netip.MustParsePrefix("203.0.113.0/24"),  // RFC 5737 documentation (TEST-NET-3)
+	netip.MustParsePrefix("224.0.0.0/4"),     // multicast
+	netip.MustParsePrefix("240.0.0.0/4"),     // reserved, incl. the 255.255.255.255 broadcast
+}
+
+// dottedQuadIsAddress reports whether the quad at body[lo:hi] is an IPv4 address literal
+// rather than a version citation. Two independent tells, both tight:
+//
+//   - it sits in a reserved IPv4 block (above), or
+//   - it is immediately followed by ":<digit>" — a port. A version is never written that
+//     way, an address in an operator doc routinely is, and this catches a PUBLIC address
+//     that no reserved block covers.
+//
+// Deliberately NOT tells: a "/<digit>" suffix (CIDR) and a "//" or "@" prefix (URL
+// authority). Those would read the "4.2.6.0" in a version RANGE like "4.2.6.0/4.12.11.0"
+// as an address and let a genuinely stale version through — the exact failure this filter
+// exists to avoid, one level down. A bare public address stays a version citation and
+// still fails loudly; that is the safe direction, because a false red gets read by a human
+// while a false green does not.
+func dottedQuadIsAddress(body string, lo, hi int) bool {
+	if after := body[hi:]; len(after) >= 2 && after[0] == ':' && after[1] >= '0' && after[1] <= '9' {
+		return true
+	}
+	a, err := netip.ParseAddr(body[lo:hi])
+	if err != nil || !a.Is4() {
+		return false
+	}
+	for _, p := range reservedIPv4Blocks {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// versionCitations returns the four-part version strings in body, with IPv4 address
+// literals filtered out.
+func versionCitations(body string) []string {
+	var out []string
+	for _, m := range fourPartVersion.FindAllStringIndex(body, -1) {
+		if dottedQuadIsAddress(body, m[0], m[1]) {
+			continue
+		}
+		out = append(out, body[m[0]:m[1]])
+	}
+	return out
+}
 
 // javaTarget is the single source of truth: the fdb-record-layer-core pin in MODULE.bazel.
 func javaTarget(t *testing.T, root string) string {
@@ -238,7 +309,7 @@ func TestLivingDocsCiteCurrentJavaTarget(t *testing.T) {
 	want := javaTarget(t, root)
 	for _, doc := range livingDocs {
 		body := versionScanBody(t, root, doc)
-		for _, v := range fourPartVersion.FindAllString(body, -1) {
+		for _, v := range versionCitations(body) {
 			if v != want {
 				t.Errorf("%s cites 4-part version %q, but MODULE.bazel pins fdb-record-layer-core %q — living docs must track the pin (archived snapshots belong under docs/archive/)", doc, v, want)
 			}
