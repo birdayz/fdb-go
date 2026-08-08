@@ -26,6 +26,52 @@ So the tree carried two implementations of one concept. One was executed; the
 other was tested. Twenty-seven tests reported on a function no query could
 reach, which is worse than no coverage: it reads as coverage.
 
+## 1a. What Java does, and why "drift" is the wrong word
+
+An earlier draft of this RFC said the dead twin had "silently drifted into
+wrongness." That is wrong, and the correction matters more than the phrasing,
+because it changes what this deletion *is*.
+
+Java's counterpart is `ScanComparisons.toTupleRange` (`ScanComparisons.java`
+:283-311, :670-674):
+
+```java
+public TupleRange toTupleRange() { Tuple low = ...; return new TupleRange(low, high, lowEndpoint, highEndpoint); }
+```
+
+A **scalar** return type — one range, exactly like the Go twin. And `grep -n NaN`
+over `ScanComparisons.java`, `TupleRange.java` and `Comparisons.java` returns
+**zero hits**: Java's index-bound construction has no NaN awareness at all and is
+structurally incapable of emitting the negative-NaN block.
+
+The twin therefore never drifted. It was a faithful port on the day it was
+written. **Java is the side that is wrong**, and inconsistent with itself:
+`Comparisons.java:237-239` / `:756-759` evaluate `GREATER_THAN` through
+`Double.compare`, where NaN is greatest — so Java's *residual predicate* says
+negative-NaN rows qualify while Java's *index scan* cannot reach them. The
+index and non-index plans for the same query disagree, and no Java test covers
+it.
+
+So `bindScanComparisonsToRangeSet` emitting two ranges is **a deliberate
+read-side divergence from Java**, not a bug fix against it. That is sanctioned —
+CLAUDE.md's "wire compat is the hard line; query reach is not" — because nothing
+about the stored bytes changes; Go merely reaches rows Java's index path drops.
+
+It is written down here because the consequence is externally visible: a
+cross-engine row-diff over a table containing raw negative NaNs will show Go and
+Java returning **different row sets**, and the next person to hit that must find
+this paragraph rather than conclude Go has a bug. Retiring the live binder
+instead of the dead one — see §8 — would have re-armed the row drop and matched
+Java by reintroducing Java's own inconsistency.
+
+Go has exactly one float semantic to be consistent with, which is what makes the
+two-range emission forced rather than optional: `values.CompareFloat64`
+(`cascades/values/coercion.go:26`) is Double.compare-faithful and is the single
+comparator on the logical side. Java holds two at once — `Comparisons` via
+`Double.compare` (NaN greatest) and `RelOpValue.java:708-714` `GT_DD` via
+primitive IEEE `>` (NaN never qualifies) — which is why Java is no use as an
+oracle on this point.
+
 ## 2. Retraction — where RFC-179's F11 actually lives
 
 An earlier claim held that `executor.go:1379` (the STARTS_WITH arm of the dead

@@ -10453,7 +10453,8 @@ to nothing.)
   the covering flag when a residual sits between the fetch and the index scan,
   which drops the decision onto cost criterion #7 and makes secondary indexes
   lose). That is its own change with its own plan-movement blast radius; it is
-  NOT the dead-code gate of RFC-218.
+  NOT the dead-twin retirement of RFC-217, and not the unexported-dead-code
+  gate, which has no RFC number and is not built.
 
 - [ ] **CQ-34 (MED) — the sargable gate and the range builder are kept in manual
   lockstep.** `isSargableComparisonForMatch` (`match_max_match_map.go:67`) decides
