@@ -256,6 +256,25 @@ func TestFDB_UnqualifiedRefBesideAProjectedExistsOverAJoin(t *testing.T) {
 		})
 	}
 
+	// TWO PRE-EXISTING FAILURES, FOUND WHILE ASKING A DIFFERENT QUESTION, AND
+	// NEITHER IS RFC-223's DEFECT.
+	//
+	// The question was whether a CTE or a derived table routes projection
+	// binding through `logical_predicate.go`'s copies of the bare-projection
+	// predicate rather than through the PlanVisitor site RFC-223 converted — if
+	// so, the same bug would still be live behind a different front door.
+	//
+	// The routes cannot answer it: BOTH forms already fail when a projected
+	// EXISTS is added, for two DIFFERENT reasons, and both fail identically with
+	// RFC-223's production diff reverted. So they are not regressions, and the
+	// twins' latency could not be established this way. That is why the copies
+	// were FOLDED into resolveBaked rather than left with a "why they stay"
+	// note: a latency claim nothing could measure is not a claim to ship.
+	//
+	// Both are LOUD, so neither is a silent wrong answer. They are pinned so the
+	// shapes are not forgotten and so the day either starts working is visible
+	// — at which point the right move is to assert the rows their non-EXISTS
+	// controls already return, listed in each arm.
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

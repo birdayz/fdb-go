@@ -1869,18 +1869,35 @@ func mintQualifiedDatumKey(proj *logical.LogicalProject, i int, qualifiedName st
 // precondition is exactly how a widened predicate can admit a population it was
 // never measured against.
 //
-// The two admissible shapes are NOT interchangeable, and childlessOK is the
-// difference rather than a convenience:
+// The two admissible shapes:
 //
 //   - CHILD-BEARING + leg-relative unpinned — the merged-row shape. The executor
 //     binds the leg's window off the merged row's own leg boundaries
 //     (rowLegsBinder), so the ordinal reads positionally over the composed row.
 //     Always admissible.
 //   - CHILDLESS + source-relative — an ordinal relative to the reference's OWN
-//     source row. Correct only where there is no leg choice to lose. Over a join
-//     it would address another leg's slot, so a caller that can be looking at a
-//     merged row passes childlessOK=false. `logical_predicate.go`'s
-//     sort-key filler states this same rule inline as `len(sq.joins) == 0`.
+//     source row, correct where there is no leg choice to lose. Over a merged
+//     row it would address another leg's slot. `upgradeAggregateOperands`
+//     (`logical_predicate.go`, the aggregate GROUP-key filler) states that same
+//     rule inline as `len(sq.joins) == 0`, with "on a join, childless would lose
+//     the defining leg and remains forbidden".
+//
+// childlessOK IS AN UNMEASURED PRECAUTION, AND SAYING SO IS THE POINT. Setting
+// it true at BOTH call sites — the context-free union — was tried and produces a
+// byte-identical plan-shape golden and a fully green suite, so no measurement
+// says the parameter is load-bearing. It is kept as defence-in-depth for the one
+// failure it prevents, which is the expensive kind: a childless ordinal read
+// over a merged row is a SILENT wrong-slot read, not a loud decline. A guard
+// against a silent failure is worth keeping without a reproducer; it is not
+// worth claiming a reproducer it does not have.
+//
+// It is also a GO-ONLY artifact and does not follow from Java.
+// `SemanticAnalyzer.resolveIdentifier` is a lookup plus two asserts — no fork,
+// no context parameter — so the "Java has one function, Go gets one function"
+// argument (RFC-223 §3) is only half-honoured by a single function that applies
+// different rules to its two callers. The honest statement is that Go has one
+// SITE for the rule, which is what stops the two spellings drifting apart, and
+// that the context parameter is a Go-side addition.
 //
 // A non-FieldValue, a lazy result, or a shape the caller did not admit returns
 // nil, leaving the caller's existing emission — loud at runtime, never a silent

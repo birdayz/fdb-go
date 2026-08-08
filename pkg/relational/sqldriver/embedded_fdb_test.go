@@ -439,14 +439,33 @@ var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 		// claims they are.
 		//   denominator 588+14 = 602, ACCEPT 168+12 = 180, no-exist-ref 210+2 = 212
 		//
-		// Step 5 — RFC-223's FIX, and this one is NOT corpus growth. No query was
-		// added: the same corpus produces two MORE fold firings, both ACCEPT,
-		// once a bare reference keeps its baked ordinal. That is the fix
-		// reaching the seed decision on a shape that previously never got there.
-		// Attributed by toggling the PRODUCTION diff with the corpus held fixed
-		// — the only control that can separate a fix from a fixture, and the one
-		// that corrected a first reading here that had blamed a test.
+		// Step 5 — ORDINARY CORPUS GROWTH, from the one `ORDER BY n.sk` query
+		// RFC-223 adds to nested_sort_key_fold_fdb_test.go's converted arm. It
+		// is a projected-EXISTS fold and it ACCEPTs.
 		//   denominator 602+2 = 604, ACCEPT 180+2 = 182, no-exist-ref unchanged
+		//
+		// RFC-223's FIX MOVES THIS CENSUS BY ZERO, and the wording above is
+		// deliberate because an earlier revision of this comment claimed the
+		// opposite — that the fix "reaches the seed decision on a shape that
+		// previously never got there". THAT IS FALSE. `foldStep1Seed` fires
+		// identically either side of the fix; what the fix changes is what the
+		// projection CARRIES, not whether the seed decision happens.
+		//
+		// Both controls, each unfiltered with --nocache_test_results and 5879
+		// === RUN lines, differing only in plan_visitor.go:
+		//   fix applied      -> 604/182/212
+		//   fix reverted     -> 604/182/212   (four converted arms red, so the
+		//                                      revert demonstrably took effect)
+		// and the complementary one, fix applied, deleting only that ORDER BY
+		// query, 5878 === RUN:
+		//   -> 602/180/212
+		//
+		// The false claim mattered more than the number: the gate VALUE was
+		// right either way, so CI could never have caught a comment asserting a
+		// property of the engine that the engine does not have. It survived one
+		// reading that was correct and a "correction" that was not — the
+		// correction reached for the stronger claim and cited as settled the
+		// very control that refutes it.
 		//
 		// Steps 3 and 4 were both RE-MEASURED after this branch rebased onto the
 		// step-2 head; the pre-rebase increments were taken against 572/160/202 and

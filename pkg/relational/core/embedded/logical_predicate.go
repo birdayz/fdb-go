@@ -2689,7 +2689,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				if proj.ProjectedValues == nil || (i < len(proj.ProjectedValues) && proj.ProjectedValues[i] == nil) {
 					rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, id)
 					if rerr == nil {
-						if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child == nil && fv.SourceRelativeBaked() {
+						if fv := resolveBaked(rv, true); fv != nil {
 							if proj.ProjectedValues == nil {
 								proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 							}
@@ -4386,7 +4386,7 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			if len(sq.joins) == 0 {
 				rv, rerr := resolver.ResolveIdentifier(qualID, semantic.FromNormalized(ref.bare()))
 				if rerr == nil {
-					if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child == nil && fv.SourceRelativeBaked() {
+					if fv := resolveBaked(rv, true); fv != nil {
 						keyValues[i] = fv
 						filled = true
 						continue
@@ -4418,7 +4418,7 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		if keyValues[i] == nil && !ref.isQualified() {
 			rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, semantic.FromNormalized(ref.bare()))
 			if rerr == nil {
-				if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child == nil && fv.SourceRelativeBaked() {
+				if fv := resolveBaked(rv, true); fv != nil {
 					keyValues[i] = fv
 					filled = true
 				}

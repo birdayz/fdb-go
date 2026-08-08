@@ -1,25 +1,36 @@
 # RFC-223 — A bare column reference keeps its ordinal, exactly as a qualified one does
 
 **Status:** rev 4 — ACK'd by Graefe and Torvalds, and **IMPLEMENTED**.
-**Scope:** one shape predicate, `resolveBaked`, shared by two sites in
-`pkg/relational/core/embedded/plan_visitor.go`.
+**Scope:** one shape predicate, `resolveBaked`, shared by every site that binds a
+projected column reference (`plan_visitor.go` and `logical_predicate.go`).
 
 **Implementation notes that changed what this document says**, recorded here
 because each corrects a claim the design made:
 
-1. **`resolveBaked` needed a `childlessOK` parameter, and the reason is a third
-   site.** `logical_predicate.go`'s sort-key filler already admits the CHILDLESS
-   shape for a qualified reference, but only under `len(sq.joins) == 0`, with
-   the comment "on a join, childless would lose the defining leg and remains
-   forbidden". So the childless arm is **context-dependent** and a context-free
-   union would have fused a rule that is not one rule. The parameter makes the
-   dependence explicit and reviewable instead of implicit in which call site you
-   happen to read.
-2. **The census moves for a reason that is NOT corpus growth** — see step 5 in
-   `foldStep1SeedGates`. The fix itself produces two more fold firings on an
-   unchanged corpus, and a first reading here blamed a test fixture for it. The
-   control that separates the two is toggling the PRODUCTION diff with the
-   corpus held fixed.
+1. **`resolveBaked` takes a `childlessOK` parameter, and it is an UNMEASURED
+   PRECAUTION rather than a necessity.** `upgradeAggregateOperands`
+   (`logical_predicate.go`, the aggregate GROUP-key filler — **not** the sort-key
+   filler, which is `qualifyShadowedSortKeys` in `plan_visitor.go` and has
+   neither a childless arm nor an `sq.joins` guard) admits the CHILDLESS shape
+   only under `len(sq.joins) == 0`, with "on a join, childless would lose the
+   defining leg and remains forbidden". But setting `childlessOK` true at BOTH
+   sites — the context-free union this RFC originally specified and both gates
+   ACK'd — produces a byte-identical golden and a fully green suite. So no
+   measurement says the parameter is load-bearing. It is kept because the
+   failure it guards is SILENT (a childless ordinal read over a merged row is a
+   wrong-slot read, not a decline), and a guard against a silent failure is
+   worth keeping without a reproducer — but it is not worth claiming one.
+   It is also **Go-only**: Java's `resolveIdentifier` is a lookup plus two
+   asserts, no fork and no context, so §3's "Java has one function, Go gets one
+   function" is only half-honoured by one function applying different rules to
+   its two callers. What Go gets is one SITE for the rule.
+2. **The fix moves the `foldStep1Seed` census by ZERO.** An earlier revision of
+   this document and of the gate comment claimed the fix produced two extra fold
+   firings "on a shape that previously never got there". **That is false**, and
+   it was refuted by the very control it cited. The +2/+2/+0 is ordinary corpus
+   growth from the one `ORDER BY n.sk` query this change adds. Both controls are
+   quoted in `foldStep1SeedGates` step 5. The gate VALUE was right either way,
+   which is exactly why CI could not have caught it.
 3. **Three golden records move, not one** — §(g), which has now been wrong twice.
 4. Measured deltas the design asked for: `ProjectedValues` mentions and
    nil-branch count are **unchanged at 116 / 24** (the extraction adds no new
@@ -326,13 +337,23 @@ regression. Its replacement assertion is named in its own message.
 
 ### Census bookkeeping, so a reader does not re-derive it
 
-`foldStep1Seed`'s equalities moved twice, each time proven by moving the fixture
-file out of the package and back rather than asserted: `572/160/202 → 574/162/202`,
-then `→ 588/174/204`. **The second round split +14 across TWO arms** — ACCEPT +12
-and `rv-no-exist-ref` +2 — because two of the new controls project no reference
-to the exists alias at all. The first round landed wholly in ACCEPT. The first
-commit's "other equalities untouched" claim was true then and is not true now, so
-it is restated at the gate rather than left standing.
+**These numbers are SUPERSEDED and kept only as history.** They were taken before
+this branch rebased onto the head that carries the leg-reference RFC, which moved
+the base from `572/160/202` to `586/166/210`. The live figures are in
+`foldStep1SeedGates`, which now runs `586 → 588 → 602 → 604`; nothing below is a
+current claim about the gate.
+
+Pre-rebase, `foldStep1Seed`'s equalities moved twice, each time proven by moving
+the fixture file out of the package and back rather than asserted:
+`572/160/202 → 574/162/202`, then `→ 588/174/204`. **The second round split +14
+across TWO arms** — ACCEPT +12 and `rv-no-exist-ref` +2 — because two of the new
+controls project no reference to the exists alias at all. The first round landed
+wholly in ACCEPT.
+
+Post-rebase every increment was RE-MEASURED rather than carried over, because
+carrying a pre-rebase delta onto a moved base restates a number nobody measured.
+And the final increment is **corpus growth, not the fix**: toggling the
+production diff with the corpus held fixed moves this census by zero.
 
 ---
 
@@ -355,12 +376,30 @@ it is restated at the gate rather than left standing.
       movement attributed by the move-out/move-back control.
 - (e) No change to `FieldTypeForProtoField`. The type erasure is out of scope and
       stays a separate, documented divergence.
-- (f) **`resolveBaked` exists as ONE function and BOTH sites call it.** §4's
-      structural claim — that Go gets one resolution rule because Java has one
-      resolution function — is otherwise unchecked at implementation review, and
-      an inlined disjunction would satisfy the prose while leaving two rules.
-      The gate is mechanical: the bare site and `resolveQualifiedBaked` contain
-      no shape predicate of their own.
+- (f) **`resolveBaked` exists as ONE function and EVERY site calls it.** §4's
+      structural claim — that Go gets one resolution rule — is otherwise
+      unchecked at implementation review, and an inlined disjunction would
+      satisfy the prose while leaving two rules.
+
+      The gate is mechanical and its SCOPE was widened during implementation.
+      Converting the two sites §2 names left **three inline copies of the old
+      childless-only predicate** in `logical_predicate.go` (`:2692`, `:4389`,
+      `:4421`), one of which self-describes as the twin of the PlanVisitor's
+      bare-projection step and sits ~30 lines above its qualified partner — the
+      identical disjoint pair §2 calls the defect, surviving the fix for it.
+
+      **They are folded too, and the reason is that their latency could not be
+      established.** The natural probes — a derived table and a CTE wrapping the
+      same multi-source `FROM` — do not answer the question, because BOTH forms
+      already fail once a projected `EXISTS` is added, for two different
+      pre-existing reasons, identically with this change reverted (§8). A
+      latency claim nothing can measure is not a claim to ship, so the copies
+      were removed rather than documented.
+
+      Verified mechanically: `git grep -c "SourceRelativeBaked()"` over
+      `plan_visitor.go` and `logical_predicate.go` returns the two occurrences
+      inside `resolveBaked` and nothing else. Folding them is behaviour-neutral
+      on the corpus — census and golden both unchanged.
 
 ### (g) The THREE golden records that move, justified individually
 
@@ -425,3 +464,43 @@ stress gate is consequently not claimed as required; the golden movement above i
 a rendering/addressing change with no operator or cardinality effect. Should
 review disagree that this is cost-neutral, the stress comparison runs in a
 sibling worktree on the same filesystem before merge.
+
+---
+
+## 8. TWO PRE-EXISTING DEFECTS FOUND HERE, NEITHER FIXED NOR PINNED — ESCALATED
+
+Asking whether a CTE or a derived table routes projection binding through
+`logical_predicate.go`'s surviving copies turned up two failures that have
+nothing to do with this change. **Both reproduce identically with this change
+reverted**, so neither is a regression, and both are LOUD — no silent wrong rows.
+
+```
+WITH c AS (SELECT id, n FROM t1)
+SELECT c.id, t1_id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = c.id) AS h
+FROM c, t3 WHERE t3.t1_id = c.id
+  -> 42703: no FROM source aliased as C
+
+SELECT d.id, t1_id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = d.id) AS h
+FROM (SELECT id, n FROM t1) AS d, t3 WHERE t3.t1_id = d.id
+  -> correlated FieldValue "ID" (correlation "D") evaluated against an
+     unbound/unrecognized context (*RowEvalContext (multi-leg row cannot serve
+     a source-relative ordinal)) — no frontier row resolved (planner/executor bug)
+```
+
+Each has a CONTROL that differs only by removing the projected `EXISTS`, and
+**both controls pass**, returning `[[1 1] [2 2] [3 3]]`. So in each case it is
+the projected-EXISTS fold that loses the source — the CTE alias in the first, the
+derived-table correlation in the second.
+
+**Why they are escalated rather than pinned here.** Adding either query to the
+sqldriver corpus trips a hard-zero census: `LEG-LOCAL BAKE CENSUS FAIL:
+UnderivableLegs = 2, want 0`. That is not an obstacle to route around — it is the
+diagnosis. An underivable leg "has no ordinal it can honestly carry on its own
+alias, so every read through it falls through to the qualified NAME", which is
+exactly the `42703`. Pinning these shapes therefore means either fixing the
+underivable leg or knowingly red-lining a guard that is telling the truth, and both
+are a different change from this one.
+
+They are stated here, in the conversation, and in the commit message rather than
+filed as a TODO — a filed item is how a blocker becomes invisible, and the next
+person should get the reproducer, the control, and the census pointer together.
