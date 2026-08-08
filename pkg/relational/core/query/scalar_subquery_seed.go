@@ -84,11 +84,42 @@ func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerO
 	// has exactly one field. Anything else contradicts that premise — keep the
 	// nullable-unknown leg rather than guess which field is the scalar.
 	scalarType := values.WithNullability(scalarColumnType(t.legColumns(innerOp), scalarCol), true)
+	innerTitle := unqualifiedScalarTitle(scalarCol)
 	// Nullability is independent of the concrete type and always true: the join
 	// is LEFT-OUTER, so an outer row with no inner match yields NULL in this slot.
+	// RFC-212 §11.3 — THE RETITLING. The flowed column's title must not be
+	// parseable as a qualifier.
+	//
+	// `scalarCol` is the subquery's OUTPUT TITLE, and when a query titles its
+	// scalar with something already qualified (`SELECT ... AS "C.CV"`, or a title
+	// derived from a qualified reference) that dotted string becomes this leg
+	// type's only column name. It then reaches executor.rowSlotForLegColumn's
+	// dotted arm indistinguishable from a leg-qualified reference — the arm
+	// splits it at the dot and resolves a LEG named `C` and a column named `CV`,
+	// neither of which this leg has. Attribution measured both live witnesses
+	// (`C.CV`, `I.QTY`) originating exactly here.
+	//
+	// The title is a LABEL on a single-field type; the leg's identity is
+	// `innerCorr`, threaded in and unique, and nothing is minted. So stripping a
+	// qualifier off the label removes the ambiguity without touching any identity.
+	// The RC FIELD name below keeps the qualified spelling — that is the row-key
+	// arm, which replaceScalarSubqueryRef reads, and it is deliberately not in
+	// scope here.
 	innerType := &values.RecordType{Fields: []values.Field{
-		{Name: scalarCol, FieldType: scalarType, Ordinal: 0},
+		{Name: innerTitle, FieldType: scalarType, Ordinal: 0},
 	}}
+	// RFC-212 §10.3 deliverable 1, SECOND producer: register the (correlation,
+	// TITLE) pair so the executor's dotted-arm answers can be attributed BY
+	// IDENTITY. This is the SINGLE-SOURCE outer's seed; its multi-table twin
+	// (clusteredOuterOrdinalSeed) registers the same way, and the attribution
+	// census reports which — if either — named the leg type each dotted answer
+	// comes from.
+	if values.LegIdentityCensusEnabled() {
+		// The title the TYPE carries, not the pre-strip one: "attributed" must mean
+		// "this producer named this leg type's column", so registering the old
+		// spelling would attribute a title the leg no longer has.
+		values.RecordInnerScalarLegTitleAt(values.InnerLegProducerSingleSource, innerCorr, innerTitle)
+	}
 	innerQOV := values.NewQuantifiedObjectValueOfType(innerCorr, innerType)
 	innerFV, err := values.NewFieldValueOfOrdinal(innerQOV, 0)
 	if err != nil {
@@ -157,3 +188,27 @@ func scalarColumnType(innerCols []values.Field, scalarCol string) values.Type {
 // unconditionally. The old guard declined computed scalars to the name model,
 // where they resolved to nothing (a silent NULL); the materialization fixes that
 // AND lets them ordinalize.
+
+// unqualifiedScalarTitle strips a leading qualifier off a correlated scalar's
+// output title, so the title cannot be read as `LEG.COL` by a downstream reader
+// that splits at the dot.
+//
+// It takes the LAST segment, not the first, and it leaves a title with no dot
+// untouched. A title that is ONLY a dot, or that would strip to empty, is left
+// verbatim: an empty column name is worse than an ambiguous one, and this
+// function's job is to remove an ambiguity rather than to guarantee a name.
+//
+// A rendered composite (`{_0: C.ID#0}`) is left alone for the reason
+// executor.isDottedQualifiedName states: a rendered record type carries the dots
+// of every qualified column inside it, so slicing one would mangle a name that
+// was never a qualifier.
+func unqualifiedScalarTitle(title string) string {
+	if title == "" || strings.HasPrefix(title, "{") || strings.HasPrefix(title, "[") {
+		return title
+	}
+	i := strings.LastIndexByte(title, '.')
+	if i <= 0 || i == len(title)-1 {
+		return title
+	}
+	return title[i+1:]
+}

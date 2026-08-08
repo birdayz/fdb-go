@@ -569,7 +569,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				header := store.GetStoreHeader()
 				Expect(header).NotTo(BeNil())
 				Expect(header.GetFormatVersion()).To(BeNumerically(">=", formatVersionMinimum))
-				Expect(header.GetFormatVersion()).To(BeNumerically("<=", formatVersionCurrent))
+				Expect(header.GetFormatVersion()).To(BeNumerically("<=", formatVersionMaxSupported))
 
 				return nil, nil
 			})

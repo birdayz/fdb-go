@@ -152,6 +152,7 @@ go_test(
         "plan_cache_test.go",
         "plan_determinism_test.go",
         "plan_harness_dml_test.go",
+        "plan_harness_exists_guard_test.go",
         "plan_harness_test.go",
         "plan_logging_test.go",
         "plan_visitor_where_installation_test.go",
@@ -338,6 +339,7 @@ go_test(
         "qualifier_recovery_census_main_test.go",
         "tx_time_limit_marker_test.go",
         "like_prefix_not_sargable_test.go",
+        "plan_harness_exists_guard_test.go",
     ],
     deps = [
         "//gen",

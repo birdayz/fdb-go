@@ -790,7 +790,19 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 			c.orderingKeyLayout(), c.columnNames[idx],
 		)
 		claimsOwnOrder := plans.EqualityBoundCoordinateClaimsOwnOrder(cr) || canExtend
-		carriesTheSuffix := plans.EqualityPinsSinglePhysicalKey(cr) || canExtend
+		// canExtend ("this column is not a float") still short-circuits: a
+		// non-float coordinate has no signed zero, so it carries the suffix
+		// whether it is equality-bound or merely sorted.
+		//
+		// A FLOAT coordinate must prove it pins, and the operand alone cannot
+		// prove it. An IN-list binding arrives UNKNOWN-typed, which the
+		// operand-only predicate reads as "not a float" and pins on — so the
+		// per-binding leg advertised a PK order the runtime signed-zero widening
+		// does not deliver. Ask the column-aware authority, the same one the
+		// plans-side derivation now asks, so neither half can classify this
+		// coordinate differently from the other.
+		carriesTheSuffix := canExtend ||
+			plans.EqualityPinsSinglePhysicalKeyOnColumn(cr, true)
 		if !claimsOwnOrder {
 			break
 		}

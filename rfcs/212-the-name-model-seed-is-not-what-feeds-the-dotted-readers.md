@@ -1,9 +1,10 @@
 # RFC-212 — The name-model seed is not what feeds either dotted reader
 
 Status: **ACCEPTED, revision 3** (Graefe + Torvalds ACK on revision 2), **with
-§1.1 WITHDRAWN AND RETARGETED — see §10, the erratum.** §1.1 was implemented,
+§1.1 WITHDRAWN AND RETARGETED TWICE — see §10 (erratum 1) and §11 (erratum 2).
+The current target is §11.3 and it is UNREVIEWED.** §1.1 was implemented,
 measured INERT over two uncached corpus runs, and reverted; the retirement it
-was for needs a different producer. The corrected target is stated in §10.3 and
+was for needs a different producer. The corrected target is stated in §11.3 and
 is UNREVIEWED — it needs its own Graefe+Torvalds lap before implementation.
 Every other section stands as ACK'd.
 
@@ -988,6 +989,13 @@ single-derivation finding holds; only the corollary was wrong.
 
 ### 10.3 The corrected target: the inner leg's flowed-column TITLE
 
+> **SUPERSEDED BY §11.** This section named `clusteredOuterOrdinalSeed`. Identity
+> attribution measured that NEITHER dotted witness comes from it, refuting this
+> target before any code was written — which is what the deliverable below was
+> gated for. The corrected producer is `scalarSubqueryOrdinalSeed` (§11.3). The
+> KIND of target described here — a producer naming a quantifier's flowed column
+> with a title that can contain a dot — survived unchanged.
+
 The dotted names reach the reader as `qov.Type()` COLUMN NAMES, which means a
 producer named a quantifier's flowed column with a label.
 `clusteredOuterOrdinalSeed` builds
@@ -1145,3 +1153,223 @@ NEGATIVE result gets pinned with what re-arms it, namely a rewrite site becoming
 reachable from a named struct literal. `liftConstructor` needs its own answer
 either way: it RESHAPES the row, so it is the one site where carrying properties
 across is not automatically correct.
+
+---
+
+## 11. ERRATUM 2 — §10.3 named the wrong producer. The gate caught it before implementation.
+
+Status: **§10.3's target is CORRECTED, again.** §1.1 and §10.3 v1 are both
+withdrawn; the corrected target is §11.3. **Unreviewed — it needs its own
+Graefe+Torvalds lap, same as erratum 1.** No implementation has been attempted
+against it.
+
+### 11.1 Three targets, and why each failed
+
+This is the third redirect on one item. That is not a failure to bury — it is
+the record of a target that was genuinely hard to locate, and **each refutation
+was cheaper than the one before it.** The method is what made that true.
+
+| Target | Claim | How it failed | Cost |
+| --- | --- | --- | --- |
+| **§1.1** — `RecordConstructorValue.Type()` | Carry the leg table on the constructor and propagate it | **Not on the read path.** The reader takes `qov.Type()`. §3.5 correctly measured `Type()` as the sole DERIVATION path and then inferred readership from it — *derivation is not readership* | Full build → measure → revert cycle |
+| **§10.3 v1** — `clusteredOuterOrdinalSeed` | Retitle the inner leg's flowed column | **Right kind, wrong producer.** Identity attribution: neither witness came from it, over a run where it minted 19 titles | One corpus run, refuted *before* any code was written |
+| **§11.3** — `scalarSubqueryOrdinalSeed` | Retitle the inner leg's flowed column | *(current — unreviewed)* | — |
+
+The progression is the argument for gate-before-conversion: §1.1 cost an
+implementation, §10.3 v1 cost a measurement, and the difference is entirely that
+the second one was gated on a deliverable that had to produce a reading before
+any code could be written.
+
+### 11.2 The measurement
+
+Same identity-based method as deliverable 1, both producers instrumented. Whole
+real-FDB sqldriver corpus, uncached, `EXIT=0`:
+
+```
+bazelisk test //pkg/relational/sqldriver:sqldriver_test \
+  --cache_test_results=no --test_output=streamed --test_timeout=3600
+```
+
+```
+[sqldriver real-FDB corpus] dotted-witness attribution (RFC-212 §10.3 deliverable 1): inner-leg titles minted 274; dotted-arm names observed 2
+  ATTRIBUTED to a correlated-scalar seed inner leg (2):
+    C.CV (owner q$3122) -> scalarSubqueryOrdinalSeed, minted title "C.CV"
+    I.QTY (owner q$336732) -> scalarSubqueryOrdinalSeed, minted title "I.QTY"
+```
+
+**BOTH witnesses attribute to `scalarSubqueryOrdinalSeed`**, by identity: the
+producer registered the `(correlation, title)` pair it minted, the reader
+reported the owner correlation it was handed, and a hit required both to agree.
+A name match would have proved only that two strings agree — which is precisely
+how the earlier corollary errors were made.
+
+The prior round, with only `clusteredOuterOrdinalSeed` instrumented, reported
+`NOT attributed (2)` over a run where that producer minted 19 titles. Both
+readings are kept in the census header: the first is the refutation of §10.3 v1,
+not a false start.
+
+The `q$N` counter differs run to run (`q$395174` then `q$336732` for the same
+logical leg), which is why attribution is computed WITHIN a run and never by
+quoting an id across runs.
+
+### 11.3 The corrected target
+
+**`scalarSubqueryOrdinalSeed` (`scalar_subquery_seed.go:50`), the SINGLE-SOURCE
+outer's correlated-scalar seed**, which builds
+
+```go
+innerType := &values.RecordType{Fields: []values.Field{
+    {Name: scalarCol, FieldType: scalarType, Ordinal: 0},
+}}
+innerQOV := values.NewQuantifiedObjectValueOfType(innerCorr, innerType)
+```
+
+`scalarCol` is the subquery's output title. When it already contains a dot, it
+becomes the leg type's only column name and reaches the dotted arm
+indistinguishable from a leg-qualified reference. Its multi-table twin
+`clusteredOuterOrdinalSeed` builds the same shape but is not what the corpus
+drives to this reader.
+
+- **The scope question is ANSWERED, not rounded up.** Both witnesses share one
+  producer, so the retitling retires the whole arm. This is the "BOTH
+  attributed" branch the deliverable enumerated in advance, and it is stated
+  because it was measured — had only one attributed, day-one scope would have
+  been one witness.
+- **Identity comes from `innerCorr`**, already threaded into the function,
+  already unique, already the span's key. Nothing is minted. A mint here is how a
+  leg acquires a second spelling.
+- **The retirement condition is unchanged**: `AssertLegColumnProvenanceCensus`
+  reporting `dotted HITS by identity availability: available 0` with `Calls`
+  above its floor, uncached, before and after. It is the same measurement that
+  refuted §1.1, which is what makes it a fair test.
+- **§10.4's brancher checklist still applies unchanged**, and the structural
+  argument survives the producer swap: `innerType` sets `Fields` only and never
+  `Legs`, so no table becomes non-empty and none of the 16 decision sites changes
+  its answer.
+
+### 11.4 What is NOT settled
+
+The RFC's framing — "a producer naming a quantifier's flowed column with a title
+that can contain a dot" — survived this redirect, and that is the third time the
+KIND held while the instance moved. It is evidence for the framing, not proof:
+the corrected target has been attributed but not yet exercised, and the only
+thing that will settle it is the retirement condition moving to `available 0`.
+If it does not, revert and report — that response is now demonstrated to cost
+far less than shipping inert code.
+
+---
+
+## 12. §11.3 IMPLEMENTED — the dotted arm goes from 2 answers to 0
+
+Status: **the retitling is BUILT and the retirement condition is MET.** The
+executor's dotted leg-column arm is deliberately NOT deleted; §12.4 says why.
+Query-engine change — it gets its own Graefe+Torvalds lap.
+
+### 12.1 The change
+
+`scalarSubqueryOrdinalSeed` titles its inner leg's flowed column with the
+subquery's OUTPUT TITLE, and a title that already contains a dot reaches
+`rowSlotForLegColumn`'s dotted arm indistinguishable from a leg-qualified
+reference — the arm splits it and resolves a LEG and COLUMN the leg does not
+have. `unqualifiedScalarTitle` strips the qualifier off that LABEL only.
+
+The identity is `innerCorr`, already threaded, and nothing is minted. The RC
+FIELD name keeps its qualified spelling: that is the row-key arm,
+`replaceScalarSubqueryRef` reads it, and it is deliberately out of scope.
+
+The census registers `innerTitle` — the same variable that names `innerType`'s
+field three lines up — so the registered title and the carried title cannot
+drift. There is only one.
+
+### 12.2 The retirement condition, and why it is a DRAIN not a REROUTE
+
+Same command both sides, uncached, neither side narrowed:
+
+```
+bazelisk test //pkg/relational/sqldriver:sqldriver_test \
+  --cache_test_results=no --test_output=streamed --test_timeout=3600
+```
+
+BEFORE:
+```
+[sqldriver real-FDB corpus] leg-column provenance: calls 1174 (flatHit 120, notDotted 1052, noLegs 0, dottedMiss 0); dotted HITS by identity availability: available 2, unstated 0, diverged 0
+  dotted HITS by OWNER selection: sameLeg 0, ownerUnstated 0, ownerNamesNoLeg 2, ownerSelectsOtherLeg 0
+```
+
+AFTER:
+```
+[sqldriver real-FDB corpus] leg-column provenance: calls 2534 (flatHit 122, notDotted 2412, noLegs 0, dottedMiss 0); dotted HITS by identity availability: available 0, unstated 0, diverged 0
+  dotted HITS by OWNER selection: sameLeg 0, ownerUnstated 0, ownerNamesNoLeg 0, ownerSelectsOtherLeg 0
+```
+
+**A zero can be produced by draining a population or by rerouting it, and the
+statistic that separates them here is `flatHit`.** It read **120 on all five**
+of the full-suite runs the harness enumerates (calls 2394 / 2474 / 2554 / 2554 /
+2674) — the one number on this census that did not move while the call total
+swung by nearly 300. It is now **122**. Exactly +2, exactly the two dotted hits
+that disappeared, landing in the arm they must land in once the name stops
+splitting: the FLAT lookup answers them instead. A reroute would show no
+compensating +2 in any sibling arm.
+
+**The drift also runs the safe way.** The AFTER run's 2534 calls is inside the
+≈2.4–2.7k band; the BEFORE run's 1174 is an unexplained low outlier at less than
+half the band floor. It was **not** a narrowed run — no `-test.run`, and the
+harness printed none of the narrowing notices it emits when filtered — so it is
+genuine run-to-run variance. The consequence is the direction that matters: the
+zero was measured on the **larger** population, 2.16× the before side. A
+shrinking population can manufacture a zero; a growing one cannot.
+
+Nothing else moved: no test, no golden, no row. The only two failures on the
+first AFTER run were this branch's own floors, guarding the population the
+retirement deliberately drains.
+
+### 12.3 The guarded direction FLIPS, and the floors are reconciled not relaxed
+
+While the arm was live, `DottedHitIdentityAvailable` was floored because a zero
+would have read like good news while meaning the instrument died. Zero is now
+the steady state, so the danger is **growth**: a non-zero means some producer is
+again naming a quantifier's flowed column with a dot-containing title. The floor
+retires and a **hard zero** replaces it, whose message names the direction and
+points at `unqualifiedScalarTitle`.
+
+`Calls` is floored at a **magnitude (100)**, not at 1. It is the floor that
+forecloses "the producers register and the reader is dark" — the state in which
+the hard zero reads clean over an evaporated population. At 1 the reader could
+run three times and the retirement would still report as measured.
+
+**The first magnitude tried was 1000, and a run refuted it within one rebase.**
+The reasoning was that 1000 sat comfortably under the ≈2.4–2.7k band and the
+1174 low outlier; the next full run reported **574** and the floor fired
+spuriously. Every full run this path has recorded: 574, 1174, 2394, 2474, 2534,
+2554, 2554, 2674 — nearly 5x, on an unchanged corpus. A floor set just under the
+observed minimum is a floor set to fire. 100 is an order of magnitude below the
+lowest reading and still ~30x above an evaporated population, which is the only
+state it exists to catch.
+
+That 574 run is also a THIRD confirmation of §12.2: `flatHit` read **122** there
+too, against `notDotted` moving 2412 → 452. The discriminating statistic held at
+its post-change value across a 4.4x swing in the denominator. A fourth run at 1914 calls read 122 as
+well: flatHit has now held at its post-change value on every reading taken,
+while the denominator ranged 574–2534.
+
+The attribution census keeps its **Minted** floor — which is what keeps the zero
+honest, proving the producers still register — and drops its **Observed** floor
+as unsatisfiable by construction.
+
+### 12.4 The arm is NOT deleted, and that is not a deferral
+
+The dotted arm now answers zero and could be deleted on that warrant. It stays,
+because **the arm at zero plus the hard zero is a live tripwire**: it catches a
+future producer re-introducing a dot-containing title. Delete it and that
+reference resolves through the flat path silently, with nothing watching.
+
+This is not the deferral the project forbids. The work is not merely postponed —
+it is not yet correct to do, and it becomes correct only when `RecordTypeLeg.Name`'s
+other reader (`legWindowSlot`, §4) also retires and the field goes with it.
+
+### 12.5 Enumeration, per the counting rule
+
+`.Legs` references: 69 total, 36 branch-shaped, 16 decision sites — commands in
+§10.4. §10.4's checklist is re-verified for this producer and unchanged:
+`innerType` sets `Fields` only and never `Legs`, so none of the 16 changes its
+answer. The retitling touches a string on a single-field type and nothing else.

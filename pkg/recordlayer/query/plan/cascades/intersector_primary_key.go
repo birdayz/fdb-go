@@ -1220,6 +1220,7 @@ func commonPrimaryKeyValues(accesses []Vectored[*SingleMatchedAccess], ctx PlanC
 func bakedIntersectionKeys(pkValues []values.Value, legs []plans.RecordQueryPlan) []values.Value {
 	var rowType *values.RecordType
 	for _, leg := range legs {
+		recordResultTypeRead("bakedIntersectionKeys", leg.GetResultType())
 		rt, isRT := leg.GetResultType().(*values.RecordType)
 		if !isRT {
 			return nil

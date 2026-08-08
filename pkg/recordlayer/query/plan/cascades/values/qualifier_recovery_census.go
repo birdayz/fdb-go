@@ -464,9 +464,19 @@ func assertQualifierRecoveryCounts(
 	//   - AGREED, LEAF-ONLY and HEURISTIC-DECLINE are health populations. Their
 	//     witnesses illustrate a shape that is working; the COUNT carries the
 	//     claim and the list is an example set. Saturation is expected on any
-	//     corpus of size (displayLabelStrip alone agrees on 700+ calls across
-	//     dozens of aliases) and is announced, not failed. Failing it would mean
-	//     the gate goes red because the suite grew.
+	//     corpus of size (displayLabelStrip alone agrees on HUNDREDS of calls
+	//     across dozens of aliases) and is announced, not failed. Failing it
+	//     would mean the gate goes red because the suite grew.
+	//
+	//     NO FIXED FIGURE BELONGS HERE. Two back-to-back unfiltered runs of the
+	//     same tree, same 5808 subtests, no cache, read displayLabelStrip at 702
+	//     and then 660 calls — the variance sits entirely in the AGREED arm
+	//     (674 vs 632) while bare (22) and MANUFACTURED (6) were identical, and
+	//     while existsSortSplit was bit-stable at 44/44/0. So this site's total
+	//     is a property of the RUN, not of the tree, and any single number
+	//     written down here is stale the next time anyone checks it. What is
+	//     invariant, and all the health claim needs, is that it is far from
+	//     zero: a zero here would mean the instrument is dead rather than clean.
 	for s := QualifierRecoverySite(0); s < qualRecSiteCount; s++ {
 		for _, c := range []QualifierRecoveryClass{QualRecDiverged, QualRecManufactured} {
 			if len(witnesses[s][c]) >= qualRecWitnessCap {

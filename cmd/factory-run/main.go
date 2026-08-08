@@ -59,6 +59,10 @@ func main() {
 	flag.StringVar(&cfg.out, "out", "pkg/relational/conformance/factorycorpus/testdata", "corpus directory to write scenarios into")
 	flag.StringVar(&cfg.findings, "findings", "factory-findings", "directory oracle disagreements are persisted into")
 	flag.StringVar(&cfg.manifest, "manifest", "factory-manifest.json", "path for the run's batch manifest")
+	flag.StringVar(&cfg.prBody, "pr-body", "factory-pr-body.md",
+		"path for the batch PR body: the manifest's numbers WITHOUT the per-scenario census maps, "+
+			"which are whole-corpus state and put the raw manifest an order of magnitude past GitHub's 65536-character body limit")
+	flag.StringVar(&cfg.runURL, "run-url", "", "workflow run URL, linked from the PR body as where the full manifest artifact lives")
 	flag.StringVar(&cfg.date, "date", "", "batch date YYYY-MM-DD, stamped into every header (required: generation must never read the clock)")
 	flag.StringVar(&cfg.javaURL, "java-url", "", "base URL of a running Java conformance server; empty = metamorphic blessing only")
 	flag.StringVar(&cfg.retirementLedger, "retirement-ledger", "",
@@ -75,6 +79,7 @@ type config struct {
 	quota            int
 	out, findings    string
 	manifest, date   string
+	prBody, runURL   string
 	javaURL          string
 	retirementLedger string
 	updateCensus     bool
@@ -292,6 +297,18 @@ func persist(cfg config, batch *factory.Batch, findings []*factory.Finding, bles
 	if err := factory.WriteManifest(cfg.manifest, manifest); err != nil {
 		fmt.Fprintf(os.Stderr, "INFRA: write manifest: %v\n", err)
 		return manifest, exitInfra
+	}
+	// The PR body is written HERE, next to the manifest, rather than assembled
+	// in the workflow: the shell had no way to drop the two per-scenario census
+	// maps short of a jq dependency this repo does not have, so it inlined the
+	// whole manifest and the PR call failed on GitHub's body limit — after the
+	// branch was already committed and pushed. A typed renderer with tests is
+	// the thing that can promise a bounded body; a heredoc cannot.
+	if cfg.prBody != "" {
+		if err := os.WriteFile(cfg.prBody, []byte(manifest.SummaryMarkdown(cfg.runURL)), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "INFRA: write PR body: %v\n", err)
+			return manifest, exitInfra
+		}
 	}
 	// THE RATCHET IS VERIFIED BY DEFAULT AND REWRITTEN ONLY ON REQUEST.
 	//

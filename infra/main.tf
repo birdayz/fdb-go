@@ -231,7 +231,7 @@ resource "hcloud_server" "runner" {
 variable "runner_count" {
   description = "Number of pool runners (in addition to the grandfathered scaleset box)"
   type        = number
-  default     = 4
+  default     = 1
 }
 
 variable "runner_registration_token" {
@@ -242,7 +242,7 @@ variable "runner_registration_token" {
 }
 
 # The pool's token, with the documented one as the fallback. A registration token is
-# repo-scoped and single-purpose, so the same token registering five boxes is exactly what
+# repo-scoped and single-purpose, so the same token registering every box is exactly what
 # the documented one-token setup means; a separate value stays possible for the case it
 # was added for (replacing pool boxes on a token the grandfathered box must not rotate to).
 locals {

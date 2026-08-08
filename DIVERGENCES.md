@@ -11,44 +11,107 @@ live 4.12 in `just test` with a stale-annotation guard, and the suite is green).
 
 ## Intentional Architectural Decisions (no functional difference)
 
-### Default format version for a NEW store: Go writes 14, Java writes 7 (OPEN, mechanically unblocked)
+### Default format version for a NEW store: Go writes 14, Java writes 7 (DECIDED — keep 14)
 
 Java's default is **`CACHEABLE_STATE` (7)** — `FormatVersion.getDefaultFormatVersion()`
 (`FormatVersion.java:215-217`), which `FDBRecordStore.Builder` seeds itself with
-(`FDBRecordStore.java:5437`). Go's default is `formatVersionCurrent = 14`, which is
+(`FDBRecordStore.java:5437`). Go's default is `formatVersionDefault = 14`, which is
 `FULL_STORE_LOCK(14)` (`FormatVersion.java:173`) — the same value as Java's
-`MAX_SUPPORTED_VERSION` (`:182`, `getMaximumSupportedVersion()` at `:203`). So a new store
-created by Go declares a **newer on-disk format than a new store created by Java**, and Go
-also upgrades any store it opens to that version.
+`MAX_SUPPORTED_VERSION` (`:182`). So a new store created by Go declares a **newer
+on-disk format than a new store created by Java**, and Go also upgrades any store it
+opens to that version.
 
-This is deliberate for the moment, not an oversight, and it is **not** a wire-compat
-break in the read/write sense: format versions 8–14 gate store-header features
-(user fields, `READABLE_UNIQUE_PENDING`, record-count state, store locks, incarnation),
-not record or index key encoding. The risk it carries is narrower and specific: a Java
-instance pinned at its default 7 opening a Go-created store sees a format it did not
-expect, and `validateFormatVersion` (`FormatVersion.java:225`) is the gate that decides
-what happens. Java notes it has **no policy for advancing this default**
-(`FormatVersion.java:210-213`, issue #709), which is exactly why aligning it is a
-judgement call rather than a typo fix.
+**DECISION: keep Go's default at 14.** Not for tidiness and not by default — the
+question was carried to the Java source and the answer settles it.
 
-**Why it is not changed here.** Changing the default alters what *every* new Go store
-writes to disk, and every existing Go store was created under the current default — so
-it needs its own reviewed change with its own compatibility argument, not a drive-by
-edit inside a cardinality-migration PR.
+**What Java actually does, read rather than assumed.** `validateFormatVersion`
+(`FormatVersion.java:224-231`) throws `UnsupportedFormatVersionException` only when the
+candidate is `< getMinimumVersion()` **or** `> getMaximumSupportedVersion()`. At
+4.12.11.0 `MAX_SUPPORTED_VERSION` is computed as the maximum enum value (`:182`) and
+that value **is** `FULL_STORE_LOCK(14)`. So 14 ≤ 14 and the check passes. Then
+`checkPossiblyRebuild` (`FDBRecordStore.java:4627-4630`):
 
-**What changed: alignment is now mechanically possible.** Until CQ-90, Go had no way to
-express "open at a version other than the newest this binary knows" —
-`maybeUpgradeFormatVersion` raised every store to `formatVersionCurrent` on every open,
-so even writing an older version into the header was undone by the next open. Java takes
-the target from the builder (`FDBRecordStoreBase.BaseBuilder.setFormatVersion`,
-`:2245`/`:2266`) precisely so a rolling upgrade can pin every instance to the OLD format
-and stop any one of them writing a layout the others cannot read. Go now has
-`StoreBuilder.SetFormatVersion` (plus the `OnlineIndexerBuilder` twin); the upgrade
-targets it rather than a constant, new stores are born at it, and it is a ceiling that
-never downgrades. The remaining work is a decision about the DEFAULT, not a missing
-capability.
+```java
+final int oldFormatVersion = info.getFormatVersion();
+final int newFormatVersion = Math.max(oldFormatVersion, formatVersion.getValueForSerialization());
+final boolean formatVersionChanged = oldFormatVersion != newFormatVersion;
+formatVersion = FormatVersion.getFormatVersion(newFormatVersion);
+```
 
-### Version-gated header features: WRITES gated like Java, READS still lenient (OPEN, narrow)
+A Java instance at its default 7 opening a Go store at 14 computes `max(14,7) = 14`,
+leaves `formatVersionChanged` false so **nothing is written**, and **adopts 14** for
+that store instance. It does not throw, and it does not downgrade. **There is no
+interop break at the pinned spec**, which is the premise the case for changing rested
+on.
+
+**The cost of aligning, established from the write gates rather than from a suite run.**
+Format versions 8–14 gate store-header features — header user fields (8),
+`READABLE_UNIQUE_PENDING` (9), record-count state (11), store lock state (12),
+incarnation (13), full store lock (14). A default of 7 disables **all** of them by
+construction: every one is guarded by `requireFormatVersion`, which reads the header,
+so a store born at 7 refuses each with `UnsupportedFeatureForFormatVersionError`. Java
+users at Java's default accept exactly this and opt in via `setFormatVersion`; the
+difference is that Go's feature set is newer, so the default would be turning off more.
+No measured interop benefit against a definite functional cost.
+
+**The real blocker was one level down, and it is FIXED.** This entry previously said
+the remaining work was "a decision about the DEFAULT, not a missing capability." That
+was wrong. `formatVersionCurrent` served **both** of the roles Java keeps apart —
+the validation ceiling (`store_builder.go:185`, `:1338`, rejecting `stored > current`)
+and the creation/upgrade target (`:199`, `:1005`, `:1200`) — where Java separates
+`getMaximumSupportedVersion()` (`:203`) from `getDefaultFormatVersion()` (`:215-217`).
+Fused, **lowering the default would have lowered the ceiling with it, and every store
+Go had already created at 14 would have been rejected on open** with
+`UnsupportedFormatVersionError`. "Just change the default" was a change that could not
+be made safely at all. Now split into `formatVersionMaxSupported` and
+`formatVersionDefault` (both 14, zero behaviour change), so the default is a free
+decision and the existing-store path is safe by construction: the ceiling does not move
+when the default does. Pinned by `format_version_split_test.go`, including the case the
+fusion made inexpressible — a store pinned BELOW its own header still opens, because
+validation consults the ceiling and never the target.
+
+**THE STANDING COUNTER-ARGUMENT, and the condition that flips this decision.** Go at
+default 14 opening an existing **Java** store at 7 upgrades it to 14 and writes that,
+permanently narrowing the set of readers that store can be opened by. Java at its
+conservative default never does this to someone else's store. It is harmless at the
+pinned spec — Java 4.12.11.0 reads 14 — and it is the strongest argument that exists
+for lowering the default.
+
+It flips the decision if any of these becomes true:
+- a deployment mixes Go with a Java version whose `MAX_SUPPORTED_VERSION` is **below**
+  Go's default, because `validateFormatVersion` then rejects the store outright;
+- Go's default is ever raised past Java's max (guarded:
+  `TestFormatVersion_DefaultIsWithinTheCeiling` fails on it);
+- the 8–14 feature set stops being wanted by default, removing the cost side.
+
+Until one of those holds, 14 stays. Callers that need Java's conservative default have
+`StoreBuilder.SetFormatVersion` — the mechanism, unlike the decision, was never the
+missing piece.
+
+### Version-gated header features: WRITES and READS both gated like Java (CLOSED)
+
+**The gap was an AMBIGUITY, not a leniency — which is why this entry's own defence was
+the wrong test.** It used to argue "the read paths write nothing, so no bytes diverge",
+reasoning from bytes on disk when the hazard was a CALLER'S INFERENCE. A caller could
+not distinguish:
+
+- "this store has no incarnation yet" from "this store's format is too old to have one"
+  — both were `0`. A migration keyed off incarnation reads a too-old store as a
+  never-migrated one;
+- "this user field is unset" from "this format cannot hold user fields at all" — both
+  were `nil`.
+
+**And the pair was ASYMMETRIC.** `SetHeaderUserField` refused loudly at exactly the
+version where `GetHeaderUserField` answered "absent" — the shape that makes a caller
+conclude its own write silently failed to persist. A write that errors beside a read
+that shrugs is worse than either alone.
+
+**The concrete cost was one call site away from a real index defect.**
+`key_expression.go:1480`, the incarnation key expression, swallowed the missing gate into
+a `0`: every record in a too-old store would have keyed under a single index entry. That
+is not "match Java's strictness" — that is a live defect the gate prevents.
+
+---
 
 Java guards every version-gated store-header feature at its site with
 `if (!getFormatVersionEnum().isAtLeast(V)) throw` — header user fields
@@ -56,20 +119,30 @@ Java guards every version-gated store-header feature at its site with
 (`:3478`/`:3494`), incarnation (`:3503`/`:3517`) — and gates the record-count key/state
 written at store creation independently (`:5950-5957`).
 
-Go now ports **every WRITE gate** (`FDBRecordStore.requireFormatVersion`, returning
+Go ports **every WRITE gate** (`FDBRecordStore.requireFormatVersion`, returning
 `UnsupportedFeatureForFormatVersionError`), because those are the wire-compat hazard: a
 v12 store lock written into a header that still declares 11 is a lock a correctly-behaved
 older reader does not understand and therefore silently ignores. Pinned by a table-driven
 spec per feature plus a contrast case at the current version.
 
-**Still divergent, deliberately and narrowly: the READ side.** Java also throws from
-`getIncarnation()` (`:3503`) and `validateCanAccessHeaderUserFields()` (`:3222`) when the
-format is too old; Go's `GetIncarnation()` returns 0 and `GetHeaderUserField()` returns
-nil. Those read paths write nothing, so no bytes diverge and no older instance is misled —
-the gap is strictness (catching programmer error early) rather than compatibility. Closing
-it changes two public signatures from value-returning to `(value, error)`, which is an API
-break worth its own change rather than a rider on a migration PR. Recorded here so it is a
-known gap and not an oversight.
+**The READ side is now gated too, and the previous objection is dissolved.** This entry
+used to record the gap as deliberate, on the grounds that closing it "changes two public
+signatures from value-returning to `(value, error)`, which is an API break worth its own
+change." The project is pre-release and Go API breaks are acceptable, so that objection
+does not survive contact with the actual cost.
+
+`GetIncarnation()` now returns `(int32, error)` and `GetHeaderUserField()` returns
+`([]byte, error)`, both gated through the same `requireFormatVersion` the writes use —
+Java's `getIncarnation()` (`:3502-3506`) and `validateCanAccessHeaderUserFields()`
+(the shared validator at `:3221-3226`, reached from getHeaderUserField at
+`:3249`).
+
+
+The read entries live in the same table as the writes, deliberately, so the two ends
+cannot drift apart on a version. The contrast case asserts the absent-value stays
+REACHABLE at a supporting version — an incarnation of `0` and a `nil` field with no error
+— because separating the absent-value from the error is the entire point; a reader that
+always errored would satisfy the gate table on its own.
 
 ### PK-intersection declines a needed non-ForMatch compensation (conservative)
 
@@ -368,7 +441,7 @@ explicit sort-count, NLJ-predicate, and statistics-cost rungs. Criterion-by-crit
 | Criterion | Java | Go | Status |
 |---|---|---|---|
 | 1. Physical beats non-physical | `instanceof RecordQueryPlan` | `isPhysical` | Aligned |
-| 2. Max data access cardinality | CardinalitiesProperty gate + comparison | Data-access cardinality gate | Functionally equivalent |
+| 2. Max data access cardinality | CardinalitiesProperty gate + comparison — index arm has TWO criteria: PK-bound-by-equalities, falling through to unique-index | Data-access cardinality gate — implements the uniqueness criterion only | **Deliberate divergence — Go's sargable surface excludes the PK, so Java's criterion 1 has no constructible input (see below)** |
 | 3. Residual predicate count | NormalizedResidualPredicateProperty (CNF size) | `countResidualPredicates` using `cnfSize()` | Aligned |
 | 4. Data access count | count(Scan, Index, Covering) | `scanCount + indexScanCount + coveringIndexCount` | Aligned |
 | 5. Recursive CTE DFS > level | flipFlop(compareRecursiveCte) | `compareRecursiveCTE` | Aligned |
@@ -389,6 +462,59 @@ explicit sort-count, NLJ-predicate, and statistics-cost rungs. Criterion-by-crit
 | 17. Plan hash tiebreak | planHash(CURRENT_FOR_CONTINUATION) | `costExprHash`→`concretePlanHash`/`exprConcreteHash` (FNV-flavored) | **Shape-aligned, NOT byte-aligned** (RFC-167 §5) — both break cost ties by a structural plan hash so each engine is *intra-engine* stable, but Go uses an FNV-flavored hash (RFC-024 cache key) ≠ Java's `planHash(CURRENT_FOR_CONTINUATION)`, so Go and Java may pick **different** tie-winner indexes for the same query (rows identical; EXPLAIN may differ). Convergence is deferred until cross-engine continuation re-planning is a requirement (RFC-167 OQ#5). |
 
 Criterion 15b (`compareFlatMapVsNLJ`) is RETIRED (RFC-181 WS-P stage (d)): under the epoch convergence with finals-only physical yields and prune-to-winner, its recorded JOIN regression no longer reproduces — deleted with its tests. 15c is RECLASSIFIED: Java's PlanningCostModel is self-described heuristic — its rungs end in a planHash tiebreak and no statistics rung exists — so 15c is a Go statistics EXTENSION occupying that role slot (cost discriminator before the hash tiebreak), not a literal Java rung; the stage-(d) retirement probe regressed equality-index preference and vector outer-limit folding, proving it load-bearing. The maxRoundsPerRef load cap (10) is obsolete under epoch convergence (both constraint lattices are finite chains, so rounds are structurally bounded); it remains only as a loud divergence tripwire at 100. RFC-190 removed the five Go-specific per-rung sort gates and promoted sort count. The GROUP BY/covering-index flip exposed the missing `RecordQueryScanPlan` unmatched-fields arm; porting Java's scan branch fixed the apples-to-oranges comparison, so it is not evidence for retaining the gate.
+
+#### Criterion 2 — max data access cardinality — DELIBERATE DIVERGENCE (Go candidate-model constraint)
+
+**Unlike criteria 6 and 7, this is NOT a Java defect. Java is correct here and Go proves strictly
+less. Read-side plan choice only — nothing here touches the wire.**
+
+Java's `CardinalitiesProperty.visitRecordQueryIndexPlan` (`CardinalitiesProperty.java:313-355`) has
+**two** criteria for an index plan, the first falling through to the second on a miss:
+
+1. `:329-337` — if the candidate is a `WithPrimaryKeyMatchCandidate` and the scan's
+   `equalityBoundValues` contain all of `primaryKeyValues`, return `atMostOne()`. This applies to
+   value-index candidates: `ValueIndexScanMatchCandidate` implements `ScanWithFetchMatchCandidate`
+   (`:52`), which extends `WithPrimaryKeyMatchCandidate` (`ScanWithFetchMatchCandidate.java:44`).
+2. `:339-352` — if the candidate `isUnique()` and is a `ValueIndexScanMatchCandidate`, rebase the
+   index key values and trim to `getColumnSize()`; if the equality-bound set covers them, return
+   `atMostOne()`.
+
+Go implements **only criterion 2** (`indexProvableMaxCard`, `planning_cost_model.go:503`).
+
+**Cause — the sargable-surface invariant.** Criterion 1 requires equalities *binding primary-key
+positions*. Java can express that because its `indexKeyValues` span index key **plus** the PK suffix
+— which is exactly why criterion 2 must call `.limit(getColumnSize())` to trim the PK back off. Go's
+candidates deliberately never fold the PK into the sargable surface
+(`match_candidate_index.go:678-681`: "The PK is NOT part of the sargable surface … that invariant
+must hold"), so a constructed index plan's comparison count never exceeds its index key column
+count and criterion 1 has **no constructible input**. Note the two criteria compare in the same
+value domain, so this is a genuine gap and not a Java no-op: `primaryKeyValues` come from
+`ScalarTranslationVisitor.translateKeyExpression` rooted at `Quantifier.current()`
+(`ScalarTranslationVisitor.java:230`), and `equalityBoundValues` are built through the same
+`toResultValue(Quantifier.current(), …)` (`ValueIndexLikeMatchCandidate.java:139-141`) — which is
+why criterion 1 needs no rebase while criterion 2 does.
+
+**Cost — this is decisive, not silent.** `PlanningCostModel.java:127-132` returns on one-sided
+abstention: the side whose max-of-max data-access cardinality is unknown **loses outright**. The
+outer guards at `:121`/`:125` are disjunctive, so they tolerate only the both-abstain case. For a
+PK-bound non-unique index scan, Java ranks the plan first on this rung and Go ranks it last, and the
+comparison never reaches the structural tie-breakers below.
+
+**Why it is not closed here.** Folding the PK into the sargable surface is the only way to make
+criterion 1 reachable, and it re-opens a regression this repo already paid for: counting the PK
+suffix in `unmatchedFieldsForIndex` over-counts a fully-bound index probe and mis-ranks criterion
+#12 toward a full-scan join driver (`planning_cost_model.go:2833-2835`). That change belongs to its
+own RFC with its own plan-diff, not to a cost-model unification. Pinned by
+`TestRFC219_IndexPlanWidthInvariant`, which drives all four production index-plan construction sites
+and fails if any can exceed the index key width — the event that would make criterion 1 reachable
+and this entry stale. Measured `len(comps)/len(columnNames)` per site: `match_candidate_index` 3/3,
+`windowed_index_match_candidate` 2/2, `aggregate_index_candidate` 2/2 (clamp proven by feeding
+`physicalGroupingPrefixCount = 5`), `rule_implement_nested_loop_join` 1/2, plus a positive control
+at 2/1 confirming the predicate fires. Three of the four are structural; the **windowed** site is a
+caller contract — `columnNames` and `groupingAliases` are independent constructor parameters with no
+clamp. That arm is additionally unreachable today (`NewWindowedIndexScanMatchCandidate` has no
+non-test caller), so its unclamped parameter space is not exploitable; it is nonetheless the first
+arm to re-check if a production caller ever appears or if criterion 1 ever looks reachable.
 
 #### Criterion 6 — IN-plan SARG penalty — DELIBERATE DIVERGENCE (Java upstream defect)
 
@@ -1333,6 +1459,99 @@ integer type, non-integral and out-of-range bounds rewrite to the
 tightest integer predicate — exact at every magnitude. Go-right
 divergence, verified live by the bigint_eq_double_above_2p53 corpus
 entry (DivergenceJavaWrongRowsGoCorrect).
+
+## INT-vs-LONG stays sargable in Go; Java promotes and loses the probe
+
+**Direction: Java is correct-by-its-own-lights but plans WORSE, and Go
+proves strictly MORE. This is a sanctioned read-side extension, NOT a
+gap to close.** Anyone "fixing" Go to match Java here would be deleting
+a working index probe.
+
+Read this beside "Criterion 2 — max data access cardinality" (the
+RFC-219 entry above, "Java is correct here and Go proves strictly
+less"). Same shape, opposite sign: both are read-side plan choice only,
+both touch no wire byte, and in one Go proves less than Java while here
+Go proves more. The pair is what makes either legible — a lone entry in
+this family reads as a parity gap someone should close, which is
+exactly how the INT/LONG item got filed as open work in the first
+place. It also belongs with "Go-Only Extensions" (Java rejects
+outright) and "Java Upstream Bugs (Go is correct, Java is wrong)"
+(Java is plainly wrong); this is the third case — Java is internally
+consistent and simply plans a worse access path.
+
+Java injects the promotion unconditionally on the sargability path.
+Not in `RelOpValue.encapsulate` (which leaves INT/LONG alone and
+dispatches a mixed-type physical operator, `EQ_IL` at
+`RelOpValue.java:566`), but in `promoteOperands`, reached from
+`toQueryPredicate`: `Type.maximumType(leftType, rightType)` then
+`PromoteValue.inject` on BOTH operands (`RelOpValue.java:209,217-218`).
+`inject`'s only escape hatches are type identity and a
+nullability-only `canResultInType` (`PromoteValue.java:444-449`), which
+`FieldValue` does not override — so INT→LONG over a column always
+mints a real node. Nothing removes it later:
+`DefaultValueSimplificationRuleSet.java:39-54` holds four rules, none
+promote-related, and `EvaluateConstantPromotionRule` covers only
+NULL / untyped-`[]` / nullability and is not in the default set.
+
+On the match side `Value.matchAndCompensateComparisonMaybe`
+(`Value.java:763-785`) sees through CANDIDATE-side `InvertableValue`
+wrappers only. `PromoteValue` overrides neither `equalsWithoutChildren`
+nor `semanticEquals`, so the class-identity default
+(`Value.java:480-486`) rejects `PromoteValue` against the placeholder's
+bare `FieldValue`. The wrapper is transparent on the COMPARAND side
+only, via `PromoteValue implements Value.RangeMatchableValue`
+(`PromoteValue.java:70`).
+
+Consequence in Java, from its own checked-in plan baseline, on a schema
+where `col3` (INTEGER) leads an index (`sql-functions.yamsql:24,27`):
+
+```
+sql-functions.metrics.yaml:204
+ISCAN(T1_IDX1 <,>) | FILTER promote(_.COL3 AS LONG) EQUALS promote(@c9 AS LONG) | FLATMAP …
+```
+
+Unbounded scan plus a residual filter — `T1_IDX2` unused. Same shape at
+`:180, :192, :218, :232, :246`.
+
+Go instead declines to insert the promotion at all
+(`sharesIntegerWireEncoding` in `expr.promoteColumnColumnNumeric`): INT
+and LONG funnel to the SAME FDB tuple encoding, so the wrapper cannot
+change a single wire byte and only costs the match. On
+`intCol <op> <long-typed expr>` Go produces an index probe where Java
+produces a full scan. **Wire compat is untouched** — identical encoding
+is the entire premise of the guard — so this is read-side reach, which
+is explicitly allowed.
+
+The asymmetry matters and is easy to misread: `maximumType(INT,LONG)`
+is LONG, so the wrapper always lands on the INT side. It costs the
+probe only when the INT side IS the indexed column. `bigintCol = 5`
+promotes the LITERAL and stays sargable in both engines; a promoted
+COMPARAND stays range-matchable in both. A bare integer literal that
+fits int32 is typed INT (`expr.intLiteralType`), so the only literal
+spelling that can express the defect is an explicitly-LONG one (`20L`,
+or a magnitude exceeding int32).
+
+Pinned by `pkg/relational/sqldriver/int_long_sarg_matrix_probe_test.go`
+(25 cells: literal and correlated-column comparands × both directions ×
+`=`,`>`,`>=`,`<`,`<=`, each asserting the `IndexScan` AND the rows —
+the degradation returns correct rows, so only the plan is the alarm).
+10 of those cells are mutation-proven: removing the
+`sharesIntegerWireEncoding` skip reddens the 5 `correlated_bigint`
+cells; removing that plus the `IsConstantValue` early return also
+reddens the 5 `long_literal` cells. The remaining 15 are
+regression coverage this mechanism structurally cannot reach, which the
+test file states rather than leaving as accidental green.
+
+**Evidence class — read this before acting on the comparison.** The Go
+half is MEASURED (live FDB, `--nocache_test_results`, red-green
+mutation both ways). The JAVA half is INFERRED from 4.12.11.0 sources
+plus the checked-in plan golden above. That golden is Java's own
+recorded planner output, which makes it strong, but **the Java planner
+was not run**. What would upgrade it: reproducing
+`sql-functions.metrics.yaml:204` from an actual Java run. That was
+deliberately not done — nothing is blocked on it, and the cost is not
+justified by the claim's current use, which is only to explain why Go's
+guard must not be "fixed" back toward Java.
 
 ## Bound parameters stay Unknown-typed at the plan gates
 

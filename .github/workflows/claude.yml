@@ -13,7 +13,7 @@ on:
 jobs:
   claude:
     # One live run per issue/PR, newest wins. This job competes with the real CI gates
-    # for the hetzner-fdb-vm boxes — five of them, one job each — so a pile of wedged or
+    # for the hetzner-fdb-vm boxes — a handful, one job each — so a pile of wedged or
     # superseded review runs still starves PR CI behind it (a 3h-wedged run + its queued
     # re-requests once held a box while CI sat queued for an hour).
     #

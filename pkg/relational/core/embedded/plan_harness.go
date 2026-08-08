@@ -202,6 +202,18 @@ func planPhysicalForTest(
 		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, msg)
 	}
 
+	// RFC-141 §8 safety guard, logical half — the SAME check the production
+	// SELECT generator applies before translation. The DML twin below has run
+	// both halves since it was written; the SELECT half ran neither, so this
+	// harness planned queries production REFUSES and the plan-shape corpus
+	// recorded a plan where the driver returns 0AF00. That is worse than a
+	// missing entry: an error-pinned stanza rendered a bogus plan, and the
+	// bogus plan is exactly the shape the guard exists to prevent shipping —
+	// a projected ExistsValue sitting where its binding is dead.
+	if msg := findUnfoldableProjectedExists(logicalOp); msg != "" {
+		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, msg)
+	}
+
 	if arityErr := query.ValidateCTEAliasArities(logicalOp); arityErr != nil {
 		return nil, nil, arityErr
 	}
@@ -213,6 +225,17 @@ func planPhysicalForTest(
 	}
 	if ref == nil {
 		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
+	}
+
+	// RFC-141 §8 post-translation half, and the R4 buried-existential backstop.
+	// Same ordering and same error code as the production SELECT generator, so a
+	// corpus stanza pinned to 0AF00 renders a <PLAN-ERROR> marker rather than a
+	// plan the driver would never run.
+	if existsErr := query.CheckProjectedExistsFolded(ref); existsErr != nil {
+		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, existsErr.Error())
+	}
+	if buriedErr := query.CheckBuriedExistentialPredicate(ref); buriedErr != nil {
+		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, buriedErr.Error())
 	}
 
 	// SELECT plans with the SELECT planning rule set (Batch-A). The DML harness

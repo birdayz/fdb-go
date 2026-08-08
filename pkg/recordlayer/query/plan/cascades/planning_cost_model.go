@@ -2550,6 +2550,7 @@ func predicatesFilterIsFullPKPointProbe(pl *plans.RecordQueryPredicatesFilterPla
 	// Unknown means there is no declared column order to state the proof in, so
 	// the probe declines rather than falling back to the names it still has.
 	layout := scan.GetResultType()
+	recordResultTypeRead("predicatesFilterIsFullPKPointProbe", layout)
 	frontier := values.OrdinalDomainOfType(layout)
 	if !frontier.IsKnown() {
 		return false

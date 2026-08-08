@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -80,10 +81,13 @@ type txDefaults struct {
 	sizeLimit      int64 // bytes, 0 = disabled
 	readSystemKeys bool  // allow reading \xff system keys
 	// snapshotRywDisableNet is the NET (disables - enables) of the DB-level snapshot-RYW option.
-	// libfdb_c's DatabaseContext keeps a cumulative counter (snapshotRywEnabled++/--,
-	// NativeAPI.actor.cpp:2156/2160) that each new tx is seeded from (ReadYourWrites.actor.cpp:2082),
-	// so SetSnapshotRywEnable();SetSnapshotRywDisable() nets to 0 (still enabled) — a bool can't
-	// model that. applyTxDefaults replays this net onto the tx's own disable counter.
+	// libfdb_c's DatabaseContext keeps a cumulative SIGNED counter (int snapshotRywEnabled,
+	// DatabaseContext.h:681; ++/-- at NativeAPI.actor.cpp:2156/2160 and
+	// ReadYourWrites.actor.cpp:2591/2596) that each new tx is seeded from
+	// (ReadYourWrites.actor.cpp:2082) and which is tested as `<= 0` (:402). The threshold is
+	// signed and the counter may legitimately go NEGATIVE, so neither a bool nor a
+	// clamp-at-zero can model it: SetSnapshotRywEnable();SetSnapshotRywDisable() must net to 0
+	// (still enabled). applyTxDefaults replays this net onto the tx's own disable counter.
 	snapshotRywDisableNet int
 	bypassUnreadable      bool // DB default bypasses accessed_unreadable on each new tx (set-once flag)
 	causalReadRisky       bool // DB default sets the GRV causal-read-risky flag on each new tx (set-once flag)
@@ -91,9 +95,68 @@ type txDefaults struct {
 
 // internalDB wraps client.Database with a context for async operations.
 type internalDB struct {
-	inner      *client.Database
-	ctx        context.Context
-	txDefaults txDefaults
+	inner *client.Database
+	ctx   context.Context
+
+	// txDefaults is an IMMUTABLE snapshot published atomically.
+	//
+	// This is NOT thread confinement: in C++ (7.3.77) both fdb_database_set_option
+	// and fdb_database_create_transaction run on the CALLER's thread. The C shim
+	// passes straight through (bindings/c/fdb_c.cpp:611-617, :631-635);
+	// ThreadSafeDatabase::setOption validates and mutates isConfigDB caller-side and
+	// only DEFERS the DatabaseContext::setOption body via onMainThreadVoid
+	// (ThreadSafeTransaction.cpp:63-85), and createTransaction is entirely caller-side
+	// (:58-61).
+	//
+	// Coherence comes from a narrower mechanism, and it is the one worth porting:
+	// the deferred bodies are queued SAME-PRIORITY FIFO onto the network thread (the
+	// no-ordering warning at ThreadHelper.actor.h:69-70 is scoped to DIFFERING
+	// priorities; ThreadSafeTransaction.cpp:369 states the ordering guarantee), and
+	// the whole default list is bulk-copied in ONE non-yielding callback — the RYW
+	// constructor's std::copy of getTransactionDefaults()
+	// (ReadYourWrites.actor.cpp:1550-1557), which is not an ACTOR and so cannot yield
+	// mid-body. A transaction therefore sees the option list as it stood at one
+	// instant.
+	//
+	// Go has no equivalent: any goroutine may set a DB option while another starts a
+	// transaction. Publishing a whole snapshot (rather than per-field atomics) is what
+	// reproduces that bulk-copy property — a transaction must not pick up the new
+	// timeout alongside the old retry limit. Readers take one Load; they never hold a
+	// lock across the callouts into the client that apply the options.
+	//
+	// Note this is a property of the single-version path only. C++'s multi-version
+	// client is itself racy here: MultiVersionDatabase::createTransaction copies
+	// dbState->transactionDefaultOptions BY VALUE with optionLock NOT held
+	// (MultiVersionTransaction.actor.cpp:2122-2126) while setOption mutates it under
+	// that lock (:2129, :2143). Go implements no multi-version client, so there is
+	// nothing to reproduce or work around — but "libfdb_c is immune" is not a claim
+	// this code can rest on.
+	//
+	// nil means "nothing ever set" and reads as the zero txDefaults.
+	txDefaults atomic.Pointer[txDefaults]
+	// txDefaultsMu serializes the read-modify-write in the setters (the snapshot-RYW
+	// net counter is cumulative, so last-write-wins would lose increments).
+	txDefaultsMu sync.Mutex
+}
+
+// defaults returns the current immutable snapshot of the database-level
+// transaction defaults. Safe to call from any goroutine.
+func (d *internalDB) defaults() txDefaults {
+	if p := d.txDefaults.Load(); p != nil {
+		return *p
+	}
+	return txDefaults{}
+}
+
+// mutateDefaults applies fn to a COPY of the current defaults and publishes the
+// result atomically, so a concurrent defaults() reader sees either the whole old
+// snapshot or the whole new one — never a half-applied option.
+func (d *internalDB) mutateDefaults(fn func(*txDefaults)) {
+	d.txDefaultsMu.Lock()
+	defer d.txDefaultsMu.Unlock()
+	next := d.defaults()
+	fn(&next)
+	d.txDefaults.Store(&next)
 }
 
 // Database is a handle to a FoundationDB database.
@@ -389,7 +452,9 @@ func (db Database) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) 
 // applyTxDefaults applies database-level transaction option defaults.
 // Matches C++ FDB_DB_OPTION_TRANSACTION_* behavior.
 func (db Database) applyTxDefaults(t *transaction) {
-	d := &db.d.txDefaults
+	// One Load: every option below comes from the SAME snapshot, so a concurrent
+	// Options().SetXxx cannot split this transaction across two default sets.
+	d := db.d.defaults()
 	if d.timeout > 0 {
 		t.inner.SetTimeout(d.timeout)
 	}

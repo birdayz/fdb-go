@@ -209,6 +209,53 @@ Related: `pkg/docscheck`'s `TestNightlyRaceStepsDeclareTheirJobCount` currently 
 every race-instrumented nightly step to WRITE `--local_test_jobs`. If the tags land, that
 gate should be revisited — the point of the tags is that the number stops needing to be
 restated at each call site.
+## CI flake — `bazelscaleset` remote tests race their own fake `ssh` binary
+
+### [ ] Create the fake `ssh` once, before any parallel test starts forking
+
+MEASURED, 1 of 20 consecutive `GOWORK=off go test ./... -count=1` runs in
+`tools/bazelscaleset` (the `Test the standalone runner-supervisor module` step of the
+required `Build, Lint & Test` lane):
+
+```
+--- FAIL: TestRemoteLaunchArgvAndJitDelivery (0.01s)
+    remote_test.go:279: remote launch: remote launch on runner@<fake-host> failed (exit -1):
+    : fork/exec /tmp/TestRemoteLaunchArgvAndJitDelivery3456571678/001/ssh: text file busy
+```
+
+(The host is the test's dotted-quad placeholder, elided here only because
+`TestLivingDocsCiteCurrentJavaTarget` cannot tell a fake IP from a stale 4-part
+version string. Nothing else in the output is altered.)
+
+Mechanism: the test writes a fake `ssh` into its own temp dir, and a *parallel* test's
+`fork` duplicates the still-open write fd into a child that has not yet `exec`'d. O_CLOEXEC
+does not help — it clears at exec, so the fd is live for the whole fork→exec window — and
+Go's `ForkLock` is held across fork+exec by `os/exec` but is not taken by `os.OpenFile`.
+While any process holds a write fd, executing the file fails ETXTBSY. Same fork/exec race
+`startLocal` already retries past (`scaler.go`, and `copyFile`'s comment in `slots.go`
+describes the sibling unlink-first cure).
+
+**Do NOT "fix" this by adding a retry to `launchRemote`.** The missing retry is the correct
+discrimination, not an inconsistency:
+
+- `startLocal` execs `run.sh` out of a per-slot clone that this process itself wrote —
+  `slots.go` `copyFile` copies `run.sh` with its 0755 perms into every slot dir. ETXTBSY is
+  genuinely reachable in production there, which is why the retry exists and is pinned by
+  `TestStartLocalRetriesETXTBSY` (`lifecycle_test.go:623`).
+- `launchRemote` execs `/usr/bin/ssh`, which this tool never writes. A retry there could
+  never fire in production; it would exist solely to mask a test-harness race.
+
+Correct fix direction: build the fake `ssh` **once** — `sync.Once` or a `TestMain` step —
+into a shared dir, before any parallel test begins forking, so no write is ever concurrent
+with a fork. That removes the race at its source without putting unreachable code in the
+production path.
+
+**Not mutation-verified, and that is the first job.** It did not recur in 25 later runs, so
+at ~1/20 there is no reproducer on demand yet. Build the harness first (a deliberate write-fd
+hold on the fake `ssh` at exec time is how `TestStartLocalRetriesETXTBSY` forces the sibling
+shape), prove it red, then fix. Booking rather than fixing was a scope call, not a judgement
+that it is unimportant: it is live on a required lane.
+
 ## Wire divergence — first-or-default continuation bytes (blocked on Java issue 3220)
 
 ### [ ] Reconcile the RecordQueryFirstOrDefaultPlan continuation format with Java
@@ -248,6 +295,43 @@ which is how a Java-issued `[0x00]` would previously have been fed to the wrong 
 Java's, since it will finally be able to express the state. Until then the reachability bound
 is what keeps this benign: this continuation is internal to the Go paginating driver, and no
 cross-engine test exchanges it — if that ever changes, this entry becomes urgent.
+
+## FDB client — database transaction defaults are a struct, not C++'s ordered option list
+
+### [ ] Replay DB transaction defaults as an ordered option list, with TIMEOUT applied last
+
+Pre-existing divergence on the DB-defaults replay path, surfaced while fixing the
+`applyTxDefaults` data race (that fix was synchronization-only and left the replay order
+byte-for-byte unchanged, before and after — so this is not a regression from it).
+
+C++ stores the defaults as `UniqueOrderedOptionList<FDBTransactionOptions> transactionDefaults`
+(`DatabaseContext.h:717`) — a `std::list` of (option, value) pairs plus a `std::map` index, where
+`addOption` erases any prior entry and re-appends, i.e. **dedup by move-to-end**
+(`FDBOptions.h:91-111`). At transaction construction the whole list is replayed **one option at a
+time** in list order by `ReadYourWritesTransaction::applyPersistentOptions`
+(`ReadYourWrites.actor.cpp:2678-2696`).
+
+That replay singles out `TIMEOUT`: the loop **skips** it, and it is re-applied **last**, after every
+other option is installed. The rationale is in the source and is deliberate, not incidental:
+
+> Setting a timeout can immediately cause a transaction to fail. The only timeout that matters is
+> the one most recently set, so we ignore any earlier set timeouts that might inadvertently fail
+> the transaction.
+
+Go instead models the defaults as a fixed struct (`txDefaults` in `pkg/fdbgo/fdb/database.go`,
+`TransactionDefaults` in `pkg/fdbgo/client/database.go`) and applies them in **field order**, with
+`SetTimeout` **first** (`Database.applyTxDefaults`). Two behavioural consequences, not cosmetic
+ones:
+
+1. **The timeout clock starts before the other options are installed** rather than after, so the
+   window it measures differs from C++'s.
+2. **Set-order is not preserved.** A struct cannot express move-to-end dedup, so an option set
+   later cannot overtake one set earlier the way C++'s list guarantees.
+
+The port is the option list: keep an ordered, dedup-by-move-to-end list and replay it in order with
+TIMEOUT deferred to the end. Note the immutable-snapshot publication the race fix introduced must be
+preserved — a list is a reference type, so the snapshot has to be a genuine copy, not a shared
+header.
 
 ## FDB client — conflicting-keys readback (debugging surface + skew instrument)
 
@@ -2275,6 +2359,38 @@ closed rather than silently alter rows or output schema.
   pack to byte-identical tuple encodings, and the wrapper was defeating the
   SARG matcher's `AccessorNamePath` (only unwraps `*FieldValue` chains),
   degrading a BIGINT=INTEGER point lookup to a residual full scan.
+  **RE-INVESTIGATED AND REFUTED — do not re-open as "item #28".** A later
+  board carried this INT/LONG sub-finding forward as a live item, "Stop
+  INTEGER-to-LONG promotion killing index probes". Two things are wrong with
+  that line. (1) The number: this text is CQ-**27**; CQ-28 is the zero-valued
+  FLOAT/DOUBLE item further down and has nothing to do with INT/LONG. (2) The
+  tense: the defect was already fixed by the `sharesIntegerWireEncoding` skip
+  above, landed in `41ecb95d1` (#517) and on master. Measured at
+  `f648bb96e` on live FDB: all 25 cells of
+  `pkg/relational/sqldriver/int_long_sarg_matrix_probe_test.go` (literal and
+  correlated-column comparands × both directions × `=`,`>`,`>=`,`<`,`<=`)
+  produce an `IndexScan` with correct rows. The cells are split into two
+  NAMED groups so the count is honest at a glance rather than resting on a
+  comment: `mutation_proven` (10) go RED when the guard is removed;
+  `inert_regression` (15) stay GREEN with both guards removed and are
+  coverage against OTHER regressions, which their failure message says.
+  Verified per group, not asserted — dropping both guards yields exactly
+  `10 FAIL mutation_proven / 15 PASS inert_regression`, and dropping only
+  `sharesIntegerWireEncoding` reddens exactly the 5 `correlated_bigint`
+  cells while `long_literal` stays green behind the `IsConstantValue` early
+  return. The item's "both directions" framing is also wrong:
+  `maximumType(INT,LONG)` is LONG, so the wrapper always lands on the INT
+  side and costs the probe ONLY when the INT side is the indexed column —
+  `bigintCol = 5` promotes the literal and is structurally immune.
+  Java 4.12.11.0 is the loser here, not the spec to converge on: it injects
+  the promote unconditionally (`RelOpValue.java:209,217-218`; no INT/LONG
+  fast path in `PromoteValue.inject`, `PromoteValue.java:444-449`; no
+  simplification rule removes it) and its own checked-in baseline shows the
+  probe lost — `sql-functions.metrics.yaml:204`,
+  `ISCAN(T1_IDX1 <,>) | FILTER promote(_.COL3 AS LONG) EQUALS promote(@c9 AS LONG)`.
+  Go's guard is therefore a sanctioned read-side extension, recorded in
+  DIVERGENCES.md ("INT-vs-LONG stays sargable in Go"). The Java half of that
+  comparison is INFERRED from source plus that golden, not from a Java run.
   Pinned by `pkg/relational/sqldriver/negative_zero_index_sarg_probe_test.go`
   (rewritten to assert CORRECT behavior across `=`,`<>`,`<`,`<=`,`>`,`>=`,
   `IN`, `IS [NOT] NULL` on indexed DOUBLE and FLOAT — was the buggy-boundary
@@ -10649,6 +10765,47 @@ standing rule is that a finding without a booking is a finding that evaporates,
 so each is recorded here with its evidence refs, a size, and what "done" means.
 None is speculative: each was re-verified against the tree before booking.
 
+- [ ] **RFC-218 remainder — the leg-window re-anchor: a nested ORDER BY key over a
+  JOIN declines instead of planning.** · M · **query-engine change — needs a Graefe
+  ACK before merge**
+  RFC-218 fixed the projected-EXISTS fold for nested sort keys on a SINGLE-TABLE
+  source: the key carries its resolved path and the re-anchor re-states the root
+  ordinal in the flowed layout. The JOIN arm is NOT fixed — it declines with a
+  clean `0AF00`, because `rebaseOuterLegValueOrdinal`
+  (`left_outer_existential.go`) refuses multi-accessor paths outright
+  (`fv.Resolved.Single()`, `!single -> failed`). Exercised, both leg kinds:
+  `ok=false, unchanged` for a multi-accessor path, `ok=true` for a single-accessor
+  control.
+  WHY IT MUST BE BOOKED RATHER THAN LEFT TO THE TRIPWIRE: the test
+  `nested_key_over_a_join_declines_cleanly` asserts the refusal and tells a future
+  reader what to do when it changes, but a tripwire is a SENTINEL, not a booking —
+  it fires only if someone happens to fix the thing, and nothing schedules that.
+  DIVERGENCE FROM JAVA, still open: Java has no SQL-layer rejection for this
+  shape. It attempts the plan and fails downstream in `RemoveSortRule.onMatch`, so
+  Go's clean refusal is a divergence in FORM, not a narrower behaviour.
+  DONE = the JOIN arm plans, `nested_key_over_a_join_declines_cleanly` is replaced
+  by a row assertion (ids `[3 2 1]` ordered by `n.sk`), that arm mutation-reds
+  independently of the three single-table arms, and `existsSortSplit` stays at
+  `DIVERGED 0` on the UNFILTERED suite.
+  Refs: `rfcs/218-sort-keys-carry-resolved-paths-not-rendered-names.md` §5-RESULT;
+  `pkg/relational/sqldriver/nested_sort_key_fold_fdb_test.go`;
+  `pkg/recordlayer/query/plan/cascades/values/nested_root_reanchor_test.go`.
+
+- [ ] **RFC-218 adjacent — Go appends a hidden sort column where Java derives
+  instead (plan-shape only).** · S
+  Java's `Expression.canBeDerivedFrom` (`Expression.java:254-264`) decides
+  hidden-column membership via `Value.pullUp`, so `n.sk` IS derivable from a
+  projected `n` and Java appends NO hidden column. Go's `sortKeyInOutput`
+  (`cascades_translator.go`) uses exact `SemanticEqualsUnderAliasMap`, so
+  `{N}{SK} != {N}` and a column IS appended, named `"N"` — putting TWO fields named
+  `N` in the folded row, which is the duplicate-root layout the fold is documented
+  as able to manufacture from unambiguous SQL.
+  ROWS ARE CORRECT either way; this is shape, not a bug, and is pinned by
+  `struct_root_projected_still_orders_correctly_despite_the_extra_column`.
+  DONE = `sortKeyInOutput` matches Java's derivability, the extra column stops
+  being appended, and the pin is updated to assert the shape rather than only the
+  answer.
+
 - [x] **CQ-40 — two `LikeMatch` implementations disagreed. THE BOOKING HAD THE
   DIRECTION BACKWARDS: the "canonical" matcher was the wrong one.** · was S,
   actually M · **query-engine change — needs a Graefe ACK before merge**
@@ -12431,6 +12588,87 @@ None is speculative: each was re-verified against the tree before booking.
   (k.Value == nil && k.Pos > 0 arm), measured 0/2481 because
   upgradeSortKeyValues resolves positional keys upstream — pin THAT.
 
+
+  **SEQUENCING — RFC-215 LANDS FIRST, THEN THE CENSUS IS RE-RUN, THEN THIS.**
+  Evidence below verified on `origin/master` @ `a0958983a`; every count is
+  scoped to the command that produced it.
+
+  THE NUMBERS ABOVE ARE STALE, not merely imprecise. They were measured over a
+  tree in which every in-memory-sort ordering key is a `*FieldValue` BY
+  CONSTRUCTION, and RFC-215 removes that construction. The chain is unbroken
+  and still unconverted on master:
+
+    - `rule_implement_in_memory_sort.go:126-130` — a sort key that is not a
+      plain childless FieldValue gets `field = values.ExplainValue(sk.Value)`;
+      `:135` then writes BOTH into one struct,
+      `plans.SortKey{Field: field, …, ValueExpr: sk.Value}`.
+    - `ordering.go:796` — `keys[i] = &values.FieldValue{Field: sk.Field, …}`
+      keeps the rendering and drops `ValueExpr`. #653 merged RFC-215's RFC and
+      its instruments, NOT the fix; this line is unchanged on master.
+    - `plan_properties.go:326` → `:367` passes `o.Keys` unchanged into
+      `properties.NewRichOrdering`.
+    - `properties/rich_ordering.go` keys the ordering SET by
+      `values.ExplainValue(v)` — 11 occurrences
+      (`grep -c ExplainValue pkg/recordlayer/query/plan/cascades/properties/rich_ordering.go`),
+      the set contract stated at `:14` and `orderingKeyFor` opening with it at
+      `:365`.
+
+  So a key minted at `:796` is a `*FieldValue` whose `Field` is ALREADY a
+  rendering, and the ordering set renders it AGAIN. `plan_properties.go:367` is
+  simultaneously RFC-215's downstream consumer and the site this item names as
+  its dominant unaddressable producer (1218 keys): one defect, two
+  instrumentation points, one pipeline.
+
+  THE GATE IS UNSATISFIABLE UNTIL RFC-215 LANDS. `values.OrderingFieldPair`
+  (`column_identity.go:221-225`) is a pure Go type test — `a.(*FieldValue)` on
+  both sides and nothing else. A `:796` key for an arithmetic sort expression
+  IS a `*FieldValue` by type while carrying `(q$3728.K#1 + q$3728.K#5)`, so
+  under this item's binding condition — dispatch by VALUE TYPE, the FieldValue
+  arm returning identity-or-DECLINE and never falling through to structural —
+  it DECLINES, though it denotes an `ArithmeticValue` that belongs on the
+  structural arm. Today `orderingValuesEqualIn`
+  (`abstract_data_access_rule.go:1103-1115`) does fall through, which masks it;
+  closing that fall-through is precisely what this item does. "Decline must
+  measure zero before implementing" therefore cannot be reached while the
+  producer misrepresents the type.
+
+  THE ORDER, then:
+    1. RFC-215's conversion lands (`HintOrdering` carries `sk.ValueExpr`).
+    2. `ordering_identity_decisions_test.go`'s corpus census is RE-RUN, to
+       re-derive the FieldValue/structural split and the decline count against
+       the CONVERTED tree.
+    3. This item is implemented against numbers describing the tree it will
+       actually run on.
+
+  WHAT MOVES AND WHAT DOES NOT. The 94.8% FieldValue-arm figure partitions a
+  population RFC-215 redistributes: arithmetic sort keys relocate from the
+  FieldValue population into the structural one, which are exactly the two
+  sides of that percentage. The 126 `*RecordTypeValue` discriminators are
+  themselves untouched — they never pass through `:796` — but their DENOMINATOR
+  is not, so "126 of N" changes even though 126 does not.
+
+  WHAT THIS IS NOT: a joint scope. Different files, different producers, and
+  RFC-215 is strictly smaller and strictly upstream. RFC-215's producer is
+  `RecordQueryInMemorySortPlan.HintOrdering()` — a physical plan's PROVIDED
+  ordering. This item's comparator is `orderingValuesEqual`, on the data-access
+  MATCH path; its non-test callers are `abstract_data_access_rule.go:1020` and
+  the recursive `:1119`, both via `orderingValuesEqualIn`, with the `:1093`
+  wrapper called only from tests
+  (`grep -rn "orderingValuesEqual" pkg/ | grep -v _test.go`). They are not one
+  producer under two names. What they share is the MEASUREMENT — they converge
+  downstream at `ExplainValue`-keyed set membership — not the implementation.
+
+  OPEN QUESTION, recorded as open rather than resolved: does RFC-215's F3
+  population — the 599 ordinary dotted mints from
+  `cascades_translator.go:6940`, `cascades_translator.go:6628` and
+  `pullup.go:76` — overlap this item's territory? The evidence is PARTIAL and
+  the disambiguation was not finished. What is known: one of the two translator
+  sites mints from `k.Expr`, which is sort-key-shaped and would be this item's
+  territory; the other sits inside a `for i, col := range p.Projections` loop,
+  which is projection territory and would not be. That is one site classified
+  either way and one unexamined (`pullup.go:76`). Finish it by measurement —
+  the mint census already captures these three producers by stack — and do NOT
+  settle it by inference from the two data points above.
 - [ ] **CQ-59 (M, gated) — GroupByExpression.GetResultValue returns the INPUT
   row where Java constructs the grouping+aggregate output row**
   (GroupByExpression.java:129,:756-759 vs Go's inner.GetFlowedObjectValue()).
@@ -13615,6 +13853,49 @@ None is speculative: each was re-verified against the tree before booking.
   equivalent to hang the validator off, or whether the dispatch's type switch is
   the de facto registry — if the latter, that is the thing to give a validate
   entry point rather than inventing a second list that can drift from it.
+
+- [ ] **CQ-99 (SMALL, bounded SEARCH — RFC-197): does Go have an output type
+  whose column name comes from a RENDERED value, fenced only by the order its
+  callers happen to run in?** This is a search with a defined stopping point, not
+  an open-ended audit, and it is booked rather than answered because no grep run
+  so far has been scoped widely enough for its negative to mean anything.
+
+  **Where it comes from.** Closing the `contract:` bucket rested on Java keeping
+  no name where Go renders one. That is right about aggregates — an unaliased
+  aggregate is `Column.unnamedOf` (`GroupByExpression.java:754`) surfacing as the
+  positional `_0` (`Expressions.java:251-253`, `Type.java:2645-2651`) — but the
+  general form "Java never renders an expression into a column name" is FALSE and
+  should not be carried forward. `Star.java:178-179` renders one:
+  `expression.getUnderlying().toString()` installed as a `StructType` FIELD NAME,
+  reached from all three `Star` factories.
+
+  What keeps it out of result metadata is CALL ORDER. `Expressions.expanded()`
+  (`Expressions.java:79-84`) flattens every `Star` before any
+  `LogicalOperator.output` is built — the expansion runs at
+  `LogicalOperator.java:397, 436, 473, 531, 651` — and `underlyingAsColumns()`
+  (`Expressions.java:269-287`) has no rendering fallback at all: the name is an
+  `Optional` and stays empty when absent. So Java's guarantee is DISCIPLINE, not
+  construction, and the Go-side consequence is to look for the FENCE rather than
+  for an absence.
+
+  **The work.** Enumerate every Go site that derives an output column name and
+  classify each as (a) name-as-data carried from construction, (b) rendered but
+  structurally unable to reach metadata, or (c) rendered and fenced only by call
+  order. Any (c) is the same pathology as `values.go`'s `explainValueOrdinals` —
+  one declaration serving display and naming, separated by convention — which is
+  already ruled STOP on the `.Field` ratchet for exactly that reason.
+
+  **What makes this hard to grep, stated so the next person does not read a thin
+  search as a clean result.** Go carries `Star` as a BOOLEAN on
+  `logical.AggregateCall` rather than as an expression node, so there is no
+  structural mirror of `Star.java` to search for, and an inconclusive sweep of
+  `expr.go` has already been run and correctly declined to assert its negative.
+  The honest search is over name-DERIVING sites (`ColumnNameValue`,
+  `ExplainValue`, `ProjectionColumnName`, `OutputColumnName` and their callers),
+  not over a Go `Star`.
+
+  Deliverable: the classification, plus a test for every (c) found — and if the
+  answer is genuinely zero, a pinned negative saying what re-arms it.
 
 - [ ] **CQ-69 (L, multi-phase, per-phase gates) — build the RFC-201 layered test
   corpus ladder.** Design: `rfcs/201-layered-test-corpus.md` (merged, #542),
@@ -15643,10 +15924,13 @@ None is speculative: each was re-verified against the tree before booking.
     and the corollary that the reader takes it was wrong — derivation is not
     readership.
 
-    **The corrected target is a RETITLING**, and it is UNREVIEWED: the inner leg's
+    **The corrected target is a RETITLING** (producer corrected again in RFC-212
+    §11.3 to `scalarSubqueryOrdinalSeed`, the SINGLE-SOURCE outer seed —
+    attribution measured, both witnesses), UNREVIEWED: the inner leg's
     flowed column is named by the subquery's OUTPUT TITLE
-    (`clusteredOuterOrdinalSeed`'s `innerType := &RecordType{Fields:
-    [{Name: scalarCol}]}`), and a title that already contains a dot arrives at the
+    (`scalarSubqueryOrdinalSeed`'s `innerType := &RecordType{Fields:
+    [{Name: scalarCol}]}`; the same shape in `clusteredOuterOrdinalSeed` is NOT
+    what the corpus drives to this reader), and a title that already contains a dot arrives at the
     dotted arm indistinguishable from a leg-qualified reference. Do NOT implement
     before its own Graefe+Torvalds lap — the target changed, so the gate applies
     again.

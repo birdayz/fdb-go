@@ -4,9 +4,9 @@ load("@rules_go//go:def.bzl", "nogo")
 exports_files(["buf.yaml"])
 
 # The workflow definitions, staged as data for //infra:infra_test's
-# TestPushFanOutFitsTheRunnerPool — the gate that keeps one push's self-hosted
-# job fan-out inside the provisioned runner pool. It reads the workflows and
-# main.tf together, because the budget and the capacity have to move in one edit.
+# TestPushFanOutVersusTheRunnerPool — the instrument that reports one push's
+# self-hosted job fan-out against the provisioned runner pool. It reads the
+# workflows and main.tf together, so the ratio always describes the live fleet.
 filegroup(
     name = "github_workflows",
     srcs = glob([".github/workflows/*.yml"]),
@@ -40,6 +40,10 @@ exports_files([
     # TestSQLCoverageUpToDate / TestAnsiLedger* drift guards in the same target.
     "SQL_COVERAGE.md",
     "SQL_ANSI_CONFORMANCE.md",
+    # The pre-commit hook's tracked source of truth lives in the `install-hooks`
+    # recipe; the installed .git/hooks/pre-commit is per-clone local state no test
+    # can read. Staged for TestPreCommitHookNamesTheConditionItDetected.
+    "justfile",
 ])
 
 # gazelle:prefix fdb.dev

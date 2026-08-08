@@ -2,8 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -30,6 +35,89 @@ func hangingTemplateRunner(t *testing.T) string {
 	return dir
 }
 
+// killGroupAndWait tears a launched runner's process group down and does not
+// return until the group is GONE.
+//
+// Requesting death is not observing it: kill(2) returns once the signal is
+// queued, not once the target has died and dropped its file descriptors. A
+// cleanup that only signals therefore hands the rest of the run a process that
+// is still holding everything it inherited. Measured on this suite: after
+// signal(15); signal(9) the group was still alive on 40 of 40 launches, and the
+// stragglers (run.sh and its sleep) were caught at test-binary exit still
+// holding the binary's stdout pipe — which is what makes cmd/go sit out its 60s
+// WaitDelay and print "Test I/O incomplete" after every test has passed.
+//
+// ESRCH is reachable here because the scaler's own wait() goroutine reaps the
+// group leader; without that reap the leader would linger as a zombie, which
+// still answers kill(pgid, 0) with nil. Measured time to ESRCH: ~1ms worst case.
+func killGroupAndWait(t *testing.T, proc runnerProc) {
+	t.Helper()
+	proc.signal(syscall.SIGTERM)
+	proc.signal(syscall.SIGKILL)
+	pgid := proc.pid()
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		if err := syscall.Kill(-pgid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if time.Now().After(deadline) {
+			// Two very different faults reach this line and they need opposite
+			// investigations, so name which one happened rather than asserting the
+			// livelier-sounding of the two. A zombie leader inherits nothing and
+			// holds no descriptors: it means the reap this helper depends on stopped
+			// happening, not that a process is still running with our stdout.
+			t.Errorf("process group %d still present 10s after SIGKILL: %s", pgid, groupLingerReason(pgid))
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// groupLingerReason explains why a signalled process group is still present,
+// distinguishing the two faults that keep kill(-pgid, 0) from returning ESRCH.
+//
+// The leader's state is field 3 of /proc/<pid>/stat, read after the trailing
+// ')' of field 2 because comm is parenthesised and may itself contain spaces
+// or a ')'.
+func groupLingerReason(pgid int) string {
+	raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pgid), "stat"))
+	if err != nil {
+		return "the leader is gone but some group member is not; a member still running holds " +
+			"every descriptor it inherited from this binary and stalls cmd/go for its full WaitDelay"
+	}
+	state := ""
+	if i := strings.LastIndexByte(string(raw), ')'); i >= 0 {
+		if f := strings.Fields(string(raw)[i+1:]); len(f) > 0 {
+			state = f[0]
+		}
+	}
+	if state == "Z" {
+		return "the leader is a ZOMBIE, so nothing is holding this binary's descriptors and " +
+			"cmd/go is not at risk. What broke is the reap this helper relies on: the scaler's " +
+			"wait() goroutine must call Wait on the leader, and a zombie answers kill(pgid, 0) " +
+			"with nil forever, so this poll can never reach ESRCH. Look at wait(), not at a survivor"
+	}
+	return fmt.Sprintf("the leader is in state %q — still running, holding every descriptor it "+
+		"inherited from this binary and stalling cmd/go for its full WaitDelay", state)
+}
+
+// silenceChildOutput points a scaler's locally launched runners at /dev/null.
+//
+// Every test scaler gets this, and it is the structural half of the fix that
+// killGroupAndWait is the behavioural half of. A cleanup can only protect the
+// tests that remember to call it, and it cannot protect a path that leaves via
+// t.Fatal before the runner is tracked; sending child output somewhere this
+// process does not depend on means a straggler is a leaked process rather than
+// a corrupted stream and a stalled cmd/go.
+func silenceChildOutput(t *testing.T, s *Scaler) {
+	t.Helper()
+	devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = devnull.Close() }) // exec dup'd it into the child already
+	s.childOut, s.childErr = devnull, devnull
+}
+
 // newWatchdogScaler builds a local-only scaler with a fast terminal watchdog.
 func newWatchdogScaler(t *testing.T, client scalerClient, pool *slotPool) *Scaler {
 	t.Helper()
@@ -42,6 +130,7 @@ func newWatchdogScaler(t *testing.T, client scalerClient, pool *slotPool) *Scale
 		jobTerminalGrace: 150 * time.Millisecond,
 	}
 	s := newScaler(discardLogger(), client, 1, cfg, pool)
+	silenceChildOutput(t, s)
 	s.terminalPoll = 40 * time.Millisecond
 	return s
 }
@@ -65,7 +154,7 @@ func launchOne(t *testing.T, s *Scaler, pool *slotPool) *runner {
 	if r == nil {
 		t.Fatal("no running runner tracked")
 	}
-	t.Cleanup(func() { r.proc.signal(15); r.proc.signal(9) })
+	t.Cleanup(func() { killGroupAndWait(t, r.proc) })
 	return r
 }
 

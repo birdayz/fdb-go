@@ -62,9 +62,12 @@ func TestDottedRowTypeProducerCensus_ClassifiesBothDirections(t *testing.T) {
 	}
 }
 
-// The floor's failure text has to say what a collapse re-arms, because the
-// census's usable finding is a ZERO and an unreached zero prints identically to
-// a measured one.
+// The floor's failure text has to say what a collapse re-arms. The census's
+// finding is already in and it is NOT a zero — DOTTED came back 683 and 841 over
+// two full-corpus runs, so this path IS the producer of the dotted row. What the
+// floor still guards is the READING: an unreached counter prints identically to a
+// measured one, so a collapse would silently un-measure the producer set rather
+// than report a quiet corpus.
 func TestDottedRowTypeProducerCensus_FloorSaysWhatItReArms(t *testing.T) {
 	t.Parallel()
 	var b strings.Builder

@@ -107,6 +107,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	values.ResetFieldValueMintCensus()
 	values.ResetOrderingBridgeDottedCensus()
 	values.ResetDottedRowTypeProducerCensus()
+	values.ResetDottedWitnessAttribution()
 	values.ResetQualifierRecoveryCensus()
 	cascades.ResetFoldStep1SeedCensus()
 	corequery.ResetUnnestLegMintCensus()
@@ -192,9 +193,15 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// it is a second producer of the row a leg-table population would target.
 	// refineRowTypes declines a populated table against an empty one, so the
 	// producer SET is what decides where that population may be attached.
+	// RFC-212 §10.3 DELIVERABLE 1, gate-before-conversion: which producer named
+	// the leg-type column each dotted-arm answer comes from. Decided BY IDENTITY
+	// (owner correlation), not by name match.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedWitnessAttribution())
+	if failed := assertDottedWitnessAttributionCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedRowTypeProducerCensus())
-	if failed := values.AssertDottedRowTypeProducerCensus(os.Stderr,
-		&values.DottedRowTypeProducerFloor{Derivations: 100}); failed && code == 0 {
+	if failed := assertDottedRowTypeProducerCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", corequery.FormatUnnestLegMintCensus())
@@ -202,6 +209,11 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 		executor.LegColumnProvenanceDottedNames()); failed && code == 0 {
 		code = 1
 	}
+	// The RFC-213 payoff census: how often a consumer that must decide on a plan's
+	// result type is handed an UNRESOLVED one and declines. Declining is invisible
+	// — it costs a proof or an optimization, never a wrong row — so the size of the
+	// loss has to be counted rather than argued.
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatUnresolvedResultTypeCensus())
 	if failed := assertDottedLegQualifierCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
@@ -256,6 +268,14 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	}
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatProjectionMergeCensus())
 	if failed := assertProjectionMergeCensus(os.Stderr); failed && code == 0 {
+		code = 1
+	}
+	// RFC-213: the consumers must stay REACHED. There is no zero to defend — the
+	// unresolved reads ARE the defect and their count is a measurement, not a
+	// contract — but if these sites go dark, a later "unresolved is 0" would be
+	// indistinguishable from having fixed it. Floored an order of magnitude below
+	// the measured 15,909 classified reads.
+	if failed := assertUnresolvedResultTypeCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
 	return code
@@ -689,6 +709,22 @@ var legLocalBakeFloors = cascades.LegLocalBakeFloors{
 // legColumnProvenanceFloors is the minimum population the leg-column provenance
 // census must report over the whole suite.
 //
+// RETIREMENT MEASURED, AND IT IS A DRAIN RATHER THAN A REROUTE. RFC-212 §11.3
+// retitled the producer and the dotted arm went from 2 answers to 0. The
+// statistic that separates those two readings is flatHit, which was 120 on ALL
+// FIVE of the runs enumerated below — the one number on this census that did not
+// move while the call total swung by nearly 300 — and is now 122. Exactly +2,
+// exactly the two dotted hits that disappeared, landing in the arm they must land
+// in when the name stops splitting: the FLAT lookup answers them instead. A
+// reroute would show no compensating +2 in any sibling arm.
+//
+// The drift also runs the SAFE way. The AFTER run reported 2534 calls, inside the
+// magnitude below; the BEFORE run reported 1174, an unexplained low outlier at
+// less than half the band floor — and NOT a narrowed run (no -test.run, and the
+// harness printed none of its narrowing notices). So the zero was measured on the
+// LARGER population, 2.16x the before side, which is the direction that cannot
+// manufacture a zero.
+//
 // RE-MEASURED over this corpus, 2026-08-06: dotted hits available 2 (`C.CV`,
 // `I.QTY`), unstated 0, diverged 0 — STABLE across five full-suite runs. The
 // CALL total is not stable and is quoted as a MAGNITUDE, ≈2.4–2.7k: 2394, 2474,
@@ -730,9 +766,42 @@ var legLocalBakeFloors = cascades.LegLocalBakeFloors{
 // separately from Calls because the non-dotted arms carry all but 2 of the
 // calls, so the
 // denominator can look healthy while the arm the census exists for goes silent.
+// RFC-212 §11.3 RETITLED the producer, and the dotted arm now answers ZERO
+// times over the whole corpus (measured: available 2 -> 0). The
+// DottedHitIdentityAvailable FLOOR is therefore retired with the population it
+// guarded — it is unsatisfiable by construction now, and a floor that cannot be
+// met is a build break rather than a guard.
+//
+// THE DANGEROUS DIRECTION HAS FLIPPED, and that is the whole point: this
+// population was watched for COLLAPSE while the arm was live, because a zero read
+// like good news. Now zero IS the news, so growth is the alarm — a non-zero means
+// some producer is again naming a leg type's column with a dot-containing title,
+// and the arm the retitling emptied is answering again. AssertLegColumnProvenanceCensus
+// holds that at a hard zero; only the Calls floor remains, because the reader
+// itself is still live on its FLAT arm and a census reaching it zero times would
+// make that zero vacuous.
 var legColumnProvenanceFloors = executor.LegColumnProvenanceFloors{
-	Calls:                      1,
-	DottedHitIdentityAvailable: 1,
+	// A MAGNITUDE, not a liveness check. Calls is the floor that forecloses
+	// "the producers register and the reader is dark" — the state in which the
+	// hard zero above reads clean over an evaporated population. At 1 the reader
+	// could run three times and the retirement would still report as measured.
+	//
+	// 100 — AND THE FIRST NUMBER TRIED HERE WAS 1000, WHICH A RUN REFUTED WITHIN
+	// ONE REBASE. The reasoning for 1000 was that it sat "comfortably under" the
+	// ≈2.4–2.7k band and the 1174 low outlier; the very next full run reported
+	// 574 and the floor fired spuriously. Observed across every full run this
+	// path has recorded: 574, 1174, 1914, 2394, 2474, 2534, 2554, 2554, 2674 — a range
+	// of nearly 5x, on an unchanged corpus.
+	//
+	// So this population is far less stable than the band above suggests, and a
+	// floor set just under the observed minimum is a floor set to fire. 100 is an
+	// order of magnitude below the lowest reading and still ~30x above what an
+	// evaporated population looks like (a handful of calls), which is the only
+	// state it exists to catch. The lesson is the one the enumeration note two
+	// paragraphs up already states, re-learned on the guard rather than on the
+	// quote: a bounded-looking number for an unbounded quantity decays into a
+	// wrong one.
+	Calls: 100,
 }
 
 // assertLegColumnProvenanceCensus checks the provenance census, dropping the

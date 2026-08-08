@@ -48,6 +48,7 @@ go_test(
         "ansiledger_test.go",
         "coverage_internal_test.go",
         "coverage_test.go",
+        "diff_struct_test.go",
         "featurematrix_test.go",
         "load_strict_test.go",
         "runner_report_test.go",
@@ -69,6 +70,8 @@ go_test(
     embed = [":yamsql"],
     tags = ["resources:memory:700"],
     deps = [
+        "//pkg/relational/api",
+        "//pkg/relational/core/rowstruct",
         "//pkg/relational/sqldriver",
         "//pkg/testcontainers/foundationdb",
     ],

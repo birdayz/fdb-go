@@ -453,6 +453,44 @@ inverted entries got written in the first place.
 - **F4** — per-consumer attribution census; prerequisite for retiring any `dotted`
   entry.
 
+## 8.3 A second item is waiting on this conversion
+
+**CQ-55 AMENDMENT 2 is blocked on this RFC, and whoever implements §5 should know
+that before starting** — the re-measurement it needs is a deliverable of this
+work, not an afterthought someone discovers later.
+
+CQ-55-A2 rules that an ordering key is a VALUE, dispatched by value type, with the
+FieldValue arm returning identity-or-DECLINE and never falling through to
+structural. Its binding condition is that the decline count measures zero before
+implementation. **That condition is unsatisfiable while `ordering.go:796` stands.**
+`values.OrderingFieldPair` (`column_identity.go:221-225`) is a pure Go type test,
+and a `:796` key for an arithmetic sort expression IS a `*FieldValue` by type while
+denoting an `ArithmeticValue` — so it lands on the FieldValue arm and declines,
+when it belongs on the structural one. Today `orderingValuesEqualIn`
+(`abstract_data_access_rule.go:1103-1115`) falls through and masks this; closing
+that fall-through is exactly what CQ-55-A2 does.
+
+The two items also share a downstream consumer, which is why one conversion moves
+both sets of numbers: `plan_properties.go:326` → `:367` hands `o.Keys` to
+`properties.NewRichOrdering`, and `rich_ordering.go` keys the ordering SET by
+`values.ExplainValue(v)`. A key minted at `:796` therefore carries a rendering and
+is then rendered again. `plan_properties.go:367` is this RFC's downstream consumer
+and CQ-55-A2's dominant unaddressable producer at once.
+
+**Consequence for CQ-55-A2's numbers:** its 94.8% FieldValue-arm figure partitions
+a population in which every in-memory-sort ordering key is a `*FieldValue` by
+construction. This conversion relocates arithmetic keys into the structural
+population — the other side of that same percentage — so the split must be
+re-derived, not adjusted. Its 126 `*RecordTypeValue` discriminators are untouched
+(they never pass through `:796`) but their denominator is not.
+
+They are NOT a joint scope: different files, different producers, this RFC strictly
+smaller and strictly upstream. What they share is the measurement.
+
+Verified on `origin/master` @ `a0958983a`. The sequencing and the open question
+about F3's overlap with CQ-55-A2's territory are recorded on the CQ-55 AMENDMENT 2
+entry in `TODO.md`.
+
 ## 9. Review
 
 Query-engine change (planner ordering properties, plan selection). Requires a

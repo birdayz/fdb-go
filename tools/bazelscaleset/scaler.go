@@ -79,6 +79,23 @@ type Scaler struct {
 
 	pool *slotPool
 
+	// Where a locally launched runner's stdout/stderr go. These are fields
+	// rather than a hard-wired os.Stdout/os.Stderr because the destination is
+	// inherited by a long-lived child that this process does not control the
+	// lifetime of. Under `go test`, os.Stdout IS the pipe cmd/go reads to learn
+	// that the test binary has finished: a runner outliving the test keeps that
+	// pipe open, so cmd/go waits out its 60s WaitDelay and reports "Test I/O
+	// incomplete" on a run whose every test passed. A launcher must therefore
+	// let its caller say where child output goes; a caller that cannot say is
+	// forced to clean up perfectly or corrupt an unrelated process's stream.
+	//
+	// *os.File rather than io.Writer on purpose: exec passes a file's descriptor
+	// to the child directly, whereas any other writer makes it create a pipe and
+	// a copier goroutine, changing when Wait returns. A nil value sends the
+	// stream to /dev/null.
+	childOut *os.File
+	childErr *os.File
+
 	nonce int64         // per-process base for runner names (unique across restarts)
 	seq   atomic.Uint64 // monotonic suffix for runner names
 
@@ -135,6 +152,8 @@ func newScaler(logger *slog.Logger, client scalerClient, scaleSetID int, cfg *co
 		runnerBase:        filepath.Clean(cfg.runnerDir),
 		adoptPoll:         5 * time.Second,
 		pool:              pool,
+		childOut:          os.Stdout,
+		childErr:          os.Stderr,
 		nonce:             time.Now().Unix(),
 		running:           make(map[string]*runner),
 	}
@@ -295,14 +314,31 @@ func (s *Scaler) launch(ctx context.Context, sl *slot) error {
 // file fails with "text file busy" — the well-known Go fork/exec race. The
 // window is microseconds; a bounded retry is the standard cure. A Cmd is not
 // reusable after a failed Start, so each attempt builds a fresh one.
+//
+// The retry stays even though the write side is fixable elsewhere. Callers that
+// write a file they will exec can close the window outright, by writing before
+// anything forks or by holding syscall.ForkLock across the write. Neither
+// transfers here: cloneRunnerDir copies the whole runner tree on every startup,
+// deliberately while live runners are running, so the write cannot be hoisted
+// ahead of the forks, and holding ForkLock for the length of a full-tree copy
+// would stall every launch in the process for as long as the copy takes. This
+// is the one exec whose write genuinely cannot be taken out of the racing
+// window, which is why it is also the only one that retries.
 func (s *Scaler) startLocal(sl *slot, jitConfig string) (runnerProc, error) {
 	var err error
 	for deadline := time.Now().Add(2 * time.Second); ; {
 		cmd := exec.Command(filepath.Join(sl.runnerDir, "run.sh"))
 		cmd.Dir = sl.runnerDir
 		cmd.Env = append(os.Environ(), "ACTIONS_RUNNER_INPUT_JITCONFIG="+jitConfig)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		// Assigned only when non-nil: cmd.Stdout is an io.Writer, so storing a
+		// nil *os.File in it yields a non-nil interface holding a nil pointer,
+		// which slips past exec's "== nil means /dev/null" check and dereferences.
+		if s.childOut != nil {
+			cmd.Stdout = s.childOut
+		}
+		if s.childErr != nil {
+			cmd.Stderr = s.childErr
+		}
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if err = cmd.Start(); err == nil {
 			return &localProc{cmd: cmd, logger: s.logger}, nil

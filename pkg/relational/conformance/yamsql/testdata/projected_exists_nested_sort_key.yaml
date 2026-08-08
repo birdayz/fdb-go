@@ -1,0 +1,99 @@
+# projected_exists_nested_sort_key.yaml
+#
+# The projected-EXISTS fold crossed with a NESTED `ORDER BY` key (RFC-218).
+#
+# WHY THIS FILE EXISTS AT ALL: before it, the plan-shape corpus contained
+# 2506 queries and ZERO of them projected an EXISTS into the SELECT list, so
+# `TestPlanShapeGolden` was structurally incapable of seeing a change to that
+# fold — a green there was absence of coverage, not evidence of safety. Beware
+# a greedy re-derivation of that count: taking the select list as
+# `SELECT.*FROM` runs to the LAST `FROM` (inside the subquery) and reports 119
+# false hits; the select list ends at the FIRST `FROM`, and the non-greedy form
+# `SELECT.*?FROM` reports the true 0. The pattern matches 2373 lines overall,
+# so the zero is a real zero and not a broken pattern.
+#
+# `n.sk` resolves to ONE FieldValue whose Field is the struct ROOT (`N`) and
+# whose resolved path is `[N, SK]`. Re-deriving the key from a RENDERED name
+# yields either `N` (sorting by the whole struct) or `T1.N.SK` (whose last-dot
+# split yields `SK`, a column no row has). The fold carries the resolved path
+# and re-states its ROOT ordinal in the layout it evaluates against.
+#
+# THE ORDER IS THE ASSERTION, AND IT DISCRIMINATES. `sk` is ANTI-correlated
+# with `id` (50,40,30 as id goes 1,2,3) while `co` is correlated (1,2,3), so
+# ordering by `n.sk` yields ids [3 2 1] while ordering by `id`, by `n.co`, or
+# by whatever slot a mis-derived root ordinal lands on yields [1 2 3]. A
+# single-member struct would have made `ORDER BY n` and `ORDER BY n.sk`
+# indistinguishable.
+name: projected_exists_nested_sort_key
+schema_template: |
+  CREATE TYPE AS STRUCT nst (sk BIGINT, co BIGINT)
+  CREATE TABLE t1 (id BIGINT, n nst, PRIMARY KEY (id))
+  CREATE TABLE t2 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t3 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t1 VALUES (1, (50, 1)), (2, (40, 2)), (3, (30, 3))
+  - INSERT INTO t2 VALUES (100, 1), (200, 3)
+  - INSERT INTO t3 VALUES (900, 1), (901, 2), (902, 3)
+tests:
+  # Shape 1 — the nested key is NOT projected. The fold must append it as a
+  # hidden column and drop it again in the cleanup projection.
+  - query: |
+      SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h
+      FROM t1 ORDER BY n.sk
+    rows:
+      - [3, true]
+      - [2, false]
+      - [1, true]
+
+  # Shape 2 — the struct ROOT is also projected. A distinct failure mode: this
+  # one broke as a planning error, not as the struct-comparison error above.
+  - query: |
+      SELECT id, n, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h
+      FROM t1 ORDER BY n.sk
+    rows:
+      - [3, [30, 3], true]
+      - [2, [40, 2], false]
+      - [1, [50, 1], true]
+
+  # Shape 3 — the projected root is ALIASED, so it cannot be matched to the
+  # sort key by output name even incidentally.
+  - query: |
+      SELECT id, n AS nn, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h
+      FROM t1 ORDER BY n.sk
+    rows:
+      - [3, [30, 3], true]
+      - [2, [40, 2], false]
+      - [1, [50, 1], true]
+
+  # THE JOIN ARM DECLINES, AND THE DECLINE IS THE PIN. A nested key over a
+  # merged row needs the leg-window re-anchor, which refuses multi-accessor
+  # paths today, so the fold bails and the query is rejected as unsupported
+  # rather than planned with a key that reads a pre-merge ordinal against the
+  # merged row. Recording the decline here is what makes a future SILENT
+  # regression to a wrong-order plan visible: if this ever returns rows, the
+  # re-anchor has landed and this becomes ids [3 2 1].
+  #
+  # This stanza is also what first REACHED the RFC-141 §8 guards from the
+  # plan-shape harness: no corpus query projected an EXISTS before it, so the
+  # SELECT harness had been skipping both halves of the guard unnoticed while
+  # its DML twin ran them. It planned this query — recording, under an
+  # error-pinned stanza, a plan carrying an ExistsValue whose binding is dead.
+  # The harness now runs the guards production runs, so the golden records the
+  # same decline the driver gives here.
+  - query: |
+      SELECT t1.id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h
+      FROM t1 JOIN t3 ON t3.t1_id = t1.id ORDER BY n.sk
+    error_code: "0AF00"
+
+  # CONTROL — a projected EXISTS whose ORDER BY key is a SINGLE accessor and
+  # is already in the output. No hidden column is appended, so no cleanup
+  # projection wraps the fold. Without this the shape assertions above could
+  # hold for a reason unrelated to hidden columns.
+  - query: |
+      SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h
+      FROM t1 ORDER BY id
+    plan_not_contains: "Project("
+    rows:
+      - [1, true]
+      - [2, false]
+      - [3, true]
