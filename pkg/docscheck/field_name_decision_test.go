@@ -344,7 +344,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// than argument: name and ordinal answered identically on all 8358
 	// aggregate operands the relational suite produces.
 
-	// contract (10)
+	// contract (11)
 	//
 	// The four `contract:` entries below with a `normalizeAggOutputName` note
 	// were INVISIBLE when this bucket was sized, and their absence is the
@@ -677,6 +677,8 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/query/cascades_translator.go # legWindowSlot # a EqualFold call via local qual derived from the name # 1":          {1, "translator: QUALIFIER match inside legWindowSlot -- the leg the qualifier selects, matched against leg.Name TEXT. Reached through a plain string parameter, and tainted by the SPLITTING caller only: the converted projection path passes ref.Qualifier (parse-tree segments, not a display name) and does not taint it. So this entry is precisely the un-migrated channels' debt, and it retires when the last caller stops slicing a rendered name. The comparison itself converts separately, when the leg table is matched by identity rather than by Name"},
 	"pkg/relational/core/query/cascades_translator.go # legWindowSlot # a EqualFold call via local leaf derived from the name # 1":          {1, "translator: LEAF match inside legWindowSlot -- the column within the selected leg window, by name. Same parameter provenance as :6070, and the half that was never on the ratchet at all before the call-boundary taint: it was the LEAF of an identifier whose qualifier half was recorded, which is the split-across-buckets misfiling the dotted-bucket note describes"},
 
+	"pkg/recordlayer/query/plan/cascades/values/values.go # (FieldPath).ReAnchorRootInto # a == comparison # 1": {1, "contract: the nested-key re-anchor derives a root ordinal by matching the carried root accessor NAME against the flowed layout (RFC-218). It is debt by construction and the RFC says so: the correct discriminator is leg IDENTITY -- which correlation the root belongs to, against which leg each merged slot came from -- and the name is a stand-in until a caller supplies it. What keeps it honest meanwhile is that it DECLINES on a duplicate name rather than first-matching, so the failure is a refused fold and never a wrong-column read; RecordType.FieldIndex would have first-matched. Retires when the merged layout carries per-slot leg provenance the re-anchor can match on"},
+
 	// harness (1)
 	"pkg/relational/conformance/rowdiff/ordering.go # sortKeysMatchOrderBy # a EqualFold call # 1": {1, "harness: conformance oracle compares plan sort keys to SQL ORDER BY text; engine identity rules do not apply, but the entry stays until the harness is separately audited"},
 }
@@ -744,7 +746,7 @@ func bucketCounts(m map[string]fieldDebt) (counts map[string]int, untagged []str
 //	an ESCAPE   is one site where a name can leave typed context — one entry.
 //	an AUTHORITY is the declaration that owns it — `file.go # declaration`.
 //
-// Currently 46 escapes across 33 authorities. The gap is real concentration
+// Currently 47 escapes across 34 authorities. The gap is real concentration
 // rather than noise: three authorities carry 12 of the 46 (groupByOutputBaker 5,
 // deriveColumnsFromProjection 4, explainValueOrdinals 3) and the other thirty sit
 // near 1:1.
@@ -790,7 +792,7 @@ func bucketCounts(m map[string]fieldDebt) (counts map[string]int, untagged []str
 // headers were introduced; the authority count is the figure that now LEADS the
 // report, so it needs it more, not less. Changing this constant is how a change
 // to the authority count becomes deliberate.
-const fieldDebtAuthorityTotal = 33
+const fieldDebtAuthorityTotal = 34
 
 func bucketAuthorityCounts(m map[string]fieldDebt) map[string]int {
 	perBucket := map[string]map[string]struct{}{}

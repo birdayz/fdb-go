@@ -1,6 +1,6 @@
 # RFC-218 — The projected-EXISTS fold must read the sort key's resolved path, not a re-derived name
 
-**Status:** DRAFT rev 7 — rev 6 NAK'd: CCC1's negative result does NOT survive Shape B (Java has no arity cap, verified), so the ambiguity licence is withdrawn and the arm is BUILT and unit-driven. The §2f harness is committed rather than quoted. Awaiting Graefe + Torvalds.
+**Status:** rev 8 — IMPLEMENTED (§5-RESULT). Single-table arm fixed and mutation-verified in four directions; JOIN arm declines cleanly pending the leg-window re-anchor. MMM-A/B/C folded. Awaiting the implementation review lap.
 **Origin:** RFC-197 ratchet entry `cascades_translator.go # sortKeyFieldRef`, whose stated
 mechanisms were measured false; the live bug behind it is this one
 **Scope:** `pkg/relational/core/query/cascades_translator.go` (the `sortSource` helpers), plus
@@ -51,6 +51,18 @@ instrument was live (7 hits on `TestFDB_ProjectedExists_Round4`). The printed st
 field="N"       Expr="N.SK"    Bare="SK" Qual="N"    Qualified=true Value=&FieldValue{Field:"N", Resolved:<non-nil>}
 field="T1.N.SK" Expr="T1.N.SK" Bare="SK" Qual="T1.N" Qualified=true Value=<nil>
 ```
+
+And a THIRD failure mode, which an earlier revision missed entirely — the crossing breaks
+differently depending only on what ELSE the SELECT list projects:
+
+```
+SELECT id, EXISTS(...)          ORDER BY n.sk -> no ordering defined between *dynamicpb.Message
+SELECT id, n, EXISTS(...)       ORDER BY n.sk -> 0AF00: Cascades planner could not plan query
+SELECT id, n AS nn, EXISTS(...) ORDER BY n.sk -> 0AF00: Cascades planner could not plan query
+```
+
+Omitting it from the deliverable list was **§2a's error one layer out**: a target population
+enumerated short. Each shape now has its own arm and its own mutation-red.
 
 These are **two different bugs** that happen to share a symptom, and conflating them is how the
 ratchet entry went wrong. They are separated in §2 and §3.
@@ -317,7 +329,7 @@ The re-anchor, run against the real flowed layouts:
 
 ```
 BBB1  WW2 single-table flowed [ID N]            -> OK  path={N@1}{SK@0}  slot 1 -> column "N"
-BBB1  WW3 JOIN flowed [ID T1_ID ID2 N]          -> OK  path={N@3}{SK@0}  slot 3 -> column "N"
+BBB1  WW3 JOIN flowed [ID T1_ID ID N]          -> OK  path={N@3}{SK@0}  slot 3 -> column "N"
 BBB3  COINCIDENCE flowed [ID N X Y]             -> OK  path={N@1}{SK@0}  slot 1 -> column "N"
 BBB3  MISMATCH flowed [ID Q] (root absent)      -> DECLINE (root column absent)
 BBB3  carried ordinal disagrees in SAME domain  -> DECLINE (disagrees with the flowed layout)
@@ -359,8 +371,19 @@ The re-anchor must name which one it targets and assert it — they differ in wi
 and in content, and a root ordinal derived against the wrong one lands on a real column and
 returns rows.
 
-**This also breaks the "users cannot write it" argument for the ambiguity arm, from a direction
-§2g does not reach.** The appended hidden column is named by `sortKeyFieldRef` → `"N"`, so a
+**INFERRED, NOT MEASURED — and it is a POST-FIX consequence stated in the present tense by an
+earlier revision, which is the exact error §2 itself adopts a rule against.** Read against the
+code today it is FALSE: `collectExtraSortColumns` suppresses the hidden column via
+`sortKeyInOutput`'s VALUE match (`:5107`), and today's path-less `FieldValue{N}` matches the
+projected `N`. The duplicate appears only AFTER the fix, when the source value carries `{N}{SK}`
+and stops matching. The arm is justified independently by the Shape-B route above; this is not
+load-bearing for it.
+
+What it DOES surface is a real consequence nobody had named: post-fix, `sortKeyInOutput` stops
+matching for nested keys, so hidden columns are APPENDED where today they are suppressed. That
+is a plan-shape change on Shape A, and `fields` is mutated in place at `:4725` with the SAME
+slice reaching `applySortOverRef` at `:4746`, so appended extras are inside the key's
+`outputFieldDomain`. Expect golden movement from this and review it record by record. The appended hidden column is named by `sortKeyFieldRef` → `"N"`, so a
 folded projection that already carries a column named `N` gets a **second** one. The fold
 manufactures the duplicate-root layout itself, out of SQL that is perfectly unambiguous. No
 resolver rejection stands between a user and that row, which is the strongest single reason the
@@ -527,6 +550,43 @@ those sites receive.
    §2's rule rather than left to fall through. A negative pin whose message only says "this
    changed" makes the next reader re-derive why anyone cared.
 5. The corpus plan-shape comparison — see §6.
+
+---
+
+## 5-RESULT. IMPLEMENTED — single-table arm lands, JOIN arm declines
+
+```
+SELECT id, EXISTS(...)          ORDER BY n.sk -> ids [3 2 1]   CORRECT
+SELECT id, n, EXISTS(...)       ORDER BY n.sk -> ids [3 2 1]   CORRECT
+SELECT id, n AS nn, EXISTS(...) ORDER BY n.sk -> ids [3 2 1]   CORRECT
+JOIN + nested key                             -> 0AF00 clean refusal (was: malformed plan)
+```
+
+`RootOrdinalIn` and `ReAnchorRootInto` are production methods on `FieldPath`;
+`sortKeySourceValue` routes a multi-accessor key through the re-anchor instead of the rendered
+name. **The constraint held: `existsSortSplit` reports `calls 0 | DIVERGED 0`** — green because
+the nested key no longer reaches the render/split at all, i.e. by USING THE IDENTITY. The zero
+was not widened.
+
+**The JOIN arm declines rather than shipping.** The leg-window re-anchor
+(`rebaseOuterLegValueOrdinal`) refuses multi-accessor paths (§2c AAA2), so building it is
+remaining work on a different surface. Declining is loud (§2d) and strictly better than today's
+`malformed plan`; it is NOT the fail-closed-always degeneration §2c warned about, because the
+single-table arm demonstrably succeeds.
+
+**Mutation, four directions, each independent.** With the production change reverted and the
+tests kept, every fold arm reds on its own:
+
+```
+nested_key_not_projected             -> no ordering defined between *dynamicpb.Message ...
+struct_root_also_projected           -> 0AF00: Cascades planner could not plan query
+struct_root_projected_under_an_alias -> 0AF00: Cascades planner could not plan query
+nested_key_over_a_join               -> ordinal resolution: field "SK" not resolvable in the
+                                        runtime row (ordinal -1, row columns [ID T1_ID ID N])
+```
+
+The two ambiguity assertions stay GREEN under the same mutation, correctly — they pin a
+resolver fact the fold fix does not touch.
 
 ---
 

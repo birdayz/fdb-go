@@ -132,45 +132,51 @@ func TestFDB_NestedSortKeyAmbiguityIsRejectedBeforeTheFold(t *testing.T) {
 		})
 	}
 
-	// COUNTERWEIGHT. The 42702 above must come from genuine ambiguity and not
-	// from "a nested key reaching the fold at all", or the assertions above hold
-	// for a reason unrelated to duplicate names and this file pins the wrong fact.
+	// COUNTERWEIGHT. The 42702 above must come from genuine ambiguity and not from
+	// "a nested key reaching the fold at all", or the assertions above hold for a
+	// reason unrelated to duplicate names and this file pins the wrong fact.
 	//
-	// "not 42702" is too weak to do that on its own: the unambiguous query does
-	// not currently succeed either — it reaches the fold and dies there, on the
-	// very defect the fold fix exists to remove. An assertion that merely excludes
-	// 42702 passes identically whether the key RESOLVED CLEANLY or EXPLODED one
-	// stage later, which is exactly the distinction the counterweight owes.
+	// This asserts the ROWS, not merely the absence of an error. An earlier version
+	// asserted only that the error was not 42702, which passed identically whether
+	// the key resolved cleanly or exploded one stage later — and a later version
+	// pinned the fold defect itself, which had to go red the moment it was fixed.
+	// Now that the fold carries the resolved path, the honest assertion is the
+	// answer: ids ordered by the NESTED field.
 	//
-	// So it asserts the stage precisely: resolution must succeed (no 42702) AND
-	// the failure must be the known fold defect. Both halves are load-bearing —
-	// the first is the counterweight, the second is what stops this from silently
-	// becoming a "not 42702" tautology again.
-	//
-	// WHEN THE FOLD FIX LANDS THIS TEST MUST GO RED, and that is intended: replace
-	// it with the assertion the fix earns — the query SUCCEEDS and returns ids
-	// [3 2 1], ordered by n.sk ascending (sk = 30, 40, 50 for ids 3, 2, 1). Do not
-	// relax it back to an error check.
-	t.Run("unambiguous_nested_key_resolves_then_fails_only_in_the_fold", func(t *testing.T) {
+	// It pins the COLUMN, not just the order. n.sk descends 50,40,30 as id ascends
+	// 1,2,3, so ordering by n.sk gives [3 2 1] while ordering by id — or by any
+	// column the re-anchor might land on by mistake — gives [1 2 3]. A row-order
+	// assertion over a column that happens to be sorted would not tell those apart.
+	t.Run("unambiguous_nested_key_orders_by_the_nested_field", func(t *testing.T) {
 		t.Parallel()
 		q := "SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h " +
 			"FROM t1 ORDER BY n.sk"
-		err := queryErr(q)
-		if err == nil {
-			t.Fatalf("the unambiguous nested key now SUCCEEDS — the fold defect is fixed. "+
-				"Replace this test with the real assertion: %q must return ids [3 2 1] "+
-				"ordered by n.sk ascending", q)
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("query %q: %v — an UNAMBIGUOUS nested key must plan and sort", q, err)
 		}
-		if strings.Contains(err.Error(), "42702") {
-			t.Fatalf("an UNAMBIGUOUS nested key was rejected as ambiguous: %v — the "+
-				"ambiguity guard is over-broad, and the mutual exclusion this file "+
-				"documents would hold vacuously", err)
+		defer rows.Close()
+		var ids []int64
+		for rows.Next() {
+			var id int64
+			var h bool
+			if err := rows.Scan(&id, &h); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			ids = append(ids, id)
 		}
-		if !strings.Contains(err.Error(), "no ordering defined between") {
-			t.Fatalf("expected the known fold defect (a struct/struct ordering "+
-				"comparison), got: %v — the failure MOVED. Re-read which stage now "+
-				"rejects this query before trusting the counterweight above; it is only "+
-				"a counterweight while the key resolves and dies in the fold", err)
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		want := []int64{3, 2, 1}
+		if len(ids) != len(want) {
+			t.Fatalf("got %d rows %v, want %v", len(ids), ids, want)
+		}
+		for i := range want {
+			if ids[i] != want[i] {
+				t.Fatalf("got ids %v, want %v — [1 2 3] means the sort ordered by ID "+
+					"(or by another slot the root re-anchored onto), not by n.sk", ids, want)
+			}
 		}
 	})
 }

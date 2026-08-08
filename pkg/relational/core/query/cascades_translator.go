@@ -4691,6 +4691,17 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 			continue
 		}
 		for _, k := range s.Keys {
+			// A NESTED key whose source column cannot be built is unfoldable, and it
+			// must bail HERE rather than fall through: it is nameable, so the
+			// nameability check below would wave it past, and collectExtraSortColumns
+			// would then skip it for a nil value — appending no hidden column and
+			// leaving the re-applied sort reading a field the folded record lacks.
+			// That is a SILENT wrong order, which is strictly worse than the loud
+			// failure it replaces. Declining yields a clean unsupported error.
+			if fv, isFV := k.Value.(*values.FieldValue); isFV && fv.Resolved != nil &&
+				len(fv.Resolved.Accessors) > 1 && src.sortKeySourceValue(k) == nil {
+				return nil
+			}
 			if src.sortKeyName(k) != "" {
 				continue // a nameable column — appended as a hidden field or already in output
 			}
@@ -4984,6 +4995,37 @@ func sortKeyFieldRef(k logical.SortKey) string {
 // the bare name (`col1 AS id` → output column named `ID`), so the sort ordered by
 // the wrong column (RFC-141 R4 P2b). Returns nil for a computed key.
 func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
+	// A NESTED key carries its whole path on the Value and must never be routed
+	// through the rendered name. `n.sk` resolves to ONE FieldValue whose Field is
+	// the struct ROOT (`N`) and whose Resolved holds the full `[N, SK]` path, so
+	// rendering it yields `N` (sorts by the struct) or `T1.N.SK` (whose last-dot
+	// split yields `SK`, a column that does not exist). The path is in hand; the
+	// only thing needed is to re-state its ROOT ordinal in the layout the fold
+	// evaluates against, since the carried root is stated in the reference's own
+	// source row.
+	//
+	// Derive-and-assert, never trust-and-carry: a carried ordinal that is not
+	// comparable (a different layout) is re-derived, and one that IS comparable
+	// must agree or the key declines. Declining costs a clean unsupported error;
+	// a wrong ordinal is a silent wrong-column read.
+	if fv, ok := k.Value.(*values.FieldValue); ok && fv.Resolved != nil &&
+		len(fv.Resolved.Accessors) > 1 && !s.isJoin {
+		if s.singleType == nil {
+			return nil // no layout to derive against — decline rather than guess
+		}
+		rebased, _, ok := fv.Resolved.ReAnchorRootInto(s.singleType)
+		if !ok {
+			return nil
+		}
+		return &values.FieldValue{Field: fv.Field, Typ: fv.Typ, Resolved: rebased}
+	}
+	// A nested key over a JOIN needs the leg-window re-anchor, which currently
+	// refuses multi-accessor paths; decline the fold rather than emit a plan whose
+	// key reads a pre-merge ordinal against the merged row.
+	if fv, ok := k.Value.(*values.FieldValue); ok && fv.Resolved != nil &&
+		len(fv.Resolved.Accessors) > 1 && s.isJoin {
+		return nil
+	}
 	field := sortKeyFieldRef(k)
 	if field == "" {
 		return nil
