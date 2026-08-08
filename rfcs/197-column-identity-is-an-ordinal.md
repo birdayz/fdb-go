@@ -988,6 +988,33 @@ group headers, not off the per-item paragraphs above, which carry the size each
 bucket had when it was written. `pkg/docscheck` remains the authority for all
 of them.
 
+**The residual is 34 AUTHORITIES (52 escape sites).** Two numbers over one key
+set, and the bucket sizes in this list are the SECOND one — escapes, because that
+is what the list stores and what the group headers claim.
+
+- An **escape** is one site where a name can leave typed context. It must stay
+  per-site: fix five of six return arms in one switch and the sixth is a live
+  hole a coarser entry would report as retired.
+- An **authority** is the declaration that owns it. It is the number that
+  answers "how much work remains", because a fix lands on a declaration.
+
+They differ by concentration rather than noise — four authorities carry 18 of the
+52 (`AggregateResultColumnName` 6, `groupByOutputBaker` 5,
+`deriveColumnsFromProjection` 4, `explainValueOrdinals` 3), and the other thirty
+sit near 1:1. So a bucket of 15 escapes is not 15 pieces of work, and reading it
+as such over-states what is left.
+
+Both are derived from the same keys, which became possible only when the site key
+gained the declaration as a first-class segment; before that this needed a second
+list. `bucketAuthorityCounts` computes it and
+`TestFieldDebtBucketsArePartition` asserts both against declared numbers so
+neither can drift unnoticed.
+
+Note also that a **bucket is not a form**: a bucket is an editorial statement of
+WHY debt exists, a form is a mechanical statement of HOW the walk found it, and
+they legitimately disagree. Per-bucket numbers key on the bucket tag in the
+entry's reason, never on the key's form segment.
+
 0. Domain accessor (fail-closed) — nothing else may land first.
 1. boundary (2, REOPENED — was 0, MIGRATED): metadata names died at candidate
    construction, and that part holds. The bucket is non-empty again for two
