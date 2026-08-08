@@ -20,6 +20,7 @@ go_test(
         "explaindiff_test.go",
         "ordering_census_test.go",
         "plan_shape_golden_test.go",
+        "projected_exists_coverage_test.go",
         "projection_merge_census_test.go",
         "reachability_test.go",
     ],

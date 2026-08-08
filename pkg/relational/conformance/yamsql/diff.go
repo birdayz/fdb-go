@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"fdb.dev/pkg/relational/api"
 )
 
 // diffRows compares an expected row set against an actual row set.
@@ -82,6 +84,31 @@ func normalizeValue(v any) any {
 		cp := make([]byte, len(x))
 		copy(cp, x)
 		return cp
+	case api.Struct:
+		// A STRUCT column, normalised POSITIONALLY into a plain slice so it
+		// compares against a nested YAML sequence (`- [3, [30, 3], true]`).
+		// Position is the right key because that is what the metadata's
+		// ordinals mean, and it is Java's own contract in MessageTuple.
+		//
+		// Without this arm a struct column fell to the `%T:%v` default and
+		// rendered as a POINTER ADDRESS, so no scenario could ever assert one:
+		// the expectation could not be written down at all, and the whole
+		// struct-valued-column axis was silently unassertable.
+		attrs := x.Attributes()
+		out := make([]any, len(attrs))
+		for i, a := range attrs {
+			out[i] = normalizeValue(a)
+		}
+		return out
+	case []any:
+		// A nested sequence from the YAML side (the expected spelling of a
+		// struct column), normalised elementwise so `[30, 3]` promotes its
+		// int literals exactly as a top-level row value would.
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = normalizeValue(e)
+		}
+		return out
 	default:
 		// Unknown types (complex values from the driver) compared by %v.
 		return fmt.Sprintf("%T:%v", v, v)
@@ -113,6 +140,21 @@ func valueEqual(a, b any) bool {
 	case []byte:
 		bv, ok := b.([]byte)
 		return ok && bytes.Equal(av, bv)
+	case []any:
+		// A normalised STRUCT column (or an expected nested sequence). Slices
+		// are never comparable with ==, so the default arm below would PANIC
+		// rather than answer; compare elementwise and recurse so a struct of
+		// structs works too.
+		bv, ok := b.([]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for i := range av {
+			if !valueEqual(av[i], bv[i]) {
+				return false
+			}
+		}
+		return true
 	case int64:
 		bv, ok := b.(int64)
 		if ok {

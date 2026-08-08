@@ -496,6 +496,83 @@ func (p *FieldPath) OrdinalIn(frontier OrdinalDomain) (int, bool) {
 	return 0, false
 }
 
+// RootOrdinalIn is the ARITY-TOLERANT counterpart to OrdinalIn: it reports the
+// ordinal this path's ROOT accessor reads in the caller's layout, and only when
+// that root provably indexes THAT layout.
+//
+// It exists because OrdinalIn refuses on arity BEFORE it reads the domain, so it
+// returns false for every multi-accessor path and cannot distinguish "this root
+// indexes the layout you asked about" from "it indexes a different one". Those
+// are opposite facts for a caller re-anchoring a nested path, and collapsing
+// them is what makes OrdinalIn unusable there rather than merely conservative.
+//
+// It answers about the ROOT only, deliberately: accessors beyond the first
+// descend a nested record, where "which layout does this index" does not arise.
+// A caller re-stating a root must still DERIVE the new ordinal from the target
+// layout — this only says whether the carried one is comparable.
+func (p *FieldPath) RootOrdinalIn(frontier OrdinalDomain) (int, bool) {
+	if p == nil || len(p.Accessors) == 0 {
+		return 0, false
+	}
+	if !frontier.IsKnown() || !p.Domain.IsKnown() || p.Domain != frontier {
+		return 0, false
+	}
+	if ord := p.Accessors[0].Ordinal; ord >= 0 {
+		return ord, true
+	}
+	return 0, false
+}
+
+// ReAnchorRootInto re-states a MULTI-ACCESSOR path's root ordinal in `flowed`,
+// preserving the nested suffix, and reports why it declined when it cannot.
+//
+// The derived ordinal is AUTHORITATIVE; the carried one is a tripwire, never a
+// source. A carried root ordinal is stated in the layout it was resolved
+// against — for a join, the PRE-MERGE row — so trusting it reads whatever column
+// happens to occupy that slot in the target layout. That failure is silent,
+// because an ordinal does not fail the way an unresolvable name does.
+//
+// Declines, rather than guessing, when the root name is absent or DUPLICATED in
+// `flowed`. RecordType.FieldIndex returns the first name match, so a layout
+// holding two columns of the root's name would resolve to the left one whatever
+// the reference meant. Disambiguating that needs leg IDENTITY — which
+// correlation the root belongs to, against which leg each slot came from — not a
+// name, and until a caller supplies it the correct answer is to decline.
+func (p *FieldPath) ReAnchorRootInto(flowed *RecordType) (*FieldPath, string, bool) {
+	if p == nil || len(p.Accessors) < 2 {
+		return nil, "not a multi-accessor path", false
+	}
+	if flowed == nil {
+		return nil, "no flowed layout to derive against", false
+	}
+	root := p.Accessors[0]
+	if root.Field == "" {
+		return nil, "root accessor has no name to derive from", false
+	}
+	dupes, derived := 0, -1
+	for i, f := range flowed.Fields {
+		if f.Name == root.Field {
+			dupes++
+			if derived < 0 {
+				derived = i
+			}
+		}
+	}
+	switch {
+	case dupes == 0:
+		return nil, "root column absent from the flowed layout", false
+	case dupes > 1:
+		return nil, "root column name is ambiguous in the flowed layout", false
+	}
+	if carried, ok := p.RootOrdinalIn(OrdinalDomainOfType(flowed)); ok && carried != derived {
+		return nil, "carried ordinal disagrees with the flowed layout", false
+	}
+	acc := make([]ResolvedAccessor, 0, len(p.Accessors))
+	acc = append(acc, ResolvedAccessor{Field: root.Field, Ordinal: derived})
+	acc = append(acc, p.Accessors[1:]...)
+	return &FieldPath{Accessors: acc, Domain: OrdinalDomainOfType(flowed)}, "", true
+}
+
 // WithSuffix returns a NEW path with suffix's accessors appended — Java's
 // FieldPath.withSuffix (FieldValue.java:525-534); neither input is mutated.
 // The frontier pin comes from the RECEIVER: fusing inner.WithSuffix(outer)

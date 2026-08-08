@@ -10618,6 +10618,47 @@ standing rule is that a finding without a booking is a finding that evaporates,
 so each is recorded here with its evidence refs, a size, and what "done" means.
 None is speculative: each was re-verified against the tree before booking.
 
+- [ ] **RFC-218 remainder — the leg-window re-anchor: a nested ORDER BY key over a
+  JOIN declines instead of planning.** · M · **query-engine change — needs a Graefe
+  ACK before merge**
+  RFC-218 fixed the projected-EXISTS fold for nested sort keys on a SINGLE-TABLE
+  source: the key carries its resolved path and the re-anchor re-states the root
+  ordinal in the flowed layout. The JOIN arm is NOT fixed — it declines with a
+  clean `0AF00`, because `rebaseOuterLegValueOrdinal`
+  (`left_outer_existential.go`) refuses multi-accessor paths outright
+  (`fv.Resolved.Single()`, `!single -> failed`). Exercised, both leg kinds:
+  `ok=false, unchanged` for a multi-accessor path, `ok=true` for a single-accessor
+  control.
+  WHY IT MUST BE BOOKED RATHER THAN LEFT TO THE TRIPWIRE: the test
+  `nested_key_over_a_join_declines_cleanly` asserts the refusal and tells a future
+  reader what to do when it changes, but a tripwire is a SENTINEL, not a booking —
+  it fires only if someone happens to fix the thing, and nothing schedules that.
+  DIVERGENCE FROM JAVA, still open: Java has no SQL-layer rejection for this
+  shape. It attempts the plan and fails downstream in `RemoveSortRule.onMatch`, so
+  Go's clean refusal is a divergence in FORM, not a narrower behaviour.
+  DONE = the JOIN arm plans, `nested_key_over_a_join_declines_cleanly` is replaced
+  by a row assertion (ids `[3 2 1]` ordered by `n.sk`), that arm mutation-reds
+  independently of the three single-table arms, and `existsSortSplit` stays at
+  `DIVERGED 0` on the UNFILTERED suite.
+  Refs: `rfcs/218-sort-keys-carry-resolved-paths-not-rendered-names.md` §5-RESULT;
+  `pkg/relational/sqldriver/nested_sort_key_fold_fdb_test.go`;
+  `pkg/recordlayer/query/plan/cascades/values/nested_root_reanchor_test.go`.
+
+- [ ] **RFC-218 adjacent — Go appends a hidden sort column where Java derives
+  instead (plan-shape only).** · S
+  Java's `Expression.canBeDerivedFrom` (`Expression.java:254-264`) decides
+  hidden-column membership via `Value.pullUp`, so `n.sk` IS derivable from a
+  projected `n` and Java appends NO hidden column. Go's `sortKeyInOutput`
+  (`cascades_translator.go`) uses exact `SemanticEqualsUnderAliasMap`, so
+  `{N}{SK} != {N}` and a column IS appended, named `"N"` — putting TWO fields named
+  `N` in the folded row, which is the duplicate-root layout the fold is documented
+  as able to manufacture from unambiguous SQL.
+  ROWS ARE CORRECT either way; this is shape, not a bug, and is pinned by
+  `struct_root_projected_still_orders_correctly_despite_the_extra_column`.
+  DONE = `sortKeyInOutput` matches Java's derivability, the extra column stops
+  being appended, and the pin is updated to assert the shape rather than only the
+  answer.
+
 - [x] **CQ-40 — two `LikeMatch` implementations disagreed. THE BOOKING HAD THE
   DIRECTION BACKWARDS: the "canonical" matcher was the wrong one.** · was S,
   actually M · **query-engine change — needs a Graefe ACK before merge**
