@@ -255,3 +255,99 @@ func TestFieldDecisionSiteKeysAreUnique(t *testing.T) {
 	}
 	t.Logf("site keys unique over %d decisions in %d files", total, files)
 }
+
+// TestFieldDecisionAuthorityOf pins the projection from a site key onto its
+// owning declaration — the operation the authority count is built on.
+//
+// Driven over explicit state rather than over the live debt map, because the
+// live map exercises only the shapes it happens to contain: it has no
+// malformed key, no key whose declaration repeats across files, and no
+// file-scope entry, and those are exactly the cases where a projection can go
+// quietly wrong.
+func TestFieldDecisionAuthorityOf(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, site, want string
+		why              string
+	}{
+		{
+			"ordinary key",
+			"pkg/x/f.go # Decide # a == comparison # 1",
+			"pkg/x/f.go # Decide",
+			"the first two segments and nothing else",
+		},
+		{
+			"twins collapse onto one authority",
+			"pkg/x/f.go # Decide # a == comparison # 2",
+			"pkg/x/f.go # Decide",
+			"two escapes in one declaration are one place to fix them — that IS the ratio",
+		},
+		{
+			"a form containing the separator does not leak into the authority",
+			"pkg/x/f.go # Decide # a map key via local a # b derived from the name # 1",
+			"pkg/x/f.go # Decide",
+			"the projection takes the FIRST two segments, so a form with its own ` # ` " +
+				"cannot extend the authority",
+		},
+		{
+			"same declaration name in two files stays two authorities",
+			"pkg/y/g.go # Decide # a == comparison # 1",
+			"pkg/y/g.go # Decide",
+			"the file is part of the authority; collapsing on the bare name would " +
+				"merge unrelated declarations and under-count the work",
+		},
+		{
+			"file-scope entry",
+			"pkg/x/f.go # (file-scope) # a map key # 1",
+			"pkg/x/f.go # (file-scope)",
+			"a package-level initializer is its own authority, not a missing one",
+		},
+		{
+			"malformed key is returned whole",
+			"pkg/x/f.go",
+			"pkg/x/f.go",
+			"an unparseable key must be VISIBLE as its own authority rather than " +
+				"silently merging into another one's count",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := fieldDecisionAuthorityOf(tc.site); got != tc.want {
+				t.Fatalf("fieldDecisionAuthorityOf(%q) = %q, want %q\n%s",
+					tc.site, got, tc.want, tc.why)
+			}
+		})
+	}
+}
+
+// TestBucketAuthorityCountsDeDupesWithinBucket pins that the per-bucket
+// authority count counts DECLARATIONS, not entries — the one thing that
+// distinguishes it from bucketCounts and the whole reason it exists.
+func TestBucketAuthorityCountsDeDupesWithinBucket(t *testing.T) {
+	t.Parallel()
+	m := map[string]fieldDebt{
+		"pkg/x/f.go # Decide # a == comparison # 1": {1, "dotted: first"},
+		"pkg/x/f.go # Decide # a == comparison # 2": {1, "dotted: second, same declaration"},
+		"pkg/x/f.go # Decide # a map key # 1":       {1, "dotted: third, same declaration"},
+		"pkg/x/g.go # Other # a map key # 1":        {1, "dotted: a second declaration"},
+		"pkg/x/h.go # Third # a map key # 1":        {1, "contract: another bucket"},
+		"pkg/x/i.go # Untagged # a map key # 1":     {1, "no bucket tag at all"},
+	}
+	got := bucketAuthorityCounts(m)
+	if got["dotted"] != 2 {
+		t.Fatalf("dotted authorities = %d, want 2 (three entries across two "+
+			"declarations).\nIf this equals 3 the count is counting ENTRIES and is "+
+			"just bucketCounts under another name; if it equals 1 the file is being "+
+			"dropped from the authority.", got["dotted"])
+	}
+	if got["contract"] != 1 {
+		t.Fatalf("contract authorities = %d, want 1", got["contract"])
+	}
+	if _, ok := got["no bucket tag at all"]; ok {
+		t.Fatal("an untagged entry created a bucket; untagged entries are " +
+			"bucketCounts' finding and must not invent a bucket here")
+	}
+	if len(got) != 2 {
+		t.Fatalf("buckets = %v, want exactly dotted and contract", got)
+	}
+}

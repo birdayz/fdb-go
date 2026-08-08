@@ -638,6 +638,86 @@ func bucketCounts(m map[string]fieldDebt) (counts map[string]int, untagged []str
 	return counts, untagged
 }
 
+// THE LIST RECORDS ESCAPES; THE REPORT LEADS WITH AUTHORITIES. Two numbers over
+// one key set, answering two different questions, and neither replaces the other.
+//
+//	an ESCAPE   is one site where a name can leave typed context — one entry.
+//	an AUTHORITY is the declaration that owns it — `file.go # declaration`.
+//
+// Currently 52 escapes across 34 authorities. The gap is real concentration
+// rather than noise: four authorities carry 18 of the 52
+// (AggregateResultColumnName 6, groupByOutputBaker 5,
+// deriveColumnsFromProjection 4, explainValueOrdinals 3) and the other thirty sit
+// near 1:1.
+//
+// WHY BOTH, and why the list is not collapsed to authorities:
+//
+//   - "Where can a name leave typed context?" is ESCAPES, and it must stay
+//     per-site. Fix five of six return arms in one switch and the sixth is a live
+//     hole; an authority-level entry would report it as retired.
+//   - "How much work remains?" is AUTHORITIES, because a fix lands on a
+//     declaration, not on a line.
+//
+// Collapsing the LIST to authorities would also re-open, one level up, exactly
+// the hole TestFieldDecisionAllowlistIsPerSite exists to close: an entry that
+// covers every escape its declaration grows later, reading like an exemption
+// while granting none.
+//
+// Both are derived here from the SAME keys, which is only possible because the
+// declaration is a first-class segment of the site key rather than something
+// recoverable from a line number.
+//
+// BUCKET IS NOT FORM, and anyone deriving per-bucket numbers must key on the
+// bucket tag in the `why` string rather than on the key's form segment. A bucket
+// is an EDITORIAL statement of why the debt exists; a form is a MECHANICAL
+// statement of how the walk detected it, and they legitimately disagree —
+// values.go's `explainValueOrdinals` MINT escape is filed under `contract` while
+// being reported by the arm that names the `dotted` bucket. Keying per-bucket
+// counts on the form segment would "fix" that by moving a correctly-filed entry.
+// fieldDebtAuthorityTotal is the DECLARED number of distinct authorities, held
+// beside the list the way the per-bucket group headers hold the entry counts and
+// asserted the same way.
+//
+// A derived number that nothing claims is a number that can move without anyone
+// deciding it should. The entry count has had that protection since the group
+// headers were introduced; the authority count is the figure that now LEADS the
+// report, so it needs it more, not less. Changing this constant is how a change
+// to the authority count becomes deliberate.
+const fieldDebtAuthorityTotal = 34
+
+func bucketAuthorityCounts(m map[string]fieldDebt) map[string]int {
+	perBucket := map[string]map[string]struct{}{}
+	for site, d := range m {
+		bucket, ok := bucketTagOf(d.why)
+		if !ok {
+			continue // untagged entries are bucketCounts' finding, not this one's
+		}
+		if perBucket[bucket] == nil {
+			perBucket[bucket] = map[string]struct{}{}
+		}
+		perBucket[bucket][fieldDecisionAuthorityOf(site)] = struct{}{}
+	}
+	counts := map[string]int{}
+	for bucket, set := range perBucket {
+		counts[bucket] = len(set)
+	}
+	return counts
+}
+
+// fieldDecisionAuthorityOf projects a site key onto its owning declaration —
+// `path/file.go # declaration`, the first two of the key's four segments.
+//
+// A key that does not have the expected shape is returned whole rather than
+// silently truncated: an unparseable key must show up as its own authority and
+// be visible, never merge into another one's count.
+func fieldDecisionAuthorityOf(site string) string {
+	parts := strings.Split(site, " # ")
+	if len(parts) < 2 {
+		return site
+	}
+	return parts[0] + " # " + parts[1]
+}
+
 // bucketHeaderPattern matches a group-header comment: `// <bucket> (N)` at the
 // start of the comment's own text. WHERE the comment sits is decided
 // structurally rather than by indentation — see bucketHeaderCounts.
@@ -1968,12 +2048,75 @@ func TestFieldDebtBucketsArePartition(t *testing.T) {
 	sort.Strings(buckets)
 	var sum int
 	var summary strings.Builder
+	// AUTHORITIES LEAD, escapes follow in parentheses. The primary number is the
+	// one that answers "how much work remains", because a fix lands on a
+	// declaration; the escape count is what the list actually stores and is kept
+	// visible beside it. See bucketAuthorityCounts for why neither replaces the
+	// other, and why the list is not collapsed.
+	authorities := bucketAuthorityCounts(knownFieldDecisionDebt)
+	authSum := 0
 	for _, b := range buckets {
-		fmt.Fprintf(&summary, "\n  %-11s %3d", b, counts[b])
+		fmt.Fprintf(&summary, "\n  %-11s %3d authority/ies  (%3d escape sites)",
+			b, authorities[b], counts[b])
 		sum += counts[b]
+		authSum += authorities[b]
 	}
-	t.Logf("field-name debt by owning bucket:%s\n  %-11s %3d (over %d entries)",
-		summary.String(), "TOTAL", sum, len(knownFieldDecisionDebt))
+	totalAuthorities := map[string]struct{}{}
+	for site := range knownFieldDecisionDebt {
+		totalAuthorities[fieldDecisionAuthorityOf(site)] = struct{}{}
+	}
+	t.Logf("field-name debt by owning bucket:%s\n  %-11s %3d authority/ies  (%3d escape sites, %d entries)\n"+
+		"  the two differ because one declaration can host several escapes — a switch\n"+
+		"  with six return arms is six escapes and one place to fix them.",
+		summary.String(), "TOTAL", len(totalAuthorities), sum, len(knownFieldDecisionDebt))
+
+	if len(totalAuthorities) != fieldDebtAuthorityTotal {
+		t.Errorf("the debt spans %d distinct authorities, but fieldDebtAuthorityTotal "+
+			"claims %d.\n\nThe authority count is the number this report LEADS with — "+
+			"the answer to 'how much work remains', because a fix lands on a "+
+			"declaration. Update the constant in the same commit that moved it, so the "+
+			"change is a decision rather than a drift. If entries were retired the "+
+			"number should FALL; if it rose, a new declaration started leaking a name.",
+			len(totalAuthorities), fieldDebtAuthorityTotal)
+	}
+
+	// THE TWO NUMBERS MUST NOT DRIFT. Per-bucket authorities summed across
+	// buckets must equal the distinct authorities overall — they can only differ
+	// if one declaration's escapes are filed under two different buckets, which
+	// is legal (a declaration can owe two kinds of debt) and must therefore be
+	// REPORTED rather than silently absorbed. Left unchecked, the day the two
+	// disagree with no explanation is the day someone "corrects" one to match the
+	// other.
+	if authSum != len(totalAuthorities) {
+		var split []string
+		byAuthority := map[string]map[string]struct{}{}
+		for site, d := range knownFieldDecisionDebt {
+			b, ok := bucketTagOf(d.why)
+			if !ok {
+				continue
+			}
+			a := fieldDecisionAuthorityOf(site)
+			if byAuthority[a] == nil {
+				byAuthority[a] = map[string]struct{}{}
+			}
+			byAuthority[a][b] = struct{}{}
+		}
+		for a, bs := range byAuthority {
+			if len(bs) > 1 {
+				names := make([]string, 0, len(bs))
+				for b := range bs {
+					names = append(names, b)
+				}
+				sort.Strings(names)
+				split = append(split, fmt.Sprintf("%s → %v", a, names))
+			}
+		}
+		sort.Strings(split)
+		t.Logf("per-bucket authorities sum to %d against %d distinct overall: %d "+
+			"declaration(s) owe debt in more than one bucket, which is legal and is "+
+			"listed here so the difference is never mistaken for an arithmetic slip:\n  %s",
+			authSum, len(totalAuthorities), len(split), strings.Join(split, "\n  "))
+	}
 
 	// The group headers claim these same numbers, and a claim nothing checks is
 	// how this list starts lying. Reading THIS file back is the only way to
