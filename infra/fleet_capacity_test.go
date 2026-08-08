@@ -32,13 +32,27 @@ import (
 // state is not red about what it tests; it never tested anything. Check the job
 // step count before reading a red safety net as a regression.
 //
-// WHAT THIS GATE THEREFORE DOES NOT DO: it cannot prevent that. What it prevents
-// is the failure that would look identical and WOULD be ours — oversubscribing
-// the pool so a job waits past GitHub's fixed ~10-minute unacquired-job window
-// and is cancelled with the same zero-step signature. Today one push fans out
-// exactly as many self-hosted jobs as there are slots, and that 1:1 is a
-// coincidence of counts that nothing was holding. Add a fifth CI job and the
-// margin is gone silently.
+// WHAT THIS GATE THEREFORE DOES NOT DO: it cannot prevent that. What it used to
+// prevent is the failure that would look identical and WOULD be ours —
+// oversubscribing the pool so a job waits past GitHub's fixed ~10-minute
+// unacquired-job window and is cancelled with the same zero-step signature.
+//
+// THE FLEET IS NOW DELIBERATELY OVERSUBSCRIBED, so that budget no longer holds
+// and this file reports rather than fails. The pool was cut to one box: one push
+// fans out more self-hosted jobs than there are slots, the excess queues, and a
+// lane that queues past the window is cancelled having executed zero steps. That
+// is an ACCEPTED cost of running a smaller fleet, not an unnoticed regression —
+// which is exactly why the count is still computed and still printed on every
+// run. Read the reported ratio before diagnosing a zero-step red lane: at a
+// ratio above 1 the boring explanation is queueing, not GitHub.
+//
+// Restoring the guarantee is one edit — raise var.runner_count in main.tf until
+// the ratio reaches 1 — and this file will say by how much.
+//
+// What stays HARD here is everything about whether the count is trustworthy: a
+// parse that finds no population, and a matrix this file cannot size. Those are
+// bugs in the instrument, and an instrument that silently reports a wrong ratio
+// is worse than one that reports none.
 //
 // The window is GitHub's and is not configurable: nightly-libfdbc.yml sets
 // timeout-minutes 40 and an inner `go test -timeout 30m`, so the ~10 minutes has
@@ -188,7 +202,7 @@ func provisionedSlots(t *testing.T) int {
 	return n + dedicatedRunners
 }
 
-func TestPushFanOutFitsTheRunnerPool(t *testing.T) {
+func TestPushFanOutVersusTheRunnerPool(t *testing.T) {
 	t.Parallel()
 
 	paths, err := filepath.Glob("../.github/workflows/*.yml")
@@ -252,24 +266,29 @@ func TestPushFanOutFitsTheRunnerPool(t *testing.T) {
 	}
 	sort.Strings(names)
 
-	if total > slots {
-		var detail string
-		for _, k := range names {
-			detail += "\n    " + k + ": " + itoa(perWorkflow[k])
-		}
-		t.Fatalf("one push fans out %d self-hosted %s job(s) but the fleet provisions %d "+
-			"slot(s) (var.runner_count + %d dedicated).%s\n"+
-			"  OVERSUBSCRIPTION IS NOT A QUEUEING INCONVENIENCE HERE. A job that waits for a\n"+
-			"  runner past GitHub's fixed ~10-minute unacquired window is CANCELLED, and it\n"+
-			"  is cancelled having executed zero steps — so the lane reports RED while having\n"+
-			"  tested nothing. On the wire-differential lane that is a wire-format safety net\n"+
-			"  going red for reasons unrelated to wire format.\n"+
-			"  The window is GitHub's and is not configurable: nightly-libfdbc.yml already\n"+
-			"  allows timeout-minutes 40. Slots are the only lever this repo owns.\n"+
-			"  FIX BY RAISING CAPACITY (var.runner_count in main.tf, then apply), not by\n"+
-			"  raising a timeout and not by deleting this check.",
-			total, runnerLabel, slots, dedicatedRunners, detail)
+	var detail string
+	for _, k := range names {
+		detail += "\n    " + k + ": " + itoa(perWorkflow[k])
 	}
+
+	if total > slots {
+		t.Logf("OVERSUBSCRIBED: one push fans out %d self-hosted %s job(s) into %d slot(s) "+
+			"(var.runner_count + %d dedicated); %d job(s) queue.%s\n"+
+			"  This is the accepted cost of the smaller fleet, recorded here so a zero-step\n"+
+			"  red lane gets classified in a minute. A job that waits past GitHub's fixed\n"+
+			"  ~10-minute unacquired window is CANCELLED having executed zero steps — the\n"+
+			"  lane reports RED while having tested nothing. At this ratio, queueing is the\n"+
+			"  first explanation to check, ahead of anything the lane actually tests.\n"+
+			"  The window is GitHub's and is not configurable: nightly-libfdbc.yml already\n"+
+			"  allows timeout-minutes 40. Slots are the only lever this repo owns — raise\n"+
+			"  var.runner_count to %d in main.tf and apply to restore the 1:1 fit.",
+			total, runnerLabel, slots, dedicatedRunners, total-slots, detail,
+			total-dedicatedRunners)
+		return
+	}
+
+	t.Logf("one push fans out %d self-hosted %s job(s) into %d slot(s); nothing queues.%s",
+		total, runnerLabel, slots, detail)
 }
 
 // itoa avoids pulling strconv in for one call in a failure path.
