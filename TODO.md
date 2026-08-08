@@ -13550,6 +13550,49 @@ None is speculative: each was re-verified against the tree before booking.
   the de facto registry — if the latter, that is the thing to give a validate
   entry point rather than inventing a second list that can drift from it.
 
+- [ ] **CQ-99 (SMALL, bounded SEARCH — RFC-197): does Go have an output type
+  whose column name comes from a RENDERED value, fenced only by the order its
+  callers happen to run in?** This is a search with a defined stopping point, not
+  an open-ended audit, and it is booked rather than answered because no grep run
+  so far has been scoped widely enough for its negative to mean anything.
+
+  **Where it comes from.** Closing the `contract:` bucket rested on Java keeping
+  no name where Go renders one. That is right about aggregates — an unaliased
+  aggregate is `Column.unnamedOf` (`GroupByExpression.java:754`) surfacing as the
+  positional `_0` (`Expressions.java:251-253`, `Type.java:2645-2651`) — but the
+  general form "Java never renders an expression into a column name" is FALSE and
+  should not be carried forward. `Star.java:178-179` renders one:
+  `expression.getUnderlying().toString()` installed as a `StructType` FIELD NAME,
+  reached from all three `Star` factories.
+
+  What keeps it out of result metadata is CALL ORDER. `Expressions.expanded()`
+  (`Expressions.java:79-84`) flattens every `Star` before any
+  `LogicalOperator.output` is built — the expansion runs at
+  `LogicalOperator.java:397, 436, 473, 531, 651` — and `underlyingAsColumns()`
+  (`Expressions.java:269-287`) has no rendering fallback at all: the name is an
+  `Optional` and stays empty when absent. So Java's guarantee is DISCIPLINE, not
+  construction, and the Go-side consequence is to look for the FENCE rather than
+  for an absence.
+
+  **The work.** Enumerate every Go site that derives an output column name and
+  classify each as (a) name-as-data carried from construction, (b) rendered but
+  structurally unable to reach metadata, or (c) rendered and fenced only by call
+  order. Any (c) is the same pathology as `values.go`'s `explainValueOrdinals` —
+  one declaration serving display and naming, separated by convention — which is
+  already ruled STOP on the `.Field` ratchet for exactly that reason.
+
+  **What makes this hard to grep, stated so the next person does not read a thin
+  search as a clean result.** Go carries `Star` as a BOOLEAN on
+  `logical.AggregateCall` rather than as an expression node, so there is no
+  structural mirror of `Star.java` to search for, and an inconclusive sweep of
+  `expr.go` has already been run and correctly declined to assert its negative.
+  The honest search is over name-DERIVING sites (`ColumnNameValue`,
+  `ExplainValue`, `ProjectionColumnName`, `OutputColumnName` and their callers),
+  not over a Go `Star`.
+
+  Deliverable: the classification, plus a test for every (c) found — and if the
+  answer is genuinely zero, a pinned negative saying what re-arms it.
+
 - [ ] **CQ-69 (L, multi-phase, per-phase gates) — build the RFC-201 layered test
   corpus ladder.** Design: `rfcs/201-layered-test-corpus.md` (merged, #542),
   which this item cites rather than restates. Layer 1 is Java's own acceptance

@@ -183,14 +183,36 @@ type fieldDecisionSite struct {
 //
 //   - Java has no such contract. An unaliased aggregate is Column.unnamedOf
 //     (GroupByExpression.java:754) and surfaces as the positional `_0`
-//     (Type.java:2645-2651, RelationalStructMetaData.java:81-89); nothing in
-//     fdb-relational-core renders an aggregate expression back to text for a
-//     column name, and nothing matches that label back — lookupAlias skips
-//     unnamed expressions outright (SemanticAnalyzer.java:521-523) and the
-//     group-by pull-up binds by loop index (CompensateRecordConstructorRule
-//     .java:73-95). Go's `COUNT(X)` spelling is a Go-only display convention.
-//     A site cannot be exempted as "the name IS the identity at this layer"
-//     when the reference implementation keeps no name at that layer at all.
+//     (Expressions.java:251-253 mints it as `"_" + index`, Type.java:2645-2651,
+//     RelationalStructMetaData.java:81-89), and nothing matches that label back
+//     — lookupAlias skips unnamed expressions outright
+//     (SemanticAnalyzer.java:521-523) and the group-by pull-up binds by loop
+//     index (CompensateRecordConstructorRule.java:73-95). Go's `COUNT(X)`
+//     spelling is a Go-only display convention. A site cannot be exempted as
+//     "the name IS the identity at this layer" when the reference
+//     implementation keeps no name at that layer at all.
+//
+//     THE PORTABLE FORM OF THIS IS ABOUT A FENCE, NOT AN ABSENCE, and the
+//     difference decides what to go looking for in Go. "Java never renders an
+//     expression into a column name" is too strong: Star.java:178-179 does
+//     exactly that, `expression.getUnderlying().toString()` installed as a
+//     StructType FIELD NAME, reached from all three Star factories. What keeps
+//     it away from result metadata is call ORDER — Expressions.expanded()
+//     (Expressions.java:79-84) flattens every Star before any
+//     LogicalOperator.output is built (the expansion runs at
+//     LogicalOperator.java:397, 436, 473, 531 and 651), and
+//     underlyingAsColumns() (Expressions.java:269-287) has no rendering
+//     fallback at all: the name is Optional and stays empty when absent. So
+//     Java's guarantee here is DISCIPLINE, not construction. The Go-side
+//     question that follows is therefore not "does Go render a name" — it
+//     plainly does — but "does Go have an output type whose name comes from a
+//     rendered value, fenced only by the order its callers happen to run in".
+//     That is the same shape as the two-faces problem below, and it is OPEN:
+//     Go carries `Star` as a boolean on logical.AggregateCall rather than as an
+//     expression node, so there is no structural mirror to grep for, and no
+//     search yet run has been scoped widely enough for its negative to mean
+//     anything. Recorded as a question, not as a clean bill — booked as CQ-99.
+//
 //   - Every renderer in the bucket also FEEDS A MATCH. AggregateKeyColumnName's
 //     text is a match key in plans/ordering.go and in the translator's keyOrds;
 //     AggregateResultColumnName's fed aggOrds; ColumnNameValue's rendering is
