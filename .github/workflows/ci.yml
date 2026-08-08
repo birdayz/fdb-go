@@ -71,6 +71,29 @@ jobs:
             exit 1
           fi
 
+      - name: Check vanity-import module list is up to date
+        # website/data/gomodules.yaml lists the nested Go modules that need a stub page
+        # on fdb.dev. The site build regenerates it, so production self-heals; this gate
+        # keeps the committed copy honest so `hugo server` locally serves what CI does.
+        run: |
+          # Assert the file is TRACKED before diffing it. `git diff` reports nothing for
+          # an untracked path, so a renamed/never-added file would sail through green —
+          # the gate would fail open, which is the direction that ships bugs.
+          git ls-files --error-unmatch website/data/gomodules.yaml >/dev/null || {
+            echo "::error::website/data/gomodules.yaml is not tracked; this gate cannot see it."
+            exit 1
+          }
+          # Invoked via `bash`, not as an executable: this repo sets core.fileMode=false,
+          # so a plain `chmod +x` never reaches the index and the script lands 100644 —
+          # which fails only in CI (exit 126), never locally, where the on-disk bit is set.
+          bash scripts/gen-vanity-modules.sh >/dev/null
+          # Diff against HEAD, not the index: `git diff` alone compares worktree-vs-index
+          # and goes quiet if the drift happens to be staged.
+          if ! git diff --exit-code HEAD -- website/data/gomodules.yaml; then
+            echo "::error::Nested Go modules changed. Run 'just vanity-modules' and commit website/data/gomodules.yaml."
+            exit 1
+          fi
+
       - name: Check Docker (else the PRIMARY merge gate silently no-ops)
         # The whole test suite drives real FDB testcontainers; without Docker every
         # FDB test hits the allowed `FDB not available (no Docker)` skip and this job

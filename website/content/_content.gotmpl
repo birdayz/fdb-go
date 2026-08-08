@@ -1,10 +1,24 @@
-{{/* Generate one vanity-import stub page per Go package path. GitHub Pages is static
-     and cannot run a `?go-get=1` handler, so `go get fdb.dev/<pkg>` needs an HTTP 200
-     at that exact path. The pages use the minimal `gometa` layout (NOT the full theme
-     page). Go's meta parser is a non-strict XML decoder and chokes on a full HTML
-     document's scripts/SVG, so the stub must be a tiny well-formed page carrying only
-     the go-import/go-source meta. Package list: data/gopackages.yaml (from go list). */}}
-{{ range hugo.Data.gopackages.packages }}
+{{/* Vanity-import stub pages for NESTED Go modules.
+
+     `go get fdb.dev/a/b/c` requests `?go-get=1` for each prefix of the path, longest
+     first, and stops at the first HTTP 200 whose go-import prefix matches. Every page on
+     this site carries that meta (see _partials/head.html), so the tag served at `/`
+     resolves EVERY package in the root module — present and future. Those need no stub
+     and must not get one: a per-package list rots on each new package for no benefit.
+
+     A nested module is the one case the prefix walk cannot reach. It finds the `fdb.dev`
+     root tag first and resolves the package against the root module, which does not
+     contain it — a nested go.mod carves that subtree out of the parent. So each nested
+     module root needs an HTTP 200 at its exact path to be discoverable at all.
+
+     Module list: data/gomodules.yaml, derived from the tree by
+     scripts/gen-vanity-modules.sh (re-run by CI on every site build, so it cannot drift).
+
+     The stubs use the minimal `gometa` layout, NOT the full theme page: Go's meta parser
+     is a non-strict XML decoder and chokes on a full document's scripts/SVG, so the stub
+     must be a tiny well-formed page carrying only the go-import/go-source meta. */}}
+{{ $mods := (index (or hugo.Data.gomodules dict) "modules") }}
+{{ range $mods }}
   {{ $p := . }}
   {{ $.AddPage (dict
     "path" $p
