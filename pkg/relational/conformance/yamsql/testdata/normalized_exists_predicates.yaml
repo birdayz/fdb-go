@@ -26,6 +26,8 @@ tests:
           AND (reviews.rating >= 4 OR reviews.rating = 1)
       )
       ORDER BY id
+    plan_contains: "FlatMap(outer=Scan(PRODUCTS), inner=PredicatesFilter(FirstOrDefault("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - [1]
       - [3]
@@ -44,6 +46,8 @@ tests:
       )
       AND (products.category = 'electronics' OR products.price > 50)
       ORDER BY id
+    plan_contains: "FlatMap(outer=PredicatesFilter(Scan(PRODUCTS), [1 preds]), inner=PredicatesFilter(FirstOrDefault("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - [5]
       - [6]

@@ -11,6 +11,8 @@ setup:
 tests:
   # PK order ASC (natural)
   - query: SELECT id FROM t ORDER BY id
+    plan_contains: "Scan(T)"
+    plan_not_contains: "InMemorySort"
     rows:
       - [1]
       - [2]
@@ -20,6 +22,8 @@ tests:
 
   # PK order DESC (reverse scan)
   - query: SELECT id FROM t ORDER BY id DESC
+    plan_contains: "Scan(T) REVERSE"
+    plan_not_contains: "InMemorySort"
     rows:
       - [5]
       - [4]
@@ -29,6 +33,8 @@ tests:
 
   # Index order ASC
   - query: SELECT id, val FROM t ORDER BY val
+    plan_contains: "IndexScan(IDX_VAL, [*])"
+    plan_not_contains: "InMemorySort"
     rows:
       - [2, 10]
       - [4, 20]
@@ -38,6 +44,8 @@ tests:
 
   # Index order DESC
   - query: SELECT id, val FROM t ORDER BY val DESC
+    plan_contains: "IndexScan(IDX_VAL, [*]) REVERSE"
+    plan_not_contains: "InMemorySort"
     rows:
       - [3, 50]
       - [5, 40]
@@ -47,6 +55,8 @@ tests:
 
   # Index scan with WHERE filter
   - query: SELECT id, val FROM t WHERE val > 25 ORDER BY val
+    plan_contains: "IndexScan(IDX_VAL, [<>] COVERING)"
+    plan_not_contains: "InMemorySort"
     rows:
       - [1, 30]
       - [5, 40]

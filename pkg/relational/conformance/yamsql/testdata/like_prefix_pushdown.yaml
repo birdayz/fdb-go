@@ -1,25 +1,35 @@
 # like_prefix_pushdown.yaml
 #
-# LIKE prefix pushdown: `WHERE col LIKE 'foo%'` on a STRING column
-# (either PK or single-col VALUE index) narrows to a range scan
-# `[prefix, strinc(prefix))` — a contiguous half-open interval over
-# the tuple-encoded byte order. Previously fell through to full-type
-# scan + per-row likeMatch.
+# No LIKE prefix pushdown exists — every LIKE query here is a full scan.
 #
-# Scope of the pushdown path (tested via equivalence with the scan
-# path):
-#   - Pattern ends in trailing `%`, no other `%` or `_`, no ESCAPE.
-#   - NOT LIKE bails (complement of a contiguous range).
-#   - Interior wildcards (`foo%bar`, `f_o%`) bail.
-#   - Leading wildcards (`%foo`, `%foo%`) bail.
-#   - Empty-prefix (`%`) bails — it already matches everything.
-#   - Non-string column kind bails.
+# The filename is an aspiration, not a description. Each LIKE query below
+# plans as a full type scan with the pattern left as a per-row residual —
+# `PredicatesFilter(Scan(T))` —
+# including `name LIKE 'a%'` where `name` IS the primary key, and
+# `status LIKE 'a%'` where `status` carries a single-column VALUE index that
+# the plan does not even open. The one non-LIKE control in the file
+# (`WHERE name = 'banana'` → `Scan(T, [=])`) proves the sarging machinery
+# itself works; LIKE simply never reaches it.
 #
-# Correctness invariant: result rows match the scan path regardless
-# of whether pushdown fires. The tests cover both directions:
-# pushdown-eligible patterns (verifying the narrowed range still
-# yields correct rows) and pushdown-ineligible patterns (verifying
-# the scan fallback produces the same rows).
+# The header this replaces described a pushdown in the present tense, listed
+# a six-line eligibility scope for it, and contradicted itself: it said
+# interior wildcards "bail", while the section at the bottom of the file
+# said an ESCAPE pattern with an interior `_` "narrows to the prefix before
+# the `_`". Neither statement was true and nothing could tell, because the
+# file asserted only rows — and rows are identical whether the range is
+# narrowed or the predicate is applied per row. That is exactly why the
+# claim survived: a pushdown that never existed read as covered.
+#
+# What this file actually pins now: `plan_not_contains: "<>"` on every LIKE
+# case. A range bound is how any narrowing would render — `Scan(T, [<>])`
+# on the PK, `IndexScan(IDX_STATUS, [<>])` on the secondary index,
+# `IndexScan(IDX_REGION_NAME, [=, <>])` on the composite. So these
+# assertions go RED the moment a real pushdown lands, which is the correct
+# and intended signal: whoever implements it updates this file from
+# "no narrowing" to the narrowed shape, case by case, and the eligibility
+# scope gets WRITTEN from what the assertions show rather than asserted from
+# a design note. Until then the rows below are still the correctness
+# invariant they always were — LIKE returns the right answers via the scan.
 name: like_prefix_pushdown
 schema_template: |
   CREATE TABLE t (
@@ -81,22 +91,30 @@ tests:
 
   # 'a%' matches apple, apricot.
   - query: SELECT name FROM t WHERE name LIKE 'a%' ORDER BY name
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['apple']
       - ['apricot']
 
   # 'ba%' matches banana (not bean — 'bean' starts with 'be').
   - query: SELECT name FROM t WHERE name LIKE 'ba%'
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['banana']
 
   # 'be%' matches bean.
   - query: SELECT name FROM t WHERE name LIKE 'be%'
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['bean']
 
   # Longer prefix — 'car%' matches only carrot.
   - query: SELECT name FROM t WHERE name LIKE 'car%'
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['carrot']
 
@@ -104,15 +122,21 @@ tests:
   # pushdown — it's equality, but LIKE 'apple' with no % still works
   # via scan).
   - query: SELECT name FROM t WHERE name LIKE 'apple'
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['apple']
 
   # No matches.
   - query: SELECT name FROM t WHERE name LIKE 'xyz%'
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows: []
 
   # Prefix matches everything starting with that letter.
   - query: SELECT name FROM t WHERE name LIKE 'c%' ORDER BY name
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['cabbage']
       - ['carrot']
@@ -120,28 +144,36 @@ tests:
   # Prefix matches single row where the prefix is longer than row
   # (pattern "appleX%" matches nothing, since "apple" != "appleX").
   - query: SELECT name FROM t WHERE name LIKE 'appleX%'
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows: []
 
   # -------------------------------------------------------------------
   # PK LIKE prefix + residual AND predicates
   # -------------------------------------------------------------------
 
-  # Range narrows to 'a*'; residual `v > 10` drops apple.
+  # No narrowing: the LIKE and `v > 10` are both per-row residuals.
   - query: SELECT name FROM t WHERE name LIKE 'a%' AND v > 10 ORDER BY name
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['apricot']
 
-  # Range narrows to 'b*'; residual tag filter drops bean.
+  # No narrowing: the LIKE and the tag equality are both per-row residuals.
   - query: SELECT name FROM t WHERE name LIKE 'b%' AND tag = 'fruit'
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['banana']
 
   # -------------------------------------------------------------------
-  # Bails to scan — NOT LIKE
+  # NOT LIKE
   # -------------------------------------------------------------------
 
-  # NOT LIKE bails. Result still correct via scan.
+  # NOT LIKE, correct via the scan.
   - query: SELECT name FROM t WHERE name NOT LIKE 'a%' ORDER BY name
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['banana']
       - ['bean']
@@ -150,40 +182,51 @@ tests:
       - ['date']
 
   # -------------------------------------------------------------------
-  # Bails to scan — interior wildcard / underscore / leading wildcard
+  # Interior wildcard / underscore / leading wildcard
   # -------------------------------------------------------------------
 
   # Interior `_`: matches 'bean' (4 chars: b-e-a-n), pattern 'b_an'
   # wildcards the second char → 'bean' matches; 'banana' doesn't
   # (wrong length).
   - query: SELECT name FROM t WHERE name LIKE 'b_an'
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['bean']
 
   # Interior `%`: pattern 'b%an%' — 'banana' (has 'an' after 'b'),
   # 'bean' (has 'an' at end).
   - query: SELECT name FROM t WHERE name LIKE 'b%an%' ORDER BY name
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['banana']
       - ['bean']
 
-  # Leading wildcard: bails.
+  # Leading wildcard.
   - query: SELECT name FROM t WHERE name LIKE '%ate'
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['date']
 
   # Empty-prefix `%` matches everything.
   - query: SELECT COUNT(*) FROM t WHERE name LIKE '%'
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - [7]
 
   # -------------------------------------------------------------------
-  # Secondary-index LIKE prefix pushdown
+  # Secondary index: not opened at all
   # -------------------------------------------------------------------
 
-  # idx_status is a VALUE index on status (STRING). `status LIKE 'a%'`
-  # pushes down as a range on the index key.
+  # idx_status is a VALUE index on status (STRING), and `status LIKE 'a%'`
+  # does not reach it — the plan is a full scan of T2. That is what
+  # `plan_not_contains: IndexScan` records.
   - query: SELECT id, status FROM t2 WHERE status LIKE 'a%' ORDER BY id
+    plan_contains: "PredicatesFilter(Scan(T2)"
+    plan_not_contains: "IndexScan"
     rows:
       - [1, 'active']
       - [2, 'archived']
@@ -191,35 +234,47 @@ tests:
 
   # `status LIKE 'd%'` hits the 'de*' and 'di*' rows.
   - query: SELECT id FROM t2 WHERE status LIKE 'd%' ORDER BY id
+    plan_contains: "PredicatesFilter(Scan(T2)"
+    plan_not_contains: "IndexScan"
     rows:
       - [4]
       - [5]
 
   # Longer prefix: only the matching status.
   - query: SELECT id FROM t2 WHERE status LIKE 'awa%'
+    plan_contains: "PredicatesFilter(Scan(T2)"
+    plan_not_contains: "IndexScan"
     rows:
       - [3]
 
-  # No match on the index → empty.
+  # No matching rows → empty.
   - query: SELECT id FROM t2 WHERE status LIKE 'zzz%'
+    plan_contains: "PredicatesFilter(Scan(T2)"
+    plan_not_contains: "IndexScan"
     rows: []
 
   # -------------------------------------------------------------------
-  # UPDATE / DELETE via PK LIKE prefix
+  # UPDATE / DELETE with a PK LIKE predicate
   # -------------------------------------------------------------------
 
   - query: UPDATE t SET tag = 'updated' WHERE name LIKE 'a%'
   - query: SELECT name, tag FROM t WHERE name LIKE 'a%' ORDER BY name
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['apple',   'updated']
       - ['apricot', 'updated']
   # Rows outside the prefix untouched.
   - query: SELECT tag FROM t WHERE name = 'banana'
+    plan_contains: "Scan(T, [=])"
+    plan_not_contains: "PredicatesFilter"
     rows:
       - ['fruit']
 
   - query: DELETE FROM t WHERE name LIKE 'c%'
   - query: SELECT COUNT(*) FROM t WHERE name LIKE 'c%'
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - [0]
   - query: SELECT COUNT(*) FROM t
@@ -230,25 +285,35 @@ tests:
   # Composite-PK LIKE prefix: leading eq on region + LIKE on name
   # -------------------------------------------------------------------
 
-  # PK (region, name) — WHERE region = 'us' AND name LIKE 'a%' narrows
-  # to the tuple prefix ['us', 'a'] with a bound on the second col.
+  # PK (region, name). The region equality opens the scan at [=]; the LIKE
+  # on the second PK column does NOT add a bound, it stays a residual. The old
+  # comment claimed it narrowed
+  # to the tuple prefix ['us', 'a'] — it does not.
   - query: SELECT region, name FROM cp WHERE region = 'us' AND name LIKE 'a%' ORDER BY name
+    plan_contains: "PredicatesFilter(Scan(CP, [=])"
+    plan_not_contains: "<>"
     rows:
       - ['us', 'apple']
       - ['us', 'apricot']
 
   # Same shape, different prefix.
   - query: SELECT region, name FROM cp WHERE region = 'eu' AND name LIKE 'b%'
+    plan_contains: "PredicatesFilter(Scan(CP, [=])"
+    plan_not_contains: "<>"
     rows:
       - ['eu', 'bean']
 
   # Composite PK LIKE + residual on non-indexed col.
   - query: SELECT name FROM cp WHERE region = 'us' AND name LIKE 'a%' AND v > 10
+    plan_contains: "PredicatesFilter(Scan(CP, [=])"
+    plan_not_contains: "<>"
     rows:
       - ['apricot']
 
   # Composite PK LIKE with NO match.
   - query: SELECT region FROM cp WHERE region = 'us' AND name LIKE 'zzz%'
+    plan_contains: "PredicatesFilter(Scan(CP, [=])"
+    plan_not_contains: "<>"
     rows: []
 
   # -------------------------------------------------------------------
@@ -256,81 +321,106 @@ tests:
   # -------------------------------------------------------------------
 
   # idx_region_name on (region, name). WHERE region = 'us' AND
-  # name LIKE 'a%' narrows to tuple [us, a, ...) on the index.
+  # WHERE region = 'us' opens the index at [=, *]; the LIKE does NOT extend
+  # that to a range on the second column — it stays a residual filter.
   - query: SELECT id, region, name FROM ci WHERE region = 'us' AND name LIKE 'a%' ORDER BY id
+    plan_contains: "PredicatesFilter(IndexScan(IDX_REGION_NAME, [=, *])"
+    plan_not_contains: "<>"
     rows:
       - [1, 'us', 'apple']
       - [2, 'us', 'apricot']
 
   - query: SELECT id FROM ci WHERE region = 'eu' AND name LIKE 'b%'
+    plan_contains: "PredicatesFilter(IndexScan(IDX_REGION_NAME, [=, *])"
+    plan_not_contains: "<>"
     rows:
       - [5]
 
-  # Composite index + LIKE on second col + non-matching first col bails
+  # Composite index + LIKE on second col + non-matching first col: the region
+  # equality selects an empty index range
   # at the index level (no such region) — empty.
   - query: SELECT id FROM ci WHERE region = 'asia' AND name LIKE 'a%'
+    plan_contains: "PredicatesFilter(IndexScan(IDX_REGION_NAME, [=, *])"
+    plan_not_contains: "<>"
     rows: []
 
   # -------------------------------------------------------------------
   # LIKE prefix with ESCAPE clause
   # -------------------------------------------------------------------
 
-  # Seed rows with literal underscores / percents so ESCAPE patterns
-  # have something real to narrow.
+  # Seed rows with literal underscores / percents so the ESCAPE patterns
+  # below have real data to match.
   - query: INSERT INTO t VALUES ('x_ray', 'extra', 88), ('y%lo', 'extra', 99)
   - query: SELECT name FROM t WHERE name LIKE 'x\_%' ESCAPE '\' ORDER BY name
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['x_ray']
 
   # Escaped `%` inside the pattern becomes a literal. Here pattern
   # 'y\%%' = literal "y%" + trailing wildcard → matches y%lo.
   - query: SELECT name FROM t WHERE name LIKE 'y\%%' ESCAPE '\' ORDER BY name
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['y%lo']
 
-  # ESCAPE without a trailing `%` is exact-match — not a prefix
-  # scan, but still correct via the scan path.
+  # ESCAPE without a trailing `%` is exact-match, and still a full scan.
   - query: SELECT name FROM t WHERE name LIKE 'x\_ray' ESCAPE '\'
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['x_ray']
 
-  # ESCAPE with interior `_` (unescaped) narrows to the prefix
-  # before the `_`. The scan loop's likeMatch handles the single-char
-  # wildcard position. Result is the same rows as the scan-only path.
+  # ESCAPE with an interior, unescaped `_`. This was the file's live
+  # self-contradiction: the header called interior wildcards ineligible while
+  # this comment said the pattern "narrows to the prefix before the `_`".
+  # Neither happens — like every other case here it is a full scan with the
+  # LIKE applied per row.
   - query: SELECT name FROM t WHERE name LIKE 'y\%l_' ESCAPE '\' ORDER BY name
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['y%lo']
 
   # -------------------------------------------------------------------
-  # Interior-wildcard prefix narrowing
+  # Interior wildcards
   # -------------------------------------------------------------------
   #
-  # `LIKE 'foo%bar'` / `LIKE 'f_o'` narrow at the first unescaped
-  # wildcard — "foo" or "f" respectively. The scan loop's likeMatch
-  # handles the wildcards and trailing literal. The narrowing keeps
-  # the scan bounded while the post-filter enforces full semantics.
+  # These four cases were labelled "interior-wildcard prefix narrowing" and
+  # described as narrowing at the first unescaped wildcard. They do not: the
+  # pattern is matched per row against a full scan, exactly like the trailing-
+  # `%` cases above. The rows are the real content of this block.
 
-  # 'a%le' → narrows at 'a', matches 'apple'.
+  # 'a%le' matches 'apple'.
   - query: SELECT name FROM t WHERE name LIKE 'a%le' ORDER BY name
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['apple']
 
-  # 'a_ple' → narrows at 'a', matches 'apple' (5 chars, a-_-p-l-e
+  # 'a_ple' matches 'apple' (5 chars, a-_-p-l-e
   # where `_` matches 'p'). Wait — the pattern has underscore at
   # position 1, literal 'p','l','e' at 2,3,4 — so "apple" is
   # a=a, _=p, p=p, l=l, e=e → matches. "apricot" doesn't match
   # (length mismatch).
   - query: SELECT name FROM t WHERE name LIKE 'a_ple' ORDER BY name
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['apple']
 
-  # 'bana%' — ends with %, narrows at 'bana'. Matches banana.
+  # 'bana%' — trailing wildcard, matches banana.
   - query: SELECT name FROM t WHERE name LIKE 'bana%'
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['banana']
 
-  # Underscore at the start — no literal prefix → bails. Still
+  # Underscore at the start — no literal prefix at all. Still
   # correct via the scan path.
   - query: SELECT name FROM t WHERE name LIKE '_anana'
+    plan_contains: "PredicatesFilter"
+    plan_not_contains: "<>"
     rows:
       - ['banana']

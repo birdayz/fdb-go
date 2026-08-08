@@ -6,10 +6,15 @@
 # here pin the correctness invariant: result rows must match what a
 # full sort would produce, even when elimination fires.
 #
-# The elimination itself isn't directly observable from row contents.
-# This file's value is regression safety — if elimination incorrectly
-# fires on a query where the cursor order DOESN'T match (e.g. DESC,
-# mid-chain col), the result order would diverge and tests fail.
+# The elimination is not observable from row contents — a sorted result and
+# a sort-free result are the same rows — so every case asserts the plan.
+# `plan_not_contains: InMemorySort` marks the cases where elimination MUST
+# fire; the four cases that legitimately keep a sort (ORDER BY on a non-scan
+# column, ORDER BY id over an index range, mixed ASC/DESC, ORDER BY a
+# trailing PK column) assert `plan_contains: InMemorySort` instead, so a
+# planner that started eliminating sorts it may not eliminate also goes red.
+# Without both directions the file passed against a tree with no elimination
+# at all.
 #
 # Cursor natural orders (per execSelectQueryFull):
 #   - PK equality / PK range / composite-PK range: PK cols ASC
@@ -54,6 +59,8 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT id, v FROM t ORDER BY id
+    plan_contains: "Scan(T)"
+    plan_not_contains: "InMemorySort"
     rows:
       - [1, 30]
       - [2, 20]
@@ -63,6 +70,8 @@ tests:
 
   # Full scan + ORDER BY on non-PK col — must actually sort (v).
   - query: SELECT id, v FROM t ORDER BY v
+    plan_contains: "IndexScan(IDX_V, [*])"
+    plan_not_contains: "InMemorySort"
     rows:
       - [3, 10]
       - [5, 15]
@@ -75,6 +84,8 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT id FROM t WHERE id > 1 ORDER BY id
+    plan_contains: "Scan(T, [<>])"
+    plan_not_contains: "InMemorySort"
     rows:
       - [2]
       - [3]
@@ -83,6 +94,8 @@ tests:
 
   # PK range + DESC — sort must run (cursor is ASC only).
   - query: SELECT id FROM t WHERE id > 1 ORDER BY id DESC
+    plan_contains: "Scan(T, [<>]) REVERSE"
+    plan_not_contains: "InMemorySort"
     rows:
       - [5]
       - [4]
@@ -94,11 +107,15 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT id FROM t WHERE v = 10 ORDER BY id
+    plan_contains: "IndexScan(IDX_V, [=] COVERING)"
+    plan_not_contains: "InMemorySort"
     rows:
       - [3]
 
   # Secondary-index range + ORDER BY v (the indexed col) — eliminate.
   - query: SELECT id, v FROM t WHERE v >= 20 ORDER BY v
+    plan_contains: "IndexScan(IDX_V, [<>] COVERING)"
+    plan_not_contains: "InMemorySort"
     rows:
       - [2, 20]
       - [1, 30]
@@ -107,6 +124,8 @@ tests:
   # Secondary-index range + ORDER BY (v, id) — prefix matches
   # natural order (idxCol + PK suffix), eliminate.
   - query: SELECT id, v FROM t WHERE v >= 20 ORDER BY v, id
+    plan_contains: "IndexScan(IDX_V, [<>] COVERING)"
+    plan_not_contains: "InMemorySort"
     rows:
       - [2, 20]
       - [1, 30]
@@ -114,6 +133,7 @@ tests:
 
   # Secondary-index range + ORDER BY on DIFFERENT col — must sort.
   - query: SELECT id, v, name FROM t WHERE v >= 20 ORDER BY name
+    plan_contains: "InMemorySort([NAME ASC], Fetch(IndexScan(IDX_V, [<>])))"
     rows:
       - [1, 30, 'a']
       - [2, 20, 'b']
@@ -124,6 +144,8 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY a, b
+    plan_contains: "Scan(AB, [=])"
+    plan_not_contains: "InMemorySort"
     rows:
       - [1, 10]
       - [1, 20]
@@ -135,6 +157,8 @@ tests:
   # beyond the `a` key (b ASC within each a group). Locked in to
   # catch any regression that breaks PK tuple ordering.
   - query: SELECT a, b FROM ab WHERE b > 5 ORDER BY a
+    plan_contains: "PredicatesFilter(Scan(AB)"
+    plan_not_contains: "InMemorySort"
     rows:
       - [1, 10]
       - [1, 20]
@@ -144,6 +168,8 @@ tests:
 
   # Composite PK range + ORDER BY b (non-prefix) — must sort.
   - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY b DESC
+    plan_contains: "Scan(AB, [=]) REVERSE"
+    plan_not_contains: "InMemorySort"
     rows:
       - [1, 30]
       - [1, 20]
@@ -154,6 +180,8 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT id, region, plan FROM rp WHERE region = 'us' AND plan > 'a' ORDER BY region, plan
+    plan_contains: "IndexScan(IDX_REGION_PLAN, [=, <>] COVERING)"
+    plan_not_contains: "InMemorySort"
     rows:
       - [2, 'us', 'free']
       - [1, 'us', 'pro']
@@ -163,6 +191,7 @@ tests:
   # natural order is (region, plan, id). ORDER BY [id] alone is NOT
   # a prefix of (region, plan, id) — must sort.
   - query: SELECT id FROM rp WHERE region = 'us' AND plan > 'a' ORDER BY id
+    plan_contains: "InMemorySort([ID ASC], Fetch(IndexScan(IDX_REGION_PLAN, [=, <>])))"
     rows:
       - [1]
       - [2]
@@ -173,6 +202,8 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT id FROM t WHERE id = 3 ORDER BY id
+    plan_contains: "Scan(T, [=])"
+    plan_not_contains: "InMemorySort"
     rows:
       - [3]
 
@@ -185,6 +216,8 @@ tests:
 
   # ASC + NULLS FIRST (explicit): eliminate.
   - query: SELECT id FROM t ORDER BY id ASC NULLS FIRST
+    plan_contains: "Scan(T)"
+    plan_not_contains: "InMemorySort"
     rows:
       - [1]
       - [2]
@@ -199,6 +232,8 @@ tests:
   # rejected via "no scan satisfies"; that contradicted the pinned
   # rows below, which have always asserted success.)
   - query: SELECT id FROM t ORDER BY id ASC NULLS LAST
+    plan_contains: "Scan(T)"
+    plan_not_contains: "InMemorySort"
     rows:
       - [1]
       - [2]
@@ -213,28 +248,38 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT id FROM t ORDER BY id LIMIT 3
+    plan_contains: "Limit(3, Project([ID#0], Scan(T)))"
+    plan_not_contains: "InMemorySort"
     rows:
       - [1]
       - [2]
       - [3]
 
   - query: SELECT id FROM t ORDER BY id LIMIT 2 OFFSET 2
+    plan_contains: "Limit(2, offset=2,"
+    plan_not_contains: "InMemorySort"
     rows:
       - [3]
       - [4]
 
   - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v LIMIT 3
+    plan_contains: "Limit(3, Fetch(IndexScan(IDX_V, [<>])))"
+    plan_not_contains: "InMemorySort"
     rows:
       - [3, 10]
       - [5, 15]
       - [2, 20]
 
   - query: SELECT id FROM t ORDER BY id DESC LIMIT 2
+    plan_contains: "Limit(2, Scan(T) REVERSE)"
+    plan_not_contains: "InMemorySort"
     rows:
       - [5]
       - [4]
 
   - query: SELECT DISTINCT v FROM t WHERE v > 0 ORDER BY v LIMIT 3
+    plan_contains: "Distinct(Project([V#1], IndexScan(IDX_V, [<>] COVERING)))"
+    plan_not_contains: "InMemorySort"
     rows:
       - [10]
       - [15]
@@ -248,6 +293,8 @@ tests:
   # and eliminate the sort since id matches the PK natural order.
 
   - query: SELECT id AS pk FROM t ORDER BY pk
+    plan_contains: "Scan(T)"
+    plan_not_contains: "InMemorySort"
     rows:
       - [1]
       - [2]
@@ -257,6 +304,8 @@ tests:
 
   # Alias + LIMIT (Go extension, RFC-128).
   - query: SELECT id AS pk FROM t ORDER BY pk LIMIT 2
+    plan_contains: "Limit(2, Project([ID#0], Scan(T)))"
+    plan_not_contains: "InMemorySort"
     rows:
       - [1]
       - [2]
@@ -264,6 +313,8 @@ tests:
   # Alias that shadows a different col — ORDER BY matches the
   # alias's underlying column, not the alias's own name.
   - query: SELECT v AS id FROM t ORDER BY id
+    plan_contains: "IndexScan(IDX_V, [*])"
+    plan_not_contains: "InMemorySort"
     rows:
       - [10]
       - [15]
@@ -292,6 +343,8 @@ tests:
 
   # Full type scan + ORDER BY id DESC — single-col PK, reverse scan.
   - query: SELECT id FROM t ORDER BY id DESC
+    plan_contains: "Scan(T) REVERSE"
+    plan_not_contains: "InMemorySort"
     rows:
       - [5]
       - [4]
@@ -301,6 +354,8 @@ tests:
 
   # PK range + ORDER BY id DESC — reverse scan on the range.
   - query: SELECT id FROM t WHERE id > 1 AND id < 5 ORDER BY id DESC
+    plan_contains: "Scan(T, [<>]) REVERSE"
+    plan_not_contains: "InMemorySort"
     rows:
       - [4]
       - [3]
@@ -309,6 +364,8 @@ tests:
   # Composite PK range + ORDER BY (a DESC, b DESC) — reverse scan
   # produces tuple order reversed.
   - query: SELECT a, b FROM ab WHERE a = 1 AND b > 10 ORDER BY a DESC, b DESC
+    plan_contains: "Scan(AB, [=, <>]) REVERSE"
+    plan_not_contains: "InMemorySort"
     rows:
       - [1, 30]
       - [1, 20]
@@ -316,6 +373,8 @@ tests:
   # Composite PK pure prefix + ORDER BY (a DESC, b DESC) — reverse
   # scan over the tuple-prefix [rtk, 1].
   - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY a DESC, b DESC
+    plan_contains: "Scan(AB, [=]) REVERSE"
+    plan_not_contains: "InMemorySort"
     rows:
       - [1, 30]
       - [1, 20]
@@ -323,6 +382,8 @@ tests:
 
   # ORDER BY id DESC + LIMIT (Go extension, RFC-128).
   - query: SELECT id FROM t ORDER BY id DESC LIMIT 2
+    plan_contains: "Limit(2, Scan(T) REVERSE)"
+    plan_not_contains: "InMemorySort"
     rows:
       - [5]
       - [4]
@@ -331,6 +392,8 @@ tests:
   # to the row set. Pins that the reverse-scan branch doesn't break
   # the at-most-one case.
   - query: SELECT id, v FROM t WHERE id = 3 ORDER BY id DESC
+    plan_contains: "Scan(T, [=])"
+    plan_not_contains: "InMemorySort"
     rows:
       - [3, 10]
 
@@ -339,6 +402,7 @@ tests:
   # descending sub-sorts; rejection emerges from "no scan satisfies".
   # Same architectural reason in both engines.
   - query: SELECT a, b FROM ab WHERE a > 0 ORDER BY a ASC, b DESC
+    plan_contains: "InMemorySort([A ASC, B DESC], Scan(AB, [<>]))"
     rows:
       - [1, 30]
       - [1, 20]
@@ -350,6 +414,8 @@ tests:
   # exercises the alias-resolves-to-PK-col reverse-scan path with a
   # row bound.
   - query: SELECT id AS pk FROM t ORDER BY pk DESC LIMIT 3
+    plan_contains: "Limit(3, Project([ID#0], Scan(T) REVERSE))"
+    plan_not_contains: "InMemorySort"
     rows:
       - [5]
       - [4]
@@ -361,6 +427,8 @@ tests:
   # [b] and ORDER BY b DESC matches the all-DESC prefix → reverse
   # scan is applied, post-sort is skipped.
   - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY b DESC
+    plan_contains: "Scan(AB, [=]) REVERSE"
+    plan_not_contains: "InMemorySort"
     rows:
       - [1, 30]
       - [1, 20]
@@ -375,6 +443,8 @@ tests:
   # naturalOrder=[a,b] (pkCols), equatedCols={a} → effective
   # naturalOrder=[b]. orderBy=[b ASC] matches → sort eliminated.
   - query: SELECT a, b FROM ab WHERE a = 2 ORDER BY b ASC
+    plan_contains: "Scan(AB, [=])"
+    plan_not_contains: "InMemorySort"
     rows:
       - [2, 10]
       - [2, 20]
@@ -382,6 +452,8 @@ tests:
   # Leading PK col equated + LIMIT (Go extension, RFC-128) — the
   # equality-prefix-relaxation forward-scan path with a row bound.
   - query: SELECT a, b FROM ab WHERE a = 2 ORDER BY b ASC LIMIT 1
+    plan_contains: "Limit(1, Scan(AB, [=]))"
+    plan_not_contains: "InMemorySort"
     rows:
       - [2, 10]
 
@@ -390,6 +462,8 @@ tests:
   # irrelevant (constant), only b DESC drives the decision. Reverse
   # scan applies.
   - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY a DESC, b DESC
+    plan_contains: "Scan(AB, [=]) REVERSE"
+    plan_not_contains: "InMemorySort"
     rows:
       - [1, 30]
       - [1, 20]
@@ -398,6 +472,8 @@ tests:
   # ORDER BY on the equated col alone — every row has a=1, direction
   # is a no-op. Forward scan + sort eliminated.
   - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY a DESC
+    plan_contains: "Scan(AB, [=])"
+    plan_not_contains: "REVERSE"
     rows:
       - [1, 10]
       - [1, 20]
@@ -409,6 +485,8 @@ tests:
   # matches → sort eliminated. The DESC twin below uses the same
   # equality-prefix relaxation with a reverse secondary-index scan.
   - query: SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan
+    plan_contains: "IndexScan(IDX_REGION_PLAN, [=, *] COVERING)"
+    plan_not_contains: "InMemorySort"
     rows:
       - [2, 'us', 'free']
       - [1, 'us', 'pro']
@@ -419,6 +497,7 @@ tests:
   # the orderBy unchanged with orderBy[0]=c ≠ na[0]=b → falls through
   # to in-memory sort. Rows come out sorted by c ASC.
   - query: SELECT a, b, c FROM ab WHERE a = 1 ORDER BY c
+    plan_contains: "InMemorySort([C ASC], Scan(AB, [=]))"
     rows:
       - [1, 10, 100]
       - [1, 30, 130]
@@ -432,6 +511,8 @@ tests:
   # Single-col secondary index: idx_v on t(v). naturalOrder=(v, id).
   # ORDER BY v DESC is an all-DESC prefix → reverse scan applies.
   - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v DESC
+    plan_contains: "IndexScan(IDX_V, [<>] COVERING) REVERSE"
+    plan_not_contains: "InMemorySort"
     rows:
       - [4, 40]
       - [1, 30]
@@ -442,6 +523,8 @@ tests:
   # Same with LIMIT (Go extension, RFC-128) — reverse scan bounded
   # to the top two v values.
   - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v DESC LIMIT 2
+    plan_contains: "Limit(2, Fetch(IndexScan(IDX_V, [<>]) REVERSE))"
+    plan_not_contains: "InMemorySort"
     rows:
       - [4, 40]
       - [1, 30]
@@ -454,6 +537,8 @@ tests:
   # rows), id=3 comes before id=1 under reverse; then region='us'
   # + plan='free' trails.
   - query: SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan DESC
+    plan_contains: "IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE"
+    plan_not_contains: "InMemorySort"
     rows:
       - [3, 'us', 'pro']
       - [1, 'us', 'pro']
@@ -463,5 +548,7 @@ tests:
   # extension, RFC-128). region='eu' rows: (4, 'pro'), (5, 'free');
   # plan DESC puts 'pro' first, LIMIT 1 keeps id=4.
   - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY plan DESC LIMIT 1
+    plan_contains: "Limit(1, Fetch(IndexScan(IDX_REGION_PLAN, [=, *]) REVERSE))"
+    plan_not_contains: "InMemorySort"
     rows:
       - [4]

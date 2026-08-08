@@ -12,6 +12,8 @@ setup:
 tests:
   # 1:N join — Tolkien has 3 books, Asimov has 2.
   - query: SELECT a.name, b.title FROM authors a, books b WHERE b.author_id = a.id ORDER BY a.name, b.title
+    plan_contains: "FlatMap("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ["Asimov", "Foundation"]
       - ["Asimov", "I Robot"]
@@ -25,11 +27,15 @@ tests:
       WHERE b.author_id = a.id
       GROUP BY a.name
       ORDER BY a.name
+    plan_contains: "FlatMap("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ["Asimov", 2]
       - ["Tolkien", 3]
   # LIMIT on 1:N join.
   - query: SELECT a.name, b.title FROM authors a, books b WHERE b.author_id = a.id ORDER BY b.title LIMIT 3
+    plan_contains: "FlatMap("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - ["Asimov", "Foundation"]
       - ["Tolkien", "Hobbit"]

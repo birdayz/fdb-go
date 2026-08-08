@@ -2,8 +2,16 @@
 #
 # Exercises the predicate split for correlated NOT EXISTS: outer-only
 # predicates filter the outer plan, inner-referencing predicates
-# filter the inner plan. Tests both PK-match (FlatMap) and non-PK
-# (NLJ fallback) paths.
+# filter the inner plan. The assertions below pin exactly that split —
+# which side of the FlatMap each predicate lands on.
+#
+# The header used to claim this file covered "both PK-match (FlatMap) and
+# non-PK (NLJ fallback) paths". It does not, and nothing checked: all five
+# cases plan as FlatMap. `shipments.order_id` is neither the PK nor indexed,
+# so the inner side is a filtered full scan — but it is still the inner of a
+# correlated FlatMap, never a NestedLoopJoin. Correlated EXISTS/NOT EXISTS
+# does not have an NLJ fallback here; the LEFT JOIN cases in
+# flatmap_regression.yaml are where NestedLoopJoin actually appears.
 name: not_exists_predicates
 schema_template: |
   CREATE TABLE orders (id BIGINT, status STRING, customer_id BIGINT, PRIMARY KEY (id))
@@ -14,25 +22,35 @@ setup:
 tests:
   # Basic correlated NOT EXISTS
   - query: SELECT o.id FROM orders o WHERE NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id) ORDER BY o.id
+    plan_contains: "FlatMap(outer=Scan(ORDERS)"
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - [1]
       - [4]
 
   # NOT EXISTS + outer predicate (status filter)
   - query: SELECT o.id FROM orders o WHERE o.status = 'pending' AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id) ORDER BY o.id
+    plan_contains: "FlatMap(outer=PredicatesFilter(Scan(ORDERS)"
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - [1]
 
   # EXISTS + outer predicate
   - query: SELECT o.id FROM orders o WHERE o.status = 'pending' AND EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id) ORDER BY o.id
+    plan_contains: "FlatMap(outer=PredicatesFilter(Scan(ORDERS)"
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - [3]
 
   # NOT EXISTS with no matching inner rows at all
   - query: SELECT o.id FROM orders o WHERE o.customer_id = 300 AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id) ORDER BY o.id
+    plan_contains: "FlatMap(outer=PredicatesFilter(Scan(ORDERS)"
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - [4]
 
   # NOT EXISTS where all outer rows have matches (empty result)
   - query: SELECT o.id FROM orders o WHERE o.id IN (2, 3) AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id)
+    plan_contains: "FlatMap(outer=PredicatesFilter(Scan(ORDERS)"
+    plan_not_contains: "NestedLoopJoin"
     rows: []

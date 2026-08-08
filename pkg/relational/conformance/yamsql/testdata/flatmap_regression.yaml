@@ -2,6 +2,14 @@
 #
 # Exercises the FlatMap execution path to verify the RowEvalContext
 # CorrelationBinder addition doesn't break existing FlatMap behavior.
+#
+# Every operator claim below is asserted with plan_contains/plan_not_contains.
+# Without them the file named four "FlatMap modes" that nothing could observe,
+# and one of the four was simply wrong: the LEFT JOIN case plans as
+# NestedLoopJoin(LEFT OUTER), because the join column c.parent_id is not
+# child's PK and carries no index, so there is no correlated access path to
+# bind. Compare flatmap_left_outer_coverage.yaml, where the LEFT JOIN inner
+# IS keyed on the join column and a FlatMap does win.
 name: flatmap_regression
 schema_template: |
   CREATE TABLE parent (id BIGINT, name STRING, PRIMARY KEY (id))
@@ -15,17 +23,25 @@ tests:
       SELECT p.name, c.val FROM parent p, child c
       WHERE c.parent_id = p.id
       ORDER BY p.name, c.val
+    plan_contains: "FlatMap("
+    plan_not_contains: NestedLoopJoin
     rows:
       - ["Alpha", 100]
       - ["Alpha", 200]
       - ["Beta", 150]
       - ["Beta", 250]
 
-  # EXISTS subquery (FlatMap EXISTS mode)
+  # EXISTS subquery (FlatMap EXISTS mode). The negation of NOT EXISTS lives
+  # inside the outer PredicatesFilter's predicate, so the rendered plan cannot
+  # distinguish EXISTS from NOT EXISTS — the rows do that. What the plan pins
+  # is the shared shape: a correlated FlatMap whose inner is short-circuited to
+  # at most one row by FirstOrDefault, not a full join.
   - query: >
       SELECT p.name FROM parent p
       WHERE EXISTS (SELECT 1 FROM child c WHERE c.parent_id = p.id AND c.val > 100)
       ORDER BY p.name
+    plan_contains: "FlatMap(outer=Scan(PARENT), inner=PredicatesFilter(FirstOrDefault("
+    plan_not_contains: NestedLoopJoin
     rows:
       - ["Alpha"]
       - ["Beta"]
@@ -35,14 +51,21 @@ tests:
       SELECT p.name FROM parent p
       WHERE NOT EXISTS (SELECT 1 FROM child c WHERE c.parent_id = p.id)
       ORDER BY p.name
+    plan_contains: "FlatMap(outer=Scan(PARENT), inner=PredicatesFilter(FirstOrDefault("
+    plan_not_contains: NestedLoopJoin
     rows:
       - ["Gamma"]
 
-  # LEFT JOIN (FlatMap LEFT OUTER mode)
+  # LEFT JOIN — NOT a FlatMap. c.parent_id is neither child's PK nor indexed,
+  # so no correlated access path exists for the inner side and the join lands
+  # on NestedLoopJoin(LEFT OUTER). The header used to call this "FlatMap LEFT
+  # OUTER mode"; nothing checked it, and it was false.
   - query: >
       SELECT p.name, c.val FROM parent p
       LEFT JOIN child c ON c.parent_id = p.id
       ORDER BY p.name, c.val
+    plan_contains: "NestedLoopJoin(LEFT OUTER"
+    plan_not_contains: FlatMap
     rows:
       - ["Alpha", 100]
       - ["Alpha", 200]
@@ -55,6 +78,8 @@ tests:
       SELECT p.name, SUM(c.val) FROM parent p, child c
       WHERE c.parent_id = p.id
       GROUP BY p.name ORDER BY p.name
+    plan_contains: "StreamingAgg(keys=[P.NAME#1], InMemorySort([P.NAME#1 ASC], FlatMap("
+    plan_not_contains: NestedLoopJoin
     rows:
       - ["Alpha", 300]
       - ["Beta", 400]

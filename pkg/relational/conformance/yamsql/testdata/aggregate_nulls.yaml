@@ -47,11 +47,14 @@ tests:
   # order. Before the fix the pre-aggregate sort omitted NullsFirst (zero-value
   # = NULLS LAST) and the NULL group came out LAST — wrong rows, not cosmetics.
   - query: SELECT grp, COUNT(*) FROM t GROUP BY grp ORDER BY grp
+    plan_contains: "StreamingAgg(keys=[GRP#1], InMemorySort([GRP#1 ASC], Scan(T)))"
+    plan_not_contains: "InMemorySort([GRP ASC]"
     rows:
       - [~, 2]
       - [a, 3]
       - [b, 1]
   - query: SELECT grp, COUNT(*) FROM t GROUP BY grp ORDER BY grp DESC
+    plan_contains: "InMemorySort([GRP DESC], StreamingAgg("
     rows:
       - [b, 1]
       - [a, 3]

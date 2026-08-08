@@ -10,11 +10,19 @@
 # Tried LAST of the secondary-index branches: tighter forms
 # (full-equality, IN-list, range, composite-range) win first.
 #
-# Correctness-only tests — the pushdown decision isn't directly
-# observable from results; regression safety: if the branch
-# wrongly fires on a query where the index prefix doesn't match,
-# or wrongly BAILS on a query that should take the branch, the
-# result set diverges and tests fail.
+# The pushdown decision IS observable — every SELECT below asserts the
+# scan shape it claims. Rows alone cannot see it: a full type scan with a
+# residual filter returns exactly the same rows as a narrowed prefix scan,
+# so a file that only checked rows passed against a planner with no prefix
+# pushdown at all. The bracket notation is the assertion surface:
+# `[=, *]` is a one-column prefix over a two-column index, `[=, =]` is full
+# equality on it, `[=, *, *]` a one-column prefix over the three-column one.
+#
+# The UPDATE/DELETE steps at the bottom cannot carry plan assertions — the
+# loader rejects them on non-queries because the runner returns before the
+# plan check. Their scan shape is pinned instead by the corpus-wide baseline
+# in conformance/explaindiff/testdata/plan_shape.golden, which renders the
+# DML plans too.
 name: composite_secondary_index_prefix_pushdown
 schema_template: |
   CREATE TABLE rp (
@@ -40,6 +48,8 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT id FROM rp WHERE region = 'us' ORDER BY id
+    plan_contains: "IndexScan(IDX_REGION_PLAN, [=, *])"
+    plan_not_contains: "Scan(RP)"
     rows:
       - [1]
       - [2]
@@ -50,6 +60,8 @@ tests:
   # evalPredicate. Result set narrows correctly regardless of whether
   # the branch fires or falls through.
   - query: SELECT id FROM rp WHERE region = 'us' AND tier = 1 ORDER BY id
+    plan_contains: "PredicatesFilter(IndexScan(IDX_REGION_PLAN_TIER, [=, *, *])"
+    plan_not_contains: "Scan(RP)"
     rows:
       - [1]
       - [3]
@@ -58,6 +70,8 @@ tests:
   # full type scan. Verifies the branch isn't firing when leading
   # col has no equality.
   - query: SELECT id FROM rp WHERE plan = 'pro' ORDER BY id
+    plan_contains: "PredicatesFilter(Scan(RP)"
+    plan_not_contains: IndexScan
     rows:
       - [1]
       - [2]
@@ -69,6 +83,8 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY id
+    plan_contains: "IndexScan(IDX_REGION_PLAN, [=, *])"
+    plan_not_contains: "Scan(RP)"
     rows:
       - [4]
       - [5]
@@ -79,6 +95,8 @@ tests:
   # on iteration order of GetIndexesForRecordType — whichever is
   # picked first; both are correct.
   - query: SELECT id FROM rp WHERE region = 'us' AND plan = 'pro' ORDER BY id
+    plan_contains: "[=, =]"
+    plan_not_contains: "Scan(RP)"
     rows:
       - [1]
       - [2]
@@ -89,6 +107,8 @@ tests:
   # this, not the composite-prefix branch. Composite-prefix explicitly
   # bails when every col is equated.
   - query: SELECT id FROM rp WHERE region = 'us' AND plan = 'pro' AND tier = 1 ORDER BY id
+    plan_contains: "IndexScan(IDX_REGION_PLAN_TIER, [=, =, =]"
+    plan_not_contains: "Scan(RP)"
     rows:
       - [1]
 
@@ -96,6 +116,8 @@ tests:
   # prefix is only [region] (stops at first non-equated col).
   # Trailing tier=1 stays post-filter. No bogus "skip-middle" behavior.
   - query: SELECT id FROM rp WHERE region = 'us' AND tier = 2 ORDER BY id
+    plan_contains: "PredicatesFilter(IndexScan(IDX_REGION_PLAN_TIER, [=, *, *])"
+    plan_not_contains: "[=, *, =]"
     rows:
       - [2]
 
@@ -108,6 +130,8 @@ tests:
     rowcount: 2
 
   - query: SELECT id, tier FROM rp WHERE region = 'eu' ORDER BY id
+    plan_contains: "IndexScan(IDX_REGION_PLAN, [=, *])"
+    plan_not_contains: "Scan(RP)"
     rows:
       - [4, 99]
       - [5, 99]
@@ -116,4 +140,6 @@ tests:
     rowcount: 2
 
   - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY id
+    plan_contains: "IndexScan(IDX_REGION_PLAN, [=, *])"
+    plan_not_contains: "Scan(RP)"
     rows: []

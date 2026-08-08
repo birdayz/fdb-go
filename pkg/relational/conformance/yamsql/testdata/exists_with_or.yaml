@@ -25,6 +25,8 @@ tests:
         WHERE tags.item_id = items.id AND (tags.label = 'hot' OR tags.label = 'new')
       )
       ORDER BY id
+    plan_contains: "FlatMap(outer=Scan(ITEMS), inner=PredicatesFilter(FirstOrDefault("
+    plan_not_contains: "NestedLoopJoin"
     rows:
       - [1]
       - [2]

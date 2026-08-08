@@ -29,6 +29,7 @@ setup:
 tests:
   # Simple equality on indexed column
   - query: SELECT * FROM t1 WHERE col1 = 20 ORDER BY id
+    plan_contains: "Fetch(IndexScan(I1, [=]))"
     rows:
       - [6, 20, 6]
       - [7, 20, 7]
@@ -38,6 +39,7 @@ tests:
 
   # AND range: col1 >= 10 AND col1 <= 20 → combined range scan
   - query: SELECT id FROM t1 WHERE col1 >= 10 AND col1 <= 20 ORDER BY id
+    plan_contains: "PredicatesFilter(IndexScan(I1, [<>])"
     rows:
       - [1]
       - [2]
@@ -52,6 +54,7 @@ tests:
 
   # Strict range: col1 > 10 AND col1 < 30
   - query: SELECT id FROM t1 WHERE col1 > 10 AND col1 < 30 ORDER BY id
+    plan_contains: "PredicatesFilter(IndexScan(I1, [<>])"
     rows:
       - [6]
       - [7]
@@ -61,6 +64,8 @@ tests:
 
   # Duplicate OR: col1 = 20 OR col1 = 20 → deduplicated to single equality
   - query: SELECT id FROM t1 WHERE col1 = 20 OR col1 = 20 ORDER BY id
+    plan_contains: "PredicatesFilter(Scan(T1)"
+    plan_not_contains: "IndexScan"
     rows:
       - [6]
       - [7]
@@ -70,6 +75,7 @@ tests:
 
   # Duplicate AND: col1 = 20 AND col1 = 20 → single equality
   - query: SELECT id FROM t1 WHERE col1 = 20 AND col1 = 20 ORDER BY id
+    plan_contains: "PredicatesFilter(IndexScan(I1, [=])"
     rows:
       - [6]
       - [7]
@@ -79,6 +85,8 @@ tests:
 
   # OR with different values: col1 = 10 OR col1 = 30
   - query: SELECT id FROM t1 WHERE col1 = 10 OR col1 = 30 ORDER BY id
+    plan_contains: "PredicatesFilter(Scan(T1)"
+    plan_not_contains: "IndexScan"
     rows:
       - [1]
       - [2]
@@ -91,6 +99,8 @@ tests:
 
   # Complex: (OR) AND (OR) → should still work correctly
   - query: SELECT id FROM t1 WHERE (col1 = 20 OR col1 = 10) AND (col1 = 20 OR col1 = 10) ORDER BY id
+    plan_contains: "PredicatesFilter(Scan(T1), [2 preds])"
+    plan_not_contains: "IndexScan"
     rows:
       - [1]
       - [2]
@@ -105,6 +115,8 @@ tests:
 
   # Greater than with ORDER BY on indexed column
   - query: SELECT id, col1 FROM t1 WHERE col1 >= 20 ORDER BY col1, id
+    plan_contains: "IndexScan(I1, [<>] COVERING)"
+    plan_not_contains: "InMemorySort"
     rows:
       - [6, 20]
       - [7, 20]
@@ -117,6 +129,7 @@ tests:
 
   # Less than
   - query: SELECT id FROM t1 WHERE col1 < 20 ORDER BY id
+    plan_contains: "Fetch(IndexScan(I1, [<>]))"
     rows:
       - [1]
       - [2]
@@ -126,6 +139,8 @@ tests:
 
   # Not equals (no index pushdown — full scan + filter)
   - query: SELECT id FROM t1 WHERE col1 <> 20 ORDER BY id
+    plan_contains: "PredicatesFilter(Scan(T1)"
+    plan_not_contains: "IndexScan"
     rows:
       - [1]
       - [2]

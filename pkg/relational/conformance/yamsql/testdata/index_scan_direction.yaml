@@ -25,6 +25,8 @@ setup:
 tests:
   # ORDER BY indexed column ASC
   - query: SELECT id, ts FROM events WHERE ts >= 150 ORDER BY ts
+    plan_contains: "IndexScan(IDX_TS, [<>] COVERING)"
+    plan_not_contains: "InMemorySort"
     rows:
       - [3, 150]
       - [2, 200]
@@ -33,6 +35,8 @@ tests:
 
   # ORDER BY indexed column DESC
   - query: SELECT id, ts FROM events WHERE ts >= 150 ORDER BY ts DESC
+    plan_contains: "IndexScan(IDX_TS, [<>] COVERING) REVERSE"
+    plan_not_contains: "InMemorySort"
     rows:
       - [4, 300]
       - [5, 250]
@@ -41,6 +45,8 @@ tests:
 
   # ORDER BY PK ASC with range predicate
   - query: SELECT id, ts FROM events WHERE id > 3 ORDER BY id
+    plan_contains: "Scan(EVENTS, [<>])"
+    plan_not_contains: "InMemorySort"
     rows:
       - [4, 300]
       - [5, 250]
@@ -48,6 +54,8 @@ tests:
 
   # ORDER BY PK DESC
   - query: SELECT id FROM events ORDER BY id DESC
+    plan_contains: "Scan(EVENTS) REVERSE"
+    plan_not_contains: "InMemorySort"
     rows:
       - [6]
       - [5]
@@ -58,6 +66,8 @@ tests:
 
   # ORDER BY string indexed column
   - query: SELECT id, category FROM events WHERE category >= 'l' ORDER BY category, id
+    plan_contains: "IndexScan(IDX_CATEGORY, [<>] COVERING)"
+    plan_not_contains: "InMemorySort"
     rows:
       - [1, 'login']
       - [3, 'login']
@@ -66,6 +76,8 @@ tests:
 
   # Covering index scan with ORDER BY
   - query: SELECT id, ts FROM events WHERE ts BETWEEN 100 AND 200 ORDER BY ts
+    plan_contains: "PredicatesFilter(IndexScan(IDX_TS, [<>])"
+    plan_not_contains: "InMemorySort"
     rows:
       - [1, 100]
       - [3, 150]
@@ -73,11 +85,14 @@ tests:
 
   # COUNT with indexed filter
   - query: SELECT COUNT(*) FROM events WHERE category = 'login'
+    plan_contains: "IndexScan(IDX_CATEGORY, [=] COVERING)"
+    plan_not_contains: "Fetch"
     rows:
       - [3]
 
   # Multi-value aggregate with indexed filter
   - query: SELECT category, COUNT(*), MIN(ts), MAX(ts) FROM events GROUP BY category ORDER BY category
+    plan_contains: "StreamingAgg(keys=[CATEGORY#2], InMemorySort([CATEGORY#2 ASC], Scan(EVENTS)))"
     rows:
       - ['error', 2, 50, 300]
       - ['login', 3, 100, 250]
