@@ -216,3 +216,29 @@ func TestMalformedWorkflowIsAnError(t *testing.T) {
 		t.Fatal("a workflow that does not parse must be an error; silently dropping it shrinks the expected set and weakens the gate")
 	}
 }
+
+// A truncated listing must be an error, not a quietly narrower sweep.
+//
+// This is the third negative control, and it is here because the gate shipped
+// with the bug: a 100-item limit against 149 pull requests merged inside the
+// default window, auditing two thirds and printing a clean summary for all of
+// them. A gate that silently narrows its own scope is the same fail-open shape
+// as a check that never ran.
+func TestSaturatedListingIsAnError(t *testing.T) {
+	t.Parallel()
+
+	if err := checkListSaturation("merged", 99, 100); err != nil {
+		t.Errorf("a listing under the limit is complete and must pass: %v", err)
+	}
+	for _, got := range []int{100, 101} {
+		err := checkListSaturation("merged", got, 100)
+		if err == nil {
+			t.Fatalf("a listing of %d against a limit of 100 is truncated and must be an ERROR, not a "+
+				"silently narrowed sweep", got)
+		}
+		if !strings.Contains(err.Error(), "TRUNCATED") {
+			t.Errorf("the message must say the listing was truncated, so the reader knows the sweep's SCOPE "+
+				"shrank rather than that the repository is clean; got %q", err)
+		}
+	}
+}

@@ -144,9 +144,16 @@ func listPRs(repo string, mergedDays int) ([]pullRequest, error) {
 	if mergedDays > 0 {
 		states = append(states, "merged")
 	}
+	// `gh pr list` truncates at --limit and says nothing about it, which on a
+	// gate is the worst possible failure: it audits a subset and reports on the
+	// whole. Measured here, 149 pull requests merged inside the default 14-day
+	// window, so a 100 limit silently skipped a third of them. The limit is
+	// therefore a SATURATION DETECTOR, not a budget — if a page ever comes back
+	// full, the sweep says so and fails rather than quietly narrowing.
+	const listLimit = 1000
 	var out []pullRequest
 	for _, state := range states {
-		raw, err := gh("pr", "list", "--repo", repo, "--state", state, "--limit", "100",
+		raw, err := gh("pr", "list", "--repo", repo, "--state", state, "--limit", fmt.Sprint(listLimit),
 			"--json", "number,headRefName,headRefOid,mergedAt,updatedAt,state")
 		if err != nil {
 			return nil, err
@@ -160,6 +167,9 @@ func listPRs(repo string, mergedDays int) ([]pullRequest, error) {
 		}
 		if err := json.Unmarshal(raw, &items); err != nil {
 			return nil, fmt.Errorf("decode %s pull requests: %w", state, err)
+		}
+		if err := checkListSaturation(state, len(items), listLimit); err != nil {
+			return nil, err
 		}
 		for _, it := range items {
 			pr := pullRequest{

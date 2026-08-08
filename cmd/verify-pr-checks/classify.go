@@ -174,6 +174,25 @@ func Unsatisfied(verdicts []Verdict) []Verdict {
 	return out
 }
 
+// checkListSaturation refuses a pull-request listing that came back full.
+//
+// `gh pr list` truncates at --limit and reports nothing about having done so,
+// which on an auditing gate is the worst available failure: it inspects a subset
+// and reports on the whole, and the report is indistinguishable from a complete
+// one. Measured on this repository, 149 pull requests merged inside the default
+// 14-day window, so the original 100 limit silently skipped roughly a third of
+// them while printing a clean summary.
+//
+// A saturated page is therefore an ERROR, never a quietly narrowed sweep.
+func checkListSaturation(state string, got, limit int) error {
+	if got < limit {
+		return nil
+	}
+	return fmt.Errorf("`gh pr list --state %s` returned %d items, saturating the %d limit: the listing was "+
+		"TRUNCATED, so this sweep would audit a subset while reporting on the whole. Raise the limit or "+
+		"narrow -merged-days", state, got, limit)
+}
+
 // workflow is the slice of GitHub workflow syntax this gate reads.
 type workflow struct {
 	Name string `yaml:"name"`
