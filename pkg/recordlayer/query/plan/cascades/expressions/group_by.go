@@ -124,21 +124,37 @@ func AggregateKeyColumnName(k values.Value) string {
 // (function + operand), IGNORING any alias: the SELECT list references this
 // canonical text and the projection above applies the alias. THE single naming
 // authority for an aggregate column (same rationale as AggregateKeyColumnName).
+//
+// The operand's text comes from OperandName — the parse text captured once, at
+// the sole production mint (cascades_translator.go), and carried on the spec as
+// DATA. That is the shape Java uses for every name it keeps: Column.of stores an
+// Optional<String> on the Field at construction (Column.java:81-82,
+// Type.java:2908-2910) and every downstream read is a getter
+// (Type.java:2750-2763), never a re-derivation from the Value. Where Java keeps
+// no name it keeps NONE — an unaliased aggregate is Column.unnamedOf
+// (GroupByExpression.java:754) and surfaces as the positional `_0`
+// (Type.java:2645-2651), so the rendered `COUNT(X)` spelling below is a Go-only
+// display convention with no upstream contract behind it.
+//
+// A Value-derived fallback is therefore deliberately NOT a `.Field` read. Reading
+// the leaf name off a FieldValue is a SECOND copy of the Value→name rendering
+// rule, and it disagrees with the authority (ColumnNameValue) on exactly the
+// shape that matters: a qualified operand `t.v` renders bare `V`, so `SUM(t.v)`
+// and `SUM(u.v)` both spell `SUM(V)` and collapse in the last-wins aggregate
+// output-ordinal map (groupByOutputOrdinals). ColumnNameValue is the one
+// rendering every output-naming site must use, and it keeps them apart.
 func AggregateResultColumnName(agg AggregateSpec) string {
 	opName := "?"
 	if agg.OperandName != "" {
 		opName = strings.ReplaceAll(agg.OperandName, " ", "")
 	} else if agg.Operand != nil {
-		switch v := agg.Operand.(type) {
-		case *values.ConstantValue:
-			if v.Value == nil {
+		if c, isConst := agg.Operand.(*values.ConstantValue); isConst {
+			if c.Value == nil {
 				opName = "*"
 			} else {
-				opName = v.Name()
+				opName = c.Name()
 			}
-		case *values.FieldValue:
-			opName = v.Field
-		default:
+		} else {
 			opName = values.ColumnNameValue(agg.Operand)
 		}
 	}

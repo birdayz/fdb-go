@@ -45,6 +45,7 @@ go_library(
 go_test(
     name = "expressions_test",
     srcs = [
+        "aggregate_operand_name_is_data_test.go",
         "alias_map_test.go",
         "benchmark_test.go",
         "constraints_map_test.go",
