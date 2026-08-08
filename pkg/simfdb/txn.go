@@ -2,6 +2,7 @@ package simfdb
 
 import (
 	"bytes"
+	"encoding/binary"
 	"sort"
 	"time"
 
@@ -67,6 +68,39 @@ type simTxn struct {
 	// SetWriteConflictsDisabled — when true, writes add no write conflict ranges at all.
 	writeConflictsDisabled bool
 
+	// unreadable is the set of keys carrying a pending versionstamped op. A read that REACHES
+	// one throws accessed_unreadable(1036): the stamp is assigned by the cluster at commit, so
+	// the value is not knowable client-side and there is nothing honest to return. SimFDB used
+	// to hand back the unstamped operand as though it were a real value — a phantom present key
+	// whose contents no real client could ever have observed, and which the same transaction
+	// would then find changed after commit.
+	//
+	// STICKY, mirroring C++ WriteMap.cpp:97 (`is_unreadable = it.is_unreadable() || op is a
+	// versionstamped op`, ported at client/ryw.go:483-488): a later plain Set on the key does NOT
+	// clear it (client/ryw.go:225-229 — the stack-replacing SetValue fast path is gated on
+	// !is_unreadable, so the Set is pushed and the flag survives). Only a clear removes it
+	// (client/ryw.go:243-244, 270-271) — a cleared key is readable because you know it is empty.
+	unreadable map[string]struct{}
+
+	// unreadableRanges are the SVK CANDIDATE STAMP ranges: sorted, non-overlapping. A
+	// SetVersionstampedKey does not just make one key unknowable — nobody knows WHERE the
+	// stamped key will land, only that it lands somewhere in [template@minStamp, template@\xff×10),
+	// so every position in that span is unknowable and a read reaching ANY of them throws 1036.
+	// C++ writes.addUnmodifiedAndUnreadableRange(getVersionstampKeyRange(...))
+	// (ReadYourWrites.actor.cpp:2271 over Atomic.h:268-287), ported at client/ryw.go:1699
+	// (addUnreadableRangeLocked into rywCache.unreadableRanges).
+	//
+	// Marking only the exact template key — which is what this modelled before — UNDER-THROWS:
+	// a Get of a different key inside the candidate range returned a value where libfdb_c raises
+	// accessed_unreadable, so a record-layer path that reads near its own pending stamp would
+	// pass under the sim and fail against a real cluster.
+	unreadableRanges []keyRange
+
+	// SetBypassUnreadable (FDB_TR_OPTION_BYPASS_UNREADABLE): reads of unreadable keys return the
+	// write-map value with the versionstamp placeholder bytes AS WRITTEN instead of throwing
+	// (client/ryw.go:55-60).
+	bypassUnreadable bool
+
 	committed        bool
 	committedVersion int64
 	cancelled        bool
@@ -88,14 +122,17 @@ func (db *SimDB) newTxn() *simTxn {
 	return tx
 }
 
-// ensureReadVersion lazily pins the read version at the highest committed version, the first
-// time the transaction reads or commits (matching a lazy GRV).
+// ensureReadVersion lazily pins the read version the first time the transaction reads or commits
+// (matching a lazy GRV). The version comes from db.latestVersion — the highest committed version
+// OR the simulated clock's, whichever is further along — because that is what a real GRV returns:
+// the cluster's version advances with time even while idle, so a transaction that starts after a
+// long quiet period does not read at the version of the last write.
 func (tx *simTxn) ensureReadVersion() {
 	if tx.rvSet {
 		return
 	}
 	tx.db.mu.Lock()
-	tx.readVersion = tx.db.currentReadVersion()
+	tx.readVersion = tx.db.latestVersion()
 	tx.db.mu.Unlock()
 	tx.rvSet = true
 	tx.rvInstant = tx.db.env.Now()
@@ -119,6 +156,29 @@ func cloneVal(v []byte) []byte {
 	if v == nil {
 		return nil
 	}
+	c := make([]byte, len(v))
+	copy(c, v)
+	return c
+}
+
+// presentVal copies v as a PRESENT value: a nil operand becomes an empty, non-nil slice.
+//
+// nil is SimFDB's spelling of "absent" everywhere below this line — store.put(k, nil) writes a
+// tombstone, resolveKey returns nil for a cleared key, buildView drops nil-valued entries. A
+// Set operand must therefore never be allowed to carry that meaning: there is no such thing as
+// "Set to absent" in FDB. The C API takes a (pointer, length) pair, so a nil operand is
+// indistinguishable from a zero-length one and both store a PRESENT, zero-length value; the
+// pure-Go client makes that explicit — rywCache.set copies with `make([]byte, len(value))`
+// (client/ryw.go:223-224), which turns nil into non-nil empty, and rywEntry documents
+// `value==nil ("Set to empty bytes", a present key)` as distinct from its `absent` flag
+// (client/ryw.go:88-91).
+//
+// Without the normalization one Set(k, nil) produced three different answers: Get saw nil and
+// reported absent, GetRange's view map held the key with a nil value and reported it PRESENT,
+// and the commit wrote a tombstone so the key vanished from the store. Normalizing at the write
+// boundary — rather than teaching each of the three readers about a fourth state — is what makes
+// them agree, and it is what the client does.
+func presentVal(v []byte) []byte {
 	c := make([]byte, len(v))
 	copy(c, v)
 	return c
@@ -173,6 +233,220 @@ func (tx *simTxn) resolveKey(key []byte) []byte {
 	return cur
 }
 
+// ---- unreadable (pending versionstamp) tracking -----------------------------------------
+
+// markUnreadable records that a versionstamped op landed on key.
+func (tx *simTxn) markUnreadable(key []byte) {
+	if tx.unreadable == nil {
+		tx.unreadable = make(map[string]struct{})
+	}
+	tx.unreadable[string(key)] = struct{}{}
+}
+
+// clearUnreadable makes key readable again. Called only from the clear paths: a cleared key is
+// known to be empty, so there is nothing unknowable about it (client/ryw.go:243-244). The
+// single-key clear also subtracts [key, key+\x00) from the candidate ranges, so clearing the one
+// position inside an SVK span makes that position — and only it — readable.
+func (tx *simTxn) clearUnreadable(key []byte) {
+	delete(tx.unreadable, string(key))
+	tx.subtractUnreadableRange(key, keyAfter(key))
+}
+
+// clearUnreadableRange makes every unreadable key in [begin, end) readable — the ClearRange half
+// of the same rule (client/ryw.go:270-271, 280) — and subtracts the span from the SVK candidate
+// ranges (client/ryw.go's subtractRangeList; C++ gets it free from the shared PTree, where
+// clear() inserts readable entries over the span, WriteMap.cpp:195).
+func (tx *simTxn) clearUnreadableRange(begin, end []byte) {
+	for k := range tx.unreadable {
+		if bytes.Compare([]byte(k), begin) >= 0 && bytes.Compare([]byte(k), end) < 0 {
+			delete(tx.unreadable, k)
+		}
+	}
+	tx.subtractUnreadableRange(begin, end)
+}
+
+// hasUnreadable reports whether the transaction carries any unreadable state at all — the
+// fast-path guard every gate opens with (client/ryw.go:1853 tests BOTH populations; testing only
+// the key set is how the range half stayed dead).
+func (tx *simTxn) hasUnreadable() bool {
+	return len(tx.unreadable) > 0 || len(tx.unreadableRanges) > 0
+}
+
+// addUnreadableRange merges [begin, end) into the sorted, non-overlapping candidate ranges.
+// Port of client/ryw.go's addUnreadableRangeLocked (C++
+// writes.addUnmodifiedAndUnreadableRange, ReadYourWrites.actor.cpp:2271).
+func (tx *simTxn) addUnreadableRange(begin, end []byte) {
+	if bytes.Compare(begin, end) >= 0 {
+		return
+	}
+	n := len(tx.unreadableRanges)
+	hiIdx := sort.Search(n, func(i int) bool {
+		return bytes.Compare(tx.unreadableRanges[i].begin, end) > 0
+	})
+	loIdx := sort.Search(n, func(i int) bool {
+		return bytes.Compare(tx.unreadableRanges[i].end, begin) >= 0
+	})
+	newBegin := append([]byte(nil), begin...)
+	newEnd := append([]byte(nil), end...)
+	for i := loIdx; i < hiIdx; i++ {
+		if bytes.Compare(tx.unreadableRanges[i].begin, newBegin) < 0 {
+			newBegin = tx.unreadableRanges[i].begin
+		}
+		if bytes.Compare(tx.unreadableRanges[i].end, newEnd) > 0 {
+			newEnd = tx.unreadableRanges[i].end
+		}
+	}
+	merged := append([]keyRange(nil), tx.unreadableRanges[:loIdx]...)
+	merged = append(merged, keyRange{begin: newBegin, end: newEnd})
+	merged = append(merged, tx.unreadableRanges[hiIdx:]...)
+	tx.unreadableRanges = merged
+}
+
+// subtractUnreadableRange removes [begin, end) from the candidate ranges, splitting any range
+// that straddles the span. Port of client/ryw.go's subtractRangeList.
+func (tx *simTxn) subtractUnreadableRange(begin, end []byte) {
+	if len(tx.unreadableRanges) == 0 || bytes.Compare(begin, end) >= 0 {
+		return
+	}
+	out := make([]keyRange, 0, len(tx.unreadableRanges)+1)
+	for _, r := range tx.unreadableRanges {
+		if bytes.Compare(r.end, begin) <= 0 || bytes.Compare(r.begin, end) >= 0 {
+			out = append(out, r) // no overlap
+			continue
+		}
+		if bytes.Compare(r.begin, begin) < 0 {
+			out = append(out, keyRange{begin: r.begin, end: append([]byte(nil), begin...)})
+		}
+		if bytes.Compare(r.end, end) > 0 {
+			out = append(out, keyRange{begin: append([]byte(nil), end...), end: r.end})
+		}
+	}
+	tx.unreadableRanges = out
+}
+
+// inUnreadableRange reports whether key falls inside a candidate stamp range
+// (client/ryw.go's isUnreadableLocked).
+func (tx *simTxn) inUnreadableRange(key []byte) bool {
+	// First range with end > key; key is inside iff that range's begin <= key.
+	i := sort.Search(len(tx.unreadableRanges), func(i int) bool {
+		return bytes.Compare(tx.unreadableRanges[i].end, key) > 0
+	})
+	return i < len(tx.unreadableRanges) && bytes.Compare(tx.unreadableRanges[i].begin, key) <= 0
+}
+
+// firstUnreadableRangeIn returns the smallest position in [begin, end) covered by a candidate
+// range, or nil. Port of client/ryw.go's firstUnreadableInLocked.
+func (tx *simTxn) firstUnreadableRangeIn(begin, end []byte) []byte {
+	i := sort.Search(len(tx.unreadableRanges), func(i int) bool {
+		return bytes.Compare(tx.unreadableRanges[i].end, begin) > 0
+	})
+	if i < len(tx.unreadableRanges) && bytes.Compare(tx.unreadableRanges[i].begin, end) < 0 {
+		// The intersection starts at max(range.begin, begin).
+		if bytes.Compare(tx.unreadableRanges[i].begin, begin) > 0 {
+			return tx.unreadableRanges[i].begin
+		}
+		return begin
+	}
+	return nil
+}
+
+// lastUnreadableRangeIn returns the exclusive END of the last candidate range intersecting
+// [begin, end), or nil — the reverse-scan counterpart. Port of client/ryw.go's
+// lastUnreadableInLocked.
+func (tx *simTxn) lastUnreadableRangeIn(begin, end []byte) []byte {
+	i := sort.Search(len(tx.unreadableRanges), func(i int) bool {
+		return bytes.Compare(tx.unreadableRanges[i].begin, end) >= 0
+	}) - 1
+	if i < 0 || bytes.Compare(tx.unreadableRanges[i].end, begin) <= 0 {
+		return nil
+	}
+	if bytes.Compare(tx.unreadableRanges[i].end, end) < 0 {
+		return tx.unreadableRanges[i].end
+	}
+	return end
+}
+
+// isUnreadable reports whether a read of key must throw accessed_unreadable — either because the
+// key itself carries a pending versionstamped op, or because it sits inside an SVK candidate
+// stamp range whose winner could land exactly there.
+func (tx *simTxn) isUnreadable(key []byte) bool {
+	if tx.bypassUnreadable || !tx.hasUnreadable() {
+		return false
+	}
+	if _, ok := tx.unreadable[string(key)]; ok {
+		return true
+	}
+	return tx.inUnreadableRange(key)
+}
+
+// unreadableScanCap returns the position at which a scan of [begin, end) must stop because of a
+// pending versionstamped op, or nil if there is none in the window. A port of the client's
+// unreadableScanCapLocked (client/ryw.go:1805-1839):
+//
+//   - forward: the SMALLEST unreadable key in the window becomes the scan's exclusive END, so
+//     the key itself is excluded.
+//   - reverse: the LARGEST one, and its cap is keyAfter(k) because that becomes the scan's
+//     INCLUSIVE begin — without the +\x00 the reverse scan would return the very key it must
+//     not read. Only the largest matters: a reverse scan walks down from end, so the highest
+//     unreadable key is the first one it can reach and everything below hides behind it.
+//
+// Both populations participate: the pending-op entry keys AND the SVK candidate stamp ranges.
+func (tx *simTxn) unreadableScanCap(begin, end []byte, reverse bool) []byte {
+	if tx.bypassUnreadable || !tx.hasUnreadable() {
+		return nil
+	}
+	// The SVK candidate ranges cap the scan too, and they cap it EARLIER than any entry key: a
+	// range's head holds no write-map key at all, so a walk that consulted only the entry set
+	// would sail through the unknowable span and report rows for positions the stamp may occupy
+	// (client/ryw.go:1858/1867 folds both populations into one cap for the same reason).
+	// The two populations produce caps in the SAME coordinate — a scan bound — but reach it
+	// differently: a range already carries an exclusive end, while an entry key needs the
+	// keyAfter(+\x00) on the reverse path to fall below the window. Convert first, combine
+	// second; combining raw positions would apply the +\x00 to a range end and let a reverse
+	// scan read the range's last position.
+	var entryPos []byte
+	for k := range tx.unreadable {
+		kb := []byte(k)
+		if bytes.Compare(kb, begin) < 0 || bytes.Compare(kb, end) >= 0 {
+			continue
+		}
+		switch {
+		case entryPos == nil:
+			entryPos = kb
+		case reverse && bytes.Compare(kb, entryPos) > 0:
+			entryPos = kb
+		case !reverse && bytes.Compare(kb, entryPos) < 0:
+			entryPos = kb
+		}
+	}
+	if entryPos != nil && reverse {
+		entryPos = keyAfter(entryPos)
+	}
+	var rangePos []byte
+	if reverse {
+		rangePos = tx.lastUnreadableRangeIn(begin, end)
+	} else {
+		rangePos = tx.firstUnreadableRangeIn(begin, end)
+	}
+	switch {
+	case entryPos == nil:
+		return rangePos
+	case rangePos == nil:
+		return entryPos
+	case reverse:
+		// Reverse: the scan walks down from end, so the HIGHER cap is the first thing it meets.
+		if bytes.Compare(rangePos, entryPos) > 0 {
+			return rangePos
+		}
+		return entryPos
+	default:
+		if bytes.Compare(rangePos, entryPos) < 0 {
+			return rangePos
+		}
+		return entryPos
+	}
+}
+
 func (tx *simTxn) Get(key fdb.KeyConvertible) fdb.FutureByteSlice {
 	return tx.get(key, false)
 }
@@ -183,6 +457,12 @@ func (tx *simTxn) get(key fdb.KeyConvertible, snapshot bool) fdb.FutureByteSlice
 	}
 	tx.ensureReadVersion()
 	k := []byte(key.FDBKey())
+	// The unreadable gate fires BEFORE any conflict range is recorded and before the value is
+	// resolved, exactly as the client's does (client/ryw.go:511-517 throws at the top of get,
+	// ahead of the server read). The read did not happen, so it takes no conflict.
+	if tx.isUnreadable(k) {
+		return newReadyByteSlice(nil, fdb.Error{Code: 1036}) // accessed_unreadable
+	}
 	if !snapshot {
 		tx.addFilteredReadConflictKey(k)
 	}
@@ -348,6 +628,51 @@ func (tx *simTxn) rangeRows(begin, end []byte, limit int, reverse bool) ([]fdb.K
 	return rows, false
 }
 
+// fetchRange is ONE round-trip of a range read: cap the window at any pending versionstamped op,
+// resolve the rows over what remains, and decide whether iteration REACHED the cap. It is the
+// sim's rywCache.getRange (client/ryw.go:645-700) and, like it, runs once per FETCH — so the cap
+// is recomputed for every batch, and a versionstamped write landing mid-scan truncates the
+// batches after it while leaving the ones already returned alone.
+//
+// cBegin/cEnd are the window the fetch ACTUALLY read, and they are returned because that is what
+// the caller must record its read conflict over. The client caps begin/end before issuing the
+// read for exactly that reason (client/ryw.go:667-673); conflicting over the REQUESTED window
+// instead claims a read of keys past the cap that provably never happened.
+func (tx *simTxn) fetchRange(begin, end []byte, limit int, reverse bool) (
+	kvs []fdb.KeyValue, more bool, cBegin, cEnd []byte, err error,
+) {
+	cBegin, cEnd = begin, end
+	// Truncate at the first (forward) / last (reverse) key carrying a pending versionstamped op.
+	// unreadableScanCap already honours BYPASS_UNREADABLE and returns nil when nothing
+	// unreadable intersects the window.
+	capKey := tx.unreadableScanCap(begin, end, reverse)
+	if capKey != nil {
+		if reverse {
+			// The cap is keyAfter(the unreadable key), so it becomes the INCLUSIVE begin and the
+			// unreadable key itself falls below the window.
+			cBegin = capKey
+		} else {
+			cEnd = capKey
+		}
+	}
+	kvs, more = tx.rangeRows(cBegin, cEnd, limit, reverse)
+	if capKey == nil {
+		return kvs, more, cBegin, cEnd, nil
+	}
+	// "reached" is the client's predicate (client/ryw.go:676-681): iteration of the capped window
+	// would continue INTO the unreadable position unless the limit was filled strictly inside it,
+	// and an unlimited scan always reaches. rangeRows' `more` is precisely "the limit was filled",
+	// so !more IS that predicate. The client discards the partial rows on this branch too
+	// (client/ryw.go:686-688 returns nil alongside the error rather than the prefix it read).
+	if !more {
+		return nil, false, nil, nil, fdb.Error{Code: 1036} // accessed_unreadable
+	}
+	// The scan stopped of its own accord strictly inside the truncated window, so there is
+	// provably more beyond it — the client reports more unconditionally once a cap applies
+	// (client/ryw.go:692, `|| unreadableCap != nil`).
+	return kvs, true, cBegin, cEnd, nil
+}
+
 // applyMutationToView folds one pending mutation into the merged-view map.
 func applyMutationToView(m map[string][]byte, mut mutation) {
 	switch mut.kind {
@@ -401,6 +726,30 @@ func (tx *simTxn) getKey(sel fdb.Selectable, snapshot bool) fdb.FutureKey {
 	tx.ensureReadVersion()
 	ks := sel.FDBKeySelector()
 	view := tx.buildView()
+	// A selector resolution is a READ of the keyspace it walks, so it is subject to the same
+	// unreadable gate — C++ RYWIterator's type()/kv() throw from the offset walk itself
+	// (RYWIterator.cpp:45-46/:75-76), which is what the client's getKeyRYW inherits. The span
+	// walked runs between the selector's anchor and the key it lands on, in whichever direction
+	// the offset points; if a pending versionstamped op sits anywhere in it, the walk cannot
+	// know how many slots it just crossed, because it does not know where the stamped key will
+	// land.
+	if idx := resolveSelector(view, ks); !tx.bypassUnreadable && tx.hasUnreadable() {
+		anchor := []byte(ks.Key.FDBKey())
+		var lo, hi []byte
+		switch {
+		case idx < 0:
+			lo, hi = []byte{}, keyAfter(anchor)
+		case idx >= len(view):
+			lo, hi = anchor, append([]byte(nil), endKeyMarker...)
+		case bytes.Compare(view[idx].Key, anchor) < 0:
+			lo, hi = []byte(view[idx].Key), keyAfter(anchor)
+		default:
+			lo, hi = anchor, keyAfter([]byte(view[idx].Key))
+		}
+		if bytes.Compare(lo, hi) < 0 && tx.unreadableScanCap(lo, hi, false) != nil {
+			return newReadyKey(nil, fdb.Error{Code: 1036}) // accessed_unreadable
+		}
+	}
 	idx := resolveSelector(view, ks)
 	var result fdb.Key
 	switch {
@@ -726,16 +1075,23 @@ func (tx *simTxn) enqueue(m mutation) {
 }
 
 func (tx *simTxn) Set(key fdb.KeyConvertible, value []byte) {
-	tx.enqueue(mutation{kind: mutSet, key: []byte(key.FDBKey()), value: cloneVal(value)})
+	// presentVal, not cloneVal: Set(k, nil) writes a present empty value, never a tombstone.
+	tx.enqueue(mutation{kind: mutSet, key: []byte(key.FDBKey()), value: presentVal(value)})
 }
 
 func (tx *simTxn) Clear(key fdb.KeyConvertible) {
-	tx.enqueue(mutation{kind: mutClear, key: []byte(key.FDBKey())})
+	k := []byte(key.FDBKey())
+	// A clear is the ONE thing that makes a key readable again: the transaction knows it is
+	// empty, so there is no pending stamp to be ignorant of (client/ryw.go:243-244).
+	tx.clearUnreadable(k)
+	tx.enqueue(mutation{kind: mutClear, key: k})
 }
 
 func (tx *simTxn) ClearRange(er fdb.ExactRange) {
 	b, e := er.FDBRangeKeys()
-	tx.enqueue(mutation{kind: mutClearRange, key: []byte(b.FDBKey()), end: []byte(e.FDBKey())})
+	begin, end := []byte(b.FDBKey()), []byte(e.FDBKey())
+	tx.clearUnreadableRange(begin, end)
+	tx.enqueue(mutation{kind: mutClearRange, key: begin, end: end})
 }
 
 func (tx *simTxn) atomic(op atomicOp, key fdb.KeyConvertible, param []byte) {
@@ -760,12 +1116,79 @@ func (tx *simTxn) CompareAndClear(key fdb.KeyConvertible, param []byte) {
 	tx.atomic(atomicCompareAndClear, key, param)
 }
 
+// SetVersionstampedKey / SetVersionstampedValue make their key UNREADABLE for the rest of the
+// transaction: the cluster fills the stamp at commit, so no client can know the resulting bytes
+// beforehand, and a read must say so rather than invent an answer (client/ryw.go:483-488).
+// SetVersionstampedKey additionally marks the whole CANDIDATE STAMP RANGE unreadable and buffers
+// the mutation at the key TRANSFORMED with the min-bound stamp — both halves of C++ RYW::atomicOp
+// (ReadYourWrites.actor.cpp:2263-2277, over getVersionstampKeyRange in Atomic.h:268-300), ported
+// at client/transaction.go:1553-1613. The transform is invisible after commit (the proxy
+// overwrites [pos,pos+10) with the assigned stamp either way) but it decides WHERE the pending
+// entry sits during the transaction, which is what the range head's boundaries are measured from.
 func (tx *simTxn) SetVersionstampedKey(key fdb.KeyConvertible, param []byte) {
-	tx.enqueue(mutation{kind: mutVersionstampedKey, key: []byte(key.FDBKey()), value: cloneVal(param)})
+	k := []byte(key.FDBKey())
+	// C++ captures getCachedReadVersion().orDefault(0): a transaction that has not yet pinned a
+	// read version stamps from 0, so the candidate range starts at the all-zero stamp.
+	minVersion := int64(0)
+	if tx.rvSet {
+		minVersion = tx.readVersion
+	}
+	// The legal-write-range guard is C++'s (:2266 rejects an out-of-legal-range key BEFORE
+	// transforming). SimFDB models no system keyspace — every option that would widen it is a
+	// no-op here — so the bound is the plain user-keyspace end, the same key endKeyMarker names.
+	if bytes.Compare(k, []byte(endKeyMarker)) < 0 {
+		if rb, re, transformed, ok := versionstampKeyRange(k, minVersion, []byte(endKeyMarker)); ok {
+			k = transformed
+			tx.addUnreadableRange(rb, re)
+		}
+	}
+	tx.markUnreadable(k)
+	tx.enqueue(mutation{kind: mutVersionstampedKey, key: k, value: cloneVal(param)})
+}
+
+// versionstampKeyRange ports C++ getVersionstampKeyRange plus the in-place key transform
+// (Atomic.h:258-300), identically to client/transaction.go:1623-1655. `key` carries a trailing
+// 4-byte little-endian offset naming the position of its 10-byte placeholder. Returns the
+// candidate stamp range [key@stamp(minVersion,0), key@\xff×10 + \x00) clamped to maxKey, and the
+// key transformed with the min-bound stamp — offset suffix PRESERVED, because the suffix is what
+// the commit path reads to find the placeholder again. ok=false on a malformed key.
+func versionstampKeyRange(key []byte, minVersion int64, maxKey []byte) (begin, end, transformed []byte, ok bool) {
+	if len(key) < 4 {
+		return nil, nil, nil, false
+	}
+	pos := int(int32(binary.LittleEndian.Uint32(key[len(key)-4:])))
+	// pos > len-14 rather than pos+10 > len-4: the subtraction form cannot overflow for any
+	// int32 pos on a 32-bit int.
+	if pos < 0 || pos > len(key)-4-10 {
+		return nil, nil, nil, false
+	}
+	begin = append([]byte(nil), key[:len(key)-4]...)
+	placeVersionstamp(begin[pos:], minVersion, 0)
+	// end = key[:len-3] with a trailing 0x00 and \xff×10 at pos (Atomic.h:277-284).
+	end = append([]byte(nil), key[:len(key)-3]...)
+	end[len(end)-1] = 0x00
+	for i := 0; i < 10; i++ {
+		end[pos+i] = 0xff
+	}
+	if bytes.Compare(end, maxKey) > 0 {
+		end = append([]byte(nil), maxKey...)
+	}
+	transformed = append([]byte(nil), key...)
+	placeVersionstamp(transformed[pos:], minVersion, 0)
+	return begin, end, transformed, true
+}
+
+// placeVersionstamp writes the 10-byte versionstamp: 8-byte BIG-endian version followed by a
+// 2-byte BIG-endian transaction number (Atomic.h:243-256).
+func placeVersionstamp(dst []byte, version int64, txnNumber uint16) {
+	binary.BigEndian.PutUint64(dst[:8], uint64(version))
+	binary.BigEndian.PutUint16(dst[8:10], txnNumber)
 }
 
 func (tx *simTxn) SetVersionstampedValue(key fdb.KeyConvertible, param []byte) {
-	tx.enqueue(mutation{kind: mutVersionstampedValue, key: []byte(key.FDBKey()), value: cloneVal(param)})
+	k := []byte(key.FDBKey())
+	tx.markUnreadable(k)
+	tx.enqueue(mutation{kind: mutVersionstampedValue, key: k, value: cloneVal(param)})
 }
 
 // []byte fast-path overloads: delegate to the KeyConvertible forms (fdb.Key is a KeyConvertible).
@@ -873,6 +1296,8 @@ func (tx *simTxn) postCommitReset() {
 	tx.rvSet = false
 	tx.rvInstant = time.Time{}
 	tx.buffer = nil
+	tx.unreadable = nil // the stamps are resolved; the keys are readable again
+	tx.unreadableRanges = nil
 	tx.readConflicts = nil
 	tx.writeConflicts = nil
 }
@@ -886,6 +1311,8 @@ func (tx *simTxn) Reset() {
 	tx.rvSet = false
 	tx.rvInstant = time.Time{}
 	tx.buffer = nil
+	tx.unreadable = nil
+	tx.unreadableRanges = nil
 	tx.readConflicts = nil
 	tx.writeConflicts = nil
 	tx.nextWriteNoConflict = false
@@ -977,6 +1404,11 @@ func (tx *simTxn) GetVersionstamp() fdb.FutureKey {
 type lazyVersionstamp struct{ tx *simTxn }
 
 func (f *lazyVersionstamp) Get() (fdb.Key, error) {
+	// transaction_cancelled(1025) out-ranks the not-yet-committed verdict, as in the client
+	// (client/transaction.go:2217-2219: checkCancelled precedes the hasCommitted check).
+	if f.tx.cancelled {
+		return nil, fdb.Error{Code: 1025}
+	}
 	if !f.tx.committed || f.tx.versionstamp == nil {
 		return nil, fdb.Error{Code: 2017}
 	}
@@ -995,12 +1427,26 @@ func (f *lazyVersionstamp) BlockUntilReady() {}
 func (f *lazyVersionstamp) IsReady() bool    { return f.tx.committed }
 func (f *lazyVersionstamp) Cancel()          {}
 
+// GetApproximateSize returns the transaction's size the way the client's RYW counter does
+// (client/transaction.go:2510-2543): the commit accounting — every mutation charged
+// sizeof(MutationRef), every read and write conflict range charged sizeof(KeyRangeRef) — with one
+// correction. C++ models a single-key clear as a write-map RANGE entry and charges its MUTATION
+// half sizeof(KeyRangeRef) rather than sizeof(MutationRef) (ReadYourWrites.actor.cpp:2431), so
+// each one is refunded the difference. The commit-time 2101 gate deliberately does NOT apply that
+// refund — in the native commit a single-key clear IS a ClearRange mutation charged the full 44 —
+// which is why the two callers share commitSize but not this line.
+//
+// Deliberately NOT gated on Cancel(): C++ gates getApproximateSize on the deferred error and
+// nothing else (ThreadSafeTransaction.cpp:715-721 — no resetPromise race), so a cancelled txn
+// still reports its size. See TestCancelledTransactionApproximateSizeStillAnswers.
 func (tx *simTxn) GetApproximateSize() fdb.FutureInt64 {
-	var size int64
+	var singleKeyClears int64
 	for _, m := range tx.buffer {
-		size += int64(len(m.key) + len(m.end) + len(m.value))
+		if m.kind == mutClear {
+			singleKeyClears++
+		}
 	}
-	return newReadyInt64(size, nil)
+	return newReadyInt64(commitSize(tx)-singleKeyClears*(sizeofMutationRef-sizeofKeyRangeRef), nil)
 }
 
 // A transaction is itself a Transactor (the interface embeds ReadTransactor via

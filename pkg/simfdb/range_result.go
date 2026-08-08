@@ -93,7 +93,12 @@ func (r *simRangeResult) GetSliceWithError() ([]fdb.KeyValue, error) {
 	if err := validateRangeLimit(r.options); err != nil {
 		return nil, err
 	}
-	kvs, more := r.tx.rangeRows(begin, end, fdb.EffectiveRowLimit(r.options.Limit), r.options.Reverse)
+	// fetchRange, not rangeRows: the unreadable cap is a property of the FETCH, so it applies on
+	// both consumption surfaces and it narrows the window the conflict below is taken over.
+	kvs, more, begin, end, err := r.tx.fetchRange(begin, end, fdb.EffectiveRowLimit(r.options.Limit), r.options.Reverse)
+	if err != nil {
+		return nil, err
+	}
 	if !r.snapshot {
 		cb, ce := rangeConflictExtent(begin, end, kvs, more, r.options.Reverse)
 		if bytes.Compare(cb, ce) < 0 {
@@ -187,7 +192,26 @@ func (it *rangeIter) fetchBatch() bool {
 		it.exhausted = true
 		return false
 	}
-	batch, more := it.rr.tx.rangeRows(it.scanBegin, it.scanEnd, want, it.rr.options.Reverse)
+	// The cap is recomputed per batch, as it is in the client — doRangeWithLimit funnels every
+	// batch through rywCache.getRange, which caps the window it was handed. So a versionstamped
+	// write issued between two batches truncates the second one and not the first.
+	batch, more, capBegin, capEnd, err := it.rr.tx.fetchRange(
+		it.scanBegin, it.scanEnd, want, it.rr.options.Reverse)
+	if err != nil {
+		// Surfaced through it.err, the same channel a resolve-time error uses: Advance() reports
+		// no element and Get() returns the error. The client does the same — goRangeIterator's
+		// fetch stores convertError(err) in ri.err and returns false (fdb/range_result.go:316-319).
+		it.err = err
+		it.exhausted = true
+		return false
+	}
+	// capBegin/capEnd are used for THIS batch's conflict only; they must NOT be written back
+	// into scanBegin/scanEnd. The client keeps ri.begin/ri.end at the REQUESTED bounds and lets
+	// rywCache.getRange re-cap each call (fdb/range_result.go:309 passes ri.begin/ri.end
+	// unmodified). Persisting the cap here would move the unreadable key onto the next window's
+	// exclusive end, where unreadableScanCap no longer sees it — the following batch would find
+	// no cap, return no rows and report clean exhaustion, silently swallowing the 1036 the scan
+	// is supposed to raise.
 	if it.traceLog != nil {
 		// iteration-1 is the 1-based number of the iteration this batch WAS, matching the
 		// client's own trace call (fdb/range_result.go:255-257).
@@ -201,7 +225,7 @@ func (it *rangeIter) fetchBatch() bool {
 			// the clamped extent on every call, and an empty result clamps to the full
 			// [begin,end) it scanned. The previous batch stays in it.batch, exactly as the
 			// client leaves ri.kvs untouched on an empty fetch.
-			it.addConflict(nil, false)
+			it.addConflict(capBegin, capEnd, nil, false)
 		}
 		return false
 	}
@@ -210,7 +234,7 @@ func (it *rangeIter) fetchBatch() bool {
 	it.pos = 1
 	it.remaining -= len(batch)
 	if !it.rr.snapshot {
-		it.addConflict(batch, more)
+		it.addConflict(capBegin, capEnd, batch, more)
 	}
 	// Advance the scan bounds past this batch, as the client's iterator does: forward reads
 	// resume after the last key returned, reverse reads resume before the lowest.
@@ -226,10 +250,11 @@ func (it *rangeIter) fetchBatch() bool {
 	return true
 }
 
-// addConflict registers the read conflict for one fetched batch over the CURRENT scan bounds,
+// addConflict registers the read conflict for one fetched batch over the window that batch
+// ACTUALLY read — the scan bounds as the unreadable cap narrowed them, not the requested ones —
 // clamped by the same rule the whole-read path uses.
-func (it *rangeIter) addConflict(batch []fdb.KeyValue, more bool) {
-	cb, ce := rangeConflictExtent(it.scanBegin, it.scanEnd, batch, more, it.rr.options.Reverse)
+func (it *rangeIter) addConflict(begin, end []byte, batch []fdb.KeyValue, more bool) {
+	cb, ce := rangeConflictExtent(begin, end, batch, more, it.rr.options.Reverse)
 	if bytes.Compare(cb, ce) < 0 {
 		it.rr.tx.addFilteredReadConflict(cb, ce)
 	}
