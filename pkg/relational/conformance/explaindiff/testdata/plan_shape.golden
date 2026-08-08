@@ -3649,7 +3649,7 @@ shape:         RecordQueryProjectionPlan
 shape:           RecordQueryScanPlan
 === cte.yaml#13
 sql:   WITH lo(li) AS (SELECT id FROM t WHERE v < 20), hi(hi_id) AS (SELECT id FROM t WHERE v >= 30) SELECT li, hi_id FROM lo, hi ORDER BY li, hi_id
-plan:  Project([LI#0, HI_ID#1], InMemorySort([LO.LI#0 ASC, HI.HI_ID#0 ASC], NestedLoopJoin(INNER, Project([ID#0], PredicatesFilter(Scan(T), [1 preds])), Project([ID#0], PredicatesFilter(Scan(T), [1 preds])))))
+plan:  Project([LO.LI#0, HI.HI_ID#0], InMemorySort([LO.LI#0 ASC, HI.HI_ID#0 ASC], NestedLoopJoin(INNER, Project([ID#0], PredicatesFilter(Scan(T), [1 preds])), Project([ID#0], PredicatesFilter(Scan(T), [1 preds])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryNestedLoopJoinPlan
@@ -3706,7 +3706,7 @@ shape:             RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === cte.yaml#21
 sql:   WITH c1(w) AS (SELECT id FROM t), c2(a) AS (WITH c3(x) AS (SELECT id FROM t WHERE id <= 2) SELECT x FROM c3) SELECT w, a FROM c1, c2 WHERE w = a ORDER BY w
-plan:  Project([W#0, A#1], InMemorySort([C1.W#0 ASC], NestedLoopJoin(INNER, [1 preds], Project([ID#0], Scan(T)), Project([ID#0], Scan(T, [<>])))))
+plan:  Project([C1.W#0, C2.A#0], InMemorySort([C1.W#0 ASC], NestedLoopJoin(INNER, [1 preds], Project([ID#0], Scan(T)), Project([ID#0], Scan(T, [<>])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryNestedLoopJoinPlan
@@ -3968,7 +3968,7 @@ shape:           RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === cte_join.yaml#2
 sql:   WITH eng_dept AS (SELECT id FROM dept WHERE name = 'Engineering'), eng_emp AS (SELECT name FROM emp e, eng_dept ed WHERE e.dept_id = ed.id) SELECT name FROM eng_emp ORDER BY name
-plan:  Project([NAME#0], InMemorySort([NAME ASC], Project([NAME#1], NestedLoopJoin(INNER, [1 preds], Scan(EMP), Project([ID#0], PredicatesFilter(Scan(DEPT), [1 preds]))))))
+plan:  Project([NAME#0], InMemorySort([NAME ASC], Project([E.NAME#1], NestedLoopJoin(INNER, [1 preds], Scan(EMP), Project([ID#0], PredicatesFilter(Scan(DEPT), [1 preds]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryProjectionPlan

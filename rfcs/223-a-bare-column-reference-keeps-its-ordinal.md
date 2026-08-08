@@ -1,10 +1,31 @@
 # RFC-223 — A bare column reference keeps its ordinal, exactly as a qualified one does
 
-**Status:** rev 3 — **ACK'd by Graefe and Torvalds**, ready to implement. NOT yet
-implemented: the change below has been applied and reverted as a measurement
-probe only, and the tree carries no production change.
-**Scope:** one shape predicate, shared by two sites in
+**Status:** rev 4 — ACK'd by Graefe and Torvalds, and **IMPLEMENTED**.
+**Scope:** one shape predicate, `resolveBaked`, shared by two sites in
 `pkg/relational/core/embedded/plan_visitor.go`.
+
+**Implementation notes that changed what this document says**, recorded here
+because each corrects a claim the design made:
+
+1. **`resolveBaked` needed a `childlessOK` parameter, and the reason is a third
+   site.** `logical_predicate.go`'s sort-key filler already admits the CHILDLESS
+   shape for a qualified reference, but only under `len(sq.joins) == 0`, with
+   the comment "on a join, childless would lose the defining leg and remains
+   forbidden". So the childless arm is **context-dependent** and a context-free
+   union would have fused a rule that is not one rule. The parameter makes the
+   dependence explicit and reviewable instead of implicit in which call site you
+   happen to read.
+2. **The census moves for a reason that is NOT corpus growth** — see step 5 in
+   `foldStep1SeedGates`. The fix itself produces two more fold firings on an
+   unchanged corpus, and a first reading here blamed a test fixture for it. The
+   control that separates the two is toggling the PRODUCTION diff with the
+   corpus held fixed.
+3. **Three golden records move, not one** — §(g), which has now been wrong twice.
+4. Measured deltas the design asked for: `ProjectedValues` mentions and
+   nil-branch count are **unchanged at 116 / 24** (the extraction adds no new
+   consumer and removes no branch), and the plan-reachability **ratchet delta is
+   ZERO** — `edges=22316 compared=22314 unreachable=0 no-quantifier=2 over 2516
+   queries`, byte-identical either side of the fix.
 
 Rev 2 folded Graefe's three conditions and Torvalds' three blockers; rev 3 folds
 Graefe's delta items (gate (f), the leg-attribution half of the precondition, and
@@ -341,45 +362,62 @@ it is restated at the gate rather than left standing.
       The gate is mechanical: the bare site and `resolveQualifiedBaked` contain
       no shape predicate of their own.
 
-### (g) The ONE golden record that moves, justified individually
+### (g) The THREE golden records that move, justified individually
 
-**A first draft of this section predicted no golden would move. That prediction
-was wrong, and the measurement is recorded here rather than quietly corrected.**
-Under the probe, `//pkg/relational/conformance/explaindiff:explaindiff_test`
-fails `TestPlanShapeGolden` with **3 lines differing, all in one record**
-(`cte.yaml#13`):
+**This section has now been wrong TWICE, and both corrections are kept in place
+rather than tidied away.** A first draft predicted no golden would move. The
+second said ONE record moved — a misreading of the failure text: the differ
+reports "**3 line(s) differ**" and one `first divergence`, which is three
+records at one line each, not one record at three lines. The re-bless diff is
+what settles it, and it is the reason a re-bless is read rather than run.
+
+All three are **the same change on the same shape** — a bare reference in a
+projection over a multi-source `FROM` — and all three keep a **byte-identical
+operator tree**:
 
 ```
- sql:   WITH lo(li) AS (SELECT id FROM t WHERE v < 20),
-             hi(hi_id) AS (SELECT id FROM t WHERE v >= 30)
-        SELECT li, hi_id FROM lo, hi ORDER BY li, hi_id
--plan:  Project([LI#0, HI_ID#1], InMemorySort(...))
+cte.yaml#13   SELECT li, hi_id FROM lo, hi ORDER BY li, hi_id
+-plan:  Project([LI#0, HI_ID#1],   InMemorySort(...))
 +plan:  Project([LO.LI#0, HI.HI_ID#0], InMemorySort(...))
+
+cte.yaml#21   SELECT w, a FROM c1, c2 WHERE w = a ORDER BY w
+-plan:  Project([W#0, A#1],        InMemorySort(...))
++plan:  Project([C1.W#0, C2.A#0],  InMemorySort(...))
+
+cte_join.yaml#2  ... eng_emp AS (SELECT name FROM emp e, eng_dept ed WHERE ...)
+-plan:  Project([NAME#0], InMemorySort([NAME ASC], Project([NAME#1],   NLJ(...))))
++plan:  Project([NAME#0], InMemorySort([NAME ASC], Project([E.NAME#1], NLJ(...))))
 ```
 
-**The operator tree is byte-identical** — same `Project`, same
-`InMemorySort`, same `NestedLoopJoin`, same two filtered scans. Only the two
-projected references re-render, and this is precisely the change under review
-reaching its intended case: `FROM lo, hi` is a two-source `FROM`, so `li` and
-`hi_id` are exactly the bare references that previously stayed lazy. There is no
-`EXISTS` here, so this record shows the guard's effect **isolated from the fold**.
+The third is worth separating from the first two: its ordinal does **not** move
+(`#1 → #1`), only the qualifier appears. So the change is not "ordinals get
+renumbered" — it is "the reference now carries the leg it was always resolved
+against", and the ordinal moves only where the old flat ordinal and the new
+leg-relative one genuinely differ.
 
-**The `#1 → #0` is the load-bearing part and it is not a lost column.** The old
-`HI_ID#1` was a FLAT ordinal into the concatenated row; the new `HI.HI_ID#0` is
-LEG-RELATIVE — slot 0 within leg `HI` — which is what `rowLegsBinder` binds and
-what `resolveQualifiedBaked`'s contract requires. A qualified spelling of the
-same query already rendered this way; the bare spelling now agrees.
+**Rows are unchanged for all three, verified independently of the plan text.**
+Each is a `yamsql` corpus entry carrying row assertions — `[1,3] [1,4]`,
+`[1,1] [2,2]`, `["Alice"] ["Bob"]` — and `//pkg/relational/conformance/yamsql`
+passes under the change (84 of 85 targets pass, with `explaindiff` the only
+failure and only on the golden text). An ordinal that had moved to the wrong
+slot would have changed those rows.
 
-**Rows are unchanged, verified independently of the plan text.** `cte.yaml#13`
-carries row assertions (`[1, 3]`, `[1, 4]`), and
-`//pkg/relational/conformance/yamsql:yamsql_test` **passes under the probe** —
-751 RUN/PASS lines, `TestYamsqlConformance/cte` among them. An ordinal that had
-moved to the wrong slot would have changed those rows. That check is the reason
-this is a re-bless and not a defect, and it is why the golden is not re-blessed
-on the strength of "the shape looks the same".
+**Why these three and no others.** `FROM lo, hi`, `FROM c1, c2` and `FROM emp e,
+eng_dept ed` are the corpus' multi-source FROMs whose projections spell a column
+BARE. None involves an `EXISTS`, so these records show the guard's effect
+**isolated from the fold** — which is the useful part: the fold was where the
+defect was OBSERVED, and the guard is where it lives.
 
-Re-blessing is therefore **one record, named, with its diff in the commit** —
-not a bulk `dump`. No other golden line moves.
+**The `#1 -> #0` is not a lost column.** The old `HI_ID#1` was a FLAT ordinal
+into the concatenated row; the new `HI.HI_ID#0` is LEG-RELATIVE — slot 0 within
+leg `HI` — which is what `rowLegsBinder` binds and what `resolveBaked`'s
+child-bearing arm requires. A qualified spelling of the same query already
+rendered this way; the bare spelling now agrees, which is the whole RFC in one
+line of golden.
+
+Re-blessing is therefore **three records, each named above, with the full diff in
+the commit** — not a bulk `dump` of a file whose other 3900-odd lines are
+unchanged. Verified by reading the re-bless diff: exactly 3 changed lines.
 
 Costing is untouched: the change moves a plan-time ordinal from absent to
 present and constructs no new operator, and no cost formula reads it. The 1M

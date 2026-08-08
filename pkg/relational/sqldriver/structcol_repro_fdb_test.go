@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"testing"
 )
 
@@ -25,8 +24,11 @@ import (
 // these fixtures are deterministic; the claim is that a count ALONE is
 // insufficient, not that order goes unchecked.
 //
-// CONFIRMED — adding a projected EXISTS to that same SELECT list makes the
-// query fail to execute. That half is a tripwire on the current loud failure.
+// CONFIRMED, AND SINCE FIXED — adding a projected EXISTS to that same SELECT
+// list used to make the query fail to execute, because the bare reference lost
+// the ordinal its qualified twin kept (RFC-223). That arm was a tripwire on the
+// loud failure and now asserts the values its no-join control produces, which is
+// the replacement the tripwire's own message named.
 //
 // t3 holds exactly one row per t1 id, so the join is row-preserving: every
 // projected value must equal the unjoined form, and the unjoined queries are
@@ -193,30 +195,42 @@ func TestFDB_ProjectedStructColumnThroughAJoin(t *testing.T) {
 		}
 	})
 
-	t.Run("struct_root_beside_a_projected_exists_over_a_join_still_fails", func(t *testing.T) {
+	// This WAS a tripwire on the unresolvable-ordinal failure. RFC-223 baked the
+	// bare reference's ordinal, so it now carries the assertion the tripwire's
+	// own message named: the values its no-join control already produced.
+	t.Run("struct_root_beside_a_projected_exists_over_a_join", func(t *testing.T) {
 		t.Parallel()
 		q := "SELECT t1.id, n, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h " +
 			"FROM t1 JOIN t3 ON t3.t1_id = t1.id"
 		rows, err := db.QueryContext(ctx, q)
-		if err == nil {
-			rows.Close()
-			t.Fatalf("%q now executes. Replace this tripwire with the row "+
-				"assertion: ids [1 2 3], struct members [[50 1] [40 2] [30 3]], "+
-				"h [true false true] — the values its no-join control already "+
-				"produces", q)
+		if err != nil {
+			t.Fatalf("query %q: %v", q, err)
 		}
-		if !strings.Contains(err.Error(), "not resolvable in the runtime row") {
-			t.Fatalf("expected the unresolvable-struct-column failure, got: %v — a "+
-				"DIFFERENT failure means this shape changed for another reason and "+
-				"the diagnosis recorded here no longer describes it", err)
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var id int64
+			var raw any
+			var h bool
+			if err := rows.Scan(&id, &raw, &h); err != nil {
+				t.Fatalf("scan %q: %v", q, err)
+			}
+			s, ok := raw.(interface{ Attributes() []any })
+			if !ok {
+				t.Fatalf("query %q: struct column is %T, not a struct", q, raw)
+			}
+			got = append(got, fmt.Sprint(id, s.Attributes(), h))
 		}
-		// The runtime row DOES carry a column named N. The failure is therefore
-		// not "a name the row does not answer to"; the reference arrived unbaked
-		// (ordinal -1) and the name path did not recover it.
-		if !strings.Contains(err.Error(), "row columns [ID T1_ID ID N]") {
-			t.Fatalf("expected the merged row to be reported as [ID T1_ID ID N] — "+
-				"the struct column IS present in it, which is what makes this an "+
-				"ordinal-resolution failure rather than a missing column. Got: %v", err)
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows %q: %v", q, err)
+		}
+		// Byte-identical to the no-join control's expectation above. The join is
+		// row-preserving, so agreeing with it is the whole claim.
+		want := "[1 [50 1] true 2 [40 2] false 3 [30 3] true]"
+		if fmt.Sprint(got) != want {
+			t.Fatalf("query %q = %v, want %v — this must equal its no-join "+
+				"control exactly; t3 holds one row per t1 id, so the join cannot "+
+				"change any projected value", q, got, want)
 		}
 	})
 }

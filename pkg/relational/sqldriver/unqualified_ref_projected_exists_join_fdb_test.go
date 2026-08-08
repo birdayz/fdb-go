@@ -77,21 +77,24 @@ func TestFDB_UnqualifiedRefBesideAProjectedExistsOverAJoin(t *testing.T) {
 	cases := []struct {
 		name string
 		q    string
-		// want is the full rendered result; wantErrField, when non-empty, says
-		// the query must instead fail with that field unresolvable.
-		want         string
-		wantErrField string
+		// want is the full rendered result. Every arm here now has one: the
+		// three that used to be tripwires on the unresolvable-ordinal failure
+		// assert the values their qualified twins return, which is exactly the
+		// replacement their tripwire messages named.
+		want string
 	}{
-		// --- the two failures, on DIFFERENT column types ---
+		// --- THE TWO THAT USED TO FAIL, on DIFFERENT column types. Each is
+		// byte-for-byte its qualified twin below, which is the claim: bare and
+		// qualified now resolve by one rule. ---
 		{
-			name:         "unqualified_scalar_join_projectedExists",
-			q:            "SELECT t1.id, t1_id, " + exists + join,
-			wantErrField: "T1_ID",
+			name: "unqualified_scalar_join_projectedExists",
+			q:    "SELECT t1.id, t1_id, " + exists + join,
+			want: "[[1 1 true] [2 2 false] [3 3 true]]",
 		},
 		{
-			name:         "unqualified_structRoot_join_projectedExists",
-			q:            "SELECT t1.id, n, " + exists + join,
-			wantErrField: "N",
+			name: "unqualified_structRoot_join_projectedExists",
+			q:    "SELECT t1.id, n, " + exists + join,
+			want: "[[1 struct[50 1] true] [2 struct[40 2] false] [3 struct[30 3] true]]",
 		},
 		// --- their qualified twins: ONE factor moved, both pass ---
 		{
@@ -146,9 +149,9 @@ func TestFDB_UnqualifiedRefBesideAProjectedExistsOverAJoin(t *testing.T) {
 		},
 		// Position in the SELECT list is not the discriminator.
 		{
-			name:         "unqualified_structRoot_join_projectedExists_structLast",
-			q:            "SELECT t1.id, " + exists + ", n" + join,
-			wantErrField: "N",
+			name: "unqualified_structRoot_join_projectedExists_structLast",
+			q:    "SELECT t1.id, " + exists + ", n" + join,
+			want: "[[1 true struct[50 1]] [2 false struct[40 2]] [3 true struct[30 3]]]",
 		},
 	}
 
@@ -257,31 +260,6 @@ func TestFDB_UnqualifiedRefBesideAProjectedExistsOverAJoin(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			rows, err := db.QueryContext(ctx, tc.q)
-			if tc.wantErrField != "" {
-				if err == nil {
-					rows.Close()
-					t.Fatalf("%q now executes. If the ordinal for an unqualified "+
-						"reference is now baked over a join's merged row, replace "+
-						"this arm with the values its qualified twin already "+
-						"returns", tc.q)
-				}
-				wantMsg := fmt.Sprintf("field %q not resolvable in the runtime row (ordinal -1", tc.wantErrField)
-				if !strings.Contains(err.Error(), wantMsg) {
-					t.Fatalf("expected %s, got: %v — a DIFFERENT failure means this "+
-						"shape changed for another reason and the differential "+
-						"recorded here no longer describes it", wantMsg, err)
-				}
-				// The merged runtime row CARRIES the column the reference names.
-				// This is not a missing column; the reference arrived unbaked and
-				// evaluateOrdinal has no name fallback. Pinning the row listing
-				// keeps the diagnosis attached to the failure it describes.
-				if !strings.Contains(err.Error(), "row columns [ID T1_ID ID N]") {
-					t.Fatalf("expected the merged row [ID T1_ID ID N], which CONTAINS "+
-						"the named column — that containment is what makes this an "+
-						"ordinal-baking failure rather than a resolution one. Got: %v", err)
-				}
-				return
-			}
 			if err != nil {
 				t.Fatalf("CONTROL %q failed: %v — a failing control makes the "+
 					"paired failure above uninterpretable", tc.q, err)

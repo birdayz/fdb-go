@@ -695,15 +695,28 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 					return nil, unresShadow
 				}
 				// A BARE non-shadowed column resolves through the scope so the
-				// projection carries the construction-bound ordinal (a
-				// childless source-relative baked FieldValue — the resolver's
-				// single-source bind). Anything else — a multi-source
-				// QOV-correlated resolution, an unresolvable name, a lazy
-				// result — keeps the translator's name emission unchanged.
+				// projection carries the construction-bound ordinal, by the SAME
+				// shape rule the qualified site uses (resolveBaked). An
+				// unresolvable name or a lazy result keeps the translator's name
+				// emission unchanged.
+				//
+				// This used to accept ONLY the childless single-source bind, and
+				// that is what made a bare reference lose an ordinal a qualified
+				// one kept: over a multi-source FROM the resolver takes its
+				// CORRELATED arm and hands back a QOV-child value, which the old
+				// test rejected — leaving the slot nil with a good ordinal in
+				// hand, for translateProjectOverExistsFilter to mint a lazy
+				// carrier it has no bake pass to recover (RFC-223 §2).
+				//
+				// childlessOK=true preserves the single-source bind exactly. It
+				// cannot admit a childless bake over a join: `needsQualification`
+				// routes every multi-source bare resolution through the
+				// correlated arm, so no childless value is produced there in the
+				// first place.
 				if proj.ProjectedValues == nil || (i < len(proj.ProjectedValues) && proj.ProjectedValues[i] == nil) {
 					rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, id)
 					if rerr == nil {
-						if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child == nil && fv.SourceRelativeBaked() {
+						if fv := resolveBaked(rv, true); fv != nil {
 							if proj.ProjectedValues == nil {
 								proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 							}
@@ -1839,6 +1852,53 @@ func mintQualifiedDatumKey(proj *logical.LogicalProject, i int, qualifiedName st
 	}
 }
 
+// resolveBaked is the ONE shape test for "did the resolver hand back a
+// plan-time-baked reference this site may keep". Both the bare and the qualified
+// resolution sites call it, because a bare spelling and a qualified spelling of
+// the same column must resolve by the same rule — Java's
+// SemanticAnalyzer.resolveCorrelatedIdentifier asserts qualification and then
+// delegates to the very same resolveIdentifier, so qualification is a
+// PRECONDITION and never a different algorithm (RFC-223 §3). Two inline copies of
+// this predicate are how the two sites drifted into accepting disjoint shapes,
+// which is the defect RFC-223 removes; keeping it one function is what stops
+// them drifting apart again.
+//
+// It owns the SHAPE test ONLY. The explicit-qualifier precondition stays at the
+// qualified call site, where it is a precondition rather than a property of the
+// value, and the two must not fuse: importing the shape test without its
+// precondition is exactly how a widened predicate can admit a population it was
+// never measured against.
+//
+// The two admissible shapes are NOT interchangeable, and childlessOK is the
+// difference rather than a convenience:
+//
+//   - CHILD-BEARING + leg-relative unpinned — the merged-row shape. The executor
+//     binds the leg's window off the merged row's own leg boundaries
+//     (rowLegsBinder), so the ordinal reads positionally over the composed row.
+//     Always admissible.
+//   - CHILDLESS + source-relative — an ordinal relative to the reference's OWN
+//     source row. Correct only where there is no leg choice to lose. Over a join
+//     it would address another leg's slot, so a caller that can be looking at a
+//     merged row passes childlessOK=false. `logical_predicate.go`'s
+//     sort-key filler states this same rule inline as `len(sq.joins) == 0`.
+//
+// A non-FieldValue, a lazy result, or a shape the caller did not admit returns
+// nil, leaving the caller's existing emission — loud at runtime, never a silent
+// wrong-slot read.
+func resolveBaked(rv values.Value, childlessOK bool) *values.FieldValue {
+	fv, isFV := rv.(*values.FieldValue)
+	if !isFV {
+		return nil
+	}
+	if fv.Child != nil && fv.RootIsLegRelativeUnpinned() {
+		return fv
+	}
+	if childlessOK && fv.Child == nil && fv.SourceRelativeBaked() {
+		return fv
+	}
+	return nil
+}
+
 // resolveQualifiedBaked resolves a QUALIFIED column reference through the scope
 // and returns it ONLY when the resolver produced a QUANTIFIER-ADDRESSED BAKED
 // reference (a QOV-child SourceRelativeBaked node — a construction-bound
@@ -1858,7 +1918,12 @@ func resolveQualifiedBaked(resolver *expr.Resolver, ref colRef) values.Value {
 	if err != nil || rv == nil {
 		return nil
 	}
-	if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child != nil && fv.RootIsLegRelativeUnpinned() {
+	// childlessOK=false: a qualified reference is resolved here precisely
+	// because a leg choice exists, so a source-row-relative ordinal would lose
+	// the leg it names. The single-source case, where the qualifier is redundant
+	// and childless IS correct, is handled by the caller that can prove it —
+	// `logical_predicate.go`'s `len(sq.joins) == 0` arm.
+	if fv := resolveBaked(rv, false); fv != nil {
 		return fv
 	}
 	return nil

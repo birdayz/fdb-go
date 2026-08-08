@@ -437,11 +437,26 @@ var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 		// layer and never reach a seed decision, so they add to NEITHER count —
 		// which is itself the check that they are refused where this comment
 		// claims they are.
-		//   MEASURED, not derived; see the values below.
-		Denominator:     n(588),
-		Accept:          n(168),
+		//   denominator 588+14 = 602, ACCEPT 168+12 = 180, no-exist-ref 210+2 = 212
+		//
+		// Step 5 — RFC-223's FIX, and this one is NOT corpus growth. No query was
+		// added: the same corpus produces two MORE fold firings, both ACCEPT,
+		// once a bare reference keeps its baked ordinal. That is the fix
+		// reaching the seed decision on a shape that previously never got there.
+		// Attributed by toggling the PRODUCTION diff with the corpus held fixed
+		// — the only control that can separate a fix from a fixture, and the one
+		// that corrected a first reading here that had blamed a test.
+		//   denominator 602+2 = 604, ACCEPT 180+2 = 182, no-exist-ref unchanged
+		//
+		// Steps 3 and 4 were both RE-MEASURED after this branch rebased onto the
+		// step-2 head; the pre-rebase increments were taken against 572/160/202 and
+		// carrying them over would have restated a number nobody measured. Control:
+		// both files out of the package reports 586/166/210, both back in reports
+		// 602/180/212.
+		Denominator:     n(604),
+		Accept:          n(182),
 		CorrelatedStep1: n(108),
-		NoExistRef:      n(210),
+		NoExistRef:      n(212),
 		ReconstructNil:  n(102),
 		// The residue is now ENTIRELY bare-QOV, and the two entries below say so
 		// separately on purpose. A single "reconstruct-nil == 94" would be
