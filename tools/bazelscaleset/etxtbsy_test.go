@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // TestFakeSSHIsPreexistingAndNeverWrittenPerTest pins the STRUCTURE that keeps
@@ -167,6 +168,181 @@ func TestETXTBSYIsRealForAWriterHeldOpen(t *testing.T) {
 	_, _ = child.Process.Wait()
 	if err := execUntilNotBusy(bin); err != nil {
 		t.Fatalf("exec with no writer left: %v", err)
+	}
+}
+
+// TestWriteExecutableSerialisesAgainstForks pins the cure for the run.sh write,
+// which cannot use the shared-inode trick the fake ssh binaries use.
+//
+// The property: writeExecutable holds syscall.ForkLock exclusively, the same
+// lock os/exec takes around forkExec, so no fork can be in flight while its
+// write fd is open and no child can inherit that fd. The test proves it by
+// holding the lock and showing writeExecutable cannot proceed — if the lock is
+// dropped from writeExecutable, it sails through and this goes red.
+//
+// The remote launch path has no ETXTBSY retry anywhere, so nothing downstream
+// would absorb the regression.
+func TestWriteExecutableSerialisesAgainstForks(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "victim.sh")
+
+	held := make(chan struct{})
+	released := make(chan struct{})
+	go func() {
+		syscall.ForkLock.Lock()
+		close(held)
+		// Short: this blocks every fork in the process, including other
+		// parallel tests', so it is held only long enough to observe the block.
+		time.Sleep(150 * time.Millisecond)
+		syscall.ForkLock.Unlock()
+		close(released)
+	}()
+	<-held
+
+	done := make(chan error, 1)
+	go func() { done <- writeExecutable(path, []byte("#!/bin/sh\nexit 0\n")) }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("writeExecutable completed (err=%v) while syscall.ForkLock was held exclusively; it is not taking the lock, so a fork can still duplicate its write fd and re-arm ETXTBSY on the remote run.sh — which has no retry behind it", err)
+	case <-time.After(40 * time.Millisecond):
+	}
+
+	<-released
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("writeExecutable: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("writeExecutable never completed after ForkLock was released")
+	}
+	if err := exec.Command(path).Run(); err != nil {
+		t.Fatalf("the file writeExecutable produced does not exec: %v", err)
+	}
+}
+
+// TestRenameAndChmodDoNotCureETXTBSY is a negative result made permanent, and it
+// exists because both of these read as obvious fixes and neither works.
+//
+// Writing to a temp name and rename(2)-ing it into place is the standard cure
+// for a torn read; it does nothing here, because rename moves a NAME and the
+// exec'd path still resolves to the very inode the writer had open. Writing
+// 0644 and chmod +x only after the close is equally tempting; it does nothing
+// either, because ETXTBSY is decided by the inode's writer count, not its mode.
+//
+// The cures that do work: never execve a freshly written inode (link a pristine
+// one, as the fake ssh helpers do; or hand the script to an interpreter as data,
+// as lifecycle_test.go does), or keep forks out of the write window entirely
+// (writeExecutable). If this test ever goes red, one of the two below started
+// working and the design has cheaper options than it does today — check the
+// kernel, not the test.
+func TestRenameAndChmodDoNotCureETXTBSY(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	const body = "#!/bin/sh\nexit 0\n"
+
+	// A fork that caught the write fd keeps the inode busy no matter what name
+	// it is later reachable under, or what mode it is later given.
+	hold := func(t *testing.T, f *os.File) {
+		t.Helper()
+		child := exec.Command("sleep", "30")
+		child.ExtraFiles = []*os.File{f}
+		if err := child.Start(); err != nil {
+			t.Fatalf("start fd-holding child: %v", err)
+		}
+		t.Cleanup(func() { _ = child.Process.Kill(); _, _ = child.Process.Wait() })
+	}
+
+	t.Run("rename into place", func(t *testing.T) {
+		tmp, final := filepath.Join(dir, "r.tmp"), filepath.Join(dir, "r.sh")
+		f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY, 0o755)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if _, err := f.WriteString(body); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		hold(t, f)
+		if err := f.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		if err := os.Rename(tmp, final); err != nil {
+			t.Fatalf("rename: %v", err)
+		}
+		if err := exec.Command(final).Run(); !errors.Is(err, syscall.ETXTBSY) {
+			t.Fatalf("exec after rename-into-place: got %v, want ETXTBSY — rename moves a name, it does not give the exec'd path a writer-free inode", err)
+		}
+	})
+
+	t.Run("chmod after close", func(t *testing.T) {
+		p := filepath.Join(dir, "c.sh")
+		f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if _, err := f.WriteString(body); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		hold(t, f)
+		if err := f.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		if err := os.Chmod(p, 0o755); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		if err := exec.Command(p).Run(); !errors.Is(err, syscall.ETXTBSY) {
+			t.Fatalf("exec after close-then-chmod: got %v, want ETXTBSY — the executable bit is not what ETXTBSY tests, the inode's writer count is", err)
+		}
+	})
+
+	t.Run("interpreter reads it as data", func(t *testing.T) {
+		p := filepath.Join(dir, "d.sh")
+		f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY, 0o755)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if _, err := f.WriteString(body); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		hold(t, f)
+		if err := f.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		// No execve on the script's inode at all, so a writer cannot matter.
+		if err := exec.Command("/bin/sh", p).Run(); err != nil {
+			t.Fatalf("running a held-open script through /bin/sh: %v; reading it as data is supposed to sidestep ETXTBSY entirely", err)
+		}
+	})
+}
+
+// TestSharedInodeTrickIsUnsafeForRunSh pins WHY run.sh uses the lock instead of
+// the link the fake ssh binaries use. A link shares the inode in both
+// directions: helpers that legitimately rewrite a runner dir's run.sh would
+// write through to every other test's copy. This is not hypothetical — it is
+// what an earlier attempt at this fix did, and the suite failed with "exec
+// format error" once one test's body landed on the shared inode.
+func TestSharedInodeTrickIsUnsafeForRunSh(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pristine := filepath.Join(dir, "pristine-run.sh")
+	if err := os.WriteFile(pristine, []byte("#!/bin/sh\nexit 3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(dir, "run.sh")
+	if err := os.Link(pristine, linked); err != nil {
+		t.Fatalf("hard link within one temp dir failed: %v", err)
+	}
+	// A helper rewriting "its own" run.sh through the link.
+	if err := os.WriteFile(linked, []byte("#!/bin/sh\nexit 4\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(pristine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "exit 4") {
+		t.Fatalf("writing through a hard link did NOT reach the shared inode (%q); if that is now true, the link trick would be usable for run.sh and writeExecutable's lock could be reconsidered", string(b))
 	}
 }
 

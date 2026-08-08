@@ -112,15 +112,46 @@ func fakeSSHFailing(t *testing.T) (bin, argvLog string) {
 	return linkFakeSSH(t, sharedFakeSSHFailing)
 }
 
+// writeExecutable writes a file that will later be handed to execve, without
+// leaving an ETXTBSY window open behind it.
+//
+// The window is a fork landing between this open and its close: the child
+// inherits the write fd, and until it execs (clearing it, O_CLOEXEC) execve on
+// the file fails "text file busy". os/exec takes syscall.ForkLock around
+// forkExec, so holding it exclusively here means no fork in this process can be
+// in flight while the fd is open. The window is not narrowed, it is closed.
+//
+// The other two shapes that look like cures are not. Writing to a temp name and
+// renaming into place keeps the inode the writer had open, and chmod'ing +x only
+// after the close leaves the inode's writer count untouched — ETXTBSY follows
+// that count, not the name and not the mode. Both are pinned as negative results
+// in etxtbsy_test.go.
+//
+// Sharing one pristine inode between tests — what the fake ssh binaries do — is
+// the other real cure, but it is NOT usable for run.sh: several helpers
+// legitimately overwrite a runner dir's run.sh, and a link would send those
+// writes through to every other test's copy. Holding the lock keeps each test's
+// file on its own inode.
+//
+// Deliberately not a retry around the exec: a retry leaves the window open and
+// only hides how often it is hit.
+func writeExecutable(path string, content []byte) error {
+	syscall.ForkLock.Lock()
+	defer syscall.ForkLock.Unlock()
+	return os.WriteFile(path, content, 0o755)
+}
+
 // remoteRunnerDir creates a "pool box" actions/runner dir whose run.sh runs
-// the given body.
+// the given body. The remote launch path execve's this run.sh ("exec ./run.sh"
+// in remote.go) and, unlike startLocal, has no ETXTBSY retry to absorb a fork
+// that caught the write fd — so the write goes through writeExecutable.
 func remoteRunnerDir(t *testing.T, body string) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "actions-runner")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "run.sh"), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+	if err := writeExecutable(filepath.Join(dir, "run.sh"), []byte("#!/bin/sh\n"+body+"\n")); err != nil {
 		t.Fatal(err)
 	}
 	return dir
