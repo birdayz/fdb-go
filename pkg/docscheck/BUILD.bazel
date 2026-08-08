@@ -32,6 +32,7 @@ go_test(
         "panic_boundary_test.go",
         "pinned_ordinal_domain_test.go",
         "plan_proto_schema_test.go",
+        "precommit_hook_message_test.go",
         "qualifier_recovery_gate_test.go",
         "race_lane_scope_test.go",
         "result_type_stub_census_test.go",
@@ -54,6 +55,9 @@ go_test(
         "//:RELEASE.md",
         "//:TODO.md",
         "//:go.mod",
+        # keep: the pre-commit hook body is extracted from the install-hooks recipe,
+        # which is its tracked source of truth (TestPreCommitHookNamesTheConditionItDetected).
+        "//:justfile",
         # keep: the production-status authority and the redirect that points at it
         # (B6, TestProductionStatusAuthority).
         "//:road-to-prod.md",

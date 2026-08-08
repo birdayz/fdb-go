@@ -501,18 +501,89 @@ verify:
         -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s
     echo "=== All verification passed ==="
 
-# Install pre-commit hook (lint + gazelle + build + test)
+# Install pre-commit hook (generate drift check + lint + build + test)
 install-hooks:
     #!/usr/bin/env bash
     set -euo pipefail
-    cat > .git/hooks/pre-commit << 'HOOK'
+    # `.git` is a FILE in a linked worktree, not a directory, so a literal
+    # `.git/hooks` path silently fails everywhere except the main checkout.
+    # --git-common-dir resolves to the one hooks dir every worktree shares.
+    hooks_dir="$(git rev-parse --git-common-dir)/hooks"
+    mkdir -p "$hooks_dir"
+    cat > "$hooks_dir/pre-commit" << 'HOOK'
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "Running pre-commit: just lint && just gazelle && just build && just test"
-    just lint && just gazelle && just build && just test
+    echo "Running pre-commit: just generate && just lint && just build && just test"
+
+    # This hook is per-clone state, and core.hooksPath is one absolute path SHARED
+    # by every worktree — so any worktree, on any branch, overwrites it for all of
+    # them by running `just install-hooks`. Nothing else keeps the installed text
+    # and the recipe in agreement over time. Warn, never fail: a hook that refuses
+    # to run because it disagrees with the tree is worse than one that says so.
+    if [ -f justfile ]; then
+      recipe_hook="$(sed -n "/<< 'HOOK'/,/^ *HOOK\$/p" justfile | sed '1d;$d;s/^    //')"
+      if [ -n "$recipe_hook" ] && [ "$recipe_hook" != "$(cat "$0")" ]; then
+        echo "WARNING: the installed pre-commit hook differs from this tree's install-hooks recipe."
+        echo "  The hook is shared by every worktree, so another branch may have installed it."
+        echo "  Run 'just install-hooks' from this tree to resync."
+      fi
+    fi
+
+    # An untracked file still reaches the BUILD, but not the commit. Surfaced here
+    # rather than left to `just build`, because a test file that is present on disk
+    # and absent from its Bazel test target fails minutes later with a message
+    # about the target, not about the file being uncommitted. BUILD.bazel is in
+    # scope because gazelle creates one for a new package.
+    untracked_go="$(git ls-files --others --exclude-standard -- '*.go' 'BUILD.bazel' '*.bzl' || true)"
+    if [ -n "$untracked_go" ]; then
+      echo "NOTE: untracked .go file(s) present — these are BUILT but will NOT be committed:"
+      echo "$untracked_go" | sed 's/^/  /'
+      echo "  If 'just build' fails below on a missing Bazel target, stage these and their"
+      echo "  BUILD.bazel entries together — a test file in no test target fails the build."
+    fi
+
+    # Snapshot the tree BEFORE codegen. `git diff --exit-code` alone cannot tell a
+    # dirty tree from genuine codegen drift: it reports both identically, so a
+    # message naming either one is confidently wrong half the time.
+    #
+    # The untracked list is snapshotted SEPARATELY because `git diff` reports
+    # tracked files only. Codegen that CREATES a file — gazelle writing a
+    # BUILD.bazel for a new package — is invisible to a tracked-only diff, so
+    # before == after and the drift check passes over uncommitted codegen output.
+    # It stays separate from the dirty-tree test below so that pre-existing
+    # scratch files, which appear in both snapshots, still cannot fail the commit.
+    before="$(git diff)"
+    before_untracked="$(git ls-files --others --exclude-standard)"
+
+    just generate
+
+    after="$(git diff)"
+    after_untracked="$(git ls-files --others --exclude-standard)"
+
+    if [ "$before" != "$after" ] || [ "$before_untracked" != "$after_untracked" ]; then
+      echo "ERROR: 'just generate' produced changes — generated files are out of date."
+      echo "  Stage the regenerated files and retry."
+      git diff --stat
+      # --stat covers modified tracked files only; a file codegen CREATED shows up
+      # nowhere else, and is the case most likely to be missed when staging.
+      comm -13 <(printf '%s\n' "$before_untracked") <(printf '%s\n' "$after_untracked") \
+        | sed 's/^/  new file: /'
+      exit 1
+    fi
+
+    if [ -n "$before" ]; then
+      echo "ERROR: unstaged changes in tracked files — the tree was already dirty BEFORE"
+      echo "  'just generate' ran, and codegen did not change anything. This is NOT"
+      echo "  codegen drift. Stage what belongs in this commit, or stash/revert the rest."
+      echo "  (Committing with a dirty tree would test content the commit does not carry.)"
+      git diff --stat
+      exit 1
+    fi
+
+    just lint && just build && just test
     HOOK
-    chmod +x .git/hooks/pre-commit
-    echo "Pre-commit hook installed."
+    chmod +x "$hooks_dir/pre-commit"
+    echo "Pre-commit hook installed at $hooks_dir/pre-commit"
 
 # Run a specific test with forced rebuild (no stale binary)
 test-fresh target *args:
