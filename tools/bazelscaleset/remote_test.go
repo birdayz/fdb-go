@@ -143,6 +143,7 @@ func newRemoteScaler(t *testing.T, client scalerClient, pool *slotPool, sshBin s
 		remoteSSHKey:    "/test/remote_id",
 	}
 	s := newScaler(discardLogger(), client, 1, cfg, pool)
+	silenceChildOutput(t, s)
 	s.sshBin = sshBin
 	s.sshConnectTimeout = 2 * time.Second
 	s.remoteCfg = remoteProcConfig{pollInterval: 30 * time.Millisecond, probeTimeout: 5 * time.Second, unreachableLimit: 3}

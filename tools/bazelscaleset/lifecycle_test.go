@@ -252,6 +252,7 @@ func newAdoptScaler(t *testing.T, client scalerClient, pool *slotPool, workBase,
 		runnerDir:        runnerBase,
 	}
 	s := newScaler(discardLogger(), client, 1, cfg, pool)
+	silenceChildOutput(t, s)
 	s.adoptPoll = 30 * time.Millisecond
 	return s
 }
@@ -743,6 +744,7 @@ func TestListenerRunReturnsOnGetMessageError(t *testing.T) {
 		t.Fatal(err)
 	}
 	sc := newScaler(discardLogger(), nil, 1, &config{maxRunners: 1, minRunners: 0}, pool)
+	silenceChildOutput(t, sc)
 
 	done := make(chan error, 1)
 	go func() { done <- lis.Run(context.Background(), sc) }()
