@@ -22,23 +22,46 @@ import (
 // carry a two-segment nested sort key, the fold would decline a shape users
 // write.
 //
-// It cannot, and the two facts are the same fact. A bare `n.sk` is ambiguous
-// PRECISELY WHEN more than one leg exposes `n`, and SQL rejects that reference
-// with 42702 during resolution — before the fold ever sees a key. Duplicate
-// root names in the merged row and a resolvable two-segment nested key are
-// therefore mutually exclusive, so the re-anchor's ambiguity arm is unreachable
-// for that population and declines nothing a user can express.
+// It cannot TODAY, and the two facts are the same fact: a bare `n.sk` is
+// ambiguous PRECISELY WHEN more than one leg exposes `n`, and SQL rejects that
+// reference with 42702 during resolution — before the fold sees a key.
 //
-// WHAT RE-ARMS THE HAZARD: any change that lets a bare multi-segment reference
-// resolve when its root is ambiguous — first-match resolution, an implicit
-// preference for the left leg, or scoping that hides one leg's column instead
-// of rejecting. If this test fails, that is what happened, and the re-anchor's
-// ambiguity arm becomes reachable: it must then disambiguate by IDENTITY (which
+// THE LICENCE THIS GIVES IS CONDITIONAL, AND THE CONDITION IS LOAD-BEARING.
+// Two-segment keys are only half the population. A merged row carrying two `N`
+// columns is reachable RIGHT NOW through the three-segment form:
+//
+//	self-join, ORDER BY a.n.sk       -> row columns [ID N ID N]
+//	t1 JOIN t4, ORDER BY t1.n.sk     -> row columns [ID N T1_ID ID N]
+//
+// Those fail only because Go's walkColumnRef refuses a 3-segment reference —
+// and that refusal is a DIVERGENCE, not a rule. Java has no arity cap anywhere
+// on this path: `fullId : uid (DOT uid)*` in the grammar, an unbounded
+// remainingPath accessor loop in SemanticAnalyzer, and its own tests execute a
+// five-segment reference. So the moment that divergence is closed — which is
+// exactly what this workstream prescribes — duplicate roots and a resolvable
+// nested key coexist, and the conjunction this file calls impossible becomes
+// ordinary. The ambiguity arm must therefore EXIST and DECLINE before that
+// lands; it is unit-driven in the values package. It must never first-match:
+// RecordType.FieldIndex returns the first name match, so `b.n.sk` over a
+// self-join would silently read the LEFT leg's `N`.
+//
+// WHAT RE-ARMS THE HAZARD:
+//   - walkColumnRef gains 3-segment support (the prescribed fix, and the most
+//     likely re-armer BY FAR — it is scheduled work, not a hypothetical);
+//   - a bare multi-segment reference resolves when its root is ambiguous, via
+//     first-match, an implicit left-leg preference, or scoping that hides a
+//     column instead of rejecting;
+//   - the ephemeral-derived suppression widens. Java already suppresses
+//     ephemeral-derived duplicates by name before its ambiguity assert
+//     (SemanticAnalyzer), so a mixed direct/ephemeral pair yields ONE match and
+//     no ambiguity error. Go matching that behaviour would admit a duplicate
+//     root name without any 42702 at all — this file would stay green while the
+//     conjunction became reachable, which is the one re-armer these assertions
+//     cannot see.
+//
+// In every case the answer is to disambiguate by leg IDENTITY — which
 // correlation the carried path's root belongs to, matched against which leg each
-// merged slot came from) and NEVER by picking a first name match.
-//
-// The three-segment form (`a.n.sk`) is a different, unresolved shape and is not
-// what this test pins; it is refused for its own reason and has its own pin.
+// merged slot came from — and never by name.
 func TestFDB_NestedSortKeyAmbiguityIsRejectedBeforeTheFold(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -109,32 +132,45 @@ func TestFDB_NestedSortKeyAmbiguityIsRejectedBeforeTheFold(t *testing.T) {
 		})
 	}
 
-	// COUNTERWEIGHT. The 42702 above must come from genuine ambiguity, not from
-	// "a nested key reaching the fold at all". With only ONE `n` in scope the
-	// reference is unambiguous and must NOT be rejected as ambiguous — otherwise
-	// the two assertions above would pass for a reason having nothing to do with
-	// duplicate names, and this file would be pinning the wrong fact.
+	// COUNTERWEIGHT. The 42702 above must come from genuine ambiguity and not
+	// from "a nested key reaching the fold at all", or the assertions above hold
+	// for a reason unrelated to duplicate names and this file pins the wrong fact.
 	//
-	// THIS COUNTERWEIGHT IS THE WEAKER OF THE TWO, DELIBERATELY, AND THE STRONGER
-	// ONE IS OWED. The ideal control is the same shape over a JOIN — unambiguous
-	// nested key, merged row, no duplicate name — because that is the exact
-	// population the ambiguity arm sits in. It cannot land yet: that query trips
-	// an existing hard-zero (`existsSortSplit` DIVERGED, witness `"T1.N.SK"` vs
-	// identity `"T1"`), which is the very defect the fold fix exists to remove.
-	// Adding it now would put the suite red against an assertion that is correct.
+	// "not 42702" is too weak to do that on its own: the unambiguous query does
+	// not currently succeed either — it reaches the fold and dies there, on the
+	// very defect the fold fix exists to remove. An assertion that merely excludes
+	// 42702 passes identically whether the key RESOLVED CLEANLY or EXPLODED one
+	// stage later, which is exactly the distinction the counterweight owes.
 	//
-	// So the join control belongs to the commit that fixes the fold, and that
-	// commit MUST add it — a single-table counterweight cannot show the ambiguity
-	// guard is well-scoped over merged rows, only that it is not firing on every
-	// nested key.
-	t.Run("unambiguous_nested_key_single_table_is_not_42702", func(t *testing.T) {
+	// So it asserts the stage precisely: resolution must succeed (no 42702) AND
+	// the failure must be the known fold defect. Both halves are load-bearing —
+	// the first is the counterweight, the second is what stops this from silently
+	// becoming a "not 42702" tautology again.
+	//
+	// WHEN THE FOLD FIX LANDS THIS TEST MUST GO RED, and that is intended: replace
+	// it with the assertion the fix earns — the query SUCCEEDS and returns ids
+	// [3 2 1], ordered by n.sk ascending (sk = 30, 40, 50 for ids 3, 2, 1). Do not
+	// relax it back to an error check.
+	t.Run("unambiguous_nested_key_resolves_then_fails_only_in_the_fold", func(t *testing.T) {
 		t.Parallel()
 		q := "SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h " +
 			"FROM t1 ORDER BY n.sk"
-		if err := queryErr(q); err != nil && strings.Contains(err.Error(), "42702") {
-			t.Fatalf("an UNAMBIGUOUS nested key was rejected as ambiguous: %v — "+
-				"the ambiguity guard is over-broad, and the mutual exclusion this file "+
+		err := queryErr(q)
+		if err == nil {
+			t.Fatalf("the unambiguous nested key now SUCCEEDS — the fold defect is fixed. "+
+				"Replace this test with the real assertion: %q must return ids [3 2 1] "+
+				"ordered by n.sk ascending", q)
+		}
+		if strings.Contains(err.Error(), "42702") {
+			t.Fatalf("an UNAMBIGUOUS nested key was rejected as ambiguous: %v — the "+
+				"ambiguity guard is over-broad, and the mutual exclusion this file "+
 				"documents would hold vacuously", err)
+		}
+		if !strings.Contains(err.Error(), "no ordering defined between") {
+			t.Fatalf("expected the known fold defect (a struct/struct ordering "+
+				"comparison), got: %v — the failure MOVED. Re-read which stage now "+
+				"rejects this query before trusting the counterweight above; it is only "+
+				"a counterweight while the key resolves and dies in the fold", err)
 		}
 	})
 }

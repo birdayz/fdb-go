@@ -145,6 +145,7 @@ go_test(
         "leg_identity_census_test.go",
         "like_match_test.go",
         "name_split_census_test.go",
+        "nested_root_reanchor_test.go",
         "ordering_claim_test.go",
         "ordinal_domain_test.go",
         "ordinal_eval_test.go",

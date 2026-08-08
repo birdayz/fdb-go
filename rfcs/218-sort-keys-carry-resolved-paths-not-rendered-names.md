@@ -1,6 +1,6 @@
 # RFC-218 — The projected-EXISTS fold must read the sort key's resolved path, not a re-derived name
 
-**Status:** DRAFT rev 6 — COMPLETE, ready for a joint lap. The ambiguity arm is measured unreachable and pinned (§2g); the corpus run happened and shows the corpus CANNOT verify this fix (§6-RESULT); the standalone/wired gap is now a precondition of wiring (§2f). Awaiting Graefe + Torvalds.
+**Status:** DRAFT rev 7 — rev 6 NAK'd: CCC1's negative result does NOT survive Shape B (Java has no arity cap, verified), so the ambiguity licence is withdrawn and the arm is BUILT and unit-driven. The §2f harness is committed rather than quoted. Awaiting Graefe + Torvalds.
 **Origin:** RFC-197 ratchet entry `cascades_translator.go # sortKeyFieldRef`, whose stated
 mechanisms were measured false; the live bug behind it is this one
 **Scope:** `pkg/relational/core/query/cascades_translator.go` (the `sortSource` helpers), plus
@@ -296,6 +296,14 @@ mechanism is exactly what the previous three revisions were NAK'd for.
 
 ### 2f. The mechanism is BUILT and EXERCISED — it is not a specification any more
 
+> **The harness is COMMITTED**, at
+> `pkg/recordlayer/query/plan/cascades/values/nested_root_reanchor_test.go`. Revs 2 and 3 were
+> NAK'd for *cited-but-unrun*; keeping these numbers in prose over a deleted probe would have
+> been *run-but-unkeepable* — the same hole one step later, and a breach of the standing rule
+> that every proof gets committed as a test. Every arm below is driven there, including the
+> ambiguity arm, and the join case uses the REAL merged row `[ID T1_ID ID N]` (duplicate `ID`
+> and all) rather than a synthetic stand-in.
+
 `RootOrdinalIn` differs from `OrdinalIn` in one line — it drops the arity gate and keeps the
 domain gate — and that is precisely the separation §2c showed was missing:
 
@@ -335,17 +343,32 @@ Both declines are loud (§2d: a clean `0AF00`), and both positive controls succe
 §2c's rule, is what makes the declines interpretable at all rather than possible harness
 defects.
 
-**FIRST THING IMPLEMENTATION MUST CONFIRM — a check to perform, not a risk to note.** Everything
-in §2f was exercised as a **standalone composition against synthetic `RecordType`s**. What is
-proven is that the composition behaves as specified when handed a given layout. What is **not**
-proven is that the fold hands it the layout constructed here. Before wiring, assert that the
-`RecordType` the fold actually flows at the re-anchor point is the merged row — print it and
-compare against `[ID T1_ID ID N]` for WW3 — and fail the wiring if it is not.
+**FIRST THING IMPLEMENTATION MUST CONFIRM — a check to perform, not a risk to note.** §2f is
+exercised against hand-built layouts: it proves the composition behaves as specified *when handed
+a given layout*, never that the fold hands it that one.
 
-This is first because its failure mode is **silent**: a wrong-but-plausible layout still
-re-anchors to *some* column and still returns rows. That is the same silent shape as the rev-2
-hazard this whole section exists to remove, so it must be a verified precondition of the wiring
-rather than something noticed afterwards.
+**And the fold has TWO layouts, so "the flowed layout" is not yet a well-formed instruction.**
+An earlier revision said "the merged row" and that under-specifies by exactly one:
+
+| layout | what it is | who uses it |
+|---|---|---|
+| outer / merged scan row | `[ID T1_ID ID N]` for WW3 | `collectExtraSortColumns` / `sortKeySourceValue` build the hidden column's **value** against this |
+| folded projection | `[ID HAS_T2 N]` for WW2 | `applySortOverRef` resolves the sort **key** against this, via `outputFieldDomain(fields)` (`cascades_translator.go:5199-5222`) |
+
+The re-anchor must name which one it targets and assert it — they differ in width, in order,
+and in content, and a root ordinal derived against the wrong one lands on a real column and
+returns rows.
+
+**This also breaks the "users cannot write it" argument for the ambiguity arm, from a direction
+§2g does not reach.** The appended hidden column is named by `sortKeyFieldRef` → `"N"`, so a
+folded projection that already carries a column named `N` gets a **second** one. The fold
+manufactures the duplicate-root layout itself, out of SQL that is perfectly unambiguous. No
+resolver rejection stands between a user and that row, which is the strongest single reason the
+arm must exist in code.
+
+This check is first because its failure mode is **silent**: a wrong-but-plausible layout still
+re-anchors to *some* column and still returns rows — the same shape as the rev-2 hazard this
+section exists to remove.
 
 ### 2g. The ambiguity arm is unreachable — measured, and pinned as a test
 
@@ -361,11 +384,46 @@ self-join, QUALIFIED a.n.sk           -> 3 segments = Shape B; row columns [ID N
 CONTROL only t1 exposes `n`           -> reaches the fold (the WW3 failure)
 ```
 
-**Duplicate root names and a resolvable two-segment nested key are mutually exclusive, and they
-are the same fact:** a bare `n.sk` is ambiguous *precisely when* more than one leg exposes `n`,
-and SQL rejects it with `42702` during resolution, before the fold sees a key. The ambiguity arm
-declines nothing a user can express, so it is not a regression and does not need identity-based
-disambiguation today.
+For **two-segment** keys, duplicate root names and a resolvable nested key are mutually
+exclusive, and they are the same fact: a bare `n.sk` is ambiguous *precisely when* more than one
+leg exposes `n`, and SQL rejects it with `42702` before the fold sees a key.
+
+**That licence is CONDITIONAL, and an earlier revision of this section stated it as absolute.
+It was wrong, and Shape B is why.** A merged row carrying two `N` columns is reachable today
+through the three-segment form:
+
+```
+self-join,  ORDER BY a.n.sk    -> row columns [ID N ID N]
+t1 JOIN t4, ORDER BY t1.n.sk   -> row columns [ID N T1_ID ID N]
+```
+
+Those fail only because `walkColumnRef` refuses a 3-segment reference — and **that refusal is a
+divergence, not a rule.** Java has no arity cap anywhere on this path, verified at the pinned
+tag: `RelationalParser.g4:747` is `fullId : uid (DOT uid)*`; `SemanticAnalyzer.java:574-597`
+walks `remainingPath` with no arity branch; `V2PlanGeneratorTests.java:978` *executes*
+`select x.c.m.n.p from (select a.b.c from t1) as x`. §3 is therefore right on **sequencing** and
+wrong on **grounds**: Shape B is deferred work, not an unsupported shape, and closing it is
+prescribed by this very workstream.
+
+So the instant that divergence closes, duplicate roots and a resolvable nested key coexist —
+the exact conjunction this section previously called impossible. And `RecordType.FieldIndex`
+first-matches (`type.go:825`), so `b.n.sk` over a self-join would silently read the **left**
+leg's `N`: the wrong-column read this whole design exists to prevent.
+
+**Consequence: the ambiguity arm is BUILT, not licensed away.** It counts duplicate root names
+explicitly and declines, because `FieldIndex` alone cannot — a first match is indistinguishable
+from a correct one. Every arm is unit-driven in
+`values/nested_root_reanchor_test.go` (§2f), including this one. The negative result narrows to
+what it can support: *today, two-segment keys cannot reach the arm*, which is a statement about
+scheduling, not about the design.
+
+**A second escape hatch the negative result did not account for.** Java suppresses
+ephemeral-derived duplicates by name *before* its ambiguity assert
+(`SemanticAnalyzer.java:491-510`), so a mixed direct/ephemeral pair yields one match and **no**
+`AMBIGUOUS_COLUMN`. If Go matches that behaviour, a duplicate root name arrives with no `42702`
+at all — and the pinning test stays green while the conjunction becomes reachable. That is the
+one re-armer the SQL-level assertions structurally cannot see, which is a further reason the arm
+exists in code rather than resting on them.
 
 That is a negative result, so it is committed as a test rather than asserted here —
 `nested_sort_key_ambiguity_fdb_test.go` — pinning the `42702` rejection that makes the arm
@@ -391,8 +449,10 @@ not the one you did not is how this defect survives a second lap.
 symptom and keeps the round trip: the name becomes `N.SK`, which `stripSortQualifier`'s last-dot
 rule turns straight back into `SK`. That is the defect restated, not removed.
 
-**Rejected: declining the fold for nested keys.** A capability regression — Java plans this
-shape, and §1a shows Go plans it too on every path except this one. Declining would convert a
+**Rejected: declining the fold for nested keys.** A capability regression — Java is *inferred*
+to plan this shape (no Java test combines a projected EXISTS with an ORDER BY on a
+non-projected column, so this is an inference from `generateSelect` accepting arbitrary
+`remainingOrderByExpressions`, not an observed plan), and §1a shows Go plans it too on every path except this one. Declining would convert a
 bug into a documented narrowing.
 
 ---
@@ -479,10 +539,14 @@ this fix**, for a reason the fifth gate condition was written to catch — measu
 assumed:
 
 ```
-corpus:                        348 files, 2506 queries
-WHERE-EXISTS + ORDER BY:       108 lines
-SELECT-list (projected) EXISTS:  0        <- the fold this RFC modifies
-JOIN + projected EXISTS + ORDER BY: 0
+source: pkg/relational/conformance/explaindiff/testdata/plan_shape.golden
+  (NOT the yaml corpus -- re-deriving these from yamsql/testdata gives different
+   numbers, e.g. 46 rather than 108, because the golden is the PLANNED set)
+
+corpus:                             348 files, 2506 queries
+EXISTS + ORDER BY (107 WHERE + 1 HAVING):  108 lines
+SELECT-list (projected) EXISTS:       0     <- the fold this RFC modifies
+JOIN + projected EXISTS + ORDER BY:   0
 ```
 
 The single grep hit for `EXISTS(...) AS` is `) AS sq` — a derived-table alias, not a projected
@@ -505,13 +569,18 @@ loud survived.
 trips a hard zero that is currently green only because nothing exercises the shape:
 
 ```
-existsSortSplit  calls 4 | AGREED 0 | DIVERGED 4
+# NARROWED PROBE on a MODIFIED tree (-test.run scoped to one new test), 5 of the
+# report line's 8 fields elided here for width. NOT a whole-suite reading:
+# the unfiltered production population is 44 calls, and an independent reviewer
+# probe of the same shape reported calls 20 | AGREED 12 | DIVERGED 8.
+# What is invariant across all three readings is DIVERGED > 0, which is the claim.
+existsSortSplit  calls 4 | AGREED 0 | DIVERGED 4   (+carried/MANUFACTURED/leafOnly/bare/heuristicDecline, all 0)
   DIVERGED witness: "T1.N.SK" vs identity "T1"
 FAIL: existsSortSplit manufactured a qualifier that CONTRADICTS the structured identity
       ... THE FIX IS TO USE THE IDENTITY, never to widen this zero
 ```
 
-That is this RFC's conclusion, reached by an instrument that predates it, and it is the
+Its 44 production calls are weaker evidence of health than they look: the AGREED arm there has a **documented tautology** (`embedded_fdb_test.go:982-989`), so "green only because nothing exercises the shape" understates the case rather than overstating it. That is this RFC's conclusion, reached by an instrument that predates it, and it is the
 strongest independent corroboration in the document. It also constrains the work: the fix must
 make that census green **by using the identity**, and the zero must not be widened. The join
 control in `nested_sort_key_ambiguity_fdb_test.go` is deliberately withheld for the same reason
@@ -561,7 +630,7 @@ citation known current:
 | Citation | Verified content |
 |---|---|
 | `LogicalOperator.java:390` | `orderByExpressions.difference(output, outerCorrelations)` |
-| `LogicalOperator.java:394-399` | `output.concat(remaining)` → `generateSort` → `output.expanded().rewireQov(…).rewireQov(…)` |
+| `LogicalOperator.java:394-399` | `output.concat(remaining)` → `generateSort` → `output.expanded().rewireQov(…).rewireQov(…).clearQualifier()` — the trailing `clearQualifier()` is load-bearing and an earlier quote omitted it |
 | `Expressions.java:87-96` | `rewireQov`, `int colCount = 0` → `FieldValue.ofOrdinalNumber(value, colCount)` |
 | `Expressions.java:124-146` | `difference`, comparing only against `that` — no self-dedup |
 | `Expression.java:254-264` | `canBeDerivedFrom` via `simplify` + `pullUp` + `containsKey` |
