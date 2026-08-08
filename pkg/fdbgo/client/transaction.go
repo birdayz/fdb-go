@@ -3528,7 +3528,7 @@ func (tx *Transaction) applyOptionDefaults(userReset bool) {
 	if tx.db == nil {
 		return
 	}
-	td := &tx.db.txDefaults
+	td := tx.db.defaults()
 	// Non-persistent → DB defaults on BOTH reset() and OnError retry. The RYW-level options
 	// (readSystemKeys/writeSystemKeys) are zeroed by C++ options.reset(tr) (ReadYourWrites.actor.cpp:
 	// 2078-2083); the NativeAPI-level ones (sizeLimit, priority, lockAware, tags, useGrvCache, …) by

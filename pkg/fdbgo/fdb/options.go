@@ -439,7 +439,7 @@ func (o DatabaseOptions) SetDatacenterId(_ string) error { return nil }
 func (o DatabaseOptions) SetMachineId(_ string) error    { return nil }
 func (o DatabaseOptions) SetSnapshotRywEnable() error {
 	if o.db != nil {
-		o.db.txDefaults.snapshotRywDisableNet--
+		o.db.mutateDefaults(func(d *txDefaults) { d.snapshotRywDisableNet-- })
 	}
 	return nil
 }
@@ -449,43 +449,42 @@ func (o DatabaseOptions) SetSnapshotRywEnable() error {
 // read-semantics change, not a hint. Propagate it via txDefaults rather than silently dropping it.
 func (o DatabaseOptions) SetSnapshotRywDisable() error {
 	if o.db != nil {
-		o.db.txDefaults.snapshotRywDisableNet++
+		o.db.mutateDefaults(func(d *txDefaults) { d.snapshotRywDisableNet++ })
 	}
 	return nil
 }
 
 func (o DatabaseOptions) SetReadSystemKeys() error {
 	if o.db != nil {
-		o.db.txDefaults.readSystemKeys = true
+		o.db.mutateDefaults(func(d *txDefaults) { d.readSystemKeys = true })
 	}
 	return nil
 }
 
 func (o DatabaseOptions) SetTransactionTimeout(ms int64) error {
 	if o.db != nil {
-		o.db.txDefaults.timeout = ms
+		o.db.mutateDefaults(func(d *txDefaults) { d.timeout = ms })
 	}
 	return nil
 }
 
 func (o DatabaseOptions) SetTransactionRetryLimit(retries int64) error {
 	if o.db != nil {
-		o.db.txDefaults.retryLimit = retries
-		o.db.txDefaults.hasRetryLimit = true
+		o.db.mutateDefaults(func(d *txDefaults) { d.retryLimit, d.hasRetryLimit = retries, true })
 	}
 	return nil
 }
 
 func (o DatabaseOptions) SetTransactionMaxRetryDelay(ms int64) error {
 	if o.db != nil {
-		o.db.txDefaults.maxRetryDelay = ms
+		o.db.mutateDefaults(func(d *txDefaults) { d.maxRetryDelay = ms })
 	}
 	return nil
 }
 
 func (o DatabaseOptions) SetTransactionSizeLimit(bytes int64) error {
 	if o.db != nil {
-		o.db.txDefaults.sizeLimit = bytes
+		o.db.mutateDefaults(func(d *txDefaults) { d.sizeLimit = bytes })
 	}
 	return nil
 }
@@ -496,7 +495,7 @@ func (o DatabaseOptions) SetTransactionSizeLimit(bytes int64) error {
 // rather than be silently dropped (unlike causal_write_risky, whose per-tx form is a fail-safe no-op).
 func (o DatabaseOptions) SetTransactionCausalReadRisky() error {
 	if o.db != nil {
-		o.db.txDefaults.causalReadRisky = true
+		o.db.mutateDefaults(func(d *txDefaults) { d.causalReadRisky = true })
 	}
 	return nil
 }
@@ -519,7 +518,7 @@ func (o DatabaseOptions) SetTransactionAutomaticIdempotency() error {
 // observable behaviour, not a hint. Propagate it via txDefaults.
 func (o DatabaseOptions) SetTransactionBypassUnreadable() error {
 	if o.db != nil {
-		o.db.txDefaults.bypassUnreadable = true
+		o.db.mutateDefaults(func(d *txDefaults) { d.bypassUnreadable = true })
 	}
 	return nil
 }

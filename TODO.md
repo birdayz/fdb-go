@@ -249,6 +249,43 @@ Java's, since it will finally be able to express the state. Until then the reach
 is what keeps this benign: this continuation is internal to the Go paginating driver, and no
 cross-engine test exchanges it — if that ever changes, this entry becomes urgent.
 
+## FDB client — database transaction defaults are a struct, not C++'s ordered option list
+
+### [ ] Replay DB transaction defaults as an ordered option list, with TIMEOUT applied last
+
+Pre-existing divergence on the DB-defaults replay path, surfaced while fixing the
+`applyTxDefaults` data race (that fix was synchronization-only and left the replay order
+byte-for-byte unchanged, before and after — so this is not a regression from it).
+
+C++ stores the defaults as `UniqueOrderedOptionList<FDBTransactionOptions> transactionDefaults`
+(`DatabaseContext.h:717`) — a `std::list` of (option, value) pairs plus a `std::map` index, where
+`addOption` erases any prior entry and re-appends, i.e. **dedup by move-to-end**
+(`FDBOptions.h:91-111`). At transaction construction the whole list is replayed **one option at a
+time** in list order by `ReadYourWritesTransaction::applyPersistentOptions`
+(`ReadYourWrites.actor.cpp:2678-2696`).
+
+That replay singles out `TIMEOUT`: the loop **skips** it, and it is re-applied **last**, after every
+other option is installed. The rationale is in the source and is deliberate, not incidental:
+
+> Setting a timeout can immediately cause a transaction to fail. The only timeout that matters is
+> the one most recently set, so we ignore any earlier set timeouts that might inadvertently fail
+> the transaction.
+
+Go instead models the defaults as a fixed struct (`txDefaults` in `pkg/fdbgo/fdb/database.go`,
+`TransactionDefaults` in `pkg/fdbgo/client/database.go`) and applies them in **field order**, with
+`SetTimeout` **first** (`Database.applyTxDefaults`). Two behavioural consequences, not cosmetic
+ones:
+
+1. **The timeout clock starts before the other options are installed** rather than after, so the
+   window it measures differs from C++'s.
+2. **Set-order is not preserved.** A struct cannot express move-to-end dedup, so an option set
+   later cannot overtake one set earlier the way C++'s list guarantees.
+
+The port is the option list: keep an ordered, dedup-by-move-to-end list and replay it in order with
+TIMEOUT deferred to the end. Note the immutable-snapshot publication the race fix introduced must be
+preserved — a list is a reference type, so the snapshot has to be a genuine copy, not a shared
+header.
+
 ## FDB client — conflicting-keys readback (debugging surface + skew instrument)
 
 ### [ ] Implement `report_conflicting_keys` + `\xff\xff/transaction/conflicting_keys/` in the pure-Go client
