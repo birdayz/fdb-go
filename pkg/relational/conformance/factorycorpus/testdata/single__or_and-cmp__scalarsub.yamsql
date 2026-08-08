@@ -226,3 +226,381 @@ test_block:
           SELECT id, a, c, f, e FROM t_rd WHERE ((e = 9.0) OR ((a <= 2) AND (d IN (0, 8, 3, 2)) AND (b = 2))) IS NULL AND c <= (SELECT COUNT(c) FROM t_rd)
       - unorderedResult:
           - {ID: 4, A: 4, C: 5, F: false, E: !null ''}
+#
+# scenario: fc_0001880163_q2_p0
+# generator: rowdiff-gen/2
+# seed: 1880163
+# query-index: 2
+# projection: 0
+# date: 2026-08-08
+# blessing: metamorphic
+# oracles: tlp,second-plan
+# feature-vector: shape=single;idx=A,E;proj=star;where=or(cmp.eq,and(cmp.eq,case.lt));scalarsub=1;order=none
+# plan-shape: 6d2228388486a1ae
+# dedup-key: 31a5a7347ca2c2d4
+# reproduce: bazelisk run //cmd/factory-run -- -seed-start 1880163 -seeds 1 -date 2026-08-08 -out <dir>
+---
+schema_template: |-
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_e ON T_RD (e) CREATE INDEX idx_a ON T_RD (a)
+---
+setup:
+  connect: 4
+  steps:
+    - query: |-
+        INSERT INTO T_RD VALUES (1, 9, 2, 8, NULL, TRUE, -9007199254740992.0, 1.0), (2, 3, 2, 1, 'gamma', TRUE, 1.0, 1.0), (3, 3, 2, 9, 'gamma', TRUE, 5.0, 8.0), (4, 4, 6, 4, 'gamma', FALSE, NULL, NULL), (5, 9, 3, 0, 'gamma', NULL, 6.0, NULL), (6, 4, 7, 0, 'delta', NULL, 0.0, 2.0), (7, NULL, 1, 4611686018427387904, ' c ', TRUE, -9007199254740992.0, 2.0), (8, 4, 9, 5, 'b ', FALSE, 7.0, 4.0), (9, 8, -1, NULL, ' a', FALSE, 4.0, 16777216.0), (10, 5, 2, NULL, 'delta', NULL, NULL, 3.0), (11, 4, 5, 2, 'gamma', FALSE, 9007199254740992.0, 1.0), (12, 3, 9, 2, NULL, TRUE, 6.0, 6.0), (13, 9, 8, NULL, NULL, TRUE, 6.0, 5.0), (14, NULL, 9, 1, 'gamma', FALSE, 7.0, 9.0), (15, NULL, 6, 9, 'epsilon', TRUE, 1.0, 5.0), (16, 6, 0, 9, ' a', TRUE, 1.0, 1.0), (17, 9, 1, 2, 'b ', NULL, 5.0, NULL), (18, NULL, 0, NULL, ' c ', NULL, 0.0, 16777216.0), (19, 2, 3, 8, '', FALSE, 7.0, 1.0), (20, 7, 6, 4611686018427387904, 'delta', NULL, 6.0, 0.10000000149011612), (21, 6, 3, 9, NULL, NULL, 0.1, NULL), (22, NULL, 7, -1, NULL, TRUE, 3.0, NULL), (23, NULL, 9, 5, NULL, FALSE, 3.0, 6.0), (24, 2, -1, 5, 'beta', TRUE, 3.0, 6.0)
+---
+test_block:
+  name: "fc_0001880163_q2_p0"
+  preset: single_repetition_ordered
+  connect: 4
+  tests:
+    - - query: |-
+          SELECT * FROM t_rd WHERE a < (SELECT COUNT(*) FROM t_rd)
+      - unorderedResult:
+          - {ID: 19, A: 2, B: 3, C: 8, S: "", F: false, D: 7.0, E: !f 1.0}
+          - {ID: 24, A: 2, B: -1, C: 5, S: "beta", F: true, D: 3.0, E: !f 6.0}
+          - {ID: 2, A: 3, B: 2, C: 1, S: "gamma", F: true, D: 1.0, E: !f 1.0}
+          - {ID: 3, A: 3, B: 2, C: 9, S: "gamma", F: true, D: 5.0, E: !f 8.0}
+          - {ID: 12, A: 3, B: 9, C: 2, S: !null '', F: true, D: 6.0, E: !f 6.0}
+          - {ID: 4, A: 4, B: 6, C: 4, S: "gamma", F: false, D: !null '', E: !null ''}
+          - {ID: 6, A: 4, B: 7, C: 0, S: "delta", F: !null '', D: 0.0, E: !f 2.0}
+          - {ID: 8, A: 4, B: 9, C: 5, S: "b ", F: false, D: 7.0, E: !f 4.0}
+          - {ID: 11, A: 4, B: 5, C: 2, S: "gamma", F: false, D: 9.007199254740992e+15, E: !f 1.0}
+          - {ID: 10, A: 5, B: 2, C: !null '', S: "delta", F: !null '', D: !null '', E: !f 3.0}
+          - {ID: 16, A: 6, B: 0, C: 9, S: " a", F: true, D: 1.0, E: !f 1.0}
+          - {ID: 21, A: 6, B: 3, C: 9, S: !null '', F: !null '', D: 0.1, E: !null ''}
+          - {ID: 20, A: 7, B: 6, C: 4611686018427387904, S: "delta", F: !null '', D: 6.0, E: !f 0.1}
+          - {ID: 9, A: 8, B: -1, C: !null '', S: " a", F: false, D: 4.0, E: !f 1.6777216e+07}
+          - {ID: 1, A: 9, B: 2, C: 8, S: !null '', F: true, D: -9.007199254740992e+15, E: !f 1.0}
+          - {ID: 5, A: 9, B: 3, C: 0, S: "gamma", F: !null '', D: 6.0, E: !null ''}
+          - {ID: 13, A: 9, B: 8, C: !null '', S: !null '', F: true, D: 6.0, E: !f 5.0}
+          - {ID: 17, A: 9, B: 1, C: 2, S: "b ", F: !null '', D: 5.0, E: !null ''}
+    - - query: |-
+          SELECT * FROM t_rd WHERE ((a = 5) OR ((e = 0.0) AND ((CASE WHEN b <> 7 THEN 1 ELSE b END) < 0))) AND a < (SELECT COUNT(*) FROM t_rd)
+      - unorderedResult:
+          - {ID: 10, A: 5, B: 2, C: !null '', S: "delta", F: !null '', D: !null '', E: !f 3.0}
+    - - query: |-
+          SELECT * FROM t_rd WHERE NOT ((a = 5) OR ((e = 0.0) AND ((CASE WHEN b <> 7 THEN 1 ELSE b END) < 0))) AND a < (SELECT COUNT(*) FROM t_rd)
+      - unorderedResult:
+          - {ID: 19, A: 2, B: 3, C: 8, S: "", F: false, D: 7.0, E: !f 1.0}
+          - {ID: 24, A: 2, B: -1, C: 5, S: "beta", F: true, D: 3.0, E: !f 6.0}
+          - {ID: 2, A: 3, B: 2, C: 1, S: "gamma", F: true, D: 1.0, E: !f 1.0}
+          - {ID: 3, A: 3, B: 2, C: 9, S: "gamma", F: true, D: 5.0, E: !f 8.0}
+          - {ID: 12, A: 3, B: 9, C: 2, S: !null '', F: true, D: 6.0, E: !f 6.0}
+          - {ID: 4, A: 4, B: 6, C: 4, S: "gamma", F: false, D: !null '', E: !null ''}
+          - {ID: 6, A: 4, B: 7, C: 0, S: "delta", F: !null '', D: 0.0, E: !f 2.0}
+          - {ID: 8, A: 4, B: 9, C: 5, S: "b ", F: false, D: 7.0, E: !f 4.0}
+          - {ID: 11, A: 4, B: 5, C: 2, S: "gamma", F: false, D: 9.007199254740992e+15, E: !f 1.0}
+          - {ID: 16, A: 6, B: 0, C: 9, S: " a", F: true, D: 1.0, E: !f 1.0}
+          - {ID: 21, A: 6, B: 3, C: 9, S: !null '', F: !null '', D: 0.1, E: !null ''}
+          - {ID: 20, A: 7, B: 6, C: 4611686018427387904, S: "delta", F: !null '', D: 6.0, E: !f 0.1}
+          - {ID: 9, A: 8, B: -1, C: !null '', S: " a", F: false, D: 4.0, E: !f 1.6777216e+07}
+          - {ID: 1, A: 9, B: 2, C: 8, S: !null '', F: true, D: -9.007199254740992e+15, E: !f 1.0}
+          - {ID: 5, A: 9, B: 3, C: 0, S: "gamma", F: !null '', D: 6.0, E: !null ''}
+          - {ID: 13, A: 9, B: 8, C: !null '', S: !null '', F: true, D: 6.0, E: !f 5.0}
+          - {ID: 17, A: 9, B: 1, C: 2, S: "b ", F: !null '', D: 5.0, E: !null ''}
+    - - query: |-
+          SELECT * FROM t_rd WHERE ((a = 5) OR ((e = 0.0) AND ((CASE WHEN b <> 7 THEN 1 ELSE b END) < 0))) IS NULL AND a < (SELECT COUNT(*) FROM t_rd)
+      - unorderedResult: []
+#
+# scenario: fc_0001880163_q2_p1
+# generator: rowdiff-gen/2
+# seed: 1880163
+# query-index: 2
+# projection: 1
+# date: 2026-08-08
+# blessing: metamorphic
+# oracles: tlp,second-plan
+# feature-vector: shape=single;idx=A,E;proj=n1;where=or(cmp.eq,and(cmp.eq,case.lt));scalarsub=1;order=none
+# plan-shape: ce7242da2db867a2
+# dedup-key: 0391e92647f7030f
+# reproduce: bazelisk run //cmd/factory-run -- -seed-start 1880163 -seeds 1 -date 2026-08-08 -out <dir>
+---
+schema_template: |-
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_e ON T_RD (e) CREATE INDEX idx_a ON T_RD (a)
+---
+setup:
+  connect: 5
+  steps:
+    - query: |-
+        INSERT INTO T_RD VALUES (1, 9, 2, 8, NULL, TRUE, -9007199254740992.0, 1.0), (2, 3, 2, 1, 'gamma', TRUE, 1.0, 1.0), (3, 3, 2, 9, 'gamma', TRUE, 5.0, 8.0), (4, 4, 6, 4, 'gamma', FALSE, NULL, NULL), (5, 9, 3, 0, 'gamma', NULL, 6.0, NULL), (6, 4, 7, 0, 'delta', NULL, 0.0, 2.0), (7, NULL, 1, 4611686018427387904, ' c ', TRUE, -9007199254740992.0, 2.0), (8, 4, 9, 5, 'b ', FALSE, 7.0, 4.0), (9, 8, -1, NULL, ' a', FALSE, 4.0, 16777216.0), (10, 5, 2, NULL, 'delta', NULL, NULL, 3.0), (11, 4, 5, 2, 'gamma', FALSE, 9007199254740992.0, 1.0), (12, 3, 9, 2, NULL, TRUE, 6.0, 6.0), (13, 9, 8, NULL, NULL, TRUE, 6.0, 5.0), (14, NULL, 9, 1, 'gamma', FALSE, 7.0, 9.0), (15, NULL, 6, 9, 'epsilon', TRUE, 1.0, 5.0), (16, 6, 0, 9, ' a', TRUE, 1.0, 1.0), (17, 9, 1, 2, 'b ', NULL, 5.0, NULL), (18, NULL, 0, NULL, ' c ', NULL, 0.0, 16777216.0), (19, 2, 3, 8, '', FALSE, 7.0, 1.0), (20, 7, 6, 4611686018427387904, 'delta', NULL, 6.0, 0.10000000149011612), (21, 6, 3, 9, NULL, NULL, 0.1, NULL), (22, NULL, 7, -1, NULL, TRUE, 3.0, NULL), (23, NULL, 9, 5, NULL, FALSE, 3.0, 6.0), (24, 2, -1, 5, 'beta', TRUE, 3.0, 6.0)
+---
+test_block:
+  name: "fc_0001880163_q2_p1"
+  preset: single_repetition_ordered
+  connect: 5
+  tests:
+    - - query: |-
+          SELECT id FROM t_rd WHERE a < (SELECT COUNT(*) FROM t_rd)
+      - unorderedResult:
+          - {ID: 19}
+          - {ID: 24}
+          - {ID: 2}
+          - {ID: 3}
+          - {ID: 12}
+          - {ID: 4}
+          - {ID: 6}
+          - {ID: 8}
+          - {ID: 11}
+          - {ID: 10}
+          - {ID: 16}
+          - {ID: 21}
+          - {ID: 20}
+          - {ID: 9}
+          - {ID: 1}
+          - {ID: 5}
+          - {ID: 13}
+          - {ID: 17}
+    - - query: |-
+          SELECT id FROM t_rd WHERE ((a = 5) OR ((e = 0.0) AND ((CASE WHEN b <> 7 THEN 1 ELSE b END) < 0))) AND a < (SELECT COUNT(*) FROM t_rd)
+      - unorderedResult:
+          - {ID: 10}
+    - - query: |-
+          SELECT id FROM t_rd WHERE NOT ((a = 5) OR ((e = 0.0) AND ((CASE WHEN b <> 7 THEN 1 ELSE b END) < 0))) AND a < (SELECT COUNT(*) FROM t_rd)
+      - unorderedResult:
+          - {ID: 19}
+          - {ID: 24}
+          - {ID: 2}
+          - {ID: 3}
+          - {ID: 12}
+          - {ID: 4}
+          - {ID: 6}
+          - {ID: 8}
+          - {ID: 11}
+          - {ID: 16}
+          - {ID: 21}
+          - {ID: 20}
+          - {ID: 9}
+          - {ID: 1}
+          - {ID: 5}
+          - {ID: 13}
+          - {ID: 17}
+    - - query: |-
+          SELECT id FROM t_rd WHERE ((a = 5) OR ((e = 0.0) AND ((CASE WHEN b <> 7 THEN 1 ELSE b END) < 0))) IS NULL AND a < (SELECT COUNT(*) FROM t_rd)
+      - unorderedResult: []
+#
+# scenario: fc_0001880163_q2_p2
+# generator: rowdiff-gen/2
+# seed: 1880163
+# query-index: 2
+# projection: 2
+# date: 2026-08-08
+# blessing: metamorphic
+# oracles: tlp,second-plan
+# feature-vector: shape=single;idx=A,E;proj=n5;where=or(cmp.eq,and(cmp.eq,case.lt));scalarsub=1;order=none
+# plan-shape: ce7242da2db867a2
+# dedup-key: 25a0c9deade622bf
+# reproduce: bazelisk run //cmd/factory-run -- -seed-start 1880163 -seeds 1 -date 2026-08-08 -out <dir>
+---
+schema_template: |-
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_e ON T_RD (e) CREATE INDEX idx_a ON T_RD (a)
+---
+setup:
+  connect: 6
+  steps:
+    - query: |-
+        INSERT INTO T_RD VALUES (1, 9, 2, 8, NULL, TRUE, -9007199254740992.0, 1.0), (2, 3, 2, 1, 'gamma', TRUE, 1.0, 1.0), (3, 3, 2, 9, 'gamma', TRUE, 5.0, 8.0), (4, 4, 6, 4, 'gamma', FALSE, NULL, NULL), (5, 9, 3, 0, 'gamma', NULL, 6.0, NULL), (6, 4, 7, 0, 'delta', NULL, 0.0, 2.0), (7, NULL, 1, 4611686018427387904, ' c ', TRUE, -9007199254740992.0, 2.0), (8, 4, 9, 5, 'b ', FALSE, 7.0, 4.0), (9, 8, -1, NULL, ' a', FALSE, 4.0, 16777216.0), (10, 5, 2, NULL, 'delta', NULL, NULL, 3.0), (11, 4, 5, 2, 'gamma', FALSE, 9007199254740992.0, 1.0), (12, 3, 9, 2, NULL, TRUE, 6.0, 6.0), (13, 9, 8, NULL, NULL, TRUE, 6.0, 5.0), (14, NULL, 9, 1, 'gamma', FALSE, 7.0, 9.0), (15, NULL, 6, 9, 'epsilon', TRUE, 1.0, 5.0), (16, 6, 0, 9, ' a', TRUE, 1.0, 1.0), (17, 9, 1, 2, 'b ', NULL, 5.0, NULL), (18, NULL, 0, NULL, ' c ', NULL, 0.0, 16777216.0), (19, 2, 3, 8, '', FALSE, 7.0, 1.0), (20, 7, 6, 4611686018427387904, 'delta', NULL, 6.0, 0.10000000149011612), (21, 6, 3, 9, NULL, NULL, 0.1, NULL), (22, NULL, 7, -1, NULL, TRUE, 3.0, NULL), (23, NULL, 9, 5, NULL, FALSE, 3.0, 6.0), (24, 2, -1, 5, 'beta', TRUE, 3.0, 6.0)
+---
+test_block:
+  name: "fc_0001880163_q2_p2"
+  preset: single_repetition_ordered
+  connect: 6
+  tests:
+    - - query: |-
+          SELECT id, a, c, f, e FROM t_rd WHERE a < (SELECT COUNT(*) FROM t_rd)
+      - unorderedResult:
+          - {ID: 19, A: 2, C: 8, F: false, E: !f 1.0}
+          - {ID: 24, A: 2, C: 5, F: true, E: !f 6.0}
+          - {ID: 2, A: 3, C: 1, F: true, E: !f 1.0}
+          - {ID: 3, A: 3, C: 9, F: true, E: !f 8.0}
+          - {ID: 12, A: 3, C: 2, F: true, E: !f 6.0}
+          - {ID: 4, A: 4, C: 4, F: false, E: !null ''}
+          - {ID: 6, A: 4, C: 0, F: !null '', E: !f 2.0}
+          - {ID: 8, A: 4, C: 5, F: false, E: !f 4.0}
+          - {ID: 11, A: 4, C: 2, F: false, E: !f 1.0}
+          - {ID: 10, A: 5, C: !null '', F: !null '', E: !f 3.0}
+          - {ID: 16, A: 6, C: 9, F: true, E: !f 1.0}
+          - {ID: 21, A: 6, C: 9, F: !null '', E: !null ''}
+          - {ID: 20, A: 7, C: 4611686018427387904, F: !null '', E: !f 0.1}
+          - {ID: 9, A: 8, C: !null '', F: false, E: !f 1.6777216e+07}
+          - {ID: 1, A: 9, C: 8, F: true, E: !f 1.0}
+          - {ID: 5, A: 9, C: 0, F: !null '', E: !null ''}
+          - {ID: 13, A: 9, C: !null '', F: true, E: !f 5.0}
+          - {ID: 17, A: 9, C: 2, F: !null '', E: !null ''}
+    - - query: |-
+          SELECT id, a, c, f, e FROM t_rd WHERE ((a = 5) OR ((e = 0.0) AND ((CASE WHEN b <> 7 THEN 1 ELSE b END) < 0))) AND a < (SELECT COUNT(*) FROM t_rd)
+      - unorderedResult:
+          - {ID: 10, A: 5, C: !null '', F: !null '', E: !f 3.0}
+    - - query: |-
+          SELECT id, a, c, f, e FROM t_rd WHERE NOT ((a = 5) OR ((e = 0.0) AND ((CASE WHEN b <> 7 THEN 1 ELSE b END) < 0))) AND a < (SELECT COUNT(*) FROM t_rd)
+      - unorderedResult:
+          - {ID: 19, A: 2, C: 8, F: false, E: !f 1.0}
+          - {ID: 24, A: 2, C: 5, F: true, E: !f 6.0}
+          - {ID: 2, A: 3, C: 1, F: true, E: !f 1.0}
+          - {ID: 3, A: 3, C: 9, F: true, E: !f 8.0}
+          - {ID: 12, A: 3, C: 2, F: true, E: !f 6.0}
+          - {ID: 4, A: 4, C: 4, F: false, E: !null ''}
+          - {ID: 6, A: 4, C: 0, F: !null '', E: !f 2.0}
+          - {ID: 8, A: 4, C: 5, F: false, E: !f 4.0}
+          - {ID: 11, A: 4, C: 2, F: false, E: !f 1.0}
+          - {ID: 16, A: 6, C: 9, F: true, E: !f 1.0}
+          - {ID: 21, A: 6, C: 9, F: !null '', E: !null ''}
+          - {ID: 20, A: 7, C: 4611686018427387904, F: !null '', E: !f 0.1}
+          - {ID: 9, A: 8, C: !null '', F: false, E: !f 1.6777216e+07}
+          - {ID: 1, A: 9, C: 8, F: true, E: !f 1.0}
+          - {ID: 5, A: 9, C: 0, F: !null '', E: !null ''}
+          - {ID: 13, A: 9, C: !null '', F: true, E: !f 5.0}
+          - {ID: 17, A: 9, C: 2, F: !null '', E: !null ''}
+    - - query: |-
+          SELECT id, a, c, f, e FROM t_rd WHERE ((a = 5) OR ((e = 0.0) AND ((CASE WHEN b <> 7 THEN 1 ELSE b END) < 0))) IS NULL AND a < (SELECT COUNT(*) FROM t_rd)
+      - unorderedResult: []
+#
+# scenario: fc_0001880201_q5_p0
+# generator: rowdiff-gen/2
+# seed: 1880201
+# query-index: 5
+# projection: 0
+# date: 2026-08-08
+# blessing: metamorphic
+# oracles: tlp,second-plan
+# feature-vector: shape=single;idx=A,A+B,B,C;proj=star;where=or(and(!cmp.eq,cmp.eq),cmp.lt);scalarsub=1;order=asc+asc
+# plan-shape: 939e308acf825986
+# dedup-key: 1988890f8aa82934
+# reproduce: bazelisk run //cmd/factory-run -- -seed-start 1880201 -seeds 1 -date 2026-08-08 -out <dir>
+---
+schema_template: |-
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_b ON T_RD (b) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_ab ON T_RD (a, b)
+---
+setup:
+  connect: 7
+  steps:
+    - query: |-
+        INSERT INTO T_RD VALUES (1, NULL, 6, 3, 'epsilon', TRUE, -9007199254740992.0, 8.0), (2, 8, 4611686018427387904, 1, ' c ', NULL, 6.0, 7.0), (3, 4, 3, -1, NULL, TRUE, -9007199254740992.0, 16777216.0), (4, 5, 5, 6, 'beta', FALSE, -0.0, 4.0), (5, NULL, 8, 6, '', TRUE, 2.0, 6.0), (6, NULL, 4611686018427387904, 5, 'alpha', TRUE, NULL, 6.0), (7, NULL, 9, 4, 'gamma', FALSE, 1.0, 0.10000000149011612), (8, NULL, 7, 5, 'alpha', TRUE, 4.0, 4.0), (9, 9, 3, 2, '', FALSE, 0.0, 2.0), (10, 1, 5, NULL, ' a', FALSE, 2.0, -16777216.0), (11, 4, 4, 2, ' a', FALSE, NULL, 0.10000000149011612), (12, 2, -1, 0, NULL, NULL, 7.0, 16777216.0), (13, 2, 3, 5, 'beta', TRUE, 4.0, 8.0), (14, 8, 0, NULL, NULL, FALSE, 7.0, NULL), (15, 4, 6, 3, 'alpha', TRUE, NULL, 6.0), (16, 3, 6, NULL, '', TRUE, NULL, 2.0), (17, 2, 1, 6, 'beta', TRUE, 2.0, 6.0), (18, 6, 4, 8, 'b ', NULL, 0.0, 1.0), (19, 2, 5, 0, 'delta', NULL, 8.0, 5.0), (20, 0, 6, 4611686018427387904, 'alpha', TRUE, NULL, NULL), (21, -1, -1, 3, NULL, FALSE, 2.0, 9.0), (22, 1, 8, 6, 'beta', TRUE, 9007199254740992.0, 9.0), (23, -1, 4, 0, 'epsilon', NULL, 1.0, 1.0), (24, 6, 0, 6, 'alpha', NULL, 2.0, 4.0)
+---
+test_block:
+  name: "fc_0001880201_q5_p0"
+  preset: single_repetition_ordered
+  connect: 7
+  tests:
+    - - query: |-
+          SELECT * FROM t_rd WHERE c <= (SELECT COUNT(a) FROM t_rd WHERE b > 8) ORDER BY d, id
+      - result:
+          - {ID: 3, A: 4, B: 3, C: -1, S: !null '', F: true, D: -9.007199254740992e+15, E: !f 1.6777216e+07}
+          - {ID: 23, A: -1, B: 4, C: 0, S: "epsilon", F: !null '', D: 1.0, E: !f 1.0}
+          - {ID: 2, A: 8, B: 4611686018427387904, C: 1, S: " c ", F: !null '', D: 6.0, E: !f 7.0}
+          - {ID: 12, A: 2, B: -1, C: 0, S: !null '', F: !null '', D: 7.0, E: !f 1.6777216e+07}
+          - {ID: 19, A: 2, B: 5, C: 0, S: "delta", F: !null '', D: 8.0, E: !f 5.0}
+    - - query: |-
+          SELECT * FROM t_rd WHERE (((NOT (b = 3)) AND (c = 9)) OR (s < '')) AND c <= (SELECT COUNT(a) FROM t_rd WHERE b > 8) ORDER BY d, id
+      - result: []
+    - - query: |-
+          SELECT * FROM t_rd WHERE NOT (((NOT (b = 3)) AND (c = 9)) OR (s < '')) AND c <= (SELECT COUNT(a) FROM t_rd WHERE b > 8) ORDER BY d, id
+      - result:
+          - {ID: 23, A: -1, B: 4, C: 0, S: "epsilon", F: !null '', D: 1.0, E: !f 1.0}
+          - {ID: 2, A: 8, B: 4611686018427387904, C: 1, S: " c ", F: !null '', D: 6.0, E: !f 7.0}
+          - {ID: 19, A: 2, B: 5, C: 0, S: "delta", F: !null '', D: 8.0, E: !f 5.0}
+    - - query: |-
+          SELECT * FROM t_rd WHERE (((NOT (b = 3)) AND (c = 9)) OR (s < '')) IS NULL AND c <= (SELECT COUNT(a) FROM t_rd WHERE b > 8) ORDER BY d, id
+      - result:
+          - {ID: 3, A: 4, B: 3, C: -1, S: !null '', F: true, D: -9.007199254740992e+15, E: !f 1.6777216e+07}
+          - {ID: 12, A: 2, B: -1, C: 0, S: !null '', F: !null '', D: 7.0, E: !f 1.6777216e+07}
+#
+# scenario: fc_0001880201_q5_p1
+# generator: rowdiff-gen/2
+# seed: 1880201
+# query-index: 5
+# projection: 1
+# date: 2026-08-08
+# blessing: metamorphic
+# oracles: tlp,second-plan
+# feature-vector: shape=single;idx=A,A+B,B,C;proj=n1;where=or(and(!cmp.eq,cmp.eq),cmp.lt);scalarsub=1;order=asc+asc
+# plan-shape: 4e46add88be826e4
+# dedup-key: 8366c2595ab499b0
+# reproduce: bazelisk run //cmd/factory-run -- -seed-start 1880201 -seeds 1 -date 2026-08-08 -out <dir>
+---
+schema_template: |-
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_b ON T_RD (b) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_ab ON T_RD (a, b)
+---
+setup:
+  connect: 8
+  steps:
+    - query: |-
+        INSERT INTO T_RD VALUES (1, NULL, 6, 3, 'epsilon', TRUE, -9007199254740992.0, 8.0), (2, 8, 4611686018427387904, 1, ' c ', NULL, 6.0, 7.0), (3, 4, 3, -1, NULL, TRUE, -9007199254740992.0, 16777216.0), (4, 5, 5, 6, 'beta', FALSE, -0.0, 4.0), (5, NULL, 8, 6, '', TRUE, 2.0, 6.0), (6, NULL, 4611686018427387904, 5, 'alpha', TRUE, NULL, 6.0), (7, NULL, 9, 4, 'gamma', FALSE, 1.0, 0.10000000149011612), (8, NULL, 7, 5, 'alpha', TRUE, 4.0, 4.0), (9, 9, 3, 2, '', FALSE, 0.0, 2.0), (10, 1, 5, NULL, ' a', FALSE, 2.0, -16777216.0), (11, 4, 4, 2, ' a', FALSE, NULL, 0.10000000149011612), (12, 2, -1, 0, NULL, NULL, 7.0, 16777216.0), (13, 2, 3, 5, 'beta', TRUE, 4.0, 8.0), (14, 8, 0, NULL, NULL, FALSE, 7.0, NULL), (15, 4, 6, 3, 'alpha', TRUE, NULL, 6.0), (16, 3, 6, NULL, '', TRUE, NULL, 2.0), (17, 2, 1, 6, 'beta', TRUE, 2.0, 6.0), (18, 6, 4, 8, 'b ', NULL, 0.0, 1.0), (19, 2, 5, 0, 'delta', NULL, 8.0, 5.0), (20, 0, 6, 4611686018427387904, 'alpha', TRUE, NULL, NULL), (21, -1, -1, 3, NULL, FALSE, 2.0, 9.0), (22, 1, 8, 6, 'beta', TRUE, 9007199254740992.0, 9.0), (23, -1, 4, 0, 'epsilon', NULL, 1.0, 1.0), (24, 6, 0, 6, 'alpha', NULL, 2.0, 4.0)
+---
+test_block:
+  name: "fc_0001880201_q5_p1"
+  preset: single_repetition_ordered
+  connect: 8
+  tests:
+    - - query: |-
+          SELECT id FROM t_rd WHERE c <= (SELECT COUNT(a) FROM t_rd WHERE b > 8) ORDER BY d, id
+      - result:
+          - {ID: 3}
+          - {ID: 23}
+          - {ID: 2}
+          - {ID: 12}
+          - {ID: 19}
+    - - query: |-
+          SELECT id FROM t_rd WHERE (((NOT (b = 3)) AND (c = 9)) OR (s < '')) AND c <= (SELECT COUNT(a) FROM t_rd WHERE b > 8) ORDER BY d, id
+      - result: []
+    - - query: |-
+          SELECT id FROM t_rd WHERE NOT (((NOT (b = 3)) AND (c = 9)) OR (s < '')) AND c <= (SELECT COUNT(a) FROM t_rd WHERE b > 8) ORDER BY d, id
+      - result:
+          - {ID: 23}
+          - {ID: 2}
+          - {ID: 19}
+    - - query: |-
+          SELECT id FROM t_rd WHERE (((NOT (b = 3)) AND (c = 9)) OR (s < '')) IS NULL AND c <= (SELECT COUNT(a) FROM t_rd WHERE b > 8) ORDER BY d, id
+      - result:
+          - {ID: 3}
+          - {ID: 12}
+#
+# scenario: fc_0001880201_q5_p2
+# generator: rowdiff-gen/2
+# seed: 1880201
+# query-index: 5
+# projection: 2
+# date: 2026-08-08
+# blessing: metamorphic
+# oracles: tlp,second-plan
+# feature-vector: shape=single;idx=A,A+B,B,C;proj=n5;where=or(and(!cmp.eq,cmp.eq),cmp.lt);scalarsub=1;order=asc+asc
+# plan-shape: 4e46add88be826e4
+# dedup-key: 4a876be8825fa7a6
+# reproduce: bazelisk run //cmd/factory-run -- -seed-start 1880201 -seeds 1 -date 2026-08-08 -out <dir>
+---
+schema_template: |-
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_b ON T_RD (b) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_ab ON T_RD (a, b)
+---
+setup:
+  connect: 9
+  steps:
+    - query: |-
+        INSERT INTO T_RD VALUES (1, NULL, 6, 3, 'epsilon', TRUE, -9007199254740992.0, 8.0), (2, 8, 4611686018427387904, 1, ' c ', NULL, 6.0, 7.0), (3, 4, 3, -1, NULL, TRUE, -9007199254740992.0, 16777216.0), (4, 5, 5, 6, 'beta', FALSE, -0.0, 4.0), (5, NULL, 8, 6, '', TRUE, 2.0, 6.0), (6, NULL, 4611686018427387904, 5, 'alpha', TRUE, NULL, 6.0), (7, NULL, 9, 4, 'gamma', FALSE, 1.0, 0.10000000149011612), (8, NULL, 7, 5, 'alpha', TRUE, 4.0, 4.0), (9, 9, 3, 2, '', FALSE, 0.0, 2.0), (10, 1, 5, NULL, ' a', FALSE, 2.0, -16777216.0), (11, 4, 4, 2, ' a', FALSE, NULL, 0.10000000149011612), (12, 2, -1, 0, NULL, NULL, 7.0, 16777216.0), (13, 2, 3, 5, 'beta', TRUE, 4.0, 8.0), (14, 8, 0, NULL, NULL, FALSE, 7.0, NULL), (15, 4, 6, 3, 'alpha', TRUE, NULL, 6.0), (16, 3, 6, NULL, '', TRUE, NULL, 2.0), (17, 2, 1, 6, 'beta', TRUE, 2.0, 6.0), (18, 6, 4, 8, 'b ', NULL, 0.0, 1.0), (19, 2, 5, 0, 'delta', NULL, 8.0, 5.0), (20, 0, 6, 4611686018427387904, 'alpha', TRUE, NULL, NULL), (21, -1, -1, 3, NULL, FALSE, 2.0, 9.0), (22, 1, 8, 6, 'beta', TRUE, 9007199254740992.0, 9.0), (23, -1, 4, 0, 'epsilon', NULL, 1.0, 1.0), (24, 6, 0, 6, 'alpha', NULL, 2.0, 4.0)
+---
+test_block:
+  name: "fc_0001880201_q5_p2"
+  preset: single_repetition_ordered
+  connect: 9
+  tests:
+    - - query: |-
+          SELECT id, a, c, f, e FROM t_rd WHERE c <= (SELECT COUNT(a) FROM t_rd WHERE b > 8) ORDER BY d, id
+      - result:
+          - {ID: 3, A: 4, C: -1, F: true, E: !f 1.6777216e+07}
+          - {ID: 23, A: -1, C: 0, F: !null '', E: !f 1.0}
+          - {ID: 2, A: 8, C: 1, F: !null '', E: !f 7.0}
+          - {ID: 12, A: 2, C: 0, F: !null '', E: !f 1.6777216e+07}
+          - {ID: 19, A: 2, C: 0, F: !null '', E: !f 5.0}
+    - - query: |-
+          SELECT id, a, c, f, e FROM t_rd WHERE (((NOT (b = 3)) AND (c = 9)) OR (s < '')) AND c <= (SELECT COUNT(a) FROM t_rd WHERE b > 8) ORDER BY d, id
+      - result: []
+    - - query: |-
+          SELECT id, a, c, f, e FROM t_rd WHERE NOT (((NOT (b = 3)) AND (c = 9)) OR (s < '')) AND c <= (SELECT COUNT(a) FROM t_rd WHERE b > 8) ORDER BY d, id
+      - result:
+          - {ID: 23, A: -1, C: 0, F: !null '', E: !f 1.0}
+          - {ID: 2, A: 8, C: 1, F: !null '', E: !f 7.0}
+          - {ID: 19, A: 2, C: 0, F: !null '', E: !f 5.0}
+    - - query: |-
+          SELECT id, a, c, f, e FROM t_rd WHERE (((NOT (b = 3)) AND (c = 9)) OR (s < '')) IS NULL AND c <= (SELECT COUNT(a) FROM t_rd WHERE b > 8) ORDER BY d, id
+      - result:
+          - {ID: 3, A: 4, C: -1, F: true, E: !f 1.6777216e+07}
+          - {ID: 12, A: 2, C: 0, F: !null '', E: !f 1.6777216e+07}
