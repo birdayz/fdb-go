@@ -146,6 +146,31 @@ var requestBuilders = map[string]func(tok [16]byte) []byte{
 			SsLatestCommitVersions: emptyVersionVector(),
 		}).MarshalFDB()
 	},
+	// getMappedRange. Identical to GetKeyValuesRequest_basic except for Mapper, so
+	// a byte-identical pass here proves the spliced mapper slot lands where
+	// GetMappedKeyValuesRequest::serialize puts it (StorageServerInterface.h:484-496)
+	// rather than at the tail where an append-style port would put it.
+	"GetMappedKeyValuesRequest_basic": func(tok [16]byte) []byte {
+		return (&GetMappedKeyValuesRequest{
+			Begin: KeySelectorRef{
+				Key:     []byte("begin_key"),
+				OrEqual: true,
+				Offset:  1,
+			},
+			End: KeySelectorRef{
+				Key:     []byte("end_key"),
+				OrEqual: false,
+				Offset:  0,
+			},
+			Mapper:                 []byte("\x01idx\x00{K[1]}"),
+			Version:                54321,
+			Limit:                  1000,
+			LimitBytes:             0x7fffffff,
+			Reply:                  ReplyPromise{Token: tok},
+			TenantInfo:             TenantInfo{TenantId: -1},
+			SsLatestCommitVersions: emptyVersionVector(),
+		}).MarshalFDB()
+	},
 	"CommitTransactionRequest_single_set": func(tok [16]byte) []byte {
 		return (&CommitTransactionRequest{
 			Transaction: CommitTransactionRef{
@@ -295,6 +320,8 @@ func requestRoundTrip(t *testing.T, name string, data []byte) []byte {
 		return rt(&GetKeyRequest{})
 	case hasPrefix(name, "GetKeyValuesRequest"):
 		return rt(&GetKeyValuesRequest{})
+	case hasPrefix(name, "GetMappedKeyValuesRequest"):
+		return rt(&GetMappedKeyValuesRequest{})
 	case hasPrefix(name, "CommitTransactionRequest"):
 		return rt(&CommitTransactionRequest{})
 	case hasPrefix(name, "GetReadVersionRequest"):

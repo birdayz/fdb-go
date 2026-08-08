@@ -15,6 +15,7 @@ go_library(
         "hedge.go",
         "loadbalance.go",
         "locality.go",
+        "mappedrange.go",
         "metrics.go",
         "options.go",
         "panicbackstop.go",
