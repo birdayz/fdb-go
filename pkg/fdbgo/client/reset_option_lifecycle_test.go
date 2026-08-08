@@ -93,7 +93,7 @@ func TestReset_OptionPersistenceSplit(t *testing.T) {
 		t.Parallel()
 		// A DB-level timeout default of 3000ms; a per-txn override of 5000ms.
 		tx := txWithDB()
-		tx.db.txDefaults.Timeout = 3000
+		tx.db.mutateDefaults(func(td *TransactionDefaults) { td.Timeout = 3000 })
 		tx.SetTimeout(5000)
 
 		tx.reset(false) // retry → per-txn override preserved
@@ -155,9 +155,8 @@ func TestReset_ClearsGrvCacheAndWriteConflictFlags(t *testing.T) {
 func TestReset_UnlimitedDBRetryDefaultStaysUnlimited(t *testing.T) {
 	t.Parallel()
 	tx := txWithDB()
-	tx.db.txDefaults.HasRetryLimit = true
-	tx.db.txDefaults.RetryLimit = -1 // unlimited
-	tx.SetRetryLimit(3)              // per-txn override
+	tx.db.mutateDefaults(func(td *TransactionDefaults) { td.HasRetryLimit, td.RetryLimit = true, -1 }) // unlimited
+	tx.SetRetryLimit(3)                                                                                // per-txn override
 
 	tx.reset(true) // user Reset → revert to the DB default, which is "unlimited"
 

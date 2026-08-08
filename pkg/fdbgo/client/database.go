@@ -318,7 +318,19 @@ type database struct {
 
 	// Transaction defaults — applied to every new transaction.
 	// Matches C++ DatabaseContext::transactionDefaults.
-	txDefaults TransactionDefaults
+	//
+	// Published as an IMMUTABLE snapshot: C++ marshals fdb_database_set_option and
+	// transaction creation onto the single network thread, so a new transaction always
+	// observes one coherent transactionDefaults. Go has no such confinement — the
+	// SetTransaction* setters below are exported, so any goroutine may set a default
+	// while another creates a transaction. Swapping the whole snapshot (rather than
+	// per-field atomics) is what keeps the set coherent: a transaction must not pick up
+	// the new timeout alongside the old retry limit.
+	//
+	// nil means "nothing ever set" and reads as the zero TransactionDefaults.
+	txDefaults atomic.Pointer[TransactionDefaults]
+	// txDefaultsMu serializes the read-modify-write in the setters.
+	txDefaultsMu sync.Mutex
 
 	// Operational counters — the C++ DatabaseContext CounterCollection subset.
 	// Exposed via Database.Metrics(). RFC-097.
@@ -985,8 +997,9 @@ func (d *Database) CreateTransaction() *Transaction {
 		txOptions:    txOptions{tenantId: NoTenantID},
 		creationTime: time.Now(),
 	}
-	// Apply database-level defaults (matches C++ applyTxDefaults).
-	td := &d.db.txDefaults
+	// Apply database-level defaults (matches C++ applyTxDefaults). One Load, so every
+	// option below comes from the SAME snapshot.
+	td := d.db.defaults()
 	if td.Timeout > 0 {
 		tx.SetTimeout(td.Timeout)
 	}
@@ -1019,41 +1032,60 @@ func (d *Database) CreateTransaction() *Transaction {
 	return tx
 }
 
+// defaults returns the current immutable snapshot of the database-level
+// transaction defaults. Safe to call from any goroutine.
+func (d *database) defaults() TransactionDefaults {
+	if p := d.txDefaults.Load(); p != nil {
+		return *p
+	}
+	return TransactionDefaults{}
+}
+
+// mutateDefaults applies fn to a COPY of the current defaults and publishes the
+// result atomically, so a concurrent defaults() reader sees either the whole old
+// snapshot or the whole new one — never a half-applied option.
+func (d *database) mutateDefaults(fn func(*TransactionDefaults)) {
+	d.txDefaultsMu.Lock()
+	defer d.txDefaultsMu.Unlock()
+	next := d.defaults()
+	fn(&next)
+	d.txDefaults.Store(&next)
+}
+
 // SetTransactionTimeout sets the default timeout (in milliseconds) for all
 // transactions created from this database. Matches FDB_DB_OPTION_TRANSACTION_TIMEOUT.
 func (d *Database) SetTransactionTimeout(ms int64) {
-	d.db.txDefaults.Timeout = ms
+	d.db.mutateDefaults(func(td *TransactionDefaults) { td.Timeout = ms })
 }
 
 // SetTransactionRetryLimit sets the default retry limit for all transactions.
 // Matches FDB_DB_OPTION_TRANSACTION_RETRY_LIMIT.
 func (d *Database) SetTransactionRetryLimit(retries int64) {
-	d.db.txDefaults.RetryLimit = int(retries)
-	d.db.txDefaults.HasRetryLimit = true
+	d.db.mutateDefaults(func(td *TransactionDefaults) { td.RetryLimit, td.HasRetryLimit = int(retries), true })
 }
 
 // SetTransactionMaxRetryDelay sets the default max retry delay (ms) for all
 // transactions. Matches FDB_DB_OPTION_TRANSACTION_MAX_RETRY_DELAY.
 func (d *Database) SetTransactionMaxRetryDelay(ms int64) {
-	d.db.txDefaults.MaxRetryDelay = ms
+	d.db.mutateDefaults(func(td *TransactionDefaults) { td.MaxRetryDelay = ms })
 }
 
 // SetTransactionSizeLimit sets the default size limit for all transactions.
 // Matches FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT.
 func (d *Database) SetTransactionSizeLimit(limit int64) {
-	d.db.txDefaults.SizeLimit = limit
+	d.db.mutateDefaults(func(td *TransactionDefaults) { td.SizeLimit = limit })
 }
 
 // SetDefaultReadSystemKeys makes all new transactions automatically call
 // SetReadSystemKeys(), allowing reads of \xff-prefixed system keys.
 func (d *Database) SetDefaultReadSystemKeys() {
-	d.db.txDefaults.ReadSystemKeys = true
+	d.db.mutateDefaults(func(td *TransactionDefaults) { td.ReadSystemKeys = true })
 }
 
 // SetDefaultAccessSystemKeys makes all new transactions automatically call
 // SetAccessSystemKeys(), allowing reads AND writes of \xff-prefixed system keys.
 func (d *Database) SetDefaultAccessSystemKeys() {
-	d.db.txDefaults.AccessSysKeys = true
+	d.db.mutateDefaults(func(td *TransactionDefaults) { td.AccessSysKeys = true })
 }
 
 // SetMaxWatches sets the cap on concurrently-outstanding watches for this Database

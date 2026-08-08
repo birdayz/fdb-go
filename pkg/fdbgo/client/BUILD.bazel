@@ -158,6 +158,7 @@ go_test(
         "transaction_options_test.go",
         "transaction_tags_test.go",
         "transaction_unit_test.go",
+        "txdefaults_race_test.go",
         "unbounded_default_pin_test.go",
         "unreadable_test.go",
         "versionstamp_commit_test.go",

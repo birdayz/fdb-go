@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -91,9 +92,46 @@ type txDefaults struct {
 
 // internalDB wraps client.Database with a context for async operations.
 type internalDB struct {
-	inner      *client.Database
-	ctx        context.Context
-	txDefaults txDefaults
+	inner *client.Database
+	ctx   context.Context
+
+	// txDefaults is an IMMUTABLE snapshot published atomically. libfdb_c gets this
+	// for free: fdb_database_set_option and transaction creation are both marshalled
+	// onto the single network thread, so a new transaction always observes one
+	// coherent DatabaseContext::transactionDefaults. Go has no such confinement —
+	// any goroutine may set a DB option while another starts a transaction — so the
+	// snapshot is swapped wholesale instead of mutated field-by-field.
+	//
+	// Publishing a whole snapshot (rather than per-field atomics) is what preserves
+	// COHERENCE: a transaction must not pick up the new timeout alongside the old
+	// retry limit. Readers take one Load; they never hold a lock across the callouts
+	// into the client that apply the options.
+	//
+	// nil means "nothing ever set" and reads as the zero txDefaults.
+	txDefaults atomic.Pointer[txDefaults]
+	// txDefaultsMu serializes the read-modify-write in the setters (the snapshot-RYW
+	// net counter is cumulative, so last-write-wins would lose increments).
+	txDefaultsMu sync.Mutex
+}
+
+// defaults returns the current immutable snapshot of the database-level
+// transaction defaults. Safe to call from any goroutine.
+func (d *internalDB) defaults() txDefaults {
+	if p := d.txDefaults.Load(); p != nil {
+		return *p
+	}
+	return txDefaults{}
+}
+
+// mutateDefaults applies fn to a COPY of the current defaults and publishes the
+// result atomically, so a concurrent defaults() reader sees either the whole old
+// snapshot or the whole new one — never a half-applied option.
+func (d *internalDB) mutateDefaults(fn func(*txDefaults)) {
+	d.txDefaultsMu.Lock()
+	defer d.txDefaultsMu.Unlock()
+	next := d.defaults()
+	fn(&next)
+	d.txDefaults.Store(&next)
 }
 
 // Database is a handle to a FoundationDB database.
@@ -389,7 +427,9 @@ func (db Database) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) 
 // applyTxDefaults applies database-level transaction option defaults.
 // Matches C++ FDB_DB_OPTION_TRANSACTION_* behavior.
 func (db Database) applyTxDefaults(t *transaction) {
-	d := &db.d.txDefaults
+	// One Load: every option below comes from the SAME snapshot, so a concurrent
+	// Options().SetXxx cannot split this transaction across two default sets.
+	d := db.d.defaults()
 	if d.timeout > 0 {
 		t.inner.SetTimeout(d.timeout)
 	}

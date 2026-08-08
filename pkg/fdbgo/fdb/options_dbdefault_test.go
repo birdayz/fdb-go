@@ -55,7 +55,7 @@ func TestDatabaseDefault_BypassUnreadable_Propagates(t *testing.T) {
 	if err := (DatabaseOptions{db: idb}).SetTransactionBypassUnreadable(); err != nil {
 		t.Fatalf("SetTransactionBypassUnreadable: %v", err)
 	}
-	if !idb.txDefaults.bypassUnreadable {
+	if !idb.defaults().bypassUnreadable {
 		t.Fatal("SetTransactionBypassUnreadable must store the DB default (codex #331)")
 	}
 
@@ -93,7 +93,7 @@ func TestDatabaseDefault_CausalReadRisky_Propagates(t *testing.T) {
 	if err := (DatabaseOptions{db: idb}).SetTransactionCausalReadRisky(); err != nil {
 		t.Fatalf("SetTransactionCausalReadRisky: %v", err)
 	}
-	if !idb.txDefaults.causalReadRisky {
+	if !idb.defaults().causalReadRisky {
 		t.Fatal("SetTransactionCausalReadRisky must store the DB default")
 	}
 
