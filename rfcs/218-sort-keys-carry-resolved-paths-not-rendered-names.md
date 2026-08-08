@@ -1,6 +1,6 @@
 # RFC-218 — The projected-EXISTS fold must read the sort key's resolved path, not a re-derived name
 
-**Status:** DRAFT rev 5 — §2e is no longer a specification: the arity-tolerant root accessor and the derive-and-assert re-anchor are BUILT and EXERCISED against WW2, WW3 and the coincidence pair (§2f). Awaiting Graefe + Torvalds.
+**Status:** DRAFT rev 6 — COMPLETE, ready for a joint lap. The ambiguity arm is measured unreachable and pinned (§2g); the corpus run happened and shows the corpus CANNOT verify this fix (§6-RESULT); the standalone/wired gap is now a precondition of wiring (§2f). Awaiting Graefe + Torvalds.
 **Origin:** RFC-197 ratchet entry `cascades_translator.go # sortKeyFieldRef`, whose stated
 mechanisms were measured false; the live bug behind it is this one
 **Scope:** `pkg/relational/core/query/cascades_translator.go` (the `sortSource` helpers), plus
@@ -335,6 +335,46 @@ Both declines are loud (§2d: a clean `0AF00`), and both positive controls succe
 §2c's rule, is what makes the declines interpretable at all rather than possible harness
 defects.
 
+**FIRST THING IMPLEMENTATION MUST CONFIRM — a check to perform, not a risk to note.** Everything
+in §2f was exercised as a **standalone composition against synthetic `RecordType`s**. What is
+proven is that the composition behaves as specified when handed a given layout. What is **not**
+proven is that the fold hands it the layout constructed here. Before wiring, assert that the
+`RecordType` the fold actually flows at the re-anchor point is the merged row — print it and
+compare against `[ID T1_ID ID N]` for WW3 — and fail the wiring if it is not.
+
+This is first because its failure mode is **silent**: a wrong-but-plausible layout still
+re-anchors to *some* column and still returns rows. That is the same silent shape as the rev-2
+hazard this whole section exists to remove, so it must be a verified precondition of the wiring
+rather than something noticed afterwards.
+
+### 2g. The ambiguity arm is unreachable — measured, and pinned as a test
+
+§2e's re-anchor declines when the flowed layout holds more than one column of the root's name.
+A merged join row *can* hold two same-named columns, so the open question was whether that
+decline is a capability regression on a shape users write — §3's objection arriving by a third
+route. Measured:
+
+```
+self-join, BARE n.sk                  -> ERROR 42702: Ambiguous reference N.SK
+t1 JOIN t4 (both expose `n`), BARE    -> ERROR 42702: Ambiguous reference N.SK
+self-join, QUALIFIED a.n.sk           -> 3 segments = Shape B; row columns [ID N ID N]
+CONTROL only t1 exposes `n`           -> reaches the fold (the WW3 failure)
+```
+
+**Duplicate root names and a resolvable two-segment nested key are mutually exclusive, and they
+are the same fact:** a bare `n.sk` is ambiguous *precisely when* more than one leg exposes `n`,
+and SQL rejects it with `42702` during resolution, before the fold sees a key. The ambiguity arm
+declines nothing a user can express, so it is not a regression and does not need identity-based
+disambiguation today.
+
+That is a negative result, so it is committed as a test rather than asserted here —
+`nested_sort_key_ambiguity_fdb_test.go` — pinning the `42702` rejection that makes the arm
+unreachable, with a failure message naming what re-arms it: any change letting a bare
+multi-segment reference resolve when its root is ambiguous (first-match, an implicit left-leg
+preference, or scoping that hides a column instead of rejecting). If that happens the arm
+becomes reachable and **must disambiguate by leg IDENTITY, never by first name match** — the
+RFC-197 principle that a name is display-only and must never decide.
+
 **Why the discriminator is multi-accessor, stated as a principle rather than a threshold:** a
 single-accessor `Resolved` is fully expressible by `Field`, so rendering it loses nothing.
 Multi-accessor is precisely the case where **the rendered name cannot express the path**. The
@@ -430,7 +470,57 @@ those sites receive.
 
 ---
 
-## 6. BLOCKER — the corpus plan-shape run is OWED and UNRUN
+## 6-RESULT. The run happened, and the corpus CANNOT verify this fix
+
+Disk was cleared (93%, 68G free), so §6's precondition was satisfied and the run was performed.
+
+**`TestPlanShapeGolden` passes.** Nothing moved. And that green is **vacuous with respect to
+this fix**, for a reason the fifth gate condition was written to catch — measured rather than
+assumed:
+
+```
+corpus:                        348 files, 2506 queries
+WHERE-EXISTS + ORDER BY:       108 lines
+SELECT-list (projected) EXISTS:  0        <- the fold this RFC modifies
+JOIN + projected EXISTS + ORDER BY: 0
+```
+
+The single grep hit for `EXISTS(...) AS` is `) AS sq` — a derived-table alias, not a projected
+EXISTS. **The projected-EXISTS fold is exercised by zero corpus queries.** Not thinly: at all.
+So the golden could not have moved no matter what this fix does to the fold, and reporting
+"nothing moved" as evidence of safety would be precisely the corollary error this document keeps
+catching — invariance is not absence.
+
+**Consequence: the fifth gate condition is currently UNSATISFIABLE, and satisfying it is part of
+this work.** Before the fix merges, the corpus must gain projected-EXISTS coverage including the
+JOIN + fold + nested shape, and the run must show it was *reached* — the gate is not "the corpus
+contains it". Extending the corpus is the deliverable; a re-run against today's corpus would
+produce the same uninformative green.
+
+This also independently explains §1a's dimension gap from the other side: the shape that broke
+is absent from the plan-shape corpus *and* from the ordering tests, which is why a defect this
+loud survived.
+
+**And an existing instrument already detects it.** Running an unambiguous nested key over a join
+trips a hard zero that is currently green only because nothing exercises the shape:
+
+```
+existsSortSplit  calls 4 | AGREED 0 | DIVERGED 4
+  DIVERGED witness: "T1.N.SK" vs identity "T1"
+FAIL: existsSortSplit manufactured a qualifier that CONTRADICTS the structured identity
+      ... THE FIX IS TO USE THE IDENTITY, never to widen this zero
+```
+
+That is this RFC's conclusion, reached by an instrument that predates it, and it is the
+strongest independent corroboration in the document. It also constrains the work: the fix must
+make that census green **by using the identity**, and the zero must not be widened. The join
+control in `nested_sort_key_ambiguity_fdb_test.go` is deliberately withheld for the same reason
+— it would put the suite red against an assertion that is correct — and the implementing commit
+owes it.
+
+---
+
+## 6. Precondition as originally stated (retained for the record)
 
 This is translator surgery in the RFC-141 fold and it has plan-shape exposure, so the corpus
 comparison is a required deliverable, not an optional one.
