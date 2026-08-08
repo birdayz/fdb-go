@@ -10457,8 +10457,14 @@ to nothing.)
 
   **Tightness — MEASURED; it constrains every possible design.** Java (4.12.11.0)
   compiles `%` to `.*` inside a `^…$` wrap with no DOTALL, so a wildcard cannot
-  cross a line terminator: a byte-prefix range is a STRICT SUPERSET and **the
-  residual LIKE may never be dropped.** A witness of that strictness needs an
+  cross a line terminator: a subject that starts with the literal prefix but
+  then carries a terminator lies in the byte-prefix range and does NOT match the
+  pattern, so the range is NOT contained in the predicate and **the residual
+  LIKE may never be dropped.** That is the only direction the witnesses
+  establish; the STRICT-SUPERSET claim additionally needs containment the other
+  way — every match lying inside the range — which nothing here proves and which
+  `comparisons_test.go:1285-1290` explicitly leaves open. A witness of that
+  separation needs an
   INTERNAL terminator, because Java's `$` tolerates exactly one FINAL one
   (`LikeMatch("abc%", "abc\n")` = TRUE) — which also makes a wildcard-free LIKE
   not an equality: its match set is the literal plus the literal-then-one-
@@ -14679,12 +14685,22 @@ None is speculative: each was re-verified against the tree before booking.
   records, for each non-terminal zero-float equality, a two-element
   `alternatives` pair on that component (`scan_range_binding.go:390-406`);
   the choices expand to one range per signed-zero combination (2^k for k such
-  components, ascending key order). `scanRangeSetCursor` walks them as a LAZY
+  components; on a FORWARD scan the alternatives are emitted in ascending key
+  order, and on a REVERSE scan descending — the `if reverse` branch emits
+  `+0, -0` at `scan_range_binding.go:402-403` — so odometer order tracks scan
+  direction). `scanRangeSetCursor` walks them as a LAZY
   mixed-radix odometer (`scan_range_set_cursor.go:405`,
   `advanceScanRangeChoices`) — one child cursor open at a time, advanced only
   on `SourceExhausted` (`:307`) — rather than materializing a concatenated
-  chain, and wraps each child's continuation so resume is
-  Java-wire-compatible. Disjoint ranges make
+  chain, and wraps each child's continuation so resume is exact. The WRAPPER is
+  **Go-only** and deliberately so: `ScanRangeSetContinuation`
+  (`proto/relational/scan_range_set_continuation.proto`, RFC-208 §3) is a
+  Go-internal read-side execution detail that Java has no counterpart for, which
+  is why it lives in the relational proto set and not the Apple mirror. Only its
+  embedded `inner_continuation` — the active physical leaf scan cursor's own
+  token, carried through opaquely — is the Java-compatible part. Nothing on the
+  wire-compat hard line changes: no stored key, no record/index format, and no
+  continuation format shared with the Java Record Layer. Disjoint ranges make
   the union duplicate-free with NO dedup layer — the IN-rewrite direction
   CQ-28 twice reverted stays dead. The full composite prefix stays sarg'd:
   no de-sarg, no residual filter, plan shape unchanged (EXPLAIN-pinned).
@@ -14711,9 +14727,14 @@ None is speculative: each was re-verified against the tree before booking.
   (`TestBindScanComparisonsToRangeSet_NonTerminalFloatingZero:42`,
   `_ReverseZeroOrder:108`, `_TwoZerosCartesianWithoutMaterialization:135`),
   terminal-stays-single in `_TerminalZeroUsesOneInclusiveRange:175`; and
-  `scanRangeSetCursor` forward/reverse odometer ordering plus continuation
-  resume at every stop point in `scan_range_set_cursor_test.go`
-  (`...OdometerOrderAndSingleLiveChild:258`, `...ContinuationSweep:496`).
+  `scanRangeSetCursor` odometer ordering plus continuation resume at every stop
+  point in `scan_range_set_cursor_test.go`
+  (`...OdometerOrderAndSingleLiveChild:258`, `...ContinuationSweep:496`) —
+  those two, and in fact every `newScanRangeSetCursor` call in that file,
+  construct `recordlayer.ForwardScan()`, so they pin the FORWARD odometer only.
+  The reverse direction is covered where the direction is actually decided, in
+  the binder: `_ReverseZeroOrder:108` above passes `reverse=true` and asserts the
+  alternatives come out `+0` then `-0`.
   One claim from the original list is NOT carried over and has no
   replacement: "single-range projection errors loudly on forks" pinned a
   single-range projection helper that no longer exists (the range SET is now

@@ -37,8 +37,10 @@ package sqldriver_test
 // cases below are still valid full-scan-vs-index-scan differential cases in
 // general (kept for the day a LIKE->STARTS_WITH rewrite lands, at which point
 // they start actually exercising the index path) but they do not, today, reach
-// the STARTS_WITH arm at all — the demonstration mutation below uses a
-// comparison the SQL surface DOES reach instead.
+// the STARTS_WITH arm at all. That is also why the historical one-off mutation
+// described above broke the ComparisonGreaterThan arm rather than the
+// STARTS_WITH one: it needed a comparison the SQL surface DOES reach. There is
+// no demonstration mutation anywhere in this file, below or above.
 //
 // Mechanism: DISABLED_PLANNER_RULES=[MatchLeafRule] removes index-candidate
 // matching from the Cascades rule set (proven in

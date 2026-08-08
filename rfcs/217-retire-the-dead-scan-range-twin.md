@@ -216,8 +216,9 @@ What replaces it, all discharged:
 1. **No definition and no caller — a COMMIT-PINNED historical measurement, not a
    standing invariant.** §1 shows the PRE-deletion state: the non-test grep
    matched the function's own definition and nothing else. Post-deletion, both
-   greps below were run at commit `0dd2736fe`, and what is recorded here is
-   *their output at that commit*:
+   greps below were run at commit `0dd2736fe`, and what is recorded here is the
+   *set of locations they matched at that commit* — `grep -rn` also prints each
+   matching line's source text, which is elided below:
 
    ```
    # at 0dd2736fe
@@ -276,5 +277,12 @@ What replaces it, all discharged:
   on convenience: it would re-arm the negative-NaN row drop (§5,
   `..._MultiEqualityThenInequality`) and would match Java only by reintroducing
   Java's own internal inconsistency, where the residual predicate says negative-NaN
-  rows qualify and the index scan cannot reach them. Go has one float comparator,
-  so it does not get to hold both answers.
+  rows qualify and the index scan cannot reach them. Go cannot hold both answers
+  **on this axis**: it does have two float comparators — the PREDICATE one
+  (`cmpAny`, `predicates/comparisons.go:588`) and the SORT/index one
+  (`values.CompareFloat64`) — but they are split on SIGNED ZERO, not on NaN
+  (`plans/ordering.go:401-409`). For NaN the predicate path never reaches its own
+  IEEE branch: `af == bf` is false for NaN, so `cmpAny` falls straight through to
+  `values.CompareFloat64` (`comparisons.go:598-604`), the same total order the
+  index bounds use. Predicate and index therefore agree about negative NaN by
+  construction, which is exactly what Java does not do.
