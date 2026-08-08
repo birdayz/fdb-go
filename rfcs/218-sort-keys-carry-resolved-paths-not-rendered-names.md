@@ -583,8 +583,8 @@ existsSortSplit  calls 44 | carried 0 | AGREED 44 | DIVERGED 0 | MANUFACTURED 0 
 
 `DIVERGED 0` over a real 44-call population, identical to the committed pre-fix baseline: the
 zero was **not widened**. An earlier revision quoted `calls 0 | DIVERGED 0` from a NARROWED
-`--test.run` run, where every site read 0 — including `displayLabelStrip`, documented at 750
-calls — and where the census printed its own warning that at zero the check holds VACUOUSLY.
+`--test.run` run, where every site read 0 — including `displayLabelStrip`, measured at 560 calls
+on the same unfiltered run — and where the census printed its own warning that at zero the check holds VACUOUSLY.
 The conclusion was right and the measurement proved nothing; that is the corollary error this
 document keeps catching, committed by this document.
 

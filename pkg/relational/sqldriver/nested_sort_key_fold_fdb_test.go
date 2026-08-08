@@ -145,34 +145,68 @@ func TestFDB_NestedSortKeyThroughTheProjectedExistsFold(t *testing.T) {
 		})
 	}
 
-	// A JAVA DIVERGENCE, pinned here because it is plan-shape only and would
-	// otherwise go unrecorded.
+	// A JAVA DIVERGENCE, PINNED AS SHAPE — not merely as the answer.
 	//
 	// Java decides hidden-column membership by DERIVABILITY: Expression
-	// .canBeDerivedFrom runs Value.pullUp, so a nested `n.sk` IS derivable from a
-	// projected `n` and Java appends NO hidden column for the two shapes above
-	// that project the struct root. Go's sortKeyInOutput uses exact
-	// SemanticEqualsUnderAliasMap, so {N}{SK} != {N} and a hidden column IS
-	// appended — named "N", which puts TWO fields named N in the folded row. That
-	// is precisely the duplicate-root layout the fold is documented as able to
-	// manufacture from unambiguous SQL, and it is why the re-anchor's ambiguity
-	// arm cannot be argued away by "users cannot write it".
+	// .canBeDerivedFrom (Expression.java:254-264) runs Value.pullUp, so a nested
+	// `n.sk` IS derivable from a projected `n` and Java appends NO hidden column.
+	// Go's sortKeyInOutput uses exact SemanticEqualsUnderAliasMap, so {N}{SK} !=
+	// {N} and a hidden column IS appended, named "N" — putting TWO fields named N
+	// in the folded row. That is the duplicate-root layout the fold can manufacture
+	// from unambiguous SQL, and it is why the re-anchor's ambiguity arm cannot be
+	// argued away by "users cannot write it".
 	//
-	// ROWS ARE CORRECT either way, which is why this is a shape divergence and not
-	// a bug: the sort resolves to the appended column and orders by the same
-	// values Java orders by. It is pinned so that closing it (teaching
-	// sortKeyInOutput derivability, matching canBeDerivedFrom) is a deliberate
-	// change with a test that notices, rather than a silent plan-shape drift.
-	t.Run("struct_root_projected_still_orders_correctly_despite_the_extra_column", func(t *testing.T) {
+	// ROWS ARE CORRECT either way, so an answer assertion CANNOT see this: an
+	// earlier version of this test was byte-identical in query and expectation to
+	// struct_root_also_projected above and would have stayed green if the
+	// divergence were closed — while claiming to be the test that notices.
+	//
+	// THE OBSERVABLE is the fold's cleanup projection, which
+	// translateProjectOverExistsFilter emits ONLY when extraSortCols is non-empty.
+	// Measured, holding the sort constant so the wrapper is the only thing that
+	// varies:
+	//
+	//	ORDER BY n.sk (hidden column appended) -> Project([...], InMemorySort([N ASC], FlatMap(...)))
+	//	ORDER BY id   (key already projected)  -> FlatMap(...)                       [no Project]
+	//
+	// So if sortKeyInOutput is taught derivability, extraSortCols goes empty, the
+	// cleanup Project disappears, and this test REDDENS — which is what the booking
+	// asks for.
+	t.Run("java_divergence_the_hidden_column_is_appended_and_shows_in_the_plan", func(t *testing.T) {
 		t.Parallel()
-		got := firstCol(t, "SELECT id, n, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h "+
-			"FROM t1 ORDER BY n.sk")
-		want := []int64{3, 2, 1}
-		for i := range want {
-			if i >= len(got) || got[i] != want[i] {
-				t.Fatalf("got %v, want %v — the appended hidden column (Go appends one where "+
-					"Java derives instead) must not change the ANSWER, only the shape", got, want)
-			}
+		q := "SELECT id, n, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h " +
+			"FROM t1 ORDER BY n.sk"
+		var plan string
+		if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
+			t.Fatalf("EXPLAIN %q: %v", q, err)
+		}
+		if !strings.Contains(plan, "InMemorySort") {
+			t.Fatalf("expected the nested key to still require a sort, got: %s — the "+
+				"control below is only meaningful with the sort held constant", plan)
+		}
+		if !strings.HasPrefix(plan, "Project(") {
+			t.Fatalf("no cleanup projection in %s — Go no longer appends a hidden sort "+
+				"column for a projected struct root, i.e. sortKeyInOutput now matches "+
+				"Java's derivability. That is the DESIRED end state: delete this test, "+
+				"and update the TODO booking that asks for it", plan)
+		}
+	})
+
+	// CONTROL for the assertion above: with the ORDER BY key already projected, no
+	// hidden column is appended and the cleanup projection is absent. Without this,
+	// "the plan starts with Project(" could be true of every folded query and the
+	// pin would hold for a reason unrelated to hidden columns.
+	t.Run("no_hidden_column_means_no_cleanup_projection", func(t *testing.T) {
+		t.Parallel()
+		q := "SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h " +
+			"FROM t1 ORDER BY id"
+		var plan string
+		if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
+			t.Fatalf("EXPLAIN %q: %v", q, err)
+		}
+		if strings.HasPrefix(plan, "Project(") {
+			t.Fatalf("a cleanup projection appeared for a query needing NO hidden sort "+
+				"column: %s — the shape assertion above no longer discriminates", plan)
 		}
 	})
 

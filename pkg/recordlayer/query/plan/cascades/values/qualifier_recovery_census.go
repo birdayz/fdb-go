@@ -464,7 +464,7 @@ func assertQualifierRecoveryCounts(
 	//   - AGREED, LEAF-ONLY and HEURISTIC-DECLINE are health populations. Their
 	//     witnesses illustrate a shape that is working; the COUNT carries the
 	//     claim and the list is an example set. Saturation is expected on any
-	//     corpus of size (displayLabelStrip alone agrees on 700+ calls across
+	//     corpus of size (displayLabelStrip alone agrees on 560 calls (measured, unfiltered) across
 	//     dozens of aliases) and is announced, not failed. Failing it would mean
 	//     the gate goes red because the suite grew.
 	for s := QualifierRecoverySite(0); s < qualRecSiteCount; s++ {
