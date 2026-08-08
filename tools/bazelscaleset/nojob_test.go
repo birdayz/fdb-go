@@ -56,7 +56,9 @@ func newNoJobScaler(t *testing.T, pool *slotPool) *Scaler {
 		jobStartTimeout:  0, // no job-start watchdog: the runner exits on its own
 		jobTerminalGrace: 0,
 	}
-	return newScaler(discardLogger(), &fakeScalerClient{}, 1, cfg, pool)
+	s := newScaler(discardLogger(), &fakeScalerClient{}, 1, cfg, pool)
+	silenceChildOutput(t, s)
+	return s
 }
 
 // slotReturnedBenched reports whether the given slot has been returned to the
