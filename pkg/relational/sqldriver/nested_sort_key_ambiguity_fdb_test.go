@@ -72,7 +72,7 @@ func TestFDB_NestedSortKeyAmbiguityIsRejectedBeforeTheFold(t *testing.T) {
 	setup := openTestDB(t, "/testdb_nsk_ambig")
 	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_nsk_ambig")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nsk_ambig_tmpl "+
-		"CREATE TYPE AS STRUCT nst (sk BIGINT) "+
+		"CREATE TYPE AS STRUCT nst (sk BIGINT, co BIGINT) "+
 		"CREATE TABLE t1(id BIGINT, n nst, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t4(id BIGINT, n nst, t1_id BIGINT, PRIMARY KEY(id))")
@@ -84,9 +84,9 @@ func TestFDB_NestedSortKeyAmbiguityIsRejectedBeforeTheFold(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, (50)), (2, (40)), (3, (30))")
+	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, (50, 1)), (2, (40, 2)), (3, (30, 3))")
 	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (200, 3)")
-	mustExec(t, db, ctx, "INSERT INTO t4 VALUES (900, (7), 1), (901, (8), 2), (902, (9), 3)")
+	mustExec(t, db, ctx, "INSERT INTO t4 VALUES (900, (7, 1), 1), (901, (8, 2), 2), (902, (9, 3), 3)")
 
 	queryErr := func(q string) error {
 		rows, err := db.QueryContext(ctx, q)

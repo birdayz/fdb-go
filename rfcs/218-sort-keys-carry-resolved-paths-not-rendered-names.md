@@ -1,6 +1,6 @@
 # RFC-218 — The projected-EXISTS fold must read the sort key's resolved path, not a re-derived name
 
-**Status:** rev 8 — IMPLEMENTED (§5-RESULT). Single-table arm fixed and mutation-verified in four directions; JOIN arm declines cleanly pending the leg-window re-anchor. MMM-A/B/C folded. Awaiting the implementation review lap.
+**Status:** rev 9 — PARTIALLY IMPLEMENTED. The single-table arm is fixed and mutation-verified in four directions. **§5 deliverable 2 is NOT fully met:** it requires both arms to assert row order and mutation-red independently, and the JOIN arm asserts a REFUSAL, not an order — the leg-window re-anchor is unbuilt and booked in TODO.md. Awaiting the implementation review lap.
 **Origin:** RFC-197 ratchet entry `cascades_translator.go # sortKeyFieldRef`, whose stated
 mechanisms were measured false; the live bug behind it is this one
 **Scope:** `pkg/relational/core/query/cascades_translator.go` (the `sortSource` helpers), plus
@@ -472,6 +472,11 @@ not the one you did not is how this defect survives a second lap.
 symptom and keeps the round trip: the name becomes `N.SK`, which `stripSortQualifier`'s last-dot
 rule turns straight back into `SK`. That is the defect restated, not removed.
 
+**Note on the JOIN decline vs Java.** Java has no SQL-layer rejection for the join shape: it
+attempts the plan and fails downstream in `RemoveSortRule.onMatch`. Go's clean `0AF00` is
+therefore a divergence in FORM, not merely a narrower Go behaviour, and a gap vs Java remains
+open until the leg-window re-anchor lands.
+
 **Rejected: declining the fold for nested keys.** A capability regression — Java is *inferred*
 to plan this shape (no Java test combines a projected EXISTS with an ORDER BY on a
 non-projected column, so this is an inference from `generateSelect` accepting arbitrary
@@ -526,8 +531,13 @@ those sites receive.
 
    The test must cover **both arms**, because §2a shows a fix validated on one of them looks
    correct while leaving the other broken:
-   - single-table fold (`fv.Child == nil`): `SELECT id, EXISTS(...) FROM t1 ORDER BY n.sk`
+   - single-table, key NOT projected: `SELECT id, EXISTS(...) FROM t1 ORDER BY n.sk`
+   - single-table, struct ROOT also projected: `SELECT id, n, EXISTS(...) … ORDER BY n.sk`
+   - single-table, struct root projected under an ALIAS: `SELECT id, n AS nn, EXISTS(...) …`
    - JOIN fold (`fv.Child != nil`, two segments): the same with `JOIN t3 ON …`
+
+   Four, not two. Enumerating this list short is the same error §1 names one section earlier,
+   and it was committed here after §1 was corrected.
 
    Each asserts row order and mutation-verifies red **independently** — a mutation that only
    reds one arm has not earned the other. **This deliverable is SPECIFIED, NOT WRITTEN**, and
@@ -564,9 +574,19 @@ JOIN + nested key                             -> 0AF00 clean refusal (was: malfo
 
 `RootOrdinalIn` and `ReAnchorRootInto` are production methods on `FieldPath`;
 `sortKeySourceValue` routes a multi-accessor key through the re-anchor instead of the rendered
-name. **The constraint held: `existsSortSplit` reports `calls 0 | DIVERGED 0`** — green because
-the nested key no longer reaches the render/split at all, i.e. by USING THE IDENTITY. The zero
-was not widened.
+name. **The constraint held**, and the reading that shows it must be the UNFILTERED one. Full
+`sqldriver_test`, `--nocache_test_results`, at HEAD:
+
+```
+existsSortSplit  calls 44 | carried 0 | AGREED 44 | DIVERGED 0 | MANUFACTURED 0 | bare 0
+```
+
+`DIVERGED 0` over a real 44-call population, identical to the committed pre-fix baseline: the
+zero was **not widened**. An earlier revision quoted `calls 0 | DIVERGED 0` from a NARROWED
+`--test.run` run, where every site read 0 — including `displayLabelStrip`, documented at 750
+calls — and where the census printed its own warning that at zero the check holds VACUOUSLY.
+The conclusion was right and the measurement proved nothing; that is the corollary error this
+document keeps catching, committed by this document.
 
 **The JOIN arm declines rather than shipping.** The leg-window re-anchor
 (`rebaseOuterLegValueOrdinal`) refuses multi-accessor paths (§2c AAA2), so building it is

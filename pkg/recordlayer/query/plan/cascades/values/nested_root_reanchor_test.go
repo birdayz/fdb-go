@@ -13,6 +13,14 @@ import "testing"
 // two cases the design needed separated. The mechanism now lives here, driven,
 // so a later reader can re-run it instead of re-deriving it.
 //
+// EVERY ASSERTION BELOW DRIVES THE PRODUCTION METHODS ON FieldPath, and that
+// sentence is load-bearing rather than decorative. An earlier version of this
+// file defined LOCAL COPIES of the algorithm and drove those; the file is
+// `package values`, so it compiled happily against the real source while
+// asserting nothing about it. Mutating production to first-match on duplicate
+// root names left every assertion GREEN. If you add a case here, call the
+// method — never re-implement it to "keep the test self-contained".
+//
 // A NOTE ON WHAT THIS FILE DOES NOT PROVE. These exercises run against
 // hand-built layouts. They establish that the composition behaves as specified
 // when handed a given layout; they do NOT establish that the fold hands it that
@@ -33,82 +41,6 @@ func rawRecord(names ...string) *RecordType {
 	return &RecordType{Fields: fs}
 }
 
-// rootOrdinalInFrontier is the arity-tolerant counterpart to OrdinalIn.
-//
-// OrdinalIn refuses on ARITY before it reads the domain, so it answers false for
-// every multi-accessor path and cannot distinguish "this path's root indexes the
-// layout you asked about" from "it indexes a different one". Those are the two
-// cases the re-anchor must separate, so it needs an accessor that separates
-// them. This drops the arity gate and keeps the domain gate; it deliberately
-// answers ONLY about the ROOT, since accessors beyond the first descend a nested
-// record where the layout question does not arise.
-func rootOrdinalInFrontier(p *FieldPath, frontier OrdinalDomain) (int, bool) {
-	if p == nil || len(p.Accessors) == 0 {
-		return 0, false
-	}
-	if !frontier.IsKnown() || !p.Domain.IsKnown() || p.Domain != frontier {
-		return 0, false
-	}
-	if ord := p.Accessors[0].Ordinal; ord >= 0 {
-		return ord, true
-	}
-	return 0, false
-}
-
-// reAnchorRoot re-states a multi-accessor path's ROOT ordinal in `flowed`.
-//
-// The derived ordinal is authoritative and the carried one is a tripwire, never
-// a source. That ordering is the whole design: a carried ordinal is stated in
-// the layout it was resolved against, which for a join is the PRE-MERGE row, so
-// trusting it reads whatever column happens to sit at that slot in the merged
-// row — silently, since an ordinal does not fail the way an unresolvable name
-// does.
-//
-// The duplicate-root-name arm declines rather than first-matching. RecordType's
-// FieldIndex returns the FIRST name match, so a merged row holding two columns
-// of the root's name would resolve to the left one regardless of which leg the
-// reference belongs to. Declining is correct-or-loud; first-matching is the
-// wrong-column read this design exists to prevent. Disambiguating such a row
-// needs leg IDENTITY (which correlation the root belongs to, matched against
-// which leg each merged slot came from), not a name.
-func reAnchorRoot(p *FieldPath, flowed *RecordType) (*FieldPath, string, bool) {
-	if p == nil || len(p.Accessors) < 2 {
-		return nil, "not a multi-accessor path", false
-	}
-	root := p.Accessors[0]
-	if root.Field == "" {
-		return nil, "root accessor has no name to derive from", false
-	}
-	dupes := 0
-	derived := -1
-	for i, f := range flowed.Fields {
-		if f.Name == root.Field {
-			dupes++
-			if derived < 0 {
-				derived = i
-			}
-		}
-	}
-	if dupes == 0 {
-		return nil, "root column absent from the flowed layout", false
-	}
-	if dupes > 1 {
-		return nil, "root column name is ambiguous in the flowed layout", false
-	}
-	// Assert only where the carried ordinal is COMPARABLE — i.e. it is stated in
-	// the very layout being re-anchored into. Where the domains differ the
-	// carried ordinal indexes something else and must not be compared at all.
-	if carried, ok := rootOrdinalInFrontier(p, OrdinalDomainOfType(flowed)); ok && carried != derived {
-		return nil, "carried ordinal disagrees with the flowed layout", false
-	}
-	out := &FieldPath{
-		Accessors: append([]ResolvedAccessor{{Field: root.Field, Ordinal: derived}},
-			p.Accessors[1:]...),
-		Domain: OrdinalDomainOfType(flowed),
-	}
-	return out, "", true
-}
-
 func nestedKeyPath() *FieldPath {
 	return &FieldPath{
 		Accessors: []ResolvedAccessor{{Field: "N", Ordinal: 1}, {Field: "SK", Ordinal: 0}},
@@ -118,7 +50,7 @@ func nestedKeyPath() *FieldPath {
 
 // TestOrdinalInRefusesOnArityBeforeDomain pins WHY a new accessor is needed.
 // If OrdinalIn ever starts answering for multi-accessor paths, the re-anchor
-// should use it and rootOrdinalInFrontier should go away — this test is what
+// should use it and RootOrdinalIn should go away — this test is what
 // tells the next reader that.
 func TestOrdinalInRefusesOnArityBeforeDomain(t *testing.T) {
 	t.Parallel()
@@ -154,12 +86,12 @@ func TestRootOrdinalInSeparatesArityFromDomain(t *testing.T) {
 	matching := OrdinalDomainOfType(rawRecord("ID", "N"))
 	mismatched := OrdinalDomainOfType(rawRecord("ID", "T1_ID", "ID", "N"))
 
-	got, ok := rootOrdinalInFrontier(multi, matching)
+	got, ok := multi.RootOrdinalIn(matching)
 	if !ok || got != 1 {
 		t.Fatalf("matching domain: got (%d,%v), want (1,true) — the accessor no longer "+
 			"answers for a multi-accessor root, which is its entire purpose", got, ok)
 	}
-	if _, ok := rootOrdinalInFrontier(multi, mismatched); ok {
+	if _, ok := multi.RootOrdinalIn(mismatched); ok {
 		t.Fatal("MISMATCHED domain answered true — the domain gate is gone, and a " +
 			"carried pre-merge ordinal would now be trusted against a merged row")
 	}
@@ -209,7 +141,7 @@ func TestReAnchorRootAcrossFlowedLayouts(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, why, ok := reAnchorRoot(nestedKeyPath(), tc.flowed)
+			got, why, ok := nestedKeyPath().ReAnchorRootInto(tc.flowed)
 			if ok != tc.wantOK {
 				t.Fatalf("ok=%v want %v (why=%q)", ok, tc.wantOK, why)
 			}
@@ -249,7 +181,7 @@ func TestReAnchorRejectsContradictoryCarriedOrdinal(t *testing.T) {
 		Accessors: []ResolvedAccessor{{Field: "N", Ordinal: 0}, {Field: "SK", Ordinal: 0}},
 		Domain:    OrdinalDomainOfType(flowed),
 	}
-	_, why, ok := reAnchorRoot(bad, flowed)
+	_, why, ok := bad.ReAnchorRootInto(flowed)
 	if ok {
 		t.Fatal("a carried ordinal contradicting its own stated layout was accepted — " +
 			"the tripwire is gone, and a rebased-one-channel-not-the-other producer " +
