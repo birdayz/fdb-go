@@ -367,7 +367,7 @@ var _ = Describe("Legacy format compatibility", func() {
 				store, oErr := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				Expect(oErr).NotTo(HaveOccurred())
-				Expect(store.GetFormatVersion()).To(Equal(int32(formatVersionCurrent)))
+				Expect(store.GetFormatVersion()).To(Equal(int32(formatVersionDefault)))
 				Expect(store.useOldVersionFormat()).To(BeFalse())
 				return nil, nil
 			})
@@ -412,7 +412,7 @@ var _ = Describe("Legacy format compatibility", func() {
 				store, oErr := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				Expect(oErr).NotTo(HaveOccurred())
-				Expect(store.GetFormatVersion()).To(Equal(int32(formatVersionCurrent)))
+				Expect(store.GetFormatVersion()).To(Equal(int32(formatVersionDefault)))
 				// !split store upgraded from <5 keeps the legacy layout forever.
 				Expect(store.omitUnsplitRecordSuffix()).To(BeTrue())
 				Expect(store.useOldVersionFormat()).To(BeTrue())
@@ -475,7 +475,7 @@ var _ = Describe("Legacy format compatibility", func() {
 				store, oErr := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				Expect(oErr).NotTo(HaveOccurred())
-				Expect(store.GetFormatVersion()).To(Equal(int32(formatVersionCurrent)))
+				Expect(store.GetFormatVersion()).To(Equal(int32(formatVersionDefault)))
 				// Empty store adopts the modern layout instead of keeping omit forever.
 				Expect(store.omitUnsplitRecordSuffix()).To(BeFalse())
 				Expect(store.useOldVersionFormat()).To(BeFalse())

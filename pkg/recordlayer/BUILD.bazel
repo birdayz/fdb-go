@@ -217,6 +217,7 @@ go_test(
         "fallback_cursor_test.go",
         "fht_kac_rotator_test.go",
         "field_type_index_test.go",
+        "format_version_split_test.go",
         "function_key_expression_test.go",
         "fuzz_test.go",
         "group_count_companion_predicate_gate_test.go",

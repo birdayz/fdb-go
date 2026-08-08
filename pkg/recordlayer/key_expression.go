@@ -1477,5 +1477,13 @@ func evaluateGetVersionstampIncarnation(record *FDBStoredRecord[proto.Message], 
 	if record == nil || record.Store == nil {
 		return nil, &KeyExpressionError{Message: "get_versionstamp_incarnation requires store context on record"}
 	}
-	return [][]any{{int64(record.Store.GetIncarnation())}}, nil
+	// The gate PROPAGATES rather than being swallowed into a 0. An incarnation key
+	// expression evaluated against a store whose format predates INCARNATION(13)
+	// has no incarnation to key on, and silently keying on 0 would put EVERY
+	// record in that store under a single index entry.
+	incarnation, err := record.Store.GetIncarnation()
+	if err != nil {
+		return nil, err
+	}
+	return [][]any{{int64(incarnation)}}, nil
 }

@@ -1113,7 +1113,7 @@ var _ = Describe("Store State Cache", func() {
 					return nil, err
 				}
 				Expect(store.storeHeader.GetCacheable()).To(BeTrue())
-				Expect(store.storeHeader.GetFormatVersion()).To(Equal(int32(formatVersionCurrent)))
+				Expect(store.storeHeader.GetFormatVersion()).To(Equal(int32(formatVersionDefault)))
 				var found bool
 				for _, uf := range store.storeHeader.UserField {
 					if uf.GetKey() == "cached-field" {
