@@ -2679,13 +2679,17 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 					// through to the name channel.
 					return nil, unresShadow
 				}
-				// A BARE non-shadowed column resolves through the
-				// scope so the projection carries the construction-bound ordinal
-				// (a childless source-relative baked FieldValue — the resolver's
-				// single-source bind). Anything else — a multi-source
-				// QOV-correlated resolution, an unresolvable name, a lazy result —
-				// keeps the translator's name emission unchanged. Twin of the
-				// PlanVisitor's bare-projection bind.
+				// A BARE non-shadowed column resolves through the scope so the
+				// projection carries the construction-bound ordinal, by the SAME
+				// shape rule as every other binding site (resolveBaked). An
+				// unresolvable name or a lazy result keeps the translator's name
+				// emission unchanged.
+				//
+				// This is the twin of the PlanVisitor's bare-projection bind, and it
+				// used to state the retired rule: that a MULTI-SOURCE QOV-correlated
+				// resolution also falls through to the name. It no longer does —
+				// resolveBaked's child-bearing arm admits exactly that shape, and it
+				// FIRES here on the existing corpus (RFC-223).
 				if proj.ProjectedValues == nil || (i < len(proj.ProjectedValues) && proj.ProjectedValues[i] == nil) {
 					rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, id)
 					if rerr == nil {
@@ -4407,14 +4411,17 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		if errors.As(err, &unresShadow) {
 			return unresShadow
 		}
-		// A BARE non-shadowed group key resolves through the
-		// scope so it carries the construction-bound ordinal (a childless
-		// source-relative baked FieldValue — the resolver's single-source
-		// bind). Field stays the bare column, so the aggregate's OUTPUT
-		// column name (AggregateKeyColumnName = Field) and every downstream
-		// name-keyed consumer are unchanged. Qualified keys, multi-source
-		// resolutions, and unresolvable names keep the translator's name
-		// emission.
+		// A BARE non-shadowed group key resolves through the scope so it
+		// carries the construction-bound ordinal, by the SAME shape rule as
+		// every other binding site (resolveBaked). Field stays the bare
+		// column, so the aggregate's OUTPUT column name
+		// (AggregateKeyColumnName = Field) and every downstream name-keyed
+		// consumer are unchanged. Qualified keys and unresolvable names keep
+		// the translator's name emission.
+		//
+		// MULTI-SOURCE resolutions no longer fall through to the name, which
+		// is what this comment used to say: resolveBaked's child-bearing arm
+		// admits them, and this is the site where it fires most (RFC-223).
 		if keyValues[i] == nil && !ref.isQualified() {
 			rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, semantic.FromNormalized(ref.bare()))
 			if rerr == nil {

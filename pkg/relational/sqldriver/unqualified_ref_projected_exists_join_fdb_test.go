@@ -271,10 +271,17 @@ func TestFDB_UnqualifiedRefBesideAProjectedExistsOverAJoin(t *testing.T) {
 	// were FOLDED into resolveBaked rather than left with a "why they stay"
 	// note: a latency claim nothing could measure is not a claim to ship.
 	//
-	// Both are LOUD, so neither is a silent wrong answer. They are pinned so the
-	// shapes are not forgotten and so the day either starts working is visible
-	// — at which point the right move is to assert the rows their non-EXISTS
-	// controls already return, listed in each arm.
+	// Both are LOUD, so neither is a silent wrong answer.
+	//
+	// THEY ARE PINNED IN A DIFFERENT PACKAGE, and deliberately not here:
+	// `pkg/relational/conformance/yamsql/testdata/projected_exists_over_a_derived_source.yaml`,
+	// with each failing query beside the passing control that differs from it
+	// only by removing the projected EXISTS. Running either query in THIS
+	// package makes its leg-local bake census report `UnderivableLegs = 2,
+	// want 0` — a hard zero that is telling the truth, since a leg with no
+	// derivable row layout is exactly why these reads fall through to a
+	// qualified name. The yamsql target does not feed that census, so the
+	// shapes are pinned rather than the guard red-lined.
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

@@ -453,9 +453,25 @@ var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 		//
 		// Both controls, each unfiltered with --nocache_test_results and 5879
 		// === RUN lines, differing only in plan_visitor.go:
-		//   fix applied      -> 604/182/212
-		//   fix reverted     -> 604/182/212   (four converted arms red, so the
-		//                                      revert demonstrably took effect)
+		//   fix applied   -> 604/182/212, and the log carries the three
+		//                    converted-arm PASS lines, so the binary is the
+		//                    current source and not a cached pre-edit one
+		//   fix reverted  -> 604/182/212, with SIX distinct leaf failures, so
+		//                    the revert demonstrably took effect. Counted, not
+		//                    estimated — an earlier note said four and a review
+		//                    said five; `grep -E "^\s+--- FAIL"` returns seven
+		//                    lines, one of which is a PARENT of two others:
+		//                      projected_struct_root_over_a_join/ordered_by_the_nested_key
+		//                      projected_struct_root_over_a_join/unordered
+		//                      struct_root_beside_a_projected_exists_over_a_join
+		//                      unqualified_scalar_join_projectedExists
+		//                      unqualified_structRoot_join_projectedExists
+		//                      unqualified_structRoot_join_projectedExists_structLast
+		//
+		// A === RUN count is a POPULATION check, not a staleness check: two runs
+		// can both report 5879 and one still be stale. Each leg therefore carries
+		// a marker only its own build can emit. Reading a number out of a log
+		// without one is how the false claim above survived twice.
 		// and the complementary one, fix applied, deleting only that ORDER BY
 		// query, 5878 === RUN:
 		//   -> 602/180/212

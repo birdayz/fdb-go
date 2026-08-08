@@ -1,8 +1,12 @@
 # RFC-223 — A bare column reference keeps its ordinal, exactly as a qualified one does
 
-**Status:** rev 4 — ACK'd by Graefe and Torvalds, and **IMPLEMENTED**.
-**Scope:** one shape predicate, `resolveBaked`, shared by every site that binds a
-projected column reference (`plan_visitor.go` and `logical_predicate.go`).
+**Status:** rev 5 — ACK'd by Graefe and Torvalds, and **IMPLEMENTED**.
+**Scope:** one shape predicate, `resolveBaked`, called from all five sites that
+bind a column reference to a plan-time ordinal: two bare-projection binds, the
+qualified resolver `resolveQualifiedBaked` (itself used by projections, sort keys
+and predicates), and two aggregate GROUP-key fillers — across `plan_visitor.go`
+and `logical_predicate.go`. Verified with
+`git grep -n "resolveBaked(" -- <both files>`.
 
 **Implementation notes that changed what this document says**, recorded here
 because each corrects a claim the design made:
@@ -38,13 +42,13 @@ because each corrects a claim the design made:
    ZERO** — `edges=22316 compared=22314 unreachable=0 no-quantifier=2 over 2516
    queries`, byte-identical either side of the fix.
 
-Rev 2 folded Graefe's three conditions and Torvalds' three blockers; rev 3 folds
-Graefe's delta items (gate (f), the leg-attribution half of the precondition, and
-multi-accessor ambiguity coverage) and Torvalds' last stale comment. The
-substantive finding of the lap was **Torvalds' blocker 1**: the widened predicate
-is imported without its explicit-qualifier precondition, and the one dimension
-where a wrong bake reads SILENTLY was the one dimension unmeasured. It is now
-nine pinned arms.
+Review history: rev 2 folded Graefe's three conditions and Torvalds' three
+blockers; rev 3 folded Graefe's delta items and Torvalds' last stale comment;
+rev 4 was the implementation; rev 5 folds the implementation lap's two NAKs. The
+substantive finding of the design lap was that the widened predicate is imported
+without its explicit-qualifier precondition, and the one dimension where a wrong
+bake reads SILENTLY was the one dimension unmeasured — now nine ambiguity arms.
+The substantive finding of the implementation lap is item 2 above.
 **Origin:** an escalation from the leg-reference RFC's §4, whose premise this
 document refutes.
 
@@ -268,9 +272,13 @@ golden result is read as evidence about them:
 known Values can push an ordering it previously could not) and
 `rule_projection_elim` (elimination is only provable when the slots are
 inspectable). Across the whole corpus **neither produced an operator-tree
-change** — the one golden record that moves keeps a byte-identical operator tree
-— so both rules' extra reach is either unexercised or ordering-neutral on this
-corpus.
+change** — all THREE golden records that move keep byte-identical operator trees.
+
+"Unexercised" is ruled out: the bare-projection arm fires **131 times** on the
+`sqldriver` corpus (§6(f)), so these rules are seeing filled slots they did not
+see before and are declining to act on them differently. The claim is therefore
+the narrower, measured one — their extra reach is **operator-tree-neutral on this
+corpus** — and not the vacuous one that they never saw it.
 
 **Ambiguity cannot ride in on the widened predicate, and the reason is measured,
 not assumed.** `resolveQualifiedBaked`'s safety rests on two things: the shape
@@ -397,9 +405,28 @@ production diff with the corpus held fixed moves this census by zero.
       were removed rather than documented.
 
       Verified mechanically: `git grep -c "SourceRelativeBaked()"` over
-      `plan_visitor.go` and `logical_predicate.go` returns the two occurrences
-      inside `resolveBaked` and nothing else. Folding them is behaviour-neutral
-      on the corpus — census and golden both unchanged.
+      `plan_visitor.go` and `logical_predicate.go` returns **one** occurrence,
+      the one inside `resolveBaked`, and nothing in `logical_predicate.go` at
+      all.
+
+      **Folding is behaviour-neutral in the OBSERVABLE, not in the code path,
+      and the stronger statement is the true one.** Census and golden unchanged
+      cannot tell "never fires" from "fires and agrees". Instrumented with a
+      caller-tagged counter over the whole `sqldriver` corpus, the widened
+      child-bearing arm fires:
+
+      | call site | fires | what it is |
+      |---|---|---|
+      | `plan_visitor.go` bare projection | **131** | RFC-223's fix |
+      | `logical_predicate.go:4428` | **7** | aggregate GROUP-key, bare |
+      | `logical_predicate.go:2696` | **1** | the bare-projection twin |
+      | `resolveQualifiedBaked` | 7094 | pre-existing, this arm was always here |
+
+      So the folded sites fire **8 times** and every assertion still holds — the
+      new arm is exercised and agrees, not inert. And the fix site itself fires
+      **131 times**, which is the honest measure of this change's reach: far
+      more than the three golden records suggest, because most firings re-derive
+      an ordinal that was already correct and only the renderings differ.
 
 ### (g) The THREE golden records that move, justified individually
 
@@ -467,7 +494,7 @@ sibling worktree on the same filesystem before merge.
 
 ---
 
-## 8. TWO PRE-EXISTING DEFECTS FOUND HERE, NEITHER FIXED NOR PINNED — ESCALATED
+## 7. TWO PRE-EXISTING DEFECTS FOUND HERE — PINNED ELSEWHERE, ROOT CAUSE FOUND
 
 Asking whether a CTE or a derived table routes projection binding through
 `logical_predicate.go`'s surviving copies turned up two failures that have
@@ -492,15 +519,36 @@ Each has a CONTROL that differs only by removing the projected `EXISTS`, and
 the projected-EXISTS fold that loses the source — the CTE alias in the first, the
 derived-table correlation in the second.
 
-**Why they are escalated rather than pinned here.** Adding either query to the
-sqldriver corpus trips a hard-zero census: `LEG-LOCAL BAKE CENSUS FAIL:
-UnderivableLegs = 2, want 0`. That is not an obstacle to route around — it is the
-diagnosis. An underivable leg "has no ordinal it can honestly carry on its own
-alias, so every read through it falls through to the qualified NAME", which is
-exactly the `42703`. Pinning these shapes therefore means either fixing the
-underivable leg or knowingly red-lining a guard that is telling the truth, and both
-are a different change from this one.
+**They ARE pinned**, in
+`pkg/relational/conformance/yamsql/testdata/projected_exists_over_a_derived_source.yaml`,
+each beside its passing control. Not in `pkg/relational/sqldriver`: running
+either query there trips `LEG-LOCAL BAKE CENSUS FAIL: UnderivableLegs = 2,
+want 0`, a hard zero that is telling the truth — an underivable leg "has no
+ordinal it can honestly carry on its own alias, so every read through it falls
+through to the qualified NAME", which is exactly the `42703`. That census is a
+package-global counter and the yamsql target does not feed it, so the shapes are
+pinned without red-lining a truthful guard.
 
-They are stated here, in the conversation, and in the commit message rather than
-filed as a TODO — a filed item is how a blocker becomes invisible, and the next
-person should get the reproducer, the control, and the census pointer together.
+### The root cause, followed to ground rather than escalated
+
+The census names the next step — "look for a flowed object value built UNTYPED"
+— and following it terminates in a defect **already diagnosed in the tree**.
+`RecordQueryProjectionPlan.GetResultType` is a hardcoded `values.UnknownType`,
+and `LogicalProjectionExpression.GetResultValue` returns its INNER's
+`QuantifiedObjectValue` rather than the row the projection produces. The comment
+above the latter states the falsehood plainly — "a projection outputs its
+PROJECTED columns, not its inner's row" — and records the SAME symptom this
+section pins, in the same words the derived-table arm produces:
+`correlated FieldValue … multi-leg row cannot serve a source-relative ordinal`.
+
+It also names the fix: state the row built from `GetProjectedValues` and
+`GetAliases`, in the logical expression AND its physical twin, with a standing
+warning not to "clean up" the site until that lands. So this is not an unexplored
+lead — it is a known design gap with a named remedy, and the remedy changes what
+every consumer of a projection's reported row sees. That is its own RFC, and this
+section exists so the next person starts from the reproducer, the control, the
+census pointer and that comment together.
+
+**The struct type is not involved, measured:** a derived table over
+`SELECT id FROM t1` — no struct column anywhere — fails identically, and its
+control passes.

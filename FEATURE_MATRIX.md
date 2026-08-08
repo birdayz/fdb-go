@@ -23,13 +23,13 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**350 scenarios · 2777 query/assertion cases** across 18 feature areas — 2438 supported, 113 unsupported-feature pins, 226 error-path pins.
+**351 scenarios · 2780 query/assertion cases** across 18 feature areas — 2440 supported, 113 unsupported-feature pins, 227 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 51 | 326 | 293 | 19 | 14 |
 | Joins | 63 | 277 | 268 | 3 | 6 |
-| Subqueries (EXISTS / IN / scalar) | 45 | 307 | 252 | 35 | 20 |
+| Subqueries (EXISTS / IN / scalar) | 46 | 310 | 254 | 35 | 21 |
 | CTEs | 13 | 108 | 75 | 9 | 24 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 | 52 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 210 | 192 | 1 | 17 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 30 | 233 | 200 | 10 | 23 |
-| **Total** | **350** | **2777** | **2438** | **113** | **226** |
+| **Total** | **351** | **2780** | **2440** | **113** | **227** |
 
 ## Aggregates & GROUP BY
 
@@ -207,6 +207,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `not_exists_or` | 2 | 1 | 1 | 0 | NOT EXISTS combined with OR predicates |
 | `not_exists_predicates` | 5 | 5 | 0 | 0 | NOT EXISTS with various predicate shapes |
 | `projected_exists_nested_sort_key` | 6 | 6 | 0 | 0 | The projected-EXISTS fold crossed with a NESTED `ORDER BY` key (RFC-218). |
+| `projected_exists_over_a_derived_source` | 3 | 2 | 0 | 1 | TWO PRE-EXISTING FAILURES found while implementing RFC-223, neither caused by |
 | `scalar_subquery` | 8 | 6 | 0 | 2 | Scalar subquery: `(SELECT ...)` used as a value-returning expression. |
 | `scalar_subquery_advanced` | 10 | 9 | 1 | 0 | Edge-case probes for the scalar-subquery feature added in nightshift-39. |
 | `scalar_subquery_dml` | 8 | 6 | 2 | 0 | Scalar subquery on the right-hand side of UPDATE SET, in DELETE WHERE |
