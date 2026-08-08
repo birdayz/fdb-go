@@ -604,6 +604,18 @@ func TestKeyExpressionFastPath_NestingExpressionDeclinesFastPath(t *testing.T) {
 // indexing every record of that type under the same wrong key and leaving no
 // trace that the field was missing. If this test fails, that corruption is
 // re-armed on the path every index write takes.
+//
+// This is a KNOWN, deliberate divergence from Java, recorded here so it is not
+// re-derived as a bug: Java folds the absent field into getNullResult() and
+// writes the null entry. Its Javadoc lists "the fieldDescriptor is null
+// (meaning the field does not exist, i.e., incorrect metadata)" as one of that
+// method's three callers (FieldKeyExpression.java:220-231), reached from
+// evaluateMessage's final else (:214-216); NestingKeyExpression inherits the
+// same behaviour by delegating its parent step to FieldKeyExpression. The arm
+// is only reachable through metadata Java itself calls incorrect, and refusing
+// writes no bytes rather than different bytes, so stored data stays
+// wire-identical either way — the divergence is a write that never happens,
+// loudly, instead of one that happens wrong, silently.
 func TestKeyExpressionFastPath_UnknownFieldErrorsEverywhere(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
