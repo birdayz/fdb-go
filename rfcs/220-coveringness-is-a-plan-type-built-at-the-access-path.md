@@ -143,13 +143,22 @@ them separate, which is exactly what makes an intervening operator harmless.
    (§2.3 site 5). Mirrors `RecordQueryCoveringIndexPlan.java`, delegating `IsReverse`, index
    name, match candidate and max-cardinality to the inner (`:141-190`).
 
-   **Acceptance criterion (Graefe condition 1): the inner index plan is a plain field —
-   never memoized, never a child quantifier, invisible to child traversal and to
-   `expressionCounts`.** Java's type `implements RecordQueryPlanWithNoChildren` and memoizes
-   only the covering plan. If Go exposes the inner as a child, two things break: other rules
-   match the bare index plan and yield a group member whose result value differs from
-   `Covering(Index)` (unsound group), and the census counts it so `indexScanCount` returns to
-   1 and the §1.1 misclassification is re-armed. A test drives this directly.
+   **Criterion C1 — the inner index plan is a plain field:** never memoized, never a child
+   quantifier, invisible to child traversal and to `expressionCounts`. Java's type
+   `implements RecordQueryPlanWithNoChildren` and memoizes only the covering plan. If Go
+   exposes the inner as a child, two things break: other rules match the bare index plan and
+   yield a group member whose result value differs from `Covering(Index)` (unsound group),
+   and the census counts it so `indexScanCount` returns to 1 and the §1.1 misclassification
+   is re-armed. A test drives this directly.
+
+   **Criterion C2 — because C1 makes the inner a field, nothing in child traversal folds it,
+   so every identity surface on the new type must fold the inner's FULL identity itself:**
+   index name, scan comparisons / ranges, and reverse — not merely the covering columns.
+   This binds both `structuralKey` (§6) and the fingerprint salt (§7). Getting C1 right and
+   C2 wrong trades one memo collision for a strictly worse one: two covering scans over the
+   same index with *different scan ranges* would collapse into a single group and one of
+   them would execute the other's ranges. C1 is what creates this obligation, which is why
+   it is stated rather than left implicit in a field list.
 
 2. **Access path** — `wrapScanPlanWithCoverage`'s `Fetch(IndexScan)` branch builds
    `Fetch(Covering(IndexScan))` unconditionally whenever the entry→partial-record mapping
@@ -222,9 +231,17 @@ Three identity surfaces key on `covering` today. All three are addressed explici
 
 **`structuralKey`** (`index_scan.go:397-426`) folds `Bool(p.covering)` at `:422` — but not
 `coveringColumns`, so two plans differing only in *which* columns are covered currently
-collapse into one memo Reference. The new type gets its own `structuralKey` including the
-covering columns, which **fixes that latent collision** rather than reproducing it. Pinned by
-a test asserting two covering plans over different column sets do not dedup.
+collapse into one memo Reference. That is an **unsound group collapse, not a cosmetic gap**:
+two covering scans over different covered-column sets emit *different partial records*, so
+merging them lets one execute as the other. Including the covering columns in the new type's
+`structuralKey` is therefore **required**, and is a correctness fix in its own right rather
+than a nicety adopted in passing.
+
+Per criterion C2 (§4.1) the new key must additionally fold the **inner index plan's full
+identity** — index name, scan comparisons/ranges, reverse — because C1 makes the inner a
+field that child traversal does not reach. Pinned by two tests: covering plans differing only
+in covered columns do not dedup, and covering plans over the same index differing only in
+scan range do not dedup.
 
 **`PlanHash`** (`plan_hash.go:19`) folds `HashCodeWithoutChildren` → `structuralKey`, so it
 moves. `plan_hash.go:14-18` states it is in-memory only — the plan cache is keyed on
@@ -255,6 +272,12 @@ resolved as follows, in two cases:
   `index-name`, `scan-type`, `reverse`, `covering`, `covering-columns`,
   `primary-key-columns`, `record-types`, `physical-key-types`, `flowed-type`). A golden test
   over the digest bytes pins this; it is the one assertion that must not be re-blessed.
+  Criterion C2 applies here too: the salt must fold the inner plan's index name, scan
+  comparisons and reverse flag directly, since the covering wrapper's own fields no longer
+  reach them through a child. A salt that folded only the covering columns would give two
+  covering scans over different ranges the SAME fingerprint, and a continuation from one
+  would be silently ACCEPTED by the other — the one failure mode in this design that is not
+  loud.
 - **Plan changed by this RFC** (a scan that gains coveringness) → the fingerprint necessarily
   changes and an in-flight token is **rejected loudly** at `scan_range_set_cursor.go:145`.
   That is the designed behaviour for a plan change across a binary upgrade, and it is a loud
@@ -273,13 +296,25 @@ This is a physical-plan change and plans will move; that is the point. §4.2 mak
 path emit `Fetch(Covering(Index))` on **every value-index match**, so the radius is *not* the
 defect shape. Re-derived from the proposed change:
 
+**Re-derived at `1d78ddb08` (post-#679), not carried over.** #679 landed 497 plan assertions
+across 37 yamsql files, which grew the yamsql `COVERING` surface from 8 references in 4 files
+to **22 in 8** — so the goldens are no longer the only thing that moves, and the earlier
+table understated it.
+
 | Count | Golden / fixture |
 |---|---|
 | 68 | `pkg/relational/conformance/explaindiff/testdata/plan_shape.golden` |
-| 4 | `pkg/relational/conformance/yamsql/testdata/rfc202_generated_index_plans.yaml` |
-| 2 | `pkg/relational/conformance/yamsql/testdata/covering_index_pushdown.yaml` |
+| 8 | `yamsql/testdata/order_by_elimination.yaml` (new in #679) |
+| 4 | `yamsql/testdata/rfc202_generated_index_plans.yaml` |
+| 4 | `yamsql/testdata/index_scan_direction.yaml` (new in #679) |
+| 2 | `yamsql/testdata/covering_index_pushdown.yaml` |
 | 2 | `pkg/simfdb/hunt/golden/testdata/orders.golden` |
-| 1 each | `cascades_plan_shapes.yaml`, `like_patterns_java.yaml`, `subquery.golden` |
+| 1 each | `cascades_plan_shapes.yaml`, `index_scan_order.yaml` (new), `index_range_predicates_java.yaml` (new), `like_patterns_java.yaml` |
+
+`pkg/docscheck/yamsql_plan_claim_gate_test.go` (also new in #679) fails when a yamsql header
+claims a plan shape the file does not assert. Any header this change invalidates will be
+reported by that gate rather than found by inspection — it is treated as a required signal,
+not noise to re-bless.
 
 Plus ~15 Go test files carrying hard `" COVERING"` Explain strings, `rowdiff/run.go:495-499`'s
 `"Covering"` vs `"IndexScan"` family classification, and **69 non-test references to
@@ -309,7 +344,7 @@ direction:
    is NOT covered, proving the fetch resolves full records rather than leaking partial rows.
    Direction 2, and the one that catches a regression to the pass-through fetch. A second
    assertion covers the orphan-entry path, which must still error loudly.
-3. **The inner index plan is invisible to the census** (Graefe condition 1) —
+3. **The inner index plan is invisible to the census** (criterion C1) —
    `TestCoveringPlanInnerIsNotCounted`: build `Covering(Index)`, run `expressionCounts` over
    it, assert `indexScanCount == 0 && coveringIndexCount == 1`, and assert child traversal
    yields no quantifier for the inner. Direction 3. This replaces #658's PART 3 disabling
