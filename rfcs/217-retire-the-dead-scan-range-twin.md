@@ -194,11 +194,25 @@ addition to being meaningless.)
 
 What replaces it, all discharged:
 
-1. **Zero production callers re-verified at this branch head**, not inherited. §1
-   shows the PRE-deletion state: the non-test grep matched the function's own
-   definition and nothing else. After the deletion the unrestricted
-   `grep -rn "scanComparisonsToTupleRange" pkg/` returns no output at all — every
-   reference, test and comment alike, is gone or retargeted (§3).
+1. **No definition and no caller, re-verified at this branch head**, not
+   inherited. §1 shows the PRE-deletion state: the non-test grep matched the
+   function's own definition and nothing else. After the deletion, the grep that
+   states the post-condition and stays true is the one restricted to Go call and
+   definition syntax — a definition is always `func <name>(` and a call is always
+   `<name>(`, while a prose mention in a comment is not followed by `(`:
+
+   ```
+   $ grep -rn "scanComparisonsToTupleRange(" pkg/
+   $   # no output
+   ```
+
+   The UNRESTRICTED `grep -rn "scanComparisonsToTupleRange" pkg/` is deliberately
+   NOT the claim here, and asserting it returns nothing would be self-invalidating:
+   it matches two comments in this branch's own retargeting edits
+   (`sqldriver/negative_zero_index_sarg_probe_test.go:143`,
+   `sqldriver/sargability_differential_oracle_fdb_test.go:13`), both of which name
+   the retired function precisely in order to point the reader at the live binder.
+   The claim is about compiled references, not about prose.
 2. **plandiff and explaindiff goldens byte-identical.** No file under
    `pkg/relational/conformance/{plandiff,explaindiff}/` is modified;
    `git status --porcelain` over that tree reports only a comment-only edit in

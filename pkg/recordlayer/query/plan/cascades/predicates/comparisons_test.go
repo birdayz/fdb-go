@@ -1269,7 +1269,7 @@ func TestComparisonPredicate_Like_FieldValueRHS(t *testing.T) {
 //	        LOSE rows -- the opposite failure direction from PART 1.
 //	        NOT "any" terminator: final CRLF is stripped as a single unit,
 //	        so a literal already ending in `\r` does NOT match literal+`\n`
-//	        (`like_match_test.go:129`, "$ never between \r and \n"). The
+//	        (`like_match_test.go:139`, "$ never between \r and \n"). The
 //	        match set is therefore literal-plus-one-terminator MINUS that
 //	        case. The universal is unaffected -- the set still is not a
 //	        single value, so no equality range is exact -- but the set is

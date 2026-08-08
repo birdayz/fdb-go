@@ -226,21 +226,27 @@ func TestLikeMatch_CrossCheckSQLPatternToRegex(t *testing.T) {
 //	             differ there, or one ends exactly there. No longer prefix is
 //	             common to THESE TWO, so a P too SHORT for this pattern fails
 //	             here, P = "" included. This half is airtight for the fixture.
-//	RESIDUAL     a subject INSIDE P's byte range that the pattern REJECTS. The
-//	             byte range is therefore a STRICT superset of the predicate for
-//	             this pattern, which is what forbids dropping the residual LIKE
-//	             after emitting such a range.
+//	RESIDUAL     a subject INSIDE P's byte range that the pattern REJECTS. That
+//	             is what forbids DROPPING the residual LIKE after emitting such
+//	             a range: the range provably is not contained in the predicate.
+//	             It is NOT the strict-SUPERSET claim, which additionally needs
+//	             containment the other way — every match inside the range —
+//	             i.e. the soundness half below, which is only sampled.
 //
 // SOUNDNESS — that every match begins with P — is only SAMPLED here: the two
 // matched subjects are checked, and two subjects cannot quantify over all
 // matches, so a P that is too long survives unless one of them witnesses it.
 // Mutating the matcher makes that concrete: folding case in the literal
 // comparison makes LikeMatch("a_b%","AXB",0) true, so the asserted "a" is
-// unsound while every assertion in this file still passes. Quantified soundness
-// belongs to the exhaustive grid instead — which is why
-// TestLikeMatch_CrossCheckSQLPatternToRegex carries an uppercase subject rune
-// and an escape rune of `_`: those were its two blind spots, and matcher
-// mutations of exactly that shape passed through both tests before they existed.
+// unsound while every assertion in THIS test still passes.
+//
+// That mutation does not survive the package: TestLikeMatch_CrossCheckSQLPatternToRegex
+// above fails it at pattern="a" subject="A", which is why the grid carries an
+// uppercase subject rune (and an escape rune of `_`). But that is a
+// MATCHER-conformance catch, not a prefix-soundness one — the grid derives no
+// P and never calls HasPrefix. Quantified prefix soundness is therefore proven
+// NOWHERE in this tree; it is an open obligation for whoever writes the
+// extractor, not a property some other test already discharges.
 //
 // The ESCAPE shapes are the ones a hand-rolled scanner gets wrong, because
 // Java's replacement table has exactly TWO escape entries, `<esc>_` and

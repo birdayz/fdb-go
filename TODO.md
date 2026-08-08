@@ -2213,7 +2213,10 @@ closed rather than silently alter rows or output schema.
   indexed DOUBLE/FLOAT columns, 2026-07-26; FIXED 2026-07-27) — an indexed
   DOUBLE/FLOAT column's equality/IN/range SARG DISAGREES with the full-scan
   residual-filter path on a value stored as -0.0 (negative zero).**
-  `scanComparisonsToTupleRange` (executor.go) packed a comparand into the raw
+  The scan-range builder of the day (`scanComparisonsToTupleRange`, executor.go
+  — since retired as a dead twin, RFC-217; the live builder is
+  `bindScanComparisonsToRangeSet`, `scan_range_binding.go:256`) packed a
+  comparand into the raw
   FDB tuple encoding and compared byte ranges, and that encoding preserves
   the IEEE sign bit — so -0.0 sorts strictly BELOW +0.0 as two DISTINCT,
   physically ADJACENT keys with nothing else representable between them. The
@@ -2247,7 +2250,11 @@ closed rather than silently alter rows or output schema.
   keys depending on which engine inserted the row. Range-widening only
   changes how Go's OWN executor builds a scan boundary; it touches no wire
   byte anyone else reads.
-  **Fix:** `scanComparisonsToTupleRange` widens a zero-valued FLOAT/DOUBLE
+  **Fix (live code: `bindScanComparisonsToRangeSetWithTerminalWidening`,
+  `scan_range_binding.go:273`, reached through `bindScanComparisonsToRangeSet`
+  at `:256`; the fix originally landed in the since-retired
+  `scanComparisonsToTupleRange`, RFC-217):** the binder widens a
+  zero-valued FLOAT/DOUBLE
   bound to cover BOTH adjacent keys wherever it terminates the range: an
   equality (or IN-list per-element sub-probe) that is the LAST comparison
   widens to an inclusive `[-0.0, +0.0]` subtree; `>=`/`<` canonicalize their
@@ -2329,7 +2336,13 @@ closed rather than silently alter rows or output schema.
   equality is left un-widened when it is NOT the terminal column of a
   composite index's equality prefix** (e.g. index `(a DOUBLE, b BIGINT)`,
   predicate `a = 0 AND b = 5`, where `a`'s stored value is `-0.0`).
-  `scanComparisonsToTupleRange`'s CQ-27 fix only widens a zero bound at the
+  (HISTORICAL STATE — superseded by the FIXED/CQ-83 notes below; the live
+  binder `bindScanComparisonsToRangeSetWithTerminalWidening`
+  (`scan_range_binding.go:273`) now also handles the NON-terminal case, by
+  emitting both signed zeros as range-set ALTERNATIVES at `:396-405` rather
+  than leaving the column un-widened.) As of CQ-28's filing,
+  the CQ-27 fix — then in `scanComparisonsToTupleRange`, since retired,
+  RFC-217 — only widened a zero bound at the
   position that terminates the range (nothing pinned after it), because
   widening a MIDDLE column requires either a genuine two-way range union
   (not expressible as a single `TupleRange` low/high pair — verified: the
@@ -6815,8 +6828,9 @@ place; a reminder that a stale gate note outlives the code it describes if nobod
    non-exact equality → left unpromoted (mismatched tuple type codes make the SARG naturally empty, which
    coincides with the true answer, same reasoning the int-narrowing fix already relied on). `ResolveIn` got the
    matching per-element treatment. The executor's tuple-packing boundary needed a companion fix
-   (`coerceTupleElement` in `pkg/recordlayer/query/executor/executor.go`, replacing the narrower
-   `uuidToTupleElement`): the row-domain convention deliberately keeps a FLOAT-typed value as float64 everywhere
+   (`coerceTupleElementForKey` in `pkg/recordlayer/query/executor/executor.go:1041` — landed under the name
+   `coerceTupleElement`, wrapping rather than replacing the narrower `uuidToTupleElement`, which it still
+   delegates to at `:1042`): the row-domain convention deliberately keeps a FLOAT-typed value as float64 everywhere
    else (`tupleElementToRowValue`'s doc comment), but the FDB tuple encoder dispatches on the Go RUNTIME type
    (float32 → tuple code 0x20, float64 → 0x21), so a comparand whose declared type says FLOAT must be downcast
    to a genuine `float32` at the exact point it gets packed into the scan range — the mirror image of
@@ -6830,7 +6844,7 @@ place; a reminder that a stale gate note outlives the code it describes if nobod
    CONSTANT gets unwrapped/ignored by the matcher, turned out to be irrelevant here — that finding was about
    retyping a literal, which the sibling constant-side functions already handle without Promote; wrapping a
    genuine non-constant FieldValue/CorrelatedFieldValue works because there is no bare value to extract instead).
-   The same `coerceTupleElement` packer fix from (1) makes the FLOAT variant of this case work at the wire
+   The same `coerceTupleElementForKey` packer fix from (1) makes the FLOAT variant of this case work at the wire
    boundary too.
 
 **FIXED (2026-07-27) — a FIFTH category this item claimed did not exist.** The header above said "all four
@@ -7304,7 +7318,10 @@ be queried by `WHERE v='…'`.
 **ARCHITECTURE RESOLVED — Graefe DECISION: (b).** A UUID flows as a neutral `[16]byte` inside the
 Cascades value layer (`values` stays wire-agnostic — NO `tuple` import there). The `tuple.UUID`
 conversion lives ONLY at the wire boundaries that already import `tuple`: the scan-range packing
-(`scanComparisonsToTupleRange`, executor) and the index-entry write (`scalarToInterface`, recordlayer —
+(`uuidToTupleElement`, reached from the scan-range binder through `coerceTupleElementForKey`,
+`executor.go:985`/`:1041` — the decision was written against the since-retired
+`scanComparisonsToTupleRange`, RFC-217) and the index-entry write (`scalarToInterface`,
+`recordlayer/key_expression.go:350` —
 already landed). Rationale: matches the `IndexEntryObjectValue` no-wire-coupling precedent + Java's
 neutral `java.util.UUID`; `[16]byte` and `tuple.UUID` compare identically (unsigned big-endian) in
 `cmpAny`, so zero semantic cost. CONCRETE TYPES this fixes:
@@ -10423,6 +10440,17 @@ to nothing.)
   (`scan_match_helpers.go:37`), and `ResolveStartsWith` (`expr.go:1437`), which
   builds the comparison the scan machinery does accept, has no production caller.
 
+  *Every Java claim in this item is against **Java 4.12.11.0** — the tree at
+  `fdb-record-layer/` in the REPO ROOT (gitignored, so it is absent from
+  `git ls-files` and from any worktree; the version is pinned in `MODULE.bazel:117`
+  as `org.foundationdb:fdb-record-layer-core:4.12.11.0`). That names exactly what
+  to check out to re-verify. The two backing `file:line` citations, both
+  re-verified at that tag: `PatternForLikeValue.java:111-112` (the escape table's
+  only two entries, `<esc>_` and `<esc>%`, layered over `REPLACE_MAP` at `:62-79`
+  where `%` → `.*`), and `:116` (the `^…$` wrap) evaluated by
+  `LikeOperatorValue.likeOperation` (`LikeOperatorValue.java:93-99`:
+  `Pattern.compile(rhs)` with NO flags, then `.find()`).*
+
   **Tightness — MEASURED; it constrains every possible design.** Java (4.12.11.0)
   compiles `%` to `.*` inside a `^…$` wrap with no DOTALL, so a wildcard cannot
   cross a line terminator: a byte-prefix range is a STRICT SUPERSET and **the
@@ -10449,10 +10477,16 @@ to nothing.)
   `escape == '_'` left the whole values package green. The guard is a NON-EMPTY
   prefix on a constant pattern, NOT the absence of later wildcards.
 
-  **Blockers.** (1) *Empty primary-key range — HISTORICAL:* a prototyped producer
+  **Blockers.** (1) *Empty primary-key range — HISTORICAL, NOT REPRODUCIBLE, a
+  LEAD AND NOT A FACT:* a prototyped producer
   returned zero rows for every primary-key prefix LIKE (`expected [apple]
   [apricot], actual 0 rows`), STARTS_WITH bound present and range empty; DELETED
-  rather than fixed, loss point NEVER diagnosed. Diagnosing it is step one of any
+  rather than fixed, loss point NEVER diagnosed. The code that produced this
+  observation is not in the tree or its history and there is no committed
+  artifact, so nothing here can be re-run and none of it may be relied on as a
+  property of the current tree — it is a hypothesis to RE-DERIVE against a new
+  prototype, and it must fail on its own terms again before it counts.
+  Diagnosing it is step one of any
   retry. (2) *Covering stamp lost through an intervening residual — MEASURED at
   HEAD, pinned by the same test:* `WHERE status > 'act'` gives
   `Project([ID#0], IndexScan(IDX_STATUS, [<>] COVERING))`; adding
@@ -10465,32 +10499,46 @@ to nothing.)
   criterion #7. Under `PreferIndex` the penalty falls on the primary scan; a
   non-covering projection has no stamp to lose; a query separated on an earlier
   criterion never reaches #7. (3) *Logical-vs-physical type gate — INFERRED,
-  UNVERIFIED:* the logical LIKE gate (`expr.go:1415-1427`) admits
+  UNVERIFIED (a reading of the code, never executed):* the logical LIKE gate (`expr.go:1415-1427`) admits
   Unknown/Null/Enum/Date/Timestamp alongside String while the physical layer
   accepts STRING; whether a disagreement demotes to residual or errors at
   execution was never measured. `ResolveStartsWith` also has no LHS type gate
   where `ResolveLikeWithEscape` raises 42804, so giving it a caller means adding
-  that gate first. (4) *The prototype's other failures — HISTORICAL:* it also
+  that gate first. (4) *The prototype's other failures — HISTORICAL, NOT
+  REPRODUCIBLE, a LEAD AND NOT A FACT (same deleted, uncommitted prototype as
+  (1)):* it also
   broke `TestRuleTypes_EveryProductionRuleHasDirectBehavioralTest`,
   `TestPartitionSelect_ChainInterningBaseline` and `TestJavaCorpusRuns/files`,
-  none diagnosed before deletion.
+  none diagnosed before deletion. All three pass at this head; the entry says
+  only that a producer of that shape once broke them, which is a place to LOOK
+  on a retry, not a defect anyone has established in the current tree.
 
   **`yamsql/testdata/like_prefix_pushdown.yaml` cannot detect this optimization,
   and contradicts itself — OUTSTANDING, on master, untouched by this branch.** 41
   `- query:` steps, `grep -cE 'plan_contains|plan_not_contains'` = 0: no step
   asserts plan shape, and a correct pushdown returns the same rows by
   construction, so nothing separates its presence from its absence. (Rows-only
-  assertions DO catch a WRONG optimization — they caught the deleted prototype on
-  its first run — so the gap is dimensional, not total.) It also states two
+  assertions DO catch a WRONG optimization — they are reported to have caught the
+  deleted prototype on its first run, which is the same NOT-REPRODUCIBLE lead as
+  blocker (1) and not a re-runnable demonstration — so the gap is dimensional,
+  not total.) It also states two
   incompatible contracts: the header at `:11`/`:13` says ESCAPE and interior
   wildcards BAIL, while `:297-325` say they NARROW at the first unescaped
   wildcard with the post-filter enforcing full semantics.
 
   **No producer design is recorded here, deliberately** — two attempts to state a
   contract both proved satisfiable by a rule that never fires. RFC-216 carried
-  this material and was DELETED: its Java `file:line` citations resolve only in a
-  gitignored sibling checkout absent from `git ls-files` and its prototype results
-  have no committed artifact, so it could not be kept true.
+  this material and was DELETED: as a document claiming to BE the design record it
+  could not be kept true, because its prototype results have no committed artifact
+  and nothing in the repo could be diffed against them. That standard does not
+  transfer to this file. A TODO entry is a work list, and "a prototype produced
+  zero rows and the code is gone" is exactly the lead the next attempt needs — so
+  the material is kept here, explicitly labelled NOT REPRODUCIBLE (blockers (1)
+  and (4)). Its Java citations are likewise kept: Java is this port's spec, the
+  tree is `fdb-record-layer/` at tag 4.12.11.0 pinned in `MODULE.bazel`, and
+  citing it is the repo's established practice (`DIVERGENCES.md` rests entirely
+  on such citations). Gitignored is not uncheckable when the pin says what to
+  check out.
 
 - [ ] **CQ-34 (MED) — the sargable gate and the range builder are kept in manual
   lockstep.** `isSargableComparisonForMatch` (`match_max_match_map.go:67`) decides
@@ -14610,7 +14658,18 @@ None is speculative: each was re-verified against the tree before booking.
   wanted key set {(-0.0,5), (+0.0,5)} is not a contiguous interval, so neither
   a single probe nor a widened one can serve it.
   **Mechanism — execution-time probe split (executor, no plan change).**
-  `scanComparisonsToTupleRange` already evaluates the correlated comparand
+  (SYMBOLS AS OF LANDING — every name in this paragraph has since been
+  replaced. `scanComparisonsToTupleRange`/`...Ranges` were retired (RFC-217);
+  the live binder is `bindScanComparisonsToRangeSet`
+  (`scan_range_binding.go:256`), a `zeroFork` is now a per-component
+  `alternatives` pair emitted at `scan_range_binding.go:396-405`, and
+  `multiRangeScanCursor` is now `scanRangeSetCursor`
+  (`scan_range_set_cursor.go:200`). The unit pins moved from
+  `zero_fork_scan_ranges_test.go` to `scan_range_binding_test.go` /
+  `scan_range_set_cursor_test.go`; the sentinel
+  `correlated_zero_composite_sentinel_test.go` kept its name. The behaviour
+  described below is unchanged.)
+  The binder already evaluates the correlated comparand
   per-probe with the value in hand; the only missing piece was that one
   `TupleRange` cannot express the two-key union. `scanComparisonsToTupleRanges`
   now records a `zeroFork` for each non-terminal zero-float equality and
