@@ -319,13 +319,18 @@ type database struct {
 	// Transaction defaults — applied to every new transaction.
 	// Matches C++ DatabaseContext::transactionDefaults.
 	//
-	// Published as an IMMUTABLE snapshot: C++ marshals fdb_database_set_option and
-	// transaction creation onto the single network thread, so a new transaction always
-	// observes one coherent transactionDefaults. Go has no such confinement — the
-	// SetTransaction* setters below are exported, so any goroutine may set a default
-	// while another creates a transaction. Swapping the whole snapshot (rather than
-	// per-field atomics) is what keeps the set coherent: a transaction must not pick up
-	// the new timeout alongside the old retry limit.
+	// Published as an IMMUTABLE snapshot. C++ does NOT achieve this by thread
+	// confinement — fdb_database_set_option and fdb_database_create_transaction both
+	// run on the caller's thread — but by same-priority FIFO onto the network thread
+	// plus a bulk, non-yielding copy of the whole option list when a transaction is
+	// built. See the fuller citation chain on internalDB.txDefaults in
+	// pkg/fdbgo/fdb/database.go.
+	//
+	// Go has no equivalent, and the SetTransaction*/SetDefault* setters below are
+	// exported, so any goroutine may set a default while another creates a
+	// transaction. Swapping the whole snapshot (rather than per-field atomics) is what
+	// keeps the set coherent: a transaction must not pick up the new timeout alongside
+	// the old retry limit.
 	//
 	// nil means "nothing ever set" and reads as the zero TransactionDefaults.
 	txDefaults atomic.Pointer[TransactionDefaults]

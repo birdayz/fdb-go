@@ -17,6 +17,26 @@ import (
 // writes readSystemKeys on a process-shared Database while a concurrent query's
 // TransactCtx reads the same defaults in applyTxDefaults.
 //
+// That CI run (31238513459) reported four failing sqldriver tests —
+// TestFDB_StoreTimerExporter_IndexScansAreCounted, TestFDB_UpdateSetNullIndexProbe,
+// TestFDB_ScalarMathProbe/power, TestFDB_StoreTimerExporter_CountsRealSQLWork.
+// They are held to be four symptoms of ONE cause, not four defects: the whole log
+// contained exactly ONE "WARNING: DATA RACE" (measured, `grep -c`), and the four are
+// simply what was in flight when the detector aborted the shared test binary. They
+// were not individually re-run after the fix.
+//
+// That claim is falsifiable, and these are the observations that would break it:
+//   - any of the four reds on a -race lane at a commit that CONTAINS this fix;
+//   - any of the four reds with "--- FAIL" but WITHOUT an accompanying
+//     "race detected during execution of test" — that is an ordinary assertion
+//     failure and therefore an independent cause;
+//   - a race report whose reader/writer frames are anything other than
+//     applyTxDefaults against a DatabaseOptions setter — that is a second racing
+//     pair this fix does not address.
+//
+// If any of those is seen, the single-cause reasoning is wrong and the specific test
+// needs its own root-cause, not a re-run.
+//
 // This test only fails under -race. If it stops failing with the synchronization
 // removed, the defaults have been made unreachable from one of the two sides and
 // the invariant needs re-checking.
