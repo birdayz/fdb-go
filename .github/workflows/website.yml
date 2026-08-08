@@ -9,6 +9,10 @@ on:
       - "website/**"
       - "CHANGELOG.md"
       - ".github/workflows/website.yml"
+      # A new/removed nested Go module changes which vanity-import stubs the site must
+      # serve, so it has to trigger a redeploy even when nothing under website/ changed.
+      - "**/go.mod"
+      - "scripts/gen-vanity-modules.sh"
   workflow_dispatch:
 
 permissions:
@@ -44,6 +48,8 @@ jobs:
             printf -- '---\ntitle: Changelog\ntoc: true\n---\n\n'
             cat CHANGELOG.md
           } > website/content/changelog.md
+      - name: Derive vanity-import module roots (single source of truth)
+        run: ./scripts/gen-vanity-modules.sh
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@v5

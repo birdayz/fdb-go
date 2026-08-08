@@ -589,6 +589,12 @@ install-hooks:
 test-fresh target *args:
     bazelisk test {{target}} --cache_test_results=no {{args}}
 
+# Regenerate the fdb.dev vanity-import module list (website/data/gomodules.yaml).
+# Only NESTED Go modules need a stub page; the root module is covered by the go-import
+# meta on / via Go's prefix walk. See scripts/gen-vanity-modules.sh.
+vanity-modules:
+    ./scripts/gen-vanity-modules.sh
+
 # Convenience wrapper for the frl CLI (Phase A skeleton — see cmd/frl/).
 # Example: `just frl version` or `just frl config schema`.
 frl *args:
