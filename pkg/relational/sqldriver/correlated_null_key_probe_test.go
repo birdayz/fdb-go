@@ -5,7 +5,7 @@ package sqldriver_test
 // when the outer's join key is NULL, the inner index probe was built as
 // `k = <NULL>` and seeked the [null] index entries — wrongly MATCHING the inner's
 // NULL-keyed rows (SQL NULL = NULL is UNKNOWN, must not match). Root cause:
-// scanComparisonsToTupleRange appended a nil equality comparand to the scan
+// bindScanComparisonsToRangeSet appended a nil equality comparand to the scan
 // prefix instead of returning an empty range. Fixed there. A COUNT of 119
 // instead of 118 means NULL wrongly matched. (Both tables have 120 rows with
 // indexes on k so the planner picks the index-probe join.)
@@ -68,7 +68,7 @@ func TestFDB_CorrelatedNullKeyJoin(t *testing.T) {
 	}
 
 	// Pin the plan SHAPE: the equi-join must lower to a correlated index probe
-	// (FlatMap over an IndexScan) — the path scanComparisonsToTupleRange's NULL
+	// (FlatMap over an IndexScan) — the path bindScanComparisonsToRangeSet's NULL
 	// fix governs. If the planner ever picks a different join, this fails loudly
 	// rather than letting the regression sentinel silently pass on a path the fix
 	// doesn't touch (CLAUDE.md "NO FAKE CHECKBOXES").

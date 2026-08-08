@@ -133,7 +133,7 @@ func TestFDB_W3_5_PlanDiversity_IndexedVsFullScan(t *testing.T) {
 		"SELECT id, a FROM t WHERE a >= 3 AND a <= 9",
 		// Upper-only range: the index plan must EXCLUDE NULL entries (NULL sorts
 		// first). This line is the regression sentinel for the NULL-range fix in
-		// scanComparisonsToTupleRange — before it, the index scan returned NULLs
+		// bindScanComparisonsToRangeSet — before it, the index scan returned NULLs
 		// that `a < 4` (UNKNOWN on NULL) must drop.
 		"SELECT id FROM t WHERE a < 4",
 		"SELECT id FROM t WHERE a <= 4",

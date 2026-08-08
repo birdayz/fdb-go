@@ -4351,7 +4351,7 @@ func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
 		//
 		// The result stays a float64 CARRYING binary32 precision, the row
 		// domain every FLOAT-typed value lives in (see tupleElementToRowValue);
-		// coerceTupleElement narrows it to a real float32 at the tuple-probe
+		// coerceTupleElementForKey narrows it to a real float32 at the tuple-probe
 		// boundary, where the wire type code is what matters.
 		// A FLOAT-typed child makes this an IDENTITY cast, which Java short
 		// circuits before any operator runs ("If the types are the same, no

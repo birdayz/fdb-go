@@ -10,7 +10,7 @@ package sqldriver_test
 // only the indexed FLOAT(32) SARG path was cross-type-broken. Fixed by
 // expr.narrowConstAgainstFloatColumn (the FLOAT-column analogue of
 // widenConstAgainstDoubleColumn/narrowFloatConstAgainstInt) plus the
-// executor's coerceTupleElement, which downcasts the wire-packed value to
+// executor's coerceTupleElementForKey, which downcasts the wire-packed value to
 // a genuine Go float32 at the tuple-packing boundary.
 //
 // This file also pins the width-narrowing BOUNDARY case that the naive

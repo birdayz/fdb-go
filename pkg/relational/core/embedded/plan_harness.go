@@ -40,8 +40,34 @@ func PlanQueryForTest(sql, schemaDDL string, stats properties.StatisticsProvider
 // plan families over this tree — per the RFC, plan-family classification
 // must come from a plan-type switch, never from string-matching EXPLAIN text.
 func PlanPhysicalForTest(sql, schemaDDL string, stats properties.StatisticsProvider) (plans.RecordQueryPlan, error) {
-	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, nil)
+	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, nil, plannerOptionsFrom(nil))
 	return plan, err
+}
+
+// PlanQueryForTestWithDisabledRules is PlanQueryForTest with a set of planner
+// rules excluded from selection, by the SIMPLE type name Planner.DisabledRules
+// is keyed by ("MergeProjectionAndFetchRule").
+//
+// It exists so a causal claim about WHICH rule produces an observed plan shape
+// can be asserted rather than asserted-in-prose: the observable ("the plan has
+// COVERING") is one measurement, and "this rule is what put it there" is a
+// different one that only a disabling experiment can make. The names go through
+// the same api.Options funnel a connection's DISABLED_PLANNER_RULES uses, so a
+// test cannot reach a disabled-rule configuration production cannot.
+//
+// An unrecognized name is INERT, not an error — Java's
+// setDisabledTransformationRuleNames never resolves its strings either. A test
+// relying on a name must therefore also show the name has an effect; a typo
+// otherwise reads as "disabling it changed nothing".
+func PlanQueryForTestWithDisabledRules(
+	sql, schemaDDL string, stats properties.StatisticsProvider, disabled []string,
+) (string, error) {
+	opts := api.NewOptionsBuilder().Set(api.OptDisabledPlannerRules, disabled).Build()
+	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, nil, plannerOptionsFrom(opts))
+	if err != nil {
+		return "", err
+	}
+	return plan.Explain(), nil
 }
 
 // PlanPhysicalForTestWithReachability is PlanPhysicalForTest with RFC-183's
@@ -60,7 +86,7 @@ func PlanPhysicalForTestWithReachability(
 	stats properties.StatisticsProvider,
 	reach *cascades.ReachabilityCollector,
 ) (plans.RecordQueryPlan, error) {
-	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, reach)
+	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, reach, plannerOptionsFrom(nil))
 	return plan, err
 }
 
@@ -120,11 +146,16 @@ func PlanPhysicalDMLForTestWithReachability(
 // SUMMED result (edges=53748 for a true 17916). Both are the same bug: a
 // measurement whose scope is the process rather than the caller. nil = collect
 // nothing.
+//
+// popts carries the planner options this run plans under; every caller but
+// PlanQueryForTestWithDisabledRules passes plannerOptionsFrom(nil), the
+// Java-default configuration a query that sets no options gets.
 func planPhysicalForTest(
 	sql, schemaDDL string,
 	stats properties.StatisticsProvider,
 	verifyOneFinal bool,
 	reach *cascades.ReachabilityCollector,
+	popts plannerOptions,
 ) (plans.RecordQueryPlan, []string, error) {
 	tmpl, err := buildSchemaTemplateFromDDL(schemaDDL)
 	if err != nil {
@@ -210,7 +241,7 @@ func planPhysicalForTest(
 	// SELECT plans with the SELECT planning rule set (Batch-A). The DML harness
 	// (planPhysicalDMLForTest) appends DMLImplementationRules; everything from
 	// the planner build onward is identical, so it lives in the shared tail.
-	return planReferenceToPhysical(ref, md, stats, cascades.BatchAExpressionRules(), verifyOneFinal, reach)
+	return planReferenceToPhysical(ref, md, stats, cascades.BatchAExpressionRules(), verifyOneFinal, reach, popts)
 }
 
 // planReferenceToPhysical is the shared planning tail of the no-FDB harness
@@ -231,12 +262,14 @@ func planReferenceToPhysical(
 	planningRules []cascades.ExpressionRule,
 	verifyOneFinal bool,
 	reach *cascades.ReachabilityCollector,
+	popts plannerOptions,
 ) (plans.RecordQueryPlan, []string, error) {
-	// The no-FDB harness has no connection and therefore no api.Options: it
-	// plans under the Java-default planner options, like any query that sets
-	// none. It still goes through newCascadesPlanner so the harness and the
-	// production paths cannot diverge in how a planner is built.
-	planner := newCascadesPlanner(md, plannerOptionsFrom(nil), planningRules, stats)
+	// The no-FDB harness has no connection, so its callers resolve api.Options
+	// themselves — plannerOptionsFrom(nil), the Java defaults, for every entry
+	// point but PlanQueryForTestWithDisabledRules. It still goes through
+	// newCascadesPlanner so the harness and the production paths cannot diverge
+	// in how a planner is built.
+	planner := newCascadesPlanner(md, popts, planningRules, stats)
 
 	// RFC-183 P5 precondition: does every reference reachable at extraction
 	// hold at most ONE physical final? That is what Java's getRangesOverPlan
@@ -382,7 +415,7 @@ func planPhysicalDMLForTest(
 	}
 
 	planningRules := append(cascades.BatchAExpressionRules(), cascades.DMLImplementationRules()...)
-	physPlan, _, err := planReferenceToPhysical(ref, md, stats, planningRules, false, reach)
+	physPlan, _, err := planReferenceToPhysical(ref, md, stats, planningRules, false, reach, plannerOptionsFrom(nil))
 	return physPlan, err
 }
 
@@ -767,7 +800,7 @@ func ResultColumnDefsForPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordM
 // of the deleted globals, false the moment they were threaded through, and
 // shipped stale by the very commit that fixed three other stale comments.
 func planAndVerifyOneFinal(sql, schema string) ([]string, error) {
-	_, violations, err := planPhysicalForTest(sql, schema, nil, true, nil)
+	_, violations, err := planPhysicalForTest(sql, schema, nil, true, nil, plannerOptionsFrom(nil))
 	if err != nil {
 		return nil, err
 	}

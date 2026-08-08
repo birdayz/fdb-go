@@ -94,7 +94,7 @@ func TestFDB_CrossTypeJoinProbe(t *testing.T) {
 
 	// FIXED: BIGINT = DOUBLE via an index probe (index on the DOUBLE side) —
 	// column-vs-column, so promoteColumnColumnNumeric wraps the outer BIGINT
-	// comparand in PromoteValue(DOUBLE); the executor's coerceTupleElement
+	// comparand in PromoteValue(DOUBLE); the executor's coerceTupleElementForKey
 	// isn't even needed here (DOUBLE stays float64 in both the row and wire
 	// domains), only PromoteValue.Evaluate's numeric coercion.
 	t.Run("bigint_eq_double_uses_index", func(t *testing.T) {
@@ -132,7 +132,7 @@ func TestFDB_CrossTypeJoinProbe(t *testing.T) {
 	})
 
 	// FIXED: BIGINT = FLOAT(32-bit) via an index probe — the same
-	// column-vs-column promotion, but here coerceTupleElement's downcast to a
+	// column-vs-column promotion, but here coerceTupleElementForKey's downcast to a
 	// genuine Go float32 at the tuple-packing boundary IS load-bearing (the
 	// row-domain convention keeps PromoteValue.Evaluate's FLOAT result as
 	// float64; only the packer narrows it to match the index's 0x20 wire code).

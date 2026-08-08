@@ -1246,6 +1246,283 @@ func TestComparisonPredicate_Like_FieldValueRHS(t *testing.T) {
 	}
 }
 
+// TestLikeMatch_NoPatternYieldsATightPrefixRange pins a NEGATIVE result:
+// there is NO LIKE pattern whose matching set equals a byte-prefix range,
+// not even the `<literal>%` shape that looks exactly like a prefix
+// predicate.
+//
+// The name quantifies over ALL patterns, so the test is in four parts and
+// only the last is about `<literal>%`:
+//
+//	PART 1  one witness per PATTERN CLASS -- wildcard-free, trailing `%`,
+//	        interior `%`, `_`, an ESCAPE-escaped wildcard inside the
+//	        prefix, and a leading `%` (empty prefix). Each class escapes
+//	        the prefix range for a different reason, so a fix to one does
+//	        not silently cover the others.
+//	PART 2  `_` is terminator-averse exactly as `%` is; both are
+//	        no-DOTALL character classes.
+//	PART 3  the boundary of the argument. Java's `$` tolerates ONE FINAL
+//	        line terminator, so the counterexample needs an INTERNAL one.
+//	        The same tolerance is why a wildcard-free LIKE is NOT a plain
+//	        equality: its match set is the literal plus the literal with
+//	        one trailing terminator, so an equality range over it would
+//	        LOSE rows -- the opposite failure direction from PART 1.
+//	        NOT "any" terminator: final CRLF is stripped as a single unit,
+//	        so a literal already ending in `\r` does NOT match literal+`\n`
+//	        (`like_match_test.go:139`, "$ never between \r and \n"). The
+//	        match set is therefore literal-plus-one-terminator MINUS that
+//	        case. The universal is unaffected -- the set still is not a
+//	        single value, so no equality range is exact -- but the set is
+//	        not uniformly six or seven members either.
+//	PART 4  the raw-terminator deep dive on `abc%` (see the EDITING
+//	        HAZARD note below before touching its subject list).
+//
+// The reason is the no-DOTALL rule in likeMatch's contract. `%` maps to
+// `.*` compiled with no flags, so it cannot consume a Java line
+// terminator (`\n`, `\r`, NEL, LS, PS). A subject that starts with the
+// literal prefix but then contains one of those does NOT match the
+// pattern, while a byte-prefix range contains it. Such a witness therefore
+// separates the range from the predicate for every pattern shape: the
+// range is NOT contained in the predicate, which is the direction that
+// makes the residual mandatory. It is not the STRICT-SUPERSET claim --
+// that additionally needs containment the other way, every match lying
+// inside the range, which these sampled fixtures do not establish and
+// this file leaves unproven.
+//
+// Why this is worth a test rather than a comment: the obvious index
+// optimization for `col LIKE 'abc%'` is to rewrite it to a prefix range
+// scan and DROP the LIKE as redundant. That rewrite is unsound here, and
+// nothing else in the tree records why. This test is the reason it must
+// not be written that way.
+//
+// EDITING HAZARD - READ BEFORE TOUCHING THE SUBJECT LIST BELOW.
+// Three of the six subjects contain a RAW, INVISIBLE UTF-8 line
+// terminator rather than a backslash escape: NEL (U+0085, bytes c2 85),
+// LS (U+2028, e2 80 a8) and PS (U+2029, e2 80 a9). In a diff, a terminal
+// or a review UI they render as nothing at all, so `"abc<NEL>def"` looks
+// exactly like a plain `"abcdef"` -- which would be a subject that DOES
+// match `abc%`, making the loop's assertion look like an obvious bug and
+// inviting a "fix" that silently deletes three of the five terminators
+// this test exists to cover.
+//
+// They are deliberately raw: the point is that the MATCHER must treat
+// these code points as terminators, and writing them as backslash-u escapes
+// in the Go source would test the same runes but hide that the hazard is
+// unreadable input. Verify with a hexdump, never by eye, and copy this
+// block byte-exactly.
+//
+// Two failure modes, and only one of them used to be caught. DELETING a
+// terminator is caught already: the subject collapses to a plain "abcdef",
+// which DOES match `abc%`, so the loop's assertion fires and the test goes
+// red. SUBSTITUTING one terminator for another is the silent one -- an
+// editor normalising NEL to "\n" yields a byte-for-byte duplicate of the
+// first subject, every assertion still holds, and coverage of NEL
+// evaporates with the suite still green. The distinctness check below
+// closes exactly that gap: six subjects that are no longer six distinct
+// byte strings mean a terminator was rewritten into another one.
+func TestLikeMatch_NoPatternYieldsATightPrefixRange(t *testing.T) {
+	t.Parallel()
+
+	// PART 1 - the universal, across every LIKE pattern class. The name of
+	// this test quantifies over ALL patterns, so a single pattern shape
+	// cannot establish it: the trailing-`%` shape is only the one that
+	// LOOKS tight. Each class below pairs the constant byte prefix a
+	// prefix-range rewrite would derive (the literal run before the first
+	// unescaped wildcard) with a witness that separates the range from the
+	// predicate.
+	//
+	//	inRange  a subject the byte-prefix range CONTAINS and the predicate
+	//	         REJECTS. Its existence separates the range from the
+	//	         predicate -- the range is provably not contained in it --
+	//	         which is what forbids dropping the residual LIKE filter
+	//	         after emitting the range. It is NOT the strict-superset
+	//	         claim, which additionally needs every match to lie inside
+	//	         the range; that direction stays unproven here.
+	//	matched  a control the predicate ACCEPTS, so the class is not
+	//	         vacuous -- a pattern that matched nothing would satisfy the
+	//	         separation assertion for free and prove nothing.
+	//
+	// The witnesses are NOT interchangeable across classes: each class
+	// escapes the prefix range for a different reason (a wildcard that
+	// cannot cross a line terminator, a literal that follows the wildcard,
+	// a wildcard that consumes exactly one character, an escaped wildcard
+	// that is part of the prefix, a wildcard that opens the pattern).
+	classes := []struct {
+		name    string
+		pattern string
+		escape  rune
+		prefix  string
+		inRange string
+		matched string
+	}{
+		// The shape the rewrite is actually after. `%` compiles to `.*`
+		// with no DOTALL, so it cannot consume the INTERNAL terminator.
+		{
+			name: "trailing_wildcard", pattern: "abc%", prefix: "abc",
+			inRange: "abc\ndef", matched: "abcdef",
+		},
+		// No wildcard at all: the pattern is an equality in disguise, so
+		// everything strictly longer than the literal is in the prefix
+		// range and out of the predicate. See PART 3 for why its EQUALITY
+		// range is not tight either.
+		{
+			name: "wildcard_free", pattern: "abc", prefix: "abc",
+			inRange: "abcdef", matched: "abc",
+		},
+		// Interior `%`: the prefix stops at the wildcard, and the literal
+		// tail after it rejects most of the range.
+		{
+			name: "interior_wildcard", pattern: "ab%de", prefix: "ab",
+			inRange: "abzz", matched: "abxde",
+		},
+		// `_` matches EXACTLY ONE character, so the range's longer
+		// subjects are out. PART 2 pins that `_` is terminator-averse too.
+		{
+			name: "underscore_wildcard", pattern: "abc_", prefix: "abc",
+			inRange: "abcde", matched: "abcd",
+		},
+		// ESCAPE puts a literal `%` INSIDE the prefix; the prefix is
+		// "a%b", not "a". The escaped wildcard does not widen the range,
+		// and the trailing `%` still cannot cross a terminator.
+		{
+			name: "escaped_wildcard_in_prefix", pattern: "a!%b%", escape: '!',
+			prefix: "a%b", inRange: "a%b\ncd", matched: "a%bcd",
+		},
+		// Leading `%`: the derived prefix is empty, so the "range" is
+		// every string. A rewrite must bail out here; the assertion
+		// records that the degenerate range is maximally untight.
+		{
+			name: "empty_prefix", pattern: "%foo", prefix: "",
+			inRange: "zzz", matched: "xfoo",
+		},
+	}
+	for _, c := range classes {
+		if !strings.HasPrefix(c.inRange, c.prefix) {
+			t.Fatalf("%s: witness %q is not in the byte-prefix range of %q — test setup is wrong",
+				c.name, c.inRange, c.prefix)
+		}
+		if likeMatch(c.pattern, c.inRange, c.escape) {
+			t.Fatalf("%s: likeMatch(%q, %q, %q) = true, want false.\n"+
+				"The byte-prefix range %q would then have no witness separating it "+
+				"from the predicate for this pattern class, and a rewrite that emits "+
+				"the range and DROPS the residual LIKE would look sound for this "+
+				"class. Re-derive the tightness argument before relying on it.",
+				c.name, c.pattern, c.inRange, c.escape, c.prefix)
+		}
+		if !strings.HasPrefix(c.matched, c.prefix) {
+			t.Fatalf("%s: control %q is not in the byte-prefix range of %q — the prefix "+
+				"a rewrite derives from %q is wrong, or the control is",
+				c.name, c.matched, c.prefix, c.pattern)
+		}
+		if !likeMatch(c.pattern, c.matched, c.escape) {
+			t.Fatalf("%s: likeMatch(%q, %q, %q) = false, want true — the class is vacuous, "+
+				"so its separation assertion above proves nothing",
+				c.name, c.pattern, c.matched, c.escape)
+		}
+	}
+
+	// PART 2 - `_` is terminator-averse exactly as `%` is. Both compile to
+	// character classes with no DOTALL (`.` and `.*`), so NEITHER can cross
+	// a Java line terminator. A rewrite author who fixed the `%` case by
+	// hand and assumed `_` was ordinary would reintroduce the bug.
+	for _, subject := range []string{"abc\n", "abc\r", "abc\u0085", "abc\u2028", "abc\u2029"} {
+		if likeMatch("abc_", subject, 0) {
+			t.Fatalf("likeMatch(%q, %q) = true, want false — `_` must not consume a "+
+				"line terminator; if it now can, the prefix-range witnesses above "+
+				"for the underscore class are no longer separating",
+				"abc_", subject)
+		}
+	}
+
+	// PART 3 - the carve-out, stated exactly. Java's `$` under find()
+	// tolerates ONE FINAL line terminator (values/like_match.go's
+	// trimFinalLineTerminator retry), so the counterexample to tightness
+	// needs an INTERNAL terminator, not merely a terminator. The two
+	// assertions below are the boundary of that: with the terminator FINAL
+	// the predicate accepts, and PART 1's witnesses all place it INTERNAL.
+	if !likeMatch("abc%", "abc\n", 0) {
+		t.Fatal("likeMatch(\"abc%\", \"abc\\n\") = false, want true — a FINAL line " +
+			"terminator is accepted. If this flips, the not-tight claim above is " +
+			"still true but its stated REASON (internal terminators only) is not.")
+	}
+	// And the consequence that makes "wildcard-free LIKE is just an
+	// equality, so an equality range over it IS tight" WRONG: the predicate
+	// accepts "abc"+terminator, which the equality range {"abc"} excludes.
+	// The failure direction is the opposite of PART 1's — not extra rows
+	// but MISSING ones — so a future rule may NOT route the wildcard-free
+	// shape to a bare equality bound and drop the residual.
+	for _, subject := range []string{"abc\n", "abc\r", "abc\r\n", "abc\u0085", "abc\u2028", "abc\u2029"} {
+		if !likeMatch("abc", subject, 0) {
+			t.Fatalf("likeMatch(%q, %q) = false, want true — a wildcard-free LIKE "+
+				"matches its literal followed by one final line terminator, which is "+
+				"why its match set is NOT the single value and an equality range over "+
+				"it is NOT tight (it would LOSE this row)",
+				"abc", subject)
+		}
+		if subject == "abc" {
+			t.Fatalf("test setup is wrong: %q collapsed to the bare literal", subject)
+		}
+	}
+
+	// PART 4 - the raw-terminator deep dive on the trailing-`%` shape,
+	// covering all five Java line terminators rather than just `\n`.
+	const pattern = "abc%"
+	const prefix = "abc"
+
+	subjects := []string{
+		"abc\ndef",
+		"abc\rdef",
+		"abc\r\ndef",
+		"abcdef",
+		"abc def",
+		"abc def",
+	}
+
+	// Substitution guard -- see the EDITING HAZARD note above. Each subject
+	// carries a DIFFERENT terminator, so all six must be distinct byte
+	// strings. Rewriting one terminator into another (the failure mode the
+	// assertions below cannot see) collapses two subjects into one and trips
+	// this instead of passing silently.
+	if len(subjects) != 6 {
+		t.Fatalf("expected 6 subjects, got %d — a terminator subject was added or deleted",
+			len(subjects))
+	}
+	for i, a := range subjects {
+		for j, b := range subjects[i+1:] {
+			if a == b {
+				t.Fatalf("subjects %d and %d are byte-identical (%q, % x) — a raw line "+
+					"terminator was normalised into another one, silently dropping the "+
+					"code point this subject exists to cover; recover the block by "+
+					"byte-copy and verify with a hexdump",
+					i, i+1+j, a, a)
+			}
+		}
+	}
+
+	for _, subject := range subjects {
+		if !strings.HasPrefix(subject, prefix) {
+			t.Fatalf("subject %q does not start with %q — test setup is wrong",
+				subject, prefix)
+		}
+		if likeMatch(pattern, subject, 0) {
+			t.Fatalf("likeMatch(%q, %q) = true, want false.\n"+
+				"A trailing `%%` would then be TIGHT, and a prefix-range "+
+				"rewrite that drops the LIKE residual filter would be sound. "+
+				"It is not sound today: the range contains this subject and "+
+				"the predicate rejects it, so dropping the residual returns "+
+				"WRONG ROWS. If this assertion is genuinely obsolete, "+
+				"re-derive the tightness argument before relying on it.",
+				pattern, subject)
+		}
+	}
+
+	// Control: the same prefix without a terminator DOES match, so the
+	// test is not passing merely because likeMatch rejects everything.
+	if !likeMatch(pattern, "abcdef", 0) {
+		t.Fatal("likeMatch(\"abc%\", \"abcdef\") = false, want true")
+	}
+}
+
 // FuzzLikeMatch cross-checks likeMatch against a regex-based oracle.
 // `%` → `.*`, `_` → `.`, all other chars are regex-escaped. Both
 // anchored with `^...$`. Mismatch = likeMatch bug.
