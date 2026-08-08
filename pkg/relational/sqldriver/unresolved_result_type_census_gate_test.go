@@ -37,15 +37,46 @@ import (
 // zero survives narrowing and only the floor is withheld, because a zero over a
 // sum of non-negative counters is exact under any filter. See the dotted-witness
 // gate next door for that shape.
+// BOTH floors are whole-corpus population claims, so both are withheld together
+// when narrowed. MinSites is not a milder version of MinReads — it is the arm
+// that sees a census kept alive by one hot consumer while the others go dark —
+// but it is just as filter-dependent, so a narrowed run has nothing here it can
+// honestly decide either.
+//
+// The floors themselves are pinned as a UNIT, away from this corpus and away from
+// the process globals, in the cascades package's
+// unresolved_result_type_census_test.go: every class, every floor and the nil
+// vacuity guard. A corpus reading exercises only the arms the corpus reaches, so
+// it is not a substitute for that.
 func assertUnresolvedResultTypeCensus(w io.Writer) bool {
-	// Floored an order of magnitude below the measured 15,909 classified reads.
-	minReads := 1000
+	// MinReads is floored an order of magnitude below the measurement (15,909
+	// classified reads originally; 15,074 and 15,589 on later whole-corpus runs).
+	//
+	// MinSites is an EXACT count, not a floor with headroom, because the whole
+	// corpus reports exactly five deciding sites and each one is a distinct
+	// consumer RFC-213 is denominated against — losing any of them is the event
+	// this arm exists for. The same run shows why a read floor cannot do this job:
+	// predicatesFilterIsFullPKPointProbe alone contributes 14,166 of the 15,589
+	// reads (91%), so the other four consumers could go silent together and
+	// MinReads would still be clear by an order of magnitude.
+	//
+	// This is the run that first exercised both floors rather than merely
+	// supplying numbers for them — whole corpus, floors NOT withheld, 1487 tests
+	// passed. Note the four low-traffic sites are stable across runs while the hot
+	// one moves; the site count is the part that does not drift.
+	//
+	//	bakedIntersectionKeys                 resolved 412    UNRESOLVED 0
+	//	distinctKeyColumns                    resolved 4      UNRESOLVED 31
+	//	planBuriedLegConcat                   resolved 252    UNRESOLVED 0
+	//	planRowRecordType                     resolved 620    UNRESOLVED 104
+	//	predicatesFilterIsFullPKPointProbe    resolved 14166  UNRESOLVED 0
+	floors := &cascades.UnresolvedResultTypeFloors{MinReads: 1000, MinSites: 5}
 	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
-		fmt.Fprintf(w, "unresolved-result-type census: reached-consumers floor NOT checked "+
-			"(-test.run=%q narrowed the corpus; the floor describes the whole suite). "+
+		fmt.Fprintf(w, "unresolved-result-type census: reached-consumers floors NOT checked "+
+			"(-test.run=%q narrowed the corpus; they describe the whole suite). "+
 			"The census still reports its counts above; there is no hard zero here to run "+
 			"over the reduced population.\n", f.Value.String())
-		minReads = 0
+		floors = nil
 	}
-	return cascades.AssertUnresolvedResultTypeCensus(w, minReads)
+	return cascades.AssertUnresolvedResultTypeCensus(w, floors)
 }

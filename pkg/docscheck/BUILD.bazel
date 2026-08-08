@@ -42,6 +42,7 @@ go_test(
         "source_hygiene_test.go",
         "status_page_crossref_test.go",
         "store_timer_event_taxonomy_test.go",
+        "test_filter_resolution_test.go",
         "unknown_type_mint_census_test.go",
         "vuln_gate_test.go",
         "yamsql_plan_claim_gate_test.go",
