@@ -1536,9 +1536,9 @@ Pinned by `pkg/relational/sqldriver/int_long_sarg_matrix_probe_test.go`
 `=`,`>`,`>=`,`<`,`<=`, each asserting the `IndexScan` AND the rows —
 the degradation returns correct rows, so only the plan is the alarm).
 10 of those cells are mutation-proven: removing the
-`sharesIntegerWireEncoding` skip reddens the 5 `int_col_vs_bigint_*`
+`sharesIntegerWireEncoding` skip reddens the 5 `correlated_bigint`
 cells; removing that plus the `IsConstantValue` early return also
-reddens the 5 `long_literal_vs_int_column` cells. The remaining 15 are
+reddens the 5 `long_literal` cells. The remaining 15 are
 regression coverage this mechanism structurally cannot reach, which the
 test file states rather than leaving as accidental green.
 
