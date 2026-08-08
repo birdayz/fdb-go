@@ -42,6 +42,22 @@ func TestPreCommitHookNamesTheConditionItDetected(t *testing.T) {
 			"that comparison a dirty tree and genuine codegen drift are indistinguishable\n"+
 			"and any message naming either one is a guess. hook:\n%s", hook)
 	}
+	if !strings.Contains(hook, `before_untracked=`) || !strings.Contains(hook, `after_untracked=`) {
+		t.Fatalf("the hook no longer snapshots UNTRACKED files around codegen. `git diff`\n"+
+			"reports tracked files only, so codegen that CREATES a file is invisible to it\n"+
+			"and the drift check passes over uncommitted codegen output. hook:\n%s", hook)
+	}
+	// The self-check is the only mechanism positioned to notice that the installed
+	// hook and the recipe have diverged, because it runs in the worktree doing the
+	// committing — where the local state actually lives. core.hooksPath is one
+	// path shared by every worktree, so a stale branch can downgrade the guard for
+	// all of them, and nothing else would say so.
+	if !strings.Contains(hook, "WARNING: the installed pre-commit hook differs") {
+		t.Fatalf("the hook no longer self-checks against the install-hooks recipe. The hook is\n"+
+			"shared by every worktree via core.hooksPath, so any branch running\n"+
+			"`just install-hooks` overwrites it for all of them — silently, and with no\n"+
+			"other mechanism able to notice. hook:\n%s", hook)
+	}
 
 	cases := []struct {
 		name string
@@ -49,10 +65,13 @@ func TestPreCommitHookNamesTheConditionItDetected(t *testing.T) {
 		setup func(t *testing.T, dir string)
 		// driftStub makes the stubbed `just generate` modify a tracked file.
 		driftStub bool
-		wantExit0 bool
-		want      string
-		notWant   string
-		why       string
+		// createStub makes the stubbed `just generate` CREATE an untracked file,
+		// which a tracked-only diff cannot see.
+		createStub bool
+		wantExit0  bool
+		want       string
+		notWant    string
+		why        string
 	}{
 		{
 			name:      "clean tree and codegen produces nothing",
@@ -90,6 +109,25 @@ func TestPreCommitHookNamesTheConditionItDetected(t *testing.T) {
 				"missing otherwise surfaces minutes later as a Bazel target error",
 		},
 		{
+			name:       "codegen CREATED an untracked file",
+			setup:      func(*testing.T, string) {},
+			createStub: true,
+			want:       "'just generate' produced changes",
+			why: "`git diff` reports tracked files only, so codegen that creates a file — " +
+				"gazelle writing a BUILD.bazel for a new package — is invisible to a " +
+				"tracked-only snapshot and the hook goes green over uncommitted codegen output",
+		},
+		{
+			name: "pre-existing untracked file is NOT drift",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, filepath.Join(dir, "scratch.go"), "package p\n")
+			},
+			wantExit0: true,
+			notWant:   "ERROR",
+			why: "a scratch file present before codegen appears in both snapshots, so it must " +
+				"not be mistaken for drift — scratch files are legitimate and must not fail a commit",
+		},
+		{
 			name: "tree dirty AND codegen drifted",
 			setup: func(t *testing.T, dir string) {
 				appendTo(t, filepath.Join(dir, "tracked.txt"), "hand edit\n")
@@ -103,7 +141,7 @@ func TestPreCommitHookNamesTheConditionItDetected(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			dir := newStubRepo(t, hook, tc.driftStub)
+			dir := newStubRepo(t, hook, tc.driftStub, tc.createStub)
 			tc.setup(t, dir)
 
 			cmd := exec.Command("bash", filepath.Join(dir, "hook.sh"))
@@ -128,6 +166,53 @@ func TestPreCommitHookNamesTheConditionItDetected(t *testing.T) {
 					tc.notWant, tc.why, out)
 			}
 		})
+	}
+}
+
+// The INSTALLED hook must match the recipe it is supposed to have come from.
+//
+// The gate above reads the recipe, which is the tracked source of truth. Nothing
+// in it can see the file git actually executes: that is per-clone local state
+// written by `just install-hooks`. It is worth checking anyway, because
+// core.hooksPath here is one absolute path SHARED by every worktree, so any
+// worktree on any branch can overwrite the hook for all of them — and a stale
+// branch installing an older body silently downgrades the guard everywhere.
+//
+// This is the belt to the hook's own self-check (which warns at commit time, in
+// the tree doing the committing). When the artifact is genuinely absent — no
+// hook installed, or a sandbox with no access to the real .git — there is
+// nothing to compare, and the test says so rather than reporting a green it did
+// not earn. That is a report of an absent artifact, not a deferred failure.
+func TestInstalledPreCommitHookMatchesTheRecipe(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+
+	out, err := exec.Command("git", "-C", root, "rev-parse", "--git-common-dir").Output()
+	if err != nil {
+		t.Logf("NOT MEASURED: no git common dir reachable from %s (%v). The installed hook "+
+			"could not be compared; the recipe-side gate above still ran.", root, err)
+		return
+	}
+	dir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(root, dir)
+	}
+	path := filepath.Join(dir, "hooks", "pre-commit")
+
+	installed, err := os.ReadFile(path)
+	if err != nil {
+		t.Logf("NOT MEASURED: no pre-commit hook installed at %s (%v). Nothing to compare — "+
+			"run `just install-hooks` to install one.", path, err)
+		return
+	}
+
+	want := extractPreCommitHook(t)
+	if strings.TrimRight(string(installed), "\n") != strings.TrimRight(want, "\n") {
+		t.Fatalf("the INSTALLED pre-commit hook does not match this tree's install-hooks recipe.\n"+
+			"  installed: %s\n"+
+			"  The hook is shared by every worktree via core.hooksPath, so a stale branch\n"+
+			"  installing an older body silently downgrades the guard for everyone.\n"+
+			"  Run `just install-hooks` from this tree to resync.", path)
 	}
 }
 
@@ -156,7 +241,7 @@ func extractPreCommitHook(t *testing.T) string {
 
 // newStubRepo builds a throwaway git repo containing the hook and a stubbed
 // `just`, and returns its path.
-func newStubRepo(t *testing.T, hook string, drift bool) string {
+func newStubRepo(t *testing.T, hook string, drift, create bool) string {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "hook.sh"), hook)
@@ -168,6 +253,9 @@ func newStubRepo(t *testing.T, hook string, drift bool) string {
 	gen := "true"
 	if drift {
 		gen = `echo regenerated >> generated.txt`
+	}
+	if create {
+		gen = `echo 'go_library(name = "x")' > BUILD.bazel`
 	}
 	writeFile(t, filepath.Join(stub, "just"),
 		"#!/usr/bin/env bash\nif [ \"${1:-}\" = generate ]; then "+gen+"; fi\nexit 0\n")
