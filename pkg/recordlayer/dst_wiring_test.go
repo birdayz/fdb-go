@@ -456,16 +456,25 @@ func TestScanTimeBudgetUsesTheEnvClock(t *testing.T) {
 
 	t.Run("stepping clock trips it at a reproducible row", func(t *testing.T) {
 		t.Parallel()
-		// One second per clock read, budget 5s: the cursor must stop, and at the same row every
-		// time. A wall-clock anchor measured against the env clock gives a NEGATIVE elapsed and
-		// never stops at all.
-		first := scan(t, "stepping0", &steppingClock{now: dst.Epoch, step: time.Second}, 5*time.Second)
+		// 100ms per clock read, budget 1s: the cursor must stop, and at the same row every time.
+		// A wall-clock anchor measured against the env clock gives a NEGATIVE elapsed and never
+		// stops at all.
+		//
+		// Both numbers are scaled to sit well inside the 5s MVCC window, and that is load-bearing
+		// rather than cosmetic. SimFDB mints versions from the simulated clock at
+		// VERSIONS_PER_SECOND, so simulated time spent inside a transaction ages its read version
+		// exactly as it does on a cluster. A stepping clock that advances 5 simulated seconds
+		// before the budget trips therefore takes transaction_too_old(1007) FIRST — which is not a
+		// sim artifact but the real 5s transaction limit, and a scan that outlives it is a
+		// transaction real FDB would refuse. Stepping 100ms against a 1s budget trips the budget a
+		// full 5x inside the window, so the assertion under test is the one that fires.
+		first := scan(t, "stepping0", &steppingClock{now: dst.Epoch, step: 100 * time.Millisecond}, time.Second)
 		if first >= records {
 			t.Fatalf("scan returned all %d rows under a clock stepping one second per read with "+
 				"a 5s budget — the budget must be reached; an anchor minted off the env clock "+
 				"and measured against another spans two epochs and can never trip", records)
 		}
-		second := scan(t, "stepping1", &steppingClock{now: dst.Epoch, step: time.Second}, 5*time.Second)
+		second := scan(t, "stepping1", &steppingClock{now: dst.Epoch, step: 100 * time.Millisecond}, time.Second)
 		if first != second {
 			t.Fatalf("the same scan stopped after %d rows on one run and %d on the next — a "+
 				"simulated page must end at the same row every time", first, second)

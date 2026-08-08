@@ -94,8 +94,14 @@ func (s *mvccStore) rangeAtLimited(
 			rowsTouched++
 			if v := s.valueAtEntry(e, readVersion); v != nil {
 				out = append(out, fdb.KeyValue{
-					Key:   append(fdb.Key(nil), e.key...),
-					Value: append([]byte(nil), v...),
+					Key: append(fdb.Key(nil), e.key...),
+					// cloneVal, not append(nil, v...): appending nothing to a nil slice yields
+					// nil, which is this package's spelling of "absent" — so a present,
+					// zero-length value (what Set(k, nil) and Set(k, []byte{}) both write) would
+					// come back out of the store looking like a tombstone. The v != nil gate
+					// above lets it through precisely because it IS present; the copy must not
+					// undo that. Same on the forward arm below, and in rangeAt.
+					Value: cloneVal(v),
 				})
 				if want > 0 && len(out) >= want {
 					// Complete from this key up to end; below it, unknown.
@@ -118,7 +124,7 @@ func (s *mvccStore) rangeAtLimited(
 		if v := s.valueAtEntry(e, readVersion); v != nil {
 			out = append(out, fdb.KeyValue{
 				Key:   append(fdb.Key(nil), e.key...),
-				Value: append([]byte(nil), v...),
+				Value: cloneVal(v),
 			})
 			if want > 0 && len(out) >= want {
 				// Complete from begin through this key inclusive; above it, unknown.
@@ -141,8 +147,12 @@ func (s *mvccStore) rangeAt(begin, end []byte, readVersion int64) []fdb.KeyValue
 		}
 		if v := s.valueAtEntry(e, readVersion); v != nil {
 			out = append(out, fdb.KeyValue{
-				Key:   append(fdb.Key(nil), e.key...),
-				Value: append([]byte(nil), v...),
+				Key: append(fdb.Key(nil), e.key...),
+				// cloneVal, not append(nil, v...): appending nothing to a nil slice yields nil,
+				// which is this package's spelling of "absent" — so a present, zero-length value
+				// (what Set(k, nil) and Set(k, []byte{}) both write) would come back out of the
+				// store looking like a tombstone.
+				Value: cloneVal(v),
 			})
 		}
 	}

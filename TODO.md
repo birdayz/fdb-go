@@ -35,10 +35,10 @@ the merge landed. `pkg/dst` and `pkg/simfdb` are in the tree.
   had swept 400 scenarios across a range axis and a selector axis without ever
   crossing them.
 
-- [ ] **F4 — re-land the reverted client-fidelity commit, 1036 last and only with an
-  answer.** `de1da5f17` ported four client-fidelity gaps; `302ea8a67` reverted all four
+- [x] **F4 — re-landed. The revert's reproducer does not reproduce at the commit it
+  reverts.** `de1da5f17` ported four client-fidelity gaps; `302ea8a67` reverted all four
   because ONE of them — M5, `accessed_unreadable`(1036) on a read that reaches a pending
-  versionstamped write — turned the Tier-2 hunt red:
+  versionstamped write — was reported to turn the Tier-2 hunt red:
 
   ```
   hunt: seed=42 FAILED after 9 ops (3 faults)
@@ -80,12 +80,43 @@ the merge landed. `pkg/dst` and `pkg/simfdb` are in the tree.
   instrument exactly that: when the sim's unreadable set becomes non-empty relative to the
   record layer's read, and whether it survives a failed commit and a retry.
 
-  M4 (1007 minted from the simulated clock), M6 (mutation and conflict-range size overhead,
-  and the size-before-too-old ordering) and M8b (present-empty `Set(k, nil)`) were green and
-  are recoverable from `de1da5f17`; re-land them once the 1036 question has an answer rather
-  than piecemeal. M8a (cancellation on every read entry point) is already re-landed, with
-  `GetRangeSplitPoints` added to the set and the metrics paths' inverted-range-before-cancel
-  precedence pinned.
+  **RESOLVED — the premise was wrong, and the ruling is (a), not (c).** MEASURED: at
+  `de1da5f17` itself, `HUNT_SEED=42 go test ./pkg/simfdb/hunt/ -run '^TestHuntSeed$'` runs
+  all 300 ops and PASSES (`seed=42 OK (300 ops, 107 faults, fp=88d14b36…)`), as does seed 0
+  (`300 ops, 105 faults, fp=6ceec5a2…`). The fingerprints are byte-identical to the re-landed
+  branch. The revert was taken on a reproducer that never held at the commit it reverted;
+  1088 seeds × 300 ops under the full fault profile produce zero 1036.
+
+  Instrumentation of the unreadable-set lifecycle (536 MARK, 0 GET-HIT, 0 SCANCAP, 80
+  Reset-on-non-empty per run) refutes the hypothesised carry-across-a-faulted-retry: every
+  mark comes from `flushVersionMutations`, which is commit-adjacent at all SIX call sites
+  (`database.go:309,413,462,879,1237`, `runner.go:334`; the seventh grep hit is the
+  definition at `:1011`), so no read can follow a mark within an attempt. Across attempts
+  `SimDB.Transact` reuses the handle but routes every retry through `OnError`→`Reset()`,
+  which nils the set — matching the real client (`client/ryw.go:183-184` in `reset()`, reached
+  from `Transaction.OnError`) and C++, where the unreadable bits live in the `WriteMap`
+  (`WriteMap.h:75-76`) that `resetRyow()` reconstructs wholesale
+  (`ReadYourWrites.actor.cpp:2704-2706`) on the unique retry path (`:1521`, `:2754`). After a
+  failed commit at modern API versions C++ leaves the map intact (`:1413-1423`) but
+  `commitStarted` stays true, so every access yields `used_during_commit`(2017), never 1036
+  (`:2781-2787`) — "unreadable survives a failed commit and is observable on the retry" is
+  unreachable in a real client.
+
+  (b) is dead: the record layer never sets `BYPASS_UNREADABLE` (no non-test hit in
+  `pkg/recordlayer/`, `pkg/relational/`). (a) is where the residual risk lives — a read
+  landing on a versionstamped key would get 1036 against a real cluster
+  (`RYWIterator.cpp:45-46`, `:75-76`) and nothing here reaches that shape — but it is
+  unreached for a structural reason, not by seed luck.
+
+  Three defects in `de1da5f17` itself were found and fixed while re-landing: its
+  `SetBypassUnreadable` never assigned the field it documented (the whole bypass path was
+  dead, and the commit is red on its own test); its present-empty fix landed on `store.rangeAt`
+  while master has since added `store.rangeAtLimited`, which the lazy range path actually
+  calls — a semantic conflict git merged cleanly; and grafting the cap onto master's lazy
+  range pipeline exposed that persisting the capped bounds back into the scan bounds swallows
+  the 1036 at a batch boundary. M6's size-before-too-old ORDERING was already on master; only
+  its overhead constants (`sizeofMutationRef`/`sizeofKeyRangeRef`) were missing. M8a is
+  unchanged.
 
 ## DST findings
 
