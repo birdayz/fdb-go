@@ -49,8 +49,33 @@ const (
 	formatVersionStoreLockState        = 12 // StoreLockState with FORBID_RECORD_UPDATE + FULL_STORE
 	formatVersionIncarnation           = 13 // Incarnation counter for cross-cluster migration
 	formatVersionFullStoreLock         = 14 // Unknown lock states prevent store opening
-	formatVersionCurrent               = formatVersionFullStoreLock
-	formatVersionMinimum               = formatVersionInfoAdded // Matches Java's FormatVersion.getMinimumVersion()
+	// formatVersionMaxSupported is the highest format this binary can OPEN, and
+	// it is a different question from the version a new store is BORN at.
+	//
+	// Java keeps the two apart deliberately — getMaximumSupportedVersion()
+	// (FormatVersion.java:203) against getDefaultFormatVersion() (`:215-217`) —
+	// and Go had them fused into one constant, which made the default impossible
+	// to move without also moving the ceiling. Lowering a fused constant would
+	// have REJECTED every store this binary had already created at 14, so "just
+	// change the default" was a change that could not be made safely. Splitting
+	// them is what makes it a free decision.
+	//
+	// Matches Java's MAX_SUPPORTED_VERSION, computed as the max enum value
+	// (FormatVersion.java:182), which is FULL_STORE_LOCK(14) at 4.12.11.0.
+	formatVersionMaxSupported = formatVersionFullStoreLock
+
+	// formatVersionDefault is the version a NEW store is created at, and the
+	// version an existing store is upgraded to, when the caller pins nothing.
+	//
+	// Java's default is CACHEABLE_STATE(7) and Go's is the maximum. See
+	// DIVERGENCES.md for the decision and the evidence behind it; the short form
+	// is that Java at 4.12.11.0 opens a Go store at 14 without error —
+	// validateFormatVersion admits anything <= MAX, and checkPossiblyRebuild
+	// takes Math.max of stored and requested — so the divergence is not an
+	// interop break at the pinned spec.
+	formatVersionDefault = formatVersionMaxSupported
+
+	formatVersionMinimum = formatVersionInfoAdded // Matches Java's FormatVersion.getMinimumVersion()
 )
 
 // StoreIsLockedForRecordUpdatesError is returned when attempting to modify records
@@ -117,7 +142,7 @@ type FDBRecordStore struct {
 	indexRebuildPolicy IndexRebuildPolicy    // Policy for rebuilding indexes on metadata version change
 	// targetFormatVersion is the format version this store opens AT — the
 	// ceiling maybeUpgradeFormatVersion upgrades toward, not necessarily the
-	// newest the binary knows. 0 means formatVersionCurrent.
+	// newest the binary knows. 0 means formatVersionDefault.
 	//
 	// Java's equivalent is a builder property, not a constant
 	// (FDBRecordStoreBase.BaseBuilder.setFormatVersion, :2245/:2266), and its

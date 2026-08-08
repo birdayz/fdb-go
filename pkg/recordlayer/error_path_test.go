@@ -804,7 +804,7 @@ var _ = Describe("Phase 2 error types", func() {
 			var fmtErr *UnsupportedFormatVersionError
 			Expect(errors.As(err, &fmtErr)).To(BeTrue())
 			Expect(fmtErr.Version).To(Equal(int32(999)))
-			Expect(fmtErr.MaxVersion).To(Equal(int32(formatVersionCurrent)))
+			Expect(fmtErr.MaxVersion).To(Equal(int32(formatVersionMaxSupported)))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -840,7 +840,7 @@ var _ = Describe("Phase 2 error types", func() {
 			var fmtErr *UnsupportedFormatVersionError
 			Expect(errors.As(err, &fmtErr)).To(BeTrue())
 			Expect(fmtErr.Version).To(Equal(int32(0)))
-			Expect(fmtErr.MaxVersion).To(Equal(int32(formatVersionCurrent)))
+			Expect(fmtErr.MaxVersion).To(Equal(int32(formatVersionMaxSupported)))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

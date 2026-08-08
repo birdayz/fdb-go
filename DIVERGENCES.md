@@ -11,42 +11,82 @@ live 4.12 in `just test` with a stale-annotation guard, and the suite is green).
 
 ## Intentional Architectural Decisions (no functional difference)
 
-### Default format version for a NEW store: Go writes 14, Java writes 7 (OPEN, mechanically unblocked)
+### Default format version for a NEW store: Go writes 14, Java writes 7 (DECIDED — keep 14)
 
 Java's default is **`CACHEABLE_STATE` (7)** — `FormatVersion.getDefaultFormatVersion()`
 (`FormatVersion.java:215-217`), which `FDBRecordStore.Builder` seeds itself with
-(`FDBRecordStore.java:5437`). Go's default is `formatVersionCurrent = 14`, which is
+(`FDBRecordStore.java:5437`). Go's default is `formatVersionDefault = 14`, which is
 `FULL_STORE_LOCK(14)` (`FormatVersion.java:173`) — the same value as Java's
-`MAX_SUPPORTED_VERSION` (`:182`, `getMaximumSupportedVersion()` at `:203`). So a new store
-created by Go declares a **newer on-disk format than a new store created by Java**, and Go
-also upgrades any store it opens to that version.
+`MAX_SUPPORTED_VERSION` (`:182`). So a new store created by Go declares a **newer
+on-disk format than a new store created by Java**, and Go also upgrades any store it
+opens to that version.
 
-This is deliberate for the moment, not an oversight, and it is **not** a wire-compat
-break in the read/write sense: format versions 8–14 gate store-header features
-(user fields, `READABLE_UNIQUE_PENDING`, record-count state, store locks, incarnation),
-not record or index key encoding. The risk it carries is narrower and specific: a Java
-instance pinned at its default 7 opening a Go-created store sees a format it did not
-expect, and `validateFormatVersion` (`FormatVersion.java:225`) is the gate that decides
-what happens. Java notes it has **no policy for advancing this default**
-(`FormatVersion.java:210-213`, issue #709), which is exactly why aligning it is a
-judgement call rather than a typo fix.
+**DECISION: keep Go's default at 14.** Not for tidiness and not by default — the
+question was carried to the Java source and the answer settles it.
 
-**Why it is not changed here.** Changing the default alters what *every* new Go store
-writes to disk, and every existing Go store was created under the current default — so
-it needs its own reviewed change with its own compatibility argument, not a drive-by
-edit inside a cardinality-migration PR.
+**What Java actually does, read rather than assumed.** `validateFormatVersion`
+(`FormatVersion.java:224-231`) throws `UnsupportedFormatVersionException` only when the
+candidate is `< getMinimumVersion()` **or** `> getMaximumSupportedVersion()`. At
+4.12.11.0 `MAX_SUPPORTED_VERSION` is computed as the maximum enum value (`:182`) and
+that value **is** `FULL_STORE_LOCK(14)`. So 14 ≤ 14 and the check passes. Then
+`checkPossiblyRebuild` (`FDBRecordStore.java:4627-4630`):
 
-**What changed: alignment is now mechanically possible.** Until CQ-90, Go had no way to
-express "open at a version other than the newest this binary knows" —
-`maybeUpgradeFormatVersion` raised every store to `formatVersionCurrent` on every open,
-so even writing an older version into the header was undone by the next open. Java takes
-the target from the builder (`FDBRecordStoreBase.BaseBuilder.setFormatVersion`,
-`:2245`/`:2266`) precisely so a rolling upgrade can pin every instance to the OLD format
-and stop any one of them writing a layout the others cannot read. Go now has
-`StoreBuilder.SetFormatVersion` (plus the `OnlineIndexerBuilder` twin); the upgrade
-targets it rather than a constant, new stores are born at it, and it is a ceiling that
-never downgrades. The remaining work is a decision about the DEFAULT, not a missing
-capability.
+```java
+final int oldFormatVersion = info.getFormatVersion();
+final int newFormatVersion = Math.max(oldFormatVersion, formatVersion.getValueForSerialization());
+final boolean formatVersionChanged = oldFormatVersion != newFormatVersion;
+formatVersion = FormatVersion.getFormatVersion(newFormatVersion);
+```
+
+A Java instance at its default 7 opening a Go store at 14 computes `max(14,7) = 14`,
+leaves `formatVersionChanged` false so **nothing is written**, and **adopts 14** for
+that store instance. It does not throw, and it does not downgrade. **There is no
+interop break at the pinned spec**, which is the premise the case for changing rested
+on.
+
+**The cost of aligning, established from the write gates rather than from a suite run.**
+Format versions 8–14 gate store-header features — header user fields (8),
+`READABLE_UNIQUE_PENDING` (9), record-count state (11), store lock state (12),
+incarnation (13), full store lock (14). A default of 7 disables **all** of them by
+construction: every one is guarded by `requireFormatVersion`, which reads the header,
+so a store born at 7 refuses each with `UnsupportedFeatureForFormatVersionError`. Java
+users at Java's default accept exactly this and opt in via `setFormatVersion`; the
+difference is that Go's feature set is newer, so the default would be turning off more.
+No measured interop benefit against a definite functional cost.
+
+**The real blocker was one level down, and it is FIXED.** This entry previously said
+the remaining work was "a decision about the DEFAULT, not a missing capability." That
+was wrong. `formatVersionCurrent` served **both** of the roles Java keeps apart —
+the validation ceiling (`store_builder.go:185`, `:1338`, rejecting `stored > current`)
+and the creation/upgrade target (`:199`, `:1005`, `:1200`) — where Java separates
+`getMaximumSupportedVersion()` (`:203`) from `getDefaultFormatVersion()` (`:215-217`).
+Fused, **lowering the default would have lowered the ceiling with it, and every store
+Go had already created at 14 would have been rejected on open** with
+`UnsupportedFormatVersionError`. "Just change the default" was a change that could not
+be made safely at all. Now split into `formatVersionMaxSupported` and
+`formatVersionDefault` (both 14, zero behaviour change), so the default is a free
+decision and the existing-store path is safe by construction: the ceiling does not move
+when the default does. Pinned by `format_version_split_test.go`, including the case the
+fusion made inexpressible — a store pinned BELOW its own header still opens, because
+validation consults the ceiling and never the target.
+
+**THE STANDING COUNTER-ARGUMENT, and the condition that flips this decision.** Go at
+default 14 opening an existing **Java** store at 7 upgrades it to 14 and writes that,
+permanently narrowing the set of readers that store can be opened by. Java at its
+conservative default never does this to someone else's store. It is harmless at the
+pinned spec — Java 4.12.11.0 reads 14 — and it is the strongest argument that exists
+for lowering the default.
+
+It flips the decision if any of these becomes true:
+- a deployment mixes Go with a Java version whose `MAX_SUPPORTED_VERSION` is **below**
+  Go's default, because `validateFormatVersion` then rejects the store outright;
+- Go's default is ever raised past Java's max (guarded:
+  `TestFormatVersion_DefaultIsWithinTheCeiling` fails on it);
+- the 8–14 feature set stops being wanted by default, removing the cost side.
+
+Until one of those holds, 14 stays. Callers that need Java's conservative default have
+`StoreBuilder.SetFormatVersion` — the mechanism, unlike the decision, was never the
+missing piece.
 
 ### Version-gated header features: WRITES gated like Java, READS still lenient (OPEN, narrow)
 

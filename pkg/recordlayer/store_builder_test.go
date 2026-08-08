@@ -27,7 +27,7 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 	It("defaults to the newest format version when SetFormatVersion is never called", func() {
 		b := NewStoreBuilder().SetMetaDataProvider(fvMetaData).
 			SetSubspace(subspace.FromBytes(tuple.Tuple{"fmtver_unset"}.Pack()))
-		Expect(b.effectiveFormatVersion()).To(Equal(int32(formatVersionCurrent)))
+		Expect(b.effectiveFormatVersion()).To(Equal(int32(formatVersionDefault)))
 	})
 
 	It("honours an explicitly pinned older format version", func() {
@@ -61,7 +61,7 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 			SetContext(&FDBRecordContext{}).
 			SetMetaDataProvider(fvMetaData).
 			SetSubspace(subspace.FromBytes(tuple.Tuple{"fmtver_high"}.Pack())).
-			SetFormatVersion(int32(formatVersionCurrent) + 1).
+			SetFormatVersion(int32(formatVersionMaxSupported) + 1).
 			Build()
 		Expect(err).To(HaveOccurred())
 		var fmtErr *UnsupportedFormatVersionError
@@ -205,7 +205,7 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 		Entry("born at 11: key yes, state yes",
 			int32(formatVersionRecordCountState), true, true),
 		Entry("born at the current version: key yes, state yes",
-			int32(formatVersionCurrent), true, true),
+			int32(formatVersionDefault), true, true),
 	)
 
 	// The MIRROR of the creation gate, on the reconciliation path. The two must
@@ -319,7 +319,7 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 		Entry("born at 3, key unchanged: key present, no rescan",
 			int32(formatVersionRecordCountKeyAdded), true, true, true),
 		Entry("born at the current version, key unchanged: key present, no rescan",
-			int32(formatVersionCurrent), true, true, true),
+			int32(formatVersionDefault), true, true, true),
 
 		// THE POSITIVE DIRECTION, and without it the false branch above is dead code
 		// and the gate's boundary is untested. Born at 3 with NO count key declared,
@@ -330,7 +330,7 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 		Entry("born at 3 with no count key, reopened with one: rebuilds",
 			int32(formatVersionRecordCountKeyAdded), false, true, false),
 		Entry("born at the current version with no count key, reopened with one: rebuilds",
-			int32(formatVersionCurrent), false, true, false),
+			int32(formatVersionDefault), false, true, false),
 	)
 
 	// Java's FIRST rebuildRecordCounts arm (FDBRecordStore.java:5116):

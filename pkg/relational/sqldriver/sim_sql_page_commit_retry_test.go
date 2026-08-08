@@ -16,7 +16,7 @@ package sqldriver
 // through storeIn, which never calls SetSkipPossiblyRebuild, so every page runs
 // StoreBuilder.Open() → checkPossiblyRebuild. That WRITES the store header on
 // three arms: maybeUpgradeFormatVersion (a persisted format version below
-// formatVersionCurrent), checkPossiblyRebuildRecordCounts (the record-count key
+// formatVersionDefault), checkPossiblyRebuildRecordCounts (the record-count key
 // changed), and the metadata-version-moved arm (which rebuilds indexes inline).
 // A store last written by an older writer — Java pinned at a lower FormatVersion
 // is the everyday case — therefore makes the FIRST page of a plain auto-commit
@@ -391,14 +391,14 @@ func TestPageRetry_NoFailureIsUnchanged(t *testing.T) {
 	}
 }
 
-// staleFormatVersion is one step below formatVersionCurrent (14,
+// staleFormatVersion is one step below formatVersionDefault (14,
 // FULL_STORE_LOCK). A header carrying it is what a store last written by an
 // older writer looks like, and it is the cheapest way to arm the header-write
 // arm of checkPossiblyRebuild: maybeUpgradeFormatVersion rewrites the header
 // whenever the persisted version differs from current, with no other migration
 // work on this step.
 //
-// If formatVersionCurrent ever moves, this stays one-below by construction only
+// If formatVersionDefault ever moves, this stays one-below by construction only
 // if it is updated with it — TestPageRetry_StoreOpenWritesHeaderOnStaleFormat
 // fails loudly rather than silently measuring a no-op, because it asserts the
 // header actually changed.
@@ -495,7 +495,7 @@ func pageRetryMetaData(t *testing.T) *recordlayer.RecordMetaData {
 //
 // SCOPE, measured rather than assumed: this pins the RECORD-LAYER fact only. It
 // opens the store through its own builder, so it goes red if
-// checkPossiblyRebuild stops persisting the upgrade, or if formatVersionCurrent
+// checkPossiblyRebuild stops persisting the upgrade, or if formatVersionDefault
 // moves to or below staleFormatVersion without that constant following it — and
 // it does NOT notice if the SQL layer stops reaching this path. Adding
 // SetSkipPossiblyRebuild to storeIn leaves this test green (verified). The SQL
@@ -515,7 +515,7 @@ func TestPageRetry_StoreOpenWritesHeaderOnStaleFormat(t *testing.T) {
 
 	if got := readStoreFormatVersion(t, ctx, rdb, ss); got == staleFormatVersion {
 		t.Fatalf("the freshly created store already carries format version %d, which is the "+
-			"value this test writes to make it look STALE. formatVersionCurrent has moved to "+
+			"value this test writes to make it look STALE. formatVersionDefault has moved to "+
 			"or below %d and staleFormatVersion must follow it, or this test proves nothing",
 			got, staleFormatVersion)
 	}

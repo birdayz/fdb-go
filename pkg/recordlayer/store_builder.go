@@ -178,12 +178,12 @@ func (store *FDBRecordStore) indexedRecordTypesRange(index *Index) (low, high tu
 }
 
 // validateFormatVersion checks that the stored format version is supported.
-// Rejects versions below formatVersionMinimum (1) and above formatVersionCurrent.
+// Rejects versions below formatVersionMinimum (1) and above formatVersionMaxSupported.
 // Matches Java's FormatVersion.validateFormatVersion().
 func (store *FDBRecordStore) validateFormatVersion(storeHeader *gen.DataStoreInfo) error {
 	storedVersion := storeHeader.GetFormatVersion()
-	if storedVersion < formatVersionMinimum || storedVersion > formatVersionCurrent {
-		return &UnsupportedFormatVersionError{Version: storedVersion, MaxVersion: int32(formatVersionCurrent)}
+	if storedVersion < formatVersionMinimum || storedVersion > formatVersionMaxSupported {
+		return &UnsupportedFormatVersionError{Version: storedVersion, MaxVersion: int32(formatVersionMaxSupported)}
 	}
 	return nil
 }
@@ -196,7 +196,7 @@ func (store *FDBRecordStore) effectiveFormatVersion() int32 {
 	if store.targetFormatVersion > 0 {
 		return store.targetFormatVersion
 	}
-	return int32(formatVersionCurrent)
+	return int32(formatVersionDefault)
 }
 
 // maybeUpgradeFormatVersion upgrades the persisted format version in the store header
@@ -1002,7 +1002,7 @@ func (store *FDBRecordStore) recordCountStateIsReadable() bool {
 // Includes RecordCountKey from metadata if present, matching Java's
 // checkPossiblyRebuildRecordCounts which sets it during store creation.
 func createStoreHeader(metaDataVersion int32, metaData *RecordMetaData, env *dst.Env) *gen.DataStoreInfo {
-	return createStoreHeaderAtFormat(metaDataVersion, metaData, env, int32(formatVersionCurrent))
+	return createStoreHeaderAtFormat(metaDataVersion, metaData, env, int32(formatVersionDefault))
 }
 
 // createStoreHeaderAtFormat is createStoreHeader with the format version the
@@ -1197,7 +1197,7 @@ func (b *StoreBuilder) effectiveFormatVersion() int32 {
 	if b.formatVersion != nil {
 		return *b.formatVersion
 	}
-	return int32(formatVersionCurrent)
+	return int32(formatVersionDefault)
 }
 
 // SetFormatVersion pins the format version this store opens at, instead of
@@ -1214,7 +1214,7 @@ func (b *StoreBuilder) effectiveFormatVersion() int32 {
 //
 // The version is a CEILING, never a downgrade: a store whose header is already
 // past it keeps what it has, because the data on disk may already be in that
-// layout. Values outside [formatVersionMinimum, formatVersionCurrent] are
+// layout. Values outside [formatVersionMinimum, formatVersionMaxSupported] are
 // rejected when the store is opened.
 func (b *StoreBuilder) SetFormatVersion(version int32) *StoreBuilder {
 	b.formatVersion = &version
@@ -1335,8 +1335,8 @@ func (b *StoreBuilder) validateBuilder() error {
 	// caller asking for 0 could possibly want, and unnoticeable until it had
 	// already written a newer format than intended.
 	if b.formatVersion != nil &&
-		(*b.formatVersion < formatVersionMinimum || *b.formatVersion > int32(formatVersionCurrent)) {
-		return &UnsupportedFormatVersionError{Version: *b.formatVersion, MaxVersion: int32(formatVersionCurrent)}
+		(*b.formatVersion < formatVersionMinimum || *b.formatVersion > int32(formatVersionMaxSupported)) {
+		return &UnsupportedFormatVersionError{Version: *b.formatVersion, MaxVersion: int32(formatVersionMaxSupported)}
 	}
 	return nil
 }
