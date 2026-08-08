@@ -246,6 +246,7 @@ go_test(
         "key_expression_cardinality_test.go",
         "key_expression_concatenate_test.go",
         "key_expression_fastpath_test.go",
+        "key_expression_field_identity_test.go",
         "key_expression_proto_test.go",
         "key_expression_test.go",
         "key_expression_validate_test.go",

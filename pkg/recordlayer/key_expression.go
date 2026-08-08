@@ -15,9 +15,17 @@ import (
 // FieldKeyExpressions are shared across goroutines (via RecordMetaData), so
 // the cache must be safe for concurrent reads/writes. Using atomic.Pointer
 // ensures no torn reads (unlike bare struct fields which would race).
+// The cache is keyed on the MessageDescriptor IDENTITY, never on its full
+// name. A full name does not identify a descriptor: two distinct descriptors
+// (a generated type and a dynamicpb type built from stored metadata, or two
+// evolutions of one message) legitimately share "pkg.Rec" while numbering
+// their fields differently. Keying on the name hands back a FieldDescriptor
+// belonging to the OTHER descriptor, and protoreflect rejects that with a
+// panic ("field descriptor does not belong to this message") on the index-key
+// path.
 type fieldDescCache struct {
-	msgName string
-	fd      protoreflect.FieldDescriptor
+	desc protoreflect.MessageDescriptor
+	fd   protoreflect.FieldDescriptor
 }
 
 // FanType controls how repeated (list) proto fields are handled in key expressions.
@@ -99,18 +107,37 @@ func Field(name string) KeyExpression {
 	return &FieldKeyExpression{fieldName: name, fanType: FanTypeNone}
 }
 
-// resolveFieldDescriptor returns the cached field descriptor for the given message,
-// or resolves and caches it atomically. Thread-safe.
+// resolveFieldDescriptor returns the field descriptor this expression names on
+// the given message, resolving and caching it atomically. Thread-safe.
+//
+// Resolution is BY NAME, and that is correct: Java resolves the same step by
+// name on every evaluation — FieldKeyExpression.evaluateMessage does
+// recordDescriptor.findFieldByName(fieldName) (FieldKeyExpression.java:183),
+// and validate() does the same (:140). A key expression is declared against a
+// field NAME in stored metadata, so the name is the identity here; the field's
+// declaration index is not, and must never be substituted for it.
+//
+// An absent field is a DELIBERATE divergence from Java and must stay an error.
+// Java folds it into getNullResult() — its Javadoc lists "the fieldDescriptor
+// is null (meaning the field does not exist, i.e., incorrect metadata)" as one
+// of that method's three callers (FieldKeyExpression.java:220-231), reached
+// from evaluateMessage's final else (:214-216), so Java writes a null index
+// entry. Go refuses instead, because the arm is only reachable through
+// metadata Java itself calls incorrect and a null entry files every record of
+// the type under one key with nothing recording that the field was missing.
+// Refusing writes no bytes rather than different bytes, so stored data stays
+// wire-identical; it is the write that never happens, loudly. The strictness
+// is pinned by TestKeyExpressionFastPath_UnknownFieldErrorsEverywhere.
 func (f *FieldKeyExpression) resolveFieldDescriptor(m protoreflect.Message) (protoreflect.FieldDescriptor, error) {
-	msgName := string(m.Descriptor().FullName())
-	if cached := f.fdCache.Load(); cached != nil && cached.msgName == msgName {
+	md := m.Descriptor()
+	if cached := f.fdCache.Load(); cached != nil && cached.desc == md {
 		return cached.fd, nil
 	}
-	fd := m.Descriptor().Fields().ByName(protoreflect.Name(f.fieldName))
+	fd := md.Fields().ByName(protoreflect.Name(f.fieldName))
 	if fd == nil {
 		return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s not found in message", f.fieldName)}
 	}
-	f.fdCache.Store(&fieldDescCache{msgName: msgName, fd: fd})
+	f.fdCache.Store(&fieldDescCache{desc: md, fd: fd})
 	return fd, nil
 }
 
@@ -852,6 +879,11 @@ func (n *NestingKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], 
 	m := msg.ProtoReflect()
 	fd := m.Descriptor().Fields().ByName(protoreflect.Name(n.parentField))
 	if fd == nil {
+		// Same deliberate divergence as FieldKeyExpression.resolveFieldDescriptor:
+		// Java's NestingKeyExpression.evaluateMessage delegates the parent step
+		// to FieldKeyExpression.evaluateMessage, so an absent parent field
+		// yields getNullResult() there and the child evaluates on a null
+		// submessage. Go refuses instead, for the reason given at that helper.
 		return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s not found in message", n.parentField)}
 	}
 	if fd.Kind() != protoreflect.MessageKind {
