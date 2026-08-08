@@ -1,6 +1,6 @@
 # RFC-220 — A leg reference is NESTED or FLAT before it is PINNED or LAZY
 
-**Status:** rev 2 — IMPLEMENTED and exercised; rev 1 was NAK'd on mechanism and record. §2a answered the suffix question about the ORDINAL when the executor reads the NAME; §2b understated where the emitted value goes; §3's fourth mutation conflated two fields; §4's silent variant was a probe artifact and is RETRACTED. No production behaviour changed as a result — the wrong-rows fix stands and is unaltered — but one real coverage hole (§3c) was found and closed. Awaiting the delta lap.
+**Status:** rev 3 — IMPLEMENTED and exercised. Rev 2 corrected rev 1's mechanism; rev 3 corrects rev 2's §3c, which stated the wrong mutation DIRECTION and the wrong reason. The fixture change it justified is unchanged and correct. Also here: the retracted §4 negative result is now a committed test rather than a comment, the census attribution is restated to rev 2's arithmetic, and §3d's reported-but-unfixed fixture blind spot is FIXED. No production code has changed since rev 1. Awaiting final confirmation.
 **Origin:** TODO.md's "RFC-218 remainder — the leg-window re-anchor". That booking
 described a capability gap. **It is a wrong-rows defect**, and the correction is §1.
 **Scope:** `rebaseOuterLegValueOrdinal` (`left_outer_existential.go`), one new values
@@ -285,14 +285,41 @@ ORDER BY n.sk -> got ids [1 2 3], want [3 2 1]
 
 ### 3c. A hole this review found in the correlation pins, now closed
 
-The wrong-rows pin used only `n.sk`, and in its fixture `co` matched no `t2` row. So
-swapping the suffix member in ONE direction (`SK`→`CO`) left every pin green — both sides
-read empty — and detection required swapping BOTH ways, which is a stronger mutation than
-a real defect would be: a producer that emits the wrong member emits it one way. A third
-`t2` row now makes the two members answer **disjointly** (`sk`→ids 1,3; `co`→id 2) and the
-`co` polarity pair is added, so a one-directional substitution reds whichever arm it lands
-away from.
+**The fixture change here is right; rev 2's justification for it was wrong in BOTH the
+direction and the mechanism, and the correction is recorded rather than quietly swapped.**
+Rev 2 wrote that swapping the member `SK`→`CO` left every pin green "because both sides
+read empty". Re-run against rev 1's own fixture (`git show c4dd8d1a0:…`), same mutation
+site, `=== RUN` counted:
 
+```
+rev-1 fixture + SK->CO   -> RED    adding a row-preserving inner JOIN changed the answer:
+                                   [] vs the single-table [1 3]
+rev-1 fixture + CO->SK   -> GREEN  12 === RUN
+```
+
+The green direction was `CO`→`SK`, the opposite of what rev 2 claimed. And "both sides read
+empty" cannot be the reason for either: the mutation site is on the JOIN path only, so the
+single-table control kept returning `[1 3]` and the two sides disagreed — which is exactly
+why `SK`→`CO` reds.
+
+**The real reason `CO`→`SK` was invisible is that rev 1's correlation pins contained no
+`n.co` query at all.** Every one of them correlated on `n.sk`, so a co-only substitution had
+nothing to land on, and that holds whatever the fixture data is because the expectation is
+hardcoded. (Rev 1's only `n.co` queries were in the SORT test, which does not travel this
+path — see §2b.)
+
+The fix is the same either way and is what makes the pins one-directional-safe: a third
+`t2` row makes the two members answer **disjointly** (`sk`→ids 1,3; `co`→id 2) and a `co`
+polarity pair is added. Verified in both directions, each landing on the arm that owns its
+member:
+
+```
+rev-2 fixture + SK->CO   -> RED    [2] vs the single-table [1 3]
+rev-2 fixture + CO->SK   -> RED    [1 3] vs the single-table [2]
+```
+
+That matters because a real defect emits the wrong member ONE way; a pin that needs a
+two-way swap to notice is not testing what it claims.
 ### 3d. The unit pins
 
 The leg-window pin drives the production symbol **by name**
@@ -301,14 +328,27 @@ implementation. It covers both leg kinds × both pin states × both type-knownne
 with four single-accessor controls, because a decline whose control also fails is
 uninterpretable.
 
-**Two dimensions this RFC's own work missed, both now covered.** First, all four typed
-arms passed while every real query crashed: `into` was a typed-nil `*RecordType` in a
-`Type` interface, so the assertion arm succeeded with a nil receiver — the fixture only
-ever stated a type. Second, and it is this RFC's own rule landing on its own fixture: the
-leg-window pin's reference is `L.N.SK` with `SK` at struct ordinal **0**, so forcing a
-suffix ordinal to 0 is a NO-OP against it. It stayed green under a mutation
-`values_test` caught. A fixture whose discriminating value is the mutation's target
-cannot discriminate.
+**Two dimensions this RFC's own work missed, both now closed by code.**
+
+**The typed-nil arm.** All four typed arms passed while every real query crashed: `into`
+was a typed-nil `*RecordType` in a `Type` interface, so the assertion arm succeeded with a
+nil receiver — the fixture only ever stated a type. The `UNKNOWN leg column type` cases
+were added for exactly that and are the arm the planner actually takes.
+
+**A fixture whose discriminating value WAS the mutation's target** — this RFC's own rule
+landing on its own fixture. The leg-window pin's reference was `L.N.SK`, and `SK` sits at
+struct ordinal **0**, so forcing a fused suffix ordinal to zero is a NO-OP against it: the
+file stayed green under a mutation `values_test` caught. Reporting that and leaving it
+would have been a deferral; the fixture is now parameterised on the member and four
+`non-zero struct member` cases descend to `CO` at ordinal **1**. Verified — under a
+forced-zero suffix ordinal they red where the `SK` cases cannot:
+
+```
+kind=flatRun pinned=false produced path [11 0],    want [11 1]
+kind=flatRun pinned=true  produced path [11 0],    want [11 1]
+kind=nested  pinned=false produced path [10 1 0],  want [10 1 1]
+kind=nested  pinned=true  produced path [10 1 0],  want [10 1 1]
+```
 
 ---
 

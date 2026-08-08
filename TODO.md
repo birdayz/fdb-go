@@ -10636,11 +10636,18 @@ None is speculative: each was re-verified against the tree before booking.
   FIXED by dispatching on ARITY above the pin: re-anchor the root in the leg's own
   layout (`ReAnchorRootInto`), bake the merged address per leg KIND, then fuse the
   remaining accessors with `FieldPath.WithSuffix` — Java's `ofFieldsAndFuseIfPossible`
-  (`FieldValue.java:525-534`). The suffix is CARRIED and the root DERIVED, because a
-  suffix ordinal indexes a struct's own declared field order and no merge restates it —
-  and because neither the merged row nor the leg window carries a struct column's type
-  (both state UNKNOWN, measured), so a design requiring the type declines every real
-  nested reference.
+  (`FieldValue.java:525-534`). The root is DERIVED and the suffix CARRIED — and the
+  carried suffix's identity is its NAME, not its ordinal: a struct column materialises
+  as a `proto.Message`, whose descent arm reads the per-step name and never the ordinal
+  (`values.go`'s standing divergence from Java, pinned by
+  `TestFieldValue_DescendProtoMessage_MustNotConsultTheOrdinal`). Measured one mutation
+  per site × field: forcing either suffix ORDINAL is undetectable end-to-end, while
+  swapping either suffix NAME reds — the wrong-rows pin at the rebase, both sort arms in
+  opposite directions at the translator. An earlier version of this booking justified the
+  design by "a suffix ordinal indexes a struct's own declared field order"; that is true
+  and nearly irrelevant, because nothing on the reachable paths reads it.
+  Neither the merged row nor the leg window carries a struct column's type (both state
+  UNKNOWN, measured), so a design requiring the type declines every real nested reference.
   DONE, all four parts: the JOIN arm plans; `nested_key_over_a_join_declines_cleanly`
   is replaced by COLUMN assertions (`n.sk`→[3 2 1] and `n.co`→[1 2 3], opposite orders
   so the wrong member is visible); the arms mutation-red INDEPENDENTLY — reverting the

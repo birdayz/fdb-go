@@ -319,6 +319,75 @@ func TestFDB_NestedSortKeyThroughTheProjectedExistsFold(t *testing.T) {
 				"and the diagnosis recorded above no longer describes it", err)
 		}
 	})
+
+	// THE RETRACTED CLAIM, COMMITTED AS A TEST — because a negative result that
+	// lives only in prose is the thing that went wrong here.
+	//
+	// An earlier revision reported that this query returns its first column as 0
+	// instead of the ids, and escalated that as a live SILENT wrong-rows defect on
+	// master. It does not. The zeros were an artifact of the throwaway probe that
+	// produced them: it scanned a TWO-column result into ONE destination and
+	// ignored the resulting Scan error, so the int64 kept its zero value. The
+	// engine was correct; the instrument was not — and because the probe had been
+	// deleted, the bad reading could not be re-read and was relayed onward before
+	// anyone re-measured it.
+	//
+	// So this asserts the CORRECTION rather than restating it. It is the boundary
+	// of the loud defect above: projecting a struct column through a merged row
+	// fails only when a projected EXISTS is also present, and WITHOUT one the rows
+	// are right. If that ever stops being true, a genuinely silent wrong-rows
+	// defect has appeared on the shape this whole exchange was about.
+	//
+	// IT SCANS BOTH COLUMNS AND CHECKS THE ERROR, deliberately — that is the exact
+	// mistake being pinned, and a test reproducing it would report the same false
+	// zeros while claiming to guard against them.
+	t.Run("a_struct_column_projected_over_a_join_without_an_exists_returns_correct_ids", func(t *testing.T) {
+		t.Parallel()
+		const q = "SELECT t1.id, n FROM t1 JOIN t3 ON t3.t1_id = t1.id ORDER BY t1.id"
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("query %q: %v — this shape PLANS and returns rows today; a failure "+
+				"here means the loud defect pinned above has widened to shapes that "+
+				"carry no projected EXISTS", q, err)
+		}
+		defer rows.Close()
+		cols, err := rows.Columns()
+		if err != nil {
+			t.Fatalf("columns: %v", err)
+		}
+		if len(cols) != 2 {
+			t.Fatalf("got %d columns %v, want 2 — the two-column shape IS the fixture: "+
+				"the retracted reading came from scanning two columns into one "+
+				"destination, and with one column the mistake cannot be made", len(cols), cols)
+		}
+		var ids []int64
+		for rows.Next() {
+			var id int64
+			var nested any
+			// BOTH destinations, and the error CHECKED. Dropping either reproduces
+			// the original defect in the instrument rather than testing the engine.
+			if err := rows.Scan(&id, &nested); err != nil {
+				t.Fatalf("scan: %v — an ignored Scan error here is precisely how the "+
+					"retracted 'first column is 0' reading was produced", err)
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		want := []int64{1, 2, 3}
+		if len(ids) != len(want) {
+			t.Fatalf("got %d rows %v, want %v", len(ids), ids, want)
+		}
+		for i := range want {
+			if ids[i] != want[i] {
+				t.Fatalf("got ids %v, want %v — ALL ZEROS would mean the retracted claim "+
+					"has become true and a silent wrong-rows defect really does exist on "+
+					"this shape; any other wrong value is a different silent defect on it",
+					ids, want)
+			}
+		}
+	})
 }
 
 // TestFDB_NestedCorrelationThroughAJoinsMergedRow is the earning test for the
@@ -377,12 +446,19 @@ func TestFDB_NestedCorrelationThroughAJoinsMergedRow(t *testing.T) {
 	//
 	// THE THIRD t2 ROW MAKES THE TWO MEMBERS ANSWER DISJOINTLY, and that is what
 	// closes a real hole rather than adding a case. `co` is (1,2,3) and matching
-	// on it selects id 2 alone, while `sk` selects ids 1 and 3 — no overlap. With
-	// only the `sk` arm present, swapping the fused suffix's member in ONE
-	// direction (SK→CO) left every pin green, because `co` matched nothing in this
-	// data and both sides read empty. Detection required swapping BOTH ways, which
+	// on it selects id 2 alone, while `sk` selects ids 1 and 3 — no overlap.
+	//
+	// THE HOLE, stated as it reproduces. Before the `co` arms existed, every
+	// correlation query here used `n.sk`, so substituting the fused suffix's
+	// member CO→SK had nothing to land on and went undetected — the expectation is
+	// hardcoded, so that held whatever the data was. (The SK→CO direction DID red,
+	// because the mutation site is join-only and the single-table control kept
+	// answering correctly; an earlier version of this comment had the green
+	// direction backwards and blamed "both sides read empty", which cannot be the
+	// reason for either.) Detection therefore required swapping BOTH ways, which
 	// is a stronger mutation than a real defect would be: a producer that emits
-	// the wrong member emits it one way.
+	// the wrong member emits it one way. With the `co` pair present, each
+	// direction reds on the arm that owns its member.
 	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, (50, 1)), (2, (40, 2)), (3, (30, 3))")
 	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 30), (200, 50), (300, 2)")
 	// One t3 row per t1 row: the join is row-preserving, so it CANNOT change the

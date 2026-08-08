@@ -26,6 +26,7 @@ package cascades
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -84,6 +85,18 @@ func nestedLegFixtureOfKnownness(t *testing.T, known bool) (leg *values.RecordTy
 // LEG's own layout. This is the shape the resolver's fuseNestedAccessors emits
 // and the shape the fold carries.
 func nestedLegRef(leg *values.RecordType, pinned bool) *values.FieldValue {
+	return nestedLegRefTo(leg, pinned, "SK", 0)
+}
+
+// nestedLegRefTo builds the same reference against a NAMED struct member.
+//
+// THE MEMBER IS A PARAMETER BECAUSE SK SITS AT STRUCT ORDINAL 0, and a fixture
+// whose discriminating value equals a plausible mutation's target cannot
+// discriminate. Forcing a fused suffix ordinal to 0 is a NO-OP against an SK
+// reference, so this file stayed green under a mutation the values-level pins
+// caught — this file's own stated rule, landing on its own fixture. The CO
+// variant sits at ordinal 1, so a forced-to-zero suffix is visible here too.
+func nestedLegRefTo(leg *values.RecordType, pinned bool, member string, memberOrdinal int) *values.FieldValue {
 	return &values.FieldValue{
 		Field: "N",
 		Typ:   values.NullableInt,
@@ -91,7 +104,7 @@ func nestedLegRef(leg *values.RecordType, pinned bool) *values.FieldValue {
 		Resolved: &values.FieldPath{
 			Accessors: []values.ResolvedAccessor{
 				{Field: "N", Ordinal: 1},
-				{Field: "SK", Ordinal: 0},
+				{Field: member, Ordinal: memberOrdinal},
 			},
 			FrontierPinned: pinned,
 			Domain:         values.OrdinalDomainOfType(leg),
@@ -134,6 +147,14 @@ func TestNestedLegWindow_MultiAccessorRefRebasesOntoTheMergedRow(t *testing.T) {
 		{"flatRun/pinned/UNKNOWN leg column type", values.LegKindFlatRun, true, false, []int{11, 0}},
 		{"nested/unpinned/UNKNOWN leg column type", values.LegKindNested, false, false, []int{10, 1, 0}},
 		{"nested/pinned/UNKNOWN leg column type", values.LegKindNested, true, false, []int{10, 1, 0}},
+		// THE NON-ZERO STRUCT MEMBER. Every case above descends to SK at struct
+		// ordinal 0, so a fused suffix forced to zero is indistinguishable from a
+		// correct one here. CO sits at ordinal 1, which is what makes the last
+		// step of the path an assertion rather than a coincidence.
+		{"flatRun/unpinned/non-zero struct member", values.LegKindFlatRun, false, true, []int{11, 1}},
+		{"flatRun/pinned/non-zero struct member", values.LegKindFlatRun, true, true, []int{11, 1}},
+		{"nested/unpinned/non-zero struct member", values.LegKindNested, false, true, []int{10, 1, 1}},
+		{"nested/pinned/non-zero struct member/UNKNOWN type", values.LegKindNested, true, false, []int{10, 1, 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -144,7 +165,11 @@ func TestNestedLegWindow_MultiAccessorRefRebasesOntoTheMergedRow(t *testing.T) {
 					Alias: values.NamedCorrelationIdentifier("L"),
 				},
 			}
-			ref := nestedLegRef(leg, tc.pinned)
+			member, memberOrdinal := "SK", 0
+			if strings.Contains(tc.name, "non-zero struct member") {
+				member, memberOrdinal = "CO", 1
+			}
+			ref := nestedLegRefTo(leg, tc.pinned, member, memberOrdinal)
 			out, ok := rebaseOuterLegValueOrdinal(ref, windows, mergedQOV)
 			if !ok {
 				t.Fatalf("rebaseOuterLegValueOrdinal DECLINED a multi-accessor leg "+
