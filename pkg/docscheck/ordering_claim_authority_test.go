@@ -41,6 +41,20 @@ import (
 // have nothing to do with ordering claims. The population is narrowed to files
 // that already ask the authority, because those are the ones positioned to
 // re-answer it.
+//
+// WHAT GREEN HERE DOES AND DOES NOT PROVE. This gate catches a duplicated claim
+// rule EXPRESSED AS A TYPE-CODE TEST — the shape it was derived from, and the
+// shape the existing copies take. It does not catch one written any other way: a
+// type helper (`t.IsFloat()`), a name match on the column, a switch over some
+// other discriminator, or a rule reached through a wrapper. No AST gate is closed
+// under paraphrase, and pretending otherwise is worse than the gap, because it
+// invites reading a green run as proof that no second copy exists.
+//
+// So read a pass as "no second copy is written as a type-code test", never as
+// "no second copy exists". The claim that the rowdiff ordering axis is covered
+// carries the same qualifier: it is covered IF its rule is written that way.
+// Where certainty is needed, the check is to read the consumer, not to trust
+// this.
 
 // orderingClaimAuthorityFile is where the rule lives. It is the only file
 // allowed to both decide and be consulted.
