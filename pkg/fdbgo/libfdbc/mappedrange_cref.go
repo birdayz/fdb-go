@@ -158,6 +158,19 @@ static void fdbgo_mkv_decode(const FDBMappedKeyValue* kv, fdbgo_mapped_row* out)
 	}
 }
 
+// fdbgo_mkv_decode_at indexes the reply array IN C, and that is load-bearing
+// rather than stylistic. cgo's Go-side view of FDBMappedKeyValue is 128 bytes
+// while C's is 112: cgo cannot express the 8-byte pointers that FDBKey.value and
+// FDBGetRangeReqAndResult put at 4-aligned offsets, so it substitutes padding and
+// re-aligns, and the sizes diverge. Any Go-side stride — unsafe.Slice(arr, n),
+// arr[i], unsafe.Add with unsafe.Sizeof — therefore addresses row i at
+// 128*i instead of 112*i and reads a garbage pointer out of the middle of a
+// neighbouring row. Only row 0 survives, which is exactly the shape that makes a
+// one-row test pass while the decoder is broken.
+static void fdbgo_mkv_decode_at(const FDBMappedKeyValue* arr, int i, fdbgo_mapped_row* out) {
+	fdbgo_mkv_decode(&arr[i], out);
+}
+
 static void fdbgo_kv_at(const FDBKeyValue* data, int i, fdbgo_kv* out) {
 	out->key = data[i].key;
 	out->key_length = data[i].key_length;
@@ -446,9 +459,10 @@ func CGetMappedRange(tr CTxnHandle, begin, end, mapper []byte, limit int, revers
 
 	rows := make([]CMappedRow, 0, int(count))
 	if arr != nil && count > 0 {
-		kvs := unsafe.Slice(arr, int(count))
-		for i := range kvs {
-			rows = append(rows, decodeMappedRow(&kvs[i]))
+		// Indexed in C — see fdbgo_mkv_decode_at. Go's stride for this struct is
+		// 128 bytes against C's 112.
+		for i := 0; i < int(count); i++ {
+			rows = append(rows, decodeMappedRow(arr, i))
 		}
 	}
 	// Everything is copied out by decodeMappedRow above; the deferred
@@ -456,11 +470,13 @@ func CGetMappedRange(tr CTxnHandle, begin, end, mapper []byte, limit int, revers
 	return rows, more != 0, nil
 }
 
-// decodeMappedRow copies one FDBMappedKeyValue — primary row and whichever
-// variant arm is active — into Go memory.
-func decodeMappedRow(kv *C.FDBMappedKeyValue) CMappedRow {
+// decodeMappedRow copies row i of the reply array — primary row and whichever
+// variant arm is active — into Go memory. It takes the array and an index rather
+// than a *C.FDBMappedKeyValue so the caller cannot compute the element address
+// in Go, where the struct is 16 bytes larger than it is in C.
+func decodeMappedRow(arr *C.FDBMappedKeyValue, i int) CMappedRow {
 	var d C.fdbgo_mapped_row
-	C.fdbgo_mkv_decode(kv, &d)
+	C.fdbgo_mkv_decode_at(arr, C.int(i), &d)
 
 	row := CMappedRow{
 		Key:   goBytes(d.key, d.key_length),

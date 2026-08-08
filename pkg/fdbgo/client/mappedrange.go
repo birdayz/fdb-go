@@ -252,6 +252,13 @@ const (
 	ErrMapperBadIndex          = 2030 // mapper_bad_index
 	ErrMapperNoSuchKey         = 2031 // mapper_no_such_key
 	ErrMapperBadRangeDescrptor = 2032 // mapper_bad_range_decriptor (sic: the C++ spelling)
+	// ErrKeyNotTuple / ErrValueNotTuple are raised when a {K[n]} / {V[n]}
+	// placeholder forces the server to unpack a PRIMARY row that is not a packed
+	// tuple (unpackKeyTuple / unpackValueTuple, storageserver.actor.cpp:4820-4844).
+	// They are properties of the DATA, not of the mapper, so no amount of mapper
+	// checking anywhere would pre-empt them.
+	ErrKeyNotTuple   = 2041 // key_not_tuple
+	ErrValueNotTuple = 2042 // value_not_tuple
 	// ErrGetMappedRangeReadsYourWrites is raised by THIS client when the mapped
 	// read — primary range or any resolved secondary read — overlaps a key the
 	// transaction has already written.
@@ -308,9 +315,15 @@ func (tx *Transaction) GetMappedRange(ctx context.Context, begin, end, mapper []
 	if bytes.Compare(begin, end) >= 0 {
 		return nil, false, nil
 	}
-	// C++ :1219-1233 — snapshot isolation and RYW-disabled are both
-	// unsupported_operation. These are the two shapes a caller reaches for
-	// first, and neither degrades gracefully: they are hard errors.
+	// C++ :1219-1233 makes snapshot isolation and RYW-disabled both
+	// unsupported_operation. Only ONE of those is reachable here, and the
+	// difference matters: RYW-disabled is a runtime state, so it is guarded
+	// below; snapshot is unreachable BY CONSTRUCTION because *Snapshot exposes
+	// no GetMappedRange at all, so there is no way to ask for the unsupported
+	// thing. That is a stronger guarantee than returning 2108, not a weaker one
+	// — but it holds only while *Snapshot lacks the method, which is why
+	// TestGetMappedRange_SnapshotCannotRequestIt pins the absence rather than
+	// leaving it as an unstated property of the API surface.
 	if tx.rywDisabled {
 		return nil, false, &wire.FDBError{Code: ErrUnsupportedOperation}
 	}
@@ -325,35 +338,79 @@ func (tx *Transaction) GetMappedRange(ctx context.Context, begin, end, mapper []
 	// one is first checked against the write map — an overlap means the mapped
 	// read observed a key this transaction wrote, which RYW cannot honour for
 	// mapped reads and which C++ reports rather than silently serving stale data.
-	if err := tx.addMappedRangeConflicts(begin, end, rows); err != nil {
+	if err := tx.addMappedRangeConflicts(begin, end, reverse, more, rows); err != nil {
 		return nil, false, err
 	}
 	return rows, more, nil
 }
 
+// primaryConflictRange is C++ addConflictRange for the mapped read's PRIMARY
+// range: the forward overload at ReadYourWrites.actor.cpp:245-281 and the
+// reverse one at :284-318, which differ in which END of the range a truncated
+// result narrows.
+//
+// The point of the narrowing is that a read cut short by a row limit did not
+// observe the whole requested range, so it must not conflict on the part it
+// never looked at. Forward: everything past the last row returned is unread, so
+// the range ends at keyAfter(lastRow). Reverse: everything below the last row
+// returned is unread, so the range begins there. Recording [begin, end) instead
+// is safe for serializability — a superset never MISSES a conflict — but it is
+// not safe for the mustUnmodified check that shares this range, where a
+// superset turns a write C++ tolerates into get_mapped_range_reads_your_writes.
+//
+// C++'s readToBegin / readThroughEnd clamps (:262-265, :301-304) are omitted
+// because they are unreachable through this API, not because they are
+// unavailable. Both are guarded on the selector offsets — `begin.offset <= 0`
+// and `end.offset > 0` — and GetMappedRange resolves its plain key arguments as
+// firstGreaterOrEqual, i.e. offset 1 for both ends. That kills the readToBegin
+// arm outright. readThroughEnd survives the offset guard but is only ever set
+// by getRangeFallback (NativeAPI.actor.cpp:4483-4491) when the RESOLVED end key
+// is allKeys.end AND the result is not truncated, in which case it rewrites
+// rangeEnd from end.getKey() to getMaxReadKey() — the same value, since
+// getMaxReadKey() is what bounds `end` at the legal-range check above. So the
+// clamp is a no-op for every input this API accepts.
+func primaryConflictRange(begin, end []byte, reverse, more bool, rows []MappedKeyValue) [2][]byte {
+	// The begin >= end case C++ handles by swapping is unreachable: GetMappedRange
+	// returns an empty result before issuing the read.
+	rangeBegin, rangeEnd := begin, end
+	if reverse {
+		// C++ :306 — `rangeBegin = read.begin.offset <= 1 && result.more ? end : begin`.
+		if more {
+			rangeBegin = end
+		}
+		if n := len(rows); n > 0 {
+			// result.end()[-1] is the SMALLEST key a reverse scan returned.
+			if last := rows[n-1].Key; bytes.Compare(last, rangeBegin) < 0 {
+				rangeBegin = last
+			}
+			// read.end.offset > 0 always holds here (firstGreaterOrEqual).
+			if bytes.Compare(rangeEnd, rows[0].Key) <= 0 {
+				rangeEnd = keyAfterBytes(rows[0].Key)
+			}
+		}
+		return [2][]byte{rangeBegin, rangeEnd}
+	}
+	// C++ :256 — `rangeEnd = read.end.offset > 0 && result.more ? begin : end`.
+	if more {
+		rangeEnd = begin
+	}
+	if n := len(rows); n > 0 {
+		// The `read.begin.offset <= 0` arm that lowers rangeBegin to result[0].key
+		// is dead here for the same offset reason as readToBegin.
+		if last := rows[n-1].Key; bytes.Compare(rangeEnd, last) <= 0 {
+			rangeEnd = keyAfterBytes(last)
+		}
+	}
+	return [2][]byte{rangeBegin, rangeEnd}
+}
+
 // addMappedRangeConflicts implements C++ addConflictRangeAndMustUnmodified.
-// The mustUnmodified check and the conflict insertion are the same walk in C++
-// (updateConflictMap<true>), so they are the same walk here: every range is
-// tested before ANY conflict is recorded for it.
-func (tx *Transaction) addMappedRangeConflicts(begin, end []byte, rows []MappedKeyValue) error {
-	// Primary range first, exactly as C++ does.
-	//
-	// KNOWN DIVERGENCE, in the conservative direction, and it is not free.
-	// C++ addConflictRange (ReadYourWrites.actor.cpp:283-318) NARROWS the
-	// primary range before recording it: when begin.offset <= 1 and the result
-	// is truncated (result.more) it starts at read.end rather than read.begin,
-	// and it clamps to the first/last keys actually returned. This uses the
-	// caller's full [begin, end).
-	//
-	// A superset can never MISS a conflict, so serializability is safe. But the
-	// same range feeds the mustUnmodified check below, and there a superset is
-	// user-visible: a write that falls inside [begin, end) but outside the
-	// narrowed range makes this raise get_mapped_range_reads_your_writes where
-	// C++ would have completed the read. Porting the narrowing needs the
-	// readToBegin / readThroughEnd flags, which rangeScanImpl does not yet
-	// surface. Until it does, this errs toward refusing rather than toward
-	// silently under-conflicting.
-	ranges := [][2][]byte{{begin, end}}
+func (tx *Transaction) addMappedRangeConflicts(begin, end []byte, reverse, more bool, rows []MappedKeyValue) error {
+	// Primary range first, exactly as C++ does — and NARROWED, see
+	// primaryConflictRange. The narrowing is not an optimization: the same range
+	// feeds the mustUnmodified check, where recording a superset would raise
+	// get_mapped_range_reads_your_writes on a write C++ lets through.
+	ranges := [][2][]byte{primaryConflictRange(begin, end, reverse, more, rows)}
 	for i := range rows {
 		switch rows[i].Kind {
 		case MappedResultGetValue:
@@ -362,7 +419,7 @@ func (tx *Transaction) addMappedRangeConflicts(begin, end []byte, rows []MappedK
 			// singleKeyRange. The point lookup gets a conflict range whether or
 			// not the key EXISTED: a miss is a real observation, and a later
 			// insert at that key must conflict.
-			ranges = append(ranges, [2][]byte{k, append(append([]byte{}, k...), 0)})
+			ranges = append(ranges, [2][]byte{k, keyAfterBytes(k)})
 		case MappedResultGetRange:
 			gr := &rows[i].GetRange
 			// The selectors the server actually resolved, not the mapper's
@@ -370,6 +427,14 @@ func (tx *Transaction) addMappedRangeConflicts(begin, end []byte, rows []MappedK
 			ranges = append(ranges, [2][]byte{gr.Begin.Key, gr.End.Key})
 		}
 	}
+	// C++ interleaves the check and the insert: updateConflictMap<true>
+	// (ReadYourWrites.actor.cpp:334-351) walks ONE range's write-map segments,
+	// throwing on the first modified one and inserting the rest as it goes, and
+	// addConflictRangeAndMustUnmodified calls it once per range. So a throw on
+	// range N leaves ranges 0..N-1 recorded. Checking every range up front and
+	// inserting only on success would look tidier and would diverge: a caller
+	// that catches 2039 and commits anyway would ship a transaction missing the
+	// conflict ranges C++ had already banked.
 	for _, r := range ranges {
 		if bytes.Compare(r[0], r[1]) >= 0 {
 			continue // empty range contributes no conflict and cannot overlap a write
@@ -377,7 +442,7 @@ func (tx *Transaction) addMappedRangeConflicts(begin, end []byte, rows []MappedK
 		if tx.ryw.hasModificationsInRange(r[0], r[1]) {
 			return &wire.FDBError{Code: ErrGetMappedRangeReadsYourWrites}
 		}
+		tx.addReadConflicts([][2][]byte{r})
 	}
-	tx.addReadConflicts(ranges)
 	return nil
 }

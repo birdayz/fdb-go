@@ -681,7 +681,12 @@ closed rather than silently alter rows or output schema.
      same error (:1226-1233). So a remote-fetch cursor may not be offered as a
      cheap snapshot scan, and any caller that today drops to a snapshot read for
      a non-conflicting index scan must NOT route that through `GetMappedRange`.
-     Both shapes are pinned in `pkg/fdbgo/client/mappedrange_guards_test.go`.
+     The two shapes are pinned differently, and the difference is the point:
+     RYW-disabled is a runtime state and returns 2108, while snapshot is
+     unreachable BY CONSTRUCTION — `*Snapshot` exposes no `GetMappedRange`, so
+     the request cannot be expressed. `TestGetMappedRange_SnapshotCannotRequestIt`
+     pins that absence, since adding the method would arm the divergence with
+     every other test still green.
   2. **Every secondary read needs its own conflict range.** The mapped read is
      issued at `Snapshot::True` internally and the client then re-adds read
      conflict ranges by hand — for the primary range AND for each resolved

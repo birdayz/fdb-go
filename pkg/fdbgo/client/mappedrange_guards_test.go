@@ -229,3 +229,42 @@ func TestGetMappedRange_MapperNotTuple_PropagatesServerError(t *testing.T) {
 	g.Expect(mappedFDBErrCode(t, err)).To(gomega.Equal(2043),
 		"mapper_not_tuple must arrive from the storage server, through the reply's inline error arm, unchanged")
 }
+
+// TestGetMappedRange_SnapshotCannotRequestIt pins a NEGATIVE result that the
+// rest of this file silently depends on. C++ raises unsupported_operation (2108)
+// for a snapshot mapped range (ReadYourWrites.actor.cpp:1219-1225). Go never
+// returns that code for snapshot — not because the guard was forgotten, but
+// because *Snapshot exposes no GetMappedRange, so the request cannot be
+// expressed. Unreachable-by-construction is the stronger position, but it is
+// invisible: adding a single method to *Snapshot would arm the exact divergence
+// C++ guards against, with every existing test still green.
+//
+// So the absence itself is the assertion. If someone gives *Snapshot a
+// GetMappedRange, this fails and names what must be added with it.
+func TestGetMappedRange_SnapshotCannotRequestIt(t *testing.T) {
+	t.Parallel()
+
+	// A *Snapshot must NOT satisfy an interface carrying GetMappedRange. This is
+	// a compile-time-shaped fact checked at runtime so the failure message can
+	// explain the consequence rather than just failing to build.
+	type mappedRangeCapable interface {
+		GetMappedRange(ctx context.Context, begin, end, mapper []byte, limit int, reverse bool) ([]MappedKeyValue, bool, error)
+	}
+	var s any = (*Snapshot)(nil)
+	if _, ok := s.(mappedRangeCapable); ok {
+		t.Fatal("*Snapshot now exposes GetMappedRange. C++ raises unsupported_operation " +
+			"(2108) for a snapshot mapped range (ReadYourWrites.actor.cpp:1219-1225); Go " +
+			"relied on the method not existing instead of returning that code. Either drop " +
+			"the method again, or add an explicit snapshot guard returning 2108 and pin it.")
+	}
+
+	// Guard the guard: the interface must actually match the real signature, or
+	// the assertion above is vacuous — it would pass for a *Snapshot that had the
+	// method under a different shape. A *Transaction MUST satisfy it.
+	var tx any = (*Transaction)(nil)
+	if _, ok := tx.(mappedRangeCapable); !ok {
+		t.Fatal("*Transaction does not satisfy mappedRangeCapable — the signature in this " +
+			"test has drifted from Transaction.GetMappedRange, so the *Snapshot assertion " +
+			"above proves nothing")
+	}
+}
