@@ -8170,6 +8170,26 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
 
+**2026-08-08 (RFC-220 — coveringness as a plan type, BEFORE side only):**
+branch point `4465dcc6d`, tree carrying the RFC only (no code change), so this
+row IS the baseline. Same filesystem, `df -T .` = **xfs**, 89% used, 111G
+available. The box is XFS; CLAUDE.md's ~95% ext4 threshold does not transfer, so
+the run is judged against its own after-side, not that figure.
+
+`TestFDB_Stress_1M` **PASS, 336.10s.** PK lookups 0.09/0.02/0.02s; idx_customer
+eq 0.05s; idx_amount range 0.40s; idx_status count 0.51s; full_scan_count 4.72s;
+full-scan filter 0.86s; GROUP BY status 0.02s; GROUP BY COUNT-only 0.01s; SUM by
+status 0.01s; GROUP BY customer HAVING 0.79s; JOIN 10×customers 0.06s; ORDER BY
+PK full (1M) 6.13s; ORDER BY PK + index filter 12.58ms; scan-all narrow (1M)
+6.26s; scan-all wide (1M) 6.24s; IN-list 26.44ms; PK needle 7.70ms; PK+filter
+needle 10.67ms; sparse filter (97 rows) 4.77s; UPDATE by index 14.11ms; DELETE
+single 10.23ms.
+
+**Do NOT read these against the 2026-07-31 row as a regression** — that run was
+on a differently-loaded box (its ORDER BY PK full is 3.355s against 6.13s here).
+Only the before/after pair taken on the SAME box in the SAME session is a
+comparison; the after side is pending implementation.
+
 **2026-07-31 (CQ-67 / RFC-200 — the NESTED merged leg, steps 3a–3d′):**
 baseline worktree at the branch point `719f6c8b0` vs the branch head, SAME
 FILESYSTEM (sibling worktree under `.claude/worktrees/`), sequential fresh FDB
