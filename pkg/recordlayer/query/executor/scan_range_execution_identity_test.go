@@ -43,7 +43,7 @@ func mustScanIdentity(t testing.TB, identity string, err error) string {
 
 func mustEncodeScanIdentityType(t testing.TB, typ values.Type) []byte {
 	t.Helper()
-	encoded, err := encodeScanIdentityType(typ)
+	encoded, err := newScanIdentityTypeEncoder().encode(typ, "$type")
 	if err != nil {
 		t.Fatalf("encode scan identity type: %v", err)
 	}
@@ -421,7 +421,7 @@ func requireScanIdentityTypeError(
 	wantKind ScanIdentityTypeErrorKind,
 ) *InvalidScanRangeExecutionIdentityTypeError {
 	t.Helper()
-	_, err := encodeScanIdentityType(typ)
+	_, err := newScanIdentityTypeEncoder().encode(typ, "$type")
 	var identityErr *InvalidScanRangeExecutionIdentityTypeError
 	if !errors.As(err, &identityErr) {
 		t.Fatalf("encode error = %T(%v), want *InvalidScanRangeExecutionIdentityTypeError", err, err)

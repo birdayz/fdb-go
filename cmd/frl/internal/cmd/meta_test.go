@@ -110,7 +110,7 @@ func writeDemoMetaFile(t *testing.T, version int32) string {
 // TestMetaTypesLs_MetaFileFlagWorks drives the command end-to-end via
 // --meta-file so the command constructor (RunE, flag wiring, meta.Source
 // resolution) gets covered without opening FDB. Without this test, a
-// regression in `resolveContextAndOverride` / `meta.FromContext` that
+// regression in `storeAddressFlags.resolve` / `meta.FromContext` that
 // drops the override path goes undetected until someone runs integration.
 func TestMetaTypesLs_MetaFileFlagWorks(t *testing.T) {
 	path := writeDemoMetaFile(t, 0)

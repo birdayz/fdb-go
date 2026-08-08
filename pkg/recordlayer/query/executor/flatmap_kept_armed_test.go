@@ -20,13 +20,13 @@ import (
 func flatMapArmedFixture(t *testing.T, outer recordlayer.RecordCursor[QueryResult], savedPK tuple.Tuple, armedBytes []byte) *flatMapCursor {
 	t.Helper()
 	inner := plans.NewRecordQueryValuesPlan([]values.Value{&values.ConstantValue{Value: int64(7)}})
-	c, err := newFlatMapCursor(
+	c, err := newFlatMapCursorWithOuterProperties(
 		outer, plans.NewRecordQueryValuesPlan(nil), inner, nil, EmptyEvaluationContext(),
 		values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"),
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("I")), recordlayer.ExecuteProperties{},
+		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("I")), recordlayer.ExecuteProperties{}, false,
 	)
 	if err != nil {
-		t.Fatalf("newFlatMapCursor: %v", err)
+		t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)
 	}
 	c.initialInnerCont = armedBytes
 	c.hasPendingInner = true

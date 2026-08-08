@@ -163,14 +163,6 @@ func (f *futureNil) MustGet() {
 	}
 }
 
-func newReadyFutureNil(err error) FutureNil {
-	f := &futureNil{}
-	f.init()
-	f.err = err
-	close(f.done)
-	return f
-}
-
 func newFutureNil(fn func() error) FutureNil {
 	f := &futureNil{}
 	f.init()
@@ -326,15 +318,6 @@ func (f *futureKeyArray) MustGet() []Key {
 	return val
 }
 
-func newReadyFutureKeyArray(val []Key, err error) FutureKeyArray {
-	f := &futureKeyArray{}
-	f.init()
-	f.val = val
-	f.err = err
-	close(f.done)
-	return f
-}
-
 func newFutureKeyArray(fn func() ([]Key, error)) FutureKeyArray {
 	f := &futureKeyArray{}
 	f.init()
@@ -370,13 +353,4 @@ func (f *futureStringSlice) MustGet() []string {
 		panic(err)
 	}
 	return val
-}
-
-func newReadyFutureStringSlice(val []string, err error) FutureStringSlice {
-	f := &futureStringSlice{}
-	f.init()
-	f.val = val
-	f.err = err
-	close(f.done)
-	return f
 }

@@ -19,6 +19,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/relational/core/query/logical"
 )
 
 // bakedRef digs the single baked FieldValue out of a baked result.
@@ -91,7 +92,7 @@ func TestBakeDottedRefsToLegQOV_StatesTheLegLayoutAsItsDomain(t *testing.T) {
 			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T")),
 			[]expressions.Quantifier{q}, nil, []string{"T"})
 
-		fv := bakedRef(t, bakeDottedRefsToLegQOV(values.NewFlatFieldValue("NAME", values.UnknownType), outer))
+		fv := bakedRef(t, bakeDottedRefsToLegQOVWithRef(values.NewFlatFieldValue("NAME", values.UnknownType), logical.ColumnRef{}, outer))
 		layout := values.OrdinalDomainOfColumnNames([]string{"ID", "NAME"})
 		if got, ok := fv.OrdinalIn(layout); !ok || got != 1 {
 			t.Fatalf("single-ForEach flat bake = (%d,%v), want (1,true)", got, ok)
@@ -119,7 +120,7 @@ func TestBakeDottedRefsToLegQOV_StatesTheLegLayoutAsItsDomain(t *testing.T) {
 		leftDomain := values.OrdinalDomainOfColumnNames([]string{"ID", "NAME"})
 		rightDomain := values.OrdinalDomainOfColumnNames([]string{"NAME", "ID"})
 
-		lref := bakedRef(t, bakeDottedRefsToLegQOV(values.NewFlatFieldValue("L.NAME", values.UnknownType), outer))
+		lref := bakedRef(t, bakeDottedRefsToLegQOVWithRef(values.NewFlatFieldValue("L.NAME", values.UnknownType), logical.ColumnRef{}, outer))
 		if got, ok := lref.OrdinalIn(leftDomain); !ok || got != 1 {
 			t.Fatalf("L.NAME = (%d,%v), want (1,true)", got, ok)
 		}
@@ -127,7 +128,7 @@ func TestBakeDottedRefsToLegQOV_StatesTheLegLayoutAsItsDomain(t *testing.T) {
 			t.Fatalf("L.NAME answered %d in R's layout — same leaf name, different column", got)
 		}
 
-		rref := bakedRef(t, bakeDottedRefsToLegQOV(values.NewFlatFieldValue("R.NAME", values.UnknownType), outer))
+		rref := bakedRef(t, bakeDottedRefsToLegQOVWithRef(values.NewFlatFieldValue("R.NAME", values.UnknownType), logical.ColumnRef{}, outer))
 		if got, ok := rref.OrdinalIn(rightDomain); !ok || got != 0 {
 			t.Fatalf("R.NAME = (%d,%v), want (0,true)", got, ok)
 		}

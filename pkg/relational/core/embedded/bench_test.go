@@ -67,20 +67,6 @@ func BenchmarkNullSafeEqual_NonNil(b *testing.B) {
 	}
 }
 
-func BenchmarkRowKey_Simple(b *testing.B) {
-	row := []driver.Value{int64(1), "hello", true}
-	for b.Loop() {
-		_ = rowKey(row)
-	}
-}
-
-func BenchmarkRowKey_Wide(b *testing.B) {
-	row := []driver.Value{int64(1), "hello", float64(3.14), true, nil, []byte{1, 2, 3}, "world", int64(42)}
-	for b.Loop() {
-		_ = rowKey(row)
-	}
-}
-
 func BenchmarkSubstituteParams_None(b *testing.B) {
 	for b.Loop() {
 		_, _ = substituteParams("SELECT * FROM t", nil)

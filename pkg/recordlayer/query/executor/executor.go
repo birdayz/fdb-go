@@ -3171,14 +3171,9 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias values.Correlati
 	}
 }
 
-// passesJoinPredicates evaluates a join's residual predicates against the merged
-// leg-windowed positional row (the nil-legs entry point to passesJoinPredicatesLegs).
-func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicate, evalCtx *EvaluationContext) (bool, error) {
-	return passesJoinPredicatesLegs(combined, preds, evalCtx, nil)
-}
-
-// passesJoinPredicatesLegs is passesJoinPredicates extended with the
-// ordinal-build leg bindings. legs nil (the non-build merged-row path)
+// passesJoinPredicatesLegs evaluates a join's residual predicates against the
+// merged leg-windowed positional row, with the ordinal-build leg bindings.
+// legs nil (the non-build merged-row path)
 // resolves through the merged row's leg windows (spansFromMergedLegs below).
 // legs non-nil (an ordinal-build cursor) evaluates the predicates against a
 // RowEvalContext carrying the DIRECT per-leg bindings (the cursor's pre-built

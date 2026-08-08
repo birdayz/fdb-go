@@ -3,13 +3,10 @@ package foundationdb
 import (
 	"context"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
 	"github.com/testcontainers/testcontainers-go"
-	tcexec "github.com/testcontainers/testcontainers-go/exec"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 // Cluster represents a multi-container FDB cluster.
@@ -214,20 +211,4 @@ func (c *Cluster) InternalClusterFile() string {
 // Size returns the number of containers in the cluster.
 func (c *Cluster) Size() int {
 	return len(c.Replicas)
-}
-
-// customWaitStrategy waits for "FDBD joined cluster" in replica containers
-// that connect to an existing coordinator.
-func customWaitForJoin(timeout time.Duration) wait.Strategy {
-	return wait.ForLog("FDBD joined cluster").WithStartupTimeout(timeout)
-}
-
-// containerExec is a helper for running commands in any cluster container.
-func containerExec(ctx context.Context, c *Container, cmd []string) (string, error) {
-	_, reader, err := c.Exec(ctx, cmd, tcexec.Multiplexed())
-	if err != nil {
-		return "", err
-	}
-	out, _ := io.ReadAll(reader)
-	return string(out), nil
 }

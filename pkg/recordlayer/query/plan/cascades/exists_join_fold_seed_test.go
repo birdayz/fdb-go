@@ -74,15 +74,15 @@ func TestReconstructFoldStep1Seed(t *testing.T) {
 	}
 }
 
-// legIsOrdinalSafe admits a single-source scan leg (its rows are one namespace,
+// legOrdinalSafety admits a single-source scan leg (its rows are one namespace,
 // ordinal-positionable) and REJECTS a name-model merged-row leg (a join), which
 // stays name-model — the executor twin of the translator gate's ordinalEligible
 // (correct-or-conservative). This is the guard that keeps the step-1 seed from
 // mis-positioning a leg whose rows are a dotted-keyed merged row.
-func TestLegIsOrdinalSafe(t *testing.T) {
+func TestLegOrdinalSafety(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, commit2RecType("T", "ID"), false)
-	if !legIsOrdinalSafe(scan) {
+	if safe, _ := legOrdinalSafety(scan); !safe {
 		t.Fatal("a scan leg must be ordinal-safe")
 	}
 	// An INDEX / covering-index leg is also a single source — ordinal-safe. The
@@ -91,7 +91,7 @@ func TestLegIsOrdinalSafe(t *testing.T) {
 	// NLJ builds from the same seed); if it is NOT a record the reconstruction
 	// declines below and the leg stays name-model — never a silent-wrong path.
 	idxRec := plans.NewRecordQueryIndexPlan("idx", nil, []string{"T2"}, commit2RecType("T2", "ID"), false)
-	if !legIsOrdinalSafe(idxRec) {
+	if safe, _ := legOrdinalSafety(idxRec); !safe {
 		t.Fatal("an index-scan leg is a single source — ordinal-safe")
 	}
 	if s, _ := reconstructFoldStep1Seed(scan, idxRec, values.NamedCorrelationIdentifier("T"), values.NamedCorrelationIdentifier("T2")); s == nil {
@@ -112,18 +112,18 @@ func TestLegIsOrdinalSafe(t *testing.T) {
 	// fix.
 	if opaqueDecline.Shape != foldStep1LegShapeNone {
 		t.Fatalf("an opaque index leg declined with shape %v, want %v — this nil comes from "+
-			"BELOW legIsOrdinalSafe (planBuriedLegConcat could not state the leg's row), so "+
+			"BELOW legOrdinalSafety (planBuriedLegConcat could not state the leg's row), so "+
 			"filing it under a refused-leg shape would attribute it to a population it is "+
 			"not part of", opaqueDecline.Shape, foldStep1LegShapeNone)
 	}
 	// A filter over a scan (a leg with a pushed predicate) unwraps to the scan.
 	filtered := plans.NewRecordQueryPredicatesFilterPlan(scan, nil)
-	if !legIsOrdinalSafe(filtered) {
+	if safe, _ := legOrdinalSafety(filtered); !safe {
 		t.Fatal("a filter over a scan unwraps to a single source — ordinal-safe")
 	}
 	// A join leg emits a name-model merged row — NOT ordinal-safe.
 	nlj := plans.NewRecordQueryNestedLoopJoinPlan(scan, scan, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), nil)
-	if legIsOrdinalSafe(nlj) {
+	if safe, _ := legOrdinalSafety(nlj); safe {
 		t.Fatal("a name-model join leg must NOT be ordinal-safe (it stays name-model)")
 	}
 	// A reconstruction over a join leg must therefore DECLINE (nil), keeping the

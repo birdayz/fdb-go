@@ -68,8 +68,21 @@ func newIndexLsCmd() *cobra.Command {
 				} else {
 					src, err = meta.FromContext(target.cfgCtx, nil, nil)
 					if err != nil {
-						return fmt.Errorf("--no-fdb requires a file metadata source: %w "+
-							"(add `meta_file` to the context or pass --meta-file)", err)
+						// Three properties this phrasing protects:
+						//
+						//  1. It leads with a sentence word, not the flag.
+						//     fang title-cases the FIRST WORD of an error
+						//     banner, so a leading "--no-fdb" renders as
+						//     "--No-Fdb" and reads like a typo.
+						//  2. It names the context. The operator with
+						//     several contexts otherwise cannot tell which
+						//     one lacks the file source.
+						//  3. It adds no remediation clause. Both sentinels
+						//     meta.FromContext returns already end in one
+						//     ("configure `meta_file` … or pass --meta-file"),
+						//     so a clause here duplicated it verbatim.
+						return fmt.Errorf("offline rendering (--no-fdb) needs a file metadata source in context %q: %w",
+							target.cfgCtx.GetName(), err)
 					}
 				}
 				md, err := src.Load(cmd.Context())

@@ -99,10 +99,20 @@ type Conn struct {
 	loopWG    sync.WaitGroup // tracks readLoop + writeLoop goroutines
 	closeOnce sync.Once      // guards the single failConnection teardown
 
-	// Connection monitor cadence. Defaults match C++ CONNECTION_MONITOR_LOOP_TIME
-	// (0.75s) / CONNECTION_MONITOR_TIMEOUT (2s); set once at dial time before the
-	// monitor goroutine starts. Tests inject small values for deterministic,
-	// fast monitor-death assertions (see withMonitorCadence).
+	// Connection monitor cadence. Set once at dial time before the monitor
+	// goroutine starts. Tests inject small values for deterministic, fast
+	// monitor-death assertions (see withMonitorCadence).
+	//
+	// UNMEASURED divergence from the C++ client, recorded here rather than
+	// lost: these two defaults are read from DIFFERENT columns of
+	// Knobs.cpp. C++ declares each knob with a real value and a simulation
+	// value; 0.75s is CONNECTION_MONITOR_LOOP_TIME's SIMULATED value while 2s
+	// is CONNECTION_MONITOR_TIMEOUT's REAL one, so the pair Go runs in
+	// production is a combination the C client never uses in either mode.
+	// C++ is the spec for this package, so if that reading holds it is a Go
+	// bug, not a tuning choice. Confirming it means diffing against
+	// libfdb_c 7.3.77's Knobs.cpp and deciding the pair deliberately — work
+	// that belongs to the FDB C++ client review gate, not to a dead-code sweep.
 	monitorLoopInterval time.Duration
 	monitorTimeout      time.Duration
 

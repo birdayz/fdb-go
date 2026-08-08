@@ -3,7 +3,7 @@ package cascades
 // The two ordering-value comparators dispatch by VALUE TYPE: a pair of plain
 // FieldValues is decided by column identity and by nothing else. This file is the
 // net under that dispatch, and it exists because deleting the identity arm from
-// intersectionValuesEqual used to leave the whole suite GREEN — fifteen of
+// intersectionValuesEqualIn used to leave the whole suite GREEN — fifteen of
 // fifteen intersection tests passed with the gate gone, so nothing in the tree
 // was testing the dimension the gate protects.
 //
@@ -77,15 +77,15 @@ func twoLayoutOrdinalCollision(t *testing.T) (recordRowKey, aggregateRowKey valu
 }
 
 // TestIntersectionComparatorSeparatesSameSlotDifferentLayouts is the net for the
-// identity arm of intersectionValuesEqual. Deleting that arm makes this test
+// identity arm of intersectionValuesEqualIn. Deleting that arm makes this test
 // RED; before it existed, deleting the arm left the suite green.
 func TestIntersectionComparatorSeparatesSameSlotDifferentLayouts(t *testing.T) {
 	t.Parallel()
 
 	recordRowKey, aggregateRowKey := twoLayoutOrdinalCollision(t)
 
-	if intersectionValuesEqual(recordRowKey, aggregateRowKey) {
-		t.Fatalf("intersectionValuesEqual says ordinal 0 of a record row (%q) and "+
+	if intersectionValuesEqualIn(nil, recordRowKey, aggregateRowKey) {
+		t.Fatalf("intersectionValuesEqualIn says ordinal 0 of a record row (%q) and "+
 			"ordinal 0 of an aggregate output row (%q) are the SAME COLUMN.\n\n"+
 			"They are different columns of different rows. The comparator reached "+
 			"the domain-blind structural arm, which compares ordinals and never "+
@@ -100,8 +100,8 @@ func TestIntersectionComparatorSeparatesSameSlotDifferentLayouts(t *testing.T) {
 	sameLayoutTwin := values.NewFieldValueWithResolvedOrdinalInDomain(
 		"ID", 0, values.UnknownType,
 		recordRowKey.(*values.FieldValue).Resolved.Domain)
-	if !intersectionValuesEqual(recordRowKey, sameLayoutTwin) {
-		t.Fatalf("intersectionValuesEqual refuses two keys stating the SAME "+
+	if !intersectionValuesEqualIn(nil, recordRowKey, sameLayoutTwin) {
+		t.Fatalf("intersectionValuesEqualIn refuses two keys stating the SAME "+
 			"ordinal in the SAME layout (%q vs %q).\n\n"+
 			"A comparator that declines everything satisfies the separation "+
 			"assertion above while destroying every intersection merge. Both "+
@@ -167,8 +167,8 @@ func TestNonFieldOrderingKeysStayWholeValueCompared(t *testing.T) {
 			"any row and has no ordinal to state; it must be compared as a whole " +
 			"Value.")
 	}
-	if !intersectionValuesEqual(left, right) {
-		t.Fatalf("intersectionValuesEqual refuses two structurally identical " +
+	if !intersectionValuesEqualIn(nil, left, right) {
+		t.Fatalf("intersectionValuesEqualIn refuses two structurally identical " +
 			"record-type discriminators.\n\n" +
 			"These carry no column identity by design, so an identity-or-decline " +
 			"arm rejects them and every intersection's merged ordering comes out " +
@@ -181,7 +181,7 @@ func TestNonFieldOrderingKeysStayWholeValueCompared(t *testing.T) {
 // partition be DROPPED because a smaller one already fixes the same equalities.
 //
 // It used to compare with bare structural equality while the `required` list it
-// probes was DEDUPED by intersectionValuesEqual. A list built under one notion of
+// probes was DEDUPED by intersectionValuesEqualIn. A list built under one notion of
 // "same value" and probed under another can report a member present that it does
 // not hold, and here that direction is the dangerous one: the subpartition looks
 // like it fixes an equality it does not, the larger partition is discarded, and
@@ -307,8 +307,8 @@ func TestOrderingComparatorsAreTransitiveAcrossTheUnknownDomain(t *testing.T) {
 		name string
 		eq   func(a, b values.Value) bool
 	}{
-		{"intersectionValuesEqual", intersectionValuesEqual},
-		{"orderingValuesEqual", orderingValuesEqual},
+		{"intersectionValuesEqualIn", func(a, b values.Value) bool { return intersectionValuesEqualIn(nil, a, b) }},
+		{"orderingValuesEqualIn", func(a, b values.Value) bool { return orderingValuesEqualIn(nil, a, b) }},
 	} {
 		// The separation the identity arm exists for. Stated first because a
 		// comparator that equated these would make the transitivity closure below
@@ -456,8 +456,8 @@ func assertRootAxisWitnessStillIntransitive(t *testing.T) {
 		name string
 		eq   func(a, b values.Value) bool
 	}{
-		{"intersectionValuesEqual", intersectionValuesEqual},
-		{"orderingValuesEqual", orderingValuesEqual},
+		{"intersectionValuesEqualIn", func(a, b values.Value) bool { return intersectionValuesEqualIn(nil, a, b) }},
+		{"orderingValuesEqualIn", func(a, b values.Value) bool { return orderingValuesEqualIn(nil, a, b) }},
 	} {
 		// The separation that is CORRECT and must not regress: two named
 		// quantifiers over the same table are different columns.

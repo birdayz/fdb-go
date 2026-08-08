@@ -772,6 +772,18 @@ const relationalUnionName = "RecordTypeUnion"
 // Java's containsNullableArray flag (DdlVisitor accumulates it over column
 // definitions): whether any NullableArrayWrapper was emitted, gating the
 // index key-expression wrap pass.
+//
+// UNMEASURED, and recorded here rather than lost: the flag's SCOPE may not
+// match Java's. Java accumulates it as it visits column definitions in
+// declaration order, so a column can be visited while the flag is still false;
+// Go computes it template-wide and hands one answer to every index. The two
+// can only disagree for a type that has both a nullable array and a NOT NULL
+// repeated field literally named `values`, where the wrap pass would rewrite
+// the flat repeated field's key expression as though it were wrapped. Nobody
+// has built that schema and compared the stored key expression against Java's,
+// so this is a suspicion with a named reproducer, not a known divergence — but
+// it is wire-affecting if real, which is why it is written at the site that
+// would have to change rather than filed somewhere it would rot.
 func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descriptorpb.FileDescriptorProto, bool, error) {
 	fdp := &descriptorpb.FileDescriptorProto{}
 	fdp.Name = proto.String(b.name)
@@ -1207,7 +1219,8 @@ func buildAggregateIndex(idx indexSpec) (*recordlayer.Index, error) {
 //
 // The argument built HERE is always field(col, Concatenate). That is not the
 // final shape for a NULLABLE array column: Go now writes those wrapped, and
-// wrapArrayKeyExpression (NullableArrayUtils.wrapArray) rewrites the argument
+// wrapArrayInternal (NullableArrayUtils.wrapArray's body, applied under the
+// same containsNullableArray gate by registerIndex) rewrites the argument
 // through its function arm into the Java wrapper shape
 // field(col).nest(field("values", Concatenate)) before the template is built.
 // A NOT NULL array column is a flat repeated field in both engines, so its

@@ -1109,9 +1109,9 @@ func protoScalarToRowValue(fd protoreflect.FieldDescriptor, v protoreflect.Value
 
 // ProtoScalarKindToRowValue is the kind-keyed scalar conversion (no UUID/
 // message handling — that needs the descriptor, see protoScalarToRowValue).
-// Exported as the single source of truth the executor's kind-based
-// scalarProtoToGo delegates to, so the record→row and struct-descent
-// conversions cannot drift on the scalar arms.
+// Exported as the single source of truth the executor's kind-based conversion
+// calls directly, so the record→row and struct-descent conversions cannot drift
+// on the scalar arms.
 func ProtoScalarKindToRowValue(kind protoreflect.Kind, v protoreflect.Value) any {
 	switch kind {
 	case protoreflect.BoolKind:

@@ -92,9 +92,10 @@ var _ = Describe("IndexBugVerify", func() {
 		})
 	})
 
-	// Bug 2: COUNT_NOT_NULL with NestingKeyExpression — must detect null nested fields.
-	// Before fix: keyExpressionHasNullField was missing the NestingKeyExpression case,
-	// so null nested fields were counted instead of skipped.
+	// Bug 2: COUNT_NOT_NULL with NestingKeyExpression — must detect null nested
+	// fields. These specs drive a real SaveRecord, so they exercise the live
+	// maintainer path (evaluateGroupingKeysNotNull), which decides nullness by
+	// EVALUATING the key expression rather than by walking the proto structurally.
 	Describe("COUNT_NOT_NULL with nested field null detection", func() {
 		It("skips counting when nested field is null (flower unset)", func() {
 			ctx := context.Background()
@@ -264,35 +265,6 @@ var _ = Describe("IndexBugVerify", func() {
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
-		})
-	})
-
-	// Verify keyExpressionHasNullField with direct field (not nested).
-	Describe("keyExpressionHasNullField basic", func() {
-		It("returns true for nil optional field", func() {
-			order := &gen.Order{OrderId: intPtr(1)} // price is nil
-			Expect(keyExpressionHasNullField(order, Field("price"))).To(BeTrue())
-		})
-
-		It("returns false for set optional field", func() {
-			order := &gen.Order{OrderId: intPtr(1), Price: int32Ptr(42)}
-			Expect(keyExpressionHasNullField(order, Field("price"))).To(BeFalse())
-		})
-
-		It("returns true for nil nested message", func() {
-			order := &gen.Order{OrderId: intPtr(1)} // flower is nil
-			Expect(keyExpressionHasNullField(order, Nest("flower", Field("type")))).To(BeTrue())
-		})
-
-		It("returns false for set nested message with set field", func() {
-			flowerType := "Rose"
-			order := &gen.Order{OrderId: intPtr(1), Flower: &gen.Flower{Type: &flowerType}}
-			Expect(keyExpressionHasNullField(order, Nest("flower", Field("type")))).To(BeFalse())
-		})
-
-		It("returns true for set nested message with nil child field", func() {
-			order := &gen.Order{OrderId: intPtr(1), Flower: &gen.Flower{}} // type is nil
-			Expect(keyExpressionHasNullField(order, Nest("flower", Field("type")))).To(BeTrue())
 		})
 	})
 })

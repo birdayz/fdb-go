@@ -254,10 +254,3 @@ func PositionalTypeForRecordLayout(desc protoreflect.MessageDescriptor, storeRow
 func protoFieldToGo(fd protoreflect.FieldDescriptor, v protoreflect.Value) any {
 	return values.ProtoFieldToRowValue(fd, v)
 }
-
-// scalarProtoToGo delegates to the single kind-based scalar converter in the
-// values layer (no drift between record→row and struct descent). Kept as a
-// named executor helper for its exhaustive per-kind tests.
-func scalarProtoToGo(kind protoreflect.Kind, v protoreflect.Value) any {
-	return values.ProtoScalarKindToRowValue(kind, v)
-}

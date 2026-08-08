@@ -7,9 +7,10 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// Benchmarks for the protoreflect hot path: protoToMap, scalarProtoToGo,
+// Benchmarks for the protoreflect hot path: protoToMap, values.ProtoScalarKindToRowValue,
 // goToProtoValue. These run on every record scan and every UPDATE/INSERT
 // write — the dominant cost in query execution after FDB round-trips.
 
@@ -105,7 +106,7 @@ func BenchmarkScalarProtoToGo_Int64(b *testing.B) {
 	v := protoreflect.ValueOfInt64(42)
 	b.ResetTimer()
 	for b.Loop() {
-		_ = scalarProtoToGo(protoreflect.Int64Kind, v)
+		_ = values.ProtoScalarKindToRowValue(protoreflect.Int64Kind, v)
 	}
 }
 
@@ -114,7 +115,7 @@ func BenchmarkScalarProtoToGo_String(b *testing.B) {
 	v := protoreflect.ValueOfString("hello world")
 	b.ResetTimer()
 	for b.Loop() {
-		_ = scalarProtoToGo(protoreflect.StringKind, v)
+		_ = values.ProtoScalarKindToRowValue(protoreflect.StringKind, v)
 	}
 }
 
@@ -123,7 +124,7 @@ func BenchmarkScalarProtoToGo_Float64(b *testing.B) {
 	v := protoreflect.ValueOfFloat64(3.14159)
 	b.ResetTimer()
 	for b.Loop() {
-		_ = scalarProtoToGo(protoreflect.DoubleKind, v)
+		_ = values.ProtoScalarKindToRowValue(protoreflect.DoubleKind, v)
 	}
 }
 

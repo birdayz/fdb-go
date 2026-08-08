@@ -20,13 +20,14 @@ import (
 // primary persisted-byte site: the store header's LastUpdateTime. Under a sim env it is a
 // deterministic function of the sim clock (Epoch), reproducible across runs; under
 // production (nil env) it falls back to the wall clock — byte-identical to pre-seam
-// behavior. This is the site every store open writes (createStoreHeader).
+// behavior. This is the site every store creation writes: createStoreHeaderAtFormat,
+// which store_builder.go reaches with the builder's own effectiveFormatVersion().
 func TestStoreHeader_LastUpdateTimeSeamed(t *testing.T) {
 	t.Parallel()
 	epochMillis := uint64(dst.Epoch.UnixMilli())
 
 	// Sim env → the persisted timestamp is the sim clock (Epoch), not the wall clock.
-	h1 := createStoreHeader(1, nil, dst.NewSim(7))
+	h1 := createStoreHeaderAtFormat(1, nil, dst.NewSim(7), int32(formatVersionDefault))
 	if h1.LastUpdateTime == nil {
 		t.Fatal("LastUpdateTime unset")
 	}
@@ -35,7 +36,7 @@ func TestStoreHeader_LastUpdateTimeSeamed(t *testing.T) {
 	}
 
 	// Reproducible: a fresh sim at the same seed yields the identical persisted timestamp.
-	h2 := createStoreHeader(1, nil, dst.NewSim(7))
+	h2 := createStoreHeaderAtFormat(1, nil, dst.NewSim(7), int32(formatVersionDefault))
 	if *h2.LastUpdateTime != *h1.LastUpdateTime {
 		t.Fatalf("sim header not reproducible: %d vs %d", *h1.LastUpdateTime, *h2.LastUpdateTime)
 	}
@@ -43,7 +44,7 @@ func TestStoreHeader_LastUpdateTimeSeamed(t *testing.T) {
 	// Production (nil env) uses the wall clock — must NOT be the fixed Epoch, and must be
 	// a recent time (proves the fallback path is live, i.e. we didn't hard-wire Epoch).
 	before := uint64(time.Now().UnixMilli())
-	h3 := createStoreHeader(1, nil, nil)
+	h3 := createStoreHeaderAtFormat(1, nil, nil, int32(formatVersionDefault))
 	after := uint64(time.Now().UnixMilli())
 	if *h3.LastUpdateTime == epochMillis {
 		t.Fatal("production LastUpdateTime is the sim Epoch — the wall-clock fallback is broken")

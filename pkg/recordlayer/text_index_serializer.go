@@ -343,18 +343,6 @@ func (s *TextIndexBunchedSerializer) deserializeBunch(key tuple.Tuple, data []by
 // Compile-time check that TextIndexBunchedSerializer implements BunchedSerializer.
 var _ BunchedSerializer[tuple.Tuple, []int] = (*TextIndexBunchedSerializer)(nil)
 
-// packVarInt is a convenience for encoding a single varint to bytes (used in tests).
-func packVarInt(val int) []byte {
-	buf := &bytes.Buffer{}
-	serializeVarInt(buf, val)
-	return buf.Bytes()
-}
-
-// unpackVarInt is a convenience for decoding a single varint from bytes (used in tests).
-func unpackVarInt(data []byte) (int, error) {
-	return deserializeVarInt(bytes.NewReader(data))
-}
-
 // BunchedSerializationError is returned when bunched map serialization/deserialization fails.
 type BunchedSerializationError struct {
 	Message string
@@ -366,11 +354,6 @@ func (e *BunchedSerializationError) Error() string {
 		return fmt.Sprintf("bunched serialization error: %s (data len=%d)", e.Message, len(e.Data))
 	}
 	return fmt.Sprintf("bunched serialization error: %s", e.Message)
-}
-
-// bytesToHex returns a hex string for debugging.
-func bytesToHex(b []byte) string {
-	return fmt.Sprintf("%x", b)
 }
 
 // BunchedMapException is the error type for BunchedMap operations.

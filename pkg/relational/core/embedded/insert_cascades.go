@@ -475,15 +475,6 @@ func firstSubqueryOrExistsAtom(ctx antlr.Tree) string {
 	return ""
 }
 
-func colsContainFold(cols []string, name string) bool {
-	for _, c := range cols {
-		if strings.EqualFold(c, name) {
-			return true
-		}
-	}
-	return false
-}
-
 // validateUpdateAssignments enforces NOT NULL on UPDATE SET at plan time
 // (matching Java's visitor and the naive execUpdate): assigning a
 // statically-NULL value to a NOT NULL column is a NOT_NULL_VIOLATION.

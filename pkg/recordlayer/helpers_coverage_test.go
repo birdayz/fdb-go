@@ -5,9 +5,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"google.golang.org/protobuf/proto"
-
-	"fdb.dev/gen"
 )
 
 // Tests targeting uncovered lines in atomic_index_helpers.go and runner.go.
@@ -66,88 +63,6 @@ var _ = Describe("Helper function coverage", func() {
 			_, err := toInt64("not a number")
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("cannot convert"))
-		})
-	})
-
-	Describe("keyExpressionHasNullField", func() {
-		// Lines 130-172 of atomic_index_helpers.go.
-		// Covers: CompositeKeyExpression, GroupingKeyExpression, EmptyKeyExpression,
-		// default case, nil message.
-
-		It("returns true for nil message", func() {
-			Expect(keyExpressionHasNullField(nil, Field("price"))).To(BeTrue())
-		})
-
-		It("returns false for set field", func() {
-			order := &gen.Order{Price: proto.Int32(100)}
-			Expect(keyExpressionHasNullField(order, Field("price"))).To(BeFalse())
-		})
-
-		It("returns true for unset field", func() {
-			order := &gen.Order{}
-			Expect(keyExpressionHasNullField(order, Field("price"))).To(BeTrue())
-		})
-
-		It("returns true for unknown field name", func() {
-			order := &gen.Order{Price: proto.Int32(100)}
-			Expect(keyExpressionHasNullField(order, Field("nonexistent"))).To(BeTrue())
-		})
-
-		It("handles CompositeKeyExpression - all set", func() {
-			order := &gen.Order{
-				OrderId: proto.Int64(1),
-				Price:   proto.Int32(100),
-			}
-			expr := Concat(Field("order_id"), Field("price"))
-			Expect(keyExpressionHasNullField(order, expr)).To(BeFalse())
-		})
-
-		It("handles CompositeKeyExpression - one unset", func() {
-			order := &gen.Order{OrderId: proto.Int64(1)}
-			expr := Concat(Field("order_id"), Field("price"))
-			Expect(keyExpressionHasNullField(order, expr)).To(BeTrue())
-		})
-
-		It("handles GroupingKeyExpression", func() {
-			order := &gen.Order{Price: proto.Int32(100)}
-			expr := Ungrouped(Field("price"))
-			Expect(keyExpressionHasNullField(order, expr)).To(BeFalse())
-
-			order2 := &gen.Order{}
-			Expect(keyExpressionHasNullField(order2, expr)).To(BeTrue())
-		})
-
-		It("returns false for EmptyKeyExpression", func() {
-			order := &gen.Order{}
-			Expect(keyExpressionHasNullField(order, EmptyKey())).To(BeFalse())
-		})
-
-		It("returns false for default (unknown) expression type", func() {
-			// VersionKeyExpression is not handled by the switch — falls to default.
-			order := &gen.Order{Price: proto.Int32(100)}
-			Expect(keyExpressionHasNullField(order, VersionKey())).To(BeFalse())
-		})
-
-		It("handles NestingKeyExpression with unknown parent field", func() {
-			order := &gen.Order{}
-			expr := Nest("nonexistent_field", Field("type"))
-			Expect(keyExpressionHasNullField(order, expr)).To(BeTrue())
-		})
-
-		It("handles NestingKeyExpression with unset parent message", func() {
-			// Order has an optional Flower field. If not set, should be true.
-			order := &gen.Order{OrderId: proto.Int64(1)}
-			expr := Nest("flower", Field("type"))
-			Expect(keyExpressionHasNullField(order, expr)).To(BeTrue())
-		})
-
-		It("handles NestingKeyExpression with set parent message", func() {
-			order := &gen.Order{
-				OrderId: proto.Int64(1),
-				Flower:  &gen.Flower{Type: proto.String("Rose")},
-			}
-			expr := Nest("flower", Field("type"))
-			Expect(keyExpressionHasNullField(order, expr)).To(BeFalse())
 		})
 	})
 

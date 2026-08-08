@@ -1,7 +1,7 @@
 package query
 
 // isScanFamilyLeg is the logical proxy for
-// the executor's legIsOrdinalSafe. It decides whether a LEFT projected-EXISTS
+// the executor's legOrdinalSafety. It decides whether a LEFT projected-EXISTS
 // fold ordinalizes (both legs scan-family → a positional seed + a
 // JoinLeftOuter NLJ, no name-model producer) or declines (a buried box falls
 // to a name-model path). This white-box pin fixes the

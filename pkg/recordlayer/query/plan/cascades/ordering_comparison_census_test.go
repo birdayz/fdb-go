@@ -193,7 +193,7 @@ func TestRootWildcardCensusCountsAMissingContext(t *testing.T) {
 // TestNonFieldBridgeOnlyCensusReachesTheCardinalityWrapper is the reachability pin
 // for NonFieldBridgeOnly.
 //
-// orderingValuesEqual keeps the ordinal-free NAME bridge below its structural arm
+// orderingValuesEqualIn keeps the ordinal-free NAME bridge below its structural arm
 // on the stated grounds that a CardinalityValue-wrapped pair still crosses it,
 // even though the FieldValue class never can any more. The corpus reports that
 // count as zero, and a zero is exactly what a DELETED bridge would report too. So
@@ -239,7 +239,7 @@ func TestNonFieldBridgeOnlyCensusReachesTheCardinalityWrapper(t *testing.T) {
 			"That is the only population left that reaches the bridge, and the "+
 			"corpus asserts the count is zero there. With this pin red, the corpus "+
 			"zero says the arm is DEAD rather than merely unexercised — at which "+
-			"point remove the arm from orderingValuesEqual instead of keeping a "+
+			"point remove the arm from orderingValuesEqualIn instead of keeping a "+
 			"fallback that cannot fire.",
 			values.ExplainValue(rooted), values.ExplainValue(sourceLocal),
 			c.NonFieldBridgeOnly)
@@ -248,9 +248,9 @@ func TestNonFieldBridgeOnlyCensusReachesTheCardinalityWrapper(t *testing.T) {
 	// The comparator itself must agree with the census's classification: the
 	// census derives the arms independently, so a disagreement means one of the two
 	// is describing a comparator that no longer exists.
-	if !orderingValuesEqual(rooted, sourceLocal) {
+	if !orderingValuesEqualIn(nil, rooted, sourceLocal) {
 		t.Errorf("the census says the name bridge decides %q vs %q EQUAL, but "+
-			"orderingValuesEqual says unequal. The census derives its arms "+
+			"orderingValuesEqualIn says unequal. The census derives its arms "+
 			"independently of the site, so the two have drifted.",
 			values.ExplainValue(rooted), values.ExplainValue(sourceLocal))
 	}

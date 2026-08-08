@@ -5,7 +5,6 @@ import (
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // indexGroupingCount returns the number of grouping columns in an index expression.
@@ -113,6 +112,24 @@ func updateWhileWriteOnlyNonIdempotent(
 // evaluateGroupingKeysNotNull extracts the grouping key tuple(s) from a record,
 // filtering out any tuples where the GROUPED (trailing) columns contain null values.
 // Used by COUNT_NOT_NULL maintainer.
+//
+// The GROUPED suffix, and only it. Java splits the evaluated entry before the
+// null test — AtomicMutationIndexMaintainer.updateIndexKeys builds
+// groupKey = subTuple(key, 0, groupPrefixSize) and
+// groupedValue = subKey(groupPrefixSize, keySize), and passes only groupedValue
+// to getMutationParam (AtomicMutationIndexMaintainer.java:141-146), which is
+// where keyContainsNonUniqueNull runs (AtomicMutation.java:165-171). A null in a
+// GROUP BY column is therefore a group, not a reason to drop the row; testing
+// the whole key instead undercounts every group whose key contains a null, which
+// is silent and reads as a correct-looking smaller number. Pinned by
+// "counts a row whose GROUPING column is null when the grouped column is not" —
+// the only spec here with a non-empty grouping prefix, which is the sole
+// dimension on which the two readings differ.
+//
+// Note it decides nullness by EVALUATING the key expression, not by walking the
+// proto structurally: a structural walk cannot see fan-out (a repeated field
+// with no elements yields zero tuples, not a null one) and cannot tell a
+// grouping column from a grouped one.
 func evaluateGroupingKeysNotNull(index *Index, record *FDBStoredRecord[proto.Message]) ([]tuple.Tuple, error) {
 	if index.Predicate != nil && !index.Predicate(record.Record) {
 		return nil, nil
@@ -147,55 +164,6 @@ func evaluateGroupingKeysNotNull(index *Index, record *FDBStoredRecord[proto.Mes
 		result = append(result, groupKey)
 	}
 	return result, nil
-}
-
-// keyExpressionHasNullField checks if evaluating a key expression against a message
-// would involve any unset (null) proto fields. Used by COUNT_NOT_NULL to skip
-// entries where the key contains NullStandin.NULL.
-// Matches Java's IndexEntry.keyContainsNonUniqueNull().
-func keyExpressionHasNullField(msg proto.Message, expr KeyExpression) bool {
-	if msg == nil {
-		return true
-	}
-	switch e := expr.(type) {
-	case *FieldKeyExpression:
-		m := msg.ProtoReflect()
-		fd := m.Descriptor().Fields().ByName(protoreflect.Name(e.fieldName))
-		if fd == nil {
-			return true
-		}
-		if fd.HasPresence() && !m.Has(fd) {
-			return true
-		}
-		return false
-	case *CompositeKeyExpression:
-		for _, child := range e.expressions {
-			if keyExpressionHasNullField(msg, child) {
-				return true
-			}
-		}
-		return false
-	case *NestingKeyExpression:
-		m := msg.ProtoReflect()
-		fd := m.Descriptor().Fields().ByName(protoreflect.Name(e.parentField))
-		if fd == nil {
-			return true
-		}
-		if fd.HasPresence() && !m.Has(fd) {
-			return true
-		}
-		if fd.Kind() == protoreflect.MessageKind {
-			nestedMsg := m.Get(fd).Message().Interface()
-			return keyExpressionHasNullField(nestedMsg, e.child)
-		}
-		return false
-	case *GroupingKeyExpression:
-		return keyExpressionHasNullField(msg, e.wholeKey)
-	case *EmptyKeyExpression:
-		return false
-	default:
-		return false
-	}
 }
 
 // toInt64 converts a numeric value (from proto field evaluation) to int64.

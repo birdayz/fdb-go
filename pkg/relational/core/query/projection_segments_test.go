@@ -51,7 +51,7 @@ func TestLegQOVBake_QuotedWholeNameIsNotAQualifiedReference(t *testing.T) {
 
 	// Guard the fixture: L must really be a leg carrying NAME, or the test
 	// would pass for the wrong reason — nothing to misattribute to.
-	probe := bakeDottedRefsToLegQOV(values.NewFlatFieldValue("L.NAME", values.UnknownType), outer)
+	probe := bakeDottedRefsToLegQOVWithRef(values.NewFlatFieldValue("L.NAME", values.UnknownType), logical.ColumnRef{}, outer)
 	if fv, ok := probe.(*values.FieldValue); !ok || fv.Resolved == nil {
 		t.Fatalf("fixture: L.NAME did not bake (%#v) — there is no leg L.NAME for a split to hit", probe)
 	}
@@ -429,7 +429,7 @@ func TestSingleForEachBake_AQualifiedReadDeclines(t *testing.T) {
 
 	// The BARE leaf still bakes — the live path, and the guard that says this
 	// fixture reaches the baker at all.
-	bare := bakeDottedRefsToLegQOV(values.NewFlatFieldValue("NAME", values.UnknownType), outer)
+	bare := bakeDottedRefsToLegQOVWithRef(values.NewFlatFieldValue("NAME", values.UnknownType), logical.ColumnRef{}, outer)
 	bfv, isFV := bare.(*values.FieldValue)
 	if !isFV || bfv.Resolved == nil {
 		t.Fatalf("fixture: the bare leaf NAME did not bake (%#v) — this baker's live arm "+
@@ -439,7 +439,7 @@ func TestSingleForEachBake_AQualifiedReadDeclines(t *testing.T) {
 	// The QUALIFIED read — qualified by the quantifier's OWN alias, the exact
 	// shape the deleted arm matched — must not bake.
 	in := values.NewFlatFieldValue("T.NAME", values.UnknownType)
-	if out := bakeDottedRefsToLegQOV(in, outer); out != values.Value(in) {
+	if out := bakeDottedRefsToLegQOVWithRef(in, logical.ColumnRef{}, outer); out != values.Value(in) {
 		t.Fatalf("a qualified read over a single-ForEach select baked to %#v — the arm "+
 			"that matched the qualifier against the layout's binding TEXT is deleted, "+
 			"and its replacement disposition is to decline and be loud at evaluation",

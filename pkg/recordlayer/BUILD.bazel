@@ -121,7 +121,6 @@ go_library(
         "time_window_leaderboard_maintainer.go",
         "tuple_fast.go",
         "tuple_ordering.go",
-        "vec_math.go",
         "vector_index_maintainer.go",
         "version_index_maintainer.go",
     ],

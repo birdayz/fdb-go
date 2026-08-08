@@ -121,7 +121,7 @@ func TestWriteIndexDescriptionJSON_HappyPath(t *testing.T) {
 
 // TestIndexDescribeCmd_MetaFile exercises the cobra command directly
 // via --meta-file (no FDB, no config). Covers RunE + flag wiring +
-// resolveContextAndOverride + meta.FromContext fallback. Without
+// storeAddressFlags.resolve + meta.FromContext fallback. Without
 // this, newIndexDescribeCmd stayed at 22% (only helpers were
 // exercised).
 func TestIndexDescribeCmd_MetaFile(t *testing.T) {

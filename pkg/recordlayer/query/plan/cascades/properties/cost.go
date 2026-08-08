@@ -394,17 +394,6 @@ func estimateCostMemoised(
 	return localCost(e, childCosts, childBounds, stats)
 }
 
-// firstMemberCost returns the cost of the first exploratory member of `ref`,
-// falling back to its first final member for a finals-only pinned reference.
-// Returns Cost{Cardinality: LeafScanCardinality} if `ref` is nil or
-// empty (defensive — represents "unknown sub-tree"). See package doc
-// for why we use first-member rather than best-member here.
-//
-// Exposed for use by callers that need the unmemoised path.
-func firstMemberCost(ref *expressions.Reference) Cost {
-	return firstMemberCostMemoised(ref, nil, newBoundsWalk(), DefaultStatistics{})
-}
-
 // firstMemberCostMemoised keeps its name and its COST-ONLY job. The bounds walk
 // travels beside it as a parameter and is never consulted here — a child's cost
 // comes from members[0], a child's bounds from all members, and conflating the

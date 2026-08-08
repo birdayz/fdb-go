@@ -10524,6 +10524,34 @@ to nothing.)
   exists because this exact fork already hid a live disagreement for a long time
   — see the false proof below.
 
+  **THAT GATE IS CURRENTLY BLIND, AND TWO SENTENCES ABOVE ARE STALE.** Found by
+  the unexported-dead-code gate; the authority is
+  `unreferencedFuncLedger` in `pkg/docscheck/unreferenced_func_gate_test.go`,
+  which this paragraph quotes rather than the reverse.
+
+  1. Of the four functions named for deletion above, `scanProvableMaxCard` is
+     ALREADY dead — zero production callers. The live logical walk's scan arm
+     takes `scanPlanProvableMaxCard(scan, ctx)`; only the index arm still uses
+     the plan-local `indexProvableMaxCard`. So the scan half of the deletion is
+     not gated on the plan-stamping work at all.
+  2. The visibility gate's scan arm calls that dead function. It is therefore
+     not measuring criterion 2; it is measuring something criterion 2 stopped
+     calling, and the context-enrichment axis — the ONLY axis on which the two
+     derivations can differ, and the whole reason this fork is dangerous — is
+     unreachable from it. Its shape table compounds this by stamping a primary
+     key on every scan, where both derivations read the same field and agree
+     trivially.
+  3. Repointing the arm at `scanPlanProvableMaxCard(p, ctx)` and adding an
+     UNSTAMPED scan turns the gate RED: criterion 2 proves max=1 under a
+     PK-resolving context while `ProvenCardinalities` returns unbounded, which
+     is the condition the gate fatals on. Latent today only because
+     `PrimaryScanRule` stamps under the same conditions the context fallback
+     needs — the same latency argument RFC-219 makes for the index arm.
+
+  So the fork is not held visible; it is held green. Arming the gate is the
+  first step of this item, and it needs the Cascades architectural review gate
+  because the red it produces is a real disagreement to resolve, not a test bug.
+
   While relocating the derivation, one FALSE PROOF in this area was found —
   and, in the first pass, only HALF fixed. The correction is now complete, and
   the distinction matters enough to record precisely:

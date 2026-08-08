@@ -31,7 +31,7 @@ func TestCursorResolvesFoldPositionally(t *testing.T) {
 	step1 := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), seed)
 
 	// Cross-agreement strengthening: the EXECUTOR twin (ordinalJoinSpansOf, via
-	// downstreamLegWindows→joinPlanSpans) yields A@0 / B@2 for this seed — the
+	// downstreamLegWindows→joinPlanSpansTyped) yields A@0 / B@2 for this seed — the
 	// same offsets the planner twin (OrdinalSeedLegWindows) gives, closing the
 	// cross-agreement loop on this constructor.
 	spans, ok := downstreamLegWindows(step1)
@@ -57,12 +57,12 @@ func TestCursorResolvesFoldPositionally(t *testing.T) {
 
 	mergedCorr := values.NamedCorrelationIdentifier("M")
 	existCorr := values.NamedCorrelationIdentifier("EX")
-	c, err := newFlatMapCursor(
+	c, err := newFlatMapCursorWithOuterProperties(
 		recordlayer.FromList([]QueryResult{}), step1, scanB, nil,
 		EmptyEvaluationContext(), mergedCorr, existCorr, foldRV,
-		recordlayer.ExecuteProperties{})
+		recordlayer.ExecuteProperties{}, false)
 	if err != nil {
-		t.Fatalf("newFlatMapCursor: %v", err)
+		t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)
 	}
 	defer c.Close()
 	if !c.foldWindowsOK {

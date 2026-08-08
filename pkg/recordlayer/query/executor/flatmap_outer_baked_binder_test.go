@@ -15,7 +15,7 @@ import (
 )
 
 // This file pins the FlatMap executor binder for a build-disabled join
-// (identity result value, no ordinal state of its own): newFlatMapCursor
+// (identity result value, no ordinal state of its own): newFlatMapCursorWithOuterProperties
 // probes the inner plan for FrontierPinned baked references over the OUTER
 // alias and, on a hit, binds the outer row positionally (adaptLegPositional,
 // LOUD on adaptation failure — never a silent Datum fallback). It also pins
@@ -225,11 +225,11 @@ func TestLoudAdaptationFailure(t *testing.T) {
 	outer := recordlayer.FromList([]QueryResult{
 		dmap(map[string]any{"A.ID": int64(1), "A.V": int64(10)}),
 	})
-	c, err := newFlatMapCursor(outer, nil, innerPlan, nil, EmptyEvaluationContext(),
+	c, err := newFlatMapCursorWithOuterProperties(outer, nil, innerPlan, nil, EmptyEvaluationContext(),
 		qovA.Correlation, values.NamedCorrelationIdentifier("B"),
-		values.NewQuantifiedObjectValue(qovA.Correlation), recordlayer.ExecuteProperties{})
+		values.NewQuantifiedObjectValue(qovA.Correlation), recordlayer.ExecuteProperties{}, false)
 	if err != nil {
-		t.Fatalf("newFlatMapCursor: %v", err)
+		t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)
 	}
 	defer c.Close()
 	if c.outerBakedType == nil {
@@ -350,11 +350,11 @@ func TestComputeResult_PassThrough(t *testing.T) {
 	)
 	newIdentityCursor := func(t *testing.T, innerPlan plans.RecordQueryPlan) *flatMapCursor {
 		t.Helper()
-		c, err := newFlatMapCursor(nil, nil, innerPlan, nil, EmptyEvaluationContext(),
+		c, err := newFlatMapCursorWithOuterProperties(nil, nil, innerPlan, nil, EmptyEvaluationContext(),
 			qovA.Correlation, qovB.Correlation,
-			values.NewQuantifiedObjectValue(qovA.Correlation), recordlayer.ExecuteProperties{})
+			values.NewQuantifiedObjectValue(qovA.Correlation), recordlayer.ExecuteProperties{}, false)
 		if err != nil {
-			t.Fatalf("newFlatMapCursor: %v", err)
+			t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)
 		}
 		return c
 	}

@@ -17,6 +17,22 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+// packVarInt / unpackVarInt drive a single varint through the LIVE stream codec
+// (serializeVarInt / deserializeVarInt, the ones the bunched-map serializer uses
+// at every call site). They live here rather than beside the codec because
+// nothing in production encodes one varint in isolation; a helper of this shape
+// in a production file reads as part of the codec's surface when it is only ever
+// a test's convenience.
+func packVarInt(val int) []byte {
+	buf := &bytes.Buffer{}
+	serializeVarInt(buf, val)
+	return buf.Bytes()
+}
+
+func unpackVarInt(data []byte) (int, error) {
+	return deserializeVarInt(bytes.NewReader(data))
+}
+
 // ---------------------------------------------------------------------------
 // VarInt encoding roundtrip
 // ---------------------------------------------------------------------------
