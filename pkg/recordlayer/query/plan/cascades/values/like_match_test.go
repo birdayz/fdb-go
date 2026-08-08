@@ -197,6 +197,101 @@ func TestLikeMatch_CrossCheckSQLPatternToRegex(t *testing.T) {
 	}
 }
 
+// TestLikeMatch_EscapeFallthroughFixesTheConstantPrefix pins, on the live
+// matcher, the four ESCAPE fallthrough shapes that decide where a pattern's
+// CONSTANT LITERAL PREFIX ends — the longest initial literal run before the
+// first UNESCAPED `%` or `_`.
+//
+// Nothing derives such a prefix today. RFC-216 §4 designs the extractor that
+// would (`values.LikeConstantPrefix`) and tabulates the required prefix per
+// ESCAPE hazard. That table is a claim about THIS matcher's semantics, and a
+// table in a design document cannot fail — these assertions are what make it
+// checkable, and what goes red if the matcher's ESCAPE handling moves under it.
+// If that happens, the RFC's table is what needs re-deriving, not this test.
+//
+// Each case is a PAIR: a subject inside the claimed prefix's byte range that the
+// pattern MATCHES, and one it REJECTS. One direction alone cannot locate a
+// boundary — only the rejection rules out the boundary being somewhere else.
+//
+// The `escape == '%'` pair is the sharpest, and was the unpinned one. Java's
+// replacement table has exactly two escape entries, `<esc>_` and `<esc>%`, so an
+// escape rune not followed by `_`/`%` falls through to the ORDINARY rules — which
+// for `%` means falling through to the METACHARACTER rules. The same rune is
+// therefore a literal in `'%%abc'` and a wildcard in `'%abc'`, giving prefixes
+// `%abc` and empty. TestLikeMatch's ESCAPE rows cover the DANGLING `%` direction
+// (`"a%"` with escape `%` still wildcards); the before-an-ordinary-character
+// direction is pinned here.
+func TestLikeMatch_EscapeFallthroughFixesTheConstantPrefix(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		pattern string
+		escape  rune
+		// prefix is the constant literal prefix RFC-216 §4 requires an
+		// extractor to derive from pattern. Nothing computes it — no
+		// extractor exists — it is the value the two subjects witness.
+		prefix  string
+		matches string
+		rejects string
+		why     string
+	}{
+		{
+			name:    "escape_rune_is_percent_escaped_pair_is_literal",
+			pattern: "%%abc", escape: '%', prefix: "%abc",
+			matches: "%abc", rejects: "abc",
+			why: "`%%` is the `<esc>%` entry, so a LITERAL `%` opens the prefix. If the " +
+				"two subjects swap verdicts, `%%` is behaving as a wildcard and the " +
+				"derived prefix is empty rather than \"%abc\".",
+		},
+		{
+			name:    "escape_rune_is_percent_before_ordinary_char_still_wildcards",
+			pattern: "%abc", escape: '%', prefix: "",
+			matches: "xabc", rejects: "xabd",
+			why: "`%` before an ordinary character matches no escape entry and falls " +
+				"through to the metacharacter rules, so it is the WILDCARD and the " +
+				"constant prefix is EMPTY. A rewrite must bail out here: deriving " +
+				"\"%abc\" would emit a range that excludes the matched subject, which " +
+				"the predicate accepts — dropped rows, the LOSING direction.",
+		},
+		{
+			name:    "no_escaped_escape_both_runes_stay_literal",
+			pattern: "a!!b%", escape: '!', prefix: "a!!b",
+			matches: "a!!bZZ", rejects: "ab",
+			why: "Java installs no `<esc><esc>` entry, so NEITHER `!` is consumed as an " +
+				"escape and both are literals: the prefix is \"a!!b\", four runes, not " +
+				"the three an escape-collapsing scanner would produce.",
+		},
+		{
+			name:    "dangling_escape_is_a_literal_in_the_prefix",
+			pattern: "abc!", escape: '!', prefix: "abc!",
+			matches: "abc!", rejects: "abc",
+			why: "A dangling escape is neither malformed nor a no-match: it is a literal, " +
+				"so it belongs IN the prefix. Truncating to \"abc\" would emit a range " +
+				"containing the rejected subject — which is the superset direction the " +
+				"mandatory residual covers (RFC-216 §2).",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if !strings.HasPrefix(c.matches, c.prefix) {
+				t.Fatalf("setup is wrong: matched subject %q is not in the byte-prefix "+
+					"range of %q", c.matches, c.prefix)
+			}
+			if !LikeMatch(c.pattern, c.matches, c.escape) {
+				t.Fatalf("LikeMatch(%q, %q, %q) = false, want true\n  prefix under test: %q\n  %s",
+					c.pattern, c.matches, c.escape, c.prefix, c.why)
+			}
+			if LikeMatch(c.pattern, c.rejects, c.escape) {
+				t.Fatalf("LikeMatch(%q, %q, %q) = true, want false\n  prefix under test: %q\n  %s",
+					c.pattern, c.rejects, c.escape, c.prefix, c.why)
+			}
+		})
+	}
+}
+
 // enumerateStrings returns every concatenation of alphabet elements
 // of length 0..maxLen.
 func enumerateStrings(alphabet []string, maxLen int) []string {

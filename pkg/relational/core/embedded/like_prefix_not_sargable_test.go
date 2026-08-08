@@ -29,15 +29,26 @@ CREATE INDEX idx_status ON t2 (status)`
 // comparison type and not about the schema.
 //
 // PART 2 — the covering stamp is lost through an intervening residual.
-// `MergeProjectionAndFetchRule` stamps covering only when the fetch's
-// inner is DIRECTLY a `RecordQueryIndexPlan`
-// (rule_merge_projection_and_fetch.go:91); once `PushFilterThroughFetchRule`
-// has pushed a residual below the fetch the inner is a
-// `RecordQueryPredicatesFilterPlan`, the rule takes the fallback at
-// :117-126, and the flag is dropped. Java has no such failure mode:
+// TWO rules stamp covering for this shape, redundantly, and both fail on
+// the same structural condition:
+//
+//   - `ImplementProjectionRule` — a PLANNING-phase expression rule, via
+//     `findIndexScanPlan` (rule_implement_projection.go:66);
+//   - `MergeProjectionAndFetchRule` — a PLANNING-phase implementation
+//     rule, via a direct `*RecordQueryIndexPlan` type assertion
+//     (rule_merge_projection_and_fetch.go:91), falling through to the
+//     :117-126 fallback when the assertion misses.
+//
+// Once `PushFilterThroughFetchRule` has pushed a residual below the
+// fetch, the fetch's inner is a `RecordQueryPredicatesFilterPlan`, and
+// neither the direct assertion nor `findIndexScanPlan` descends through
+// it, so the flag is dropped. Java has no such failure mode:
 // coveringness there is a distinct class,
 // `RecordQueryCoveringIndexPlan`, which deliberately does not implement
 // `RecordQueryPlanWithIndex`, so `Filter(CoveringIndexPlan)` keeps it.
+//
+// PART 3 (subtest) — the disabling experiment that makes "TWO rules,
+// redundantly" a measurement rather than a reading of the source.
 //
 // This matters beyond cosmetics because `isSingularIndexScanWithFetch`
 // keys on `indexScanCount==1`, so an unstamped index scan counts as
@@ -60,18 +71,26 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 			sql:  "SELECT id FROM t2 WHERE status LIKE 'act%'",
 			want: "Project([ID#0], PredicatesFilter(Scan(T2), [1 preds]))",
 			why: "RFC-216's defect: a LIKE conjunct cannot bind an index placeholder. " +
-				"If this now plans an IndexScan, a LIKE->range producer has landed and " +
-				"RFC-216's premise is closed — check that the residual LIKE is STILL " +
-				"applied above the scan (predicates_test.go's " +
-				"TestLikeMatch_NoPatternYieldsATightPrefixRange says it must be).",
+				"If this now plans an IndexScan, SOMETHING has given the LIKE an access " +
+				"path — but an IndexScan alone does not establish that a LIKE->range " +
+				"producer landed, and does not by itself establish a bug either: an " +
+				"all-residual match over a full index scan is a legal plan " +
+				"(rule_match_intermediate.go:1082). Check what the scan's BOUND is and " +
+				"whether the residual LIKE is still applied above it — " +
+				"TestLikeMatch_NoPatternYieldsATightPrefixRange in " +
+				"cascades/predicates/comparisons_test.go says no LIKE pattern yields a " +
+				"tight range, so the residual may never be dropped whatever the bound is.",
 		},
 		{
 			name: "like_suffix_full_scans",
 			sql:  "SELECT id FROM t2 WHERE status LIKE '%act'",
 			want: "Project([ID#0], PredicatesFilter(Scan(T2), [1 preds]))",
-			why: "A leading-% LIKE has an EMPTY constant prefix, so no range exists for it " +
-				"in any design. If this ever plans an IndexScan the range is unbounded and " +
-				"the plan is wrong, not merely different.",
+			why: "A leading-% LIKE has an EMPTY constant prefix, so no LIKE-derived range " +
+				"exists for it in any design. If this plans an IndexScan, the question to " +
+				"answer is whether the scan carries a bound DERIVED FROM THE LIKE (which " +
+				"would be wrong, not merely different) or is an unbounded all-residual " +
+				"index scan the cost model happened to pick (legal, and only a costing " +
+				"question).",
 		},
 		{
 			name: "equality_control_uses_the_index",
@@ -86,8 +105,8 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 			sql:  "SELECT id FROM t2 WHERE status > 'act'",
 			want: "Project([ID#0], IndexScan(IDX_STATUS, [<>] COVERING))",
 			why: "The covering control for PART 2: with no residual between the fetch and " +
-				"the scan, MergeProjectionAndFetchRule's direct branch fires and the stamp " +
-				"survives.",
+				"the scan, the direct stamping branches fire and the stamp survives. " +
+				"Also the subject of the PART 3 disabling experiment.",
 		},
 		{
 			name: "residual_below_the_fetch_drops_the_covering_stamp",
@@ -96,7 +115,7 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 			why: "The defect itself: same index, same projected columns, same covering " +
 				"entry — but a residual now sits between the fetch and the scan and the " +
 				"COVERING stamp is gone. If this string gains COVERING the stamp is being " +
-				"preserved through the residual, which is the fix RFC-216 §4.1 names as a " +
+				"preserved through the residual, which is the fix RFC-216 §3.2 names as a " +
 				"prerequisite for CQ-33 on secondary indexes; update that section rather " +
 				"than this expectation.",
 		},
@@ -115,4 +134,77 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("two_rules_stamp_covering_redundantly", func(t *testing.T) {
+		t.Parallel()
+
+		// PART 3. The cases above pin the OBSERVABLE (this shape has the
+		// stamp, that shape lost it). They cannot pin the CAUSAL claim
+		// RFC-216 §3.2 rests on — that TWO rules stamp it and either one
+		// alone suffices — because they stay green if one of the two
+		// redundant stampers disappears entirely. A causal claim needs a
+		// disabling experiment, so this is one.
+		//
+		// SCOPE: the direct, no-residual covering control ONLY. On the
+		// residual query the experiment measures something else —
+		// disabling MergeProjectionAndFetchRule there changes the FETCH
+		// shape (Fetch(PredicatesFilter(IndexScan)) instead of
+		// PredicatesFilter(IndexScan)) rather than the stamp, which is
+		// already absent. So "disabling either alone changes nothing" is a
+		// statement about this control, not about the defect shape.
+		const sql = "SELECT id FROM t2 WHERE status > 'act'"
+		const stamped = "Project([ID#0], IndexScan(IDX_STATUS, [<>] COVERING))"
+		// With BOTH stampers off, the projection no longer absorbs the
+		// fetch at all: the fetch survives and its inner scan is unstamped.
+		const unstamped = "Project([ID#0], Fetch(IndexScan(IDX_STATUS, [<>])))"
+
+		exps := []struct {
+			name     string
+			disabled []string
+			want     string
+			why      string
+		}{
+			{
+				name: "merge_alone_off_stamp_survives", disabled: []string{"MergeProjectionAndFetchRule"},
+				want: stamped,
+				why: "ImplementProjectionRule stamps it independently. If this now " +
+					"differs, the two stampers are no longer redundant and RFC-216 " +
+					"§3.2's two-rule attribution needs re-deriving — the covering-stamp " +
+					"fix then has one site to change, not two.",
+			},
+			{
+				name: "implement_projection_alone_off_stamp_survives", disabled: []string{"ImplementProjectionRule"},
+				want: stamped,
+				why: "MergeProjectionAndFetchRule stamps it independently. Same " +
+					"consequence as above in the other direction.",
+			},
+			{
+				name: "both_off_stamp_is_gone",
+				disabled: []string{
+					"MergeProjectionAndFetchRule", "ImplementProjectionRule",
+				},
+				want: unstamped,
+				why: "The load-bearing half: it is these TWO rules and nothing else that " +
+					"stamp covering for this shape. If the stamp survives with both " +
+					"disabled there is a THIRD stamper the RFC does not account for; if " +
+					"planning fails outright, DisabledRules stopped being able to express " +
+					"this experiment and the two assertions above became vacuous — an " +
+					"unrecognized rule name is INERT, so a rename would silently turn " +
+					"both of them into 'disabling nothing changes nothing'.",
+			},
+		}
+		for _, e := range exps {
+			t.Run(e.name, func(t *testing.T) {
+				t.Parallel()
+				got, err := PlanQueryForTestWithDisabledRules(sql, rfc216Schema, nil, e.disabled)
+				if err != nil {
+					t.Fatalf("planning %q with %v disabled failed: %v", sql, e.disabled, err)
+				}
+				if got != e.want {
+					t.Fatalf("%s\n  query:    %s\n  disabled: %v\n  got:      %s\n  want:     %s\n\n%s",
+						e.name, sql, e.disabled, got, e.want, e.why)
+				}
+			})
+		}
+	})
 }

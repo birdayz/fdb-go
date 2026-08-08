@@ -38,7 +38,7 @@ const (
 	ColBoolean
 	ColDouble // 64-bit IEEE double
 	ColFloat  // 32-bit IEEE single, carried as float64 everywhere above the
-	// tuple-packing boundary (see coerceTupleElement) -- genRows rounds
+	// tuple-packing boundary (see coerceTupleElementForKey) -- genRows rounds
 	// through float32 once at generation time so the oracle's row already
 	// holds the value the engine will actually store and read back.
 )
@@ -1088,7 +1088,7 @@ func genRows(rng *rand.Rand, table TableDef) []Row {
 				}
 				// FLOAT columns store as a genuine float32; the value layer
 				// and the driver widen it back to float64 on read (the
-				// row-domain convention documented at coerceTupleElement).
+				// row-domain convention documented at coerceTupleElementForKey).
 				// The oracle's authoritative row value must reflect that
 				// ROUNDING or it would compare against a value the engine
 				// can never actually produce — this line is what keeps

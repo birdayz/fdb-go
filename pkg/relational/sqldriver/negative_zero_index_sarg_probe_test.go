@@ -135,8 +135,13 @@ func TestFDB_NegativeZeroIndexSargProbe(t *testing.T) {
 		}
 	}
 	// notEqProbe checks `<>` WITHOUT requiring an IndexScan: NOT_EQUALS is
-	// ComparisonType.NONE in Java (residual, never sargable — see
-	// bindScanComparisonsToRangeSet's default-arm comment) and, with no other
+	// ComparisonType.NONE in Java — residual, never sargable into a scan
+	// range. On the Go side that is decided upstream of the binder, by
+	// isScanRangeCompatible (scan_match_helpers.go:37-48), which does not
+	// admit ComparisonNotEquals, so a `<>` can never bind a placeholder and
+	// never reaches the binder's range-tail switch at all. (The comment that
+	// used to be cited here lived on the retired scanComparisonsToTupleRange
+	// twin's default arm; the live binder has no such comment.) With no other
 	// predicate to justify visiting the secondary index at all, the planner
 	// takes a full PRIMARY scan here rather than IndexScan(D_V)/IndexScan(F_V)
 	// — there is no SARG-vs-residual disagreement to prove for this operator,

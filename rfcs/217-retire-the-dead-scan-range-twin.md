@@ -194,9 +194,11 @@ addition to being meaningless.)
 
 What replaces it, all discharged:
 
-1. **Zero production callers re-verified at this branch head**, not inherited —
-   command and empty output in §1, and `grep -rn "scanComparisonsToTupleRange"
-   --include='*.go' pkg/` is empty after the deletion.
+1. **Zero production callers re-verified at this branch head**, not inherited. §1
+   shows the PRE-deletion state: the non-test grep matched the function's own
+   definition and nothing else. After the deletion the unrestricted
+   `grep -rn "scanComparisonsToTupleRange" pkg/` returns no output at all — every
+   reference, test and comment alike, is gone or retargeted (§3).
 2. **plandiff and explaindiff goldens byte-identical.** No file under
    `pkg/relational/conformance/{plandiff,explaindiff}/` is modified;
    `git status --porcelain` over that tree reports only a comment-only edit in
@@ -213,3 +215,11 @@ What replaces it, all discharged:
   analysis is exactly the false green this change exists to remove. Every test
   was landed in a bucket instead.
 - **Keep the tests pointed at a thin shim.** Same defect, one indirection later.
+- **Retire the LIVE binder and keep the twin** — i.e. treat the twin's single-range
+  emission as the correct behaviour and delete the plural binder instead. This is
+  the alternative §1a points here for, and it is rejected on the merits rather than
+  on convenience: it would re-arm the negative-NaN row drop (§5,
+  `..._MultiEqualityThenInequality`) and would match Java only by reintroducing
+  Java's own internal inconsistency, where the residual predicate says negative-NaN
+  rows qualify and the index scan cannot reach them. Go has one float comparator,
+  so it does not get to hold both answers.

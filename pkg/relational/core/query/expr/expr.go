@@ -1304,7 +1304,7 @@ func sharesIntegerWireEncoding(a, b values.TypeCode) bool {
 // — because a FieldValue/CorrelatedFieldValue cannot declare a different
 // result type without a real per-row coercion. values.PromoteValue.Evaluate
 // (coerceNumericResult) performs that coercion at row-eval time, and the
-// executor's tuple-packing boundary (coerceTupleElement) narrows a
+// executor's tuple-packing boundary (coerceTupleElementForKey) narrows a
 // FLOAT-targeted result to a genuine Go float32 so the wire encoding
 // matches the indexed column's tuple type code — the same division of
 // labor as the bare-constant path, just split across plan time (retype)
