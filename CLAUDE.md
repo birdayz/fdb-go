@@ -114,6 +114,15 @@ If you're tempted to add a 5-line note explaining a divergence, write it as a co
 
 **A TEST FILTER THAT MATCHES NOTHING REPORTS GREEN.** `--test.run` / `--test_filter` with a name that matches no test function runs zero tests and the target still passes — Bazel will print `Executed 1 out of 1 test: 1 test passes` for a target that executed nothing you asked for. So a green from a narrowed run is a statement about the FILTER until you have checked the filter matches: confirm the pattern against the actual function names, or read the per-test output and count what ran. Never bank a narrowed green as evidence without that check.
 
+**A GREEN FROM AN EMPTY SET IS THE DOMINANT FALSE POSITIVE — AND IT WEARS AT LEAST FOUR FACES.** The narrowed-filter case above is one instance of a general failure: a reporting layer that cannot distinguish *passed* from *never ran* renders both as success, so the absence of a result reads as the absence of a problem. Four confirmed here, three of them in a single session:
+
+- a `--test.run` pattern matching no function (`TestFieldNameDecision` for a test actually named `TestFieldNameNeverDecides` — `PASS`, zero `=== RUN` lines);
+- Bazel serving a cached result, printing `Executed 0 out of 1 test: 1 test passes` — a green that ran nothing this invocation. Re-run with `--nocache_test_results` before banking it;
+- CI runs held at `action_required` awaiting approval, which `gh pr checks` reports as *"no checks reported"* — indistinguishable from never triggered. All 3 bot-authored PRs in this repo's history ran zero checks and **one of them merged that way**, because `mergeStateStatus` was `UNSTABLE`, not blocked;
+- a `gh` JSON query whose `statusCheckRollup` is empty, so a filter for failing checks returns nothing and reads as "all green".
+
+The defence is always the same and it is cheap: **confirm the population is non-empty before interpreting the verdict.** Count the `=== RUN` lines, count the checks, count the rows. A gate must separate three states — passed, failed, and never-ran — because collapsing the third into the first fails OPEN, which is the direction that ships bugs. When you report a green, you are implicitly claiming something ran; make that claim checkable.
+
 **EVERY PROOF GETS COMMITTED AS A TEST — never as a throwaway probe you delete.** If you wrote a scratch probe to establish a fact, and that fact justified a decision, the probe becomes a test. No exceptions. The instinct is to delete it once it has "done its job", and that is exactly backwards: the conclusion outlives the measurement, so the measurement is what has to survive. A deleted probe is the same failure as a filed-instead-of-fixed finding — the knowledge evaporates, and the next person either re-derives it or silently breaks the assumption it rested on.
 
 This applies with FULL force to two cases that feel exempt:
@@ -235,6 +244,7 @@ Java source at `fdb-record-layer/` (gitignored, tag **4.12.11.0**, matches MODUL
 8. **Error types, not sentinels** — see below.
 9. **Never paper over bugs** — early-return tolerance gates compound across shifts and hide real failures. Pin the actual expected behaviour.
 10. **Emergent behaviour over special-case checks** — match the architectural property that produces the behaviour, not a downstream observable. Bolted-on `if X { throw }` checks diverge the moment Java's structure changes.
+11. **Resolve a conflict by reading it, never by stripping the markers** — a conflict is not always two additions to merge. It is often one side *correcting* what the other still asserts, and "keep both" then silently reverts the correction while compiling cleanly and passing the whole suite. That failure is invisible to `go vet`, to the compiler and to a green run; the loud ones (a brace mismatch, a duplicate map key) are the lucky cases. Restore the markers with `git checkout --conflict=merge` and read each hunk. The resolution differs *per hunk within one file*: the first may be genuinely balanced and keeping both is right, and the next may need one side outright because it is the newer, corrected text.
 
 ## Cross-engine SQL conformance
 
