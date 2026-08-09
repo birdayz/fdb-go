@@ -67,8 +67,8 @@ import (
 // Reference per child edge (plans.QuantifierOverPlan / QuantifiersOverPlans),
 // so every edge in a freshly-built tree starts unprimed; recursing into
 // children before priming the parent's edge is what lets
-// cardinalitiesFromChildRef read a populated PlanPropertiesMap instead of an
-// empty one. A no-op on an already-primed Reference (shared sub-trees are
+// cardinalitiesFromChildRefOrInner read a populated PlanPropertiesMap instead
+// of an empty one. A no-op on an already-primed Reference (shared sub-trees are
 // primed once).
 func primeCardinalitiesProperty(plan plans.RecordQueryPlan) {
 	if plan == nil {

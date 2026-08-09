@@ -700,10 +700,6 @@ func countLogicalPlanNode(plan plans.RecordQueryPlan, counts *expressionCounts, 
 	}
 }
 
-func countResidualPredicates(e expressions.RelationalExpression) int {
-	return countResidualPredicatesWithContext(e, nil)
-}
-
 func countResidualPredicatesWithContext(e expressions.RelationalExpression, ctx PlanContext) int {
 	if ph, ok := e.(physicalPlanExpression); ok {
 		if plan := ph.GetRecordQueryPlan(); plan != nil {
@@ -719,10 +715,10 @@ func countResidualPredicatesRec(e expressions.RelationalExpression, count *int, 
 	if e == nil {
 		return
 	}
-	// Mirror concreteResidualPredicates: PredicatesFilter, legacy Filter, and a
+	// Mirror concreteResidualPredicatesWithContext: PredicatesFilter, legacy Filter, and a
 	// materialized NLJ's join predicate are all residual conjuncts (#3). This
 	// fallback only runs when the compared expression is not itself a physical
-	// plan (the physical path takes concreteResidualPredicates), so the counters
+	// plan (the physical path takes concreteResidualPredicatesWithContext), so the counters
 	// must agree on what a residual is.
 	if plan, ok := e.(plans.RecordQueryPlan); ok {
 		classification, known := classifyConcretePlan(plan)
@@ -2170,33 +2166,6 @@ func concretePlanCounts(p plans.RecordQueryPlan, ctx PlanContext) expressionCoun
 	return counts
 }
 
-// mergeCounts adds src's operator counts into dst, taking the max of provable
-// max-cardinalities (-1 = unknown) and OR-ing the unbounded-access flag. The final
-// "unbounded ⇒ unknown" reset is applied once by concretePlanCounts at the top.
-func mergeCounts(dst *expressionCounts, src expressionCounts) {
-	dst.scanCount += src.scanCount
-	dst.indexScanCount += src.indexScanCount
-	dst.coveringIndexCount += src.coveringIndexCount
-	dst.fetchCount += src.fetchCount
-	dst.typeFilterCount += src.typeFilterCount
-	dst.inJoinCount += src.inJoinCount
-	dst.inUnionCount += src.inUnionCount
-	dst.flatMapCount += src.flatMapCount
-	dst.nestedLoopJoinCount += src.nestedLoopJoinCount
-	dst.mapCount += src.mapCount
-	dst.predicatesFilterCount += src.predicatesFilterCount
-	dst.unmatchedFieldCount += src.unmatchedFieldCount
-	dst.inMemorySortCount += src.inMemorySortCount
-	dst.nljPredicateCount += src.nljPredicateCount
-	dst.numDefaultOnEmpty += src.numDefaultOnEmpty
-	if src.maxDataAccessCardinality > dst.maxDataAccessCardinality {
-		dst.maxDataAccessCardinality = src.maxDataAccessCardinality
-	}
-	if src.unboundedDataAccess {
-		dst.unboundedDataAccess = true
-	}
-}
-
 func walkConcretePlan(p plans.RecordQueryPlan, counts *expressionCounts, ctx PlanContext) {
 	if p == nil {
 		return
@@ -2953,12 +2922,6 @@ func unmatchedFieldsForScan(pl *plans.RecordQueryScanPlan, ctx PlanContext) int 
 		columnSize = numComparisons
 	}
 	return columnSize - numComparisons
-}
-
-// concreteResidualPredicates sums the CNF size of every residual predicate
-// (PredicatesFilter + legacy Filter) in a concrete plan tree (criterion #3).
-func concreteResidualPredicates(p plans.RecordQueryPlan) int {
-	return concreteResidualPredicatesWithContext(p, nil)
 }
 
 func concreteResidualPredicatesWithContext(p plans.RecordQueryPlan, ctx PlanContext) int {

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -29,6 +30,22 @@ func newIndexCmd() *cobra.Command {
 	)
 	return c
 }
+
+// offlineNeedsFileSourceError replaces meta.ErrMissingSource's own remediation
+// for the --no-fdb path, while still UNWRAPPING to it so callers matching the
+// sentinel keep working. A plain fmt.Errorf could do one or the other, not both:
+// %w would drag in the sentinel's text (which recommends
+// `metadata.meta_store_keyspace`, a source read FROM FDB and therefore a dead
+// end under this flag), and omitting %w would break errors.Is.
+type offlineNeedsFileSourceError struct{ context string }
+
+func (e *offlineNeedsFileSourceError) Error() string {
+	return fmt.Sprintf("offline rendering (--no-fdb) needs a FILE metadata source, and context %q "+
+		"has none: add `metadata.meta_file` to it or pass --meta-file "+
+		"(a `meta_store_keyspace` source is read from FDB, which --no-fdb skips)", e.context)
+}
+
+func (e *offlineNeedsFileSourceError) Unwrap() error { return meta.ErrMissingSource }
 
 func newIndexLsCmd() *cobra.Command {
 	var addr storeAddressFlags
@@ -60,7 +77,7 @@ func newIndexLsCmd() *cobra.Command {
 			}
 			if noFDB {
 				if target.relational() {
-					return fmt.Errorf("--no-fdb cannot be combined with --database/--schema — the catalog metadata lives in FDB")
+					return fmt.Errorf("offline rendering (--no-fdb) cannot be combined with --database/--schema — the catalog metadata lives in FDB")
 				}
 				var src meta.Source
 				if target.metaFile != "" {
@@ -68,8 +85,30 @@ func newIndexLsCmd() *cobra.Command {
 				} else {
 					src, err = meta.FromContext(target.cfgCtx, nil, nil)
 					if err != nil {
-						return fmt.Errorf("--no-fdb requires a file metadata source: %w "+
-							"(add `meta_file` to the context or pass --meta-file)", err)
+						// Name the context: an operator with several contexts
+						// otherwise cannot tell which one lacks the source.
+						//
+						// ErrMissingSource is special-cased rather than
+						// wrapped. Its own remediation is "add
+						// metadata.meta_file or metadata.meta_store_keyspace",
+						// and under --no-fdb the second half is a dead end —
+						// a meta-store source is READ FROM FDB, which is the
+						// one thing this flag exists to avoid. Wrapping it
+						// would offer the operator a fix that fails again and
+						// omit --meta-file, which works. The other paths out
+						// of FromContext already carry accurate remediation
+						// ("configure `meta_file` … or pass --meta-file"), so
+						// those are wrapped unchanged.
+						//
+						// Leading with a sentence word rather than the flag is
+						// enforced for the whole binary by docscheck's
+						// TestCLIErrorMessagesDoNotLeadWithAFlag; fang
+						// title-cases the banner's first word.
+						if errors.Is(err, meta.ErrMissingSource) {
+							return &offlineNeedsFileSourceError{context: target.cfgCtx.GetName()}
+						}
+						return fmt.Errorf("offline rendering (--no-fdb) needs a file metadata source in context %q: %w",
+							target.cfgCtx.GetName(), err)
 					}
 				}
 				md, err := src.Load(cmd.Context())

@@ -301,22 +301,71 @@ func TestFDB_NestedSortKeyThroughTheProjectedExistsFold(t *testing.T) {
 	// It is a tripwire, not an endorsement: when the merge learns struct columns
 	// this reddens, and the right move is to replace it with the row assertion
 	// (ids [3 2 1] ordered by n.sk, the struct projected intact).
-	t.Run("projected_struct_root_over_a_join_still_fails_for_a_reason_that_predates_this", func(t *testing.T) {
+	// This WAS a tripwire asserting that projecting a struct root over a join's
+	// merged row fails. It is now the row assertion its own message named.
+	//
+	// ITS DIAGNOSIS WAS WRONG, and that is worth keeping rather than deleting.
+	// The tripwire attributed the failure to "the positional merge does not
+	// model a struct-typed column" and instructed a replacement once the merge
+	// LEARNED struct columns. The merge never learned anything: RFC-223 showed
+	// the struct was not involved at all — a plain BIGINT failed identically and
+	// this same struct's QUALIFIED twin already worked — and the discriminator
+	// was that a bare reference lost the ordinal a qualified one kept. So the
+	// arm is converted because the reference now bakes, not because a type is
+	// now carried.
+	//
+	// The ORDER BY n.sk form is the one this file exists for, and it is the
+	// stronger assertion: n.sk descends 50,40,30 as id ascends 1,2,3, so
+	// ordering by it yields ids [3 2 1] while ordering by id — or by whatever
+	// slot a mis-derived root ordinal lands on — yields [1 2 3].
+	t.Run("projected_struct_root_over_a_join", func(t *testing.T) {
 		t.Parallel()
-		q := "SELECT t1.id, n, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h " +
-			"FROM t1 JOIN t3 ON t3.t1_id = t1.id"
-		rows, err := db.QueryContext(ctx, q)
-		if err == nil {
-			rows.Close()
-			t.Fatalf("projecting a struct column through a join's merged row now works "+
-				"for %q. The positional merge has learned struct-typed columns — replace "+
-				"this tripwire with the row assertion for the ORDER BY n.sk form, which "+
-				"the leg-window re-anchor already handles for every non-projected shape", q)
-		}
-		if !strings.Contains(err.Error(), "not resolvable in the runtime row") {
-			t.Fatalf("expected the pre-existing unresolvable-struct-column failure, got: "+
-				"%v — a DIFFERENT failure means this shape changed for some other reason "+
-				"and the diagnosis recorded above no longer describes it", err)
+		for _, tc := range []struct{ name, q, want string }{
+			{
+				"unordered",
+				"SELECT t1.id, n, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h " +
+					"FROM t1 JOIN t3 ON t3.t1_id = t1.id",
+				"[1 [50 1] true 2 [40 2] false 3 [30 3] true]",
+			},
+			{
+				"ordered_by_the_nested_key",
+				"SELECT t1.id, n, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h " +
+					"FROM t1 JOIN t3 ON t3.t1_id = t1.id ORDER BY n.sk",
+				"[3 [30 3] true 2 [40 2] false 1 [50 1] true]",
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				rows, err := db.QueryContext(ctx, tc.q)
+				if err != nil {
+					t.Fatalf("query %q: %v", tc.q, err)
+				}
+				defer rows.Close()
+				var got []string
+				for rows.Next() {
+					var id int64
+					var raw any
+					var h bool
+					if err := rows.Scan(&id, &raw, &h); err != nil {
+						t.Fatalf("scan %q: %v", tc.q, err)
+					}
+					s, ok := raw.(interface{ Attributes() []any })
+					if !ok {
+						t.Fatalf("query %q: struct column is %T, not a struct", tc.q, raw)
+					}
+					got = append(got, fmt.Sprint(id, s.Attributes(), h))
+				}
+				if err := rows.Err(); err != nil {
+					t.Fatalf("rows %q: %v", tc.q, err)
+				}
+				if len(got) == 0 {
+					t.Fatalf("query %q returned ZERO rows; the assertion would hold "+
+						"vacuously", tc.q)
+				}
+				if fmt.Sprint(got) != tc.want {
+					t.Fatalf("query %q =\n  %v\nwant\n  %v", tc.q, fmt.Sprint(got), tc.want)
+				}
+			})
 		}
 	})
 

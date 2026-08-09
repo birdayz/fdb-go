@@ -83,29 +83,19 @@ var _ = Describe("Bug Bounty Round 3", func() {
 		Expect(result).To(Equal(prefix), "computeIndexDeletePrefix should return the type key prefix")
 	})
 
-	// =========================================================================
-	// BUG #2: COUNT_NOT_NULL checks null on whole expression instead of grouped portion
+	// BUG #2 (COUNT_NOT_NULL tested nullness on the WHOLE key instead of the
+	// GROUPED suffix, undercounting every group whose GROUP BY column was null)
+	// is FIXED and now pinned, in count_not_null_index_test.go, by "counts a row
+	// whose GROUPING column is null when the grouped column is not".
 	//
-	// Severity: incorrect behavior (wrong count)
-	// Location: count_not_null_index_maintainer.go:109-113
-	//
-	// Description: evaluateGroupingKeys in CountNotNullIndexMaintainer calls
-	// keyExpressionHasNullField(record.Record, m.index.RootExpression) which
-	// checks the FULL expression (including grouping columns) for null fields.
-	//
-	// Java's AtomicMutationIndexMaintainer.updateIndexKeys() splits the
-	// evaluated entry into groupKey and groupedValue, then passes ONLY
-	// groupedValue to getMutationParam(). COUNT_NOT_NULL's getMutationParam()
-	// calls entry.keyContainsNonUniqueNull() on the grouped VALUE portion only.
-	//
-	// When a grouping column is null but the value (grouped) column is non-null,
-	// Java correctly counts the entry (null check passes on non-null value),
-	// but Go incorrectly skips it (null check fails on null grouping column).
-	//
-	// Impact: COUNT_NOT_NULL indexes with GroupBy expressions produce incorrect
-	// counts when grouping columns contain null values. This is silent data
-	// corruption — counts are too low.
-	// =========================================================================
+	// It is worth recording why it stayed unpinned long after it was fixed. The
+	// maintainer was repointed at evaluateGroupingKeysNotNull, but the function
+	// carrying the bug was left in the tree with its tests still asserting the
+	// PRE-FIX semantics as correct — and every COUNT_NOT_NULL spec used Ungrouped
+	// or GroupAll, i.e. groupingCount == 0, where the whole key and the grouped
+	// suffix are the same columns and the two readings cannot be told apart. The
+	// suite was green either way, so nothing would have failed if the fix were
+	// reverted. The gap was dimensional, not volumetric.
 
 	// =========================================================================
 	// BUG #3: SaveRecordWithOptions panics on nil proto.Message

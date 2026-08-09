@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	mathrand "math/rand/v2"
 	"net"
 	"os"
 	"runtime/debug"
@@ -99,10 +100,23 @@ type Conn struct {
 	loopWG    sync.WaitGroup // tracks readLoop + writeLoop goroutines
 	closeOnce sync.Once      // guards the single failConnection teardown
 
-	// Connection monitor cadence. Defaults match C++ CONNECTION_MONITOR_LOOP_TIME
-	// (0.75s) / CONNECTION_MONITOR_TIMEOUT (2s); set once at dial time before the
-	// monitor goroutine starts. Tests inject small values for deterministic,
-	// fast monitor-death assertions (see withMonitorCadence).
+	// Connection monitor cadence. Set once at dial time before the monitor
+	// goroutine starts. Tests inject small values for deterministic, fast
+	// monitor-death assertions (see withMonitorCadence).
+	//
+	// These were MEASURED against flow/Knobs.cpp:102-103 and the reading held:
+	// C++ declares each knob with a simulation value and a real one,
+	//
+	//	CONNECTION_MONITOR_LOOP_TIME  isSimulated ? 0.75 : 1.0
+	//	CONNECTION_MONITOR_TIMEOUT    isSimulated ? 1.50 : 2.0
+	//
+	// and Go used to run 0.75s alongside 2s — the loop time's SIMULATED value
+	// paired with the timeout's REAL one, a combination the C client never uses
+	// in either mode. Both are now taken from the real column. C++ is the spec
+	// for this package, so the mixed pair was a Go bug and not a tuning choice.
+	//
+	// Tests inject small values through withMonitorCadence rather than relying
+	// on these, which is why tightening the loop to 1s does not slow any test.
 	monitorLoopInterval time.Duration
 	monitorTimeout      time.Duration
 
@@ -115,6 +129,14 @@ type Conn struct {
 	// detect dead connections in ~2s (vs 10s TCP keepalive).
 	// Matches C++ FlowTransport.actor.cpp connectionMonitor().
 	bytesReceived atomic.Int64
+
+	// monitorCycles counts completed connectionMonitor iterations. It exists so
+	// the loop's PACING is observable: an idle connection must cost one cycle
+	// per loop interval, and a version of this loop that reached its `continue`
+	// without waiting spun hot and hung the package's test target at its
+	// 300-second timeout rather than failing an assertion. A timeout is not a
+	// regression test, so the rate is asserted directly.
+	monitorCycles atomic.Int64
 
 	// Debug tracing (set before first use).
 	debugFrames bool
@@ -353,8 +375,12 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		pending: make(map[UID]chan Response, 16),
 		ctx:     connCtx,
 		cancel:  cancel,
-		// C++ CONNECTION_MONITOR_LOOP_TIME / CONNECTION_MONITOR_TIMEOUT defaults.
-		monitorLoopInterval: 750 * time.Millisecond,
+		// C++ CONNECTION_MONITOR_LOOP_TIME / CONNECTION_MONITOR_TIMEOUT, both
+		// taken from the NON-simulated column of flow/Knobs.cpp:102-103:
+		//
+		//	init( CONNECTION_MONITOR_LOOP_TIME, isSimulated ? 0.75 : 1.0 );
+		//	init( CONNECTION_MONITOR_TIMEOUT,   isSimulated ? 1.50 : 2.0 );
+		monitorLoopInterval: 1 * time.Second,
 		monitorTimeout:      2 * time.Second,
 	}
 	// Apply test-only knobs BEFORE any loop goroutine starts (no data race).
@@ -925,9 +951,11 @@ func buildVoidReply() []byte {
 // Matches C++ FlowTransport.actor.cpp connectionMonitor() (lines 641-721):
 //
 // Outer loop:
-//  1. Sleep CONNECTION_MONITOR_LOOP_TIME (750ms)
-//  2. If no pending requests → check idle timeout (skip PING)
-//  3. Sleep again (jittered), then send PING
+//  1. Sleep CONNECTION_MONITOR_LOOP_TIME (1s), jittered — the client's ONLY
+//     per-cycle delay; C++'s other one at :651 is server-only
+//  2. If no pending requests → skip the PING and loop (see the divergence note
+//     at the check itself)
+//  3. Send PING
 //  4. Inner loop: wait CONNECTION_MONITOR_TIMEOUT (2s) per round
 //     - If bytesReceived unchanged → kill connection
 //     - If bytesReceived changed → update baseline, continue inner loop
@@ -936,33 +964,78 @@ func buildVoidReply() []byte {
 // The inner retry loop is key: a single 2s timeout with no bytes kills,
 // but if ANY bytes arrive (server PINGs, other responses), the baseline
 // resets and we wait another 2s. This tolerates slow-but-alive connections.
+// jitteredDelay ports flow's delayJittered (flow.h:1481):
+//
+//	seconds * (DELAY_JITTER_OFFSET + DELAY_JITTER_RANGE * random01())
+//
+// with the knob values from Knobs.cpp:54-55 — offset 0.9, range 0.2 — so the
+// result is uniform over [0.9d, 1.1d). Both constants are named rather than
+// folded into a single ±10% because they are two independent knobs in C++ and a
+// future divergence should show up against the knob it came from.
+const (
+	delayJitterOffset = 0.9
+	delayJitterRange  = 0.2
+)
+
+func jitteredDelay(d time.Duration) time.Duration {
+	return time.Duration(float64(d) * (delayJitterOffset + delayJitterRange*mathrand.Float64()))
+}
+
 func (c *Conn) connectionMonitor() {
 	defer c.loopWG.Done()
 	defer c.recoverLoop("connectionMonitor")
 
 	for {
-		// Outer loop: sleep, then decide whether to PING.
-		// C++ CONNECTION_MONITOR_LOOP_TIME = 0.75s (configurable for tests).
+		// ONE jittered delay per cycle, and it is the client's only one.
+		//
+		// C++'s FIRST `delay(CONNECTION_MONITOR_LOOP_TIME)`
+		// (FlowTransport.actor.cpp:651) sits inside a block guarded by
+		// `!FlowTransport::isClient() && !peer->destination.isPublic()` (:644),
+		// so a CLIENT never executes it. The client path is delay(0) (:667),
+		// the idle/unreferenced checks (:669-680), then ONE delayJittered
+		// (:682), the PING, and delay(CONNECTION_MONITOR_TIMEOUT) (:692).
+		//
+		// Go used to sleep here AS WELL as below, porting the server-only
+		// delay, which put worst-case dead-connection detection at
+		// 2*loop+timeout instead of loop+timeout. That is why correcting the
+		// knob VALUE alone made things worse rather than better: at the real
+		// 1.0s the doubled loop moved the worst case to 4.0s, further from the
+		// C client's 3.0s than the 3.5s the wrong value happened to give.
+		//
+		// The delay sits BEFORE the idle check rather than after it, unlike
+		// C++. That is forced by the divergence noted below: Go's idle branch
+		// loops instead of throwing, so a delay placed only on the ping path
+		// would leave the idle path spinning hot.
+		//
+		// JITTERED, matching `delayJittered` at :682. Not cosmetic — without it
+		// every connection a client holds pings on the same period, so a process
+		// that opened many at once keeps them in lockstep and the PINGs arrive
+		// as a synchronized burst.
 		select {
-		case <-time.After(c.monitorLoopInterval):
+		case <-time.After(jitteredDelay(c.monitorLoopInterval)):
 		case <-c.ctx.Done():
 			return
 		}
 
-		// C++ checks peer->reliable.empty() && peer->unsent.empty() && peer->outstandingReplies == 0.
-		// If no pending requests, the connection is idle — skip PING, let TCP keepalive handle it.
+		// C++ checks peer->reliable.empty() && peer->unsent.empty() &&
+		// peer->outstandingReplies == 0 (:669).
+		//
+		// KNOWN DIVERGENCE, pre-existing and not introduced here: on that
+		// branch C++ either THROWS — connection_unreferenced (:672) or
+		// connection_idle (:677, past CONNECTION_MONITOR_IDLE_TIMEOUT = 180s) —
+		// or falls through and PINGs anyway. Go instead skips the ping and
+		// loops, so it never pings an idle connection and never closes one:
+		// a dead idle socket goes undetected until TCP keepalive. Closing that
+		// gap needs both missing knobs (IDLE_TIMEOUT and
+		// UNREFERENCED_CLOSE_DELAY) and a peer-reference count Go does not
+		// track, so it is a separate change with its own client-review lap.
+		c.monitorCycles.Add(1)
+
 		c.pendingMu.RLock()
 		hasPending := len(c.pending) > 0
 		c.pendingMu.RUnlock()
 		if !hasPending {
 			continue
-		}
-
-		// C++ second delay (jittered) before sending PING.
-		select {
-		case <-time.After(c.monitorLoopInterval):
-		case <-c.ctx.Done():
-			return
 		}
 
 		// Send PING and register for reply.

@@ -3,7 +3,7 @@ package sqldriver_test
 // Regression pin for a projected EXISTS over a BURIED box under a LEFT JOIN:
 // `(p JOIN q) LEFT JOIN s` (the 3-way clause associates left, so the LEFT's
 // preserved leg is the inner join box). The preserved leg is a JOIN, not a
-// scan, so it is not ordinal-safe (the executor's legIsOrdinalSafe rejects a
+// scan, so it is not ordinal-safe (the executor's legOrdinalSafety rejects a
 // join leg). Folding a buried box like this has no name-model producer any
 // more, so Go DECLINES the query cleanly (0AF00) rather than minting a fresh
 // one. This is a Java-parity REACH gap (Java folds and answers `[[10

@@ -137,6 +137,116 @@ var replyAsserters = map[string]func(t *testing.T, data []byte){
 			t.Errorf("penalty = %v, want 1.0", penalty)
 		}
 	},
+	// getMappedRange. These drive the production parser over real C++
+	// ObjectWriter bytes for both arms of the per-row union, including the two
+	// shapes that decode without error while being wrong: a mapped key that does
+	// not exist, and a mapped range that matched nothing.
+	"GetMappedKeyValuesReply_getvalue": func(t *testing.T, data []byte) {
+		rows, more, penalty, err := parseGetMappedKeyValuesReply(data)
+		if err != nil {
+			t.Fatalf("parseGetMappedKeyValuesReply: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("len(rows) = %d, want 2", len(rows))
+		}
+		if string(rows[0].Key) != "idx_a" || string(rows[0].Value) != "pk_a" {
+			t.Errorf("rows[0] primary = (%q,%q), want (idx_a,pk_a)", rows[0].Key, rows[0].Value)
+		}
+		if rows[0].Kind != MappedResultGetValue {
+			t.Fatalf("rows[0].Kind = %v, want getValue", rows[0].Kind)
+		}
+		if string(rows[0].GetValue.Key) != "rec_a" || string(rows[0].GetValue.Value) != "record_a" {
+			t.Errorf("rows[0] mapped = (%q,%q), want (rec_a,record_a)",
+				rows[0].GetValue.Key, rows[0].GetValue.Value)
+		}
+		if !rows[0].GetValue.Present {
+			t.Error("rows[0].GetValue.Present = false, want true")
+		}
+		// The mapper resolved to a key that is not in the database. Present must
+		// stay false so the caller can tell this apart from an empty record.
+		if rows[1].Kind != MappedResultGetValue {
+			t.Fatalf("rows[1].Kind = %v, want getValue", rows[1].Kind)
+		}
+		if string(rows[1].GetValue.Key) != "rec_missing" {
+			t.Errorf("rows[1] mapped key = %q, want rec_missing", rows[1].GetValue.Key)
+		}
+		if rows[1].GetValue.Present {
+			t.Errorf("rows[1].GetValue.Present = true (value %q), want false — an "+
+				"absent mapped value must not read as an empty one", rows[1].GetValue.Value)
+		}
+		if more {
+			t.Error("more = true, want false")
+		}
+		if penalty != 1.5 {
+			t.Errorf("penalty = %v, want 1.5", penalty)
+		}
+	},
+	"GetMappedKeyValuesReply_getrange": func(t *testing.T, data []byte) {
+		rows, more, penalty, err := parseGetMappedKeyValuesReply(data)
+		if err != nil {
+			t.Fatalf("parseGetMappedKeyValuesReply: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("len(rows) = %d, want 2", len(rows))
+		}
+		if rows[0].Kind != MappedResultGetRange {
+			t.Fatalf("rows[0].Kind = %v, want getRange", rows[0].Kind)
+		}
+		gr := rows[0].GetRange
+		if string(gr.Begin.Key) != "pfx_r\x00" || !gr.Begin.OrEqual || gr.Begin.Offset != 1 {
+			t.Errorf("rows[0] begin = (%q,%v,%d), want (pfx_r\\x00,true,1)",
+				gr.Begin.Key, gr.Begin.OrEqual, gr.Begin.Offset)
+		}
+		if string(gr.End.Key) != "pfx_r\xff" {
+			t.Errorf("rows[0] end key = %q, want pfx_r\\xff", gr.End.Key)
+		}
+		if len(gr.Rows) != 2 {
+			t.Fatalf("rows[0] nested rows = %d, want 2", len(gr.Rows))
+		}
+		if string(gr.Rows[0].Key) != "pfx_r_1" || string(gr.Rows[0].Value) != "sub_1" {
+			t.Errorf("rows[0] nested[0] = (%q,%q), want (pfx_r_1,sub_1)",
+				gr.Rows[0].Key, gr.Rows[0].Value)
+		}
+		if string(gr.Rows[1].Key) != "pfx_r_2" || string(gr.Rows[1].Value) != "sub_2" {
+			t.Errorf("rows[0] nested[1] = (%q,%q), want (pfx_r_2,sub_2)",
+				gr.Rows[1].Key, gr.Rows[1].Value)
+		}
+		// The mapped range matched nothing. The probed selectors must survive so
+		// "genuinely empty" stays distinguishable from "truncated".
+		if rows[1].Kind != MappedResultGetRange {
+			t.Fatalf("rows[1].Kind = %v, want getRange", rows[1].Kind)
+		}
+		if string(rows[1].GetRange.Begin.Key) != "pfx_e\x00" {
+			t.Errorf("rows[1] begin key = %q, want pfx_e\\x00", rows[1].GetRange.Begin.Key)
+		}
+		if len(rows[1].GetRange.Rows) != 0 {
+			t.Errorf("rows[1] nested rows = %d, want 0", len(rows[1].GetRange.Rows))
+		}
+		if rows[1].GetRange.More {
+			t.Error("rows[1] nested more = true, want false")
+		}
+		if !more {
+			t.Error("more = false, want true")
+		}
+		if penalty != 2.5 {
+			t.Errorf("penalty = %v, want 2.5", penalty)
+		}
+	},
+	"GetMappedKeyValuesReply_empty": func(t *testing.T, data []byte) {
+		rows, more, penalty, err := parseGetMappedKeyValuesReply(data)
+		if err != nil {
+			t.Fatalf("parseGetMappedKeyValuesReply: %v", err)
+		}
+		if len(rows) != 0 {
+			t.Errorf("len(rows) = %d, want 0", len(rows))
+		}
+		if more {
+			t.Error("more = true, want false")
+		}
+		if penalty != 1.0 {
+			t.Errorf("penalty = %v, want 1.0", penalty)
+		}
+	},
 	"GetReadVersionReply_locked": func(t *testing.T, data []byte) {
 		version, locked, rkDefault, rkBatch, _, _, err := parseGetReadVersionReply(data)
 		if err != nil {

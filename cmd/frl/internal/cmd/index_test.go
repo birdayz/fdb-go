@@ -3,12 +3,14 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"fdb.dev/cmd/frl/internal/meta"
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -176,6 +178,115 @@ contexts:
 	}
 	if !strings.Contains(err.Error(), "--no-fdb") || !strings.Contains(err.Error(), "file") {
 		t.Errorf("error = %v; should mention both --no-fdb and the file requirement", err)
+	}
+}
+
+// runIndexLsNoFDBWithConfig writes cfgYAML as the active frl config and
+// runs `index ls --no-fdb` (plus extraArgs) through the real root
+// command, returning the error the operator would see. Uses t.Setenv,
+// so callers must not be parallel.
+func runIndexLsNoFDBWithConfig(t *testing.T, cfgYAML string, extraArgs ...string) error {
+	t.Helper()
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("FRL_CONFIG", cfgPath)
+
+	c := NewRoot()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs(append([]string{"index", "ls", "--no-fdb"}, extraArgs...))
+	return c.Execute()
+}
+
+// assertNoFDBSourceError pins the three properties of the `index ls
+// --no-fdb` metadata-source failure that operators actually depend on.
+// Each is a defect this message once had:
+//
+//   - it names the context, so an operator juggling several knows which
+//     one is missing the file source;
+//   - it does not lead with the flag, because fang title-cases the first
+//     word of the error banner and turns "--no-fdb" into "--No-Fdb";
+//   - it states the remediation exactly once — the wrapped sentinel
+//     already carries "or pass --meta-file", and the wrapper used to
+//     repeat that sentence verbatim.
+func assertNoFDBSourceError(t *testing.T, err error, wantContext string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected a metadata-source error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, wantContext) {
+		t.Errorf("error = %q; must name the context %q", msg, wantContext)
+	}
+	if strings.HasPrefix(msg, "-") {
+		t.Errorf("error = %q; must not start with a flag name (fang banner "+
+			"capitalization renders it as --No-Fdb)", msg)
+	}
+	if n := strings.Count(msg, "pass --meta-file"); n > 1 {
+		t.Errorf("error = %q; remediation repeated %d times, want once", msg, n)
+	}
+	if n := strings.Count(msg, "meta_file"); n > 1 {
+		t.Errorf("error = %q; `meta_file` remediation repeated %d times, want once", msg, n)
+	}
+}
+
+// TestIndexLs_NoFDB_MissingSourceNamesContext — a context with no
+// metadata source at all must fail with an ErrMissingSource-wrapping
+// error that names the context.
+func TestIndexLs_NoFDB_MissingSourceNamesContext(t *testing.T) {
+	// Not parallel: runIndexLsNoFDBWithConfig uses t.Setenv.
+	err := runIndexLsNoFDBWithConfig(t, `current_context: local-dev
+contexts:
+  - name: local-dev
+    cluster_file: /definitely/not/a/real/cluster.file
+    keyspace_path: /test
+`)
+	if !errors.Is(err, meta.ErrMissingSource) {
+		t.Errorf("error %v should unwrap to ErrMissingSource", err)
+	}
+	assertNoFDBSourceError(t, err, "local-dev")
+}
+
+// TestIndexLs_NoFDB_FDBStoreSourceNamesContext — same dance for the
+// FDB-store-unsupported sentinel, so callers using errors.Is can tell
+// "this command is file-only" apart from "context has no metadata at
+// all" while the operator still sees which context is at fault.
+func TestIndexLs_NoFDB_FDBStoreSourceNamesContext(t *testing.T) {
+	// Not parallel: runIndexLsNoFDBWithConfig uses t.Setenv.
+	err := runIndexLsNoFDBWithConfig(t, `current_context: prod
+contexts:
+  - name: prod
+    cluster_file: /definitely/not/a/real/cluster.file
+    keyspace_path: /test
+    metadata:
+      meta_store_keyspace: /myapp/_meta
+`)
+	if !errors.Is(err, meta.ErrFDBStoreNotAvailable) {
+		t.Errorf("error %v should unwrap to ErrFDBStoreNotAvailable", err)
+	}
+	assertNoFDBSourceError(t, err, "prod")
+}
+
+// TestIndexLs_NoFDB_MetaFileOverridesContextSource — --meta-file
+// short-circuits the context's metadata source, so an fdb_store context
+// that `--no-fdb` alone rejects still renders when the flag supplies a
+// file.
+func TestIndexLs_NoFDB_MetaFileOverridesContextSource(t *testing.T) {
+	// Not parallel: runIndexLsNoFDBWithConfig uses t.Setenv.
+	metaPath := writeMetaFileWithIndexes(t)
+	err := runIndexLsNoFDBWithConfig(t, `current_context: prod
+contexts:
+  - name: prod
+    cluster_file: /definitely/not/a/real/cluster.file
+    keyspace_path: /test
+    metadata:
+      meta_store_keyspace: /myapp/_meta
+`, "--meta-file", metaPath)
+	if err != nil {
+		t.Fatalf("--meta-file should override the context source: %v", err)
 	}
 }
 

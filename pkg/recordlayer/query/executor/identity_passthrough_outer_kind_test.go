@@ -42,10 +42,10 @@ func TestIdentityPassThroughDiscriminatesOuterKind(t *testing.T) {
 	// GATED ORDINAL OUTER: the step-1 NLJ carries the ordinal seed → outerMergedType
 	// set (from downstreamLegWindowsTyped), outerBakedType nil (leg-independent inner).
 	gatedOuter := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), seed)
-	cGated, err := newFlatMapCursor(recordlayer.FromList([]QueryResult{}), gatedOuter, legIndependentInner, nil,
-		EmptyEvaluationContext(), mergedCorr, existCorr, identityRV, recordlayer.ExecuteProperties{})
+	cGated, err := newFlatMapCursorWithOuterProperties(recordlayer.FromList([]QueryResult{}), gatedOuter, legIndependentInner, nil,
+		EmptyEvaluationContext(), mergedCorr, existCorr, identityRV, recordlayer.ExecuteProperties{}, false)
 	if err != nil {
-		t.Fatalf("newFlatMapCursor (gated): %v", err)
+		t.Fatalf("newFlatMapCursorWithOuterProperties (gated): %v", err)
 	}
 	defer cGated.Close()
 	if cGated.outerBakedType != nil {
@@ -83,10 +83,10 @@ func TestIdentityPassThroughDiscriminatesOuterKind(t *testing.T) {
 		values.RecordConstructorField{Name: "B.ID", Value: &values.FieldValue{Field: "B.ID", Typ: values.NotNullLong}},
 	)
 	nameModelOuter := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), nameModelRV)
-	cName, err := newFlatMapCursor(recordlayer.FromList([]QueryResult{}), nameModelOuter, legIndependentInner, nil,
-		EmptyEvaluationContext(), mergedCorr, existCorr, identityRV, recordlayer.ExecuteProperties{})
+	cName, err := newFlatMapCursorWithOuterProperties(recordlayer.FromList([]QueryResult{}), nameModelOuter, legIndependentInner, nil,
+		EmptyEvaluationContext(), mergedCorr, existCorr, identityRV, recordlayer.ExecuteProperties{}, false)
 	if err != nil {
-		t.Fatalf("newFlatMapCursor (name-model): %v", err)
+		t.Fatalf("newFlatMapCursorWithOuterProperties (name-model): %v", err)
 	}
 	defer cName.Close()
 	if cName.outerMergedType != nil {

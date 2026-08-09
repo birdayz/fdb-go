@@ -73,11 +73,11 @@ func newIndexBuildCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if allSchemas {
 				if addr.schema != "" {
-					return fmt.Errorf("--all-schemas fans out over every schema in --database — " +
-						"drop --schema (it addresses a single store)")
+					return fmt.Errorf("fanning out with --all-schemas covers every schema in " +
+						"--database — drop --schema (it addresses a single store)")
 				}
 				if addr.database == "" {
-					return fmt.Errorf("--all-schemas needs --database to know which fleet to build")
+					return fmt.Errorf("fanning out with --all-schemas needs --database to know which fleet to build")
 				}
 				return runFleetIndexBuild(cmd, &addr, addr.database, args, yes, indexBuildOptions{
 					limit: limit, rps: rps, maxRetries: maxRetries, timeLimit: timeLimit,

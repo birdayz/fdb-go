@@ -113,33 +113,8 @@ type flatMapCursor struct {
 	pendingCheckValue      []byte
 }
 
-func newFlatMapCursor(
-	outerCursor recordlayer.RecordCursor[QueryResult],
-	outerPlan plans.RecordQueryPlan,
-	innerPlan plans.RecordQueryPlan,
-	store *recordlayer.FDBRecordStore,
-	evalCtx *EvaluationContext,
-	outerAlias, innerAlias values.CorrelationIdentifier,
-	resultValue values.Value,
-	props recordlayer.ExecuteProperties,
-) (*flatMapCursor, error) {
-	return newFlatMapCursorWithOuterProperties(
-		outerCursor,
-		outerPlan,
-		innerPlan,
-		store,
-		evalCtx,
-		outerAlias,
-		innerAlias,
-		resultValue,
-		props,
-		false,
-	)
-}
-
 // newFlatMapCursorWithOuterProperties is the production constructor for a
-// RecordQueryFlatMapPlan. newFlatMapCursor remains the default-false helper so
-// existing non-inheriting shapes cannot silently change semantics.
+// RecordQueryFlatMapPlan.
 func newFlatMapCursorWithOuterProperties(
 	outerCursor recordlayer.RecordCursor[QueryResult],
 	outerPlan plans.RecordQueryPlan,

@@ -1065,7 +1065,7 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 	return &resolved
 }
 
-// orderingValuesEqual decides whether a requested ordering key and a match
+// orderingValuesEqualIn decides whether a requested ordering key and a match
 // candidate's ordering key are the SAME COLUMN. The two are built by different
 // producers — an SQL sort request against a row layout, a candidate against its
 // index metadata — and never arrive as one node.
@@ -1097,16 +1097,12 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 // a CardinalityValue-wrapped pair still crosses it. The census counts how often
 // it is the only arm that decides such a pair, and on today's corpus that count
 // is zero — unexercised, not unreachable, which is why it stays.
-func orderingValuesEqual(left, right values.Value) bool {
-	return orderingValuesEqualIn(nil, left, right)
-}
-
-// orderingValuesEqualIn is orderingValuesEqual told which LIST the caller is
-// scanning. The comparison itself does not depend on it — only the census does,
-// because the root-wildcard ambiguity it counts is a property of a whole list and
-// not of a pair (see recordRootWildcard). Every production call site supplies
-// one; the census counts the ones that do not, so a site added without a context
-// cannot quietly shrink the population the ambiguity assertion covers.
+// The `context` parameter is the LIST the caller is scanning. The comparison
+// itself does not depend on it — only the census does, because the root-wildcard
+// ambiguity it counts is a property of a whole list and not of a pair (see
+// recordRootWildcard). Every production call site supplies one; the census counts
+// the ones that do not, so a site added without a context cannot quietly shrink
+// the population the ambiguity assertion covers.
 func orderingValuesEqualIn(context []values.Value, left, right values.Value) bool {
 	recordOrderingComparison(
 		OrderingSiteRequestedVsCandidate, left, right,

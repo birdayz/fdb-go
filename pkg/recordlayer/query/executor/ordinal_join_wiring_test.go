@@ -667,10 +667,10 @@ func TestFlatMap_ComputeResult_OrdinalBuild(t *testing.T) {
 	legA, legB, qovA, qovB, seed := ojWiringLegs(t)
 	newCursor := func(t *testing.T) *flatMapCursor {
 		t.Helper()
-		c, err := newFlatMapCursor(nil, nil, nil, nil, EmptyEvaluationContext(),
-			qovA.Correlation, qovB.Correlation, seed, recordlayer.ExecuteProperties{})
+		c, err := newFlatMapCursorWithOuterProperties(nil, nil, nil, nil, EmptyEvaluationContext(),
+			qovA.Correlation, qovB.Correlation, seed, recordlayer.ExecuteProperties{}, false)
 		if err != nil {
-			t.Fatalf("newFlatMapCursor: %v", err)
+			t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)
 		}
 		return c
 	}
@@ -899,7 +899,7 @@ func TestNLJ_FoldedRVDroppedLeg_PredTypes(t *testing.T) {
 // that DROPS the outer leg leaves the build typeless for it even though the
 // inner plan still references it — a leg row built by name (aggregate-box
 // shape) then bound zero-width and the baked SARG died loudly on a
-// legitimate plan. newFlatMapCursor must widen LegTypes from the inner
+// legitimate plan. newFlatMapCursorWithOuterProperties must widen LegTypes from the inner
 // plan's predicate surfaces.
 func TestFlatMap_FoldedRVDroppedLeg_PlanTypes(t *testing.T) {
 	t.Parallel()
@@ -930,11 +930,11 @@ func TestFlatMap_FoldedRVDroppedLeg_PlanTypes(t *testing.T) {
 		[]predicates.QueryPredicate{ojEqPred(bakedBID, bakedAID)},
 	)
 
-	c, err := newFlatMapCursor(nil, nil, innerPlan, nil, EmptyEvaluationContext(),
+	c, err := newFlatMapCursorWithOuterProperties(nil, nil, innerPlan, nil, EmptyEvaluationContext(),
 		outerCorr, values.NamedCorrelationIdentifier("B"), foldedRV,
-		recordlayer.ExecuteProperties{})
+		recordlayer.ExecuteProperties{}, false)
 	if err != nil {
-		t.Fatalf("newFlatMapCursor: %v", err)
+		t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)
 	}
 	// The build must know the dropped OUTER leg's type from the inner plan's
 	// baked reference…

@@ -51,12 +51,6 @@ func isFieldNullable(fd protoreflect.FieldDescriptor) bool {
 	return fd.Cardinality() != protoreflect.Required
 }
 
-// protoScalarToDataTypeWithNullability handles the element type only;
-// cardinality (repeated → array) is applied by the caller.
-func protoScalarToDataTypeWithNullability(fd protoreflect.FieldDescriptor, nullable bool) (api.DataType, error) {
-	return protoScalarToDataTypeWithNullabilityVisited(fd, nullable, map[string]bool{})
-}
-
 // protoScalarToDataTypeWithNullabilityVisited is the recursion-aware
 // implementation. `visited` carries the set of message full names
 // currently in-progress on the descent; re-entering one returns an

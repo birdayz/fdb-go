@@ -5,6 +5,36 @@ import (
 	"testing"
 )
 
+// dot and l2Norm are TEST helpers. They used to sit in a production file
+// (vec_math.go) as a character-identical duplicate of the live pair in
+// pkg/rabitq, which is the copy the quantizer actually runs (rabitq.go, inside
+// absOfNormalized — the port of RaBitQuantizer.absOfNormalized). Nothing in
+// pkg/recordlayer ever called this copy: it existed only for the vector tests
+// here, which use it to check that a rotation preserves norms and that a
+// decoded vector still points the same way.
+//
+// Kept here rather than imported from pkg/rabitq on purpose. A test that
+// measures a rotation with the same helper the quantizer uses cannot tell a
+// broken rotation from a broken dot product; an independent copy in the test
+// file is the second opinion. Its being a duplicate is the point — but a
+// duplicate in a PRODUCTION file reads as a second implementation someone might
+// call, which is how the two diverge.
+func dot(a, b []float64) float64 {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	var sum float64
+	for i := 0; i < n; i++ {
+		sum += a[i] * b[i]
+	}
+	return sum
+}
+
+func l2Norm(x []float64) float64 {
+	return math.Sqrt(dot(x, x))
+}
+
 func TestDotIdenticalVectors(t *testing.T) {
 	t.Parallel()
 	a := []float64{1, 2, 3}

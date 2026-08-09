@@ -197,7 +197,7 @@ func newMetaCatalogRepairCmd() *cobra.Command {
 					"to rebind every schema in --database")
 			}
 			if databaseID == "" {
-				return fmt.Errorf("--database is required")
+				return fmt.Errorf("this command addresses a database; pass --database")
 			}
 			cf, err := resolveCatalogContext(contextName, clusterFile)
 			if err != nil {

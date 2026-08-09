@@ -4258,7 +4258,7 @@ func (t *cascadesTranslator) buildExistentialSelect(
 
 // isScanFamilyLeg reports whether a logical leg is a single scan source
 // (optionally under filters) — the logical proxy for the executor's
-// legIsOrdinalSafe, which unwraps Filter/Fetch/FetchOnDemand to a Scan/Index
+// legOrdinalSafety, which unwraps Filter/Fetch/FetchOnDemand to a Scan/Index
 // base. The F2-LEFT projected-EXISTS fold ordinalizes ONLY when both
 // legs are scan-family; a join/unnest/union/aggregate leg (a buried box) is not
 // and must decline rather than fall to the name-model producer path. Conservative:
@@ -4344,7 +4344,7 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 	if j.Kind == logical.JoinLeft && (!isScanFamilyLeg(j.Left) || !isScanFamilyLeg(j.Right)) {
 		// F2-LEFT is SCAN-leg scope only. A buried box
 		// `(a JOIN b) LEFT JOIN c` — any non-scan preserved/null-supplying leg —
-		// does not ordinalize (the executor's legIsOrdinalSafe rejects the join
+		// does not ordinalize (the executor's legOrdinalSafety rejects the join
 		// leg → gatedSeedStep1 false), so folding it would fall through to a
 		// name-model path with a null-extended name-keyed row: correct today
 		// via the row's name-keyed Datum, but that path is slated for removal.
@@ -6032,25 +6032,19 @@ func expressionOutputLegs(expr expressions.RelationalExpression, flatCount int) 
 	return legs
 }
 
-// bakeDottedRefsToLegQOV rewrites a childless DOTTED lazy reference whose
-// qualifier names a ForEach quantifier of the input select (peering through
-// row-shape-preserving unaries) into the resolver's LEG-ADDRESSED
-// source-relative bake: FieldValue{Child: QOV(leg), leaf, ord = leg-local
-// first-match}. The executor binds the leg window by alias
-// off the merged row's own leg boundaries, so the read is
-// ORIENTATION-INDEPENDENT — a physical join reorder cannot shift the slot,
-// which a flat concat ordinal would (that is why the flat bake declines the
-// non-RC select shape). A duplicate quantifier alias, an underivable leg
-// layout, or a leaf missing from the leg leaves the reference untouched
-// (loud at eval, never a wrong slot).
-func bakeDottedRefsToLegQOV(v values.Value, input expressions.RelationalExpression) values.Value {
-	return bakeDottedRefsToLegQOVWithRef(v, logical.ColumnRef{}, input)
-}
-
-// bakeDottedRefsToLegQOVWithRef is the same bake with the ROOT carrier's
-// parse-tree segments supplied. Where ref is Present it REPLACES the dot slice
-// for that node — the parser's segment count decides qualification, so a quoted
-// `"A.B"` is one leaf name here instead of a reference to leg A.
+// bakeDottedRefsToLegQOVWithRef rewrites a value's dotted field references into
+// leg-qualified QuantifiedObjectValue reads against `input`, with the ROOT
+// carrier's parse-tree segments supplied. Where ref is Present it REPLACES the
+// dot slice for that node — the parser's segment count decides qualification,
+// so a quoted `"A.B"` is one leaf name here instead of a reference to leg A.
+// Callers with no parse-tree segments to offer pass a zero logical.ColumnRef,
+// which is an ordinary production configuration and not a degenerate one: both
+// live call sites start from a zero ref and overwrite it only for the slot that
+// is the minted carrier.
+//
+// It has two arms. The leg-QOV bake below is the one the name describes; there
+// is also a single-ForEach FLAT arm further down, taken when the input has one
+// quantifier and the reference cannot name a leg.
 //
 // This baker is the site where that distinction bites hardest: unlike the flat
 // bake it has no exact-name precedence to resolve the quoted spelling first, so

@@ -835,6 +835,58 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		}
 	}
 
+	// Validate TEXT indexes name a registered tokenizer and an in-range version.
+	// Matches Java's TextIndexMaintainerFactory.getIndexValidator().validate()
+	// (TextIndexMaintainerFactory.java:106-111), which resolves the tokenizer and
+	// calls tokenizer.validateVersion(tokenizerVersion) during META-DATA validation.
+	//
+	// Java checks this twice, and the two checks are not redundant: the metadata
+	// check rejects a bad index definition when the schema is built, while
+	// DefaultTextTokenizer.tokenize's validateVersion (DefaultTextTokenizer.java:174,
+	// mirrored at text_tokenizer.go:153) guards the write path against a version
+	// threaded in from a stored per-record tokenizer version. Only the second existed
+	// in Go, so an index naming an unknown tokenizer or an out-of-range version was
+	// accepted at build time and failed later, at the first record save.
+	for _, idx := range indexes {
+		if canonicalIndexType(idx.Type) != IndexTypeText {
+			continue
+		}
+		// The other three checks in the SAME Java method
+		// (TextIndexMaintainerFactory.java:102-104): validateNotVersion,
+		// validateNotUnique, validateNoValue. Ported together rather than
+		// leaving the tokenizer half alone — a validator that implements one of
+		// four checks reads as "TEXT indexes are validated" while three ways to
+		// build a broken one stay open.
+		if countVersionColumns(idx.RootExpression) > 0 {
+			return nil, &MetaDataError{Message: fmt.Sprintf(
+				"text index %q: version key not possible in index type", idx.Name)}
+		}
+		if idx.IsUnique() {
+			return nil, &MetaDataError{Message: fmt.Sprintf(
+				"text index %q: index type does not allow unique indexes", idx.Name)}
+		}
+		if _, isKeyWithValue := idx.RootExpression.(*KeyWithValueExpression); isKeyWithValue {
+			// Java's TODO on this line reads "allow value expressions for
+			// covering text indexes"; until Java allows it, Go does not either.
+			return nil, &MetaDataError{Message: fmt.Sprintf(
+				"text index %q: no value expression allowed in index type", idx.Name)}
+		}
+		tok, err := getTextTokenizer(idx)
+		if err != nil {
+			return nil, &MetaDataError{Message: fmt.Sprintf(
+				"text index %q: %v", idx.Name, err)}
+		}
+		version, err := getTextTokenizerVersion(idx)
+		if err != nil {
+			return nil, &MetaDataError{Message: fmt.Sprintf(
+				"text index %q: %v", idx.Name, err)}
+		}
+		if err := ValidateTokenizerVersion(tok, version); err != nil {
+			return nil, &MetaDataError{Message: fmt.Sprintf(
+				"text index %q: %v", idx.Name, err)}
+		}
+	}
+
 	// Validate BITMAP_VALUE indexes.
 	// Matches Java's BitmapValueIndexMaintainerFactory.getIndexValidator() which calls
 	// validateGrouping(1) and validateNotVersion(). The root expression must be a

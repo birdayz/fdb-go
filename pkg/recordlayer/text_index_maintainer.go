@@ -34,10 +34,6 @@ type textIndexMaintainer struct {
 	bunchedMap                  *BunchedMap
 }
 
-func newTextIndexMaintainer(index *Index, indexSubspace subspace.Subspace, secSubspace subspace.Subspace, tx fdb.WritableTransaction, store indexStoreContext) (*textIndexMaintainer, error) {
-	return newTextIndexMaintainerWithTimer(index, indexSubspace, secSubspace, tx, store, nil)
-}
-
 func newTextIndexMaintainerWithTimer(index *Index, indexSubspace subspace.Subspace, secSubspace subspace.Subspace, tx fdb.WritableTransaction, store indexStoreContext, timer *StoreTimer) (*textIndexMaintainer, error) {
 	tokenizer, err := getTextTokenizer(index)
 	if err != nil {

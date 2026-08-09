@@ -1949,7 +1949,7 @@ func planResultValue(p plans.RecordQueryPlan) values.Value {
 	return nil
 }
 
-// legIsOrdinalSafe reports whether a projected-EXISTS fold leg
+// legOrdinalSafety reports whether a projected-EXISTS fold leg
 // can seed the step-1 ordinal merged row: a
 // SINGLE-SOURCE leg whose rows are one namespace (a scan, through transparent
 // Filter/Fetch/FOD wrappers), OR an ORDINAL bare-INNER nested-loop join — the
@@ -1959,12 +1959,7 @@ func planResultValue(p plans.RecordQueryPlan) values.Value {
 // cannot position is declined — the executor twin of the translator gate's
 // ordinalEligible (correct-or-conservative). A NON-INNER NLJ is declined (the
 // INNER-first scope carries no null-extension; the LEFT follow-on widens it).
-func legIsOrdinalSafe(p plans.RecordQueryPlan) bool {
-	safe, _ := legOrdinalSafety(p)
-	return safe
-}
-
-// legOrdinalSafety is legIsOrdinalSafe's decision plus the NODE it stopped at.
+// It returns that decision plus the NODE it stopped at.
 //
 // The node exists for the foldStep1Seed outcome census, whose whole value is the
 // sub-classification of a refused leg by its result-value shape. It is handed
@@ -2204,7 +2199,7 @@ func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAli
 		concatFields, buriedLegs, ok := planBuriedLegConcat(leg.plan, leg.alias, 0)
 		if !ok || len(concatFields) == 0 {
 			// Both legs were ordinal-SAFE and the concat still failed: a residue
-			// below legIsOrdinalSafe, with its own fix. foldStep1LegShapeNone is
+			// below legOrdinalSafety, with its own fix. foldStep1LegShapeNone is
 			// what keeps it from being counted as a refused leg shape it is not.
 			return nil, foldStep1LegDecline{
 				Shape:   foldStep1LegShapeNone,

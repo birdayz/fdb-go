@@ -16,17 +16,10 @@ import (
 // nullable arrays wrapped, and so does Go's emitter — so any index over a
 // nullable array column is rewritten through this pass before the template
 // is built.
-
-// wrapArrayKeyExpression mirrors NullableArrayUtils.wrapArray: identity
-// when the template contains no nullable array (the gate Java threads from
-// DdlVisitor's containsNullableArray flag); otherwise the recursive rewrite
-// against the record type's descriptor.
-func wrapArrayKeyExpression(ke *gen.KeyExpression, parent protoreflect.MessageDescriptor, containsNullableArray bool) *gen.KeyExpression {
-	if !containsNullableArray {
-		return ke
-	}
-	return wrapArrayInternal(ke, parent)
-}
+//
+// Java's `wrapArray` is this function plus a `containsNullableArray` gate;
+// Go applies that gate at the single funnel every index passes through
+// (builder.go's registerIndex), so the entry point here is the ungated body.
 
 func wrapArrayInternal(ke *gen.KeyExpression, parent protoreflect.MessageDescriptor) *gen.KeyExpression {
 	switch {

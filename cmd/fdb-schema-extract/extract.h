@@ -67,11 +67,20 @@ REGISTER_GO_TYPE(NetworkAddress, "NetworkAddress");
 REGISTER_GO_TYPE(NetworkAddressList, "NetworkAddressList");
 REGISTER_GO_TYPE(IPAddress, "IPAddress");
 REGISTER_GO_TYPE(Endpoint, "Endpoint");
+// getMappedRange (fdb_transaction_get_mapped_range) response graph. MappedKeyValueRef
+// carries a std::variant whose two arms are themselves serializable structs, so both
+// arms have to be registered for the variant codegen to emit nested tables.
+REGISTER_GO_TYPE(KeyValueRef, "KeyValueRef");
+REGISTER_GO_TYPE(GetValueReqAndResultRef, "GetValueReqAndResult");
+REGISTER_GO_TYPE(GetRangeReqAndResultRef, "GetRangeReqAndResult");
+REGISTER_GO_TYPE(RangeResultRef, "RangeResultRef");
+REGISTER_GO_TYPE(MappedKeyValueRef, "MappedKeyValueRef");
 
 // ReplyPromise<T> — all instantiations share same vtable.
 REGISTER_GO_TYPE(ReplyPromise<GetValueReply>, "ReplyPromise");
 REGISTER_GO_TYPE(ReplyPromise<WatchValueReply>, "ReplyPromise");
 REGISTER_GO_TYPE(ReplyPromise<GetKeyValuesReply>, "ReplyPromise");
+REGISTER_GO_TYPE(ReplyPromise<GetMappedKeyValuesReply>, "ReplyPromise");
 REGISTER_GO_TYPE(ReplyPromise<GetKeyReply>, "ReplyPromise");
 REGISTER_GO_TYPE(ReplyPromise<GetReadVersionReply>, "ReplyPromise");
 REGISTER_GO_TYPE(ReplyPromise<GetKeyServerLocationsReply>, "ReplyPromise");
@@ -113,6 +122,19 @@ REGISTER_FIELD_NAMES(WatchValueRequest, "key", "value", "version", "tags", "debu
 REGISTER_FIELD_NAMES(WatchValueReply, "version", "cached");
 REGISTER_FIELD_NAMES(GetKeyValuesRequest, "begin", "end", "version", "limit", "limitBytes", "tags", "reply", "spanContext", "tenantInfo", "options", "ssLatestCommitVersions", "arena");
 REGISTER_FIELD_NAMES(GetKeyValuesReply, "penalty", "error", "data", "version", "more", "cached", "arena");
+// getMappedRange. GetMappedKeyValuesRequest is GetKeyValuesRequest with `mapper`
+// spliced in at serialize position 3 (StorageServerInterface.h:484-496); the reply
+// mirrors GetKeyValuesReply with MappedKeyValueRef rows (StorageServerInterface.h:457-459).
+REGISTER_FIELD_NAMES(GetMappedKeyValuesRequest, "begin", "end", "mapper", "version", "limit", "limitBytes", "tags", "reply", "spanContext", "tenantInfo", "options", "ssLatestCommitVersions", "arena");
+REGISTER_FIELD_NAMES(GetMappedKeyValuesReply, "penalty", "error", "data", "version", "more", "cached", "arena");
+// MappedKeyValueRef serializes its KeyValueRef base as one nested element, then the
+// variant (FDBTypes.h:924-926).
+REGISTER_FIELD_NAMES(MappedKeyValueRef, "keyValue", "reqAndResult");
+REGISTER_FIELD_NAMES(GetValueReqAndResultRef, "key", "result");
+REGISTER_FIELD_NAMES(GetRangeReqAndResultRef, "begin", "end", "result");
+// RangeResultRef serializes its VectorRef<KeyValueRef> base as one element
+// (FDBTypes.h:831-832).
+REGISTER_FIELD_NAMES(RangeResultRef, "data", "more", "readThrough", "readToBegin", "readThroughEnd");
 REGISTER_FIELD_NAMES(GetKeyRequest, "sel", "version", "tags", "reply", "spanContext", "tenantInfo", "options", "ssLatestCommitVersions");
 REGISTER_FIELD_NAMES(GetKeyReply, "penalty", "error", "sel", "cached");
 REGISTER_FIELD_NAMES(GetReadVersionRequest, "transactionCount", "flags", "tags", "debugID", "reply", "spanContext", "maxVersion");
@@ -226,6 +248,15 @@ VariantAlt makeVariantAlt() {
     if constexpr (is_scalar<T>) {
         auto si = scalarInfoFor<T>();
         return {si.goType, si.reader, FieldKind::Scalar, (int)fb_size<T>};
+    } else if constexpr (GoTypeName<T>::registered) {
+        // A serializable STRUCT alternative. C++ SaveAlternative takes the
+        // use_indirection arm (flat_buffers.h:845) exactly as it does for
+        // Optional<struct>, so the union's RelativeOffset points at a nested
+        // flatbuffers TABLE — not at a count-prefixed byte vector. Emitting the
+        // registered Go struct (and the nested table reader/writer that goes with
+        // it) is what keeps MappedReqAndResultRef's two arms on the wire contract;
+        // the ReadBytes fallback below would skip a 4-byte count that is not there.
+        return {GoTypeName<T>::name(), "", FieldKind::NestedStruct, (int)fb_size<T>};
     } else if constexpr (is_vector_like<T>) {
         return {"[]byte", "ReadBytes", FieldKind::VectorLike, (int)fb_size<T>};
     } else {
@@ -252,6 +283,12 @@ template <class T> struct VectorElementGoType {
     static const char* name() { return ""; }
 };
 template <class T, VecSerStrategy S> struct VectorElementGoType<VectorRef<T, S>> {
+    // No VecSerStrategy guard is needed here, and one was deliberately not added:
+    // a String-strategy VectorRef (GetKeyValuesReply.data is the only one in this
+    // schema) carries string_serialized_traits, so classifyField's is_dynamic_size
+    // arm claims it before control ever reaches the is_vector_like arm below. A
+    // strategy test at this point is therefore unreachable, and registering an
+    // element type cannot retype a String-strategy vector.
     static constexpr bool registered = GoTypeName<T>::registered;
     static const char* name() { return GoTypeName<T>::name(); }
 };

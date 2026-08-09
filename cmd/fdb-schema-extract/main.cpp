@@ -370,6 +370,14 @@ private:
                         // (For the uint32 IPv4 alt this stays byte-identical: no cast needed.)
                         fprintf(f, "\t\t\tm.%sAlt%zu = %s\n", gn.c_str(), a,
                                 bareScalarReadRHS(rv, slot, alt.goType, alt.size).c_str());
+                    } else if (alt.kind == FieldKind::NestedStruct) {
+                        // Struct alternative: the union RelativeOffset points at a nested
+                        // TABLE, so follow it with a nested reader — the same shape as the
+                        // Optional<struct> arm above, not the count-prefixed ReadBytes below.
+                        fprintf(f, "\t\t\tif nr, err := %s.ReadNestedReader(%s + 1); err == nil {\n",
+                                rv, slot.c_str());
+                        fprintf(f, "\t\t\t\tm.%sAlt%zu.UnmarshalFromReader(nr)\n", gn.c_str(), a);
+                        fprintf(f, "\t\t\t}\n");
                     } else if (alt.kind == FieldKind::VectorLike || alt.kind == FieldKind::DynamicSize) {
                         // C++ union vector alternative (use_indirection==true,
                         // flat_buffers.h:872-877): the RelativeOffset points at a
@@ -439,6 +447,9 @@ private:
                     if (alt.kind == FieldKind::Scalar) {
                         fprintf(f, "\tcase %zu:\n\t\tps.Write(ps.CurrentBufferSize + %d)\n",
                                 a + 1, alt.size);
+                    } else if (alt.kind == FieldKind::NestedStruct) {
+                        fprintf(f, "\tcase %zu:\n\t\tm.%sAlt%zu.precomputeSize(ps)\n",
+                                a + 1, gn.c_str(), a);
                     } else {
                         fprintf(f, "\tcase %zu:\n\t\tps.VisitDynamicSize(len(m.%sAlt%zu))\n",
                                 a + 1, gn.c_str(), a);
@@ -570,6 +581,11 @@ private:
                         fprintf(f, "\tcase %zu:\n", a + 1);
                         fprintf(f, "\t\t%s\n", bareScalarWriteStmt(valExpr, alt.size).c_str());
                         fprintf(f, "\t\t%s = wb.CurrentBufferSize\n", (safeParam(gn) + "Off").c_str());
+                    } else if (alt.kind == FieldKind::NestedStruct) {
+                        // Struct alternative: lay the nested TABLE out-of-line and take its
+                        // start as the union's RelativeOffset (same as Optional<struct>).
+                        fprintf(f, "\tcase %zu:\n\t\t%s = m.%sAlt%zu.writeToBuffer(wb, vtableStart, tmpl)\n",
+                                a + 1, (safeParam(gn) + "Off").c_str(), gn.c_str(), a);
                     } else {
                         // use_indirection==true (:845-846): count-prefixed vector.
                         fprintf(f, "\tcase %zu:\n\t\t%s, _ = wb.VisitDynamicSize(m.%sAlt%zu)\n",
@@ -1148,6 +1164,22 @@ void generateTestVectors(const char* outDir) {
         comma(); emitTestVector(out, "GetKeyValuesRequest_basic", req, getReplyToken(req.reply));
     }
 
+    // --- GetMappedKeyValuesRequest ---
+    // Same shape as GetKeyValuesRequest_basic plus the mapper, so a byte diff
+    // between the two vectors isolates exactly the spliced `mapper` slot.
+    {
+        GetMappedKeyValuesRequest req;
+        req.begin = KeySelectorRef("begin_key"_sr, true, 1);
+        req.end = KeySelectorRef("end_key"_sr, false, 0);
+        req.mapper = "\x01idx\x00{K[1]}"_sr;
+        req.version = 54321;
+        req.limit = 1000;
+        req.limitBytes = 0x7fffffff;
+        req.tenantInfo.tenantId = -1;
+        pinReply(req.reply, 0x1000000000000000ULL + 14, 0x2000000000000000ULL + 7);
+        comma(); emitTestVector(out, "GetMappedKeyValuesRequest_basic", req, getReplyToken(req.reply));
+    }
+
     // --- CommitTransactionRequest ---
     {
         CommitTransactionRequest req;
@@ -1327,6 +1359,79 @@ void generateTestVectors(const char* outDir) {
         r.cached = false;
         comma(); emitReplyVector(out, "GetKeyValuesReply_two_rows", r);
     }
+
+    // --- GetMappedKeyValuesReply ---
+    // One vector per shape that exercises a distinct arm of the union codegen. The
+    // rows deliberately include the cases a happy-path probe never reaches: a
+    // point-lookup whose mapped key is ABSENT, and a range lookup that matched
+    // NOTHING. Both are on-the-wire-legal and both were invisible to any test that
+    // only reads a populated row.
+    {
+        GetMappedKeyValuesReply r;
+        MappedKeyValueRef rows[2];
+        // tag 1 — GetValueReqAndResultRef, mapped key present.
+        rows[0].key = "idx_a"_sr;
+        rows[0].value = "pk_a"_sr;
+        {
+            GetValueReqAndResultRef g;
+            g.key = "rec_a"_sr;
+            g.result = Optional<ValueRef>("record_a"_sr);
+            rows[0].reqAndResult = g;
+        }
+        // tag 1 — mapped key ABSENT (mapper resolved to a key not in the database).
+        rows[1].key = "idx_b"_sr;
+        rows[1].value = "pk_b"_sr;
+        {
+            GetValueReqAndResultRef g;
+            g.key = "rec_missing"_sr;
+            g.result = Optional<ValueRef>();
+            rows[1].reqAndResult = g;
+        }
+        r.data.append(r.arena, rows, 2);
+        r.penalty = 1.5;
+        r.version = 111222;
+        r.more = false;
+        comma(); emitReplyVector(out, "GetMappedKeyValuesReply_getvalue", r);
+    }
+    {
+        GetMappedKeyValuesReply r;
+        MappedKeyValueRef rows[2];
+        // tag 2 — GetRangeReqAndResultRef with rows.
+        rows[0].key = "idx_r"_sr;
+        rows[0].value = "pfx_r"_sr;
+        {
+            GetRangeReqAndResultRef g;
+            g.begin = KeySelectorRef("pfx_r\x00"_sr, true, 1);
+            g.end = KeySelectorRef("pfx_r\xff"_sr, true, 1);
+            KeyValueRef sub[2] = { KeyValueRef("pfx_r_1"_sr, "sub_1"_sr),
+                                   KeyValueRef("pfx_r_2"_sr, "sub_2"_sr) };
+            g.result.append(r.arena, sub, 2);
+            g.result.more = false;
+            rows[0].reqAndResult = g;
+        }
+        // tag 2 — range matched NOTHING (empty result, more=false).
+        rows[1].key = "idx_e"_sr;
+        rows[1].value = "pfx_e"_sr;
+        {
+            GetRangeReqAndResultRef g;
+            g.begin = KeySelectorRef("pfx_e\x00"_sr, true, 1);
+            g.end = KeySelectorRef("pfx_e\xff"_sr, true, 1);
+            g.result.more = false;
+            rows[1].reqAndResult = g;
+        }
+        r.data.append(r.arena, rows, 2);
+        r.penalty = 2.5;
+        r.version = 333444;
+        r.more = true;
+        comma(); emitReplyVector(out, "GetMappedKeyValuesReply_getrange", r);
+    }
+    {
+        GetMappedKeyValuesReply r; // empty index range: no rows at all
+        r.penalty = 1.0;
+        r.version = 555666;
+        r.more = false;
+        comma(); emitReplyVector(out, "GetMappedKeyValuesReply_empty", r);
+    }
     {
         GetKeyValuesReply r; // empty range, exhausted
         r.penalty = 1.0;
@@ -1428,6 +1533,7 @@ int main(int argc, char** argv) {
     extractType<GetValueReply>(outDir, "GetValueReply");
     extractType<WatchValueReply>(outDir, "WatchValueReply");
     extractType<GetKeyValuesReply>(outDir, "GetKeyValuesReply");
+    extractType<GetMappedKeyValuesReply>(outDir, "GetMappedKeyValuesReply");
     extractType<GetKeyReply>(outDir, "GetKeyReply");
     extractType<GetReadVersionReply>(outDir, "GetReadVersionReply");
     extractType<GetKeyServerLocationsReply>(outDir, "GetKeyServerLocationsReply");
@@ -1436,6 +1542,7 @@ int main(int argc, char** argv) {
     extractType<GetValueRequest>(outDir, "GetValueRequest");
     extractType<WatchValueRequest>(outDir, "WatchValueRequest");
     extractType<GetKeyValuesRequest>(outDir, "GetKeyValuesRequest");
+    extractType<GetMappedKeyValuesRequest>(outDir, "GetMappedKeyValuesRequest");
     extractType<GetKeyRequest>(outDir, "GetKeyRequest");
     extractType<GetReadVersionRequest>(outDir, "GetReadVersionRequest");
     extractType<GetKeyServerLocationsRequest>(outDir, "GetKeyServerLocationsRequest");
@@ -1455,6 +1562,12 @@ int main(int argc, char** argv) {
     extractType<TenantMapEntry>(outDir, "TenantMapEntry");
     extractType<Error>(outDir, "Error");
     extractType<KeyValueRef>(outDir, "KeyValueRef");
+    // getMappedRange row graph: MappedKeyValueRef -> variant{GetValueReqAndResult,
+    // GetRangeReqAndResult}, the latter carrying a RangeResultRef.
+    extractType<MappedKeyValueRef>(outDir, "MappedKeyValueRef");
+    extractType<GetValueReqAndResultRef>(outDir, "GetValueReqAndResult");
+    extractType<GetRangeReqAndResultRef>(outDir, "GetRangeReqAndResult");
+    extractType<RangeResultRef>(outDir, "RangeResultRef");
     // Entry objects of the TransactionTagMap fields on GetReadVersionRequest
     // (tags) and GetReadVersionReply (tagThrottleInfo).
     extractType<ClientTagThrottleLimits>(outDir, "ClientTagThrottleLimits");

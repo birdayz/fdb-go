@@ -28,6 +28,21 @@ import (
 // Walks the FINAL members only, and follows quantifiers from finals — the
 // extraction path. Exploratory members are irrelevant here: extraction never
 // reads them, and they are expected to be plural.
+//
+// TWO KNOWN DEFECTS, both measured, neither yet fixed — see RFC-224 and do not
+// read an empty result as proof:
+//
+//   - The walk terminates at any reference with an EMPTY final set, which is
+//     also counted as a non-violation. Measured over the 20 shapes in
+//     TestOneFinalPlanPerReference: 43 visits, 21 dead ends, and on the join
+//     shape 2 references visited where extraction visits 5.
+//   - The property itself is Java's, not Go's. Java's Reference.pruneWith
+//     leaves exactly one member; Go's OptimizeGroupTask prunes to a keep set of
+//     best-plus-one-per-requested-ordering, so a group holding several physical
+//     finals is correct Cascades here, not a violation.
+//
+// Fixing the first without settling the second would turn a vacuous green into
+// a red that is also wrong. RFC-224 settles what Go should assert.
 func VerifyOneFinalPlanPerReference(root *expressions.Reference) []string {
 	seen := map[*expressions.Reference]bool{}
 	var violations []string

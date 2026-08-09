@@ -66,7 +66,7 @@ package cascades
 // counted the merge path, the set membership and the resolving keyFor cells, and
 // those are different cells:
 //
-//	                                  orderingValuesEqual   intersectionValuesEqual
+//	                                  orderingValuesEqualIn   intersectionValuesEqualIn
 //	  comparisons                            8659                    862
 //	  both operands plain FieldValue         8658                    403
 //	  ... and both state an identity         8658                    403
@@ -113,7 +113,7 @@ package cascades
 // EXPLORATION VOLUME — more or fewer comparisons of the same kind. Re-censused
 // with ONLY that change reverted and everything else in place:
 //
-//	                                  orderingValuesEqual   intersectionValuesEqual
+//	                                  orderingValuesEqualIn   intersectionValuesEqualIn
 //	  comparisons                       8659 -> 8675             862 -> 862
 //	  DECLINE RESIDUAL                     0 -> 5                  0 -> 0
 //	  ... of which matched before           0 -> 3                  0 -> 0
@@ -125,7 +125,7 @@ package cascades
 // for InMemorySort(Scan(ORDERS)). So the two changes are COUPLED, not
 // independent: pushing the GROUPING KEY (input space, domained) instead of the
 // request part (output space) is a PRECONDITION of the decline residual being
-// zero at orderingValuesEqual, because an output-space part has no identity the
+// zero at orderingValuesEqualIn, because an output-space part has no identity the
 // candidate side can meet. That coupling is the finding; it is not an
 // exploration-volume artifact and must not be recorded as one.
 

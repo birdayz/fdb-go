@@ -62,10 +62,10 @@ func TestPlanningCostModel_RungOrderResidualBeforeDataAccess(t *testing.T) {
 		[]predicates.QueryPredicate{rungPredicate("K")},
 	)
 
-	if got := countResidualPredicates(noResidual); got != 0 {
+	if got := countResidualPredicatesWithContext(noResidual, nil); got != 0 {
 		t.Fatalf("zero-residual candidate has %d residual conjuncts, want 0", got)
 	}
-	if got := countResidualPredicates(oneResidual); got != 1 {
+	if got := countResidualPredicatesWithContext(oneResidual, nil); got != 1 {
 		t.Fatalf("one-residual candidate has %d residual conjuncts, want 1", got)
 	}
 	opsWinner := findExpressionsByType(noResidual, nil, nil)
@@ -804,7 +804,7 @@ func TestPlanningCostModel_NLJPredicateCountRung(t *testing.T) {
 		t.Fatal("could not construct a hash-adverse NLJ predicate-count fixture")
 	}
 
-	if winnerResidual, loserResidual := countResidualPredicates(winner), countResidualPredicates(loser); winnerResidual != 2 || loserResidual != 2 {
+	if winnerResidual, loserResidual := countResidualPredicatesWithContext(winner, nil), countResidualPredicatesWithContext(loser, nil); winnerResidual != 2 || loserResidual != 2 {
 		t.Fatalf("residual-count precondition = (%d, %d), want (2, 2)", winnerResidual, loserResidual)
 	}
 	opsWinner := findExpressionsByType(winner, nil, nil)
@@ -924,7 +924,7 @@ func TestPlanningCostModel_ScalarFallbackRung(t *testing.T) {
 	if opsWinner != opsLoser {
 		t.Fatalf("ordinal operator profiles differ: winner=%+v loser=%+v", opsWinner, opsLoser)
 	}
-	if winnerResidual, loserResidual := countResidualPredicates(winner), countResidualPredicates(loser); winnerResidual != 0 || loserResidual != 0 {
+	if winnerResidual, loserResidual := countResidualPredicatesWithContext(winner, nil), countResidualPredicatesWithContext(loser, nil); winnerResidual != 0 || loserResidual != 0 {
 		t.Fatalf("residual-count precondition = (%d, %d), want (0, 0)", winnerResidual, loserResidual)
 	}
 	winnerCost := properties.EstimateCost(winner)

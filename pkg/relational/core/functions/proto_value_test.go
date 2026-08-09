@@ -563,7 +563,7 @@ func TestProtoValueToDriver_Enum(t *testing.T) {
 	fd := typedFD("val_enum")
 	v := protoreflect.ValueOfEnum(protoreflect.EnumNumber(gen.Color_BLUE))
 	got := ProtoValueToDriver(fd, v)
-	// Enum → int64 via scalarProtoToGo path, but ProtoValueToDriver has
+	// Enum → int64 via the ProtoScalarKindToRowValue path, but ProtoValueToDriver has
 	// no explicit enum case — falls through to default v.Interface().
 	// Verify we get something usable.
 	if got == nil {

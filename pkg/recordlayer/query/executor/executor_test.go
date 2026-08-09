@@ -3309,12 +3309,12 @@ func TestDistinctKey_CoveringAndBaseFloatRowsDedup(t *testing.T) {
 	}
 }
 
-// --- passesJoinPredicates unit tests ---
+// --- passesJoinPredicatesLegs unit tests ---
 
 func TestPassesJoinPredicates_Empty(t *testing.T) {
 	t.Parallel()
 	qr := dmap(map[string]any{"A": 1})
-	ok, err := passesJoinPredicates(qr, nil, EmptyEvaluationContext())
+	ok, err := passesJoinPredicatesLegs(qr, nil, EmptyEvaluationContext(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3330,7 +3330,7 @@ func TestPassesJoinPredicates_MatchingPredicate(t *testing.T) {
 		values.NewFieldValueWithResolvedOrdinal("PRICE", 0, values.NullableLong),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(100)),
 	)
-	ok, err := passesJoinPredicates(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext())
+	ok, err := passesJoinPredicatesLegs(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3346,7 +3346,7 @@ func TestPassesJoinPredicates_NonMatchingPredicate(t *testing.T) {
 		values.NewFieldValueWithResolvedOrdinal("PRICE", 0, values.NullableLong),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(999)),
 	)
-	ok, err := passesJoinPredicates(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext())
+	ok, err := passesJoinPredicatesLegs(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3631,16 +3631,16 @@ func TestCollectAll_MultipleItems(t *testing.T) {
 }
 
 // =============================================================================
-// scalarProtoToGo — exhaustive coverage of every protoreflect.Kind
+// values.ProtoScalarKindToRowValue — exhaustive coverage of every protoreflect.Kind
 // =============================================================================
 
 func TestScalarProtoToGo_Bool(t *testing.T) {
 	t.Parallel()
-	got := scalarProtoToGo(protoreflect.BoolKind, protoreflect.ValueOfBool(true))
+	got := values.ProtoScalarKindToRowValue(protoreflect.BoolKind, protoreflect.ValueOfBool(true))
 	if got != true {
 		t.Errorf("got %v, want true", got)
 	}
-	got = scalarProtoToGo(protoreflect.BoolKind, protoreflect.ValueOfBool(false))
+	got = values.ProtoScalarKindToRowValue(protoreflect.BoolKind, protoreflect.ValueOfBool(false))
 	if got != false {
 		t.Errorf("got %v, want false", got)
 	}
@@ -3653,11 +3653,11 @@ func TestScalarProtoToGo_Int32Kinds(t *testing.T) {
 	} {
 		t.Run(kind.String(), func(t *testing.T) {
 			t.Parallel()
-			got := scalarProtoToGo(kind, protoreflect.ValueOfInt32(42))
+			got := values.ProtoScalarKindToRowValue(kind, protoreflect.ValueOfInt32(42))
 			if got != int64(42) {
 				t.Errorf("got %v (%T), want int64(42)", got, got)
 			}
-			got = scalarProtoToGo(kind, protoreflect.ValueOfInt32(-1))
+			got = values.ProtoScalarKindToRowValue(kind, protoreflect.ValueOfInt32(-1))
 			if got != int64(-1) {
 				t.Errorf("got %v, want int64(-1)", got)
 			}
@@ -3672,7 +3672,7 @@ func TestScalarProtoToGo_Int64Kinds(t *testing.T) {
 	} {
 		t.Run(kind.String(), func(t *testing.T) {
 			t.Parallel()
-			got := scalarProtoToGo(kind, protoreflect.ValueOfInt64(math.MaxInt64))
+			got := values.ProtoScalarKindToRowValue(kind, protoreflect.ValueOfInt64(math.MaxInt64))
 			if got != int64(math.MaxInt64) {
 				t.Errorf("got %v, want MaxInt64", got)
 			}
@@ -3687,7 +3687,7 @@ func TestScalarProtoToGo_Uint32Kinds(t *testing.T) {
 	} {
 		t.Run(kind.String(), func(t *testing.T) {
 			t.Parallel()
-			got := scalarProtoToGo(kind, protoreflect.ValueOfUint32(math.MaxUint32))
+			got := values.ProtoScalarKindToRowValue(kind, protoreflect.ValueOfUint32(math.MaxUint32))
 			if got != int64(math.MaxUint32) {
 				t.Errorf("got %v (%T), want int64(%d)", got, got, uint32(math.MaxUint32))
 			}
@@ -3702,7 +3702,7 @@ func TestScalarProtoToGo_Uint64Kinds(t *testing.T) {
 	} {
 		t.Run(kind.String(), func(t *testing.T) {
 			t.Parallel()
-			got := scalarProtoToGo(kind, protoreflect.ValueOfUint64(12345))
+			got := values.ProtoScalarKindToRowValue(kind, protoreflect.ValueOfUint64(12345))
 			if got != int64(12345) {
 				t.Errorf("got %v (%T), want int64(12345)", got, got)
 			}
@@ -3712,7 +3712,7 @@ func TestScalarProtoToGo_Uint64Kinds(t *testing.T) {
 
 func TestScalarProtoToGo_Float(t *testing.T) {
 	t.Parallel()
-	got := scalarProtoToGo(protoreflect.FloatKind, protoreflect.ValueOfFloat32(3.14))
+	got := values.ProtoScalarKindToRowValue(protoreflect.FloatKind, protoreflect.ValueOfFloat32(3.14))
 	f, ok := got.(float64)
 	if !ok {
 		t.Fatalf("got type %T, want float64", got)
@@ -3724,7 +3724,7 @@ func TestScalarProtoToGo_Float(t *testing.T) {
 
 func TestScalarProtoToGo_Double(t *testing.T) {
 	t.Parallel()
-	got := scalarProtoToGo(protoreflect.DoubleKind, protoreflect.ValueOfFloat64(2.71828))
+	got := values.ProtoScalarKindToRowValue(protoreflect.DoubleKind, protoreflect.ValueOfFloat64(2.71828))
 	if got != float64(2.71828) {
 		t.Errorf("got %v, want 2.71828", got)
 	}
@@ -3732,11 +3732,11 @@ func TestScalarProtoToGo_Double(t *testing.T) {
 
 func TestScalarProtoToGo_String(t *testing.T) {
 	t.Parallel()
-	got := scalarProtoToGo(protoreflect.StringKind, protoreflect.ValueOfString("hello"))
+	got := values.ProtoScalarKindToRowValue(protoreflect.StringKind, protoreflect.ValueOfString("hello"))
 	if got != "hello" {
 		t.Errorf("got %v, want hello", got)
 	}
-	got = scalarProtoToGo(protoreflect.StringKind, protoreflect.ValueOfString(""))
+	got = values.ProtoScalarKindToRowValue(protoreflect.StringKind, protoreflect.ValueOfString(""))
 	if got != "" {
 		t.Errorf("got %v, want empty string", got)
 	}
@@ -3745,7 +3745,7 @@ func TestScalarProtoToGo_String(t *testing.T) {
 func TestScalarProtoToGo_Bytes(t *testing.T) {
 	t.Parallel()
 	data := []byte{0xDE, 0xAD}
-	got := scalarProtoToGo(protoreflect.BytesKind, protoreflect.ValueOfBytes(data))
+	got := values.ProtoScalarKindToRowValue(protoreflect.BytesKind, protoreflect.ValueOfBytes(data))
 	b, ok := got.([]byte)
 	if !ok {
 		t.Fatalf("got type %T, want []byte", got)
@@ -3757,7 +3757,7 @@ func TestScalarProtoToGo_Bytes(t *testing.T) {
 
 func TestScalarProtoToGo_Enum(t *testing.T) {
 	t.Parallel()
-	got := scalarProtoToGo(protoreflect.EnumKind, protoreflect.ValueOfEnum(2))
+	got := values.ProtoScalarKindToRowValue(protoreflect.EnumKind, protoreflect.ValueOfEnum(2))
 	if got != int64(2) {
 		t.Errorf("got %v (%T), want int64(2)", got, got)
 	}

@@ -236,8 +236,9 @@ var _ = Describe("MetadataBugVerify", func() {
 		})
 	})
 
-	// Bug 5: createStoreHeader must persist RecordCountKey.
-	Describe("createStoreHeader RecordCountKey", func() {
+	// Bug 5: store creation must persist RecordCountKey. This drives a real Create(),
+	// so it exercises the live createStoreHeaderAtFormat.
+	Describe("store creation persists RecordCountKey", func() {
 		It("persists RecordCountKey in header on Create", func() {
 			ctx := context.Background()
 			ss := specSubspace()

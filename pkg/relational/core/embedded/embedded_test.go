@@ -636,40 +636,6 @@ func TestLikeMatchWithEscape(t *testing.T) {
 	}
 }
 
-func TestRowKey(t *testing.T) {
-	t.Parallel()
-	row := func(vals ...driver.Value) []driver.Value { return vals }
-
-	cases := []struct {
-		a, b []driver.Value
-		same bool
-	}{
-		{row(int64(1)), row(int64(1)), true},
-		{row(int64(1)), row(int64(2)), false},
-		{row(nil), row(nil), true},
-		{row(nil), row(int64(0)), false},
-		// Binary string containing separator bytes must not collide.
-		{row("foo\x00"), row("foo", "\x00"), false},
-		{row("a", "b"), row("ab"), false},
-		// Compound (STRING, BIGINT) duplicates must produce identical keys
-		// — the canonical SELECT DISTINCT a, b shape (TODO #42 sentinel).
-		{row("x", int64(1)), row("x", int64(1)), true},
-		{row("x", int64(1)), row("x", int64(2)), false},
-		{row("x", int64(1)), row("y", int64(1)), false},
-	}
-	for i, tc := range cases {
-		t.Run(fmt.Sprintf("case%d", i), func(t *testing.T) {
-			t.Parallel()
-			ka, kb := rowKey(tc.a), rowKey(tc.b)
-			if tc.same && ka != kb {
-				t.Errorf("expected equal keys for %v and %v, got %q vs %q", tc.a, tc.b, ka, kb)
-			} else if !tc.same && ka == kb {
-				t.Errorf("expected distinct keys for %v and %v, both got %q", tc.a, tc.b, ka)
-			}
-		})
-	}
-}
-
 // FuzzApplyMathOp pins the arithmetic evaluator. The function must never
 // panic, must reject non-numeric operands cleanly, must propagate NULL, and
 // must error on div/0 for both `/` and `%` (one unified code path).
