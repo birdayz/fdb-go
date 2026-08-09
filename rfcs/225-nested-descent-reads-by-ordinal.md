@@ -1,6 +1,6 @@
 # RFC-225 — The nested descent reads by ordinal
 
-**Revision 12.** Revisions 1-7 are preserved in **Appendix A**; revision 8's live
+**Revision 13.** Revisions 1-7 are preserved in **Appendix A**; revision 8's live
 sections were corrected in place rather than appended to, so that section 5
 remains the ONE live acceptance list.
 
@@ -95,9 +95,13 @@ Two properties matter:
 
 - `currentType = field.getFieldType()` (`:296`) — resolution **walks the nested
   type step by step**. Java can resolve step *k* only because it holds the
-  stated record type at depth *k*. Go's producers do not hold that type;
-  section 4 resolves against the DESCRIPTOR instead, which is the thing Java's
-  `Type.Record` is a mirror of anyway.
+  stated record type at depth *k*. **Go's producers do not hold that type
+  either — and §3.3.3 records that this is exactly where RFC-225 is blocked.**
+  Earlier revisions answered "resolve against the DESCRIPTOR instead"; no
+  producer can reach one (§3.3.1), and the `*values.RecordType` chain that
+  replaced it is `UnknownType` at the first nested level on the candidate side
+  (§3.3.3). Java's ability to hold the stated type at depth *k* is precisely the
+  capability Go lacks.
 - A name that is absent is a **hard error** at construction
   (`RECORD_DOES_NOT_CONTAIN_FIELD`, `SemanticException.java:44`), never a NULL.
   Go's current silent-NULL-on-miss for an unpinned path has no counterpart.
@@ -145,10 +149,17 @@ appending in list order. Reverse, `Type.java:2586-2588 fromDescriptor` ingests
 There is no assertion, no sort, no cross-check. `findFieldDescriptorOnMessageByOrdinal`
 bounds-checks the index and nothing else.
 
-That is worth stating plainly because it sets the bar, and because it is what
-section 4's revised design turns to Go's advantage: **resolving directly against
-the descriptor leaves no second list that could drift**, so Go does not need the
-invariant Java leaves unchecked — it has no way to violate it.
+That is worth stating plainly because it sets the bar. **Java has no second list
+to drift: it resolves against the descriptor and stores the ordinal, so the
+invariant it never checks is one it cannot violate.**
+
+**Go is NOT in that position, and earlier revisions of this section claimed it
+was.** Go's bake resolves against a `*values.RecordType` and the read descends a
+proto message, so there ARE two lists and they CAN drift. That is not a detail —
+it is the plank the whole ordinal read stands on, it is unpinned today, and
+**criterion 20 exists to pin it**. A reader who forms their model here and then
+meets criterion 20 would find the document arguing with itself; this paragraph
+asserted the opposite of the criterion for four revisions.
 
 **ResolvedAccessor keeps the name, for display only.** `FieldValue.java:684`
 `equals` is `getOrdinal() == that.getOrdinal()`; `hashCode` `:689` likewise. The
@@ -497,8 +508,11 @@ document's own documented failure.
 The extension is cheap because the correspondence is real where it is derived:
 `proto_types.go:129-137` mints struct fields in descriptor order. So
 `PrimitiveAccessorsForType` gains the same token on the `FieldPath` it builds, and
-the converted arm compares it against the arriving message's descriptor token
-before reading by ordinal. **The wrapped-array case (`unwrapWrappedArray`,
+the converted arm compares it against the arriving message's layout before
+reading by ordinal. **Which token that comparison uses is UNRESOLVED and is part
+of what §3.3.3 blocks**: §3.3.2 step 4 forbids building a descriptor token at
+runtime, so this arm cannot both honour that and compare against a descriptor.
+The two statements were live simultaneously for two revisions. **The wrapped-array case (`unwrapWrappedArray`,
 §3.3.1) is exactly what that comparison catches** — there the `RecordType` and the
 descriptor differ in shape, and a bare ordinal read would take the wrong column
 silently.
@@ -695,18 +709,32 @@ catalog, not a per-row check**: `rlcatalog.go:364-368` iterates `nested.Get(i)` 
 descriptor order and `expr.go:1815` assigns `Ordinal: i`. It is pinned once, by
 criterion 20, rather than paid for on every row.
 
-**This dissolves the alphabet defect rather than fixing it.** A draft of this
-section had the bake comparing a `RecordType` token against a descriptor token,
-which fails for escaped fields — `rlcatalog.go:336` signs USER names (`A$B`) and
-the descriptor signs STORED names (`A__1B`) — so one escaped sibling would poison
-a whole struct's bake, and criterion 5 (which requires the escaped class to work
-THROUGH the ordinal path) would have been unsatisfiable against it. That draft
-then proposed normalising the descriptor side through `ToUserIdentifier`. **Both
-sides of the real bake are `RecordType`-derived, so both already sign USER names
-and no normalisation is needed at all.** The escaped class bakes like any other.
-The measurement that produced the defect is kept because it is what makes the
-catalog invariant above load-bearing; the proposed remedy is withdrawn as a fix
-to a problem the correct mechanism does not have.
+**The alphabet defect is NOT dissolved — revision 12 withdrew the fix on a false
+premise, and this is the correction.** Revision 12 argued: both sides of the bake
+are `RecordType`-derived, `RecordType`s sign USER names, therefore the alphabets
+agree and no `ToUserIdentifier` normalisation is needed. **The middle step is a
+non-sequitur.** Measured over the 8 non-test `NewRecordType` call sites
+(`type.go:713` is the definition), four are descriptor→`RecordType` builders and
+they do NOT agree on an alphabet:
+
+| Builder | Name signed | Alphabet |
+|---|---|---|
+| `structColumnType` (`expr.go:1820`) | via `ToUserIdentifier` (`rlcatalog.go:336`) | **USER** (`A$B`) |
+| `TargetElementType` (`cascades_translator.go:351`) | `string(sub.Name())` (`:344`) | **STORED** (`A__1B`) |
+| `PositionalTypeForDescriptor` (`query_result.go:171`) | `strings.ToUpper(string(fd.Name()))` (`:169`) | **STORED** |
+| `positionalTypeWithRowVersion` (`query_result.go:228`) | as above **plus a `__ROW_VERSION` pseudo-field** (`:222-226`) | **STORED**, and a DIFFERENT LENGTH |
+
+So three of the four sign STORED names, one signs USER, and the fourth's
+name-list is a field longer than its own base. **The escaped class breaks exactly
+as the withdrawn draft said it would**, and the whole-layout signature means one
+escaped sibling still poisons a struct. `ToUserIdentifier` normalisation (or
+carrying the stored name explicitly) is back on the table as the real fix.
+
+**It is moot only while the bake declines universally (§3.3.3), and that is the
+only honest way to state it.** The measurement stands; the remedy is unresolved,
+not unnecessary. Recording it as "dissolved" would hand the next author a solved
+problem that is not solved — which is how a withdrawn draft step got re-adopted
+in the first place (§3.3.3).
 
 So `NewResolvedAccessorOfDescriptorField(fd)` is **not** the nested-descent
 constructor. The nested-descent constructor takes the field index within the
@@ -716,9 +744,15 @@ constructor is needed — `OrdinalDomainOfType` already exists at `values.go:347
 (A draft of this section invented `OrdinalDomainOfRecordType`; that is the
 "check Java/the tree first, the machinery is probably already there" rule
 failing on the tree's own code.)
-`OrdinalDomainOfMessageDescriptor` is still promoted per §3.2(1) — the READ side
-sees a proto message and needs the descriptor's token to compare against — and
-the agreement check is exactly a comparison of those two tokens.
+**`OrdinalDomainOfMessageDescriptor` and step 4 contradict each other, and both
+were live.** Step 4 above says *"no descriptor token is ever built at runtime"*;
+this paragraph, thirty-one lines later, says the READ side needs exactly such a
+token. They cannot both hold. Under §3.3.2's mechanism the read keeps **only**
+Java's bounds check, so no descriptor token is built at runtime and
+`OrdinalDomainOfMessageDescriptor` is needed **only by criterion 20's test**, which
+runs at build time against the catalog — not on any row path. That is the
+reading this document now takes; the contradiction is recorded rather than
+quietly deleted because it is the fourth site of the same class.
 
 **The two tokens ARE comparable — measured, because if they were not, this whole
 section would be universal decline in a new costume.** Both derivations funnel
@@ -808,6 +842,54 @@ same resolver, becoming the asserted case rather than the assumed one.
   `-1` class does end; the zero-value class replaces it, at the same site, and an
   unwatched revival is the other half of the shelf-life rule.
 
+### 3.3.3 BLOCKED: the type chain is UNKNOWN at the nested level, and RFC-204 owns it
+
+**RFC-225 is blocked on RFC-204 §4.4/§4.5. This is a measured gate with a named
+owner, not a scheduling note.** Nothing below the bake can proceed until it lands.
+
+§3.3.2 bakes against the `*values.RecordType` chain. On `index_expansion`'s
+CANDIDATE side that chain has no nested level. Probed at branch HEAD:
+
+```
+ZZREVIEW flowed root type = RECORD<ID LONG NULL, HOME UNKNOWN NULL> NOT NULL
+ZZREVIEW field[1] name="HOME" ordinal=1 type=UNKNOWN NULL isRecordType=false
+```
+
+The trace: `index_expansion.go:215` → `GetBaseType` → `IndexRowType` →
+`PositionalTypeForDescriptor` → `FieldTypeForProtoField`, whose `MessageKind` arm
+returns `UnknownType` for everything but UUID. So at the first nested step
+`currentType.(*values.RecordType)` is **false**, `OrdinalDomainOfType(UnknownType)`
+yields the UNKNOWN token, and §3.3.2 step 3 declines. **The bake declines
+unconditionally — verbatim what §3.3.1 says about revision 10.**
+
+**The refutation was already in this file.** Appendix A §3.5 R1 quotes
+`TargetTypeForFD`'s own doc: the `MessageKind` → `UnknownType` collapse is
+load-bearing, **RFC-204 §4.4/§4.5 owns unifying it**, and widening
+`FieldTypeForFD` would change plan-time typing for every query. R1 **withdrew
+draft §5 Step 1 for exactly this reason.** Revision 12 re-adopted the withdrawn
+step without noticing it was preserved in the same document.
+
+**The pattern, stated so it is not repeated a fourth time.** Three revisions, three
+resolution sources, each named without measuring it populated *at the site where
+it must be read*:
+
+| Revision | Resolve against | Refuted by |
+|---|---|---|
+| 8 | the READ, per row | memo executability (every plan in the memo must be executable by construction) |
+| 10-11 | the DESCRIPTOR | zero descriptors reach the bake (§3.3.1's exit-1 grep) |
+| 12 | the `*RecordType` CHAIN | the chain is `UnknownType` at the nested level (above) |
+
+The type information is genuinely absent, by a deliberate collapse another gated
+RFC owns. That makes this a **STOP**, not a deferral: the decision — whether to
+change plan-time typing for every query — belongs to RFC-204's owner.
+
+**What survives the block, and must not be lost:** criterion 9's atomicity
+argument, including that `collectionPath` IS "which query-side producer will I be
+interned against" (§5, criterion 9). That coupling is a real discovery about the
+memo, independent of how the nested descent is ultimately baked, and it must
+survive to whoever picks this up after RFC-204 lands. Criterion 20 (below) is
+likewise independent and is being done NOW.
+
 ## 4. Wire format
 
 **No bytes change.** This changes which descriptor field a read selects, so the
@@ -868,7 +950,9 @@ against.
    **pinned and unpinned paths alike**. The unpinned arm is the behaviour change;
    a test driving only the pinned arm passes with the change half-applied.
 7. **DOMAIN-MISMATCH PIN (§3.2) — at the BAKE.** A test driving a producer whose
-   resolved descriptor token disagrees with the layout its child advertises
+   resolved **layout** token (`OrdinalDomainOfType` of the type it walked, §3.3.2
+   — not a descriptor token; no producer can obtain one) disagrees with the
+   layout its child advertises
    asserts **no nested path is baked** (the rule declines, and the plan shape
    shows it). Mutation: drop the token comparison from the bake and the test must
    go RED **on the resulting plan/value**, not on an absence of code. Revision 8
@@ -886,9 +970,13 @@ against.
    **That has no witness: such a test does not COMPILE, so no test exists and
    nothing runs** — appendix §16.3's failure in a better suit, and the third time
    this document has written an absence-of-code pin. Replaced by BOTH:
-   (a) a `reflect` pin on the resolver's signature asserting its parameter is a
-   `protoreflect.MessageDescriptor` — mutation: widen it back to `*RecordType`,
-   test goes RED; and
+   (a) a `reflect` pin on the resolver's signature. **Revision 12 wrote this as
+   asserting a `protoreflect.MessageDescriptor` parameter, which is directly
+   exclusive with §3.3.2's `*RecordType` walk** — under the stated mechanism the
+   resolver's parameter IS a `*RecordType`, so this arm as written pins the
+   refuted design and its mutation ("widen it back to `*RecordType`") mutates
+   toward the correct one. The pin is on whatever §3.3.3's gate resolves the
+   parameter to be, and it cannot be written before that resolves; and
    (b) drive the duplicate-bearing `*RecordType` through to the bake and assert a
    DECLINE **on the returned value**.
 9. **ATOMICITY PIN (Appendix A §10.1 — the strongest section in the document; its
@@ -1027,19 +1115,38 @@ against.
     non-root accessor carrying an unknown domain. The compiler and the chokepoint
     then do the enumeration. Mutation direction (criterion 13): remove the
     refusal, splice an unknown-domain accessor, assert RED.
-20. **THE CATALOG ORDER INVARIANT — pinned once, since the read relies on it every
-    row (§3.3.2).** The bake reasons about a `*values.RecordType`; the read
-    descends a stored proto message by that ordinal. The bridge is that
-    `rlcatalog.go:364-368` builds struct fields in **descriptor order** and
-    `expr.go:1815` assigns `Ordinal: i`. Nothing pins it today. A test asserting,
-    over a schema including an ESCAPED field name and a NESTED struct, that for
-    every `i`, `rt.Fields[i]` corresponds to `descriptor.Fields().Get(i)` —
-    **name-substituted but order-identical** (`rlcatalog.go:336` maps through
-    `ToUserIdentifier`, so the test compares `ToUserIdentifier(descriptor name)`
-    against `rt.Fields[i].Name`, and that substitution is exactly why the
-    invariant is about ORDER and not about names). Mutation (criterion 13):
-    permute the catalog's field order, assert RED. This is the plank the whole
-    ordinal read stands on and it is currently unwatched.
+20. **THE DESCRIPTOR-ORDER INVARIANT, ACROSS ALL FOUR BUILDERS — standalone work,
+    NOT blocked by §3.3.3, and load-bearing TODAY.** The bake reasons about a
+    `*values.RecordType`; the read descends a stored proto message by that
+    ordinal. The bridge is that the `RecordType`'s field order equals the
+    descriptor's declaration order. **Nothing pins it, and `expr.go:260`
+    (`fuseNestedAccessors`) already carries ordinals across that bridge today** —
+    so this is a live unguarded plank independent of any conversion.
+
+    **Pin it for each of the FOUR descriptor→`RecordType` builders, not just one.**
+    Revision 12 pinned `structColumnType` alone — the same unenumerated-population
+    shape that killed laps 1-7, sitting inside the criterion written to close it:
+
+    - `structColumnType` (`expr.go:1820`; order from `rlcatalog.go:364-368`,
+      `Ordinal: i` at `expr.go:1816`) — signs USER names;
+    - `TargetElementType` (`cascades_translator.go:351`, `Ordinal: i` at `:347`)
+      — signs STORED names;
+    - `PositionalTypeForDescriptor` (`query_result.go:171`, `:169`) — STORED,
+      upper-cased;
+    - `positionalTypeWithRowVersion` (`query_result.go:228`) — STORED plus a
+      trailing `__ROW_VERSION` pseudo-field, so its list is one LONGER than its
+      own base.
+
+    The invariant under test is **ORDER**, not names — the alphabets provably
+    differ (§3.3.2), which is exactly why the test compares positions and not
+    spellings. For each builder, over a schema including an ESCAPED field name and
+    a NESTED struct: for every `i`, the builder's field `i` corresponds to
+    `descriptor.Fields().Get(i)`, with `positionalTypeWithRowVersion`'s extra slot
+    asserted to be strictly trailing. Any builder deliberately out of scope is
+    NAMED in the failure message, so a future reader sees a decision rather than
+    an omission. Mutation (criterion 13): permute one builder's field order,
+    assert RED — **per builder, four separate mutations**, since a single-builder
+    test stays green while the other three drift.
 
 ### 5.1 The mutation-checkability of the divergent-ordinal fixture (Appendix A §12's criterion 7 — the correction §16.4 claimed and did not make)
 
