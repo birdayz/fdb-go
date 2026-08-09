@@ -1,6 +1,6 @@
 # RFC-225 — The nested descent reads by ordinal
 
-**Revision 10.** Revisions 1-7 are preserved in **Appendix A**; revision 8's live
+**Revision 11.** Revisions 1-7 are preserved in **Appendix A**; revision 8's live
 sections were corrected in place rather than appended to, so that section 5
 remains the ONE live acceptance list.
 
@@ -285,7 +285,8 @@ Constructors, and there are no others:
 
 | Constructor | For | Ordinal from | Domain |
 |---|---|---|---|
-| `NewResolvedAccessorOfDescriptorField(fd protoreflect.FieldDescriptor)` | **nested struct descent** | `fd.Index()` — non-negative by protoreflect's contract, and it *is* the declaration index | `OrdinalDomainOfMessageDescriptor(fd.ContainingMessage())` |
+| `NewResolvedAccessorOfDescriptorField(fd protoreflect.FieldDescriptor)` | a descriptor-side mint (**not** the nested descent — see §3.3.1) | `fd.Index()` — non-negative by protoreflect's contract, and it *is* the declaration index | `OrdinalDomainOfMessageDescriptor(fd.ContainingMessage())` |
+| `NewResolvedAccessorOfRecordTypeField(rt *RecordType, idx int)` | **nested struct descent** — the producers walk types, not descriptors (§3.3.1) | caller's field index within `rt`, `>= 0` enforced | `OrdinalDomainOfRecordType(rt)` |
 | `NewResolvedAccessorInDomain(name string, ord int, d OrdinalDomain) (ResolvedAccessor, error)` | a ROW-layout root | caller, `ord >= 0` enforced | caller's stated layout |
 | `NewResolvedAccessorOfOrdinal(name string, ord int) (ResolvedAccessor, error)` | a root whose layout is not in hand | caller, `ord >= 0` enforced | UNKNOWN — fails closed at every domain check |
 
@@ -309,10 +310,23 @@ var a values.ResolvedAccessor
 make([]values.ResolvedAccessor, n)
 ```
 
-None matches a `grep "ResolvedAccessor{"`. So closing the struct buys a real but
+Of those, only `var a` and `make(...)` are grep-invisible — `ResolvedAccessor{}`
+obviously matches the grep, and `values.go:617` comes back in it. (Revision 10
+wrote "none matches", inside the paragraph correcting an overstatement.) So closing the struct buys a real but
 **narrower** property: no site outside `values` can *set* a negative or arbitrary
 ordinal, and the compiler enumerates every setter. It does not make an unresolved
 accessor unconstructible.
+
+**A constructor restriction is a CONVENTION, not a mechanism.** All the
+constructors return the same `ResolvedAccessor`; there is no runtime marker, so
+the bake cannot enforce *provenance* — it can only enforce `domain.IsKnown()`.
+Any rule of the form "the nested-descent bake accepts accessors from constructor
+X only" is a review convention with **no compile-time force**, which is the same
+species as revision 8's withdrawn "unconstructible" claim one level down. It is
+stated here as a convention deliberately. One consequence in the design's favour:
+criterion 9's mutation — minting a wrong ordinal through
+`NewResolvedAccessorInDomain` — compiles, reaches the bake, and splits the
+bucket, so the pin is executable *because* the rule is not enforced.
 
 **The class is REPRESENTABLE but currently UNPOPULATED, and revision 9 overstated
 that too.** Revision 9 cited `expr/expr.go:258` and `max_match_map.go:910` as
@@ -353,7 +367,7 @@ state my layout" to be spelled at the call site and visible in the diff.
 
 > **Revision 9 rewrote this section.** Revision 8 put the check at the READ, per
 > row. Both reviewers NAK'd; the Cascades objection is decisive and is recorded
-> in §2.4. In Cascades every plan in the memo is executable by construction, so a
+> in §5.2's table and §7. In Cascades every plan in the memo is executable by construction, so a
 > per-row agreement test means either a silent NULL on the unpinned arm (opening
 > a third silent-NULL class while §0 indicts exactly that) or an optimizer that
 > costed and committed a plan whose read cannot be performed. **The check moves
@@ -447,6 +461,41 @@ divergence — but it is the reason §3.2(3)'s read stays LOUD rather than becom
 a formality: **the bake makes the read's failure a bug, not a possibility; it
 does not make the read total.**
 
+### 3.2.1 The FOURTH producer criterion 3 pulls in — `PrimitiveAccessorsForType`
+
+Criterion 3 converts the chained `Evaluate` arm at `values.go:1191`/`:1195`. That
+arm's ordinals are not minted by any of §3.3's three producers. They are minted by
+`PrimitiveAccessorsForType` (`primitive_accessors.go:41-67`), which does
+`rt, isRecord := typ.(*RecordType)` and then `NewFieldValueOfOrdinal(base(), i)`
+for `i := range rt.Fields` — **an ordinal indexing `rt.Fields`**. The eval context
+at `:1191` is a raw stored proto message (`values.go:1180-1190` says so). So
+converting that arm indexes a **proto descriptor** with an ordinal baked against a
+**`RecordType`**. That is §3.2's wrong-column class verbatim, at a fourth
+producer §3.2 did not gate — and it is the way an implementer following revision
+10 reaches a wrong-column read of stored records.
+
+**Decision: extend the bake-time agreement to this mint. Do not scope criterion 3
+out.** Scoping out deadlocks against criterion 1 for the third time (the
+`boundary` debt entries at `field_name_decision_test.go:320-321` are keyed inside
+`protoFieldByName`, which cannot be emptied while a caller still needs a name) —
+appendix §3.5's R3 recurrence, and shipping it a third time would be the
+document's own documented failure.
+
+The extension is cheap because the correspondence is real where it is derived:
+`proto_types.go:129-137` mints struct fields in descriptor order. So
+`PrimitiveAccessorsForType` gains the same token on the `FieldPath` it builds, and
+the converted arm compares it against the arriving message's descriptor token
+before reading by ordinal. **The wrapped-array case (`unwrapWrappedArray`,
+§3.3.1) is exactly what that comparison catches** — there the `RecordType` and the
+descriptor differ in shape, and a bare ordinal read would take the wrong column
+silently.
+
+**Note the two halves need two different gates.** `PrimitiveAccessorsForType`'s
+ordinal is a **root** ordinal, whose domain lives on `FieldPath.Domain`
+(`values.go:373-376`), not on the per-accessor `domain` §3.1 adds. Criterion 3
+therefore has a root-domain gate and a suffix-domain gate, and the RFC specifies
+both rather than conflating them.
+
 This restores the Cascades property revision 8 broke: every plan in the memo is
 executable by construction. It also removes the per-row cost revision 8 quietly
 imported — `OrdinalDomainOfColumnNames` is an O(#fields) walk with `ToUpper` and
@@ -530,7 +579,7 @@ So each producer:
    but *"by its own existing route"* is **FALSE for `index_expansion`, and
    revision 9 wrote it anyway.** Measured this lap: all three
    `lazyFanOutFieldPathValue` returns are **before** the suffix loop
-   (`index_expansion.go:539-551`). **Inside the loop (`:558-580`) there is no
+   (`index_expansion.go:541, `:546`, `:550``). **Inside the loop (`:561-583`) there is no
    decline at all** — a name miss sets `currentType = values.UnknownType`, appends
    a `-1` accessor, and returns a `FieldValue` regardless.
 
@@ -538,6 +587,68 @@ So each producer:
    new edge changes the value shape for the **non-collection name-miss** case
    — a shape that today silently produces a name-addressed accessor and after the
    change produces no bake. Criterion 15(a) covers it.
+
+   **And the edge must reach `(GraphExpansion, false)`, not merely return
+   differently.** Revision 10 said "the rule does not fire", which is not
+   available where it placed the decline. Measured: the `SCALAR` caller
+   (`index_expansion.go:310`) has a `return nil, false`; the **`FAN_OUT` arms at
+   `:325` and `:440` have none.** They take the returned collection and
+   unconditionally build `arrayElementType` → `NewExplodeExpression` →
+   `ForEachQuantifier` → `NewPlaceholder` (`:331-345`, `:445-455`). A decline that
+   returns `values.UnknownType` therefore does **not** suppress the expansion — it
+   emits a candidate carrying an unknown-typed element into the memo. That is a
+   degraded candidate, not an absent one, which is precisely the executability
+   property §3.2 claims to restore. The decline must propagate out of both
+   `FAN_OUT` arms as a `(GraphExpansion, false)`, and that propagation is part of
+   the same atomic commit as criterion 9.
+
+### 3.3.1 Where each producer gets its descriptor — the gap revision 10 shipped
+
+Revision 10 required each producer to resolve against a
+`protoreflect.MessageDescriptor` and **never said where one comes from**. Measured
+this lap, and this is the blocking correction of lap 9:
+
+```
+$ grep -nE "protoreflect|MessageDescriptor" unnest_seed.go unnest_gather.go index_expansion.go
+(exit 1 — zero hits)
+```
+
+**None of the three producers imports, holds, or can reach a descriptor.** All
+three walk `values.Type` chains: `recordTypeField(nestedType, segment)`
+(index_expansion.go:567), `outerType.FieldIndex` (unnest_seed.go:171),
+`ownerWindow.leafTyp.FieldIndex` (unnest_gather.go:168). Under revision 10 as
+written every bake declines unconditionally — criterion 4 unsatisfiable,
+criterion 9's equality pin with nothing to compare, criterion 15(a)'s "UNCHANGED"
+false. That is the silent-decline failure mode criterion 4 exists to catch,
+promoted from a risk to the design's steady state.
+
+**The resolution: bake against the `values.Type` chain, not against the
+descriptor.** The producers already walk the type chain, and the type chain is
+what the ordinal must index at read time anyway. Measured:
+`metadata/proto_types.go:129-137` builds `StructField`s in **descriptor order**,
+`api.NewStructField(string(fd.Name()), dt, i)` with `i` the descriptor index — so
+for any type derived by that path, `RecordType.Fields[i]` corresponds to
+descriptor field `i` **by construction**. That is the correspondence the design
+needs, and it is available where the producers already stand.
+
+So `NewResolvedAccessorOfDescriptorField(fd)` is **not** the nested-descent
+constructor. The nested-descent constructor takes the field index within the
+`*values.RecordType` being descended, in that type's own domain:
+`NewResolvedAccessorInDomain(name, idx, OrdinalDomainOfRecordType(rt))`.
+`OrdinalDomainOfMessageDescriptor` is still promoted per §3.2(1) — the READ side
+sees a proto message and needs the descriptor's token to compare against — and
+the agreement check is exactly a comparison of those two tokens.
+
+**The shrink class this creates, named rather than discovered.** The
+correspondence is NOT universal, and the counter-example is in-tree:
+`unwrapWrappedArray` (`proto_types.go:165-180`) collapses the serializer's
+`message M { repeated R values = 1; }` nullable-array wrapper into an
+`ArrayType`, so the type tree and the descriptor tree **differ in shape** at that
+node. A path descending through a wrapped array has no ordinal correspondence to
+bake, and the token comparison is what detects it. Additionally
+`unnest_seed.go:135-139`'s `derivedOutputColumns` arm (a derived-table outer)
+has no descriptor at all and can only decline. **Both are named shrink classes,
+covered by criterion 15; neither is a surprise at implementation time.**
 
 The name matching in step 1 is **today's `protoFieldByName` head moved verbatim**:
 exact, lower-case, `EqualFold` scan, then the escaped spelling
@@ -677,15 +788,27 @@ against.
 
    **Why `index_expansion` is NOT independently flippable — the question revision
    9 left open, answered.** `collectionPath=true` is passed at exactly two sites,
-   `index_expansion.go:328` and `:443`, both inside `case gen.Field_FAN_OUT`
-   (`:324`, `:435`) — measured this lap. Those build the **candidate-side**
+   `index_expansion.go:329` and `:444` (the `true` literals; the calls are at
+   `:325` and `:440`), both inside `case gen.Field_FAN_OUT` (`:324`, `:435`) — measured this lap. Those build the **candidate-side**
    Explode collection value. The **query-side** of the same Explode is built by
    `unnest_seed.go:177` and `unnest_gather.go:189`, which mint `-1`. Identity is
    ordinal-only.
 
-   **So `index_expansion` withholds the ordinal it just derived precisely so its
-   suffix ordinals EQUAL the unnest producers' `-1`, and the two sides intern
-   into one memo bucket.** The withholding is not an independent mystery and not a
+   **The symmetry that actually closes it — both arms, not one.** The stated
+   reason at all three sites (`index_expansion.go:525-527`,
+   `unnest_seed.go:174-176`, `unnest_gather.go:184-189`) is that a struct
+   materializes as a proto message read by name, so the ordinal is never
+   consulted — a claim about the READ arm, which supports the consequence but not
+   the cause. What explains **both** arms structurally: `index_expansion`'s
+   `!collectionPath` arm keeps a real ordinal because its query-side counterpart
+   is `expr.go:260` (`fuseNestedAccessors`), which carries `a.Ordinal`; the
+   `collectionPath` arm withholds because its counterpart is the unnest pair's
+   `-1`. So `collectionPath` is literally *"which query-side producer will I be
+   interned against"*.
+
+   **`index_expansion` therefore withholds the ordinal it derived so that its
+   suffix ordinals EQUAL the unnest producers' `-1` and the two sides intern into
+   one memo bucket.** The withholding is not an independent mystery and not a
    separate investigation: **it IS this criterion's atomic-flip coupling wearing a
    different hat.** That is why the three producers are one commit — the coupling
    was already documented at `index_expansion.go:525-527`, in the language of
@@ -739,7 +862,7 @@ against.
     decline route is `lazyFanOutFieldPathValue` (a different memo identity), not
     an absence (§3.3). **Extended:** the same criterion covers the
     **non-collection name-miss** case, where §3.3(4) requires a decline edge that
-    does not exist today — the loop at `index_expansion.go:558-580` currently
+    does not exist today — the loop at `index_expansion.go:561-583` currently
     returns a `FieldValue` with a `-1` accessor rather than declining, so adding
     the edge moves plans that are not the collection-path ones. Both sub-cases get
     golden coverage;
@@ -763,17 +886,26 @@ against.
 18. **UNKNOWN-DOMAIN MINT CENSUS.** `NewResolvedAccessorInDomain` can be called
     with `OrdinalDomain{}`, which declines at §3.2's gate — not a wrong-column
     vector, but a SILENT-DECLINE vector, the failure mode two laps already caught
-    and the reason criterion 4 exists. A census with a floor on the
-    unknown-domain mint population, per the repo's census rule, so the
-    optimization cannot die quietly one lazy producer at a time. Drives every
+    and the reason criterion 4 exists. **An EXACT-COUNT ratchet, not a floor** —
+    revision 10 asked for a floor, but quiet death is *growth* of unknown-domain
+    mints, and a floor alarms on collapse while collapse to zero is the healthy
+    end state, i.e. an unsatisfiable guard. The shelf-life rule this document
+    cites three times elsewhere applies here: the alarm direction is GROWTH, and
+    the failure message must say so, so the optimization cannot die quietly one
+    lazy producer at a time. Drives every
     arm from explicit state, not from whatever the corpus reaches.
-19. **NO `WithSuffix` SPLICE PAST A BAKE (§3.1).** The bake is the single plank
-    closing the zero-value class, so a path composed AFTER a bake could in
-    principle carry an accessor the bake never saw. A test asserting that every
-    non-root accessor reaching `descendResolvedPath` carries a KNOWN domain,
-    driven over the 12 `WithSuffix` sites' shapes. Nothing violates this today;
-    the pin is what says so, and its failure message names the revival — a
-    composition site that splices an unbaked accessor into a baked path.
+19. **NO SPLICE PAST A BAKE — ENFORCED IN `WithSuffix` ITSELF, not by a test
+    listing shapes.** The bake is the single plank closing the zero-value class,
+    so a path composed AFTER a bake could carry an accessor the bake never saw.
+    Revision 10 asked for a test "driven over the 12 `WithSuffix` sites' shapes"
+    — but §2.2's own argument is that this population is OPEN ("a seventh lap
+    would find a thirteenth"), so a 13th site added later is uncovered and the
+    test stays green. That is the enumeration-by-test antipattern the document
+    elsewhere rejects. **Put the check inside `WithSuffix`** — one function,
+    callgraph-closed by §2.3's own chokepoint test — refusing to splice a
+    non-root accessor carrying an unknown domain. The compiler and the chokepoint
+    then do the enumeration. Mutation direction (criterion 13): remove the
+    refusal, splice an unknown-domain accessor, assert RED.
 
 ### 5.1 The mutation-checkability of the divergent-ordinal fixture (Appendix A §12's criterion 7 — the correction §16.4 claimed and did not make)
 
@@ -788,9 +920,13 @@ mutation-checkable by this repo's mandated cycle.** Constructible: a sub-leg row
 descriptor ordinal 1 for the same step, and `reconstructFoldStep1Seed` is already
 driven from `exists_join_fold_seed_test.go:37`. Not mutation-checkable **by
 reverting the fix**: reverting restores the *name* read, which selects the right
-column and stays GREEN. The mutation that works is the narrower one stated in
-criterion 7 — drop the `OrdinalIn` gate from the converted proto arm, leaving the
-ordinal read in place. Stated here because otherwise this pin gets reported
+column and stays GREEN. The mutation that works is the one stated in live criterion 7 — **drop the
+token comparison from the BAKE**, leaving the ordinal read in place. (Revision 10
+left revision 8's read-site wording here: "drop the `OrdinalIn` gate from the
+converted proto arm". There is no such gate in the converted read — §3.2(3) keeps
+**only** Java's bounds check — so that instruction names a mutation this design
+does not have, in the very section whose purpose is preventing a pin from being
+reported green-under-mutation.) Stated here because otherwise this pin gets reported
 green-under-mutation and banked as evidence, which is the failure this document
 has made in five other places.
 
@@ -804,8 +940,8 @@ check"). Revision 9 is the fold. What they found, and where each is answered:
 | Finding | Found by | Answered |
 |---|---|---|
 | The per-row domain check moves a plan-time decision to evaluation; unpinned arm is a silent NULL, opening a third such class while §0 indicts exactly that | Cascades | §3.2, rewritten to bake time |
-| Unexporting does NOT make the value unconstructible — Go's zero value yields ordinal 0, a VALID index, in production today at `expr/expr.go:258` and `max_match_map.go:910` | **both, independently** | §3.1, §4, §8 |
-| `index_expansion` withholds a KNOWN ordinal and declines via `lazyFanOutFieldPathValue`, not `nil` | **both, independently** | §3.3, criteria 15, 17 |
+| Unexporting does NOT make the value unconstructible — Go's zero value yields ordinal 0, a VALID index. **The "in production today at `expr/expr.go:258` / `max_match_map.go:910`" half is RETRACTED at revision 10** — both are fully overwritten and mint nothing; the class is representable but unpopulated | **both, independently** | §3.1, §4, §8 |
+| `index_expansion` withholds a KNOWN ordinal and declines via `lazyFanOutFieldPathValue`, not `nil` | **both, independently** | §3.3, criteria 9, 15 (criterion 17 was deleted into 9 at revision 10) |
 | The chained `Evaluate` arm was dropped, making criteria 1 and 3 mutually unsatisfiable — appendix §3.5 R3, re-committed | Cascades | criterion 3 |
 | Criterion 9's "flip ONE producer alone" no longer COMPILES under §3.1 — dead as an instruction | Cascades | criterion 9 |
 | Criteria 1 and 8 assert an ABSENCE OF CODE — appendix §16.3's failure in a better suit | code quality | criteria 1, 8 |
@@ -866,7 +1002,7 @@ separately, is the signal that neither was a matter of taste.
 ## 8. Cost, stated honestly
 
 Unexporting touches **55 `ResolvedAccessor{` lines, 10 of them non-test** — and of
-those 10 only **6 are mints**: `values.go:960` is a comment, `values.go:617` is
+those 10, **7 are mints** (10 minus the 3 non-mints below; revision 10 said 6 — an arithmetic error in a load-bearing count, in the section titled "Cost, stated honestly"): `values.go:960` is a comment, `values.go:617` is
 `return ResolvedAccessor{}, false` (a zero value that SURVIVES unexporting, §3.1),
 and `max_match_map.go:935` names the slice element type and mints nothing.
 Repo-wide the grep is 59; the 4 extra are `PFieldPath_PResolvedAccessor{}` in
