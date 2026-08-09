@@ -10536,16 +10536,33 @@ func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
 // unverifiable 104, matched 232, declined 68; MapCountDiffers 92, of which
 // DECLINED 0.
 //
-// WHAT §1c ITSELF MOVED, isolated by mutation rather than inferred from the
-// drift: with the unstated-field arm of recordFieldsMatch removed and everything
-// else identical, the same corpus reads calls 504, unverifiable 104, matched
-// 230, DECLINED 68. So the relaxation moves TWO firings, both into Matched, and
-// **Declined does not move at all**. The 84 -> 104 and 61 -> 68 drift from the
-// numbers above is ORDINARY CORPUS GROWTH, not this change — which is worth
-// stating plainly because the drift is in the direction that would otherwise
-// look like the relaxation's fingerprint. (The mutated leg fails the suite by
-// design, so its populations are a lower bound; the comparison is still sound
-// for Declined, which is what the relaxation was predicted to move.)
+// WHAT THIS CHANGE MOVES: NOTHING, on the pre-existing corpus. Established by
+// the only control that answers that question — the PRE-CHANGE baseline, not a
+// mutation of the branch:
+//
+//	master aba271454        calls 496  unverifiable 104  matched 224  DECLINED 66
+//	branch, probe file OUT  calls 496  unverifiable 104  matched 224  DECLINED 66
+//	branch, probe file IN   calls 506  unverifiable 104  matched 232  DECLINED 68
+//
+// The middle row is the whole answer: with this branch's engine changes applied
+// and ONLY its new test queries removed, the census is bit-identical to master.
+// So the +10 calls / +8 matched / +2 declined are NEW FIRINGS contributed by
+// projection_result_type_probe_fdb_test.go's two WHERE-EXISTS queries — not
+// existing firings that flipped INTO declining, which is the reading the census
+// alone cannot rule out and which would have been a real alarm.
+//
+// A PRIOR REVISION OF THIS COMMENT GOT THAT WRONG, and the error is kept visible
+// because the reasoning was seductive: it isolated §1c's arm by MUTATING THE
+// BRANCH (removing the unstated-field arm of recordFieldsMatch — calls 504,
+// matched 230, declined 68) and concluded "Declined does not move at all". That
+// measures what §1c's ARM does, not what this CHANGE does, and it swept the
+// whole 61 -> 68 drift into "corpus growth". Only 61 -> 66 is growth; 66 -> 68
+// is this branch. The unverifiable claim survives intact — master already reads
+// 104, so 84 -> 104 is growth.
+//
+// The ceiling is deliberately NOT raised: 68 against 200 has ample headroom, and
+// a bound moved to accommodate the movement it was installed to detect is not a
+// bound.
 var orientationGateFloors = cascades.OrientationGateFloors{
 	Calls:           40, // measured 506
 	MapCountDiffers: 7,  // measured 92

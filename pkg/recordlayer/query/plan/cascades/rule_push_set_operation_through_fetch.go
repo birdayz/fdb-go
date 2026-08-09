@@ -399,14 +399,20 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	// records (Java: scalarOf(setOperationPlan.getResultType())); when
 	// the matched plan doesn't carry a type, any pushable leg's fetch
 	// produces exactly that for homogeneous legs.
-	// "Carries no type" is asked as a PREDICATE, not as pointer identity against
-	// the UnknownType singleton. The two are not the same question and the
-	// difference is live: a plan that declines by returning a NULLABLE unknown
-	// (values.WithNullability(values.UnknownType, true), which is what the
-	// projection fallback yields) is a different pointer, so an `== UnknownType`
-	// test reads it as a stated type and threads "unknown" through as if it were
-	// one. Same argument this file's siblings make for NAMES — compare on the
-	// property, never on the instance.
+	// "Carries no type" is asked as a PREDICATE for UNIFORMITY with the sibling
+	// site (rule_implement_nested_loop_join.go's typeUnstated), and because
+	// pointer identity against a singleton is brittle in principle: it is a
+	// question about an instance where the intent is a question about a property.
+	//
+	// NOT because the old `== values.UnknownType` was catching the wrong set
+	// TODAY. An earlier revision of this comment claimed a nullable unknown was
+	// "a different pointer"; that is FALSE and measured false —
+	// values.UnknownType is itself declared nullable, and WithNullability returns
+	// its argument unchanged when the nullability already matches, so
+	// `WithNullability(UnknownType, true) == UnknownType` is true. The only value
+	// this predicate catches that pointer identity misses is a NON-NULLABLE
+	// unknown, which no production site currently produces. So this edit is a
+	// no-op on today's inputs and is here for the shape, not for a bug.
 	resultType := p.resultType
 	if typeUnstated(resultType) {
 		resultType = pushable[0].fw.GetResultType()

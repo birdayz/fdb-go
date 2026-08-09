@@ -801,7 +801,14 @@ otherwise:
 Every one is a `RecordQueryFlatMapPlan`, which is still a `GetResultType` stub and which this RFC
 does not touch — so those 31 cannot have flipped, and the count is 31 before and after.
 
-The wrapper-over-projection arm is real but **unreachable from SQL**: every `SELECT DISTINCT` the
+The wrapper-over-projection arm is real but **not reached by the sqldriver FDB corpus** — which
+is what was MEASURED, and it is a weaker claim than "unreachable from SQL". The instrumented run
+above classifies every read at the site: 31 FlatMap, and five resolved reads over a Scan, a
+PredicatesFilter and an Index. None is a wrapper over a projection. "Unreachable from SQL" is
+INFERENCE on top of that, from three enumerated `SELECT DISTINCT` shapes, and it is the kind of
+inference this document has already been wrong about twice — note that the resolved
+PredicatesFilter reads look like the wrapper shape and are not: they sit over a **Scan**. Every
+`SELECT DISTINCT` the
 SQL layer builds puts the projection immediately under the `Distinct`
 (`Distinct(Project(Project(Limit(Scan))))`, `Distinct(Project(PredicatesFilter(Project(Scan))))`,
 …), so no corpus can cover it and no plan pin can be written for it. It therefore gets a UNIT pin
@@ -832,13 +839,32 @@ needs its own role-differential, which is §5's own rule.
   materialized NLJ at all). Every arm is driven by
   `TestOrientationGateCensus_AssertionArmsGoRed`, not just by the corpus.
 
-  **What §1c actually moves, isolated by mutation rather than inferred from drift:** current
-  corpus `calls 506, unverifiable 104, matched 232, declined 68`; with the unstated-field arm of
-  `recordFieldsMatch` removed and nothing else changed, `calls 504, unverifiable 104, matched 230,
-  declined 68`. So the relaxation moves **two** firings, both into `Matched`, and **`Declined`
-  does not move at all**. The `84 → 104` / `61 → 68` drift from the previously documented reading
-  is ordinary corpus growth — worth saying plainly, because that drift is in exactly the
-  direction that would otherwise look like this change's fingerprint.
+  **What this change moves at that gate: nothing, on the pre-existing corpus.** Established by
+  the PRE-CHANGE baseline, which is the only control that answers the question:
+
+  ```
+  master aba271454        calls 496  unverifiable 104  matched 224  DECLINED 66
+  branch, probe file OUT  calls 496  unverifiable 104  matched 224  DECLINED 66
+  branch, probe file IN   calls 506  unverifiable 104  matched 232  DECLINED 68
+  ```
+
+  The middle row is the answer: engine changes applied, only the new test queries removed, and
+  the census is bit-identical to master. The `+2` declines are **new firings** from the probe's
+  two WHERE-EXISTS queries, not existing firings that flipped into declining — a distinction the
+  census alone cannot make, and the second reading would have been a genuine alarm.
+
+  **An earlier revision of this section got that wrong, and the mistake is instructive enough to
+  keep.** It isolated §1c by MUTATING THE BRANCH — removing the unstated-field arm of
+  `recordFieldsMatch` (`calls 504, matched 230, declined 68`) — and concluded "`Declined` does
+  not move at all", sweeping the whole `61 → 68` into corpus growth. That measures what §1c's
+  ARM does, not what this CHANGE does. Only `61 → 66` is growth; `66 → 68` is this branch. The
+  unverifiable half survives intact: master already reads 104, so `84 → 104` is growth.
+
+  The failure mode is worth naming because it was named *in the same paragraph it happened in*:
+  the text flagged that the drift pointed in the alarm direction, and then asserted past it with
+  a control that could not see the question. A mutation of the branch answers "what does this arm
+  do"; only the pre-change baseline answers "what did we change". The ceiling stays at 200 — a
+  bound moved to accommodate the movement it was installed to detect is not a bound.
 - `legLocalBakeFloors` (`sqldriver/embedded_fdb_test.go:759`) — `UnderivableLegs` should reach 0
   *including* the new derived-table arm. That is the acceptance criterion, not a floor to move.
 

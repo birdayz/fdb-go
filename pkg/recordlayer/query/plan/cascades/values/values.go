@@ -4584,20 +4584,30 @@ func NewRawRecordConstructorValue(fields ...RecordConstructorField) *RecordConst
 // projection list is a single bare QuantifiedObjectValue — a "one-slot
 // whole-row projection".
 //
-// That shape is unbuildable on purpose (RFC-226). The executor emits one
-// positional slot PER PROJECTION, so such a projection produces a 1-slot row
-// WRAPPING its inner's row, while the rules that used to erase it yielded the
-// inner's N-field row into the same memo reference: two differently-shaped
-// plans in one equivalence class. Java never has the shape, because
-// GraphExpansion expands SELECT * into per-field columns; Go's SELECT * builds
-// no projection node at all. So nothing needs it, and forbidding it here makes
-// the arity disagreement unreachable BY CONSTRUCTION rather than caught
-// downstream.
+// THIS IS A DERIVATION REFUSING TO SYNTHESISE A ROW. It is NOT a constructor
+// guard and the shape is NOT unbuildable — say so here, in the file that owns
+// the error, because earlier text in three files claimed the opposite and this
+// is where a reader looks first.
 //
-// The guard lives at the constructor rather than in a review sweep because a
-// sweep enumerates call sites and cannot see a list COMPOSED at runtime — a
-// projection-merge or a merge-across-fetch can build this from inputs that are
-// each individually fine.
+// What actually holds: every LogicalProjectionExpression constructor is a plain
+// struct fill that validates nothing, so the one-slot whole-row projection can
+// be built and IS built (expressions/flowed_value_typing_test.go's
+// TestLogicalProjectionFallsBackToUntypedQOV). What this error does is stop the
+// projection CLAIMING a row it cannot name; GetResultValue then falls back to an
+// untyped QOV, which is the pre-RFC-226 decline kept deliberately for the one
+// shape that cannot answer. The fallback is a LIVE arm, not dead code.
+//
+// WHY THE SHAPE CANNOT ANSWER. The executor emits one positional slot PER
+// PROJECTION, so this projection produces a 1-slot row WRAPPING its inner's row,
+// and the wrapper has no name for its single field. Java never has the shape at
+// all — GraphExpansion expands SELECT * into per-field columns, and Go's
+// SELECT * builds no projection node either.
+//
+// WHAT IS STILL OWED, and is RFC-226 §4.4(c)'s follow-on rather than something
+// this error delivers: the two rules that yield an inner's N-field row into the
+// projection's OWN memo reference make two differently-shaped plans co-members
+// of one equivalence class. Refusing the derivation does not stop that; only
+// deleting the rules does. Do not read this guard as having closed it.
 var ErrWholeRowProjection = errors.New(
 	"projection list is a single bare QuantifiedObjectValue (one-slot whole-row projection): " +
 		"the executor emits one slot per projection, so this wraps the inner row instead of " +

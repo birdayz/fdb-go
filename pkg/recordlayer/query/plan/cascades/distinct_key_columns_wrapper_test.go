@@ -8,14 +8,23 @@ import (
 )
 
 // TestDistinctKeyColumns_WrapperOverProjection pins the consumer arm that
-// RFC-226's type change flips, and that no SQL query in any corpus can reach.
+// RFC-226's type change flips, and that no corpus in this repo reaches.
 //
 // WHY IT IS DRIVEN DIRECTLY RATHER THAN THROUGH SQL. distinctKeyColumns
 // short-circuits on a DIRECT projection inner (it prefers GetProjections, the
 // richer answer), so the arm below is only reachable when a WRAPPER sits between
-// the Distinct and the projection. Every SELECT DISTINCT the SQL layer builds
-// puts the projection immediately under the Distinct — measured across the
-// shapes that could plausibly interpose one:
+// the Distinct and the projection.
+//
+// WHAT IS MEASURED, stated separately from what is inferred, because the two
+// were conflated in an earlier revision. MEASURED: the whole sqldriver FDB
+// corpus reaches this site 36 times and never with a projection under a wrapper
+// — 31 over a FlatMap, and 5 resolved over a Scan, a PredicatesFilter and an
+// Index. Note the PredicatesFilter reads LOOK like the wrapper shape and are
+// not: they sit over a Scan, so they would refute the claim if read carelessly.
+//
+// INFERRED, not measured: that the shape is unreachable from SQL in general.
+// That rests on the three enumerated forms below, each of which puts the
+// projection immediately under the Distinct:
 //
 //	SELECT DISTINCT a FROM (SELECT a FROM t LIMIT 10) x
 //	  -> Distinct(Project(Project(Limit(Scan))))
@@ -24,10 +33,9 @@ import (
 //	SELECT DISTINCT x.a FROM (SELECT a FROM t) x WHERE x.a > 5
 //	  -> Distinct(Project(PredicatesFilter(Project(Scan))))
 //
-// so a corpus reading cannot cover this and a plan pin cannot be written for it.
-// That is exactly why it gets a unit pin: an arm no corpus reaches is an arm
-// whose first real firing would be read as a finding rather than as untested
-// code.
+// Either way no corpus covers the arm, which is exactly why it gets a unit pin:
+// an arm no corpus reaches is an arm whose first real firing would be read as a
+// finding rather than as untested code.
 //
 // WHAT CHANGED. Before RFC-226 a projection answered UnknownType, so a wrapper
 // above one forwarded UnknownType, the RecordType assertion below failed and
@@ -107,20 +115,36 @@ func TestDistinctKeyColumns_WrapperOverProjection(t *testing.T) {
 	}
 }
 
-// TestTypeUnstated_AcceptsNullableUnknown pins the predicate that replaced a
-// pointer-identity test against the UnknownType singleton.
+// TestTypeUnstated_CatchesTheNonNullableUnknown pins the predicate that replaced
+// a pointer-identity test against the UnknownType singleton, and pins the ONE
+// value where the two actually differ.
 //
-// The two questions look identical and are not. values.WithNullability(
-// UnknownType, true) is a DIFFERENT pointer that means exactly the same thing —
-// "this side has nothing to say" — and it is what a declining projection yields,
-// so an `== values.UnknownType` comparison classifies it as a STATED type and
-// threads unknown through as if it were one.
+// SAYING PRECISELY WHAT THE DIFFERENCE IS, because an earlier version of this
+// test asserted a difference that does not exist. It listed "a NULLABLE unknown"
+// as a distinct case on the belief that it is a different pointer. It is not:
+// values.UnknownType is declared nullable and values.WithNullability returns its
+// argument unchanged when the nullability already matches, so
+// `WithNullability(UnknownType, true) == UnknownType` — that row was literally
+// the row above it, and a four-case table with three cases reads as more
+// coverage than it has.
 //
-// rule_push_set_operation_through_fetch.go carried that comparison; it now asks
-// typeUnstated. This pins both directions, because a predicate that answers true
-// for everything would satisfy the first assertion alone.
-func TestTypeUnstated_AcceptsNullableUnknown(t *testing.T) {
+// The real discriminator is the NON-nullable unknown: a different pointer that
+// still means "nothing to say". No production site mints one today, so
+// rule_push_set_operation_through_fetch.go's switch to this predicate is a no-op
+// on current inputs — uniformity with the sibling site, not a bug fix. This test
+// is what would notice if a producer for that value ever appeared.
+func TestTypeUnstated_CatchesTheNonNullableUnknown(t *testing.T) {
 	t.Parallel()
+
+	// The premise, asserted rather than assumed: if this ever stops holding, the
+	// case table below silently loses its discriminating row.
+	if values.WithNullability(values.UnknownType, true) != values.UnknownType {
+		t.Fatal("WithNullability(UnknownType, true) is no longer the UnknownType " +
+			"singleton. The nullable-unknown case is now DISTINCT from the singleton and " +
+			"belongs back in the table below — and the comment in " +
+			"rule_push_set_operation_through_fetch.go, which says this edit is a no-op on " +
+			"today's inputs, stops being true.")
+	}
 
 	for _, tc := range []struct {
 		name string
@@ -129,7 +153,10 @@ func TestTypeUnstated_AcceptsNullableUnknown(t *testing.T) {
 	}{
 		{"nil", nil, true},
 		{"the UnknownType singleton", values.UnknownType, true},
-		{"a NULLABLE unknown", values.WithNullability(values.UnknownType, true), true},
+		{
+			"a NON-NULLABLE unknown (the one pointer identity misses)",
+			values.WithNullability(values.UnknownType, false), true,
+		},
 		{"a real type", values.NotNullLong, false},
 	} {
 		if got := typeUnstated(tc.typ); got != tc.want {
