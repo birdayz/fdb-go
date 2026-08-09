@@ -475,9 +475,10 @@ func NewFieldPathOfSingleInDomain(field string, ordinal int, frontierPinned bool
 //     domain is a parameter rather than a comment at the call site.
 //   - a NEGATIVE ordinal: Java's ResolvedAccessor asserts ordinal >= 0 at
 //     construction (FieldValue.java:651), which is what makes its ordinal-only
-//     equality safe. Go mints `Ordinal: -1` NAME-ONLY accessors at four
-//     producer sites (the unnest/gather/index-expansion seeds and the
-//     translator's array-path model), where two accessors are ordinal-equal by
+//     equality safe. Go mints `Ordinal: -1` NAME-ONLY accessors at three
+//     producer sites — unnest_seed.go, unnest_gather.go, and index_expansion.go
+//     (its fan-out collection path, plus any step whose enclosing type is not a
+//     record or whose name does not resolve) — where two accessors are ordinal-equal by
 //     construction and the NAME is the only identity left. Answering -1 hands
 //     a caller an ordinal that matches every other name-only accessor — the
 //     wrong-column bind pinned in aggregate_group_key_accessor_name_test.go.
