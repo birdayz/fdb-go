@@ -255,6 +255,7 @@ go_test(
         "default_rules_test.go",
         "depth_rung_sort_gate_test.go",
         "descending_in_union_test.go",
+        "distinct_key_columns_wrapper_test.go",
         "distinct_license_order_partition_test.go",
         "dml_pk_dedup_test.go",
         "edge_case_test.go",
@@ -1084,6 +1085,7 @@ go_test(
         "covering_scan_repricing_test.go",
         "restricted_final_reference_test.go",
         "projection_leg_ordinal_seed_test.go",
+        "distinct_key_columns_wrapper_test.go",
     ],
     deps = [
         "//gen",

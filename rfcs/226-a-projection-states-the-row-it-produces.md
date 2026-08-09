@@ -304,7 +304,7 @@ type-supply change needs a *behavioural* differential over shapes, not a call-si
 
 `pkg/relational/sqldriver/projection_result_type_probe_fdb_test.go` (real FDB) asserts ROWS on
 all seven arms, EXISTS column included by value; the fast sentinel
-`pkg/relational/core/embedded/derived_source_exists_plan_test.go` pins the nine plan shapes; and
+`pkg/relational/core/embedded/derived_source_exists_plan_test.go` pins the TEN plan shapes (an earlier draft said nine; the subtests count ten); and
 `pkg/recordlayer/query/plan/cascades/projection_leg_ordinal_seed_test.go` pins the three
 decisions themselves, which a functional test cannot distinguish from any other route to a
 working plan. Each of the three fixes was mutated separately and each went RED alone (§6).
@@ -506,6 +506,25 @@ Concretely:
    > callers: `rule_remove_projection.go:41`, `rule_projection_elim.go:47-63`, and
    > `fk_chain_cardinality.go:290`'s always-false fast path, whose general branch below computes
    > the same result anyway.
+   >
+   > **STATUS: (c) IS NOT IMPLEMENTED — and rev 5's code claimed it was.** The design below
+   > stands as the plan for the follow-on change (see §6b), but what SHIPPED has no constructor
+   > guard at all: all seven `LogicalProjectionExpression` constructors are plain struct fills,
+   > the one-slot whole-row shape is fully CONSTRUCTIBLE, and `values.ProjectionResultValue` —
+   > which is a DERIVATION, not a constructor — merely declines to synthesise a row for it, so
+   > `GetResultValue` falls back to an untyped QOV. Rev 5's source comments asserted the shape
+   > was "unbuildable, enforced by the constructors below" and the fallback "pinned as unreachable
+   > by test"; a passing test built the shape and reached the fallback. Those claims are deleted
+   > and the arm is now pinned as REACHABLE, in both directions
+   > (`TestLogicalProjectionFallsBackToUntypedQOV` for the declining shape,
+   > `TestLogicalProjectionStatesProjectedRow` for the ordinary one — the pair is what
+   > distinguishes "projections decline" from "this ONE shape declines", which a single test
+   > could not).
+   >
+   > Note also that the declining population is **strictly larger than `IsIdentity()`**: the guard
+   > fires on any single bare QOV, including one over a FOREIGN correlation, which is not an
+   > identity projection. The §4.4 sweep measured identity projections and is therefore a LOWER
+   > bound on how often the fallback is taken.
    >
    > **Acceptance for (c) is unbuildability, not detection**, and it needs TWO arms because one
    > of them cannot see the whole risk:
@@ -727,18 +746,74 @@ The sites that **decide** rather than forward, in risk order:
 | `rule_remove_projection.go:50` and `rule_projection_elim.go:65` | yield the inner **into the projection's own reference**, making a 1-slot-wrapping plan and an N-field plan co-members of one class; the projection contributes no type so the arity mismatch is invisible | **DELETED under Decision §4.4(c).** Their guards are unsatisfiable once the one-slot whole-row projection is unbuildable | **Was rated HIGHEST in rev 2 on the belief that this collides on `SELECT *`. That belief was WRONG and this RFC's own sweep refuted it:** `SELECT *` builds no projection node at all (`pkg/relational/core/embedded/select_parser.go:685`, `pkg/relational/core/embedded/logical_builder.go:714`), and no ORIGIN site emits a bare QOV, so the collision is unreachable from SQL and was only ever reachable from tests and the two planner fuzzers. The residual risk is not a wrong row — it is a *dead rule left registered*, which reads as coverage. Hence deletion rather than a guard |
 | `Quantifier.GetFlowedObjectType` `quantifier.go:324` | projection member hits `rt == nil` → `continue` | contributes a row type, and can now **disagree** with a sibling → `MemberResultTypeDisagreementError` | **highest** — a silent skip becomes a hard error. `AllMembers()` includes *exploratory* members, so the comparison is against more than the winner |
 | `distinctKeyColumns` `rule_implement_distinct_final.go:904` | concrete-type branch short-circuits; generic branch returns nil | wrappers above a projection take the generic branch and **mint resolved ordinals** | **high** — starts baking ordinals. Its comment's stated invariant ("its GetResultType is always UnknownType") becomes false and must be rewritten |
-| `bakedIntersectionKeys` `intersector_primary_key.go:1220` | always declines on a projection leg | cross-leg `rowType.Equals` goes live; may accept and bake | **high** — plan shape + wrong-slot exposure |
+| `bakedIntersectionKeys` `intersector_primary_key.go:1220` | always declines on a projection leg | **REFUTED — no change.** The whole-corpus census reads `bakedIntersectionKeys resolved 412 UNRESOLVED 0`, so no stub-typed leg reaches it | **none** — the "high" rating was contradicted by this RFC's own citation, unread |
 | `isSimplePassthroughOf` `rule_implement_simple_select.go:210` | `flowedType == nil` → `return true`, Map skipped | runs `qov.Typ.Equals(flowedType)` | medium — an identity Map kept/dropped flips. Its own doc warns this "inverts the moment a result value does" |
 | `planRowRecordType` `rule_implement_nested_loop_join.go:2429` | falls through to nil | verifies leg layouts. **Accepts `*RecordType` or `RelationType`** where two other sites accept only bare `*RecordType` | medium — fixes the return shape: bare `*RecordType` |
 | `rule_push_set_operation_through_fetch.go:403` | `resultType == values.UnknownType` pointer-identity fallback fires | may stop firing | medium — the one explicit `== UnknownType` branch |
 | `fk_chain_cardinality.go:671` | declines the cardinality cap | cap fires on new shapes | medium — cost/plan-shape churn |
 | `scan_range_execution_identity.go:455,:488` | feeds `typeField("result-type", …)` into an execution-identity hash | hash changes for every plan containing a projection | **expect golden churn here first** |
 
-Two walkers — `executor.go:2892` and `rule_implement_unordered_union.go:187` — descend *past*
-the projection via `GetInner()` and are therefore **unaffected**. Both already carry
-"don't descend" arms for StreamingAgg / AggregateIndex / MultiIntersection whose comments say
-*"Its GetResultType is UnknownType, so without this it would fall through to nil"*. A projection
-now defines its own schema and needs the same arm; adding it is in scope here.
+**RETRACTED — the two-walker paragraph was wrong in both halves, and a review round then
+repeated one of them.** Rev 4 said `executor.go` and `rule_implement_unordered_union.go` both
+descend PAST a projection via `GetInner()` and both need a "don't descend" arm added. Neither
+does and neither needs one: `planColumnNamesWithMD` (`executor.go:2806`) and
+`physicalPlanColumnNames` (`rule_implement_unordered_union.go:147`) each match
+`*plans.RecordQueryProjectionPlan` as the FIRST arm of their loop and return its names, so the
+`GetInner()` descent below is unreachable for a projection. The review that caught the first
+half asserted the union walker has no arm; it has one — `grep -c RecordQueryProjectionPlan` over
+that file returns 1, and it is that arm. There is no code to add here.
+
+That makes both walkers **unaffected for a stronger reason than rev 4 gave**: not "they descend
+past it" but "they never read `GetResultType()` for a projection at all". Pinned in both
+packages (`TestPhysicalPlanColumnNames_StopsAtProjection`,
+`TestPlanColumnNames_StopsAtProjection`) because two readings in a row got it backwards.
+
+And the executor arm is INDEPENDENT CORROBORATION of the naming choice: it resolves a projected
+column's name with `values.OutputColumnName`, which is the same function
+`values.ProjectionResultValue` uses to name the fields of the row a projection now states. The
+executor-visible name and the stated row's field name come from ONE authority by construction.
+
+**The per-consumer census was quoted and never read for its numbers.** `unresolved_result_type_-
+census_gate_test.go:66-71` records the whole-FDB-corpus reading per consumer, and it answers two
+of the rows above outright:
+
+```
+bakedIntersectionKeys    resolved 412    UNRESOLVED 0
+distinctKeyColumns       resolved 4      UNRESOLVED 31
+planRowRecordType        resolved 620    UNRESOLVED 104
+```
+
+`UNRESOLVED 0` for `bakedIntersectionKeys` means no stub-typed leg reaches it, so the "high risk"
+rating above was refuted by a citation two sections away in the same document.
+
+**`distinctKeyColumns`' 31 unresolved reads are NOT wrappers over projections — MEASURED.** The
+natural reading (and a review round's) is that they must be, since the site short-circuits on a
+direct projection inner. Instrumenting the site and running the whole sqldriver FDB corpus says
+otherwise:
+
+```
+31 ZZDKC unresolved inner=*plans.RecordQueryFlatMapPlan
+ 2 ZZDKC resolved   inner=*plans.RecordQueryScanPlan
+ 2 ZZDKC resolved   inner=*plans.RecordQueryPredicatesFilterPlan
+ 1 ZZDKC resolved   inner=*plans.RecordQueryIndexPlan
+```
+
+Every one is a `RecordQueryFlatMapPlan`, which is still a `GetResultType` stub and which this RFC
+does not touch — so those 31 cannot have flipped, and the count is 31 before and after.
+
+The wrapper-over-projection arm is real but **unreachable from SQL**: every `SELECT DISTINCT` the
+SQL layer builds puts the projection immediately under the `Distinct`
+(`Distinct(Project(Project(Limit(Scan))))`, `Distinct(Project(PredicatesFilter(Project(Scan))))`,
+…), so no corpus can cover it and no plan pin can be written for it. It therefore gets a UNIT pin
+that drives it directly — `cascades/distinct_key_columns_wrapper_test.go` — which goes red with
+the physical projection change reverted (`fixture: the wrapper states *values.PrimitiveType, not
+a RecordType`). An arm no corpus reaches is precisely the arm whose first firing would be read as
+a finding rather than as untested code.
+
+That pin also surfaced **CQ-101**: it could not use a `LIMIT` as the wrapper, because
+`RecordQueryLimitPlan.GetResultType()` is still a flat `UnknownType` stub and swallows the row
+its inner now states. Booked with the measurement, deliberately not fixed here — flipping a stub
+needs its own role-differential, which is §5's own rule.
 
 **Two censuses must be reconciled, not relaxed** (both files say so themselves):
 
@@ -748,6 +823,22 @@ now defines its own schema and needs the same arm; adding it is in scope here.
   unsatisfiable. Reconcile it with the new expected value then; do not relax it to whatever the
   run produced."* Per CLAUDE.md's shelf-life rule, the guard direction may **invert** — the
   alarm becomes growth — and the failure message must say which direction is now the alarm.
+- `orientationGateFloors` (`sqldriver/embedded_fdb_test.go`) — the census watching the very gate
+  §1c relaxes, and rev 5 did not list it. Its two DECIDING arms had **no bound in either
+  direction**: `Matched` and `Declined` were unfloored and uncapped, so a gate that proved nothing
+  satisfied every other check (the partition still adds up; `UnverifiableCeiling` cannot notice a
+  drop). Both are now bounded — `MatchedFloor` (collapse = the comparison never runs) and
+  `DeclinedCeiling` (growth = queries LOSE their plans, since this gate is what admits the
+  materialized NLJ at all). Every arm is driven by
+  `TestOrientationGateCensus_AssertionArmsGoRed`, not just by the corpus.
+
+  **What §1c actually moves, isolated by mutation rather than inferred from drift:** current
+  corpus `calls 506, unverifiable 104, matched 232, declined 68`; with the unstated-field arm of
+  `recordFieldsMatch` removed and nothing else changed, `calls 504, unverifiable 104, matched 230,
+  declined 68`. So the relaxation moves **two** firings, both into `Matched`, and **`Declined`
+  does not move at all**. The `84 → 104` / `61 → 68` drift from the previously documented reading
+  is ordinary corpus growth — worth saying plainly, because that drift is in exactly the
+  direction that would otherwise look like this change's fingerprint.
 - `legLocalBakeFloors` (`sqldriver/embedded_fdb_test.go:759`) — `UnderivableLegs` should reach 0
   *including* the new derived-table arm. That is the acceptance criterion, not a floor to move.
 

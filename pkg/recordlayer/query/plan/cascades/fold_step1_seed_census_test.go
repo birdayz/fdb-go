@@ -271,7 +271,10 @@ func TestOrientationGateCensus_AssertionArmsGoRed(t *testing.T) {
 			MapCountDiffers: 72, DeclinedNewlyChecked: 0,
 		}
 	}
-	floors := &OrientationGateFloors{Calls: 40, MapCountDiffers: 7, UnverifiableCeiling: 200}
+	floors := &OrientationGateFloors{
+		Calls: 40, MapCountDiffers: 7, UnverifiableCeiling: 200,
+		MatchedFloor: 40, DeclinedCeiling: 200,
+	}
 
 	var clean strings.Builder
 	if assertOrientationGateCounters(&clean, base(), floors) {
@@ -338,6 +341,30 @@ func TestOrientationGateCensus_AssertionArmsGoRed(t *testing.T) {
 				c.Matched = 31 // keep the disposition partition exact
 			},
 			wantMsg: "250 UNVERIFIABLE firing(s), want <= 200",
+		},
+		{
+			// THE MATCHED FLOOR, whose dangerous direction is COLLAPSE. Added
+			// with RFC-226 because until then the two DECIDING arms had no bound
+			// at all: a gate that proved nothing satisfied every other check
+			// here, since the partition still adds up and a ceiling cannot
+			// notice a drop.
+			name: "the gate stops proving anything",
+			mutate: func(c *orientationGateCounters) {
+				c.Matched = 5
+				c.Unverifiable = 276 // keep the disposition partition exact
+			},
+			wantMsg: "only 5 MATCHED firing(s), want >= 40",
+		},
+		{
+			// THE DECLINED CEILING, whose dangerous direction is GROWTH — and
+			// growth here is not "a slower plan", it is NO plan: this gate admits
+			// the materialized NLJ, so refusing both orientations loses the query.
+			name: "refusals grow into plan loss",
+			mutate: func(c *orientationGateCounters) {
+				c.Declined = 250
+				c.Matched = 8 // keep the disposition partition exact
+			},
+			wantMsg: "250 DECLINED firing(s), want <= 200",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

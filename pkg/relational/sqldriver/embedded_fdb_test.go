@@ -10530,13 +10530,35 @@ func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
 //
 // Floored an order of magnitude below, like every population floor on this path:
 // what a floor detects here is the shape going DARK, not drift.
+// RE-MEASURED at RFC-226, because §1c relaxed this exact gate's type comparison
+// and a bound nobody re-read after changing the thing it watches is not a bound.
+// Current corpus: calls 506 (not-a-seed 102, tiled-by-2 404, tiled-by-other 0);
+// unverifiable 104, matched 232, declined 68; MapCountDiffers 92, of which
+// DECLINED 0.
+//
+// WHAT §1c ITSELF MOVED, isolated by mutation rather than inferred from the
+// drift: with the unstated-field arm of recordFieldsMatch removed and everything
+// else identical, the same corpus reads calls 504, unverifiable 104, matched
+// 230, DECLINED 68. So the relaxation moves TWO firings, both into Matched, and
+// **Declined does not move at all**. The 84 -> 104 and 61 -> 68 drift from the
+// numbers above is ORDINARY CORPUS GROWTH, not this change — which is worth
+// stating plainly because the drift is in the direction that would otherwise
+// look like the relaxation's fingerprint. (The mutated leg fails the suite by
+// design, so its populations are a lower bound; the comparison is still sound
+// for Declined, which is what the relaxation was predicted to move.)
 var orientationGateFloors = cascades.OrientationGateFloors{
-	Calls:           40, // measured 438
-	MapCountDiffers: 7,  // measured 72
-	// A CEILING, calibrated from the measured 84 with headroom for corpus growth.
-	// Unverifiable is the SECOND fail-open and its dangerous direction is GROWTH,
-	// so unlike every other number here it is capped rather than floored.
-	UnverifiableCeiling: 200, // measured 84
+	Calls:           40, // measured 506
+	MapCountDiffers: 7,  // measured 92
+	// A CEILING, calibrated with headroom for corpus growth. Unverifiable is the
+	// SECOND fail-open and its dangerous direction is GROWTH, so unlike the
+	// floors here it is capped.
+	UnverifiableCeiling: 200, // measured 104
+	// The two DECIDING arms, which had no bound in either direction until
+	// RFC-226 — so the gate could have gone from proving 232 layouts to proving
+	// none, or from 68 refusals to refusing everything, and every number above
+	// would still have been satisfied.
+	MatchedFloor:    40,  // measured 232 — collapse means the gate proves nothing
+	DeclinedCeiling: 200, // measured 68 — growth means queries lose their plans
 }
 
 // assertOrientationGateCensus checks the gate census, dropping the population

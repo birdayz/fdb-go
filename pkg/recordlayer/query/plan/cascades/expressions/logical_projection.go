@@ -115,11 +115,29 @@ func (e *LogicalProjectionExpression) GetInner() Quantifier { return e.inner }
 // (RecordQueryProjectionPlan.GetResultValue) through values.ProjectionResultValue
 // so the two cannot state different rows for the same projection.
 //
-// The error is unreachable here: a one-slot whole-row projection is
-// unbuildable, enforced by the constructors below, so this returns the
-// well-formed row or the expression could not have been built. It falls back to
-// an untyped QOV rather than panicking, because library code does not panic —
-// and that fallback is pinned as unreachable by test, not left to trust.
+// THE ERROR PATH IS REACHABLE, and saying otherwise was this file's own bug.
+// An earlier revision claimed a one-slot whole-row projection was "unbuildable,
+// enforced by the constructors below" and that the fallback was "pinned as
+// unreachable by test". Both were false: all seven constructors in this file are
+// plain struct fills that validate nothing, and
+// TestLogicalProjectionFallsBackToUntypedQOV builds exactly that shape and
+// reaches this branch. The guard lives in values.ProjectionResultValue, which is
+// a DERIVATION — it refuses to synthesise a row for the shape, it does not stop
+// anyone constructing the expression.
+//
+// The fallback is therefore a live arm with a deliberate value: an UNTYPED QOV,
+// which is precisely the pre-RFC decline. A one-slot bare-QOV projection cannot
+// honestly say what row it produces (the executor emits one positional slot per
+// projection, so the shape WRAPS the inner row rather than passing it through,
+// and the wrapped shape has no name to give its single field). Declining is the
+// honest answer for it; every other shape gets the real row. Library code does
+// not panic, so this returns rather than raising.
+//
+// THE FALLBACK POPULATION IS STRICTLY LARGER THAN IsIdentity(). The guard fires
+// on ANY single bare QuantifiedObjectValue — including one over a FOREIGN
+// correlation, which is not an identity projection at all — so the sweep that
+// measured identity projections is a LOWER bound on how often this arm is taken,
+// not a count of it.
 func (e *LogicalProjectionExpression) GetResultValue() values.Value {
 	rv, err := values.ProjectionResultValue(e.projectedValues, e.aliases)
 	if err != nil {

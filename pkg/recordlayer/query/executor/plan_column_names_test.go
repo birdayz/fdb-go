@@ -94,3 +94,33 @@ func TestPlanColumnNames_MultiIntersectionReportsResultValueNames(t *testing.T) 
 		t.Fatalf("MultiIntersection must report result-value field names VERBATIM [G COUNT(*) MixedKey], got %v", got)
 	}
 }
+
+// TestPlanColumnNames_StopsAtProjection is the executor-side twin of the
+// cascades package's TestPhysicalPlanColumnNames_StopsAtProjection, and the two
+// exist as a PAIR on purpose: the walkers' own comments say they mirror each
+// other, and a mirror claim that nothing checks is how they drift.
+//
+// RFC-226 rev 5 claimed both walkers descend past a projection and both needed a
+// don't-descend arm added. Neither does and neither needs one — the projection
+// arm is the first thing in each loop. Pinned here so the claim is settled by a
+// test rather than re-derived by the next reader.
+func TestPlanColumnNames_StopsAtProjection(t *testing.T) {
+	t.Parallel()
+
+	innerRow := values.NewRecordType("", true, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "A", FieldType: values.NotNullLong},
+	})
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, innerRow, false)
+	proj := plans.NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{values.NewFieldValueWithResolvedOrdinal("A", 1, values.NotNullLong)},
+		[]string{"RENAMED"}, scan)
+
+	got := planColumnNamesWithMD(proj, nil)
+	if len(got) != 1 || got[0] != "RENAMED" {
+		t.Fatalf("planColumnNamesWithMD(Projection) = %v, want [RENAMED].\n"+
+			"  [ID A] means the walker descended PAST the projection and the union "+
+			"position-remap would key on columns the projection does not emit. nil means "+
+			"the projection arm was removed.", got)
+	}
+}

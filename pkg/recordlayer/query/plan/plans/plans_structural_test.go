@@ -1171,27 +1171,35 @@ func TestProjectionPlan_ResultTypeMatchesLogicalTwin(t *testing.T) {
 	}
 }
 
-// TestProjectionResultValue_RejectsWholeRowProjection is the (c) unbuildability
-// pin, and its ALARM DIRECTION IS REVIVAL.
+// TestProjectionResultValue_RejectsWholeRowProjection pins the DERIVATION's
+// refusal to synthesise a row for a one-slot whole-row projection.
 //
-// It does not ask "did a type disagreement appear" — that question is now
-// unreachable and would pass by constructing nothing. It asks whether the
-// one-slot whole-row projection became CONSTRUCTIBLE again. The executor emits
-// one slot per projection, so that shape wraps its inner's row rather than
-// passing it through, and the rules that used to erase it yielded the inner's
-// N-field row into the same memo reference — two differently-shaped plans in
-// one equivalence class.
+// SCOPE, stated precisely because an earlier revision of this comment
+// overstated it as an "unbuildability pin". It is not one. This drives
+// values.ProjectionResultValue, a derivation; the LogicalProjectionExpression
+// constructors validate nothing and build the shape happily
+// (expressions/flowed_value_typing_test.go's TestLogicalProjectionFallsBackTo-
+// UntypedQOV builds it and reaches the fallback). So the shape IS constructible
+// and the arm below IS live. What this pins is narrower and still worth having:
+// the derivation must keep refusing, because the executor emits one positional
+// slot per projection, so that shape WRAPS its inner's row rather than passing
+// it through and has no name to give its single field.
+//
+// The alarm direction is REVIVAL: a success here means the derivation started
+// synthesising a row for a shape that cannot name one, and every consumer keyed
+// on "unstated" would begin trusting it.
 func TestProjectionResultValue_RejectsWholeRowProjection(t *testing.T) {
 	t.Parallel()
 
 	_, err := values.ProjectionResultValue(
 		[]values.Value{values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("Q"))}, nil)
 	if err == nil {
-		t.Fatal("a one-slot whole-row projection was CONSTRUCTED. The alarm here is " +
-			"REVIVAL, not a type disagreement: this shape is meant to be unbuildable, " +
-			"so a success means the construction came back. The executor emits one " +
-			"positional slot per projection, so this wraps the inner row instead of " +
-			"passing it through.")
+		t.Fatal("the derivation SYNTHESISED a row for a one-slot whole-row projection. " +
+			"The alarm is REVIVAL: this shape must keep declining, because the executor " +
+			"emits one positional slot per projection, so it wraps the inner row instead " +
+			"of passing it through and has no name for its single field. (This does not " +
+			"assert the shape is unconstructible — it is; the expression constructors " +
+			"validate nothing and the untyped-QOV fallback that handles it is live.)")
 	}
 
 	// Precision: the guard must reject only the BARE whole-row shape. A

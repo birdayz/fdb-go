@@ -16269,3 +16269,33 @@ None is speculative: each was re-verified against the tree before booking.
   translator is being asked for a derived-table scope whose inner is a join.
   Read Java first — `GraphExpansion` / `SelectExpression` construction for a
   derived table — before changing the Go translator.
+
+- [ ] **CQ-101 (query-engine): `RecordQueryLimitPlan` swallows the row its inner
+  now states, so a LIMIT above a projection re-hides what RFC-226 exposed.**
+  MEASURED at RFC-226 while pinning `distinctKeyColumns`:
+
+  ```
+  scan(ID,A,B) -> Projection([A] AS RENAMED) -> LimitPlan
+  LimitPlan.GetResultType() == *values.PrimitiveType (UnknownType)
+  ```
+
+  `limit.go:` `GetResultType()` is `return values.UnknownType` — a flat stub, not
+  a forward. A LIMIT cannot alter a row type and its inner is one call away, so
+  this is the sharpest remaining entry in the RFC-213 stub inventory
+  (`pkg/docscheck/result_type_stub_census_test.go`, which already lists it and is
+  the ratchet that will notice when it goes).
+
+  CONSEQUENCE, measured rather than argued: the wrapper-over-projection pin
+  (`cascades/distinct_key_columns_wrapper_test.go`) had to use a
+  PredicatesFilter, because a Limit cannot transmit the flip at all. Any
+  consumer reading a row type through a LIMIT still sees "unstated" and stays on
+  its fail-closed path.
+
+  NOT FIXED INSIDE RFC-226 ON PURPOSE, and this is a STOP rather than a
+  deferral of tiny work. The edit is three lines; the RISK is not. Flipping a
+  stub changes what every fail-open consumer above it does, and RFC-226 §1c is
+  the measured proof that those consumers cannot be enumerated by a call-site
+  census — the one that broke reads `GetResultType()` on a different node's plan
+  through a helper. So this needs its own role-differential (leg, subquery
+  source, query root) exactly as RFC-226 §5 now prescribes, not a rider on a
+  change whose own §1 was refuted once already.

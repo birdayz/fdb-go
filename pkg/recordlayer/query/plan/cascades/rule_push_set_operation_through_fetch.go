@@ -399,8 +399,16 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	// records (Java: scalarOf(setOperationPlan.getResultType())); when
 	// the matched plan doesn't carry a type, any pushable leg's fetch
 	// produces exactly that for homogeneous legs.
+	// "Carries no type" is asked as a PREDICATE, not as pointer identity against
+	// the UnknownType singleton. The two are not the same question and the
+	// difference is live: a plan that declines by returning a NULLABLE unknown
+	// (values.WithNullability(values.UnknownType, true), which is what the
+	// projection fallback yields) is a different pointer, so an `== UnknownType`
+	// test reads it as a stated type and threads "unknown" through as if it were
+	// one. Same argument this file's siblings make for NAMES — compare on the
+	// property, never on the instance.
 	resultType := p.resultType
-	if resultType == nil || resultType == values.UnknownType {
+	if typeUnstated(resultType) {
 		resultType = pushable[0].fw.GetResultType()
 	}
 	// The merged fetch is its own cascades expression carrying the live setOpRef

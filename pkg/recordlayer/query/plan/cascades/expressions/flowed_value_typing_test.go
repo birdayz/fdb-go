@@ -82,33 +82,36 @@ func TestTypingAQuantifiedObjectValueDoesNotChangeItsIdentity(t *testing.T) {
 	}
 }
 
-// TestLogicalProjectionResultValueStatesNoRowType pins the FIRST site found that
-// must not take the typed flowed value, with its reason attached so it cannot be
-// "cleaned up" onto the typed accessor for consistency.
+// TestLogicalProjectionFallsBackToUntypedQOV pins the ONE shape for which a
+// projection still declines to state its row, and it pins that arm as REACHABLE.
 //
-// It was believed to be the only one. It is not: GroupBy, Insert and Update pass
-// their inner through while producing a different row too, for three different
-// reasons, and they are pinned as a family in flowed_value_exemptions_test.go —
-// along with the three sites that LOOK like the family and are actually
-// Java-faithful (Delete, Union, Intersection), because the analogy is what would
-// spread the exemption to them.
+// THIS TEST WAS REPURPOSED AND ITS OLD NAME LIED. It shipped as
+// TestLogicalProjectionResultValueStatesNoRowType, with a doc arguing that
+// "stating no type is the honest answer" — the design RFC-226 REPLACED. The
+// assertions still passed, because the shape it happens to build is the one
+// shape that still declines, so the test read as green while its name and its
+// prose asserted the opposite of shipped behaviour. That is worse than no test:
+// a reader looking for "does a projection state its row" finds a passing test
+// saying it must not.
 //
-// This one keeps its own test because its reason is its own: a projection outputs
-// its PROJECTED columns, and the fix is a row built from GetProjectedValues.
+// WHAT IS TRUE NOW. A projection states the row it produces — a record
+// constructor over its projected columns — for every shape EXCEPT a single bare
+// QuantifiedObjectValue, where values.ProjectionResultValue returns
+// ErrWholeRowProjection and GetResultValue falls back to an untyped QOV.
 //
-// LogicalProjectionExpression.GetResultValue passes its inner's flowed object
-// through, which is Java's contract verbatim
-// (LogicalProjectionExpression.java:105) and harmless in Java, where the class
-// serves only legacy RecordQuery planning. Go uses it as the SQL projection, and
-// there the inherited contract is false: a projection outputs its PROJECTED
-// columns, not its inner's row.
+// The fallback exists because that shape cannot honestly answer: the executor
+// emits one positional slot per projection, so a one-slot projection of a whole
+// row WRAPS it rather than passing it through, and the wrapper has no name for
+// its single field. Declining is right for it. The arm is REACHABLE — the
+// constructor below validates nothing, which is the whole point of building the
+// shape here rather than asserting it cannot exist.
 //
-// Untyped, that falsehood asserts nothing. Typed, it asserts that the projection
-// flows the inner's whole row — legs included — and a downstream reader that
-// believes it refuses to serve a source-relative ordinal against the resulting
-// multi-leg row. Stating no type is the honest answer until the projection can
-// state the row it actually produces.
-func TestLogicalProjectionResultValueStatesNoRowType(t *testing.T) {
+// The alarm is BIDIRECTIONAL. If this shape starts stating a row, the untyped
+// decline was removed and readers begin trusting a row nobody derived. If any
+// OTHER shape reaches the fallback, the guard widened —
+// TestLogicalProjectionStatesProjectedRow below is the other half and drives the
+// ordinary shape.
+func TestLogicalProjectionFallsBackToUntypedQOV(t *testing.T) {
 	t.Parallel()
 
 	innerRow := rowOfTypes("A", values.NotNullLong, "B", values.NotNullString)
@@ -131,22 +134,74 @@ func TestLogicalProjectionResultValueStatesNoRowType(t *testing.T) {
 	rv := proj.GetResultValue()
 	qov, isQOV := rv.(*values.QuantifiedObjectValue)
 	if !isQOV {
-		t.Fatalf("projection result value is a %T; the passthrough shape changed and this "+
-			"pin no longer describes the site", rv)
+		t.Fatalf("the one-slot whole-row projection produced a %T, not the untyped QOV "+
+			"fallback.\n"+
+			"  Either values.ProjectionResultValue stopped returning ErrWholeRowProjection "+
+			"for this shape — in which case a projection is now claiming to produce a row "+
+			"it cannot name, since the executor emits one positional slot per projection "+
+			"and this shape WRAPS the inner row — or a constructor started rejecting the "+
+			"shape, in which case say so and delete the fallback rather than leaving dead "+
+			"code the comments describe as live.", rv)
 	}
 	if qov.Correlation != inner.GetAlias() {
-		t.Errorf("projection result value is over %s, want the inner alias %s",
+		t.Errorf("fallback QOV is over %s, want the inner alias %s",
 			qov.Correlation.Name(), inner.GetAlias().Name())
 	}
 	if _, stated := qov.Typ.(*values.RecordType); stated {
-		t.Errorf("the projection's result value STATES the row type %v.\n"+
-			"  That row is the INNER's, and a projection does not flow its inner's row —\n"+
-			"  it flows the columns it projects. A reader that believes the statement takes\n"+
-			"  the inner's multi-leg row as the projection's output and then refuses to\n"+
-			"  serve a source-relative ordinal against it (measured:\n"+
-			"  `correlated FieldValue \"EL\" … multi-leg row cannot serve a source-relative\n"+
-			"  ordinal` on a CTE + derived-table + unnest three-source shape).\n"+
-			"  Fix the value before typing it: build the projected row from\n"+
-			"  GetProjectedValues and GetAliases.", qov.Typ)
+		t.Errorf("the FALLBACK states the row type %v, and it must state none.\n"+
+			"  That row would be the INNER's, and this projection does not flow its\n"+
+			"  inner's row — a reader that believes it takes a multi-leg row as the\n"+
+			"  projection's output and then refuses to serve a source-relative ordinal\n"+
+			"  against it (measured: `correlated FieldValue \"EL\" … multi-leg row cannot\n"+
+			"  serve a source-relative ordinal`). An untyped QOV here is the pre-RFC-226\n"+
+			"  decline, kept deliberately for the one shape that cannot answer.", qov.Typ)
+	}
+}
+
+// TestLogicalProjectionStatesProjectedRow is the OTHER half of the pin above,
+// and it is the half that would have caught the repurposing.
+//
+// The fallback test alone cannot distinguish "projections decline" (the design
+// RFC-226 replaced) from "this ONE shape declines" (what ships), because the
+// only shape it builds is the declining one. Driving an ordinary projection is
+// what makes the pair discriminating: this one must state a real row, named by
+// its output aliases, and it must NOT be the inner's row.
+func TestLogicalProjectionStatesProjectedRow(t *testing.T) {
+	t.Parallel()
+
+	innerRow := rowOfTypes("A", values.NotNullLong, "B", values.NotNullString)
+	inner := NamedForEachQuantifier(values.NamedCorrelationIdentifier("IN"),
+		InitialOf(&typedStubExpr{name: "src", typ: innerRow}))
+
+	// One projected column out of a two-column inner, aliased. If the projection
+	// flowed its inner's row this would state two fields named A and B.
+	proj := NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{values.NewFlatFieldValue("A", values.NotNullLong)},
+		[]string{"RENAMED"}, inner)
+
+	rv := proj.GetResultValue()
+	rc, isRC := rv.(*values.RecordConstructorValue)
+	if !isRC {
+		t.Fatalf("an ordinary projection produced a %T, want a RecordConstructorValue.\n"+
+			"  A %T here means the whole-row FALLBACK swallowed an ordinary shape — the "+
+			"guard in values.ProjectionResultValue widened, and every projection above it "+
+			"stops stating a row.", rv, rv)
+	}
+	if len(rc.Fields) != 1 {
+		t.Fatalf("projection states %d fields, want 1 — the projected column list has one "+
+			"entry, and the inner's 2-column row must not leak through", len(rc.Fields))
+	}
+	if rc.Fields[0].Name != "RENAMED" {
+		t.Errorf("projection field is named %q, want %q — the OUTPUT alias names the row, "+
+			"not the underlying column", rc.Fields[0].Name, "RENAMED")
+	}
+	rt, typed := rc.Type().(*values.RecordType)
+	if !typed {
+		t.Fatalf("the stated row has type %T, not a RecordType — an untyped row is the "+
+			"pre-RFC-226 decline and every consumer keyed on \"unstated\" stays off",
+			rc.Type())
+	}
+	if len(rt.Fields) != 1 || rt.Fields[0].Name != "RENAMED" {
+		t.Errorf("stated row type is %v, want a 1-field record named RENAMED", rt)
 	}
 }
