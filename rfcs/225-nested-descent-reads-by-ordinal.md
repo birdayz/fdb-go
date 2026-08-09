@@ -286,7 +286,7 @@ Constructors, and there are no others:
 | Constructor | For | Ordinal from | Domain |
 |---|---|---|---|
 | `NewResolvedAccessorOfDescriptorField(fd protoreflect.FieldDescriptor)` | a descriptor-side mint (**not** the nested descent — see §3.3.1) | `fd.Index()` — non-negative by protoreflect's contract, and it *is* the declaration index | `OrdinalDomainOfMessageDescriptor(fd.ContainingMessage())` |
-| `NewResolvedAccessorOfRecordTypeField(rt *RecordType, idx int)` | **nested struct descent** — the producers walk types, not descriptors (§3.3.1) | caller's field index within `rt`, `>= 0` enforced | `OrdinalDomainOfRecordType(rt)` |
+| `NewResolvedAccessorInDomain(name, idx, OrdinalDomainOfType(rt))` | **nested struct descent** — the producers walk types, not descriptors (§3.3.1) | caller's field index within `rt`, `>= 0` enforced | `OrdinalDomainOfType(rt)` — **already exists**, `values.go:347` |
 | `NewResolvedAccessorInDomain(name string, ord int, d OrdinalDomain) (ResolvedAccessor, error)` | a ROW-layout root | caller, `ord >= 0` enforced | caller's stated layout |
 | `NewResolvedAccessorOfOrdinal(name string, ord int) (ResolvedAccessor, error)` | a root whose layout is not in hand | caller, `ord >= 0` enforced | UNKNOWN — fails closed at every domain check |
 
@@ -634,10 +634,33 @@ needs, and it is available where the producers already stand.
 So `NewResolvedAccessorOfDescriptorField(fd)` is **not** the nested-descent
 constructor. The nested-descent constructor takes the field index within the
 `*values.RecordType` being descended, in that type's own domain:
-`NewResolvedAccessorInDomain(name, idx, OrdinalDomainOfRecordType(rt))`.
+`NewResolvedAccessorInDomain(name, idx, OrdinalDomainOfType(rt))`. **No new domain
+constructor is needed — `OrdinalDomainOfType` already exists at `values.go:347`.**
+(A draft of this section invented `OrdinalDomainOfRecordType`; that is the
+"check Java/the tree first, the machinery is probably already there" rule
+failing on the tree's own code.)
 `OrdinalDomainOfMessageDescriptor` is still promoted per §3.2(1) — the READ side
 sees a proto message and needs the descriptor's token to compare against — and
 the agreement check is exactly a comparison of those two tokens.
+
+**The two tokens ARE comparable — measured, because if they were not, this whole
+section would be universal decline in a new costume.** Both derivations funnel
+into the SAME function over the SAME alphabet: `OrdinalDomainOfType`
+(`values.go:347-357`) maps `rt.Fields[i].Name` and `descriptorOrdinalDomain`
+(`cascades_generator.go:5047-5054`) maps `fields.Get(i).Name()`, and both then
+call `OrdinalDomainOfColumnNames` (`values.go:326-340`), which upper-cases and
+length-prefixes an ordered name list. So the tokens are equal exactly when the
+ordered column-name lists agree — well-defined, neither vacuous nor
+always-false. `descriptorOrdinalDomain`'s own doc comment states this as the
+design intent: *"derivable independently by the producer ... and by the consumer
+that holds the descriptor-shaped row type. Equality of the two is the soundness
+condition for reusing an ordinal across them."* The mechanism was already in the
+tree, built for exactly this.
+
+And the wrapped-array shrink class falls out for free rather than needing a
+special case: `OrdinalDomainOfType` returns the UNKNOWN token for anything that
+is not a `*RecordType`, so a path descending into an unwrapped `ArrayType` fails
+closed by construction.
 
 **The shrink class this creates, named rather than discovered.** The
 correspondence is NOT universal, and the counter-example is in-tree:
