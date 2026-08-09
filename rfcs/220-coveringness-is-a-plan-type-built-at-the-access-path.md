@@ -22,8 +22,37 @@ Outstanding against the implementation (three independent review passes):
 - Instruments reporting clean because they stopped executing: the redundant-sort
   detector, and `classify` silently skipping scenarios missing from either dump.
 
+SECOND REVIEW ROUND (delta). Graefe ACK'd the delta conditionally; Torvalds
+NAK'd it. Both sets of conditions are now addressed:
+
+- The restriction was verified against Java rather than accepted on reasoning:
+  `Reference.newReferenceFromFinalMembers` (`Reference.java:587`) calls
+  `Reference.of(stage, [], expressions)`, whose constructor mints a FRESH
+  propertiesMap and runs `finalExpressions.forEach(propertiesMap::add)`
+  (`:181-182`). Java carries properties for exactly the retained members, so
+  restricting is what Java PRODUCES, not a Go-side accommodation.
+- Java's two asserts are ported as far as they port. The membership
+  precondition is enforced; the FINAL-only form and `!needsExploration()` are
+  not, and the reason is measured rather than argued — see `assertMembersOf`,
+  which carries the counts (797 of 15147 real-planner calls pass a non-final
+  member, via the documented no-finals fallback Java does not have).
+- The live twin is fixed. `MemoizeFinalExpressionsFromOther` was still copying
+  the source property map wholesale across NINE non-test call sites — the same
+  defect, in the sibling function. Both entry points now share one
+  implementation.
+- The cost repricing is pinned rather than assumed, and the pins split it: the
+  `combineConcreteCostUnclamped` arm is numerically a NO-OP (the covering
+  plan's HintCost delegates to the inner's, which already agreed), while the
+  `scanLikeCostSpecForPlan` arm is NOT — it moves `fkChainInnerFixedCPU` for a
+  covering inner from fail-closed `(0, false)` to `(4.5, true)`, and the
+  production `Fetch(Covering(scan))` shape from `(0, false)` to `(4.05, true)`.
+  Fail-closed there makes the caller charge a capped hop the inner's FULL CPU,
+  so the arm materially reprices FK-chain-capped joins.
+- `isProvablePointProbe` is pinned to AGREE with the scan it wraps, over a
+  matrix guarded on both populations, with the mutation receipt recorded.
+
 The design in the sections below is not in dispute. This status stays
-non-accepted until the above are fixed, pinned, and re-reviewed.
+non-accepted until Torvalds re-reviews the delta.
 Java reference: fdb-record-layer 4.12.11.0 (pinned `MODULE.bazel:117`)
 
 ## 1. The defect

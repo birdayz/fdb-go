@@ -246,6 +246,7 @@ go_test(
         "cost_monotonicity_test.go",
         "cost_selectivity_test.go",
         "cost_transitivity_test.go",
+        "covering_scan_repricing_test.go",
         "cross_product_test.go",
         "data_access_fixture_guard_test.go",
         "data_access_types_test.go",
@@ -1078,6 +1079,7 @@ go_test(
         "order_function_direction_test.go",
         "restricted_inner_reference_test.go",
         "rule_implement_in_memory_sort_test.go",
+        "covering_scan_repricing_test.go",
     ],
     deps = [
         "//gen",

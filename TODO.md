@@ -16174,12 +16174,19 @@ None is speculative: each was re-verified against the tree before booking.
     which is why dropping the pin is not safe today. Measured consequence when
     dropped: an InUnion claiming ASC over a filtered full scan.
 
-  Same file also copies the SOURCE reference's whole plan-property map onto a
-  RESTRICTED reference. `ToPlanPartitions` walks the property map rather than
-  the member list, so such a reference reports partitions for plans it does not
-  contain. The `ExpressionRuleCall` twin added for RFC-220
-  (`MemoizeMemberPlansFromOther`) restricts the map correctly; the
-  `ImplementationRuleCall` one still does not, and it has six rule callers.
+  The property-map half of this item is CLOSED. `MemoizeFinalExpressionsFromOther`
+  copied the SOURCE reference's whole plan-property map onto a RESTRICTED
+  reference — `ToPlanPartitions` walks the property map rather than the member
+  list, so such a reference reported partitions for plans it did not contain,
+  which is the identical defect its twin was written to avoid, live across NINE
+  non-test call sites. Both entry points now share one implementation
+  (`newRestrictedFinalReference`), so the two cannot drift apart again; the
+  earlier count of "six rule callers" was low.
+
+  What remains open here is only the CONSTRAINT half: the minted reference still
+  carries no constraint entry, so `OptimizeGroupTask`'s per-ordering retention
+  finds nothing and resolves by cost alone, which is what `pinOrderedSpine`
+  compensates for.
 
 - [ ] **CQ-98 (query-engine): two accepted cost movements from the RFC-220
   re-bless need a standing justification, not a one-time sign-off.**
@@ -16199,3 +16206,21 @@ None is speculative: each was re-verified against the tree before booking.
   because it was never the operative bound. A real per-rule fan-out claim needs
   measured yield counts, and there is currently no instrument that produces
   them. Build one, or stop making the claim.
+
+  STATUS AFTER THE NAK ROUND: the claim is withdrawn everywhere it was made (PR
+  body, `physical_wrapper.go`), and the item stays OPEN rather than being closed
+  cheaply. The reason is worth stating so it is not re-litigated: a
+  yield-counting instrument is easy to bolt on as a process-global counter, and
+  that is exactly the shape this repo has been burned by — a census whose arms
+  are driven only by whatever the corpus happens to reach. The RFC-220 round did
+  build a throwaway counter of this kind (to settle which of Java's asserts hold
+  in Go, see `assertMembersOf`), and its numbers were only trustworthy because
+  every reading was cross-checked against a deliberate mutation. A permanent
+  fan-out instrument needs the same discipline plus per-rule attribution and a
+  vacuity floor, which is its own change with its own review — not a rider on
+  this one.
+
+  What IS now known, and did not need the instrument: the filter loop was inert
+  before this PR and genuinely yields N parents after it, so whatever headroom
+  exists is being used for the first time. Zero plan movement across the 7000-
+  scenario corpus is the evidence that the fan-out is not pathological today.

@@ -133,21 +133,17 @@ func (c *ImplementationRuleCall) MemoizeFinalExpressionsFromOther(
 	// StagePlanned, which is the SPINE-PIN decision, not the memoize
 	// decision, and forcing it here changes what ExploreGroupTask does with
 	// the reference.
-	var ref *expressions.Reference
-	for i, e := range exprs {
-		if i == 0 {
-			ref = expressions.FinalOfAtStage(e, expressions.StageCanonical)
-		} else {
-			ref.InsertFinal(e)
-		}
-	}
-	if ref == nil {
-		ref = &expressions.Reference{}
-	}
-	if source != nil {
-		ref.SetPlanProperties(source.GetPlanProperties())
-	}
-	return ref
+	//
+	// Shares its whole body with MemoizeMemberPlansFromOther. Until this
+	// change it did NOT: it copied the source's property map wholesale
+	// (`SetPlanProperties(source.GetPlanProperties())`) while its twin
+	// restricted the map to the retained members — so a reference restricted
+	// to one plan still reported the entire source group to anything reading
+	// ToPlanPartitions, which walks the property map rather than the member
+	// list. That is the same defect the twin was written to avoid, live here
+	// across nine call sites. One implementation now, so the two cannot drift
+	// apart again.
+	return newRestrictedFinalReference("MemoizeFinalExpressionsFromOther", source, exprs)
 }
 
 // MemoizeFinalExpression creates a new Reference holding expr as its single

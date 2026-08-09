@@ -78,6 +78,7 @@ go_test(
         "continuable_without_duplicates_property_test.go",
         "coverage_test.go",
         "covering_index_scan_test.go",
+        "covering_point_probe_test.go",
         "cte_plans_test.go",
         "distinct_streaming_refuses_narrowing_test.go",
         "equality_prefix_test.go",
@@ -217,6 +218,7 @@ go_test(
         "ordering_test.go",
         "index_scan_carrier.go",
         "index_scan_carrier_test.go",
+        "covering_point_probe_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",

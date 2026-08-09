@@ -266,3 +266,56 @@ func TestCoveringPlan_DelegatesRangeDescription(t *testing.T) {
 		t.Error("IsReverse() dropped the inner scan's direction")
 	}
 }
+
+// TestCoveringPlanDelegatesUniqueAndFlowedType is the consumer that makes the
+// IsUnique and GetFlowedType delegators non-vacuous, and it exists because
+// DELETING a delegator cannot fail loudly.
+//
+// Both names are reachable through anonymous-interface probes — the tree has
+// two on IsUnique today (abstract_data_access_rule.go: candidateScanProps,
+// candidateUnique). When such a probe stops matching there is no compiler error
+// and no panic: the type assertion returns false, and the caller reads that as
+// "not unique" rather than as "I asked a type that cannot answer". A wrong
+// answer arriving silently, which is the failure class RFC-220's carrier work
+// exists to remove.
+//
+// The unique arm drives BOTH values. A delegator that returned a hardcoded
+// constant would satisfy a single-value assertion.
+func TestCoveringPlanDelegatesUniqueAndFlowedType(t *testing.T) {
+	t.Parallel()
+
+	for _, unique := range []bool{true, false} {
+		inner := NewRecordQueryIndexPlan("IDX_A", nil, []string{"T"}, values.UnknownType, false).
+			WithIndexMetadata([]string{"A"}, []string{"ID"}, unique)
+		cov := NewRecordQueryCoveringIndexPlan(inner)
+
+		if got := cov.IsUnique(); got != unique {
+			t.Errorf("covering.IsUnique() = %v, want %v (the wrapped scan's answer) — "+
+				"uniqueness is a property of the INDEX and a covering scan reads the same index",
+				got, unique)
+		}
+		// The probe SHAPE, not just the method: this is how the two live call
+		// sites reach the name, and it is the form that fails silently.
+		u, ok := any(cov).(interface{ IsUnique() bool })
+		if !ok {
+			t.Fatalf("covering plan no longer satisfies interface{ IsUnique() bool }. "+
+				"Anonymous-interface probes on this name return FALSE when they stop "+
+				"matching — no compile error, no panic — so removing the delegator "+
+				"silently answers 'not unique' for every covering scan (unique=%v)", unique)
+		}
+		if u.IsUnique() != unique {
+			t.Errorf("probed IsUnique() = %v, want %v", u.IsUnique(), unique)
+		}
+	}
+
+	inner := coveringTestIndexPlan("IDX_A", nil, false)
+	cov := NewRecordQueryCoveringIndexPlan(inner)
+	if cov.GetFlowedType() != inner.GetFlowedType() {
+		t.Errorf("covering.GetFlowedType() = %v, want the wrapped scan's %v",
+			cov.GetFlowedType(), inner.GetFlowedType())
+	}
+	if _, ok := any(cov).(interface{ GetFlowedType() values.Type }); !ok {
+		t.Fatal("covering plan no longer satisfies interface{ GetFlowedType() values.Type }; " +
+			"same silent-false hazard as IsUnique above")
+	}
+}
