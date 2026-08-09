@@ -191,6 +191,15 @@ func aggregateInputIsFlatFrontier(input plans.RecordQueryPlan) bool {
 		switch p := input.(type) {
 		case *plans.RecordQueryScanPlan,
 			*plans.RecordQueryIndexPlan,
+			// A COVERING index scan is a single-source flat producer for
+			// exactly the reason the bare one is: it emits one positional row
+			// per index entry, from one index, with no join below. It is also
+			// the ORDINARY shape reached here — the access path emits
+			// Fetch(Covering(IndexScan)) for every index-backed access, and the
+			// fetch arm below peels straight onto it — so omitting it does not
+			// lose an exotic case, it turns the flat-frontier answer off for
+			// every index-backed aggregate.
+			*plans.RecordQueryCoveringIndexPlan,
 			*plans.RecordQueryTextIndexPlan,
 			*plans.RecordQueryVectorIndexPlan,
 			*plans.RecordQueryStreamingAggregationPlan,

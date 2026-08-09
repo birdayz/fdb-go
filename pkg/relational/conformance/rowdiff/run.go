@@ -487,16 +487,17 @@ func classifyPlan(p plans.RecordQueryPlan) []string {
 		if p == nil {
 			return
 		}
-		switch t := p.(type) {
+		switch p.(type) {
 		case *plans.RecordQueryScanPlan:
 			fams["FullScan"] = true
 		case *plans.RecordQueryIndexPlan:
 			sawIndex = true
-			if t.IsCovering() {
-				fams["Covering"] = true
-			} else {
-				fams["IndexScan"] = true
-			}
+			fams["IndexScan"] = true
+		case *plans.RecordQueryCoveringIndexPlan:
+			// A leaf: its inner index plan is a FIELD, so the walk below never
+			// reaches it and this arm is the only place the family is recorded.
+			sawIndex = true
+			fams["Covering"] = true
 		case *plans.RecordQueryIntersectionPlan:
 			fams["Intersection"] = true
 		case *plans.RecordQueryMultiIntersectionOnValuesPlan:

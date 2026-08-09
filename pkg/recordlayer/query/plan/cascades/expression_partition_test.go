@@ -264,17 +264,26 @@ func TestRollUpPlanPartitions_RetainSingleProperty(t *testing.T) {
 	wB := scanB
 	wC := scanC
 
+	// Each member carries its OWN property values, which is what
+	// toPartitionsFromMap always produces (it stores the full
+	// computeWrapperProperties map per expression). Roll-up groups by those
+	// per-member values, so a member with an empty property map states nothing
+	// to group on — a fixture shape that cannot arise in the planner.
+	propsA := properties.PropertyMap{properties.PropDistinctRecords: true, properties.PropStoredRecord: true}
+	propsB := properties.PropertyMap{properties.PropDistinctRecords: true, properties.PropStoredRecord: false}
+	propsC := properties.PropertyMap{properties.PropDistinctRecords: false, properties.PropStoredRecord: true}
+
 	p1 := NewPlanPartition(
-		properties.PropertyMap{properties.PropDistinctRecords: true, properties.PropStoredRecord: true},
-		map[expressions.RelationalExpression]properties.PropertyMap{wA: {}},
+		propsA,
+		map[expressions.RelationalExpression]properties.PropertyMap{wA: propsA},
 	)
 	p2 := NewPlanPartition(
-		properties.PropertyMap{properties.PropDistinctRecords: true, properties.PropStoredRecord: false},
-		map[expressions.RelationalExpression]properties.PropertyMap{wB: {}},
+		propsB,
+		map[expressions.RelationalExpression]properties.PropertyMap{wB: propsB},
 	)
 	p3 := NewPlanPartition(
-		properties.PropertyMap{properties.PropDistinctRecords: false, properties.PropStoredRecord: true},
-		map[expressions.RelationalExpression]properties.PropertyMap{wC: {}},
+		propsC,
+		map[expressions.RelationalExpression]properties.PropertyMap{wC: propsC},
 	)
 
 	// Retain only PropDistinctRecords — p1 and p2 should merge (both distinct=true).

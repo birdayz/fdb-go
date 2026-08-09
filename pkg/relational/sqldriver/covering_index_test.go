@@ -25,31 +25,32 @@ func TestFDB_CoveringIndexScan(t *testing.T) {
 		"CREATE TABLE items (id BIGINT, cat STRING, price BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cat_idx ON items (cat)")
 
+	// The question each case asks is whether the scan answers from the INDEX
+	// ENTRY or reads the base record — not whether a `Fetch(` node renders.
+	// A bare `IndexScan(…)` is itself a fetching scan, so `Fetch(` is a
+	// rendering detail that RFC-220 changed without changing the behaviour;
+	// asserting on it made this test fail on a plan that was entirely correct.
 	for _, c := range []struct {
-		name        string
-		query       string
-		wantCover   bool // expect "COVERING" + no Fetch
-		wantNoFetch bool
+		name  string
+		query string
+		// wantCovered: every projected column lives in the index entry, so the
+		// scan must answer from the entry alone.
+		wantCovered bool
 	}{
-		{"project_indexed_col", "SELECT cat FROM items WHERE cat = 'c1'", true, true},
-		{"project_indexed_plus_pk", "SELECT id, cat FROM items WHERE cat = 'c1'", true, true},
-		{"project_noncovered_col", "SELECT price FROM items WHERE cat = 'c1'", false, false},
+		{"project_indexed_col", "SELECT cat FROM items WHERE cat = 'c1'", true},
+		{"project_indexed_plus_pk", "SELECT id, cat FROM items WHERE cat = 'c1'", true},
+		// PRICE is outside CAT_IDX's entry, so this scan must read base records.
+		{"project_noncovered_col", "SELECT price FROM items WHERE cat = 'c1'", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			plan := planExplainVia(t, ctx, db, c.query)
-			hasFetch := strings.Contains(plan, "Fetch(")
-			hasCovering := strings.Contains(plan, "COVERING")
 			if !strings.Contains(plan, "IndexScan(CAT_IDX") {
 				t.Fatalf("%s: expected an IndexScan on CAT_IDX, got: %s", c.query, plan)
 			}
-			if c.wantCover && !hasCovering {
-				t.Errorf("%s: expected a COVERING index scan (MergeProjectionAndFetch should eliminate the fetch), got: %s", c.query, plan)
-			}
-			if c.wantNoFetch && hasFetch {
-				t.Errorf("%s: expected NO Fetch for a covering projection (codex P2 regression), got: %s", c.query, plan)
-			}
-			if !c.wantNoFetch && !hasFetch {
-				t.Errorf("%s: expected a Fetch for a non-covered projection, got: %s", c.query, plan)
+			if c.wantCovered {
+				assertScanAnswersFromIndexEntry(t, plan, "IndexScan(CAT_IDX")
+			} else {
+				assertScanReadsBaseRecords(t, plan, "IndexScan(CAT_IDX")
 			}
 		})
 	}

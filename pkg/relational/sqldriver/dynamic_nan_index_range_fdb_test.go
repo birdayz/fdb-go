@@ -369,19 +369,16 @@ func TestFDB_FloatInequalitiesWithRawNaNPayloadsUseExactIndexRanges(t *testing.T
 					// the index"; it is "return the same rows as a full scan
 					// even with raw NaN payloads stored", which the baseline
 					// comparison below asserts directly.
-					usedBoundedIndex := false
-					plans.Walk(indexedPlan, func(node plans.RecordQueryPlan) bool {
-						concrete, ok := node.(*plans.RecordQueryIndexPlan)
-						if !ok || concrete.GetIndexName() != indexName {
-							return true
-						}
-						for _, comparisonRange := range concrete.GetScanComparisons() {
-							if comparisonRange != nil && !comparisonRange.IsEmpty() {
-								usedBoundedIndex = true
-							}
-						}
-						return true
-					})
+					// planBindsBoundedScanOn sees through a COVERING wrapper. This
+					// guard used to walk with a concrete *RecordQueryIndexPlan
+					// assertion, which is BLIND BY CONSTRUCTION since RFC-220: the
+					// covering plan holds its index plan as a field, plans.Walk
+					// recurses through GetChildren(), and GetChildren() returns nil.
+					// The guard then reported "no bounded scan" for
+					// `IndexScan(VALUE_IDX, [<>] COVERING)` — a plan carrying exactly
+					// the bounded inequality range it demands. See
+					// covering_plan_assertions_test.go for the general rule.
+					_, usedBoundedIndex := planBindsBoundedScanOn(indexedPlan, indexName)
 					if !usedBoundedIndex {
 						t.Fatalf(
 							"%s did not bind a bounded scan on %s: %s\n"+

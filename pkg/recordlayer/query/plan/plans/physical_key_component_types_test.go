@@ -35,7 +35,6 @@ func TestPhysicalKeyComponentTypesPreservedByPlanCopies(t *testing.T) {
 		WithKeyComponentTypes([]values.Type{values.NullableFloat, values.NullableDouble})
 	requirePhysicalTypeCodes(t, index.GetKeyComponentTypes(), values.TypeCodeFloat, values.TypeCodeDouble)
 	requirePhysicalTypeCodes(t, index.WithStrictlySorted().GetKeyComponentTypes(), values.TypeCodeFloat, values.TypeCodeDouble)
-	requirePhysicalTypeCodes(t, index.WithCovering([]string{"A"}).GetKeyComponentTypes(), values.TypeCodeFloat, values.TypeCodeDouble)
 	requirePhysicalTypeCodes(t, index.WithScanComparisons(comparisons[:1]).GetKeyComponentTypes(), values.TypeCodeFloat, values.TypeCodeDouble)
 
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).

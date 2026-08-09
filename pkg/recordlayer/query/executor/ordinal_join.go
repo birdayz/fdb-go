@@ -1584,9 +1584,12 @@ func (b *ordinalJoinBuild) widenLegTypesFromPlan(plan plans.RecordQueryPlan) err
 // DELIBERATELY omitted: a baked-ref-bearing NLJ does not appear inside a
 // gated FlatMap's inner plan (an existential inner is never itself consumed
 // as a gated join leg).
-// The exact-set plan arms fail SAFE: a missed predicate surface leaves a leg
-// typeless / a probe negative — a loud zero-width death downstream, never
-// silent misbinding.
+// A missed predicate surface fails SAFE for the BUILD consumer only: a
+// typeless leg dies loudly at zero width downstream. It does NOT fail safe for
+// the PROBE consumer — a probe negative is indistinguishable from "this inner
+// plan has no baked references", which licenses name-keyed binding. So the arm
+// set has to cover every surface a SARG can be pushed onto, which is why the
+// covering scan is enumerated below rather than left to child descent.
 func walkBakedRefs(plan plans.RecordQueryPlan, collect func(values.Value) values.Value) {
 	collectComparison := func(c *predicates.Comparison) {
 		if c != nil && c.Operand != nil {
@@ -1607,18 +1610,25 @@ func walkBakedRefs(plan plans.RecordQueryPlan, collect func(values.Value) values
 			for _, pr := range t.GetPredicates() {
 				predicates.ReplaceValues(pr, collect)
 			}
-		case *plans.RecordQueryScanPlan:
-			for _, cr := range t.GetScanComparisons() {
-				if cr.IsEquality() {
-					collectComparison(cr.GetEqualityComparison())
-				} else if cr.IsInequality() {
-					for _, c := range cr.GetInequalityComparisons() {
-						collectComparison(c)
-					}
-				}
+		// The three SARGable leaves, read through the one accessor they share.
+		// A COVERING scan belongs in this set because the access path emits
+		// Fetch(Covering(IndexScan)) for EVERY index-backed access (RFC-220), so
+		// it is the ordinary shape here, not an exotic one — and it holds its
+		// index scan as a FIELD, so the generic child descent below never
+		// reaches the operands. Its omission would NOT fail safe the way a
+		// missed predicate surface does: for the probe, a nil outer type reads
+		// as "no baked references at all" and licenses the identity
+		// pass-through to bind by NAME, which is the exact state the probe
+		// exists to prevent. The covering plan's GetScanComparisons delegates to
+		// the inner scan, whose physical range it shares.
+		case *plans.RecordQueryScanPlan, *plans.RecordQueryIndexPlan, *plans.RecordQueryCoveringIndexPlan:
+			sargable, ok := t.(interface {
+				GetScanComparisons() []*predicates.ComparisonRange
+			})
+			if !ok {
+				break
 			}
-		case *plans.RecordQueryIndexPlan:
-			for _, cr := range t.GetScanComparisons() {
+			for _, cr := range sargable.GetScanComparisons() {
 				if cr.IsEquality() {
 					collectComparison(cr.GetEqualityComparison())
 				} else if cr.IsInequality() {

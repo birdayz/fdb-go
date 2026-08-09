@@ -105,7 +105,9 @@ func TestIntersection_DescendingCommonSecondaryOrdering(t *testing.T) {
 
 	reverseLegs := map[string]bool{}
 	plans.Walk(intersection, func(node plans.RecordQueryPlan) bool {
-		indexPlan, ok := node.(*plans.RecordQueryIndexPlan)
+		// See THROUGH a covering wrapper: this asks about the SCAN (name,
+		// direction), and RFC-220 C1 hides the inner from plans.Walk.
+		indexPlan, ok := indexScanOf(node)
 		if !ok {
 			return true
 		}

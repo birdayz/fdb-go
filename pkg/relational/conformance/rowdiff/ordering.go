@@ -58,7 +58,9 @@ import (
 // EstimateOrdering operates on Cascades expressions, not this physical tree):
 //   - RecordQueryScanPlan is a primary-key scan → provides [pk] order (this
 //     generator's pk is always the single column ID), reversed if reverse.
-//   - RecordQueryIndexPlan on index [c1..cn] over pk → provides
+//   - RecordQueryIndexPlan — and RecordQueryCoveringIndexPlan, which the access
+//     path wraps around EVERY index-backed scan and which delegates each of
+//     these facts to the scan it wraps — on index [c1..cn] over pk → provides
 //     [c1..cn, pk...] order, with the LEADING equality-bound prefix dropped
 //     (those columns are constant across the scan), reversed if reverse.
 //   - PredicatesFilter / FetchFromPartialRecord / TypeFilter preserve their
@@ -158,12 +160,20 @@ func resolveNullsFirst(placement NullsPlacement, desc bool) bool {
 	}
 }
 
+// The facts the index-scan ordering derivation reads — reverseness, the index
+// key columns, the trimmed primary key, the scan comparisons and both physical
+// type vectors — are all facts about the INDEX SCAN, so the derivation reaches
+// them through plans.IndexPlanOf rather than through a locally-declared
+// interface listing them. See providedOrdering's index arm for why the local
+// interface was retired.
+
 // providedOrdering returns the row ordering p's output stream is PROVABLY in, or
 // nil when the harness cannot prove one. Only leaf scans (and order-preserving
 // unary wrappers above them) yield a non-nil ordering; every other node kind
 // returns nil, so a caller never asserts on an unproven order.
 func providedOrdering(p plans.RecordQueryPlan) []ordCol {
-	switch n := p.(type) {
+	leaf := orderingLeaf(p)
+	switch n := leaf.(type) {
 	case *plans.RecordQueryScanPlan:
 		// Primary-key scan. This generator's primary key is always the single
 		// column ID (see gen.go DDL: "PRIMARY KEY (id)"), so a forward scan
@@ -172,19 +182,42 @@ func providedOrdering(p plans.RecordQueryPlan) []ordCol {
 		rev := n.IsReverse()
 		return []ordCol{{col: "ID", desc: rev, nullsFirst: !rev}}
 
-	case *plans.RecordQueryIndexPlan:
-		cols := upperAll(n.GetColumnNames())
-		pk := upperAll(n.GetPKColumnNames())
+	case *plans.RecordQueryIndexPlan, *plans.RecordQueryCoveringIndexPlan:
+		// BOTH index shapes, because the access path emits
+		// Fetch(Covering(IndexScan)) for every index-backed access (RFC-220) —
+		// a bare index plan reaches here only from an ordered-scan rule. Matching
+		// the bare plan alone does not make this detector wrong, it makes it
+		// ABSENT on the index shapes: providedOrdering answers nil, the caller
+		// reads that as "input order unprovable, no finding", and the axis
+		// reports clean because it stopped executing. The covering plan reads the
+		// same physical range as its inner and emits one row per entry in the
+		// same order, so every fact below reads off the SCAN itself, recovered
+		// through plans.IndexPlanOf.
+		//
+		// Reading the inner scan rather than a locally-declared facts interface
+		// is the convergence: this file briefly carried its own
+		// `indexOrderingSource` listing the six delegating accessors, which made
+		// a SECOND surface that had to be kept in step with the covering plan's
+		// delegation — and a fact added to the scan but not to the interface
+		// goes missing silently, which is the failure this whole arm exists to
+		// avoid. The carrier hands back the scan and every fact is read off
+		// that, so there is nothing to keep in step.
+		src, ok := plans.IndexPlanOf(leaf)
+		if !ok {
+			return nil
+		}
+		cols := upperAll(src.GetColumnNames())
+		pk := upperAll(src.GetPKColumnNames())
 		// Empty index-key or pk metadata → cannot prove the order (pk is empty
 		// for a fan-out/createsDuplicates index, where the sorted suffix breaks;
 		// this generator has none, but bail rather than guess).
 		if len(cols) == 0 || len(pk) == 0 {
 			return nil
 		}
-		rev := n.IsReverse()
-		comps := n.GetScanComparisons()
-		keyTypes := n.GetKeyComponentTypes()
-		pkTypes := n.GetPrimaryKeyComponentTypes()
+		rev := src.IsReverse()
+		comps := src.GetScanComparisons()
+		keyTypes := src.GetKeyComponentTypes()
+		pkTypes := src.GetPrimaryKeyComponentTypes()
 
 		// Walk the key columns left to right, asking the CANONICAL predicates the
 		// two questions the planner asks — never a local re-statement of either.
@@ -247,17 +280,35 @@ func providedOrdering(p plans.RecordQueryPlan) []ordCol {
 			out = append(out, ordCol{col: c, desc: rev, nullsFirst: !rev})
 		}
 		return out
-	case *plans.RecordQueryPredicatesFilterPlan,
-		*plans.RecordQueryFetchFromPartialRecordPlan,
-		*plans.RecordQueryTypeFilterPlan:
-		// Order-preserving unary pass-throughs: descend to the single child.
-		ch := p.GetChildren()
-		if len(ch) != 1 {
-			return nil
-		}
-		return providedOrdering(ch[0])
 	}
 	return nil
+}
+
+// orderingLeaf descends the order-preserving unary pass-throughs above a scan —
+// residual filter, primary-key fetch, type filter — and returns the first node
+// that is not one. It is the ONE descent: providedOrdering derives from its
+// result, and the sweep's vacuity floor censuses it, so the floor cannot report
+// an arm as reached that the derivation does not actually read.
+//
+// Anything that is not a listed pass-through is returned as-is and ends the
+// derivation there (union, join, another sort, projection, …) — including a
+// pass-through with a child count other than one, which is a shape this walk
+// does not understand and must not guess at.
+func orderingLeaf(p plans.RecordQueryPlan) plans.RecordQueryPlan {
+	for {
+		switch p.(type) {
+		case *plans.RecordQueryPredicatesFilterPlan,
+			*plans.RecordQueryFetchFromPartialRecordPlan,
+			*plans.RecordQueryTypeFilterPlan:
+		default:
+			return p
+		}
+		ch := p.GetChildren()
+		if len(ch) != 1 {
+			return p
+		}
+		p = ch[0]
+	}
 }
 
 // orderingCoversPrefix reports whether the requested ordering is a PREFIX of the

@@ -29,7 +29,7 @@ setup:
 tests:
   # Simple equality on indexed column
   - query: SELECT * FROM t1 WHERE col1 = 20 ORDER BY id
-    plan_contains: "Fetch(IndexScan(I1, [=]))"
+    plan_contains: "IndexScan(I1, [=])"
     rows:
       - [6, 20, 6]
       - [7, 20, 7]
@@ -39,7 +39,7 @@ tests:
 
   # AND range: col1 >= 10 AND col1 <= 20 → combined range scan
   - query: SELECT id FROM t1 WHERE col1 >= 10 AND col1 <= 20 ORDER BY id
-    plan_contains: "PredicatesFilter(IndexScan(I1, [<>])"
+    plan_contains: "PredicatesFilter(IndexScan(I1, [<>] COVERING)"
     rows:
       - [1]
       - [2]
@@ -54,7 +54,7 @@ tests:
 
   # Strict range: col1 > 10 AND col1 < 30
   - query: SELECT id FROM t1 WHERE col1 > 10 AND col1 < 30 ORDER BY id
-    plan_contains: "PredicatesFilter(IndexScan(I1, [<>])"
+    plan_contains: "PredicatesFilter(IndexScan(I1, [<>] COVERING)"
     rows:
       - [6]
       - [7]
@@ -129,7 +129,7 @@ tests:
 
   # Less than
   - query: SELECT id FROM t1 WHERE col1 < 20 ORDER BY id
-    plan_contains: "Fetch(IndexScan(I1, [<>]))"
+    plan_contains: "IndexScan(I1, [<>])"
     rows:
       - [1]
       - [2]

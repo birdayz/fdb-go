@@ -105,6 +105,16 @@ func dataAccessExprCorrelations(p plans.RecordQueryPlan) map[values.CorrelationI
 			for a := range scanComparisonCorrelations(sp.GetScanComparisons()) {
 				out[a] = struct{}{}
 			}
+		case *plans.RecordQueryCoveringIndexPlan:
+			// plans.Walk cannot descend into the wrapper's scan — it is a FIELD,
+			// not a child — so without this arm the SARG correlations on an
+			// index-backed access are invisible here. That is the UNDER-reported
+			// direction this function's doc comment names as the latent hazard:
+			// a correlated probe read as self-contained by join-leg / winner
+			// bookkeeping. GetScanComparisons delegates to the wrapped scan.
+			for a := range scanComparisonCorrelations(sp.GetScanComparisons()) {
+				out[a] = struct{}{}
+			}
 		case *plans.RecordQueryPredicatesFilterPlan:
 			for _, pr := range sp.GetPredicates() {
 				c := map[values.CorrelationIdentifier]struct{}{}
@@ -146,10 +156,20 @@ type physicalPlanExpression interface {
 }
 
 // IsPhysicalIndexScan reports whether the given RelationalExpression is an index
-// scan. Since RFC-184 W2 the memo holds *plans.RecordQueryIndexPlan directly (no
-// physicalIndexScanWrapper), so this is a bare type check.
+// scan. Since RFC-184 W2 the memo holds the plan directly (no
+// physicalIndexScanWrapper), so this is a type check on the plan.
+//
+// A COVERING index scan answers TRUE. It is an index scan — it reads the same
+// physical index range and differs only in the row it reconstructs — and since
+// RFC-220 it is the shape the memo actually holds for an index-backed access.
+// A predicate named "is an index scan" that answered FALSE for the only index
+// scan in the memo would be a trap for every caller.
 func IsPhysicalIndexScan(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*plans.RecordQueryIndexPlan)
+	plan, isPlan := expr.(plans.RecordQueryPlan)
+	if !isPlan {
+		return false
+	}
+	_, ok := plans.IndexPlanOf(plan)
 	return ok
 }
 
@@ -350,6 +370,58 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 // and extraction then reads that winner through the ordering-aware winner
 // lookup. A cost comparison at rule time is a second, ordering-blind optimizer
 // running outside the cost framework.
+// physicalMembersForParentEnumeration returns EVERY physical member of ref that
+// a parent construction should be fired over — the cardinality answer to
+// findPhysicalExpr's single pick.
+//
+// Java fires an implementation rule once per (parent, child-member) pair, so a
+// parent is built over every alternative its child offers and the memo's cost
+// framework chooses among the resulting parents. Go's single pick meant a child
+// member that was not the local winner was never lifted into a parent
+// alternative — invisible to cost, because it was never constructed. Measured
+// on RFC-220's defect query: a group held [FETCH, INDEX] together and only
+// Filter(Index) was ever built.
+//
+// Same member-set policy as findPhysicalExpr: FINAL members first, exploratory
+// as a deliberate fallback for rules firing mid-planning (see that function for
+// why a finals-only tightening is not safe — 3821 references at these sites have
+// zero finals).
+//
+// Order is preserved, NOT ranked. Ranking here would be the ordering-blind
+// second optimizer findPhysicalExpr's comment forbids; the point of enumerating
+// is that no choice is made at rule time at all.
+//
+// The resulting cross product is NOT capped per rule — references here hold up
+// to 52 physical finals, and a caller looping over them yields once per member
+// inside a SINGLE OnMatch. MaxNumMatchesPerRuleCall does not apply: its counter
+// counts BINDINGS produced by the matcher (unified_tasks.go:350, :461, :560),
+// and this loop produces none. The operative backstop is the much coarser
+// Planner.MaxTasks / MaxTaskQueueSize, which fails the WHOLE plan with
+// ErrPlannerCapHit rather than capping one rule's fan-out. Memoization keeps the
+// enumerated subtrees singly represented, so the fan-out is in parent
+// alternatives rather than in duplicated trees — but a caller adding a second
+// enumerated child multiplies, and nothing here will stop it.
+func physicalMembersForParentEnumeration(ref *expressions.Reference) []expressions.RelationalExpression {
+	if ref == nil {
+		return nil
+	}
+	var out []expressions.RelationalExpression
+	for _, m := range ref.FinalMembers() {
+		if _, ok := m.(physicalPlanExpression); ok {
+			out = append(out, m)
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	for _, m := range ref.Members() {
+		if _, ok := m.(physicalPlanExpression); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 func findPhysicalExpr(ref *expressions.Reference) expressions.RelationalExpression {
 	if ref == nil {
 		return nil

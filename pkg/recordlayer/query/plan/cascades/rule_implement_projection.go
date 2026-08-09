@@ -70,16 +70,18 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 		if fetchInnerRef == nil {
 			continue
 		}
-		if idxPlan := findIndexScanPlan(fetchInnerRef); idxPlan != nil {
-			// The covering index scan is its own cascades expression (RFC-184 W2);
-			// WithCovering preserves the metadata already on the plan (struct copy).
-			coveredPlan := idxPlan.WithCovering(idxPlan.AllCoveredEntryColumns())
-			cq := expressions.ForEachQuantifier(call.MemoizeExpression(coveredPlan))
-			// The projection is its own cascades expression carrying the live cq
-			// edge (RFC-184 W2).
-			call.Yield(plans.NewRecordQueryProjectionPlanFromQuantifierWithProvenance(
-				projectedValues, proj.GetAliases(), proj.GetAliasMinted(), cq))
-		}
+		// Every projected value pushes through the fetch, so the fetch goes and
+		// its CHILD is used as-is (Java MergeProjectionAndFetchRule). Nothing is
+		// stamped: the child is already Covering(IndexScan) from the access path.
+		// The projection is RETAINED above it — Go's deliberate, permanent
+		// divergence from Java's `yieldPlan(fetchPlan.getChild())`, see
+		// rule_merge_projection_and_fetch.go and DIVERGENCES.md.
+		//
+		// The projection is its own cascades expression carrying the live
+		// fetch-inner edge (RFC-184 W2).
+		call.Yield(plans.NewRecordQueryProjectionPlanFromQuantifierWithProvenance(
+			projectedValues, proj.GetAliases(), proj.GetAliasMinted(),
+			expressions.ForEachQuantifier(fetchInnerRef)))
 	}
 
 	// Normal path: for each requested ordering, wrap the child winner.

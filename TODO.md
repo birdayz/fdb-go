@@ -8203,6 +8203,26 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
 
+**2026-08-08 (RFC-220 — coveringness as a plan type, BEFORE side only):**
+branch point `4465dcc6d`, tree carrying the RFC only (no code change), so this
+row IS the baseline. Same filesystem, `df -T .` = **xfs**, 89% used, 111G
+available. The box is XFS; CLAUDE.md's ~95% ext4 threshold does not transfer, so
+the run is judged against its own after-side, not that figure.
+
+`TestFDB_Stress_1M` **PASS, 336.10s.** PK lookups 0.09/0.02/0.02s; idx_customer
+eq 0.05s; idx_amount range 0.40s; idx_status count 0.51s; full_scan_count 4.72s;
+full-scan filter 0.86s; GROUP BY status 0.02s; GROUP BY COUNT-only 0.01s; SUM by
+status 0.01s; GROUP BY customer HAVING 0.79s; JOIN 10×customers 0.06s; ORDER BY
+PK full (1M) 6.13s; ORDER BY PK + index filter 12.58ms; scan-all narrow (1M)
+6.26s; scan-all wide (1M) 6.24s; IN-list 26.44ms; PK needle 7.70ms; PK+filter
+needle 10.67ms; sparse filter (97 rows) 4.77s; UPDATE by index 14.11ms; DELETE
+single 10.23ms.
+
+**Do NOT read these against the 2026-07-31 row as a regression** — that run was
+on a differently-loaded box (its ORDER BY PK full is 3.355s against 6.13s here).
+Only the before/after pair taken on the SAME box in the SAME session is a
+comparison; the after side is pending implementation.
+
 **2026-07-31 (CQ-67 / RFC-200 — the NESTED merged leg, steps 3a–3d′):**
 baseline worktree at the branch point `719f6c8b0` vs the branch head, SAME
 FILESYSTEM (sibling worktree under `.claude/worktrees/`), sequential fresh FDB
@@ -16086,3 +16106,121 @@ None is speculative: each was re-verified against the tree before booking.
     `cascades_translator.go:3711` (was `:3667`; the line moved with the census
     site parameter) does NOT drop with item 1 — it is the mint's entry, and the
     mint survives item 1 untouched.
+
+### RFC-220 residue — what the three review passes surfaced and this PR does NOT close
+
+- [x] **CQ-96 — CLOSED as a CLASS, not instance-by-instance.** `IndexScanCarrier`
+  (sealed, so `RecordQueryAggregateIndexPlan` cannot satisfy it structurally —
+  it emits one row per GROUP) plus `plans.IndexPlanOf`, plus an AST gate in
+  `pkg/docscheck` that fails the build on any non-test `*RecordQueryIndexPlan`
+  type test lacking a covering arm.
+
+  The census is stated as a BEFORE and an AFTER measured by the same instrument,
+  because a single after-figure cannot show how much was fixed and an earlier
+  write-up of this item recited a split (29 correct / 21 blind) that neither
+  figure supports. Both lines below are the gate's own `t.Logf`, the before one
+  taken by exporting the pre-fix commit and dropping in only the gate:
+
+  ```
+  before: 55 index-plan type tests examined = 23 covered + 5 allowlisted + 27 blind
+  after:  54 index-plan type tests examined = 49 covered + 5 allowlisted +  0 blind
+  ```
+
+  So 27 sites were blind, not 21. The population itself drops by one because two
+  adjacent `extractIndexPlan` assertions collapsed into a single `IndexPlanOf`
+  call — which is why the two totals are not required to match, and why the gate
+  now logs the full decomposition rather than a lone blind count: 0 blind is
+  exactly what a scan that found nothing also prints. The gate refuses a
+  zero-site scan (the never-ran state), and its allowlist is keyed on
+  file+enclosing-function rather than line numbers, with a test failing any entry
+  that matches nothing — a line-keyed allowlist rotted inside this very change.
+
+  Two of the 27 were fail-OPEN, not precision: `planReferencesAnyBuriedAlias`
+  (the post-rebase verifier read "no buried reference" and licensed the probe it
+  exists to decline) and `dataAccessExprCorrelations` (under-reported SARG
+  correlations — a correlated probe read as self-contained).
+
+  Why the class exists at all: coveringness became a plan TYPE, so a
+  `*RecordQueryCoveringIndexPlan` wrapping an index plan does not match
+  `case *plans.RecordQueryIndexPlan`, and the walk does not descend into the
+  wrapped scan because it is a structural FIELD rather than a child.
+
+  Two more of the 27 were CORRECTNESS rather than precision:
+  `stampNodeLocalValues` never reaching a covering plan's comparands (an
+  unstamped `RecordConstructorValue` evaluates NAME-keyed instead of
+  field-number-keyed), and `probeOuterBakedType` returning nil for a covering
+  outer.
+
+  Earlier passes at this item quoted hand-run grep counts (first "~14 sites",
+  then "52 non-test sites"). Both are superseded and are deliberately not kept
+  here: a stale count sitting next to a measured one is indistinguishable from a
+  disagreement, and the gate's logged census is now the only figure anyone
+  should quote. That is also the point of closing this as a CLASS — an
+  instance-by-instance fix leaves every newly written type switch a fresh latent
+  instance, which is what the gate, not a grep, prevents.
+
+- [ ] **CQ-97 (query-engine): two shapes still read a partition through a single
+  member.** Both are the same conflation the RFC-220 enumeration fix removed
+  elsewhere, surviving in places the fix did not reach:
+  - `rule_implement_in_union.go` takes the rich ordering from `innerPlans[0]`.
+    That is sound only under the row-shape invariant, and it consumes
+    `ToPlanPartitions` raw without the roll-up that would make a
+    partition-level read legitimate. Converting it needs more than roll-up: it
+    also pins a single member via `pinOrderedSpine`.
+  - `MemoizeFinalExpressionsFromOther` (`implementation_rule.go:124`) mints a
+    fresh Reference with NO constraint entry, so `OptimizeGroupTask`'s
+    per-ordering retention looks the new reference up, finds nothing, and
+    resolves by cost alone. That is what `pinOrderedSpine` is compensating for,
+    which is why dropping the pin is not safe today. Measured consequence when
+    dropped: an InUnion claiming ASC over a filtered full scan.
+
+  The property-map half of this item is CLOSED. `MemoizeFinalExpressionsFromOther`
+  copied the SOURCE reference's whole plan-property map onto a RESTRICTED
+  reference — `ToPlanPartitions` walks the property map rather than the member
+  list, so such a reference reported partitions for plans it did not contain,
+  which is the identical defect its twin was written to avoid, live across NINE
+  non-test call sites. Both entry points now share one implementation
+  (`newRestrictedFinalReference`), so the two cannot drift apart again; the
+  earlier count of "six rule callers" was low.
+
+  What remains open here is only the CONSTRAINT half: the minted reference still
+  carries no constraint entry, so `OptimizeGroupTask`'s per-ordering retention
+  finds nothing and resolves by cost alone, which is what `pinOrderedSpine`
+  compensates for.
+
+- [ ] **CQ-98 (query-engine): two accepted cost movements from the RFC-220
+  re-bless need a standing justification, not a one-time sign-off.**
+  `set_op_fetch_pushdown#1` and `in_list_pushdown#34` moved. They were accepted
+  as correct-but-different rather than as regressions; nothing currently
+  re-derives that judgement, so a later change that moves them again will read
+  as "already blessed". Pin the property each one turns on.
+
+- [ ] **CQ-99 (instrumentation): `MaxNumMatchesPerRuleCall` is NOT a fan-out
+  bound and must stop being cited as one.** MEASURED: the counter increments per
+  MATCHER BINDING (`unified_tasks.go:350`, `:461`, `:560`), not per
+  `call.Yield()`. The RFC-220 enumeration loops yield up to N times inside a
+  single `OnMatch` and never touch it. The operative backstop is the far coarser
+  `Planner.MaxTasks` / `MaxTaskQueueSize`, which fails the WHOLE plan with
+  `ErrPlannerCapHit` rather than capping one rule's fan-out. Consequence:
+  "`MaxNumMatchesPerRuleCall` was never approached" is evidence of nothing,
+  because it was never the operative bound. A real per-rule fan-out claim needs
+  measured yield counts, and there is currently no instrument that produces
+  them. Build one, or stop making the claim.
+
+  STATUS AFTER THE NAK ROUND: the claim is withdrawn everywhere it was made (PR
+  body, `physical_wrapper.go`), and the item stays OPEN rather than being closed
+  cheaply. The reason is worth stating so it is not re-litigated: a
+  yield-counting instrument is easy to bolt on as a process-global counter, and
+  that is exactly the shape this repo has been burned by — a census whose arms
+  are driven only by whatever the corpus happens to reach. The RFC-220 round did
+  build a throwaway counter of this kind (to settle which of Java's asserts hold
+  in Go, see `assertMembersOf`), and its numbers were only trustworthy because
+  every reading was cross-checked against a deliberate mutation. A permanent
+  fan-out instrument needs the same discipline plus per-rule attribution and a
+  vacuity floor, which is its own change with its own review — not a rider on
+  this one.
+
+  What IS now known, and did not need the instrument: the filter loop was inert
+  before this PR and genuinely yields N parents after it, so whatever headroom
+  exists is being used for the first time. Zero plan movement across the 7000-
+  scenario corpus is the evidence that the fan-out is not pathological today.

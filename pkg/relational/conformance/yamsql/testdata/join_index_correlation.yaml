@@ -39,7 +39,7 @@ tests:
       SELECT d.name, e.name FROM departments d, employees e
       WHERE e.dept_id = d.id
       ORDER BY d.name, e.name
-    plan_contains: "FlatMap(outer=Scan(DEPARTMENTS), inner=Fetch(IndexScan(IDX_DEPT, [=])))"
+    plan_contains: "FlatMap(outer=Scan(DEPARTMENTS), inner=IndexScan(IDX_DEPT, [=]))"
     plan_not_contains: NestedLoopJoin
     rows:
       - ['Engineering', 'Alice']
@@ -92,7 +92,7 @@ tests:
       SELECT d.name, e.name FROM departments d
       LEFT JOIN employees e ON e.dept_id = d.id AND e.salary > 200
       ORDER BY d.name
-    plan_contains: "FlatMap(outer=Scan(DEPARTMENTS), inner=DefaultOnEmpty(PredicatesFilter(Fetch(IndexScan(IDX_DEPT, [=]))"
+    plan_contains: "FlatMap(outer=Scan(DEPARTMENTS), inner=DefaultOnEmpty(PredicatesFilter(IndexScan(IDX_DEPT, [=]), [1 preds])))"
     plan_not_contains: NestedLoopJoin
     rows:
       - ['Engineering', null]
@@ -104,7 +104,7 @@ tests:
       SELECT d.id, e.name FROM departments d, employees e
       WHERE e.dept_id = d.id
       ORDER BY d.id, e.name
-    plan_contains: "FlatMap(outer=Scan(DEPARTMENTS), inner=Fetch(IndexScan(IDX_DEPT, [=])))"
+    plan_contains: "FlatMap(outer=Scan(DEPARTMENTS), inner=IndexScan(IDX_DEPT, [=]))"
     plan_not_contains: NestedLoopJoin
     rows:
       - [1, 'Alice']

@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"context"
+	"fmt"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
@@ -229,4 +230,164 @@ func (c *ExpressionRuleCall) Yielded() []expressions.RelationalExpression {
 // it.
 func (c *ExpressionRuleCall) MemoizeFinalExpression(expr expressions.RelationalExpression) *expressions.Reference {
 	return expressions.FinalOfAtStage(expr, expressions.StageCanonical)
+}
+
+// MemoizeMemberPlansFromOther mints a NEW reference holding only `members` —
+// which must already be members of `source` — as final expressions. Ports
+// Java's FinalMemoizer.memoizeMemberPlansFromOther (CascadesRuleCall.java:518 →
+// Reference.newReferenceFromFinalMembers:587), whose contract is that the
+// returned reference "is always newly created and never reused".
+//
+// This is the RESTRICTION an enumerating implementation rule needs, and it is
+// what MemoizeExpression cannot give it. MemoizeExpression INTERNS: asked for a
+// member, it hands back a group that already contains that member — which, for
+// a member of the rule's own child group, is that whole child group. A rule
+// that loops over N child members and memoizes each one therefore builds N
+// structurally IDENTICAL parents over the same reference, and they collapse to
+// one on insert. The loop enumerates nothing.
+//
+// Java cannot reach that state because it binds a PlanPartition and memoizes a
+// reference restricted to that partition's plans; the restriction is not an
+// optimization there, it is what makes the per-partition parent distinct.
+//
+// The source's per-plan property map is carried over RESTRICTED to the retained
+// members. Copying it wholesale would leave the new reference reporting
+// partitions (ToPlanPartitions walks the property map, not the member list) for
+// plans it does not contain, which is the same conflation in the other
+// direction.
+func (c *ExpressionRuleCall) MemoizeMemberPlansFromOther(
+	source *expressions.Reference,
+	members []expressions.RelationalExpression,
+) *expressions.Reference {
+	return newRestrictedFinalReference("MemoizeMemberPlansFromOther", source, members)
+}
+
+// newRestrictedFinalReference is the ONE implementation behind both memoize-
+// from-other entry points — this file's MemoizeMemberPlansFromOther and
+// ImplementationRuleCall.MemoizeFinalExpressionsFromOther. They are twins of
+// Java's two FinalMemoizer methods, and they had drifted: one restricted the
+// property map to the retained members and the other copied the source's map
+// wholesale. Two implementations of one rule is how that drift happened, so
+// there is now one.
+//
+// caller names the entry point in any panic, because "which of the two" is the
+// first thing anyone debugging this needs and the stack alone will not say it
+// once both are one call deep.
+func newRestrictedFinalReference(
+	caller string,
+	source *expressions.Reference,
+	members []expressions.RelationalExpression,
+) *expressions.Reference {
+	assertMembersOf(caller, source, members)
+
+	var ref *expressions.Reference
+	for i, m := range members {
+		if i == 0 {
+			ref = expressions.FinalOfAtStage(m, expressions.StageCanonical)
+		} else {
+			ref.InsertFinal(m)
+		}
+	}
+	if ref == nil {
+		return &expressions.Reference{}
+	}
+	// The property map is carried over RESTRICTED to the retained members.
+	// Copying it wholesale leaves the new reference reporting partitions for
+	// plans it does not contain, because ToPlanPartitions walks the property
+	// MAP rather than the member list — so a restricted reference would still
+	// offer the whole source group to anything reading partitions, which is
+	// precisely the conflation the restriction exists to remove.
+	//
+	// Java never faces the choice: Reference.of mints a FRESH propertiesMap and
+	// runs finalExpressions.forEach(propertiesMap::add) (Reference.java:181-182),
+	// so it carries properties for exactly the retained members by construction.
+	if pm := GetRefPlanPropertiesMap(source); pm != nil {
+		restricted := NewPlanPropertiesMap()
+		for _, m := range members {
+			props := pm.GetProperties(m)
+			// A member with no entry is a HARD failure, never a skip. Java
+			// COMPUTES the property per retained member and cannot be short of
+			// one; Go COPIES, and a copy can miss.
+			//
+			// Skipping would mint a non-nil but member-short map, and
+			// toPartitionsFromMap walks the MAP: the plan would then belong to
+			// no partition and the alternative would vanish with nothing said.
+			// That is the empty-set-reads-as-success shape, occurring inside
+			// the fix for an empty-set-reads-as-success bug — so it fails loudly
+			// or not at all. Measured zero firings across 15739 observed calls.
+			if props == nil {
+				panic(fmt.Sprintf(
+					"%s: source reference has a plan-properties map but no entry for "+
+						"retained member %T. Java computes the property per retained member "+
+						"and cannot be short of one; copying can be, and a member-short map "+
+						"makes ToPlanPartitions report NO partition for this plan — the "+
+						"alternative disappears silently. Compute the source's properties "+
+						"before restricting (computeRefPlanProperties), do not skip the entry",
+					caller, m))
+			}
+			restricted.Set(m, props)
+		}
+		ref.SetPlanProperties(restricted)
+	}
+	return ref
+}
+
+// assertMembersOf enforces the precondition Java states as an assertion on
+// Reference.newReferenceFromFinalMembers (Reference.java:588-589):
+// `getFinalExpressions().containsAll(expressions)`. Both callers pass real
+// members today, which is exactly why this is worth asserting — the invariant
+// is one refactor away from being untrue and unchecked, and violating it builds
+// a parent over a plan its own group never offered.
+//
+// Java's assert names the FINAL expressions specifically. That exact form is
+// NOT portable to Go, and the reason is measured rather than argued. A probe
+// counting every call to this function across the suite reported:
+//
+//	real planner (sqldriver, real FDB): 15147 calls, 797 pass a NON-final member
+//	cascades unit fixtures:               592 calls,  11 non-final, 15 on a
+//	                                                  reference still needing
+//	                                                  exploration
+//	both:                                          0 calls with a missing
+//	                                                  property entry
+//
+// So `getFinalExpressions().containsAll(...)` would fire on roughly 5% of real
+// planning calls. It is not a latent defect being caught: it is
+// physicalMembersForParentEnumeration's documented fallback to EXPLORATORY
+// members for a reference holding no finals yet — a group mid-planning, a state
+// Java does not have because a Java caller always holds a PlanPartition and
+// partitions are fed only by finals. The membership check is therefore against
+// ALL members, which is the part of the invariant that is load-bearing: the
+// parent must not range over a plan the source group does not contain. That
+// form has zero violations across all 15739 observed calls.
+//
+// Java's second assert, `!needsExploration()`, is absent for the same measured
+// reason: 15 firings, all in unit fixtures that mint groups through InitialOf
+// (which leaves explorationNever set) — and zero on the real planner path. As a
+// panic it would reject test fixtures rather than defects.
+//
+// The nil-property check inside MemoizeMemberPlansFromOther is the opposite
+// case and IS a hard failure: zero firings across all 15739 calls, so it costs
+// nothing today and its steady state is genuinely zero.
+func assertMembersOf(caller string, source *expressions.Reference, members []expressions.RelationalExpression) {
+	if source == nil || len(members) == 0 {
+		return
+	}
+	all := source.AllMembers()
+	for _, m := range members {
+		found := false
+		for _, s := range all {
+			if s == m {
+				found = true
+				break
+			}
+		}
+		if !found {
+			panic(fmt.Sprintf(
+				"%s: member %T is not a member of the source reference (%d members). The "+
+					"restricted reference must hold a SUBSET of the group it is drawn from; a "+
+					"parent built over a non-member ranges over a plan its own group never "+
+					"offered (Java asserts the same precondition at Reference.java:588)",
+				caller, m, len(all)))
+		}
+	}
 }

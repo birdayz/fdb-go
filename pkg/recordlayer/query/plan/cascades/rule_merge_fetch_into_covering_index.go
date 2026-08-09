@@ -14,19 +14,15 @@ import (
 //
 //	Fetch(CoveringIndexScan)  →  IndexScan
 //
-// In Go, covering index scans are physicalIndexScanWrappers whose
-// TranslateValueFunction can translate all required values. The rule
-// fires when the fetch wraps an index scan directly (no intermediate
-// filter or distinct).
+// Mirrors Java's `MergeFetchIntoCoveringIndexRule` one for one, including what
+// it yields: the inner INDEX plan, which fetches its own records by primary
+// key. The rule fires when the fetch wraps a covering scan directly (no
+// intervening filter or distinct).
 //
-// Mirrors Java's `MergeFetchIntoCoveringIndexRule`.
-//
-// Note: currently unreachable in the production pipeline because
-// wrapScanPlanWithCoverage strips the Fetch at construction time for
-// covering indexes (returning a bare physicalIndexScanWrapper with
-// covering=true). This rule exists for completeness and would fire if
-// a Fetch(covering-index) structure were produced by a different path
-// (e.g., manual plan construction or future rule rewrites).
+// It was documented as unreachable, because coveringness was a flag that the
+// access path applied only by STRIPPING the fetch. Now the access path emits
+// Fetch(Covering(IndexScan)) on every value-index match (RFC-220), which is
+// exactly this rule's pattern, so it is live.
 type MergeFetchIntoCoveringIndexRule struct {
 	matcher matching.BindingMatcher
 }
@@ -47,21 +43,17 @@ func (r *MergeFetchIntoCoveringIndexRule) OnMatch(call *ImplementationRuleCall) 
 		return
 	}
 
-	// Check if the inner is a covering index scan marked as covering.
-	// In Java, this rule matches FetchPlan(CoveringIndexPlan(IndexPlan))
-	// where CoveringIndexPlan is an explicit wrapper indicating the
-	// index provides all needed columns. In Go, we check the index
-	// scan wrapper's `covering` flag (set by the data access pipeline
-	// when the index is known to cover all referenced fields).
-	// The index scan is its own cascades expression now (RFC-184 W2) — carrying its
-	// covering flag on the plan, no physicalIndexScanWrapper.
+	// Java: fetchFromPartialRecordPlan(coveringIndexPlan().where(indexPlanOf(innerPlanMatcher)))
+	// → call.yieldPlan(innerPlan). The inner INDEX plan is yielded, not the
+	// covering plan: a bare index plan resolves each entry to its base record
+	// by primary key, so Fetch(Covering(Index)) and Index are the same rows
+	// from one node instead of two. Go's executor agrees — executeIndexScan
+	// resolves records via indexFetchCursor.
 	var indexPlan *plans.RecordQueryIndexPlan
 	for _, m := range innerRef.AllMembers() {
-		if ip, ok := m.(*plans.RecordQueryIndexPlan); ok {
-			if ip.IsCovering() {
-				indexPlan = ip
-				break
-			}
+		if cov, ok := m.(*plans.RecordQueryCoveringIndexPlan); ok {
+			indexPlan = cov.GetIndexPlan()
+			break
 		}
 	}
 	if indexPlan == nil {

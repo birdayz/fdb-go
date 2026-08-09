@@ -486,6 +486,35 @@ func rebasePlanOuterRefsOrdinal(
 			return p, true
 		}
 		return pl.WithScanComparisons(newComps), true
+	case *plans.RecordQueryCoveringIndexPlan:
+		// The SARGs live on the scan this wrapper HOLDS AS A FIELD, so the
+		// pass-through arms below never reach them — and the access path builds
+		// Fetch(Covering(IndexScan)) for every index-backed access, so that is
+		// the shape a correlated probe arrives in. Rebase the inner and rebuild
+		// the wrapper over it (WithIndexPlan re-derives the covered columns, so
+		// the entry layout cannot drift from the scan).
+		//
+		// Omitting it does not silently mis-answer: the caller's
+		// planReferencesAnyBuriedAlias verification sees the surviving leg
+		// reference and declines. But the decline is TOTAL rather than
+		// occasional, which reads as "this optimization does not apply" instead
+		// of "this walk cannot see the node".
+		inner, ok := plans.IndexPlanOf(pl)
+		if !ok {
+			return p, false
+		}
+		rebased, ok := rebasePlanOuterRefsOrdinal(inner, windows, mergedQOV)
+		if !ok {
+			return p, false
+		}
+		rebasedIdx, isIdx := rebased.(*plans.RecordQueryIndexPlan)
+		if !isIdx {
+			return p, false
+		}
+		if rebasedIdx == inner {
+			return p, true
+		}
+		return pl.WithIndexPlan(rebasedIdx), true
 	case *plans.RecordQueryScanPlan:
 		newComps, changed, ok := rebaseComparisonRangesOrdinal(pl.GetScanComparisons(), windows, mergedQOV)
 		if !ok {

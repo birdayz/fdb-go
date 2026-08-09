@@ -29,6 +29,19 @@ func (m *PlanPropertiesMap) Add(w physicalPlanExpression) {
 	m.props[w] = computeWrapperProperties(w)
 }
 
+// Set stores an ALREADY-COMPUTED property map for an expression, preserving
+// insertion order. Add is the computing twin; this one exists for carrying a
+// source reference's entries into a reference restricted to a subset of its
+// members (MemoizeMemberPlansFromOther), where recomputing would be both
+// wasteful and a second, independently-derived answer to a question the source
+// already answered.
+func (m *PlanPropertiesMap) Set(expr expressions.RelationalExpression, props properties.PropertyMap) {
+	if _, exists := m.props[expr]; !exists {
+		m.order = append(m.order, expr)
+	}
+	m.props[expr] = props
+}
+
 // GetProperties returns the computed properties for a wrapper expression.
 func (m *PlanPropertiesMap) GetProperties(expr expressions.RelationalExpression) properties.PropertyMap {
 	return m.props[expr]
@@ -52,6 +65,7 @@ func computeWrapperProperties(w physicalPlanExpression) properties.PropertyMap {
 		properties.PropStoredRecord:    computeStoredRecord(plan),
 		properties.PropPrimaryKey:      computePrimaryKey(plan),
 		properties.PropOrdering:        computeWrapperOrdering(w),
+		properties.PropRichOrdering:    computeWrapperRichOrdering(w),
 		properties.PropCardinalities:   computeCardinalities(w, plan),
 		properties.PropDerivations:     ComputeDerivations(w),
 	}
@@ -70,6 +84,17 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 		// build time (WithDistinctRecordsSignal).
 		if ip, ok := plan.(*plans.RecordQueryIndexPlan); ok {
 			return ip.ProducesDistinctRecords()
+		}
+		return false
+	case *plans.RecordQueryCoveringIndexPlan:
+		// Java DistinctRecordsProperty.visitCoveringIndexPlan delegates straight
+		// to visitIndexPlan on the held index plan. The inner is a FIELD, not a
+		// child quantifier (RFC-220 criterion C1), so child traversal never
+		// reaches it and this arm must fold it explicitly — without it every
+		// value-index access path reports NOT distinct and distinctness-dependent
+		// rules silently stop firing.
+		if cp, ok := plan.(*plans.RecordQueryCoveringIndexPlan); ok {
+			return cp.ProducesDistinctRecords()
 		}
 		return false
 	case *plans.RecordQueryProjectionPlan:
@@ -175,8 +200,65 @@ func computeStoredRecord(plan plans.RecordQueryPlan) bool {
 	switch plan.(type) {
 	case *plans.RecordQueryScanPlan,
 		*plans.RecordQueryIndexPlan,
+		// Java StoredRecordProperty.visitCoveringIndexPlan returns true, the
+		// same constant as visitIndexPlan. RFC-220 criterion C1 makes the inner
+		// a field, so the covering type needs its own arm rather than inheriting
+		// one through child traversal.
+		*plans.RecordQueryCoveringIndexPlan,
 		*plans.RecordQueryVectorIndexPlan,
 		*plans.RecordQueryDistinctPlan,
+		// DIVERGENCE, deliberate and NOT a simplification — Java's
+		// StoredRecordProperty.visitFetchFromPartialRecordPlan returns true
+		// (:306-307), so a fetch belongs in the unconditional-true arm above:
+		// it turns an index entry into the stored record, and delegating to
+		// its child (a covering scan flowing PARTIAL records) answers false
+		// and calls the fetch's whole purpose non-stored. Go answers false via
+		// the default arm.
+		//
+		// Correcting it in isolation REGRESSES SELECT plans, measured over the
+		// explaindiff corpus: six ordered InUnions collapse into
+		// InMemorySort(Fetch(InJoin(...))) — e.g. `SELECT * FROM tbl WHERE a IN
+		// (10,20,30) ORDER BY a, id, k`. So it is BLOCKED on the propagation fix
+		// below, not on doubt about which answer is right. Java's is.
+		//
+		// StoredRecord is a PARTITIONING dimension (expression_partition.go
+		// toPartitionsFromMap), so this arm makes a fetch share a partition with
+		// the index and filter members it is an alternative to — partitions of
+		// the form [PredicatesFilter, Fetch, IndexPlan] where the corpus
+		// previously had singletons. That is correct and desirable.
+		//
+		// THE BLOCKER IS ONE MISSING LINE OF PROPAGATION, in a third file.
+		// MemoizeFinalExpressionsFromOther (implementation_rule.go:124-151)
+		// mints a fresh Reference and copies the source's plan properties, but
+		// registers NO constraint entry for it. OptimizeGroupTask's per-ordering
+		// retention then looks the constraint up keyed on that NEW reference
+		// (unified_tasks.go:663-666), finds nothing, and resolves the group by
+		// COST ALONE — so the ordered member that would have been retained is
+		// pruned as a loser. A RequestedOrdering pushed onto the SOURCE
+		// reference does not survive the copy.
+		//
+		// DO NOT ADD A PushConstraint CALL TO ImplementInUnionRule. Java's
+		// ImplementInUnionRule DECLARES REQUESTED_ORDERING as a constraint it
+		// CONSUMES (ImplementInUnionRule.java:82) and calls pushConstraint zero
+		// times. The push for this shape lives in a separate rule,
+		// PushRequestedOrderingThroughInLikeSelectRule.java:99-104, which pushes
+		// the requested orderings VERBATIM onto the inner quantifier's
+		// reference — not derived from the IN bindings. Go already has that rule
+		// and already registers it (default_rules.go:261). There is no missing
+		// push to write: the ordering arrives correctly and is then dropped by
+		// the copy.
+		//
+		// Java needs no such lookup for an independent reason: after rollUpTo
+		// every member of the partition it copies is ordering-HOMOGENEOUS by
+		// construction, so whichever winner the memo resolves satisfies the
+		// contract. Go has two independent ways to be correct here and currently
+		// neither is reliable — the roll-up equivalence was lossy
+		// (PropRichOrdering and richOrderingsEqual close that half) and the
+		// constraint does not survive the copy.
+		//
+		// This arm changes NO DML plan in the corpus (measured: golden with and
+		// without it differ in zero Update/Delete lines), so the DML rules'
+		// StoredRecord filter is unaffected either way.
 		*plans.RecordQueryInsertPlan,
 		*plans.RecordQueryDeletePlan,
 		*plans.RecordQueryUpdatePlan:
@@ -248,6 +330,16 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		// that made M5 unsafe (ImplementDistinctUnionRule dropping rows). nil when
 		// the candidate/def supplied no structural PK → the property abstains
 		// (no dedup), the safe under-report.
+		if pk := p.GetCommonPrimaryKeyValues(); pk != nil {
+			return pk
+		}
+		return nil
+	case *plans.RecordQueryCoveringIndexPlan:
+		// Java PrimaryKeyProperty.visitCoveringIndexPlan delegates to
+		// visitIndexPlan on the held index plan. RFC-220 criterion C1 makes the
+		// inner a field, so without this arm the common primary key vanishes
+		// above every value-index access path and ordered set operators lose the
+		// key they dedup and merge on.
 		if pk := p.GetCommonPrimaryKeyValues(); pk != nil {
 			return pk
 		}

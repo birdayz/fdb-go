@@ -324,14 +324,14 @@ tests:
   # WHERE region = 'us' opens the index at [=, *]; the LIKE does NOT extend
   # that to a range on the second column — it stays a residual filter.
   - query: SELECT id, region, name FROM ci WHERE region = 'us' AND name LIKE 'a%' ORDER BY id
-    plan_contains: "PredicatesFilter(IndexScan(IDX_REGION_NAME, [=, *])"
+    plan_contains: "PredicatesFilter(IndexScan(IDX_REGION_NAME, [=, *] COVERING)"
     plan_not_contains: "<>"
     rows:
       - [1, 'us', 'apple']
       - [2, 'us', 'apricot']
 
   - query: SELECT id FROM ci WHERE region = 'eu' AND name LIKE 'b%'
-    plan_contains: "PredicatesFilter(IndexScan(IDX_REGION_NAME, [=, *])"
+    plan_contains: "PredicatesFilter(IndexScan(IDX_REGION_NAME, [=, *] COVERING)"
     plan_not_contains: "<>"
     rows:
       - [5]
@@ -340,7 +340,7 @@ tests:
   # equality selects an empty index range
   # at the index level (no such region) — empty.
   - query: SELECT id FROM ci WHERE region = 'asia' AND name LIKE 'a%'
-    plan_contains: "PredicatesFilter(IndexScan(IDX_REGION_NAME, [=, *])"
+    plan_contains: "PredicatesFilter(IndexScan(IDX_REGION_NAME, [=, *] COVERING)"
     plan_not_contains: "<>"
     rows: []
 

@@ -3812,6 +3812,18 @@ func findIndexPlan(p plans.RecordQueryPlan) *plans.RecordQueryIndexPlan {
 		if idx, ok := p.(*plans.RecordQueryIndexPlan); ok {
 			return idx
 		}
+		// A covering scan HOLDS its index plan as a field rather than as a
+		// child (RFC-220 criterion C1), so neither the type assertion above nor
+		// the innerPlan chain below reaches it — the walk would run off the end
+		// and report "no index leaf". That answer is not an error anywhere: the
+		// caller reads it as "no record types" and returns an empty column list,
+		// so `SELECT *` over a plan whose leaves are covering scans reports ZERO
+		// columns and every database/sql Scan fails with "expected 0 destination
+		// arguments". Unwrapping here is the same explicit arm Java's plan
+		// visitors each carry for the covering type.
+		if cov, ok := p.(*plans.RecordQueryCoveringIndexPlan); ok {
+			return cov.GetIndexPlan()
+		}
 		if ip, ok := p.(innerPlan); ok {
 			p = ip.GetInner()
 		} else {
@@ -3840,6 +3852,22 @@ func allLeafDescriptors(p plans.RecordQueryPlan, md *recordlayer.RecordMetaData)
 		case *plans.RecordQueryScanPlan:
 			rts = leaf.GetRecordTypes()
 		case *plans.RecordQueryIndexPlan:
+			rts = leaf.GetRecordTypes()
+		case *plans.RecordQueryCoveringIndexPlan:
+			// A covering scan is a LEAF here, not a parent of one: it holds its
+			// index plan as a field (RFC-220 criterion C1), so the GetChildren()
+			// recursion below never descends into it and it would otherwise
+			// contribute no descriptor.
+			//
+			// This walk is reached with a covering leaf constantly (436 times
+			// across the sqldriver target, measured), but removing this arm
+			// currently changes NO test outcome: when the descriptor is absent,
+			// projection type resolution falls through to its type-inheritance
+			// chain and arrives at the same answer. So the arm is correct rather
+			// than demonstrably load-bearing, and it is kept on that basis — a
+			// leaf that reports no record types is wrong on its own terms, and
+			// the fallback that currently hides it is not guaranteed to cover
+			// every future caller of this walk.
 			rts = leaf.GetRecordTypes()
 		}
 		// RecordQueryAggregateIndexPlan is intentionally omitted: aggregate

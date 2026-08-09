@@ -40,12 +40,9 @@ import (
 // planted sentinel or an allowlist entry with a written reason, so a new field
 // cannot be silently ignored by forgetting to test it.
 //
-// KNOWN LIMIT, stated plainly: planTypes below is hand-maintained. A new plan
-// TYPE is not detected — Go cannot enumerate a package's types at runtime, and
-// the source-scanning route (pkg/docscheck's repoRoot walk) needs the plans
-// package staged as a `data` dep of this test target, which it is not. New
-// FIELDS on existing types ARE detected, which is the failure mode that
-// actually recurs.
+// The roster of plan TYPES the census runs over is DERIVED rather than
+// hand-listed — see planTypes below for why a hand-written roster is not a
+// guard at all.
 
 // ---------------------------------------------------------------------------
 // Census: which field types carry something FinalizePlan must reach
@@ -172,50 +169,64 @@ func sentinelChild() (plans.RecordQueryPlan, *values.RecordConstructorValue) {
 	return plans.NewRecordQueryValuesPlan([]values.Value{s}), s
 }
 
-// planTypes is the hand-maintained roster of concrete plan types. See the
-// KNOWN LIMIT note at the top of the file.
-var planTypes = []reflect.Type{
-	reflect.TypeOf(plans.RecordQueryAggregateIndexPlan{}),
-	reflect.TypeOf(plans.RecordQueryComparatorPlan{}),
-	reflect.TypeOf(plans.RecordQueryDefaultOnEmptyPlan{}),
-	reflect.TypeOf(plans.RecordQueryDeletePlan{}),
-	reflect.TypeOf(plans.RecordQueryDistinctPlan{}),
-	reflect.TypeOf(plans.RecordQueryExplodePlan{}),
-	reflect.TypeOf(plans.RecordQueryFetchFromPartialRecordPlan{}),
-	reflect.TypeOf(plans.RecordQueryFilterPlan{}),
-	reflect.TypeOf(plans.RecordQueryFirstOrDefaultPlan{}),
-	reflect.TypeOf(plans.RecordQueryFlatMapPlan{}),
-	reflect.TypeOf(plans.RecordQueryInJoinPlan{}),
-	reflect.TypeOf(plans.RecordQueryInMemorySortPlan{}),
-	reflect.TypeOf(plans.RecordQueryInUnionPlan{}),
-	reflect.TypeOf(plans.RecordQueryIndexPlan{}),
-	reflect.TypeOf(plans.RecordQueryInsertPlan{}),
-	reflect.TypeOf(plans.RecordQueryIntersectionPlan{}),
-	reflect.TypeOf(plans.RecordQueryLimitPlan{}),
-	reflect.TypeOf(plans.RecordQueryLoadByKeysPlan{}),
-	reflect.TypeOf(plans.RecordQueryMapPlan{}),
-	reflect.TypeOf(plans.RecordQueryMergeSortUnionPlan{}),
-	reflect.TypeOf(plans.RecordQueryMultiIntersectionOnValuesPlan{}),
-	reflect.TypeOf(plans.RecordQueryNestedLoopJoinPlan{}),
-	reflect.TypeOf(plans.RecordQueryPredicatesFilterPlan{}),
-	reflect.TypeOf(plans.RecordQueryProjectionPlan{}),
-	reflect.TypeOf(plans.RecordQueryRecursiveDfsJoinPlan{}),
-	reflect.TypeOf(plans.RecordQueryRecursiveLevelUnionPlan{}),
-	reflect.TypeOf(plans.RecordQueryScanPlan{}),
-	reflect.TypeOf(plans.RecordQueryScoreForRankPlan{}),
-	reflect.TypeOf(plans.RecordQuerySelectorPlan{}),
-	reflect.TypeOf(plans.RecordQueryStreamingAggregationPlan{}),
-	reflect.TypeOf(plans.RecordQueryTableFunctionPlan{}),
-	reflect.TypeOf(plans.RecordQueryTempTableInsertPlan{}),
-	reflect.TypeOf(plans.RecordQueryTempTableScanPlan{}),
-	reflect.TypeOf(plans.RecordQueryTextIndexPlan{}),
-	reflect.TypeOf(plans.RecordQueryTypeFilterPlan{}),
-	reflect.TypeOf(plans.RecordQueryUnionPlan{}),
-	reflect.TypeOf(plans.RecordQueryUnorderedPrimaryKeyDistinctPlan{}),
-	reflect.TypeOf(plans.RecordQueryUnorderedUnionPlan{}),
-	reflect.TypeOf(plans.RecordQueryUpdatePlan{}),
-	reflect.TypeOf(plans.RecordQueryValuesPlan{}),
-	reflect.TypeOf(plans.RecordQueryVectorIndexPlan{}),
+// uncostedPlanTypes names the plan types that answer NO cost/proof contract and
+// are therefore absent from plans.CostedPlanPrototypes. They are listed here so
+// the census still covers them, each with the reason it is not costed.
+//
+// The list is self-cleaning in both directions, enforced by
+// TestFinalizePlanRosterIsDerived: an entry that starts satisfying
+// plans.CostedPlan is stale (it belongs in the prototypes now and would be
+// counted twice conceptually), and a prototype missing from the census fails the
+// main test by name.
+var uncostedPlanTypes = map[reflect.Type]string{
+	reflect.TypeOf(plans.RecordQueryComparatorPlan{}):   "a plan-comparison harness, never costed or extracted",
+	reflect.TypeOf(plans.RecordQueryLoadByKeysPlan{}):   "legacy record-layer plan, not constructed by Cascades",
+	reflect.TypeOf(plans.RecordQueryScoreForRankPlan{}): "legacy record-layer plan, not constructed by Cascades",
+	reflect.TypeOf(plans.RecordQuerySelectorPlan{}):     "a plan-selection harness, never costed or extracted",
+	reflect.TypeOf(plans.RecordQueryTextIndexPlan{}):    "legacy record-layer plan, not constructed by Cascades",
+}
+
+// planTypes is the roster of concrete plan types the census runs over. It is
+// DERIVED, not hand-listed, and that distinction is the whole guard.
+//
+// A hand-written roster is checked only against itself, so it stops guarding the
+// moment a plan type is ADDED: the new type is simply absent, the loop never
+// visits it, and the suite stays green while its value trees go unstamped. That
+// is not hypothetical — RecordQueryCoveringIndexPlan was added, wraps an index
+// scan in a structural field exactly as RecordQueryAggregateIndexPlan does,
+// never appeared in the roster, and its inner scan's comparands were never
+// baked. Nothing went red.
+//
+// So the roster is built from plans.CostedPlanPrototypes — the plans package's
+// own enumeration of every operator the memo costs, which a new physical plan
+// must join to be costed at all — plus uncostedPlanTypes for the handful that
+// answer no cost contract. This is the same self-cleaning shape
+// TestRFC195_LogicalPhysicalArmsArePaired uses, and for the same reason.
+//
+// What remains undetected is a plan type in NEITHER list. Closing that needs the
+// plans package's SOURCE, which the AST route in plans' own
+// TestEveryPlanTypeIsAMemoParticipant has via //go:embed *.go — a directive that
+// cannot reach a sibling package, and staging the sources as a Bazel `data` dep
+// of this target is a BUILD change this test cannot make for itself.
+var planTypes = derivePlanTypes()
+
+func derivePlanTypes() []reflect.Type {
+	seen := map[reflect.Type]bool{}
+	var out []reflect.Type
+	add := func(t reflect.Type) {
+		if !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	for _, proto := range plans.CostedPlanPrototypes {
+		add(reflect.TypeOf(proto).Elem())
+	}
+	for t := range uncostedPlanTypes {
+		add(t)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
+	return out
 }
 
 // specimens maps plan type NAME to its proof obligation. A plan type whose
@@ -234,6 +245,22 @@ var specimens = map[string]specimen{
 			)
 			p := plans.NewRecordQueryAggregateIndexPlan(idx, "T", values.UnknownType, "COUNT")
 			return p, map[string]*values.RecordConstructorValue{"indexPlan": s}
+		},
+		allow: map[string]string{"resultValue": resultValueIsMinted},
+	},
+
+	"RecordQueryCoveringIndexPlan": {
+		build: func(t *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
+			// Same shape as the aggregate-index specimen above and for the same
+			// reason: the wrapped index plan is a FIELD, GetChildren returns nil,
+			// so only a dedicated arm reaches the inner scan's comparands.
+			s := sentinel()
+			idx := plans.NewRecordQueryIndexPlan(
+				"IDX", []*predicates.ComparisonRange{sentinelRange(t, s)},
+				[]string{"T"}, values.UnknownType, false,
+			)
+			return plans.NewRecordQueryCoveringIndexPlan(idx),
+				map[string]*values.RecordConstructorValue{"indexPlan": s}
 		},
 		allow: map[string]string{"resultValue": resultValueIsMinted},
 	},
@@ -749,6 +776,97 @@ func sortedSpecimenFields(planted map[string]*values.RecordConstructorValue, all
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TestFinalizePlanStampsCoveringIndexInnerScan is the named pin for the defect
+// the derived roster exposed: a covering index scan's comparands going unbaked.
+//
+// It states the failure in the terms that make it a CORRECTNESS bug rather than
+// a coverage gap. An unstamped RecordConstructorValue evaluates to its
+// NAME-keyed map instead of the field-NUMBER-keyed message, so a record-valued
+// scan bound compares against a differently shaped operand.
+//
+// The plan is placed under a fetch, which is where a covering scan actually
+// sits, so the pin also proves the walk arrives at the covering plan through a
+// real child edge rather than only as a root.
+func TestFinalizePlanStampsCoveringIndexInnerScan(t *testing.T) {
+	t.Parallel()
+
+	comparand := sentinel()
+	pk := sentinel()
+	idx := plans.NewRecordQueryIndexPlan(
+		"IDX", []*predicates.ComparisonRange{sentinelRange(t, comparand)},
+		[]string{"T"}, values.UnknownType, false,
+	).WithCommonPrimaryKey([]values.Value{pk})
+
+	covering := plans.NewRecordQueryCoveringIndexPlan(idx)
+	root := plans.NewRecordQueryFetchFromPartialRecordPlan(
+		covering, plans.UnableToTranslate, values.UnknownType,
+		plans.FetchIndexRecordsPrimaryKey)
+
+	FinalizePlan(root)
+
+	for label, s := range map[string]*values.RecordConstructorValue{
+		"scan comparand":     comparand,
+		"common primary key": pk,
+	} {
+		if s.MessageDescriptor() == nil {
+			t.Errorf("covering index scan's %s RecordConstructorValue was NOT stamped: "+
+				"FinalizePlan never reached the wrapped index plan. It is a structural "+
+				"FIELD, not a child, so GetChildren does not return it and only a "+
+				"dedicated arm in stampNodeLocalValues can reach it. Unstamped, the "+
+				"constructor evaluates to its name-keyed map instead of the "+
+				"field-number-keyed message.", label)
+		}
+	}
+}
+
+// TestFinalizePlanRosterIsDerived pins the derivation itself — the half that
+// decides WHICH types get censused, and therefore the half whose silent
+// collapse would make the guard above vacuous rather than red.
+//
+// Three things are asserted, each guarding a different way the derivation dies:
+// the population is non-empty (a green over zero types is the dominant false
+// positive); every cost prototype is in the roster (the direction that missed
+// RecordQueryCoveringIndexPlan); and no uncostedPlanTypes entry has since gained
+// a cost contract (the direction in which the hand-written remainder rots).
+func TestFinalizePlanRosterIsDerived(t *testing.T) {
+	t.Parallel()
+
+	if len(plans.CostedPlanPrototypes) == 0 {
+		t.Fatal("plans.CostedPlanPrototypes is empty — the roster the census is derived " +
+			"from is gone, so TestFinalizePlanCoversStructuralKey now guards nothing")
+	}
+	if len(planTypes) <= len(uncostedPlanTypes) {
+		t.Fatalf("derived roster holds %d types, no more than the %d hand-listed uncosted "+
+			"ones — the derivation from CostedPlanPrototypes has stopped contributing",
+			len(planTypes), len(uncostedPlanTypes))
+	}
+
+	inRoster := map[reflect.Type]bool{}
+	for _, pt := range planTypes {
+		inRoster[pt] = true
+	}
+	for _, proto := range plans.CostedPlanPrototypes {
+		pt := reflect.TypeOf(proto).Elem()
+		if !inRoster[pt] {
+			t.Errorf("%s answers the cost contract but is not in the census roster; "+
+				"FinalizePlan's walk over it is unproven", pt.Name())
+		}
+	}
+
+	costedPlan := reflect.TypeOf((*plans.CostedPlan)(nil)).Elem()
+	for pt, reason := range uncostedPlanTypes {
+		if reason == "" {
+			t.Errorf("%s is listed as uncosted with no reason", pt.Name())
+		}
+		if reflect.PointerTo(pt).Implements(costedPlan) {
+			t.Errorf("%s now satisfies plans.CostedPlan, so listing it in "+
+				"uncostedPlanTypes is stale: register it in plans.CostedPlanPrototypes "+
+				"and drop the entry, or the roster stops being derived from the "+
+				"enumeration that self-cleans", pt.Name())
+		}
+	}
 }
 
 // TestFinalizePlanCensusSeesTheCarriers pins the census classifier itself. It

@@ -512,3 +512,111 @@ func TestUnwrapIdentityFlatMap(t *testing.T) {
 		}
 	})
 }
+
+// ojBakedCoveringScan builds the shape the access path actually emits for an
+// index-backed correlated inner (RFC-220): Covering(IndexScan) whose scan range
+// carries the pushed-down baked outer reference as its equality operand. The
+// covering plan holds the index scan as a FIELD, so a plan walk that only
+// descends children never reaches this operand.
+func ojBakedCoveringScan(t *testing.T, baked values.Value) *plans.RecordQueryCoveringIndexPlan {
+	t.Helper()
+	cmp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: baked}
+	merged := predicates.EmptyComparisonRange().Merge(&cmp)
+	if !merged.Ok {
+		t.Fatalf("Merge(=) into the universe range failed: %+v", merged)
+	}
+	idx := plans.NewRecordQueryIndexPlan(
+		"IDX_B_W",
+		[]*predicates.ComparisonRange{merged.Range},
+		nil, values.UnknownType, false,
+	)
+	return plans.NewRecordQueryCoveringIndexPlan(idx)
+}
+
+// TestProbeOuterBakedType_CoveringScan pins the probe over the COVERING shape.
+//
+// The covering plan is the ordinary index-backed access now, and it holds its
+// index scan as a field rather than a child — so a walk that enumerates only
+// bare index plans reads the pushed SARG operand as absent. That failure is
+// SILENT at the probe's consumer: a nil probed type is indistinguishable from
+// "the inner plan carries no baked references", which is precisely what
+// licenses the identity pass-through to bind the outer by NAME while the inner
+// resolves it by ordinal.
+func TestProbeOuterBakedType_CoveringScan(t *testing.T) {
+	t.Parallel()
+	legA, _, qovA, qovB, _ := ojWiringLegs(t)
+
+	bakedAID, err := values.NewFieldValueOfOrdinal(qovA, 0)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+	}
+
+	t.Run("bare covering scan", func(t *testing.T) {
+		t.Parallel()
+		rt, perr := probeOuterBakedType(ojBakedCoveringScan(t, bakedAID), qovA.Correlation)
+		if perr != nil {
+			t.Fatalf("probe error: %v", perr)
+		}
+		if rt == nil {
+			t.Fatal("probe over Covering(IndexScan) = nil — the pushed SARG's baked outer reference is invisible to the walk (the covering plan's inner is a FIELD, not a child), and a nil probe silently licenses name-keyed outer binding")
+		}
+		if len(rt.Fields) != len(legA.Fields) {
+			t.Fatalf("probed type has %d fields, want leg A's %d", len(rt.Fields), len(legA.Fields))
+		}
+	})
+
+	t.Run("under order-preserving wrappers", func(t *testing.T) {
+		t.Parallel()
+		// Fetch(Covering(IndexScan)) under a residual filter — the full shape
+		// the access path emits. The wrappers ARE children, so the walk must
+		// reach the covering leaf through them and then into its field.
+		wrapped := plans.NewRecordQueryPredicatesFilterPlan(
+			plans.NewRecordQueryFetchFromPartialRecordPlan(
+				ojBakedCoveringScan(t, bakedAID), nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
+			),
+			[]predicates.QueryPredicate{ojEqPred(
+				&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
+				&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
+			)},
+		)
+		rt, perr := probeOuterBakedType(wrapped, qovA.Correlation)
+		if perr != nil {
+			t.Fatalf("probe error: %v", perr)
+		}
+		if rt == nil || len(rt.Fields) != len(legA.Fields) {
+			t.Fatalf("probe under Fetch(Covering(...)) = %v, want leg A's %d-field type", rt, len(legA.Fields))
+		}
+	})
+
+	t.Run("negative for another alias", func(t *testing.T) {
+		t.Parallel()
+		if rt, perr := probeOuterBakedType(ojBakedCoveringScan(t, bakedAID), qovB.Correlation); perr != nil || rt != nil {
+			t.Fatalf("probe over B = %v (err %v), want nil (the baked reference is over A)", rt, perr)
+		}
+	})
+
+	t.Run("identity pass-through never computes on a nil type", func(t *testing.T) {
+		t.Parallel()
+		// The consumer state: a build-DISABLED identity-RV FlatMap (WHERE
+		// EXISTS) whose inner is the covering shape. A negative probe here sets
+		// outerIdentityPassthrough = true — the gate deciding the outer binds by
+		// name — on an inner that resolves the outer BY ORDINAL.
+		outer := recordlayer.FromList([]QueryResult{ojLegQR(t, legA, int64(1), int64(10))})
+		c, cerr := newFlatMapCursorWithOuterProperties(
+			outer, nil, ojBakedCoveringScan(t, bakedAID), nil, EmptyEvaluationContext(),
+			qovA.Correlation, qovB.Correlation,
+			values.NewQuantifiedObjectValue(qovA.Correlation),
+			recordlayer.ExecuteProperties{}, false,
+		)
+		if cerr != nil {
+			t.Fatalf("newFlatMapCursorWithOuterProperties: %v", cerr)
+		}
+		defer c.Close()
+		if c.outerBakedType == nil {
+			t.Fatal("cursor's probed outer type is nil over a covering inner that carries a baked outer reference")
+		}
+		if c.outerIdentityPassthrough {
+			t.Fatal("outerIdentityPassthrough = true over a BAKED inner — the pass-through is the plain-scan (lazy-reference) arm only; reaching it here means the probe answered negative on a nil type")
+		}
+	})
+}

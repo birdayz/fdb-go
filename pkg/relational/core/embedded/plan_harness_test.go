@@ -7,6 +7,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/metadata"
 )
@@ -262,6 +263,40 @@ CREATE INDEX idx_customer ON ORDERS(customer_id)
 	assertPlanContains(t, plan, "FlatMap")
 }
 
+// TestPlanHarness_InList pins that an ORDERED IN-list query is answered WITHOUT
+// an in-memory sort.
+//
+// It asserted `InJoin` as a substring. That assertion could not express the
+// property that matters, and it actively misled: an InJoin over IDX_CUSTOMER
+// (entries (customer_id, id), PK id) concatenates per-binding scans and yields
+// rows ordered by (customer_id, id), which does NOT satisfy ORDER BY id. Reading
+// the substring, two people in one session concluded the plan was
+// wrong-ordered. It was not — the full plan at merge-base 789b29ea8 was
+//
+//	Project([ID#0, AMOUNT#3], InMemorySort([ID ASC], Fetch(InJoin(IndexScan(IDX_CUSTOMER, [=]), binding ASC))))
+//
+// with the ordering supplied by a sort the substring never mentioned. A
+// plan-shape SUBSTRING cannot distinguish a correctly-ordered plan from an
+// incorrectly-ordered one, which is why this now asserts the PROPERTY.
+//
+// The plan is now InUnion, which merges the per-binding streams on id and
+// satisfies ORDER BY id directly — same rows, same order, one operator fewer.
+// The improvement IS the sort's elimination, so that is what is asserted.
+//
+// ATTRIBUTED, not assumed. The change comes from RFC-220's access path emitting
+// Fetch(Covering(IndexScan)) on every value-index match. MEASURED by reverting
+// that one construction on the finished branch and replanning: the plan returns
+// to the merge-base InMemorySort(Fetch(InJoin(...))) shape, and restoring it
+// gives InUnion again. No other change on the branch moves it — enumeration in
+// particular is excluded, measured byte-identical with it on and off.
+//
+// So this test pins a property that RFC-220 SUPPLIES: the covering alternative
+// existing in the memo is what lets the IN-union form. It is not orthogonal to
+// RFC-220 and it would regress if that access-path construction became
+// conditional again. Note the final plan's leg is a bare (fetching) IndexScan —
+// MergeFetchIntoCoveringIndexRule collapses it after the union is formed — so
+// the covering scan's role here is to EXIST as an alternative, not to survive
+// into the chosen plan. That is easy to misread from the plan string alone.
 func TestPlanHarness_InList(t *testing.T) {
 	t.Parallel()
 	plan, err := PlanQueryForTest(
@@ -271,7 +306,18 @@ func TestPlanHarness_InList(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("plan: %s", plan)
-	assertPlanContains(t, plan, "InJoin")
+
+	// The IN-list must still be answered by an IN-list access path, or the
+	// no-sort assertion below could be satisfied by an unrelated plan shape.
+	if !strings.Contains(plan, "InUnion") && !strings.Contains(plan, "InJoin") {
+		t.Fatalf("expected an IN-list access path (InUnion or InJoin), got: %s", plan)
+	}
+	if strings.Contains(plan, "InMemorySort") {
+		t.Fatalf("ORDER BY id is being satisfied by an IN-MEMORY SORT: %s\n"+
+			"An IN-union merges the per-binding streams on id and delivers that "+
+			"ordering directly. Re-introducing the sort is a regression in plan "+
+			"quality even though the rows are correct.", plan)
+	}
 }
 
 func TestPlanHarness_CountStarNoGroupBy(t *testing.T) {
@@ -343,7 +389,48 @@ func TestPlanHarness_WithStats_LargeTable(t *testing.T) {
 	assertPlanContains(t, plan, "IndexScan")
 }
 
-func TestPlanHarness_StatsAffectInJoinSelection(t *testing.T) {
+// TestInListAccessPathIsInvariantUnderCardinality pins that the IN-list access
+// path does NOT depend on table statistics — and it is named for what holds,
+// because its predecessor was named for the opposite.
+//
+// It was TestPlanHarness_StatsAffectInJoinSelection. That test planned the query
+// at 10 rows and at 1,000,000 rows, logged both, and then asserted a SUBSTRING
+// on the large plan only. It never compared the two. MEASURED at merge-base
+// 789b29ea8, the two plans it computed were byte-identical:
+//
+//	plan (10 rows):  Project([ID#0, AMOUNT#3], InMemorySort([ID ASC], Fetch(InJoin(IndexScan(IDX_CUSTOMER, [=]), binding ASC))))
+//	plan (1M rows):  Project([ID#0, AMOUNT#3], InMemorySort([ID ASC], Fetch(InJoin(IndexScan(IDX_CUSTOMER, [=]), binding ASC))))
+//
+// So it was a test named for a decision being responsive, which never checked
+// responsiveness, over a decision that is not responsive. It passed on a
+// substring.
+//
+// JAVA IS THE SPEC AND AGREES THE CHOICE IS NOT STATISTICAL.
+// ImplementInJoinRule and ImplementInUnionRule are both registered
+// (PlanningRuleSet.java:151-162) and both gated only on
+// RequestedOrderingConstraint.REQUESTED_ORDERING (ImplementInUnionRule.java:98,
+// ImplementInJoinRule.java:98), returning early when no ordering is requested.
+// Neither rule mentions cardinality or statistics anywhere — grep for
+// Cardinalit|Statistic|RecordCount over both files returns ZERO. The only size
+// input is attemptFailedInJoinAsUnionMaxSize (ImplementInUnionRule.java:170), a
+// STATIC planner-configuration integer, and it is a runtime leg-count guard
+// (RecordQueryInUnionPlan.java:152), not a planning-time statistic.
+//
+// So the choice is driven by the REQUESTED ORDERING and by which alternative can
+// satisfy it — not by how big the table is. This test asserts that, and asserts
+// it by COMPARING the two plans, which is the thing its predecessor computed and
+// then threw away.
+//
+// If this ever goes red, a statistics input has entered the IN-list access-path
+// choice. That may well be an improvement, but it is a DIVERGENCE from Java and
+// must be argued as one — do not simply re-bless it.
+//
+// The shared plan is InUnion rather than the merge-base's
+// InMemorySort(Fetch(InJoin(...))) because RFC-220's access path emits
+// Fetch(Covering(IndexScan)), which is what lets the IN-union form (attributed
+// by reverting that one construction and replanning — see TestPlanHarness_InList).
+// The invariance asserted here holds on both shapes; only the shape moved.
+func TestInListAccessPathIsInvariantUnderCardinality(t *testing.T) {
 	t.Parallel()
 	sql := "SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id"
 	planSmall, err := PlanQueryForTest(sql, ordersSchema, properties.MapStatistics{
@@ -360,7 +447,23 @@ func TestPlanHarness_StatsAffectInJoinSelection(t *testing.T) {
 	}
 	t.Logf("plan (10 rows):  %s", planSmall)
 	t.Logf("plan (1M rows):  %s", planLarge)
-	assertPlanContains(t, planLarge, "InJoin")
+
+	if planSmall != planLarge {
+		t.Fatalf("the IN-list access path became cardinality-SENSITIVE.\n"+
+			"  10 rows: %s\n  1M rows: %s\n"+
+			"Java's ImplementInJoinRule/ImplementInUnionRule consult no statistics "+
+			"at all (zero Cardinalit|Statistic|RecordCount references in either), so "+
+			"a stats-driven choice here is a divergence that must be argued, not "+
+			"re-blessed.", planSmall, planLarge)
+	}
+
+	// Non-vacuity: the shared plan must actually be the IN-list access path. If
+	// planning ever collapsed to something else entirely, the equality above
+	// would still hold and assert nothing about IN-lists.
+	if !strings.Contains(planLarge, "InUnion") && !strings.Contains(planLarge, "InJoin") {
+		t.Fatalf("neither plan uses an IN-list access path, so the invariance "+
+			"above is vacuous: %s", planLarge)
+	}
 }
 
 func TestPlanHarness_AggregateIndexCountGroupBy(t *testing.T) {
@@ -1558,6 +1661,188 @@ func assertPlanContains(t *testing.T, plan, substr string) {
 	}
 }
 
+// indexScanOf returns the index scan a plan node represents, seeing THROUGH a
+// covering wrapper. It is a thin alias for plans.IndexPlanOf, kept only so the
+// existing call sites in this package read unchanged.
+//
+// It USED to be a hand-written copy of that function, and so did
+// indexScanOfNode in package sqldriver_test — the same six lines written twice
+// because an unexported test helper cannot cross a package boundary and there
+// was no exported symbol to share. The exported one now exists, and the copies
+// are gone: two copies of a structural guard agree exactly until one of them is
+// edited, and the edit that matters here is a THIRD plan type learning to carry
+// an index scan.
+//
+// RFC-220 made coveringness a plan TYPE holding the index scan as a FIELD, and
+// criterion C1 makes that field invisible to child traversal — deliberately, so
+// the memo cannot yield a bare-scan group member whose rows differ from the
+// covering plan's. The consequence for test-side walkers is that `plans.Walk`
+// no longer reaches the inner scan, and a walker type-switching on
+// *RecordQueryIndexPlan silently observes nothing.
+//
+// Walkers asking about the SCAN — its index name, direction, uniqueness, sort
+// guarantee — want the inner, because a covering wrapper reads the same physical
+// range and only reshapes the row. Walkers asking whether a plan answers from
+// the entry want the covering plan itself, and must NOT use this.
+func indexScanOf(node plans.RecordQueryPlan) (*plans.RecordQueryIndexPlan, bool) {
+	return plans.IndexPlanOf(node)
+}
+
+// assertScanReadsBaseRecords asserts that the index scan introduced by
+// scanPrefix reads BASE RECORDS rather than answering from the index entry.
+//
+// The old proxy for this was the literal `Fetch(IndexScan(IDX_X…))`, and RFC-220
+// killed it: a bare `IndexScan(…)` IS a fetching scan now — Java's semantics,
+// where executeIndexScan resolves every entry to its record by primary key — and
+// a separate `Fetch(` node renders only when one survives above a COVERING scan.
+// So `Fetch(` disappearing does not mean the base record stopped being read; it
+// usually means MergeFetchIntoCoveringIndexRule collapsed two nodes into one.
+//
+// The real property is "this scan does not answer from the entry alone", i.e. it
+// carries no COVERING marker. That is what is checked, on the scan's own label
+// rather than on the whole plan, so a covering scan elsewhere in the tree cannot
+// mask a regression here.
+func assertScanReadsBaseRecords(t *testing.T, plan, scanPrefix string) {
+	t.Helper()
+	label, covering, found := scanCoverage(plan, scanPrefix)
+	if !found {
+		t.Errorf("plan does not contain the scan %q, so the question of whether that scan "+
+			"answers from the index entry is not being asked of anything:\n  %s", scanPrefix, plan)
+		return
+	}
+	if covering {
+		t.Errorf("the scan %q answers from the INDEX ENTRY (covering), so the base "+
+			"record is never read — any column outside the entry reads NULL:\n  %s\n  scan: %s",
+			scanPrefix, plan, label)
+	}
+}
+
+// assertScanAnswersFromIndexEntry is the mirror: the named scan must be COVERING.
+//
+// It exists because the natural way to write this — "the plan renders no
+// `Fetch(`" — is dead. A bare `IndexScan(…)` IS a fetching scan since RFC-220,
+// so `Fetch(` is absent from correct fetching plans too and its absence proves
+// nothing. The property is a positive one, checked on the scan's own label.
+func assertScanAnswersFromIndexEntry(t *testing.T, plan, scanPrefix string) {
+	t.Helper()
+	label, covering, found := scanCoverage(plan, scanPrefix)
+	if !found {
+		t.Errorf("plan does not contain the scan %q, so the question of whether that scan "+
+			"answers from the index entry is not being asked of anything:\n  %s", scanPrefix, plan)
+		return
+	}
+	if !covering {
+		t.Errorf("the scan %q reads base records, but every value the query needs is in the "+
+			"index entry so it should answer from the entry alone:\n  %s\n  scan: %s",
+			scanPrefix, plan, label)
+	}
+}
+
+// scanCoverage isolates the label of the scan introduced by scanPrefix and
+// reports whether that scan answers from the index entry.
+//
+// SCOPED TO ONE SCAN'S LABEL, not to the whole plan, and that is the entire
+// reason it exists. `!strings.Contains(plan, "COVERING")` is the same claim
+// written over the whole string, and it is satisfied by a plan that does not
+// scan the index AT ALL — a full table scan carries no COVERING marker either,
+// so the assertion passes on precisely the plan it was written to reject. The
+// `found` result is what closes that hole: absence of the scan is a distinct
+// answer from "the scan is not covering", and the caller must fail on it rather
+// than read it as success.
+func scanCoverage(plan, scanPrefix string) (label string, covering, found bool) {
+	i := strings.Index(plan, scanPrefix)
+	if i < 0 {
+		return "", false, false
+	}
+	label = plan[i:]
+	if j := strings.Index(label, ")"); j >= 0 {
+		label = label[:j+1]
+	}
+	return label, strings.Contains(label, "COVERING"), true
+}
+
+// TestPlanHarness_CoverageAssertionsRejectAPlanWithoutTheScan drives every arm of
+// scanCoverage from synthetic plan strings, including the arm the corpus does not
+// currently produce.
+//
+// The arm that matters is `found == false`. The assertion these helpers replaced
+// was `!strings.Contains(plan, "COVERING")`, and a full table scan satisfies it:
+// the test meant "this index scan must read base records" and would have passed
+// on a plan that reached no index at all. That arm is not reachable from today's
+// planner for the query in question, so only a unit pin can drive it — and an
+// untested arm in an instrument reads its first real firing as a finding.
+func TestPlanHarness_CoverageAssertionsRejectAPlanWithoutTheScan(t *testing.T) {
+	t.Parallel()
+	const prefix = "IndexScan(IDX_AMOUNT"
+	for _, tc := range []struct {
+		name               string
+		plan               string
+		wantFound          bool
+		wantCovering       bool
+		oldAssertionPasses bool // what `!Contains(plan, "COVERING")` would have said
+	}{
+		{
+			name:               "fetching_index_scan",
+			plan:               "Project([COUNT(STATUS)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>])))",
+			wantFound:          true,
+			wantCovering:       false,
+			oldAssertionPasses: true,
+		},
+		{
+			name:               "covering_index_scan",
+			plan:               "Project([COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+			wantFound:          true,
+			wantCovering:       true,
+			oldAssertionPasses: false,
+		},
+		{
+			// THE HOLE. No index scan anywhere, so nothing answers from an index
+			// entry — and the whole-plan COVERING check calls that a pass.
+			name:               "full_table_scan_reaches_no_index",
+			plan:               "Project([COUNT(STATUS)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(ORDERS), [1 preds])))",
+			wantFound:          false,
+			wantCovering:       false,
+			oldAssertionPasses: true,
+		},
+		{
+			// A covering scan on a DIFFERENT index must not be read as this one's
+			// answer — the label is isolated, the whole plan is not consulted.
+			name:               "covering_scan_on_another_index_is_not_this_scan",
+			plan:               "Union(IndexScan(IDX_STATUS, [=] COVERING), IndexScan(IDX_AMOUNT, [<>]))",
+			wantFound:          true,
+			wantCovering:       false,
+			oldAssertionPasses: false,
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			label, covering, found := scanCoverage(tc.plan, prefix)
+			if found != tc.wantFound {
+				t.Fatalf("found = %v, want %v for %q in\n  %s", found, tc.wantFound, prefix, tc.plan)
+			}
+			if covering != tc.wantCovering {
+				t.Fatalf("covering = %v, want %v (scan label %q)\n  %s",
+					covering, tc.wantCovering, label, tc.plan)
+			}
+			// The premise of the whole refactor, asserted so it cannot rot into a
+			// claim nobody checks: on at least one of these plans the retired
+			// whole-plan check disagrees with the scoped one.
+			if got := !strings.Contains(tc.plan, "COVERING"); got != tc.oldAssertionPasses {
+				t.Fatalf("the retired whole-plan check `!Contains(plan, \"COVERING\")` reports "+
+					"%v here, expected %v — the comparison this table records is stale", got, tc.oldAssertionPasses)
+			}
+			if !tc.wantFound && tc.oldAssertionPasses {
+				// Restating the defect as an assertion rather than as prose: this is
+				// the exact combination that made the old form worthless.
+				if covering {
+					t.Fatalf("internal: a plan with no index scan cannot be covering")
+				}
+			}
+		})
+	}
+}
+
 func assertPlanNotContains(t *testing.T, plan, substr string) {
 	t.Helper()
 	if strings.Contains(plan, substr) {
@@ -1886,7 +2171,8 @@ func TestPlanHarness_JoinLegResidualNoNilFetch(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertPlanNotContains(t, andPlan, "<nil>")
-	assertPlanContains(t, andPlan, "Fetch(IndexScan(IDX_K")
+	assertPlanContains(t, andPlan, "IndexScan(IDX_K")
+	assertScanReadsBaseRecords(t, andPlan, "IndexScan(IDX_K")
 
 	// OR-residual is the shape-gated variant (no materialization → no shell → Scan(T));
 	// a distinct path, so assert only the absence of the nil leg + a driven join.
@@ -1923,7 +2209,8 @@ func TestPlanHarness_RotFix_CompoundResidualUsesIndex(t *testing.T) {
 		// the index but DROPPED the OR/IN residual would return wrong rows yet still
 		// contain "IndexScan(IDX_K"; this is the dimension that actually matters
 		// (the hazard is "residual survives", not "index used").
-		assertPlanContains(t, plan, "PredicatesFilter(Fetch(IndexScan(IDX_K")
+		assertPlanContains(t, plan, "PredicatesFilter(IndexScan(IDX_K")
+		assertScanReadsBaseRecords(t, plan, "IndexScan(IDX_K")
 	}
 
 	// Join-leg IN: a 3-way join where the indexed leg t carries an IN residual and is

@@ -1,9 +1,15 @@
-# in_list_index_plan.yaml — IN-list queries must use InJoin(IndexScan)
+# in_list_index_plan.yaml — IN-list queries must probe the index per value
 #
 # When a table has an index on a column used in an IN-list predicate,
-# the Cascades planner should produce an InJoin plan that iterates
-# over IN-list values and does per-value index probes. This is O(k)
-# where k = IN-list size, versus O(N) for a full scan + filter.
+# the Cascades planner should iterate over IN-list values and do
+# per-value index probes. This is O(k) where k = IN-list size, versus
+# O(N) for a full scan + filter.
+#
+# Which per-value operator wins is driven by the requested ordering. With
+# no ORDER BY the planner picks InJoin; with an ORDER BY the ordered
+# IN-UNION merge across the per-value streams PROVIDES that order, so it
+# beats InJoin plus an enforcer sort (Java's RecordQueryInUnionPlan is the
+# ordered-IN plan; InJoin provides no cross-value order).
 #
 # The plan_contains assertions verify the optimization fires.
 name: in_list_index_plan
@@ -28,9 +34,9 @@ setup:
       (7, 'food', 'Coffee', 15),
       (8, 'food', 'Tea', 10)
 tests:
-  # IN-list on indexed column with small list
+  # IN-list on indexed column with small list, ORDER BY id — ordered IN-UNION
   - query: SELECT id, category FROM items WHERE category IN ('books', 'electronics') ORDER BY id
-    plan_contains: InJoin
+    plan_contains: "InUnion(IndexScan(IDX_CATEGORY, [=]), bindings=1, ASC)"
     rows:
       - [1, 'books']
       - [2, 'books']
@@ -44,9 +50,9 @@ tests:
       - [7, 'Coffee']
       - [8, 'Tea']
 
-  # IN-list on integer indexed column
+  # IN-list on integer indexed column, ORDER BY id — ordered IN-UNION
   - query: SELECT id, name FROM items WHERE price IN (25, 45, 120) ORDER BY id
-    plan_contains: InJoin
+    plan_contains: "InUnion(IndexScan(IDX_PRICE, [=]), bindings=1, ASC)"
     rows:
       - [1, 'Go Programming']
       - [3, 'Keyboard']

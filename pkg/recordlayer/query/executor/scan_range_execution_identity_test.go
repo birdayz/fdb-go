@@ -153,46 +153,63 @@ func indexIdentityTestPlan(
 		flowedType,
 		reverse,
 	).WithKeyComponentTypes([]values.Type{keyType})
+	// Covered columns are DERIVED from the inner scan now (RFC-220), so the
+	// column list a covering plan will report is stamped here as the index's key
+	// columns rather than handed to a constructor.
 	if coveringColumns != nil {
-		plan = plan.WithCovering(coveringColumns)
+		plan = plan.WithIndexMetadata(coveringColumns, []string{"ID"}, false)
 	}
 	return plan
 }
 
+// mustCoveringIndexScanIdentity is the covering-plan salt. It must reproduce
+// indexScanRangeFingerprintSalt's builder prefix and field order exactly, which
+// is what TestCoveringIndexScanSaltIsByteIdenticalToTheFlagEncoding pins.
+func mustCoveringIndexScanIdentity(
+	t testing.TB,
+	plan *plans.RecordQueryIndexPlan,
+	scanType recordlayer.IndexScanType,
+) string {
+	t.Helper()
+	identity, err := coveringIndexScanRangeFingerprintSalt(
+		plans.NewRecordQueryCoveringIndexPlan(plan), scanType)
+	return mustScanIdentity(t, identity, err)
+}
+
 func TestIndexScanRangeFingerprintSaltCoversScanAndOutputShape(t *testing.T) {
 	t.Parallel()
-	basePlan := indexIdentityTestPlan("idx", false, []string{"ab", "c"}, values.NotNullDouble, []string{"T"}, values.UnknownType).
-		WithIndexMetadata([]string{"K"}, []string{"ID"}, false)
-	base := mustIndexScanIdentity(t, basePlan, recordlayer.IndexScanByValue)
+	basePlan := indexIdentityTestPlan("idx", false, []string{"ab", "c"}, values.NotNullDouble, []string{"T"}, values.UnknownType)
+	base := mustCoveringIndexScanIdentity(t, basePlan, recordlayer.IndexScanByValue)
 
+	// Every variant below is a COVERING plan differing from the base in exactly
+	// one axis, except "fetch instead of covering", which is the same plan read
+	// through the NON-covering salt — that is the axis it names.
 	assertScanIdentitiesDistinct(t, base, map[string]string{
-		"index name": mustIndexScanIdentity(t,
+		"index name": mustCoveringIndexScanIdentity(t,
 			indexIdentityTestPlan("idx2", false, []string{"ab", "c"}, values.NotNullDouble, []string{"T"}, values.UnknownType),
 			recordlayer.IndexScanByValue),
-		"scan kind": mustIndexScanIdentity(t, basePlan, recordlayer.IndexScanByRank),
-		"direction": mustIndexScanIdentity(t,
+		"scan kind": mustCoveringIndexScanIdentity(t, basePlan, recordlayer.IndexScanByRank),
+		"direction": mustCoveringIndexScanIdentity(t,
 			indexIdentityTestPlan("idx", true, []string{"ab", "c"}, values.NotNullDouble, []string{"T"}, values.UnknownType),
 			recordlayer.IndexScanByValue),
-		"fetch instead of covering": mustIndexScanIdentity(t,
-			indexIdentityTestPlan("idx", false, nil, values.NotNullDouble, []string{"T"}, values.UnknownType),
-			recordlayer.IndexScanByValue),
-		"length-delimited covering columns": mustIndexScanIdentity(t,
+		"fetch instead of covering": mustIndexScanIdentity(t, basePlan, recordlayer.IndexScanByValue),
+		"length-delimited covering columns": mustCoveringIndexScanIdentity(t,
 			indexIdentityTestPlan("idx", false, []string{"a", "bc"}, values.NotNullDouble, []string{"T"}, values.UnknownType),
 			recordlayer.IndexScanByValue),
-		"covering column order": mustIndexScanIdentity(t,
+		"covering column order": mustCoveringIndexScanIdentity(t,
 			indexIdentityTestPlan("idx", false, []string{"c", "ab"}, values.NotNullDouble, []string{"T"}, values.UnknownType),
 			recordlayer.IndexScanByValue),
-		"primary-key coverage layout": mustIndexScanIdentity(t,
+		"primary-key coverage layout": mustCoveringIndexScanIdentity(t,
 			indexIdentityTestPlan("idx", false, []string{"ab", "c"}, values.NotNullDouble, []string{"T"}, values.UnknownType).
-				WithIndexMetadata([]string{"K"}, []string{"OTHER_ID"}, false),
+				WithIndexMetadata([]string{"ab", "c"}, []string{"OTHER_ID"}, false),
 			recordlayer.IndexScanByValue),
-		"physical schema": mustIndexScanIdentity(t,
+		"physical schema": mustCoveringIndexScanIdentity(t,
 			indexIdentityTestPlan("idx", false, []string{"ab", "c"}, values.NotNullFloat, []string{"T"}, values.UnknownType),
 			recordlayer.IndexScanByValue),
-		"record type": mustIndexScanIdentity(t,
+		"record type": mustCoveringIndexScanIdentity(t,
 			indexIdentityTestPlan("idx", false, []string{"ab", "c"}, values.NotNullDouble, []string{"U"}, values.UnknownType),
 			recordlayer.IndexScanByValue),
-		"flowed schema": mustIndexScanIdentity(t,
+		"flowed schema": mustCoveringIndexScanIdentity(t,
 			indexIdentityTestPlan("idx", false, []string{"ab", "c"}, values.NotNullDouble, []string{"T"}, values.NullableString),
 			recordlayer.IndexScanByValue),
 	})

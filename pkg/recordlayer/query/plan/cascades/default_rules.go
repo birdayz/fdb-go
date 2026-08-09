@@ -286,6 +286,28 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewSinkLimitIntoVectorScanRule(),
 
 		// --- Fetch push-through rules (physical plan optimization) ---
+		//
+		// MergeFetchIntoCoveringIndexRule collapses Fetch(Covering(Index)) into a
+		// bare Index — semantically identical (a bare index plan resolves its own
+		// records by primary key) and one node cheaper. Java registers it
+		// (PlanningRuleSet.java:151) and so does Go: it is a sound transformation
+		// and the competition it creates is the same competition Java has.
+		//
+		// Registering it currently COSTS RFC-220's target plan, and the reason is
+		// not this rule. MEASURED on the defect query: the fetch-rooted member is
+		// NOT deleted — the group MergeFetchIntoCoveringIndexRule yields into holds
+		// [FETCH, INDEX] together afterwards, since InsertFinal appends. But the
+		// group PushFilterThroughFetchRule scans is a DIFFERENT reference holding
+		// [INDEX] alone, so the rule never finds a fetch and the
+		// Fetch(Filter(Covering)) alternative is never built. The costing is not at
+		// fault either: on the two final trees (both 3 nodes) criterion 7 returns
+		// -1 and the full ladder prefers the covering tree.
+		//
+		// So the open defect is a reference-IDENTITY question — which group the
+		// filter ends up ranging over — not a prune, not a cost comparison, and not
+		// this rule's soundness. It stays registered because Java registers it and
+		// it is a sound transformation; the identity question is tracked as RFC-220's
+		// remaining blocker.
 		NewMergeFetchIntoCoveringIndexRule(),
 		NewPushDistinctBelowFilterRule(),
 		NewPushDistinctThroughFetchRule(),

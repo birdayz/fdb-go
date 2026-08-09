@@ -599,13 +599,13 @@ func TestPlanningCostModel_SargRichIndexBeatsSargPoorIndex(t *testing.T) {
 
 	// rich: covering index bound on one column, plus an explicit fetch.
 	rich := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		plans.NewRecordQueryIndexPlan(
+		plans.NewRecordQueryCoveringIndexPlan(plans.NewRecordQueryIndexPlan(
 			"idx_sarg_rich_leg",
 			[]*predicates.ComparisonRange{rungEqualityRange(t, values.LiteralValue(int64(1)))},
 			[]string{"T"},
 			values.UnknownType,
 			false,
-		).WithCovering([]string{"K"}),
+		).WithIndexMetadata([]string{"K"}, nil, false)),
 		nil,
 		values.UnknownType,
 		plans.FetchIndexRecordsPrimaryKey,
@@ -685,13 +685,13 @@ func TestPlanningCostModel_ExplicitFetchCountBeforeUnmatchedFields(t *testing.T)
 		values.UnknownType,
 		false,
 	)
-	explicitIndex := plans.NewRecordQueryIndexPlan(
+	explicitIndex := plans.NewRecordQueryCoveringIndexPlan(plans.NewRecordQueryIndexPlan(
 		"idx_explicit_fetch",
 		[]*predicates.ComparisonRange{rungEqualityRange(t, values.LiteralValue(int64(1)))},
 		[]string{"T"},
 		values.UnknownType,
 		false,
-	).WithCovering([]string{"K"})
+	).WithIndexMetadata([]string{"K"}, nil, false))
 	explicit := plans.NewRecordQueryFetchFromPartialRecordPlan(
 		explicitIndex,
 		nil,

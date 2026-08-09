@@ -103,6 +103,7 @@ func TestAllPlanProperties_Completeness(t *testing.T) {
 	t.Parallel()
 	expected := map[*ExpressionProperty]bool{
 		PropOrdering:                  false,
+		PropRichOrdering:              false,
 		PropDistinctRecords:           false,
 		PropStoredRecord:              false,
 		PropPrimaryKey:                false,

@@ -47,6 +47,17 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 	case *plans.RecordQueryIndexPlan:
 		return derivationsForIndexScan(w)
 
+	// A covering index scan derives exactly what the index scan it holds
+	// derives. The inner is a FIELD, not a child quantifier (RFC-220 criterion
+	// C1), so neither this switch's single-child passthrough nor child
+	// traversal reaches it — without this arm the covering scan falls to
+	// EmptyDerivations and every column it produces disappears. That is not a
+	// degraded plan but a wrong answer: `SELECT *` over an intersection whose
+	// legs are covering scans derives its output columns from the legs, and
+	// empty legs yield a zero-column result.
+	case *plans.RecordQueryCoveringIndexPlan:
+		return derivationsForIndexScan(w.GetIndexPlan())
+
 	case *scanPlanExpression:
 		if sp, ok := w.plan.(*plans.RecordQueryScanPlan); ok {
 			return derivationsForScan(sp)

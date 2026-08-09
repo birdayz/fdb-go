@@ -295,14 +295,16 @@ func TestFDB_SignedZeroEqualityDoesNotOrderThePKSuffix(t *testing.T) {
 			// index it degrades into a second copy of the baseline: both sides
 			// full-scan and sort, both agree, and the test passes with the
 			// defect fully present.
-			usesIndex := false
-			plans.Walk(indexedPlan, func(node plans.RecordQueryPlan) bool {
-				if index, ok := node.(*plans.RecordQueryIndexPlan); ok &&
-					index.GetIndexName() == indexName {
-					usesIndex = true
-				}
-				return true
-			})
+			// planUsesIndex sees through a COVERING wrapper. Walking with a
+			// concrete *RecordQueryIndexPlan assertion is BLIND BY CONSTRUCTION
+			// since RFC-220 — the covering plan holds its index plan as a field
+			// and plans.Walk only follows GetChildren() — so this guard reported
+			// "did not bind IDX_Z" for a plan reading
+			// `IndexScan(IDX_Z, [=] COVERING) REVERSE`. A reachability guard that
+			// under-reports is the worst direction: it fires on a healthy plan and
+			// trains the reader to disbelieve it. See
+			// covering_plan_assertions_test.go for the general rule.
+			usesIndex := planUsesIndex(indexedPlan, indexName)
 			if !usesIndex {
 				t.Fatalf(
 					"%s did not bind %s: %s\nwithout an index scan this test cannot express the "+

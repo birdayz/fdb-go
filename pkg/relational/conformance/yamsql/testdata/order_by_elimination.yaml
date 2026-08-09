@@ -133,7 +133,7 @@ tests:
 
   # Secondary-index range + ORDER BY on DIFFERENT col — must sort.
   - query: SELECT id, v, name FROM t WHERE v >= 20 ORDER BY name
-    plan_contains: "InMemorySort([NAME ASC], Fetch(IndexScan(IDX_V, [<>])))"
+    plan_contains: "InMemorySort([NAME ASC], IndexScan(IDX_V, [<>]))"
     rows:
       - [1, 30, 'a']
       - [2, 20, 'b']
@@ -191,7 +191,7 @@ tests:
   # natural order is (region, plan, id). ORDER BY [id] alone is NOT
   # a prefix of (region, plan, id) — must sort.
   - query: SELECT id FROM rp WHERE region = 'us' AND plan > 'a' ORDER BY id
-    plan_contains: "InMemorySort([ID ASC], Fetch(IndexScan(IDX_REGION_PLAN, [=, <>])))"
+    plan_contains: "InMemorySort([ID ASC], IndexScan(IDX_REGION_PLAN, [=, <>]))"
     rows:
       - [1]
       - [2]
@@ -263,7 +263,7 @@ tests:
       - [4]
 
   - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v LIMIT 3
-    plan_contains: "Limit(3, Fetch(IndexScan(IDX_V, [<>])))"
+    plan_contains: "Limit(3, IndexScan(IDX_V, [<>]))"
     plan_not_contains: "InMemorySort"
     rows:
       - [3, 10]
@@ -523,7 +523,7 @@ tests:
   # Same with LIMIT (Go extension, RFC-128) — reverse scan bounded
   # to the top two v values.
   - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v DESC LIMIT 2
-    plan_contains: "Limit(2, Fetch(IndexScan(IDX_V, [<>]) REVERSE))"
+    plan_contains: "Limit(2, IndexScan(IDX_V, [<>]) REVERSE)"
     plan_not_contains: "InMemorySort"
     rows:
       - [4, 40]
@@ -548,7 +548,7 @@ tests:
   # extension, RFC-128). region='eu' rows: (4, 'pro'), (5, 'free');
   # plan DESC puts 'pro' first, LIMIT 1 keeps id=4.
   - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY plan DESC LIMIT 1
-    plan_contains: "Limit(1, Fetch(IndexScan(IDX_REGION_PLAN, [=, *]) REVERSE))"
+    plan_contains: "Limit(1, IndexScan(IDX_REGION_PLAN, [=, *]) REVERSE)"
     plan_not_contains: "InMemorySort"
     rows:
       - [4]

@@ -609,16 +609,31 @@ func TestFDB_DistinctProof_UnconditionalLicenseYieldsUnstampedPlan(t *testing.T)
 		query   string
 		license string
 	}{
+		// The `_null_rejected` arms carry a predicate that rejects NULLs on the
+		// UNIQUE column, because that is the condition under which a
+		// secondary-UNIQUE proof COULD become available — the arm's whole point
+		// is that the unconditional licence covers the elision anyway, so the
+		// plan must record no U_EMAIL dependency.
+		//
+		// The predicate is deliberately NOT `EMAIL IS NOT NULL`, and this must
+		// not be "simplified" back. That form is SARGABLE on U_EMAIL, so the
+		// planner legitimately chooses `IndexScan(U_EMAIL, [<>])` as the access
+		// path — and then a U_EMAIL dependency in the plan is REAL rather than a
+		// stamp, which is exactly the distinction these arms exist to draw. The
+		// guard below reports that as a failure rather than tolerating it, so
+		// the predicate has to reject NULLs WITHOUT being sargable on the index.
+		// CHARACTER_LENGTH(EMAIL) >= 0 is UNKNOWN for a NULL EMAIL and so drops
+		// the row, while giving the access path nothing to bind.
 		{"whole_record", "SELECT DISTINCT * FROM T", "record-level distinctness"},
 		{
 			"whole_record_null_rejected",
-			"SELECT DISTINCT * FROM T WHERE EMAIL IS NOT NULL",
+			"SELECT DISTINCT * FROM T WHERE CHARACTER_LENGTH(EMAIL) >= 0",
 			"record-level distinctness",
 		},
 		{"primary_key", "SELECT DISTINCT ID, EMAIL, PAD FROM T", "primary-key coverage"},
 		{
 			"primary_key_null_rejected",
-			"SELECT DISTINCT ID, EMAIL, PAD FROM T WHERE EMAIL IS NOT NULL",
+			"SELECT DISTINCT ID, EMAIL, PAD FROM T WHERE CHARACTER_LENGTH(EMAIL) >= 0",
 			"primary-key coverage",
 		},
 	} {

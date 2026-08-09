@@ -336,6 +336,13 @@ func indexScanUnderOrderPreservingWrappers(
 	if p, ok := expr.(*plans.RecordQueryIndexPlan); ok {
 		return p
 	}
+	// A COVERING scan reads the same physical range; only the row shape differs,
+	// so the ordering claim describes the same stream. This arm and
+	// makeStrictlySorted move together — a shape admitted here but not stamped
+	// there is a claim proved and then silently dropped.
+	if cov, ok := expr.(*plans.RecordQueryCoveringIndexPlan); ok {
+		return cov.GetIndexPlan()
+	}
 	// A fetch reshapes rows without removing any, so the scan under it emits
 	// exactly what the fetch does and the flag describes the right stream.
 	if fw, ok := expr.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
@@ -346,6 +353,9 @@ func indexScanUnderOrderPreservingWrappers(
 		for _, m := range ref.AllMembers() {
 			if p, ok := m.(*plans.RecordQueryIndexPlan); ok {
 				return p
+			}
+			if cov, ok := m.(*plans.RecordQueryCoveringIndexPlan); ok {
+				return cov.GetIndexPlan()
 			}
 		}
 	}
@@ -433,11 +443,30 @@ func indexHasStreamEnforcedUniqueKey(p *plans.RecordQueryIndexPlan) bool {
 func makeStrictlySorted(expr expressions.RelationalExpression) expressions.RelationalExpression {
 	if p, ok := expr.(*plans.RecordQueryIndexPlan); ok {
 		// WithStrictlySorted is a struct copy — it preserves the index metadata
-		// (columns/pk/unique/covering) the plan already carries (RFC-184 W2).
+		// (columns/pk/unique) the plan already carries (RFC-184 W2).
 		return p.WithStrictlySorted()
+	}
+	// A COVERING scan is the shape the access path now emits (RFC-220), so it
+	// must be stamped too. Omitting it does not fail loudly: the walk above
+	// admits the shape, proves the strict-ordering claim, and this function then
+	// hands back the plan unchanged — the claim is silently dropped and the sort
+	// it would have eliminated reappears. The stamp goes on the INNER scan, which
+	// is where strictlySorted lives and where IsStrictlySorted() reads it from.
+	if cov, ok := expr.(*plans.RecordQueryCoveringIndexPlan); ok {
+		return cov.WithIndexPlan(cov.GetIndexPlan().WithStrictlySorted())
 	}
 	if fw, ok := expr.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 		inner := fw.GetInner()
+		if cov, ok := inner.(*plans.RecordQueryCoveringIndexPlan); ok {
+			newCov := cov.WithIndexPlan(cov.GetIndexPlan().WithStrictlySorted())
+			newCovRef := expressions.InitialOf(newCov)
+			return plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+				expressions.ForEachQuantifier(newCovRef),
+				fw.GetTranslateValueFunction(),
+				fw.GetResultType(),
+				fw.GetFetchIndexRecords(),
+			)
+		}
 		if idxPlan, ok := inner.(*plans.RecordQueryIndexPlan); ok {
 			// The index scan is its own cascades expression (RFC-184 W2), carrying its
 			// metadata on the plan; WithStrictlySorted preserves it (struct copy). The

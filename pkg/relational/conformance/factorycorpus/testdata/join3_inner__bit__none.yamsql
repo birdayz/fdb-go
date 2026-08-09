@@ -446,8 +446,8 @@ test_block:
 # blessing: metamorphic
 # oracles: tlp,second-plan
 # feature-vector: shape=join3.inner;idx=A,B,E,S;proj=n24;where=bit.lt;order=desc+asc+asc
-# plan-shape: 6df4c4f98999b251
-# dedup-key: f67fbaad528c34cd
+# plan-shape: 472cebc37fd3b949
+# dedup-key: 4fb1d0d68daf7fbf
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1880118 -seeds 1 -date 2026-08-08 -out <dir>
 ---
 schema_template: |-
@@ -528,8 +528,8 @@ test_block:
 # blessing: metamorphic
 # oracles: tlp,second-plan
 # feature-vector: shape=join3.inner;idx=A,B,E,S;proj=n3;where=bit.lt;order=desc+asc+asc
-# plan-shape: 6df4c4f98999b251
-# dedup-key: 723f5436d51d9c29
+# plan-shape: 472cebc37fd3b949
+# dedup-key: 3d31ace78511969d
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1880118 -seeds 1 -date 2026-08-08 -out <dir>
 ---
 schema_template: |-
@@ -610,8 +610,8 @@ test_block:
 # blessing: metamorphic
 # oracles: tlp,second-plan
 # feature-vector: shape=join3.inner;idx=A,B,E,S;proj=n4;where=bit.lt;order=desc+asc+asc
-# plan-shape: 6df4c4f98999b251
-# dedup-key: f799369ca0606eb4
+# plan-shape: 472cebc37fd3b949
+# dedup-key: 16904fdad37d394b
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1880118 -seeds 1 -date 2026-08-08 -out <dir>
 ---
 schema_template: |-

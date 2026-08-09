@@ -154,9 +154,11 @@ func TestFDB_RuntimeSignedZeroRangeSetAccessPaths(t *testing.T) {
 	}
 	nonCoveringQ := "SELECT payload FROM d WHERE v = 0 AND w = 5"
 	nonCoveringPlan := planExplainVia(t, ctx, db, nonCoveringQ)
-	if !strings.Contains(nonCoveringPlan, "Fetch(IndexScan(D_VW") {
-		t.Fatalf("non-covering plan = %s, want Fetch(IndexScan(D_VW...))", nonCoveringPlan)
-	}
+	// PAYLOAD is outside D_VW's entry, so this scan must read base records.
+	// Asserted as the property, not as the literal `Fetch(IndexScan(D_VW` — a
+	// bare IndexScan is a fetching scan, so the old string tested the rendering
+	// and went red on a plan that reads exactly the records it should.
+	assertScanReadsBaseRecords(t, nonCoveringPlan, "IndexScan(D_VW")
 	var payloads []string
 	rows, err := db.QueryContext(ctx, nonCoveringQ)
 	if err != nil {

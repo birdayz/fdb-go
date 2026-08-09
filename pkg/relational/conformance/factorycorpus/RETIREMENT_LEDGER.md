@@ -226,3 +226,94 @@ determinism invariant (candidate name, feature vector, all four TLP renderings,
 schema template, setup INSERT) rather than rewriting it, refuses to run if any
 of those drifted, checks for dedup-key collisions, and regenerates
 `census_baseline.json`. No digest was hand-edited.
+
+---
+
+## Coveringness became a plan type — REPRESENTATION CHANGE, over a concealed regression
+
+**Re-blessed: 4340 scenarios of 7000, across 238 of 373 family files. Result
+rows: UNCHANGED.** Machine half:
+`retirements/2026-08-09-rfc220-coveringness-is-a-plan-type.json`, base commit
+`431eb79af6624b9f7081ba6bfb09e3557cfc10d6`.
+
+### What moved, and why it is not a retirement
+
+RFC-220 makes `RecordQueryCoveringIndexPlan` a plan type built at the access
+path rather than a wrapper discovered afterwards. Two things follow in the
+RENDERING of almost every plan that touches a secondary index: a Fetch wrapper
+collapses wherever the merge rule can remove it, and a scan that serves its
+columns from the index acquires a COVERING marker. The reproduction recipe, the
+feature vector, the four TLP renderings, the schema, the setup and every frozen
+row cell are unchanged — only the two derived header lines moved. That is why
+this is a re-bless and not a retirement: no plan point ceased to exist, they are
+described differently.
+
+### The part that is not routine
+
+The same drift concealed a real regression, and that is the reason this entry
+exists at all.
+
+183 scenarios lost a correlated EQUALITY index probe on the inner side of a
+nested-loop join and got a full scan instead — O(N) per outer row. The rows were
+identical, so no row-based check in the repo could see it, and the digest
+movement was indistinguishable from the thousands of benign movements around it.
+A re-bless taken at that point would have frozen the regression into the corpus
+as though intended, and destroyed the only record that those plans had ever been
+probes.
+
+Root cause: `collectScanPlanCorrelations` (`planner.go:1442`) recursed through
+`GetChildren()`, and criterion C1 makes the covering plan hold its index scan as
+a non-memoized FIELD. The walker therefore returned empty correlations for a
+covering probe, `compensationResidualCorrelationSafe` (`planner.go:1245`)
+rejected the outer-correlated residual, the compensation reached `InsertFinal`
+with no exploration task, `ImplementFilterRule` never fired, and the probe was
+never constructed. Java is immune because it dispatches on the type:
+`RecordQueryCoveringIndexPlan.getCorrelatedTo()` delegates to
+`indexPlan.getCorrelatedTo()`.
+
+That is fixed in the same change. The re-bless above is taken over the FIXED
+planner.
+
+### The instrument, which is the durable part
+
+`cmd/factory-plan-census` was written for this and is committed alongside it. It
+dumps one `<scenario>\t<plan>` line per committed scenario through the same
+entry point the digest is derived from, and classifies a two-dump difference
+into NAMED counts. It exits non-zero when a scenario loses an equality index
+probe or becomes unplannable, and stays silent on Fetch-wrapper removal and
+COVERING acquisition, which are representation. It refuses a verdict when either
+dump is empty.
+
+Measured over this exact transition — base dump taken in a tree at
+`431eb79af6624b9f7081ba6bfb09e3557cfc10d6`, branch dump on the fixed planner,
+both 7000 lines, both processes exit 0:
+
+```
+scenarios compared: 7000
+plans moved:        4333
+
+  lost an EQUALITY index probe:   0
+  lost ALL index access:          0
+  gained an UNBOUNDED full scan:  0
+  newly unplannable:              0
+
+no regression class present; the movement is representation-only
+EXIT=0
+```
+
+Before the fix the same three counts read 183 / 177 / 75.
+
+4333 here versus the 4340 the re-bless reports is not a discrepancy to
+reconcile away: `classify` compares `Explain()` text and the corpus digests
+`explaindiff.ShapeOf`, so seven scenarios have a shape the digest separates and
+the rendered explain does not. The census is the more conservative of the two on
+that margin, never the looser.
+
+### How the re-bless was done
+
+`go run ./cmd/factory-rebless-plan-shapes` with `-ledger`, which re-derives the
+plan-shape and dedup-key headers from each scenario's committed reproduction
+recipe, verifies every other determinism invariant rather than rewriting it,
+refuses to run if any of those drifted, regenerates `census_baseline.json`, and
+emits the machine ledger carrying both census endpoints, both corpus-tree
+fingerprints and a per-file disposition. No digest was hand-edited.

@@ -221,6 +221,9 @@ func ExecutePlan(
 	case *plans.RecordQueryFlatMapPlan:
 		return executeFlatMap(ctx, p, store, evalCtx, continuation, props)
 
+	case *plans.RecordQueryCoveringIndexPlan:
+		return executeCoveringIndexScan(ctx, p, store, evalCtx, continuation, props)
+
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		return executeFetchFromPartialRecord(ctx, p, store, evalCtx, continuation, props)
 
@@ -356,14 +359,26 @@ func executeScan(
 	return recordlayer.MapCursor(inner, FromStoredRecord), nil
 }
 
-func executeIndexScan(
-	ctx context.Context,
+// openIndexEntryCursor opens the physical index-entry cursor for an index scan:
+// metadata lookup, readability gate, range-set binding under the caller's
+// execution-identity salt, and the per-range scan factory. Shared by the
+// non-covering scan and by the covering scan, which differ ONLY in how they
+// shape the entries they receive — never in which entries they receive. That
+// sharing is what makes the covering path provably a consumer of the same
+// forked range set (RFC-208 signed-zero alternatives) as the fetching path.
+//
+// The salt is a PARAMETER rather than derived here because the two plan types
+// have different execution identities: a covering plan builds its rows from the
+// entry, so its continuation must never be interchangeable with a fetching
+// scan's over the same range.
+func openIndexEntryCursor(
 	p *plans.RecordQueryIndexPlan,
+	fingerprintSalt string,
 	store *recordlayer.FDBRecordStore,
 	evalCtx *EvaluationContext,
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
-) (recordlayer.RecordCursor[QueryResult], error) {
+) (recordlayer.RecordCursor[*recordlayer.IndexEntry], error) {
 	idx := store.GetMetaData().GetIndex(p.GetIndexName())
 	if idx == nil {
 		return nil, fmt.Errorf("executor: index %q not found in metadata", p.GetIndexName())
@@ -376,10 +391,6 @@ func executeIndexScan(
 		return nil, fmt.Errorf("executor: getting index maintainer for %q: %w", p.GetIndexName(), err)
 	}
 
-	fingerprintSalt, err := indexScanRangeFingerprintSalt(p, recordlayer.IndexScanByValue)
-	if err != nil {
-		return nil, fmt.Errorf("executor: building scan execution identity for %q: %w", p.GetIndexName(), err)
-	}
 	rangeSet, err := bindScanComparisonsToRangeSet(
 		p.GetScanComparisons(),
 		p.GetKeyComponentTypes(),
@@ -416,57 +427,86 @@ func executeIndexScan(
 	if err != nil {
 		return nil, fmt.Errorf("executor: opening scan ranges for %q: %w", p.GetIndexName(), err)
 	}
+	return indexCursor, nil
+}
 
-	var resultCursor recordlayer.RecordCursor[QueryResult]
-	if p.IsCovering() {
-		// The plan's PK names were validated against tuple-coordinate topology
-		// by the metadata adapter. Re-reading KeyExpression.FieldNames here would
-		// discard that proof: e.g. PK (ID, literal(7)) reports only ID, and the
-		// tail mapper below would place literal 7 in ID's logical slot.
-		pkCols := p.GetPKColumnNames()
-		var logicalType *values.RecordType
-		if rts := p.GetRecordTypes(); len(rts) > 0 {
-			if rt := store.GetMetaData().GetRecordType(rts[0]); rt != nil {
-				// The record's LOGICAL row shape — only authoritative when the
-				// scan serves a single record type (a multi-type covering scan
-				// has no single logical shape and keeps the index layout).
-				// Metadata-aware: a version-storing store's rows carry the
-				// trailing __ROW_VERSION pseudo-slot.
-				if len(rts) == 1 && rt.Descriptor != nil {
-					logicalType = PositionalTypeForRecordLayout(rt.Descriptor,
-						store.GetMetaData().IsStoreRecordVersions())
-				}
-			}
+// executeIndexScan runs a NON-covering index scan: every entry is resolved to
+// its base record by primary key. Coveringness is no longer a flag consulted
+// here — it is RecordQueryCoveringIndexPlan, a distinct plan type with its own
+// executor, exactly as in Java.
+func executeIndexScan(
+	_ context.Context,
+	p *plans.RecordQueryIndexPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	fingerprintSalt, err := indexScanRangeFingerprintSalt(p, recordlayer.IndexScanByValue)
+	if err != nil {
+		return nil, fmt.Errorf("executor: building scan execution identity for %q: %w", p.GetIndexName(), err)
+	}
+	indexCursor, err := openIndexEntryCursor(p, fingerprintSalt, store, evalCtx, continuation, props)
+	if err != nil {
+		return nil, err
+	}
+	return applySkipLimit(&indexFetchCursor{inner: indexCursor, store: store},
+		props.Skip, props.ReturnedRowLimit), nil
+}
+
+// executeCoveringIndexScan runs a covering index scan: the row is rebuilt from
+// the index ENTRY, with no base-record read. Mirrors Java's
+// RecordQueryCoveringIndexPlan, which scans its inner index plan's entries and
+// maps each through IndexKeyValueToPartialRecord.
+func executeCoveringIndexScan(
+	_ context.Context,
+	p *plans.RecordQueryCoveringIndexPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	fingerprintSalt, err := coveringIndexScanRangeFingerprintSalt(p, recordlayer.IndexScanByValue)
+	if err != nil {
+		return nil, fmt.Errorf("executor: building scan execution identity for %q: %w", p.GetIndexName(), err)
+	}
+	indexCursor, err := openIndexEntryCursor(p.GetIndexPlan(), fingerprintSalt, store, evalCtx, continuation, props)
+	if err != nil {
+		return nil, err
+	}
+
+	// The plan's PK names were validated against tuple-coordinate topology by
+	// the metadata adapter. Re-reading KeyExpression.FieldNames here would
+	// discard that proof: e.g. PK (ID, literal(7)) reports only ID, and the
+	// tail mapper below would place literal 7 in ID's logical slot.
+	pkCols := p.GetPKColumnNames()
+	var logicalType *values.RecordType
+	// The record's LOGICAL row shape — only authoritative when the scan serves
+	// a single record type (a multi-type covering scan has no single logical
+	// shape). Metadata-aware: a version-storing store's rows carry the trailing
+	// __ROW_VERSION pseudo-slot.
+	if rts := p.GetRecordTypes(); len(rts) == 1 {
+		if rt := store.GetMetaData().GetRecordType(rts[0]); rt != nil && rt.Descriptor != nil {
+			logicalType = PositionalTypeForRecordLayout(rt.Descriptor,
+				store.GetMetaData().IsStoreRecordVersions())
 		}
-		cov := p.GetCoveringColumns()
-		posNames := make([]string, 0, len(cov)+len(pkCols))
-		for _, col := range cov {
-			posNames = append(posNames, strings.ToUpper(col))
-		}
-		for _, col := range pkCols {
-			posNames = append(posNames, strings.ToUpper(col))
-		}
-		// A covering-index row must conform to the record's LOGICAL slot
-		// order — Java's IndexKeyValueToPartialRecord builds a
-		// descriptor-shaped partial record, so a FieldValue ordinal baked
-		// against the record type reads the same slot on the base-scan and
-		// covering paths. Non-covered fields stay nil (Java: unset partial
-		// fields — the planner's covering gate guarantees they are never
-		// referenced). When any column cannot be mapped (a
-		// nested/expression index column has no top-level logical slot),
-		// this falls THROUGH to the full-record fetch below — never an
-		// index-layout row, which a baked logical ordinal would misread.
-		logicalOrds := coveringLogicalOrdinals(posNames, logicalType)
-		if logicalOrds != nil {
-			resultCursor = &coveringIndexCursor{
-				inner:       indexCursor,
-				columns:     cov,
-				pkColumns:   pkCols,
-				logicalType: logicalType,
-				logicalOrds: logicalOrds,
-			}
-			return applySkipLimit(resultCursor, props.Skip, props.ReturnedRowLimit), nil
-		}
+	}
+	cov := p.GetCoveringColumns()
+	posNames := make([]string, 0, len(cov)+len(pkCols))
+	for _, col := range cov {
+		posNames = append(posNames, strings.ToUpper(col))
+	}
+	for _, col := range pkCols {
+		posNames = append(posNames, strings.ToUpper(col))
+	}
+	// A covering-index row must conform to the record's LOGICAL slot order —
+	// Java's IndexKeyValueToPartialRecord builds a descriptor-shaped partial
+	// record, so a FieldValue ordinal baked against the record type reads the
+	// same slot on the base-scan and covering paths. Non-covered fields stay nil
+	// (Java: unset partial fields — the planner's covering gate guarantees they
+	// are never referenced).
+	logicalOrds := coveringLogicalOrdinals(posNames, logicalType)
+	if logicalOrds == nil {
 		// This covering scan cannot present a row in the record's LOGICAL slot
 		// order: a nested/expression index column (e.g. `ADDR.CITY`) has no
 		// top-level logical slot, and a multi-type scan has no single logical
@@ -474,21 +514,30 @@ func executeIndexScan(
 		// INDEX-layout covering row would read a baked ordinal at the wrong slot
 		// whenever index-order != logical-order (descriptor [ID,A,ADDR] + index
 		// row [A,ADDR.CITY,ID]: `A#1` would read ADDR.CITY — a wrong slot). Rather
-		// than serve a misread-able covering row (or fail the query loud), fall
-		// back to fetching the full record by PK — the base record layout, which a
-		// baked ordinal reads correctly. Slower than covering but correct; the
-		// covering optimization simply doesn't apply to these shapes. (Java serves
-		// them from the covering index via IndexKeyValueToPartialRecord's
-		// descriptor-shaped partial record — porting that would restore covering
-		// here, but the fetch fallback is correct in the meantime.)
+		// than serve a misread-able covering row (or fail the query loud), resolve
+		// the full record by PK — the base record layout, which a baked ordinal
+		// reads correctly.
+		//
+		// The fallback lives HERE rather than being delegated upward to the Fetch
+		// because the Fetch above may have been eliminated (the projection pushed
+		// through), in which case nothing else would make these rows whole. When a
+		// Fetch IS above, it sees a row that already carries its stored record and
+		// passes it through rather than reading it a second time — see
+		// fetchFullRecordCursor.
+		//
+		// (Java serves these shapes from the covering index via
+		// IndexKeyValueToPartialRecord's descriptor-shaped partial record;
+		// porting that would restore covering here.)
+		return applySkipLimit(&indexFetchCursor{inner: indexCursor, store: store},
+			props.Skip, props.ReturnedRowLimit), nil
 	}
-
-	resultCursor = &indexFetchCursor{
-		inner: indexCursor,
-		store: store,
-	}
-
-	return applySkipLimit(resultCursor, props.Skip, props.ReturnedRowLimit), nil
+	return applySkipLimit(&coveringIndexCursor{
+		inner:       indexCursor,
+		columns:     cov,
+		pkColumns:   pkCols,
+		logicalType: logicalType,
+		logicalOrds: logicalOrds,
+	}, props.Skip, props.ReturnedRowLimit), nil
 }
 
 // defaultVectorEfSearch is the HNSW search-quality knob used when the query
@@ -1850,13 +1899,18 @@ func readUint32BE(b []byte) uint32 {
 	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
 }
 
-// executeFetchFromPartialRecord executes a FetchFromPartialRecordPlan.
-// In Java, this takes index entries (partial records) and fetches full
-// records by PK. In Go, the index scan executor already returns full
-// records, so the fetch is a pass-through that delegates to the inner.
-// This exists as a safety net for plans where the Cascades optimizer
-// didn't eliminate the fetch via MergeFetchIntoCoveringIndex or
-// PushMapThroughFetch.
+// executeFetchFromPartialRecord executes a FetchFromPartialRecordPlan: it takes
+// the partial records its child produces and resolves each to the FULL record
+// by primary key. Mirrors Java's RecordQueryFetchFromPartialRecordPlan, which
+// maps its child's rows through QueryResult::getIndexEntry and hands them to
+// FetchIndexRecords.PRIMARY_KEY (RecordQueryFetchFromPartialRecordPlan:128-132).
+//
+// This used to be a PASS-THROUGH, on the premise that "in Go, the index scan
+// executor already returns full records". That premise died with RFC-220: the
+// access path now emits Fetch(Covering(IndexScan)) on every value-index match,
+// so the child's rows are partial records built from index entries. Passing
+// them through would hand partial rows to the fetch's consumer — silent wrong
+// rows, not a slower plan.
 func executeFetchFromPartialRecord(
 	ctx context.Context,
 	p *plans.RecordQueryFetchFromPartialRecordPlan,
@@ -1869,8 +1923,92 @@ func executeFetchFromPartialRecord(
 	if inner == nil {
 		return recordlayer.Empty[QueryResult](), nil
 	}
-	return ExecutePlan(ctx, inner, store, evalCtx, continuation, props)
+	innerCursor, err := ExecutePlan(ctx, inner, store, evalCtx, continuation, props)
+	if err != nil {
+		return nil, err
+	}
+	return &fetchFullRecordCursor{inner: innerCursor, store: store}, nil
 }
+
+// fetchFullRecordCursor resolves each incoming row to its full stored record by
+// primary key. It is the QueryResult-shaped sibling of indexFetchCursor, which
+// consumes raw index entries; a residual pushed below the fetch (Java's
+// PushFilterThroughFetchRule does exactly this) means the fetch's child is a
+// plan, not a scan, so its rows arrive as QueryResult.
+//
+// A row that ALREADY carries its stored record passes through untouched. That
+// is idempotence, not a heuristic: fetching a row whose record is in hand
+// returns the identical record, so the read would be pure cost. It is what
+// keeps the covering scan's logical-shape fallback (see executeCoveringIndexScan)
+// from costing two reads per row.
+//
+// Orphan behaviour is Java's IndexOrphanBehavior.ERROR, identical to
+// indexFetchCursor's: an entry whose base record is missing means the index and
+// the records disagree, and query execution never uses SKIP.
+type fetchFullRecordCursor struct {
+	inner  recordlayer.RecordCursor[QueryResult]
+	store  *recordlayer.FDBRecordStore
+	closed bool
+	// lastNoNext replays the terminal result on a contract-violating re-call
+	// (Java's cached no-next result) — never re-pulls the inner cursor.
+	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
+}
+
+func (c *fetchFullRecordCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
+	result, err := c.inner.OnNext(ctx)
+	if err != nil {
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+	}
+	if !result.HasNext() {
+		res := recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation())
+		c.lastNoNext = &res
+		return res, nil
+	}
+
+	row := result.GetValue()
+	if row.Record != nil {
+		return result, nil
+	}
+	pk := row.PrimaryKey
+	if pk == nil {
+		// The fetch's contract is "make this partial row whole", and the only
+		// handle it has is the primary key. A row reaching it with neither a
+		// record nor a key is a planner fault — a fetch placed over a producer
+		// that does not carry row identity — and it is raised rather than
+		// passed through, because passing it through is precisely the silent
+		// partial-row leak this cursor exists to prevent.
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}),
+			&recordlayer.RecordCoreStorageError{
+				Message: "fetch from partial record: row carries neither a stored record nor a primary key",
+			}
+	}
+	rec, err := c.store.LoadRecord(pk)
+	if err != nil {
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}),
+			fmt.Errorf("executor: loading record for partial row pk %v: %w", pk, err)
+	}
+	if rec == nil {
+		// Java IndexOrphanBehavior.ERROR — see indexFetchCursor for the full
+		// reasoning. Silently continuing would return fewer rows and hide index
+		// corruption.
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}),
+			&recordlayer.RecordCoreStorageError{
+				Message:    "record not found from index entry",
+				PrimaryKey: pk,
+			}
+	}
+	return recordlayer.NewResultWithValue(FromStoredRecord(rec), result.GetContinuation()), nil
+}
+
+func (c *fetchFullRecordCursor) Close() error {
+	c.closed = true
+	return c.inner.Close()
+}
+
+func (c *fetchFullRecordCursor) IsClosed() bool { return c.closed }
 
 func executeDistinct(
 	ctx context.Context,

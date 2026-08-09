@@ -4,7 +4,7 @@
 #   CREATE INDEX ord_cid ON ord(cid)
 
 === SELECT c.cid, o.oid, o.amt FROM cust c JOIN ord o ON c.cid = o.cid ORDER BY c.cid, o.oid
-PLAN: Project([C.CID#0, O.OID#0, O.AMT#2], InMemorySort([C.CID#0 ASC, O.OID#0 ASC], FlatMap(outer=Scan(CUST), inner=Fetch(IndexScan(ORD_CID, [=])))))
+PLAN: Project([C.CID#0, O.OID#0, O.AMT#2], InMemorySort([C.CID#0 ASC, O.OID#0 ASC], FlatMap(outer=Scan(CUST), inner=IndexScan(ORD_CID, [=]))))
 ROWS(4) cols=[CID, OID, AMT]:
   [1, 100, 50]
   [1, 101, 70]
@@ -25,7 +25,7 @@ ROWS(3) cols=[OID]:
   [103]
 
 === SELECT COUNT(*) FROM cust c JOIN ord o ON c.cid = o.cid
-PLAN: Project([COUNT(*)#0], StreamingAgg(keys=[], FlatMap(outer=Scan(CUST), inner=Fetch(IndexScan(ORD_CID, [=])))))
+PLAN: Project([COUNT(*)#0], StreamingAgg(keys=[], FlatMap(outer=Scan(CUST), inner=IndexScan(ORD_CID, [=]))))
 ROWS(1) cols=[COUNT(*)]:
   [4]
 

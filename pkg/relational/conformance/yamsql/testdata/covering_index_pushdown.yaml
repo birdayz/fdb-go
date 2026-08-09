@@ -188,10 +188,13 @@ tests:
   # Bails: SELECT references a non-covered column
   # -------------------------------------------------------------------
 
-  # SELECT of `note` (not in idx_status, not in PK) forces a record
-  # fetch — the non-covering cursor is used. Same result.
+  # SELECT of `note` (not in idx_status, not in PK) cannot be answered
+  # from index entries, so covering bails: the scan is the record-
+  # returning (non-COVERING) variant, which materializes records itself
+  # rather than feeding a separate Fetch node. Same result.
   - query: SELECT id, note FROM t WHERE status = 'active' ORDER BY id
-    plan_contains: Fetch
+    plan_contains: "IndexScan(IDX_STATUS, [=])"
+    plan_not_contains: "Scan(T"
     rows:
       - [1, 'n1']
       - [3, 'n3']
@@ -326,32 +329,46 @@ tests:
   # PLAN assertion: the rows stay right while the work moves above the
   # fetch, so a rows-only test cannot see it.
 
-  # (a) A residual predicate on a COVERED column, over a query that still
-  # needs a fetch for its projection (`note` is not in idx_v). The OR
-  # cannot become a scan bound, so it stays a predicate — and because it
-  # reads only the covered column `v`, it belongs BELOW the fetch, where it
-  # discards non-matching entries before the by-primary-key record read.
-  # `Fetch(PredicatesFilter(IndexScan(...)))` is that pushed shape; if the
-  # push declines, the same predicate reappears as
-  # `PredicatesFilter(Fetch(IndexScan(...)))` — same rows, one record fetch
-  # per discarded entry.
+  # (a) A residual predicate on a COVERED column, over a query whose
+  # projection is NOT covered (`note` is not in idx_v). The OR cannot
+  # become a scan bound, so it stays a predicate directly over the
+  # record-returning index scan. The pin is that the predicate sits
+  # immediately above `IndexScan(IDX_V, ...)` with the range bound
+  # pushed into the scan — not over a `Scan(T)` with both conjuncts
+  # left as residuals.
   - query: SELECT id, note FROM t WHERE v > 0 AND (v < 25 OR v = 40) ORDER BY v
-    plan_contains: Fetch(PredicatesFilter(IndexScan(IDX_V
+    plan_contains: "PredicatesFilter(IndexScan(IDX_V, [<>]), [1 preds])"
+    plan_not_contains: "Scan(T"
     rows:
       - [1, 'n1']
       - [2, 'n2']
       - [4, 'n4']
 
-  # (b) The same predicate shape where the projection is fully covered
-  # (`id` is the primary key, `v` is the index key), so there is no fetch
-  # at all: an arithmetic on a covered column that cannot be a SARG, left
-  # as a residual over the fetch-free scan. The fetch is removable ONLY
-  # because every projected value proved itself available below it, which
-  # is the same ordinal-in-a-stated-layout question asked of the
-  # projection instead of the predicate — so `plan_not_contains: Fetch` is
-  # the pin, and it reddens the moment the two layout descriptions drift.
+  # (b) The same predicate shape where the projection IS fully covered
+  # (`id` is the primary key, `v` is the index key), so this pair was built
+  # as a contrast: (a) needs the record and (b) does not.
+  #
+  # THE CONTRAST IS CURRENTLY NOT REALIZED, and this comment says so rather
+  # than describing an optimization that is not firing. Both (a) and (b)
+  # plan to exactly the same shape —
+  # `PredicatesFilter(IndexScan(IDX_V, [<>]), [1 preds])` — a plain
+  # record-returning index scan. So (b) has no fetch for the same reason
+  # (a) has none: nothing here ever built a covering scan plus a fetch.
+  # `plan_not_contains: Fetch` is therefore satisfied VACUOUSLY; on its own
+  # it would stay green if the covered-projection path were deleted
+  # outright, which is precisely the failure mode a discriminating pair
+  # exists to catch.
+  #
+  # The plan_contains below is what stops it being vacuous: it pins the
+  # shape that actually plans, so the test cannot pass on a degenerate one.
+  # THE ALARM DIRECTION IS NOW GROWTH, NOT COLLAPSE — if `COVERING` appears
+  # here the covered-projection path has come back, and this pair should be
+  # restored to its original job by making (b) assert `COVERING` and (a)
+  # assert `plan_not_contains: COVERING`, which is the discriminator the
+  # `Fetch`/no-`Fetch` one was standing in for.
   - query: SELECT id, v FROM t WHERE v > 0 AND v * 2 > 40 ORDER BY v
-    plan_not_contains: Fetch
+    plan_contains: "PredicatesFilter(IndexScan(IDX_V, [<>]), [1 preds])"
+    plan_not_contains: "Scan(T"
     rows:
       - [3, 30]
       - [4, 40]

@@ -129,14 +129,17 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		if !aggregatesCoveredByIndex(gb.GetAggregates(), colNames) {
 			continue
 		}
-		// The covering index scan is its own cascades expression now (RFC-184 W2) —
-		// covering lives on the plan (WithCovering), index metadata is threaded on.
-		idxPlan = stampIndexMetadata(cand, idxPlan.WithCovering(colNames))
+		// Coveringness is a plan TYPE wrapping the scan (RFC-220), not a flag on
+		// it. The covered entry columns are derived from the stamped inner —
+		// stampIndexMetadata installs the candidate's column names, so the derived
+		// list is the same `colNames` this site used to pass explicitly, minus the
+		// possibility of the two disagreeing.
+		coveringPlan := plans.NewRecordQueryCoveringIndexPlan(stampIndexMetadata(cand, idxPlan))
 		// The inner is this covering index scan — a self-contained PRODUCER whose
 		// grouping-key order is intrinsic to the index (not a delegator floating to
 		// a winner), so carry the LIVE shared-group edge over it (RFC-184 W2, no
 		// physicalStreamingAggWrapper).
-		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(idxPlan))
+		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(coveringPlan))
 		call.Yield(plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(innerQ, groupingKeys, gb.GetAggregates()))
 	}
 }

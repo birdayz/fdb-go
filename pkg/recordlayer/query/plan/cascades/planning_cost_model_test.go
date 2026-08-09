@@ -623,14 +623,13 @@ func TestPlanningCostModel_CoveringEqualityIndexPreferredOverPrimaryScan(t *test
 	if !mr.Ok {
 		t.Fatal("failed to merge equality comparison")
 	}
-	// The cost-model walks the wrapper's CONCRETE plan tree (RFC-069 phantom-child
-	// fix) and reads the covering flag from the concrete plan (pl.IsCovering()), so
-	// the concrete plan must be marked covering via WithCovering — exactly as the
-	// data-access rule does in production (abstract_data_access_rule.go). Index
-	// metadata (key columns) is resolved from a PlanContext, also as in production.
-	idxPlan := plans.NewRecordQueryIndexPlan("idx_a", []*predicates.ComparisonRange{mr.Range}, []string{"T"}, values.UnknownType, false).
-		WithCovering([]string{"A"})
-	index := idxPlan.WithIndexMetadata([]string{"A"}, nil, false)
+	// The cost-model walks the CONCRETE plan tree (RFC-069 phantom-child fix) and
+	// keys coveringness on the plan TYPE, so the concrete plan must be the covering
+	// plan wrapping the scan — exactly as the data-access rule builds it in
+	// production (abstract_data_access_rule.go). Index metadata (key columns) is
+	// resolved from a PlanContext, also as in production.
+	idxPlan := plans.NewRecordQueryIndexPlan("idx_a", []*predicates.ComparisonRange{mr.Range}, []string{"T"}, values.UnknownType, false)
+	index := plans.NewRecordQueryCoveringIndexPlan(idxPlan.WithIndexMetadata([]string{"A"}, nil, false))
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
 		newKnownDistinctValueIndexCandidate("idx_a", []string{"T"}, []string{"A"}, nil, values.UnknownType, false, nil),
 	}}
@@ -773,12 +772,11 @@ func TestPlanningCostModelLess_Criterion10_IndexScanFetchCount(t *testing.T) {
 	// concrete plans, and index metadata is resolved from a PlanContext supplied
 	// exactly as the planner does in production.
 	//
-	// Plan A: covering index scan (no fetch wrapper). The concrete plan must be
-	// marked covering (WithCovering) so the concrete-plan walk classifies it as a
-	// covering index, exactly as the production data-access rule does.
-	idxAPlan := plans.NewRecordQueryIndexPlan("idx_a", nil, []string{"T"}, values.UnknownType, false).
-		WithCovering([]string{"a"})
-	indexA := idxAPlan.WithIndexMetadata([]string{"a"}, nil, false)
+	// Plan A: covering index scan (no fetch wrapper). The concrete plan must be the
+	// covering plan TYPE so the concrete-plan walk classifies it as a covering
+	// index, exactly as the production data-access rule builds it.
+	idxAPlan := plans.NewRecordQueryIndexPlan("idx_a", nil, []string{"T"}, values.UnknownType, false)
+	indexA := plans.NewRecordQueryCoveringIndexPlan(idxAPlan.WithIndexMetadata([]string{"a"}, nil, false))
 
 	// Plan B: non-covering index scan + fetch wrapper.
 	idxBPlan := plans.NewRecordQueryIndexPlan("idx_b", nil, []string{"T"}, values.UnknownType, false)
@@ -882,12 +880,14 @@ func TestPlanningCostModelLess_Criterion12_UnmatchedFieldCount(t *testing.T) {
 	// without criterion 12, the final hash rung prefers "many".
 	//
 	// Plan A: 1-column unbound index → unmatched=1.
-	indexA := plans.NewRecordQueryIndexPlan("few", nil, []string{"T"}, values.UnknownType, false).
-		WithCovering(nil).WithIndexMetadata([]string{"a"}, nil, false)
+	indexA := plans.NewRecordQueryCoveringIndexPlan(
+		plans.NewRecordQueryIndexPlan("few", nil, []string{"T"}, values.UnknownType, false).
+			WithIndexMetadata([]string{"a"}, nil, false))
 
 	// Plan B: 3-column index, 0 bounds → unmatched=3.
-	indexB := plans.NewRecordQueryIndexPlan("many", nil, []string{"T"}, values.UnknownType, false).
-		WithCovering(nil).WithIndexMetadata([]string{"a", "b", "c"}, nil, false)
+	indexB := plans.NewRecordQueryCoveringIndexPlan(
+		plans.NewRecordQueryIndexPlan("many", nil, []string{"T"}, values.UnknownType, false).
+			WithIndexMetadata([]string{"a", "b", "c"}, nil, false))
 
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
 		newKnownDistinctValueIndexCandidate("few", []string{"T"}, []string{"a"}, nil, values.UnknownType, false, nil),
@@ -994,7 +994,8 @@ func TestPlanningCostModelLess_Criterion13_InJoinCount(t *testing.T) {
 	// nesting lives in the live memo edges: outerInJoin ranges over the index, and
 	// twoInJoins ranges over outerInJoin (two InJoins in the child tree).
 	indexPlan := plans.NewRecordQueryIndexPlan("idx", nil, []string{"T"}, values.UnknownType, false)
-	indexRef := expressions.InitialOf(indexPlan.WithCovering(nil).WithIndexMetadata([]string{"a"}, nil, false))
+	indexRef := expressions.InitialOf(plans.NewRecordQueryCoveringIndexPlan(
+		indexPlan.WithIndexMetadata([]string{"a"}, nil, false)))
 	indexQ := expressions.NewPhysicalQuantifier(indexRef)
 
 	outerInJoin := plans.NewRecordQueryInJoinPlanFromQuantifier(indexQ, "bind1", false, false)

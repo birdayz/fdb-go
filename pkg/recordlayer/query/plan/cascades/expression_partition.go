@@ -180,6 +180,40 @@ func (p *PlanPartition) GetExpressionPropertyValue(
 
 // ToPlanPartitions computes plan partitions for a Reference by reading
 // the pre-computed PlanPropertiesMap (set during PLANNING phase).
+//
+// A RULE MUST NOT READ A PROPERTY OFF A PARTITION THIS RETURNS. The partition
+// key here is (DistinctRecords, StoredRecord, orderingHash) — see
+// toPartitionsFromMap — so a partition is homogeneous in those three and in
+// NOTHING else, while its partitionProps carries every property copied from
+// whichever member happened to create it. Reading any other property off it is
+// a fact about one member asserted of all of them.
+//
+// That is a DISTINCT defect from the single-member pick (a rule choosing one
+// member where it should yield over many). This one is the opposite shape: the
+// group is correctly enumerated and then DESCRIBED by one arbitrary element.
+// The two need different fixes, and grepping for one will not find the other —
+// a pick reads like a chosen winner, a read like `[0]` or a `break` on the
+// first match over a member collection.
+//
+// The gate is roll-up: call RollUpPlanPartitions with an EXPLICIT list of the
+// properties the rule reads, then read only those, off the partition. Roll-up
+// groups by each expression's own value for those properties, so the resulting
+// partition-level value describes every member by construction. Java needs no
+// such discipline because its partition key is the full property set
+// (PlanPartitions), which is why porting a Java rule that reads
+// getPartitionPropertyValue without also porting its rollUpTo silently drops
+// the guarantee the read depends on.
+//
+// ImplementInUnionRule is the known outstanding case: it consumes this raw and
+// takes the rich ordering from its first physical member. Converting it needs
+// more than roll-up. It also pins a single member (pinOrderedSpine), and that
+// pin is compensating for a SEPARATE defect one layer down:
+// MemoizeFinalExpressionsFromOther (implementation_rule.go:124-151) mints a
+// fresh Reference without a constraint entry, so OptimizeGroupTask's
+// per-ordering retention (unified_tasks.go:663-666) looks up the new reference,
+// finds nothing, and resolves by cost alone. Roll-up alone therefore does not
+// make dropping the pin safe — measured: it yields an InUnion claiming ASC over
+// a filtered full scan.
 func ToPlanPartitions(ref *expressions.Reference) []*PlanPartition {
 	pm := GetRefPlanPropertiesMap(ref)
 	if pm == nil {
@@ -335,28 +369,46 @@ func RollUpPlanPartitions(partitions []*PlanPartition, interestingProps ...*prop
 		}
 		return true
 	}
+	// Grouping is driven by each EXPRESSION's own property values, never by the
+	// source partition's. That is what makes the post-roll-up read TOTAL: a
+	// caller that rolls up to the properties it reads and then reads them off
+	// the partition is guaranteed the value holds for every member, because
+	// membership was decided by that very value.
+	//
+	// Grouping by the SOURCE partition's value would not give that guarantee,
+	// and the difference is not theoretical. Go's partition key is
+	// (DistinctRecords, StoredRecord, orderingHash) — see toPartitionsFromMap —
+	// so a partition is homogeneous in those three and in NOTHING else, while
+	// its partitionProps carries every property copied from whichever member
+	// happened to create it. Rolling up on such a value would propagate one
+	// member's answer to the whole group and hand the caller a partition-level
+	// read that is still a member-level fact. Java does not have to make this
+	// distinction because its partition key is the full property set, so its
+	// partitions are homogeneous in every property by construction.
 	var result []*PlanPartition
 	for _, p := range partitions {
-		var existing *PlanPartition
-		for _, g := range result {
-			if sameProps(g, p) {
-				existing = g
-				break
-			}
-		}
-		if existing == nil {
-			filteredProps := make(properties.PropertyMap, len(interestingProps))
-			for _, prop := range interestingProps {
-				filteredProps[prop] = p.partitionProps[prop]
-			}
-			existing = &PlanPartition{
-				partitionProps: filteredProps,
-				exprProps:      make(map[expressions.RelationalExpression]properties.PropertyMap),
-			}
-			result = append(result, existing)
-		}
 		for _, e := range p.GetExpressions() {
-			existing.addExpression(e, p.exprProps[e])
+			exprProps := p.exprProps[e]
+			candidate := &PlanPartition{partitionProps: exprProps}
+			var existing *PlanPartition
+			for _, g := range result {
+				if sameProps(g, candidate) {
+					existing = g
+					break
+				}
+			}
+			if existing == nil {
+				filteredProps := make(properties.PropertyMap, len(interestingProps))
+				for _, prop := range interestingProps {
+					filteredProps[prop] = exprProps[prop]
+				}
+				existing = &PlanPartition{
+					partitionProps: filteredProps,
+					exprProps:      make(map[expressions.RelationalExpression]properties.PropertyMap),
+				}
+				result = append(result, existing)
+			}
+			existing.addExpression(e, exprProps)
 		}
 	}
 	return result
@@ -379,6 +431,10 @@ func partitionPropValueEqual(a, b any) bool {
 		}
 		return orderingsEqual(ao, bo)
 	}
+	if ao, ok := a.(*properties.RichOrdering); ok {
+		bo, ok2 := b.(*properties.RichOrdering)
+		return ok2 && richOrderingsEqual(ao, bo)
+	}
 	ra, rb := reflect.TypeOf(a), reflect.TypeOf(b)
 	if ra != rb {
 		return false
@@ -387,6 +443,77 @@ func partitionPropValueEqual(a, b any) bool {
 		return a == b
 	}
 	return reflect.DeepEqual(a, b)
+}
+
+// richOrderingsEqual compares the FULL ordering structurally. reflect.DeepEqual
+// cannot do this job: a RichOrdering holds a map keyed by values.Value and a
+// pointer to a partially-ordered set, so two semantically identical orderings
+// built by different plans compare unequal on interface identity — the same
+// address-vs-value trap orderingsEqual was written for (RFC-180 D3).
+//
+// The comparison is deliberately CONSERVATIVE where it is unsure. Splitting two
+// orderings that are in fact equal costs enumeration; merging two that differ
+// puts a member into a partition whose property value does not describe it,
+// which is the exact defect roll-up exists to prevent. So the safe direction is
+// to split, and every uncertain case takes it.
+func richOrderingsEqual(a, b *properties.RichOrdering) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	ak, bk := a.GetKeys(), b.GetKeys()
+	if len(ak) != len(bk) {
+		return false
+	}
+	for i := range ak {
+		if !values.ValuesStructurallyEqual(ak[i], bk[i]) {
+			return false
+		}
+		// The bindings carry the direction and null placement for each key, and
+		// two orderings over the same key sequence with different bindings are
+		// different orderings — that is precisely the distinction PropOrdering
+		// loses and this property exists to keep.
+		ab, aok := bindingsForStructuralKey(a, ak[i])
+		bb, bok := bindingsForStructuralKey(b, bk[i])
+		if aok != bok || len(ab) != len(bb) {
+			return false
+		}
+		for j := range ab {
+			if ab[j] != bb[j] {
+				return false
+			}
+		}
+	}
+	// The ORDERING SET is part of the ordering's identity, not decoration. It is
+	// the partial order over the keys, and it is what
+	// EnumerateSatisfyingComparisonKeyValues walks to decide which comparison
+	// keys a requested ordering admits. Two orderings can carry the same key
+	// list and the same bindings and still admit different comparison keys.
+	//
+	// Omitting it here MERGED such a pair, and the merged partition then
+	// reported one member's ordering for both — reintroducing, through a
+	// too-permissive equality, exactly the read-off-a-member defect the roll-up
+	// exists to remove. Measured as six ordered InUnions collapsing to
+	// InMemorySort. Over-merging is the unsafe direction and this is the guard
+	// against it.
+	if !a.OrderingSet().Equal(b.OrderingSet()) {
+		return false
+	}
+	return a.IsDistinct() == b.IsDistinct()
+}
+
+// bindingsForStructuralKey looks a key up in an ordering's binding map by
+// STRUCTURAL equality. The map is keyed by values.Value, so a direct index with
+// a key taken from a different ordering matches only on interface identity and
+// would report "absent" for a key that is plainly there.
+func bindingsForStructuralKey(
+	o *properties.RichOrdering, key values.Value,
+) ([]properties.OrderingBinding, bool) {
+	for k, bindings := range o.GetBindingMap() {
+		if values.ValuesStructurallyEqual(k, key) {
+			return bindings, true
+		}
+	}
+	return nil, false
 }
 
 func orderingsEqual(a, b properties.Ordering) bool {

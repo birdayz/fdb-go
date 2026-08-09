@@ -14,15 +14,23 @@ import (
 // have several live callers, which is why they live in their own file rather than inside
 // any one rule.
 
-// extractIndexPlan extracts a *RecordQueryIndexPlan from a plan that may be either
-// an IndexPlan directly or a FetchFromPartialRecordPlan wrapping one.
+// extractIndexPlan extracts a *RecordQueryIndexPlan from a plan that is an index
+// scan, or a FetchFromPartialRecordPlan over one.
+//
+// Both levels go through plans.IndexPlanOf, which sees through the COVERING
+// wrapper. That is not defensive: the access path emits
+// Fetch(Covering(IndexScan)) for every index-backed access (RFC-220), and the
+// covering plan holds its scan as a FIELD, so matching the bare type under the
+// fetch found nothing for essentially every plan this helper is asked about.
+// Callers read a nil as "no index scan / no comparison ranges" — the
+// unrestricted-scan direction.
 func extractIndexPlan(p plans.RecordQueryPlan) *plans.RecordQueryIndexPlan {
-	if ip, ok := p.(*plans.RecordQueryIndexPlan); ok {
+	if ip, ok := plans.IndexPlanOf(p); ok {
 		return ip
 	}
 	if fp, ok := p.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 		if inner := fp.GetInner(); inner != nil {
-			if ip, ok := inner.(*plans.RecordQueryIndexPlan); ok {
+			if ip, ok := plans.IndexPlanOf(inner); ok {
 				return ip
 			}
 		}

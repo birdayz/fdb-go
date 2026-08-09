@@ -93,13 +93,13 @@ func TestPushFilter_NeverPushesUncoveredColumnBelowFetch(t *testing.T) {
 			name:    "or_residual",
 			sql:     "SELECT * FROM t WHERE k = 5 AND (a > 1 OR b < 2)",
 			uncov:   []string{"A", "B"},
-			wantTop: "PredicatesFilter(Fetch(IndexScan(IDX_K",
+			wantTop: "PredicatesFilter(IndexScan(IDX_K",
 		},
 		{
 			name:    "in_residual",
 			sql:     "SELECT * FROM t WHERE k = 5 AND m IN (1, 2, 3)",
 			uncov:   []string{"M"},
-			wantTop: "PredicatesFilter(Fetch(IndexScan(IDX_K",
+			wantTop: "PredicatesFilter(IndexScan(IDX_K",
 		},
 		{
 			name:  "simple_residual",
@@ -140,8 +140,16 @@ func TestPushFilter_NeverPushesUncoveredColumnBelowFetch(t *testing.T) {
 						col, "k-only", joined, p.Explain())
 				}
 			}
+			// The residual must be re-applied ABOVE the record read. Since RFC-220 a
+			// bare IndexScan is itself a fetching scan, so the shape is
+			// PredicatesFilter(IndexScan(...)) with no separate Fetch node; what makes
+			// it a record read rather than an entry read is the ABSENCE of COVERING,
+			// asserted separately below.
 			if tc.wantTop != "" && !strings.Contains(p.Explain(), tc.wantTop) {
-				t.Errorf("want the residual re-applied above the fetch (%s), got: %s", tc.wantTop, p.Explain())
+				t.Errorf("want the residual re-applied above the record read (%s), got: %s", tc.wantTop, p.Explain())
+			}
+			if tc.wantTop != "" {
+				assertScanReadsBaseRecords(t, p.Explain(), "IndexScan(IDX_K")
 			}
 		})
 	}
