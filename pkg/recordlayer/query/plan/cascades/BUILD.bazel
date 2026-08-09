@@ -395,6 +395,7 @@ go_test(
         "rebase_ordinal_layout_test.go",
         "reference_winner_test.go",
         "referenced_fields_readers_test.go",
+        "restricted_final_reference_test.go",
         "restricted_inner_reference_test.go",
         "rewriting_cost_model_outer_join_test.go",
         "rewriting_final_invariant_test.go",
@@ -1080,6 +1081,7 @@ go_test(
         "restricted_inner_reference_test.go",
         "rule_implement_in_memory_sort_test.go",
         "covering_scan_repricing_test.go",
+        "restricted_final_reference_test.go",
     ],
     deps = [
         "//gen",
