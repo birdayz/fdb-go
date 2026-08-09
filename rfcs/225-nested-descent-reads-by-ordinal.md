@@ -1,6 +1,6 @@
 # RFC-225 — The nested descent reads by ordinal
 
-**Revision 11.** Revisions 1-7 are preserved in **Appendix A**; revision 8's live
+**Revision 12.** Revisions 1-7 are preserved in **Appendix A**; revision 8's live
 sections were corrected in place rather than appended to, so that section 5
 remains the ONE live acceptance list.
 
@@ -286,9 +286,8 @@ Constructors, and there are no others:
 | Constructor | For | Ordinal from | Domain |
 |---|---|---|---|
 | `NewResolvedAccessorOfDescriptorField(fd protoreflect.FieldDescriptor)` | a descriptor-side mint (**not** the nested descent — see §3.3.1) | `fd.Index()` — non-negative by protoreflect's contract, and it *is* the declaration index | `OrdinalDomainOfMessageDescriptor(fd.ContainingMessage())` |
-| `NewResolvedAccessorInDomain(name, idx, OrdinalDomainOfType(rt))` | **nested struct descent** — the producers walk types, not descriptors (§3.3.1) | caller's field index within `rt`, `>= 0` enforced | `OrdinalDomainOfType(rt)` — **already exists**, `values.go:347` |
-| `NewResolvedAccessorInDomain(name string, ord int, d OrdinalDomain) (ResolvedAccessor, error)` | a ROW-layout root | caller, `ord >= 0` enforced | caller's stated layout |
-| `NewResolvedAccessorOfOrdinal(name string, ord int) (ResolvedAccessor, error)` | a root whose layout is not in hand | caller, `ord >= 0` enforced | UNKNOWN — fails closed at every domain check |
+| `NewResolvedAccessorInDomain(name, idx, d)` | **nested struct descent — THE one constructor for it** (§3.3.1), and a ROW-layout root | caller, `ord >= 0` enforced | caller's stated layout; nested descent passes `OrdinalDomainOfType(rt)`, **already exists at `values.go:347`** |
+| ~~`NewResolvedAccessorOfOrdinal`~~ | **DELETED** — listed here only to say so; revision 11 both declared it deleted and kept it in this table | — | — |
 
 The error type is `*OrdinalBakeError`, which already exists and already carries
 `Ordinal` and `Reason`. Java's `Preconditions` throws; Go's library code does not
@@ -358,7 +357,7 @@ analogue of Java's resolved `Field`. The other two let a caller assert an ordina
 against a layout it happens to hold, which is the failure
 `NewFieldPathOfSingleInDomain`'s own doc names (`values.go:444-447`: *"stating a
 layout the ordinal does not index … wearing a proof's clothes"*). Therefore:
-**the nested-descent bake accepts descriptor-derived accessors only.**
+**the nested-descent bake accepts accessors carrying a KNOWN domain only (§3.3.1) — **revision 11 said "descriptor-derived only" here, which would have rejected 100% of what its own §3.3.1 mints**.**
 `NewResolvedAccessorOfOrdinal` is **deleted** — it is
 `NewResolvedAccessorInDomain(name, ord, OrdinalDomain{})` and forces "I cannot
 state my layout" to be spelled at the call site and visible in the diff.
@@ -422,9 +421,15 @@ of indexing the wrong slot."*
    `OrdinalDomainOfMessageDescriptor`, and **delete the original**. A second copy
    of a domain derivation is precisely the "no second list that could drift"
    hazard §1 takes credit for avoiding.
-2. **The producer checks agreement before it bakes.** It resolves each segment
-   against the nested message descriptor and compares that descriptor's token
-   against the layout its child `Value` advertises. **Disagreement, or an
+2. **The producer checks agreement before it bakes, and BOTH tokens are
+   type-derived — no descriptor participates at bake.** It resolves each segment
+   against the `*values.RecordType` it is already walking (`currentType`,
+   `index_expansion.go:560-566`) and compares that type's token against the layout
+   its child `Value` advertises (`FieldValue.Typ`). Naming the two sides is the
+   correction of lap 10: revision 11 said "the descriptor's token", and the
+   producer provably cannot obtain one (§3.3.1's zero-hit grep), so that check was
+   either impossible at bake or had silently moved back to the read — the per-row
+   design §7 lists as losing. **Disagreement, or an
    unknown token on either side, means the nested path is NOT baked** — the rule
    does not fire. A rule that cannot establish its precondition must not fire; it
    must not fire *and then apologise at runtime*.
@@ -551,7 +556,7 @@ the code.
   withhold it is **not yet established, and it is the one item on this list
   requiring new investigation before implementation.**
 - **`index_expansion`'s decline is not `nil`.** It is
-  `lazyFanOutFieldPathValue(...)` (`:541`, `:546`, `:549`) — a name-keyed lazy
+  `lazyFanOutFieldPathValue(...)` (`:541`, `:545`, `:550`) — a name-keyed lazy
   `FieldValue` with a **different memo identity** and a surviving per-row name
   read. So "decline the optimization" changes the value shape on the fan-out
   path, which is the path criterion 9's atomicity pin is about.
@@ -570,16 +575,16 @@ The decline is per-producer and criterion 15(a) pins that its plans do not move.
 
 So each producer:
 
-1. walks its segments against the nested message descriptor, one step at a time
+1. walks its segments against the nested `*values.RecordType` chain (§3.3.1), one step at a time
    (`fd.Message()` gives the next descriptor — Java's `currentType =
    field.getFieldType()`, `FieldValue.java:296`, in descriptor form);
-2. mints `NewResolvedAccessorOfDescriptorField(fd)` per step;
+2. mints `NewResolvedAccessorInDomain(name, idx, OrdinalDomainOfType(rt))` per step (§3.3.1);
 3. **checks the bake-time domain agreement of §3.2** before baking anything;
 4. **declines** on any step that will not resolve, or on a token disagreement —
    but *"by its own existing route"* is **FALSE for `index_expansion`, and
    revision 9 wrote it anyway.** Measured this lap: all three
    `lazyFanOutFieldPathValue` returns are **before** the suffix loop
-   (`index_expansion.go:541, `:546`, `:550``). **Inside the loop (`:561-583`) there is no
+   (`index_expansion.go:541`, `:545`, `:550`). **Inside the loop (`:561-583`) there is no
    decline at all** — a name miss sets `currentType = values.UnknownType`, appends
    a `-1` accessor, and returns a `FieldValue` regardless.
 
@@ -590,9 +595,17 @@ So each producer:
 
    **And the edge must reach `(GraphExpansion, false)`, not merely return
    differently.** Revision 10 said "the rule does not fire", which is not
-   available where it placed the decline. Measured: the `SCALAR` caller
-   (`index_expansion.go:310`) has a `return nil, false`; the **`FAN_OUT` arms at
-   `:325` and `:440` have none.** They take the returned collection and
+   available where it placed the decline.
+
+   **FOUR arms need the edge, not two — revision 11 miscounted by describing the
+   SCALAR arm as already having one.** Measured: `index_expansion.go:310` is
+   `value, _ := fanOutFieldPathValue(...)` — it **discards** the second return.
+   The `return nil, false` at `:304` is the name-agreement check and is
+   unreachable from a bake decline. So `SCALAR`/`CONCATENATE` (`:309-323`) is a
+   fourth site needing the new edge, alongside the two `FAN_OUT` arms — the same
+   species of gap as the one that produced this blocker.
+
+   The **`FAN_OUT` arms at `:325` and `:440` have no decline either.** They take the returned collection and
    unconditionally build `arrayElementType` → `NewExplodeExpression` →
    `ForEachQuantifier` → `NewPlaceholder` (`:331-345`, `:445-455`). A decline that
    returns `values.UnknownType` therefore does **not** suppress the expansion — it
@@ -623,13 +636,69 @@ false. That is the silent-decline failure mode criterion 4 exists to catch,
 promoted from a risk to the design's steady state.
 
 **The resolution: bake against the `values.Type` chain, not against the
-descriptor.** The producers already walk the type chain, and the type chain is
-what the ordinal must index at read time anyway. Measured:
-`metadata/proto_types.go:129-137` builds `StructField`s in **descriptor order**,
-`api.NewStructField(string(fd.Name()), dt, i)` with `i` the descriptor index — so
-for any type derived by that path, `RecordType.Fields[i]` corresponds to
-descriptor field `i` **by construction**. That is the correspondence the design
-needs, and it is available where the producers already stand.
+descriptor.** The type chain is what the ordinal must index at read time anyway.
+
+**The correspondence, cited against the structure actually in play.** Revision 11
+justified this with `metadata/proto_types.go:129-137` — which builds an
+`api.StructType`. **The producers do not walk `api.StructType`; they walk
+`values.RecordType`, and the two have no shared construction path.** The
+load-bearing citation did not cover the object the design operates on. The real
+path is `rlcatalog.columnForField` (`rlcatalog.go:335-369`) feeding
+`structColumnType` (`expr.go:1796-1819`), and measured against it the two halves
+of the correspondence come apart:
+
+- **ORDER is preserved.** `rlcatalog.go:364-368` iterates `nested.Get(i)` in
+  descriptor order and `expr.go:1815` assigns `Ordinal: i`. The ordinal
+  correspondence the design needs is real.
+- **NAMES are substituted.** `rlcatalog.go:336` is
+  `Id: semantic.NewUnquoted(recordlayer.ToUserIdentifier(string(f.Name())))`, and
+  the comment above it states the divergence outright: *"for the rest this is
+  what makes `SELECT "a$b"` resolve against the field stored as A__1B."`*
+  `:366` recurses through `columnForField`, so the substitution applies to
+  nested struct fields uniformly.
+
+### 3.3.2 One mechanism, stated once — and why no descriptor token exists at bake
+
+Lap 10 found the previous two revisions had left **four** live statements of the
+mechanism, three of them the refuted descriptor one, and §3.3's numbered recipe —
+the one an implementer actually follows — among them. That is the criteria-9/17
+failure repeating at the level of the design text: two instructions, mutually
+exclusive, and the wrong one load-bearing. The mechanism is therefore stated
+**once**, here, and the other sites now point at it.
+
+**At bake, the only layout in hand is a `*values.RecordType`.** Measured:
+`index_expansion.go:560-566` threads `currentType` and resolves each segment with
+`recordTypeField`; no producer holds a descriptor (§3.3.1). So:
+
+1. The producer resolves segment *k* against `currentType.(*values.RecordType)`.
+2. It mints `NewResolvedAccessorInDomain(field.Name, ordinal, OrdinalDomainOfType(nestedType))`.
+   The accessor's domain **is the token of the layout its ordinal indexes** — that
+   is the whole invariant, and it is checkable at the mint site.
+3. It compares that token against the layout the child `Value` advertises
+   (`FieldValue.Typ`). Disagreement, or UNKNOWN on either side, declines.
+4. The READ keeps **only** Java's bounds check (§3.2(3)). No token is recomputed
+   per row, and no descriptor token is ever built at runtime.
+
+**What closes the gap between the RecordType and the arriving proto message.**
+The read descends a stored message by ordinal while the bake reasoned about a
+`RecordType`, so something must guarantee `rt.Fields[i]` corresponds to
+`descriptor.Fields().Get(i)`. That guarantee is a **construction invariant of the
+catalog, not a per-row check**: `rlcatalog.go:364-368` iterates `nested.Get(i)` in
+descriptor order and `expr.go:1815` assigns `Ordinal: i`. It is pinned once, by
+criterion 20, rather than paid for on every row.
+
+**This dissolves the alphabet defect rather than fixing it.** A draft of this
+section had the bake comparing a `RecordType` token against a descriptor token,
+which fails for escaped fields — `rlcatalog.go:336` signs USER names (`A$B`) and
+the descriptor signs STORED names (`A__1B`) — so one escaped sibling would poison
+a whole struct's bake, and criterion 5 (which requires the escaped class to work
+THROUGH the ordinal path) would have been unsatisfiable against it. That draft
+then proposed normalising the descriptor side through `ToUserIdentifier`. **Both
+sides of the real bake are `RecordType`-derived, so both already sign USER names
+and no normalisation is needed at all.** The escaped class bakes like any other.
+The measurement that produced the defect is kept because it is what makes the
+catalog invariant above load-bearing; the proposed remedy is withdrawn as a fix
+to a problem the correct mechanism does not have.
 
 So `NewResolvedAccessorOfDescriptorField(fd)` is **not** the nested-descent
 constructor. The nested-descent constructor takes the field index within the
@@ -670,7 +739,28 @@ correspondence is NOT universal, and the counter-example is in-tree:
 node. A path descending through a wrapped array has no ordinal correspondence to
 bake, and the token comparison is what detects it. Additionally
 `unnest_seed.go:135-139`'s `derivedOutputColumns` arm (a derived-table outer)
-has no descriptor at all and can only decline. **Both are named shrink classes,
+has no descriptor at all and can only decline. A third: `structColumnType` returns
+`values.TypeUnknown` for a recursion-stopped struct (`expr.go:1797-1798`, driven
+by `rlcatalog.go:353-356`'s `enclosing` guard), so a self-referential nested type
+declines — named here rather than discovered at implementation time.
+
+**And two of the three producers do not walk a per-step type either — the same
+gap as lap 9's, one level in.** Revision 11's premise ("the producers already walk
+the type chain … it is available where they stand") is measured TRUE only for
+`index_expansion` (`:560-581` genuinely threads `currentType`). For the other two
+it holds for the ROOT only:
+
+- `unnest_seed.go:168-177`: `outerType.FieldIndex` resolves `arrIdx`, then the
+  suffix loop over `u.Segments[rootSegmentIndex+1:]` **walks no type at all** — it
+  uppercases raw SQL segments and appends `-1`;
+- `unnest_gather.go:180-190`: identical shape over `u.Segments[2:]`.
+
+**Where the descent comes from, since this must not be another unstated input.**
+The root ordinal already yields the collection: `outerType.Fields[arrIdx].FieldType`
+is the array type, and `arrayElementType` of it is the element `*RecordType` —
+the same derivation `index_expansion.go:331` already performs. Each producer
+threads that element type into its suffix loop and descends it per segment,
+exactly as `index_expansion` does. The input exists; it is currently discarded. **Both are named shrink classes,
 covered by criterion 15; neither is a surprise at implementation time.**
 
 The name matching in step 1 is **today's `protoFieldByName` head moved verbatim**:
@@ -929,6 +1019,19 @@ against.
     non-root accessor carrying an unknown domain. The compiler and the chokepoint
     then do the enumeration. Mutation direction (criterion 13): remove the
     refusal, splice an unknown-domain accessor, assert RED.
+20. **THE CATALOG ORDER INVARIANT — pinned once, since the read relies on it every
+    row (§3.3.2).** The bake reasons about a `*values.RecordType`; the read
+    descends a stored proto message by that ordinal. The bridge is that
+    `rlcatalog.go:364-368` builds struct fields in **descriptor order** and
+    `expr.go:1815` assigns `Ordinal: i`. Nothing pins it today. A test asserting,
+    over a schema including an ESCAPED field name and a NESTED struct, that for
+    every `i`, `rt.Fields[i]` corresponds to `descriptor.Fields().Get(i)` —
+    **name-substituted but order-identical** (`rlcatalog.go:336` maps through
+    `ToUserIdentifier`, so the test compares `ToUserIdentifier(descriptor name)`
+    against `rt.Fields[i].Name`, and that substitution is exactly why the
+    invariant is about ORDER and not about names). Mutation (criterion 13):
+    permute the catalog's field order, assert RED. This is the plank the whole
+    ordinal read stands on and it is currently unwatched.
 
 ### 5.1 The mutation-checkability of the divergent-ordinal fixture (Appendix A §12's criterion 7 — the correction §16.4 claimed and did not make)
 
