@@ -1,8 +1,18 @@
 # RFC-225 — The nested descent reads by ordinal
 
-Takes RFC-197's `boundary` bucket from 2 entries to **0** — but not for the
-reason the work started with, and not on one arm. See section 9.2 for the final
-position; sections 3.5, 7.9 and 9 record how it changed and why.
+**Revision 9.** Revisions 1-7 are preserved in **Appendix A**; revision 8's live
+sections were corrected in place rather than appended to, so that section 5
+remains the ONE live acceptance list.
+
+Seven review laps, zero ACKs. Revision 8 changed the axis — from a seventh
+consumer-side check to the constructor — and **both reviewers endorsed the axis
+and NAK'd the execution** (§5.2 is the record). Revision 9 folds both reviews.
+The single largest correction: revision 8 put the layout-agreement check at the
+READ, per row; it belongs at the BAKE, and the tree already does exactly that
+elsewhere (§3.2).
+
+See §2 for why the axis changed, §3 for the design, §5 for the criteria, §5.2 for
+what lap 7 found.
 
 ## 0. Summary
 
@@ -17,14 +27,13 @@ This RFC converts the read to Java's form: **the nested path is resolved to
 declaration indices once, at construction, and the evaluator indexes
 `Descriptor().Fields().Get(ordinal)` with a bounds check that is LOUD.**
 
-The conversion has been blocked, correctly, by a real precondition: on the
-producers that reach this arm the ordinal is not the descriptor's declaration
-index. This RFC's substance is the audit that establishes what each producer's
-ordinal actually is (section 3), and a construction-time resolution that does
-not depend on any flowed row type (section 4).
-
-Three refutations are stated up front: two of the inherited framing (section 2)
-and one of this RFC's own first draft, which both reviewers NAK'd (section 3.5).
+The conversion is blocked by a real precondition: on the producers that reach
+this arm the ordinal is not the descriptor's declaration index, and three of them
+mint `-1` deliberately. Revisions 2-7 tried to clear that precondition with a
+check at the CONSUMER, and were refuted six times by one more feeder. **Revision
+8 clears it at the MINT, by porting the Java constructor that makes an
+unresolved accessor unconstructible** (§2, §3.1) — and adds the one guard the
+constructor cannot supply, which is *which descriptor* the ordinal indexes (§3.2).
 
 ## 1. Java is the spec — verified against `fdb-record-layer/` @ 4.12.11.0
 
@@ -146,6 +155,665 @@ invariant Java leaves unchecked — it has no way to violate it.
 name feeds `toString`/`explain` (`:694-696`, `:427-433`, `:229-236`) and plan
 serialization (`:703`). Go's `ResolvedAccessor` already documents and implements
 exactly this. **No change to identity semantics is proposed.**
+## 2. The axis was wrong, and that is why six laps found six holes
+
+Revisions 2 through 7 are preserved in **Appendix A**. Read this section first;
+the appendix is evidence, not design. Every one of those revisions tried to
+establish *"this ordinal is trustworthy"* with a check at the **CONSUMER** —
+`assertSuffixStep`, then an enumeration of feeders, then a resolver route, then a
+`DescriptorResolved` provenance bit. Each was refuted by finding one more feeder.
+That is not six unlucky audits. It is the signature of a check placed where the
+population it must cover is unbounded.
+
+### 2.1 Java does not have this problem, because Java does not have this struct
+
+`CASC/values/FieldValue.java:645-655`, `ResolvedAccessor`:
+
+```java
+@Nonnull final Field field;              // the resolved Type.Record.Field
+final int ordinal;
+
+protected ResolvedAccessor(@Nonnull final Field field, final int ordinal) {
+    Preconditions.checkArgument(ordinal >= 0);
+    this.field = field;
+    this.ordinal = ordinal;
+}
+```
+
+Two properties, both structural:
+
+- the constructor is `protected` and takes the **resolved `Type.Record.Field`** —
+  the evidence the resolution happened, not a flag saying it did;
+- `Preconditions.checkArgument(ordinal >= 0)` — a negative ordinal is
+  **unconstructible**, which is exactly what makes ordinal-only equality
+  (`:684`, `:689`) sound.
+
+Go's is:
+
+```go
+type ResolvedAccessor struct {
+	Field   string
+	Ordinal int
+}
+```
+
+Exported fields, no constructor, no precondition, `-1` a legal value that three
+producers deliberately mint. **The provenance question that consumed six
+revisions exists only because Go dropped Java's field and left the struct open.**
+It is not a hard question about nested descent. It is the absence of a
+constructor.
+
+### 2.2 The consumer axis provably cannot cover its population — measured
+
+The revision-7 design put the fail-closed check at `FuseNestedSuffix`. Scoped
+counts, commands run at the repo root in this worktree:
+
+```
+$ grep -rn "\.WithSuffix(" --include="*.go" pkg/ cmd/ | grep -v _test.go | wc -l
+13
+```
+
+Thirteen lines; one (`values.go:579`) is a comment inside a doc block, so **12
+real call sites** mint or extend a path with a suffix. Against:
+
+```
+$ grep -rn "FuseNestedSuffix(" --include="*.go" pkg/ cmd/ | grep -v _test.go
+pkg/recordlayer/query/plan/cascades/left_outer_existential.go:51
+pkg/recordlayer/query/plan/cascades/values/values.go:5205   (the definition)
+```
+
+**One non-test caller.** Ordinary nested SQL references never reach it: they mint
+at `pkg/relational/core/query/expr/expr.go:264` (`fuseNestedAccessors`) and call
+`WithSuffix` directly. So the revision-7 guard covered 1 of 12 routes, and each
+lap found the route the previous lap missed. A seventh lap would find a
+thirteenth. **The axis is the defect.**
+
+### 2.3 The mint is a chokepoint, and so is the read — the fuse is neither
+
+The check belongs where the population is provably closed. There are two such
+places and the fuse is not one of them:
+
+- **The mint.** With unexported fields, *the Go compiler* enumerates the
+  producers. Not a grep, not an audit — a build failure at every site that tries
+  to construct an accessor another way. A site that **cannot construct** the
+  value cannot bypass the check, and no future feeder can be missed because a
+  future feeder must also compile.
+- **The read.** `descendResolvedPath` is where a suffix ordinal meets a stored
+  proto message, and it has exactly **one** non-test caller:
+
+```
+$ grep -rn "descendResolvedPath(" --include="*.go" pkg/ | grep -v _test.go
+values.go:867    (evaluateOrdinal — the ONE caller)
+values.go:905    (the definition)
+```
+
+Every fused path, from every one of the 12 `WithSuffix` sites, evaluates through
+`values.go:867`. **The consumer population here is 1 by measurement, and it is 1
+because it is the READ.** (Revision 8 wrote "and there is only one read". That is
+true of `descendResolvedPath` and FALSE of the struct-descent read, which has
+three sites — see criterion 3. The chokepoint argument survives; the sentence did
+not.) That is the difference
+between this and the refuted design, which put a check at a *fuse*, of which
+there are many.
+
+## 3. The design
+
+Three changes. (1) and (2) are one mechanism at two levels; (3) is what (1)
+forces the producers to admit.
+
+### 3.1 Close the struct — port Java's constructor
+
+```go
+// ResolvedAccessor is Java's FieldValue.ResolvedAccessor (FieldValue.java:645).
+// Fields are UNEXPORTED and there is no literal form: an accessor exists only
+// if a constructor made it, and every constructor upholds Java's
+// Preconditions.checkArgument(ordinal >= 0) (:651). A NEGATIVE ordinal is not
+// representable, which is what makes the ordinal-only equality at :684/:689
+// sound in Go as it is in Java.
+type ResolvedAccessor struct {
+	field   string
+	ordinal int
+	domain  OrdinalDomain
+}
+
+func (a ResolvedAccessor) Field() string          { return a.field }
+func (a ResolvedAccessor) Ordinal() int           { return a.ordinal }
+func (a ResolvedAccessor) Domain() OrdinalDomain  { return a.domain }
+```
+
+Constructors, and there are no others:
+
+| Constructor | For | Ordinal from | Domain |
+|---|---|---|---|
+| `NewResolvedAccessorOfDescriptorField(fd protoreflect.FieldDescriptor)` | **nested struct descent** | `fd.Index()` — non-negative by protoreflect's contract, and it *is* the declaration index | `OrdinalDomainOfMessageDescriptor(fd.ContainingMessage())` |
+| `NewResolvedAccessorInDomain(name string, ord int, d OrdinalDomain) (ResolvedAccessor, error)` | a ROW-layout root | caller, `ord >= 0` enforced | caller's stated layout |
+| `NewResolvedAccessorOfOrdinal(name string, ord int) (ResolvedAccessor, error)` | a root whose layout is not in hand | caller, `ord >= 0` enforced | UNKNOWN — fails closed at every domain check |
+
+The error type is `*OrdinalBakeError`, which already exists and already carries
+`Ordinal` and `Reason`. Java's `Preconditions` throws; Go's library code does not
+panic (design principle 4), so the precondition is an error the caller must
+handle — and every current `-1` site is a site that already has a `nil`-return
+decline path to route it into.
+
+**What this buys, and the overclaim revision 8 made — corrected.** Revision 8 said
+"an accessor exists only if a constructor made it" and "this is the whole
+provenance question, answered at compile time". **That is false, and both
+reviewers found it independently.** Go rejects only composite literals that
+*name* unexported fields. All of these compile from any package and yield
+`ordinal == 0` — a **valid first-field index**, strictly more dangerous than
+`-1`, which at least fails a bounds check loudly:
+
+```go
+values.ResolvedAccessor{}          // and values.go:617 already returns exactly this
+var a values.ResolvedAccessor
+make([]values.ResolvedAccessor, n) // IN PRODUCTION TODAY:
+                                   //   expr/expr.go:258   make(..., len(accessors))
+                                   //   max_match_map.go:910  make(..., p)
+```
+
+None of them matches a `grep "ResolvedAccessor{"`. So closing the struct buys a
+real but **narrower** property: no site outside `values` can *set* a negative or
+arbitrary ordinal, and the compiler enumerates every setter. It does not make an
+unresolved accessor unconstructible.
+
+**The zero value is closed by the domain, not by the constructor.** An accessor
+no constructor touched has an UNKNOWN domain token, and §3.2's bake-time
+agreement check declines on an unknown token on either side. That is why the
+domain is not an optional second guard: for the zero-value class it is
+**load-bearing alone**. §4's "two independent structural properties" is corrected
+accordingly.
+
+Of the three constructors, **only `NewResolvedAccessorOfDescriptorField` is
+evidence-bearing** — the `protoreflect.FieldDescriptor` *is* the resolution, the
+analogue of Java's resolved `Field`. The other two let a caller assert an ordinal
+against a layout it happens to hold, which is the failure
+`NewFieldPathOfSingleInDomain`'s own doc names (`values.go:444-447`: *"stating a
+layout the ordinal does not index … wearing a proof's clothes"*). Therefore:
+**the nested-descent bake accepts descriptor-derived accessors only.**
+`NewResolvedAccessorOfOrdinal` is **deleted** — it is
+`NewResolvedAccessorInDomain(name, ord, OrdinalDomain{})` and forces "I cannot
+state my layout" to be spelled at the call site and visible in the diff.
+
+### 3.2 The wrong-column class no lap has named — checked at BAKE time, the way the tree already does it
+
+> **Revision 9 rewrote this section.** Revision 8 put the check at the READ, per
+> row. Both reviewers NAK'd; the Cascades objection is decisive and is recorded
+> in §2.4. In Cascades every plan in the memo is executable by construction, so a
+> per-row agreement test means either a silent NULL on the unpinned arm (opening
+> a third silent-NULL class while §0 indicts exactly that) or an optimizer that
+> costed and committed a plan whose read cannot be performed. **The check moves
+> to bake time.** The read keeps only Java's bounds check.
+
+Closing the struct kills `-1` and kills "did a resolver run". It does **not** kill
+a second class, which no revision of this document has stated:
+
+> Java's `resolveFieldPath` sets `currentType = field.getFieldType()`
+> (`FieldValue.java:296`) — resolution walks **the type of the value it will
+> read**, step by step. Go's producers resolve against a descriptor fetched
+> independently (`t.resolveRecordType(table).Descriptor`), and **nothing checks
+> that the message arriving at `descendResolvedPath` has the descriptor the
+> producer resolved against.**
+
+Today that fails comparatively safely: an absent name yields NULL (unpinned) or a
+loud `*OrdinalResolutionError` (pinned). After the conversion, ordinal *k* is
+**in range on a different message type** and reads the **wrong column silently,
+off stored records**. A provenance bit records that *a* resolver ran. It cannot
+record *which descriptor* it ran against, and that is the question.
+
+**The tree already holds both the mechanism AND the shape, and revision 8 failed
+to look for the second.** `OrdinalDomain` (`values.go:297-306`) is an injective,
+length-prefixed signature of a layout's ordered column names, with an unexported
+`sig` so it cannot be hand-forged and a fail-closed `IsKnown()`. It is already
+derived from a proto descriptor, by a function that already exists:
+
+```go
+// pkg/relational/core/embedded/cascades_generator.go:5047
+func descriptorOrdinalDomain(d protoreflect.MessageDescriptor) values.OrdinalDomain
+```
+
+and it is already used as a **plan-time** agreement check, in exactly the shape
+this section needs (`cascades_generator.go:5031-5037`):
+
+```go
+for _, d := range allLeafDescriptors(leg, md) {
+	if descriptorOrdinalDomain(d) != id.Domain { continue }   // layout agreement
+	if id.Ordinal >= d.Fields().Len() { return "" }           // Java's bounds check
+	return arrayElementTypeNameOfField(d.Fields().Get(id.Ordinal))
+}
+```
+
+Its own doc (`:4993-4998`) states the rationale this RFC spent seven revisions
+re-deriving: *"The check is a whole-layout signature match … not a per-column
+name match, so a leg whose row type was derived some other way declines instead
+of indexing the wrong slot."*
+
+**So the design is: do that, for the nested descent, at bake time.**
+
+1. **Promote `descriptorOrdinalDomain` into `values`** as
+   `OrdinalDomainOfMessageDescriptor`, and **delete the original**. A second copy
+   of a domain derivation is precisely the "no second list that could drift"
+   hazard §1 takes credit for avoiding.
+2. **The producer checks agreement before it bakes.** It resolves each segment
+   against the nested message descriptor and compares that descriptor's token
+   against the layout its child `Value` advertises. **Disagreement, or an
+   unknown token on either side, means the nested path is NOT baked** — the rule
+   does not fire. A rule that cannot establish its precondition must not fire; it
+   must not fire *and then apologise at runtime*.
+3. **The read keeps ONLY Java's bounds check**, and it is **loud on pinned and
+   unpinned alike** — after (2) it can fire only on a bug, so a silent NULL there
+   would hide one:
+
+```go
+case proto.Message:
+	fields := rec.ProtoReflect().Descriptor().Fields()
+	ord := acc.Ordinal()
+	if ord >= fields.Len() {          // Java MessageHelpers.java:171
+		return nil, &OrdinalResolutionError{...}
+	}
+	fd := fields.Get(ord)
+	cur = ProtoFieldToRowValue(fd, rec.ProtoReflect().Get(fd))
+```
+
+This restores the Cascades property revision 8 broke: every plan in the memo is
+executable by construction. It also removes the per-row cost revision 8 quietly
+imported — `OrdinalDomainOfColumnNames` is an O(#fields) walk with `ToUpper` and
+`Itoa` per field, which revision 8 put on the eval hot path in place of an O(1)
+`fields.ByName` map hit, while §3.3 sold the change as moving name matching
+*off* the per-row path. That inversion was in the document and no criterion would
+have caught it.
+
+**What this costs, stated because §14's shape is real.** The appendix §14
+merge-slot sub-leg ROW now declines at PLAN time rather than reading the wrong
+column at eval time. That is the correct trade and it is a genuine loss of
+optimization on that shape, not a no-op. Separately: any step whose STORED
+spelling differs from the SCHEMA's resolves fine today at runtime and will
+decline at bake time after this change. Java never loses those, because Java's
+construction-time type *is* the read's type (`FieldValue.java:296`). §5
+criterion 15 requires that shrink to be measured, not assumed empty.
+
+**Identity and hash — stated, not assumed.** The accessor gains a `domain` field.
+`FieldPath.Equals` (`values.go:643`) and `semantic_hash.go:127` read `Ordinal`
+alone, so two references to one column arriving through different producers still
+intern as one memo member. That is **safe today and unpinned**, and it must be
+both stated and pinned (criterion 16) — `ResolvedAccessor` is a comparable struct
+`!=`'d whole at `fieldpath_compose_test.go:59-60,119-120`, so adding a field
+silently changes every such comparison. Revision 8 claimed at §3.1 to have "no
+identity/hash question" while adding a third field that has exactly that
+question; that sentence is deleted.
+
+**This overturns an in-tree comment, deliberately.** `values.go:373-376` says the
+domain *"Lives ON THE PATH, once … accessors beyond the first descend nested
+records where the question does not arise."* This section's premise is that it
+**does** arise there. The comment is reconciled at source, not left contradicting
+the code.
+
+### 3.3 The three `-1` producers say what they mean
+
+> **Revision 9 corrected this section on two facts, both found independently by
+> both reviewers.** Revision 8 said each producer "is minting *no descriptor
+> ordinal known*" and "declines through the `nil` return it already has". Both
+> are false for `index_expansion`, and the appendix §2.1 had it right before
+> revision 8 flattened it.
+
+`index_expansion.go:564`, `unnest_seed.go:177`, `unnest_gather.go:189`. Under
+§3.1 they cannot mint `-1`. But they are not three of a kind:
+
+- **`unnest_seed.go:177` and `unnest_gather.go:189`** genuinely mint *"no
+  descriptor ordinal known"* — a literal `-1` with no resolution attempted.
+- **`index_expansion.go:566-570` does NOT.** `recordTypeField` **finds** the
+  ordinal and `if !collectionPath { accessor.Ordinal = ordinal }` then
+  deliberately **withholds** it. The function's own doc says so (`:525-527`):
+  *"For a collection path, nested proto-message suffixes remain name-addressed
+  (ordinal -1); ordinary scalar paths resolve every available nested ordinal."*
+  That is a documented withholding of a KNOWN ordinal. Why collection paths
+  withhold it is **not yet established, and it is the one item on this list
+  requiring new investigation before implementation.**
+- **`index_expansion`'s decline is not `nil`.** It is
+  `lazyFanOutFieldPathValue(...)` (`:541`, `:546`, `:549`) — a name-keyed lazy
+  `FieldValue` with a **different memo identity** and a surviving per-row name
+  read. So "decline the optimization" changes the value shape on the fan-out
+  path, which is the path criterion 9's atomicity pin is about.
+
+**What each producer does under the closed type.** For a step that genuinely will
+not resolve, the representation of *"I could not resolve this"* is **the absence
+of an accessor** — the producer declines. A separate "name-only accessor" variant
+is rejected: it would be `-1` with a better name, would reach the descent, and
+would put us back at asking a consumer whether what it received is trustworthy.
+Both reviewers ACK'd that rejection.
+
+But "declines" is **not uniformly `return nil`**, and revision 8 said it was.
+`unnest_seed` and `unnest_gather` do return `nil`; `index_expansion` returns
+`lazyFanOutFieldPathValue(...)`, a different value with a different memo identity.
+The decline is per-producer and criterion 15(a) pins that its plans do not move.
+
+So each producer:
+
+1. walks its segments against the nested message descriptor, one step at a time
+   (`fd.Message()` gives the next descriptor — Java's `currentType =
+   field.getFieldType()`, `FieldValue.java:296`, in descriptor form);
+2. mints `NewResolvedAccessorOfDescriptorField(fd)` per step;
+3. **checks the bake-time domain agreement of §3.2** before baking anything;
+4. **declines by its own existing route** on any step that will not resolve, or
+   on a token disagreement.
+
+The name matching in step 1 is **today's `protoFieldByName` head moved verbatim**:
+exact, lower-case, `EqualFold` scan, then the escaped spelling
+(`protoname.ToProtoBufCompliantName`). Nothing about name matching is weakened;
+it moves from once-per-row to **once-per-plan**, which is the migration RFC-197's
+bucket header prescribes. `protoFieldByName` keeps only the presence check and
+`ProtoFieldToRowValue`.
+
+`expr/expr.go:264` (`fuseNestedAccessors`) is descriptor-true by construction
+(Appendix A §2.2, traced through `rlcatalog.go:363-369`) and routes through the
+same resolver, becoming the asserted case rather than the assumed one.
+
+### 3.4 What §3.1 makes DELETABLE, and what it makes UNNECESSARY
+
+- `FuseNestedSuffix`'s `into` parameter and `assertSuffixStep` (`values.go:5322`)
+  are **deleted**. Appendix A §15.2(2)'s mapping of the six decline arms holds
+  and is carried; the arms relocate to the resolver, which holds a strictly
+  better input (see §5 criterion 8 for the one correction to that table).
+- The `step.Ordinal < 0` tripwire at `values.go:5266-5271` goes away **as a
+  consequence of deleting `FuseNestedSuffix`'s `into`/`assertSuffixStep`
+  wholesale — NOT because `-1` became unrepresentable.** Revision 8 gave the
+  second reason and it is wrong twice over: `values.go` *is* package `values`, so
+  an in-package `ResolvedAccessor{ordinal: -1}` still compiles, and per §3.1 the
+  zero value is constructible everywhere.
+
+  **Its direction inverted, so it is RECONCILED, not deleted.** The old alarm was
+  *"a `-1` reached the read"*. The new alarm is *"an accessor no constructor
+  touched reached the bake"* — which reads column 0, silently. It relocates to
+  §3.2's bake-time check as an asserted `domain.IsKnown()` decline whose failure
+  message names the new direction. Deleting a guard because the state it watched
+  is unconstructible, when the danger merely moved, is the shelf-life failure
+  this repo keeps hitting; revision 8 applied that reasoning to the tripwire and
+  not to its own criterion 9 (see §5 criterion 9).
+- The `values.go:478-482` comment that has been recounting `-1` producers across
+  three revisions is **rewritten to describe the new hazard**, not deleted. The
+  `-1` class does end; the zero-value class replaces it, at the same site, and an
+  unwatched revival is the other half of the shelf-life rule.
+
+## 4. Wire format
+
+**No bytes change.** This changes which descriptor field a read selects, so the
+hard line applies in full: a wrong ordinal is a wrong-column read of real stored
+data. That is why every producer's decline arm is pinned (§5), and why the bake
+declines rather than the read apologising (§3.2).
+
+**Correction to revision 8:** it said the guard is "two independent structural
+properties (§3.1, §3.2)". They are not independent. §3.1 closes the negative and
+arbitrary-setter class; §3.2 closes the zero-value class **alone** (§3.1). The
+design survives the correction; the argument for it did not.
+
+## 5. Acceptance criteria — the only list
+
+Appendix A's five earlier lists (§5, §8, §12, and the two partial restatements)
+are superseded and are marked as such in place. This is the list to implement
+against.
+
+1. **`ResolvedAccessor` has no exported field — as a REFLECT PIN, not a grep.**
+   A test over `reflect.TypeOf(ResolvedAccessor{})` asserting every field has a
+   non-empty `PkgPath`. Mutation: export one field, test goes RED. Revision 8
+   said "verified by grep, output pasted", which asserts an ABSENCE OF CODE — it
+   runs nothing and cannot fail — and was additionally false as a property, since
+   the zero literal stays legal and would appear in that grep (§3.1).
+2. **A negative ordinal is unconstructible.** A unit test drives every
+   constructor with `-1` and asserts `*OrdinalBakeError` via `errors.As`, never a
+   string match. Ports `Preconditions.checkArgument(ordinal >= 0)`
+   (`FieldValue.java:651`).
+3. **`boundary` bucket, count 2 → 0** ("bucket 2" read as index 2 of
+   `fieldDebtBuckets`, which is `"contract"` — `docscheck/field_name_decision_test.go:698`).
+   **BOTH `protoFieldByName` callers convert, not one.** Measured this lap:
+   `values.go:973` (`descendResolvedPath` — the arm §3.2 converts), `values.go:1191`
+   and `values.go:1195` (`Evaluate`'s CHAINED struct descent, driven by `f.Field`).
+   **Revision 8 converted one and then required the name head to vanish, making
+   criteria 1 and 3 mutually unsatisfiable — for the SECOND time in this
+   document's history** (appendix §3.5 R3 diagnosed exactly this, and revision 2
+   §4 Step 3 answered it: the chained arm reads `f.Resolved.Root().Ordinal`, which
+   `primitive_accessors.go:53-61` bakes against `rt`). Step 3 is restored, with
+   the `gk.Type()` audit of appendix §7.6/§7.9 as its precondition.
+   Both entries out of `knownFieldDecisionDebt`;
+   `TestFieldDebtBucketsArePartition` green. The resolver's decision site is
+   DECLARED in the `translator` bucket with its count and its once-per-plan
+   property — never allowlisted. `protoFieldByName` contains no `ByName`,
+   `EqualFold` or `ToProtoBufCompliantName`; grep output pasted.
+4. **A nested read SUCCEEDS** end-to-end through SQL against real FDB
+   (testcontainers), with a plan-shape assertion proving the baked nested path was
+   taken. Two independent review laps found the silent-decline failure mode; this
+   is the criterion a decline cannot satisfy.
+5. **The escaped-spelling class is pinned THROUGH the ordinal path.**
+   `values/proto_field_escaped_name_test.go` (`a$b` → `a__1b`, `:39`) re-pointed at
+   the resolver, not rewritten. A name-path assertion proves nothing about the
+   ordinal path.
+6. **Out-of-range raises `*values.OrdinalResolutionError`** via `errors.As`, for
+   **pinned and unpinned paths alike**. The unpinned arm is the behaviour change;
+   a test driving only the pinned arm passes with the change half-applied.
+7. **DOMAIN-MISMATCH PIN (§3.2) — at the BAKE.** A test driving a producer whose
+   resolved descriptor token disagrees with the layout its child advertises
+   asserts **no nested path is baked** (the rule declines, and the plan shape
+   shows it). Mutation: drop the token comparison from the bake and the test must
+   go RED **on the resulting plan/value**, not on an absence of code. Revision 8
+   placed this at the read; §3.2 records why that was NAK'd. The divergent-ordinal
+   fixture of §5.1 is the input.
+8. **DUPLICATE-NAME ARM — pin the INPUT TYPE, with a WITNESS THAT RUNS.**
+   Appendix A §16.6 arm 5 says "proto descriptors cannot carry duplicate field
+   names". Not falsifiable — testing it tests `protoc`. The duplicate arm exists
+   because `assertSuffixStep` resolves against a `*RecordType`, which **can**
+   duplicate: `rule_implement_nested_loop_join.go:2222-2229` uses a struct literal
+   *specifically* so a cross-source duplicate cannot panic, and says so.
+
+   Revision 8 then said "construct that `*RecordType` and assert the resolver does
+   not accept it — its parameter is a `protoreflect.MessageDescriptor`".
+   **That has no witness: such a test does not COMPILE, so no test exists and
+   nothing runs** — appendix §16.3's failure in a better suit, and the third time
+   this document has written an absence-of-code pin. Replaced by BOTH:
+   (a) a `reflect` pin on the resolver's signature asserting its parameter is a
+   `protoreflect.MessageDescriptor` — mutation: widen it back to `*RecordType`,
+   test goes RED; and
+   (b) drive the duplicate-bearing `*RecordType` through to the bake and assert a
+   DECLINE **on the returned value**.
+9. **ATOMICITY PIN (Appendix A §10.1 — the strongest section in the document; its
+   SUBSTANCE is carried, its MUTATION INSTRUCTION is repaired).** The three
+   producers flip in **one commit**. `FieldPath.Equals`
+   (`values.go:634-647`) and `semantic_hash.go:125-129` are both ordinal-only, so
+   flipping one producer alone makes the two Explodes hash into **different memo
+   buckets and silently loses fanout index matching** — rows stay right, only the
+   plan gets worse, and **every correctness test still passes**. The pin is a test
+   asserting the candidate-side and query-side Explode values compare equal AND
+   hash equal, **mutation-checked by diverging ONE producer alone** — a mutation
+   reverting all three restores bit-identity and stays green, proving nothing.
+   Confirmed gap: `expressions/explode_test.go` covers determinism (`:148-151`)
+   and plain-vs-ordinality (`:184`); nothing compares candidate-side against
+   query-side. Verified this lap: `FieldPath.Equals` is ordinal-only
+   (`values.go:643`) and `semantic_hash.go` folds `#%d` per accessor ordinal, so
+   a partial flip really does change the memo bucket — the premise is measured.
+
+   **The repair, and why it was needed.** Appendix §10.1's literal instruction is
+   "flip ONE producer alone", i.e. leave `ResolvedAccessor{Ordinal: -1}` standing
+   at one site. **Under §3.1 that no longer compiles, so it is not a state the
+   tree can be put in** — the instruction is intact as text and DEAD as an
+   instruction. That is exactly the defect §3.4 diagnoses in the `-1` tripwire,
+   which revision 8 applied to the tripwire and not to its own criterion. The
+   mutation is restated in terms the closed type admits: **have one producer mint
+   a deliberately WRONG ordinal through `NewResolvedAccessorInDomain`**, which
+   produces the same memo-bucket divergence and does compile.
+10. **EACH producer's decline arm driven by an explicit test** (census rule: an
+    arm the corpus happens not to reach is an untested arm). Per producer: name
+    absent from the descriptor; descent past a non-message field; step index out of
+    `Fields().Len()`; the `collectionPath` / non-record / name-miss step. Arm 6 of
+    Appendix A §16.6 ("carried ordinal disagrees") is now **unconstructible for a
+    structural reason** — the producer mints from `fd.Index()`, so there is no
+    second source — and gets a negative pin saying a future producer that carries
+    an ordinal from elsewhere re-arms it.
+11. **PLAN-SHAPE EVIDENCE.** The `left_outer_existential` rebase stops declining,
+    so plans appear that never existed. Evidence is the correctness e2e plus the
+    **golden delta**, every changed golden read and justified. The stress
+    comparison is run but is NOT the evidence — it measures latency and cannot see
+    a wrong plan that returns right rows.
+12. **`field_name_decision_test.go:680`'s entry is DELETED, not rewritten.** It is
+    keyed on `values.go # assertSuffixStep # a == comparison # 1`, and §3.4 deletes
+    that comparison; a rewritten entry would point at a site with zero occurrences
+    and the census fails count-1/actual-0. `//pkg/docscheck` output pasted showing
+    no orphaned entry.
+13. **Mutation-checked PER DIRECTION, separately**, each RED line quoted verbatim:
+    wrong ordinal; negative ordinal (criterion 2); silent-instead-of-loud miss;
+    unresolved-name decline; domain mismatch (criterion 7); producer divergence
+    (criterion 9). A fix that satisfies only one direction is how this class
+    survives repeated attempts.
+14. `just test` green; affected Bazel targets green with `--nocache_test_results`,
+    `=== RUN` lines COUNTED and pasted, not assumed.
+15. **PLANS LOST ARE MEASURED, NOT ASSUMED EMPTY (§3.2).** Criterion 11 looks only
+    for plans GAINED (`left_outer_existential` stops declining); nothing in
+    revision 8's list would have seen plans LOST. Two shrink classes, each
+    measured against the goldens and the corpus:
+    (a) **index-expansion collection paths** — pinned as UNCHANGED, since their
+    decline route is `lazyFanOutFieldPathValue` (a different memo identity), not
+    an absence (§3.3);
+    (b) **steps whose STORED spelling differs from the SCHEMA's** — these resolve
+    fine at runtime today and decline at bake time after this change. Java never
+    loses them (`FieldValue.java:296`). If the class is non-empty the RFC states
+    the shrink; if empty, the emptiness is shown, not asserted.
+16. **ACCESSOR-DOMAIN EXCLUDED FROM IDENTITY AND HASH — pinned.** Two accessors
+    differing ONLY in domain must compare equal and hash equal.
+    `TestOrdinalDomain_ExcludedFromIdentityAndHash` (`ordinal_domain_test.go:229`)
+    pins this for `FieldPath.Domain` only; nothing extends it to an accessor-level
+    domain, and `ResolvedAccessor` is compared with Go `==` whole-struct at
+    `fieldpath_compose_test.go:59-60,119-120`, so adding a field silently changes
+    every such comparison. Add an `Equals` method so `==` is not the reachable
+    default. Mutation: fold the domain into `semantic_hash.go`, test goes RED.
+17. **THE `collectionPath` WITHHOLDING IS EXPLAINED BEFORE IT IS CHANGED (§3.3).**
+    `index_expansion.go:525-527` documents that collection paths deliberately
+    withhold a KNOWN ordinal. Why is not established. This is the one item on the
+    list requiring new investigation, and it gates implementation of that
+    producer — not of the other two.
+18. **UNKNOWN-DOMAIN MINT CENSUS.** `NewResolvedAccessorInDomain` can be called
+    with `OrdinalDomain{}`, which declines at §3.2's gate — not a wrong-column
+    vector, but a SILENT-DECLINE vector, the failure mode two laps already caught
+    and the reason criterion 4 exists. A census with a floor on the
+    unknown-domain mint population, per the repo's census rule, so the
+    optimization cannot die quietly one lazy producer at a time. Drives every
+    arm from explicit state, not from whatever the corpus reaches.
+
+### 5.1 The mutation-checkability of the divergent-ordinal fixture (Appendix A §12's criterion 7 — the correction §16.4 claimed and did not make)
+
+§16.4 says criterion 7 was "corrected in place". It was not: §12's criterion 7 is
+still verbatim the emptiness pin that §14.5 declared known-false. Corrected here
+by replacement (criterion 7 above), and with one thing §15.3/§16.3 asserted that
+must be said plainly:
+
+**The divergent-ordinal fixture IS constructible, and it is NOT
+mutation-checkable by this repo's mandated cycle.** Constructible: a sub-leg row
+`[SK, N]` against struct `N`'s descriptor `[A, SK]` gives leg-row ordinal 0 and
+descriptor ordinal 1 for the same step, and `reconstructFoldStep1Seed` is already
+driven from `exists_join_fold_seed_test.go:37`. Not mutation-checkable **by
+reverting the fix**: reverting restores the *name* read, which selects the right
+column and stays GREEN. The mutation that works is the narrower one stated in
+criterion 7 — drop the `OrdinalIn` gate from the converted proto arm, leaving the
+ordinal read in place. Stated here because otherwise this pin gets reported
+green-under-mutation and banked as evidence, which is the failure this document
+has made in five other places.
+
+## 5.2 Lap 7 review record — revision 8: NAK / NAK, axis endorsed
+
+Both reviewers verified every count in §2.2, §2.3 and §8 and found them exact and
+scoped — the first revision of which that is true. Both endorsed the axis change
+and explicitly asked that it not be walked back ("Do not add a seventh consumer
+check"). Revision 9 is the fold. What they found, and where each is answered:
+
+| Finding | Found by | Answered |
+|---|---|---|
+| The per-row domain check moves a plan-time decision to evaluation; unpinned arm is a silent NULL, opening a third such class while §0 indicts exactly that | Cascades | §3.2, rewritten to bake time |
+| Unexporting does NOT make the value unconstructible — Go's zero value yields ordinal 0, a VALID index, in production today at `expr/expr.go:258` and `max_match_map.go:910` | **both, independently** | §3.1, §4, §8 |
+| `index_expansion` withholds a KNOWN ordinal and declines via `lazyFanOutFieldPathValue`, not `nil` | **both, independently** | §3.3, criteria 15, 17 |
+| The chained `Evaluate` arm was dropped, making criteria 1 and 3 mutually unsatisfiable — appendix §3.5 R3, re-committed | Cascades | criterion 3 |
+| Criterion 9's "flip ONE producer alone" no longer COMPILES under §3.1 — dead as an instruction | Cascades | criterion 9 |
+| Criteria 1 and 8 assert an ABSENCE OF CODE — appendix §16.3's failure in a better suit | code quality | criteria 1, 8 |
+| Accessor-level domain has the identity/hash question §3.1 claimed immunity from | both | §3.2, criterion 16 |
+| `descriptorOrdinalDomain` ALREADY EXISTS and is already used as a plan-time check | code quality | §3.2 |
+| Tripwire deleted for the wrong reason; its direction inverted and needs reconciling | code quality | §3.4 |
+| Per-row domain derivation inverts the RFC's own cost argument; no criterion sees it | Cascades | §3.2 |
+
+**The two independent findings are the load-bearing ones.** Two reviewers reaching
+the zero-value hole separately, and the `index_expansion` mischaracterisation
+separately, is the signal that neither was a matter of taste.
+
+## 6. What is carried from revision 7, unchanged
+
+- **Appendix A §16.2's three self-struck claims stay struck.** Re-verified in this
+  session: `NewFusedFieldValueOfNestedOrdinal` (`values.go:5135`) fuses
+  `slot.Resolved.WithSuffix(leaf.Resolved)` at `:5170` where both are ordinal-model
+  reads, and has **no struct-descent suffix step**. §9.3 and §15.2(4) are false on
+  their face. The constructor needs no change.
+- **Appendix A §10.1 verbatim** — see criterion 9.
+- **The enumeration errors stay visible** in the appendix (§7.4, §11, §13.1,
+  §14.6 — three wrong counts, two wrong axes). They are the argument for §2.3: a
+  reader who sees only the conclusion would reasonably ask why the simpler route
+  was not taken, and the answer is that it was, six times.
+- **`legColumns`' `LogicalProject` arm (`cascades_translator.go:487-506`) stays
+  FLAGGED-UNAUDITED.** Moot under this design — no `*RecordType` participates in
+  the descent decision at all — and deliberately not dropped, so a reader knows it
+  was never audited rather than assuming it was.
+
+## 7. Why the alternatives lose
+
+- **A `DescriptorResolved` provenance bit (revision 7 §16.1).** Records that *a*
+  resolver ran, not *which descriptor* it ran against — so it cannot see §3.2's
+  wrong-column class at all. Needs an identity/hash exclusion, and needs every one
+  of 12 mint sites to set it correctly, which is the coverage gap that refuted
+  revisions 3-6 restated as a field.
+- **A guard at `FuseNestedSuffix` (revisions 3-6).** Covers 1 of 12 routes,
+  measured (§2.2).
+- **The layout-agreement check at the READ, per row (revision 8).** NAK'd by both
+  reviewers. In Cascades every plan in the memo is executable by construction, so
+  a per-row agreement test means either a silent NULL on the unpinned arm — a
+  third silent-NULL class, while §0 indicts exactly that — or an optimizer that
+  costed and committed a plan whose read cannot be performed. It also put an
+  O(#fields) token derivation on the eval hot path in place of an O(1)
+  `fields.ByName` hit, inverting this RFC's own cost argument. §3.2 moves it to
+  the bake.
+- **Enumerate the feeders (revisions 4-5).** Wrong twice, and the second time the
+  producer was found in a physical plan the enumeration's axis did not contain.
+- **A "name-only accessor" variant for the three producers.** `-1` with a better
+  name; reaches the descent; restores the consumer question. Rejected in §3.3.
+- **Keep the name read.** Two compensations already, neither able to cover the
+  other, every miss a silent NULL, spelling space open.
+- **Resolve by proto field NUMBER.** Wire-durable and rejected anyway: Java's
+  ordinal *is* the declaration index (`Type.java:2306-2311`) and accessor equality
+  is ordinal-only, so a number-keyed Go accessor interns differently in the memo
+  from its Java counterpart.
+
+## 8. Cost, stated honestly
+
+Unexporting touches **55 `ResolvedAccessor{` lines, 10 of them non-test** — and of
+those 10 only **6 are mints**: `values.go:960` is a comment, `values.go:617` is
+`return ResolvedAccessor{}, false` (a zero value that SURVIVES unexporting, §3.1),
+and `max_match_map.go:935` names the slice element type and mints nothing.
+Repo-wide the grep is 59; the 4 extra are `PFieldPath_PResolvedAccessor{}` in
+`gen/`, a different type.
+
+Revision 8 said the compiler visiting all 55 sites "is precisely what makes 'a
+site that cannot construct the value cannot bypass the check' true". **It is
+not** — §3.1 records why. What the cost actually buys is narrower and still
+worth it: no site outside `values` can SET a negative or arbitrary ordinal, and
+the compiler enumerates every setter, which is what six laps of grepping failed
+to achieve.
+
+**One thing the closed type must NOT do, checked rather than assumed:** 45 of the
+55 sites are tests, and a closed type that cannot express the failure fixture is
+a coverage cliff. `NewResolvedAccessorInDomain` can still build the adversarial
+inputs criteria 7, 8 and 10 need — mismatched domain, out-of-range ordinal,
+deliberately wrong ordinal. This one narrowly is not a cliff. Go API breaks are
+acceptable pre-release.
+
+---
+
+# Appendix A — revisions 1 through 7
+
+Evidence, not design. Section 2 of the live document argues that "the enumeration
+was wrong twice" is itself the case for the constructor axis, and that argument is
+only checkable if the wrong enumerations remain readable. Numbering is the
+original; internal cross-references ("section 4", "section 12") refer WITHIN this
+appendix. All five acceptance lists below are SUPERSEDED by the live section 5.
 
 ## 2. Two corrections to the inherited framing
 
@@ -442,7 +1110,7 @@ so the hard line applies in full — which is why Step 3 comes after Step 2, why
 Step 4 declines rather than assumes, and why criterion 3 below pins the
 wrong-column direction specifically.
 
-## 5. Acceptance criteria (SUPERSEDED by section 8)
+## 5. Acceptance criteria (SUPERSEDED by Appendix A section 8, and finally by the live section 5)
 
 > These were written when the RFC still claimed the bucket reaches 0. Section 3.5
 > R3 refuted that and section 8 restates them. Kept, not deleted, because the
@@ -1245,7 +1913,7 @@ Closed here so the enumeration is checkable rather than trusted:
 So the enumeration covers every non-test constructor site that can produce a
 merge-leg QOV type, and none of them yields a `*RecordType`-typed FIELD.
 
-## 12. Acceptance criteria — THE LIVE LIST
+## 12. Acceptance criteria — SUPERSEDED by the live section 5 (was "THE LIVE LIST")
 
 Every earlier criteria list in this document (section 5, section 8) is
 superseded. This is the only one to implement against. Falsifiable, each naming
