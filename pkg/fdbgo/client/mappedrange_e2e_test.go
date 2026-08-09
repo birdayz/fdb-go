@@ -773,3 +773,76 @@ func TestGetMappedRange_SecondaryReadConflictsOnResolvedKey(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Where a mapped key is allowed to land
+// ---------------------------------------------------------------------------
+
+// TestGetMappedRange_MapperCannotEscapeTheTupleKeyspace answers the "mapper
+// resolving outside the allowed keyspace" question, and the answer is that it
+// cannot — by construction, on the server.
+//
+// This matters because of an asymmetry that looks like a hole. GetMappedRange
+// checks the caller's PRIMARY range against maxReadKey and refuses anything past
+// it (key_outside_legal_range, 2004), but it applies no such check to the
+// SECONDARY key, and it could not: that key does not exist until the server has
+// resolved the mapper. So on the face of it a mapper could name \xff and read the
+// system keyspace through a transaction that is not allowed to read it directly.
+//
+// It cannot, because constructMappedKey ends in mappedKeyTuple.pack()
+// (storageserver.actor.cpp:4949): the mapped key is always a PACKED TUPLE, so it
+// always begins with a tuple type code. A literal "\xff" in the mapper becomes
+// the three bytes 01 FF 00 — an ordinary user key — not the one byte FF. The
+// system keyspace (\xff) and the special keyspace (\xff\xff) are therefore
+// unreachable from any mapper, whatever it says.
+//
+// The test writes the tuple-encoded destination and shows the read lands THERE,
+// so this is not merely "no error occurred": the mapper really did resolve, and
+// it resolved inside the tuple keyspace. Nothing is written to \xff — that would
+// be both illegal for this transaction and unsafe on a shared container.
+func TestGetMappedRange_MapperCannotEscapeTheTupleKeyspace(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx, cancel := mappedTestCtx()
+	defer cancel()
+
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	f := newMappedFixture(t, 1)
+	// The mapper's first element is the single byte 0xFF — the system keyspace
+	// prefix — followed by the primary key placeholder.
+	systemish := []byte{0xFF}
+	mapper := mtPack(systemish, []byte("{K[3]}"))
+	// What the server will actually build: pack(0xFF, pk), not 0xFF || pk.
+	wantMappedKey := mtPack(systemish, f.primaryKey(0))
+	g.Expect(wantMappedKey[0]).To(gomega.Equal(byte(0x01)),
+		"a packed tuple starts with a type code; if this ever starts with 0xFF the premise is gone")
+
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(f.indexEntryKey(0), []byte{})
+		tx.Set(wantMappedKey, []byte("landed-in-the-tuple-keyspace"))
+		return nil, nil
+	})
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	tx := db.CreateTransaction()
+	defer tx.Cancel()
+
+	begin, end := f.indexRange()
+	rows, _, err := tx.GetMappedRange(ctx, begin, end, mapper, 0, false)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(rows).To(gomega.HaveLen(1))
+
+	got := rows[0].GetValue.Key
+	g.Expect(got[0]).NotTo(gomega.Equal(byte(0xFF)),
+		"a mapper naming \\xff must NOT produce a \\xff-prefixed mapped key; if it does, a mapped read "+
+			"can reach the system keyspace through a transaction forbidden to read it directly, and "+
+			"GetMappedRange's maxReadKey check on the primary range is guarding the wrong half of the read")
+	g.Expect(got).To(gomega.Equal(wantMappedKey),
+		"the mapper's \\xff must be tuple-ENCODED (01 FF 00), not concatenated raw")
+	g.Expect(rows[0].GetValue.Present).To(gomega.BeTrue(),
+		"the record written at the tuple-encoded key must be what the read found — otherwise this "+
+			"test proves only that nothing happened")
+	g.Expect(rows[0].GetValue.Value).To(gomega.Equal([]byte("landed-in-the-tuple-keyspace")))
+}

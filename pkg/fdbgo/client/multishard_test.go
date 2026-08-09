@@ -320,6 +320,50 @@ func testMultiShard_MappedRangeAcrossShards(t *testing.T, ctx context.Context, e
 		})
 	t.Logf("mapped primary range spans %d shards", indexShards)
 
+	// The other half of the shard question, and the one that decides which code
+	// path the SERVER takes per row: quickGetValue serves the mapped key locally
+	// only when `data->shards[key]->isReadable()` — when the storage server
+	// handling this request also holds the mapped key. Otherwise it falls back to
+	// a full Transaction read at the same version (QUICK_GET_VALUE_FALLBACK,
+	// default true at 7.3.77, ServerKnobs.cpp:1053), which is a round trip per row
+	// that the mapped read exists to avoid.
+	//
+	// What is measurable from a client is the NECESSARY condition: the records
+	// must live in different shards from the index entries, or the question never
+	// arises. Whether the same storage server happens to hold both shards is a
+	// data-distribution decision this test cannot pin, so the assertion below is
+	// deliberately the weaker one — with the strong claim left to the source.
+	// Either way the RESULT must be identical, which is what the sub-tests check;
+	// the fallback is a cost difference, not a correctness one.
+	// The quantity is per ROW, not per keyspace. Comparing the two keyspaces'
+	// shard SETS is the obvious formulation and it is wrong: shards are contiguous
+	// key ranges, so the shard holding the highest index entries necessarily runs
+	// on into the record keyspace, and "no shard holds both" can never hold. What
+	// decides how often the server takes the fallback is how many ROWS have their
+	// mapped key in a different shard from their primary row, so that is what is
+	// counted here.
+	shardOf := func(key []byte) string {
+		res, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+			return tx.db.locCache.locateRange(tx.db, ctx, key, keyAfterBytes(key), 1, false, tx.tenantId, tx.currentSpan())
+		})
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		locs := res.([]LocationResult)
+		g.Expect(locs).ToNot(gomega.BeEmpty(), "no shard located for %q", key)
+		return string(locs[0].ShardBegin)
+	}
+	crossShardRows := 0
+	for i := 0; i < f.n; i++ {
+		if shardOf(f.indexEntryKey(i)) != shardOf(f.recordKey(i)) {
+			crossShardRows++
+		}
+	}
+	g.Expect(crossShardRows).To(gomega.BeNumerically(">", 0),
+		"every row's mapped key sits in the SAME shard as its index entry, so the storage server "+
+			"serving the primary row always holds the mapped key too and quickGetValue never reaches "+
+			"its fallback — this environment cannot exercise the cross-shard mapped lookup at all")
+	t.Logf("%d of %d rows have their mapped key in a different shard from their index entry",
+		crossShardRows, f.n)
+
 	for _, tc := range []struct {
 		name    string
 		reverse bool

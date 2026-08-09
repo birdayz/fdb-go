@@ -17,6 +17,17 @@ import (
 // resolves each row through a `mapper` tuple and returns the resolved
 // SECONDARY read alongside it, saving the client a round trip per row.
 //
+// Every C++ line number cited in this file and its tests is 7.3.77, the version
+// the test containers run. Where the reference source read during the port was
+// the 7.3.75 tag, the two were checked rather than assumed equivalent: for the
+// mapped-range surface — storageserver.actor.cpp, ReadYourWrites.actor.cpp,
+// fdb_c.cpp, fdb_c.h, StorageServerInterface.h, FDBTypes.h and
+// error_definitions.h — `git diff 7.3.75 7.3.77` is EMPTY, so the line numbers
+// and the behaviour are the same text. NativeAPI.actor.cpp is the one cited file
+// that differs, and only in waitStorageMetrics trace severity around line 8022,
+// below everything referenced here; the mapped-range knobs (QUICK_GET_*_FALLBACK,
+// MAX_PARALLEL_QUICK_GET_VALUE, STRICTLY_ENFORCE_BYTE_LIMIT) are unchanged too.
+//
 // Two facts about 7.3.77 shape everything here, and both were established by
 // reading the C++ rather than assumed:
 //
@@ -346,7 +357,7 @@ func (tx *Transaction) GetMappedRange(ctx context.Context, begin, end, mapper []
 
 // primaryConflictRange is C++ addConflictRange for the mapped read's PRIMARY
 // range: the forward overload at ReadYourWrites.actor.cpp:245-281 and the
-// reverse one at :284-318, which differ in which END of the range a truncated
+// reverse one at :284-319, which differ in which END of the range a truncated
 // result narrows.
 //
 // The point of the narrowing is that a read cut short by a row limit did not
@@ -358,7 +369,7 @@ func (tx *Transaction) GetMappedRange(ctx context.Context, begin, end, mapper []
 // not safe for the mustUnmodified check that shares this range, where a
 // superset turns a write C++ tolerates into get_mapped_range_reads_your_writes.
 //
-// C++'s readToBegin / readThroughEnd clamps (:262-265, :301-304) are omitted
+// C++'s readToBegin / readThroughEnd clamps (:263-265, :302-304) are omitted
 // because they are unreachable through this API, not because they are
 // unavailable. Both are guarded on the selector offsets — `begin.offset <= 0`
 // and `end.offset > 0` — and GetMappedRange resolves its plain key arguments as
@@ -374,7 +385,7 @@ func primaryConflictRange(begin, end []byte, reverse, more bool, rows []MappedKe
 	// returns an empty result before issuing the read.
 	rangeBegin, rangeEnd := begin, end
 	if reverse {
-		// C++ :306 — `rangeBegin = read.begin.offset <= 1 && result.more ? end : begin`.
+		// C++ :295 — `rangeBegin = read.begin.offset <= 1 && result.more ? end : begin`.
 		if more {
 			rangeBegin = end
 		}
@@ -390,7 +401,7 @@ func primaryConflictRange(begin, end []byte, reverse, more bool, rows []MappedKe
 		}
 		return [2][]byte{rangeBegin, rangeEnd}
 	}
-	// C++ :256 — `rangeEnd = read.end.offset > 0 && result.more ? begin : end`.
+	// C++ :257 — `rangeEnd = read.end.offset > 0 && result.more ? begin : end`.
 	if more {
 		rangeEnd = begin
 	}
@@ -428,7 +439,7 @@ func (tx *Transaction) addMappedRangeConflicts(begin, end []byte, reverse, more 
 		}
 	}
 	// C++ interleaves the check and the insert: updateConflictMap<true>
-	// (ReadYourWrites.actor.cpp:334-351) walks ONE range's write-map segments,
+	// (ReadYourWrites.actor.cpp:335-351) walks ONE range's write-map segments,
 	// throwing on the first modified one and inserting the rest as it goes, and
 	// addConflictRangeAndMustUnmodified calls it once per range. So a throw on
 	// range N leaves ranges 0..N-1 recorded. Checking every range up front and
