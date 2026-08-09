@@ -207,7 +207,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `not_exists_or` | 2 | 1 | 1 | 0 | NOT EXISTS combined with OR predicates |
 | `not_exists_predicates` | 5 | 5 | 0 | 0 | NOT EXISTS with various predicate shapes |
 | `projected_exists_nested_sort_key` | 6 | 6 | 0 | 0 | The projected-EXISTS fold crossed with a NESTED `ORDER BY` key (RFC-218). |
-| `projected_exists_over_a_derived_source` | 3 | 2 | 0 | 1 | TWO PRE-EXISTING FAILURES found while implementing RFC-223, neither caused by |
+| `projected_exists_over_a_derived_source` | 3 | 2 | 0 | 1 | ONE of TWO pre-existing failures found while implementing RFC-223, neither |
 | `scalar_subquery` | 8 | 6 | 0 | 2 | Scalar subquery: `(SELECT ...)` used as a value-returning expression. |
 | `scalar_subquery_advanced` | 10 | 9 | 1 | 0 | Edge-case probes for the scalar-subquery feature added in nightshift-39. |
 | `scalar_subquery_dml` | 8 | 6 | 2 | 0 | Scalar subquery on the right-hand side of UPDATE SET, in DELETE WHERE |

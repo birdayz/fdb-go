@@ -273,15 +273,43 @@ func TestFDB_UnqualifiedRefBesideAProjectedExistsOverAJoin(t *testing.T) {
 	//
 	// Both are LOUD, so neither is a silent wrong answer.
 	//
-	// THEY ARE PINNED IN A DIFFERENT PACKAGE, and deliberately not here:
-	// `pkg/relational/conformance/yamsql/testdata/projected_exists_over_a_derived_source.yaml`,
-	// with each failing query beside the passing control that differs from it
-	// only by removing the projected EXISTS. Running either query in THIS
-	// package makes its leg-local bake census report `UnderivableLegs = 2,
-	// want 0` — a hard zero that is telling the truth, since a leg with no
-	// derivable row layout is exactly why these reads fall through to a
-	// qualified name. The yamsql target does not feed that census, so the
-	// shapes are pinned rather than the guard red-lined.
+	// ONE IS PINNED; THE OTHER IS BLOCKED, AND THE BLOCK IS NAMED.
+	//
+	// The CTE failure and BOTH controls live in
+	// `pkg/relational/conformance/yamsql/testdata/projected_exists_over_a_derived_source.yaml`
+	// — it fails with a SQLSTATE (42703), which that runner can match.
+	//
+	// The DERIVED-TABLE failure is NOT pinned anywhere, and not for want of
+	// trying. Two independent blocks, each measured rather than assumed:
+	//
+	//   - yamsql cannot express it. It surfaces a *values.UnboundEvalContextError
+	//     and the runner asserts errors only through errors.As(err, &apiErr)
+	//     against an *api.Error carrying a SQLSTATE. There is no code to match.
+	//   - This package cannot host it. Adding the query makes the leg-local bake
+	//     census report `UnderivableLegs = 2, want 0` — a CQ-63 acceptance gate
+	//     asserted as a HARD ZERO in a fixed list, not a tunable expectation.
+	//     Control: with the query absent the census emits no NO-LAYOUT witness at
+	//     all; with it present, two. The gate is telling the truth — a leg with
+	//     no derivable row layout is exactly why that read falls through to a
+	//     qualified name — so pinning here would mean relaxing a live acceptance
+	//     gate to admit a defect, which is the wrong direction.
+	//
+	// So it is reported rather than pinned, which is a STOP with a named
+	// blocker and not a quiet deferral. RFC-223 §7 carries the reproducer, the
+	// passing control, and the root cause. An earlier revision of this comment
+	// claimed the arm "costs no census here"; that was measured on a narrowed
+	// run and is false on the full suite.
+	// THE DERIVED-TABLE ARM LIVES HERE, NOT IN THE YAML, and the reason is
+	// mechanical: it fails with a *values.UnboundEvalContextError, and the
+	// yamsql runner asserts errors only as an *api.Error carrying a SQLSTATE
+	// (runner.go's `errors.As(err, &apiErr)`). There is no SQLSTATE to pin, so
+	// the yaml can hold its CONTROL but not the failure itself.
+	//
+	// THIS ARM IS ALSO THE PROOF THAT THE STRUCT TYPE IS NOT INVOLVED. The
+	// fixture it runs against has a struct column, but the query never touches
+	// it: the derived table selects `id` alone, and the failure is identical.
+	// That sentence appears in RFC-223 as a measured claim, and this is the
+	// measurement — without it the claim would be true and unpinned.
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

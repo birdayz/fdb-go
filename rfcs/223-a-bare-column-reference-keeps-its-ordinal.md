@@ -1,6 +1,6 @@
 # RFC-223 — A bare column reference keeps its ordinal, exactly as a qualified one does
 
-**Status:** rev 5 — ACK'd by Graefe and Torvalds, and **IMPLEMENTED**.
+**Status:** rev 7 — ACK'd by Graefe and Torvalds, and **IMPLEMENTED**.
 **Scope:** one shape predicate, `resolveBaked`, called from all five sites that
 bind a column reference to a plan-time ordinal: two bare-projection binds, the
 qualified resolver `resolveQualifiedBaked` (itself used by projections, sort keys
@@ -44,7 +44,7 @@ because each corrects a claim the design made:
 
 Review history: rev 2 folded Graefe's three conditions and Torvalds' three
 blockers; rev 3 folded Graefe's delta items and Torvalds' last stale comment;
-rev 4 was the implementation; rev 5 folds the implementation lap's two NAKs. The
+rev 4 was the implementation; revs 5-7 fold the implementation lap's three NAKs. The
 substantive finding of the design lap was that the widened predicate is imported
 without its explicit-qualifier precondition, and the one dimension where a wrong
 bake reads SILENTLY was the one dimension unmeasured — now nine ambiguity arms.
@@ -274,7 +274,8 @@ known Values can push an ordering it previously could not) and
 inspectable). Across the whole corpus **neither produced an operator-tree
 change** — all THREE golden records that move keep byte-identical operator trees.
 
-"Unexercised" is ruled out: the bare-projection arm fires **131 times** on the
+"Unexercised" is ruled out: the bare-projection site takes the WIDENED
+child-bearing arm **131 times** on the
 `sqldriver` corpus (§6(f)), so these rules are seeing filled slots they did not
 see before and are declining to act on them differently. The claim is therefore
 the narrower, measured one — their extra reach is **operator-tree-neutral on this
@@ -415,18 +416,29 @@ production diff with the corpus held fixed moves this census by zero.
       caller-tagged counter over the whole `sqldriver` corpus, the widened
       child-bearing arm fires:
 
-      | call site | fires | what it is |
-      |---|---|---|
-      | `plan_visitor.go` bare projection | **131** | RFC-223's fix |
-      | `logical_predicate.go:4428` | **7** | aggregate GROUP-key, bare |
-      | `logical_predicate.go:2696` | **1** | the bare-projection twin |
-      | `resolveQualifiedBaked` | 7094 | pre-existing, this arm was always here |
+      | call site | fires | stability | what it is |
+      |---|---|---|---|
+      | `plan_visitor.go` bare projection | **131** | EXACT, reproduced | RFC-223's fix |
+      | `logical_predicate.go:4428` | **7** | EXACT, reproduced | aggregate GROUP-key, bare |
+      | `logical_predicate.go:2696` | **1** | EXACT, reproduced | the bare-projection twin |
+      | `resolveQualifiedBaked` | ~7100 | **UNSTABLE** | pre-existing; this arm was always here |
+
+      **The stability column is not decoration.** The first three re-derive
+      byte-identically across runs. The fourth does NOT: it has been observed at
+      7094, 7141 and 7277 on an unchanged tree, because it counts every qualified
+      resolution across a suite whose plan-cache hits and retry tests vary
+      run-to-run. It is quoted only to establish that this arm PRE-EXISTED the
+      change; no claim rests on its value, and it must not be turned into a gate.
+      A table mixing exact and noisy figures without saying which is which is the
+      shape that keeps burning this workstream.
 
       So the folded sites fire **8 times** and every assertion still holds — the
-      new arm is exercised and agrees, not inert. And the fix site itself fires
-      **131 times**, which is the honest measure of this change's reach: far
-      more than the three golden records suggest, because most firings re-derive
-      an ordinal that was already correct and only the renderings differ.
+      new arm is exercised and agrees, not inert. And the fix site takes the
+      widened arm **131 times**, which is the honest measure of this change's
+      reach: far more than the three golden records suggest, because most
+      firings re-derive an ordinal that was already correct so only the
+      renderings differ. Note this is the WIDENED sub-arm, not the site's total
+      traffic — the site itself resolves far more references than that.
 
 ### (g) The THREE golden records that move, justified individually
 
@@ -519,15 +531,38 @@ Each has a CONTROL that differs only by removing the projected `EXISTS`, and
 the projected-EXISTS fold that loses the source — the CTE alias in the first, the
 derived-table correlation in the second.
 
-**They ARE pinned**, in
-`pkg/relational/conformance/yamsql/testdata/projected_exists_over_a_derived_source.yaml`,
-each beside its passing control. Not in `pkg/relational/sqldriver`: running
-either query there trips `LEG-LOCAL BAKE CENSUS FAIL: UnderivableLegs = 2,
-want 0`, a hard zero that is telling the truth — an underivable leg "has no
-ordinal it can honestly carry on its own alias, so every read through it falls
-through to the qualified NAME", which is exactly the `42703`. That census is a
-package-global counter and the yamsql target does not feed it, so the shapes are
-pinned without red-lining a truthful guard.
+**ONE is pinned. The other is BLOCKED, and this is a STOP with a named blocker
+rather than a deferral.**
+
+- The **CTE** failure and **both controls** are in
+  `pkg/relational/conformance/yamsql/testdata/projected_exists_over_a_derived_source.yaml`.
+  It fails with a SQLSTATE (`42703`), which is what that runner can assert.
+- The **derived-table** failure is **not pinned anywhere**, blocked twice over,
+  each block measured:
+  - **yamsql cannot express it.** It surfaces a `*values.UnboundEvalContextError`
+    and the runner asserts errors only through `errors.As(err, &apiErr)` against
+    an `*api.Error` with a SQLSTATE. There is no code to match.
+  - **`pkg/relational/sqldriver` cannot host it.** Adding the query makes the
+    leg-local bake census report `UnderivableLegs = 2, want 0` — a CQ-63
+    acceptance gate asserted as a HARD ZERO in a fixed list, not a tunable
+    expectation. Control: with the query absent the census emits no `NO-LAYOUT`
+    witness at all; with it present, two. The gate is telling the truth, so
+    pinning there would mean relaxing a live acceptance gate to admit a defect.
+
+**This section has been wrong about that census twice, in both directions.** One
+draft said any such query trips it (over-general — the CTE query does not). The
+next said the committed arm "costs no census … `UnderivableLegs` stays 0" — read
+off a narrowed run, and false on the full suite, which is where the gate is
+asserted. The measurement above is from the unfiltered target with a
+present/absent control.
+
+**A consequence worth stating plainly:** the sentence below — that the struct
+type is not involved in the *derived-table* defect — is therefore **measured but
+unpinned**. Its evidence is that `(SELECT id FROM t1)`, with no struct column
+anywhere, fails identically. RFC-223's OWN defect has its struct-independence
+pinned (the bare `BIGINT` arm in the differential); this narrower claim about the
+pre-existing defect does not, and cannot until one of the two blocks above
+moves.
 
 ### The root cause, followed to ground rather than escalated
 

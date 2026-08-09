@@ -4421,7 +4421,9 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		//
 		// MULTI-SOURCE resolutions no longer fall through to the name, which
 		// is what this comment used to say: resolveBaked's child-bearing arm
-		// admits them, and this is the site where it fires most (RFC-223).
+		// admits them. Of the two folded sites here this is the busier (7 firings
+		// to the bare-projection twin's 1), though the PlanVisitor site outside
+		// this file takes the same arm 131 times (RFC-223).
 		if keyValues[i] == nil && !ref.isQualified() {
 			rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, semantic.FromNormalized(ref.bare()))
 			if rerr == nil {

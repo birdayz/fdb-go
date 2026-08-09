@@ -1,11 +1,26 @@
 # projected_exists_over_a_derived_source.yaml
 #
-# TWO PRE-EXISTING FAILURES found while implementing RFC-223, neither caused by
-# it: both reproduce identically with its production diff reverted.
+# ONE of TWO pre-existing failures found while implementing RFC-223, neither
+# caused by it: both reproduce identically with its production diff reverted.
 #
 # Adding a projected EXISTS to a SELECT over a DERIVED SOURCE — a CTE or a
 # derived table — joined to another source loses that source. The CTE form
 # cannot find its own alias; the derived-table form fails inside the executor.
+#
+# THIS FILE HOLDS THE CTE FAILURE AND BOTH CONTROLS. The derived-table FAILURE
+# is NOT PINNED ANYWHERE, blocked twice over and each block measured:
+#
+#   - This runner cannot express it: it surfaces a
+#     *values.UnboundEvalContextError, while runner.go asserts errors only via
+#     errors.As(err, &apiErr) against an *api.Error carrying a SQLSTATE.
+#   - pkg/relational/sqldriver cannot host it: adding the query makes the
+#     leg-local bake census report UnderivableLegs = 2, want 0 — a CQ-63
+#     acceptance gate asserted as a hard zero, not a tunable expectation.
+#     Control: absent, the census emits no NO-LAYOUT witness at all; present,
+#     two. Pinning there would mean relaxing a truthful gate to admit a defect.
+#
+# Its control is kept here anyway, beside its CTE sibling, so the two shapes
+# read together and the missing experiment is visible rather than merely absent.
 #
 # THE CONTROLS ARE THE POINT. Each failing query has a twin differing ONLY by
 # removing the projected EXISTS, and every twin PASSES. So it is the
@@ -16,22 +31,15 @@
 # .GetResultValue returns its INNER's QuantifiedObjectValue rather than the row
 # the projection actually produces, and RecordQueryProjectionPlan.GetResultType
 # is a hardcoded UnknownType "for the same reason". That comment records the
-# same symptom this file pins, in the same words the derived-table arm produces
-# ("multi-leg row cannot serve a source-relative ordinal"), and names the fix:
-# state the row built from GetProjectedValues and GetAliases, in both the
-# logical expression and its physical twin. It is scoped there as its own piece
-# of work, with a standing warning not to "clean up" the site until it lands.
+# same symptom, in the same words the derived-table arm produces ("multi-leg row
+# cannot serve a source-relative ordinal"), and names the fix: state the row
+# built from GetProjectedValues and GetAliases, in both the logical expression
+# and its physical twin. It is scoped there as its own piece of work, with a
+# standing warning not to "clean up" the site until it lands.
 #
-# WHY THESE LIVE HERE AND NOT IN pkg/relational/sqldriver: running either query
-# in that package makes its leg-local bake census report
-# `UnderivableLegs = 2, want 0` — a hard zero that is telling the truth, since a
-# leg with no derivable row layout is exactly why these reads fall through to a
-# qualified name. This target does not feed that census, so the shapes are
-# pinned here rather than left unpinned or the guard red-lined.
-#
-# When the projection learns to state its row, these arms go red. The right move
-# is then to replace each with the rows its control already returns, plus the
-# EXISTS column — spelled out per arm below.
+# When the projection learns to state its row, the CTE arm below goes red. The
+# right move is then to replace it with the rows its control already returns,
+# plus the EXISTS column — spelled out on the arm.
 name: projected_exists_over_a_derived_source
 schema_template: |
   CREATE TABLE t1 (id BIGINT, v BIGINT, PRIMARY KEY (id))
@@ -57,9 +65,12 @@ tests:
       SELECT c.id, t1_id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = c.id) AS h
       FROM c, t3 WHERE t3.t1_id = c.id ORDER BY c.id
     error_code: "42703"
-  # CONTROL for the derived-table arm: identical but for the projected EXISTS.
-  # PASSES. It also shows the struct type is not involved — t1 has no struct
-  # column at all and the failing arm below still fails.
+  # CONTROL for the derived-table failure, which is NOT PINNED ANYWHERE (see the
+  # header). This arm is identical but for the projected EXISTS, and it PASSES.
+  # There is deliberately no failing arm below it: this runner cannot express
+  # that failure's error, and the sqldriver package cannot host it either. A
+  # control whose experiment is blocked says so rather than reading as an
+  # experiment someone forgot to write.
   - query: |-
       SELECT d.id, t1_id FROM (SELECT id, v FROM t1) AS d, t3
       WHERE t3.t1_id = d.id ORDER BY d.id
