@@ -8185,6 +8185,18 @@ The Cascades architecture is solid — task stack, two-phase REWRITING+PLANNING,
 
 ---
 
+## Stress comparison — RFC-226 projection result type (2026-08-09, same machine, same filesystem)
+
+Baseline = detached worktree at master `aba271454`; current = `rfc/projection-result-type`.
+Both legs uncached, `--test.v`, 24 `=== RUN` lines each, `/home` at 89% before starting
+(a baseline taken at the 100% this box briefly hit would measure the DISK, not the change).
+
+**No regression. 177.36s -> 177.52s total (+0.09%); all 23 subtest arms inside noise.**
+Largest single delta `+0.15s` on `full_scan_count` (3.02 -> 3.17) against a ~3s scan;
+`order_by_pk_full` 3.42 -> 3.51; `scan_all_wide` 3.37 -> 3.38; point lookups 0.01-0.06s
+unchanged. The arms assert ROW COUNTS, so 23 passing on both sides is also the statement that
+no plan started returning different rows.
+
 ## Stress comparison — RFC-173 Slice 2 W3b live flip (2026-07-02, same machine)
 
 Master (`/tmp/fdb-master` worktree) vs branch `feat/rfc173-slice2-wedge` @ 5ead4e149 — the ordinal
@@ -16224,3 +16236,66 @@ None is speculative: each was re-verified against the tree before booking.
   before this PR and genuinely yields N parents after it, so whatever headroom
   exists is being used for the first time. Zero plan movement across the 7000-
   scenario corpus is the evidence that the fan-out is not pathological today.
+
+- [ ] **CQ-100 (query-engine): a projected EXISTS over a derived table that WRAPS
+  A JOIN fails at Cascades TRANSLATION, before any planning decision is reached.**
+  MEASURED, and measured on BOTH sides so it is booked as pre-existing rather
+  than as fallout of RFC-226:
+
+  ```
+  SELECT d.aid, EXISTS (SELECT 1 FROM ld x WHERE x.id = d.aid)
+  FROM (SELECT a.id AS aid, b.k AS bk FROM la a JOIN lb b ON b.id = a.id) d
+  -> *api.Error 0AF00: Cascades translation failed
+  ```
+
+  Run through `embedded.PlanPhysicalForTest`, once with the RFC-226 working tree
+  applied and once with it reverted via the save-diff/apply-R cycle: **identical
+  error both times.** So this is not the seed/leg-ordinal family RFC-226 §1b
+  fixes — that one reaches the planner and fails in the EXECUTOR on a
+  source-relative ordinal. This one never gets a logical expression at all.
+  Different layer, different fix, and it does not ride inside RFC-226.
+
+  The shape is already visible in the suite and already known not to plan:
+  `pkg/relational/sqldriver/leg_identity_census_fdb_test.go:164-168` carries it
+  as "projected EXISTS over a derived-table leg" and its runner logs
+  `shape %q did not plan … — no leg traffic contributed` and CONTINUES. That
+  `t.Logf`-and-continue is why nothing has been red: the census tolerates a
+  non-planning shape by design (it is measuring leg traffic, not planability), so
+  the gap has been sitting in a passing test's output. Fixing this should also
+  convert that log line into an assertion, or the next regression here is
+  invisible in exactly the same way.
+
+  Entry point: the derived source here is a projection over an NLJ, so the
+  translator is being asked for a derived-table scope whose inner is a join.
+  Read Java first — `GraphExpansion` / `SelectExpression` construction for a
+  derived table — before changing the Go translator.
+
+- [ ] **CQ-101 (query-engine): `RecordQueryLimitPlan` swallows the row its inner
+  now states, so a LIMIT above a projection re-hides what RFC-226 exposed.**
+  MEASURED at RFC-226 while pinning `distinctKeyColumns`:
+
+  ```
+  scan(ID,A,B) -> Projection([A] AS RENAMED) -> LimitPlan
+  LimitPlan.GetResultType() == *values.PrimitiveType (UnknownType)
+  ```
+
+  `limit.go:` `GetResultType()` is `return values.UnknownType` — a flat stub, not
+  a forward. A LIMIT cannot alter a row type and its inner is one call away, so
+  this is the sharpest remaining entry in the RFC-213 stub inventory
+  (`pkg/docscheck/result_type_stub_census_test.go`, which already lists it and is
+  the ratchet that will notice when it goes).
+
+  CONSEQUENCE, measured rather than argued: the wrapper-over-projection pin
+  (`cascades/distinct_key_columns_wrapper_test.go`) had to use a
+  PredicatesFilter, because a Limit cannot transmit the flip at all. Any
+  consumer reading a row type through a LIMIT still sees "unstated" and stays on
+  its fail-closed path.
+
+  NOT FIXED INSIDE RFC-226 ON PURPOSE, and this is a STOP rather than a
+  deferral of tiny work. The edit is three lines; the RISK is not. Flipping a
+  stub changes what every fail-open consumer above it does, and RFC-226 §1c is
+  the measured proof that those consumers cannot be enumerated by a call-site
+  census — the one that broke reads `GetResultType()` on a different node's plan
+  through a helper. So this needs its own role-differential (leg, subquery
+  source, query root) exactly as RFC-226 §5 now prescribes, not a rider on a
+  change whose own §1 was refuted once already.

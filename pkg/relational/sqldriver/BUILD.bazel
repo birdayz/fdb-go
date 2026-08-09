@@ -422,6 +422,7 @@ go_test(
         "projected_exists_round8_fdb_test.go",
         "projection_merge_census_gate_test.go",
         "projection_over_setop_columns_fdb_test.go",
+        "projection_result_type_probe_fdb_test.go",
         "quality_probes_test.go",
         "quoted_machine_alias_fdb_test.go",
         "rawnan_pk_suffix_fdb_test.go",

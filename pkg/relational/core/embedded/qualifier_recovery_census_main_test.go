@@ -62,7 +62,17 @@ func TestMain(m *testing.M) {
 // drift.
 // Measured over this corpus: recursiveRemap 2, derivedUnnestSource 8,
 // projScopeClassify 18, projQualVsScan 4, displayLabelStrip 11,
-// existsSortSplit 0 (this package plans no sorted EXISTS fold over a join).
+// existsSortSplit 6.
+//
+// existsSortSplit's zero was the header's own point about zeros: it read "this
+// package plans no sorted EXISTS fold over a join", which was a fact about the
+// CORPUS, not about the package. derived_source_exists_plan_test.go plans
+// exactly that shape — `ORDER BY d.id` over a correlated EXISTS across a
+// derived source — and the site reports 6 calls, all AGREED, with the split
+// qualifier matching the leg identity on every one (`C.ID`/C, `D.ID`/D,
+// `T1.ID`/T1). So the arm is now carried by the corpus rather than standing on
+// the unit wiring pin, and its floor is a real number below the measurement like
+// every other one here.
 //
 // WHAT IS PRODUCTION TRAFFIC HERE AND WHAT IS FIXTURE, because the two do not
 // support the same claims and a merged total hides which:
@@ -88,6 +98,7 @@ func TestMain(m *testing.M) {
 var embeddedQualifierRecoveryFloors = values.QualifierRecoveryFloors{
 	Calls: [6]int{
 		values.QualRecSiteRecursiveRemap:      1,
+		values.QualRecSiteExistsSortSplit:     3,
 		values.QualRecSiteDerivedUnnestSource: 4,
 		values.QualRecSiteProjScopeClassify:   6,
 		values.QualRecSiteProjQualVsScan:      2,
@@ -95,6 +106,7 @@ var embeddedQualifierRecoveryFloors = values.QualifierRecoveryFloors{
 	},
 	Split: [6]int{
 		values.QualRecSiteRecursiveRemap:      1,
+		values.QualRecSiteExistsSortSplit:     3,
 		values.QualRecSiteDerivedUnnestSource: 4,
 		values.QualRecSiteProjScopeClassify:   6,
 		values.QualRecSiteProjQualVsScan:      2,

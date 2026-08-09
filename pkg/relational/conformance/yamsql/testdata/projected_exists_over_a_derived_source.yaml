@@ -1,45 +1,28 @@
 # projected_exists_over_a_derived_source.yaml
 #
-# ONE of TWO pre-existing failures found while implementing RFC-223, neither
-# caused by it: both reproduce identically with its production diff reverted.
+# A correlated EXISTS over a DERIVED SOURCE — a CTE or a derived table — joined
+# to another source, in the SELECT list and in the WHERE.
 #
-# Adding a projected EXISTS to a SELECT over a DERIVED SOURCE — a CTE or a
-# derived table — joined to another source loses that source. The CTE form
-# cannot find its own alias; the derived-table form fails inside the executor.
+# ALL FOUR ARMS USED TO BE BROKEN, and they were broken for THREE UNRELATED
+# reasons that one symptom hid. This file's earlier revision pinned the CTE arm
+# as `error_code: "42703"` and attributed everything to one root cause — a
+# projection not stating the row it produces. That attribution was refuted by
+# measurement:
 #
-# THIS FILE HOLDS THE CTE FAILURE AND BOTH CONTROLS. The derived-table FAILURE
-# is NOT PINNED ANYWHERE, blocked twice over and each block measured:
+#   - The CTE arms failed 42703 because the subquery's OUTER SCOPE registered
+#     every real FROM leg and no WITH leg. The arm that proved it is the WHERE
+#     form below: same failure, no projected EXISTS anywhere.
+#   - The derived-table arms planned and then died in the executor
+#     ("multi-leg row cannot serve a source-relative ordinal") because the
+#     join's step-1 ordinal seed had no arm for a PROJECTION leg, so the
+#     materialized join kept the folded projection as its merged row.
+#   - The WHERE arms additionally lost their plan entirely once a projection
+#     began stating its row, because the join's orientation gate compared the
+#     seed's UNSTATED window field types against the leg's newly stated ones.
 #
-#   - This runner cannot express it: it surfaces a
-#     *values.UnboundEvalContextError, while runner.go asserts errors only via
-#     errors.As(err, &apiErr) against an *api.Error carrying a SQLSTATE.
-#   - pkg/relational/sqldriver cannot host it: adding the query makes the
-#     leg-local bake census report UnderivableLegs = 2, want 0 — a CQ-63
-#     acceptance gate asserted as a hard zero, not a tunable expectation.
-#     Control: absent, the census emits no NO-LAYOUT witness at all; present,
-#     two. Pinning there would mean relaxing a truthful gate to admit a defect.
-#
-# Its control is kept here anyway, beside its CTE sibling, so the two shapes
-# read together and the missing experiment is visible rather than merely absent.
-#
-# THE CONTROLS ARE THE POINT. Each failing query has a twin differing ONLY by
-# removing the projected EXISTS, and every twin PASSES. So it is the
-# projected-EXISTS fold that loses the derived source, not the derived source
-# itself, and not the join.
-#
-# ROOT CAUSE, already documented in the tree: LogicalProjectionExpression
-# .GetResultValue returns its INNER's QuantifiedObjectValue rather than the row
-# the projection actually produces, and RecordQueryProjectionPlan.GetResultType
-# is a hardcoded UnknownType "for the same reason". That comment records the
-# same symptom, in the same words the derived-table arm produces ("multi-leg row
-# cannot serve a source-relative ordinal"), and names the fix: state the row
-# built from GetProjectedValues and GetAliases, in both the logical expression
-# and its physical twin. It is scoped there as its own piece of work, with a
-# standing warning not to "clean up" the site until it lands.
-#
-# When the projection learns to state its row, the CTE arm below goes red. The
-# right move is then to replace it with the rows its control already returns,
-# plus the EXISTS column — spelled out on the arm.
+# THE CONTROLS ARE STILL THE POINT, and they are kept: each arm has a twin
+# differing only by removing the correlated EXISTS. They are what localized each
+# defect to the derived leg rather than to EXISTS, to the join, or to ORDER BY.
 name: projected_exists_over_a_derived_source
 schema_template: |
   CREATE TABLE t1 (id BIGINT, v BIGINT, PRIMARY KEY (id))
@@ -50,7 +33,7 @@ setup:
   - INSERT INTO t2 VALUES (100, 1), (200, 3)
   - INSERT INTO t3 VALUES (900, 1), (901, 2), (902, 3)
 tests:
-  # CONTROL for the CTE arm: identical but for the projected EXISTS. PASSES.
+  # CONTROL for the CTE arms: identical but for the correlated EXISTS.
   - query: |-
       WITH c AS (SELECT id, v FROM t1)
       SELECT c.id, t1_id FROM c, t3 WHERE t3.t1_id = c.id ORDER BY c.id
@@ -58,23 +41,56 @@ tests:
       - [1, 1]
       - [2, 2]
       - [3, 3]
-  # A qualified CTE reference beside a projected EXISTS cannot find its own
-  # alias. Replacement when fixed: [1, 1, true], [2, 2, false], [3, 3, true].
+  # A qualified CTE reference beside a projected EXISTS. t2 has rows for t1 ids
+  # 1 and 3 only, so the EXISTS column carries BOTH values — an EXISTS that were
+  # constant across the result could not witness a wrong-slot read.
   - query: |-
       WITH c AS (SELECT id, v FROM t1)
       SELECT c.id, t1_id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = c.id) AS h
       FROM c, t3 WHERE t3.t1_id = c.id ORDER BY c.id
-    error_code: "42703"
-  # CONTROL for the derived-table failure, which is NOT PINNED ANYWHERE (see the
-  # header). This arm is identical but for the projected EXISTS, and it PASSES.
-  # There is deliberately no failing arm below it: this runner cannot express
-  # that failure's error, and the sqldriver package cannot host it either. A
-  # control whose experiment is blocked says so rather than reading as an
-  # experiment someone forgot to write.
+    rows:
+      - [1, 1, true]
+      - [2, 2, false]
+      - [3, 3, true]
+  # The same correlation with the EXISTS in the WHERE. This arm is what showed
+  # the CTE failure was a scope-registration gap and had nothing to do with the
+  # projection, so it stays even though its sibling above now passes.
+  - query: |-
+      WITH c AS (SELECT id, v FROM t1)
+      SELECT c.id, t1_id FROM c, t3
+      WHERE t3.t1_id = c.id AND EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = c.id)
+      ORDER BY c.id
+    rows:
+      - [1, 1]
+      - [3, 3]
+  # CONTROL for the derived-table arms.
   - query: |-
       SELECT d.id, t1_id FROM (SELECT id, v FROM t1) AS d, t3
       WHERE t3.t1_id = d.id ORDER BY d.id
     rows:
       - [1, 1]
       - [2, 2]
+      - [3, 3]
+  # The derived-table form of the projected EXISTS. This is the arm this runner
+  # could not host before: it failed with a *values.UnboundEvalContextError
+  # carrying no SQLSTATE, while the runner asserts errors only through
+  # errors.As against an *api.Error. Now that it returns rows, the runner can
+  # express it and the gap in this file's coverage is closed.
+  - query: |-
+      SELECT d.id, t1_id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = d.id) AS h
+      FROM (SELECT id, v FROM t1) AS d, t3
+      WHERE t3.t1_id = d.id ORDER BY d.id
+    rows:
+      - [1, 1, true]
+      - [2, 2, false]
+      - [3, 3, true]
+  # And its WHERE form — the shape a projection stating its row took the plan
+  # away from entirely until the orientation gate stopped reading an unstated
+  # field type as a leg mismatch.
+  - query: |-
+      SELECT d.id, t1_id FROM (SELECT id, v FROM t1) AS d, t3
+      WHERE t3.t1_id = d.id AND EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = d.id)
+      ORDER BY d.id
+    rows:
+      - [1, 1]
       - [3, 3]

@@ -227,3 +227,46 @@ func TestCrossProductPartitions_ThreeChildren(t *testing.T) {
 		}
 	}
 }
+
+// TestPhysicalPlanColumnNames_StopsAtProjection pins that this walker takes its
+// names from a PROJECTION and does not descend past one.
+//
+// It exists because RFC-226 rev 5 asserted the opposite — that this walker and
+// the executor's planColumnNamesWithMD both "descend past the projection via
+// GetInner() and are therefore unaffected", and that a don't-descend arm needed
+// adding to both. That was wrong about both walkers: each already has a
+// projection arm at the TOP of its loop, so neither ever reaches the GetInner()
+// descent for a projection. The claim has since been restated for this walker
+// specifically and was wrong again, so the behaviour is pinned here rather than
+// argued about a third time.
+//
+// The pin is also the reason the walkers are UNAFFECTED by a projection stating
+// a row: they never read GetResultType() for one. The tail RecordType read below
+// the loop is reached only for a non-projection terminal.
+//
+// Naming authority is the second half. This walker resolves a projected column's
+// name with values.OutputColumnName — the same function values.Projection-
+// ResultValue uses to name the fields of the row a projection now states. So the
+// executor-visible name and the stated row's field name come from ONE authority
+// by construction, not by two implementations agreeing.
+func TestPhysicalPlanColumnNames_StopsAtProjection(t *testing.T) {
+	t.Parallel()
+
+	innerRow := values.NewRecordType("", true, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "A", FieldType: values.NotNullLong},
+	})
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, innerRow, false)
+	proj := plans.NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{values.NewFieldValueWithResolvedOrdinal("A", 1, values.NotNullLong)},
+		[]string{"RENAMED"}, scan)
+
+	got := physicalPlanColumnNames(proj)
+	if len(got) != 1 || got[0] != "RENAMED" {
+		t.Fatalf("physicalPlanColumnNames(Projection) = %v, want [RENAMED].\n"+
+			"  A 2-name [ID A] result means the walker descended PAST the projection to "+
+			"its inner's row — the union rename would then be built from columns the "+
+			"projection does not output. A nil means the projection arm was removed and "+
+			"the walk fell through to the tail RecordType read.", got)
+	}
+}

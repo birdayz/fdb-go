@@ -488,10 +488,34 @@ var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 		// carrying them over would have restated a number nobody measured. Control:
 		// both files out of the package reports 586/166/210, both back in reports
 		// 602/180/212.
-		Denominator:     n(604),
-		Accept:          n(182),
+		// Step 6 — RFC-226's projected-EXISTS-over-a-derived-source probe
+		// (projection_result_type_probe_fdb_test.go) adds seven queries, and the
+		// increment is ATTRIBUTED BY CONTROL rather than by arithmetic, per the
+		// paragraph above: with that one file out of the package the census is
+		// unchanged and the target PASSES at 604/182/212 (`exit=0`, unfiltered,
+		// --nocache_test_results); with it back in, 614/188/216 — so every unit of
+		// the movement is this file's.
+		//   denominator 604+10 = 614, ACCEPT 182+6 = 188, no-exist-ref 212+4 = 216
+		//
+		// The split is the check that the queries are the shapes they claim to be.
+		// Three of them project the EXISTS (the CTE arm, the derived-table arm and
+		// the base-table control) and each fires the rule under BOTH orientations,
+		// so 3x2 = 6 ACCEPTs. Two put the EXISTS in the WHERE, projecting no
+		// reference to the exists alias, so 2x2 = 4 decline as no-exist-ref. The
+		// two remaining queries are the no-EXISTS controls and reach this decision
+		// never — which is itself the check that they are the plain two-quantifier
+		// joins they are meant to be.
+		//
+		// RECONSTRUCT-NIL HOLDING AT 102, ALL BARE-QOV, IS THE LOAD-BEARING ONE.
+		// Before RFC-226's leg fix, a projection leg refused the seed and landed in
+		// the `rv=RecordConstructorValue (NOT a positional merge)` bucket; the three
+		// projected arms above would have declined there instead of accepting. That
+		// bucket is 0 and ACCEPT absorbed all six, which is the census stating the
+		// fix from the other side.
+		Denominator:     n(614),
+		Accept:          n(188),
 		CorrelatedStep1: n(108),
-		NoExistRef:      n(212),
+		NoExistRef:      n(216),
 		ReconstructNil:  n(102),
 		// The residue is now ENTIRELY bare-QOV, and the two entries below say so
 		// separately on purpose. A single "reconstruct-nil == 94" would be
@@ -10506,13 +10530,58 @@ func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
 //
 // Floored an order of magnitude below, like every population floor on this path:
 // what a floor detects here is the shape going DARK, not drift.
+// RE-MEASURED at RFC-226, because §1c relaxed this exact gate's type comparison
+// and a bound nobody re-read after changing the thing it watches is not a bound.
+// Current corpus: calls 506 (not-a-seed 102, tiled-by-2 404, tiled-by-other 0);
+// unverifiable 104, matched 232, declined 68; MapCountDiffers 92, of which
+// DECLINED 0.
+//
+// WHAT THIS CHANGE MOVES: NOTHING, on the pre-existing corpus. Established by
+// the only control that answers that question — the PRE-CHANGE baseline, not a
+// mutation of the branch:
+//
+//	master aba271454        calls 496  unverifiable 104  matched 224  DECLINED 66
+//	branch, probe file OUT  calls 496  unverifiable 104  matched 224  DECLINED 66
+//	branch, probe file IN   calls 506  unverifiable 104  matched 232  DECLINED 68
+//
+// The middle row is the whole answer: with this branch's engine changes applied
+// and ONLY its new test queries removed, the census is bit-identical to master.
+// So the +10 calls / +8 matched / +2 declined are NEW FIRINGS contributed by
+// projection_result_type_probe_fdb_test.go's two WHERE-EXISTS queries — not
+// existing firings that flipped INTO declining, which is the reading the census
+// alone cannot rule out and which would have been a real alarm.
+//
+// A PRIOR REVISION OF THIS COMMENT GOT THAT WRONG, and the error is kept visible
+// because the reasoning was seductive: it isolated §1c's arm by MUTATING THE
+// BRANCH (removing the unstated-field arm of recordFieldsMatch — calls 504,
+// matched 230, declined 68) and concluded "Declined does not move at all". That
+// measures what §1c's ARM does, not what this CHANGE does, and it swept the
+// whole 61 -> 68 drift into "corpus growth". Only 61 -> 66 is growth; 66 -> 68
+// is this branch. The unverifiable claim survives intact — master already reads
+// 104, so 84 -> 104 is growth.
+//
+// ON THE CEILING, stated precisely because the loose phrasing gives away the
+// stronger claim: DeclinedCeiling is not "200, unchanged". Master aba271454 has
+// NO DeclinedCeiling and NO MatchedFloor — the OrientationGateFloors struct
+// there carries only Calls, MapCountDiffers and UnverifiableCeiling, and the
+// floors var sets only the last. Both bounds are INTRODUCED here, at 200 against
+// a measured 68, and not moved by any later fold. A population that had no bound
+// at all now has one, which is a stronger safety statement than a bound that
+// stayed put — and a bound moved to accommodate the movement it was installed to
+// detect would be neither.
 var orientationGateFloors = cascades.OrientationGateFloors{
-	Calls:           40, // measured 438
-	MapCountDiffers: 7,  // measured 72
-	// A CEILING, calibrated from the measured 84 with headroom for corpus growth.
-	// Unverifiable is the SECOND fail-open and its dangerous direction is GROWTH,
-	// so unlike every other number here it is capped rather than floored.
-	UnverifiableCeiling: 200, // measured 84
+	Calls:           40, // measured 506
+	MapCountDiffers: 7,  // measured 92
+	// A CEILING, calibrated with headroom for corpus growth. Unverifiable is the
+	// SECOND fail-open and its dangerous direction is GROWTH, so unlike the
+	// floors here it is capped.
+	UnverifiableCeiling: 200, // measured 104
+	// The two DECIDING arms, which had no bound in either direction until
+	// RFC-226 — so the gate could have gone from proving 232 layouts to proving
+	// none, or from 68 refusals to refusing everything, and every number above
+	// would still have been satisfied.
+	MatchedFloor:    40,  // measured 232 — collapse means the gate proves nothing
+	DeclinedCeiling: 200, // measured 68 — growth means queries lose their plans
 }
 
 // assertOrientationGateCensus checks the gate census, dropping the population

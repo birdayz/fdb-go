@@ -744,6 +744,31 @@ type OrientationGateFloors struct {
 	//
 	// Zero means uncapped.
 	UnverifiableCeiling int
+
+	// MatchedFloor floors the population the gate PROVES. Added because the two
+	// deciding arms — Matched and Declined — had no bound in either direction,
+	// so the gate could have gone from proving 232 layouts to proving none and
+	// every other number here would still have been satisfied. Matched
+	// collapsing means the structural comparison stopped succeeding: either the
+	// legs stopped stating rows, or the comparison got stricter than the shapes
+	// it is fed.
+	//
+	// Zero means unfloored.
+	MatchedFloor int
+
+	// DeclinedCeiling CAPS the refusals, and the direction is deliberate.
+	//
+	// A decline here is not a neutral outcome: this gate is what admits the
+	// materialized NLJ at all, so declining BOTH orientations does not fall back
+	// to a slower plan, it loses the plan entirely ("best expression is not a
+	// physical plan"). That is a measured failure mode, not a hypothetical — a
+	// stated leg type compared against an unstated seed window produced exactly
+	// it, which is why recordFieldsMatch treats an unstated side as unable to
+	// contradict. So growth is the alarm: more declines means more queries
+	// silently losing their plan.
+	//
+	// Zero means uncapped.
+	DeclinedCeiling int
 }
 
 // AssertOrientationGateCensus checks the partitions and the floors.
@@ -799,6 +824,31 @@ func assertOrientationGateCounters(w io.Writer, c orientationGateCounters, floor
 			"  WHAT GROWTH MEANS: more join orientations are going unchecked. Find which\n"+
 			"  leg plans stopped stating a row type — that is the fixable half — rather\n"+
 			"  than raising this bound.\n", c.Unverifiable, floors.UnverifiableCeiling)
+	}
+	if floors.MatchedFloor > 0 && c.Matched < floors.MatchedFloor {
+		failed = true
+		fmt.Fprintf(w, "ORIENTATION GATE CENSUS FAIL: only %d MATCHED firing(s), want >= %d.\n"+
+			"  Matched is the population the gate PROVES, and its dangerous direction is\n"+
+			"  COLLAPSE. Every other bound here can be satisfied by a gate that proves\n"+
+			"  nothing: the partition still adds up, the unverifiable ceiling is a\n"+
+			"  ceiling, and declines only have to stay low. This floor is what separates\n"+
+			"  \"the comparison succeeds\" from \"the comparison never runs\".\n"+
+			"  WHAT COLLAPSE MEANS: either the leg plans stopped stating rows (look for a\n"+
+			"  GetResultType that regressed to UnknownType), or the comparison got\n"+
+			"  stricter than the shapes it is fed.\n", c.Matched, floors.MatchedFloor)
+	}
+	if floors.DeclinedCeiling > 0 && c.Declined > floors.DeclinedCeiling {
+		failed = true
+		fmt.Fprintf(w, "ORIENTATION GATE CENSUS FAIL: %d DECLINED firing(s), want <= %d.\n"+
+			"  A CEILING, because a decline here is not a fallback to a slower plan — this\n"+
+			"  gate is what admits the materialized NLJ at all, so declining BOTH\n"+
+			"  orientations loses the plan outright (\"best expression is not a physical\n"+
+			"  plan\"). That is measured, not hypothetical: comparing a STATED leg type\n"+
+			"  against an UNSTATED seed-window field produced exactly that failure, which\n"+
+			"  is why recordFieldsMatch treats an unstated side as unable to contradict.\n"+
+			"  WHAT GROWTH MEANS: queries are losing their plans. Find the comparison that\n"+
+			"  started refusing — do not raise this bound to make the red go away.\n",
+			c.Declined, floors.DeclinedCeiling)
 	}
 	if c.MapCountDiffers < floors.MapCountDiffers {
 		failed = true

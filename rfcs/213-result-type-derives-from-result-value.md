@@ -104,11 +104,37 @@ forwarders; a textual gate reports 34 and describes neither population).
 | tier | plans | derivable from |
 |---|---|---|
 | **1** | `FlatMap`, `NestedLoopJoin`, `StreamingAggregation`, `TempTableScan`, `Values` | `GetResultValue()` — Java's derivation applies verbatim |
-| **2** | `Limit`, `Projection`, `TempTableInsert` | `GetInner()` — pass-throughs that change no row shape |
+| **2** | `Limit`, ~~`Projection`~~, `TempTableInsert` | `GetInner()` — pass-throughs that change no row shape |
 | **3** | `LoadByKeys`, `RecursiveDfsJoin`, `RecursiveLevelUnion`, `TextIndex` | **`EmptyValue`'s analogue** — see §5 |
 
 `RecordQueryLimitPlan` is the sharpest case: a LIMIT cannot alter a row type, its inner is
 one call away, and it answers unknown anyway.
+
+> **CORRECTION (RFC-226): `Projection` was in tier 2 and must not be — it is tier 1.** A
+> projection is precisely the node that changes the row shape; `Limit` and `TempTableInsert`
+> belong in tier 2, it does not. Deriving `RecordQueryProjectionPlan.GetResultType()` from
+> `GetInner()` as tier 2 prescribes would make it state its inner's row, which is the exact
+> falsehood `expressions/logical_projection.go:94-121` already documents. Tier 2 would make the
+> physical twin agree with the logical one *on the wrong answer* — worse than today, where the
+> physical side at least declines honestly.
+>
+> **An earlier draft of this note claimed the tier-2 assignment was the CAUSE of two live
+> defects. RFC-226 rev 5 measured that and it is false** — both defects survived the type change
+> unchanged and had unrelated causes (a subquery outer scope that registered no CTE leg, and a
+> join seed that refused a projection leg). What the row-stating change does deliver is that the
+> *consumers* of a projection's row can finally read one: the seed reconstruction is built on
+> `GetResultType().(*values.RecordType)` and could not have been written while a projection
+> answered `UnknownType`. The correction to this table stands on Java's contract and on the
+> node's role, not on a defect attribution.
+>
+> `Projection` derives from `GetResultValue()` like the rest of tier 1: a record constructor over
+> its projected columns and their aliases. That is Java's contract for the node holding this role
+> (`GraphExpansion.java:396` → `SelectExpression`; `RecordQueryMapPlan.java:143-147` stores the
+> result value and defines no `getResultType`). Graefe confirmed the correction is mandatory.
+> See `rfcs/226-a-projection-states-the-row-it-produces.md` §0c and §4. RFC-226 also measured
+> that the executor emits one `PositionalRow` slot **per projection**
+> (`executor/executor.go:2589-2609`), so the projection's produced row is its column list — not
+> its inner's row — which is the same conclusion reached from the execution side.
 
 ---
 

@@ -2871,12 +2871,21 @@ func TestFDB_QualityProbe_ComplexSubqueryPatterns(t *testing.T) {
 	})
 
 	t.Run("cte_with_exists", func(t *testing.T) {
-		// CTE-derived table + correlated EXISTS: the CTE alias
-		// becomes the quantifier alias via sourceAlias. Currently
-		// the EXISTS correlation can't resolve CTE columns across
-		// the subquery boundary. When this starts working, flip
-		// to a correctness assertion: want [Alice Bob].
-		err := expectError(t, db,
+		// CTE-derived table + correlated EXISTS. This arm used to expect an
+		// ERROR — the subquery's outer scope registered every real FROM leg and
+		// no WITH leg, so `a.id` had nothing to bind to and the query died 42703.
+		// Its own comment named the flip to make when it started working, and
+		// this is that flip: active customers are Alice(1), Bob(2), Diana(4) and
+		// shipped orders belong to customers 1, 2, 3, so the EXISTS keeps Alice
+		// and Bob and drops Diana. Diana is the row that matters — a correlation
+		// that resolved to the wrong leg, or an EXISTS that filtered nothing,
+		// would keep her.
+		//
+		// The CTE is ALIASED here (`FROM active a`), which the plain-name form in
+		// TestFDB_ProjectionResultTypeProbe does not cover: the column schema
+		// comes from the WITH registry while the alias and correlation come from
+		// this reference.
+		rows := collectRows(t, db,
 			`WITH active AS (
 			   SELECT id, name FROM customers WHERE active = true
 			 )
@@ -2885,8 +2894,12 @@ func TestFDB_QualityProbe_ComplexSubqueryPatterns(t *testing.T) {
 			   SELECT 1 FROM orders o WHERE o.customer_id = a.id AND o.status = 'shipped'
 			 )
 			 ORDER BY a.name`)
-		if err == nil {
-			t.Fatal("CTE + EXISTS now works — update this test to assert correctness")
+		names := make([]string, len(rows))
+		for i, r := range rows {
+			names[i] = fmt.Sprintf("%v", r[0])
+		}
+		if len(names) != 2 || names[0] != "Alice" || names[1] != "Bob" {
+			t.Errorf("want [Alice Bob], got %v", names)
 		}
 	})
 

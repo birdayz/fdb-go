@@ -1094,11 +1094,119 @@ func TestProjectionPlan_Identity_OrdinalVsLiteralHashField(t *testing.T) {
 	}
 }
 
+// TestProjectionPlan_GetResultType pins that a projection STATES the row it
+// produces rather than declining with UnknownType.
+//
+// This assertion is inverted from what it used to be. It required UnknownType,
+// which was the decline that made every consumer re-derive the row by NAME —
+// the supply side of two live wrong-behaviour defects. A projection's row is
+// its columns, derived from the result value exactly as Java derives it
+// (RelationalExpression.java:194-197, which no Java plan overrides).
 func TestProjectionPlan_GetResultType(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryProjectionPlan(nil, stub("X"))
-	if !values.UnknownType.Equals(p.GetResultType()) {
-		t.Fatalf("GetResultType() = %v, want UnknownType", p.GetResultType())
+
+	// Empty projection list: a record with no fields, NOT UnknownType. The
+	// arity is the claim — an empty record says "zero columns", where
+	// UnknownType said "cannot tell" and every reader failed closed on it.
+	empty := NewRecordQueryProjectionPlan(nil, stub("X"))
+	emptyRT, ok := empty.GetResultType().(*values.RecordType)
+	if !ok {
+		t.Fatalf("GetResultType() = %v (%T), want a *values.RecordType", empty.GetResultType(), empty.GetResultType())
+	}
+	if len(emptyRT.Fields) != 0 {
+		t.Errorf("empty projection stated %d field(s), want 0", len(emptyRT.Fields))
+	}
+
+	// Two columns: one aliased, one not. The stated row must have one field
+	// per projected column, in order, and NO field may be unnamed — an unnamed
+	// field reaches the name-keyed readers as "" and resolves to nothing.
+	p := NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{
+			values.NewFlatFieldValue("A", values.UnknownType),
+			values.NewFlatFieldValue("B", values.UnknownType),
+		},
+		[]string{"OUT", ""}, stub("X"))
+	rt, ok := p.GetResultType().(*values.RecordType)
+	if !ok {
+		t.Fatalf("GetResultType() = %v (%T), want a *values.RecordType", p.GetResultType(), p.GetResultType())
+	}
+	if len(rt.Fields) != 2 {
+		t.Fatalf("stated %d field(s), want 2: %v", len(rt.Fields), rt.Fields)
+	}
+	if rt.Fields[0].Name != "OUT" {
+		t.Errorf("slot 0 named %q, want %q (the user's AS wins)", rt.Fields[0].Name, "OUT")
+	}
+	for i, f := range rt.Fields {
+		if f.Name == "" {
+			t.Errorf("slot %d is UNNAMED; every slot must carry a name "+
+				"(the user's alias, the column's own name, or Java's \"_\"+ordinal)", i)
+		}
+		if f.Ordinal != i {
+			t.Errorf("slot %d carries ordinal %d, want %d", i, f.Ordinal, i)
+		}
+	}
+}
+
+// TestProjectionPlan_ResultTypeMatchesLogicalTwin pins that the physical
+// projection and its logical twin state the SAME row for the same columns.
+// They share values.ProjectionResultValue precisely so they cannot drift; this
+// is the test that notices if one of them stops using it.
+func TestProjectionPlan_ResultTypeMatchesLogicalTwin(t *testing.T) {
+	t.Parallel()
+
+	projections := []values.Value{
+		values.NewFlatFieldValue("A", values.UnknownType),
+		values.NewFlatFieldValue("B", values.UnknownType),
+	}
+	aliases := []string{"OUT", ""}
+
+	physical := NewRecordQueryProjectionPlanWithAliases(projections, aliases, stub("X"))
+	logical, err := values.ProjectionResultValue(projections, aliases)
+	if err != nil {
+		t.Fatalf("ProjectionResultValue: %v", err)
+	}
+	if !logical.Type().Equals(physical.GetResultType()) {
+		t.Errorf("logical twin states %v, physical states %v — the two projections "+
+			"must state the same row", logical.Type(), physical.GetResultType())
+	}
+}
+
+// TestProjectionResultValue_RejectsWholeRowProjection pins the DERIVATION's
+// refusal to synthesise a row for a one-slot whole-row projection.
+//
+// SCOPE, stated precisely because an earlier revision of this comment
+// overstated it as an "unbuildability pin". It is not one. This drives
+// values.ProjectionResultValue, a derivation; the LogicalProjectionExpression
+// constructors validate nothing and build the shape happily
+// (expressions/flowed_value_typing_test.go's TestLogicalProjectionFallsBackTo-
+// UntypedQOV builds it and reaches the fallback). So the shape IS constructible
+// and the arm below IS live. What this pins is narrower and still worth having:
+// the derivation must keep refusing, because the executor emits one positional
+// slot per projection, so that shape WRAPS its inner's row rather than passing
+// it through and has no name to give its single field.
+//
+// The alarm direction is REVIVAL: a success here means the derivation started
+// synthesising a row for a shape that cannot name one, and every consumer keyed
+// on "unstated" would begin trusting it.
+func TestProjectionResultValue_RejectsWholeRowProjection(t *testing.T) {
+	t.Parallel()
+
+	_, err := values.ProjectionResultValue(
+		[]values.Value{values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("Q"))}, nil)
+	if err == nil {
+		t.Fatal("the derivation SYNTHESISED a row for a one-slot whole-row projection. " +
+			"The alarm is REVIVAL: this shape must keep declining, because the executor " +
+			"emits one positional slot per projection, so it wraps the inner row instead " +
+			"of passing it through and has no name for its single field. (This does not " +
+			"assert the shape is unconstructible — it is; the expression constructors " +
+			"validate nothing and the untyped-QOV fallback that handles it is live.)")
+	}
+
+	// Precision: the guard must reject only the BARE whole-row shape. A
+	// one-slot projection of an actual column is ordinary and must build.
+	if _, err := values.ProjectionResultValue(
+		[]values.Value{values.NewFlatFieldValue("A", values.UnknownType)}, nil); err != nil {
+		t.Errorf("a one-column projection of a real column must build, got: %v", err)
 	}
 }
 

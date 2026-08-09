@@ -890,7 +890,11 @@ func distinctStreamingEligible(member expressions.RelationalExpression, innerPla
 // distinctKeyColumns returns the inner plan's output columns as Values — the
 // whole-row DISTINCT dedup key (distinctKey packs exactly these positional
 // slots). A projection carries its output columns as projected Values directly
-// (its GetResultType is always UnknownType); a BARE-column projection yields
+// (read from GetProjections, the authority on what a projection outputs — this
+// line used to say "its GetResultType is always UnknownType", true before
+// RFC-226 and false now that a projection states its produced row. The
+// short-circuit stays because the projected Values are the RICHER answer, not
+// because the type is unavailable); a BARE-column projection yields
 // FieldValues in the same representation the inner ordering's keys use, so
 // orderingSatisfiesGroupingKeys can prove adjacency. A COMPUTED projection
 // (g/2, f(g)) yields non-FieldValue projected values that won't match — the

@@ -141,7 +141,34 @@ func (p *RecordQueryProjectionPlan) IsIdentity() bool {
 	return ok && qov.Correlation == p.innerQ.GetAlias()
 }
 
-func (p *RecordQueryProjectionPlan) GetResultType() values.Type { return values.UnknownType }
+// GetResultValue states the row this projection PRODUCES — the same derivation
+// its logical twin uses (values.ProjectionResultValue), so the two cannot drift.
+//
+// It must be stated here rather than inherited: PlanExprBase.GetResultValue
+// mints a QOV over a FRESH unique correlation, which no consumer can resolve
+// against this plan's columns.
+//
+// This is also what the executor emits. executeProjection builds a
+// PositionalRow with exactly one slot per projection, named by
+// values.OutputColumnName — the authority ProjectionResultValue also uses — so
+// the row stated here and the row emitted there are the same row.
+func (p *RecordQueryProjectionPlan) GetResultValue() values.Value {
+	rv, err := values.ProjectionResultValue(p.projections, p.aliases)
+	if err != nil {
+		return values.NewQuantifiedObjectValue(p.innerQ.GetAlias())
+	}
+	return rv
+}
+
+// GetResultType derives from the result value, which is Java's arrangement:
+// RelationalExpression.getResultType() is `Type.Relation(getResultValue()
+// .getResultType())` and NO Java expression or plan overrides it
+// (RelationalExpression.java:194-197). It was a hardcoded UnknownType, which
+// made every consumer re-derive the row by name — the supply side RFC-226
+// removes.
+func (p *RecordQueryProjectionPlan) GetResultType() values.Type {
+	return p.GetResultValue().Type()
+}
 
 func (p *RecordQueryProjectionPlan) GetChildren() []RecordQueryPlan {
 	inner := p.GetInner()
