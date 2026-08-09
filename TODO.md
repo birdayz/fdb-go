@@ -10889,6 +10889,36 @@ standing rule is that a finding without a booking is a finding that evaporates,
 so each is recorded here with its evidence refs, a size, and what "done" means.
 None is speculative: each was re-verified against the tree before booking.
 
+- [ ] **Two producers mint primary-key comparison Values from the same
+  `GetPrimaryKeyColumns` source with DIFFERENT case handling, and lazy
+  `FieldValue` equality is case-SENSITIVE** · S · found while refuting the
+  RFC-197 `uniqueUpperFieldIndex` name-keyed booking
+  `commonPrimaryKeyValues` (`intersector_primary_key.go:1197-1203`) mints
+  `&values.FieldValue{Field: strings.ToUpper(col)}`. `PrimaryScanRule.OnMatch`
+  (`rule_primary_scan.go:50-55`) mints `&values.FieldValue{Field: col}` from the
+  SAME `PlanContext.GetPrimaryKeyColumns` source with no `ToUpper`. The source
+  does not normalise either: `coveredPrimaryKeyColumns`
+  (`cascades_generator.go:3437-3444`) appends `component.Field.GetFieldName()`
+  verbatim off the key expression.
+  This matters because lazy (unresolved) `FieldValue` equality is
+  case-SENSITIVE — `EqualsWithoutChildren` returns `av.Field == bv.Field`
+  (`map_field_values.go:354`), not an `EqualFold`. So wherever a metadata PK
+  field name is not already upper-case, the two producers mint UNEQUAL Values
+  for one and the same column: memo members fail to intern, and a structural
+  comparison between a scan-minted primary key and an intersection-minted one
+  is false for a column they both name.
+  NOT MEASURED, and it is the first thing to establish: whether any live
+  metadata path actually yields a non-upper-case PK field name. If none does,
+  this closes by making the two producers agree and PINNING that invariant
+  rather than by fixing an observable bug — which is still worth doing, because
+  the asymmetry is one DDL path away from being live and nothing currently
+  detects it.
+  DONE = one shared mint helper behind both producers (or an asserted
+  normalisation at the `GetPrimaryKeyColumns` boundary, which is the better
+  shape if the boundary can state the invariant), plus a unit pin that drives a
+  mixed-case PK column through both producers and reds if either side's case
+  handling diverges again.
+
 - [x] **RFC-218 remainder — the leg-window re-anchor. THE BOOKING UNDERSTATED IT:
   the decline was only ONE of the rebase's two arms, and the other silently
   returned WRONG ROWS.** · was M, actually L · RFC-222 · **query-engine change —
