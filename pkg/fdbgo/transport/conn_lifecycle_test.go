@@ -332,7 +332,8 @@ func TestConn_MonitorDeathClosesSocket(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	// Tiny cadence: monitor fires in ~ (loop + loop + timeout) = 60ms.
+	// Tiny cadence: monitor fires in ~ (loop + timeout) = 40ms. The client has
+	// ONE loop delay, not two — C++'s first delay is server-only (:644).
 	c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(20*time.Millisecond, 20*time.Millisecond))
 	if err != nil {
 		t.Fatalf("dial: %v", err)
