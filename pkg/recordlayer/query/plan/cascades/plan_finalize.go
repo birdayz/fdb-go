@@ -132,10 +132,10 @@ func stampPlanNode(plan plans.RecordQueryPlan, repo *values.TypeProtoRepository,
 //
 // GetChildren() alone is not enough either, and that gap is the sharper one: a
 // plan may hold a whole sub-PLAN in a structural field that GetChildren
-// deliberately does not return. RecordQueryAggregateIndexPlan is exactly that
-// shape — a leaf by Java's RecordQueryPlanWithNoChildren contract, wrapping a
-// RecordQueryIndexPlan whose scan comparands are only reachable from its arm
-// here.
+// deliberately does not return. RecordQueryAggregateIndexPlan and
+// RecordQueryCoveringIndexPlan are both that shape — leaves by Java's
+// RecordQueryPlanWithNoChildren contract, each wrapping a RecordQueryIndexPlan
+// whose scan comparands are only reachable from its arm here.
 //
 // TestFinalizePlanCoversStructuralKey guards both gaps. It reflects over every
 // plan type's struct fields, flags the ones whose type transitively carries a
@@ -177,6 +177,23 @@ func stampNodeLocalValues(plan plans.RecordQueryPlan, repo *values.TypeProtoRepo
 		// keeps the two in step by construction. The nil guard is for the
 		// struct-literal test plans that bypass the constructor — a typed-nil
 		// pointer in an interface is not == nil, so it must be checked here.
+		if idx := p.GetIndexPlan(); idx != nil {
+			stampNodeLocalValues(idx, repo)
+		}
+	case *plans.RecordQueryCoveringIndexPlan:
+		// The second plan of the same shape, and for the same reason: the
+		// wrapped index scan is a STRUCTURAL field (Java's covering plan
+		// likewise implements RecordQueryPlanWithNoChildren), GetChildren
+		// returns nil, so the plan walk never descends into it.
+		//
+		// Recursing through stampNodeLocalValues rather than reading this
+		// plan's own delegating GetScanComparisons/GetCommonPrimaryKeyValues is
+		// deliberate: the delegates would have to be re-enumerated here every
+		// time the index-plan arm above grows a field, and the day they drift
+		// the miss is silent — an unstamped RecordConstructorValue does not
+		// fail, it quietly evaluates to its name-keyed map instead of the
+		// field-number-keyed message. Recursion keeps the two in step by
+		// construction.
 		if idx := p.GetIndexPlan(); idx != nil {
 			stampNodeLocalValues(idx, repo)
 		}

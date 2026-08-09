@@ -94,13 +94,22 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 	// The per-ordering winners below are still yielded — they are what guarantees
 	// an ORDERING-satisfying alternative exists — and the enumeration adds the
 	// members no ordering asked for.
+	//
+	// Each enumerated parent ranges over a reference RESTRICTED to its one child
+	// member (Java's memoizeMemberPlansFromOther, ImplementFilterRule.java:89),
+	// NOT over the interned group. Interning returns the group that already
+	// CONTAINS the member — here, innerRef itself — so every iteration would
+	// build the structurally identical Filter(innerRef) and the N alternatives
+	// would collapse into one on insert. The restriction is what makes them
+	// distinct; without it this loop yields N times and enumerates nothing.
 	for _, m := range physicalMembersForParentEnumeration(innerRef) {
 		if seen[m] {
 			continue
 		}
 		seen[m] = true
 		innerAlias := f.GetInner().GetAlias()
-		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(m))
+		innerQ := expressions.ForEachQuantifier(call.MemoizeMemberPlansFromOther(
+			innerRef, []expressions.RelationalExpression{m}))
 		call.Yield(plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
 			innerQ, f.GetPredicates(), innerAlias))
 	}

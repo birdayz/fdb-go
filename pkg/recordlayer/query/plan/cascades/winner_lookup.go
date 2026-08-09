@@ -103,24 +103,29 @@ func bestSatisfyingMember(ref *expressions.Reference, ordering *properties.Reque
 //
 // REMOVAL CONDITION. This function is compensation, and the thing it
 // compensates for is a defect with a known fix, so record what would retire it
-// rather than leaving it to be re-argued.
+// rather than leaving it to be re-argued. Two DISTINCT things are named below —
+// the condition that must become true, and the measurement that would show it
+// has. Neither substitutes for the other: the condition holding is what makes
+// the pin unnecessary, and the measurement is the only way to know it holds.
 //
-// It stays until MemoizeFinalExpressionsFromOther (implementation_rule.go:
-// 124-151) PROPAGATES the constraint entry to the reference it mints. Today it
-// copies the source's plan properties and registers no constraint, so
-// OptimizeGroupTask's per-ordering retention (unified_tasks.go:663-666) looks
-// up the new reference, finds nothing, and resolves the group by COST ALONE.
-// That is the ordering-blind edge this pin exists to survive: without the pin a
-// rule that dropped a sort can have its spine resolved to a cheaper unordered
-// sibling.
+// THE CONDITION — constraint propagation. The pin stays until
+// MemoizeFinalExpressionsFromOther (implementation_rule.go:124-151) PROPAGATES
+// the constraint entry to the reference it mints. Today it copies the source's
+// plan properties and registers no constraint, so OptimizeGroupTask's
+// per-ordering retention (unified_tasks.go:663-666) looks up the new reference,
+// finds nothing, and resolves the group by COST ALONE. That is the
+// ordering-blind edge this pin exists to survive: without the pin a rule that
+// dropped a sort can have its spine resolved to a cheaper unordered sibling.
 //
-// It is removable on MEASUREMENT, not on argument. The concrete gate is the
-// StoredRecordProperty fetch arm in plan_properties.go computeStoredRecord:
-// turn it on, and the six ordered InUnions that currently collapse into
-// InMemorySort(Fetch(InJoin(...))) must hold. Until that has been observed,
-// "roll-up makes the partition ordering-homogeneous so the pin is redundant" is
-// exactly the reasoning that was tried and measured wrong — it yielded an
-// InUnion claiming ASC over a filtered full scan.
+// THE VERIFICATION — the StoredRecordProperty fetch arm in plan_properties.go
+// computeStoredRecord. That arm is not a second condition; it is the
+// EXPERIMENT that reads whether the condition above now holds. Turn it on, and
+// the six ordered InUnions that currently collapse into
+// InMemorySort(Fetch(InJoin(...))) must hold their ordering. Until that has
+// been OBSERVED, the pin stays: "roll-up makes the partition
+// ordering-homogeneous so the pin is redundant" is exactly the argument that
+// was tried and measured wrong — it yielded an InUnion claiming ASC over a
+// filtered full scan. Removable on measurement, never on argument.
 func pinOrderedSpine(expr expressions.RelationalExpression, ordering *properties.RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
 	return pinOrderedSpineDepth(expr, ordering, less, 0)
 }

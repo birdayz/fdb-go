@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -15,9 +16,18 @@ import (
 // access-path alternatives the rules now enumerate.
 //
 // WHY THE plan_shape GOLDEN MOVED, class by class. Anyone reading the golden
-// diff and grepping UnorderedPrimaryKeyDistinct lands here. Measured over the
-// explaindiff corpus (350 files, 2516 queries + 157 DML) by dumping the golden
-// before and after and pairing stanzas by key:
+// diff and grepping UnorderedPrimaryKeyDistinct lands here.
+//
+// TWO of the three claims below are CORPUS measurements and no test in this
+// package can re-derive them; they are stated with the command that does, so a
+// reader can check rather than trust. The third — the one that JUSTIFIES the
+// access-path movement — is a property of the planner, not of the corpus, and
+// it is asserted in TestDMLPlan_AccessPathAgreesWithTheEquivalentSelect below
+// rather than argued here.
+//
+// TO RE-DERIVE THE TWO COUNTS: dump the explaindiff golden (350 files, 2516
+// queries + 157 DML) on this branch and on its merge-base, pair stanzas by key,
+// and diff. As measured when the change landed:
 //
 //	99 DML stanzas changed, 0 non-DML plan lines.
 //
@@ -30,22 +40,23 @@ import (
 //	   property cannot establish; every other DELETE correctly kept none.
 //
 //	 4 ACCESS-PATH CHANGES, from replacing the rules' single-winner pick with
-//	   enumeration. Each is justified by the SAME fact — the DML now agrees with
-//	   the SELECT that has the identical predicate, which is precisely what the
-//	   pick was suppressing:
+//	   enumeration:
 //	     composite_secondary_index_prefix_pushdown #7 (UPDATE) and #9 (DELETE):
-//	       IDX_REGION_PLAN_TIER[=,*,*] -> IDX_REGION_PLAN[=,*], the same index
-//	       `SELECT id FROM rp WHERE region = 'eu'` already picks. It also moves
-//	       the UPDATE off the one index whose key contains the column it writes.
-//	     in_list_pushdown #28 (UPDATE) and #31 (DELETE): gain an InJoin, the
-//	       shape `SELECT a, b, c FROM kvw WHERE a = 1 AND b IN (10, 20)` already
-//	       plans. Verified by planning that SELECT directly, not inferred.
+//	       IDX_REGION_PLAN_TIER[=,*,*] -> IDX_REGION_PLAN[=,*].
+//	     in_list_pushdown #28 (UPDATE) and #31 (DELETE): gain an InJoin.
 //
-// The classifier was NOT re-run for the final tree: the yamsql work that
-// followed changed only plan_contains/plan_not_contains claims — zero query,
-// rows or rowcount edits — so the planned corpus is identical and a re-run
-// re-derives the same split. Confirmed by dumping the golden again afterwards:
-// zero delta.
+// Those four are all justified by ONE fact — a DML statement now reaches the
+// same access path as the SELECT with the identical predicate, which is exactly
+// what the single-winner pick was suppressing. That fact is the load-bearing
+// one, it is a planner property rather than a corpus reading, and it is
+// asserted directly on this file's own schema below. The corpus numbers say how
+// MANY stanzas moved; the assertion says why moving was right.
+//
+// The classifier has NOT been re-run since: the yamsql work that followed
+// changed only plan_contains/plan_not_contains claims — no query, rows or
+// rowcount edits — so the planned corpus is unchanged and a re-run re-derives
+// the same split. Re-running is the dump-and-pair procedure above; nothing
+// automated checks it.
 
 func planDMLShape(t *testing.T, sql, ddl string) string {
 	t.Helper()
@@ -104,6 +115,118 @@ func TestDMLPlan_DeleteElidesDedupOverDistinctAccessPaths(t *testing.T) {
 				"path proves DistinctRecords, which is the short-circuit "+
 				"ImplementDeleteRule.java:79-82 applies", sql, shape)
 		}
+	}
+}
+
+// accessPathOf renders every scan a plan reaches, in traversal order, as
+// "<source>[bounded]" or "<source>[unbounded]" — an index by name, the base
+// table as "<primary>".
+//
+// BOUNDEDNESS IS RECORDED FOR THE PRIMARY SCAN TOO, not only for index scans.
+// A primary-key equality plans as a base-table scan with a bound comparison
+// range, so a renderer that labelled every RecordQueryScanPlan "full table scan"
+// would report the same string for `WHERE id = 1` and for no predicate at all —
+// collapsing a point lookup and a full table read into one answer, on the one
+// access path where the difference is largest.
+//
+// It sees THROUGH covering wrappers (indexScanOf), because coveringness is a
+// row-shaping decision — which columns the row is built from — and not part of
+// which physical range is read. A DML statement writes whole records and can
+// never use a covering path, so comparing it against a SELECT that can would
+// otherwise report a difference that is not one.
+func accessPathOf(p plans.RecordQueryPlan) []string {
+	bound := func(ranges []*predicates.ComparisonRange) string {
+		for _, cr := range ranges {
+			if cr != nil && !cr.IsEmpty() {
+				return "bounded"
+			}
+		}
+		return "unbounded"
+	}
+	var out []string
+	plans.Walk(p, func(n plans.RecordQueryPlan) bool {
+		if idx, ok := indexScanOf(n); ok {
+			out = append(out, idx.GetIndexName()+"["+bound(idx.GetScanComparisons())+"]")
+			return true
+		}
+		if s, ok := n.(*plans.RecordQueryScanPlan); ok {
+			out = append(out, "<primary>["+bound(s.GetScanComparisons())+"]")
+		}
+		return true
+	})
+	return out
+}
+
+// TestDMLPlan_AccessPathAgreesWithTheEquivalentSelect asserts the fact the four
+// access-path stanzas in the header rest on, instead of leaving it as prose.
+//
+// The DML implementation rules used to pick a single access-path winner
+// themselves; they now ENUMERATE and let cost choose, which is why four corpus
+// stanzas moved. The justification for every one of them is the same and is not
+// a corpus reading: an UPDATE or DELETE with a given predicate must reach the
+// same access path as a SELECT with that predicate, because the two are asking
+// the storage engine the identical question. A rule that picks its own winner
+// can disagree with cost, and did.
+//
+// Coveringness is deliberately not compared — see accessPathOf. What is compared
+// is the index and whether the predicate reached it as a scan bound, which is
+// what "the same access path" means and what the four stanzas changed.
+//
+// If this fails, the DML rules have gone back to deciding an access path
+// independently of the SELECT path. That is the defect the enumeration removed;
+// do not reconcile it by changing the expectation.
+func TestDMLPlan_AccessPathAgreesWithTheEquivalentSelect(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		pred string
+	}{
+		{"pk_equality", "id = 1"},
+		{"single_column_range", "a > 1"},
+		{"unindexed_column_range", "b > 1"},
+		{"in_list", "a IN (10, 20)"},
+		{"composite_prefix_equality", "a = 1"},
+		{"composite_two_column_equality", "a = 1 AND b = 2"},
+		{"composite_prefix_plus_in_list", "a = 1 AND b IN (10, 20)"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// The SELECT counterpart reads whole records, as the DML does. A
+			// narrower projection could win a covering path the DML cannot use,
+			// which would be a difference in the projection and not in the access
+			// path.
+			sel, err := PlanPhysicalForTest("SELECT * FROM t WHERE "+tc.pred, dedupDDL, nil)
+			if err != nil {
+				t.Fatalf("planning the SELECT counterpart: %v", err)
+			}
+			want := accessPathOf(sel)
+			t.Logf("WHERE %s -> SELECT access path %v", tc.pred, want)
+			if len(want) == 0 {
+				t.Fatalf("the SELECT counterpart reached no scan at all:\n  %s\n"+
+					"there is then no access path to agree with and this case is vacuous",
+					sel.Explain())
+			}
+
+			for _, dml := range []string{
+				"UPDATE t SET v = v + 1 WHERE " + tc.pred,
+				"DELETE FROM t WHERE " + tc.pred,
+			} {
+				p, err := PlanPhysicalDMLForTest(dml, dedupDDL, nil)
+				if err != nil {
+					t.Fatalf("planning %q: %v", dml, err)
+				}
+				got := accessPathOf(p)
+				if strings.Join(got, ",") != strings.Join(want, ",") {
+					t.Errorf("%s\n  DML access path:    %v\n    %s\n"+
+						"  SELECT access path: %v\n    %s\n"+
+						"The two ask storage the same question and must reach the same "+
+						"answer. A DML rule that picks its own single winner instead of "+
+						"enumerating and letting cost choose is how they diverge.",
+						dml, got, p.Explain(), want, sel.Explain())
+				}
+			}
+		})
 	}
 }
 

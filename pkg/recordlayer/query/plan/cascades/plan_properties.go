@@ -29,6 +29,19 @@ func (m *PlanPropertiesMap) Add(w physicalPlanExpression) {
 	m.props[w] = computeWrapperProperties(w)
 }
 
+// Set stores an ALREADY-COMPUTED property map for an expression, preserving
+// insertion order. Add is the computing twin; this one exists for carrying a
+// source reference's entries into a reference restricted to a subset of its
+// members (MemoizeMemberPlansFromOther), where recomputing would be both
+// wasteful and a second, independently-derived answer to a question the source
+// already answered.
+func (m *PlanPropertiesMap) Set(expr expressions.RelationalExpression, props properties.PropertyMap) {
+	if _, exists := m.props[expr]; !exists {
+		m.order = append(m.order, expr)
+	}
+	m.props[expr] = props
+}
+
 // GetProperties returns the computed properties for a wrapper expression.
 func (m *PlanPropertiesMap) GetProperties(expr expressions.RelationalExpression) properties.PropertyMap {
 	return m.props[expr]

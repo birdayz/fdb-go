@@ -594,6 +594,7 @@ go_test(
         "//pkg/recordlayer/query/plan/plans",
         "//pkg/recordlayer/rlmetrics",
         "//pkg/relational/api",
+        "//pkg/relational/conformance/coveringleaf",
         "//pkg/relational/conformance/rowdiff",
         "//pkg/relational/core/catalog",
         "//pkg/relational/core/ddl",

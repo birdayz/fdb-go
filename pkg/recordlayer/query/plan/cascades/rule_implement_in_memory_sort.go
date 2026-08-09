@@ -155,11 +155,21 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 	// first physical plan, and sorting their small output is cheaper
 	// than sorting a full scan. Skip the first physical member: it is the
 	// placeholder the group-ranged primary yield above already covers.
+	//
+	// The member set is physicalMembersForParentEnumeration's — finals, with
+	// exploratory only as the no-finals fallback — which is also the set
+	// findPhysicalExpr picks the skipped placeholder out of. Enumerating a wider
+	// set than the one the skip is computed from is how the placeholder ends up
+	// wrapped twice, or a member the cost framework has not admitted as a plan
+	// ends up with a parent built over it.
 	firstPhys := findPhysicalExpr(innerRef)
-	for _, m := range innerRef.AllMembers() {
+	for _, m := range physicalMembersForParentEnumeration(innerRef) {
 		if m == firstPhys {
 			continue
 		}
+		// physicalMembersForParentEnumeration only returns physical members, so
+		// this holds by construction; the check stays because a rule must not
+		// panic if that ever stops being true.
 		ph, ok := m.(physicalPlanExpression)
 		if !ok {
 			continue
@@ -200,12 +210,8 @@ func isRestrictedFetch(ph physicalPlanExpression) bool {
 	if !ok {
 		return false
 	}
-	inner := fetchPlan.GetInner()
-	if inner == nil {
-		return false
-	}
-	idxPlan, ok := inner.(*plans.RecordQueryIndexPlan)
-	if !ok {
+	idxPlan := fetchedIndexScan(fetchPlan.GetInner())
+	if idxPlan == nil {
 		return false
 	}
 	for _, cr := range idxPlan.GetScanComparisons() {
@@ -214,6 +220,29 @@ func isRestrictedFetch(ph physicalPlanExpression) bool {
 		}
 	}
 	return false
+}
+
+// fetchedIndexScan returns the index scan a fetch actually reads entries from,
+// looking through the covering wrapper.
+//
+// The covering plan holds its scan as a FIELD, not a child (RFC-220 C1), so a
+// type assertion for the bare scan misses it — and the access path builds
+// Fetch(Covering(IndexScan)) for every value-index access, which makes the miss
+// TOTAL rather than occasional. The failure is silent in the direction that
+// costs plans: no scan found reads as "no comparison ranges", i.e. as an
+// unrestricted scan, and the sort-the-selective-output alternative is never
+// built for any query. Java reaches the same fields by delegating through the
+// covering plan rather than by walking children
+// (RecordQueryCoveringIndexPlan.java:224).
+func fetchedIndexScan(inner plans.RecordQueryPlan) *plans.RecordQueryIndexPlan {
+	switch p := inner.(type) {
+	case *plans.RecordQueryIndexPlan:
+		return p
+	case *plans.RecordQueryCoveringIndexPlan:
+		return p.GetIndexPlan()
+	default:
+		return nil
+	}
 }
 
 var _ ImplementationRule = (*ImplementInMemorySortRule)(nil)

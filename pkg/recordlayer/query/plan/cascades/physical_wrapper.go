@@ -105,6 +105,16 @@ func dataAccessExprCorrelations(p plans.RecordQueryPlan) map[values.CorrelationI
 			for a := range scanComparisonCorrelations(sp.GetScanComparisons()) {
 				out[a] = struct{}{}
 			}
+		case *plans.RecordQueryCoveringIndexPlan:
+			// plans.Walk cannot descend into the wrapper's scan — it is a FIELD,
+			// not a child — so without this arm the SARG correlations on an
+			// index-backed access are invisible here. That is the UNDER-reported
+			// direction this function's doc comment names as the latent hazard:
+			// a correlated probe read as self-contained by join-leg / winner
+			// bookkeeping. GetScanComparisons delegates to the wrapped scan.
+			for a := range scanComparisonCorrelations(sp.GetScanComparisons()) {
+				out[a] = struct{}{}
+			}
 		case *plans.RecordQueryPredicatesFilterPlan:
 			for _, pr := range sp.GetPredicates() {
 				c := map[values.CorrelationIdentifier]struct{}{}
@@ -146,10 +156,20 @@ type physicalPlanExpression interface {
 }
 
 // IsPhysicalIndexScan reports whether the given RelationalExpression is an index
-// scan. Since RFC-184 W2 the memo holds *plans.RecordQueryIndexPlan directly (no
-// physicalIndexScanWrapper), so this is a bare type check.
+// scan. Since RFC-184 W2 the memo holds the plan directly (no
+// physicalIndexScanWrapper), so this is a type check on the plan.
+//
+// A COVERING index scan answers TRUE. It is an index scan — it reads the same
+// physical index range and differs only in the row it reconstructs — and since
+// RFC-220 it is the shape the memo actually holds for an index-backed access.
+// A predicate named "is an index scan" that answered FALSE for the only index
+// scan in the memo would be a trap for every caller.
 func IsPhysicalIndexScan(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*plans.RecordQueryIndexPlan)
+	plan, isPlan := expr.(plans.RecordQueryPlan)
+	if !isPlan {
+		return false
+	}
+	_, ok := plans.IndexPlanOf(plan)
 	return ok
 }
 
@@ -371,9 +391,16 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 // second optimizer findPhysicalExpr's comment forbids; the point of enumerating
 // is that no choice is made at rule time at all.
 //
-// Callers MUST bound the resulting cross product — references here hold up to 52
-// physical finals — which is what MaxNumMatchesPerRuleCall does at the rule-call
-// boundary.
+// The resulting cross product is NOT capped per rule — references here hold up
+// to 52 physical finals, and a caller looping over them yields once per member
+// inside a SINGLE OnMatch. MaxNumMatchesPerRuleCall does not apply: its counter
+// counts BINDINGS produced by the matcher (unified_tasks.go:350, :461, :560),
+// and this loop produces none. The operative backstop is the much coarser
+// Planner.MaxTasks / MaxTaskQueueSize, which fails the WHOLE plan with
+// ErrPlannerCapHit rather than capping one rule's fan-out. Memoization keeps the
+// enumerated subtrees singly represented, so the fan-out is in parent
+// alternatives rather than in duplicated trees — but a caller adding a second
+// enumerated child multiplies, and nothing here will stop it.
 func physicalMembersForParentEnumeration(ref *expressions.Reference) []expressions.RelationalExpression {
 	if ref == nil {
 		return nil

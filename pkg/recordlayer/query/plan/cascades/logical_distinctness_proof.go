@@ -33,6 +33,13 @@ func planRecordIdentityMatchesLogicalEquality(plan plans.RecordQueryPlan) bool {
 			properties.TupleKeyUniquenessMatchesLogicalEquality(
 				p.GetPrimaryKeyComponentTypes(), len(p.GetPKColumnNames()),
 			)
+	case *plans.RecordQueryCoveringIndexPlan:
+		// Reconstructing a partial record from an entry neither creates nor
+		// removes duplicates, so the record identity is the wrapped scan's.
+		// The wrapper is a FIELD, so the fetch arm below cannot reach it, and
+		// Fetch(Covering(IndexScan)) is what every index-backed access looks
+		// like — without this arm the proof fails closed on all of them.
+		return planRecordIdentityMatchesLogicalEquality(p.GetIndexPlan())
 	case *plans.RecordQueryDistinctPlan:
 		// This operator already applies the SQL row-value dedup key.
 		return true
@@ -126,6 +133,11 @@ func planStorageOrderingIsComplete(plan plans.RecordQueryPlan) bool {
 	case *plans.RecordQueryScanPlan:
 		return p.HintRichOrdering().StorageKeyIsComplete()
 	case *plans.RecordQueryIndexPlan:
+		return p.HintRichOrdering().StorageKeyIsComplete()
+	case *plans.RecordQueryCoveringIndexPlan:
+		// HintRichOrdering delegates to the wrapped scan, whose physical range
+		// and entry order the wrapper shares. Stated as its own arm rather than
+		// left to the fetch arm below, which cannot reach a field.
 		return p.HintRichOrdering().StorageKeyIsComplete()
 	case *plans.RecordQueryFirstOrDefaultPlan:
 		return true

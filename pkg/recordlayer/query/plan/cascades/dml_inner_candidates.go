@@ -11,6 +11,11 @@ import (
 // ImplementUpdateRule / ImplementDeleteRule consult.
 type dmlInnerCandidate struct {
 	expr expressions.RelationalExpression
+	// source is the reference expr was drawn from. The mutation must range over
+	// a reference RESTRICTED to expr, and the restriction is minted from source
+	// (Java's memoizeMemberPlansFromOther takes the same two arguments,
+	// ImplementDeleteRule.java:78).
+	source *expressions.Reference
 	// distinctRecords is DistinctRecordsProperty.distinctRecords() for this
 	// access path — the ONLY thing that lets ImplementDeleteRule skip the
 	// primary-key dedup (ImplementDeleteRule.java:79-82). ImplementUpdateRule
@@ -76,6 +81,7 @@ func storedRecordDMLCandidates(ref *expressions.Reference) []dmlInnerCandidate {
 		}
 		out = append(out, dmlInnerCandidate{
 			expr:            m,
+			source:          ref,
 			distinctRecords: props.GetBool(properties.PropDistinctRecords),
 		})
 	}
@@ -112,10 +118,26 @@ func storedRecordDMLCandidates(ref *expressions.Reference) []dmlInnerCandidate {
 // memo lookup, so MemoizeFinalExpression is the twin: the dedup is a
 // compensating operator this rule just built and must not be deduped against an
 // unrelated group.
+//
+// The ACCESS PATH underneath is restricted the same way, for a reason that is a
+// correctness one rather than an enumeration one. The dedup decision is read
+// per candidate, so the reference the mutation ranges over must offer exactly
+// that candidate. Interning hands back the group CONTAINING the candidate — the
+// whole child group — and then a candidate that reported DistinctRecords, and
+// therefore skipped the dedup, produces a DELETE ranging over a group that also
+// holds NON-distinct members. Extraction may resolve it to one of those, and
+// the mutation sees a stored record more than once with nothing in the plan to
+// drop the repeat: the Halloween dedup bypassed. Cost makes that outcome more
+// likely, not less, because the undeduped plan is the cheaper one.
+//
+// Java's property reading and its reference always describe the same set of
+// plans — both come from one PlanPartition (ImplementDeleteRule.java:78-82) —
+// so the two cannot drift apart there.
 func dmlDedupedInnerQuantifier(
 	call *ExpressionRuleCall, candidate dmlInnerCandidate, alreadyDistinct bool,
 ) expressions.Quantifier {
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(candidate.expr))
+	innerQ := expressions.ForEachQuantifier(call.MemoizeMemberPlansFromOther(
+		candidate.source, []expressions.RelationalExpression{candidate.expr}))
 	if alreadyDistinct {
 		return innerQ
 	}

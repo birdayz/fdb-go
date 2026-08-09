@@ -226,3 +226,43 @@ func TestCoveringPlan_DelegatesToInner(t *testing.T) {
 		t.Error("IsStrictlySorted() = false, want true — must delegate to the inner scan")
 	}
 }
+
+// TestCoveringPlan_DelegatesRangeDescription pins the accessors that describe
+// the physical RANGE. These are not conveniences: a covering scan is the shape
+// the access path emits for every index-backed access, and it holds its index
+// scan as a FIELD, so anything reasoning about the range from a plan tree can
+// only reach these facts through this plan. Two consumers depend on them —
+// the executor's baked-reference walk (which reads the scan comparisons to
+// recover a correlated outer's type) and the row-diff harness's ordering
+// derivation (which reads the key columns and their physical types). A
+// delegator answering from a zero value would not fail loudly in either: the
+// walk would report "no baked references" and the derivation "order
+// unprovable", both of which read as a clean result.
+func TestCoveringPlan_DelegatesRangeDescription(t *testing.T) {
+	t.Parallel()
+
+	comps := []*predicates.ComparisonRange{pkOrderingEq(t, int64(5))}
+	inner := coveringTestIndexPlan("IDX_A", comps, false).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong})
+	cov := NewRecordQueryCoveringIndexPlan(inner)
+
+	if got := cov.GetScanComparisons(); len(got) != 1 || got[0] != comps[0] {
+		t.Errorf("GetScanComparisons() = %v, want the inner scan's %v — the range is the inner's range", got, comps)
+	}
+	if got := cov.GetColumnNames(); len(got) != 1 || got[0] != "A" {
+		t.Errorf("GetColumnNames() = %v, want the inner scan's [A]", got)
+	}
+	if got := cov.GetPKColumnNames(); len(got) != 1 || got[0] != "ID" {
+		t.Errorf("GetPKColumnNames() = %v, want the inner scan's [ID]", got)
+	}
+	if got := cov.GetKeyComponentTypes(); len(got) != len(inner.GetKeyComponentTypes()) {
+		t.Errorf("GetKeyComponentTypes() = %v, want the inner scan's %v", got, inner.GetKeyComponentTypes())
+	}
+	if got := cov.GetPrimaryKeyComponentTypes(); len(got) != len(inner.GetPrimaryKeyComponentTypes()) {
+		t.Errorf("GetPrimaryKeyComponentTypes() = %v, want the inner scan's %v", got, inner.GetPrimaryKeyComponentTypes())
+	}
+	if !cov.IsReverse() && inner.IsReverse() {
+		t.Error("IsReverse() dropped the inner scan's direction")
+	}
+}

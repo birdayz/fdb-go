@@ -171,14 +171,31 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 		// Coveringness is now a plan TYPE constructed at the access path. There is
 		// no stamper left to disable, so the disabling experiment cannot say
 		// anything about stamping. What it CAN say is the architectural claim that
-		// replaced it: no downstream rule participates in the decision, therefore
-		// disabling downstream rules cannot remove COVERING from the scan. All
-		// three configurations below assert the marker SURVIVES.
+		// replaced it: no downstream rule participates in the decision, so no
+		// downstream rule can take COVERING off a scan that has it.
 		//
-		// The rules still change the SHAPE around the scan — with both disabled the
-		// projection no longer absorbs the fetch, so the Fetch node survives. That
-		// is fetch ELIMINATION, a genuinely downstream decision, and it is correct
-		// that it responds to these rules. Coveringness is not.
+		// READ THE THIRD EXPECTATION CAREFULLY, because it is NOT "the marker
+		// survives" and an earlier version of this comment claimed it was. Two
+		// different things respond to these rules and only one of them is
+		// coveringness:
+		//
+		//   - COVERINGNESS is decided at the access path. Nothing downstream can
+		//     remove it. That is what the first two configurations show: with one
+		//     fetch-eliding rule gone the other still elides, and the covering scan
+		//     is untouched.
+		//   - WHICH PLAN WINS is a cost question, and fetch elimination is a
+		//     genuinely downstream decision. With BOTH eliders disabled, no ancestor
+		//     can remove the fetch that coveringness exists to make removable, so
+		//     the covering path buys nothing and loses on cost to a bare fetching
+		//     index scan. The covering plan is not damaged; it is not chosen.
+		//
+		// So the third configuration asserts a plan with NO covering scan — and no
+		// Fetch node either, which is the other thing that comment got wrong:
+		// MergeFetchIntoCoveringIndexRule collapses Fetch(Covering(Index)) into one
+		// bare fetching IndexScan, so nothing renders a separate Fetch. Since
+		// RFC-220 a bare `IndexScan(…)` already resolves its own records by primary
+		// key; a `Fetch(` node renders only above a COVERING scan, which is exactly
+		// what this configuration does not have.
 		//
 		// SCOPE: the direct, no-residual control ONLY, so the shape difference
 		// between configurations stays legible. The residual shape is pinned above.

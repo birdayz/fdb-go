@@ -1,6 +1,29 @@
 # RFC-220 — Coveringness is a plan type built at the access path, not a flag stamped downstream
 
-Status: proposed (implementation gated on Graefe + Torvalds ACK)
+Status: design ACK'd; implementation NAK'd by Graefe and Torvalds — NOT accepted.
+
+Outstanding against the implementation (three independent review passes):
+
+- The headline enumeration fix was a NO-OP. The rule memoized each child member
+  through the INTERNING path, which returns the group that already contains it,
+  so all N yields were structurally identical and collapsed into one. Java's
+  shape is a RESTRICTED reference (`memoizeMemberPlansFromOther`).
+- The DML port inherited the same defect as a CORRECTNESS bug: a distinct
+  candidate skips the primary-key dedup while ranging over a group that still
+  offers non-distinct members — the Halloween dedup bypassed, and cost prefers
+  the bypassing plan because it is the cheaper one.
+- Coveringness becoming a plan TYPE left `*RecordQueryIndexPlan` type-switches
+  blind, because `plans.Walk` does not descend into the wrapped scan. At least
+  two are correctness (`stampNodeLocalValues` never reaching a covering plan's
+  comparands; `probeOuterBakedType` returning nil).
+- Three alternatives stopped being CONSTRUCTED with no golden movement at all —
+  this RFC's own thesis ("not a losing plan, a plan the memo never saw")
+  recurring inside its fix.
+- Instruments reporting clean because they stopped executing: the redundant-sort
+  detector, and `classify` silently skipping scenarios missing from either dump.
+
+The design in the sections below is not in dispute. This status stays
+non-accepted until the above are fixed, pinned, and re-reviewed.
 Java reference: fdb-record-layer 4.12.11.0 (pinned `MODULE.bazel:117`)
 
 ## 1. The defect

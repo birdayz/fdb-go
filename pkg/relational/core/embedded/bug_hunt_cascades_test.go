@@ -169,26 +169,29 @@ CREATE INDEX idx_amount ON ORDERS(amount)`
 		t.Fatalf("plan: %v", err)
 	}
 	t.Logf("COUNT(status): %s", plan)
-	// COUNT(col) must read col, so the scan must NOT answer from the index entry.
+	// COUNT(col) must read col, so the IDX_AMOUNT scan must NOT answer from the
+	// index entry: idx_amount does not carry status, so a covering scan would
+	// read NULL for every row and COUNT would come back 0.
 	//
-	// The positive `Fetch` assertion that used to sit here is gone, and its
-	// removal does not weaken this test — the COVERING assertion below IS the
-	// hazard. Since RFC-220 a bare `IndexScan(…)` is itself a fetching scan
-	// (executeIndexScan resolves every entry by primary key), so `Fetch` is
-	// absent from correct plans and its presence proves nothing either way. What
-	// would actually break COUNT(status) is the scan becoming COVERING over
-	// idx_amount, which does not carry status: every row would read NULL and the
-	// count would come back 0. That is the assertion, and it still fails loudly
-	// if the plan ever becomes covering.
-	if strings.Contains(plan, "COVERING") {
-		t.Errorf("COUNT(col) over an index lacking col must not be COVERING — "+
-			"status would read NULL for every row and COUNT would return 0: %s", plan)
-	}
+	// BOTH of the substring forms this used to be written in are retired, for the
+	// same underlying reason — a rendered substring is not the property.
+	//
+	//   - `!strings.Contains(plan, "COVERING")` is satisfied by a FULL TABLE SCAN,
+	//     which carries no COVERING marker anywhere. The test exists to reject
+	//     exactly that class of plan and would have passed on it. The scoped form
+	//     below fails when the scan is absent, which is a distinct answer from
+	//     "the scan is not covering" — see scanCoverage.
+	//   - `strings.Contains(plan, "Fetch")` as a proxy for "the base record is
+	//     read" is dead by RFC-220: a bare `IndexScan(…)` IS a fetching scan
+	//     (executeIndexScan resolves every entry by primary key), so no `Fetch`
+	//     node renders in a correct plan and its absence proves nothing.
+	assertScanReadsBaseRecords(t, plan, "IndexScan(IDX_AMOUNT")
 
-	// Controls: COUNT(*) and COUNT(<constant>) read no base-record field, so they
-	// MAY still use a covering index scan (no Fetch). COUNT(1)/COUNT(TRUE) must
-	// not regress to Fetch (the covering decision is about field access, not
-	// count-star semantics).
+	// Controls: COUNT(*) and COUNT(<constant>) read no base-record field, so the
+	// same scan MAY answer from the index entry — and must, or the count is doing
+	// a primary-key lookup per row for values it never looks at. Asserted as the
+	// positive property (this scan is COVERING) rather than as "no Fetch node
+	// renders", which is true of the fetching plan as well.
 	for _, q := range []string{
 		"SELECT COUNT(*) FROM orders WHERE amount > 5",
 		"SELECT COUNT(1) FROM orders WHERE amount > 5",
@@ -199,9 +202,7 @@ CREATE INDEX idx_amount ON ORDERS(amount)`
 			t.Fatalf("%s: %v", q, err)
 		}
 		t.Logf("%s => %s", q, p)
-		if strings.Contains(p, "Fetch") {
-			t.Errorf("%s reads no field and should stay covering (no Fetch), got %s", q, p)
-		}
+		assertScanAnswersFromIndexEntry(t, p, "IndexScan(IDX_AMOUNT")
 	}
 }
 

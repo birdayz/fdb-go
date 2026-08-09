@@ -1662,7 +1662,16 @@ func assertPlanContains(t *testing.T, plan, substr string) {
 }
 
 // indexScanOf returns the index scan a plan node represents, seeing THROUGH a
-// covering wrapper.
+// covering wrapper. It is a thin alias for plans.IndexPlanOf, kept only so the
+// existing call sites in this package read unchanged.
+//
+// It USED to be a hand-written copy of that function, and so did
+// indexScanOfNode in package sqldriver_test — the same six lines written twice
+// because an unexported test helper cannot cross a package boundary and there
+// was no exported symbol to share. The exported one now exists, and the copies
+// are gone: two copies of a structural guard agree exactly until one of them is
+// edited, and the edit that matters here is a THIRD plan type learning to carry
+// an index scan.
 //
 // RFC-220 made coveringness a plan TYPE holding the index scan as a FIELD, and
 // criterion C1 makes that field invisible to child traversal — deliberately, so
@@ -1676,13 +1685,7 @@ func assertPlanContains(t *testing.T, plan, substr string) {
 // range and only reshapes the row. Walkers asking whether a plan answers from
 // the entry want the covering plan itself, and must NOT use this.
 func indexScanOf(node plans.RecordQueryPlan) (*plans.RecordQueryIndexPlan, bool) {
-	switch p := node.(type) {
-	case *plans.RecordQueryIndexPlan:
-		return p, true
-	case *plans.RecordQueryCoveringIndexPlan:
-		return p.GetIndexPlan(), true
-	}
-	return nil, false
+	return plans.IndexPlanOf(node)
 }
 
 // assertScanReadsBaseRecords asserts that the index scan introduced by
@@ -1701,19 +1704,142 @@ func indexScanOf(node plans.RecordQueryPlan) (*plans.RecordQueryIndexPlan, bool)
 // mask a regression here.
 func assertScanReadsBaseRecords(t *testing.T, plan, scanPrefix string) {
 	t.Helper()
-	i := strings.Index(plan, scanPrefix)
-	if i < 0 {
-		t.Errorf("plan does not contain the scan %q:\n  %s", scanPrefix, plan)
+	label, covering, found := scanCoverage(plan, scanPrefix)
+	if !found {
+		t.Errorf("plan does not contain the scan %q, so the question of whether that scan "+
+			"answers from the index entry is not being asked of anything:\n  %s", scanPrefix, plan)
 		return
 	}
-	label := plan[i:]
-	if j := strings.Index(label, ")"); j >= 0 {
-		label = label[:j+1]
-	}
-	if strings.Contains(label, "COVERING") {
+	if covering {
 		t.Errorf("the scan %q answers from the INDEX ENTRY (covering), so the base "+
 			"record is never read — any column outside the entry reads NULL:\n  %s\n  scan: %s",
 			scanPrefix, plan, label)
+	}
+}
+
+// assertScanAnswersFromIndexEntry is the mirror: the named scan must be COVERING.
+//
+// It exists because the natural way to write this — "the plan renders no
+// `Fetch(`" — is dead. A bare `IndexScan(…)` IS a fetching scan since RFC-220,
+// so `Fetch(` is absent from correct fetching plans too and its absence proves
+// nothing. The property is a positive one, checked on the scan's own label.
+func assertScanAnswersFromIndexEntry(t *testing.T, plan, scanPrefix string) {
+	t.Helper()
+	label, covering, found := scanCoverage(plan, scanPrefix)
+	if !found {
+		t.Errorf("plan does not contain the scan %q, so the question of whether that scan "+
+			"answers from the index entry is not being asked of anything:\n  %s", scanPrefix, plan)
+		return
+	}
+	if !covering {
+		t.Errorf("the scan %q reads base records, but every value the query needs is in the "+
+			"index entry so it should answer from the entry alone:\n  %s\n  scan: %s",
+			scanPrefix, plan, label)
+	}
+}
+
+// scanCoverage isolates the label of the scan introduced by scanPrefix and
+// reports whether that scan answers from the index entry.
+//
+// SCOPED TO ONE SCAN'S LABEL, not to the whole plan, and that is the entire
+// reason it exists. `!strings.Contains(plan, "COVERING")` is the same claim
+// written over the whole string, and it is satisfied by a plan that does not
+// scan the index AT ALL — a full table scan carries no COVERING marker either,
+// so the assertion passes on precisely the plan it was written to reject. The
+// `found` result is what closes that hole: absence of the scan is a distinct
+// answer from "the scan is not covering", and the caller must fail on it rather
+// than read it as success.
+func scanCoverage(plan, scanPrefix string) (label string, covering, found bool) {
+	i := strings.Index(plan, scanPrefix)
+	if i < 0 {
+		return "", false, false
+	}
+	label = plan[i:]
+	if j := strings.Index(label, ")"); j >= 0 {
+		label = label[:j+1]
+	}
+	return label, strings.Contains(label, "COVERING"), true
+}
+
+// TestPlanHarness_CoverageAssertionsRejectAPlanWithoutTheScan drives every arm of
+// scanCoverage from synthetic plan strings, including the arm the corpus does not
+// currently produce.
+//
+// The arm that matters is `found == false`. The assertion these helpers replaced
+// was `!strings.Contains(plan, "COVERING")`, and a full table scan satisfies it:
+// the test meant "this index scan must read base records" and would have passed
+// on a plan that reached no index at all. That arm is not reachable from today's
+// planner for the query in question, so only a unit pin can drive it — and an
+// untested arm in an instrument reads its first real firing as a finding.
+func TestPlanHarness_CoverageAssertionsRejectAPlanWithoutTheScan(t *testing.T) {
+	t.Parallel()
+	const prefix = "IndexScan(IDX_AMOUNT"
+	for _, tc := range []struct {
+		name               string
+		plan               string
+		wantFound          bool
+		wantCovering       bool
+		oldAssertionPasses bool // what `!Contains(plan, "COVERING")` would have said
+	}{
+		{
+			name:               "fetching_index_scan",
+			plan:               "Project([COUNT(STATUS)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>])))",
+			wantFound:          true,
+			wantCovering:       false,
+			oldAssertionPasses: true,
+		},
+		{
+			name:               "covering_index_scan",
+			plan:               "Project([COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_AMOUNT, [<>] COVERING)))",
+			wantFound:          true,
+			wantCovering:       true,
+			oldAssertionPasses: false,
+		},
+		{
+			// THE HOLE. No index scan anywhere, so nothing answers from an index
+			// entry — and the whole-plan COVERING check calls that a pass.
+			name:               "full_table_scan_reaches_no_index",
+			plan:               "Project([COUNT(STATUS)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(ORDERS), [1 preds])))",
+			wantFound:          false,
+			wantCovering:       false,
+			oldAssertionPasses: true,
+		},
+		{
+			// A covering scan on a DIFFERENT index must not be read as this one's
+			// answer — the label is isolated, the whole plan is not consulted.
+			name:               "covering_scan_on_another_index_is_not_this_scan",
+			plan:               "Union(IndexScan(IDX_STATUS, [=] COVERING), IndexScan(IDX_AMOUNT, [<>]))",
+			wantFound:          true,
+			wantCovering:       false,
+			oldAssertionPasses: false,
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			label, covering, found := scanCoverage(tc.plan, prefix)
+			if found != tc.wantFound {
+				t.Fatalf("found = %v, want %v for %q in\n  %s", found, tc.wantFound, prefix, tc.plan)
+			}
+			if covering != tc.wantCovering {
+				t.Fatalf("covering = %v, want %v (scan label %q)\n  %s",
+					covering, tc.wantCovering, label, tc.plan)
+			}
+			// The premise of the whole refactor, asserted so it cannot rot into a
+			// claim nobody checks: on at least one of these plans the retired
+			// whole-plan check disagrees with the scoped one.
+			if got := !strings.Contains(tc.plan, "COVERING"); got != tc.oldAssertionPasses {
+				t.Fatalf("the retired whole-plan check `!Contains(plan, \"COVERING\")` reports "+
+					"%v here, expected %v — the comparison this table records is stale", got, tc.oldAssertionPasses)
+			}
+			if !tc.wantFound && tc.oldAssertionPasses {
+				// Restating the defect as an assertion rather than as prose: this is
+				// the exact combination that made the old form worthless.
+				if covering {
+					t.Fatalf("internal: a plan with no index scan cannot be covering")
+				}
+			}
+		})
 	}
 }
 

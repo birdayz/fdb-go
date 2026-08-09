@@ -495,6 +495,19 @@ func mergeDistinctLegProducesDistinctRecordsAtDepth(
 		return true
 	case *plans.RecordQueryIndexPlan:
 		return p.ProducesDistinctRecords()
+	case *plans.RecordQueryCoveringIndexPlan:
+		// Rebuilding a partial record from an entry neither creates nor removes
+		// duplicates, so duplicate-freedom is the wrapped scan's — which is what
+		// ProducesDistinctRecords delegates to. Distinct from the sibling
+		// identity walk, which REFUSES a bare covering leg: there the question
+		// is whether the base primary key identifies the EMITTED row, and for a
+		// partial row it does not. Here the question is only whether the leg
+		// repeats a record, which the fan-out signal answers.
+		//
+		// Without this arm the fetch arm below stops at the wrapper (a field,
+		// never a child), so Fetch(Covering(IndexScan)) — every index-backed
+		// access — reports non-distinct.
+		return p.ProducesDistinctRecords()
 	case *plans.RecordQueryDistinctPlan,
 		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
 		return true

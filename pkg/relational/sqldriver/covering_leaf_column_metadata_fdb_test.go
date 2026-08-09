@@ -38,6 +38,8 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/conformance/coveringleaf"
 )
 
 func TestFDB_CoveringLeafKeepsColumnTypeMetadata(t *testing.T) {
@@ -49,8 +51,12 @@ func TestFDB_CoveringLeafKeepsColumnTypeMetadata(t *testing.T) {
 	const dbPath = "/testdb_covleafmeta"
 	setup := openTestDB(t, dbPath)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE covleafmeta CREATE TABLE products (id BIGINT, category INTEGER, price INTEGER, name STRING, PRIMARY KEY (id)) CREATE INDEX idx_cat ON products (category)")
+	// The schema is the SHARED definition. The planner-side pin
+	// (TestCoveringLeafMetadataQueriesStillPlanAsCoveringLeaves, package
+	// embedded_test) asserts the plan SHAPE these queries take against the very
+	// same DDL — which is the premise this test rests on, and which used to be
+	// a hand-kept copy on each side.
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE covleafmeta "+coveringleaf.DDL)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE covleafmeta")
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
 	if err != nil {
@@ -59,36 +65,17 @@ func TestFDB_CoveringLeafKeepsColumnTypeMetadata(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 	mwjoMustExec(t, db, ctx, "INSERT INTO products VALUES (1,2,100,'widget'),(2,2,200,'gadget'),(3,3,150,'gizmo')")
 
-	for _, tc := range []struct {
-		name  string
-		query string
-		want  []string // "NAME|DATABASE_TYPE"
-	}{
-		{
-			// The covering shape: the projected column IS the indexed one.
-			name:  "projected_indexed_column_over_covering_leaf",
-			query: "SELECT category FROM products WHERE category = 2",
-			want:  []string{"CATEGORY|INTEGER"},
-		},
-		{
-			// Still covering — the primary key rides along in the index entry.
-			name:  "projected_pk_over_covering_leaf",
-			query: "SELECT id FROM products WHERE category = 2",
-			want:  []string{"ID|BIGINT"},
-		},
-		{
-			// Control: a non-covered column forces the fetching shape, so this
-			// one would pass even with the leaf walk broken. It is here to prove
-			// the expected types are right rather than co-degraded.
-			name:  "projected_noncovered_column_is_the_control",
-			query: "SELECT category, price FROM products WHERE category = 2",
-			want:  []string{"CATEGORY|INTEGER", "PRICE|INTEGER"},
-		},
-	} {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
+	// The queries and their expected metadata come from the shared probe table,
+	// alongside the coveringness the planner-side pin asserts for each. The
+	// control case is marked there (Covering=false) rather than only in a
+	// comment here, so "which case is the control" is one fact both sides read.
+	if len(coveringleaf.Probes) == 0 {
+		t.Fatal("coveringleaf.Probes is empty — this test would report PASS having asserted nothing")
+	}
+	for _, tc := range coveringleaf.Probes {
+		t.Run(tc.Name, func(t *testing.T) {
 			t.Parallel()
-			rows, err := db.QueryContext(ctx, tc.query)
+			rows, err := db.QueryContext(ctx, tc.Query)
 			if err != nil {
 				t.Fatalf("query: %v", err)
 			}
@@ -101,10 +88,10 @@ func TestFDB_CoveringLeafKeepsColumnTypeMetadata(t *testing.T) {
 			for i, ct := range cts {
 				got[i] = ct.Name() + "|" + ct.DatabaseTypeName()
 			}
-			if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", tc.want) {
+			if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", tc.ColumnMeta) {
 				t.Fatalf("column metadata for %q\n got=%v\nwant=%v\n"+
 					"an UNKNOWN type here means a leaf walk failed to reach the index plan held inside the covering scan",
-					tc.query, got, tc.want)
+					tc.Query, got, tc.ColumnMeta)
 			}
 		})
 	}

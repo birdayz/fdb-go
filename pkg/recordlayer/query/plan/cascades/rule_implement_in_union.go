@@ -288,6 +288,25 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 				if !natural {
 					continue
 				}
+				// Reading a property off member [0] of a raw partition is
+				// normally a fact about one member asserted of all of them
+				// (see ToPlanPartitions), and the plan finally baked below is
+				// `best`, not [0]. The ROW SHAPE is the one property where
+				// index 0 is genuinely representative, and not because of the
+				// partition: every member here is a member of ONE equivalence
+				// class (innerRef), and an equivalence class has a single
+				// result type by construction — Java resolves it by reducing
+				// over all members under Verify.verify(left.equals(right))
+				// (Reference.java getResultType), so a disagreement is a memo
+				// defect, not a shape to handle. Go cannot crash there, so the
+				// disagreement is counted and witnessed instead
+				// (recordMergeSlotTypeDisagreement, positional_merge.go).
+				//
+				// It is load-bearing because the bake resolves lazy keys by
+				// FIELD NAME against this type: were two members to flow
+				// different rows, a name that resolved to different ordinals
+				// would bake a wrong-slot read into the merge comparison —
+				// silently, since the rows a merge emits are unchanged.
 				comparisonKeys = bakeMergeComparisonKeys(comparisonKeys, requestedOrdering, innerPlans[0].GetResultType())
 				if comparisonKeys == nil {
 					// Unresolvable free-suffix tiebreak — candidate declined

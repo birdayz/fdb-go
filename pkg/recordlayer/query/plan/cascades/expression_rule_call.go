@@ -230,3 +230,53 @@ func (c *ExpressionRuleCall) Yielded() []expressions.RelationalExpression {
 func (c *ExpressionRuleCall) MemoizeFinalExpression(expr expressions.RelationalExpression) *expressions.Reference {
 	return expressions.FinalOfAtStage(expr, expressions.StageCanonical)
 }
+
+// MemoizeMemberPlansFromOther mints a NEW reference holding only `members` —
+// which must already be members of `source` — as final expressions. Ports
+// Java's FinalMemoizer.memoizeMemberPlansFromOther (CascadesRuleCall.java:518 →
+// Reference.newReferenceFromFinalMembers:587), whose contract is that the
+// returned reference "is always newly created and never reused".
+//
+// This is the RESTRICTION an enumerating implementation rule needs, and it is
+// what MemoizeExpression cannot give it. MemoizeExpression INTERNS: asked for a
+// member, it hands back a group that already contains that member — which, for
+// a member of the rule's own child group, is that whole child group. A rule
+// that loops over N child members and memoizes each one therefore builds N
+// structurally IDENTICAL parents over the same reference, and they collapse to
+// one on insert. The loop enumerates nothing.
+//
+// Java cannot reach that state because it binds a PlanPartition and memoizes a
+// reference restricted to that partition's plans; the restriction is not an
+// optimization there, it is what makes the per-partition parent distinct.
+//
+// The source's per-plan property map is carried over RESTRICTED to the retained
+// members. Copying it wholesale would leave the new reference reporting
+// partitions (ToPlanPartitions walks the property map, not the member list) for
+// plans it does not contain, which is the same conflation in the other
+// direction.
+func (c *ExpressionRuleCall) MemoizeMemberPlansFromOther(
+	source *expressions.Reference,
+	members []expressions.RelationalExpression,
+) *expressions.Reference {
+	var ref *expressions.Reference
+	for i, m := range members {
+		if i == 0 {
+			ref = expressions.FinalOfAtStage(m, expressions.StageCanonical)
+		} else {
+			ref.InsertFinal(m)
+		}
+	}
+	if ref == nil {
+		return &expressions.Reference{}
+	}
+	if pm := GetRefPlanPropertiesMap(source); pm != nil {
+		restricted := NewPlanPropertiesMap()
+		for _, m := range members {
+			if props := pm.GetProperties(m); props != nil {
+				restricted.Set(m, props)
+			}
+		}
+		ref.SetPlanProperties(restricted)
+	}
+	return ref
+}

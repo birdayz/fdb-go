@@ -1155,12 +1155,48 @@ func (p *RecordQueryStreamingAggregationPlan) HintOrdering() properties.Ordering
 			expressions.AggregateKeyColumnName(k), i, values.UnknownType, domain)
 	}
 	desc := make([]bool, len(keys))
-	if idx, ok := p.GetInner().(*RecordQueryIndexPlan); ok && idx.IsReverse() {
+	if orderProducingScanIsReverse(p.GetInner()) {
 		for i := range desc {
 			desc[i] = true
 		}
 	}
 	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
+}
+
+// orderProducingScanIsReverse reports whether the index scan that actually
+// produces plan's rows runs in reverse.
+//
+// The DIRECTION of a delegating producer's ordering is a correctness claim, not
+// decoration: a consumer that reads "ascending" elides its own sort, so an
+// ascending claim over a descending scan returns wrongly-ordered rows with
+// nothing failing. Matching only the bare *RecordQueryIndexPlan made that claim
+// fail SILENTLY in the ascending direction — the type assertion misses, the
+// direction slice stays all-false, and the miss is indistinguishable from a
+// genuinely forward scan.
+//
+// Two wrappers stand between an operator and its scan, and neither changes row
+// ORDER, so both are traversed:
+//
+//   - RecordQueryCoveringIndexPlan holds its scan as a FIELD, not a child, so
+//     no child walk reaches it. Java answers the same way — by DELEGATING the
+//     getter to the wrapped plan rather than by walking children
+//     (RecordQueryCoveringIndexPlan.java:224 for getCorrelatedTo).
+//   - RecordQueryFetchFromPartialRecordPlan resolves entries to base records in
+//     the order its inner hands them over, which is why it delegates IsReverse
+//     itself. It is the shape the access path now always builds beneath an
+//     operator that needs the full record, so an ordered inner reaching this
+//     function is normally Fetch(Covering(IndexScan)).
+func orderProducingScanIsReverse(plan RecordQueryPlan) bool {
+	switch p := plan.(type) {
+	case *RecordQueryIndexPlan:
+		return p.IsReverse()
+	case *RecordQueryCoveringIndexPlan:
+		return orderProducingScanIsReverse(p.GetIndexPlan())
+	case *RecordQueryFetchFromPartialRecordPlan:
+		return orderProducingScanIsReverse(p.GetInner())
+	default:
+		return false
+	}
 }
 
 // HintOrdering: an aggregate index is stored grouped, so it emits one row per

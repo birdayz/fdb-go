@@ -1974,7 +1974,11 @@ func planResultValue(p plans.RecordQueryPlan) values.Value {
 func legOrdinalSafety(p plans.RecordQueryPlan) (bool, plans.RecordQueryPlan) {
 	for p != nil {
 		switch pl := p.(type) {
-		case *plans.RecordQueryScanPlan, *plans.RecordQueryIndexPlan:
+		// A COVERING index scan is ordinal-safe for exactly the reason the bare
+		// scan is — one positional row per entry from one source — and it is
+		// what the fetch arm below peels onto for every index-backed access.
+		case *plans.RecordQueryScanPlan, *plans.RecordQueryIndexPlan,
+			*plans.RecordQueryCoveringIndexPlan:
 			return true, nil
 		case *plans.RecordQueryPredicatesFilterPlan:
 			p = pl.GetInner()
@@ -2058,7 +2062,12 @@ func planBuriedLegConcat(p plans.RecordQueryPlan, alias values.CorrelationIdenti
 	inner := p
 	for {
 		switch pl := inner.(type) {
-		case *plans.RecordQueryScanPlan, *plans.RecordQueryIndexPlan:
+		// The covering wrapper reports the inner scan's flowed row Type
+		// (GetResultType delegates), so its leg window is the inner's — and it
+		// is the shape the fetch arm below peels onto for every index-backed
+		// access, so leaving it out windows nothing.
+		case *plans.RecordQueryScanPlan, *plans.RecordQueryIndexPlan,
+			*plans.RecordQueryCoveringIndexPlan:
 			recordResultTypeRead("planBuriedLegConcat", inner.GetResultType())
 			rt, isRT := inner.GetResultType().(*values.RecordType)
 			if !isRT || len(rt.Fields) == 0 {
@@ -3191,6 +3200,22 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 			return p
 		}
 		return pl.WithScanComparisons(newComps)
+	case *plans.RecordQueryCoveringIndexPlan:
+		// The SARGs are on the scan this wrapper holds as a FIELD; the
+		// pass-through arms below cannot reach them, and Fetch(Covering(...)) is
+		// the shape every index-backed access arrives in. Rebase the inner and
+		// rebuild the wrapper — mirroring rebasePlanOuterRefsOrdinal, which the
+		// comment above requires this walk to move in step with.
+		inner, ok := plans.IndexPlanOf(pl)
+		if !ok {
+			return p
+		}
+		rebased := rebasePlanBuriedRefs(inner, legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		rebasedIdx, isIdx := rebased.(*plans.RecordQueryIndexPlan)
+		if !isIdx || rebasedIdx == inner {
+			return p
+		}
+		return pl.WithIndexPlan(rebasedIdx)
 	case *plans.RecordQueryScanPlan:
 		newComps, changed := rebaseComparisonRanges(pl.GetScanComparisons(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
 		if !changed {
@@ -3380,6 +3405,16 @@ func planReferencesAnyBuriedAlias(p plans.RecordQueryPlan, legAliases []string) 
 				found = true
 			}
 		case *plans.RecordQueryIndexPlan:
+			if comparisonRangesReferenceAlias(sp.GetScanComparisons(), upper) {
+				found = true
+			}
+		case *plans.RecordQueryCoveringIndexPlan:
+			// This walk is the VERIFIER, and a missed node here fails OPEN: the
+			// covering wrapper holds its scan as a FIELD, so plans.Walk never
+			// descends into it, and a surviving buried reference on those SARGs
+			// reads as "no buried reference" — which licenses the very probe the
+			// verification exists to decline. The wrapper's GetScanComparisons
+			// delegates to the scan it holds, so the check is the inner's.
 			if comparisonRangesReferenceAlias(sp.GetScanComparisons(), upper) {
 				found = true
 			}

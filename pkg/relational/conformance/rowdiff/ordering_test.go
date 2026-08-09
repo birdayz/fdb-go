@@ -33,6 +33,71 @@ func indexScan(cols, pk []string, reverse bool, comps ...*predicates.ComparisonR
 	return p.WithIndexMetadata(cols, pk, false)
 }
 
+// The arms of the ordering derivation, as the sweep's vacuity floors name them.
+// "other" is every node kind that ends the derivation with no claim.
+const (
+	orderingArmPrimaryKey = "primary-key-scan"
+	orderingArmIndex      = "index-scan"
+	orderingArmOther      = "other"
+)
+
+// orderingLeafArm classifies which arm of providedOrdering's type switch a sort's
+// input reaches, by asking the derivation's OWN descent (orderingLeaf) rather
+// than re-walking the tree — a census that walked separately could report an arm
+// as reached that the derivation does not read.
+//
+// The bare and covering index plans share ONE arm because they share one
+// derivation: the covering wrapper delegates every fact to the scan it wraps.
+// Counting them apart would let the floor stay green on bare-index plans while
+// the shape the access path actually emits went unread.
+func orderingLeafArm(p plans.RecordQueryPlan) string {
+	switch orderingLeaf(p).(type) {
+	case *plans.RecordQueryScanPlan:
+		return orderingArmPrimaryKey
+	case *plans.RecordQueryIndexPlan, *plans.RecordQueryCoveringIndexPlan:
+		return orderingArmIndex
+	default:
+		return orderingArmOther
+	}
+}
+
+// TestOrderingLeafArm_EveryArm drives every arm of the sweep's vacuity census
+// explicitly. The corpus reaches only the arms it happens to produce today, so
+// an arm that is rare now — or that a pending planner change is about to make
+// live — would otherwise ship untested and its first real firing would read as a
+// finding rather than as an untested branch.
+func TestOrderingLeafArm_EveryArm(t *testing.T) {
+	t.Parallel()
+	idx := indexScan([]string{"B"}, []string{"ID"}, false, predicates.EmptyComparisonRange())
+	cov := plans.NewRecordQueryCoveringIndexPlan(idx)
+	scan := plans.NewRecordQueryScanPlan(nil, nil, false)
+	fetch := func(inner plans.RecordQueryPlan) plans.RecordQueryPlan {
+		return plans.NewRecordQueryFetchFromPartialRecordPlan(inner, nil, nil, plans.FetchIndexRecordsPrimaryKey)
+	}
+	cases := []struct {
+		name string
+		plan plans.RecordQueryPlan
+		want string
+	}{
+		{"bare primary-key scan", scan, orderingArmPrimaryKey},
+		{"bare index scan", idx, orderingArmIndex},
+		{"bare covering scan", cov, orderingArmIndex},
+		{"fetch over index scan", fetch(idx), orderingArmIndex},
+		{"fetch over covering scan", fetch(cov), orderingArmIndex},
+		{"nested pass-throughs over a pk scan", fetch(fetch(scan)), orderingArmPrimaryKey},
+		{"a sort ends the derivation", plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{{Field: "ID"}}), orderingArmOther},
+		{"nil plan", nil, orderingArmOther},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := orderingLeafArm(tc.plan); got != tc.want {
+				t.Fatalf("orderingLeafArm(%s) = %q, want %q", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestCheckPlanOrdering_RedundantSort proves the redundant-sort invariant both
 // FIRES on a sort over an already-ordered input and stays quiet on every sort
 // that is genuinely required — the sensitivity net for the ORDERING check
@@ -85,6 +150,49 @@ func TestCheckPlanOrdering_RedundantSort(t *testing.T) {
 	fetchIdxB := plans.NewRecordQueryFetchFromPartialRecordPlan(fwdIdxB, nil, nil, plans.FetchIndexRecordsPrimaryKey)
 	if got := checkPlanOrdering(sortOver(fetchIdxB, bKey, idKey), orderByBID); len(got) == 0 {
 		t.Fatal("redundant sort over Fetch(index [B] scan) not flagged (pass-through not walked)")
+	}
+	// Fetch(Covering(index [B] scan)) — the shape the access path ACTUALLY emits
+	// for every index-backed access. The covering plan holds its index scan as a
+	// FIELD, so nothing about the bare-index arm carries over to it: if the
+	// derivation does not name the covering type, it answers "order unprovable"
+	// and this detector goes silent on every index shape in the corpus — a clean
+	// report produced by not running, which is the failure mode a nightly net
+	// cannot afford.
+	covIdxB := plans.NewRecordQueryCoveringIndexPlan(fwdIdxB)
+	if got := checkPlanOrdering(sortOver(covIdxB, bKey, idKey), orderByBID); len(got) == 0 {
+		t.Fatal("redundant sort over Covering(index [B] scan) not flagged — the ordering derivation does not reach the covering shape, so it reports clean by never running")
+	}
+	fetchCovIdxB := plans.NewRecordQueryFetchFromPartialRecordPlan(covIdxB, nil, nil, plans.FetchIndexRecordsPrimaryKey)
+	if got := checkPlanOrdering(sortOver(fetchCovIdxB, bKey, idKey), orderByBID); len(got) == 0 {
+		t.Fatal("redundant sort over Fetch(Covering(index [B] scan)) not flagged — this is the exact shape the access path emits")
+	}
+	// The covering wrapper must not merely be REACHED, it must derive the SAME
+	// ordering as the scan it wraps: it reads the same physical range and emits
+	// one row per entry. A covering arm that reached the code but read different
+	// facts would flag and clear on different shapes than the bare arm.
+	bare, cov := providedOrdering(fwdIdxB), providedOrdering(covIdxB)
+	if len(bare) == 0 {
+		t.Fatal("providedOrdering(bare index [B] scan) = nil — the reference arm of the comparison is itself dead")
+	}
+	if len(cov) != len(bare) {
+		t.Fatalf("providedOrdering(Covering(idx)) = %v, want the wrapped scan's %v", cov, bare)
+	}
+	for i := range bare {
+		if cov[i] != bare[i] {
+			t.Fatalf("providedOrdering(Covering(idx))[%d] = %+v, want the wrapped scan's %+v", i, cov[i], bare[i])
+		}
+	}
+
+	// --- The covering arm inherits the bare arm's CONSERVATISM too. ---
+	//
+	// Reaching the covering shape must not turn the detector into something that
+	// knows more than the planner: a covering scan over a REVERSE index with a
+	// mixed-direction ORDER BY stays clean, exactly as the bare shape does.
+	covRevIdxA := plans.NewRecordQueryCoveringIndexPlan(
+		indexScan([]string{"A"}, []string{"ID"}, true, predicates.EmptyComparisonRange()))
+	orderByADescIDCov := Query{OrderBy: []OrderKey{{Col: "A", Desc: true}, {Col: "ID"}}}
+	if got := checkPlanOrdering(sortOver(covRevIdxA, aDescKey, idKey), orderByADescIDCov); len(got) != 0 {
+		t.Fatalf("covering scan with a mixed direction (a DESC, id ASC) flagged: %v", got)
 	}
 
 	// --- CLEAN: the sort is genuinely required (or out of scope). ---
@@ -146,6 +254,21 @@ func TestOrderingInvariant_PurePlannerSweep(t *testing.T) {
 	}
 	var checked, violations int
 	var sorts, sortsUnprovable int
+	// Per-ARM census of what the derivation actually read. A total-only floor
+	// cannot separate a live index arm from one that stopped matching: when the
+	// access path started wrapping every index scan in a covering plan, the
+	// index arm went dark and the totals barely moved, because primary-key scans
+	// kept the "provable" count healthy on their own.
+	leafArms := map[string]int{}
+	// Observe-only: the CONCRETE leaf types behind those arms. The index arm is
+	// fed by two plan shapes and the split between them is what a change to the
+	// access path moves, so recording it is what makes a future shift in reach
+	// legible rather than a silent one. Deliberately NOT floored: either of the
+	// two shapes dropping to zero is a legitimate access-path outcome, so a floor
+	// on one of them would be a build break rather than an alarm. What each shape
+	// needs is a UNIT pin, and TestCheckPlanOrdering_RedundantSort has one per
+	// shape.
+	leafTypes := map[string]int{}
 	var samples []string
 	for seed := uint64(1); seed <= seeds; seed++ {
 		c := Generate(seed)
@@ -166,6 +289,8 @@ func TestOrderingInvariant_PurePlannerSweep(t *testing.T) {
 						if providedOrdering(s.GetInner()) == nil {
 							sortsUnprovable++
 						}
+						leafArms[orderingLeafArm(s.GetInner())]++
+						leafTypes[fmt.Sprintf("%T", orderingLeaf(s.GetInner()))]++
 					})
 				}
 				for _, v := range checkPlanOrdering(plan, q) {
@@ -177,10 +302,25 @@ func TestOrderingInvariant_PurePlannerSweep(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("ordering-invariant sweep: %d plans checked across %d seeds; in-memory sorts observed=%d (input order unprovable=%d)",
-		checked, seeds, sorts, sortsUnprovable)
+	t.Logf("ordering-invariant sweep: %d plans checked across %d seeds; in-memory sorts observed=%d (input order unprovable=%d); leaf arms=%v; leaf types=%v",
+		checked, seeds, sorts, sortsUnprovable, leafArms, leafTypes)
 	if checked == 0 {
 		t.Fatal("planned zero queries — the sweep is not exercising the planner")
+	}
+	// Vacuity floors. The alarm direction here is COLLAPSE: this axis reports a
+	// clean nightly by emitting no findings, so an arm that stops being reached
+	// is indistinguishable from an engine that stopped producing the defect. The
+	// index arm gets its own floor because it is the one that went dark once the
+	// access path started wrapping index scans in a covering plan, while the
+	// primary-key arm kept the totals looking healthy.
+	if sorts == 0 {
+		t.Fatal("the corpus produced ZERO in-memory sorts — the redundant-sort detector examined nothing, so its clean report means nothing (alarm direction: COLLAPSE)")
+	}
+	if leafArms[orderingArmIndex] == 0 {
+		t.Fatalf("ZERO of the %d observed sorts sat over an INDEX-backed input (arms=%v) — the index arm of the ordering derivation is unreachable and the axis is silent on every index shape (alarm direction: COLLAPSE)", sorts, leafArms)
+	}
+	if leafArms[orderingArmPrimaryKey] == 0 {
+		t.Fatalf("ZERO of the %d observed sorts sat over a primary-key scan (arms=%v) — the PK arm of the ordering derivation is unreachable (alarm direction: COLLAPSE)", sorts, leafArms)
 	}
 	if violations != 0 {
 		for _, s := range samples {

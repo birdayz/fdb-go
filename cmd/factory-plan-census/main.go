@@ -34,8 +34,10 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 
 	"fdb.dev/pkg/relational/conformance/factory"
@@ -117,7 +119,7 @@ func dump(corpusDir string) error {
 			plan, perr := embedded.PlanPhysicalForTest(
 				cand.Case.SQL(queries[1], cand.Projection), cand.Case.DDL(), nil)
 			if perr != nil {
-				fmt.Fprintf(out, "%s\tPLAN-ERROR\n", s.Header.Name)
+				fmt.Fprintf(out, "%s\t%s\n", s.Header.Name, planError)
 				continue
 			}
 			fmt.Fprintf(out, "%s\t%s\n", s.Header.Name, plan.Explain())
@@ -125,6 +127,10 @@ func dump(corpusDir string) error {
 	}
 	return nil
 }
+
+// planError is the dump line body for a scenario that failed to plan. It is
+// written by dump and read back by the census, so it is one constant.
+const planError = "PLAN-ERROR"
 
 // eqIndexScan matches an index scan whose FIRST bound is an equality — a probe,
 // as opposed to an unbounded or one-sided range.
@@ -136,6 +142,157 @@ var anyIndexScan = regexp.MustCompile(`IndexScan\(`)
 // probe and is deliberately excluded: replacing a secondary-index probe with a
 // PK probe is an improvement, not a regression.
 var fullScan = regexp.MustCompile(`Scan\([A-Z0-9_]+\)`)
+
+// census is the classified movement between two dumps. It is produced by a
+// PURE function over two explicit maps so every arm can be driven directly: a
+// full-corpus run exercises only the arms the corpus happens to reach, and an
+// arm that is rare today reads as a FINDING the first time it fires rather than
+// as the untested branch it actually is.
+type census struct {
+	compared int
+	moved    int
+
+	// The two REGRESSION classes. Their steady state is zero and the alarm is
+	// GROWTH above zero — see exitCode.
+	lostEqProbe  []string
+	newPlanError []string
+
+	// The two REPRESENTATION classes. These are reported and never fail:
+	// an unbounded-range index scan replaced by a full scan reads the same
+	// rows with less indirection and is a legitimate cost choice.
+	lostAnyIndex   []string
+	gainedFullScan []string
+}
+
+// refusal is a population problem, not a verdict. The census must separate
+// three states — passed, failed, and NEVER RAN — because collapsing the third
+// into the first fails OPEN, and an empty or truncated dump is exactly the
+// input that renders "never ran" as "no regression class present".
+type refusal struct{ msg string }
+
+func (r *refusal) Error() string { return "refusing to report a verdict: " + r.msg }
+
+// checkPopulation rejects every dump pair whose examined population cannot
+// support a verdict. Each arm names the direction of its alarm, because the
+// expected value differs per arm: a dump is expected to be the FULL corpus, so
+// the alarm on the compared population is SHRINKAGE, whereas the alarm on the
+// regression classes is growth.
+func checkPopulation(before, after map[string]string) error {
+	if len(before) == 0 {
+		return &refusal{"the BEFORE dump is empty; an empty population cannot distinguish 'every plan is clean' from 'nothing was planned'. Expected population is the full corpus; the alarm here is SHRINKAGE"}
+	}
+	if len(after) == 0 {
+		return &refusal{"the AFTER dump is empty; an empty population cannot distinguish 'every plan is clean' from 'nothing was planned'. Expected population is the full corpus; the alarm here is SHRINKAGE"}
+	}
+	// Both dumps are produced from the SAME committed corpus, one worktree at
+	// the base commit and one on the branch, so the two name sets are expected
+	// to be IDENTICAL. Any asymmetry is an artifact of how the dumps were made
+	// — a truncated redirect, a racing writer, two different corpus dirs — and
+	// it is never a signal about plans. The two directions are checked
+	// SEPARATELY because they fail differently and a guard covering one is not
+	// a guard covering the other.
+	onlyBefore := missingFrom(before, after)
+	onlyAfter := missingFrom(after, before)
+	if len(onlyBefore) == len(before) && len(onlyAfter) == len(after) {
+		return &refusal{fmt.Sprintf(
+			"the two dumps share NO scenario name (%d before, %d after); zero scenarios would be compared, and a zero examined population prints the same green as a clean corpus. Expected population is the full corpus; the alarm here is SHRINKAGE",
+			len(before), len(after))}
+	}
+	if len(onlyBefore) > 0 {
+		return &refusal{fmt.Sprintf(
+			"the AFTER dump is missing %d of %d BEFORE scenarios (first: %s); those scenarios would be SKIPPED, so a regression hiding among them never surfaces and the run prints a green over a silently smaller population. Expected population is the full corpus; the alarm here is SHRINKAGE",
+			len(onlyBefore), len(before), onlyBefore[0])}
+	}
+	if len(onlyAfter) > 0 {
+		return &refusal{fmt.Sprintf(
+			"the BEFORE dump is missing %d of %d AFTER scenarios (first: %s); the two dumps do not describe the same corpus, so the movement between them is not attributable to the branch. Expected population is the full corpus; the alarm here is SHRINKAGE on the before side",
+			len(onlyAfter), len(after), onlyAfter[0])}
+	}
+	return nil
+}
+
+// missingFrom returns the sorted names present in a but absent from b.
+func missingFrom(a, b map[string]string) []string {
+	var out []string
+	for name := range a {
+		if _, ok := b[name]; !ok {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// takeCensus classifies the movement. A scenario absent from after cannot
+// reach this — checkPopulation has already refused — so `compared` is the whole
+// BEFORE population and no arm is computed over a partial one.
+func takeCensus(before, after map[string]string) (*census, error) {
+	if err := checkPopulation(before, after); err != nil {
+		return nil, err
+	}
+	c := &census{}
+	for name, b := range before {
+		a := after[name]
+		c.compared++
+		if a == b {
+			continue
+		}
+		c.moved++
+		if a == planError && b != planError {
+			c.newPlanError = append(c.newPlanError, name)
+		}
+		if eqIndexScan.MatchString(b) && !eqIndexScan.MatchString(a) {
+			c.lostEqProbe = append(c.lostEqProbe, name)
+		}
+		if anyIndexScan.MatchString(b) && !anyIndexScan.MatchString(a) {
+			c.lostAnyIndex = append(c.lostAnyIndex, name)
+		}
+		if !fullScan.MatchString(b) && fullScan.MatchString(a) {
+			c.gainedFullScan = append(c.gainedFullScan, name)
+		}
+	}
+	for _, s := range [][]string{c.lostEqProbe, c.lostAnyIndex, c.gainedFullScan, c.newPlanError} {
+		sort.Strings(s)
+	}
+	return c, nil
+}
+
+// exitCode is the whole verdict, isolated so every class can be driven through
+// it. Only the two regression classes fail; the representation classes are
+// reported and return 0.
+func (c *census) exitCode() int {
+	if len(c.lostEqProbe) > 0 || len(c.newPlanError) > 0 {
+		return 1
+	}
+	return 0
+}
+
+func (c *census) report(w io.Writer, before, after map[string]string) {
+	fmt.Fprintf(w, "scenarios compared: %d\nplans moved:        %d\n\n", c.compared, c.moved)
+	fmt.Fprintf(w, "  lost an EQUALITY index probe:   %d\n", len(c.lostEqProbe))
+	fmt.Fprintf(w, "  lost ALL index access:          %d\n", len(c.lostAnyIndex))
+	fmt.Fprintf(w, "  gained an UNBOUNDED full scan:  %d\n", len(c.gainedFullScan))
+	fmt.Fprintf(w, "  newly unplannable:              %d\n", len(c.newPlanError))
+
+	if c.exitCode() == 0 {
+		fmt.Fprintln(w, "\nno regression class present; the movement is representation-only")
+		return
+	}
+	fmt.Fprintf(w, "\nREGRESSION: %d scenario(s) lost an equality index probe and %d became unplannable.\n",
+		len(c.lostEqProbe), len(c.newPlanError))
+	fmt.Fprintln(w, "Both classes are expected to be ZERO in steady state, so the alarm here is")
+	fmt.Fprintln(w, "GROWTH above zero, not shrinkage.")
+	fmt.Fprintln(w, "The rows are unchanged, so no row-based test can see this — that is why it")
+	fmt.Fprintln(w, "is checked here. Do NOT re-bless the corpus to make the drift go away; the")
+	fmt.Fprintln(w, "digests are the only record that these plans were once index probes.")
+	for i, n := range c.lostEqProbe {
+		if i >= 10 {
+			fmt.Fprintf(w, "  ... and %d more\n", len(c.lostEqProbe)-10)
+			break
+		}
+		fmt.Fprintf(w, "  %s\n    before: %s\n    after:  %s\n", n, before[n], after[n])
+	}
+}
 
 func load(p string) (map[string]string, error) {
 	f, err := os.Open(p)
@@ -166,55 +323,11 @@ func classify(beforePath, afterPath string) int {
 		fmt.Fprintln(os.Stderr, "factory-plan-census:", err)
 		return 2
 	}
-	if len(before) == 0 || len(after) == 0 {
-		fmt.Fprintln(os.Stderr, "factory-plan-census: an empty dump proves nothing; refusing to report a verdict")
+	c, err := takeCensus(before, after)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "factory-plan-census:", err)
 		return 2
 	}
-
-	var moved int
-	var lostEqProbe, lostAnyIndex, gainedFullScan, newPlanError []string
-	for name, b := range before {
-		a, ok := after[name]
-		if !ok || a == b {
-			continue
-		}
-		moved++
-		if a == "PLAN-ERROR" && b != "PLAN-ERROR" {
-			newPlanError = append(newPlanError, name)
-		}
-		if eqIndexScan.MatchString(b) && !eqIndexScan.MatchString(a) {
-			lostEqProbe = append(lostEqProbe, name)
-		}
-		if anyIndexScan.MatchString(b) && !anyIndexScan.MatchString(a) {
-			lostAnyIndex = append(lostAnyIndex, name)
-		}
-		if !fullScan.MatchString(b) && fullScan.MatchString(a) {
-			gainedFullScan = append(gainedFullScan, name)
-		}
-	}
-
-	fmt.Printf("scenarios compared: %d\nplans moved:        %d\n\n", len(before), moved)
-	fmt.Printf("  lost an EQUALITY index probe:   %d\n", len(lostEqProbe))
-	fmt.Printf("  lost ALL index access:          %d\n", len(lostAnyIndex))
-	fmt.Printf("  gained an UNBOUNDED full scan:  %d\n", len(gainedFullScan))
-	fmt.Printf("  newly unplannable:              %d\n", len(newPlanError))
-
-	fail := len(lostEqProbe) > 0 || len(newPlanError) > 0
-	if !fail {
-		fmt.Println("\nno regression class present; the movement is representation-only")
-		return 0
-	}
-	fmt.Printf("\nREGRESSION: %d scenario(s) lost an equality index probe and %d became unplannable.\n",
-		len(lostEqProbe), len(newPlanError))
-	fmt.Println("The rows are unchanged, so no row-based test can see this — that is why it")
-	fmt.Println("is checked here. Do NOT re-bless the corpus to make the drift go away; the")
-	fmt.Println("digests are the only record that these plans were once index probes.")
-	for i, n := range lostEqProbe {
-		if i >= 10 {
-			fmt.Printf("  ... and %d more\n", len(lostEqProbe)-10)
-			break
-		}
-		fmt.Printf("  %s\n    before: %s\n    after:  %s\n", n, before[n], after[n])
-	}
-	return 1
+	c.report(os.Stdout, before, after)
+	return c.exitCode()
 }

@@ -114,6 +114,20 @@ func computePKThread(p plans.RecordQueryPlan) pkThread {
 		}
 		return pkThread{recordType: rts[0], pkValues: pk, pkTypes: pkTypes, ok: true}
 
+	case *plans.RecordQueryCoveringIndexPlan:
+		// The covering wrapper reads the SAME physical index range as the scan
+		// it holds and emits one row per entry, so the thread it carries is the
+		// inner's, unchanged. Recursing rather than restating the arm above
+		// keeps the two in step by construction — every fact the arm reads is
+		// one the covering plan merely delegates.
+		//
+		// The wrapper is a FIELD, not a child, so the fetch arm below cannot
+		// reach through it: without this, Fetch(Covering(IndexScan)) — which is
+		// what the access path builds for EVERY index-backed access — yields no
+		// thread at all, and the whole FK-chain cardinality cap silently stops
+		// firing on index-backed probes.
+		return computePKThread(pl.GetIndexPlan())
+
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		return pkThreadFromSingleChild(pl.GetChildren())
 	case *plans.RecordQueryTypeFilterPlan:
@@ -704,6 +718,12 @@ func scanBindingOfLeaf(p plans.RecordQueryPlan) (leafScanBinding, bool) {
 		return leafScanBinding{
 			comparisons: pl.GetScanComparisons(), physicalTypes: pl.GetKeyComponentTypes(),
 		}, true
+	case *plans.RecordQueryCoveringIndexPlan:
+		// Same physical range, same entry order, same duplicate-freedom — the
+		// binding is the inner's. Recursed, not restated, so the fan-out guard
+		// above cannot be lost here. The wrapper is a field, so the fetch arm
+		// below does not reach it.
+		return scanBindingOfLeaf(pl.GetIndexPlan())
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		return scanBindingOfSingleChild(pl.GetChildren())
 	case *plans.RecordQueryTypeFilterPlan:
@@ -823,6 +843,10 @@ func singleLeafRecordType(p plans.RecordQueryPlan) (string, bool) {
 			return "", false
 		}
 		return rts[0], true
+	case *plans.RecordQueryCoveringIndexPlan:
+		// A field, not a child: the fetch arm below cannot reach the scan
+		// through it, and the record types it reports are the inner's.
+		return singleLeafRecordType(pl.GetIndexPlan())
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		return singleLeafRecordTypeFromChildren(pl.GetChildren())
 	case *plans.RecordQueryTypeFilterPlan:

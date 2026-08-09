@@ -1639,6 +1639,17 @@ func combineConcreteCostUnclamped(p plans.RecordQueryPlan, child []properties.Co
 			return properties.Cost{}
 		}
 		return scanLikeCostFromSpec(spec, stats)
+	case *plans.RecordQueryCoveringIndexPlan:
+		// Priced by the SAME selectivity-only formula as the scan it wraps.
+		// Without this arm a covering scan falls to the default and is priced by
+		// HintCost, so the join-ordering recursion would compare a covering
+		// access and a bare one on two different models — a comparison whose
+		// outcome is an artifact of which model each side landed in.
+		spec, ok := scanLikeCostSpecForPlan(pl, ctx)
+		if !ok {
+			return properties.Cost{}
+		}
+		return scanLikeCostFromSpec(spec, stats)
 	case *plans.RecordQueryFlatMapPlan:
 		if len(child) < 2 {
 			return properties.Cost{}
@@ -1950,6 +1961,22 @@ func scanLikeCostSpecForPlan(p plans.RecordQueryPlan, ctx PlanContext) (scanLike
 			uniqueKeyColumnCount: uniqueKeyColumnCount,
 			uniquenessSemantics:  properties.SecondaryUniqueNullsDistinct,
 		}, true
+	case *plans.RecordQueryCoveringIndexPlan:
+		// The covering scan's physical work IS the wrapped scan's range read —
+		// same index, same ranges, same key types, one row per entry — so its
+		// scan-like cost spec is the inner's. The wrapper holds that scan as a
+		// FIELD, so no arm above can reach it and no child descent will.
+		//
+		// The omission was not neutral. Falling to default returns ok=false,
+		// which sends the caller down the generic HintCost path while a BARE
+		// index scan keeps the RFC-069 selectivity-only formula this switch
+		// exists to apply. Two shapes that read the identical index range were
+		// then priced by two different models.
+		inner, ok := plans.IndexPlanOf(pl)
+		if !ok {
+			return scanLikeCostSpec{}, false
+		}
+		return scanLikeCostSpecForPlan(inner, ctx)
 	default:
 		return scanLikeCostSpec{}, false
 	}

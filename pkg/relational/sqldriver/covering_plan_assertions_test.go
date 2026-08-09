@@ -44,19 +44,19 @@ import (
 )
 
 // indexScanOfNode returns the concrete index scan a node denotes, seeing
-// through a covering wrapper.
+// through a covering wrapper. A thin alias for plans.IndexPlanOf, kept only so
+// this package's call sites read unchanged.
+//
+// It was a hand-written copy of the identical helper in package embedded, in a
+// different Go package so neither could import the other. The shared symbol is
+// exported now; the copies are not, because a structural guard maintained in
+// two places stops being one guard the first time only one copy is updated.
 //
 // Use it for questions about the SCAN — index name, direction, scan ranges,
 // uniqueness. Do NOT use it to ask whether a plan answers from the index entry:
 // that question is about the wrapper, and unwrapping erases the answer.
 func indexScanOfNode(node plans.RecordQueryPlan) (*plans.RecordQueryIndexPlan, bool) {
-	switch p := node.(type) {
-	case *plans.RecordQueryIndexPlan:
-		return p, true
-	case *plans.RecordQueryCoveringIndexPlan:
-		return p.GetIndexPlan(), true
-	}
-	return nil, false
+	return plans.IndexPlanOf(node)
 }
 
 // walkIndexScans visits every index scan in the plan, including those held

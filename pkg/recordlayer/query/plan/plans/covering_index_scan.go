@@ -76,7 +76,13 @@ func NewRecordQueryCoveringIndexPlan(indexPlan *RecordQueryIndexPlan) *RecordQue
 
 // GetIndexPlan returns the wrapped index scan. It is a field, not a child:
 // callers that walk the plan tree will NOT reach it, by design.
-func (p *RecordQueryCoveringIndexPlan) GetIndexPlan() *RecordQueryIndexPlan { return p.indexPlan }
+//
+// Nil-tolerant on the receiver, via inner(): this is IndexScanCarrier's single
+// method, and the hint-contract parity harnesses enumerate plan types as TYPED
+// NILS. A carrier accessor that panics on the enumeration shape would make the
+// interface unusable exactly where it is most useful — a generic walk that does
+// not know which concrete type it holds.
+func (p *RecordQueryCoveringIndexPlan) GetIndexPlan() *RecordQueryIndexPlan { return p.inner() }
 
 // WithIndexPlan returns a shallow copy over a rewritten inner scan, preserving
 // the stable result value. Used by rewrites that rebase the inner's scan
@@ -102,7 +108,10 @@ func (p *RecordQueryCoveringIndexPlan) GetIndexName() string { return p.indexPla
 // IsReverse delegates to the inner scan.
 func (p *RecordQueryCoveringIndexPlan) IsReverse() bool { return p.indexPlan.IsReverse() }
 
-// IsStrictlySorted delegates to the inner scan.
+// IsStrictlySorted delegates to the inner scan, mirroring Java's
+// RecordQueryCoveringIndexPlan.isStrictlySorted
+// (RecordQueryCoveringIndexPlan.java:174-176). Reconstructing a partial record
+// from an entry cannot break a strict ordering the entry stream already has.
 func (p *RecordQueryCoveringIndexPlan) IsStrictlySorted() bool {
 	return p.indexPlan.IsStrictlySorted()
 }
@@ -222,6 +231,14 @@ var _ DistinctProofStampable = (*RecordQueryCoveringIndexPlan)(nil)
 // A covering scan reads the SAME physical index range as its inner; only the
 // row it emits differs (a partial record rebuilt from the entry, rather than
 // the base record). Everything that describes the RANGE therefore delegates.
+//
+// Each one here answers a LIVE consumer that reaches this plan type — the
+// baked-reference walk, the ordering derivations, the primary-key property.
+// Two more (the flowed row type, the index's uniqueness flag) were written
+// alongside them and had none; they were removed rather than kept as a surface
+// for callers that never came. A delegator with no consumer is not free: it
+// makes a runtime `x.(interface{ ... })` probe over a plan tree look answered,
+// so its silence stops being a shape anyone notices.
 
 // GetScanComparisons delegates to the inner scan.
 func (p *RecordQueryCoveringIndexPlan) GetScanComparisons() []*predicates.ComparisonRange {
@@ -243,11 +260,6 @@ func (p *RecordQueryCoveringIndexPlan) GetRecordTypes() []string {
 	return p.indexPlan.GetRecordTypes()
 }
 
-// GetFlowedType delegates to the inner scan.
-func (p *RecordQueryCoveringIndexPlan) GetFlowedType() values.Type {
-	return p.indexPlan.GetFlowedType()
-}
-
 // GetColumnNames delegates to the inner scan.
 func (p *RecordQueryCoveringIndexPlan) GetColumnNames() []string {
 	return p.indexPlan.GetColumnNames()
@@ -257,9 +269,6 @@ func (p *RecordQueryCoveringIndexPlan) GetColumnNames() []string {
 func (p *RecordQueryCoveringIndexPlan) GetPKColumnNames() []string {
 	return p.indexPlan.GetPKColumnNames()
 }
-
-// IsUnique delegates to the inner scan.
-func (p *RecordQueryCoveringIndexPlan) IsUnique() bool { return p.indexPlan.IsUnique() }
 
 // GetCommonPrimaryKeyValues delegates to the inner scan.
 func (p *RecordQueryCoveringIndexPlan) GetCommonPrimaryKeyValues() []values.Value {

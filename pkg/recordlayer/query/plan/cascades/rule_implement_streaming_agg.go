@@ -109,9 +109,17 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 			// emitted Fetch(Covering(IndexScan)), so this rule reaches through
 			// the fetch to the covering child rather than stamping a flag onto
 			// an index plan. Nothing here decides coveringness.
-			if coveringPlan := findCoveringIndexPlan(innerRef); coveringPlan != nil &&
-				admissibleStreamingAggInner(coveringPlan) &&
-				coveringPlan.ProducesDistinctRecords() {
+			//
+			// EVERY reachable covering scan yields its own parent. A group with
+			// two index accesses to the same table offers two count-answering
+			// scans of different widths, and taking the first is a cost decision
+			// made where the cost model cannot see it — the runner-up is not
+			// out-priced, it is never built. Java's onMatch likewise yields once
+			// per candidate plan partition (ImplementStreamingAggregationRule.java:117-122).
+			for _, coveringPlan := range findCoveringIndexPlans(innerRef) {
+				if !admissibleStreamingAggInner(coveringPlan) || !coveringPlan.ProducesDistinctRecords() {
+					continue
+				}
 				// Count-only, no grouping keys → no ordering precondition, so carry
 				// the LIVE shared-group edge (RFC-184 W2, no physicalStreamingAggWrapper).
 				coveringQ := expressions.ForEachQuantifier(call.MemoizeExpression(coveringPlan))
@@ -127,10 +135,11 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 		// first member is whatever landed first, and a single pick
 		// silently drops the cheaper (or the only CORRECT-for-Explain)
 		// alternative.
-		for _, m := range innerRef.AllMembers() {
-			if _, ok := m.(physicalPlanExpression); !ok {
-				continue
-			}
+		//
+		// Same member-set policy as every other enumeration in this rule:
+		// finals, with exploratory only as the no-finals fallback. See
+		// findOrderedPhysicalExprs for why Java settles it that way.
+		for _, m := range physicalMembersForParentEnumeration(innerRef) {
 			if !admissibleStreamingAggInner(m) {
 				continue
 			}
@@ -275,12 +284,20 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 // first candidate suppresses an admissible later one, and the difference is
 // invisible — the plan simply comes out without the index, with nothing
 // reporting that an alternative existed.
+//
+// The member set is physicalMembersForParentEnumeration's, not AllMembers().
+// Two enumeration policies for one concept is how a divergence starts, and here
+// Java settles which one is right: the plan partitions this rule matches over
+// come from Reference.toPlanPartitions, which reads the reference's
+// propertiesMap, and that map is fed ONLY by FINAL expressions — at construction
+// (Reference.java:182) and in insertUnchecked under `if (isFinal)`
+// (Reference.java:372-378). Exploratory members never enter it, so Java's
+// ImplementStreamingAggregationRule cannot see one. Go keeps exploratory members
+// as a FALLBACK only, for references that hold no finals yet because a rule
+// fired mid-planning — a situation Java does not have.
 func findOrderedPhysicalExprs(ref *expressions.Reference, groupingKeys []values.Value) []expressions.RelationalExpression {
 	var out []expressions.RelationalExpression
-	for _, m := range ref.AllMembers() {
-		if _, ok := m.(physicalPlanExpression); !ok {
-			continue
-		}
+	for _, m := range physicalMembersForParentEnumeration(ref) {
 		o := properties.EstimateOrdering(m)
 		if !o.IsKnown {
 			continue
@@ -331,34 +348,69 @@ func isFullRangeFetch(fw *plans.RecordQueryFetchFromPartialRecordPlan) bool {
 	return true
 }
 
-// findIndexScanPlan scans the Reference for a bare *plans.RecordQueryIndexPlan,
-// traversing through Fetch operators. The Fetch operator is a transparent
-// enforcer — rules that need index properties look through it. Since RFC-184 W2
-// the index scan is its own cascades expression (no physicalIndexScanWrapper),
-// carrying its metadata (columns/pk/unique/covering) on the plan itself.
-// findCoveringIndexPlan locates a covering index scan in ref, descending
-// through a Fetch exactly as findIndexScanPlan does. The access path builds
-// Fetch(Covering(IndexScan)), so the covering scan a rule wants to place under
-// an operator that needs no base record is one level below the fetch.
-func findCoveringIndexPlan(ref *expressions.Reference) *plans.RecordQueryCoveringIndexPlan {
+// findCoveringIndexPlans locates EVERY covering index scan reachable in ref,
+// descending through a Fetch exactly as findIndexScanPlan does. The access path
+// builds Fetch(Covering(IndexScan)), so the covering scan a rule wants to place
+// under an operator that needs no base record is one level below the fetch.
+//
+// It returns all of them rather than the first for the same reason
+// findOrderedPhysicalExprs does: the caller yields a parent per covering scan,
+// and a group holding several index accesses to the same table offers several
+// count-answering scans of different widths. Picking one at rule time makes the
+// rest invisible to the cost model rather than out-priced by it — a cost
+// decision taken where cost cannot see it. Java never picks one either: its
+// onMatch loops over every candidate plan partition and yields a plan per
+// partition (ImplementStreamingAggregationRule.java:117-122), memoizing ALL of
+// the partition's plans into the new inner reference (:130).
+//
+// Members are returned in group order and may repeat a plan reachable by two
+// routes; the memo dedups on insertion, so the caller yields per distinct scan.
+// The member set is findOrderedPhysicalExprs's — finals, exploratory only as the
+// no-finals fallback — because this is the same kind of decision: which
+// alternatives get a parent built over them.
+func findCoveringIndexPlans(ref *expressions.Reference) []*plans.RecordQueryCoveringIndexPlan {
 	if ref == nil {
 		return nil
 	}
-	for _, m := range ref.AllMembers() {
+	var out []*plans.RecordQueryCoveringIndexPlan
+	for _, m := range physicalMembersForParentEnumeration(ref) {
 		if p, ok := m.(*plans.RecordQueryCoveringIndexPlan); ok {
-			return p
+			out = append(out, p)
+			continue
 		}
 		if fw, ok := m.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 			if innerRef := fw.GetInnerQuantifier().GetRangesOver(); innerRef != nil {
-				if p := findCoveringIndexPlan(innerRef); p != nil {
-					return p
-				}
+				out = append(out, findCoveringIndexPlans(innerRef)...)
 			}
 		}
 	}
-	return nil
+	return out
 }
 
+// findIndexScanPlan scans the Reference for the *plans.RecordQueryIndexPlan
+// that performs the actual index read, traversing through the two wrappers that
+// stand between a group member and its scan. The Fetch operator is a
+// transparent enforcer — rules that need index properties look through it.
+// Since RFC-184 W2 the index scan is its own cascades expression (no
+// physicalIndexScanWrapper), carrying its metadata (columns/pk/unique) on the
+// plan itself.
+//
+// The COVERING wrapper is traversed by DELEGATION, not by descending into a
+// child Reference, because it holds its scan as a FIELD (RFC-220 C1) — the same
+// way Java reaches it, by forwarding the getter to the wrapped plan
+// (RecordQueryCoveringIndexPlan.java:224 for getCorrelatedTo). Missing it is
+// not a missing optimization but a WRONG ANSWER: callers ask this for the scan
+// comparisons, and a nil answer reads as "no comparisons", i.e. as a full-range
+// scan. Since the access path builds Fetch(Covering(IndexScan)) for every
+// value-index access, stopping at the wrapper makes every fetch answer
+// full-range.
+//
+// This one keeps AllMembers() on purpose, unlike every enumeration above it.
+// It is a LOOKUP, not a choice: it answers "what index does this subtree read,
+// and with what ranges" for a caller that has already decided which member it
+// cares about. No parent is built over what it returns, so restricting it to
+// finals would only make it fail to answer for a group mid-planning — and its
+// callers read a non-answer as "unrestricted scan", the expensive direction.
 func findIndexScanPlan(ref *expressions.Reference) *plans.RecordQueryIndexPlan {
 	if ref == nil {
 		return nil
@@ -366,6 +418,11 @@ func findIndexScanPlan(ref *expressions.Reference) *plans.RecordQueryIndexPlan {
 	for _, m := range ref.AllMembers() {
 		if p, ok := m.(*plans.RecordQueryIndexPlan); ok {
 			return p
+		}
+		if cov, ok := m.(*plans.RecordQueryCoveringIndexPlan); ok {
+			if p := cov.GetIndexPlan(); p != nil {
+				return p
+			}
 		}
 		if fw, ok := m.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 			if innerRef := fw.GetInnerQuantifier().GetRangesOver(); innerRef != nil {

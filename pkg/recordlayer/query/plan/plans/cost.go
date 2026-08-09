@@ -151,6 +151,17 @@ func isProvablePointProbe(plan RecordQueryPlan) bool {
 			properties.SecondaryUniqueNullsDistinct,
 		)
 		return p.IsUnique() && known && multiplicity == 1
+	case *RecordQueryCoveringIndexPlan:
+		// A covering scan reads the same index range as the scan it holds, so
+		// it is a point probe exactly when that scan is. The scan is a FIELD:
+		// the fetch arm below peels straight onto this wrapper and, without
+		// this arm, stops — which since RFC-220 is every index-backed access,
+		// so no unique-index point probe would be provable at all.
+		inner, ok := IndexPlanOf(p)
+		if !ok {
+			return false
+		}
+		return isProvablePointProbe(inner)
 	case *RecordQueryFetchFromPartialRecordPlan:
 		if p == nil {
 			return false
@@ -838,6 +849,14 @@ func innerLegLayout(plan RecordQueryPlan) values.Type {
 		if p == nil {
 			return nil
 		}
+	case *RecordQueryCoveringIndexPlan:
+		// Recognized for the same reason the bare index scan is, and it must
+		// stay in step with innerLeafUniqueKeyOrdinals below (the doc comment
+		// above states the two arm sets are the same set). GetResultType
+		// delegates to the wrapped scan.
+		if p == nil {
+			return nil
+		}
 	case *RecordQueryFetchFromPartialRecordPlan:
 		if p == nil {
 			return nil
@@ -982,6 +1001,21 @@ func innerLeafUniqueKeyOrdinals(plan RecordQueryPlan, layout values.Type) (map[v
 			want[key] = physicalKeyTypeAt(physicalTypes, i)
 		}
 		return want, true
+	case *RecordQueryCoveringIndexPlan:
+		// Identity-preserving over the scan it holds, exactly like the wrappers
+		// below — and unlike them it holds that scan as a FIELD, so it needs an
+		// explicit arm. The `layout` is threaded down UNCHANGED, per this
+		// function's own contract: it is the inner LEG's output row, not the
+		// partial record the covering scan reconstructs.
+		//
+		// The Fetch arm below peels directly onto this wrapper for every
+		// index-backed access since RFC-220, so without this arm no unique
+		// secondary index would ever supply a want set.
+		inner, ok := IndexPlanOf(p)
+		if !ok {
+			return nil, false
+		}
+		return innerLeafUniqueKeyOrdinals(inner, layout)
 	case *RecordQueryFetchFromPartialRecordPlan:
 		if p == nil {
 			return nil, false

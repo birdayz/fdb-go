@@ -4,11 +4,15 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/conformance/coveringleaf"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
-const rfc220ProbeDDL = `CREATE TABLE products (id BIGINT, category INTEGER, price INTEGER, name STRING, PRIMARY KEY (id))
-CREATE INDEX idx_cat ON products (category)`
+// The schema is the SHARED one — the driver-side metadata test asserts against
+// the same tables, index and queries, and the two were hand-duplicated until
+// coveringleaf gave them one definition to import. See that package for why the
+// duplication was load-bearing rather than cosmetic.
+const rfc220ProbeDDL = coveringleaf.DDL
 
 // TestCoveringLeafMetadataQueriesStillPlanAsCoveringLeaves pins the premise of
 // the column-metadata test over in the sqldriver package
@@ -23,27 +27,23 @@ CREATE INDEX idx_cat ON products (category)`
 // It is pinned here, next to the planner, because that is where it would move.
 func TestCoveringLeafMetadataQueriesStillPlanAsCoveringLeaves(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
-		query       string
-		wantCovered bool
-	}{
-		{`SELECT category FROM products WHERE category = 2`, true},
-		{`SELECT id FROM products WHERE category = 2`, true},
-		// The control query in that test: a non-covered column, so NOT covering.
-		{`SELECT category, price FROM products WHERE category = 2`, false},
-	} {
-		tc := tc
-		t.Run(tc.query, func(t *testing.T) {
+	// Driven from the shared probe table, so a query added or edited on the
+	// driver side cannot silently go unpinned here.
+	if len(coveringleaf.Probes) == 0 {
+		t.Fatal("coveringleaf.Probes is empty — this pin would report PASS having asserted nothing")
+	}
+	for _, tc := range coveringleaf.Probes {
+		t.Run(tc.Name, func(t *testing.T) {
 			t.Parallel()
-			p, err := embedded.PlanQueryForTest(tc.query, rfc220ProbeDDL, nil)
+			p, err := embedded.PlanQueryForTest(tc.Query, rfc220ProbeDDL, nil)
 			if err != nil {
 				t.Fatalf("plan: %v", err)
 			}
-			if got := strings.Contains(p, "COVERING"); got != tc.wantCovered {
+			if got := strings.Contains(p, "COVERING"); got != tc.Covering {
 				t.Errorf("covering leaf = %v, want %v\n  plan: %s\n"+
 					"TestFDB_CoveringLeafKeepsColumnTypeMetadata depends on this shape; "+
 					"update both together or it stops testing what it claims",
-					got, tc.wantCovered, p)
+					got, tc.Covering, p)
 			}
 		})
 	}
