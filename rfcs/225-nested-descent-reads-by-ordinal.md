@@ -1,10 +1,10 @@
 # RFC-225 — The nested descent reads by ordinal
 
-**Revision 9.** Revisions 1-7 are preserved in **Appendix A**; revision 8's live
+**Revision 10.** Revisions 1-7 are preserved in **Appendix A**; revision 8's live
 sections were corrected in place rather than appended to, so that section 5
 remains the ONE live acceptance list.
 
-Seven review laps, zero ACKs. Revision 8 changed the axis — from a seventh
+Eight review laps, zero ACKs. Revision 8 changed the axis — from a seventh
 consumer-side check to the constructor — and **both reviewers endorsed the axis
 and NAK'd the execution** (§5.2 is the record). Revision 9 folds both reviews.
 The single largest correction: revision 8 put the layout-agreement check at the
@@ -299,29 +299,44 @@ decline path to route it into.
 "an accessor exists only if a constructor made it" and "this is the whole
 provenance question, answered at compile time". **That is false, and both
 reviewers found it independently.** Go rejects only composite literals that
-*name* unexported fields. All of these compile from any package and yield
+*name* unexported fields, so these compile from any package and yield
 `ordinal == 0` — a **valid first-field index**, strictly more dangerous than
 `-1`, which at least fails a bounds check loudly:
 
 ```go
-values.ResolvedAccessor{}          // and values.go:617 already returns exactly this
+values.ResolvedAccessor{}   // values.go:617 returns exactly this, in-package, today
 var a values.ResolvedAccessor
-make([]values.ResolvedAccessor, n) // IN PRODUCTION TODAY:
-                                   //   expr/expr.go:258   make(..., len(accessors))
-                                   //   max_match_map.go:910  make(..., p)
+make([]values.ResolvedAccessor, n)
 ```
 
-None of them matches a `grep "ResolvedAccessor{"`. So closing the struct buys a
-real but **narrower** property: no site outside `values` can *set* a negative or
-arbitrary ordinal, and the compiler enumerates every setter. It does not make an
-unresolved accessor unconstructible.
+None matches a `grep "ResolvedAccessor{"`. So closing the struct buys a real but
+**narrower** property: no site outside `values` can *set* a negative or arbitrary
+ordinal, and the compiler enumerates every setter. It does not make an unresolved
+accessor unconstructible.
 
-**The zero value is closed by the domain, not by the constructor.** An accessor
-no constructor touched has an UNKNOWN domain token, and §3.2's bake-time
-agreement check declines on an unknown token on either side. That is why the
-domain is not an optional second guard: for the zero-value class it is
-**load-bearing alone**. §4's "two independent structural properties" is corrected
-accordingly.
+**The class is REPRESENTABLE but currently UNPOPULATED, and revision 9 overstated
+that too.** Revision 9 cited `expr/expr.go:258` and `max_match_map.go:910` as
+production witnesses. Measured this lap, both are **fully overwritten
+immediately** — `expr.go:259-261` assigns every index, `max_match_map.go:911` is a
+`copy` over the whole slice — so neither mints a zero-value accessor that
+survives. `expr.go:260` additionally names exported fields and therefore does not
+compile under the closed type at all, i.e. the compiler catches it. The only
+standing in-tree zero value is `values.go:617`, a deliberate `ok=false` return.
+
+That correction is worth stating rather than quietly fixing: **citing two sites
+that mint nothing, inside the paragraph correcting revision 8 for overstating, is
+the third overstatement in three revisions of the same argument.** The structural
+claim survives — the class is representable and a future site could populate it —
+but the population today is empty, and "empty" is not "impossible".
+
+**The domain closes the zero value AT THE BAKE, and only there.** A zero accessor
+has ordinal 0, which is IN RANGE, and §3.2(3)'s read keeps only a bounds check —
+so a zero accessor that reached a read would **read column 0 silently**. The bake
+is the single plank, not one of two: `WithSuffix` composition (12 sites, §2.2)
+could in principle splice an accessor into a path past a bake that already
+happened. **Nothing does today**, and criterion 19 pins that. Write this as
+defence-in-depth with one plank, not as "the domain closes it" — revision 9 said
+the latter and it is the same overclaim one level down.
 
 Of the three constructors, **only `NewResolvedAccessorOfDescriptorField` is
 evidence-bearing** — the `protoreflect.FieldDescriptor` *is* the resolution, the
@@ -407,12 +422,30 @@ of indexing the wrong slot."*
 case proto.Message:
 	fields := rec.ProtoReflect().Descriptor().Fields()
 	ord := acc.Ordinal()
-	if ord >= fields.Len() {          // Java MessageHelpers.java:171
+	// BOTH bounds, exactly as Java: MessageHelpers.java:171 checks
+	// "fieldOrdinal < 0 || fieldOrdinal >= size". The negative arm is
+	// unreachable under the closed type (§3.1) and is asserted ANYWAY --
+	// unreachable-today is the shelf-life rule's trigger, not a licence to
+	// delete. §1 makes a point of Java checking it explicitly.
+	if ord < 0 || ord >= fields.Len() {
 		return nil, &OrdinalResolutionError{...}
 	}
 	fd := fields.Get(ord)
 	cur = ProtoFieldToRowValue(fd, rec.ProtoReflect().Get(fd))
 ```
+
+**What the bake does NOT buy — stated, because revision 9 implied otherwise.** The
+bake checks a **static** layout: the descriptor the producer resolved against,
+compared with the layout its child advertises. It does not and cannot certify the
+descriptor of the message that arrives at runtime. Note also that the in-tree
+model iterates `allLeafDescriptors(leg, md)` — plural — because a leg can flow
+several leaf descriptors, so agreement is "some leaf matched", not "the leaf
+matched". **Java has the identical property**: `resolveFieldPath` walks
+`currentType = field.getFieldType()` (`FieldValue.java:296`), a static type, and
+`MessageHelpers.java:171` still bounds-checks at read time. So this is not a
+divergence — but it is the reason §3.2(3)'s read stays LOUD rather than becoming
+a formality: **the bake makes the read's failure a bug, not a possibility; it
+does not make the read total.**
 
 This restores the Cascades property revision 8 broke: every plan in the memo is
 executable by construction. It also removes the per-row cost revision 8 quietly
@@ -493,8 +526,18 @@ So each producer:
    field.getFieldType()`, `FieldValue.java:296`, in descriptor form);
 2. mints `NewResolvedAccessorOfDescriptorField(fd)` per step;
 3. **checks the bake-time domain agreement of §3.2** before baking anything;
-4. **declines by its own existing route** on any step that will not resolve, or
-   on a token disagreement.
+4. **declines** on any step that will not resolve, or on a token disagreement —
+   but *"by its own existing route"* is **FALSE for `index_expansion`, and
+   revision 9 wrote it anyway.** Measured this lap: all three
+   `lazyFanOutFieldPathValue` returns are **before** the suffix loop
+   (`index_expansion.go:539-551`). **Inside the loop (`:558-580`) there is no
+   decline at all** — a name miss sets `currentType = values.UnknownType`, appends
+   a `-1` accessor, and returns a `FieldValue` regardless.
+
+   So the implementer must **ADD a decline edge** that does not exist, and that
+   new edge changes the value shape for the **non-collection name-miss** case
+   — a shape that today silently produces a name-addressed accessor and after the
+   change produces no bake. Criterion 15(a) covers it.
 
 The name matching in step 1 is **today's `protoFieldByName` head moved verbatim**:
 exact, lower-case, `EqualFold` scan, then the escaped spelling
@@ -576,7 +619,11 @@ against.
    `TestFieldDebtBucketsArePartition` green. The resolver's decision site is
    DECLARED in the `translator` bucket with its count and its once-per-plan
    property — never allowlisted. `protoFieldByName` contains no `ByName`,
-   `EqualFold` or `ToProtoBufCompliantName`; grep output pasted.
+   `EqualFold` or `ToProtoBufCompliantName` — read from the **docscheck census**,
+   which is a runtime witness, not from a pasted grep. (The "verified by grep,
+   output pasted" phrasing was NAK'd twice as an absence-of-code assertion and
+   does not survive into this list. Lap 8 ran the census: 3 `=== RUN`, all PASS,
+   `boundary` = 2 escape sites — the premise this criterion drives to 0.)
 4. **A nested read SUCCEEDS** end-to-end through SQL against real FDB
    (testcontainers), with a plan-shape assertion proving the baked nested path was
    taken. Two independent review laps found the silent-decline failure mode; this
@@ -628,6 +675,27 @@ against.
    (`values.go:643`) and `semantic_hash.go` folds `#%d` per accessor ordinal, so
    a partial flip really does change the memo bucket — the premise is measured.
 
+   **Why `index_expansion` is NOT independently flippable — the question revision
+   9 left open, answered.** `collectionPath=true` is passed at exactly two sites,
+   `index_expansion.go:328` and `:443`, both inside `case gen.Field_FAN_OUT`
+   (`:324`, `:435`) — measured this lap. Those build the **candidate-side**
+   Explode collection value. The **query-side** of the same Explode is built by
+   `unnest_seed.go:177` and `unnest_gather.go:189`, which mint `-1`. Identity is
+   ordinal-only.
+
+   **So `index_expansion` withholds the ordinal it just derived precisely so its
+   suffix ordinals EQUAL the unnest producers' `-1`, and the two sides intern
+   into one memo bucket.** The withholding is not an independent mystery and not a
+   separate investigation: **it IS this criterion's atomic-flip coupling wearing a
+   different hat.** That is why the three producers are one commit — the coupling
+   was already documented at `index_expansion.go:525-527`, in the language of
+   name-addressing rather than of memo identity, which is why six revisions read
+   past it.
+
+   **Consequence for the implementer:** shipping the unnest pair first is exactly
+   the partial flip this criterion forbids. Rows stay right, fanout index matching
+   silently dies, every correctness test stays green.
+
    **The repair, and why it was needed.** Appendix §10.1's literal instruction is
    "flip ONE producer alone", i.e. leave `ResolvedAccessor{Ordinal: -1}` standing
    at one site. **Under §3.1 that no longer compiles, so it is not a state the
@@ -653,8 +721,9 @@ against.
 12. **`field_name_decision_test.go:680`'s entry is DELETED, not rewritten.** It is
     keyed on `values.go # assertSuffixStep # a == comparison # 1`, and §3.4 deletes
     that comparison; a rewritten entry would point at a site with zero occurrences
-    and the census fails count-1/actual-0. `//pkg/docscheck` output pasted showing
-    no orphaned entry.
+    and the census fails count-1/actual-0 — the ratchet is a count, not a boolean,
+    which is exactly what makes it catch this. Acceptance is the `//pkg/docscheck`
+    census READING (executed-test count and bucket totals), not a pasted grep.
 13. **Mutation-checked PER DIRECTION, separately**, each RED line quoted verbatim:
     wrong ordinal; negative ordinal (criterion 2); silent-instead-of-loud miss;
     unresolved-name decline; domain mismatch (criterion 7); producer divergence
@@ -668,7 +737,12 @@ against.
     measured against the goldens and the corpus:
     (a) **index-expansion collection paths** — pinned as UNCHANGED, since their
     decline route is `lazyFanOutFieldPathValue` (a different memo identity), not
-    an absence (§3.3);
+    an absence (§3.3). **Extended:** the same criterion covers the
+    **non-collection name-miss** case, where §3.3(4) requires a decline edge that
+    does not exist today — the loop at `index_expansion.go:558-580` currently
+    returns a `FieldValue` with a `-1` accessor rather than declining, so adding
+    the edge moves plans that are not the collection-path ones. Both sub-cases get
+    golden coverage;
     (b) **steps whose STORED spelling differs from the SCHEMA's** — these resolve
     fine at runtime today and decline at bake time after this change. Java never
     loses them (`FieldValue.java:296`). If the class is non-empty the RFC states
@@ -681,11 +755,11 @@ against.
     `fieldpath_compose_test.go:59-60,119-120`, so adding a field silently changes
     every such comparison. Add an `Equals` method so `==` is not the reachable
     default. Mutation: fold the domain into `semantic_hash.go`, test goes RED.
-17. **THE `collectionPath` WITHHOLDING IS EXPLAINED BEFORE IT IS CHANGED (§3.3).**
-    `index_expansion.go:525-527` documents that collection paths deliberately
-    withhold a KNOWN ordinal. Why is not established. This is the one item on the
-    list requiring new investigation, and it gates implementation of that
-    producer — not of the other two.
+17. *(deleted — absorbed into criterion 9. Revision 9 called the `collectionPath`
+    withholding "one item requiring new investigation" gating "that producer, not
+    the other two". **That was mutually exclusive with criterion 9, and 17 is the
+    one an implementer would follow** — straight into the partial flip 9 forbids.
+    The question is answered in 9 from evidence already in this document.)*
 18. **UNKNOWN-DOMAIN MINT CENSUS.** `NewResolvedAccessorInDomain` can be called
     with `OrdinalDomain{}`, which declines at §3.2's gate — not a wrong-column
     vector, but a SILENT-DECLINE vector, the failure mode two laps already caught
@@ -693,6 +767,13 @@ against.
     unknown-domain mint population, per the repo's census rule, so the
     optimization cannot die quietly one lazy producer at a time. Drives every
     arm from explicit state, not from whatever the corpus reaches.
+19. **NO `WithSuffix` SPLICE PAST A BAKE (§3.1).** The bake is the single plank
+    closing the zero-value class, so a path composed AFTER a bake could in
+    principle carry an accessor the bake never saw. A test asserting that every
+    non-root accessor reaching `descendResolvedPath` carries a KNOWN domain,
+    driven over the 12 `WithSuffix` sites' shapes. Nothing violates this today;
+    the pin is what says so, and its failure message names the revival — a
+    composition site that splices an unbaked accessor into a baked path.
 
 ### 5.1 The mutation-checkability of the divergent-ordinal fixture (Appendix A §12's criterion 7 — the correction §16.4 claimed and did not make)
 
