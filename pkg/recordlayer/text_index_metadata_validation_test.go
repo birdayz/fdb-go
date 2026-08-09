@@ -68,12 +68,20 @@ func (f *namedTestTokenizerFactory) GetTokenizer() TextTokenizer {
 	return &multiVersionTestTokenizer{name: f.name}
 }
 
-// registerTestTokenizer is idempotent: Register only errors when a DIFFERENT
-// factory claims the same name, and these factories are values compared by
-// pointer, so the singletons below register once and re-register harmlessly.
+// registerTestTokenizers is idempotent: Register only errors when a DIFFERENT
+// factory claims the same name, and these factories are compared by pointer, so
+// the singletons below register once and re-register harmlessly.
+//
+// The names are deliberately implausible. Registration mutates a PROCESS-GLOBAL
+// registry, so whatever is registered here stays valid for every other spec in
+// this test binary — which slightly weakens the very gate this file installs. A
+// name like "english" would be a plausible thing for another spec to use as its
+// example of an UNREGISTERED tokenizer, and it would then silently pass for the
+// wrong reason. These cannot be mistaken for a real tokenizer anyone would
+// name, and `grep` confirms nothing else in pkg/recordlayer/ refers to them.
 var (
-	englishTestTokenizer = &namedTestTokenizerFactory{name: "english"}
-	frenchTestTokenizer  = &namedTestTokenizerFactory{name: "french"}
+	englishTestTokenizer = &namedTestTokenizerFactory{name: "metadata_validation_test_tokenizer_a"}
+	frenchTestTokenizer  = &namedTestTokenizerFactory{name: "metadata_validation_test_tokenizer_b"}
 )
 
 func registerTestTokenizers() {

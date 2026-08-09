@@ -87,15 +87,18 @@ Concretely:
    that was pushed to it. A retained final satisfying no requested property is dead
    weight the prune was supposed to drop, and today nothing would notice it.
 
-   **"Property", not "ordering", and the distinction is load-bearing.** An earlier
-   draft wrote this clause as "some requested ORDERING", which would have made the
-   check delete the member RFC-220 depends on. Requested ordering is one instance of a
-   required physical property; fetch-**elidability** is another — a parent that has
-   determined every projected value pushes through a fetch needs the group to have
-   retained a fetch-rooted member for `MergeProjectionAndFetchRule` to match. Writing
-   the clause narrowly would turn this invariant into the enforcement arm of the very
-   bug RFC-220 is fixing. Any new required property joins this clause rather than
-   being special-cased next to it.
+   **"Property", not "ordering", and the distinction is load-bearing** — on grounds
+   independent of any other RFC. An earlier draft wrote this clause as "some requested
+   ORDERING". That hard-codes one property class into an invariant whose whole subject
+   is property-keyed retention: the keep set is defined per required physical property,
+   so a coherence rule that can only see orderings would report any future
+   property-retained member as dead weight and pressure someone into pruning it. Any
+   new required property joins this clause rather than being special-cased beside it.
+
+   This wording was first proposed to protect a specific retained member that RFC-220
+   was thought to need. That reasoning is **withdrawn** — the diagnosis it rested on
+   was refuted by measurement — and the clause is stated here without it, because it
+   was never the reason the clause is right.
 
 4. **RFC-183 P5 is unblocked, and that is a finding, not a side effect.** The current
    test's failure message says "P5 is blocked and any plan-holds-a-quantifier work must

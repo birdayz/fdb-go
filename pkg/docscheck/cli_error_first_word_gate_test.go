@@ -65,8 +65,8 @@ func TestFangTitleCasesMangleALeadingFlag(t *testing.T) {
 	}
 }
 
-// TestCLIErrorMessagesDoNotLeadWithAFlag fails on any fmt.Errorf under a
-// fang-rendered command tree whose format literal begins with a flag.
+// TestCLIErrorMessagesDoNotLeadWithAFlag fails on any error constructed from a
+// string literal beginning with a flag, under a fang-rendered command tree.
 func TestCLIErrorMessagesDoNotLeadWithAFlag(t *testing.T) {
 	t.Parallel()
 	root := sourceTreeRoot(t)
@@ -138,7 +138,7 @@ func TestCLIErrorMessagesDoNotLeadWithAFlag(t *testing.T) {
 			}
 			pos := fset.Position(lit.Pos())
 			offenders = append(offenders, strconv.Itoa(pos.Line)+" in "+rel+
-				" — fmt."+name+" starting "+strconv.Quote(first)+", which renders as "+
+				" — "+name+" starting "+strconv.Quote(first)+", which renders as "+
 				strconv.Quote(cases.Title(language.AmericanEnglish).String(first)))
 			return true
 		})
@@ -172,13 +172,16 @@ func sortedKeys(m map[string]bool) []string {
 	return out
 }
 
-// errorFormatLiteral reports whether n is a fmt.Errorf call whose first
-// argument is a string literal, returning that literal and the function name.
+// errorFormatLiteral reports whether n CONSTRUCTS AN ERROR from a string
+// literal — `fmt.Errorf` or `errors.New` — returning that literal and a label.
 //
-// Errorf ONLY, deliberately. fmt.Sprintf builds display strings that never
-// reach the error banner — `frl sql` uses it for a SQL comment header
+// Both, deliberately, and NOT `fmt.Sprintf`. Sprintf builds display strings that
+// never reach the error banner: `frl sql` uses it for a SQL comment header
 // ("-- frl sql — edit and save…") and a psql-style record separator
-// ("-[ RECORD 1 ]-"), both of which legitimately lead with a dash.
+// ("-[ RECORD 1 ]-"), both of which legitimately lead with a dash. `errors.New`
+// has zero offenders in the tree today, which is exactly why it is included —
+// a gate that only watches the constructor that happens to be in use lets the
+// next one walk straight past.
 func errorFormatLiteral(n ast.Node) (*ast.BasicLit, string, bool) {
 	call, ok := n.(*ast.CallExpr)
 	if !ok || len(call.Args) == 0 {
@@ -189,15 +192,18 @@ func errorFormatLiteral(n ast.Node) (*ast.BasicLit, string, bool) {
 		return nil, "", false
 	}
 	pkg, ok := sel.X.(*ast.Ident)
-	if !ok || pkg.Name != "fmt" {
+	if !ok {
 		return nil, "", false
 	}
-	if sel.Sel.Name != "Errorf" {
+	switch {
+	case pkg.Name == "fmt" && sel.Sel.Name == "Errorf":
+	case pkg.Name == "errors" && sel.Sel.Name == "New":
+	default:
 		return nil, "", false
 	}
 	lit, ok := call.Args[0].(*ast.BasicLit)
 	if !ok || lit.Kind != token.STRING {
 		return nil, "", false
 	}
-	return lit, sel.Sel.Name, true
+	return lit, pkg.Name + "." + sel.Sel.Name, true
 }

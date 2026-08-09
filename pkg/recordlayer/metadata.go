@@ -851,6 +851,26 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		if canonicalIndexType(idx.Type) != IndexTypeText {
 			continue
 		}
+		// The other three checks in the SAME Java method
+		// (TextIndexMaintainerFactory.java:102-104): validateNotVersion,
+		// validateNotUnique, validateNoValue. Ported together rather than
+		// leaving the tokenizer half alone — a validator that implements one of
+		// four checks reads as "TEXT indexes are validated" while three ways to
+		// build a broken one stay open.
+		if countVersionColumns(idx.RootExpression) > 0 {
+			return nil, &MetaDataError{Message: fmt.Sprintf(
+				"text index %q: version key not possible in index type", idx.Name)}
+		}
+		if idx.IsUnique() {
+			return nil, &MetaDataError{Message: fmt.Sprintf(
+				"text index %q: index type does not allow unique indexes", idx.Name)}
+		}
+		if _, isKeyWithValue := idx.RootExpression.(*KeyWithValueExpression); isKeyWithValue {
+			// Java's TODO on this line reads "allow value expressions for
+			// covering text indexes"; until Java allows it, Go does not either.
+			return nil, &MetaDataError{Message: fmt.Sprintf(
+				"text index %q: no value expression allowed in index type", idx.Name)}
+		}
 		tok, err := getTextTokenizer(idx)
 		if err != nil {
 			return nil, &MetaDataError{Message: fmt.Sprintf(
