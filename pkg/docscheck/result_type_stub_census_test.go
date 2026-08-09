@@ -45,7 +45,7 @@ import (
 // puts it at the VALUE level, names it (EmptyValue) and gives it a predicate; a
 // plan that flows no row SAYS SO. Go puts it at the PLAN level, unnamed, as a
 // method that opts out — indistinguishable from an unfinished one, which is how
-// twelve of them accumulated without anyone deciding to.
+// twelve of them accumulated (eleven now) without anyone deciding to.
 //
 // GO INVERTED THAT DEPENDENCY, and every symptom follows from the inversion.
 // `plans.RecordQueryPlan` requires `GetResultType()` (plan.go:70) and does NOT
@@ -53,10 +53,11 @@ import (
 // mandatory source to derive from, plans that cannot answer return the
 // UnknownType singleton — and the count is not the one CQ-97 booked. It booked
 // `RecordQueryFlatMapPlan`, mentioning `RecordQueryNestedLoopJoinPlan` in
-// passing. Measured by this gate, it is TWELVE.
+// passing. Measured by this gate it was TWELVE; RFC-226 closed RecordQueryProjectionPlan
+// and it is ELEVEN.
 //
 // WHY THIS IS AN INVENTORY AND NOT A ZERO. The stub is not a bug that can be
-// deleted today: four of the twelve have neither a result value nor an inner to
+// deleted today: four of the eleven have neither a result value nor an inner to
 // derive from, so a zero here would be an assertion nobody can satisfy, and this
 // file's siblings record at length what happens when a census asserts a wish.
 // It is a DEBT LIST, and it earns its keep by shrinking — RFC-213's
@@ -65,7 +66,7 @@ import (
 //
 // BOTH DIRECTIONS FAIL, and the growth direction is the one that matters:
 //
-//   - A THIRTEENTH stub means a new plan joined the divergence silently. Every
+//   - A TWELFTH stub means a new plan joined the divergence silently. Every
 //     consumer that type-asserts the result — measured at 28 call sites, all
 //     failing CLOSED — starts declining on that plan's rows too, and declining
 //     is invisible: it costs an optimization, never a wrong answer, so nothing
@@ -86,8 +87,14 @@ func stubInventory() map[string]string {
 		// no row shape at all, so forwarding is the whole fix. RecordQueryLimitPlan
 		// is the sharpest case in the file: a LIMIT cannot alter a type, its inner
 		// is one call away, and it still answers unknown.
-		"RecordQueryLimitPlan":           "pure pass-through; has GetInner",
-		"RecordQueryProjectionPlan":      "has GetProjections + GetInner; distinctKeyColumns already special-cases this plan to route around the stub",
+		"RecordQueryLimitPlan": "pure pass-through; has GetInner",
+		// RecordQueryProjectionPlan was HERE and is CLOSED by RFC-226, named so the
+		// shrink is deliberate rather than a rename nobody can point at. It was
+		// filed under tier 2 ("forward the inner"), and that was the wrong tier:
+		// a projection is precisely the node that changes the row shape, so it is
+		// tier 1 and now derives from its own GetResultValue() — a record
+		// constructor over its projected columns. RFC-213 rev 2's §2 table carries
+		// the same correction.
 		"RecordQueryTempTableInsertPlan": "has GetInner",
 
 		// Tier 3 — neither a result value nor an inner. These are why the gate is
@@ -220,7 +227,7 @@ func TestResultTypeStubInventoryIsCurrent(t *testing.T) {
 // This is the ROOT of the divergence and it is one line in each language. Java's
 // RelationalExpression requires the VALUE and derives the TYPE. Go's
 // RecordQueryPlan requires the TYPE and requires no value, so the type has no
-// mandatory source and twelve plans answer unknown.
+// mandatory source and eleven plans answer unknown.
 //
 // Pinned because RFC-213's whole design rests on it, and because it is the kind
 // of precondition that gets quietly satisfied by someone else's change: the day
@@ -275,7 +282,7 @@ func TestRecordQueryPlanStillDoesNotRequireGetResultValue(t *testing.T) {
 			"  That is RFC-213's phase 0 and it inverts the dependency the whole RFC is about: "+
 			"Java requires the VALUE (RelationalExpression.java:200, abstract) and DERIVES the "+
 			"type from it (:195-196); Go required the TYPE and left the value optional, which "+
-			"is why twelve plans answer UnknownType.\n"+
+			"is why eleven plans answer UnknownType.\n"+
 			"  If this was deliberate, RFC-213 needs updating and the stub inventory above "+
 			"should be shrinking in the same change. If it was incidental, it is a much larger "+
 			"change than its author probably intended.", rel)

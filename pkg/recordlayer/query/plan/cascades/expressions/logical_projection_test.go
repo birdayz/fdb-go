@@ -22,11 +22,31 @@ func TestLogicalProjection_Construction(t *testing.T) {
 	if p.CanCorrelate() {
 		t.Fatal("projection should not anchor a correlation")
 	}
-	// GetResultValue passes through to inner's flowed object — must
-	// carry the inner's alias.
-	resultCorr := p.GetResultValue().(*values.QuantifiedObjectValue).GetCorrelatedTo()
-	if _, ok := resultCorr[q.GetAlias()]; !ok {
-		t.Fatal("GetResultValue does not carry the inner Quantifier's alias")
+	// GetResultValue states the row the projection PRODUCES — a record
+	// constructor over its two projected columns.
+	//
+	// INVERTED. This asserted the value was a *QuantifiedObjectValue carrying
+	// the INNER's alias, because the expression passed its inner's flowed
+	// object through. That was the falsehood: a projection outputs its
+	// projected columns, not its inner's row, and stating the inner's row is
+	// what let a reader refuse to serve a source-relative ordinal against a
+	// multi-leg row.
+	rv, ok := p.GetResultValue().(*values.RecordConstructorValue)
+	if !ok {
+		t.Fatalf("GetResultValue() = %T, want *values.RecordConstructorValue — a projection "+
+			"must state its own columns, not pass its inner's row through", p.GetResultValue())
+	}
+	if len(rv.Fields) != 2 {
+		t.Fatalf("stated %d field(s), want 2 (one per projected column)", len(rv.Fields))
+	}
+	rt, ok := rv.Type().(*values.RecordType)
+	if !ok {
+		t.Fatalf("result value type %T, want *values.RecordType", rv.Type())
+	}
+	for i, f := range rt.Fields {
+		if f.Name == "" {
+			t.Errorf("slot %d is UNNAMED; every slot must carry a name", i)
+		}
 	}
 }
 

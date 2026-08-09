@@ -4580,6 +4580,63 @@ func NewRawRecordConstructorValue(fields ...RecordConstructorField) *RecordConst
 	return &RecordConstructorValue{Fields: out}
 }
 
+// ErrWholeRowProjection is returned by ProjectionResultValue when the
+// projection list is a single bare QuantifiedObjectValue — a "one-slot
+// whole-row projection".
+//
+// That shape is unbuildable on purpose (RFC-226). The executor emits one
+// positional slot PER PROJECTION, so such a projection produces a 1-slot row
+// WRAPPING its inner's row, while the rules that used to erase it yielded the
+// inner's N-field row into the same memo reference: two differently-shaped
+// plans in one equivalence class. Java never has the shape, because
+// GraphExpansion expands SELECT * into per-field columns; Go's SELECT * builds
+// no projection node at all. So nothing needs it, and forbidding it here makes
+// the arity disagreement unreachable BY CONSTRUCTION rather than caught
+// downstream.
+//
+// The guard lives at the constructor rather than in a review sweep because a
+// sweep enumerates call sites and cannot see a list COMPOSED at runtime — a
+// projection-merge or a merge-across-fetch can build this from inputs that are
+// each individually fine.
+var ErrWholeRowProjection = errors.New(
+	"projection list is a single bare QuantifiedObjectValue (one-slot whole-row projection): " +
+		"the executor emits one slot per projection, so this wraps the inner row instead of " +
+		"passing it through; project the inner's columns per-field instead")
+
+// ProjectionResultValue builds the row a projection PRODUCES, as a record
+// constructor over its projected values and output aliases. It is the single
+// authority for that derivation, shared by the logical projection expression
+// and its physical twin so the two cannot drift.
+//
+// Slot names come from OutputColumnName — the same authority the executor uses
+// to name the emitted positional row — so the type a projection STATES matches
+// the row it EMITS. A slot that still resolves to no name takes Java's
+// ordinal spelling, "_"+i (Type.java normalizeFields).
+//
+// Duplicate names go through NewRecordConstructorValue's _2/_3 dedup, never the
+// raw constructor: a raw duplicate under name-keyed lookup resolves to the
+// first match, the exact conflation ordinal identity exists to prevent.
+func ProjectionResultValue(projections []Value, aliases []string) (*RecordConstructorValue, error) {
+	if len(projections) == 1 {
+		if _, bare := projections[0].(*QuantifiedObjectValue); bare {
+			return nil, ErrWholeRowProjection
+		}
+	}
+	fields := make([]RecordConstructorField, len(projections))
+	for i, v := range projections {
+		alias := ""
+		if i < len(aliases) {
+			alias = aliases[i]
+		}
+		name := OutputColumnName(v, alias)
+		if name == "" {
+			name = OrdinalFieldName(i)
+		}
+		fields[i] = RecordConstructorField{Name: name, Value: v}
+	}
+	return NewRecordConstructorValue(fields...), nil
+}
+
 // Children returns each field's Value as a flat list, in field
 // declaration order. Lets WalkValue traverse the whole tree.
 func (r *RecordConstructorValue) Children() []Value {
@@ -4600,8 +4657,17 @@ func (r *RecordConstructorValue) Type() Type {
 		if f.Value != nil {
 			ft = f.Value.Type()
 		}
+		// Java normalizes names centrally, in Type.Record.fromFields ->
+		// normalizeFields (Type.java:2617-2682), not at each caller: "no field
+		// is unnamed" is an invariant of the record TYPE. An unnamed field
+		// would otherwise reach the name-keyed readers as "", and
+		// computeFieldNameToOrdinal's analogue has no entry to return.
+		name := f.Name
+		if name == "" {
+			name = OrdinalFieldName(i)
+		}
 		fields[i] = Field{
-			Name:      f.Name,
+			Name:      name,
 			FieldType: ft,
 			Ordinal:   i,
 		}

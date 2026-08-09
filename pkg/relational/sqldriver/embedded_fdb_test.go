@@ -488,10 +488,34 @@ var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 		// carrying them over would have restated a number nobody measured. Control:
 		// both files out of the package reports 586/166/210, both back in reports
 		// 602/180/212.
-		Denominator:     n(604),
-		Accept:          n(182),
+		// Step 6 — RFC-226's projected-EXISTS-over-a-derived-source probe
+		// (projection_result_type_probe_fdb_test.go) adds seven queries, and the
+		// increment is ATTRIBUTED BY CONTROL rather than by arithmetic, per the
+		// paragraph above: with that one file out of the package the census is
+		// unchanged and the target PASSES at 604/182/212 (`exit=0`, unfiltered,
+		// --nocache_test_results); with it back in, 614/188/216 — so every unit of
+		// the movement is this file's.
+		//   denominator 604+10 = 614, ACCEPT 182+6 = 188, no-exist-ref 212+4 = 216
+		//
+		// The split is the check that the queries are the shapes they claim to be.
+		// Three of them project the EXISTS (the CTE arm, the derived-table arm and
+		// the base-table control) and each fires the rule under BOTH orientations,
+		// so 3x2 = 6 ACCEPTs. Two put the EXISTS in the WHERE, projecting no
+		// reference to the exists alias, so 2x2 = 4 decline as no-exist-ref. The
+		// two remaining queries are the no-EXISTS controls and reach this decision
+		// never — which is itself the check that they are the plain two-quantifier
+		// joins they are meant to be.
+		//
+		// RECONSTRUCT-NIL HOLDING AT 102, ALL BARE-QOV, IS THE LOAD-BEARING ONE.
+		// Before RFC-226's leg fix, a projection leg refused the seed and landed in
+		// the `rv=RecordConstructorValue (NOT a positional merge)` bucket; the three
+		// projected arms above would have declined there instead of accepting. That
+		// bucket is 0 and ACCEPT absorbed all six, which is the census stating the
+		// fix from the other side.
+		Denominator:     n(614),
+		Accept:          n(188),
 		CorrelatedStep1: n(108),
-		NoExistRef:      n(212),
+		NoExistRef:      n(216),
 		ReconstructNil:  n(102),
 		// The residue is now ENTIRELY bare-QOV, and the two entries below say so
 		// separately on purpose. A single "reconstruct-nil == 94" would be

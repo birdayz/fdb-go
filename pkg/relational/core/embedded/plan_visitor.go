@@ -1005,7 +1005,7 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 	existsPlanner := &existsSubqueryPlanner{
 		md:          v.md,
 		schemaName:  v.schemaName,
-		outerScopes: buildOuterScopeSources(sq, v.md, v.schemaName),
+		outerScopes: buildOuterScopeSources(sq, v.md, v.schemaName, v.cteScopes),
 		cteScopes:   v.cteScopes,
 		cteOnScopes: v.cteOnScopes,
 		cteBodies:   v.cteBodies,

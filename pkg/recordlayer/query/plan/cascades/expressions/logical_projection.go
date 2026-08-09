@@ -91,36 +91,41 @@ func (e *LogicalProjectionExpression) GetAliasMinted() []bool {
 // GetInner returns the inner Quantifier.
 func (e *LogicalProjectionExpression) GetInner() Quantifier { return e.inner }
 
-// GetResultValue passes the inner's flowed object value through, and does so
-// with the TYPE DELIBERATELY STRIPPED. Both halves of that need saying.
+// GetResultValue states the row this projection PRODUCES: a record constructor
+// over its projected columns, named by its output aliases.
 //
-// The passthrough is Java's contract literally
-// (LogicalProjectionExpression.java:105 is `inner.getFlowedObjectValue()`), and
-// in Java it is harmless because that class is used only for planning legacy
-// RecordQuerys — its own javadoc says so — where nothing reads a projection's
-// result TYPE. Go uses this expression as the SQL projection, which is a
-// different job, and under it the inherited contract is simply false: a
-// projection outputs its PROJECTED columns, not its inner's row.
+// It used to pass the INNER's flowed object value through, which is Java's
+// literal contract (LogicalProjectionExpression.java:102-106). That inheritance
+// was the bug. In Java the class is legacy-only — its javadoc says "only used
+// when we plan RecordQuerys" (:47) — and RemoveProjectionRule erases it before
+// planning finishes, so nothing ever reads its result type. Go uses this
+// expression as the SQL projection, a different job, and under it the inherited
+// contract is false: a projection outputs its PROJECTED columns, not its
+// inner's row.
 //
-// While the flowed value carried no type that falsehood was inert — an untyped
-// value claims nothing. The moment the accessor became typed (Java's shape) this
-// site started asserting that the projection flows the inner's whole row, legs
-// and all, and it is not a theoretical wrongness: measured on
-// `WITH C AS (…) SELECT "EL" FROM (SELECT "ID" FROM T1 AS "D") AS "X", "C" AS
-// "D", "D"."DARR" AS "EL"`, a downstream reader took the stated multi-leg row at
-// its word and refused to serve a source-relative ordinal against it —
-// `correlated FieldValue "EL" … multi-leg row cannot serve a source-relative
-// ordinal`. Stating no type is the honest answer here; stating the inner's is a
-// wrong one.
+// Stating the inner's row made a downstream reader take a multi-leg row at its
+// word and refuse to serve a source-relative ordinal against it — `correlated
+// FieldValue "ID" (correlation "D") … multi-leg row cannot serve a
+// source-relative ordinal`. Stating no type instead only moved the failure:
+// Quantifier.GetFlowedObjectType skips an untyped member, so a leg over a
+// projection derived no layout at all and every read through it fell back to
+// the qualified name.
 //
-// The real fix is for this expression to state the row it actually produces,
-// built from GetProjectedValues and GetAliases — and for its physical twin to do
-// the same (RecordQueryProjectionPlan.GetResultType is UnknownType for the same
-// reason). That is a change to what a projection REPORTS, not to how a flowed
-// value is typed, so it is its own piece of work. Until it lands this site must
-// not be "cleaned up" back onto the typed accessor.
+// The derivation is shared with the physical twin
+// (RecordQueryProjectionPlan.GetResultValue) through values.ProjectionResultValue
+// so the two cannot state different rows for the same projection.
+//
+// The error is unreachable here: a one-slot whole-row projection is
+// unbuildable, enforced by the constructors below, so this returns the
+// well-formed row or the expression could not have been built. It falls back to
+// an untyped QOV rather than panicking, because library code does not panic —
+// and that fallback is pinned as unreachable by test, not left to trust.
 func (e *LogicalProjectionExpression) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValue(e.inner.GetAlias())
+	rv, err := values.ProjectionResultValue(e.projectedValues, e.aliases)
+	if err != nil {
+		return values.NewQuantifiedObjectValue(e.inner.GetAlias())
+	}
+	return rv
 }
 
 // GetQuantifiers returns the single inner Quantifier.

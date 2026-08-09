@@ -107,6 +107,7 @@ go_test(
         "ddl_quoted_case_wire_test.go",
         "ddl_quoted_dot_pk_test.go",
         "ddl_scope_guard_test.go",
+        "derived_source_exists_plan_test.go",
         "derived_unnest_test.go",
         "distinct_scratch_retry_charge_test.go",
         "distinct_scratch_wiring_test.go",
@@ -350,6 +351,7 @@ go_test(
         "correlated_probe_cross_relation_residual_test.go",
         "plan_harness.go",
         "plan_harness_one_final_test.go",
+        "derived_source_exists_plan_test.go",
     ],
     deps = [
         "//gen",

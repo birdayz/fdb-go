@@ -391,6 +391,7 @@ go_test(
         "primary_vs_index_sarg_test.go",
         "primary_vs_index_transitivity_test.go",
         "projection_alias_provenance_carry_test.go",
+        "projection_leg_ordinal_seed_test.go",
         "quantifier_match_enumerator_test.go",
         "rebase_ordinal_layout_test.go",
         "reference_winner_test.go",
@@ -1082,6 +1083,7 @@ go_test(
         "rule_implement_in_memory_sort_test.go",
         "covering_scan_repricing_test.go",
         "restricted_final_reference_test.go",
+        "projection_leg_ordinal_seed_test.go",
     ],
     deps = [
         "//gen",

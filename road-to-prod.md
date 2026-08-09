@@ -161,8 +161,22 @@ entries mean the same query returns different rows or different errors on the tw
 | B2 | No read-your-writes in explicit transactions; SELECTs take no read locks → silent lost updates | Wrong data | L | **DONE — merged 2026-08-04 (#607, `d6f635073`), Tier 2 confirmed.** RFC-198 all five phases; joint Graefe+Torvalds lap ACK'd; 1M stress clean; the OQ-1 GRV-cache span survived a C++-client + Torvalds design review (fence reshape) and fifteen codex rounds, every finding folded before merge |
 | B3 | RFC-195: cost estimates contradict proven cardinality bounds; comparator uses a private cardinality walk | Wrong plans (perf), not wrong rows | M | **DONE, merged (#547.)** `rfcs/195-cost-must-not-contradict-proof.md:3` — "ACCEPTED, revision 3 … implemented". Seven shapes fixed in the end, not six; zero exclusions and no mechanism to add one (`cardinality_cost_bound_test.go:36-45`). **Residual: CQ-30 in `TODO.md`, open** — criterion 2's data-access maxima are still forked; held visible by a standing test |
 | B4 | RFC-197 identity migration residual (see per-bucket table) | Plan/decline-direction only; wrong-rows channels closed | M | Active; ratchet-enforced; **68 at inception → 48 now** |
-| B5 | WS-N Phase D: metadata re-derived by name instead of flowing from the type (~347 UnknownType mints repo-wide; three named guessers) | Wrong client VALUES on cross-leg same-name-different-type | L | Booked; gates the typed-row-representation work |
+| B5 | WS-N Phase D: metadata re-derived by name instead of flowing from the type (production `UnknownType` mints: see the live census, `pkg/docscheck/unknown_type_mint_census_test.go` — 43 across 20 files at `aba271454`; five name-keyed guessers, enumerated in `shifts/handoff-ws-n-phase-d-typed-metadata.md:65-81`) | Wrong client VALUES on cross-leg same-name-different-type | L | Booked; gates the typed-row-representation work. Entry point: RFC-226 (projection states its row) |
 | B6 | Documentation authority contradictory/stale | Trust/decision risk, not code | S | **This revision.** Authority headers added to `PRODUCTION_READINESS.md` and `rfcs/prod-readiness-go-client.md`; stale TODO entries fixed; `TestProductionStatusAuthority` added so the redirects cannot silently rot |
+
+**B5's count was refuted and is corrected above, recorded here rather than quietly changed.**
+It read *"~347 UnknownType mints repo-wide; three named guessers"*. Neither number was right and
+the first counted the wrong population. `347` was a raw line count of *mentions* —
+`git grep -n UnknownType a1d281a63 -- 'pkg/**/*.go' | grep -v '_test.go:' | wc -l` → **352** at
+the SHA this page measured at — which folds mints, declines, comparisons and reads together. The
+repo has an authoritative AST census of *mints* (`pkg/docscheck/unknown_type_mint_census_test.go`,
+ratcheted, red in both directions): **43** across 20 files. The raw number has since risen to 417
+while the real mint population *fell* (45 when the census landed at `1e64d6e75` → 43), so anyone
+tracking B5 by its stated metric read progress as regression. The guessers are **five**, not
+three (`shifts/handoff-ws-n-phase-d-typed-metadata.md:65-81` plus the surviving last-wins
+`innerByName` map and `colref.go`). Note also that the census deliberately does **not** count
+`return values.UnknownType` — a classified decline is often the *cure* for a mint — so B5's entry
+point (RFC-226) will not move this number, and must not be judged by it.
 
 ### B4 residual, per bucket — MEASURED at `041838856`
 

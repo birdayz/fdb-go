@@ -1980,6 +1980,33 @@ func legOrdinalSafety(p plans.RecordQueryPlan) (bool, plans.RecordQueryPlan) {
 		case *plans.RecordQueryScanPlan, *plans.RecordQueryIndexPlan,
 			*plans.RecordQueryCoveringIndexPlan:
 			return true, nil
+		// A PROJECTION leg — what a derived table (`FROM (SELECT …) AS d`) and a
+		// CTE reference lower to — is ordinal-safe for the same reason the scan
+		// is, and for a reason the executor states outright: executeProjection
+		// ALWAYS emits a dense PositionalRow with one slot per projection, named
+		// by values.OutputColumnName. One namespace, one slot per column, which is
+		// exactly what the positional merge needs.
+		//
+		// The walk STOPS here rather than descending into the inner: what this leg
+		// flows is the PROJECTED row, not the scan's, and seeding off the scan's
+		// row would window the merged row against columns the leg does not emit.
+		//
+		// Without this arm the leg fell to the default refusal, the step-1 seed was
+		// never built, and the materialized NLJ kept the SELECT's own projected-fold
+		// result value as its merged row — a row the executor's leg concat does not
+		// produce. The projected-EXISTS over a derived source then died at execution
+		// with "multi-leg row cannot serve a source-relative ordinal", while the
+		// identical query over a base-table leg (two scan legs, seed built) worked.
+		//
+		// Gated on the row being STATABLE rather than assumed: a projection whose
+		// result value cannot be derived falls back to a bare QOV, and seeding
+		// ordinals off a row nothing can describe is precisely the forgery this
+		// walk exists to refuse.
+		case *plans.RecordQueryProjectionPlan:
+			if projectionLegRowType(pl) == nil {
+				return false, pl
+			}
+			return true, nil
 		case *plans.RecordQueryPredicatesFilterPlan:
 			p = pl.GetInner()
 		case *plans.RecordQueryFilterPlan:
@@ -2049,6 +2076,25 @@ func legOrdinalSafety(p plans.RecordQueryPlan) (bool, plans.RecordQueryPlan) {
 	return false, nil
 }
 
+// projectionLegRowType is the row a PROJECTION leg flows, as the seed
+// derivation must see it: the plan's OWN stated RecordType, non-empty.
+//
+// It is shared by legOrdinalSafety and planBuriedLegConcat so the safety
+// decision and the concat that acts on it read one derivation. Two copies would
+// agree until one was edited, and here disagreeing means admitting a leg whose
+// fields the merged row cannot then enumerate.
+//
+// nil means the leg cannot state its row — RecordQueryProjectionPlan's result
+// value falls back to a bare QOV when its columns are underivable, and an
+// ordinal seed over a row nothing describes addresses slots by guess.
+func projectionLegRowType(p *plans.RecordQueryProjectionPlan) *values.RecordType {
+	rt := planRowRecordType(p)
+	if rt == nil || len(rt.Fields) == 0 {
+		return nil
+	}
+	return rt
+}
+
 // planBuriedLegConcat walks an ordinal-safe leg PLAN accumulating its buried
 // scan leaves' fields (the flat concat) and each buried source's [Start,Width)
 // window relative to `base` — the PLAN-LEVEL twin of the translator's
@@ -2082,6 +2128,19 @@ func planBuriedLegConcat(p plans.RecordQueryPlan, alias values.CorrelationIdenti
 			// SameLeg exists to keep out of the minted leg's window. Threading the
 			// identifier removes the question. Name is its own spelling, so the text
 			// channel's readers see what they always saw.
+			return rt.Fields, []values.RecordTypeLeg{
+				values.NewRecordTypeLeg(values.LegKindFlatRun, alias, alias.Name(), base, len(rt.Fields)),
+			}, true
+		// A PROJECTION leg contributes its OWN stated row — see legOrdinalSafety's
+		// projection arm, which admits it on exactly this row being statable. The
+		// two read it through the SAME helper so the safety walk and the concat
+		// builder can never disagree about what a leg emits. The walk does not
+		// descend: the projected row is what this leg flows.
+		case *plans.RecordQueryProjectionPlan:
+			rt := projectionLegRowType(pl)
+			if rt == nil {
+				return nil, nil, false
+			}
 			return rt.Fields, []values.RecordTypeLeg{
 				values.NewRecordTypeLeg(values.LegKindFlatRun, alias, alias.Name(), base, len(rt.Fields)),
 			}, true
@@ -2401,6 +2460,17 @@ func materializedNLJOrdinalLayoutMatches(resultValue values.Value, outerPlan, in
 // including the correctly-oriented one. Field shape is the information both
 // sides actually carry and is exactly what distinguishes one base table's
 // leg from another's (different tables have different column sets).
+//
+// AN UNSTATED FIELD TYPE ON EITHER SIDE IS NOT A DIFFERENCE. A seed window's
+// field types come from wherever the seed was built, and a leg lowered from a
+// derived table carries names with UnknownType there (the same names-only
+// derivation the executor's own positional row type uses) while the leg's plan
+// states LONG. UnknownType means "not inferred", so requiring equality against
+// it turns an ABSENCE into a MISMATCH and declines a correctly-oriented join —
+// which, since this gate is what admits the materialized NLJ at all, left the
+// query with NO physical plan rather than with a lost alternative. The name and
+// the ordinal are what identify a leg; the type is corroboration, and only
+// where both sides state one.
 func recordFieldsMatch(a, b *values.RecordType) bool {
 	if a == nil || b == nil {
 		return a == b
@@ -2409,11 +2479,29 @@ func recordFieldsMatch(a, b *values.RecordType) bool {
 		return false
 	}
 	for i := range a.Fields {
-		if !a.Fields[i].Equals(b.Fields[i]) {
+		af, bf := a.Fields[i], b.Fields[i]
+		if af.Name != bf.Name || af.Ordinal != bf.Ordinal {
+			return false
+		}
+		if typeUnstated(af.FieldType) || typeUnstated(bf.FieldType) {
+			continue
+		}
+		if !af.FieldType.Equals(bf.FieldType) {
 			return false
 		}
 	}
 	return true
+}
+
+// typeUnstated reports whether t carries no inferred type — nil, or the
+// UnknownType placeholder. Both mean the same thing to a comparison: this side
+// has nothing to say, so it can neither confirm nor contradict the other.
+func typeUnstated(t values.Type) bool {
+	if t == nil {
+		return true
+	}
+	pt, ok := t.(*values.PrimitiveType)
+	return ok && pt.TypeCode == values.TypeCodeUnknown
 }
 
 // planRowRecordType unwraps p's own GetResultType() down to the *RecordType

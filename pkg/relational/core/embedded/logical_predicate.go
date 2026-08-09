@@ -1018,7 +1018,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 				onPlanner := &existsSubqueryPlanner{
 					md:          md,
 					schemaName:  schemaName,
-					outerScopes: buildOuterScopeSources(sq, md, schemaName),
+					outerScopes: buildOuterScopeSources(sq, md, schemaName, cteScopes),
 					cteScopes:   cteScopes,
 					cteOnScopes: cteOnScopes,
 				}
@@ -2964,7 +2964,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		existsPlanner = &existsSubqueryPlanner{
 			md:          md,
 			schemaName:  schemaName,
-			outerScopes: buildOuterScopeSources(sq, md, schemaName),
+			outerScopes: buildOuterScopeSources(sq, md, schemaName, cteScopes),
 			cteScopes:   cteScopes,
 			cteOnScopes: cteOnScopes,
 			cteBodies:   bodies,
@@ -5366,9 +5366,12 @@ func upgradeDMLWhereWithCatalog(
 	// main, main.PB AS B)` classifies main.PB as a schema-qualified TABLE against
 	// the ACTIVE schema, not the hardcoded default. RFC-142.
 	existsPlanner := &existsSubqueryPlanner{
-		md:          md,
-		schemaName:  schemaName,
-		outerScopes: buildOuterScopeSources(sq, md, schemaName),
+		md:         md,
+		schemaName: schemaName,
+		// nil CTE registry: this DML entry point builds its selectQuery from a bare
+		// table name, so there is no enclosing WITH clause whose legs could appear
+		// in the FROM it describes.
+		outerScopes: buildOuterScopeSources(sq, md, schemaName, nil),
 	}
 	resolver.SetSubqueryPlanner(existsPlanner)
 	walked, err := resolver.WalkPredicate(whereExpr.Expression())
@@ -7991,7 +7994,7 @@ func buildLogicalPlanForUnionWithCatalog(
 // logical plans for EXISTS and scalar subqueries and collects the
 // (alias, plan) pairs that the LogicalFilter/LogicalProject need to
 // carry to the Cascades translator.
-func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string) []semantic.ScopeSource {
+func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) []semantic.ScopeSource {
 	// A DUPLICATE-PRESERVING slice in FROM order, never an alias-keyed map:
 	// duplicate outer aliases are legal, and a
 	// map collapsed them last-wins — an inner correlated reference then saw
@@ -8009,13 +8012,41 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, sch
 	analyzer := semantic.NewAnalyzer(cat, false)
 	var sources []semantic.ScopeSource
 	addSrc := func(tableName, alias, bindingID string) {
-		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
-		if err != nil {
-			return
-		}
 		a := semantic.FromNormalized(alias)
 		if alias == "" {
 			a = semantic.FromNormalized(tableName)
+		}
+		// CTE-FIRST, in lockstep with buildSelectScope's addSource, because a
+		// subquery's outer scope must see the SAME FROM clause as the query it is
+		// nested in. A WITH leg is not a catalog table, so a catalog-only lookup
+		// returned silently here: the outer scope held every REAL leg and no CTE
+		// leg, and a correlated reference to the CTE alias died 42703 ("no FROM
+		// source aliased as C") while the identical correlation to a base-table
+		// alias resolved. The DERIVED-table leg below was registered for exactly
+		// this reason; the CTE leg was the residual gap left beside it.
+		//
+		// The ORDER is not incidental. A declared CTE SHADOWS a same-named catalog
+		// table, and resolving the table instead would analyze the TABLE's schema
+		// for reads that execute against the CTE. A TOMBSTONE entry (nil Table — a
+		// declared CTE whose schema is not derivable here) must therefore DECLINE
+		// rather than fall through, or a same-named base table would bind its
+		// ordinals onto the CTE's rows.
+		//
+		// The registry supplies the COLUMN SCHEMA only: alias and correlation come
+		// from THIS reference, so `FROM c AS x` binds under X and a duplicated CTE
+		// leg keeps its own binding id, exactly as a duplicated real table does.
+		if src, found := cteScopes[strings.ToUpper(tableName)]; found {
+			if src.Table == nil {
+				return
+			}
+			src.Alias = a
+			src.CorrelationName = bindingOrAlias(bindingID, a)
+			sources = append(sources, src)
+			return
+		}
+		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
+		if err != nil {
+			return
 		}
 		sources = append(sources, semantic.ScopeSource{
 			Table: tbl, Alias: a, CorrelationName: bindingOrAlias(bindingID, a),
