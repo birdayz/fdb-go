@@ -96,20 +96,26 @@ const (
 //
 //	commit=0, ..., getKeyServerLocations=2
 const (
-	EndpointGetValue              = 0  // StorageServerInterface::getValue
-	EndpointGetKey                = 1  // StorageServerInterface::getKey
-	EndpointGetKeyValues          = 2  // StorageServerInterface::getKeyValues
-	EndpointGetShardState         = 3  // StorageServerInterface::getShardState
-	EndpointWaitMetrics           = 4  // StorageServerInterface::waitMetrics
-	EndpointSplitMetrics          = 5  // StorageServerInterface::splitMetrics
-	EndpointGetStorageMetrics     = 6  // StorageServerInterface::getStorageMetrics
-	EndpointWaitFailure           = 7  // StorageServerInterface::waitFailure
-	EndpointGetQueuingMetrics     = 8  // StorageServerInterface::getQueuingMetrics
-	EndpointGetKeyValueStoreType  = 9  // StorageServerInterface::getKeyValueStoreType
-	EndpointWatchValue            = 10 // StorageServerInterface::watchValue
-	EndpointGetReadHotRanges      = 11 // StorageServerInterface::getReadHotRanges
-	EndpointGetRangeSplitPoints   = 12 // StorageServerInterface::getRangeSplitPoints
-	EndpointGetKeyValuesStream    = 13 // StorageServerInterface::getKeyValuesStream
+	EndpointGetValue             = 0  // StorageServerInterface::getValue
+	EndpointGetKey               = 1  // StorageServerInterface::getKey
+	EndpointGetKeyValues         = 2  // StorageServerInterface::getKeyValues
+	EndpointGetShardState        = 3  // StorageServerInterface::getShardState
+	EndpointWaitMetrics          = 4  // StorageServerInterface::waitMetrics
+	EndpointSplitMetrics         = 5  // StorageServerInterface::splitMetrics
+	EndpointGetStorageMetrics    = 6  // StorageServerInterface::getStorageMetrics
+	EndpointWaitFailure          = 7  // StorageServerInterface::waitFailure
+	EndpointGetQueuingMetrics    = 8  // StorageServerInterface::getQueuingMetrics
+	EndpointGetKeyValueStoreType = 9  // StorageServerInterface::getKeyValueStoreType
+	EndpointWatchValue           = 10 // StorageServerInterface::watchValue
+	EndpointGetReadHotRanges     = 11 // StorageServerInterface::getReadHotRanges
+	EndpointGetRangeSplitPoints  = 12 // StorageServerInterface::getRangeSplitPoints
+	EndpointGetKeyValuesStream   = 13 // StorageServerInterface::getKeyValuesStream
+	// getMappedKeyValues is DECLARED right after getKeyValues
+	// (StorageServerInterface.h:103) but assigned getAdjustedEndpoint(14)
+	// (:184-185) — it was appended after getKeyValuesStream so the pre-existing
+	// indices stayed stable. Taking the index from the declaration order would
+	// address getShardState (3) instead.
+	EndpointGetMappedKeyValues    = 14 // StorageServerInterface::getMappedKeyValues
 	EndpointGetKeyServerLocations = 2  // CommitProxyInterface::getKeyServerLocations
 )
 

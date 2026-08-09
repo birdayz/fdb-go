@@ -256,6 +256,145 @@ func TestMultiShard(t *testing.T) {
 	t.Run("ContinuationCorrectnessWithCacheInvalidation", func(t *testing.T) {
 		testMultiShard_ContinuationCorrectnessWithCacheInvalidation(t, ctx, env)
 	})
+	t.Run("MappedRangeAcrossShards", func(t *testing.T) {
+		testMultiShard_MappedRangeAcrossShards(t, ctx, env)
+	})
+}
+
+// MappedRange: a mapped read whose PRIMARY range spans more than one shard.
+//
+// Every other GetMappedRange test runs on the single-process container, where the
+// whole index range is one shard and rangeScanImpl's shard walk never executes.
+// That gap matters more for a mapped read than for a plain one, because of what
+// the storage server does to the rows: on the getValue arm it blanks the primary
+// key and value on every row except the first and last of each REPLY
+// (storageserver.actor.cpp:6024-6031), and the shard walk continues from
+// keyAfter(lastRow.Key). Concatenating replies from several shards is therefore
+// correct only while each reply's boundary rows carry their index entry — which
+// is invisible on one shard, where there is a single reply and nothing to
+// continue from.
+//
+// The fixture is seeded here rather than reusing env's: it is the PRIMARY range
+// that has to cross a boundary, so the INDEX entries are what must carry enough
+// bytes to split, and env's flat keyspace has no mapper-shaped layout.
+func testMultiShard_MappedRangeAcrossShards(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
+	f := mappedFixture{prefix: []byte("msmapped"), n: 60}
+	// 8 KiB of padding per index entry puts ~480 KiB in the index keyspace alone,
+	// which splits many times over at max_shard_bytes=50000.
+	pad := bytes.Repeat([]byte{'p'}, 8*1024)
+	for batch := 0; batch < 6; batch++ {
+		_, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+			for i := batch * 10; i < (batch+1)*10; i++ {
+				tx.Set(f.indexEntryKey(i), pad)
+				tx.Set(f.recordKey(i), []byte(fmt.Sprintf("record-%08d", i)))
+			}
+			return nil, nil
+		})
+		g.Expect(err).ToNot(gomega.HaveOccurred(), "seed mapped batch %d", batch)
+	}
+
+	begin, end := f.indexRange()
+
+	// Non-vacuity: the PRIMARY range must really span more than one shard, or this
+	// sub-test is an expensive re-run of the single-shard path. env.numShards says
+	// nothing about it — that is a different range in a different keyspace.
+	var indexShards int
+	var lastErr error
+	g.Eventually(func() int {
+		res, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+			return tx.db.locCache.locateRange(tx.db, ctx, begin, end, 100, false, tx.tenantId, tx.currentSpan())
+		})
+		if err != nil {
+			lastErr = err
+		} else {
+			indexShards = len(res.([]LocationResult))
+		}
+		env.db.db.locCache.invalidateRange(begin, end, NoTenantID)
+		return indexShards
+	}).WithTimeout(90*time.Second).WithPolling(2*time.Second).Should(gomega.BeNumerically(">", 1),
+		func() string {
+			return fmt.Sprintf("the mapped read's PRIMARY range never split beyond one shard, so a green "+
+				"here would only have re-run the single-shard path. last locateRange error: %v", lastErr)
+		})
+	t.Logf("mapped primary range spans %d shards", indexShards)
+
+	// The other half of the shard question, and the one that decides which code
+	// path the SERVER takes per row: quickGetValue serves the mapped key locally
+	// only when `data->shards[key]->isReadable()` — when the storage server
+	// handling this request also holds the mapped key. Otherwise it falls back to
+	// a full Transaction read at the same version (QUICK_GET_VALUE_FALLBACK,
+	// default true at 7.3.77, ServerKnobs.cpp:1053), which is a round trip per row
+	// that the mapped read exists to avoid.
+	//
+	// What is measurable from a client is the NECESSARY condition: the records
+	// must live in different shards from the index entries, or the question never
+	// arises. Whether the same storage server happens to hold both shards is a
+	// data-distribution decision this test cannot pin, so the assertion below is
+	// deliberately the weaker one — with the strong claim left to the source.
+	// Either way the RESULT must be identical, which is what the sub-tests check;
+	// the fallback is a cost difference, not a correctness one.
+	// The quantity is per ROW, not per keyspace. Comparing the two keyspaces'
+	// shard SETS is the obvious formulation and it is wrong: shards are contiguous
+	// key ranges, so the shard holding the highest index entries necessarily runs
+	// on into the record keyspace, and "no shard holds both" can never hold. What
+	// decides how often the server takes the fallback is how many ROWS have their
+	// mapped key in a different shard from their primary row, so that is what is
+	// counted here.
+	shardOf := func(key []byte) string {
+		res, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+			return tx.db.locCache.locateRange(tx.db, ctx, key, keyAfterBytes(key), 1, false, tx.tenantId, tx.currentSpan())
+		})
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		locs := res.([]LocationResult)
+		g.Expect(locs).ToNot(gomega.BeEmpty(), "no shard located for %q", key)
+		return string(locs[0].ShardBegin)
+	}
+	crossShardRows := 0
+	for i := 0; i < f.n; i++ {
+		if shardOf(f.indexEntryKey(i)) != shardOf(f.recordKey(i)) {
+			crossShardRows++
+		}
+	}
+	g.Expect(crossShardRows).To(gomega.BeNumerically(">", 0),
+		"every row's mapped key sits in the SAME shard as its index entry, so the storage server "+
+			"serving the primary row always holds the mapped key too and quickGetValue never reaches "+
+			"its fallback — this environment cannot exercise the cross-shard mapped lookup at all")
+	t.Logf("%d of %d rows have their mapped key in a different shard from their index entry",
+		crossShardRows, f.n)
+
+	for _, tc := range []struct {
+		name    string
+		reverse bool
+	}{{"forward", false}, {"reverse", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			tx := env.db.CreateTransaction()
+			defer tx.Cancel()
+
+			rows, more, err := tx.GetMappedRange(ctx, begin, end, f.getValueMapper(), 0, tc.reverse)
+			g.Expect(err).ToNot(gomega.HaveOccurred())
+			g.Expect(more).To(gomega.BeFalse(), "an unlimited read must exhaust every shard")
+			g.Expect(rows).To(gomega.HaveLen(f.n),
+				"a row was lost or duplicated at a shard boundary — the walk continues from the last row's index entry")
+
+			for i := range rows {
+				want := i
+				if tc.reverse {
+					want = f.n - 1 - i
+				}
+				// The mapped KEY is populated on every row regardless of the
+				// boundary blanking, so it is what pins order across the join of
+				// several replies.
+				g.Expect(rows[i].GetValue.Key).To(gomega.Equal(f.recordKey(want)),
+					"row %d resolved to the wrong record", i)
+				g.Expect(rows[i].GetValue.Present).To(gomega.BeTrue(), "row %d record missing", i)
+				g.Expect(rows[i].GetValue.Value).To(gomega.Equal([]byte(fmt.Sprintf("record-%08d", want))),
+					"row %d value", i)
+			}
+		})
+	}
 }
 
 // GetRange: full forward scan across all shards.

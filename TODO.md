@@ -670,6 +670,39 @@ closed rather than silently alter rows or output schema.
   `plannerOptionsFrom`. Until (1)-(3) exist the option's own doc comment says
   plainly that it is not honored, and its default stays Java-identical so the
   default option set does not diverge on the wire.
+
+  **Two constraints step (1) established that bind step (2)** — read out of
+  `ReadYourWrites.actor.cpp` at 7.3.77, not inferred, and they change what a
+  remote-fetch cursor is ALLOWED to do:
+
+  1. **A mapped read can never be a snapshot read.** `snapshot=true` is
+     `unsupported_operation` (2108), not a mode
+     (`ReadYourWrites.actor.cpp:1219-1224`), and read-your-writes-disabled is the
+     same error (:1226-1233). So a remote-fetch cursor may not be offered as a
+     cheap snapshot scan, and any caller that today drops to a snapshot read for
+     a non-conflicting index scan must NOT route that through `GetMappedRange`.
+     The two shapes are pinned differently, and the difference is the point:
+     RYW-disabled is a runtime state and returns 2108, while snapshot is
+     unreachable BY CONSTRUCTION — `*Snapshot` exposes no `GetMappedRange`, so
+     the request cannot be expressed. `TestGetMappedRange_SnapshotCannotRequestIt`
+     pins that absence, since adding the method would arm the divergence with
+     every other test still green.
+  2. **Every secondary read needs its own conflict range.** The mapped read is
+     issued at `Snapshot::True` internally and the client then re-adds read
+     conflict ranges by hand — for the primary range AND for each resolved
+     secondary get/getRange (`:1163-1192`). The secondary keys are not knowable
+     until the reply arrives, so they cannot be conflict-ranged up front. A
+     cursor that batches, caches, or resumes mapped reads across transactions
+     inherits this: dropping the secondary conflict ranges turns a serializable
+     index fetch into a silently non-serializable one. Overlap with the
+     transaction's own writes is `get_mapped_range_reads_your_writes` (2039) —
+     the client raises it rather than serving the write-through value, because
+     RYW is deliberately NOT implemented for mapped reads.
+
+  Also settled while porting, so step (2) does not re-derive them: `MATCH_INDEX_*`
+  does not exist in 7.3.77 (no `fdb_c.h` parameter, no wire slot), and
+  `libfdb_c` is NOT a valid oracle for the point-lookup arm — its
+  `FDBMappedKeyValue` can only represent the getRange arm and its header says so.
 - [x] **CQ-10 (MED) — make winner comparison globally order-safe.** Cost-model
   criterion #6 (`compareInPlan`) was not antisymmetric: two unSARGed IN-plans
   had BOTH orientations answer "+1, the first argument is worse", and a SARGed
