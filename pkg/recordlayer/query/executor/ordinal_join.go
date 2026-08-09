@@ -53,7 +53,7 @@ type legSpan struct {
 // folded projection's output is a plain frontier row and gets none.
 //
 // Loud seed validation lives where the shape IS guaranteed by construction:
-// assertOrdinalJoinSeed, called by the translator at the seed (and by its
+// values.AssertOrdinalJoinSeed, called by the translator at the seed (and by its
 // pins). Cursor-side ORDINAL-BUILD detection (does this join evaluate its
 // result value with leg bindings) is values.ContainsBakedOrdinal — deep,
 // rewrite-invariant — not this probe.
@@ -671,18 +671,9 @@ func spliceLegSpansDepth(spans []legSpan, legRVs map[values.CorrelationIdentifie
 	return out
 }
 
-// joinPlanSpans derives the leg windows for a join plan's output row: the
-// span probe with fused-reference resolution over the plan's leg RVs, then
-// the recursive box splice. Subsumes the bare ordinalJoinSpans probe (a
-// pristine seed needs no legRVs and no splice — identical output).
-func joinPlanSpans(join plans.RecordQueryPlan) ([]legSpan, bool) {
-	spans, _, ok := joinPlanSpansTyped(join)
-	return spans, ok
-}
-
-// joinPlanSpansTyped is joinPlanSpans that ALSO returns the merged row's
-// RecordType (which ordinalJoinSpansOf already computes and joinPlanSpans
-// discards). The identity-FlatMap positional pass-through
+// joinPlanSpansTyped derives the leg windows for a join plan's output row and
+// ALSO returns the merged row's RecordType (which ordinalJoinSpansOf already
+// computes). The identity-FlatMap positional pass-through
 // adapts a propagated outer against this merged type (a no-op on a seed-layout
 // row, but LOUD on a mismatch — never a silent wrong-slot read).
 func joinPlanSpansTyped(join plans.RecordQueryPlan) ([]legSpan, *values.RecordType, bool) {
@@ -703,15 +694,6 @@ func joinPlanSpansTyped(join plans.RecordQueryPlan) ([]legSpan, *values.RecordTy
 		return nil, nil, false
 	}
 	return spliceLegSpans(spans, legRVs), mergedType, true
-}
-
-// assertOrdinalJoinSeed delegates to values.AssertOrdinalJoinSeed — the LOUD
-// seed-shape validator, which lives in the values package so
-// the translator, the caller of record, can invoke it at the seed without an
-// executor import. Semantics unchanged; the executor-side pins keep
-// exercising it through this name.
-func assertOrdinalJoinSeed(rc *values.RecordConstructorValue) {
-	values.AssertOrdinalJoinSeed(rc)
 }
 
 // legWindowRow is a leg-relative view over the join's merged positional row:
@@ -1373,7 +1355,7 @@ type ordinalJoinBuild struct {
 	// type's AS/AT alias NAMES — a user may spell an alias `_0`/`_1`
 	// (`FROM t, t.arr AS "_1" AT "_0"`), and a name lookup would route the
 	// wrong internal key. Distinguished by PRODUCER CONTEXT (the FlatMap
-	// knows its inner is an ordinality Explode — newFlatMapCursor sets
+	// knows its inner is an ordinality Explode — newFlatMapCursorWithOuterProperties sets
 	// this), NOT the row SHAPE: a leg whose own columns are aliased
 	// `_0`/`_1` is shape-identical but binds correctly by NAME
 	// (adaptLegPositional).
@@ -1549,7 +1531,7 @@ func (b *ordinalJoinBuild) enabled() bool { return b != nil && b.Enabled }
 // build typeless for it even though the inner plan still references it — the
 // untyped leg then adapts to a
 // zero-width binding and dies loudly on a legitimate plan. Called by
-// newFlatMapCursor with the inner plan; the NLJ path gets the same widening
+// newFlatMapCursorWithOuterProperties with the inner plan; the NLJ path gets the same widening
 // directly from its predicate list in newOrdinalJoinBuild.
 //
 // The walk exists only because a folded RV can drop a leg the plan still
@@ -1570,7 +1552,7 @@ func (b *ordinalJoinBuild) widenLegTypesFromPlan(plan plans.RecordQueryPlan) err
 	}
 	var divergence error
 	// The walk continues widening LegTypes after a capture; harmless — the
-	// caller (newFlatMapCursor) discards the whole build on error.
+	// caller (newFlatMapCursorWithOuterProperties) discards the whole build on error.
 	walkBakedRefs(plan, func(v values.Value) values.Value {
 		fv, isFV := v.(*values.FieldValue)
 		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
@@ -1749,7 +1731,7 @@ func (b *ordinalJoinBuild) bindLeg(legs map[values.CorrelationIdentifier]values.
 	// ordinal at slot 1 under the internal `[_0,_1]` schema, so slot i = row
 	// slot i — the leg type's AS/AT alias NAMES never participate (a user may
 	// spell an alias `_0`/`_1`). See OrdinalityLegs (producer context, set by
-	// newFlatMapCursor).
+	// newFlatMapCursorWithOuterProperties).
 	if _, isOrd := b.OrdinalityLegs[id]; isOrd {
 		if qr == nil {
 			legs[id] = nil
@@ -2052,7 +2034,7 @@ func unwrapToJoinPlan(input plans.RecordQueryPlan) plans.RecordQueryPlan {
 			// authority is the outer's join — this FlatMap's own bare-QOV RV
 			// yields no spans. Any other RV keeps the FlatMap as the terminal:
 			// the seed RC is its own authority, everything else declines in
-			// joinPlanSpans. An INNER-identity RV (FirstOrDefault-style
+			// joinPlanSpansTyped. An INNER-identity RV (FirstOrDefault-style
 			// shapes) re-emits INNER rows and must NOT unwrap to the outer.
 			if qov, ok := p.GetResultValue().(*values.QuantifiedObjectValue); ok && qov.Correlation == p.GetOuterAlias() {
 				input = p.GetOuter()

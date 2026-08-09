@@ -980,8 +980,13 @@ func keyExpressionFlatColumnDescriptors(
 				return nil, false
 			}
 			return []flatKeyColumnDescriptor{{
-				name:     arguments.Field.GetFieldName(),
-				function: strings.ToLower(function.GetName()),
+				name: arguments.Field.GetFieldName(),
+				// Verbatim. The gate above is an EXACT match against the four
+				// registered names, so folding here is provably a no-op — and a
+				// second case-folding classifier is the shape that made the
+				// first one unsafe: two classifiers that disagree about which
+				// names are order functions.
+				function: function.GetName(),
 			}}, true
 		}
 		return nil, false

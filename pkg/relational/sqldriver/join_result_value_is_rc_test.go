@@ -35,8 +35,8 @@ type joinResultValue struct {
 
 // collectJoinResultValues gathers every join node of a plan tree. Both join
 // flavours reach newOrdinalJoinBuild — the materialized nested-loop join through
-// newNLJCursor and the correlated FlatMap through newFlatMapCursor — so both are
-// in scope.
+// newNLJCursor and the correlated FlatMap through
+// newFlatMapCursorWithOuterProperties — so both are in scope.
 func collectJoinResultValues(p plans.RecordQueryPlan, out []joinResultValue) []joinResultValue {
 	if p == nil {
 		return out

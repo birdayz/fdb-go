@@ -40,9 +40,6 @@ import (
 //                       int64 path avoids float-precision loss for
 //                       values > 2^53). Cross-type compares return
 //                       false rather than panicking.
-//   rowKey              DISTINCT / UNION DISTINCT deduplication
-//                       hash. Length-prefixed fields prevent
-//                       separator-character collisions.
 //
 // Destined for pkg/relational/core/{functions,eval}/ per RFC 021
 // Phase 1c.
@@ -484,20 +481,4 @@ func valuesEqual(a, b any) bool {
 		return false
 	}
 	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
-}
-
-// rowKey serializes a result row to a collision-free string key for DISTINCT deduplication.
-// Each field is length-prefixed: "<type-tag>:<len>:<bytes>|" so that string values
-// containing separator characters cannot collide with other fields or NULL markers.
-func rowKey(row []driver.Value) string {
-	var b strings.Builder
-	for _, v := range row {
-		if v == nil {
-			b.WriteString("N:0:|")
-			continue
-		}
-		s := fmt.Sprintf("%T\x00%v", v, v)
-		fmt.Fprintf(&b, "V:%d:%s|", len(s), s)
-	}
-	return b.String()
 }

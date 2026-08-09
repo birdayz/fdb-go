@@ -810,21 +810,31 @@ func isNaNFloatBound(value any) bool {
 // representable set of them, because the disagreeing region is a contiguous
 // block at each end of the coordinate's domain.
 //
-// floatWireLowestNaN and floatWireHighestNaN are the extreme encodings of the
-// coordinate's carrier: every negative NaN lies in [lowest, -Inf) and every
-// positive NaN in (+Inf, highest].
+// floatWireLowestNaN is the lowest encoding of the coordinate's carrier: every
+// negative NaN lies in [lowest, -Inf), and every positive NaN symmetrically in
+// (+Inf, highest].
+//
+// Only the LOW extreme needs naming. The two NaN blocks are not treated alike
+// because the ranges that must reach them are not alike: the negative block is
+// physically BELOW -Inf, so an open-low `> x` range cannot reach it and needs a
+// second, explicit [lowestNaN, -Inf) range; the positive block sits at the very
+// top of the coordinate's domain, which an open-high range already covers by
+// running to the end of the subspace. A `floatWireHighestNaN` terminator would
+// be redundant with that end, never an additional one, so the asymmetry here is
+// the decomposition being exact rather than a missing case.
+//
+// That reachability is ASSERTED, not merely argued: TestOrderedFloatRangeSet-
+// SelectsExactlyTheLogicalRows materializes the ranges and checks physical
+// selection against the predicate evaluator over a domain carrying both
+// positive-NaN encodings. Bounding the open-high range at +Inf makes it report
+// "MISSES a qualifying key (silent data loss)" for every `>`/`>=` threshold. So
+// if the encoding ever stops putting positive NaNs above +Inf, this asymmetry
+// fails loudly there rather than silently dropping rows here.
 func floatWireLowestNaN(physicalType values.Type) any {
 	if physicalType != nil && physicalType.Code() == values.TypeCodeFloat {
 		return math.Float32frombits(0xFFFFFFFF)
 	}
 	return math.Float64frombits(0xFFFFFFFFFFFFFFFF)
-}
-
-func floatWireHighestNaN(physicalType values.Type) any {
-	if physicalType != nil && physicalType.Code() == values.TypeCodeFloat {
-		return math.Float32frombits(0x7FFFFFFF)
-	}
-	return math.Float64frombits(0x7FFFFFFFFFFFFFFF)
 }
 
 func floatWireInfinity(physicalType values.Type, sign int) any {

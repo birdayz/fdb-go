@@ -10,7 +10,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
 	"fdb.dev/cmd/frl/internal/meta"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -303,16 +302,6 @@ func writeTypesList(out io.Writer, md *recordlayer.RecordMetaData) error {
 		fmt.Fprintf(tw, "%s\t%s\t%s\n", name, pk, since)
 	}
 	return tw.Flush()
-}
-
-// runMetaGet loads and renders metadata for a context — retained for
-// tests that drive the render path with a synthetic context.
-func runMetaGet(cmd *cobra.Command, cfgCtx *configv1.Context, outputFmt string) error {
-	md, err := loadTargetMetadata(cmd.Context(), &storeTarget{cfgCtx: cfgCtx})
-	if err != nil {
-		return err
-	}
-	return writeMetaDataRendered(cmd.OutOrStdout(), md, outputFmt)
 }
 
 // validateResult / evolveCheckResult are the typed JSON shapes of

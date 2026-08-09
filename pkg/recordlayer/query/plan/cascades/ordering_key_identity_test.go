@@ -115,8 +115,8 @@ func TestOrderingValuesEqualRefusesEqualOrdinalsInDifferentLayouts(t *testing.T)
 			"this test should assert THAT instead.")
 	}
 
-	if orderingValuesEqual(requested, candidate) {
-		t.Fatalf("orderingValuesEqual(%q in %v, %q in %v) = true.\n\n"+
+	if orderingValuesEqualIn(nil, requested, candidate) {
+		t.Fatalf("orderingValuesEqualIn(nil, %q in %v, %q in %v) = true.\n\n"+
 			"These are DIFFERENT columns of DIFFERENT rows that happen to share "+
 			"an ordinal. Answering yes elides a sort against an ordering the "+
 			"scan does not provide: measured live on "+
@@ -131,8 +131,8 @@ func TestOrderingValuesEqualRefusesEqualOrdinalsInDifferentLayouts(t *testing.T)
 			values.ExplainValue(candidate), recordDomain)
 	}
 
-	if !orderingValuesEqual(candidate, candidate) {
-		t.Fatal("orderingValuesEqual is not reflexive on a stated identity — " +
+	if !orderingValuesEqualIn(nil, candidate, candidate) {
+		t.Fatal("orderingValuesEqualIn is not reflexive on a stated identity — " +
 			"the identity arm refuses a value against itself, which would make " +
 			"every access-path ordering match fail")
 	}
@@ -142,8 +142,8 @@ func TestOrderingValuesEqualRefusesEqualOrdinalsInDifferentLayouts(t *testing.T)
 		"CUSTOMER_ID", 1, values.UnknownType, recordDomain)
 	otherSideSameColumn := values.NewFieldValueWithResolvedOrdinalInDomain(
 		"CUSTOMER_ID", 1, values.UnknownType, recordDomain)
-	if !orderingValuesEqual(sameColumn, otherSideSameColumn) {
-		t.Fatal("orderingValuesEqual refuses two independently built references " +
+	if !orderingValuesEqualIn(nil, sameColumn, otherSideSameColumn) {
+		t.Fatal("orderingValuesEqualIn refuses two independently built references " +
 			"to the SAME ordinal of the SAME layout. That is the common path; " +
 			"refusing it costs every elision the identity was introduced to win")
 	}

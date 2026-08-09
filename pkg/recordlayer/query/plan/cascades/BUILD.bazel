@@ -316,6 +316,7 @@ go_test(
         "null_rejecting_conjuncts_test.go",
         "null_rejecting_scan_range_test.go",
         "optimize_group_ordering_test.go",
+        "order_function_direction_test.go",
         "ordering_comparator_dispatch_test.go",
         "ordering_comparison_census_test.go",
         "ordering_identity_decisions_test.go",
@@ -1064,6 +1065,7 @@ go_test(
         "rfc219_index_width_invariant_test.go",
         "nested_leg_window_rebase_test.go",
         "unresolved_result_type_census_test.go",
+        "order_function_direction_test.go",
     ],
     deps = [
         "//gen",

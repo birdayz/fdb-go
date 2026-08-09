@@ -1,12 +1,9 @@
 package cmd
 
 import (
-	"errors"
 	"strings"
 	"testing"
 
-	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
-	"fdb.dev/cmd/frl/internal/meta"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -81,68 +78,6 @@ func TestLookupIndex_MissingListsAllAvailable(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing %q", err.Error(), want)
 		}
-	}
-}
-
-// TestResolveMetaSourceFile_OverrideShortCircuits — when the caller
-// already resolved a meta.Source (via --meta-file), the helper must
-// return it verbatim without consulting the context's metadata.
-func TestResolveMetaSourceFile_OverrideShortCircuits(t *testing.T) {
-	t.Parallel()
-	override := &meta.FileSource{Path: "/tmp/whatever.pb"}
-	// Context has no metadata at all — would error if consulted.
-	cfgCtx := &configv1.Context{Name: "empty"}
-	got, err := resolveMetaSourceFile(cfgCtx, override)
-	if err != nil {
-		t.Fatalf("override path should short-circuit: %v", err)
-	}
-	if got != override {
-		t.Errorf("got %v; want the passed-in override", got)
-	}
-}
-
-// TestResolveMetaSourceFile_MissingSourceWrappedWithContext confirms
-// that an empty context produces an ErrMissingSource-wrapping error
-// that mentions the context name — so operators with multiple contexts
-// know which one is broken.
-func TestResolveMetaSourceFile_MissingSourceWrappedWithContext(t *testing.T) {
-	t.Parallel()
-	cfgCtx := &configv1.Context{Name: "local-dev"}
-	_, err := resolveMetaSourceFile(cfgCtx, nil)
-	if err == nil {
-		t.Fatal("expected ErrMissingSource")
-	}
-	if !errors.Is(err, meta.ErrMissingSource) {
-		t.Errorf("error %v should unwrap to ErrMissingSource", err)
-	}
-	if !strings.Contains(err.Error(), "local-dev") {
-		t.Errorf("error %v should name the context", err)
-	}
-}
-
-// TestResolveMetaSourceFile_FDBStoreWrappedWithContext — same dance
-// for the FDB-store-unsupported sentinel. Confirms callers via
-// errors.Is can tell "this command is file-only" apart from
-// "context has no metadata at all".
-func TestResolveMetaSourceFile_FDBStoreWrappedWithContext(t *testing.T) {
-	t.Parallel()
-	cfgCtx := &configv1.Context{
-		Name: "prod",
-		Metadata: &configv1.MetadataSource{
-			Source: &configv1.MetadataSource_MetaStoreKeyspace{
-				MetaStoreKeyspace: "/myapp/_meta",
-			},
-		},
-	}
-	_, err := resolveMetaSourceFile(cfgCtx, nil)
-	if err == nil {
-		t.Fatal("expected ErrFDBStoreNotAvailable")
-	}
-	if !errors.Is(err, meta.ErrFDBStoreNotAvailable) {
-		t.Errorf("error %v should unwrap to ErrFDBStoreNotAvailable", err)
-	}
-	if !strings.Contains(err.Error(), "prod") {
-		t.Errorf("error %v should name the context", err)
 	}
 }
 

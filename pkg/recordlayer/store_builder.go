@@ -998,17 +998,15 @@ func (store *FDBRecordStore) recordCountStateIsReadable() bool {
 	return store.storeHeader.GetRecordCountState() == gen.DataStoreInfo_READABLE
 }
 
-// createStoreHeader creates a DataStoreInfo header for a new record store.
-// Includes RecordCountKey from metadata if present, matching Java's
-// checkPossiblyRebuildRecordCounts which sets it during store creation.
-func createStoreHeader(metaDataVersion int32, metaData *RecordMetaData, env *dst.Env) *gen.DataStoreInfo {
-	return createStoreHeaderAtFormat(metaDataVersion, metaData, env, int32(formatVersionDefault))
-}
-
-// createStoreHeaderAtFormat is createStoreHeader with the format version the
-// builder pinned. A store created by an instance opening at an older format must
-// be BORN at that format, not created new and immediately upgraded past it --
-// Java threads the builder's formatVersion into store creation the same way.
+// createStoreHeaderAtFormat creates a DataStoreInfo header for a new record
+// store at the format version the builder pinned. Includes RecordCountKey from
+// metadata if present, matching Java's checkPossiblyRebuildRecordCounts which
+// sets it during store creation.
+//
+// The format version is a parameter rather than a default because a store
+// created by an instance opening at an older format must be BORN at that
+// format, not created new and immediately upgraded past it -- Java threads the
+// builder's formatVersion into store creation the same way.
 func createStoreHeaderAtFormat(metaDataVersion int32, metaData *RecordMetaData, env *dst.Env, formatVersionIn int32) *gen.DataStoreInfo {
 	formatVersion := formatVersionIn
 	userVersion := int32(0) // Default user version

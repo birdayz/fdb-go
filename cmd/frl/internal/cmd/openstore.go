@@ -267,22 +267,6 @@ func loadTargetMetadata(ctx context.Context, target *storeTarget) (*recordlayer.
 	return src.Load(ctx)
 }
 
-// resolveContextAndOverride is the legacy prelude retained for commands
-// that only take --context/--meta-file (sql, meta catalog). Store-
-// touching commands use storeAddressFlags.resolve instead.
-func resolveContextAndOverride(contextName, metaFile string) (*configv1.Context, meta.Source, error) {
-	f := storeAddressFlags{contextName: contextName, metaFile: metaFile}
-	target, err := f.resolve()
-	if err != nil {
-		return nil, nil, err
-	}
-	var override meta.Source
-	if metaFile != "" {
-		override = &meta.FileSource{Path: metaFile}
-	}
-	return target.cfgCtx, override, nil
-}
-
 // lookupRecordType resolves name against md, returning the RecordType on
 // hit and a "not found — available: A, B, C" error on miss. Shared by
 // meta types describe / record scan / record count so typos always
@@ -313,27 +297,6 @@ func lookupIndex(md *recordlayer.RecordMetaData, name string) (*recordlayer.Inde
 	}
 	return nil, fmt.Errorf("index %q not found — available: %s",
 		name, strings.Join(sortedIndexNames(md), ", "))
-}
-
-// resolveMetaSourceFile returns `override` when non-nil, otherwise
-// invokes meta.FromContext(cfgCtx, nil, nil) — i.e. the FDB-store-
-// unsupported resolution used by every metadata-reading command in v1.
-// Wraps the two well-known sentinels (ErrMissingSource,
-// ErrFDBStoreNotAvailable) with the context name so operators can tell
-// which context the message is about when they have several.
-func resolveMetaSourceFile(cfgCtx *configv1.Context, override meta.Source) (meta.Source, error) {
-	if override != nil {
-		return override, nil
-	}
-	src, err := meta.FromContext(cfgCtx, nil, nil)
-	if err != nil {
-		if errors.Is(err, meta.ErrMissingSource) ||
-			errors.Is(err, meta.ErrFDBStoreNotAvailable) {
-			return nil, fmt.Errorf("%w (context %q)", err, cfgCtx.GetName())
-		}
-		return nil, err
-	}
-	return src, nil
 }
 
 // withStoreE is the ergonomic twin of withStore for commands whose store

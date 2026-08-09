@@ -635,16 +635,6 @@ func usesOrInnerChildResolver(plan plans.RecordQueryPlan) bool {
 	return false
 }
 
-// cardinalitiesFromChildRef returns the Cardinalities from the first
-// (only) child Reference's plan properties. For single-inner wrappers.
-func cardinalitiesFromChildRef(w physicalPlanExpression) properties.Cardinalities {
-	qs := w.GetQuantifiers()
-	if len(qs) != 1 {
-		return properties.UnknownCardinalities()
-	}
-	return cardinalitiesForRef(qs[0].GetRangesOver())
-}
-
 // cardinalitiesFromChildRefOrInner is cardinalitiesFromChildRef for a transparent
 // (1:1) wrapper, with a fallback to the concrete embedded child. The data-access
 // path exposes a composite (e.g. TypeFilter(Scan) over a full-PK-equality point

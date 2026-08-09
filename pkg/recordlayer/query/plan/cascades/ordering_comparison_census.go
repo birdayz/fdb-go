@@ -7,8 +7,8 @@ import (
 )
 
 // This file is the MEASUREMENT half of the ordering-value comparators. The two
-// comparators — orderingValuesEqual (a requested ordering key against a match
-// candidate's) and intersectionValuesEqual (a primary-key intersection's own
+// comparators — orderingValuesEqualIn (a requested ordering key against a match
+// candidate's) and intersectionValuesEqualIn (a primary-key intersection's own
 // key lists) — decide whether two ordering Values are the same column. Both
 // dispatch by TYPE: a pair of plain FieldValues is decided by column identity
 // and nothing else, with no fallthrough. The retired alternative dispatched on
@@ -38,11 +38,11 @@ import (
 type OrderingComparisonSite int
 
 const (
-	// OrderingSiteRequestedVsCandidate is orderingValuesEqual: a requested
+	// OrderingSiteRequestedVsCandidate is orderingValuesEqualIn: a requested
 	// ordering key against a match candidate's ordering key.
 	OrderingSiteRequestedVsCandidate OrderingComparisonSite = iota
 
-	// OrderingSiteIntersectionKeys is intersectionValuesEqual: the primary-key
+	// OrderingSiteIntersectionKeys is intersectionValuesEqualIn: the primary-key
 	// intersection's own comparison-key, equality-bound and implicit
 	// discriminator lists.
 	OrderingSiteIntersectionKeys
@@ -54,9 +54,9 @@ const (
 func (s OrderingComparisonSite) String() string {
 	switch s {
 	case OrderingSiteRequestedVsCandidate:
-		return "orderingValuesEqual (requested vs candidate)"
+		return "orderingValuesEqualIn (requested vs candidate)"
 	case OrderingSiteIntersectionKeys:
-		return "intersectionValuesEqual (intersection key lists)"
+		return "intersectionValuesEqualIn (intersection key lists)"
 	default:
 		return "unknown ordering comparison site"
 	}

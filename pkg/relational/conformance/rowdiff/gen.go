@@ -549,16 +549,6 @@ func (c *Case) ProjectionsFor(q Query) [][]string {
 	return c.Projections()
 }
 
-// aggOutputCols is the aggregate query's output column list, in order:
-// the grouping key (when present) followed by the aggregate, both aliased.
-func aggOutputCols(a *AggSpec) []string {
-	cols := make([]string, 0, len(a.GroupBy)+1)
-	for i := range a.GroupBy {
-		cols = append(cols, groupKeyCol(i))
-	}
-	return append(cols, "AGG")
-}
-
 // genExists builds a correlated [NOT] EXISTS: correlation on a BIGINT column
 // plus, half the time, a simple `col op literal` filter on the inner row. The
 // inner Pred keeps Qual empty (it reads a plain-keyed inner row in the oracle)

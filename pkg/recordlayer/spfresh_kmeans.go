@@ -20,12 +20,6 @@ import (
 // GOMAXPROCS.
 const spfreshKMeansChunk = 4096
 
-// spfreshParallelChunks runs fn over [0,n) in fixed-size chunks across
-// NumCPU workers. fn must only write chunk-local or index-disjoint state.
-func spfreshParallelChunks(n int, fn func(chunk, lo, hi int)) {
-	spfreshParallelChunksSized(n, spfreshKMeansChunk, 0, fn)
-}
-
 // spfreshParallelChunksSized is the parameterized core. workers == 0 means
 // NumCPU; tests pin worker-count invariance — the actual cross-machine
 // determinism guarantee — by comparing workers=1 against the parallel run at

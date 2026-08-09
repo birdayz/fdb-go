@@ -815,41 +815,6 @@ func TestInvertBytesLargeInput(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// orderDirectionFromName
-// ---------------------------------------------------------------------------
-
-func TestOrderDirectionFromName(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name     string
-		expected OrderDirection
-		ok       bool
-	}{
-		{"order_asc_nulls_first", OrderAscNullsFirst, true},
-		{"order_asc_nulls_last", OrderAscNullsLast, true},
-		{"order_desc_nulls_first", OrderDescNullsFirst, true},
-		{"order_desc_nulls_last", OrderDescNullsLast, true},
-		{"unknown", OrderDirection{}, false},
-		{"", OrderDirection{}, false},
-		{"ORDER_ASC_NULLS_FIRST", OrderDirection{}, false}, // case-sensitive
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			dir, ok := orderDirectionFromName(tc.name)
-			if ok != tc.ok {
-				t.Fatalf("expected ok=%v, got %v", tc.ok, ok)
-			}
-			if ok && dir != tc.expected {
-				t.Fatalf("expected %+v, got %+v", tc.expected, dir)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Order function evaluator via FunctionExpr
 // ---------------------------------------------------------------------------
 

@@ -37,7 +37,7 @@ func TestPlanningCostModel_InUnionRepeatedFullScanCannotWinScalarFallback(t *tes
 	if _, applicable := compareInOperator(repeated); applicable {
 		t.Fatal("root Projection unexpectedly activated the root-only IN penalty")
 	}
-	if plainResiduals, repeatedResiduals := countResidualPredicates(plain), countResidualPredicates(repeated); plainResiduals != 1 || repeatedResiduals != 1 {
+	if plainResiduals, repeatedResiduals := countResidualPredicatesWithContext(plain, nil), countResidualPredicatesWithContext(repeated, nil); plainResiduals != 1 || repeatedResiduals != 1 {
 		t.Fatalf(
 			"residual-count precondition = (%d, %d), want (1, 1)",
 			plainResiduals,

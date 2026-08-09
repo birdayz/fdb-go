@@ -402,8 +402,24 @@ const (
 
 // OrderFunctionDirection maps an order-function name to its TupleOrdering
 // direction; ok=false for any other function name.
+//
+// EXACT match, not case-folded. Java never classifies by name at all — it holds
+// the direction as a field on OrderFunctionKeyExpression and dispatches on the
+// type — and it registers the four builders under names already lowercased
+// (OrderFunctionKeyExpressionFactory: `FUNCTION_NAME_PREFIX +
+// direction.name().toLowerCase(Locale.ROOT)`), so no upper-case spelling can
+// name a built-in order function in either engine.
+//
+// Folding case here was not a harmless convenience. RegisterFunction is public
+// API over a CASE-SENSITIVE map (key_expression.go), so an application may
+// register its own evaluator under `ORDER_ASC_NULLS_FIRST`; the record layer
+// would then encode that column with the application's function while the
+// planner classified it as the built-in tuple-order encoding, deriving ordered
+// ranges — or eliminating a sort — from bytes nothing ever wrote in that order.
+// Exact match keeps this consistent with isOrderFunctionName
+// (order_function_key_expression.go), which never folded.
 func OrderFunctionDirection(name string) (values.OrderedBytesDirection, bool) {
-	switch strings.ToLower(name) {
+	switch name {
 	case FunctionKindOrderAscNullsFirst:
 		return values.OrderedBytesAscNullsFirst, true
 	case FunctionKindOrderAscNullsLast:

@@ -410,7 +410,7 @@ func isPrimaryKeyPartitionRedundant(
 // every equality the FULL partition fixes — the redundancy proof that lets a
 // partition be dropped in favour of a smaller one.
 //
-// It compares through intersectionValuesEqual (via containsIntersectionValue),
+// It compares through intersectionValuesEqualIn (via containsIntersectionValue),
 // which is the same comparator the `required` list was DEDUPED by when it was
 // built. That agreement is the point: a list built under one notion of "same
 // value" and probed under another can report a member missing that it holds, and
@@ -874,7 +874,7 @@ func containsIntersectionValue(haystack []values.Value, needle values.Value) boo
 	return false
 }
 
-// intersectionValuesEqual is orderingValuesEqual's counterpart for the
+// intersectionValuesEqualIn is orderingValuesEqualIn's counterpart for the
 // primary-key intersection's own value lists (comparison keys, equality-bound
 // values, the implicit record-type discriminators). Same TYPE dispatch and the
 // same reason: a pair of plain FieldValues is decided by column identity alone,
@@ -896,16 +896,12 @@ func containsIntersectionValue(haystack []values.Value, needle values.Value) boo
 // every such pair now returns from the arm above. Keeping a call that cannot
 // fire would read as a live fallback for the very class the identity arm was
 // made final over.
-func intersectionValuesEqual(left, right values.Value) bool {
-	return intersectionValuesEqualIn(nil, left, right)
-}
-
-// intersectionValuesEqualIn is intersectionValuesEqual told which LIST the caller
-// is scanning — the `seen` dedup's accepted keys, the partition's comparison-key
-// or equality-bound list. Only the census reads it, and only for the root-wildcard
-// ambiguity, which is a property of a whole list rather than of a pair: an
-// intransitive triple costs a nondeterministic comparison key exactly when all
-// three of its members sit in ONE of these lists.
+// The `context` parameter is the LIST the caller is scanning — the `seen` dedup's
+// accepted keys, the partition's comparison-key or equality-bound list. Only the
+// census reads it, and only for the root-wildcard ambiguity, which is a property
+// of a whole list rather than of a pair: an intransitive triple costs a
+// nondeterministic comparison key exactly when all three of its members sit in ONE
+// of these lists.
 func intersectionValuesEqualIn(context []values.Value, left, right values.Value) bool {
 	recordOrderingComparison(
 		OrderingSiteIntersectionKeys, left, right,

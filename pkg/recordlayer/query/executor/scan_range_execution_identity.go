@@ -227,7 +227,7 @@ func newScanIdentityTypeEncoder() *scanIdentityTypeEncoder {
 	return &scanIdentityTypeEncoder{active: make(map[scanIdentityTypeNode]string)}
 }
 
-// encodeScanIdentityType is structural for every built-in values.Type. Key
+// encode is structural for every built-in values.Type. Key
 // schemas normally contain primitive types, but encoding the complete type
 // hierarchy keeps the identity correct for hand-built plans and future schema
 // extensions. Malformed typed-nil or cyclic built-in graphs return a typed error
@@ -235,10 +235,6 @@ func newScanIdentityTypeEncoder() *scanIdentityTypeEncoder {
 // concrete implementation name in addition to the Type contract, so an
 // out-of-tree implementation cannot alias a built-in type merely by returning
 // the same display string.
-func encodeScanIdentityType(typ values.Type) ([]byte, error) {
-	return newScanIdentityTypeEncoder().encode(typ, "$type")
-}
-
 func (e *scanIdentityTypeEncoder) encode(typ values.Type, path string) ([]byte, error) {
 	b := newScanRangeExecutionIdentityBuilder("type")
 	if typ == nil {

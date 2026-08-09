@@ -772,6 +772,21 @@ const relationalUnionName = "RecordTypeUnion"
 // Java's containsNullableArray flag (DdlVisitor accumulates it over column
 // definitions): whether any NullableArrayWrapper was emitted, gating the
 // index key-expression wrap pass.
+//
+// The flag's SCOPE matches Java's, and this is CHECKED rather than assumed —
+// an earlier note here recorded a suspicion that it might not, on the reasoning
+// that Java accumulates the flag while visiting columns in declaration order
+// and so could build an index while it was still false. Reading
+// DdlVisitor.visitCreateSchemaTemplateStatement settles it the other way: the
+// visitor first partitions every templateClause into per-kind lists, then
+// visits structs and tables (`:422-423`, which is where `:162` sets the flag),
+// and only afterwards visits the index clauses (`:434`), whose generator reads
+// it at `:218`. So by the time ANY index is built the flag has accumulated over
+// every column in the template — template-wide, exactly like Go's.
+//
+// The suspicion's named reproducer (a type with both a nullable array and a
+// NOT NULL repeated field called `values`) therefore cannot separate the two
+// engines on the index path, and no schema needs to be built to find that out.
 func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, *descriptorpb.FileDescriptorProto, bool, error) {
 	fdp := &descriptorpb.FileDescriptorProto{}
 	fdp.Name = proto.String(b.name)
@@ -1207,7 +1222,8 @@ func buildAggregateIndex(idx indexSpec) (*recordlayer.Index, error) {
 //
 // The argument built HERE is always field(col, Concatenate). That is not the
 // final shape for a NULLABLE array column: Go now writes those wrapped, and
-// wrapArrayKeyExpression (NullableArrayUtils.wrapArray) rewrites the argument
+// wrapArrayInternal (NullableArrayUtils.wrapArray's body, applied under the
+// same containsNullableArray gate by registerIndex) rewrites the argument
 // through its function arm into the Java wrapper shape
 // field(col).nest(field("values", Concatenate)) before the template is built.
 // A NOT NULL array column is a flat repeated field in both engines, so its

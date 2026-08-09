@@ -2878,7 +2878,7 @@ func buildIntersectionChildCursors(
 // widenInt32 normalizes an intersection/union merge comparison-key element so the
 // FDB tuple layer can Pack it. The tuple layer has no int32 case — Pack panics on
 // it — and the index key encoding already widens int32 columns to int64
-// (key_expression_compiled.go), so widening here keeps the in-memory merge key
+// (key_expression.go's scalar field read), so widening here keeps the in-memory merge key
 // byte-identical to the children's sort order (int32->int64 sign-extension is
 // value-preserving and tuple integer encoding is monotonic). Matches Java, whose
 // Tuple stores Long and never sees a 32-bit key element. Only int32 is handled:
@@ -3171,14 +3171,9 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias values.Correlati
 	}
 }
 
-// passesJoinPredicates evaluates a join's residual predicates against the merged
-// leg-windowed positional row (the nil-legs entry point to passesJoinPredicatesLegs).
-func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicate, evalCtx *EvaluationContext) (bool, error) {
-	return passesJoinPredicatesLegs(combined, preds, evalCtx, nil)
-}
-
-// passesJoinPredicatesLegs is passesJoinPredicates extended with the
-// ordinal-build leg bindings. legs nil (the non-build merged-row path)
+// passesJoinPredicatesLegs evaluates a join's residual predicates against the
+// merged leg-windowed positional row, with the ordinal-build leg bindings.
+// legs nil (the non-build merged-row path)
 // resolves through the merged row's leg windows (spansFromMergedLegs below).
 // legs non-nil (an ordinal-build cursor) evaluates the predicates against a
 // RowEvalContext carrying the DIRECT per-leg bindings (the cursor's pre-built

@@ -234,7 +234,7 @@ func TestOrdinalJoinSpans_FoldedProjectionsDecline(t *testing.T) {
 }
 
 // TestSeedAssert_MalformedPanics pins every malformation panic in
-// assertOrdinalJoinSeed — the SEED-TIME validator. The loudness lives at the
+// values.AssertOrdinalJoinSeed — the SEED-TIME validator. The loudness lives at the
 // translator seed, where the pristine shape is guaranteed by construction;
 // the cursor-side ordinalJoinSpans probe DECLINES the same shapes, pinned
 // separately, because post-merge result values legitimately mix/fold baked
@@ -257,7 +257,7 @@ func TestSeedAssert_MalformedPanics(t *testing.T) {
 		t.Parallel()
 		qovA := newQOV("a", ojLegTypeAV())
 		rc := values.NewRawRecordConstructorValue(baked(qovA, 0), baked(qovA, 1))
-		mustPanicLoud(t, func() { assertOrdinalJoinSeed(rc) }, "at least two legs")
+		mustPanicLoud(t, func() { values.AssertOrdinalJoinSeed(rc) }, "at least two legs")
 		if _, _, ok := ordinalJoinSpans(rc); ok {
 			t.Fatal("the cursor-side probe must DECLINE this shape, not accept it")
 		}
@@ -273,7 +273,7 @@ func TestSeedAssert_MalformedPanics(t *testing.T) {
 			baked(newQOV("b", oneCol("Y")), 0),
 			baked(newQOV("c", oneCol("Z")), 0),
 		)
-		assertOrdinalJoinSeed(rc) // must NOT panic — a join seed may flatten any number of legs, not just two
+		values.AssertOrdinalJoinSeed(rc) // must NOT panic — a join seed may flatten any number of legs, not just two
 		spans, mergedType, ok := ordinalJoinSpans(rc)
 		if !ok || len(spans) != 3 {
 			t.Fatalf("cursor-side probe must accept the 3-leg seed with 3 spans, got (%v, ok=%v)", spans, ok)
@@ -296,7 +296,7 @@ func TestSeedAssert_MalformedPanics(t *testing.T) {
 			baked(qovA, 0), baked(qovA, 2), // gap: 0,2
 			baked(qovB, 0), baked(qovB, 1),
 		)
-		mustPanicLoud(t, func() { assertOrdinalJoinSeed(rc) })
+		mustPanicLoud(t, func() { values.AssertOrdinalJoinSeed(rc) })
 		if _, _, ok := ordinalJoinSpans(rc); ok {
 			t.Fatal("the cursor-side probe must DECLINE this shape, not accept it")
 		}
@@ -315,7 +315,7 @@ func TestSeedAssert_MalformedPanics(t *testing.T) {
 			baked(qovA, 0), baked(qovA, 1), // leg type has 3 fields, run has 2
 			baked(qovB, 0), baked(qovB, 1),
 		)
-		mustPanicLoud(t, func() { assertOrdinalJoinSeed(rc) })
+		mustPanicLoud(t, func() { values.AssertOrdinalJoinSeed(rc) })
 		if _, _, ok := ordinalJoinSpans(rc); ok {
 			t.Fatal("the cursor-side probe must DECLINE this shape, not accept it")
 		}
@@ -328,7 +328,7 @@ func TestSeedAssert_MalformedPanics(t *testing.T) {
 			baked(qovA, 0),
 			values.RecordConstructorField{Name: "V", Value: values.NewFieldValue(qovA, "V", values.NotNullLong)},
 		)
-		mustPanicLoud(t, func() { assertOrdinalJoinSeed(rc) })
+		mustPanicLoud(t, func() { values.AssertOrdinalJoinSeed(rc) })
 		if _, _, ok := ordinalJoinSpans(rc); ok {
 			t.Fatal("the cursor-side probe must DECLINE this shape, not accept it")
 		}

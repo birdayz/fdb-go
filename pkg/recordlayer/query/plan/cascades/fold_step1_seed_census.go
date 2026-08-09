@@ -147,7 +147,7 @@ const (
 func (s foldStep1LegShape) String() string {
 	switch s {
 	case foldStep1LegShapeNone:
-		return "no-unsafe-leg(nil from below legIsOrdinalSafe)"
+		return "no-unsafe-leg(nil from below legOrdinalSafety)"
 	case foldStep1LegShapeBareQOV:
 		return "rv=bare QuantifiedObjectValue"
 	case foldStep1LegShapePositionalMerge:

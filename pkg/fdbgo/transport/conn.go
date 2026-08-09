@@ -99,10 +99,23 @@ type Conn struct {
 	loopWG    sync.WaitGroup // tracks readLoop + writeLoop goroutines
 	closeOnce sync.Once      // guards the single failConnection teardown
 
-	// Connection monitor cadence. Defaults match C++ CONNECTION_MONITOR_LOOP_TIME
-	// (0.75s) / CONNECTION_MONITOR_TIMEOUT (2s); set once at dial time before the
-	// monitor goroutine starts. Tests inject small values for deterministic,
-	// fast monitor-death assertions (see withMonitorCadence).
+	// Connection monitor cadence. Set once at dial time before the monitor
+	// goroutine starts. Tests inject small values for deterministic, fast
+	// monitor-death assertions (see withMonitorCadence).
+	//
+	// These were MEASURED against flow/Knobs.cpp:102-103 and the reading held:
+	// C++ declares each knob with a simulation value and a real one,
+	//
+	//	CONNECTION_MONITOR_LOOP_TIME  isSimulated ? 0.75 : 1.0
+	//	CONNECTION_MONITOR_TIMEOUT    isSimulated ? 1.50 : 2.0
+	//
+	// and Go used to run 0.75s alongside 2s — the loop time's SIMULATED value
+	// paired with the timeout's REAL one, a combination the C client never uses
+	// in either mode. Both are now taken from the real column. C++ is the spec
+	// for this package, so the mixed pair was a Go bug and not a tuning choice.
+	//
+	// Tests inject small values through withMonitorCadence rather than relying
+	// on these, which is why tightening the loop to 1s does not slow any test.
 	monitorLoopInterval time.Duration
 	monitorTimeout      time.Duration
 
@@ -353,8 +366,12 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		pending: make(map[UID]chan Response, 16),
 		ctx:     connCtx,
 		cancel:  cancel,
-		// C++ CONNECTION_MONITOR_LOOP_TIME / CONNECTION_MONITOR_TIMEOUT defaults.
-		monitorLoopInterval: 750 * time.Millisecond,
+		// C++ CONNECTION_MONITOR_LOOP_TIME / CONNECTION_MONITOR_TIMEOUT, both
+		// taken from the NON-simulated column of flow/Knobs.cpp:102-103:
+		//
+		//	init( CONNECTION_MONITOR_LOOP_TIME, isSimulated ? 0.75 : 1.0 );
+		//	init( CONNECTION_MONITOR_TIMEOUT,   isSimulated ? 1.50 : 2.0 );
+		monitorLoopInterval: 1 * time.Second,
 		monitorTimeout:      2 * time.Second,
 	}
 	// Apply test-only knobs BEFORE any loop goroutine starts (no data race).

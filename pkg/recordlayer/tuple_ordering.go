@@ -25,22 +25,6 @@ var (
 	OrderDescNullsLast = OrderDirection{inverted: true, counterflowNulls: false}
 )
 
-// orderDirectionFromName returns the OrderDirection for a function name suffix.
-func orderDirectionFromName(name string) (OrderDirection, bool) {
-	switch name {
-	case "order_asc_nulls_first":
-		return OrderAscNullsFirst, true
-	case "order_asc_nulls_last":
-		return OrderAscNullsLast, true
-	case "order_desc_nulls_first":
-		return OrderDescNullsFirst, true
-	case "order_desc_nulls_last":
-		return OrderDescNullsLast, true
-	default:
-		return OrderDirection{}, false
-	}
-}
-
 const nullLastByte = byte(0xFE)
 
 // tupleOrderingPack encodes a tuple according to the given direction.
