@@ -951,9 +951,11 @@ func buildVoidReply() []byte {
 // Matches C++ FlowTransport.actor.cpp connectionMonitor() (lines 641-721):
 //
 // Outer loop:
-//  1. Sleep CONNECTION_MONITOR_LOOP_TIME (750ms)
-//  2. If no pending requests → check idle timeout (skip PING)
-//  3. Sleep again (jittered), then send PING
+//  1. Sleep CONNECTION_MONITOR_LOOP_TIME (1s), jittered — the client's ONLY
+//     per-cycle delay; C++'s other one at :651 is server-only
+//  2. If no pending requests → skip the PING and loop (see the divergence note
+//     at the check itself)
+//  3. Send PING
 //  4. Inner loop: wait CONNECTION_MONITOR_TIMEOUT (2s) per round
 //     - If bytesReceived unchanged → kill connection
 //     - If bytesReceived changed → update baseline, continue inner loop
