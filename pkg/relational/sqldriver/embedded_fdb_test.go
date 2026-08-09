@@ -420,10 +420,78 @@ var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 		//   denominator 582+4 = 586, no-exist-ref 206+4 = 210, ACCEPT unchanged 166
 		// ACCEPT holding still across step 2 is the check that those four firings
 		// are the shape they claim to be rather than four more folds.
-		Denominator:     n(586),
-		Accept:          n(166),
+		//
+		// Step 3 — TestFDB_ProjectedStructColumnThroughAJoin adds two
+		// projected-EXISTS queries, one over a join and one without, and both
+		// seed decisions ACCEPT. Attributed by CONTROL, not arithmetic: this
+		// rebase landed on top of step 2, so the increment was RE-MEASURED
+		// against 586/166/210 rather than carried over from the pre-rebase base
+		// it was first taken against.
+		//   denominator 586+2 = 588, ACCEPT 166+2 = 168, no-exist-ref unchanged
+		//
+		// Step 4 — TestFDB_UnqualifiedRefBesideAProjectedExistsOverAJoin's
+		// differential. Unlike every step above, this one splits across TWO arms:
+		// most of its queries project a reference to the exists alias and ACCEPT,
+		// while its EXISTS-in-WHERE and no-join controls project none and decline
+		// as no-exist-ref. Its AMBIGUITY arms are refused with 42702 by the SQL
+		// layer and never reach a seed decision, so they add to NEITHER count —
+		// which is itself the check that they are refused where this comment
+		// claims they are.
+		//   denominator 588+14 = 602, ACCEPT 168+12 = 180, no-exist-ref 210+2 = 212
+		//
+		// Step 5 — ORDINARY CORPUS GROWTH, from the one `ORDER BY n.sk` query
+		// RFC-223 adds to nested_sort_key_fold_fdb_test.go's converted arm. It
+		// is a projected-EXISTS fold and it ACCEPTs.
+		//   denominator 602+2 = 604, ACCEPT 180+2 = 182, no-exist-ref unchanged
+		//
+		// RFC-223's FIX MOVES THIS CENSUS BY ZERO, and the wording above is
+		// deliberate because an earlier revision of this comment claimed the
+		// opposite — that the fix "reaches the seed decision on a shape that
+		// previously never got there". THAT IS FALSE. `foldStep1Seed` fires
+		// identically either side of the fix; what the fix changes is what the
+		// projection CARRIES, not whether the seed decision happens.
+		//
+		// Both controls, each unfiltered with --nocache_test_results and 5879
+		// === RUN lines, differing only in plan_visitor.go:
+		//   fix applied   -> 604/182/212, and the log carries the three
+		//                    converted-arm PASS lines, so the binary is the
+		//                    current source and not a cached pre-edit one
+		//   fix reverted  -> 604/182/212, with SIX distinct leaf failures, so
+		//                    the revert demonstrably took effect. Counted, not
+		//                    estimated — an earlier note said four and a review
+		//                    said five; `grep -E "^\s+--- FAIL"` returns seven
+		//                    lines, one of which is a PARENT of two others:
+		//                      projected_struct_root_over_a_join/ordered_by_the_nested_key
+		//                      projected_struct_root_over_a_join/unordered
+		//                      struct_root_beside_a_projected_exists_over_a_join
+		//                      unqualified_scalar_join_projectedExists
+		//                      unqualified_structRoot_join_projectedExists
+		//                      unqualified_structRoot_join_projectedExists_structLast
+		//
+		// A === RUN count is a POPULATION check, not a staleness check: two runs
+		// can both report 5879 and one still be stale. Each leg therefore carries
+		// a marker only its own build can emit. Reading a number out of a log
+		// without one is how the false claim above survived twice.
+		// and the complementary one, fix applied, deleting only that ORDER BY
+		// query, 5878 === RUN:
+		//   -> 602/180/212
+		//
+		// The false claim mattered more than the number: the gate VALUE was
+		// right either way, so CI could never have caught a comment asserting a
+		// property of the engine that the engine does not have. It survived one
+		// reading that was correct and a "correction" that was not — the
+		// correction reached for the stronger claim and cited as settled the
+		// very control that refutes it.
+		//
+		// Steps 3 and 4 were both RE-MEASURED after this branch rebased onto the
+		// step-2 head; the pre-rebase increments were taken against 572/160/202 and
+		// carrying them over would have restated a number nobody measured. Control:
+		// both files out of the package reports 586/166/210, both back in reports
+		// 602/180/212.
+		Denominator:     n(604),
+		Accept:          n(182),
 		CorrelatedStep1: n(108),
-		NoExistRef:      n(210),
+		NoExistRef:      n(212),
 		ReconstructNil:  n(102),
 		// The residue is now ENTIRELY bare-QOV, and the two entries below say so
 		// separately on purpose. A single "reconstruct-nil == 94" would be

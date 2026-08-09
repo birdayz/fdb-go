@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=350 queries=2516 dml=157 non_query=104 plan_errors=260 unexpected_errors=4
+# files=351 queries=2519 dml=157 non_query=104 plan_errors=261 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -3649,7 +3649,7 @@ shape:         RecordQueryProjectionPlan
 shape:           RecordQueryScanPlan
 === cte.yaml#13
 sql:   WITH lo(li) AS (SELECT id FROM t WHERE v < 20), hi(hi_id) AS (SELECT id FROM t WHERE v >= 30) SELECT li, hi_id FROM lo, hi ORDER BY li, hi_id
-plan:  Project([LI#0, HI_ID#1], InMemorySort([LO.LI#0 ASC, HI.HI_ID#0 ASC], NestedLoopJoin(INNER, Project([ID#0], PredicatesFilter(Scan(T), [1 preds])), Project([ID#0], PredicatesFilter(Scan(T), [1 preds])))))
+plan:  Project([LO.LI#0, HI.HI_ID#0], InMemorySort([LO.LI#0 ASC, HI.HI_ID#0 ASC], NestedLoopJoin(INNER, Project([ID#0], PredicatesFilter(Scan(T), [1 preds])), Project([ID#0], PredicatesFilter(Scan(T), [1 preds])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryNestedLoopJoinPlan
@@ -3706,7 +3706,7 @@ shape:             RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === cte.yaml#21
 sql:   WITH c1(w) AS (SELECT id FROM t), c2(a) AS (WITH c3(x) AS (SELECT id FROM t WHERE id <= 2) SELECT x FROM c3) SELECT w, a FROM c1, c2 WHERE w = a ORDER BY w
-plan:  Project([W#0, A#1], InMemorySort([C1.W#0 ASC], NestedLoopJoin(INNER, [1 preds], Project([ID#0], Scan(T)), Project([ID#0], Scan(T, [<>])))))
+plan:  Project([C1.W#0, C2.A#0], InMemorySort([C1.W#0 ASC], NestedLoopJoin(INNER, [1 preds], Project([ID#0], Scan(T)), Project([ID#0], Scan(T, [<>])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryNestedLoopJoinPlan
@@ -3968,7 +3968,7 @@ shape:           RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === cte_join.yaml#2
 sql:   WITH eng_dept AS (SELECT id FROM dept WHERE name = 'Engineering'), eng_emp AS (SELECT name FROM emp e, eng_dept ed WHERE e.dept_id = ed.id) SELECT name FROM eng_emp ORDER BY name
-plan:  Project([NAME#0], InMemorySort([NAME ASC], Project([NAME#1], NestedLoopJoin(INNER, [1 preds], Scan(EMP), Project([ID#0], PredicatesFilter(Scan(DEPT), [1 preds]))))))
+plan:  Project([NAME#0], InMemorySort([NAME ASC], Project([E.NAME#1], NestedLoopJoin(INNER, [1 preds], Scan(EMP), Project([ID#0], PredicatesFilter(Scan(DEPT), [1 preds]))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryProjectionPlan
@@ -13597,6 +13597,27 @@ plan:  FlatMap(outer=Scan(T1), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [
 shape: RecordQueryFlatMapPlan
 shape:   RecordQueryScanPlan
 shape:   RecordQueryFirstOrDefaultPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+=== projected_exists_over_a_derived_source.yaml#0
+sql:   WITH c AS (SELECT id, v FROM t1) SELECT c.id, t1_id FROM c, t3 WHERE t3.t1_id = c.id ORDER BY c.id
+plan:  Project([C.ID#0, T3.T1_ID#1], FlatMap(outer=Project([ID#0, V#1], Scan(T1)), inner=PredicatesFilter(Scan(T3), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+=== projected_exists_over_a_derived_source.yaml#1 expect-error=42703
+sql:   WITH c AS (SELECT id, v FROM t1) SELECT c.id, t1_id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = c.id) AS h FROM c, t3 WHERE t3.t1_id = c.id ORDER BY c.id
+plan:  <PLAN-ERROR: 42703: no FROM source aliased as C>
+=== projected_exists_over_a_derived_source.yaml#2
+sql:   SELECT d.id, t1_id FROM (SELECT id, v FROM t1) AS d, t3 WHERE t3.t1_id = d.id ORDER BY d.id
+plan:  Project([D.ID#0, T3.T1_ID#1], FlatMap(outer=Project([ID#0, V#1], Scan(T1)), inner=PredicatesFilter(Scan(T3), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === qualified_star.yaml#0
