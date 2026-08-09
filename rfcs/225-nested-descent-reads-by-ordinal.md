@@ -351,10 +351,16 @@ happened. **Nothing does today**, and criterion 19 pins that. Write this as
 defence-in-depth with one plank, not as "the domain closes it" — revision 9 said
 the latter and it is the same overclaim one level down.
 
-Of the three constructors, **only `NewResolvedAccessorOfDescriptorField` is
-evidence-bearing** — the `protoreflect.FieldDescriptor` *is* the resolution, the
-analogue of Java's resolved `Field`. The other two let a caller assert an ordinal
-against a layout it happens to hold, which is the failure
+**Evidence-bearing means the ordinal came from resolving, not from asserting.** A
+`protoreflect.FieldDescriptor` is such a resolution — but so is a
+`recordTypeField` hit against the `*values.RecordType` the producer is walking,
+which is what the nested descent actually has (§3.3.2), and which is the direct
+analogue of Java's `currentType = field.getFieldType()` walk
+(`FieldValue.java:296`). (Revision 11 said the descriptor constructor was the
+**only** evidence-bearing one; that is a fourth site asserting the refuted
+mechanism, found while auditing the three §3.3.2 was written to fix.) What is NOT
+evidence-bearing is a caller asserting an ordinal against a layout it merely
+happens to hold — the failure
 `NewFieldPathOfSingleInDomain`'s own doc names (`values.go:444-447`: *"stating a
 layout the ordinal does not index … wearing a proof's clothes"*). Therefore:
 **the nested-descent bake accepts accessors carrying a KNOWN domain only (§3.3.1) — **revision 11 said "descriptor-derived only" here, which would have rejected 100% of what its own §3.3.1 mints**.**
@@ -377,10 +383,12 @@ a second class, which no revision of this document has stated:
 
 > Java's `resolveFieldPath` sets `currentType = field.getFieldType()`
 > (`FieldValue.java:296`) — resolution walks **the type of the value it will
-> read**, step by step. Go's producers resolve against a descriptor fetched
-> independently (`t.resolveRecordType(table).Descriptor`), and **nothing checks
-> that the message arriving at `descendResolvedPath` has the descriptor the
-> producer resolved against.**
+> read**, step by step. Go's producers resolve against a `*values.RecordType`
+> chain (§3.3.2 — measured: none of them can reach a descriptor at all), and
+> **nothing checks that the message arriving at `descendResolvedPath` matches the
+> layout the producer resolved against.** (Revision 11 wrote
+> `t.resolveRecordType(table).Descriptor` here, which no producer calls; the gap
+> it names is real, the mechanism it named was not.)
 
 Today that fails comparatively safely: an absent name yields NULL (unpinned) or a
 loud `*OrdinalResolutionError` (pinned). After the conversion, ordinal *k* is
