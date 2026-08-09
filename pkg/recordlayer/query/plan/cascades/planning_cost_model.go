@@ -623,9 +623,18 @@ func countLogicalPlanNode(plan plans.RecordQueryPlan, counts *expressionCounts, 
 			counts.unboundedDataAccess = true
 		}
 		counts.unmatchedFieldCount += unmatchedFieldsForScan(scan, ctx)
-	case concreteCountIndex:
-		index := plan.(*plans.RecordQueryIndexPlan)
-		if index.IsCovering() {
+	case concreteCountIndex, concreteCountCoveringIndex:
+		// The covering wrapper contributes its INNER's range facts (max
+		// cardinality, unmatched columns) — same physical read — but under the
+		// covering count class. Reaching the inner here is reading a FIELD, not
+		// descending a child: child traversal still never sees it.
+		var index *plans.RecordQueryIndexPlan
+		if cov, ok := plan.(*plans.RecordQueryCoveringIndexPlan); ok {
+			index = cov.GetIndexPlan()
+		} else {
+			index = plan.(*plans.RecordQueryIndexPlan)
+		}
+		if classification.count == concreteCountCoveringIndex {
 			counts.coveringIndexCount++
 		} else {
 			counts.indexScanCount++
@@ -1319,6 +1328,13 @@ func collectPlanSargComparisons(p plans.RecordQueryPlan, out *[]*predicates.Comp
 	case *plans.RecordQueryScanPlan:
 		ranges = w.GetScanComparisons()
 	case *plans.RecordQueryIndexPlan:
+		ranges = w.GetScanComparisons()
+	case *plans.RecordQueryCoveringIndexPlan:
+		// The covering scan performs its inner's range read, so its SARGs are the
+		// inner's. An explicit arm is REQUIRED, not a convenience: the inner is a
+		// field, so the GetChildren() descent below never reaches it, and without
+		// this the search-argument set of every covering access would read as
+		// EMPTY — demoting a fully SARGed covering scan against an unbound one.
 		ranges = w.GetScanComparisons()
 	}
 	for _, r := range ranges {
@@ -2205,6 +2221,12 @@ const (
 	concreteCountNeutral concreteCountKind = iota
 	concreteCountScan
 	concreteCountIndex
+	// concreteCountCoveringIndex is its OWN class rather than a flag read off
+	// concreteCountIndex: coveringness is now a plan TYPE, so the census keys
+	// on the type and the inner index plan is unreachable from here (it is a
+	// field, not a child). That is what keeps indexScanCount at 0 for a
+	// fetchless covering scan, which isSingularIndexScanWithFetch reads.
+	concreteCountCoveringIndex
 	concreteCountAggregateIndex
 	concreteCountMultiIntersection
 	concreteCountVectorIndex
@@ -2242,6 +2264,8 @@ func classifyConcretePlan(p plans.RecordQueryPlan) (classification concretePlanC
 		return concretePlanClassification{count: concreteCountScan}, true
 	case *plans.RecordQueryIndexPlan:
 		return concretePlanClassification{count: concreteCountIndex}, true
+	case *plans.RecordQueryCoveringIndexPlan:
+		return concretePlanClassification{count: concreteCountCoveringIndex}, true
 	case *plans.RecordQueryAggregateIndexPlan:
 		return concretePlanClassification{count: concreteCountAggregateIndex}, true
 	case *plans.RecordQueryMultiIntersectionOnValuesPlan:
@@ -2342,10 +2366,18 @@ func countClassifiedConcreteNode(
 			counts.unboundedDataAccess = true
 		}
 		counts.unmatchedFieldCount += unmatchedFieldsForScan(pl, ctx)
-	case concreteCountIndex:
-		pl := p.(*plans.RecordQueryIndexPlan)
+	case concreteCountIndex, concreteCountCoveringIndex:
+		// See the logical census copy above: the covering wrapper contributes
+		// its inner's range facts under the covering count class, by reading a
+		// field rather than by descending into a child.
+		var pl *plans.RecordQueryIndexPlan
+		if cov, ok := p.(*plans.RecordQueryCoveringIndexPlan); ok {
+			pl = cov.GetIndexPlan()
+		} else {
+			pl = p.(*plans.RecordQueryIndexPlan)
+		}
 		cols, unique := indexMetadata(pl, ctx)
-		if pl.IsCovering() {
+		if classification.count == concreteCountCoveringIndex {
 			counts.coveringIndexCount++
 		} else {
 			counts.indexScanCount++
@@ -3062,6 +3094,21 @@ func stablePlanNodeHash(p plans.RecordQueryPlan) uint64 {
 		_, _ = h.Write([]byte{0})
 		_, _ = h.Write([]byte{boolByte(t.IsReverse())})
 		stableHashComparisonRanges(h, t.GetScanComparisons())
+	case *plans.RecordQueryCoveringIndexPlan:
+		// An EXPLICIT arm, not a delegation to the inner: without it a covering
+		// scan falls to the default (node head only), so a covering and a
+		// non-covering scan over the same index would tie here and the winner
+		// would be decided by map order — a plan change with NO golden moving.
+		// The covered columns are folded because two covering scans over the
+		// same range but different covered surfaces emit different rows.
+		_, _ = io.WriteString(h, t.GetIndexName())
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte{boolByte(t.IsReverse())})
+		stableHashComparisonRanges(h, t.GetScanComparisons())
+		for _, col := range t.GetCoveringColumns() {
+			_, _ = io.WriteString(h, col)
+			_, _ = h.Write([]byte{0})
+		}
 	case *plans.RecordQueryPredicatesFilterPlan:
 		for _, pr := range t.GetPredicates() {
 			stableHashU64(h, predicates.SemanticHashCode(pr))

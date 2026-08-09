@@ -257,9 +257,10 @@ func primaryVsIndexFoldCorpus(t *testing.T) []preorderCandidate {
 	t.Helper()
 	one := rungEqualityRange(t, values.LiteralValue(int64(1)))
 	two := rungEqualityRange(t, values.LiteralValue(int64(2)))
-	covering := plans.NewRecordQueryIndexPlan("idx_pre_fold_covering",
-		[]*predicates.ComparisonRange{one}, []string{"T"}, values.UnknownType, false).
-		WithCovering([]string{"K"})
+	covering := plans.NewRecordQueryCoveringIndexPlan(
+		plans.NewRecordQueryIndexPlan("idx_pre_fold_covering",
+			[]*predicates.ComparisonRange{one}, []string{"T"}, values.UnknownType, false).
+			WithIndexMetadata([]string{"K"}, nil, false))
 
 	return []preorderCandidate{
 		{"primary", plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)},

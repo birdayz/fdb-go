@@ -177,9 +177,10 @@ func TestCriterion7_FetchPayingIndexLosesToCoveringIndex(t *testing.T) {
 		plans.NewRecordQueryIndexPlan("idx_fetch_paying",
 			[]*predicates.ComparisonRange{sarg}, []string{"T"}, values.UnknownType, false),
 		nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey)
-	covering := plans.NewRecordQueryIndexPlan("idx_covering_no_fetch",
-		[]*predicates.ComparisonRange{sarg}, []string{"T"}, values.UnknownType, false).
-		WithCovering([]string{"K"})
+	covering := plans.NewRecordQueryCoveringIndexPlan(
+		plans.NewRecordQueryIndexPlan("idx_covering_no_fetch",
+			[]*predicates.ComparisonRange{sarg}, []string{"T"}, values.UnknownType, false).
+			WithIndexMetadata([]string{"K"}, nil, false))
 
 	opsFetch := concretePlanCounts(fetchPaying, nil)
 	opsCovering := concretePlanCounts(covering, nil)
@@ -227,9 +228,10 @@ func TestCriterion7_RankIsATotalPreorder(t *testing.T) {
 	one := rungEqualityRange(t, values.LiteralValue(int64(1)))
 	two := rungEqualityRange(t, values.LiteralValue(int64(2)))
 
-	covering := plans.NewRecordQueryIndexPlan("idx_rank_covering",
-		[]*predicates.ComparisonRange{one}, []string{"T"}, values.UnknownType, false).
-		WithCovering([]string{"K"})
+	covering := plans.NewRecordQueryCoveringIndexPlan(
+		plans.NewRecordQueryIndexPlan("idx_rank_covering",
+			[]*predicates.ComparisonRange{one}, []string{"T"}, values.UnknownType, false).
+			WithIndexMetadata([]string{"K"}, nil, false))
 
 	corpus := []struct {
 		name string

@@ -511,15 +511,22 @@ func TestFDB_CoveringIndexLegOverOrdinalJoin(t *testing.T) {
 	plan := pinExplain(t, db, ctx, q)
 	// CANARY: the covering-leg-into-gated-join shape is UNREACHABLE today —
 	// fetch elimination lives in MergeProjectionAndFetchRule, which needs a
-	// projection DIRECTLY over the fetch, and join legs never have one (the
-	// probe stays Fetch(IndexScan)). The adapter's alignment guard + a unit
-	// pin (TestAdaptLegPositional_IndexShapedFallsBack) carry the
-	// protection. If this canary goes RED — a COVERING probe appeared in a
-	// gated join's plan — the row assertions below become the live pin for
-	// the index-shaped-row dimension.
-	if !strings.Contains(plan, "Fetch(IndexScan(C_A_ID") {
-		t.Fatalf("expected the fetch-backed index probe (today's reachable shape) — plan: %s", plan)
+	// projection DIRECTLY over the fetch, and join legs never have one. The
+	// adapter's alignment guard + a unit pin
+	// (TestAdaptLegPositional_IndexShapedFallsBack) carry the protection. If
+	// this canary goes RED — a COVERING probe appeared in a gated join's plan
+	// — the row assertions below become the live pin for the index-shaped-row
+	// dimension.
+	//
+	// The premise below is the PROBE READING BASE RECORDS, not the literal
+	// `Fetch(IndexScan(C_A_ID`. RFC-220 collapsed that rendering to a bare
+	// `IndexScan(C_A_ID, [=])`, which is still a fetching scan — so the old
+	// string went red while the canary itself was working correctly. Asserting
+	// the rendering would have retired a live guard over a cosmetic change.
+	if !strings.Contains(plan, "IndexScan(C_A_ID") {
+		t.Fatalf("expected the c-leg to probe through C_A_ID — plan: %s", plan)
 	}
+	assertScanReadsBaseRecords(t, plan, "IndexScan(C_A_ID")
 	if strings.Contains(plan, "COVERING") {
 		t.Fatalf("a COVERING probe reached a gated join — the canary fired: promote the row assertions to the live pin (plan: %s)", plan)
 	}
@@ -700,9 +707,14 @@ func TestFDB_SecondaryIndexThroughJoinMerge(t *testing.T) {
 
 	const q = "SELECT a.id, c.id FROM a, b, c WHERE a.x = b.y AND b.z = c.b_z"
 	plan := pinExplain(t, db, ctx, q)
-	if !strings.Contains(plan, "Fetch(IndexScan(C_B_Z") {
+	// The property is that the c-leg probes through its secondary index and
+	// reads base records — not that a `Fetch(` node renders above it. A bare
+	// `IndexScan(C_B_Z, [=])` is a fetching scan and satisfies the claim; the
+	// old literal asserted the rendering RFC-220 changed.
+	if !strings.Contains(plan, "IndexScan(C_B_Z") {
 		t.Fatalf("the c-leg must probe through its secondary index inside the merge machinery — plan: %s", plan)
 	}
+	assertScanReadsBaseRecords(t, plan, "IndexScan(C_B_Z")
 	got := pinRows(t, db, ctx, q)
 	sort.Strings(got)
 	if want := []string{"1|100", "2|101"}; !eqStrSlices(got, want) {
@@ -713,9 +725,12 @@ func TestFDB_SecondaryIndexThroughJoinMerge(t *testing.T) {
 	// fused-substrate-induced double sort), rows ordered.
 	const qo = q + " ORDER BY a.id"
 	planO := pinExplain(t, db, ctx, qo)
-	if !strings.Contains(planO, "Fetch(IndexScan(C_B_Z") {
+	// Same property as the unordered variant above: the probe reads base
+	// records. Not the `Fetch(` rendering, which RFC-220 collapsed.
+	if !strings.Contains(planO, "IndexScan(C_B_Z") {
 		t.Fatalf("ORDER BY variant lost the index probe — plan: %s", planO)
 	}
+	assertScanReadsBaseRecords(t, planO, "IndexScan(C_B_Z")
 	if strings.Count(planO, "InMemorySort") > 1 {
 		t.Fatalf("more than one sort in the ordered plan (spurious sort) — plan: %s", planO)
 	}

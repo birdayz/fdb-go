@@ -138,8 +138,18 @@ func TestImplementUpdateRule_FiresAfterScanImplemented(t *testing.T) {
 	if got := len(plan.GetTransforms()); got != 1 {
 		t.Fatalf("transforms = %d, want 1", got)
 	}
-	if _, ok := plan.GetInner().(*plans.RecordQueryScanPlan); !ok {
-		t.Fatalf("inner = %T, want *RecordQueryScanPlan", plan.GetInner())
+	// Java's ImplementUpdateRule interposes a primary-key dedup between the
+	// access path and the mutation UNCONDITIONALLY (ImplementUpdateRule.java:
+	// 79-80) — unlike ImplementDeleteRule it does not consult
+	// DistinctRecordsProperty, so even a plain primary scan (which IS distinct)
+	// gets one. A bare Scan directly under the UpdatePlan is the pre-port
+	// shape, not a simplification of this one.
+	dedup, ok := plan.GetInner().(*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan)
+	if !ok {
+		t.Fatalf("inner = %T, want *RecordQueryUnorderedPrimaryKeyDistinctPlan", plan.GetInner())
+	}
+	if _, ok := dedup.GetInner().(*plans.RecordQueryScanPlan); !ok {
+		t.Fatalf("dedup inner = %T, want *RecordQueryScanPlan", dedup.GetInner())
 	}
 }
 

@@ -819,6 +819,7 @@ func TestRFC195_LogicalPhysicalArmsArePaired(t *testing.T) {
 		"*plans.RecordQueryRecursiveDfsJoinPlan":            "depth-first physical form of RecursiveUnionExpression; paired through RecordQueryRecursiveLevelUnionPlan, and pinned equal to it by TestRFC195_RecursiveTwinsProveOneBound",
 		"*plans.RecordQueryMapPlan":                         "physical form of LogicalProjectionExpression's row reshape; paired through RecordQueryProjectionPlan",
 		"*plans.RecordQueryIndexPlan":                       "no logical counterpart: index selection is an implementation choice, not a logical operator",
+		"*plans.RecordQueryCoveringIndexPlan":               "no logical counterpart: answering from the index entry instead of the base record is an implementation choice over the same logical access as RecordQueryIndexPlan",
 		"*plans.RecordQueryVectorIndexPlan":                 "no logical counterpart: a K-NN probe is an access path, not a logical operator",
 		"*plans.RecordQueryAggregateIndexPlan":              "no logical counterpart: an aggregate index is an access path for GroupByExpression, not a logical operator",
 		"*plans.RecordQueryFetchFromPartialRecordPlan":      "no logical counterpart: a fetch is an enforcer the planner inserts, never named in SQL",

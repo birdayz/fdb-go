@@ -16,7 +16,7 @@ tests:
       SELECT c.name, o.total FROM customers c, orders o
       WHERE o.customer_id = c.id
       ORDER BY c.name, o.total
-    plan_contains: "FlatMap(outer=Scan(CUSTOMERS), inner=Fetch(IndexScan(IDX_CUSTOMER, [=])))"
+    plan_contains: "FlatMap(outer=Scan(CUSTOMERS), inner=IndexScan(IDX_CUSTOMER, [=]))"
     plan_not_contains: "NestedLoopJoin"
     rows:
       - ["Alice", 100]

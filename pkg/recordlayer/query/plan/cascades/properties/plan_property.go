@@ -10,7 +10,17 @@ type ExpressionProperty struct {
 func (p *ExpressionProperty) String() string { return p.name }
 
 var (
-	PropOrdering        = &ExpressionProperty{name: "ordering"}
+	PropOrdering = &ExpressionProperty{name: "ordering"}
+	// PropRichOrdering is the FULL ordering — binding map, ordering set and
+	// distinctness — which is what Java's OrderingProperty.ordering() carries
+	// and what a rule needs to build a merge comparison key. PropOrdering is a
+	// LOSSY projection of it (key sequence plus direction/null flags only).
+	//
+	// Both are computed per plan, so a rule that reads the rich form must roll
+	// its partitions up to THIS property; rolling up to PropOrdering leaves two
+	// members with equal key sequences but different binding maps in one
+	// partition, which is heterogeneity on a property the rule reads.
+	PropRichOrdering    = &ExpressionProperty{name: "richOrdering"}
 	PropDistinctRecords = &ExpressionProperty{name: "distinctRecords"}
 	PropStoredRecord    = &ExpressionProperty{name: "storedRecord"}
 	PropPrimaryKey      = &ExpressionProperty{name: "primaryKey"}
@@ -27,7 +37,7 @@ var (
 	PropDerivations               = &ExpressionProperty{name: "derivations"}
 
 	AllPlanProperties = []*ExpressionProperty{
-		PropOrdering, PropDistinctRecords, PropStoredRecord, PropPrimaryKey,
+		PropOrdering, PropRichOrdering, PropDistinctRecords, PropStoredRecord, PropPrimaryKey,
 		PropCardinalities,
 		PropComparisons, PropExpressionCount, PropFieldWithComparisonCount,
 		PropPredicateComplexity, PropPredicateCountByLevel, PropRecordTypes,

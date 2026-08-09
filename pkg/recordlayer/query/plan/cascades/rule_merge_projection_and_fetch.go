@@ -88,29 +88,23 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	if idxPlan, ok := fetchInnerExpr.(*plans.RecordQueryIndexPlan); ok && !idxPlan.IsCovering() {
-		// The covering index scan is its own cascades expression (RFC-184 W2);
-		// WithCovering preserves the metadata already on the plan (struct copy).
-		coveredPlan := idxPlan.WithCovering(idxPlan.AllCoveredEntryColumns())
-		innerQ := expressions.ForEachQuantifier(expressions.InitialOf(coveredPlan))
-		// The projection is its own cascades expression carrying the live innerQ
-		// edge (RFC-184 W2).
-		call.Yield(plans.NewRecordQueryProjectionPlanFromQuantifierWithProvenance(
-			projectedValues, projW.GetAliases(), projW.GetAliasMinted(), innerQ))
-		return
-	}
-
-	// Fallback: the fetch's child is not a directly-coverable index scan
-	// (e.g. it is an InJoin whose own inner is already a covering scan,
-	// produced by PushInJoinThroughFetchRule). The fetch is removable
-	// because all projected values are available in the partial record,
-	// but — unlike Java, where pushValue rewrites the child's result value
-	// to the projected columns — Go's covering plans carry the FULL
-	// partial-record result value. So the projection MUST be retained to
-	// select the queried columns; dropping it (Java's
-	// `yieldPlan(fetchPlan.getChild())`) leaks the full record and the
-	// wrong output schema. The covering-index branch above retains the
-	// projection for exactly this reason.
+	// The rule now does what Java's MergeProjectionAndFetchRule.onMatch does:
+	// remove the fetch and use its CHILD. No shape check, no type assertion, no
+	// coveringness stamped — the child was built as Covering(IndexScan) at the
+	// access path and is covering however deep it sits beneath operators pushed
+	// below the fetch.
+	//
+	// ONE DELIBERATE, PERMANENT DIVERGENCE (RFC-220 §4.1): Go RETAINS the
+	// projection where Java drops it (`yieldPlan(fetchPlan.getChild())`). Java
+	// can drop it because its covering plan's getResultValue() returns the
+	// un-projected BASE record type — it carries a standing TODO admitting so —
+	// and Java simply tolerates the wider output. Go's covering plan reports the
+	// same full partial-record shape, but Go's callers do not tolerate a wider
+	// row, so dropping the projection would leak the full record and the wrong
+	// output schema. Retaining it is strictly more correct than Java, not a
+	// fallback pending a port; there is no result-value rewrite in Java to port.
+	// Recorded in DIVERGENCES.md.
+	//
 	// fetchInnerExpr comes from findPhysicalExpr above, which only returns
 	// physicalPlanExpression members, so !ok is unreachable; the guard is
 	// defensive (avoids a panic if that invariant ever changes).

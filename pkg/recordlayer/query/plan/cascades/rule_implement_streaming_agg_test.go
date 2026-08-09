@@ -179,7 +179,20 @@ func TestImplementStreamingAgg_CountCoveringRequiresDistinctIndexRecords(t *test
 			if tc.signal != nil {
 				indexPlan = indexPlan.WithDistinctRecordsSignal(*tc.signal)
 			}
-			innerRef := expressions.InitialOf(indexPlan)
+			// The PRODUCTION shape, and it has to be exact for this test to
+			// discriminate at all (RFC-220): the access path emits
+			// Fetch(Covering(IndexScan)), and the count-only shortcut reaches PAST
+			// the fetch to the covering child — that reach is what the fan-out guard
+			// gates. Putting the covering plan directly in this group instead would
+			// let the rule's general "aggregate over every physical alternative"
+			// loop yield an aggregate over it with no guard consulted, and the
+			// assertion below would read TRUE for every case, guard or no guard.
+			coveringRef := expressions.InitialOf(plans.NewRecordQueryCoveringIndexPlan(indexPlan))
+			fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+				expressions.ForEachQuantifier(coveringRef),
+				nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
+			)
+			innerRef := expressions.InitialOf(fetchPlan)
 			groupBy := expressions.NewGroupByExpression(
 				nil,
 				[]expressions.AggregateSpec{{Function: expressions.AggCount}},
@@ -196,7 +209,7 @@ func TestImplementStreamingAgg_CountCoveringRequiresDistinctIndexRecords(t *test
 				if !ok {
 					continue
 				}
-				if idx, ok := agg.GetInner().(*plans.RecordQueryIndexPlan); ok && idx.IsCovering() {
+				if _, ok := agg.GetInner().(*plans.RecordQueryCoveringIndexPlan); ok {
 					foundCovering = true
 				}
 			}
@@ -310,8 +323,17 @@ func TestStreamingAgg_OrderedChildPinned(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if _, isIdx := w.GetInner().(*plans.RecordQueryIndexPlan); isIdx {
+		// EITHER scan type counts. The claim under test is that the ordered
+		// alternative reads the index DIRECTLY rather than sorting in memory;
+		// whether that direct read is a fetching scan or a covering one is
+		// RFC-220's concern, not this pin's. Since RFC-220 the access path emits
+		// Fetch(Covering(IndexScan)), so the aggregate's child is the covering
+		// plan — a type change, not a lost alternative.
+		switch w.GetInner().(type) {
+		case *plans.RecordQueryIndexPlan, *plans.RecordQueryCoveringIndexPlan:
 			orderedAgg = w
+		}
+		if orderedAgg != nil {
 			break
 		}
 	}

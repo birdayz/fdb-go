@@ -1,10 +1,9 @@
 package plans
 
 import (
-	"fmt"
-	"strings"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -55,19 +54,22 @@ type RecordQueryCoveringIndexPlan struct {
 	resultValue values.Value
 }
 
-// NewRecordQueryCoveringIndexPlan wraps an index scan as a covering scan over
-// the given entry-layout columns. Mirrors Java's construction at the access
-// path, which is unconditional whenever the entry can be turned into a partial
-// record and never consults the projection.
-func NewRecordQueryCoveringIndexPlan(
-	indexPlan *RecordQueryIndexPlan,
-	coveringColumns []string,
-) *RecordQueryCoveringIndexPlan {
-	cols := make([]string, len(coveringColumns))
-	copy(cols, coveringColumns)
+// NewRecordQueryCoveringIndexPlan wraps an index scan as a covering scan.
+// Mirrors Java's construction at the access path, which is unconditional
+// whenever the entry can be turned into a partial record and never consults the
+// projection.
+//
+// The covered columns are DERIVED from the inner scan rather than accepted from
+// the caller. Accepting them made an inconsistent pair representable — a column
+// list naming something the entry does not carry, or omitting something it
+// does — and the executor aligns that list POSITIONALLY against
+// (index key values ++ entry value tuple). A mismatch there is not a loud
+// failure; it silently reads a value into the wrong logical slot. Deriving
+// removes the failure mode instead of documenting it.
+func NewRecordQueryCoveringIndexPlan(indexPlan *RecordQueryIndexPlan) *RecordQueryCoveringIndexPlan {
 	return &RecordQueryCoveringIndexPlan{
 		indexPlan:       indexPlan,
-		coveringColumns: cols,
+		coveringColumns: indexPlan.AllCoveredEntryColumns(),
 		resultValue:     values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
 	}
 }
@@ -77,11 +79,17 @@ func NewRecordQueryCoveringIndexPlan(
 func (p *RecordQueryCoveringIndexPlan) GetIndexPlan() *RecordQueryIndexPlan { return p.indexPlan }
 
 // WithIndexPlan returns a shallow copy over a rewritten inner scan, preserving
-// the covering columns and the stable result value. Used by rewrites that
-// rebase the inner's scan comparisons.
+// the stable result value. Used by rewrites that rebase the inner's scan
+// comparisons.
+//
+// The covered columns are RE-DERIVED from the new inner rather than carried
+// over: carrying them would let a rewrite that changes the inner's covered
+// surface leave this plan describing the old one, which the executor would
+// then align positionally against the new entry layout.
 func (p *RecordQueryCoveringIndexPlan) WithIndexPlan(inner *RecordQueryIndexPlan) *RecordQueryCoveringIndexPlan {
 	cp := *p
 	cp.indexPlan = inner
+	cp.coveringColumns = inner.AllCoveredEntryColumns()
 	return &cp
 }
 
@@ -105,12 +113,9 @@ func (p *RecordQueryCoveringIndexPlan) ProducesDistinctRecords() bool {
 	return p.indexPlan.ProducesDistinctRecords()
 }
 
-// GetResultValue returns the STABLE per-instance result value, falling back to
-// PlanExprBase for struct-literal test plans that bypass the constructor.
+// GetResultValue returns the STABLE per-instance result value minted by the
+// constructor — the only way this type is built.
 func (p *RecordQueryCoveringIndexPlan) GetResultValue() values.Value {
-	if p.resultValue == nil {
-		return p.PlanExprBase.GetResultValue()
-	}
 	return p.resultValue
 }
 
@@ -151,20 +156,19 @@ func (p *RecordQueryCoveringIndexPlan) HashCodeWithoutChildren() uint64 {
 	return p.structuralKey().Hash("coveringindexplan|")
 }
 
-// Explain renders the inner scan's label with the COVERING marker inserted
-// before the closing paren, so a covering scan reads as
-// `IndexScan(IDX, [=] COVERING)`. Java renders its covering plan as
-// `COVERING(IDX [...] -> ...)`; converging on that shape is deliberately out of
-// scope here and would churn every plan golden for an unrelated reason.
+// Explain renders the inner scan's label carrying the COVERING marker, so a
+// covering scan reads as `IndexScan(IDX, [=] COVERING)`. Java renders its
+// covering plan as `COVERING(IDX [...] -> ...)`; converging on that shape is
+// deliberately out of scope here and would churn every plan golden for an
+// unrelated reason.
+//
+// The marker is passed DOWN to the inner's label builder rather than spliced
+// into the finished string. A splice at the last "]" cannot tell "the marker is
+// absent" from "the marker is already there", so it double-stamps
+// (`[] COVERING COVERING`), and it silently relocates if the label's bracket
+// ever moves.
 func (p *RecordQueryCoveringIndexPlan) Explain() string {
-	inner := p.indexPlan.Explain()
-	// The inner never carries COVERING now that the flag is gone, so the marker
-	// is inserted at the same position the flag used to render it: after the
-	// comparison-range bracket, before `)` / `) REVERSE`.
-	if idx := strings.LastIndex(inner, "]"); idx >= 0 {
-		return inner[:idx+1] + " COVERING" + inner[idx+1:]
-	}
-	return fmt.Sprintf("%s COVERING", inner)
+	return p.indexPlan.explainWithCovering()
 }
 
 var (
@@ -212,3 +216,96 @@ func (p *RecordQueryCoveringIndexPlan) WithDistinctProofIndexName(indexName stri
 }
 
 var _ DistinctProofStampable = (*RecordQueryCoveringIndexPlan)(nil)
+
+// --- Delegating accessors -------------------------------------------------
+//
+// A covering scan reads the SAME physical index range as its inner; only the
+// row it emits differs (a partial record rebuilt from the entry, rather than
+// the base record). Everything that describes the RANGE therefore delegates.
+
+// GetScanComparisons delegates to the inner scan.
+func (p *RecordQueryCoveringIndexPlan) GetScanComparisons() []*predicates.ComparisonRange {
+	return p.indexPlan.GetScanComparisons()
+}
+
+// GetKeyComponentTypes delegates to the inner scan.
+func (p *RecordQueryCoveringIndexPlan) GetKeyComponentTypes() []values.Type {
+	return p.indexPlan.GetKeyComponentTypes()
+}
+
+// GetPrimaryKeyComponentTypes delegates to the inner scan.
+func (p *RecordQueryCoveringIndexPlan) GetPrimaryKeyComponentTypes() []values.Type {
+	return p.indexPlan.GetPrimaryKeyComponentTypes()
+}
+
+// GetRecordTypes delegates to the inner scan.
+func (p *RecordQueryCoveringIndexPlan) GetRecordTypes() []string {
+	return p.indexPlan.GetRecordTypes()
+}
+
+// GetFlowedType delegates to the inner scan.
+func (p *RecordQueryCoveringIndexPlan) GetFlowedType() values.Type {
+	return p.indexPlan.GetFlowedType()
+}
+
+// GetColumnNames delegates to the inner scan.
+func (p *RecordQueryCoveringIndexPlan) GetColumnNames() []string {
+	return p.indexPlan.GetColumnNames()
+}
+
+// GetPKColumnNames delegates to the inner scan.
+func (p *RecordQueryCoveringIndexPlan) GetPKColumnNames() []string {
+	return p.indexPlan.GetPKColumnNames()
+}
+
+// IsUnique delegates to the inner scan.
+func (p *RecordQueryCoveringIndexPlan) IsUnique() bool { return p.indexPlan.IsUnique() }
+
+// GetCommonPrimaryKeyValues delegates to the inner scan.
+func (p *RecordQueryCoveringIndexPlan) GetCommonPrimaryKeyValues() []values.Value {
+	return p.indexPlan.GetCommonPrimaryKeyValues()
+}
+
+// --- Cost and ordering hints ----------------------------------------------
+//
+// Registered in hint_contracts.go. All four delegate: the covering scan's
+// physical work IS the inner's range read, and it emits one row per entry in
+// the same order. The base-record fetch that a non-covering access still pays
+// is priced on the separate Fetch node above, exactly as before — so a plan
+// unchanged in substance by RFC-220 is unchanged in cost.
+
+// inner returns the wrapped scan, tolerating a TYPED-NIL receiver. The hint
+// contracts are enumerated by typed nils (hint_contracts.go's
+// CostedPlanPrototypes and the parity tests that drive it), so every hint
+// implementation must answer on a nil receiver; the inner scan's own hints are
+// nil-tolerant for the same reason.
+func (p *RecordQueryCoveringIndexPlan) inner() *RecordQueryIndexPlan {
+	if p == nil {
+		return nil
+	}
+	return p.indexPlan
+}
+
+// HintCost delegates to the inner scan.
+func (p *RecordQueryCoveringIndexPlan) HintCost(children []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return p.inner().HintCost(children, stats)
+}
+
+// ProvenCardinalities delegates to the inner scan.
+func (p *RecordQueryCoveringIndexPlan) ProvenCardinalities(children []properties.Cardinalities) properties.Cardinalities {
+	return p.inner().ProvenCardinalities(children)
+}
+
+// HintOrdering delegates to the inner scan. Without this the covering scan
+// would derive NO ordering, RemoveSortRule could not fire above it, and every
+// order-satisfying index access would sprout an in-memory sort.
+func (p *RecordQueryCoveringIndexPlan) HintOrdering() properties.Ordering {
+	return p.inner().HintOrdering()
+}
+
+// HintRichOrdering delegates to the inner scan, for the same reason as
+// HintOrdering — and additionally because the rich form is what carries the
+// equality-prefix bindings a sort-elimination match needs.
+func (p *RecordQueryCoveringIndexPlan) HintRichOrdering() *properties.RichOrdering {
+	return p.inner().HintRichOrdering()
+}

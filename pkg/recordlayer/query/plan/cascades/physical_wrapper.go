@@ -350,6 +350,51 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 // and extraction then reads that winner through the ordering-aware winner
 // lookup. A cost comparison at rule time is a second, ordering-blind optimizer
 // running outside the cost framework.
+// physicalMembersForParentEnumeration returns EVERY physical member of ref that
+// a parent construction should be fired over — the cardinality answer to
+// findPhysicalExpr's single pick.
+//
+// Java fires an implementation rule once per (parent, child-member) pair, so a
+// parent is built over every alternative its child offers and the memo's cost
+// framework chooses among the resulting parents. Go's single pick meant a child
+// member that was not the local winner was never lifted into a parent
+// alternative — invisible to cost, because it was never constructed. Measured
+// on RFC-220's defect query: a group held [FETCH, INDEX] together and only
+// Filter(Index) was ever built.
+//
+// Same member-set policy as findPhysicalExpr: FINAL members first, exploratory
+// as a deliberate fallback for rules firing mid-planning (see that function for
+// why a finals-only tightening is not safe — 3821 references at these sites have
+// zero finals).
+//
+// Order is preserved, NOT ranked. Ranking here would be the ordering-blind
+// second optimizer findPhysicalExpr's comment forbids; the point of enumerating
+// is that no choice is made at rule time at all.
+//
+// Callers MUST bound the resulting cross product — references here hold up to 52
+// physical finals — which is what MaxNumMatchesPerRuleCall does at the rule-call
+// boundary.
+func physicalMembersForParentEnumeration(ref *expressions.Reference) []expressions.RelationalExpression {
+	if ref == nil {
+		return nil
+	}
+	var out []expressions.RelationalExpression
+	for _, m := range ref.FinalMembers() {
+		if _, ok := m.(physicalPlanExpression); ok {
+			out = append(out, m)
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	for _, m := range ref.Members() {
+		if _, ok := m.(physicalPlanExpression); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 func findPhysicalExpr(ref *expressions.Reference) expressions.RelationalExpression {
 	if ref == nil {
 		return nil

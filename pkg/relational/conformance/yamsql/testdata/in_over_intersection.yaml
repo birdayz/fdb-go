@@ -33,26 +33,26 @@ tests:
   # Two indexed equalities + an IN residual. The residual must be applied
   # ABOVE the intersection: dropping it leaks id 3 (a=1 is not in the list).
   - query: SELECT id FROM t WHERE b = 7 AND c = 5 AND a IN (9, 4)
-    plan_contains: "PredicatesFilter(Fetch(Intersection(IndexScan(IDX_B, [=]), IndexScan(IDX_C, [=])))"
+    plan_contains: "PredicatesFilter(Fetch(Intersection(IndexScan(IDX_B, [=] COVERING), IndexScan(IDX_C, [=] COVERING)))"
     plan_not_contains: "InJoin"
     rows:
       - [1]
   # Same shape under SELECT * — the projection variant that flips the cost
   # winner to the intersection, which is how the dropped residual hid.
   - query: SELECT id, a, b, c, s FROM t WHERE b = 7 AND c = 5 AND a IN (9, 4)
-    plan_contains: "PredicatesFilter(Fetch(Intersection(IndexScan(IDX_B, [=]), IndexScan(IDX_C, [=])))"
+    plan_contains: "PredicatesFilter(Fetch(Intersection(IndexScan(IDX_B, [=] COVERING), IndexScan(IDX_C, [=] COVERING)))"
     plan_not_contains: "InJoin"
     rows:
       - [1, 9, 7, 5, x]
   # An IN residual matching nothing must return no rows, not the whole
   # intersection.
   - query: SELECT id FROM t WHERE b = 7 AND c = 5 AND a IN (404)
-    plan_contains: "PredicatesFilter(Fetch(Intersection(IndexScan(IDX_B, [=]), IndexScan(IDX_C, [=])))"
+    plan_contains: "PredicatesFilter(Fetch(Intersection(IndexScan(IDX_B, [=] COVERING), IndexScan(IDX_C, [=] COVERING)))"
     plan_not_contains: "InJoin"
     rows: []
   # IN plus a second, unindexed residual.
   - query: SELECT id FROM t WHERE b = 7 AND c = 5 AND s = 'x' AND a IN (9, 1)
-    plan_contains: "PredicatesFilter(Fetch(Intersection(IndexScan(IDX_B, [=]), IndexScan(IDX_C, [=])))"
+    plan_contains: "PredicatesFilter(Fetch(Intersection(IndexScan(IDX_B, [=] COVERING), IndexScan(IDX_C, [=] COVERING)))"
     plan_not_contains: "InJoin"
     unordered: true
     rows:
@@ -61,7 +61,7 @@ tests:
   # TWO IN predicates plus an indexed equality — the shape that extracted
   # InJoin(<nil>) and failed the plan invariant outright.
   - query: SELECT id FROM t WHERE b IN (7, 5) AND c = 5 AND a IN (5, 9, 3, 10)
-    plan_contains: "PredicatesFilter(Fetch(IndexScan(IDX_C, [=])), [2 preds])"
+    plan_contains: "PredicatesFilter(IndexScan(IDX_C, [=]), [2 preds])"
     plan_not_contains: "Intersection"
     unordered: true
     rows:
@@ -80,7 +80,7 @@ tests:
   # below a set operation, so every column read failed the positional
   # alignment guard.
   - query: SELECT DISTINCT id FROM t WHERE b = 7 AND c = 5 LIMIT 27
-    plan_contains: "Intersection(IndexScan(IDX_B, [=]), IndexScan(IDX_C, [=]))"
+    plan_contains: "Intersection(IndexScan(IDX_B, [=] COVERING), IndexScan(IDX_C, [=] COVERING))"
     plan_not_contains: "PredicatesFilter"
     columns: [ID]
     unordered: true

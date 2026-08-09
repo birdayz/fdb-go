@@ -352,12 +352,12 @@ func mergeDistinctStoredRecordIdentityAtDepth(
 			p.GetKeyComponentTypes(), len(p.GetPrimaryKeyValues()),
 		)
 
+	case *plans.RecordQueryCoveringIndexPlan:
+		// A bare covering scan emits a partial/index-shaped row. The base PK
+		// identifies the record it came from, not necessarily that emitted row.
+		return "", false
+
 	case *plans.RecordQueryIndexPlan:
-		if p.IsCovering() {
-			// A bare covering scan emits a partial/index-shaped row. The base PK
-			// identifies the record it came from, not necessarily that emitted row.
-			return "", false
-		}
 		return mergeDistinctLeafRecordIdentity(
 			p.GetRecordTypes(), p.GetCommonPrimaryKeyValues(), commonPrimaryKey,
 			p.GetPrimaryKeyComponentTypes(), len(p.GetPKColumnNames()),

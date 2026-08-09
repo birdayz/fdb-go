@@ -201,6 +201,45 @@ func corpus() []Scenario {
 // testdata/. A mismatch fails with a reviewable diff. GOLDEN_UPDATE=1 regenerates the baselines
 // (review the diff before committing). The capture is asserted deterministic first — a golden is
 // only meaningful if the same scenario yields identical bytes every run.
+//
+// WHY THESE BASELINES MOVED (RFC-220, coveringness as a plan type). Six stanzas
+// changed across setops/joins/orders; aggidx/multikey/subquery are untouched.
+//
+// The decisive check is that EVERY changed line is a `PLAN:` line: zero ROWS
+// lines differ, in count, in value, or in ORDER. These goldens capture results
+// as well as plans, so a semantics change would have shown up as a row diff and
+// did not. That is a stronger statement than plan_shape.golden can make, and it
+// is the reason this file moved without a per-row argument.
+//
+// The plan movements were classified by the same tool and the same wrong-rows
+// checks used on plan_shape.golden, over these files adapted into its stanza
+// format, rather than by eye:
+//
+//	1 A  — an index scan gains COVERING with its enclosing Fetch intact.
+//	3 B  — a Fetch wrapper removed from above a NON-covering scan. Safe because
+//	       a bare IndexScan is itself record-resolving (executor.go
+//	       executeIndexScan), so no partial record escapes.
+//	0 A! / 0 B! — no stanza gains COVERING without an enclosing Fetch, and no
+//	       Fetch is removed from above a COVERING scan. Those are the two
+//	       wrong-rows shapes, and neither occurs.
+//	2 D  — residual, given individual verdicts below.
+//
+// The two residuals are setops#0 and orders#9, the same shape both times:
+//
+//	InMemorySort([ID ASC], Fetch(InJoin(IndexScan(<cat index>, [=]), binding ASC)))
+//	  ->  InUnion(IndexScan(<cat index>, [=]), bindings=1, ASC)
+//
+// Both indexes are single-column on `cat`, so their entries are (cat, id) with
+// the primary key as suffix: under a `cat` EQUALITY each leg is already id
+// ordered, and merging the legs on one binding ascending yields global id order.
+// The ORDER BY is therefore satisfied by the merge and the whole-result
+// in-memory sort is eliminated — a strict improvement. The Fetch drop is the
+// class-B argument above; the projection is `id`, which the entry carries.
+//
+// That ordering claim is not merely argued: the ROWS blocks for both stanzas are
+// byte-identical to the previous baseline INCLUDING their order ([1][2][3][4]
+// and [1][2][5][6][7]), so the merge demonstrably produced ascending id without
+// the sort.
 func TestGolden(t *testing.T) {
 	t.Parallel()
 	update := os.Getenv("GOLDEN_UPDATE") != ""

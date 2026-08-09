@@ -100,6 +100,27 @@ func bestSatisfyingMember(ref *expressions.Reference, ordering *properties.Reque
 // extraction-side rebuildOrderedSpine; this is the RULE-time twin for
 // yields that drop a sort during PLANNING (Java bakes concrete children at
 // rule time via memoizePlan, so it has no unpinned window at all).
+//
+// REMOVAL CONDITION. This function is compensation, and the thing it
+// compensates for is a defect with a known fix, so record what would retire it
+// rather than leaving it to be re-argued.
+//
+// It stays until MemoizeFinalExpressionsFromOther (implementation_rule.go:
+// 124-151) PROPAGATES the constraint entry to the reference it mints. Today it
+// copies the source's plan properties and registers no constraint, so
+// OptimizeGroupTask's per-ordering retention (unified_tasks.go:663-666) looks
+// up the new reference, finds nothing, and resolves the group by COST ALONE.
+// That is the ordering-blind edge this pin exists to survive: without the pin a
+// rule that dropped a sort can have its spine resolved to a cheaper unordered
+// sibling.
+//
+// It is removable on MEASUREMENT, not on argument. The concrete gate is the
+// StoredRecordProperty fetch arm in plan_properties.go computeStoredRecord:
+// turn it on, and the six ordered InUnions that currently collapse into
+// InMemorySort(Fetch(InJoin(...))) must hold. Until that has been observed,
+// "roll-up makes the partition ordering-homogeneous so the pin is redundant" is
+// exactly the reasoning that was tried and measured wrong — it yielded an
+// InUnion claiming ASC over a filtered full scan.
 func pinOrderedSpine(expr expressions.RelationalExpression, ordering *properties.RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
 	return pinOrderedSpineDepth(expr, ordering, less, 0)
 }

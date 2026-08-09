@@ -77,6 +77,10 @@ func isGenuineLeafPlan(plan plans.RecordQueryPlan) bool {
 	switch plan.(type) {
 	case *plans.RecordQueryScanPlan,
 		*plans.RecordQueryIndexPlan,
+		// A covering scan is a leaf even though it HOLDS an index plan: the
+		// inner is a field, never a child, so GetChildren() is unconditionally
+		// empty by construction rather than by accident.
+		*plans.RecordQueryCoveringIndexPlan,
 		*plans.RecordQueryAggregateIndexPlan,
 		*plans.RecordQueryVectorIndexPlan,
 		*plans.RecordQueryTextIndexPlan,

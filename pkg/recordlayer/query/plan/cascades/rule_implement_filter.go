@@ -78,6 +78,32 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 	}
 
 	seen := make(map[expressions.RelationalExpression]bool)
+	// ENUMERATE, don't single-pick. Java fires an implementation rule once per
+	// (parent, child-member) pair — a rule binds every member of a child
+	// reference — so both Filter(Fetch(Covering)) and Filter(Index) reach the
+	// parent group and COST decides between them. Go used to build only the
+	// per-ordering winner, so a child member that is not the local winner was
+	// never lifted into a parent alternative at all: not out-priced, never
+	// constructed.
+	//
+	// This is not ranking at the rule site (which physical_wrapper.go's
+	// findPhysicalExpr comment rightly forbids, because a rule-time cost pick is
+	// an ordering-blind second optimizer). It is the opposite: the rule stops
+	// choosing and hands every valid child to the memo.
+	//
+	// The per-ordering winners below are still yielded — they are what guarantees
+	// an ORDERING-satisfying alternative exists — and the enumeration adds the
+	// members no ordering asked for.
+	for _, m := range physicalMembersForParentEnumeration(innerRef) {
+		if seen[m] {
+			continue
+		}
+		seen[m] = true
+		innerAlias := f.GetInner().GetAlias()
+		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(m))
+		call.Yield(plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+			innerQ, f.GetPredicates(), innerAlias))
+	}
 	for _, ordering := range orderings {
 		// satisfied deliberately DISCARDED (RFC-186 §2C): this wrapper is an
 		// orderingDelegator — its ordering claim is re-derived through

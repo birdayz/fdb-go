@@ -128,15 +128,17 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 				"Also the subject of the PART 3 disabling experiment.",
 		},
 		{
-			name: "residual_below_the_fetch_drops_the_covering_stamp",
+			name: "residual_below_the_fetch_keeps_the_covering_stamp",
 			sql:  "SELECT id FROM t2 WHERE status > 'act' AND status LIKE '%zz%'",
-			want: "Project([ID#0], PredicatesFilter(IndexScan(IDX_STATUS, [<>]), [1 preds]))",
-			why: "The defect itself: same index, same projected columns, same covering " +
-				"entry — but a residual now sits between the fetch and the scan and the " +
-				"COVERING stamp is gone. If this string gains COVERING the stamp is being " +
-				"preserved through the residual — the fix CQ-33's covering-stamp " +
-				"blocker asks for, so update TODO.md CQ-33 and CQ-39 rather than " +
-				"this expectation.",
+			want: "Project([ID#0], PredicatesFilter(IndexScan(IDX_STATUS, [<>] COVERING), [1 preds]))",
+			why: "RFC-220's target. This shape used to LOSE the COVERING stamp: same " +
+				"index, same projected columns, same covering entry, but a residual sat " +
+				"between the fetch and the scan and the rules that STAMPED coveringness " +
+				"could not descend through it. Coveringness is now a plan TYPE built at " +
+				"the access path, so there is nothing left to recognise and no operator " +
+				"pushed below the fetch can defeat it. If this string LOSES COVERING " +
+				"again, coveringness has gone back to being decided downstream — fix " +
+				"that, do not update this expectation.",
 		},
 	}
 
@@ -154,29 +156,41 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 		})
 	}
 
-	t.Run("two_rules_stamp_covering_redundantly", func(t *testing.T) {
+	t.Run("no_downstream_rule_can_remove_coveringness", func(t *testing.T) {
 		t.Parallel()
 
-		// PART 3. The cases above pin the OBSERVABLE (this shape has the
-		// stamp, that shape lost it). They cannot pin the CAUSAL claim
-		// CQ-33's covering-stamp blocker rests on — that TWO rules
-		// stamp it and either one alone suffices — because they stay
-		// green if one of the two redundant stampers disappears
-		// entirely. A causal claim needs a disabling experiment, so
-		// this is one.
+		// PART 3, INVERTED BY RFC-220 — and the inversion is the point.
 		//
-		// SCOPE: the direct, no-residual covering control ONLY. On the
-		// residual query the experiment measures something else —
-		// disabling MergeProjectionAndFetchRule there changes the FETCH
-		// shape (Fetch(PredicatesFilter(IndexScan)) instead of
-		// PredicatesFilter(IndexScan)) rather than the stamp, which is
-		// already absent. So "disabling either alone changes nothing" is a
-		// statement about this control, not about the defect shape.
+		// This experiment used to establish a CAUSAL claim about two redundant
+		// STAMPERS: MergeProjectionAndFetchRule and ImplementProjectionRule each
+		// stamped coveringness onto the scan, either alone sufficed, and with both
+		// disabled the stamp vanished. That claim was true, and it was the disease:
+		// coveringness had to be RECOGNISED downstream, so it could be lost — which
+		// is exactly what a residual pushed below the fetch did.
+		//
+		// Coveringness is now a plan TYPE constructed at the access path. There is
+		// no stamper left to disable, so the disabling experiment cannot say
+		// anything about stamping. What it CAN say is the architectural claim that
+		// replaced it: no downstream rule participates in the decision, therefore
+		// disabling downstream rules cannot remove COVERING from the scan. All
+		// three configurations below assert the marker SURVIVES.
+		//
+		// The rules still change the SHAPE around the scan — with both disabled the
+		// projection no longer absorbs the fetch, so the Fetch node survives. That
+		// is fetch ELIMINATION, a genuinely downstream decision, and it is correct
+		// that it responds to these rules. Coveringness is not.
+		//
+		// SCOPE: the direct, no-residual control ONLY, so the shape difference
+		// between configurations stays legible. The residual shape is pinned above.
 		const sql = "SELECT id FROM t2 WHERE status > 'act'"
-		const stamped = "Project([ID#0], IndexScan(IDX_STATUS, [<>] COVERING))"
-		// With BOTH stampers off, the projection no longer absorbs the
-		// fetch at all: the fetch survives and its inner scan is unstamped.
-		const unstamped = "Project([ID#0], Fetch(IndexScan(IDX_STATUS, [<>])))"
+		const merged = "Project([ID#0], IndexScan(IDX_STATUS, [<>] COVERING))"
+		// With BOTH downstream rules off, NOTHING can elide the fetch — and
+		// MergeFetchIntoCoveringIndexRule then collapses Fetch(Covering(Index))
+		// into a bare fetching index scan, which is sound (a bare index plan
+		// resolves its own records by primary key) and one node cheaper. So the
+		// plan legitimately uses no covering scan: coveringness buys nothing when
+		// no ancestor can remove the fetch it exists to make removable.
+		const collapsedToFetchingScan = "Project([ID#0], IndexScan(IDX_STATUS, [<>]))"
 
 		exps := []struct {
 			name     string
@@ -185,32 +199,33 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 			why      string
 		}{
 			{
-				name: "merge_alone_off_stamp_survives", disabled: []string{ruleMergeProjectionAndFetch},
-				want: stamped,
-				why: "ImplementProjectionRule stamps it independently. If this now " +
-					"differs, the two stampers are no longer redundant and CQ-33's " +
-					"two-rule attribution needs re-deriving — the covering-stamp fix " +
-					"then has one site to change, not two.",
+				name: "merge_alone_off_covering_survives", disabled: []string{ruleMergeProjectionAndFetch},
+				want: merged,
+				why: "ImplementProjectionRule still removes the fetch. Coveringness is " +
+					"not at stake in either rule.",
 			},
 			{
-				name: "implement_projection_alone_off_stamp_survives", disabled: []string{ruleImplementProjection},
-				want: stamped,
-				why: "MergeProjectionAndFetchRule stamps it independently. Same " +
-					"consequence as above in the other direction.",
+				name: "implement_projection_alone_off_covering_survives", disabled: []string{ruleImplementProjection},
+				want: merged,
+				why: "MergeProjectionAndFetchRule still removes the fetch. Same as above " +
+					"in the other direction.",
 			},
 			{
-				name: "both_off_stamp_is_gone",
+				name: "both_off_collapses_to_a_fetching_scan",
 				disabled: []string{
 					ruleMergeProjectionAndFetch, ruleImplementProjection,
 				},
-				want: unstamped,
-				why: "The load-bearing half: it is these TWO rules and nothing else that " +
-					"stamp covering for this shape. If the stamp survives with both " +
-					"disabled there is a THIRD stamper the RFC does not account for; if " +
-					"planning fails outright, DisabledRules stopped being able to express " +
-					"this experiment and the two assertions above became vacuous — an " +
-					"unrecognized rule name is INERT, so a rename would silently turn " +
-					"both of them into 'disabling nothing changes nothing'.",
+				want: collapsedToFetchingScan,
+				why: "The CONTROL for the two assertions above: with every fetch-eliding " +
+					"rule disabled, coveringness correctly buys nothing and the plan " +
+					"collapses to a single fetching index scan. Together with those two, " +
+					"this pins that the covering scan above is chosen because an ancestor " +
+					"can ELIDE the fetch — not because coveringness is stamped or " +
+					"preferred unconditionally. " +
+					"If planning fails outright instead, DisabledRules stopped being able " +
+					"to express this experiment and the two assertions above went vacuous " +
+					"— an unrecognized rule name is INERT, so a rename would silently turn " +
+					"both into 'disabling nothing changes nothing'.",
 			},
 		}
 		for _, e := range exps {

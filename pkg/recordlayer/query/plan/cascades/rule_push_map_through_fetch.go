@@ -77,20 +77,14 @@ func (r *PushMapThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	// Mark the inner index scan as covering since the fetch is eliminated. The
-	// index scan is its own cascades expression (RFC-184 W2); WithCovering
-	// preserves the metadata already on the plan (struct copy).
-	if idxPlan, ok := fetchInnerExpr.(*plans.RecordQueryIndexPlan); ok && !idxPlan.IsCovering() {
-		fetchInnerExpr = idxPlan.WithCovering(idxPlan.AllCoveredEntryColumns())
-	}
-
-	// Build: Map(translatedResultValue, fetchInner)
-	// The fetch is eliminated entirely.
-	//
-	// The child plan is read AFTER the covering rewrite above: the rewritten
-	// wrapper carries a different (covering) index plan, and baking the
-	// pre-rewrite plan would put a non-covering scan under a map whose fetch
-	// has been eliminated.
+	// Build: Map(translatedResultValue, fetchInner). The fetch is eliminated
+	// entirely and the fetch's CHILD is used as-is — Java's
+	// PushMapThroughFetchRule does exactly this and nothing else. There is no
+	// coveringness to stamp: the child is already Covering(IndexScan), built at
+	// the access path, and it stays whatever it is however deep it sits under
+	// operators pushed below the fetch. That is the whole point of RFC-220 —
+	// this rule used to have to RECOGNISE a covering scan, which any
+	// intervening operator defeated.
 	fetchInnerPlan := bakedInnerPlan(fetchInnerExpr)
 	if fetchInnerPlan == nil {
 		return

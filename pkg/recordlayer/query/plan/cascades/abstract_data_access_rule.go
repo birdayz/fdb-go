@@ -447,14 +447,18 @@ func DataAccessForMatchPartition(
 			continue
 		}
 
-		// Determine if the index is covering: no result compensation
-		// needed means all output fields are available from the index.
 		cand := pm.GetMatchCandidate()
-		isCovering := !comp.IsFinalNeeded()
-		var coveringCols []string
-		if isCovering {
-			coveringCols = cand.GetColumnNames()
-		}
+		// There is deliberately NO coveringness signal computed here.
+		// wrapScanPlanWithCoverage builds Fetch(Covering(IndexScan))
+		// unconditionally, mirroring
+		// ValueIndexScanMatchCandidate.tryFetchCoveringIndexScan, which
+		// consults only whether the entry can be turned into a partial record
+		// and never looks at the projection. The `!comp.IsFinalNeeded()` signal
+		// that used to live here was removed rather than refined: Java has no
+		// such input, and deciding coveringness at a site that can see the
+		// compensation is exactly what made the decision defeasible by any
+		// operator later pushed between the fetch and the scan.
+		//
 		// Propagate the candidate's unique flag + column order onto the
 		// scan wrapper, exactly as OrderedIndexScanRule does. These drive
 		// the cost model (a unique index with all columns equality-bound
@@ -463,7 +467,7 @@ func DataAccessForMatchPartition(
 		// data-access scan look non-unique/unordered, so a non-unique
 		// index could beat the unique one and sorts weren't eliminated.
 		unique := candidateUnique(cand)
-		var expr expressions.RelationalExpression = wrapScanPlanWithCoverage(plan, isCovering, coveringCols, unique, cand.GetColumnNames(), candidatePKColumns(cand), candidateDistinctSignal(cand))
+		var expr expressions.RelationalExpression = wrapScanPlanWithCoverage(plan, unique, cand.GetColumnNames(), candidatePKColumns(cand), candidateDistinctSignal(cand))
 
 		if comp.IsNeeded() {
 			fmc, ok := comp.(*ForMatchCompensation)
@@ -611,46 +615,48 @@ func candidatePKColumns(cand MatchCandidate) []string {
 func wrapAccessScan(access *SingleMatchedAccess, plan plans.RecordQueryPlan) expressions.RelationalExpression {
 	cand := access.GetPartialMatch().GetMatchCandidate()
 	unique, columnNames := candidateScanProps(cand)
-	return wrapScanPlanWithCoverage(plan, false, nil, unique, columnNames, candidatePKColumns(cand), candidateDistinctSignal(cand))
+	return wrapScanPlanWithCoverage(plan, unique, columnNames, candidatePKColumns(cand), candidateDistinctSignal(cand))
 }
 
 // wrapScanPlanWithCoverage wraps a scan plan as the properly-typed physical
 // RelationalExpression.
 //
-// For a Fetch(IndexScan) (what a value/windowed candidate's ToScanPlan always
-// returns) the Fetch wrapper is ALWAYS emitted here and isCovering/coveringColumns
-// are intentionally NOT consulted: covering is decided downstream by
-// MergeProjectionAndFetchRule, which compares the actual projection's columns
-// against the index's covered columns (index columns + PK) and eliminates the
-// fetch when the projection is covered. That is strictly more precise than the
-// coarse isCovering signal here (`!comp.IsFinalNeeded()`), which does not see
-// the projection — eliminating the fetch on isCovering alone was wrong (it
-// dropped fetches that a non-covered projection still needs). TestFDB_CoveringIndexScan
-// pins that the deferral works: a covered projection yields IndexScan(... COVERING)
-// with no Fetch; a non-covered one keeps the Fetch. (Costing nuance: the
-// intermediate Fetch wrapper is costed non-covering during winner selection,
-// before MergeProjectionAndFetch runs; it does not change the chosen plan
-// today. This used to be deferred to "the template-aware costing work" — that
-// machinery existed only to cost trees with holes and was deleted with the
-// shells (RFC-183 P3), so the nuance now stands on its own.)
+// For a Fetch(IndexScan) — what a value/windowed candidate's ToScanPlan always
+// returns — this emits Fetch(Covering(IndexScan)) UNCONDITIONALLY, mirroring
+// ValueIndexScanMatchCandidate.tryFetchCoveringIndexScan
+// (ValueIndexScanMatchCandidate.java:250-282), which builds exactly that shape
+// whenever the index entry can be turned into a partial record and never
+// consults the projection.
 //
-// For a bare IndexScan (no Fetch — e.g. a primary scan) isCovering IS applied
-// directly, since there is no fetch to defer to.
-func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, coveringColumns []string, unique bool, columnNames []string, pkColumnNames []string, distinctSignal *bool) expressions.RelationalExpression {
+// It used to emit a bare Fetch(IndexScan) and leave coveringness to
+// MergeProjectionAndFetchRule, on the argument that a downstream rule comparing
+// the actual projection against the covered columns is "strictly more precise".
+// That argument compared against the wrong Java operation. Java separates
+// CONSTRUCTING the covering plan (here, unconditional, needs no knowledge of the
+// projection) from DECIDING the projection is covered (downstream, by removing
+// the fetch). Doing both downstream turned coveringness into a subtree
+// RECOGNITION problem, so any operator pushed between the fetch and the scan —
+// a residual filter, for one — defeated it; and the set of such operators is not
+// enumerable, which is why patching recognisers could not close it.
+//
+// The covering plan holds the index scan as a FIELD and only the covering plan
+// is memoized, exactly as Java does (:280). Nothing here is a quantifier over
+// the index scan.
+func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, unique bool, columnNames []string, pkColumnNames []string, distinctSignal *bool) expressions.RelationalExpression {
 	if fetchPlan, ok := plan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 		if innerIdx, ok := fetchPlan.GetInner().(*plans.RecordQueryIndexPlan); ok {
-			// Covering is decided downstream by MergeProjectionAndFetchRule (see
-			// the doc above) — do not consult isCovering/coveringColumns here.
-			_ = coveringColumns
-			// The index scan is its own cascades expression now (RFC-184 W2) — a bare
-			// leaf carrying its index metadata (columns/pk/unique) on the plan.
+			// The index scan carries its index metadata (columns/pk/unique) on
+			// the plan, which is what the covering wrapper derives its covered
+			// entry columns from — so the metadata must be stamped BEFORE the
+			// wrap, not after.
 			idxLeaf := innerIdx.WithIndexMetadata(columnNames, pkColumnNames, unique)
 			if distinctSignal != nil {
 				idxLeaf = idxLeaf.WithDistinctRecordsSignal(*distinctSignal)
 			}
-			idxRef := expressions.InitialOf(idxLeaf)
-			fetchQ := expressions.ForEachQuantifier(idxRef)
-			// The fetch is its own cascades expression carrying the live idxRef
+			covering := plans.NewRecordQueryCoveringIndexPlan(idxLeaf)
+			covRef := expressions.InitialOf(covering)
+			fetchQ := expressions.ForEachQuantifier(covRef)
+			// The fetch is its own cascades expression carrying the live covRef
 			// edge (RFC-184 W2).
 			return plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 				fetchQ,
@@ -661,13 +667,14 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, cover
 		}
 	}
 	if idxPlan, ok := plan.(*plans.RecordQueryIndexPlan); ok {
-		if isCovering {
-			idxPlan = idxPlan.WithCovering(coveringColumns)
-		}
-		// The index scan is its own cascades expression now (RFC-184 W2) — the
-		// covering flag lives on the plan (WithCovering above); index metadata
-		// (columns/pk/unique) is threaded onto the plan so its HintRichOrdering and
-		// the cost model read the same facts the wrapper used to carry separately.
+		// A BARE index scan with no fetch above it (e.g. an ordered-scan rule's
+		// output). It stays non-covering: there is no entry→partial-record
+		// mapping being claimed here, and the covering shape is built only where
+		// Java builds it, at the Fetch(IndexScan) branch above.
+		//
+		// Index metadata (columns/pk/unique) is threaded onto the plan so its
+		// HintRichOrdering and the cost model read the same facts the wrapper
+		// used to carry separately.
 		idxPlan = idxPlan.WithIndexMetadata(columnNames, pkColumnNames, unique)
 		if distinctSignal != nil {
 			idxPlan = idxPlan.WithDistinctRecordsSignal(*distinctSignal)

@@ -3,10 +3,11 @@
 # Java's PushSetOperationThroughFetchRule rebuilds the set operation
 # over the covering index scans and re-fetches ONCE above the merged
 # stream (withChildrenReferences over the fetch children). The EXPLAIN
-# pin is the point: Fetch(Union(IndexScan, IndexScan)) — one fetch above
-# the union — not Union(Fetch, Fetch) with a fetch per leg, and never
-# the double-fetching Fetch(Union(Fetch, Fetch)) the stale-snapshot
-# rebuild produced.
+# pin is the point: Fetch(UnorderedUnion(IndexScan, IndexScan)) — one
+# fetch above the union — not UnorderedUnion(Fetch, Fetch) with a fetch
+# per leg, and never the double-fetching Fetch(UnorderedUnion(Fetch,
+# Fetch)) the stale-snapshot rebuild produced. UNION ALL requests no
+# ordering, so the merge is the unordered variant.
 name: set_op_fetch_pushdown
 schema_template: |
   CREATE TABLE items (
@@ -29,7 +30,7 @@ tests:
   # index scans, the union merges index entries, ONE fetch materializes
   # full records above.
   - query: SELECT * FROM items WHERE category = 'books' UNION ALL SELECT * FROM items WHERE price = 120
-    plan_contains: "Fetch(Union(IndexScan"
+    plan_contains: "Fetch(UnorderedUnion(IndexScan(IDX_CATEGORY, [=] COVERING), IndexScan(IDX_PRICE, [=] COVERING)))"
     unordered: true
     rows:
       - [1, books, Go Programming, 45]

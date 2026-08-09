@@ -182,7 +182,10 @@ func TestSecondaryUniqueProof_StrictOrderingReachability(t *testing.T) {
 			}
 			scanned := false
 			plans.Walk(plan, func(node plans.RecordQueryPlan) bool {
-				indexPlan, ok := node.(*plans.RecordQueryIndexPlan)
+				// See THROUGH a covering wrapper: this asks about the SCAN
+				// (uniqueness, sort guarantee), and RFC-220 C1 hides the inner
+				// from plans.Walk.
+				indexPlan, ok := indexScanOf(node)
 				if !ok || !indexPlan.IsUnique() {
 					return true
 				}

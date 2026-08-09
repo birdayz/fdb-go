@@ -1016,10 +1016,39 @@ side per the corpus's omit comment.
 | 2 ordered Union subclasses | `RecordQueryMergeSortUnionPlan` | Aligned for Java's deduplicating mode; Go additionally supports ordered UNION ALL |
 | `RecordQueryUnorderedUnionPlan` | `RecordQueryUnorderedUnionPlan` plus extra keyless `RecordQueryUnionPlan` | Java-aligned unordered plan plus a duplicate Go concat implementation; cleanup tracked by RFC-190 |
 | 2 Distinct plan variants | 1 `RecordQueryDistinctPlan` | Aligned |
-| CoveringIndexPlan | `covering bool` + `coveringColumns` on IndexPlan | Aligned (planner + executor) |
+| CoveringIndexPlan | `RecordQueryCoveringIndexPlan` holding `*RecordQueryIndexPlan` as a FIELD | Aligned (RFC-220) — no longer collapsed |
 | CountValue + NumericAggregationValue | `AggregateValue` | Aligned (no rule distinguishes them) |
 | VariadicFunctionValue | `ScalarFunctionValue` | Aligned (COALESCE folding matches Java) |
 | 12 Comparison subclasses | Single `Comparison` struct with optional fields | Aligned |
+
+## RFC-220 — the projection is RETAINED over a covering scan where Java drops it
+
+Java's `MergeProjectionAndFetchRule.onMatch`
+(`MergeProjectionAndFetchRule.java:62-78`) does exactly one thing when every
+projected value pushes through the fetch: `call.yieldPlan(fetchPlan.getChild())`.
+The projection is DROPPED. Go yields the fetch's child with the projection
+RETAINED above it (`rule_merge_projection_and_fetch.go`,
+`rule_implement_projection.go`).
+
+This is deliberate and permanent, and it is not a shortfall — Go is stricter
+than Java here.
+
+Java can drop the projection because
+`RecordQueryCoveringIndexPlan.getResultValue()` returns
+`IndexedValue(indexPlan.getResultType().getInnerType())` — the base record type,
+not the projected shape — and it carries a standing TODO in the Java source
+admitting exactly that. `pushValue` translates the projection's Values only for
+the FEASIBILITY test; Java then discards both and tolerates a wider output type
+than the query asked for.
+
+Go's covering plan reports the same full partial-record shape, but Go's callers
+do NOT tolerate a wider row: dropping the projection leaks the whole record and
+the wrong output schema. So the projection stays.
+
+There is therefore no "result-value rewrite" in Java to port. An earlier draft of
+RFC-220 described this as a fallback pending such a port; that was wrong about
+Java and is corrected here. The divergence is not effort-gated and should not be
+"closed" by making Go match Java — matching Java would be a regression.
 
 ## DML statement-layer routing (RFC-035)
 

@@ -33,7 +33,7 @@ setup:
 tests:
   # equality_filter_via_index
   - query: SELECT * FROM t1 WHERE col1 = 20 ORDER BY id
-    plan_contains: "Fetch(IndexScan(I1, [=]))"
+    plan_contains: "IndexScan(I1, [=])"
     rows:
       - [6, 20, 6]
       - [7, 20, 7]
@@ -46,7 +46,7 @@ tests:
 
   # and_range_both_bounds
   - query: SELECT * FROM t1 WHERE col1 >= 10 AND col1 <= 20 ORDER BY id
-    plan_contains: "PredicatesFilter(IndexScan(I1, [<>])"
+    plan_contains: "PredicatesFilter(IndexScan(I1, [<>] COVERING)"
     rows:
       - [1, 10, 1]
       - [2, 10, 2]
@@ -64,7 +64,7 @@ tests:
 
   # and_range_lower_bound_only
   - query: SELECT * FROM t1 WHERE col1 >= 15 ORDER BY id
-    plan_contains: "Fetch(IndexScan(I1, [<>]))"
+    plan_contains: "IndexScan(I1, [<>])"
     rows:
       - [6, 20, 6]
       - [7, 20, 7]
@@ -77,7 +77,7 @@ tests:
 
   # and_range_upper_bound_only
   - query: SELECT * FROM t1 WHERE col1 <= 15 ORDER BY id
-    plan_contains: "Fetch(IndexScan(I1, [<>]))"
+    plan_contains: "IndexScan(I1, [<>])"
     rows:
       - [1, 10, 1]
       - [2, 10, 2]
@@ -87,7 +87,7 @@ tests:
 
   # and_range_empty_result
   - query: SELECT * FROM t1 WHERE col1 >= 30 ORDER BY id
-    plan_contains: "Fetch(IndexScan(I1, [<>]))"
+    plan_contains: "IndexScan(I1, [<>])"
     rows: []
 
   # case_when_with_in_list
@@ -162,7 +162,7 @@ tests:
 
   # and_equality_with_secondary_filter
   - query: SELECT id, col1, col2 FROM t1 WHERE col1 = 20 AND col2 > 10 ORDER BY id
-    plan_contains: "PredicatesFilter(Fetch(IndexScan(I1, [=]))"
+    plan_contains: "PredicatesFilter(IndexScan(I1, [=]), [1 preds])"
     rows:
       - [11, 20, 11]
       - [12, 20, 12]

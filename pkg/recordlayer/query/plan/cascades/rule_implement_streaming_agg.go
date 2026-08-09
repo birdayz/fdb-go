@@ -105,12 +105,13 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	groupingKeys := gb.GetGroupingKeys()
 	if len(groupingKeys) == 0 {
 		if isCountOnlyAggregation(gb.GetAggregates()) {
-			if idxPlan := findIndexScanPlan(innerRef); idxPlan != nil &&
-				admissibleStreamingAggInner(idxPlan) &&
-				idxPlan.ProducesDistinctRecords() && !idxPlan.IsCovering() {
-				// The covering index scan is its own cascades expression (RFC-184 W2);
-				// WithCovering preserves the metadata already on the plan (struct copy).
-				coveringPlan := idxPlan.WithCovering(nil)
+			// The covering scan is REACHED, not built: the access path already
+			// emitted Fetch(Covering(IndexScan)), so this rule reaches through
+			// the fetch to the covering child rather than stamping a flag onto
+			// an index plan. Nothing here decides coveringness.
+			if coveringPlan := findCoveringIndexPlan(innerRef); coveringPlan != nil &&
+				admissibleStreamingAggInner(coveringPlan) &&
+				coveringPlan.ProducesDistinctRecords() {
 				// Count-only, no grouping keys → no ordering precondition, so carry
 				// the LIVE shared-group edge (RFC-184 W2, no physicalStreamingAggWrapper).
 				coveringQ := expressions.ForEachQuantifier(call.MemoizeExpression(coveringPlan))
@@ -210,8 +211,22 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	// reads every row via random PK lookups, always slower than
 	// InMemorySort(FullScan). Selective Fetches (WHERE predicate
 	// consumed by the index) are kept — they read fewer rows.
-	orderedExpr := findOrderedPhysicalExpr(innerRef, orderingKeys)
-	if orderedExpr != nil && admissibleStreamingAggInner(orderedExpr) {
+	//
+	// EVERY ordered physical member yields its own parent, not just the first
+	// one found. A single pick makes the non-picked members invisible to cost
+	// rather than out-priced by it, and the two filters below are precisely
+	// where that goes wrong: `admissibleStreamingAggInner` and the full-range
+	// Fetch skip can REJECT the first ordered member while a later member — the
+	// bare index scan over the same group — would have been admitted. The rule
+	// then yields no index path at all and the aggregate falls back to
+	// InMemorySort(FullScan), reading and materializing the whole table where an
+	// ordered index scan was available. Enumerating is also what the parent
+	// construction does elsewhere; a rule-time single pick is a cost decision
+	// taken where the cost model cannot see it.
+	for _, orderedExpr := range findOrderedPhysicalExprs(innerRef, orderingKeys) {
+		if !admissibleStreamingAggInner(orderedExpr) {
+			continue
+		}
 		if fw, isFetch := orderedExpr.(*plans.RecordQueryFetchFromPartialRecordPlan); isFetch && isFullRangeFetch(fw) {
 			// Skip — InMemorySort(FullScan) is cheaper than Fetch(IndexScan(full-range)).
 		} else if _, ok := orderedExpr.(physicalPlanExpression); ok {
@@ -252,9 +267,16 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	}
 }
 
-// findOrderedPhysicalExpr scans the Reference for a physical-plan
-// member whose ordering satisfies the grouping keys (in order).
-func findOrderedPhysicalExpr(ref *expressions.Reference, groupingKeys []values.Value) expressions.RelationalExpression {
+// findOrderedPhysicalExprs returns EVERY physical-plan member of ref whose
+// ordering satisfies the grouping keys (in order), in member order.
+//
+// It returns all of them rather than the first because its callers apply
+// admissibility filters afterwards: returning one member means a rejected
+// first candidate suppresses an admissible later one, and the difference is
+// invisible — the plan simply comes out without the index, with nothing
+// reporting that an alternative existed.
+func findOrderedPhysicalExprs(ref *expressions.Reference, groupingKeys []values.Value) []expressions.RelationalExpression {
+	var out []expressions.RelationalExpression
 	for _, m := range ref.AllMembers() {
 		if _, ok := m.(physicalPlanExpression); !ok {
 			continue
@@ -264,10 +286,10 @@ func findOrderedPhysicalExpr(ref *expressions.Reference, groupingKeys []values.V
 			continue
 		}
 		if orderingSatisfiesGroupingKeys(o, groupingKeys) {
-			return m
+			out = append(out, m)
 		}
 	}
-	return nil
+	return out
 }
 
 // orderingSatisfiesGroupingKeys returns true if the ordering's leading
@@ -314,6 +336,29 @@ func isFullRangeFetch(fw *plans.RecordQueryFetchFromPartialRecordPlan) bool {
 // enforcer — rules that need index properties look through it. Since RFC-184 W2
 // the index scan is its own cascades expression (no physicalIndexScanWrapper),
 // carrying its metadata (columns/pk/unique/covering) on the plan itself.
+// findCoveringIndexPlan locates a covering index scan in ref, descending
+// through a Fetch exactly as findIndexScanPlan does. The access path builds
+// Fetch(Covering(IndexScan)), so the covering scan a rule wants to place under
+// an operator that needs no base record is one level below the fetch.
+func findCoveringIndexPlan(ref *expressions.Reference) *plans.RecordQueryCoveringIndexPlan {
+	if ref == nil {
+		return nil
+	}
+	for _, m := range ref.AllMembers() {
+		if p, ok := m.(*plans.RecordQueryCoveringIndexPlan); ok {
+			return p
+		}
+		if fw, ok := m.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
+			if innerRef := fw.GetInnerQuantifier().GetRangesOver(); innerRef != nil {
+				if p := findCoveringIndexPlan(innerRef); p != nil {
+					return p
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func findIndexScanPlan(ref *expressions.Reference) *plans.RecordQueryIndexPlan {
 	if ref == nil {
 		return nil

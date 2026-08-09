@@ -118,11 +118,18 @@ func TestNestedIn_OverIntersection(t *testing.T) {
 	// binding),…))`), so the test passed against the very bug it was rewritten
 	// to pin. Nesting is the whole claim here: the filter must sit ABOVE the
 	// fetch, not below it on an index entry that carries neither A nor B.
-	for _, want := range []string{"PredicatesFilter(Fetch(IndexScan(IDX_C", "[2 preds]"} {
+	// Since RFC-220 a bare IndexScan IS a fetching scan, so the nesting reads
+	// PredicatesFilter(IndexScan(...)) with no separate Fetch node. The claim is
+	// unchanged and still ordered: the filter must sit above a scan that reads
+	// BASE RECORDS. "Above a record read" is now expressed as the scan carrying no
+	// COVERING marker (assertScanReadsBaseRecords), which is exactly the property
+	// the old Fetch( nesting stood for — an index entry here carries neither A nor B.
+	for _, want := range []string{"PredicatesFilter(IndexScan(IDX_C", "[2 preds]"} {
 		if !strings.Contains(plan, want) {
 			t.Errorf("want %s in the plan, got: %s", want, plan)
 		}
 	}
+	assertScanReadsBaseRecords(t, plan, "IndexScan(IDX_C")
 }
 
 // TestInJoinBelowFetch_RelinksRealChild is the sentinel
@@ -147,7 +154,14 @@ func TestInJoinBelowFetch_RelinksRealChild(t *testing.T) {
 CREATE TABLE T_AB (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))
 CREATE INDEX idx_a ON T_AB (a)
 CREATE INDEX idx_b ON T_AB (b)`
-	const q = "SELECT id, a FROM t_ab WHERE a IN (1,2) ORDER BY id"
+	// NO ORDER BY, deliberately. With an ORDER BY the planner now prefers an
+	// IN-UNION, which merges the per-binding streams and needs no InJoin at all —
+	// so this sentinel would stop exercising PushInJoinThroughFetchRule's relink
+	// entirely and go silently green on a path it no longer covers. Without the
+	// ORDER BY there is no ordering for a union to satisfy, the IN-JOIN shape is
+	// the one planned, and the relink stays under test. (Measured: the same query
+	// WITH ORDER BY plans InUnion(IndexScan(IDX_A, [=]), bindings=1, ASC).)
+	const q = "SELECT id, a FROM t_ab WHERE a IN (1,2)"
 	plan, err := PlanQueryForTest(q, schema, nil)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -155,9 +169,16 @@ CREATE INDEX idx_b ON T_AB (b)`
 	if strings.Contains(plan, "<nil>") {
 		t.Fatalf("relink left a nil inner: %s", plan)
 	}
-	// The exact nesting matters: the InJoin must sit BELOW the fetch and hold
-	// the index scan. `InJoin(` alone would also match the un-pushed shape.
-	if !strings.Contains(plan, "Fetch(InJoin(IndexScan(IDX_A") {
-		t.Errorf("want Fetch(InJoin(IndexScan(IDX_A…))) with real children, got: %s", plan)
+	// The exact nesting still matters: the InJoin must HOLD the index scan
+	// directly, which is what proves the relink ran. `InJoin(` alone would also
+	// match the un-pushed shape.
+	//
+	// The enclosing `Fetch(` is gone and its absence is not a weakening: the
+	// projection (id, a) is covered by idx_a plus the primary key, so
+	// MergeProjectionAndFetchRule elides the fetch and leaves a COVERING scan
+	// under the InJoin. Requiring `Fetch(` here would now assert the absence of a
+	// correct optimization rather than the presence of the relink.
+	if !strings.Contains(plan, "InJoin(IndexScan(IDX_A") {
+		t.Errorf("want InJoin(IndexScan(IDX_A…)) with real children, got: %s", plan)
 	}
 }

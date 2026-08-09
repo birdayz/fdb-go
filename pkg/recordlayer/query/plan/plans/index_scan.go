@@ -39,8 +39,6 @@ type RecordQueryIndexPlan struct {
 	flowedType      values.Type
 	reverse         bool
 	strictlySorted  bool
-	covering        bool
-	coveringColumns []string
 	// distinctProofIndexName names the secondary UNIQUE index whose uniqueness
 	// licensed eliding a DISTINCT above this scan (distinct_proof_stamp.go).
 	distinctProofIndexName string
@@ -372,22 +370,6 @@ func (p *RecordQueryIndexPlan) WithStrictlySorted() *RecordQueryIndexPlan {
 	return &cp
 }
 
-// IsCovering reports whether the index provides all columns needed by
-// the query, eliminating the need to fetch the full record by PK.
-func (p *RecordQueryIndexPlan) IsCovering() bool { return p.covering }
-
-// GetCoveringColumns returns the index column names when covering.
-func (p *RecordQueryIndexPlan) GetCoveringColumns() []string { return p.coveringColumns }
-
-// WithCovering returns a shallow copy marked as a covering index scan.
-func (p *RecordQueryIndexPlan) WithCovering(columns []string) *RecordQueryIndexPlan {
-	cp := *p
-	cp.covering = true
-	cp.coveringColumns = make([]string, len(columns))
-	copy(cp.coveringColumns, columns)
-	return &cp
-}
-
 // GetResultType returns the row Type.
 func (p *RecordQueryIndexPlan) GetResultType() values.Type { return p.flowedType }
 
@@ -405,8 +387,10 @@ func (p *RecordQueryIndexPlan) GetChildren() []RecordQueryPlan { return nil }
 // structuralKey folds the index scan's identity: index name, SARG comparison
 // ranges (shape AND comparands — two different-comparand scans must stay in
 // distinct References, else the memo materializes the wrong-comparand scan,
-// mirroring Java's full scanParameters equality), the reverse / strictlySorted /
-// covering flags, the record-type set, and the flowed type (equals-only). The
+// mirroring Java's full scanParameters equality), the reverse / strictlySorted
+// flags, the record-type set, and the flowed type (equals-only). Coveringness is
+// NOT folded here and cannot be: it is a distinct plan type wrapping this one,
+// whose own structuralKey folds this key as a sub-key. The
 // stable per-instance resultValue is excluded (RFC-184 W2). The same key drives
 // EqualsPlanWithoutChildren and HashCodeWithoutChildren.
 func (p *RecordQueryIndexPlan) structuralKey() *structuralKey {
@@ -419,7 +403,6 @@ func (p *RecordQueryIndexPlan) structuralKey() *structuralKey {
 		Int(p.physicalGroupingPrefixCount).
 		Bool(p.reverse).
 		Bool(p.strictlySorted).
-		Bool(p.covering).
 		Strs(p.recordTypes).
 		Type(p.flowedType).
 		Str(p.distinctProofIndexName)
@@ -434,8 +417,20 @@ func (p *RecordQueryIndexPlan) HashCodeWithoutChildren() uint64 {
 	return p.structuralKey().Hash("indexplan|")
 }
 
-// Explain renders a one-line label.
-func (p *RecordQueryIndexPlan) Explain() string {
+// Explain renders a one-line label. A bare index scan is never covering — a
+// covering scan is a distinct plan type wrapping this one, and it renders
+// through explainWithCovering.
+func (p *RecordQueryIndexPlan) Explain() string { return p.explainScan(false) }
+
+// explainWithCovering renders this scan's label carrying the COVERING marker.
+// It exists so RecordQueryCoveringIndexPlan can render its inner WITHOUT
+// string surgery on an already-rendered label: splicing at the last "]" both
+// assumes a bracket that a future label change could move and double-stamps
+// whenever the inner already carries the marker. Passing the flag down to the
+// one builder that knows the layout makes both impossible.
+func (p *RecordQueryIndexPlan) explainWithCovering() string { return p.explainScan(true) }
+
+func (p *RecordQueryIndexPlan) explainScan(covering bool) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("IndexScan(%s, [", p.indexName))
 	for i, cr := range p.scanComparisons {
@@ -452,7 +447,7 @@ func (p *RecordQueryIndexPlan) Explain() string {
 		}
 	}
 	b.WriteString("]")
-	if p.covering {
+	if covering {
 		b.WriteString(" COVERING")
 	}
 	if p.reverse {

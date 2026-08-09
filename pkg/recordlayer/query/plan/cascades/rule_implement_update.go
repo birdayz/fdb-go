@@ -3,24 +3,30 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // ImplementUpdateRule implements a logical UpdateExpression as a
-// physical RecordQueryUpdatePlan, gated on the inner Reference
-// having at least one physical-plan member.
+// physical RecordQueryUpdatePlan.
 //
-//	Update(target, [transforms], inner-with-physical-member)
-//	  →  UpdatePlan(target, [transforms], inner-physical)
+//	Update(target, [transforms], stored-record-access-path)
+//	  →  UpdatePlan(target, [transforms],
+//	         UnorderedPrimaryKeyDistinct(stored-record-access-path))
 //
-// Per-row transform application happens at execution time (not
-// rule-fire time) — transforms pass through unchanged. The rule
-// structure is identical to ImplementInsert/Delete; the
-// transforms-evaluation gating is in the executor, not the rule.
+// Ports Java's ImplementUpdateRule 1:1 on both of its structural decisions:
 //
-// Java's ImplementUpdateRule consults StoredRecordProperty for
-// dispatch; Go always emits.
+//   - the inner reference is bound only through partitions whose
+//     StoredRecordProperty holds (ImplementUpdateRule.java:54-57), and
+//   - a primary-key dedup is interposed UNCONDITIONALLY between the access path
+//     and the mutation (ImplementUpdateRule.java:79-80). The update rule does
+//     not consult DistinctRecordsProperty at all — only ImplementDeleteRule
+//     does — so neither does this one.
+//
+// Both are handled by storedRecordDMLCandidates / dmlDedupedInnerQuantifier,
+// where the reasoning for each lives.
+//
+// Per-row transform application happens at execution time (not rule-fire
+// time) — transforms pass through unchanged.
 type ImplementUpdateRule struct {
 	matcher matching.BindingMatcher
 }
@@ -35,25 +41,22 @@ func NewImplementUpdateRule() *ImplementUpdateRule {
 // Matcher returns the pattern.
 func (r *ImplementUpdateRule) Matcher() matching.BindingMatcher { return r.matcher }
 
-// OnMatch fires on every UpdateExpression with a physical inner.
+// OnMatch fires on every UpdateExpression, once per stored-record access path
+// the inner reference offers.
 func (r *ImplementUpdateRule) OnMatch(call *ExpressionRuleCall) {
 	upd := matching.Get[*expressions.UpdateExpression](call.Bindings, r.matcher)
 	innerRef := upd.GetInner().GetRangesOver()
 	if innerRef == nil {
 		return
 	}
-	winner, _ := getWinnerForOrdering(innerRef, properties.PreserveOrdering(), call.CostModel())
-	if winner == nil {
-		return
+	for _, candidate := range storedRecordDMLCandidates(innerRef) {
+		// The UPDATE plan is its own cascades expression (RFC-184 W2) — it
+		// carries the live child edge directly, no physicalUpdateWrapper.
+		innerQ := dmlDedupedInnerQuantifier(call, candidate, false)
+		updPlan := plans.NewRecordQueryUpdatePlanFromQuantifier(
+			innerQ, upd.GetTargetRecordType(), upd.GetTransforms())
+		call.Yield(updPlan)
 	}
-	if _, ok := winner.(physicalPlanExpression); !ok {
-		return
-	}
-	// The UPDATE plan is its own cascades expression now (RFC-184 W2) — it carries
-	// the live child edge directly, no physicalUpdateWrapper.
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
-	updPlan := plans.NewRecordQueryUpdatePlanFromQuantifier(innerQ, upd.GetTargetRecordType(), upd.GetTransforms())
-	call.Yield(updPlan)
 }
 
 var _ ExpressionRule = (*ImplementUpdateRule)(nil)

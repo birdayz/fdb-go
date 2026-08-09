@@ -60,7 +60,7 @@ func TestIndexPrimaryKeySuffixTypesParticipateInIdentityAndCopies(t *testing.T) 
 		longPlan.HashCodeWithoutChildren() == doublePlan.HashCodeWithoutChildren() {
 		t.Fatal("plans with LONG versus DOUBLE PK suffix metadata coalesced")
 	}
-	copied := doublePlan.WithScanComparisons(nil).WithStrictlySorted().WithCovering([]string{"STATUS"})
+	copied := doublePlan.WithScanComparisons(nil).WithStrictlySorted()
 	got := copied.GetPrimaryKeyComponentTypes()
 	if len(got) != 1 || got[0].Code() != values.TypeCodeDouble {
 		t.Fatalf("copy lost DOUBLE PK suffix metadata: %v", got)

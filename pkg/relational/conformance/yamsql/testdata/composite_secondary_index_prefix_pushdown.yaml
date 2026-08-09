@@ -60,7 +60,7 @@ tests:
   # evalPredicate. Result set narrows correctly regardless of whether
   # the branch fires or falls through.
   - query: SELECT id FROM rp WHERE region = 'us' AND tier = 1 ORDER BY id
-    plan_contains: "PredicatesFilter(IndexScan(IDX_REGION_PLAN_TIER, [=, *, *])"
+    plan_contains: "PredicatesFilter(IndexScan(IDX_REGION_PLAN_TIER, [=, *, *] COVERING)"
     plan_not_contains: "Scan(RP)"
     rows:
       - [1]
@@ -116,7 +116,7 @@ tests:
   # prefix is only [region] (stops at first non-equated col).
   # Trailing tier=1 stays post-filter. No bogus "skip-middle" behavior.
   - query: SELECT id FROM rp WHERE region = 'us' AND tier = 2 ORDER BY id
-    plan_contains: "PredicatesFilter(IndexScan(IDX_REGION_PLAN_TIER, [=, *, *])"
+    plan_contains: "PredicatesFilter(IndexScan(IDX_REGION_PLAN_TIER, [=, *, *] COVERING)"
     plan_not_contains: "[=, *, =]"
     rows:
       - [2]

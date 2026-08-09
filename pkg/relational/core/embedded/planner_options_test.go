@@ -154,7 +154,10 @@ func TestPlannerOptions_DisabledPlannerRules(t *testing.T) {
 	const sql = "SELECT id, c FROM T WHERE a = 1"
 
 	base := explainWithOptions(t, sql, indexedTableDDL, nil)
-	const wantBase = "Project([ID#0, C#3], Fetch(IndexScan(IDX_A, [=])))"
+	// A bare IndexScan IS a fetching scan since RFC-220 (Java semantics), and
+	// MergeFetchIntoCoveringIndexRule collapses Fetch(Covering(Index)) into it.
+	// The fixture still starts from an INDEX plan, which is all the contrast needs.
+	const wantBase = "Project([ID#0, C#3], IndexScan(IDX_A, [=]))"
 	if base != wantBase {
 		t.Fatalf("default plan = %q, want %q — the fixture must start from an INDEX plan for "+
 			"the disabled-rule contrast to mean anything", base, wantBase)
@@ -260,7 +263,8 @@ func TestPlannerOptions_DisablePlannerRewriting(t *testing.T) {
 		const sql = "SELECT T.id FROM T LEFT JOIN T AS U ON T.a = U.a"
 
 		base := explainWithOptions(t, sql, indexedTableDDL, nil)
-		const wantBase = "Project([T.ID#0], FlatMap(outer=Scan(T), inner=DefaultOnEmpty(Fetch(IndexScan(IDX_AB, [=, *])))))"
+		// See the note above: the inner index scan fetches its own records now.
+		const wantBase = "Project([T.ID#0], FlatMap(outer=Scan(T), inner=DefaultOnEmpty(IndexScan(IDX_AB, [=, *]))))"
 		if base != wantBase {
 			t.Fatalf("default plan = %q, want %q — the fixture must start from the REWRITTEN "+
 				"outer join for the contrast to mean anything", base, wantBase)

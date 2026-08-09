@@ -250,11 +250,13 @@ func TestStreamingAggFromIndex_RejectsFanOutCandidate(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *plans.RecordQueryStreamingAggregationPlan, got %T", results[0])
 	}
-	indexPlan, ok := agg.GetInner().(*plans.RecordQueryIndexPlan)
+	// The rule builds a COVERING scan (RFC-220: coveringness is the plan type,
+	// constructed where the scan is built, never stamped later onto a bare scan).
+	coveringPlan, ok := agg.GetInner().(*plans.RecordQueryCoveringIndexPlan)
 	if !ok {
-		t.Fatalf("expected aggregate over a bare index scan, got %T", agg.GetInner())
+		t.Fatalf("expected aggregate over a covering index scan, got %T", agg.GetInner())
 	}
-	if got := indexPlan.GetIndexName(); got != "T$tags_scalar" {
+	if got := coveringPlan.GetIndexName(); got != "T$tags_scalar" {
 		t.Fatalf("aggregate shortcut selected %q, want the non-fan-out candidate", got)
 	}
 }

@@ -16,8 +16,8 @@ func TestMergeFetchIntoCoveringIndex_FiresOnFetchOverIndex(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_name", nil, []string{"MyRecord"}, values.UnknownType, false,
 	)
-	indexWrapper := indexPlan.WithCovering(nil)
-	indexRef := expressions.InitialOf(indexWrapper)
+	coveringPlan := plans.NewRecordQueryCoveringIndexPlan(indexPlan)
+	indexRef := expressions.InitialOf(coveringPlan)
 
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 		indexPlan, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,

@@ -195,7 +195,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `having_not_exists` | 1 | 1 | 0 | 0 | HAVING with NOT EXISTS subquery |
 | `in_list_advanced` | 10 | 8 | 0 | 2 | Advanced IN-list scenarios from Java's in-predicate.yamsql: |
 | `in_list_comprehensive` | 8 | 8 | 0 | 0 | Comprehensive IN-list tests |
-| `in_list_index_plan` | 6 | 6 | 0 | 0 | IN-list queries must use InJoin(IndexScan) |
+| `in_list_index_plan` | 6 | 6 | 0 | 0 | IN-list queries must probe the index per value |
 | `in_list_null` | 4 | 1 | 0 | 3 | Java rejects NULL anywhere in the IN list with verbatim "NULL values |
 | `in_list_pushdown` | 45 | 38 | 3 | 4 | IN-list pushdown: `WHERE pk_col IN (v1, v2, ...)` on a single-column |
 | `in_list_with_order_by` | 3 | 3 | 0 | 0 | IN-list combined with ORDER BY |

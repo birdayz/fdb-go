@@ -1439,19 +1439,36 @@ func compensationProbeCorrelations(f *expressions.LogicalFilterExpression) map[v
 // correlations of every primary or index scan in p's plan subtree into out. The
 // matched data-access plan is wrapped (TypeFilter / Fetch / Covering …) above the
 // bound Scan, so recurse through GetChildren to reach it.
+//
+// The covering scan needs its OWN arm rather than being reached by the descent:
+// it holds its index scan as a FIELD, so GetChildren returns nothing and the
+// recursion stops there. Java delegates the same fact the same way —
+// RecordQueryCoveringIndexPlan implements RecordQueryPlanWithNoChildren and
+// answers getCorrelatedTo() with indexPlan.getCorrelatedTo()
+// (RecordQueryCoveringIndexPlan.java:224) — so a correlation carried by the
+// inner probe is a correlation OF the covering plan, not of a child it has.
+//
+// Without the arm, the probe correlations of a covering data-access scan read as
+// EMPTY, and compensationResidualCorrelationSafe then rejects every residual
+// correlated to the outer leg it is in fact already fed by: the compensation is
+// routed to InsertFinal with no exploration task, ImplementFilterRule never
+// fires on it, and the correlated index probe is never CONSTRUCTED — the join
+// falls back to a materialized full-scan NLJ with identical rows.
 func collectScanPlanCorrelations(p plans.RecordQueryPlan, out map[values.CorrelationIdentifier]struct{}) {
 	if p == nil {
 		return
 	}
+	var ranges []*predicates.ComparisonRange
 	switch sp := p.(type) {
 	case *plans.RecordQueryScanPlan:
-		for a := range scanComparisonCorrelations(sp.GetScanComparisons()) {
-			out[a] = struct{}{}
-		}
+		ranges = sp.GetScanComparisons()
 	case *plans.RecordQueryIndexPlan:
-		for a := range scanComparisonCorrelations(sp.GetScanComparisons()) {
-			out[a] = struct{}{}
-		}
+		ranges = sp.GetScanComparisons()
+	case *plans.RecordQueryCoveringIndexPlan:
+		ranges = sp.GetScanComparisons()
+	}
+	for a := range scanComparisonCorrelations(ranges) {
+		out[a] = struct{}{}
 	}
 	for _, c := range p.GetChildren() {
 		collectScanPlanCorrelations(c, out)

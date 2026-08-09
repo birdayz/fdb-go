@@ -169,13 +169,20 @@ CREATE INDEX idx_amount ON ORDERS(amount)`
 		t.Fatalf("plan: %v", err)
 	}
 	t.Logf("COUNT(status): %s", plan)
-	// COUNT(col) must read col → the scan must Fetch (not a zero-column COVERING
-	// scan that reads status as NULL and returns 0). Assert the Fetch positively.
-	if !strings.Contains(plan, "Fetch") {
-		t.Errorf("COUNT(col) must Fetch the counted column, got a non-fetching plan (status would read NULL → COUNT=0): %s", plan)
-	}
+	// COUNT(col) must read col, so the scan must NOT answer from the index entry.
+	//
+	// The positive `Fetch` assertion that used to sit here is gone, and its
+	// removal does not weaken this test — the COVERING assertion below IS the
+	// hazard. Since RFC-220 a bare `IndexScan(…)` is itself a fetching scan
+	// (executeIndexScan resolves every entry by primary key), so `Fetch` is
+	// absent from correct plans and its presence proves nothing either way. What
+	// would actually break COUNT(status) is the scan becoming COVERING over
+	// idx_amount, which does not carry status: every row would read NULL and the
+	// count would come back 0. That is the assertion, and it still fails loudly
+	// if the plan ever becomes covering.
 	if strings.Contains(plan, "COVERING") {
-		t.Errorf("COUNT(col) over an index lacking col must not be COVERING: %s", plan)
+		t.Errorf("COUNT(col) over an index lacking col must not be COVERING — "+
+			"status would read NULL for every row and COUNT would return 0: %s", plan)
 	}
 
 	// Controls: COUNT(*) and COUNT(<constant>) read no base-record field, so they

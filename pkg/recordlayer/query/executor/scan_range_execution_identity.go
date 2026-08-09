@@ -368,12 +368,57 @@ func indexScanRangeFingerprintSalt(
 	plan *plans.RecordQueryIndexPlan,
 	scanType recordlayer.IndexScanType,
 ) (string, error) {
+	// A bare index plan is never covering — coveringness is
+	// RecordQueryCoveringIndexPlan. The two fields are nonetheless still
+	// WRITTEN, at their original positions and with their original names, so
+	// the digest of a plan this RFC did not change stays BYTE-IDENTICAL and
+	// in-flight continuations keep resuming. They are constants here, not
+	// omissions: removing them would silently invalidate every outstanding
+	// index-scan continuation.
+	return indexScanRangeFingerprintSaltFields(plan, scanType, false, nil)
+}
+
+// coveringIndexScanRangeFingerprintSalt is the covering plan's execution
+// identity. It reproduces indexScanRangeFingerprintSalt's builder prefix and
+// field ORDER exactly, folding the inner plan's index name, reverse flag,
+// primary-key columns, record types and key/flowed types directly — the inner
+// is a field, not a child, so nothing else in the continuation path reaches it.
+//
+// Byte-identity is the point: a covering plan that this RFC left unchanged in
+// substance must produce the digest the flag-carrying plan produced, or every
+// outstanding covering-scan continuation is rejected on upgrade.
+//
+// The scan COMPARISONS are deliberately not folded here, and their omission is
+// not a C2 gap: the salt names everything OUTSIDE the ranges, and it is then
+// hashed together with the fully materialized ranges by
+// boundScanRangeSet.fingerprint (components, per-component alternatives, every
+// tail's endpoints, and the packed low/high bytes). Two covering scans over
+// different ranges therefore differ in that digest even though their salts
+// agree. Folding the comparisons here as well would change the digest of every
+// plan and buy nothing.
+func coveringIndexScanRangeFingerprintSalt(
+	plan *plans.RecordQueryCoveringIndexPlan,
+	scanType recordlayer.IndexScanType,
+) (string, error) {
+	return indexScanRangeFingerprintSaltFields(
+		plan.GetIndexPlan(), scanType, true, plan.GetCoveringColumns())
+}
+
+// indexScanRangeFingerprintSaltFields is the ONE field list both index-scan
+// salts emit. Sharing it is what makes "byte-identical for an unchanged plan" a
+// property of the code rather than of two copies staying in step.
+func indexScanRangeFingerprintSaltFields(
+	plan *plans.RecordQueryIndexPlan,
+	scanType recordlayer.IndexScanType,
+	covering bool,
+	coveringColumns []string,
+) (string, error) {
 	b := newScanRangeExecutionIdentityBuilder("index")
 	b.stringField("index-name", plan.GetIndexName())
 	b.stringField("scan-type", string(scanType))
 	b.boolField("reverse", plan.IsReverse())
-	b.boolField("covering", plan.IsCovering())
-	b.stringsField("covering-columns", plan.GetCoveringColumns())
+	b.boolField("covering", covering)
+	b.stringsField("covering-columns", coveringColumns)
 	b.stringsField("primary-key-columns", plan.GetPKColumnNames())
 	b.stringsField("record-types", plan.GetRecordTypes())
 	if err := b.typesField("physical-key-types", plan.GetKeyComponentTypes()); err != nil {
