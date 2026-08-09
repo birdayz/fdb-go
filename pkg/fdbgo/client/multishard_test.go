@@ -256,6 +256,101 @@ func TestMultiShard(t *testing.T) {
 	t.Run("ContinuationCorrectnessWithCacheInvalidation", func(t *testing.T) {
 		testMultiShard_ContinuationCorrectnessWithCacheInvalidation(t, ctx, env)
 	})
+	t.Run("MappedRangeAcrossShards", func(t *testing.T) {
+		testMultiShard_MappedRangeAcrossShards(t, ctx, env)
+	})
+}
+
+// MappedRange: a mapped read whose PRIMARY range spans more than one shard.
+//
+// Every other GetMappedRange test runs on the single-process container, where the
+// whole index range is one shard and rangeScanImpl's shard walk never executes.
+// That gap matters more for a mapped read than for a plain one, because of what
+// the storage server does to the rows: on the getValue arm it blanks the primary
+// key and value on every row except the first and last of each REPLY
+// (storageserver.actor.cpp:6024-6031), and the shard walk continues from
+// keyAfter(lastRow.Key). Concatenating replies from several shards is therefore
+// correct only while each reply's boundary rows carry their index entry — which
+// is invisible on one shard, where there is a single reply and nothing to
+// continue from.
+//
+// The fixture is seeded here rather than reusing env's: it is the PRIMARY range
+// that has to cross a boundary, so the INDEX entries are what must carry enough
+// bytes to split, and env's flat keyspace has no mapper-shaped layout.
+func testMultiShard_MappedRangeAcrossShards(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
+	f := mappedFixture{prefix: []byte("msmapped"), n: 60}
+	// 8 KiB of padding per index entry puts ~480 KiB in the index keyspace alone,
+	// which splits many times over at max_shard_bytes=50000.
+	pad := bytes.Repeat([]byte{'p'}, 8*1024)
+	for batch := 0; batch < 6; batch++ {
+		_, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+			for i := batch * 10; i < (batch+1)*10; i++ {
+				tx.Set(f.indexEntryKey(i), pad)
+				tx.Set(f.recordKey(i), []byte(fmt.Sprintf("record-%08d", i)))
+			}
+			return nil, nil
+		})
+		g.Expect(err).ToNot(gomega.HaveOccurred(), "seed mapped batch %d", batch)
+	}
+
+	begin, end := f.indexRange()
+
+	// Non-vacuity: the PRIMARY range must really span more than one shard, or this
+	// sub-test is an expensive re-run of the single-shard path. env.numShards says
+	// nothing about it — that is a different range in a different keyspace.
+	var indexShards int
+	var lastErr error
+	g.Eventually(func() int {
+		res, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+			return tx.db.locCache.locateRange(tx.db, ctx, begin, end, 100, false, tx.tenantId, tx.currentSpan())
+		})
+		if err != nil {
+			lastErr = err
+		} else {
+			indexShards = len(res.([]LocationResult))
+		}
+		env.db.db.locCache.invalidateRange(begin, end, NoTenantID)
+		return indexShards
+	}).WithTimeout(90*time.Second).WithPolling(2*time.Second).Should(gomega.BeNumerically(">", 1),
+		func() string {
+			return fmt.Sprintf("the mapped read's PRIMARY range never split beyond one shard, so a green "+
+				"here would only have re-run the single-shard path. last locateRange error: %v", lastErr)
+		})
+	t.Logf("mapped primary range spans %d shards", indexShards)
+
+	for _, tc := range []struct {
+		name    string
+		reverse bool
+	}{{"forward", false}, {"reverse", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			tx := env.db.CreateTransaction()
+			defer tx.Cancel()
+
+			rows, more, err := tx.GetMappedRange(ctx, begin, end, f.getValueMapper(), 0, tc.reverse)
+			g.Expect(err).ToNot(gomega.HaveOccurred())
+			g.Expect(more).To(gomega.BeFalse(), "an unlimited read must exhaust every shard")
+			g.Expect(rows).To(gomega.HaveLen(f.n),
+				"a row was lost or duplicated at a shard boundary — the walk continues from the last row's index entry")
+
+			for i := range rows {
+				want := i
+				if tc.reverse {
+					want = f.n - 1 - i
+				}
+				// The mapped KEY is populated on every row regardless of the
+				// boundary blanking, so it is what pins order across the join of
+				// several replies.
+				g.Expect(rows[i].GetValue.Key).To(gomega.Equal(f.recordKey(want)),
+					"row %d resolved to the wrong record", i)
+				g.Expect(rows[i].GetValue.Present).To(gomega.BeTrue(), "row %d record missing", i)
+				g.Expect(rows[i].GetValue.Value).To(gomega.Equal([]byte(fmt.Sprintf("record-%08d", want))),
+					"row %d value", i)
+			}
+		})
+	}
 }
 
 // GetRange: full forward scan across all shards.
