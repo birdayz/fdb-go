@@ -10560,9 +10560,15 @@ func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
 // is this branch. The unverifiable claim survives intact — master already reads
 // 104, so 84 -> 104 is growth.
 //
-// The ceiling is deliberately NOT raised: 68 against 200 has ample headroom, and
-// a bound moved to accommodate the movement it was installed to detect is not a
-// bound.
+// ON THE CEILING, stated precisely because the loose phrasing gives away the
+// stronger claim: DeclinedCeiling is not "200, unchanged". Master aba271454 has
+// NO DeclinedCeiling and NO MatchedFloor — the OrientationGateFloors struct
+// there carries only Calls, MapCountDiffers and UnverifiableCeiling, and the
+// floors var sets only the last. Both bounds are INTRODUCED here, at 200 against
+// a measured 68, and not moved by any later fold. A population that had no bound
+// at all now has one, which is a stronger safety statement than a bound that
+// stayed put — and a bound moved to accommodate the movement it was installed to
+// detect would be neither.
 var orientationGateFloors = cascades.OrientationGateFloors{
 	Calls:           40, // measured 506
 	MapCountDiffers: 7,  // measured 92

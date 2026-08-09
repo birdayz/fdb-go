@@ -463,7 +463,14 @@ Concretely:
    > elimination rules are registered (`default_rules.go:72`, `:322`) and both are dead on SQL
    > traffic.
    >
-   > **Decision: (c).** Make the one-slot whole-row projection **unbuildable**, so the
+   > **Decision: (c) — DESIGN ONLY; NOT IMPLEMENTED IN THIS CHANGE. See the STATUS block ~44
+   > lines below before reading any of what follows as shipped.** Everything in this decision is
+   > written in the assertive voice of a plan that was expected to land in this change and did
+   > not: no constructor guard exists, the shape is fully constructible, and what shipped is a
+   > DERIVATION that declines to synthesise a row. The design stands as the follow-on's spec
+   > (§6b); the tense does not describe the tree.
+   >
+   > Make the one-slot whole-row projection **unbuildable**, so the
    > disagreement is unreachable by construction rather than caught by a consumer. (b) loses on
    > the repo's own rule that emergent structure beats a downstream check: it leaves the
    > ill-shaped member constructible and merely forbids one consumer from noticing, which is the
@@ -743,7 +750,7 @@ The sites that **decide** rather than forward, in risk order:
 
 | site | today | after | risk |
 |---|---|---|---|
-| `rule_remove_projection.go:50` and `rule_projection_elim.go:65` | yield the inner **into the projection's own reference**, making a 1-slot-wrapping plan and an N-field plan co-members of one class; the projection contributes no type so the arity mismatch is invisible | **DELETED under Decision §4.4(c).** Their guards are unsatisfiable once the one-slot whole-row projection is unbuildable | **Was rated HIGHEST in rev 2 on the belief that this collides on `SELECT *`. That belief was WRONG and this RFC's own sweep refuted it:** `SELECT *` builds no projection node at all (`pkg/relational/core/embedded/select_parser.go:685`, `pkg/relational/core/embedded/logical_builder.go:714`), and no ORIGIN site emits a bare QOV, so the collision is unreachable from SQL and was only ever reachable from tests and the two planner fuzzers. The residual risk is not a wrong row — it is a *dead rule left registered*, which reads as coverage. Hence deletion rather than a guard |
+| `rule_remove_projection.go:50` and `rule_projection_elim.go:65` | yield the inner **into the projection's own reference**, making a 1-slot-wrapping plan and an N-field plan co-members of one class; the projection contributes no type so the arity mismatch is invisible | **TO BE DELETED under Decision §4.4(c) — NOT DONE IN THIS CHANGE; both files still exist on disk (§6b).** Their guards would become unsatisfiable only once the one-slot whole-row projection is genuinely unbuildable, which it is not: the guard that shipped is a DERIVATION refusing to synthesise a row, not a constructor refusing to build one | **Was rated HIGHEST in rev 2 on the belief that this collides on `SELECT *`. That belief was WRONG and this RFC's own sweep refuted it:** `SELECT *` builds no projection node at all (`pkg/relational/core/embedded/select_parser.go:685`, `pkg/relational/core/embedded/logical_builder.go:714`), and no ORIGIN site emits a bare QOV, so the collision is unreachable from SQL and was only ever reachable from tests and the two planner fuzzers. The residual risk is not a wrong row — it is a *dead rule left registered*, which reads as coverage. Hence deletion rather than a guard |
 | `Quantifier.GetFlowedObjectType` `quantifier.go:324` | projection member hits `rt == nil` → `continue` | contributes a row type, and can now **disagree** with a sibling → `MemberResultTypeDisagreementError` | **highest** — a silent skip becomes a hard error. `AllMembers()` includes *exploratory* members, so the comparison is against more than the winner |
 | `distinctKeyColumns` `rule_implement_distinct_final.go:904` | concrete-type branch short-circuits; generic branch returns nil | wrappers above a projection take the generic branch and **mint resolved ordinals** | **high** — starts baking ordinals. Its comment's stated invariant ("its GetResultType is always UnknownType") becomes false and must be rewritten |
 | `bakedIntersectionKeys` `intersector_primary_key.go:1220` | always declines on a projection leg | **REFUTED — no change.** The whole-corpus census reads `bakedIntersectionKeys resolved 412 UNRESOLVED 0`, so no stub-typed leg reaches it | **none** — the "high" rating was contradicted by this RFC's own citation, unread |
@@ -863,8 +870,15 @@ needs its own role-differential, which is §5's own rule.
   The failure mode is worth naming because it was named *in the same paragraph it happened in*:
   the text flagged that the drift pointed in the alarm direction, and then asserted past it with
   a control that could not see the question. A mutation of the branch answers "what does this arm
-  do"; only the pre-change baseline answers "what did we change". The ceiling stays at 200 — a
-  bound moved to accommodate the movement it was installed to detect is not a bound.
+  do"; only the pre-change baseline answers "what did we change".
+
+  **And the ceiling is not "200, unchanged" — master has no `DeclinedCeiling` and no
+  `MatchedFloor` at all.** The `OrientationGateFloors` struct at `aba271454` carries only `Calls`,
+  `MapCountDiffers` and `UnverifiableCeiling`, and the corpus's floors var sets only the last.
+  Both bounds are **introduced** by this change, at 200 against a measured 68, and not moved by
+  any subsequent fold. That is the stronger claim and the earlier phrasing gave it away: a
+  population that previously had **no bound in either direction** now has one. A bound moved to
+  accommodate the movement it was installed to detect would be neither.
 - `legLocalBakeFloors` (`sqldriver/embedded_fdb_test.go:759`) — `UnderivableLegs` should reach 0
   *including* the new derived-table arm. That is the acceptance criterion, not a floor to move.
 
