@@ -6993,7 +6993,15 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 // Load-bearing for a lateral-unnest SHADOWING group key, whose resolved Value is
 // a QUALIFIED FieldValue(QOV(V), V): its bare field name `V` (not the explain
 // `V.V`) is the aggregate output column. RFC-142.
+//
+// A NESTED key takes its resolved PATH for the same reason
+// expressions.AggregateKeyColumnName does, and through the same predicate: this
+// function is that authority's mirror, and a mirror that disagrees on one shape
+// is how a reference comes to read a slot the executor keyed differently.
 func aggregateGroupKeyOutputName(gkv values.Value) string {
+	if path, nested := values.NestedResolvedPath(gkv); nested {
+		return path
+	}
 	if fv, ok := gkv.(*values.FieldValue); ok {
 		return strings.ToUpper(fv.Field)
 	}

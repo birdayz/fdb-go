@@ -82,6 +82,7 @@ go_test(
     srcs = [
         "aggregate_group_key_accessor_name_test.go",
         "aggregate_group_key_call_site_guard_test.go",
+        "aggregate_group_key_nested_path_test.go",
         "aggregate_group_key_reachability_test.go",
         "aggregate_output_slot_domain_test.go",
         "aggregate_output_slot_recorded_test.go",
@@ -352,6 +353,7 @@ go_test(
         "plan_harness.go",
         "plan_harness_one_final_test.go",
         "derived_source_exists_plan_test.go",
+        "aggregate_group_key_nested_path_test.go",
     ],
     deps = [
         "//gen",

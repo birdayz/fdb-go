@@ -5393,8 +5393,8 @@ func extraSortColOfValue(extra []extraSortCol, val values.Value) int {
 // (`T1.ID`), which is what keeps a hidden column from shadowing an output alias
 // sharing the bare column name.
 func sortKeyExtraColumnName(k logical.SortKey) string {
-	if fv, ok := nestedResolvedSortKey(k); ok {
-		return strings.ToUpper(values.ColumnNameValue(fv))
+	if path, nested := values.NestedResolvedPath(k.Value); nested {
+		return path
 	}
 	return sortKeyFieldRef(k)
 }
@@ -5408,12 +5408,14 @@ func sortKeyExtraColumnName(k logical.SortKey) string {
 // that made a nested key carry a distinct per-member value were added ABOVE the
 // name derivation without the naming site learning about it, which is precisely
 // how two keys came to read different columns while being named the same.
+// The predicate itself now lives in values.NestedResolvedPath, so the sort side
+// and the projection/group-key sides cannot disagree about what "nested" means;
+// this stays as the SortKey-shaped wrapper its three structural callers need.
 func nestedResolvedSortKey(k logical.SortKey) (*values.FieldValue, bool) {
-	fv, ok := k.Value.(*values.FieldValue)
-	if !ok || fv.Resolved == nil || len(fv.Resolved.Accessors) <= 1 {
+	if _, nested := values.NestedResolvedPath(k.Value); !nested {
 		return nil, false
 	}
-	return fv, true
+	return k.Value.(*values.FieldValue), true
 }
 
 // stripSortQualifier returns the upper-cased BARE column name of a (possibly
@@ -9961,7 +9963,19 @@ func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []
 		}
 		out[i] = values.OutputColumnName(v, alias)
 		_, isField := v.(*values.FieldValue)
-		verbatimField[i] = alias == "" && isField
+		// A NESTED reference is a FieldValue whose emitted name is NOT its
+		// `Field`: OutputColumnName gives it the resolved PATH ("N.SK", or
+		// "T1.N.SK" over a multi-source FROM). "Unaliased AND a FieldValue" was
+		// a sufficient test for "this string is `Field` verbatim" only while
+		// those two coincided; once they part, the flag would assert
+		// identifier-provenance about a path, and the reader acts on it —
+		// splitting at the first dot into QOV("N"), a correlation named after a
+		// struct ROOT that is not a quantifier anywhere in the plan. Same
+		// garbage-correlation class as QOV("(B") and QOV("1"); this keeps the
+		// flag's meaning and the string in step, so the path takes the ordinal
+		// arm (read emitted slot i) instead.
+		_, nested := values.NestedResolvedPath(v)
+		verbatimField[i] = alias == "" && isField && !nested
 	}
 	return out, verbatimField, true
 }

@@ -4418,8 +4418,28 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 // spelled alike — and the separation is the whole difference between reporting
 // `SELECT u.name AS "U.NAME"` as Java does (verbatim) and degrading it.
 func deriveProjectionColumnDef(v values.Value, alias string, aliasMinted bool, idx int, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
+	// A NESTED reference is named by its resolved PATH, read from the one
+	// predicate every naming authority shares, and it is tested FIRST because it
+	// subsumes both arms below: `Field` is the struct ROOT, shared by every
+	// member, so `n.sk` and `n.co` were both named `N` here — duplicate labels
+	// over correct data, measured. Java names the fused reference by the
+	// requested identifier `n.sk` for exactly this reason
+	// (SemanticAnalyzer.java:598-599) and the top-level projection then clears
+	// the qualifier, so the user sees SK and CO.
+	//
+	// It subsumes the Child arm too, and that is the point rather than an
+	// accident: NestedResolvedPath renders THROUGH the child, so a nested
+	// reference over a ≥2-source FROM takes `T1.N.SK` here — the same qualified
+	// shape the `Child != nil` arm below produces for a flat reference, reached
+	// by one predicate instead of two. `Child == nil` is not the nested arm's
+	// precondition; the multi-accessor resolved path is. The Label computed from
+	// this Name is the unqualified leaf either way (`SK`), measured over
+	// `SELECT n.sk, n.co FROM t1, t2`, so the qualifier stays an internal slot
+	// key exactly as Java's does (Identifier.withoutQualifier, Identifier.java:101).
 	var name string
-	if fv, ok := v.(*values.FieldValue); ok {
+	if path, nested := values.NestedResolvedPath(v); nested {
+		name = path
+	} else if fv, ok := v.(*values.FieldValue); ok {
 		if fv.Child != nil {
 			name = values.ColumnNameValue(v)
 		} else {
@@ -4489,11 +4509,15 @@ func deriveProjectionColumnDef(v values.Value, alias string, aliasMinted bool, i
 	// the user-visible metadata.
 	displayLabel := label
 	if label == "" {
-		if fv, isField := v.(*values.FieldValue); isField && fv.Field != "" {
-			// fv.Field is qualified ("U.NAME") for a join projection but
-			// bare ("NAME") for a single source; the user-visible label is
-			// always the bare column, matching Java.
-			displayLabel = strings.ToUpper(parseColRef(fv.Field).bare())
+		if _, isField := v.(*values.FieldValue); isField && name != "" {
+			// The label is the bare LEAF of the column's NAME, not of fv.Field.
+			// Those differ for exactly one shape and it is the one that matters:
+			// a fused nested reference carries the struct ROOT in Field, so
+			// reading Field labelled `n.sk` as `N` — and `n.co` as `N` too.
+			// Java takes the leaf of the resolved identifier
+			// (Identifier.withoutQualifier, Identifier.java:101-106) applied by
+			// the top-level clearQualifier, which is SK and CO.
+			displayLabel = strings.ToUpper(parseColRef(name).bare())
 		}
 	} else if aliasMinted {
 		// A MACHINERY-pinned alias — the duplicated-bare-leaf dedup pins the
@@ -5319,10 +5343,15 @@ func buildAggColumns(
 		// has three mirrors that must agree: executor aggKeyName,
 		// aggregateGroupKeyOutputName (logical_predicate.go), and this
 		// derivation. So the qualified Name is load-bearing and stays.
-		name := values.ColumnNameValue(k)
-		if fv, ok := k.(*values.FieldValue); ok {
-			name = fv.Field
-		}
+		//
+		// THE THIRD MIRROR NOW READS THE AUTHORITY INSTEAD OF RE-DERIVING IT.
+		// It used to hand-copy the FieldValue-vs-ColumnNameValue rule, and a
+		// hand-copied rule is one that can be corrected in two places and
+		// missed in the third — which is exactly what a nested key would have
+		// done: the authority takes the resolved PATH, and a mirror still
+		// reading the flat root would key this column `N` against a row the
+		// cursor wrote under `N.SK`, serving NULL.
+		name := expressions.AggregateKeyColumnName(k)
 		// The DISPLAY label is always BARE: Java clears the qualifier on the
 		// top-level projection (Expression.clearQualifier), so a qualified group
 		// key `d.dname` labels the output column `DNAME`, never `D.DNAME`. Carry

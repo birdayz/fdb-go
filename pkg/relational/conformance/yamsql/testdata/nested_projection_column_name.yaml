@@ -1,0 +1,140 @@
+# nested_projection_column_name.yaml — a nested projection's OUTPUT NAME
+# (RFC-229 §2.3), on both the unqualified and the qualified arm.
+#
+# WHY THIS FILE EXISTS AT ALL. Before it, this 351-file hand-authored corpus
+# contained exactly TWO files declaring a struct type
+# (nested_correlation_over_a_join.yaml, projected_exists_nested_sort_key.yaml)
+# and ZERO that PROJECTED a nested member into the SELECT list:
+#
+#     grep -rl "TYPE AS STRUCT" pkg/relational/conformance/yamsql/testdata/   -> 2
+#     grep -rlE "SELECT [a-z_]+\.[a-z_]+\.[a-z_]+" .../testdata/             -> 0
+#
+# So "the corpus did not move" was structurally incapable of being evidence
+# about a change to nested projection naming: the corpus could not express the
+# input. A green there was absence of coverage, not proof of safety. That is the
+# claim this file converts into a real one, and any future statement of the form
+# "the goldens are unchanged" about this class of change must cite this file or
+# be rewritten.
+#
+# THE TWO ARMS ARE DIFFERENT NAMES, AND BOTH ARE PINNED HERE. The SQL resolver
+# FUSES `n.sk` into ONE FieldValue whose `Field` is the struct ROOT `N` with
+# resolved path [N, SK] — Java fuses identically (SemanticAnalyzer.java:598,
+# FieldValue.ofFieldsAndFuseIfPossible) and then names the result by the
+# REQUESTED IDENTIFIER rather than by the fused value (:599). `Field` therefore
+# answers "which struct does this read out of", never "which column is this",
+# so `n.sk` and `n.co` share it and both used to be named `N`.
+#
+#   - ONE source:  the slot is `N.SK`.
+#   - TWO sources: every reference is emitted through its quantifier, so the
+#     node carries QOV(T1) and the slot is `T1.N.SK`.
+#
+# The qualifier is DELIBERATE, not renderer leakage: over two sources each
+# declaring an `n`, `T1.N.SK` and `T2.N.SK` are different columns, and a bare
+# `N.SK` would re-create one level up exactly the collapse the path fixes. Java
+# keeps it too — the requested Identifier's fullyQualifiedName() retains its
+# qualifiers — and clears it only for the user-visible label
+# (Identifier.withoutQualifier, Identifier.java:101).
+#
+# THE FILE ASSERTS BOTH CHANNELS ON PURPOSE, because they disagree and each can
+# regress without the other:
+#   - `plan_contains` pins the INTERNAL slot name, which is the map key the
+#     executor WRITES and the translator READS. This is the channel that
+#     collapses two columns into one.
+#   - `columns` pins the USER-VISIBLE label, which is the bare leaf in both
+#     arms. Asserting only this would miss a qualifier regression entirely;
+#     asserting only the plan would miss the label degrading to `_0`.
+# `rows` is the control under both: `sk` and `co` are not functions of each
+# other, so a name bound to the wrong slot moves the DATA, not the spelling.
+name: nested_projection_column_name
+schema_template: |
+  CREATE TYPE AS STRUCT nst (sk BIGINT, co BIGINT)
+  CREATE TABLE t1 (id BIGINT, sk BIGINT, n nst, PRIMARY KEY (id))
+  CREATE TABLE t2 (id2 BIGINT, v BIGINT, PRIMARY KEY (id2))
+setup:
+  # t1.sk is deliberately a FLAT column whose name collides with the struct
+  # member's LEAF, and its values (99, 98) are disjoint from n.sk's (10, 11) so
+  # the two can never be confused for each other in a row assertion.
+  - INSERT INTO t1 VALUES (1, 99, (10, 21)), (2, 98, (11, 22))
+  # ONE row, so a comma-join keeps t1's cardinality and a row-count change
+  # cannot be mistaken for a naming effect.
+  - INSERT INTO t2 VALUES (100, 7)
+tests:
+  # THE REGRESSION THIS FILE EXISTS FOR. Both members of one struct root: before
+  # RFC-229 §2.3 both slots were named `N` and both labels read N.
+  - query: SELECT n.sk, n.co FROM t1 ORDER BY id
+    plan_contains: "Project([N#2.SK#0, N#2.CO#1], Scan(T1))"
+    columns: [SK, CO]
+    rows:
+      - [10, 21]
+      - [11, 22]
+
+  # A SINGLE nested member. One column cannot collide with anything, so this
+  # catches a fix that only engages when two nested columns are present — the
+  # name was wrong for `SELECT n.sk` alone too.
+  - query: SELECT n.sk FROM t1 ORDER BY id
+    plan_contains: "Project([N#2.SK#0], Scan(T1))"
+    columns: [SK]
+    rows:
+      - [10]
+      - [11]
+
+  # THE QUALIFIED ARM, reached by the BARE `n.sk` under a multi-source FROM.
+  # (The three-part spelling `t1.n.sk` does NOT resolve — it is refused 42703 —
+  # so this is the only entry point, and a test written the obvious way would
+  # have pinned nothing.)
+  - query: SELECT n.sk, n.co FROM t1, t2 ORDER BY id
+    plan_contains: "Project([T1.N#2.SK#0, T1.N#2.CO#1],"
+    columns: [SK, CO]
+    rows:
+      - [10, 21]
+      - [11, 22]
+
+  # NESTED OVER AN EXPLICIT JOIN, with the other leg's column projected beside
+  # it. Distinct from the comma form above: the qualifier must attach to the leg
+  # that actually declares `n`, and the flat column from the OTHER leg must keep
+  # its own bare name and its own value.
+  - query: SELECT n.sk, v FROM t1 JOIN t2 ON t2.v > 0 ORDER BY id
+    plan_contains: "T1.N#2.SK#0"
+    columns: [SK, V]
+    rows:
+      - [10, 7]
+      - [11, 7]
+
+  # THE BARE-LEAF COLLISION, driven on the schema that arms it. §2.3 made the
+  # nested slot `N.SK`, whose bare LEAF is `SK` — the same leaf as a real
+  # declared column of the same table. The labels legitimately collide (Java's
+  # getColumnLabel is the unqualified leaf too), so what must hold is that the
+  # ROWS stay attached to the right slots: 99 is t1.sk and 10 is n.sk, never
+  # each other, and never the same value twice.
+  - query: SELECT sk, n.sk FROM t1 ORDER BY id
+    columns: [SK, SK]
+    rows:
+      - [99, 10]
+      - [98, 11]
+
+  # ORDER CONTROL on the same collision — a last-wins name-keyed map resolves
+  # both slots to whichever was written last, which is invisible in one
+  # ordering and loud in the other.
+  - query: SELECT n.sk, sk FROM t1 ORDER BY id
+    columns: [SK, SK]
+    rows:
+      - [10, 99]
+      - [11, 98]
+
+  # CONTROL — a FLAT reference must keep its bare `Field`. A fix that routed
+  # EVERY reference through the path renderer would still satisfy every case
+  # above and would change this one.
+  - query: SELECT id, n.co FROM t1 ORDER BY id
+    plan_contains: "Project([ID#0, N#2.CO#1], Scan(T1))"
+    columns: [ID, CO]
+    rows:
+      - [1, 21]
+      - [2, 22]
+
+  # CONTROL — an explicit alias is the entire output-name authority and §2.3
+  # must not reach past it, in either channel.
+  - query: SELECT n.sk AS first, n.co AS second FROM t1 ORDER BY id
+    columns: [FIRST, SECOND]
+    rows:
+      - [10, 21]
+      - [11, 22]

@@ -231,8 +231,23 @@ type FieldValue struct {
 	// from ResolvedAccessor equality). Every FieldValue copy/rebuild site MUST
 	// preserve Resolved — dropping it silently degrades a baked node to lazy,
 	// which is loud at evaluation but conflates duplicate same-named columns
-	// in plan-time matching. For baked nodes Field equals the LAST accessor's
-	// name (Java getLastFieldName) — display only.
+	// in plan-time matching.
+	//
+	// Field is DISPLAY ONLY, and it does NOT reliably equal the last accessor's
+	// name. That was stated here as an invariant and it holds for one producer
+	// only: the planner's rewrite machinery (compose, the rebase/withChildren
+	// fuse arms, select-merge, match-info merge, index expansion, unnest, the
+	// left-outer wrappers) sets Field to the fused last accessor. The SQL
+	// RESOLVER does the opposite — fuseNestedAccessors copies the node whole,
+	// updates Typ to the leaf, and leaves Field as the struct ROOT — so a
+	// resolver-produced `n.sk` is FieldValue{Field:"N", Accessors:[N,SK]}.
+	//
+	// Nothing enforces either shape: there is no WithSuffix postcondition and no
+	// construction-time validator, and the one assertion that exists covers the
+	// simplifier alone. So the two producers disagree and no test notices. That
+	// asymmetry is not cosmetic — reading Field as the column's identity is what
+	// collapsed two ORDER BY keys of one struct root (RFC-227), and the same
+	// read is still live in the group-key namer.
 	Resolved *FieldPath
 }
 
@@ -1703,17 +1718,85 @@ func ContainsAggregate(v Value) bool {
 	return found
 }
 
+// NestedResolvedPath returns the upper-cased dotted PATH a FUSED NESTED field
+// reference reads, and reports whether v is one.
+//
+// THE DEFINITION OF "NESTED" IS THE MULTI-ACCESSOR RESOLVED PATH, and it is one
+// function because the predicate is the whole subtlety. The SQL resolver FUSES
+// `n.sk` into ONE FieldValue whose `Field` is the struct ROOT `N` with
+// Resolved=[N,SK] — Java does exactly the same fuse
+// (SemanticAnalyzer.lookupNestedField, SemanticAnalyzer.java:598
+// `FieldValue.ofFieldsAndFuseIfPossible`) and then names the result by the
+// REQUESTED IDENTIFIER `n.sk` rather than by the fused value
+// (SemanticAnalyzer.java:599). So `Field` answers "what struct does this read
+// out of", never "which column is this": `n.sk` and `n.co` share it.
+//
+// Every output-naming authority that answers the second question must take the
+// path. Reading `Field` there spells two different columns alike, and a
+// name-keyed reader then serves one of them where the other was asked for.
+//
+// THE PATH IS QUALIFIED WHEN THE REFERENCE HAS A CHILD, and that is a decision,
+// not a leak. With ≥2 FROM sources the resolver emits the reference through its
+// quantifier (`resolveScopedColumn`'s correlated arm), so the FieldValue carries
+// `Child = QOV(T1)` and this returns `T1.N.SK`; with one source it returns
+// `N.SK`. MEASURED end-to-end: `SELECT n.sk, n.co FROM t1, t2` explains as
+// `Project([T1.N#1.SK#0, T1.N#1.CO#1], ...)` against `Project([N#1.SK#0, ...])`
+// for the single-source form.
+//
+// The qualifier is KEPT because dropping it would be the same conflation one
+// level up: over `FROM t1, t2` where both declare an `n`, `T1.N.SK` and
+// `T2.N.SK` are different columns and a bare `N.SK` collapses them in exactly
+// the name-keyed maps this predicate exists to protect. It is also what the two
+// neighbouring authorities already do for a childful reference — `sortKeyFieldRef`
+// renders `LEG.COL` (cascades_translator.go) and `deriveProjectionColumnDef`'s
+// non-nested arm calls `ColumnNameValue` when `Child != nil`
+// (cascades_generator.go) — so qualifying here makes the nested arm agree with
+// its siblings rather than inventing a third rule. The remaining asymmetry is
+// ProjectionColumnName's own non-nested arm, which returns a bare `Field`; that
+// arm is deliberately untouched, because changing it moves emitted names for
+// every flat qualified projection and is a separate change.
+//
+// Java agrees, and structurally: the fused nested reference is named by the
+// REQUESTED IDENTIFIER (`SemanticAnalyzer.java:599`), an `Identifier` whose
+// `fullyQualifiedName()` retains its qualifiers, and the top-level projection
+// then strips them for the user-visible label
+// (`Identifier.withoutQualifier`, Identifier.java:101). Go does the same: the
+// display label for both forms is the bare leaf `SK` — measured, so the
+// qualifier is an INTERNAL slot key and never reaches the user.
+//
+// A path step can never contain the `#` that explainValueOrdinals escapes: a
+// struct member name must be a valid protobuf identifier and DDL refuses
+// anything else ("field name \"a#1\": a#1 it not a valid protobuf identifier",
+// measured). See the escape's own note in explainValueOrdinals.
+func NestedResolvedPath(v Value) (string, bool) {
+	fv, ok := v.(*FieldValue)
+	if !ok || fv.Resolved == nil || len(fv.Resolved.Accessors) <= 1 {
+		return "", false
+	}
+	return strings.ToUpper(ColumnNameValue(fv)), true
+}
+
 // ProjectionColumnName is the projection output-column NAMING CONTRACT: the
 // name a projected Value's result is keyed under, alias-absent, in the
-// emitted positional row's type (executeProjection's posNames). A FieldValue
-// projects under its (possibly dotted)
+// emitted positional row's type (executeProjection's posNames). A NESTED
+// FieldValue projects under its resolved PATH ("N.SK"); any other FieldValue
+// under its (possibly dotted)
 // Field; any other Value under its upper-cased explain rendering (a computed
 // expression like `n + 1` is keyed "(N + 1)"). Shared here so the
 // planner/translator side can READ a projection's output by the exact key the
 // executor WRITES — reading by any other rendering (e.g. the logical layer's
 // un-parenthesized "N + 1") is a loud
 // OrdinalResolutionError on valid SQL.
+//
+// The nested arm is NOT a special case bolted on: it is the same rule the sort
+// side already applies (sortKeyExtraColumnName) and the same rule Java applies
+// to every resolved reference. `Field` is the struct root, so without it
+// `SELECT n.sk, n.co` emits two slots named `N` — measured, and visible to the
+// user as duplicate column labels over correct data.
 func ProjectionColumnName(v Value) string {
+	if path, nested := NestedResolvedPath(v); nested {
+		return path
+	}
 	if fv, ok := v.(*FieldValue); ok {
 		return fv.Field
 	}
@@ -1882,11 +1965,23 @@ func explainValueOrdinals(v Value, withOrdinals bool) string {
 		// 3) but is semantic since RFC-176 P2 — the escape stays because
 		// debugging output that collapses two DIFFERENT reads is still a bug
 		// (writeSemanticHash's FieldValue arm keeps the same injective
-		// discriminator). Display only: ProjectionColumnName's FieldValue arm
+		// discriminator). ProjectionColumnName's plain-field arm
 		// returns Field verbatim, so plain-field Datum keys and positional
 		// slot names never change (a COMPUTED composite over a #-named field
 		// shifts its derived key spelling consistently on writer and reader,
 		// both sides of the shared contract).
+		//
+		// "DISPLAY ONLY" IS NO LONGER THE WHOLE TRUTH, and the correction is
+		// worth stating because the escape's safety argument used to rest on it:
+		// NestedResolvedPath mints an output NAME from this renderer, so a `#`
+		// in a nested path STEP would reach a slot key doubled. It cannot: a
+		// struct member name must be a valid protobuf identifier and DDL refuses
+		// anything else — `CREATE TYPE AS STRUCT hst ("a#1" BIGINT, ...)` is
+		// rejected 42F59 `field name "a#1": a#1 it not a valid protobuf
+		// identifier` (measured, pinned in the sqldriver suite). The name path
+		// is therefore safe by the SCHEMA's constraint, not by this renderer's;
+		// if DDL ever admits a `#` in a field name, mint the path from the
+		// accessors directly instead of from explainValueOrdinals.
 		name := strings.ReplaceAll(cv.Field, "#", "##")
 		// A multi-accessor baked path renders EVERY step as name#ordinal,
 		// dot-joined (Java FieldPath.toString, FieldValue.java:428-433) — the

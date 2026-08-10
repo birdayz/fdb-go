@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**351 scenarios · 2783 query/assertion cases** across 18 feature areas — 2444 supported, 113 unsupported-feature pins, 226 error-path pins.
+**352 scenarios · 2791 query/assertion cases** across 18 feature areas — 2452 supported, 113 unsupported-feature pins, 226 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -44,8 +44,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 30 | 233 | 200 | 10 | 23 |
-| **Total** | **351** | **2783** | **2444** | **113** | **226** |
+| Other | 31 | 241 | 208 | 10 | 23 |
+| **Total** | **352** | **2791** | **2452** | **113** | **226** |
 
 ## Aggregates & GROUP BY
 
@@ -480,6 +480,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `multi_feature_integer` | 11 | 11 | 0 | 0 | Integration tests combining multiple SQL features against INTEGER (INT32) |
 | `multi_operator_pipeline` | 6 | 6 | 0 | 0 | Tests that exercise multiple Cascades operators working together |
 | `negative_values` | 6 | 6 | 0 | 0 | Negative numbers and zero edge cases |
+| `nested_projection_column_name` | 8 | 8 | 0 | 0 | a nested projection's OUTPUT NAME |
 | `output_column_naming` | 8 | 8 | 0 | 0 | a query's OUTPUT COLUMN NAMES are part of its |
 | `parse_channel_pins` | 5 | 5 | 0 | 0 | dotted display names survive the parser→IR |
 | `quoted_identifier_pins` | 4 | 4 | 0 | 0 | quoted-identifier shapes that must keep |
