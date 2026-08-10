@@ -23,7 +23,7 @@ func TestFieldValue_ResolveOrdinal(t *testing.T) {
 	}
 	// The declared ordinal for "name" is its slice position (1), and it round-trips
 	// to the field name — the invariant positional evaluation rests on.
-	ord, ok := rec.FieldIndex("name")
+	ord, ok := rec.FieldIndexUnique("name")
 	if !ok || ord != 1 {
 		t.Fatalf("FieldIndex(name) = (%d,%v), want (1,true)", ord, ok)
 	}
@@ -69,7 +69,7 @@ func TestFieldValue_ResolveOrdinal_RawDivergentRecord(t *testing.T) {
 	// (RecordType.FieldIndex) uses the SLICE POSITION (1), NOT the stored
 	// Field.Ordinal (0) — so a raw divergent record bakes the correct slot. A lazy
 	// node declines (name-derive not supported); the baked node returns the derived slot.
-	ord, ok := raw.FieldIndex("b")
+	ord, ok := raw.FieldIndexUnique("b")
 	if !ok || ord != 1 {
 		t.Fatalf("raw-record FieldIndex(b) = (%d,%v), want (1,true) — the SLICE POSITION, not the stored Ordinal 0", ord, ok)
 	}
@@ -104,7 +104,7 @@ func TestFieldValue_OrdinalOrderingPrecondition(t *testing.T) {
 	})
 	// A LAZY node declines; the ordinal is bound at plan time (slice position
 	// via FieldIndex) and a BAKED accessor returns it.
-	ordB, ok := ordered.FieldIndex("b")
+	ordB, ok := ordered.FieldIndexUnique("b")
 	if !ok || ordB != 1 {
 		t.Fatalf("ordered: FieldIndex(b) = (%d,%v), want (1,true)", ordB, ok)
 	}
@@ -127,7 +127,7 @@ func TestFieldValue_OrdinalOrderingPrecondition(t *testing.T) {
 			t.Fatalf("NewRecordType must normalise Field[%d].Ordinal to %d, got %d", i, i, f.Ordinal)
 		}
 	}
-	ordA, ok := normalized.FieldIndex("a")
+	ordA, ok := normalized.FieldIndexUnique("a")
 	if !ok || ordA != 0 {
 		t.Fatalf("normalised: FieldIndex(a) = (%d,%v), want (0,true)", ordA, ok)
 	}
@@ -146,7 +146,7 @@ func TestFieldValue_OrdinalOrderingPrecondition(t *testing.T) {
 		{Name: "a", FieldType: NotNullLong, Ordinal: 1},
 		{Name: "b", FieldType: NotNullLong, Ordinal: 0},
 	}}
-	f, _ := raw.LookupField("a") // declared Ordinal 1
+	f, _ := raw.LookupFieldUnique("a") // declared Ordinal 1
 	if g, _ := raw.GetField(f.Ordinal); g.Name == "a" {
 		t.Fatal("raw mis-ordered record should expose the ordinal!=slice-position divergence the guard prevents")
 	}

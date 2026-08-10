@@ -114,7 +114,7 @@ func TestGatheredSeedShape(t *testing.T) {
 		t.Fatalf("collection correlates to %v, want the OWNING source o (the per-source edge, never the cluster concat)", coll.Child)
 	}
 	ownerType := tr.ordinalLegType(scan("SRC", "s"))
-	wantIdx, _ := ownerType.FieldIndex("ARR")
+	wantIdx, _ := ownerType.FieldIndexUnique("ARR")
 	if acc, single := coll.Resolved.Single(); !single || acc.Ordinal != wantIdx {
 		t.Fatalf("collection baked at ordinal %v, want %d (FieldIndex of the classified field on the OWNER type)", coll.Resolved, wantIdx)
 	}

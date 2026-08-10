@@ -150,7 +150,7 @@ func TestClusteredPullUp_BakesAllLegs(t *testing.T) {
 	}
 
 	// The baked ordinals land at legStart+idx of the CONCAT, not leg-relative.
-	cIdx, _ := pu.legByBinding["C"].typ.FieldIndex("CUSTOMER_ID")
+	cIdx, _ := pu.legByBinding["C"].typ.FieldIndexUnique("CUSTOMER_ID")
 	wantC := pu.legByBinding["C"].start + cIdx
 	found := false
 	predicates.ReplaceValues(rebuilt.(*logical.LogicalFilter).Predicate, func(v values.Value) values.Value {
@@ -325,7 +325,7 @@ func TestClusteredSeed_Shape(t *testing.T) {
 		if acc.Ordinal != i {
 			t.Fatalf("outer field %d baked at ordinal %d, want %d (one full run)", i, acc.Ordinal, i)
 		}
-		idx, found := leg.typ.FieldIndex(f.Name[dot+1:])
+		idx, found := leg.typ.FieldIndexUnique(f.Name[dot+1:])
 		if !found || leg.start+idx != i {
 			t.Fatalf("outer field %d name %q does not map back to global ordinal %d via its leg span", i, f.Name, i)
 		}

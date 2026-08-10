@@ -457,7 +457,23 @@ func TestOrdinalSlotInLegWindow(t *testing.T) {
 	if _, ok := ordinalSlotInLegWindow(noLegs, values.NamedCorrelationIdentifier("B"), "ID", true); ok {
 		t.Error("multi-alias prefix WITHOUT windows must decline loudly, never flat-match")
 	}
-	if got, ok := ordinalSlotInLegWindow(noLegs, values.NamedCorrelationIdentifier("A"), "ID", false); !ok || got != 0 {
+	// A single-alias caller over a DUP-NAMED type declines too, and the fixture
+	// above is exactly that shape. The flat fallback resolves by name against the
+	// whole type, so two ID columns leave it no honest answer: a first match is
+	// indistinguishable from a correct one, and there is no window to bound the
+	// search to the alias's own columns. Declining is the only reading.
+	if _, ok := ordinalSlotInLegWindow(noLegs, values.NamedCorrelationIdentifier("A"), "ID", false); ok {
+		t.Error("single-alias over a DUP-NAMED window-less type must decline — no window bounds the search, so a first match would be a guess")
+	}
+	// The pristine-prefix path this case exists to protect is the SINGLE-ALIAS
+	// one, and a single alias is one table's row: it cannot declare two columns
+	// of one name. That is the fixture the guarantee is stated over, and it must
+	// keep resolving flat.
+	pristine := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "SUB", FieldType: values.NotNullLong, Ordinal: 1},
+	}}
+	if got, ok := ordinalSlotInLegWindow(pristine, values.NamedCorrelationIdentifier("A"), "ID", false); !ok || got != 0 {
 		t.Errorf("single-alias window-less flat path = (%d,%v), want (0,true) — the hardening must not break it", got, ok)
 	}
 }
@@ -516,7 +532,7 @@ func TestThreeWayBoxCrossAgreement(t *testing.T) {
 		}
 		for _, f := range w.Typ.Fields {
 			legWalkSlot, ok1 := ordinalSlotInLegWindow(boxType, leg.Alias, f.Name, true)
-			ci, okc := w.Typ.FieldIndex(f.Name)
+			ci, okc := w.Typ.FieldIndexUnique(f.Name)
 			seedWinSlot := w.Offset + ci
 			if !ok1 || !okc || legWalkSlot != seedWinSlot {
 				t.Fatalf("3-way DRIFT: leaf %s col %s — leg-window walk slot %d (ok=%v) vs seed-window slot %d", leg.Name, f.Name, legWalkSlot, ok1, seedWinSlot)

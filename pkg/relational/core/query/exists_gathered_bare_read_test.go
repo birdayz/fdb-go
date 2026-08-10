@@ -290,27 +290,23 @@ func TestRebaseLegRefsToBox_DupNamedBoxWindowFirstMatches(t *testing.T) {
 
 	ref := values.NewFieldValue(values.NewQuantifiedObjectValue(boxLeg), "K", values.UnknownType)
 	out, ok := rebaseLegRefsToBox(ref, windows, mergedType, boxQOV)
-	if !ok {
-		t.Fatal("the rebase must not decline this shape — the reference carries a " +
-			"correlation and the window exists; if a decline was ADDED for ambiguity, " +
-			"that is the fix, and the exists_gathered_cluster_wrap.go FieldIndex entry " +
-			"in fieldIndexBlindSpotDebt should be retired with it")
+	if ok {
+		fv, isFV := out.(*values.FieldValue)
+		slot := -1
+		if isFV && fv.Resolved != nil {
+			slot = fv.Resolved.Root().Ordinal
+		}
+		t.Fatalf("a dup-named box-run window resolved `K` to merged slot %d — it must "+
+			"DECLINE.\n"+
+			"  Two buried leaves both carry `K` in one window, so no answer here is "+
+			"distinguishable from a guess: slot 1 and slot 2 are both real merged "+
+			"columns of the same type, and nothing downstream can reject the wrong one.\n"+
+			"  The name lookup this site used to make was deleted outright; if it "+
+			"resolves again, a first-match scan came back.", slot)
 	}
-	fv, isFV := out.(*values.FieldValue)
-	if !isFV || fv.Resolved == nil {
-		t.Fatalf("the reference must rebase, got %v", out)
-	}
-	got := fv.Resolved.Root().Ordinal
-	if got != 1 {
-		t.Fatalf("a dup-named box-run window resolved `K` to merged slot %d, want 1 "+
-			"(the FIRST match, window offset 1 + leg-local index 0).\n"+
-			"  If this now answers 2, the resolution rule changed and the recorded\n"+
-			"  blind-spot entry is describing something else. If it DECLINES, an\n"+
-			"  ambiguity guard was added — retire the entry.", got)
-	}
-	// The domain IS fixed by the identity: the assertion above proves the
-	// resolution stayed inside the window (offset 1), never scanning the
-	// merged concat from 0. That is the half this site gets right, and the
-	// reason the entry is narrow debt rather than the class the two deleted
-	// arms were in.
+	// The bare-read blind spot is CLOSED, and this test now guards the closure
+	// rather than the hazard. What made the old answer look reasonable was that
+	// the resolution stayed inside the window (offset 1) instead of scanning the
+	// merged concat from 0 — a correct DOMAIN with an arbitrary choice inside it.
+	// A correct domain is not a correct answer.
 }

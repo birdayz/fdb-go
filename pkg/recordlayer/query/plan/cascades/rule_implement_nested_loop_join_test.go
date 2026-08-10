@@ -933,7 +933,7 @@ func nljBakedRef(t *testing.T, rt string, alias values.CorrelationIdentifier, fi
 	if !known {
 		t.Fatalf("setup: no layout registered for %q", rt)
 	}
-	ord, found := layout.FieldIndex(field)
+	ord, found := layout.FieldIndexUnique(field)
 	if !found {
 		return &values.FieldValue{
 			Field: field, Typ: values.UnknownType,

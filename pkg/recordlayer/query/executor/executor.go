@@ -1451,7 +1451,7 @@ func coveringLogicalOrdinals(posNames []string, logicalType *values.RecordType) 
 	}
 	ords := make([]int, len(posNames))
 	for i, name := range posNames {
-		ord, ok := logicalType.FieldIndex(name)
+		ord, ok := logicalType.FieldIndexUnique(name)
 		if !ok {
 			return nil
 		}
@@ -5266,7 +5266,7 @@ func (k *cteDedupKeyer) layoutOrdinals(rt *values.RecordType) []int {
 	}
 	ords := make([]int, len(k.cols))
 	for i, col := range k.cols {
-		if idx, ok := rt.FieldIndex(col); ok {
+		if idx, ok := rt.FieldIndexUnique(col); ok {
 			ords[i] = idx
 		} else {
 			ords[i] = -1

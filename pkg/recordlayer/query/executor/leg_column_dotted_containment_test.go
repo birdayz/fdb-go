@@ -50,7 +50,7 @@ func TestRowSlotForLegColumn_FlatExactMatchWinsOverTheLegWindow(t *testing.T) {
 
 	// Guard the fixture: the dotted arm really would answer, and with the OTHER
 	// slot — otherwise the ordering decides nothing and this passes vacuously.
-	if _, found := rt.FieldIndex("CV"); !found {
+	if _, found := rt.FieldIndexUnique("CV"); !found {
 		t.Fatal("fixture: leg C's window must declare CV for the dotted arm to answer")
 	}
 
@@ -84,7 +84,7 @@ func TestRowSlotForLegColumn_AManufacturedQualifierDeclines(t *testing.T) {
 	// Guard the fixture, both halves: the LEAF the slice produces is present in
 	// the window, and the genuine qualified twin resolves. Without these the
 	// decline below could be "nothing here resolves".
-	if _, found := rt.FieldIndex("V)"); !found {
+	if _, found := rt.FieldIndexUnique("V)"); !found {
 		t.Fatal("fixture: the manufactured leaf \"V)\" must exist, or the qualifier is not what declines")
 	}
 	if slot, ok := rowSlotForLegColumn(rt, "GA.V", values.CorrelationIdentifier{}); !ok || slot != 0 {
@@ -163,16 +163,13 @@ func TestRowSlotForLegColumn_DuplicateBareNamesAcrossLegs(t *testing.T) {
 		},
 	}
 
-	// THE HAZARD. A bare lookup cannot tell the two legs' ID apart: it answers
-	// leg O's slot for a reference that may mean leg I's.
-	bare, found := merged.FieldIndex("ID")
-	if !found {
-		t.Fatal("fixture: the merged row must declare ID at all")
-	}
-	if bare != 0 {
-		t.Fatalf("FieldIndex(\"ID\") = %d, want 0 — the fixture no longer has a duplicate "+
-			"bare name across legs, so it has stopped describing the hazard it exists for",
-			bare)
+	// THE HAZARD, now refused rather than answered. A bare lookup cannot tell the
+	// two legs' ID apart, so it declines instead of handing back leg O's slot for
+	// a reference that may mean leg I's.
+	if _, found := merged.FieldIndexUnique("ID"); found {
+		t.Fatal("a bare lookup resolved a name both legs declare — it must decline; " +
+			"if this fixture stopped having a duplicate bare name across legs it has " +
+			"stopped describing the hazard it exists for")
 	}
 	// Both legs really do declare it — that is what makes slot 0 a WRONG answer
 	// for one of them rather than merely a first-match among equals.

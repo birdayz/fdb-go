@@ -717,7 +717,7 @@ func bakeGatedJoinPredicatesChecked(preds []predicates.QueryPredicate, legTypes 
 		// leaf for a box leg — the alias names that leaf), then offset into
 		// the leg's flowed concat. A whole-concat FieldIndex would first-match
 		// an earlier leg's duplicate name — silently the wrong column.
-		idx, found := legType.leafTyp.FieldIndex(fv.Field)
+		idx, found := legType.leafTyp.FieldIndexUnique(fv.Field)
 		if !found {
 			drift = true // the leaf window has no such field — verdict/bake drift
 			return v

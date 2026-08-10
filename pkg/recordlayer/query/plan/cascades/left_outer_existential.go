@@ -217,7 +217,7 @@ func rebaseOuterLegValueOrdinal(
 			// A leg-relative NAME ref (non-baked): NewFieldValueOfOrdinal is not its
 			// source, so resolve the slot by column name. A single source leg has no
 			// duplicate column names, so FieldIndex(Field) is the leg-local ordinal.
-			idx, found := w.Typ.FieldIndex(strings.ToUpper(fv.Field))
+			idx, found := w.Typ.FieldIndexUnique(strings.ToUpper(fv.Field))
 			if !found {
 				failed = true
 				return node

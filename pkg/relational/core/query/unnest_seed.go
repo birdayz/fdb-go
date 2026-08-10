@@ -158,7 +158,7 @@ func (t *cascadesTranslator) unnestBakedRootCollection(
 		arrIdx = explicitRootIdx
 	} else {
 		rootField := strings.ToUpper(u.Segments[rootSegmentIndex])
-		idx, found := outerType.FieldIndex(rootField)
+		idx, found := outerType.FieldIndexUnique(rootField)
 		if !found {
 			return nil
 		}

@@ -57,7 +57,7 @@ func pointProbeRef(t *testing.T, rt string, corr values.CorrelationIdentifier, f
 	if !ok {
 		t.Fatalf("setup: no layout registered for %q", rt)
 	}
-	ord, found := layout.FieldIndex(field)
+	ord, found := layout.FieldIndexUnique(field)
 	if !found {
 		t.Fatalf("setup: %s does not declare %q", rt, field)
 	}

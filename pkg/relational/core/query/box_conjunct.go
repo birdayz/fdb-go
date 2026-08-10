@@ -135,7 +135,7 @@ func (t *cascadesTranslator) classifyLegConjunct(legs []clusterLeg, gateJoin *lo
 					if w, isLeg := legTypes[key]; isLeg {
 						if w.leafTyp == nil {
 							verdict = boxConjUnbakeable
-						} else if _, found := w.leafTyp.FieldIndex(nv.Field); !found {
+						} else if _, found := w.leafTyp.FieldIndexUnique(nv.Field); !found {
 							verdict = boxConjUnbakeable
 						}
 					} else if _, isBoxLeg := boxLegs[key]; isBoxLeg {

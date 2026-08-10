@@ -74,7 +74,7 @@ func getByName(pos *PositionalRow, name string) (any, bool) {
 	if pos == nil || pos.Type == nil {
 		return nil, false
 	}
-	i, ok := pos.Type.FieldIndex(name)
+	i, ok := pos.Type.FieldIndexUnique(name)
 	if !ok {
 		return nil, false
 	}

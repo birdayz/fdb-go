@@ -53,7 +53,7 @@ func TestClusterBake_DoesNotAttributeAChildlessDottedName(t *testing.T) {
 	if !isLeg {
 		t.Fatal("fixture: O is not a leg — nothing for a sliced qualifier to hit")
 	}
-	if _, found := leg.typ.FieldIndex("ORDER_ID"); !found {
+	if _, found := leg.typ.FieldIndexUnique("ORDER_ID"); !found {
 		t.Fatal("fixture: leg O has no ORDER_ID — nothing for a sliced qualifier to hit")
 	}
 

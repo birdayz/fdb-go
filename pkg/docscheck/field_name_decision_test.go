@@ -65,7 +65,7 @@ import (
 //     identifier is on the ratchet and the LEAF half is invisible. Closing this
 //     needs types — the parameter's origin is a `.Field` read one frame up —
 //     which is why it is recorded rather than fixed here.
-//   - `Typ.FieldIndex(name)` and friends: resolving a name against a record
+//   - `Typ.FieldIndexUnique(name)` and friends: resolving a name against a record
 //     type is a lookup, not a comparison or a map key, so no sink tier reports
 //     it. The gathered-EXISTS wrap (exists_gathered_cluster_wrap.go:131) is
 //     recorded for its qualifier and silent for its leaf for exactly this
@@ -78,85 +78,21 @@ import (
 // simply never reaches them. Neither is counted in any bucket total, so the
 // arithmetic those totals feed is a floor rather than a census.
 //
-// The FieldIndex hole's known instances are enumerated in
-// fieldIndexBlindSpotDebt below and CHECKED, rather than described here in
-// prose. A blind spot recorded only in a comment is rediscovered rather than
-// tracked: the prose cannot notice the call moving, being deleted, or a new one
-// arriving beside it, so it decays into a claim about a tree that has moved on.
-
-// fieldIndexBlindSpotDebt enumerates the `FieldIndex(name)`-shaped lookups the
-// walk above CANNOT see, so the hole has an inventory instead of a paragraph.
+// The FieldIndex hole is CLOSED, and the inventory that tracked it is gone with
+// it. `RecordType.FieldIndex` and `RecordType.LookupField` were first-match
+// scans by name: they answered the first field carrying a name even when a row
+// carried it twice, so a caller could not tell a correct answer from a guess.
+// Both were DELETED rather than kept beside the declining forms, because a
+// first-match lookup left in the API is a copy target — the next site reaches
+// for it and inherits the guess. What survives is FieldIndexUnique /
+// LookupFieldUnique, which resolve only when the name matches exactly one field.
 //
-// It is deliberately NOT knownFieldDecisionDebt: entries there must match a
-// decision the detector reports, and by construction none of these do. Merging
-// them would make every entry here permanently stale.
-//
-// TestFieldIndexBlindSpotSitesAreCurrent checks each recorded line still holds
-// the call it names, so drift fails the way the main ratchet does. What it
-// cannot do is prove the list is COMPLETE — that needs the detector widening
-// this list exists to justify.
-var fieldIndexBlindSpotDebt = map[string]string{
-	// The header bullet cited :131 for this file. That line is the QUALIFIER
-	// comparison, which the detector does see and which is already on the main
-	// ratchet — the invisible lookups are the two below. Prose naming the wrong
-	// line while claiming to name a blind spot is the decay this list replaces.
-	// exists_gathered_cluster_wrap.go had TWO entries here. Both named the DOTTED
-	// and BARE arms, and both arms are GONE by deletion rather than migration: the
-	// wrap.s window map is keyed by leg IDENTITY now, so an arm that selected a
-	// window with a qualifier sliced out of a column name had no key it could
-	// honestly use. Their LEAF FieldIndex lookups went with them.
-	//
-	// Both arms were measured unreachable before removal (a panic in each is hit by
-	// nothing across ./pkg/relational/... or ./pkg/recordlayer/query/...), and what
-	// replaces them is a DECLINE, so a shape that ever reaches them falls back to the
-	// name model instead of shipping a lazy read into a context with no name channel.
-	//
-	// The retirement was recorded on a WRONG DESCRIPTION, which is why the entry is
-	// back below rather than simply deleted. One of the two entries described the
-	// BARE arm and pointed at the line holding the QOV-shaped arm.s lookup — so
-	// deleting it retired an arm that had not gone anywhere, and a live
-	// FieldIndex(name) left this inventory while still being made on every rebased
-	// reference. It is re-pointed at :142 with what that call actually does.
-
-	// DIAGNOSTICS ONLY, and labelled so rather than quietly filed with the
-	// engine sites. This lookup decides nothing a plan can observe: it splits a
-	// census witness between COLUMN-ABSENT and LAYOUT-AVAILABLE. It is recorded
-	// because it is the exact move RFC-197 forbids — a column identified by its
-	// display name against a row type — and the leg-local bake that was DELETED
-	// from this branch made precisely this call for real, to mint an ordinal. A
-	// diagnostic that survived its deleted sibling is how the move gets
-	// reintroduced: someone finds it, reads it as sanctioned, and promotes it.
-	"pkg/recordlayer/query/plan/cascades/leg_local_bake_census.go # classifyLegLocalBake # 1": "name-keyed: DIAGNOSTICS ONLY — classifies a census witness, never reaches a plan. The identically-shaped call that DID reach a plan (the leg-local bake) was deleted; this one is retained because the two residues it separates have different fixes. Retires with the census.",
-
-	// The wrap's SURVIVING FieldIndex, re-pointed. It is NOT the arm the two
-	// deleted entries described, and calling it genuine debt rather than the
-	// fixed-domain-safe class is a MEASURED classification, not a hedge.
-	//
-	// What is safe about it: the identity chose the domain. The window comes from
-	// `windows[qov.Correlation]`, so the name is resolved INSIDE a row the
-	// reference's own correlation already selected — not across the merged concat,
-	// which is where a name genuinely cannot answer. That is the half the two
-	// deleted arms got wrong and this one gets right.
-	//
-	// What is NOT safe about it: the selected window is not guaranteed
-	// duplicate-free. A CLUSTERED BOX run window (the pristine gated-join seed's
-	// `X$BOX` producer, whose box run is filed BESIDE its buried leaves rather
-	// than replaced by them) carries every buried leaf's columns concatenated, so
-	// two leaves' same-named columns sit in one window and FieldIndex first-matches
-	// between them. Its sibling reader knows this and defends against it: the
-	// leg-relative arm in left_outer_existential.go carries the reference's already
-	// BAKED ordinal specifically so an opaque box leg's duplicate buried names
-	// cannot remap it. This site has no such arm — it always resolves by name.
-	//
-	// MEASURED before writing: a panic wired here on "the selected window holds
-	// more than one field named fv.Field" is hit by NOTHING over the real-FDB
-	// sqldriver corpus or ./pkg/relational/core/... . So the ambiguous case does
-	// not occur today; it is unreached, not impossible, and nothing structural
-	// forbids it. Pinned by TestRebaseLegRefsToBox_DupNamedBoxWindowFirstMatches,
-	// which holds the shape so the entry is about a real hazard rather than a
-	// hypothetical one — and which says to retire this entry if a guard appears.
-	"pkg/relational/core/query/exists_gathered_cluster_wrap.go # rebaseLegRefsToBox # 1": "dotted: the wrap's QOV-shaped rebase resolves a column by NAME within the window its own correlation selected. The identity fixes WHICH row, so this is not a name choosing a domain — but the window is not guaranteed dup-free (a clustered box RUN concatenates its buried leaves) and FieldIndex first-matches. Measured unreached for the ambiguous case; retires when the reference arrives carrying its leg-local ordinal, as its sibling in left_outer_existential.go already does.",
-}
+// The guard's DIRECTION inverted with the fix. The old list was watched for
+// going stale, i.e. for entries whose call had moved; zero entries was the
+// failure state, and the test said so. Now zero first-match lookups is the
+// steady state and the alarm is GROWTH: the danger is one coming back. That is
+// what TestNoFirstMatchNameLookup below watches. Relaxing the old floor instead
+// of inverting it would have left the revival unwatched.
 
 type fieldDecisionSite struct {
 	site string // "path/to/file.go:LINE"
@@ -2348,89 +2284,114 @@ func TestFieldNameNeverDecides(t *testing.T) {
 // deliberately does NOT assert the list is complete; that claim needs the
 // detector widening the list exists to justify, and pretending otherwise here
 // would be the vacuous-green failure the census gate documents at length.
-func TestFieldIndexBlindSpotSitesAreCurrent(t *testing.T) {
+
+// TestNoFirstMatchNameLookup is the INVERTED guard that replaced the
+// FieldIndex blind-spot inventory. That list watched a population for going
+// stale; this one watches a population for coming back.
+//
+// `RecordType.FieldIndex` and `RecordType.LookupField` resolved a column by
+// name and answered the FIRST field carrying it. A record type may legitimately
+// declare a name twice — a leg-concat of two sources merges `A.K` and `B.K`
+// into one row — so the first match is indistinguishable from a correct answer,
+// and the wrong one is a real column of the same type that nothing downstream
+// rejects. Both methods were deleted; FieldIndexUnique / LookupFieldUnique
+// resolve only on an unambiguous name.
+//
+// A green here means neither a declaration nor a call has reappeared. It counts
+// what it scanned and fails on an empty population, because a walk that reached
+// no files reports exactly the same green as a tree with no violations.
+func TestNoFirstMatchNameLookup(t *testing.T) {
 	t.Parallel()
 	root := sourceTreeRoot(t)
 
-	// Keyed the same way the main ratchet is — `file # declaration # ordinal` —
-	// and for the same reason. This list is small (two entries) but it lives in
-	// the same files the main ratchet's sites live in, so a line-number key here
-	// is invalidated by exactly the edits that invalidate one there. "Only two
-	// entries" is not a reason to keep the tax; it is a reason the migration is
-	// cheap.
-	//
-	// The FORM part is dropped: every site here is the same shape by construction,
-	// a FieldIndex( call the main detector cannot see. Declaration plus
-	// source-order ordinal is the whole identity.
-	//
-	// EACH ENTRY IS RESOLVED AGAINST ITS OWN FILE, named by the key, rather than
-	// by sweeping a file list. That is not a style choice: under Bazel `git
-	// ls-files` is unavailable and the tracked-file helper degrades to a
-	// filesystem walk that does not reach every package, so a sweep found ZERO
-	// FieldIndex calls in the sandbox and reported both entries stale. Reading the
-	// file the entry names cannot go quiet that way — if the file is missing, that
-	// is itself the finding.
+	banned := map[string]string{
+		"FieldIndex":  "FieldIndexUnique",
+		"LookupField": "LookupFieldUnique",
+	}
 	var problems []string
-	for site, why := range fieldIndexBlindSpotDebt {
-		parts := strings.Split(site, " # ")
-		if len(parts) != 3 || !strings.HasSuffix(parts[0], ".go") {
-			problems = append(problems, fmt.Sprintf(
-				"%s: must be `path/file.go # declaration # ordinal`", site))
-			continue
-		}
-		rel, wantFn, wantOrd := parts[0], parts[1], parts[2]
-		src, err := os.ReadFile(filepath.Join(root, rel))
+	scanned := 0
+
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			problems = append(problems, fmt.Sprintf("%s: read: %v", site, err))
-			continue
+			return err
+		}
+		if info.IsDir() {
+			// Vendored and generated trees are not ours to hold to this rule,
+			// and bazel-* are symlinked build outputs that would double-count.
+			switch info.Name() {
+			case "vendor", "gen", "node_modules", ".git", "fdb-record-layer":
+				return filepath.SkipDir
+			case ".claude":
+				// Agent worktrees live here — other branches' checkouts of this
+				// same repo. Scanning them reports THEIR code as this tree's
+				// violations, which is how a clean tree fails with 1500 findings.
+				return filepath.SkipDir
+			}
+			if strings.HasPrefix(info.Name(), "bazel-") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		src, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		// This file names both methods in prose and in this test's own tables;
+		// scanning it would report itself.
+		if strings.HasSuffix(path, "field_name_decision_test.go") {
+			return nil
 		}
 		fset := token.NewFileSet()
-		f, err := parser.ParseFile(fset, rel, src, parser.ParseComments)
-		if err != nil {
-			problems = append(problems, fmt.Sprintf("%s: parse: %v", site, err))
-			continue
+		f, perr := parser.ParseFile(fset, path, src, 0)
+		if perr != nil {
+			return nil // not our business to fail on unparseable files
 		}
-		seen := map[string]int{}
-		fn := fieldDecisionFileScope
-		hit := false
+		scanned++
+		rel, _ := filepath.Rel(root, path)
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.FuncDecl:
-				fn = fieldDecisionFuncName(x)
-			case *ast.CallExpr:
-				if callFuncName(x.Fun) != "FieldIndex" {
+				if x.Recv == nil || x.Name == nil {
 					return true
 				}
-				seen[fn]++
-				if fn == wantFn && strconv.Itoa(seen[fn]) == wantOrd {
-					hit = true
+				if want, bad := banned[x.Name.Name]; bad {
+					problems = append(problems, fmt.Sprintf(
+						"%s:%d: method %s redeclared — use %s",
+						rel, fset.Position(x.Pos()).Line, x.Name.Name, want))
+				}
+			case *ast.CallExpr:
+				sel, ok := x.Fun.(*ast.SelectorExpr)
+				if !ok || sel.Sel == nil {
+					return true
+				}
+				if want, bad := banned[sel.Sel.Name]; bad {
+					problems = append(problems, fmt.Sprintf(
+						"%s:%d: call to %s — use %s",
+						rel, fset.Position(x.Pos()).Line, sel.Sel.Name, want))
 				}
 			}
 			return true
 		})
-		if len(seen) == 0 {
-			problems = append(problems, fmt.Sprintf(
-				"%s: the file contains no FieldIndex( call at all", site))
-			continue
-		}
-		if !hit {
-			problems = append(problems, fmt.Sprintf(
-				"%s: no FieldIndex( call there any more (that file's calls: %v)", site, seen))
-		}
-		_ = why
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
 	}
-	sort.Strings(problems)
-	if len(problems) != 0 {
-		t.Fatalf("the FieldIndex blind-spot list is stale:\n  %s\n\n"+
-			"These entries stand in for decisions the main detector cannot see. An "+
-			"entry pointing at a call that no longer exists is worse than no entry: it "+
-			"reads as a tracked hole while tracking nothing. Either the call moved — "+
-			"re-key it — or it is gone, and the line goes.",
-			strings.Join(problems, "\n  "))
+	if scanned == 0 {
+		t.Fatal("scanned 0 Go files — this test cannot distinguish a clean tree " +
+			"from a walk that reached nothing, and an empty population reports green")
 	}
-	if len(fieldIndexBlindSpotDebt) == 0 {
-		t.Fatal("the blind-spot list is empty, so this test proves nothing; if the " +
-			"detector was widened to cover FieldIndex, delete this test with the list")
+	if len(problems) > 0 {
+		t.Fatalf("a first-match name lookup came back (%d site(s)):\n  %s\n\n"+
+			"These resolve a column by NAME and answer the FIRST field carrying it. "+
+			"A row can declare one name twice — a leg-concat merges A.K and B.K into "+
+			"one row — so the answer is a guess that reads as a fact, and the wrong "+
+			"slot is a real column of the same type that nothing downstream rejects. "+
+			"Use the Unique form, which declines on an ambiguous name.",
+			len(problems), strings.Join(problems, "\n  "))
 	}
-	t.Logf("FieldIndex blind-spot entries current: %d", len(fieldIndexBlindSpotDebt))
+	t.Logf("no first-match name lookup in %d Go files", scanned)
 }

@@ -1009,7 +1009,7 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType, owner values
 // selecting the source window by identity have chosen the leg the text chose?
 func rowSlotForLegColumn(rt *values.RecordType, name string, owner values.CorrelationIdentifier) (int, bool) {
 	census := values.LegIdentityCensusEnabled()
-	if i, ok := rt.FieldIndex(name); ok {
+	if i, ok := rt.FieldIndexUnique(name); ok {
 		if census {
 			recordLegColumnProvenance(rt, name, true, nil, "", owner)
 		}

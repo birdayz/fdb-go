@@ -3883,7 +3883,7 @@ func ordinalSlotInLegWindow(rt *values.RecordType, leg values.CorrelationIdentif
 	if multiAlias {
 		return 0, false // multi-alias prefix WITHOUT windows — loud decline (never flat)
 	}
-	return rt.FieldIndex(field)
+	return rt.FieldIndexUnique(field)
 }
 
 // rebaseUnnestOuterLegPredicateOrdinal bakes outer-table-leg references in a
@@ -5077,7 +5077,7 @@ func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
 					// against baked projection values and an appended hidden
 					// column resolves positionally through its leg window.
 					if li < len(s.legTypes) && s.legTypes[li] != nil {
-						if idx, found := s.legTypes[li].FieldIndex(col); found {
+						if idx, found := s.legTypes[li].FieldIndexUnique(col); found {
 							return values.NewCorrelatedFieldValueWithResolvedOrdinal(qov, col, idx, values.UnknownType)
 						}
 					}
@@ -5093,7 +5093,7 @@ func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
 	// when the layout is derivable (see the join arm above).
 	bare := stripSortQualifier(field)
 	if s.singleType != nil {
-		if idx, found := s.singleType.FieldIndex(bare); found {
+		if idx, found := s.singleType.FieldIndexUnique(bare); found {
 			return values.NewFieldValueWithResolvedOrdinal(bare, idx, values.UnknownType)
 		}
 	}

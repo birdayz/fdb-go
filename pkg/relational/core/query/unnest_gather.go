@@ -164,7 +164,7 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	if len(u.Segments) > 2 {
 		rootField = strings.ToUpper(u.Segments[1])
 	}
-	arrIdx, found := ownerWindow.leafTyp.FieldIndex(rootField)
+	arrIdx, found := ownerWindow.leafTyp.FieldIndexUnique(rootField)
 	if !found {
 		return nil
 	}
@@ -456,7 +456,7 @@ func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalS
 		// without a stated kind is a producer bug, and the group-by key it would
 		// have resolved is better unresolved than resolved to a guess.
 		if isLeg && w.Kind == values.LegKindFlatRun {
-			if idx, found := w.Typ.FieldIndex(col); found {
+			if idx, found := w.Typ.FieldIndexUnique(col); found {
 				return w.Offset + idx, true
 			}
 		}
@@ -490,7 +490,7 @@ func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalS
 			if w.Kind != values.LegKindFlatRun {
 				continue
 			}
-			if idx, found := w.Typ.FieldIndex(col); found {
+			if idx, found := w.Typ.FieldIndexUnique(col); found {
 				slot, hits = w.Offset+idx, hits+1
 			}
 		}
