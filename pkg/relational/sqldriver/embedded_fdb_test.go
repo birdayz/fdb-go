@@ -208,85 +208,67 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// the leg-type column each dotted-arm answer comes from. Decided BY IDENTITY
 	// (owner correlation), not by name match.
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedWitnessAttribution())
-	if failed := assertDottedWitnessAttributionCensus(os.Stderr); failed && code == 0 {
-		code = 1
-	}
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedRowTypeProducerCensus())
-	if failed := assertDottedRowTypeProducerCensus(os.Stderr); failed && code == 0 {
-		code = 1
-	}
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", corequery.FormatUnnestLegMintCensus())
-	if failed := corequery.AssertUnnestLegMintCensus(os.Stderr,
-		executor.LegColumnProvenanceDottedNames()); failed && code == 0 {
-		code = 1
-	}
 	// The RFC-213 payoff census: how often a consumer that must decide on a plan's
 	// result type is handed an UNRESOLVED one and declines. Declining is invisible
 	// — it costs a proof or an optimization, never a wrong row — so the size of the
 	// loss has to be counted rather than argued.
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatUnresolvedResultTypeCensus())
-	if failed := assertDottedLegQualifierCensus(os.Stderr); failed && code == 0 {
-		code = 1
-	}
-	if failed := assertSeedWindowReaderCensus(os.Stderr); failed && code == 0 {
-		code = 1
-	}
-	if failed := assertNameSplitCensus(os.Stderr); failed && code == 0 {
-		code = 1
-	}
-	// The QUALIFIER RECOVERY census — the four DARK SPLITTERS the name-split
-	// census names in its header and does not watch. Six sites, because the
-	// parseColRef family contributes three DIFFERENT decisions with three
-	// different counterparties and one merged number could answer the
-	// conversion question for none of them.
-	if failed := assertQualifierRecoveryCensus(os.Stderr); failed && code == 0 {
-		code = 1
-	}
-	if failed := assertLegIdentityCensus(os.Stderr); failed && code == 0 {
-		code = 1
-	}
-	if failed := assertLegColumnProvenanceCensus(os.Stderr); failed && code == 0 {
-		code = 1
-	}
-	// The bakeability census is ASSERTED, not merely printed. It was printed
-	// only, which made its numbers — including CQ-63's acceptance number — a
-	// report nothing checked: the partition could stop holding and the
-	// population could collapse to zero with the gate still green.
-	if failed := assertLegLocalBakeCensus(os.Stderr); failed && code == 0 {
-		code = 1
-	}
-	// The merged-leg binding census is ASSERTED too, and for a sharper reason than
-	// its siblings: the number the whole "the binder has no reader" finding rests
-	// on is a count of ZERO, and a zero produced by a dead counter is
-	// indistinguishable in a printed report from a zero produced by an absent
-	// reader. Measured, not assumed — no-opping recordMergedLegRead left the entire
-	// suite green while the census went on reporting the exact "0 READ" the finding
-	// quotes.
-	if failed := assertMergedLegBindingCensus(os.Stderr); failed && code == 0 {
-		code = 1
-	}
-	if failed := assertFoldStep1SeedCensus(os.Stderr); failed && code == 0 {
-		code = 1
-	}
-	if failed := assertOrientationGateCensus(os.Stderr); failed && code == 0 {
-		code = 1
-	}
-	if failed := assertFlatMapProducerCensus(os.Stderr); failed && code == 0 {
-		code = 1
-	}
-	if failed := assertSelectResultMintCensus(os.Stderr); failed && code == 0 {
-		code = 1
-	}
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatProjectionMergeCensus())
-	if failed := assertProjectionMergeCensus(os.Stderr); failed && code == 0 {
-		code = 1
-	}
-	// RFC-213: the consumers must stay REACHED. There is no zero to defend — the
-	// unresolved reads ARE the defect and their count is a measurement, not a
-	// contract — but if these sites go dark, a later "unresolved is 0" would be
-	// indistinguishable from having fixed it. Floored an order of magnitude below
-	// the measured 15,909 classified reads.
-	if failed := assertUnresolvedResultTypeCensus(os.Stderr); failed && code == 0 {
+
+	// THE GATES, run through the reporter so a failure carries a `--- FAIL:` line
+	// naming which one moved. They used to assert inline here, each writing prose
+	// to stderr and bumping the exit code, which produced a red package with no
+	// failure marker anywhere in its output — see census_gate_reporting_test.go
+	// for what that cost and why the gates cannot simply become test functions.
+	//
+	// Their reports are emitted together at the end rather than interleaved with
+	// the census dumps above, because the SET of gates that moved is the
+	// diagnosis, and a set is easier to read collected than scattered through
+	// thirty thousand lines of census.
+	if runCensusGates(os.Stderr, testing.Verbose(), []censusGate{
+		{"dottedWitnessAttribution", assertDottedWitnessAttributionCensus},
+		{"dottedRowTypeProducer", assertDottedRowTypeProducerCensus},
+		{"unnestLegMint", func(w io.Writer) bool {
+			return corequery.AssertUnnestLegMintCensus(w, executor.LegColumnProvenanceDottedNames())
+		}},
+		{"dottedLegQualifier", assertDottedLegQualifierCensus},
+		{"seedWindowReader", assertSeedWindowReaderCensus},
+		{"nameSplit", assertNameSplitCensus},
+		// The QUALIFIER RECOVERY census — the four DARK SPLITTERS the name-split
+		// census names in its header and does not watch. Six sites, because the
+		// parseColRef family contributes three DIFFERENT decisions with three
+		// different counterparties and one merged number could answer the
+		// conversion question for none of them.
+		{"qualifierRecovery", assertQualifierRecoveryCensus},
+		{"legIdentity", assertLegIdentityCensus},
+		{"legColumnProvenance", assertLegColumnProvenanceCensus},
+		// The bakeability census is ASSERTED, not merely printed. It was printed
+		// only, which made its numbers — including CQ-63's acceptance number — a
+		// report nothing checked: the partition could stop holding and the
+		// population could collapse to zero with the gate still green.
+		{"legLocalBake", assertLegLocalBakeCensus},
+		// The merged-leg binding census is ASSERTED too, and for a sharper reason
+		// than its siblings: the number the whole "the binder has no reader"
+		// finding rests on is a count of ZERO, and a zero produced by a dead
+		// counter is indistinguishable in a printed report from a zero produced by
+		// an absent reader. Measured, not assumed — no-opping recordMergedLegRead
+		// left the entire suite green while the census went on reporting the exact
+		// "0 READ" the finding quotes.
+		{"mergedLegBinding", assertMergedLegBindingCensus},
+		{"foldStep1Seed", assertFoldStep1SeedCensus},
+		{"orientationGate", assertOrientationGateCensus},
+		{"flatMapProducer", assertFlatMapProducerCensus},
+		{"selectResultMint", assertSelectResultMintCensus},
+		{"projectionMerge", assertProjectionMergeCensus},
+		// RFC-213: the consumers must stay REACHED. There is no zero to defend —
+		// the unresolved reads ARE the defect and their count is a measurement,
+		// not a contract — but if these sites go dark, a later "unresolved is 0"
+		// would be indistinguishable from having fixed it. Floored an order of
+		// magnitude below the measured 15,909 classified reads.
+		{"unresolvedResultType", assertUnresolvedResultTypeCensus},
+	}) && code == 0 {
 		code = 1
 	}
 	return code

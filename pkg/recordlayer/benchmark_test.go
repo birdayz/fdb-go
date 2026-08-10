@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -27,7 +28,15 @@ func ensureBenchDB(b *testing.B) {
 		if sharedDB != nil {
 			return
 		}
-		ctx := context.Background()
+		// Container startup is BOUNDED. An unbounded context here blocks
+		// forever when Docker is slow — a pull, a busy host, an
+		// oversubscribed daemon — and a benchmark that hangs reports
+		// nothing at all: no failure, no timing, just a run that never
+		// ends. A deadline converts that into a loud, attributable error.
+		// Two minutes is the same budget every other container-starting
+		// test in this repo uses.
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
 		container, err := foundationdbtc.Run(ctx, "",
 			foundationdbtc.WithAPIVersion(730),
 		)
