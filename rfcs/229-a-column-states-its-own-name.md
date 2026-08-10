@@ -233,10 +233,23 @@ collision drop at all** — `Identifier::toString`, falling back to `_index`
 only for a genuinely absent name.
 
 Applying the internal rule to Go's user-visible label was implemented and
-MEASURED: it reddens nine `sqldriver` test functions that deliberately pin the
-opposite, among them `TestFDB_DuplicateBareLeafKeepsTwoColumns`, whose own
-disambiguation mint is documented as having reddened seven suites with WRONG
-ROWS when removed. Reverted.
+MEASURED: it reddens **seven** `sqldriver` test functions that deliberately pin
+the opposite —
+
+    TestFDB_AggregateGroupKeySlotCollision   TestFDB_AmbiguousColumnStar
+    TestFDB_DuplicateBareLeafKeepsTwoColumns TestFDB_GroupBySelectOrderProbe
+    TestFDB_ProjectedExists_Round6           TestFDB_ProjectedExists_Round8
+    TestFDB_RowVersionBareStar_MixedSourcesAndQuotedAliases
+
+— counted from `grep -E "^--- FAIL" ... | sort -u` over a dedicated
+`//pkg/relational/sqldriver:sqldriver_test` run, NOT eyeballed. An earlier
+draft of this section said "nine", read off a listing truncated at twenty lines;
+the correction is left visible because an unscoped count is the shape this
+repository keeps getting wrong even when the argument resting on it is right.
+
+Among them `TestFDB_DuplicateBareLeafKeepsTwoColumns`, whose own disambiguation
+mint is documented as having reddened seven suites with WRONG ROWS when removed.
+Reverted.
 
 The PROPERTY §2.2.2 actually wants — no two slots holding one name, so no
 name-keyed reader can first-match between them — **Go already has**, by a
