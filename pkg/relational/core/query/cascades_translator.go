@@ -6319,7 +6319,14 @@ func bakeDottedRefsToLegQOVWithRef(v values.Value, ref logical.ColumnRef, input 
 	// row, existential siblings contribute no columns) bakes FLAT: the select
 	// output IS the quantifier's row, so a bare leaf — or a dotted read
 	// qualified by the quantifier's own alias — resolves to the row's flat
-	// slot (first-match, the retired GetByName's rule). A leg-QOV bake here
+	// slot, first-match. That rule used to be justified here as "the retired
+	// GetByName's rule", which justifies nothing: GetByName no longer exists
+	// anywhere in the tree, and a retired function's behaviour is not a reason
+	// to copy it. What the first-match actually rests on is upstream refusal —
+	// a BARE column reference carried by two visible sources is rejected with
+	// SQLSTATE 42702 before it reaches here, so the first hit is the only hit.
+	// The premise covers the bare shape only; it says nothing about `lay.cols`
+	// itself declaring one name twice. A leg-QOV bake here
 	// would be WRONG: the quantifier's alias can collide with an INNER leg
 	// window of the flowed row (the gathered-unnest select is named by its
 	// rightmost source, e.g. the element X), and the runtime binder would
@@ -6576,9 +6583,31 @@ func bakeSegmentedColumnRef(fv *values.FieldValue, ref logical.ColumnRef, cols [
 }
 
 // legWindowSlot resolves a qualifier/leaf pair to a slot of the FLAT row: the
-// qualifier selects a leg window (first-match, mirroring FieldIndex's own rule)
-// and the leaf selects a column within it. The returned ordinal indexes the
-// WHOLE flat row, since a leg window is a range within it.
+// qualifier selects a leg window and the leaf selects a column within it. The
+// returned ordinal indexes the WHOLE flat row, since a leg window is a range
+// within it.
+//
+// BOTH matches are first-match, and the two rest on different footings, which is
+// worth stating because the comment here used to rest them both on
+// "RecordType.FieldIndex's own rule" — a function that has since been deleted
+// precisely because first-matching a duplicate name is a guess dressed as a
+// fact. Citing it justified nothing even while it existed.
+//
+//   - The LEAF match is safe for a BARE reference: a column reference carried by
+//     more than one visible source is refused upstream with SQLSTATE 42702
+//     (semantic.Scope.ResolveColumn treats >1 match as terminal), so the first
+//     hit is the only hit. That guarantee is about the REFERENCE, not about
+//     `cols`, which a leg-concat can legitimately fill with one name twice.
+//
+//   - The QUALIFIER match has no such backing. 42702 is ambiguous_column and
+//     says nothing about two legs sharing a name, and no rejection of a repeated
+//     FROM-clause alias was found. bakeDottedRefsToLegQOVWithRef's addKey takes
+//     the other disposition on the same channel — it poisons a duplicate
+//     qualifier and refuses to bake through it — so the two readers of this
+//     channel disagree, and this one is the permissive half.
+//
+// Reconciling them means matching the leg by IDENTITY rather than by Name, at
+// which point neither first-match exists.
 //
 // Factored out so the segment-carrying caller and the name-splitting one run
 // the identical lookup — two copies of a leg walk is two decisions with nothing
