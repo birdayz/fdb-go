@@ -51,9 +51,18 @@ func TestLegQOVBake_QuotedWholeNameIsNotAQualifiedReference(t *testing.T) {
 
 	// Guard the fixture: L must really be a leg carrying NAME, or the test
 	// would pass for the wrong reason — nothing to misattribute to.
-	probe := bakeDottedRefsToLegQOVWithRef(values.NewFlatFieldValue("L.NAME", values.UnknownType), logical.ColumnRef{}, outer)
+	//
+	// The guard used to establish that by baking with an EMPTY ColumnRef and
+	// requiring it to resolve, i.e. by exercising the first-dot split itself.
+	// That split is gone, so the fixture is now proved the only way left that
+	// means anything: with the parser's segments, which is also the only way a
+	// leg is legitimately reachable.
+	probe := bakeDottedRefsToLegQOVWithRef(
+		values.NewFlatFieldValue("L.NAME", values.UnknownType),
+		logical.ColumnRef{Present: true, Bare: "NAME", Qualifier: "L", Qualified: true}, outer)
 	if fv, ok := probe.(*values.FieldValue); !ok || fv.Resolved == nil {
-		t.Fatalf("fixture: L.NAME did not bake (%#v) — there is no leg L.NAME for a split to hit", probe)
+		t.Fatalf("fixture: qualified L.NAME did not bake (%#v) — there is no leg L "+
+			"carrying NAME, so the refusal below would hold vacuously", probe)
 	}
 
 	in := values.NewFlatFieldValue("L.NAME", values.UnknownType)
@@ -105,12 +114,20 @@ func TestFlatColumnBake_QuotedWholeNameNeverReachesALegWindow(t *testing.T) {
 		values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("R"), "R", 2, 1),
 	}
 
-	// Guard the fixture: the splitting path really does resolve this text.
-	split := bakeFlatRefsAgainstColumns(
-		values.NewFlatFieldValue("L.NAME", values.UnknownType), cols, legs...)
-	if fv, ok := split.(*values.FieldValue); !ok || fv.Resolved == nil {
-		t.Fatalf("fixture: the splitting path left %q lazy (%#v) — nothing for the "+
-			"segments to have to refuse", "L.NAME", split)
+	// This guard has INVERTED. It previously asserted that the no-segments
+	// baker really did resolve "L.NAME" by splitting it, which is what made
+	// bakeSegmentedColumnRef's refusal below a contrast worth pinning: one
+	// path resolved the text, the other refused it.
+	//
+	// The splitting path is gone, so the two paths now AGREE, and agreement is
+	// the property to hold. A resolution here would mean the re-split came
+	// back — the direction of the alarm is growth, not collapse.
+	noSegments := bakeFlatRefsAgainstColumns(
+		values.NewFlatFieldValue("L.NAME", values.UnknownType), cols)
+	if fv, ok := noSegments.(*values.FieldValue); !ok || fv.Resolved != nil {
+		t.Fatalf("the no-segments baker RESOLVED %q to %#v. It must decline: a name that "+
+			"arrived without parse-tree segments has no qualifier, so reaching a leg "+
+			"window means the first-dot re-split has been reintroduced", "L.NAME", noSegments)
 	}
 
 	in := values.NewFlatFieldValue("L.NAME", values.UnknownType)
@@ -162,17 +179,41 @@ func TestFlatColumnBake_QuotedWholeNameNeverReachesALegWindow(t *testing.T) {
 // same zero value in that struct and mean opposite things: read as
 // "unqualified", an uncaptured reference would stop resolving through leg
 // windows altogether.
-func TestBakers_UncapturedRefKeepTheSplittingBehaviour(t *testing.T) {
+func TestBakers_UncapturedRefIsUnqualified(t *testing.T) {
 	t.Parallel()
 	outer := twoLegSelect()
-	leftDomain := values.OrdinalDomainOfColumnNames([]string{"ID", "NAME"})
 
+	// INVERTED. This test was named ...KeepTheSplittingBehaviour and asserted
+	// the opposite of what it asserts now: that an uncaptured ref resolved
+	// "L.NAME" to leg L's ordinal 1, because "a producer that carries no
+	// segments must keep the behaviour it had".
+	//
+	// That was the debt stated as a requirement. Keeping the behaviour meant
+	// keeping a first-dot slice, which manufactures a qualifier no parser
+	// produced and cannot tell a qualified `L.NAME` from a quoted `"L.NAME"`.
+	// The rule now matches Java's: an Identifier's qualifier is an explicit
+	// segment list, so a carrier stating no segments is UNQUALIFIED and cannot
+	// select a leg.
 	var uncaptured logical.ColumnRef // Present is false — no producer stated anything
+	out := bakeDottedRefsToLegQOVWithRef(
+		values.NewFlatFieldValue("L.NAME", values.UnknownType), uncaptured, outer)
+	if fv, isFV := out.(*values.FieldValue); !isFV || fv.Resolved != nil {
+		t.Fatalf("an uncaptured L.NAME baked to %#v — it must stay lazy. Resolving it "+
+			"requires inventing the qualifier L out of the bytes before the dot, which "+
+			"is the re-split this change removed", out)
+	}
+
+	// CONTROL: the SAME baker with the SAME text resolves when the parser's
+	// segments say it is qualified. Without this the decline above would also
+	// pass with the baker gutted.
+	segmented := logical.ColumnRef{Present: true, Bare: "NAME", Qualifier: "L", Qualified: true}
 	ref := bakedRef(t, bakeDottedRefsToLegQOVWithRef(
-		values.NewFlatFieldValue("L.NAME", values.UnknownType), uncaptured, outer))
+		values.NewFlatFieldValue("L.NAME", values.UnknownType), segmented, outer))
+	leftDomain := values.OrdinalDomainOfColumnNames([]string{"ID", "NAME"})
 	if got, ok := ref.OrdinalIn(leftDomain); !ok || got != 1 {
-		t.Fatalf("uncaptured L.NAME = (%d,%v), want (1,true) — a producer that carries no "+
-			"segments must keep the behaviour it had", got, ok)
+		t.Fatalf("control: SEGMENTED L.NAME = (%d,%v), want (1,true) — a genuine qualified "+
+			"reference must still reach its leg, or the decline above proves only that "+
+			"the baker is dead", got, ok)
 	}
 
 	cols := []string{"ID", "NAME", "OTHER"}
@@ -181,10 +222,11 @@ func TestBakers_UncapturedRefKeepTheSplittingBehaviour(t *testing.T) {
 		values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("R"), "R", 2, 1),
 	}
 	in := values.NewFlatFieldValue("L.NAME", values.UnknownType)
-	if out := bakeSegmentedColumnRef(in, uncaptured, cols, legs); out != values.Value(in) {
+	if got := bakeSegmentedColumnRef(in, uncaptured, cols, legs); got != values.Value(in) {
 		t.Fatalf("the segment-carrying baker acted on an UNCAPTURED ref (%#v) — with no "+
-			"segments stated it has nothing to resolve by and must defer to the caller "+
-			"that splits", out)
+			"segments stated it has nothing to resolve by. It used to defer to a caller "+
+			"that split the name; there is no such caller now, and both paths decline",
+			got)
 	}
 }
 

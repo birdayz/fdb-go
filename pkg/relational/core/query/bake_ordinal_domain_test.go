@@ -53,19 +53,35 @@ func TestBakeFlatRefsAgainstColumns_StatesTheColumnListAsItsDomain(t *testing.T)
 		t.Fatalf("flat bake answered %d in a layout with the same names in a different order", got)
 	}
 
-	// The LEG-WINDOW arm: a dotted read resolved through a leg boundary. Its
-	// ordinal indexes the whole flat row (the window is a range within it), so
-	// the domain is the row's column list — not the leg's slice of it.
+	// The LEG-WINDOW arm is GONE from this baker, and this assertion is its
+	// inverse. It previously read: a dotted `R.R_B` with no parse-tree
+	// segments resolved through the leg boundary to flat ordinal 3, and the
+	// test pinned that its domain was the whole row rather than the leg's
+	// slice. That resolution required slicing "R.R_B" at its first dot to
+	// invent the qualifier "R" — the re-split this baker no longer performs.
+	//
+	// The rule now: no segments means no qualifier, so a dot is just a
+	// character in the name. `R.R_B` matches no flat column verbatim and
+	// therefore DECLINES, staying lazy and going loud at evaluation. The
+	// segment-carrying caller (bakeSegmentedColumnRef) is where a genuine
+	// qualified reference reaches a leg window, and it is pinned separately.
 	wideCols := []string{"L_A", "L_B", "R_A", "R_B"}
-	wideDomain := values.OrdinalDomainOfColumnNames(wideCols)
-	legs := []values.RecordTypeLeg{{Name: "R", Start: 2, Width: 2}}
-	legRef := bakedRef(t, bakeFlatRefsAgainstColumns(
-		values.NewFlatFieldValue("R.R_B", values.UnknownType), wideCols, legs...))
-	if got, ok := legRef.OrdinalIn(wideDomain); !ok || got != 3 {
-		t.Fatalf("leg-window bake of R.R_B = (%d,%v), want (3,true)", got, ok)
+	out := bakeFlatRefsAgainstColumns(
+		values.NewFlatFieldValue("R.R_B", values.UnknownType), wideCols)
+	fv, isFV := out.(*values.FieldValue)
+	if !isFV || fv.Resolved != nil {
+		t.Fatalf("a dotted name with no parse-tree segments baked to %#v — it must stay "+
+			"lazy: without segments there is no qualifier to select a leg window with, "+
+			"and slicing the name to invent one is the re-split this baker retired", out)
 	}
-	if _, ok := legRef.OrdinalIn(values.OrdinalDomainOfColumnNames([]string{"R_A", "R_B"})); ok {
-		t.Fatal("leg-window bake answered in the LEG's own layout — its ordinal indexes the whole row")
+	// CONTROL: the same baker still resolves a name that IS a flat column, so
+	// the decline above is the dot being refused rather than the baker being
+	// inert. Without this, deleting the baker's body would pass the check.
+	hit := bakedRef(t, bakeFlatRefsAgainstColumns(
+		values.NewFlatFieldValue("R_B", values.UnknownType), wideCols))
+	if got, ok := hit.OrdinalIn(values.OrdinalDomainOfColumnNames(wideCols)); !ok || got != 3 {
+		t.Fatalf("control: flat bake of R_B = (%d,%v), want (3,true) — the baker must "+
+			"still resolve ordinary names, or the decline above proves nothing", got, ok)
 	}
 }
 
@@ -120,7 +136,15 @@ func TestBakeDottedRefsToLegQOV_StatesTheLegLayoutAsItsDomain(t *testing.T) {
 		leftDomain := values.OrdinalDomainOfColumnNames([]string{"ID", "NAME"})
 		rightDomain := values.OrdinalDomainOfColumnNames([]string{"NAME", "ID"})
 
-		lref := bakedRef(t, bakeDottedRefsToLegQOVWithRef(values.NewFlatFieldValue("L.NAME", values.UnknownType), logical.ColumnRef{}, outer))
+		// Driven by the PARSER's segments. These used to pass an empty
+		// ColumnRef and rely on the baker slicing "L.NAME" at its first dot to
+		// recover the qualifier; that split is gone. The subject of this
+		// subtest was never the split — it is the leg-addressed DOMAIN, and
+		// every assertion below is unchanged.
+		lSeg := logical.ColumnRef{Present: true, Bare: "NAME", Qualifier: "L", Qualified: true}
+		rSeg := logical.ColumnRef{Present: true, Bare: "NAME", Qualifier: "R", Qualified: true}
+
+		lref := bakedRef(t, bakeDottedRefsToLegQOVWithRef(values.NewFlatFieldValue("L.NAME", values.UnknownType), lSeg, outer))
 		if got, ok := lref.OrdinalIn(leftDomain); !ok || got != 1 {
 			t.Fatalf("L.NAME = (%d,%v), want (1,true)", got, ok)
 		}
@@ -128,7 +152,7 @@ func TestBakeDottedRefsToLegQOV_StatesTheLegLayoutAsItsDomain(t *testing.T) {
 			t.Fatalf("L.NAME answered %d in R's layout — same leaf name, different column", got)
 		}
 
-		rref := bakedRef(t, bakeDottedRefsToLegQOVWithRef(values.NewFlatFieldValue("R.NAME", values.UnknownType), logical.ColumnRef{}, outer))
+		rref := bakedRef(t, bakeDottedRefsToLegQOVWithRef(values.NewFlatFieldValue("R.NAME", values.UnknownType), rSeg, outer))
 		if got, ok := rref.OrdinalIn(rightDomain); !ok || got != 0 {
 			t.Fatalf("R.NAME = (%d,%v), want (0,true)", got, ok)
 		}

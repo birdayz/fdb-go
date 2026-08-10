@@ -88,16 +88,6 @@ func TestNameSplitRecorder_LegQOVSegmentsOfCountsEveryArm(t *testing.T) {
 				"silently stopped being reached",
 		},
 		{
-			name:  "SPLIT-QUALIFIED",
-			field: "L.NAME",
-			ref:   logical.ColumnRef{},
-			class: values.NameSplitQualified,
-			why: "a carrier stating NO segments reached the arm with a dot in its " +
-				"rendered name, and a qualifier was manufactured out of the bytes " +
-				"before it. THE DEBT BUCKET. The corpus reports 0 here, so nothing " +
-				"but this pin goes red when the recorder leaves this arm",
-		},
-		{
 			name:  "splitBare",
 			field: "NAME",
 			ref:   logical.ColumnRef{},
@@ -124,44 +114,112 @@ func TestNameSplitRecorder_LegQOVSegmentsOfCountsEveryArm(t *testing.T) {
 	}
 }
 
-// TestNameSplitRecorder_FlatColumnBakeCountsBothArms pins the flat baker's two
-// classes against the SPLIT CONDITION rather than beside it.
+// TestNameSplitRecorder_SplitQualifiedIsUnreachable is the INVERSE of the
+// SPLIT-QUALIFIED floors this file used to carry, at both sites.
 //
-// The recorder there lives inside the same if/else that decides the split, and
-// this test is what makes that structure load-bearing: moved back out into a
-// separate `if dot > 0`, an edit to either predicate can leave the census
-// reporting the other one's population with both totals still plausible.
-func TestNameSplitRecorder_FlatColumnBakeCountsBothArms(t *testing.T) {
+// Those floors asserted `>= 1`: the debt bucket had to be reachable, because a
+// bucket the corpus drives zero times is one whose recorder can be dropped
+// without any number moving. That made COLLAPSE the alarm.
+//
+// Both bakers now decide qualification from the parser's segment count alone
+// and never slice a rendered name, so the class has no producer left and the
+// alarm direction has INVERTED: zero is the steady state, and any count at all
+// means a first-dot re-split was reintroduced. The old floors are unsatisfiable
+// and are replaced here rather than deleted, so the expectation stays watched.
+func TestNameSplitRecorder_SplitQualifiedIsUnreachable(t *testing.T) {
 	t.Parallel()
 
-	// A flat layout the dotted name does NOT appear in, so the exact-name
-	// precedence cannot resolve it first and the dotted arm is really entered.
 	cols := []string{"L_ID", "L_NAME"}
-	legs := []values.RecordTypeLeg{{Name: "L", Start: 0, Width: 2}}
 
-	t.Run("SPLIT-QUALIFIED", func(t *testing.T) {
+	t.Run("legQOVSegmentsOf", func(t *testing.T) {
 		t.Parallel()
-		got := nameSplitDelta(t, values.NameSplitSiteFlatColumnBake, values.NameSplitQualified, func() {
-			bakeFlatRefsAgainstColumns(
-				values.NewFlatFieldValue("L.L_NAME", values.UnknownType), cols, legs...)
+		outer := twoLegSelect()
+		got := nameSplitDelta(t, values.NameSplitSiteLegQOVSegmentsOf, values.NameSplitQualified, func() {
+			bakeDottedRefsToLegQOVWithRef(
+				values.NewFlatFieldValue("L.NAME", values.UnknownType), logical.ColumnRef{}, outer)
 		})
-		if got < 1 {
-			t.Fatalf("flatColumnBake recorded %d SPLIT-QUALIFIED decision(s) for a dotted "+
-				"name — want at least 1. Over the corpus this bucket is 0 by traffic, so "+
-				"an unwired debt bucket there is indistinguishable from a clean one", got)
+		if got != 0 {
+			t.Fatalf("legQOVSegmentsOf recorded %d SPLIT-QUALIFIED decision(s) for a dotted "+
+				"name carrying NO segments — want 0. A non-zero here means the arm is "+
+				"slicing a rendered name at its first dot again, which cannot tell a "+
+				"qualified A.B from a quoted \"A.B\"", got)
 		}
 	})
 
-	t.Run("splitBare", func(t *testing.T) {
+	t.Run("flatColumnBake", func(t *testing.T) {
+		t.Parallel()
+		got := nameSplitDelta(t, values.NameSplitSiteFlatColumnBake, values.NameSplitQualified, func() {
+			bakeFlatRefsAgainstColumns(
+				values.NewFlatFieldValue("L.L_NAME", values.UnknownType), cols)
+		})
+		if got != 0 {
+			t.Fatalf("flatColumnBake recorded %d SPLIT-QUALIFIED decision(s) for a dotted "+
+				"name — want 0. The leg list is gone from this baker's signature, so a "+
+				"count here means both the parameter and the re-split came back", got)
+		}
+	})
+
+	// CONTROL: the census gate and the recorder are both live, so the two zeros
+	// above are the class being unreachable rather than the instrument being
+	// dark. Without this, deleting every RecordNameSplit call would pass.
+	t.Run("control_instrument_is_live", func(t *testing.T) {
 		t.Parallel()
 		got := nameSplitDelta(t, values.NameSplitSiteFlatColumnBake, values.NameSplitBare, func() {
 			bakeFlatRefsAgainstColumns(
-				values.NewFlatFieldValue("ABSENT", values.UnknownType), cols, legs...)
+				values.NewFlatFieldValue("L.L_NAME", values.UnknownType), cols)
+		})
+		if got < 1 {
+			t.Fatalf("flatColumnBake recorded %d splitBare decision(s) — want at least 1. "+
+				"The same call that must report ZERO SPLIT-QUALIFIED must report a BARE "+
+				"decision, or the zero above is a dark instrument rather than a property", got)
+		}
+	})
+}
+
+// TestNameSplitRecorder_FlatColumnBakeCountsItsOneArm pins the flat baker's
+// surviving class.
+//
+// It used to pin TWO, against the split condition rather than beside it: the
+// recorder lived inside the same if/else that decided the split, so that
+// structure was load-bearing against an edit to either predicate leaving the
+// census reporting the other one's population. There is no longer a split
+// condition to be on the wrong side of — every call records BARE — so what is
+// left to pin is that the recorder still fires at all. The SPLIT-QUALIFIED half
+// moved to TestNameSplitRecorder_SplitQualifiedIsUnreachable, inverted.
+func TestNameSplitRecorder_FlatColumnBakeCountsItsOneArm(t *testing.T) {
+	t.Parallel()
+
+	// A flat layout the names do NOT appear in, so the exact-name precedence
+	// cannot resolve them first and the recorder at the tail is really reached.
+	cols := []string{"L_ID", "L_NAME"}
+
+	t.Run("splitBare_plain", func(t *testing.T) {
+		t.Parallel()
+		got := nameSplitDelta(t, values.NameSplitSiteFlatColumnBake, values.NameSplitBare, func() {
+			bakeFlatRefsAgainstColumns(
+				values.NewFlatFieldValue("ABSENT", values.UnknownType), cols)
 		})
 		if got < 1 {
 			t.Fatalf("flatColumnBake recorded %d splitBare decision(s) for a bare name — "+
-				"want at least 1. This is the site's ENTIRE measured population (2 calls), "+
-				"so it is this bucket whose floor would go quietly false", got)
+				"want at least 1. This is now the site's ONLY class, so it is this bucket "+
+				"whose floor would go quietly false", got)
+		}
+	})
+
+	// A DOTTED name lands in the same bucket, and that is the point rather than
+	// an accident: with no segments behind it, a dot is a character in the name
+	// and the decision is BARE. A census that filed this under SPLIT-QUALIFIED
+	// would be reporting a qualifier nobody derived.
+	t.Run("splitBare_dotted", func(t *testing.T) {
+		t.Parallel()
+		got := nameSplitDelta(t, values.NameSplitSiteFlatColumnBake, values.NameSplitBare, func() {
+			bakeFlatRefsAgainstColumns(
+				values.NewFlatFieldValue("L.L_NAME", values.UnknownType), cols)
+		})
+		if got < 1 {
+			t.Fatalf("flatColumnBake recorded %d splitBare decision(s) for a DOTTED name — "+
+				"want at least 1. Without parse-tree segments a dot is part of the name, "+
+				"so this call must be counted as a bare decision", got)
 		}
 	})
 }

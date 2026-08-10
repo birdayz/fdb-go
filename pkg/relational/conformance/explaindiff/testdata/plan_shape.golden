@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=352 queries=2530 dml=157 non_query=104 plan_errors=260 unexpected_errors=4
+# files=353 queries=2537 dml=157 non_query=104 plan_errors=260 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -15453,6 +15453,50 @@ shape:   RecordQueryProjectionPlan
 shape:     RecordQueryCoveringIndexPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryCoveringIndexPlan
+=== star_body_columns_are_named.yaml#0
+sql:   WITH c AS (SELECT * FROM sb) SELECT id, amt FROM c WHERE grp = 10 ORDER BY id
+plan:  Project([ID#0, AMT#2], PredicatesFilter(Scan(SB), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== star_body_columns_are_named.yaml#1
+sql:   WITH c AS (SELECT * FROM sb) SELECT c.id, c.amt FROM c AS c WHERE c.grp = 20
+plan:  Project([ID#0, AMT#2], PredicatesFilter(Scan(SB), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== star_body_columns_are_named.yaml#2
+sql:   WITH c(x, y, z) AS (SELECT * FROM sb) SELECT z, x FROM c WHERE y = 20
+plan:  Project([Z#2, X#0], PredicatesFilter(Project([ID#0, GRP#1, AMT#2], Scan(SB)), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+=== star_body_columns_are_named.yaml#3
+sql:   SELECT id, amt FROM (SELECT * FROM sb WHERE grp = 10) AS d ORDER BY id
+plan:  Project([ID#0, AMT#2], PredicatesFilter(Scan(SB), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== star_body_columns_are_named.yaml#4
+sql:   SELECT d.id FROM (SELECT * FROM sb) AS d WHERE d.amt = 300
+plan:  Project([ID#0], PredicatesFilter(Scan(SB), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== star_body_columns_are_named.yaml#5
+sql:   SELECT id, amt FROM (SELECT * FROM (SELECT * FROM sb) AS x WHERE grp = 20) AS y
+plan:  Project([ID#0, AMT#2], PredicatesFilter(Scan(SB), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== star_body_columns_are_named.yaml#6
+sql:   SELECT COUNT(*) FROM (SELECT * FROM (SELECT * FROM sb) AS x) AS y WHERE amt > 150
+plan:  Project([COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(SB), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
 === string_comparison.yaml#0
 sql:   SELECT id FROM t WHERE s = 'apple'
 plan:  Project([ID#0], PredicatesFilter(Scan(T), [1 preds]))

@@ -6249,7 +6249,21 @@ func bakeDottedRefsToLegQOVWithRef(v values.Value, ref logical.ColumnRef, input 
 		return v
 	}
 	// segmentsOf yields the (qualifier, leaf) a node should be resolved by, and
-	// whether it is qualified at all.
+	// whether it is qualified at all. Qualification is decided by the PARSER's
+	// segment count and by nothing else — a rendered name is never sliced to
+	// recover one.
+	//
+	// Java is the shape being matched: an Identifier is a leaf name plus an
+	// explicit List<String> qualifier, assembled segment-by-segment
+	// (IdentifierVisitor.java:56-64) and joined only for display (:61-63).
+	// Nothing in Java ever parses a display string back into segments, so a
+	// name that arrived without segments has an EMPTY qualifier list and can
+	// only match an unqualified attribute. That is what this returns.
+	//
+	// The discrimination this buys is not cosmetic: a qualified `A.B` and a
+	// quoted `"A.B"` render to the same bytes, so a slice at the first dot
+	// reads the quoted single identifier as a reference into source A. The
+	// segment count separates them before any name is compared.
 	segmentsOf := func(fv *values.FieldValue, isRoot bool) (qual, leaf string, qualified bool) {
 		if isRoot && ref.Present {
 			values.RecordNameSplit(values.NameSplitSiteLegQOVSegmentsOf,
@@ -6259,15 +6273,15 @@ func bakeDottedRefsToLegQOVWithRef(v values.Value, ref logical.ColumnRef, input 
 			}
 			return strings.ToUpper(ref.Qualifier), ref.Bare, true
 		}
-		dot := strings.IndexByte(fv.Field, '.')
-		if dot <= 0 {
-			values.RecordNameSplit(values.NameSplitSiteLegQOVSegmentsOf,
-				values.NameSplitBare, fv.Field)
-			return "", fv.Field, false
-		}
+		// No segments in hand — the carrier is a machinery mint (the star-body
+		// normalization's boundary labels are the standing example) or a node
+		// below the converted root. Either way there is no parse tree to ask,
+		// so the name is UNQUALIFIED and resolves against the flat row only.
+		// A miss stays lazy and is loud at evaluation, never a silent wrong
+		// slot chosen by a dot that was never a qualifier.
 		values.RecordNameSplit(values.NameSplitSiteLegQOVSegmentsOf,
-			values.NameSplitQualified, fv.Field)
-		return strings.ToUpper(fv.Field[:dot]), fv.Field[dot+1:], true
+			values.NameSplitBare, fv.Field)
+		return "", fv.Field, false
 	}
 	sel := peelToSelectExpression(input)
 	if sel == nil {
@@ -6663,14 +6677,17 @@ func legWindowSlot(qual, leaf string, cols []string, legs []values.RecordTypeLeg
 
 // bakeFlatRefsAgainstColumns rewrites each FLAT LAZY FieldValue (nil child, no
 // Resolved) whose Field matches an output column — exact first-match,
-// case-insensitive — into a baked-ordinal
-// reference over that column's slot. A DOTTED field that
-// matches no column verbatim resolves through the leg boundaries when
-// supplied (qualifier → leg window, leaf → first match WITHIN the window),
-// matching the runtime's leg-window routing but resolved at plan time.
+// case-insensitive — into a baked-ordinal reference over that column's slot.
 // Non-matching and non-flat values are returned unchanged (a miss stays lazy
 // → loud at eval).
-func bakeFlatRefsAgainstColumns(v values.Value, cols []string, legs ...values.RecordTypeLeg) values.Value {
+//
+// It takes NO leg list, and that absence is the contract rather than an
+// omission: this is the baker for carriers that arrive with no parse-tree
+// segments, and without segments there is no qualifier to select a leg window
+// with. Reaching a leg window requires a qualifier the PARSER produced, which
+// is bakeSegmentedColumnRef's job. Handing this function legs again would
+// re-create the re-split it exists without.
+func bakeFlatRefsAgainstColumns(v values.Value, cols []string) values.Value {
 	if v == nil || len(cols) == 0 {
 		return v
 	}
@@ -6688,95 +6705,36 @@ func bakeFlatRefsAgainstColumns(v values.Value, cols []string, legs ...values.Re
 					fv.Field, i, fv.Typ, values.OrdinalDomainOfColumnNames(cols))
 			}
 		}
-		// Dotted qualifier → leg window → leaf within the window. This is the
-		// RE-SPLIT arm: it recovers a qualifier by slicing a rendered name, and
-		// therefore cannot tell a qualified `A.B` from a quoted `"A.B"`. It
-		// serves the callers whose carrier still arrives as text; the callers
-		// that hold the parser's segments go through bakeSegmentedColumnRef.
+		// A name with no parse-tree segments behind it is UNQUALIFIED, and a
+		// dot inside it is part of the name rather than a qualifier boundary.
+		// It resolves against the flat columns above or not at all.
 		//
-		// EVERY PARSED CHANNEL IS CONVERTED AND THIS ARM STILL STANDS —
-		// deliberately, and the reason is worth stating because "unconverted
-		// leftover" is the wrong reading. Projections, ORDER BY keys, GROUP BY
-		// keys and aggregate operands all carry the parser's segment triple now
-		// (CQ-52), and the dotted re-split over the real-FDB sqldriver corpus
-		// went from 110 calls to zero with them.
+		// This arm used to slice the rendered name at its first dot and route
+		// the halves through legWindowSlot. That is the one thing Java never
+		// does: an Identifier carries a leaf name plus an explicit
+		// List<String> qualifier, built segment-by-segment
+		// (IdentifierVisitor.java:56-64) and joined only for display (:61-63),
+		// so a display string is never parsed back into structure. Structure
+		// encoded into text and then recovered from it cannot distinguish a
+		// qualified `A.B` from a quoted `"A.B"` — they are the same bytes —
+		// and the slice silently read the quoted single identifier as a
+		// reference into a source named A.
 		//
-		// What the arm serves is the UNCAPTURED carrier — ColumnRef.Present
-		// false — which ProjectionRefs' own contract requires be read as
-		// "unknown", never as "unqualified", and therefore be given exactly the
-		// behaviour it had. Some of those producers are un-migrated and will
-		// carry a triple one day. One class never will: a projection MACHINERY
-		// mints, whose names are BODY OUTPUT COLUMNS with no FullId anywhere
-		// behind them (the star-body normalization in translateScan). There is
-		// no segment count to capture there, so an absent triple is STRUCTURAL,
-		// and capturing one would mean inventing it.
+		// The segment-carrying counterpart is bakeSegmentedColumnRef, which
+		// every caller prefers whenever ColumnRef.Present. Those two paths now
+		// agree on the same rule instead of disagreeing: absent segments are
+		// treated exactly like present-but-unqualified segments, which is what
+		// bakeSegmentedColumnRef already did via its `if !ref.Qualified`
+		// return. A miss stays lazy and is loud at evaluation.
 		//
-		// Those labels are BARE by construction today (the outer scan's own
-		// columns, then the link's AS/AT aliases), so the class is not currently
-		// firing here — but a quoted identifier carrying a dot is legal SQL, and
-		// what happens then is a BEHAVIOUR decision nobody has made: should a
-		// star-projected body column be leg-addressable at all? If not, this arm
-		// must not answer for such a label. If so, the addressing belongs to the
-		// boundary schema's leg identities — which that normalization has in
-		// hand — and not to a dot in a label it constructed. The arm is left
-		// standing and the question stated, rather than converted by guesswork,
-		// which would settle it silently.
-		//
-		// THE SPLIT POPULATION NOW HAS A GUARD, and the numbers below are
-		// instrument readings rather than the scratch figures they replace.
-		// values.RecordNameSplit counts this arm and segmentsOf per resolution
-		// decision, bucketed by which representation DECIDED; the standing
-		// assertion is values.AssertNameSplitCensus, wired into the sqldriver
-		// TestMain beside its siblings. Measured over the real-FDB corpus,
-		// 2026-08-06, STABLE across two consecutive full-suite runs:
-		//
-		//	legQOVSegmentsOf   calls 9 | segmented 9 | SPLIT-QUALIFIED 0 | splitBare 0
-		//	flatColumnBake     calls 2 | segmented 0 | SPLIT-QUALIFIED 0 | splitBare 2
-		//
-		// So the "110 → 3 → 0" progression's ZERO is confirmed, and the
-		// POPULATION is far smaller than that progression implied: this arm is
-		// reached twice over the whole corpus, both times by a BARE name that
-		// falls through unbaked. It has never been handed a dotted name here.
-		// The hard zero is therefore nearly vacuous on its own, and what
-		// carries the weight is the floors PLUS a unit wiring pin — a weaker
-		// and more honest statement than the floors alone. THIS arm's split
-		// population is 2, so its floor is real. segmentsOf's is 0, so its
-		// floor is a DECLARATION (watched, not proven) and the recorder wiring
-		// on its splitting arms is pinned by unit test instead; see the census
-		// header.
-		//
-		// Both numbers scope to THESE TWO ARMS. They are not a statement about
-		// re-splitting in Go: the census header names four uninstrumented
-		// siblings (recursiveRemapValues, parseColRef, splitQualifier, and the
-		// derived-unnest base-column split), and nothing counts those.
-		//
-		// The parked question above cannot be settled by accident here, and it
-		// is not this arm's to settle in any case: the day a machinery-minted
-		// label arrives carrying a dot, SPLIT-QUALIFIED leaves zero and the
-		// assertion fires with the RULING in its message — Java resolves a
-		// projection output that carries no Identifier by no spelling at all
-		// (SemanticAnalyzer.java:459-461), so this arm DECLINES and the zero is
-		// not widened.
-		// ONE if/else, with the recorder INSIDE the arm it reports. Counting in a
-		// separate `if dot > 0` that merely happened to test the same expression
-		// let an edit to the split condition leave the census measuring the other
-		// predicate — reporting SPLIT-QUALIFIED for calls that took the bare path,
-		// which is the one way a hard zero can be both green and meaningless.
-		dot := strings.IndexByte(fv.Field, '.')
-		if dot > 0 {
-			values.RecordNameSplit(values.NameSplitSiteFlatColumnBake,
-				values.NameSplitQualified, fv.Field)
-			if k, found := legWindowSlot(fv.Field[:dot], fv.Field[dot+1:], cols, legs,
-				values.DottedLegSiteFlatColumnBake); found {
-				// k indexes the WHOLE flat row (the leg window is a range
-				// within it), so the domain is cols — not the leg's slice of it.
-				return values.NewFieldValueWithResolvedOrdinalInDomain(
-					fv.Field, k, fv.Typ, values.OrdinalDomainOfColumnNames(cols))
-			}
-		} else {
-			values.RecordNameSplit(values.NameSplitSiteFlatColumnBake,
-				values.NameSplitBare, fv.Field)
-		}
+		// A carrier reaching here with a dot is therefore not a resolution
+		// failure to route around — it is a MINT that never had a parse tree,
+		// the star-body normalization's boundary labels being the standing
+		// example. Its absent triple is structural and permanent, so inventing
+		// a qualifier for it to slice back out would manufacture the very
+		// structure this removal deletes.
+		values.RecordNameSplit(values.NameSplitSiteFlatColumnBake,
+			values.NameSplitBare, fv.Field)
 		return node
 	}
 	if baked := baker(v); baked != v {
@@ -6986,7 +6944,7 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 		if ref.Present {
 			v = bakeSegmentedColumnRef(minted, ref, inputCols, inputLegs)
 		} else {
-			v = bakeFlatRefsAgainstColumns(v, inputCols, inputLegs...)
+			v = bakeFlatRefsAgainstColumns(v, inputCols)
 		}
 		// A surviving dotted read over a leg of the input select bakes
 		// LEG-ADDRESSED (same rationale as translateProject's pass).
@@ -7332,7 +7290,7 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 					continue
 				}
 			}
-			projected[i] = bakeFlatRefsAgainstColumns(v, inputCols, inputLegs...)
+			projected[i] = bakeFlatRefsAgainstColumns(v, inputCols)
 		}
 	}
 	// A surviving DOTTED lazy read whose qualifier names a
@@ -8084,7 +8042,7 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 				continue
 			}
 		}
-		groupKeys[i] = bakeFlatRefsAgainstColumns(groupKeys[i], aggInputCols, aggInputLegs...)
+		groupKeys[i] = bakeFlatRefsAgainstColumns(groupKeys[i], aggInputCols)
 	}
 	// Correct-or-loud floor for the PROJECTING-CTE-aggregate class: the bake was SKIPPED
 	// (findWindowedSeed couldn't reach an identity-wrapped seed) but the input is a
@@ -8168,10 +8126,10 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 			if ref := call.Ref(); ref.Present {
 				spec.Operand = bakeSegmentedColumnRef(operandMinted, ref, aggInputCols, aggInputLegs)
 			} else {
-				spec.Operand = bakeFlatRefsAgainstColumns(spec.Operand, aggInputCols, aggInputLegs...)
+				spec.Operand = bakeFlatRefsAgainstColumns(spec.Operand, aggInputCols)
 			}
 		} else {
-			spec.Operand = bakeFlatRefsAgainstColumns(spec.Operand, aggInputCols, aggInputLegs...)
+			spec.Operand = bakeFlatRefsAgainstColumns(spec.Operand, aggInputCols)
 		}
 		if i < len(a.Aliases) && a.Aliases[i] != "" {
 			spec.Alias = strings.ToUpper(a.Aliases[i])

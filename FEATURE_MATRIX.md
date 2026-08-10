@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**352 scenarios · 2791 query/assertion cases** across 18 feature areas — 2452 supported, 113 unsupported-feature pins, 226 error-path pins.
+**353 scenarios · 2798 query/assertion cases** across 18 feature areas — 2459 supported, 113 unsupported-feature pins, 226 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -44,8 +44,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 31 | 241 | 208 | 10 | 23 |
-| **Total** | **352** | **2791** | **2452** | **113** | **226** |
+| Other | 32 | 248 | 215 | 10 | 23 |
+| **Total** | **353** | **2798** | **2459** | **113** | **226** |
 
 ## Aggregates & GROUP BY
 
@@ -487,5 +487,6 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `select_no_from` | 6 | 0 | 6 | 0 | FROM-less SELECT — fdb-relational 4.11.1.0's QueryVisitor.visitSimpleTable |
 | `select_star_single_table` | 4 | 4 | 0 | 0 | SELECT * from single table |
 | `set_op_fetch_pushdown` | 2 | 2 | 0 | 0 | set operations push below the fetch |
+| `star_body_columns_are_named` | 7 | 7 | 0 | 0 | A star-projected CTE or derived-table body carries its source columns' NAMES, |
 | `string_comparison` | 5 | 5 | 0 | 0 | String comparison edge cases |
 
