@@ -18,6 +18,13 @@
 # split yields `SK`, a column no row has). The fold carries the resolved path
 # and re-states its ROOT ordinal in the layout it evaluates against.
 #
+# THE PINNED RENDERING BELOW SAYS `N.SK`, NOT `N` (RFC-227). The hidden column
+# the fold appends is named by that resolved PATH rather than by the struct
+# root, because the root spelling was also the dedup identity: `n.sk` and `n.co`
+# both rendered `N`, so a query ordering by BOTH lost the second key's column
+# and returned silently wrong rows. The name is display-only — resolution is by
+# baked ordinal — so this move changed no row in this file.
+#
 # THE ORDER IS THE ASSERTION, AND IT DISCRIMINATES. `sk` is ANTI-correlated
 # with `id` (50,40,30 as id goes 1,2,3) while `co` is correlated (1,2,3), so
 # ordering by `n.sk` yields ids [3 2 1] while ordering by `id`, by `n.co`, or
@@ -40,7 +47,7 @@ tests:
   - query: |
       SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h
       FROM t1 ORDER BY n.sk
-    plan_contains: "InMemorySort([N ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault("
+    plan_contains: "InMemorySort([N.SK ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault("
     rows:
       - [3, true]
       - [2, false]
@@ -51,7 +58,7 @@ tests:
   - query: |
       SELECT id, n, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h
       FROM t1 ORDER BY n.sk
-    plan_contains: "InMemorySort([N ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault("
+    plan_contains: "InMemorySort([N.SK ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault("
     rows:
       - [3, [30, 3], true]
       - [2, [40, 2], false]
@@ -62,7 +69,7 @@ tests:
   - query: |
       SELECT id, n AS nn, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h
       FROM t1 ORDER BY n.sk
-    plan_contains: "InMemorySort([N ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault("
+    plan_contains: "InMemorySort([N.SK ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault("
     rows:
       - [3, [30, 3], true]
       - [2, [40, 2], false]

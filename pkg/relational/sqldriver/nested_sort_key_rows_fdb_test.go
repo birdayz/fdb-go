@@ -33,11 +33,17 @@ import (
 //	id=3 n=(sk=30, co=100)
 //
 // Ascending by `co` yields ids [3 2 1]. Ascending by `sk` yields [1 2 3], and so
-// does ascending by the struct root under any first-member-wins or
-// serialized-prefix comparison, and so does ascending by `id` and by the
-// insertion order a dropped sort would leave. [3 2 1] is reachable by ordering
-// on `n.co` and by nothing else in this row set — which is what makes the
-// assertion an assertion rather than a coincidence.
+// does ascending by `id`, and so does the insertion order a dropped sort would
+// leave. [3 2 1] is reachable by ordering on `n.co` and by nothing else in this
+// row set — which is what makes the assertion an assertion rather than a
+// coincidence.
+//
+// Ordering by the struct ROOT is not a fourth way to get [1 2 3], because there
+// is no struct comparator to get it with: that case does not mis-order, it FAILS
+// (`values: no ordering defined between *dynamicpb.Message and *dynamicpb.Message`)
+// — measured, and recorded again further down. An earlier version of this
+// sentence claimed the root ordering "yields [1 2 3] under any first-member-wins
+// or serialized-prefix comparison"; neither comparison exists.
 //
 // THE MEASURED VERDICT IS "RENDERING ONLY", and the arms below are green because
 // of it: the comparator reads the nested MEMBER while EXPLAIN prints the struct
@@ -235,22 +241,32 @@ func TestFDB_NestedSortKeyOrdersByTheMemberNotTheStructRoot(t *testing.T) {
 }
 
 // TestFDB_TwoNestedSortKeysOfTheSameStructRootDoNotCollapse is the arm the
-// severity question opened up rather than closed.
+// severity question opened up rather than closed. It pinned a live defect; the
+// defect is FIXED and this now guards the fix.
 //
-// The rows test above establishes that a SINGLE nested key sorts correctly and
-// only RENDERS flat. But the flat rendering is not confined to EXPLAIN: it is the
-// NAME the projected-EXISTS fold gives the hidden column it appends
-// (collectExtraSortColumns, cascades_translator.go), and that name is also the
-// key of the fold's `seen` dedup. `n.sk` and `n.co` both render `N`, so the
-// second of them is dropped as a duplicate of the first.
+// WHAT WAS WRONG, kept because a regression here will look exactly like it
+// again. The rows test above establishes that a SINGLE nested key sorts
+// correctly and only RENDERS flat. But the flat rendering was not confined to
+// EXPLAIN: it was the NAME the projected-EXISTS fold gave the hidden column it
+// appends (collectExtraSortColumns, cascades_translator.go), and that name also
+// keyed the fold's dedup. `n.sk` and `n.co` both render `N`, so the second key's
+// COLUMN was never appended — the second KEY survived in the plan
+// (`InMemorySort([N ASC, N.SK ASC])`) and read a slot the folded record did not
+// carry, which is why the symptom was a silently ignored key rather than an error.
 //
-// That dedup was previously argued safe on the grounds that two alike-rendering
-// keys carry an identical source value BY CONSTRUCTION, since sortKeySourceValue
-// depends on the key only through sortKeyFieldRef. That is true for FLAT keys and
-// FALSE for nested ones: sortKeySourceValue's nested arm sits ABOVE the
-// sortKeyFieldRef call and returns a distinct per-member value, so two keys that
-// render alike now carry DIFFERENT reads. The construction the argument rested on
-// no longer holds.
+// That dedup was argued safe on the grounds that two alike-rendering keys carry
+// an identical source value BY CONSTRUCTION, since sortKeySourceValue depends on
+// the key only through sortKeyFieldRef. That is true for FLAT keys and FALSE for
+// nested ones: sortKeySourceValue's nested arm sits ABOVE the sortKeyFieldRef
+// call and returns a distinct per-member value. The argument was true when it was
+// written and false when it shipped — the change it was justifying is what
+// removed its premise.
+//
+// The fix is two-part and both parts are load-bearing: the dedup is keyed on the
+// source VALUE (symmetric semantic equality — never Java's asymmetric
+// canBeDerivedFrom, which among the extras would find `n.sk` derivable from `n`
+// and recreate this), and the appended column is named by its RESOLVED PATH so
+// two members of one root are not spelled alike.
 //
 // THE FIXTURE TIES BOTH MEMBERS, because a collapse is only visible where the
 // dropped key was doing work:
@@ -304,49 +320,47 @@ func TestFDB_TwoNestedSortKeysOfTheSameStructRootDoNotCollapse(t *testing.T) {
 
 	const existsSel = "SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h FROM t1 "
 
-	// `correct` is what SQL requires. `broken` is what this build ACTUALLY
-	// returns, and where the two differ the arm is a CHARACTERIZATION pin: it
-	// asserts the defect so the defect cannot drift unobserved, and it fails
-	// LOUDLY the moment the rows become correct so whoever fixes it is told to
-	// flip the assertion rather than left wondering why a test went red.
-	//
-	// The alternative — asserting `correct` and shipping a permanently red test —
-	// was rejected: a test that is always red is a test nobody reads, and it
-	// cannot be told apart from a test that broke today.
+	// THE PIN IS FLIPPED. These arms were CHARACTERIZATION pins asserting the
+	// broken order; the fold now returns what SQL requires, so they assert that
+	// instead. The previously-observed wrong orders are kept in each `why` — a
+	// regression here has a specific shape, and naming it is what tells the next
+	// reader whether the second key went missing again or something else moved.
 	cases := []struct {
 		name    string
 		sql     string
 		correct []int64
-		broken  []int64
+		fold    bool
 		why     string
 	}{{
 		name:    "fold/co-then-sk",
 		sql:     existsSel + "ORDER BY n.co, n.sk",
 		correct: []int64{3, 2, 1},
-		broken:  []int64{3, 1, 2},
-		why:     "n.sk (the SECOND key) is dropped as a duplicate of n.co's hidden column",
+		fold:    true,
+		why: "n.sk is the SECOND key and it must do work: co ties ids 1 and 2 at 5, " +
+			"so sk breaks the tie to 2 before 1. [3 1 2] is the signature of the " +
+			"second key's hidden column going missing — it was the measured answer " +
+			"while two nested keys of one struct root shared a name",
 	}, {
 		name:    "fold/sk-then-co",
 		sql:     existsSel + "ORDER BY n.sk, n.co",
 		correct: []int64{3, 2, 1},
-		broken:  []int64{2, 3, 1},
-		why:     "n.co (the SECOND key) is dropped as a duplicate of n.sk's hidden column",
+		fold:    true,
+		why: "the same claim in the other key order, separately falsifiable so a fix " +
+			"satisfying one direction only is not mistaken for a fix. [2 3 1] is the " +
+			"signature of n.co (the SECOND key here) going missing",
 	}, {
 		// NO FOLD — the ordinary sort path appends no hidden column and runs no
-		// dedup, so it localises the defect to the projected-EXISTS fold rather
-		// than to nested multi-key sorting in general. These two arms assert the
-		// CORRECT order (broken == correct), which is what makes the pair above a
-		// statement about the fold and not about nested sorting.
+		// dedup. It localises any red above to the projected-EXISTS fold rather
+		// than to nested multi-key sorting in general, which is what made the pair
+		// above a statement about the fold. It kept working throughout.
 		name:    "nofold/co-then-sk",
 		sql:     "SELECT id FROM t1 ORDER BY n.co, n.sk",
 		correct: []int64{3, 2, 1},
-		broken:  []int64{3, 2, 1},
 		why:     "the non-fold control — this path has no hidden column and no dedup",
 	}, {
 		name:    "nofold/sk-then-co",
 		sql:     "SELECT id FROM t1 ORDER BY n.sk, n.co",
 		correct: []int64{3, 2, 1},
-		broken:  []int64{3, 2, 1},
 		why:     "the non-fold control",
 	}}
 
@@ -394,28 +408,15 @@ func TestFDB_TwoNestedSortKeysOfTheSameStructRootDoNotCollapse(t *testing.T) {
 					tc.sql, got, len(got), tc.correct, len(tc.correct))
 			}
 
-			isBroken := !equalIDs(tc.broken, tc.correct)
-			switch {
-			case equalIDs(got, tc.correct) && isBroken:
-				t.Fatalf("THE KNOWN-BROKEN SHAPE NOW RETURNS THE CORRECT ROWS — "+
-					"flip this arm's `broken` to the correct order and delete this "+
-					"branch.\nsql:  %s\nplan: %s\ngot:  %v (correct)\n"+
-					"previously: %v, because %s\n\n"+
-					"This is a PASS in substance: a multi-key nested ORDER BY through "+
-					"the projected-EXISTS fold used to lose its second key.",
-					tc.sql, plan, got, tc.broken, tc.why)
-			case !equalIDs(got, tc.broken):
-				verdict := "a multi-key nested ORDER BY changed its answer"
-				if !isBroken {
-					verdict = "the non-fold control lost a sort key — the defect has " +
-						"SPREAD out of the projected-EXISTS fold"
+			if !equalIDs(got, tc.correct) {
+				verdict := "the projected-EXISTS fold LOST A SORT KEY again"
+				if !tc.fold {
+					verdict = "the ORDINARY sort path lost a sort key — this is the " +
+						"non-fold control, so the defect is NOT confined to the " +
+						"projected-EXISTS fold"
 				}
-				t.Fatalf("%s.\nsql:  %s\nplan: %s\ngot:  %v\nthis build returned: %v\n"+
-					"SQL requires: %v\nwhy: %s",
-					verdict, tc.sql, plan, got, tc.broken, tc.correct, tc.why)
-			case isBroken:
-				t.Logf("KNOWN-BROKEN, pinned: got %v, SQL requires %v — %s",
-					got, tc.correct, tc.why)
+				t.Fatalf("%s.\nsql:  %s\nplan: %s\ngot:  %v\nSQL requires: %v\nwhy: %s",
+					verdict, tc.sql, plan, got, tc.correct, tc.why)
 			}
 		})
 	}
@@ -433,19 +434,23 @@ func equalIDs(a, b []int64) bool {
 	return true
 }
 
-// TestFDB_NestedSortKeyExplainRendersTheStructRoot records the RENDERING half of
-// the same question, separately from the rows half, because they are separate
-// facts with opposite severities and a single test asserting both would report
-// one severity for either failure.
+// TestFDB_NestedSortKeyExplainRendersTheMember records the RENDERING half of the
+// same question, separately from the rows half, because they are separate facts
+// with opposite severities and a single test asserting both would report one
+// severity for either failure.
 //
-// `ORDER BY n.co` renders its sort key as the struct ROOT (`N`) rather than the
-// member (`N.CO`). This test pins that this is COSMETIC — it stands beside the
-// rows test above, which pins that the same query returns member-ordered rows.
-// If a change makes the rendering faithful, this test reds and the correct
-// response is to update it; if a change makes the ROWS follow the rendering, the
-// test above reds and that is a correctness regression. Keeping them apart is
-// what makes the two outcomes distinguishable at a glance.
-func TestFDB_NestedSortKeyExplainRendersTheStructRoot(t *testing.T) {
+// `ORDER BY n.co` now renders its sort key as the MEMBER (`N.CO`). It used to
+// render the struct ROOT (`N`), and that was not merely cosmetic after all: the
+// rendering was the hidden column's NAME, two members of one root were therefore
+// spelled alike, and the second key's column was dropped. Fixing the rows fixed
+// the rendering, because they were the same string.
+//
+// This test remains SEPARATE from the rows test on purpose. A red here with the
+// rows test green is a display regression; a red there is a correctness
+// regression. Keeping them apart is what makes the two outcomes distinguishable
+// at a glance — and the name is still only hygiene, since resolution is by baked
+// ordinal (pullUpToOutputField), not by this string.
+func TestFDB_NestedSortKeyExplainRendersTheMember(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -484,15 +489,17 @@ func TestFDB_NestedSortKeyExplainRendersTheStructRoot(t *testing.T) {
 	}
 	t.Logf("plan: %s", plan)
 
-	if !strings.Contains(plan, "InMemorySort([N ASC]") {
-		t.Errorf("the flat sort-key RENDERING changed.\nplan: %s\n"+
-			"This test pins the COSMETIC half of the nested-sort-key question: the "+
-			"key renders as the struct ROOT while the rows follow the MEMBER. If the "+
-			"rendering was made faithful (`N.CO`), update this expectation. If it "+
-			"changed for any other reason, check the rows test in this file first — "+
-			"it is the one that guards correctness.", plan)
+	if !strings.Contains(plan, "InMemorySort([N.CO ASC]") {
+		t.Errorf("the nested sort-key RENDERING changed.\nplan: %s\n"+
+			"want a sort key naming the MEMBER: InMemorySort([N.CO ASC]\n"+
+			"If this reverted to the struct ROOT (`InMemorySort([N ASC]`), the hidden "+
+			"column is being named by its root again — check the rows test in this "+
+			"file, because that spelling is what let two members of one struct root "+
+			"collapse into a single appended column.", plan)
 	}
-	if strings.Contains(plan, "N.CO") {
-		t.Logf("the rendering now names the member — the flat-name defect appears fixed")
+	if strings.Contains(plan, "InMemorySort([N ASC]") {
+		t.Errorf("the sort key renders the struct ROOT again.\nplan: %s\n"+
+			"This is the exact spelling the collapse defect wore — see "+
+			"TestFDB_TwoNestedSortKeysOfTheSameStructRootDoNotCollapse.", plan)
 	}
 }

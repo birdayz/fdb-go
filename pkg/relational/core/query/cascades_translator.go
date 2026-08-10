@@ -4698,8 +4698,7 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 			// leaving the re-applied sort reading a field the folded record lacks.
 			// That is a SILENT wrong order, which is strictly worse than the loud
 			// failure it replaces. Declining yields a clean unsupported error.
-			if fv, isFV := k.Value.(*values.FieldValue); isFV && fv.Resolved != nil &&
-				len(fv.Resolved.Accessors) > 1 {
+			if _, isNested := nestedResolvedSortKey(k); isNested {
 				if src.sortKeySourceValue(k) == nil {
 					return nil
 				}
@@ -5019,8 +5018,7 @@ func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
 	// comparable (a different layout) is re-derived, and one that IS comparable
 	// must agree or the key declines. Declining costs a clean unsupported error;
 	// a wrong ordinal is a silent wrong-column read.
-	if fv, ok := k.Value.(*values.FieldValue); ok && fv.Resolved != nil &&
-		len(fv.Resolved.Accessors) > 1 && !s.isJoin {
+	if fv, ok := nestedResolvedSortKey(k); ok && !s.isJoin {
 		if s.singleType == nil {
 			return nil // no layout to derive against — decline rather than guess
 		}
@@ -5041,8 +5039,7 @@ func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
 	// re-states the root on the merged row and fuses the suffix back on. That is
 	// the same division of labour the FLAT join arm below already uses, extended
 	// to carry a path instead of a bare column name.
-	if fv, ok := k.Value.(*values.FieldValue); ok && fv.Resolved != nil &&
-		len(fv.Resolved.Accessors) > 1 && s.isJoin {
+	if fv, ok := nestedResolvedSortKey(k); ok && s.isJoin {
 		li, ok := s.legIndexOfNestedKey(fv)
 		if !ok || s.legTypes[li] == nil {
 			// No leg layout to derive the root against — decline rather than guess.
@@ -5174,10 +5171,18 @@ func (s sortSource) resolveKeyName(field string, ident string, identPresent bool
 }
 
 // extraSortCol is a hidden remainingOrderBy column appended to the folded
-// projection: a collision-free NAME (the qualified field reference) and the
-// source-column VALUE it reads (bare for single-table, qualified leg ref for a
-// JOIN). The qualified name guarantees the hidden column never shadows an output
-// alias that happens to share the bare column name (RFC-141 R4 P2b).
+// projection: a NAME (the qualified field reference for a flat key, the resolved
+// PATH for a nested one) and the source-column VALUE it reads (bare for
+// single-table, qualified leg ref for a JOIN).
+//
+// The name is HYGIENE, not the identity. It keeps a hidden column from being
+// spelled like an output alias sharing the bare column name (RFC-141 R4 P2b) and
+// from two struct members being spelled alike, and it is the DISPLAY name the
+// re-applied sort renders into EXPLAIN. What actually resolves a sort key onto
+// its column is the VALUE match in pullUpToOutputField, which emits a baked
+// ORDINAL — so a name that collided anyway (a quoted identifier can contain a
+// dot) still resolves correctly. Identity is the value; the name is what a human
+// reads.
 type extraSortCol struct {
 	name string
 	val  values.Value
@@ -5188,41 +5193,119 @@ type extraSortCol struct {
 // by an output field (Java's remainingOrderByExpressions). Membership is
 // VALUE-based (sortKeyInOutput) — a key is "in output" only when an output field
 // genuinely projects its source column, never merely sharing a bare name with an
-// output alias. Each appended column is named by its QUALIFIED field reference so
-// it cannot collide with an output column. A sort key whose column can't be named
-// (a computed expression) is skipped here — the caller
-// (translateProjectOverExistsFilter) has already bailed the fold for any computed
-// key absent from the projection, so a computed key reaching this point is a
-// SELECTED expression that pulls up to its own output field. Order is stable and
-// de-duplicated by name.
+// output alias. A sort key whose column can't be named (a computed expression) is
+// skipped here — the caller (translateProjectOverExistsFilter) has already bailed
+// the fold for any computed key absent from the projection, so a computed key
+// reaching this point is a SELECTED expression that pulls up to its own output
+// field.
+//
+// Order is stable and de-duplicated BY VALUE, never by the appended column's name
+// (see extraSortColOfValue). Naming is a separate concern handled by
+// sortKeyExtraColumnName: a flat key keeps its QUALIFIED field reference so it
+// cannot collide with an output column, and a nested key is named by its resolved
+// PATH so two members of one struct root are not spelled alike.
 func collectExtraSortColumns(chain []logical.LogicalOperator, fields []values.RecordConstructorField, src sortSource) []extraSortCol {
 	var extra []extraSortCol
-	seen := map[string]struct{}{}
 	for _, op := range chain {
 		s, ok := op.(*logical.LogicalSort)
 		if !ok {
 			continue
 		}
 		for _, k := range s.Keys {
-			name := sortKeyFieldRef(k)
+			name := sortKeyExtraColumnName(k)
 			if name == "" {
 				continue
 			}
 			if _, inOutput := src.sortKeyInOutput(k, fields); inOutput {
 				continue
 			}
-			if _, dup := seen[name]; dup {
-				continue
-			}
+			// The VALUE is computed BEFORE identity is asserted, because the
+			// value IS the identity. The dedup this replaced consulted a
+			// rendered name first and so decided on a spelling it had not yet
+			// earned the right to trust: two nested keys of one struct root
+			// both render the root, and the second key's column was dropped as
+			// a duplicate of the first while reading a different member.
 			val := src.sortKeySourceValue(k)
 			if val == nil {
 				continue
 			}
-			seen[name] = struct{}{}
+			if extraSortColOfValue(extra, val) >= 0 {
+				continue
+			}
 			extra = append(extra, extraSortCol{name: name, val: val})
 		}
 	}
 	return extra
+}
+
+// extraSortColOfValue returns the index of an already-collected hidden column
+// that reads the SAME source value, or -1. This is Java's membership test —
+// Expressions.difference over canBeDerivedFrom (Expressions.java:124-146,
+// Expression.java:254-264) — and it is deliberately the same comparison
+// sortKeyInOutput applies against the OUTPUT, applied here among the appended
+// columns themselves.
+//
+// THE EQUALITY IS SYMMETRIC AND MUST STAY SYMMETRIC. Java's derivation test is
+// ASYMMETRIC and is sound only in the direction Java uses it: an order-by
+// expression against the OUTPUT. Applied among the extras it inverts — for
+// `ORDER BY n, n.sk` the member IS derivable from its struct root, so an
+// asymmetric test would drop `n.sk`'s column and recreate exactly the defect
+// this function was repaired for, with a Java citation attached to it. Anyone
+// "upgrading" this to canBeDerivedFrom for closer Java alignment is reintroducing
+// the bug.
+//
+// Equality separates the two keys structurally, not by name: EqualsWithoutChildren
+// compares baked FieldValues by their full ordinal PATH, so `n.co` and `n.sk`
+// share the Field `N` and stay distinct. The CHILDREN recursion is load-bearing
+// on the join arm and must not be optimised away — two legs whose struct sits at
+// the same ordinals have EQUAL paths, and only the QOV correlation child keeps
+// `t1.n.sk` from merging with `t2.n.sk`.
+func extraSortColOfValue(extra []extraSortCol, val values.Value) int {
+	for i, e := range extra {
+		if e.val != nil && values.SemanticEqualsUnderAliasMap(val, e.val, values.AliasMap{}) {
+			return i
+		}
+	}
+	return -1
+}
+
+// sortKeyExtraColumnName names the hidden column a sort key gets appended as.
+//
+// A NESTED key is named by its RESOLVED PATH (`N.CO`), never by sortKeyFieldRef's
+// flat rendering, which for an unqualified nested key returns the struct ROOT
+// (`N` — fv.Child is nil, so the ToUpper(fv.Field) arm fires). The flat name is a
+// faithful answer to "what does this key spell" and a wrong answer to "which
+// column is this", which is the question an appended field's name is asked. Two
+// members of one struct root would otherwise be spelled alike in a single
+// RecordConstructorValue.
+//
+// The nested-over-JOIN shape already renders the path (fv.Child is the leg's QOV,
+// so sortKeyFieldRef takes the ColumnNameValue branch), and this recomputes the
+// identical string there. FLAT keys keep their qualified provenance name
+// (`T1.ID`), which is what keeps a hidden column from shadowing an output alias
+// sharing the bare column name.
+func sortKeyExtraColumnName(k logical.SortKey) string {
+	if fv, ok := nestedResolvedSortKey(k); ok {
+		return strings.ToUpper(values.ColumnNameValue(fv))
+	}
+	return sortKeyFieldRef(k)
+}
+
+// nestedResolvedSortKey reports whether a sort key carries a multi-accessor
+// resolved path — THE definition of "this key is nested", read by every site that
+// needs to know.
+//
+// It exists as one function because the predicate was hand-copied at three sites
+// and a fourth was about to be added. That drift is not hypothetical: the arms
+// that made a nested key carry a distinct per-member value were added ABOVE the
+// name derivation without the naming site learning about it, which is precisely
+// how two keys came to read different columns while being named the same.
+func nestedResolvedSortKey(k logical.SortKey) (*values.FieldValue, bool) {
+	fv, ok := k.Value.(*values.FieldValue)
+	if !ok || fv.Resolved == nil || len(fv.Resolved.Accessors) <= 1 {
+		return nil, false
+	}
+	return fv, true
 }
 
 // stripSortQualifier returns the upper-cased BARE column name of a (possibly

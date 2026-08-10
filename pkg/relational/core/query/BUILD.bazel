@@ -55,6 +55,7 @@ go_test(
         "exists_known_truth_test.go",
         "exists_rider_test.go",
         "explode_collection_ordinal_test.go",
+        "extra_sort_column_identity_test.go",
         "flatten_gate_test.go",
         "group_by_output_baker_test.go",
         "groupby_gate_test.go",
