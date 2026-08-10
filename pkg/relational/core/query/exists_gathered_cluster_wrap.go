@@ -153,7 +153,7 @@ func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier
 			if w.Kind != values.LegKindFlatRun && w.Kind != values.LegKindNested {
 				return n
 			}
-			idx, found := w.Typ.FieldIndex(fv.Field)
+			idx, found := w.Typ.FieldIndexUnique(fv.Field)
 			if !found {
 				return n // survives → the caller's verification declines
 			}

@@ -210,7 +210,7 @@ func TestFilteredBoxUnnestCensus(t *testing.T) {
 // flat-leg safety net: predicateRefsBuriedLeg alone catches only BURIED
 // survivors and is inert for a flat-leg survivor, so bakeGatedJoinPredicatesChecked
 // also flags a should-bake flat-leg reference whose field the leaf window lacks.
-// The classifier pre-verifies FieldIndex before admitting, so drift is
+// The classifier pre-verifies the same unique-name resolution before admitting, so drift is
 // unreachable via production SQL — this is the white-box pin of the dimension
 // no end-to-end shape can reach. A should-bake ref (≥2-leg or buried conjunct)
 // whose leaf window has no such field → drift=true; a SINGLE-LEG non-buried
@@ -263,7 +263,7 @@ func TestBakeGatedChecked_DriftDetection(t *testing.T) {
 		{"single_leg_lazy_missing_field", []predicates.QueryPredicate{singleLeg("MISSING")}, flatLegs, false},
 		// buried single-leg A.K → FORCED to bake (predicateRefsBuriedLeg), resolves → no drift.
 		{"buried_resolves", []predicates.QueryPredicate{singleLeg("K")}, buriedLegs, false},
-		// buried single-leg A.MISSING → forced to bake, FieldIndex fails → DRIFT.
+		// buried single-leg A.MISSING → forced to bake, the name lookup fails → DRIFT.
 		{"buried_survivor", []predicates.QueryPredicate{singleLeg("MISSING")}, buriedLegs, true},
 		// an AND of a clean cross-leg and a drifting cross-leg → DRIFT (any conjunct).
 		{"and_one_drifts", []predicates.QueryPredicate{predicates.NewAnd(crossLeg("K", "K"), crossLeg("K", "MISSING"))}, flatLegs, true},

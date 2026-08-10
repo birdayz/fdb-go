@@ -946,8 +946,9 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType, owner values
 		return row, nil
 	}
 	// Layout PERMUTATION at the leg boundary: gather the row's slots into
-	// legType order via the row's own plan-produced RecordType (FieldIndex,
-	// first-match — the same rule every plan-time bake uses). A documented
+	// legType order via the row's own plan-produced RecordType
+	// (rowSlotForLegColumn, which resolves only an UNAMBIGUOUS name and hands
+	// back the ambiguity otherwise). A documented
 	// residual of Go's two-layout seed: gated-join legs are seeded with the
 	// LOGICAL (table-shaped) leg type while a physical leg may emit a row
 	// typed by its own plan output (covering-index rows are LOGICAL-shaped
@@ -964,10 +965,29 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType, owner values
 		matched := 0
 		if qr.Positional.Type != nil {
 			for i, f := range legType.Fields {
-				if idx, ok := rowSlotForLegColumn(qr.Positional.Type, f.Name, owner); ok {
+				idx, bind := rowSlotForLegColumn(qr.Positional.Type, f.Name, owner)
+				switch bind {
+				case legColumnBound:
 					v, _ := qr.Positional.Get(idx)
 					row.Slots[i] = v
 					matched++
+				case legColumnAmbiguous:
+					// LOUD. The source row carries this leg column at more than
+					// one slot and nothing here can say which one the leg type
+					// meant. Leaving the slot nil would answer NULL for a
+					// column that has a value; taking either duplicate would
+					// read the other leg's column. Both return plausible rows
+					// that no downstream check rejects, which is why this is a
+					// refusal and not a degradation.
+					return nil, fmt.Errorf("leg adapter: leg column %q is declared %d times by the source row %v — "+
+						"a merged row puts every leg's columns in one flat namespace, so this name addresses two "+
+						"different columns and the leg type does not say which; the producer must qualify the leg "+
+						"type's column names (or carry a baked ordinal) rather than have this reader guess",
+						f.Name, qr.Positional.Type.FieldNameHits(f.Name), typeFieldNames(qr.Positional.Type))
+				case legColumnUnbound:
+					// The source row does not carry this leg column at all; the
+					// slot stays nil and the zero-match tripwire below is the
+					// guard for the case where NONE of them bound.
 				}
 			}
 		}
@@ -995,32 +1015,73 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType, owner values
 	return row, nil
 }
 
+// legColumnBind is what one leg-type column name did against a source row's
+// layout. THREE outcomes, not two, because the two ways of failing to produce
+// an ordinal call for opposite handling by the caller.
+type legColumnBind int
+
+const (
+	// legColumnBound: exactly one slot answers, and the returned ordinal is it.
+	legColumnBound legColumnBind = iota
+	// legColumnUnbound: no slot answers. Benign — the source row simply does
+	// not carry this leg column, and the gather leaves it nil.
+	legColumnUnbound
+	// legColumnAmbiguous: the row declares the name MORE THAN ONCE and nothing
+	// at this reader can choose between them. Never benign: the value is there,
+	// twice, so leaving the slot nil is a WRONG value rather than a missing one
+	// — and picking either duplicate is a wrong-leg read of the kind
+	// leg_column_dotted_containment_test.go pins (`ID` in both the O and I legs
+	// of one merged row addresses two different columns). The caller must
+	// refuse, not degrade.
+	legColumnAmbiguous
+)
+
 // rowSlotForLegColumn binds one leg-type column name to a slot of the source
-// row's plan-produced RecordType: the flat FieldIndex first, then — for a
-// DOTTED name over a row whose type carries leg boundaries (RecordType.Legs,
-// the merged concat / clustered box layout) — the per-leg window: qualifier →
-// the leg's window, column → FieldIndex WITHIN it. The dotted arm serves the
+// row's plan-produced RecordType: the flat lookup first, then — for a DOTTED
+// name over a row whose type carries leg boundaries (RecordType.Legs, the
+// merged concat / clustered box layout) — the per-leg window: qualifier → the
+// leg's window, column → the column WITHIN it. The dotted arm serves the
 // correlated-scalar seed legs, whose seed leg types name columns literally
 // `LEG.COL` while the physical leg emits the merged row those names address.
-// First-match on duplicate leg names mirrors FieldIndex's own first-match rule.
+//
+// THE FLAT LOOKUP DECLINES ON A DUPLICATE NAME, and that decline is reported as
+// legColumnAmbiguous rather than folded into the miss. A merged row puts every
+// leg's columns in one flat namespace, so two legs that both declare `ID` put
+// `ID` at two slots; answering either would be a wrong-leg read that returns a
+// plausible value, and answering "not present" would hand the caller a nil for
+// a column the row does carry. Both are silent wrong rows, so the ambiguity
+// travels to the caller intact and fails there.
+//
+// A DOTTED name whose flat lookup was ambiguous still tries the per-leg arm:
+// the qualifier is strictly more information than the flat namespace has, so if
+// a leg window resolves it, that answer is not a guess. Only when nothing
+// resolves does the ambiguity stand.
+//
 // owner is the IDENTITY of the leg whose type supplied `name` — the correlation
 // adaptLegPositional is adapting a row FOR. It does not steer the lookup; it is
 // recorded so the census can answer the question the conversion turns on: would
 // selecting the source window by identity have chosen the leg the text chose?
-func rowSlotForLegColumn(rt *values.RecordType, name string, owner values.CorrelationIdentifier) (int, bool) {
+func rowSlotForLegColumn(rt *values.RecordType, name string, owner values.CorrelationIdentifier) (int, legColumnBind) {
 	census := values.LegIdentityCensusEnabled()
-	if i, ok := rt.FieldIndex(name); ok {
+	flatHits := rt.FieldNameHits(name)
+	if flatHits == 1 {
+		i, _ := rt.FieldIndexUnique(name)
 		if census {
-			recordLegColumnProvenance(rt, name, true, nil, "", owner)
+			recordLegColumnProvenance(rt, name, true, false, nil, "", owner)
 		}
-		return i, true
+		return i, legColumnBound
+	}
+	flatAmbiguous := flatHits > 1
+	unresolved := legColumnUnbound
+	if flatAmbiguous {
+		unresolved = legColumnAmbiguous
 	}
 	di := strings.IndexByte(name, '.')
 	if di <= 0 || len(rt.Legs) == 0 {
 		if census {
-			recordLegColumnProvenance(rt, name, false, nil, "", owner)
+			recordLegColumnProvenance(rt, name, false, flatAmbiguous, nil, "", owner)
 		}
-		return 0, false
+		return 0, unresolved
 	}
 	qual, col := name[:di], name[di+1:]
 	for i := range rt.Legs {
@@ -1038,17 +1099,17 @@ func rowSlotForLegColumn(rt *values.RecordType, name string, owner values.Correl
 				// that leg also states an identity — the fact that decides
 				// whether this reader can be re-keyed off the name.
 				if census {
-					recordLegColumnProvenance(rt, name, false, &leg, qual, owner)
+					recordLegColumnProvenance(rt, name, false, flatAmbiguous, &leg, qual, owner)
 				}
-				return k, true
+				return k, legColumnBound
 			}
 		}
 		break
 	}
 	if census {
-		recordLegColumnProvenance(rt, name, false, nil, qual, owner)
+		recordLegColumnProvenance(rt, name, false, flatAmbiguous, nil, qual, owner)
 	}
-	return 0, false
+	return 0, unresolved
 }
 
 // rowIsMergeShaped reports whether a positional row is a JOIN-MERGE output — it
@@ -1930,8 +1991,13 @@ type rowLegsBinder struct {
 	row  *PositionalRow
 }
 
-// GetCorrelationBinding implements values.CorrelationBinder. First-match on
-// duplicate leg names mirrors RecordType.FieldIndex's first-match rule.
+// GetCorrelationBinding implements values.CorrelationBinder. Two legs of one row
+// can carry the SAME identity only if a producer minted it twice, which SameLeg
+// cannot happen across the deliberately case-disjoint alias namespaces; the loop
+// therefore takes the first identity match and stops. This is NOT the retired
+// name lookup's first-match rule wearing a different field — it selects on the
+// leg's IDENTITY, which is why a duplicate here would be a producer bug rather
+// than an ordinary ambiguity to resolve.
 func (b *rowLegsBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (any, bool) {
 	if b.row != nil && b.row.Type != nil {
 		for _, leg := range b.row.Type.Legs {

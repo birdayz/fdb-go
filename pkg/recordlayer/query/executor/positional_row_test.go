@@ -12,7 +12,7 @@ import (
 
 // TestPositionalRow_Basics pins the positional row primitives: ordinal Get/Set,
 // out-of-range safety, and nil-safety. There is NO name-keyed read on the type:
-// a column's slot is bound at plan time via the Type's FieldIndex.
+// a column's slot is bound at plan time via the Type's FieldIndexUnique.
 func TestPositionalRow_Basics(t *testing.T) {
 	t.Parallel()
 	typ := values.NewRecordType("R", false, []values.Field{
@@ -36,12 +36,12 @@ func TestPositionalRow_Basics(t *testing.T) {
 		t.Fatalf("Get(1) = (%v,%v), want (alice,true)", v, ok)
 	}
 
-	// The plan-time bind rule: FieldIndex names each slot; a bake against the
-	// type reads the same slot Set wrote.
+	// The plan-time bind rule: FieldIndexUnique names each slot; a bake against
+	// the type reads the same slot Set wrote.
 	for i, f := range typ.Fields {
-		idx, ok := typ.FieldIndex(f.Name)
+		idx, ok := typ.FieldIndexUnique(f.Name)
 		if !ok || idx != i {
-			t.Fatalf("FieldIndex(%q) = (%d,%v), want (%d,true)", f.Name, idx, ok, i)
+			t.Fatalf("FieldIndexUnique(%q) = (%d,%v), want (%d,true)", f.Name, idx, ok, i)
 		}
 	}
 
@@ -190,7 +190,8 @@ func TestProtoToPositional_EmptyRepeatedIsEmptyArray(t *testing.T) {
 // projection with duplicate output names (SELECT a, a; a join projecting both
 // legs' `id`) keeps BOTH values positionally — positionalTypeFromNames uses a
 // raw RecordType (NewRecordType would panic on the duplicate); ordinal access
-// is unambiguous, and the plan-time name bind (FieldIndex) is first-match.
+// is unambiguous, and the plan-time name bind DECLINES on the duplicate, so
+// ordinal access is the only way to reach either column.
 func TestPositionalRow_DuplicateNames(t *testing.T) {
 	t.Parallel()
 	typ := positionalTypeFromNames([]string{"ID", "ID"})
@@ -205,10 +206,13 @@ func TestPositionalRow_DuplicateNames(t *testing.T) {
 	if v1, _ := row.Get(1); v1 != int64(2) {
 		t.Fatalf("Get(1) = %v, want 2", v1)
 	}
-	// The plan-time name bind resolves to the FIRST match; the second slot is
-	// reachable only by ordinal — which is why duplicate-name-correct reads
-	// REQUIRE the plan-time bake.
-	if idx, ok := typ.FieldIndex("ID"); !ok || idx != 0 {
-		t.Fatalf("FieldIndex(ID) = (%d,%v), want (0,true) — first match", idx, ok)
+	// A name bind cannot resolve here AT ALL, and that is the point: the lookup
+	// used to answer the first match, which silently handed slot 0 to a
+	// reference that may have meant slot 1. Now it declines, so the only way to
+	// read either column is by ordinal — which is what makes
+	// duplicate-name-correct reads REQUIRE the plan-time bake rather than merely
+	// prefer it.
+	if _, ok := typ.FieldIndexUnique("ID"); ok {
+		t.Fatal("FieldIndexUnique(ID) resolved on a dup-named type — a name bind must decline here, not answer the first match")
 	}
 }

@@ -51,8 +51,8 @@ func TestFinalizeSeedWindows_BoxBuried(t *testing.T) {
 	}
 	// Each leaf window is leaf-relative (its own [ID,V]); a dup-named ID resolves to
 	// DIFFERENT absolute slots — O.ID -> 0, C.ID -> 2 (not the flat first-match 0).
-	oi, okO := ow.Typ.FieldIndex("ID")
-	ci, okC := cw.Typ.FieldIndex("ID")
+	oi, okO := ow.Typ.FieldIndexUnique("ID")
+	ci, okC := cw.Typ.FieldIndexUnique("ID")
 	if !okO || !okC || ow.Offset+oi != 0 || cw.Offset+ci != 2 {
 		t.Fatalf("dup-named ID disambiguation: O.ID abs=%d (want 0), C.ID abs=%d (want 2)", ow.Offset+oi, cw.Offset+ci)
 	}

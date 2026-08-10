@@ -653,7 +653,7 @@ func classifyLegLocalBake(outcome legLocalBakeOutcome, legTyp values.Type, colum
 	if !isRT {
 		return legLocalBakeClassUntypedLeg
 	}
-	if _, found := rt.FieldIndex(column); !found {
+	if _, found := rt.FieldIndexUnique(column); !found {
 		return legLocalBakeClassColumnAbsent
 	}
 	return legLocalBakeClassLayoutAvailable

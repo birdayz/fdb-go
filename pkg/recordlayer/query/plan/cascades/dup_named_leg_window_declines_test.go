@@ -1,54 +1,57 @@
 package cascades
 
 // The NAME arm of rebaseOuterLegValueOrdinal against a leg window that holds two
-// columns of one name — the case its two SIBLING arms in the same switch both
-// defend against and it does not.
+// columns of one name — the case its two SIBLING arms in the same switch always
+// defended against and it, for a while, did not.
 //
-// THIS FILE PINS A DEFECT, NOT A CONTRACT. Every assertion below states what the
-// code does TODAY, and every failure message says which way to flip it. A green
-// run here means the asymmetry is still present.
+// THIS FILE PINS A CLOSURE. It was written to pin the DEFECT — a green run then
+// meant the asymmetry was still present — and RFC-228 closed it, so the same
+// assertions now read the other way: a green run means all three arms decline on
+// the ambiguous name, and a resolved answer coming back means a first-match
+// lookup has returned. The failure messages carry that reading.
 //
-// The asymmetry, stated precisely. rebaseOuterLegValueOrdinal dispatches a leg
-// reference to one of three arms, all resolving against the SAME window type
+// The asymmetry it was written against. rebaseOuterLegValueOrdinal dispatches a
+// leg reference to one of three arms, all resolving against the SAME window type
 // `w.Typ`:
 //
 //	multi-accessor -> FieldPath.ReAnchorRootInto, which COUNTS matches and
 //	                  declines on `dupes > 1` (values.go: "root column name is
 //	                  ambiguous in the flowed layout")
 //	FrontierPinned -> carries acc.Ordinal and performs no name lookup at all,
-//	                  its comment naming this exact hazard: "an OPAQUE box leg
+//	                  its comment naming this exact hazard: an opaque box leg
 //	                  can expose DUPLICATE buried column names (`A.K` and `B.K`
-//	                  merged into one leg), where FieldIndex("K") would remap the
-//	                  already-baked ref to the FIRST match and silently probe the
-//	                  WRONG column (wrong rows)"
-//	name arm       -> w.Typ.FieldIndex(fv.Field), a FIRST-MATCH scan with no
-//	                  duplicate detection (type.go RecordType.FieldIndex),
-//	                  justified in place by "A single source leg has no duplicate
-//	                  column names, so FieldIndex(Field) is the leg-local
-//	                  ordinal."
+//	                  merged into one leg), where a first-match remap of the
+//	                  already-baked ref would silently probe the WRONG column
+//	name arm       -> a FIRST-MATCH scan with no duplicate detection, justified
+//	                  in place by "A single source leg has no duplicate column
+//	                  names, so FieldIndex(Field) is the leg-local ordinal."
 //
-// That justification is the claim under test, and its own siblings contradict
+// That justification was the claim under test, and its own siblings contradicted
 // it: the window is not always a single source leg. A CLUSTERED BOX run window
 // concatenates every buried leaf's columns, and finalizeSeedWindows narrows only
-// the RIGHTMOST leaf's entry (ordinal_seed_layout.go: "an alias-qualified read
-// must window the leaf rather than FieldIndex across the whole concat"). A run
-// window that was not narrowed therefore can hold `A.K` and `B.K` as two fields
-// both named K.
+// the RIGHTMOST leaf's entry, so a run window that was not narrowed can hold
+// `A.K` and `B.K` as two fields both named K. The arm now resolves through
+// RecordType.FieldIndexUnique, which declines on exactly that shape; the
+// first-match lookup it used to call was deleted rather than left as a copy
+// target.
 //
-// WHY THE CARRIED ORDINAL MAKES THIS SHARPER THAN "LAZY REFS ARE UNDEFENDED".
+// WHY THE CARRIED ORDINAL MADE THIS SHARPER THAN "LAZY REFS ARE UNDEFENDED".
 // The name arm is not reached only by lazy references. A SOURCE-RELATIVE baked
 // reference — resolved, unpinned, single-accessor — reaches it too, and it
-// ARRIVES CARRYING the correct leg-local ordinal. The arm discards that ordinal
-// and re-derives one by first-match name. The multi-accessor arm, given the same
-// disagreement, declines outright ("carried ordinal disagrees with the flowed
-// layout"). So one arm treats the carried ordinal as authoritative enough to
-// refuse on, and another silently overrules it.
+// ARRIVES CARRYING the correct leg-local ordinal. The arm discarded that ordinal
+// and re-derived one by first-match name, while the multi-accessor arm, given
+// the same disagreement, declined outright ("carried ordinal disagrees with the
+// flowed layout"). One arm treated the carried ordinal as authoritative enough
+// to refuse on, and another silently overruled it. Both decline now — and note
+// the decline, not the carried ordinal, is what this file asserts: honouring the
+// ordinal in the name arm is a different and larger change.
 //
 // A duplicate-named RecordType is built as a RAW literal here because
 // NewRecordType PANICS on duplicate field names. That is not a harness dodge —
 // it is how such a window arises in production too, at ordinal_seed_layout.go,
-// and it is why FieldIndex's own doc advertises working on "a raw RecordType
-// that was built without NewRecordType's normalization".
+// which is why the by-name lookup has to work on "a raw RecordType that was
+// built without NewRecordType's normalization" and therefore has to face
+// duplicates at all.
 
 import (
 	"fmt"
@@ -108,13 +111,14 @@ func rebasedOrdinals(t *testing.T, ref values.Value, leg *values.RecordType, mer
 	return got, true
 }
 
-// TestDupNamedLegWindow_NameArmDiscardsTheCarriedOrdinalAndFirstMatches is the
-// defect itself, stated two-sidedly.
+// TestDupNamedLegWindow_NameArmDeclinesOnTheAmbiguousName is the closure,
+// stated two-sidedly.
 //
 // The reference is `L.K` resolved to leg-local ordinal 1 — the SECOND K, which
-// is the column the user asked for. Correct output is merged slot 11 (Offset 10
-// + 1), or a DECLINE. What the code produces is slot 10.
-func TestDupNamedLegWindow_NameArmDiscardsTheCarriedOrdinalAndFirstMatches(t *testing.T) {
+// is the column the user asked for. An acceptable output is merged slot 11
+// (Offset 10 + 1) or a DECLINE; the arm produces the DECLINE. Before the fix it
+// produced slot 10, the first match.
+func TestDupNamedLegWindow_NameArmDeclinesOnTheAmbiguousName(t *testing.T) {
 	t.Parallel()
 
 	leg, merged := dupNamedLegFixture()
@@ -129,42 +133,42 @@ func TestDupNamedLegWindow_NameArmDiscardsTheCarriedOrdinalAndFirstMatches(t *te
 	}
 
 	got, ok := rebasedOrdinals(t, ref, leg, merged)
-	if !ok {
-		t.Fatalf("rebaseOuterLegValueOrdinal DECLINED — and a decline is one of the two " +
-			"CORRECT answers here.\n\nTHE DEFECT THIS FILE PINS IS FIXED. Retire this test " +
-			"and the `dotted` debt entry for left_outer_existential.go # " +
-			"rebaseOuterLegValueOrdinal is unaffected (its '.' probe is a separate " +
-			"concern), but the in-place comment 'A single source leg has no duplicate " +
-			"column names' must go with the fix.")
-	}
-	if fmt.Sprint(got) == fmt.Sprint([]int{11}) {
-		t.Fatalf("the name arm produced merged slot 11 — the column the reference's own " +
-			"carried ordinal names.\n\nTHE DEFECT THIS FILE PINS IS FIXED: the arm now " +
-			"honours the carried leg-local ordinal instead of re-deriving one by " +
-			"first-match name. FLIP THIS TEST to assert [11] as the contract, drop the " +
-			"'first match' language, and correct the in-place comment 'A single source " +
-			"leg has no duplicate column names, so FieldIndex(Field) is the leg-local " +
-			"ordinal.'")
-	}
-	if fmt.Sprint(got) != fmt.Sprint([]int{10}) {
-		t.Fatalf("the name arm produced %v; this file was written when it produced [10] "+
-			"(first match) and [11] is the correct answer. An unrecognised third answer "+
-			"means the dispatch changed shape — re-read the switch before trusting any "+
-			"verdict here.", got)
+	if ok {
+		which := "an unrecognised slot"
+		switch fmt.Sprint(got) {
+		case fmt.Sprint([]int{10}):
+			which = "merged slot 10 — the FIRST match, which is the defect this file was " +
+				"written to pin. A first-match name lookup came back"
+		case fmt.Sprint([]int{11}):
+			which = "merged slot 11 — the column the reference's own carried ordinal " +
+				"names. That is the CORRECT column, and the arm is not entitled to it: " +
+				"its contract is that its input is non-baked, so an ordinal arriving here " +
+				"is stated in a layout this site cannot identify. If the arm was " +
+				"deliberately taught to honour the carried ordinal, that is a different " +
+				"and larger change than the decline, and this test should be replaced " +
+				"rather than relaxed"
+		}
+		t.Fatalf("the name arm RESOLVED and produced %v (%s).\n\n"+
+			"Two buried columns of one name sit in this leg window, so no answer here "+
+			"is distinguishable from a guess: slots 10 and 11 are both real merged "+
+			"columns of the same type and nothing downstream rejects the wrong one. "+
+			"The arm must DECLINE, exactly as its two siblings do against this same "+
+			"window.", got, which)
 	}
 
-	t.Logf("PINNED DEFECT: `L.K` carrying leg-local ordinal 1 rebased to merged slot %v, "+
-		"not [11]. The carried ordinal was discarded and FieldIndex(\"K\") first-matched "+
-		"the leg's slot 0. This is a WRONG-COLUMN read, and it is silent: slot 10 is a "+
-		"real merged column of the same type, so nothing downstream rejects it.", got)
+	t.Logf("`L.K` over a leg window declaring K twice DECLINES, so the wrong-column " +
+		"read is closed. Before the fix it produced merged slot 10: the carried " +
+		"leg-local ordinal 1 was discarded and a first-match name lookup answered the " +
+		"leg's slot 0 instead. The lookup that did that no longer exists.")
 }
 
 // TestDupNamedLegWindow_SiblingArmsDefendAgainstTheSameWindow is the other side.
 //
-// Without it the test above is a bug report; with it, it is an ASYMMETRY — the
-// same window, the same duplicate name, defended twice and undefended once. If
-// either sibling ever stops defending, that is a REGRESSION in the opposite
-// direction and this test is what reports it.
+// Without it the test above is a lone assertion; with it, the three arms are
+// pinned as ONE property — the same window, the same duplicate name, defended
+// three times. It was written when the count was two-of-three and the gap was
+// the finding; the siblings still need pinning, because if either ever stops
+// defending, that is a regression this is what reports.
 func TestDupNamedLegWindow_SiblingArmsDefendAgainstTheSameWindow(t *testing.T) {
 	t.Parallel()
 
@@ -242,10 +246,6 @@ func TestDupNamedLegWindow_ControlsDistinguishFixtureFromFinding(t *testing.T) {
 		// The UNIQUE column of the same window: the arm resolves it correctly, so
 		// the fixture is not simply broken for every lookup.
 		{"unique column Z resolves to its own slot", "Z", 2, []int{12}},
-		// The duplicate name asking for the FIRST match: agrees with first-match
-		// and with the carried ordinal at once, so it cannot discriminate — which
-		// is exactly why the defect test carries ordinal 1 instead.
-		{"duplicate name carrying ordinal 0 is the non-discriminating case", "K", 0, []int{10}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -259,11 +259,36 @@ func TestDupNamedLegWindow_ControlsDistinguishFixtureFromFinding(t *testing.T) {
 			got, ok := rebasedOrdinals(t, ref, leg, merged)
 			if !ok {
 				t.Fatal("CONTROL DECLINED — the fixture does not reach the name arm at all, " +
-					"so every verdict in this file is void")
+					"so every verdict in this file is void. In particular the decline " +
+					"asserted above would be passing for the wrong reason: an arm that " +
+					"refuses everything is not an arm that detects ambiguity.")
 			}
 			if fmt.Sprint(got) != fmt.Sprint(tc.wantPath) {
 				t.Fatalf("CONTROL produced %v, want %v", got, tc.wantPath)
 			}
 		})
 	}
+
+	// The duplicate name asking for the FIRST match. Before the fix this was the
+	// NON-DISCRIMINATING case: first-match and the carried ordinal both answered
+	// slot 10, which is why the defect test carries ordinal 1 instead. It is now
+	// a second decline, and it earns its place by ruling out a narrower fix —
+	// one that declined only when the carried ordinal DISAGREED with the first
+	// match would still resolve here, and would still be a guess.
+	t.Run("duplicate name carrying ordinal 0 declines too", func(t *testing.T) {
+		t.Parallel()
+		leg, merged := dupNamedLegFixture()
+		ref := &values.FieldValue{
+			Field:    "K",
+			Typ:      values.NullableInt,
+			Child:    values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("L")),
+			Resolved: values.NewFieldPathOfSingleInDomain("K", 0, false, values.OrdinalDomainOfType(leg)),
+		}
+		if got, ok := rebasedOrdinals(t, ref, leg, merged); ok {
+			t.Fatalf("an ambiguous name whose carried ordinal happens to AGREE with the "+
+				"first match resolved to %v. The ambiguity is a property of the WINDOW, "+
+				"not of whether the two candidate answers coincide — a decline "+
+				"conditioned on disagreement resolves this case and is still guessing.", got)
+		}
+	})
 }

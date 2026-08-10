@@ -192,7 +192,7 @@ func (pu *clusterPullUp) bake(v values.Value) values.Value {
 	if !isLeg {
 		return v
 	}
-	idx, found := leg.typ.FieldIndex(col)
+	idx, found := leg.typ.FieldIndexUnique(col)
 	if !found {
 		pu.missed = true
 		return v
@@ -572,7 +572,7 @@ func clusterProjectionsResolvable(p *logical.LogicalProject, csq logical.Correla
 							ok = false
 							return false
 						}
-						if _, found := leg.typ.FieldIndex(strings.ToUpper(n.Field)); !found {
+						if _, found := leg.typ.FieldIndexUnique(strings.ToUpper(n.Field)); !found {
 							ok = false
 						}
 						return false
@@ -613,7 +613,7 @@ func clusterSeedSlot(pu *clusterPullUp, binding, col string) (int, bool) {
 	pos := 0
 	for _, leg := range pu.legs {
 		if leg.binding == binding {
-			if idx, found := leg.typ.FieldIndex(col); found {
+			if idx, found := leg.typ.FieldIndexUnique(col); found {
 				return pos + idx, true
 			}
 			return 0, false

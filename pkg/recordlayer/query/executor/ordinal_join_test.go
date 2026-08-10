@@ -341,7 +341,7 @@ func TestSeedAssert_MalformedPanics(t *testing.T) {
 // row: Get is leg-relative (window at offset 2 reads merged slot 2+i),
 // out-of-range is (nil,false) — never a read into a sibling leg — and
 // TypeNames reports the leg's columns. A leg-local plan-time bind (the LEG
-// type's FieldIndex) names exactly the leg's own columns, even when the merged
+// type's FieldIndexUnique) names exactly the leg's own columns, even when the merged
 // type carries the same name at a DIFFERENT absolute slot (the wrong-slot
 // axis).
 func TestLegWindowRow(t *testing.T) {
@@ -375,14 +375,14 @@ func TestLegWindowRow(t *testing.T) {
 	// leg ordinal 0 (→ merged slot 2 = B's ID=2), even though the merged type
 	// has "ID" at absolute slot 0 holding A's ID=1 — the wrong-slot axis. A's
 	// "V" is not a column of B's leg type at all.
-	if idx, found := spans[1].LegType.FieldIndex("ID"); !found || idx != 0 {
-		t.Fatalf("leg B FieldIndex(ID) = (%d, %v), want (0, true) — B's own ID, not the merged slot 0", idx, found)
+	if idx, found := spans[1].LegType.FieldIndexUnique("ID"); !found || idx != 0 {
+		t.Fatalf("leg B FieldIndexUnique(ID) = (%d, %v), want (0, true) — B's own ID, not the merged slot 0", idx, found)
 	}
-	if idx, found := spans[1].LegType.FieldIndex("W"); !found || idx != 1 {
-		t.Fatalf("leg B FieldIndex(W) = (%d, %v), want (1, true)", idx, found)
+	if idx, found := spans[1].LegType.FieldIndexUnique("W"); !found || idx != 1 {
+		t.Fatalf("leg B FieldIndexUnique(W) = (%d, %v), want (1, true)", idx, found)
 	}
-	if _, found := spans[1].LegType.FieldIndex("V"); found {
-		t.Fatal("leg B FieldIndex(V) must miss — V is leg A's column, not visible through B's window")
+	if _, found := spans[1].LegType.FieldIndexUnique("V"); found {
+		t.Fatal("leg B FieldIndexUnique(V) must miss — V is leg A's column, not visible through B's window")
 	}
 
 	wantNames := []string{"ID", "W"}

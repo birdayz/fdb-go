@@ -65,7 +65,7 @@ import (
 //     identifier is on the ratchet and the LEAF half is invisible. Closing this
 //     needs types — the parameter's origin is a `.Field` read one frame up —
 //     which is why it is recorded rather than fixed here.
-//   - `Typ.FieldIndex(name)` and friends: resolving a name against a record
+//   - `Typ.FieldIndexUnique(name)` and friends: resolving a name against a record
 //     type is a lookup, not a comparison or a map key, so no sink tier reports
 //     it. The gathered-EXISTS wrap (exists_gathered_cluster_wrap.go:131) is
 //     recorded for its qualifier and silent for its leaf for exactly this
@@ -78,85 +78,21 @@ import (
 // simply never reaches them. Neither is counted in any bucket total, so the
 // arithmetic those totals feed is a floor rather than a census.
 //
-// The FieldIndex hole's known instances are enumerated in
-// fieldIndexBlindSpotDebt below and CHECKED, rather than described here in
-// prose. A blind spot recorded only in a comment is rediscovered rather than
-// tracked: the prose cannot notice the call moving, being deleted, or a new one
-// arriving beside it, so it decays into a claim about a tree that has moved on.
-
-// fieldIndexBlindSpotDebt enumerates the `FieldIndex(name)`-shaped lookups the
-// walk above CANNOT see, so the hole has an inventory instead of a paragraph.
+// The FieldIndex hole is CLOSED, and the inventory that tracked it is gone with
+// it. `RecordType.FieldIndex` and `RecordType.LookupField` were first-match
+// scans by name: they answered the first field carrying a name even when a row
+// carried it twice, so a caller could not tell a correct answer from a guess.
+// Both were DELETED rather than kept beside the declining forms, because a
+// first-match lookup left in the API is a copy target — the next site reaches
+// for it and inherits the guess. What survives is FieldIndexUnique /
+// LookupFieldUnique, which resolve only when the name matches exactly one field.
 //
-// It is deliberately NOT knownFieldDecisionDebt: entries there must match a
-// decision the detector reports, and by construction none of these do. Merging
-// them would make every entry here permanently stale.
-//
-// TestFieldIndexBlindSpotSitesAreCurrent checks each recorded line still holds
-// the call it names, so drift fails the way the main ratchet does. What it
-// cannot do is prove the list is COMPLETE — that needs the detector widening
-// this list exists to justify.
-var fieldIndexBlindSpotDebt = map[string]string{
-	// The header bullet cited :131 for this file. That line is the QUALIFIER
-	// comparison, which the detector does see and which is already on the main
-	// ratchet — the invisible lookups are the two below. Prose naming the wrong
-	// line while claiming to name a blind spot is the decay this list replaces.
-	// exists_gathered_cluster_wrap.go had TWO entries here. Both named the DOTTED
-	// and BARE arms, and both arms are GONE by deletion rather than migration: the
-	// wrap.s window map is keyed by leg IDENTITY now, so an arm that selected a
-	// window with a qualifier sliced out of a column name had no key it could
-	// honestly use. Their LEAF FieldIndex lookups went with them.
-	//
-	// Both arms were measured unreachable before removal (a panic in each is hit by
-	// nothing across ./pkg/relational/... or ./pkg/recordlayer/query/...), and what
-	// replaces them is a DECLINE, so a shape that ever reaches them falls back to the
-	// name model instead of shipping a lazy read into a context with no name channel.
-	//
-	// The retirement was recorded on a WRONG DESCRIPTION, which is why the entry is
-	// back below rather than simply deleted. One of the two entries described the
-	// BARE arm and pointed at the line holding the QOV-shaped arm.s lookup — so
-	// deleting it retired an arm that had not gone anywhere, and a live
-	// FieldIndex(name) left this inventory while still being made on every rebased
-	// reference. It is re-pointed at :142 with what that call actually does.
-
-	// DIAGNOSTICS ONLY, and labelled so rather than quietly filed with the
-	// engine sites. This lookup decides nothing a plan can observe: it splits a
-	// census witness between COLUMN-ABSENT and LAYOUT-AVAILABLE. It is recorded
-	// because it is the exact move RFC-197 forbids — a column identified by its
-	// display name against a row type — and the leg-local bake that was DELETED
-	// from this branch made precisely this call for real, to mint an ordinal. A
-	// diagnostic that survived its deleted sibling is how the move gets
-	// reintroduced: someone finds it, reads it as sanctioned, and promotes it.
-	"pkg/recordlayer/query/plan/cascades/leg_local_bake_census.go # classifyLegLocalBake # 1": "name-keyed: DIAGNOSTICS ONLY — classifies a census witness, never reaches a plan. The identically-shaped call that DID reach a plan (the leg-local bake) was deleted; this one is retained because the two residues it separates have different fixes. Retires with the census.",
-
-	// The wrap's SURVIVING FieldIndex, re-pointed. It is NOT the arm the two
-	// deleted entries described, and calling it genuine debt rather than the
-	// fixed-domain-safe class is a MEASURED classification, not a hedge.
-	//
-	// What is safe about it: the identity chose the domain. The window comes from
-	// `windows[qov.Correlation]`, so the name is resolved INSIDE a row the
-	// reference's own correlation already selected — not across the merged concat,
-	// which is where a name genuinely cannot answer. That is the half the two
-	// deleted arms got wrong and this one gets right.
-	//
-	// What is NOT safe about it: the selected window is not guaranteed
-	// duplicate-free. A CLUSTERED BOX run window (the pristine gated-join seed's
-	// `X$BOX` producer, whose box run is filed BESIDE its buried leaves rather
-	// than replaced by them) carries every buried leaf's columns concatenated, so
-	// two leaves' same-named columns sit in one window and FieldIndex first-matches
-	// between them. Its sibling reader knows this and defends against it: the
-	// leg-relative arm in left_outer_existential.go carries the reference's already
-	// BAKED ordinal specifically so an opaque box leg's duplicate buried names
-	// cannot remap it. This site has no such arm — it always resolves by name.
-	//
-	// MEASURED before writing: a panic wired here on "the selected window holds
-	// more than one field named fv.Field" is hit by NOTHING over the real-FDB
-	// sqldriver corpus or ./pkg/relational/core/... . So the ambiguous case does
-	// not occur today; it is unreached, not impossible, and nothing structural
-	// forbids it. Pinned by TestRebaseLegRefsToBox_DupNamedBoxWindowFirstMatches,
-	// which holds the shape so the entry is about a real hazard rather than a
-	// hypothetical one — and which says to retire this entry if a guard appears.
-	"pkg/relational/core/query/exists_gathered_cluster_wrap.go # rebaseLegRefsToBox # 1": "dotted: the wrap's QOV-shaped rebase resolves a column by NAME within the window its own correlation selected. The identity fixes WHICH row, so this is not a name choosing a domain — but the window is not guaranteed dup-free (a clustered box RUN concatenates its buried leaves) and FieldIndex first-matches. Measured unreached for the ambiguous case; retires when the reference arrives carrying its leg-local ordinal, as its sibling in left_outer_existential.go already does.",
-}
+// The guard's DIRECTION inverted with the fix. The old list was watched for
+// going stale, i.e. for entries whose call had moved; zero entries was the
+// failure state, and the test said so. Now zero first-match lookups is the
+// steady state and the alarm is GROWTH: the danger is one coming back. That is
+// what TestNoFirstMatchNameLookup below watches. Relaxing the old floor instead
+// of inverting it would have left the revival unwatched.
 
 type fieldDecisionSite struct {
 	site string // "path/to/file.go:LINE"
@@ -362,12 +298,41 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// of //pkg/relational/... green; only six executor UNIT tests, which assert
 	// on the emitted map keys, go red. The binding is already ordinal at
 	// runtime. What is left is entirely plan-time, and it is these four lines.
-	"pkg/recordlayer/query/plan/cascades/values/values.go # explainValueOrdinals # the name escaping as a bare string (return) via local name derived from the name # 1": {1, "contract: explainValueOrdinals returns the rendered DISPLAY text of a value, and for a FieldValue that text is its leaf name — the rendering ProjectionColumnName (:1492) and every output-naming authority above it delegate to. Same producer family; surfaced once ReplaceAll joined nameLaunderers, since the '#'-doubling escape is what carried the name past the walk"},
+	"pkg/recordlayer/query/plan/cascades/values/values.go # explainValueOrdinals # the name escaping as a bare string (return) via local name derived from the name # 1": {1, "contract: explainValueOrdinals returns the rendered DISPLAY text of a value, and for a FieldValue that text is its leaf name — the rendering ProjectionColumnName (values.go:1710 -- the entry said :1492, stale) and every output-naming authority above it delegate to. Same producer family; surfaced once ReplaceAll joined nameLaunderers, since the '#'-doubling escape is what carried the name past the walk"},
 	"pkg/recordlayer/query/plan/cascades/values/values.go # explainValueOrdinals # the name escaping as a bare string (return) via local name derived from the name # 2": {1, "contract: same renderer, the un-suffixed (ColumnNameValue) arm — which DROPS the '#ordinal' discriminator, so two baked reads of duplicate-named slots render identically. That is the collision this bucket is about, in the authority itself"},
 
 	"pkg/relational/core/query/cascades_translator.go # groupByOutputBaker # a map key via local key derived from the name # 1": {1, "contract: groupByOutputBaker matches a post-aggregate reference's rendered name against the AGGREGATE output-name map to pick its slot — the READ side of AggregateResultColumnName. Laundered through normalizeAggOutputName, which is why it was absent from this bucket while all six of its producer arms were on it"},
-	"pkg/relational/core/query/cascades_translator.go # groupByOutputBaker # a map key via local key derived from the name # 2": {1, "contract: same binder, the GROUP-KEY output-name map — the READ side of AggregateKeyColumnName (group_by.go:118). Java binds here by ordinal instead: the SELECT list is pulled up through the group-by result row by loop index (CompensateRecordConstructorRule.java:92) over columns built with Column.unnamedOf (GroupByExpression.java:754,758)"},
+	"pkg/relational/core/query/cascades_translator.go # groupByOutputBaker # a map key via local key derived from the name # 2": {1, "contract: same binder, the GROUP-KEY output-name map — the READ side of AggregateKeyColumnName (group_by.go:116 -- the entry said :118, stale). Java binds here by ordinal instead: the SELECT list is pulled up through the group-by result row by loop index (CompensateRecordConstructorRule.java:92) over columns built with Column.unnamedOf (GroupByExpression.java:754,758)"},
 	"pkg/relational/core/query/cascades_translator.go # groupByOutputBaker # a map key via local key derived from the name # 3": {1, "contract: same binder, the final group-key lookup that actually emits the baked ordinal. Its map is last-wins on a duplicated output name (groupByOutputOrdinals `keys[full] = ord`), so two group keys sharing a leaf collapse to one slot; today they are separated only because the name channel happens to carry the qualifier, which is the dotted bucket's debt propping up this one"},
+
+	// THERE ARE FOUR NAME-DERIVED MAP READS IN groupByOutputBaker AND ONLY THREE
+	// ENTRIES ABOVE. The three are cascades_translator.go:1046 (aggOrds[key]),
+	// :1055 (the keyOrds[key] probe) and :1085 (the keyOrds[key] that emits the
+	// baked ordinal). The FOURTH is :1057,
+	// `keyOrds[normalizeAggOutputName(stripped)]` — the qualified-ref-to-bare-key
+	// strip, with its ambiguity scan immediately below at :1064-1069.
+	//
+	// It has no entry because THIS GATE CANNOT SEE IT, and that is the fact worth
+	// recording rather than the missing line. The taint reaches `key` — which is
+	// why the `!=` comparison at :1056 IS on the list, filed under dotted — but
+	// :1057 keys on `stripped`, and `stripped` comes from
+	// `stripColumnQualifier(key)`, which is not on nameLaunderers. Taint stops at
+	// that call, so the read keys as no form at all. The green run is therefore
+	// not evidence the arm is absent; it is evidence the scan never looked.
+	// Corroborated by this file's own launderer doc, which already says the
+	// binder has FOUR name-to-ordinal lookups while the bucket lists three.
+	//
+	// The reason this particular blind spot matters more than a missing line
+	// usually would: :1057-1069 is the arm that carries the UNAMBIGUOUS-OR-
+	// NOTHING guarantee the other three implicitly rely on. It resolves a
+	// stripped leaf only when every key bearing that leaf maps to the SAME output
+	// ordinal, and leaves the reference lazy — loud at eval — otherwise. So the
+	// bucket's strongest safety mechanism is the one piece of it the ratchet is
+	// blind to, and a change that relaxed the ambiguity scan into a first-match
+	// would move no count and fail no test here. Recorded, not fixed: widening
+	// the taint through stripColumnQualifier changes what the gate reports across
+	// the whole tree, which is an instrument change with its own review, not a
+	// documentation correction.
 
 	// The three binder entries above are RULED STOP, on an ordering dependency
 	// rather than a missing capability — worth stating precisely, because "the
@@ -442,7 +407,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/recordlayer/query/plan/cascades/values/values.go # ProjectionColumnName # the name escaping as a bare string (return) # 1":          {1, "contract: ProjectionColumnName IS the projection output-column naming contract -- the key the executor writes a projected slot under and every re-reader reads it by; the naming authority the other contract sites delegate to, and invisible until the gate could see unqualified *FieldValue inside the values package. RULED CONVERT, and Java names the shape: a projected column's name is stored AS DATA on the column at construction (Column.of(Optional<String>, value) -> Field.of(value.getResultType(), fieldNameOptional), Column.java:81-82, Type.java:2908-2910) and read back by getter (Type.java:2750-2763, DataTypeUtils.java:76) -- never re-derived from the Value, which is what this function does on every read. What it costs is a name carried on the projected column through every copy/rebuild/rebase, the same preserve-on-copy contract Resolved already imposes; the executor then WRITES the stored name instead of both sides re-deriving and agreeing by convention"},
 	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go # AggregateKeyColumnName # the name escaping as a bare string (return) # 1": {1, "contract: AggregateKeyColumnName is THE group-key naming contract with the executor; moves only when the contract becomes an ordinal slot. RULED STOP, on a blocker that is already booked rather than a new one: its text is a MATCH key at plans/ordering.go, where RichOrdering addresses its ordering set by rendering, so the provided and requested keys meet only as strings -- CQ-55 (ordering matched on structural identity) over CQ-56 (the ordinal domain). Not an allow, and Java is why the direction is settled: Java's group-key output columns carry NO name to be a contract with (Column.unnamedOf, GroupByExpression.java:754,758 -> the positional _0, Type.java:2645-2651) and the pull-up binds by loop index (CompensateRecordConstructorRule.java:73-95)"},
 	"pkg/relational/core/embedded/logical_predicate.go # aggregateGroupKeyOutputName # the name escaping as a bare string (return) # 1":      {1, "contract: aggregate group-key output name, the exact mirror of the executor's aggKeyName. RULED STOP, travelling with AggregateKeyColumnName above and blocked on the same CQ-55/CQ-56: two renderings of one slot cannot stop being renderings one at a time, because the agreement between them is the only thing keeping the emitted slot name and the re-read name in lockstep"},
-	"pkg/relational/core/query/cascades_translator.go # sortKeyFieldRef # the name escaping as a bare string (return) # 1":                   {1, "contract: sort-key hidden-field naming (RFC-141), same output-naming contract family. RULED CONVERT, and the escape is real -- but the two mechanisms this entry previously blamed were both MEASURED FALSE, so anyone executing the old text did work that fixes nothing. Java is unchanged and still the spec: it appends the same hidden columns for an ORDER BY key absent from the SELECT list (LogicalOperator.java:390-399 -- the old text said 389, off by one) and finds and drops them PURELY BY ORDINAL, the final projection re-using the original output list through Expressions.rewireQov's FieldValue.ofOrdinalNumber counter (Expressions.java:87-96), with membership by value-derivability (Expressions.difference -> canBeDerivedFrom, Expressions.java:124-146, Expression.java:254-264), never name equality. NOT in the old text and load-bearing: Java's difference removes only what is derivable from the OUTPUT and performs NO dedup among the order-by expressions themselves, so Go's `seen[name]` is a Go-only invention with no upstream counterpart. REFUTED (1), AND THE REFUTATION IS ITSELF NOW REFUTED -- both readings are kept because the sequence is the lesson. The claim was: that dedup cannot merge distinct source columns, because sortKeySourceValue depends on the key ONLY through sortKeyFieldRef(k), so alike-rendering keys carry an identical source value by construction and collapsing them is correct. That was TRUE WHEN WRITTEN and FALSE WHEN SHIPPED, and the change it was justifying is what falsified it: RFC-218 added sortKeySourceValue's NESTED arms ABOVE the sortKeyFieldRef call, so a nested key returns a distinct per-member value while still rendering its struct ROOT. Two nested keys of one root (`ORDER BY n.co, n.sk`) then rendered alike, the second key's hidden column was dropped as a duplicate, and the query returned SILENTLY WRONG ROWS -- measured [3 1 2] where SQL requires [3 2 1], and [2 3 1] in the other key order. A dedup keyed on a rendering is only as sound as the claim that the rendering determines the value, which is precisely what a fix that stops re-deriving values from renderings destroys. FIXED (RFC-227): the dedup is keyed on the source VALUE (symmetric semantic equality, Java's Expressions.difference shape) and the appended column is named by its resolved PATH. Pinned by extra_sort_column_identity_test.go and by nested_sort_key_rows_fdb_test.go's TestFDB_TwoNestedSortKeysOfTheSameStructRootDoNotCollapse. REFUTED (2): pullUpSortKeyValue does not recover hidden columns by scanning field names; it recovers them at the VALUE match, proven by renaming an appended column to a string no name-scan could find and watching resolution still succeed. Carrying len(fields)+i fixes neither. THE REAL DEFECT is that the rendering is FLAT and loses nested path segments: a struct-column key renders `N.SK` and the last-dot split yields `SK`, so `ORDER BY t1.n.sk` plans an unresolvable ordinal. The clause that followed -- that `ORDER BY n.sk` SORTS BY THE WHOLE STRUCT -- is MEASURED FALSE and is corrected rather than deleted, because it is the reading that makes the flat rendering look merely cosmetic: there is no struct comparator to sort by, so that shape does not mis-order, it FAILS LOUDLY with `values: no ordering defined between *dynamicpb.Message and *dynamicpb.Message`. The single-key rows follow the MEMBER and only the EXPLAIN name was flat (pinned by TestFDB_NestedSortKeyOrdersByTheMemberNotTheStructRoot). The flat rendering's real cost was not the sort it performed but the IDENTITY it supplied to the hidden-column dedup -- see REFUTED (1) above. The conversion is therefore: the sort-key reference must stop re-deriving a flat NAME from a Value that already carries the resolved path. Scope, measured rather than assumed -- an earlier draft of this entry guessed the leaf was lost upstream and that was wrong: the resolver fuses `n.sk` into ONE FieldValue whose Field is the struct root `N` and whose Resolved.Accessors is the full [N, SK] path (expr.go fuseNestedAccessors), and the ordinary non-fold sort path is correct precisely BECAUSE it passes that Value through untouched (bakeFlatRefsAgainstColumns returns early on a non-nil Resolved). Line 4947's `fv.Child == nil -> ToUpper(fv.Field)` arm is where the path is discarded, so for the unqualified shape the defect IS fold-local and the fix IS confined to this file. The three-segment shape (`t1.n.sk`) is a SEPARATE and more general gap: walkColumnRef rejects a 3-segment FullId and upgradeSortKeyValues swallows the error, leaving Value nil everywhere, so that one is not a fold bug and does not convert here"},
+	"pkg/relational/core/query/cascades_translator.go # sortKeyFieldRef # the name escaping as a bare string (return) # 1":                   {1, "contract: sort-key hidden-field naming (RFC-141), same output-naming contract family. RULED CONVERT, and the escape is real -- but the two mechanisms this entry previously blamed were both MEASURED FALSE, so anyone executing the old text did work that fixes nothing. Java is unchanged and still the spec: it appends the same hidden columns for an ORDER BY key absent from the SELECT list (LogicalOperator.java:390-399 -- the old text said 389, off by one) and finds and drops them PURELY BY ORDINAL, the final projection re-using the original output list through Expressions.rewireQov's FieldValue.ofOrdinalNumber counter (Expressions.java:87-96), with membership by value-derivability (Expressions.difference -> canBeDerivedFrom, Expressions.java:124-146, Expression.java:254-264), never name equality. NOT in the old text and load-bearing: Java's difference removes only what is derivable from the OUTPUT and performs NO dedup among the order-by expressions themselves, so Go's `seen[name]` is a Go-only invention with no upstream counterpart. REFUTED (1), AND THE REFUTATION IS ITSELF NOW REFUTED -- both readings are kept because the sequence is the lesson. The claim was: that dedup cannot merge distinct source columns, because sortKeySourceValue depends on the key ONLY through sortKeyFieldRef(k), so alike-rendering keys carry an identical source value by construction and collapsing them is correct. That was TRUE WHEN WRITTEN and FALSE WHEN SHIPPED, and the change it was justifying is what falsified it: RFC-218 added sortKeySourceValue's NESTED arms ABOVE the sortKeyFieldRef call, so a nested key returns a distinct per-member value while still rendering its struct ROOT. Two nested keys of one root (`ORDER BY n.co, n.sk`) then rendered alike, the second key's hidden column was dropped as a duplicate, and the query returned SILENTLY WRONG ROWS -- measured [3 1 2] where SQL requires [3 2 1], and [2 3 1] in the other key order. A dedup keyed on a rendering is only as sound as the claim that the rendering determines the value, which is precisely what a fix that stops re-deriving values from renderings destroys. FIXED (RFC-227): the dedup is keyed on the source VALUE (symmetric semantic equality, Java's Expressions.difference shape) and the appended column is named by its resolved PATH. Pinned by extra_sort_column_identity_test.go and by nested_sort_key_rows_fdb_test.go's TestFDB_TwoNestedSortKeysOfTheSameStructRootDoNotCollapse. REFUTED (2): pullUpSortKeyValue does not recover hidden columns by scanning field names; it recovers them at the VALUE match, proven by renaming an appended column to a string no name-scan could find and watching resolution still succeed. Carrying len(fields)+i fixes neither. THE REAL DEFECT is that the rendering is FLAT and loses nested path segments: a struct-column key renders `N.SK` and the last-dot split yields `SK`, so `ORDER BY t1.n.sk` plans an unresolvable ordinal. The clause that followed -- that `ORDER BY n.sk` SORTS BY THE WHOLE STRUCT -- is MEASURED FALSE and is corrected rather than deleted, because it is the reading that makes the flat rendering look merely cosmetic: there is no struct comparator to sort by, so that shape does not mis-order, it FAILS LOUDLY with `values: no ordering defined between *dynamicpb.Message and *dynamicpb.Message`. The single-key rows follow the MEMBER and only the EXPLAIN name was flat (pinned by TestFDB_NestedSortKeyOrdersByTheMemberNotTheStructRoot). The flat rendering's real cost was not the sort it performed but the IDENTITY it supplied to the hidden-column dedup -- see REFUTED (1) above. The conversion is therefore: the sort-key reference must stop re-deriving a flat NAME from a Value that already carries the resolved path. Scope, measured rather than assumed -- an earlier draft of this entry guessed the leaf was lost upstream and that was wrong: the resolver fuses `n.sk` into ONE FieldValue whose Field is the struct root `N` and whose Resolved.Accessors is the full [N, SK] path (expr.go fuseNestedAccessors), and the ordinary non-fold sort path is correct precisely BECAUSE it passes that Value through untouched (bakeFlatRefsAgainstColumns returns early on a non-nil Resolved). sortKeyFieldRef's `fv.Child == nil -> ToUpper(fv.Field)` arm at :4967-4968 (the entry said 4947, stale) is where the path is discarded, so for the unqualified shape the defect IS fold-local and the fix IS confined to this file. The three-segment shape (`t1.n.sk`) is a SEPARATE and more general gap: walkColumnRef rejects a 3-segment FullId and upgradeSortKeyValues swallows the error, leaving Value nil everywhere, so that one is not a fold bug and does not convert here"},
 
 	// dotted (14)
 	//
@@ -554,11 +519,11 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// "whose producers are executor-side (CQ-53)" stood here and is REFUTED. The
 	// producers are translator-side — the correlated-scalar ordinal seed builders
 	// in pkg/relational/core/query (scalar_subquery_seed.go:129 — this said :83,
-	// which is prose inside a comment about scalarType; the record-constructor
-	// field is minted at :129 as `ToUpper(innerAlias) + "." + scalarCol`, and
-	// clustered_outer_scalar.go:493, which IS still exact) name their
-	// record-constructor fields `LEG.COL` literally, and the executor merely
-	// CONSUMES that spelling when
+	// which is a line of PROSE naming buildCorrelatedScalar and joining nothing;
+	// the record-constructor field is minted at :129 as
+	// `ToUpper(innerAlias) + "." + scalarCol`, and clustered_outer_scalar.go:493,
+	// re-derived and still exact) name their record-constructor fields
+	// `LEG.COL` literally, and the executor merely CONSUMES that spelling when
 	// adaptLegPositional feeds those leg-type column names to rowSlotForLegColumn.
 	// Measured: instrumenting both builders reproduced the executor census's own
 	// witnesses (`C.CV` and `O.ID` verbatim, `I.QTY` as the scalarCol half of
@@ -604,11 +569,11 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// rejects it.
 	//
 	// PINNED, NOT FIXED (the fix is a functional query-engine change and needs its
-	// own RFC and review): dup_named_leg_window_first_match_test.go asserts the
+	// own RFC and review): dup_named_leg_window_declines_test.go asserts the
 	// wrong answer two-sidedly and fails with instructions to flip it the moment
 	// the arm honours the carried ordinal or declines. Its sibling cases pin that
 	// the OTHER two arms still defend, so a regression in either direction reports.
-	"pkg/recordlayer/query/plan/cascades/left_outer_existential.go # rebaseOuterLegValueOrdinal # a Contains call # 1":   {1, "dotted: leg-relative vs qualified ref probed via '.' in the name. The '.' probe itself is accurate and is what this entry tracks; see the note above for the DUPLICATE-NAME defect the arm's in-place justification concealed, pinned by dup_named_leg_window_first_match_test.go and NOT fixed here"},
+	"pkg/recordlayer/query/plan/cascades/left_outer_existential.go # rebaseOuterLegValueOrdinal # a Contains call # 1":   {1, "dotted: leg-relative vs qualified ref probed via '.' in the name. The '.' probe itself is accurate and is what this entry tracks; see the note above for the DUPLICATE-NAME defect the arm's in-place justification concealed, pinned by dup_named_leg_window_declines_test.go and NOT fixed here"},
 	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go # rebaseOuterLegValue # a Contains call # 1": {1, "dotted: declines re-qualifying an already-dotted ref; Child is a live QOV, so this is the qualified-name channel, not the legacy flat shape"},
 	// MEASURED, not inferred: 3 declines in 269 979 calls over the sqldriver
 	// real-FDB corpus, 2 distinct witnesses, both of the form `q$N.AID#0`. The
@@ -715,6 +680,44 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// two buckets was the misfiling, and the upstream fix that retires all four
 	// at once is CQ-52 — the parser already produces the segments and joins them
 	// only for the resolver to split them back.
+	//
+	// THE 42702 PREMISE, which several first-match entries in this bucket rest
+	// on. It is TWO-THIRDS TRUE and a conversion is in flight, so it must never
+	// be written as a blanket fact — an entry citing it has to say WHICH HALF it
+	// rests on, and the two halves have very different standing.
+	//
+	//   - BARE ambiguity IS rejected upstream, at the semantic layer, with
+	//     SQLSTATE 42702. The authority is semantic.Scope.ResolveColumn
+	//     (core/query/semantic/scope.go:258-275): more than one match is
+	//     terminal, minting *AmbiguousColumnError rather than picking one. It
+	//     surfaces as 42702 through mapPredicateWalkError
+	//     (logical_predicate.go:687-691) and mapColumnResolveError (:3460-3468),
+	//     with the qualified twin at scope.go:375-388. So for a BARE reference,
+	//     "the first match is the only match" is an upstream guarantee and the
+	//     first-match sites are honest debt rather than latent wrong-column reads.
+	//
+	//   - DERIVED-TABLE ambiguity is NOT rejected there. `SELECT d.k FROM
+	//     (SELECT x.k, y.k …) AS d` and its relatives reach the planner and die
+	//     downstream, by accident rather than by a guard — an ordinal that will
+	//     not resolve, or a plain refusal to plan. A fix converting these to a
+	//     real 42702 is being implemented on break/228-delete-name-lookup. Any
+	//     entry leaning on THIS half is leaning on an accident, and on one that
+	//     is about to be replaced.
+	//
+	// The pin for both halves is
+	// pkg/relational/sqldriver/ambiguous_column_ref_rejected_fdb_test.go, whose
+	// unambiguous-shapes block exists so the rejection block cannot pass by
+	// refusing everything. NOT MEASURED HERE, and said plainly rather than
+	// implied: the derived-table half was not re-run from this worktree (the test
+	// lives on the in-flight branch), so its current failure MODE is taken from
+	// that branch's own audit and not from a run recorded here. What WAS checked
+	// statically is weak corroboration only — the set of ErrCodeAmbiguousColumn
+	// producing sites is the same on both branches, which is consistent with the
+	// fix not having landed but does not prove it, since a fix could widen an
+	// existing site instead of adding one.
+	//
+	// A third thing this premise does NOT cover, because it is about columns:
+	// a duplicate QUALIFIER. See the legWindowSlot entry below.
 	"pkg/relational/core/embedded/cascades_generator.go # deriveColumnsFromProjection # a EqualFold call # 1": {1, "translator: parsed column ref matched against declared inner columns"},
 	// CQ-52 converted the PROJECTION channel: LogicalProject now carries the
 	// parser's segment triple beside Projections, so a projected reference
@@ -745,23 +748,23 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// helper's parameter, so :6070 and :6102 below are those comparisons, back
 	// on the ratchet where they belong. A refactor can no longer walk this count
 	// down without changing a single decision.
-	"pkg/relational/core/query/cascades_translator.go # bakeDottedRefsToLegQOVWithRef # the name escaping as a bare string (return) # 1":    {1, "translator: LEAF segment of a parsed identifier escaping as a bare string, leg baker's segmentsOf fallback -- reached only when the carrier arrived with NO parse-tree segments (ref.Present false), so it is the un-migrated producers' path; guarded by `Child != nil || Resolved != nil → bail` at the caller, and every match downstream emits a born-baked ordinal. Retires when the remaining LogicalProject producers carry ProjectionRefs"},
-	"pkg/relational/core/query/cascades_translator.go # bakeDottedRefsToLegQOVWithRef # the name escaping as a bare string (return) # 2":    {1, "translator: QUALIFIER segment of the same fallback slice as 5742 -- one site now serves BOTH the single-ForEach and multi-ForEach arms, which previously sliced separately at :5769 and :5839. The leg-window comparisons it feeds are invisible to this gate (plain-string parameters into legWindowSlot / legBake)"},
-	"pkg/relational/core/query/cascades_translator.go # bakeSegmentedColumnRef # a EqualFold call # 1":                                      {1, "translator: bakeSegmentedColumnRef's exact first-match of the SEGMENTED carrier's rendered name against the output column list -- the name is still what selects the slot, so it is still debt, but it is no longer the name that decides QUALIFICATION: that comes from the parser's segment count. Same resolve-then-bake shape as 6130, on the converted path"},
+	"pkg/relational/core/query/cascades_translator.go # bakeDottedRefsToLegQOVWithRef # the name escaping as a bare string (return) # 1":    {1, "translator: LEAF segment of a parsed identifier escaping as a bare string, leg baker's segmentsOf fallback (:6156). REACHABILITY CORRECTED, and the old claim was not a small overstatement: it said this arm is reached 'only when the carrier arrived with NO parse-tree segments (ref.Present false)', which reads ONE of two conjuncts. The gate is `isRoot && ref.Present`, and isRoot is `node == v` -- the ROOT of the projected value tree (passed as `node == v` at :6226 and :6285). So the segmented arm serves the ROOT ONLY, and every NON-ROOT *values.FieldValue reached through values.Replace takes this splitting path no matter what ref.Present says. A FULLY CONVERTED, segment-carrying projection whose expression is COMPOUND -- `a.b + c.d`, a function call over two column refs, a CASE -- therefore still re-splits rendered names at every node below its root. LATENT, and measured rather than argued: the in-source census (values/name_split_census.go) reads `legQOVSegmentsOf calls 9 | segmented 9 | SPLIT-QUALIFIED 0 | splitBare 0`, so no compound converted projection reaches this arm in the corpus today. That zero is the entire safety margin and it is a CORPUS READING, not a property of the code -- the arm is one compound converted projection away from live. Guarded by `Child != nil || Resolved != nil → bail` at the caller, and every match downstream emits a born-baked ordinal. Retires when the remaining LogicalProject producers carry ProjectionRefs"},
+	"pkg/relational/core/query/cascades_translator.go # bakeDottedRefsToLegQOVWithRef # the name escaping as a bare string (return) # 2":    {1, "translator: QUALIFIER segment of the same fallback slice as :6156; the split itself is :6160 (the old text cited `5742` for the sibling, stale). One site now serves BOTH the single-ForEach and multi-ForEach arms, which previously sliced separately -- the old text pinned those two former slices at `:5769` and `:5839`, which are line numbers of DELETED code and cannot be re-derived from any current file, so the history is kept and the false precision is dropped. INHERITS THE REACHABILITY CORRECTION on the leaf entry above: this splitting arm is taken for every NON-ROOT node regardless of ref.Present, not only for a carrier that arrived with no segments. The leg-window comparisons it feeds are invisible to this gate (plain-string parameters into legWindowSlot / legBake)"},
+	"pkg/relational/core/query/cascades_translator.go # bakeSegmentedColumnRef # a EqualFold call # 1":                                      {1, "translator: bakeSegmentedColumnRef's exact first-match of the SEGMENTED carrier's rendered name against the output column list (:6449-6453) -- the name is still what selects the slot, so it is still debt, but it is no longer the name that decides QUALIFICATION: that comes from the parser's segment count. Same resolve-then-bake shape as bakeFlatRefsAgainstColumns' exact match (:6546) -- both walk `cols`, take the first case-insensitive hit, and bake into OrdinalDomainOfColumnNames(cols) -- on the converted path. The old text pointed at a bare `6130`; nothing at that line answers to the description and the referent could not be recovered, so the sibling is named by SYMBOL, which cannot rot silently the way a number does. WHAT THE FIRST-MATCH RESTS ON: the BARE half of the 42702 premise noted below this bucket, and only that half. A bare reference carried by two visible sources is refused upstream, so the first hit is the only hit -- but that guarantee is about the REFERENCE being unambiguous, not about `cols` being duplicate-free, and a leg-concat row legitimately declares one name twice"},
 	"pkg/relational/core/embedded/cascades_generator.go # deriveColumnsFromProjection # a map key # 1":                                      {1, "translator: same inner-column lookup as the sibling entry above, leg-qualified arm -- the map key is a CONCATENATION, which is why that sibling was recorded and this one was not"},
 	"pkg/relational/core/embedded/cascades_generator.go # deriveColumnsFromProjection # a map key # 2":                                      {1, "translator: inner-column lookup by parsed name (laundered map key)"},
-	"pkg/relational/core/embedded/logical_predicate.go # validateUnionOrderByColumns # a map key # 1":                                       {1, "translator: join-side name set during translation (laundered map key)"},
+	"pkg/relational/core/embedded/logical_predicate.go # validateUnionOrderByColumns # a map key # 1":                                       {1, "translator: NOT a join-side set -- that description was wrong twice over. It is the UNION LEFT BRANCH output-name set: `leftNames`, seeded at logical_predicate.go:7774-7789 from findProjection(leftBranch), where leftBranch is the union's left leg. The second error is about WHICH LINE DECIDES. What the gate flags is the WRITE at :7783, `leftNames[strings.ToUpper(fv.Field)] = true` -- the only operand in the whole function derived from FieldValue.Field -- and a write merely SEEDS the set; it resolves nothing. The actual name-keyed DECISION is the READ at :7810, `!leftNames[upper] && !leftNames[bareName]`, and this gate CANNOT SEE IT: both operands derive from logical.SortKey's Expr/Bare, not from FieldValue.Field, so no taint reaches them. The recorded site and the deciding site are different lines and the ratchet is watching the cheaper one. CONSEQUENCE CLASS, stated because it is what bounds this entry: the read's only outcomes are `api.ErrCodeUndefinedColumn` (42703) or silence, so a miscall is a spurious or a missed error on an ORDER BY key over a UNION -- validation only, never a wrong-column read"},
 	"pkg/relational/core/query/cascades_translator.go # rewriteUnnestPredicate # a EqualFold call # 1":                                      {1, "translator: unnest element alias resolution, flat arm; the sibling arm consults the ordinal"},
 	"pkg/relational/core/query/cascades_translator.go # rewriteUnnestPredicate # a switch tag # 1":                                          {1, "translator: unnest element/ordinality selection by declared alias, qualified arm (laundered switch tag)"},
 	"pkg/relational/core/query/cascades_translator.go # bakeUnnestElementRefOrdinal # a map key # 1":                                        {1, "translator: element slot lookup during translation (laundered map key)"},
-	"pkg/relational/core/query/cascades_translator.go # pullUpSortKeyValue # a EqualFold call # 1":                                          {1, "translator: pullUpSortKeyValue resolves a bare ORDER BY key against the FOLDED projection's output fields -- guarded by `Child == nil && Resolved == nil` at 5210, so the key side is a lazy carrier from parsed text, and a match emits NewFieldValueWithResolvedOrdinal. Gated on cascades_translator.go:4715, NOT on values.go:1510: this site's `fields` are named from p.Projections/p.Aliases (parser text) or a positional `_i`, and the ONLY .Field-derived names in them are the hidden sort columns collectExtraSortColumns appends -- a contract-bucket entry. (STALE SINCE RFC-227 and corrected here rather than silently: those columns are no longer named by sortKeyFieldRef's strings.ToUpper(fv.Field) in every case. sortKeyExtraColumnName now names a NESTED key by its resolved PATH, because the flat root spelling was the dedup identity and two members of one struct root collapsed onto it. A FLAT key still takes the qualified field reference, so this site's `fields` still carry .Field-derived names and the entry still stands.) Converting ProjectionColumnName leaves this one red. RETRACTED AS FALSE, and the retraction is kept visible because the prescription it carried would have shipped a user-visible regression for zero debt payoff: the prior text said this site's gate IS removable by naming the hidden columns positionally, on the reasoning that doing so leaves `fields` with no .Field-derived names. That reasoning reads the WRONG SIDE of the comparison. The gate is a STATIC AST scan and what it flags here is `fv.Field` -- the KEY side of `strings.EqualFold(f.Name, fv.Field)`. The `fields` side is `f.Name`, a RecordConstructorField.Name, which isFieldSelector never taints; no runtime name landing in `fields` is visible to the scan at all. MEASURED both ways rather than predicted: with the hidden columns named positionally the gate stays GREEN with this entry INTACT (the site is still reported, count 1), and DELETING the entry fails TestFieldNameNeverDecides with `pullUpSortKeyValue # a EqualFold call # 1: a EqualFold call uses FieldValue.Field`. The conversion therefore retires NOTHING -- not this entry and not sortKeyFieldRef's contract-bucket one, whose escape (a name returned for sortKeyName, sortKeySourceValue, and this collector's own dedup key and nameability check) survives the rename untouched. ALSO MEASURED and load-bearing against the same prescription: a hidden column's name is NOT plan-internal. It is the DISPLAY name the re-applied sort renders, so it reaches EXPLAIN -- naming the columns positionally moves 5 lines of testdata/plan_shape.golden (every projected_exists_nested_sort_key.yaml stanza, e.g. `InMemorySort([N ASC]` and `InMemorySort([T1.N.SK ASC]` becoming a positional token), degrading EXPLAIN from naming the sorted column to naming a slot. What IS true, and is now PINNED rather than left as prose (hidden_sort_column_value_recovery_test.go): the hidden columns are recovered by VALUE, not by this name scan -- an appended column named a string no scan can find still resolves, and a key whose leaf name matches a DECOY output column holding a different value still resolves to its source column. The real conversion for this site is on the KEY side: the guard `Child == nil && Resolved == nil` is what selects a lazy text-derived carrier, so the site dies when ORDER BY keys arrive already resolved, never by renaming what they are compared against"},
-	"pkg/relational/core/query/cascades_translator.go # bakeFlatRefsAgainstColumns # a EqualFold call # 1":                                  {1, "translator: column list membership during resolution (bakeFlatRefsAgainstColumns' exact first-match; was :5982 before CQ-52 moved the leg walk into legWindowSlot)"},
-	"pkg/relational/core/query/cascades_translator.go # ordinalSlotInLegWindow # a == comparison via local field derived from the name # 1": {1, "translator: ordinalSlotInLegWindow scans the selected leg's window for the field NAME, after selecting the leg by IDENTITY (values.SameLeg on the window's Alias, :3697). Newly visible through the call boundary. Half-migrated by construction and worth reading as such: the QUANTIFIER side is already identity-keyed, the COLUMN side is still a name -- which is the same split the leg census reports from the reader side, and it closes with the column domain, not with the leg table"},
-	"pkg/relational/core/query/cascades_translator.go # legWindowSlot # a EqualFold call via local qual derived from the name # 1":          {1, "translator: QUALIFIER match inside legWindowSlot -- the leg the qualifier selects, matched against leg.Name TEXT. Reached through a plain string parameter, and tainted by the SPLITTING caller only: the converted projection path passes ref.Qualifier (parse-tree segments, not a display name) and does not taint it. So this entry is precisely the un-migrated channels' debt, and it retires when the last caller stops slicing a rendered name. The comparison itself converts separately, when the leg table is matched by identity rather than by Name"},
-	"pkg/relational/core/query/cascades_translator.go # legWindowSlot # a EqualFold call via local leaf derived from the name # 1":          {1, "translator: LEAF match inside legWindowSlot -- the column within the selected leg window, by name. Same parameter provenance as :6070, and the half that was never on the ratchet at all before the call-boundary taint: it was the LEAF of an identifier whose qualifier half was recorded, which is the split-across-buckets misfiling the dotted-bucket note describes"},
+	"pkg/relational/core/query/cascades_translator.go # pullUpSortKeyValue # a EqualFold call # 1":                                          {1, "translator: pullUpSortKeyValue resolves a bare ORDER BY key against the FOLDED projection's output fields -- guarded by `Child == nil && Resolved == nil` at :5481 (the entry said 5210, stale), so the key side is a lazy carrier from parsed text, and a match emits NewFieldValueWithResolvedOrdinal. Gated on cascades_translator.go:4715 (the nonempty `src.sortKeyName(k)` guard -- re-derived, still accurate), NOT on ProjectionColumnName, which is values.go:1710; the entry's `values.go:1510` is stale and that line now holds OrdinalBakeError.Error. This site's `fields` are named from p.Projections/p.Aliases (parser text) or a positional `_i`, and the ONLY .Field-derived names in them are the hidden sort columns collectExtraSortColumns appends -- a contract-bucket entry. (STALE SINCE RFC-227 and corrected here rather than silently: those columns are no longer named by sortKeyFieldRef's strings.ToUpper(fv.Field) in every case. sortKeyExtraColumnName now names a NESTED key by its resolved PATH, because the flat root spelling was the dedup identity and two members of one struct root collapsed onto it. A FLAT key still takes the qualified field reference, so this site's `fields` still carry .Field-derived names and the entry still stands.) Converting ProjectionColumnName leaves this one red. RETRACTED AS FALSE, and the retraction is kept visible because the prescription it carried would have shipped a user-visible regression for zero debt payoff: the prior text said this site's gate IS removable by naming the hidden columns positionally, on the reasoning that doing so leaves `fields` with no .Field-derived names. That reasoning reads the WRONG SIDE of the comparison. The gate is a STATIC AST scan and what it flags here is `fv.Field` -- the KEY side of `strings.EqualFold(f.Name, fv.Field)`. The `fields` side is `f.Name`, a RecordConstructorField.Name, which isFieldSelector never taints; no runtime name landing in `fields` is visible to the scan at all. MEASURED both ways rather than predicted: with the hidden columns named positionally the gate stays GREEN with this entry INTACT (the site is still reported, count 1), and DELETING the entry fails TestFieldNameNeverDecides with `pullUpSortKeyValue # a EqualFold call # 1: a EqualFold call uses FieldValue.Field`. The conversion therefore retires NOTHING -- not this entry and not sortKeyFieldRef's contract-bucket one, whose escape (a name returned for sortKeyName, sortKeySourceValue, and this collector's own dedup key and nameability check) survives the rename untouched. ALSO MEASURED and load-bearing against the same prescription: a hidden column's name is NOT plan-internal. It is the DISPLAY name the re-applied sort renders, so it reaches EXPLAIN -- naming the columns positionally moves 5 lines of testdata/plan_shape.golden (every projected_exists_nested_sort_key.yaml stanza, e.g. `InMemorySort([N ASC]` and `InMemorySort([T1.N.SK ASC]` becoming a positional token), degrading EXPLAIN from naming the sorted column to naming a slot. What IS true, and is now PINNED rather than left as prose (hidden_sort_column_value_recovery_test.go): the hidden columns are recovered by VALUE, not by this name scan -- an appended column named a string no scan can find still resolves, and a key whose leaf name matches a DECOY output column holding a different value still resolves to its source column. The real conversion for this site is on the KEY side: the guard `Child == nil && Resolved == nil` is what selects a lazy text-derived carrier, so the site dies when ORDER BY keys arrive already resolved, never by renaming what they are compared against"},
+	"pkg/relational/core/query/cascades_translator.go # bakeFlatRefsAgainstColumns # a EqualFold call # 1":                                  {1, "translator: column list membership during resolution -- bakeFlatRefsAgainstColumns' exact first-match, CURRENTLY :6546. The entry carried only `:5982`, its pre-CQ-52 line, and never acquired a current one; the historical fact (the leg walk moved out into legWindowSlot) is kept, the dead number is not. WHAT THE FIRST-MATCH RESTS ON: the BARE half of the 42702 premise noted below this bucket, with the same caveat as bakeSegmentedColumnRef -- `cols` is a FLAT row that a leg-concat can legitimately fill with one name twice, and the upstream rejection covers the REFERENCE being ambiguous, not the row being duplicate-named"},
+	"pkg/relational/core/query/cascades_translator.go # ordinalSlotInLegWindow # a == comparison via local field derived from the name # 1": {1, "translator: ordinalSlotInLegWindow scans the selected leg's window for the field NAME, after selecting the leg by IDENTITY (values.SameLeg on the window's Alias, :3868 -- the entry said :3697, stale). Newly visible through the call boundary. Half-migrated by construction and worth reading as such: the QUANTIFIER side is already identity-keyed, the COLUMN side is still a name -- which is the same split the leg census reports from the reader side, and it closes with the column domain, not with the leg table"},
+	"pkg/relational/core/query/cascades_translator.go # legWindowSlot # a EqualFold call via local qual derived from the name # 1":          {1, "translator: QUALIFIER match inside legWindowSlot (:6486) -- the leg the qualifier selects, matched against leg.Name TEXT. Reached through a plain string parameter, and tainted by the SPLITTING caller only: the converted projection path passes ref.Qualifier (parse-tree segments, not a display name) and does not taint it. So this entry is precisely the un-migrated channels' debt, and it retires when the last caller stops slicing a rendered name. The comparison itself converts separately, when the leg table is matched by identity rather than by Name. THE FIRST-MATCH PREMISE, and this is the site where it is WEAKEST, which is why it is spelled out rather than inherited from the note below: legWindowSlot takes the first leg whose Name matches and its own census comment states the choice outright (:6493-6497, 'a qualifier carried by two legs is a first-match, not a poisoned key'). That is a first-match on a QUALIFIER, and the 42702 note below this bucket does NOT cover it -- 42702 is ambiguous_column, about a COLUMN reference. The declining alternative already exists on the same channel a few hundred lines up: bakeDottedRefsToLegQOVWithRef's addKey POISONS a duplicate qualifier and refuses to bake through it (:6180-6186). Two readers of one channel, one declining and one first-matching, and no upstream rejection was found that reconciles them: every ErrCodeDuplicateAlias (42712) producer in pkg/ is CTE-name duplication, none rejects a repeated FROM-clause table alias. Whether some other mechanism refuses that shape was NOT established, so treat this premise as UNVERIFIED rather than as refuted -- it is the one on this list with no pin behind it"},
+	"pkg/relational/core/query/cascades_translator.go # legWindowSlot # a EqualFold call via local leaf derived from the name # 1":          {1, "translator: LEAF match inside legWindowSlot (:6518) -- the column within the selected leg window, by name. Same parameter provenance as the qualifier half at :6486 (the entry said :6070, stale), and the half that was never on the ratchet at all before the call-boundary taint: it was the LEAF of an identifier whose qualifier half was recorded, which is the split-across-buckets misfiling the dotted-bucket note describes"},
 
 	"pkg/recordlayer/query/plan/cascades/values/values.go # assertSuffixStep # a == comparison # 1":             {1, "contract: the sibling of ReAnchorRootInto above, one step further down. FuseNestedSuffix asserts a nested suffix accessor against the record type it descends into by matching the accessor's per-step NAME, because the question being asked is 'which slot of THIS record does this named step denote' and only that record's field names can answer it -- Resolved is what is being read, not what is missing. Two things keep it from being the conflation this ratchet exists to catch. It DECLINES on a duplicate name rather than first-matching, so the failure is a refused fold and never a wrong-column read. And the comparison is a TRIPWIRE, not the source: the suffix ordinals are CARRIED, because a suffix indexes a struct's own declared field order which no merge restates -- this arm only fires when a record type happens to be available, and on the production path it is not (the positional merge states UNKNOWN for a struct column). Retires with the merged-layout struct-typing work booked in TODO.md, at which point the assert arm becomes the live one and the question of leg provenance arrives with it"},
-	"pkg/recordlayer/query/plan/cascades/values/values.go # (FieldPath).ReAnchorRootInto # a == comparison # 1": {1, "contract: the nested-key re-anchor derives a root ordinal by matching the carried root accessor NAME against the flowed layout (RFC-218). It is debt by construction and the RFC says so: the correct discriminator is leg IDENTITY -- which correlation the root belongs to, against which leg each merged slot came from -- and the name is a stand-in until a caller supplies it. What keeps it honest meanwhile is that it DECLINES on a duplicate name rather than first-matching, so the failure is a refused fold and never a wrong-column read; RecordType.FieldIndex would have first-matched. Retires when the merged layout carries per-slot leg provenance the re-anchor can match on"},
+	"pkg/recordlayer/query/plan/cascades/values/values.go # (FieldPath).ReAnchorRootInto # a == comparison # 1": {1, "contract: the nested-key re-anchor derives a root ordinal by matching the carried root accessor NAME against the flowed layout (RFC-218). It is debt by construction and the RFC says so: the correct discriminator is leg IDENTITY -- which correlation the root belongs to, against which leg each merged slot came from -- and the name is a stand-in until a caller supplies it. What keeps it honest meanwhile is that it DECLINES on a duplicate name rather than first-matching, so the failure is a refused fold and never a wrong-column read. The old text justified that with a counterfactual -- 'RecordType.FieldIndex would have first-matched' -- which is now DEAD: RecordType.FieldIndex and RecordType.LookupField were deleted outright, and FieldIndexUnique / LookupFieldUnique (type.go:827, :847) are the only name resolvers left in the package, so there is no longer a first-matching form for this site to be contrasted against. The CONCLUSION survives untouched and is restated on what actually holds it up: the decline is real -- ReAnchorRootInto returns a reason and refuses rather than resolving when the root name is absent or DUPLICATED in `flowed` -- and declining is now the only behaviour the API offers, not the better of two available ones. Retires when the merged layout carries per-slot leg provenance the re-anchor can match on"},
 
 	// harness (1)
 	"pkg/relational/conformance/rowdiff/ordering.go # sortKeysMatchOrderBy # a EqualFold call # 1": {1, "harness: conformance oracle matches a plan sort key against an ORDER BY key so it can tell WHICH sort a node is. AUDITED, and the audit refused the allowlist on its own evidence. The reason this entry used to carry -- 'compares plan sort keys to SQL ORDER BY text', so the name is the identity and engine rules do not apply -- was false in the half that mattered: an OrderKey renders as `ToLower(Qual) + \".\" + Col` (gen.go:1753), so the compared Col is a FRAGMENT of that text, and the generator emits `ORDER BY l.id, r.id` and `l.id, m.id, r.id` -- key vectors whose leaf names are all ID. One plan-key vector matched two DIFFERENT qualified orderings; the guard now REFUSES a qualified key and a unit pin drives both the conflation and the two caller fences (singleTablePlain, requestedOrdering) that kept it latent. It stays debt because what remains is contingent, not an identity: the leaf comparison is sound only while the generator's schema has no duplicate leaf name, which is a property of test data. MEASURED at 250 seeds: 952 sorts, 952 guard matches, 0 rejections -- the guard never fires in the corpus, and nothing censused that until the sweep gained a guard-match floor"},
@@ -2087,7 +2090,7 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form, fn string)
 			// string parameter, or a `.Name` selector off a schema/leg field, is
 			// INVISIBLE here. The two producers this branch measured as the live
 			// channel are both outside the scope for exactly that reason —
-			// scalar_subquery_seed.go:83 joins a plain `scalarCol` string, and
+			// scalar_subquery_seed.go:129 joins a plain `scalarCol` string, and
 			// clustered_outer_scalar.go:493 joins `leg.typ.Fields[i].Name`. Neither
 			// is a FieldValue, so neither is counted, and the `dotted` bucket's
 			// tally must not be read as "every dotted producer in the tree".
@@ -2431,89 +2434,231 @@ func TestFieldNameNeverDecides(t *testing.T) {
 // deliberately does NOT assert the list is complete; that claim needs the
 // detector widening the list exists to justify, and pretending otherwise here
 // would be the vacuous-green failure the census gate documents at length.
-func TestFieldIndexBlindSpotSitesAreCurrent(t *testing.T) {
+
+// TestNoFirstMatchNameLookup is the INVERTED guard that replaced the
+// FieldIndex blind-spot inventory. That list watched a population for going
+// stale; this one watches a population for coming back.
+//
+// `RecordType.FieldIndex` and `RecordType.LookupField` resolved a column by
+// name and answered the FIRST field carrying it. A record type may legitimately
+// declare a name twice — a leg-concat of two sources merges `A.K` and `B.K`
+// into one row — so the first match is indistinguishable from a correct answer,
+// and the wrong one is a real column of the same type that nothing downstream
+// rejects. Both methods were deleted; FieldIndexUnique / LookupFieldUnique
+// resolve only on an unambiguous name.
+//
+// A green here means neither a declaration nor a call has reappeared. It counts
+// what it scanned and fails on an empty population, because a walk that reached
+// no files reports exactly the same green as a tree with no violations.
+// selfExemptFieldDecisionFile is the ONE file TestNoFirstMatchNameLookup skips,
+// stated as a repo-relative path so the exemption cannot spread by naming.
+const selfExemptFieldDecisionFile = "pkg/docscheck/field_name_decision_test.go"
+
+// firstMatchNameLookups are the deleted first-match lookups and their
+// replacements. Watched by NAME, because that is what a revival would reuse.
+var firstMatchNameLookups = map[string]string{
+	"FieldIndex":  "FieldIndexUnique",
+	"LookupField": "LookupFieldUnique",
+}
+
+// scanFirstMatchNameLookups reports every revival of a deleted first-match name
+// lookup in one file's source, as "rel:LINE: …" strings. parsed is false when
+// the source does not parse.
+//
+// It is SPLIT OUT of the tree walk so the decision can be driven from source
+// held in a string. The alternative is what actually happened: the two holes
+// below were found by dropping a probe FILE into the tree, watching the gate
+// report it, and deleting the probe — which leaves the conclusion in a commit
+// message and nothing that fails if either hole reopens. A revival of this gate's
+// own blind spot cannot be pinned by a real file, because a real
+// `func FieldIndex` in the tree is a permanent red.
+func scanFirstMatchNameLookups(rel string, src []byte) (problems []string, parsed bool) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, rel, src, 0)
+	if err != nil {
+		return nil, false
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.FuncDecl:
+			// METHOD OR PLAIN FUNCTION. Bailing on `x.Recv == nil` watched only
+			// the method form, so `func FieldIndex(r *RecordType, name string)
+			// (int, bool)` declared at package level in `values` — the same
+			// first-match lookup with the receiver moved into the parameter
+			// list — reintroduced the API this gate deletes and the gate had
+			// nothing to say about it.
+			if x.Name == nil {
+				return true
+			}
+			if want, bad := firstMatchNameLookups[x.Name.Name]; bad {
+				problems = append(problems, fmt.Sprintf(
+					"%s:%d: %s declared — use %s",
+					rel, fset.Position(x.Pos()).Line, x.Name.Name, want))
+			}
+		case *ast.CallExpr:
+			// QUALIFIED OR UNQUALIFIED. Matching only *ast.SelectorExpr watched
+			// `x.FieldIndex(n)` and missed the bare `FieldIndex(rt, n)` a
+			// package-level redeclaration is called by — so the two holes
+			// COMPOSED: declare it as a function and call it from its own
+			// package, and both arms passed.
+			var name string
+			switch fn := x.Fun.(type) {
+			case *ast.SelectorExpr:
+				if fn.Sel != nil {
+					name = fn.Sel.Name
+				}
+			case *ast.Ident:
+				name = fn.Name
+			}
+			if want, bad := firstMatchNameLookups[name]; bad {
+				problems = append(problems, fmt.Sprintf(
+					"%s:%d: call to %s — use %s",
+					rel, fset.Position(x.Pos()).Line, name, want))
+			}
+		}
+		return true
+	})
+	return problems, true
+}
+
+// TestFirstMatchNameLookupScanArms drives every arm of the gate's decision from
+// source held in a string, including the two that a tree walk over a CLEAN tree
+// cannot reach at all.
+//
+// A green from the walk above is a statement about the tree, not about the
+// detector. Both arms below passed the tree walk while blind: the declaration
+// arm bailed on `x.Recv == nil` and the call arm matched only *ast.SelectorExpr,
+// so a package-level `func FieldIndex` called unqualified from its own package
+// slipped through BOTH. The tree was clean, so the gate reported green and the
+// blindness was invisible — which is exactly the shape this repo keeps finding:
+// a green from an empty set.
+func TestFirstMatchNameLookupScanArms(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		src     string
+		want    int
+		blindTo string
+	}{
+		{
+			"method declaration", "package p\ntype T struct{}\nfunc (t *T) FieldIndex(n string) (int, bool) { return 0, false }\n", 1,
+			"the original form — the only one the gate ever watched",
+		},
+		{
+			"package-level function declaration", "package p\ntype T struct{}\nfunc FieldIndex(t *T, n string) (int, bool) { return 0, false }\n", 1,
+			"the receiver moved into the parameter list. Identical semantics, and the " +
+				"`x.Recv == nil` bail meant the gate never looked",
+		},
+		{
+			"package-level LookupField", "package p\ntype T struct{}\nfunc LookupField(t *T, n string) (int, bool) { return 0, false }\n", 1,
+			"the sibling lookup, same evasion — both names must be watched in both forms",
+		},
+		{
+			"qualified call", "package p\nfunc f(t interface{ FieldIndex(string) (int, bool) }) { t.FieldIndex(\"K\") }\n", 1,
+			"the original call form",
+		},
+		{
+			"unqualified call", "package p\nfunc FieldIndexUniqueX() {}\nfunc f() { FieldIndex(nil, \"K\") }\n", 1,
+			"how a package-level redeclaration is called from its own package. The " +
+				"*ast.SelectorExpr-only match saw an *ast.Ident and returned",
+		},
+		{
+			"the Unique forms are not flagged", "package p\ntype T struct{}\nfunc (t *T) FieldIndexUnique(n string) (int, bool) { return 0, false }\nfunc g(t *T) { t.FieldIndexUnique(\"K\"); t.LookupFieldUnique(\"K\") }\n", 0,
+			"the NEGATIVE control. Without it every arm above is satisfied by a " +
+				"detector that flags everything, and the gate would fail the whole tree",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, parsed := scanFirstMatchNameLookups("probe.go", []byte(tc.src))
+			if !parsed {
+				t.Fatalf("the probe source did not parse — the case tests nothing:\n%s", tc.src)
+			}
+			if len(got) != tc.want {
+				t.Fatalf("scan reported %d finding(s) %v, want %d.\n  This arm exists because: %s",
+					len(got), got, tc.want, tc.blindTo)
+			}
+		})
+	}
+}
+
+func TestNoFirstMatchNameLookup(t *testing.T) {
 	t.Parallel()
 	root := sourceTreeRoot(t)
 
-	// Keyed the same way the main ratchet is — `file # declaration # ordinal` —
-	// and for the same reason. This list is small (two entries) but it lives in
-	// the same files the main ratchet's sites live in, so a line-number key here
-	// is invalidated by exactly the edits that invalidate one there. "Only two
-	// entries" is not a reason to keep the tax; it is a reason the migration is
-	// cheap.
-	//
-	// The FORM part is dropped: every site here is the same shape by construction,
-	// a FieldIndex( call the main detector cannot see. Declaration plus
-	// source-order ordinal is the whole identity.
-	//
-	// EACH ENTRY IS RESOLVED AGAINST ITS OWN FILE, named by the key, rather than
-	// by sweeping a file list. That is not a style choice: under Bazel `git
-	// ls-files` is unavailable and the tracked-file helper degrades to a
-	// filesystem walk that does not reach every package, so a sweep found ZERO
-	// FieldIndex calls in the sandbox and reported both entries stale. Reading the
-	// file the entry names cannot go quiet that way — if the file is missing, that
-	// is itself the finding.
 	var problems []string
-	for site, why := range fieldIndexBlindSpotDebt {
-		parts := strings.Split(site, " # ")
-		if len(parts) != 3 || !strings.HasSuffix(parts[0], ".go") {
-			problems = append(problems, fmt.Sprintf(
-				"%s: must be `path/file.go # declaration # ordinal`", site))
-			continue
-		}
-		rel, wantFn, wantOrd := parts[0], parts[1], parts[2]
-		src, err := os.ReadFile(filepath.Join(root, rel))
+	scanned := 0
+	selfExempted := 0
+
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			problems = append(problems, fmt.Sprintf("%s: read: %v", site, err))
-			continue
+			return err
 		}
-		fset := token.NewFileSet()
-		f, err := parser.ParseFile(fset, rel, src, parser.ParseComments)
-		if err != nil {
-			problems = append(problems, fmt.Sprintf("%s: parse: %v", site, err))
-			continue
-		}
-		seen := map[string]int{}
-		fn := fieldDecisionFileScope
-		hit := false
-		ast.Inspect(f, func(n ast.Node) bool {
-			switch x := n.(type) {
-			case *ast.FuncDecl:
-				fn = fieldDecisionFuncName(x)
-			case *ast.CallExpr:
-				if callFuncName(x.Fun) != "FieldIndex" {
-					return true
-				}
-				seen[fn]++
-				if fn == wantFn && strconv.Itoa(seen[fn]) == wantOrd {
-					hit = true
-				}
+		if info.IsDir() {
+			// Vendored and generated trees are not ours to hold to this rule,
+			// and bazel-* are symlinked build outputs that would double-count.
+			switch info.Name() {
+			case "vendor", "gen", "node_modules", ".git", "fdb-record-layer":
+				return filepath.SkipDir
+			case ".claude":
+				// Agent worktrees live here — other branches' checkouts of this
+				// same repo. Scanning them reports THEIR code as this tree's
+				// violations, which is how a clean tree fails with 1500 findings.
+				return filepath.SkipDir
 			}
-			return true
-		})
-		if len(seen) == 0 {
-			problems = append(problems, fmt.Sprintf(
-				"%s: the file contains no FieldIndex( call at all", site))
-			continue
+			if strings.HasPrefix(info.Name(), "bazel-") {
+				return filepath.SkipDir
+			}
+			return nil
 		}
-		if !hit {
-			problems = append(problems, fmt.Sprintf(
-				"%s: no FieldIndex( call there any more (that file's calls: %v)", site, seen))
+		if !strings.HasSuffix(path, ".go") {
+			return nil
 		}
-		_ = why
+		src, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		rel, _ := filepath.Rel(root, path)
+		// This file names both methods in prose and in this test's own tables;
+		// scanning it would report itself. The exemption is an EXACT path, not a
+		// suffix: `strings.HasSuffix(path, "field_name_decision_test.go")` also
+		// exempts `values_field_name_decision_test.go` and any other file whose
+		// name merely ends that way, so the one file that must be skipped came
+		// with a free skip for every future file that copies its name.
+		if filepath.ToSlash(rel) == selfExemptFieldDecisionFile {
+			selfExempted++
+			return nil
+		}
+		found, parsed := scanFirstMatchNameLookups(rel, src)
+		if !parsed {
+			return nil // not our business to fail on unparseable files
+		}
+		scanned++
+		problems = append(problems, found...)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
 	}
-	sort.Strings(problems)
-	if len(problems) != 0 {
-		t.Fatalf("the FieldIndex blind-spot list is stale:\n  %s\n\n"+
-			"These entries stand in for decisions the main detector cannot see. An "+
-			"entry pointing at a call that no longer exists is worse than no entry: it "+
-			"reads as a tracked hole while tracking nothing. Either the call moved — "+
-			"re-key it — or it is gone, and the line goes.",
-			strings.Join(problems, "\n  "))
+	if selfExempted != 1 {
+		t.Fatalf("the self-exemption matched %d files, want exactly 1 (%s).\n"+
+			"  0 means the path is stale — this file renamed or moved — so the test is\n"+
+			"  about to report its own prose as violations. More than 1 means the exact\n"+
+			"  match has stopped being exact and the exemption is spreading, which is the\n"+
+			"  suffix hole this replaced.", selfExempted, selfExemptFieldDecisionFile)
 	}
-	if len(fieldIndexBlindSpotDebt) == 0 {
-		t.Fatal("the blind-spot list is empty, so this test proves nothing; if the " +
-			"detector was widened to cover FieldIndex, delete this test with the list")
+	if scanned == 0 {
+		t.Fatal("scanned 0 Go files — this test cannot distinguish a clean tree " +
+			"from a walk that reached nothing, and an empty population reports green")
 	}
-	t.Logf("FieldIndex blind-spot entries current: %d", len(fieldIndexBlindSpotDebt))
+	if len(problems) > 0 {
+		t.Fatalf("a first-match name lookup came back (%d site(s)):\n  %s\n\n"+
+			"These resolve a column by NAME and answer the FIRST field carrying it. "+
+			"A row can declare one name twice — a leg-concat merges A.K and B.K into "+
+			"one row — so the answer is a guess that reads as a fact, and the wrong "+
+			"slot is a real column of the same type that nothing downstream rejects. "+
+			"Use the Unique form, which declines on an ambiguous name.",
+			len(problems), strings.Join(problems, "\n  "))
+	}
+	t.Logf("no first-match name lookup in %d Go files", scanned)
 }

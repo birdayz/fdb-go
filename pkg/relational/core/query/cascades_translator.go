@@ -979,6 +979,96 @@ func stripColumnQualifier(s string) string {
 	return s
 }
 
+// groupKeyOrdinalByStructure answers WHICH grouping key a reference IS, from the
+// two Values themselves rather than from a string both sides happen to render the
+// same way. The output ordinal of a grouping key is its index in
+// GetGroupingKeys() — the row is [group keys in this order..., aggregates...] —
+// so a structural match yields the slot directly, with no name in between.
+//
+// This is the same join Java performs when it pulls a reference up over a
+// group-by: CompensateRecordConstructorRule walks the columns and takes the LOOP
+// INDEX. It is also the join the post-aggregate binder in
+// core/embedded/logical_predicate.go already uses (semantic equality / resolved
+// path → pinned ordinal), which is why the aggregate arm of the name map below
+// went from 1014 firings to 1.
+//
+// Why the name cannot decide it: AggregateKeyColumnName renders a FieldValue as
+// its BARE leaf, so `GROUP BY o.k, i.k` spells BOTH keys "K" and the name map is
+// last-wins — every re-read of either key recovers the SECOND key's slot. The
+// qualifier segment the map registers alongside ("O.K"/"I.K") is a (correlation,
+// leaf) pair encoded into a string, i.e. the very channel RFC-197 removes; when
+// it goes, the leaf is all that is left. The structure does not have that
+// problem: two quantifier roots decline each other.
+//
+// It DECLINES rather than first-matches when two keys match, for the reason
+// RFC-228 gave: an ambiguous answer that looks authoritative is worse than no
+// answer, and the caller's name channel is still there behind it.
+func groupKeyOrdinalByStructure(ref values.Value, groupKeys []values.Value) (int, bool) {
+	rf, isField := ref.(*values.FieldValue)
+	if !isField || rf.Resolved == nil {
+		return 0, false
+	}
+	found, hits := 0, 0
+	for i, k := range groupKeys {
+		kf, keyIsField := k.(*values.FieldValue)
+		if !keyIsField || kf.Resolved == nil {
+			continue
+		}
+		if !values.SameColumnPath(rf.Resolved, kf.Resolved) || !sameQuantifierRoot(rf, kf) {
+			continue
+		}
+		found, hits = i, hits+1
+	}
+	if hits != 1 {
+		return 0, false
+	}
+	return found, true
+}
+
+// sortKeyAggregateOutputSlot resolves an ORDER BY key that IS a group-key or
+// aggregate output to its slot in the aggregate's [keys..., aggregates...] row.
+//
+// The name maps answer WHETHER the key names an output column; groupKeys answers
+// WHICH grouping key it is. They have to be two questions here, because
+// AggregateKeyColumnName renders a FieldValue as its bare leaf: `GROUP BY o.k,
+// i.k` asks for both keys under "K", keyOrds is last-wins on that name, and an
+// ORDER BY on either key would take the second one's slot. The qualified
+// spelling the baker can fall back on never even forms on this path — the
+// authority strips the qualifier before the map is consulted.
+//
+// Group keys are matched BEFORE aggregates, as the two maps' disjoint ranges and
+// aggregate-name-priority-on-collision rule already had it.
+func sortKeyAggregateOutputSlot(v values.Value, groupKeys []values.Value, keyOrds, aggOrds map[string]int) (int, bool) {
+	whole := normalizeAggOutputName(expressions.AggregateKeyColumnName(v))
+	if slot, hit := keyOrds[whole]; hit {
+		if structuralSlot, structural := groupKeyOrdinalByStructure(v, groupKeys); structural {
+			return structuralSlot, true
+		}
+		return slot, true
+	}
+	slot, hit := aggOrds[whole]
+	return slot, hit
+}
+
+// sameQuantifierRoot is the ROOT half of the identity SameColumnPath does not
+// cover: it is what keeps `o.k` and `i.k` apart when their resolved paths agree
+// because they read the same column of the same table through two quantifiers.
+// Unlike SameColumnPath's ordering-side root rule, a childless value is NOT a
+// wildcard here — a reference that lost its quantifier cannot be attributed to
+// one of several legs, and guessing is what the last-wins name map already does.
+func sameQuantifierRoot(a, b *values.FieldValue) bool {
+	aq, aQualified := a.Child.(*values.QuantifiedObjectValue)
+	bq, bQualified := b.Child.(*values.QuantifiedObjectValue)
+	switch {
+	case a.Child == nil && b.Child == nil:
+		return true
+	case aQualified && bQualified:
+		return strings.EqualFold(aq.Correlation.Name(), bq.Correlation.Name())
+	default:
+		return false
+	}
+}
+
 // groupByOutputBaker returns the Value replacement that rewrites a FieldValue
 // naming a GROUP BY output column into an UNPINNED baked-ordinal FieldValue over
 // the aggregate's output row. This is Java's resolution of a SELECT-list /
@@ -994,7 +1084,12 @@ func stripColumnQualifier(s string) string {
 // UNIFORMLY, top-level or nested — there is no "leave a name-resolvable key lazy"
 // policy anymore (that was a runtime-accident partition, not a stable structural one);
 // the only partition is provenance (an aggregate output IS a positional row here).
-func groupByOutputBaker(keyOrds, aggOrds map[string]int) func(values.Value) values.Value {
+// groupKeys is the grouping-key Value list keyOrds was built from, in output
+// order. It is what decides WHICH key a matched reference is; keyOrds only
+// decides WHETHER the reference names a group-key output at all. Passing nil
+// leaves the name map as the sole decider (the shape a unit test that supplies
+// only maps gets).
+func groupByOutputBaker(groupKeys []values.Value, keyOrds, aggOrds map[string]int) func(values.Value) values.Value {
 	return func(node values.Value) values.Value {
 		fv, ok := node.(*values.FieldValue)
 		if !ok {
@@ -1068,6 +1163,11 @@ func groupByOutputBaker(keyOrds, aggOrds map[string]int) func(values.Value) valu
 						}
 					}
 					if !ambiguous {
+						// The STRUCTURE decides WHICH key this is; the leaf
+						// only decided that it is one (groupKeyOrdinalByStructure).
+						if s, structural := groupKeyOrdinalByStructure(fv, groupKeys); structural {
+							slot = s
+						}
 						// Display the group key's OWN OUTPUT column name (the
 						// bare leaf — AggregateKeyColumnName), so the projected
 						// slot is named identically to the group-key output it
@@ -1083,6 +1183,13 @@ func groupByOutputBaker(keyOrds, aggOrds map[string]int) func(values.Value) valu
 			}
 		}
 		if slot, hit := keyOrds[key]; hit {
+			// WHICH key, structurally. keyOrds is last-wins over the rendered
+			// output name, so on two keys sharing a leaf it hands back the
+			// SECOND key's slot for a re-read of either; the two Values do not
+			// have that ambiguity. See groupKeyOrdinalByStructure.
+			if s, structural := groupKeyOrdinalByStructure(fv, groupKeys); structural {
+				slot = s
+			}
 			// Bake the group key UNIFORMLY — never
 			// leave it lazy on the runtime-accident that its bare name HAPPENS to
 			// resolve by GetByName. The provenance gate (the aggregate output is a
@@ -1102,7 +1209,7 @@ func groupByOutputBaker(keyOrds, aggOrds map[string]int) func(values.Value) valu
 // (uniform bind, no top-level-vs-nested policy split).
 func bakeGroupByOutputRefs(vals []values.Value, gb *expressions.GroupByExpression) {
 	keyOrds, aggOrds := groupByOutputOrdinals(gb)
-	baker := groupByOutputBaker(keyOrds, aggOrds)
+	baker := groupByOutputBaker(gb.GetGroupingKeys(), keyOrds, aggOrds)
 	for i, v := range vals {
 		if v == nil {
 			continue
@@ -3830,7 +3937,7 @@ func chainedPredScanPushable(p predicates.QueryPredicate, outerLegs map[string]s
 // goes live only when that guard lifts (channel 2).
 //
 // multiAlias is the CALLER's structural fact (len(outerLegs) > 1). The flat
-// FieldIndex fallback is legitimate ONLY for a single-alias prefix (the
+// whole-row name fallback is legitimate ONLY for a single-alias prefix (the
 // pristine-prefix-at-offset-0 case, where every column belongs to the one
 // alias). A MULTI-alias prefix that arrives WITHOUT leg windows must DECLINE:
 // the flat fallback would silently first-match a dup-named column across
@@ -3883,7 +3990,7 @@ func ordinalSlotInLegWindow(rt *values.RecordType, leg values.CorrelationIdentif
 	if multiAlias {
 		return 0, false // multi-alias prefix WITHOUT windows — loud decline (never flat)
 	}
-	return rt.FieldIndex(field)
+	return rt.FieldIndexUnique(field)
 }
 
 // rebaseUnnestOuterLegPredicateOrdinal bakes outer-table-leg references in a
@@ -3947,7 +4054,8 @@ func rebaseUnnestOuterLegPredicateOrdinal(
 			// box): a qualified ref to a dup-named column must pick THAT leg's slot,
 			// not the flat first-match across the whole merged prefix (which silently
 			// reads the OTHER alias's same-named column).
-			// A single-alias outer has no rt.Legs and falls back to a flat FieldIndex.
+			// A single-alias outer has no rt.Legs and falls back to a flat whole-row
+			// name lookup.
 			// The MAP lookup above is keyed by upper text (the outerLegs set is built
 			// from the same text channel), but the WINDOW resolution below is an
 			// identity question and takes the correlation itself.
@@ -5077,7 +5185,7 @@ func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
 					// against baked projection values and an appended hidden
 					// column resolves positionally through its leg window.
 					if li < len(s.legTypes) && s.legTypes[li] != nil {
-						if idx, found := s.legTypes[li].FieldIndex(col); found {
+						if idx, found := s.legTypes[li].FieldIndexUnique(col); found {
 							return values.NewCorrelatedFieldValueWithResolvedOrdinal(qov, col, idx, values.UnknownType)
 						}
 					}
@@ -5093,7 +5201,7 @@ func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
 	// when the layout is derivable (see the join arm above).
 	bare := stripSortQualifier(field)
 	if s.singleType != nil {
-		if idx, found := s.singleType.FieldIndex(bare); found {
+		if idx, found := s.singleType.FieldIndexUnique(bare); found {
 			return values.NewFieldValueWithResolvedOrdinal(bare, idx, values.UnknownType)
 		}
 	}
@@ -6212,7 +6320,14 @@ func bakeDottedRefsToLegQOVWithRef(v values.Value, ref logical.ColumnRef, input 
 	// row, existential siblings contribute no columns) bakes FLAT: the select
 	// output IS the quantifier's row, so a bare leaf — or a dotted read
 	// qualified by the quantifier's own alias — resolves to the row's flat
-	// slot (first-match, the retired GetByName's rule). A leg-QOV bake here
+	// slot, first-match. That rule used to be justified here as "the retired
+	// GetByName's rule", which justifies nothing: GetByName no longer exists
+	// anywhere in the tree, and a retired function's behaviour is not a reason
+	// to copy it. What the first-match actually rests on is upstream refusal —
+	// a BARE column reference carried by two visible sources is rejected with
+	// SQLSTATE 42702 before it reaches here, so the first hit is the only hit.
+	// The premise covers the bare shape only; it says nothing about `lay.cols`
+	// itself declaring one name twice. A leg-QOV bake here
 	// would be WRONG: the quantifier's alias can collide with an INNER leg
 	// window of the flowed row (the gathered-unnest select is named by its
 	// rightmost source, e.g. the element X), and the runtime binder would
@@ -6469,9 +6584,31 @@ func bakeSegmentedColumnRef(fv *values.FieldValue, ref logical.ColumnRef, cols [
 }
 
 // legWindowSlot resolves a qualifier/leaf pair to a slot of the FLAT row: the
-// qualifier selects a leg window (first-match, mirroring FieldIndex's own rule)
-// and the leaf selects a column within it. The returned ordinal indexes the
-// WHOLE flat row, since a leg window is a range within it.
+// qualifier selects a leg window and the leaf selects a column within it. The
+// returned ordinal indexes the WHOLE flat row, since a leg window is a range
+// within it.
+//
+// BOTH matches are first-match, and the two rest on different footings, which is
+// worth stating because the comment here used to rest them both on
+// "RecordType.FieldIndex's own rule" — a function that has since been deleted
+// precisely because first-matching a duplicate name is a guess dressed as a
+// fact. Citing it justified nothing even while it existed.
+//
+//   - The LEAF match is safe for a BARE reference: a column reference carried by
+//     more than one visible source is refused upstream with SQLSTATE 42702
+//     (semantic.Scope.ResolveColumn treats >1 match as terminal), so the first
+//     hit is the only hit. That guarantee is about the REFERENCE, not about
+//     `cols`, which a leg-concat can legitimately fill with one name twice.
+//
+//   - The QUALIFIER match has no such backing. 42702 is ambiguous_column and
+//     says nothing about two legs sharing a name, and no rejection of a repeated
+//     FROM-clause alias was found. bakeDottedRefsToLegQOVWithRef's addKey takes
+//     the other disposition on the same channel — it poisons a duplicate
+//     qualifier and refuses to bake through it — so the two readers of this
+//     channel disagree, and this one is the permissive half.
+//
+// Reconciling them means matching the leg by IDENTITY rather than by Name, at
+// which point neither first-match exists.
 //
 // Factored out so the segment-carrying caller and the name-splitting one run
 // the identical lookup — two copies of a leg walk is two decisions with nothing
@@ -6818,11 +6955,7 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 			// pre-aggregate ordinals against the output row (a dead read of
 			// whatever occupies that slot), and the provided-ordering match
 			// (which the canonical spelling restores) can never fire.
-			whole := normalizeAggOutputName(expressions.AggregateKeyColumnName(v))
-			slot, hit := sortGBKeyOrds[whole]
-			if !hit {
-				slot, hit = sortGBAggOrds[whole]
-			}
+			slot, hit := sortKeyAggregateOutputSlot(v, sortGB.GetGroupingKeys(), sortGBKeyOrds, sortGBAggOrds)
 			if hit && slot >= 0 && slot < len(sortGBNames) {
 				v = values.NewFieldValueWithResolvedOrdinalInDomain(sortGBNames[slot], slot, values.UnknownType, sortGBDomain)
 			} else {
@@ -8103,7 +8236,7 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	// since the ordinal is aggregate-output-relative.
 	hkeys, haggs := groupByOutputOrdinals(groupBy)
 	havingPred := predicates.ReplaceValues(a.HavingPredicate,
-		groupByOutputBaker(hkeys, haggs))
+		groupByOutputBaker(groupBy.GetGroupingKeys(), hkeys, haggs))
 
 	return expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{havingPred},
@@ -9957,7 +10090,7 @@ func recursiveRemapValues(cols []string, verbatimField []bool, ordinalReads, pos
 			// and the logical-name fallback (a scan/aggregate/union top, whose
 			// physical row conforms to the logical column order). The
 			// name-keyed lazy read this replaces resolved the
-			// same slot by FieldIndex over that same order.
+			// same slot by name over that same order.
 			out[i] = values.NewFieldValueWithResolvedOrdinal(cu, i, values.UnknownType)
 		}
 	}

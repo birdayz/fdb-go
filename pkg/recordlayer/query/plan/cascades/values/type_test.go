@@ -306,15 +306,15 @@ func TestRecordType_LookupField(t *testing.T) {
 		{Name: "name", FieldType: NullableString, Ordinal: 1},
 		{Name: "", FieldType: NotNullBoolean, Ordinal: 2}, // anonymous
 	})
-	f, ok := r.LookupField("id")
+	f, ok := r.LookupFieldUnique("id")
 	if !ok || f.Ordinal != 0 || !f.FieldType.Equals(NotNullLong) {
-		t.Errorf("LookupField(id): got %v, %v", f, ok)
+		t.Errorf("LookupFieldUnique(id): got %v, %v", f, ok)
 	}
-	if _, ok := r.LookupField("missing"); ok {
-		t.Errorf("LookupField(missing): expected not found")
+	if _, ok := r.LookupFieldUnique("missing"); ok {
+		t.Errorf("LookupFieldUnique(missing): expected not found")
 	}
-	if _, ok := r.LookupField(""); ok {
-		t.Errorf("LookupField(\"\"): anonymous fields should not be name-addressable")
+	if _, ok := r.LookupFieldUnique(""); ok {
+		t.Errorf("LookupFieldUnique(\"\"): anonymous fields should not be name-addressable")
 	}
 }
 

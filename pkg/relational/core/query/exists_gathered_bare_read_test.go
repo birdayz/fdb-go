@@ -244,30 +244,32 @@ func TestRebaseLegRefsToBox_ChildlessSourceRelativeBakeDeclines(t *testing.T) {
 	}
 }
 
-// TestRebaseLegRefsToBox_DupNamedBoxWindowFirstMatches holds the shape behind
-// the wrap's one recorded FieldIndex blind-spot entry.
+// TestRebaseLegRefsToBox_DupNamedBoxWindowDeclines holds the shape that used to
+// be the wrap's one recorded name-lookup blind spot, and now pins its closure.
 //
 // The rebase resolves a column by NAME inside the window the reference's own
 // correlation selected. The identity fixes WHICH row, which is the half the two
 // deleted text arms got wrong — but it does not make the window unambiguous. A
 // CLUSTERED BOX run window concatenates every buried leaf's columns, so two
-// leaves' same-named columns share one window and FieldIndex first-matches
-// between them.
+// leaves' same-named columns share ONE window, and the first-match scan that
+// used to run here answered with a guess dressed as a fact.
 //
-// Measured: the ambiguous case is UNREACHED — a panic wired at this call on "the
-// selected window holds more than one field named fv.Field" is hit by nothing
-// over the real-FDB sqldriver corpus or ./pkg/relational/core/... . This test
-// exists because that is a negative result, and a negative result recorded only
-// in prose is one nobody re-checks. It pins the shape so the debt entry names a
-// real hazard, and it pins the CURRENT answer so a guard cannot be added
-// silently.
+// The lookup now DECLINES on that ambiguity (FieldIndexUnique), and the decline
+// is what this test asserts: an answer coming back at all means a first-match
+// scan has returned.
 //
-// The sibling reader already has the fix: left_outer_existential.go's
-// leg-relative arm carries the reference's already-BAKED ordinal precisely so an
-// opaque box leg's duplicate buried names cannot remap it. When a reference
-// arrives here carrying its leg-local ordinal too, this site stops resolving by
-// name and the blind-spot entry retires.
-func TestRebaseLegRefsToBox_DupNamedBoxWindowFirstMatches(t *testing.T) {
+// Measured before the closure: the ambiguous case was UNREACHED — a panic wired
+// at this call on "the selected window holds more than one field named fv.Field"
+// was hit by nothing over the real-FDB sqldriver corpus or ./pkg/relational/core/...
+// The shape is pinned here rather than left in prose because an unreachable
+// hazard is exactly the kind nobody re-checks.
+//
+// The sibling reader carries the same property by a different route:
+// left_outer_existential.go's leg-relative arm carries the reference's
+// already-BAKED ordinal, so an opaque box leg's duplicate buried names cannot
+// remap it. When a reference arrives here carrying its leg-local ordinal too,
+// this site stops resolving by name at all.
+func TestRebaseLegRefsToBox_DupNamedBoxWindowDeclines(t *testing.T) {
 	t.Parallel()
 
 	// A clustered BOX run window: two buried leaves, both carrying `K`, filed as
@@ -290,27 +292,23 @@ func TestRebaseLegRefsToBox_DupNamedBoxWindowFirstMatches(t *testing.T) {
 
 	ref := values.NewFieldValue(values.NewQuantifiedObjectValue(boxLeg), "K", values.UnknownType)
 	out, ok := rebaseLegRefsToBox(ref, windows, mergedType, boxQOV)
-	if !ok {
-		t.Fatal("the rebase must not decline this shape — the reference carries a " +
-			"correlation and the window exists; if a decline was ADDED for ambiguity, " +
-			"that is the fix, and the exists_gathered_cluster_wrap.go FieldIndex entry " +
-			"in fieldIndexBlindSpotDebt should be retired with it")
+	if ok {
+		fv, isFV := out.(*values.FieldValue)
+		slot := -1
+		if isFV && fv.Resolved != nil {
+			slot = fv.Resolved.Root().Ordinal
+		}
+		t.Fatalf("a dup-named box-run window resolved `K` to merged slot %d — it must "+
+			"DECLINE.\n"+
+			"  Two buried leaves both carry `K` in one window, so no answer here is "+
+			"distinguishable from a guess: slot 1 and slot 2 are both real merged "+
+			"columns of the same type, and nothing downstream can reject the wrong one.\n"+
+			"  The name lookup this site used to make was deleted outright; if it "+
+			"resolves again, a first-match scan came back.", slot)
 	}
-	fv, isFV := out.(*values.FieldValue)
-	if !isFV || fv.Resolved == nil {
-		t.Fatalf("the reference must rebase, got %v", out)
-	}
-	got := fv.Resolved.Root().Ordinal
-	if got != 1 {
-		t.Fatalf("a dup-named box-run window resolved `K` to merged slot %d, want 1 "+
-			"(the FIRST match, window offset 1 + leg-local index 0).\n"+
-			"  If this now answers 2, the resolution rule changed and the recorded\n"+
-			"  blind-spot entry is describing something else. If it DECLINES, an\n"+
-			"  ambiguity guard was added — retire the entry.", got)
-	}
-	// The domain IS fixed by the identity: the assertion above proves the
-	// resolution stayed inside the window (offset 1), never scanning the
-	// merged concat from 0. That is the half this site gets right, and the
-	// reason the entry is narrow debt rather than the class the two deleted
-	// arms were in.
+	// The bare-read blind spot is CLOSED, and this test now guards the closure
+	// rather than the hazard. What made the old answer look reasonable was that
+	// the resolution stayed inside the window (offset 1) instead of scanning the
+	// merged concat from 0 — a correct DOMAIN with an arbitrary choice inside it.
+	// A correct domain is not a correct answer.
 }

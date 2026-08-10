@@ -319,8 +319,8 @@ type Field struct {
 	// Java *ordinal* (Type.Record.computeFieldNameToOrdinal = list position),
 	// NOT the protobuf fieldIndex/tag. NewRecordType normalizes Ordinal to the
 	// slice position, so Fields[i].Ordinal == i; ordinal resolution reads the
-	// slice position directly (RecordType.FieldIndex) for soundness even on a
-	// raw RecordType. Anonymous fields share Name="" but have distinct Ordinals.
+	// slice position directly (RecordType.FieldIndexUnique) for soundness even on
+	// a raw RecordType. Anonymous fields share Name="" but have distinct Ordinals.
 	Ordinal int
 }
 
@@ -800,38 +800,81 @@ func (r *RecordType) String() string {
 	return string(b)
 }
 
-// LookupField returns the named field plus a found flag. Empty name
-// always returns (Field{}, false) — anonymous fields aren't
-// addressable by name.
-func (r *RecordType) LookupField(name string) (Field, bool) {
-	if name == "" {
-		return Field{}, false
+// DELETED: LookupField. A first-match scan by name. See FieldIndex's removal
+// note below — same defect, same reason.
+
+// FieldIndexUnique returns the SLICE POSITION of the field named `name`, and
+// only when the name matches EXACTLY ONE field. Absent and DUPLICATED both
+// report false.
+//
+// The slice position is the field's sound ordinal — mirroring Java's ordinal,
+// which Type.Record.computeFieldNameToOrdinal builds as the field's LIST
+// POSITION (IntStream.range + identity), not the protobuf fieldIndex. Unlike
+// reading a stored Field.Ordinal, position is correct even for a raw RecordType
+// that was built without NewRecordType's normalization. Empty name never
+// matches (anonymous fields aren't addressable by name).
+//
+// It replaced a first-match `FieldIndex`, which was deleted rather than kept
+// beside it. A record type may legitimately carry repeated names — a leg-concat
+// of two sources merges `A.K` and `B.K` into one row, and the raw
+// &RecordType{...} literals on the join path exist precisely because
+// NewRecordType refuses to build that shape — so a first match is
+// indistinguishable from a correct answer, and the caller has no way to tell
+// them apart afterwards. Disambiguating needs leg identity the type alone does
+// not carry. Keeping both forms would have left the first-match one as a copy
+// target for the next site; every caller that survives the removal either
+// carries an ordinal or declines.
+func (r *RecordType) FieldIndexUnique(name string) (int, bool) {
+	idx, hits := r.fieldNameScan(name)
+	if hits != 1 {
+		return 0, false
 	}
-	for _, f := range r.Fields {
-		if f.Name == name {
-			return f, true
-		}
-	}
-	return Field{}, false
+	return idx, true
 }
 
-// FieldIndex returns the SLICE POSITION of the field named `name` plus a found
-// flag. This is the field's sound ordinal — mirroring Java's ordinal, which
-// Type.Record.computeFieldNameToOrdinal builds as the field's LIST POSITION
-// (IntStream.range + identity), not the protobuf fieldIndex. Unlike reading a
-// stored Field.Ordinal, position is correct even for a raw RecordType that was
-// built without NewRecordType's normalization. Empty name
-// never matches (anonymous fields aren't addressable by name).
-func (r *RecordType) FieldIndex(name string) (int, bool) {
+// FieldNameHits reports HOW MANY fields declare `name` — 0 absent, 1
+// unambiguous, >1 duplicated. Empty name never matches, exactly as
+// FieldIndexUnique.
+//
+// It exists because FieldIndexUnique's single `found` flag folds two facts a
+// caller may have to treat DIFFERENTLY. Absent is routinely benign: a canonical
+// column missing from one layout keys as NULL, a leg column the source row does
+// not carry stays unbound. Duplicated is never benign — the value exists, twice,
+// and answering NULL for it is a silent wrong answer rather than a missing one.
+// A caller whose absent branch means "there is nothing to read" MUST NOT reach
+// that branch for a name the row declares twice, and this is how it tells.
+//
+// Callers that would do the same thing either way keep using FieldIndexUnique;
+// this is not a first-match escape hatch, and it returns no ordinal for the
+// duplicated case precisely so it cannot become one.
+func (r *RecordType) FieldNameHits(name string) int {
+	_, hits := r.fieldNameScan(name)
+	return hits
+}
+
+// fieldNameScan is the one scan both name lookups read, so the ordinal and the
+// hit count can never disagree about what matched.
+func (r *RecordType) fieldNameScan(name string) (idx, hits int) {
 	if name == "" {
-		return 0, false
+		return 0, 0
 	}
 	for i, f := range r.Fields {
 		if f.Name == name {
-			return i, true
+			hits++
+			idx = i
 		}
 	}
-	return 0, false
+	return idx, hits
+}
+
+// LookupFieldUnique is FieldIndexUnique returning the field rather than its
+// position. Same contract: exactly one match, or false.
+func (r *RecordType) LookupFieldUnique(name string) (Field, bool) {
+	idx, ok := r.FieldIndexUnique(name)
+	if !ok {
+		return Field{}, false
+	}
+	return r.Fields[idx], true
 }
 
 // GetField returns the field at the given ordinal plus a found flag.

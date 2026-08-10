@@ -364,7 +364,7 @@ func TestTranslatedTopSpans(t *testing.T) {
 	// The recovered windows resolve a dotted read the way spanAwareRow will:
 	// leg-local name against the LEAF type (the whole point of the recovery —
 	// "B.W" over the flat top row).
-	if idx, found := spans[1].LegType.FieldIndex("W"); !found || idx != 1 {
+	if idx, found := spans[1].LegType.FieldIndexUnique("W"); !found || idx != 1 {
 		t.Fatalf("leg B window must resolve W leg-locally (got %d, %v)", idx, found)
 	}
 }

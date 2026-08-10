@@ -37,7 +37,7 @@ var (
 // spelling, so a reference that cannot say which layout its ordinal indexes
 // gets no answer — pinned by TestNestedLoopJoinPlan_HintCost_LazyOperand_Unaffected.
 func fieldOfAliasIn(layout *values.RecordType, col, alias string) values.Value {
-	ord, ok := layout.FieldIndex(col)
+	ord, ok := layout.FieldIndexUnique(col)
 	if !ok {
 		panic("test layout " + layout.RecordName + " does not declare " + col)
 	}
@@ -318,7 +318,7 @@ func TestNestedLoopJoinPlan_HintCost_NestedFieldSameLeafName_Unaffected(t *testi
 		WithPrimaryKey(pkOf("ID")).
 		WithKeyComponentTypes(testPhysicalLongTypes(1))
 
-	addrOrd, _ := innerLayout.FieldIndex("ADDRESS")
+	addrOrd, _ := innerLayout.FieldIndexUnique("ADDRESS")
 	nestedInnerID := &values.FieldValue{
 		Field: "ID",
 		Typ:   values.UnknownType,
@@ -390,7 +390,7 @@ func TestNestedLoopJoinPlan_HintCost_SameLeafNameDifferentDomain_Unaffected(t *t
 	if fv.Field != "ID" {
 		t.Fatalf("test setup: the operand must share the key column's leaf name, got %q", fv.Field)
 	}
-	innerOrd, _ := innerLayout.FieldIndex("ID")
+	innerOrd, _ := innerLayout.FieldIndexUnique("ID")
 	if fv.Resolved.Root().Ordinal != innerOrd {
 		t.Fatalf("test setup: the operand must sit at the key column's ordinal (%d) so the DOMAIN is the only difference, got %d",
 			innerOrd, fv.Resolved.Root().Ordinal)

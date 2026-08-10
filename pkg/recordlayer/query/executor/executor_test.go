@@ -6289,3 +6289,75 @@ func (p *unsupportedTestPlan) EqualsWithoutChildren(other expressions.Relational
 func (p *unsupportedTestPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
 	return p
 }
+
+// TestCTEDedupKeyer_DuplicatedColumnRefuses pins the split between the two ways
+// a canonical dedup column can fail to bind, because folding them into one
+// sentinel was SILENT ROW LOSS.
+//
+// The keyer resolves each canonical column against the leg's row layout and
+// marks the ones it cannot resolve. Absent is routine and keys as NULL —
+// dimension-preserving with the seed leg. DUPLICATED resolves to nothing for a
+// different reason entirely: the value is there, at two slots. Keying it NULL
+// makes two rows that differ ONLY in that column produce the same key, and
+// UNION DISTINCT then drops one. The rows are gone with no error and no
+// diagnostic, which is strictly worse than the arbitrary-but-real column a
+// first-match lookup would have returned.
+//
+// The 42702 ambiguous-reference rejection is not a defence here and the
+// distinction matters: 42702 is about a REFERENCE that names two columns, while
+// this is about a ROW that carries a name twice. A recursive-CTE leg over a
+// join body emits exactly that row without ever writing an ambiguous reference.
+func TestCTEDedupKeyer_DuplicatedColumnRefuses(t *testing.T) {
+	t.Parallel()
+
+	// The leg layout declares K twice — one leg-concat of two sources, the shape
+	// `SELECT x.k, y.k FROM t x, t y` produces.
+	dupType := &values.RecordType{Fields: []values.Field{
+		{Name: "K", Ordinal: 0},
+		{Name: "K", Ordinal: 1},
+	}}
+	// Fixture guard: this is only a duplicate-name test while the name really is
+	// declared twice.
+	if hits := dupType.FieldNameHits("K"); hits != 2 {
+		t.Fatalf("fixture: the layout must declare K twice, it declares it %d time(s)", hits)
+	}
+
+	k := newCTEDedupKeyer([]string{"K"})
+	rowA := NewPositionalRow(dupType)
+	rowA.Slots = []any{int64(1), int64(7)}
+	rowB := NewPositionalRow(dupType)
+	rowB.Slots = []any{int64(1), int64(8)}
+
+	keyA, errA := k.key(QueryResult{Positional: rowA})
+	if errA == nil {
+		keyB, _ := k.key(QueryResult{Positional: rowB})
+		if keyA == keyB {
+			t.Fatalf("two rows differing in the duplicated dedup column keyed IDENTICALLY (%q) — "+
+				"UNION DISTINCT drops one of them and the query silently loses a row", keyA)
+		}
+		t.Fatalf("the keyer answered %q for a dedup column the layout declares twice. Any "+
+			"answer here is a guess: it either keys NULL (collapsing rows that differ in "+
+			"this column) or picks one of the duplicates (deduping on an arbitrary "+
+			"column). It must refuse", keyA)
+	}
+	if !strings.Contains(errA.Error(), "declared 2 times") {
+		t.Fatalf("the keyer refused, but the message does not name the duplicated column "+
+			"or its count, so nothing points at the leg layout that has to be fixed: %v", errA)
+	}
+
+	// THE OTHER DIRECTION, and the reason this needs its own assertion: making
+	// the ambiguous case loud must NOT make the ABSENT case loud. A canonical
+	// column missing from one leg's layout is the ordinary dimension-preserving
+	// shape (the seed leg names a column the recursive leg does not), and it
+	// keys as NULL.
+	absent := newCTEDedupKeyer([]string{"MISSING"})
+	present := &values.RecordType{Fields: []values.Field{{Name: "K", Ordinal: 0}}}
+	rowC := NewPositionalRow(present)
+	rowC.Slots = []any{int64(1)}
+	if _, err := absent.key(QueryResult{Positional: rowC}); err != nil {
+		t.Fatalf("a canonical column ABSENT from the layout was refused: %v.\n"+
+			"  Absent and duplicated are different facts. Absent keys as NULL and always "+
+			"has; refusing it would fail every recursive CTE whose legs do not declare "+
+			"identical column sets.", err)
+	}
+}

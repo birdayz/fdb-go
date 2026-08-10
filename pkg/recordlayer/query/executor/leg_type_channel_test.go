@@ -160,7 +160,7 @@ func TestSpanLegType_ALabelInTheQUANTIFIERTypeDoesReachTheReader(t *testing.T) {
 		},
 	}
 	slot, resolved := rowSlotForLegColumn(merged, "I.QTY", values.CorrelationIdentifier{})
-	if !resolved || slot != 4 {
+	if resolved != legColumnBound || slot != 4 {
 		t.Fatalf("the OUTPUT LABEL %q resolved to (%d,%v), want (4,true) — this is not a "+
 			"claim that resolving it is correct, it is the pin that it HAPPENS, so the "+
 			"day a conversion changes it the change is visible", "I.QTY", slot, resolved)

@@ -517,7 +517,10 @@ func buildDerivedTableSourceFromTerm(
 			CorrelationName: aliasID.Name(),
 		}, true
 	}
-	if len(innerSQ.joins) > 0 || innerSQ.tableName == "" {
+	if len(innerSQ.joins) > 0 {
+		return buildDerivedTableSourceFromJoinBody(md, alias, innerSQ)
+	}
+	if innerSQ.tableName == "" {
 		return semantic.ScopeSource{}, false
 	}
 	for _, e := range innerSQ.projExprs {
@@ -607,6 +610,225 @@ func buildDerivedTableSourceFromTerm(
 		Alias:           aliasID,
 		CorrelationName: aliasID.Name(),
 	}, true
+}
+
+// buildDerivedTableSourceFromJoinBody types `FROM (SELECT … FROM a, b …) AS d`
+// — a derived table whose BODY is a join. Its output row is the body's select
+// list read against the body's own legs, so the alias `d` exposes exactly the
+// columns the body emits, in body order.
+//
+// Declining this shape was not a neutral gap. The caller drops the WHOLE
+// resolver when a FROM source cannot be typed (buildSelectScope), so an outer
+// query over a join-bodied derived table was never adjudicated at all — and a
+// join body is precisely the shape that can emit ONE NAME TWICE
+// (`SELECT x.k, y.k FROM zn AS x, zn AS y` outputs K, K). With no schema, the
+// duplicate existed only in a row nothing described: `d.k` reached the executor
+// and died as a malformed plan, and a bare `k` over `SELECT *` answered off the
+// first match. Java never has that hole — the derived quantifier's output is a
+// real attribute LIST, and SemanticAnalyzer.lookup counts every attribute whose
+// name equals the reference (SemanticAnalyzer.java:441-466), raising
+// AMBIGUOUS_COLUMN "Ambiguous reference D.K" on the second
+// (SemanticAnalyzer.java:417/422). Building the list here — duplicates
+// INCLUDED, because the duplicate is the fact being reported — routes these
+// references into the same per-attribute check every other 42702 comes from.
+//
+// A duplicated output name is only an error to REFERENCE, never to declare:
+// `(SELECT x.k, y.k …) AS d` is a legal derived table whose unreferenced
+// columns are nobody's problem, so this returns the source rather than
+// rejecting the construction.
+//
+// The legs must be plain catalog tables: a lateral array unnest, a nested
+// derived leg, a correlated array source and a USING join's hidden right copy
+// each derive their output by a rule this does not implement, and typing them
+// wrong is worse than declining — the outer references would be adjudicated
+// against a row the body does not emit.
+func buildDerivedTableSourceFromJoinBody(
+	md *recordlayer.RecordMetaData,
+	alias string,
+	innerSQ *selectQuery,
+) (semantic.ScopeSource, bool) {
+	if innerSQ.tableName == "" {
+		return semantic.ScopeSource{}, false
+	}
+	for _, e := range innerSQ.projExprs {
+		if e != nil {
+			// Computed expression — same decline as the single-table path.
+			return semantic.ScopeSource{}, false
+		}
+	}
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+
+	// One entry per body leg, in FROM order: the name it answers to and the
+	// columns it contributes to a star expansion.
+	type bodyLeg struct {
+		alias string
+		cols  []semantic.Column
+		// nullSupplying: an OUTER join pads this leg with NULLs for unmatched
+		// rows, so every column it contributes is nullable in the body's output
+		// REGARDLESS of what the catalog declares. Derived algebraically from
+		// the join flavours, never read off the base table — see the wrap below.
+		nullSupplying bool
+	}
+	resolveLeg := func(tableName, legAlias string, segments []string) (bodyLeg, bool) {
+		if len(segments) > 1 {
+			// A dotted source is a correlated array unnest, not a table.
+			return bodyLeg{}, false
+		}
+		tbl, terr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
+		if terr != nil {
+			return bodyLeg{}, false
+		}
+		name := legAlias
+		if name == "" {
+			segs := strings.Split(tableName, ".")
+			name = segs[len(segs)-1]
+		}
+		return bodyLeg{alias: strings.ToUpper(name), cols: semantic.NonEphemeral(tbl.Columns())}, true
+	}
+	primary, ok := resolveLeg(innerSQ.tableName, innerSQ.tableAlias, innerSQ.sourceSegments)
+	if !ok {
+		return semantic.ScopeSource{}, false
+	}
+	legs := []bodyLeg{primary}
+	for _, j := range innerSQ.joins {
+		if j.derivedQuery != nil || j.atAlias != "" || len(j.usingHiddenCols) > 0 || j.usingUids != nil {
+			return semantic.ScopeSource{}, false
+		}
+		leg, legOK := resolveLeg(j.tableName, j.alias, j.segments)
+		if !legOK {
+			return semantic.ScopeSource{}, false
+		}
+		legs = append(legs, leg)
+		// NULLABILITY IS DERIVED FROM THE JOIN ALGEBRA, not copied from the
+		// catalog. An outer join pads its null-supplying side, so that side's
+		// columns are nullable in the body's output whatever the base table
+		// declares — `FROM (SELECT a.x, b.y FROM a LEFT JOIN b ON …) d` serves
+		// NULL for `d.y` on every unmatched `a` row.
+		//
+		// This mirrors the physical side's own rule: ordinal_seed.go wraps a
+		// null-supplying leg's column types with WithNullability(true), citing
+		// Java's pullUpResultColumnsWithNullability. The two must agree, because
+		// this derivation is what adjudicates the outer references against the
+		// row that side produces.
+		//
+		// LEFT pads the RIGHT leg. RIGHT pads everything to its LEFT — a later
+		// RIGHT JOIN makes the whole accumulated left side null-supplying, which
+		// is why the wrap is applied to the finished list rather than to each
+		// leg as it is built. FULL pads both.
+		switch j.joinType {
+		case joinTypeLeft:
+			legs[len(legs)-1].nullSupplying = true
+		case joinTypeRight:
+			for i := range legs[:len(legs)-1] {
+				legs[i].nullSupplying = true
+			}
+		case joinTypeFull:
+			for i := range legs {
+				legs[i].nullSupplying = true
+			}
+		case joinTypeInner:
+			// A comma join or an explicit INNER JOIN pads nothing.
+		}
+	}
+	// Applied once the whole FROM list is known: a RIGHT JOIN in position 3
+	// changes legs 0..2, so no leg's nullability is final until the last join
+	// clause has been read. Copy-on-wrap — the Column values must not be shared
+	// back to the catalog.
+	for li := range legs {
+		if !legs[li].nullSupplying {
+			continue
+		}
+		wrapped := make([]semantic.Column, len(legs[li].cols))
+		for ci, c := range legs[li].cols {
+			c.Nullable = true
+			wrapped[ci] = c
+		}
+		legs[li].cols = wrapped
+	}
+
+	// SELECT * over the body: every leg's columns, concatenated in FROM order.
+	// This is the row the body emits, duplicate names and all.
+	if innerSQ.projCols == nil {
+		if innerSQ.projQualifier != "" {
+			// `SELECT x.*` — one named leg's columns.
+			for _, leg := range legs {
+				if leg.alias == strings.ToUpper(innerSQ.projQualifier) {
+					return derivedJoinBodySource(alias, append([]semantic.Column(nil), leg.cols...)), true
+				}
+			}
+			return semantic.ScopeSource{}, false
+		}
+		var columns []semantic.Column
+		for _, leg := range legs {
+			columns = append(columns, leg.cols...)
+		}
+		return derivedJoinBodySource(alias, columns), true
+	}
+
+	var columns []semantic.Column
+	for i, col := range innerSQ.projCols {
+		if i < len(innerSQ.projStarQualifiers) && innerSQ.projStarQualifiers[i] != "" {
+			found := false
+			for _, leg := range legs {
+				if leg.alias == strings.ToUpper(innerSQ.projStarQualifiers[i]) {
+					columns = append(columns, leg.cols...)
+					found = true
+					break
+				}
+			}
+			if !found {
+				return semantic.ScopeSource{}, false
+			}
+			continue
+		}
+		bareName := col.bare
+		if bareName == "" {
+			bareName = col.name
+		}
+		id := semantic.FromNormalized(bareName)
+		var (
+			resolved semantic.Column
+			hits     int
+		)
+		for _, leg := range legs {
+			if col.qualified && leg.alias != strings.ToUpper(col.qualifier) {
+				continue
+			}
+			for _, c := range leg.cols {
+				if c.Id.Name() == id.Name() {
+					resolved = c
+					hits++
+				}
+			}
+		}
+		// hits != 1 is an ambiguity or a miss INSIDE the body, which belongs to
+		// the body's own resolution, not to this schema derivation. Decline
+		// rather than guess a row the body may never produce.
+		if hits != 1 {
+			return semantic.ScopeSource{}, false
+		}
+		outName := bareName
+		if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
+			outName = innerSQ.projAliases[i]
+		}
+		columns = append(columns, renameCarriedColumn(resolved, outName))
+	}
+	return derivedJoinBodySource(alias, columns), true
+}
+
+// derivedJoinBodySource wraps a join body's derived output columns as the
+// virtual scope source the outer FROM alias exposes.
+func derivedJoinBodySource(alias string, columns []semantic.Column) semantic.ScopeSource {
+	aliasID := semantic.FromNormalized(alias)
+	return semantic.ScopeSource{
+		Table: &semantic.StaticTable{
+			TableName:    semantic.FromSegments([]string{alias}, false),
+			TableColumns: columns,
+		},
+		Alias:           aliasID,
+		CorrelationName: aliasID.Name(),
+	}
 }
 
 // aggOutputCol is one VISIBLE output column of an aggregate SELECT body.
@@ -6509,10 +6731,18 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	// column names first, then table columns. Aliases take precedence.
 	proj := findProjection(op)
 	agg := findAggregate(op)
-	var groupKeyExplainMap map[string]string
+	// groupKeyOrdinalByDisplay carries the group key's OUTPUT ORDINAL — its index
+	// in agg.GroupKeys, which IS its slot in the aggregate's [keys..., calls...]
+	// output row. It used to carry the rendered output NAME, which is what the
+	// consumer needs to spell the key, but the name is not what identifies the
+	// key: aggregateGroupKeyOutputName renders a FieldValue as its bare leaf, so
+	// two keys of `GROUP BY o.k, i.k` both render "K" and a map holding that name
+	// cannot say which key it came from. The ordinal can, and the name is derived
+	// back from it at the one place that needs to spell it.
+	var groupKeyOrdinalByDisplay map[string]int
 	if agg != nil && len(agg.GroupKeys) > 0 {
-		groupKeyExplainMap = make(map[string]string)
-		for _, gk := range agg.GroupKeys {
+		groupKeyOrdinalByDisplay = make(map[string]int)
+		for gkOrdinal, gk := range agg.GroupKeys {
 			gkv := gk.Value
 			if gkv == nil {
 				continue
@@ -6527,8 +6757,10 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 			// the sort by a column the aggregate output does not carry → a no-op sort
 			// (ORDER BY DESC silently ignored, P2b). Mirror aggKeyName:
 			// the field name for a FieldValue, the explain for a computed key (whose
-			// output column IS its explain). RFC-142.
-			groupKeyExplainMap[strings.ToUpper(gk.Display)] = aggregateGroupKeyOutputName(gkv)
+			// output column IS its explain). RFC-142. That naming rule still
+			// applies; it is applied at the READ below, to the key this
+			// ordinal names.
+			groupKeyOrdinalByDisplay[strings.ToUpper(gk.Display)] = gkOrdinal
 		}
 	}
 	// colToIdx maps a NON-aliased select item's canonical text to its select-list
@@ -6637,8 +6869,13 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 				}
 			}
 		}
-		if groupKeyExplainMap != nil && !sort.Keys[i].AggregateOutputValueExact {
-			if explain, ok := groupKeyExplainMap[strings.ToUpper(sort.Keys[i].Expr)]; ok {
+		if groupKeyOrdinalByDisplay != nil && !sort.Keys[i].AggregateOutputValueExact {
+			if gkOrdinal, ok := groupKeyOrdinalByDisplay[strings.ToUpper(sort.Keys[i].Expr)]; ok {
+				// The name is spelled FROM the ordinal — the same authority
+				// (aggregateGroupKeyOutputName over that slot's own key Value)
+				// the map used to transport, now read off the key the ordinal
+				// names instead of off whichever key wrote the map entry last.
+				explain := aggregateNativeOutputName(agg, gkOrdinal)
 				// The sort reads the row ABOVE the outermost operator. Directly
 				// over the aggregate that is the AGGREGATE output name; with a
 				// visible PROJECTION in between (mixed aliased/uneliased select

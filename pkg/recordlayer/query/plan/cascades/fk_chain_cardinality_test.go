@@ -88,7 +88,7 @@ func fkChainCorrelatedRef(t *testing.T, outerRT string, outerAlias values.Correl
 	if !known {
 		return &values.FieldValue{Field: field, Typ: values.UnknownType, Child: values.NewQuantifiedObjectValue(outerAlias)}
 	}
-	ord, found := layout.FieldIndex(field)
+	ord, found := layout.FieldIndexUnique(field)
 	if !found {
 		return &values.FieldValue{Field: field, Typ: values.UnknownType, Child: values.NewQuantifiedObjectValue(outerAlias)}
 	}
@@ -1064,7 +1064,7 @@ func fkTypedEquality(
 	field string,
 ) *predicates.ComparisonRange {
 	t.Helper()
-	ordinal, ok := layout.FieldIndex(field)
+	ordinal, ok := layout.FieldIndexUnique(field)
 	if !ok {
 		t.Fatalf("layout %s has no field %s", layout.RecordName, field)
 	}

@@ -50,7 +50,7 @@ const (
 //     the box legs ∪ the unnest's own AS/AT aliases (a scalar-subquery alias is
 //     a foreign correlation — its conjunct stays on the name-model path
 //     without a new loud error);
-//   - every box-leg reference (legRef shape) must FieldIndex-resolve in its
+//   - every box-leg reference (legRef shape) must resolve UNIQUELY by name in its
 //     buried window's leafTyp — an unresolvable ref would strand as a lazy name
 //     read over the positional row (the wrong-slot class).
 //
@@ -135,7 +135,7 @@ func (t *cascadesTranslator) classifyLegConjunct(legs []clusterLeg, gateJoin *lo
 					if w, isLeg := legTypes[key]; isLeg {
 						if w.leafTyp == nil {
 							verdict = boxConjUnbakeable
-						} else if _, found := w.leafTyp.FieldIndex(nv.Field); !found {
+						} else if _, found := w.leafTyp.FieldIndexUnique(nv.Field); !found {
 							verdict = boxConjUnbakeable
 						}
 					} else if _, isBoxLeg := boxLegs[key]; isBoxLeg {

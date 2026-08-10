@@ -305,8 +305,11 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			//     the pulled-up leg quantifier (the box is NAMED by its
 			//     rightmost leaf, so the name stays bound). A blanket
 			//     TranslationMap substitution would put the dup-bare-named
-			//     concat under a lazy read — FieldIndex first-match,
-			//     silently the wrong column.
+			//     concat under a lazy read, where the bare name matches
+			//     TWO of the concat's columns: every by-name lookup on
+			//     the bake path declines on that ambiguity, so the
+			//     reference never re-binds and the plan dies loud at
+			//     evaluation instead of staying bound to its leg column.
 			//   - NON-SEED child: the TranslationMap
 			//     substitution — the child alias disappears with the RV
 			//     substituted in place.
@@ -367,9 +370,11 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 	// legs by their own aliases (Go's box quantifier is NAMED by its
 	// rightmost leaf), so after the merge pulls the legs up a lazy
 	// read re-binds to the correct leg quantifier by construction —
-	// substituting the RC under a lazy read would instead first-match a
-	// duplicate bare name across the whole concat (silently the wrong
-	// column). A subtree the helper cannot rebuild keeps its original
+	// substituting the RC under a lazy read would instead put a duplicate
+	// bare name in front of the whole concat, which no by-name lookup will
+	// resolve — they decline on the ambiguity, so the reference is stranded
+	// lazy and fails loud at evaluation rather than reaching its leg
+	// column. A subtree the helper cannot rebuild keeps its original
 	// reference (dangling stays LOUD, never silently rebound).
 	if len(rcByAlias) > 0 {
 		mergedAliases := make(map[values.CorrelationIdentifier]struct{}, len(targets))

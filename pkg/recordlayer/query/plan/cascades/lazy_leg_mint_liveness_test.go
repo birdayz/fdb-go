@@ -264,7 +264,7 @@ func TestRebaseOuterLegValue_DerivableLegKeepsTheLegLocalRead(t *testing.T) {
 				"simplest possible leg. layouts = %v", leg.Name(), layouts)
 		}
 	}
-	if _, found := layouts[legL].FieldIndex("ID"); !found {
+	if _, found := layouts[legL].FieldIndexUnique("ID"); !found {
 		t.Fatalf("leg L's layout does not declare ID (%v). The correlation predicate "+
 			"reads L.ID, so a layout that cannot place it makes the precondition "+
 			"vacuous.", layouts[legL].Fields)

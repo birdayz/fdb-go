@@ -215,9 +215,12 @@ func rebaseOuterLegValueOrdinal(
 			legOrdinal = acc.Ordinal
 		case !strings.Contains(fv.Field, "."):
 			// A leg-relative NAME ref (non-baked): NewFieldValueOfOrdinal is not its
-			// source, so resolve the slot by column name. A single source leg has no
-			// duplicate column names, so FieldIndex(Field) is the leg-local ordinal.
-			idx, found := w.Typ.FieldIndex(strings.ToUpper(fv.Field))
+			// source, so the slot is resolved by column name. The lookup DECLINES on a
+			// duplicate rather than first-matching: an OPAQUE box leg can expose two
+			// buried columns of one name, where a first match is indistinguishable from
+			// a correct answer and disambiguating needs the leg identity this site does
+			// not carry — exactly what the two arms above decline for.
+			idx, found := w.Typ.FieldIndexUnique(strings.ToUpper(fv.Field))
 			if !found {
 				failed = true
 				return node
@@ -228,7 +231,7 @@ func rebaseOuterLegValueOrdinal(
 			return node
 		}
 		// Bound the ordinal to THIS leg's window before adding w.Offset. The name arm
-		// (FieldIndex) is in-range by construction, but a baked acc.Ordinal is relative
+		// (FieldIndexUnique) is in-range by construction, but a baked acc.Ordinal is relative
 		// to its child QOV's FULL type — if `windows[alias]` was narrowed to a
 		// buried-leg SUBwindow, a full-concat ordinal could spill past w.Typ into the
 		// NEXT leg's slots (w.Offset+legOrdinal is still a valid MERGED ordinal, so

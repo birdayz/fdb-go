@@ -107,8 +107,8 @@ func (f *FieldValue) CorrelatedIdentityIn(frontier OrdinalDomain) (ColumnIdentit
 //
 // Matching is case-insensitive FIRST-MATCH against the layout's declared column
 // order — the resolver's own sourceColumnOrdinal rule, and the same fold
-// OrdinalDomain's signature applies. RecordType.FieldIndex is deliberately NOT
-// used: it matches EXACTLY, and the metadata lists this function resolves
+// OrdinalDomain's signature applies. RecordType.FieldIndexUnique is deliberately
+// NOT used: it matches EXACTLY, and the metadata lists this function resolves
 // (index definitions, primary keys, proto descriptors) do not agree with a
 // record type's field spelling on case, so an exact match would silently
 // decline a column that is plainly there.

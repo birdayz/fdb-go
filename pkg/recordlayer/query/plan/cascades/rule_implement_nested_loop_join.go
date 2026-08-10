@@ -3090,7 +3090,7 @@ func rebaseOuterLegValue(
 					// NO LEG-LOCAL BAKE HERE, in the sense the deleted one meant.
 					// There was one, and it minted the leg-local ordinal by
 					// resolving the reference's DISPLAY NAME against the leg's row
-					// type (`legType.FieldIndex(ToUpper(fv.Field))`). That is
+					// type (`legType.FieldIndexUnique(ToUpper(fv.Field))`). That is
 					// RFC-197's forbidden move verbatim — a name deciding a column's
 					// identity — and it was invisible to the `.Field` decision gate
 					// because a type lookup by name is neither a comparison nor a map

@@ -21,7 +21,7 @@ func TestGroupByOutputBaker_RebindsInputBoundRef(t *testing.T) {
 
 	keyOrds := map[string]int{"COL1": 0}
 	aggOrds := map[string]int{"SUM(V)": 1}
-	baker := groupByOutputBaker(keyOrds, aggOrds)
+	baker := groupByOutputBaker(nil, keyOrds, aggOrds)
 
 	// Input-bound ref (COL1 at scan ordinal 1) must rebind to output slot 0.
 	inputBound := values.NewFieldValueWithResolvedOrdinal("COL1", 1, values.UnknownType)

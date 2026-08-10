@@ -35,55 +35,78 @@ func TestLegColumnProvenanceClassification(t *testing.T) {
 		rt       *values.RecordType
 		column   string
 		flatHit  bool
+		flatAmbi bool
 		matched  *values.RecordTypeLeg
 		qual     string
 		want     legColumnProvenanceClass
 		wantWhen string
 	}{
 		{
-			"flat hit dominates", legged(stated), "C.CV", true, &stated, "C",
+			"flat hit dominates", legged(stated), "C.CV", true, false, &stated, "C",
 			legColumnProvenanceFlatHit,
 			"the row's own type declared the name, so the dotted arm was never reached — " +
 				"nothing about the leg table may be held against a call that did not consult it",
 		},
 		{
-			"undotted miss", legged(stated), "CV", false, nil, "",
+			"undotted miss", legged(stated), "CV", false, false, nil, "",
 			legColumnProvenanceNotDotted,
 			"a miss on an unqualified name is not a name DECISION; folding it in would " +
 				"inflate the population the re-keying claim is a share of",
 		},
 		{
-			"dotted over a legless row", &values.RecordType{}, "C.CV", false, nil, "C",
+			"dotted over a legless row", &values.RecordType{}, "C.CV", false, false, nil, "C",
 			legColumnProvenanceNoLegs,
 			"there was no leg table to consult",
 		},
 		{
-			"dotted miss", legged(stated), "Z.CV", false, nil, "Z",
+			"dotted miss", legged(stated), "Z.CV", false, false, nil, "Z",
 			legColumnProvenanceMiss,
 			"legs were present and none declared the column",
 		},
 		{
-			"identity available", legged(stated), "C.CV", false, &stated, "C",
+			"identity available", legged(stated), "C.CV", false, false, &stated, "C",
 			legColumnProvenanceIdentityAvailable,
 			"the matched leg states an alias naming the same thing, so an identity-keyed " +
 				"reader would answer identically",
 		},
 		{
-			"identity unstated", legged(unstated), "C.CV", false, &unstated, "C",
+			"identity unstated", legged(unstated), "C.CV", false, false, &unstated, "C",
 			legColumnProvenanceIdentityUnstated,
 			"the matched leg states NO alias, so an identity-keyed reader would MISS here " +
 				"— this is the population that blocks re-keying, and it closes at the producer",
 		},
 		{
-			"identity diverged", legged(diverged), "C.CV", false, &diverged, "C",
+			"identity diverged", legged(diverged), "C.CV", false, false, &diverged, "C",
 			legColumnProvenanceIdentityDiverged,
 			"the leg's text and its stated alias name DIFFERENT things and the lookup " +
 				"resolved on the text — two keys for one leg, disagreeing",
 		},
+		{
+			"bare ambiguous name", legged(stated), "ID", false, true, nil, "",
+			legColumnProvenanceFlatAmbiguous,
+			"the row declares the name twice and it carries no qualifier, so nothing can " +
+				"choose. This used to classify as NotDotted — indistinguishable from an " +
+				"ordinary miss — which is exactly why the reader could start declining rows " +
+				"it used to bind with the census reporting no change at all",
+		},
+		{
+			"dotted, flat-ambiguous, no leg window answered", legged(stated), "Z.CV", false, true, nil, "Z",
+			legColumnProvenanceFlatAmbiguous,
+			"the qualifier resolved no window, so the flat ambiguity is what stands — " +
+				"reporting this as a plain DottedMiss would hide that the name was present " +
+				"twice rather than absent",
+		},
+		{
+			"dotted, flat-ambiguous, but a leg window ANSWERED", legged(stated), "C.CV", false, true, &stated, "C",
+			legColumnProvenanceIdentityAvailable,
+			"a qualifier that names a leg window is strictly more information than the flat " +
+				"namespace carries, so the answer is not a guess and the flat ambiguity is " +
+				"resolved rather than merely outvoted",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := classifyLegColumnProvenance(tc.rt, tc.column, tc.flatHit, tc.matched, tc.qual)
+			got := classifyLegColumnProvenance(tc.rt, tc.column, tc.flatHit, tc.flatAmbi, tc.matched, tc.qual)
 			if got != tc.want {
 				t.Fatalf("classified as %d, want %d — %s", got, tc.want, tc.wantWhen)
 			}
@@ -171,6 +194,32 @@ func TestLegColumnProvenanceGate(t *testing.T) {
 	}
 	if !strings.Contains(b.String(), "DottedHitIdentityDiverged") {
 		t.Fatalf("the divergence failure does not name the counter that fired:\n%s", b.String())
+	}
+
+	// And the OTHER zero, whose alarm direction is also GROWTH: a leg-type column
+	// name the source row declares twice. adaptLegPositional now FAILS the query
+	// on this rather than binding an arbitrary duplicate or leaving the slot nil,
+	// so a non-zero here is a real user-visible error and the gate must say so
+	// rather than let it pass as ordinary traffic.
+	b.Reset()
+	ambi := ok
+	ambi.NotDotted = 7
+	ambi.FlatAmbiguous = 1
+	if !assertLegColumnProvenanceCounters(&b, ambi, floors) {
+		t.Fatal("the gate accepted a FLAT-AMBIGUOUS bind. The reader was handed a leg " +
+			"column name its source row declares at two slots: binding either is a " +
+			"wrong-leg read, and skipping it answers NULL for a column that has a value. " +
+			"Zero is the measured steady state and GROWTH is the alarm — a non-zero means " +
+			"a producer started emitting a leg type whose column names are ambiguous " +
+			"against the merged row they are adapted against.")
+	}
+	if !strings.Contains(b.String(), "FlatAmbiguous = 1, want 0") {
+		t.Fatalf("the flat-ambiguity failure does not name the counter that fired:\n%s", b.String())
+	}
+	if !strings.Contains(b.String(), "GROWTH") {
+		t.Fatalf("the flat-ambiguity failure does not state which DIRECTION is the alarm. "+
+			"A guard whose expected value is zero is read as dead-instrument news unless "+
+			"it says growth is the danger:\n%s", b.String())
 	}
 }
 

@@ -15,7 +15,7 @@ import (
 // (LogicalOperator.generateCorrelatedFieldAccess + generateSimpleSelect): ONE
 // flat select over {QOV(A), QOV(B), ForEach(Explode)} where the Explode's
 // collection is a BAKED reference to the OWNING source's own quantifier —
-// `ofOrdinal(QOV(A, typA), FieldIndex(ARR))` — a genuine per-source
+// `ofOrdinal(QOV(A, typA), FieldIndexUnique(ARR))` — a genuine per-source
 // correlation every Cascades rule can see. This replaces the name-model
 // binary FlatMap-over-merged-outer whose buried dotted read
 // (`FieldValue(QOV(rightmost), "A.ARR")`) required the dotted-prefix
@@ -164,7 +164,7 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	if len(u.Segments) > 2 {
 		rootField = strings.ToUpper(u.Segments[1])
 	}
-	arrIdx, found := ownerWindow.leafTyp.FieldIndex(rootField)
+	arrIdx, found := ownerWindow.leafTyp.FieldIndexUnique(rootField)
 	if !found {
 		return nil
 	}
@@ -456,7 +456,7 @@ func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalS
 		// without a stated kind is a producer bug, and the group-by key it would
 		// have resolved is better unresolved than resolved to a guess.
 		if isLeg && w.Kind == values.LegKindFlatRun {
-			if idx, found := w.Typ.FieldIndex(col); found {
+			if idx, found := w.Typ.FieldIndexUnique(col); found {
 				return w.Offset + idx, true
 			}
 		}
@@ -490,7 +490,7 @@ func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalS
 			if w.Kind != values.LegKindFlatRun {
 				continue
 			}
-			if idx, found := w.Typ.FieldIndex(col); found {
+			if idx, found := w.Typ.FieldIndexUnique(col); found {
 				slot, hits = w.Offset+idx, hits+1
 			}
 		}

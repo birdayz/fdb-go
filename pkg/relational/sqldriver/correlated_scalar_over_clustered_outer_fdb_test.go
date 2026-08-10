@@ -3,7 +3,6 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
-	"strings"
 	"testing"
 )
 
@@ -95,18 +94,22 @@ func TestFDB_CorrelatedScalarOverClusteredOuter(t *testing.T) {
 		t.Errorf("gated-LEFT non-rightmost correlation = (%q, %d valid=%v), want (bob, 50)", name.String, amt.Int64, amt.Valid)
 	}
 
-	// (d') The STILL-UNGATED shape (joined-preserved: a clustered preserved
-	// leg keeps the LEFT box on the name-model path until per-reference
-	// join-leg binding lands — see TODO.md) + NON-rightmost correlation still
-	// hits the CORRECT-or-LOUD decline.
+	// (d') The same shape with the LEFT-join outer's preserved side fed by a
+	// JOIN-BODIED DERIVED TABLE. It used to decline 0AF00 for a reason that had
+	// nothing to do with the correlation: the derived body is a join, its output
+	// row could not be enumerated, and buildSelectScope drops the resolver
+	// entirely when a FROM source cannot be typed. With the body's row derived
+	// from its own legs the query ANSWERS, so the VALUE is the pin — a
+	// mis-bound non-rightmost correlation would read e/e2 instead of d.cid and
+	// come back NULL or with the other customer's order.
 	const qLeftClustered = "SELECT (SELECT o.amount FROM orders o WHERE o.id = d.cid) " +
 		"FROM (SELECT c.id AS cid, e2.tag AS t2 FROM customers c, extras e2 WHERE e2.id = 10) AS d LEFT JOIN extras e ON e.ref = d.cid WHERE d.cid = 2"
 	var amtDecl sql.NullInt64
-	if err := db.QueryRowContext(ctx, qLeftClustered).Scan(&amtDecl); err == nil {
-		t.Errorf("clustered-LEFT outer with non-rightmost correlation must still DECLINE (0AF00), got rows (%d valid=%v)\n  sql: %s",
-			amtDecl.Int64, amtDecl.Valid, qLeftClustered)
-	} else if !strings.Contains(err.Error(), "0AF00") {
-		t.Errorf("clustered-LEFT non-rightmost decline error = %v, want the clean plan error (0AF00), not a runtime failure", err)
+	if err := db.QueryRowContext(ctx, qLeftClustered).Scan(&amtDecl); err != nil {
+		t.Errorf("clustered-LEFT outer with non-rightmost correlation: %v\n  sql: %s", err, qLeftClustered)
+	} else if !amtDecl.Valid || amtDecl.Int64 != 50 {
+		t.Errorf("clustered-LEFT non-rightmost correlation = %d (valid=%v), want 50 (d.cid=2 -> orders[2])",
+			amtDecl.Int64, amtDecl.Valid)
 	}
 
 	// (e) UNGATED outer, correlation to the RIGHTMOST leg (the outer

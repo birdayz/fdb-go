@@ -1451,7 +1451,7 @@ func coveringLogicalOrdinals(posNames []string, logicalType *values.RecordType) 
 	}
 	ords := make([]int, len(posNames))
 	for i, name := range posNames {
-		ord, ok := logicalType.FieldIndex(name)
+		ord, ok := logicalType.FieldIndexUnique(name)
 		if !ok {
 			return nil
 		}
@@ -5215,7 +5215,7 @@ func recursiveUnionOutputColumns(p plans.RecordQueryPlan) []string {
 				} else {
 					// Upper-case symmetrically with the aliased branch: the dedup
 					// keyer binds these names against the UPPER-cased row layouts
-					// (exact FieldIndex match), so a mixed-case name here would miss
+					// (an exact FieldIndexUnique match), so a mixed-case name here would miss
 					// every layout and collapse distinct rows / break cycle detection.
 					// projectionColumnName already uppers the non-field
 					// path; this makes the field path explicit too.
@@ -5256,20 +5256,46 @@ func newCTEDedupKeyer(cols []string) *cteDedupKeyer {
 	return &cteDedupKeyer{cols: upper, ords: make(map[*values.RecordType][]int)}
 }
 
-// layoutOrdinals binds the canonical columns to rt's slot ordinals (-1 =
-// absent), memoized per layout. The bind rule is RecordType.FieldIndex —
-// first-match on the exact (already upper-cased) name, the same plan-time
-// rule every construction-time bake uses.
+// dedupOrdAbsent and dedupOrdAmbiguous are the two NON-ordinal outcomes of
+// binding a canonical column to a layout, and they are separate sentinels
+// because the key builder must treat them differently.
+//
+// One sentinel for both was a silent row-loss bug. The bind declines on a name
+// the layout declares TWICE as well as on one it does not declare at all, and a
+// single "no ordinal" marker sent the duplicate case down the absent branch —
+// which packs NULL for that key component. Two rows differing ONLY in the
+// duplicated column then produce the same key and UNION DISTINCT drops one.
+// Absent-keys-as-NULL is dimension-preserving and correct; ambiguous-keys-as-
+// NULL is a wrong answer wearing the same shape.
+//
+// The 42702 ambiguous-reference rejection does NOT cover this. That rule is
+// about a REFERENCE naming two columns; it says nothing about a ROW carrying a
+// duplicated name, and a recursive-CTE leg over a join body (`SELECT x.k, y.k
+// FROM t x, t y`) emits exactly that row with no reference to reject.
+const (
+	dedupOrdAbsent    = -1
+	dedupOrdAmbiguous = -2
+)
+
+// layoutOrdinals binds the canonical columns to rt's slot ordinals, memoized
+// per layout. The bind rule is RecordType.FieldIndexUnique — the exact (already
+// upper-cased) name resolving to EXACTLY ONE field, the same plan-time rule
+// every construction-time bake uses. A name the layout does not declare binds
+// dedupOrdAbsent; a name it declares more than once binds dedupOrdAmbiguous,
+// which key() refuses rather than keys as NULL.
 func (k *cteDedupKeyer) layoutOrdinals(rt *values.RecordType) []int {
 	if ords, ok := k.ords[rt]; ok {
 		return ords
 	}
 	ords := make([]int, len(k.cols))
 	for i, col := range k.cols {
-		if idx, ok := rt.FieldIndex(col); ok {
-			ords[i] = idx
-		} else {
-			ords[i] = -1
+		switch hits := rt.FieldNameHits(col); {
+		case hits == 1:
+			ords[i], _ = rt.FieldIndexUnique(col)
+		case hits == 0:
+			ords[i] = dedupOrdAbsent
+		default:
+			ords[i] = dedupOrdAmbiguous
 		}
 	}
 	k.ords[rt] = ords
@@ -5290,8 +5316,22 @@ func (k *cteDedupKeyer) key(qr QueryResult) (string, error) {
 	ords := k.layoutOrdinals(qr.Positional.Type)
 	slots := make([]any, len(ords))
 	for i, ord := range ords {
-		if ord >= 0 {
+		switch {
+		case ord >= 0:
 			slots[i], _ = qr.Positional.Get(ord)
+		case ord == dedupOrdAmbiguous:
+			// REFUSE, never dedup on a partial key. Keying NULL here would
+			// collapse rows that differ in this very column; picking one of the
+			// duplicate slots would dedup on an arbitrary column. Both are
+			// wrong rows, so the query fails loudly instead (RFC-180 C4, the
+			// same disposition as the layout-less row above).
+			return "", fmt.Errorf("CTE dedup column %q is declared %d times by the leg's output row %v — "+
+				"a dedup key component that names two columns cannot be resolved, and keying it as NULL would "+
+				"silently collapse rows that differ in it",
+				k.cols[i], qr.Positional.Type.FieldNameHits(k.cols[i]), typeFieldNames(qr.Positional.Type))
+		default:
+			// dedupOrdAbsent: the canonical column is not in this layout at
+			// all. NULL is the dimension-preserving answer (see the type doc).
 		}
 	}
 	return packedDedupKey(slots)

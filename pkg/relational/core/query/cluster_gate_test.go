@@ -650,7 +650,7 @@ func TestWhereMergeBakesLegRelative(t *testing.T) {
 	if customerType == nil || orderType == nil {
 		t.Fatal("leg types must derive from metadata")
 	}
-	wantOrd, found := customerType.FieldIndex("CUSTOMER_ID")
+	wantOrd, found := customerType.FieldIndexUnique("CUSTOMER_ID")
 	if !found {
 		t.Fatal("CUSTOMER_ID missing from Customer's own type")
 	}
@@ -727,11 +727,11 @@ func TestBoxLegBakeResolvesLeafLocal(t *testing.T) {
 	if orderType == nil || customerType == nil {
 		t.Fatal("leg types must derive from metadata")
 	}
-	leafIdx, found := customerType.FieldIndex("PRICE")
+	leafIdx, found := customerType.FieldIndexUnique("PRICE")
 	if !found {
 		t.Fatal("PRICE missing from Customer's own type")
 	}
-	firstMatch, found := orderType.FieldIndex("PRICE")
+	firstMatch, found := orderType.FieldIndexUnique("PRICE")
 	if !found {
 		t.Fatal("the collision premise needs PRICE on Order too")
 	}

@@ -113,12 +113,6 @@ func TestFDB_LegIdentityCensus_NoFoldOnlyTraffic(t *testing.T) {
 	// looks like a proof and is an artifact. That is not hypothetical — it is
 	// exactly what the first version of this test did.
 
-	// cq100NonPlanningShape names the ONE shape in this list that does not plan
-	// today. It is a named constant rather than an inline string so the two arms
-	// that reference it — "any other shape failing is a regression" and "this one
-	// succeeding means the defect is fixed" — cannot drift apart.
-	const cq100NonPlanningShape = "projected EXISTS over a derived-table leg"
-
 	// Each shape is a Group-A leg-window consumer. They are run for their leg
 	// TRAFFIC, so a query that legitimately declines to plan is not a failure of
 	// this test — the shapes' ANSWERS are pinned by their own dedicated tests. What
@@ -175,36 +169,19 @@ func TestFDB_LegIdentityCensus_NoFoldOnlyTraffic(t *testing.T) {
 	} {
 		rows, qErr := db.QueryContext(ctx, q.sql)
 		if qErr != nil {
-			// A NON-PLANNING SHAPE IS NOW A CHARACTERIZATION, NOT A LOG LINE.
+			// A NON-PLANNING SHAPE IS A CHARACTERIZATION, NOT A LOG LINE.
 			//
 			// This used to t.Logf and continue, which meant a shape that stopped
 			// planning was invisible: the census measures leg TRAFFIC, so it
 			// tolerates a query that never runs, and the tolerance quietly became
-			// cover for a real gap. "projected EXISTS over a derived-table leg"
-			// has been failing 0AF00 in this passing test's output for as long as
-			// it has been listed (CQ-100 — a Cascades TRANSLATION failure, not a
-			// planning decision; measured identical with and without RFC-226, so
-			// it is pre-existing).
-			//
-			// Both directions are alarms. Any OTHER shape failing to plan is a
-			// regression. This shape STARTING to plan means CQ-100 is fixed — a
-			// good outcome that must red, so whoever fixes it deletes this pin
-			// instead of leaving a stale exemption behind.
-			if q.name != cq100NonPlanningShape {
-				t.Errorf("shape %q did not plan (%v).\n"+
-					"  Every shape here is expected to plan; the one known exception is "+
-					"%q (CQ-100). If this shape has a legitimate reason not to plan, it "+
-					"needs its own booked item and its own name here — not silent "+
-					"tolerance.", q.name, qErr, cq100NonPlanningShape)
-			}
-			continue
-		}
-		if q.name == cq100NonPlanningShape {
-			rows.Close()
-			t.Errorf("shape %q PLANNED. CQ-100 is fixed — delete this characterization "+
-				"pin and the cq100NonPlanningShape constant, and let the shape join the "+
-				"others. The pin is red on purpose so the exemption cannot outlive the "+
-				"defect.", q.name)
+			// cover for a real gap. There is no exemption left — every shape here
+			// plans, including "projected EXISTS over a derived-table leg", whose
+			// 0AF00 was the missing output row of a JOIN-BODIED derived table
+			// rather than anything about EXISTS.
+			t.Errorf("shape %q did not plan (%v).\n"+
+				"  Every shape here is expected to plan. If this shape has a "+
+				"legitimate reason not to plan, it needs its own booked item and its "+
+				"own name here — not silent tolerance.", q.name, qErr)
 			continue
 		}
 		for rows.Next() {

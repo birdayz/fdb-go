@@ -19,16 +19,16 @@ import (
 // A single shared enclosure flag would conflate two architecturally distinct
 // positions:
 //   - OUTER: only a single-source or ungated outer reaches this path (a gated
-//     multi-table outer ordinalizes earlier); a buried-join / multi-source
-//     outer has arity≠1 and declines LOUDLY (0AF00) regardless of any
-//     enclosure flag — so forcing enclosure here has no observable effect.
-//     The outer instead inherits whatever enclosure state produced it.
+//     multi-table outer ordinalizes earlier); a multi-source outer has arity≠1
+//     and declines LOUDLY (0AF00) regardless of any enclosure flag — so forcing
+//     enclosure here has no observable effect. The outer instead inherits
+//     whatever enclosure state produced it.
 //   - INNER: a correlated-scalar subquery is never merged into its parent, so
 //     it must gate on its own arity, not the outer's enclosure — routed via
 //     translateSubqueryRef.
 //
-// This test pins BOTH sides: the outer residency (a derived-JOIN outer stays
-// 0AF00, the reach gap that masks it), and the inner name-model constructs
+// This test pins BOTH sides: the outer residency (a derived-JOIN outer answers
+// its correlated scalar over the body's own row), and the inner name-model constructs
 // (JOIN, aggregate) answering CORRECT values with the inner rooted fresh —
 // plus the StrictSingle cardinality guard, which must never silently pick
 // one row.
@@ -107,9 +107,13 @@ func TestFDB_CorrelatedScalarSubqueryEnclosure(t *testing.T) {
 			[]string{"[100 7]", "[200 <nil>]"})
 	})
 
-	// OUTER decomposition: single-source / plain-join / derived-single outers plan
-	// correctly; the derived-JOIN outer (the retired producer's residency) declines
-	// 0AF00 — the reach gap that masks it, unchanged by the lift.
+	// OUTER decomposition: single-source / plain-join / derived-single /
+	// derived-JOIN outers all plan correctly. The derived-JOIN outer used to
+	// decline 0AF00 — not a planner limit but a MISSING SCHEMA: the derived
+	// table's body is a join, buildDerivedTableSource could not enumerate its
+	// output row, and buildSelectScope drops the whole resolver when a FROM
+	// source cannot be typed. With the body's output row derived from its own
+	// legs, the reach gap is gone and the values are pinned, not the decline.
 	t.Run("outer_plain_table", func(t *testing.T) {
 		wantRows(t, "SELECT a.k, (SELECT c.cv FROM c WHERE c.ck = a.k) FROM a ORDER BY a.k",
 			[]string{"[100 7]", "[200 8]"})
@@ -118,13 +122,14 @@ func TestFDB_CorrelatedScalarSubqueryEnclosure(t *testing.T) {
 		wantRows(t, "SELECT d.k, (SELECT c.cv FROM c WHERE c.ck = d.k) FROM (SELECT k FROM a) d ORDER BY d.k",
 			[]string{"[100 7]", "[200 8]"})
 	})
-	t.Run("outer_derived_join_declines_0AF00", func(t *testing.T) {
-		_, err := rowsOf(t, "SELECT d.k, (SELECT c.cv FROM c WHERE c.ck = d.k) "+
-			"FROM (SELECT a.k FROM a JOIN b ON b.bref = a.aid) d ORDER BY d.k")
-		if err == nil {
-			t.Fatalf("derived-JOIN outer: expected the 0AF00 reach-gap decline (unchanged by the lift), got no error")
-		}
-		requireSQLSTATE(t, err, api.ErrCodeUnsupportedQuery)
+	t.Run("outer_derived_join", func(t *testing.T) {
+		// a⋈b on b.bref = a.aid keeps both a rows, so d.k is {100, 200} and the
+		// correlated scalar reads c.cv at c.ck = d.k. The VALUES are the pin: a
+		// derived-JOIN outer that mis-bound its leg would still produce two
+		// rows, with the wrong cv or a NULL.
+		wantRows(t, "SELECT d.k, (SELECT c.cv FROM c WHERE c.ck = d.k) "+
+			"FROM (SELECT a.k FROM a JOIN b ON b.bref = a.aid) d ORDER BY d.k",
+			[]string{"[100 7]", "[200 8]"})
 	})
 
 	// A WHERE-EXISTS inside a correlated-scalar inner declines at the FRONT-END

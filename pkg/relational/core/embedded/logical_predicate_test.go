@@ -12,6 +12,7 @@ import (
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/logical"
+	"fdb.dev/pkg/relational/core/query/semantic"
 )
 
 // parseQueryFromSelect parses SQL and returns the IQueryContext from
@@ -1012,4 +1013,136 @@ func TestBuildLogicalPlanWithCatalog_JoinAmbiguousColumn_ErrorsProperly(t *testi
 	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeAmbiguousColumn {
 		t.Fatalf("expected ErrCodeAmbiguousColumn, got: %v", err)
 	}
+}
+
+// buildDerivedTableSourceFromJoinBody must derive a body leg's nullability from
+// the JOIN ALGEBRA, not by copying the catalog.
+//
+// A LEFT JOIN pads its right leg for every unmatched left row, so the right
+// leg's columns are nullable in the body's output regardless of what the base
+// table declares. The derivation read `semantic.NonEphemeral(tbl.Columns())`
+// straight from the catalog and never looked at `joinClause.joinType`, so a NOT
+// NULL column stayed NOT NULL through an outer join. The physical side already
+// applies the opposite rule (ordinal_seed.go wraps a null-supplying leg's column
+// types with WithNullability(true), citing Java's
+// pullUpResultColumnsWithNullability); this is the semantic side agreeing.
+//
+// WHY THIS IS PINNED HERE AND NOT THROUGH SQL, stated because the difference is
+// the finding. The defect is currently LATENT and the measurement is what says
+// so, not an argument:
+//
+//   - `Order.tags` is REPEATED, which rlcatalog.isNullable reports as NOT NULL.
+//     That is the ONLY column shape that can carry a false NOT NULL here — the
+//     SQL DDL refuses `NOT NULL` on a scalar column outright ("0A000: NOT NULL
+//     is only allowed for ARRAY column type") and every scalar catalog column,
+//     PRIMARY KEY columns included, arrives nullable.
+//   - Driven end-to-end against real FDB over a `LEFT JOIN`-bodied derived
+//     table with an `ARRAY NOT NULL` column on each leg, NOTHING DOWNSTREAM
+//     OBSERVED THE DIFFERENCE: the driver's column metadata reports an ARRAY
+//     column nullable either way (it does so for the BASE table too), and
+//     `IS NULL`, `IS NOT NULL` and the both-operands AND fold over the derived
+//     column returned identical rows with the fix present and absent.
+//
+// So the wrong type is real and its consumers are, today, all blind to it. That
+// makes this test the only thing that can fail when the derivation goes back to
+// copying the catalog — and it is why the fix is not left out: a derivation that
+// states a false NOT NULL is a loaded gun aimed at the next consumer to start
+// reading it, and the SQL-level probes that would catch it cannot be written.
+func TestDerivedJoinBodyNullability_IsDerivedFromTheJoinAlgebra(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+
+	// FIXTURE GUARD. The whole test is "a NOT NULL column becomes nullable", so
+	// the column has to be NOT NULL in the catalog first. If Order.TAGS ever
+	// stops reporting NOT NULL, every assertion below is satisfied by a column
+	// that was already nullable and the test proves nothing.
+	inner := &selectQuery{tableName: "Order", tableAlias: "A"}
+	innerSrc, ok := buildDerivedTableSourceFromJoinBody(md, "D", &selectQuery{
+		tableName: "Order", tableAlias: "A",
+		joins: []joinClause{{tableName: "Customer", alias: "B", joinType: joinTypeInner}},
+	})
+	_ = inner
+	if !ok {
+		t.Fatal("the INNER control body did not derive at all — nothing below is comparable")
+	}
+	tags, found := columnNamed(innerSrc.Table.Columns(), "TAGS")
+	if !found {
+		t.Fatalf("fixture: Order must contribute a TAGS column, got %v",
+			columnNames(innerSrc.Table.Columns()))
+	}
+	if tags.Nullable {
+		t.Fatal("fixture: Order.TAGS reports nullable in the catalog. It is a REPEATED " +
+			"field, which rlcatalog.isNullable reports as NOT NULL, and it is the only " +
+			"column shape this derivation can carry a false NOT NULL for. With a nullable " +
+			"fixture column the assertions below hold before the fix and after it.")
+	}
+
+	for _, tc := range []struct {
+		name string
+		// jt is the flavour of the ONE join clause; the body is
+		// `FROM Order AS A <jt> JOIN Customer AS B`.
+		jt joinType
+		// wantNullable per leg: [left (Order.TAGS), right (Customer.*)].
+		wantTagsNullable bool
+		why              string
+	}{
+		{
+			"INNER preserves both legs", joinTypeInner, false,
+			"an inner join pads nothing, so the catalog's NOT NULL survives. This is " +
+				"the direction a blanket \"mark every leg nullable\" fix destroys",
+		},
+		{
+			"LEFT preserves the LEFT leg", joinTypeLeft, false,
+			"a LEFT JOIN pads only the RIGHT side; the preserved leg keeps its type",
+		},
+		{
+			"RIGHT pads the LEFT leg", joinTypeRight, true,
+			"a RIGHT JOIN pads everything to its left, and the left leg is where TAGS " +
+				"lives — this is the arm a fix that only handles LEFT would miss",
+		},
+		{
+			"FULL pads both legs", joinTypeFull, true,
+			"a FULL OUTER JOIN pads both sides",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			src, derived := buildDerivedTableSourceFromJoinBody(md, "D", &selectQuery{
+				tableName: "Order", tableAlias: "A",
+				joins: []joinClause{{tableName: "Customer", alias: "B", joinType: tc.jt}},
+			})
+			if !derived {
+				t.Fatalf("the body did not derive — the case tests nothing")
+			}
+			got, ok := columnNamed(src.Table.Columns(), "TAGS")
+			if !ok {
+				t.Fatalf("no TAGS column in %v", columnNames(src.Table.Columns()))
+			}
+			if got.Nullable != tc.wantTagsNullable {
+				t.Fatalf("D.TAGS nullable=%v, want %v — %s.\n"+
+					"  Nullability here must come from the join algebra. Reading it off the "+
+					"catalog states a NOT NULL for a column the body serves NULL in, and the "+
+					"semantic row is what adjudicates every outer reference against the row "+
+					"the executor actually produces.",
+					got.Nullable, tc.wantTagsNullable, tc.why)
+			}
+		})
+	}
+}
+
+func columnNamed(cols []semantic.Column, name string) (semantic.Column, bool) {
+	for _, c := range cols {
+		if c.Id.Name() == name {
+			return c, true
+		}
+	}
+	return semantic.Column{}, false
+}
+
+func columnNames(cols []semantic.Column) []string {
+	out := make([]string, 0, len(cols))
+	for _, c := range cols {
+		out = append(out, c.Id.Name())
+	}
+	return out
 }

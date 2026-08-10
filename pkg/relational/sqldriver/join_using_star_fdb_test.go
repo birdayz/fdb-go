@@ -196,24 +196,23 @@ func TestFDB_JoinUsingStarHidesRightColumns(t *testing.T) {
 		}
 	})
 
-	t.Run("underivable derived leg is unreachable — the query fail-closes first", func(t *testing.T) {
+	t.Run("join-bodied derived USING leg hides its right copy", func(t *testing.T) {
 		t.Parallel()
-		// NEGATIVE-RESULT PIN: the one derived-leg shape the schema
-		// deriver cannot enumerate (a JOIN-BODIED body —
-		// buildDerivedTableSourceFromTerm bails on inner joins) never
-		// reaches star expansion at all: the ON-scope drop-risk gate
-		// rejects the whole query 0AF00 (dropping the ON would return
-		// cross-product rows). expandBareStarOverUsingJoins's decline
-		// path is therefore UNREACHABLE for USING legs today — every
-		// USING-leg shape that plans is enumerated and hides. If this
-		// starts failing because the query now PLANS, join-bodied
-		// derived legs became resolvable and the hidden-star expectation
-		// must be asserted here instead (Java answers with X's c1
-		// hidden).
-		_, err := db.QueryContext(ctx,
+		// A JOIN-BODIED derived leg used to be the one shape the schema
+		// deriver could not enumerate, so the query never reached star
+		// expansion: the ON-scope drop-risk gate rejected it 0AF00. The
+		// body's output row is now derived from its own legs, so this is
+		// the ordinary USING-leg shape and hides like every other one —
+		// X's c1 is the RIGHT copy, so the star emits C1 (ja's), A2, D2.
+		cols, got := run(t,
 			"SELECT * FROM ja JOIN (SELECT jb.c1 AS c1, jd.d2 AS d2 FROM jb JOIN jd ON jb.c1 = jd.c1) AS X USING (c1)")
-		if err == nil || !strings.Contains(err.Error(), "0AF00") {
-			t.Fatalf("join-bodied derived USING leg: expected the 0AF00 fail-closed rejection, got %v", err)
+		wantCols := []string{"C1", "A2", "D2"}
+		if strings.Join(cols, ",") != strings.Join(wantCols, ",") {
+			t.Fatalf("columns = %v, want %v", cols, wantCols)
+		}
+		// X = jb⋈jd on c1 = {(1,'d1')}; ja(1,'a1') is its only USING match.
+		if len(got) != 1 || got[0] != "1|a1|d1" {
+			t.Fatalf("rows = %v, want [1|a1|d1]", got)
 		}
 	})
 

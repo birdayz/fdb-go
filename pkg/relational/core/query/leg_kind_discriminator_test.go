@@ -135,7 +135,7 @@ func TestLegKind_GatheredSeedBareArmIgnoresANestedWindow(t *testing.T) {
 	}
 }
 
-// rebaseLegRefsToBox — keyed reader #2 — bakes `w.Offset + FieldIndex(col)` over
+// rebaseLegRefsToBox — keyed reader #2 — bakes `w.Offset + FieldIndexUnique(col)` over
 // the box quantifier. Same arithmetic, same dispatch requirement.
 //
 // Its decline is to leave the node UNREWRITTEN, which is correct at this site

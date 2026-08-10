@@ -41,9 +41,11 @@ import (
 // exactly what this workstream prescribes — duplicate roots and a resolvable
 // nested key coexist, and the conjunction this file calls impossible becomes
 // ordinary. The ambiguity arm must therefore EXIST and DECLINE before that
-// lands; it is unit-driven in the values package. It must never first-match:
-// RecordType.FieldIndex returns the first name match, so `b.n.sk` over a
-// self-join would silently read the LEFT leg's `N`.
+// lands; it is unit-driven in the values package. It must never first-match: a
+// first-match name lookup would resolve `b.n.sk` over a self-join to the LEFT
+// leg's `N` and read the wrong column silently. RecordType's by-name lookup
+// declines on an ambiguous name today (FieldIndexUnique); a re-introduced
+// first-match scan is one of the re-armers listed below.
 //
 // WHAT RE-ARMS THE HAZARD:
 //   - walkColumnRef gains 3-segment support (the prescribed fix, and the most

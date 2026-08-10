@@ -196,9 +196,10 @@ type FieldValue struct {
 	// FieldPath resolution, where the accessor IS an ordinal and runtime access
 	// is positional: resolveOrdinal returns the accessor's ordinal directly, so
 	// a positional-row read is row.Get(ordinal) — position-preserving by
-	// construction, and therefore sound under DUPLICATE output names, which
-	// every name-based resolution collapses (RecordType.FieldIndex is
-	// first-match). Field is a DISPLAY name for diagnostics and Explain.
+	// construction, and therefore sound under DUPLICATE output names, which no
+	// name-based resolution can address at all: a by-name lookup DECLINES on an
+	// ambiguous name (RecordType.FieldIndexUnique) and a name-keyed map collapses
+	// the duplicates. Field is a DISPLAY name for diagnostics and Explain.
 	//
 	// Every RUNTIME-evaluated FieldValue is BAKED (Resolved non-nil): the
 	// runtime name-resolution fallback is deleted, so a LAZY node (nil) that
@@ -534,11 +535,16 @@ func (p *FieldPath) RootOrdinalIn(frontier OrdinalDomain) (int, bool) {
 // because an ordinal does not fail the way an unresolvable name does.
 //
 // Declines, rather than guessing, when the root name is absent or DUPLICATED in
-// `flowed`. RecordType.FieldIndex returns the first name match, so a layout
-// holding two columns of the root's name would resolve to the left one whatever
-// the reference meant. Disambiguating that needs leg IDENTITY — which
-// correlation the root belongs to, against which leg each slot came from — not a
-// name, and until a caller supplies it the correct answer is to decline.
+// `flowed`. A layout can legitimately hold two columns of the root's name — a
+// leg-concat merges A.K and B.K into one row — and a name cannot say which of
+// them the reference meant; answering with either is a guess that reads as a
+// fact, and the loser is a real column of the same type that nothing downstream
+// rejects. Declining is also the only behaviour this package still offers:
+// FieldIndexUnique / LookupFieldUnique resolve a name ONLY when it matches
+// exactly one field, and no first-matching form survives to be reached for by
+// mistake. Disambiguating a duplicate needs leg IDENTITY — which correlation the
+// root belongs to, against which leg each slot came from — not a name, and until
+// a caller supplies it the correct answer is to decline.
 func (p *FieldPath) ReAnchorRootInto(flowed *RecordType) (*FieldPath, string, bool) {
 	if p == nil || len(p.Accessors) < 2 {
 		return nil, "not a multi-accessor path", false
@@ -1319,7 +1325,7 @@ func (f *FieldValue) resolveOrdinal() (int, bool) {
 	if _, ok := f.Child.Type().(*RecordType); !ok {
 		return 0, false
 	}
-	// There is NO runtime name-derive fallback (no rt.FieldIndex here). A
+	// There is NO runtime name-derive fallback (no by-name lookup against rt here). A
 	// FieldValue with a typed child but no baked Resolved ordinal is an
 	// UNBAKED site: its ordinal must be bound at plan time. Return false so
 	// evaluateOrdinal fails LOUD rather than re-deriving the ordinal by name at
@@ -4572,9 +4578,9 @@ func NewRecordConstructorValue(fields ...RecordConstructorField) *RecordConstruc
 //
 // NEVER use this for a projection RC: NewRecordConstructorValue (above)
 // appends _2/_3 suffixes, which is correct there (SQL projection column
-// naming) — a raw duplicate under name-keyed plan-time lookup (FieldIndex
-// first-match) silently
-// resolves to the first match, the exact conflation ordinal identity exists to avoid.
+// naming) — a raw duplicate is not addressable by name at all: the plan-time
+// lookup declines on the ambiguity, so a projection built this way would lose the
+// columns rather than name them, the exact conflation ordinal identity exists to avoid.
 func NewRawRecordConstructorValue(fields ...RecordConstructorField) *RecordConstructorValue {
 	out := make([]RecordConstructorField, len(fields))
 	copy(out, fields)

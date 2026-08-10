@@ -25,8 +25,8 @@ func TestEmptyValue_TypeIsEmptyRecord(t *testing.T) {
 		t.Fatal("EmptyValue type should be non-nullable")
 	}
 	// No exported field-count accessor on RecordType; check via
-	// LookupField for a sentinel that can't exist.
-	if _, ok := rt.LookupField("anything"); ok {
+	// LookupFieldUnique for a sentinel that can't exist.
+	if _, ok := rt.LookupFieldUnique("anything"); ok {
 		t.Fatal("EmptyValue type should have no fields")
 	}
 }

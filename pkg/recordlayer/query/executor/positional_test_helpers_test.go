@@ -67,14 +67,16 @@ func rowMapOK(qr QueryResult) (map[string]any, bool) {
 }
 
 // getByName is the TEST-ONLY name read-out: it resolves name → ordinal via the
-// row's Type (FieldIndex, first-match) and reads that slot. Production has no
+// row's Type (FieldIndexUnique — a duplicated name DECLINES rather than
+// first-matching, so a dup-named row is unreadable here) and reads that slot.
+// Production has no
 // name-keyed read arm — every reference is baked to an ordinal at plan time;
 // tests keep this convenience purely to ASSERT on named columns.
 func getByName(pos *PositionalRow, name string) (any, bool) {
 	if pos == nil || pos.Type == nil {
 		return nil, false
 	}
-	i, ok := pos.Type.FieldIndex(name)
+	i, ok := pos.Type.FieldIndexUnique(name)
 	if !ok {
 		return nil, false
 	}
