@@ -234,3 +234,112 @@ func TestRecursiveBodyGatesOrdinal(t *testing.T) {
 		t.Fatal("recursiveBodyIsPositional must be FALSE for a scan-only recursive body (name-model bodies keep the dotted-split arm)")
 	}
 }
+
+// TestLegPhysicalOutputNamesProvenanceOfANestedPath pins the INVARIANT
+// legPhysicalOutputNames' second return states, on the one shape RFC-229 §2.3
+// made able to violate it.
+//
+// THE INVARIANT (the function's own header): verbatimField[i] is true when the
+// emitted name is a plain *values.FieldValue's `Field` string VERBATIM — an
+// identifier by construction, "so a dot in it IS a qualifier".
+// recursiveRemapValues reads that flag and nothing else: on true it splits at
+// the FIRST dot and mints FieldValue{Field: after, Child: QOV(before)}.
+//
+// WHY §2.3 CAN VIOLATE IT. For an UNALIASED nested reference the emitted name
+// is no longer `Field` (the struct root `N`) but the RESOLVED PATH (`N.SK`, or
+// `T1.N.SK` over a multi-source FROM). The old predicate — unaliased AND a
+// FieldValue — is still true, so the flag claims "verbatim identifier" about a
+// string that is a PATH. The split then mints QOV("N"): a correlation named
+// after a struct ROOT, which is not a quantifier anywhere in the plan. That is
+// byte-for-byte the garbage-correlation class the flag was introduced to close
+// (QOV("(B"), QOV("1"), QOV("A")); §2.3 re-armed it from the writer side.
+//
+// WHY THIS IS A UNIT PIN AND NOT A QUERY PIN, stated plainly because the
+// distinction is the whole reason the test lives here. It was MEASURED at the
+// SQL level first: `WITH RECURSIVE r AS (SELECT n.sk FROM t1 ... UNION ALL
+// SELECT sk + 1 FROM r ...)` returns the correct [10 11 12 13] with the fix AND
+// without it. Both routes answer, because the seed's Datum key really is
+// "N.SK", so a QOV("N")/field-"SK" read happens to resolve it the same way a
+// qualified join key "B.ID" does. So there is no query whose ANSWER detects
+// this, and a query-level test would have been green either way — the defect is
+// that a structured provenance claim is FALSE, and the claim is what must be
+// asserted. (The end-to-end shape is still pinned, in sqldriver's
+// nested_projection_column_name_fdb_test.go, for the answer.)
+func TestLegPhysicalOutputNamesProvenanceOfANestedPath(t *testing.T) {
+	t.Parallel()
+
+	nested := values.NewFlatFieldValue("N", values.UnknownType)
+	nested.Resolved = &values.FieldPath{Accessors: []values.ResolvedAccessor{
+		{Field: "N", Ordinal: 1}, {Field: "SK", Ordinal: 0},
+	}}
+	flat := values.NewFlatFieldValue("ID", values.UnknownType)
+	dotted := values.NewFlatFieldValue("B.ID", values.UnknownType)
+
+	leg := expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{nested, flat, dotted},
+		[]string{"", "", ""},
+		expressions.Quantifier{},
+	)
+	names, verbatim, fromProjection := legPhysicalOutputNames(leg, []string{"A", "B", "C"})
+	if !fromProjection {
+		t.Fatalf("legPhysicalOutputNames declined the projection leg entirely — "+
+			"the shape this test drives is gone (names=%v)", names)
+	}
+	if len(names) != 3 || len(verbatim) != 3 {
+		t.Fatalf("legPhysicalOutputNames returned %d names / %d flags, want 3 / 3",
+			len(names), len(verbatim))
+	}
+
+	// The PREMISE, asserted rather than assumed: the emitted name for the nested
+	// column really is the path. If §2.3 were reverted this would be "N" and the
+	// rest of this test would be about a shape that no longer exists.
+	if names[0] != "N.SK" {
+		t.Fatalf("the nested column's physical name is %q, want N.SK — this test's "+
+			"premise is that §2.3 made this name a PATH; without that there is no "+
+			"provenance claim to violate", names[0])
+	}
+
+	// THE ASSERTION. A path is not a `Field` verbatim, so the flag must be false
+	// and recursiveRemapValues must take the ORDINAL arm (read emitted slot i)
+	// rather than the first-dot split.
+	if verbatim[0] {
+		t.Fatalf("legPhysicalOutputNames claims the nested column's name %q is a "+
+			"plain FieldValue's Field VERBATIM. It is not — it is the resolved "+
+			"path, and the flag's documented meaning is that a dot in a verbatim "+
+			"name IS a qualifier. recursiveRemapValues believes it: it splits at "+
+			"the first dot and mints FieldValue{Field:\"SK\", Child: QOV(\"N\")} — "+
+			"a correlation named after a STRUCT ROOT, which is not a quantifier "+
+			"anywhere in the plan. That is the garbage-correlation class this flag "+
+			"exists to close.", names[0])
+	}
+
+	// CONTROLS — without these the assertion above is satisfied by a flag that
+	// went false for EVERY column, which would send genuinely qualified leg
+	// references down the ordinal arm and lose the qualifier-stripping the
+	// recursive wrap depends on (a qualified key persisted into the temp table
+	// doubles the row and stalls the recursion one level early).
+	if !verbatim[1] {
+		t.Fatalf("a plain unaliased flat FieldValue's name %q is no longer "+
+			"classified verbatim — the predicate has gone false for everything, "+
+			"not just for paths", names[1])
+	}
+	if !verbatim[2] {
+		t.Fatalf("a genuinely QUALIFIED unaliased leg reference %q is no longer "+
+			"classified verbatim. This is the case the split exists FOR: the wrap "+
+			"reads the qualified datum key and projects the bare output name, "+
+			"which is what keeps a qualified key out of the temp table.", names[2])
+	}
+
+	// An ALIAS still wins over everything, including on the nested shape — the
+	// alias is one identifier and a quoted alias may legally contain a dot.
+	aliased := expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{nested}, []string{"A.B"}, expressions.Quantifier{})
+	_, aliasVerbatim, ok := legPhysicalOutputNames(aliased, []string{"A"})
+	if !ok || len(aliasVerbatim) != 1 {
+		t.Fatalf("legPhysicalOutputNames declined the aliased leg (ok=%v)", ok)
+	}
+	if aliasVerbatim[0] {
+		t.Fatalf("an ALIASED nested column is classified verbatim — splitting a " +
+			"quoted alias `AS \"A.B\"` manufactures QOV(\"A\"), the same class")
+	}
+}

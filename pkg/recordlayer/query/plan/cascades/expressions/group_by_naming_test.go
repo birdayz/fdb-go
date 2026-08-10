@@ -107,4 +107,43 @@ func TestAggregateKeyColumnName_NestedKeyTakesTheResolvedPath(t *testing.T) {
 			"QID — the executor keys that row by the bare field (RFC-142), so a "+
 			"qualified name here serves NULL for a correctly-grouped result", got)
 	}
+
+	// THE QUALIFIED NESTED KEY, driven because nothing else drives it. The
+	// control above has Resolved == nil, so it never reaches the nested arm at
+	// all: it pins the FLAT arm's treatment of a child and says nothing about
+	// what a child does to a PATH. That arm is user-reachable — with ≥2 FROM
+	// sources the resolver emits every reference through its quantifier, so a
+	// nested key really does arrive here carrying QOV(T1).
+	//
+	// It names `T1.N.SK`, qualified, and that is the DECIDED behaviour rather
+	// than an accident of the renderer: over `FROM t1, t2` where both declare an
+	// `n`, a bare `N.SK` would collapse two different columns in the same
+	// last-wins maps the nested arm exists to protect. Asserting the exact
+	// spelling, not merely "distinct": distinct is satisfiable by a positional
+	// fallback.
+	qualifiedNested := values.NewFieldValue(
+		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T1")),
+		"N", values.UnknownType)
+	qualifiedNested.Resolved = &values.FieldPath{Accessors: []values.ResolvedAccessor{
+		{Field: "N", Ordinal: 1}, {Field: "SK", Ordinal: 0},
+	}}
+	if got := AggregateKeyColumnName(qualifiedNested); got != "T1.N.SK" {
+		t.Fatalf("a QUALIFIED nested group key names its column %q, want T1.N.SK — "+
+			"the path is rendered THROUGH the child by design, so that two sources "+
+			"each declaring an `n` cannot collapse `T1.N.SK` and `T2.N.SK` into one "+
+			"map key. If this now answers N.SK the qualifier was dropped, which "+
+			"re-creates the collapse one level up; if it answers N or T1.N the "+
+			"nested arm stopped firing for a childful reference altogether", got)
+	}
+	// The cross-source distinctness the qualifier buys, asserted directly rather
+	// than left as an argument in a comment.
+	other := values.NewFieldValue(
+		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T2")),
+		"N", values.UnknownType)
+	other.Resolved = qualifiedNested.Resolved
+	if a, b := AggregateKeyColumnName(qualifiedNested), AggregateKeyColumnName(other); a == b {
+		t.Fatalf("the same nested path off TWO different sources both name %q — "+
+			"`t1.n.sk` and `t2.n.sk` are different columns and this is the map key "+
+			"they are stored under", a)
+	}
 }

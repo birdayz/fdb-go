@@ -4426,6 +4426,16 @@ func deriveProjectionColumnDef(v values.Value, alias string, aliasMinted bool, i
 	// requested identifier `n.sk` for exactly this reason
 	// (SemanticAnalyzer.java:598-599) and the top-level projection then clears
 	// the qualifier, so the user sees SK and CO.
+	//
+	// It subsumes the Child arm too, and that is the point rather than an
+	// accident: NestedResolvedPath renders THROUGH the child, so a nested
+	// reference over a ≥2-source FROM takes `T1.N.SK` here — the same qualified
+	// shape the `Child != nil` arm below produces for a flat reference, reached
+	// by one predicate instead of two. `Child == nil` is not the nested arm's
+	// precondition; the multi-accessor resolved path is. The Label computed from
+	// this Name is the unqualified leaf either way (`SK`), measured over
+	// `SELECT n.sk, n.co FROM t1, t2`, so the qualifier stays an internal slot
+	// key exactly as Java's does (Identifier.withoutQualifier, Identifier.java:101).
 	var name string
 	if path, nested := values.NestedResolvedPath(v); nested {
 		name = path

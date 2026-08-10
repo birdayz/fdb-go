@@ -118,4 +118,48 @@ func TestProjectionNamerCollapsesANestedPath(t *testing.T) {
 		t.Fatalf("NestedResolvedPath(a computed expression) = (%q, %v), want (\"\", false)",
 			path, isNested)
 	}
+
+	// THE QUALIFIED ARM. Every fixture above has Child == nil, which is the
+	// SINGLE-source shape; with ≥2 FROM sources the resolver emits the reference
+	// through its quantifier and the fused nested node carries QOV(T1). That arm
+	// is user-reachable and nothing drove it, while three doc comments stated the
+	// Child == nil spelling as if it were the rule.
+	//
+	// MEASURED end-to-end before this assertion was written:
+	// `EXPLAIN SELECT n.sk, n.co FROM t1, t2` →
+	// `Project([T1.N#1.SK#0, T1.N#1.CO#1], NestedLoopJoin(...))`, against
+	// `Project([N#1.SK#0, N#1.CO#1], Scan(T1))` for the single-source form.
+	// (`SELECT t1.n.sk ...` — the three-part qualified spelling — is refused
+	// 42703 and is not how this shape is reached.)
+	qualified := &FieldValue{Field: "N", Resolved: &FieldPath{
+		Accessors: []ResolvedAccessor{{Field: "N", Ordinal: 1}, {Field: "SK", Ordinal: 0}},
+	}, Child: NewQuantifiedObjectValue(NamedCorrelationIdentifier("T1"))}
+	if got, want := ProjectionColumnName(qualified), "T1.N.SK"; got != want {
+		t.Fatalf("a QUALIFIED nested projection names its slot %q, want %q.\n"+
+			"  The qualifier is KEPT deliberately: over `FROM t1, t2` where both "+
+			"declare an `n`, T1.N.SK and T2.N.SK are different columns and a bare "+
+			"N.SK collapses them in exactly the name-keyed maps this arm exists to "+
+			"protect. It is also what the neighbouring authorities already do for a "+
+			"childful reference (sortKeyFieldRef renders LEG.COL). A change here "+
+			"MOVES EMITTED SLOT NAMES on both the writer and the reader side and is "+
+			"a semantics change, not a rename.", got, want)
+	}
+	// What the qualifier buys, asserted rather than argued.
+	otherSource := *qualified
+	otherSource.Child = NewQuantifiedObjectValue(NamedCorrelationIdentifier("T2"))
+	if a, b := ProjectionColumnName(qualified), ProjectionColumnName(&otherSource); a == b {
+		t.Fatalf("the same nested path off TWO sources both name %q — the "+
+			"cross-source collapse the qualifier prevents is back", a)
+	}
+	// CONTROL — the user-visible label is unaffected by the qualifier. The
+	// display side strips to the bare leaf, so `SELECT n.sk FROM t1, t2` shows
+	// SK exactly as the single-source form does (measured over real FDB in
+	// sqldriver's nested_projection_column_name_fdb_test.go). Java does the same
+	// by clearing the qualifier at the top-level projection
+	// (Identifier.withoutQualifier, Identifier.java:101).
+	if got := ProjectionColumnName(nested); got == ProjectionColumnName(qualified) {
+		t.Fatalf("the qualified and unqualified nested references now BOTH name "+
+			"%q — the qualifier stopped participating, so the two FROM shapes are "+
+			"no longer distinguishable in the slot key", got)
+	}
 }

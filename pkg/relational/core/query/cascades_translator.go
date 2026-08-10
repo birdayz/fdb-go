@@ -9963,7 +9963,19 @@ func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []
 		}
 		out[i] = values.OutputColumnName(v, alias)
 		_, isField := v.(*values.FieldValue)
-		verbatimField[i] = alias == "" && isField
+		// A NESTED reference is a FieldValue whose emitted name is NOT its
+		// `Field`: OutputColumnName gives it the resolved PATH ("N.SK", or
+		// "T1.N.SK" over a multi-source FROM). "Unaliased AND a FieldValue" was
+		// a sufficient test for "this string is `Field` verbatim" only while
+		// those two coincided; once they part, the flag would assert
+		// identifier-provenance about a path, and the reader acts on it —
+		// splitting at the first dot into QOV("N"), a correlation named after a
+		// struct ROOT that is not a quantifier anywhere in the plan. Same
+		// garbage-correlation class as QOV("(B") and QOV("1"); this keeps the
+		// flag's meaning and the string in step, so the path takes the ordinal
+		// arm (read emitted slot i) instead.
+		_, nested := values.NestedResolvedPath(v)
+		verbatimField[i] = alias == "" && isField && !nested
 	}
 	return out, verbatimField, true
 }

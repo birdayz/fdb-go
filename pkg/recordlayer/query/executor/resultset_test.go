@@ -707,3 +707,109 @@ func TestResultSet_PositionalMisalignedIsLoud(t *testing.T) {
 		}
 	})
 }
+
+// TestResultSet_PreRFC229SortContinuationNamesFailClosed MEASURES what a
+// MemorySortContinuation minted by a PRE-RFC-229 binary does when resumed by a
+// post-229 one, over a nested projection.
+//
+// WHY THE TOKEN CARRIES NAMES AT ALL. encodeSortedRecords serializes the
+// buffered row's positional slot NAMES into the token (continuation.go, the
+// payload's "n" field) and decodeSortedRecords rebuilds the PositionalRow type
+// from them (positionalTypeFromNames). Those names are
+// values.ProjectionColumnName's output, which RFC-229 §2.3 changed for a nested
+// projection: `SELECT n.sk, n.co ORDER BY ...` wrote ["N","N"] before and
+// ["N.SK","N.CO"] after. A token therefore outlives the naming rule that minted
+// it, and continuations are on the non-negotiable-compatibility list.
+//
+// THE MEASURED ANSWER: it FAILS CLOSED. The rebuilt row's slot names do not
+// match the new binary's column labels, positionalAligned rejects the row
+// wholesale (it is deliberately all-or-nothing), and every read returns a loud
+// XX000 — the same correct-or-loud path a producer bug takes. There is no arm
+// in which slot 0 is served for column 1: alignment is refused for the row, not
+// repaired per slot. So the observable break is "a resumed page errors", never
+// "a resumed page returns the wrong column's data".
+//
+// That is what makes accepting the break defensible rather than reckless, and
+// it is why this is a test and not a paragraph: if positionalAligned ever grows
+// a tolerant arm — a leaf-strip on BOTH sides, a fallback to name lookup, a
+// per-slot repair — this shape stops failing closed and starts serving `N` for
+// `SK`, silently, on exactly the tokens a rolling upgrade produces.
+func TestResultSet_PreRFC229SortContinuationNamesFailClosed(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// The row a PRE-229 binary buffered and encoded: both slots of one struct
+	// root named after the root, which is the defect §2.3 fixed.
+	oldToken := &PositionalRow{
+		Type: &values.RecordType{Fields: []values.Field{
+			{Name: "N", FieldType: values.UnknownType, Ordinal: 0},
+			{Name: "N", FieldType: values.UnknownType, Ordinal: 1},
+		}},
+		Slots: []any{int64(10), int64(21)},
+	}
+	// The columns a POST-229 binary reports for the same query.
+	newCols := []ColumnDef{
+		{Name: "N.SK", Label: "SK", TypeName: "BIGINT"},
+		{Name: "N.CO", Label: "CO", TypeName: "BIGINT"},
+	}
+
+	rs := NewRecordLayerResultSet(ctx, recordlayer.FromList([]QueryResult{{Positional: oldToken}}), newCols)
+	defer rs.Close()
+	if rs.positionalAligned(oldToken) {
+		t.Fatalf("a PRE-RFC-229 sort continuation's slot names [N N] now ALIGN " +
+			"against post-229 columns [SK CO].\n" +
+			"  That is the dangerous direction, not the safe one: aligning means " +
+			"every read is served BY ORDINAL from a row whose names disagree with " +
+			"the columns, so the alignment check has stopped being a shape proof. " +
+			"The break must stay a loud rejection until the decode side actually " +
+			"reconciles old names, not become a silent acceptance.")
+	}
+	if !rs.Next() {
+		t.Fatal("expected a row")
+	}
+	v, err := rs.Object(1)
+	if err == nil {
+		t.Fatalf("reading column 1 off a pre-229 continuation row returned %v with "+
+			"no error — the resumed page must fail LOUDLY rather than serve a slot "+
+			"whose name does not match its column", v)
+	}
+	if !containsSubstr(err.Error(), "no positional output row aligned") {
+		t.Fatalf("pre-229 continuation resume failed with %v, want the "+
+			"correct-or-loud alignment error — a different failure would mean the "+
+			"break is being reported by something else and this pin has stopped "+
+			"measuring the channel it names", err)
+	}
+
+	// CONTROL — the SAME row shape under its OWN binary's columns still reads.
+	// Without this the assertions above are satisfied by a result set that
+	// rejects everything, which would prove nothing about names.
+	okRS := NewRecordLayerResultSet(ctx,
+		recordlayer.FromList([]QueryResult{{Positional: oldToken}}),
+		[]ColumnDef{
+			{Name: "N", Label: "N", TypeName: "BIGINT"},
+			{Name: "N", Label: "N", TypeName: "BIGINT"},
+		})
+	defer okRS.Close()
+	if !okRS.Next() {
+		t.Fatal("expected a row from the control")
+	}
+	if v, err := okRS.Object(1); err != nil || v != int64(10) {
+		t.Fatalf("the control read column 1 as (%v, %v), want (10, nil) — the "+
+			"rejection above must be about the NAMES disagreeing, not about this "+
+			"row being unreadable in general", v, err)
+	}
+}
+
+// containsSubstr is a local substring test kept off the `strings` import so
+// this file's import set does not move for one assertion.
+func containsSubstr(haystack, needle string) bool {
+	if len(needle) > len(haystack) {
+		return false
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
+}

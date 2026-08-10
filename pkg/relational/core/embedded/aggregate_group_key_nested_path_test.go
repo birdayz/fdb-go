@@ -74,6 +74,28 @@ func TestAggregateGroupKeyMirrorsTakeTheNestedPath(t *testing.T) {
 		if got := aggregateGroupKeyOutputName(qualified); got != "QID" {
 			t.Fatalf("a CORRELATION-qualified group key now names its column %q, want QID", got)
 		}
+		// The control above has Resolved == nil, so it never reaches the nested
+		// arm — it pins the FLAT arm's treatment of a child and says nothing
+		// about what a child does to a PATH. Drive that arm here, because the
+		// mirror must track its authority on it too: with ≥2 FROM sources every
+		// reference is emitted through its quantifier, so a nested key really
+		// does arrive carrying QOV(T1) and names T1.N.SK.
+		qualifiedNested := values.NewFieldValue(
+			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T1")),
+			"N", values.UnknownType)
+		qualifiedNested.Resolved = &values.FieldPath{Accessors: []values.ResolvedAccessor{
+			{Field: "N", Ordinal: 1}, {Field: "SK", Ordinal: 0},
+		}}
+		if got := aggregateGroupKeyOutputName(qualifiedNested); got != "T1.N.SK" {
+			t.Fatalf("the mirror names a QUALIFIED nested group key %q, want T1.N.SK", got)
+		}
+		if got, want := aggregateGroupKeyOutputName(qualifiedNested),
+			expressions.AggregateKeyColumnName(qualifiedNested); got != want {
+			t.Fatalf("on the QUALIFIED nested shape the mirror answers %q where its "+
+				"authority answers %q — a mirror that disagrees on ONE shape is the "+
+				"entire defect class RFC-229 closes, and this is the shape neither "+
+				"side had a test for", got, want)
+		}
 	})
 
 	t.Run("buildAggColumns ColumnDef", func(t *testing.T) {

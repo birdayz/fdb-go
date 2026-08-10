@@ -1,5 +1,14 @@
 # RFC-229: a column states its own name
 
+> **The title overclaims relative to §8, deliberately left as the record of what
+> was proposed.** A column does NOT state its own name in what shipped: §2.1 —
+> the stored-name slot that would have made the title literally true — is
+> REFUTED (§8.1), and what landed instead DERIVES the name from structure, but
+> derives it CONSISTENTLY, through one shared predicate
+> (`values.NestedResolvedPath`) that every naming authority reads. Read the
+> title as the goal the bucket was measured against, not as a description of
+> the code.
+
 **Status:** IMPLEMENTED in part (rev 5 — §2.2 and §2.3 landed and measured; §2.1 and §2.2.2 REFUTED as prescribed, see §8)
 **Scope:** output-column naming across the projection, group-by and sort-key authorities.
 **Retires:** part of the `contract` bucket. Rev 1 claimed 10 of 12 and that number was wrong — see §6.

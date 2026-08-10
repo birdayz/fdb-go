@@ -118,9 +118,16 @@ func NewGroupByExpression(
 // shared by every member of one struct — `n.sk` and `n.co` are both `N` — and
 // this name is a MAP KEY in three downstream last-wins maps, so the flat
 // spelling silently collapses two grouping columns into one and returns too few
-// groups. Nested-path GROUP BY is refused at the SQL layer today, which is the
+// groups. Nested-path GROUP BY does not plan today, which is the
 // only reason that is latent rather than live; the conversion lands FIRST so
 // implementing the feature cannot arm it.
+//
+// The path is QUALIFIED when the key reference carries a Child — `T1.N.SK` over
+// a ≥2-source FROM, `N.SK` over one — because NestedResolvedPath renders through
+// the child. That is deliberate and is argued at the predicate: over two sources
+// each declaring an `n`, a bare `N.SK` would re-create one level up exactly the
+// collapse this function exists to prevent. `Child == nil` is the common case,
+// not the rule.
 func AggregateKeyColumnName(k values.Value) string {
 	if path, nested := values.NestedResolvedPath(k); nested {
 		return path

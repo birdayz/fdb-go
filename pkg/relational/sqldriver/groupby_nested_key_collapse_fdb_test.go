@@ -122,7 +122,25 @@ func TestFDB_GroupByNestedPathRejected(t *testing.T) {
 				"assertion above. Confirm first that nothing has RE-DERIVED a "+
 				"group-key name from fv.Field in the meantime: the unit pin at "+
 				"expressions/group_by_naming_test.go covers the three authorities, "+
-				"not any fourth site a new feature might add.", q)
+				"not any fourth site a new feature might add.\n\n"+
+				"  THE FOURTH SITE EXISTS AND IS NAMED HERE so nobody has to hunt "+
+				"for it: RecordQueryStreamingAggregationPlan.HintOrdering "+
+				"(pkg/recordlayer/query/plan/plans/ordering.go:1155) synthesizes a "+
+				"PROVIDED ordering key as FieldValue{Field: AggregateKeyColumnName(k)}, "+
+				"and RichOrdering.orderingKeyFor "+
+				"(pkg/recordlayer/query/plan/cascades/properties/rich_ordering.go:364-365) "+
+				"matches a REQUESTED key against those provided keys through "+
+				"values.ExplainValue — a STRING. So group-key naming reaches ordering "+
+				"MATCHING through a rendering, not through Value identity. Once a "+
+				"nested key is admitted, the provided key is a flat single-accessor "+
+				"FieldValue whose Field is the dotted path \"N.SK\", while the "+
+				"requested key is the real fused multi-accessor reference rendering "+
+				"as \"N#0.SK#1\" (both renderings MEASURED). Two spellings that do "+
+				"not meet make the match fail SILENTLY: an ordering the aggregation "+
+				"really provides goes unrecognised, so the cost is a redundant sort "+
+				"rather than a wrong answer — which is exactly why it needs naming "+
+				"rather than discovering. Convert the ordering side too, or prove "+
+				"the spellings meet.", q)
 		}
 		if !strings.Contains(err.Error(), "42703") {
 			t.Fatalf("nested-path GROUP BY refused with the WRONG error.\n"+

@@ -30,10 +30,17 @@ import "testing"
 // Expressions.getStructType (:246-262) applies NO collision drop at all, using
 // `Identifier::toString` and falling back to `_index` only for a genuinely
 // absent name. Applying the internal rule to Go's user-visible label was
-// MEASURED and reddens nine sqldriver test functions that deliberately pin the
-// opposite, among them TestFDB_DuplicateBareLeafKeepsTwoColumns — whose own
+// MEASURED and reddens SEVEN sqldriver test functions that deliberately pin the
+// opposite — the seven are named in RFC-229 §8.3, counted from `grep -E "^--- FAIL"
+// ... | sort -u` over a dedicated sqldriver_test run rather than eyeballed. (An
+// earlier draft of this comment said "nine", read off a truncated listing; §8.3
+// retracts it explicitly. An unscoped count is the shape this repository keeps
+// getting wrong even when the argument resting on it is right, so the two
+// statements are kept in sync deliberately.) Among the seven is
+// TestFDB_DuplicateBareLeafKeepsTwoColumns — whose own
 // mint is documented as having reddened seven suites with WRONG ROWS when
-// removed. So the label question is a separate, unanalysed change; this test
+// removed; that the two sevens coincide is a coincidence, not one measurement
+// cited twice. So the label question is a separate, unanalysed change; this test
 // pins the property §2.2.2 actually asks for, at the layer it actually lives.
 func TestProjectionResultValueNeverHoldsOneNameTwice(t *testing.T) {
 	t.Parallel()

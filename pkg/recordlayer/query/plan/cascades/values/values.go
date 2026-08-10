@@ -1734,6 +1734,40 @@ func ContainsAggregate(v Value) bool {
 // Every output-naming authority that answers the second question must take the
 // path. Reading `Field` there spells two different columns alike, and a
 // name-keyed reader then serves one of them where the other was asked for.
+//
+// THE PATH IS QUALIFIED WHEN THE REFERENCE HAS A CHILD, and that is a decision,
+// not a leak. With ≥2 FROM sources the resolver emits the reference through its
+// quantifier (`resolveScopedColumn`'s correlated arm), so the FieldValue carries
+// `Child = QOV(T1)` and this returns `T1.N.SK`; with one source it returns
+// `N.SK`. MEASURED end-to-end: `SELECT n.sk, n.co FROM t1, t2` explains as
+// `Project([T1.N#1.SK#0, T1.N#1.CO#1], ...)` against `Project([N#1.SK#0, ...])`
+// for the single-source form.
+//
+// The qualifier is KEPT because dropping it would be the same conflation one
+// level up: over `FROM t1, t2` where both declare an `n`, `T1.N.SK` and
+// `T2.N.SK` are different columns and a bare `N.SK` collapses them in exactly
+// the name-keyed maps this predicate exists to protect. It is also what the two
+// neighbouring authorities already do for a childful reference — `sortKeyFieldRef`
+// renders `LEG.COL` (cascades_translator.go) and `deriveProjectionColumnDef`'s
+// non-nested arm calls `ColumnNameValue` when `Child != nil`
+// (cascades_generator.go) — so qualifying here makes the nested arm agree with
+// its siblings rather than inventing a third rule. The remaining asymmetry is
+// ProjectionColumnName's own non-nested arm, which returns a bare `Field`; that
+// arm is deliberately untouched, because changing it moves emitted names for
+// every flat qualified projection and is a separate change.
+//
+// Java agrees, and structurally: the fused nested reference is named by the
+// REQUESTED IDENTIFIER (`SemanticAnalyzer.java:599`), an `Identifier` whose
+// `fullyQualifiedName()` retains its qualifiers, and the top-level projection
+// then strips them for the user-visible label
+// (`Identifier.withoutQualifier`, Identifier.java:101). Go does the same: the
+// display label for both forms is the bare leaf `SK` — measured, so the
+// qualifier is an INTERNAL slot key and never reaches the user.
+//
+// A path step can never contain the `#` that explainValueOrdinals escapes: a
+// struct member name must be a valid protobuf identifier and DDL refuses
+// anything else ("field name \"a#1\": a#1 it not a valid protobuf identifier",
+// measured). See the escape's own note in explainValueOrdinals.
 func NestedResolvedPath(v Value) (string, bool) {
 	fv, ok := v.(*FieldValue)
 	if !ok || fv.Resolved == nil || len(fv.Resolved.Accessors) <= 1 {
@@ -1931,11 +1965,23 @@ func explainValueOrdinals(v Value, withOrdinals bool) string {
 		// 3) but is semantic since RFC-176 P2 — the escape stays because
 		// debugging output that collapses two DIFFERENT reads is still a bug
 		// (writeSemanticHash's FieldValue arm keeps the same injective
-		// discriminator). Display only: ProjectionColumnName's FieldValue arm
+		// discriminator). ProjectionColumnName's plain-field arm
 		// returns Field verbatim, so plain-field Datum keys and positional
 		// slot names never change (a COMPUTED composite over a #-named field
 		// shifts its derived key spelling consistently on writer and reader,
 		// both sides of the shared contract).
+		//
+		// "DISPLAY ONLY" IS NO LONGER THE WHOLE TRUTH, and the correction is
+		// worth stating because the escape's safety argument used to rest on it:
+		// NestedResolvedPath mints an output NAME from this renderer, so a `#`
+		// in a nested path STEP would reach a slot key doubled. It cannot: a
+		// struct member name must be a valid protobuf identifier and DDL refuses
+		// anything else — `CREATE TYPE AS STRUCT hst ("a#1" BIGINT, ...)` is
+		// rejected 42F59 `field name "a#1": a#1 it not a valid protobuf
+		// identifier` (measured, pinned in the sqldriver suite). The name path
+		// is therefore safe by the SCHEMA's constraint, not by this renderer's;
+		// if DDL ever admits a `#` in a field name, mint the path from the
+		// accessors directly instead of from explainValueOrdinals.
 		name := strings.ReplaceAll(cv.Field, "#", "##")
 		// A multi-accessor baked path renders EVERY step as name#ordinal,
 		// dot-joined (Java FieldPath.toString, FieldValue.java:428-433) — the
