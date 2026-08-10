@@ -47,6 +47,7 @@ go_test(
     srcs = [
         "aggregate_operand_name_is_data_test.go",
         "alias_map_test.go",
+        "alias_memo_identity_test.go",
         "benchmark_test.go",
         "constraints_map_test.go",
         "correlation_test.go",

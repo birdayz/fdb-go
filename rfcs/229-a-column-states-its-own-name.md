@@ -1,6 +1,6 @@
 # RFC-229: a column states its own name
 
-**Status:** DRAFT (rev 3 — two review laps; the group-key elimination is CUT, and the retirement count is corrected)
+**Status:** DRAFT (rev 4 — three more of this RFC's own claims measured and refuted: the memo-identity premise, step 0, and the §2.3 renderer)
 **Scope:** output-column naming across the projection, group-by and sort-key authorities.
 **Retires:** part of the `contract` bucket. Rev 1 claimed 10 of 12 and that number was wrong — see §6.
 **Relates to:** RFC-197 (the migration), RFC-226 (a projection states the row it produces), RFC-227 (the hidden sort column is named by the path it reads), RFC-228 (a leg column lookup declines on an ambiguous name).
@@ -52,13 +52,22 @@ A name slot on the projected column, carried through every copy, rebuild and reb
 
 All five stop rendering and start reading. There is then exactly one minting point per authority, at construction, and one way to read it.
 
-### 2.2.1 Whether the stored name participates in identity
+### 2.2.1 The stored name DOES participate in identity, and that is already true
 
-It does not, and this has to be stated rather than left to whatever the first implementation does.
+**Rev 3 said the opposite and it was measurably false.** It claimed the question was "currently unanswered" and that a name entering identity would split alias-variant plans in the memo as a new hazard. Measured on master:
 
-Java splits it: `Column.planHash` deliberately excludes auto-generated names, while `RecordConstructorValue.equalsWithoutChildren` compares fields. Go has `ProjectionOutputIdentityKey` for one half and nothing for group-by, so the question is currently unanswered rather than answered differently.
+```
+alias-only:        EqualsWithoutChildren=false  hashEqual=false
+no-alias control:  EqualsWithoutChildren=true   hashEqual=true
+```
 
-The hazard is concrete. A stored name that silently enters `EqualsWithoutChildren` or `SemanticHashCode` splits alias-variant plans in the memo: `SELECT k AS a` and `SELECT k AS b` produce structurally identical plans that stop interning, and the cost is paid as duplicated search, invisibly. §7 pins both directions.
+`SELECT k AS a` and `SELECT k AS b` already do not intern. That is deliberate and documented: `ProjectionOutputIdentityKey` is folded into `EqualsWithoutChildren` and `HashCodeWithoutChildren` on the logical projection and into `structuralKey` on the physical one, the comment states *"Output names belong in memo identity"*, and the adjacent text explicitly forecloses the other direction — *"Do not answer this by folding aliasMinted into identity — that trades a wrong label for a duplicated memo group."*
+
+It also matches Java, which is what rev 3's own closing sentence asked for while its headline asked for the reverse: `RecordConstructorValue.equalsWithoutChildren` compares fields. Go compares them too.
+
+So there is nothing to decide and nothing to pin. **The alias stays in projection memo identity.** A stored name inherits that treatment; an implementation that removed it would be a query-engine behaviour change reversing two prior RFCs, which §2 neither proposes nor justifies.
+
+The plan-hash half has no Go analogue to state: the query cache key is SQL text plus planner options, so there is no `Column.planHash` equivalent for an auto-generated name to be excluded from.
 
 ### 2.2.2 Duplicate stored names
 
@@ -72,7 +81,16 @@ Once no output-naming authority calls `explainValueOrdinals`, its only remaining
 
 This is the part that decides whether the RFC fixes anything.
 
-A fused nested reference is ONE `FieldValue{Field:"N", Resolved:[N,SK]}`. `Field` is the struct root and is *not* the column's identity — `n.sk` and `n.co` share it. Storing `Field` at construction would freeze the collapse into data, where it is harder to see and impossible to catch by reading the renderer. What gets stored is what `values.ColumnNameValue` renders: the path.
+A fused nested reference is ONE `FieldValue{Field:"N", Resolved:[N,SK]}`. `Field` is the struct root and is *not* the column's identity — `n.sk` and `n.co` share it. Measured:
+
+```
+ProjectionColumnName  n.sk -> "N"      n.co -> "N"      COLLAPSE
+ColumnNameValue       n.sk -> "N.SK"   n.co -> "N.CO"   distinct
+```
+
+Storing `Field` at construction would freeze that collapse into data, where it is harder to see and impossible to catch by reading the renderer.
+
+**But "store what `ColumnNameValue` renders" is too broad, and rev 3's wording was a trap.** Switching every column to it wholesale regresses the correlation-qualified case, which a prior fix documents as having previously served NULL. The template is RFC-227's, at `sortKeyExtraColumnName`: a **nested** reference — one with a multi-accessor `Resolved` — takes the path; everything else keeps its current rendering. That is the narrow change that closes the collapse without touching cases that are already right.
 
 RFC-227 already made this change on the sort-key side. Doing 2.1 and 2.2 without 2.3 would ship a well-organized version of the defect.
 
@@ -80,13 +98,19 @@ One consequence to hold: `values.ColumnNameValue`, the renderer 2.3 mints from, 
 
 ## 3. The defect surface is narrower than §0 implies
 
-Rev 1 said readers "re-derive the same name and look each other up by the result", generally. Measured, that is true at **three** sites: two last-wins string maps in the translator and one in `logical_predicate.go`. The other readers already carry an authoritative ordinal and use the name only as a label.
+Rev 1 said readers "re-derive the same name and look each other up by the result", generally. Rev 3 narrowed that to **three** sites and called them "the only load-bearing group-key name consumers in the engine". **That exhaustiveness claim is also false** — at least four more exist, and one is load-bearing on plan shape: `rule_push_requested_ordering_through_groupby.go` keys a last-wins map by `AccessorNamePathKey`, and its own comment names the cost of a collision as losing an index scan for an in-memory sort.
 
-That does not weaken the fix — a label that can be derived two ways is still how `(N#0 + 1)` happens — but it changes what to build first and what the tests must target. Those three maps are the only load-bearing group-key name consumers in the engine.
+What survives is the direction, not the enumeration: a label that can be derived two ways is how `(N#0 + 1)` happens, and the consumers that match by that label are where it bites. An implementation must find them rather than work from a list this RFC has now been wrong about twice.
 
 ## 4. Sequencing, and the tripwire that enforces it
 
-**Step 0, and it lands as its own commit before anything in §2:** re-key the three maps of §3 by ordinal. It is separable, it is the whole load-bearing surface, and it can be verified on its own — which means the large change that follows is a refactor over an already-correct base rather than a refactor that is also a fix. If step 0 moves a single plan or a single row, that is a defect found early and cheaply instead of inside a change touching five authorities.
+**Step 0 is STRUCK. Rev 3 specified it as "re-key the three maps of §3 by ordinal", and it is not implementable as worded — nor is it needed, because the substance already landed.** Measured:
+
+- the first two maps hold the ordinal at their **write** site (the loop counter) and at **no read** site: reads are SELECT/HAVING/ORDER BY references carrying no output-relative ordinal, and the references that *do* carry one return early before touching the map. An ordinal-keyed map has no lookup argument;
+- the third is **already ordinal-valued**, and is keyed on raw SQL source text rather than on a rendered `Value`, so it was never an instance of §0's defect class at all;
+- what *was* implementable — an ordinal channel consulted beside the name map — is substantially done, including by the commit this revision is based on.
+
+The accurate statement of the existing contract is **the ordinal channel overrides the name map**: the name gates *whether* a reference is an output column, structure decides *which*. That is what the code does. §2 therefore builds on it directly; there is no preparatory commit to land first, and rev 3's claim that step 0 is what makes §2 "a refactor over an already-correct base" was describing work that had already happened.
 
 
 Nested-path `GROUP BY` is refused with 42703 today, which is the only reason the collapse is latent. `groupby_nested_key_collapse_fdb_test.go` pins that refusal and says in its failure message what must be converted first.
@@ -117,6 +141,6 @@ Two things survive the cut. Continuations are clean: they serialize the evaluate
 - A nested-path projection asserting the stored name is the PATH and not the root, which is the §2.3 claim stated as a test rather than as a comment.
 - The pre-bake/post-bake rendering asymmetry from §0 pinned directly — against `isPlainColumnRef` in the result-set layer, which is the mask that actually hides it. Rev 1 named `OutputColumnName`'s alias check instead, so this test would have pinned a mask that does not exist and reported green.
 - `groupby_nested_key_collapse_fdb_test.go` flips from asserting the 42703 refusal to asserting 4 groups for `GROUP BY n.sk, n.co` and 2 for each single-key query — when, and only when, nested-path `GROUP BY` lands.
-- **A name-only difference must not split the memo.** `SELECT k AS a` and `SELECT k AS b` produce structurally identical plans; if the stored name reaches `EqualsWithoutChildren` or `SemanticHashCode` they stop interning and the cost is duplicated search that no assertion currently notices. Pin both directions — the name is compared where Java compares it, and excluded from the plan hash where Java excludes it.
+- **A name-only difference DOES split the memo, and that must not change.** Rev 3 asked for the opposite and was wrong about current behaviour (§2.2.1). The pin therefore guards the existing contract: `SELECT k AS a` and `SELECT k AS b` compare unequal and hash unequal, with a no-alias control that compares equal — so an implementation that quietly drops the name out of identity fails here rather than shipping as a silent planner change.
 - **The duplicate-name policy of §2.2.2**, driven from a test rather than left to the first collision in production: two projected columns of one name produce NO stored name on either, and readers fall through to the positional identity.
 - **Step 0 in isolation**: the three re-keyed maps, with the golden and the row counts unmoved. A green here before the rest begins is what makes the later change a refactor rather than a refactor-plus-fix.
