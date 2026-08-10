@@ -681,7 +681,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/recordlayer/query/plan/cascades/values/values.go # (FieldPath).ReAnchorRootInto # a == comparison # 1": {1, "contract: the nested-key re-anchor derives a root ordinal by matching the carried root accessor NAME against the flowed layout (RFC-218). It is debt by construction and the RFC says so: the correct discriminator is leg IDENTITY -- which correlation the root belongs to, against which leg each merged slot came from -- and the name is a stand-in until a caller supplies it. What keeps it honest meanwhile is that it DECLINES on a duplicate name rather than first-matching, so the failure is a refused fold and never a wrong-column read; RecordType.FieldIndex would have first-matched. Retires when the merged layout carries per-slot leg provenance the re-anchor can match on"},
 
 	// harness (1)
-	"pkg/relational/conformance/rowdiff/ordering.go # sortKeysMatchOrderBy # a EqualFold call # 1": {1, "harness: conformance oracle compares plan sort keys to SQL ORDER BY text; engine identity rules do not apply, but the entry stays until the harness is separately audited"},
+	"pkg/relational/conformance/rowdiff/ordering.go # sortKeysMatchOrderBy # a EqualFold call # 1": {1, "harness: conformance oracle matches a plan sort key against an ORDER BY key so it can tell WHICH sort a node is. AUDITED, and the audit refused the allowlist on its own evidence. The reason this entry used to carry -- 'compares plan sort keys to SQL ORDER BY text', so the name is the identity and engine rules do not apply -- was false in the half that mattered: an OrderKey renders as `ToLower(Qual) + \".\" + Col` (gen.go:1753), so the compared Col is a FRAGMENT of that text, and the generator emits `ORDER BY l.id, r.id` and `l.id, m.id, r.id` -- key vectors whose leaf names are all ID. One plan-key vector matched two DIFFERENT qualified orderings; the guard now REFUSES a qualified key and a unit pin drives both the conflation and the two caller fences (singleTablePlain, requestedOrdering) that kept it latent. It stays debt because what remains is contingent, not an identity: the leaf comparison is sound only while the generator's schema has no duplicate leaf name, which is a property of test data. MEASURED at 250 seeds: 952 sorts, 952 guard matches, 0 rejections -- the guard never fires in the corpus, and nothing censused that until the sweep gained a guard-match floor"},
 }
 
 // fieldDebtBuckets is the RFC-197 migration partition, and the ONE place the seven
@@ -1884,19 +1884,34 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form, fn string)
 	// wrapper it trusts.
 	//
 	// Gating BOTH tiers on the discriminator was tried and is wrong: it silences
-	// in_memory_sort.go:142 and rowdiff/ordering.go:241, two sites the gate holds
-	// today, because a sort key and an oracle compare names in functions that
-	// never name the type. Trading two known sites for four false positives is a
-	// worse gate on both axes, so the tiers are additive — reach is never
-	// narrowed, depth is only added where the type is in play.
+	// the SORT-KEY CARRIER shape — `plans.SortKey.Field` compared inside a
+	// function that never names a FieldValue — of which rowdiff's
+	// sortKeysMatchOrderBy is the live instance the debt list holds. Trading that
+	// shape for four false positives is a worse gate on both axes, so the tiers
+	// are additive — reach is never narrowed, depth is only added where the type
+	// is in play.
+	//
+	// The shape is named rather than pointed at by file:line on purpose, and the
+	// purpose is a measurement. This paragraph used to cite "in_memory_sort.go:142
+	// and rowdiff/ordering.go:241, two sites the gate holds today", and by the time
+	// the harness entry was audited NEITHER citation was true: RFC-197 item 3
+	// migrated the in_memory_sort comparison to ValueExpr, so it is not a site at
+	// all and appears nowhere in the debt list, and the rowdiff line number had
+	// drifted off the function it named. The argument survived — the trade is
+	// still the right one — but half of the evidence it rested on had been fixed
+	// out from under it and the prose still asserted it. A design trade defended
+	// by line numbers decays into an unfalsifiable claim; the fixtures below are
+	// what actually holds it.
 	//
 	// The PRICE of the ungated shallow tier, stated so nobody has to rediscover
 	// it: a direct `.Field` selector is typed by SPELLING ALONE. `x.Field == s`
 	// on a type unrelated to FieldValue, in a function with no FieldValue
-	// anywhere in it, is reported — the gate cannot tell it apart from
-	// in_memory_sort.go:142 (`plans.SortKey.Field`) or rowdiff/ordering.go:241,
-	// and those two are NAME-TYPED CARRIERS: the string they compare came off a
-	// FieldValue upstream and carries the conflation with it. They are real debt.
+	// anywhere in it, is reported — the gate cannot tell it apart from the
+	// sort-key carrier above, which is a NAME-TYPED CARRIER: the string it
+	// compares came off a FieldValue upstream and carries the conflation with it.
+	// It is real debt, and the audit of the harness entry is what established that
+	// rather than assuming it — the leaf name there is a FRAGMENT of the ORDER BY
+	// text it is checked against, and it did conflate two legs.
 	// So this is a deliberate trade, not an oversight — precision on unrelated
 	// `.Field` structs is spent to keep carriers visible, and it is spent knowing
 	// the type discriminator would buy the precision back at exactly that cost.

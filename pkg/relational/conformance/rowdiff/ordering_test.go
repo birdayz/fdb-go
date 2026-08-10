@@ -235,6 +235,62 @@ func TestCheckPlanOrdering_RedundantSort(t *testing.T) {
 	}
 }
 
+// TestSortKeysMatchOrderBy_QualifiedKeyNeverMatches pins the shape that made the
+// guard's leaf-name comparison unsound: a plan sort key carries a LEAF name, an
+// ORDER BY key carries `Qual` too, and matching leaf-to-leaf throws the leg away.
+//
+// The vectors here are the generator's own — gen.go emits `ORDER BY l.id [DESC],
+// r.id` for a self-join and `l.id, m.id, r.id` for a 3-way — so the leaf names
+// are all "ID" and only the qualifier separates them. The second assertion is the
+// one that makes it a conflation rather than an omission: ONE key vector would
+// otherwise match TWO different qualified orderings that are not each other.
+func TestSortKeysMatchOrderBy_QualifiedKeyNeverMatches(t *testing.T) {
+	t.Parallel()
+
+	keys := []plans.SortKey{{Field: "ID", Desc: true}, {Field: "ID"}}
+	lThenR := []OrderKey{{Col: "ID", Qual: "L", Desc: true}, {Col: "ID", Qual: "R"}}
+	rThenL := []OrderKey{{Col: "ID", Qual: "R", Desc: true}, {Col: "ID", Qual: "L"}}
+
+	if sortKeysMatchOrderBy(keys, lThenR) {
+		t.Fatal("sort keys [ID DESC, ID] matched `ORDER BY l.id DESC, r.id` — the qualifier is dropped, so the leaf name alone decided which sort this is")
+	}
+	if sortKeysMatchOrderBy(keys, rThenL) {
+		t.Fatal("the SAME sort keys also matched `ORDER BY r.id DESC, l.id` — one key vector matching two different qualified orderings is the conflation itself, not a near miss")
+	}
+
+	threeWay := []OrderKey{{Col: "ID", Qual: "L"}, {Col: "ID", Qual: "M"}, {Col: "ID", Qual: "R"}}
+	if sortKeysMatchOrderBy([]plans.SortKey{{Field: "ID"}, {Field: "ID"}, {Field: "ID"}}, threeWay) {
+		t.Fatal("sort keys [ID, ID, ID] matched the 3-way `ORDER BY l.id, m.id, r.id`")
+	}
+
+	// The refusal must be about the QUALIFIER, not about repeated leaf names:
+	// an unqualified key still matches, or the guard would reject every sort and
+	// the ordering axis would report clean by never running.
+	if !sortKeysMatchOrderBy([]plans.SortKey{{Field: "id", Desc: true}}, []OrderKey{{Col: "ID", Desc: true}}) {
+		t.Fatal("an UNQUALIFIED key stopped matching — the refusal is over-broad and the whole axis goes silent")
+	}
+}
+
+// TestCheckPlanOrdering_QualifiedFences pins the two caller-side fences that kept
+// a qualified ORDER BY away from the guard above, and it is a NEGATIVE result
+// deliberately kept: it is what makes the conflation latent rather than shipped.
+// Relaxing either fence — teaching the ordering derivation about joins, or
+// letting requestedOrdering carry a qualifier — re-arms the hole, and this test
+// is the notice that it did.
+func TestCheckPlanOrdering_QualifiedFences(t *testing.T) {
+	t.Parallel()
+
+	if got := requestedOrdering([]OrderKey{{Col: "ID", Qual: "L"}}); got != nil {
+		t.Fatalf("requestedOrdering accepted a QUALIFIED key and returned %v — fence 1 is down; a qualified ORDER BY now reaches sortKeysMatchOrderBy", got)
+	}
+	if singleTablePlain(Query{Join: &JoinSpec{}}) {
+		t.Fatal("singleTablePlain accepted a JOIN query — fence 2 is down for the self-join shape whose ORDER BY is `l.id, r.id`")
+	}
+	if singleTablePlain(Query{ThreeWay: &ThreeWayJoinSpec{}}) {
+		t.Fatal("singleTablePlain accepted a 3-WAY query — fence 2 is down for the shape whose ORDER BY is `l.id, m.id, r.id`")
+	}
+}
+
 // TestOrderingInvariant_PurePlannerSweep validates the redundant-sort invariant
 // against the REAL planner over the generative corpus, with no FDB: every
 // generated query is planned and checked, and a correct engine (whose
@@ -253,7 +309,7 @@ func TestOrderingInvariant_PurePlannerSweep(t *testing.T) {
 		}
 	}
 	var checked, violations int
-	var sorts, sortsUnprovable int
+	var sorts, sortsUnprovable, sortsGuardMatched int
 	// Per-ARM census of what the derivation actually read. A total-only floor
 	// cannot separate a live index arm from one that stopped matching: when the
 	// access path started wrapping every index scan in a covering plan, the
@@ -286,6 +342,9 @@ func TestOrderingInvariant_PurePlannerSweep(t *testing.T) {
 				if singleTablePlain(q) && len(q.OrderBy) > 0 {
 					forEachInMemorySort(plan, func(s *plans.RecordQueryInMemorySortPlan) {
 						sorts++
+						if sortKeysMatchOrderBy(s.GetSortKeys(), q.OrderBy) {
+							sortsGuardMatched++
+						}
 						if providedOrdering(s.GetInner()) == nil {
 							sortsUnprovable++
 						}
@@ -302,8 +361,8 @@ func TestOrderingInvariant_PurePlannerSweep(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("ordering-invariant sweep: %d plans checked across %d seeds; in-memory sorts observed=%d (input order unprovable=%d); leaf arms=%v; leaf types=%v",
-		checked, seeds, sorts, sortsUnprovable, leafArms, leafTypes)
+	t.Logf("ordering-invariant sweep: %d plans checked across %d seeds; in-memory sorts observed=%d (guard-matched=%d, input order unprovable=%d); leaf arms=%v; leaf types=%v",
+		checked, seeds, sorts, sortsGuardMatched, sortsUnprovable, leafArms, leafTypes)
 	if checked == 0 {
 		t.Fatal("planned zero queries — the sweep is not exercising the planner")
 	}
@@ -315,6 +374,17 @@ func TestOrderingInvariant_PurePlannerSweep(t *testing.T) {
 	// primary-key arm kept the totals looking healthy.
 	if sorts == 0 {
 		t.Fatal("the corpus produced ZERO in-memory sorts — the redundant-sort detector examined nothing, so its clean report means nothing (alarm direction: COLLAPSE)")
+	}
+	// The guard is the LAST thing between a seen sort and a reasoned-about one,
+	// and it was the one step the census did not watch: every floor above counts
+	// what the detector SAW, none counted what it ACCEPTED. A guard that starts
+	// rejecting everything — a sort key whose Field renders as an explain string
+	// rather than a bare column, say — leaves sorts, both leaf arms and the
+	// unprovable count all healthy while checkPlanOrdering returns on its first
+	// statement for every plan in the corpus, and the axis reports a clean nightly
+	// by never running. Alarm direction: COLLAPSE.
+	if sortsGuardMatched == 0 {
+		t.Fatalf("the guard accepted ZERO of the %d observed sorts as the ORDER BY sort — checkPlanOrdering skipped every one, so its clean report means nothing (alarm direction: COLLAPSE)", sorts)
 	}
 	if leafArms[orderingArmIndex] == 0 {
 		t.Fatalf("ZERO of the %d observed sorts sat over an INDEX-backed input (arms=%v) — the index arm of the ordering derivation is unreachable and the axis is silent on every index shape (alarm direction: COLLAPSE)", sorts, leafArms)
