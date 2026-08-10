@@ -21,8 +21,14 @@ import (
 // aggregate reuses only the AggregateCursorContinuation / PartialAggregationResult
 // proto message NAMES (never Java's payload structure — Go carries its own
 // count + per-aggregate count/sum/int-sum/all-int/min/max accumulator model that
-// Java's AggregateCursor cannot parse, and vice versa), and Java has no in-memory
-// sort at all. Because neither payload ever interoperates with Java, both carry a
+// Java's AggregateCursor cannot parse, and vice versa), and the sort reuses only
+// MemorySortContinuation's message name. "Java has no in-memory sort at all"
+// stood here and is FALSE — Java has MemorySortCursor, named by this very file
+// below; what Java's CASCADES has no physical sort operator for is the PLANNING
+// path, and Java's legacy RecordQueryPlanner still builds RecordQuerySortPlan and
+// mints these tokens. What makes the payload Go-internal is the payload: Go
+// writes a positional datum into SortedRecord.message where Java writes
+// record-proto bytes. Because neither payload ever interoperates with Java, both carry a
 // lossless typed codec instead of encoding/json, which corrupts row values in two
 // ways JSON cannot avoid:
 //   - the aggregate group-break key is string(tuple.Pack(...)) — arbitrary bytes;
@@ -955,9 +961,12 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 }
 
 // sortInnerExhaustedMarker rides the proto's minimum_key field as the Go-owned
-// EMIT-PHASE discriminator: the sort plan is a Go extension (Java's Cascades
-// has no physical sort operator, so Java can neither produce nor consume these
-// continuations), and Go's fill phase never uses minimum_key — in Java's own
+// EMIT-PHASE discriminator: the sort plan is a Go extension on the CASCADES path
+// (Java's Cascades has no physical sort operator; its legacy RecordQueryPlanner
+// does, and mints these tokens — so "Java can neither produce nor consume these
+// continuations" stood here and was false. Go cannot consume a Java-minted one
+// because the payloads differ, which is the property that actually holds), and
+// Go's fill phase never uses minimum_key — in Java's own
 // MemorySortCursor the field's presence likewise means "rows were already
 // emitted". A present marker means the INNER WAS EXHAUSTED when the
 // continuation was taken (a per-row emit-phase continuation): resume must go
@@ -1054,20 +1063,32 @@ func encodeSortContinuation(
 		//     mutation showing a TOLERANT alignment check would start serving the
 		//     wrong column silently, at resultset_test.go's
 		//     TestResultSet_PreRFC229SortContinuationNamesFailClosed.
-		//  2. JAVA NEVER MINTS THIS TOKEN, which is why it is not an interop
-		//     break at all. It belongs to RecordQueryInMemorySortPlan, a Go-only
-		//     read-side fallback; Java's Cascades never constructs a physical
-		//     sort (RemoveSortRule must eliminate the logical sort or planning
-		//     fails), so no Java reader can be holding one of these. The
-		//     wire-compat hard line covers what the two engines SHARE — record
-		//     and index format, key encoding, and the continuations Java also
-		//     mints — and this is not among them.
+		//  2. NO JAVA-MINTED TOKEN CARRIES THESE NAMES. Stated carefully, because
+		//     the obvious phrasing — "Java never mints this token" — is FALSE and
+		//     was written here once: MemorySortContinuation is a JAVA proto, and
+		//     Java's MemorySortCursorContinuation.toProto mints it from
+		//     RecordQuerySortPlan, which the LEGACY RecordQueryPlanner constructs.
+		//     What is true is narrower and sufficient. Java's CASCADES never builds
+		//     a physical sort (RemoveSortRule must eliminate the logical sort or
+		//     planning fails), so nothing on the shared planning path produces one;
+		//     and the payload diverged independently of this change — Go writes
+		//     each buffered row's positional datum into SortedRecord.message where
+		//     Java writes record-proto bytes, a Go-owned format Java cannot decode.
+		//     A Java-minted token therefore cannot reach this decoder at all, names
+		//     or no names. The wire-compat hard line covers what the two engines
+		//     SHARE — record and index format, key encoding, and the continuations
+		//     Java mints AND Go reads — and this pairing is not among them.
 		//  3. Pre-release, so a break confined to an in-flight sort continuation
 		//     across a rolling upgrade is an acceptable cost.
 		//
-		// If any of the three stops holding — most likely (2), if Java ever gains
-		// a physical sort — this needs a format-version bump and a decode-side
-		// reconciliation, not a relaxed alignment check.
+		// If any of the three stops holding, this needs a format-version bump and a
+		// decode-side reconciliation, not a relaxed alignment check. The condition
+		// to watch for (2) is NOT "if Java ever gains a physical sort" — Java has
+		// had one all along, which is precisely why that tripwire was dead on
+		// arrival. Watch instead for the PAYLOAD converging: if Go ever writes
+		// record-proto bytes into SortedRecord.message, or a Java-minted token
+		// becomes readable here by any route, then these names become an interop
+		// surface and (2) has stopped holding.
 		names := make([]string, len(qr.Positional.Type.Fields))
 		for fi, f := range qr.Positional.Type.Fields {
 			names[fi] = f.Name
