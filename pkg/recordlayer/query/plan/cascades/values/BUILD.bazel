@@ -123,6 +123,7 @@ go_test(
         "cast_float_identity_test.go",
         "cast_java_trim_test.go",
         "cast_round_bughunt_test.go",
+        "census_gate_test.go",
         "coercion_test.go",
         "column_identity_test.go",
         "column_name_value_test.go",

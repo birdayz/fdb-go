@@ -73,7 +73,15 @@ func (r *ImplementInMemorySortRule) Matcher() matching.BindingMatcher { return r
 func sortKeysAreOrderable(sortKeys []expressions.SortKey) bool {
 	for _, sk := range sortKeys {
 		if sk.Value == nil {
-			continue
+			// DECLINE, not tolerate. A nil Value cannot be sorted BY: the loop
+			// below would hand plans.SortKey a nil ValueExpr, and the executor
+			// rejects that as a malformed plan. Skipping the key here produced
+			// exactly that plan silently, which is the same non-contract the
+			// ordering advertiser used to encode a third way. Declining yields
+			// no plan — the outcome this rule already gives an unorderable key,
+			// and the one the streaming-aggregate twin gives a grouping key
+			// with no leaf decomposition.
+			return false
 		}
 		t := sk.Value.Type()
 		if values.IsRecord(t) || values.IsArray(t) {

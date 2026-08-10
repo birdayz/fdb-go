@@ -23,6 +23,7 @@ package plans
 // at all and the ordering claim is dropped.
 
 import (
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -348,4 +349,175 @@ func TestAggregateProvidersStateTheirOutputLayout(t *testing.T) {
 				"preserve them", ident.Ordinal)
 		}
 	})
+}
+
+// TestInMemorySortHintOrderingStatesTheKeyValueNotItsRendering pins the fifth
+// provider on the axis the four above do not reach: an in-memory sort does not
+// resolve a metadata NAME at all — it is handed the key Value the executor will
+// evaluate, and it used to throw that Value away and re-mint a lazy FieldValue
+// from SortKey.Field.
+//
+// SortKey.Field is DISPLAY text. For anything but a bare column it is
+// ExplainValue's rendering, correlation and `#ordinal` included ("q$7.AID#0"),
+// which is a string no schema can produce. Storing it as a lazy Field made the
+// sort advertise its ordering in terms of a RENDERING, and the match-domain
+// identity has to decline a flat-dotted lazy name outright — `addr.city` (a
+// nested path) and `Q.city` (an alias-qualified leaf) are the same string. The
+// decline is safe but it is not free: it is read as "this ordering does not
+// satisfy that grouping key", so streaming aggregation over an ordered input
+// falls back to a sort it did not need.
+func TestInMemorySortHintOrderingStatesTheKeyValueNotItsRendering(t *testing.T) {
+	t.Parallel()
+
+	// A CORRELATED leg reference — the shape whose SortKey.Field is the full
+	// explain rendering rather than a bare column name.
+	key := &values.FieldValue{
+		Field:    "AID",
+		Typ:      values.NullableLong,
+		Child:    values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("q$7")),
+		Resolved: values.NewFieldPathOfSingle("AID", 0, false),
+	}
+	rendered := values.ExplainValue(key)
+
+	// CONTROL, so this test cannot pass for the wrong reason. Two facts have to
+	// hold before the assertion below means anything: the rendering really is
+	// the flat-dotted shape, and a lazy FieldValue carrying it really is
+	// declined by the match-domain identity. If either stops being true the
+	// defect is no longer expressible and this test would go green vacuously.
+	if !strings.Contains(rendered, ".") || !strings.Contains(rendered, "#") {
+		t.Fatalf("control: ExplainValue of a correlated key rendered %q, which "+
+			"is not the dotted `#ordinal` shape this test is about — the "+
+			"renderer changed and this pin no longer expresses the defect",
+			rendered)
+	}
+	if _, ok := values.AccessorNamePath(&values.FieldValue{Field: rendered, Typ: values.UnknownType}); ok {
+		t.Fatalf("control: AccessorNamePath ACCEPTED a lazy field carrying the "+
+			"rendering %q. The decline this test exists to avoid is gone, so a "+
+			"pass below would prove nothing", rendered)
+	}
+	// CONTROL: the key itself must be addressable, otherwise the assertion
+	// below is satisfied by a value that is merely a different kind of broken.
+	if _, ok := values.AccessorNamePath(key); !ok {
+		t.Fatalf("control: AccessorNamePath declined the baked key itself, so " +
+			"there is no identity for HintOrdering to state")
+	}
+
+	plan := &RecordQueryInMemorySortPlan{sortKeys: []SortKey{
+		{Field: rendered, Desc: false, NullsFirst: true, ValueExpr: key},
+	}}
+
+	ordering := plan.HintOrdering()
+	if !ordering.IsKnown || len(ordering.Keys) != 1 {
+		t.Fatalf("HintOrdering = %#v, want 1 known key", ordering)
+	}
+	path, ok := values.AccessorNamePath(ordering.Keys[0])
+	if !ok {
+		t.Fatalf("the advertised sort key states no accessor path. "+
+			"HintOrdering re-minted a lazy FieldValue from the DISPLAY string "+
+			"%q instead of handing out the key Value it was given, so the "+
+			"ordering is advertised as a rendering and every identity consumer "+
+			"declines it", rendered)
+	}
+	if len(path) != 1 || path[0] != "AID" {
+		t.Fatalf("advertised sort key states accessor path %v, want [AID] — "+
+			"the correlation root is excluded from the path by construction",
+			path)
+	}
+	if ordering.Keys[0] != values.Value(key) {
+		t.Fatalf("advertised sort key is a COPY (%q), not the key Value the "+
+			"executor evaluates. A restated key is a second identity for one "+
+			"column, which is the conflation the ordinal exists to prevent",
+			values.ExplainValue(ordering.Keys[0]))
+	}
+}
+
+// TestInMemorySortHintOrderingIsUnknownWhenUnbaked pins the OTHER direction of
+// the same change, and it replaces a test that pinned the OPPOSITE contract.
+//
+// The deleted test (TestInMemorySortHintOrderingKeepsDisplayNameWhenUnbaked)
+// asserted that a SortKey with no ValueExpr still advertises a lazy FieldValue
+// built from its display name. That made the ADVERTISER more permissive than the
+// EXECUTOR of the same struct: in_memory_sort.go declares ValueExpr REQUIRED and
+// the cursor rejects a nil one as a malformed plan (TestSortCursor_
+// UnbakedKeyIsLoud), so the advertised ordering was a claim about a plan that
+// cannot run. It also entrenched nothing testable — with a nil ValueExpr both the
+// old always-lazy code and the fixed code take the same branch, so it stayed
+// green under the mutation that reverts the fix while making the dead arm look
+// covered.
+//
+// The contract now: an unbaked key yields an UNKNOWN ordering. Never a silent
+// name mint — a rendered display string re-entered as an identity is declined by
+// AccessorNamePath, so an ordering advertised that way is not comparable with a
+// baked one, and two producer-dependent vocabularies is what makes satisfaction
+// unreliable.
+func TestInMemorySortHintOrderingIsUnknownWhenUnbaked(t *testing.T) {
+	t.Parallel()
+
+	plan := &RecordQueryInMemorySortPlan{sortKeys: []SortKey{
+		{Field: "SCORE", Desc: true, NullsFirst: false},
+	}}
+	ordering := plan.HintOrdering()
+	if ordering.IsKnown || len(ordering.Keys) != 0 {
+		t.Fatalf("HintOrdering = %#v, want an UNKNOWN ordering for a nil ValueExpr. "+
+			"Advertising anything here claims an order for a plan the sort cursor "+
+			"rejects as malformed, and a key minted from the display string %q is a "+
+			"rendering re-entered as an identity", ordering, "SCORE")
+	}
+
+	// A key that IS baked still advertises, so the assertion above is the nil
+	// arm and not the whole function going dark.
+	baked := values.NewFlatFieldValue("SCORE", values.UnknownType)
+	ok := (&RecordQueryInMemorySortPlan{sortKeys: []SortKey{
+		{Field: "SCORE", Desc: true, NullsFirst: false, ValueExpr: baked},
+	}}).HintOrdering()
+	if !ok.IsKnown || len(ok.Keys) != 1 || ok.Keys[0] != values.Value(baked) {
+		t.Fatalf("control: a BAKED key advertised %#v, want the key Value itself. "+
+			"Without this, the assertion above is satisfied by HintOrdering never "+
+			"advertising anything at all", ok)
+	}
+	if !ok.Descending[0] || ok.NullsFirst[0] {
+		t.Fatalf("control: direction lost on the baked key: Descending=%v NullsFirst=%v, want true/false",
+			ok.Descending[0], ok.NullsFirst[0])
+	}
+}
+
+// TestInMemorySortHintOrderingMintsNothingWhenUnbaked is the census-side half of
+// the pin above: the nil arm must not record a lazy mint either.
+//
+// This is the fact the whole-corpus number rests on. The mint census counted
+// 21,865 lazy-EXPLAIN-RENDERED mints from this one line; the corpus gate asserts
+// that class is now 0. A silent re-mint here would put it straight back, and the
+// ordering assertion above cannot see a mint that is recorded and then discarded.
+func TestInMemorySortHintOrderingMintsNothingWhenUnbaked(t *testing.T) {
+	// Not parallel: it owns the process census counters and the census gate flag
+	// for its duration.
+	was := values.LegIdentityCensusEnabled()
+	values.SetLegIdentityCensusEnabled(true)
+	values.ResetFieldValueMintCensus()
+	t.Cleanup(func() {
+		values.ResetFieldValueMintCensus()
+		values.SetLegIdentityCensusEnabled(was)
+	})
+
+	// The exact shape that broke: a rendered Explain label in Field — dot and
+	// `#ordinal` — which is what ClassifyFieldMint buckets as lazy-EXPLAIN-RENDERED.
+	const rendered = "q$50765.AID#0"
+	if got := values.ClassifyFieldMint(rendered, false); got != values.FieldMintLazyExplainRendered {
+		t.Fatalf("control: %q classifies as %v, not lazy-EXPLAIN-RENDERED — the fixture no "+
+			"longer expresses the class this test is about", rendered, got)
+	}
+
+	plan := &RecordQueryInMemorySortPlan{sortKeys: []SortKey{{Field: rendered}}}
+	_ = plan.HintOrdering()
+
+	total, counts := values.FieldValueMintCensus()
+	if counts[values.FieldMintLazyExplainRendered] != 0 {
+		t.Fatalf("HintOrdering minted %d lazy-EXPLAIN-RENDERED FieldValue(s) from a display "+
+			"string; the corpus gate's ceiling of 0 on that class exists because this line "+
+			"was its only producer", counts[values.FieldMintLazyExplainRendered])
+	}
+	if total != 0 {
+		t.Fatalf("HintOrdering minted %d FieldValue(s) for an unbaked key, want none — "+
+			"any mint here is a display rendering re-entered as an identity", total)
+	}
 }

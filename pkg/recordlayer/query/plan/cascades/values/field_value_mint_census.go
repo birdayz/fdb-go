@@ -377,3 +377,109 @@ func DumpOrderingBridgeDottedCensus(w io.Writer, label string) {
 		fmt.Fprintf(w, "    %s  x%d\n", n, ws[n])
 	}
 }
+
+// ---- the MINT census's GATE ----------------------------------------------
+//
+// (Back to the mint census above; the ordering-bridge block between is a
+// different population and carries no gate.)
+//
+// Printed and not asserted until this existed, exactly like its consumer-side
+// twin next door. `lazy-EXPLAIN-RENDERED 21,865 -> 0` lived in one prose string
+// on the field-decision ratchet, which nothing parses, so a regression back to
+// 21,865 would have failed nothing at all.
+
+// FieldValueMintGates are the populations this census refuses to let move
+// silently.
+//
+//   - MinTotal guards VACUITY, against the INDEPENDENT denominator. A ceiling of
+//     zero over zero observed mints passes perfectly while measuring nothing;
+//     that green-from-an-empty-set is the failure this repo hits most.
+//
+//   - MaxExplainRendered is the GROWTH ceiling on FieldMintLazyExplainRendered,
+//     the one class whose non-zero is a DEFECT rather than debt: a Field
+//     carrying both '.' and '#' is the shape explainValueOrdinals emits and
+//     nothing else does, so it is Explain OUTPUT fed back in as identity. Its
+//     whole measured population — 21,865 mints, all 64 captured origins on one
+//     line — came from RecordQueryInMemorySortPlan.HintOrdering minting a lazy
+//     FieldValue from SortKey.Field while SortKey.ValueExpr held the baked
+//     identity all along. That arm is gone; the expected value is 0, and there
+//     is no floor to pair with this ceiling because zero IS the steady state
+//     here.
+//
+// The PARTITION is checked unconditionally whenever gates is non-nil: a class
+// vector that disagrees with the independently counted total means a mint took a
+// path no arm classified, which is a bug in this census rather than a fact about
+// the code — and it makes every number above it unreadable. It is exact under
+// any filter, so it needs no floor to be honest.
+//
+// A nil *FieldValueMintGates is a no-op, the shape a narrowed run needs for
+// MinTotal. The ceiling and the partition survive narrowing (a subset cannot
+// exceed the whole, and a sum of non-negative counters is exact under any
+// filter), so both are checked whenever gates is non-nil.
+type FieldValueMintGates struct {
+	MinTotal           int
+	MaxExplainRendered *int
+}
+
+// AssertFieldValueMintCensus checks the process census against its gates.
+func AssertFieldValueMintCensus(w io.Writer, gates *FieldValueMintGates) bool {
+	total, counts := FieldValueMintCensus()
+	return assertFieldValueMintCensusState(w, total, counts, FieldValueMintOrigins(), gates)
+}
+
+// assertFieldValueMintCensusState is the whole decision over EXPLICIT state, so
+// a unit test can drive every arm without depending on what a corpus contains.
+func assertFieldValueMintCensusState(w io.Writer, total int, counts [fieldMintClassCount]int,
+	origins []string, gates *FieldValueMintGates,
+) bool {
+	if gates == nil {
+		return false
+	}
+	failed := false
+	sum := 0
+	for _, n := range counts {
+		sum += n
+	}
+	if sum != total {
+		failed = true
+		fmt.Fprintf(w, "FIELD-VALUE MINT CENSUS FAIL: classes sum to %d against an independently\n"+
+			"  counted total of %d — %d mint(s) took a path no arm classified. That is a bug in\n"+
+			"  THIS CENSUS, not a fact about the code, and it makes the ceiling below unreadable:\n"+
+			"  an unclassified mint could be of exactly the class the ceiling watches.\n",
+			sum, total, total-sum)
+	}
+	if gates.MinTotal > 0 && total < gates.MinTotal {
+		failed = true
+		fmt.Fprintf(w, "FIELD-VALUE MINT CENSUS FAIL: %d mint(s) observed, want >= %d.\n"+
+			"  ALARM DIRECTION: vacuity. No mint reached the hooks at all, so every zero class is\n"+
+			"  the absence of a POPULATION rather than the absence of a shape. The census never\n"+
+			"  ran, the corpus is empty, or the hook detached — and the lazy-EXPLAIN-RENDERED\n"+
+			"  ceiling of 0 passes over zero observations while measuring nothing.\n",
+			total, gates.MinTotal)
+	}
+	if gates.MaxExplainRendered != nil &&
+		counts[FieldMintLazyExplainRendered] > *gates.MaxExplainRendered {
+		failed = true
+		fmt.Fprintf(w, "FIELD-VALUE MINT CENSUS FAIL: %d lazy-EXPLAIN-RENDERED mint(s), want <= %d.\n"+
+			"  ALARM DIRECTION: growth — the only direction there is here, because 0 is the steady\n"+
+			"  state and there is no floor to pair with this. A Field carrying both '.' and '#' is\n"+
+			"  Explain OUTPUT re-entered as an IDENTITY: the match-domain identity then declines it\n"+
+			"  (a rendered label is indistinguishable as a string from a real nested path), so the\n"+
+			"  value is not comparable with a baked one and satisfaction becomes producer-dependent.\n"+
+			"  This population was 21,865 and every captured origin was one line —\n"+
+			"  RecordQueryInMemorySortPlan.HintOrdering minting from SortKey.Field while\n"+
+			"  SortKey.ValueExpr held the baked identity. Fix the PRODUCER; the origins below name it.\n",
+			counts[FieldMintLazyExplainRendered], *gates.MaxExplainRendered)
+	}
+	if failed {
+		fmt.Fprintf(w, "  classes:")
+		for i := FieldMintClass(0); i < fieldMintClassCount; i++ {
+			fmt.Fprintf(w, " %s=%d", i, counts[i])
+		}
+		fmt.Fprintf(w, " total=%d\n", total)
+		for _, o := range origins {
+			fmt.Fprintf(w, "  dotted mint origin:\n%s\n", o)
+		}
+	}
+	return failed
+}

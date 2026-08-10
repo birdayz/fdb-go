@@ -982,8 +982,36 @@ func (p *RecordQueryInMemorySortPlan) HintOrdering() properties.Ordering {
 	desc := make([]bool, len(sks))
 	nullsFirst := make([]bool, len(sks))
 	for i, sk := range sks {
-		values.NoteFieldValueMint(sk.Field, false)
-		keys[i] = &values.FieldValue{Field: sk.Field, Typ: values.UnknownType}
+		if sk.ValueExpr == nil {
+			// ValueExpr is REQUIRED of every SortKey (see in_memory_sort.go),
+			// and the executor enforces that: a nil one is rejected as a
+			// malformed plan, loud, never a name read. An ADVERTISER that
+			// minted a lazy FieldValue from SortKey.Field instead was therefore
+			// MORE PERMISSIVE THAN THE EXECUTOR OF THE SAME STRUCT — it stated
+			// an ordering for a plan the cursor will refuse to run.
+			//
+			// It also stated it in a second vocabulary. SortKey.Field is a
+			// DISPLAY rendering: for anything but a bare column it is
+			// ExplainValue's output, correlation and `#ordinal` included. A
+			// lazy FieldValue carrying that string is declined by the
+			// match-domain identity (AccessorNamePath), because a rendered
+			// label is indistinguishable as a string from a real nested path.
+			// So the advertised ordering was not comparable with a baked one,
+			// which is what made satisfaction producer-dependent rather than
+			// merely untidy.
+			//
+			// UNKNOWN rather than a panic: HintOrdering is a property
+			// advertiser with no error channel, and the contract already has
+			// exactly one loud enforcement point — the executor, where an error
+			// can be returned and where the plan is actually rejected. An
+			// advertiser that under-claims costs a plan shape; one that
+			// over-claims is the bug being fixed here.
+			return properties.Ordering{}
+		}
+		// The key's OWN Value is the identity, and the sort re-orders rows
+		// without reshaping them, so the Value the executor evaluates per row is
+		// exactly the Value this plan provides an ordering ON.
+		keys[i] = sk.ValueExpr
 		desc[i] = sk.Desc
 		nullsFirst[i] = sk.NullsFirst
 	}

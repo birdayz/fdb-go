@@ -86,11 +86,16 @@ var knownUnknownTypeMints = map[string]int{
 	"pkg/recordlayer/query/plan/cascades/values/values.go":                  3,
 	"pkg/recordlayer/query/plan/cascades/vector_index_match_candidate.go":   1,
 	"pkg/recordlayer/query/plan/cascades/windowed_index_match_candidate.go": 1,
-	"pkg/recordlayer/query/plan/plans/ordering.go":                          2,
-	"pkg/recordlayer/query/plan/plans/streaming_aggregation.go":             1,
-	"pkg/relational/core/embedded/logical_predicate.go":                     2,
-	"pkg/relational/core/query/cascades_translator.go":                      18,
-	"pkg/relational/core/query/clustered_outer_scalar.go":                   2,
+	// Was 2. The second was RecordQueryInMemorySortPlan.HintOrdering minting a
+	// lazy FieldValue from SortKey.Field when ValueExpr was nil — an advertiser
+	// re-entering a DISPLAY rendering as an identity, and more permissive than
+	// the executor of the same struct, which rejects a nil ValueExpr outright.
+	// That arm now returns an UNKNOWN ordering instead of minting.
+	"pkg/recordlayer/query/plan/plans/ordering.go":              1,
+	"pkg/recordlayer/query/plan/plans/streaming_aggregation.go": 1,
+	"pkg/relational/core/embedded/logical_predicate.go":         2,
+	"pkg/relational/core/query/cascades_translator.go":          18,
+	"pkg/relational/core/query/clustered_outer_scalar.go":       2,
 }
 
 // scanUnknownTypeMints reports every reference to UnknownType that appears
