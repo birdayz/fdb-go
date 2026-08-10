@@ -3080,6 +3080,29 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				if err := resolveColumnRefStructural(resolver, gb.bare, gb.qualifier, gb.qualified); err != nil {
 					return nil, err
 				}
+				// KEEP THIS EVEN THOUGH NOTHING REACHES IT TODAY, and do not
+				// mistake it for a duplicate encoding of one rule at one site.
+				// It is THE SAME RULE at a SECOND DISPATCH SITE — the one
+				// resolveColumnRefStructural directly above already occupies.
+				// The two calls are a pair: this builder and the PlanVisitor's
+				// GROUP BY validation each validate a grouping key, and a key
+				// that resolves here must be refused here for the same reason
+				// it is refused there. Dropping the refusal from one of the two
+				// sites while leaving the resolution check at both is the
+				// asymmetry that produced the defect this gate closes: a
+				// grouping key was checked for EXISTENCE everywhere and for
+				// being a legal KEY nowhere.
+				//
+				// Measured: instrumenting this arm to fault on firing and
+				// running the nested-key corpus in
+				// sqldriver/groupby_nested_path_refused_fdb_test.go and
+				// groupby_nested_key_collapse_fdb_test.go, it never fires —
+				// the PlanVisitor's copy of this validation runs first and
+				// refuses. That is a statement about which site wins the race
+				// today, not about this site being redundant; a new SELECT
+				// build path, or any reordering that lets this builder see a
+				// grouping key first, makes it the only thing standing between
+				// a nested key and the executor.
 				if err := rejectNestedPathGroupKey(resolver, gb.bare, gb.qualifier, gb.qualified); err != nil {
 					return nil, err
 				}
@@ -3667,15 +3690,23 @@ func resolveColumnRefStructural(resolver *expr.Resolver, bare, qualifier string,
 // It is a REFUSAL, not a resolution failure, and the distinction is the whole
 // point. The reference is perfectly well-formed — `n.sk` answers in SELECT,
 // WHERE and ORDER BY over the same table — so reporting it as an undefined
-// column would describe a column that demonstrably exists. Java draws the same
-// line in the same place: visitGroupByItem's ONLY gate is
-// `Assert.isNullUnchecked(ctx.order, ErrorCode.UNSUPPORTED_QUERY, "ordering
-// grouping column is not supported")` (ExpressionVisitor.java:250-258), and
-// everything else the item's expression resolves to is accepted — including a
-// nested path, since the item goes through the same resolveIdentifier /
-// lookupNestedField route every other reference does. So the nested key is a
-// capability Go lacks and Java has, and UNSUPPORTED_QUERY is the code Java
-// itself spends on an unsupported GROUP BY item.
+// column would describe a column that demonstrably exists.
+//
+// Java draws the same line in the same place, MEASURED against the live server
+// at tag 4.12.11.0 by conformance/nested_groupby_key_java_probe_test.go: a
+// nested grouping key reaches Java's PLANNER — every nested shape lands on the
+// same outcome as a flat key ("Cascades planner could not plan query", no
+// SQLSTATE) — while a qualifier resolving to nothing is refused earlier with
+// 42703. Java spends "undefined column" on a reference that does not resolve
+// and does not spend it here. UNSUPPORTED_QUERY is also the code Java's own
+// visitGroupByItem spends on a GROUP BY item it will not take
+// (`Assert.isNullUnchecked(ctx.order, ErrorCode.UNSUPPORTED_QUERY, "ordering
+// grouping column is not supported")`, ExpressionVisitor.java:250-258).
+//
+// The measurement is about WHICH LAYER refuses, which is what the error-code
+// choice turns on. It does not say Java ANSWERS a nested grouping key: at this
+// tag Java's Cascades declines the flat key too, absent a matching aggregate
+// index.
 //
 // Two properties of the OLD behaviour this replaces, both measured:
 //
@@ -3692,8 +3723,11 @@ func resolveColumnRefStructural(resolver *expr.Resolver, bare, qualifier string,
 //     never ran.
 //
 // Only a QUALIFIED reference can descend: the bare arm returns an empty
-// accessor chain by Java's own rule (SemanticAnalyzer.java:557-559), so a bare
-// key cannot reach a struct member and is left alone.
+// accessor chain, so a bare key cannot reach a struct member and is left alone.
+// INFERRED FROM JAVA SOURCE (SemanticAnalyzer.java:557-559) — a descent needs a
+// prefix to consume, so an unqualified name mints no accessors. Unlike the
+// error-code choice above, this one is not separately measured; it is pinned on
+// the Go side by expr's DescendsIntoStruct tests.
 func rejectNestedPathGroupKey(resolver *expr.Resolver, bare, qualifier string, qualified bool) error {
 	if resolver == nil || bare == "" || !qualified {
 		return nil

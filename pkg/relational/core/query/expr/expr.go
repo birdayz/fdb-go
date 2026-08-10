@@ -193,12 +193,15 @@ func (r *Resolver) functionCatalog() *semantic.FunctionCatalog {
 // struct column rather than addressing a source column directly — `n.sk` where
 // `n` is a struct column, as opposed to `t.sk` where `t` is a FROM source.
 //
-// The fact comes from the semantic layer's own accessor chain (Java's
-// lookupNestedField result, SemanticAnalyzer.java:578-601), never from the
+// The fact comes from the semantic layer's own accessor chain, never from the
 // shape of the produced Value: fuseNestedAccessors happens to yield a
 // multi-accessor FieldPath today, but the number of accessors a root reference
 // carries is a property of the source kind, so counting them would be an
-// inference where the analyzer already states the answer.
+// inference where the analyzer already states the answer. The accessor chain is
+// the analogue of Java's lookupNestedField result — INFERRED FROM JAVA SOURCE,
+// SemanticAnalyzer.java:578-601, not observed against a running server; what IS
+// measured live is the outcome this gate produces, in
+// conformance/nested_groupby_key_java_probe_test.go.
 //
 // A resolution FAILURE reports false with the error, so a caller gating on the
 // descent never converts an unrelated lookup failure into its own verdict —

@@ -80,7 +80,7 @@ func TestRejectNestedPathGroupKey(t *testing.T) {
 		{
 			name: "a bare reference is allowed", bare: "SK", qualifier: "", qualified: false,
 			wantRefuse: false,
-			why:        "the bare arm cannot descend at all (SemanticAnalyzer.java:557-559), so it is never this gate's business",
+			why:        "the bare arm cannot descend at all (INFERRED FROM JAVA SOURCE, SemanticAnalyzer.java:557-559), so it is never this gate's business",
 		},
 		{
 			name: "an unresolvable qualifier is left to the existence check", bare: "SK", qualifier: "NOPE", qualified: true,

@@ -30,13 +30,23 @@ import (
 //
 // WHY 0AF00 AND NOT 42703. The reference is well-formed — `n.sk` answers in
 // SELECT, WHERE and ORDER BY over the same table, asserted below — so
-// "undefined column" would name a column that demonstrably exists. Java accepts
-// a nested grouping key outright: visitGroupByItem's only gate is
-// UNSUPPORTED_QUERY for an ordering grouping column (ExpressionVisitor.java:
-// 250-258) and the item's expression otherwise resolves through the same
-// lookupNestedField route every reference uses. So this is a capability Go
-// lacks and Java has, and UNSUPPORTED_QUERY is the code Java itself spends on
-// an unsupported GROUP BY item.
+// "undefined column" would name a column that demonstrably exists.
+//
+// MEASURED, not inferred: conformance/nested_groupby_key_java_probe_test.go
+// runs these shapes against the live Java server at tag 4.12.11.0. Java gets a
+// nested grouping key PAST semantic analysis — every nested key produces the
+// same outcome as a FLAT key ("Cascades planner could not plan query", no
+// SQLSTATE), while a qualifier that resolves to nothing produces 42703
+// ("Attempting to query non existing column ZZZ.SK"). Java therefore spends
+// 42703 on a reference that does not resolve and does NOT spend it here; the
+// layer that turns the nested key away in Java is the planner, not the
+// resolver. UNSUPPORTED_QUERY is also the code Java's own visitGroupByItem
+// spends on a GROUP BY item it will not take (ExpressionVisitor.java:250-258).
+//
+// What the measurement does NOT say: Java does not ANSWER a nested grouping
+// key at this tag either — its Cascades declines the flat key too, absent a
+// matching aggregate index. The claim is about WHICH LAYER refuses, which is
+// exactly what the error-code choice turns on.
 //
 // WHEN NESTED GROUPING KEYS LAND, delete the gate and assert the answers: over
 // the seeded (1,1)(1,2)(2,1)(2,2)(1,1) in t1, `GROUP BY n.sk, n.co` is 4 groups
@@ -273,17 +283,34 @@ func TestFDB_GroupByNestedPathRefusedCleanly(t *testing.T) {
 		}
 	})
 
-	t.Run("an unresolvable qualifier keeps its own error", func(t *testing.T) {
+	t.Run("a qualifier Go cannot resolve keeps its own error", func(t *testing.T) {
 		t.Parallel()
 		// The refusal must not swallow the existence check: a qualifier that
 		// resolves to nothing is still 42703, decided where it always was. If
 		// this started reporting 0AF00, the new gate would be deciding
 		// existence too — and a genuinely misspelled key would be reported as
 		// an unsupported feature.
+		//
+		// WHAT THIS PINS IS CURRENT GO BEHAVIOUR, NOT A SEMANTIC RULE. Go does
+		// not resolve the THREE-SEGMENT `alias.struct.member` spelling at all —
+		// anywhere, not just in GROUP BY — so `A.N` reaches the existence check
+		// as an unresolvable qualifier and that check answers 42703. That is a
+		// Go limitation. Java RESOLVES the spelling and answers rows: measured
+		// live at tag 4.12.11.0 by conformance/nested_groupby_key_java_probe_test.go,
+		// whose three_segment_select_control runs `SELECT a.n.sk FROM t AS a`
+		// and gets [[1] [1] [2]] out of Java while Go returns this same 42703.
+		//
+		// So this assertion says "42703 is what Go produces today, from the
+		// existence check", NOT "a three-segment qualifier cannot exist". When
+		// Go learns the spelling, this case moves to the 0AF00 group above —
+		// it is the same struct descent — and it must not silently keep
+		// answering 42703 on the way there.
 		const q = "SELECT a.n.sk, COUNT(*) FROM t2 AS a GROUP BY a.n.sk"
 		_, err := db.QueryContext(ctx, q)
 		if err == nil {
-			t.Fatalf("%s planned; A.N is not a resolvable qualifier", q)
+			t.Fatalf("%s planned. Go may have learned the three-segment spelling; "+
+				"if so this key is a struct descent and belongs with the 0AF00 "+
+				"group above, not here", q)
 		}
 		if !strings.Contains(err.Error(), "42703") {
 			t.Errorf("%s: got %v, want 42703 — existence stays owned by the "+

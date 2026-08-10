@@ -59,8 +59,13 @@ import (
 // embedded/logical_predicate.go), which is why the escaping query is folded into
 // the gate below rather than pinned as a defect, and why the expected code is
 // 0AF00: the reference is well-formed and answers in SELECT, WHERE and ORDER BY,
-// so it is an unsupported FEATURE, not an undefined column — Java's own code for
-// an unsupported GROUP BY item (ExpressionVisitor.java:251). The wider shape
+// so it is an unsupported FEATURE, not an undefined column. Measured against the
+// live Java server at tag 4.12.11.0 by
+// conformance/nested_groupby_key_java_probe_test.go: Java gets a nested grouping
+// key past semantic analysis (it reaches the planner, exactly as a flat key
+// does) and reserves 42703 for a qualifier that resolves to nothing. 0AF00 is
+// also the code Java's own visitGroupByItem spends on a GROUP BY item it will
+// not take (ExpressionVisitor.java:251). The wider shape
 // coverage lives in groupby_nested_path_refused_fdb_test.go; what this file
 // keeps watching is the collapse-ordering constraint above.
 func TestFDB_GroupByNestedPathRejected(t *testing.T) {

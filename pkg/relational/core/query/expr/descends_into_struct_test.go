@@ -60,9 +60,10 @@ func TestDescendsIntoStruct(t *testing.T) {
 			if !got {
 				t.Errorf("n.%s reported as NOT descending into a struct.\n"+
 					"  N is a struct column and %s is one of its members, so this is "+
-					"the descent Java's lookupNestedField mints "+
-					"(SemanticAnalyzer.java:578-601). A false here disarms the GROUP BY "+
-					"refusal and the key escapes to the executor as a malformed plan.", leaf, leaf)
+					"the descent Java's lookupNestedField mints — INFERRED FROM JAVA "+
+					"SOURCE, SemanticAnalyzer.java:578-601. A false here disarms the "+
+					"GROUP BY refusal and the key escapes to the executor as a "+
+					"malformed plan.", leaf, leaf)
 			}
 		}
 	})
@@ -93,8 +94,9 @@ func TestDescendsIntoStruct(t *testing.T) {
 		}
 		if got {
 			t.Error("a bare `sk` reported as descending into a struct.\n" +
-				"  The bare arm returns an empty accessor chain by Java's own rule " +
-				"(SemanticAnalyzer.java:557-559): a descent needs a prefix to consume. " +
+				"  The bare arm returns an empty accessor chain: a descent needs a " +
+				"prefix to consume (INFERRED FROM JAVA SOURCE, " +
+				"SemanticAnalyzer.java:557-559). " +
 				"A true here would refuse ordinary flat GROUP BY keys.")
 		}
 	})
