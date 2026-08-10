@@ -534,11 +534,16 @@ func (p *FieldPath) RootOrdinalIn(frontier OrdinalDomain) (int, bool) {
 // because an ordinal does not fail the way an unresolvable name does.
 //
 // Declines, rather than guessing, when the root name is absent or DUPLICATED in
-// `flowed`. RecordType.FieldIndex returns the first name match, so a layout
-// holding two columns of the root's name would resolve to the left one whatever
-// the reference meant. Disambiguating that needs leg IDENTITY — which
-// correlation the root belongs to, against which leg each slot came from — not a
-// name, and until a caller supplies it the correct answer is to decline.
+// `flowed`. A layout can legitimately hold two columns of the root's name — a
+// leg-concat merges A.K and B.K into one row — and a name cannot say which of
+// them the reference meant; answering with either is a guess that reads as a
+// fact, and the loser is a real column of the same type that nothing downstream
+// rejects. Declining is also the only behaviour this package still offers:
+// FieldIndexUnique / LookupFieldUnique resolve a name ONLY when it matches
+// exactly one field, and no first-matching form survives to be reached for by
+// mistake. Disambiguating a duplicate needs leg IDENTITY — which correlation the
+// root belongs to, against which leg each slot came from — not a name, and until
+// a caller supplies it the correct answer is to decline.
 func (p *FieldPath) ReAnchorRootInto(flowed *RecordType) (*FieldPath, string, bool) {
 	if p == nil || len(p.Accessors) < 2 {
 		return nil, "not a multi-accessor path", false
