@@ -532,16 +532,24 @@ type RecordTypeLeg struct {
 	// rewriting its comparison:
 	//
 	//   - executor.rowSlotForLegColumn's dotted arm (`EqualFold(leg.Name, qual)`
-	//     in executor/ordinal_join.go). The leg-column provenance census measures
-	//     it answering TWICE over the real-FDB sqldriver corpus — `C.CV` and
-	//     `I.QTY` — every one over a leg that also states an identity, so
-	//     the leg TABLE is ready. (Dated point measurement, 2026-08-06, STABLE
-	//     across two consecutive full-suite runs; the standing instrument is
-	//     executor.AssertLegColumnProvenanceCensus, whose `unstated` and
-	//     `diverged` zeros are what actually gate the conversion. This line read
-	//     "FOUR times" while listing THREE witnesses — the count and the witness
-	//     list disagreed with each other as well as with the census, which is how
-	//     long a prose number can rot before anyone re-reads the instrument.)
+	//     in executor/ordinal_join.go). MEASURED ZERO over the real-FDB sqldriver
+	//     corpus, and this line is corrected rather than annotated because it is
+	//     the third distinct number it has carried. It said "FOUR times" while
+	//     listing THREE witnesses; it was corrected to "TWICE ... `C.CV` and
+	//     `I.QTY`"; both are now stale. The producer that reached the arm was
+	//     closed by RFC-212 §11.3's `unqualifiedScalarTitle`
+	//     (scalar_subquery_seed.go:205-214), so nothing drives it today and the
+	//     standing assertion in executor's leg-column provenance census
+	//     (leg_column_provenance_census.go:552-564) now holds the arm at a HARD
+	//     ZERO — with the alarm direction stated there as GROWTH, since a count
+	//     means the producer came back.
+	//
+	//     THE LESSON THIS LINE KEEPS RE-TEACHING: a prose number carries no
+	//     instrument, so it rots silently while the assertion two files over
+	//     stays correct. Read the census, not this sentence. The arm's SAFETY
+	//     does not rest on the zero anyway — a flat exact match runs first and
+	//     wins, and a manufactured qualifier naming no leg declines with no
+	//     leaf-only fallback, both pinned by unit tests in the executor package.
 	//     The READER is blocked at its PRODUCER, not at
 	//     the comparison: the qualifier is split out of a column name a producer
 	//     PACKED, and those producers are CQ-53's booked mints (the join rule's

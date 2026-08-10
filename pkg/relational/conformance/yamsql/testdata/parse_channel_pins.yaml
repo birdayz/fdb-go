@@ -50,3 +50,28 @@ tests:
     rows:
       - [8]
       - [7]
+
+  # RECURSIVE-CTE leg with a QUOTED DOTTED column name. This is the shape
+  # recursiveRemapValues' name arm names as its residual hazard: within a
+  # verbatim Field string, "is this dot a qualifier?" is ambiguous, and a
+  # quoted CTE column alias re-projected in a recursive leg is the only
+  # route to a dotted name whose dot is NOT a qualifier (proto field names
+  # cannot carry dots). If the arm splits it, "A.B" becomes a read of a
+  # correlation named A — a wrong slot or a resolution failure, not a
+  # cosmetic one.
+  #
+  # Pinned because the arm is measured UNREACHED over the corpus rather
+  # than proven unreachable, and an unreached hazard with no test is one
+  # refactor away from being a live one. If this scenario ever starts
+  # failing, the split has begun firing on a quoted identifier.
+  - query: |
+      WITH RECURSIVE r("A.B") AS (
+        SELECT id FROM u WHERE id = 1
+        UNION ALL
+        SELECT "A.B" + 1 FROM r WHERE "A.B" < 3
+      )
+      SELECT "A.B" FROM r ORDER BY "A.B"
+    rows:
+      - [1]
+      - [2]
+      - [3]

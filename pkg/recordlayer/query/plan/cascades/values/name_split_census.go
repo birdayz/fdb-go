@@ -413,22 +413,42 @@ func assertNameSplitCounts(w io.Writer, counts [nameSplitSiteCount][nameSplitCla
 					"  population. Either the shapes that drive it stopped being planned, or the\n"+
 					"  recorder was dropped from the arm.\n", s, total, floors.Calls[s])
 			}
-			split := counts[s][NameSplitBare] + counts[s][NameSplitQualified]
+			// NO-SEGMENTS decisions: the site decided without a parse-tree
+			// triple in hand. WORDING CORRECTED, METRIC KEPT — and the choice
+			// between those two is worth recording, because both were available.
+			//
+			// This was called "entered a SPLITTING arm". There is no splitting
+			// arm at either site any more: CQ-52 deleted the first-dot
+			// re-split, so qualification is the parser's segment count alone
+			// and NameSplitQualified has no producer left. Describing a live
+			// metric in terms of a deleted branch is the same failure the
+			// guard-shelf-life rule names — the number keeps moving, the story
+			// around it does not, and the next reader trusts the story.
+			//
+			// The METRIC is deliberately unchanged, including the now-dead
+			// NameSplitQualified term. It still answers the question this floor
+			// exists to ask — "is the no-segments path still being REACHED, or
+			// is the hard zero a zero over nothing?" — because a total call
+			// count stays healthy on SEGMENTED traffic alone. Dropping the
+			// Qualified term would make the sum unable to see the very
+			// regression the hard zero watches for, so the term stays and the
+			// separate zero assertion below is what actually alarms on it.
+			noSegments := counts[s][NameSplitBare] + counts[s][NameSplitQualified]
 			switch f := floors.Split[s]; {
-			case f > 0 && split < f:
+			case f > 0 && noSegments < f:
 				failed = true
-				fmt.Fprintf(w, "FAIL: %s entered a SPLITTING arm %d time(s), below its split floor of\n"+
+				fmt.Fprintf(w, "FAIL: %s made %d NO-SEGMENTS decision(s), below its floor of\n"+
 					"  %d. Its total call count can stay healthy on SEGMENTED traffic alone, so\n"+
-					"  this is the floor — and the only floor — that says the arms this census's\n"+
-					"  hard zero is a zero OVER are still being reached.\n", s, split, f)
-			case f == 0 && split > 0:
+					"  this is the floor — and the only floor — that says the path this census's\n"+
+					"  hard zero is a zero OVER is still being reached.\n", s, noSegments, f)
+			case f == 0 && noSegments > 0:
 				failed = true
-				fmt.Fprintf(w, "FAIL: %s declares a split floor of 0 — WATCHED, NOT PROVEN, meaning its\n"+
-					"  splitting arms were measured empty over this corpus and are covered by a\n"+
-					"  unit wiring pin instead. They are no longer empty: %d split call(s) now\n"+
-					"  arrive here. This is not a defect, it is the declaration going stale.\n"+
-					"  Re-read the arm, then raise this floor to a real number so the corpus\n"+
-					"  starts carrying the guarantee the unit pin was standing in for.\n", s, split)
+				fmt.Fprintf(w, "FAIL: %s declares a no-segments floor of 0 — WATCHED, NOT PROVEN,\n"+
+					"  meaning that path was measured empty over this corpus and is covered by a\n"+
+					"  unit wiring pin instead. It is no longer empty: %d call(s) now arrive\n"+
+					"  without a parse-tree triple. This is not a defect, it is the declaration\n"+
+					"  going stale. Re-read the site, then raise this floor to a real number so\n"+
+					"  the corpus starts carrying the guarantee the unit pin was standing in for.\n", s, noSegments)
 			}
 		}
 	}

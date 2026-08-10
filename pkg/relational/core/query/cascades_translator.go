@@ -6725,14 +6725,35 @@ func bakeFlatRefsAgainstColumns(v values.Value, cols []string) values.Value {
 		// agree on the same rule instead of disagreeing: absent segments are
 		// treated exactly like present-but-unqualified segments, which is what
 		// bakeSegmentedColumnRef already did via its `if !ref.Qualified`
-		// return. A miss stays lazy and is loud at evaluation.
+		// A miss stays lazy and goes loud at evaluation THROUGH THIS PATH —
+		// FieldValue.Evaluate rejects an unresolved lazy read (values.go:885,
+		// :1337). That is a statement about this baker's output, not a global
+		// property: recursiveRemapValues (:10032) and the executor's
+		// ordinal_join.go (:1079) still split on a first dot, and neither is
+		// downstream of this decision.
 		//
-		// A carrier reaching here with a dot is therefore not a resolution
-		// failure to route around — it is a MINT that never had a parse tree,
-		// the star-body normalization's boundary labels being the standing
-		// example. Its absent triple is structural and permanent, so inventing
-		// a qualifier for it to slice back out would manufacture the very
-		// structure this removal deletes.
+		// WHY DEFAULT-TO-UNQUALIFIED RATHER THAN AN ASSERTED BRIDGE. The
+		// tempting stronger rule is to require a triple here and fail loudly
+		// without one, on the theory that every carrier reaching this point is
+		// a machinery mint. IT IS NOT, and this was checked rather than
+		// assumed. The star-body normalization's boundary labels are indeed
+		// structural — no FullId exists anywhere behind them, so no triple
+		// could be captured — but at least two OTHER channels deliver a
+		// genuinely qualified USER identifier with Present=false:
+		//
+		//   - the post-aggregate strip projection (core/embedded's
+		//     logical_builder.go:706, plan_visitor.go:539);
+		//   - a positional ORDER BY key rebased to a qualified rendering
+		//     (logical_builder.go:625).
+		//
+		// Both are legal SQL today. An asserted bridge would red on them, so
+		// the default is the correct disposition and the mint is one member of
+		// the population rather than the whole of it. What would let the rule
+		// tighten is those two channels carrying triples; until then, treating
+		// an absent triple as "unknown, therefore unqualified" is the only
+		// reading that is safe for every producer — and it is Java's, since an
+		// Identifier with an empty qualifier list matches only an unqualified
+		// attribute.
 		values.RecordNameSplit(values.NameSplitSiteFlatColumnBake,
 			values.NameSplitBare, fv.Field)
 		return node
@@ -9960,8 +9981,9 @@ func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []
 // QOV reads below never need ordinals). Non-projection legs (ordinalReads
 // false: scan-top star seeds, multi-branch unions) keep pure name reads —
 // their columns are table columns, which cannot be duplicate-named.
-// The dotted split fires from the NAME-PROVENANCE classification, never from
-// the string's shape: verbatimField[i] marks a name that is an UNALIASED
+// The dotted split in the NAME arm fires from the NAME-PROVENANCE
+// classification, never from the string's shape: verbatimField[i] marks a name
+// that is an UNALIASED
 // plain *values.FieldValue's Field string verbatim — an identifier by
 // construction, so a dot in it IS a qualifier. Everything else never splits:
 // a computed rendering ("(B.ID + 1)", a float literal's "1.5") whose dots
@@ -9971,6 +9993,21 @@ func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []
 // like QOV("(B") / QOV("1") / QOV("A") — a first-dot-split
 // hazard (review findings, three classes). verbatimField nil = the
 // logical-name fallback path, identifiers by construction.
+//
+// THE POSITIONAL ARM IS THE EXCEPTION, and the sentence above used to be
+// written as a blanket claim over the whole function — "the dotted split fires
+// from the NAME-PROVENANCE classification, never from the string's shape" —
+// which the corpus refutes. The positional arm below splits UNCONDITIONALLY on
+// strings.IndexByte, never consulting verbatimField, and it is reached with
+// exactly the class the blanket claim said cannot occur: a computed rendering,
+// "(B.ID#0 + 1)", driven by TestFDB_RecursiveCTEComputedLegProjection.
+//
+// That is not a wrong-value bug and the arm is not being changed. The sliced
+// `bare` is DISPLAY only — the read is `Resolved` at ordinal i, which is
+// authoritative on a positional row — so a mis-sliced string produces an ugly
+// temp-row key, never a wrong slot. It is recorded here because a blanket claim
+// that is false in one arm is how the next reader concludes the shape is
+// impossible and stops checking.
 //
 // RESIDUAL (pre-existing): within a
 // verbatim Field string itself, "is this dot a qualifier?" stays ambiguous —

@@ -1042,13 +1042,28 @@ func assertSeedWindowReaderCensus(w io.Writer) bool {
 //     acquires a split population, the declaration REDS so somebody raises it to
 //     a real number instead of leaving a permanent exemption.
 //
-// The zero is a corpus fact, NOT a dead arm, and that was measured rather than
-// assumed: a panic at the arm's entry is reached with a DOTTED name by
-// `TestRecursiveBodyGatesOrdinal` ("C.ORDER_ID"), so it reaches the
-// SPLIT-QUALIFIED bucket itself. It therefore cannot be deleted the way
-// singleForEachBake's arm was, and the recorder wiring on its two splitting
-// classes — invisible to this corpus in both the present and the mutated state —
-// is pinned by `core/query/name_split_recorder_wiring_test.go`.
+// THE SPLIT-QUALIFIED ZERO IS NOW STRUCTURAL, NOT A CORPUS FACT, and the
+// direction of the alarm has inverted with it.
+//
+// This block used to say the zero was "a corpus fact, NOT a dead arm", and
+// backed that with a measurement: a panic at the arm's entry was reached with a
+// DOTTED name by TestRecursiveBodyGatesOrdinal ("C.ORDER_ID"), so the arm could
+// not be deleted the way singleForEachBake's was. THAT CLAIM IS NOW FALSE and
+// is replaced rather than annotated. CQ-52 deleted the first-dot re-split at
+// both sites: qualification is decided by the parser's segment count alone, so
+// a carrier with no segments is UNQUALIFIED and no name is ever sliced. Nothing
+// can reach the SPLIT-QUALIFIED bucket at either site by any input.
+//
+// What that changes for these floors: the CALL floors below still measure a
+// live population (both sites are still reached, and a zero there still means
+// the recorder or the traffic died — COLLAPSE is the alarm). The SPLIT-
+// QUALIFIED class is different: zero is now the steady state and GROWTH is the
+// alarm, since a count there means the re-split was reintroduced. That
+// inversion is asserted as a hard zero by
+// core/query/name_split_recorder_wiring_test.go's
+// TestNameSplitRecorder_SplitQualifiedIsUnreachable, which drives both sites
+// explicitly and carries a control proving the instrument is still live — the
+// corpus cannot prove a zero it reaches vacuously.
 var nameSplitFloors = func() values.NameSplitFloors {
 	var f values.NameSplitFloors
 	f.Calls[values.NameSplitSiteLegQOVSegmentsOf] = 1 // measured 9

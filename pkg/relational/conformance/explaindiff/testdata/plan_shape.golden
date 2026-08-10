@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=353 queries=2537 dml=157 non_query=104 plan_errors=260 unexpected_errors=4
+# files=353 queries=2538 dml=157 non_query=104 plan_errors=260 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -13024,6 +13024,18 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryProjectionPlan
 shape:       RecordQueryScanPlan
+=== parse_channel_pins.yaml#5
+sql:   WITH RECURSIVE r("A.B") AS ( SELECT id FROM u WHERE id = 1 UNION ALL SELECT "A.B" + 1 FROM r WHERE "A.B" < 3 ) SELECT "A.B" FROM r ORDER BY "A.B"
+plan:  Project([A.B#0], InMemorySort([A.B ASC], RecursiveDfsJoin(PREORDER, Project([ID#0], Project([ID#0], Scan(U, [=]))), Project([(A.B#0 + 1)], PredicatesFilter(TempTableScan(RforScan), [1 preds])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryRecursiveDfsJoinPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryScanPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryTempTableScanPlan
 === pk_pushdown.yaml#0
 sql:   SELECT id, name, v FROM t WHERE id = 3
 plan:  Project([ID#0, NAME#1, V#2], Scan(T, [=]))
