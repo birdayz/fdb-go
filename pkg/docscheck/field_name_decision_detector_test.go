@@ -750,15 +750,25 @@ func TestFieldDecisionTaintFollowsTheDeclarationNotTheSpelling(t *testing.T) {
 // renegotiated. This half: a name-typed CARRIER must stay visible.
 //
 // A carrier is a plain struct field holding a string that came off a FieldValue
-// upstream — plans.SortKey.Field (in_memory_sort.go:142) and the conformance
-// oracle's sort key (rowdiff/ordering.go:241). Comparing two of them conflates
-// two same-named columns exactly as comparing two `fv.Field`s does; the name
-// simply travelled one type further from where it was read. Both are recorded
-// debt.
+// upstream — `plans.SortKey.Field`, compared in a function that never names the
+// type. Comparing two of them conflates two same-named columns exactly as
+// comparing two `fv.Field`s does; the name simply travelled one type further
+// from where it was read. The live instance is the conformance oracle's
+// sortKeysMatchOrderBy, which the debt list records.
 //
-// Neither function names FieldValue anywhere, so gating the shallow tier on the
-// type discriminator — the obvious "fix" for the precision cost pinned below —
-// silences both. That was measured, and it loses on both axes: two real sites
+// The carrier is named by SHAPE here, not pointed at by file:line, and that is a
+// correction rather than a style choice. This comment and the failure message
+// below both used to cite "in_memory_sort.go:142 and rowdiff/ordering.go:241",
+// and when the harness debt entry was audited NEITHER citation held: RFC-197
+// item 3 migrated the in_memory_sort comparison to ValueExpr, so it is not a
+// site and appears nowhere in the debt list, and the rowdiff line number had
+// drifted off the function it named. The trade below is still the right one —
+// but it was being defended with evidence that had been fixed out from under it,
+// which is how a measured decision decays into an unfalsifiable one.
+//
+// The carrier function names FieldValue nowhere, so gating the shallow tier on
+// the type discriminator — the obvious "fix" for the precision cost pinned below
+// — silences it. That was measured, and it loses on both axes: a real site
 // traded for four protobuf false positives.
 func TestFieldDecisionDetectorReportsNameTypedCarriers(t *testing.T) {
 	t.Parallel()
@@ -778,7 +788,7 @@ func sortKeysEqual(a, b SortKey) bool { return a.Field == b.Field }`)
 	t.Fatalf("a name-typed CARRIER comparison was not reported: %v\n\n"+
 		"plans.SortKey.Field holds a leaf name read off a FieldValue upstream, and comparing "+
 		"two of them conflates two same-named columns just as comparing two `fv.Field`s does. "+
-		"in_memory_sort.go:142 and rowdiff/ordering.go:241 are exactly this shape and are "+
+		"the conformance oracle's sortKeysMatchOrderBy is exactly this shape and is "+
 		"recorded debt. If this went silent because the shallow tier was gated on the type "+
 		"discriminator, that gating also has to explain the four protobuf false positives it "+
 		"lets back in.", got)

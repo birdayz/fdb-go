@@ -344,14 +344,36 @@ func orderColNotNull(col string) bool {
 }
 
 // sortKeysMatchOrderBy reports whether an in-memory sort's keys line up 1:1 with
-// the query's ORDER BY — same count, same column (display Field), same direction
-// per key. Used only to confirm a sort IS the ORDER BY sort before reasoning
-// about its redundancy; a mismatch skips the sort (never a false flag).
+// the query's ORDER BY — same count, same UNQUALIFIED column, same direction per
+// key. Used only to confirm a sort IS the ORDER BY sort before reasoning about
+// its redundancy; a mismatch skips the sort (never a false flag).
+//
+// A QUALIFIED key is REFUSED rather than matched on its leaf, and that refusal is
+// the whole of what this function can honestly say about one. The comparison has
+// a plan sort key's Field on one side — a LEAF name — and an OrderKey on the
+// other, whose SQL rendering is `strings.ToLower(Qual) + "." + Col` (gen.go). So
+// the leaf is a FRAGMENT of the ORDER BY text, not the text: matching on it
+// discards exactly the half that distinguishes one leg from another. The
+// generator's own join shapes make that concrete — a self-join orders by
+// `l.id, r.id` and a 3-way by `l.id, m.id, r.id`, key vectors whose leaf names
+// are all "ID" and whose legs are not. One vector of plan keys [ID, ID] would
+// then "match" both `ORDER BY l.id DESC, r.id` and `ORDER BY r.id DESC, l.id`,
+// which is a claim about which sort this is that the leaf name cannot support.
+//
+// Two callers' fences keep qualified keys away from here today (checkPlanOrdering
+// gates on singleTablePlain, and requestedOrdering answers nil for a qualified
+// key), so nothing has ever reached the hole. Neither fence belongs to this
+// function, and a guard whose correctness lives entirely in its caller is one
+// caller away from being wrong; the refusal below makes the function answerable
+// for its own contract.
 func sortKeysMatchOrderBy(keys []plans.SortKey, orderBy []OrderKey) bool {
 	if len(keys) != len(orderBy) {
 		return false
 	}
 	for i := range keys {
+		if orderBy[i].Qual != "" {
+			return false
+		}
 		if !strings.EqualFold(keys[i].Field, orderBy[i].Col) {
 			return false
 		}
