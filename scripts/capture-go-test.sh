@@ -37,8 +37,18 @@
 #
 #   -p         `go test` runs up to GOMAXPROCS package binaries at once (24 on
 #              this host) and each FDB package starts its own container. Bazel
-#              caps the equivalent at 4 (`.bazelrc`: --local_test_jobs=4). The
-#              go lane has no such cap, so it is applied here explicitly.
+#              caps exactly this at 4 (`.bazelrc`: --local_test_jobs=4, which
+#              exists because concurrent FDB containers are the scarce resource,
+#              not CPU). The go lane has NO equivalent knob — `-p` is the only
+#              one — so the cap is applied here by hand.
+#
+#              DO NOT "optimise" this back to the default. Raising it does not
+#              make the suite faster; it makes more containers contend for the
+#              same Docker daemon and pushes packages toward the deadline above,
+#              which is how a lane manufactures failures that read as product
+#              flakes. If it is raised, raise .bazelrc's cap in the same change
+#              and for the same measured reason, or the two lanes disagree about
+#              what the machine can hold.
 #
 # Override either by passing your own flag after `--`; the last occurrence wins.
 set -uo pipefail

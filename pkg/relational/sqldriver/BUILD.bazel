@@ -105,6 +105,7 @@ go_test(
         "case_types_probe_test.go",
         "cast_edges_probe_test.go",
         "cast_probe_test.go",
+        "census_gate_reporting_test.go",
         "chained_unnest_3link_filtered_ordinal_fdb_test.go",
         "chained_unnest_ordinal_fdb_test.go",
         "chained_unnest_predicate_pushdown_fdb_test.go",
