@@ -253,3 +253,116 @@ func AccessorPathDottedOrigins() []string {
 	sort.Strings(out)
 	return out
 }
+
+// ---- the GATE ------------------------------------------------------------
+//
+// The numbers this census produced were, until this gate existed, written down
+// in exactly one place — a prose `why` string on the field-decision ratchet,
+// which nothing parses. The census itself was PRINTED to stderr and not
+// asserted, unlike the ~15 sibling censuses in the same TestMain block that flip
+// the exit code. A regression straight back to the pre-fix population would have
+// failed nothing. The measurement is the thing that has to survive, not the
+// prose.
+
+// AccessorPathGates are the populations this census refuses to let move
+// silently. It is named Gates rather than Floors, as its siblings are, because
+// the two arms guard OPPOSITE directions on different populations.
+//
+//   - MinTotal guards VACUITY, on the denominator. A ceiling over zero
+//     observations passes perfectly while measuring nothing, and a green from an
+//     empty set is this repo's dominant false positive. Nothing else here may be
+//     read without it.
+//
+//   - MaxDeclineDotted is the GROWTH ceiling on the ratchet arm
+//     (AccessorPathDeclineDotted), and growth is the ONLY alarm direction it has.
+//
+// THE DIRECTION HERE INVERTED, and the history is kept because a guard whose
+// expected value moved is exactly the one that gets silently relaxed instead.
+// The arm carried 4 declines: two RENDERED EXPLAIN LABELS (`q$N.AID#0`) minted by
+// RecordQueryInMemorySortPlan.HintOrdering re-entering a display string as an
+// identity, and `N.SK` — a genuinely NESTED path (struct column `n`, field `sk`,
+// from `GROUP BY n.sk`) the resolver FUSED into one flat Field, which is the real
+// `addr.city` versus `T.city` ambiguity this guard was written for. The rendered
+// ones died with the advertiser fix. `N.SK` then died too, at its PRODUCER: a
+// nested-path GROUP BY key is now rejected before it reaches the planner.
+//
+// So ZERO is the steady state, a collapse floor on this arm would be
+// unsatisfiable, and the event to watch for is the arm coming BACK — by the lazy
+// render returning, or by the nested-path GROUP BY rejection being relaxed
+// without the resolver keeping the path segmented. The floor is not deleted so
+// much as SUPERSEDED: MinTotal still catches the instrument dying, which is the
+// thing a collapse floor on the arm would otherwise have been covering.
+//
+// A nil *AccessorPathGates is a no-op, which is the shape a narrowed run needs
+// for MinTotal — a whole-corpus population claim. The ceiling is exact under any
+// filter (a subset cannot exceed the whole), so it survives narrowing and is
+// checked whenever gates is non-nil; MaxDeclineDotted nil leaves it unchecked.
+type AccessorPathGates struct {
+	MinTotal         int
+	MaxDeclineDotted *int
+}
+
+// AssertAccessorPathCensus checks the process census against its gates.
+func AssertAccessorPathCensus(w io.Writer, gates *AccessorPathGates) bool {
+	return assertAccessorPathCensusState(w, AccessorPathCensus(), AccessorPathDottedWitnesses(), gates)
+}
+
+// assertAccessorPathCensusState is the whole decision over EXPLICIT state, so
+// every arm can be driven by a unit test rather than only by whatever the corpus
+// happens to reach. It reports whether the census failed, writing the reason to w.
+func assertAccessorPathCensusState(w io.Writer, counts [accessorPathClassCount]int,
+	witnesses map[string]int, gates *AccessorPathGates,
+) bool {
+	if gates == nil {
+		return false
+	}
+	total := 0
+	for _, n := range counts {
+		total += n
+	}
+	dotted := counts[AccessorPathDeclineDotted]
+	failed := false
+
+	if gates.MinTotal > 0 && total < gates.MinTotal {
+		failed = true
+		fmt.Fprintf(w, "ACCESSOR-PATH CENSUS FAIL: %d call(s) to AccessorNamePath, want >= %d.\n"+
+			"  ALARM DIRECTION: vacuity. The instrument is dead — the census never ran, the corpus\n"+
+			"  is empty, or the hook detached. Every count below is the absence of a POPULATION,\n"+
+			"  not the absence of a shape, and the ceiling on the dotted arm passes over zero\n"+
+			"  observations while measuring nothing.\n", total, gates.MinTotal)
+	}
+	if gates.MaxDeclineDotted != nil && dotted > *gates.MaxDeclineDotted {
+		failed = true
+		fmt.Fprintf(w, "ACCESSOR-PATH CENSUS FAIL: %d DECLINE-lazy-dotted, want <= %d.\n"+
+			"  ALARM DIRECTION: growth, and it is the only direction this arm has — zero is the\n"+
+			"  steady state, so there is no collapse floor beside this and none is missing.\n"+
+			"  A lazy flat-dotted value is reaching the one match-domain column identity again,\n"+
+			"  and every one of them is a comparison silently downgraded to a residual. Read the\n"+
+			"  witnesses below; they say WHICH of the two retired producers came back:\n"+
+			"  - a `#ordinal` in the name is a RENDERED EXPLAIN LABEL, which only a renderer emits.\n"+
+			"    RecordQueryInMemorySortPlan.HintOrdering minted these from SortKey.Field while\n"+
+			"    SortKey.ValueExpr held the baked identity; that arm advertises UNKNOWN now.\n"+
+			"  - a plain dotted name (the old `N.SK`) is a genuinely NESTED path the resolver\n"+
+			"    FUSED into one flat Field. Nested-path GROUP BY keys are rejected before the\n"+
+			"    planner now, so this returning means that rejection was relaxed without the\n"+
+			"    resolver being taught to keep the path segmented.\n"+
+			"  Fix the PRODUCER either way — editing the guard re-arms the conflation it stops.\n",
+			dotted, *gates.MaxDeclineDotted)
+	}
+	if failed {
+		fmt.Fprintf(w, "  classes:")
+		for i := AccessorPathClass(0); i < accessorPathClassCount; i++ {
+			fmt.Fprintf(w, " %s=%d", i, counts[i])
+		}
+		fmt.Fprintf(w, " total=%d\n", total)
+		names := make([]string, 0, len(witnesses))
+		for n := range witnesses {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			fmt.Fprintf(w, "  dotted witness: %-40s x%d\n", n, witnesses[n])
+		}
+	}
+	return failed
+}

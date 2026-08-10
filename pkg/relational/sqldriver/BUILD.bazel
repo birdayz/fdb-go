@@ -307,6 +307,7 @@ go_test(
         "large_scan_continuation_probe_test.go",
         "large_value_split_probe_test.go",
         "lateral_unnest_chain_fdb_test.go",
+        "lazy_render_census_gate_test.go",
         "left_box_where_exists_ordinal_fdb_test.go",
         "left_join_buried_box_scope_fdb_test.go",
         "left_join_continuation_fdb_test.go",

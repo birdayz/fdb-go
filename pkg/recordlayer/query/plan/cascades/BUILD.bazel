@@ -535,6 +535,7 @@ go_test(
         "simple_select_passthrough_test.go",
         "simplifier_test.go",
         "single_matched_access_test.go",
+        "sort_key_nil_value_contract_test.go",
         "sparse_candidate_expansion_test.go",
         "temp_table_test.go",
         "translate_value_function_ordinal_test.go",
@@ -1088,6 +1089,7 @@ go_test(
         "projection_leg_ordinal_seed_test.go",
         "distinct_key_columns_wrapper_test.go",
         "dup_named_leg_window_declines_test.go",
+        "sort_key_nil_value_contract_test.go",
     ],
     deps = [
         "//gen",
