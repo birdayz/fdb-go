@@ -1,6 +1,6 @@
 # RFC-228: a leg column lookup declines on an ambiguous name
 
-**Status:** DRAFT
+**Status:** DRAFT (rev 2 — folds two review laps; §1 strengthened, §3 retracted and rewritten, §2 rescoped)
 **Scope:** `rebaseOuterLegValueOrdinal` (`pkg/recordlayer/query/plan/cascades/left_outer_existential.go`), one arm.
 **Relates to:** RFC-218 (name-derived root re-anchor), RFC-222 (nested-or-flat before pinned-or-lazy), RFC-197 (the `.Field` debt list, `dotted` bucket entry 5).
 
@@ -33,9 +33,27 @@ A **source-relative baked** reference reaches the name arm carrying the correct 
 
 The two inputs differ **only** in the frontier pin. Slot 10 is a real merged column of the same type, so `NewFieldValueOfOrdinal` accepts it and nothing downstream rejects it: the plan is built, executed, and returns rows read from the wrong column.
 
-This is pinned two-sidedly by `dup_named_leg_window_first_match_test.go` (landed separately, as a characterization of the current behaviour). Mutation-verified: honouring the carried ordinal turns that test red with an instruction to flip it, while the sibling and control cases stay green.
+This is pinned two-sidedly by `dup_named_leg_window_first_match_test.go`, which landed on master in #702 as a characterization of the current behaviour. Mutation-verified: honouring the carried ordinal turns that test red with an instruction to flip it, while the sibling and control cases stay green.
 
-**Reachability on real traffic is unmeasured** and this RFC does not claim it. Whether a lazy or source-relative single-accessor reference meets a non-narrowed box-run window today is not shown, so the defect is latent-until-shown. That does not change the disposition: an arm whose stated safety premise is false, sitting between two arms that refuse the same operation for the stated reason, is fixed on the strength of the inconsistency alone. Waiting for a reachability proof is waiting for the wrong rows.
+**Rev 1 called this a hand-built symbol and said reachability was unmeasured. It understated the case.** Every piece of the symbol is production-built:
+
+- the duplicate-named leg type comes from `rule_implement_nested_loop_join.go:2288`, a raw `&values.RecordType{Fields: concatFields, Legs: legs}` literal, written raw *because* `NewRecordType` panics on duplicates (`values/type.go:713-722`);
+- `values/ordinal_seed_layout.go:256` files it as `LegKindFlatRun` with an `Offset`, which is what routes it to the arithmetic at the defect site;
+- the unpinned single-accessor reference is the ordinary SQL column reference.
+
+### 1.1 Measured: the defect is LATENT, and not for the reason the arm gives
+
+The site was instrumented (arm taken, window kind, whether `w.Typ` holds any duplicate name, match count for the looked-up name) and the full `pkg/relational/sqldriver` FDB corpus was run, plus a purpose-built set of eight self-join and derived-table shapes chosen to hit it. The instrumentation was then reverted.
+
+**Population: 496 name-arm entries.** Every one: `matches=1`, `typeHasAnyDup=false`. The name arm never saw a duplicate.
+
+**Duplicate-named leg windows are nonetheless produced in production** — 4 occurrences of `fields=ID,PARTNER,K,ID,PARTNER,K`, `width=6 nlegs=2`, from a plain self-join. So the arm's stated premise ("a single source leg has no duplicate column names") is **false as measured**, exactly as §0 argues. What keeps the defect from firing is a different property entirely: every duplicate-named window observed arrives carrying a **multi-accessor pinned** reference (`accs=[_1@1 K@2] naccessors=2 pinned=true`) and therefore routes to the multi-accessor arm, which declines via `ReAnchorRootInto`. The honest arm catches it.
+
+So the defect is **latent, not shipped** — and the thing making it unreachable is unrelated to the justification written at the site. That is the dangerous configuration, because the comment invites a future change to rely on a premise that was never true, while the actual guard is an unstated coincidence about which arm dup-named windows currently reach.
+
+Per the repo's negative-result rule, the unreachability is pinned rather than asserted: the eight shapes land as a committed test, and the pin's failure message names what gets re-armed if a duplicate-named window ever arrives unpinned or single-accessor.
+
+The disposition is unchanged and was never contingent on this measurement: an arm whose stated safety premise is false, sitting between two arms that refuse the same operation for the stated reason, is fixed on the inconsistency alone.
 
 ## 2. The fix
 
@@ -93,6 +111,29 @@ Folding absent and ambiguous into one `found == false` matches the existing beha
 
 The two sibling arms keep their inline loops. Their decline strings are diagnostic (`"root column absent from the flowed layout"` vs `"root column name is ambiguous in the flowed layout"`) and are asserted by `nested_root_reanchor_test.go`; collapsing them into a boolean would delete information the tests read. `FieldIndexUnique` is for the callers that only need the answer.
 
+### 2.2 Scope: this is a class, not a site
+
+Rev 1 fixed one call and proposed a public method with one caller, which is dead code in waiting and was correctly objected to. The census (`grep -rn --include='*.go' "\.FieldIndex(" pkg/ cmd/ | grep -v _test.go` → **19 sites**) shows the defect is a property of an entire family. Eight do leg-window lookup followed by offset arithmetic — the shape where a first match is a wrong-column read:
+
+| site | needle | note |
+|---|---|---|
+| `left_outer_existential.go:225` | `ToUpper` | the site §2 fixes |
+| `unnest_gather.go:459` | raw | keyed arm, first-matches |
+| `unnest_gather.go:493` | raw | the hits-counting arm — see below |
+| `exists_gathered_cluster_wrap.go:156` | raw | |
+| `clustered_outer_scalar.go:195` | raw | |
+| `clustered_outer_scalar.go:616` | raw | |
+| `ordinal_seed.go:720` | raw | |
+| `cascades_translator.go:5080` | raw | |
+
+The remaining eleven are presence-only (`if _, found := ...; !found`) or resolve against a non-leg type, where a duplicate changes nothing: a name that is present is present regardless of how many times.
+
+**`unnest_gather.go:493` is the one worth stating precisely, because it looks like the careful case and is not.** That arm ranges every window, counts hits, and declines unless exactly one leg carries the column — its comment even says "an ambiguous bare column (a dup-named `K` present in two legs) declines here". True, and insufficient: it counts hits **across** windows while `FieldIndex` first-matches **within** one. A single window holding two same-named fields contributes exactly one hit and silently first-matches inside itself. The guard is real for inter-leg ambiguity and blind to intra-leg ambiguity, which is the case §1 measures.
+
+All eight convert to `FieldIndexUnique`. That is what makes the method a shared lookup rather than a wrapper for one call, and it is why `LookupField` (`type.go:806`, the same first-match scan with the same silence) gets the same treatment — leaving it means the ninth site has a copy target.
+
+The needle column above is a second finding in its own right: two sites in one family disagree about case-folding, one uppercasing and six passing raw. §6 records what is measured about it.
+
 The change can only convert a wrong-column read into a declined optimization. It cannot make a previously-correct plan wrong: every input that reached `legOrdinal` before with `dupes == 1` reaches it identically now, and the only inputs whose behaviour changes are those where `FieldIndex` returned a slot that is not the only candidate — precisely the set whose answer was arbitrary.
 
 ### 2.1 Why not the other direction
@@ -103,11 +144,29 @@ It is a larger claim than the evidence supports. The name arm's contract is that
 
 And it is unnecessary. A declined optimization is recoverable; a wrong ordinal is not. The decline is the correct-or-loud disposition this file already commits to at four other sites (`LegKindUnset`, the window bound check, `Single()`, `ReAnchorRootInto`).
 
-## 3. Why the decline is not a silent regression
+## 3. A decline here fails the query — and that is still the right trade
 
-A decline here drops one rebase, which drops one candidate plan, not the query. If the *only* plan for a query ran through this arm with an ambiguous leg name, the query would previously have returned wrong rows; a plan-not-found is the strictly better failure and is loud.
+**Rev 1 of this section was wrong and is retracted.** It said "a decline drops one rebase, which drops one candidate plan, not the query." That is false at this site.
 
-The exposure is bounded by how the ambiguous input is produced at all: an opaque box leg exposing two buried columns of one name. The corpus is the check — a golden diff and the 1M stress comparison establish whether any planned shape currently takes this arm with `dupes > 1`. **The prediction, registered before the measurement: zero corpus plans change.** If the corpus does move, that is the reachability proof §1 says is missing, and it belongs in the implementation PR as such.
+`ImplementNestedLoopJoinRule` is the **sole implementer** of both existential Select shapes. `rule_partition_select.go` bars the 2-quantifier shape outright (`len(quantifiers) < 3` → return) and then explicitly refuses `existentialCount == 1 && foreachCount <= 2`, with a comment saying it does so precisely to avoid racing this rule's working arm with an alternate decomposition. So there is no second producer to fall back to. The declines in `rule_implement_nested_loop_join.go` are bare returns *before* the single `call.Yield`; the group stays empty and planning ends at `plan_harness.go`'s `"best expression is not a physical plan"`.
+
+A decline is therefore a **query planning failure**, user-visible, not a lost candidate.
+
+The change still stands, for the reason it always did: a loud planning failure is strictly better than silently reading the wrong column. But three things follow from the correction, and rev 1 got all three wrong by omission.
+
+1. **§2.1's "a declined optimization is recoverable" is false here.** It is recoverable in the sense that no wrong answer escapes; it is not recoverable in the sense that the query still runs. The argument for the decline over honouring the carried ordinal rests only on the frame-unknown problem, not on cheapness.
+2. **The zero-diff prediction is now a correctness gate, not a nicety.** A corpus plan that moves under this change is a query that goes from planning to not-planning. The prediction, registered before the measurement: **zero corpus plans change, and zero queries lose a plan.** If either moves, the change does not ship as-is — it ships together with the terminal fix in §3.1, because at that point the decline has a live victim.
+3. **It raises the priority of the terminal fix**, below.
+
+### 3.1 The terminal fix, and why it is not deferred out of this RFC
+
+Java does not have this problem and the reason is structural: at the analogous site, `PartitionSelectRule` builds the collapsed row from `Column.unnamedOf` — synthetic, positionally-derived names — and rebases with `FieldValue.ofOrdinalNumber(..., index)`. A name lookup is not merely avoided; it is unexpressible. `ResolvedAccessor.equals` is ordinal-only. `Type.Record`'s name maps are built with `ImmutableMap.toImmutableMap`, which throws on a duplicate key, so a duplicate-named row cannot be constructed at all.
+
+Go already does exactly this on one path: `positional_merge.go` names merged fields with `values.OrdinalFieldName(i)`, which is `Column.unnamedOf`. The divergence is that the **leg-concat** path does not. `rule_implement_nested_loop_join.go:2288` builds `&values.RecordType{Fields: concatFields, Legs: legs}` as a **raw literal specifically because `NewRecordType` panics on duplicates** (`values/type.go:713-722`), and `values/ordinal_seed_layout.go:256` files the result as `LegKindFlatRun` with an `Offset`. So the duplicate-named leg window is not an anomaly to be stamped out at the producer — it is what a leg-concat of two real sources legitimately *is*, and the raw literal exists to permit it.
+
+That settles a question rev 1 left open in the wrong direction. The producer is not defective. `NewRecordType`'s panic is a constructor that cannot express a legal merged row, which is why every merged-row site routes around it. Adding a "loud assert" at the producer, as one review lap proposed, would assert against a shape the engine is entitled to build.
+
+The terminal fix is therefore to carry ordinal identity through this rebase the way Java does, so the name never has to answer the question. This RFC does not implement it, and that is a **sequencing statement, not a deferral**: the decline is the strictly smaller change, it is a precondition for measuring whether the terminal fix moves anything (an arm that silently first-matches cannot be observed), and §3's gate above is what forces the terminal fix to arrive the moment the decline has a victim. The follow-on is booked in TODO.md against RFC-197's `dotted` entry 5, which §4 keeps open for exactly this.
 
 ## 4. The debt entry
 
@@ -124,6 +183,10 @@ The entry's text is amended to record that the duplicate case declines, and its 
 
 `FieldIndexUnique` gets its own unit pin driving **every** arm, not just the two the leg site happens to reach: empty name, absent, exactly one, two, three, a duplicate in the final position (so the loop's last-write-wins cannot masquerade as a correct answer), and the unaffected `FieldIndex` first-match behaviour asserted alongside it so the twins are visibly different. An arm exercised only by the corpus is an untested arm, and this one is about to acquire callers.
 
-## 6. Noted, not claimed
+## 6. The case-folding asymmetry
 
-The site passes `strings.ToUpper(fv.Field)` to a lookup that compares against `f.Name` **raw**. If a leg's field names are ever not upper-cased, the arm declines on a name that is present. That asymmetry predates this RFC, is unchanged by it, and its reachability is unmeasured — recorded here so it is not rediscovered as a finding.
+The site passes `strings.ToUpper(fv.Field)` to a lookup that compares against `f.Name` **raw**, while six sibling sites in the same family (§2.2) pass the needle raw. Rev 1 filed this as "noted, not claimed" on the grounds that a decline is cheap; §3's correction removes that excuse, since a decline here fails the query.
+
+Measured on the same instrumented run: **`matches` and `rawMatches` were equal in all 496 entries.** Every leg-window field name reached by this arm is already upper-case, so the fold is a no-op today and the asymmetry costs nothing. It is a latent divergence, not a live bug.
+
+It is not fixed here, and the reason is that the two candidate fixes point in opposite directions — normalize every site to fold, or normalize every site to raw — and choosing needs the same leg-identity answer §3.1 defers to the terminal fix. What this RFC does is stop it from being invisible: the every-arm unit pin in §5 includes a mixed-case case asserting the current behaviour, so a future change to either side of the comparison shows up as a test change rather than as a silent decline.
