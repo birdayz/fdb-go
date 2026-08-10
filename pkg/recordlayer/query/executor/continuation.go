@@ -1034,6 +1034,40 @@ func encodeSortContinuation(
 		if qr.Positional == nil || qr.Positional.Type == nil {
 			return nil, fmt.Errorf("sort continuation: a buffered row has no positional layout — cannot encode a resumable continuation")
 		}
+		// THESE NAMES ARE values.ProjectionColumnName's OUTPUT, so they move
+		// whenever the naming rule moves — and RFC-229 §2.3 moved them: a nested
+		// projection's slots were spelled after the struct ROOT (`SELECT n.sk,
+		// n.co` wrote ["N","N"]) and are now spelled by the resolved PATH
+		// (["N.SK","N.CO"], or ["T1.N.SK", …] over a multi-source FROM). A token
+		// therefore outlives the rule that minted it, and a binary reading an
+		// older one sees names its own columns do not match.
+		//
+		// THAT BREAK IS ACCEPTED, on three grounds, recorded here because a
+		// continuation change with no explanation is alarming on sight:
+		//
+		//  1. It fails CLOSED. positionalAligned is deliberately all-or-nothing,
+		//     so a stale token's row is rejected wholesale and every read returns
+		//     a loud XX000 — there is no arm that repairs slots individually and
+		//     therefore no way to serve N's value for column SK. A break that
+		//     cannot produce a wrong row is categorically different from one that
+		//     can, and the strictness is what buys that. Pinned, with the
+		//     mutation showing a TOLERANT alignment check would start serving the
+		//     wrong column silently, at resultset_test.go's
+		//     TestResultSet_PreRFC229SortContinuationNamesFailClosed.
+		//  2. JAVA NEVER MINTS THIS TOKEN, which is why it is not an interop
+		//     break at all. It belongs to RecordQueryInMemorySortPlan, a Go-only
+		//     read-side fallback; Java's Cascades never constructs a physical
+		//     sort (RemoveSortRule must eliminate the logical sort or planning
+		//     fails), so no Java reader can be holding one of these. The
+		//     wire-compat hard line covers what the two engines SHARE — record
+		//     and index format, key encoding, and the continuations Java also
+		//     mints — and this is not among them.
+		//  3. Pre-release, so a break confined to an in-flight sort continuation
+		//     across a rolling upgrade is an acceptable cost.
+		//
+		// If any of the three stops holding — most likely (2), if Java ever gains
+		// a physical sort — this needs a format-version bump and a decode-side
+		// reconciliation, not a relaxed alignment check.
 		names := make([]string, len(qr.Positional.Type.Fields))
 		for fi, f := range qr.Positional.Type.Fields {
 			names[fi] = f.Name

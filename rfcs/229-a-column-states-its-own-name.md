@@ -196,8 +196,31 @@ fused Value; the top-level projection clears the qualifier
 `Identifier.java:101`). §1's "Java does not have this class, and the reason is
 structural" is confirmed, and this is the citation it was missing.
 
-Corpus unchanged either side: `pass=68 fail=0 skip=170 queries=1597`. No
-`plan_shape.golden` line and no yamsql EXPLAIN assertion moved.
+Corpus: `pass=68 fail=0 skip=170 queries=1597`, and no pre-existing
+`plan_shape.golden` line or yamsql EXPLAIN assertion moved.
+
+**That sentence used to be offered as evidence, and it was not.** The corpus
+could not express the input: of the 351 hand-authored yamsql files, exactly two
+declared a struct type and **zero** projected a nested member —
+
+    grep -rl "TYPE AS STRUCT" pkg/relational/conformance/yamsql/testdata/    -> 2
+    grep -rlE "SELECT [a-z_]+\.[a-z_]+\.[a-z_]+" .../yamsql/testdata/        -> 0
+
+so "the goldens did not move" was a fact about the corpus, not about this
+change, in exactly the way `projected_exists_nested_sort_key.yaml` records for
+projected EXISTS. It is now a real statement: `nested_projection_column_name.yaml`
+adds eight stanzas covering both arms, and `plan_shape.golden` records
+`Project([N#2.SK#0, N#2.CO#1], Scan(T1))` for one source against
+`Project([T1.N#2.SK#0, T1.N#2.CO#1], …)` for two — so the qualified and
+unqualified spellings are both pinned corpus-wide. The golden diff for this
+change is 48 insertions and one deletion (the header count line), i.e. purely
+the new file.
+
+Note the earlier scoping error this corrects: an initial reading concluded "the
+yamsql corpus is generated and cannot be hand-authored", which was true of
+`factorycorpus/testdata` (373/373 carry `do not hand-edit`) and false of
+`conformance/yamsql/testdata` (351 files, 0 generated markers). Two corpora, one
+count applied to both.
 
 ### 8.2 REFUTED: §2.1's name SLOT is not owed
 

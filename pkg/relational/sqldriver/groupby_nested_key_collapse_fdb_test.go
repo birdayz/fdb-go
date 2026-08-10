@@ -56,7 +56,12 @@ func TestFDB_GroupByNestedPathRejected(t *testing.T) {
 	if _, err := setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE gnk_tmpl "+
 			"CREATE TYPE AS STRUCT gst (sk BIGINT, co BIGINT) "+
-			"CREATE TABLE t1 (id BIGINT, n gst, PRIMARY KEY (id))"); err != nil {
+			"CREATE TABLE t1 (id BIGINT, n gst, PRIMARY KEY (id)) "+
+			// t2 differs from t1 in ONE way: it also declares a FLAT column whose
+			// name equals the struct member's LEAF. That single difference is
+			// what arms the escape pinned at the bottom of this file, so the two
+			// tables are the controlled comparison rather than two fixtures.
+			"CREATE TABLE t2 (id BIGINT, sk BIGINT, n gst, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -76,6 +81,16 @@ func TestFDB_GroupByNestedPathRejected(t *testing.T) {
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO t1 VALUES (1, (1, 1)), (2, (1, 2)), (3, (2, 1)), (4, (2, 2)), (5, (1, 1))"); err != nil {
 		t.Fatalf("INSERT: %v", err)
+	}
+	// t2 MUST be non-empty. The escape pinned at the bottom of this file
+	// surfaces from the EXECUTOR, so an empty table hides it completely: the
+	// plan is built, no row is ever evaluated, and the query returns zero rows
+	// with no error — a green that proves only that the table was empty. The
+	// flat `sk` values are disjoint from the struct's so a wrong-slot read is
+	// visible if the shape ever starts answering.
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO t2 VALUES (1, 90, (1, 1)), (2, 91, (1, 2)), (3, 92, (2, 1))"); err != nil {
+		t.Fatalf("INSERT t2: %v", err)
 	}
 
 	// A nested path in ORDER BY works — this is the asymmetry, asserted rather
@@ -149,4 +164,83 @@ func TestFDB_GroupByNestedPathRejected(t *testing.T) {
 				"while the gate it watches was gone.", q, err)
 		}
 	}
+
+	// A SEPARATE, PRE-EXISTING DEFECT, pinned at its CURRENT behaviour rather
+	// than at the behaviour it should have.
+	//
+	// WHAT ACTUALLY DEFEATS THE REFUSAL — measured, and it is not what it first
+	// looked like. `SELECT n.sk FROM t1 GROUP BY n.sk` over t1, which declares
+	// only `n`, IS refused cleanly with 42703; dropping the aggregate is not by
+	// itself enough. The escape needs a table that ALSO declares a FLAT column
+	// whose name equals the path's LEAF. Over t2 (id, sk, n) the same query is
+	// NOT refused: it plans and dies in the EXECUTOR with
+	//
+	//   ordinal resolution: field "N.SK" not resolvable in the runtime row
+	//   (ordinal -1, row columns [ID SK N]) — malformed plan
+	//
+	// The reading that follows from the pair: the semantic layer's validation of
+	// the grouping key is satisfied by the BARE LEAF, so `n.sk` is accepted on
+	// the strength of the unrelated flat `sk`, and the mismatch only surfaces
+	// when the executor tries to resolve the real path. A user error reported as
+	// internal state — the same class as any missing semantic refusal that
+	// surfaces from the executor.
+	//
+	// It is NOT this change's regression: MEASURED identically with RFC-229
+	// §2.3's predicate disabled, so the naming conversion neither caused it nor
+	// can fix it, and fixing it here would mean changing refusal semantics inside
+	// a naming change.
+	//
+	// It is pinned rather than described because an earlier version of this
+	// file's header asserted that "the SQL layer rejects a nested path as a
+	// grouping key with 42703" full stop, and that claim was too broad — it held
+	// for every shape anyone had tried and not for this one. A watched gap
+	// survives the next refactor; a described one does not.
+	t.Run("a flat column sharing the leaf name defeats the refusal", func(t *testing.T) {
+		t.Parallel()
+		// CONTROL FIRST: the same query over the table WITHOUT the flat `sk` is
+		// refused properly. Without this the assertions below would read as
+		// "non-aggregate GROUP BY is broken", which is false and would send the
+		// eventual fix to the wrong layer.
+		if _, err := db.QueryContext(ctx, "SELECT n.sk FROM t1 GROUP BY n.sk"); err == nil ||
+			!strings.Contains(err.Error(), "42703") {
+			t.Fatalf("the CONTROL moved: `SELECT n.sk FROM t1 GROUP BY n.sk` over a "+
+				"table with no flat `sk` should still be a clean 42703, got %v.\n"+
+				"  The defect below is specifically about a flat column sharing the "+
+				"path's LEAF name; if the control fails too, the gap is wider than "+
+				"this pin describes and its diagnosis is wrong.", err)
+		}
+		const q = "SELECT n.sk FROM t2 GROUP BY n.sk"
+		rows, err := db.QueryContext(ctx, q)
+		if err == nil {
+			rows.Close()
+			t.Fatalf("%s now SUCCEEDS.\n"+
+				"  If it returns correct groups, nested-path GROUP BY has landed "+
+				"for this shape — convert the gate above too. If it returns rows "+
+				"without grouping correctly, that is worse than the error it used "+
+				"to raise.", q)
+		}
+		if strings.Contains(err.Error(), "42703") {
+			t.Fatalf("%s is now refused with 42703 — THE DEFECT THIS PINS IS FIXED.\n"+
+				"  A nested grouping key over a table declaring a flat column of the "+
+				"same leaf name now gets the same clean "+
+				"undefined_column refusal the aggregate shape always got. Delete "+
+				"this sub-test and fold the query into the gate's list above.", q)
+		}
+		if !strings.Contains(err.Error(), "not resolvable in the runtime row") {
+			t.Fatalf("%s failed with an UNEXPECTED error: %v\n"+
+				"  This pin expects the known defect — a plan-time escape that "+
+				"surfaces as an executor ordinal-resolution failure. A different "+
+				"error means the shape moved and this pin has stopped watching "+
+				"what it names. Want either 42703 (fixed) or the runtime "+
+				"'not resolvable in the runtime row' (still broken).", q, err)
+		}
+		// The defect stated as the assertion it should one day become: the
+		// grouping key is a user-supplied column reference the semantic layer
+		// declined to validate, so the correct answer is 42703 at plan time, not
+		// XX000-class internal state from the executor.
+		t.Logf("KNOWN DEFECT (pre-existing, not RFC-229's): %s reports a user "+
+			"error as internal state:\n  %v\n  It should be a clean 42703 at the "+
+			"semantic layer, as the aggregate shape is. Booked separately; fixing "+
+			"it here would mean changing refusal semantics inside a naming change.", q, err)
+	})
 }
