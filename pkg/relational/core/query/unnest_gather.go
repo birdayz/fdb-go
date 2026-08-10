@@ -357,6 +357,13 @@ func fieldValueReferencesInner(v values.Value, inner values.CorrelationIdentifie
 // selects a leg window by correlation. It is still recognized here — `qualified`
 // is set for it — because a dotted reference must not fall into the BARE
 // namespace, which is the fail-open that made `A.K` read a same-named element.
+//
+// That last sentence describes what the flag does NOW. It did not describe what
+// the flag did when it was written: the flag reached only the bare-LEG scan, while
+// the element arm beside it was ungated, so a qualified read whose correlation
+// failed to select a window still read the element. The flag gates the whole bare
+// namespace today because slotInGatheredSeed declines every unresolved qualified
+// read before either bare arm — see the gate there.
 func bakeGatheredGroupValue(v values.Value, windows map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow, elementSlots map[string]int, seedQOV values.Value) values.Value {
 	return values.Replace(v, func(node values.Value) values.Value {
 		fv, isFV := node.(*values.FieldValue)
@@ -373,13 +380,16 @@ func bakeGatheredGroupValue(v values.Value, windows map[values.CorrelationIdenti
 		// the correlation, so only the arm that has one can select a leg.
 		//
 		// `qualified` still tracks BOTH, and carrying the dotted arm in it is what
-		// makes the resolver SAFE rather than merely tidy. It gates two things: the
-		// bare-column fallback below, and — since a qualified read with no identifier
-		// can select no window — the DECLINE that arm now takes. Dropping the flag on
-		// the dotted arm would send `A.K` into the bare namespace, where the
-		// element-first fallback answers with the ELEMENT whenever the two share a
-		// leaf name. A dotted reference is not a bare one whether or not its qualifier
-		// resolves; that is the whole content of the flag.
+		// makes the resolver SAFE rather than merely tidy. It gates ONE thing, and
+		// that is the correction: the ENTIRE bare namespace of slotInGatheredSeed —
+		// the element arm and the bare-leg scan alike. It used to be described as
+		// gating "two things", the bare-column fallback and the no-identifier
+		// decline, and that enumeration was the bug in prose: it omitted the element
+		// arm because the element arm was not in fact gated. Dropping the flag on the
+		// dotted arm would send `A.K` into that namespace, where the element-first
+		// fallback answers with the ELEMENT whenever the two share a leaf name. A
+		// dotted reference is not a bare one whether or not its qualifier resolves;
+		// that is the whole content of the flag.
 		//
 		// The standing seed-window reader census pins the dotted arm's population:
 		// its QUALIFIED-NO-IDENTITY class is a hard zero, so a producer that starts
@@ -406,13 +416,22 @@ func bakeGatheredGroupValue(v values.Value, windows map[values.CorrelationIdenti
 }
 
 // slotInGatheredSeed resolves a group-by key / operand reference to its flat slot in
-// the gathered seed. The ELEMENT wins FIRST (element-first, so an element AS alias
-// shadowing a leg column reads the element): its slot is its rc index, located via
-// the seed's OWN element predicate (fieldValueReferencesInner) — a single
-// distinguished field, NOT a layout window (rc-index↔slot is the
-// substrate, no drift). A qualified LEG column routes through its leg's
-// [Offset,Width) window from the SHARED authority OrdinalSeedLegWindows (agreeing
-// bit-for-bit with the executor spans by the cross-agreement fixture).
+// the gathered seed. It has TWO namespaces and they do not overlap.
+//
+// A QUALIFIED read is answered by its qualifier's leg window or not at all: the
+// leg routes through its [Offset,Width) window from the SHARED authority
+// OrdinalSeedLegWindows (agreeing bit-for-bit with the executor spans by the
+// cross-agreement fixture), and every way of failing that lookup declines.
+//
+// A BARE read gets the element-first namespace: the ELEMENT wins (so an element AS
+// alias shadowing a leg column reads the element), its slot being its rc index
+// located via the seed's OWN element predicate (fieldValueReferencesInner) — a
+// single distinguished field, NOT a layout window (rc-index↔slot is the substrate,
+// no drift) — and a bare LEG column resolves only when exactly one leg carries it.
+//
+// Element-first is a BARE-namespace rule. Describing it as the site's first step
+// full stop is what this doc used to do, and it read as a licence for the element
+// to answer a qualified reference it does not name.
 func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow, elementSlots map[string]int, corr values.CorrelationIdentifier, col string, qualified bool) (int, bool) {
 	// A QUALIFIED read with NO correlation DECLINES here, before anything else.
 	// This is the flat-dotted arm (`FieldValue{Field:"A.K"}`), whose qualifier was
@@ -447,23 +466,93 @@ func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalS
 		}
 		// This site's CONTRACT is a flat slot index into the gathered seed's row,
 		// and a NESTED leg has none: its column lives one level down, reachable
-		// only by descending. So it DECLINES — exactly as it already declines a
-		// qualified read with no correlation a few lines above, and for the same
-		// reason: an answer this site cannot express honestly must not be
-		// approximated.
+		// only by descending. LegKindUnset is refused for a different reason — a
+		// window that reached a slot resolver without a stated kind is a producer
+		// bug, and the key it would have resolved is better unresolved than
+		// resolved to a guess.
 		//
-		// LegKindUnset declines here too. A window that reached a slot resolver
-		// without a stated kind is a producer bug, and the group-by key it would
-		// have resolved is better unresolved than resolved to a guess.
+		// Neither refusal happens HERE. Failing this condition only leaves the
+		// block; the decline that answers for it is the `qualified` gate below,
+		// which owns every way a qualified read can fail to resolve. This comment
+		// used to claim the two kinds "DECLINE" at this point and that the arm
+		// above already declined a correlation-less qualified read "a few lines
+		// above" — the second half was true, the first was not, and the gap
+		// between them was a live wrong-column read.
 		if isLeg && w.Kind == values.LegKindFlatRun {
 			if idx, found := w.Typ.FieldIndexUnique(col); found {
 				return w.Offset + idx, true
 			}
 		}
 	}
-	// A BARE / element-alias read: the ELEMENT wins the bare namespace (element-first —
-	// an element AS alias shadowing a later leg column reads the element, matching the
-	// name-model shadow the un-collapse preserves).
+	// A QUALIFIED read that its own qualifier could not resolve DECLINES, and this
+	// is the GENERAL form of the rule the no-correlation arm states at the top of
+	// this function: a reference that names a source is answered BY that source or
+	// not at all. Three shapes fail the lookup above, and each used to FALL
+	// THROUGH into the element/bare arms below, where `U.V` silently read the
+	// ELEMENT's `V`. They are NOT equally reachable, and saying so is the point —
+	// an unqualified "three shapes reach here" was what this comment said, and a
+	// reachability claim nobody checked is how the original defect survived a
+	// reading:
+	//
+	//   - LIVE — a correlation no window is filed under (an existential inner's
+	//     quantifier, say) — the same shape bakeUnnestElementRefOrdinal was
+	//     patched to dodge at the PRODUCER, which left the resolver still wrong
+	//     for every other producer;
+	//   - LIVE — a FLAT window that declares `col` TWICE, so FieldIndexUnique
+	//     picks nothing. That shape became reachable when the first-match
+	//     FieldIndex was deleted: a leg window's Typ is a leg-concat for a
+	//     clustered box run and may legitimately repeat a leaf name;
+	//   - DEFENSIVE at THIS call site — a window whose Kind cannot be
+	//     flat-addressed (LegKindNested, LegKindUnset), per the block above. No
+	//     nested window can exist here at all: LegKindNested is stamped in exactly
+	//     one place, positionalMergeWindows, which is reachable only through
+	//     `acceptNested && IsPositionalMergeRC` — and the windows here come from
+	//     gatheredSeedBakeContext, which calls OrdinalSeedLegWindows with
+	//     acceptNested=false. So the kind is never minted on this path, rather
+	//     than being minted and then filtered. (The neighbouring
+	//     `leg.Kind == LegKindNested && !acceptNested` refusal is a different
+	//     mechanism — it governs SUB-legs of a box run — and is not what makes
+	//     this arm unreachable.)
+	//     Every window that survives to this function is stamped LegKindFlatRun.
+	//     The dispatch stays because the refusal must be by KIND and not by luck
+	//     of which entry point the caller picked — but it is a contract guard,
+	//     not a class with production traffic, and the difference matters to
+	//     anyone reasoning about what the gate below actually catches.
+	//
+	// Java answers the same way structurally rather than by a rule: each
+	// quantifier is bound under its OWN alias (RecordQueryFlatMapPlan.java:135,140)
+	// and the unnest element lives on the Explode's own quantifier
+	// (LogicalOperator.java:318-329), so there is no shared namespace a qualified
+	// read could fall into.
+	//
+	// ONE gate, not one per arm. The arms below are the BARE namespace and nothing
+	// else; the bare-leg scan's own `!qualified` guard was removed with this gate's
+	// introduction, because two encodings of one rule is what let a reader assume
+	// the element arm carried the guard it did not.
+	//
+	// IT DOES NOT SWALLOW THE ELEMENT-QUALIFIED READ, and that is worth stating
+	// because `qualified` is set for ANY FieldValue over a QuantifiedObjectValue —
+	// not only for a dotted spelling — so this line reads like a gate on a
+	// namespace the ELEMENT legitimately owns. The corpus really does mint an
+	// element-qualified key: `FROM GD, GD.ARR AS V GROUP BY V` groups on
+	// FieldValue(QOV(V), V), so the grouping is the ELEMENT and not a later
+	// same-named column. It resolves above this gate, in the leg arm, because
+	// OrdinalSeedLegWindows files the unnest element under its OWN correlation —
+	// a synthesized one-column flat run for a scalar element, an ordinary leg run
+	// for a record one. The gate is therefore reachable only by a qualifier that
+	// names NO source in the seed, which is the whole of its intent. That
+	// invariant lives in the producer, not here, so it is pinned there:
+	// TestGatheredSeed_ElementQualifiedReadIsServedByItsOwnLegWindow drives all
+	// three arms off a real seed, and TestFDB_ArrayUnnestOrdinality/R19b pins the
+	// end-to-end consequence — the group key bakes to the element's slot rather
+	// than degrading to the name model.
+	if qualified {
+		return 0, false
+	}
+	// A BARE read: the ELEMENT wins the bare namespace (element-first — an element
+	// AS alias shadowing a later leg column reads the element, matching the
+	// name-model shadow the un-collapse preserves). Element-first is a rule about
+	// the BARE namespace only; a qualified read never arrives here.
 	if slot, ok := elementSlots[col]; ok {
 		return slot, true
 	}
@@ -473,30 +562,33 @@ func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalS
 	// carries it (unambiguous). An ambiguous bare column (a dup-named `K` present in two
 	// legs) declines here → name-model, exactly as an unqualified dup would be ambiguous
 	// in SQL. Map order is irrelevant: a unique hit is order-independent; >1 declines.
-	if !qualified {
-		slot, hits := 0, 0
-		for _, w := range windows {
-			// THE CENSUS CANNOT SEE THIS ARM. It is not a keyed read — it ranges
-			// every window instead of selecting one — so the seed-window reader
-			// census records nothing here, and this line is exactly as dangerous as
-			// the five keyed sites: it does offset arithmetic.
-			//
-			// A NESTED window must not contribute a hit, for the same reason the
-			// qualified arm above declines one: `w.Offset + idx` is not this leg's
-			// column, and worse, a nested contribution would ALSO move `hits` — so a
-			// column present in one flat leg and one nested leg would go from a
-			// unique resolution to an ambiguous decline, or a nested-only column
-			// would resolve to a slot in a neighbouring leg.
-			if w.Kind != values.LegKindFlatRun {
-				continue
-			}
-			if idx, found := w.Typ.FieldIndexUnique(col); found {
-				slot, hits = w.Offset+idx, hits+1
-			}
+	//
+	// It carried its own `!qualified` guard until the single gate above took over.
+	// The guard was real here and ABSENT on the element arm above, which is
+	// precisely how the fall-through hid: two bare arms, one gated, and a reader
+	// checking either one drew the wrong conclusion about the other.
+	slot, hits := 0, 0
+	for _, w := range windows {
+		// THE CENSUS CANNOT SEE THIS ARM. It is not a keyed read — it ranges
+		// every window instead of selecting one — so the seed-window reader
+		// census records nothing here, and this line is exactly as dangerous as
+		// the five keyed sites: it does offset arithmetic.
+		//
+		// A NESTED window must not contribute a hit, for the same reason the
+		// qualified gate above declines one: `w.Offset + idx` is not this leg's
+		// column, and worse, a nested contribution would ALSO move `hits` — so a
+		// column present in one flat leg and one nested leg would go from a
+		// unique resolution to an ambiguous decline, or a nested-only column
+		// would resolve to a slot in a neighbouring leg.
+		if w.Kind != values.LegKindFlatRun {
+			continue
 		}
-		if hits == 1 {
-			return slot, true
+		if idx, found := w.Typ.FieldIndexUnique(col); found {
+			slot, hits = w.Offset+idx, hits+1
 		}
+	}
+	if hits == 1 {
+		return slot, true
 	}
 	return 0, false
 }
