@@ -42,6 +42,7 @@ go_test(
         "rowvalue_map_expectation_test.go",
         "slot_order_derivation_test.go",
         "source_hygiene_test.go",
+        "star_body_named_column_census_test.go",
         "status_page_crossref_test.go",
         "store_timer_event_taxonomy_test.go",
         "test_filter_resolution_test.go",
@@ -72,6 +73,10 @@ go_test(
         # than passing on an empty set.
         "//pkg/relational/conformance/explaindiff:plan_shape_golden",
         "//pkg/relational/conformance/yamsql:testdata",
+        # keep: the vendored Java .yamsql corpus, the second half of the
+        # star-body-by-name census (TestStarBodyColumnsAreAddressedByName). Drop
+        # this and the walk finds no files, which its per-corpus floor catches.
+        "//third_party/apple/fdb-record-layer:yamsql_corpus",
         # keep: the pre-commit hook body is extracted from the install-hooks recipe,
         # which is its tracked source of truth (TestPreCommitHookNamesTheConditionItDetected).
         "//:justfile",
