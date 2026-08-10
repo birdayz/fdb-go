@@ -30,6 +30,7 @@ go_test(
         "qualified_name_test.go",
         "resolver_at_mint_capability_test.go",
         "scope_build_test.go",
+        "scope_duplicate_qualifier_gate_test.go",
         "scope_nested_test.go",
         "scope_test.go",
     ],

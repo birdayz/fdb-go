@@ -200,6 +200,7 @@ go_test(
         "duec_window_loss_reproducer_test.go",
         "duplicate_alias_keybinding_exists_fdb_test.go",
         "duplicate_from_alias_rejected_fdb_test.go",
+        "duplicate_from_alias_surface_fdb_test.go",
         "duplicate_from_aliases_fdb_test.go",
         "duplicate_groupby_fdb_test.go",
         "dynamic_float32_projection_fdb_test.go",
