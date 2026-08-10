@@ -58,6 +58,7 @@ go_test(
         "flatten_gate_test.go",
         "group_by_output_baker_test.go",
         "groupby_gate_test.go",
+        "hidden_sort_column_value_recovery_test.go",
         "is_scan_family_leg_test.go",
         "left_outer_seed_test.go",
         "leg_identity_census_main_test.go",
