@@ -1,6 +1,6 @@
 # RFC-228: a leg column lookup declines on an ambiguous name
 
-**Status:** DRAFT (rev 2 — folds two review laps; §1 strengthened, §3 retracted and rewritten, §2 rescoped)
+**Status:** IMPLEMENTED, and the implementation went FURTHER than this RFC — see §8. (rev 2 folded two review laps; §1 strengthened, §3 retracted and rewritten, §2 rescoped.)
 **Scope:** `rebaseOuterLegValueOrdinal` (`pkg/recordlayer/query/plan/cascades/left_outer_existential.go`), one arm.
 **Relates to:** RFC-218 (name-derived root re-anchor), RFC-222 (nested-or-flat before pinned-or-lazy), RFC-197 (the `.Field` debt list, `dotted` bucket entry 5).
 
@@ -33,7 +33,7 @@ A **source-relative baked** reference reaches the name arm carrying the correct 
 
 The two inputs differ **only** in the frontier pin. Slot 10 is a real merged column of the same type, so `NewFieldValueOfOrdinal` accepts it and nothing downstream rejects it: the plan is built, executed, and returns rows read from the wrong column.
 
-This is pinned two-sidedly by `dup_named_leg_window_first_match_test.go`, which landed on master in #702 as a characterization of the current behaviour. Mutation-verified: honouring the carried ordinal turns that test red with an instruction to flip it, while the sibling and control cases stay green.
+This is pinned two-sidedly by `dup_named_leg_window_declines_test.go`, which landed on master in #702 as a characterization of the current behaviour. Mutation-verified: honouring the carried ordinal turns that test red with an instruction to flip it, while the sibling and control cases stay green.
 
 **Rev 1 called this a hand-built symbol and said reachability was unmeasured. It understated the case.** Every piece of the symbol is production-built:
 
@@ -176,7 +176,7 @@ The entry's text is amended to record that the duplicate case declines, and its 
 
 ## 5. Tests
 
-- `dup_named_leg_window_first_match_test.go` flips from characterizing the defect to asserting the fix: `L.K` at leg-local 1 in a `[K, K, Z]` leg now **declines** rather than returning merged slot 10, and the `FrontierPinned` sibling continues to return 11.
+- `dup_named_leg_window_declines_test.go` flips from characterizing the defect to asserting the fix: `L.K` at leg-local 1 in a `[K, K, Z]` leg now **declines** rather than returning merged slot 10, and the `FrontierPinned` sibling continues to return 11.
 - A control on the unambiguous path: a leg with no duplicate names resolves by name exactly as before, so the fix is not a blanket decline.
 - The absent-name case keeps its existing decline, so `dupes != 1` is shown to subsume rather than replace it.
 - Corpus golden + 1M stress, per §3, with the zero-diff prediction stated above recorded ahead of the run.
@@ -190,3 +190,16 @@ The site passes `strings.ToUpper(fv.Field)` to a lookup that compares against `f
 Measured on the same instrumented run: **`matches` and `rawMatches` were equal in all 496 entries.** Every leg-window field name reached by this arm is already upper-case, so the fold is a no-op today and the asymmetry costs nothing. It is a latent divergence, not a live bug.
 
 It is not fixed here, and the reason is that the two candidate fixes point in opposite directions — normalize every site to fold, or normalize every site to raw — and choosing needs the same leg-identity answer §3.1 defers to the terminal fix. What this RFC does is stop it from being invisible: the every-arm unit pin in §5 includes a mixed-case case asserting the current behaviour, so a future change to either side of the comparison shows up as a test change rather than as a silent decline.
+
+## 8. What actually shipped
+
+This RFC proposed adding `FieldIndexUnique` **beside** `FieldIndex` and converting eight leg-window sites. What shipped deletes `RecordType.FieldIndex` and `RecordType.LookupField` outright and converts every caller — 33 files, enumerated by the compiler rather than by the grep in §2.2, which had found eight.
+
+The reason for going further is §2's own argument taken seriously. A first-match lookup left in the API is a copy target; §2.2 said so about `LookupField` and then proposed keeping `FieldIndex` next to its safe twin anyway. Deleting both removes the choice instead of documenting it, and `TestNoFirstMatchNameLookup` fails if either declaration or any call comes back.
+
+Two claims in this RFC are superseded by that:
+
+- §3's registered prediction — zero corpus plans change, zero queries lose a plan — **held**, over the whole conversion rather than the one site.
+- §1's note that the characterization test is "mutation-verified: honouring the carried ordinal turns it red with an instruction to flip it" is now history. The test was flipped, by the fix, exactly as designed. It asserts the decline and is renamed accordingly.
+
+§6's case-folding asymmetry is unchanged and still measured: `matches` and `rawMatches` were equal in all 496 corpus entries, so the fold is a no-op today.

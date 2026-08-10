@@ -540,11 +540,11 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// rejects it.
 	//
 	// PINNED, NOT FIXED (the fix is a functional query-engine change and needs its
-	// own RFC and review): dup_named_leg_window_first_match_test.go asserts the
+	// own RFC and review): dup_named_leg_window_declines_test.go asserts the
 	// wrong answer two-sidedly and fails with instructions to flip it the moment
 	// the arm honours the carried ordinal or declines. Its sibling cases pin that
 	// the OTHER two arms still defend, so a regression in either direction reports.
-	"pkg/recordlayer/query/plan/cascades/left_outer_existential.go # rebaseOuterLegValueOrdinal # a Contains call # 1":   {1, "dotted: leg-relative vs qualified ref probed via '.' in the name. The '.' probe itself is accurate and is what this entry tracks; see the note above for the DUPLICATE-NAME defect the arm's in-place justification concealed, pinned by dup_named_leg_window_first_match_test.go and NOT fixed here"},
+	"pkg/recordlayer/query/plan/cascades/left_outer_existential.go # rebaseOuterLegValueOrdinal # a Contains call # 1":   {1, "dotted: leg-relative vs qualified ref probed via '.' in the name. The '.' probe itself is accurate and is what this entry tracks; see the note above for the DUPLICATE-NAME defect the arm's in-place justification concealed, pinned by dup_named_leg_window_declines_test.go and NOT fixed here"},
 	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go # rebaseOuterLegValue # a Contains call # 1": {1, "dotted: declines re-qualifying an already-dotted ref; Child is a live QOV, so this is the qualified-name channel, not the legacy flat shape"},
 	// MEASURED, not inferred: 3 declines in 269 979 calls over the sqldriver
 	// real-FDB corpus, 2 distinct witnesses, both of the form `q$N.AID#0`. The
