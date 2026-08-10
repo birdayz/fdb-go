@@ -69,7 +69,7 @@ func TestBuildCoveringLogicalRow(t *testing.T) {
 	// The row's TYPE names slots identically to the base-scan path, so a
 	// plan-time bake against it lands on the same slot.
 	if idx, ok := row.Type.FieldIndexUnique("B"); !ok || idx != 2 {
-		t.Fatalf("FieldIndex(B) = (%d, %v), want (2, true)", idx, ok)
+		t.Fatalf("FieldIndexUnique(B) = (%d, %v), want (2, true)", idx, ok)
 	}
 }
 

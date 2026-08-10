@@ -25,8 +25,10 @@ import (
 //     uses). The requested ordering was pushed down TO this select, so its
 //     values are already in the merge row's domain. A column name carried by
 //     two semantically different requested parts is ambiguous — skipped.
-//  2. The inner plan's flowed RecordType (when the plan flows one), by
-//     first-match field name — the plan-time FieldIndex rule.
+//  2. The inner plan's flowed RecordType (when the plan flows one), by field
+//     name — case-insensitively, and only when the name matches EXACTLY ONE
+//     field (uniqueUpperFieldIndex). A name carried by two fields of the
+//     flowed row is ambiguous and bakes through neither authority.
 //
 // Baked keys and computed/correlated keys pass through untouched. A lazy key
 // that resolves through NEITHER authority passes through lazy: a record-backed

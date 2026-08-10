@@ -3937,7 +3937,7 @@ func chainedPredScanPushable(p predicates.QueryPredicate, outerLegs map[string]s
 // goes live only when that guard lifts (channel 2).
 //
 // multiAlias is the CALLER's structural fact (len(outerLegs) > 1). The flat
-// FieldIndex fallback is legitimate ONLY for a single-alias prefix (the
+// whole-row name fallback is legitimate ONLY for a single-alias prefix (the
 // pristine-prefix-at-offset-0 case, where every column belongs to the one
 // alias). A MULTI-alias prefix that arrives WITHOUT leg windows must DECLINE:
 // the flat fallback would silently first-match a dup-named column across
@@ -4054,7 +4054,8 @@ func rebaseUnnestOuterLegPredicateOrdinal(
 			// box): a qualified ref to a dup-named column must pick THAT leg's slot,
 			// not the flat first-match across the whole merged prefix (which silently
 			// reads the OTHER alias's same-named column).
-			// A single-alias outer has no rt.Legs and falls back to a flat FieldIndex.
+			// A single-alias outer has no rt.Legs and falls back to a flat whole-row
+			// name lookup.
 			// The MAP lookup above is keyed by upper text (the outerLegs set is built
 			// from the same text channel), but the WINDOW resolution below is an
 			// identity question and takes the correlation itself.
@@ -10089,7 +10090,7 @@ func recursiveRemapValues(cols []string, verbatimField []bool, ordinalReads, pos
 			// and the logical-name fallback (a scan/aggregate/union top, whose
 			// physical row conforms to the logical column order). The
 			// name-keyed lazy read this replaces resolved the
-			// same slot by FieldIndex over that same order.
+			// same slot by name over that same order.
 			out[i] = values.NewFieldValueWithResolvedOrdinal(cu, i, values.UnknownType)
 		}
 	}

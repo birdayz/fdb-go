@@ -50,7 +50,7 @@ const (
 //     the box legs ∪ the unnest's own AS/AT aliases (a scalar-subquery alias is
 //     a foreign correlation — its conjunct stays on the name-model path
 //     without a new loud error);
-//   - every box-leg reference (legRef shape) must FieldIndex-resolve in its
+//   - every box-leg reference (legRef shape) must resolve UNIQUELY by name in its
 //     buried window's leafTyp — an unresolvable ref would strand as a lazy name
 //     read over the positional row (the wrong-slot class).
 //

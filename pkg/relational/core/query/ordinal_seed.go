@@ -374,9 +374,10 @@ func (t *cascadesTranslator) legsOfGatedJoin(j *logical.LogicalJoin) []clusterLe
 // type (the baked QOV's type — the flat concat for a box leg) plus the BAKE
 // WINDOW bare names resolve within. A box leg is NAMED after its rightmost
 // LEAF (sourceAlias), so a bare reference `b.col` addressing the box alias
-// means THAT LEAF's column: FieldIndex must run against the leaf's own type
-// at its concat offset, never first-match across the whole concat — an
-// earlier leg's duplicate name would silently bake the WRONG column. For a
+// means THAT LEAF's column: the name lookup must run against the leaf's own type
+// at its concat offset, never across the whole concat — an earlier leg carrying
+// the same name makes a whole-concat lookup ambiguous, and it declines rather
+// than picking one, so the ref never reaches its leaf at all. For a
 // plain (non-join) leg the window IS the whole type at offset 0.
 type bakeLegType struct {
 	typ        *values.RecordType // the leg's flowed type (the baked QOV's type)
@@ -425,8 +426,7 @@ func (t *cascadesTranslator) legBakeWindow(op logical.LogicalOperator) (int, *va
 // WRONG for a nested-binary cluster: sourceAlias(join-operand) recurses to the
 // buried RIGHTMOST table while ordinalLegType(join-operand) is the whole
 // subtree's concat, so a bake would pin a single table's reference to a
-// concat-relative ordinal (out of range at runtime — or silently the WRONG
-// column when FieldIndex first-matches an earlier leg's duplicate name). A leg
+// concat-relative ordinal (out of range at runtime). A leg
 // with an empty alias or an undeciphered type is simply absent: its references
 // stay lazy, which is sound (the load-bearing lazy invariant).
 func (t *cascadesTranslator) gatedJoinLegTypes(j *logical.LogicalJoin) map[string]bakeLegType {
@@ -688,7 +688,8 @@ func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[str
 // bool is true iff a leg ref the bake ATTEMPTED (a ≥2-leg or buried conjunct, past
 // the per-conjunct lazy gate) could not be positionally resolved — its leg carries no
 // bakeable window, or the leaf window has no such field. The classifier pre-verifies
-// FieldIndex before admitting, so drift is unreachable via production SQL today; it is
+// the same unique-name resolution before admitting, so drift is unreachable via
+// production SQL today; it is
 // the safety net the gathered-merge arms decline (INNER) / loud-error (box) on,
 // guarding against a future classifier/bake divergence that would otherwise strand a
 // leg ref as a silent-NULL name read (0 rows). A SINGLE-LEG non-buried ref is left
@@ -715,8 +716,8 @@ func bakeGatedJoinPredicatesChecked(preds []predicates.QueryPredicate, legTypes 
 		fv := v.(*values.FieldValue) // legRef confirmed the cast + guards
 		// Resolve the bare name within the leg's BAKE WINDOW (the rightmost
 		// leaf for a box leg — the alias names that leaf), then offset into
-		// the leg's flowed concat. A whole-concat FieldIndex would first-match
-		// an earlier leg's duplicate name — silently the wrong column.
+		// the leg's flowed concat. Resolving over the whole concat instead would
+		// meet an earlier leg's duplicate name and decline, stranding the ref.
 		idx, found := legType.leafTyp.FieldIndexUnique(fv.Field)
 		if !found {
 			drift = true // the leaf window has no such field — verdict/bake drift

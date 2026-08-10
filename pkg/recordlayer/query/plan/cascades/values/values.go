@@ -196,9 +196,10 @@ type FieldValue struct {
 	// FieldPath resolution, where the accessor IS an ordinal and runtime access
 	// is positional: resolveOrdinal returns the accessor's ordinal directly, so
 	// a positional-row read is row.Get(ordinal) — position-preserving by
-	// construction, and therefore sound under DUPLICATE output names, which
-	// every name-based resolution collapses (RecordType.FieldIndex is
-	// first-match). Field is a DISPLAY name for diagnostics and Explain.
+	// construction, and therefore sound under DUPLICATE output names, which no
+	// name-based resolution can address at all: a by-name lookup DECLINES on an
+	// ambiguous name (RecordType.FieldIndexUnique) and a name-keyed map collapses
+	// the duplicates. Field is a DISPLAY name for diagnostics and Explain.
 	//
 	// Every RUNTIME-evaluated FieldValue is BAKED (Resolved non-nil): the
 	// runtime name-resolution fallback is deleted, so a LAZY node (nil) that
@@ -1324,7 +1325,7 @@ func (f *FieldValue) resolveOrdinal() (int, bool) {
 	if _, ok := f.Child.Type().(*RecordType); !ok {
 		return 0, false
 	}
-	// There is NO runtime name-derive fallback (no rt.FieldIndex here). A
+	// There is NO runtime name-derive fallback (no by-name lookup against rt here). A
 	// FieldValue with a typed child but no baked Resolved ordinal is an
 	// UNBAKED site: its ordinal must be bound at plan time. Return false so
 	// evaluateOrdinal fails LOUD rather than re-deriving the ordinal by name at
@@ -4577,9 +4578,9 @@ func NewRecordConstructorValue(fields ...RecordConstructorField) *RecordConstruc
 //
 // NEVER use this for a projection RC: NewRecordConstructorValue (above)
 // appends _2/_3 suffixes, which is correct there (SQL projection column
-// naming) — a raw duplicate under name-keyed plan-time lookup (FieldIndex
-// first-match) silently
-// resolves to the first match, the exact conflation ordinal identity exists to avoid.
+// naming) — a raw duplicate is not addressable by name at all: the plan-time
+// lookup declines on the ambiguity, so a projection built this way would lose the
+// columns rather than name them, the exact conflation ordinal identity exists to avoid.
 func NewRawRecordConstructorValue(fields ...RecordConstructorField) *RecordConstructorValue {
 	out := make([]RecordConstructorField, len(fields))
 	copy(out, fields)

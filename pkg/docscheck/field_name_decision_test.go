@@ -2450,16 +2450,145 @@ func TestFieldNameNeverDecides(t *testing.T) {
 // A green here means neither a declaration nor a call has reappeared. It counts
 // what it scanned and fails on an empty population, because a walk that reached
 // no files reports exactly the same green as a tree with no violations.
+// selfExemptFieldDecisionFile is the ONE file TestNoFirstMatchNameLookup skips,
+// stated as a repo-relative path so the exemption cannot spread by naming.
+const selfExemptFieldDecisionFile = "pkg/docscheck/field_name_decision_test.go"
+
+// firstMatchNameLookups are the deleted first-match lookups and their
+// replacements. Watched by NAME, because that is what a revival would reuse.
+var firstMatchNameLookups = map[string]string{
+	"FieldIndex":  "FieldIndexUnique",
+	"LookupField": "LookupFieldUnique",
+}
+
+// scanFirstMatchNameLookups reports every revival of a deleted first-match name
+// lookup in one file's source, as "rel:LINE: …" strings. parsed is false when
+// the source does not parse.
+//
+// It is SPLIT OUT of the tree walk so the decision can be driven from source
+// held in a string. The alternative is what actually happened: the two holes
+// below were found by dropping a probe FILE into the tree, watching the gate
+// report it, and deleting the probe — which leaves the conclusion in a commit
+// message and nothing that fails if either hole reopens. A revival of this gate's
+// own blind spot cannot be pinned by a real file, because a real
+// `func FieldIndex` in the tree is a permanent red.
+func scanFirstMatchNameLookups(rel string, src []byte) (problems []string, parsed bool) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, rel, src, 0)
+	if err != nil {
+		return nil, false
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.FuncDecl:
+			// METHOD OR PLAIN FUNCTION. Bailing on `x.Recv == nil` watched only
+			// the method form, so `func FieldIndex(r *RecordType, name string)
+			// (int, bool)` declared at package level in `values` — the same
+			// first-match lookup with the receiver moved into the parameter
+			// list — reintroduced the API this gate deletes and the gate had
+			// nothing to say about it.
+			if x.Name == nil {
+				return true
+			}
+			if want, bad := firstMatchNameLookups[x.Name.Name]; bad {
+				problems = append(problems, fmt.Sprintf(
+					"%s:%d: %s declared — use %s",
+					rel, fset.Position(x.Pos()).Line, x.Name.Name, want))
+			}
+		case *ast.CallExpr:
+			// QUALIFIED OR UNQUALIFIED. Matching only *ast.SelectorExpr watched
+			// `x.FieldIndex(n)` and missed the bare `FieldIndex(rt, n)` a
+			// package-level redeclaration is called by — so the two holes
+			// COMPOSED: declare it as a function and call it from its own
+			// package, and both arms passed.
+			var name string
+			switch fn := x.Fun.(type) {
+			case *ast.SelectorExpr:
+				if fn.Sel != nil {
+					name = fn.Sel.Name
+				}
+			case *ast.Ident:
+				name = fn.Name
+			}
+			if want, bad := firstMatchNameLookups[name]; bad {
+				problems = append(problems, fmt.Sprintf(
+					"%s:%d: call to %s — use %s",
+					rel, fset.Position(x.Pos()).Line, name, want))
+			}
+		}
+		return true
+	})
+	return problems, true
+}
+
+// TestFirstMatchNameLookupScanArms drives every arm of the gate's decision from
+// source held in a string, including the two that a tree walk over a CLEAN tree
+// cannot reach at all.
+//
+// A green from the walk above is a statement about the tree, not about the
+// detector. Both arms below passed the tree walk while blind: the declaration
+// arm bailed on `x.Recv == nil` and the call arm matched only *ast.SelectorExpr,
+// so a package-level `func FieldIndex` called unqualified from its own package
+// slipped through BOTH. The tree was clean, so the gate reported green and the
+// blindness was invisible — which is exactly the shape this repo keeps finding:
+// a green from an empty set.
+func TestFirstMatchNameLookupScanArms(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		src     string
+		want    int
+		blindTo string
+	}{
+		{
+			"method declaration", "package p\ntype T struct{}\nfunc (t *T) FieldIndex(n string) (int, bool) { return 0, false }\n", 1,
+			"the original form — the only one the gate ever watched",
+		},
+		{
+			"package-level function declaration", "package p\ntype T struct{}\nfunc FieldIndex(t *T, n string) (int, bool) { return 0, false }\n", 1,
+			"the receiver moved into the parameter list. Identical semantics, and the " +
+				"`x.Recv == nil` bail meant the gate never looked",
+		},
+		{
+			"package-level LookupField", "package p\ntype T struct{}\nfunc LookupField(t *T, n string) (int, bool) { return 0, false }\n", 1,
+			"the sibling lookup, same evasion — both names must be watched in both forms",
+		},
+		{
+			"qualified call", "package p\nfunc f(t interface{ FieldIndex(string) (int, bool) }) { t.FieldIndex(\"K\") }\n", 1,
+			"the original call form",
+		},
+		{
+			"unqualified call", "package p\nfunc FieldIndexUniqueX() {}\nfunc f() { FieldIndex(nil, \"K\") }\n", 1,
+			"how a package-level redeclaration is called from its own package. The " +
+				"*ast.SelectorExpr-only match saw an *ast.Ident and returned",
+		},
+		{
+			"the Unique forms are not flagged", "package p\ntype T struct{}\nfunc (t *T) FieldIndexUnique(n string) (int, bool) { return 0, false }\nfunc g(t *T) { t.FieldIndexUnique(\"K\"); t.LookupFieldUnique(\"K\") }\n", 0,
+			"the NEGATIVE control. Without it every arm above is satisfied by a " +
+				"detector that flags everything, and the gate would fail the whole tree",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, parsed := scanFirstMatchNameLookups("probe.go", []byte(tc.src))
+			if !parsed {
+				t.Fatalf("the probe source did not parse — the case tests nothing:\n%s", tc.src)
+			}
+			if len(got) != tc.want {
+				t.Fatalf("scan reported %d finding(s) %v, want %d.\n  This arm exists because: %s",
+					len(got), got, tc.want, tc.blindTo)
+			}
+		})
+	}
+}
+
 func TestNoFirstMatchNameLookup(t *testing.T) {
 	t.Parallel()
 	root := sourceTreeRoot(t)
 
-	banned := map[string]string{
-		"FieldIndex":  "FieldIndexUnique",
-		"LookupField": "LookupFieldUnique",
-	}
 	var problems []string
 	scanned := 0
+	selfExempted := 0
 
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -2489,46 +2618,34 @@ func TestNoFirstMatchNameLookup(t *testing.T) {
 		if rerr != nil {
 			return rerr
 		}
+		rel, _ := filepath.Rel(root, path)
 		// This file names both methods in prose and in this test's own tables;
-		// scanning it would report itself.
-		if strings.HasSuffix(path, "field_name_decision_test.go") {
+		// scanning it would report itself. The exemption is an EXACT path, not a
+		// suffix: `strings.HasSuffix(path, "field_name_decision_test.go")` also
+		// exempts `values_field_name_decision_test.go` and any other file whose
+		// name merely ends that way, so the one file that must be skipped came
+		// with a free skip for every future file that copies its name.
+		if filepath.ToSlash(rel) == selfExemptFieldDecisionFile {
+			selfExempted++
 			return nil
 		}
-		fset := token.NewFileSet()
-		f, perr := parser.ParseFile(fset, path, src, 0)
-		if perr != nil {
+		found, parsed := scanFirstMatchNameLookups(rel, src)
+		if !parsed {
 			return nil // not our business to fail on unparseable files
 		}
 		scanned++
-		rel, _ := filepath.Rel(root, path)
-		ast.Inspect(f, func(n ast.Node) bool {
-			switch x := n.(type) {
-			case *ast.FuncDecl:
-				if x.Recv == nil || x.Name == nil {
-					return true
-				}
-				if want, bad := banned[x.Name.Name]; bad {
-					problems = append(problems, fmt.Sprintf(
-						"%s:%d: method %s redeclared — use %s",
-						rel, fset.Position(x.Pos()).Line, x.Name.Name, want))
-				}
-			case *ast.CallExpr:
-				sel, ok := x.Fun.(*ast.SelectorExpr)
-				if !ok || sel.Sel == nil {
-					return true
-				}
-				if want, bad := banned[sel.Sel.Name]; bad {
-					problems = append(problems, fmt.Sprintf(
-						"%s:%d: call to %s — use %s",
-						rel, fset.Position(x.Pos()).Line, sel.Sel.Name, want))
-				}
-			}
-			return true
-		})
+		problems = append(problems, found...)
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("walk: %v", err)
+	}
+	if selfExempted != 1 {
+		t.Fatalf("the self-exemption matched %d files, want exactly 1 (%s).\n"+
+			"  0 means the path is stale — this file renamed or moved — so the test is\n"+
+			"  about to report its own prose as violations. More than 1 means the exact\n"+
+			"  match has stopped being exact and the exemption is spreading, which is the\n"+
+			"  suffix hole this replaced.", selfExempted, selfExemptFieldDecisionFile)
 	}
 	if scanned == 0 {
 		t.Fatal("scanned 0 Go files — this test cannot distinguish a clean tree " +

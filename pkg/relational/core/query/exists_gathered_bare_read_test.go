@@ -244,30 +244,32 @@ func TestRebaseLegRefsToBox_ChildlessSourceRelativeBakeDeclines(t *testing.T) {
 	}
 }
 
-// TestRebaseLegRefsToBox_DupNamedBoxWindowFirstMatches holds the shape behind
-// the wrap's one recorded FieldIndex blind-spot entry.
+// TestRebaseLegRefsToBox_DupNamedBoxWindowDeclines holds the shape that used to
+// be the wrap's one recorded name-lookup blind spot, and now pins its closure.
 //
 // The rebase resolves a column by NAME inside the window the reference's own
 // correlation selected. The identity fixes WHICH row, which is the half the two
 // deleted text arms got wrong — but it does not make the window unambiguous. A
 // CLUSTERED BOX run window concatenates every buried leaf's columns, so two
-// leaves' same-named columns share one window and FieldIndex first-matches
-// between them.
+// leaves' same-named columns share ONE window, and the first-match scan that
+// used to run here answered with a guess dressed as a fact.
 //
-// Measured: the ambiguous case is UNREACHED — a panic wired at this call on "the
-// selected window holds more than one field named fv.Field" is hit by nothing
-// over the real-FDB sqldriver corpus or ./pkg/relational/core/... . This test
-// exists because that is a negative result, and a negative result recorded only
-// in prose is one nobody re-checks. It pins the shape so the debt entry names a
-// real hazard, and it pins the CURRENT answer so a guard cannot be added
-// silently.
+// The lookup now DECLINES on that ambiguity (FieldIndexUnique), and the decline
+// is what this test asserts: an answer coming back at all means a first-match
+// scan has returned.
 //
-// The sibling reader already has the fix: left_outer_existential.go's
-// leg-relative arm carries the reference's already-BAKED ordinal precisely so an
-// opaque box leg's duplicate buried names cannot remap it. When a reference
-// arrives here carrying its leg-local ordinal too, this site stops resolving by
-// name and the blind-spot entry retires.
-func TestRebaseLegRefsToBox_DupNamedBoxWindowFirstMatches(t *testing.T) {
+// Measured before the closure: the ambiguous case was UNREACHED — a panic wired
+// at this call on "the selected window holds more than one field named fv.Field"
+// was hit by nothing over the real-FDB sqldriver corpus or ./pkg/relational/core/...
+// The shape is pinned here rather than left in prose because an unreachable
+// hazard is exactly the kind nobody re-checks.
+//
+// The sibling reader carries the same property by a different route:
+// left_outer_existential.go's leg-relative arm carries the reference's
+// already-BAKED ordinal, so an opaque box leg's duplicate buried names cannot
+// remap it. When a reference arrives here carrying its leg-local ordinal too,
+// this site stops resolving by name at all.
+func TestRebaseLegRefsToBox_DupNamedBoxWindowDeclines(t *testing.T) {
 	t.Parallel()
 
 	// A clustered BOX run window: two buried leaves, both carrying `K`, filed as

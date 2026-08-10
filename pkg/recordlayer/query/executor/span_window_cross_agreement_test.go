@@ -609,7 +609,7 @@ func TestSpanWindowCrossAgreement_NestedMerge(t *testing.T) {
 	// flat window — and the reason this fixture exists is the trap it guards:
 	// routing the per-slot test through IsMixedSeedElementType would classify a
 	// nil-typed slot as NESTED (that predicate answers false for nil), yielding a
-	// window with a nil Typ that panics at the first FieldIndex.
+	// window with a nil Typ that panics at the first FieldIndexUnique.
 	untyped := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("U"))
 
 	for _, tc := range []struct {

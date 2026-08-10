@@ -108,7 +108,7 @@ func (t *cascadesTranslator) unnestOrdinalSeed(
 // the outer row is ORDINAL-addressed, so the ordinal-build resolver applies all
 // name accessors flat against the outer row and fails ("field NARR not resolvable
 // ... ordinal -1"). The ordinal form bakes the ROOT column positionally —
-// ofOrdinal(QOV(outer, outerType), FieldIndex(root)) — and rides the remaining
+// ofOrdinal(QOV(outer, outerType), FieldIndexUnique(root)) — and rides the remaining
 // segments as a NAME-addressed FUSED suffix that descends the struct VALUE
 // through FieldValue's proto-message arm (independent of the positional build).
 // This is the single-leg case of the gathered unnest cluster's owner-window
@@ -146,10 +146,10 @@ func (t *cascadesTranslator) unnestBakedRootCollection(
 	//     < 0 → resolve by NAME (Segments[rootSegmentIndex]). Unshadowable — the
 	//     outer scan's own columns.
 	//   - CHAINED owner-alias root (the first link's ELEMENT): the caller passes
-	//     explicitRootIdx (the element's slot). A NAME lookup here would pick an
-	//     OUTER column that SHADOWS the alias — the outer columns precede the
-	//     element in the merged row, so FieldIndex returns the wrong (outer)
-	//     occurrence and the Explode roots at the wrong column. Use the slot.
+	//     explicitRootIdx (the element's slot). A NAME lookup here cannot reach the
+	//     element: an OUTER column SHADOWS the alias, and the outer columns precede
+	//     the element in the merged row, so the name matches TWO fields and the
+	//     unique-match lookup declines — the Explode never roots. Use the slot.
 	var arrIdx int
 	if explicitRootIdx >= 0 {
 		if explicitRootIdx >= len(outerType.Fields) {

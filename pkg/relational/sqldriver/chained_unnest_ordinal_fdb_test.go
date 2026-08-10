@@ -228,9 +228,10 @@ func TestFDB_ChainedUnnestOrdinal(t *testing.T) {
 	t.Run("root shadow: first unnest alias collides with the outer SUB=777 column, roots at the ELEMENT slot", func(t *testing.T) {
 		// The first unnest is aliased AS SUB — the SAME name as the outer scalar
 		// column SUB=777. The chained collection must root at the ELEMENT'S SLOT in
-		// the merged row (after the outer columns), NOT the first name match: a
-		// FieldIndex("SUB") lookup returns the OUTER SUB=777 (earlier in the row),
-		// rooting the second Explode at a scalar → wrong value / runtime failure.
+		// the merged row (after the outer columns), NOT by name: the name `SUB`
+		// matches TWO columns of that row, so a by-name root either first-matches
+		// the OUTER SUB=777 (rooting the second Explode at a scalar → wrong value)
+		// or declines and loses the plan. Neither reaches the element.
 		// With the explicit element-slot root, SUB.SUB descends the element's SUB
 		// array and answers the SAME rows as the X-aliased 2-chain.
 		const q = `SELECT "ID", "Y" FROM T4, T4."SARR" AS "SUB", "SUB"."SUB" AS "Y"`

@@ -9,12 +9,14 @@ package sqldriver_test
 //     correct rows AND the same plan shape a plain name-model plan would
 //     produce (the nested FlatMap-over-FlatMap anchored merge chain).
 //   - The flattening-evasion shape `FROM (a JOIN b) t1, (c JOIN d) t2 WHERE
-//     t1.aid = t2.cid` stays name-model end-to-end. PARTIAL — see
-//     TestFDB_FourWayFlatteningEvasionStaysNameModel: the shape is
-//     unplannable (pre-existing 0AF00), so the pinned observable is the
-//     CLEAN rejection (never silent rows, never ordinal artifacts). The
-//     correct-rows half is blocked on a pre-existing derived-with-join
-//     planner gap.
+//     t1.aid = t2.cid` stays name-model end-to-end — see
+//     TestFDB_FourWayFlatteningEvasionStaysNameModel. It used to be
+//     unplannable (0AF00) and the pin was the clean rejection; now the
+//     JOIN-bodied derived table derives its output row from its own legs,
+//     so what is pinned is the ANSWER: exactly the one row where
+//     t1.aid = t2.cid, in every spelling. The row COUNT is load-bearing —
+//     a cross-product degrade returns four. The CTE spelling still
+//     declines, and that decline is pinned too so the gap stays visible.
 //   - A dedicated GROUP BY/HAVING-over-2-way-join pin: aggregation, HAVING
 //     (on the aggregate and on the group key), and ORDER BY/LIMIT sit
 //     correctly over a GATED (ordinal) 2-way join, with EXPLAIN fragments

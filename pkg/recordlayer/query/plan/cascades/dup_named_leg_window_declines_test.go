@@ -1,54 +1,57 @@
 package cascades
 
 // The NAME arm of rebaseOuterLegValueOrdinal against a leg window that holds two
-// columns of one name — the case its two SIBLING arms in the same switch both
-// defend against and it does not.
+// columns of one name — the case its two SIBLING arms in the same switch always
+// defended against and it, for a while, did not.
 //
-// THIS FILE PINS A DEFECT, NOT A CONTRACT. Every assertion below states what the
-// code does TODAY, and every failure message says which way to flip it. A green
-// run here means the asymmetry is still present.
+// THIS FILE PINS A CLOSURE. It was written to pin the DEFECT — a green run then
+// meant the asymmetry was still present — and RFC-228 closed it, so the same
+// assertions now read the other way: a green run means all three arms decline on
+// the ambiguous name, and a resolved answer coming back means a first-match
+// lookup has returned. The failure messages carry that reading.
 //
-// The asymmetry, stated precisely. rebaseOuterLegValueOrdinal dispatches a leg
-// reference to one of three arms, all resolving against the SAME window type
+// The asymmetry it was written against. rebaseOuterLegValueOrdinal dispatches a
+// leg reference to one of three arms, all resolving against the SAME window type
 // `w.Typ`:
 //
 //	multi-accessor -> FieldPath.ReAnchorRootInto, which COUNTS matches and
 //	                  declines on `dupes > 1` (values.go: "root column name is
 //	                  ambiguous in the flowed layout")
 //	FrontierPinned -> carries acc.Ordinal and performs no name lookup at all,
-//	                  its comment naming this exact hazard: "an OPAQUE box leg
+//	                  its comment naming this exact hazard: an opaque box leg
 //	                  can expose DUPLICATE buried column names (`A.K` and `B.K`
-//	                  merged into one leg), where FieldIndex("K") would remap the
-//	                  already-baked ref to the FIRST match and silently probe the
-//	                  WRONG column (wrong rows)"
-//	name arm       -> w.Typ.FieldIndex(fv.Field), a FIRST-MATCH scan with no
-//	                  duplicate detection (type.go RecordType.FieldIndex),
-//	                  justified in place by "A single source leg has no duplicate
-//	                  column names, so FieldIndex(Field) is the leg-local
-//	                  ordinal."
+//	                  merged into one leg), where a first-match remap of the
+//	                  already-baked ref would silently probe the WRONG column
+//	name arm       -> a FIRST-MATCH scan with no duplicate detection, justified
+//	                  in place by "A single source leg has no duplicate column
+//	                  names, so FieldIndex(Field) is the leg-local ordinal."
 //
-// That justification is the claim under test, and its own siblings contradict
+// That justification was the claim under test, and its own siblings contradicted
 // it: the window is not always a single source leg. A CLUSTERED BOX run window
 // concatenates every buried leaf's columns, and finalizeSeedWindows narrows only
-// the RIGHTMOST leaf's entry (ordinal_seed_layout.go: "an alias-qualified read
-// must window the leaf rather than FieldIndex across the whole concat"). A run
-// window that was not narrowed therefore can hold `A.K` and `B.K` as two fields
-// both named K.
+// the RIGHTMOST leaf's entry, so a run window that was not narrowed can hold
+// `A.K` and `B.K` as two fields both named K. The arm now resolves through
+// RecordType.FieldIndexUnique, which declines on exactly that shape; the
+// first-match lookup it used to call was deleted rather than left as a copy
+// target.
 //
-// WHY THE CARRIED ORDINAL MAKES THIS SHARPER THAN "LAZY REFS ARE UNDEFENDED".
+// WHY THE CARRIED ORDINAL MADE THIS SHARPER THAN "LAZY REFS ARE UNDEFENDED".
 // The name arm is not reached only by lazy references. A SOURCE-RELATIVE baked
 // reference — resolved, unpinned, single-accessor — reaches it too, and it
-// ARRIVES CARRYING the correct leg-local ordinal. The arm discards that ordinal
-// and re-derives one by first-match name. The multi-accessor arm, given the same
-// disagreement, declines outright ("carried ordinal disagrees with the flowed
-// layout"). So one arm treats the carried ordinal as authoritative enough to
-// refuse on, and another silently overrules it.
+// ARRIVES CARRYING the correct leg-local ordinal. The arm discarded that ordinal
+// and re-derived one by first-match name, while the multi-accessor arm, given
+// the same disagreement, declined outright ("carried ordinal disagrees with the
+// flowed layout"). One arm treated the carried ordinal as authoritative enough
+// to refuse on, and another silently overruled it. Both decline now — and note
+// the decline, not the carried ordinal, is what this file asserts: honouring the
+// ordinal in the name arm is a different and larger change.
 //
 // A duplicate-named RecordType is built as a RAW literal here because
 // NewRecordType PANICS on duplicate field names. That is not a harness dodge —
 // it is how such a window arises in production too, at ordinal_seed_layout.go,
-// and it is why FieldIndex's own doc advertises working on "a raw RecordType
-// that was built without NewRecordType's normalization".
+// which is why the by-name lookup has to work on "a raw RecordType that was
+// built without NewRecordType's normalization" and therefore has to face
+// duplicates at all.
 
 import (
 	"fmt"
@@ -108,12 +111,13 @@ func rebasedOrdinals(t *testing.T, ref values.Value, leg *values.RecordType, mer
 	return got, true
 }
 
-// TestDupNamedLegWindow_NameArmDeclinesOnTheAmbiguousName is the
-// defect itself, stated two-sidedly.
+// TestDupNamedLegWindow_NameArmDeclinesOnTheAmbiguousName is the closure,
+// stated two-sidedly.
 //
 // The reference is `L.K` resolved to leg-local ordinal 1 — the SECOND K, which
-// is the column the user asked for. Correct output is merged slot 11 (Offset 10
-// + 1), or a DECLINE. What the code produces is slot 10.
+// is the column the user asked for. An acceptable output is merged slot 11
+// (Offset 10 + 1) or a DECLINE; the arm produces the DECLINE. Before the fix it
+// produced slot 10, the first match.
 func TestDupNamedLegWindow_NameArmDeclinesOnTheAmbiguousName(t *testing.T) {
 	t.Parallel()
 
@@ -160,10 +164,11 @@ func TestDupNamedLegWindow_NameArmDeclinesOnTheAmbiguousName(t *testing.T) {
 
 // TestDupNamedLegWindow_SiblingArmsDefendAgainstTheSameWindow is the other side.
 //
-// Without it the test above is a bug report; with it, it is an ASYMMETRY — the
-// same window, the same duplicate name, defended twice and undefended once. If
-// either sibling ever stops defending, that is a REGRESSION in the opposite
-// direction and this test is what reports it.
+// Without it the test above is a lone assertion; with it, the three arms are
+// pinned as ONE property — the same window, the same duplicate name, defended
+// three times. It was written when the count was two-of-three and the gap was
+// the finding; the siblings still need pinning, because if either ever stops
+// defending, that is a regression this is what reports.
 func TestDupNamedLegWindow_SiblingArmsDefendAgainstTheSameWindow(t *testing.T) {
 	t.Parallel()
 

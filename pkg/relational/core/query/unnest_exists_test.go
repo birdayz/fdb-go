@@ -419,7 +419,7 @@ func TestOrdinalSlotInLegWindow(t *testing.T) {
 			t.Errorf("ordinalSlotInLegWindow(%s.%s) = (%d,%v), want (%d,%v)", c.leg, c.field, got, ok, c.want, c.wantOK)
 		}
 	}
-	// SINGLE-alias outer (no rt.Legs): flat FieldIndex, backward-compatible.
+	// SINGLE-alias outer (no rt.Legs): flat whole-row name lookup, backward-compatible.
 	single := &values.RecordType{Fields: []values.Field{
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: "V", FieldType: values.NotNullLong, Ordinal: 1},

@@ -27,6 +27,7 @@ package executor
 // pin the containment that has to hold until then, and afterwards.
 
 import (
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -54,8 +55,8 @@ func TestRowSlotForLegColumn_FlatExactMatchWinsOverTheLegWindow(t *testing.T) {
 		t.Fatal("fixture: leg C's window must declare CV for the dotted arm to answer")
 	}
 
-	got, ok := rowSlotForLegColumn(rt, "C.CV", values.CorrelationIdentifier{})
-	if !ok {
+	got, bind := rowSlotForLegColumn(rt, "C.CV", values.CorrelationIdentifier{})
+	if bind != legColumnBound {
 		t.Fatal("C.CV did not resolve at all")
 	}
 	if got != 1 {
@@ -87,12 +88,12 @@ func TestRowSlotForLegColumn_AManufacturedQualifierDeclines(t *testing.T) {
 	if _, found := rt.FieldIndexUnique("V)"); !found {
 		t.Fatal("fixture: the manufactured leaf \"V)\" must exist, or the qualifier is not what declines")
 	}
-	if slot, ok := rowSlotForLegColumn(rt, "GA.V", values.CorrelationIdentifier{}); !ok || slot != 0 {
+	if slot, bind := rowSlotForLegColumn(rt, "GA.V", values.CorrelationIdentifier{}); bind != legColumnBound || slot != 0 {
 		t.Fatalf("fixture: the genuine qualified read GA.V = (%d,%v), want (0,true) — "+
-			"the dotted arm must be live for its refusal to mean anything", slot, ok)
+			"the dotted arm must be live for its refusal to mean anything", slot, bind)
 	}
 
-	if slot, ok := rowSlotForLegColumn(rt, "SUM(GA.V)", values.CorrelationIdentifier{}); ok {
+	if slot, bind := rowSlotForLegColumn(rt, "SUM(GA.V)", values.CorrelationIdentifier{}); bind == legColumnBound {
 		t.Fatalf("the rendered aggregate label %q resolved to slot %d — its dot is inside "+
 			"the function argument, so the slice manufactured the leg alias %q and the "+
 			"reader bound a public output column to a leg window",
@@ -119,10 +120,10 @@ func TestRowSlotForLegColumn_ARenderedLabelPresentInTheRowStillWins(t *testing.T
 			values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("GA"), "GA", 0, 1),
 		},
 	}
-	slot, ok := rowSlotForLegColumn(rt, "SUM(GA.V)", values.CorrelationIdentifier{})
-	if !ok || slot != 1 {
+	slot, bind := rowSlotForLegColumn(rt, "SUM(GA.V)", values.CorrelationIdentifier{})
+	if bind != legColumnBound || slot != 1 {
 		t.Fatalf("SUM(GA.V) = (%d,%v), want (1,true) — a public aggregate label the row "+
-			"declares must resolve to its own column", slot, ok)
+			"declares must resolve to its own column", slot, bind)
 	}
 }
 
@@ -130,12 +131,15 @@ func TestRowSlotForLegColumn_ARenderedLabelPresentInTheRowStillWins(t *testing.T
 // arm's RETIREMENT has to clear, pinned before the retirement rather than after.
 //
 // The obvious way to delete this arm is to make the seed emit BARE column names
-// and let FieldIndex find them. That does not work, and the reason is a property
-// of the merged row rather than of any producer: legs contribute their columns to
-// one flat namespace, so two legs that both declare `ID` put `ID` at two slots.
-// FieldIndex is first-match, so a bare lookup silently answers with the FIRST
-// leg's column for BOTH — a wrong-leg read that returns a plausible value and
-// nothing detects.
+// and let the flat lookup find them. That does not work, and the reason is a
+// property of the merged row rather than of any producer: legs contribute their
+// columns to one flat namespace, so two legs that both declare `ID` put `ID` at
+// two slots. The retired first-match lookup answered the FIRST for both — a
+// wrong-leg read returning a plausible value that nothing detects. The flat
+// lookup now DECLINES instead, and the decline travels to the caller as
+// legColumnAmbiguous so the gather refuses rather than binding a nil, which
+// would be the same wrong answer with a different value in it. Both halves are
+// asserted at the foot of this test.
 //
 // The witness is the real corpus shape (TestFDB_CorrelatedScalarJoinInner):
 // rtFields [ID CUSTOMER_ID ID ORDER_ID QTY], leg O = [0,2), leg I = [2,5). `ID`
@@ -195,9 +199,9 @@ func TestRowSlotForLegColumn_DuplicateBareNamesAcrossLegs(t *testing.T) {
 				"witness arithmetic is stated wrong and the conversion would aim at it",
 				w.name, w.start, w.legOrdinal, got, w.want)
 		}
-		got, ok := rowSlotForLegColumn(merged, w.name, values.CorrelationIdentifier{})
-		if !ok || got != w.want {
-			t.Fatalf("%s resolved to (%d,%v), want (%d,true)", w.name, got, ok, w.want)
+		got, bind := rowSlotForLegColumn(merged, w.name, values.CorrelationIdentifier{})
+		if bind != legColumnBound || got != w.want {
+			t.Fatalf("%s resolved to (%d,%v), want (%d,legColumnBound)", w.name, got, bind, w.want)
 		}
 	}
 
@@ -205,8 +209,8 @@ func TestRowSlotForLegColumn_DuplicateBareNamesAcrossLegs(t *testing.T) {
 	// and a bare `ID` collapses them onto the first. Any retirement that answers
 	// both with 0 has reintroduced exactly this.
 	oid, _ := rowSlotForLegColumn(merged, "O.ID", values.CorrelationIdentifier{})
-	iid, ok := rowSlotForLegColumn(merged, "I.ID", values.CorrelationIdentifier{})
-	if !ok {
+	iid, iidBind := rowSlotForLegColumn(merged, "I.ID", values.CorrelationIdentifier{})
+	if iidBind != legColumnBound {
 		t.Fatal("I.ID did not resolve — leg I declares ID at slot 2")
 	}
 	if oid == iid {
@@ -216,5 +220,38 @@ func TestRowSlotForLegColumn_DuplicateBareNamesAcrossLegs(t *testing.T) {
 	}
 	if iid != 2 {
 		t.Fatalf("I.ID = %d, want 2 (leg I start 2 + leg-local ordinal 0)", iid)
+	}
+
+	// WHAT THE DECLINE DOES DOWNSTREAM — the half this test used to leave open.
+	//
+	// Asserting only that the LOOKUP declines says nothing about the answer the
+	// query gets, and the two are not the same claim. A decline that the gather
+	// folds into "column not present" leaves the slot nil, which is a WRONG
+	// value (the row carries the column, twice) dressed as a missing one — worse
+	// than the arbitrary-but-real column the retired first-match returned,
+	// because a NULL flows on and dedups and compares.
+	//
+	// So both ends are pinned: the reader reports the ambiguity as its own
+	// outcome, and the gather REFUSES on it.
+	if _, bind := rowSlotForLegColumn(merged, "ID", values.CorrelationIdentifier{}); bind != legColumnAmbiguous {
+		t.Fatalf("bare ID bound as %v, want legColumnAmbiguous — folding a duplicated "+
+			"name into the ordinary miss hands the gather a nil for a column the row "+
+			"carries at two slots, and nothing downstream can tell that apart from a "+
+			"column the row genuinely lacks", bind)
+	}
+	legType := &values.RecordType{Fields: []values.Field{{Name: "ID", Ordinal: 0}}}
+	pos := NewPositionalRow(merged)
+	pos.Slots = []any{int64(1), int64(10), int64(2), int64(20), int64(3)}
+	adapted, err := adaptLegPositional(QueryResult{Positional: pos}, legType, values.CorrelationIdentifier{})
+	if err == nil {
+		t.Fatalf("adaptLegPositional accepted a leg column the source row declares twice "+
+			"and produced %v. Either slot is another leg's column and a nil is a NULL for "+
+			"a column that has a value; both are silent wrong rows, so this must fail the "+
+			"query rather than degrade", adapted)
+	}
+	if !strings.Contains(err.Error(), "declared 2 times") {
+		t.Fatalf("adaptLegPositional failed, but not on the ambiguity — the message must "+
+			"name the duplicated column so the PRODUCER can be found, since that is where "+
+			"the fix goes: %v", err)
 	}
 }

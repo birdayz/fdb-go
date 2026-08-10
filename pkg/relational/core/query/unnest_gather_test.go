@@ -116,7 +116,7 @@ func TestGatheredSeedShape(t *testing.T) {
 	ownerType := tr.ordinalLegType(scan("SRC", "s"))
 	wantIdx, _ := ownerType.FieldIndexUnique("ARR")
 	if acc, single := coll.Resolved.Single(); !single || acc.Ordinal != wantIdx {
-		t.Fatalf("collection baked at ordinal %v, want %d (FieldIndex of the classified field on the OWNER type)", coll.Resolved, wantIdx)
+		t.Fatalf("collection baked at ordinal %v, want %d (the unique-name ordinal of the classified field on the OWNER type)", coll.Resolved, wantIdx)
 	}
 
 	// The seed: full O-run + full C-run + element + ordinal — all baked (AS+AT

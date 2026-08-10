@@ -25,7 +25,7 @@ func TestFieldValue_ResolveOrdinal(t *testing.T) {
 	// to the field name — the invariant positional evaluation rests on.
 	ord, ok := rec.FieldIndexUnique("name")
 	if !ok || ord != 1 {
-		t.Fatalf("FieldIndex(name) = (%d,%v), want (1,true)", ord, ok)
+		t.Fatalf("FieldIndexUnique(name) = (%d,%v), want (1,true)", ord, ok)
 	}
 	if got, ok2 := rec.GetField(ord); !ok2 || got.Name != "name" {
 		t.Fatalf("round-trip: GetField(%d).Name = %q, want %q", ord, got.Name, "name")
@@ -52,7 +52,7 @@ func TestFieldValue_ResolveOrdinal(t *testing.T) {
 }
 
 // TestFieldValue_ResolveOrdinal_RawDivergentRecord pins a robustness
-// requirement: resolveOrdinal returns the SLICE POSITION (RecordType.FieldIndex),
+// requirement: resolveOrdinal returns the SLICE POSITION (RecordType.FieldIndexUnique),
 // which is the Java ordinal, so it is sound even for a RAW RecordType that
 // bypassed NewRecordType's normalization and carries a stored Field.Ordinal
 // that diverges from position. This is the axis the enforcement test can't
@@ -66,12 +66,12 @@ func TestFieldValue_ResolveOrdinal_RawDivergentRecord(t *testing.T) {
 		{Name: "b", FieldType: NotNullLong, Ordinal: 0},
 	}}
 	// The ordinal is bound at PLAN time. The plan-time derivation
-	// (RecordType.FieldIndex) uses the SLICE POSITION (1), NOT the stored
+	// (RecordType.FieldIndexUnique) uses the SLICE POSITION (1), NOT the stored
 	// Field.Ordinal (0) — so a raw divergent record bakes the correct slot. A lazy
 	// node declines (name-derive not supported); the baked node returns the derived slot.
 	ord, ok := raw.FieldIndexUnique("b")
 	if !ok || ord != 1 {
-		t.Fatalf("raw-record FieldIndex(b) = (%d,%v), want (1,true) — the SLICE POSITION, not the stored Ordinal 0", ord, ok)
+		t.Fatalf("raw-record FieldIndexUnique(b) = (%d,%v), want (1,true) — the SLICE POSITION, not the stored Ordinal 0", ord, ok)
 	}
 	qov := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("raw"), raw)
 	if _, lok := NewFieldValue(qov, "b", NotNullLong).resolveOrdinal(); lok {
@@ -103,10 +103,10 @@ func TestFieldValue_OrdinalOrderingPrecondition(t *testing.T) {
 		{Name: "b", FieldType: NotNullLong, Ordinal: 1},
 	})
 	// A LAZY node declines; the ordinal is bound at plan time (slice position
-	// via FieldIndex) and a BAKED accessor returns it.
+	// via FieldIndexUnique) and a BAKED accessor returns it.
 	ordB, ok := ordered.FieldIndexUnique("b")
 	if !ok || ordB != 1 {
-		t.Fatalf("ordered: FieldIndex(b) = (%d,%v), want (1,true)", ordB, ok)
+		t.Fatalf("ordered: FieldIndexUnique(b) = (%d,%v), want (1,true)", ordB, ok)
 	}
 	fvB := NewCorrelatedFieldValueWithResolvedOrdinal(NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("q"), ordered), "b", ordB, NotNullLong)
 	if o, bok := fvB.resolveOrdinal(); !bok || o != 1 {
@@ -129,7 +129,7 @@ func TestFieldValue_OrdinalOrderingPrecondition(t *testing.T) {
 	}
 	ordA, ok := normalized.FieldIndexUnique("a")
 	if !ok || ordA != 0 {
-		t.Fatalf("normalised: FieldIndex(a) = (%d,%v), want (0,true)", ordA, ok)
+		t.Fatalf("normalised: FieldIndexUnique(a) = (%d,%v), want (0,true)", ordA, ok)
 	}
 	fvA := NewCorrelatedFieldValueWithResolvedOrdinal(NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("n"), normalized), "a", ordA, NotNullLong)
 	if o, aok := fvA.resolveOrdinal(); !aok || o != 0 {

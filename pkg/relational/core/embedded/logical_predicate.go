@@ -664,6 +664,11 @@ func buildDerivedTableSourceFromJoinBody(
 	type bodyLeg struct {
 		alias string
 		cols  []semantic.Column
+		// nullSupplying: an OUTER join pads this leg with NULLs for unmatched
+		// rows, so every column it contributes is nullable in the body's output
+		// REGARDLESS of what the catalog declares. Derived algebraically from
+		// the join flavours, never read off the base table — see the wrap below.
+		nullSupplying bool
 	}
 	resolveLeg := func(tableName, legAlias string, segments []string) (bodyLeg, bool) {
 		if len(segments) > 1 {
@@ -695,6 +700,51 @@ func buildDerivedTableSourceFromJoinBody(
 			return semantic.ScopeSource{}, false
 		}
 		legs = append(legs, leg)
+		// NULLABILITY IS DERIVED FROM THE JOIN ALGEBRA, not copied from the
+		// catalog. An outer join pads its null-supplying side, so that side's
+		// columns are nullable in the body's output whatever the base table
+		// declares — `FROM (SELECT a.x, b.y FROM a LEFT JOIN b ON …) d` serves
+		// NULL for `d.y` on every unmatched `a` row.
+		//
+		// This mirrors the physical side's own rule: ordinal_seed.go wraps a
+		// null-supplying leg's column types with WithNullability(true), citing
+		// Java's pullUpResultColumnsWithNullability. The two must agree, because
+		// this derivation is what adjudicates the outer references against the
+		// row that side produces.
+		//
+		// LEFT pads the RIGHT leg. RIGHT pads everything to its LEFT — a later
+		// RIGHT JOIN makes the whole accumulated left side null-supplying, which
+		// is why the wrap is applied to the finished list rather than to each
+		// leg as it is built. FULL pads both.
+		switch j.joinType {
+		case joinTypeLeft:
+			legs[len(legs)-1].nullSupplying = true
+		case joinTypeRight:
+			for i := range legs[:len(legs)-1] {
+				legs[i].nullSupplying = true
+			}
+		case joinTypeFull:
+			for i := range legs {
+				legs[i].nullSupplying = true
+			}
+		case joinTypeInner:
+			// A comma join or an explicit INNER JOIN pads nothing.
+		}
+	}
+	// Applied once the whole FROM list is known: a RIGHT JOIN in position 3
+	// changes legs 0..2, so no leg's nullability is final until the last join
+	// clause has been read. Copy-on-wrap — the Column values must not be shared
+	// back to the catalog.
+	for li := range legs {
+		if !legs[li].nullSupplying {
+			continue
+		}
+		wrapped := make([]semantic.Column, len(legs[li].cols))
+		for ci, c := range legs[li].cols {
+			c.Nullable = true
+			wrapped[ci] = c
+		}
+		legs[li].cols = wrapped
 	}
 
 	// SELECT * over the body: every leg's columns, concatenated in FROM order.

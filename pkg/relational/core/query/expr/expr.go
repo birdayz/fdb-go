@@ -371,9 +371,11 @@ func (r *Resolver) resolveScopedColumn(col semantic.Column, src semantic.ScopeSo
 	// Bind the LOGICAL ordinal at plan time (Java's FieldValue.ofFieldName
 	// resolving against the referent's result type, FieldValue.java:273-299).
 	// The referent is the resolved source's output row; its logical column
-	// order is src.Table.Columns() (declared order). First-match by
-	// case-folded name — identical to the RecordType.FieldIndex rule — so the
-	// bound slot is the same one a name read would have found. Unresolvable
+	// order is src.Table.Columns() (declared order). First-match by case-folded
+	// name over ONE resolved source's own column list — NOT the rule for a merged
+	// or leg-concat layout, where a name can legitimately name two columns and the
+	// lookup must decline instead (values.RecordType.FieldIndexUnique).
+	// Unresolvable
 	// (computed alias, no source table) is LOUD at plan time
 	// (UnresolvableOrdinalError — born-baked, slice 2).
 	// The row type is discarded here and only here: this arm emits a CHILDLESS
@@ -469,8 +471,9 @@ func flowedTypeFor(src semantic.ScopeSource, rowType *values.RecordType) values.
 
 // sourceColumnOrdinal returns the 0-based position of field within the
 // resolved source's declared column order — the LOGICAL ordinal of the
-// column in the row the source flows. Matching is case-insensitive
-// first-match, mirroring values.RecordType.FieldIndex.
+// column in the row the source flows. Matching is case-insensitive first-match
+// over ONE source's declared columns — see the caller for why first-match is
+// sound on that list and is not the rule for a merged layout.
 //
 // It also returns the FLOWED TYPE a reference's quantifier object may state for
 // this source (flowedTypeFor) and the DOMAIN token for the layout the ordinal

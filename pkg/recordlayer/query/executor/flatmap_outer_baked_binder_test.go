@@ -171,7 +171,7 @@ func TestIntegration_DisabledBuildBinder_BakedInner(t *testing.T) {
 // plain-scan correlated-EXISTS shape (outerIdentityPassthrough) rather than by
 // the baked-probe path. The identity output PROPAGATES the outer's positional
 // row, stamped with the outer alias as a leg window (qualifyOuterPositional).
-// That row resolves both a bare column (FieldIndex) and an alias-qualified
+// That row resolves both a bare column (by unique name) and an alias-qualified
 // reference (the Legs path), so a downstream projection reading "CUST.NAME"
 // no longer loud-misses a bare-named row (the former
 // TestFDB_CorrelatedExistsCrossJoin catch that once forced this edge to stay

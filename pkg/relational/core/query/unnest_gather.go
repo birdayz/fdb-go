@@ -15,7 +15,7 @@ import (
 // (LogicalOperator.generateCorrelatedFieldAccess + generateSimpleSelect): ONE
 // flat select over {QOV(A), QOV(B), ForEach(Explode)} where the Explode's
 // collection is a BAKED reference to the OWNING source's own quantifier —
-// `ofOrdinal(QOV(A, typA), FieldIndex(ARR))` — a genuine per-source
+// `ofOrdinal(QOV(A, typA), FieldIndexUnique(ARR))` — a genuine per-source
 // correlation every Cascades rule can see. This replaces the name-model
 // binary FlatMap-over-merged-outer whose buried dotted read
 // (`FieldValue(QOV(rightmost), "A.ARR")`) required the dotted-prefix

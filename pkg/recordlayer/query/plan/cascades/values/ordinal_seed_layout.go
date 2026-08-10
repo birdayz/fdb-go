@@ -116,7 +116,8 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[CorrelationIdentifie
 // caller deriving it. finalizeSeedWindows' rightmost-leaf case REPLACES a box
 // run's own entry with a narrower sub-window — deliberately, because the box IS
 // its rightmost leaf under the sourceBinding convention and an alias-qualified
-// read must window the leaf rather than FieldIndex across the whole concat. So
+// read must window the leaf rather than look the name up across the whole
+// concat. So
 // after finalization "the windows that tile the row" is simply not recoverable
 // from the map: one of the tiles has been overwritten by something narrower, and
 // nothing distinguishes that from a seed that always had a narrow leg there.
@@ -286,8 +287,8 @@ func ordinalSeedLegWindows(rc *RecordConstructorValue, acceptNested bool) (map[C
 // reason is a deliberate feature of finalization rather than an accident: the
 // rightmost-leaf case REPLACES a clustered box run's own entry with a narrower
 // sub-window, because the box IS its rightmost leaf under the sourceBinding
-// convention and an alias-qualified read must window the leaf rather than
-// FieldIndex across the whole concat. After that, one of the tiles has been
+// convention and an alias-qualified read must window the leaf rather than look
+// the name up across the whole concat. After that, one of the tiles has been
 // overwritten by something narrower and nothing in the map distinguishes it from
 // a seed that always had a narrow leg there.
 //
@@ -333,7 +334,7 @@ func positionalMergeWindows(rc *RecordConstructorValue) (map[CorrelationIdentifi
 		// Routing this through IsMixedSeedElementType instead would be a trap:
 		// that predicate returns FALSE for a nil type, so a slot whose QOV states
 		// nil would be classified NOT-an-element — i.e. nested — i.e. a window with
-		// a nil Typ, which panics at the first w.Typ.FieldIndex in the keyed
+		// a nil Typ, which panics at the first w.Typ.FieldIndexUnique in the keyed
 		// readers. The assertion is needed for Typ anyway; BINDING it is both the
 		// correct test and the value the window carries. (Binding is also what the
 		// single-authority ban permits — it forbids DISCARDED assertions.)
@@ -554,8 +555,9 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 			// The rightmost-leaf case (SameLeg above) REPLACES the box-run window with
 			// the LEAF's sub-window: the box IS its rightmost leaf
 			// (sourceBinding), so an alias-qualified read must window the leaf — the
-			// run-wide window would FieldIndex across the concat and first-match an
-			// earlier buried leg's duplicate name. Also what keeps the merged type's
+			// run-wide window would resolve the name across the whole concat, where an
+			// earlier buried leg carrying the same name makes it ambiguous — so the
+			// read declines rather than reaching the leaf it named. Also what keeps the merged type's
 			// Legs in lockstep with the executor twin, which emits EVERY sub of a box
 			// run (ordinalJoinSpansOf).
 			// Filed under the BURIED leg's own IDENTITY — the whole point of a

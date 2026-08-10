@@ -76,7 +76,7 @@ func FromStoredRecord(rec *recordlayer.FDBStoredRecord[proto.Message]) QueryResu
 // declaration order), never the row, and rebuilding it per scanned row made
 // protoToPositional cost more than the sparse protoToMap itself
 // (BenchmarkProtoToPositional_Order). The cached type is shared across rows and
-// goroutines — read-only after construction (FieldIndex / shadow reads only).
+// goroutines — read-only after construction (name lookups / shadow reads only).
 // Keyed by the descriptor: a per-message-type singleton for generated code,
 // and per-schema-load for dynamicpb — a long-lived multi-tenant process that
 // keeps loading schemas mints fresh descriptor instances forever, so the cache

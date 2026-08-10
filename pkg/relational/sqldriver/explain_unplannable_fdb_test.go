@@ -17,6 +17,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -92,20 +94,38 @@ func TestFDB_ExplainUnplannableQueryFailsLoudly(t *testing.T) {
 		// both. EXPLAIN and execution must never disagree in either direction,
 		// so a shape that starts planning has to keep its EXPLAIN, exactly as a
 		// shape that stops planning has to lose it.
-		for _, q := range []string{
-			"SELECT t1.aid, t1.bv, t2.cid, t2.dw " +
-				"FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) t1, " +
-				"(SELECT c.id AS cid, d.dw AS dw FROM c JOIN d ON d.c_id = c.id) t2 " +
-				"WHERE t1.aid = t2.cid",
-			"SELECT t1.aid, t1.bv FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) t1 WHERE t1.aid = 1",
+		//
+		// The rows are CONSUMED and rows.Err() checked, not just requested: the
+		// driver defers a planning failure to the first Next — which is why the
+		// arm above reaches for assertUnsupported, whose whole first half exists
+		// to drive Next and rows.Err() before believing a nil QueryContext error.
+		// A QueryContext that returns nil proves only that a *sql.Rows came
+		// back. The
+		// expected rows are asserted for the same reason — a cross-product
+		// degrade also "returns something".
+		for _, tc := range []struct {
+			sql  string
+			want []string
+		}{
+			{
+				sql: "SELECT t1.aid, t1.bv, t2.cid, t2.dw " +
+					"FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) t1, " +
+					"(SELECT c.id AS cid, d.dw AS dw FROM c JOIN d ON d.c_id = c.id) t2 " +
+					"WHERE t1.aid = t2.cid",
+				want: []string{"1|111|1|41"},
+			},
+			{
+				sql:  "SELECT t1.aid, t1.bv FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) t1 WHERE t1.aid = 1",
+				want: []string{"1|111"},
+			},
 		} {
-			rows, qerr := db.QueryContext(ctx, q)
-			if qerr != nil {
-				t.Fatalf("statement must plan: %v\n  sql: %s", qerr, q)
+			got := pinRows(t, db, ctx, tc.sql)
+			sort.Strings(got)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("rows = %v, want %v\n  sql: %s", got, tc.want, tc.sql)
 			}
-			rows.Close()
-			if plan := pinExplain(t, db, ctx, q); plan == "" {
-				t.Fatalf("EXPLAIN of a plannable statement returned nothing\n  sql: %s", q)
+			if plan := pinExplain(t, db, ctx, tc.sql); plan == "" {
+				t.Fatalf("EXPLAIN of a plannable statement returned nothing\n  sql: %s", tc.sql)
 			}
 		}
 	})

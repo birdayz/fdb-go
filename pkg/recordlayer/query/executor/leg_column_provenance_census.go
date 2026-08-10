@@ -170,6 +170,19 @@ type legColumnProvenanceCounters struct {
 	// NotDotted: the flat lookup missed and the name carries no qualifier, so
 	// there was nothing for the dotted arm to try. A miss, not a name decision.
 	NotDotted int
+	// FlatAmbiguous: the row's own type declares the name MORE THAN ONCE, and
+	// no leg window resolved it either. This is the outcome that has no benign
+	// reading — the value exists at two slots, so neither "here it is" nor "it
+	// is not here" is true, and the reader refuses.
+	//
+	// It is counted SEPARATELY from NotDotted because it used to be
+	// indistinguishable from it. The flat lookup declines on absent and on
+	// duplicated alike, and a bare duplicated name lands in the `di <= 0` arm,
+	// so an ambiguous bind was reported as a plain miss — the census could not
+	// have told anyone the reader had started declining rows it used to bind.
+	// Expected value over the corpus is ZERO, and the assertion says which
+	// direction is the alarm.
+	FlatAmbiguous int
 	// NoLegs: dotted, but the row's type carries no leg table at all.
 	NoLegs int
 	// DottedHitIdentityAvailable: the dotted arm ANSWERED and the leg it matched
@@ -241,6 +254,7 @@ const (
 	legColumnProvenanceIdentityUnstated
 	legColumnProvenanceIdentityDiverged
 	legColumnProvenanceMiss
+	legColumnProvenanceFlatAmbiguous
 )
 
 // classifyLegColumnProvenance decides one call's bucket from the facts the
@@ -253,9 +267,27 @@ const (
 // hits the IDENTITY question is asked last, because it is a question about the
 // leg the arm ALREADY chose by name: asking it earlier would report the identity
 // state of a leg no lookup selected.
-func classifyLegColumnProvenance(rt *values.RecordType, name string, flatHit bool, matched *values.RecordTypeLeg, qualifier string) legColumnProvenanceClass {
+// flatAmbiguous says the flat lookup found the name at MORE THAN ONE slot. It
+// is asked AFTER the dotted arm's answer, because a qualifier that resolves a
+// leg window is strictly more information than the flat namespace carries — the
+// ambiguity only stands when nothing resolved it. It is asked BEFORE NotDotted
+// so a bare duplicated name is reported as the ambiguity it is rather than as
+// an ordinary miss, which is how it went uncounted.
+func classifyLegColumnProvenance(rt *values.RecordType, name string, flatHit, flatAmbiguous bool, matched *values.RecordTypeLeg, qualifier string) legColumnProvenanceClass {
 	if flatHit {
 		return legColumnProvenanceFlatHit
+	}
+	if matched != nil {
+		if matched.Alias.IsZero() {
+			return legColumnProvenanceIdentityUnstated
+		}
+		if !strings.EqualFold(matched.Alias.Name(), qualifier) {
+			return legColumnProvenanceIdentityDiverged
+		}
+		return legColumnProvenanceIdentityAvailable
+	}
+	if flatAmbiguous {
+		return legColumnProvenanceFlatAmbiguous
 	}
 	if strings.IndexByte(name, '.') <= 0 {
 		return legColumnProvenanceNotDotted
@@ -263,16 +295,7 @@ func classifyLegColumnProvenance(rt *values.RecordType, name string, flatHit boo
 	if rt == nil || len(rt.Legs) == 0 {
 		return legColumnProvenanceNoLegs
 	}
-	if matched == nil {
-		return legColumnProvenanceMiss
-	}
-	if matched.Alias.IsZero() {
-		return legColumnProvenanceIdentityUnstated
-	}
-	if !strings.EqualFold(matched.Alias.Name(), qualifier) {
-		return legColumnProvenanceIdentityDiverged
-	}
-	return legColumnProvenanceIdentityAvailable
+	return legColumnProvenanceMiss
 }
 
 // legColumnOwnerClass is one dotted HIT's owner-selection bucket: what a reader
@@ -313,8 +336,8 @@ func classifyLegColumnOwner(rt *values.RecordType, matched *values.RecordTypeLeg
 // leg the dotted arm resolved the qualifier to, or nil. owner is the identity the
 // reader was handed, recorded so the conversion's precondition is measured rather
 // than asserted.
-func recordLegColumnProvenance(rt *values.RecordType, name string, flatHit bool, matched *values.RecordTypeLeg, qualifier string, owner values.CorrelationIdentifier) {
-	class := classifyLegColumnProvenance(rt, name, flatHit, matched, qualifier)
+func recordLegColumnProvenance(rt *values.RecordType, name string, flatHit, flatAmbiguous bool, matched *values.RecordTypeLeg, qualifier string, owner values.CorrelationIdentifier) {
+	class := classifyLegColumnProvenance(rt, name, flatHit, flatAmbiguous, matched, qualifier)
 	legColumnProvenanceMu.Lock()
 	defer legColumnProvenanceMu.Unlock()
 	legColumnProvenanceCounts.Calls++
@@ -352,6 +375,10 @@ func recordLegColumnProvenance(rt *values.RecordType, name string, flatHit bool,
 	case legColumnProvenanceMiss:
 		legColumnProvenanceCounts.DottedMiss++
 		addLegColumnProvenanceWitness(fmt.Sprintf("DOTTED-MISS %q over legs %v", name, legNamesOf(rt)))
+	case legColumnProvenanceFlatAmbiguous:
+		legColumnProvenanceCounts.FlatAmbiguous++
+		addLegColumnProvenanceWitness(fmt.Sprintf("FLAT-AMBIGUOUS %q: the row declares it %d times over legs %v",
+			name, rt.FieldNameHits(name), legNamesOf(rt)))
 	case legColumnProvenanceIdentityUnstated:
 		legColumnProvenanceCounts.DottedHitIdentityUnstated++
 		addLegColumnProvenanceWitness(fmt.Sprintf("DOTTED-HIT-NO-IDENTITY %q: leg %q states no alias",
@@ -441,8 +468,8 @@ func FormatLegColumnProvenanceCensus() string {
 	c, witnesses := LegColumnProvenanceCensus()
 	var b strings.Builder
 	fmt.Fprintf(&b, "leg-column provenance: calls %d (flatHit %d, notDotted %d, noLegs %d, "+
-		"dottedMiss %d); dotted HITS by identity availability: available %d, unstated %d, diverged %d",
-		c.Calls, c.FlatHit, c.NotDotted, c.NoLegs, c.DottedMiss,
+		"dottedMiss %d, flatAmbiguous %d); dotted HITS by identity availability: available %d, unstated %d, diverged %d",
+		c.Calls, c.FlatHit, c.NotDotted, c.NoLegs, c.DottedMiss, c.FlatAmbiguous,
 		c.DottedHitIdentityAvailable, c.DottedHitIdentityUnstated, c.DottedHitIdentityDiverged)
 	fmt.Fprintf(&b, "\n  dotted HITS by OWNER selection: sameLeg %d, ownerUnstated %d, "+
 		"ownerNamesNoLeg %d, ownerSelectsOtherLeg %d",
@@ -510,11 +537,11 @@ func AssertLegColumnProvenanceCensus(w io.Writer, floors *LegColumnProvenanceFlo
 
 func assertLegColumnProvenanceCounters(w io.Writer, c legColumnProvenanceCounters, floors *LegColumnProvenanceFloors) bool {
 	failed := false
-	got := c.FlatHit + c.NotDotted + c.NoLegs + c.DottedMiss +
+	got := c.FlatHit + c.NotDotted + c.NoLegs + c.DottedMiss + c.FlatAmbiguous +
 		c.DottedHitIdentityAvailable + c.DottedHitIdentityUnstated + c.DottedHitIdentityDiverged
 	if got != c.Calls {
 		failed = true
-		fmt.Fprintf(w, "LEG-COLUMN PROVENANCE CENSUS FAIL: the seven outcomes sum to %d, "+
+		fmt.Fprintf(w, "LEG-COLUMN PROVENANCE CENSUS FAIL: the eight outcomes sum to %d, "+
 			"but Calls = %d.\n"+
 			"  They are the only things one lookup can do, so they must partition it. A\n"+
 			"  gap means a call left the reader by a path with no counter on it, and every\n"+
@@ -546,6 +573,22 @@ func assertLegColumnProvenanceCounters(w io.Writer, c legColumnProvenanceCounter
 			"  have done, so the two must agree. A gap means hits are reaching the reader\n"+
 			"  down a path that records no owner verdict, and the conversion's\n"+
 			"  precondition is then a share of an unknown whole.\n", owners, dottedHits)
+	}
+	if c.FlatAmbiguous != 0 {
+		failed = true
+		fmt.Fprintf(w, "LEG-COLUMN PROVENANCE CENSUS FAIL: FlatAmbiguous = %d, want 0.\n"+
+			"  THE ALARM DIRECTION HERE IS GROWTH, not collapse. Zero is the steady state\n"+
+			"  measured over the whole real-FDB corpus: no leg type has ever handed this\n"+
+			"  reader a column name that its source row declares twice. This counter is not\n"+
+			"  floored, because a floor on it would demand the defect it watches for.\n"+
+			"  WHAT A NON-ZERO MEANS: a producer built a leg type whose column name is\n"+
+			"  ambiguous against the merged row it will be adapted against, so the reader\n"+
+			"  can neither bind it (either slot is a wrong-leg read) nor skip it (the value\n"+
+			"  exists, so a nil is a wrong value rather than a missing one). adaptLegPositional\n"+
+			"  now FAILS the query on this rather than degrading, so a non-zero here comes\n"+
+			"  with a real error — fix the PRODUCER to qualify the leg type's column names or\n"+
+			"  to carry a baked ordinal. Do NOT relax this zero and do NOT make the reader guess.\n",
+			c.FlatAmbiguous)
 	}
 	if c.DottedHitIdentityDiverged != 0 {
 		failed = true

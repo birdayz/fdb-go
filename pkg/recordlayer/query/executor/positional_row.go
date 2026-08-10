@@ -131,11 +131,11 @@ func positionalToMap(pos *PositionalRow) map[string]any {
 // index whose value column repeats a PK column), and the ordinal model keeps those
 // as DISTINCT fields by position, whereas NewRecordType panics on a duplicate
 // name. Positional access is by
-// ordinal, so duplicates are unambiguous; FieldIndex (name->ordinal) returns the
-// first match, which is why a name-keyed lookup legitimately differs from
-// positional access on duplicate-named output: name lookup sees only the
-// first match (or last-wins, for a map built by positionalToMap), while every
-// ordinal slot stays independently addressable.
+// ordinal, so duplicates are unambiguous; a NAME-keyed lookup on the same type is
+// not, which is why it legitimately reaches less of the row than positional access
+// does. FieldIndexUnique DECLINES on a duplicated name (it answers only when the
+// name matches exactly one field), and a map built by positionalToMap collapses
+// duplicates last-wins — while every ordinal slot stays independently addressable.
 func positionalTypeFromNames(names []string) *values.RecordType {
 	fields := make([]values.Field, len(names))
 	for i, n := range names {
