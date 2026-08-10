@@ -150,6 +150,7 @@ go_test(
         "ordering_claim_test.go",
         "ordinal_domain_test.go",
         "ordinal_eval_test.go",
+        "projection_duplicate_name_test.go",
         "projection_namer_nested_collapse_test.go",
         "proto_descent_test.go",
         "proto_field_escaped_name_test.go",

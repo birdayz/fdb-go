@@ -1,6 +1,6 @@
 # RFC-229: a column states its own name
 
-**Status:** DRAFT (rev 4 — three more of this RFC's own claims measured and refuted: the memo-identity premise, step 0, and the §2.3 renderer)
+**Status:** IMPLEMENTED in part (rev 5 — §2.2 and §2.3 landed and measured; §2.1 and §2.2.2 REFUTED as prescribed, see §8)
 **Scope:** output-column naming across the projection, group-by and sort-key authorities.
 **Retires:** part of the `contract` bucket. Rev 1 claimed 10 of 12 and that number was wrong — see §6.
 **Relates to:** RFC-197 (the migration), RFC-226 (a projection states the row it produces), RFC-227 (the hidden sort column is named by the path it reads), RFC-228 (a leg column lookup declines on an ambiguous name).
@@ -146,3 +146,125 @@ Two things survive the cut. Continuations are clean: they serialize the evaluate
 - **A name-only difference DOES split the memo, and that must not change.** Rev 3 asked for the opposite and was wrong about current behaviour (§2.2.1). The pin therefore guards the existing contract: `SELECT k AS a` and `SELECT k AS b` compare unequal and hash unequal, with a no-alias control that compares equal — so an implementation that quietly drops the name out of identity fails here rather than shipping as a silent planner change.
 - **The duplicate-name policy of §2.2.2**, driven from a test rather than left to the first collision in production: two projected columns of one name produce NO stored name on either, and readers fall through to the positional identity.
 - ~~Step 0 in isolation~~ — **struck with §4.** Rev 3 listed this as the gating green; the work it names is not implementable as worded and its substance already landed. Left visible rather than deleted so a future revision does not reinstate it from rev 3's history.
+
+## 8. What the implementation measured, and what it refuted
+
+Rev 5. Everything below was run, not reasoned about. Where this section
+contradicts an earlier one, this section is the measurement and the earlier one
+is the claim.
+
+### 8.1 Shipped: §2.2 and §2.3
+
+The five authorities read ONE predicate, `values.NestedResolvedPath`, and a
+nested reference takes its resolved path:
+
+| authority | file |
+|---|---|
+| `ProjectionColumnName` | `cascades/values/values.go` |
+| `AggregateKeyColumnName` | `cascades/expressions/group_by.go` |
+| `aggregateGroupKeyOutputName` | `embedded/logical_predicate.go` |
+| `buildAggColumns` (the ColumnDef mirror) | `embedded/cascades_generator.go` |
+| `sortKeyExtraColumnName` | `core/query/cascades_translator.go` |
+
+The fourth stopped re-deriving the rule and now READS the second, which is the
+consolidation §2.2 asks for. `deriveProjectionColumnDef` takes the nested arm
+too, and its DISPLAY label is now the leaf of the column's NAME rather than of
+`fv.Field` — that second half is what the user sees.
+
+MEASURED user-visible defect, over a real store, before and after:
+
+```
+SELECT n.sk, n.co FROM t1     [N  N]   ->   [SK  CO]
+```
+
+Two identical labels over correct, different data. Java answers SK and CO, and
+the reason is one line rather than care: `SemanticAnalyzer.lookupNestedField`
+performs the identical fuse (`SemanticAnalyzer.java:598`,
+`FieldValue.ofFieldsAndFuseIfPossible`) and then names the resulting
+`Expression` by the REQUESTED IDENTIFIER `n.sk` (`:599`) rather than by the
+fused Value; the top-level projection clears the qualifier
+(`LogicalOperator.java:238` -> `Identifier.withoutQualifier`,
+`Identifier.java:101`). §1's "Java does not have this class, and the reason is
+structural" is confirmed, and this is the citation it was missing.
+
+Corpus unchanged either side: `pass=68 fail=0 skip=170 queries=1597`. No
+`plan_shape.golden` line and no yamsql EXPLAIN assertion moved.
+
+### 8.2 REFUTED: §2.1's name SLOT is not owed
+
+§2.1 asks for "a name slot on the projected column, carried through every copy,
+rebuild and rebase — the same preserve-on-copy contract `Resolved` already
+imposes". The contract is right. **The slot is not, and the RFC never checked
+whether the existing channel already satisfies it.** It does.
+
+Driven from a test rather than argued
+(`expressions/projection_name_survives_copy_rebuild_rebase_test.go`): mint,
+copy through `WithQuantifiers`, rebuild through the constructor, rebase through
+`RebaseValue` — for a flat reference, a nested reference, its struct sibling,
+and an explicit alias. **All four arms preserve the name for the entire
+population §2.3 touches.**
+
+The reason is the one §2.1 itself names and then argues past: a nested column's
+name IS its `Resolved` path, so it inherits `Resolved`'s preserve-on-copy
+contract by being derived from it, not by being copied beside it. Adding a slot
+would put a second name beside the first with nothing forcing them to agree —
+which is the defect class this RFC exists to close, arriving as its fix.
+
+The contract does fail for ONE population: a COMPUTED expression, whose
+rendering gains `#ordinal` discriminators when its operands bake. That is §0's
+pre/post-bake asymmetry, it is out of §2.3's nested-only scope, and it is
+asserted as the boundary rather than omitted. A slot would "fix" it by freezing
+the pre-bake spelling — a behaviour change §2 neither proposes nor justifies,
+and the label such a column actually receives is the positional `_i` anyway.
+
+### 8.3 REFUTED AS PRESCRIBED: §2.2.2 asks for a mechanism Go should not adopt
+
+§2.2.2's reading of Java is CORRECT and was verified in the source:
+`Expressions.underlyingAsColumns` (`Expressions.java:269-288`) counts by the
+unqualified `Identifier::getName` (`:209-214`) and drops every colliding name
+to `Optional.empty()`; `Type.Record.normalizeFields` re-mints it as `"_" + i`
+(`Type.java:2646-2651`). Visible in the reference corpus at
+`right-deep-plan-tests.yamsql:33-37`.
+
+What §2.2.2 does not say is WHICH channel that governs, and it is not the one a
+reader would assume. Java's drop is on the plan's INTERNAL result Value. The
+metadata path is `Expressions.getStructType` (`:246-262`), which applies **no
+collision drop at all** — `Identifier::toString`, falling back to `_index`
+only for a genuinely absent name.
+
+Applying the internal rule to Go's user-visible label was implemented and
+MEASURED: it reddens nine `sqldriver` test functions that deliberately pin the
+opposite, among them `TestFDB_DuplicateBareLeafKeepsTwoColumns`, whose own
+disambiguation mint is documented as having reddened seven suites with WRONG
+ROWS when removed. Reverted.
+
+The PROPERTY §2.2.2 actually wants — no two slots holding one name, so no
+name-keyed reader can first-match between them — **Go already has**, by a
+different mechanism: `NewRecordConstructorValue` suffixes later occurrences
+`_2`/`_3` where Java re-mints both positionally. Pinned, with the collision
+driven, at `values/projection_duplicate_name_test.go`.
+
+That test also records what §2.3 was worth in this channel: before the fix,
+`SELECT n.sk, n.co` stored `N` and `N_2` — the second member reported under a
+name it has no relation to, minted by a dedup that had been handed a collision
+it should never have seen.
+
+### 8.4 MEASURED: the debt delta is ONE entry
+
+Rev 1's "10 of 12" is retracted in §6 already; the measured answer is **1**.
+Running the detector after the conversion, exactly one entry stops being
+flagged: `cascades_generator.go # buildAggColumns`. Retired — `dotted` 14 -> 13,
+`fieldDebtAuthorityTotal` 35 -> 34, `road-to-prod.md` 48 -> 47.
+
+The debt CONSOLIDATED rather than evaporated: `AggregateKeyColumnName` and
+`aggregateGroupKeyOutputName` are both still listed under `contract`, which is
+correct — the mirror stopped re-deriving, the authority did not stop rendering.
+§2.3's own caveat anticipated this and is confirmed.
+
+### 8.5 §4's sequencing is satisfied
+
+`AggregateKeyColumnName` is converted and nested-path `GROUP BY` is still
+refused with 42703, which is the order §4 fixes.
+`groupby_nested_key_collapse_fdb_test.go` is no longer a tripwire over an
+unconverted namer — it is the pin on the refusal, and its prose and failure
+message say so.
