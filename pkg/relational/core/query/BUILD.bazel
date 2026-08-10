@@ -58,6 +58,7 @@ go_test(
         "extra_sort_column_identity_test.go",
         "flatten_gate_test.go",
         "group_by_output_baker_test.go",
+        "group_key_structural_ordinal_test.go",
         "groupby_gate_test.go",
         "hidden_sort_column_value_recovery_test.go",
         "is_scan_family_leg_test.go",

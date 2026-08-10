@@ -248,6 +248,7 @@ go_test(
         "groupby_ordinal_probe_test.go",
         "groupby_over_join_fdb_test.go",
         "groupby_same_leaf_key_binder_fdb_test.go",
+        "groupby_same_leaf_key_orderby_fdb_test.go",
         "groupby_same_leaf_key_pushdown_rebind_fdb_test.go",
         "groupby_select_order_probe_test.go",
         "groupby_validation_probe_test.go",

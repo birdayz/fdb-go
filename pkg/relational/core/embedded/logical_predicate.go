@@ -6681,10 +6681,18 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	// column names first, then table columns. Aliases take precedence.
 	proj := findProjection(op)
 	agg := findAggregate(op)
-	var groupKeyExplainMap map[string]string
+	// groupKeyOrdinalByDisplay carries the group key's OUTPUT ORDINAL — its index
+	// in agg.GroupKeys, which IS its slot in the aggregate's [keys..., calls...]
+	// output row. It used to carry the rendered output NAME, which is what the
+	// consumer needs to spell the key, but the name is not what identifies the
+	// key: aggregateGroupKeyOutputName renders a FieldValue as its bare leaf, so
+	// two keys of `GROUP BY o.k, i.k` both render "K" and a map holding that name
+	// cannot say which key it came from. The ordinal can, and the name is derived
+	// back from it at the one place that needs to spell it.
+	var groupKeyOrdinalByDisplay map[string]int
 	if agg != nil && len(agg.GroupKeys) > 0 {
-		groupKeyExplainMap = make(map[string]string)
-		for _, gk := range agg.GroupKeys {
+		groupKeyOrdinalByDisplay = make(map[string]int)
+		for gkOrdinal, gk := range agg.GroupKeys {
 			gkv := gk.Value
 			if gkv == nil {
 				continue
@@ -6699,8 +6707,10 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 			// the sort by a column the aggregate output does not carry → a no-op sort
 			// (ORDER BY DESC silently ignored, P2b). Mirror aggKeyName:
 			// the field name for a FieldValue, the explain for a computed key (whose
-			// output column IS its explain). RFC-142.
-			groupKeyExplainMap[strings.ToUpper(gk.Display)] = aggregateGroupKeyOutputName(gkv)
+			// output column IS its explain). RFC-142. That naming rule still
+			// applies; it is applied at the READ below, to the key this
+			// ordinal names.
+			groupKeyOrdinalByDisplay[strings.ToUpper(gk.Display)] = gkOrdinal
 		}
 	}
 	// colToIdx maps a NON-aliased select item's canonical text to its select-list
@@ -6809,8 +6819,13 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 				}
 			}
 		}
-		if groupKeyExplainMap != nil && !sort.Keys[i].AggregateOutputValueExact {
-			if explain, ok := groupKeyExplainMap[strings.ToUpper(sort.Keys[i].Expr)]; ok {
+		if groupKeyOrdinalByDisplay != nil && !sort.Keys[i].AggregateOutputValueExact {
+			if gkOrdinal, ok := groupKeyOrdinalByDisplay[strings.ToUpper(sort.Keys[i].Expr)]; ok {
+				// The name is spelled FROM the ordinal — the same authority
+				// (aggregateGroupKeyOutputName over that slot's own key Value)
+				// the map used to transport, now read off the key the ordinal
+				// names instead of off whichever key wrote the map entry last.
+				explain := aggregateNativeOutputName(agg, gkOrdinal)
 				// The sort reads the row ABOVE the outermost operator. Directly
 				// over the aggregate that is the AGGREGATE output name; with a
 				// visible PROJECTION in between (mixed aliased/uneliased select
