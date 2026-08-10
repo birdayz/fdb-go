@@ -503,11 +503,16 @@ func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalS
 	//     FieldIndex was deleted: a leg window's Typ is a leg-concat for a
 	//     clustered box run and may legitimately repeat a leaf name;
 	//   - DEFENSIVE at THIS call site — a window whose Kind cannot be
-	//     flat-addressed (LegKindNested, LegKindUnset), per the block above. The
-	//     windows here come from gatheredSeedBakeContext, which calls
-	//     OrdinalSeedLegWindows (acceptNested=false), and finalizeSeedWindows
-	//     declines the WHOLE seed on a nested leg rather than returning one
-	//     (ordinal_seed_layout.go's `leg.Kind == LegKindNested && !acceptNested`).
+	//     flat-addressed (LegKindNested, LegKindUnset), per the block above. No
+	//     nested window can exist here at all: LegKindNested is stamped in exactly
+	//     one place, positionalMergeWindows, which is reachable only through
+	//     `acceptNested && IsPositionalMergeRC` — and the windows here come from
+	//     gatheredSeedBakeContext, which calls OrdinalSeedLegWindows with
+	//     acceptNested=false. So the kind is never minted on this path, rather
+	//     than being minted and then filtered. (The neighbouring
+	//     `leg.Kind == LegKindNested && !acceptNested` refusal is a different
+	//     mechanism — it governs SUB-legs of a box run — and is not what makes
+	//     this arm unreachable.)
 	//     Every window that survives to this function is stamped LegKindFlatRun.
 	//     The dispatch stays because the refusal must be by KIND and not by luck
 	//     of which entry point the caller picked — but it is a contract guard,
