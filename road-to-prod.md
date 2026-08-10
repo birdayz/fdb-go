@@ -108,7 +108,7 @@ because an unguarded count in a status doc is a claim with a shelf life:
 | SQL corpus coverage | **342 scenarios · 2740 cases · 2401 supported (87.6%)**, 109 unsupported-feature pins, 230 error-path pins | **Yes** — `TestSQLCoverageUpToDate` regenerates `SQL_COVERAGE.md`; `FEATURE_MATRIX.md` carries the same generated totals |
 | Java yamsql corpus (RFC-201, NEW since the audit) | **238** files vendored · **32** pass · **0** fail · **206** on the skip ledger · **487** asserted queries | **Yes** — `pinnedLedger` + `pinnedFileTotal` + `pinnedAssignmentDigest` in `pkg/relational/conformance/javacorpus/pinned_ledger_test.go` |
 | Generation factory corpus (NEW, #555) | **5000** scenarios · **20000** tests · **4952** feature vectors; blessings **4469 `metamorphic` + 531 `metamorphic-tlp-only`**, labeled in every header | **Yes** — componentwise census ratchet over scenario/test totals and each feature vector, plus per-scenario authority keyed by dedup key; `ByBlessing` is report-only (`factorycorpus/census_baseline.json`) |
-| `.Field`-decides ratchet (RFC-197) | **47** sites, per-bucket totals gate-checked | **Yes** — `TestFieldNameNeverDecides` + `TestFieldDebtBucketsArePartition`, and `TestStatusPageQuotesTheLiveFieldDebt` for the numbers ON THIS PAGE |
+| `.Field`-decides ratchet (RFC-197) | **44** sites, per-bucket totals gate-checked | **Yes** — `TestFieldNameNeverDecides` + `TestFieldDebtBucketsArePartition`, and `TestStatusPageQuotesTheLiveFieldDebt` for the numbers ON THIS PAGE |
 
 The first four run per-PR. Both former P0s of the client prod-readiness RFC are verified CLOSED in
 code: cluster-file rotation (`pkg/fdbgo/client/database.go:614` re-reads the file when the
@@ -160,7 +160,7 @@ entries mean the same query returns different rows or different errors on the tw
 | B1 | Nightly safety nets were fake-green (window gates anchored to cron hours GitHub dispatches 2-4h late; 12 fake-green stress nights; rowdiff window unreachable by construction; oracles never ran) | Unknown-risk factory | S → M | **DONE — confirmed genuinely green 2026-08-02 and 08-03 (reconcile runs 30744450066, 30814146026, all eleven nets artifact-backed inside limits).** Detection merged (#523); the window shape fixed and merged (#556). #523 gave every windowed job a heartbeat and made the reconciler fail on silence — which then correctly exposed that three fuzz lanes had never recorded one. #556 found the cause was the band's shape, not the lanes (a non-wrapping band calling 18:00–24:00 "daytime"), fixed it across all five nets, and published the honest history: **107 of 177 scheduled runs were fake-green**. Stress 07-17 root-caused (see Tier 1, CQ-46); binding-stress 0/50 root-caused and fixed 2026-08-05 (CQ-47) |
 | B2 | No read-your-writes in explicit transactions; SELECTs take no read locks → silent lost updates | Wrong data | L | **DONE — merged 2026-08-04 (#607, `d6f635073`), Tier 2 confirmed.** RFC-198 all five phases; joint Graefe+Torvalds lap ACK'd; 1M stress clean; the OQ-1 GRV-cache span survived a C++-client + Torvalds design review (fence reshape) and fifteen codex rounds, every finding folded before merge |
 | B3 | RFC-195: cost estimates contradict proven cardinality bounds; comparator uses a private cardinality walk | Wrong plans (perf), not wrong rows | M | **DONE, merged (#547.)** `rfcs/195-cost-must-not-contradict-proof.md:3` — "ACCEPTED, revision 3 … implemented". Seven shapes fixed in the end, not six; zero exclusions and no mechanism to add one (`cardinality_cost_bound_test.go:36-45`). **Residual: CQ-30 in `TODO.md`, open** — criterion 2's data-access maxima are still forked; held visible by a standing test |
-| B4 | RFC-197 identity migration residual (see per-bucket table) | Plan/decline-direction only; wrong-rows channels closed | M | Active; ratchet-enforced; **68 at inception → 47 now** |
+| B4 | RFC-197 identity migration residual (see per-bucket table) | Plan/decline-direction only; wrong-rows channels closed | M | Active; ratchet-enforced; **68 at inception → 44 now** |
 | B5 | WS-N Phase D: metadata re-derived by name instead of flowing from the type (production `UnknownType` mints: see the live census, `pkg/docscheck/unknown_type_mint_census_test.go` — 43 across 20 files at `aba271454`; five name-keyed guessers, enumerated in `shifts/handoff-ws-n-phase-d-typed-metadata.md:65-81`) | Wrong client VALUES on cross-leg same-name-different-type | L | Booked; gates the typed-row-representation work. Entry point: RFC-226 (projection states its row) |
 | B6 | Documentation authority contradictory/stale | Trust/decision risk, not code | S | **This revision.** Authority headers added to `PRODUCTION_READINESS.md` and `rfcs/prod-readiness-go-client.md`; stale TODO entries fixed; `TestProductionStatusAuthority` added so the redirects cannot silently rot |
 
@@ -182,7 +182,7 @@ point (RFC-226) will not move this number, and must not be judged by it.
 
 These are the gate-enforced group headers in `pkg/docscheck/field_name_decision_test.go`, which
 `TestFieldDebtBucketsArePartition` checks against the entries they advertise. The buckets are a
-partition, so they sum to the list: **47**.
+partition, so they sum to the list: **44**.
 
 **The numbers in this table and the totals quoted around it are now gate-checked ON THIS PAGE**
 (`TestStatusPageQuotesTheLiveFieldDebt`). They were not before, and the guarantee column above
@@ -202,7 +202,7 @@ about, one level up and in the page an adopter is handed first.
 | contract | 11 | **12** | Not alone — single naming authorities. The four newly-visible entries are the group-by output name's CONSUMERS, laundered through one helper; the bucket had listed eleven producers and not one consumer, and a migration plan written against producers alone cannot close it. It fell 16 → 10 by RETIRING (and back to 11 with RFC-218's nested-key re-anchor) `AggregateResultColumnName`'s six arms: the aggregate operand's text comes from the parse text carried on the spec (name-as-DATA, Java's `Column.of(Optional<String>, value)`), and the leaf `.Field` fallback beside it was a second, DIVERGENT copy of the Value→name rendering that dropped a qualifier and collapsed `SUM(t.v)`/`SUM(u.v)` onto one output slot |
 | dotted | 6 | **13** | The WRITERS are resolved; what remains are READERS that decline, each probe-pinned, plus five newly-visible MINTs. It fell 14 → 13 by RETIRING `cascades_generator.go # buildAggColumns` (RFC-229 §2.2): the ColumnDef mirror hand-copied the group-key naming rule and now READS the authority, `expressions.AggregateKeyColumnName`. The debt CONSOLIDATED rather than evaporated — the authority and its other mirror `aggregateGroupKeyOutputName` are both still listed under `contract` — and that is the whole shape of RFC-229: one minting point per authority instead of a rule copied into every reader |
 | name-keyed | 3 | **4** | Measured machinery gaps, each recorded on its debt entry (planner-budget re-fire on constraint growth, CQ-51; lazy carriers with no other identity). It fell 5 → 4 by REMOVAL: the projection-merge site's recorded "HEAVILY LIVE" reason was refuted by counting instead of panicking — the rule fires 897 times across the relational suite and its name-matching arm takes ZERO of them, so it was dead debt and is now a fail-closed decline |
-| translator | 17 | **15** | Bounded — resolution-time text handling; misbinding requires the 42702/42703 ambiguity checks to have a hole |
+| translator | 17 | **12** | Bounded — resolution-time text handling; misbinding requires the 42702/42703 ambiguity checks to have a hole |
 | harness | 1 | **1** | No — oracle-side; affects trust in the net, not prod rows |
 
 **The total ROSE from 41 to 53 between the audit and now, and that is the gate working.** #540 and
@@ -212,54 +212,80 @@ ratchet that has stopped looking.
 
 *Refuted while verifying:* the previous revision's "68 at inception → 38" and its `dotted 6 /
 translator 17` cells were audit-day figures presented as current. Measured trajectory of the list:
-**68** at inception (#520) → **41** (#527/#528/#529) → **54** (#544) → **52** (#556) → **53** (#601) → **52** (`b3ac5fe31`) → **46** (`46a00357a`) → **47** (`f599685d2`, RFC-218 adds the nested-key re-anchor's name match) → **48** (RFC-222 adds its nested-SUFFIX sibling) → **47** (HEAD, RFC-229 retires the buildAggColumns mirror). More
+**68** at inception (#520) → **41** (#527/#528/#529) → **54** (#544) → **52** (#556) → **53** (#601) → **52** (`b3ac5fe31`) → **46** (`46a00357a`) → **47** (`f599685d2`, RFC-218 adds the nested-key re-anchor's name match) → **48** (RFC-222 adds its nested-SUFFIX sibling) → **47** (`c5ffbb986`, RFC-229 retires the buildAggColumns mirror) → **44** (HEAD, CQ-52 retires the leg-window re-split: both `legWindowSlot` entries and `bakeDottedRefsToLegQOVWithRef`s QUALIFIER half). More
 consequentially, the previous revision's sequencing said the remaining ratchet was the
-boundary/contract tail. **It is not:** `dotted` (13) and `translator` (15) are the two largest
-buckets and together are 60% of the list (28 of 47).
+boundary/contract tail. **It is not:** `dotted` (13) and `translator` (12) are the two largest
+buckets and together are 57% of the list (25 of 44).
 
 Two further corrections to the migration's bookkeeping, both found by reading the ratchet against
 `TODO.md`:
 
-- **CQ-52 is not done, but its residual is not what this page said.** #540 landed the PROJECTION
-  channel; the parsed channels (ORDER BY keys, GROUP BY keys, aggregate operands) followed. The
-  four debt keys this page cited (`cascades_translator.go:5742`/`:5744`/`:6070`/`:6102`) NO LONGER
-  EXIST — the surviving entries carrying those reason strings are `:5811`, `:5813`, `:6139`,
-  `:6171`. More importantly the framing was wrong: the residual is **one behaviour decision**, not
-  four line-keyed sites. `cascades_translator.go:6218-6237` states it and deliberately leaves it
-  open — *should a star-projected body column be leg-addressable at all?* The star-body
-  normalization mints output labels with no parse tree behind them, so their absent segment triple
-  is STRUCTURAL and permanent; the remaining producers are machinery mints whose names are
-  aggregate renderings (`MAX(E.SALARY)`), where a dot is deliberately not a qualifier. **STOPPED on
-  an owner decision** — but NOT because Java is silent, which an earlier draft of this bullet
-  claimed. Java *does* have projection outputs carrying no `Identifier`: `Expression.name` is an
-  `Optional<Identifier>` (`Expression.java:100-113`) and `Expression.ofUnnamed`
-  (`:305-322`) mints empty ones throughout. Its answer to those is that they are **not
-  name-resolvable at all** — `SemanticAnalyzer.lookup` skips an attribute with no name outright
-  (`SemanticAnalyzer.java:459-461`), never matching it positionally or through a synthesized
-  string. What is genuinely Go-side is the *re-split*: Java never re-parses a dotted string
-  (identity is `name` + `List<String> qualifier`, `Identifier.java:34-58`, built segment-by-segment
-  at `IdentifierVisitor.java:56-64`, joined only for display at `:61-63`), so it has no analogue of
-  the arm that would answer the question by accident. The caveat that used to sit here — "nothing
-  instruments the split population, so the 110 → 0 figures are scratch measurements" — is
-  CLOSED **for the two leg bakers, and for nothing else**: `name_split_census.go` counts those two
-  arms per resolution decision and `AssertNameSplitCensus` gates them in the sqldriver `TestMain`.
-  Measured, stable across two consecutive full-suite runs: `legQOVSegmentsOf` 9 calls (segmented 9,
-  **SPLIT-QUALIFIED 0**), `flatColumnBake` 2 calls (splitBare 2, **SPLIT-QUALIFIED 0**). The zero is
-  confirmed; the population is 11, not the ~110 the scratch figure implied. Four splitting siblings
-  remain uninstrumented by anything — `recursiveRemapValues` (`cascades_translator.go:9547`, which
-  manufactures a `CorrelationIdentifier` outright), `parseColRef` (`core/embedded/colref.go:18`, 27
-  production call sites), `splitQualifier` (`:5016`) and the derived-unnest base-column split
-  (`derived_unnest.go:107`) — named in the census header and booked as **CQ-94**; do not read
-  these zeros as global. What carries the guarantee is the floors PLUS a unit wiring pin, not the
-  floors alone: the split population is floored per site (`flatColumnBake` 1, measured 2), and
-  `legQOVSegmentsOf`'s is a declared **0** — "watched, not proven", checked in the stale direction —
-  because that arm is measured empty over the corpus while being demonstrably LIVE (a panic there is
-  reached with a dotted name), so its recorder wiring is pinned by unit test instead. And the
-  behaviour question at the arm is **RULED, not open**: Java skips a projection output carrying no
-  `Identifier` before any comparison, so a machinery label is not name-resolvable by any spelling and
-  the arm DECLINES — the gate's failure text now states that instead of telling the tripper to
-  escalate. What stays the owner's is only whether the star-body normalization should stop minting
-  such labels at all, which is upstream of this arm.
+- **CQ-52 is DONE, and the way it closed refutes the framing this page carried for it.** #540
+  landed the PROJECTION channel; the parsed channels (ORDER BY keys, GROUP BY keys, aggregate
+  operands) followed. The four debt keys this page once cited
+  (`cascades_translator.go:5742`/`:5744`/`:6070`/`:6102`) NO LONGER EXIST, and neither do the
+  `:5811`/`:5813`/`:6139`/`:6171` that replaced them. What remained after the parsed channels was
+  the **re-split**: `bakeDottedRefsToLegQOVWithRef`'s `segmentsOf` fallback and
+  `bakeFlatRefsAgainstColumns`' dotted arm each recovered a qualifier by slicing a rendered name at
+  its first dot. Both are now deleted. `bakeFlatRefsAgainstColumns` no longer accepts a leg list at
+  all, so the site cannot reach a leg window by any spelling — a structural retirement rather than
+  a behavioural one. Ratchet effect: **47 → 44 entries, 34 → 33 authorities**, `translator` 15 → 12.
+
+  **The framing this page carried — that the residual was one owner-gated BEHAVIOUR decision about
+  whether a star-projected body column should be leg-addressable — was wrong, and was put to the
+  owner as a ruling before being checked.** The proposed ruling was "match Java: a star-projected
+  body column carries no name and is not name-resolvable at all", resting on
+  `SemanticAnalyzer.java:458-461` skipping an attribute whose `Identifier` is absent. That citation
+  is real; the inference from it is not. **Java's star expansion NAMES its columns**: `expandStar`
+  returns a `Star` over `logicalTable.getOutput().nonEphemeralVisible()`
+  (`SemanticAnalyzer.java:321-367`), `Expressions.expanded()` splices those named members straight
+  into the operator output (`Expressions.java:78-84`), and `Star.createStarType` reads
+  `expression.getName()` per field (`Star.java:169-180`). `Expression.ofUnnamed` serves literals,
+  NULLs, casts and function results — never a star. Java's own corpus asserts this directly:
+  `array-join-at.yamsql:83-84` comments "With `SELECT *`, the star expansion includes both the AS
+  field and the AT field" and then selects `"id"`, `"val"`, `"at"` out of exactly the star-over-
+  unnest body Go's `derivedBodyStarOrdinalLeg` serves; `alias-tests.yamsql:250` pins
+  `resultMetadata: [{ID: BIGINT}, {A: BIGINT}]` for `WITH cte AS (SELECT * FROM T1) SELECT c.id,
+  c.a FROM cte AS c`. Implementing the ruling would have turned **144 queries across the tree** into
+  42703 — see the census below — including queries in Java's own corpus, and would have broken the
+  rowdiff harness, which GENERATES the shape at runtime (`rowdiff/gen.go:717`, `:1829`).
+
+  A second premise was also false: the star-body normalization does not mint dotted labels. Its
+  labels come from `ordinalLegColumns` (`ordinal_seed.go:130`), which bottoms out at table metadata
+  column names and at `legColumns`' unnest arm (`strings.ToUpper(o.Alias)` / `o.AtAlias`) — bare by
+  construction, with no `+ "." +` anywhere on the path. A dot reaches them only if a user quotes one
+  into a column name or alias.
+
+  What was genuinely Go-side is what got fixed, and it needed no ruling because it has no
+  behavioural blast radius. Java never re-parses a display string: identity is `name` plus an
+  explicit `List<String> qualifier` (`Identifier.java:34-58`), assembled segment-by-segment at
+  `IdentifierVisitor.java:56-64` and joined only for display at `:61-63`. The Go rule now matches —
+  **absent segments means unqualified**, which is what `bakeSegmentedColumnRef` already did for a
+  present-but-unqualified triple, so the two paths agree instead of disagreeing. Reachability was
+  MEASURED before the change, not argued: a recording probe on both splitting arms over
+  `./pkg/relational/...` and `./pkg/recordlayer/...` caught 15 entries, **all 15 from
+  `pkg/relational/core/query` unit tests deliberately driving the arms, and zero from the real-FDB
+  sqldriver corpus, conformance, explaindiff, plandiff or recordlayer.**
+
+  The census that watched the split population is retained with its **direction inverted**: the
+  `SPLIT-QUALIFIED` floors asserted `>= 1` (collapse was the alarm, because a bucket the corpus
+  drives zero times is one whose recorder can be dropped silently); the class now has no producer,
+  so zero is the steady state and any count means the re-split returned. `legQOVSegmentsOf`'s
+  remaining split classes are gone with it. Four uninstrumented splitting siblings remain, named in
+  the census header and booked as **CQ-94** — `recursiveRemapValues`
+  (`cascades_translator.go:9547`), `parseColRef` (`core/embedded/colref.go:18`, 27 production call
+  sites), `splitQualifier` (`:5016`) and the derived-unnest base-column split
+  (`derived_unnest.go:107`). Do not read this closure as a statement about re-splitting in Go
+  generally.
+
+  **One of the four listed entries did NOT retire, and forcing it would have been wrong.**
+  `bakeDottedRefsToLegQOVWithRef # the name escaping as a bare string (return) # 1` survives: with
+  the split gone, `segmentsOf` still returns the LEAF as a plain string, which the downstream
+  `strings.EqualFold(c, leaf)` in `legBake` and the single-ForEach arm compare by name. That is
+  name-keyed column resolution — a different axis from the re-split, and closing it needs a
+  layout-resolved column contract rather than a segment triple. It stays on the list under
+  `translator`.
+
 - **CQ-53 is marked done but has a surviving producer.** `TODO.md`'s CQ-53 closes it as subsumed by
   CQ-67 (#549) "carrying no separate remainder", while
   `pkg/docscheck/field_name_decision_test.go:447` pins `cascades_translator.go:3598` as "dotted:

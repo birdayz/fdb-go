@@ -1,0 +1,85 @@
+# star_body_columns_are_named.yaml
+#
+# A star-projected CTE or derived-table body carries its source columns' NAMES,
+# and those names resolve in the enclosing query. This is Java's behaviour and
+# it is the acceptance criteria for anything that touches star-body naming.
+#
+# WHY THIS FILE EXISTS. A proposal was put forward to make star-projected body
+# columns UNNAMED and unresolvable, on the reading that Java's
+# SemanticAnalyzer.lookup skips an output attribute whose Identifier is absent
+# (SemanticAnalyzer.java:458-461). That skip is real; the inference is not.
+# Java's star expansion NAMES its columns — expandStar returns a Star over
+# `logicalTable.getOutput().nonEphemeralVisible()` (SemanticAnalyzer.java:321-367)
+# and Expressions.expanded() (Expressions.java:78-84) splices those NAMED
+# members straight into the operator's output. Expression.ofUnnamed serves
+# literals, casts and function results, never a star.
+#
+# Java's own corpus asserts it: alias-tests.yamsql:250 pins
+# `resultMetadata: [{ID: BIGINT}, {A: BIGINT}]` for
+# `WITH cte AS (SELECT * FROM T1) SELECT c.id, c.a FROM cte AS c`, and
+# array-join-at.yamsql:83 comments "With `SELECT *`, the star expansion includes
+# both the AS field and the AT field" before naming all three.
+#
+# A tree-wide sweep found 144 queries addressing a star-body column by name.
+# The shape groups are pinned here, one query each, so that narrowing the
+# behaviour again fails loudly and locally instead of somewhere in the corpus:
+#
+#   B  plain star CTE, outer names a column
+#   C  star CTE with a column-alias list, outer names an alias
+#   D  single-level star derived table, outer names a column
+#   E  nested star derived tables, an enclosing level names a column
+#
+# Group A — a star body containing an UNNEST leg — needs a populated ARRAY
+# column, which SQL INSERT cannot provide (see array_column_type.yaml), so it is
+# pinned in Go instead: sqldriver's TestFDB_StarBodyCTEJoinLeg and
+# TestFDB_ChainedStarBodyCTE, 29 queries over that shape.
+name: star_body_columns_are_named
+schema_template: |
+  CREATE TABLE sb (id BIGINT, grp BIGINT, amt BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO sb VALUES (1, 10, 100)
+  - INSERT INTO sb VALUES (2, 10, 200)
+  - INSERT INTO sb VALUES (3, 20, 300)
+tests:
+  # --- Group B: plain star CTE, outer names a column -----------------------
+  # `id`, `grp` and `amt` are the star body's columns. All three resolve.
+  - query: WITH c AS (SELECT * FROM sb) SELECT id, amt FROM c WHERE grp = 10 ORDER BY id
+    rows:
+      - [1, 100]
+      - [2, 200]
+
+  # The same, QUALIFIED by the CTE's alias — the shape Java pins at
+  # alias-tests.yamsql:250.
+  - query: WITH c AS (SELECT * FROM sb) SELECT c.id, c.amt FROM c AS c WHERE c.grp = 20
+    rows:
+      - [3, 300]
+
+  # --- Group C: star CTE + column-alias list ------------------------------
+  # The alias list renames the star-expanded columns positionally, and the new
+  # names resolve. Java: cte.yamsql:62.
+  - query: WITH c(x, y, z) AS (SELECT * FROM sb) SELECT z, x FROM c WHERE y = 20
+    rows:
+      - [300, 3]
+
+  # --- Group D: single-level star derived table ---------------------------
+  # Java: standard-tests.yamsql:284, versions-tests.yamsql:263.
+  - query: SELECT id, amt FROM (SELECT * FROM sb WHERE grp = 10) AS d ORDER BY id
+    rows:
+      - [1, 100]
+      - [2, 200]
+
+  # Qualified by the derived table's alias.
+  - query: SELECT d.id FROM (SELECT * FROM sb) AS d WHERE d.amt = 300
+    rows:
+      - [3]
+
+  # --- Group E: nested star derived tables --------------------------------
+  # Java: standard-tests-proto.yamsql:53, field-index-tests-proto.yamsql:64.
+  - query: SELECT id, amt FROM (SELECT * FROM (SELECT * FROM sb) AS x WHERE grp = 20) AS y
+    rows:
+      - [3, 300]
+
+  # Three levels, the column named only at the outermost.
+  - query: SELECT COUNT(*) FROM (SELECT * FROM (SELECT * FROM sb) AS x) AS y WHERE amt > 150
+    rows:
+      - [2]

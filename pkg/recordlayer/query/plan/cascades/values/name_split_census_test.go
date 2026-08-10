@@ -128,21 +128,30 @@ func TestNameSplitCensus_SplitArmGoingDarkIsRed(t *testing.T) {
 			"the census stayed green — the Calls floor is measuring the segmented channel, " +
 			"and this census's hard zero is a zero over the SPLIT population")
 	}
-	if out := sb.String(); !strings.Contains(out, "SPLITTING arm") {
-		t.Fatalf("failure text does not name the split population: %s", out)
+	// The failure text must name the population, and the LABEL changed with the
+	// code: this asserted "SPLITTING arm" until CQ-52 deleted the first-dot
+	// re-split at both sites. There is no splitting arm to go dark now — what
+	// this floor watches is the NO-SEGMENTS path, decisions made without a
+	// parse-tree triple. The assertion is retargeted rather than dropped, so the
+	// text is still pinned to describe the thing being measured.
+	if out := sb.String(); !strings.Contains(out, "NO-SEGMENTS decision") {
+		t.Fatalf("failure text does not name the no-segments population: %s", out)
 	}
 }
 
 // TestNameSplitCensus_StaleZeroDeclarationIsRed pins the OTHER direction of the
 // zero declaration, and it is the one that keeps the label honest.
 //
-// legQOVSegmentsOf's split floor is 0. That is not "no floor" — it is a claim:
-// this arm's splitting paths are measured EMPTY over the corpus, so the corpus
-// cannot guard their recorder wiring and a unit pin does it instead. The arm is
-// live (a panic there is reached, with a dotted name), so the day the corpus
-// starts driving it, that claim is stale and the unit pin is no longer the only
-// coverage available. A declaration nobody re-reads is how a placeholder becomes
-// a permanent exemption.
+// legQOVSegmentsOf's no-segments floor is 0. That is not "no floor" — it is a
+// claim: that path was measured EMPTY over the corpus, so the corpus cannot
+// guard its recorder wiring and a unit pin does it instead. The site is LIVE
+// (its call floor is met), so the day the corpus starts driving it without a
+// parse-tree triple, that claim is stale and the unit pin is no longer the only
+// coverage available. The older wording here said the arm was proven live by "a
+// panic reached with a dotted name" — that was true of the SPLITTING arm, which
+// CQ-52 deleted; a dotted name no longer takes a different path from any other.
+// A declaration nobody re-reads is how a placeholder becomes a permanent
+// exemption.
 func TestNameSplitCensus_StaleZeroDeclarationIsRed(t *testing.T) {
 	t.Parallel()
 
