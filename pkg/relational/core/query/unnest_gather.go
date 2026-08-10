@@ -487,19 +487,32 @@ func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalS
 	// A QUALIFIED read that its own qualifier could not resolve DECLINES, and this
 	// is the GENERAL form of the rule the no-correlation arm states at the top of
 	// this function: a reference that names a source is answered BY that source or
-	// not at all. Three shapes reach here, and all three used to FALL THROUGH into
-	// the element/bare arms below, where `U.V` silently read the ELEMENT's `V`:
+	// not at all. Three shapes fail the lookup above, and each used to FALL
+	// THROUGH into the element/bare arms below, where `U.V` silently read the
+	// ELEMENT's `V`. They are NOT equally reachable, and saying so is the point —
+	// an unqualified "three shapes reach here" was what this comment said, and a
+	// reachability claim nobody checked is how the original defect survived a
+	// reading:
 	//
-	//   - a correlation no window is filed under (an existential inner's
+	//   - LIVE — a correlation no window is filed under (an existential inner's
 	//     quantifier, say) — the same shape bakeUnnestElementRefOrdinal was
 	//     patched to dodge at the PRODUCER, which left the resolver still wrong
 	//     for every other producer;
-	//   - a window whose Kind cannot be flat-addressed (LegKindNested,
-	//     LegKindUnset), per the block above;
-	//   - a FLAT window that declares `col` TWICE, so FieldIndexUnique picks
-	//     nothing. That shape became reachable when the first-match FieldIndex was
-	//     deleted: a leg window's Typ is a leg-concat for a clustered box run and
-	//     may legitimately repeat a leaf name.
+	//   - LIVE — a FLAT window that declares `col` TWICE, so FieldIndexUnique
+	//     picks nothing. That shape became reachable when the first-match
+	//     FieldIndex was deleted: a leg window's Typ is a leg-concat for a
+	//     clustered box run and may legitimately repeat a leaf name;
+	//   - DEFENSIVE at THIS call site — a window whose Kind cannot be
+	//     flat-addressed (LegKindNested, LegKindUnset), per the block above. The
+	//     windows here come from gatheredSeedBakeContext, which calls
+	//     OrdinalSeedLegWindows (acceptNested=false), and finalizeSeedWindows
+	//     declines the WHOLE seed on a nested leg rather than returning one
+	//     (ordinal_seed_layout.go's `leg.Kind == LegKindNested && !acceptNested`).
+	//     Every window that survives to this function is stamped LegKindFlatRun.
+	//     The dispatch stays because the refusal must be by KIND and not by luck
+	//     of which entry point the caller picked — but it is a contract guard,
+	//     not a class with production traffic, and the difference matters to
+	//     anyone reasoning about what the gate below actually catches.
 	//
 	// Java answers the same way structurally rather than by a rule: each
 	// quantifier is bound under its OWN alias (RecordQueryFlatMapPlan.java:135,140)
@@ -511,6 +524,23 @@ func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalS
 	// else; the bare-leg scan's own `!qualified` guard was removed with this gate's
 	// introduction, because two encodings of one rule is what let a reader assume
 	// the element arm carried the guard it did not.
+	//
+	// IT DOES NOT SWALLOW THE ELEMENT-QUALIFIED READ, and that is worth stating
+	// because `qualified` is set for ANY FieldValue over a QuantifiedObjectValue —
+	// not only for a dotted spelling — so this line reads like a gate on a
+	// namespace the ELEMENT legitimately owns. The corpus really does mint an
+	// element-qualified key: `FROM GD, GD.ARR AS V GROUP BY V` groups on
+	// FieldValue(QOV(V), V), so the grouping is the ELEMENT and not a later
+	// same-named column. It resolves above this gate, in the leg arm, because
+	// OrdinalSeedLegWindows files the unnest element under its OWN correlation —
+	// a synthesized one-column flat run for a scalar element, an ordinary leg run
+	// for a record one. The gate is therefore reachable only by a qualifier that
+	// names NO source in the seed, which is the whole of its intent. That
+	// invariant lives in the producer, not here, so it is pinned there:
+	// TestGatheredSeed_ElementQualifiedReadIsServedByItsOwnLegWindow drives all
+	// three arms off a real seed, and TestFDB_ArrayUnnestOrdinality/R19b pins the
+	// end-to-end consequence — the group key bakes to the element's slot rather
+	// than degrading to the name model.
 	if qualified {
 		return 0, false
 	}

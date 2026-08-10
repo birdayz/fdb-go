@@ -11,6 +11,7 @@ package query
 // own rather than riding along with its sibling arm.
 
 import (
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -174,6 +175,151 @@ func TestLegKind_GatheredGroupSlotStillServesTheBareNamespace(t *testing.T) {
 	if !ok || slot != 2 {
 		t.Fatalf("bare BONLY = (%d, %t), want (2, true) — the bare-leg scan stopped "+
 			"answering when its own guard was folded into the qualified gate", slot, ok)
+	}
+}
+
+// gatheredMixedSeedFixture builds the seed for `FROM GD, GD."ARR" AS "V"` where
+// GD ALSO carries a column named V — the shadowing shape
+// TestFDB_ArrayUnnestOrdinality's R18/R19 drive — and derives the resolver's two
+// inputs the way production derives them, rather than hand-writing them.
+//
+// The windows come from values.OrdinalSeedLegWindows over a real seed RC; the
+// element slots are seedElementSlots' rule (rc index of every field whose value
+// references the Explode quantifier) applied to that same RC. Hand-written maps
+// are what let the sibling fixtures above model a layout production cannot
+// build, and the property under test here is precisely a property of the
+// PRODUCER, so the producer has to run.
+//
+// Layout: slot 0 = GD.DID, slot 1 = GD.V, slot 2 = the unnest element V.
+func gatheredMixedSeedFixture(t *testing.T) (
+	map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow,
+	map[string]int,
+	values.CorrelationIdentifier, // the GD leg
+	values.CorrelationIdentifier, // the unnest ELEMENT
+) {
+	t.Helper()
+	gd := values.NamedCorrelationIdentifier("GD")
+	elem := values.NamedCorrelationIdentifier("V")
+	gdType := &values.RecordType{Fields: []values.Field{
+		{Name: "DID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "V", FieldType: values.NotNullLong, Ordinal: 1},
+	}}
+	gdQOV := values.NewQuantifiedObjectValueOfType(gd, gdType)
+	did, err := values.NewFieldValueOfOrdinal(gdQOV, 0)
+	if err != nil {
+		t.Fatalf("GD.DID bake: %v", err)
+	}
+	legV, err := values.NewFieldValueOfOrdinal(gdQOV, 1)
+	if err != nil {
+		t.Fatalf("GD.V bake: %v", err)
+	}
+	// The unnest element of a SCALAR array: a bare QOV over the element type, the
+	// slot OrdinalSeedLegWindows recognizes through isMixedSeedElement.
+	elemQOV := values.NewQuantifiedObjectValueOfType(elem, values.NotNullLong)
+	rc := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "DID", Value: did},
+		values.RecordConstructorField{Name: "V", Value: legV},
+		values.RecordConstructorField{Name: "V", Value: elemQOV},
+	)
+	windows, _ := values.OrdinalSeedLegWindows(rc)
+	elementSlots := map[string]int{}
+	for i, f := range rc.Fields {
+		if fieldValueReferencesInner(f.Value, elem) {
+			elementSlots[strings.ToUpper(f.Name)] = i
+		}
+	}
+	return windows, elementSlots, gd, elem
+}
+
+// The three arms of slotInGatheredSeed on a REAL gathered seed, and the reason
+// the qualified gate does not cost the element-qualified read anything.
+//
+// The gate declines every qualified read whose qualifier could not select a leg
+// window, and `qualified` is set for ANY FieldValue over a QuantifiedObjectValue
+// — not only for a dotted spelling. That reads like it must swallow the
+// ELEMENT-qualified group key, which the corpus really does mint:
+// `FROM GD, GD."ARR" AS "V" GROUP BY "V"` groups on FieldValue(QOV(V), V) so the
+// grouping is on the ELEMENT and not on a later same-named column.
+//
+// It does not, and the reason is one line in the PRODUCER rather than anything
+// at the resolver: OrdinalSeedLegWindows files the unnest element under its OWN
+// correlation, as a synthesized one-column flat run at the element's slot
+// (ordinal_seed_layout.go's isMixedSeedElement branch; a RECORD element gets an
+// ordinary leg run under the same correlation). So an element-qualified read is
+// answered by the LEG arm, above the gate, and never reaches it. That is the
+// same structure Java has — every quantifier bound under its own alias — arrived
+// at from the other side.
+//
+// This is a NEGATIVE result and it is load-bearing, which is why it is pinned
+// rather than written down: if the producer ever stops giving the element a
+// window, the gate silently turns the element-qualified group key into a decline,
+// and a decline here is not a no-op — it routes to bakeFlatRefsAgainstColumns,
+// downgrading an authoritative ordinal to the name model.
+func TestGatheredSeed_ElementQualifiedReadIsServedByItsOwnLegWindow(t *testing.T) {
+	t.Parallel()
+	windows, elementSlots, gd, elem := gatheredMixedSeedFixture(t)
+
+	// THE INVARIANT the qualified gate rests on. Asserted before the arms so a
+	// producer regression reads as itself rather than as three failing arms.
+	if w, ok := windows[elem]; !ok || w.Kind != values.LegKindFlatRun || w.Offset != 2 {
+		t.Fatalf("windows[V] = %+v (present=%t), want a flat run at offset 2. The unnest "+
+			"ELEMENT must hold a window under its OWN correlation: that is what makes "+
+			"slotInGatheredSeed's qualified gate safe for an element-qualified group key "+
+			"(FieldValue(QOV(V), V)). Without it the gate declines that key and the gather "+
+			"is downgraded to the name model. windows=%v", w, ok, windows)
+	}
+	if got, want := elementSlots, (map[string]int{"V": 2}); len(got) != len(want) || got["V"] != want["V"] {
+		t.Fatalf("elementSlots = %v, want %v — the fixture is not modelling the shadowing seed", got, want)
+	}
+
+	// ARM 1 — UNQUALIFIED: the bare namespace, element-first. Bare `V` is the
+	// ELEMENT at slot 2, NOT the GD leg's same-named column at slot 1.
+	if slot, ok := slotInGatheredSeed(windows, elementSlots, values.CorrelationIdentifier{}, "V", false); !ok || slot != 2 {
+		t.Fatalf("bare V = (%d, %t), want (2, true) — element-first over the shadowed GD.V at slot 1", slot, ok)
+	}
+
+	// ARM 2 — ELEMENT-QUALIFIED: answered, and answered by the element's own LEG
+	// window. Driven with an EMPTY element map so the answer cannot have come
+	// from the bare namespace: this is the assertion that distinguishes "the
+	// element arm served it" from "the leg arm served it", and the two are
+	// indistinguishable at (2, true) when both maps are populated.
+	for _, tc := range []struct {
+		name  string
+		slots map[string]int
+	}{
+		{"with the element map", elementSlots},
+		{"with an EMPTY element map", map[string]int{}},
+	} {
+		if slot, ok := slotInGatheredSeed(windows, tc.slots, elem, "V", true); !ok || slot != 2 {
+			t.Fatalf("element-qualified V.V %s = (%d, %t), want (2, true). The qualified "+
+				"gate must not swallow a read qualified by the ELEMENT's own correlation — "+
+				"the element holds a leg window, so the leg arm answers above the gate",
+				tc.name, slot, ok)
+		}
+	}
+
+	// ARM 2 control — LEG-QUALIFIED on a PRESENT leg: GD.V is GD's V at slot 1,
+	// never the element at slot 2. Without this, arm 2 would pass just as well if
+	// every qualified read resolved to the element.
+	if slot, ok := slotInGatheredSeed(windows, elementSlots, gd, "V", true); !ok || slot != 1 {
+		t.Fatalf("leg-qualified GD.V = (%d, %t), want (1, true) — the qualifier wins over element-first", slot, ok)
+	}
+
+	// ARM 3 — QUALIFIED BY AN ABSENT LEG: declines. This is the shape the gate
+	// exists for; `ZZ` is filed under no window, so there is nothing to resolve
+	// the qualifier by. It must NOT reach slot 2 (the element leak the gate
+	// closed) and must NOT reach slot 1 (GD's V by name).
+	absent := values.NamedCorrelationIdentifier("ZZ")
+	if slot, ok := slotInGatheredSeed(windows, elementSlots, absent, "V", true); ok {
+		what := "a slot belonging to no source named ZZ"
+		switch slot {
+		case 2:
+			what = "the ELEMENT's slot — the wrong-column fall-through the qualified gate closed"
+		case 1:
+			what = "the GD leg's V — a name-model first match, not a resolution of the stated qualifier"
+		}
+		t.Fatalf("ZZ.V resolved to slot %d: %s. A reference that STATES a qualifier is "+
+			"answered by that qualifier or not at all", slot, what)
 	}
 }
 

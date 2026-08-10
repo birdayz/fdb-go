@@ -3798,6 +3798,45 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
+	t.Run("R19b the ELEMENT-qualified group key bakes POSITIONALLY over the gathered seed", func(t *testing.T) {
+		// The rows above prove the answer; this proves the MECHANISM, and the two are
+		// different claims because the name model can produce the same rows more
+		// slowly and less safely.
+		//
+		// `GROUP BY "V"` over `FROM GD, GD."ARR" AS "V", GW` stores the QUALIFIED
+		// FieldValue(QOV(V), V) as the group key, so the grouping is on the unnest
+		// ELEMENT and not on GW's own same-named column. slotInGatheredSeed resolves
+		// that key over the gathered seed, and it declines EVERY qualified read whose
+		// qualifier cannot select a leg window — a gate that would swallow this key if
+		// the unnest element did not hold a window under its own correlation. It does
+		// (OrdinalSeedLegWindows synthesizes one at the element's slot), so the key
+		// bakes to the element slot #3: GD's run ID/ARR/SARR tiles slots 0-2, the
+		// mid-list element V is 3, GW's ID/V/O are 4-6.
+		//
+		// A decline is NOT a no-op. It routes to the name-model bakers, where the bare
+		// `V` key is what mergeRows clobbers last-leg-wins with GW.V=999 — a constant
+		// for every row. So the two spellings this asserts against are the two ways of
+		// being wrong: `#5` is GW.V read positionally, a bare `V` is GW.V read by name.
+		plan, perr := embedded.PlanRecordQueryWithMetadata(
+			`SELECT "V", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V", GW GROUP BY "V"`, md, nil)
+		if perr != nil {
+			t.Fatalf("plan: %v", perr)
+		}
+		explain := plan.Explain()
+		// `StreamingAgg(keys=[q$1.V#3], …)` — the seed correlation is machine-minted
+		// so only the slot is asserted; `.V#3]` closes the key list and therefore
+		// names the GROUP KEY specifically, not the pre-aggregate sort key beside it
+		// (which renders `.V#3 ASC]`).
+		unnestMustContain(t, explain, "StreamingAgg(keys=[")
+		unnestMustContain(t, explain, ".V#3]")
+		unnestMustNotContain(t, explain, "#5")
+		unnestMustNotContain(t, explain, "keys=[V]")
+		// And the rows the positional key produces: 2 GD rows x {1,2} x 1 GW row.
+		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V", GW GROUP BY "V"`, []string{
+			"V=1|N=2", "V=2|N=2",
+		})
+	})
+
 	// --- Every POST-aggregate consumer that references a grouped
 	// unnest key must read it under the aggregate OUTPUT name (the bare `V`), NOT
 	// the qualified PRE-aggregate value `V.V`. Grouping stores the
