@@ -262,11 +262,15 @@ func TestFDB_NestedSortKeyOrdersByTheMemberNotTheStructRoot(t *testing.T) {
 // written and false when it shipped — the change it was justifying is what
 // removed its premise.
 //
-// The fix is two-part and both parts are load-bearing: the dedup is keyed on the
-// source VALUE (symmetric semantic equality — never Java's asymmetric
-// canBeDerivedFrom, which among the extras would find `n.sk` derivable from `n`
-// and recreate this), and the appended column is named by its RESOLVED PATH so
-// two members of one root are not spelled alike.
+// The fix is two-part, and the two parts do NOT carry equal weight — measured,
+// because assuming they did is how one of them nearly shipped unpinned. The
+// dedup is keyed on the source VALUE (symmetric semantic equality — never Java's
+// asymmetric canBeDerivedFrom, which among the extras would find `n.sk`
+// derivable from `n` and recreate this), and THAT is the half these row arms
+// guard: revert it and they red. The appended column is separately named by its
+// RESOLVED PATH, which is display and hygiene — revert that half alone and these
+// rows stay CORRECT, because resolution is by baked ordinal, not by the name.
+// The EXPLAIN test in this file is what guards the naming half.
 //
 // THE FIXTURE TIES BOTH MEMBERS, because a collapse is only visible where the
 // dropped key was doing work:
