@@ -8,34 +8,46 @@ import (
 	"testing"
 )
 
-// TestFDB_DuplicateFromAliasRejected closes an UNVERIFIED gap in the safety
-// premise that several by-name planner lookups rest on.
+// TestFDB_DuplicateFromAliasRejected pins WHAT THE USER SEES for a reference
+// through a duplicated FROM alias, and it guards the ONLY gate that stands
+// between that SQL and a wrong-column read.
 //
-// `legWindowSlot` and its siblings resolve a leg window by matching a
-// reference's QUALIFIER, first-match. That is safe only if two FROM sources
-// cannot share an alias. The bare/derived-table ambiguity rejections pinned in
-// ambiguous_column_ref_rejected_fdb_test.go are 42702 `ambiguous_column` and say
-// nothing about a repeated ALIAS, and every 42712 `duplicate_alias` producer in
-// pkg/ concerns CTE names — so on inspection the qualifier half of the premise
-// appeared to rest on nothing. Worse, the same channel's other reader poisons a
-// duplicate qualifier and refuses to bake, so two readers of one channel held
-// opposite dispositions with no upstream reconciliation visible.
+// Go permits the duplicate alias to be DECLARED and rejects any reference
+// through it as ambiguous — 42702. The producer is
+// semantic.Scope.ResolveQualifiedColumn's multi-match arm (semantic/scope.go
+// :380-387), NOT ResolveColumn's (:267-274): `a.k` is a QUALIFIED reference and
+// takes the qualified path. That distinction was established by mutation, not
+// by reading — removing ResolveColumn's arm leaves this test fully GREEN, and
+// only removing the qualified one reddens it. Cite the qualified arm when
+// reasoning about this shape.
 //
-// Measured, the premise holds — by a different route than expected. Go permits
-// the duplicate alias to be DECLARED and rejects any reference through it as
-// ambiguous, which is the same disposition it takes for a bare name two sources
-// carry. So the qualifier first-match is covered after all: a reference that
-// would reach it with an ambiguous qualifier never gets that far.
+// This diverges from Postgres in WHEN, not whether: Postgres rejects the FROM
+// clause itself with 42712 duplicate_alias even when nothing references the
+// alias. Recorded rather than fixed; no reference resolves through the
+// ambiguous alias either way.
 //
-// This diverges from Postgres in WHEN, not whether. Postgres rejects the FROM
-// clause itself with 42712 `duplicate_alias` even when nothing references the
-// alias; Go accepts the declaration and rejects the read. That difference is
-// recorded rather than fixed: it is not a safety hole, because no reference can
-// resolve through the ambiguous alias either way.
+// WHAT RELAXING THIS COSTS, measured rather than predicted. With the qualified
+// arm removed, all three spellings below RETURN ROWS — the reference resolves
+// to the FIRST matching source at semantic analysis and planning never sees an
+// ambiguity. So this 42702 is not one of two layered defences; for this SQL
+// shape it is the whole defence, and its failure mode is a silent wrong-column
+// read (the loser of a first match is a real column of the same type).
 //
-// If this ever stops rejecting, the qualifier first-match in the leg-window
-// readers is armed, and its failure mode is a silent wrong-column read — the
-// loser of a first match is a real column of the same type.
+// An earlier revision of this comment claimed a second gate caught it —
+// legWindowSlot's ambiguity decline routing to a lazy reference that "fails at
+// evaluation". THAT IS FALSE and the mutation above is what showed it:
+// legWindowSlot never sees a duplicate qualifier on this path, because the
+// semantic layer has already collapsed the reference to one source before a leg
+// window is walked. The decline is real and asserted
+// (TestDuplicateQualifier_ReadersAgree), but it defends a population this SQL
+// does not reach — over the whole corpus that population is empty, measured by
+// a probe that panicked on any duplicate-leg match and was never hit outside
+// its own unit test.
+//
+// Keeping the verdict here is also right on layering: an ambiguous identifier
+// is a SEMANTIC-ANALYSIS verdict and Java raises it there, not inside a
+// plan-time slot walk. A helper that threw for a shape the analyzer should have
+// rejected would turn a user error into an internal one.
 func TestFDB_DuplicateFromAliasRejected(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -82,9 +94,16 @@ func TestFDB_DuplicateFromAliasRejected(t *testing.T) {
 					t.Fatalf("A REFERENCE THROUGH A DUPLICATED FROM ALIAS RESOLVED.\n"+
 						"  query: %s\n"+
 						"  Two sources answer to that alias, so a qualifier match has no "+
-						"honest answer. The leg-window readers match a qualifier "+
-						"first-match and are safe only because this cannot reach them; "+
-						"the failure mode once it does is a silent wrong-column read.",
+						"honest answer, and this 42702 is the ONLY gate that says so for "+
+						"this shape. Rows here mean semantic analysis resolved the "+
+						"reference to the FIRST matching source: a silent wrong-column "+
+						"read, since the loser of that match is a real column of the "+
+						"same type. Nothing downstream catches it — legWindowSlot's "+
+						"ambiguity decline never sees a duplicate qualifier on this "+
+						"path, because the reference was collapsed to one source "+
+						"before any leg window was walked. Measured by removing "+
+						"ResolveQualifiedColumn's multi-match arm: all three "+
+						"spellings returned rows.",
 						tc.query)
 				}
 				if err = rows.Err(); err == nil {
