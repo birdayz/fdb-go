@@ -9,13 +9,46 @@ import (
 	"testing"
 )
 
-// This file maps the SURFACE of one gate: semantic.Scope's qualified multi-match
-// arm, which is what refuses a column reference through a duplicated FROM alias
-// (SQLSTATE 42702). The gate is thin — it is the only thing standing between
-// such a reference and the leg-window readers, which select a leg by matching
-// the qualifier TEXT first-match. The loser of that first match is a real column
-// of the same type, so a relaxation of the gate does not surface as an error. It
-// surfaces as WRONG ROWS.
+// READ THIS BEFORE "FIXING" ANYTHING HERE.
+//
+// A duplicated FROM alias whose two sources carry DISJOINT columns is ACCEPTED,
+// and the queries in TestFDB_DuplicateFromAliasPerAttributeBindsTheRightLeg
+// RETURN ROWS on purpose. That is DELIBERATE JAVA PARITY, not an oversight and
+// not a hole waiting to be closed.
+//
+// Java resolves a reference by counting candidates PER REFERENCE, not per alias:
+// SemanticAnalyzer.lookup walks every operator's output attribute and appends one
+// candidate per match, and resolveIdentifier rejects only when that list holds
+// more than one entry. Two operators both named `a`, one carrying `id` and the
+// other `pid`, therefore yield exactly ONE candidate for `a.id` and one for
+// `a.pid`, and both resolve. No alias-uniqueness check exists anywhere in that
+// class — its only DUPLICATE_ALIAS assert, SemanticAnalyzer.java:180, is CTE-name
+// lookup, which is a different thing entirely.
+//
+// POSTGRES DIVERGES, and that is context rather than a defect report. Postgres
+// rejects the FROM clause itself with 42712 even when nothing references the
+// alias. This is the SHARED query surface — an input Java also attempts — where
+// the conformance rule is parity with Java, not "whichever engine reads as more
+// principled". Adopting the Postgres rule would break fifteen live-verified
+// dup_from_alias_* entries in the cross-engine corpus, among them
+// dup_from_alias_order_by_second_leg, whose multi-row second leg would expose a
+// wrong-leg read — the corpus already tests the failure a declaration-time check
+// would claim to prevent, and it passes.
+//
+// So: if you arrived here from Postgres semantics intending to reject the
+// duplicate at declaration time, that change is a SPEC VIOLATION. It needs an
+// owner ruling and a corpus re-verification against a live Java server, not a
+// green local suite.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// With that settled, this file maps the SURFACE of one gate: semantic.Scope's
+// qualified multi-match arm, which refuses a reference that a duplicated alias
+// makes genuinely ambiguous (SQLSTATE 42702). The gate is thin — it is the only
+// thing standing between such a reference and the leg-window readers, which
+// select a leg by matching the qualifier TEXT first-match. The loser of that
+// first match is a real column of the same type, so a relaxation of the gate does
+// not surface as an error. It surfaces as WRONG ROWS.
 //
 // Two facts about the gate were established by mutation and are worth stating
 // here because both had been recorded wrongly:
@@ -27,22 +60,18 @@ import (
 //     (AmbiguousColumnError.Qualifier is populated by one arm and not the
 //     other) — a control over deleted code has no runtime form otherwise.
 //
-//  2. The arm counts matches per COLUMN REFERENCE, not per ALIAS. So a
-//     duplicated alias whose two sources carry DISJOINT columns produces one
-//     match per reference and RESOLVES. That is Java's per-attribute rule, not
-//     a hole: SemanticAnalyzer.lookup walks every operator's output and counts
-//     candidates for the reference, and no alias-uniqueness check exists
-//     anywhere in that class (its only DUPLICATE_ALIAS assert,
-//     SemanticAnalyzer.java:180, is CTE-name lookup). Postgres rejects the
-//     declaration outright; Go follows Java, and fifteen dup_from_alias_*
-//     entries in the cross-engine corpus are live-verified on that basis.
+//  2. The arm counts matches per COLUMN REFERENCE, not per ALIAS — the Java rule
+//     spelled out above. This is what makes the disjoint-column case resolve
+//     rather than error.
 //
 // Fact 2 is why the ACCEPTED half of this file matters more than the refused
 // half. Those queries return rows today, so the only thing keeping them honest
 // is that per-attribute binding picks the RIGHT source. A regression to
 // first-match-by-alias would still return rows — just wrong ones. Every accepted
 // shape below therefore asserts VALUES, over legs whose value ranges are
-// disjoint, so the leg a value came from is readable off the value itself.
+// disjoint, so the leg a value came from is readable off the value itself, and
+// each sits beside an UNDUPLICATED control so a shared regression cannot pass by
+// agreeing with itself.
 
 // dupAliasSurfaceDB provisions the shared fixture. zn.id ∈ {1,2} and
 // zp.pid ∈ {5,7,9} are disjoint ranges; zn.k runs WITH id while zp.w runs
@@ -205,12 +234,16 @@ func TestFDB_DuplicateFromAliasReachesTheQualifiedArm(t *testing.T) {
 // COMPLEMENT: references that a duplicated alias lets through because only one
 // of the two sources carries the column.
 //
-// These queries RETURN ROWS today, deliberately and in agreement with Java. The
-// risk they carry is not that they answer — it is that they might answer off the
-// wrong leg. Every assertion below is on VALUES drawn from disjoint ranges, so a
-// wrong-leg read is visible rather than merely a differing row count. An
-// UNDUPLICATED control accompanies each, so a shared regression that changes
-// both cannot pass by agreeing with itself.
+// These queries RETURN ROWS today, deliberately and in agreement with Java —
+// see the DELIBERATE JAVA PARITY note at the top of this file before changing
+// any expectation here. Making one of these ERROR is a spec violation, not a
+// hardening, however much the Postgres rule recommends itself.
+//
+// The risk these shapes carry is not that they answer — it is that they might
+// answer off the wrong leg. Every assertion below is on VALUES drawn from
+// disjoint ranges, so a wrong-leg read is visible rather than merely a differing
+// row count. An UNDUPLICATED control accompanies each, so a shared regression
+// that changes both cannot pass by agreeing with itself.
 func TestFDB_DuplicateFromAliasPerAttributeBindsTheRightLeg(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
