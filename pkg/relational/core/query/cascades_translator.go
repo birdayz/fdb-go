@@ -6634,12 +6634,46 @@ func legWindowSlot(qual, leaf string, cols []string, legs []values.RecordTypeLeg
 	if len(legs) == 0 {
 		return 0, false
 	}
+	// An AMBIGUOUS qualifier — one carried by more than one leg — DECLINES.
+	// This is the same disposition bakeDottedRefsToLegQOVWithRef's addKey takes
+	// (it sets layouts[key] = nil and refuses to bake through a duplicate), and
+	// the two readers of this channel now agree instead of contradicting each
+	// other.
+	//
+	// They used to disagree: this walk took the FIRST leg whose Name matched
+	// and resolved, while addKey poisoned the same shape. A first-match on a
+	// QUALIFIER has no upstream backing — SQLSTATE 42702 is ambiguous_column,
+	// raised by semantic.Scope.ResolveColumn's terminal AmbiguousColumnError
+	// (semantic/scope.go:271-274) for an ambiguous COLUMN reference, and it
+	// says nothing about two legs sharing a name. No rejection of a repeated
+	// FROM-clause alias was found either: every ErrCodeDuplicateAlias (42712)
+	// producer in pkg/ is CTE-name duplication. So the permissive arm was a
+	// guess dressed as a fact, and picking one of two candidate legs by
+	// position is a wrong-column read waiting for its first caller.
+	//
+	// Declining is the conservative half of the disagreement, and it costs
+	// nothing measurable: a probe panicking here on a duplicate was reached
+	// ZERO times across ./pkg/relational/... and ./pkg/recordlayer/... — the
+	// only hit was the unit test that drives the shape deliberately. A decline
+	// returns the reference unbaked, so it stays lazy and goes loud at
+	// evaluation rather than silently reading the wrong leg's column.
 	matched := -1
 	for i, leg := range legs {
-		if strings.EqualFold(leg.Name, qual) {
-			matched = i
-			break
+		if !strings.EqualFold(leg.Name, qual) {
+			continue
 		}
+		if matched >= 0 {
+			// Ambiguous. Recorded before returning so the census SEES the
+			// decline: an early return above the recorder would make this
+			// outcome invisible, and a disposition nothing counts is one that
+			// can be reverted without any number moving.
+			if values.LegIdentityCensusEnabled() {
+				values.RecordDottedLegQualifier(site, qual,
+					values.CorrelationIdentifier{}, "", values.DottedLegLookupAmbiguous)
+			}
+			return 0, false
+		}
+		matched = i
 	}
 	if values.LegIdentityCensusEnabled() {
 		// The census's question is unchanged by WHERE the qualifier came from:
@@ -6647,9 +6681,13 @@ func legWindowSlot(qual, leaf string, cols []string, legs []values.RecordTypeLeg
 		// thing. Recording it here rather than at each caller keeps the two
 		// callers reporting one population instead of two half-populations.
 		//
-		// No AMBIGUOUS outcome: this reader walks a leg SLICE and takes the
-		// first match, so a qualifier carried by two legs is a first-match, not
-		// a poisoned key.
+		// THE AMBIGUOUS OUTCOME IS NOW REACHABLE HERE, and this note used to say
+		// the opposite — "no AMBIGUOUS outcome: this reader walks a leg SLICE
+		// and takes the first match, so a qualifier carried by two legs is a
+		// first-match, not a poisoned key". That was an accurate description of
+		// a permissive arm that has since been removed. Both readers of this
+		// channel now decline a duplicate qualifier, so both can report
+		// AMBIGUOUS and the census no longer has to model them differently.
 		var matchedAlias values.CorrelationIdentifier
 		var matchedBinding string
 		lookup := values.DottedLegLookupMiss
