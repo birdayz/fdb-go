@@ -15,6 +15,7 @@ go_test(
         "build_membership_test.go",
         "cli_error_first_word_gate_test.go",
         "container_memory_tag_test.go",
+        "container_startup_timeout_test.go",
         "copy_method_rebuild_detector_test.go",
         "copy_method_rebuild_test.go",
         "docs_consistency_test.go",
