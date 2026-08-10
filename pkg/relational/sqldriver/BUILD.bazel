@@ -526,6 +526,7 @@ go_test(
         "transaction_probe_test.go",
         "transaction_tags_fdb_test.go",
         "twotable_order_invariant_test.go",
+        "tx_budget_retry_fdb_test.go",
         "tx_commit_rollback_probe_test.go",
         "tx_isolation_rfc198_fdb_test.go",
         "tx_ryw_index_range_fdb_test.go",

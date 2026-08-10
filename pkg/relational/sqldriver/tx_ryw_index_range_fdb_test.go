@@ -98,52 +98,75 @@ func TestFDB_RFC198_ReadYourWritesThroughIndex(t *testing.T) {
 	// entries and an empty-index artifact cannot be mistaken for a pass.
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
 
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback() //nolint:errcheck
-
-	if _, err := tx.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (2, 777)"); err != nil {
-		t.Fatalf("in-tx INSERT: %v", err)
-	}
-
-	const q = "SELECT id FROM t WHERE v = 777"
-	mustUseIndexScan(t, explainInTx(t, ctx, tx, q), q)
-
-	rows, err := tx.QueryContext(ctx, q)
-	if err != nil {
-		t.Fatalf("in-tx SELECT: %v", err)
-	}
-	var got []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			t.Fatalf("scan: %v", err)
+	// THE WHOLE TRANSACTION IS RETRYABLE, and the retry is not defensive
+	// padding — it is the contract this shape has to honour.
+	//
+	// An explicit transaction pins one FDB read version, and that version dies
+	// five seconds after it was obtained in WALL CLOCK, whether the client was
+	// working or merely queued. The driver pre-empts at four with a typed 40001
+	// (RFC-198), so a body issuing three statements is asserting that all three
+	// finish inside four seconds — an assumption this suite can break on its own:
+	// MEASURED at 5.34s for this test in a full-parallel run against 0.08s
+	// standalone, with a reported failure at `read version 4.321s old, budget 4s`.
+	//
+	// Retrying the WHOLE transaction is the only correct response and the only
+	// effective one: a fresh transaction takes a fresh read version, and because
+	// the body re-runs in full the uncommitted INSERT is re-established INSIDE
+	// the new transaction. Nothing is carried across the boundary, so the
+	// read-your-writes property below is proven in whichever transaction ends up
+	// asserting it, never smuggled from a dead one. Only the time-limit marker is
+	// retried — a genuine write conflict shares the SQLSTATE and must surface.
+	//
+	// The retry's own mechanics are pinned in tx_budget_retry_fdb_test.go, which
+	// forces the pre-emption deterministically with an injected clock rather than
+	// waiting for a loaded machine to supply one.
+	runInTxWithRetry(t, db, 3, nil, func(a txAttempt) error {
+		if _, err := a.tx.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (2, 777)"); err != nil {
+			return err
 		}
-		got = append(got, id)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows.Err: %v", err)
-	}
-	rows.Close()
-	if len(got) != 1 || got[0] != 2 {
-		t.Fatalf("in-tx index scan on v=777 returned ids %v, want [2]: the index "+
-			"entry the uncommitted INSERT wrote is not visible to the "+
-			"transaction's own read — the index scan is not running on the "+
-			"transaction (RFC-198 criterion 3)", got)
-	}
 
-	// The row is still uncommitted: a separate connection must not see it.
-	var outside int64
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM t WHERE v = 777").Scan(&outside); err != nil {
-		t.Fatalf("outside count: %v", err)
-	}
-	if outside != 0 {
-		t.Fatalf("a separate connection already sees %d rows with v=777: the in-tx "+
-			"INSERT is not isolated, which would make the RYW assert above "+
-			"vacuous", outside)
-	}
+		const q = "SELECT id FROM t WHERE v = 777"
+		mustUseIndexScan(t, explainInTx(t, ctx, a.tx, q), q)
+
+		rows, err := a.tx.QueryContext(ctx, q)
+		if err != nil {
+			return err
+		}
+		var got []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			got = append(got, id)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		if len(got) != 1 || got[0] != 2 {
+			t.Fatalf("in-tx index scan on v=777 returned ids %v, want [2]: the index "+
+				"entry the uncommitted INSERT wrote is not visible to the "+
+				"transaction's own read — the index scan is not running on the "+
+				"transaction (RFC-198 criterion 3)", got)
+		}
+
+		// The row is still uncommitted: a separate connection must not see it.
+		// Asserted INSIDE the body, while this transaction is still open — that
+		// is the only window in which the claim means anything.
+		var outside int64
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM t WHERE v = 777").Scan(&outside); err != nil {
+			return err
+		}
+		if outside != 0 {
+			t.Fatalf("a separate connection already sees %d rows with v=777: the in-tx "+
+				"INSERT is not isolated, which would make the RYW assert above "+
+				"vacuous", outside)
+		}
+		return nil
+	})
 }
 
 // TestFDB_RFC198_ReadYourWritesOverClearedRange pins criterion 4: rows DELETEd
