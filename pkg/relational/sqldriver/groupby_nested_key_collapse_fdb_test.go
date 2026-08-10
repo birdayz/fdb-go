@@ -37,11 +37,37 @@ import (
 // collapse, and its symptom — missing groups — is silent.
 //
 // WHAT IS STILL PINNED HERE, and why the file survives the conversion: the SQL
-// layer still rejects a nested path as a grouping key with 42703, so the feature
-// is a genuine gap and nothing else measures the refusal. When nested-path GROUP
-// BY is implemented, the naming prerequisite is already met — replace the gate
-// below with the assertions its failure message names, and check nothing else
-// re-derives a group-key name from `fv.Field`.
+// layer refuses a nested path as a grouping key, so the feature is a genuine gap
+// and this is the pin on the refusal. When nested-path GROUP BY is implemented,
+// the naming prerequisite is already met — replace the gate below with the
+// assertions its failure message names, and check nothing else re-derives a
+// group-key name from `fv.Field`.
+//
+// THE REFUSAL IS 0AF00, AND IT USED TO BE SOMETHING ELSE ENTIRELY. This file
+// previously recorded it as 42703, and the sub-test that lived below pinned a
+// shape that ESCAPED it. Both had the same cause: nothing validated the grouping
+// KEY. The 42703 came from validateGroupByProjection's existence check, which
+// compares a PROJECTED column's BARE LEAF against the union of source field
+// names — so the refusal held only while the leaf named nothing. A table also
+// declaring a flat `sk` let `GROUP BY n.sk` through on the strength of that
+// unrelated column, and `SELECT COUNT(*) ... GROUP BY n.sk` escaped even without
+// one, because with nothing projected the check never ran at all. Those shapes
+// planned and died in the executor as "not resolvable in the runtime row —
+// malformed plan".
+//
+// The key is now validated as a key (rejectNestedPathGroupKey,
+// embedded/logical_predicate.go), which is why the escaping query is folded into
+// the gate below rather than pinned as a defect, and why the expected code is
+// 0AF00: the reference is well-formed and answers in SELECT, WHERE and ORDER BY,
+// so it is an unsupported FEATURE, not an undefined column. Measured against the
+// live Java server at tag 4.12.11.0 by
+// conformance/nested_groupby_key_java_probe_test.go: Java gets a nested grouping
+// key past semantic analysis (it reaches the planner, exactly as a flat key
+// does) and reserves 42703 for a qualifier that resolves to nothing. 0AF00 is
+// also the code Java's own visitGroupByItem spends on a GROUP BY item it will
+// not take (ExpressionVisitor.java:251). The wider shape
+// coverage lives in groupby_nested_path_refused_fdb_test.go; what this file
+// keeps watching is the collapse-ordering constraint above.
 func TestFDB_GroupByNestedPathRejected(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -59,8 +85,8 @@ func TestFDB_GroupByNestedPathRejected(t *testing.T) {
 			"CREATE TABLE t1 (id BIGINT, n gst, PRIMARY KEY (id)) "+
 			// t2 differs from t1 in ONE way: it also declares a FLAT column whose
 			// name equals the struct member's LEAF. That single difference is
-			// what arms the escape pinned at the bottom of this file, so the two
-			// tables are the controlled comparison rather than two fixtures.
+			// what used to arm the escape now folded into the gate below, so the
+			// two tables are the controlled comparison rather than two fixtures.
 			"CREATE TABLE t2 (id BIGINT, sk BIGINT, n gst, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -82,8 +108,8 @@ func TestFDB_GroupByNestedPathRejected(t *testing.T) {
 		"INSERT INTO t1 VALUES (1, (1, 1)), (2, (1, 2)), (3, (2, 1)), (4, (2, 2)), (5, (1, 1))"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
-	// t2 MUST be non-empty. The escape pinned at the bottom of this file
-	// surfaces from the EXECUTOR, so an empty table hides it completely: the
+	// t2 MUST be non-empty. The escape now folded into the gate below surfaced
+	// from the EXECUTOR, so an empty table hides it completely: the
 	// plan is built, no row is ever evaluated, and the query returns zero rows
 	// with no error — a green that proves only that the table was empty. The
 	// flat `sk` values are disjoint from the struct's so a wrong-slot read is
@@ -121,6 +147,10 @@ func TestFDB_GroupByNestedPathRejected(t *testing.T) {
 	for _, q := range []string{
 		"SELECT n.sk, COUNT(*) FROM t1 GROUP BY n.sk",
 		"SELECT n.sk, n.co, COUNT(*) FROM t1 GROUP BY n.sk, n.co",
+		// Folded in from a sub-test that pinned this exact query as an ESCAPE:
+		// over t2, whose flat `sk` shares the path leaf, it used to plan and die
+		// in the executor. It is now refused with the rest.
+		"SELECT n.sk FROM t2 GROUP BY n.sk",
 	} {
 		_, err := db.QueryContext(ctx, q)
 		if err == nil {
@@ -157,90 +187,11 @@ func TestFDB_GroupByNestedPathRejected(t *testing.T) {
 				"rather than discovering. Convert the ordering side too, or prove "+
 				"the spellings meet.", q)
 		}
-		if !strings.Contains(err.Error(), "42703") {
+		if !strings.Contains(err.Error(), "0AF00") {
 			t.Fatalf("nested-path GROUP BY refused with the WRONG error.\n"+
-				"  query: %s\n  got:   %v\n  want:  42703 (undefined_column).\n"+
+				"  query: %s\n  got:   %v\n  want:  0AF00 (unsupported_query).\n"+
 				"  A refusal for an unrelated reason would let this tripwire pass "+
 				"while the gate it watches was gone.", q, err)
 		}
 	}
-
-	// A SEPARATE, PRE-EXISTING DEFECT, pinned at its CURRENT behaviour rather
-	// than at the behaviour it should have.
-	//
-	// WHAT ACTUALLY DEFEATS THE REFUSAL — measured, and it is not what it first
-	// looked like. `SELECT n.sk FROM t1 GROUP BY n.sk` over t1, which declares
-	// only `n`, IS refused cleanly with 42703; dropping the aggregate is not by
-	// itself enough. The escape needs a table that ALSO declares a FLAT column
-	// whose name equals the path's LEAF. Over t2 (id, sk, n) the same query is
-	// NOT refused: it plans and dies in the EXECUTOR with
-	//
-	//   ordinal resolution: field "N.SK" not resolvable in the runtime row
-	//   (ordinal -1, row columns [ID SK N]) — malformed plan
-	//
-	// The reading that follows from the pair: the semantic layer's validation of
-	// the grouping key is satisfied by the BARE LEAF, so `n.sk` is accepted on
-	// the strength of the unrelated flat `sk`, and the mismatch only surfaces
-	// when the executor tries to resolve the real path. A user error reported as
-	// internal state — the same class as any missing semantic refusal that
-	// surfaces from the executor.
-	//
-	// It is NOT this change's regression: MEASURED identically with RFC-229
-	// §2.3's predicate disabled, so the naming conversion neither caused it nor
-	// can fix it, and fixing it here would mean changing refusal semantics inside
-	// a naming change.
-	//
-	// It is pinned rather than described because an earlier version of this
-	// file's header asserted that "the SQL layer rejects a nested path as a
-	// grouping key with 42703" full stop, and that claim was too broad — it held
-	// for every shape anyone had tried and not for this one. A watched gap
-	// survives the next refactor; a described one does not.
-	t.Run("a flat column sharing the leaf name defeats the refusal", func(t *testing.T) {
-		t.Parallel()
-		// CONTROL FIRST: the same query over the table WITHOUT the flat `sk` is
-		// refused properly. Without this the assertions below would read as
-		// "non-aggregate GROUP BY is broken", which is false and would send the
-		// eventual fix to the wrong layer.
-		if _, err := db.QueryContext(ctx, "SELECT n.sk FROM t1 GROUP BY n.sk"); err == nil ||
-			!strings.Contains(err.Error(), "42703") {
-			t.Fatalf("the CONTROL moved: `SELECT n.sk FROM t1 GROUP BY n.sk` over a "+
-				"table with no flat `sk` should still be a clean 42703, got %v.\n"+
-				"  The defect below is specifically about a flat column sharing the "+
-				"path's LEAF name; if the control fails too, the gap is wider than "+
-				"this pin describes and its diagnosis is wrong.", err)
-		}
-		const q = "SELECT n.sk FROM t2 GROUP BY n.sk"
-		rows, err := db.QueryContext(ctx, q)
-		if err == nil {
-			rows.Close()
-			t.Fatalf("%s now SUCCEEDS.\n"+
-				"  If it returns correct groups, nested-path GROUP BY has landed "+
-				"for this shape — convert the gate above too. If it returns rows "+
-				"without grouping correctly, that is worse than the error it used "+
-				"to raise.", q)
-		}
-		if strings.Contains(err.Error(), "42703") {
-			t.Fatalf("%s is now refused with 42703 — THE DEFECT THIS PINS IS FIXED.\n"+
-				"  A nested grouping key over a table declaring a flat column of the "+
-				"same leaf name now gets the same clean "+
-				"undefined_column refusal the aggregate shape always got. Delete "+
-				"this sub-test and fold the query into the gate's list above.", q)
-		}
-		if !strings.Contains(err.Error(), "not resolvable in the runtime row") {
-			t.Fatalf("%s failed with an UNEXPECTED error: %v\n"+
-				"  This pin expects the known defect — a plan-time escape that "+
-				"surfaces as an executor ordinal-resolution failure. A different "+
-				"error means the shape moved and this pin has stopped watching "+
-				"what it names. Want either 42703 (fixed) or the runtime "+
-				"'not resolvable in the runtime row' (still broken).", q, err)
-		}
-		// The defect stated as the assertion it should one day become: the
-		// grouping key is a user-supplied column reference the semantic layer
-		// declined to validate, so the correct answer is 42703 at plan time, not
-		// XX000-class internal state from the executor.
-		t.Logf("KNOWN DEFECT (pre-existing, not RFC-229's): %s reports a user "+
-			"error as internal state:\n  %v\n  It should be a clean 42703 at the "+
-			"semantic layer, as the aggregate shape is. Booked separately; fixing "+
-			"it here would mean changing refusal semantics inside a naming change.", q, err)
-	})
 }

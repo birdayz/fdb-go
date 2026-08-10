@@ -109,6 +109,7 @@ go_test(
         "min_max_ever_index_conformance_test.go",
         "min_max_ever_tuple_index_conformance_test.go",
         "multidimensional_index_conformance_test.go",
+        "nested_groupby_key_java_probe_test.go",
         "nesting_index_conformance_test.go",
         "online_indexer_conformance_test.go",
         "orphan_jvm_regression_test.go",
