@@ -49,9 +49,13 @@ func TestAccessorPathGates_ZeroValueChecksNothing(t *testing.T) {
 	var w strings.Builder
 	// Every field unset: MinTotal 0, MaxDeclineDotted nil.
 	// This is the shape the sqldriver wrapper degrades to when narrowed, and it
-	// must not fire on a population that would trip every arm if enabled.
-	if assertAccessorPathCensusState(&w, classes(0, 0), nil, &AccessorPathGates{}) {
-		t.Fatalf("an all-zero gates value FAILED on an empty census: %q", w.String())
+	// must not fire on a population that would trip every arm if enabled. The
+	// population is therefore a TRIPPING one: over an empty census the test would
+	// pass whether or not the zero-valued gates checked anything, which is the
+	// vacuous green these gates exist to catch.
+	if assertAccessorPathCensusState(&w, classes(9999, 0), nil, &AccessorPathGates{}) {
+		t.Fatalf("an all-zero gates value FAILED on a population that would trip every "+
+			"enabled arm: %q", w.String())
 	}
 }
 
@@ -183,6 +187,37 @@ func TestFieldValueMintGates_NilIsANoOp(t *testing.T) {
 	}
 }
 
+// TestFieldValueMintGates_ZeroValueChecksNothing is the mint counterpart of the
+// accessor-path twin above, and it is the arm that had no pin at all.
+//
+// MaxExplainRendered is a *int, so a caller that sets only MinTotal — or nothing
+// — leaves it nil, and the ceiling arm must decline rather than dereference it.
+// Without this, deleting the nil guard keeps every other pin green: they all set
+// the ceiling, so none of them ever reaches a nil to dereference. The population
+// is a TRIPPING one, and its total matches the class sum so the unconditional
+// partition check cannot redden this for an unrelated reason.
+func TestFieldValueMintGates_ZeroValueChecksNothing(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		gates *FieldValueMintGates
+	}{
+		{"every field unset", &FieldValueMintGates{}},
+		{"only the vacuity floor set", &FieldValueMintGates{MinTotal: 1000}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var w strings.Builder
+			// A nil MaxExplainRendered is not "a ceiling of zero" — it is NO ceiling,
+			// so 99999 rendered mints must pass.
+			if assertFieldValueMintCensusState(&w, 99999, mintCounts(99999, 0), nil, tc.gates) {
+				t.Fatalf("a gates value with a nil MaxExplainRendered FAILED on a population "+
+					"that would trip the ceiling if one were set: %q", w.String())
+			}
+		})
+	}
+}
+
 func TestFieldValueMintGates_VacuityFloorFires(t *testing.T) {
 	t.Parallel()
 	var w strings.Builder
@@ -259,6 +294,14 @@ func TestAssertFieldValueMintCensus_ReadsTheProcessCounters(t *testing.T) {
 	if !AssertFieldValueMintCensus(&w, &FieldValueMintGates{MaxExplainRendered: intp(0)}) {
 		t.Fatal("AssertFieldValueMintCensus did not see a mint recorded through " +
 			"NoteFieldValueMint — the exported gate is not wired to the live counters")
+	}
+	// The ORIGINS are a second wire, and passing nil for them at the call site
+	// breaks nothing a count-only assertion can see. A ceiling that reddens
+	// without naming a witness leaves the next reader with a number and no
+	// producer to look at, which is most of the value of instrumenting the mint.
+	if !strings.Contains(w.String(), "q$50765.AID#0") {
+		t.Fatalf("the live gate did not print the captured origin for the mint it just "+
+			"failed on: %q", w.String())
 	}
 	var w2 strings.Builder
 	if AssertFieldValueMintCensus(&w2, &FieldValueMintGates{MinTotal: 2, MaxExplainRendered: intp(1)}) {
