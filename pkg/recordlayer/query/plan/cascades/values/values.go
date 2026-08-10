@@ -1718,17 +1718,51 @@ func ContainsAggregate(v Value) bool {
 	return found
 }
 
+// NestedResolvedPath returns the upper-cased dotted PATH a FUSED NESTED field
+// reference reads, and reports whether v is one.
+//
+// THE DEFINITION OF "NESTED" IS THE MULTI-ACCESSOR RESOLVED PATH, and it is one
+// function because the predicate is the whole subtlety. The SQL resolver FUSES
+// `n.sk` into ONE FieldValue whose `Field` is the struct ROOT `N` with
+// Resolved=[N,SK] — Java does exactly the same fuse
+// (SemanticAnalyzer.lookupNestedField, SemanticAnalyzer.java:598
+// `FieldValue.ofFieldsAndFuseIfPossible`) and then names the result by the
+// REQUESTED IDENTIFIER `n.sk` rather than by the fused value
+// (SemanticAnalyzer.java:599). So `Field` answers "what struct does this read
+// out of", never "which column is this": `n.sk` and `n.co` share it.
+//
+// Every output-naming authority that answers the second question must take the
+// path. Reading `Field` there spells two different columns alike, and a
+// name-keyed reader then serves one of them where the other was asked for.
+func NestedResolvedPath(v Value) (string, bool) {
+	fv, ok := v.(*FieldValue)
+	if !ok || fv.Resolved == nil || len(fv.Resolved.Accessors) <= 1 {
+		return "", false
+	}
+	return strings.ToUpper(ColumnNameValue(fv)), true
+}
+
 // ProjectionColumnName is the projection output-column NAMING CONTRACT: the
 // name a projected Value's result is keyed under, alias-absent, in the
-// emitted positional row's type (executeProjection's posNames). A FieldValue
-// projects under its (possibly dotted)
+// emitted positional row's type (executeProjection's posNames). A NESTED
+// FieldValue projects under its resolved PATH ("N.SK"); any other FieldValue
+// under its (possibly dotted)
 // Field; any other Value under its upper-cased explain rendering (a computed
 // expression like `n + 1` is keyed "(N + 1)"). Shared here so the
 // planner/translator side can READ a projection's output by the exact key the
 // executor WRITES — reading by any other rendering (e.g. the logical layer's
 // un-parenthesized "N + 1") is a loud
 // OrdinalResolutionError on valid SQL.
+//
+// The nested arm is NOT a special case bolted on: it is the same rule the sort
+// side already applies (sortKeyExtraColumnName) and the same rule Java applies
+// to every resolved reference. `Field` is the struct root, so without it
+// `SELECT n.sk, n.co` emits two slots named `N` — measured, and visible to the
+// user as duplicate column labels over correct data.
 func ProjectionColumnName(v Value) string {
+	if path, nested := NestedResolvedPath(v); nested {
+		return path
+	}
 	if fv, ok := v.(*FieldValue); ok {
 		return fv.Field
 	}

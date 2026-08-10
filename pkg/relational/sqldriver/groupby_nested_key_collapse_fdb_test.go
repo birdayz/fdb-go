@@ -12,33 +12,36 @@ import (
 // worth a test file is that it is the only thing standing between a latent
 // wrong-rows defect and a live one.
 //
-// The defect, unreachable today. The resolver FUSES a nested reference: `n.sk`
-// becomes ONE FieldValue{Field:"N", Resolved:[N,SK]}. AggregateKeyColumnName
+// THE ORDERING CONSTRAINT THIS FILE ENFORCED IS NOW SATISFIED, and that changes
+// what the file is for. It is no longer a tripwire over an UNCONVERTED namer; it
+// is the pin on the remaining half — the refusal itself.
+//
+// What it used to watch. The resolver FUSES a nested reference: `n.sk` becomes
+// ONE FieldValue{Field:"N", Resolved:[N,SK]}. AggregateKeyColumnName
 // (pkg/recordlayer/query/plan/cascades/expressions/group_by.go) is the single
-// naming authority for a grouping key and renders the flat ROOT —
-// strings.ToUpper(fv.Field) — so it answers "N" for `n.sk` AND for `n.co`. The
+// naming authority for a grouping key and rendered the flat ROOT —
+// strings.ToUpper(fv.Field) — so it answered "N" for `n.sk` AND for `n.co`. The
 // translator keys grouping columns by that name and the later key overwrites the
-// earlier, so `GROUP BY n.sk, n.co` would collapse to ONE grouping column and
-// return too few groups.
+// earlier, so `GROUP BY n.sk, n.co` would have collapsed to ONE grouping column
+// and returned too few groups.
 //
-// That is byte-for-byte the sort-key defect RFC-227 fixed. The fix there was to
-// name the hidden column by the path it reads (sortKeyExtraColumnName now calls
-// values.ColumnNameValue, which renders the full path). The group-key half was
-// never fixed, and the two sit one screen apart:
+// That was byte-for-byte the sort-key defect RFC-227 fixed on its own side. The
+// group-key half is fixed by RFC-229 §2.3: AggregateKeyColumnName, its mirror
+// aggregateGroupKeyOutputName (embedded/logical_predicate.go) and the
+// ColumnDef mirror (cascades_generator.go buildAggColumns) all take the
+// RESOLVED PATH for a nested key, through the one shared predicate
+// values.NestedResolvedPath. The conversion is pinned as a unit, driving both
+// arms and both controls, at
+// expressions/group_by_naming_test.go:TestAggregateKeyColumnName_NestedKeyTakesTheResolvedPath.
+// It landed BEFORE the feature, deliberately: converting afterwards ships the
+// collapse, and its symptom — missing groups — is silent.
 //
-//	sortKeyExtraColumnName  -> values.ColumnNameValue(fv)   // full PATH  (fixed)
-//	AggregateKeyColumnName  -> strings.ToUpper(fv.Field)    // flat ROOT  (not)
-//
-// What makes it unreachable is measured here, not assumed: the SQL layer
-// rejects a nested path as a grouping key outright with 42703, so no query can
-// reach the collapse. Nothing pinned that rejection before this file.
-//
-// THIS TEST IS THE TRIPWIRE. If nested-path GROUP BY is ever implemented — and
-// it is a real gap, since ORDER BY over the same path works (RFC-227) and the
-// asymmetry between the two is not a design decision anyone recorded — then
-// AggregateKeyColumnName MUST be converted to the resolved path IN THE SAME
-// CHANGE. Implementing the feature alone silently arms the collapse, and the
-// symptom is missing groups, which no existing test would catch.
+// WHAT IS STILL PINNED HERE, and why the file survives the conversion: the SQL
+// layer still rejects a nested path as a grouping key with 42703, so the feature
+// is a genuine gap and nothing else measures the refusal. When nested-path GROUP
+// BY is implemented, the naming prerequisite is already met — replace the gate
+// below with the assertions its failure message names, and check nothing else
+// re-derives a group-key name from `fv.Field`.
 func TestFDB_GroupByNestedPathRejected(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -106,20 +109,20 @@ func TestFDB_GroupByNestedPathRejected(t *testing.T) {
 	} {
 		_, err := db.QueryContext(ctx, q)
 		if err == nil {
-			t.Fatalf("NESTED-PATH GROUP BY NOW PLANS — THE COLLAPSE IS ARMED.\n"+
+			t.Fatalf("NESTED-PATH GROUP BY NOW PLANS.\n"+
 				"  query: %s\n\n"+
-				"  This test exists because AggregateKeyColumnName "+
-				"(expressions/group_by.go) renders a grouping key as the flat struct "+
-				"ROOT, strings.ToUpper(fv.Field). A fused nested reference carries "+
-				"Field=\"N\" for BOTH n.sk and n.co, so two grouping columns take one "+
-				"output name and the later overwrites the earlier: "+
-				"`GROUP BY n.sk, n.co` returns 2 groups where the data has 4.\n\n"+
-				"  If you implemented nested-path GROUP BY, convert "+
-				"AggregateKeyColumnName (and its mirror aggregateGroupKeyOutputName "+
-				"in embedded/logical_predicate.go) to the RESOLVED PATH first — "+
-				"values.ColumnNameValue, exactly as sortKeyExtraColumnName does since "+
-				"RFC-227 — then replace this test with one asserting 4 groups for the "+
-				"two-key query and 2 for each single-key query.", q)
+				"  THE NAMING PREREQUISITE IS ALREADY MET — RFC-229 §2.3 converted "+
+				"AggregateKeyColumnName, aggregateGroupKeyOutputName and the "+
+				"ColumnDef mirror to the RESOLVED PATH, so two members of one struct "+
+				"root no longer share an output name. This is therefore an expected "+
+				"and welcome state, not an armed collapse.\n\n"+
+				"  What to do: replace this gate with the real assertions — 4 groups "+
+				"for `GROUP BY n.sk, n.co` over the seeded (1,1)(1,2)(2,1)(2,2)(1,1), "+
+				"and 2 groups for each single-key query — and keep the ORDER BY "+
+				"assertion above. Confirm first that nothing has RE-DERIVED a "+
+				"group-key name from fv.Field in the meantime: the unit pin at "+
+				"expressions/group_by_naming_test.go covers the three authorities, "+
+				"not any fourth site a new feature might add.", q)
 		}
 		if !strings.Contains(err.Error(), "42703") {
 			t.Fatalf("nested-path GROUP BY refused with the WRONG error.\n"+

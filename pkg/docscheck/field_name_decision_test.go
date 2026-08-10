@@ -409,13 +409,23 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/embedded/logical_predicate.go # aggregateGroupKeyOutputName # the name escaping as a bare string (return) # 1":      {1, "contract: aggregate group-key output name, the exact mirror of the executor's aggKeyName. RULED STOP, travelling with AggregateKeyColumnName above and blocked on the same CQ-55/CQ-56: two renderings of one slot cannot stop being renderings one at a time, because the agreement between them is the only thing keeping the emitted slot name and the re-read name in lockstep"},
 	"pkg/relational/core/query/cascades_translator.go # sortKeyFieldRef # the name escaping as a bare string (return) # 1":                   {1, "contract: sort-key hidden-field naming (RFC-141), same output-naming contract family. RULED CONVERT, and the escape is real -- but the two mechanisms this entry previously blamed were both MEASURED FALSE, so anyone executing the old text did work that fixes nothing. Java is unchanged and still the spec: it appends the same hidden columns for an ORDER BY key absent from the SELECT list (LogicalOperator.java:390-399 -- the old text said 389, off by one) and finds and drops them PURELY BY ORDINAL, the final projection re-using the original output list through Expressions.rewireQov's FieldValue.ofOrdinalNumber counter (Expressions.java:87-96), with membership by value-derivability (Expressions.difference -> canBeDerivedFrom, Expressions.java:124-146, Expression.java:254-264), never name equality. NOT in the old text and load-bearing: Java's difference removes only what is derivable from the OUTPUT and performs NO dedup among the order-by expressions themselves, so Go's `seen[name]` is a Go-only invention with no upstream counterpart. REFUTED (1), AND THE REFUTATION IS ITSELF NOW REFUTED -- both readings are kept because the sequence is the lesson. The claim was: that dedup cannot merge distinct source columns, because sortKeySourceValue depends on the key ONLY through sortKeyFieldRef(k), so alike-rendering keys carry an identical source value by construction and collapsing them is correct. That was TRUE WHEN WRITTEN and FALSE WHEN SHIPPED, and the change it was justifying is what falsified it: RFC-218 added sortKeySourceValue's NESTED arms ABOVE the sortKeyFieldRef call, so a nested key returns a distinct per-member value while still rendering its struct ROOT. Two nested keys of one root (`ORDER BY n.co, n.sk`) then rendered alike, the second key's hidden column was dropped as a duplicate, and the query returned SILENTLY WRONG ROWS -- measured [3 1 2] where SQL requires [3 2 1], and [2 3 1] in the other key order. A dedup keyed on a rendering is only as sound as the claim that the rendering determines the value, which is precisely what a fix that stops re-deriving values from renderings destroys. FIXED (RFC-227): the dedup is keyed on the source VALUE (symmetric semantic equality, Java's Expressions.difference shape) and the appended column is named by its resolved PATH. Pinned by extra_sort_column_identity_test.go and by nested_sort_key_rows_fdb_test.go's TestFDB_TwoNestedSortKeysOfTheSameStructRootDoNotCollapse. REFUTED (2): pullUpSortKeyValue does not recover hidden columns by scanning field names; it recovers them at the VALUE match, proven by renaming an appended column to a string no name-scan could find and watching resolution still succeed. Carrying len(fields)+i fixes neither. THE REAL DEFECT is that the rendering is FLAT and loses nested path segments: a struct-column key renders `N.SK` and the last-dot split yields `SK`, so `ORDER BY t1.n.sk` plans an unresolvable ordinal. The clause that followed -- that `ORDER BY n.sk` SORTS BY THE WHOLE STRUCT -- is MEASURED FALSE and is corrected rather than deleted, because it is the reading that makes the flat rendering look merely cosmetic: there is no struct comparator to sort by, so that shape does not mis-order, it FAILS LOUDLY with `values: no ordering defined between *dynamicpb.Message and *dynamicpb.Message`. The single-key rows follow the MEMBER and only the EXPLAIN name was flat (pinned by TestFDB_NestedSortKeyOrdersByTheMemberNotTheStructRoot). The flat rendering's real cost was not the sort it performed but the IDENTITY it supplied to the hidden-column dedup -- see REFUTED (1) above. The conversion is therefore: the sort-key reference must stop re-deriving a flat NAME from a Value that already carries the resolved path. Scope, measured rather than assumed -- an earlier draft of this entry guessed the leaf was lost upstream and that was wrong: the resolver fuses `n.sk` into ONE FieldValue whose Field is the struct root `N` and whose Resolved.Accessors is the full [N, SK] path (expr.go fuseNestedAccessors), and the ordinary non-fold sort path is correct precisely BECAUSE it passes that Value through untouched (bakeFlatRefsAgainstColumns returns early on a non-nil Resolved). sortKeyFieldRef's `fv.Child == nil -> ToUpper(fv.Field)` arm at :4967-4968 (the entry said 4947, stale) is where the path is discarded, so for the unqualified shape the defect IS fold-local and the fix IS confined to this file. The three-segment shape (`t1.n.sk`) is a SEPARATE and more general gap: walkColumnRef rejects a 3-segment FullId and upgradeSortKeyValues swallows the error, leaving Value nil everywhere, so that one is not a fold bug and does not convert here"},
 
-	// dotted (14)
+	// dotted (13)
 	//
-	// RE-MEASURED, ALL 14. Every site below was resolved to its CURRENT file and
-	// line by instrumenting the walk itself (recording fset.Position at the
-	// point each key is matched) rather than by reading the prose, and all 14
-	// still match a decision the detector reports. ZERO are retirable: deleting
-	// any entry while its declaration stands fails TestFieldNameNeverDecides,
+	// WAS 14, AND ONE RETIRED — the first entry this bucket has ever lost, so the
+	// old "ZERO are retirable" reading is recorded here rather than quietly
+	// replaced. cascades_generator.go # buildAggColumns is GONE (RFC-229 §2.2):
+	// it hand-copied the group-key naming rule (name = fv.Field, then an
+	// EqualFold of that name against its own bare form) and now READS the
+	// authority, expressions.AggregateKeyColumnName. The debt did not evaporate,
+	// it CONSOLIDATED: the authority is still listed, in the contract bucket, and
+	// so is its other mirror aggregateGroupKeyOutputName. A mirror that reads the
+	// authority is one fewer place a correction can be applied to and missed in.
+	//
+	// The remaining 13 were re-measured to their CURRENT file and line by
+	// instrumenting the walk itself (recording fset.Position at the point each
+	// key is matched) rather than by reading the prose, and all 13 still match a
+	// decision the detector reports. None of THOSE is retirable: deleting any
+	// entry while its declaration stands fails TestFieldNameNeverDecides,
 	// which SCANS SOURCE.
 	//
 	// THE LINE NUMBERS IN THESE REASONS ARE THE ROT SURFACE, and the sweep found
@@ -487,7 +497,6 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	// consumers by TestGatheredExplodeOwnerEdgeReachesPartitionOrder and
 	// TestGatheredExplodeOwnerEdgeReachesMatchEnumerator, whose name-model arms
 	// go red if the slice is ever restored.
-	"pkg/relational/core/embedded/cascades_generator.go # buildAggColumns # a EqualFold call via local name derived from the name # 1": {1, "dotted: asks whether a group-key name is QUALIFIED by comparing it to its own bare form, then labels the output column from the answer; the flat representation is the debt, not the comparison"},
 	//
 	// clustered_outer_scalar.go:189/402/405/406 MIGRATED (RFC-197 item 6). The
 	// pull-up bake and the outer-ref classifier attribute a reference to a leg by
@@ -879,7 +888,7 @@ func bucketCounts(m map[string]fieldDebt) (counts map[string]int, untagged []str
 // headers were introduced; the authority count is the figure that now LEADS the
 // report, so it needs it more, not less. Changing this constant is how a change
 // to the authority count becomes deliberate.
-const fieldDebtAuthorityTotal = 35
+const fieldDebtAuthorityTotal = 34
 
 func bucketAuthorityCounts(m map[string]fieldDebt) map[string]int {
 	perBucket := map[string]map[string]struct{}{}

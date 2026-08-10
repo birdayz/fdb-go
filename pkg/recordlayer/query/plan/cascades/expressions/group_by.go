@@ -113,7 +113,18 @@ func NewGroupByExpression(
 // the executor's aggregateCursor, and the translator's ordinal baking all read
 // the name from here so a baked ordinal and the emitted positional slot can never
 // disagree.
+//
+// A NESTED key takes its resolved PATH, never the flat struct root. The root is
+// shared by every member of one struct — `n.sk` and `n.co` are both `N` — and
+// this name is a MAP KEY in three downstream last-wins maps, so the flat
+// spelling silently collapses two grouping columns into one and returns too few
+// groups. Nested-path GROUP BY is refused at the SQL layer today, which is the
+// only reason that is latent rather than live; the conversion lands FIRST so
+// implementing the feature cannot arm it.
 func AggregateKeyColumnName(k values.Value) string {
+	if path, nested := values.NestedResolvedPath(k); nested {
+		return path
+	}
 	if fv, ok := k.(*values.FieldValue); ok {
 		return strings.ToUpper(fv.Field)
 	}

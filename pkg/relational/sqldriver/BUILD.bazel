@@ -354,6 +354,7 @@ go_test(
         "nested_left_box_chained_unnest_fdb_test.go",
         "nested_merge_leg_wrong_rows_fdb_test.go",
         "nested_path_depth_gate_fdb_test.go",
+        "nested_projection_column_name_fdb_test.go",
         "nested_sort_key_ambiguity_fdb_test.go",
         "nested_sort_key_fold_fdb_test.go",
         "nested_sort_key_rows_fdb_test.go",

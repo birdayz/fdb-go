@@ -5393,8 +5393,8 @@ func extraSortColOfValue(extra []extraSortCol, val values.Value) int {
 // (`T1.ID`), which is what keeps a hidden column from shadowing an output alias
 // sharing the bare column name.
 func sortKeyExtraColumnName(k logical.SortKey) string {
-	if fv, ok := nestedResolvedSortKey(k); ok {
-		return strings.ToUpper(values.ColumnNameValue(fv))
+	if path, nested := values.NestedResolvedPath(k.Value); nested {
+		return path
 	}
 	return sortKeyFieldRef(k)
 }
@@ -5408,12 +5408,14 @@ func sortKeyExtraColumnName(k logical.SortKey) string {
 // that made a nested key carry a distinct per-member value were added ABOVE the
 // name derivation without the naming site learning about it, which is precisely
 // how two keys came to read different columns while being named the same.
+// The predicate itself now lives in values.NestedResolvedPath, so the sort side
+// and the projection/group-key sides cannot disagree about what "nested" means;
+// this stays as the SortKey-shaped wrapper its three structural callers need.
 func nestedResolvedSortKey(k logical.SortKey) (*values.FieldValue, bool) {
-	fv, ok := k.Value.(*values.FieldValue)
-	if !ok || fv.Resolved == nil || len(fv.Resolved.Accessors) <= 1 {
+	if _, nested := values.NestedResolvedPath(k.Value); !nested {
 		return nil, false
 	}
-	return fv, true
+	return k.Value.(*values.FieldValue), true
 }
 
 // stripSortQualifier returns the upper-cased BARE column name of a (possibly
