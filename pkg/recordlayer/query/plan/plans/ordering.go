@@ -982,8 +982,28 @@ func (p *RecordQueryInMemorySortPlan) HintOrdering() properties.Ordering {
 	desc := make([]bool, len(sks))
 	nullsFirst := make([]bool, len(sks))
 	for i, sk := range sks {
-		values.NoteFieldValueMint(sk.Field, false)
-		keys[i] = &values.FieldValue{Field: sk.Field, Typ: values.UnknownType}
+		if sk.ValueExpr != nil {
+			// The key's OWN Value is the identity, and the sort re-orders rows
+			// without reshaping them, so the Value the executor evaluates per
+			// row is exactly the Value this plan provides an ordering ON.
+			//
+			// SortKey.Field is a DISPLAY rendering: for anything but a bare
+			// column it is ExplainValue's output, correlation and `#ordinal`
+			// included. Re-minting a lazy FieldValue from that string fed a
+			// RENDERING back in as an identity, and the match-domain identity
+			// (AccessorNamePath) then had to decline the whole comparison,
+			// because a rendered label is indistinguishable as a string from a
+			// real nested path. The decline is safe but it costs the plan: a
+			// grouping key that the ordering genuinely satisfies is reported as
+			// unsatisfied, and streaming aggregation falls back to a sort.
+			keys[i] = sk.ValueExpr
+		} else {
+			// ValueExpr is required of every planner-built key; a nil one is a
+			// hand-assembled plan, which keeps the display-name behaviour
+			// rather than being silently dropped from the ordering.
+			values.NoteFieldValueMint(sk.Field, false)
+			keys[i] = &values.FieldValue{Field: sk.Field, Typ: values.UnknownType}
+		}
 		desc[i] = sk.Desc
 		nullsFirst[i] = sk.NullsFirst
 	}
