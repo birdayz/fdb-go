@@ -166,48 +166,46 @@ func TestFDB_TwoWayJoinUnderThreeWayClusterStaysNameModel(t *testing.T) {
 			t.Errorf("comma vs explicit-JOIN 3-way plans diverged:\ncomma: %s\njoin:  %s", commaPlan, joinPlan)
 		}
 	})
-	t.Run("derived_variant_status_quo_0AF00", func(t *testing.T) {
-		// The `FROM (SELECT ...) s, c` spelling of the same cluster is NOT
-		// expressible today: derived tables whose body contains a join do not
-		// plan (pre-existing 0AF00, unrelated to ordinalization —
-		// buildDerivedTableSource declines join-bodied derived tables and the
-		// comma-join cluster over them never yields a physical plan). Pin the
-		// CLEAN rejection: ordinalization must not turn this into silent rows
-		// or ordinal artifacts. When the planner gap closes, this goes red and
-		// the subtest must be upgraded to rows+plan assertions like the ones
-		// above.
-		assertUnsupported(t, db, ctx,
+	t.Run("derived_variant_same_rows", func(t *testing.T) {
+		// The `FROM (SELECT ...) s, c` spelling of the same cluster. It used to
+		// reject 0AF00 because buildDerivedTableSource could not enumerate a
+		// JOIN-BODIED derived table's output row, which left the whole outer
+		// query without a resolver. The body's row is now derived from its own
+		// legs, so the spelling must produce the SAME rows as the three above —
+		// that equality is the point: a re-spelling of one cluster may not
+		// change the answer.
+		got := pinRows(t, db, ctx,
 			"SELECT s.aid, s.bid, c.id FROM (SELECT a.id AS aid, b.id AS bid FROM a, b WHERE a.id = b.a_id) s, c WHERE s.bid = c.b_id")
+		sort.Strings(got)
+		if !eqStrSlices(got, want) {
+			t.Errorf("derived-variant rows = %v, want %v (the same cluster, re-spelled)", got, want)
+		}
 	})
 }
 
-// TestFDB_FourWayFlatteningEvasionStaysNameModel is PARTIAL. The evasion
-// shape `FROM (a JOIN b) t1, (c JOIN d) t2 WHERE t1.aid = t2.cid` is 2-way at
+// TestFDB_FourWayFlatteningEvasionStaysNameModel pins the evasion shape
+// `FROM (a JOIN b) t1, (c JOIN d) t2 WHERE t1.aid = t2.cid` — 2-way at
 // translation and 4-way post-flattening; a companion translation-level test
-// proves it does NOT gate ordinal (the cluster-arity walk sees 4). The
-// runtime-green half ("returns correct rows name-model") is BLOCKED on a
-// pre-existing planner gap:
+// proves it does NOT gate ordinal (the cluster-arity walk sees 4).
 //
-//   - The comma/CTE spellings translate correctly (the cross-derived
-//     predicate survives into the logical plan — asserted in
-//     TestExplainOnlyMode_KeepsCrossDerivedPredicate, pkg/relational/core/
-//     embedded) but the Cascades planner cannot produce a physical plan:
-//     clean 0AF00, for the statement AND for EXPLAIN of it.
-//   - The explicit-JOIN spelling (`(...) t1 JOIN (...) t2 ON t1.aid =
-//     t2.cid`) is WORSE — pre-existing silent wrong rows, NOT pinned here:
-//     buildDerivedTableSource (embedded/logical_predicate.go) declines
-//     join-bodied derived tables, scopeOK goes false, and
-//     upgradeJoinOnPredicates' early `if !scopeOK { return nil }` silently
-//     skips the ON upgrade — bypassing its own fail-closed backstop — so the
-//     ON predicate drops and the join degrades to a cross product. That bug
-//     is unrelated to ordinalization and needs its own production fix + its
-//     own red→green pin; pinning its current wrong rows green here would be
-//     forbidden expectation-adjustment.
+// It used to pin a clean 0AF00 for every spelling, because a JOIN-BODIED
+// derived table had no derivable output row: buildDerivedTableSource
+// (embedded/logical_predicate.go) declined it, buildSelectScope dropped the
+// whole resolver, and nothing downstream could address t1/t2. That decline
+// also masked a WRONG-ROWS hazard — upgradeJoinOnPredicates' early
+// `if !scopeOK { return nil }` skipped the ON upgrade, so the explicit-JOIN
+// spelling degraded to a cross product before the fail-closed decline landed
+// in front of it.
 //
-// What this test pins TODAY: the evasion shape fails cleanly (0AF00), never
-// ordinal artifacts, never silent rows. When the derived-with-join gap
-// closes, assertUnsupported goes red and this must be upgraded to the full
-// correct-rows assertion.
+// With the body's output row derived from its own legs the shapes answer, so
+// what is pinned now is the ANSWER, in every spelling: exactly the one row
+// where t1.aid = t2.cid. The cross-product degrade is what a wrong fix looks
+// like here — it returns four rows, not one — so the row COUNT is as
+// load-bearing as the values.
+//
+// The CTE spelling still declines: a CTE leg's row is derived by the WITH
+// scope, not by this path, and closing that is its own work. Its decline is
+// pinned rather than dropped so the difference stays visible.
 func TestFDB_FourWayFlatteningEvasionStaysNameModel(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -240,51 +238,66 @@ func TestFDB_FourWayFlatteningEvasionStaysNameModel(t *testing.T) {
 		"(SELECT c.id AS cid, d.dw AS dw FROM c JOIN d ON d.c_id = c.id) t2 " +
 		"WHERE t1.aid = t2.cid"
 
-	t.Run("comma_form_fails_cleanly", func(t *testing.T) {
-		assertUnsupported(t, db, ctx, evasion)
+	// t1 = {(1,111),(2,222)}, t2 = {(1,41),(3,42)}; t1.aid = t2.cid keeps ONE
+	// pair. A dropped cross-derived predicate returns all four.
+	wantEvasion := []string{"1|111|1|41"}
+
+	t.Run("comma_form_correct_rows", func(t *testing.T) {
+		got := pinRows(t, db, ctx, evasion)
+		sort.Strings(got)
+		if !eqStrSlices(got, wantEvasion) {
+			t.Errorf("comma-form rows = %v, want %v", got, wantEvasion)
+		}
 	})
-	t.Run("explain_form_fails_cleanly", func(t *testing.T) {
-		// EXPLAIN of an unplannable query must raise the SAME 0AF00 the query
-		// raises — it may not describe a plan the engine refuses to run. This
-		// subtest previously asserted the cross-derived predicate in EXPLAIN's
-		// logical-plan text, which was pinning that degrade. The predicate's
-		// survival through TRANSLATION is a real property and still pinned, at
-		// the layer where logical text is the honest answer:
-		// TestExplainOnlyMode_KeepsCrossDerivedPredicate in
-		// pkg/relational/core/embedded.
-		assertUnsupported(t, db, ctx, "EXPLAIN "+evasion)
+	t.Run("explain_form_describes_the_plan_it_runs", func(t *testing.T) {
+		// EXPLAIN must agree with the statement: both plan, or neither does.
+		plan := pinExplain(t, db, ctx, evasion)
+		if !strings.Contains(plan, "NestedLoopJoin") {
+			t.Errorf("EXPLAIN lost the cross-derived join:\n%s", plan)
+		}
 	})
 	t.Run("cte_form_fails_cleanly", func(t *testing.T) {
+		// STILL declines: a CTE leg's output row comes from the WITH scope, a
+		// different derivation than the FROM-derived one this test's other arms
+		// now exercise. Pinned so the remaining gap is visible rather than
+		// assumed closed along with its neighbours.
 		assertUnsupported(t, db, ctx,
 			"WITH t1 AS (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id), "+
 				"t2 AS (SELECT c.id AS cid, d.dw AS dw FROM c JOIN d ON d.c_id = c.id) "+
 				"SELECT t1.aid, t1.bv, t2.cid, t2.dw FROM t1, t2 WHERE t1.aid = t2.cid")
 	})
-	t.Run("explicit_join_form_fails_closed", func(t *testing.T) {
-		// RED→GREEN for the ON-predicate-drop fix (embedded/
-		// logical_predicate.go, upgradeJoinOnPredicates' !scopeOK early
-		// return): these spellings previously returned the FULL CROSS
-		// PRODUCT — buildDerivedTableSource declines the join-bodied derived
-		// table, scope building fails, and the early return silently skipped
-		// the ON upgrade, bypassing the function's own fail-closed backstop
-		// (the same class as the fixed subquery-in-ON bug). Now a loud clean
-		// decline: better no rows than wrong rows.
-		assertUnsupported(t, db, ctx,
+	t.Run("explicit_join_form_keeps_its_ON", func(t *testing.T) {
+		// The ON-predicate-drop hazard, now reachable and asserted rather than
+		// hidden behind a decline: with the derived legs typed,
+		// upgradeJoinOnPredicates' scopeOK is true and the ON survives. One row,
+		// not the four a dropped ON would produce.
+		got := pinRows(t, db, ctx,
 			"SELECT t1.aid, t1.bv, t2.cid, t2.dw "+
 				"FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) t1 "+
 				"JOIN (SELECT c.id AS cid, d.dw AS dw FROM c JOIN d ON d.c_id = c.id) t2 "+
 				"ON t1.aid = t2.cid")
-		assertUnsupported(t, db, ctx,
+		sort.Strings(got)
+		if !eqStrSlices(got, wantEvasion) {
+			t.Errorf("explicit-JOIN rows = %v, want %v — extra rows mean the ON was dropped", got, wantEvasion)
+		}
+		// c = {1,3}, s.aid = {1,2}: exactly one match.
+		got = pinRows(t, db, ctx,
 			"SELECT s.aid, c.id FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) s "+
 				"JOIN c ON c.id = s.aid")
+		sort.Strings(got)
+		if !eqStrSlices(got, []string{"1|1"}) {
+			t.Errorf("derived-JOIN-table rows = %v, want [1|1] — extra rows mean the ON was dropped", got)
+		}
 	})
 	t.Run("solo_derived_join_control", func(t *testing.T) {
-		// Control: ONE derived-with-join consumed alone hits the same
-		// pre-existing gap — the evasion failure is the derived-with-join
-		// capability, not the t1×t2 combination. When THIS goes red, the
-		// planner learned the shape and the whole test must be upgraded.
-		assertUnsupported(t, db, ctx,
+		// Control: ONE derived-with-join consumed alone. It isolates the
+		// derived-with-join capability from the t1×t2 combination, so a failure
+		// here says the capability broke, not the cross-derived predicate.
+		got := pinRows(t, db, ctx,
 			"SELECT t1.aid, t1.bv FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) t1 WHERE t1.aid = 1")
+		if !eqStrSlices(got, []string{"1|111"}) {
+			t.Errorf("solo derived-join rows = %v, want [1|111]", got)
+		}
 	})
 }
 

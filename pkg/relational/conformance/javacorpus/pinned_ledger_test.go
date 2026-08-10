@@ -52,6 +52,16 @@ package javacorpus_test
 // past their INCLUDE/orderClause rejections and now rest at CREATE VIEW
 // (unsupported-DDL:other), the class's remaining cause.
 //
+// Deriving a JOIN-BODIED derived table's output row from its own legs (a
+// derived table over a join used to have no enumerable schema, which dropped
+// the whole outer resolver) moved two files:
+// documentation-queries/joins-documentation-queries PASSES — its ON over a
+// join-bodied derived table resolves, so `engine-gap:derived-table-join-on`
+// changed carrier rather than size; and join-tests runs 11 more queries before
+// resting on that same class, at a JOIN … USING over a derived table whose body
+// projects a COMPUTED expression. That body still has no derivable output type,
+// which is the older gap the file was never reaching.
+//
 // `polarity:negative-execution` appears in BOTH groups on purpose: the file
 // entry says the negative failed, and the inner entry carries the failure text
 // so the log shows WHY. A negative credited for failing the wrong way — dying
@@ -89,13 +99,13 @@ package javacorpus_test
 // engine. It is the honest denominator behind `pass`, and it deliberately
 // EXCLUDES `noChecks` queries: those execute but assert nothing, so counting
 // them would let a file whose only query is config-less report a pass.
-const pinnedLedger = "pass=67 fail=0 skip=171 queries=1586 file_skips{conformance:go-accepts-what-java-rejects=4," +
+const pinnedLedger = "pass=68 fail=0 skip=170 queries=1597 file_skips{conformance:go-accepts-what-java-rejects=4," +
 	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
 	"engine-gap:correlated-exists-setop=1,engine-gap:derived-table-join-on=1," +
 	"engine-gap:dml-returning-result-set=2,engine-gap:error-class=2," +
 	"engine-gap:inline-values-table=1,engine-gap:multiple-lateral-unnests=1," +
 	"engine-gap:nested-recursive-with=2," +
-	"engine-gap:planner-declines=7,engine-gap:result-metadata=3,engine-gap:returning-dry-run=1," +
+	"engine-gap:planner-declines=6,engine-gap:result-metadata=3,engine-gap:returning-dry-run=1," +
 	"engine-gap:serialization-options=1,engine-gap:star-group-by-expansion=1," +
 	"engine-gap:struct-query=1,fragment=2,no-checks=1,plan-assertion=8," +
 	"polarity:fixed-version-meta=9,polarity:negative-execution=26,polarity:negative-parse=25," +
@@ -108,9 +118,9 @@ const pinnedLedger = "pass=67 fail=0 skip=171 queries=1586 file_skips{conformanc
 	"engine-gap:dml-returning-result-set=2,engine-gap:error-class=2," +
 	"engine-gap:inline-values-table=1,engine-gap:multiple-lateral-unnests=1," +
 	"engine-gap:nested-recursive-with=2," +
-	"engine-gap:planner-declines=7,engine-gap:result-metadata=3,engine-gap:returning-dry-run=1," +
+	"engine-gap:planner-declines=6,engine-gap:result-metadata=3,engine-gap:returning-dry-run=1," +
 	"engine-gap:serialization-options=1,engine-gap:star-group-by-expansion=1," +
-	"engine-gap:struct-query=1,no-checks=8,plan-assertion=630,polarity:negative-execution=26," +
+	"engine-gap:struct-query=1,no-checks=8,plan-assertion=633,polarity:negative-execution=26," +
 	"unsupported-DDL:function=11,unsupported-DDL:other=11,unsupported-DDL:struct-index=6," +
 	"unsupported:check-cache=143,unsupported:continuation=34,unsupported:debugger=3," +
 	"unsupported:multi-cluster=2,unsupported:prepared=216,unsupported:random-injection=25," +
@@ -129,4 +139,4 @@ const pinnedFileTotal = 238
 // corpus's meaning changes underneath it. The digest is deliberately opaque —
 // on mismatch the test dumps the full assignment, which is the artefact worth
 // diffing.
-const pinnedAssignmentDigest = "0984381f1831137f0ce961b81386f01f1b53bedc9b8c923f75c710ef7bcf2e91"
+const pinnedAssignmentDigest = "e8ae1d4c525cc6657977d2fcde2fc0b47839d7a151d5a8dddaf8416c79bff0bd"

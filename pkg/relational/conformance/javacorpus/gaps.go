@@ -103,10 +103,10 @@ var engineGaps = []EngineGap{
 	// same gap as the entry above, reached from a second carrier.
 	{"recursive-cte.yamsql", SkipGapNestedRecursiveWith, "nested WITH inside a recursive CTE body", "CQ-72"},
 
-	// A JOIN-bodied derived table whose ON clause cannot be resolved back to
-	// its sources. The engine declines rather than silently returning the
-	// cross product, which is the right failure mode — but Java plans it.
-	{"documentation-queries/joins-documentation-queries.yamsql", SkipGapDerivedJoinOn, "unsupported FROM shape", "CQ-72"},
+	// joins-documentation-queries.yamsql used to stop at a JOIN-bodied derived
+	// table whose ON clause could not be resolved back to its sources. CLOSED:
+	// the body's output row is derived from its own legs, the ON resolves, and
+	// the file passes outright — its entry is gone and it is counted in `pass`.
 
 	// alias-tests.yamsql's EXISTS-over-a-view decline is masked now: the
 	// template's CREATE VIEW fails closed (unsupported-DDL:other) instead of
@@ -309,13 +309,22 @@ var engineGaps = []EngineGap{
 	//   - null-extraction-tests.yamsql now passes OUTRIGHT — its entry is gone
 	//     and it is counted in `pass`.
 	//   - union.yamsql reaches a bare `select * from t1` as a UNION ALL branch.
-	//   - join-tests.yamsql reaches a comma join whose right side is a table
-	//     and whose left is a derived table the predicate references by alias.
+	//   - join-tests.yamsql reached a comma join whose right side is a table and
+	//     whose left is a derived table the predicate references by alias. That
+	//     one is CLOSED — a join-bodied derived table's output row is now
+	//     derived from its own legs, so the comma join plans — and the file
+	//     advances to a JOIN … USING over a derived table whose body PROJECTS A
+	//     COMPUTED EXPRESSION (`select c3 - 2 as c11`). That body has no
+	//     derivable output type, so the USING scope cannot be built and the ON
+	//     upgrade fails closed rather than dropping the predicate into a cross
+	//     product. Pre-existing and independent: the same statement produces the
+	//     same rejection with the derived-join derivation reverted; it was
+	//     unreachable only because the file stopped earlier.
 	//
 	// Both remaining signatures pin the exact statement, so a DIFFERENT failure
 	// in either file stays a hard failure rather than hiding under the entry.
 	{"union.yamsql", SkipGapPlannerDeclines, "select id as W, col1 as X, col2 as Y from t1 union all (select * from t1)", "CQ-72"},
-	{"join-tests.yamsql", SkipGapPlannerDeclines, "select sq.name, project.name from (select dept.name, emp.id from emp, dept where emp.dept_id = dept.id) as sq, project", "CQ-72"},
+	{"join-tests.yamsql", SkipGapDerivedJoinOn, "select * from (select c11 as c1, c3 from (select c3 - 2 as c11, c3 from jub) as Z) as Y join", "CQ-72"},
 	// Schema-template serialization options (encryption): Go's store layer
 	// does not implement encrypted serialization, so a read that Java fails
 	// with XXF01 (missing/wrong key) succeeds.

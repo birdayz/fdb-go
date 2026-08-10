@@ -63,6 +63,7 @@ go_test(
         "aggregate_over_join_ordinal_fdb_test.go",
         "aggregate_over_mixed_nesting_outer_join_fdb_test.go",
         "ambiguous_column_probe_test.go",
+        "ambiguous_column_ref_rejected_fdb_test.go",
         "ambiguous_column_star_test.go",
         "arith_overflow_predicate_fdb_test.go",
         "arith_precedence_probe_test.go",

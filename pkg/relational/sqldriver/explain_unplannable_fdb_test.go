@@ -22,11 +22,15 @@ import (
 )
 
 // TestFDB_ExplainUnplannableQueryFailsLoudly is the red→green pin for the
-// silent-degrade fix. The flattening-evasion shape (`FROM (a JOIN b) t1,
-// (c JOIN d) t2 WHERE t1.aid = t2.cid`) is a pre-existing planner gap:
-// buildDerivedTableSource declines join-bodied derived tables, so Cascades
-// yields no physical plan. Running it is 0AF00; EXPLAIN of it must be the
-// SAME 0AF00, not a logical plan tree.
+// silent-degrade fix: a shape Cascades attempts and declines must raise the
+// SAME 0AF00 under EXPLAIN as it does when run, never a logical plan tree.
+//
+// The specimen is the CTE spelling of the flattening-evasion shape. The two
+// FROM-derived spellings that used to sit beside it now PLAN — a join-bodied
+// derived table's output row is derived from its own legs, so the gap that
+// made them unplannable is gone — and they moved to the agreement arm below.
+// The loud-degrade direction needs SOME query Cascades declines: if the CTE
+// leg's derivation closes too, this arm needs a new specimen, not a deletion.
 func TestFDB_ExplainUnplannableQueryFailsLoudly(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -59,24 +63,13 @@ func TestFDB_ExplainUnplannableQueryFailsLoudly(t *testing.T) {
 		sql  string
 	}{
 		{
-			// Two join-bodied derived tables joined on a cross-derived predicate.
-			name: "comma_over_two_derived_joins",
-			sql: "SELECT t1.aid, t1.bv, t2.cid, t2.dw " +
-				"FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) t1, " +
-				"(SELECT c.id AS cid, d.dw AS dw FROM c JOIN d ON d.c_id = c.id) t2 " +
-				"WHERE t1.aid = t2.cid",
-		},
-		{
-			// The CTE spelling of the same shape.
+			// The CTE spelling of the flattening-evasion shape: a CTE leg's
+			// output row is derived by the WITH scope, which still cannot
+			// enumerate a join body.
 			name: "cte_over_two_derived_joins",
 			sql: "WITH t1 AS (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id), " +
 				"t2 AS (SELECT c.id AS cid, d.dw AS dw FROM c JOIN d ON d.c_id = c.id) " +
 				"SELECT t1.aid, t1.bv, t2.cid, t2.dw FROM t1, t2 WHERE t1.aid = t2.cid",
-		},
-		{
-			// A single join-bodied derived table — the underlying capability gap.
-			name: "solo_derived_join",
-			sql:  "SELECT t1.aid, t1.bv FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) t1 WHERE t1.aid = 1",
 		},
 	}
 
@@ -92,6 +85,30 @@ func TestFDB_ExplainUnplannableQueryFailsLoudly(t *testing.T) {
 			assertUnsupported(t, db, ctx, "EXPLAIN "+tc.sql)
 		})
 	}
+
+	t.Run("formerly_unplannable_derived_joins_agree", func(t *testing.T) {
+		// The other half of the same invariant, from the side that changed:
+		// these two used to be 0AF00 on BOTH sides and are now plannable on
+		// both. EXPLAIN and execution must never disagree in either direction,
+		// so a shape that starts planning has to keep its EXPLAIN, exactly as a
+		// shape that stops planning has to lose it.
+		for _, q := range []string{
+			"SELECT t1.aid, t1.bv, t2.cid, t2.dw " +
+				"FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) t1, " +
+				"(SELECT c.id AS cid, d.dw AS dw FROM c JOIN d ON d.c_id = c.id) t2 " +
+				"WHERE t1.aid = t2.cid",
+			"SELECT t1.aid, t1.bv FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) t1 WHERE t1.aid = 1",
+		} {
+			rows, qerr := db.QueryContext(ctx, q)
+			if qerr != nil {
+				t.Fatalf("statement must plan: %v\n  sql: %s", qerr, q)
+			}
+			rows.Close()
+			if plan := pinExplain(t, db, ctx, q); plan == "" {
+				t.Fatalf("EXPLAIN of a plannable statement returned nothing\n  sql: %s", q)
+			}
+		}
+	})
 
 	t.Run("plannable_still_renders_physical_plan", func(t *testing.T) {
 		// The other direction: the fix must not make EXPLAIN loud in general.
