@@ -13525,7 +13525,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === projected_exists_nested_sort_key.yaml#0
 sql:   SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h FROM t1 ORDER BY n.sk
-plan:  Project([ID#0, H#1], InMemorySort([N ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])))))
+plan:  Project([ID#0, H#1], InMemorySort([N.SK ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -13535,7 +13535,7 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 === projected_exists_nested_sort_key.yaml#1
 sql:   SELECT id, n, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h FROM t1 ORDER BY n.sk
-plan:  Project([ID#0, N#1, H#2], InMemorySort([N ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])))))
+plan:  Project([ID#0, N#1, H#2], InMemorySort([N.SK ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -13545,7 +13545,7 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 === projected_exists_nested_sort_key.yaml#2
 sql:   SELECT id, n AS nn, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h FROM t1 ORDER BY n.sk
-plan:  Project([ID#0, NN#1, H#2], InMemorySort([N ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])))))
+plan:  Project([ID#0, NN#1, H#2], InMemorySort([N.SK ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
