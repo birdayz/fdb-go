@@ -3080,6 +3080,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				if err := resolveColumnRefStructural(resolver, gb.bare, gb.qualifier, gb.qualified); err != nil {
 					return nil, err
 				}
+				if err := rejectNestedPathGroupKey(resolver, gb.bare, gb.qualifier, gb.qualified); err != nil {
+					return nil, err
+				}
 			} else if err := resolveColumnName(resolver, gb.display); err != nil {
 				return nil, err
 			}
@@ -3656,6 +3659,55 @@ func resolveColumnRefStructural(resolver *expr.Resolver, bare, qualifier string,
 		}
 	}
 	return mapColumnResolveError(err, display)
+}
+
+// rejectNestedPathGroupKey refuses a GROUP BY key that descends INTO a struct
+// column (`GROUP BY n.sk`), which the aggregate path cannot yet carry.
+//
+// It is a REFUSAL, not a resolution failure, and the distinction is the whole
+// point. The reference is perfectly well-formed — `n.sk` answers in SELECT,
+// WHERE and ORDER BY over the same table — so reporting it as an undefined
+// column would describe a column that demonstrably exists. Java draws the same
+// line in the same place: visitGroupByItem's ONLY gate is
+// `Assert.isNullUnchecked(ctx.order, ErrorCode.UNSUPPORTED_QUERY, "ordering
+// grouping column is not supported")` (ExpressionVisitor.java:250-258), and
+// everything else the item's expression resolves to is accepted — including a
+// nested path, since the item goes through the same resolveIdentifier /
+// lookupNestedField route every other reference does. So the nested key is a
+// capability Go lacks and Java has, and UNSUPPORTED_QUERY is the code Java
+// itself spends on an unsupported GROUP BY item.
+//
+// Two properties of the OLD behaviour this replaces, both measured:
+//
+//   - nothing validated the grouping KEY at all. The refusal that existed came
+//     from validateGroupByProjection's existence check, which compares a
+//     PROJECTED column's BARE LEAF against the union of source field names — so
+//     `n.sk` was turned away only because no column named SK existed, and a
+//     table that also declared a flat `sk` let the same key through on the
+//     strength of an unrelated column;
+//   - the shapes that escaped died in the executor as "not resolvable in the
+//     runtime row — malformed plan", i.e. internal state for what is really a
+//     capability gap. `SELECT COUNT(*) FROM t GROUP BY n.sk` escaped even with
+//     no flat `sk` anywhere, because with nothing projected the leaf check
+//     never ran.
+//
+// Only a QUALIFIED reference can descend: the bare arm returns an empty
+// accessor chain by Java's own rule (SemanticAnalyzer.java:557-559), so a bare
+// key cannot reach a struct member and is left alone.
+func rejectNestedPathGroupKey(resolver *expr.Resolver, bare, qualifier string, qualified bool) error {
+	if resolver == nil || bare == "" || !qualified {
+		return nil
+	}
+	nested, err := resolver.DescendsIntoStruct(semantic.FromNormalized(qualifier), semantic.New(bare, true))
+	if err != nil || !nested {
+		// A lookup failure is deliberately silent here: existence and
+		// ambiguity are reported by resolveColumnRefStructural, which runs
+		// alongside this gate. Deciding them twice would let this refusal
+		// shadow a 42702 with a less precise message.
+		return nil
+	}
+	return api.NewErrorf(api.ErrCodeUnsupportedQuery,
+		"grouping by the nested field %q is not supported", qualifier+"."+bare)
 }
 
 // resolveColumnName is the RENDERED-STRING arm for call sites whose

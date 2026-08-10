@@ -189,6 +189,28 @@ func (r *Resolver) functionCatalog() *semantic.FunctionCatalog {
 	return r.funcCat
 }
 
+// DescendsIntoStruct reports whether a reference resolves by descending INTO a
+// struct column rather than addressing a source column directly — `n.sk` where
+// `n` is a struct column, as opposed to `t.sk` where `t` is a FROM source.
+//
+// The fact comes from the semantic layer's own accessor chain (Java's
+// lookupNestedField result, SemanticAnalyzer.java:578-601), never from the
+// shape of the produced Value: fuseNestedAccessors happens to yield a
+// multi-accessor FieldPath today, but the number of accessors a root reference
+// carries is a property of the source kind, so counting them would be an
+// inference where the analyzer already states the answer.
+//
+// A resolution FAILURE reports false with the error, so a caller gating on the
+// descent never converts an unrelated lookup failure into its own verdict —
+// existence and ambiguity stay owned by the checks that already report them.
+func (r *Resolver) DescendsIntoStruct(qualifier, id semantic.Identifier) (bool, error) {
+	_, _, accessors, err := r.analyzer.ResolveColumnRefNested(r.scope, qualifier, id)
+	if err != nil {
+		return false, err
+	}
+	return len(accessors) > 0, nil
+}
+
 // ResolveIdentifier produces a cascades Value for a bare or
 // qualified identifier reference. qualifier may be the zero
 // Identifier for bare lookups.

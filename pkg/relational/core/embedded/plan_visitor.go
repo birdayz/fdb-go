@@ -892,6 +892,9 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 				if err := resolveColumnRefStructural(resolver, gb.bare, gb.qualifier, gb.qualified); err != nil {
 					return nil, err
 				}
+				if err := rejectNestedPathGroupKey(resolver, gb.bare, gb.qualifier, gb.qualified); err != nil {
+					return nil, err
+				}
 			} else if err := resolveColumnName(resolver, gb.display); err != nil {
 				return nil, err
 			}
