@@ -231,8 +231,23 @@ type FieldValue struct {
 	// from ResolvedAccessor equality). Every FieldValue copy/rebuild site MUST
 	// preserve Resolved — dropping it silently degrades a baked node to lazy,
 	// which is loud at evaluation but conflates duplicate same-named columns
-	// in plan-time matching. For baked nodes Field equals the LAST accessor's
-	// name (Java getLastFieldName) — display only.
+	// in plan-time matching.
+	//
+	// Field is DISPLAY ONLY, and it does NOT reliably equal the last accessor's
+	// name. That was stated here as an invariant and it holds for one producer
+	// only: the planner's rewrite machinery (compose, the rebase/withChildren
+	// fuse arms, select-merge, match-info merge, index expansion, unnest, the
+	// left-outer wrappers) sets Field to the fused last accessor. The SQL
+	// RESOLVER does the opposite — fuseNestedAccessors copies the node whole,
+	// updates Typ to the leaf, and leaves Field as the struct ROOT — so a
+	// resolver-produced `n.sk` is FieldValue{Field:"N", Accessors:[N,SK]}.
+	//
+	// Nothing enforces either shape: there is no WithSuffix postcondition and no
+	// construction-time validator, and the one assertion that exists covers the
+	// simplifier alone. So the two producers disagree and no test notices. That
+	// asymmetry is not cosmetic — reading Field as the column's identity is what
+	// collapsed two ORDER BY keys of one struct root (RFC-227), and the same
+	// read is still live in the group-key namer.
 	Resolved *FieldPath
 }
 
