@@ -1,8 +1,8 @@
 # RFC-229: a column states its own name
 
-**Status:** DRAFT (rev 2 — folds the Cascades lap: a fifth namer, identity participation, duplicate-name policy, and a separable step 0)
+**Status:** DRAFT (rev 3 — two review laps; the group-key elimination is CUT, and the retirement count is corrected)
 **Scope:** output-column naming across the projection, group-by and sort-key authorities.
-**Retires:** 10 of the 12 `contract` entries on the RFC-197 debt list, plus the read-side entries that depend on them.
+**Retires:** part of the `contract` bucket. Rev 1 claimed 10 of 12 and that number was wrong — see §6.
 **Relates to:** RFC-197 (the migration), RFC-226 (a projection states the row it produces), RFC-227 (the hidden sort column is named by the path it reads), RFC-228 (a leg column lookup declines on an ambiguous name).
 
 ## 0. What the bucket is actually waiting on
@@ -16,8 +16,8 @@ The `contract` bucket has been read as blocked on "per-slot leg provenance". It 
 That is the whole defect class. A name that is re-derived can be derived *differently* — and has been, three times now:
 
 - **RFC-227**: the hidden sort column was named by its rendering rather than its path, so two `ORDER BY` keys under one struct root collapsed. Silently wrong row order.
-- **This RFC's §3**: `AggregateKeyColumnName` still renders the flat struct root, so `GROUP BY n.sk, n.co` would collapse two grouping columns into one. Unreachable today only because nested-path `GROUP BY` is refused with 42703 — pinned as a tripwire, not fixed, because the fix is this RFC.
-- **`ProjectionColumnName`** returns `fv.Field` for a `FieldValue` but `ToUpper(ExplainValue(v))` for anything else, and `ExplainValue` renders ordinals. So a computed projection over a *baked* field renders `(N#0 + 1)` where the same expression pre-bake renders `(N + 1)`. Writers and readers agree only if they derive on the same side of the bake. Today that is masked because the first namer stores an alias and `OutputColumnName` short-circuits on it — but that mask *is* the convention being replaced, and it is load-bearing.
+- **`AggregateKeyColumnName`** still renders the flat struct root, so `GROUP BY n.sk, n.co` would collapse two grouping columns into one. Unreachable today only because nested-path `GROUP BY` is refused with 42703 — pinned as a tripwire, and NOT fixed here; see §6.
+- **`ProjectionColumnName`** returns `fv.Field` for a `FieldValue` but `ToUpper(ExplainValue(v))` for anything else, and `ExplainValue` renders ordinals. So a computed projection over a *baked* field renders `(N#0 + 1)` where the same expression pre-bake renders `(N + 1)`. Writers and readers agree only if they derive on the same side of the bake. The asymmetry is real; **rev 1 named the wrong mask for it** — the short-circuit that hides it is `isPlainColumnRef` in the result-set layer, not an alias check in `OutputColumnName`. That correction matters because §7's test would otherwise have pinned a mask that does not exist and reported green.
 
 Three instances, three different mechanisms, one cause. The cause is that the name is a function call rather than a fact.
 
@@ -34,7 +34,7 @@ and every reader takes it back with a getter. No site re-derives a name from a `
 Java also answers the question this RFC has to answer twice, because it treats the two populations differently:
 
 - a **projected** column carries a name, because that name is user-visible output;
-- a **group-by key** column carries `Column.unnamedOf` — no name at all, positional `_0`.
+- a **group-by key** column carries `Column.unnamedOf`. Rev 1 read that as "no name at all"; it is not — `RecordConstructorValue.resolveColumns` normalizes through `normalizeFields`, which mints `"_" + i`, and EXPLAIN prints `AS _0`. The property that matters is that the name is POSITIONAL, so two slots cannot share it, not that it is absent.
 
 ## 2. The design
 
@@ -58,7 +58,7 @@ It does not, and this has to be stated rather than left to whatever the first im
 
 Java splits it: `Column.planHash` deliberately excludes auto-generated names, while `RecordConstructorValue.equalsWithoutChildren` compares fields. Go has `ProjectionOutputIdentityKey` for one half and nothing for group-by, so the question is currently unanswered rather than answered differently.
 
-The hazard is concrete. A stored name that silently enters `EqualsWithoutChildren` or `SemanticHashCode` splits alias-variant plans in the memo: `SELECT k AS a` and `SELECT k AS b` produce structurally identical plans that stop interning, and the cost is paid as duplicated search, invisibly. §6 pins both directions.
+The hazard is concrete. A stored name that silently enters `EqualsWithoutChildren` or `SemanticHashCode` splits alias-variant plans in the memo: `SELECT k AS a` and `SELECT k AS b` produce structurally identical plans that stop interning, and the cost is paid as duplicated search, invisibly. §7 pins both directions.
 
 ### 2.2.2 Duplicate stored names
 
@@ -74,32 +74,11 @@ This is the part that decides whether the RFC fixes anything.
 
 A fused nested reference is ONE `FieldValue{Field:"N", Resolved:[N,SK]}`. `Field` is the struct root and is *not* the column's identity — `n.sk` and `n.co` share it. Storing `Field` at construction would freeze the collapse into data, where it is harder to see and impossible to catch by reading the renderer. What gets stored is what `values.ColumnNameValue` renders: the path.
 
-RFC-227 already made this change on the sort-key side. §3 is the same change on the group-key side. Doing 2.1 and 2.2 without 2.3 would ship a well-organized version of the defect.
+RFC-227 already made this change on the sort-key side. Doing 2.1 and 2.2 without 2.3 would ship a well-organized version of the defect.
 
-## 3. Two policies, one mechanism
+One consequence to hold: `values.ColumnNameValue`, the renderer 2.3 mints from, is **itself** a site the RFC-197 detector flags. So the columns this RFC converts do not all leave the debt list — they move from "the name is re-derived at read time" to "the name was minted once from a flagged renderer". That is a real improvement and it is not a retirement, which is most of why §6's count is what it is.
 
-The ten entries split into two populations that want opposite things, and this is the trap in treating them as one job.
-
-| | population | what the name is | policy |
-|---|---|---|---|
-| KEEP | projection columns, EXPLAIN output, sort-key labels | user-visible output text | store it, per §2.3 |
-| ELIMINATE | group-by key columns | an internal convention Go invented | drop it — Java's `Column.unnamedOf`, positional |
-
-Group-key output names are not a feature. Java's group keys are unnamed; Go's naming of them is the convention that produced the collapse in the first place. Storing a name there would port a Go-only convention *as data*, which is strictly worse than the status quo: today the convention is visible in a renderer that can be read and questioned, and afterwards it would be a field nobody has a reason to look at.
-
-So group keys go positional, and the collapse becomes unrepresentable rather than merely fixed. `GROUP BY n.sk, n.co` produces two key columns because it produces two *slots*, regardless of what either would have been called.
-
-### 3.1 "Unnamed" does not mean nameless downstream
-
-Rev 1 said "no name at all" and stopped there, which is not what Java does and would have broken the result set. Java's group-by columns are constructed `unnamedOf`, and then `RecordConstructorValue.resolveColumns` normalizes through `Type.Record.normalizeFields`, which mints `"_" + i`. EXPLAIN prints `AS _0`. The name is *positional and derived from the slot*, which is the property that matters — it cannot collapse, because two slots cannot share an index — rather than absent.
-
-### 3.2 Where the result-set name lands
-
-This is the gap rev 1 left, and it is the one that would have shipped a regression. Of the four surfaces that could consume a group-key name, three are already clean: EXPLAIN goes through `ExplainValue` rather than the key namer, continuations pack key *data*, and the plan hash folds Values only and explicitly excludes the operand name. The fourth is not: **SQL result-set metadata does consume a group-key-derived name**, through the `cascades_generator.go` mirror of §2.2.
-
-Java puts that name at the relational **expression** layer, not on the column — `Expressions`/`LogicalOperator` name the output of the operator, while the column underneath stays positional. Go does the same: the result-set column name is stated by the relational output expression, and the group-by column below it stays `_i`. That keeps the user-visible name exactly where a user-visible name belongs and keeps it out of the structure the planner reasons about.
-
-## 3.3 The defect surface is narrower than §0 implies
+## 3. The defect surface is narrower than §0 implies
 
 Rev 1 said readers "re-derive the same name and look each other up by the result", generally. Measured, that is true at **three** sites: two last-wins string maps in the translator and one in `logical_predicate.go`. The other readers already carry an authoritative ordinal and use the name only as a label.
 
@@ -107,25 +86,36 @@ That does not weaken the fix — a label that can be derived two ways is still h
 
 ## 4. Sequencing, and the tripwire that enforces it
 
-**Step 0, and it lands as its own commit before anything in §2 or §3:** re-key the three maps of §3.3 by ordinal. It is separable, it is the whole load-bearing surface, and it can be verified on its own — which means the large change that follows is a refactor over an already-correct base rather than a refactor that is also a fix. If step 0 moves a single plan or a single row, that is a defect found early and cheaply instead of inside a change touching five authorities.
+**Step 0, and it lands as its own commit before anything in §2:** re-key the three maps of §3 by ordinal. It is separable, it is the whole load-bearing surface, and it can be verified on its own — which means the large change that follows is a refactor over an already-correct base rather than a refactor that is also a fix. If step 0 moves a single plan or a single row, that is a defect found early and cheaply instead of inside a change touching five authorities.
 
 
 Nested-path `GROUP BY` is refused with 42703 today, which is the only reason the collapse is latent. `groupby_nested_key_collapse_fdb_test.go` pins that refusal and says in its failure message what must be converted first.
 
-The order is therefore fixed and the tripwire enforces it: **§2.3 and §3 land before nested-path `GROUP BY` is implemented.** Implementing the feature first arms the collapse, and the symptom — missing groups — is one no existing test would catch. The tripwire fails loudly the moment the feature lands without the conversion, which is what makes this a sequencing statement rather than a hope.
+The order is therefore fixed and the tripwire enforces it: **`AggregateKeyColumnName` is converted to the resolved path before nested-path `GROUP BY` is implemented.** Implementing the feature first arms the collapse, and the symptom — missing groups — is one no existing test would catch. The tripwire fails loudly the moment the feature lands without the conversion, which is what makes this a sequencing statement rather than a hope.
 
 ## 5. What this does not retire
 
-Two `contract` entries are outside this work entirely and retire on their own TODO items: `assertSuffixStep` (waiting on merged-layout struct typing, which makes its assert arm *live* rather than unblocking it) and `(FieldPath).ReAnchorRootInto` (waiting on per-slot leg provenance). Their closure conditions are genuinely different from each other and from these ten, and collapsing all three phrasings into one capability is how the bucket came to look like a single blocked item.
+Two `contract` entries are outside this work entirely and retire on their own TODO items: `assertSuffixStep` (waiting on merged-layout struct typing, which makes its assert arm *live* rather than unblocking it) and `(FieldPath).ReAnchorRootInto` (waiting on per-slot leg provenance). Their closure conditions are genuinely different from each other and from the rest, and collapsing all three phrasings into one capability is how the bucket came to look like a single blocked item.
 
 `ReAnchorRootInto`'s entry also carries a dead counterfactual — "RecordType.FieldIndex would have first-matched" — about a function RFC-228 deleted. The same dead claim is in production source at `values/values.go`. Both get corrected with this change: the decline is still real, but its justification is now that `FieldIndexUnique` is the only name resolver there is.
 
-## 6. Tests
+## 6. What rev 3 cut, and the count that was wrong
+
+Rev 1 and rev 2 carried a §3 proposing that group-key columns go positional, Java-style, as a side effect of the naming refactor. **It is cut**, and the reason is not scope discipline — it was specified wrong and would have shipped a silent wrong answer on the most common `GROUP BY` in the language.
+
+With keys named `_0`, `keyOrds` becomes `{"_0":0}` and `groupByOutputBaker`'s lookup of the SELECT-list spelling **misses**. The reference stays lazy and reads `"STATUS"` off a row the executor keyed `"_0"` — a NULL column, no error. That is `SELECT status, COUNT(*) FROM t GROUP BY status`. On the exact-aggregate path the label degrades to a literal `_0`, and the naming golden has no unaliased-group-key case, so the regression would have landed **unpinned**.
+
+It is not only wrong answers. `rule_push_requested_ordering_through_groupby` matches the requested ordering against grouping keys by name; an output-row spelling of `_0` against an input-keyed map never matches, the rule pushes nothing, and that file's own comment names the consequence — `SELECT customer_id, COUNT(*) … GROUP BY customer_id ORDER BY customer_id` loses its index scan for an in-memory sort. Roughly 326 `plan_shape.golden` lines move, plus four yamsql EXPLAIN assertions. And `OrdinalDomainOfColumnNames` is length-prefixed over the names, so spelling every key `_0.._n` collapses structurally different aggregates of equal arity into one domain token, making the cross-layout `OrdinalIn` guard **vacuous** — with nothing failing to say so.
+
+Two things survive the cut. Continuations are clean: they serialize the evaluated key tuple and index-parallel accumulator state, no column names, so Java wire compat was never at stake — rev 1 should have said that and didn't. And the elimination is not blocked on a capability that does not exist: the structural ordinal channel already works, which is what drained the aggregate arm from 1014 hits to 1. What keeps the name arm alive is the flat dotted `FieldValue` whose `Field` is literally `"A.ID"` — so this is the **dotted MINT** conversion plus CQ-55, exactly as the debt entry says, and it needs its own RFC and the query-engine gate.
+
+**The retirement count.** Rev 1 claimed 10 of 12. That is false, and it was my number rather than a measured one. At least four entries survive the static gate after this change, and §2.3 adds a reason of its own: the stored name is minted from `values.ColumnNameValue`, which the detector flags. A site that mints once from a flagged renderer is better than a site that re-derives at every read, and it is still a flagged site. The honest claim is that this RFC removes a defect *class* and shrinks the bucket; the arithmetic belongs in the implementation PR, measured against the gate, not asserted here.
+
+## 7. Tests
 
 - The every-arm unit pin on the stored name: minted, copied, rebuilt, rebased — a column that loses its name across any of the four fails, because that is the contract §2.1 claims.
 - A nested-path projection asserting the stored name is the PATH and not the root, which is the §2.3 claim stated as a test rather than as a comment.
-- The pre-bake/post-bake rendering asymmetry from §0 pinned directly, so the mask that currently hides it (`OutputColumnName` short-circuiting on an alias) stops being load-bearing without anyone noticing.
-- Group keys: an assertion that the key columns are positional and carry no name, so a future change that reintroduces group-key naming fails rather than passing quietly.
+- The pre-bake/post-bake rendering asymmetry from §0 pinned directly — against `isPlainColumnRef` in the result-set layer, which is the mask that actually hides it. Rev 1 named `OutputColumnName`'s alias check instead, so this test would have pinned a mask that does not exist and reported green.
 - `groupby_nested_key_collapse_fdb_test.go` flips from asserting the 42703 refusal to asserting 4 groups for `GROUP BY n.sk, n.co` and 2 for each single-key query — when, and only when, nested-path `GROUP BY` lands.
 - **A name-only difference must not split the memo.** `SELECT k AS a` and `SELECT k AS b` produce structurally identical plans; if the stored name reaches `EqualsWithoutChildren` or `SemanticHashCode` they stop interning and the cost is duplicated search that no assertion currently notices. Pin both directions — the name is compared where Java compares it, and excluded from the plan hash where Java excludes it.
 - **The duplicate-name policy of §2.2.2**, driven from a test rather than left to the first collision in production: two projected columns of one name produce NO stored name on either, and readers fall through to the positional identity.
