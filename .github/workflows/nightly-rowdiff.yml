@@ -259,18 +259,24 @@ jobs:
         # not exit, and measured growth needs ~10h to reach the limit); an fd
         # leak (23 fds against a 1024 soft limit).
         #
-        # The surviving hypothesis is that the container EXITS and its bridge IP
+        # What IS established is the shape: the container EXITS and its bridge IP
         # then blackholes — which matches the CI stack blocking in
         # net.(*netFD).connect rather than getting an RST, because a live
-        # container with a dead process would refuse the connection. That was
-        # reproduced deliberately by filling the data tmpfs: fdbserver logs
-        # `Fatal Error: Disk i/o operation failed` and traces
+        # container with a dead process would refuse the connection. An exit of
+        # that shape was reproduced deliberately by filling the data tmpfs:
+        # fdbserver logs `Fatal Error: Disk i/o operation failed` and traces
         # `SharedTLogFailed`/`io_error`/1510, then `StopAfterError`, and the
         # container exits 1 with **OOMKilled=false** — which is exactly why an
-        # OOM check has never explained this. The helper mounts /var/fdb/data as
-        # a SIZE-LESS tmpfs (50% of host RAM), so on a 7.6 GB runner that is
-        # ~3.78 GB and shares the page budget with the Bazel JVM and a test
-        # process measured leaking ~17 MB/min.
+        # OOM check has never explained this.
+        #
+        # NO MECHANISM IS ESTABLISHED for why that happens on the runner, and
+        # this comment says so rather than implying one. The two memory stories
+        # that fit the signature were both measured and both REFUTED: the
+        # size-less tmpfs does not grow into its ~3872 MB ceiling (~130 MB at the
+        # death point, and pinning it to the CI size changed nothing), and host
+        # exhaustion does not arrive in time (summed consumers reach ~52% of
+        # 7745 MB at t+33min, ~217 minutes short). Which is the point of dumping
+        # forensics instead of arguing: read the exit state, do not infer it.
         #
         # These three outcomes are distinguishable and this dump separates them:
         #   exit 1  + StopAfterError/io_error/1510 -> tmpfs ENOSPC

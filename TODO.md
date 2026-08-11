@@ -16767,9 +16767,44 @@ None is speculative: each was re-verified against the tree before booking.
   bridge IP blackholes, which is why the CI stack sits in `net.(*netFD).connect`
   instead of taking an RST. A live container with a dead process would refuse the
   connection. The false OOM flag is why this has looked inexplicable.
-  INFERRED, not proven: on the 7.6 GB runner the tmpfs shares the page budget
-  with the Bazel JVM and the test process, a write returns ENOSPC, and the above
-  path runs. NOT yet confirmed on the runner itself.
+  **NO MECHANISM IS ESTABLISHED.** That is a positive statement, not an
+  omission: the two memory hypotheses that fit the signature were each pursued
+  and each REFUTED by measurement, and nothing has replaced them. Recorded in
+  full because a refuted hypothesis is a result, and because both are the kind
+  that will be re-proposed by the next person who reads the io_error trace.
+  1. **tmpfs-as-consumer — REFUTED.** `foundationdb.go:179` really does mount
+     `/var/fdb/data` size-less (`{"": }`), so the kernel caps it at 50% of RAM,
+     ~3872 MB on a 7745 MB cpx32; that much is confirmed from source and is
+     worth bounding on its own merits. But it does not GROW into that ceiling:
+     measured during the sweep it holds ~165 MB at 42min and ~130 MB at the
+     death point — about 4% of its cap. Re-confirmed by re-running the sweep
+     with the tmpfs explicitly pinned to the CI size (`size=3780m`): usage
+     stayed 1..181 MB and nothing failed. Bounding the tmpfs would bound a thing
+     that is not growing, so it CANNOT be the fix for this death.
+  2. **ENOSPC via host RAM + swap exhaustion — REFUTED.** The reframe (tmpfs as
+     victim rather than consumer: host pages and the 4 GiB swapfile exhaust, a
+     tmpfs write returns ENOSPC, and the path in the paragraph above runs) fit
+     every piece of negative evidence including `OOMKilled=false`, which is what
+     made it worth measuring rather than believing. It fails on arithmetic. The
+     never-measured term was the Bazel server JVM, which is UNCAPPED in this
+     lane (unlike the race lane's `-Xmx3g`); isolated to this worktree's own
+     server it is 2268 MB. Summed at t+33min against 7745 MB: 728 baseline
+     (`container_memory_tag_test.go:100-102`) + 674 test + 2268 bazel + 253
+     fdbserver + 130 tmpfs = **4053 MB, 52%** — needing ~217 further minutes of
+     leaking to exhaust, and still only ~62% if CI's heap were 3 GB. The box is
+     about half full when the container dies.
+  WHAT WOULD DISCRIMINATE NEXT, because it will not be in anyone's head
+  tomorrow: ~12 minutes on a QUIET box — the constraint is isolation, not
+  duration, since the slope settles within minutes. Poll by this worktree's own
+  `--output_base` rather than `grep bazel | grep java`, by the container ID the
+  test actually created rather than `head -1` of an ancestor filter, and read
+  RSS from the Bazel test PID. The first attempt at this measurement was
+  WORTHLESS for exactly that reason — on a box with 14 sibling Bazel servers the
+  `bazel` column summed all of them and the `test` column swung 45..1674..268 MB
+  by matching other agents' processes, which is not a leak curve and a slope
+  drawn through it would have been a confident wrong answer. Only a summed slope
+  above **~110 MB/min** could reach 7745 MB by t+33min; the measured leak is
+  ~17 MB/min, an order of magnitude short.
   IN FLIGHT: this change adds a "Capture FDB container forensics" step
   (`docker inspect` exit/OOM, `docker logs`, `Severity="40"` trace events, host
   `free`/`df`/kernel OOM lines) that runs on success or failure. Its three
@@ -16782,8 +16817,19 @@ None is speculative: each was re-verified against the tree before booking.
 
 - [ ] **`sqldriver_test` leaks ~17 MB/min under the rowdiff sweep and blows past
   its own declared Bazel memory tag in about half an hour** · S-M · found while
-  root-causing the rowdiff container death · plausibly its CAUSE, worth fixing
-  either way
+  root-causing the rowdiff container death · a real defect on its own; it is NOT
+  the cause of that death
+  TWO CLAIMS, DELIBERATELY SEPARATED, because conflating them is how a real but
+  unrelated defect gets written up as a root cause:
+  1. the leak DOES breach the target's own declared budget — ~17 MB/min against
+     `resources:memory:700`, exceeded in ~30 minutes. Bazel schedules co-located
+     targets against that declaration, so it is wrong for the whole box.
+  2. the leak DOES NOT account for the container death at ~33 minutes. It was
+     the leading candidate for supplying the memory pressure in the ENOSPC story
+     above, and that story is refuted on arithmetic: at the death point the leak
+     has reached ~674 MB — still INSIDE its 700 MB declaration — and the summed
+     host usage is ~52%. Fixing this leak should not be expected to stop the
+     container dying.
   MEASURED over one 42-minute local sweep, process RSS: 249 MB at 8min, 300 MB
   at 11min, **808 MB at 42min** — roughly linear at ~17 MB/min, so ~675 MB by the
   33-minute mark and multiple GB over a full-length job. The target declares
