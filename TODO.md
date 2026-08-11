@@ -16874,65 +16874,58 @@ None is speculative: each was re-verified against the tree before booking.
   `rowdiff.RunCase` (`pkg/relational/conformance/rowdiff/run.go:104-120`).
   DONE = the retention named from a heap profile, fixed, and a pin that fails if
   RSS growth per seed regresses past a declared bound.
-- [ ] **A SIXTH `legRef`-adjacent site rebases an outer-leg reference with NO
-  arity guard and DISCARDS the nested suffix — the wrong-rows half — and the
-  SAFETY NET that should catch it is masked by that very site, so the two must
-  be fixed TOGETHER** · M · found during the RFC-228 nested-ON fix (PR #725) ·
-  **query-engine change — needs a Graefe ACK before merge**
-  `rebaseUnnestOuterLegPredicateOrdinal` (`cascades_translator.go:4040-4070`)
-  takes any `FieldValue` with a `QuantifiedObjectValue` child on an outer leg and
-  bakes it with neither a `SourceRelativeBaked` guard nor an arity guard:
+
+- [x] **A sixth `legRef`-adjacent site rebased an outer-leg reference with no
+  arity guard and discarded the nested suffix — REAL WHEN BOOKED, CLOSED BY
+  `db9d87d7c` BEFORE THIS BRANCH REBASED ONTO IT. Kept as the audit trail, and
+  because the attached element-channel lead needed a measurement.**
+  · found during the RFC-228 nested-ON fix (PR #725)
+  `rebaseUnnestOuterLegPredicateOrdinal`
+  (`pkg/relational/core/query/cascades_translator.go` — note the path: the file
+  is under `core/query/`, NOT `core/embedded/`) took any `FieldValue` with a
+  `QuantifiedObjectValue` child on an outer leg and baked it by NAME, with no
+  arity guard. For a nested reference the name lookup succeeded on the ROOT
+  column and returned a fresh SINGLE-accessor address, so `Accessors[1:]` was
+  dropped and the predicate compared the enclosing STRUCT.
+  **THAT IS NO LONGER TRUE, AND THE FIX IS UPSTREAM OF THIS ENTRY.**
+  `db9d87d7c` (#724) added, immediately above the slot lookup:
   ```go
-  ord, found := ordinalSlotInLegWindow(outerLegType, qov.Correlation, strings.ToUpper(fv.Field), len(outerLegs) > 1)
-  baked, err := values.NewFieldValueOfOrdinal(mergedQOV, ord)
-  return baked
+  if fv.Resolved != nil && len(fv.Resolved.Accessors) > 1 {
+      ok = false
+      return node
+  }
   ```
-  For a NESTED reference (`a.n.sk`) `fv.Field` is the struct ROOT (`N`), so the
-  lookup SUCCEEDS and returns a fresh SINGLE-accessor address at `N`'s slot.
-  `Accessors[1:]` is dropped — there is no `WithSuffix` — and `fv.Typ` is not
-  carried either. The predicate then compares the whole STRUCT where a member was
-  named, against a real merged column that nothing downstream rejects. Silent
-  wrong rows, not a loud error. This is the exact defect class PR #725 fixed at
-  the bake closure, at a site that fix did not touch.
-  THE CAPABILITY EXISTS AND IS NOT BEING CALLED, which is what makes this small:
-  `fieldOntoCorrelatedScalarRow` (`cascades_translator.go:7699-7711`) — same file
-  — rebases the root and then re-fuses `Accessors[1:]` with `WithSuffix`, and
-  carries `fv.Typ`. That is the shape this site needs.
-  THE FIX ORDER IS CONSTRAINED, and this is the part that must not be lost.
-  `unnestOuterLegRefSurvives` (`cascades_translator.go:4154`) is a SAFETY NET —
-  it scans for references that must not survive the rebase — so its refusal means
-  "declared clean", which fails in the WORSE direction than failing open. It
-  keys on `fv.Resolved != nil && !fv.SourceRelativeBaked()`, and its comment
-  still asserts the premise RFC-228 refuted by trace: "only machinery-owned baked
-  nodes (pinned/multi-accessor ofOrdinals) are safe". Its hole is CURRENTLY
-  MASKED by the sixth site: the nested reference is wrongly baked upstream and
-  comes back FrontierPinned, so it is skipped and never counted as surviving.
-  Making the sixth site DECLINE would immediately expose the net's false
-  negative. Fix them together; fixing either alone either leaves the wrong rows
-  or converts them into an unguarded shape the net still waves through.
-  THE DESIGN LESSON, recorded because a sibling net gets it right by
-  CONSTRUCTION: the post-walk in `exists_gathered_cluster_wrap.go:281-295` hunts
-  for `QuantifiedObjectValue` nodes rather than for `FieldValue` shapes, so it is
-  arity-blind by construction and cannot acquire this class of hole. That is also
-  precisely why RFC-228's deliberate decline at
-  `exists_gathered_cluster_wrap.go:124` is genuinely safe — a declined reference
-  stays leg-correlated and that walk's survivor check is guaranteed to see it.
-  Site 5 lacks that property; a net that keys on the reference's BAKE SHAPE is
-  one upstream mis-bake away from being blind, while a net that keys on the
-  surviving CORRELATION is not.
-  REACHABILITY IS UNPROVEN AND A PROBE IS THE FIRST STEP, NOT A FIX. The code
-  shape above is MEASURED by reading; that a query reaches it is NOT. The
-  candidate trigger is a buried outer-only conjunct in an existential over a
-  lateral unnest comparing a nested outer column — plausible, undriven. Do not
-  treat this as live until a query drives it. If it proves unreachable, that is a
-  result to PIN (what makes it unreachable, with a failure message naming what
-  re-arms it), not a reason to close the entry: the same reasoning that would
-  close it is what left the hole.
-  DONE = (1) a driven reproducer, or a pinned proof of unreachability; (2) the
-  sixth site fuses `Accessors[1:]` and carries `fv.Typ` via the
-  `fieldOntoCorrelatedScalarRow` shape, or declines; (3) the safety net at :4154
-  re-keyed so it counts what the sixth site now declines, with its comment
-  rewritten to stop asserting the refuted premise; (4) both mutation-red
-  INDEPENDENTLY — reverting the rebase reds a wrong-rows pin, reverting the net
-  reds a survivor pin — because the masking relation is exactly what a single
-  combined test would hide.
+  and both callers bail on `!ok`, so the shape now DECLINES loudly instead of
+  shipping a truncated path. Verified against the two bases rather than
+  re-derived: the guard is ABSENT in that function at `ffc31689c` (this
+  booking's base, where the finding was correct) and PRESENT at `db9d87d7c`.
+  Re-check with `git log -S'len(fv.Resolved.Accessors) > 1' -- <that file>`
+  rather than by reading the function again.
+  **THE MASKING RELATION AND ITS FIX-ORDER ARE THEREFORE RETIRED.** This entry
+  previously claimed the safety net at `unnestExistsRefSurvivesUnbaked` had a hole
+  masked by the sixth site, so the two had to be fixed together. With the site
+  declining, there is nothing to mask; the "fix them together" constraint
+  described a state that no longer exists and must not be carried forward.
+  **THE ATTACHED LEAD WAS MEASURED AND DOES NOT REPRODUCE.** The ELEMENT channel
+  has the same unguarded shape: `bakeUnnestElementRefOrdinal` skips an unpinned
+  multi-accessor ref (keyed `!SourceRelativeBaked()`) and, unlike the outer-leg
+  sibling, sets NO failure flag; `unnestExistsRefSurvivesUnbaked` then skips it
+  on the same key as "safe", on a comment still asserting that multi-accessor
+  nodes are machinery-owned. On paper a nested ELEMENT reference survives unbaked
+  while the net declares the tree clean. MEASURED: it cannot be reached, because
+  a member reference on a STRUCT element is refused during resolution INSIDE an
+  EXISTS subquery — `42703: column "EK" does not exist` for the flat form and
+  `42703: column "DK" does not exist` for the nested one. The rule never looks at
+  arity, so the nested case is refused together with its flat twin, one step
+  before the bake.
+  That negative is PINNED, not just recorded, by
+  `TestFDB_UnnestElementMemberInExistsIsRefused`
+  (`pkg/relational/sqldriver/unnest_element_member_in_exists_fdb_test.go`),
+  which also drives a bare SCALAR element through the same buried-conjunct path
+  so a green cannot come from a family that stopped planning, and which names in
+  its failure message exactly what re-arms the site: either 42703 arm starting to
+  answer. At that point the two element functions need what `ordinal_seed.go`'s
+  bake got — resolve the root from `Accessors[0]`, fuse `Accessors[1:]`, or
+  decline with `ok=false`, never skip.
+  DONE: nothing to build. The wrong-rows half is fixed upstream, the element half
+  is unreachable with the unreachability pinned and its re-arm condition stated.

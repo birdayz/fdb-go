@@ -62,7 +62,31 @@ import (
 // yields three rows of `l.id`, so `[1 2 3]` alone cannot tell a correct descent
 // from a dropped one. Projecting the null-extendable side separates them: a
 // dropped descent turns the matching arm's r.id into NULL and the non-matching
-// arm's into a match. What this fixture CANNOT separate is `l` from `m` — the
+// arm's into a match.
+//
+// MEASURED AGAINST THE ACTUAL PRE-FIX DEFECT, which is BOTH mutations at once —
+// resolve the root by DISPLAY name (a fused node is named after its leaf, so
+// `m.n.sk` resolves to the flat `sk`) AND drop the descent. Under that
+// combination NINE of these ten arms are GREEN, and exactly one fires:
+//
+//	-multileg-side-only-projecting-r   want [1|NULL 2|NULL 3|NULL]
+//	                                   got  [1|1 2|2 3|3]
+//
+// The mechanism is the fixture's two key columns. `-both-sides` degrades from
+// `m.n.sk = r.n.sk` to `m.sk = r.sk` — both sides degrade TOGETHER, `sk` is
+// unique, so it still matches 1:1 and still produces 1|1,2|2,3|3. The wrong read
+// COINCIDES with the right answer, which is why even the projecting form of that
+// arm cannot see it. `-multileg-side-only` degrades from `m.n.sk = r.sk` to
+// `m.sk = r.sk`: the correct query compares DISJOINT domains (11/22/33 against
+// 100/200/300) and must null-extend, while the degraded one matches. Only there
+// does the wrong column change the answer.
+//
+// So the whole `[1 2 3]` population — and one of the two projecting arms — is
+// blind to the exact defect this file exists for, and a single arm carries the
+// detection. That is the argument for keeping it, and it is a stronger one than
+// "more coverage": a pair whose two sides degrade together cannot check itself.
+//
+// What this fixture CANNOT separate is `l` from `m` — the
 // join condition makes them the same row, so both bindings are correct by
 // construction here; the multiplicity discrimination for that axis lives in
 // sqldriver's TestFDB_OuterMultilegNestedOnPredicate, whose fixture collides

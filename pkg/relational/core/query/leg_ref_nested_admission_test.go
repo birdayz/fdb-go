@@ -262,7 +262,25 @@ func TestLegRefRootInWindow_ResolvesTheRootAccessorNotTheLeafDisplayName(t *test
 
 // nestedLegDescent is a user-written `<corr>.<root>.<leaf>`: ONE UNPINNED
 // FieldValue whose root accessor is the leg column and whose second descends
-// inside it. Field is the ROOT name, which is what every leg walk resolves.
+// inside it.
+//
+// IT SETS Field TO THE ROOT NAME, AND SQL NO LONGER PRODUCES THAT. The real
+// mint, fuseNestedAccessors (expr/expr.go), sets `out.Field = leaf.Name` — a
+// fused value carries ONE name and it is the LEAF's. So this fixture is
+// deliberately kept at the historical shape ONLY because the three tests below
+// it are about ADMISSION (does legRef see the reference, do the counters count
+// it), and admission never reads Field except through legRef's dotted guard,
+// which neither name trips.
+//
+// It is therefore NOT a fixture for anything that RESOLVES a slot, and that
+// limit is why none of those three tests caught the display-name defect: with
+// Field set to the root, the old FieldIndexUnique(fv.Field) lookup happened to
+// be right. A fixture that cannot express the current node shape is a test that
+// cannot fail. The resolution axis has its own fixture, built the way SQL
+// actually mints it — see
+// TestLegRefRootInWindow_ResolvesTheRootAccessorNotTheLeafDisplayName, whose
+// node carries the LEAF display name over a root accessor and a colliding flat
+// column.
 func nestedLegDescent(corr, root, leaf string) *values.FieldValue {
 	return &values.FieldValue{
 		Field: root,
@@ -291,9 +309,12 @@ func nestedLegDescent(corr, root, leaf string) *values.FieldValue {
 // Unbakeable when it does not.
 //
 // The verdict asks the ROOT only, and that is correct rather than sloppy: it is
-// the same question the bake asks in the same window
-// (leafTyp.FieldIndexUnique of the reference's Field), so verdict and bake agree
-// by construction. The suffix is not the verdict's business — a descent into a
+// the same question the bake asks in the same window, asked through the SAME
+// function — both call legRefRootInWindow, so a verdict cannot say "resolves"
+// about a different column than the bake reads. The two used to spell the lookup
+// out separately, and that arrangement could not survive the fused-leaf naming:
+// a display name is not the root's, so two copies would have had to be corrected
+// in lockstep. The suffix is not the verdict's business — a descent into a
 // column that resolves is the fuse's problem, and the fuse is correct-or-loud.
 func TestClassifyLegConjunct_SeesANestedBoxLegDescent(t *testing.T) {
 	t.Parallel()

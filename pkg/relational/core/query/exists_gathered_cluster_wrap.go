@@ -130,17 +130,30 @@ func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier
 		//
 		// What stops this walk from following suit is the code beneath it: it
 		// resolves ONE name (w.Typ.FieldIndexUnique(fv.Field)) and bakes a
-		// one-step address from it. For a nested descent fv.Field is the ROOT
-		// column, so admitting it here without also fusing Accessors[1:] would
-		// bake the address of the enclosing STRUCT and drop the descent — a real
-		// merged column that nothing downstream rejects, i.e. wrong rows.
-		// Declining instead leaves the reference leg-correlated, the post-walk
-		// survivor check sees it and returns ok=false, and the caller falls back
-		// to the name model, which answers the shape correctly. A decline costs
-		// the ordinal wrap; the alternative costs rows.
+		// one-step address from it. TWO separate things go wrong if a nested
+		// descent is admitted without changing that code, and the FIRST is the
+		// one that is easy to miss:
 		//
-		// Widening this is a real optimization, and it is a TWO-part change like
-		// the bake's was — the fuse must land with it. Pinned so it cannot be
+		//   - fv.Field is the LEAF's name, not the root's. A fused nested value
+		//     carries ONE name and it is the leaf's (RFC-231), so the lookup does
+		//     not resolve the struct the path starts at — it resolves whatever
+		//     flat column of the leg happens to share the leaf's spelling. On
+		//     `nt(id, sk, n gst)` with `gst(sk, …)`, `m.n.sk` resolves to the
+		//     top-level SK. A real column, a valid ordinal, the wrong one, and no
+		//     ordinal check downstream can reject it.
+		//   - even with the root resolved correctly, the address reaches the
+		//     enclosing STRUCT and the descent is still dropped.
+		//
+		// So widening this needs BOTH: derive the root from Accessors[0] (the
+		// resolved path, which no naming policy touches — legRefRootInWindow in
+		// ordinal_seed.go is that resolver, and ReAnchorRootInto is what it uses)
+		// AND fuse Accessors[1:] onto the result. Doing only the second is the
+		// wrong-slot read above; doing only the first drops the descent.
+		//
+		// Declining leaves the reference leg-correlated, the post-walk survivor
+		// check sees it and returns ok=false, and the caller falls back to the
+		// name model, which answers the shape correctly. A decline costs the
+		// ordinal wrap; either half-widening costs rows. Pinned so it cannot be
 		// widened halfway; see TestRebaseLegRefsToBox_DeclinesANestedDescent.
 		if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 			return n

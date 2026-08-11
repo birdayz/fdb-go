@@ -839,15 +839,29 @@ func bakeGatedJoinPredicatesChecked(preds []predicates.QueryPredicate, legTypes 
 //   - box_conjunct.go classifyLegConjunct — the GATHER ADMISSION VERDICT for a
 //     box/flat-cluster WHERE conjunct, and a PLAN-SHAPE decision rather than a
 //     count. It is not pre-filtered, so it widens with this gate, and it stays
-//     coherent with the bake BY CONSTRUCTION: it resolves the same root name in
-//     the same window (leafTyp.FieldIndexUnique of the reference's Field, which
-//     for a nested descent is the ROOT column), so verdict and bake cannot
-//     disagree about whether the reference resolves;
+//     coherent with the bake because the two SHARE legRefRootInWindow — one
+//     function, so a verdict cannot say "resolves" about a different column than
+//     the bake reads. It used to make that claim on a weaker basis (both sites
+//     spelled out leafTyp.FieldIndexUnique(fv.Field) separately), and that basis
+//     was destroyed by the fused-leaf naming: a display name is not the root's,
+//     so the two copies would have had to be corrected in lockstep to stay
+//     coherent. Sharing the resolver is what makes the coherence structural;
 //   - exists_gathered_cluster_wrap.go rebaseLegRefsToBox — MASKED. Its caller
 //     pre-filters on SourceRelativeBaked before reaching here, deliberately, and
 //     that narrowness is pinned at its own site; see the guard's comment there
 //     for why the walk below it cannot serve a multi-accessor path.
-//
+func legRef(v values.Value) (string, bool) {
+	fv, isFV := v.(*values.FieldValue)
+	if !isFV || (fv.Resolved != nil && !fv.RootIsLegRelativeUnpinned()) || strings.Contains(fv.Field, ".") {
+		return "", false
+	}
+	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+	if !isQOV {
+		return "", false
+	}
+	return strings.ToUpper(qov.Correlation.Name()), true
+}
+
 // legRefRootInWindow resolves a leg reference's ROOT column within one leg
 // BAKE WINDOW, returning its ordinal in that window and the accessors the
 // reference still has to travel INSIDE it (empty for a flat reference).
@@ -888,18 +902,6 @@ func legRefRootInWindow(fv *values.FieldValue, window *values.RecordType) (int, 
 		return 0, nil, false
 	}
 	return idx, nil, true
-}
-
-func legRef(v values.Value) (string, bool) {
-	fv, isFV := v.(*values.FieldValue)
-	if !isFV || (fv.Resolved != nil && !fv.RootIsLegRelativeUnpinned()) || strings.Contains(fv.Field, ".") {
-		return "", false
-	}
-	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
-	if !isQOV {
-		return "", false
-	}
-	return strings.ToUpper(qov.Correlation.Name()), true
 }
 
 // predicateLegAliases counts how many DISTINCT gated-join leg aliases a predicate's

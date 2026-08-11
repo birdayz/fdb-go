@@ -4194,8 +4194,23 @@ func unnestExistsRefSurvivesUnbaked(
 		values.WalkValue(v, func(node values.Value) bool {
 			fv, isFV := node.(*values.FieldValue)
 			// A source-relative baked ref mis-resolves over the NLJ layout
-			// exactly like a lazy one — it SURVIVES; only machinery-owned
-			// baked nodes (pinned/multi-accessor ofOrdinals) are safe.
+			// exactly like a lazy one — it SURVIVES; a FrontierPinned
+			// (machinery-owned) baked ofOrdinal is safe.
+			//
+			// THE ARITY HALF OF THIS KEY IS A KNOWN GAP, NOT A JUSTIFIED
+			// EXCLUSION. SourceRelativeBaked additionally requires a SINGLE
+			// accessor, so an UNPINNED MULTI-accessor node — which is what a
+			// user-written nested descent is — is skipped here as "safe" when it
+			// is not: it would survive unbaked while this net reports the tree
+			// clean, and bakeUnnestElementRefOrdinal skips the same shape without
+			// setting a failure flag. It is unreachable today only because a
+			// member reference on a struct element is refused during resolution
+			// inside an EXISTS (42703), one step upstream. That is PINNED, with
+			// the re-arm condition spelled out, by
+			// TestFDB_UnnestElementMemberInExistsIsRefused in
+			// pkg/relational/sqldriver — and booked in TODO.md Phase 12. Fixing
+			// it means what ordinal_seed.go's bake did: derive the root from
+			// Accessors[0] and fuse Accessors[1:], or decline — never skip.
 			if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 				return true // baked ofOrdinal (or non-FieldValue) — descend/skip
 			}
