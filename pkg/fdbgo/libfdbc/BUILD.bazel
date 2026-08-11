@@ -21,6 +21,7 @@ load("@rules_go//go:def.bzl", "go_library")
 # gazelle:exclude backend.go
 # gazelle:exclude options.go
 # gazelle:exclude mappedrange_cref.go
+# gazelle:exclude range_cref.go
 go_library(
     name = "libfdbc",
     srcs = ["backend_stub.go"],
