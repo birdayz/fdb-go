@@ -83,6 +83,51 @@ var _ = Describe("DuplicateGroupByJavaProbe", func() {
 			// raw-text identity catches only the byte-identical twin).
 			{"rev_expr_same_text", "SELECT amount+1, COUNT(*) FROM T_G1 GROUP BY amount+1, amount+1", "both_42702"},
 			{"rev_expr_diff_space", "SELECT amount+1, COUNT(*) FROM T_G1 GROUP BY amount+1, amount + 1", "both_42702"},
+			// THE PARENTHESISED TWIN — a MEASURED divergence, pinned in the
+			// direction it actually runs rather than assumed either way.
+			//
+			// Go builds a RecordConstructorValue for `(amount+1)` and a bare
+			// ArithmeticValue for `amount+1`, and that is CORRECT: Java's
+			// visitRecordConstructor does not unwrap a one-element constructor
+			// either (ExpressionVisitor.java:918-925), which is why
+			// walkRecordConstructorInner deliberately does not. The natural
+			// inference — that Java therefore sees the same asymmetry and also
+			// declines to refuse — is WRONG, and only the live JVM could say so.
+			//
+			// Java refuses anyway, and its message says why: `Ambiguous columns
+			// for q…._0.AMOUNT + @c12` names the UNWRAPPED arithmetic. Java's
+			// guard is Expressions.pullUp over FieldPaths (Expressions.java:112),
+			// which descends THROUGH the record wrapper and finds the same
+			// derivation twice. The wrapper asymmetry is real on both sides; only
+			// Java's guard looks past it.
+			//
+			// So this is not a normalization divergence. It is Go's duplicate
+			// gate comparing whole Values where Java's pull-up compares
+			// derivations — booked in TODO.md Phase 12.
+			{"paren_twin_aggonly", "SELECT COUNT(*) FROM T_G1 GROUP BY (amount+1), amount+1", "java_42702_go_plans"},
+			{"paren_twin_proj", "SELECT amount+1, COUNT(*) FROM T_G1 GROUP BY (amount+1), amount+1", "java_42702_go_plans"},
+			{"paren_twin_having", "SELECT COUNT(*) FROM T_G1 GROUP BY (amount+1), amount+1 HAVING amount+1 > 11", "java_42702_go_plans"},
+			// The COMPARISON spelling diverges the same way, by a second and
+			// independent route: Go's gate resolves with WalkExpression
+			// (posPredicate), which will not fold a comparison to a Value at all,
+			// so identity falls to a GetText compare the parentheses defeat.
+			{"cmp_twin", "SELECT COUNT(*) FROM T_G1 GROUP BY (amount=1), amount=1", "java_42702_go_plans"},
+			// THE CONTROLS that keep the three above honest: with the spellings
+			// made to coincide, Go's gate DOES refuse, so what is pinned is the
+			// mixed-spelling hole and not a claim that the gate never fires.
+			{"paren_both_sides", "SELECT COUNT(*) FROM T_G1 GROUP BY (amount+1), (amount+1)", "both_42702"},
+			{"cmp_same_text", "SELECT COUNT(*) FROM T_G1 GROUP BY amount=1, amount=1", "both_42702"},
+			// THE JOIN SPELLING — the OTHER route (name-keyed, plain FieldValue
+			// keys), measured here rather than inferred from the single-source
+			// `dup_qualified_vs_bare` analogue. Go's duplicate gate strips a
+			// leading alias only when the query has NO joins
+			// (visitSelectGroupBy's `len(fs.joins) == 0`), so under a join
+			// `a.amount` and bare `amount` compare as different names.
+			// `amount` exists ONLY in T_G1, so the bare reference is
+			// unambiguous and cannot be refused for an unrelated reason — using
+			// `category`, which both tables declare, would confound this.
+			{"join_qualified_vs_bare", "SELECT COUNT(*) FROM T_G1 a JOIN T_G2 b ON a.category = b.category GROUP BY a.amount, amount", "java_42702_go_plans"},
+			{"join_control_single_source", "SELECT COUNT(*) FROM T_G1 a GROUP BY a.amount, amount", "both_42702"},
 			{"distinct_exprs_ok", "SELECT COUNT(*) FROM T_G1 GROUP BY amount+1, amount+2", "go_extends"},
 			{"distinct_keys_ok", "SELECT category, amount, COUNT(*) FROM T_G1 GROUP BY category, amount", "go_extends"},
 			{"single_key_ok", "SELECT category, COUNT(*) FROM T_G1 GROUP BY category", "go_extends"},
@@ -123,6 +168,26 @@ var _ = Describe("DuplicateGroupByJavaProbe", func() {
 			fmt.Fprintf(GinkgoWriter, "PROBE %s\n  %s\n  %s\n  sql: %s\n",
 				p.name, render("JAVA", jr), render("GO  ", gr), p.sql)
 			switch p.expect {
+			case "java_42702_go_plans":
+				// A PINNED DIVERGENCE, asserted in BOTH directions so neither
+				// side can move unnoticed. Java must keep refusing (if it stops,
+				// Go is conformant and the Phase 12 entry is wrong); Go must keep
+				// planning (if it starts refusing, the fix landed and these move
+				// to both_42702).
+				if jr.Err == nil || !strings.Contains(errMsg(jr), "Ambiguous columns for") {
+					divergences = append(divergences, fmt.Sprintf(
+						"probe %s: Java NO LONGER refuses the parenthesised duplicate.\n"+
+							"  That would make Go's current behaviour CONFORMANT and the TODO.md\n"+
+							"  Phase 12 booking wrong — re-measure before changing Go.\n  java: %s",
+						p.name, render("JAVA", jr)))
+				}
+				if gr.Err != nil {
+					divergences = append(divergences, fmt.Sprintf(
+						"probe %s: Go now REFUSES, so the divergence is closed.\n"+
+							"  Move this probe to both_42702 and flip the Go-side arms in\n"+
+							"  sqldriver/groupby_computed_key_having_fdb_test.go.\n  go: %s",
+						p.name, render("GO  ", gr)))
+				}
 			case "both_42702":
 				if jr.Err == nil || !strings.Contains(errMsg(jr), "Ambiguous columns for") {
 					divergences = append(divergences, fmt.Sprintf("probe %s: Java no longer rejects the duplicate grouping\n  java: %s",

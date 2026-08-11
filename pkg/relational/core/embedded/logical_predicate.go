@@ -7407,14 +7407,25 @@ func aggregateGroupKeyOutputName(gkv values.Value) string {
 //
 // WHAT ACTUALLY KEEPS THIS LOOP SINGLE-MATCHED is that same wrapper mismatch:
 // instrumenting the loop to count matches reports 1 for every such query, over
-// keys [RecordConstructorValue, ArithmeticValue]. So the loop is protected by a
-// normalization GAP rather than by an interlock — and if that gap is ever closed
-// (making the walk unwrap the paren, which is what its own doc promises) without
-// converging the two sites on one predicate, a genuine multi-match becomes
-// constructible here. Closing it is a change to the gate affecting every GROUP BY
-// shape, so it is booked in TODO.md Phase 12 with the join divergence it shares a
-// fix with, and pinned both directions by
-// TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot's parenthesised-twin arm.
+// keys [RecordConstructorValue, ArithmeticValue].
+//
+// THE NON-UNWRAP IS DELIBERATE AND CORRECT — do not "fix" it. walkRecordConstructorInner
+// (expr/walk.go) does not unwrap a one-element constructor because JAVA does not:
+// visitRecordConstructor goes straight to RecordConstructorValue.ofColumns
+// (ExpressionVisitor.java:918-925) whatever the element count, so `SELECT (1 + 2)`
+// is a one-field STRUCT, measured against the live JVM. Java resolves the
+// `(expr)`-vs-one-tuple ambiguity by POSITION — function arguments are flattened
+// later by FlattenRecordWithOneField — and unwrapping in the walk collapses the
+// projection case, which is a divergence Go already fixed. (The summary list at
+// the top of walk.go still says "1-element unnamed → unwrap"; that line is stale
+// and contradicts the function it summarizes.)
+//
+// So the loop is protected by a NORMALIZATION ASYMMETRY that is not itself a bug.
+// The thing to fix is this loop's own trust in an upstream gate — Java guards
+// LOCALLY at the pull-up site (Expressions.java:112, Expression.java:246) rather
+// than delegating to a duplicate-key check. Booked in TODO.md Phase 12, whose
+// FIRST step is making both rebase loops collect matches and raise on >1; that
+// guard is small, local, and safe in every ordering.
 func rebasePostAggregateComputedGroupKey(v values.Value, agg *logical.LogicalAggregate) values.Value {
 	return values.Replace(v, func(node values.Value) values.Value {
 		// A FieldValue is the SIBLING walk's business, and leaving it entirely

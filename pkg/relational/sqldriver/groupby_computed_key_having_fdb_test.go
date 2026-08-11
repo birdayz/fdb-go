@@ -221,15 +221,23 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 	})
 
 	t.Run("two_computed_keys_bind_their_own_slot_and_not_slot_zero", func(t *testing.T) {
-		// NO OTHER ARM PUTS A SECOND BINDABLE KEY IN FRONT OF THE COMPUTED WALK,
-		// so without this one the slot that walk records is always 0 and nothing
-		// could tell the recorded loop index from a hardcoded zero — while that
-		// index IS the binding. This arm exists for the index alone.
+		// THE SLOT INDEX IS THE BINDING, and a single-key arm cannot tell the
+		// recorded loop index from a hardcoded zero. This arm exists for the
+		// index alone, and it is the DELIBERATE witness for it on the computed
+		// walk — mutating that walk's mint to ordinal 0 reddens this arm and
+		// nothing else.
 		//
-		// Other arms DO group by two keys; none of them substitutes. The two
-		// duplicate arms are refused 42702 before the walk runs at all, and the
-		// join and parenthesised arms bind through the SIBLING FieldValue walk,
-		// whose slot index has its own arm (a_nested_key_in_a_nonzero_slot).
+		// It is not the only witness, though, and the difference matters when
+		// reading a mutation result. a_parenthesised_computed_key_twin also puts
+		// a second key in front of THIS walk: its HAVING reference resolves to an
+		// ArithmeticValue matched against key index 1 (the instrumentation in
+		// that arm reports the keys as [RecordConstructorValue, ArithmeticValue],
+		// which is the computed loop's own view). So it is a second, incidental
+		// witness — but it cannot replace this one, because it also passes for a
+		// reason unrelated to the index (see its own note on m1).
+		//
+		// The two duplicate arms genuinely do not substitute: both are refused
+		// 42702 before any walk runs.
 		//
 		// The groups are the eight (c1+1, c2+1) pairs: (101,201..204) and
 		// (141,328..331). The predicates are chosen so that reading the OTHER
@@ -502,9 +510,27 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// `c1 + 1` resolves to the bare ArithmeticValue. Semantically the same
 		// expression, structurally two different Value types. So the gate is not
 		// defeated by falling back to a weaker predicate here; it is defeated
-		// while running its STRONGEST one, on inputs the walk failed to
-		// normalize. WalkExpression's doc says a 1-element unnamed
-		// RecordConstructor is unwrapped; on this path it is not.
+		// while running its STRONGEST one.
+		//
+		// THE NON-UNWRAP IS CORRECT — do not "fix" it, and do not read this arm
+		// as asking for that. Java's visitRecordConstructor does not unwrap a
+		// one-element constructor either (ExpressionVisitor.java:918-925), which
+		// is exactly why walkRecordConstructorInner does not; unwrapping in the
+		// walk collapses the projection case and reintroduces a divergence Go
+		// already fixed. (walk.go's summary list still says "1-element unnamed →
+		// unwrap"; that line is stale and contradicts its own function. It is
+		// what an earlier version of this comment cited.)
+		//
+		// MEASURED AGAINST THE LIVE JVM, because the natural inference from the
+		// above is that Java sees the same asymmetry and also declines to refuse
+		// — and that inference is WRONG. conformance's DuplicateGroupByJavaProbe
+		// (paren_twin_*) reports Java refusing with `Ambiguous columns for
+		// q…._0.AMOUNT + @c12`, naming the UNWRAPPED arithmetic: Java's
+		// Expressions.pullUp compares FieldPath DERIVATIONS and descends through
+		// the wrapper, finding the same one twice. Both engines build the
+		// wrapper; only Java's guard looks past it. That measurement is what
+		// makes this a divergence rather than conformance, and it is pinned
+		// there in both directions.
 		//
 		// THE COMPARISON SPELLING FAILS DIFFERENTLY, and is worth pinning beside
 		// it because it is a second, independent route to the same place:
@@ -527,12 +553,42 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// loop, so it binds the one correct slot. The loop's CONCLUSION holds;
 		// what does not hold is the reason previously given for it.
 		//
+		// WHICH SPELLING CAN ARM THE LOOP, stated precisely because the obvious
+		// reading is backwards. For the ARITHMETIC pair the loop can never be
+		// armed by normalizing: walkAtom dispatches RecordConstructor the same
+		// way in both positions, so any unwrap makes the GATE see AV vs AV and
+		// refuse 42702 BEFORE the loop. It is the COMPARISON pair that carries
+		// the hazard — its gate failure (posPredicate will not fold a comparison
+		// at all) is independent of the wrapper, so it survives any unwrap.
+		//
+		// And the danger is DIRECTION-ASYMMETRIC, with the naive fix landing on
+		// the wrong side:
+		//   unwrap in WalkExpressionForProjection ONLY -> gate still compares
+		//     RCV vs AV and does not refuse, while GroupKeys becomes [AV, AV] and
+		//     a reference matches BOTH — ARMED;
+		//   unwrap in WalkExpression ONLY (the gate's walk) -> gate sees AV vs AV
+		//     -> 42702 — safe;
+		//   unwrap in both, or beneath both -> safe.
+		// The projection walk is the one that mints the planner's value, so it is
+		// where someone would naturally change it. Do the loop guard first.
+		//
 		// BOUND AND OWNERSHIP: identical to the join divergence below. The rows
 		// are arithmetically correct, so this is conformance-only — Go answers
-		// where Java raises AMBIGUOUS_COLUMN. Both divergences share one fix
-		// (converge the gate and the walk on one predicate) and are booked
-		// together in TODO.md Phase 12; neither is folded here, because that fix
-		// changes every GROUP BY shape in the engine.
+		// where Java refuses. Booked with the join case in TODO.md Phase 12,
+		// whose FIRST step is small and local: make both rebase loops collect
+		// matches and raise on >1, which is what Java does at the pull-up site
+		// and is safe in every ordering.
+		//
+		// WHY THIS ARM STAYS GREEN UNDER THE m1 MUTATION (reverting the computed
+		// walk), which would otherwise look like evidence it tests nothing: it
+		// passes by COINCIDENCE. Without the walk the HAVING reference reads
+		// output slot 1, which here holds `(c1+1)` — the key's own value — so
+		// `> 120` separates 101 from 141 exactly as the correct binding does.
+		// That is a property of this fixture, not a guard. The DELIBERATE witness
+		// for the computed walk's slot index is
+		// two_computed_keys_bind_their_own_slot_and_not_slot_zero; this arm is an
+		// incidental second one (its HAVING reference is an ArithmeticValue
+		// matched against key index 1) and must not be read as replacing it.
 		const why = "This arm pins a KNOWN Go-answers/Java-raises divergence, booked in " +
 			"TODO.md Phase 12. If it now errors, check for 42702 and flip this arm to " +
 			"assert the refusal — that is the fix landing, not a regression."
@@ -605,12 +661,16 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// `grep -c '^-[^-]'` = 0) — a diff that deletes nothing cannot have
 		// introduced or widened this.
 		//
-		// WHEN IT IS FIXED — by converging the duplicate gate and the rebase on
-		// ONE predicate, which is what removes the asymmetry documented at
-		// rebasePostAggregateGroupKeyValue's first-match loop — every query below
-		// must start returning 42702, and this arm becomes that assertion. Until
-		// then it exists so the behaviour cannot move in EITHER direction
-		// unnoticed: silently starting to refuse is a change worth seeing too.
+		// WHEN IT IS FIXED, every query below must start returning 42702 and this
+		// arm becomes that assertion. The FIRST step is small and local, and is
+		// not the gate rework it looks like: make this walk's first-match loop
+		// COLLECT matches and raise on more than one, which is exactly where Java
+		// guards (Expressions.java:112, Expression.java:246 — locally, at the
+		// pull-up, delegating to no upstream duplicate-key check). Converging the
+		// gate's identity predicate is a separate, larger step that can follow.
+		// Until then this arm exists so the behaviour cannot move in EITHER
+		// direction unnoticed: silently starting to refuse is a change worth
+		// seeing too.
 		//
 		// BOOKED in TODO.md Phase 12, together with its computed-route twin
 		// (a_parenthesised_computed_key_twin_is_NOT_refused_either), because the
