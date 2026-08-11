@@ -263,11 +263,58 @@ var engineGaps = []EngineGap{
 	// expanded output to be composable from the grouping expressions plus the
 	// aggregates plus the outer correlations (LogicalOperator.java:435-441), so
 	// a star covering exactly the grouping list is legal and only a star
-	// exceeding it is 42803. Go rejects the shape unconditionally in the
-	// classifier, which runs before any schema is available to expand against.
+	// exceeding it is 42803.
+	//
+	// GO NOW EXPANDS ONE OF THE TWO STAR SHAPES, so the old wording here — "Go
+	// rejects the shape unconditionally in the classifier, which runs before any
+	// schema is available to expand against" — describes a state that no longer
+	// exists and would read as a stale entry. A WHOLE-LIST star, `SELECT *` or
+	// `SELECT q.*` as the entire select list, is expanded against the semantic
+	// scope BEFORE the grouping rules are applied and then validated per
+	// expanded column, which is Java's order.
+	//
+	// WHAT STILL RESTS HERE IS THE MIXED ARM: `SELECT a, q.*` keeps a blanket
+	// refusal in the reclassification block, and that — not the whole-list
+	// shape — is what this file lands on. The entry is LIVE; the count of 1 is
+	// this shape, not a leftover.
+	//
 	// Booked to that gap at its own exact rejection, so the struct class no
 	// longer claims the file and the real blocker is counted under its own name.
 	{"select-a-star.yamsql", SkipGapStarGroupBy, "SELECT qualifier.* expands to columns not in GROUP BY", "CQ-72"},
+
+	// A GROUP BY key that descends into a struct column. The file's FIRST test
+	// is `select max(q.s) from nested group by r.v.z having r.v.z > 120`, which
+	// Java answers `[{330}]` off index i2 (groupby-tests.yamsql:29,61-62);
+	// rejectNestedPathGroupKey refuses it with 0AF00.
+	//
+	// THE FILE STILL RUNS, and that is why this is a booking rather than a
+	// re-skip. It executes 33 of its 44 queries before the block's shuffle
+	// reaches line 61 and aborts there, and those 33 are counted in the ledger's
+	// `queries` total either way.
+	//
+	// That is true BY CONSTRUCTION, not merely by measurement, which is the
+	// stronger statement: Census.accumulate adds f.QueriesRun OUTSIDE the
+	// `switch f.Status`, so pass, fail and skip contribute identically, and
+	// gapFor is consulted only after execute has already returned and counted.
+	// A gap entry therefore CANNOT move `queries` — only pass/fail/skip. (The
+	// two-run comparison agrees: booked and unbooked both report queries=1775.)
+	//
+	// What this entry changes is the file's STATUS, not its
+	// coverage. Before the three-segment resolver landed the same file was
+	// `unsupported-DDL:struct-index queries=0` — its CREATE SCHEMA TEMPLATE died
+	// on the three-segment index `I2` and NOTHING ran. That is the state this
+	// entry must not be confused with.
+	//
+	// WHAT RETIRES IT: the arm at upgradeAggregateOperands that mints a grouping
+	// key as `colRef{table: gk.Qualifier, col: gk.Bare}` — a spelling that reads
+	// a qualified key as `table.column` and can never express `column.member`, so
+	// a nested key degrades to a flat dotted FieldValue no runtime row can
+	// answer. RFC-230 carries it. When that lands the refusal disappears, this
+	// signature stops matching, and the run goes RED until the entry is deleted.
+	// THAT REDNESS IS THE POINT: it is the pin failing in the direction of
+	// noticing. Do not answer it by widening the signature or by relabelling the
+	// class — delete the entry, and re-measure the ledger string.
+	{"groupby-tests.yamsql", SkipGapNestedPathGroupKey, `grouping by the nested field "R.V.Z" is not supported`, "RFC-230"},
 
 	// NOT struct-related, re-armed by the struct DML landing (these files'
 	// later blocks run for the first time):

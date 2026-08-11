@@ -46,7 +46,11 @@ type groupKeyRef struct {
 	bare      string // last segment of a bare column ref; "" for expressions
 	qualifier string // leading segment(s) of a qualified bare ref; "" otherwise
 	qualified bool   // parse-tree segment count > 1
-	expr      antlrgen.IExpressionContext
+	// segs is the FULL ordered segment list of the reference (`a.n.sk` ->
+	// [A N SK]). It is what RESOLUTION consumes; qualifier is a rendering and
+	// cannot express where one segment ends and the next begins.
+	segs []string
+	expr antlrgen.IExpressionContext
 }
 
 // groupKeyRefDisplays renders the parser keys' display names for name-only
@@ -198,6 +202,10 @@ type orderByClause struct {
 	bare      string
 	qualifier string
 	qualified bool
+	// segs is the FULL ordered segment list of the reference (`a.n.sk` ->
+	// [A N SK]). It is what RESOLUTION consumes; qualifier is a rendering and
+	// cannot express where one segment ends and the next begins.
+	segs []string
 	// bareRef: the ORDER BY item is a plain ONE-segment column reference —
 	// the only shape SQL binds to an output alias. False for qualified
 	// references (`d.x`), aggregates, and computed expressions, whose
@@ -281,8 +289,12 @@ type aggSelectCol struct {
 	// binding one leg's key. Empty/false for expression-redirected entries.
 	groupColQualifier string
 	groupColQualified bool
-	aggFunc           string // COUNT/SUM/MIN/MAX/AVG
-	aggArg            string // argument column name — set only when arg is a bare column; used for the proto-path FD fast path. Empty for COUNT(*) and for expression args.
+	// groupColSegs is the FULL ordered segment list of the reference (`a.n.sk` ->
+	// [A N SK]). It is what RESOLUTION consumes; qualifier is a rendering and
+	// cannot express where one segment ends and the next begins.
+	groupColSegs []string
+	aggFunc      string // COUNT/SUM/MIN/MAX/AVG
+	aggArg       string // argument column name — set only when arg is a bare column; used for the proto-path FD fast path. Empty for COUNT(*) and for expression args.
 	// aggExpr is the IExpressionContext of the aggregate's argument when it is not a bare
 	// column reference (e.g. SUM(qty*price), AVG(CASE ... END)). Evaluated per input row.
 	// nil for bare-column args and for COUNT(*).
@@ -295,6 +307,10 @@ type aggSelectCol struct {
 	aggArgQualified bool
 	aggArgBare      string
 	aggArgQualifier string
+	// aggArgSegs is the FULL ordered segment list of the reference (`a.n.sk` ->
+	// [A N SK]). It is what RESOLUTION consumes; qualifier is a rendering and
+	// cannot express where one segment ends and the next begins.
+	aggArgSegs []string
 	// visible is true when the aggregate appears in the user's SELECT list.
 	// Non-visible entries are harvested from HAVING or ORDER BY — they
 	// contribute to accumulation/evaluation but are excluded from (or
@@ -341,26 +357,26 @@ func checkCountStar(e *antlrgen.SelectExpressionElementContext) bool {
 // Shares the AggregateWindowedFunction → (funcName, argCol, argExpr, outName)
 // extraction with aggColFromAwf via extractAwfFields; this wrapper adds the
 // SELECT-list element unwrap + the alias-from-AS overlay.
-func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, alias string, distinct, argQualified bool, argBare, argQualifier string, ok bool) {
+func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, alias string, distinct, argQualified bool, argBare, argQualifier string, argSegs []string, ok bool) {
 	pred, pok := e.Expression().(*antlrgen.PredicatedExpressionContext)
 	if !pok {
-		return "", "", nil, "", false, false, "", "", false
+		return "", "", nil, "", false, false, "", "", nil, false
 	}
 	fc, fcok := pred.ExpressionAtom().(*antlrgen.FunctionCallExpressionAtomContext)
 	if !fcok {
-		return "", "", nil, "", false, false, "", "", false
+		return "", "", nil, "", false, false, "", "", nil, false
 	}
 	agg, aggok := fc.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
 	if !aggok {
-		return "", "", nil, "", false, false, "", "", false
+		return "", "", nil, "", false, false, "", "", nil, false
 	}
 	awf, awfok := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext)
 	if !awfok {
-		return "", "", nil, "", false, false, "", "", false
+		return "", "", nil, "", false, false, "", "", nil, false
 	}
-	fn, arg, aExpr, outName, isDistinct, argQual, argBare, argQualifier, fieldsOk := extractAwfFields(awf)
+	fn, arg, aExpr, outName, isDistinct, argQual, argBare, argQualifier, argSegs, fieldsOk := extractAwfFields(awf)
 	if !fieldsOk {
-		return "", "", nil, "", false, false, "", "", false
+		return "", "", nil, "", false, false, "", "", nil, false
 	}
 	// SELECT-list-only overlay: an explicit `AS alias` on the SELECT element
 	// wins over the reconstructed default ("SUM(v)") as the output column
@@ -368,7 +384,7 @@ func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCo
 	if e.Uid() != nil {
 		outName = functions.StripIdentifierQuotes(e.Uid().GetText())
 	}
-	return fn, arg, aExpr, outName, isDistinct, argQual, argBare, argQualifier, true
+	return fn, arg, aExpr, outName, isDistinct, argQual, argBare, argQualifier, argSegs, true
 }
 
 // extractAwfFields classifies an AggregateWindowedFunction into the pieces
@@ -390,7 +406,7 @@ func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCo
 // matches by surfacing distinct=true to callers, which then reject.
 // Same architectural reason in both engines: visitor doesn't handle
 // the DISTINCT case.
-func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, outName string, distinct, argQualified bool, argBare, argQualifier string, ok bool) {
+func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, outName string, distinct, argQualified bool, argBare, argQualifier string, argSegs []string, ok bool) {
 	distinct = awf.DISTINCT() != nil
 	resolveArg := func(fa antlrgen.IFunctionArgContext) {
 		if fa == nil {
@@ -408,12 +424,15 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 				uids := fid.AllUid()
 				argQualified = len(uids) > 1
 				argBare = functions.StripIdentifierQuotes(uids[len(uids)-1].GetText())
+				// EVERY segment is carried, not just the leading ones joined:
+				// an aggregate over a struct descent (`COUNT(a.n.sk)`) needs the
+				// boundaries, and the joined form asks for a source "A.N".
+				argSegs = make([]string, len(uids))
+				for qi, u := range uids {
+					argSegs[qi] = functions.StripIdentifierQuotes(u.GetText())
+				}
 				if argQualified {
-					parts := make([]string, len(uids)-1)
-					for qi, u := range uids[:len(uids)-1] {
-						parts[qi] = functions.StripIdentifierQuotes(u.GetText())
-					}
-					argQualifier = strings.Join(parts, ".")
+					argQualifier = strings.Join(argSegs[:len(uids)-1], ".")
 				}
 				return
 			}
@@ -461,7 +480,7 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 		funcName = "BITMAP_CONSTRUCT_AGG"
 		resolveArg(awf.FunctionArg())
 	default:
-		return "", "", nil, "", false, false, "", "", false
+		return "", "", nil, "", false, false, "", "", nil, false
 	}
 	display := argCol
 	if display == "" && argExpr != nil {
@@ -475,7 +494,7 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 	default:
 		outName = funcName + "(" + display + ")"
 	}
-	return funcName, argCol, argExpr, outName, distinct, argQualified, argBare, argQualifier, true
+	return funcName, argCol, argExpr, outName, distinct, argQualified, argBare, argQualifier, argSegs, true
 }
 
 // columnNameFromExpr extracts a plain column name (or aggregate output name like
@@ -503,17 +522,25 @@ func exprIsBareColumnRef(expr antlrgen.IExpressionContext) bool {
 
 // splitColumnRef reads the parse-tree segments of a plain column-reference
 // expression: bare = last FullId segment, qualifier = the joined leading
-// segments, qualified = segment count > 1. Zero values when expr is not a
-// plain column reference (the caller has already classified it via
-// columnNameFromExpr).
-func splitColumnRef(expr antlrgen.IExpressionContext) (bare, qualifier string, qualified bool) {
+// segments, qualified = segment count > 1, segs = EVERY segment in order.
+// Zero values when expr is not a plain column reference (the caller has
+// already classified it via columnNameFromExpr).
+//
+// `segs` is the resolution-grade carrier and `qualifier` is only a rendering.
+// Joining the leading segments loses the boundary between them, so a
+// three-segment reference `a.n.sk` arrives at the scope as a lookup for a
+// source or struct column literally named "A.N" — which exists nowhere, and
+// the reference dies as UNDEFINED_COLUMN even though every segment resolves.
+// Callers that RESOLVE must pass segs; callers that only display may keep
+// using qualifier.
+func splitColumnRef(expr antlrgen.IExpressionContext) (bare, qualifier string, qualified bool, segs []string) {
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok || pred.Predicate() != nil {
-		return "", "", false
+		return "", "", false, nil
 	}
 	atom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
 	if !ok {
-		return "", "", false
+		return "", "", false, nil
 	}
 	uids := atom.FullColumnName().FullId().AllUid()
 	parts := make([]string, len(uids))
@@ -528,14 +555,14 @@ func splitColumnRef(expr antlrgen.IExpressionContext) (bare, qualifier string, q
 		parts[i] = functions.StripIdentifierQuotes(u.GetText())
 	}
 	if len(parts) == 0 {
-		return "", "", false
+		return "", "", false, nil
 	}
 	bare = parts[len(parts)-1]
 	if len(parts) > 1 {
 		qualifier = strings.Join(parts[:len(parts)-1], ".")
 		qualified = true
 	}
-	return bare, qualifier, qualified
+	return bare, qualifier, qualified, parts
 }
 
 func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (string, error) {
@@ -573,7 +600,7 @@ func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (strin
 			return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"%s: unsupported aggregate %T", context, agg.AggregateWindowedFunction())
 		}
-		_, _, _, outName, _, _, _, _, ok := extractAwfFields(awf)
+		_, _, _, outName, _, _, _, _, _, ok := extractAwfFields(awf)
 		if !ok {
 			return "", api.NewErrorf(api.ErrCodeUnsupportedOperation, "%s: unsupported aggregate function", context)
 		}
@@ -649,6 +676,10 @@ type projCol struct {
 	bare      string
 	qualifier string
 	qualified bool
+	// segs is the FULL ordered segment list of the reference (`a.n.sk` ->
+	// [A N SK]). It is what RESOLUTION consumes; qualifier is a rendering and
+	// cannot express where one segment ends and the next begins.
+	segs []string
 	// selectOrdinal is the immutable one-based SQL SELECT-list position. It
 	// follows this item when it is reclassified into aggSelectCol.
 	selectOrdinal int
@@ -757,7 +788,14 @@ func selectQueryFromClassification(cls *selectClassification, fs *fromSource) *s
 // logic extracted from extractFromSimpleTable — it does NOT parse the
 // FROM clause. Both extractFromSimpleTable (proto path) and
 // PlanVisitor.VisitSimpleTable (Cascades path) delegate here.
-func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectClassification, error) {
+// starExpander returns the columns a SELECT-list star expands to, in FROM
+// order, for one qualifier ("" = the bare `*`). ok=false means the sources'
+// columns are not knowable here — deliberately distinct from an empty slice,
+// because "expands to nothing" and "cannot be expanded" need opposite handling
+// and collapse onto the same value otherwise.
+type starExpander func(qualifier string) ([]projCol, bool)
+
+func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar starExpander) (*selectClassification, error) {
 	// Parse SELECT list: either *, a list of column name expressions, COUNT(*), or
 	// a GROUP BY aggregate list (mix of group-by columns + aggregate functions).
 	selElems := simpleTable.SelectElements()
@@ -810,12 +848,12 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 					if e.Uid() != nil {
 						countStarAlias = functions.StripIdentifierQuotes(e.Uid().GetText())
 					}
-				} else if fn, argCol, argExpr, alias, isDistinct, argQual, argBare, argQualifier, isAgg := extractAggFunc(e); isAgg {
+				} else if fn, argCol, argExpr, alias, isDistinct, argQual, argBare, argQualifier, argSegs, isAgg := extractAggFunc(e); isAgg {
 					if containsNestedAggregateInSelectElement(e, argExpr) {
 						return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 							"unsupported nested aggregate(s)")
 					}
-					aggCols = append(aggCols, aggSelectCol{outName: alias, selectOrdinal: selectOrdinal, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct, aggArgQualified: argQual, aggArgBare: argBare, aggArgQualifier: argQualifier, visible: true})
+					aggCols = append(aggCols, aggSelectCol{outName: alias, selectOrdinal: selectOrdinal, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct, aggArgQualified: argQual, aggArgBare: argBare, aggArgQualifier: argQualifier, aggArgSegs: argSegs, visible: true})
 				} else {
 					colName, alias, nameErr := selectExprToColumnName(e)
 					var expr antlrgen.IExpressionContext
@@ -896,17 +934,17 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 							// 42803 grouping_error.
 							aggCols = append(aggCols, aggSelectCol{outName: outName, selectOrdinal: selectOrdinal, outExpr: expr, visible: true})
 						default:
-							gcBare, gcQual, gcQualified := splitColumnRef(e.Expression())
+							gcBare, gcQual, gcQualified, gcSegs := splitColumnRef(e.Expression())
 							if gcBare == "" {
 								gcBare = colName
 							}
-							aggCols = append(aggCols, aggSelectCol{outName: outName, selectOrdinal: selectOrdinal, groupCol: colName, groupColBare: gcBare, groupColQualifier: gcQual, groupColQualified: gcQualified, visible: true})
+							aggCols = append(aggCols, aggSelectCol{outName: outName, selectOrdinal: selectOrdinal, groupCol: colName, groupColBare: gcBare, groupColQualifier: gcQual, groupColQualified: gcQualified, groupColSegs: gcSegs, visible: true})
 						}
 					} else {
 						pc := projCol{name: colName, selectOrdinal: selectOrdinal}
 						if expr == nil {
 							// Plain column reference: parse-tree segments.
-							pc.bare, pc.qualifier, pc.qualified = splitColumnRef(e.Expression())
+							pc.bare, pc.qualifier, pc.qualified, pc.segs = splitColumnRef(e.Expression())
 						}
 						projCols = append(projCols, pc)
 						projAliases = append(projAliases, alias)
@@ -1033,7 +1071,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 					// mixed-agg classification site above.
 					extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, outExpr: slotExpr, visible: true}
 				default:
-					extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: c.name, groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, visible: true}
+					extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: c.name, groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, groupColSegs: c.segs, visible: true}
 				}
 			}
 			aggCols = append(extra, aggCols...)
@@ -1124,8 +1162,8 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 						"duplicate column %q in ORDER BY", colName)
 				}
 				seenOrderCols[key] = true
-				kb, kq, kqf := splitColumnRef(obExpr.Expression())
-				cls.orderBy = append(cls.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression(), bareRef: exprIsBareColumnRef(obExpr.Expression()), bare: kb, qualifier: kq, qualified: kqf})
+				kb, kq, kqf, ksegs := splitColumnRef(obExpr.Expression())
+				cls.orderBy = append(cls.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression(), bareRef: exprIsBareColumnRef(obExpr.Expression()), bare: kb, qualifier: kq, qualified: kqf, segs: ksegs})
 			} else {
 				cls.orderBy = append(cls.orderBy, orderByClause{ascending: ascending, nullsFirst: nullsFirst, expr: obExpr.Expression(), rawExpr: obExpr.Expression()})
 			}
@@ -1209,12 +1247,13 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 					break
 				}
 				if !redirected {
-					bare, qualifier, qualified := splitColumnRef(item.Expression())
+					bare, qualifier, qualified, segs := splitColumnRef(item.Expression())
 					cls.groupBy = append(cls.groupBy, groupKeyRef{
 						display:   colName,
 						bare:      bare,
 						qualifier: qualifier,
 						qualified: qualified,
+						segs:      segs,
 					})
 				}
 			} else {
@@ -1338,15 +1377,61 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 
 	// SQL §7.10 General Rule 1 / Java alignment: when GROUP BY is present,
 	// every SELECT-list column reference must be in GROUP BY or wrapped in
-	// an aggregate. Both SELECT * and SELECT qualifier.* with GROUP BY
-	// error 42803 because the star expansion includes all source columns,
-	// which generally aren't all in GROUP BY.
+	// an aggregate.
+	//
+	// THE STAR IS EXPANDED FIRST, AND ONLY THEN VALIDATED — that order is the
+	// whole rule. Java expands against the FROM-side operators
+	// (ExpressionVisitor.java:145-147 → SemanticAnalyzer.expandStar:321-368)
+	// and validates each EXPANDED item against the grouping keys afterwards
+	// (LogicalOperator.java:436-439, isComposableFrom). Go ran the two in the
+	// opposite order: a blanket refusal here meant the star was NEVER expanded,
+	// so `select * from (select col1 from T1) as X group by col1` — whose
+	// expansion is exactly the grouping key, and which Java answers — was
+	// refused as if it were `select * from T1 group by col1`, which genuinely
+	// does expand to ungrouped columns. One shape's correct answer was standing
+	// in for the other's.
+	//
+	// After expansion the star is an ordinary explicit column list, so the
+	// per-column 42803 is minted where every other projection's is:
+	// validateGroupByProjection. Nothing downstream needs to know a star was
+	// ever here.
 	if len(cls.groupBy) > 0 && len(projCols) == 0 && !countStar && len(cls.aggCols) == 0 {
 		// projCols == nil + projQualifier == "" → SELECT *
 		// projCols == nil + projQualifier != "" → SELECT qualifier.*
-		// Either way, the star expands to ungrouped columns. Java 42803.
-		return nil, api.NewError(api.ErrCodeGroupingError,
-			"SELECT * cannot be used with GROUP BY (every column must be in GROUP BY or aggregated)")
+		var expanded []projCol
+		var ok bool
+		if expandStar != nil {
+			expanded, ok = expandStar(projQualifier)
+		}
+		if !ok {
+			// An ASSERTED refusal, never a silent fall-through: with the
+			// sources' columns unknown there is no expansion to validate, and
+			// continuing would drop the GROUP BY and emit every source row.
+			// This is the pre-expansion behaviour, kept for the parse-only
+			// callers that hold no metadata.
+			return nil, api.NewError(api.ErrCodeGroupingError,
+				"SELECT * cannot be used with GROUP BY (every column must be in GROUP BY or aggregated)")
+		}
+		// The expansion IS the SELECT list, so its positions are the SELECT-list
+		// positions. selectOrdinal is one-based and load-bearing downstream: the
+		// aggregate output contract asserts OutputSlots[i].SelectOrdinal == i+1
+		// (validateExactAggregateProjectContract), so leaving it at the zero
+		// value fails every expanded star with an internal 0AF00 rather than
+		// answering it. The expander cannot set this itself — it does not know
+		// whether it is filling the whole list or one slot of a mixed one.
+		for i := range expanded {
+			expanded[i].selectOrdinal = i + 1
+		}
+		projCols = expanded
+		projAliases = make([]string, len(expanded))
+		projExprs = make([]antlrgen.IExpressionContext, len(expanded))
+		projStarQualifiers = make([]string, len(expanded))
+		projQualifier = ""
+		cls.projCols = projCols
+		cls.projAliases = projAliases
+		cls.projExprs = projExprs
+		cls.projStarQualifiers = projStarQualifiers
+		cls.projQualifier = ""
 	}
 
 	// GROUP BY without any aggregate function in the SELECT list (e.g.
@@ -1389,7 +1474,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				// the rowMap (which carries group-by column values).
 				extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, outExpr: slotExpr, visible: true}
 			default:
-				extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: c.name, groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, visible: true}
+				extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: c.name, groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, groupColSegs: c.segs, visible: true}
 			}
 		}
 		cls.aggCols = extra
@@ -1633,18 +1718,19 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 					gc := c.name
 					gcBare := colBareOrName(c)
 					gcQual, gcQualified := c.qualifier, c.qualified
+					gcSegs := c.segs
 					if i < len(projExprs) && projExprs[i] != nil {
 						projText := canonicalTextOf(projExprs[i])
 						for _, gn := range cls.groupBy {
 							if gn.expr != nil && projText == gn.display {
 								gc = gn.display
 								gcBare = gn.display
-								gcQual, gcQualified = "", false
+								gcQual, gcQualified, gcSegs = "", false, nil
 								break
 							}
 						}
 					}
-					prepended = append(prepended, aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: gc, groupColBare: gcBare, groupColQualifier: gcQual, groupColQualified: gcQualified, visible: true})
+					prepended = append(prepended, aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: gc, groupColBare: gcBare, groupColQualifier: gcQual, groupColQualified: gcQualified, groupColSegs: gcSegs, visible: true})
 				}
 				cls.aggCols = append(prepended, cls.aggCols...)
 				cls.projCols = nil
@@ -1660,13 +1746,22 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 }
 
 func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQuery, error) {
-	cls, err := classifySelectElements(simpleTable)
+	return extractFromSimpleTableWithStar(simpleTable, nil)
+}
+
+// extractFromSimpleTableWithStar is extractFromSimpleTable with a star
+// expander. The parameterless form is the parse-only callers, which hold no
+// metadata and therefore cannot expand a star under GROUP BY; they get the
+// asserted refusal in classifySelectElements rather than a silent GROUP BY drop.
+func extractFromSimpleTableWithStar(simpleTable *antlrgen.SimpleTableContext, expandStar starExpander) (*selectQuery, error) {
+	// FROM is parsed FIRST because the star expander is derived from it: the
+	// SELECT list cannot be classified until the star's columns are known.
+	fs, err := parseFromSource(simpleTable)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse FROM clause via the shared parseFromSource helper.
-	fs, err := parseFromSource(simpleTable)
+	cls, err := classifySelectElements(simpleTable, expandStar)
 	if err != nil {
 		return nil, err
 	}
@@ -1952,7 +2047,7 @@ func queryScopeHasWindowedAggregate(n antlr.Tree) bool {
 // HAVING resolver's lookup name and the SELECT-list default alias
 // ("COUNT(*)", "SUM(v)"). Returns false for unknown aggregate shapes.
 func aggColFromAwf(awf *antlrgen.AggregateWindowedFunctionContext) (aggSelectCol, bool) {
-	fn, argCol, argExpr, outName, isDistinct, argQual, argBare, argQualifier, ok := extractAwfFields(awf)
+	fn, argCol, argExpr, outName, isDistinct, argQual, argBare, argQualifier, argSegs, ok := extractAwfFields(awf)
 	if !ok {
 		return aggSelectCol{}, false
 	}
@@ -1965,6 +2060,7 @@ func aggColFromAwf(awf *antlrgen.AggregateWindowedFunctionContext) (aggSelectCol
 		aggArgQualified: argQual,
 		aggArgBare:      argBare,
 		aggArgQualifier: argQualifier,
+		aggArgSegs:      argSegs,
 	}, true
 }
 

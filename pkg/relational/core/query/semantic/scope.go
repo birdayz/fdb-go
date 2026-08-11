@@ -332,6 +332,74 @@ type NestedAccessor struct {
 // Everything else about the level walk is unchanged, including the property
 // that a zero-match level falls through to the parent.
 func (s *Scope) ResolveQualifiedColumnNested(qualifier, col Identifier) (Column, ScopeSource, []NestedAccessor, error) {
+	return s.ResolvePathNested([]Identifier{qualifier, col})
+}
+
+// descendStruct walks `rest` as a chain of struct-field steps starting from
+// `col`, returning one NestedAccessor per step — Java's remainingPath accessor
+// loop (SemanticAnalyzer.java:576-593). The loop is UNBOUNDED there and here:
+// each step re-types on the field it just consumed, so `n.inner.leaf` descends
+// as far as the declared struct nesting goes. A step whose current type is not
+// a struct, or whose name is not one of its fields, fails the whole descent —
+// Java returns Optional.empty() in both cases rather than a partial path.
+//
+// An empty `rest` succeeds with no accessors: the reference addresses the
+// column itself, which is what makes the alias-qualified direct form
+// (`a.id`) and the descending form (`a.n.sk`) one rule instead of two.
+func descendStruct(col Column, rest []Identifier) ([]NestedAccessor, bool) {
+	if len(rest) == 0 {
+		return nil, true
+	}
+	acc := make([]NestedAccessor, 0, len(rest))
+	cur := col
+	for _, seg := range rest {
+		field, ord, found := cur.LookupStructField(seg)
+		if !found {
+			return nil, false
+		}
+		acc = append(acc, NestedAccessor{Name: field.Id.Name(), Ordinal: ord, Col: field})
+		cur = field
+	}
+	return acc, true
+}
+
+// ResolvePathNested resolves a dotted reference of ARBITRARY depth — the shape
+// Java resolves natively because its Identifier carries `name` plus a
+// `List<String> qualifier` and every rule reasons over the joined
+// `fullyQualifiedName()` list (IdentifierVisitor.java:56-64 builds it segment
+// by segment; SemanticAnalyzer.lookupNestedField consumes a matched PREFIX and
+// walks whatever remains). Go's two-argument (qualifier, column) shape could
+// express only the first two segments, so `a.n.sk` was flattened into a
+// qualifier string "A.N" that names neither a source nor a struct column and
+// the reference died as UNDEFINED_COLUMN.
+//
+// Two candidate kinds compete per source, counted TOGETHER so a reference both
+// could answer is an ambiguity rather than a silent preference:
+//
+//   - STRUCT-RELATIVE: segs[0] names a column of the source and segs[1:]
+//     descend into it (`n.sk`, `n.inner.leaf`). This carries no source
+//     qualifier at all, so it is tried against EVERY source in scope.
+//   - ALIAS-QUALIFIED: segs[0] names the source, segs[1] one of its columns,
+//     and segs[2:] descend into that column (`a.id`, `a.n.sk`).
+//
+// The alias-qualified arm is what keeps two sources declaring the same struct
+// apart: `a.n.sk` and `b.n.sk` each match exactly one source because the
+// leading segment is compared against the source ALIAS, not discarded.
+//
+// The scope-chain walk is unchanged from the two-segment form it subsumes:
+// ambiguity at a level is terminal, a zero-match level falls through to the
+// parent, and exhaustion reports ColumnNotFound when some alias matched
+// somewhere and SourceNotFound when nothing did.
+func (s *Scope) ResolvePathNested(segs []Identifier) (Column, ScopeSource, []NestedAccessor, error) {
+	if len(segs) == 0 {
+		return Column{}, ScopeSource{}, nil, &ColumnNotFoundError{}
+	}
+	if len(segs) == 1 {
+		c, src, err := s.ResolveColumn(segs[0])
+		return c, src, nil, err
+	}
+	qualifier := segs[0]
+	leaf := segs[len(segs)-1]
 	var firstAliasTable QualifiedName
 	aliasSeen := false
 	for cur := s; cur != nil; cur = cur.parent {
@@ -341,18 +409,17 @@ func (s *Scope) ResolveQualifiedColumnNested(qualifier, col Identifier) (Column,
 			accessors []NestedAccessor
 		}
 		for _, src := range cur.sources {
-			// Rule 5 (nested): the qualifier names a STRUCT column of this
-			// source. Checked for EVERY source, not only alias-matching ones,
-			// because the struct column is reached through the source's
-			// columns — the reference `home_address.city` carries no source
-			// qualifier at all.
+			// Rule 5 (nested): segs[0] names a STRUCT column of this source.
+			// Checked for EVERY source, not only alias-matching ones, because
+			// the struct column is reached through the source's columns — the
+			// reference `home_address.city` carries no source qualifier at all.
 			if structCol, ok := src.Table.LookupColumn(qualifier); ok {
-				if field, ord, found := structCol.LookupStructField(col); found {
+				if acc, found := descendStruct(structCol, segs[1:]); found {
 					matches = append(matches, struct {
 						col       Column
 						src       ScopeSource
 						accessors []NestedAccessor
-					}{structCol, src, []NestedAccessor{{Name: field.Id.Name(), Ordinal: ord, Col: field}}})
+					}{structCol, src, acc})
 				}
 			}
 			if !src.Alias.EqualsIgnoreQuoting(qualifier) {
@@ -364,12 +431,16 @@ func (s *Scope) ResolveQualifiedColumnNested(qualifier, col Identifier) (Column,
 			}
 			// Per-attribute, exactly as the bare form: a source emitting the
 			// name twice makes `nested.id` ambiguous, not first-match.
-			for _, c := range matchingColumns(src.Table, col) {
+			for _, c := range matchingColumns(src.Table, segs[1]) {
+				acc, found := descendStruct(c, segs[2:])
+				if !found {
+					continue
+				}
 				matches = append(matches, struct {
 					col       Column
 					src       ScopeSource
 					accessors []NestedAccessor
-				}{c, src, nil})
+				}{c, src, acc})
 			}
 		}
 		switch len(matches) {
@@ -383,12 +454,13 @@ func (s *Scope) ResolveQualifiedColumnNested(qualifier, col Identifier) (Column,
 				sources = append(sources, m.src.Alias)
 			}
 			return Column{}, ScopeSource{}, nil, &AmbiguousColumnError{
-				Id: col, Qualifier: qualifier, Matches: len(matches), Sources: sources,
+				Id: leaf, Qualifier: qualifier, Path: segs,
+				Matches: len(matches), Sources: sources,
 			}
 		}
 	}
 	if aliasSeen {
-		return Column{}, ScopeSource{}, nil, &ColumnNotFoundError{TableName: firstAliasTable, Id: col}
+		return Column{}, ScopeSource{}, nil, &ColumnNotFoundError{TableName: firstAliasTable, Id: leaf}
 	}
 	// Collect all visible aliases across the chain for a better
 	// error message.
@@ -415,6 +487,13 @@ type AmbiguousColumnError struct {
 	// reference. Callers render Java's exact message from the reference
 	// as written: `Ambiguous reference A.ID` / `Ambiguous reference ID`.
 	Qualifier Identifier
+	// Path is the reference's FULL segment list when it was resolved as a
+	// dotted path (`a.n.sk` → [A N SK]). Qualifier/Id keep the first and last
+	// segments so two-segment callers are unaffected, but they cannot render a
+	// deeper reference AS WRITTEN — and the rendering is the message operand
+	// Java prints, so a three-segment ambiguity would otherwise report a
+	// reference the user never typed. Empty for callers that pass no path.
+	Path []Identifier
 	// Matches is always equal to len(Sources); exists as a
 	// convenience accessor for callers who don't need the full
 	// alias list. Future API tightening may remove it — prefer
@@ -432,6 +511,13 @@ type AmbiguousColumnError struct {
 // Java's SemanticAnalyzer text (verified for duplicate AND distinct aliases,
 // bare AND qualified).
 func (e *AmbiguousColumnError) Reference() string {
+	if len(e.Path) > 0 {
+		parts := make([]string, len(e.Path))
+		for i, p := range e.Path {
+			parts[i] = p.Name()
+		}
+		return joinStrings(parts, ".")
+	}
 	if e.Qualifier.Name() != "" {
 		return e.Qualifier.Name() + "." + e.Id.Name()
 	}

@@ -2034,31 +2034,26 @@ func comparisonOpFromCtx(op antlrgen.IComparisonOperatorContext) (predicates.Com
 	}
 }
 
-// walkColumnRef: an identifier from the parse tree → ResolveIdentifier.
-// Handles both bare (`col`) and qualified (`t.col`) via the number
-// of Uid segments.
+// walkColumnRef: an identifier from the parse tree → ResolveIdentifierPath.
+// Every segment the grammar produced is carried through as its own
+// Identifier — bare (`col`), qualified (`t.col`), and alias-qualified nested
+// (`a.n.sk` and deeper). The grammar itself imposes no arity cap
+// (`fullId : uid (DOT uid)*`) and neither does Java's resolver, so the walker
+// must not either: an arity switch here refused a reference the resolver can
+// answer, and the refusal surfaced downstream as UNDEFINED_COLUMN.
 func (r *Resolver) walkColumnRef(fullId antlrgen.IFullIdContext) (values.Value, error) {
 	if fullId == nil {
 		return nil, fmt.Errorf("expr.walkColumnRef: nil FullId")
 	}
 	uids := fullId.AllUid()
-	switch len(uids) {
-	case 1:
-		return r.ResolveIdentifier(
-			semantic.Identifier{},
-			semantic.FromUidContext(uids[0], r.analyzer.CaseSensitive()),
-		)
-	case 2:
-		return r.ResolveIdentifier(
-			semantic.FromUidContext(uids[0], r.analyzer.CaseSensitive()),
-			semantic.FromUidContext(uids[1], r.analyzer.CaseSensitive()),
-		)
+	if len(uids) == 0 {
+		return nil, &UnsupportedExpressionShapeError{Shape: "FullId with 0 segments"}
 	}
-	// Deeper-qualified references (`schema.table.col`) need extra
-	// resolution; defer until the logical-builder needs them.
-	return nil, &UnsupportedExpressionShapeError{
-		Shape: fmt.Sprintf("FullId with %d segments", len(uids)),
+	segs := make([]semantic.Identifier, len(uids))
+	for i, u := range uids {
+		segs[i] = semantic.FromUidContext(u, r.analyzer.CaseSensitive())
 	}
+	return r.ResolveIdentifierPath(segs)
 }
 
 // walkConstant: a literal from the parse tree → ResolveConstant.

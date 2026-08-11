@@ -16329,3 +16329,31 @@ None is speculative: each was re-verified against the tree before booking.
   through a helper. So this needs its own role-differential (leg, subquery
   source, query root) exactly as RFC-226 §5 now prescribes, not a rider on a
   change whose own §1 was refuted once already.
+
+- [ ] **CQ-102 (SMALL, query surface): a COMPUTED aggregate argument types its
+  output UNKNOWN, so arithmetic over it across a derived-table boundary demotes
+  to Integer.** The flat-argument half is CLOSED — `aggregateOutputColumn` types
+  COUNT/AVG/SUM/MIN/MAX from Java's PhysicalOperator table, and
+  `TestFDB_AggregateOutputTypeCrossesTheDerivedBoundary` pins each rule
+  separately. `MIN(col2 + 1)` is the residue.
+
+  MEASURED, and the residual is pinned by that same test's last subtest, which
+  asserts today's wrong answer with a three-state message so it fails toward
+  noticing when it flips:
+
+  ```
+  SELECT G     FROM (SELECT MIN(col2 + 1) AS G FROM t1) AS Y  -> BIGINT
+  SELECT G + 1 FROM (SELECT MIN(col2 + 1) AS G FROM t1) AS Y  -> INTEGER  (Java: LONG)
+  ```
+
+  NOT A MISSING CAPABILITY, which is what makes it small: the inner read already
+  reports BIGINT, so the type IS derivable at plan time. What is absent is the
+  SCOPE-level derivation — `aggOutputCols` runs before the aggregate body's
+  semantic scope exists, so it has no resolver to walk the argument expression
+  with. That is the same ordering wall `buildDerivedTableSourceFromTerm` names
+  where it declines a computed projection outright.
+
+  THE FIX IS AN ORDERING CHANGE, not a typing table: build the body's scope
+  before typing its outputs, the way `buildFromOnlySelectScope` already does for
+  star expansion. Its blast radius is when the scope is constructed, which is why
+  it did not ride along with the typing fix.

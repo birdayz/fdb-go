@@ -451,9 +451,36 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 		return nil, err
 	}
 
-	// Classify SELECT elements, GROUP BY, HAVING, ORDER BY. This is
-	// the pure parse-tree classification — no FROM, no selectQuery.
-	cls, err := classifySelectElements(simpleTable)
+	// Classify SELECT elements, GROUP BY, HAVING, ORDER BY.
+	//
+	// The classifier is handed a star expander built from the FROM clause
+	// alone. A `SELECT *` under GROUP BY has to be expanded BEFORE the
+	// grouping rules are applied to it — Java generates the select-where
+	// operator first (QueryVisitor.java:275) and expands the star against it
+	// (QueryVisitor.java:286) before generateGroupBy validates the expansion
+	// (LogicalOperator.java:436-439). Everything else in the classifier is
+	// still pure parse-tree work.
+	// The expander is built only when the branch that consumes it can be
+	// reached at all, and even then it builds its scope LAZILY.
+	//
+	// This path runs for EVERY SELECT while the star-under-GROUP-BY branch
+	// needs a GROUP BY clause to fire, so the parse-tree presence of one is a
+	// free and exact precondition. MEASURED, because laziness alone was not
+	// free: deferring the scope saved 12 allocs / ~600 B per plan on the
+	// star-free shapes but allocated a closure on every call here, which a
+	// join-heavy plan makes many of — two_table_join went +51 allocs. Gating on
+	// the GROUP BY removes both costs, since a query with no GROUP BY now
+	// allocates nothing at all for star expansion.
+	//
+	// A nil expander is the classifier's "cannot expand" signal and keeps the
+	// asserted 42803 refusal. That is correct here rather than merely cheap: with
+	// no GROUP BY clause the classifier never consults the expander, so nil and
+	// a working expander are indistinguishable to it.
+	var expandStar starExpander
+	if simpleTable.GroupByClause() != nil {
+		expandStar = starExpanderFor(fs, v.md, v.schemaName, v.cteScopes)
+	}
+	cls, err := classifySelectElements(simpleTable, expandStar)
 	if err != nil {
 		return nil, err
 	}
@@ -662,7 +689,7 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 				continue
 			}
 			if col.bare != "" {
-				if err := resolveColumnRefStructural(resolver, col.bare, col.qualifier, col.qualified); err != nil {
+				if err := resolveColumnRefStructural(resolver, col.bare, col.qualifier, col.qualified, col.segs); err != nil {
 					return nil, err
 				}
 			} else if err := resolveColumnName(resolver, col.name); err != nil {
@@ -742,8 +769,8 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 					// that leg's binding so the ordinal bake addresses the
 					// right quantifier. Every other reference keeps the
 					// alias-keyed merged-row read.
-					qv, qerr := resolver.ResolveQualifiedProjection(
-						semantic.FromNormalized(col.qualifier), semantic.FromNormalized(col.bare))
+					qv, qerr := resolver.ResolveQualifiedProjectionPath(
+						colRefIdentifiers(col.bare, col.qualifier, col.qualified, col.segs))
 					if qerr != nil {
 						var ambigErr *semantic.AmbiguousColumnError
 						if errors.As(qerr, &ambigErr) {
@@ -755,7 +782,8 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 					if i < len(proj.ProjectedValues) {
 						if qv != nil {
 							proj.ProjectedValues[i] = qv
-						} else if bv := resolveQualifiedBaked(resolver, colRef{table: col.qualifier, col: col.bare}); bv != nil {
+						} else if bv := resolveQualifiedBakedPath(resolver,
+							colRefIdentifiers(col.bare, col.qualifier, col.qualified, col.segs)); bv != nil {
 							// A qualified projection over a join emits the
 							// resolver's QUANTIFIER-ADDRESSED source-relative
 							// baked reference — the executor binds the leg
@@ -782,12 +810,8 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 						}
 					}
 				} else {
-					var qualifier semantic.Identifier
-					id := semantic.FromNormalized(colBareOrName(col))
-					if col.qualified {
-						qualifier = semantic.FromNormalized(col.qualifier)
-					}
-					if rv, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
+					if rv, err := resolver.ResolveIdentifierPath(
+						colRefIdentifiers(colBareOrName(col), col.qualifier, col.qualified, col.segs)); err == nil {
 						if i < len(proj.ProjectedValues) {
 							proj.ProjectedValues[i] = rv
 						}
@@ -868,7 +892,7 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 							continue
 						}
 						if ob.bare != "" {
-							if resolveColumnRefStructural(resolver, ob.bare, ob.qualifier, ob.qualified) == nil {
+							if resolveColumnRefStructural(resolver, ob.bare, ob.qualifier, ob.qualified, ob.segs) == nil {
 								continue
 							}
 						} else if ob.colName != "" && resolveColumnName(resolver, ob.colName) == nil {
@@ -889,10 +913,10 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 				continue
 			}
 			if gb.bare != "" {
-				if err := resolveColumnRefStructural(resolver, gb.bare, gb.qualifier, gb.qualified); err != nil {
+				if err := resolveColumnRefStructural(resolver, gb.bare, gb.qualifier, gb.qualified, gb.segs); err != nil {
 					return nil, err
 				}
-				if err := rejectNestedPathGroupKey(resolver, gb.bare, gb.qualifier, gb.qualified); err != nil {
+				if err := rejectNestedPathGroupKey(resolver, gb.bare, gb.qualifier, gb.qualified, gb.segs); err != nil {
 					return nil, err
 				}
 			} else if err := resolveColumnName(resolver, gb.display); err != nil {
@@ -906,7 +930,7 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 		for _, ac := range sq.aggCols {
 			if ac.aggArg != "" && ac.aggExpr == nil {
 				if ac.aggArgBare != "" {
-					if err := resolveColumnRefStructural(resolver, ac.aggArgBare, ac.aggArgQualifier, ac.aggArgQualified); err != nil {
+					if err := resolveColumnRefStructural(resolver, ac.aggArgBare, ac.aggArgQualifier, ac.aggArgQualified, ac.aggArgSegs); err != nil {
 						return nil, err
 					}
 				} else if err := resolveColumnName(resolver, ac.aggArg); err != nil {
@@ -934,7 +958,7 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 			if ac.groupCol == "" || ac.groupColBare == "" || exprKeyDisplays[ac.groupCol] {
 				continue
 			}
-			if err := resolveColumnRefStructural(resolver, ac.groupColBare, ac.groupColQualifier, ac.groupColQualified); err != nil {
+			if err := resolveColumnRefStructural(resolver, ac.groupColBare, ac.groupColQualifier, ac.groupColQualified, ac.groupColSegs); err != nil {
 				return nil, err
 			}
 		}
@@ -1720,7 +1744,7 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 		colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
 		if nameErr == nil {
 			bareRef := exprIsBareColumnRef(obExpr.Expression())
-			kb, kq, kqf := splitColumnRef(obExpr.Expression())
+			kb, kq, kqf, ksegs := splitColumnRef(obExpr.Expression())
 			origColName := colName
 			if len(deferredStripProj) > 0 {
 				colName = rebaseToInternal(colName, bareRef)
@@ -1737,7 +1761,7 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 				continue
 			}
 			seenOrderCols[key] = true
-			sk := logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf, BareRef: bareRef, Bare: kb, Qualifier: kq, Qualified: kqf}
+			sk := logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf, BareRef: bareRef, Bare: kb, Qualifier: kq, Qualified: kqf, Segs: ksegs}
 			if kb != "" && (colName != origColName || sk.Expr != colName) {
 				// A COLUMN key rebased/alias-resolved to an internal OUTPUT
 				// name, or with its prefix stripped — BARE from here on
@@ -1934,7 +1958,20 @@ func resolveQualifiedBaked(resolver *expr.Resolver, ref colRef) values.Value {
 	if !ref.isQualified() {
 		return nil
 	}
-	rv, err := resolver.ResolveIdentifier(semantic.FromNormalized(ref.table), semantic.FromNormalized(ref.bare()))
+	return resolveQualifiedBakedPath(resolver,
+		[]semantic.Identifier{semantic.FromNormalized(ref.table), semantic.FromNormalized(ref.bare())})
+}
+
+// resolveQualifiedBakedPath is resolveQualifiedBaked over the full segment
+// list. A reference that DESCENDS into a struct on the join path must resolve
+// through every segment: collapsing `a.n.sk` to a (qualifier, name) pair asks
+// the scope for a source named "A.N", which resolves to nothing and left the
+// projection with no baked value at all.
+func resolveQualifiedBakedPath(resolver *expr.Resolver, segs []semantic.Identifier) values.Value {
+	if len(segs) < 2 {
+		return nil
+	}
+	rv, err := resolver.ResolveIdentifierPath(segs)
 	if err != nil || rv == nil {
 		return nil
 	}
@@ -2161,9 +2198,9 @@ func (v *PlanVisitor) visitFinalProjection(op logical.LogicalOperator, simpleTab
 				// qualifier prefix off it. An aggregate item (`SUM(v)`) is not
 				// a FullColumnName, so it captures nothing and its rendered
 				// name is never read as qualified.
-				bare, qual, qualified := splitColumnRef(e.Expression())
+				bare, qual, qualified, segs := splitColumnRef(e.Expression())
 				refs = append(refs, projColRef(
-					projCol{name: colName, bare: bare, qualifier: qual, qualified: qualified},
+					projCol{name: colName, bare: bare, qualifier: qual, qualified: qualified, segs: segs},
 					rendered))
 			}
 		}

@@ -6847,7 +6847,7 @@ shape:       RecordQueryInMemorySortPlan
 shape:         RecordQueryScanPlan
 === group_by_validation.yaml#0 expect-error=42803
 sql:   SELECT * FROM t1 GROUP BY col1
-plan:  <PLAN-ERROR: 42803: SELECT * cannot be used with GROUP BY (every column must be in GROUP BY or aggregated)>
+plan:  <PLAN-ERROR: 42803: column "ID" must appear in the GROUP BY clause or be used in an aggregate function>
 === group_by_validation.yaml#1 expect-error=42803
 sql:   SELECT id FROM t1 GROUP BY col1 ORDER BY id
 plan:  <PLAN-ERROR: 42803: column "ID" must appear in the GROUP BY clause or be used in an aggregate function>
@@ -13814,7 +13814,7 @@ shape:     RecordQueryScanPlan
 shape:     RecordQueryScanPlan
 === qualified_star_more.yaml#2 expect-error=42803
 sql:   SELECT a.* FROM a GROUP BY a1
-plan:  <PLAN-ERROR: 42803: SELECT * cannot be used with GROUP BY (every column must be in GROUP BY or aggregated)>
+plan:  <PLAN-ERROR: 42803: column "A2" must appear in the GROUP BY clause or be used in an aggregate function>
 === qualified_star_more.yaml#3 expect-error=42803
 sql:   SELECT a.*, b.* FROM a, b WHERE a.a1 = b.b1 GROUP BY a1
 plan:  <PLAN-ERROR: 42803: SELECT qualifier.* expands to columns not in GROUP BY>

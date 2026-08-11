@@ -32,6 +32,7 @@ go_test(
         "scope_build_test.go",
         "scope_duplicate_qualifier_gate_test.go",
         "scope_nested_test.go",
+        "scope_path_test.go",
         "scope_test.go",
     ],
     embed = [":semantic"],

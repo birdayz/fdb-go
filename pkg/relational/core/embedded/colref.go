@@ -110,42 +110,73 @@ func projScopeAlias(fv *values.FieldValue) string {
 	return ""
 }
 
-// recordDisplayLabelStrip files one machinery-alias display-label decision into
-// the qualifier recovery census.
+// stripDisplayLabelQualifier removes the SOURCE qualifier from a
+// machinery-pinned alias and reports whether it removed one. It classifies the
+// same decision it makes, which is the point: a recorder that classified a
+// split the production line then performed differently would measure the wrong
+// predicate.
 //
 // The counterparty is the projected VALUE. A machinery-minted alias exists
 // because the dedup pinned a projected reference's QUALIFIED spelling, and that
 // reference is a FieldValue over a QuantifiedObjectValue — so the correlation
-// the alias was minted FROM is right there, and whether the qualifier sliced out
-// of the label equals it is this site's whole conversion question.
+// the alias was minted FROM is right there, and whether the qualifier that came
+// off equals it is this site's whole conversion question.
+//
+// WHAT IS REMOVED is the leaf-preserving strip Java performs: its clearQualifier
+// drops the whole qualifier LIST (LogicalOperator.java:484-487), and a
+// three-segment reference puts BOTH leading segments in that list, so the label
+// is the last segment either way.
+//
+// WHAT IS CLASSIFIED is whether the qualifier agrees with that correlation, and
+// the qualifier is the LEADING segment. The comparison used to be against
+// everything before the LAST dot — the same string at two segments and a
+// different one at three. For `a.n.sk` that read a source "A.N" which exists
+// nowhere and recorded DIVERGED against an identity plainly saying "A", firing
+// this census's one asserted zero on a correct read. The second dot is inside
+// the struct path and is not a qualifier boundary at all.
+//
+// The classification lives in recordDisplayLabelStrip below, which reads its
+// gate FIRST and re-derives nothing: this function's parse is passed to it.
+func stripDisplayLabelQualifier(label string, v values.Value) (string, bool) {
+	ref := parseColRef(label)
+	strips := ref.isQualified() && isPlainQualifiedColumnReference(label)
+	recordDisplayLabelStrip(label, ref.isQualified(), strips, v)
+	if !strips {
+		return label, false
+	}
+	return strings.ToUpper(ref.bare()), true
+}
+
+// recordDisplayLabelStrip files the decision stripDisplayLabelQualifier just
+// made. The GATE IS ITS FIRST STATEMENT and it classifies nothing of its own:
+// the caller has already parsed the label for its own purposes and passes the
+// two bits of that parse this recorder needs, so with the census off the cost
+// here is one comparison. It used to re-derive them — a parseColRef plus an
+// isPlainQualifiedColumnReference that parses AGAIN — doubling the caller's
+// work on every projected column of every query to build an argument the
+// disabled sink drops.
 //
 // The parenthesis rejection gets its own class rather than being folded into
 // bare: the site WAS handed a dotted name and declined by inspecting
 // punctuation in a rendering, which is the opposite finding from never having
 // seen a dot.
-//
-// The gate is read FIRST, and this is the site where that matters most. The
-// production line beside it already calls parseColRef and
-// isPlainQualifiedColumnReference (which calls parseColRef AGAIN, plus a
-// ContainsAny) to make its own decision; a recorder that classified before
-// consulting the gate would DOUBLE all of it on every projected column of every
-// query — 750 calls over the real-FDB corpus — to build an argument nothing
-// reads.
-func recordDisplayLabelStrip(label string, v values.Value) {
+func recordDisplayLabelStrip(label string, qualified, strips bool, v values.Value) {
 	if !values.LegIdentityCensusEnabled() {
 		return
 	}
-	ref := parseColRef(label)
-	if !ref.isQualified() {
-		values.RecordQualifierRecovery(values.QualRecSiteDisplayLabelStrip,
-			values.QualRecBare, label, "")
+	if !strips {
+		class := values.QualRecBare
+		if qualified {
+			class = values.QualRecHeuristicDecline
+		}
+		values.RecordQualifierRecovery(values.QualRecSiteDisplayLabelStrip, class, label, "")
 		return
 	}
-	if !isPlainQualifiedColumnReference(label) {
-		values.RecordQualifierRecovery(values.QualRecSiteDisplayLabelStrip,
-			values.QualRecHeuristicDecline, label, "")
-		return
-	}
+	// The counterparty is the projected VALUE. A machinery-minted alias exists
+	// because the dedup pinned a projected reference's QUALIFIED spelling, and
+	// that reference is a FieldValue over a QuantifiedObjectValue — so the
+	// correlation the alias was minted FROM is right there, and whether the
+	// qualifier that came off equals it is this site's whole question.
 	ident, present := "", false
 	if fv, isField := v.(*values.FieldValue); isField && fv.Child != nil {
 		if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
@@ -154,15 +185,27 @@ func recordDisplayLabelStrip(label string, v values.Value) {
 	}
 	switch {
 	case !present:
+		// A dotted label over a value carrying no correlation at all: the
+		// qualifier comes off with nothing to check it against.
 		values.RecordQualifierRecovery(values.QualRecSiteDisplayLabelStrip,
 			values.QualRecManufactured, label, "")
-	case strings.EqualFold(ref.table, ident):
+	case strings.EqualFold(leadingSegment(label), ident):
 		values.RecordQualifierRecovery(values.QualRecSiteDisplayLabelStrip,
 			values.QualRecAgreed, label, ident)
 	default:
 		values.RecordQualifierRecovery(values.QualRecSiteDisplayLabelStrip,
 			values.QualRecDiverged, label, ident)
 	}
+}
+
+// leadingSegment is a reference's FIRST segment — the only one that can name a
+// SOURCE. parseColRef answers the LAST dot, which is the other end of the same
+// string and coincides with this only at two segments.
+func leadingSegment(label string) string {
+	if dot := strings.IndexByte(label, '.'); dot > 0 {
+		return label[:dot]
+	}
+	return label
 }
 
 // bare returns the unqualified column name.

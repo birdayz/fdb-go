@@ -54,36 +54,47 @@ func TestRejectNestedPathGroupKey(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name       string
-		nilResolv  bool
-		bare       string
-		qualifier  string
-		qualified  bool
+		name      string
+		nilResolv bool
+		bare      string
+		qualifier string
+		qualified bool
+		// segs is the parse tree's FULL segment list. Every case states it,
+		// including the two-segment ones, because the gate reads segs when it
+		// is there and the (qualifier, bare) fallback only when it is not —
+		// so a table that left it empty would exercise the fallback and call
+		// it coverage of the gate.
+		segs       []string
 		wantRefuse bool
 		why        string
 	}{
 		{
 			name: "a struct member is refused", bare: "SK", qualifier: "N", qualified: true,
+			segs:       []string{"N", "SK"},
 			wantRefuse: true,
 			why:        "N.SK descends into a struct; the aggregate path cannot carry it, so it must be refused at plan time",
 		},
 		{
 			name: "a struct member with no flat twin is refused", bare: "CO", qualifier: "N", qualified: true,
+			segs:       []string{"N", "CO"},
 			wantRefuse: true,
 			why:        "N.CO descends too — driven beside N.SK because SK also exists as a flat column, so a leaf-based gate is right about one and wrong about the other",
 		},
 		{
 			name: "a source-qualified column is allowed", bare: "SK", qualifier: "T2", qualified: true,
+			segs:       []string{"T2", "SK"},
 			wantRefuse: false,
 			why:        "T2.SK addresses a source column; refusing it would take every table-qualified grouping key with it",
 		},
 		{
 			name: "a bare reference is allowed", bare: "SK", qualifier: "", qualified: false,
+			segs:       []string{"SK"},
 			wantRefuse: false,
 			why:        "the bare arm cannot descend at all (INFERRED FROM JAVA SOURCE, SemanticAnalyzer.java:557-559), so it is never this gate's business",
 		},
 		{
 			name: "an unresolvable qualifier is left to the existence check", bare: "SK", qualifier: "NOPE", qualified: true,
+			segs:       []string{"NOPE", "SK"},
 			wantRefuse: false,
 			why: "NOPE names neither a source nor a struct column. Reporting 0AF00 here would " +
 				"claim an unsupported FEATURE for what is a misspelled name, and would shadow " +
@@ -91,11 +102,13 @@ func TestRejectNestedPathGroupKey(t *testing.T) {
 		},
 		{
 			name: "an unresolvable member is left to the existence check", bare: "NOPE", qualifier: "N", qualified: true,
+			segs:       []string{"N", "NOPE"},
 			wantRefuse: false,
 			why:        "N exists and is a struct, but NOPE is not one of its members — still an existence question, not a capability one",
 		},
 		{
 			name: "a nil resolver decides nothing", nilResolv: true, bare: "SK", qualifier: "N", qualified: true,
+			segs:       []string{"N", "SK"},
 			wantRefuse: false,
 			why:        "with no scope there is nothing to resolve against; the gate must not guess from the spelling",
 		},
@@ -104,6 +117,41 @@ func TestRejectNestedPathGroupKey(t *testing.T) {
 			wantRefuse: false,
 			why:        "an expression key carries no bare segment and is handled by the expression path",
 		},
+		// THREE SEGMENTS: the same descent with the SOURCE named in front. Each
+		// case below has a two-segment twin above, and the pair is the
+		// assertion: one key spelled two ways must reach one verdict. It did
+		// not — the descent test could see only two segments, so for
+		// T2.N.SK it asked whether a source called "T2.N" exists, answered no,
+		// and reported "does not descend" for a key that plainly does.
+		{
+			name: "an alias-qualified struct member is refused", bare: "SK", qualifier: "T2.N", qualified: true,
+			segs:       []string{"T2", "N", "SK"},
+			wantRefuse: true,
+			why: "T2.N.SK is N.SK with its source named. Refusing one spelling and " +
+				"not the other makes the SQLSTATE depend on how the user wrote the key",
+		},
+		{
+			name: "an alias-qualified member with no flat twin is refused", bare: "CO", qualifier: "T2.N", qualified: true,
+			segs:       []string{"T2", "N", "CO"},
+			wantRefuse: true,
+			why:        "the twin of N.CO above, so the flat-leaf coincidence cannot be what decides either arm",
+		},
+		{
+			name: "an alias-qualified flat column is allowed", bare: "SK", qualifier: "T2", qualified: true,
+			segs:       []string{"T2", "SK"},
+			wantRefuse: false,
+			why: "T2.SK descends into nothing. It is stated beside the refusals so the " +
+				"gate is not merely counting segments: three segments do not make a " +
+				"descent and two do not preclude one",
+		},
+		{
+			name: "an unresolvable leading segment is left to the existence check", bare: "SK", qualifier: "NOPE.N", qualified: true,
+			segs:       []string{"NOPE", "N", "SK"},
+			wantRefuse: false,
+			why: "NOPE names no source, so nothing here descends and the existence " +
+				"check owns the report. Refusing would claim an unsupported feature " +
+				"for a misspelled alias",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -111,7 +159,7 @@ func TestRejectNestedPathGroupKey(t *testing.T) {
 			if !tc.nilResolv {
 				r = newResolver(t)
 			}
-			err := rejectNestedPathGroupKey(r, tc.bare, tc.qualifier, tc.qualified)
+			err := rejectNestedPathGroupKey(r, tc.bare, tc.qualifier, tc.qualified, tc.segs)
 			if tc.wantRefuse {
 				if err == nil {
 					t.Fatalf("%s.%s was NOT refused.\n  %s", tc.qualifier, tc.bare, tc.why)
