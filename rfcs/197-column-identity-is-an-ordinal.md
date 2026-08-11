@@ -1190,24 +1190,30 @@ so the table below states one per edge:
 
 <!-- FIELD-DEBT-ORDER-EDGES -->
 
-| producer | reader | class | retires | evidence |
-| --- | --- | --- | --- | --- |
-| `rebaseUnnestOuterLegPredicate` | `rowSlotForLegColumn` | consumer | yes | pkg/recordlayer/query/executor/ordinal_join.go |
-| `rebaseUnnestOuterLegPredicate` | `rebaseOuterLegValueOrdinal` | decliner | no | pkg/recordlayer/query/plan/cascades/left_outer_existential.go |
-| `rebaseUnnestOuterLegPredicate` | `rebaseOuterLegValue` | decliner | no | pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go |
-| `rebaseUnnestOuterLegPredicate` | `legRef` | decliner | no | pkg/relational/core/query/ordinal_seed.go |
-| `rebaseUnnestOuterLegPredicate` | `groupByOutputBaker` | co-occurring | no | pkg/relational/core/query/cascades_translator.go |
-| `explainValueOrdinals` | `AccessorNamePath` | decliner | no | pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go |
-| `projCol` | `clusterFieldResolvable` | consumer | no | pkg/relational/core/query/clustered_outer_scalar.go |
-| `projCol` | `clusterSeedSlotByName` | consumer | no | pkg/relational/core/query/clustered_outer_scalar.go |
-| `groupByOutputOrdinals` | `groupByOutputBaker` | consumer | yes | pkg/relational/core/query/cascades_translator.go |
+| producer | producer evidence | reader | reader evidence | class | retires |
+| --- | --- | --- | --- | --- | --- |
+| `rebaseUnnestOuterLegPredicate` | pkg/relational/core/query/cascades_translator.go | `rowSlotForLegColumn` | pkg/recordlayer/query/executor/ordinal_join.go | consumer | yes |
+| `rebaseUnnestOuterLegPredicate` | pkg/relational/core/query/cascades_translator.go | `rebaseOuterLegValueOrdinal` | pkg/recordlayer/query/plan/cascades/left_outer_existential.go | decliner | no |
+| `rebaseUnnestOuterLegPredicate` | pkg/relational/core/query/cascades_translator.go | `rebaseOuterLegValue` | pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go | decliner | no |
+| `rebaseUnnestOuterLegPredicate` | pkg/relational/core/query/cascades_translator.go | `legRef` | pkg/relational/core/query/ordinal_seed.go | decliner | no |
+| `rebaseUnnestOuterLegPredicate` | pkg/relational/core/query/cascades_translator.go | `groupByOutputBaker` | pkg/relational/core/query/cascades_translator.go | co-occurring | no |
+| `explainValueOrdinals` | pkg/recordlayer/query/plan/cascades/values/values.go | `AccessorNamePath` | pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go | decliner | no |
+| `projCol` | pkg/relational/core/embedded/select_parser.go | `clusterFieldResolvable` | pkg/relational/core/query/clustered_outer_scalar.go | consumer | no |
+| `projCol` | pkg/relational/core/embedded/select_parser.go | `clusterSeedSlotByName` | pkg/relational/core/query/clustered_outer_scalar.go | consumer | no |
+| `groupByOutputOrdinals` | pkg/relational/core/query/cascades_translator.go | `groupByOutputBaker` | pkg/relational/core/query/cascades_translator.go | consumer | yes |
 
-`TestFieldDebtRFCOrderEdgesAreClassified` gates it: every name in either identifier
-column must be a live declaration, every reader must be declared in its evidence
-file, and a `decliner` or `co-occurring` edge may not claim `retires = yes`. What
-that gate CANNOT check is stated at the test — it verifies that an edge is
-well-formed and that the retirement claim is consistent with the class, not that
-the class is the true one. Classifying an edge remains a reading of dataflow.
+`TestFieldDebtRFCOrderEdgesAreClassified` gates it. Each endpoint must be a live
+declaration AND must be declared in the file cited beside it, and a `decliner` or
+`co-occurring` edge may not claim `retires = yes`. Each endpoint carries its own
+citation because a name checked only against the repo-wide set of declarations is
+barely checked at all: every real identifier is in that set, so a producer
+mis-cited to an unrelated live symbol read as sound until the column existed.
+
+What the gate CANNOT check is stated at the test, and it is one thing only:
+whether a row's class is the TRUE one. Classifying an edge is a reading of
+dataflow, which no check over a markdown table can perform. Everything else the
+table asserts — both declaration sites, the consistency of the retirement claim
+with the stated class, and the table's own well-formedness — is mechanical.
 
 **The two reversed edges survive, with their readings sharpened:**
 
