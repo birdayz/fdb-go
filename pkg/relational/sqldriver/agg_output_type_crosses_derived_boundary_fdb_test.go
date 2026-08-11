@@ -180,6 +180,16 @@ func TestFDB_AggregateOutputTypeCrossesTheDerivedBoundary(t *testing.T) {
 			"Counting an INTEGER column must NOT produce INTEGER, which is what " +
 			"an argument-typed rule would do.",
 	}, {
+		name:     "COUNT(*) is BIGINT across the boundary",
+		sql:      "SELECT C + 1 FROM (SELECT COUNT(*) AS C FROM t1) AS Y",
+		wantType: "BIGINT",
+		wantRows: "[14]",
+		why: "COUNT(*) is the one aggregate output that was ALREADY typed before " +
+			"this change, in its own arm of aggOutputCols. It is asserted here " +
+			"beside COUNT(x) so the two arms cannot drift — they are the same " +
+			"Java rule (CountValue's two operators both carry TypeCode.LONG) and " +
+			"they were written twenty lines apart.",
+	}, {
 		name:     "a GROUPING KEY carries its source column's type",
 		sql:      "SELECT K + 4 FROM (SELECT col1 AS K, COUNT(*) AS C FROM t1 GROUP BY col1) AS Y WHERE K > 15",
 		wantType: "BIGINT",
@@ -226,6 +236,10 @@ func TestFDB_AggregateOutputTypeCrossesTheDerivedBoundary(t *testing.T) {
 	// building the aggregate body's scope before its output columns are typed,
 	// which is a change to when the scope is built and belongs to its own
 	// review.
+	//
+	// OWNER: CQ-102, which carries the ordering change and states why it did not
+	// ride along with the typing fix. A residual pin with no owner is an orphan —
+	// it records that something is wrong and hands the work to nobody.
 	//
 	// IF THIS SUBTEST GOES GREEN because the outer arithmetic starts reporting
 	// BIGINT, the deeper gap has been closed and this pin should become an

@@ -326,16 +326,21 @@ func TestFDB_GroupByNestedPathRefusedCleanly(t *testing.T) {
 		// segments, so for `a.n.sk` it was really asking whether a source called
 		// "A.N" exists, answering no, and letting the key fall through to
 		// undefined-column — a capability gap reported as a missing column.
-		for _, q := range []string{
-			"SELECT a.n.sk, COUNT(*) FROM t2 AS a GROUP BY a.n.sk",
-			"SELECT t2.n.sk, COUNT(*) FROM t2 GROUP BY t2.n.sk",
-			"SELECT COUNT(*) FROM t2 AS a GROUP BY a.n.co",
+		// The expected spelling is carried PER QUERY rather than checked against
+		// the union of all three. An OR over the three holds as soon as any one
+		// does, so two of them could stop being produced and this would stay
+		// green — and the whole point of the check is that each refusal names
+		// the key AS WRITTEN.
+		for _, tc := range []struct{ query, wantKey string }{
+			{"SELECT a.n.sk, COUNT(*) FROM t2 AS a GROUP BY a.n.sk", `"A.N.SK"`},
+			{"SELECT t2.n.sk, COUNT(*) FROM t2 GROUP BY t2.n.sk", `"T2.N.SK"`},
+			{"SELECT COUNT(*) FROM t2 AS a GROUP BY a.n.co", `"A.N.CO"`},
 		} {
-			rows, err := db.QueryContext(ctx, q)
+			rows, err := db.QueryContext(ctx, tc.query)
 			if err == nil {
 				rows.Close()
 				t.Errorf("%s now PLANS. If nested grouping keys have landed, this "+
-					"arm belongs with the answers named in this file's header.", q)
+					"arm belongs with the answers named in this file's header.", tc.query)
 				continue
 			}
 			if !strings.Contains(err.Error(), "0AF00") {
@@ -343,14 +348,13 @@ func TestFDB_GroupByNestedPathRefusedCleanly(t *testing.T) {
 					"  A 42703 here means the three-segment spelling is being decided by "+
 					"the EXISTENCE check again — the two arities of one key disagreeing "+
 					"about which layer refuses them, which is the defect this arm was "+
-					"flipped from.", q, err)
+					"flipped from.", tc.query, err)
 			}
-			// The message must name the key AS WRITTEN. A refusal that reported
+			// The message must name THIS key as written. A refusal that reported
 			// the two-segment spelling would hide which reference was rejected.
-			if !strings.Contains(err.Error(), "A.N.SK") &&
-				!strings.Contains(err.Error(), "T2.N.SK") &&
-				!strings.Contains(err.Error(), "A.N.CO") {
-				t.Errorf("%s: refusal %v does not name the key as written", q, err)
+			if !strings.Contains(err.Error(), tc.wantKey) {
+				t.Errorf("%s: refusal %v does not name the key as written (want %s)",
+					tc.query, err, tc.wantKey)
 			}
 		}
 	})

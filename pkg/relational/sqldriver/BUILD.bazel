@@ -44,6 +44,7 @@ go_test(
         "agg_index_residual_drop_probe_test.go",
         "agg_input_ordinal_fdb_test.go",
         "agg_null_semantics_probe_test.go",
+        "agg_operand_suffix_collision_fdb_test.go",
         "agg_output_type_crosses_derived_boundary_fdb_test.go",
         "agg_over_projecting_derived_source_fdb_test.go",
         "agg_reshaping_input_ordinal_fdb_test.go",

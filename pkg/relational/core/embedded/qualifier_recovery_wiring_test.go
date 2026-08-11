@@ -285,31 +285,45 @@ func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
 		label string
 		v     values.Value
 		class values.QualifierRecoveryClass
-		why   string
+		// wantOut/wantStripped are the OUTCOME, asserted beside the census
+		// class. The census says which decision was FILED; these say what the
+		// caller was actually handed, and the two are independent — the class
+		// comes from recordDisplayLabelStrip's inputs and the label from the
+		// branch below it. The return value used to be discarded here, so a
+		// strip that bucketed correctly and handed back the wrong label passed.
+		wantOut      string
+		wantStripped bool
+		why          string
 	}{
 		{
-			name:  "AGREED",
-			label: "A.NAME",
-			v:     values.NewFieldValue(qov("A"), "NAME", values.UnknownType),
-			class: values.QualRecAgreed,
+			name:         "AGREED",
+			label:        "A.NAME",
+			v:            values.NewFieldValue(qov("A"), "NAME", values.UnknownType),
+			class:        values.QualRecAgreed,
+			wantOut:      "NAME",
+			wantStripped: true,
 			why: "the machinery minted this alias from correlation A and the split " +
 				"recovered A. 722 of the site's 750 corpus calls land here — the " +
 				"largest conversion-ready population in the family",
 		},
 		{
-			name:  "DIVERGED",
-			label: "A.NAME",
-			v:     values.NewFieldValue(qov("Z"), "NAME", values.UnknownType),
-			class: values.QualRecDiverged,
+			name:         "DIVERGED",
+			label:        "A.NAME",
+			v:            values.NewFieldValue(qov("Z"), "NAME", values.UnknownType),
+			class:        values.QualRecDiverged,
+			wantOut:      "NAME",
+			wantStripped: true,
 			why: "the value names correlation Z and the label's bytes name A. The one " +
 				"population this census asserts at zero, and it must be reachable for " +
 				"that zero to mean anything",
 		},
 		{
-			name:  "MANUFACTURED",
-			label: "A.NAME",
-			v:     values.NewFlatFieldValue("NAME", values.UnknownType),
-			class: values.QualRecManufactured,
+			name:         "MANUFACTURED",
+			label:        "A.NAME",
+			v:            values.NewFlatFieldValue("NAME", values.UnknownType),
+			class:        values.QualRecManufactured,
+			wantOut:      "NAME",
+			wantStripped: true,
 			why: "a dotted label over a value carrying no correlation at all: the " +
 				"qualifier is stripped with nothing to check it against. The sqldriver " +
 				"corpus reports 6 and this package's production traffic 3 more " +
@@ -317,10 +331,12 @@ func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
 				"conversion despite 722 agreements",
 		},
 		{
-			name:  "heuristicDecline",
-			label: "SUM(A.VAL).X",
-			v:     values.NewFieldValue(qov("A"), "VAL", values.UnknownType),
-			class: values.QualRecHeuristicDecline,
+			name:         "heuristicDecline",
+			label:        "SUM(A.VAL).X",
+			v:            values.NewFieldValue(qov("A"), "VAL", values.UnknownType),
+			class:        values.QualRecHeuristicDecline,
+			wantOut:      "SUM(A.VAL).X",
+			wantStripped: false,
 			why: "a dotted label containing parentheses. isPlainQualifiedColumnReference " +
 				"rejects it by looking for `()` in the RENDERING — a heuristic, not a " +
 				"parse — and that decision is bucketed apart from `bare` so it cannot " +
@@ -328,17 +344,21 @@ func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
 				"this package plans `MAX(E.SALARY)` through it for real",
 		},
 		{
-			name:  "bare",
-			label: "NAME",
-			v:     values.NewFlatFieldValue("NAME", values.UnknownType),
-			class: values.QualRecBare,
-			why:   "no dot in the label; 22 of the sqldriver corpus's 750 calls and 2 of this package's 6",
+			name:         "bare",
+			label:        "NAME",
+			v:            values.NewFlatFieldValue("NAME", values.UnknownType),
+			class:        values.QualRecBare,
+			wantOut:      "NAME",
+			wantStripped: false,
+			why:          "no dot in the label; 22 of the sqldriver corpus's 750 calls and 2 of this package's 6",
 		},
 		{
-			name:  "AGREED_three_segment",
-			label: "A.N.SK",
-			v:     values.NewFieldValue(qov("A"), "N", values.UnknownType),
-			class: values.QualRecAgreed,
+			name:         "AGREED_three_segment",
+			label:        "A.N.SK",
+			v:            values.NewFieldValue(qov("A"), "N", values.UnknownType),
+			class:        values.QualRecAgreed,
+			wantOut:      "SK",
+			wantStripped: true,
 			why: "an alias-qualified struct descent. The SOURCE qualifier is the " +
 				"LEADING segment, and it agrees with the correlation; the second " +
 				"dot is inside the struct path and is not a qualifier boundary at " +
@@ -347,10 +367,12 @@ func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
 				"is what it did, and what made the census fire on a correct read",
 		},
 		{
-			name:  "DIVERGED_three_segment",
-			label: "Z.N.SK",
-			v:     values.NewFieldValue(qov("A"), "N", values.UnknownType),
-			class: values.QualRecDiverged,
+			name:         "DIVERGED_three_segment",
+			label:        "Z.N.SK",
+			v:            values.NewFieldValue(qov("A"), "N", values.UnknownType),
+			class:        values.QualRecDiverged,
+			wantOut:      "SK",
+			wantStripped: true,
 			why: "the leading segment names Z and the value names A, so the label " +
 				"is not a rendering of this identity. DIVERGED must stay reachable " +
 				"at three segments too: the arm above makes the common case agree, " +
@@ -362,12 +384,22 @@ func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			var gotOut string
+			var gotStripped bool
 			got := qualRecDelta(t, values.QualRecSiteDisplayLabelStrip, tc.class, func() {
-				_, _ = stripDisplayLabelQualifier(tc.label, tc.v)
+				gotOut, gotStripped = stripDisplayLabelQualifier(tc.label, tc.v)
 			})
 			if got < 1 {
 				t.Fatalf("displayLabelStrip recorded %d %v decision(s) for %q — want at least 1.\n%s",
 					got, tc.class, tc.label, tc.why)
+			}
+			// THE OUTCOME, not only the bucket the decision was filed in. This
+			// call's return was discarded, so a strip that classified correctly
+			// and handed the caller the wrong label satisfied the counter and
+			// mislabelled every column it touched.
+			if gotOut != tc.wantOut || gotStripped != tc.wantStripped {
+				t.Fatalf("stripDisplayLabelQualifier(%q) = (%q, %v), want (%q, %v).\n%s",
+					tc.label, gotOut, gotStripped, tc.wantOut, tc.wantStripped, tc.why)
 			}
 		})
 	}

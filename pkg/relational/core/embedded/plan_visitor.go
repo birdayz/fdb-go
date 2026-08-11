@@ -460,8 +460,27 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 	// (QueryVisitor.java:286) before generateGroupBy validates the expansion
 	// (LogicalOperator.java:436-439). Everything else in the classifier is
 	// still pure parse-tree work.
-	cls, err := classifySelectElements(simpleTable,
-		starExpanderFromScope(buildFromOnlySelectScope(fs, v.md, v.schemaName, v.cteScopes)))
+	// The expander is built only when the branch that consumes it can be
+	// reached at all, and even then it builds its scope LAZILY.
+	//
+	// This path runs for EVERY SELECT while the star-under-GROUP-BY branch
+	// needs a GROUP BY clause to fire, so the parse-tree presence of one is a
+	// free and exact precondition. MEASURED, because laziness alone was not
+	// free: deferring the scope saved 12 allocs / ~600 B per plan on the
+	// star-free shapes but allocated a closure on every call here, which a
+	// join-heavy plan makes many of — two_table_join went +51 allocs. Gating on
+	// the GROUP BY removes both costs, since a query with no GROUP BY now
+	// allocates nothing at all for star expansion.
+	//
+	// A nil expander is the classifier's "cannot expand" signal and keeps the
+	// asserted 42803 refusal. That is correct here rather than merely cheap: with
+	// no GROUP BY clause the classifier never consults the expander, so nil and
+	// a working expander are indistinguishable to it.
+	var expandStar starExpander
+	if simpleTable.GroupByClause() != nil {
+		expandStar = starExpanderFor(fs, v.md, v.schemaName, v.cteScopes)
+	}
+	cls, err := classifySelectElements(simpleTable, expandStar)
 	if err != nil {
 		return nil, err
 	}

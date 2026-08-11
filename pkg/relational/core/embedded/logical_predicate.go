@@ -973,7 +973,14 @@ func aggOutputCols(sq *selectQuery, md *recordlayer.RecordMetaData) []aggOutputC
 		if sq.countStarAlias != "" {
 			name = sq.countStarAlias
 		}
-		out = append(out, aggOutputCol{name: name, typ: "BIGINT", nullable: false})
+		// NULLABLE, exactly like every other aggregate output below. Java's
+		// CountValue.getResultType is `Type.primitiveType(TypeCode.LONG)`
+		// (CountValue.java:140-141) and the one-argument overload hardcodes
+		// isNullable=true (Type.java:404-405), so COUNT(*) is LONG NULLABLE
+		// there. This arm minted it NOT NULL, which contradicted the COUNT arm
+		// of aggregateOutputColumn twenty lines down — the same function, the
+		// same Java rule, two answers.
+		out = append(out, aggOutputCol{name: name, typ: "BIGINT", nullable: true})
 	}
 	srcCols := aggBodySourceColumns(sq, md)
 	for _, ac := range sq.aggCols {
@@ -4794,19 +4801,31 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		// is qualified (`MIN(PID)` vs aggArg `C.PID`) — the main builder
 		// strips a same-source qualifier when naming the slot. Match the
 		// bare form too so the resolved-operand path engages for it.
-		// Every SUFFIX of the reference is a candidate spelling, not just the
-		// whole thing and its last segment. The builder strips a same-source
-		// qualifier when naming the slot, so a three-segment argument
-		// (`COUNT(a.n.sk)`) is named "N.SK" there while the parsed arg still
-		// reads "A.N.SK" — matching only the two ends missed it entirely, the
-		// operand stayed unresolved, and the translator fell back to a lazy
-		// FieldValue{"N.SK"} that no runtime row can answer. For a two-segment
-		// argument the suffix set is exactly the pair this replaces.
+		// TWO candidate spellings, and exactly two: the reference as parsed, and
+		// the reference with its LEADING segment removed.
+		//
+		// The second exists for one reason — the builder strips the SOURCE
+		// qualifier when naming the slot. A three-segment argument
+		// (`COUNT(a.n.sk)`) is named "N.SK" there while the parsed arg reads
+		// "A.N.SK", so matching only the whole spelling missed it, the operand
+		// stayed unresolved, and the translator fell back to a lazy
+		// FieldValue{"N.SK"} no runtime row can answer.
+		//
+		// EVERY suffix is NOT the rule, and briefly was. Dropping one leading
+		// segment is what the slot naming does; dropping more manufactures
+		// spellings nothing produces. The difference is a collision class: over
+		// two sources, `SUM(a.n.sk)` and `SUM(b.m.sk)` are different columns
+		// whose all-suffix sets SHARE the bare leaf "SK", so a slot named "SK"
+		// could be claimed by either. Measured latent today — the slot names
+		// carry enough qualification that no live shape mis-binds
+		// (TestFDB_AggregateOperandSuffixDoesNotCollideOnASharedLeaf) — but the
+		// binding here is algebraic and must not rest on a spelling that wide.
+		//
+		// At TWO segments this is exactly the pair it replaces: the whole
+		// spelling plus the bare leaf, which for `c.pid` is ["C.PID", "PID"].
 		spellings := []string{arg}
 		if segs := ac.aggArgSegs; len(segs) > 1 {
-			for i := 1; i < len(segs); i++ {
-				spellings = append(spellings, strings.Join(segs[i:], "."))
-			}
+			spellings = append(spellings, strings.Join(segs[1:], "."))
 		} else if ac.aggArgQualified && ac.aggArgBare != "" {
 			spellings = append(spellings, ac.aggArgBare)
 		}
@@ -8269,15 +8288,38 @@ func starColumnsFromScope(resolver *expr.Resolver, qualifier string) ([]projCol,
 	return cols, true
 }
 
-// starExpanderFromScope adapts a FROM-only semantic scope into the expander
-// classifySelectElements consumes. Nil resolver yields a nil expander, which the
-// classifier treats as "no expansion available" rather than "expands to
-// nothing".
-func starExpanderFromScope(resolver *expr.Resolver) starExpander {
-	if resolver == nil {
+// starExpanderFor adapts a FROM clause into the expander
+// classifySelectElements consumes, DEFERRING the scope construction to the
+// first expansion that actually asks for it.
+//
+// The laziness is the point. visitSimpleTableBody runs for every SELECT, while
+// the expander is consulted only by the star-under-GROUP-BY branch of the
+// classifier — a small minority of queries. Building the FROM-only scope
+// eagerly put a second full scope construction on the hot path of every query
+// to pay for a branch most never reach.
+//
+// NIL-NESS IS STILL DECIDED EAGERLY, and must be: a nil expander is the
+// classifier's "no expansion available" signal, which keeps the asserted 42803
+// refusal rather than silently dropping the GROUP BY. That decision cannot
+// depend on whether anything happened to ask.
+//
+// The result is memoised INCLUDING a nil resolver — a scope that could not be
+// built is a determination, not a retry. starColumnsFromScope answers
+// (nil, false) for it, which is the same "cannot expand" the classifier needs.
+// This closure is called from one goroutine per plan build; it is not shared.
+func starExpanderFor(fs *fromSource, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) starExpander {
+	if fs == nil || md == nil {
 		return nil
 	}
+	var (
+		resolver *expr.Resolver
+		built    bool
+	)
 	return func(qualifier string) ([]projCol, bool) {
+		if !built {
+			built = true
+			resolver = buildFromOnlySelectScope(fs, md, schemaName, cteScopes)
+		}
 		return starColumnsFromScope(resolver, qualifier)
 	}
 }
