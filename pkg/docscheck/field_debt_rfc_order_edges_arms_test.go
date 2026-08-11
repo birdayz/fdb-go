@@ -1,6 +1,9 @@
 package docscheck
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The live edges table exercises only the arms it happens to contain — today
 // that is the well-formed, correctly-classed ones, which is to say the arms that
@@ -13,7 +16,11 @@ import "testing"
 // take rows, not a document, and return problems, not `t.Error` calls.
 
 func edgeRow(producer, reader, class, retires, evidence string) []string {
-	return []string{producer, reader, class, retires, evidence}
+	return edgeRowFull(producer, "p_"+evidence, reader, evidence, class, retires)
+}
+
+func edgeRowFull(producer, producerEvidence, reader, readerEvidence, class, retires string) []string {
+	return []string{producer, producerEvidence, reader, readerEvidence, class, retires}
 }
 
 // A well-formed table that satisfies every check, used as the base each arm
@@ -103,7 +110,7 @@ func TestFieldDebtOrderEdgeGateArms(t *testing.T) {
 	t.Run("wrong cell count reported", func(t *testing.T) {
 		t.Parallel()
 		_, problems := parseOrderEdges([][]string{{"`a`", "`b`", edgeClassConsumer}})
-		if !hasProblemContaining(problems, "want 5") {
+		if !hasProblemContaining(problems, "want 6") {
 			t.Fatalf("a 3-cell row was accepted; problems: %v", problems)
 		}
 	})
@@ -111,7 +118,7 @@ func TestFieldDebtOrderEdgeGateArms(t *testing.T) {
 	t.Run("non-identifier cell reported", func(t *testing.T) {
 		t.Parallel()
 		rows := goodEdgeRows()
-		rows[0] = []string{"the star expander", "`readerA`", edgeClassConsumer, "yes", "a.go"}
+		rows[0] = edgeRowFull("the star expander", "p_a.go", "readerA", "a.go", edgeClassConsumer, "yes")
 		_, problems := parseOrderEdges(rows)
 		if !hasProblemContaining(problems, "not a bare Go identifier") {
 			t.Fatalf("a prose producer cell was accepted; problems: %v", problems)
@@ -158,15 +165,117 @@ func TestFieldDebtOrderEdgeGateArms(t *testing.T) {
 		}
 	})
 
-	// readerDeclaredIn's rejection arms. The accept arm is exercised by the live
-	// gate against the real table; these are the ones the corpus never reaches.
-	t.Run("evidence must be a go file", func(t *testing.T) {
+	// endpointDeclaredIn's rejection arms. The accept arm is exercised by the
+	// live gate against the real table; these are the ones the corpus never
+	// reaches. Driven for BOTH endpoint kinds, because the whole point of the
+	// producer column is that a check running on one endpoint only is not a
+	// check on the other.
+	for _, what := range []string{"producer", "reader"} {
+		t.Run(what+" evidence must be a go file", func(t *testing.T) {
+			t.Parallel()
+			if p := endpointDeclaredIn(".", "rfcs/197-column-identity-is-an-ordinal.md", what, "legRef"); p == "" {
+				t.Fatalf("a non-.go %s evidence path was accepted", what)
+			}
+			if p := endpointDeclaredIn(".", "", what, "legRef"); p == "" {
+				t.Fatalf("an empty %s evidence path was accepted", what)
+			}
+		})
+	}
+
+	// The gap this column closes, driven directly rather than only through the
+	// live document: a producer cited to a file that does not declare it must be
+	// rejected even when the name is a perfectly live symbol elsewhere. Before
+	// the producer evidence column existed, membership in the repo-wide
+	// identifier set was the ONLY producer check, and that swap passed.
+	t.Run("producer cited to a file that does not declare it", func(t *testing.T) {
 		t.Parallel()
-		if p := readerDeclaredIn(".", "rfcs/197-column-identity-is-an-ordinal.md", "legRef"); p == "" {
-			t.Fatal("a non-.go evidence path was accepted")
+		tree := sourceTreeRoot(t)
+		const cascades = "pkg/relational/core/query/cascades_translator.go"
+
+		if p := endpointDeclaredIn(tree, cascades, "producer", "rebaseUnnestOuterLegPredicate"); p != "" {
+			t.Fatalf("the true producer citation was rejected: %s\n"+
+				"  The negative below would then pass for the wrong reason.", p)
 		}
-		if p := readerDeclaredIn(".", "", "legRef"); p == "" {
-			t.Fatal("an empty evidence path was accepted")
+		// `legRef` is live — it is a reader in the live table — but it is not
+		// declared here. That swap is the one the repo-wide set waves through.
+		p := endpointDeclaredIn(tree, cascades, "producer", "legRef")
+		if p == "" {
+			t.Fatal("a producer cited to a file that does not declare it was accepted; " +
+				"a live-but-unrelated identifier is exactly the mis-citation the " +
+				"repo-wide existence check cannot see")
+		}
+		if !strings.Contains(p, "producer") {
+			t.Fatalf("the rejection does not name the endpoint kind: %q — a message that "+
+				"cannot say WHICH citation is wrong sends the reader to the other column", p)
+		}
+	})
+
+	// THE WIRING, driven without a source tree. The gap that shipped was not in
+	// either check but in which endpoints reached them, and a loop living inline
+	// in the gate body could not be perturbed by any unit arm. Each endpoint kind
+	// is asserted to reach EACH check, one at a time, so dropping any single
+	// pairing reddens exactly one subtest here.
+	for _, endpoint := range []string{"producer", "reader"} {
+		t.Run(endpoint+" reaches the existence check", func(t *testing.T) {
+			t.Parallel()
+			edges, _ := parseOrderEdges([][]string{
+				edgeRowFull("prodA", "p.go", "readerA", "r.go", edgeClassConsumer, "yes"),
+			})
+			// Only the endpoint under test is dead; evidence always accepts, so
+			// nothing but the existence check can produce a problem.
+			dead := map[string]string{"producer": "prodA", "reader": "readerA"}[endpoint]
+			problems := checkEdgeEndpoints(edges,
+				func(name string) bool { return name != dead },
+				func(_, _, _ string) string { return "" })
+			if !hasProblemContaining(problems, "declared nowhere in the tracked Go tree") {
+				t.Fatalf("a dead %s never reached the existence check; problems: %v", endpoint, problems)
+			}
+			if !hasProblemContaining(problems, endpoint+" \""+dead+"\"") {
+				t.Fatalf("the report does not name the %s endpoint; problems: %v", endpoint, problems)
+			}
+		})
+
+		t.Run(endpoint+" reaches the evidence check", func(t *testing.T) {
+			t.Parallel()
+			edges, _ := parseOrderEdges([][]string{
+				edgeRowFull("prodA", "p.go", "readerA", "r.go", edgeClassConsumer, "yes"),
+			})
+			// Everything is live, so a problem can only come from the evidence
+			// resolver — and it rejects only the endpoint under test. This is the
+			// arm that would stay green if that endpoint's evidence column were
+			// simply never passed down.
+			var sawWhat []string
+			problems := checkEdgeEndpoints(edges,
+				func(string) bool { return true },
+				func(evidence, what, name string) string {
+					sawWhat = append(sawWhat, what)
+					if what != endpoint {
+						return ""
+					}
+					return "cited " + name + " to " + evidence + " which does not declare it"
+				})
+			if !hasProblemContaining(problems, "which does not declare it") {
+				t.Fatalf("the %s evidence column never reached the evidence check; "+
+					"the resolver saw %v, problems: %v\n"+
+					"  An endpoint anchored only by the repo-wide identifier set is "+
+					"anchored by nothing a rename or a mis-citation would disturb.",
+					endpoint, sawWhat, problems)
+			}
+			if len(problems) != 1 {
+				t.Fatalf("want exactly the %s evidence problem, got %v", endpoint, problems)
+			}
+		})
+	}
+
+	// A type, not a func. The existence check accepts carrier types, so the
+	// per-file anchor must too, or a legitimate row would be unfixable except by
+	// deleting its citation.
+	t.Run("a carrier type anchors as well as a func", func(t *testing.T) {
+		t.Parallel()
+		tree := sourceTreeRoot(t)
+		if p := endpointDeclaredIn(tree, "pkg/relational/core/embedded/select_parser.go",
+			"producer", "projCol"); p != "" {
+			t.Fatalf("a type-valued producer was rejected by its own declaring file: %s", p)
 		}
 	})
 }

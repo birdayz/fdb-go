@@ -39,15 +39,23 @@ import (
 //   - every identifier named in either column of the edges table is a LIVE
 //     declaration somewhere in the tracked Go tree (so an edge cannot outlive a
 //     rename or a deletion — the "names a function that no longer exists" case);
-//   - every READER is declared in the file the row cites as evidence (so the
-//     citation points at the code that decides the relationship, rather than at
-//     a file that merely once contained it);
+//   - BOTH endpoints — producer and reader alike — are declared in the file the
+//     row cites beside them (so each citation points at the code that decides
+//     the relationship, rather than at a file that merely once contained it);
 //   - the class is one of the three the section defines;
 //   - a `decliner` or `co-occurring` edge does not claim `retires = yes`.
 //
-// That last rule is the one that mechanically forbids the exact error that
-// shipped. It is a ONE-directional implication and is stated that way on
-// purpose:
+// The producer anchor is not decoration. An earlier version of this gate held
+// producers to nothing but membership in the repo-wide identifier set, and
+// swapping a producer for an unrelated but live identifier passed silently: a
+// rename, or a mis-citation to any symbol still declared anywhere, went
+// unnoticed. Membership in a repo-wide set is a weak claim — the set is large
+// and every real name is in it — so an endpoint is anchored to a FILE or it is
+// not anchored at all.
+//
+// The retirement rule — the last bullet above — is the one that mechanically
+// forbids the exact error that shipped. It is a ONE-directional implication and
+// is stated that way on purpose:
 //
 //	decliner     => retires = no
 //	co-occurring => retires = no
@@ -58,14 +66,22 @@ import (
 // `consumer` cannot imply `yes` and this gate must not pretend otherwise.
 //
 // WHAT THIS GATE CANNOT CHECK, said plainly because a gate whose limits are
-// unstated gets read as covering more than it does: it cannot verify that a
+// unstated gets read as covering more than it does — and because the previous
+// statement of those limits was itself the record-outlives-the-code failure this
+// file exists to catch: it disclaimed only dataflow while staying silent about
+// the producer endpoint, which at the time was anchored by nothing.
+//
+// So, precisely. ANCHORED: both endpoints, each to the declaration site cited
+// beside it; the consistency of a row's retirement claim with its own stated
+// class; and well-formedness — cell count, identifier shape, closed class
+// vocabulary, a non-empty table, and the presence of both a retiring and a
+// non-retiring class.
+//
+// NOT ANCHORED, and unmechanizable rather than merely unimplemented: whether a
 // row's CLASS is the TRUE one. Deciding whether a reader parses the minted
 // string, refuses it, or merely touches a same-shaped string from elsewhere is a
-// reading of dataflow, and no regex over a markdown table can perform it. What
-// the gate buys is that a claim must be well-formed, must name live code, must
-// cite the deciding site, and must not draw a retirement conclusion its own
-// stated class forbids. A wrong class is still possible; a wrong class that also
-// claims leverage is not.
+// reading of dataflow, and no regex over a markdown table can perform it. A
+// wrong class is still possible; a wrong class that also claims leverage is not.
 const fieldDebtOrderEdgesMarker = "<!-- FIELD-DEBT-ORDER-EDGES -->"
 
 // The closed vocabulary. Adding a class is a deliberate act — a new relationship
@@ -96,11 +112,12 @@ func edgeClassMayRetire(class string) (known, mayRetire bool) {
 }
 
 type orderEdge struct {
-	producer string
-	reader   string
-	class    string
-	retires  string
-	evidence string
+	producer         string
+	producerEvidence string
+	reader           string
+	readerEvidence   string
+	class            string
+	retires          string
 }
 
 // goIdent matches a bare Go identifier. Cells arrive from parseFieldDebtTable
@@ -120,18 +137,20 @@ func parseOrderEdges(rows [][]string) (edges []orderEdge, problems []string) {
 		if len(r) > 0 && strings.TrimSpace(r[0]) == "producer" {
 			continue
 		}
-		if len(r) != 5 {
+		if len(r) != 6 {
 			problems = append(problems, fmt.Sprintf(
-				"edges table row %d has %d cells, want 5 (producer | reader | class | retires | evidence)",
+				"edges table row %d has %d cells, want 6 (producer | producer evidence | "+
+					"reader | reader evidence | class | retires)",
 				i+1, len(r)))
 			continue
 		}
 		e := orderEdge{
-			producer: strings.TrimSpace(r[0]),
-			reader:   strings.TrimSpace(r[1]),
-			class:    strings.TrimSpace(r[2]),
-			retires:  strings.TrimSpace(r[3]),
-			evidence: strings.TrimSpace(r[4]),
+			producer:         strings.TrimSpace(r[0]),
+			producerEvidence: strings.TrimSpace(r[1]),
+			reader:           strings.TrimSpace(r[2]),
+			readerEvidence:   strings.TrimSpace(r[3]),
+			class:            strings.TrimSpace(r[4]),
+			retires:          strings.TrimSpace(r[5]),
 		}
 		for _, c := range []struct{ what, cell string }{{"producer", e.producer}, {"reader", e.reader}} {
 			if !goIdent.MatchString(c.cell) {
@@ -231,26 +250,11 @@ func TestFieldDebtRFCOrderEdgesAreClassified(t *testing.T) {
 			"a dead declaration (or, with the polarity reversed, none)", len(decls), tree)
 	}
 
-	for i, e := range edges {
-		for _, c := range []struct{ what, cell string }{{"producer", e.producer}, {"reader", e.reader}} {
-			if !goIdent.MatchString(c.cell) {
-				continue // already reported by parseOrderEdges
-			}
-			if _, live := decls[c.cell]; !live {
-				problems = append(problems, fmt.Sprintf(
-					"edges table row %d: %s %q is declared nowhere in the tracked Go tree.\n"+
-						"  A dependency claim naming code that no longer exists is the rot this "+
-						"gate was added for: it reads as a live constraint and plans as one.",
-					i+1, c.what, c.cell))
-			}
-		}
-		if !goIdent.MatchString(e.reader) {
-			continue
-		}
-		if p := readerDeclaredIn(tree, e.evidence, e.reader); p != "" {
-			problems = append(problems, fmt.Sprintf("edges table row %d: %s", i+1, p))
-		}
-	}
+	problems = append(problems, checkEdgeEndpoints(edges,
+		func(name string) bool { _, live := decls[name]; return live },
+		func(evidence, what, name string) string {
+			return endpointDeclaredIn(tree, evidence, what, name)
+		})...)
 
 	sort.Strings(problems)
 	for _, p := range problems {
@@ -258,28 +262,101 @@ func TestFieldDebtRFCOrderEdgesAreClassified(t *testing.T) {
 	}
 }
 
-// readerDeclaredIn checks the evidence citation points at the file declaring the
-// reader. Returns "" when it does.
+// checkEdgeEndpoints applies BOTH endpoint checks to BOTH endpoints. Pure over
+// its two resolvers so TestFieldDebtOrderEdgeGateArms can drive it without a
+// source tree — which is the point, because the defect this closes was in the
+// WIRING, not in either check. Both checks were correct; one endpoint was simply
+// never passed to the second, and no unit arm could see that while the loop
+// lived inline in the test body next to the process globals it read.
 //
-// The evidence column carries a FILE and deliberately no line number. A cited
+// `live` answers "does this name still exist anywhere"; `declaredIn` answers
+// "does it exist HERE, at the site this row cites". A repo-wide set is a weak
+// claim on its own — every real identifier is in it — so an endpoint that gets
+// only the first check is, in practice, unchecked.
+func checkEdgeEndpoints(edges []orderEdge, live func(string) bool,
+	declaredIn func(evidence, what, name string) string,
+) (problems []string) {
+	for i, e := range edges {
+		for _, c := range []struct{ what, cell, evidence string }{
+			{"producer", e.producer, e.producerEvidence},
+			{"reader", e.reader, e.readerEvidence},
+		} {
+			if !goIdent.MatchString(c.cell) {
+				continue // already reported by parseOrderEdges
+			}
+			if !live(c.cell) {
+				problems = append(problems, fmt.Sprintf(
+					"edges table row %d: %s %q is declared nowhere in the tracked Go tree.\n"+
+						"  A dependency claim naming code that no longer exists is the rot this "+
+						"gate was added for: it reads as a live constraint and plans as one.",
+					i+1, c.what, c.cell))
+			}
+			if p := declaredIn(c.evidence, c.what, c.cell); p != "" {
+				problems = append(problems, fmt.Sprintf("edges table row %d: %s", i+1, p))
+			}
+		}
+	}
+	return problems
+}
+
+// endpointDeclaredIn checks an evidence citation points at the file declaring
+// the endpoint it sits beside. Returns "" when it does.
+//
+// The evidence columns carry a FILE and deliberately no line number. A cited
 // line rots on the next edit above it and rots SILENTLY, which would rebuild the
 // stale-citation problem inside the gate meant to prevent it; a file that must
 // contain the declaration is checkable and stable.
-func readerDeclaredIn(tree, evidence, reader string) string {
+func endpointDeclaredIn(tree, evidence, what, name string) string {
 	if evidence == "" || !strings.HasSuffix(evidence, ".go") {
-		return fmt.Sprintf("evidence %q is not a .go path; the citation must name the file "+
-			"whose code decides the relationship", evidence)
+		return fmt.Sprintf("%s evidence %q is not a .go path; the citation must name the "+
+			"file whose code decides the relationship", what, evidence)
 	}
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, filepath.Join(tree, evidence), nil, parser.SkipObjectResolution)
 	if err != nil {
-		return fmt.Sprintf("evidence %q does not parse: %v", evidence, err)
+		return fmt.Sprintf("%s evidence %q does not parse: %v", what, evidence, err)
 	}
-	if findFunc(f, reader) == nil {
-		return fmt.Sprintf("reader %q is not declared in its evidence file %q — the citation "+
-			"names a file that does not contain the code deciding this edge", reader, evidence)
+	if !fileDeclares(f, name) {
+		return fmt.Sprintf("%s %q is not declared in its evidence file %q — the citation "+
+			"names a file that does not contain the code deciding this edge", what, name, evidence)
 	}
 	return ""
+}
+
+// fileDeclares reports whether name is declared at top level in f — funcs,
+// methods, types, vars, consts.
+//
+// Deliberately the same breadth as declaredIdents, and not findFunc. An endpoint
+// may legitimately be a carrier TYPE rather than a function (the `projCol`
+// channel is exactly that), so a func-only anchor would make the per-file check
+// unsatisfiable for rows the repo-wide existence check accepts — the two must
+// agree on what "declared" means or the narrower one becomes a reason to drop
+// the citation rather than a reason to fix it.
+func fileDeclares(f *ast.File, name string) bool {
+	for _, d := range f.Decls {
+		switch decl := d.(type) {
+		case *ast.FuncDecl:
+			if decl.Name != nil && decl.Name.Name == name {
+				return true
+			}
+		case *ast.GenDecl:
+			for _, s := range decl.Specs {
+				switch spec := s.(type) {
+				case *ast.TypeSpec:
+					if spec.Name != nil && spec.Name.Name == name {
+						return true
+					}
+				case *ast.ValueSpec:
+					for _, n := range spec.Names {
+						if n.Name == name {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 // declaredIdents collects every top-level declared name in the tracked Go tree —
