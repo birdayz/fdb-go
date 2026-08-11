@@ -79,6 +79,13 @@ func (c *lateClock) Now() time.Time {
 // Disarm ends the spike. Safe to call repeatedly.
 func (c *lateClock) Disarm() { c.armed.Store(false) }
 
+// Rearm re-injects the spike for the NEXT transaction. A test with several
+// independent explicit transactions — subtests, typically — needs each of them
+// to meet the condition; without this the first one consumes the one-shot and
+// every later transaction runs clean, so its retry would be a permanently
+// untested arm while the test reported green.
+func (c *lateClock) Rearm() { c.armed.Store(true) }
+
 // openLateClockDB registers a REAL FoundationDB-backed database whose record
 // layer measures elapsed time on clk, and returns an *sql.DB speaking to it.
 //
@@ -120,16 +127,22 @@ func openLateClockDB(t *testing.T, clk dst.Clock, dbPath, tmpl string) *sql.DB {
 	return db
 }
 
-// isTxBudgetExhausted reports whether err is the driver's whole-transaction
-// pre-emption — the typed marker, never the SQLSTATE.
+// isTxBudgetExhausted reports whether err says the transaction outlived its
+// MVCC window — the typed marker, never the SQLSTATE.
 //
 // 40001 alone cannot answer this: a genuine write conflict carries the same
 // code, and the two need opposite responses. A conflict retried as-is usually
 // succeeds; an exhausted MVCC window only makes progress if the retry opens a
 // NEW transaction, which is what the helper below does.
+//
+// It DELEGATES to the production predicate rather than re-deriving the
+// errors.As. api.IsTransactionTimeLimit is documented as the single question
+// consumers ask, and it already spans both producers — the driver's own
+// pre-emption and FDB's transaction_too_old. A test-local copy would answer the
+// same question until the day a third producer is added, and then answer it
+// differently from every non-test caller while staying green.
 func isTxBudgetExhausted(err error) bool {
-	var tle *api.TransactionTimeLimitError
-	return errors.As(err, &tle)
+	return api.IsTransactionTimeLimit(err)
 }
 
 // TestFDB_TxBudget_PreemptsAnExplicitTransactionUnderALateClock forces the
@@ -189,26 +202,11 @@ func TestFDB_TxBudget_PreemptsAnExplicitTransactionUnderALateClock(t *testing.T)
 	}
 }
 
-// txAttempt is what runInTxWithRetry hands each attempt.
-type txAttempt struct {
-	tx  *sql.Tx
-	num int
-}
-
-// runInTxWithRetry runs body inside an explicit transaction, restarting the
-// WHOLE transaction when it is pre-empted for outliving its MVCC window.
-//
-// Restarting the whole thing is the only thing that can work, and it is also the
-// only thing that stays correct. A fresh transaction takes a fresh read version,
-// which is the only way the window problem goes away; and because body re-runs
-// in full, everything it establishes — here, an uncommitted INSERT — is
-// re-established INSIDE the new transaction rather than smuggled across the
-// boundary. A retry that resumed mid-body would be asserting read-your-writes
-// against writes made by a transaction that no longer exists.
-//
-// It deliberately does NOT retry anything else. A genuine write conflict is the
-// same SQLSTATE and is somebody else's business; retrying it here would hide a
-// real isolation failure behind a loop.
+// runInTxWithRetry is the *sql.DB-shaped spelling of retryTx, kept because the
+// call sites read better without an options literal when all they need is an
+// attempt count and a retry hook. txAttempt and the loop itself live in
+// tx_budget_retry_shared_test.go, so every converted test shares ONE decision
+// about what is retryable.
 func runInTxWithRetry(
 	t *testing.T,
 	db *sql.DB,
@@ -217,33 +215,7 @@ func runInTxWithRetry(
 	body func(txAttempt) error,
 ) {
 	t.Helper()
-	var last error
-	for i := 1; i <= attempts; i++ {
-		tx, err := db.BeginTx(context.Background(), nil)
-		if err != nil {
-			t.Fatalf("begin (attempt %d): %v", i, err)
-		}
-		err = body(txAttempt{tx: tx, num: i})
-		_ = tx.Rollback()
-		if err == nil {
-			return
-		}
-		if !isTxBudgetExhausted(err) {
-			t.Fatalf("attempt %d failed with %v — only the whole-transaction budget "+
-				"pre-emption is retried here, because it is the one 40001 that a FRESH "+
-				"transaction clears. Anything else, including a genuine write conflict, "+
-				"must surface.", i, err)
-		}
-		last = err
-		if onRetry != nil {
-			onRetry(i, err)
-		}
-	}
-	t.Fatalf("the transaction was pre-empted for outliving its MVCC window on all %d "+
-		"attempts; last error: %v.\n"+
-		"  The retry is BOUNDED on purpose: an explicit transaction whose work genuinely "+
-		"  cannot fit in FDB's 5-second window will fail every attempt, and looping on it "+
-		"  forever would convert a legible failure into a hang.", attempts, last)
+	retryTx(t, db, txRetryOpts{Attempts: attempts, OnRetry: onRetry}, body)
 }
 
 // TestTxRetry_HelperArms drives every arm of the retry helper without FDB.

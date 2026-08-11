@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "txbudgetcensus",
+    srcs = ["census.go"],
+    importpath = "fdb.dev/pkg/relational/txbudgetcensus",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "txbudgetcensus_test",
+    srcs = ["census_test.go"],
+    data = [
+        "//pkg/relational/core/embedded:tx_budget_census_corpus",
+        "//pkg/relational/sqldriver:tx_budget_census_corpus",
+    ],
+    deps = [":txbudgetcensus"],
+)

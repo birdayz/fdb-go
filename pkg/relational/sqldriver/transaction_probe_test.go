@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+	"time"
 )
 
 func TestFDB_TransactionProbe(t *testing.T) {
@@ -18,18 +19,20 @@ func TestFDB_TransactionProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_txnprobe")
+	// Created DISARMED: the two single-statement subtests below cannot expire a
+	// window between statements, so they are not exposed and must not be spiked —
+	// they have no retry and a pre-emption would simply fail them. Only
+	// multi_statement_atomic_rollback arms it, for its own transaction.
+	key, clk := spikedClusterKey(t, 30*time.Second)
+	clk.Disarm()
+	setup := openSpiked(t, key, "/testdb_txnprobe", "")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_txnprobe")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE txnprobe "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_txnprobe/s WITH TEMPLATE txnprobe")
-	dsn := fmt.Sprintf("fdbsql:///testdb_txnprobe?cluster_file=%s&schema=s", clusterFilePath)
-	db, err := sql.Open("fdbsql", dsn)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
+	dsn := spikedDSN(key, "/testdb_txnprobe", "s")
+	db := openSpiked(t, key, "/testdb_txnprobe", "s")
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 10)")
 
 	count := func() int64 {
@@ -77,19 +80,25 @@ func TestFDB_TransactionProbe(t *testing.T) {
 	})
 
 	t.Run("multi_statement_atomic_rollback", func(t *testing.T) {
+		// FIVE statements on one read version — the most exposed transaction in
+		// this file, and the only one here that carries the assumption at all.
+		// The other subtests issue a single in-transaction statement, so their
+		// window cannot expire between statements.
 		before := count()
-		tx, err := db.BeginTx(ctx, nil)
-		if err != nil {
-			t.Fatalf("BeginTx: %v", err)
-		}
-		for i := int64(200); i < 205; i++ {
-			if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (%d, %d)", i, i*10)); err != nil {
-				t.Fatalf("tx insert %d: %v", i, err)
+		clk.Rearm()
+		var attemptsRun int
+		retryTx(t, db, spikeOnce(clk, &attemptsRun), func(a txAttempt) error {
+			for i := int64(200); i < 205; i++ {
+				if _, err := a.tx.ExecContext(ctx,
+					fmt.Sprintf("INSERT INTO t (id, v) VALUES (%d, %d)", i, i*10)); err != nil {
+					return err
+				}
 			}
-		}
-		if err := tx.Rollback(); err != nil {
-			t.Fatalf("rollback: %v", err)
-		}
+			return nil
+		})
+		mustHaveRetried(t, attemptsRun)
+		// retryTx rolled the successful attempt back, which is the property under
+		// test: all five inserts must vanish together.
 		if got := count(); got != before {
 			t.Errorf("after multi-insert rollback count = %d, want %d (all-or-nothing)", got, before)
 		}

@@ -528,6 +528,7 @@ go_test(
         "transaction_tags_fdb_test.go",
         "twotable_order_invariant_test.go",
         "tx_budget_retry_fdb_test.go",
+        "tx_budget_retry_shared_test.go",
         "tx_commit_rollback_probe_test.go",
         "tx_isolation_rfc198_fdb_test.go",
         "tx_ryw_index_range_fdb_test.go",
@@ -626,4 +627,14 @@ go_test(
         "@org_golang_google_protobuf//types/descriptorpb",
         "@org_golang_google_protobuf//types/dynamicpb",
     ],
+)
+
+# The corpus the transaction-budget census reads as DATA rather than as code.
+# Declared here because a Bazel test sees only its declared inputs: without this
+# filegroup the census runs over an empty runfiles tree and reports zero exposed
+# transactions, which is indistinguishable from a clean suite.
+filegroup(
+    name = "tx_budget_census_corpus",
+    srcs = glob(["*_test.go"]),
+    visibility = ["//pkg/relational/txbudgetcensus:__pkg__"],
 )

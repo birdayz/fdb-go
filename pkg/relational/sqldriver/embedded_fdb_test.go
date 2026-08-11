@@ -3412,7 +3412,8 @@ func TestFDB_TxMultiStatement(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_tx_multi")
+	key, clk := spikedClusterKey(t, 30*time.Second)
+	setup := openSpiked(t, key, "/testdb_tx_multi", "")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_tx_multi")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE txm_tmpl "+
@@ -3420,21 +3421,31 @@ func TestFDB_TxMultiStatement(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_tx_multi/items WITH TEMPLATE txm_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_tx_multi?cluster_file=%s&schema=items", clusterFilePath)
-	db, err := sql.Open("fdbsql", dsn)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer db.Close()
+	db := openSpiked(t, key, "/testdb_tx_multi", "items")
 
-	// Multiple inserts + update in one transaction, all committed atomically.
-	tx, err := db.BeginTx(ctx, nil)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = tx.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10)")
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = tx.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (2, 20)")
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = tx.ExecContext(ctx, "UPDATE Item SET val = 99 WHERE item_id = 1")
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	g.Expect(tx.Commit()).To(gomega.Succeed())
+	// THREE statements plus a commit on one read version — the shape this whole
+	// class is about. Retried as a whole: the two INSERTs and the UPDATE are
+	// re-applied inside the new transaction, so the atomicity the assertions
+	// below check belongs to the transaction that actually committed.
+	//
+	// The gomega assertions stay OUTSIDE the body. g.Expect fails the test
+	// immediately, so a driver error raised through it on a doomed attempt would
+	// end the test before the retry loop could classify it — the same blocker
+	// that a t.Fatalf inside a body creates.
+	var attemptsRun int
+	retryTx(t, db, spikeOnce(clk, &attemptsRun), func(a txAttempt) error {
+		if _, err := a.tx.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10)"); err != nil {
+			return err
+		}
+		if _, err := a.tx.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (2, 20)"); err != nil {
+			return err
+		}
+		if _, err := a.tx.ExecContext(ctx, "UPDATE Item SET val = 99 WHERE item_id = 1"); err != nil {
+			return err
+		}
+		return a.tx.Commit()
+	})
+	mustHaveRetried(t, attemptsRun)
 
 	rows, err := db.QueryContext(ctx, "SELECT item_id, val FROM Item ORDER BY item_id ASC")
 	g.Expect(err).NotTo(gomega.HaveOccurred())

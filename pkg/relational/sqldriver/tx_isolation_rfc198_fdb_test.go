@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
@@ -34,13 +35,28 @@ import (
 
 func rfc198SetupDB(t *testing.T, dbPath, tmpl string) *sql.DB {
 	t.Helper()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	return rfc198SetupDBOn(t, clusterFilePath, dbPath, tmpl)
+}
+
+// rfc198SetupDBOn is rfc198SetupDB against a named backend key, so a test can
+// put this schema on a database whose record layer measures elapsed time on an
+// injected clock.
+func rfc198SetupDBOn(t *testing.T, key, dbPath, tmpl string) *sql.DB {
+	t.Helper()
 	ctx := context.Background()
-	setup := openTestDB(t, dbPath)
+	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbPath, key))
+	if err != nil {
+		t.Fatalf("sql.Open setup: %v", err)
+	}
+	t.Cleanup(func() { _ = setup.Close() })
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE "+tmpl+" CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+tmpl)
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, key))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -71,36 +87,62 @@ func TestFDB_RFC198_LostUpdateBecomes40001(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := rfc198SetupDB(t, "/testdb_rfc198_lostupd", "rfc198lu")
+	key, clk := spikedClusterKey(t, 30*time.Second)
+	db := rfc198SetupDBOn(t, key, "/testdb_rfc198_lostupd", "rfc198lu")
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
 
-	tx1, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatalf("begin T1: %v", err)
-	}
-	defer tx1.Rollback() //nolint:errcheck
+	// THE WHOLE INTERLEAVING IS RETRYABLE — T1's read, T2's committed write, and
+	// T1's own write-then-commit. It has to be all three: the conflict this test
+	// asserts exists only because T2 committed BETWEEN T1's read and T1's commit,
+	// so an attempt that restarted at T1's UPDATE would be commiting a
+	// transaction whose read version postdates T2 and would not conflict at all.
+	// Re-running the body re-establishes the interleaving inside the new
+	// transaction.
+	//
+	// AND THE COMMIT ERROR IS CLASSIFIED, not merely code-checked. That closes a
+	// vacuity this test had before conversion: FDB's transaction_too_old also
+	// maps to 40001, so a T1 whose MVCC window simply expired produced exactly
+	// the SQLSTATE the assertion demanded and the test passed while proving
+	// nothing about read conflict ranges. Now a lost window is returned for the
+	// retry and only a genuine conflict — 40001 with NO time-limit marker —
+	// satisfies the assertion.
+	var commitErr error
+	var attemptsRun int
+	retryTx(t, db, spikeOnce(clk, &attemptsRun), func(a txAttempt) error {
+		// T1 reads the row. This is the read that must contribute a read conflict
+		// range — and it is the FIRST read, so it is also what takes T1's read
+		// version, BEFORE T2 commits.
+		var v int64
+		if err := a.tx.QueryRowContext(ctx, "SELECT v FROM t WHERE id = 1").Scan(&v); err != nil {
+			return err
+		}
+		if v != 100 {
+			t.Fatalf("T1 read v=%d, want 100", v)
+		}
 
-	// T1 reads the row. This is the read that must contribute a read conflict
-	// range — and it is the FIRST read, so it is also what takes T1's read
-	// version, BEFORE T2 commits.
-	var v int64
-	if err := tx1.QueryRowContext(ctx, "SELECT v FROM t WHERE id = 1").Scan(&v); err != nil {
-		t.Fatalf("T1 select: %v", err)
-	}
-	if v != 100 {
-		t.Fatalf("T1 read v=%d, want 100", v)
-	}
+		// T2 (a separate connection, auto-commit) updates the same row and
+		// commits. Idempotent, so re-running it on a later attempt is harmless.
+		if _, err := db.ExecContext(ctx, "UPDATE t SET v = 500 WHERE id = 1"); err != nil {
+			return err
+		}
 
-	// T2 (a separate connection, auto-commit) updates the same row and commits.
-	mwjoMustExec(t, db, ctx, "UPDATE t SET v = 500 WHERE id = 1")
+		// T1 writes the row (its scan still reads at its own read version) and
+		// commits. The commit must fail with 40001 — this is the serialization
+		// the connection promises (BeginTx accepts LevelSerializable).
+		if _, err := a.tx.ExecContext(ctx, "UPDATE t SET v = 101 WHERE id = 1"); err != nil {
+			return err
+		}
+		commitErr = a.tx.Commit()
+		if api.IsTransactionTimeLimit(commitErr) {
+			// T1's window expired rather than conflicting. Retry the whole
+			// interleaving; asserting on this would be asserting a conflict that
+			// was never detected.
+			return commitErr
+		}
+		return nil
+	})
+	mustHaveRetried(t, attemptsRun)
 
-	// T1 writes the row (its scan still reads at its own read version) and
-	// commits. The commit must fail with 40001 — this is the serialization
-	// the connection promises (BeginTx accepts LevelSerializable).
-	if _, err := tx1.ExecContext(ctx, "UPDATE t SET v = 101 WHERE id = 1"); err != nil {
-		t.Fatalf("T1 update: %v", err)
-	}
-	commitErr := tx1.Commit()
 	if commitErr == nil {
 		t.Fatalf("T1 COMMIT succeeded after T2 committed a conflicting write: " +
 			"the lost update shipped silently — the in-tx SELECT is not adding a " +
@@ -115,13 +157,21 @@ func TestFDB_RFC198_LostUpdateBecomes40001(t *testing.T) {
 		t.Fatalf("T1 COMMIT failed with SQLSTATE %s, want %s (40001): %v",
 			apiErr.Code, api.ErrCodeSerializationFailure, commitErr)
 	}
+	if api.IsTransactionTimeLimit(commitErr) {
+		t.Fatalf("T1 COMMIT failed 40001 because its MVCC WINDOW EXPIRED, not because "+
+			"of a conflict: %v.\nThe two share a SQLSTATE, so a code-only assertion "+
+			"passes here with read conflict ranges completely absent. Only a 40001 "+
+			"WITHOUT the time-limit marker is evidence of the serialization this test "+
+			"pins.", commitErr)
+	}
 
 	// T2's write survives.
-	if err := db.QueryRowContext(ctx, "SELECT v FROM t WHERE id = 1").Scan(&v); err != nil {
+	var finalV int64
+	if err := db.QueryRowContext(ctx, "SELECT v FROM t WHERE id = 1").Scan(&finalV); err != nil {
 		t.Fatalf("final read: %v", err)
 	}
-	if v != 500 {
-		t.Fatalf("v=%d after the conflicted commit, want 500 (T2's committed write must survive)", v)
+	if finalV != 500 {
+		t.Fatalf("v=%d after the conflicted commit, want 500 (T2's committed write must survive)", finalV)
 	}
 }
 
@@ -145,34 +195,47 @@ func TestFDB_RFC198_ReadConflictFromSelectAlone(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := rfc198SetupDB(t, "/testdb_rfc198_skew", "rfc198skew")
+	key, clk := spikedClusterKey(t, 30*time.Second)
+	db := rfc198SetupDBOn(t, key, "/testdb_rfc198_skew", "rfc198skew")
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (2, 200)")
 
-	tx1, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatalf("begin T1: %v", err)
-	}
-	defer tx1.Rollback() //nolint:errcheck
+	// Retried as ONE interleaving, for the same reason as the lost-update shape
+	// above and with the same extra classification on the commit error: a T1
+	// whose MVCC window expired reports the identical SQLSTATE as the write skew
+	// this test is here to forbid, so without the marker check the assertion
+	// could be satisfied by a transaction that never contributed a read conflict
+	// range at all.
+	var commitErr error
+	var attemptsRun int
+	retryTx(t, db, spikeOnce(clk, &attemptsRun), func(a txAttempt) error {
+		// T1 reads row 1 — the ONLY touch of row 1 in this transaction.
+		var v int64
+		if err := a.tx.QueryRowContext(ctx, "SELECT v FROM t WHERE id = 1").Scan(&v); err != nil {
+			return err
+		}
+		if v != 100 {
+			t.Fatalf("T1 read v=%d, want 100", v)
+		}
 
-	// T1 reads row 1 — the ONLY touch of row 1 in this transaction.
-	var v int64
-	if err := tx1.QueryRowContext(ctx, "SELECT v FROM t WHERE id = 1").Scan(&v); err != nil {
-		t.Fatalf("T1 select: %v", err)
-	}
-	if v != 100 {
-		t.Fatalf("T1 read v=%d, want 100", v)
-	}
+		// T2 writes row 1 and commits.
+		if _, err := db.ExecContext(ctx, "UPDATE t SET v = 500 WHERE id = 1"); err != nil {
+			return err
+		}
 
-	// T2 writes row 1 and commits.
-	mwjoMustExec(t, db, ctx, "UPDATE t SET v = 500 WHERE id = 1")
+		// T1 writes row 2 (never row 1) and commits: serializable in-tx reads
+		// make this fail 40001; snapshot reads would let it commit.
+		if _, err := a.tx.ExecContext(ctx, "UPDATE t SET v = 201 WHERE id = 2"); err != nil {
+			return err
+		}
+		commitErr = a.tx.Commit()
+		if api.IsTransactionTimeLimit(commitErr) {
+			return commitErr
+		}
+		return nil
+	})
+	mustHaveRetried(t, attemptsRun)
 
-	// T1 writes row 2 (never row 1) and commits: serializable in-tx reads
-	// make this fail 40001; snapshot reads would let it commit.
-	if _, err := tx1.ExecContext(ctx, "UPDATE t SET v = 201 WHERE id = 2"); err != nil {
-		t.Fatalf("T1 update row 2: %v", err)
-	}
-	commitErr := tx1.Commit()
 	if commitErr == nil {
 		t.Fatalf("T1 COMMIT succeeded: the in-tx SELECT of row 1 added no read conflict " +
 			"range — in-tx reads are snapshot, not the SERIALIZABLE the connection " +
@@ -181,6 +244,11 @@ func TestFDB_RFC198_ReadConflictFromSelectAlone(t *testing.T) {
 	var apiErr *api.Error
 	if !errors.As(commitErr, &apiErr) {
 		t.Fatalf("T1 COMMIT failed with %v (%T), want *api.Error 40001", commitErr, commitErr)
+	}
+	if api.IsTransactionTimeLimit(commitErr) {
+		t.Fatalf("T1 COMMIT failed 40001 because its MVCC WINDOW EXPIRED, not because of "+
+			"write skew: %v. A code-only assertion is satisfied by that, with the read "+
+			"conflict range this test exists to prove entirely absent.", commitErr)
 	}
 	if apiErr.Code != api.ErrCodeSerializationFailure {
 		t.Fatalf("T1 COMMIT: SQLSTATE %s, want %s (40001): %v",
