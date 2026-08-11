@@ -544,3 +544,267 @@ test_block:
           - {ID: 11, A: 9, C: 9, F: false, E: !f -1.6777216e+07}
           - {ID: 9, A: 3, C: !null '', F: true, E: !f 2.0}
           - {ID: 1, A: 9, C: 8, F: true, E: !null ''}
+#
+# scenario: fc_0001892184_q0_p0
+# generator: rowdiff-gen/2
+# seed: 1892184
+# query-index: 0
+# projection: 0
+# date: 2026-08-11
+# blessing: metamorphic
+# oracles: tlp,second-plan
+# feature-vector: shape=single;idx=A,C,E,S;proj=star;where=and(!between.ge,cmp.notnull);order=asc
+# plan-shape: 9aa5eef2f7b16449
+# dedup-key: 81e6490e58f8e651
+# reproduce: bazelisk run //cmd/factory-run -- -seed-start 1892184 -seeds 1 -date 2026-08-11 -out <dir>
+---
+schema_template: |-
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_e ON T_RD (e) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_s ON T_RD (s)
+---
+setup:
+  connect: 7
+  steps:
+    - query: |-
+        INSERT INTO T_RD VALUES (1, 7, 1, 5, NULL, FALSE, 8.0, 0.10000000149011612), (2, 7, 5, 5, ' c ', TRUE, 3.0, NULL), (3, 9, 7, 2, ' c ', TRUE, 2.0, 1.0), (4, 7, 4, 3, '', FALSE, -9007199254740992.0, 7.0), (5, 9, 4611686018427387904, 4, NULL, TRUE, 8.0, NULL), (6, -1, -1, 0, 'delta', TRUE, 2.0, 5.0), (7, 9, 4, NULL, '', FALSE, 9007199254740992.0, 1.0), (8, NULL, 4, 1, NULL, NULL, 8.0, NULL), (9, NULL, 7, 4, 'beta', FALSE, 4.0, 0.10000000149011612), (10, NULL, 5, 9, ' a', FALSE, 4.0, 9.0), (11, 4611686018427387904, 3, 7, 'alpha', FALSE, 0.0, NULL), (12, 6, 7, 7, '', TRUE, 8.0, NULL), (13, 9, 5, 1, 'delta', TRUE, -9007199254740992.0, 6.0), (14, NULL, 0, 1, NULL, TRUE, 0.0, -0.0), (15, 3, 5, NULL, 'alpha', TRUE, 7.0, 0.10000000149011612), (16, 7, 4, 6, '', NULL, 0.0, 2.0), (17, 9, 1, 3, 'alpha', TRUE, 9007199254740992.0, 2.0), (18, 4, 9, 1, ' a', TRUE, 8.0, 8.0), (19, 3, 1, 9, 'b ', TRUE, -9007199254740992.0, -0.0), (20, NULL, 7, 5, '', TRUE, 0.1, 2.0), (21, 2, 0, 8, ' c ', FALSE, -9007199254740992.0, 3.0), (22, 4611686018427387904, 3, NULL, 'beta', TRUE, 9007199254740992.0, 3.0), (23, 3, 2, 0, 'delta', TRUE, 1.0, 4.0), (24, 7, 8, 4, NULL, FALSE, 4.0, 7.0)
+---
+test_block:
+  name: "fc_0001892184_q0_p0"
+  preset: single_repetition_ordered
+  connect: 7
+  tests:
+    - - query: |-
+          SELECT * FROM t_rd ORDER BY id
+      - result:
+          - {ID: 1, A: 7, B: 1, C: 5, S: !null '', F: false, D: 8.0, E: !f 0.1}
+          - {ID: 2, A: 7, B: 5, C: 5, S: " c ", F: true, D: 3.0, E: !null ''}
+          - {ID: 3, A: 9, B: 7, C: 2, S: " c ", F: true, D: 2.0, E: !f 1.0}
+          - {ID: 4, A: 7, B: 4, C: 3, S: "", F: false, D: -9.007199254740992e+15, E: !f 7.0}
+          - {ID: 5, A: 9, B: 4611686018427387904, C: 4, S: !null '', F: true, D: 8.0, E: !null ''}
+          - {ID: 6, A: -1, B: -1, C: 0, S: "delta", F: true, D: 2.0, E: !f 5.0}
+          - {ID: 7, A: 9, B: 4, C: !null '', S: "", F: false, D: 9.007199254740992e+15, E: !f 1.0}
+          - {ID: 8, A: !null '', B: 4, C: 1, S: !null '', F: !null '', D: 8.0, E: !null ''}
+          - {ID: 9, A: !null '', B: 7, C: 4, S: "beta", F: false, D: 4.0, E: !f 0.1}
+          - {ID: 10, A: !null '', B: 5, C: 9, S: " a", F: false, D: 4.0, E: !f 9.0}
+          - {ID: 11, A: 4611686018427387904, B: 3, C: 7, S: "alpha", F: false, D: 0.0, E: !null ''}
+          - {ID: 12, A: 6, B: 7, C: 7, S: "", F: true, D: 8.0, E: !null ''}
+          - {ID: 13, A: 9, B: 5, C: 1, S: "delta", F: true, D: -9.007199254740992e+15, E: !f 6.0}
+          - {ID: 14, A: !null '', B: 0, C: 1, S: !null '', F: true, D: 0.0, E: !f -0.0}
+          - {ID: 15, A: 3, B: 5, C: !null '', S: "alpha", F: true, D: 7.0, E: !f 0.1}
+          - {ID: 16, A: 7, B: 4, C: 6, S: "", F: !null '', D: 0.0, E: !f 2.0}
+          - {ID: 17, A: 9, B: 1, C: 3, S: "alpha", F: true, D: 9.007199254740992e+15, E: !f 2.0}
+          - {ID: 18, A: 4, B: 9, C: 1, S: " a", F: true, D: 8.0, E: !f 8.0}
+          - {ID: 19, A: 3, B: 1, C: 9, S: "b ", F: true, D: -9.007199254740992e+15, E: !f -0.0}
+          - {ID: 20, A: !null '', B: 7, C: 5, S: "", F: true, D: 0.1, E: !f 2.0}
+          - {ID: 21, A: 2, B: 0, C: 8, S: " c ", F: false, D: -9.007199254740992e+15, E: !f 3.0}
+          - {ID: 22, A: 4611686018427387904, B: 3, C: !null '', S: "beta", F: true, D: 9.007199254740992e+15, E: !f 3.0}
+          - {ID: 23, A: 3, B: 2, C: 0, S: "delta", F: true, D: 1.0, E: !f 4.0}
+          - {ID: 24, A: 7, B: 8, C: 4, S: !null '', F: false, D: 4.0, E: !f 7.0}
+    - - query: |-
+          SELECT * FROM t_rd WHERE ((NOT (c BETWEEN -1 AND 2)) AND (e IS NOT NULL)) ORDER BY id
+      - result:
+          - {ID: 1, A: 7, B: 1, C: 5, S: !null '', F: false, D: 8.0, E: !f 0.1}
+          - {ID: 4, A: 7, B: 4, C: 3, S: "", F: false, D: -9.007199254740992e+15, E: !f 7.0}
+          - {ID: 9, A: !null '', B: 7, C: 4, S: "beta", F: false, D: 4.0, E: !f 0.1}
+          - {ID: 10, A: !null '', B: 5, C: 9, S: " a", F: false, D: 4.0, E: !f 9.0}
+          - {ID: 16, A: 7, B: 4, C: 6, S: "", F: !null '', D: 0.0, E: !f 2.0}
+          - {ID: 17, A: 9, B: 1, C: 3, S: "alpha", F: true, D: 9.007199254740992e+15, E: !f 2.0}
+          - {ID: 19, A: 3, B: 1, C: 9, S: "b ", F: true, D: -9.007199254740992e+15, E: !f -0.0}
+          - {ID: 20, A: !null '', B: 7, C: 5, S: "", F: true, D: 0.1, E: !f 2.0}
+          - {ID: 21, A: 2, B: 0, C: 8, S: " c ", F: false, D: -9.007199254740992e+15, E: !f 3.0}
+          - {ID: 24, A: 7, B: 8, C: 4, S: !null '', F: false, D: 4.0, E: !f 7.0}
+    - - query: |-
+          SELECT * FROM t_rd WHERE NOT ((NOT (c BETWEEN -1 AND 2)) AND (e IS NOT NULL)) ORDER BY id
+      - result:
+          - {ID: 2, A: 7, B: 5, C: 5, S: " c ", F: true, D: 3.0, E: !null ''}
+          - {ID: 3, A: 9, B: 7, C: 2, S: " c ", F: true, D: 2.0, E: !f 1.0}
+          - {ID: 5, A: 9, B: 4611686018427387904, C: 4, S: !null '', F: true, D: 8.0, E: !null ''}
+          - {ID: 6, A: -1, B: -1, C: 0, S: "delta", F: true, D: 2.0, E: !f 5.0}
+          - {ID: 8, A: !null '', B: 4, C: 1, S: !null '', F: !null '', D: 8.0, E: !null ''}
+          - {ID: 11, A: 4611686018427387904, B: 3, C: 7, S: "alpha", F: false, D: 0.0, E: !null ''}
+          - {ID: 12, A: 6, B: 7, C: 7, S: "", F: true, D: 8.0, E: !null ''}
+          - {ID: 13, A: 9, B: 5, C: 1, S: "delta", F: true, D: -9.007199254740992e+15, E: !f 6.0}
+          - {ID: 14, A: !null '', B: 0, C: 1, S: !null '', F: true, D: 0.0, E: !f -0.0}
+          - {ID: 18, A: 4, B: 9, C: 1, S: " a", F: true, D: 8.0, E: !f 8.0}
+          - {ID: 23, A: 3, B: 2, C: 0, S: "delta", F: true, D: 1.0, E: !f 4.0}
+    - - query: |-
+          SELECT * FROM t_rd WHERE ((NOT (c BETWEEN -1 AND 2)) AND (e IS NOT NULL)) IS NULL ORDER BY id
+      - result:
+          - {ID: 7, A: 9, B: 4, C: !null '', S: "", F: false, D: 9.007199254740992e+15, E: !f 1.0}
+          - {ID: 15, A: 3, B: 5, C: !null '', S: "alpha", F: true, D: 7.0, E: !f 0.1}
+          - {ID: 22, A: 4611686018427387904, B: 3, C: !null '', S: "beta", F: true, D: 9.007199254740992e+15, E: !f 3.0}
+#
+# scenario: fc_0001892184_q0_p1
+# generator: rowdiff-gen/2
+# seed: 1892184
+# query-index: 0
+# projection: 1
+# date: 2026-08-11
+# blessing: metamorphic
+# oracles: tlp,second-plan
+# feature-vector: shape=single;idx=A,C,E,S;proj=n1;where=and(!between.ge,cmp.notnull);order=asc
+# plan-shape: 0afc689c9f4656dd
+# dedup-key: 3207f53c2c783143
+# reproduce: bazelisk run //cmd/factory-run -- -seed-start 1892184 -seeds 1 -date 2026-08-11 -out <dir>
+---
+schema_template: |-
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_e ON T_RD (e) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_s ON T_RD (s)
+---
+setup:
+  connect: 8
+  steps:
+    - query: |-
+        INSERT INTO T_RD VALUES (1, 7, 1, 5, NULL, FALSE, 8.0, 0.10000000149011612), (2, 7, 5, 5, ' c ', TRUE, 3.0, NULL), (3, 9, 7, 2, ' c ', TRUE, 2.0, 1.0), (4, 7, 4, 3, '', FALSE, -9007199254740992.0, 7.0), (5, 9, 4611686018427387904, 4, NULL, TRUE, 8.0, NULL), (6, -1, -1, 0, 'delta', TRUE, 2.0, 5.0), (7, 9, 4, NULL, '', FALSE, 9007199254740992.0, 1.0), (8, NULL, 4, 1, NULL, NULL, 8.0, NULL), (9, NULL, 7, 4, 'beta', FALSE, 4.0, 0.10000000149011612), (10, NULL, 5, 9, ' a', FALSE, 4.0, 9.0), (11, 4611686018427387904, 3, 7, 'alpha', FALSE, 0.0, NULL), (12, 6, 7, 7, '', TRUE, 8.0, NULL), (13, 9, 5, 1, 'delta', TRUE, -9007199254740992.0, 6.0), (14, NULL, 0, 1, NULL, TRUE, 0.0, -0.0), (15, 3, 5, NULL, 'alpha', TRUE, 7.0, 0.10000000149011612), (16, 7, 4, 6, '', NULL, 0.0, 2.0), (17, 9, 1, 3, 'alpha', TRUE, 9007199254740992.0, 2.0), (18, 4, 9, 1, ' a', TRUE, 8.0, 8.0), (19, 3, 1, 9, 'b ', TRUE, -9007199254740992.0, -0.0), (20, NULL, 7, 5, '', TRUE, 0.1, 2.0), (21, 2, 0, 8, ' c ', FALSE, -9007199254740992.0, 3.0), (22, 4611686018427387904, 3, NULL, 'beta', TRUE, 9007199254740992.0, 3.0), (23, 3, 2, 0, 'delta', TRUE, 1.0, 4.0), (24, 7, 8, 4, NULL, FALSE, 4.0, 7.0)
+---
+test_block:
+  name: "fc_0001892184_q0_p1"
+  preset: single_repetition_ordered
+  connect: 8
+  tests:
+    - - query: |-
+          SELECT id FROM t_rd ORDER BY id
+      - result:
+          - {ID: 1}
+          - {ID: 2}
+          - {ID: 3}
+          - {ID: 4}
+          - {ID: 5}
+          - {ID: 6}
+          - {ID: 7}
+          - {ID: 8}
+          - {ID: 9}
+          - {ID: 10}
+          - {ID: 11}
+          - {ID: 12}
+          - {ID: 13}
+          - {ID: 14}
+          - {ID: 15}
+          - {ID: 16}
+          - {ID: 17}
+          - {ID: 18}
+          - {ID: 19}
+          - {ID: 20}
+          - {ID: 21}
+          - {ID: 22}
+          - {ID: 23}
+          - {ID: 24}
+    - - query: |-
+          SELECT id FROM t_rd WHERE ((NOT (c BETWEEN -1 AND 2)) AND (e IS NOT NULL)) ORDER BY id
+      - result:
+          - {ID: 1}
+          - {ID: 4}
+          - {ID: 9}
+          - {ID: 10}
+          - {ID: 16}
+          - {ID: 17}
+          - {ID: 19}
+          - {ID: 20}
+          - {ID: 21}
+          - {ID: 24}
+    - - query: |-
+          SELECT id FROM t_rd WHERE NOT ((NOT (c BETWEEN -1 AND 2)) AND (e IS NOT NULL)) ORDER BY id
+      - result:
+          - {ID: 2}
+          - {ID: 3}
+          - {ID: 5}
+          - {ID: 6}
+          - {ID: 8}
+          - {ID: 11}
+          - {ID: 12}
+          - {ID: 13}
+          - {ID: 14}
+          - {ID: 18}
+          - {ID: 23}
+    - - query: |-
+          SELECT id FROM t_rd WHERE ((NOT (c BETWEEN -1 AND 2)) AND (e IS NOT NULL)) IS NULL ORDER BY id
+      - result:
+          - {ID: 7}
+          - {ID: 15}
+          - {ID: 22}
+#
+# scenario: fc_0001892184_q0_p2
+# generator: rowdiff-gen/2
+# seed: 1892184
+# query-index: 0
+# projection: 2
+# date: 2026-08-11
+# blessing: metamorphic
+# oracles: tlp,second-plan
+# feature-vector: shape=single;idx=A,C,E,S;proj=n5;where=and(!between.ge,cmp.notnull);order=asc
+# plan-shape: 0afc689c9f4656dd
+# dedup-key: 499eb68c199db948
+# reproduce: bazelisk run //cmd/factory-run -- -seed-start 1892184 -seeds 1 -date 2026-08-11 -out <dir>
+---
+schema_template: |-
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_e ON T_RD (e) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_s ON T_RD (s)
+---
+setup:
+  connect: 9
+  steps:
+    - query: |-
+        INSERT INTO T_RD VALUES (1, 7, 1, 5, NULL, FALSE, 8.0, 0.10000000149011612), (2, 7, 5, 5, ' c ', TRUE, 3.0, NULL), (3, 9, 7, 2, ' c ', TRUE, 2.0, 1.0), (4, 7, 4, 3, '', FALSE, -9007199254740992.0, 7.0), (5, 9, 4611686018427387904, 4, NULL, TRUE, 8.0, NULL), (6, -1, -1, 0, 'delta', TRUE, 2.0, 5.0), (7, 9, 4, NULL, '', FALSE, 9007199254740992.0, 1.0), (8, NULL, 4, 1, NULL, NULL, 8.0, NULL), (9, NULL, 7, 4, 'beta', FALSE, 4.0, 0.10000000149011612), (10, NULL, 5, 9, ' a', FALSE, 4.0, 9.0), (11, 4611686018427387904, 3, 7, 'alpha', FALSE, 0.0, NULL), (12, 6, 7, 7, '', TRUE, 8.0, NULL), (13, 9, 5, 1, 'delta', TRUE, -9007199254740992.0, 6.0), (14, NULL, 0, 1, NULL, TRUE, 0.0, -0.0), (15, 3, 5, NULL, 'alpha', TRUE, 7.0, 0.10000000149011612), (16, 7, 4, 6, '', NULL, 0.0, 2.0), (17, 9, 1, 3, 'alpha', TRUE, 9007199254740992.0, 2.0), (18, 4, 9, 1, ' a', TRUE, 8.0, 8.0), (19, 3, 1, 9, 'b ', TRUE, -9007199254740992.0, -0.0), (20, NULL, 7, 5, '', TRUE, 0.1, 2.0), (21, 2, 0, 8, ' c ', FALSE, -9007199254740992.0, 3.0), (22, 4611686018427387904, 3, NULL, 'beta', TRUE, 9007199254740992.0, 3.0), (23, 3, 2, 0, 'delta', TRUE, 1.0, 4.0), (24, 7, 8, 4, NULL, FALSE, 4.0, 7.0)
+---
+test_block:
+  name: "fc_0001892184_q0_p2"
+  preset: single_repetition_ordered
+  connect: 9
+  tests:
+    - - query: |-
+          SELECT id, a, c, f, e FROM t_rd ORDER BY id
+      - result:
+          - {ID: 1, A: 7, C: 5, F: false, E: !f 0.1}
+          - {ID: 2, A: 7, C: 5, F: true, E: !null ''}
+          - {ID: 3, A: 9, C: 2, F: true, E: !f 1.0}
+          - {ID: 4, A: 7, C: 3, F: false, E: !f 7.0}
+          - {ID: 5, A: 9, C: 4, F: true, E: !null ''}
+          - {ID: 6, A: -1, C: 0, F: true, E: !f 5.0}
+          - {ID: 7, A: 9, C: !null '', F: false, E: !f 1.0}
+          - {ID: 8, A: !null '', C: 1, F: !null '', E: !null ''}
+          - {ID: 9, A: !null '', C: 4, F: false, E: !f 0.1}
+          - {ID: 10, A: !null '', C: 9, F: false, E: !f 9.0}
+          - {ID: 11, A: 4611686018427387904, C: 7, F: false, E: !null ''}
+          - {ID: 12, A: 6, C: 7, F: true, E: !null ''}
+          - {ID: 13, A: 9, C: 1, F: true, E: !f 6.0}
+          - {ID: 14, A: !null '', C: 1, F: true, E: !f -0.0}
+          - {ID: 15, A: 3, C: !null '', F: true, E: !f 0.1}
+          - {ID: 16, A: 7, C: 6, F: !null '', E: !f 2.0}
+          - {ID: 17, A: 9, C: 3, F: true, E: !f 2.0}
+          - {ID: 18, A: 4, C: 1, F: true, E: !f 8.0}
+          - {ID: 19, A: 3, C: 9, F: true, E: !f -0.0}
+          - {ID: 20, A: !null '', C: 5, F: true, E: !f 2.0}
+          - {ID: 21, A: 2, C: 8, F: false, E: !f 3.0}
+          - {ID: 22, A: 4611686018427387904, C: !null '', F: true, E: !f 3.0}
+          - {ID: 23, A: 3, C: 0, F: true, E: !f 4.0}
+          - {ID: 24, A: 7, C: 4, F: false, E: !f 7.0}
+    - - query: |-
+          SELECT id, a, c, f, e FROM t_rd WHERE ((NOT (c BETWEEN -1 AND 2)) AND (e IS NOT NULL)) ORDER BY id
+      - result:
+          - {ID: 1, A: 7, C: 5, F: false, E: !f 0.1}
+          - {ID: 4, A: 7, C: 3, F: false, E: !f 7.0}
+          - {ID: 9, A: !null '', C: 4, F: false, E: !f 0.1}
+          - {ID: 10, A: !null '', C: 9, F: false, E: !f 9.0}
+          - {ID: 16, A: 7, C: 6, F: !null '', E: !f 2.0}
+          - {ID: 17, A: 9, C: 3, F: true, E: !f 2.0}
+          - {ID: 19, A: 3, C: 9, F: true, E: !f -0.0}
+          - {ID: 20, A: !null '', C: 5, F: true, E: !f 2.0}
+          - {ID: 21, A: 2, C: 8, F: false, E: !f 3.0}
+          - {ID: 24, A: 7, C: 4, F: false, E: !f 7.0}
+    - - query: |-
+          SELECT id, a, c, f, e FROM t_rd WHERE NOT ((NOT (c BETWEEN -1 AND 2)) AND (e IS NOT NULL)) ORDER BY id
+      - result:
+          - {ID: 2, A: 7, C: 5, F: true, E: !null ''}
+          - {ID: 3, A: 9, C: 2, F: true, E: !f 1.0}
+          - {ID: 5, A: 9, C: 4, F: true, E: !null ''}
+          - {ID: 6, A: -1, C: 0, F: true, E: !f 5.0}
+          - {ID: 8, A: !null '', C: 1, F: !null '', E: !null ''}
+          - {ID: 11, A: 4611686018427387904, C: 7, F: false, E: !null ''}
+          - {ID: 12, A: 6, C: 7, F: true, E: !null ''}
+          - {ID: 13, A: 9, C: 1, F: true, E: !f 6.0}
+          - {ID: 14, A: !null '', C: 1, F: true, E: !f -0.0}
+          - {ID: 18, A: 4, C: 1, F: true, E: !f 8.0}
+          - {ID: 23, A: 3, C: 0, F: true, E: !f 4.0}
+    - - query: |-
+          SELECT id, a, c, f, e FROM t_rd WHERE ((NOT (c BETWEEN -1 AND 2)) AND (e IS NOT NULL)) IS NULL ORDER BY id
+      - result:
+          - {ID: 7, A: 9, C: !null '', F: false, E: !f 1.0}
+          - {ID: 15, A: 3, C: !null '', F: true, E: !f 0.1}
+          - {ID: 22, A: 4611686018427387904, C: !null '', F: true, E: !f 3.0}
