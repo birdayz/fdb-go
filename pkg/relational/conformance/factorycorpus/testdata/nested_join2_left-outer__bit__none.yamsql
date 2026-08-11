@@ -18,7 +18,7 @@
 # family: nested.join2.left-outer|bit|none
 #
 # scenario: fcn_0000000033_q2_p0
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 33
 # query-index: 2
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
           - {L_ID: 21, L_A: !null '', L_N_A: 7, L_N_B: -1, L_N_DP_A: !null '', L_C: 7, L_S: "beta", L_N_S: "gamma", L_N_DP_S: "b ", L_F: true, L_D: 5.0, R_ID: 7, R_A: !null '', R_N_A: 1, R_N_B: 5, R_N_DP_A: !null '', R_C: 8, R_S: " a", R_N_S: "beta", R_N_DP_S: !null '', R_F: true, R_D: 5.0}
 #
 # scenario: fcn_0000000033_q2_p1
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 33
 # query-index: 2
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
           - {L_ID: 21, R_ID: 7}
 #
 # scenario: fcn_0000000033_q2_p2
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 33
 # query-index: 2
 # projection: 2

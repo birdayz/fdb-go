@@ -18,7 +18,7 @@
 # family: nested.single|cmp|scalarsub
 #
 # scenario: fcn_0000000030_q3_p0
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 30
 # query-index: 3
 # projection: 0
@@ -94,7 +94,7 @@ test_block:
           - {ID: 9, N_A: 6, N_B: 5}
 #
 # scenario: fcn_0000000030_q3_p1
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 30
 # query-index: 3
 # projection: 1
@@ -170,7 +170,7 @@ test_block:
           - {ID: 9, A: 4611686018427387904, N_A: 6, N_DP_A: 4}
 #
 # scenario: fcn_0000000030_q3_p3
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 30
 # query-index: 3
 # projection: 3

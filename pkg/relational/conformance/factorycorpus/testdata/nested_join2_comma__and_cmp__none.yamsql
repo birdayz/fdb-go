@@ -18,7 +18,7 @@
 # family: nested.join2.comma|and(cmp)|none
 #
 # scenario: fcn_0000000032_q0_p0
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 32
 # query-index: 0
 # projection: 0
@@ -94,7 +94,7 @@ test_block:
           - {L_ID: 10, L_A: 5, L_N_A: 4, L_N_B: 2, L_N_DP_A: !null '', L_C: !null '', L_S: "alpha", L_N_S: "beta", L_N_DP_S: "delta", L_F: false, L_D: 0.0, R_ID: 4, R_A: 8, R_N_A: 6, R_N_B: 9, R_N_DP_A: !null '', R_C: 0, R_S: "epsilon", R_N_S: "", R_N_DP_S: " a", R_F: !null '', R_D: 0.0}
 #
 # scenario: fcn_0000000032_q0_p1
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 32
 # query-index: 0
 # projection: 1
@@ -170,7 +170,7 @@ test_block:
           - {L_ID: 10, R_ID: 4}
 #
 # scenario: fcn_0000000032_q0_p2
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 32
 # query-index: 0
 # projection: 2

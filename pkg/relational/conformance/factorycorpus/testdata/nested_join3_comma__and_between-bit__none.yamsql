@@ -18,7 +18,7 @@
 # family: nested.join3.comma|and(between+bit)|none
 #
 # scenario: fcn_0000000032_q1_p0
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 32
 # query-index: 1
 # projection: 0
@@ -90,7 +90,7 @@ test_block:
           - {L_ID: 21, L_A: 8, L_N_A: 4, L_N_B: 8, L_N_DP_A: !null '', L_C: -1, L_S: "gamma", L_N_S: " a", L_N_DP_S: !null '', L_F: true, L_D: !null '', M_ID: 4, M_A: 8, M_N_A: 6, M_N_B: 9, M_N_DP_A: !null '', M_C: 0, M_S: "epsilon", M_N_S: "", M_N_DP_S: " a", M_F: !null '', M_D: 0.0, R_ID: 8, R_A: 7, R_N_A: 9, R_N_B: 6, R_N_DP_A: 0, R_C: 6, R_S: "beta", R_N_S: "epsilon", R_N_DP_S: "beta", R_F: true, R_D: 9.007199254740992e+15}
 #
 # scenario: fcn_0000000032_q1_p1
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 32
 # query-index: 1
 # projection: 1
@@ -162,7 +162,7 @@ test_block:
           - {L_ID: 21, M_ID: 4, R_ID: 8}
 #
 # scenario: fcn_0000000032_q1_p2
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 32
 # query-index: 1
 # projection: 2

@@ -18,7 +18,7 @@
 # family: nested.single|and(cmp+numfn)|none
 #
 # scenario: fcn_0000000010_q5_p0
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 10
 # query-index: 5
 # projection: 0
@@ -106,7 +106,7 @@ test_block:
       - result: []
 #
 # scenario: fcn_0000000010_q5_p1
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 10
 # query-index: 5
 # projection: 1
@@ -194,7 +194,7 @@ test_block:
       - result: []
 #
 # scenario: fcn_0000000010_q5_p3
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 10
 # query-index: 5
 # projection: 3

@@ -12,7 +12,20 @@ import (
 // hundreds of committed FLAT scenarios unreproducible, and vice versa. Every
 // consumer that dispatches on a committed header's generator therefore reads
 // this constant, never a substring of it.
-const NestedGeneratorVersion = "rowdiff-nested/1"
+//
+// It is also the ONLY declaration of it. There used to be a second, in
+// rowdiff, and the two disagreed: the rowdiff copy had no readers at all —
+// nothing dispatched on it, nothing stamped it — so a bump applied there
+// changed no committed header and the corpus went on claiming a generator
+// version the build did not have. A version constant with no reader cannot be
+// wrong loudly, which is the only way a version constant is useful.
+//
+// nested/2: the derivation rules changed — a recursive struct model (a struct
+// inside a struct, so `n.dp.a` is three segments), table-derived column pools
+// in place of literal lists, and projection variants reaching depth 3. Every
+// nested seed therefore yields different candidates than nested/1 did, and the
+// committed batch was re-stamped in the same change.
+const NestedGeneratorVersion = "rowdiff-nested/2"
 
 // NestedCandidates enumerates a seed's TLP-eligible NESTED candidates: the same
 // derivation as Candidates, over a case whose table carries a struct column.

@@ -18,7 +18,7 @@
 # family: nested.join3.comma|and(cmp)|none
 #
 # scenario: fcn_0000000009_q4_p0
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 9
 # query-index: 4
 # projection: 0
@@ -132,7 +132,7 @@ test_block:
           - {L_ID: 16, L_A: 5, L_N_A: 3, L_N_B: 3, L_N_DP_A: 4611686018427387904, L_C: 6, L_S: "gamma", L_N_S: !null '', L_N_DP_S: "alpha", L_F: true, L_D: -9.007199254740992e+15, M_ID: 23, M_A: 4, M_N_A: 0, M_N_B: 3, M_N_DP_A: 2, M_C: 4611686018427387904, M_S: !null '', M_N_S: !null '', M_N_DP_S: " c ", M_F: true, M_D: 9.0, R_ID: 3, R_A: 3, R_N_A: 1, R_N_B: 0, R_N_DP_A: 5, R_C: 4, R_S: "alpha", R_N_S: "gamma", R_N_DP_S: "beta", R_F: false, R_D: 3.0}
 #
 # scenario: fcn_0000000009_q4_p1
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 9
 # query-index: 4
 # projection: 1
@@ -246,7 +246,7 @@ test_block:
           - {L_ID: 16, M_ID: 23, R_ID: 3}
 #
 # scenario: fcn_0000000009_q4_p2
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 9
 # query-index: 4
 # projection: 2
@@ -360,7 +360,7 @@ test_block:
           - {R_ID: 3, M_ID: 23, L_ID: 16, M_N_B: 3}
 #
 # scenario: fcn_0000000015_q3_p0
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 15
 # query-index: 3
 # projection: 0
@@ -508,7 +508,7 @@ test_block:
           - {L_ID: 2, L_A: 4, L_N_A: 2, L_N_B: 6, L_N_DP_A: !null '', L_C: 5, L_S: "delta", L_N_S: "delta", L_N_DP_S: " c ", L_F: false, L_D: 4.0, M_ID: 2, M_A: 4, M_N_A: 2, M_N_B: 6, M_N_DP_A: !null '', M_C: 5, M_S: "delta", M_N_S: "delta", M_N_DP_S: " c ", M_F: false, M_D: 4.0, R_ID: 23, R_A: !null '', R_N_A: 9, R_N_B: 3, R_N_DP_A: !null '', R_C: 5, R_S: "b ", R_N_S: "beta", R_N_DP_S: " a", R_F: true, R_D: 6.0}
 #
 # scenario: fcn_0000000015_q3_p1
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 15
 # query-index: 3
 # projection: 1
@@ -656,7 +656,7 @@ test_block:
           - {L_ID: 2, M_ID: 2, R_ID: 23}
 #
 # scenario: fcn_0000000015_q3_p2
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 15
 # query-index: 3
 # projection: 2
@@ -804,7 +804,7 @@ test_block:
           - {R_ID: 23, M_ID: 2, L_ID: 2, M_N_B: 6}
 #
 # scenario: fcn_0000000017_q4_p0
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 17
 # query-index: 4
 # projection: 0
@@ -882,7 +882,7 @@ test_block:
           - {L_ID: 5, L_A: 0, L_N_A: !null '', L_N_B: 4, L_N_DP_A: !null '', L_C: 6, L_S: !null '', L_N_S: !null '', L_N_DP_S: " a", L_F: true, L_D: !null '', M_ID: 7, M_A: 5, M_N_A: !null '', M_N_B: 9, M_N_DP_A: 4, M_C: 5, M_S: "alpha", M_N_S: !null '', M_N_DP_S: " c ", M_F: !null '', M_D: -9.007199254740992e+15, R_ID: 7, R_A: 5, R_N_A: !null '', R_N_B: 9, R_N_DP_A: 4, R_C: 5, R_S: "alpha", R_N_S: !null '', R_N_DP_S: " c ", R_F: !null '', R_D: -9.007199254740992e+15}
 #
 # scenario: fcn_0000000017_q4_p1
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 17
 # query-index: 4
 # projection: 1
@@ -960,7 +960,7 @@ test_block:
           - {L_ID: 5, M_ID: 7, R_ID: 7}
 #
 # scenario: fcn_0000000017_q4_p2
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 17
 # query-index: 4
 # projection: 2
@@ -1038,7 +1038,7 @@ test_block:
           - {R_ID: 7, M_ID: 7, L_ID: 5, M_N_B: 9}
 #
 # scenario: fcn_0000000022_q3_p0
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 22
 # query-index: 3
 # projection: 0
@@ -1132,7 +1132,7 @@ test_block:
       - unorderedResult: []
 #
 # scenario: fcn_0000000022_q3_p1
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 22
 # query-index: 3
 # projection: 1
@@ -1226,7 +1226,7 @@ test_block:
       - unorderedResult: []
 #
 # scenario: fcn_0000000022_q3_p2
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 22
 # query-index: 3
 # projection: 2
@@ -1320,7 +1320,7 @@ test_block:
       - unorderedResult: []
 #
 # scenario: fcn_0000000024_q0_p0
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 24
 # query-index: 0
 # projection: 0
@@ -1448,7 +1448,7 @@ test_block:
           - {L_ID: 23, L_A: 7, L_N_A: 5, L_N_B: 6, L_N_DP_A: -1, L_C: !null '', L_S: "", L_N_S: "alpha", L_N_DP_S: !null '', L_F: true, L_D: 9.007199254740992e+15, M_ID: 22, M_A: 0, M_N_A: 8, M_N_B: 9, M_N_DP_A: 6, M_C: -1, M_S: "delta", M_N_S: " a", M_N_DP_S: !null '', M_F: true, M_D: 3.0, R_ID: 22, R_A: 0, R_N_A: 8, R_N_B: 9, R_N_DP_A: 6, R_C: -1, R_S: "delta", R_N_S: " a", R_N_DP_S: !null '', R_F: true, R_D: 3.0}
 #
 # scenario: fcn_0000000024_q0_p1
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 24
 # query-index: 0
 # projection: 1
@@ -1576,7 +1576,7 @@ test_block:
           - {L_ID: 23, M_ID: 22, R_ID: 22}
 #
 # scenario: fcn_0000000024_q0_p2
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 24
 # query-index: 0
 # projection: 2

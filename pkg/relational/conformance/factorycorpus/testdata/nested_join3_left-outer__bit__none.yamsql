@@ -18,7 +18,7 @@
 # family: nested.join3.left-outer|bit|none
 #
 # scenario: fcn_0000000016_q1_p0
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 16
 # query-index: 1
 # projection: 0
@@ -86,7 +86,7 @@ test_block:
       - unorderedResult: []
 #
 # scenario: fcn_0000000016_q1_p1
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 16
 # query-index: 1
 # projection: 1
@@ -154,7 +154,7 @@ test_block:
       - unorderedResult: []
 #
 # scenario: fcn_0000000016_q1_p2
-# generator: rowdiff-nested/1
+# generator: rowdiff-nested/2
 # seed: 16
 # query-index: 1
 # projection: 2
