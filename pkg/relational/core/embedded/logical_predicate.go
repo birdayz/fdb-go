@@ -7379,6 +7379,21 @@ func aggregateGroupKeyOutputName(gkv values.Value) string {
 // value this mints is FRONTIER-PINNED, which is exactly the guard the walk below
 // returns on, so a rebased computed key passes through it untouched instead of
 // being reconsidered as a field.
+//
+// IT FIRST-MATCHES WHERE JAVA RAISES, and that is safe only because of an
+// interlock worth naming. Java's pull-up ends in Iterables.getOnlyElement, which
+// throws on a multi-match, and its SELECT twin asserts exactly one match with
+// AMBIGUOUS_COLUMN (Expressions.java:112); the loop below takes the FIRST key
+// that matches. No query can present two keys that both match: the
+// duplicate-grouping-key gate (plan_visitor.go, visitSelectGroupBy) decides key
+// identity with values.SemanticEqualsUnderAliasMap over the resolved expression
+// Values — the SAME predicate matched here — so two keys that would both match a
+// reference are semantically equal to each other, which is what that gate
+// refuses with 42702 carrying Java's own wording. The two predicates diverging
+// is what re-arms the hazard: narrow the gate, or widen this matcher (a
+// non-identity alias map, say), and Go silently binds a slot where Java raises.
+// Pinned, with that consequence spelled out, by
+// TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot's duplicate-key arm.
 func rebasePostAggregateComputedGroupKey(v values.Value, agg *logical.LogicalAggregate) values.Value {
 	return values.Replace(v, func(node values.Value) values.Value {
 		// A FieldValue is the SIBLING walk's business, and leaving it entirely

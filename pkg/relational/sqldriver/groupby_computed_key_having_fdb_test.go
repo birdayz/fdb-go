@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -48,6 +49,19 @@ import (
 // the fused root's ordinal fell outside a 2-wide output row, which is luck and
 // not a guard. Both are asserted so a fix that satisfies only one half cannot
 // pass.
+//
+// TWO ARMS TEST THE BINDING RATHER THAN THE WALK, and they are here because
+// every other arm is correct by coincidence in the same way the defect was:
+//
+//   - two_computed_keys… — every other arm groups by ONE key, so the recorded
+//     slot is always 0 and none of them can tell the loop index from a hardcoded
+//     zero, while that index IS the binding. Mutating the mint to a literal 0
+//     reddens ONLY that arm and leaves the other eight green, which is what says
+//     it tests the ordinal instead of re-testing the walk;
+//   - a_duplicate_computed_key… — a NEGATIVE result. The rebase first-matches
+//     where Java raises; nothing can present two matching keys because the
+//     duplicate-key gate decides identity with the SAME predicate. The arm pins
+//     the refusal that makes it unreachable and names what re-arms it.
 func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -164,6 +178,96 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// matching is the sub-expression, whatever kind it is.
 		eq(t, "SELECT COALESCE(c1, 0), max(c2) FROM flat GROUP BY COALESCE(c1, 0) "+
 			"HAVING COALESCE(c1, 0) > 120 AND max(c2) > 0", 2, "[[140 330]]", slotHint)
+	})
+
+	t.Run("two_computed_keys_bind_their_own_slot_and_not_slot_zero", func(t *testing.T) {
+		// EVERY OTHER ARM IN THIS FILE GROUPS BY ONE KEY, so the slot the
+		// rebase records is always 0 and none of them can tell the loop index
+		// from a hardcoded zero — while that index IS the binding. This arm
+		// exists for the index alone.
+		//
+		// The groups are the eight (c1+1, c2+1) pairs: (101,201..204) and
+		// (141,328..331). The predicates are chosen so that reading the OTHER
+		// key's slot changes the answer in every arm, which is what the obvious
+		// fixture does NOT do — `c2 + 1 > 300` and `c1 + 1 > 120` happen to
+		// select the same four rows, so an arm built on either would pass while
+		// binding the wrong slot.
+		//
+		//   c2 + 1 > 203  ->  5 rows; on slot 0 (101/141) it is 0.
+		//   c2 + 1 < 203  ->  2 rows; on slot 0 it is 8.
+		//   c1 + 1 > 120  ->  4 rows; on slot 1 (201..331) it is 8.
+		//   c1 + 1 < 120  ->  4 rows; on slot 1 it is 0.
+		//
+		// The first is the sharpest: its answer CROSSES the slot-0 grouping
+		// boundary — one 101 row and four 141 rows — so no predicate evaluated
+		// against slot 0 can produce it at all.
+		const slotIdx = "This arm pins the SLOT INDEX. Reading the other grouping " +
+			"key's slot changes this answer, which is what separates the recorded " +
+			"loop index from a hardcoded 0."
+		eq(t, "SELECT c1 + 1, c2 + 1, max(id) FROM flat GROUP BY c1 + 1, c2 + 1 HAVING c2 + 1 > 203",
+			3, "[[101 204 4] [141 328 8] [141 329 7] [141 330 6] [141 331 5]]", slotIdx)
+		eq(t, "SELECT c1 + 1, c2 + 1, max(id) FROM flat GROUP BY c1 + 1, c2 + 1 HAVING c2 + 1 < 203",
+			3, "[[101 201 1] [101 202 2]]", slotIdx)
+		// The SAME query shape with the predicate on the FIRST key, so slot 0 is
+		// exercised deliberately rather than by being every arm's only option.
+		eq(t, "SELECT c1 + 1, c2 + 1, max(id) FROM flat GROUP BY c1 + 1, c2 + 1 HAVING c1 + 1 > 120",
+			3, "[[141 328 8] [141 329 7] [141 330 6] [141 331 5]]", slotIdx)
+		eq(t, "SELECT c1 + 1, c2 + 1, max(id) FROM flat GROUP BY c1 + 1, c2 + 1 HAVING c1 + 1 < 120",
+			3, "[[101 201 1] [101 202 2] [101 203 3] [101 204 4]]", slotIdx)
+		// With an aggregate in the predicate, so the arm also covers the shape
+		// where pushdown is refused for a second, independent reason.
+		eq(t, "SELECT c1 + 1, c2 + 1, max(id) FROM flat GROUP BY c1 + 1, c2 + 1 "+
+			"HAVING c2 + 1 > 203 AND max(id) > 0",
+			3, "[[101 204 4] [141 328 8] [141 329 7] [141 330 6] [141 331 5]]", slotIdx)
+	})
+
+	t.Run("a_duplicate_computed_key_is_refused_before_the_rebase", func(t *testing.T) {
+		// A NEGATIVE RESULT, and it is what says the rebase's first-match loop
+		// cannot silently pick a slot where Java raises.
+		//
+		// Java's HAVING pull-up ends in Iterables.getOnlyElement, which THROWS
+		// on a multi-match, and its SELECT twin asserts
+		// `pulledUpExpressionMap.get(subExpression).size() == 1` with
+		// AMBIGUOUS_COLUMN (Expressions.java:112). Go's rebase instead takes the
+		// FIRST matching key by loop index. That difference is only safe while no
+		// query can present two keys that both match — and none can:
+		// `GROUP BY c1 + 1, c1 + 1` is refused 42702 upstream, carrying Java's
+		// own wording verbatim.
+		//
+		// THE INTERLOCK IS THAT BOTH SITES ASK THE SAME QUESTION. The duplicate
+		// gate (plan_visitor.go, visitSelectGroupBy) decides key identity with
+		// values.SemanticEqualsUnderAliasMap over the resolved expression
+		// Values, and that is the SAME predicate rebasePostAggregateComputedGroupKey
+		// matches with. Two keys that would both match a reference are therefore
+		// semantically equal to each other, which is exactly what the gate
+		// rejects.
+		//
+		// WHAT RE-ARMS THE HAZARD, named because that is the point of pinning a
+		// negative: the two predicates diverging. If the duplicate gate is ever
+		// narrowed — or the rebase's matcher widened, e.g. to match under a
+		// non-identity alias map — a multi-match becomes constructible and Go
+		// would silently bind the first key where Java raises. Then this arm
+		// must become the assertion that Go raises too.
+		for _, q := range []string{
+			"SELECT max(id) FROM flat GROUP BY c1 + 1, c1 + 1 HAVING c1 + 1 > 120",
+			"SELECT c1 + 1, max(id) FROM flat GROUP BY c1 + 1, c1 + 1",
+			"SELECT max(id) FROM flat GROUP BY c1 + 1, c1 + 1",
+		} {
+			_, err := db.QueryContext(ctx, q)
+			if err == nil {
+				t.Fatalf("%s now PLANS.\n"+
+					"  Two semantically equal computed keys reaching the rebase makes its "+
+					"first-match loop able to choose a slot silently, where Java raises "+
+					"AMBIGUOUS_COLUMN. Either restore the refusal or make the rebase "+
+					"raise on a multi-match, and re-point this arm at whichever it is.", q)
+			}
+			if !strings.Contains(err.Error(), "42702") {
+				t.Fatalf("%s: got %v, want 42702.\n"+
+					"  The CODE is the point: this must be the duplicate-grouping-key "+
+					"refusal (Java's AMBIGUOUS_COLUMN), not some unrelated rejection that "+
+					"happens to keep the shape away from the rebase.", q, err)
+			}
+		}
 	})
 
 	t.Run("a_bare_key_is_the_control_and_was_always_correct", func(t *testing.T) {
