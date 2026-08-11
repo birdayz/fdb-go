@@ -521,7 +521,15 @@ type GroupKey struct {
 	Bare      string // last segment of a bare column ref; "" for expression keys
 	Qualifier string // leading segment(s) when qualified; "" otherwise
 	Qualified bool   // parse-tree segment count > 1
-	Value     values.Value
+	// Segs is the FULL ordered segment list of a bare column reference
+	// (`r.v.z` -> [R V Z]); nil for expression keys. Qualifier joins the
+	// leading segments into one string and so cannot say where one segment
+	// ends and the next begins — `R.V` reads as a source alias, which is why
+	// a grouping key that descends INTO a struct column could only be
+	// resolved once the segments travelled with it. Resolution consumes Segs;
+	// Qualifier/Display remain renderings.
+	Segs  []string
+	Value values.Value
 }
 
 type LogicalAggregate struct {

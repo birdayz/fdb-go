@@ -3239,32 +3239,6 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				if err := resolveColumnRefStructural(resolver, gb.bare, gb.qualifier, gb.qualified, gb.segs); err != nil {
 					return nil, err
 				}
-				// KEEP THIS EVEN THOUGH NOTHING REACHES IT TODAY, and do not
-				// mistake it for a duplicate encoding of one rule at one site.
-				// It is THE SAME RULE at a SECOND DISPATCH SITE — the one
-				// resolveColumnRefStructural directly above already occupies.
-				// The two calls are a pair: this builder and the PlanVisitor's
-				// GROUP BY validation each validate a grouping key, and a key
-				// that resolves here must be refused here for the same reason
-				// it is refused there. Dropping the refusal from one of the two
-				// sites while leaving the resolution check at both is the
-				// asymmetry that produced the defect this gate closes: a
-				// grouping key was checked for EXISTENCE everywhere and for
-				// being a legal KEY nowhere.
-				//
-				// Measured: instrumenting this arm to fault on firing and
-				// running the nested-key corpus in
-				// sqldriver/groupby_nested_path_refused_fdb_test.go and
-				// groupby_nested_key_collapse_fdb_test.go, it never fires —
-				// the PlanVisitor's copy of this validation runs first and
-				// refuses. That is a statement about which site wins the race
-				// today, not about this site being redundant; a new SELECT
-				// build path, or any reordering that lets this builder see a
-				// grouping key first, makes it the only thing standing between
-				// a nested key and the executor.
-				if err := rejectNestedPathGroupKey(resolver, gb.bare, gb.qualifier, gb.qualified, gb.segs); err != nil {
-					return nil, err
-				}
 			} else if err := resolveColumnName(resolver, gb.display); err != nil {
 				return nil, err
 			}
@@ -3895,111 +3869,6 @@ func resolveColumnRefStructural(resolver *expr.Resolver, bare, qualifier string,
 		}
 	}
 	return mapColumnResolveError(err, display)
-}
-
-// nestedKeyDisplay renders a refused grouping key AS WRITTEN. segs is
-// authoritative; the pair is the fallback for carriers that capture none.
-func nestedKeyDisplay(bare, qualifier string, segs []string) string {
-	if len(segs) > 0 {
-		return strings.Join(segs, ".")
-	}
-	return qualifier + "." + bare
-}
-
-// rejectNestedPathGroupKey refuses a GROUP BY key that descends INTO a struct
-// column (`GROUP BY n.sk`).
-//
-// WHAT ACTUALLY BLOCKS IT, and it is one input rather than a missing
-// capability. Measured by disabling this refusal and running the shapes:
-// `SELECT COUNT(*) FROM t1 GROUP BY n.sk` dies with `ordinal resolution: field
-// "N.SK" not resolvable in the runtime row (ordinal -1, row columns [ID N]) —
-// malformed plan`, and the projected spelling dies earlier with 42703 out of
-// validateGroupByProjection's leaf check. That output fits two very different
-// causes — a pipeline that cannot address nested keys, or a working pipeline
-// fed a degraded value — and it is the SECOND: upgradeAggregateOperands mints
-// the key reference as `colRef{table: Qualifier, col: Bare}`, which reads a
-// qualified key as `table.column` and never as `column.member`, so a nested key
-// degrades to a flat dotted FieldValue that no runtime row can answer. RFC-230
-// carries that arm; it is not implemented here, and this refusal stands until
-// it is.
-//
-// A prior note here named the group-key NAMER as the blocker — that two members
-// of one struct would collide on one output name. That is not the blocker and
-// was already false when it was written: AggregateKeyColumnName takes the
-// resolved path for a nested key (expressions/group_by.go), pinned by
-// TestAggregateKeyColumnName_NestedKeyTakesTheResolvedPath. A refuted
-// justification is evidence the gap is SMALLER than advertised, not neutral.
-//
-// It is a REFUSAL, not a resolution failure, and the distinction is the whole
-// point. The reference is perfectly well-formed — `n.sk` answers in SELECT,
-// WHERE and ORDER BY over the same table — so reporting it as an undefined
-// column would describe a column that demonstrably exists.
-//
-// UNSUPPORTED_QUERY is the right code because JAVA HAS THE CAPABILITY AND GO
-// DOES NOT. Measured live against the 4.12.11.0 server by
-// conformance/nested_groupby_key_java_probe_test.go: given an index over the
-// path, `SELECT COUNT(*) FROM T_NG3 GROUP BY n.sk` returns [[2] [1]] out of
-// Java, the same rows its indexed FLAT twin returns, while Go answers 0AF00.
-// The vendored corpus says the same statically —
-// `select max(q.s) from nested group by r.v.z having r.v.z > 120` → `[{330}]`
-// over index i2 (groupby-tests.yamsql:29,61-62). A capability Java has and Go
-// lacks is exactly what UNSUPPORTED_QUERY reports; UNDEFINED_COLUMN would claim
-// the column does not exist.
-//
-// The same probe pins the other end: Java spends 42703 on a qualifier that
-// resolves to NOTHING (`GROUP BY zzz.sk` → "Attempting to query non existing
-// column ZZZ.SK") and does not spend it here. UNSUPPORTED_QUERY is also the
-// code Java's own visitGroupByItem spends on a GROUP BY item it will not take
-// (`Assert.isNullUnchecked(ctx.order, ErrorCode.UNSUPPORTED_QUERY, "ordering
-// grouping column is not supported")`, ExpressionVisitor.java:250-258).
-//
-// WHAT A JAVA "PLANNER DECLINE" DOES AND DOES NOT MEAN. Java's Cascades has no
-// physical sort, so a GROUP BY plans only when an index supplies the key's
-// ordering; without one it declines with "Cascades planner could not plan
-// query" and no SQLSTATE — for a FLAT key just as much as a nested one. So a
-// decline is a no-access-path signature, never a nesting signature, and the
-// probe now varies index availability instead of holding it at NONE.
-//
-// Two properties of the OLD behaviour this replaces, both measured:
-//
-//   - nothing validated the grouping KEY at all. The refusal that existed came
-//     from validateGroupByProjection's existence check, which compares a
-//     PROJECTED column's BARE LEAF against the union of source field names — so
-//     `n.sk` was turned away only because no column named SK existed, and a
-//     table that also declared a flat `sk` let the same key through on the
-//     strength of an unrelated column;
-//   - the shapes that escaped died in the executor as "not resolvable in the
-//     runtime row — malformed plan", i.e. internal state for what is really a
-//     capability gap. `SELECT COUNT(*) FROM t GROUP BY n.sk` escaped even with
-//     no flat `sk` anywhere, because with nothing projected the leaf check
-//     never ran.
-//
-// Only a QUALIFIED reference can descend: the bare arm returns an empty
-// accessor chain, so a bare key cannot reach a struct member and is left alone.
-// INFERRED FROM JAVA SOURCE (SemanticAnalyzer.java:557-559) — a descent needs a
-// prefix to consume, so an unqualified name mints no accessors. Unlike the
-// error-code choice above, this one is not separately measured; it is pinned on
-// the Go side by expr's DescendsIntoStruct tests.
-//
-// The descent question is asked over the FULL segment list. Asked over a
-// joined (qualifier, name) pair it could only see two segments, so the
-// alias-qualified spelling of the very same key (`GROUP BY a.n.sk`) answered
-// "not nested" and walked past this refusal into the wrong-error territory the
-// gate exists to end.
-func rejectNestedPathGroupKey(resolver *expr.Resolver, bare, qualifier string, qualified bool, segs []string) error {
-	if resolver == nil || bare == "" || !qualified {
-		return nil
-	}
-	nested, err := resolver.DescendsIntoStructPath(colRefIdentifiers(bare, qualifier, qualified, segs))
-	if err != nil || !nested {
-		// A lookup failure is deliberately silent here: existence and
-		// ambiguity are reported by resolveColumnRefStructural, which runs
-		// alongside this gate. Deciding them twice would let this refusal
-		// shadow a 42702 with a less precise message.
-		return nil
-	}
-	return api.NewErrorf(api.ErrCodeUnsupportedQuery,
-		"grouping by the nested field %q is not supported", nestedKeyDisplay(bare, qualifier, segs))
 }
 
 // resolveColumnName is the RENDERED-STRING arm for call sites whose
@@ -4932,6 +4801,57 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		if gk.Bare == "" {
 			ref = colRef{col: gk.Display}
 		}
+		// THE STRUCT-DESCENT ARM. A grouping key whose segments descend INTO a
+		// struct column (`GROUP BY r.v.z`) is resolved by the SAME identifier
+		// resolver every other column reference uses, producing ONE fused
+		// multi-accessor FieldValue — Java's ofFieldsAndFuseIfPossible. The
+		// arms below all read a qualified key as `source . column`, which for
+		// `r.v.z` asks the scope for a source named "R.V"; nothing answers, and
+		// the key degraded to a flat dotted FieldValue{"R.V.Z"} that no runtime
+		// row can address (`ordinal -1 … malformed plan`). That degraded mint —
+		// not a missing capability in the aggregate pipeline — is what made a
+		// nested grouping key unsupported: the executor already evaluates the
+		// key Value against the row (Java's StreamGrouping.evalGroupingKey), so
+		// a correctly-minted nested key needs nothing downstream.
+		//
+		// It is a CO-EQUAL candidate, not a fallback tried after the others
+		// fail. The one-population ambiguity rule lives inside the shared
+		// resolver (ResolveColumnRefPath counts every prefix split once and
+		// spends 42702 when two resolve — SemanticAnalyzer.java:430,:436), so
+		// asking it FIRST is what keeps order of attempt from becoming a
+		// semantics. Resolving the collision by which arm ran first is exactly
+		// what TestScope_NestedDescent_CollidesWithSourceAliasAsAmbiguity
+		// forbids.
+		//
+		// The predicate is the one the retired refusal used, so the arm covers
+		// exactly the set that refusal turned away and no other key changes
+		// route.
+		if gk.Qualified && gk.Bare != "" {
+			descentIDs := colRefIdentifiers(ref.bare(), gk.Qualifier, gk.Qualified, gk.Segs)
+			if nested, derr := resolver.DescendsIntoStructPath(descentIDs); derr == nil && nested {
+				var dv values.Value
+				if len(sq.joins) > 0 {
+					// Over a join the descent's ROOT must be the
+					// quantifier-addressed source-relative bake, exactly as the
+					// qualified projection binds it: a childless bake carries an
+					// ordinal relative to its own source row and would misread
+					// another leg's slot over the merged row.
+					dv = resolveQualifiedBakedPath(resolver, descentIDs)
+				} else if v, derr2 := resolver.ResolveIdentifierPath(descentIDs); derr2 == nil {
+					dv = v
+				} else {
+					var unresDescent *expr.UnresolvableOrdinalError
+					if errors.As(derr2, &unresDescent) {
+						return unresDescent
+					}
+				}
+				if dv != nil {
+					keyValues[i] = dv
+					filled = true
+					continue
+				}
+			}
+		}
 		var qualID semantic.Identifier
 		if gk.Qualified {
 			qualID = semantic.FromNormalized(gk.Qualifier)
@@ -5575,10 +5495,52 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 	// hazard is a NEW call site with NO resolver gate on either side; converging
 	// the existence check onto resolver.ResolveIdentifier removes the coupling
 	// entirely (TODO.md, RFC-088 follow-up).
+	// tableFields holds TOP-LEVEL field names, so the leaf is the only segment
+	// it can answer for when the leading segments name a SOURCE (`e.dname` ->
+	// DNAME). When they name a STRUCT COLUMN instead (`r.v.z`), the leaf is a
+	// struct MEMBER — asking a top-level field set about it is a category
+	// error, and it answered "no such column R.V.Z" for a path that resolves.
+	// The same category error in the other direction is what let `GROUP BY
+	// n.sk` through on a table that happened to declare an unrelated flat `sk`.
+	// A dotted reference is therefore admitted when EITHER end names a real
+	// field: the leaf for the source-qualified spelling, the ROOT for a struct
+	// descent. This union check never decides alone (see the invariant above) —
+	// the precise resolver gate that brackets every call site is what rejects a
+	// path whose root is a real column but whose descent does not resolve.
+	sourceNames := make(map[string]bool)
+	for _, n := range []string{sq.tableName, sq.tableAlias} {
+		if n != "" {
+			sourceNames[strings.ToUpper(n)] = true
+		}
+	}
+	for _, j := range sq.joins {
+		for _, n := range []string{j.tableName, j.alias} {
+			if n != "" {
+				sourceNames[strings.ToUpper(n)] = true
+			}
+		}
+	}
+	existsAsField := func(upper string) bool {
+		if tableFields == nil {
+			return true
+		}
+		if tableFields[parseColRef(upper).bare()] {
+			return true
+		}
+		rest := upper
+		// A source alias is not a field, so peel one leading segment that names
+		// a FROM source before asking about the root: `a.r.v.z` descends into
+		// column R of source A, and only R is a name tableFields can answer.
+		if head, tail, dotted := strings.Cut(rest, "."); dotted && sourceNames[head] {
+			rest = tail
+		}
+		root, _, dotted := strings.Cut(rest, ".")
+		return dotted && tableFields[root]
+	}
 	checkColumn := func(col string) error {
 		upper := strings.ToUpper(col)
 		bare := parseColRef(upper).bare()
-		if tableFields != nil && !tableFields[bare] {
+		if !existsAsField(upper) {
 			return api.NewErrorf(api.ErrCodeUndefinedColumn,
 				"column %q does not exist", col)
 		}
@@ -10359,11 +10321,12 @@ func resolveCorrelatedColumnValueStructured(resolver *expr.Resolver, key logical
 	if bare == "" {
 		bare = key.Display
 	}
-	var qualifier semantic.Identifier
-	if key.Qualified {
-		qualifier = semantic.FromNormalized(key.Qualifier)
-	}
-	return resolver.ResolveIdentifier(qualifier, semantic.FromNormalized(bare))
+	// The SEGMENTS, never the joined qualifier: `n2.r.v.z` carries
+	// Qualifier "N2.R.V", which names no FROM source and no column, so the
+	// correlated-scalar path spent 42703 on a key the same resolver answers
+	// from its segment list.
+	return resolver.ResolveIdentifierPath(
+		colRefIdentifiers(bare, key.Qualifier, key.Qualified, key.Segs))
 }
 
 // resolveCorrelatedColumnValue resolves a (possibly alias-qualified) column

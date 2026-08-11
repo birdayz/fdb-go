@@ -17,10 +17,22 @@ import (
 // (plan_visitor.go:681, :1997, logical_predicate.go:2888) and the bare arm never
 // descends — Java's rule, not an omission: lookupNestedField returns empty for a
 // one-segment identifier (SemanticAnalyzer.java:557-559). The only qualified
-// entry is the GROUP-BY key path (logical_predicate.go:4713), and a nested
-// grouping key is refused upstream with 0AF00 before it gets there. That refusal
-// is pinned in the driver suite, so the two facts are recorded together: what
-// makes this arm unreachable, and what it does when reached.
+// entry is the GROUP-BY key path.
+//
+// WHAT KEEPS IT UNREACHABLE HAS CHANGED, and the old reason must not be left
+// standing. It used to be a blanket refusal: a nested grouping key took 0AF00
+// upstream and never reached the ladder. RFC-230 implemented nested grouping
+// keys and deleted that refusal — the arm is STILL not reached, now because the
+// ladder's own struct-descent arm resolves the descent through
+// ResolveIdentifierPath before ResolveColumnShadowingQualified is consulted.
+// MEASURED, not inferred: instrumenting this helper's fuse and running
+// TestFDB_QualifiedNestedAccessorShapeMatrix — whose `unnest_group_by_element_field`
+// row is exactly `SELECT e.co FROM t3, t3.arr AS e GROUP BY e.co`, the closest
+// SQL gets to this shape — the fuse does not fire, and the query answers the
+// member (200/300) rather than the struct root.
+//
+// So the two facts stay recorded together: what makes this arm unreachable, and
+// what it does when reached. Only the first one moved.
 //
 // Driving it here rather than waiting for SQL to reach it is the point. An
 // untested branch's first firing reads as a FINDING rather than as a branch

@@ -79,9 +79,46 @@ func logicalGroupKeys(keys []groupKeyRef) []logical.GroupKey {
 			Bare:      k.bare,
 			Qualifier: k.qualifier,
 			Qualified: k.qualified,
+			Segs:      k.segs,
 		}
 	}
 	return out
+}
+
+// stripGroupKeyLeadingSegment rebuilds a group key whose DISPLAY has had a
+// single-source table/alias prefix baked away, keeping the reference structured.
+//
+// The naive rebuild — `GroupKey{Display: stripped, Bare: stripped}` — makes one
+// "bare" segment out of everything that survived the strip. For a flat key
+// (`A.ID` -> `ID`) that is exact. For a key that DESCENDS into a struct
+// (`A.R.V.Z` -> `R.V.Z`) it is a dotted string in the field RFC-197 exists to
+// keep single-segment: resolution then asks for a column literally named
+// "R.V.Z", and key identity (groupKeysEquivalent) compares the whole dotted
+// blob, so `GROUP BY r.v.z, s.v.z` under two aliases would present as one
+// repeated key and take a duplicate-key 42702 that Java does not take.
+//
+// So the strip is performed on the SEGMENTS when the reference has them and its
+// leading segment is what the prefix named: the alias segment is dropped and the
+// remaining segments re-derive Bare/Qualifier/Qualified. A key without segments,
+// or whose leading segment is not the stripped prefix, keeps the flat rebuild.
+func stripGroupKeyLeadingSegment(k logical.GroupKey, stripped string) logical.GroupKey {
+	if len(k.Segs) > 1 && strings.EqualFold(strings.Join(k.Segs[1:], "."), stripped) {
+		rest := k.Segs[1:]
+		out := logical.GroupKey{
+			Display:   stripped,
+			Bare:      rest[len(rest)-1],
+			Qualified: len(rest) > 1,
+			Segs:      rest,
+		}
+		if len(rest) > 1 {
+			out.Qualifier = strings.Join(rest[:len(rest)-1], ".")
+		}
+		return out
+	}
+	// The single-source prefix was baked away and the segments cannot account
+	// for it: the key is BARE from here on — stale qualification segments would
+	// chase a qualifier the runtime row no longer carries.
+	return logical.GroupKey{Display: stripped, Bare: stripped}
 }
 
 type selectQuery struct {

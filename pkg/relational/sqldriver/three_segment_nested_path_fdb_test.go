@@ -315,25 +315,19 @@ func TestFDB_ThreeSegmentNestedPathPlanShape(t *testing.T) {
 	t.Logf("three-segment predicate plan: %s", pred)
 }
 
-// TestFDB_ThreeSegmentGroupKeyRefusesLikeItsTwoSegmentTwin pins a NEGATIVE, and
-// the negative is what keeps the refusal HONEST rather than accidental.
+// TestFDB_ThreeSegmentGroupKeyGroupsLikeItsTwoSegmentTwin is the arm above's
+// refusal pin, FLIPPED to the rows its own instruction named.
 //
-// A nested GROUP BY key is deliberately unsupported in Go — rejectNestedPathGroupKey
-// refuses it with 0AF00 rather than 42703, because the reference resolves
-// perfectly well everywhere else and calling it an undefined column would
-// describe a column that demonstrably exists (the reasoning and the live Java
-// measurement behind that code choice are in logical_predicate.go).
-//
-// Before the segment carrier reached that gate, the gate asked "does this
-// descend into a struct?" through the same two-part form everything else used.
-// For `a.n.sk` the question was really "is there a source called A.N", the
-// answer was no, and the key walked PAST the refusal — landing on the generic
-// undefined-column path with the wrong SQLSTATE. So the two spellings of one
-// key disagreed about which layer refuses them.
-//
-// If nested grouping keys ever become supported, this test SHOULD fail. Replace
-// it with the rows, in both spellings — do not relax it to accept either code.
-func TestFDB_ThreeSegmentGroupKeyRefusesLikeItsTwoSegmentTwin(t *testing.T) {
+// THE PROPERTY IS THE AGREEMENT OF THE TWO SPELLINGS, and it survives the flip
+// unchanged — only the thing they must agree on moved. Before the segment
+// carrier reached the group-key path, the descent question was asked through a
+// two-part (qualifier, name) form: for `a.n.sk` it was really "is there a source
+// called A.N", the answer was no, and the two arities of ONE key disagreed about
+// which LAYER refused them — 0AF00 for `n.sk`, undefined-column for `a.n.sk`.
+// They now agree by answering, and the assertion is the group COUNT rather than
+// the absence of an error, because a key that lost its descent groups by the
+// struct ROOT and still returns rows.
+func TestFDB_ThreeSegmentGroupKeyGroupsLikeItsTwoSegmentTwin(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -354,27 +348,35 @@ func TestFDB_ThreeSegmentGroupKeyRefusesLikeItsTwoSegmentTwin(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 	mustExec(t, db, ctx, "INSERT INTO t VALUES (1, (1, 7)), (2, (1, 8)), (3, (2, 9))")
 
-	for _, tc := range []struct{ name, query, key string }{
-		{"two_segment_projected", "SELECT n.sk, COUNT(*) FROM t GROUP BY n.sk", "N.SK"},
-		{"two_segment_unprojected", "SELECT COUNT(*) FROM t GROUP BY n.sk", "N.SK"},
-		{"three_segment_projected", "SELECT a.n.sk, COUNT(*) FROM t AS a GROUP BY a.n.sk", "A.N.SK"},
-		{"three_segment_unprojected", "SELECT COUNT(*) FROM t AS a GROUP BY a.n.sk", "A.N.SK"},
-		{"three_segment_table_qualified", "SELECT COUNT(*) FROM t GROUP BY t.n.sk", "T.N.SK"},
+	// (sk, co) = (1,7) (1,8) (2,9): two distinct sk over three rows, so the
+	// correct answer is 2 groups. Grouping by the struct ROOT would give 3
+	// (every struct value is distinct), and dropping the key would give 1 —
+	// the three outcomes are separated by the count alone.
+	for _, tc := range []struct{ name, query string }{
+		{"two_segment_projected", "SELECT n.sk, COUNT(*) FROM t GROUP BY n.sk"},
+		{"two_segment_unprojected", "SELECT COUNT(*) FROM t GROUP BY n.sk"},
+		{"three_segment_projected", "SELECT a.n.sk, COUNT(*) FROM t AS a GROUP BY a.n.sk"},
+		{"three_segment_unprojected", "SELECT COUNT(*) FROM t AS a GROUP BY a.n.sk"},
+		{"three_segment_table_qualified", "SELECT COUNT(*) FROM t GROUP BY t.n.sk"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := db.QueryContext(ctx, tc.query)
-			if err == nil {
-				t.Fatalf("nested grouping key was accepted: %s", tc.query)
+			rows, err := db.QueryContext(ctx, tc.query)
+			if err != nil {
+				t.Fatalf("nested grouping key %q was refused: %v", tc.query, err)
 			}
-			// 0AF00, not 42703. The code is the whole point: the reference
-			// resolves, so the refusal is a capability statement.
-			if !strings.Contains(err.Error(), "0AF00") {
-				t.Fatalf("nested grouping key %q: got %v, want 0AF00 unsupported-query", tc.query, err)
+			defer rows.Close()
+			n := 0
+			for rows.Next() {
+				n++
 			}
-			// And it must name the key AS WRITTEN — all three segments for the
-			// qualified spelling, which a two-part rendering cannot produce.
-			if !strings.Contains(err.Error(), tc.key) {
-				t.Fatalf("refusal for %q does not name the key as written (%s): %v", tc.query, tc.key, err)
+			if err := rows.Err(); err != nil {
+				t.Fatalf("%q: iterate: %v", tc.query, err)
+			}
+			if n != 2 {
+				t.Fatalf("%q returned %d groups, want 2.\n"+
+					"  THREE means the key grouped by the struct ROOT instead of the "+
+					"member; ONE means the key was dropped from the grouping.",
+					tc.query, n)
 			}
 		})
 	}
