@@ -59,19 +59,29 @@ func TestPreCommitHookNamesTheConditionItDetected(t *testing.T) {
 			"other mechanism able to notice. hook:\n%s", hook)
 	}
 
+	// The hook must classify a file that appeared during codegen by whether
+	// codegen could have written it, not by the fact that it appeared. Pinned as
+	// mechanism because a hook that never consulted the owned set would still
+	// pass any single message case below.
+	if !strings.Contains(hook, "codegen_owned_globs=") || !strings.Contains(hook, "path_is_codegen_owned") {
+		t.Fatalf("the hook no longer scopes untracked drift to the paths codegen writes.\n"+
+			"Without that scoping, ANY file arriving during the multi-minute `just generate`\n"+
+			"— a scratch log, a redirect target, another agent writing into this shared\n"+
+			"worktree — is reported as codegen drift, and the remedy printed is to stage it.\n"+
+			"hook:\n%s", hook)
+	}
+
 	cases := []struct {
 		name string
 		// setup runs inside a fresh repo whose HEAD is clean.
 		setup func(t *testing.T, dir string)
-		// driftStub makes the stubbed `just generate` modify a tracked file.
-		driftStub bool
-		// createStub makes the stubbed `just generate` CREATE an untracked file,
-		// which a tracked-only diff cannot see.
-		createStub bool
-		wantExit0  bool
-		want       string
-		notWant    string
-		why        string
+		// genStub is the shell body the stubbed `just generate` runs. Empty means
+		// codegen does nothing at all, which is the steady state.
+		genStub   string
+		wantExit0 bool
+		want      string
+		notWant   string
+		why       string
 	}{
 		{
 			name:      "clean tree and codegen produces nothing",
@@ -86,17 +96,17 @@ func TestPreCommitHookNamesTheConditionItDetected(t *testing.T) {
 				appendTo(t, filepath.Join(dir, "tracked.txt"), "hand edit\n")
 			},
 			want:    "the tree was already dirty BEFORE",
-			notWant: "'just generate' produced changes",
+			notWant: "generated files are out of date",
 			why: "this is the condition that burned two cycles: codegen changed nothing, " +
 				"so blaming codegen sends the reader to regenerate files that are already current",
 		},
 		{
-			name:      "codegen genuinely produced drift",
-			setup:     func(*testing.T, string) {},
-			driftStub: true,
-			want:      "'just generate' produced changes",
-			notWant:   "already dirty BEFORE",
-			why:       "real drift must still be reported as drift",
+			name:    "codegen genuinely produced drift",
+			setup:   func(*testing.T, string) {},
+			genStub: "echo regenerated >> generated.txt",
+			want:    "generated files are out of date",
+			notWant: "already dirty BEFORE",
+			why:     "real drift must still be reported as drift",
 		},
 		{
 			name: "untracked .go file present",
@@ -109,13 +119,46 @@ func TestPreCommitHookNamesTheConditionItDetected(t *testing.T) {
 				"missing otherwise surfaces minutes later as a Bazel target error",
 		},
 		{
-			name:       "codegen CREATED an untracked file",
-			setup:      func(*testing.T, string) {},
-			createStub: true,
-			want:       "'just generate' produced changes",
+			name:    "codegen CREATED an untracked file it owns",
+			setup:   func(*testing.T, string) {},
+			genStub: `mkdir -p pkg/newthing && echo 'go_library(name = "x")' > pkg/newthing/BUILD.bazel`,
+			want:    "generated files are out of date",
 			why: "`git diff` reports tracked files only, so codegen that creates a file — " +
 				"gazelle writing a BUILD.bazel for a new package — is invisible to a " +
 				"tracked-only snapshot and the hook goes green over uncommitted codegen output",
+		},
+		{
+			name:    "a file codegen cannot write appeared during codegen",
+			setup:   func(*testing.T, string) {},
+			genStub: "touch scratch-agent.log",
+			// The hook must reach the build steps: the commit is not the thing at fault.
+			wantExit0: true,
+			want:      "NOTE: file(s) appeared in the tree while the hook was running",
+			notWant:   "Stage the regenerated files",
+			why: "`just generate` runs for minutes in a worktree several agents share, so " +
+				"ANY file arriving in that window used to be reported as codegen drift with " +
+				"'stage it and retry' as the remedy — and staging a scratch log is precisely " +
+				"what must not happen. The stub here writes nothing codegen owns at all",
+		},
+		{
+			name:      "the NOTE names the file and disclaims the attribution",
+			setup:     func(*testing.T, string) {},
+			genStub:   "touch scratch-agent.log",
+			wantExit0: true,
+			want:      "scratch-agent.log",
+			notWant:   "ERROR",
+			why: "naming the file is the whole value of the note; and it must say the hook " +
+				"cannot tell what wrote it, because all the hook observed is a time window",
+		},
+		{
+			name:  "a foreign file appearing alongside real tracked drift stays an error",
+			setup: func(*testing.T, string) {},
+			genStub: "echo regenerated >> generated.txt\n" +
+				"touch scratch-agent.log",
+			want:    "generated files are out of date",
+			notWant: "Do NOT stage them",
+			why: "scoping the untracked attribution must not weaken the tracked-diff arm; " +
+				"genuine drift is still actionable and the note must not soften it",
 		},
 		{
 			name: "pre-existing untracked file is NOT drift",
@@ -132,16 +175,16 @@ func TestPreCommitHookNamesTheConditionItDetected(t *testing.T) {
 			setup: func(t *testing.T, dir string) {
 				appendTo(t, filepath.Join(dir, "tracked.txt"), "hand edit\n")
 			},
-			driftStub: true,
-			want:      "'just generate' produced changes",
-			why:       "when both hold, the actionable one is the drift — regenerating is required either way",
+			genStub: "echo regenerated >> generated.txt",
+			want:    "generated files are out of date",
+			why:     "when both hold, the actionable one is the drift — regenerating is required either way",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			dir := newStubRepo(t, hook, tc.driftStub, tc.createStub)
+			dir := newStubRepo(t, hook, tc.genStub)
 			tc.setup(t, dir)
 
 			cmd := exec.Command("bash", filepath.Join(dir, "hook.sh"))
@@ -240,8 +283,11 @@ func extractPreCommitHook(t *testing.T) string {
 }
 
 // newStubRepo builds a throwaway git repo containing the hook and a stubbed
-// `just`, and returns its path.
-func newStubRepo(t *testing.T, hook string, drift, create bool) string {
+// `just` whose `generate` runs genStub, and returns the repo's path. The stub
+// body is given verbatim by each case rather than selected from flags, because
+// what the hook now decides is WHICH PATHS changed — a boolean cannot express
+// that, and the codegen-owned/foreign split is the whole subject.
+func newStubRepo(t *testing.T, hook, genStub string) string {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "hook.sh"), hook)
@@ -250,15 +296,12 @@ func newStubRepo(t *testing.T, hook string, drift, create bool) string {
 	if err := os.MkdirAll(stub, 0o755); err != nil {
 		t.Fatalf("mkdir stub: %v", err)
 	}
-	gen := "true"
-	if drift {
-		gen = `echo regenerated >> generated.txt`
-	}
-	if create {
-		gen = `echo 'go_library(name = "x")' > BUILD.bazel`
+	gen := genStub
+	if gen == "" {
+		gen = "true"
 	}
 	writeFile(t, filepath.Join(stub, "just"),
-		"#!/usr/bin/env bash\nif [ \"${1:-}\" = generate ]; then "+gen+"; fi\nexit 0\n")
+		"#!/usr/bin/env bash\nif [ \"${1:-}\" = generate ]; then\n"+gen+"\nfi\nexit 0\n")
 	if err := os.Chmod(filepath.Join(stub, "just"), 0o755); err != nil {
 		t.Fatalf("chmod stub just: %v", err)
 	}

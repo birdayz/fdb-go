@@ -43,6 +43,7 @@ go_test(
         "pinned_ordinal_domain_test.go",
         "plan_proto_schema_test.go",
         "pr_check_gate_test.go",
+        "precommit_codegen_globs_test.go",
         "precommit_hook_message_test.go",
         "qualifier_recovery_gate_test.go",
         "race_lane_scope_test.go",
@@ -96,6 +97,12 @@ go_test(
         # keep: the pre-commit hook body is extracted from the install-hooks recipe,
         # which is its tracked source of truth (TestPreCommitHookNamesTheConditionItDetected).
         "//:justfile",
+        # keep: the parser codegen script, followed by
+        # TestCodegenOwnedGlobsCoverTheGenerateRecipes from the `bazelisk run` step in
+        # `just generate-parser` to the source-tree path it writes. Without it staged
+        # that write site is underivable and the gate fails loudly rather than
+        # covering one fewer path in silence.
+        "//pkg/relational/core/parser/grammar:generate_parser.sh",
         # keep: the production-status authority and the redirect that points at it
         # (B6, TestProductionStatusAuthority).
         "//:road-to-prod.md",
