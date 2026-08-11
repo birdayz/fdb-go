@@ -358,6 +358,8 @@ go_test(
         "derived_source_exists_plan_test.go",
         "aggregate_group_key_nested_path_test.go",
         "reject_nested_path_group_key_test.go",
+        "agg_output_cols_nullability_test.go",
+        "unnest_element_struct_fields_nested_test.go",
     ],
     deps = [
         "//gen",

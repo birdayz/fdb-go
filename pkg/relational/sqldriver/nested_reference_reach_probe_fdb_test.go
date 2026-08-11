@@ -13,24 +13,36 @@ import (
 // worth keeping, because "it does not reproduce" is only load-bearing while the
 // fact that makes it unreachable still holds.
 //
-// The three-segment arms decline LOUDLY with 42703, and identically with and
-// without a join: the reach limit is the SEGMENT COUNT, not the join, and the
-// decline comes from reference validation ahead of the projection ladder, not
-// from an ordinal that could not be baked. The correlated grouped-scalar arm
-// does not decline at all — it ANSWERS — so the shape gate downstream of it is
-// not refusing a reachable key.
+// THIS FILE'S PURPOSE CHANGED WHEN THE THREE-SEGMENT PATH LANDED, and the
+// history is kept because a pin whose reason has evaporated is worse than no
+// pin. It was written as a NEGATIVE-result file: both three-segment arms
+// refused with 42703, identically with and without a join, which isolated the
+// reach limit as the SEGMENT COUNT rather than the join. That isolation is
+// gone — the segment count is supported now, both arms ANSWER, and the
+// distinction they existed to draw no longer exists to be drawn.
 //
-// THE THREE-SEGMENT ARMS ARE EXPECTED TO GO RED, AND THAT RED IS GOOD NEWS.
-// Work is in flight to make `alias.struct.member` resolve — Java ANSWERS that
-// spelling at the pinned tag, measured live in
-// conformance/nested_groupby_key_java_probe_test.go, so Go's 42703 is a known
-// divergence and closing it is a capability ARRIVING, not a regression. When
-// these arms fail with rows where a 42703 was expected, the correct response is
-// to assert the rows (`CO|300;200` for the join arm, `CO|300;200` for the
-// single-source arm) and to re-check the qualified projection mint for the same
-// struct-root bind the two-segment shape had. The response is NEVER to loosen
-// the assertion or delete the arm: this file is the thing that will notice the
-// deeper chain reaching a mint that has only ever been driven one level deep.
+// What they watch INSTEAD is the thing the capability made reachable: a
+// three-segment reference descends TWO accessors deep, and the mint it goes
+// through had only ever been driven ONE deep. So the arms now assert the
+// leaf's ROWS on both shapes. A struct-root bind at depth two would show up
+// here as a struct-shaped cell exactly as it did at depth one, and nothing
+// else in this file would notice.
+//
+// The join arm returns SIX rows and that is correct, not a bug: its fixture
+// gives t2 three rows, so the cross join is 2x3, and the CO values repeat per
+// outer row. The earlier version of this comment predicted two rows for that
+// arm — written from the other fixture's single t2 row, and wrong. Measure the
+// shape; do not infer it from a sibling.
+//
+// THE DUPLICATE-ALIAS SQUARE AT DEPTH TWO IS NOT HERE, deliberately.
+// TestFDB_DuplicateFromAliasPerAttributeBindsTheRightLeg owns it and was
+// MEASURED to catch the projection mint's fuse being removed, so an arm for it
+// here would be padding. What these two arms hold that it does not is the
+// distinct-alias join and the single-source route.
+//
+// The correlated grouped-scalar arm is unchanged and still a negative result:
+// it ANSWERS, so the shape gate downstream of it is not refusing a reachable
+// key.
 //
 // Each arm names, in its failure message, what gets RE-ARMED if it changes.
 func TestFDB_NestedReferenceReachProbe(t *testing.T) {
@@ -80,32 +92,36 @@ func TestFDB_NestedReferenceReachProbe(t *testing.T) {
 		rearms string
 	}{
 		{
-			// THREE segments: `alias.struct.member`. The reference's qualifier is
-			// the whole two-segment text `A.N`, which names neither a FROM source
-			// nor a struct column, because the segments were never split past the
-			// first dot. The 42703 below therefore comes from reference
-			// VALIDATION, upstream of the projection ladder — the ladder's
-			// unresolvable-ordinal arm is never reached, and the next arm shows
-			// why that has nothing to do with the join.
+			// THREE segments over a join: `alias.struct.member`, routed through
+			// the qualified projection mint. The rows are what this arm is for —
+			// the mint binds the leg AND carries a TWO-accessor descent, and
+			// dropping the descent there reads the struct where CO was named.
+			//
+			// SIX rows: t2 has three rows, so the cross join repeats each outer
+			// row's CO three times. A two-row expectation here would be a
+			// different query's answer.
 			name: "three_segment_over_join",
 			sql:  "SELECT a.n.co FROM t1 AS a, t2 AS b ORDER BY id",
-			want: `ERROR: 42703: column reference with qualifier "A.N" cannot be resolved`,
-			rearms: "THE CAPABILITY ARRIVED, most likely the three-segment " +
-				"qualified path landing. Do NOT loosen this assertion. Replace the " +
-				"expectation with the ROWS (CO|300;200) and re-check the qualified " +
-				"projection mint for the same struct-root bind the two-segment shape " +
-				"had — it has only ever been driven one accessor deep",
+			want: "CO|300;300;300;200;200;200",
+			rearms: "the three-segment descent over a join stopped reading the " +
+				"leaf. A struct-shaped cell means the mint bound the ROOT at depth " +
+				"two — the same defect the two-segment shape had, one accessor " +
+				"deeper. A row-COUNT change instead means the join shape moved, " +
+				"which is a different bug: check the fixture's t2 row count first",
 		},
 		{
-			// The same three segments WITHOUT a join, for contrast: the reach
-			// limit is the segment count, not the join.
+			// The same three segments WITHOUT a join. It used to be here to prove
+			// the 42703 was about segment count rather than the join; both answer
+			// now, so what it holds is the SINGLE-SOURCE route through
+			// ResolveIdentifier's fuse at depth two, which the join arm does not
+			// exercise.
 			name: "three_segment_single_source",
 			sql:  "SELECT t1.n.co FROM t1 ORDER BY id",
-			want: `ERROR: 42703: column reference with qualifier "T1.N" cannot be resolved`,
-			rearms: "THE CAPABILITY ARRIVED on a single source. Do NOT loosen this " +
-				"assertion. Replace the expectation with the ROWS (CO|300;200) and " +
-				"re-check ResolveIdentifier's fuse for a chain deeper than one " +
-				"accessor, which no test drives today",
+			want: "CO|300;200",
+			rearms: "the single-source three-segment descent stopped reading the " +
+				"leaf. This arm and the join arm go through DIFFERENT mints, so one " +
+				"reddening alone localises the regression: this one is " +
+				"ResolveIdentifier's fuse, the other is the qualified projection mint",
 		},
 		{
 			// A CORRELATED grouping key inside a grouped scalar subquery, ordered
