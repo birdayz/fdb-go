@@ -837,6 +837,33 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 		for _, ob := range sq.orderBy {
 			if ob.rawExpr != nil {
 				if _, walkErr := resolver.WalkExpression(ob.rawExpr); walkErr != nil {
+					// A reference of THREE OR MORE segments (`r.v.z`) is the one
+					// walk failure this loop used to let past. The arms below
+					// match three semantic error types; the walker's decline for
+					// a deep path is none of them, so it fell out of the loop,
+					// the key kept its raw dotted text, and the sort reached the
+					// executor as a flat FieldValue{"R.V.Z"} — dead on a row
+					// whose columns are [ID Q R], reported as `ordinal -1 …
+					// malformed plan`. ORDER BY was the ONLY clause that leaked
+					// this: every other position (SELECT, GROUP BY, HAVING,
+					// aggregate argument, DISTINCT) already reports 42703, and
+					// WHERE / CASE / arithmetic / JOIN ON / DML already report a
+					// planner or translation decline.
+					//
+					// 0AF00 and not 42703, for the reason the nested-group-key
+					// refusal gives: the reference is well-formed and Java
+					// resolves it, so "undefined column" would name a column
+					// that demonstrably exists. It is an unsupported FEATURE.
+					//
+					// TRANSIENT. This refusal exists only while the resolver
+					// cannot descend past one level. When that lands, the
+					// reference resolves, this arm stops being reachable, and
+					// the pin on it should assert ROWS instead of an error.
+					var deepRef *expr.DeepQualifiedColumnRefError
+					if errors.As(walkErr, &deepRef) {
+						return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+							"ORDER BY on the nested field %q is not supported", deepRef.Path())
+					}
 					var ambigErr *semantic.AmbiguousColumnError
 					if errors.As(walkErr, &ambigErr) {
 						// A BARE key naming exactly ONE projection output

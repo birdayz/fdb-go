@@ -2054,11 +2054,63 @@ func (r *Resolver) walkColumnRef(fullId antlrgen.IFullIdContext) (values.Value, 
 			semantic.FromUidContext(uids[1], r.analyzer.CaseSensitive()),
 		)
 	}
-	// Deeper-qualified references (`schema.table.col`) need extra
-	// resolution; defer until the logical-builder needs them.
-	return nil, &UnsupportedExpressionShapeError{
-		Shape: fmt.Sprintf("FullId with %d segments", len(uids)),
+	// THREE OR MORE SEGMENTS — `schema.table.col`, and the shape that actually
+	// reaches this arm from SQL, a two-level struct descent like `r.v.z`.
+	// Neither resolves today: ResolveQualifiedColumnNested takes ONE qualifier
+	// Identifier and performs exactly ONE descent step, so a path of depth 2 has
+	// no way to be expressed, let alone answered.
+	//
+	// This declines with its OWN type rather than with
+	// UnsupportedExpressionShapeError, and the distinction is the point. That
+	// type is the walker's general fall-back contract: a dozen sites return it
+	// deliberately so a caller can degrade to another strategy, and at least one
+	// caller documents that it "should be swallowed"
+	// (embedded/logical_predicate.go). A decline that callers are expected to
+	// swallow is the right disposition for a shape some OTHER path will handle —
+	// and the wrong one here, because nothing else handles this. Swallowed, the
+	// reference keeps its raw dotted text and reaches the executor as a flat
+	// FieldValue{"R.V.Z"}, which dies as `ordinal -1 … malformed plan`: internal
+	// state where a capability gap belongs.
+	//
+	// So the decline is made IDENTIFIABLE instead of being made fatal. Callers
+	// that genuinely want to fall back still can; callers that would otherwise
+	// leak it can match this type and report a SQLSTATE. Widening
+	// UnsupportedExpressionShapeError itself would have changed a contract a
+	// dozen unrelated shapes rely on.
+	segs := make([]string, len(uids))
+	for i, u := range uids {
+		segs[i] = u.GetText()
 	}
+	return nil, &DeepQualifiedColumnRefError{Segments: segs}
+}
+
+// DeepQualifiedColumnRefError reports a column reference of THREE OR MORE
+// parse-tree segments, which the identifier resolver cannot yet turn into a
+// value (see walkColumnRef for why).
+//
+// It deliberately does NOT embed UnsupportedExpressionShapeError. Callers reach
+// for that type to decide "can I fall back?", and the answer for this shape is
+// no — there is nothing to fall back to. Keeping the types disjoint means a
+// caller must opt IN to swallowing this one.
+//
+// TRANSIENT BY CONSTRUCTION. Every consumer of this type is reporting a
+// capability gap, so all of them are removed when the gap closes: once the
+// resolver can descend more than one level, this arm stops being reachable and
+// the references it names simply answer. A pin on any of those consumers is a
+// pin on a gap, not on a behaviour worth keeping.
+type DeepQualifiedColumnRefError struct {
+	// Segments are the reference's parse-tree segments, in order, as written.
+	Segments []string
+}
+
+// Path renders the reference as written — "r.v.z" — for user-facing messages.
+func (e *DeepQualifiedColumnRefError) Path() string {
+	return strings.Join(e.Segments, ".")
+}
+
+func (e *DeepQualifiedColumnRefError) Error() string {
+	return fmt.Sprintf("expr.walkColumnRef: column reference %q has %d segments; "+
+		"the resolver descends at most one level", e.Path(), len(e.Segments))
 }
 
 // walkConstant: a literal from the parse tree → ResolveConstant.

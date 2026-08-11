@@ -387,6 +387,7 @@ go_test(
         "or_and_index_probe_test.go",
         "order_by_nonselected_probe_test.go",
         "order_nulls_limit_probe_test.go",
+        "orderby_deep_nested_path_refused_fdb_test.go",
         "orderby_dnf_probe_test.go",
         "orderby_gather_fdb_test.go",
         "orderby_mixed_dir_probe_test.go",
