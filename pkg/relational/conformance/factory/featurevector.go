@@ -149,41 +149,52 @@ func indexTag(c *rowdiff.Case) string {
 // refused, GROUP BY produced a plan whose ordinal did not resolve -- so a
 // census that could only say "some nesting happened" would report full
 // coverage for a corpus that only ever projected.
+//
+// Every clause asks rowdiff whether the thing it holds is a nested PATH, and
+// none of them asks whether it contains a dot. A projection entry of a join is
+// alias-qualified, so its first dot is a table qualifier and a keys-only join
+// projection is flat despite being dotted end to end; asking the dot counted
+// those as nested and reported a `select` axis carried by scenarios with no
+// nesting in their SELECT list at all. The ORDER BY, aggregate, EXISTS and
+// scalar-subquery specs keep their qualifier in a SEPARATE field, so their
+// column strings are already table-relative -- they route through the same
+// helper anyway, because the next spec to grow a qualifier must not have to
+// remember that this file decides nesting for itself.
 func nestTag(c *rowdiff.Case, q rowdiff.Query, projection []string) string {
 	if !c.Nested {
 		return ""
 	}
 	var in []string
 	for _, p := range projection {
-		if strings.Contains(p, ".") {
+		if rowdiff.IsNestedPath(p) {
 			in = append(in, "select")
 			break
 		}
 	}
-	if q.Where != nil && strings.Contains(rowdiff.PredicateSQL(q.Where), "n.") {
+	if q.Where != nil && rowdiff.PredicateReadsANestedPath(q.Where) {
 		in = append(in, "where")
 	}
 	for _, k := range q.OrderBy {
-		if strings.Contains(k.Col, ".") {
+		if rowdiff.IsNestedPath(k.Col) {
 			in = append(in, "order")
 			break
 		}
 	}
 	if q.Agg != nil {
-		if strings.Contains(q.Agg.Col, ".") {
+		if rowdiff.IsNestedPath(q.Agg.Col) {
 			in = append(in, "agg-arg")
 		}
 		for _, g := range q.Agg.GroupBy {
-			if strings.Contains(g, ".") {
+			if rowdiff.IsNestedPath(g) {
 				in = append(in, "group-key")
 				break
 			}
 		}
 	}
-	if q.Exists != nil && strings.Contains(q.Exists.CorrCol, ".") {
+	if q.Exists != nil && rowdiff.IsNestedPath(q.Exists.CorrCol) {
 		in = append(in, "exists")
 	}
-	if q.ScalarSub != nil && strings.Contains(q.ScalarSub.OuterCol, ".") {
+	if q.ScalarSub != nil && rowdiff.IsNestedPath(q.ScalarSub.OuterCol) {
 		in = append(in, "scalarsub")
 	}
 	if len(in) == 0 {

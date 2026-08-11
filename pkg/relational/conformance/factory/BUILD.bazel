@@ -39,6 +39,7 @@ go_test(
         "explain_alias_fdb_test.go",
         "export_test.go",
         "inapplicable_test.go",
+        "nest_tag_test.go",
         "nested_axis_fdb_test.go",
         "nested_outer_multileg_fdb_test.go",
         "oracle_detectors_test.go",
@@ -56,6 +57,7 @@ go_test(
         "resources:memory:3300",
     ],
     deps = [
+        "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/relational/conformance/explaindiff",
         "//pkg/relational/conformance/factorycorpus",
         "//pkg/relational/conformance/rowdiff",

@@ -99,9 +99,9 @@ test_block:
 # date: 2026-08-11
 # blessing: metamorphic
 # oracles: tlp,second-plan
-# feature-vector: shape=join2.comma;idx=A,A+C,C,D;proj=n2;nest=select+where;where=and(cmp.ge,cmp.eq,colcol.le);order=asc+asc
+# feature-vector: shape=join2.comma;idx=A,A+C,C,D;proj=n2;nest=where;where=and(cmp.ge,cmp.eq,colcol.le);order=asc+asc
 # plan-shape: 804c6310ce2564a7
-# dedup-key: dfbeda5a83e0c263
+# dedup-key: af6452f497ce3b20
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 2 -seeds 1 -date 2026-08-11 -out <dir>
 ---
 schema_template: |-
@@ -343,9 +343,9 @@ test_block:
 # date: 2026-08-11
 # blessing: metamorphic
 # oracles: tlp,second-plan
-# feature-vector: shape=join2.comma;idx=A,A+C,C,D;proj=n2;nest=select+where;where=and(cmp.ge,colcol.gt);order=none
+# feature-vector: shape=join2.comma;idx=A,A+C,C,D;proj=n2;nest=where;where=and(cmp.ge,colcol.gt);order=none
 # plan-shape: e0886af627ebc338
-# dedup-key: 36f91d51586b04d9
+# dedup-key: 98752dbe3e1c665d
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 10 -seeds 1 -date 2026-08-11 -out <dir>
 ---
 schema_template: |-
@@ -655,9 +655,9 @@ test_block:
 # date: 2026-08-11
 # blessing: metamorphic
 # oracles: tlp,second-plan
-# feature-vector: shape=join2.comma;idx=A+C,C,D,S;proj=n2;nest=select+where;where=and(cmp.like,cmp.eq,colcol.le);order=asc+asc
+# feature-vector: shape=join2.comma;idx=A+C,C,D,S;proj=n2;nest=where;where=and(cmp.like,cmp.eq,colcol.le);order=asc+asc
 # plan-shape: 349b52b1cbb92bb0
-# dedup-key: 8281ab985d659b4d
+# dedup-key: f1fe58e6d528db4e
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 22 -seeds 1 -date 2026-08-11 -out <dir>
 ---
 schema_template: |-
@@ -967,9 +967,9 @@ test_block:
 # date: 2026-08-11
 # blessing: metamorphic
 # oracles: tlp,second-plan
-# feature-vector: shape=join2.comma;idx=A+C,S;proj=n2;nest=select+where;where=and(cmp.lt,colcol.le);order=none
+# feature-vector: shape=join2.comma;idx=A+C,S;proj=n2;nest=where;where=and(cmp.lt,colcol.le);order=none
 # plan-shape: 1000da4afa27b405
-# dedup-key: 2de72a7d5da91eb8
+# dedup-key: a43e72e83517e44b
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 29 -seeds 1 -date 2026-08-11 -out <dir>
 ---
 schema_template: |-

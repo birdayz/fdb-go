@@ -54,6 +54,113 @@ func leafOf(col string) (string, bool) {
 	return rest, true
 }
 
+// JoinQualifiers are the table-alias qualifiers a JOIN projection entry can
+// carry: joinProjections mints L and R, threeWayProjections mints L, M and R.
+//
+// The list lives beside the strip helper rather than at each reader because a
+// second copy is how the readers drifted apart in the first place — three
+// sites each decided "is this nested?" for themselves and all three decided it
+// wrong in the same way.
+func JoinQualifiers() []string { return []string{"L", "M", "R"} }
+
+// StripJoinQualifier removes a leading table-alias qualifier from a projection
+// entry, yielding the column path RELATIVE TO ITS OWN TABLE. "L.N.A" becomes
+// "N.A"; "L.ID" becomes "ID"; an unqualified entry is returned unchanged.
+//
+// No table this generator builds has a column named L, M or R, so the strip is
+// unambiguous — and TestJoinQualifiersAreNotColumnNames measures that rather
+// than trusting it, because the day a schema grows an `R` column this helper
+// starts silently eating a real column's first segment.
+func StripJoinQualifier(entry string) string {
+	for _, q := range JoinQualifiers() {
+		if rest, ok := strings.CutPrefix(entry, q+"."); ok {
+			return rest
+		}
+	}
+	return entry
+}
+
+// IsNestedPath reports whether a projection entry reaches INTO a struct.
+//
+// This is NOT the same question as "does the entry contain a dot", and the
+// difference is the whole reason the helper exists. A JOIN projection entry is
+// ALIAS-QUALIFIED, so its first dot is the table qualifier: the keys-only
+// projection {"L.ID", "R.ID"} is entirely FLAT while every entry in it is
+// dotted. Reading the dot alone counts every join projection as nested, which
+// reports a nesting axis as covered by scenarios that carry no nesting at all
+// — a coverage claim about the empty set, which is the failure mode this
+// corpus's whole census exists to make impossible.
+func IsNestedPath(entry string) bool {
+	_, nested := leafOf(StripJoinQualifier(entry))
+	return nested
+}
+
+// PathSegments counts a projection entry's segments BELOW its table: 1 for a
+// flat column, 2 for `N.A`, 3 for `N.DP.A` — with any join qualifier stripped
+// first, so `L.N.A` counts 2 and not 3.
+func PathSegments(entry string) int {
+	return strings.Count(StripJoinQualifier(entry), ".") + 1
+}
+
+// PredicateReadsANestedPath reports whether any leaf of a predicate tree reads
+// a column that is a struct path.
+//
+// It walks the typed spec rather than the rendered SQL. The rendering-based
+// form it replaces asked `strings.Contains(PredicateSQL(where), "n.")`, which
+// is a text match on generated SQL: it happens to be right over today's domain
+// (every qualifier is l/m/r, the only struct root is N, and no literal in the
+// domain contains a dot) and it becomes wrong the first time a LIKE pattern, a
+// CONCAT suffix or a new alias grows a dot. The spec struct already carries
+// every column the leaf reads, so asking it is both cheaper and exact.
+func PredicateReadsANestedPath(n *BoolNode) bool {
+	found := false
+	walkPredicateCols(n, func(col string) {
+		if IsNestedPath(col) {
+			found = true
+		}
+	})
+	return found
+}
+
+// walkPredicateCols visits every COLUMN NAME a predicate tree reads. Every
+// column-bearing field of Pred is listed, including the ones nested inside the
+// expression specs — a field missed here reads as "this clause never nests",
+// which is the silent-zero direction.
+func walkPredicateCols(n *BoolNode, visit func(string)) {
+	if n == nil {
+		return
+	}
+	for _, k := range n.Kids {
+		walkPredicateCols(k, visit)
+	}
+	p := n.Leaf
+	if p == nil {
+		return
+	}
+	for _, c := range []string{p.Col, p.RhsCol, p.ArithCol2, p.BitCol2} {
+		if c != "" {
+			visit(c)
+		}
+	}
+	if p.StrFn != nil {
+		visit(p.StrFn.Col)
+	}
+	if p.NumFn != nil {
+		visit(p.NumFn.Col)
+	}
+	if p.Cast != nil {
+		visit(p.Cast.Col)
+	}
+	if p.Case != nil {
+		walkPredicateCols(&BoolNode{Leaf: p.Case.When}, visit)
+		for _, c := range []string{p.Case.ThenCol, p.Case.ElseCol} {
+			if c != "" {
+				visit(c)
+			}
+		}
+	}
+}
+
 // IsNested reports whether the case's table carries a struct column.
 func (t TableDef) IsNested() bool { return t.Struct != nil }
 

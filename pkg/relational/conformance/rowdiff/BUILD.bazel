@@ -45,6 +45,7 @@ go_test(
         "exists_oracle_test.go",
         "group_key_coverage_test.go",
         "left_join_oracle_test.go",
+        "nested_path_test.go",
         "nested_test.go",
         "num_fn_oracle_test.go",
         "ordering_canonical_test.go",

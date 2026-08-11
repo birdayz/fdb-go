@@ -96,6 +96,13 @@ func TestNestedProjectionsAreAliasedAndNeverStar(t *testing.T) {
 // nothing else, so the clauses diverged from each other undetected. This asserts
 // a dotted column actually lands in the WHERE, the ORDER BY, an aggregate
 // argument and a GROUP BY key across a seed range — measured, not assumed.
+//
+// The `select` arm counts NESTED PATHS, not dots. Counting dots made this arm
+// unable to fail: every join projection entry is alias-qualified, so `select`
+// stayed in the thousands even for a generator that emitted no nesting in any
+// SELECT list — the arm reported the axis covered while measuring the join
+// aliases. A gate whose population is dominated by things it is not asking
+// about is a gate that cannot go red.
 func TestNestedCaseReachesEveryClause(t *testing.T) {
 	t.Parallel()
 	clauses := map[string]int{}
@@ -104,33 +111,33 @@ func TestNestedCaseReachesEveryClause(t *testing.T) {
 		for _, q := range c.Queries {
 			for _, proj := range c.ProjectionsFor(q) {
 				for _, p := range proj {
-					if strings.Contains(p, ".") {
+					if rowdiff.IsNestedPath(p) {
 						clauses["select"]++
 					}
 				}
 			}
-			if q.Where != nil && strings.Contains(rowdiff.PredicateSQL(q.Where), "n.") {
+			if q.Where != nil && rowdiff.PredicateReadsANestedPath(q.Where) {
 				clauses["where"]++
 			}
 			for _, k := range q.OrderBy {
-				if strings.Contains(k.Col, ".") {
+				if rowdiff.IsNestedPath(k.Col) {
 					clauses["order-by"]++
 				}
 			}
 			if q.Agg != nil {
-				if strings.Contains(q.Agg.Col, ".") {
+				if rowdiff.IsNestedPath(q.Agg.Col) {
 					clauses["agg-arg"]++
 				}
 				for _, g := range q.Agg.GroupBy {
-					if strings.Contains(g, ".") {
+					if rowdiff.IsNestedPath(g) {
 						clauses["group-by"]++
 					}
 				}
 			}
-			if q.Exists != nil && strings.Contains(q.Exists.CorrCol, ".") {
+			if q.Exists != nil && rowdiff.IsNestedPath(q.Exists.CorrCol) {
 				clauses["exists-corr"]++
 			}
-			if q.ScalarSub != nil && strings.Contains(q.ScalarSub.OuterCol, ".") {
+			if q.ScalarSub != nil && rowdiff.IsNestedPath(q.ScalarSub.OuterCol) {
 				clauses["scalar-sub"]++
 			}
 		}
@@ -221,13 +228,7 @@ func TestNoQueryNamesAColumnTheTableLacks(t *testing.T) {
 				for _, p := range proj {
 					checked++
 					// A join projection is qualified ("L.N.A"); strip the alias.
-					name := p
-					for _, q := range []string{"L.", "R.", "M."} {
-						if strings.HasPrefix(name, q) {
-							name = name[len(q):]
-							break
-						}
-					}
+					name := rowdiff.StripJoinQualifier(p)
 					if !known[name] {
 						t.Fatalf("seed %d projects %q, which table %s does not have (columns %v)",
 							seed, p, c.Table.Name, known)
@@ -256,6 +257,11 @@ func TestNoQueryNamesAColumnTheTableLacks(t *testing.T) {
 // generator that still emits one level is capped below the engine and tests
 // only the shapes that already worked. A zero here says exactly that has
 // happened.
+//
+// Depth is counted BELOW the table, with any join qualifier stripped first.
+// Counting raw dots made `L.N.A` — an alias plus a depth-2 path — read as three
+// segments, so the depth-3 population was mostly depth-2 join entries and the
+// honest depth-3 count was never measured.
 func TestNestedCaseReachesDepthThree(t *testing.T) {
 	t.Parallel()
 	depth := map[int]int{}
@@ -267,7 +273,7 @@ func TestNestedCaseReachesDepthThree(t *testing.T) {
 		for _, q := range c.Queries {
 			for _, proj := range c.ProjectionsFor(q) {
 				for _, p := range proj {
-					if strings.Count(p, ".") >= 2 {
+					if rowdiff.PathSegments(p) >= 3 {
 						depth[0]++ // a projected 3-segment path
 					}
 				}
