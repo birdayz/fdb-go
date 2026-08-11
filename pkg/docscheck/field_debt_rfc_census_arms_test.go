@@ -1,0 +1,361 @@
+package docscheck
+
+import (
+	"strings"
+	"testing"
+)
+
+// The census gate's decisions are pure functions over explicit state, and this
+// file drives EVERY arm of them.
+//
+// The live RFC exercises only the arms the document happens to reach — two of
+// nine when this pin was written. The other seven included the two whose own
+// comments say they guard the exact rot that had already happened once: a
+// missing TOTAL row (per-bucket rows each right while the stated total is wrong)
+// and a silently absent bucket (every listed row ties out while the RFC
+// under-reports the work). An arm that has never fired is not a guard; its first
+// real firing reads as a finding rather than as a branch nobody ran.
+//
+// Each case asserts on a SUBSTRING of the message, not merely on the count, so a
+// mutation that swaps one arm's detection for another's is caught rather than
+// absorbed by "some problem was reported".
+
+func hasProblemContaining(problems []string, want string) bool {
+	for _, p := range problems {
+		if strings.Contains(p, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// A healthy instrument reading, reused as the baseline every case perturbs.
+func censusFixture() (rows [][]string, escapes, authorities map[string]int, distinct, total int) {
+	rows = [][]string{
+		{"bucket", "authorities", "escapes"},
+		{"boundary", "1", "2"},
+		{"dotted", "2", "3"},
+		{"TOTAL", "3", "5"},
+	}
+	escapes = map[string]int{"boundary": 2, "dotted": 3}
+	authorities = map[string]int{"boundary": 1, "dotted": 2}
+	return rows, escapes, authorities, 3, 5
+}
+
+func TestFieldDebtCensusTableArms(t *testing.T) {
+	t.Parallel()
+
+	t.Run("clean fixture reports nothing", func(t *testing.T) {
+		t.Parallel()
+		rows, esc, auth, distinct, total := censusFixture()
+		if got := checkCensusTable(rows, esc, auth, distinct, total); len(got) != 0 {
+			t.Fatalf("the baseline must be clean or every case below is vacuous: %v", got)
+		}
+	})
+
+	cases := []struct {
+		name   string
+		mutate func(rows [][]string, esc, auth map[string]int) ([][]string, map[string]int, map[string]int)
+		want   string
+	}{
+		{
+			name: "wrong escape count for a bucket",
+			mutate: func(r [][]string, e, a map[string]int) ([][]string, map[string]int, map[string]int) {
+				r[2][2] = "7"
+				return r, e, a
+			},
+			want: `claims bucket "dotted" has 7 escape sites; the instrument measures 3`,
+		},
+		{
+			name: "wrong authority count for a bucket",
+			mutate: func(r [][]string, e, a map[string]int) ([][]string, map[string]int, map[string]int) {
+				r[1][1] = "9"
+				return r, e, a
+			},
+			want: `claims bucket "boundary" has 9 authorities; the instrument measures 1`,
+		},
+		{
+			name: "TOTAL row disagrees",
+			mutate: func(r [][]string, e, a map[string]int) ([][]string, map[string]int, map[string]int) {
+				r[3][1], r[3][2] = "34", "52"
+				return r, e, a
+			},
+			want: "TOTAL row claims 34 authorities / 52 escape sites",
+		},
+		{
+			name: "no TOTAL row at all",
+			mutate: func(r [][]string, e, a map[string]int) ([][]string, map[string]int, map[string]int) {
+				return r[:3], e, a
+			},
+			want: "has no TOTAL row",
+		},
+		{
+			name: "a bucket carrying debt is absent from the table",
+			mutate: func(r [][]string, e, a map[string]int) ([][]string, map[string]int, map[string]int) {
+				e["contract"] = 4
+				a["contract"] = 3
+				return r, e, a
+			},
+			want: "carry debt and are absent from",
+		},
+		{
+			name: "non-numeric cells",
+			mutate: func(r [][]string, e, a map[string]int) ([][]string, map[string]int, map[string]int) {
+				r[1][2] = "several"
+				return r, e, a
+			},
+			want: "non-numeric counts",
+		},
+		{
+			name: "row with too few cells",
+			mutate: func(r [][]string, e, a map[string]int) ([][]string, map[string]int, map[string]int) {
+				r[1] = []string{"boundary", "1"}
+				return r, e, a
+			},
+			want: "cell(s), want 3",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rows, esc, auth, distinct, total := censusFixture()
+			rows, esc, auth = tc.mutate(rows, esc, auth)
+			got := checkCensusTable(rows, esc, auth, distinct, total)
+			if !hasProblemContaining(got, tc.want) {
+				t.Errorf("arm did not fire.\nwant a problem containing: %s\ngot: %v", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestFieldDebtConcentrationTableArms(t *testing.T) {
+	t.Parallel()
+
+	base := func() ([][]string, map[string]int) {
+		return [][]string{
+				{"authority", "escapes"},
+				{"groupByOutputBaker", "5"},
+				{"explainValueOrdinals", "3"},
+			}, map[string]int{
+				"groupByOutputBaker":   5,
+				"explainValueOrdinals": 3,
+				"somethingSmall":       1,
+			}
+	}
+
+	t.Run("clean fixture reports nothing", func(t *testing.T) {
+		t.Parallel()
+		rows, actual := base()
+		if got := checkConcentrationTable(rows, actual, fieldDebtConcentrationFloor); len(got) != 0 {
+			t.Fatalf("baseline must be clean: %v", got)
+		}
+	})
+
+	cases := []struct {
+		name   string
+		mutate func(rows [][]string, actual map[string]int) ([][]string, map[string]int)
+		want   string
+	}{
+		{
+			name: "a listed authority has retired to zero",
+			mutate: func(r [][]string, a map[string]int) ([][]string, map[string]int) {
+				return append(r, []string{"AggregateResultColumnName", "6"}), a
+			},
+			want: "it carries NONE — the authority has RETIRED",
+		},
+		{
+			name: "a listed authority carries a different number",
+			mutate: func(r [][]string, a map[string]int) ([][]string, map[string]int) {
+				r[1][1] = "8"
+				return r, a
+			},
+			want: `lists "groupByOutputBaker" at 8 escape site(s); the instrument measures 5`,
+		},
+		{
+			name: "a new concentration nobody wrote down",
+			mutate: func(r [][]string, a map[string]int) ([][]string, map[string]int) {
+				a["newlyConcentrated"] = 4
+				return r, a
+			},
+			want: "carry >= 3 escape sites and are absent from",
+		},
+		{
+			name: "non-numeric escape count",
+			mutate: func(r [][]string, a map[string]int) ([][]string, map[string]int) {
+				r[1][1] = "lots"
+				return r, a
+			},
+			want: "non-numeric escape count",
+		},
+		{
+			name: "row with too few cells",
+			mutate: func(r [][]string, a map[string]int) ([][]string, map[string]int) {
+				r[1] = []string{"groupByOutputBaker"}
+				return r, a
+			},
+			want: "cell(s), want 2",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rows, actual := base()
+			rows, actual = tc.mutate(rows, actual)
+			got := checkConcentrationTable(rows, actual, fieldDebtConcentrationFloor)
+			if !hasProblemContaining(got, tc.want) {
+				t.Errorf("arm did not fire.\nwant a problem containing: %s\ngot: %v", tc.want, got)
+			}
+		})
+	}
+}
+
+// TestFieldDebtRFCSourceArms drives the two file-level guards, neither of which
+// the live document can reach.
+func TestFieldDebtRFCSourceArms(t *testing.T) {
+	t.Parallel()
+
+	if got := rfcSourceProblem(nil, errForTest{}); !strings.Contains(got, "unreadable file makes the gate vacuous") {
+		t.Errorf("unreadable-file arm did not fire: %q", got)
+	}
+	if got := rfcSourceProblem([]byte("tiny"), nil); !strings.Contains(got, "too small to be the RFC") {
+		t.Errorf("file-too-small arm did not fire: %q", got)
+	}
+	big := make([]byte, fieldDebtRFCMinBytes)
+	if got := rfcSourceProblem(big, nil); got != "" {
+		t.Errorf("a readable, large-enough file must report no problem, got %q", got)
+	}
+}
+
+type errForTest struct{}
+
+func (errForTest) Error() string { return "simulated read failure" }
+
+// TestFieldDebtTablePresenceArms drives the missing-marker and too-short-table
+// guards, which the live document also cannot reach.
+func TestFieldDebtTablePresenceArms(t *testing.T) {
+	t.Parallel()
+
+	if got := tablePresenceProblem(nil, false, "<!-- X -->"); !strings.Contains(got, "no <!-- X --> marker") {
+		t.Errorf("missing-marker arm did not fire: %q", got)
+	}
+	if got := tablePresenceProblem([][]string{{"header"}}, true, "<!-- X -->"); !strings.Contains(got, "parsed 1 row(s)") {
+		t.Errorf("too-short-table arm did not fire: %q", got)
+	}
+	ok := [][]string{{"bucket", "a", "e"}, {"dotted", "1", "1"}}
+	if got := tablePresenceProblem(ok, true, "<!-- X -->"); got != "" {
+		t.Errorf("a present, long-enough table must report no problem, got %q", got)
+	}
+}
+
+// TestFieldDebtParseTableShapes pins the parser itself, including the two shapes
+// that silently produce an empty scan.
+func TestFieldDebtParseTableShapes(t *testing.T) {
+	t.Parallel()
+
+	const doc = "intro\n\n<!-- M -->\n\nsome prose\n\n| bucket | a | e |\n| --- | --- | --- |\n| dotted | 1 | 2 |\n\nafter the table\n\n| not | this | one |\n"
+	rows, found := parseFieldDebtTable(doc, "<!-- M -->")
+	if !found {
+		t.Fatal("marker present but not found")
+	}
+	if len(rows) != 2 {
+		t.Fatalf("want header + 1 data row, got %d: %v", len(rows), rows)
+	}
+	if rows[1][0] != "dotted" || rows[1][2] != "2" {
+		t.Errorf("row parsed wrong: %v", rows[1])
+	}
+	// The separator row must be dropped, and a second table after intervening
+	// prose must NOT be absorbed.
+	for _, r := range rows {
+		if strings.HasPrefix(r[0], "---") {
+			t.Errorf("separator row leaked into the parse: %v", r)
+		}
+		if r[0] == "not" {
+			t.Errorf("a later, unrelated table was absorbed: %v", r)
+		}
+	}
+	if _, found := parseFieldDebtTable(doc, "<!-- ABSENT -->"); found {
+		t.Error("an absent marker must report not-found rather than an empty table")
+	}
+	// Backticked cells are unwrapped, since the concentration table quotes
+	// declaration names as code.
+	back, _ := parseFieldDebtTable("<!-- M -->\n| `groupByOutputBaker` | 5 |\n", "<!-- M -->")
+	if len(back) != 1 || back[0][0] != "groupByOutputBaker" {
+		t.Errorf("backticked cell not unwrapped: %v", back)
+	}
+}
+
+// TestFieldDebtOrderProseArms drives the gate that closes the third-copy hole,
+// including the two shapes that must NOT fire.
+func TestFieldDebtOrderProseArms(t *testing.T) {
+	t.Parallel()
+
+	firing := []struct {
+		name  string
+		prose string
+		want  string
+	}{
+		{"the exact sentence a reviewer reverted", "The residual is 34 AUTHORITIES (52 escape sites).", "34 AUTHORITIES"},
+		{"escape sites alone", "There are 52 escape sites left.", "52 escape sites"},
+		{"a numbered bucket parenthetical", "3. name-keyed (9, was 15): including the probe", "3. name-keyed (9"},
+		{"harness stays at N", "harness stays at 1 and is out of scope.", "stays at 1"},
+		{"concentration claim", "four authorities carry 18 of the 52", "carry 18 of"},
+		{"authority sum", "The column sums to 35 against 33 distinct.", "sums to 35"},
+		{"a bucket that fell to a number", "It fell to 7 as four sites were retagged.", "fell to 7"},
+	}
+	for _, tc := range firing {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := checkOrderProseHasNoCounts(tc.prose)
+			if !hasProblemContaining(got, tc.want) {
+				t.Errorf("arm did not fire on %q.\nwant a problem containing %q\ngot: %v",
+					tc.prose, tc.want, got)
+			}
+		})
+	}
+
+	quiet := []struct {
+		name  string
+		prose string
+	}{
+		{
+			"a count quoted in backticks as an example of the rot",
+			"a reviewer reverted it to `34 AUTHORITIES (52 escape sites)` and the suite stayed green",
+		},
+		{"a markdown table row", "| boundary | 1 | 2 |"},
+		{"a source citation", "GroupByExpression.java:754,758 builds Column.unnamedOf"},
+		{"a measured traffic figure", "the mint class went 21865 to 0 and declines 4 to 1"},
+		{"an RFC section reference", "blocked on RFC-204 sec 4.4/4.5"},
+		{"a shape-only bucket line", "3. name-keyed (much reduced): including the probe"},
+	}
+	for _, tc := range quiet {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := checkOrderProseHasNoCounts(tc.prose); len(got) != 0 {
+				t.Errorf("gate must stay quiet on %q, got: %v", tc.prose, got)
+			}
+		})
+	}
+}
+
+// TestFieldDebtOrderSectionExtraction pins the section splitter, whose silent
+// failure mode is returning an empty string that every prose check then passes.
+func TestFieldDebtOrderSectionExtraction(t *testing.T) {
+	t.Parallel()
+
+	const doc = "# T\n\n## Before\n\nbefore body\n\n## Order\n\norder body here\n\n## Rejected alternatives\n\nafter body\n"
+	sec, ok := orderSectionOf(doc)
+	if !ok {
+		t.Fatal("`## Order` present but not found")
+	}
+	if !strings.Contains(sec, "order body here") {
+		t.Errorf("section body missing: %q", sec)
+	}
+	if strings.Contains(sec, "after body") || strings.Contains(sec, "before body") {
+		t.Errorf("section bled into a neighbour: %q", sec)
+	}
+	if _, ok := orderSectionOf("# T\n\n## Other\n\nbody\n"); ok {
+		t.Error("a document with no `## Order` must report not-found, never an empty section")
+	}
+}

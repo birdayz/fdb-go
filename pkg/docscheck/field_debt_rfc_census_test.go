@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,15 +30,29 @@ import (
 // a marked table, and this gate fails the build when it drifts from what
 // `knownFieldDecisionDebt` actually holds.
 //
-// The gate is deliberately two-directional. An entry missing from the table is
-// as much a failure as a wrong number, because a bucket silently absent would
-// let the sum still tie out while the RFC under-reported the work.
+// THE FIRST VERSION OF THIS GATE CHECKED ONLY THE TABLES, AND THAT WAS NOT
+// ENOUGH. The `## Order` section's PROSE was a third ungated copy: reverting its
+// lead sentence to `34 AUTHORITIES (52 escape sites)` left the whole suite green,
+// three lines below a paragraph asserting there were now only two homes for the
+// fact. Gating a third copy would have been the wrong repair — a number that
+// exists in one place cannot disagree with itself — so the prose counts were
+// DELETED and `TestFieldDebtRFCOrderProseStatesNoCounts` keeps them out.
+//
+// The gate is deliberately two-directional throughout. An entry missing from a
+// table is as much a failure as a wrong number, because a silently absent bucket
+// would let the sum still tie out while the RFC under-reported the work.
+//
+// Every decision below is a PURE function over explicit state so that
+// `TestFieldDebtCensusGateArms` can drive each arm directly. The corpus reading
+// exercises only the arms the live document happens to reach — which was two of
+// nine — and an untested arm's first real firing reads as a finding rather than
+// as a branch nobody had run.
 
 const (
 	fieldDebtRFCPath = "rfcs/197-column-identity-is-an-ordinal.md"
 
 	// The markers the RFC carries. They are HTML comments so they render as
-	// nothing, and they name this test so a reader who changes the table knows
+	// nothing, and they name this test so a reader who changes a table knows
 	// what will fail.
 	fieldDebtCensusMarker        = "<!-- FIELD-DEBT-CENSUS -->"
 	fieldDebtConcentrationMarker = "<!-- FIELD-DEBT-CONCENTRATION -->"
@@ -47,19 +62,22 @@ const (
 	// direction — a NEW concentration appearing and never being written down —
 	// which the per-row equality check alone cannot see.
 	fieldDebtConcentrationFloor = 3
+
+	// Below this a file cannot be the RFC, so checking a census against it would
+	// be vacuous rather than lenient.
+	fieldDebtRFCMinBytes = 1000
 )
 
 // fieldDebtAuthorityFunc reduces an authority key ("path/to/file.go # FuncName")
-// to the declaration name the RFC's prose uses.
+// to the declaration name the RFC's tables use.
 func fieldDebtAuthorityFunc(authority string) string {
 	parts := strings.Split(authority, " # ")
 	return strings.TrimSpace(parts[len(parts)-1])
 }
 
 // parseFieldDebtTable returns the rows of the first markdown table following
-// marker, header and separator rows dropped. The bool reports whether a table
-// was found at all — an absent marker must fail loudly rather than scan an empty
-// set, which is the whole failure mode this gate exists to end.
+// marker, separator rows dropped. The bool reports whether a table was found at
+// all — an absent marker must fail loudly rather than scan an empty set.
 func parseFieldDebtTable(src, marker string) ([][]string, bool) {
 	i := strings.Index(src, marker)
 	if i < 0 {
@@ -88,56 +106,47 @@ func parseFieldDebtTable(src, marker string) ([][]string, bool) {
 	return rows, started
 }
 
-func readFieldDebtRFC(t *testing.T) string {
-	t.Helper()
-	path := filepath.Join(sourceTreeRoot(t), fieldDebtRFCPath)
-	src, err := os.ReadFile(path)
+// rfcSourceProblem validates the file the census is read from. Returns "" when
+// the source is usable.
+func rfcSourceProblem(src []byte, err error) string {
 	if err != nil {
-		t.Fatalf("reading %s: %v — the RFC is the durable home for this census, "+
-			"so an unreadable file makes the gate vacuous rather than lenient", fieldDebtRFCPath, err)
+		return fmt.Sprintf("reading %s: %v — the RFC is the durable home for this "+
+			"census, so an unreadable file makes the gate vacuous rather than lenient",
+			fieldDebtRFCPath, err)
 	}
-	if len(src) < 1000 {
-		t.Fatalf("%s is %d bytes — too small to be the RFC; refusing to check a census "+
-			"against a file that cannot contain one", fieldDebtRFCPath, len(src))
+	if len(src) < fieldDebtRFCMinBytes {
+		return fmt.Sprintf("%s is %d bytes — too small to be the RFC; refusing to check "+
+			"a census against a file that cannot contain one", fieldDebtRFCPath, len(src))
 	}
-	return string(src)
+	return ""
 }
 
-// TestFieldDebtRFCCensusMatchesTheInstrument holds RFC-197's per-bucket table to
-// what knownFieldDecisionDebt actually contains.
-func TestFieldDebtRFCCensusMatchesTheInstrument(t *testing.T) {
-	t.Parallel()
-
-	src := readFieldDebtRFC(t)
-	rows, found := parseFieldDebtTable(src, fieldDebtCensusMarker)
+// tablePresenceProblem covers the two ways a table can fail to exist: no marker,
+// or a marker over something too short to be a census. Returns "" when usable.
+func tablePresenceProblem(rows [][]string, found bool, marker string) string {
 	if !found {
-		t.Fatalf("no %s marker in %s — the census table is how the RFC's numbers stay "+
-			"true, and without it this gate would pass while the prose drifted",
-			fieldDebtCensusMarker, fieldDebtRFCPath)
+		return fmt.Sprintf("no %s marker in %s — the marked table is how the RFC's "+
+			"numbers stay true, and without it this gate would pass while the prose drifted",
+			marker, fieldDebtRFCPath)
 	}
 	if len(rows) < 2 {
-		t.Fatalf("the census table under %s parsed %d row(s); a green from an empty "+
-			"table is exactly the false pass this gate exists to prevent",
-			fieldDebtCensusMarker, len(rows))
+		return fmt.Sprintf("the table under %s parsed %d row(s); a green from an empty "+
+			"table is exactly the false pass this gate exists to prevent", marker, len(rows))
 	}
+	return ""
+}
 
-	escapes, untagged := bucketCounts(knownFieldDecisionDebt)
-	if len(untagged) > 0 {
-		t.Fatalf("%d untagged entry/entries — TestFieldDebtBucketsArePartition owns that "+
-			"failure; this gate cannot size buckets until it passes", len(untagged))
-	}
-	authorities := bucketAuthorityCounts(knownFieldDecisionDebt)
-	distinct := map[string]struct{}{}
-	for site := range knownFieldDecisionDebt {
-		distinct[fieldDecisionAuthorityOf(site)] = struct{}{}
-	}
-	totalEscapes := len(knownFieldDecisionDebt)
-
+// checkCensusTable holds the per-bucket table to the instrument. Pure over
+// explicit state so every arm is drivable.
+func checkCensusTable(rows [][]string, escapes, authorities map[string]int, distinctAuthorities, totalEscapes int) []string {
+	var problems []string
 	claimed := map[string]bool{}
-	var sawTotal bool
+	sawTotal := false
+
 	for _, r := range rows {
 		if len(r) < 3 {
-			t.Errorf("census row %q has %d cells, want 3 (bucket | authorities | escapes)", r, len(r))
+			problems = append(problems, fmt.Sprintf(
+				"census row %q has %d cell(s), want 3 (bucket | authorities | escapes)", r, len(r)))
 			continue
 		}
 		bucket := r[0]
@@ -147,85 +156,69 @@ func TestFieldDebtRFCCensusMatchesTheInstrument(t *testing.T) {
 		wantAuth, err1 := strconv.Atoi(r[1])
 		wantEsc, err2 := strconv.Atoi(r[2])
 		if err1 != nil || err2 != nil {
-			t.Errorf("census row %q: non-numeric counts (%v / %v)", r, err1, err2)
+			problems = append(problems, fmt.Sprintf(
+				"census row %q: non-numeric counts (%v / %v)", r, err1, err2))
 			continue
 		}
 		if strings.EqualFold(bucket, "TOTAL") {
 			sawTotal = true
-			if wantAuth != len(distinct) || wantEsc != totalEscapes {
-				t.Errorf("%s TOTAL row claims %d authorities / %d escape sites; the instrument "+
-					"measures %d / %d.\n\nThis is the number the RFC leads with and the one "+
-					"people plan from. Update the table in the same commit that moves the debt.",
-					fieldDebtRFCPath, wantAuth, wantEsc, len(distinct), totalEscapes)
+			if wantAuth != distinctAuthorities || wantEsc != totalEscapes {
+				problems = append(problems, fmt.Sprintf(
+					"%s TOTAL row claims %d authorities / %d escape sites; the instrument "+
+						"measures %d / %d. This is the number the RFC leads with and the one "+
+						"people plan from.",
+					fieldDebtRFCPath, wantAuth, wantEsc, distinctAuthorities, totalEscapes))
 			}
 			continue
 		}
 		claimed[bucket] = true
 		if got := authorities[bucket]; got != wantAuth {
-			t.Errorf("%s claims bucket %q has %d authorities; the instrument measures %d",
-				fieldDebtRFCPath, bucket, wantAuth, got)
+			problems = append(problems, fmt.Sprintf(
+				"%s claims bucket %q has %d authorities; the instrument measures %d",
+				fieldDebtRFCPath, bucket, wantAuth, got))
 		}
 		if got := escapes[bucket]; got != wantEsc {
-			t.Errorf("%s claims bucket %q has %d escape sites; the instrument measures %d",
-				fieldDebtRFCPath, bucket, wantEsc, got)
+			problems = append(problems, fmt.Sprintf(
+				"%s claims bucket %q has %d escape sites; the instrument measures %d",
+				fieldDebtRFCPath, bucket, wantEsc, got))
 		}
 	}
+
 	if !sawTotal {
-		t.Errorf("the census table has no TOTAL row. The per-bucket rows can each be right " +
-			"while the stated total is wrong — that is precisely how this section rotted " +
-			"before (its own per-bucket numbers summed to 43 against a claimed 52).")
+		problems = append(problems, fmt.Sprintf(
+			"the census table in %s has no TOTAL row. The per-bucket rows can each be "+
+				"right while the stated total is wrong — that is precisely how this section "+
+				"rotted before (its own per-bucket numbers summed to 43 against a claimed 52).",
+			fieldDebtRFCPath))
 	}
 
-	// The other direction: a bucket the instrument reports and the table omits.
 	var missing []string
-	for b := range escapes {
+	for b, n := range escapes {
 		if !claimed[b] {
 			missing = append(missing, fmt.Sprintf("%s (%d authorities, %d escapes)",
-				b, authorities[b], escapes[b]))
+				b, authorities[b], n))
 		}
 	}
 	sort.Strings(missing)
 	if len(missing) > 0 {
-		t.Errorf("%d bucket(s) carry debt and are absent from %s's census table:\n  %s\n\n"+
-			"An omitted bucket under-reports the work while every listed row still ties out.",
-			len(missing), fieldDebtRFCPath, strings.Join(missing, "\n  "))
+		problems = append(problems, fmt.Sprintf(
+			"%d bucket(s) carry debt and are absent from %s's census table: %s. "+
+				"An omitted bucket under-reports the work while every listed row still ties out.",
+			len(missing), fieldDebtRFCPath, strings.Join(missing, "; ")))
 	}
-
-	t.Logf("RFC-197 CENSUS GATE: %d bucket row(s) checked against %d entries over %d authorities",
-		len(claimed), totalEscapes, len(distinct))
+	return problems
 }
 
-// TestFieldDebtRFCConcentrationMatchesTheInstrument holds the RFC's
-// "four authorities carry N of the M" claim to the list.
-//
-// This is the arm that would have caught `AggregateResultColumnName`: the RFC
-// named it as the single largest concentration at 6 escapes long after its last
-// entry retired, and no per-bucket total moved when it went to zero.
-func TestFieldDebtRFCConcentrationMatchesTheInstrument(t *testing.T) {
-	t.Parallel()
-
-	src := readFieldDebtRFC(t)
-	rows, found := parseFieldDebtTable(src, fieldDebtConcentrationMarker)
-	if !found {
-		t.Fatalf("no %s marker in %s — without it the RFC's concentration claim is "+
-			"unchecked prose, which is how it came to name a retired authority",
-			fieldDebtConcentrationMarker, fieldDebtRFCPath)
-	}
-	if len(rows) < 2 {
-		t.Fatalf("the concentration table under %s parsed %d row(s), which cannot be a "+
-			"census", fieldDebtConcentrationMarker, len(rows))
-	}
-
-	// Actual escapes per declaration name.
-	actual := map[string]int{}
-	for site := range knownFieldDecisionDebt {
-		actual[fieldDebtAuthorityFunc(fieldDecisionAuthorityOf(site))]++
-	}
-
+// checkConcentrationTable holds the "which authorities carry several escapes"
+// table to the instrument, in both directions.
+func checkConcentrationTable(rows [][]string, actual map[string]int, floor int) []string {
+	var problems []string
 	listed := map[string]bool{}
+
 	for _, r := range rows {
 		if len(r) < 2 {
-			t.Errorf("concentration row %q has %d cells, want 2 (authority | escapes)", r, len(r))
+			problems = append(problems, fmt.Sprintf(
+				"concentration row %q has %d cell(s), want 2 (authority | escapes)", r, len(r)))
 			continue
 		}
 		name := r[0]
@@ -234,42 +227,188 @@ func TestFieldDebtRFCConcentrationMatchesTheInstrument(t *testing.T) {
 		}
 		want, err := strconv.Atoi(r[1])
 		if err != nil {
-			t.Errorf("concentration row %q: non-numeric escape count: %v", r, err)
+			problems = append(problems, fmt.Sprintf(
+				"concentration row %q: non-numeric escape count: %v", r, err))
 			continue
 		}
 		listed[name] = true
 		got := actual[name]
-		if got == want {
-			continue
+		switch {
+		case got == want:
+		case got == 0:
+			problems = append(problems, fmt.Sprintf(
+				"%s lists %q as carrying %d escape site(s); it carries NONE — the authority "+
+					"has RETIRED. Remove the row; a retired declaration left in a concentration "+
+					"table is the exact rot this gate was added for.",
+				fieldDebtRFCPath, name, want))
+		default:
+			problems = append(problems, fmt.Sprintf(
+				"%s lists %q at %d escape site(s); the instrument measures %d",
+				fieldDebtRFCPath, name, want, got))
 		}
-		if got == 0 {
-			t.Errorf("%s lists %q as carrying %d escape site(s); it carries NONE — the "+
-				"authority has RETIRED.\n\nRemove the row. A retired declaration left in a "+
-				"concentration table is the exact rot this gate was added for.",
-				fieldDebtRFCPath, name, want)
-			continue
-		}
-		t.Errorf("%s lists %q at %d escape site(s); the instrument measures %d",
-			fieldDebtRFCPath, name, want, got)
 	}
 
-	// A NEW concentration must not be able to appear unlisted.
 	var unlisted []string
 	for name, n := range actual {
-		if n >= fieldDebtConcentrationFloor && !listed[name] {
+		if n >= floor && !listed[name] {
 			unlisted = append(unlisted, fmt.Sprintf("%s (%d escapes)", name, n))
 		}
 	}
 	sort.Strings(unlisted)
 	if len(unlisted) > 0 {
-		t.Errorf("%d declaration(s) carry >= %d escape sites and are absent from %s's "+
-			"concentration table:\n  %s\n\n"+
-			"The table's job is to say where the work is concentrated, so an unlisted "+
-			"concentration makes it wrong by omission rather than by arithmetic.",
-			len(unlisted), fieldDebtConcentrationFloor, fieldDebtRFCPath,
-			strings.Join(unlisted, "\n  "))
+		problems = append(problems, fmt.Sprintf(
+			"%d declaration(s) carry >= %d escape sites and are absent from %s's "+
+				"concentration table: %s. The table's job is to say where the work is "+
+				"concentrated, so an unlisted concentration makes it wrong by omission.",
+			len(unlisted), floor, fieldDebtRFCPath, strings.Join(unlisted, "; ")))
 	}
+	return problems
+}
 
-	t.Logf("RFC-197 CONCENTRATION GATE: %d listed authority/ies checked over %d distinct declarations",
-		len(listed), len(actual))
+// orderSectionOf returns the `## Order` section body.
+func orderSectionOf(src string) (string, bool) {
+	i := strings.Index(src, "\n## Order\n")
+	if i < 0 {
+		return "", false
+	}
+	rest := src[i+len("\n## Order\n"):]
+	if j := strings.Index(rest, "\n## "); j >= 0 {
+		rest = rest[:j]
+	}
+	return rest, true
+}
+
+// fieldDebtProseCountPatterns are the census-claim shapes that must not appear
+// in `## Order` prose. They are deliberately specific: the section legitimately
+// cites line numbers, RFC sections and measured traffic figures, and a blanket
+// "no digits" rule would forbid all of those.
+var fieldDebtProseCountPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\d+\s+authorities\b`),
+	regexp.MustCompile(`(?i)\d+\s+escape sites\b`),
+	regexp.MustCompile(`(?m)^\d+\.\s+[a-z-]+\s+\(\d+`),
+	regexp.MustCompile(`(?i)\bstays at \d+`),
+	regexp.MustCompile(`(?i)\bcarry \d+ of\b`),
+	regexp.MustCompile(`(?i)\bsums to \d+`),
+	regexp.MustCompile(`(?i)\b(?:fell|rose|grew) to \d+`),
+}
+
+// stripMarkdownCode removes fenced blocks, table rows and inline code spans.
+// A count QUOTED as an example of the rot — `34 AUTHORITIES (52 escape sites)` —
+// is documentation of a past failure, not a live claim, and lives in backticks.
+func stripMarkdownCode(s string) string {
+	var b strings.Builder
+	for _, ln := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(ln)
+		if strings.HasPrefix(t, "|") || strings.HasPrefix(t, "<!--") {
+			continue
+		}
+		inCode := false
+		for _, r := range ln {
+			if r == '`' {
+				inCode = !inCode
+				continue
+			}
+			if !inCode {
+				b.WriteRune(r)
+			}
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// checkOrderProseHasNoCounts is the arm that closes the third-copy hole.
+func checkOrderProseHasNoCounts(section string) []string {
+	prose := stripMarkdownCode(section)
+	var problems []string
+	for _, re := range fieldDebtProseCountPatterns {
+		for _, m := range re.FindAllString(prose, -1) {
+			problems = append(problems, fmt.Sprintf(
+				"`## Order` prose states a census count: %q. The tables are the only home "+
+					"for these numbers — prose copies cannot be checked and have already "+
+					"rotted once. State the shape (GREW, REOPENED) and let the table carry "+
+					"the magnitude.", strings.TrimSpace(m)))
+		}
+	}
+	sort.Strings(problems)
+	return problems
+}
+
+func readFieldDebtRFC(t *testing.T) string {
+	t.Helper()
+	src, err := os.ReadFile(filepath.Join(sourceTreeRoot(t), fieldDebtRFCPath))
+	if problem := rfcSourceProblem(src, err); problem != "" {
+		t.Fatal(problem)
+	}
+	return string(src)
+}
+
+// fieldDebtInstrument reads the live census off knownFieldDecisionDebt.
+func fieldDebtInstrument(t *testing.T) (escapes, authorities map[string]int, distinct, total int) {
+	t.Helper()
+	escapes, untagged := bucketCounts(knownFieldDecisionDebt)
+	if len(untagged) > 0 {
+		t.Fatalf("%d untagged entry/entries — TestFieldDebtBucketsArePartition owns that "+
+			"failure; this gate cannot size buckets until it passes", len(untagged))
+	}
+	authorities = bucketAuthorityCounts(knownFieldDecisionDebt)
+	seen := map[string]struct{}{}
+	for site := range knownFieldDecisionDebt {
+		seen[fieldDecisionAuthorityOf(site)] = struct{}{}
+	}
+	return escapes, authorities, len(seen), len(knownFieldDecisionDebt)
+}
+
+func TestFieldDebtRFCCensusMatchesTheInstrument(t *testing.T) {
+	t.Parallel()
+
+	rows, found := parseFieldDebtTable(readFieldDebtRFC(t), fieldDebtCensusMarker)
+	if problem := tablePresenceProblem(rows, found, fieldDebtCensusMarker); problem != "" {
+		t.Fatal(problem)
+	}
+	escapes, authorities, distinct, total := fieldDebtInstrument(t)
+	for _, p := range checkCensusTable(rows, escapes, authorities, distinct, total) {
+		t.Error(p)
+	}
+	t.Logf("RFC-197 CENSUS GATE: %d table row(s) checked against %d entries over %d authorities",
+		len(rows), total, distinct)
+}
+
+func TestFieldDebtRFCConcentrationMatchesTheInstrument(t *testing.T) {
+	t.Parallel()
+
+	rows, found := parseFieldDebtTable(readFieldDebtRFC(t), fieldDebtConcentrationMarker)
+	if problem := tablePresenceProblem(rows, found, fieldDebtConcentrationMarker); problem != "" {
+		t.Fatal(problem)
+	}
+	actual := map[string]int{}
+	for site := range knownFieldDecisionDebt {
+		actual[fieldDebtAuthorityFunc(fieldDecisionAuthorityOf(site))]++
+	}
+	for _, p := range checkConcentrationTable(rows, actual, fieldDebtConcentrationFloor) {
+		t.Error(p)
+	}
+	t.Logf("RFC-197 CONCENTRATION GATE: %d table row(s) checked over %d distinct declarations",
+		len(rows), len(actual))
+}
+
+// TestFieldDebtRFCOrderProseStatesNoCounts closes the third-copy hole directly:
+// the `## Order` prose may describe DIRECTION but never magnitude.
+func TestFieldDebtRFCOrderProseStatesNoCounts(t *testing.T) {
+	t.Parallel()
+
+	section, ok := orderSectionOf(readFieldDebtRFC(t))
+	if !ok {
+		t.Fatalf("no `## Order` section in %s — this gate would otherwise scan an empty "+
+			"string and pass while the prose said anything it liked", fieldDebtRFCPath)
+	}
+	if len(section) < 500 {
+		t.Fatalf("the `## Order` section is %d bytes — too short to be the real section, "+
+			"so a clean result would prove nothing", len(section))
+	}
+	for _, p := range checkOrderProseHasNoCounts(section) {
+		t.Error(p)
+	}
+	t.Logf("RFC-197 ORDER PROSE GATE: %d bytes of prose checked against %d count patterns",
+		len(section), len(fieldDebtProseCountPatterns))
 }
