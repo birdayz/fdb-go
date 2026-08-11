@@ -171,13 +171,29 @@ died at each step:
 Graefe's condition (c), discharged by instrumentation rather than argument:
 
 - **`groupByOutputBaker`** — the early return **does fire** (`Field "R"`, 3
-  accessors) and the decline is **right**: the reference reaching it is the
-  HAVING predicate's, and `PushFilterThroughGroupByRule` pushes that predicate
-  BELOW the GroupBy, where an input-relative nested read is the correct read.
-  Forcing the fall-through changed no row of any shape — a fused nested value
-  carries a QOV child and its qualified name misses `keyOrds`, so the branches
-  below return the node unchanged too. Its SELECT-list caller is gated on
-  `!exactAggregateLayout` and never runs for a grouped nested key at all.
+  accessors) and the decline is **right**. **Rev 8's first justification for that
+  was wrong and is corrected here**, because getting it wrong would have repeated
+  the exact error this revision is about: it claimed the fall-through was a
+  structural no-op ("the branches below return the node unchanged too"). It is
+  not. **MEASURED:** disabling the early return turns
+  `group_by_output_baker_test.go`'s `multi` case RED — a 2-accessor path with
+  `Field "COL1"`, a nil child and `keyOrds{COL1:0}` reaches the name channel and
+  is rewritten into a single-accessor read of output slot 0, i.e. a member read
+  becomes a read of the struct root's slot. The early return is **load-bearing on
+  leaf-collision shapes**, and the class is (a) for that reason and not for the
+  absence of an effect. What keeps a nested grouping key from needing a rebind
+  here is UPSTREAM and is a **different mechanism**: `rebaseHavingGroupKeyPredicate`
+  asks the shared decider `cascades.PredicatePushesBelowGroupBy`, and every
+  predicate that will NOT be pushed goes through `rebasePostAggregateGroupKeyValue`,
+  which pins the reference to a single-accessor **FrontierPinned** value — so it
+  exits at the FrontierPinned guard ABOVE `:1107` and never reaches it. Pushdown
+  is the narrow complement, not the rule: `predicateReferencesOnlyKeys` admits a
+  SINGLE `ComparisonPredicate` with a key-only comparand, and `buildGroupKeySet`
+  disables pushdown outright when two keys share an accessor path, so `AND`,
+  `OR`, `NOT` and any aggregate reference stay above and take the pinning route.
+  `TestFDB_GroupByNestedPathKey` exercises both routes.
+  Its SELECT-list caller is gated on `!exactAggregateLayout` and never runs for a
+  grouped nested key at all.
 - **`translateSort`** — the block this expression lives in is **never entered**.
   `GROUP BY r.v.z ORDER BY r.v.z` arrives with `AggregateOutputValueExact` set
   and takes the `canonicalizeAggregateOutputValue` arm; the correlated-scalar
@@ -195,6 +211,67 @@ Graefe's condition (c), discharged by instrumentation rather than argument:
 is INVERTED rather than deleted** — it guarded against a quiet drift to zero;
 zero is now the measured steady state, so the alarm direction is GROWTH, and a
 (b) now means a site refuses something that demonstrably works.
+
+### 0.4 A LIVE WRONG-ROWS DEFECT, found by pushing on §0.3's own reasoning — NOT this RFC's
+
+Asking what happens when `rebasePostAggregateGroupKeyValue` **cannot** pin a
+reference turns up a shape with no backstop, and it is **constructible, live, and
+silent**. `rebasePostAggregateGroupKeyValue` only considers a grouping key whose
+`Value` is a `*values.FieldValue`:
+
+```go
+qfv, ok := gk.Value.(*values.FieldValue)
+if !ok { continue }
+```
+
+A **COMPUTED** key's Value is an `ArithmeticValue`. So for `GROUP BY c1 + 1` no
+post-aggregate reference is ever pinned, and a non-pushable HAVING keeps an
+INPUT-relative read that is then evaluated against the aggregate's OUTPUT row.
+
+```
+SELECT max(c2) FROM flat GROUP BY c1 + 1 HAVING c1 + 1 > 200
+  keys are 101 and 141 -> correct answer is ZERO rows
+  MEASURED: TWO rows [203] [330]
+
+SELECT c1 + 1, max(c2) FROM flat GROUP BY c1 + 1 HAVING c1 + 1 > 200 AND max(c2) > 0
+  MEASURED: [101 203] [141 330]
+```
+
+The second is the sharpest form: the projected key column says 101 and 141 while
+the HAVING filtering `c1 + 1 > 200` admitted both — **one result set contradicting
+itself**. `c1` carries input ordinal 1 over `[ID C1 C2]`; the output row is
+`[(C1 + 1), MAX(C2)]`, whose slot 1 is the AGGREGATE. That predicts admission of
+both groups on `> 200` and of neither on `< 200`, and **both were measured, in
+opposite directions** — which identifies the slot rather than merely showing that
+something is off.
+
+**Three facts fix its scope, and each is measured rather than argued:**
+
+1. **It is PRE-EXISTING.** Re-run at the parent `9222f968c` in a detached
+   worktree with the same fixture: **byte-identical results, both arms.** RFC-230
+   admits a nested path as a BARE grouping key; the computed-key arm
+   (`sq.groupBy[i].expr != nil`) never travelled the refusal this RFC retired,
+   and the flat half is on a path this RFC does not touch at all.
+2. **The FLAT half is the dangerous one.** The nested twin of the same shape
+   fails LOUDLY (`ordinal resolution: field "R" not resolvable in the runtime
+   row (ordinal 2, row columns [(R.V.Z + 1) MAX(Q.S)])`) only because the fused
+   root's ordinal falls outside a 2-wide output row. That is luck, not a guard.
+3. **A BARE key is correct** in the identical non-pushable shape — its `gk.Value`
+   IS a `FieldValue`, so the rebase pins it. That control is what makes this a
+   computed-key finding rather than "HAVING over a grouped query is broken".
+
+**It is PINNED, not filed** — `groupby_computed_key_having_defect_fdb_test.go`
+asserts the defective answers with the correct ones named in every failure
+message, plus the bare-key control and the loud nested twin, so the fix flips it
+rather than discovering it.
+
+**It is NOT fixed here, and that is a STOP rather than a deferral.** The fix is
+to match a post-aggregate reference against a computed key by comparing the
+EXPRESSION instead of asserting the key is a `FieldValue` — a change to
+post-aggregate binding semantics, on the flat path, entirely independent of this
+RFC. Folding an unreviewed wrong-rows fix into a change whose thesis is about the
+nested path would put it through the wrong review. It is escalated with the
+reproducer in hand.
 
 **The pattern, stated because it is the sixth instance.** Every one of the three
 blockers was classified from READING the condition and its comment. Each was

@@ -103,17 +103,26 @@ var accessorAritySites = map[string]accessorAritySite{
 	// not by argument. Each carries what was observed rather than what was read.
 	"pkg/relational/core/query/cascades_translator.go#groupByOutputBaker": {
 		class: arityCorrectDecline, exprs: 1,
-		why: "MEASURED: the early return DOES fire on a fused nested grouping-key reference " +
-			"(Field \"R\", 3 accessors) and the decline is right. The reference that reaches " +
-			"it is the HAVING predicate's, and PushFilterThroughGroupByRule pushes that " +
-			"predicate BELOW the GroupBy, where an input-relative nested read is the correct " +
-			"read. Forcing the fall-through (early return disabled) changed no row of any " +
-			"nested-key shape: a fused nested value carries a QOV child and its qualified " +
-			"name misses keyOrds, so the branches below return the node unchanged too. The " +
-			"SELECT-list caller is gated on `!exactAggregateLayout` and does not run at all " +
-			"for a grouped nested key — the exact-aggregate output contract binds the " +
-			"projection's slot upstream. The predicted post-aggregate rebind was therefore " +
-			"never needed here.",
+		why: "the early return is LOAD-BEARING, not a structural no-op, and the difference " +
+			"is measured rather than argued: disabling it turns group_by_output_baker_test's " +
+			"`multi` case RED — a 2-accessor path whose Field is COL1, with a nil child and " +
+			"keyOrds{COL1:0}, reaches the name channel and is rewritten into a " +
+			"single-accessor read of output slot 0, i.e. a nested member read silently " +
+			"becomes a read of the whole struct root's slot. So the decline is CORRECT, and " +
+			"a leaf that collides with a group-key output name is what makes it necessary. " +
+			"What keeps a nested grouping key from needing the rebind is UPSTREAM and is a " +
+			"different mechanism: rebaseHavingGroupKeyPredicate asks the shared decider " +
+			"(cascades.PredicatePushesBelowGroupBy) and, for every predicate that will NOT " +
+			"be pushed, rebasePostAggregateGroupKeyValue pins the reference to a " +
+			"single-accessor FrontierPinned value addressed against the aggregate output " +
+			"row — so it exits at the FrontierPinned guard ABOVE this expression and never " +
+			"reaches it. Pushdown handles only the narrow complement: " +
+			"predicateReferencesOnlyKeys admits a SINGLE ComparisonPredicate with a " +
+			"key-only comparand, and buildGroupKeySet disables pushdown outright when two " +
+			"keys share an accessor path, so AND / OR / NOT and any aggregate reference stay " +
+			"above and travel the pinning route. Both routes are exercised end-to-end by " +
+			"TestFDB_GroupByNestedPathKey. The predicted post-aggregate rebind was therefore " +
+			"never needed HERE — it already exists one layer up.",
 	},
 	"pkg/relational/core/query/cascades_translator.go#cascadesTranslator.translateSort": {
 		class: arityCorrectDecline, exprs: 1,
