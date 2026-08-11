@@ -50,6 +50,7 @@ go_test(
         "options_matrix_test.go",
         "panic_test.go",
         "parity_test.go",
+        "range_iterator_limit_batch_test.go",
         "range_iterator_test.go",
         "range_result_internal_test.go",
         "range_test.go",

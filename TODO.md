@@ -16405,3 +16405,59 @@ None is speculative: each was re-verified against the tree before booking.
   DONE means: the query returns `[1]`, the mechanism is named at its site, and
   the regression asserts ROWS rather than plannability — with the colliding-alias
   and multi-member shapes covered, not just the one spelling above.
+- [ ] **`StreamingModeExact` materialises its ENTIRE row budget in one fetch,
+  where libfdb_c splits the same read by byte target** · L · found while probing
+  the (non-existent) multi-batch exact-mode path
+  `batchSize` returns the whole `remaining` for EXACT
+  (`pkg/fdbgo/fdb/range_result.go:199-200`), and `rangeScanImpl`
+  (`pkg/fdbgo/client/readpath.go:669`) loops internally across shards until that
+  budget is filled — it returns either a filled budget with `more=true` or an
+  exhausted range with `more=false`, never a short batch with more pending. So a
+  Go `Exact` iterator with `Limit: N` performs exactly ONE fetch and holds all N
+  rows at once, at any N. MEASURED against real FDB at N up to 5000:
+  `TestRangeIterator_ExactModeIsStructurallySingleBatch` records one batch for
+  every limit tried, while the Iterator-mode control over the same seed takes 13.
+  This is NOT a correctness divergence and must not be booked as one: rows, error
+  codes and the union of per-batch read-conflict ranges all agree with libfdb_c.
+  MEASURED by `bench:TestDifferential_LimitedIteratorMultiBatchRowSets`, whose
+  `exact/600` arm compares Go's single-batch drain against the C client's and
+  finds identical row sets. What differs is PEAK MEMORY and round-trip count:
+  Θ(limit) here against a bounded per-fetch target in C — the same failure shape
+  RFC-115 fixed for ITERATOR by porting the saturation clamp.
+  The real blocker is that the pure-Go range stack carries a ONE-dimensional row
+  budget where C++ carries `GetRangeLimits{rows, bytes}`, as the `batchSize`
+  ITERATOR note already records. Converting only EXACT would leave the mode table
+  incoherent; converting all of it moves every batch boundary, hence every
+  read-conflict range and every cursor continuation, across the client, simfdb
+  and the record layer. That is an RFC + client-review-gate change (FDB C++ dev +
+  Torvalds), not an inline fix, which is why it is booked rather than done.
+  DONE = the byte dimension ported through `batchSize`/`rangeScanImpl`/simfdb so
+  no single fetch exceeds a byte target, with the existing batch-division pins
+  updated in the same change and a differential showing row sets still match C.
+
+- [ ] **libfdb_c's batch boundaries are UNOBSERVABLE from Go, so no per-batch
+  cross-client differential is possible** · M · found while designing the
+  exact-mode batch-boundary probe
+  A differential can compare Go and libfdb_c on final ROW SETS but not on where
+  each client split them. Apple's Go binding keeps `iteration`, `more` and the
+  advancing begin-key private on an unexported `RangeIterator` with no trace hook
+  (`bindings/go/src/fdb/range.go:194-206`); the only exported range surface is the
+  per-ELEMENT `RangeResult`/`RangeIterator` pair. This repo's cgo adapter
+  therefore implements the `fdb.RangeIterator` trace hook as a documented no-op
+  (`pkg/fdbgo/libfdbc/backend.go:668-671`) — it buffers a single KV, not a batch,
+  so it has no boundary to report even internally. The pure-Go side DOES report
+  batches (`SetTraceLog`), so the instrumentation is asymmetric and every
+  batch-level claim about C is currently an inference from source, not a
+  measurement.
+  This is why `bench:TestDifferential_LimitedIteratorMultiBatchRowSets` asserts
+  row sets rather than divisions, and says so at its head. It bounds that test's
+  claim in exactly one way: two clients could agree on every row while dividing
+  it differently and it would pass. That gap is benign today (the division is not
+  wire-visible; per-batch conflicts union to the same extent) and becomes
+  load-bearing the moment the byte-dimension item above lands.
+  The capability is small and already has a template: add a raw `CGetRange`
+  beside `CGetMappedRange` (`pkg/fdbgo/libfdbc/mappedrange_cref.go:414-434`),
+  which already threads `limit/target_bytes/mode/iteration/reverse/snapshot` to C
+  and returns `more`. Then drive the C loop from Go and emit trace events.
+  DONE = `CGetRange` exists, the cgo adapter's `SetTraceLog` is real rather than
+  a stub, and one differential asserts a per-batch division across both clients.
