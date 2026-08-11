@@ -314,6 +314,24 @@ Every wrong verdict this census has produced came from reading a condition.
 it is carried on the field-mint reconciliation branch. What this RFC owes is that
 its own numbers describe the code, and on **this** base the site is live.
 
+**THE TWO CHANGES ARE ABOUT THE SAME SITE, so the merge order decides what the
+census should read — and it is stated rather than left to whoever merges.**
+Checked, not assumed: `origin/master` is `ddc2914ba` (#718), this branch is
+rebased onto it, and the field-mint fix **has not merged**. So the `(d)` is
+correct for the base this branch will merge from, and it was re-measured on that
+base rather than carried across the rebase.
+
+If the field-mint fix lands **first**, this entry becomes a `(d)` describing a
+defect that no longer exists — the same unwatched-revival failure as a floor left
+pointing at an old expectation, and it must not be resolved by deleting the
+entry. Reclassify it to **(c)**, because that is what it will then be: a site
+that handles multi-accessor paths correctly, having been made to. Two cells move
+again — `(d)` 1 → 0, `(c)` 22 → 23 — and the pinned counts move with them. The
+census guard makes this checkable rather than a matter of memory: its `(d)` arm
+requires a measurement in the reason, so re-running §7.6's four rows on the
+merged base is a precondition for whichever verdict is recorded. **Whoever
+merges second re-measures; neither verdict is inherited.**
+
 **The pattern, stated because it is the sixth instance.** Every one of the three
 blockers was classified from READING the condition and its comment. Each was
 wrong in the same way: the arity test was downstream of a rebind the reader did
@@ -1469,23 +1487,53 @@ site could not surface that, because the precondition is about a *type system's 
 about the site's own control flow. Instrumenting the arm and running a query surfaced it
 immediately.
 
-**MEASURED, re-run independently on this branch rather than accepted:**
+**MEASURED, re-run independently on this branch rather than accepted, and re-run
+again after the rebase onto `ddc2914ba`** (#718 routes more mints through
+`fuseNestedAccessors`, so the measurement is not inherited across the base change):
 
 ```
-SELECT q.s.vals FROM (SELECT s FROM t) AS q   =>  VALS:STRUCT     (a BIGINT ARRAY member)
-SELECT s.vals   FROM t                        =>  VALS:UNKNOWN
-SELECT vals2    FROM t                        =>  VALS2:BIGINT    (the top-level twin)
-SELECT q.vals2  FROM (SELECT vals2 FROM t) AS q => VALS2:BIGINT
+SELECT q.s.vals  FROM (SELECT s FROM t) AS q       =>  VALS:STRUCT     <- ARRAY member
+SELECT q.s.bin   FROM (SELECT s FROM t) AS q       =>  BIN:STRUCT      <- BYTES member
+SELECT q.s.label FROM (SELECT s FROM t) AS q       =>  LABEL:STRING    <- SCALAR member, CORRECT
+SELECT s.vals    FROM t                            =>  VALS:UNKNOWN
+SELECT top       FROM t                            =>  TOP:BIGINT      <- top-level twins
+SELECT topbin    FROM t                            =>  TOPBIN:BINARY
+SELECT q.top     FROM (SELECT top FROM t) AS q     =>  TOP:BIGINT
+SELECT q.topbin  FROM (SELECT topbin FROM t) AS q  =>  TOPBIN:BINARY
 ```
 
-over `CREATE TYPE AS STRUCT sst (top BIGINT, vals BIGINT ARRAY)`. The first row is the
-wrong-column read: the lookup found the struct **root** and reported its type for a member of a
-different type. The second shows why the suite stayed green — over a base scan the wrong hit is
-swallowed by the arm's own `ic.TypeName != "UNKNOWN"` guard; a **projection underneath** types
-the root and the hit fires. The last two are the control: the identical column kind at top level
-is right in both shapes, so this is nesting-specific and not an array-typing gap. *(One half of
-the reported finding I could **not** reproduce: `BYTES` inside `CREATE TYPE AS STRUCT` is a
-`42601` syntax error on this base, so the BYTES arm is unverified here.)*
+over `CREATE TYPE AS STRUCT sarr (vals BIGINT ARRAY, label STRING, bin BYTES)`.
+Rows 1-2 are the wrong-column read: the lookup found the struct **root** and reported
+its type for a member of a different type. Row 3 is the **sharpest control** and it
+identifies the mechanism rather than just exhibiting the bug — a **scalar** member is
+CORRECT under the same projection, because the catalog types it and the fall-through
+never runs. Row 4 shows why the suite stayed green: over a base scan the wrong hit is
+swallowed by the arm's own `ic.TypeName != "UNKNOWN"` guard, and it takes a
+**projection underneath** to type the root and fire it. Rows 5-8 are the top-level
+twins of both failing kinds, right in both shapes — so this is nesting-specific, and
+neither an array-typing nor a bytes-typing gap.
+
+> **RETRACTED — a `[PROBED]` caveat of mine here was FALSE, and it was the harmful
+> shape.** An earlier revision of this section reported that `BYTES` inside
+> `CREATE TYPE AS STRUCT` is a `42601` syntax error on this base and booked the BYTES
+> arm as unverifiable. It parses fine. My failing DDL named a struct member `blob`,
+> and **`BLOB` is a reserved word**; I attributed the error to `BYTES` because it was
+> the salient new token. Isolated one variable at a time:
+>
+> ```
+> STRUCT s1 (a BIGINT, bin BYTES)      => OK    <- BYTES, no blob
+> STRUCT s1 (a BIGINT, blob BIGINT)    => 42601 <- blob, no BYTES
+> TABLE  t  (id BIGINT, blob BIGINT)   => 42601 <- not struct-specific either
+> STRUCT s1 (a BIGINT, "blob" BIGINT)  => OK    <- quoted: a keyword, not a parse bug
+> ```
+>
+> This is worse than an ordinary stale line. "Unverified, blocked by a syntax error"
+> is precisely the note that stops the next person from probing — it converts a
+> measurable fact into an apparent dead end. The measurement it blocked *confirms*
+> the finding (row 2 above), so the caveat argued against the conclusion it was
+> attached to. The rule §12 already carries applies to the negative case too: a
+> **failure** attributed to a construct is a measurement, and attributing it to the
+> most conspicuous token is a reading.
 
 **The fix is NOT this RFC's and its details are not restated here** — it is carried, with the
 `fuseNestedAccessors` mint reverted to name the **leaf**, on the field-mint reconciliation

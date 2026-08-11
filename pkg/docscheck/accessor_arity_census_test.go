@@ -363,17 +363,22 @@ var accessorAritySites = map[string]accessorAritySite{
 			"reachable for a nested reference; the reason for doubt was that the catalog " +
 			"types the leaf, so TypeName is normally known. That holds for every SCALAR " +
 			"leaf and for no other: an ARRAY or BYTES leaf is a kind the type derivation " +
-			"has no name for. MEASURED end-to-end on this base — " +
-			"`SELECT q.s.vals FROM (SELECT s FROM t) AS q` over " +
-			"`STRUCT sst (top BIGINT, vals BIGINT ARRAY)` reports DatabaseTypeName " +
-			"\"STRUCT\" for a BIGINT ARRAY member: the lookup found the struct ROOT, a " +
-			"different column of a different type. Over a BASE scan the same read reports " +
-			"UNKNOWN — swallowed by the arm's own `ic.TypeName != \"UNKNOWN\"` guard, which " +
-			"is exactly why the suite stayed green; a PROJECTION underneath types the root " +
-			"and the wrong hit fires. The identical column at TOP level " +
-			"(`vals2 BIGINT ARRAY`) reports BIGINT in both shapes, which is the control. " +
-			"FIXED on branch rfc/231-field-mint-reconcile, not on this one — this entry " +
-			"records the state of THIS base.",
+			"has no name for. MEASURED end-to-end over " +
+			"`STRUCT sarr (vals BIGINT ARRAY, label STRING, bin BYTES)`, and re-measured " +
+			"after rebasing onto #718 rather than inherited across the base change: " +
+			"`SELECT q.s.vals FROM (SELECT s FROM t) AS q` reports DatabaseTypeName " +
+			"\"STRUCT\" for a BIGINT ARRAY member and `q.s.bin` reports \"STRUCT\" for a " +
+			"BYTES member — the lookup found the struct ROOT, a different column of a " +
+			"different type. THE CONTROL THAT IDENTIFIES THE MECHANISM: `q.s.label`, a " +
+			"SCALAR member under the same projection, is CORRECT (\"STRING\"), because the " +
+			"catalog types it and the fall-through never runs. Over a BASE scan the failing " +
+			"reads report UNKNOWN — swallowed by the arm's own `ic.TypeName != \"UNKNOWN\"` " +
+			"guard, which is exactly why the suite stayed green; a PROJECTION underneath " +
+			"types the root and the wrong hit fires. The identical kinds at TOP level " +
+			"(`top BIGINT ARRAY`, `topbin BYTES`) report BIGINT and BINARY in both shapes, " +
+			"so this is nesting-specific and not an array- or bytes-typing gap. FIXED on " +
+			"the field-mint reconciliation branch, NOT on this one — this entry records the " +
+			"state of THIS base, and must be re-read (not carried) if that lands first.",
 	},
 }
 
