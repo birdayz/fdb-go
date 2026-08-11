@@ -8646,6 +8646,83 @@ full scans 3.6–4.4s both sides). No regression.
 
 All 23 subtests PASS. Total: 170.7s (incl. bulk insert ~2:28).
 
+
+**2026-08-11 (GetRangeLimits byte-division port — range batch boundaries move, so
+read-conflict extents move):** the port makes range batching byte-driven instead of
+row-driven, which relocates every per-batch read-conflict range and every cursor
+continuation. That is correctness-adjacent under contention, not merely a
+round-trip-count change, so the comparison is mandatory. Baseline
+`cc8c88c06` (this branch's own merge base) in a sibling worktree under
+`.claude/worktrees/`, i.e. the SAME xfs mount — `df -h /home` 91% used, 87G free.
+The host is xfs, so CLAUDE.md's ~95% *ext4* threshold does not transfer; the run is
+judged against its own opposite side.
+
+VERDICT: **no detectable regression. The only systematic effect is RUN ORDER, not
+branch** — and that is a measured result, not an assumption, because the pair was
+run twice with the order REVERSED.
+
+```
+bulkInsert orders, rows/s     1st position      2nd position
+round 1                       baseline 6421     branch   4520
+round 2 (order reversed)      branch   5688     baseline 3850
+```
+
+The slow arm is whichever ran SECOND, in both rounds. Host load recorded
+throughout each run (30s samples) says why: the second run of each pair landed in a
+busy window as other agents' Bazel jobs ramped back up.
+
+```
+                mean idle   mean load1
+round 1  base       71.1%       10.72     <- 1st
+         branch     38.0%       20.75     <- 2nd
+round 2  branch     66.3%       10.29     <- 1st
+         base       37.3%       28.15     <- 2nd
+```
+
+So the ~30% ingest gap seen in round 1 alone would have been reported as a branch
+regression, and round 2 shows the identical gap pointing the other way. It is
+contention. This box carries 43 agent worktrees and up to 21 concurrent sandboxed
+test actions; both rounds were started only after a watcher observed 4-5
+consecutive 30s samples above 70% idle, and the quiet still did not survive a full
+pair.
+
+Comparing FIRST-position runs only (each on a freshly quiet box, the closest to a
+matched comparison available here), the branch is at or ahead of baseline on every
+query row:
+
+| query | baseline (1st, 71% idle) | branch (1st, 66% idle) |
+|---|---|---|
+| PK lookup id=0 | 21.63ms | 8.62ms |
+| PK lookup id=N/2 | 12.44ms | 8.35ms |
+| PK lookup id=N-1 | 13.93ms | 6.13ms |
+| idx_status count pending | 421.07ms | 361.88ms |
+| full scan filter amount>5000 | 690.63ms | 583.50ms |
+| GROUP BY status COUNT only | 20.78ms | 7.29ms |
+| SUM by status (aggregate index) | 13.43ms | 12.05ms |
+
+Those are NOT claimed as a speedup the port earns — the branch ran at 5 points lower
+idle, the differences are within the run-to-run spread this host produces, and the
+2nd-position pair is mixed in both directions. The load-bearing claim is only that
+nothing regressed.
+
+CORRECTNESS: `COUNT(*) = 1000000 (expected 1000000)` on all four runs, all 25
+subtests PASS on all four, `EXIT_CODE=0` on all four. Row counts are identical
+across the moved batch boundaries, which is the property that had to hold.
+
+THRESHOLDS: point lookups are 6.13..21.63ms against the documented <5ms, on BOTH
+sides — the pre-existing baseline-vs-threshold gap already booked above, unchanged
+by this branch (the branch is the faster side of it here).
+
+THE CONTENTION QUESTION IS ANSWERED SEPARATELY AND MORE DIRECTLY, because a latency
+comparison cannot answer it: whether moved boundaries change WHICH KEYS CONFLICT is
+a logical property, and it is pinned by
+`fdb:TestByteDividedScanConflictsOverExactlyWhatItConsumed` — a partially-drained
+byte-divided scan (6 rows across 3 batches) must abort on a concurrent write to a
+row it consumed and must NOT abort on one beyond it. Both directions asserted, and
+the over-conflicting direction mutation-checked by making `rangeConflictExtent`
+return the full requested range, which reddens only the `far_beyond` arm. That test
+runs on a loaded box, which is exactly why it is the right instrument for this axis.
+
 ---
 
 ## RFC-182 — generative row-soundness differential (2026-07-18 audit follow-ups)
@@ -16709,18 +16786,54 @@ None is speculative: each was re-verified against the tree before booking.
     delete_keys/clear_range/mixed and leaves shadow/extend green. Disjoint arms.
   - [x] Server-path division measurement LANDED —
     `libfdbc:TestLibFDBC_RangeBatchDivision` (C's division per mode) and
-    `fdb:TestRangeIterator_DivisionIsRowDrivenNotByteDriven` (Go's, asserted as
-    row-driven and size-invariant, which is the divergence stated as currently-true).
-  - [ ] PORT, server path — per-mode `target_bytes` onto the request's `LimitBytes`
-    (`min` with `replyByteLimit`), PLUS the soft-byte-limit early return in
-    `rangeScanImpl` so a byte-limited call stops after the first non-empty reply
-    instead of absorbing and re-querying. BOTH halves, per the refutation above;
-    the loop half alone divides LARGE as 19 where C divides it 18.
+    Go's own division, asserted then as row-driven and size-invariant — the
+    divergence stated as currently-true. That test has since been rewritten by the
+    port and RENAMED to `fdb:TestRangeIterator_DivisionIsByteDrivenNotRowDriven`;
+    the old name no longer exists in any Go source, so a `--test.run` filter on it
+    would match nothing and report green.
+  - [x] PORT, server path — LANDED. Per-mode `target_bytes` onto the request's
+    `LimitBytes` (`min` with `replyByteLimit`, porting `transformRangeLimits`) PLUS
+    the soft-byte-limit early return in `rangeScanImpl`, so a byte-limited call stops
+    after the first non-empty reply instead of absorbing and re-querying. Both halves,
+    per the refutation above; each alone is measurably wrong (request-only divides
+    `[60]`, loop-only divides LARGE as 19 where C divides 18).
+    CONVERGED, measured against libfdb_c over 60 rows of 200 bytes — SMALL `[2]x30`,
+    MEDIUM `[5]x12`, LARGE `[18 18 18 6]`, SERIAL `[60]`, ITERATOR `[18 26 16]`, and
+    bounded reads (`medium/250 = [24 x10, 10]`, `small/25 = [7 7 7 4]`). EXACT stays a
+    single batch as AGREEMENT with C, not a Go limit: `mode_bytes_array[EXACT]` is
+    UNLIMITED so the soft limit can never fire.
+    THE ENUM OFFSET is handled at one named site, `fdb.cModeIndex`, unit-tested against
+    both numberings; mutating it to drop the `-1` reddens with SMALL reading MEDIUM's
+    target, the exact silent failure the booking predicted.
+    THREE BUGS FOUND DURING THE PORT, all by tests rather than by review:
+    (1) the iterator derived its byte target from `iteration+1` while its counter was
+    already 1-based, so the first fetch targeted 6144 and `iterationProgression[0]`
+    (4096) was unreachable by any real scan — pinned now by
+    `fdb:TestRangeIterator_FirstFetchUsesFirstProgressionEntry`, the dimension no
+    existing test could see (the differential drives its own iteration loop; the
+    saturation test asserts only relative shape);
+    (2) `pkg/simfdb` applied the byte cut AFTER `fetchRange` returned, so `more`
+    described the untruncated read and the unreadable-cap predicate raised 1036 on the
+    first fetch having yielded nothing — the cut now happens inside `fetchRange`;
+    (3) the row budget handed down became the whole remaining limit, which left
+    simfdb's view build unbounded and a saturated drain quadratic — bounded now by
+    `byteTarget/minRowCost`, a guard that provably cannot move the boundary.
+    `fdb.BatchSize` was DELETED rather than left unused: an exported function still
+    handing out the removed per-mode ROW page is an unwatched revival, since a future
+    caller would reinstate row batching with every division test still green.
+    THE SERVER'S ACCOUNTING, measured because it is not the client's and cannot be
+    derived from it: a reply accumulates rows until `key+value+24` reaches the target,
+    INCLUDING the row that crosses. Fits all 10 cross-client measurements across 4 row
+    shapes; recorded as `serverRowOverheadBytes` in `pkg/simfdb/range_result.go`, which
+    is the only place that has to model it — the real client sends the target and lets
+    the real server apply its own rule.
   - [ ] PORT, RYW path — byte accounting into the merge helpers, guarded by the
     differential above.
-  NOTHING IN THE PORT IS STARTED. The two landed items are test-only; no production
-  file has been modified. The next person picks up at the first unchecked box with
-  the net already standing.
+  WHERE THIS STANDS: the SERVER-PATH half is LANDED (see its box above) and the RYW
+  half is not started. Production files ARE modified — the per-mode target now
+  reaches the request builder, `rangeScanImpl` carries the soft byte limit, and
+  `pkg/simfdb` mirrors both. The next person picks up at the first unchecked box,
+  which is the RYW merge path, with the net already standing.
   WHY THE SPLIT: applying the byte limit in the SERVER
   path (`rangeScanImpl`) alone already converges the no-local-writes case, which is
   what the division tests exercise. The RYW merged path (`client/ryw.go`, mirroring
@@ -16735,9 +16848,10 @@ None is speculative: each was re-verified against the tree before booking.
   DONE = `TestLibFDBC_RangeBatchDivision` asserts the two clients AGREE per mode
   AND asserts the literal expected counts (`[2]x30`, `[5]x12`, `[18 18 18 6]`) —
   an equality check alone is vacuous once both sides derive from one table;
-  `fdb:TestRangeIterator_DivisionIsRowDrivenNotByteDriven` is rewritten against the
-  C table rather than relaxed; each mode arm is mutation-checked and the arms redden
-  disjointly. Client-review gate (FDB C++ dev + Torvalds) applies.
+  the Go-side division test is rewritten against the C table rather than relaxed
+  (and renamed accordingly — `fdb:TestRangeIterator_DivisionIsByteDrivenNotRowDriven`);
+  each mode arm is mutation-checked and the arms redden disjointly. Client-review
+  gate (FDB C++ dev + Torvalds) applies.
 - [x] **The rowdiff nightly ate a two-runner CI fleet for ~5h a night for six
   consecutive nights, and the two instruments built to explain that could not
   run during it** · M · found while root-causing the 2026-08-11 runner wedge ·

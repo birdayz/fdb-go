@@ -1016,15 +1016,28 @@ func TestUnreadableDoesNotSurviveTheCommit(t *testing.T) {
 func TestUnreadableCapSurvivesBatchBoundary(t *testing.T) {
 	t.Parallel()
 	db := New(nil)
-	seed(db, "a", "1", "b", "2", "c", "3", "d", "4", "e", "5")
+	// FAT rows, and THREE of them below the cap, because the division is byte-driven: batch one
+	// has to come back TRUNCATED — short of the capped window's end, with rows still pending —
+	// or the cap fires on the very first fetch and there is no boundary to survive.
+	//
+	// ITERATOR's first fetch targets 4096 bytes and a row costs key+value+serverRowOverheadBytes,
+	// with the row that REACHES the budget included: at lazyValueLen(2048) and a 1-byte key that
+	// is 2073 per row, so the reply stops after two rows (4146 >= 4096) with "bb" still unread
+	// inside ["", "c"). With the 1-byte values this fixture used to carry, all of a, b cost 52
+	// bytes, no truncation happened, and `more` was false on fetch one — which IS the sim's "the
+	// scan would continue into the unreadable position" predicate, so the 1036 was raised before
+	// a single row had been returned.
+	seed(db, "a", fatValue("1"), "b", fatValue("2"), "bb", fatValue("2b"),
+		"c", fatValue("3"), "d", fatValue("4"), "e", fatValue("5"))
 
 	tx := db.newTxn()
 	// "c" carries a pending stamp; a forward scan may read a and b and must throw on reaching c.
 	tx.SetVersionstampedValue(k("c"), versionstampOperand())
 
-	// StreamingModeIterator's first batch is 2 rows, so batch one fills strictly inside the
-	// truncated window ["", "c") and returns normally; batch two starts at "b\x00" and reaches
-	// the cap.
+	// Batch one is the two rows above, filling strictly inside the truncated window ["", "c")
+	// and returning normally; batch two starts at "b\x00", finds only "bb" before the cap, and
+	// so REACHES it — the sim discards that partial prefix and raises 1036, exactly as the
+	// client does (client/ryw.go:686-688).
 	it := tx.GetRange(allRange(), fdb.RangeOptions{Mode: fdb.StreamingModeIterator}).Iterator()
 	var got []string
 	for it.Advance() {

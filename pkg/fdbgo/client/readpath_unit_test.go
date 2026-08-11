@@ -274,7 +274,7 @@ func TestBuildGetKeyValuesRequest_RoundTrip(t *testing.T) {
 	)
 	replyToken := transport.UID{First: 0x1234, Second: 0x5678}
 
-	body, bufp := buildGetKeyValuesRequest(begin, end, version, limit, false, tenantID,
+	body, bufp := buildGetKeyValuesRequest(begin, end, version, limit, replyByteLimit, false, tenantID,
 		types.SpanContext{}, replyToken, transport.UID{})
 	defer getKeyValuesBufPool.Put(bufp)
 
@@ -314,7 +314,7 @@ func TestBuildGetKeyValuesRequest_RoundTrip(t *testing.T) {
 func TestBuildGetKeyValuesRequest_LockAwareSetsOptions(t *testing.T) {
 	t.Parallel()
 	body, bufp := buildGetKeyValuesRequest(
-		[]byte("a"), []byte("z"), 1, 10, true /*lockAware*/, 0,
+		[]byte("a"), []byte("z"), 1, 10, replyByteLimit, true /*lockAware*/, 0,
 		types.SpanContext{}, transport.UID{First: 1, Second: 2}, transport.UID{},
 	)
 	defer getKeyValuesBufPool.Put(bufp)

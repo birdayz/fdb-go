@@ -375,18 +375,31 @@ func TestRangeIterator_DrainsPastIteratorSaturation(t *testing.T) {
 	db := openTestDB(t)
 	pfx := "iter_saturate_"
 
-	// The saturated per-fetch row budget: 2 << (max_iteration-1), max_iteration = 10
-	// (bindings/c/fdb_c.cpp:1011). Written as a literal rather than read from the
-	// implementation so that moving the clamp fails this test instead of redefining it.
-	const wantCap = 1024
-	// The scan must contain at least this many FULLY saturated fetches, so the repeated
-	// equal-batch region is genuinely exercised and not merely touched once at the corner.
-	const wantSaturatedFetches = 2
+	// WHAT SATURATES IS THE BYTE TARGET, NOT A ROW COUNT. Before the GetRangeLimits port this
+	// client's ITERATOR budget was a row count doubling to a 1024-row clamp, and this test
+	// asserted that literal. libfdb_c instead grows a per-fetch BYTE target 1.5x per iteration
+	// through iteration_progression (fdb_c.cpp:1006) and CLAMPS the iteration index at the
+	// table length (:1019), so the target saturates at the table's last entry — 120000 bytes —
+	// and no fetch ever targets more.
+	//
+	// The trace surface reports rows, not bytes, so saturation is asserted through its
+	// observable consequence: with uniform rows the returned batch sizes GROW ~1.5x while the
+	// target grows and then PLATEAU once it stops. That plateau is the clamp. Without the clamp
+	// the targets would keep multiplying and the batches would keep growing, so a run that
+	// never plateaus is exactly the failure this detects. The byte progression's own values are
+	// pinned separately and exactly by TestModeTargetBytes_IteratorProgression.
+	const wantSaturatedFetches = 3
+	// plateauTolerance is how close to the peak a fetch must be to count as saturated. It is
+	// not zero because the storage server truncates on its own reply-size accounting, so two
+	// fetches at the same byte target can differ by a row; it is far below 1.5 so a still-
+	// growing progression cannot satisfy it.
+	const plateauTolerance = 0.05
 
-	// Comfortably past the 2046-row doubling phase, so several full saturated batches and a
-	// short final one are all exercised. Written in chunks to stay inside the 10 MB
-	// transaction limit budget and well under the 5 s transaction lifetime.
-	const n = 5000
+	// Large enough that the growth phase (which consumes roughly the sum of the progression,
+	// ~285 KB) is followed by SEVERAL fetches at the saturated 120000-byte target. At 5000 rows
+	// the range drained during growth and never reached the clamp at all — the scan finished in
+	// 8 fetches — so the old row count could not have covered saturation under a byte budget.
+	const n = 20000
 	const perTx = 500
 	for start := 0; start < n; start += perTx {
 		start := start
@@ -400,31 +413,47 @@ func TestRangeIterator_DrainsPastIteratorSaturation(t *testing.T) {
 		}
 	}
 
-	// assertSaturated checks a completed scan's observed batch shape: the per-fetch budget must
-	// peak at exactly wantCap (an unclamped progression overshoots it; a clamp set too low never
-	// reaches it), and enough fetches must have actually returned a full saturated batch.
+	// assertSaturated checks a completed scan's observed batch shape. The batches must GROW
+	// (the progression is live) and then PLATEAU (the clamp at fdb_c.cpp:1019 stopped it). The
+	// plateau is measured against the peak rather than an absolute row count, because the row
+	// count a 120000-byte target admits depends on the row size, whereas the CLAMP is what this
+	// test is about.
 	assertSaturated := func(t *testing.T, arm string, requested, returned []int) {
 		t.Helper()
-		peak, saturated := 0, 0
-		for i, req := range requested {
-			if req > peak {
-				peak = req
+		peak := 0
+		for _, r := range returned {
+			if r > peak {
+				peak = r
 			}
-			if returned[i] == wantCap {
+		}
+		// The final fetch is short (the range ran out), so it is excluded from the plateau
+		// count — it is not evidence either way about the clamp.
+		saturated := 0
+		for i, r := range returned {
+			if i == len(returned)-1 {
+				continue
+			}
+			if float64(r) >= float64(peak)*(1-plateauTolerance) {
 				saturated++
 			}
 		}
-		if peak != wantCap {
-			t.Errorf("%s: peak requested batch = %d, want exactly %d — the ITERATOR budget must "+
-				"saturate at the C progression's clamp point (fdb_c.cpp:1019) and must still "+
-				"grow up to it; requested=%v", arm, peak, wantCap, requested)
-		}
 		if saturated < wantSaturatedFetches {
-			t.Errorf("%s: only %d fetch(es) returned a full %d-row batch, want >= %d — this scan "+
-				"is supposed to exercise the repeated equal-batch region; if the clamp or the "+
-				"row count moved, this test is no longer covering saturation at all. "+
-				"returned=%v", arm, saturated, wantCap, wantSaturatedFetches, returned)
+			t.Errorf("%s: only %d fetch(es) reached the plateau near the peak of %d rows, want "+
+				">= %d. The ITERATOR byte target must SATURATE at the progression's last entry "+
+				"(120000, fdb_c.cpp:1019): without that clamp the target keeps multiplying by "+
+				"1.5 and every fetch is larger than the last, so no plateau ever forms. "+
+				"returned=%v", arm, saturated, peak, wantSaturatedFetches, returned)
 		}
+		// And it must actually have GROWN to get there — a client that targeted 120000 from
+		// iteration 1 would plateau immediately and satisfy the check above while skipping the
+		// progression entirely.
+		if len(returned) >= 2 && returned[0] >= peak {
+			t.Errorf("%s: first fetch returned %d rows, already at the peak of %d — the "+
+				"progression is supposed to START small (4096 bytes) and grow 1.5x per "+
+				"iteration, so a flat sequence means the iteration count never reached the "+
+				"target derivation. returned=%v", arm, returned[0], peak, returned)
+		}
+		t.Logf("MEASURED %s returned=%v (peak %d, %d at plateau)", arm, returned, peak, saturated)
 	}
 
 	// trace records the per-fetch budget and the rows it actually yielded, skipping the trailing

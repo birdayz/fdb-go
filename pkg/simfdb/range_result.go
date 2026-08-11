@@ -28,7 +28,8 @@ import (
 //     by the simulator, which is worse than no simulator.
 //
 // The batching itself is modelled, not incidental: the real backend fetches pages sized by the
-// streaming mode (fdb.BatchSize), EVERY BATCH TAKES ITS OWN READ CONFLICT RANGE, and a cursor
+// streaming mode's per-fetch BYTE target (fdb.ModeTargetBytes), EVERY BATCH TAKES ITS OWN READ
+// CONFLICT RANGE, and a cursor
 // abandoned after one page has therefore conflicted over ONE PAGE. Registering the full extent
 // at GetRange() call time over-conflicts every early-abandoned scan — and the record layer's
 // cursors abandon constantly, at every continuation boundary. Batch boundaries are also where a
@@ -95,7 +96,7 @@ func (r *simRangeResult) GetSliceWithError() ([]fdb.KeyValue, error) {
 	}
 	// fetchRange, not rangeRows: the unreadable cap is a property of the FETCH, so it applies on
 	// both consumption surfaces and it narrows the window the conflict below is taken over.
-	kvs, more, begin, end, err := r.tx.fetchRange(begin, end, fdb.EffectiveRowLimit(r.options.Limit), r.options.Reverse)
+	kvs, more, begin, end, err := r.tx.fetchRange(begin, end, fdb.EffectiveRowLimit(r.options.Limit), fdb.ByteLimitUnlimited, r.options.Reverse)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +187,28 @@ func (it *rangeIter) Advance() bool {
 // merged with the transaction's write buffer AS OF NOW, and record the conflict range that
 // fetch would have taken.
 func (it *rangeIter) fetchBatch() bool {
-	want := fdb.BatchSize(it.rr.options.Mode, it.iteration, it.remaining)
+	// The division is BYTE-driven, exactly as it is in the client: the streaming mode supplies a
+	// per-fetch byte target (fdb.ModeTargetBytes, the single definition of the rule), the row
+	// budget passed down is just what is left of the caller's limit, and the truncation below
+	// stands in for the storage server's. A per-mode ROW page here would put this simulator's
+	// batch boundaries somewhere the real client's are not — and a batch boundary is where a
+	// read-conflict range is taken and where a mid-iteration local write becomes visible, so a
+	// disagreement shows up as a differential failure on read-your-writes rather than as a
+	// harmless difference in round-trip count.
+	// it.iteration is already 1-based, matching the C API (a fresh iterator's first fetch is
+	// iteration 1 and takes the progression's first entry, 4096).
+	byteTarget, terr := fdb.ModeTargetBytes(it.rr.options.Mode, it.iteration)
+	if terr != nil {
+		it.err = terr
+		it.exhausted = true
+		return false
+	}
+	// Mirrors the client's request-side row clamp (C++ transformRangeLimits,
+	// NativeAPI.actor.cpp:4223: req.limit = min(REPLY_BYTE_LIMIT, limits.rows)).
+	want := it.remaining
+	if want > replyByteLimit {
+		want = replyByteLimit
+	}
 	it.iteration++
 	if want <= 0 {
 		it.exhausted = true
@@ -196,7 +218,7 @@ func (it *rangeIter) fetchBatch() bool {
 	// batch through rywCache.getRange, which caps the window it was handed. So a versionstamped
 	// write issued between two batches truncates the second one and not the first.
 	batch, more, capBegin, capEnd, err := it.rr.tx.fetchRange(
-		it.scanBegin, it.scanEnd, want, it.rr.options.Reverse)
+		it.scanBegin, it.scanEnd, want, byteTarget, it.rr.options.Reverse)
 	if err != nil {
 		// Surfaced through it.err, the same channel a resolve-time error uses: Advance() reports
 		// no element and Get() returns the error. The client does the same — goRangeIterator's
@@ -248,6 +270,66 @@ func (it *rangeIter) fetchBatch() bool {
 		it.exhausted = true
 	}
 	return true
+}
+
+// replyByteLimit is CLIENT_KNOBS->REPLY_BYTE_LIMIT (fdbclient/ClientKnobs.cpp:66), the flat
+// ceiling on any single reply. It bounds both the byte target and, as C++ transformRangeLimits
+// does, the row count a single request may ask for.
+const replyByteLimit = 80000
+
+// serverRowOverheadBytes is an EFFECTIVE, END-TO-END per-row overhead: the constant that, in
+// this simulator, reproduces where a real cluster actually cuts a reply. It is deliberately NOT
+// described as "what the storage server charges", because it is not equal to that, and the
+// difference is the kind that gets "fixed" by the next reader who opens the C++ source.
+//
+// The two named per-row charges in 7.3.77 are both something else:
+//
+//   - The STORAGE SERVER charges key+value+32 — `*pLimitBytes -= sizeof(KeyValueRef) +
+//     i->expectedSize()` (fdbserver/storageserver.actor.cpp:4262, and the same shape at the
+//     merge sites and in the SQLite and RocksDB stores; Redwood charges key+value only).
+//   - The CLIENT's own decrement nets key+value+8, because VectorRef<T>::expectedSize()
+//     ALREADY includes sizeof(T)*n (flow/include/flow/Arena.h:1136-1140), so the
+//     `- (8 - sizeof(KeyValueRef)) * data.size()` term in GetRangeLimits::decrement cancels 24
+//     of that 32.
+//
+// 24 matches NEITHER. Reconciling it to 32 would be a regression: the pure server-charge model
+// predicts 17 rows at LARGE's 4096-byte target for 200-byte rows where 18 is what libfdb_c and
+// a real cluster produce. So this constant stands on measurement, not derivation — which is
+// also why the real client never needs it. The client sends the target and lets the real server
+// apply whatever its true accounting is; only a simulator with no storage server has to guess,
+// and the differentials are what keep the guess honest.
+//
+// The value 24, together with the "accumulate until the budget is REACHED, including the row
+// that crosses it" rule below, reproduces every cross-client division measured against
+// libfdb_c — four row shapes and ten targets:
+//
+//	12B key + 200B value : 256->2,  1000->5,  4096->18, 8192->35
+//	13B key + 200B value : 256->2,  1000->5,  4096->18
+//	17B key +   1B value : 256->7,  1000->24
+//	20B key +   7B value : 80000->1569
+//
+// Those measurements live in libfdbc:TestLibFDBC_RangeBatchDivision,
+// TestLibFDBC_BoundedRangeDivisionDifferential and TestLibFDBC_ByteTargetCutIsNotTheClientSideBudget,
+// and fdb:TestRangeIterator_DrainsPastIteratorSaturation. If this constant is ever wrong, those
+// differentials are what will say so — this simulator agreeing with itself proves nothing.
+const serverRowOverheadBytes = 24
+
+// serverByteCut returns how many rows of batch a storage server would put in a reply limited to
+// targetBytes. targetBytes of fdb.ByteLimitUnlimited means no truncation.
+func serverByteCut(batch []fdb.KeyValue, targetBytes int) int {
+	if targetBytes == fdb.ByteLimitUnlimited || len(batch) == 0 {
+		return len(batch)
+	}
+	sum := 0
+	for i, kv := range batch {
+		sum += len(kv.Key) + len(kv.Value) + serverRowOverheadBytes
+		// >=, not >: the row that reaches the budget is INCLUDED. A floor rule here would cut
+		// one row early at every target that is not an exact multiple of the row size.
+		if sum >= targetBytes {
+			return i + 1
+		}
+	}
+	return len(batch)
 }
 
 // addConflict registers the read conflict for one fetched batch over the window that batch

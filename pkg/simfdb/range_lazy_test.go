@@ -1,6 +1,7 @@
 package simfdb
 
 import (
+	"strings"
 	"testing"
 
 	fdb "fdb.dev/pkg/fdbgo/fdb"
@@ -33,15 +34,41 @@ import (
 // additionally pinned against a real cluster by TestDifferentialArm_ReadThenLocalWrite, which is
 // what keeps the pair anchored to a real client rather than to SimFDB's own opinion.
 
+// lazyValueLen makes each seeded row fat enough that the FIRST ITERATOR fetch holds exactly two
+// of them, which is what every "batch 1 is a, b" shape below depends on.
+//
+// The division is byte-driven: ITERATOR's first target is 4096 bytes (fdb_c.cpp:1006) and a row
+// costs key+value+serverRowOverheadBytes against it, with the row that reaches the budget
+// included. At a 1-byte key that makes one row 1+2048+24 = 2073 (under 4096, so no cut) and two
+// rows 4146 (at or over, so the reply stops there). These shapes used 2-byte values and relied
+// on a per-mode ROW page of 2; under a byte target that page held all six rows in one fetch and
+// the mid-iteration write had no "later batch" to become visible in — the tests failed not
+// because the behaviour regressed but because the fixture no longer produced a boundary.
+const lazyValueLen = 2048
+
+// fatValue pads v so a row carrying it costs lazyValueLen bytes, keeping the logical value
+// readable at the head so assertions stay legible.
+func fatValue(v string) string {
+	if len(v) >= lazyValueLen {
+		return v
+	}
+	return v + strings.Repeat("\x00", lazyValueLen-len(v))
+}
+
+// unpad recovers the logical value written by fatValue.
+func unpad(v string) string { return strings.TrimRight(v, "\x00") }
+
 // seedLazy lays down the alphabet the shapes below scan.
 func seedLazy(db *SimDB) {
-	seed(db, "a", "db", "b", "db", "c", "db", "d", "db", "e", "db", "f", "db")
+	seed(db,
+		"a", fatValue("db"), "b", fatValue("db"), "c", fatValue("db"),
+		"d", fatValue("db"), "e", fatValue("db"), "f", fatValue("db"))
 }
 
 func valueOf(kvs []fdb.KeyValue, key string) string {
 	for _, kv := range kvs {
 		if string(kv.Key) == key {
-			return string(kv.Value)
+			return unpad(string(kv.Value))
 		}
 	}
 	return "<absent>"
@@ -58,7 +85,7 @@ func TestWriteBetweenGetRangeAndGetSliceIsVisible(t *testing.T) {
 
 	tx := db.newTxn()
 	rr := tx.GetRange(fdb.KeyRange{Begin: k("a"), End: k("z")}, fdb.RangeOptions{})
-	tx.Set(k("e"), []byte("mine"))
+	tx.Set(k("e"), []byte(fatValue("mine")))
 	kvs := rr.GetSliceOrPanic()
 
 	if got := valueOf(kvs, "e"); got != "mine" {
@@ -105,7 +132,7 @@ func TestWriteBetweenGetRangeAndGetSliceCoverage(t *testing.T) {
 			seedLazy(db)
 			tx := db.newTxn()
 			rr := tx.GetRange(fdb.KeyRange{Begin: k("a"), End: k("z")}, fdb.RangeOptions{})
-			tx.Set(k("e"), []byte("mine"))
+			tx.Set(k("e"), []byte(fatValue("mine")))
 			rr.GetSliceOrPanic()
 			t.Log(tc.why)
 			commitAfterConcurrentSet(t, db, tx, tc.probe, tc.want)
@@ -136,8 +163,8 @@ func TestWriteMidIterationIsVisibleInLaterBatches(t *testing.T) {
 		fetched = append(fetched, it.MustGet())
 	}
 	// One write lands INSIDE the not-yet-fetched tail, one on a row already returned.
-	tx.Set(k("e"), []byte("mine"))
-	tx.Set(k("a"), []byte("late"))
+	tx.Set(k("e"), []byte(fatValue("mine")))
+	tx.Set(k("a"), []byte(fatValue("late")))
 	for it.Advance() {
 		fetched = append(fetched, it.MustGet())
 	}
@@ -190,8 +217,8 @@ func TestWriteMidIterationCoverage(t *testing.T) {
 					t.Fatalf("iterator exhausted after %d rows", i)
 				}
 			}
-			tx.Set(k("e"), []byte("mine"))
-			tx.Set(k("a"), []byte("late"))
+			tx.Set(k("e"), []byte(fatValue("mine")))
+			tx.Set(k("a"), []byte(fatValue("late")))
 			for it.Advance() {
 			}
 			t.Log(tc.why)
@@ -218,7 +245,7 @@ func TestWriteMidIterationShiftsWhichRowsALimitReturns(t *testing.T) {
 		}
 	}
 	// "bb" sorts into the unread tail, ahead of c.
-	tx.Set(k("bb"), []byte("phantom"))
+	tx.Set(k("bb"), []byte(fatValue("phantom")))
 	var got []string
 	for it.Advance() {
 		got = append(got, string(it.MustGet().Key))
@@ -272,7 +299,7 @@ func TestWriteBeforeGetRangeStillReads(t *testing.T) {
 	seedLazy(db)
 
 	tx := db.newTxn()
-	tx.Set(k("e"), []byte("mine"))
+	tx.Set(k("e"), []byte(fatValue("mine")))
 	kvs := tx.GetRange(fdb.KeyRange{Begin: k("a"), End: k("z")}, fdb.RangeOptions{}).GetSliceOrPanic()
 	if got := valueOf(kvs, "e"); got != "mine" {
 		t.Fatalf("row e = %q, want \"mine\"", got)
@@ -307,7 +334,7 @@ func TestCancelBetweenGetRangeAndConsumptionFailsTheRead(t *testing.T) {
 func commitAfterConcurrentSet(t *testing.T, db *SimDB, tx *simTxn, key string, want int) {
 	t.Helper()
 	if _, err := db.Transact(func(w fdb.WritableTransaction) (any, error) {
-		w.Set(k(key), []byte("concurrent"))
+		w.Set(k(key), []byte(fatValue("concurrent")))
 		return nil, nil
 	}); err != nil {
 		t.Fatalf("concurrent write: %v", err)

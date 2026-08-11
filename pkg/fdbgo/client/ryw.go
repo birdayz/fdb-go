@@ -642,12 +642,21 @@ func (c *rywCache) get(ctx context.Context, key []byte, serverGet func(ctx conte
 // we advance the scan range and re-fetch instead of returning more=false.
 // This matches the spirit of C++'s RYWIterator which handles unknown ranges
 // by issuing server reads and continuing iteration.
+// byteTarget is the read's per-fetch BYTE target (ByteLimitUnlimited when its streaming mode
+// has none). It is forwarded ONLY on the no-local-writes fast path, which goes straight to
+// storage and is therefore the server path proper. The merge loop below deliberately fetches
+// with ByteLimitUnlimited: its row-only helpers (applyLimitAndDirection, computeMore,
+// limitReached, cacheWalkBudget) decide what a read RETURNS, not merely how it is divided, so
+// byte accounting there is read-your-writes correctness rather than batching and is staged
+// separately. C++ keeps the two apart the same way — ReadYourWrites.actor.cpp implements
+// forward and reverse merges as separate functions with their own byte-limit early exits.
 func (c *rywCache) getRange(
 	ctx context.Context,
 	begin, end []byte,
 	limit int,
+	byteTarget int,
 	reverse bool,
-	serverGetRange func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error),
+	serverGetRange func(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool) ([]KeyValue, bool, error),
 ) ([]KeyValue, bool, error) {
 	c.mu.Lock()
 	// Unreadable reach cap (RFC-098): truncate the scan window at the first
@@ -690,7 +699,7 @@ func (c *rywCache) getRange(
 			}
 			return kvs, computeMore(cachedKVs, limit) || limitReached(limit, len(kvs)) || unreadableCap != nil, nil
 		}
-		kvs, more, err := serverGetRange(ctx, begin, end, limit, reverse)
+		kvs, more, err := serverGetRange(ctx, begin, end, limit, byteTarget, reverse)
 		if err != nil {
 			return nil, false, err
 		}
@@ -722,7 +731,7 @@ func (c *rywCache) getRange(
 			}
 		}
 
-		serverKVs, serverMore, err := c.fetchOrCached(ctx, curBegin, curEnd, fetchLimit, reverse, serverGetRange)
+		serverKVs, serverMore, err := c.fetchOrCached(ctx, curBegin, curEnd, fetchLimit, ByteLimitUnlimited, reverse, serverGetRange)
 		if err != nil {
 			return nil, false, err
 		}
@@ -797,8 +806,9 @@ func (c *rywCache) fetchOrCached(
 	ctx context.Context,
 	begin, end []byte,
 	limit int,
+	byteTarget int,
 	reverse bool,
-	serverGetRange func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error),
+	serverGetRange func(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool) ([]KeyValue, bool, error),
 ) ([]KeyValue, bool, error) {
 	c.mu.Lock()
 	cachedKVs, fullyKnown := c.serverCache.getRangeKVsLimited(begin, end, cacheWalkBudget(limit), reverse)
@@ -810,7 +820,7 @@ func (c *rywCache) fetchOrCached(
 		return kvs, more, nil
 	}
 
-	kvs, more, err := serverGetRange(ctx, begin, end, limit, reverse)
+	kvs, more, err := serverGetRange(ctx, begin, end, limit, byteTarget, reverse)
 	if err != nil {
 		return nil, false, err
 	}

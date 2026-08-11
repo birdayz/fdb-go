@@ -178,15 +178,15 @@ var getMappedKeyValuesBufPool = sync.Pool{
 	New: func() any { b := make([]byte, 0, 512); return &b },
 }
 
-func buildGetMappedKeyValuesRequest(mapper []byte) func(begin, end []byte, version int64, limit int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
-	return func(begin, end []byte, version int64, limit int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
+func buildGetMappedKeyValuesRequest(mapper []byte) func(begin, end []byte, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
+	return func(begin, end []byte, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
 		req := types.GetMappedKeyValuesRequest{
 			Begin:                  types.KeySelectorRef{Key: begin, OrEqual: false, Offset: 1}, // firstGreaterOrEqual(begin)
 			End:                    types.KeySelectorRef{Key: end, OrEqual: false, Offset: 1},   // firstGreaterOrEqual(end)
 			Mapper:                 mapper,
 			Version:                version,
 			Limit:                  limit,
-			LimitBytes:             replyByteLimit,
+			LimitBytes:             limitBytes,
 			Reply:                  types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 			TenantInfo:             types.TenantInfo{TenantId: tenantId},
 			SpanContext:            span,
@@ -227,9 +227,9 @@ var mappedRangeScanOps = rangeScanOps[MappedKeyValue]{
 	},
 }
 
-func (tx *Transaction) sendGetMappedRange(mapper []byte) func(ctx context.Context, begin, end []byte, limit int, reverse bool, servers []ServerInfo) ([]MappedKeyValue, bool, error) {
-	return func(ctx context.Context, begin, end []byte, limit int, reverse bool, servers []ServerInfo) ([]MappedKeyValue, bool, error) {
-		return sendRangeRPC(tx, ctx, begin, end, limit, reverse, servers, rangeRPCOps[MappedKeyValue]{
+func (tx *Transaction) sendGetMappedRange(mapper []byte) func(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool, servers []ServerInfo) ([]MappedKeyValue, bool, error) {
+	return func(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool, servers []ServerInfo) ([]MappedKeyValue, bool, error) {
+		return sendRangeRPC(tx, ctx, begin, end, limit, byteTarget, reverse, servers, rangeRPCOps[MappedKeyValue]{
 			// getMappedKeyValues is adjusted endpoint 14, NOT 3. The field is
 			// DECLARED immediately after getKeyValues (StorageServerInterface.h:103)
 			// but is assigned getAdjustedEndpoint(14) (:184-185) — it was appended
@@ -247,7 +247,12 @@ func (tx *Transaction) sendGetMappedRange(mapper []byte) func(ctx context.Contex
 func (tx *Transaction) getMappedRangeImpl(ctx context.Context, begin, end []byte, mapper []byte, limit int, reverse bool) ([]MappedKeyValue, bool, error) {
 	ops := mappedRangeScanOps
 	ops.send = tx.sendGetMappedRange(mapper)
-	return rangeScanImpl(tx, ctx, begin, end, limit, reverse, ops)
+	// ByteLimitUnlimited: getMappedRange has no streaming mode to derive a per-fetch byte
+	// target from — C++ reaches getExactRange for the mapped family through the same
+	// GetRangeLimits, but the mapped surface here takes a row limit only. Passing the
+	// unlimited sentinel keeps the flat replyByteLimit ceiling and the absorbing loop exactly
+	// as they were, rather than inventing a target this caller never asked for.
+	return rangeScanImpl(tx, ctx, begin, end, limit, ByteLimitUnlimited, reverse, ops)
 }
 
 // FDB error codes specific to getMappedRange. Source of truth:

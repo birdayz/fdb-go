@@ -5,7 +5,7 @@ package fdb_test
 // The sibling arms in pkg/simfdb (TestExactModeIsStructurallySingleBatch,
 // TestBoundedModeReDerivesRemainingBudget) assert the same properties against the SIMULATOR's
 // iterator, which is a reimplementation of this loop rather than this loop. The two share only
-// fdb.BatchSize; the `remaining -= len(kvs)` bookkeeping, the continuation advance and the
+// fdb.ModeTargetBytes; the `remaining -= len(kvs)` bookkeeping, the continuation advance and the
 // exhaustion latch are written twice. A sim-only pin therefore certifies the model, not the
 // client every real caller runs through — so these arms drive the real one against real FDB.
 
@@ -108,18 +108,25 @@ func TestRangeIterator_ExactModeIsStructurallySingleBatch(t *testing.T) {
 	const n = 5000
 	seedSequentialRows(t, db, pfx, n)
 
-	// CONTROL — non-vacuity. Iterator mode is 2,4,8,...,1024 saturating, so this seed must
-	// take well over ten batches. Without this arm, a seed too small to ever split would pass
-	// the EXACT assertions below while proving nothing at all.
+	// CONTROL — non-vacuity. ITERATOR divides this seed into several fetches, so a mode that
+	// does NOT divide it is saying something. Without this arm, a seed too small to ever split
+	// would pass the EXACT assertions below while proving nothing at all.
+	//
+	// The floor is 2, not the >10 it was when ITERATOR paged by a doubling ROW budget. Under
+	// the byte-driven division ITERATOR's target grows 1.5x from 4096 bytes, so these 5000
+	// small rows drain in about 8 fetches rather than dozens. The number that matters here is
+	// "more than one" — that is what makes EXACT's single batch a real contrast — and pinning a
+	// larger figure would only re-encode the old row progression, which is exactly what the
+	// GetRangeLimits port removed.
 	ctlKeys, ctlBatches := drainClientBatches(t, db, pfx, pfx+"~", gofdb.RangeOptions{
 		Mode: gofdb.StreamingModeIterator,
 	})
 	if len(ctlKeys) != n {
 		t.Fatalf("control drain returned %d rows, want %d", len(ctlKeys), n)
 	}
-	if len(ctlBatches) <= 10 {
-		t.Fatalf("control (Iterator mode, %d rows) took %d batches %v, want >10 — the seed does "+
-			"not force a batch boundary, so the single-batch assertions below are vacuous",
+	if len(ctlBatches) < 2 {
+		t.Fatalf("control (Iterator mode, %d rows) took %d batch(es) %v, want at least 2 — the "+
+			"seed does not force a batch boundary, so the single-batch assertions below are vacuous",
 			n, len(ctlBatches), ctlBatches)
 	}
 	t.Logf("MEASURED control Iterator mode: %d rows in %d batches %v",
@@ -155,11 +162,20 @@ func TestRangeIterator_ExactModeIsStructurallySingleBatch(t *testing.T) {
 // client, and it covers the per-batch limit re-derivation that exact mode never reaches.
 //
 // A bounded streaming mode combined with a row limit is the only shape where a LATER batch is
-// clamped by the leftover budget rather than by the mode: Medium fetches 100 at a time, so a
-// limit of 250 must divide 100,100,50 — the final batch truncated by `remaining`, not by the
-// mode size. Asserting only the total cannot separate that from 100,100,100 over-reading and
-// discarding the surplus, which returns the same 250 rows while issuing a larger final fetch
-// and taking a wider read-conflict range than the caller's budget justifies.
+// clamped by the leftover budget rather than by the mode's own division: the final batch is
+// truncated by `remaining`. Asserting only the total cannot separate that from a client that
+// over-reads a full batch and discards the surplus, which returns the same rows while issuing a
+// larger final fetch and taking a wider read-conflict range than the caller's budget justifies.
+//
+// THE DIVISIONS BELOW ARE libfdb_c's, NOT THIS CLIENT'S. They were per-mode ROW counts
+// (medium = 100/batch) until the GetRangeLimits port made the division byte-driven, at which
+// point they moved. The temptation then is to rewrite the expectation to whatever this client
+// started producing — which would be checking the code against itself. Instead each value here
+// is measured from the C client on the identical row shape by
+// libfdbc:TestLibFDBC_BoundedRangeDivisionDifferential, which drives both clients over 17-byte
+// keys with 1-byte values and asserts they agree; medium/250 = [24 x10, 10], medium/199 =
+// [24 x8, 7] and small/25 = [7 7 7 4] are that test's measurements. Update these only by
+// re-measuring there.
 func TestRangeIterator_BoundedModeReDerivesRemainingBudget(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
@@ -173,11 +189,11 @@ func TestRangeIterator_BoundedModeReDerivesRemainingBudget(t *testing.T) {
 		limit int
 		want  []int
 	}{
-		{"medium/250", gofdb.StreamingModeMedium, 250, []int{100, 100, 50}},
-		{"medium/200", gofdb.StreamingModeMedium, 200, []int{100, 100}},
-		{"medium/199", gofdb.StreamingModeMedium, 199, []int{100, 99}},
-		{"medium/201", gofdb.StreamingModeMedium, 201, []int{100, 100, 1}},
-		{"small/25", gofdb.StreamingModeSmall, 25, []int{10, 10, 5}},
+		{"medium/250", gofdb.StreamingModeMedium, 250, []int{24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 10}},
+		{"medium/200", gofdb.StreamingModeMedium, 200, []int{24, 24, 24, 24, 24, 24, 24, 24, 8}},
+		{"medium/199", gofdb.StreamingModeMedium, 199, []int{24, 24, 24, 24, 24, 24, 24, 24, 7}},
+		{"medium/201", gofdb.StreamingModeMedium, 201, []int{24, 24, 24, 24, 24, 24, 24, 24, 9}},
+		{"small/25", gofdb.StreamingModeSmall, 25, []int{7, 7, 7, 4}},
 	} {
 		c := c
 		wantRows := 0

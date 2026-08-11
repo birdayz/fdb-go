@@ -59,9 +59,10 @@ func seedRows(t *testing.T, db *SimDB, prefix string, n int) {
 //
 // Two facts compose to make it unreachable, and the test drives both:
 //
-//   - batchSize(Exact, _, remaining) returns the WHOLE remaining budget
-//     (fdb/range_result.go:199-200), so the first fetch asks for every row the caller asked
-//     for. There is no per-iteration progression to re-derive.
+//   - EXACT carries no BYTE target — mode_bytes_array[EXACT] is BYTE_LIMIT_UNLIMITED
+//     (fdb_c.cpp:1002), which fdb.ModeTargetBytes reports as fdb.ByteLimitUnlimited — while the
+//     fetch asks for the whole remaining row budget. So nothing truncates the reply and the
+//     first fetch asks for every row the caller asked for.
 //   - a fetch never returns SHORT with more pending. The pure-Go client's rangeScanImpl
 //     (client/readpath.go:669) loops internally across shards until the row budget is filled
 //     — it returns either a filled budget with more=true, or an exhausted range with
@@ -100,19 +101,27 @@ func TestExactModeIsStructurallySingleBatch(t *testing.T) {
 	seedRows(t, db, "exm_", n)
 
 	// CONTROL — non-vacuity. "EXACT took one batch" means nothing unless the same seed
-	// demonstrably forces boundaries for a mode that DOES batch. Iterator mode is
-	// 2,4,8,...,1024 saturating, so 5000 rows must take well over ten batches. Without this
-	// arm a seed too small to ever split would pass the assertion below while proving nothing.
+	// demonstrably forces a boundary for a mode that DOES batch. Iterator mode grows a per-fetch
+	// BYTE target through iteration_progression, so on this seed (10-byte keys, 1-byte values:
+	// 35 bytes a row) it divides as ceil(4096/35)=118, ceil(6144/35)=176, 264, 395, 593, 889,
+	// 1334 and a short tail — eight fetches.
+	//
+	// THE FLOOR IS 2, AND MORE THAN ONE IS THE WHOLE PROPERTY. It used to be ">10", which was a
+	// restatement of the removed 2,4,8,...,1024 ROW progression: under a byte target the same
+	// 5000 rows come back in fewer, larger fetches, and any floor above 2 would just re-encode
+	// a particular division as if it were the invariant. What has to hold is that this seed
+	// splits AT ALL — the exact division is pinned by TestBoundedModeReDerivesRemainingBudget
+	// and by TestCursorBatchSizesSaturate, on fixtures built for it.
 	ctlRows, ctlBatches := drainBatches(t, db, "exm_", "exm`", fdb.RangeOptions{
 		Mode: fdb.StreamingModeIterator,
 	})
 	if ctlRows != n {
 		t.Fatalf("control drain returned %d rows, want %d", ctlRows, n)
 	}
-	if len(ctlBatches) <= 10 {
-		t.Fatalf("control (Iterator mode, %d rows) took %d batches %v, want >10 — the seed is "+
-			"too small to force a batch boundary, so the single-batch assertion below would be "+
-			"vacuous", n, len(ctlBatches), ctlBatches)
+	if len(ctlBatches) < 2 {
+		t.Fatalf("control (Iterator mode, %d rows) took %d batch(es) %v, want at least 2 — the "+
+			"seed is too small to force a batch boundary, so the single-batch assertion below "+
+			"would be vacuous", n, len(ctlBatches), ctlBatches)
 	}
 	t.Logf("MEASURED control Iterator mode: %d rows in %d batches %v", ctlRows, len(ctlBatches), ctlBatches)
 
@@ -146,10 +155,11 @@ func TestExactModeIsStructurallySingleBatch(t *testing.T) {
 // exercises the per-batch limit re-derivation the exact-mode path never reaches.
 //
 // A bounded streaming mode combined with a row limit is the only shape where a LATER batch is
-// clamped by the leftover budget rather than by the mode: Medium fetches 100 at a time, so a
-// limit of 250 must divide as 100,100,50 — the final batch truncated by `remaining`, not by
-// the mode's own size. Asserting only the total (250 rows) cannot tell that from 100,100,100
-// over-reading and discarding, nor from 100,100,50 with the continuation left one key short.
+// clamped by the leftover budget rather than by the mode: Medium's 1000-byte target holds 29 of
+// these rows, so a limit of 250 must divide as eight 29s and a final 18 — that last batch
+// truncated by `remaining`, not by the mode. Asserting only the total (250 rows) cannot tell
+// that from nine 29s over-reading and discarding, nor from the right division with the
+// continuation left one key short.
 //
 // The division, not just the count, is therefore what is asserted. THIS test separates two
 // failure modes: same rows / different division, and an off-by-one at the limit boundary —
@@ -163,35 +173,53 @@ func TestBoundedModeReDerivesRemainingBudget(t *testing.T) {
 	const n = 600
 	seedRows(t, db, "bnd_", n)
 
+	// THE MODE SIZE IS A BYTE TARGET, so the per-fetch row count is derived, not declared.
+	// seedRows lays down 10-byte keys ("bnd_" + 6 digits) with 1-byte values, and a row charges
+	// key+value+serverRowOverheadBytes = 35 bytes against a reply's budget, with the row that
+	// REACHES the budget included. So:
+	//
+	//	MEDIUM (1000 bytes, fdb_c.cpp:1002): 28*35 = 980 < 1000, 29*35 = 1015 >= 1000 -> 29 rows
+	//	SMALL  ( 256 bytes):                  7*35 = 245 <  256,  8*35 =  280 >=  256 ->  8 rows
+	//
+	// Those replace the old 100 and 10 row pages. What the test is about is unchanged: the FINAL
+	// batch is clamped by the leftover row budget rather than by the mode.
+	const mediumRows = 29
+	const smallRows = 8
 	for _, c := range []struct {
 		name  string
 		mode  fdb.StreamingMode
 		limit int
 		want  []int
 	}{
-		// The final batch is truncated by the leftover budget, not by the mode size.
-		{"medium/250", fdb.StreamingModeMedium, 250, []int{100, 100, 50}},
-		// Limit lands exactly on a mode boundary: no short final batch at all.
-		{"medium/200", fdb.StreamingModeMedium, 200, []int{100, 100}},
-		// Off-by-one either side of that boundary.
-		{"medium/199", fdb.StreamingModeMedium, 199, []int{100, 99}},
-		{"medium/201", fdb.StreamingModeMedium, 201, []int{100, 100, 1}},
-		// A different mode size, to prove the clamp follows the mode and not a constant.
-		{"small/25", fdb.StreamingModeSmall, 25, []int{10, 10, 5}},
-		// Budget exceeds the data: the range exhausts before the limit does, and the drain
-		// takes a TRAILING ZERO-ROW FETCH. That empty fetch is deliberate, not an off-by-one:
-		// the 60th batch filled its 10-row request, so `more` is true (the sim's more is
-		// exactly "the limit was filled") and nothing yet proves the range ended. The 61st
-		// fetch is what discovers exhaustion, and it registers the read conflict for the
-		// trailing span it scanned and found empty — phantom protection for the tail
-		// (simfdb/range_result.go:220-229). Dropping it would let a concurrent insert past the
-		// last row go unconflicted.
+		// The final batch is truncated by the leftover budget, not by the mode size:
+		// 8*29 = 232, leaving 18 of the 250.
+		{"medium/250", fdb.StreamingModeMedium, 250, append(repeatN(mediumRows, 8), 18)},
+		// 6*29 = 174 of 200, so the tail is 26 — and the three cases below walk the limit
+		// across that boundary one row at a time.
+		{"medium/200", fdb.StreamingModeMedium, 200, append(repeatN(mediumRows, 6), 26)},
+		{"medium/199", fdb.StreamingModeMedium, 199, append(repeatN(mediumRows, 6), 25)},
+		{"medium/201", fdb.StreamingModeMedium, 201, append(repeatN(mediumRows, 6), 27)},
+		// A different mode target, to prove the clamp follows the mode and not a constant:
+		// 3*8 = 24 of 25, leaving 1.
+		{"small/25", fdb.StreamingModeSmall, 25, append(repeatN(smallRows, 3), 1)},
+		// Budget exceeds the data: the range exhausts before the limit does. 600 rows divide
+		// evenly into 8-row replies, so this ends after exactly 75 fetches with NO trailing
+		// empty one.
 		//
-		// Contrast medium/199 above, which ends [100,99] with NO trailing fetch: there the
-		// budget hit zero exactly, so Advance stops on `remaining <= 0` before fetching again.
-		// Whether a drain ends on an empty fetch is therefore a function of which of the two
-		// bounds ran out first, and both spellings are pinned here.
-		{"small/1000", fdb.StreamingModeSmall, 1000, append(repeatN(10, n/10), 0)},
+		// THAT TRAILING FETCH USED TO BE HERE AND ITS ABSENCE IS NOW THE INVARIANT. Under a row
+		// page the 60th batch filled its 10-row request, so `more` was true, nothing yet proved
+		// the range had ended, and a 61st empty fetch discovered exhaustion. Under a byte target
+		// `more` is set by the server's truncation, which can only fire when rows were actually
+		// left behind: the 75th reply is not truncated (its 8 rows are all that remain, so the
+		// cut lands on the last of them), `more` stays false, and exhaustion is discovered in
+		// the same fetch that returns the last rows.
+		//
+		// Phantom protection for the trailing span did NOT move with it: that final untruncated
+		// batch clamps its conflict to the full requested range rather than to the rows it
+		// returned, which is what TestDrainedCursorConflictsOverTheWholeRange pins. If a
+		// trailing empty fetch ever reappears here, `more` has stopped describing the
+		// truncation — check that pairing before adjusting this expectation.
+		{"small/1000", fdb.StreamingModeSmall, 1000, repeatN(smallRows, n/smallRows)},
 	} {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
