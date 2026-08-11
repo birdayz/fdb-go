@@ -16431,6 +16431,36 @@ None is speculative: each was re-verified against the tree before booking.
   The plan-only test that let this ship (`TestStructDDL_UnnestStructArrayFieldAccess`)
   cannot assert rows — its package has no store — and now points at its row twin,
   and back.
+
+  The suspected residual in the OTHER representation is NOT a defect, and the
+  investigation that establishes it is worth more than the guard it rejects. An
+  UNBAKED `FieldValue` (no `Resolved` path) over a datum binding has no remainder
+  to apply and serves the datum WHOLE, which reads like the same silent-wrong one
+  layer over. Making it loud was tried and REVERTED: the whole-datum read is a
+  LIVE, CORRECT convention, and the change broke
+  `TestFieldValue_UnpinnedNonOrdinalBinding_IsSilent` — a sentinel written
+  precisely so that a change to this arm is a deliberate red->green edit rather
+  than silent drift. It did its job.
+
+  The mechanism, because this will be re-proposed: the sort-key leg fallback
+  mints an unbaked `NewFieldValue(qov, col, …)` when a leg's layout is not
+  derivable (`cascades_translator.go`), and for a leg bound to a datum the whole
+  datum is the right answer. What keeps a MEMBER reference out of that arm is not
+  a guard but a property — a member reference is BAKED, arriving with the path
+  whose remainder gets applied. So the protection is "members are baked"; a guard
+  could not have distinguished the two cases anyway, since both present as an
+  unbaked node over a datum. Pinned from the unnest side by the fourth arm of
+  `TestFieldValue_DatumBinding_AppliesPathRemainder`, which points at the
+  pinned/unpinned sibling so the pair cannot drift.
+
+  Recorded where a test cannot express it: `TestJoinUnnestExistsPlanSmoke`'s
+  unnest arms are plan-only AND safe, but only because `existsGatherSchemaMetadata`
+  declares `ARR` with a SCALAR `INTEGER` element — no reference over such an
+  element can carry a second accessor, so the descent is a no-op by construction.
+  That is the REASON, and it is what survives: adding a struct-array column to
+  that shared schema silently re-arms this class across those plan-only arms. The
+  smoke test now says so and asks for a row twin instead of another entry in its
+  list.
 - [ ] **`StreamingModeExact` materialises its ENTIRE row budget in one fetch,
   where libfdb_c splits the same read by byte target** · L · found while probing
   the (non-existent) multi-batch exact-mode path

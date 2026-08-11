@@ -900,6 +900,55 @@ func (f *FieldValue) evaluateOrdinal(row OrdinalRow) (any, error) {
 	return nil, &OrdinalResolutionError{Field: f.Field, Ordinal: -1, Available: ordinalRowNames(row)}
 }
 
+// evaluateDatumBinding resolves a correlation bound to a DATUM rather than an
+// OrdinalRow. The leg adapter unwraps a bare-scalar `_0` carrier to its datum
+// (executor.isBareScalarRow), so the binding has ALREADY consumed the accessor
+// that would have addressed slot 0: the bound value IS the root read, and the
+// path's REMAINDER is what is left to apply.
+//
+// Returning the datum whole dropped that remainder. That is invisible to every
+// single-accessor reference — for which the remainder is empty — and so went
+// unseen until a DESCENT hit it: a struct-element unnest (`orders.items AS i`)
+// binds its element as one raw proto message, and `i.sku` is the two-accessor
+// path `/I/SKU`, so the WHOLE element was served where the member was asked
+// for. In a predicate comparing to a string that is never equal, which turned a
+// wrong read into `WHERE i.sku = 'x'` returning ZERO rows.
+//
+// descendResolvedPath is the same helper evaluateOrdinal applies after its own
+// root read, and it is a no-op on a remainder-free path — so this restores the
+// invariant that a binding is always read THROUGH the path, rather than adding
+// a case. Java expresses the same thing without a separate arm at all:
+// QuantifiedObjectValue hands over the whole bound object
+// (QuantifiedObjectValue.java:82-95) and FieldValue applies the entire
+// remaining ordinal path to it (FieldValue.java:164-175 →
+// MessageHelpers.java:93-106).
+//
+// A nil binding is the null leg (outer-join no-match) — NULL, not loud. A
+// FrontierPinned node bound to a non-ordinal value is a frontier-contract
+// violation.
+//
+// An UNBAKED node (no Resolved path) reads the datum WHOLE, and deliberately so.
+// It is tempting to make that loud on the grounds that a node with no remainder
+// cannot say which member it wanted — but the whole-datum read is a LIVE and
+// CORRECT convention, not an oversight: the sort-key leg fallback mints an
+// unbaked `NewFieldValue(qov, col, …)` when a leg's layout is not derivable
+// (cascades_translator.go), and for a leg bound to a datum the whole datum is
+// exactly the right answer. Going loud would break that read. What actually
+// keeps a MEMBER reference out of this arm is that a member reference is baked —
+// it arrives carrying the path whose remainder is applied below. The
+// pinned/unpinned asymmetry is pinned by
+// TestFieldValue_UnpinnedNonOrdinalBinding_IsSilent, which exists so that a
+// change to this arm is a deliberate red->green edit rather than silent drift.
+func (f *FieldValue) evaluateDatumBinding(bound any) (any, error) {
+	if bound == nil {
+		return nil, nil
+	}
+	if err := f.frontierContractGuard(); err != nil {
+		return nil, err
+	}
+	return f.descendResolvedPath(bound)
+}
+
 // frontierContractGuard enforces the FRONTIER CONTRACT for a
 // FrontierPinned baked node: the executor guarantees a positional row, so a
 // non-nil context that is NOT a positional/ordinal row is a planner/executor
@@ -1259,35 +1308,12 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		if ctx.Correlations != nil {
 			if bound, ok := ctx.Correlations.GetCorrelationBinding(qov.Correlation); ok {
 				// A quantifier bound to an ordinal-model row resolves by
-				// ordinal. A nil binding is the null leg (outer-join
-				// no-match) — NULL, not loud. A FrontierPinned node bound to any
-				// other non-ordinal value (a name-keyed map, a stray struct) is a
-				// frontier-contract violation — loud.
-				//
-				// A DATUM binding (not a row) IS the root read: the leg adapter
-				// unwraps a bare-scalar `_0` carrier to its datum
-				// (isBareScalarRow), so the accessor that would have addressed
-				// slot 0 is consumed by the binding itself and the path's
-				// REMAINDER still has to be applied. Returning the datum whole
-				// dropped that remainder, which is why a struct-element unnest
-				// (`orders.items AS i`, whose element binds as one proto message)
-				// read the WHOLE element for `i.sku`: in a predicate that
-				// compares to a string it is never equal, so
-				// `WHERE i.sku = 'x'` returned ZERO rows. descendResolvedPath is
-				// a no-op for the single-accessor path every scalar-element
-				// reference carries, so the datum convention is unchanged.
-				// Java has no separate arm here at all — FieldValue.eval resolves
-				// the whole FieldPath against the child's flowed Message
-				// (FieldValue.java:169).
+				// ordinal; anything else is a DATUM binding (see
+				// evaluateDatumBinding).
 				if row, ok := bound.(OrdinalRow); ok {
 					return f.evaluateOrdinal(row)
 				}
-				if bound != nil {
-					if err := f.frontierContractGuard(); err != nil {
-						return nil, err
-					}
-				}
-				return f.descendResolvedPath(bound)
+				return f.evaluateDatumBinding(bound)
 			}
 		}
 		// No explicit correlation binding matched, so the reference is to
@@ -1313,17 +1339,7 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			if row, ok := bound.(OrdinalRow); ok {
 				return f.evaluateOrdinal(row)
 			}
-			// nil binding = null leg (NULL); any other non-ordinal
-			// binding is a frontier-contract violation for a pinned node.
-			// A datum binding is the root read and the path's remainder still
-			// applies — see the *RowEvalContext arm above for why dropping it
-			// emptied a struct-element unnest predicate.
-			if bound != nil {
-				if err := f.frontierContractGuard(); err != nil {
-					return nil, err
-				}
-			}
-			return f.descendResolvedPath(bound)
+			return f.evaluateDatumBinding(bound)
 		}
 		// Correlation unbound in this binder: a dangling reference. Loud.
 		return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.Correlation.Name(), CtxType: fmt.Sprintf("%T (unbound)", ctx)}

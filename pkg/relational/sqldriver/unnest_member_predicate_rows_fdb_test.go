@@ -11,13 +11,18 @@ import (
 // descends into a lateral unnest's struct element.
 //
 // `FROM orders, orders.items AS i WHERE i.sku = 'x'` filters on a MEMBER of the
-// bound element. The reference reaches the unnest rewrite as a two-accessor path
-// rooted at the binding (`/I/SKU`) over the element's quantifier object, and the
-// element-substitution arm correctly declines it — no member is the element. But
-// declining is not the same as rewriting: the surviving reference still carries
-// the binding segment, while the inner Explode flows the ELEMENT, whose fields are
-// the members alone. The leading segment has to be dropped for the path to name
-// anything in the row it is evaluated against.
+// bound element. The reference is the two-accessor path `/I/SKU` over the
+// element's quantifier object, and it is correct as minted — nothing needs to
+// rewrite it. The root accessor names the BINDING, and the binding consumes it:
+// the element arrives as a DATUM (the leg adapter unwraps the bare-scalar `_0`
+// carrier), so the bound value IS the root read. What remains is `SKU`, and
+// applying that remainder is EVALUATION's job.
+//
+// The defect was there and not in any rewrite: both correlated arms of
+// FieldValue.evaluateCorrelated returned a datum binding whole and dropped the
+// remainder, serving the entire element where a member was asked for. Look in
+// values.go, not in rewriteUnnestPredicate — the translator declines this shape
+// and is right to.
 //
 // The projection form of this shape was already covered; every consumer of the
 // rewrite is a PREDICATE, and a predicate that resolves to nothing filters every
@@ -82,27 +87,28 @@ func TestFDB_UnnestMemberPredicateServesRows(t *testing.T) {
 
 	// The SUBJECT: a STRING member predicate. Only order 1 has an item with
 	// sku='x', so exactly one row must come back. Zero rows is the failure this
-	// pins — the predicate reading a path that names nothing filters everything.
+	// pins — serving the whole element makes the comparison never true, so the
+	// filter drops everything.
 	t.Run("string member predicate selects the matching order", func(t *testing.T) {
 		t.Parallel()
 		got := queryInts(t, "SELECT order_id FROM orders, orders.items AS i WHERE i.sku = 'x'")
 		if len(got) != 1 || got[0] != 1 {
 			t.Errorf("SELECT order_id ... WHERE i.sku = 'x' = %v, want [1]. Zero rows means the "+
-				"member reference resolved to nothing in the element row rather than to SKU.", got)
+				"whole element was served where the SKU member was asked for — the path's "+
+				"remainder was dropped at evaluation.", got)
 		}
 	})
 
-	// A NON-LEADING member: `qty` is the element's second field, so a fix that
-	// merely drops the binding segment and reads ordinal 0 unconditionally would
-	// serve SKU here and match nothing. This arm and the one above are separate
-	// sites: one proves the segment is dropped, the other proves the surviving
-	// path still points at the right member.
+	// A NON-LEADING member: `qty` is the element's second field, so applying the
+	// remainder as a blanket "read ordinal 0" would serve SKU here and match
+	// nothing. This arm and the one above are separate sites: one proves the
+	// remainder is applied at all, the other proves it addresses the right member.
 	t.Run("non-leading member predicate selects by the right field", func(t *testing.T) {
 		t.Parallel()
 		got := queryInts(t, "SELECT order_id FROM orders, orders.items AS i WHERE i.qty = 30")
 		if len(got) != 1 || got[0] != 2 {
-			t.Errorf("SELECT order_id ... WHERE i.qty = 30 = %v, want [2]. A wrong surviving "+
-				"ordinal reads SKU here and matches nothing.", got)
+			t.Errorf("SELECT order_id ... WHERE i.qty = 30 = %v, want [2]. A remainder applied "+
+				"at the wrong ordinal reads SKU here and matches nothing.", got)
 		}
 	})
 
