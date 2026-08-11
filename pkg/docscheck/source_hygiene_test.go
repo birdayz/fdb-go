@@ -5,7 +5,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,9 +28,11 @@ import (
 // never by path patterns. Path lists under-exclude (generators whose output
 // lands outside gen/, e.g. wire/types/*_generated.go and api/mocks_*.go) and
 // directory lists under-include (a new top-level dir must be covered
-// automatically), so paths appear below only as fallback-walk skips for trees
-// that cannot contain tracked Go (the Java checkout, hidden dirs, Bazel
-// symlinks).
+// automatically), so paths appear below only as fallback-walk skips, and only
+// for trees that are unbounded or foreign rather than merely hidden (the Java
+// checkout, the object store, other agents' worktrees, Bazel symlinks) — see
+// fallbackWalkSkippedTrees. A hidden directory is NOT excluded for being hidden:
+// .github and .claude/skills are tracked.
 //
 // Only COMMENT text is scanned — never string literals or identifiers — so a
 // test fixture or variable name containing a banned word cannot false-positive.
@@ -133,8 +134,13 @@ func sourceTreeRoot(t *testing.T) string {
 // trackedGoFiles enumerates the scan set: `git ls-files -z -- '*.go'` (the
 // RFC-175 §5 B1/B2 scope — exactly the tracked set, so untracked local scratch
 // never false-positives). When git is unavailable (minimal CI image, sandbox
-// without git), it falls back to a filesystem walk — a SUPERSET of the tracked
-// set, so the gate can only get stricter, never quieter.
+// without git), it falls back to the shared fallbackWalk, whose exclusions are
+// a closed NAMED list rather than a leading-dot pattern; that is what makes it a
+// superset of the tracked set, so the gate can only get stricter, never quieter.
+// The dot-pattern it replaced was a SUBSET: .github and .claude/skills hold
+// tracked files. No tracked *.go lives there at d482c92f8 (`git ls-files --
+// '*.go' | grep -cE '^\.[^/]+/'` → 0 of 3469), but that is an accident of
+// today's layout, not a property this scan may rest on.
 func trackedGoFiles(t *testing.T, root string) []string {
 	t.Helper()
 	out, err := exec.Command("git", "-C", root, "ls-files", "-z", "--", "*.go").Output()
@@ -147,34 +153,10 @@ func trackedGoFiles(t *testing.T, root string) []string {
 		}
 		return files
 	}
-	t.Logf("git ls-files unavailable (%v) — falling back to a filesystem walk (superset of tracked)", err)
-	var files []string
-	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		name := d.Name()
-		if d.IsDir() {
-			// Fallback-walk skips only — trees that cannot contain tracked Go of
-			// this repo. Hidden dirs cover .git and nested worktrees; bazel-* are
-			// the convenience symlinks (also caught below as symlinks);
-			// fdb-record-layer is the untracked Java checkout.
-			if path != root && (strings.HasPrefix(name, ".") ||
-				strings.HasPrefix(name, "bazel-") ||
-				name == "fdb-record-layer" || name == "node_modules") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.Type()&fs.ModeSymlink != 0 || !strings.HasSuffix(name, ".go") {
-			return nil
-		}
-		rel, relErr := filepath.Rel(root, path)
-		if relErr != nil {
-			rel = path
-		}
-		files = append(files, rel)
-		return nil
+	t.Logf("git ls-files unavailable (%v) — falling back to a filesystem walk over everything but the "+
+		"named excluded trees (%v), a superset of tracked", err, sortedFallbackWalkSkips())
+	files, walkErr := fallbackWalk(root, func(name string) bool {
+		return strings.HasSuffix(name, ".go")
 	})
 	if walkErr != nil {
 		t.Fatalf("walking %s: %v", root, walkErr)

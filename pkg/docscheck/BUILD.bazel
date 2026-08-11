@@ -22,6 +22,7 @@ go_test(
         "docs_consistency_test.go",
         "dst_seam_gate_test.go",
         "duec_wallclock_gate_scope_test.go",
+        "fallback_walk_test.go",
         "field_debt_authority_test.go",
         "field_debt_rfc_census_arms_test.go",
         "field_debt_rfc_census_test.go",
