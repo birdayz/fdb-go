@@ -306,11 +306,17 @@ var fieldDebtProseNumericExemptions = []*regexp.Regexp{
 	// Design-doc references: RFC-197, CQ-53, `sec 4.4/4.5`.
 	regexp.MustCompile(`\b(?:RFC|CQ)-\d+`),
 	regexp.MustCompile(`(?i)\bsec\.?\s*\d+(?:\.\d+)*(?:/\d+(?:\.\d+)*)*`),
-	// Measured traffic arrows: `21865 → 0`, `4 → 1`.
-	regexp.MustCompile(`\d+\s*(?:→|->)\s*\d+`),
 	// Markdown ordered-list markers at line start.
 	regexp.MustCompile(`(?m)^\s*\d+\.\s`),
 }
+
+// NO ARROW EXEMPTION, deliberately. `21865 → 0` reads as a measurement, but
+// `the translator bucket went 17 → 12` is the same syntax carrying a magnitude
+// PAIR, and nothing distinguishes them mechanically — so exempting arrows would
+// have re-opened the hole for every census claim willing to spell itself with an
+// arrow. This section's rule is DIRECTION, not magnitude, and an arrow is
+// magnitude twice over; measured traffic figures belong at the fix site or in a
+// table. This exemption existed and was removed for exactly that reason.
 
 // fieldDebtProseWordCount catches counts spelled as words in front of a census
 // noun. It is deliberately noun-anchored: `two durable homes for one fact` is
@@ -321,6 +327,21 @@ var fieldDebtProseWordCount = regexp.MustCompile(
 		// adjacent: `all eleven REMAINING sites` is the exact claim that shipped.
 		`(?:[a-z][a-z-]*\s+){0,2}` +
 		`(readers?|entries|entry|sites?|authorities|authority|escapes?|buckets?|declarations?|mints?|producers?)\b`)
+
+// fieldDebtProseElidedTally catches the OTHER half of the word-spelled class:
+// a tally whose noun is ELIDED because the surrounding sentence already supplied
+// it. Noun-anchoring cannot see these, and they are not hypothetical — `The
+// three that remain are each blocked on…` shipped as a live, wrong bucket size
+// one bullet above a tally that had just been fixed, and `two more left by
+// deletion as unreachable` shipped beside it.
+//
+// The trigger is a word-number followed by a relative clause or a bare
+// quantifier rather than by a noun. `one of the two reversed edges` does not
+// match (the `of` is followed by `the`, not by them/these/those), and ordinary
+// prose like `two durable homes` is noun-anchored and handled above.
+var fieldDebtProseElidedTally = regexp.MustCompile(
+	`(?i)\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+` +
+		`(?:more\b|that\s|which\s|of\s+(?:them|these|those)\b|remain\b|left\b)`)
 
 // fieldDebtProseScannable strips the parts of a section that are NOT prose: the
 // gated table rows, HTML comment markers, and fenced code blocks.
@@ -335,7 +356,22 @@ var fieldDebtProseWordCount = regexp.MustCompile(
 // quotation, so `the residual is 33 authorities` is a live claim wearing a
 // costume; exempting them would reopen the hole by another door. Citations
 // inside backticks are already covered by the exemptions above.
-func fieldDebtProseScannable(s string) string {
+// An HTML comment SPAN, not a whole line. Skipping any line merely STARTING
+// with `<!--` let `<!-- note --> the residual is 33 authorities` through intact:
+// the marker lines this needs to ignore are the census markers, and those are
+// comments end to end, so strip the comment and scan whatever follows it.
+var fieldDebtHTMLComment = regexp.MustCompile(`(?s)<!--.*?-->`)
+
+// fieldDebtProseScannable returns the prose of a section — table rows, HTML
+// comment spans and fenced code blocks removed — and reports whether a code
+// fence was left OPEN at the end.
+//
+// That second return exists because an unbalanced fence is a silent kill switch:
+// `inFence` toggles, so one stray ``` makes every line below it unscanned and
+// the gate reports GREEN over a section it never read. That is the
+// green-from-an-empty-set shape, inside the instrument built to prevent it, so
+// it is surfaced as a failure rather than trusted to never happen.
+func fieldDebtProseScannable(s string) (prose string, unbalancedFence bool) {
 	var b strings.Builder
 	inFence := false
 	for _, ln := range strings.Split(s, "\n") {
@@ -344,26 +380,36 @@ func fieldDebtProseScannable(s string) string {
 			inFence = !inFence
 			continue
 		}
-		if inFence || strings.HasPrefix(t, "|") || strings.HasPrefix(t, "<!--") {
+		if inFence {
 			continue
 		}
-		b.WriteString(ln)
+		stripped := fieldDebtHTMLComment.ReplaceAllString(ln, " ")
+		if strings.HasPrefix(strings.TrimSpace(stripped), "|") {
+			continue
+		}
+		b.WriteString(stripped)
 		b.WriteByte('\n')
 	}
-	return b.String()
+	return b.String(), inFence
 }
 
 var fieldDebtBareInteger = regexp.MustCompile(`\d+`)
 
 // checkOrderProseHasNoCounts is the arm that closes the third-copy hole.
 func checkOrderProseHasNoCounts(section string) []string {
-	prose := fieldDebtProseScannable(section)
+	prose, unbalancedFence := fieldDebtProseScannable(section)
 	for _, re := range fieldDebtProseNumericExemptions {
 		prose = re.ReplaceAllString(prose, " ")
 	}
 
 	seen := map[string]bool{}
 	var problems []string
+	if unbalancedFence {
+		problems = append(problems, "the `## Order` section ends inside an unclosed code "+
+			"fence. Everything after the stray fence marker was NOT scanned, so a green "+
+			"from this gate would be a green over an unread section — the exact "+
+			"empty-set false pass it exists to prevent. Close the fence.")
+	}
 	add := func(kind, match, line string) {
 		key := kind + "\x00" + match + "\x00" + line
 		if seen[key] {
@@ -389,6 +435,9 @@ func checkOrderProseHasNoCounts(section string) []string {
 		}
 		for _, m := range fieldDebtProseWordCount.FindAllString(ln, -1) {
 			add("word-spelled count", strings.TrimSpace(m), trimmed)
+		}
+		for _, m := range fieldDebtProseElidedTally.FindAllString(ln, -1) {
+			add("elided-noun tally", strings.TrimSpace(m), trimmed)
 		}
 	}
 	sort.Strings(problems)

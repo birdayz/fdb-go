@@ -328,6 +328,27 @@ func TestFieldDebtOrderProseArms(t *testing.T) {
 		{"a word-spelled count of entries", "one producer, four entries", "four entries"},
 		{"a word-spelled count of declarations", "two declarations owe debt in two buckets", "two declarations"},
 
+		// ELIDED-NOUN TALLIES. Noun-anchoring cannot see these, and both shipped:
+		// the first was a live, wrong bucket size one bullet above a tally that
+		// had just been fixed.
+		{
+			"a tally whose noun the sentence already supplied",
+			"The three that remain are each blocked on something outside the bucket",
+			"three that",
+		},
+		{"a bare quantifier tally", "both; two more left by deletion as unreachable", "two more"},
+
+		// An arrow is a magnitude PAIR. Exempting arrows would have let every
+		// census claim spell itself with one.
+		{"a magnitude pair wearing an arrow", "the translator bucket went 17 → 12", "17"},
+
+		// An HTML comment must not shield the rest of its line.
+		{
+			"a claim hiding behind an HTML comment on the same line",
+			"<!-- note --> the residual is 33 authorities",
+			"33",
+		},
+
 		// Backticks are a costume, not an exemption.
 		{
 			"a live claim smuggled inside backticks",
@@ -354,7 +375,6 @@ func TestFieldDebtOrderProseArms(t *testing.T) {
 		{"a Java source citation", "GroupByExpression.java:754,758 builds Column.unnamedOf"},
 		{"a Go source citation", "killing the mint at query/cascades_translator.go:3925 retires them"},
 		{"a bare line-range continuation", "MessageHelpers.java:170-175, and :161-167 beside it"},
-		{"a measured traffic arrow", "the mint class went 21865 → 0 and declines 4 → 1"},
 		{"an RFC section reference", "blocked on RFC-204 sec 4.4/4.5"},
 		{"a CQ reference", "blocked on CQ-55 over CQ-56"},
 		{"a shape-only bucket line", "3. name-keyed (much reduced): including the probe"},
@@ -364,6 +384,11 @@ func TestFieldDebtOrderProseArms(t *testing.T) {
 			"Two durable homes for one fact is worse than one home.",
 		},
 		{"a fenced code block body", "```\nresidual = 34 authorities\n```"},
+		{"a marker line that is a comment end to end", "<!-- FIELD-DEBT-CONCENTRATION -->"},
+		{
+			"a word-number introducing a prepositional phrase, not a tally",
+			"one of the two reversed edges runs backwards",
+		},
 	}
 	for _, tc := range quiet {
 		t.Run(tc.name, func(t *testing.T) {
@@ -372,6 +397,44 @@ func TestFieldDebtOrderProseArms(t *testing.T) {
 				t.Errorf("gate must stay quiet on %q, got: %v", tc.prose, got)
 			}
 		})
+	}
+}
+
+// TestFieldDebtUnbalancedFenceIsNotSilent pins the kill switch.
+//
+// `inFence` toggles, so a single stray fence marker makes every line below it
+// unscanned. Without an explicit balance assertion the gate reports GREEN over a
+// section it never read — the green-from-an-empty-set shape, inside the
+// instrument built to prevent it. Both halves are driven here, because "the
+// unbalanced case reports something" is only meaningful beside "the balanced
+// case still catches what follows it".
+func TestFieldDebtUnbalancedFenceIsNotSilent(t *testing.T) {
+	t.Parallel()
+
+	const after = "\nThe residual is 33 authorities.\n"
+
+	balanced := "intro\n```\nresidual = 99 authorities\n```" + after
+	got := checkOrderProseHasNoCounts(balanced)
+	if !hasProblemContaining(got, "33") {
+		t.Errorf("a balanced fence must not swallow the prose after it: %v", got)
+	}
+	if hasProblemContaining(got, "99") {
+		t.Errorf("a balanced fence body must still be exempt, got: %v", got)
+	}
+
+	unbalanced := "intro\n```\nresidual = 99 authorities" + after
+	got = checkOrderProseHasNoCounts(unbalanced)
+	if !hasProblemContaining(got, "unclosed code fence") {
+		t.Fatalf("an unbalanced fence must be reported, not silently swallow the rest "+
+			"of the section — that is a green over an unread document. got: %v", got)
+	}
+	// And it must be reported LOUDLY rather than merely being one of several:
+	// the claim after the stray fence is invisible, so the fence problem is the
+	// only signal that anything was missed.
+	if hasProblemContaining(got, "33") {
+		t.Error("the claim after an unbalanced fence is expected to be UNSCANNED; if it " +
+			"is now detected, the fence guard is no longer load-bearing and this pin " +
+			"should be re-derived rather than deleted")
 	}
 }
 

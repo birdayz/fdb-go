@@ -1099,13 +1099,20 @@ entry's reason, never on the key's form segment.
 2. escape (MIGRATED, now empty): key structs; killed the caller-side blindness the gate
    cannot reach.
 3. name-keyed (much reduced): including the `logical_predicate.go:4151` probe-first defect check; `logical_predicate.go:6188` is
-   the same two-Values shape and travels with it. The three that remain are each
-   blocked on something outside the bucket — memo interning of lazy carriers,
-   constraint-growth coupling in the planner, and resolver-side baking of a
-   projection-output reference.
+   the same two-Values shape and travels with it. Every remaining entry is
+   blocked on something outside the bucket, and the blockers are named rather
+   than counted: a layout-resolved column contract for match candidates
+   (`uniqueUpperFieldIndex`), per-alias quantifier binding (`slotInGatheredSeed`,
+   CQ-53), constraint-growth coupling in the planner
+   (`collectFieldNamesFromValue`), and memo interning of lazy carriers
+   (`EqualsWithoutChildren`). This bullet previously listed "resolver-side baking
+   of a projection-output reference" as a blocker; that entry had already LEFT by
+   removal — the resolver does bake a projection-output reference to its output
+   ordinal — so the sentence named a retired thing and did not move when it
+   retired. Same rot as the concentration table's, in the same section.
 4. translator (reduced): boundary demonstrations. The allowlist did NOT grow —
    every remaining site was read against the two legs and none passes
-   both; two more left by deletion as unreachable.
+   both; others left by deletion as unreachable.
 5. contract (GREW): the coordinated naming-contract change. It GREW: the
    launderer widening surfaced the readers the original sizing had missed, and
    the JDBC label site left by being fixed rather than exempted.
@@ -1133,8 +1140,11 @@ SUB-CHANNEL granularity, not bucket granularity, and two edges run BACKWARDS.
   `explainValueOrdinals` (`contract:`). Its dotted witnesses were EXPLAIN renders
   leaking in through `plans/ordering.go:985`, which re-minted a lazy `FieldValue`
   from a display string while the baked identity sat unread beside it. Fixing
-  that SINGLE contract-bucket producer took the lazy-render mint class 21865 → 0 and
-  the arm's declines 4 → 1, with nothing in `dotted:` touched.
+  that SINGLE contract-bucket producer COLLAPSED the lazy-render mint class to
+  zero and cut the arm's declines to a lone surviving witness, with nothing in
+  `dotted:` touched. (Magnitudes deliberately omitted: an arrow pair is a
+  magnitude twice over, and this section states direction. The measured figures
+  live in the debt entry at the fix site.)
 - `clusterFieldResolvable` / `clusterSeedSlotByName`
   (`query/clustered_outer_scalar.go`, `dotted:`) compare against strings minted in
   the `translator:` bucket, by `logical_predicate.go`'s

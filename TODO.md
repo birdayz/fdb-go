@@ -17614,18 +17614,25 @@ None is speculative: each was re-verified against the tree before booking.
   **(2) The `dotted`-as-keystone reading is wrong at bucket granularity.** Two
   edges run BACKWARDS — a `dotted:` site downstream of another bucket's producer:
   `AccessorNamePath` is downstream of `explainValueOrdinals` (`contract:`) via
-  `plans/ordering.go:985` (fixing that one producer took the lazy-render mint
-  class 21865 → 0 and the arm's declines 4 → 1, touching nothing in `dotted:`);
-  and `clusterFieldResolvable` / `clusterSeedSlotByName` compare against strings
-  minted by 8 `translator:` sites (`logical_predicate.go`'s
-  `projCol{name: qual + "." + bare}`). The claim holds for one SUB-CHANNEL, which
-  is where the leverage is: killing `rebaseUnnestOuterLegPredicate`'s mint
-  (`cascades_translator.go:3925`) mechanically retires FOUR readers —
-  `groupByOutputBaker`'s qualification probe, `rebaseOuterLegValueOrdinal`'s
-  default arm, `rebaseOuterLegValue`, `legRef`. Decomposition of the 12 `dotted`
-  authorities: 5 downstream of a dotted mint, 2 downstream of other buckets, 5
-  independent or self-paired. Recorded in RFC-197 `## Order` →
-  "Dependency order, measured".
+  `plans/ordering.go:985` (fixing that single producer collapsed the lazy-render
+  mint class to zero and cut the arm's declines to a lone witness, touching
+  nothing in `dotted:`); and `clusterFieldResolvable` / `clusterSeedSlotByName`
+  compare against strings minted in the `translator:` bucket, by
+  `logical_predicate.go`'s `projCol{name: qual + "." + bare}`. The claim holds
+  for one SUB-CHANNEL, which is where the leverage is: killing
+  `rebaseUnnestOuterLegPredicate`'s mint (`cascades_translator.go:3925`)
+  mechanically retires every reader of that channel — `groupByOutputBaker`'s
+  qualification probe, `rebaseOuterLegValueOrdinal`'s default arm,
+  `rebaseOuterLegValue`, `legRef`.
+
+  COUNTS ARE DELIBERATELY ABSENT HERE, and that is not stylistic. `TODO.md` is a
+  durable home in its own right, this entry is open and planned-from, and nothing
+  gates it — so a bucket size or a decomposition copied into it is a second
+  ungated copy of a fact the RFC's census table already owns, which is the exact
+  rot this item exists to record. An earlier draft of this very block shipped
+  four such tallies. For sizes, read the gated table in RFC-197 `## Order`; the
+  dependency order and the per-group decomposition (by NAME, not by tally) live
+  in that section's "Dependency order, measured".
 
   **(3) RFC-197's census had rotted three ways at once, and nothing checked it.**
   `TestFieldDebtBucketsArePartition` checks the group headers INSIDE

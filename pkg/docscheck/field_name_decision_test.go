@@ -222,6 +222,26 @@ func fieldDecisionAllowed(sites []fieldDecisionSite, site string) (fieldDecision
 //   - harness:    test/oracle-side code, not the engine. Engine identity rules
 //     do not apply, but the entry stays until the harness is audited.
 //
+// EVERY ENTRY STATES A RETIREMENT CONDITION, and the marker is not yet uniform.
+// An entry with no exit condition is unreachable work: nobody can pick it up,
+// because nothing says what closing it means. All entries now carry one, and it
+// must be FALSIFIABLE and MECHANICAL — "retires when X carries Y instead of Z",
+// naming the site and the property, never "retires when the representation
+// improves". Where an entry is genuinely permanent it says WHY rather than
+// inventing an exit.
+//
+// The marker itself splits two ways — `RETIREMENT CONDITION:` and
+// `RETIREMENT CONDITION,` (the latter when a clause like "stated explicitly
+// because..." follows). Any extraction over this list must accept BOTH, or it
+// will silently under-count; that is recorded here rather than left for the next
+// reader to rediscover by getting a wrong number. Prefer the colon form in new
+// entries.
+//
+// The population is best counted by PARSING the map literal, not by regex: many
+// entries wrap their `: {` onto a later line, so a line-oriented pattern like
+// `^\t"pkg/.*": \{` under-reports badly. `TestFieldDecisionAllowlistIsPerSite`
+// and the bucket census read the literal itself for this reason.
+//
 // fieldDebt records HOW MANY decisions a line hosts, not merely that it hosts
 // one. A single source line can host several: logical_predicate.go:4151 packs
 // three `.Field` comparisons into one condition and carried a count of 3, until
