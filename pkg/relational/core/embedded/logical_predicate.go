@@ -7338,6 +7338,78 @@ func aggregateGroupKeyOutputName(gkv values.Value) string {
 	return strings.ToUpper(values.ColumnNameValue(gkv))
 }
 
+// rebasePostAggregateComputedGroupKey rebases a post-aggregate reference to a
+// COMPUTED grouping key (`GROUP BY c1 + 1 … HAVING c1 + 1 > 200`) onto the
+// aggregate's output slot.
+//
+// IT IS A SEPARATE WALK BECAUSE THE UNIT OF MATCHING IS DIFFERENT, and that is
+// the whole defect. Its sibling below walks FieldValues and asks, per field,
+// which grouping key that field IS. A computed key is not a field: its Value is
+// an ArithmeticValue (or a CASE, a COALESCE, …), so the sibling's
+// `gk.Value.(*values.FieldValue)` assertion fails for every key, no reference
+// ever matches, and the reference survives as an INPUT-relative read that is
+// then evaluated against the aggregate's OUTPUT row. Measured, silently and with
+// wrong rows: `SELECT max(c2) FROM flat GROUP BY c1 + 1 HAVING c1 + 1 > 200`
+// returned both groups where the correct answer is none — `c1` carries input
+// ordinal 1 over [ID C1 C2] while the output row is [(C1 + 1), MAX(C2)], whose
+// slot 1 is the AGGREGATE. Pinned by
+// TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot, which asserts BOTH directions —
+// `> 200` admits nothing and `< 200` admits everything — because a
+// one-directional test cannot tell a wrong slot from a dropped predicate.
+//
+// JAVA MATCHES SUB-EXPRESSIONS, NOT FIELDS, which is why this is a port and not
+// an invention. Expression.pullUp (fdb-relational-core …/query/Expression.java,
+// tag 4.12.11.0) walks the post-aggregate expression with
+// `underlying.replace(subExpression -> …)` and, for EVERY sub-expression, asks
+// whether the group-by result value can produce it —
+// `simplifiedValue.pullUp(List.of(subExpression), …)` — replacing the WHOLE
+// matched sub-expression with the pulled-up reference. Its SELECT-list twin
+// Expressions.pullUp (…/query/Expressions.java) is the same walk and asserts
+// exactly one match with AMBIGUOUS_COLUMN. Neither one requires the grouping
+// item to be a field, and neither consults a name.
+//
+// PRE-ORDER IS LOAD-BEARING. values.Replace applies the function to a node
+// before descending, so `c1 + 1` is tested as a whole BEFORE its `c1` child is
+// reached; the replacement is a childless FieldValue, so the descent stops
+// there and the child is never separately rebased. Post-order would rebase `c1`
+// first — against a key it does not match — and then compare a rewritten
+// subtree against the key, which cannot match either.
+//
+// It runs BEFORE the FieldValue walk, and the ordering is not incidental: the
+// value this mints is FRONTIER-PINNED, which is exactly the guard the walk below
+// returns on, so a rebased computed key passes through it untouched instead of
+// being reconsidered as a field.
+func rebasePostAggregateComputedGroupKey(v values.Value, agg *logical.LogicalAggregate) values.Value {
+	return values.Replace(v, func(node values.Value) values.Value {
+		// A FieldValue is the SIBLING walk's business, and leaving it entirely
+		// alone here is what keeps this addition from changing any shape that
+		// worked before: the two walks partition the node kinds between them.
+		if _, isField := node.(*values.FieldValue); isField {
+			return node
+		}
+		for i, gk := range agg.GroupKeys {
+			if gk.Value == nil {
+				continue
+			}
+			if _, keyIsField := gk.Value.(*values.FieldValue); keyIsField {
+				continue
+			}
+			if !values.SemanticEqualsUnderAliasMap(node, gk.Value, values.AliasMap{}) {
+				continue
+			}
+			// The slot is `i` for the same reason the sibling records it: the
+			// aggregate output row is [group keys in this order…, aggregates…],
+			// and Java pulls a post-aggregate reference up by that loop index
+			// (CompensateRecordConstructorRule.java:88-92) rather than by a name.
+			// The name is the display label only.
+			return values.NewFieldValueWithPinnedOrdinalInDomain(
+				aggregateGroupKeyOutputName(gk.Value), i, node.Type(),
+				aggregateNativeOutputDomain(agg))
+		}
+		return node
+	})
+}
+
 // rebasePostAggregateGroupKeyValue rewrites, inside a POST-aggregate value tree,
 // every reference to a QUALIFIED grouped-unnest group key (e.g. FieldValue(QOV(V),
 // V), explain `V.V`) down to the BARE aggregate-OUTPUT name the cursor keys the
@@ -7363,6 +7435,9 @@ func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggreg
 	if v == nil || agg == nil || len(agg.GroupKeys) == 0 {
 		return v
 	}
+	// COMPUTED keys are rebased FIRST, over whole sub-expressions, because a
+	// walk that only visits FieldValues cannot see them at all (below).
+	v = rebasePostAggregateComputedGroupKey(v, agg)
 	return values.MapFieldValues(v, func(fv *values.FieldValue) values.Value {
 		// A node that already carries a RECORDED slot is addressed against the
 		// aggregate's OUTPUT row and is not a candidate for anything here. The
