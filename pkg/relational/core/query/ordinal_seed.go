@@ -745,7 +745,29 @@ func bakeGatedJoinPredicatesChecked(preds []predicates.QueryPredicate, legTypes 
 		if err != nil {
 			panic("predicate bake: " + err.Error()) // the window is within the concat by construction
 		}
-		return baked
+		if _, nested := values.NestedResolvedPath(fv); !nested {
+			return baked
+		}
+		// A NESTED leg reference (`m.n.sk`): fv.Field is still the ROOT column
+		// name, so the resolution above landed on the right slot of the concat —
+		// but that slot holds the enclosing STRUCT, and the rest of the path
+		// descends INSIDE it. Returning `baked` alone would be the silent half of
+		// this bug rather than the loud one: the address is a real leg column, so
+		// nothing downstream rejects it and the predicate compares a BIGINT
+		// against a whole struct. Fuse the remaining accessors on (Java's
+		// FieldPath.withSuffix, reached the same way — the descent is a path
+		// FUSION, nothing is materialized or re-offset), descending against the
+		// leg column's OWN type; the concat states only WHERE the column sits.
+		var into *values.RecordType
+		if idx < len(legType.leafTyp.Fields) {
+			into, _ = legType.leafTyp.Fields[idx].FieldType.(*values.RecordType)
+		}
+		fused, ferr := values.FuseNestedSuffix(baked, into, fv.Resolved.Accessors[1:], fv.Typ)
+		if ferr != nil {
+			drift = true // the descent cannot be stated positionally — never a truncated path
+			return v
+		}
+		return fused
 	}
 	// Bake per CONJUNCT: a top-level AND is split by the partition/pushdown
 	// rules later, so the cross-leg test must apply to each conjunct
@@ -782,18 +804,39 @@ func bakeGatedJoinPredicatesChecked(preds []predicates.QueryPredicate, legTypes 
 // legRef extracts the UPPER leg-correlation name of a BARE FieldValue over a
 // QuantifiedObjectValue — the reference shape all three gated-predicate walks key on
 // (the bake closure, predicateLegAliases, predicateRefsBuriedLeg). Returns "",false for
-// a non-FieldValue, a machinery-owned baked ref (FrontierPinned or multi-accessor —
-// a re-walk must not re-count or re-bake the walk's OWN output), a flat-dotted read
+// a non-FieldValue, a MACHINERY-OWNED baked ref, a flat-dotted read
 // (fv.Field carries a '.', the RFC-142 mergedQOV "leg.col" channel, resolved
-// elsewhere), or a non-QOV child. A SOURCE-RELATIVE baked ref (the resolver's
-// construction-time bind, values.SourceRelativeBaked) is a leg reference like
-// its lazy twin: its ordinal addresses the LEG's own row, not the composed
-// seed, so it must be counted and re-baked here. Each caller then consults
-// legTypes[key] for its own decision — is-a-leg (count), is-buried (bakeCorr != ""),
-// or build the baked node — so one prologue serves three keys.
+// elsewhere), or a non-QOV child.
+//
+// MACHINERY-OWNERSHIP IS THE FRONTIER PIN, NOT THE ACCESSOR COUNT. The walks'
+// own output is NewFieldValueOfOrdinal over a composed frontier, which is
+// FrontierPinned by construction; excluding it is what stops a re-walk from
+// re-counting or re-baking an address that already indexes the composed row.
+// Arity was long used as a second half of that exclusion, on the reading that
+// only machinery mints a multi-accessor path. That reading is refuted: the
+// resolver now mints a USER-WRITTEN nested descent (`m.n.sk`) as ONE unpinned
+// FieldValue with a leg-relative root and the descent in its remaining
+// accessors, so arity selected against exactly the references this walk exists
+// to rebase. A declined nested ref keeps its leg correlation, nothing binds
+// that correlation at execution, and the read falls through to the multi-leg
+// positional row and trips the correct-or-loud guard there.
+//
+// So the gate is the ROOT's leg-relativity (values.RootIsLegRelativeUnpinned),
+// the same predicate the eval-side multi-leg guards and the leg-concat collapse
+// key on: an UNPINNED root addresses the reference's OWN source window whatever
+// its arity, which is precisely the thing that must be counted and re-baked
+// here. Java needs no equivalent — QuantifiedObjectValue.eval picks the row by
+// ALIAS alone and FieldValue.eval descends the remaining ordinals inside that
+// one Message, so no arity ever selects a binding there.
+//
+// Each caller then consults legTypes[key] for its own decision — is-a-leg
+// (count), is-buried (bakeCorr != ""), or build the baked node — so one prologue
+// serves three keys, and widening it widens all three together. That is the
+// intent, not a side effect: a nested reference is a leg reference for counting
+// exactly as it is for baking.
 func legRef(v values.Value) (string, bool) {
 	fv, isFV := v.(*values.FieldValue)
-	if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) || strings.Contains(fv.Field, ".") {
+	if !isFV || (fv.Resolved != nil && !fv.RootIsLegRelativeUnpinned()) || strings.Contains(fv.Field, ".") {
 		return "", false
 	}
 	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
