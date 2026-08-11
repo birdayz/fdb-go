@@ -59,6 +59,19 @@ func TestByteDividedScanConflictsOverExactlyWhatItConsumed(t *testing.T) {
 				"concurrent write to it must abort the scanning transaction",
 		},
 		{
+			// THE ARM THAT PROVES THIS IS A UNION. The first-batch arm above cannot see the
+			// failure mode RFC-121's own note names — "the rows in later batches would carry
+			// no read-conflict" — because batch 1's conflict range would cover row 1 even if
+			// every subsequent batch registered nothing at all. Row consumeN-1 is the LAST row
+			// consumed, in the LAST batch consumed, so it conflicts only if the later batches
+			// registered their own extents too.
+			name:         "last_row_of_last_consumed_batch",
+			writeIdx:     consumeN - 1,
+			wantConflict: true,
+			why: "row 5 was returned by the scan's THIRD batch, so a conflict here is what " +
+				"distinguishes a union of per-batch extents from a single first-batch extent",
+		},
+		{
 			name:         "far_beyond_consumed_prefix",
 			writeIdx:     farBeyond,
 			wantConflict: false,
@@ -95,9 +108,12 @@ func TestByteDividedScanConflictsOverExactlyWhatItConsumed(t *testing.T) {
 				gofdb.RangeOptions{Mode: gofdb.StreamingModeSmall},
 			).Iterator()
 
-			batches := 0
+			batches, firstBatch := 0, 0
 			it.SetTraceLog(func(_, _, returned int, _ bool, _ error) {
 				if returned > 0 {
+					if batches == 0 {
+						firstBatch = returned
+					}
 					batches++
 				}
 			})
@@ -118,6 +134,16 @@ func TestByteDividedScanConflictsOverExactlyWhatItConsumed(t *testing.T) {
 				t.Fatalf("consuming %d rows took %d batch(es): the scan never crossed a boundary, "+
 					"so the union of per-batch conflict ranges under test is a single range and "+
 					"this arm cannot see a boundary-placement bug", consumeN, batches)
+			}
+			// The last-row arm is only meaningful if the last consumed row fell in a LATER
+			// batch than the first. If one batch happened to cover the whole consumed prefix,
+			// that arm silently degenerates into the first-batch arm and stops distinguishing a
+			// union from a single extent — the exact gap it was added to close.
+			if firstBatch >= consumeN {
+				t.Fatalf("the first batch returned %d rows and the scan consumed %d: the whole "+
+					"consumed prefix arrived in ONE batch, so the last-row arm no longer "+
+					"distinguishes a union of per-batch extents from a single first-batch extent",
+					firstBatch, consumeN)
 			}
 
 			// A concurrent, independently committed write landing while the scan is open.

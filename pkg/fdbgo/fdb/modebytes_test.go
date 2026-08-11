@@ -82,6 +82,38 @@ func TestCModeIndex_IsTheCNumbering(t *testing.T) {
 	}
 }
 
+// TestModeTargetBytes_RejectsOutOfRangeMode pins the arm that is also the BOUNDS CHECK.
+//
+// fdb_c.cpp:1022 admits only `mode >= 0 && mode <= FDB_STREAMING_MODE_SERIAL` in C numbering and
+// returns client_invalid_operation otherwise. In Go that guard is what keeps the table index in
+// range, so if it were dropped or written against the Go numbering an out-of-range mode would
+// not error — it would read past the end of modeBytesTable, or silently return a neighbouring
+// mode's target. Neither is visible in a division measurement.
+func TestModeTargetBytes_RejectsOutOfRangeMode(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range []struct {
+		name string
+		mode StreamingMode
+	}{
+		{"below_want_all", StreamingMode(-2)},
+		{"far_below", StreamingMode(-99)},
+		{"just_past_serial", StreamingModeSerial + 1},
+		{"far_above", StreamingMode(99)},
+	} {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := modeTargetBytes(c.mode, 1)
+			if err == nil {
+				t.Errorf("modeTargetBytes(%d) returned %d and no error; a mode outside "+
+					"EXACT..SERIAL is client_invalid_operation, and this guard is also the "+
+					"bounds check on modeBytesTable", int(c.mode), got)
+			}
+		})
+	}
+}
+
 // TestModeTargetBytes_IteratorProgression pins the ITERATOR arm, whose target depends on the
 // iteration number — the arm most likely to be subtly wrong, since nothing else in the range
 // path threaded an iteration count before this port.

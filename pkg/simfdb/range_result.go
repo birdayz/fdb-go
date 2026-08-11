@@ -277,14 +277,31 @@ func (it *rangeIter) fetchBatch() bool {
 // does, the row count a single request may ask for.
 const replyByteLimit = 80000
 
-// serverRowOverheadBytes is the per-row overhead the storage server charges against a reply's
-// byte budget, on top of key+value.
+// serverRowOverheadBytes is an EFFECTIVE, END-TO-END per-row overhead: the constant that, in
+// this simulator, reproduces where a real cluster actually cuts a reply. It is deliberately NOT
+// described as "what the storage server charges", because it is not equal to that, and the
+// difference is the kind that gets "fixed" by the next reader who opens the C++ source.
 //
-// It is MEASURED, not derived: the server's accounting is not the client's, which is the whole
-// reason the byte target has to go on the REQUEST rather than being modelled client-side. The
-// value 24, together with the "accumulate until the budget is REACHED, including the row that
-// crosses it" rule below, reproduces every cross-client division measured against libfdb_c —
-// four row shapes and ten targets:
+// The two named per-row charges in 7.3.77 are both something else:
+//
+//   - The STORAGE SERVER charges key+value+32 — `*pLimitBytes -= sizeof(KeyValueRef) +
+//     i->expectedSize()` (fdbserver/storageserver.actor.cpp:4262, and the same shape at the
+//     merge sites and in the SQLite and RocksDB stores; Redwood charges key+value only).
+//   - The CLIENT's own decrement nets key+value+8, because VectorRef<T>::expectedSize()
+//     ALREADY includes sizeof(T)*n (flow/include/flow/Arena.h:1136-1140), so the
+//     `- (8 - sizeof(KeyValueRef)) * data.size()` term in GetRangeLimits::decrement cancels 24
+//     of that 32.
+//
+// 24 matches NEITHER. Reconciling it to 32 would be a regression: the pure server-charge model
+// predicts 17 rows at LARGE's 4096-byte target for 200-byte rows where 18 is what libfdb_c and
+// a real cluster produce. So this constant stands on measurement, not derivation — which is
+// also why the real client never needs it. The client sends the target and lets the real server
+// apply whatever its true accounting is; only a simulator with no storage server has to guess,
+// and the differentials are what keep the guess honest.
+//
+// The value 24, together with the "accumulate until the budget is REACHED, including the row
+// that crosses it" rule below, reproduces every cross-client division measured against
+// libfdb_c — four row shapes and ten targets:
 //
 //	12B key + 200B value : 256->2,  1000->5,  4096->18, 8192->35
 //	13B key + 200B value : 256->2,  1000->5,  4096->18

@@ -16786,8 +16786,11 @@ None is speculative: each was re-verified against the tree before booking.
     delete_keys/clear_range/mixed and leaves shadow/extend green. Disjoint arms.
   - [x] Server-path division measurement LANDED —
     `libfdbc:TestLibFDBC_RangeBatchDivision` (C's division per mode) and
-    `fdb:TestRangeIterator_DivisionIsRowDrivenNotByteDriven` (Go's, asserted as
-    row-driven and size-invariant, which is the divergence stated as currently-true).
+    Go's own division, asserted then as row-driven and size-invariant — the
+    divergence stated as currently-true. That test has since been rewritten by the
+    port and RENAMED to `fdb:TestRangeIterator_DivisionIsByteDrivenNotRowDriven`;
+    the old name no longer exists in any Go source, so a `--test.run` filter on it
+    would match nothing and report green.
   - [x] PORT, server path — LANDED. Per-mode `target_bytes` onto the request's
     `LimitBytes` (`min` with `replyByteLimit`, porting `transformRangeLimits`) PLUS
     the soft-byte-limit early return in `rangeScanImpl`, so a byte-limited call stops
@@ -16826,9 +16829,11 @@ None is speculative: each was re-verified against the tree before booking.
     the real server apply its own rule.
   - [ ] PORT, RYW path — byte accounting into the merge helpers, guarded by the
     differential above.
-  NOTHING IN THE PORT IS STARTED. The two landed items are test-only; no production
-  file has been modified. The next person picks up at the first unchecked box with
-  the net already standing.
+  WHERE THIS STANDS: the SERVER-PATH half is LANDED (see its box above) and the RYW
+  half is not started. Production files ARE modified — the per-mode target now
+  reaches the request builder, `rangeScanImpl` carries the soft byte limit, and
+  `pkg/simfdb` mirrors both. The next person picks up at the first unchecked box,
+  which is the RYW merge path, with the net already standing.
   WHY THE SPLIT: applying the byte limit in the SERVER
   path (`rangeScanImpl`) alone already converges the no-local-writes case, which is
   what the division tests exercise. The RYW merged path (`client/ryw.go`, mirroring
@@ -16843,9 +16848,10 @@ None is speculative: each was re-verified against the tree before booking.
   DONE = `TestLibFDBC_RangeBatchDivision` asserts the two clients AGREE per mode
   AND asserts the literal expected counts (`[2]x30`, `[5]x12`, `[18 18 18 6]`) —
   an equality check alone is vacuous once both sides derive from one table;
-  `fdb:TestRangeIterator_DivisionIsRowDrivenNotByteDriven` is rewritten against the
-  C table rather than relaxed; each mode arm is mutation-checked and the arms redden
-  disjointly. Client-review gate (FDB C++ dev + Torvalds) applies.
+  the Go-side division test is rewritten against the C table rather than relaxed
+  (and renamed accordingly — `fdb:TestRangeIterator_DivisionIsByteDrivenNotRowDriven`);
+  each mode arm is mutation-checked and the arms redden disjointly. Client-review
+  gate (FDB C++ dev + Torvalds) applies.
 - [x] **The rowdiff nightly ate a two-runner CI fleet for ~5h a night for six
   consecutive nights, and the two instruments built to explain that could not
   run during it** · M · found while root-causing the 2026-08-11 runner wedge ·

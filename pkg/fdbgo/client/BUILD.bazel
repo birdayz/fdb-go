@@ -58,6 +58,7 @@ go_test(
         "atomicops_workload_test.go",
         "bench_test.go",
         "boundary_test.go",
+        "bytetarget_normalize_test.go",
         "c_binding_port_test.go",
         "client_test.go",
         "clientmetrics_test.go",
