@@ -169,6 +169,97 @@ func TestLegRef_AdmitsANestedUnpinnedRefAndStillDeclinesMachineryOutput(t *testi
 	}
 }
 
+// A FUSED nested node is DISPLAY-named after its LEAF, so the display name must
+// never select the slot. This is not a hypothetical: it broke this fix.
+//
+// RFC-231 established that a fused reference carries ONE name and that it is the
+// leaf's (`m.n.sk` renders as `SK`), because that is what Java's
+// getLastFieldName returns. The bake here originally resolved the root with
+// `leafTyp.FieldIndexUnique(fv.Field)`, which was correct only while fv.Field
+// happened to be the struct ROOT. The moment the leaf naming landed, `SK`
+// resolved against the leg window and FOUND the top-level `SK` column — a real
+// field, a valid ordinal, the wrong one. That is the silent class: an ordinal
+// does not fail the way an unresolvable name does.
+//
+// The fixture is the collision itself — a flat `SK` beside a struct `N` whose
+// member is also `SK` — and the ordinals are DIFFERENT numbers so the right
+// answer and the wrong one cannot coincide. Keying on the resolved path's ROOT
+// ACCESSOR is what makes this answer `N`; keying on the display name answers the
+// flat column.
+func TestLegRefRootInWindow_ResolvesTheRootAccessorNotTheLeafDisplayName(t *testing.T) {
+	t.Parallel()
+
+	// Slot 1 is the decoy: a real flat column named exactly like the nested leaf.
+	window := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "SK", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "N", FieldType: &values.RecordType{Fields: []values.Field{
+			{Name: "SK", FieldType: values.NotNullLong, Ordinal: 0},
+		}}, Ordinal: 2},
+	}}
+
+	// The fused shape exactly as it is minted: DISPLAY name "SK" (the leaf),
+	// resolved path rooted at "N".
+	fused := &values.FieldValue{
+		Field: "SK",
+		Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("M")),
+		Typ:   values.NotNullLong,
+		Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{
+			{Field: "N", Ordinal: 2},
+			{Field: "SK", Ordinal: 0},
+		}},
+	}
+	idx, suffix, ok := legRefRootInWindow(fused, window)
+	if !ok {
+		t.Fatal("legRefRootInWindow declined a fused nested reference whose ROOT column " +
+			"is present in the window")
+	}
+	if idx != 2 {
+		t.Errorf("resolved the root to slot %d, want 2 (the struct column N).\n"+
+			"Slot 1 is the flat SK — the fused node's DISPLAY name. Resolving by display "+
+			"name lands on a real column of the wrong type, and no ordinal check downstream "+
+			"can reject it.", idx)
+	}
+	if len(suffix) != 1 || suffix[0].Field != "SK" {
+		t.Errorf("suffix = %v, want one accessor SK — the descent must survive the "+
+			"re-anchor, or the predicate compares the whole struct", suffix)
+	}
+
+	// The FLAT twin over the same window keeps the name lookup, so the fix is not
+	// a blanket switch to accessors: a single-accessor node's display name IS its
+	// column name, and it must still resolve to slot 1 rather than to N.
+	flat := &values.FieldValue{
+		Field: "SK",
+		Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("M")),
+		Typ:   values.NotNullLong,
+		Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{
+			{Field: "SK", Ordinal: 1},
+		}},
+	}
+	flatIdx, flatSuffix, flatOK := legRefRootInWindow(flat, window)
+	if !flatOK || flatIdx != 1 || len(flatSuffix) != 0 {
+		t.Errorf("flat reference resolved to (%d, %v, %v), want (1, [], true) — the "+
+			"root-accessor rule must not disturb the single-accessor path", flatIdx, flatSuffix, flatOK)
+	}
+
+	// An ABSENT root declines rather than falling back to the display name, which
+	// is the property that keeps a decline from becoming a wrong-slot read.
+	absent := &values.FieldValue{
+		Field: "SK",
+		Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("M")),
+		Typ:   values.NotNullLong,
+		Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{
+			{Field: "NOPE", Ordinal: 0},
+			{Field: "SK", Ordinal: 0},
+		}},
+	}
+	if _, _, ok := legRefRootInWindow(absent, window); ok {
+		t.Error("a fused reference whose ROOT column is absent from the window resolved " +
+			"anyway — a fallback to the leaf display name would find the flat SK and " +
+			"read the wrong column silently")
+	}
+}
+
 // nestedLegDescent is a user-written `<corr>.<root>.<leaf>`: ONE UNPINNED
 // FieldValue whose root accessor is the leg column and whose second descends
 // inside it. Field is the ROOT name, which is what every leg walk resolves.
