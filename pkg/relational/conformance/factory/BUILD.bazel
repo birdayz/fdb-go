@@ -42,6 +42,7 @@ go_test(
         "nest_tag_test.go",
         "nested_axis_classify_test.go",
         "nested_axis_fdb_test.go",
+        "nested_corpus_collision_fdb_test.go",
         "nested_outer_multileg_fdb_test.go",
         "oracle_detectors_test.go",
         "pipeline_test.go",
