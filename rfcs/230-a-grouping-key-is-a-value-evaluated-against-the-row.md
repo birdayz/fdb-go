@@ -1369,6 +1369,42 @@ three**, and §10 pins that they agree.
 
 ### 7.3 The census — CLASSIFIED, bounded, and committed as a guard
 
+**POPULATION MOVED 58 → 60, and one site changed class from a live defect to
+already-correct.** Recorded here rather than rewritten into the figures below,
+which are the record of what earlier revisions claimed. The move is *not* this
+RFC's work: it came from the fix that made a struct-element MEMBER reference
+resolve inside an EXISTS body, which is booked in `TODO.md` and pinned by
+`TestFDB_UnnestElementMemberInExists` /
+`TestFDB_UnnestElementMemberInExistsConvertedSentinel`.
+
+Two expressions were added, both landing in the CODE population (the first move
+since 52 → 56 to do so rather than only shifting the comment bucket), and both
+class **(c) already-correct** — they HANDLE a multi-accessor path rather than
+gating on it:
+
+- `cascades_translator.go#bakeUnnestElementRefOrdinal` — now fuses
+  `Accessors[1:]` onto the baked element slot. **This site was a live (d) before
+  the fix, and it was not classified as one because it had no arity expression
+  at all**: it selected candidates with `SourceRelativeBaked()`, whose
+  `len(Accessors) == 1` requirement is spelled inside the *predicate's name*.
+  That is §7.5's discard class showing up inside §7.3's own population — a site
+  that mishandled nesting without an arity test the sweep could see. Its safety
+  net `unnestExistsRefSurvivesUnbaked` shared the same predicate and so reported
+  the tree clean. Measured cost: `EK|` where `EK|10` is correct — a silent
+  zero-row EXISTS, not an error.
+- `cascades_translator.go#rewriteUnnestPredicate` — a second expression, the
+  member-rebase arm, the positive twin of that function's existing decline.
+
+**A superseded claim retired while here.** `rewriteUnnestPredicate`'s census
+entry asserted that no query's rows were demonstrably corrected because the
+emblematic shape (`WHERE i.sku = 'x'` over `orders.items AS i`) "returns ZERO
+ROWS identically before and after — a SEPARATE, still-open defect ... that MASKS
+this one end-to-end". That predicate shape ANSWERS: measured,
+`SELECT x.ek FROM t, t.arr AS x WHERE x.d.dk = 91` → `EK|10`, pinned by the
+`control_two_level_member_beside_exists` arm. The masking defect the claim rested
+on is not there to mask anything, and the claim is corrected at the census entry
+too rather than only here.
+
 **Rev 6 published a population of "52 sites" and booked its classification as owed. The
 classification is done, it is committed as a guard (PR #715, open), and rev 7 states it here
 as the settled replacement for a count that was wrong in six revisions.**

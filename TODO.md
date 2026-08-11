@@ -17011,7 +17011,8 @@ None is speculative: each was re-verified against the tree before booking.
   `ordinal_seed.go`'s bake got — resolve the root from `Accessors[0]`, fuse
   `Accessors[1:]`, or decline with `ok=false`, never skip.
   PINNED, as a divergence sentinel rather than a blessing, by
-  `TestFDB_UnnestElementMemberInExistsDivergesFromJava`
+  `TestFDB_UnnestElementMemberInExistsConvertedSentinel` (renamed from
+  `TestFDB_UnnestElementMemberInExistsDivergesFromJava` when it was converted)
   (`pkg/relational/sqldriver/unnest_element_member_in_exists_fdb_test.go`), which
   drives a bare SCALAR element through the same buried-conjunct path first so a
   green cannot come from a family that stopped planning, and whose failure
@@ -17020,6 +17021,83 @@ None is speculative: each was re-verified against the tree before booking.
   DONE: the wrong-rows half is fixed upstream. This entry closes when the scope
   divergence is fixed and the element bake/net are corrected in the same change,
   with the sentinel converted to a row assertion.
+  **CLOSED — all three conditions met together, in the entry two below this one.**
+  Two corrections to the prose above, which must not be carried forward:
+  (a) the scope divergence was NOT one dropped argument at
+  `logical_predicate.go:9302`. That site is real but is only ONE of THREE
+  fields-less mints, and it is not the one the `SELECT … FROM t.arr AS x` shape
+  reaches — that shape is served by a FOURTH, hand-rolled inline mint inside
+  `tryBuildCorrelatedPrimaryUnnest` which never calls the shared helper, so a
+  census of the helper's call sites cannot see it.
+  (b) "it cannot be reached" understated the risk once it was: with the scope
+  repaired, the element bake did not merely admit an unbaked nested ref — the
+  outer-only conjunct channel returned ZERO ROWS SILENTLY (`EK|` for a query
+  whose answer is `EK|10`), measured, and the net reported the tree clean. The
+  fix keys both on `RootIsLegRelativeUnpinned()` and fuses `Accessors[1:]`, which
+  is what this entry prescribed.
+  The sentinel was CONVERTED, not deleted, and now asserts rows.
+---
+
+- [x] **The unnest element's struct fields reached only ONE of the four scopes that bind it, so a member reference resolved outside EXISTS and raised 42703 inside it.**
+  MEASURED on master `3179bd6984d028d6324e3f7a3324feb60414aaa9`:
+  `SELECT t.id FROM t WHERE EXISTS (SELECT x FROM t.arr AS x WHERE x.ek = 20)`
+  → `ERROR: 42703: column "EK" does not exist`, while
+  `SELECT x.ek FROM t, t.arr AS x` answers. Java answers both
+  (`valid-identifiers.yamsql:221,226` drive the flat and the two-level member on
+  a lateral struct-element alias from inside an EXISTS body; Java gets there
+  structurally because the unnest quantifier's flowed object type IS the element
+  type — `LogicalOperator.generateCorrelatedFieldAccess`).
+  Go carries the element's fields onto a VIRTUAL one-column source instead, and
+  only `unnestScopeSourceAdder` (the SELECT scope) was passing them. THREE other
+  mints were not, each independently pinned by a mutation that reddens its own
+  arm and nothing else:
+  `buildOuterScopeSources` (a correlated subquery's OUTER scope),
+  `addCorrelatedJoinScopeSource` (a correlated subquery's inner JOIN leg), and
+  a FOURTH, hand-rolled inline mint inside
+  `existsSubqueryPlanner.tryBuildCorrelatedPrimaryUnnest` that does not call the
+  shared helper at all — the one a census of the helper's call sites cannot see.
+  The three remaining `unnestVirtualScopeSource(j)` (fields-less) call sites are
+  CORRECT: `logical_predicate.go:7719,8101,8337` consume only the binding's
+  TOP-LEVEL column NAMES (star expansion and the column-name census), which the
+  element's fields do not change. Census command:
+  `grep -rn "unnestVirtualScopeSource" --include='*.go' .`
+  Fixing resolution armed two paths that were masked behind the refusal, both
+  fixed in the same change:
+  (a) the correlated-primary member reached the executor as an unbound leaf —
+  it is now rebased onto the Explode's flowed element
+  (`rebaseUnnestElementMemberOntoExplode`), which is the datum-binding contract
+  the runtime already implements;
+  (b) an outer-only conjunct naming an element MEMBER inside a correlated EXISTS
+  body returned ZERO ROWS SILENTLY. `bakeUnnestElementRefOrdinal` skipped it and
+  `unnestExistsRefSurvivesUnbaked` declared the tree clean, because BOTH keyed on
+  `SourceRelativeBaked()`, which additionally demands a SINGLE accessor and so
+  waved a two-accessor member path through. Both now key on
+  `RootIsLegRelativeUnpinned()`, and the bake keeps the accessors below the root.
+  The scalar-element twin was never affected (its ref is single-accessor) and is
+  pinned as a control.
+  Pinned by `pkg/relational/sqldriver/unnest_element_member_in_exists_fdb_test.go`
+  (15 row-asserting arms; 5 mutations, and the three scope-site mutations redden
+  three DISJOINT arm sets).
+  The projection gate this change did NOT close is booked as its own UNCHECKED
+  item immediately below — deliberately not as prose inside this completed one,
+  where nothing would ever pick it up.
+
+- [ ] **A correlated array EXISTS refuses every inner projection except the bare
+  element alias, including the `SELECT *` form Java's own corpus uses.**
+  The correlated
+  primary unnest in an EXISTS body refuses any projection other than the bare
+  element alias — `SELECT *` / `SELECT 1` / `SELECT x.ek` all give
+  `0AF00: correlated array EXISTS currently requires projecting its element
+  alias` (`logical_predicate.go`, the projection gate in
+  `tryBuildCorrelatedPrimaryUnnest`). Java accepts `select * from t.arr as x
+  where …` and returns rows, so this is the shape its own yamsql corpus uses.
+  It is a LOUD refusal, never a wrong answer, and it is upstream of everything
+  above — it is why the tests spell the projection `SELECT x`. Pinned as a
+  divergence sentinel by the `projection_gate_still_refuses_star_divergence_sentinel`
+  arm, whose re-arm note says to assert rows (`ID|1`) when the gate is widened.
+  DONE for the gate = EXISTS ignores the inner projection as Java does (EXISTS
+  observes cardinality only), with the projection still validated rather than
+  skipped, and that sentinel arm converted to a row assertion.
 - [ ] **The duplicate-GROUP-BY-key gate and the post-aggregate rebase decide key
   identity by DIFFERENT predicates, so two semantically-equal grouping keys reach
   a first-match loop and Go answers where Java raises** · M · found while folding
@@ -17221,3 +17299,95 @@ None is speculative: each was re-verified against the tree before booking.
   SPLIT THIS ITEM when step 1 lands rather than holding it open — the two steps
   have different blast radii, different review requirements, and, as the lists
   above show, disjoint closable sets.
+
+---
+
+- [ ] **Nine `SourceRelativeBaked()` call sites perform an arity decision that the accessor-arity census cannot classify — they are now ENUMERATED but not CLASSIFIED.**
+  `FieldValue.SourceRelativeBaked()` requires `len(Accessors) == 1`, and that
+  requirement lives inside the PREDICATE'S NAME. A site gating on it therefore
+  makes an arity decision while containing no `len(...Accessors)` expression, so
+  the arity sweep — a regexp over source — cannot see it. That is not
+  hypothetical: `bakeUnnestElementRefOrdinal` sat in exactly that hole with a
+  LIVE defect (a struct-element MEMBER reference was skipped, mis-resolved, and
+  EXISTS dropped every row SILENTLY) while `arityLiveDefect: 0` read green.
+  **The direction is the danger: such a site is invisible while broken and
+  becomes visible only by being FIXED**, because the repair is what introduces
+  the explicit arity expression.
+  ENUMERATION IS DONE and is guarded —
+  `TestSourceRelativeBakedSitesAreVisibleToTheCensus`
+  (`pkg/docscheck/source_relative_baked_visibility_test.go`) requires every call
+  site to be CLASSIFIED in `accessorAritySites` or LEGIBLE by a comment quoting
+  `len(Accessors) == 1`, fails on any site that is neither, and names GROWTH as
+  the alarm direction. It found 8 unguarded; all now carry a comment. **A
+  legibility comment states a FACT, never a verdict** — the classification below
+  is what is still owed. 10 sites total: 1 classified, 9 legible-only.
+  THE SHAPE TO PATTERN-MATCH, which is what makes this cheap for the next reader:
+  `if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) { return node }`
+  — a SKIP that silently passes a multi-accessor unpinned reference through
+  unbaked. Not every site below has it, and the differences are the point:
+  · **`clustered_outer_scalar.go:183`** (`clusterPullUp.bake`) — the skip shape
+    exactly. UNMEASURED.
+  · **`clustered_outer_scalar.go:391`** (`collectClusterOuterRefs`) — the skip
+    shape, but this walk COUNTS rather than bakes, and its own comment says the
+    refs "must be COUNTED or the decline guard misses them". So the consequence
+    is not a bad read but a MISSED DECLINE, which is the fail-open direction.
+    UNMEASURED, and the highest-value one to look at first for that reason.
+  · **`clustered_outer_scalar.go:660`** (`bakeClusterLegRefs`) — the skip shape.
+    UNMEASURED.
+  · **`unnest_gather.go:373`** (`bakeGatheredGroupValue`) — the skip shape, and
+    the closest sibling of the fixed defect: same gate, same
+    `elementSlots map[string]int`, same name-keyed `fv.Field` lookup, and its own
+    doc records a prior mis-bake to the element slot. **MEASURED, DOES NOT
+    REPRODUCE** across six shapes (two-level GROUP BY, HAVING, member in an
+    aggregated position, and a grouped unnest with the member correlated into an
+    EXISTS) — pinned by `TestFDB_UnnestElementMemberInGather`, whose doc states
+    what it does NOT establish: those shapes are correct, the gate still carries
+    the narrow predicate, and the reason they miss it is a property of how they
+    lower rather than a guarantee anyone stated.
+  · **`exists_gathered_cluster_wrap.go:159`** (`rebaseLegRefsToBox`) — the skip
+    shape, but here the decline is DELIBERATE and already pinned by
+    `TestRebaseLegRefsToBox_DeclinesANestedDescent`, with the surrounding comment
+    arguing that a decline costs the ordinal wrap while a half-widening costs
+    rows. Most likely already class (a); it needs the verdict recorded, not an
+    investigation.
+  · **`exists_gathered_cluster_wrap.go:343`** (`wrapRVFullyBaked`) — **INVERTED
+    relative to every site above**: `if nv.Resolved == nil || nv.SourceRelativeBaked()`
+    declines the SINGLE-accessor case, so a multi-accessor unpinned reference is
+    NOT declined and is treated as build-evaluable. The other sites risk skipping
+    a nested reference; this one risks ADMITTING one. UNMEASURED, and it is the
+    site whose failure mode is least like the others.
+  · **`rule_implement_nested_loop_join.go:4795`** (`correlatedFastPathOperand`)
+    and **`plan_visitor.go:1935`** (`resolveBaked`) — ADMIT gates, not skips: the
+    predicate admits only a flat reference, so a nested descent falls to the
+    general path or fails to resolve. Consequence is a lost fast path or a loud
+    miss, not a silent wrong read. Lowest risk; still owed a verdict.
+  DONE = each of the nine carries a class and a reason in `accessorAritySites`,
+  with the three unmeasured skip sites and the inverted one either reproduced
+  (fix + row-asserting pin) or pinned as negative results the way
+  `unnest_gather.go:373` was. Do NOT discharge this by deleting the legibility
+  comments — that re-hides the sites.
+
+- [ ] **The accessor-arity census records ONE class per SYMBOL, but a symbol can hold expressions of different classes — and now demonstrably does.**
+  `accessorAritySites` is keyed `file#symbol` with a single `class` plus an
+  `exprs` count. `exprs` works: adding an arity expression to an already-classified
+  function fails the census and forces re-classification (measured — it did
+  exactly that for `rewriteUnnestPredicate`). What is NOT captured is the class of
+  the ADDED expression.
+  `pkg/relational/core/query/cascades_translator.go#rewriteUnnestPredicate` now
+  holds TWO expressions of OPPOSITE class under a single `(a)` label: the
+  element-substitution arm's correct DECLINE (a), and the member-rebase arm which
+  HANDLES a multi-accessor path (c). The second is recorded in the entry's prose
+  only, so the class TALLY (`arityNestingOK` etc.) no longer describes the
+  expressions it is counted from — it describes symbols.
+  PRE-EXISTING, not introduced here: 10 symbols already carry `exprs > 1`
+  (`grep -oE 'exprs: [0-9]+' pkg/docscheck/accessor_arity_census_test.go`), and
+  whether any of the other nine is mixed-class has not been audited.
+  `rewriteUnnestPredicate` is simply the first KNOWN mixed one.
+  DELIBERATELY NOT FIXED IN THE CHANGE THAT FOUND IT: reworking the census's class
+  model inside a wrong-rows fix would bury an instrument defect inside a behaviour
+  change, and the two want separate review.
+  DONE = either the class moves per-expression (`classes []accessorArityClass`
+  matching `exprs`, so the tally counts expressions), or the census states
+  explicitly that its tally is symbol-granular and the per-expression verdicts
+  live in prose — and the nine other multi-expression symbols get audited for
+  mixed class either way.

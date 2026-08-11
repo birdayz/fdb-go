@@ -1931,6 +1931,7 @@ func resolveBaked(rv values.Value, childlessOK bool) *values.FieldValue {
 	if fv.Child != nil && fv.RootIsLegRelativeUnpinned() {
 		return fv
 	}
+	// SourceRelativeBaked() requires len(Accessors) == 1, so only a FLAT childless bake resolves here; a childless DESCENT is declined by arity, not by scope.
 	if childlessOK && fv.Child == nil && fv.SourceRelativeBaked() {
 		return fv
 	}

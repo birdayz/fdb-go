@@ -2206,6 +2206,52 @@ func (t *cascadesTranslator) unnestFallbackOrReject(j *logical.LogicalJoin, u *l
 //     This mirrors Java's `generateCorrelatedFieldAccess` primitive branch, which
 //     binds the alias directly to `resultingQuantifier.getFlowedObjectValue()`
 //     (the QOV) rather than a FieldValue accessor. RFC-142.
+//
+// rebaseUnnestElementMemberOntoExplode gives a correlated-primary unnest's
+// STRUCT-ELEMENT MEMBER reference the CHILD it is missing: the Explode's element
+// quantifier.
+//
+// fv arrives CHILDLESS — a source-relative baked path over the EXISTS scope's
+// one-column virtual source, whose accessor 0 is the element slot and whose
+// accessors 1..n descend into the element's own struct. Childless, it names no
+// quantifier at all, so evaluation had no correlation to bind and failed loud.
+//
+// The PATH is already right and is kept verbatim; only the child is supplied.
+// That is precisely the runtime contract for an unnest element: the Explode
+// binds the element as ONE datum (a proto message for a struct element), the
+// binding itself consumes the root accessor, and descendResolvedPath applies
+// accessors 1..n to it (values.go, the *RowEvalContext datum arm). The result is
+// therefore the SAME node shape an ordinary lateral unnest produces for `x.ek`
+// — one binding described one way, which is the property whose absence made
+// this reference resolve outside EXISTS and not inside.
+//
+// The path stays UNPINNED deliberately: it is the resolver's bind against the
+// element's own layout, not a machinery bake over a composed frontier, and
+// frontierContractGuard admits exactly the unpinned kind onto a datum binding.
+//
+// Declines (ok=false) when the collection does not flow an array of records —
+// a scalar element has no members, and the whole-element arm above already
+// handles the scalar alias reference.
+func rebaseUnnestElementMemberOntoExplode(
+	fv *values.FieldValue,
+	u *logical.LogicalUnnest,
+	unnestCorr values.CorrelationIdentifier,
+) (values.Value, bool) {
+	arr, isArr := u.CorrelatedCollection.Type().(*values.ArrayType)
+	if !isArr || arr.ElementType == nil {
+		return nil, false
+	}
+	if _, isRec := arr.ElementType.(*values.RecordType); !isRec {
+		return nil, false
+	}
+	return &values.FieldValue{
+		Field:    fv.Field,
+		Typ:      fv.Typ,
+		Child:    values.NewQuantifiedObjectValueOfType(unnestCorr, arr.ElementType),
+		Resolved: fv.Resolved,
+	}, true
+}
+
 func rewriteUnnestPredicate(p predicates.QueryPredicate, u *logical.LogicalUnnest) predicates.QueryPredicate {
 	unnestCorr := unnestSourceCorrelation(u)
 	asAlias := strings.ToUpper(u.Alias)
@@ -2245,6 +2291,38 @@ func rewriteUnnestPredicate(p predicates.QueryPredicate, u *logical.LogicalUnnes
 						unnestCorr,
 						fv.Type(),
 					)
+				}
+				// A MEMBER of a STRUCT element (`x.ek`, `x.d.dk`). The same
+				// one-column virtual source resolves it to a source-relative
+				// baked path whose ROOT is the element slot (#0) and whose
+				// REMAINING accessors are ordinals within the element's own
+				// record type. Nothing downstream can serve that root: it
+				// addresses the EXISTS scope's virtual row, which no executor
+				// context supplies, so the reference reached evaluation as an
+				// unbound leaf and failed loud. Rebase it onto the Explode's
+				// flowed element — which IS the element record — by replaying
+				// the remaining accessors as ordinal bakes over the element QOV.
+				// That is Java's shape exactly: the unnest quantifier's flowed
+				// object type IS the element type, so a member of the element is
+				// an ordinary field access on the quantifier
+				// (LogicalOperator.generateCorrelatedFieldAccess).
+				if u.CorrelatedCollection != nil &&
+					!withOrdinality &&
+					asAlias != "" &&
+					fv.Resolved != nil &&
+					!fv.Resolved.FrontierPinned &&
+					len(fv.Resolved.Accessors) > 1 &&
+					// The ROOT ORDINAL alone decides this, and deliberately so.
+					// The EXISTS scope's unnest source is a ONE-COLUMN virtual
+					// table, so slot 0 IS the element — there is nothing else it
+					// could address. A name comparison on Accessors[0].Field
+					// would add no discrimination and would make a DISPLAY name
+					// decide a binding, which is the failure this tree pins
+					// against.
+					fv.Resolved.Accessors[0].Ordinal == 0 {
+					if rebased, ok := rebaseUnnestElementMemberOntoExplode(fv, u, unnestCorr); ok {
+						return rebased
+					}
 				}
 				return node
 			}
@@ -4147,9 +4225,19 @@ func bakeUnnestElementRefOrdinal(
 		}
 		return values.Replace(v, func(node values.Value) values.Value {
 			fv, isFV := node.(*values.FieldValue)
-			// A source-relative baked element ref re-bakes to its seed slot
-			// like its lazy twin; machinery-owned baked nodes are final.
-			if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
+			// An UNPINNED baked element ref re-bakes to its seed slot like its
+			// lazy twin; machinery-owned (pinned) nodes are final.
+			//
+			// Keyed on the ROOT's leg-relativity, NOT on SourceRelativeBaked:
+			// the narrower predicate additionally demands a SINGLE accessor, so
+			// it waved through a MEMBER of a struct element (`x.ek`, `x.d.dk` —
+			// a two-accessor unpinned path). Such a ref then reached the merged
+			// row still addressing the EXISTS scope's own layout, the comparison
+			// went NULL, and EXISTS dropped every row SILENTLY — the exact
+			// failure the single-accessor arm below was written to prevent, one
+			// accessor deeper. The safety net shared the same narrow predicate,
+			// so it reported the tree clean.
+			if !isFV || (fv.Resolved != nil && !fv.RootIsLegRelativeUnpinned()) {
 				return node
 			}
 			if fv.Child != nil {
@@ -4158,13 +4246,31 @@ func bakeUnnestElementRefOrdinal(
 					return node // inner-table or other QOV — not the element
 				}
 			}
-			slot, ok := elementSlots[strings.ToUpper(fv.Field)]
+			// The slot is named by the path's ROOT, which is the element alias;
+			// fv.Field is the display LEAF and names the MEMBER on a descent.
+			rootName := fv.Field
+			if fv.Resolved != nil {
+				rootName = fv.Resolved.Root().Field
+			}
+			slot, ok := elementSlots[strings.ToUpper(rootName)]
 			if !ok {
 				return node
 			}
 			baked, err := values.NewFieldValueOfOrdinal(mergedQOV, slot)
 			if err != nil {
 				return node
+			}
+			// A DESCENT keeps its accessors below the root: only the root read
+			// moves onto the merged row. The pin and domain come from the root
+			// step (WithSuffix takes them from the receiver), which is what makes
+			// the fused node machinery-owned and therefore final to the net.
+			if fv.Resolved != nil && len(fv.Resolved.Accessors) > 1 {
+				baked = &values.FieldValue{
+					Field:    fv.Field,
+					Typ:      fv.Typ,
+					Child:    mergedQOV,
+					Resolved: baked.Resolved.WithSuffix(&values.FieldPath{Accessors: fv.Resolved.Accessors[1:]}),
+				}
 			}
 			values.NoteFieldValueMint(fv.Field, baked.Resolved != nil)
 			baked.Field = fv.Field
@@ -4193,32 +4299,18 @@ func unnestExistsRefSurvivesUnbaked(
 		}
 		values.WalkValue(v, func(node values.Value) bool {
 			fv, isFV := node.(*values.FieldValue)
-			// A source-relative baked ref mis-resolves over the NLJ layout
-			// exactly like a lazy one — it SURVIVES; a FrontierPinned
-			// (machinery-owned) baked ofOrdinal is safe.
+			// An UNPINNED baked ref mis-resolves over the NLJ layout exactly
+			// like a lazy one — it SURVIVES; only machinery-owned (PINNED)
+			// baked nodes are safe.
 			//
-			// THE ARITY HALF OF THIS KEY IS A KNOWN GAP, NOT A JUSTIFIED
-			// EXCLUSION. SourceRelativeBaked additionally requires a SINGLE
-			// accessor, so an UNPINNED MULTI-accessor node — which is what a
-			// user-written nested descent is — is skipped here as "safe" when it
-			// is not: it would survive unbaked while this net reports the tree
-			// clean, and bakeUnnestElementRefOrdinal skips the same shape without
-			// setting a failure flag.
-			//
-			// It is unreachable today only because a member reference on a struct
-			// element is refused during resolution inside an EXISTS (42703) — and
-			// THAT REFUSAL IS ITSELF A GO-ONLY DIVERGENCE OWED A FIX, not a rule
-			// to rely on: Java answers both forms (valid-identifiers.yamsql:221
-			// and :226), and Go's refusal is a dropped argument at
-			// embedded/logical_predicate.go:9302, which passes no struct fields to
-			// the EXISTS scope. So the day that omission is repaired, this gap goes
-			// live the same day — the scope fix and this one are ONE change.
-			// Sentinelled by TestFDB_UnnestElementMemberInExistsDivergesFromJava in
-			// pkg/relational/sqldriver and booked in TODO.md Phase 12. Fixing it
-			// means what ordinal_seed.go's bake did: derive the root from
-			// Accessors[0] and fuse Accessors[1:], or decline — never skip.
-			if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
-				return true // baked ofOrdinal (or non-FieldValue) — descend/skip
+			// Keyed on the ROOT's leg-relativity, NOT on SourceRelativeBaked,
+			// which also demanded a SINGLE accessor and so declared a
+			// struct-element MEMBER ref (`x.ek`, two unpinned accessors) safe.
+			// That is the shape whose bake the sibling above was missing, so
+			// the one instrument that could have caught the silent 0-row drop
+			// was blind to precisely it.
+			if !isFV || (fv.Resolved != nil && !fv.RootIsLegRelativeUnpinned()) {
+				return true // pinned ofOrdinal (or non-FieldValue) — descend/skip
 			}
 			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
 				leg := strings.ToUpper(qov.Correlation.Name())

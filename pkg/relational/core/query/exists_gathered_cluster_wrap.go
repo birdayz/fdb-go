@@ -155,6 +155,7 @@ func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier
 		// name model, which answers the shape correctly. A decline costs the
 		// ordinal wrap; either half-widening costs rows. Pinned so it cannot be
 		// widened halfway; see TestRebaseLegRefsToBox_DeclinesANestedDescent.
+		// SourceRelativeBaked() requires len(Accessors) == 1, which is what makes the nested-descent decline described above deliberate rather than incidental — pinned by TestRebaseLegRefsToBox_DeclinesANestedDescent.
 		if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 			return n
 		}
@@ -338,6 +339,7 @@ func wrapRVFullyBaked(v values.Value, boxBinding string, scalarAliases map[value
 			// source row, not the box row the build context serves — only the
 			// rebase's machinery-owned box ofOrdinals qualify. Decline like a
 			// lazy read (fail-open to the name model).
+			// SourceRelativeBaked() requires len(Accessors) == 1, so this test is INVERTED relative to its siblings: a multi-accessor unpinned ref is NOT declined and is treated as build-evaluable; classification owed (TODO.md).
 			if nv.Resolved == nil || nv.SourceRelativeBaked() {
 				ok = false
 				return false
