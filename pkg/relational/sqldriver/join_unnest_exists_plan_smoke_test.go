@@ -8,6 +8,21 @@ import (
 
 // TestJoinUnnestExistsPlanSmoke is a broad PLAN-ONLY smoke test: every join /
 // unnest / EXISTS shape below must keep planning cleanly. Planning-only.
+//
+// A plan-only assertion on a data path is normally how a wrong-rows defect
+// hides — it cannot separate right rows from wrong rows from NO rows. The unnest
+// arms here are immune, and the reason is a property of the SHARED SCHEMA rather
+// than of the shapes: `existsGatherSchemaMetadata` declares ARR as
+// `api.NewArrayType(api.NewIntegerType(false), true)`, a SCALAR-element array
+// (box_join_multi_exists_gather_fdb_test.go). No reference over such an element
+// can carry a second accessor, so the descent past the binding — the part that
+// once got dropped at evaluation and emptied a struct-element predicate — is a
+// no-op by construction here.
+//
+// That immunity is not durable and nothing else records it: add a STRUCT-array
+// column to this schema and these arms silently regain the ability to hide
+// exactly that class. A struct-array shape added here needs a ROW twin, not
+// another entry in the list below.
 func TestJoinUnnestExistsPlanSmoke(t *testing.T) {
 	t.Parallel()
 	md := existsGatherSchemaMetadata(t)

@@ -116,4 +116,47 @@ func TestFieldValue_DatumBinding_AppliesPathRemainder(t *testing.T) {
 			t.Errorf("got %#v, want int64(7) — a remainder-free path serves the datum verbatim", got)
 		}
 	})
+
+	// An UNBAKED reference (no Resolved path) over a datum reads the datum WHOLE,
+	// and that is the CORRECT answer rather than a residue of this class.
+	//
+	// It looks like the same defect in another representation — no remainder, so
+	// nothing says which member was wanted — and the obvious closure is to make
+	// it loud. That closure is wrong, and this arm is here to say so, because the
+	// reasoning that rejects it is not recoverable from the code alone: the
+	// whole-datum read is LIVE. The sort-key leg fallback mints an unbaked
+	// `NewFieldValue(qov, col, …)` when a leg's layout is not derivable
+	// (cascades_translator.go), and for a leg bound to a datum the whole datum is
+	// the right answer; going loud would break that read.
+	//
+	// What actually keeps a MEMBER reference out of this arm is that a member
+	// reference is BAKED — `i.sku` arrives as the two-accessor path the arms
+	// above exercise. So the protection is "members are baked", not "unbaked is
+	// loud". If a producer ever mints an unbaked MEMBER reference over a datum,
+	// that producer is the bug, and no guard here could have told it apart from
+	// the legitimate whole-datum read.
+	//
+	// TestFieldValue_UnpinnedNonOrdinalBinding_IsSilent pins the same asymmetry
+	// from the pinned/unpinned side; this arm pins it from the unnest side so the
+	// two cannot drift apart.
+	t.Run("unbaked reference over a datum reads the whole datum", func(t *testing.T) {
+		t.Parallel()
+		unbaked := &FieldValue{
+			Field: "SUB",
+			Typ:   NullableLong,
+			Child: NewQuantifiedObjectValueOfType(corr, UnknownType),
+		}
+		got, err := unbaked.Evaluate(&RowEvalContext{
+			Correlations: &datumBinder{id: corr, datum: elem},
+		})
+		if err != nil {
+			t.Fatalf("unbaked reference over a datum must be silent, got loud: %v", err)
+		}
+		if got == nil {
+			t.Fatal("unbaked reference over a datum returned nil, want the datum itself")
+		}
+		if _, isMsg := got.(protoreflect.Message); !isMsg {
+			t.Errorf("got %T, want the bound datum (a protoreflect.Message) served whole", got)
+		}
+	})
 }
