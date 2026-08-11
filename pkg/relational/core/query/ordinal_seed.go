@@ -714,13 +714,13 @@ func bakeGatedJoinPredicatesChecked(preds []predicates.QueryPredicate, legTypes 
 			return v
 		}
 		fv := v.(*values.FieldValue) // legRef confirmed the cast + guards
-		// Resolve the bare name within the leg's BAKE WINDOW (the rightmost
+		// Resolve the ROOT column within the leg's BAKE WINDOW (the rightmost
 		// leaf for a box leg — the alias names that leaf), then offset into
 		// the leg's flowed concat. Resolving over the whole concat instead would
 		// meet an earlier leg's duplicate name and decline, stranding the ref.
-		idx, found := legType.leafTyp.FieldIndexUnique(fv.Field)
-		if !found {
-			drift = true // the leaf window has no such field — verdict/bake drift
+		idx, suffix, resolved := legRefRootInWindow(fv, legType.leafTyp)
+		if !resolved {
+			drift = true // the leaf window has no such root — verdict/bake drift
 			return v
 		}
 		// The baked node's correlation takes the LEG-ALIAS CASE the gather
@@ -745,7 +745,28 @@ func bakeGatedJoinPredicatesChecked(preds []predicates.QueryPredicate, legTypes 
 		if err != nil {
 			panic("predicate bake: " + err.Error()) // the window is within the concat by construction
 		}
-		return baked
+		if len(suffix) == 0 {
+			return baked
+		}
+		// A NESTED leg reference (`m.n.sk`): the resolution above landed on the
+		// slot of its ROOT column, but that slot holds the enclosing STRUCT and
+		// the rest of the path descends INSIDE it. Returning `baked` alone would
+		// be the silent half of this bug rather than the loud one: the address is
+		// a real leg column, so nothing downstream rejects it and the predicate
+		// compares a BIGINT against a whole struct. Fuse the remaining accessors
+		// on (Java's FieldPath.withSuffix, reached the same way — the descent is a
+		// path FUSION, nothing is materialized or re-offset), descending against
+		// the leg column's OWN type; the concat states only WHERE the column sits.
+		var into *values.RecordType
+		if idx < len(legType.leafTyp.Fields) {
+			into, _ = legType.leafTyp.Fields[idx].FieldType.(*values.RecordType)
+		}
+		fused, ferr := values.FuseNestedSuffix(baked, into, suffix, fv.Typ)
+		if ferr != nil {
+			drift = true // the descent cannot be stated positionally — never a truncated path
+			return v
+		}
+		return fused
 	}
 	// Bake per CONJUNCT: a top-level AND is split by the partition/pushdown
 	// rules later, so the cross-leg test must apply to each conjunct
@@ -780,20 +801,58 @@ func bakeGatedJoinPredicatesChecked(preds []predicates.QueryPredicate, legTypes 
 }
 
 // legRef extracts the UPPER leg-correlation name of a BARE FieldValue over a
-// QuantifiedObjectValue — the reference shape all three gated-predicate walks key on
-// (the bake closure, predicateLegAliases, predicateRefsBuriedLeg). Returns "",false for
-// a non-FieldValue, a machinery-owned baked ref (FrontierPinned or multi-accessor —
-// a re-walk must not re-count or re-bake the walk's OWN output), a flat-dotted read
+// QuantifiedObjectValue — the reference shape the gated-predicate walks key on.
+// Returns "",false for
+// a non-FieldValue, a MACHINERY-OWNED baked ref, a flat-dotted read
 // (fv.Field carries a '.', the RFC-142 mergedQOV "leg.col" channel, resolved
-// elsewhere), or a non-QOV child. A SOURCE-RELATIVE baked ref (the resolver's
-// construction-time bind, values.SourceRelativeBaked) is a leg reference like
-// its lazy twin: its ordinal addresses the LEG's own row, not the composed
-// seed, so it must be counted and re-baked here. Each caller then consults
-// legTypes[key] for its own decision — is-a-leg (count), is-buried (bakeCorr != ""),
-// or build the baked node — so one prologue serves three keys.
+// elsewhere), or a non-QOV child.
+//
+// MACHINERY-OWNERSHIP IS THE FRONTIER PIN, NOT THE ACCESSOR COUNT. The walks'
+// own output is NewFieldValueOfOrdinal over a composed frontier, which is
+// FrontierPinned by construction; excluding it is what stops a re-walk from
+// re-counting or re-baking an address that already indexes the composed row.
+// Arity was long used as a second half of that exclusion, on the reading that
+// only machinery mints a multi-accessor path. That reading is refuted: the
+// resolver now mints a USER-WRITTEN nested descent (`m.n.sk`) as ONE unpinned
+// FieldValue with a leg-relative root and the descent in its remaining
+// accessors, so arity selected against exactly the references this walk exists
+// to rebase. A declined nested ref keeps its leg correlation, nothing binds
+// that correlation at execution, and the read falls through to the multi-leg
+// positional row and trips the correct-or-loud guard there.
+//
+// So the gate is the ROOT's leg-relativity (values.RootIsLegRelativeUnpinned),
+// the same predicate the eval-side multi-leg guards and the leg-concat collapse
+// key on: an UNPINNED root addresses the reference's OWN source window whatever
+// its arity, which is precisely the thing that must be counted and re-baked
+// here. Java needs no equivalent — QuantifiedObjectValue.eval picks the row by
+// ALIAS alone and FieldValue.eval descends the remaining ordinals inside that
+// one Message, so no arity ever selects a binding there.
+//
+// FIVE call sites consult this prologue, not three. Each then asks its own
+// question of the key, so widening the gate widens all of them together — which
+// is the intent, not a side effect: a nested reference is a leg reference for
+// counting exactly as it is for baking.
+//
+//   - the bake closure above — build the baked node;
+//   - predicateLegAliases — is-a-leg, for the cross-leg count;
+//   - predicateRefsBuriedLeg — is-buried (bakeCorr != "");
+//   - box_conjunct.go classifyLegConjunct — the GATHER ADMISSION VERDICT for a
+//     box/flat-cluster WHERE conjunct, and a PLAN-SHAPE decision rather than a
+//     count. It is not pre-filtered, so it widens with this gate, and it stays
+//     coherent with the bake because the two SHARE legRefRootInWindow — one
+//     function, so a verdict cannot say "resolves" about a different column than
+//     the bake reads. It used to make that claim on a weaker basis (both sites
+//     spelled out leafTyp.FieldIndexUnique(fv.Field) separately), and that basis
+//     was destroyed by the fused-leaf naming: a display name is not the root's,
+//     so the two copies would have had to be corrected in lockstep to stay
+//     coherent. Sharing the resolver is what makes the coherence structural;
+//   - exists_gathered_cluster_wrap.go rebaseLegRefsToBox — MASKED. Its caller
+//     pre-filters on SourceRelativeBaked before reaching here, deliberately, and
+//     that narrowness is pinned at its own site; see the guard's comment there
+//     for why the walk below it cannot serve a multi-accessor path.
 func legRef(v values.Value) (string, bool) {
 	fv, isFV := v.(*values.FieldValue)
-	if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) || strings.Contains(fv.Field, ".") {
+	if !isFV || (fv.Resolved != nil && !fv.RootIsLegRelativeUnpinned()) || strings.Contains(fv.Field, ".") {
 		return "", false
 	}
 	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
@@ -801,6 +860,48 @@ func legRef(v values.Value) (string, bool) {
 		return "", false
 	}
 	return strings.ToUpper(qov.Correlation.Name()), true
+}
+
+// legRefRootInWindow resolves a leg reference's ROOT column within one leg
+// BAKE WINDOW, returning its ordinal in that window and the accessors the
+// reference still has to travel INSIDE it (empty for a flat reference).
+//
+// THE ROOT IS NAMED BY THE RESOLVED PATH, NEVER BY fv.Field, and that
+// distinction is the whole reason this is a function. A FUSED nested node is
+// DISPLAY-named after its LEAF (RFC-231: one name, and no consumer may key on
+// it), so `m.n.sk` renders as `SK` — which routinely names a REAL FLAT COLUMN of
+// the same leg. Resolving the display name then lands on that flat column: a
+// valid ordinal into a real field of the wrong type, which no ordinal check can
+// reject because an ordinal does not fail the way an unresolvable name does.
+// MEASURED, on `nt(id, sk, n gst)` with `gst(sk, …)`: keying on fv.Field
+// resolved `m.n.sk` to the top-level `SK` at ordinal 1 instead of `N` at
+// ordinal 2.
+//
+// ReAnchorRootInto is the shared derive-and-assert for the nested case — it
+// keys on Accessors[0].Field, derives the ordinal from the window, asserts any
+// carried ordinal against it, and DECLINES on an absent or duplicated root
+// rather than first-matching. A flat reference has no root accessor to prefer
+// and keeps the name lookup, which is correct for it: a single-accessor node's
+// display name IS its column name.
+//
+// Both the bake and the gather-admission verdict call this, so a verdict cannot
+// say "resolves" about a different column than the bake reads.
+func legRefRootInWindow(fv *values.FieldValue, window *values.RecordType) (int, []values.ResolvedAccessor, bool) {
+	if fv == nil || window == nil {
+		return 0, nil, false
+	}
+	if _, nested := values.NestedResolvedPath(fv); nested {
+		reanchored, _, ok := fv.Resolved.ReAnchorRootInto(window)
+		if !ok {
+			return 0, nil, false
+		}
+		return reanchored.Root().Ordinal, reanchored.Accessors[1:], true
+	}
+	idx, found := window.FieldIndexUnique(fv.Field)
+	if !found {
+		return 0, nil, false
+	}
+	return idx, nil, true
 }
 
 // predicateLegAliases counts how many DISTINCT gated-join leg aliases a predicate's

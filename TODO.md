@@ -16943,3 +16943,80 @@ None is speculative: each was re-verified against the tree before booking.
   `rowdiff.RunCase` (`pkg/relational/conformance/rowdiff/run.go:104-120`).
   DONE = the retention named from a heap profile, fixed, and a pin that fails if
   RSS growth per seed regresses past a declared bound.
+
+- [x] **A sixth `legRef`-adjacent site rebased an outer-leg reference with no
+  arity guard and discarded the nested suffix — REAL WHEN BOOKED, CLOSED BY
+  `db9d87d7c` BEFORE THIS BRANCH REBASED ONTO IT. Kept as the audit trail, and
+  because the attached element-channel lead needed a measurement.**
+  · found during the RFC-228 nested-ON fix (PR #725)
+  `rebaseUnnestOuterLegPredicateOrdinal`
+  (`pkg/relational/core/query/cascades_translator.go` — note the path: the file
+  is under `core/query/`, NOT `core/embedded/`) took any `FieldValue` with a
+  `QuantifiedObjectValue` child on an outer leg and baked it by NAME, with no
+  arity guard. For a nested reference the name lookup succeeded on the ROOT
+  column and returned a fresh SINGLE-accessor address, so `Accessors[1:]` was
+  dropped and the predicate compared the enclosing STRUCT.
+  **THAT IS NO LONGER TRUE, AND THE FIX IS UPSTREAM OF THIS ENTRY.**
+  `db9d87d7c` (#724) added, immediately above the slot lookup:
+  ```go
+  if fv.Resolved != nil && len(fv.Resolved.Accessors) > 1 {
+      ok = false
+      return node
+  }
+  ```
+  and both callers bail on `!ok`, so the shape now DECLINES loudly instead of
+  shipping a truncated path. Verified against the two bases rather than
+  re-derived: the guard is ABSENT in that function at `ddc2914ba` — the base the
+  booking was AUTHORED on, where the finding was correct — and at `ffc31689c`,
+  and PRESENT at `db9d87d7c`.
+  Re-check with `git log -S'len(fv.Resolved.Accessors) > 1' -- <that file>`
+  rather than by reading the function again.
+  **THE MASKING RELATION AND ITS FIX-ORDER ARE THEREFORE RETIRED.** This entry
+  previously claimed the safety net at `unnestExistsRefSurvivesUnbaked` had a hole
+  masked by the sixth site, so the two had to be fixed together. With the site
+  declining, there is nothing to mask; the "fix them together" constraint
+  described a state that no longer exists and must not be carried forward.
+  **THE ATTACHED LEAD WAS MEASURED AND DOES NOT REPRODUCE.** The ELEMENT channel
+  has the same unguarded shape: `bakeUnnestElementRefOrdinal` skips an unpinned
+  multi-accessor ref (keyed `!SourceRelativeBaked()`) and, unlike the outer-leg
+  sibling, sets NO failure flag; `unnestExistsRefSurvivesUnbaked` then skips it
+  on the same key as "safe", on a comment still asserting that multi-accessor
+  nodes are machinery-owned. On paper a nested ELEMENT reference survives unbaked
+  while the net declares the tree clean. MEASURED: it cannot be reached, because
+  a member reference on a STRUCT element is refused during resolution INSIDE an
+  EXISTS subquery — `42703: column "EK" does not exist` for the flat form and
+  `42703: column "DK" does not exist` for the nested one. The rule never looks at
+  arity, so the nested case is refused together with its flat twin, one step
+  before the bake.
+  **THAT UNREACHABILITY IS AN ACCIDENT OF A BUG, NOT A GUARANTEE, and the 42703
+  is itself a Go-only divergence that is OWED A FIX.** Java answers both forms
+  from inside an EXISTS body — `valid-identifiers.yamsql:221` (flat member,
+  `-> [{2}]`) and `:226` (nested member, `-> [{1}]`) — because
+  `SemanticAnalyzer.resolveAcrossFragments` (`SemanticAnalyzer.java:383-401`)
+  walks to the root fragment arity-blind and subquery-blind, and
+  `LogicalOperator.generateCorrelatedFieldAccess` (`LogicalOperator.java:307-354`)
+  emits one Expression per struct field for a struct-array element. Go's refusal
+  is a DROPPED ARGUMENT at one call site:
+  `existsSubqueryPlanner.addCorrelatedJoinScopeSource`
+  (`pkg/relational/core/embedded/logical_predicate.go:9302`) calls
+  `unnestVirtualScopeSource(j)` — `unnestVirtualScopeSourceWithElement(j, nil)` —
+  so the element column is UNKNOWN with no StructFields, while the sibling
+  `unnestScopeSourceAdder` passes `unnestElementStructFields(scope, j)` and types
+  it RECORD. That is why the same reference answers OUTSIDE an EXISTS. The scope
+  fix is dispatched SEPARATELY (it is pre-existing on master and a behaviour
+  change, so it does not belong in the PR that found it).
+  THE TWO ARE ONE CHANGE WHEN IT LANDS: repairing the scope re-arms this site the
+  same day, so whoever fixes `logical_predicate.go:9302` must also give
+  `bakeUnnestElementRefOrdinal` and `unnestExistsRefSurvivesUnbaked` what
+  `ordinal_seed.go`'s bake got — resolve the root from `Accessors[0]`, fuse
+  `Accessors[1:]`, or decline with `ok=false`, never skip.
+  PINNED, as a divergence sentinel rather than a blessing, by
+  `TestFDB_UnnestElementMemberInExistsDivergesFromJava`
+  (`pkg/relational/sqldriver/unnest_element_member_in_exists_fdb_test.go`), which
+  drives a bare SCALAR element through the same buried-conjunct path first so a
+  green cannot come from a family that stopped planning, and whose failure
+  message says the refusal lifting is GOOD NEWS and instructs the reader to
+  CONVERT the test to assert Java's rows — never to delete it.
+  DONE: the wrong-rows half is fixed upstream. This entry closes when the scope
+  divergence is fixed and the element bake/net are corrected in the same change,
+  with the sentinel converted to a row assertion.

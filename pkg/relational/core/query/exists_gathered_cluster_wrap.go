@@ -118,9 +118,43 @@ func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier
 	out := values.Replace(v, func(n values.Value) values.Value {
 		fv, isFV := n.(*values.FieldValue)
 		// A source-relative baked ref (the resolver's construction-time bind)
-		// still addresses its LEG's row — rebase it exactly like its lazy
-		// twin; only machinery-owned baked nodes (pinned / multi-accessor)
-		// are final.
+		// still addresses its LEG's row — rebase it exactly like its lazy twin.
+		//
+		// THIS GUARD IS DELIBERATELY NARROWER THAN legRef's, and the reason is a
+		// capability of the walk below, NOT a claim about what is machinery-owned.
+		// The two used to be spelled alike, on the reading that a multi-accessor
+		// path is machinery output and therefore final. That reading is refuted:
+		// a user-written nested descent (`m.n.sk`) arrives as ONE UNPINNED
+		// FieldValue with a leg-relative root and the descent in its remaining
+		// accessors, and legRef is now arity-blind for exactly that reason.
+		//
+		// What stops this walk from following suit is the code beneath it: it
+		// resolves ONE name (w.Typ.FieldIndexUnique(fv.Field)) and bakes a
+		// one-step address from it. TWO separate things go wrong if a nested
+		// descent is admitted without changing that code, and the FIRST is the
+		// one that is easy to miss:
+		//
+		//   - fv.Field is the LEAF's name, not the root's. A fused nested value
+		//     carries ONE name and it is the leaf's (RFC-231), so the lookup does
+		//     not resolve the struct the path starts at — it resolves whatever
+		//     flat column of the leg happens to share the leaf's spelling. On
+		//     `nt(id, sk, n gst)` with `gst(sk, …)`, `m.n.sk` resolves to the
+		//     top-level SK. A real column, a valid ordinal, the wrong one, and no
+		//     ordinal check downstream can reject it.
+		//   - even with the root resolved correctly, the address reaches the
+		//     enclosing STRUCT and the descent is still dropped.
+		//
+		// So widening this needs BOTH: derive the root from Accessors[0] (the
+		// resolved path, which no naming policy touches — legRefRootInWindow in
+		// ordinal_seed.go is that resolver, and ReAnchorRootInto is what it uses)
+		// AND fuse Accessors[1:] onto the result. Doing only the second is the
+		// wrong-slot read above; doing only the first drops the descent.
+		//
+		// Declining leaves the reference leg-correlated, the post-walk survivor
+		// check sees it and returns ok=false, and the caller falls back to the
+		// name model, which answers the shape correctly. A decline costs the
+		// ordinal wrap; either half-widening costs rows. Pinned so it cannot be
+		// widened halfway; see TestRebaseLegRefsToBox_DeclinesANestedDescent.
 		if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 			return n
 		}
