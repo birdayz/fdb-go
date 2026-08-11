@@ -26,6 +26,7 @@ go_test(
     name = "expr_test",
     srcs = [
         "bench_test.go",
+        "column_ref_mint_arms_test.go",
         "descends_into_struct_test.go",
         "eval_must_test.go",
         "expr_test.go",
