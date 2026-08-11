@@ -2312,8 +2312,14 @@ func rewriteUnnestPredicate(p predicates.QueryPredicate, u *logical.LogicalUnnes
 					fv.Resolved != nil &&
 					!fv.Resolved.FrontierPinned &&
 					len(fv.Resolved.Accessors) > 1 &&
-					fv.Resolved.Accessors[0].Ordinal == 0 &&
-					strings.EqualFold(fv.Resolved.Accessors[0].Field, asAlias) {
+					// The ROOT ORDINAL alone decides this, and deliberately so.
+					// The EXISTS scope's unnest source is a ONE-COLUMN virtual
+					// table, so slot 0 IS the element — there is nothing else it
+					// could address. A name comparison on Accessors[0].Field
+					// would add no discrimination and would make a DISPLAY name
+					// decide a binding, which is the failure this tree pins
+					// against.
+					fv.Resolved.Accessors[0].Ordinal == 0 {
 					if rebased, ok := rebaseUnnestElementMemberOntoExplode(fv, u, unnestCorr); ok {
 						return rebased
 					}

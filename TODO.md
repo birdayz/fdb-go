@@ -17011,7 +17011,8 @@ None is speculative: each was re-verified against the tree before booking.
   `ordinal_seed.go`'s bake got — resolve the root from `Accessors[0]`, fuse
   `Accessors[1:]`, or decline with `ok=false`, never skip.
   PINNED, as a divergence sentinel rather than a blessing, by
-  `TestFDB_UnnestElementMemberInExistsDivergesFromJava`
+  `TestFDB_UnnestElementMemberInExistsConvertedSentinel` (renamed from
+  `TestFDB_UnnestElementMemberInExistsDivergesFromJava` when it was converted)
   (`pkg/relational/sqldriver/unnest_element_member_in_exists_fdb_test.go`), which
   drives a bare SCALAR element through the same buried-conjunct path first so a
   green cannot come from a family that stopped planning, and whose failure

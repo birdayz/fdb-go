@@ -435,8 +435,33 @@ var accessorAritySites = map[string]accessorAritySite{
 			"KEEPS the type collision because without it the test is green either way.",
 	},
 
+	"pkg/relational/core/query/cascades_translator.go#bakeUnnestElementRefOrdinal": {
+		class: arityNestingOK, exprs: 1,
+		why: "The site HANDLES multi-accessor paths; it is not a gate on them. A reference " +
+			"whose ROOT names an unnest element slot is baked onto that slot over the merged " +
+			"row, and `len(Accessors) > 1` selects the extra work a DESCENT needs — carrying " +
+			"`Accessors[1:]` onto the baked root via FieldPath.WithSuffix — rather than " +
+			"refusing it. Only the root read moves; the pin and domain come from the root " +
+			"step, which is what makes the fused node machinery-owned. " +
+			"THIS SITE USED TO BE A DECLINE AND THAT WAS A LIVE DEFECT (class (d)), which " +
+			"is why the arity expression here is now a branch and not a condition: the " +
+			"function selected candidates with `SourceRelativeBaked()`, which additionally " +
+			"requires len(Accessors) == 1, so a struct-element MEMBER (`x.ek` — two unpinned " +
+			"accessors) was skipped, reached the merged row still addressing the EXISTS " +
+			"scope's own layout, and EXISTS dropped every row SILENTLY. MEASURED: " +
+			"`SELECT x.ek FROM t, t.arr AS x WHERE EXISTS (SELECT 1 FROM t AS m WHERE " +
+			"m.id = 1 AND x.ek = 10)` returned `EK|` where `EK|10` is correct. Candidate " +
+			"selection now keys on RootIsLegRelativeUnpinned(), which excludes the real " +
+			"invariant (machinery-owned FrontierPinned nodes) at any arity — the same " +
+			"correction legRef in ordinal_seed.go received. Pinned by " +
+			"TestFDB_UnnestElementMemberInExists (the outer_element_* arms) and " +
+			"TestFDB_UnnestElementMemberInExistsConvertedSentinel, both of which assert " +
+			"ROWS: the failure mode is a silent empty, so an absence-of-error assertion " +
+			"would pass with the defect fully present.",
+	},
+
 	"pkg/relational/core/query/cascades_translator.go#rewriteUnnestPredicate": {
-		class: arityCorrectDecline, exprs: 1,
+		class: arityCorrectDecline, exprs: 2,
 		why: "The element-substitution arm rewrites a reference that IS the bound unnest " +
 			"element into the element's quantifier object, selecting that arm by comparing " +
 			"the reference's single display name against the binding's AS/AT alias. A " +
@@ -453,18 +478,31 @@ var accessorAritySites = map[string]accessorAritySite{
 			"TestFDB_NestedMemberSpelledLikeItsUnnestAliasIsRefused — a NEGATIVE result " +
 			"pinned because this gate's reachability rests on it). The gate closes the " +
 			"remainder so the arm is correct without depending on that refusal. " +
-			"NO REPRODUCER — the same epistemic class as rebaseUnnestOuterLegPredicateOrdinal " +
-			"and deriveColumnsFromProjection's name arms, and stated as plainly here so the " +
-			"MEASURED history above does not read as coverage it does not have. What was " +
-			"measured is an ARM-LEVEL wrong READ under the old mint; no query's ROWS are " +
-			"demonstrably corrected, because the emblematic shape " +
-			"(`WHERE i.sku = 'x'` over `orders.items AS i`) returns ZERO ROWS identically " +
-			"before and after — a SEPARATE, still-open defect in the correlated-unnest " +
-			"predicate path that MASKS this one end-to-end. The row-level coverage in the " +
-			"sqldriver suite does not reach this function either: its `[x y]` control is a " +
-			"PROJECTION, while every caller here is a PREDICATE path (unnest_gather.go:283; " +
-			"cascades_translator.go:3086, 3101, 3264, 3477, 3531). So this gate is " +
-			"fail-closed and argued, not corpus-proven.",
+			"NO REPRODUCER for the decline itself — the same epistemic class as " +
+			"rebaseUnnestOuterLegPredicateOrdinal and deriveColumnsFromProjection's name " +
+			"arms, and stated as plainly here so the MEASURED history above does not read " +
+			"as coverage it does not have. What was measured is an ARM-LEVEL wrong READ " +
+			"under the old mint. " +
+			"THE MASKING CLAIM THIS ENTRY USED TO CARRY IS SUPERSEDED and must not be " +
+			"carried forward: it said the emblematic shape (`WHERE i.sku = 'x'` over " +
+			"`orders.items AS i`) returns ZERO ROWS identically before and after, so no " +
+			"query's rows were demonstrably corrected. That predicate shape ANSWERS — " +
+			"MEASURED, `SELECT x.ek FROM t, t.arr AS x WHERE x.d.dk = 91` returns `EK|10`, " +
+			"pinned by TestFDB_UnnestElementMemberInExists's " +
+			"control_two_level_member_beside_exists arm — so the masking defect the claim " +
+			"rested on is not there to mask anything. " +
+			"SECOND EXPRESSION: the member-rebase arm, which is the positive twin of the " +
+			"decline above and is class (c). A CHILDLESS multi-accessor path over the " +
+			"EXISTS scope's one-column virtual source IS a member of a correlated-primary " +
+			"unnest element, and `len(Accessors) > 1` selects it for rebasing onto the " +
+			"Explode's flowed element rather than refusing it. The two expressions are " +
+			"deliberately opposite readings of the same arity fact and belong together: " +
+			"arity says 'not the element itself', the first arm concludes 'so do not " +
+			"substitute the whole element' and the second concludes 'so bind it as a " +
+			"member'. Pinned by rows — TestFDB_UnnestElementMemberInExists's " +
+			"flat_member_in_exists / two_level_member_in_exists / both_depths_in_exists " +
+			"arms, each of which goes RED with an unbound-context error when the rebase is " +
+			"disabled.",
 	},
 
 	"pkg/relational/core/query/cascades_translator.go#rebaseUnnestOuterLegPredicateOrdinal": {
@@ -509,13 +547,23 @@ const (
 	// knowing before someone "fixes" the drift by rewording a comment: making the
 	// arity meaning legible is exactly the readability failure these comments
 	// exist to prevent, and it costs two lines in the wrong bucket.
-	rfcPublishedPopulation = 58
-	// The decomposition of those 58 lines.
+	// 58 → 60: two arity sites were added by the fix that made a struct-element
+	// MEMBER reference resolve inside an EXISTS body. Both are class (c) — they
+	// HANDLE a multi-accessor path rather than gating on it — and both are new
+	// expressions inside functions the census already classified:
+	// bakeUnnestElementRefOrdinal (which now fuses `Accessors[1:]` onto the baked
+	// element slot; it previously SKIPPED such a path, which was a live silent
+	// 0-row defect) and a second expression in rewriteUnnestPredicate (the
+	// member-rebase arm, the positive twin of that function's existing decline).
+	// Both land in the CODE population, so this is the first move since 52 → 56
+	// that changes arityCodeLines rather than only the comment bucket.
+	rfcPublishedPopulation = 60
+	// The decomposition of those 60 lines.
 	arityGeneratedLines = 8  // protobuf marshal loops over PFieldPath.FieldAccessors
 	arityCommentLines   = 3  // prose inside a doc comment (see above: 1 + 2 legibility notes)
-	arityCodeLines      = 47 // the real population
-	// Four of the 47 code lines hold more than one arity expression.
-	arityExpressions = 51
+	arityCodeLines      = 49 // the real population
+	// Four of the 49 code lines hold more than one arity expression.
+	arityExpressions = 53
 )
 
 // accessorArityLine is the RFC's own sweep, as a regexp.
@@ -736,7 +784,7 @@ func TestAccessorArityClassCounts(t *testing.T) {
 	pinned := map[accessorArityClass]int{
 		arityCorrectDecline: 15,
 		arityBlocker:        0,
-		arityNestingOK:      24,
+		arityNestingOK:      25,
 		arityLiveDefect:     0,
 		arityUncertain:      0,
 	}
