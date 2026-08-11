@@ -4203,13 +4203,19 @@ func unnestExistsRefSurvivesUnbaked(
 			// user-written nested descent is — is skipped here as "safe" when it
 			// is not: it would survive unbaked while this net reports the tree
 			// clean, and bakeUnnestElementRefOrdinal skips the same shape without
-			// setting a failure flag. It is unreachable today only because a
-			// member reference on a struct element is refused during resolution
-			// inside an EXISTS (42703), one step upstream. That is PINNED, with
-			// the re-arm condition spelled out, by
-			// TestFDB_UnnestElementMemberInExistsIsRefused in
-			// pkg/relational/sqldriver — and booked in TODO.md Phase 12. Fixing
-			// it means what ordinal_seed.go's bake did: derive the root from
+			// setting a failure flag.
+			//
+			// It is unreachable today only because a member reference on a struct
+			// element is refused during resolution inside an EXISTS (42703) — and
+			// THAT REFUSAL IS ITSELF A GO-ONLY DIVERGENCE OWED A FIX, not a rule
+			// to rely on: Java answers both forms (valid-identifiers.yamsql:221
+			// and :226), and Go's refusal is a dropped argument at
+			// embedded/logical_predicate.go:9302, which passes no struct fields to
+			// the EXISTS scope. So the day that omission is repaired, this gap goes
+			// live the same day — the scope fix and this one are ONE change.
+			// Sentinelled by TestFDB_UnnestElementMemberInExistsDivergesFromJava in
+			// pkg/relational/sqldriver and booked in TODO.md Phase 12. Fixing it
+			// means what ordinal_seed.go's bake did: derive the root from
 			// Accessors[0] and fuse Accessors[1:], or decline — never skip.
 			if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 				return true // baked ofOrdinal (or non-FieldValue) — descend/skip

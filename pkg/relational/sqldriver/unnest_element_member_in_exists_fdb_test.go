@@ -8,9 +8,48 @@ import (
 	"testing"
 )
 
-// TestFDB_UnnestElementMemberInExistsIsRefused pins a NEGATIVE result, and the
-// negative is the load-bearing part: it is what makes an unguarded arity site
-// unreachable today, and it names what re-arms that site if it changes.
+// TestFDB_UnnestElementMemberInExistsDivergesFromJava pins a KNOWN GO-ONLY
+// DIVERGENCE, and it is a sentinel rather than a blessing.
+//
+// READ THIS FIRST, BECAUSE AN EARLIER VERSION OF THIS TEST GOT IT WRONG. The
+// 42703 below is NOT a resolution rule correctly declining a shape neither
+// engine supports. Java answers both of these queries with rows, and Go refuses
+// them. Under this repo's conformance principle that is a BUG TO FIX, not
+// behaviour to pin — so nothing here should be read as saying the refusal is
+// right. What is pinned is that the refusal is CURRENTLY TRUE, so that the day
+// it stops being true is visible rather than silent.
+//
+// JAVA RESOLVES IT, and structurally rather than by special case.
+// SemanticAnalyzer.resolveAcrossFragments (SemanticAnalyzer.java:383-401) walks
+// `getParentMaybe()` to the root fragment — arity-blind and subquery-blind, with
+// 42703 only after the chain is exhausted — and
+// LogicalOperator.generateCorrelatedFieldAccess (LogicalOperator.java:307-354)
+// emits one output Expression per struct field for a struct-array element
+// (`convertToExpressions(resultingQuantifier)`), which is exactly the shape Go's
+// unnestVirtualScopeSourceWithElement builds WHEN IT IS GIVEN THE FIELDS. Java's
+// own conformance corpus drives both forms from inside an EXISTS body and
+// expects rows — valid-identifiers.yamsql:221 (flat member,
+// `x."level1$field.3" = 20` -> [{2}]) and :226 (NESTED member,
+// `x."level1$field.2"."level2$field.1" = 91` -> [{1}]).
+//
+// THE GO SITE IS A DROPPED ARGUMENT, not a rule.
+// `existsSubqueryPlanner.addCorrelatedJoinScopeSource`
+// (pkg/relational/core/embedded/logical_predicate.go:9302) calls
+// `unnestVirtualScopeSource(j)` — i.e. `unnestVirtualScopeSourceWithElement(j,
+// nil)` — so the element column is typed UNKNOWN with no StructFields and no
+// descent can resolve. The sibling `unnestScopeSourceAdder` passes
+// `unnestElementStructFields(scope, j)` and types the column RECORD, which is
+// precisely why the same member reference answers OUTSIDE an EXISTS. The EXISTS
+// site has `analyzer` and `p.md` in hand. Nothing in pkg/relational asserts the
+// narrowing is intended.
+//
+// WHEN THAT SCOPE IS FIXED, CONVERT THIS TEST — assert the rows Java returns.
+// Do NOT delete it: the arms below are the only thing standing between the fix
+// and the unguarded arity site described next, and converting them is how the
+// two land together.
+//
+// The refusal also happens to make an unguarded arity site unreachable today,
+// which is why the site is booked rather than fixed:
 //
 // THE SITE. `bakeUnnestElementRefOrdinal` (cascades_translator.go) skips an
 // unpinned MULTI-ACCESSOR reference — keyed `!SourceRelativeBaked()` — and,
@@ -22,10 +61,12 @@ import (
 // reference would survive UNBAKED into the baked inner predicate while the net
 // declares the tree clean, which is the silent direction.
 //
-// IT DOES NOT REPRODUCE, and the reason is one step upstream. A member
-// reference on a STRUCT element is refused during resolution inside an EXISTS
-// subquery, so no such node ever reaches the bake. MEASURED, and the refusal
-// does NOT discriminate nesting — `x.ek` and `x.d.dk` are refused alike:
+// IT DOES NOT REPRODUCE, and the reason is the divergence above, one step
+// upstream: the EXISTS scope carries no struct fields, so no such node ever
+// reaches the bake. That is an accident of a bug, NOT a guarantee — which is
+// why the site is booked rather than closed, and why fixing the scope must
+// carry the bake fix with it. MEASURED, and the refusal does NOT discriminate
+// nesting — `x.ek` and `x.d.dk` are refused alike:
 //
 //	SELECT 1 FROM u WHERE u.uk = x.ek     -> 42703: column "EK" does not exist
 //	SELECT 1 FROM u WHERE u.uk = x.d.dk   -> 42703: column "DK" does not exist
@@ -43,14 +84,16 @@ import (
 //     what says the nested case is not specially broken — it is refused with its
 //     flat twin, by a rule that never looks at arity.
 //
-// WHAT RE-ARMS THE SITE: either 42703 arm starting to answer. If element members
-// become resolvable inside an EXISTS, a nested one reaches
+// WHAT RE-ARMS THE SITE: either 42703 arm starting to answer — which is not a
+// hypothetical future feature but an OWED REPAIR of the dropped argument at
+// logical_predicate.go:9302. When it lands, a nested element reference reaches
 // bakeUnnestElementRefOrdinal, is skipped without a flag, is waved through by
-// unnestExistsRefSurvivesUnbaked, and survives unbaked. At that point the two
-// functions need the treatment ordinal_seed.go's bake got: resolve the root from
-// Accessors[0] and fuse Accessors[1:], or decline with ok=false — never skip.
-// Do not simply delete this test when that day comes; convert it.
-func TestFDB_UnnestElementMemberInExistsIsRefused(t *testing.T) {
+// unnestExistsRefSurvivesUnbaked, and survives unbaked. So the scope fix and the
+// bake fix are one change: the two functions need the treatment ordinal_seed.go's
+// bake got — resolve the root from Accessors[0] and fuse Accessors[1:], or
+// decline with ok=false, never skip. Convert this test to assert Java's rows in
+// the same commit; deleting it is how the two halves come apart.
+func TestFDB_UnnestElementMemberInExistsDivergesFromJava(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -141,12 +184,18 @@ func TestFDB_UnnestElementMemberInExistsIsRefused(t *testing.T) {
 		rows, err := run(tc.query)
 		if err == nil {
 			t.Errorf("%s: an element member inside an EXISTS now RESOLVES (returned %v).\n  %s\n"+
-				"This RE-ARMS bakeUnnestElementRefOrdinal / unnestExistsRefSurvivesUnbaked: "+
-				"a NESTED element reference now reaches them, is skipped without a failure "+
-				"flag, is waved through by the net, and survives UNBAKED into the baked inner "+
-				"predicate. Give those two the treatment ordinal_seed.go's bake got — resolve "+
-				"the root from Accessors[0] and fuse Accessors[1:], or decline with ok=false — "+
-				"then convert this test rather than deleting it.", tc.name, rows, tc.query)
+				"GOOD NEWS, NOT A REGRESSION — this is the Java-conformant behaviour "+
+				"(valid-identifiers.yamsql:221,226 return rows for both forms), so the "+
+				"divergence this test pins has been closed. Two things follow.\n"+
+				"  1. CONVERT this test: assert the rows rather than the refusal. Deleting it "+
+				"removes the only sentinel on the arity site below.\n"+
+				"  2. VERIFY the same change fixed bakeUnnestElementRefOrdinal and "+
+				"unnestExistsRefSurvivesUnbaked. A NESTED element reference now reaches them; "+
+				"both skip an unpinned multi-accessor node — the first without setting a "+
+				"failure flag, the second while reporting the tree clean — so it survives "+
+				"UNBAKED into the baked inner predicate. Resolve the root from Accessors[0] "+
+				"and fuse Accessors[1:], or decline with ok=false; never skip.",
+				tc.name, rows, tc.query)
 			continue
 		}
 		if !strings.Contains(err.Error(), "42703") || !strings.Contains(err.Error(), tc.wantCol) {

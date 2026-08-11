@@ -16897,8 +16897,9 @@ None is speculative: each was re-verified against the tree before booking.
   ```
   and both callers bail on `!ok`, so the shape now DECLINES loudly instead of
   shipping a truncated path. Verified against the two bases rather than
-  re-derived: the guard is ABSENT in that function at `ffc31689c` (this
-  booking's base, where the finding was correct) and PRESENT at `db9d87d7c`.
+  re-derived: the guard is ABSENT in that function at `ddc2914ba` — the base the
+  booking was AUTHORED on, where the finding was correct — and at `ffc31689c`,
+  and PRESENT at `db9d87d7c`.
   Re-check with `git log -S'len(fv.Resolved.Accessors) > 1' -- <that file>`
   rather than by reading the function again.
   **THE MASKING RELATION AND ITS FIX-ORDER ARE THEREFORE RETIRED.** This entry
@@ -16918,14 +16919,35 @@ None is speculative: each was re-verified against the tree before booking.
   `42703: column "DK" does not exist` for the nested one. The rule never looks at
   arity, so the nested case is refused together with its flat twin, one step
   before the bake.
-  That negative is PINNED, not just recorded, by
-  `TestFDB_UnnestElementMemberInExistsIsRefused`
-  (`pkg/relational/sqldriver/unnest_element_member_in_exists_fdb_test.go`),
-  which also drives a bare SCALAR element through the same buried-conjunct path
-  so a green cannot come from a family that stopped planning, and which names in
-  its failure message exactly what re-arms the site: either 42703 arm starting to
-  answer. At that point the two element functions need what `ordinal_seed.go`'s
-  bake got — resolve the root from `Accessors[0]`, fuse `Accessors[1:]`, or
-  decline with `ok=false`, never skip.
-  DONE: nothing to build. The wrong-rows half is fixed upstream, the element half
-  is unreachable with the unreachability pinned and its re-arm condition stated.
+  **THAT UNREACHABILITY IS AN ACCIDENT OF A BUG, NOT A GUARANTEE, and the 42703
+  is itself a Go-only divergence that is OWED A FIX.** Java answers both forms
+  from inside an EXISTS body — `valid-identifiers.yamsql:221` (flat member,
+  `-> [{2}]`) and `:226` (nested member, `-> [{1}]`) — because
+  `SemanticAnalyzer.resolveAcrossFragments` (`SemanticAnalyzer.java:383-401`)
+  walks to the root fragment arity-blind and subquery-blind, and
+  `LogicalOperator.generateCorrelatedFieldAccess` (`LogicalOperator.java:307-354`)
+  emits one Expression per struct field for a struct-array element. Go's refusal
+  is a DROPPED ARGUMENT at one call site:
+  `existsSubqueryPlanner.addCorrelatedJoinScopeSource`
+  (`pkg/relational/core/embedded/logical_predicate.go:9302`) calls
+  `unnestVirtualScopeSource(j)` — `unnestVirtualScopeSourceWithElement(j, nil)` —
+  so the element column is UNKNOWN with no StructFields, while the sibling
+  `unnestScopeSourceAdder` passes `unnestElementStructFields(scope, j)` and types
+  it RECORD. That is why the same reference answers OUTSIDE an EXISTS. The scope
+  fix is dispatched SEPARATELY (it is pre-existing on master and a behaviour
+  change, so it does not belong in the PR that found it).
+  THE TWO ARE ONE CHANGE WHEN IT LANDS: repairing the scope re-arms this site the
+  same day, so whoever fixes `logical_predicate.go:9302` must also give
+  `bakeUnnestElementRefOrdinal` and `unnestExistsRefSurvivesUnbaked` what
+  `ordinal_seed.go`'s bake got — resolve the root from `Accessors[0]`, fuse
+  `Accessors[1:]`, or decline with `ok=false`, never skip.
+  PINNED, as a divergence sentinel rather than a blessing, by
+  `TestFDB_UnnestElementMemberInExistsDivergesFromJava`
+  (`pkg/relational/sqldriver/unnest_element_member_in_exists_fdb_test.go`), which
+  drives a bare SCALAR element through the same buried-conjunct path first so a
+  green cannot come from a family that stopped planning, and whose failure
+  message says the refusal lifting is GOOD NEWS and instructs the reader to
+  CONVERT the test to assert Java's rows — never to delete it.
+  DONE: the wrong-rows half is fixed upstream. This entry closes when the scope
+  divergence is fixed and the element bake/net are corrected in the same change,
+  with the sentinel converted to a row assertion.
