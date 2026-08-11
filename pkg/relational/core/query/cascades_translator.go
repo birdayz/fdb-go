@@ -6573,6 +6573,48 @@ func bakeSegmentedColumnRef(fv *values.FieldValue, ref logical.ColumnRef, cols [
 	if fv == nil || !ref.Present || len(cols) == 0 {
 		return fv
 	}
+	// An ALREADY-RESOLVED or CHILD-BEARING reference is not a lazy carrier, so
+	// it is PASSED THROUGH rather than declined: it arrives already addressed
+	// and stays evaluable, and nothing downstream has to recover from having
+	// seen it. That is why this is a pass-through and not an assertion —
+	// reaching this function with a resolved value is not itself an error, only
+	// RE-BAKING one is, and asserting here would turn a correct value into a
+	// planner failure. It is the same partition bakeFlatRefsAgainstColumns
+	// draws inside its own baker closure (`fv.Child != nil || fv.Resolved !=
+	// nil`), so the two readers of the legWindowSlot channel agree on this axis
+	// too; it is restated here because this function's inputs come from a
+	// different producer.
+	//
+	// It matters most for a FUSED NESTED DESCENT, where the leading segment is
+	// a STRUCT ROOT rather than a source-leg qualifier: `n.sk` resolves to ONE
+	// FieldValue{Field:"N", Resolved:[N,SK]}. The flat first-match below
+	// compares fv.Field — "N", the struct — against the output columns, and a
+	// flat column "N" (the struct itself, which a base-record layout does
+	// expose) would match and hand back a SINGLE-accessor ordinal. That reads
+	// the WHOLE struct where the member was asked for: wrong rows, no error.
+	// Resolved descent paths are already addressed; re-baking one can only
+	// discard accessors.
+	//
+	// UNREACHABLE TODAY, and the reachability story belongs here so this does
+	// not read as dead code. The call sites are what make it unreachable, so
+	// the enumeration is stated with the command that produces it rather than
+	// as a bare number — this count has already moved three times:
+	//
+	//	grep -rn "bakeSegmentedColumnRef(" pkg/ --include="*.go" | grep -v _test.go
+	//
+	// which returns the definition plus SIX callers: five in this file
+	// (translateSort, the two translateProject passes, the group-key pass and
+	// the aggregate-operand pass) and one in clustered_outer_scalar.go. Each
+	// admits its argument only after `fv == minted`, and each `minted` is a
+	// freshly built lazy FieldValue{Field, Typ} with nil Resolved and nil Child
+	// — so no resolved value can currently arrive. That is a property of six
+	// call sites agreeing, not an invariant of the function, and pointer
+	// identity is not a thing to maintain by hand: any producer that starts
+	// handing this function a resolved reference reintroduces the wrong-rows
+	// read silently. The guard makes the contract the function's own.
+	if fv.Child != nil || fv.Resolved != nil {
+		return fv
+	}
 	// Exact first-match on the flat names comes first for BOTH shapes — it is
 	// the output layout's own precedence, and a qualified reference whose
 	// rendered spelling IS an output column (the qualified dedup key "A.K")
