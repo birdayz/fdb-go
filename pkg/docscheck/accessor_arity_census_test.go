@@ -557,10 +557,24 @@ const (
 	// member-rebase arm, the positive twin of that function's existing decline).
 	// Both land in the CODE population, so this is the first move since 52 → 56
 	// that changes arityCodeLines rather than only the comment bucket.
-	rfcPublishedPopulation = 60
-	// The decomposition of those 60 lines.
+	// 60 → 68: EIGHT legibility comments added at once, and this is the census
+	// acquiring sites it was previously blind to rather than the tree growing.
+	// TestSourceRelativeBakedSitesAreVisibleToTheCensus now enumerates every
+	// `SourceRelativeBaked()` call site and requires each to be either CLASSIFIED
+	// here or LEGIBLE by comment. Eight were neither — they performed an arity
+	// decision (the predicate requires len(Accessors) == 1) while containing no
+	// arity expression for this sweep to find. That is the hole
+	// bakeUnnestElementRefOrdinal sat in with a LIVE defect while the census
+	// reported green, and it is now closed by enumeration.
+	//
+	// All eight land in arityCommentLines, so the CODE population is unchanged:
+	// a legibility comment states a FACT (what the predicate requires), never a
+	// verdict. Those eight sites are ENUMERATED but still UNCLASSIFIED, and that
+	// debt is booked in TODO.md rather than discharged by the comment.
+	rfcPublishedPopulation = 68
+	// The decomposition of those 68 lines.
 	arityGeneratedLines = 8  // protobuf marshal loops over PFieldPath.FieldAccessors
-	arityCommentLines   = 3  // prose inside a doc comment (see above: 1 + 2 legibility notes)
+	arityCommentLines   = 11 // prose inside a doc comment (1 + 2 + the 8 legibility notes)
 	arityCodeLines      = 49 // the real population
 	// Four of the 49 code lines hold more than one arity expression.
 	arityExpressions = 53

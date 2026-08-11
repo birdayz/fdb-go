@@ -17299,3 +17299,95 @@ None is speculative: each was re-verified against the tree before booking.
   SPLIT THIS ITEM when step 1 lands rather than holding it open — the two steps
   have different blast radii, different review requirements, and, as the lists
   above show, disjoint closable sets.
+
+---
+
+- [ ] **Nine `SourceRelativeBaked()` call sites perform an arity decision that the accessor-arity census cannot classify — they are now ENUMERATED but not CLASSIFIED.**
+  `FieldValue.SourceRelativeBaked()` requires `len(Accessors) == 1`, and that
+  requirement lives inside the PREDICATE'S NAME. A site gating on it therefore
+  makes an arity decision while containing no `len(...Accessors)` expression, so
+  the arity sweep — a regexp over source — cannot see it. That is not
+  hypothetical: `bakeUnnestElementRefOrdinal` sat in exactly that hole with a
+  LIVE defect (a struct-element MEMBER reference was skipped, mis-resolved, and
+  EXISTS dropped every row SILENTLY) while `arityLiveDefect: 0` read green.
+  **The direction is the danger: such a site is invisible while broken and
+  becomes visible only by being FIXED**, because the repair is what introduces
+  the explicit arity expression.
+  ENUMERATION IS DONE and is guarded —
+  `TestSourceRelativeBakedSitesAreVisibleToTheCensus`
+  (`pkg/docscheck/source_relative_baked_visibility_test.go`) requires every call
+  site to be CLASSIFIED in `accessorAritySites` or LEGIBLE by a comment quoting
+  `len(Accessors) == 1`, fails on any site that is neither, and names GROWTH as
+  the alarm direction. It found 8 unguarded; all now carry a comment. **A
+  legibility comment states a FACT, never a verdict** — the classification below
+  is what is still owed. 10 sites total: 1 classified, 9 legible-only.
+  THE SHAPE TO PATTERN-MATCH, which is what makes this cheap for the next reader:
+  `if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) { return node }`
+  — a SKIP that silently passes a multi-accessor unpinned reference through
+  unbaked. Not every site below has it, and the differences are the point:
+  · **`clustered_outer_scalar.go:183`** (`clusterPullUp.bake`) — the skip shape
+    exactly. UNMEASURED.
+  · **`clustered_outer_scalar.go:391`** (`collectClusterOuterRefs`) — the skip
+    shape, but this walk COUNTS rather than bakes, and its own comment says the
+    refs "must be COUNTED or the decline guard misses them". So the consequence
+    is not a bad read but a MISSED DECLINE, which is the fail-open direction.
+    UNMEASURED, and the highest-value one to look at first for that reason.
+  · **`clustered_outer_scalar.go:660`** (`bakeClusterLegRefs`) — the skip shape.
+    UNMEASURED.
+  · **`unnest_gather.go:373`** (`bakeGatheredGroupValue`) — the skip shape, and
+    the closest sibling of the fixed defect: same gate, same
+    `elementSlots map[string]int`, same name-keyed `fv.Field` lookup, and its own
+    doc records a prior mis-bake to the element slot. **MEASURED, DOES NOT
+    REPRODUCE** across six shapes (two-level GROUP BY, HAVING, member in an
+    aggregated position, and a grouped unnest with the member correlated into an
+    EXISTS) — pinned by `TestFDB_UnnestElementMemberInGather`, whose doc states
+    what it does NOT establish: those shapes are correct, the gate still carries
+    the narrow predicate, and the reason they miss it is a property of how they
+    lower rather than a guarantee anyone stated.
+  · **`exists_gathered_cluster_wrap.go:159`** (`rebaseLegRefsToBox`) — the skip
+    shape, but here the decline is DELIBERATE and already pinned by
+    `TestRebaseLegRefsToBox_DeclinesANestedDescent`, with the surrounding comment
+    arguing that a decline costs the ordinal wrap while a half-widening costs
+    rows. Most likely already class (a); it needs the verdict recorded, not an
+    investigation.
+  · **`exists_gathered_cluster_wrap.go:343`** (`wrapRVFullyBaked`) — **INVERTED
+    relative to every site above**: `if nv.Resolved == nil || nv.SourceRelativeBaked()`
+    declines the SINGLE-accessor case, so a multi-accessor unpinned reference is
+    NOT declined and is treated as build-evaluable. The other sites risk skipping
+    a nested reference; this one risks ADMITTING one. UNMEASURED, and it is the
+    site whose failure mode is least like the others.
+  · **`rule_implement_nested_loop_join.go:4795`** (`correlatedFastPathOperand`)
+    and **`plan_visitor.go:1935`** (`resolveBaked`) — ADMIT gates, not skips: the
+    predicate admits only a flat reference, so a nested descent falls to the
+    general path or fails to resolve. Consequence is a lost fast path or a loud
+    miss, not a silent wrong read. Lowest risk; still owed a verdict.
+  DONE = each of the nine carries a class and a reason in `accessorAritySites`,
+  with the three unmeasured skip sites and the inverted one either reproduced
+  (fix + row-asserting pin) or pinned as negative results the way
+  `unnest_gather.go:373` was. Do NOT discharge this by deleting the legibility
+  comments — that re-hides the sites.
+
+- [ ] **The accessor-arity census records ONE class per SYMBOL, but a symbol can hold expressions of different classes — and now demonstrably does.**
+  `accessorAritySites` is keyed `file#symbol` with a single `class` plus an
+  `exprs` count. `exprs` works: adding an arity expression to an already-classified
+  function fails the census and forces re-classification (measured — it did
+  exactly that for `rewriteUnnestPredicate`). What is NOT captured is the class of
+  the ADDED expression.
+  `pkg/relational/core/query/cascades_translator.go#rewriteUnnestPredicate` now
+  holds TWO expressions of OPPOSITE class under a single `(a)` label: the
+  element-substitution arm's correct DECLINE (a), and the member-rebase arm which
+  HANDLES a multi-accessor path (c). The second is recorded in the entry's prose
+  only, so the class TALLY (`arityNestingOK` etc.) no longer describes the
+  expressions it is counted from — it describes symbols.
+  PRE-EXISTING, not introduced here: 10 symbols already carry `exprs > 1`
+  (`grep -oE 'exprs: [0-9]+' pkg/docscheck/accessor_arity_census_test.go`), and
+  whether any of the other nine is mixed-class has not been audited.
+  `rewriteUnnestPredicate` is simply the first KNOWN mixed one.
+  DELIBERATELY NOT FIXED IN THE CHANGE THAT FOUND IT: reworking the census's class
+  model inside a wrong-rows fix would bury an instrument defect inside a behaviour
+  change, and the two want separate review.
+  DONE = either the class moves per-expression (`classes []accessorArityClass`
+  matching `exprs`, so the tally counts expressions), or the census states
+  explicitly that its tally is symbol-granular and the per-expression verdicts
+  live in prose — and the nine other multi-expression symbols get audited for
+  mixed class either way.

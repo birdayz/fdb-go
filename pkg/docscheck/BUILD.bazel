@@ -47,6 +47,7 @@ go_test(
         "rowvalue_map_expectation_test.go",
         "slot_order_derivation_test.go",
         "source_hygiene_test.go",
+        "source_relative_baked_visibility_test.go",
         "star_body_named_column_census_test.go",
         "status_page_crossref_test.go",
         "store_timer_event_taxonomy_test.go",

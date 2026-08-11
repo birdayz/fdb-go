@@ -369,6 +369,7 @@ func bakeGatheredGroupValue(v values.Value, windows map[values.CorrelationIdenti
 		fv, isFV := node.(*values.FieldValue)
 		// A source-relative baked ref names a seed slot like its lazy twin —
 		// re-bake it here; only machinery-owned baked nodes are final.
+		// SourceRelativeBaked() requires len(Accessors) == 1, so a multi-accessor element MEMBER is skipped here; measured NOT to reproduce the sibling silent drop (TestFDB_UnnestElementMemberInGather), classification still owed (TODO.md).
 		if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 			return node
 		}

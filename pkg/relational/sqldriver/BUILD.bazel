@@ -563,6 +563,7 @@ go_test(
         "unique_violation_probe_test.go",
         "unnest_array_inside_struct_fdb_test.go",
         "unnest_element_member_in_exists_fdb_test.go",
+        "unnest_element_member_in_gather_fdb_test.go",
         "unnest_exists_gather_fdb_test.go",
         "unnest_member_predicate_rows_fdb_test.go",
         "unnest_ordinality_pushdown_fdb_test.go",

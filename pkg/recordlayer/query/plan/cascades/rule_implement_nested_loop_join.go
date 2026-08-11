@@ -4791,6 +4791,7 @@ func correlatedFastPathOperand(
 	// itself (outerValRefsBuriedLeg declines buried legs), so the row bound
 	// under outerCorrelation IS that source's row and the declared-column-order
 	// ordinal reads the right slot.
+	// SourceRelativeBaked() requires len(Accessors) == 1, so this ADMITS only a FLAT outer reference; a nested descent on the outer source is not eligible for the fast path.
 	if outerVal.SourceRelativeBaked() {
 		// The rebuilt operand's DISPLAY name. Its identity is the ordinal
 		// passed beside it; this string is never compared, keyed or resolved,

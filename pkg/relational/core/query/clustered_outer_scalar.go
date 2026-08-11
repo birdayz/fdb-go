@@ -179,6 +179,7 @@ func (pu *clusterPullUp) bake(v values.Value) values.Value {
 	fv, isFV := v.(*values.FieldValue)
 	// A source-relative baked ref (resolver construction bind) still addresses
 	// its leg's own row — re-bake it onto the concat like its lazy twin.
+	// SourceRelativeBaked() requires len(Accessors) == 1, so a multi-accessor unpinned ref is SKIPPED rather than re-baked onto the concat; classification owed (TODO.md).
 	if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 		return v
 	}
@@ -386,6 +387,7 @@ func collectClusterOuterRefs(op logical.LogicalOperator, outerAliases, skip map[
 		fv, isFV := v.(*values.FieldValue)
 		// Source-relative baked refs are outer-leg references like their lazy
 		// twins — they must be COUNTED or the decline guard misses them.
+		// SourceRelativeBaked() requires len(Accessors) == 1, so a multi-accessor unpinned ref is NOT COUNTED here — the direction that makes the decline guard miss it; classification owed (TODO.md).
 		if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 			return v
 		}
@@ -654,6 +656,7 @@ func bakeClusterLegRefs(v values.Value, pu *clusterPullUp, cols []string) values
 		if !isFV || fv.Child == nil {
 			return node
 		}
+		// SourceRelativeBaked() requires len(Accessors) == 1, so a multi-accessor unpinned ref is left unbaked here; classification owed (TODO.md).
 		if fv.Resolved != nil && !fv.SourceRelativeBaked() {
 			return node
 		}
