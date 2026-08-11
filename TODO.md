@@ -17583,3 +17583,82 @@ None is speculative: each was re-verified against the tree before booking.
   something other than interface satisfaction order — the path's own arity or an
   explicit carrier kind — so "both interfaces" stops being resolved by which
   `if` was written first.
+
+- [ ] **RFC-197 field-name debt: the `dotted` ordering constraint was refuted, and
+  the RFC's own census had rotted.** Booked as one block; three findings, two of
+  them corrections to things that were written down and believed.
+
+  **(1) The wrong-rows hazard that gated the whole migration is CLOSED and
+  PINNED.** `knownFieldDecisionDebt`'s `groupByOutputBaker # a map key … # 3`
+  entry recorded that `groupByOutputOrdinals`' map is last-wins
+  (`keys[full] = ord`), so two group keys sharing a leaf collapse to one slot,
+  and that they were separated *only* because the name channel still carried the
+  qualifier — i.e. that retiring `dotted:` would ARM a wrong-rows bug. That was
+  the stated reason to sequence `dotted` last. **It is no longer true.**
+  `groupKeyOrdinalByStructure` (`pkg/relational/core/query/cascades_translator.go`)
+  decides WHICH key a reference is from the two Values (`SameColumnPath` +
+  `sameQuantifierRoot`) and overrides the last-wins slot at both baker arms and at
+  the ORDER BY consumer `sortKeyAggregateOutputSlot`. It is already pinned in the
+  POST-DOTTED state:
+  `pkg/relational/core/query/group_key_structural_ordinal_test.go` builds the maps
+  with the qualified aliases `O.K`/`I.K` deliberately ABSENT. Three disjoint
+  mutations, each reddening only its own arm (`sort_key_arm`,
+  `qualifier_stripped_arm`, `direct_leaf_arm`), each confirmed landed via
+  `git diff --stat` before running. A refuted blocker must LOWER the estimate for
+  the dotted representation change, not leave it standing.
+  **Residual, falsifiable:** the structural decider declines when either side has
+  `Resolved == nil`, and on a decline last-wins is the sole decider again. The
+  entry retires when every reference reaching `groupByOutputBaker` carries a
+  non-nil `Resolved`. Falsify by finding a lazy `FieldValue` arriving at the site.
+
+  **(2) The `dotted`-as-keystone reading is wrong at bucket granularity.** Two
+  edges run BACKWARDS — a `dotted:` site downstream of another bucket's producer:
+  `AccessorNamePath` is downstream of `explainValueOrdinals` (`contract:`) via
+  `plans/ordering.go:985` (fixing that single producer collapsed the lazy-render
+  mint class to zero and cut the arm's declines to a lone witness, touching
+  nothing in `dotted:`); and `clusterFieldResolvable` / `clusterSeedSlotByName`
+  compare against strings minted in the `translator:` bucket, by
+  `logical_predicate.go`'s `projCol{name: qual + "." + bare}`. The claim holds
+  for one SUB-CHANNEL, which is where the leverage is: killing
+  `rebaseUnnestOuterLegPredicate`'s mint (`cascades_translator.go:3925`)
+  mechanically retires every reader of that channel — `groupByOutputBaker`'s
+  qualification probe, `rebaseOuterLegValueOrdinal`'s default arm,
+  `rebaseOuterLegValue`, `legRef`.
+
+  COUNTS ARE DELIBERATELY ABSENT HERE, and that is not stylistic. `TODO.md` is a
+  durable home in its own right, this entry is open and planned-from, and nothing
+  gates it — so a bucket size or a decomposition copied into it is a second
+  ungated copy of a fact the RFC's census table already owns, which is the exact
+  rot this item exists to record. An earlier draft of this very block shipped
+  four such tallies. For sizes, read the gated table in RFC-197 `## Order`; the
+  dependency order and the per-group decomposition (by NAME, not by tally) live
+  in that section's "Dependency order, measured".
+
+  **(3) RFC-197's census had rotted three ways at once, and nothing checked it.**
+  `TestFieldDebtBucketsArePartition` checks the group headers INSIDE
+  `knownFieldDecisionDebt` and NOT the RFC's copies, which is exactly why one
+  rotted and the other did not. The RFC claimed 52 escape sites over 34
+  authorities against a measured 44 over 33; its own per-bucket numbers summed to
+  43 rather than the 52 the same paragraph stated; and its largest named
+  concentration, `AggregateResultColumnName` at "6 of 52", had retired to ZERO
+  entries without the sentence moving. Fixed by making them the SAME fact rather
+  than two copies: the RFC carries the census as marked markdown tables and
+  `pkg/docscheck/field_debt_rfc_census_test.go` parses them and fails the build on
+  drift, in BOTH directions (a wrong number, a bucket omitted, a retired
+  authority still listed, or a new concentration nobody wrote down). Mutation-
+  proven on two disjoint arms.
+
+  **Method note worth keeping — the MECHANISM, deliberately without magnitudes.**
+  Counting these entries with a line-oriented regex is wrong, because many wrap
+  their `: {` onto a later line, so a pattern like `^\t"pkg/.*": \{` silently
+  matches only the subset that happens to fit on one line. Parse the map literal
+  (`go/ast`) and read each `why`; that agrees with the instrument's own escape
+  total by an independent route. Likewise do not count retirement conditions by
+  grepping for the `RETIREMENT CONDITION` marker — a large minority state their
+  exit in other words, so the marker under-reports.
+
+  The numbers themselves are omitted ON PURPOSE, for the same reason this entry
+  gives above: the census total is the most-gated number in this workstream, and
+  a copy of it here would be a second ungated home in the very entry that defines
+  that as the rot. An earlier draft of this note carried three such magnitudes.
+  Read them from `pkg/docscheck`.
