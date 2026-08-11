@@ -98,9 +98,26 @@ func TestFDB_QualifiedNestedAccessorShapeMatrix(t *testing.T) {
 		// `CO|200;300`, because the GROUP BY qualified path
 		// (upgradeAggregateOperands) is one of the callers of the mint this file
 		// exists to guard.
+		//
+		// THIS GATE IS ALSO WHAT KEEPS ONE FUSE UNREACHABLE. The group-key path
+		// is the ONLY caller that passes a NON-ZERO qualifier to
+		// ResolveColumnShadowingQualified; the other three pass a zero qualifier
+		// and the bare arm never descends. So this refusal, and the shadowing one
+		// below, are jointly the reason that helper's descent cannot fire from
+		// SQL. It is driven directly by
+		// TestShadowingQualifiedResolvesTheLeafNotTheStructRoot in the expr
+		// package — when this arm changes, that fuse goes live.
 		{
 			"dup_alias_group_by", "SELECT n.co FROM t1 AS a, t2 AS a GROUP BY n.co ORDER BY n.co",
 			`ERROR: 0AF00: grouping by the nested field "N.CO" is not supported`,
+		},
+		// The same refusal over a SHADOWING source — a lateral unnest binding
+		// whose element is a struct. This is the exact reference shape that would
+		// reach ResolveColumnShadowingQualified's qualified arm, so it is the
+		// closest SQL gets to that fuse today.
+		{
+			"unnest_group_by_element_field", "SELECT e.co FROM t3, t3.arr AS e GROUP BY e.co ORDER BY e.co",
+			`ERROR: 0AF00: grouping by the nested field "E.CO" is not supported`,
 		},
 	}
 

@@ -196,6 +196,7 @@ go_test(
         "tx_time_limit_marker_test.go",
         "unnest_element_later_from_item_test.go",
         "unnest_element_stays_untyped_test.go",
+        "unnest_element_struct_fields_nested_test.go",
         "utilities_test.go",
         "value_compare_test.go",
         "vector_ddl_test.go",
@@ -357,7 +358,6 @@ go_test(
         "derived_source_exists_plan_test.go",
         "aggregate_group_key_nested_path_test.go",
         "reject_nested_path_group_key_test.go",
-        "agg_output_cols_nullability_test.go",
     ],
     deps = [
         "//gen",

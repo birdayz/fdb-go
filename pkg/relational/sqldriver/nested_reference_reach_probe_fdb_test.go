@@ -20,6 +20,18 @@ import (
 // does not decline at all — it ANSWERS — so the shape gate downstream of it is
 // not refusing a reachable key.
 //
+// THE THREE-SEGMENT ARMS ARE EXPECTED TO GO RED, AND THAT RED IS GOOD NEWS.
+// Work is in flight to make `alias.struct.member` resolve — Java ANSWERS that
+// spelling at the pinned tag, measured live in
+// conformance/nested_groupby_key_java_probe_test.go, so Go's 42703 is a known
+// divergence and closing it is a capability ARRIVING, not a regression. When
+// these arms fail with rows where a 42703 was expected, the correct response is
+// to assert the rows (`CO|300;200` for the join arm, `CO|300;200` for the
+// single-source arm) and to re-check the qualified projection mint for the same
+// struct-root bind the two-segment shape had. The response is NEVER to loosen
+// the assertion or delete the arm: this file is the thing that will notice the
+// deeper chain reaching a mint that has only ever been driven one level deep.
+//
 // Each arm names, in its failure message, what gets RE-ARMED if it changes.
 func TestFDB_NestedReferenceReachProbe(t *testing.T) {
 	t.Parallel()
@@ -78,9 +90,11 @@ func TestFDB_NestedReferenceReachProbe(t *testing.T) {
 			name: "three_segment_over_join",
 			sql:  "SELECT a.n.co FROM t1 AS a, t2 AS b ORDER BY id",
 			want: `ERROR: 42703: column reference with qualifier "A.N" cannot be resolved`,
-			rearms: "three-segment nested references now resolve; the qualified " +
-				"projection mint must be re-checked for the same struct-root bind " +
-				"the two-segment shape had",
+			rearms: "THE CAPABILITY ARRIVED, most likely the three-segment " +
+				"qualified path landing. Do NOT loosen this assertion. Replace the " +
+				"expectation with the ROWS (CO|300;200) and re-check the qualified " +
+				"projection mint for the same struct-root bind the two-segment shape " +
+				"had — it has only ever been driven one accessor deep",
 		},
 		{
 			// The same three segments WITHOUT a join, for contrast: the reach
@@ -88,8 +102,10 @@ func TestFDB_NestedReferenceReachProbe(t *testing.T) {
 			name: "three_segment_single_source",
 			sql:  "SELECT t1.n.co FROM t1 ORDER BY id",
 			want: `ERROR: 42703: column reference with qualifier "T1.N" cannot be resolved`,
-			rearms: "three-segment nested references now resolve on a single " +
-				"source; re-check ResolveIdentifier's fuse for the deeper chain",
+			rearms: "THE CAPABILITY ARRIVED on a single source. Do NOT loosen this " +
+				"assertion. Replace the expectation with the ROWS (CO|300;200) and " +
+				"re-check ResolveIdentifier's fuse for a chain deeper than one " +
+				"accessor, which no test drives today",
 		},
 		{
 			// A CORRELATED grouping key inside a grouped scalar subquery, ordered

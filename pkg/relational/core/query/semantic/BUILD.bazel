@@ -27,6 +27,7 @@ go_test(
         "identifier_test.go",
         "integration_test.go",
         "parse_bridge_test.go",
+        "qualified_column_nested_decline_test.go",
         "qualified_name_test.go",
         "resolver_at_mint_capability_test.go",
         "scope_build_test.go",

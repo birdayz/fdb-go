@@ -94,7 +94,15 @@ func (a *Analyzer) ResolveColumn(table Table, id Identifier) (Column, error) {
 // caller to reach for; Java has no such split either, because lookupNestedField
 // fuses the descent onto the value before any caller sees it
 // (SemanticAnalyzer.java:599-600). expr.fuseNestedAccessorsIfAny is the Go side
-// of that fuse and every mint routes through it.
+// of that fuse.
+//
+// BE PRECISE ABOUT WHAT THAT BUYS. Removing the discarding sibling RAISED THE
+// COST of the mistake; it did not make it unrepresentable. Each mint still calls
+// the fuse itself, so a NEW mint that resolves through this method and forgets
+// the call is the same silent wrong-column read as before — it just has to be
+// written deliberately rather than by picking the shorter-named function. The
+// change that would remove the shape is a single mint, or the fuse moved inside
+// whatever the mints share; neither exists yet.
 //
 // The BARE arm never descends, and that is Java's rule, not an omission:
 // lookupNestedField returns empty immediately when the requested identifier

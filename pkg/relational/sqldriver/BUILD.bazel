@@ -554,6 +554,7 @@ go_test(
         "unique_null_batch_probe_test.go",
         "unique_pending_index_distinct_fdb_test.go",
         "unique_violation_probe_test.go",
+        "unnest_array_inside_struct_fdb_test.go",
         "unnest_exists_gather_fdb_test.go",
         "unnest_ordinality_pushdown_fdb_test.go",
         "unordered_union_continuation_fdb_test.go",
