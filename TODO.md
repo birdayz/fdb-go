@@ -16601,7 +16601,32 @@ None is speculative: each was re-verified against the tree before booking.
   - `hasSatisfiedMinRows() = hasByteLimit() && minRows == 0` (`:2875`); `minRows`
     is what stops a byte-limited request from returning zero rows, and RYW derives
     its per-request limit with it (`ReadYourWrites.actor.cpp:580-597`).
-  STAGING, if it is not landed in one go: applying the byte limit in the SERVER
+  STAGING AND CURRENT POSITION. The order is DIFFERENTIAL FIRST, PORT SECOND, for
+  both halves: build the cross-client safety net while the code is still unchanged,
+  prove it reds against a deliberately wrong merge, and only then change production.
+  A net built after the change cannot tell you the change was safe.
+  - [x] RYW differential LANDED — `libfdbc:TestLibFDBC_RYWRangeUnderByteLimitDifferential`.
+    Drains both clients to exhaustion under each per-mode byte target and compares
+    each against an INDEPENDENT Go model (not against each other, which is the
+    paired-equality trap). Six scenarios — no_local_writes, shadow, extend,
+    delete_keys, clear_range, mixed — each forward AND reverse, since C++ implements
+    the two directions as separate functions. Fat 300-byte rows so SMALL's 256-byte
+    target is exceeded by one row, which is also the `minRows` case: the test asserts
+    no fetch returns zero rows before exhaustion. PROVEN DISCRIMINATING: dropping the
+    last local write from the merge window reds shadow/extend/mixed and leaves
+    delete_keys/clear_range green; disabling the cleared-key filter reds
+    delete_keys/clear_range/mixed and leaves shadow/extend green. Disjoint arms.
+  - [x] Server-path division measurement LANDED —
+    `libfdbc:TestLibFDBC_RangeBatchDivision` (C's division per mode) and
+    `fdb:TestRangeIterator_DivisionIsRowDrivenNotByteDriven` (Go's, asserted as
+    row-driven and size-invariant, which is the divergence stated as currently-true).
+  - [ ] PORT, server path — byte budget into `rangeScanImpl`'s loop termination.
+  - [ ] PORT, RYW path — byte accounting into the merge helpers, guarded by the
+    differential above.
+  NOTHING IN THE PORT IS STARTED. The two landed items are test-only; no production
+  file has been modified. The next person picks up at the first unchecked box with
+  the net already standing.
+  WHY THE SPLIT: applying the byte limit in the SERVER
   path (`rangeScanImpl`) alone already converges the no-local-writes case, which is
   what the division tests exercise. The RYW merged path (`client/ryw.go`, mirroring
   C++'s separate forward/reverse implementations at
