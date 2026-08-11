@@ -3,9 +3,111 @@ package sqldriver_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/relational/conformance/rowdiff"
 )
+
+// TestRowdiffSweepStopsWhenTheClusterDies drives every arm of the sweep's
+// stopping policy from explicit state.
+//
+// The live sweep reaches NONE of these arms on a healthy cluster, which is
+// exactly why they need driving here: the breaker's first real firing would
+// otherwise be read as a finding rather than as an untested branch. Both
+// DISABLED arms are pinned too — a bound of zero must mean "no bound", and
+// reading it as "a bound of zero" would abort every sweep on its first seed,
+// which fails in the loud-but-opposite direction.
+func TestRowdiffSweepStopsWhenTheClusterDies(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		lim        rowdiffLimits
+		consecutve int
+		elapsed    time.Duration
+		wantToken  string // "" = must not stop
+		wantFatal  bool   // does this stop RED the night?
+	}{
+		{
+			name:       "the wedge: enough consecutive INFRA that the cluster is gone",
+			lim:        rowdiffLimits{maxConsecutiveInfra: 10},
+			consecutve: 10,
+			wantFatal:  true,
+			wantToken:  "ROWDIFF_CLUSTER_DEAD",
+		},
+		{
+			name:       "one short of the breaker keeps sweeping",
+			lim:        rowdiffLimits{maxConsecutiveInfra: 10},
+			consecutve: 9,
+		},
+		{
+			// The load-bearing negative. A sweep on a healthy cluster that hits
+			// scattered INFRA seeds must run to completion; the counter resets in
+			// the loop on any seed that measures something, so a high TOTAL infra
+			// count never reaches this arm.
+			name:       "scattered INFRA never accumulates — a healthy sweep is untouched",
+			lim:        rowdiffLimits{maxConsecutiveInfra: 10},
+			consecutve: 0,
+			elapsed:    9 * time.Hour,
+		},
+		{
+			name:       "breaker disabled by a non-positive bound stays silent forever",
+			lim:        rowdiffLimits{maxConsecutiveInfra: 0},
+			consecutve: 100000,
+		},
+		{
+			name:      "wall-clock budget exhausted",
+			lim:       rowdiffLimits{maxConsecutiveInfra: 10, budget: time.Hour},
+			elapsed:   time.Hour,
+			wantToken: "ROWDIFF_BUDGET_EXHAUSTED",
+		},
+		{
+			name:    "inside the budget keeps sweeping",
+			lim:     rowdiffLimits{maxConsecutiveInfra: 10, budget: time.Hour},
+			elapsed: 59 * time.Minute,
+		},
+		{
+			// A zero budget means UNBOUNDED, not "a bound of zero". Getting this
+			// backwards would stop every sweep after its first seed while still
+			// looking like a working guard.
+			name:    "zero budget means unbounded, not instant abort",
+			lim:     rowdiffLimits{maxConsecutiveInfra: 10},
+			elapsed: 1000 * time.Hour,
+		},
+		{
+			name:       "the breaker outranks the budget so the message names the real cause",
+			lim:        rowdiffLimits{maxConsecutiveInfra: 10, budget: time.Hour},
+			consecutve: 50,
+			elapsed:    5 * time.Hour,
+			wantFatal:  true,
+			wantToken:  "ROWDIFF_CLUSTER_DEAD",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, fatal := tc.lim.stop(tc.consecutve, tc.elapsed)
+			if tc.wantToken == "" {
+				if got != "" {
+					t.Fatalf("stop() aborted a sweep that must continue: %q", got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatalf("stop() did not fire; want %s", tc.wantToken)
+			}
+			if !strings.Contains(got, tc.wantToken) {
+				t.Errorf("stop() = %q, want the greppable token %s — the workflow summary leads with it",
+					got, tc.wantToken)
+			}
+			// Severity is the load-bearing half: a cluster that vanished must red the
+			// night, and running out of clock must not, or the nightly is permanently
+			// failing and nobody reads it.
+			if fatal != tc.wantFatal {
+				t.Errorf("stop() fatal=%v, want %v for %q", fatal, tc.wantFatal, tc.wantToken)
+			}
+		})
+	}
+}
 
 // TestRowdiffTallyCountsEveryOutcome pins each arm of the classifier tally from
 // EXPLICIT state.
@@ -103,6 +205,72 @@ func TestRowdiffVacuityFloor(t *testing.T) {
 			}
 			if tc.wantFire && !strings.Contains(msg, "ROWDIFF_VACUOUS") {
 				t.Errorf("the complaint must carry the greppable token the workflow summary leads with; got %q", msg)
+			}
+		})
+	}
+}
+
+// TestRowdiffCoverageFloor pins the guard that keeps a NON-fatal budget
+// exhaustion honest.
+//
+// Budget exhaustion is deliberately not an error, so this floor is the only
+// thing standing between "the clock sized the night" and "per-seed cost
+// regressed tenfold and the nightly went quietly green on 200 seeds forever".
+// Both directions matter and the negatives are the load-bearing ones: a
+// developer running the 25-seed smoke slice, and a nightly that walked its full
+// request, must never trip a thousands-scale floor.
+func TestRowdiffCoverageFloor(t *testing.T) {
+	t.Parallel()
+
+	const floor = 2000
+	for _, tc := range []struct {
+		name              string
+		walked, requested uint64
+		wantFire          bool
+	}{
+		{
+			name: "the collapse this floor exists for: a truncated night that measured almost nothing",
+			// A tenfold per-seed regression against a 3h30m budget looks exactly
+			// like this, and without the floor it is a green.
+			walked: 200, requested: 10000, wantFire: true,
+		},
+		{
+			name:   "a normally truncated night is fine — the clock is meant to size the sweep",
+			walked: 8000, requested: 10000, wantFire: false,
+		},
+		{
+			// THE negative that makes the floor safe to ship: `requested` is a
+			// ceiling, so completing a small request is complete coverage. A floor
+			// that ignored this would fail every PR smoke run and every local run.
+			name:   "the 25-seed PR smoke slice walked everything it was asked for",
+			walked: 25, requested: 25, wantFire: false,
+		},
+		{
+			name:   "exactly at the floor is enough",
+			walked: floor, requested: 10000, wantFire: false,
+		},
+		{
+			name:   "one below the floor is not",
+			walked: floor - 1, requested: 10000, wantFire: true,
+		},
+		{
+			// Raising the seed ceiling must never raise the bar the night clears.
+			// Expressing the floor as a FRACTION of the request would invert this:
+			// the same 3000 walked seeds would pass at request=10000 and fail at
+			// request=100000, punishing a config change that measured nothing new.
+			name:   "raising the ceiling does not raise the bar",
+			walked: 3000, requested: 1000000, wantFire: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			msg := coverageFloor("test", tc.walked, tc.requested, floor)
+			if fired := msg != ""; fired != tc.wantFire {
+				t.Fatalf("coverageFloor(walked=%d, requested=%d) fired=%v, want %v (msg=%q)",
+					tc.walked, tc.requested, fired, tc.wantFire, msg)
+			}
+			if tc.wantFire && !strings.Contains(msg, "ROWDIFF_COVERAGE_FLOOR") {
+				t.Errorf("the complaint must carry its greppable token; got %q", msg)
 			}
 		})
 	}

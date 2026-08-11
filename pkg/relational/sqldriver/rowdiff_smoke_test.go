@@ -76,6 +76,153 @@ func rowdiffSeedRange(t *testing.T) (start, count uint64) {
 	return start, count
 }
 
+// defaultMaxConsecutiveInfra bounds how long a sweep will keep paying a full
+// context deadline per seed to learn the cluster is still gone.
+//
+// The value is chosen against the MEASURED cost of being wrong in each
+// direction. Too high is what shipped: at the observed 60s-per-dead-seed, the
+// 2026-08-10 nightly burned 4h21m of a two-runner fleet after its cluster died,
+// and five further nights did the same. Too low would abort a healthy sweep on
+// a transient, which is the worse failure — it would retrain readers to ignore
+// the abort. Ten consecutive is comfortably outside transient range (a healthy
+// sweep reaches zero INFRA, and the counter RESETS on any seed that measures
+// something) while capping the wasted runner time at ~10 minutes instead of
+// ~5 hours. It is the first-time-it-happens signal the old budget could not give.
+const defaultMaxConsecutiveInfra = 10
+
+// rowdiffLimits is the sweep's stopping policy, held as explicit state so
+// `stop` is a pure function and every arm can be driven from a unit test. The
+// arms only fire when a cluster dies or a range overruns, which is precisely
+// what a corpus run cannot be relied on to reach — the same reasoning that
+// split `vacuous` out below.
+type rowdiffLimits struct {
+	maxConsecutiveInfra int           // <=0 disables the breaker
+	budget              time.Duration // <=0 disables the wall-clock bound
+	minSeeds            uint64        // coverage floor; <=0 disables it
+}
+
+// rowdiffSweepLimits reads the policy from the environment.
+//
+// The breaker is ALWAYS ON — it needs no configuration to protect a run, and a
+// knob that must be set to be safe is a knob that will be unset somewhere. The
+// budget defaults to unbounded because its correct value is a property of the
+// seed range the CALLER chose, which only the caller knows: 25 seeds in the PR
+// smoke and 18000 in the nightly do not share a sane bound. nightly-rowdiff.yml
+// declares it as a test_env input next to the seed count it belongs to, and
+// pkg/docscheck's TestRowdiffSweepBudgetBoundsTheTimeout pins that it stays
+// declared and stays below the Bazel timeout.
+func rowdiffSweepLimits(t *testing.T) rowdiffLimits {
+	t.Helper()
+	lim := rowdiffLimits{maxConsecutiveInfra: defaultMaxConsecutiveInfra}
+	if v := os.Getenv("ROWDIFF_BUDGET"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			t.Fatalf("ROWDIFF_BUDGET=%q: want a positive Go duration such as 3h30m", v)
+		}
+		lim.budget = d
+	}
+	// The coverage floor is PER LANE because per-seed cost is: the paged lane
+	// measured 3.73x the un-paged lane's cost on one tree, and a single shared
+	// floor sized for the fast lane would fail the slow one every night for
+	// doing exactly what it was asked to do. It only has a default when a budget
+	// makes truncation possible at all — an unbounded sweep either finishes its
+	// range or dies, and neither needs a floor.
+	if lim.budget > 0 {
+		lim.minSeeds = defaultMinSeedCoverage
+	}
+	if v := os.Getenv("ROWDIFF_MIN_SEEDS"); v != "" {
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			t.Fatalf("ROWDIFF_MIN_SEEDS=%q: want a non-negative integer (0 disables the floor)", v)
+		}
+		lim.minSeeds = n
+	}
+	return lim
+}
+
+// stop returns the abort reason and whether it is a DEFECT, or "" to keep
+// sweeping.
+//
+// The two arms differ in severity and conflating them was a design error worth
+// naming, because it is the same mistake in a new place. A time-boxed
+// generative sweep that runs out of clock has not failed — it has covered fewer
+// seeds than its upper bound, which is the normal outcome of asking for "as
+// many seeds as fit in 3h30m". Making that red would put a permanent failure on
+// a healthy nightly and retrain readers to ignore it, which is precisely the
+// disease the vacuity floor below was written to avoid. A cluster that has gone
+// away IS a defect: the instrument is dark.
+//
+// So budget exhaustion is a normal, reported termination and the seed count is
+// only an upper bound. What guards against the sweep silently degrading to
+// nothing is not this arm but the COVERAGE FLOOR, which is a different question
+// asked after the loop — "did this night measure enough to be worth anything?"
+// rather than "did it finish?". That split also makes the sizing robust to the
+// thing that forced it: per-seed cost moves when the generator changes (it moved
+// 3.73x for the paged lane when nested cases landed), and no seed count chosen
+// today survives that. A clock does.
+//
+// Both arms are guarded on being CONFIGURED, not merely on being exceeded: a
+// zero budget means "no wall-clock bound", and reading it as "a bound of zero"
+// would abort every sweep on its first seed.
+func (l rowdiffLimits) stop(consecutiveInfra int, elapsed time.Duration) (reason string, fatal bool) {
+	if l.maxConsecutiveInfra > 0 && consecutiveInfra >= l.maxConsecutiveInfra {
+		return fmt.Sprintf("ROWDIFF_CLUSTER_DEAD: %d seeds in a row failed with INFRA and nothing in "+
+			"between measured anything. That is not a flaky seed, it is the cluster gone — every "+
+			"further seed would spend a full context deadline rediscovering that, which is how this "+
+			"sweep once consumed a CI runner for 4h21m and reported no tally at all. Stopping here so "+
+			"the tally below describes the seeds that DID run. Fix the cluster and re-run; read "+
+			"nothing into the engine either way.", consecutiveInfra), true
+	}
+	if l.budget > 0 && elapsed >= l.budget {
+		return fmt.Sprintf("ROWDIFF_BUDGET_EXHAUSTED: the sweep spent its %s wall-clock budget. This "+
+			"is a normal termination, not a failure: the seed count is an UPPER bound and the clock "+
+			"is what actually sizes the night. The seeds walked are reported below and every one of "+
+			"them is valid. The coverage floor, not this line, is what fails a night that measured "+
+			"too little.", l.budget), false
+	}
+	return "", false
+}
+
+// defaultMinSeedCoverage is the floor below which a truncated sweep stops being
+// a shorter night and starts being a broken one.
+//
+// It exists because budget exhaustion is deliberately NOT an error: without a
+// floor, a sweep whose per-seed cost regressed tenfold would quietly walk 200
+// seeds a night and report a clean green forever. The floor is the guard that
+// keeps "we ran out of clock" honest, and it is expressed in SEEDS rather than
+// as a fraction of the request so that raising ROWDIFF_SEEDS — which only moves
+// an upper bound — can never lower the bar the night has to clear.
+//
+// 2000 is set against measured throughput with room to spare: the un-paged lane
+// managed ~1.05 seeds/s on the runner before the nested cases landed, which is
+// >13000 seeds in a 3h30m budget, and the slower paged lane still clears 2000
+// inside its 70m. A night that cannot reach 2000 has lost most of an order of
+// magnitude and is worth a human looking at it.
+const defaultMinSeedCoverage = 2000
+
+// coverageFloor returns the complaint for a night that measured too little, or
+// "" when it measured enough.
+//
+// Pure and explicitly parameterised for the same reason as `vacuous` and
+// `stop`: a corpus run on a healthy cluster never reaches it, so it has to be
+// driveable from a unit test or its first firing is also its first execution.
+// `requested` is respected as a ceiling — asking for 25 seeds in the PR smoke
+// slice and walking all 25 is complete coverage, and holding that to a
+// thousands-scale floor would fail every developer run.
+func coverageFloor(lane string, walked, requested uint64, floor uint64) string {
+	// floor==0 disables: an unbounded sweep cannot be truncated, so there is
+	// nothing for a floor to catch and a default one would only misfire.
+	if floor == 0 || walked >= floor || walked >= requested {
+		return ""
+	}
+	return fmt.Sprintf("ROWDIFF_COVERAGE_FLOOR lane=%s: only %d of %d requested seeds were walked, "+
+		"below the floor of %d. A truncated night is normally fine — the clock sizes the sweep and "+
+		"the seed count is only a ceiling — but this one measured too little to be worth reading as "+
+		"evidence about the engine. Either per-seed cost regressed sharply or the sweep lost most of "+
+		"its budget to something; both are findings, and neither should pass as a quiet green.",
+		lane, walked, requested, floor)
+}
+
 func TestFDB_RowDiff_Smoke(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -104,25 +251,101 @@ func TestFDB_RowDiff_Smoke(t *testing.T) {
 	t.Run("random_seeds", func(t *testing.T) {
 		t.Parallel()
 		seedStart, seedCount := rowdiffSeedRange(t)
-		start := time.Now()
-		histogram := map[string]int{}
-		executed := 0
-		var tally rowdiffTally
-		for i := uint64(0); i < seedCount; i++ {
-			res := rowdiff.RunSeed(ctx, setup, dbPath, clusterFilePath, seedStart+i)
-			reportRowdiff(t, res)
-			tally.add(res)
-			for fam, n := range res.Histogram {
-				histogram[fam] += n
-			}
-			executed += res.Executed
-		}
-		elapsed := time.Since(start)
-		t.Logf("rowdiff: seeds %d..%d (%d), %d comparisons in %s (%.1f seeds/s); plan-family histogram: %v",
-			seedStart, seedStart+seedCount-1, seedCount, executed, elapsed.Round(time.Millisecond),
-			float64(seedCount)/elapsed.Seconds(), histogram)
-		tally.report(t, "random_seeds", executed)
+		runRowdiffSweep(t, "random_seeds", seedStart, seedCount, rowdiffSweepLimits(t),
+			func(seed uint64) *rowdiff.SeedResult {
+				return rowdiff.RunSeed(ctx, setup, dbPath, clusterFilePath, seed)
+			})
 	})
+}
+
+// runRowdiffSweep walks the seed range and reports, and it is the ONLY place
+// either sweep decides to stop early.
+//
+// The seed loop used to have exactly one exit condition — seed exhaustion — and
+// that is what turned a dead cluster into a wedged CI runner. MEASURED on the
+// 2026-08-10 nightly (run 31350088492): the FDB testcontainer became
+// unreachable at 03:09:08 UTC, at which point every remaining seed spent a full
+// 60s context deadline inside a TCP connect to an address that no longer
+// answered, logged one INFRA line, and moved on to the next seed. The goroutine
+// dump the Go alarm printed at the 4h50m mark shows the state precisely: the
+// only running test is `TestFDB_RowDiff_Smoke/random_seeds`, blocked in
+// `client.(*database).getOrDialConn` → `net.(*netFD).connect` in `[IO wait]`.
+// Not deadlocked and not merely slow — making perfect forward progress through
+// a range it could no longer measure anything with, at 60s a seed. 18000 seeds
+// at that rate is 300 hours, so the run could only ever end by timeout, and it
+// did, on six consecutive nights.
+//
+// The damage was not the red run. It is that NOTHING WAS REPORTED. Both
+// instruments this harness has for exactly this situation — the tally and the
+// vacuity floor below — run AFTER the loop, so the alarm killed the process
+// before either could speak. The 2026-08-10 log contains no ROWDIFF_TALLY line
+// at all, and the workflow summary greps for one. An instrument that cannot run
+// during the failure it was built to diagnose is not an instrument.
+//
+// So the loop now carries two independent stops, and both leave by the same
+// door — `break`, then report — because the reporting is the point:
+//
+//   - the INFRA circuit breaker, for a cluster that is gone. Consecutive is
+//     load-bearing: an isolated INFRA seed is noise and resets the counter,
+//     while N in a row is not a cluster that will recover, and every further
+//     seed costs a full deadline to learn nothing.
+//   - the wall-clock budget, for the other way a sweep can fail to fit —
+//     genuinely too slow for the range it was handed. This is the bound that
+//     replaces `--test_timeout` as the CONTROL: a budget that fires inside the
+//     test prints the tally and the coverage achieved, where the Bazel timeout
+//     can only SIGQUIT the process. The timeout stays as the backstop, and must
+//     stay comfortably ABOVE the budget or it takes the decision back.
+func runRowdiffSweep(t *testing.T, lane string, seedStart, seedCount uint64, lim rowdiffLimits, run func(seed uint64) *rowdiff.SeedResult) {
+	t.Helper()
+	start := time.Now()
+	histogram := map[string]int{}
+	executed := 0
+	consecutiveInfra := 0
+	var tally rowdiffTally
+	var stop string
+	var fatal bool
+	done := uint64(0)
+	for i := uint64(0); i < seedCount; i++ {
+		res := run(seedStart + i)
+		reportRowdiff(t, res)
+		tally.add(res)
+		for fam, n := range res.Histogram {
+			histogram[fam] += n
+		}
+		executed += res.Executed
+		done++
+		if res.Kind == rowdiff.OutcomeInfra {
+			consecutiveInfra++
+		} else {
+			consecutiveInfra = 0
+		}
+		if stop, fatal = lim.stop(consecutiveInfra, time.Since(start)); stop != "" {
+			break
+		}
+	}
+	elapsed := time.Since(start)
+	t.Logf("rowdiff: lane=%s seeds %d..%d (%d requested, %d walked), %d comparisons in %s (%.1f seeds/s); plan-family histogram: %v",
+		lane, seedStart, seedStart+seedCount-1, seedCount, done, executed, elapsed.Round(time.Millisecond),
+		float64(done)/elapsed.Seconds(), histogram)
+	if stop != "" {
+		// Severity is the stop's own, not the fact of stopping. A cluster that
+		// went away is a defect; running out of clock is how a time-boxed sweep
+		// is supposed to end.
+		msg := fmt.Sprintf("ROWDIFF_ABORTED lane=%s after %d of %d seeds in %s: %s",
+			lane, done, seedCount, elapsed.Round(time.Second), stop)
+		if fatal {
+			t.Errorf("%s", msg)
+		} else {
+			t.Logf("%s", msg)
+		}
+	}
+	// The floor is checked whether or not the sweep aborted: a night can also
+	// measure too little by having its seed count set absurdly low, and that
+	// should be caught by the same guard rather than by nobody.
+	if msg := coverageFloor(lane, done, seedCount, lim.minSeeds); msg != "" {
+		t.Errorf("%s", msg)
+	}
+	tally.report(t, lane, executed)
 }
 
 // TestFDB_RowDiff_Paging is the differential sweep in PAGING mode: every
@@ -153,23 +376,11 @@ func TestFDB_RowDiff_Paging(t *testing.T) {
 		}
 		scanLimit = n
 	}
-	start := time.Now()
-	histogram := map[string]int{}
-	executed := 0
-	var tally rowdiffTally
-	for i := uint64(0); i < seedCount; i++ {
-		res := rowdiff.RunSeedPaged(ctx, setup, dbPath, clusterFilePath, seedStart+i, scanLimit)
-		reportRowdiff(t, res)
-		tally.add(res)
-		for fam, n := range res.Histogram {
-			histogram[fam] += n
-		}
-		executed += res.Executed
-	}
-	t.Logf("rowdiff PAGED(scanLimit=%d): seeds %d..%d (%d), %d comparisons in %s; plan-family histogram: %v",
-		scanLimit, seedStart, seedStart+seedCount-1, seedCount, executed,
-		time.Since(start).Round(time.Millisecond), histogram)
-	tally.report(t, "paging", executed)
+	t.Logf("rowdiff PAGED: scanLimit=%d", scanLimit)
+	runRowdiffSweep(t, "paging", seedStart, seedCount, rowdiffSweepLimits(t),
+		func(seed uint64) *rowdiff.SeedResult {
+			return rowdiff.RunSeedPaged(ctx, setup, dbPath, clusterFilePath, seed, scanLimit)
+		})
 }
 
 // rowdiffTally counts the sweep's TYPED outcomes, which nothing downstream of
