@@ -394,3 +394,10 @@ go_test(
         "@org_golang_google_protobuf//types/descriptorpb",
     ],
 )
+
+# See //pkg/relational/sqldriver:tx_budget_census_corpus.
+filegroup(
+    name = "tx_budget_census_corpus",
+    srcs = glob(["*_test.go"]),
+    visibility = ["//pkg/relational/txbudgetcensus:__pkg__"],
+)

@@ -628,3 +628,13 @@ go_test(
         "@org_golang_google_protobuf//types/dynamicpb",
     ],
 )
+
+# The corpus the transaction-budget census reads as DATA rather than as code.
+# Declared here because a Bazel test sees only its declared inputs: without this
+# filegroup the census runs over an empty runfiles tree and reports zero exposed
+# transactions, which is indistinguishable from a clean suite.
+filegroup(
+    name = "tx_budget_census_corpus",
+    srcs = glob(["*_test.go"]),
+    visibility = ["//pkg/relational/txbudgetcensus:__pkg__"],
+)
