@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/relational/core/query/logical"
 )
 
 // legRef's exclusion is MACHINERY-OWNERSHIP, and machinery-ownership is the
@@ -15,13 +16,16 @@ import (
 // accessors, so the arity half declined exactly the references the walk exists
 // to rebase.
 //
-// legRef is the shared prologue of THREE walks — the bake closure,
-// predicateLegAliases and predicateRefsBuriedLeg — so the fix widened all three
-// at once. This drives each of them directly rather than inferring the widening
-// from the end-to-end query, because two of the three are COUNTERS whose move is
-// invisible in a row set: a nested reference now counts toward the cross-leg
-// test and toward the buried-leg test, which is what makes the conjunct reach
-// the bake at all.
+// legRef is the shared prologue of FIVE call sites, so the fix widened all of
+// the un-masked ones at once. This test covers the three in ordinal_seed.go —
+// the bake closure, predicateLegAliases, predicateRefsBuriedLeg — and drives
+// each directly rather than inferring the widening from the end-to-end query,
+// because two of them are COUNTERS whose move is invisible in a row set: a
+// nested reference now counts toward the cross-leg test and toward the
+// buried-leg test, which is what makes the conjunct reach the bake at all. The
+// other two consumers get their own pins below
+// (TestClassifyLegConjunct_SeesANestedBoxLegDescent and
+// TestRebaseLegRefsToBox_DeclinesANestedDescent).
 //
 // The pinned-decline arms are the other direction and they matter as much: if
 // the pin stopped excluding, a re-walk would re-bake an address that already
@@ -162,5 +166,134 @@ func TestLegRef_AdmitsANestedUnpinnedRefAndStillDeclinesMachineryOutput(t *testi
 		t.Error("predicateRefsBuriedLeg missed a NESTED reference into a buried leg. " +
 			"A buried reference left lazy evaluates QOV(buriedAlias) → unbound → NULL and " +
 			"silently drops rows; the single-leg cross-leg test cannot catch it")
+	}
+}
+
+// nestedLegDescent is a user-written `<corr>.<root>.<leaf>`: ONE UNPINNED
+// FieldValue whose root accessor is the leg column and whose second descends
+// inside it. Field is the ROOT name, which is what every leg walk resolves.
+func nestedLegDescent(corr, root, leaf string) *values.FieldValue {
+	return &values.FieldValue{
+		Field: root,
+		Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(corr)),
+		Typ:   values.UnknownType,
+		Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{
+			{Field: root, Ordinal: 0},
+			{Field: leaf, Ordinal: 0},
+		}},
+	}
+}
+
+// classifyLegConjunct is the FOURTH legRef consumer and the only one that
+// decides a PLAN SHAPE: it is the gather-admission verdict for a WHERE conjunct
+// over a box / flat cluster, and it is NOT pre-filtered, so it widened with the
+// gate.
+//
+// THE WIDENING FIXED A WRONG ADMISSION, which is why this needs both directions
+// rather than a single happy-path arm. While legRef refused a nested descent,
+// `isRef` was false here and the reference fell through to the dotted-frontier
+// arm, which requires `Child == nil` — so a nested box-leg reference matched
+// NOTHING and the conjunct classified BAKEABLE by default, including when its
+// root column does not exist in the window. The gather then admitted a shape
+// whose reference the bake could not resolve. Now the reference is seen, and the
+// verdict tracks the window: Bakeable when the ROOT column resolves uniquely,
+// Unbakeable when it does not.
+//
+// The verdict asks the ROOT only, and that is correct rather than sloppy: it is
+// the same question the bake asks in the same window
+// (leafTyp.FieldIndexUnique of the reference's Field), so verdict and bake agree
+// by construction. The suffix is not the verdict's business — a descent into a
+// column that resolves is the fuse's problem, and the fuse is correct-or-loud.
+func TestClassifyLegConjunct_SeesANestedBoxLegDescent(t *testing.T) {
+	t.Parallel()
+
+	eqConst := func(operand values.Value) predicates.QueryPredicate {
+		return predicates.NewComparisonPredicate(operand, predicates.Comparison{
+			Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(10)},
+		})
+	}
+	classify := func(t *testing.T, pred predicates.QueryPredicate) boxConjVerdict {
+		t.Helper()
+		f := b2BoxShapeWithPred(pred)
+		j := f.Input.(*logical.LogicalJoin)
+		return newChainedSpineTranslator(t).classifyBoxLegConjunct(
+			j.Left.(*logical.LogicalJoin), j.Right.(*logical.LogicalUnnest), f.Predicate)
+	}
+
+	// The ROOT column exists in T4's buried window, so the reference resolves
+	// and the gather may own the shape.
+	if got := classify(t, eqConst(nestedLegDescent("T4", "ID", "LEAF"))); got != boxConjBakeable {
+		t.Errorf("classifyBoxLegConjunct over a nested descent whose ROOT column resolves = %d, "+
+			"want Bakeable(%d)", got, boxConjBakeable)
+	}
+
+	// The DISCRIMINATING direction: the root column does not exist. Before the
+	// gate widened, legRef refused this node, no arm matched it, and the conjunct
+	// classified Bakeable — the gather admitting a reference the bake cannot
+	// resolve. An always-Bakeable classifier passes the arm above and fails here.
+	if got := classify(t, eqConst(nestedLegDescent("T4", "NO_SUCH_COL", "LEAF"))); got != boxConjUnbakeable {
+		t.Errorf("classifyBoxLegConjunct over a nested descent whose ROOT column is ABSENT "+
+			"from the buried window = %d, want Unbakeable(%d). A Bakeable verdict here admits "+
+			"the gather for a reference the bake cannot resolve — the wrong-slot class",
+			got, boxConjUnbakeable)
+	}
+}
+
+// TestRebaseLegRefsToBox_DeclinesANestedDescent pins the FIFTH legRef consumer,
+// which is MASKED: its caller pre-filters on SourceRelativeBaked at the top of
+// the walk, so a nested descent never reaches the legRef call below it.
+//
+// THIS IS A DELIBERATE NARROWNESS, NOT AN OVERSIGHT, and the pin exists because
+// the two are indistinguishable from the outside. The walk resolves ONE name and
+// bakes a one-step address; for a nested descent that name is the ROOT column,
+// so admitting it without also fusing the suffix would bake the address of the
+// enclosing struct and drop the descent — wrong rows, exactly the silent half of
+// the defect the bake's own fix had to avoid.
+//
+// WHAT RE-ARMS IF THIS GOES GREEN THE OTHER WAY: widening the guard to legRef's
+// own predicate (RootIsLegRelativeUnpinned) without landing the fuse beneath it
+// at the same time. If you widen it, this pin must be REPLACED by one asserting
+// the fused two-step address, not deleted — a deleted pin is how the halfway
+// state ships.
+func TestRebaseLegRefsToBox_DeclinesANestedDescent(t *testing.T) {
+	t.Parallel()
+
+	leg := values.NamedCorrelationIdentifier("L")
+	legType := &values.RecordType{Fields: []values.Field{
+		{Name: "N", FieldType: values.UnknownType, Ordinal: 0},
+	}}
+	// Leg L starts at merged offset 2, so a leg-relative ordinal and the merged
+	// ordinal it would have to mean are different numbers — a leg at offset 0
+	// would make a half-rebase invisible.
+	mergedType := &values.RecordType{Fields: []values.Field{
+		{Name: "X", FieldType: values.UnknownType, Ordinal: 0},
+		{Name: "Y", FieldType: values.UnknownType, Ordinal: 1},
+		{Name: "N", FieldType: values.UnknownType, Ordinal: 2},
+	}}
+	windows := map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow{
+		leg: {Kind: values.LegKindFlatRun, Offset: 2, Typ: legType, Alias: leg},
+	}
+	boxQOV := values.NewQuantifiedObjectValueOfType(
+		values.NamedCorrelationIdentifier("$box"), mergedType)
+
+	nested := nestedLegDescent("L", "N", "SK")
+	out, ok := rebaseLegRefsToBox(nested, windows, mergedType, boxQOV)
+	if ok {
+		t.Fatal("rebaseLegRefsToBox admitted a NESTED leg descent. If the guard was widened " +
+			"on purpose, the fuse of Accessors[1:] must land in the same change and this pin " +
+			"must be replaced by one asserting the FUSED two-step address. Admitting without " +
+			"fusing bakes the enclosing struct's address and drops the descent — wrong rows")
+	}
+	fv, isFV := out.(*values.FieldValue)
+	if !isFV {
+		t.Fatalf("a declined reference must come back a FieldValue, got %T", out)
+	}
+	if fv.Resolved == nil || len(fv.Resolved.Accessors) != 2 {
+		t.Fatalf("the declined node must come back UNTOUCHED (2 accessors), got %v — a "+
+			"half-rewritten node is the shape the survivor check cannot classify", fv.Resolved)
+	}
+	if got := fv.Resolved.Root().Ordinal; got != 0 {
+		t.Fatalf("the declined node's root ordinal moved to %d; it must stay LEG-relative (0). "+
+			"A silently re-anchored root is a merged address that reads a foreign column", got)
 	}
 }

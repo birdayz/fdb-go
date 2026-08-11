@@ -118,9 +118,30 @@ func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier
 	out := values.Replace(v, func(n values.Value) values.Value {
 		fv, isFV := n.(*values.FieldValue)
 		// A source-relative baked ref (the resolver's construction-time bind)
-		// still addresses its LEG's row — rebase it exactly like its lazy
-		// twin; only machinery-owned baked nodes (pinned / multi-accessor)
-		// are final.
+		// still addresses its LEG's row — rebase it exactly like its lazy twin.
+		//
+		// THIS GUARD IS DELIBERATELY NARROWER THAN legRef's, and the reason is a
+		// capability of the walk below, NOT a claim about what is machinery-owned.
+		// The two used to be spelled alike, on the reading that a multi-accessor
+		// path is machinery output and therefore final. That reading is refuted:
+		// a user-written nested descent (`m.n.sk`) arrives as ONE UNPINNED
+		// FieldValue with a leg-relative root and the descent in its remaining
+		// accessors, and legRef is now arity-blind for exactly that reason.
+		//
+		// What stops this walk from following suit is the code beneath it: it
+		// resolves ONE name (w.Typ.FieldIndexUnique(fv.Field)) and bakes a
+		// one-step address from it. For a nested descent fv.Field is the ROOT
+		// column, so admitting it here without also fusing Accessors[1:] would
+		// bake the address of the enclosing STRUCT and drop the descent — a real
+		// merged column that nothing downstream rejects, i.e. wrong rows.
+		// Declining instead leaves the reference leg-correlated, the post-walk
+		// survivor check sees it and returns ok=false, and the caller falls back
+		// to the name model, which answers the shape correctly. A decline costs
+		// the ordinal wrap; the alternative costs rows.
+		//
+		// Widening this is a real optimization, and it is a TWO-part change like
+		// the bake's was — the fuse must land with it. Pinned so it cannot be
+		// widened halfway; see TestRebaseLegRefsToBox_DeclinesANestedDescent.
 		if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 			return n
 		}

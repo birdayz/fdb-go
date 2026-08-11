@@ -802,8 +802,8 @@ func bakeGatedJoinPredicatesChecked(preds []predicates.QueryPredicate, legTypes 
 }
 
 // legRef extracts the UPPER leg-correlation name of a BARE FieldValue over a
-// QuantifiedObjectValue — the reference shape all three gated-predicate walks key on
-// (the bake closure, predicateLegAliases, predicateRefsBuriedLeg). Returns "",false for
+// QuantifiedObjectValue — the reference shape the gated-predicate walks key on.
+// Returns "",false for
 // a non-FieldValue, a MACHINERY-OWNED baked ref, a flat-dotted read
 // (fv.Field carries a '.', the RFC-142 mergedQOV "leg.col" channel, resolved
 // elsewhere), or a non-QOV child.
@@ -829,11 +829,25 @@ func bakeGatedJoinPredicatesChecked(preds []predicates.QueryPredicate, legTypes 
 // ALIAS alone and FieldValue.eval descends the remaining ordinals inside that
 // one Message, so no arity ever selects a binding there.
 //
-// Each caller then consults legTypes[key] for its own decision — is-a-leg
-// (count), is-buried (bakeCorr != ""), or build the baked node — so one prologue
-// serves three keys, and widening it widens all three together. That is the
-// intent, not a side effect: a nested reference is a leg reference for counting
-// exactly as it is for baking.
+// FIVE call sites consult this prologue, not three. Each then asks its own
+// question of the key, so widening the gate widens all of them together — which
+// is the intent, not a side effect: a nested reference is a leg reference for
+// counting exactly as it is for baking.
+//
+//   - the bake closure above — build the baked node;
+//   - predicateLegAliases — is-a-leg, for the cross-leg count;
+//   - predicateRefsBuriedLeg — is-buried (bakeCorr != "");
+//   - box_conjunct.go classifyLegConjunct — the GATHER ADMISSION VERDICT for a
+//     box/flat-cluster WHERE conjunct, and a PLAN-SHAPE decision rather than a
+//     count. It is not pre-filtered, so it widens with this gate, and it stays
+//     coherent with the bake BY CONSTRUCTION: it resolves the same root name in
+//     the same window (leafTyp.FieldIndexUnique of the reference's Field, which
+//     for a nested descent is the ROOT column), so verdict and bake cannot
+//     disagree about whether the reference resolves;
+//   - exists_gathered_cluster_wrap.go rebaseLegRefsToBox — MASKED. Its caller
+//     pre-filters on SourceRelativeBaked before reaching here, deliberately, and
+//     that narrowness is pinned at its own site; see the guard's comment there
+//     for why the walk below it cannot serve a multi-accessor path.
 func legRef(v values.Value) (string, bool) {
 	fv, isFV := v.(*values.FieldValue)
 	if !isFV || (fv.Resolved != nil && !fv.RootIsLegRelativeUnpinned()) || strings.Contains(fv.Field, ".") {
