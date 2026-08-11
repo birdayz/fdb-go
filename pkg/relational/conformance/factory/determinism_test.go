@@ -47,10 +47,18 @@ func TestFactoryDeterminism(t *testing.T) {
 	// of its Bazel budget under -race and time out on any box variance; the
 	// planning entry point is safe to call concurrently, its package state
 	// having been removed precisely so parallel tests could share it.
-	bySeed := map[uint64][]*factorycorpus.Scenario{}
-	order := make([]uint64, 0, len(files))
+	// Bucketed by (generator, seed): the two candidate families share the seed
+	// NUMBER space, so a bucket keyed on the seed alone would regenerate a
+	// nested file from a flat candidate and report the lookup failure as a dead
+	// reproduction recipe.
+	type genSeed struct {
+		gen  string
+		seed uint64
+	}
+	bySeed := map[genSeed][]*factorycorpus.Scenario{}
+	order := make([]genSeed, 0, len(files))
 	for _, f := range files {
-		s := f.Header.Seed
+		s := genSeed{f.Header.Generator, f.Header.Seed}
 		if _, ok := bySeed[s]; !ok {
 			order = append(order, s)
 		}
@@ -59,7 +67,7 @@ func TestFactoryDeterminism(t *testing.T) {
 
 	var checkedN atomic.Int64
 	workers := min(runtime.GOMAXPROCS(0), 4)
-	next := make(chan uint64)
+	next := make(chan genSeed)
 	go func() {
 		defer close(next)
 		for _, s := range order {
@@ -71,8 +79,14 @@ func TestFactoryDeterminism(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for seed := range next {
-				checkSeed(t, factory.Candidates(seed), bySeed[seed], &checkedN)
+			for gs := range next {
+				cands, ok := factory.CandidatesForGenerator(gs.gen, gs.seed)
+				if !ok {
+					t.Errorf("committed scenarios name generator %q, which this build does not have — "+
+						"their reproduction recipes cannot be checked at all", gs.gen)
+					continue
+				}
+				checkSeed(t, cands, bySeed[gs], &checkedN)
 			}
 		}()
 	}
@@ -93,9 +107,9 @@ func checkSeed(t *testing.T, cands []factory.Candidate, group []*factorycorpus.S
 	t.Helper()
 	for _, f := range group {
 		h := f.Header
-		if h.Generator != factory.GeneratorVersion {
-			t.Errorf("%s: generator %q, this build is %q. A generator version bump must come with a re-blessed batch, "+
-				"or the committed reproduction recipes no longer reproduce", f.Path, h.Generator, factory.GeneratorVersion)
+		if _, known := factory.CandidatesForGenerator(h.Generator, h.Seed); !known {
+			t.Errorf("%s: generator %q is not one this build has. A generator version bump must come with a "+
+				"re-blessed batch, or the committed reproduction recipes no longer reproduce", f.Path, h.Generator)
 			continue
 		}
 		var cand *factory.Candidate

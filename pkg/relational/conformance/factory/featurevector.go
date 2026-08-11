@@ -46,6 +46,9 @@ func FeatureVector(c *rowdiff.Case, q rowdiff.Query, projection []string) string
 	parts = append(parts, "shape="+shapeTag(q))
 	parts = append(parts, "idx="+indexTag(c))
 	parts = append(parts, "proj="+projectionTag(q, projection))
+	if tag := nestTag(c, q, projection); tag != "" {
+		parts = append(parts, "nest="+tag)
+	}
 
 	if q.Where != nil {
 		parts = append(parts, "where="+boolTag(q.Where))
@@ -135,6 +138,70 @@ func indexTag(c *rowdiff.Case) string {
 	}
 	sort.Strings(specs)
 	return strings.Join(specs, ",")
+}
+
+// nestTag records WHICH CLAUSES a dotted path reached, and is absent entirely
+// for a flat case so no committed flat feature vector changes.
+//
+// Recording the clause set rather than a bare `nest=1` is the whole point of
+// the axis. Every nested defect this corpus exists to catch was a clause
+// DISAGREEING with another clause -- SELECT resolved a path that ORDER BY
+// refused, GROUP BY produced a plan whose ordinal did not resolve -- so a
+// census that could only say "some nesting happened" would report full
+// coverage for a corpus that only ever projected.
+//
+// Every clause asks rowdiff whether the thing it holds is a nested PATH, and
+// none of them asks whether it contains a dot. A projection entry of a join is
+// alias-qualified, so its first dot is a table qualifier and a keys-only join
+// projection is flat despite being dotted end to end; asking the dot counted
+// those as nested and reported a `select` axis carried by scenarios with no
+// nesting in their SELECT list at all. The ORDER BY, aggregate, EXISTS and
+// scalar-subquery specs keep their qualifier in a SEPARATE field, so their
+// column strings are already table-relative -- they route through the same
+// helper anyway, because the next spec to grow a qualifier must not have to
+// remember that this file decides nesting for itself.
+func nestTag(c *rowdiff.Case, q rowdiff.Query, projection []string) string {
+	if !c.Nested {
+		return ""
+	}
+	var in []string
+	for _, p := range projection {
+		if rowdiff.IsNestedPath(p) {
+			in = append(in, "select")
+			break
+		}
+	}
+	if q.Where != nil && rowdiff.PredicateReadsANestedPath(q.Where) {
+		in = append(in, "where")
+	}
+	for _, k := range q.OrderBy {
+		if rowdiff.IsNestedPath(k.Col) {
+			in = append(in, "order")
+			break
+		}
+	}
+	if q.Agg != nil {
+		if rowdiff.IsNestedPath(q.Agg.Col) {
+			in = append(in, "agg-arg")
+		}
+		for _, g := range q.Agg.GroupBy {
+			if rowdiff.IsNestedPath(g) {
+				in = append(in, "group-key")
+				break
+			}
+		}
+	}
+	if q.Exists != nil && rowdiff.IsNestedPath(q.Exists.CorrCol) {
+		in = append(in, "exists")
+	}
+	if q.ScalarSub != nil && rowdiff.IsNestedPath(q.ScalarSub.OuterCol) {
+		in = append(in, "scalarsub")
+	}
+	if len(in) == 0 {
+		return "schema-only"
+	}
+	sort.Strings(in)
+	return strings.Join(in, "+")
 }
 
 func projectionTag(q rowdiff.Query, projection []string) string {

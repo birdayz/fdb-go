@@ -67,6 +67,8 @@ func main() {
 	flag.StringVar(&cfg.javaURL, "java-url", "", "base URL of a running Java conformance server; empty = metamorphic blessing only")
 	flag.StringVar(&cfg.retirementLedger, "retirement-ledger", "",
 		"reviewed corpus-retirement ledger authorizing one exact non-additive corpus transition; requires -update-census")
+	flag.BoolVar(&cfg.nested, "nested", false,
+		"sweep the NESTED candidate family (struct-column schema, dotted column references) instead of the flat one")
 	flag.BoolVar(&cfg.updateCensus, "update-census", false,
 		"rewrite the committed census baseline to this measured corpus; a decrease or content replacement requires -retirement-ledger. OFF by default: the baseline is otherwise VERIFIED, "+
 			"and a producer that rewrites its own standard every run has a ratchet that cannot fire")
@@ -82,6 +84,7 @@ type config struct {
 	prBody, runURL   string
 	javaURL          string
 	retirementLedger string
+	nested           bool
 	updateCensus     bool
 }
 
@@ -180,6 +183,7 @@ func run(cfg config) int {
 		ClusterFile: clusterFile,
 		Java:        java,
 		Date:        cfg.date,
+		Nested:      cfg.nested,
 	}
 	// A sweep failure is carried out of the loop rather than returned from
 	// inside it, so that every path with findings in hand leaves through the

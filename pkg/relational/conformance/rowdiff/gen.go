@@ -83,6 +83,10 @@ type TableDef struct {
 	Name    string
 	Cols    []ColumnDef // excludes ID
 	Indexes []IndexDef
+	// Struct, when non-nil, is the struct-typed column whose leaves the dotted
+	// entries of Cols name. See nested.go; nil for a flat table, which is
+	// every table the flat generator builds.
+	Struct *StructCol
 }
 
 // Row maps UPPER-CASE column name (incl. "ID") to a driver-typed value:
@@ -480,6 +484,9 @@ type Case struct {
 	Table   TableDef
 	Rows    []Row
 	Queries []Query
+	// Nested marks a case built by GenerateNested: its table carries a struct
+	// column and its projections name dotted paths.
+	Nested bool
 }
 
 // Projections returns the projection variants every query runs under:
@@ -512,7 +519,12 @@ func (c *Case) joinProjections() [][]string {
 	return [][]string{
 		wide,
 		{"L.ID", "R.ID"},
-		{"R.ID", "L.ID", "L.B"},
+		// The third entry names a VALUE column, not just keys, so the projection
+		// carries something the join has to thread through. It is drawn from the
+		// table rather than written literally: a literal name is a column a
+		// differently-shaped table does not have, and the query then fails 42703
+		// for a reason that has nothing to do with what it was testing.
+		{"R.ID", "L.ID", "L." + notNullSortCol(c.Table)},
 	}
 }
 
@@ -528,7 +540,7 @@ func (c *Case) threeWayProjections() [][]string {
 	return [][]string{
 		wide,
 		{"L.ID", "M.ID", "R.ID"},
-		{"R.ID", "M.ID", "L.ID", "M.B"},
+		{"R.ID", "M.ID", "L.ID", "M." + notNullSortCol(c.Table)},
 	}
 }
 
@@ -546,6 +558,9 @@ func (c *Case) ProjectionsFor(q Query) [][]string {
 	}
 	// Union and plain single-table queries share the single-table projections
 	// (both UNION branches project the same columns).
+	if c.Nested {
+		return c.nestedProjections()
+	}
 	return c.Projections()
 }
 
@@ -554,8 +569,8 @@ func (c *Case) ProjectionsFor(q Query) [][]string {
 // inner Pred keeps Qual empty (it reads a plain-keyed inner row in the oracle)
 // and is a bare column-vs-literal so both the SQL render (existsSQL) and
 // evalLeaf handle it with no BETWEEN/IN/qualifier machinery.
-func genExists(rng *rand.Rand) *ExistsSpec {
-	bigints := []string{"A", "B", "C"}
+func genExists(rng *rand.Rand, table TableDef) *ExistsSpec {
+	bigints := bigintCols(table)
 	// Correlation op: mostly equi (the common semi-join the equi-join rules
 	// target), but ~40% a non-equi correlation. A self-equi correlation always
 	// self-matches (r == outer row), so a bare equi EXISTS is trivially true for
@@ -651,7 +666,7 @@ func genThreeWayJoin(rng *rand.Rand, table TableDef) Query {
 	sides := []string{"L", "M", "R"}
 	for i := 0; i < n; i++ {
 		col := table.Cols[rng.IntN(len(table.Cols))]
-		p := genPred(rng, col, indexed[col.Name])
+		p := genPred(rng, table, col, indexed[col.Name])
 		p.Qual = sides[rng.IntN(len(sides))]
 		leaves = append(leaves, p)
 	}
@@ -685,7 +700,7 @@ func genBranchWhere(rng *rand.Rand, table TableDef, indexed map[string]bool) *Bo
 	kids := make([]*BoolNode, n)
 	for i := 0; i < n; i++ {
 		col := table.Cols[rng.IntN(len(table.Cols))]
-		kids[i] = &BoolNode{Leaf: genPred(rng, col, indexed[col.Name])}
+		kids[i] = &BoolNode{Leaf: genPred(rng, table, col, indexed[col.Name])}
 	}
 	if n == 1 {
 		return kids[0]
@@ -744,8 +759,8 @@ func genDerivedQuery(rng *rand.Rand, table TableDef) Query {
 // The outer and aggregated columns are BIGINTs; ~half the time an inner filter
 // (often selective enough to leave the subquery empty) exercises the
 // MIN/MAX-returns-NULL path.
-func genScalarSub(rng *rand.Rand) *ScalarSubSpec {
-	bigints := []string{"A", "B", "C"}
+func genScalarSub(rng *rand.Rand, table TableDef) *ScalarSubSpec {
+	bigints := bigintCols(table)
 	ops := []predicates.ComparisonType{
 		predicates.ComparisonEquals, predicates.ComparisonNotEquals,
 		predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
@@ -800,7 +815,7 @@ func genAggQuery(rng *rand.Rand, table TableDef) Query {
 			indexed[c] = true
 		}
 	}
-	bigints := []string{"A", "B", "C"}
+	bigints := bigintCols(table)
 
 	spec := &AggSpec{}
 	switch rng.IntN(5) {
@@ -1150,7 +1165,7 @@ func genJoinQuery(rng *rand.Rand, table TableDef) Query {
 	n := 1 + rng.IntN(2)
 	for i := 0; i < n; i++ {
 		col := table.Cols[rng.IntN(len(table.Cols))]
-		p := genPred(rng, col, indexed[col.Name])
+		p := genPred(rng, table, col, indexed[col.Name])
 		p.Qual = []string{"L", "R"}[rng.IntN(2)]
 		leaves = append(leaves, p)
 	}
@@ -1163,7 +1178,7 @@ func genJoinQuery(rng *rand.Rand, table TableDef) Query {
 	// promoteColumnColumnNumeric path the join KEY above exercises, reached
 	// here as a residual filter instead of the ON-equality.
 	if rng.IntN(3) == 0 {
-		numericCols := []string{"A", "B", "C", "D", "E"}
+		numericCols := numericColsOf(table)
 		ops := []predicates.ComparisonType{
 			predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
 			predicates.ComparisonNotEquals, predicates.ComparisonLessThanOrEq,
@@ -1233,16 +1248,16 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 			nIdxLeaves = len(indexedCols)
 		}
 		for _, pi := range perm[:nIdxLeaves] {
-			leaves = append(leaves, genPred(rng, indexedCols[pi], true))
+			leaves = append(leaves, genPred(rng, table, indexedCols[pi], true))
 		}
 		if len(unindexedCols) > 0 && rng.IntN(4) != 0 {
-			leaves = append(leaves, genPred(rng, unindexedCols[rng.IntN(len(unindexedCols))], false))
+			leaves = append(leaves, genPred(rng, table, unindexedCols[rng.IntN(len(unindexedCols))], false))
 		}
 	} else {
 		nLeaves := 1 + rng.IntN(3)
 		for i := 0; i < nLeaves; i++ {
 			col := table.Cols[rng.IntN(len(table.Cols))]
-			leaves = append(leaves, genPred(rng, col, indexed[col.Name]))
+			leaves = append(leaves, genPred(rng, table, col, indexed[col.Name]))
 		}
 	}
 
@@ -1257,7 +1272,7 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 	// cross-CATEGORY pair (numeric vs string/bool) has no common maximum
 	// type and would only test the 42804 error path, so it stays excluded.
 	if rng.IntN(7) == 0 {
-		numericCols := []string{"A", "B", "C", "D", "E"}
+		numericCols := numericColsOf(table)
 		l := numericCols[rng.IntN(len(numericCols))]
 		r := numericCols[rng.IntN(len(numericCols))]
 		if l != r {
@@ -1274,7 +1289,7 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 	// conditional-expression residual the planner must evaluate per row, with
 	// SQL's WHEN-TRUE-only branch selection and NULL-arm propagation.
 	if rng.IntN(8) == 0 {
-		leaves = append(leaves, genCaseLeaf(rng))
+		leaves = append(leaves, genCaseLeaf(rng, table))
 	}
 
 	// String-function leaf (~1/8): `UPPER/LOWER/LENGTH(s) op lit` — a scalar
@@ -1285,12 +1300,12 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 
 	// Numeric-function leaf (~1/8): `ABS(col) op lit` / `MOD(col, k) op lit`.
 	if rng.IntN(8) == 0 {
-		leaves = append(leaves, genNumFnLeaf(rng))
+		leaves = append(leaves, genNumFnLeaf(rng, table))
 	}
 
 	// CAST leaf (~1/8): `CAST(col AS STRING) op 'lit'` over BIGINT / BOOLEAN.
 	if rng.IntN(8) == 0 {
-		leaves = append(leaves, genCastLeaf(rng))
+		leaves = append(leaves, genCastLeaf(rng, table))
 	}
 
 	// NOT on a leaf (~1/8 each): `NOT (a = 1)` / `a NOT IN (…)`.
@@ -1337,7 +1352,7 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 	case 1:
 		// B is the NOT NULL sortable value column; append ID for a total
 		// order so the oracle's expected sequence is unique.
-		orderBy = []OrderKey{{Col: "B", Desc: rng.IntN(2) == 0}, {Col: "ID"}}
+		orderBy = []OrderKey{{Col: notNullSortCol(table), Desc: rng.IntN(2) == 0}, {Col: "ID"}}
 	case 2:
 		// NULLABLE sort key (A, C, S, D, or E) with a NULLS placement drawn
 		// from {default, FIRST, LAST}; ID suffix keeps the total order
@@ -1347,7 +1362,8 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 		// order, including the signed-zero split. It does NOT agree for arbitrary
 		// raw NaN signs/payloads, which this generator never emits. The sort order
 		// deliberately disagrees with predicate equality on -0.0/+0.0.
-		col := []string{"A", "C", "S", "D", "E"}[rng.IntN(5)]
+		sortPool := nullableSortCols(table)
+		col := sortPool[rng.IntN(len(sortPool))]
 		orderBy = []OrderKey{
 			{Col: col, Desc: rng.IntN(2) == 0, Nulls: NullsPlacement(rng.IntN(3))},
 			{Col: "ID"},
@@ -1360,14 +1376,14 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 	// surface (semi-join, decorrelation, correlation binding) the generator
 	// otherwise never reaches.
 	if rng.IntN(4) == 0 {
-		q.Exists = genExists(rng)
+		q.Exists = genExists(rng, table)
 	}
 
 	// Non-correlated aggregate scalar subquery comparison on ~1/5 of plain
 	// queries — a Go-only read extension (no Java equivalent) whose scalar
 	// evaluation and NULL-when-empty semantics need their own coverage.
 	if rng.IntN(5) == 0 {
-		q.ScalarSub = genScalarSub(rng)
+		q.ScalarSub = genScalarSub(rng, table)
 	}
 
 	// DISTINCT on ~1/6 of queries. ORDER BY is dropped for DISTINCT — the
@@ -1437,7 +1453,7 @@ func floatListElem(rng *rand.Rand) float64 {
 	}
 }
 
-func genPred(rng *rand.Rand, col ColumnDef, indexBiased bool) *Pred {
+func genPred(rng *rand.Rand, table TableDef, col ColumnDef, indexBiased bool) *Pred {
 	// NULL-comparison leaves at low probability on nullable columns.
 	if !col.NotNull && rng.IntN(10) == 0 {
 		op := predicates.ComparisonIsNull
@@ -1505,7 +1521,7 @@ func genPred(rng *rand.Rand, col ColumnDef, indexBiased bool) *Pred {
 		// returns rows — a false divergence. The oracle deliberately does not
 		// model the planner, so it cannot replicate that order; subtraction (no
 		// overflow, order-independent) is the only arithmetic it can check.
-		bigints := []string{"A", "B", "C"}
+		bigints := bigintCols(table)
 		cmp := []predicates.ComparisonType{
 			predicates.ComparisonEquals, predicates.ComparisonNotEquals,
 			predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
@@ -1523,7 +1539,7 @@ func genPred(rng *rand.Rand, col ColumnDef, indexBiased bool) *Pred {
 		// Bitwise LHS: (col <op> col2) <cmp> lit. AND/OR/XOR over two bigints —
 		// no overflow (order-independent, oracle-safe unlike +/*). Exercises the
 		// planner's handling of a bitwise predicate expression.
-		bigints := []string{"A", "B", "C"}
+		bigints := bigintCols(table)
 		bitOps := []string{"BITAND", "BITOR", "BITXOR"}
 		cmp := []predicates.ComparisonType{
 			predicates.ComparisonEquals, predicates.ComparisonNotEquals,
@@ -1577,24 +1593,22 @@ func genPred(rng *rand.Rand, col ColumnDef, indexBiased bool) *Pred {
 // DDL renders the schema-template body (CREATE TABLE + CREATE INDEX lines).
 func (c *Case) DDL() string {
 	var b strings.Builder
+	b.WriteString(c.Table.structDDL())
 	b.WriteString("CREATE TABLE ")
 	b.WriteString(c.Table.Name)
 	b.WriteString(" (id BIGINT")
+	byName := map[string]ColumnDef{}
 	for _, col := range c.Table.Cols {
+		byName[col.Name] = col
+	}
+	for _, name := range c.Table.physicalCols() {
 		b.WriteString(", ")
-		b.WriteString(strings.ToLower(col.Name))
-		switch col.Type {
-		case ColBigint:
-			b.WriteString(" BIGINT")
-		case ColString:
-			b.WriteString(" STRING")
-		case ColBoolean:
-			b.WriteString(" BOOLEAN")
-		case ColDouble:
-			b.WriteString(" DOUBLE")
-		case ColFloat:
-			b.WriteString(" FLOAT")
+		b.WriteString(strings.ToLower(name))
+		if c.Table.Struct != nil && name == c.Table.Struct.Name {
+			b.WriteString(" " + strings.ToLower(c.Table.Struct.TypeName))
+			continue
 		}
+		b.WriteString(" " + sqlTypeName(byName[name].Type))
 	}
 	b.WriteString(", PRIMARY KEY (id))")
 	for _, idx := range c.Table.Indexes {
@@ -1616,9 +1630,13 @@ func (c *Case) InsertSQL() string {
 		}
 		b.WriteString("(")
 		b.WriteString(renderLiteral(r["ID"]))
-		for _, col := range c.Table.Cols {
+		for _, name := range c.Table.physicalCols() {
 			b.WriteString(", ")
-			b.WriteString(renderLiteral(r[col.Name]))
+			if c.Table.Struct != nil && name == c.Table.Struct.Name {
+				b.WriteString(c.Table.structLiteral(r))
+				continue
+			}
+			b.WriteString(renderLiteral(r[name]))
 		}
 		b.WriteString(")")
 	}
@@ -1652,11 +1670,11 @@ func (c *Case) SQL(q Query, projection []string) string {
 		}
 		b.WriteString(strings.Join(outs, ", "))
 	} else {
-		lower := make([]string, len(projection))
+		outs := make([]string, len(projection))
 		for i, p := range projection {
-			lower[i] = strings.ToLower(p)
+			outs[i] = nestedProjectionSQL(p)
 		}
-		b.WriteString(strings.Join(lower, ", "))
+		b.WriteString(strings.Join(outs, ", "))
 	}
 	b.WriteString(" FROM ")
 	tbl := strings.ToLower(c.Table.Name)
@@ -1806,11 +1824,11 @@ func (c *Case) unionSQL(q Query, projection []string) string {
 		if projection == nil {
 			b.WriteString("*")
 		} else {
-			lower := make([]string, len(projection))
+			outs := make([]string, len(projection))
 			for i, p := range projection {
-				lower[i] = strings.ToLower(p)
+				outs[i] = nestedProjectionSQL(p)
 			}
-			b.WriteString(strings.Join(lower, ", "))
+			b.WriteString(strings.Join(outs, ", "))
 		}
 		fmt.Fprintf(&b, " FROM %s", tbl)
 		if where != nil {
@@ -1851,11 +1869,11 @@ func (c *Case) derivedSQL(q Query, projection []string) string {
 	if projection == nil {
 		b.WriteString("*")
 	} else {
-		lower := make([]string, len(projection))
+		outs := make([]string, len(projection))
 		for i, p := range projection {
-			lower[i] = strings.ToLower(p)
+			outs[i] = nestedProjectionSQL(p)
 		}
-		b.WriteString(strings.Join(lower, ", "))
+		b.WriteString(strings.Join(outs, ", "))
 	}
 	if d.Cte {
 		b.WriteString(" FROM d")
@@ -2047,8 +2065,8 @@ func opSQL(op predicates.ComparisonType) string {
 // genCaseLeaf builds a single-table searched-CASE predicate leaf
 // `(CASE WHEN col op lit THEN <arm> ELSE <arm> END) op lit`, each arm a BIGINT
 // column or literal.
-func genCaseLeaf(rng *rand.Rand) *Pred {
-	bigints := []string{"A", "B", "C"}
+func genCaseLeaf(rng *rand.Rand, table TableDef) *Pred {
+	bigints := bigintCols(table)
 	ops := []predicates.ComparisonType{
 		predicates.ComparisonEquals, predicates.ComparisonNotEquals,
 		predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
@@ -2079,7 +2097,7 @@ func caseArmSQL(col string, lit int64) string {
 // genCastLeaf builds `CAST(col AS STRING) op 'lit'` over a BIGINT or BOOLEAN
 // column; the literal is drawn from the value domain's string image so a match
 // is reachable.
-func genCastLeaf(rng *rand.Rand) *Pred {
+func genCastLeaf(rng *rand.Rand, table TableDef) *Pred {
 	ops := []predicates.ComparisonType{
 		predicates.ComparisonEquals, predicates.ComparisonNotEquals,
 		predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
@@ -2087,7 +2105,8 @@ func genCastLeaf(rng *rand.Rand) *Pred {
 	}
 	op := ops[rng.IntN(len(ops))]
 	if rng.IntN(2) == 0 {
-		col := []string{"A", "B", "C"}[rng.IntN(3)]
+		bigints := bigintCols(table)
+		col := bigints[rng.IntN(len(bigints))]
 		return &Pred{Cast: &CastSpec{Col: col, FromInt: true}, Op: op, Lit: strconv.FormatInt(int64(rng.IntN(10)), 10)}
 	}
 	return &Pred{Cast: &CastSpec{Col: "F", FromInt: false}, Op: op, Lit: []string{"true", "false"}[rng.IntN(2)]}
@@ -2163,8 +2182,8 @@ func substrVal(s string, start, length int64) string {
 // genNumFnLeaf builds a single-table numeric-function predicate leaf. ABS
 // compares against a small int; MOD uses a nonzero literal divisor (2..8) and
 // compares against a literal spanning the signed remainder range.
-func genNumFnLeaf(rng *rand.Rand) *Pred {
-	bigints := []string{"A", "B", "C"}
+func genNumFnLeaf(rng *rand.Rand, table TableDef) *Pred {
+	bigints := bigintCols(table)
 	ops := []predicates.ComparisonType{
 		predicates.ComparisonEquals, predicates.ComparisonNotEquals,
 		predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,

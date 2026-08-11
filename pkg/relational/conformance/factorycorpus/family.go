@@ -37,6 +37,14 @@ func FamilyOf(featureVector string) string {
 	if shape == "" {
 		shape = "unknown"
 	}
+	// A NESTED case gets its own files. It shares a query shape with the flat
+	// family but not a schema: its scenarios carry a CREATE TYPE AS STRUCT and
+	// dotted column references, and mixing the two in one file makes the diff of
+	// a re-bless unreadable exactly where the nested axis is what changed. Flat
+	// vectors carry no `nest=` component, so no committed file moves.
+	if featureComponent(featureVector, "nest") != "" {
+		shape = "nested." + shape
+	}
 	return shape + "|" + predicateClass(featureComponent(featureVector, "where")) + "|" + subqueryClass(featureVector)
 }
 

@@ -195,14 +195,27 @@ func TestNoCommittedScenarioCarriesAnOffset(t *testing.T) {
 func TestCommittedOrderednessMatchesTheCandidate(t *testing.T) {
 	t.Parallel()
 	files := loadCorpus(t)
-	bySeed := map[uint64][]factory.Candidate{}
+	// Keyed by (generator, seed): the flat and nested families share the seed
+	// NUMBER space, so a cache keyed on the seed alone hands a nested file the
+	// flat candidate at the same (query, projection) index — a different query
+	// whose orderedness has no bearing on this file.
+	type genSeed struct {
+		gen  string
+		seed uint64
+	}
+	bySeed := map[genSeed][]factory.Candidate{}
 	checked := 0
 	for _, f := range files {
 		h := f.Header
-		cands, ok := bySeed[h.Seed]
-		if !ok {
-			cands = factory.Candidates(h.Seed)
-			bySeed[h.Seed] = cands
+		key := genSeed{h.Generator, h.Seed}
+		cands, cached := bySeed[key]
+		if !cached {
+			var known bool
+			cands, known = factory.CandidatesForGenerator(h.Generator, h.Seed)
+			if !known {
+				continue // TestFactoryDeterminism owns the unknown-generator failure
+			}
+			bySeed[key] = cands
 		}
 		var cand *factory.Candidate
 		for i := range cands {

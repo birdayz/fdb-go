@@ -32,6 +32,41 @@ type Sweep struct {
 	// dedup-rejected must not be offered now, or a re-emission would grow the
 	// corpus as a side effect of rewriting it.
 	Filter func(Candidate) bool
+	// Nested sweeps the NESTED candidate family instead of the flat one: same
+	// seeds, a different derivation, a disjoint file namespace. It is a mode
+	// rather than an additional pass because a seed materializes ONE schema and
+	// the two families need different ones.
+	Nested bool
+}
+
+// seedCandidates derives one seed's candidates under EXACTLY ONE family, and
+// names the schema prefix that family writes under.
+//
+// The choice is expressed as early RETURNS, so the exclusivity is structural
+// rather than a property of statement order. The form this replaces was
+//
+//	cands, prefix := Candidates(seed), "fc"
+//	if s.Nested {
+//		cands, prefix = NestedCandidates(seed), "fcn"
+//	}
+//
+// which READS as an either/or and is not one: a short variable declaration
+// evaluates its right-hand side before the following `if` runs, so the FLAT
+// derivation executed on every nested seed and was immediately overwritten —
+// a whole seed's generation and feature-vector computation done for nothing.
+// A comment above it asserted the opposite, and the wasted work was the lesser
+// problem: source that claims a behaviour it does not have is the same defect
+// class this corpus's census exists to keep out.
+//
+// The two derivations therefore arrive as PARAMETERS. That is the only shape in
+// which the one-family claim is a property a test can COUNT rather than read,
+// and reading is precisely what produced the wrong verdict on the previous
+// attempt at this fix.
+func seedCandidates(nested bool, flat, nest func(uint64) []Candidate, seed uint64) ([]Candidate, string) {
+	if nested {
+		return nest(seed), "fcn"
+	}
+	return flat(seed), "fc"
 }
 
 // RunSeed evaluates every candidate of one seed and offers each outcome to the
@@ -39,7 +74,7 @@ type Sweep struct {
 // emits aggregates, unions and LIMIT queries the partition oracle declines by
 // construction — so it returns cleanly with nothing offered.
 func (s Sweep) RunSeed(ctx context.Context, seed uint64, batch *Batch) ([]Outcome, error) {
-	cands := Candidates(seed)
+	cands, schemaPrefix := seedCandidates(s.Nested, Candidates, NestedCandidates, seed)
 	if s.Filter != nil {
 		kept := cands[:0]
 		for _, c := range cands {
@@ -56,7 +91,7 @@ func (s Sweep) RunSeed(ctx context.Context, seed uint64, batch *Batch) ([]Outcom
 		batch.CountCandidate()
 	}
 
-	schema := fmt.Sprintf("fc%d", seed)
+	schema := fmt.Sprintf("%s%d", schemaPrefix, seed)
 	tmpl := schema + "t"
 	ddl := cands[0].Case.DDL()
 	for _, stmt := range []string{
