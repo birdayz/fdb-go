@@ -287,9 +287,39 @@ func (s *Scope) ResolveColumn(id Identifier) (Column, ScopeSource, error) {
 //   - at chain exhaustion: ColumnNotFoundError when some alias-matching
 //     source existed anywhere on the chain (named after the innermost one),
 //     SourceNotFoundError when the qualifier matched nothing.
+//
+// This is the chain-free form, for callers that need only the resolved
+// (column, source) IDENTITY. A resolution that DESCENDED into a struct column
+// has no identity to report without its chain — the Column it would hand back
+// is the struct ROOT, not the field the reference named — so this form DECLINES
+// it with NestedResolutionError rather than returning the root. Returning the
+// root is a wrong-column answer that no caller can detect, and a caller that
+// wants the descent already has ResolveQualifiedColumnNested.
 func (s *Scope) ResolveQualifiedColumn(qualifier, col Identifier) (Column, ScopeSource, error) {
-	c, src, _, err := s.ResolveQualifiedColumnNested(qualifier, col)
-	return c, src, err
+	c, src, accessors, err := s.ResolveQualifiedColumnNested(qualifier, col)
+	if err != nil {
+		return c, src, err
+	}
+	if len(accessors) > 0 {
+		return Column{}, ScopeSource{}, &NestedResolutionError{Qualifier: qualifier, Id: col}
+	}
+	return c, src, nil
+}
+
+// NestedResolutionError reports a reference that resolved by DESCENDING into a
+// struct column, asked of a lookup form that cannot express the descent. It is
+// never a user-facing error: every SQL path resolves through
+// ResolveQualifiedColumnNested. It exists so the chain-free form fails LOUDLY
+// instead of answering with the struct root.
+type NestedResolutionError struct {
+	Qualifier Identifier
+	Id        Identifier
+}
+
+func (e *NestedResolutionError) Error() string {
+	return fmt.Sprintf("reference %s.%s descends into a struct column; resolve it "+
+		"through ResolveQualifiedColumnNested, which carries the accessor chain",
+		e.Qualifier.Name(), e.Id.Name())
 }
 
 // NestedAccessor is one resolved step of a descent INTO a struct column —

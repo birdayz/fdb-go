@@ -301,6 +301,22 @@ func (r *Resolver) ResolveIdentifierPath(segs []semantic.Identifier) (values.Val
 	return r.resolveScopedColumn(col, src, qualifier, id)
 }
 
+// fuseNestedAccessorsIfAny is fuseNestedAccessors for the mints that may or may
+// not have descended — a qualified reference is `alias.col` (no chain) or
+// `struct.member` (a chain) and the mint cannot tell which until the semantic
+// layer answers. An empty chain returns the root unchanged, which is what makes
+// every one of those mints safe to route through the fuse unconditionally.
+//
+// It exists so no mint has to write the `len(accessors) > 0` test itself:
+// skipping that test is not a compile error and not a runtime error — it is a
+// silent read of the whole struct where a member was named.
+func fuseNestedAccessorsIfAny(root values.Value, accessors []semantic.NestedAccessor) (values.Value, error) {
+	if len(accessors) == 0 {
+		return root, nil
+	}
+	return fuseNestedAccessors(root, accessors)
+}
+
 // fuseNestedAccessors appends a struct descent onto an already-built root
 // column reference, producing ONE FieldValue over a multi-accessor path —
 // Java's FieldValue.ofFieldsAndFuseIfPossible (FieldValue.java:325-332).
@@ -639,10 +655,14 @@ func (r *Resolver) ResolveQualifiedProjectionPath(segs []semantic.Identifier) (v
 			columnCascadesType(col),
 			domain,
 		)
-		if len(accessors) > 0 {
-			return fuseNestedAccessors(root, accessors)
-		}
-		return root, nil
+		// A reference that DESCENDED into a struct column resolves to the leaf,
+		// and the descent is fused onto the root here for the same reason it is
+		// fused in ResolveIdentifier: Java's lookupNestedField never hands a
+		// caller a root plus a chain to apply — it returns the already-fused
+		// value and the LEAF's type (SemanticAnalyzer.java:599-600). Minting the
+		// root alone reads the whole struct where a member was asked for, which
+		// is a wrong-column read that no error reports.
+		return fuseNestedAccessorsIfAny(root, accessors)
 	}
 	return nil, &UnresolvableOrdinalError{Field: col.Id.Name(), Source: src.CorrelationName}
 }
@@ -684,7 +704,7 @@ func (r *Resolver) QualifierIsDuplicated(qualifier semantic.Identifier) bool {
 // is returned verbatim (callers already validate separately, so they may ignore
 // it). RFC-142.
 func (r *Resolver) ResolveColumnShadowingQualified(qualifier, id semantic.Identifier) (values.Value, bool, error) {
-	col, src, err := r.analyzer.ResolveColumnRef(r.scope, qualifier, id)
+	col, src, accessors, err := r.analyzer.ResolveColumnRefNested(r.scope, qualifier, id)
 	if err != nil {
 		return nil, false, err
 	}
@@ -703,13 +723,21 @@ func (r *Resolver) ResolveColumnShadowingQualified(qualifier, id semantic.Identi
 		// UNKNOWN — the element is a scalar, never the virtual one-column row
 		// that made its name resolve (flowedTypeFor). Stating that row instead
 		// makes values.IsMixedSeedElementType read the element as a join leg.
-		return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+		root := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
 			values.NewQuantifiedObjectValueOfType(corrID, flowed),
 			field,
 			ord,
 			columnCascadesType(col),
 			domain,
-		), true, nil
+		)
+		// Fused for the same reason as in ResolveQualifiedProjection: a descent
+		// into a struct denotes the LEAF, and Java's lookupNestedField returns it
+		// already fused (SemanticAnalyzer.java:599-600).
+		fused, ferr := fuseNestedAccessorsIfAny(root, accessors)
+		if ferr != nil {
+			return nil, false, ferr
+		}
+		return fused, true, nil
 	}
 	return nil, false, &UnresolvableOrdinalError{Field: field, Source: src.CorrelationName}
 }

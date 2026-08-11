@@ -2661,15 +2661,32 @@ func isLateralUnnestJoin(j joinClause, visible map[string]struct{}, resolvesToTa
 // resolved as source-alias then column. A miss returns nil — an unnest over
 // something the scope cannot type is not this function's to reject, and the
 // reference simply fails to resolve as it did before.
+//
+// It resolves through the NESTED form and takes the chain's LEAF, because the
+// two segments can also name a struct column and one of its fields
+// (`n.arr`, where `N` is a struct carrying an array field). The chain-free form
+// would hand back the struct ROOT for that shape, whose IsArray is false, and
+// the unnest would silently carry no element fields at all. Today no such FROM
+// item reaches here — a two-segment FROM item whose first segment is not a
+// source alias is rejected upstream as a database qualifier — so this is
+// correctness by construction rather than a live path; the reach is pinned in
+// the driver suite.
 func unnestElementStructFields(scope *semantic.Scope, j joinClause) []semantic.Column {
 	if scope == nil || len(j.segments) != 2 {
 		return nil
 	}
-	col, _, err := scope.ResolveQualifiedColumn(
+	col, _, accessors, err := scope.ResolveQualifiedColumnNested(
 		semantic.FromNormalized(j.segments[0]),
 		semantic.FromNormalized(j.segments[1]),
 	)
-	if err != nil || !col.IsArray {
+	if err != nil {
+		return nil
+	}
+	// A descent denotes its LEAF; the root is the struct it was reached through.
+	if len(accessors) > 0 {
+		col = accessors[len(accessors)-1].Col
+	}
+	if !col.IsArray {
 		return nil
 	}
 	return col.StructFields
