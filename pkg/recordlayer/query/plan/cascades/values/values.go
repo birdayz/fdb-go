@@ -1263,6 +1263,22 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 				// no-match) — NULL, not loud. A FrontierPinned node bound to any
 				// other non-ordinal value (a name-keyed map, a stray struct) is a
 				// frontier-contract violation — loud.
+				//
+				// A DATUM binding (not a row) IS the root read: the leg adapter
+				// unwraps a bare-scalar `_0` carrier to its datum
+				// (isBareScalarRow), so the accessor that would have addressed
+				// slot 0 is consumed by the binding itself and the path's
+				// REMAINDER still has to be applied. Returning the datum whole
+				// dropped that remainder, which is why a struct-element unnest
+				// (`orders.items AS i`, whose element binds as one proto message)
+				// read the WHOLE element for `i.sku`: in a predicate that
+				// compares to a string it is never equal, so
+				// `WHERE i.sku = 'x'` returned ZERO rows. descendResolvedPath is
+				// a no-op for the single-accessor path every scalar-element
+				// reference carries, so the datum convention is unchanged.
+				// Java has no separate arm here at all — FieldValue.eval resolves
+				// the whole FieldPath against the child's flowed Message
+				// (FieldValue.java:169).
 				if row, ok := bound.(OrdinalRow); ok {
 					return f.evaluateOrdinal(row)
 				}
@@ -1271,7 +1287,7 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 						return nil, err
 					}
 				}
-				return bound, nil
+				return f.descendResolvedPath(bound)
 			}
 		}
 		// No explicit correlation binding matched, so the reference is to
@@ -1299,12 +1315,15 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			}
 			// nil binding = null leg (NULL); any other non-ordinal
 			// binding is a frontier-contract violation for a pinned node.
+			// A datum binding is the root read and the path's remainder still
+			// applies — see the *RowEvalContext arm above for why dropping it
+			// emptied a struct-element unnest predicate.
 			if bound != nil {
 				if err := f.frontierContractGuard(); err != nil {
 					return nil, err
 				}
 			}
-			return bound, nil
+			return f.descendResolvedPath(bound)
 		}
 		// Correlation unbound in this binder: a dangling reference. Loud.
 		return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.Correlation.Name(), CtxType: fmt.Sprintf("%T (unbound)", ctx)}

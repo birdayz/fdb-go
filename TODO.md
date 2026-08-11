@@ -16358,7 +16358,7 @@ None is speculative: each was re-verified against the tree before booking.
   star expansion. Its blast radius is when the scope is constructed, which is why
   it did not ride along with the typing fix.
 
-- [ ] **A member predicate over a correlated UNNEST binding returns ZERO ROWS**
+- [x] **A member predicate over a correlated UNNEST binding returns ZERO ROWS**
   · M · found while auditing name-keyed reads of a fused nested reference
   (RFC-231 §7)
 
@@ -16405,6 +16405,32 @@ None is speculative: each was re-verified against the tree before booking.
   DONE means: the query returns `[1]`, the mechanism is named at its site, and
   the regression asserts ROWS rather than plannability — with the colliding-alias
   and multi-member shapes covered, not just the one spelling above.
+
+  RESOLVED. The discriminator above held: neither the mint nor the arity gate was
+  the cause, and the fix touches neither. The cause was one layer lower, in
+  `FieldValue.evaluateCorrelated` — when a correlation binds a DATUM rather than
+  an OrdinalRow, both correlated arms returned that datum WHOLE and dropped every
+  accessor past the root. A struct unnest element binds exactly that way (the leg
+  adapter unwraps the bare-scalar `_0` carrier to its datum, `isBareScalarRow`),
+  so `/I/SKU` served the whole element; against `= 'x'` it is never equal, hence
+  zero rows rather than a wrong one. The drop was invisible to every
+  single-accessor reference, which is why only a DESCENT exposed it. Both arms now
+  apply the remainder via `descendResolvedPath`, a no-op when the path has none —
+  so the scalar-element datum convention is unchanged. Java has no equivalent arm
+  at all: `FieldValue.eval` resolves the whole FieldPath against the child's
+  flowed Message (FieldValue.java:169).
+
+  Pinned by `TestFDB_UnnestMemberPredicateServesRows` (rows for the STRING member,
+  the non-leading BIGINT member, and a member predicate beside a sibling
+  projection) and by the unit twin `TestFieldValue_DatumBinding_AppliesPathRemainder`,
+  which drives the two correlated arms SEPARATELY plus the single-accessor
+  no-remainder case. Mutating each arm alone reddens only its own subtest. The
+  colliding-alias shape stays refused 42702 and is already pinned by
+  `TestFDB_NestedMemberSpelledLikeItsUnnestAliasIsRefused`.
+
+  The plan-only test that let this ship (`TestStructDDL_UnnestStructArrayFieldAccess`)
+  cannot assert rows — its package has no store — and now points at its row twin,
+  and back.
 - [ ] **`StreamingModeExact` materialises its ENTIRE row budget in one fetch,
   where libfdb_c splits the same read by byte target** · L · found while probing
   the (non-existent) multi-batch exact-mode path

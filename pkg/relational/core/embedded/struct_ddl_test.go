@@ -292,6 +292,17 @@ func messageNames(fd protoreflect.FileDescriptor) []string {
 // (SemanticAnalyzer.java:475-480). Go's unnest binding is a virtual
 // one-column scope source, so the element's field list is carried onto that
 // column and the SAME lookupNestedField descent reaches it.
+//
+// This test asserts only that these queries PLAN, and it cannot assert more:
+// the package is a metadata-only harness with no FDB. That limit is not
+// cosmetic — `WHERE i.sku = 'x'` below planned cleanly while returning ZERO
+// rows, because the element bound as one datum and the descent past the
+// binding was dropped at evaluation. A plan-only assertion cannot separate
+// right rows from wrong rows from no rows, so the ROW half lives in
+// TestFDB_UnnestMemberPredicateServesRows
+// (pkg/relational/sqldriver/unnest_member_predicate_rows_fdb_test.go) and runs
+// these same shapes against a real store. Neither half is sufficient alone;
+// if one moves, move the other.
 func TestStructDDL_UnnestStructArrayFieldAccess(t *testing.T) {
 	t.Parallel()
 	const ddl = `CREATE TYPE AS STRUCT item (sku STRING, qty BIGINT)
