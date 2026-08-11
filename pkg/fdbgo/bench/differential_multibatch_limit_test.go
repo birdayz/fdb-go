@@ -22,11 +22,17 @@ import (
 // The Go side's batch DIVISION is observable (SetTraceLog) and is asserted here as a
 // non-vacuity guard — a differential that happened to fit in one batch would compare nothing
 // about boundaries while reading exactly like a passing boundary test. The libfdb_c side's
-// division is NOT observable: Apple's Go binding keeps iteration/more/the advancing begin-key
-// private on an unexported RangeIterator with no trace hook, and this repo's cgo adapter
-// implements SetTraceLog as a documented no-op (libfdbc/backend.go:668) because there is
-// nothing underneath to forward. Exposing it would require a new raw CGetRange binding
-// alongside CGetMappedRange.
+// division is not observable THROUGH THIS PATH: Apple's Go binding keeps iteration/more/the
+// advancing begin-key private on an unexported RangeIterator with no trace hook, and this
+// repo's cgo adapter implements SetTraceLog as a documented no-op (libfdbc/backend.go:668)
+// because there is nothing underneath to forward.
+//
+// It IS observable through a different one. libfdbc.CGetRangeBatch (libfdbc/range_cref.go)
+// issues a single raw fdb_transaction_get_range with target_bytes and iteration exposed, and
+// libfdbc:TestLibFDBC_RangeBatchDivision drives that loop to measure exactly where C splits.
+// That test is tag-gated (`-tags libfdbc`) and runs in the cross-client differential workflow
+// rather than in the default bazel build, which is why the per-batch comparison lives there and
+// this test — which runs everywhere — stays on row sets.
 //
 // So the cross-client assertion is on the final ROW SET, not on where each client split it.
 // What that costs is narrow, and worth naming precisely: the two clients could agree on every
@@ -40,12 +46,12 @@ import (
 //     per-batch counts against real FDB;
 //   - a wrong continuation across a boundary (a gap or a repeat) — caught HERE, because it
 //     changes which rows come back, and independently by the row-identity arms;
-//   - a division that differs from C's while producing identical rows — NOT caught by anything,
-//     and it is not currently a wire-visible property: the per-batch read-conflict ranges union
-//     to the same consumed extent either way.
-//
-// The last bullet is what a per-batch C differential would add, and it becomes load-bearing the
-// moment a byte-dimension budget lands (see fdb:TestRangeIterator_ExactModeIsStructurallySingleBatch).
+//   - a division that differs from C's while producing identical rows — not caught HERE, and
+//     it is not a wire-visible property: the per-batch read-conflict ranges union to the same
+//     consumed extent either way. It is nonetheless REAL and now measured:
+//     libfdbc:TestLibFDBC_RangeBatchDivision records C dividing 60 200-byte rows as
+//     [2]x30 under SMALL where the pure-Go client takes [10]x6, because C derives target_bytes
+//     per mode while Go pins 80000 for every mode. Booked in TODO.md Phase 12.
 func TestDifferential_LimitedIteratorMultiBatchRowSets(t *testing.T) {
 	t.Parallel()
 	pfx := fmt.Sprintf("diffmb_%d_", os.Getpid())
@@ -103,34 +109,40 @@ func TestDifferential_LimitedIteratorMultiBatchRowSets(t *testing.T) {
 	}
 
 	for _, c := range []struct {
-		name  string
-		mode  int // shared numbering: WantAll -1, Iterator 0, Exact 1, Small 2, Medium 3
-		limit int
-		want  int // rows expected
+		name string
+		// Named constants on BOTH sides rather than one int cast into each. The two enums do
+		// coincide today (Apple generated.go vs fdb/range.go, identical -1..5), but a comment
+		// asserting an invariant the compiler could enforce is the shape that rots — and the
+		// cgo side's mode is otherwise unverified here, so a silent mismatch would still pass
+		// on row sets and this test would report agreement between two DIFFERENT requests.
+		goMode gofdb.StreamingMode
+		cMode  cgofdb.StreamingMode
+		limit  int
+		want   int // rows expected
 	}{
 		// Bounded modes with a limit: the only shape where a LATER batch is clamped by the
 		// leftover budget. Go divides these 100/100/50, 10/10/5 and so on.
-		{"medium/250", 3, 250, 250},
-		{"medium/199", 3, 199, 199},
-		{"medium/201", 3, 201, 201},
-		{"small/25", 2, 25, 25},
-		{"small/175", 2, 175, 175},
+		{"medium/250", gofdb.StreamingModeMedium, cgofdb.StreamingModeMedium, 250, 250},
+		{"medium/199", gofdb.StreamingModeMedium, cgofdb.StreamingModeMedium, 199, 199},
+		{"medium/201", gofdb.StreamingModeMedium, cgofdb.StreamingModeMedium, 201, 201},
+		{"small/25", gofdb.StreamingModeSmall, cgofdb.StreamingModeSmall, 25, 25},
+		{"small/175", gofdb.StreamingModeSmall, cgofdb.StreamingModeSmall, 175, 175},
 		// Iterator mode past the doubling phase, limited mid-progression.
-		{"iterator/300", 0, 300, 300},
-		{"iterator/nolimit", 0, 0, n},
+		{"iterator/300", gofdb.StreamingModeIterator, cgofdb.StreamingModeIterator, 300, 300},
+		{"iterator/nolimit", gofdb.StreamingModeIterator, cgofdb.StreamingModeIterator, 0, n},
 		// Limit exceeding the data: the range exhausts before the budget does.
-		{"small/1000", 2, 1000, n},
+		{"small/1000", gofdb.StreamingModeSmall, cgofdb.StreamingModeSmall, 1000, n},
 		// EXACT with a budget spanning what would be many C batches. Go serves this in ONE
 		// fetch by construction; C is free to split it. Identical rows either way is the claim.
-		{"exact/600", 1, 600, n},
-		{"exact/599", 1, 599, 599},
+		{"exact/600", gofdb.StreamingModeExact, cgofdb.StreamingModeExact, 600, n},
+		{"exact/599", gofdb.StreamingModeExact, cgofdb.StreamingModeExact, 599, 599},
 	} {
 		c := c
 		goKeys, goBatches, goCode := goDrain(gofdb.RangeOptions{
-			Mode: gofdb.StreamingMode(c.mode), Limit: c.limit,
+			Mode: c.goMode, Limit: c.limit,
 		})
 		cgoKeys, cgoCode := cgoDrain(cgofdb.RangeOptions{
-			Mode: cgofdb.StreamingMode(c.mode), Limit: c.limit,
+			Mode: c.cMode, Limit: c.limit,
 		})
 
 		if goCode != cgoCode {
@@ -160,7 +172,7 @@ func TestDifferential_LimitedIteratorMultiBatchRowSets(t *testing.T) {
 		// the property fdb:TestRangeIterator_ExactModeIsStructurallySingleBatch pins — a drain
 		// that fit in ONE batch compares nothing about boundaries. Guard it, or a future change
 		// to the mode table silently turns this into a single-fetch comparison that still passes.
-		if c.mode != 1 && goBatches < 2 {
+		if c.goMode != gofdb.StreamingModeExact && goBatches < 2 {
 			t.Errorf("%s: the Go drain took %d batches — this case is vacuous as a BOUNDARY "+
 				"differential unless it crosses at least one", c.name, goBatches)
 		}

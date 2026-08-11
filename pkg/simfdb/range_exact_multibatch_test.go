@@ -73,6 +73,16 @@ func seedRows(t *testing.T, db *SimDB, prefix string, n int) {
 // keyAfter(lastKey) re-derivation in the iterator is live code, but EXACT never reaches it —
 // the bounded modes do, which is what TestBoundedModeReDerivesRemainingBudget covers.
 //
+// THE PROPERTY IS EMERGENT, NOT ENFORCED. Nothing in the source asserts "EXACT is
+// single-batch"; it falls out of several independent sites happening to agree. Each success
+// return in the client's rangeScanImpl gates the same way (readpath.go:697, :793, :852), the
+// RYW layer gates `more` on the budget being exactly consumed (client/ryw.go:691,701,757,768,790),
+// and this package's fetchRange does the same (txn.go:626,673). The unreadable-cap arm is the
+// nearest trigger: it ERRORS rather than returning the prefix it read (txn.go:667, mirroring
+// ryw.go:689,699), and relaxing that to return the partial prefix would make EXACT multi-fetch
+// immediately. None of those sites is pinned, which is why this asserts the emergent property
+// directly rather than trusting it to hold.
+//
 // WHAT RE-ARMS THIS: if EXACT ever takes more than one batch, a byte-dimension budget has
 // been introduced (a GetRangeLimits{rows,bytes} port, per the batchSize ITERATOR note), and
 // EXACT's batch DIVISION becomes observable behaviour that libfdb_c is the spec for. At that
@@ -94,7 +104,7 @@ func TestExactModeIsStructurallySingleBatch(t *testing.T) {
 	if ctlRows != n {
 		t.Fatalf("control drain returned %d rows, want %d", ctlRows, n)
 	}
-	if len(ctlBatches) < 10 {
+	if len(ctlBatches) <= 10 {
 		t.Fatalf("control (Iterator mode, %d rows) took %d batches %v, want >10 — the seed is "+
 			"too small to force a batch boundary, so the single-batch assertion below would be "+
 			"vacuous", n, len(ctlBatches), ctlBatches)
@@ -136,10 +146,12 @@ func TestExactModeIsStructurallySingleBatch(t *testing.T) {
 // the mode's own size. Asserting only the total (250 rows) cannot tell that from 100,100,100
 // over-reading and discarding, nor from 100,100,50 with the continuation left one key short.
 //
-// The division, not just the count, is therefore what is asserted. The failure modes this
-// separates: same rows / different division; a correct division with a wrong continuation
-// (caught by the row IDENTITY check, which a mis-advanced begin key would perturb); and an
-// off-by-one at the limit boundary (caught by the exact per-batch counts).
+// The division, not just the count, is therefore what is asserted. THIS test separates two
+// failure modes: same rows / different division, and an off-by-one at the limit boundary —
+// both caught by the exact per-batch counts. It has no row-identity check, so a correct
+// division carrying a WRONG CONTINUATION is invisible here; that direction belongs to
+// TestBoundedModeMultiBatchRowIdentity, which asserts the rows themselves over a fixture built
+// to expose it.
 func TestBoundedModeReDerivesRemainingBudget(t *testing.T) {
 	t.Parallel()
 	db := New(nil)

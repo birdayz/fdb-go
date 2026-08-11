@@ -11,6 +11,7 @@ package fdb_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
@@ -74,11 +75,23 @@ func drainClientBatches(t *testing.T, db gofdb.Database, begin, end string, opts
 // control below is what keeps that claim honest: it shows the SAME seed does cross boundaries,
 // many times, so the single-batch result is a property of EXACT and not of a small seed.
 //
-// WHAT RE-ARMS THIS: EXACT taking more than one batch means a byte-dimension budget now exists
-// (a GetRangeLimits{rows,bytes} port, per the batchSize ITERATOR note). At that point EXACT's
-// batch DIVISION becomes observable behaviour for which libfdb_c is the spec, and a final
-// row-set comparison against the C client stops being sufficient — a per-batch differential
-// becomes required. This test failing is that signal.
+// THE PROPERTY IS EMERGENT, NOT ENFORCED. Nothing asserts "EXACT is single-batch" anywhere in
+// the source; it falls out of several independent sites agreeing by construction. Every success
+// return in rangeScanImpl gates the same way (readpath.go:697 `false`, :793 `true` only once
+// remaining hits 0, :852 `remaining <= 0`), the RYW layer's own returns gate `more` on the
+// budget being exactly consumed (client/ryw.go:691,701,757,768,790), and simfdb's fetchRange
+// does the same (txn.go:626,673). Change any one of them to hand back a partial prefix and the
+// property is gone. The unreadable-cap arm is the closest such trigger: it currently ERRORS
+// rather than returning what it read (ryw.go:689,699 and simfdb/txn.go:667), and relaxing that
+// to return the prefix would make EXACT multi-fetch the same afternoon. Nothing pins those
+// sites, which is exactly why this test asserts the emergent property directly.
+//
+// WHAT RE-ARMS THIS: EXACT taking more than one batch means a byte-dimension ROW budget now
+// reaches the iterator (a GetRangeLimits{rows,bytes} port, per the batchSize ITERATOR note), or
+// one of the sites above started returning partial results. At that point EXACT's batch
+// DIVISION becomes observable behaviour for which libfdb_c is the spec, and a final row-set
+// comparison against the C client stops being sufficient — a per-batch differential becomes
+// required. This test failing is that signal.
 func TestRangeIterator_ExactModeIsStructurallySingleBatch(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
@@ -180,8 +193,12 @@ func TestRangeIterator_BoundedModeReDerivesRemainingBudget(t *testing.T) {
 					c.name, i, batches[i], c.want[i], batches, c.want)
 			}
 		}
-		// The rows are the contiguous prefix of the range: a continuation that overshot or
-		// failed to advance keeps the division intact while changing WHICH rows come back.
+		// The rows are the contiguous prefix of the range. This catches a continuation that
+		// FAILS TO ADVANCE (a repeat) while leaving the division intact. It does NOT catch an
+		// overshoot: these keys are evenly spaced, so keyAfter(keyAfter(lastKey)) still sorts
+		// below the next real row and skips nothing. TestRangeIterator_MultiBatchContinuationIdentity
+		// is the arm that covers the overshoot direction, and it needs a different fixture to
+		// do it.
 		for i, key := range keys {
 			if w := fmt.Sprintf("%s%06d", pfx, i); key != w {
 				t.Errorf("%s: row %d = %q, want %q — the continuation across a batch boundary "+
@@ -190,5 +207,108 @@ func TestRangeIterator_BoundedModeReDerivesRemainingBudget(t *testing.T) {
 			}
 		}
 		t.Logf("MEASURED %-12s limit=%-4d -> %d rows, division %v", c.name, c.limit, len(keys), batches)
+	}
+}
+
+// boundaryStraddlingKeys builds a key list in which the last row of every batch-sized batch is
+// IMMEDIATELY followed by its own byte successor, key+"\x00".
+//
+// The forward continuation is `ri.begin = keyAfter(lastKey)` (range_result.go:341), i.e.
+// lastKey+"\x00". With evenly-spaced keys such as "boundbatch_000099"/"boundbatch_000100"
+// there is a WIDE gap between the two: every string from "boundbatch_000099\x00" through
+// "boundbatch_00009~" sorts between them, so a continuation that OVERSHOOTS — advancing two
+// successors instead of one — still lands below the next real row and skips nothing. A drain
+// over such keys is green under a genuinely broken continuation. That blindness was measured
+// in the simfdb twin and is why this fixture exists.
+//
+// Placing a real row at exactly keyAfter(lastKey) removes the slack: the successor position is
+// occupied, so an overshoot skips a row that exists and the drain comes up short.
+//
+// This duplicates simfdb's helper of the same name rather than sharing it: that one lives in
+// package simfdb's internal test binary and this is package fdb_test. The duplication is the
+// point of the arm — the two continuations are written twice (simfdb/range_result.go:245 and
+// range_result.go:341), so a fixture that only exercises the model leaves the line every real
+// caller executes unpinned.
+func boundaryStraddlingKeys(pfx string, batch, total int) []string {
+	keys := make([]string, 0, total+total/batch+1)
+	for i := 0; len(keys) < total; i++ {
+		base := fmt.Sprintf("%s%06d", pfx, i)
+		keys = append(keys, base)
+		if len(keys)%batch == 0 && len(keys) < total {
+			keys = append(keys, base+"\x00")
+		}
+	}
+	return keys
+}
+
+// TestRangeIterator_MultiBatchContinuationIdentity pins BOTH continuation expressions on the
+// real client across a batch boundary, in both directions of failure.
+//
+// The two directions are separate code, not one mechanism seen twice: forward advances
+// `ri.begin = keyAfter(lastKey)` (range_result.go:341), reverse retreats `ri.end = lastKey`
+// (range_result.go:338) — an exclusive end, so it has no keyAfter and no successor slack.
+// Neither had client-side multi-batch coverage.
+func TestRangeIterator_MultiBatchContinuationIdentity(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	for _, c := range []struct {
+		name    string
+		mode    gofdb.StreamingMode
+		batch   int
+		reverse bool
+	}{
+		{"forward/small", gofdb.StreamingModeSmall, 10, false},
+		{"forward/medium", gofdb.StreamingModeMedium, 100, false},
+		{"reverse/small", gofdb.StreamingModeSmall, 10, true},
+		{"reverse/medium", gofdb.StreamingModeMedium, 100, true},
+	} {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			pfx := fmt.Sprintf("contid_%s_", strings.ReplaceAll(c.name, "/", "_"))
+			const total = 350
+			want := boundaryStraddlingKeys(pfx, c.batch, total)
+			const perTx = 200
+			for start := 0; start < len(want); start += perTx {
+				start := start
+				if _, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
+					for i := start; i < start+perTx && i < len(want); i++ {
+						tr.Set(gofdb.Key(want[i]), []byte("v"))
+					}
+					return nil, nil
+				}); err != nil {
+					t.Fatalf("seed [%d,%d): %v", start, start+perTx, err)
+				}
+			}
+			// Reverse yields the same rows in descending order.
+			expect := append([]string(nil), want...)
+			if c.reverse {
+				for i, j := 0, len(expect)-1; i < j; i, j = i+1, j-1 {
+					expect[i], expect[j] = expect[j], expect[i]
+				}
+			}
+
+			keys, batches := drainClientBatches(t, db, pfx, pfx+"~", gofdb.RangeOptions{
+				Mode: c.mode, Reverse: c.reverse,
+			})
+			if len(batches) < 2 {
+				t.Fatalf("took %d batches over %d rows — this arm is vacuous unless the drain "+
+					"crosses at least one boundary", len(batches), len(want))
+			}
+			if len(keys) != len(expect) {
+				t.Fatalf("returned %d rows in %d batches, want %d — a boundary dropped or "+
+					"repeated rows", len(keys), len(batches), len(expect))
+			}
+			for i := range expect {
+				if keys[i] != expect[i] {
+					t.Fatalf("row %d = %q, want %q — the continuation across a batch boundary is "+
+						"off (a gap or a repeat), which a row-COUNT check alone passes",
+						i, keys[i], expect[i])
+				}
+			}
+			t.Logf("MEASURED %-15s %d rows across %d batches, contiguous and in order",
+				c.name, len(keys), len(batches))
+		})
 	}
 }
