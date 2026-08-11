@@ -17,7 +17,8 @@ func TestNestedCaseRendersAStructSchema(t *testing.T) {
 
 	ddl := c.DDL()
 	for _, want := range []string{
-		"CREATE TYPE AS STRUCT nst (a BIGINT, b BIGINT, s STRING)",
+		"CREATE TYPE AS STRUCT inr (a BIGINT, s STRING)",
+		"CREATE TYPE AS STRUCT nst (a BIGINT, b BIGINT, s STRING, dp inr)",
 		"CREATE TABLE T_RDN (id BIGINT, a BIGINT, n nst, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, PRIMARY KEY (id))",
 	} {
 		if !strings.Contains(ddl, want) {
@@ -37,11 +38,14 @@ func TestNestedCaseRendersAStructSchema(t *testing.T) {
 	}
 
 	ins := c.InsertSQL()
-	// Positional agreement: id, a, <struct literal>, c, s, f, d — seven values
-	// per row, with the struct's three leaves inside ONE parenthesised group.
+	// Positional agreement: id, a, <struct literal>, c, s, f, d — with the
+	// struct's members inside ONE parenthesised group and its INNER struct
+	// inside a group of its own. Three opening parens is the depth-2 signature;
+	// two would mean the inner struct was flattened into its parent, which
+	// binds every value after it to the wrong column.
 	first := ins[strings.Index(ins, "VALUES ")+len("VALUES ") : strings.Index(ins, "), (")+1]
-	if strings.Count(first, "(") != 2 {
-		t.Fatalf("the first row is not (…, (struct), …): %s", first)
+	if n := strings.Count(first, "("); n != 3 {
+		t.Fatalf("the first row has %d groups, want 3 (row, struct, inner struct): %s", n, first)
 	}
 }
 
@@ -241,4 +245,40 @@ func TestNoQueryNamesAColumnTheTableLacks(t *testing.T) {
 			t.Fatalf("seed %d yielded nothing to check", seed)
 		}
 	}
+}
+
+// TestNestedCaseReachesDepthThree pins the DEPTH axis at the boundary the
+// engine actually has.
+//
+// The arity cap RFC-204 §4.4 removed is why this axis was empty: a 3-segment
+// reference was refused outright, so a struct inside a struct could not be
+// named. With the cap gone, depth is bounded by the SCHEMA — which means a
+// generator that still emits one level is capped below the engine and tests
+// only the shapes that already worked. A zero here says exactly that has
+// happened.
+func TestNestedCaseReachesDepthThree(t *testing.T) {
+	t.Parallel()
+	depth := map[int]int{}
+	for seed := uint64(1); seed <= 60; seed++ {
+		c := rowdiff.GenerateNested(seed)
+		for _, col := range c.Table.Cols {
+			depth[strings.Count(col.Name, ".")+1]++
+		}
+		for _, q := range c.Queries {
+			for _, proj := range c.ProjectionsFor(q) {
+				for _, p := range proj {
+					if strings.Count(p, ".") >= 2 {
+						depth[0]++ // a projected 3-segment path
+					}
+				}
+			}
+		}
+	}
+	if depth[3] == 0 {
+		t.Errorf("the schema has no depth-3 column, so `n.dp.a` is unreachable: %v", depth)
+	}
+	if depth[0] == 0 {
+		t.Errorf("no query ever PROJECTS a depth-3 path, so the schema's nesting is decorative: %v", depth)
+	}
+	t.Logf("nested depth reach: schema columns by segment count %v (key 0 = projected 3-segment paths)", depth)
 }

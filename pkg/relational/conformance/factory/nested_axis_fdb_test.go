@@ -62,14 +62,14 @@ func nestedAxes() []nestedAxis {
 	return []nestedAxis{
 		// --- depth ---------------------------------------------------------
 		{axis: "depth2-select", query: "SELECT n.sk FROM nt ORDER BY id", want: []string{"11", "22", "33"}},
-		{axis: "depth3-select", query: "SELECT n.dp.sk FROM nt ORDER BY id", declines: `qualifier "N.DP" cannot be resolved`},
-		{axis: "depth3-qualified", query: "SELECT a.n.dp.sk FROM nt AS a ORDER BY a.id", declines: `qualifier "A.N.DP" cannot be resolved`},
-		{axis: "depth4-table-qualified", query: "SELECT nt.n.dp.co FROM nt ORDER BY nt.id", declines: `qualifier "NT.N.DP" cannot be resolved`},
+		{axis: "depth3-select", query: "SELECT n.dp.sk FROM nt ORDER BY id", want: []string{"111", "222", "333"}},
+		{axis: "depth3-qualified", query: "SELECT a.n.dp.sk FROM nt AS a ORDER BY a.id", want: []string{"111", "222", "333"}},
+		{axis: "depth4-table-qualified", query: "SELECT nt.n.dp.co FROM nt ORDER BY nt.id", want: []string{"aa", "bb", "cc"}},
 
 		// --- qualification ---------------------------------------------------
 		{axis: "unqualified", query: "SELECT n.co FROM nt ORDER BY id", want: []string{"a", "b", "c"}},
-		{axis: "alias-qualified", query: "SELECT a.n.co FROM nt AS a ORDER BY a.id", declines: `qualifier "A.N" cannot be resolved`},
-		{axis: "table-qualified", query: "SELECT nt.n.co FROM nt ORDER BY nt.id", declines: `qualifier "NT.N" cannot be resolved`},
+		{axis: "alias-qualified", query: "SELECT a.n.co FROM nt AS a ORDER BY a.id", want: []string{"a", "b", "c"}},
+		{axis: "table-qualified", query: "SELECT nt.n.co FROM nt ORDER BY nt.id", want: []string{"a", "b", "c"}},
 
 		// --- collision -------------------------------------------------------
 		// Two leaves of ONE struct root. The labelling defect produced two
@@ -78,25 +78,25 @@ func nestedAxes() []nestedAxis {
 		// A nested leaf whose last segment collides with a flat column. The
 		// wrong-column read lived exactly here.
 		{axis: "leaf-collides-with-flat", query: "SELECT sk, n.sk FROM nt ORDER BY id", want: []string{"100|11", "200|22", "300|33"}},
-		{axis: "leaf-collides-across-depths", query: "SELECT n.sk, n.dp.sk FROM nt ORDER BY id", declines: `qualifier "N.DP" cannot be resolved`},
+		{axis: "leaf-collides-across-depths", query: "SELECT n.sk, n.dp.sk FROM nt ORDER BY id", want: []string{"11|111", "22|222", "33|333"}},
 
 		// --- clause ----------------------------------------------------------
 		{axis: "where-depth2", query: "SELECT id FROM nt WHERE n.sk > 11 ORDER BY id", want: []string{"2", "3"}},
-		{axis: "where-depth3", query: "SELECT id FROM nt WHERE n.dp.sk = 222", declines: "could not plan query"},
+		{axis: "where-depth3", query: "SELECT id FROM nt WHERE n.dp.sk = 222", want: []string{"2"}},
 		{axis: "order-by-depth2", query: "SELECT id FROM nt ORDER BY n.sk DESC", want: []string{"3", "2", "1"}},
-		{axis: "order-by-depth3", query: "SELECT id FROM nt ORDER BY n.dp.co DESC", declines: "not resolvable in the runtime row"},
-		{axis: "order-by-qualified-depth3", query: "SELECT a.id FROM nt AS a ORDER BY a.n.dp.sk DESC", declines: "not resolvable in the runtime row"},
+		{axis: "order-by-depth3", query: "SELECT id FROM nt ORDER BY n.dp.co DESC", want: []string{"3", "2", "1"}},
+		{axis: "order-by-qualified-depth3", query: "SELECT a.id FROM nt AS a ORDER BY a.n.dp.sk DESC", want: []string{"3", "2", "1"}},
 		{axis: "agg-arg-depth2", query: "SELECT MAX(n.sk) FROM nt", want: []string{"33"}},
-		{axis: "agg-arg-depth3", query: "SELECT SUM(n.dp.sk) FROM nt", declines: `qualifier "N.DP" cannot be resolved`},
-		{axis: "group-by-depth2", query: "SELECT n.sk, COUNT(*) FROM nt GROUP BY n.sk ORDER BY n.sk", declines: "not resolvable in the runtime row"},
-		{axis: "having-depth2", query: "SELECT n.sk FROM nt GROUP BY n.sk HAVING COUNT(*) > 0 ORDER BY n.sk", declines: "not resolvable in the runtime row"},
-		{axis: "join-on-depth2", query: "SELECT l.id, r.id FROM nt AS l JOIN nt AS r ON l.n.sk = r.n.sk ORDER BY l.id", declines: "FullId with 3 segments"},
-		{axis: "join-on-depth3", query: "SELECT l.id FROM nt AS l JOIN nt AS r ON l.n.dp.sk = r.n.dp.sk ORDER BY l.id", declines: "FullId with 4 segments"},
+		{axis: "agg-arg-depth3", query: "SELECT SUM(n.dp.sk) FROM nt", want: []string{"666"}},
+		{axis: "group-by-depth2", query: "SELECT n.sk, COUNT(*) FROM nt GROUP BY n.sk ORDER BY n.sk", declines: `grouping by the nested field "N.SK" is not supported`},
+		{axis: "having-depth2", query: "SELECT n.sk FROM nt GROUP BY n.sk HAVING COUNT(*) > 0 ORDER BY n.sk", declines: `grouping by the nested field "N.SK" is not supported`},
+		{axis: "join-on-depth2", query: "SELECT l.id, r.id FROM nt AS l JOIN nt AS r ON l.n.sk = r.n.sk ORDER BY l.id", want: []string{"1|1", "2|2", "3|3"}},
+		{axis: "join-on-depth3", query: "SELECT l.id FROM nt AS l JOIN nt AS r ON l.n.dp.sk = r.n.dp.sk ORDER BY l.id", want: []string{"1", "2", "3"}},
 
 		// --- sources ---------------------------------------------------------
-		{axis: "derived-table", query: "SELECT d.x FROM (SELECT n.dp.sk AS x FROM nt) AS d ORDER BY d.x", declines: `qualifier "N.DP" cannot be resolved`},
+		{axis: "derived-table", query: "SELECT d.x FROM (SELECT n.dp.sk AS x FROM nt) AS d ORDER BY d.x", want: []string{"111", "222", "333"}},
 		{axis: "cte", query: "WITH c AS (SELECT n.sk AS x FROM nt) SELECT c.x FROM c ORDER BY c.x", want: []string{"11", "22", "33"}},
-		{axis: "join-projection", query: "SELECT l.n.sk, r.n.dp.co FROM nt AS l JOIN nt AS r ON l.id = r.id ORDER BY l.id", declines: `qualifier "L.N" cannot be resolved`},
+		{axis: "join-projection", query: "SELECT l.n.sk, r.n.dp.co FROM nt AS l JOIN nt AS r ON l.id = r.id ORDER BY l.id", want: []string{"11|aa", "22|bb", "33|cc"}},
 
 		// --- shadowing -------------------------------------------------------
 		// The alias renames the table, so the TABLE name is no longer a legal
