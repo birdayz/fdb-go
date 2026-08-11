@@ -252,7 +252,7 @@ survive. Recorded here rather than left standing, because each one is a claim
 the plan was sized from.
 
 - *The allowlist stays EMPTY, and that is now a result rather than a default.*
-  All eleven remaining sites were read against the two legs. ZERO pass both.
+  Every remaining site was read against the two legs. ZERO pass both.
   (Line numbers throughout this item are as of this revision; `pkg/docscheck`'s
   `knownFieldDecisionDebt` is the live list, and a line that has moved is a
   reason to read the debt entry, not this prose.)
@@ -992,13 +992,27 @@ of them.
 — nowhere else in this section.** Escapes are what the list stores and what the
 group headers claim; authorities are what answers "how much work remains".
 
-Counts are deliberately ABSENT from the prose here, and that absence is enforced
-(`TestFieldDebtRFCOrderProseStatesNoCounts`). The first version of this gate
-checked only the table, and a reviewer reverted this very sentence to its old
-wrong numbers — `34 AUTHORITIES (52 escape sites)` — with the whole suite still
-green, because the prose was a THIRD ungated copy sitting three lines above the
-claim that there were now only two. A number that exists in one place cannot
-disagree with itself, so the numbers were deleted rather than gated twice.
+Counts are deliberately ABSENT from the prose here.
+`TestFieldDebtRFCOrderProseStatesNoCounts` enforces that by DENYING bare integers
+and count-shaped word-numbers in this section by default, permitting only a
+closed set of non-census forms: source citations, traffic arrows, RFC and CQ
+references, and list markers.
+
+That polarity is the point, and it was reached the hard way. The gate's first
+version was an ALLOWLIST of the count phrasings its author had thought of, which
+is a statement of intent rather than an invariant. It missed a stale bucket size
+sitting in this very section — off by one against the table below — plus a
+producer tally, a decomposition whose parts summed to a table cell, and every
+word-spelled count. An allowlist of shapes you imagined cannot catch the shape
+you did not; deny-by-default can.
+
+Two consequences that would otherwise read as defects. The section states
+DIRECTION (GREW, REOPENED, fell then rose) and names sites rather than tallying
+them; where a magnitude is genuinely wanted it goes in a table, where it is
+checked. And backticks are NOT an exemption — they mark code, not quotation, so a
+live claim wrapped in them would smuggle straight through. The figures from the
+rot this gate was built for live in that test's doc comment, which is Go source
+and cannot drift unnoticed the way this paragraph did.
 
 The table below is CHECKED, not asserted. `TestFieldDebtRFCCensusMatchesTheInstrument`
 (`pkg/docscheck/field_debt_rfc_census_test.go`) parses it and fails the build when
@@ -1024,20 +1038,20 @@ the same fact.
 | TOTAL | 33 | 44 |
 
 The per-bucket authority column sums to MORE than the distinct total, because two
-declarations owe debt in more than one bucket — `deriveColumnsFromProjection`
+declarations owe debt in more than a single bucket — `deriveColumnsFromProjection`
 (dotted + translator) and `groupByOutputBaker` (contract + dotted). That is legal
 and `TestFieldDebtBucketsArePartition` reports the difference rather than
 absorbing it, so it is never mistaken for an arithmetic slip. The magnitudes are
 in the table and in that test's output, not here.
 
-- An **escape** is one site where a name can leave typed context. It must stay
+- An **escape** is a single site where a name can leave typed context. It must stay
   per-site: fix five of six return arms in one switch and the sixth is a live
   hole a coarser entry would report as retired.
 - An **authority** is the declaration that owns it. It is the number that
   answers "how much work remains", because a fix lands on a declaration.
 
 They differ by concentration rather than noise — a handful of authorities carry
-several escapes each and the rest sit at or near 1:1, so a bucket's escape count
+several escapes each and the rest sit at or near one-to-one, so a bucket's escape count
 is not a count of pieces of work, and reading it as such over-states what is
 left. Which authorities, and how many each, is the table below.
 
@@ -1049,7 +1063,7 @@ left. Which authorities, and how many each, is the table below.
 | `deriveColumnsFromProjection` | 4 |
 | `explainValueOrdinals` | 3 |
 
-`AggregateResultColumnName` used to head this table at 6 escapes and is GONE: its
+`AggregateResultColumnName` used to head this table and is GONE: its
 last entry retired and the sentence naming it did not move, which is why
 `TestFieldDebtRFCConcentrationMatchesTheInstrument` now fails on a listed
 authority that carries nothing. The same gate refuses a NEW concentration that
@@ -1084,13 +1098,13 @@ entry's reason, never on the key's form segment.
    declaration index is unproven per producer.
 2. escape (MIGRATED, now empty): key structs; killed the caller-side blindness the gate
    cannot reach.
-3. name-keyed (much reduced): including the 4151 probe-first defect check; 6188 is
+3. name-keyed (much reduced): including the `logical_predicate.go:4151` probe-first defect check; `logical_predicate.go:6188` is
    the same two-Values shape and travels with it. The three that remain are each
    blocked on something outside the bucket — memo interning of lazy carriers,
    constraint-growth coupling in the planner, and resolver-side baking of a
    projection-output reference.
 4. translator (reduced): boundary demonstrations. The allowlist did NOT grow —
-   all eleven remaining sites were read against the two legs and none passes
+   every remaining site was read against the two legs and none passes
    both; two more left by deletion as unreachable.
 5. contract (GREW): the coordinated naming-contract change. It GREW: the
    launderer widening surfaced the readers the original sizing had missed, and
@@ -1119,28 +1133,34 @@ SUB-CHANNEL granularity, not bucket granularity, and two edges run BACKWARDS.
   `explainValueOrdinals` (`contract:`). Its dotted witnesses were EXPLAIN renders
   leaking in through `plans/ordering.go:985`, which re-minted a lazy `FieldValue`
   from a display string while the baked identity sat unread beside it. Fixing
-  that ONE contract-bucket producer took the lazy-render mint class 21865 → 0 and
+  that SINGLE contract-bucket producer took the lazy-render mint class 21865 → 0 and
   the arm's declines 4 → 1, with nothing in `dotted:` touched.
 - `clusterFieldResolvable` / `clusterSeedSlotByName`
-  (`query/clustered_outer_scalar.go`, `dotted:`) compare against strings minted by
-  8 `translator:`-bucket sites (`logical_predicate.go`'s
-  `projCol{name: qual + "." + bare}`). Converting the seed representation alone
+  (`query/clustered_outer_scalar.go`, `dotted:`) compare against strings minted in
+  the `translator:` bucket, by `logical_predicate.go`'s
+  `projCol{name: qual + "." + bare}`. Converting the seed representation alone
   leaves the other side of the comparison translator-produced, so the site does
   not retire.
 
 **The claim holds for one sub-channel, and that is where the leverage is.**
 Killing `rebaseUnnestOuterLegPredicate`'s mint
 (`query/cascades_translator.go:3925`, the merged-QOV leg channel) mechanically
-retires FOUR readers at once: `groupByOutputBaker`'s qualification probe,
-`rebaseOuterLegValueOrdinal`'s default arm, `rebaseOuterLegValue`, and `legRef`.
-That is the single highest-leverage kill in the whole list — one producer, four
-entries — and it is the piece the bucket-level reading obscures, because all five
-sit in the same bucket and look like five independent fixes.
+retires every reader of that channel at once: `groupByOutputBaker`'s
+qualification probe, `rebaseOuterLegValueOrdinal`'s default arm,
+`rebaseOuterLegValue`, and `legRef`. That is the single highest-leverage kill in
+the whole list — a single producer against that whole list of readers — and it is the
+piece the bucket-level reading obscures, because the mint and its readers all sit
+in the same bucket and look like independent fixes.
 
-**Decomposition of the `dotted` authorities** (the count itself is in the census
-table above): 5 downstream of a dotted mint
-(the merged-QOV channel above, plus the group-by alias pair), 2 downstream of
-other buckets (the two reversed edges), 5 independent or self-paired.
+**Decomposition of the `dotted` authorities**, by name rather than by tally, so
+it cannot go stale the way a count does:
+
+- *Downstream of a dotted mint:* the merged-QOV channel's readers listed just
+  above, plus the group-by alias pair (`groupByOutputOrdinals`'s registration and
+  `groupByOutputBaker`'s matching read).
+- *Downstream of another bucket* — the reversed edges: `AccessorNamePath` and the
+  `clusterFieldResolvable` / `clusterSeedSlotByName` pair.
+- *Independent or self-paired:* the remainder.
 
 **The ordering constraint that used to gate all of this is GONE.** The stated
 reason to sequence `dotted` last was a live wrong-rows hazard:

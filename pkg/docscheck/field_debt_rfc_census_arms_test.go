@@ -296,13 +296,44 @@ func TestFieldDebtOrderProseArms(t *testing.T) {
 		prose string
 		want  string
 	}{
-		{"the exact sentence a reviewer reverted", "The residual is 34 AUTHORITIES (52 escape sites).", "34 AUTHORITIES"},
-		{"escape sites alone", "There are 52 escape sites left.", "52 escape sites"},
-		{"a numbered bucket parenthetical", "3. name-keyed (9, was 15): including the probe", "3. name-keyed (9"},
-		{"harness stays at N", "harness stays at 1 and is out of scope.", "stays at 1"},
-		{"concentration claim", "four authorities carry 18 of the 52", "carry 18 of"},
-		{"authority sum", "The column sums to 35 against 33 distinct.", "sums to 35"},
-		{"a bucket that fell to a number", "It fell to 7 as four sites were retagged.", "fell to 7"},
+		{"the exact sentence a reviewer reverted", "The residual is 34 AUTHORITIES (52 escape sites).", "34"},
+		{"escape sites alone", "There are 52 escape sites left.", "52"},
+		{"a numbered bucket parenthetical", "3. name-keyed (9, was 15): including the probe", "9"},
+		{"harness stays at N", "harness stays at 1 and is out of scope.", "1"},
+		{"concentration claim", "four authorities carry 18 of the 52", "18"},
+		{"authority sum", "The column sums to 35 against 33 distinct.", "35"},
+		{"a bucket that fell to a number", "It fell to 7 as sites were retagged.", "7"},
+
+		// The four the ALLOWLIST version missed. Each is here because a
+		// phrasing-based gate could not see it, and deny-by-default can.
+		{
+			"a stale bucket size the allowlist missed entirely",
+			"4. translator (reduced): all eleven remaining sites were read against the two legs",
+			"eleven remaining sites",
+		},
+		{
+			"a producer tally", "compare against strings minted by 8 translator:-bucket sites", "8",
+		},
+		{
+			"a decomposition whose parts sum to a table cell",
+			"5 downstream of a dotted mint, 2 downstream of other buckets, 5 independent",
+			"5",
+		},
+		{
+			"the phrasing the document already used, which no allowlist pattern covered",
+			"AggregateResultColumnName used to head this table at 6 escapes",
+			"6",
+		},
+		{"a word-spelled count of readers", "mechanically retires FOUR readers at once", "FOUR readers"},
+		{"a word-spelled count of entries", "one producer, four entries", "four entries"},
+		{"a word-spelled count of declarations", "two declarations owe debt in two buckets", "two declarations"},
+
+		// Backticks are a costume, not an exemption.
+		{
+			"a live claim smuggled inside backticks",
+			"The residual is `33 authorities` today.",
+			"33",
+		},
 	}
 	for _, tc := range firing {
 		t.Run(tc.name, func(t *testing.T) {
@@ -319,15 +350,20 @@ func TestFieldDebtOrderProseArms(t *testing.T) {
 		name  string
 		prose string
 	}{
-		{
-			"a count quoted in backticks as an example of the rot",
-			"a reviewer reverted it to `34 AUTHORITIES (52 escape sites)` and the suite stayed green",
-		},
 		{"a markdown table row", "| boundary | 1 | 2 |"},
-		{"a source citation", "GroupByExpression.java:754,758 builds Column.unnamedOf"},
-		{"a measured traffic figure", "the mint class went 21865 to 0 and declines 4 to 1"},
+		{"a Java source citation", "GroupByExpression.java:754,758 builds Column.unnamedOf"},
+		{"a Go source citation", "killing the mint at query/cascades_translator.go:3925 retires them"},
+		{"a bare line-range continuation", "MessageHelpers.java:170-175, and :161-167 beside it"},
+		{"a measured traffic arrow", "the mint class went 21865 → 0 and declines 4 → 1"},
 		{"an RFC section reference", "blocked on RFC-204 sec 4.4/4.5"},
+		{"a CQ reference", "blocked on CQ-55 over CQ-56"},
 		{"a shape-only bucket line", "3. name-keyed (much reduced): including the probe"},
+		{"an HTML marker line", "<!-- FIELD-DEBT-CENSUS -->"},
+		{
+			"ordinary prose using a word-number without a census noun",
+			"Two durable homes for one fact is worse than one home.",
+		},
+		{"a fenced code block body", "```\nresidual = 34 authorities\n```"},
 	}
 	for _, tc := range quiet {
 		t.Run(tc.name, func(t *testing.T) {

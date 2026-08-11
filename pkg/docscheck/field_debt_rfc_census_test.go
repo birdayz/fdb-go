@@ -278,56 +278,117 @@ func orderSectionOf(src string) (string, bool) {
 	return rest, true
 }
 
-// fieldDebtProseCountPatterns are the census-claim shapes that must not appear
-// in `## Order` prose. They are deliberately specific: the section legitimately
-// cites line numbers, RFC sections and measured traffic figures, and a blanket
-// "no digits" rule would forbid all of those.
-var fieldDebtProseCountPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\d+\s+authorities\b`),
-	regexp.MustCompile(`(?i)\d+\s+escape sites\b`),
-	regexp.MustCompile(`(?m)^\d+\.\s+[a-z-]+\s+\(\d+`),
-	regexp.MustCompile(`(?i)\bstays at \d+`),
-	regexp.MustCompile(`(?i)\bcarry \d+ of\b`),
-	regexp.MustCompile(`(?i)\bsums to \d+`),
-	regexp.MustCompile(`(?i)\b(?:fell|rose|grew) to \d+`),
+// THE POLARITY HERE IS THE WHOLE DESIGN, and it is deny-by-default because the
+// allowlist version failed.
+//
+// The first version of this gate carried seven regexes naming the count
+// phrasings its author had thought of — `N authorities`, `N escape sites`,
+// `stays at N`, and so on. That is a statement of intent, not an invariant: it
+// can only ever catch shapes somebody anticipated. It missed four live claims in
+// the very section it was built to protect, including a bucket size off by one
+// against the table three screens above it, and a phrasing (`6 escapes`) the
+// document already used one line below the concentration table.
+//
+// So: any BARE INTEGER in `## Order` prose is a violation unless it matches one
+// of the closed exemptions below, and count-shaped word-numbers get their own
+// check. The exemptions are non-census forms the section legitimately needs —
+// source citations, traffic arrows, RFC/CQ references, markdown list markers.
+// Adding an exemption is a deliberate act; failing to imagine a phrasing is not.
+
+// fieldDebtProseNumericExemptions are the non-census numeric forms permitted in
+// `## Order` prose. They are STRIPPED before the bare-integer scan, so anything
+// left carrying a digit is a count claim.
+var fieldDebtProseNumericExemptions = []*regexp.Regexp{
+	// Source citations: `cascades_translator.go:3925`, `FieldValue.java:272-300`,
+	// `GroupByExpression.java:754,758`, and bare `:161-167` continuations.
+	regexp.MustCompile(`[\w./-]+\.(?:go|java|g4|md|proto):\d+(?:[-,:]\d+)*`),
+	regexp.MustCompile(`:\d+(?:[-,]\d+)*`),
+	// Design-doc references: RFC-197, CQ-53, `sec 4.4/4.5`.
+	regexp.MustCompile(`\b(?:RFC|CQ)-\d+`),
+	regexp.MustCompile(`(?i)\bsec\.?\s*\d+(?:\.\d+)*(?:/\d+(?:\.\d+)*)*`),
+	// Measured traffic arrows: `21865 → 0`, `4 → 1`.
+	regexp.MustCompile(`\d+\s*(?:→|->)\s*\d+`),
+	// Markdown ordered-list markers at line start.
+	regexp.MustCompile(`(?m)^\s*\d+\.\s`),
 }
 
-// stripMarkdownCode removes fenced blocks, table rows and inline code spans.
-// A count QUOTED as an example of the rot — `34 AUTHORITIES (52 escape sites)` —
-// is documentation of a past failure, not a live claim, and lives in backticks.
-func stripMarkdownCode(s string) string {
+// fieldDebtProseWordCount catches counts spelled as words in front of a census
+// noun. It is deliberately noun-anchored: `two durable homes for one fact` is
+// ordinary prose, while `four entries` and `two declarations` are census claims.
+var fieldDebtProseWordCount = regexp.MustCompile(
+	`(?i)\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+` +
+		// Intervening adjectives, because the count and its noun are not always
+		// adjacent: `all eleven REMAINING sites` is the exact claim that shipped.
+		`(?:[a-z][a-z-]*\s+){0,2}` +
+		`(readers?|entries|entry|sites?|authorities|authority|escapes?|buckets?|declarations?|mints?|producers?)\b`)
+
+// fieldDebtProseScannable strips the parts of a section that are NOT prose: the
+// gated table rows, HTML comment markers, and fenced code blocks.
+//
+// Fence tracking spans lines, which the earlier version's doc comment claimed
+// and its code did not do (it reset state per line, so a fence body passed
+// straight through). Harmless at the time — the section has no fences — but a
+// comment asserting behaviour the code lacks is exactly what this file exists to
+// catch, so the function now does what it says.
+//
+// INLINE BACKTICKS ARE DELIBERATELY NOT STRIPPED. Backticks mark code, not
+// quotation, so `the residual is 33 authorities` is a live claim wearing a
+// costume; exempting them would reopen the hole by another door. Citations
+// inside backticks are already covered by the exemptions above.
+func fieldDebtProseScannable(s string) string {
 	var b strings.Builder
+	inFence := false
 	for _, ln := range strings.Split(s, "\n") {
 		t := strings.TrimSpace(ln)
-		if strings.HasPrefix(t, "|") || strings.HasPrefix(t, "<!--") {
+		if strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") {
+			inFence = !inFence
 			continue
 		}
-		inCode := false
-		for _, r := range ln {
-			if r == '`' {
-				inCode = !inCode
-				continue
-			}
-			if !inCode {
-				b.WriteRune(r)
-			}
+		if inFence || strings.HasPrefix(t, "|") || strings.HasPrefix(t, "<!--") {
+			continue
 		}
+		b.WriteString(ln)
 		b.WriteByte('\n')
 	}
 	return b.String()
 }
 
+var fieldDebtBareInteger = regexp.MustCompile(`\d+`)
+
 // checkOrderProseHasNoCounts is the arm that closes the third-copy hole.
 func checkOrderProseHasNoCounts(section string) []string {
-	prose := stripMarkdownCode(section)
+	prose := fieldDebtProseScannable(section)
+	for _, re := range fieldDebtProseNumericExemptions {
+		prose = re.ReplaceAllString(prose, " ")
+	}
+
+	seen := map[string]bool{}
 	var problems []string
-	for _, re := range fieldDebtProseCountPatterns {
-		for _, m := range re.FindAllString(prose, -1) {
-			problems = append(problems, fmt.Sprintf(
-				"`## Order` prose states a census count: %q. The tables are the only home "+
-					"for these numbers — prose copies cannot be checked and have already "+
-					"rotted once. State the shape (GREW, REOPENED) and let the table carry "+
-					"the magnitude.", strings.TrimSpace(m)))
+	add := func(kind, match, line string) {
+		key := kind + "\x00" + match + "\x00" + line
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		problems = append(problems, fmt.Sprintf(
+			"`## Order` prose states a census count (%s): %q, in: %q. The tables are the "+
+				"only home for these numbers — prose copies cannot be checked and have "+
+				"already rotted. State the shape (GREW, REOPENED) or name the sites, and "+
+				"let the table carry the magnitude. If this is a non-census number, add its "+
+				"form to fieldDebtProseNumericExemptions deliberately.",
+			kind, match, line))
+	}
+
+	for _, ln := range strings.Split(prose, "\n") {
+		trimmed := strings.TrimSpace(ln)
+		if trimmed == "" {
+			continue
+		}
+		for _, m := range fieldDebtBareInteger.FindAllString(ln, -1) {
+			add("bare integer", m, trimmed)
+		}
+		for _, m := range fieldDebtProseWordCount.FindAllString(ln, -1) {
+			add("word-spelled count", strings.TrimSpace(m), trimmed)
 		}
 	}
 	sort.Strings(problems)
@@ -409,6 +470,7 @@ func TestFieldDebtRFCOrderProseStatesNoCounts(t *testing.T) {
 	for _, p := range checkOrderProseHasNoCounts(section) {
 		t.Error(p)
 	}
-	t.Logf("RFC-197 ORDER PROSE GATE: %d bytes of prose checked against %d count patterns",
-		len(section), len(fieldDebtProseCountPatterns))
+	t.Logf("RFC-197 ORDER PROSE GATE: %d bytes scanned deny-by-default, %d numeric "+
+		"exemption form(s) permitted",
+		len(section), len(fieldDebtProseNumericExemptions))
 }
