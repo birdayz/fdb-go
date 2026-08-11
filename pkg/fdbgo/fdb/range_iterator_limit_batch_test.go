@@ -86,12 +86,21 @@ func drainClientBatches(t *testing.T, db gofdb.Database, begin, end string, opts
 // to return the prefix would make EXACT multi-fetch the same afternoon. Nothing pins those
 // sites, which is exactly why this test asserts the emergent property directly.
 //
-// WHAT RE-ARMS THIS: EXACT taking more than one batch means a byte-dimension ROW budget now
-// reaches the iterator (a GetRangeLimits{rows,bytes} port, per the batchSize ITERATOR note), or
-// one of the sites above started returning partial results. At that point EXACT's batch
-// DIVISION becomes observable behaviour for which libfdb_c is the spec, and a final row-set
-// comparison against the C client stops being sufficient — a per-batch differential becomes
-// required. This test failing is that signal.
+// THIS MATCHES libfdb_c — it is not a Go quirk being documented. C's EXACT is single-API-batch
+// for the same reason: mode_bytes_array[EXACT] is BYTE_LIMIT_UNLIMITED (bindings/c/fdb_c.cpp:1002),
+// so EXACT carries no byte target, and C++'s getRange absorbs a byte-capped short reply and
+// re-queries rather than returning it — it stops only on limits.isReached()
+// (NativeAPI.actor.cpp:4761, :4814), which for EXACT means the ROW budget alone.
+// Measured through libfdbc.CGetRangeBatch over 97 KB of rows against an 80000-byte reply cap
+// (libfdbc:TestLibFDBC_ExactModeAbsorbsByteCappedReplies): ONE C call with EXACT limit=100
+// returns all 100 rows, where SERIAL and WANT_ALL stop at 78 and SMALL at 1.
+//
+// WHAT RE-ARMS THIS: one of the sites above starting to return partial results. NOT the
+// byte-dimension port booked in TODO.md Phase 12 — an earlier version of this note claimed a
+// byte budget would make EXACT multi-fetch, and that is wrong: EXACT's entry in the C table is
+// UNLIMITED, so porting the table leaves EXACT row-bounded and single-batch. The claim was
+// prose asserting a behaviour the code does not have, which is the failure this repo pays for
+// most often, so it is corrected here rather than softened.
 func TestRangeIterator_ExactModeIsStructurallySingleBatch(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)

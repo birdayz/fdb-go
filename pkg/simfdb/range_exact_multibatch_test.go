@@ -83,11 +83,16 @@ func seedRows(t *testing.T, db *SimDB, prefix string, n int) {
 // immediately. None of those sites is pinned, which is why this asserts the emergent property
 // directly rather than trusting it to hold.
 //
-// WHAT RE-ARMS THIS: if EXACT ever takes more than one batch, a byte-dimension budget has
-// been introduced (a GetRangeLimits{rows,bytes} port, per the batchSize ITERATOR note), and
-// EXACT's batch DIVISION becomes observable behaviour that libfdb_c is the spec for. At that
-// point a final-row-set comparison against the C client is no longer sufficient and a
-// per-batch differential is required. This test failing is that signal, not a nuisance.
+// THIS MATCHES libfdb_c. C's EXACT is single-API-batch too: mode_bytes_array[EXACT] is
+// BYTE_LIMIT_UNLIMITED (bindings/c/fdb_c.cpp:1002), so EXACT carries no byte target, and
+// C++'s getRange absorbs a byte-capped short reply and re-queries rather than returning it,
+// stopping only on limits.isReached() (NativeAPI.actor.cpp:4761, :4814) — for EXACT, the ROW
+// budget alone. Measured in libfdbc:TestLibFDBC_ExactModeAbsorbsByteCappedReplies.
+//
+// WHAT RE-ARMS THIS: one of the sites above starting to return partial results. NOT the
+// byte-dimension port booked in TODO.md Phase 12 — an earlier version of this note claimed a
+// byte budget would make EXACT multi-fetch, and that is wrong: EXACT's entry in the C table is
+// UNLIMITED, so porting the table leaves EXACT row-bounded and single-batch.
 func TestExactModeIsStructurallySingleBatch(t *testing.T) {
 	t.Parallel()
 	db := New(nil)
