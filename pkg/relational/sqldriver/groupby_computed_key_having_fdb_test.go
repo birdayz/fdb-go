@@ -62,6 +62,19 @@ import (
 //     where Java raises; nothing can present two matching keys because the
 //     duplicate-key gate decides identity with the SAME predicate. The arm pins
 //     the refusal that makes it unreachable and names what re-arms it.
+//
+// THREE FURTHER ARMS COVER THE NESTED ROUTE, which is a DIFFERENT walk. RFC-230
+// retired the refusal that made a nested path unusable as a grouping key, so
+// `GROUP BY r.v.z HAVING r.v.z > 120` became constructible at the same moment
+// this file's fix changed how a re-read key binds; the two shapes had never run
+// together. A nested key resolves to a fused multi-accessor FieldValue, so it is
+// bound by the SIBLING FieldValue walk rather than by the computed walk the nine
+// arms above drive — a route those arms cannot speak for. All three were
+// measured CORRECT on first run; they are pins, not fixes. The duplicate arm is
+// the sharpest of them: on the nested route the duplicate gate and the rebase
+// matcher decide identity by DIFFERENT predicates (a string compare vs semantic
+// equality), so the interlock that is structural for computed keys is only
+// measured for nested ones.
 func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -295,5 +308,129 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 			2, "[[101 203]]", slotHint)
 		eq(t, "SELECT max(q.s) FROM nested GROUP BY COALESCE(r.v.z, 0) "+
 			"HAVING COALESCE(r.v.z, 0) > 120 AND max(q.s) > 250", 1, "[[330]]", slotHint)
+	})
+
+	// THE THREE ARMS BELOW PIN A COMPOSITION NEITHER CHANGE COULD TEST. A NESTED
+	// path is only usable as a grouping key since RFC-230 retired the
+	// `0AF00 grouping by the nested field %q is not supported` refusal and
+	// replaced it with the struct-descent arm in upgradeAggregateOperands. So a
+	// nested key re-read in HAVING became constructible at the same moment this
+	// file's fix changed how a re-read key binds — and the two met without ever
+	// having been run together.
+	//
+	// ALL THREE WERE MEASURED CORRECT ON FIRST RUN; nothing here fixes anything.
+	// They are pinned because "correct today, untested" is the state a later
+	// change breaks silently, and because a nested key reaches the binder by a
+	// DIFFERENT route than the computed key this file was written for: it is a
+	// FieldValue, so it is the SIBLING walk's business, not
+	// rebasePostAggregateComputedGroupKey's. A file whose nine other arms all
+	// drive the computed walk cannot speak for the FieldValue walk over a fused
+	// multi-accessor root, which is the one shape that walk never saw before.
+
+	t.Run("a_nested_bare_key_reread_in_having_binds_its_own_slot", func(t *testing.T) {
+		// The wrong-slot signature here is LOUD rather than silent, and the
+		// reason is the same luck the nested computed arm above turns on: the
+		// fused root R carries input ordinal 2 over [ID Q R] while the output
+		// row [R.V.Z, MAX(Q.S)] is 2 wide, so an unbound read is out of range
+		// and the executor refuses. Asserting VALUES rather than absence-of-
+		// error is still what this arm does, because an out-of-range read is
+		// only one of the two ways it can be wrong — binding the AGGREGATE's
+		// slot would answer, with contradictory rows.
+		//
+		// Java answers these: the vendored corpus pins
+		// `select max(q.s) from nested group by r.v.z having r.v.z > 120` at
+		// `[{330}]` (groupby-tests.yamsql), which is the first assertion below.
+		const why = "a NESTED bare grouping key must bind the aggregate output slot it " +
+			"occupies. Its fused root carries input ordinal 2 over [ID Q R]; the output " +
+			"row is [R.V.Z, MAX(Q.S)]."
+		eq(t, "SELECT max(q.s) FROM nested GROUP BY r.v.z HAVING r.v.z > 120", 1, "[[330]]", why)
+		// The mirrored direction, for the reason the flat arms carry it: an arm
+		// that only over-admits cannot tell a wrong slot from a dropped predicate.
+		eq(t, "SELECT max(q.s) FROM nested GROUP BY r.v.z HAVING r.v.z < 120", 1, "[[203]]", why)
+		// Key and predicate in ONE result set, so no reading of the data can
+		// make a wrong binding look correct.
+		eq(t, "SELECT r.v.z, max(q.s) FROM nested GROUP BY r.v.z HAVING r.v.z > 120",
+			2, "[[140 330]]", why)
+	})
+
+	t.Run("a_nested_key_in_a_nonzero_slot", func(t *testing.T) {
+		// The slot-index axis for the NESTED route. two_computed_keys… above
+		// establishes why this axis is necessary at all — a single-key arm
+		// cannot tell the recorded loop index from a hardcoded 0 — but it drives
+		// the computed walk only. This drives the FieldValue walk with a nested
+		// key at index 1.
+		//
+		// Groups are the eight (q.t + 1, r.v.z) pairs: q.t is 1..8 and r.v.z is
+		// 100 for ids 1-4, 140 for ids 5-8.
+		//
+		// The comparands are chosen so neither answer is reproducible from the
+		// other slot, which the obvious fixture does NOT give you:
+		//   r.v.z > 120  -> the four 140 groups; on slot 0 (2..9) it is empty.
+		//   q.t + 1 > 4  -> five groups, and it CROSSES the r.v.z boundary
+		//                   (one 100 group and all four 140 groups), so no
+		//                   predicate evaluated against slot 1 can produce it.
+		const slotIdx = "This arm pins the SLOT INDEX for a NESTED key. Reading the other " +
+			"grouping key's slot changes this answer, which separates the recorded loop " +
+			"index from a hardcoded 0."
+		eq(t, "SELECT q.t + 1, r.v.z, max(q.s) FROM nested GROUP BY q.t + 1, r.v.z HAVING r.v.z > 120",
+			3, "[[6 140 330] [7 140 329] [8 140 328] [9 140 327]]", slotIdx)
+		eq(t, "SELECT q.t + 1, r.v.z, max(q.s) FROM nested GROUP BY q.t + 1, r.v.z HAVING q.t + 1 > 4",
+			3, "[[5 100 203] [6 140 330] [7 140 329] [8 140 328] [9 140 327]]", slotIdx)
+	})
+
+	t.Run("a_duplicate_nested_key_is_refused_before_the_rebase", func(t *testing.T) {
+		// The nested half of the negative result above — and it does NOT hold
+		// for the same reason, which is the point of asserting it separately
+		// rather than assuming the flat argument covers it.
+		//
+		// THE TWO GATES ARE DIFFERENT PREDICATES. For a COMPUTED key the
+		// duplicate gate resolves both keys and compares them with
+		// values.SemanticEqualsUnderAliasMap — the SAME predicate
+		// rebasePostAggregateComputedGroupKey matches with, which is what makes
+		// that arm's interlock airtight. A NESTED key has a non-empty Bare, so
+		// it takes the gate's `default` branch instead: groupKeysEquivalent, a
+		// STRING comparison over the normalized (Bare, Qualified, Qualifier)
+		// triple (plan_visitor.go). Meanwhile the SIBLING walk that binds it
+		// matches with SemanticEqualsUnderAliasMap. So on this route the two
+		// sites decide identity by different means, and the interlock is a
+		// MEASURED fact rather than a structural one.
+		//
+		// Measured: every spelling below is refused 42702 before reaching the
+		// rebase, including the ones whose qualifier text differs (`r.v.z` vs
+		// `nested.r.v.z` vs the alias `a.r.v.z`) — so the normalization behind
+		// groupKeysEquivalent is peeling the source name before comparing.
+		//
+		// WHAT RE-ARMS THE HAZARD: a semantic twin whose normalized (Bare,
+		// Qualifier) pair differs. That would slip the string gate while still
+		// matching the walk's semantic predicate, and Go would silently bind the
+		// FIRST key where Java's pull-up raises AMBIGUOUS_COLUMN
+		// (Iterables.getOnlyElement / Expressions.java:112). Both keys being
+		// semantically equal means the ROWS would still be right — the
+		// divergence is that Java errors and Go answers. If a spelling is ever
+		// found that plans, this arm must become the assertion that Go raises
+		// too, and the string gate must be converted to the semantic one.
+		for _, q := range []string{
+			"SELECT max(q.s) FROM nested GROUP BY r.v.z, r.v.z HAVING r.v.z > 120",
+			"SELECT max(q.s) FROM nested GROUP BY r.v.z, r.v.z",
+			"SELECT max(q.s) FROM nested GROUP BY r.v.z, nested.r.v.z HAVING r.v.z > 120",
+			"SELECT max(q.s) FROM nested AS a GROUP BY a.r.v.z, r.v.z HAVING r.v.z > 120",
+			"SELECT r.v.z, nested.r.v.z, max(q.s) FROM nested GROUP BY r.v.z, nested.r.v.z",
+		} {
+			_, err := db.QueryContext(ctx, q)
+			if err == nil {
+				t.Fatalf("%s now PLANS.\n"+
+					"  Two semantically equal NESTED keys reaching the rebase makes the "+
+					"sibling FieldValue walk's first-match loop able to choose a slot "+
+					"silently, where Java raises AMBIGUOUS_COLUMN. Either restore the "+
+					"refusal or make the rebase raise on a multi-match.", q)
+			}
+			if !strings.Contains(err.Error(), "42702") {
+				t.Fatalf("%s: got %v, want 42702.\n"+
+					"  The CODE is the point: this must be the duplicate-grouping-key "+
+					"refusal (Java's AMBIGUOUS_COLUMN), not an unrelated rejection that "+
+					"happens to keep the shape away from the rebase — and in particular "+
+					"not the 0AF00 nested-key refusal RFC-230 retired.", q, err)
+			}
+		}
 	})
 }
