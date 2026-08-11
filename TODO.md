@@ -16583,15 +16583,50 @@ None is speculative: each was re-verified against the tree before booking.
   - `fdbclient/ClientKnobs.cpp:66` — `REPLY_BYTE_LIMIT` 80000 is the per-REPLY
     CEILING, not the per-mode target. Conflating the two is the present bug:
     `client/readpath.go:1102` sends the ceiling as the limit for every mode.
-  WHAT WILL NOT WORK, measured so nobody repeats it: setting `LimitBytes` per mode
-  on the request changes NOTHING observable. `rangeScanImpl` absorbs a truncated
-  reply and re-queries the same shard until the ROW budget is filled, so the
-  request's byte limit never reaches the division. Dropping `replyByteLimit` from
-  80000 to 256 — below SMALL's own target — left every division byte-for-byte
-  identical. The division is decided by the LOOP TERMINATION CONDITION, which is
-  why the port has to reach `rangeScanImpl` and `batchSize`, not the request
-  builder. C++ has the same absorbing loop; the only difference is that its
-  `limits` carries bytes (`NativeAPI.actor.cpp:4761`, `:4814`).
+  WHAT A REQUEST-ONLY CHANGE WILL NOT DO, measured so nobody repeats it: setting
+  `LimitBytes` per mode on the request, BY ITSELF, changes nothing observable.
+  `rangeScanImpl` absorbs a truncated reply and re-queries the same shard until the
+  ROW budget is filled, so the request's byte limit never reaches the division.
+  Dropping `replyByteLimit` from 80000 to 256 — below SMALL's own target — left
+  every division byte-for-byte identical.
+  BUT THE CONCLUSION FIRST DRAWN FROM THAT — "so the port must reach
+  `rangeScanImpl` and `batchSize`, NOT the request builder" — IS REFUTED, and the
+  refutation is pinned by `libfdbc:TestLibFDBC_ByteTargetCutIsNotTheClientSideBudget`.
+  The request half is not optional; it is where the boundary is actually chosen.
+  C++ applies the budget in TWO cooperating places, and the port needs both:
+  1. ON THE REQUEST. `transformRangeLimits` (`NativeAPI.actor.cpp:4223`) sets
+     `req.limitBytes = min(REPLY_BYTE_LIMIT, limits.bytes)`, and it is called from
+     BOTH range loops — `getExactRange:4299` and `getRange:4681`. The STORAGE
+     SERVER truncates the reply there, and the server's own reply-size accounting
+     is what fixes the batch boundary.
+  2. IN THE LOOP, only to END the call — the soft byte limit at
+     `getExactRange:4415`, `if (limits.hasSatisfiedMinRows() && output.size() > 0)`.
+     `hasSatisfiedMinRows() = hasByteLimit() && minRows == 0` (`:2875`) and
+     `minRows` starts at 1 (`FDBTypes.h` `GetRangeLimits` ctor), so ANY non-empty
+     reply satisfies it. With a byte target set, one range call is exactly ONE
+     server reply. `isReached()` is NOT what divides these batches.
+  WHY IT MATTERS RATHER THAN BEING A REFRAMING: the two rules round opposite ways.
+  A client-side budget over an untruncated reply stops at the first row that drives
+  the budget to zero (overshooting the target); the server stops at what fits.
+  MEASURED over 60 rows of 200 bytes (12-byte keys, so 8+key+value = 220/row),
+  sweeping `target_bytes` explicitly through one raw `fdb_transaction_get_range`:
+  ```
+  target_bytes  libfdb_c first batch   loop-only client-side model
+  256           2                      2
+  1000          5                      5
+  4096          18                     19   <- disagree
+  8192          35                     38   <- disagree
+  ```
+  A loop-only port is off by one at LARGE's own 4096 target and by three at 8192.
+  So Go cannot reproduce C's boundary by MODELLING it — the server's accounting is
+  not the client's. It must send the same per-mode `LimitBytes` and let the same
+  storage server apply the same rule. This makes the port SMALLER than booked, not
+  larger: no per-row `decrement` budget threaded through five layers, just the
+  per-mode target on the request plus "stop after the first non-empty reply when a
+  byte limit is set".
+  This also explains EXACT for free, rather than as a special case: `mode_bytes_array[EXACT]`
+  is UNLIMITED, so `hasByteLimit()` is false, so the soft-byte-limit early return
+  can never fire and the loop absorbs across replies exactly as it does today.
   EXACT IS UNAFFECTED and must stay single-batch: `mode_bytes_array[EXACT]` is
   UNLIMITED, so EXACT has no byte target and remains row-bounded. C behaves the
   same (measured: one call returns all 100 rows across 97 KB). If this port makes
@@ -16646,7 +16681,11 @@ None is speculative: each was re-verified against the tree before booking.
     `libfdbc:TestLibFDBC_RangeBatchDivision` (C's division per mode) and
     `fdb:TestRangeIterator_DivisionIsRowDrivenNotByteDriven` (Go's, asserted as
     row-driven and size-invariant, which is the divergence stated as currently-true).
-  - [ ] PORT, server path — byte budget into `rangeScanImpl`'s loop termination.
+  - [ ] PORT, server path — per-mode `target_bytes` onto the request's `LimitBytes`
+    (`min` with `replyByteLimit`), PLUS the soft-byte-limit early return in
+    `rangeScanImpl` so a byte-limited call stops after the first non-empty reply
+    instead of absorbing and re-querying. BOTH halves, per the refutation above;
+    the loop half alone divides LARGE as 19 where C divides it 18.
   - [ ] PORT, RYW path — byte accounting into the merge helpers, guarded by the
     differential above.
   NOTHING IN THE PORT IS STARTED. The two landed items are test-only; no production
