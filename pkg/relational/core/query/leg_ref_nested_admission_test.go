@@ -356,17 +356,28 @@ func TestClassifyLegConjunct_SeesANestedBoxLegDescent(t *testing.T) {
 // the walk, so a nested descent never reaches the legRef call below it.
 //
 // THIS IS A DELIBERATE NARROWNESS, NOT AN OVERSIGHT, and the pin exists because
-// the two are indistinguishable from the outside. The walk resolves ONE name and
-// bakes a one-step address; for a nested descent that name is the ROOT column,
-// so admitting it without also fusing the suffix would bake the address of the
-// enclosing struct and drop the descent — wrong rows, exactly the silent half of
-// the defect the bake's own fix had to avoid.
+// the two are indistinguishable from the outside. The walk resolves ONE name
+// (w.Typ.FieldIndexUnique(fv.Field)) and bakes a one-step address from it. TWO
+// separate things go wrong if a nested descent is admitted without changing that
+// code, and the FIRST is the one that is easy to miss:
+//
+//   - fv.Field is the LEAF's name, not the root's. A fused nested value carries
+//     ONE name and it is the leaf's (RFC-231; fuseNestedAccessors sets
+//     out.Field = leaf.Name), so the lookup does not resolve the struct the path
+//     starts at — it resolves whatever flat column of the leg happens to share
+//     the leaf's spelling. On `nt(id, sk, n gst)` with `gst(sk, …)`, `m.n.sk`
+//     resolves to the top-level SK. A real column, a valid ordinal, the wrong
+//     one, and no ordinal check downstream can reject it.
+//   - even with the root resolved correctly, the address reaches the enclosing
+//     STRUCT and the descent is still dropped.
 //
 // WHAT RE-ARMS IF THIS GOES GREEN THE OTHER WAY: widening the guard to legRef's
-// own predicate (RootIsLegRelativeUnpinned) without landing the fuse beneath it
-// at the same time. If you widen it, this pin must be REPLACED by one asserting
-// the fused two-step address, not deleted — a deleted pin is how the halfway
-// state ships.
+// own predicate (RootIsLegRelativeUnpinned) without ALSO doing both of the
+// above. Widening needs the root derived from Accessors[0] (legRefRootInWindow
+// is that resolver) AND the fuse of Accessors[1:]. Doing only the fuse is the
+// wrong-slot read; doing only the root derivation drops the descent. If you
+// widen it, this pin must be REPLACED by one asserting the fused two-step
+// address, not deleted — a deleted pin is how the halfway state ships.
 func TestRebaseLegRefsToBox_DeclinesANestedDescent(t *testing.T) {
 	t.Parallel()
 
