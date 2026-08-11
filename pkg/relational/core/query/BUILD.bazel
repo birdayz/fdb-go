@@ -39,6 +39,7 @@ go_test(
         "aggregate_ordering_identity_test.go",
         "aggregate_output_ordinal_leaf_collision_test.go",
         "bake_ordinal_domain_test.go",
+        "bake_segmented_nested_guard_test.go",
         "box_conjunct_test.go",
         "cascades_translator_test.go",
         "chained_spine_seed_test.go",
