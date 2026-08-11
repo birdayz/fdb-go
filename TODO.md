@@ -17020,3 +17020,204 @@ None is speculative: each was re-verified against the tree before booking.
   DONE: the wrong-rows half is fixed upstream. This entry closes when the scope
   divergence is fixed and the element bake/net are corrected in the same change,
   with the sentinel converted to a row assertion.
+- [ ] **The duplicate-GROUP-BY-key gate and the post-aggregate rebase decide key
+  identity by DIFFERENT predicates, so two semantically-equal grouping keys reach
+  a first-match loop and Go answers where Java raises** · M · found while folding
+  review conditions on PR #723 · **query-engine change — needs a Graefe ACK and
+  its own RFC before merge**
+
+  Two sites must agree on "are these the same grouping key" and do not. The gate
+  (`plan_visitor.go`, `visitSelectGroupBy`) refuses duplicates with 42702; the
+  post-aggregate rebase (`logical_predicate.go`, `rebasePostAggregateGroupKeyValue`
+  and `rebasePostAggregateComputedGroupKey`) binds a re-read key by taking the
+  FIRST matching key. When the gate says "different" and the rebase's semantic
+  matcher says "same", the loop silently picks a slot where Java stops.
+
+  BOTH ROUTES ARE AFFECTED, by different mechanisms, and both are MEASURED:
+
+  1. NESTED / name-keyed route. `plan_visitor.go:1402` gates the alias strip on
+     `len(fs.joins) == 0`, so under a JOIN the normalization is off and
+     `groupKeysEquivalent` compares unequal `(Bare, Qualifier)` pairs:
+     - `SELECT a.r.v.z, r.v.z, max(a.q.s) FROM nested a JOIN flat b ON a.id = b.id
+       GROUP BY a.r.v.z, r.v.z` -> `[[100 100 203] [140 140 330]]`
+     - `SELECT max(b.c2) FROM nested a JOIN flat b ON a.id = b.id
+       GROUP BY b.c1, c1 HAVING c1 > 120` -> `[[330]]`
+     The FLAT twin diverging identically is what proves this is PRE-EXISTING and
+     NOT nested-specific — it must not be mis-attributed to RFC-230.
+
+  2. COMPUTED / expression route. The gate's semantic arm needs both keys to
+     resolve through `Resolver.WalkExpression` (`posPredicate`), which is strictly
+     weaker than the `WalkExpressionForProjection` (`posProjection`) that MINTS
+     `GroupKey.Value` — only the latter folds a comparison. Measured with the gate
+     instrumented:
+     - `GROUP BY (c1 = 1), c1 = 1` — both gate walks fail
+       (`unsupported shape: *antlrgen.BinaryComparisonPredicateContext`), identity
+       falls to a `GetText` token compare, and the parentheses defeat it.
+     - `GROUP BY (c1 + 1), c1 + 1` — both gate walks SUCCEED, so the semantic arm
+       runs, and it STILL returns false: `(c1 + 1)` resolves to a
+       `RecordConstructorValue` wrapping the arithmetic that `c1 + 1` resolves to
+       bare. One expression, two Value types.
+
+  THE NON-UNWRAP IS CORRECT AND MUST NOT BE "FIXED". Java's
+  `visitRecordConstructor` does not unwrap a one-element constructor either
+  (`ExpressionVisitor.java:918-925`), which is precisely why
+  `walkRecordConstructorInner` does not — unwrapping in the walk collapses the
+  projection case and REINTRODUCES a divergence Go already closed. Beware
+  `walk.go:37`: its summary list still says "1-element unnamed → unwrap", stale
+  prose contradicting the function it summarizes at `walk.go:1479-1494`.
+
+  DELETE THAT LINE AS PART OF STEP 2 — it is not open-ended cleanup and must not
+  outlive this item. It was left untouched deliberately while #723 was in flight,
+  because editing another package's comment would have forfeited that PR's
+  "pure addition, cannot have widened a pre-existing divergence" property for
+  cosmetics. That reason expires the moment this item is worked. The line has
+  already misled one review chain into proposing a "fix" that would have
+  REINTRODUCED a divergence Go closed; leaving it is leaving the trap armed.
+
+  JAVA REFUSES ANYWAY — MEASURED, and this is the fact the whole entry rests on.
+  The natural inference from the paragraph above is that Java sees the same
+  wrapper asymmetry and also declines to refuse, i.e. that Go is CONFORMANT and
+  this route is not a divergence at all. That inference is wrong, and only the
+  live JVM could settle it. `conformance/duplicate_groupby_java_probe_test.go`
+  (`paren_twin_aggonly`, `paren_twin_proj`, `paren_twin_having`, `cmp_twin`)
+  measures Java at tag 4.12.11.0 refusing all four:
+
+      GROUP BY (amount+1), amount+1  ->  java: Ambiguous columns for
+                                           q...._0.AMOUNT + @c12   | go: PLANS
+      GROUP BY (amount=1), amount=1  ->  java: Ambiguous columns for
+                                           q...._0.AMOUNT equals @c12 | go: PLANS
+
+  Java's message names the UNWRAPPED arithmetic, which says how its guard works:
+  `Expressions.pullUp` compares FieldPath DERIVATIONS and descends THROUGH the
+  record wrapper, finding the same derivation twice. Both engines build the
+  wrapper; only Java's guard looks past it. The probe also pins the controls
+  (`paren_both_sides`, `cmp_same_text`) where Go DOES refuse, so the hole is
+  the mixed spelling and not the gate as a whole.
+
+  BOTH ROUTES ARE NOW DIRECTLY MEASURED, separately, and neither leans on the
+  other's credibility. Route 1's own JOIN spelling was initially left to the
+  single-source analogue (`dup_qualified_vs_bare`); that gap is closed —
+  `join_qualified_vs_bare` measures Java refusing `... JOIN ... GROUP BY
+  a.amount, amount` with `Ambiguous columns for q...._0.AMOUNT` while Go plans
+  it, and `join_control_single_source` measures BOTH refusing the same key
+  without the join, which is the alias strip working when it is switched on. The
+  probe deliberately groups by `amount` (declared only by T_G1) rather than
+  `category` (declared by both), so the bare reference is unambiguous and cannot
+  be refused for a reason unrelated to duplication.
+
+  THE BOUND, and it is why this is not an emergency: rows are ARITHMETICALLY
+  CORRECT in every measured case. Two semantically-equal keys hold identical
+  values in their two output slots, so binding either answers correctly. This is a
+  CONFORMANCE divergence, not wrong rows.
+
+  WHAT CURRENTLY KEEPS THE LOOP SINGLE-MATCHED, and the direction-asymmetric trap
+  in changing it. The rebase loop instruments to `matches=1` for every query here,
+  because the same wrapper mismatch that defeats the gate also keeps the two keys
+  distinguishable at the loop. For the ARITHMETIC pair no normalization can arm
+  it: `walkAtom` dispatches RecordConstructor identically in both positions, so
+  any unwrap makes the GATE refuse before the loop. The COMPARISON pair is the
+  hazard, because its gate failure is independent of the wrapper. Directions:
+
+      unwrap in WalkExpressionForProjection ONLY -> gate still sees RCV vs AV and
+        does not refuse, GroupKeys becomes [AV, AV], reference matches BOTH: ARMED
+      unwrap in WalkExpression ONLY (the gate's walk) -> gate sees AV vs AV: SAFE
+      unwrap in both, or beneath both                                     : SAFE
+
+  The projection walk mints the planner's value, so it is where someone would
+  naturally change it — the naive fix lands on the dangerous side by default.
+
+  JAVA'S SIDE differs by clause and a fix must not flatten it: `Expressions.java:112`
+  asserts `size() == 1` with `AMBIGUOUS_COLUMN`, its message verbatim the Go
+  wording at `plan_visitor.go:1492`; `Expression.java:246` is a BARE
+  `Iterables.getOnlyElement` with no assert. Only the PROJECTED half spends that
+  SQLSTATE.
+
+  THE FIX IS TWO INDEPENDENT STEPS, AND THE FIRST IS SMALL. An earlier revision of
+  this entry described one coupled change with "affects every GROUP BY shape"
+  blast radius; that was wrong and would have got this deferred as though it were
+  the big one.
+
+  THE ERROR SHAPE THAT PRODUCED THIS ITEM, recorded because it will recur here
+  and because it is what makes the entry above worth its length. Every wrong
+  claim in this item's history — five collapsed "structural interlock" arguments
+  in the Go comments, and two separate review hypotheses about what Java does —
+  had the same form: a TRUE PREMISE with an INVALID INFERENCE drawn from it, and
+  in every case only measurement settled it.
+
+    - "The gate and the matcher both use SemanticEqualsUnderAliasMap" was true of
+      one of the gate's three arms; "therefore no multi-match can reach the loop"
+      did not follow.
+    - "Java does not unwrap a one-element record constructor" is true
+      (ExpressionVisitor.java:918-925); "therefore Java sees the same asymmetry
+      and also declines to refuse" did not follow — `Expressions.pullUp` compares
+      FieldPath DERIVATIONS, not the Values, and descends through the wrapper.
+    - "Making the loops raise on a multi-match is the Java port" is true;
+      "therefore it closes the pinned divergences" did not follow, since a guard
+      is inert where no post-aggregate reference exists.
+
+  The practical rule this item should be worked under: an argument that some
+  shape CANNOT occur is not evidence until a probe has failed to construct it.
+  Every impossibility claim here that went unmeasured turned out to be false.
+
+  STEP 1 — THE LOOP GUARD, and it IS the Java port. Make both rebase loops
+  (`rebasePostAggregateComputedGroupKey` and `rebasePostAggregateGroupKeyValue`)
+  COLLECT matching keys and raise `AMBIGUOUS_COLUMN` on more than one, instead of
+  taking the first. This is exactly Java's structure: `Expressions.pullUp` and
+  `Expression.pullUp` guard LOCALLY at the pull-up site and delegate correctness
+  to no upstream duplicate-key gate. Go inverted that — the gate guards, the loop
+  trusts — and every collapsed "structural interlock" claim in this file's history
+  is a symptom of that single inversion. It is LOCAL, small, touches no GROUP BY
+  shape outside these two loops, needs no RFC-scale review, and is SAFE IN EVERY
+  ORDERING: once it is in, closing any normalization gap can only turn a silent
+  answer into a raise, which is the direction Java is already in. DO THIS FIRST.
+
+  WHAT STEP 1 ACTUALLY CLOSES, and it is LESS than the obvious reading — measured,
+  because a DONE criterion that step 1 cannot satisfy is how an item rots. A loop
+  guard only fires where a POST-AGGREGATE REFERENCE exists for a loop to match, so
+  it is inert on any shape that has neither a HAVING nor a grouping key in the
+  SELECT list.
+
+    - CLOSED by step 1: the Go-side arm `under_a_join_two_equal_keys…`. All four
+      of its spellings carry a reference, and the two equal `FieldValue` keys
+      genuinely multi-match — instrumenting the sibling loop reports
+      `matches=2 nkeys=2` for both the nested (`R`) and flat (`C1`) spellings. A
+      `>1` guard raises on exactly these.
+    - NOT closed by step 1: the Go-side arm
+      `a_parenthesised_computed_key_twin…`. Its keys are
+      [RecordConstructorValue, ArithmeticValue], so a reference matches only ONE
+      of them (`matches=1`, the measurement recorded above) and no `>1` guard can
+      trip. It needs step 2.
+    - NOT closed by step 1: ALL FIVE `java_42702_go_plans` probes.
+      `paren_twin_aggonly`, `cmp_twin` and `join_qualified_vs_bare` are bare
+      `SELECT COUNT(*)` with no HAVING and no key projected, so there is no
+      reference and the guard never runs; `paren_twin_proj` and
+      `paren_twin_having` have a reference but are the `matches=1` case. Java
+      refuses all five at GROUP BY CONSTRUCTION — pulling up the group-by result
+      itself, not a user reference — and Go's analog of that site is the duplicate
+      gate, i.e. step 2.
+
+  STEP 2 — NORMALIZATION, at leisure and behind its own RFC. Converge the gate's
+  identity predicate with the loops' so the two sites ask one question; this is
+  what changes `groupKeysEquivalent` and reaches every GROUP BY shape. The
+  tempting shortcuts are symptom fixes: widening the rebase matcher, or merely
+  extending the alias strip to joins, makes the name compare agree more often by
+  accident while leaving two predicates that still disagree.
+
+  PINNED MEANWHILE, both directions, on both sides of the engine boundary:
+  `pkg/relational/sqldriver/groupby_computed_key_having_fdb_test.go` arms
+  `under_a_join_two_equal_keys_are_NOT_refused_and_Go_answers_where_Java_raises`
+  and `a_parenthesised_computed_key_twin_is_NOT_refused_either` (Go-side, assert
+  VALUES), plus the `java_42702_go_plans` probes above (cross-engine, and they red
+  if EITHER Java stops refusing or Go starts).
+
+  STEP 1 DONE = both loops collect matches and raise `AMBIGUOUS_COLUMN` on more
+  than one, AND `under_a_join_two_equal_keys…` flipped to assert 42702 on all four
+  spellings. Nothing else moves, and nothing else should be expected to.
+
+  STEP 2 DONE = the gate and the loops share one identity predicate; all five
+  `java_42702_go_plans` probes moved to `both_42702`; and
+  `a_parenthesised_computed_key_twin…` flipped to assert the refusal.
+
+  SPLIT THIS ITEM when step 1 lands rather than holding it open — the two steps
+  have different blast radii, different review requirements, and, as the lists
+  above show, disjoint closable sets.

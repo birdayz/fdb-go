@@ -7338,6 +7338,133 @@ func aggregateGroupKeyOutputName(gkv values.Value) string {
 	return strings.ToUpper(values.ColumnNameValue(gkv))
 }
 
+// rebasePostAggregateComputedGroupKey rebases a post-aggregate reference to a
+// COMPUTED grouping key (`GROUP BY c1 + 1 … HAVING c1 + 1 > 200`) onto the
+// aggregate's output slot.
+//
+// IT IS A SEPARATE WALK BECAUSE THE UNIT OF MATCHING IS DIFFERENT, and that is
+// the whole defect. Its sibling below walks FieldValues and asks, per field,
+// which grouping key that field IS. A computed key is not a field: its Value is
+// an ArithmeticValue (or a CASE, a COALESCE, …), so the sibling's
+// `gk.Value.(*values.FieldValue)` assertion fails for every key, no reference
+// ever matches, and the reference survives as an INPUT-relative read that is
+// then evaluated against the aggregate's OUTPUT row. Measured, silently and with
+// wrong rows: `SELECT max(c2) FROM flat GROUP BY c1 + 1 HAVING c1 + 1 > 200`
+// returned both groups where the correct answer is none — `c1` carries input
+// ordinal 1 over [ID C1 C2] while the output row is [(C1 + 1), MAX(C2)], whose
+// slot 1 is the AGGREGATE. Pinned by
+// TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot, which asserts BOTH directions —
+// `> 200` admits nothing and `< 200` admits everything — because a
+// one-directional test cannot tell a wrong slot from a dropped predicate.
+//
+// JAVA MATCHES SUB-EXPRESSIONS, NOT FIELDS, which is why this is a port and not
+// an invention. Expression.pullUp (fdb-relational-core …/query/Expression.java,
+// tag 4.12.11.0) walks the post-aggregate expression with
+// `underlying.replace(subExpression -> …)` and, for EVERY sub-expression, asks
+// whether the group-by result value can produce it —
+// `simplifiedValue.pullUp(List.of(subExpression), …)` — replacing the WHOLE
+// matched sub-expression with the pulled-up reference. Its SELECT-list twin
+// Expressions.pullUp (…/query/Expressions.java) is the same walk and asserts
+// exactly one match with AMBIGUOUS_COLUMN. Neither one requires the grouping
+// item to be a field, and neither consults a name.
+//
+// PRE-ORDER IS LOAD-BEARING. values.Replace applies the function to a node
+// before descending, so `c1 + 1` is tested as a whole BEFORE its `c1` child is
+// reached; the replacement is a childless FieldValue, so the descent stops
+// there and the child is never separately rebased. Post-order would rebase `c1`
+// first — against a key it does not match — and then compare a rewritten
+// subtree against the key, which cannot match either.
+//
+// It runs BEFORE the FieldValue walk, and the ordering is not incidental: the
+// value this mints is FRONTIER-PINNED, which is exactly the guard the walk below
+// returns on, so a rebased computed key passes through it untouched instead of
+// being reconsidered as a field.
+//
+// IT FIRST-MATCHES WHERE JAVA RAISES, and no multi-match has been found that
+// reaches it — but that is a MEASURED result, not a structural guarantee, and
+// the difference matters to anyone changing either site.
+//
+// Java's HAVING pull-up ends in a BARE Iterables.getOnlyElement
+// (Expression.java:246), which throws on a multi-match; its SELECT-list twin
+// Expressions.pullUp additionally asserts exactly one match with
+// AMBIGUOUS_COLUMN (Expressions.java:112). Either way Java stops. The loop below
+// instead takes the FIRST key that matches.
+//
+// THE OBVIOUS IMPOSSIBILITY ARGUMENT IS WRONG, so it is recorded here rather
+// than repeated. It runs: the duplicate-grouping-key gate decides identity with
+// values.SemanticEqualsUnderAliasMap, the same predicate matched here, so two
+// keys that could both match are semantically equal and the gate already refused
+// them. That fails on inputs, not in principle. The gate is a three-arm switch
+// (plan_visitor.go, visitSelectGroupBy) and the semantic arm needs BOTH keys to
+// resolve through Resolver.WalkExpression — a strictly weaker walk than the
+// WalkExpressionForProjection that MINTS GroupKey.Value, since only the latter
+// folds a comparison to a Value. Measured: `GROUP BY (c1 = 1), c1 = 1` fails
+// both gate walks and falls to a GetText token compare that the parentheses
+// defeat. Worse, `GROUP BY (c1 + 1), c1 + 1` resolves BOTH walks and still is
+// not refused, because `(c1 + 1)` resolves to a RecordConstructorValue wrapping
+// the arithmetic while `c1 + 1` resolves to the bare ArithmeticValue — the
+// semantic arm runs and returns false on two spellings of one expression.
+//
+// WHAT ACTUALLY KEEPS THIS LOOP SINGLE-MATCHED is that same wrapper mismatch:
+// instrumenting the loop to count matches reports 1 for every such query, over
+// keys [RecordConstructorValue, ArithmeticValue].
+//
+// THE NON-UNWRAP IS DELIBERATE AND CORRECT — do not "fix" it. walkRecordConstructorInner
+// (expr/walk.go) does not unwrap a one-element constructor because JAVA does not:
+// visitRecordConstructor goes straight to RecordConstructorValue.ofColumns
+// (ExpressionVisitor.java:918-925) whatever the element count, so `SELECT (1 + 2)`
+// is a one-field STRUCT, measured against the live JVM. Java resolves the
+// `(expr)`-vs-one-tuple ambiguity by POSITION — function arguments are flattened
+// later by FlattenRecordWithOneField — and unwrapping in the walk collapses the
+// projection case, which is a divergence Go already fixed. (The summary list at
+// the top of walk.go still says "1-element unnamed → unwrap"; that line is stale
+// and contradicts the function it summarizes.)
+//
+// So the loop is protected by a NORMALIZATION ASYMMETRY that is not itself a bug.
+// The thing to fix is this loop's own trust in an upstream gate — Java guards
+// LOCALLY at the pull-up site (Expressions.java:112, Expression.java:246) rather
+// than delegating to a duplicate-key check. Booked in TODO.md Phase 12, whose
+// FIRST step is making both rebase loops collect matches and raise on >1; that
+// guard is small, local, and safe in every ordering.
+//
+// THAT GUARD DOES NOT CLOSE THE PARENTHESISED CASE, though it does close the
+// join one. Here the keys are [RecordConstructorValue, ArithmeticValue] and a
+// reference matches exactly ONE of them, so a `>1` guard never fires; the join
+// route's two equal FieldValue keys measure `matches=2` and do trip it. Do not
+// read the guard as closing this divergence — that takes the separate
+// gate-convergence step, and the booking lists the two closable sets apart so
+// neither step can be marked done on the other's evidence.
+func rebasePostAggregateComputedGroupKey(v values.Value, agg *logical.LogicalAggregate) values.Value {
+	return values.Replace(v, func(node values.Value) values.Value {
+		// A FieldValue is the SIBLING walk's business, and leaving it entirely
+		// alone here is what keeps this addition from changing any shape that
+		// worked before: the two walks partition the node kinds between them.
+		if _, isField := node.(*values.FieldValue); isField {
+			return node
+		}
+		for i, gk := range agg.GroupKeys {
+			if gk.Value == nil {
+				continue
+			}
+			if _, keyIsField := gk.Value.(*values.FieldValue); keyIsField {
+				continue
+			}
+			if !values.SemanticEqualsUnderAliasMap(node, gk.Value, values.AliasMap{}) {
+				continue
+			}
+			// The slot is `i` for the same reason the sibling records it: the
+			// aggregate output row is [group keys in this order…, aggregates…],
+			// and Java pulls a post-aggregate reference up by that loop index
+			// (CompensateRecordConstructorRule.java:88-92) rather than by a name.
+			// The name is the display label only.
+			return values.NewFieldValueWithPinnedOrdinalInDomain(
+				aggregateGroupKeyOutputName(gk.Value), i, node.Type(),
+				aggregateNativeOutputDomain(agg))
+		}
+		return node
+	})
+}
+
 // rebasePostAggregateGroupKeyValue rewrites, inside a POST-aggregate value tree,
 // every reference to a QUALIFIED grouped-unnest group key (e.g. FieldValue(QOV(V),
 // V), explain `V.V`) down to the BARE aggregate-OUTPUT name the cursor keys the
@@ -7363,6 +7490,9 @@ func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggreg
 	if v == nil || agg == nil || len(agg.GroupKeys) == 0 {
 		return v
 	}
+	// COMPUTED keys are rebased FIRST, over whole sub-expressions, because a
+	// walk that only visits FieldValues cannot see them at all (below).
+	v = rebasePostAggregateComputedGroupKey(v, agg)
 	return values.MapFieldValues(v, func(fv *values.FieldValue) values.Value {
 		// A node that already carries a RECORDED slot is addressed against the
 		// aggregate's OUTPUT row and is not a candidate for anything here. The
@@ -7388,6 +7518,49 @@ func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggreg
 			if !ok {
 				continue
 			}
+			// THIS LOOP FIRST-MATCHES, AND ITS INTERLOCK IS MEASURED RATHER THAN
+			// STRUCTURAL. So is the sibling computed walk's, above — NEITHER route
+			// has a structural guarantee, and the difference between them is only
+			// which way the gate fails and how easy the counterexample is to
+			// write. This one is trivially constructible; that one required
+			// instrumenting the gate to see that it fails while running its
+			// strongest predicate.
+			//
+			// A key reaching THIS loop has a non-empty Bare, which sends the gate
+			// down its `default` branch: groupKeysEquivalent (plan_visitor.go), a
+			// NAME-BASED comparison over the normalized (Bare, Qualifier) pair
+			// plus the Qualified flag. The match below is semantic. Two different
+			// predicates, so nothing structural stops a multi-match — only
+			// whatever the name-based gate happens to catch.
+			//
+			// It does not catch everything, and the hole is measured, not
+			// hypothetical. The gate normalizes by stripping a leading
+			// aliasPrefix, but that prefix is computed only when the query has NO
+			// joins (visitSelectGroupBy's `len(fs.joins) == 0`). Under a join,
+			// `GROUP BY a.r.v.z, r.v.z` keeps qualifiers `A.R.V` and `R.V`, the
+			// name compare says "different", and two semantically equal keys
+			// arrive here — where this loop binds the FIRST. Java refuses a
+			// multi-match on both post-aggregate paths, though not with the same
+			// error and the difference is worth keeping straight: the SELECT-list
+			// variant Expressions.pullUp asserts `size() == 1` with
+			// AMBIGUOUS_COLUMN (Expressions.java:112), while the HAVING variant
+			// Expression.pullUp ends in a BARE Iterables.getOnlyElement
+			// (Expression.java:246) with no such assert. Either way it stops; Go
+			// picks a slot. The rows stay
+			// CORRECT, because equal keys hold equal values in both slots, so the
+			// divergence is conformance-only; it is pinned, with the reproducer,
+			// by TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot's
+			// under_a_join_two_equal_keys… arm.
+			//
+			// Closing it means converging BOTH sites on one predicate so the gate
+			// and this loop ask the same question — not widening the match below,
+			// and not merely extending the alias strip to joins. Either of those
+			// makes the name compare agree more often by accident while leaving
+			// two predicates that still disagree, which is the symptom rather than
+			// the property. Booked with its computed-route twin in TODO.md
+			// Phase 12; it is a change to groupKeysEquivalent affecting every
+			// GROUP BY shape, so it carries its own RFC and review lap.
+			//
 			// Two ways a post-aggregate reference is provably THIS group key. A
 			// QUALIFIED key carries the V.V mismatch and matches on structural
 			// equality with the reference as resolved. A BARE key matches through

@@ -267,9 +267,20 @@ something is off.
    computed-key finding rather than "HAVING over a grouped query is broken".
 
 **It is PINNED, not filed** — `groupby_computed_key_having_defect_fdb_test.go`
-asserts the defective answers with the correct ones named in every failure
-message, plus the bare-key control and the loud nested twin, so the fix flips it
-rather than discovering it.
+asserted the defective answers with the correct ones named in every failure
+message, plus the bare-key control and the loud nested twin, so the fix would
+flip it rather than discover it.
+
+> **SUPERSEDED.** The fix landed in the successor PR, which flipped every arm as
+> this section instructed. The characterization file is gone and its arms live,
+> with the correct assertions, in `groupby_computed_key_having_fdb_test.go`
+> (`TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot`) — a strict superset that
+> keeps the bare-key control and the nested twin. That file also carries three
+> arms for the composition **this RFC made reachable and neither change could
+> test**: a nested path is only usable as a grouping key because §0 retired the
+> `0AF00` refusal, so a nested key re-read in HAVING became constructible at the
+> same moment the successor changed how a re-read key binds. All three were
+> measured correct on first run.
 
 **It is NOT fixed here, and that is a STOP rather than a deferral.** The fix is
 to match a post-aggregate reference against a computed key by comparing the
