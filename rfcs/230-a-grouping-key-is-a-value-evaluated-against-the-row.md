@@ -8,7 +8,12 @@ are all FALSE against `9222f968c` and are re-probed live in §0.2. §7.4's three
 `cascades_translator.go` **byte-identical** to its parent, so the post-aggregate
 rebind §7.1 ruled to be "the decisive site" and "the only edit the aggregate
 layer needs" was **not needed at all**. §0.3 records what the work actually was.
-Previously: REVISED (rev 7). The arity census is **classified, bounded and committed as a guard** (§7.3-§7.7, PR #715): 47 arity expressions across 36 symbols — 11 correct declines, **3 blockers**, 21 already-correct, **0 live defects**, 1 uncertain. Those 3 blockers are Phase 0/1's real scope (§7.4). Gate 7's ruling is independently corroborated. **§7.5 states the census's own limit** — it is complete for one predicate, and the discard class it cannot see provably has a member. Previously: REVISED (rev 6). Gate 7 is RULED correct and permanent (§7.1) and the depth-N ambiguity rule is ACK'd; two further gates (8, 9) and a failure of the provenance instrument itself (§12.3) are folded. **Rev 6 stops claiming a complete gate census** and publishes a classified population instead (§7.3) — the count has been wrong five times and the method, not the arithmetic, was the defect. Previously: REVISED after NAK (rev 5). Rev 4 was NAK'd on five findings; all five were
+**§7.6's single `(?)` is also settled, and it settled to `(d)`** — so the census
+now reads **13 (a), 0 (b), 22 (c), 1 (d), 0 (?)** over the same 36 symbols. The
+"0 live defects" this document used to assert is **retired** — where the phrase
+still appears below it is inside a revision's own superseded status line, kept as
+the record of what that revision claimed and marked as such (§7.6, §0.5).
+Previously: REVISED (rev 7) — *its census line is superseded by the rev-8 figures above and is kept only as the record of what rev 7 claimed*. The arity census is **classified, bounded and committed as a guard** (§7.3-§7.7, PR #715): 47 arity expressions across 36 symbols — 11 correct declines, **3 blockers**, 21 already-correct, **0 live defects**, 1 uncertain. Those 3 blockers are Phase 0/1's real scope (§7.4). Gate 7's ruling is independently corroborated. **§7.5 states the census's own limit** — it is complete for one predicate, and the discard class it cannot see provably has a member. Previously: REVISED (rev 6). Gate 7 is RULED correct and permanent (§7.1) and the depth-N ambiguity rule is ACK'd; two further gates (8, 9) and a failure of the provenance instrument itself (§12.3) are folded. **Rev 6 stops claiming a complete gate census** and publishes a classified population instead (§7.3) — the count has been wrong five times and the method, not the arithmetic, was the defect. Previously: REVISED after NAK (rev 5). Rev 4 was NAK'd on five findings; all five were
 re-probed here and all five hold. The most serious is self-inflicted: **rev 4 deleted a
 wrong-rows deliverable on an unprobed claim that it had already landed. It had not.** §4.2
 restores it. §0.0 is the refutation that lapsed the rev-2 ACKs and still stands; §0.1 is what
@@ -207,7 +212,8 @@ Graefe's condition (c), discharged by instrumentation rather than argument:
   CONSUMER of that rebind, not a second gate in front of it.
 
 **The census guard is updated accordingly** (`accessor_arity_census_test.go`):
-(a) 11→13, (b) 3→0, (c) 21→22, (d) 0, (?) 1, total 36 unchanged. **The (b) floor
+(a) 11→13, (b) 3→0, (c) 21→22, (d) 0→1, (?) 1→0, total 36 unchanged. (The
+last two move for a reason unrelated to the blockers — §0.5.) **The (b) floor
 is INVERTED rather than deleted** — it guarded against a quiet drift to zero;
 zero is now the measured steady state, so the alarm direction is GROWTH, and a
 (b) now means a site refuses something that demonstrably works.
@@ -272,6 +278,41 @@ post-aggregate binding semantics, on the flat path, entirely independent of this
 RFC. Folding an unreviewed wrong-rows fix into a change whose thesis is about the
 nested path would put it through the wrong review. It is escalated with the
 reproducer in hand.
+
+### 0.5 The census's one `(?)` is settled — and this RFC now reports a LIVE defect
+
+**Two cells moved, and they moved for a reason that has nothing to do with the
+blockers.** `cascades_generator.go#deriveColumnsFromProjection` sat at `(?)` for
+two revisions because its reachability *could not be decided by reading*. It has
+been decided, by instrumenting the arm and running a query, and it decided
+against the RFC: `(?)` 1 → 0, `(d)` 0 → **1**. §7.6 carries the measurement and
+the controls; it is re-run on this branch rather than accepted on report.
+
+**So the status line's "0 live defects" is retired, and that is the correction
+that matters most.** Every other figure in this document could be wrong by one
+and cost a reader nothing; "no live defects" is the claim a reader acts on. It
+was true of what the census could see, and the thing it could not see was sitting
+inside its own `(?)` row the whole time.
+
+**The arithmetic is checked as a POPULATION, not cell by cell** — the trap this
+RFC has hit repeatedly. Every place quoting the census now reads
+**13 / 0 / 22 / 1 / 0 over 36**: the status line, §7.3's table (which shows rev 7
+and rev 8 side by side rather than overwriting), §0.3's blocker accounting, §7.6,
+and both §12 entries. §7.3's rev-7 prose and the rev-7 status sentence are marked
+as superseded rather than rewritten, because they are the record of what was
+claimed and a document that edits its own history cannot be audited.
+
+**The guard moved with it.** The census's `(d)` floor forbade any live defect
+outright — unsatisfiable now, so it is reconciled rather than deleted: the count
+check owns both numeric directions (a *second* (d), or a silent drop back to none
+without the fix landing on this base), and the floor's remaining job is the part
+a number cannot carry — **a `(d)` is only recordable from a MEASUREMENT.** That
+is enforced, and mutating the entry's reason to drop the measurement reds it.
+Every wrong verdict this census has produced came from reading a condition.
+
+**The fix is not this RFC's** and its details are deliberately not restated here;
+it is carried on the field-mint reconciliation branch. What this RFC owes is that
+its own numbers describe the code, and on **this** base the site is live.
 
 **The pattern, stated because it is the sixth instance.** Every one of the three
 blockers was classified from READING the condition and its comment. Each was
@@ -1321,19 +1362,30 @@ decision sites; the honest unit is 47 expressions in 36 symbols.
 
 **The classification:**
 
-| class | meaning | count |
-|---|---|---|
-| (a) | correct decline — rejecting a multi-accessor path is right here | 11 |
-| (b) | **blocker** — would block a legitimate nested grouping key | **3** |
-| (c) | already correct for nesting | 21 |
-| (d) | live defect | **0** |
-| (?) | uncertain | 1 |
+| class | meaning | rev 7 | **rev 8, current** |
+|---|---|---|---|
+| (a) | correct decline — rejecting a multi-accessor path is right here | 11 | **13** |
+| (b) | **blocker** — would block a legitimate nested grouping key | **3** | **0** |
+| (c) | already correct for nesting | 21 | **22** |
+| (d) | live defect | **0** | **1** |
+| (?) | uncertain | 1 | **0** |
+| | total symbols | 36 | **36** |
+
+**Both rev-8 columns move for their own reason, and neither is the other's
+consequence.** (a)/(b)/(c) move because the three blockers were refuted by
+measurement (§0.3). (d)/(?) move because the single uncertain site was settled
+and settled to a defect (§7.6, §0.5). The table is a POPULATION, so every
+reclassification moves exactly two cells and the total is what checks it did.
 
 **Gate 7 classifies (a), confirmed independently** on the same grounds §7.1 rules: Java's
 pull-up mints `FieldPath.ofSingle`, nesting is consumed below the aggregate. The ruling holds
 and is now corroborated rather than merely asserted.
 
-**(d) = 0 is a real result, not an absence of looking** — and the class is not hypothetical.
+**(d) = 0 WAS a real result, and it has since become 1 — see §7.6 and §0.5.** The
+sentence below is rev 7's, kept because its point survives its number: the class
+was never hypothetical, and the second member found in it looks exactly like the
+first. What rev 7 could not say is that the class also had a member sitting in
+`(?)` at the time, invisible because reading could not settle it.
 One (d) was found and **already closed on master**:
 `left_outer_existential.go#rebaseOuterLegValueOrdinal`, whose name arm baked the merged address
 of the struct and dropped the descent, so `WHERE EXISTS (… t2.k = t1.n.sk)` over a join
@@ -1401,15 +1453,45 @@ class. **Sweeping by one behaviour is still sweeping by one behaviour.** Rev 7 d
 to have escaped that — it names the predicate, states what the predicate cannot see, and books
 the discard class as its own sweep (§12).
 
-### 7.6 The uncertain site, and a naming divergence underneath it
+### 7.6 The site that was uncertain — SETTLED, and it settled to a LIVE DEFECT
 
-**(?) `cascades_generator.go#deriveColumnsFromProjection`** (`:4171`). Its arity gate is
-correct; what is unresolved is the **fall-through** it selects — `innerByName[fv.Field]` — and
-for a fused nested reference `Field` is the struct **ROOT**, not the leaf. If the enclosing
-`TypeName == "" || TypeName == "UNKNOWN"` precondition is reachable for a nested reference, the
-derived column inherits the **struct's** type rather than the member's. Neither constructible
-nor provably unreachable today; recorded as **unknown with its reason**, which is the correct
-disposition for a site that cannot be decided by reading.
+**`cascades_generator.go#deriveColumnsFromProjection` is `(d)`, not `(?)`.** Its arity gate is
+correct; the defect is the **fall-through** it selects — `innerByName[fv.Field]` — and
+for a fused nested reference `Field` is the struct **ROOT**, not the leaf, so when the enclosing
+`TypeName == "" || TypeName == "UNKNOWN"` precondition holds the
+derived column inherits the **struct's** type rather than the member's.
+
+**Whether that precondition is reachable is exactly what could not be decided by reading, and
+that is the durable lesson here.** Rev 7's reason for doubt was that the catalog types the leaf,
+so `TypeName` is normally already known. That reason is true for every **scalar** leaf and for
+no other: an `ARRAY` or `BYTES` leaf is a kind the type derivation has no name for. Reading the
+site could not surface that, because the precondition is about a *type system's coverage*, not
+about the site's own control flow. Instrumenting the arm and running a query surfaced it
+immediately.
+
+**MEASURED, re-run independently on this branch rather than accepted:**
+
+```
+SELECT q.s.vals FROM (SELECT s FROM t) AS q   =>  VALS:STRUCT     (a BIGINT ARRAY member)
+SELECT s.vals   FROM t                        =>  VALS:UNKNOWN
+SELECT vals2    FROM t                        =>  VALS2:BIGINT    (the top-level twin)
+SELECT q.vals2  FROM (SELECT vals2 FROM t) AS q => VALS2:BIGINT
+```
+
+over `CREATE TYPE AS STRUCT sst (top BIGINT, vals BIGINT ARRAY)`. The first row is the
+wrong-column read: the lookup found the struct **root** and reported its type for a member of a
+different type. The second shows why the suite stayed green — over a base scan the wrong hit is
+swallowed by the arm's own `ic.TypeName != "UNKNOWN"` guard; a **projection underneath** types
+the root and the hit fires. The last two are the control: the identical column kind at top level
+is right in both shapes, so this is nesting-specific and not an array-typing gap. *(One half of
+the reported finding I could **not** reproduce: `BYTES` inside `CREATE TYPE AS STRUCT` is a
+`42601` syntax error on this base, so the BYTES arm is unverified here.)*
+
+**The fix is NOT this RFC's and its details are not restated here** — it is carried, with the
+`fuseNestedAccessors` mint reverted to name the **leaf**, on the field-mint reconciliation
+branch (`rfc/231-field-mint-reconcile`). What this RFC owes is that its own census stops
+asserting a state of the world the code does not have. On **this** base the site is live, and
+the census entry says so.
 
 **The fact underneath it is a separate finding and gets its own line, because it is a defect
 class rather than a detail.** `[PROBED]` two mints of the *same* fused-nested shape disagree
@@ -1428,9 +1510,12 @@ about what `Field` means:
 One takes the leaf and cites Java for it; the other keeps the root. **Every consumer that reads
 `fv.Field` on a fused value therefore gets a different answer depending on which mint produced
 it** — and `deriveColumnsFromProjection`'s `innerByName[fv.Field]` is one such consumer, which
-is precisely why its disposition is unknown. This is the same defect class RFC-227/228/229
+is precisely why it reads the struct root. This is the same defect class RFC-227/228/229
 removed from the *naming* authorities, surviving in the *mint*. It is tracked as its own
-finding, not folded here.
+finding, not folded here — and the divergence is settled in the same direction the leaf mint
+already took: Java's `FieldValue` exposes no root-name accessor at all, only `getLastFieldName`
+(`FieldValue.java:134-135` → `:463-466`), whose complement `getFieldPrefix` (`:450-454`) is what
+makes "last" a distinguished step rather than an arbitrary one.
 
 ### 7.7 The guard, and why it is keyed by symbol
 
@@ -1795,11 +1880,18 @@ citation held up, which is why §2 asserts them without hedging.
   redundant sort. Pinned so a later aggregate-index match is a visible change.
 
 **Still owed, and NOT closed by this RFC** — carried forward unchanged:
-the discard-class sweep (§7.5), the `Field` root-vs-leaf mint divergence (§7.6),
-`deriveColumnsFromProjection`'s reachability (§7.6), the two-segment
+the discard-class sweep (§7.5), the two-segment
 wrong-column read (§12.3), the executed continuation confirmation (§9), and
 Phase 2's aggregate-index match over a nested grouping key (provably
 performance-only, §6).
+
+**Two items LEAVE this list rather than staying on it**, and both leave because
+they were settled elsewhere, not because this RFC did them:
+`deriveColumnsFromProjection`'s reachability, and the `Field` root-vs-leaf mint
+divergence (§7.6). The first is now a recorded `(d)`; the second is answered in
+the leaf's favour on Java's authority. Neither is fixed on this branch, so the
+census entry records the defect as LIVE here — a fix landing elsewhere is not a
+reason for this base to claim it is clean.
 
 ### 12.5 Mutation, both directions per change
 
@@ -1833,18 +1925,21 @@ Each arm reverted alone, scoped to the files it touches, and the named test run:
   assignment digest.
 - ~~The plan shape line 61 gets~~ — **ANSWERED in rev 6**: `InMemorySort` over a base-record
   streaming aggregation, because `aggColumnMatches` cannot match a nested path (gate 9, §8).
-- ~~Classification of sweep 2's arity sites~~ — **DONE and guarded** (§7.3, PR #715). 47
-  expressions / 36 symbols: 11 (a), **3 (b)**, 21 (c), **0 (d)**, 1 (?). The three blockers are
-  now Phase 0/1's stated scope (§7.4) rather than an unknown.
+- ~~Classification of sweep 2's arity sites~~ — **DONE and guarded** (§7.3, PR #715), and
+  since RE-CLASSIFIED twice by measurement. 47 expressions / 36 symbols, now
+  **13 (a), 0 (b), 22 (c), 1 (d), 0 (?)**: the three blockers were refuted (§0.3)
+  and the one uncertain site settled to a live defect (§7.6). Rev 7 published
+  11 / 3 / 21 / 0 / 1 and every figure but the total has moved.
 - **A sweep for the DISCARD class** (§7.5) — sites that mishandle nesting *without* an arity
   test, which `len(...Accessors)` provably cannot see and which contains at least
   `analyzer.go:88`. This is the successor open item, and it is named with its predicate so the
   next census does not repeat the pattern of claiming completeness.
 - **The `Field` root-vs-leaf mint divergence** (§7.6) — `composeFieldOverField` takes the leaf,
   `fuseNestedAccessors` keeps the root; tracked as its own finding.
-- **`deriveColumnsFromProjection`'s reachability** (§7.6) — whether the
-  `TypeName == "" || "UNKNOWN"` precondition is reachable for a nested reference. Recorded as
-  unknown rather than assumed either way.
+- ~~`deriveColumnsFromProjection`'s reachability~~ — **SETTLED, and it is a LIVE
+  DEFECT** (§7.6, §0.5). The precondition IS reachable: it holds for an ARRAY or
+  BYTES leaf, whose kind the type derivation cannot name. Measured on this branch,
+  not accepted. Its FIX is not this RFC's.
 - **The second mint writeback at `logical_predicate.go:9999`** — whether the descent arm must
   exist there too, or is provably unreachable. Note it sits in the same file as blocker 3
   (`groupedScalarSortKeys`, `:10064`), so the correlated-scalar arm likely needs both together.
