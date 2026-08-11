@@ -8646,6 +8646,83 @@ full scans 3.6–4.4s both sides). No regression.
 
 All 23 subtests PASS. Total: 170.7s (incl. bulk insert ~2:28).
 
+
+**2026-08-11 (GetRangeLimits byte-division port — range batch boundaries move, so
+read-conflict extents move):** the port makes range batching byte-driven instead of
+row-driven, which relocates every per-batch read-conflict range and every cursor
+continuation. That is correctness-adjacent under contention, not merely a
+round-trip-count change, so the comparison is mandatory. Baseline
+`cc8c88c06` (this branch's own merge base) in a sibling worktree under
+`.claude/worktrees/`, i.e. the SAME xfs mount — `df -h /home` 91% used, 87G free.
+The host is xfs, so CLAUDE.md's ~95% *ext4* threshold does not transfer; the run is
+judged against its own opposite side.
+
+VERDICT: **no detectable regression. The only systematic effect is RUN ORDER, not
+branch** — and that is a measured result, not an assumption, because the pair was
+run twice with the order REVERSED.
+
+```
+bulkInsert orders, rows/s     1st position      2nd position
+round 1                       baseline 6421     branch   4520
+round 2 (order reversed)      branch   5688     baseline 3850
+```
+
+The slow arm is whichever ran SECOND, in both rounds. Host load recorded
+throughout each run (30s samples) says why: the second run of each pair landed in a
+busy window as other agents' Bazel jobs ramped back up.
+
+```
+                mean idle   mean load1
+round 1  base       71.1%       10.72     <- 1st
+         branch     38.0%       20.75     <- 2nd
+round 2  branch     66.3%       10.29     <- 1st
+         base       37.3%       28.15     <- 2nd
+```
+
+So the ~30% ingest gap seen in round 1 alone would have been reported as a branch
+regression, and round 2 shows the identical gap pointing the other way. It is
+contention. This box carries 43 agent worktrees and up to 21 concurrent sandboxed
+test actions; both rounds were started only after a watcher observed 4-5
+consecutive 30s samples above 70% idle, and the quiet still did not survive a full
+pair.
+
+Comparing FIRST-position runs only (each on a freshly quiet box, the closest to a
+matched comparison available here), the branch is at or ahead of baseline on every
+query row:
+
+| query | baseline (1st, 71% idle) | branch (1st, 66% idle) |
+|---|---|---|
+| PK lookup id=0 | 21.63ms | 8.62ms |
+| PK lookup id=N/2 | 12.44ms | 8.35ms |
+| PK lookup id=N-1 | 13.93ms | 6.13ms |
+| idx_status count pending | 421.07ms | 361.88ms |
+| full scan filter amount>5000 | 690.63ms | 583.50ms |
+| GROUP BY status COUNT only | 20.78ms | 7.29ms |
+| SUM by status (aggregate index) | 13.43ms | 12.05ms |
+
+Those are NOT claimed as a speedup the port earns — the branch ran at 5 points lower
+idle, the differences are within the run-to-run spread this host produces, and the
+2nd-position pair is mixed in both directions. The load-bearing claim is only that
+nothing regressed.
+
+CORRECTNESS: `COUNT(*) = 1000000 (expected 1000000)` on all four runs, all 25
+subtests PASS on all four, `EXIT_CODE=0` on all four. Row counts are identical
+across the moved batch boundaries, which is the property that had to hold.
+
+THRESHOLDS: point lookups are 6.13..21.63ms against the documented <5ms, on BOTH
+sides — the pre-existing baseline-vs-threshold gap already booked above, unchanged
+by this branch (the branch is the faster side of it here).
+
+THE CONTENTION QUESTION IS ANSWERED SEPARATELY AND MORE DIRECTLY, because a latency
+comparison cannot answer it: whether moved boundaries change WHICH KEYS CONFLICT is
+a logical property, and it is pinned by
+`fdb:TestByteDividedScanConflictsOverExactlyWhatItConsumed` — a partially-drained
+byte-divided scan (6 rows across 3 batches) must abort on a concurrent write to a
+row it consumed and must NOT abort on one beyond it. Both directions asserted, and
+the over-conflicting direction mutation-checked by making `rangeConflictExtent`
+return the full requested range, which reddens only the `far_beyond` arm. That test
+runs on a loaded box, which is exactly why it is the right instrument for this axis.
+
 ---
 
 ## RFC-182 — generative row-soundness differential (2026-07-18 audit follow-ups)

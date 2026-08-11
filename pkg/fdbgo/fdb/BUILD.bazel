@@ -52,6 +52,7 @@ go_test(
         "options_matrix_test.go",
         "panic_test.go",
         "parity_test.go",
+        "range_byte_division_conflict_test.go",
         "range_byte_division_test.go",
         "range_iterator_limit_batch_test.go",
         "range_iterator_test.go",
