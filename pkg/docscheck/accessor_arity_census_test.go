@@ -93,42 +93,40 @@ type accessorAritySite struct {
 // accessorAritySites is the classified population, keyed `file#symbol`.
 var accessorAritySites = map[string]accessorAritySite{
 	// ---------------------------------------------------------------------
-	// (b) BLOCKERS — the three sites RFC-230 must change.
-	// ---------------------------------------------------------------------
-
-	"pkg/relational/core/query/cascades_translator.go#groupByOutputBaker": {
-		class: arityBlocker, exprs: 1,
-		why: "the early return `len(Accessors) > 1 -> return node` is right for a nested " +
-			"reference INTO a source row and wrong for one that has BECOME a grouping key: " +
-			"the key never rebinds to the aggregate's output ordinal, so every consumer fed " +
-			"by this one baker (SELECT projection, HAVING, ORDER BY) keeps a dead " +
-			"input-relative ordinal. This is the single decisive site — the post-aggregate " +
-			"rebind belongs here, ABOVE canonicalizeAggregateOutputValue, not as a " +
-			"relaxation of it.",
-	},
-	"pkg/relational/core/query/cascades_translator.go#cascadesTranslator.translateSort": {
-		class: arityBlocker, exprs: 1,
-		why: "ORDER BY canonicalisation onto the aggregate output ordinal accepts only a " +
-			"childless single-accessor bake. DOWNSTREAM of groupByOutputBaker rather than " +
-			"independent: it reads bakeGroupByOutputRefs' result, which returns a " +
-			"multi-accessor node unchanged, so the `tmp[0] != v` arm never fires for a " +
-			"nested key. Fixing the baker may satisfy this site without touching it — but it " +
-			"is a blocker, not a correct decline, because the shape it refuses is legitimate.",
-	},
-	"pkg/relational/core/embedded/logical_predicate.go#groupedScalarSortKeys": {
-		class: arityBlocker, exprs: 1,
-		why: "the CORRELATED-SCALAR-SUBQUERY grouped ORDER BY path. A walked+bound key is " +
-			"accepted only at `len(Accessors) == 1`; a nested key leaves `ordinal < 0` and " +
-			"takes ErrCodeGroupingError (\"must reference a grouping column or a selected " +
-			"aggregate\") on legal SQL. This is the arm RFC-230 §7(b) flagged as running " +
-			"WITHOUT the main ladder's gates, so its post-Phase-0 behaviour cannot be " +
-			"predicted from the main ladder's — it needs its own pin.",
-	},
-
-	// ---------------------------------------------------------------------
 	// (a) CORRECT DECLINES — refusing a value that genuinely cannot be what
 	//     the site needs. A decline here costs an optimization, never rows.
 	// ---------------------------------------------------------------------
+
+	// THE THREE FORMER (b) BLOCKERS. Nested-path GROUP BY landed with all three
+	// UNCHANGED — cascades_translator.go is byte-identical across that change —
+	// so the classification that made them blockers is refuted by measurement,
+	// not by argument. Each carries what was observed rather than what was read.
+	"pkg/relational/core/query/cascades_translator.go#groupByOutputBaker": {
+		class: arityCorrectDecline, exprs: 1,
+		why: "MEASURED: the early return DOES fire on a fused nested grouping-key reference " +
+			"(Field \"R\", 3 accessors) and the decline is right. The reference that reaches " +
+			"it is the HAVING predicate's, and PushFilterThroughGroupByRule pushes that " +
+			"predicate BELOW the GroupBy, where an input-relative nested read is the correct " +
+			"read. Forcing the fall-through (early return disabled) changed no row of any " +
+			"nested-key shape: a fused nested value carries a QOV child and its qualified " +
+			"name misses keyOrds, so the branches below return the node unchanged too. The " +
+			"SELECT-list caller is gated on `!exactAggregateLayout` and does not run at all " +
+			"for a grouped nested key — the exact-aggregate output contract binds the " +
+			"projection's slot upstream. The predicted post-aggregate rebind was therefore " +
+			"never needed here.",
+	},
+	"pkg/relational/core/query/cascades_translator.go#cascadesTranslator.translateSort": {
+		class: arityCorrectDecline, exprs: 1,
+		why: "MEASURED: a nested ORDER BY key over a grouped nested key never enters the " +
+			"block this expression lives in. Instrumenting the arm selection, `GROUP BY " +
+			"r.v.z ORDER BY r.v.z` arrives with AggregateOutputValueExact set, so it takes " +
+			"the canonicalizeAggregateOutputValue arm and the `sortGB != nil && " +
+			"!exactAggregateValue` block is skipped entirely; the correlated-scalar variant " +
+			"arrives with HasAggregateOutputOrdinal set and takes the ordinal arm. Both " +
+			"upstream arms hand this site a value already rebound to ONE accessor of the " +
+			"aggregate output row, which is Java's FieldPath.ofSingle — so the arity test " +
+			"passes rather than blocking.",
+	},
 
 	"pkg/relational/core/query/cascades_translator.go#canonicalizeAggregateOutputValue": {
 		class: arityCorrectDecline, exprs: 1,
@@ -210,6 +208,19 @@ var accessorAritySites = map[string]accessorAritySite{
 	// ---------------------------------------------------------------------
 	// (c) ALREADY CORRECT FOR NESTING.
 	// ---------------------------------------------------------------------
+
+	"pkg/relational/core/embedded/logical_predicate.go#groupedScalarSortKeys": {
+		class: arityNestingOK, exprs: 1,
+		why: "the CORRELATED-SCALAR-SUBQUERY grouped ORDER BY path, classified a blocker on " +
+			"the reading that a nested key would leave `ordinal < 0` and take " +
+			"ErrCodeGroupingError on legal SQL. MEASURED, it does not: " +
+			"bindPostAggregateValueToNativeOrdinals rebinds the walked nested key to a " +
+			"SINGLE-accessor reference over the aggregate's native output row BEFORE this " +
+			"test runs, so the test sees 1 accessor and binds the slot. `SELECT id, (SELECT " +
+			"max(n2.id) FROM nested AS n2 WHERE n2.id = nested.id GROUP BY n2.r.v.z ORDER BY " +
+			"n2.r.v.z LIMIT 1) FROM nested` answers. The arity test is the CONSUMER of that " +
+			"rebind, not a second gate in front of it.",
+	},
 
 	"pkg/recordlayer/query/plan/cascades/values/values.go#FieldValue.descendResolvedPath": {
 		class: arityNestingOK, exprs: 1,
@@ -550,9 +561,9 @@ func TestAccessorArityClassCounts(t *testing.T) {
 	t.Parallel()
 
 	pinned := map[accessorArityClass]int{
-		arityCorrectDecline: 11,
-		arityBlocker:        3,
-		arityNestingOK:      21,
+		arityCorrectDecline: 13,
+		arityBlocker:        0,
+		arityNestingOK:      22,
 		arityLiveDefect:     0,
 		arityUncertain:      1,
 	}
@@ -596,13 +607,21 @@ func TestAccessorArityClassCounts(t *testing.T) {
 			"top of it", got[arityLiveDefect])
 	}
 
-	// The (b) floor guards the OTHER direction: if every blocker were resolved,
-	// RFC-230's Phase 1 would be complete, and that must be an explicit edit
-	// here rather than a quiet drift to zero.
-	if got[arityBlocker] == 0 {
-		t.Error("no (b) blockers remain. If RFC-230's post-aggregate rebind has landed, say " +
-			"so in the RFC and retire this floor deliberately — a floor that silently reaches " +
-			"zero stops watching anything")
+	// The (b) floor HAS INVERTED, and the inversion is retired deliberately
+	// rather than deleted. It used to guard against a quiet drift to zero,
+	// because zero would have meant RFC-230's Phase 1 was silently complete.
+	// Zero is now the MEASURED steady state: nested-path GROUP BY landed with
+	// all three former blockers unchanged (RFC-230 §7.4), because each was
+	// classified from reading and each was refuted by instrumenting the arm it
+	// actually takes. So the alarm direction flips to GROWTH — a (b) here means
+	// a site has been found that genuinely refuses a legitimate nested grouping
+	// key, i.e. a capability that works today has been taken away or a new arm
+	// blocks a shape the shipped tests do not cover.
+	if got[arityBlocker] > 0 {
+		t.Errorf("%d site(s) classified (b) BLOCKER. Nested-path GROUP BY is IMPLEMENTED and "+
+			"its shapes are pinned end-to-end, so a blocker is no longer a to-do item — it is "+
+			"a refusal of something that works. Name the SQL shape it blocks and show it "+
+			"failing against real FDB before recording the class", got[arityBlocker])
 	}
 }
 

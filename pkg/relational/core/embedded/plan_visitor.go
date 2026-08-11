@@ -916,9 +916,6 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 				if err := resolveColumnRefStructural(resolver, gb.bare, gb.qualifier, gb.qualified, gb.segs); err != nil {
 					return nil, err
 				}
-				if err := rejectNestedPathGroupKey(resolver, gb.bare, gb.qualifier, gb.qualified, gb.segs); err != nil {
-					return nil, err
-				}
 			} else if err := resolveColumnName(resolver, gb.display); err != nil {
 				return nil, err
 			}
@@ -1429,10 +1426,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	for i := range keys {
 		stripped := strip(keys[i].Display)
 		if stripped != keys[i].Display {
-			// The single-source prefix was baked away: the key is
-			// BARE from here on — stale qualification segments would
-			// chase a qualifier the runtime row no longer carries.
-			keys[i] = logical.GroupKey{Display: stripped, Bare: stripped}
+			keys[i] = stripGroupKeyLeadingSegment(keys[i], stripped)
 		}
 	}
 	// DUPLICATE GROUPING EXPRESSIONS reject 42702 (Java: the grouping

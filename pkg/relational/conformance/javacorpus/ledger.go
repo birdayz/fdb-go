@@ -230,22 +230,6 @@ const (
 	// conformance/duplicate_star_java_probe_test.go (group_by_star_covers vs
 	// group_by_star_exceeds).
 	SkipGapStarGroupBy SkipClass = "engine-gap:star-group-by-expansion"
-	// SkipGapNestedPathGroupKey is a GROUP BY key that DESCENDS INTO a struct
-	// column (`GROUP BY r.v.z`), refused by the SQL layer with 0AF00.
-	//
-	// It has its own class rather than borrowing one of the planner-decline
-	// classes because it is not a planner decline: rejectNestedPathGroupKey
-	// turns the key away in the SQL layer, before Cascades ever sees it, and
-	// filing it under a Cascades class would make the histogram say something
-	// untrue about where the engine stops.
-	//
-	// JAVA HAS THE CAPABILITY, measured live at tag 4.12.11.0 by
-	// conformance/nested_groupby_key_java_probe_test.go: given an index over
-	// the path, `GROUP BY n.sk` returns the same rows as its indexed FLAT twin.
-	// A Java PLANNER DECLINE is not evidence either way here — Java's Cascades
-	// has no physical sort, so it declines a flat key just as readily when no
-	// index supplies the ordering.
-	SkipGapNestedPathGroupKey SkipClass = "engine-gap:nested-path-group-key"
 )
 
 // AllSkipClasses is every declared reason class.
@@ -290,7 +274,6 @@ func AllSkipClasses() []SkipClass {
 		SkipGapSerializationOptions,
 		SkipGapMultipleLateralUnnests,
 		SkipGapStarGroupBy,
-		SkipGapNestedPathGroupKey,
 		SkipCheckCache,
 		SkipRandomInjection,
 		SkipNoChecks,
