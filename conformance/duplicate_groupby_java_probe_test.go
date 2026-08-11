@@ -119,14 +119,25 @@ var _ = Describe("DuplicateGroupByJavaProbe", func() {
 			{"cmp_same_text", "SELECT COUNT(*) FROM T_G1 GROUP BY amount=1, amount=1", "both_42702"},
 			// THE JOIN SPELLING — the OTHER route (name-keyed, plain FieldValue
 			// keys), measured here rather than inferred from the single-source
-			// `dup_qualified_vs_bare` analogue. Go's duplicate gate strips a
+			// `dup_qualified_vs_bare` analogue. Go's duplicate GATE strips a
 			// leading alias only when the query has NO joins
 			// (visitSelectGroupBy's `len(fs.joins) == 0`), so under a join
-			// `a.amount` and bare `amount` compare as different names.
-			// `amount` exists ONLY in T_G1, so the bare reference is
-			// unambiguous and cannot be refused for an unrelated reason — using
-			// `category`, which both tables declare, would confound this.
-			{"join_qualified_vs_bare", "SELECT COUNT(*) FROM T_G1 a JOIN T_G2 b ON a.category = b.category GROUP BY a.amount, amount", "java_42702_go_plans"},
+			// `a.amount` and bare `amount` still compare as different NAMES and
+			// the gate still does not fire. `amount` exists ONLY in T_G1, so the
+			// bare reference is unambiguous and cannot be refused for an
+			// unrelated reason — using `category`, which both tables declare,
+			// would confound this.
+			//
+			// IT MOVED FROM java_42702_go_plans TO both_42702, and this probe is
+			// what measured the move against the live JVM rather than a Go-side
+			// test asserting its own change. What closes it is the
+			// OUTPUT-CONSTRUCTION pull-up (groupByOutputConstructionPullUp),
+			// which asks the SEMANTIC question Java asks at
+			// LogicalOperator.java:454 and needs no post-aggregate reference —
+			// note this query is a bare COUNT(*) with no projected key and no
+			// HAVING, which is exactly why the earlier post-aggregate-only guards
+			// could not reach it.
+			{"join_qualified_vs_bare", "SELECT COUNT(*) FROM T_G1 a JOIN T_G2 b ON a.category = b.category GROUP BY a.amount, amount", "both_42702"},
 			{"join_control_single_source", "SELECT COUNT(*) FROM T_G1 a GROUP BY a.amount, amount", "both_42702"},
 			{"distinct_exprs_ok", "SELECT COUNT(*) FROM T_G1 GROUP BY amount+1, amount+2", "go_extends"},
 			{"distinct_keys_ok", "SELECT category, amount, COUNT(*) FROM T_G1 GROUP BY category, amount", "go_extends"},

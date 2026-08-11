@@ -182,31 +182,29 @@ func buildAggregateOutputSlots(keys []logical.GroupKey, aggCols []aggSelectCol, 
 					// FIRST-MATCH, AND THE REASON IT IS SAFE IS NOT THE ONE THAT
 					// USED TO BE WRITTEN HERE. The old justification was that
 					// duplicate grouping keys are rejected 42702 at aggregate
-					// build time, so at most one key can match. That gate does
-					// NOT fire under a join: visitSelectGroupBy computes its
-					// alias-strip prefix only when `len(fs.joins) == 0`, so
-					// `GROUP BY a.r.v.z, r.v.z` passes it. Trusting it here was
-					// the same delegate-upstream inversion the post-aggregate
-					// pull-up guard removes.
+					// build time by the NAME-based gate, so at most one key can
+					// match. That gate does not fire under a join:
+					// visitSelectGroupBy computes its alias-strip prefix only
+					// when `len(fs.joins) == 0`, so `GROUP BY a.r.v.z, r.v.z`
+					// passes it, and this loop then binds A.R.V.Z to key 0 and
+					// R.V.Z to key 1 — one match each by a name predicate that
+					// cannot see they are the same column.
 					//
-					// What actually keeps this single-matched is that the arms
-					// above compare the SAME (Qualified, Bare, Qualifier) triple
-					// the gate does, so two keys the gate calls different are
-					// different here too. Measured on the shape that defeats the
-					// gate: `GROUP BY a.r.v.z, r.v.z` binds A.R.V.Z to key 0 and
-					// R.V.Z to key 1 — one match each, distinct slots, correct
-					// rows. That is why the projected half of that query still
-					// plans while its HAVING twin now raises 42702: the two
-					// halves decide key identity by DIFFERENT predicates, name
-					// here and semantic at the pull-up, and only the semantic one
-					// sees a duplicate.
+					// What makes it safe NOW is a different upstream check, and a
+					// sound one: groupByOutputConstructionPullUp refuses two
+					// SEMANTICALLY equal grouping keys at output construction,
+					// which is where Java refuses them (LogicalOperator.java:454
+					// through the asserting Expressions.pullUp). It does not
+					// depend on the alias strip, on the presence of a join, or on
+					// any post-aggregate reference existing — so no pair of keys
+					// this name predicate would conflate can reach this loop.
 					//
-					// ARMING CONDITION, so this does not rot into the claim it
-					// replaced: converging the two predicates (the separate
-					// gate-convergence step) makes this loop see the multi-match
-					// the pull-up already sees. At that point this `break` must
-					// become a collect-and-raise like the pull-up's, or the
-					// projected half will silently bind the first of two.
+					// That is a real interlock rather than the delegation the old
+					// comment described, but it is still an interlock: this loop
+					// asks a NARROWER question than the construction guard, and it
+					// is correct only because the broader guard runs first. If
+					// that guard is ever moved after slot construction, or made
+					// conditional, this `break` must become a collect-and-raise.
 					native = i
 					break
 				}

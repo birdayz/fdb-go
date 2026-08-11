@@ -150,3 +150,135 @@ func TestGroupKeyPullUpGuard_RecordsOnlyTheFirstVerdict(t *testing.T) {
 			err)
 	}
 }
+
+// gpugQualified is a grouping key read through a named quantifier — the shape
+// whose correlation is what keeps `o.k` and `i.k` two keys rather than one.
+func gpugQualified(corr, field string) *values.FieldValue {
+	return &values.FieldValue{
+		Field: field,
+		Typ:   values.UnknownType,
+		Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(corr)),
+	}
+}
+
+// TestGroupKeyPullUpGuard_ConstructionRefusesTwoEqualKeys drives the guard that
+// now decides every duplicate shape — Java's LogicalOperator.java:454, which
+// pulls the grouping expressions up against the group-by result value through
+// the asserting Expressions.pullUp.
+//
+// It is corpus-reachable (the join arm in //pkg/relational/sqldriver drives it
+// end-to-end on six spellings), so this arm exists for the NEGATIVE direction
+// below and to keep the positive one honest if that arm is ever narrowed.
+func TestGroupKeyPullUpGuard_ConstructionRefusesTwoEqualKeys(t *testing.T) {
+	t.Parallel()
+
+	err := groupByOutputConstructionPullUp(gpugAgg(
+		gpugQualified("A", "K"),
+		gpugQualified("A", "K"),
+	))
+	if err == nil {
+		t.Fatal("two identical grouping keys were accepted at output construction; " +
+			"Java raises AMBIGUOUS_COLUMN here (Expressions.java:112 via " +
+			"LogicalOperator.java:454) before any SELECT-list or HAVING pull-up runs")
+	}
+	if !strings.Contains(err.Error(), "42702") || !strings.Contains(err.Error(), "K") {
+		t.Errorf("got %v, want 42702 naming K", err)
+	}
+}
+
+// TestGroupKeyPullUpGuard_ConstructionKeepsTwoQuantifiersApart is the arm that
+// stops the guard from being a blanket refusal. `GROUP BY o.k, i.k` reads the
+// same column name through two DIFFERENT quantifiers; those are two distinct
+// grouping keys and must plan. Without this, a guard that refused everything
+// would satisfy the positive arm above.
+func TestGroupKeyPullUpGuard_ConstructionKeepsTwoQuantifiersApart(t *testing.T) {
+	t.Parallel()
+
+	if err := groupByOutputConstructionPullUp(gpugAgg(
+		gpugQualified("O", "K"),
+		gpugQualified("I", "K"),
+	)); err != nil {
+		t.Fatalf("two quantifiers over one column name were refused (%v) — the "+
+			"correlation is what separates them, and collapsing it would refuse "+
+			"every self-join GROUP BY", err)
+	}
+
+	// A single key can never be ambiguous with itself: the guard compares
+	// DISTINCT indices, and an off-by-one that compared i to i would refuse
+	// every grouped query in the corpus.
+	if err := groupByOutputConstructionPullUp(gpugAgg(gpugQualified("A", "K"))); err != nil {
+		t.Fatalf("a lone grouping key was refused (%v) — the guard is comparing a "+
+			"key against itself", err)
+	}
+}
+
+// TestGroupKeyPullUpGuard_FieldValueWalkRefusesAMultiMatch and its binder twin
+// drive the two post-aggregate guards that the construction guard has made
+// UNREACHABLE from SQL.
+//
+// MEASURED, and the population is stated because it is what makes these arms
+// load-bearing rather than decorative: over the whole
+// //pkg/relational/sqldriver target at 6158 subtests, the three post-aggregate
+// sites are consulted 797 times (binder 414, computed 360, FieldValue walk 23)
+// and NOT ONE consultation sees more than one match. The construction pull-up
+// refuses duplicates first, exactly as Java's ordering predicts.
+//
+// They are kept rather than deleted because Java keeps its asserts at every
+// pull-up site — Expressions.pullUp guards both construction and the SELECT
+// list, Expression.pullUp guards HAVING — and because a normalization change is
+// all that stands between "no duplicate reaches here" and "one does". Deleting
+// them would re-arm silent first-match at three sites at once. They are unit-
+// driven here so that "unreachable" never means "untested".
+func TestGroupKeyPullUpGuard_FieldValueWalkRefusesAMultiMatch(t *testing.T) {
+	t.Parallel()
+
+	agg := gpugAgg(gpugQualified("A", "K"), gpugQualified("A", "K"))
+	var amb groupKeyPullUpAmbiguity
+	out := rebasePostAggregateGroupKeyValue(gpugQualified("A", "K"), agg, &amb)
+
+	if !amb.hit {
+		t.Fatalf("a reference answering to BOTH equal grouping keys was bound "+
+			"instead of refused (got %T) — this walk is first-matching again", out)
+	}
+	if err := amb.err(); err == nil || !strings.Contains(err.Error(), "42702") {
+		t.Errorf("got %v, want 42702", err)
+	}
+}
+
+func TestGroupKeyPullUpGuard_ExactBoundaryBinderRefusesAMultiMatch(t *testing.T) {
+	t.Parallel()
+
+	agg := gpugAgg(gpugQualified("A", "K"), gpugQualified("A", "K"))
+	_, err := bindPostAggregateValueToNativeOrdinals(gpugQualified("A", "K"), agg)
+	if err == nil {
+		t.Fatal("the exact-boundary binder bound a reference that answers to TWO " +
+			"grouping keys; this is the site Java's SELECT-list assert guards " +
+			"(Expressions.java:112)")
+	}
+	if !strings.Contains(err.Error(), "42702") {
+		t.Errorf("got %v, want 42702", err)
+	}
+}
+
+// TestGroupKeyPullUpGuard_BinderStillBindsAUniqueMatch is the binder's control,
+// and it asserts the SLOT rather than merely that something bound: the key's
+// index in GroupKeys IS its output ordinal, and a binder pinned to 0 would pass
+// any weaker check.
+func TestGroupKeyPullUpGuard_BinderStillBindsAUniqueMatch(t *testing.T) {
+	t.Parallel()
+
+	agg := gpugAgg(gpugQualified("A", "OTHER"), gpugQualified("A", "K"))
+	out, err := bindPostAggregateValueToNativeOrdinals(gpugQualified("A", "K"), agg)
+	if err != nil {
+		t.Fatalf("a unique match was refused: %v", err)
+	}
+	fv, bound := out.(*values.FieldValue)
+	if !bound || fv.Resolved == nil {
+		t.Fatalf("a unique match did not bind to an ordinal: got %T", out)
+	}
+	if fv.Resolved.Last().Ordinal != 1 {
+		t.Errorf("bound to ordinal %d, want 1 — the key's index in GroupKeys is "+
+			"its slot in the [keys..., aggregates...] output row",
+			fv.Resolved.Last().Ordinal)
+	}
+}
