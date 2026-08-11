@@ -23,6 +23,7 @@ go_test(
         "dst_seam_gate_test.go",
         "duec_wallclock_gate_scope_test.go",
         "field_debt_authority_test.go",
+        "field_debt_rfc_census_test.go",
         "field_decision_site_key_test.go",
         "field_name_decision_detector_test.go",
         "field_name_decision_test.go",

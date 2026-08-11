@@ -17583,3 +17583,65 @@ None is speculative: each was re-verified against the tree before booking.
   something other than interface satisfaction order — the path's own arity or an
   explicit carrier kind — so "both interfaces" stops being resolved by which
   `if` was written first.
+
+- [ ] **RFC-197 field-name debt: the `dotted` ordering constraint was refuted, and
+  the RFC's own census had rotted.** Booked as one block; three findings, two of
+  them corrections to things that were written down and believed.
+
+  **(1) The wrong-rows hazard that gated the whole migration is CLOSED and
+  PINNED.** `knownFieldDecisionDebt`'s `groupByOutputBaker # a map key … # 3`
+  entry recorded that `groupByOutputOrdinals`' map is last-wins
+  (`keys[full] = ord`), so two group keys sharing a leaf collapse to one slot,
+  and that they were separated *only* because the name channel still carried the
+  qualifier — i.e. that retiring `dotted:` would ARM a wrong-rows bug. That was
+  the stated reason to sequence `dotted` last. **It is no longer true.**
+  `groupKeyOrdinalByStructure` (`pkg/relational/core/query/cascades_translator.go`)
+  decides WHICH key a reference is from the two Values (`SameColumnPath` +
+  `sameQuantifierRoot`) and overrides the last-wins slot at both baker arms and at
+  the ORDER BY consumer `sortKeyAggregateOutputSlot`. It is already pinned in the
+  POST-DOTTED state:
+  `pkg/relational/core/query/group_key_structural_ordinal_test.go` builds the maps
+  with the qualified aliases `O.K`/`I.K` deliberately ABSENT. Three disjoint
+  mutations, each reddening only its own arm (`sort_key_arm`,
+  `qualifier_stripped_arm`, `direct_leaf_arm`), each confirmed landed via
+  `git diff --stat` before running. A refuted blocker must LOWER the estimate for
+  the dotted representation change, not leave it standing.
+  **Residual, falsifiable:** the structural decider declines when either side has
+  `Resolved == nil`, and on a decline last-wins is the sole decider again. The
+  entry retires when every reference reaching `groupByOutputBaker` carries a
+  non-nil `Resolved`. Falsify by finding a lazy `FieldValue` arriving at the site.
+
+  **(2) The `dotted`-as-keystone reading is wrong at bucket granularity.** Two
+  edges run BACKWARDS — a `dotted:` site downstream of another bucket's producer:
+  `AccessorNamePath` is downstream of `explainValueOrdinals` (`contract:`) via
+  `plans/ordering.go:985` (fixing that one producer took the lazy-render mint
+  class 21865 → 0 and the arm's declines 4 → 1, touching nothing in `dotted:`);
+  and `clusterFieldResolvable` / `clusterSeedSlotByName` compare against strings
+  minted by 8 `translator:` sites (`logical_predicate.go`'s
+  `projCol{name: qual + "." + bare}`). The claim holds for one SUB-CHANNEL, which
+  is where the leverage is: killing `rebaseUnnestOuterLegPredicate`'s mint
+  (`cascades_translator.go:3925`) mechanically retires FOUR readers —
+  `groupByOutputBaker`'s qualification probe, `rebaseOuterLegValueOrdinal`'s
+  default arm, `rebaseOuterLegValue`, `legRef`. Decomposition of the 12 `dotted`
+  authorities: 5 downstream of a dotted mint, 2 downstream of other buckets, 5
+  independent or self-paired. Recorded in RFC-197 `## Order` →
+  "Dependency order, measured".
+
+  **(3) RFC-197's census had rotted three ways at once, and nothing checked it.**
+  `TestFieldDebtBucketsArePartition` checks the group headers INSIDE
+  `knownFieldDecisionDebt` and NOT the RFC's copies, which is exactly why one
+  rotted and the other did not. The RFC claimed 52 escape sites over 34
+  authorities against a measured 44 over 33; its own per-bucket numbers summed to
+  43 rather than the 52 the same paragraph stated; and its largest named
+  concentration, `AggregateResultColumnName` at "6 of 52", had retired to ZERO
+  entries without the sentence moving. Fixed by making them the SAME fact rather
+  than two copies: the RFC carries the census as marked markdown tables and
+  `pkg/docscheck/field_debt_rfc_census_test.go` parses them and fails the build on
+  drift, in BOTH directions (a wrong number, a bucket omitted, a retired
+  authority still listed, or a new concentration nobody wrote down). Mutation-
+  proven on two disjoint arms.
+
+  **Method note worth keeping.** Counting these entries per LINE is wrong — 24 of
+  the 44 wrap their `: {` onto a later line, so `^\t"pkg/.*": \{` returns 20. The
+  `go/ast` parse of the map literal returns 44 and agrees with the instrument's
+  own escape total by an independent route; prefer it to any regex.

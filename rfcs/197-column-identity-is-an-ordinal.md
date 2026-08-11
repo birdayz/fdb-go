@@ -988,9 +988,36 @@ group headers, not off the per-item paragraphs above, which carry the size each
 bucket had when it was written. `pkg/docscheck` remains the authority for all
 of them.
 
-**The residual is 34 AUTHORITIES (52 escape sites).** Two numbers over one key
+**The residual is 33 AUTHORITIES (44 escape sites).** Two numbers over one key
 set, and the bucket sizes in this list are the SECOND one — escapes, because that
 is what the list stores and what the group headers claim.
+
+The table below is CHECKED, not asserted. `TestFieldDebtRFCCensusMatchesTheInstrument`
+(`pkg/docscheck/field_debt_rfc_census_test.go`) parses it and fails the build when
+it drifts from `knownFieldDecisionDebt`. That gate exists because this section
+rotted in three ways at once while the in-file group headers stayed green: it
+claimed 52 escapes over 34 authorities against a measured 44 over 33, its own
+per-bucket numbers summed to 43 rather than the 52 the same paragraph stated, and
+its largest named concentration had retired to zero without the sentence moving.
+Two durable homes for one fact is worse than one, so they are now the same fact.
+
+<!-- FIELD-DEBT-CENSUS -->
+
+| bucket | authorities | escapes |
+| --- | --- | --- |
+| boundary | 1 | 2 |
+| contract | 8 | 12 |
+| dotted | 12 | 13 |
+| harness | 1 | 1 |
+| name-keyed | 4 | 4 |
+| translator | 9 | 12 |
+| TOTAL | 33 | 44 |
+
+The per-bucket authority column sums to 35 against 33 distinct overall, because
+two declarations owe debt in more than one bucket — `deriveColumnsFromProjection`
+(dotted + translator) and `groupByOutputBaker` (contract + dotted). That is legal
+and is reported rather than absorbed, so the difference is never mistaken for an
+arithmetic slip.
 
 - An **escape** is one site where a name can leave typed context. It must stay
   per-site: fix five of six return arms in one switch and the sixth is a live
@@ -998,11 +1025,23 @@ is what the list stores and what the group headers claim.
 - An **authority** is the declaration that owns it. It is the number that
   answers "how much work remains", because a fix lands on a declaration.
 
-They differ by concentration rather than noise — four authorities carry 18 of the
-52 (`AggregateResultColumnName` 6, `groupByOutputBaker` 5,
-`deriveColumnsFromProjection` 4, `explainValueOrdinals` 3), and the other thirty
-sit near 1:1. So a bucket of 15 escapes is not 15 pieces of work, and reading it
-as such over-states what is left.
+They differ by concentration rather than noise — three authorities carry 12 of
+the 44, and the other thirty sit at or near 1:1. So a bucket of 13 escapes is not
+13 pieces of work, and reading it as such over-states what is left.
+
+<!-- FIELD-DEBT-CONCENTRATION -->
+
+| authority | escapes |
+| --- | --- |
+| `groupByOutputBaker` | 5 |
+| `deriveColumnsFromProjection` | 4 |
+| `explainValueOrdinals` | 3 |
+
+`AggregateResultColumnName` used to head this table at 6 escapes and is GONE: its
+last entry retired and the sentence naming it did not move, which is why
+`TestFieldDebtRFCConcentrationMatchesTheInstrument` now fails on a listed
+authority that carries nothing. The same gate refuses a NEW concentration that
+nobody wrote down, so the table cannot rot in either direction.
 
 Both are derived from the same keys, which became possible only when the site key
 gained the declaration as a first-class segment; before that this needed a second
@@ -1033,21 +1072,80 @@ entry's reason, never on the key's form segment.
    declaration index is unproven per producer.
 2. escape (0, MIGRATED): key structs; killed the caller-side blindness the gate
    cannot reach.
-3. name-keyed (3, was 15): including the 4151 probe-first defect check; 6188 is
+3. name-keyed (4, was 15): including the 4151 probe-first defect check; 6188 is
    the same two-Values shape and travels with it. The three that remain are each
    blocked on something outside the bucket — memo interning of lazy carriers,
    constraint-growth coupling in the planner, and resolver-side baking of a
    projection-output reference.
-4. translator (15, was 17): boundary demonstrations. The allowlist did NOT grow —
+4. translator (12, was 17): boundary demonstrations. The allowlist did NOT grow —
    all eleven remaining sites were read against the two legs and none passes
    both; two more left by deletion as unreachable.
-5. contract (15, was 11): the coordinated naming-contract change. It GREW: the
+5. contract (12, was 11): the coordinated naming-contract change. It GREW: the
    launderer widening surfaced the readers the original sizing had missed, and
    the JDBC label site left by being fixed rather than exempted.
-6. dotted (7, was 15): producer-side channel removal. Four sites were retagged
-   `translator:` and four migrated with item 6's producers.
+6. dotted (13, was 7, earlier 15): producer-side channel removal. It fell to 7 as
+   four sites were retagged `translator:` and four migrated with this item's
+   producers, then ROSE to 13 — not a regression. This bucket is ordered
+   PRODUCER-FIRST, and the detector could originally only see READERS, so every
+   MINT arm was debt nobody was counting. Making the mints visible is what a
+   producer-first migration is supposed to do; a bucket that shrank while its
+   producers stayed invisible was the misleading number, not this one.
 
 harness stays at 1 and is out of scope for the engine work.
+
+### Dependency order, measured — and the keystone claim it refutes
+
+The natural reading of the bucket list is that `dotted` is a keystone: retire the
+flat `"ALIAS.col"` channel and `contract` plus `translator` fall out behind it.
+**That is wrong as stated, and it is recorded here because it is the conclusion a
+reader re-derives from the bucket names alone.** The dependency runs at
+SUB-CHANNEL granularity, not bucket granularity, and two edges run BACKWARDS.
+
+**Two reversed edges — a `dotted:` site downstream of another bucket's producer:**
+
+- `AccessorNamePath` (`values/accessor_name_path.go`, `dotted:`) is downstream of
+  `explainValueOrdinals` (`contract:`). Its dotted witnesses were EXPLAIN renders
+  leaking in through `plans/ordering.go:985`, which re-minted a lazy `FieldValue`
+  from a display string while the baked identity sat unread beside it. Fixing
+  that ONE contract-bucket producer took the lazy-render mint class 21865 → 0 and
+  the arm's declines 4 → 1, with nothing in `dotted:` touched.
+- `clusterFieldResolvable` / `clusterSeedSlotByName`
+  (`query/clustered_outer_scalar.go`, `dotted:`) compare against strings minted by
+  8 `translator:`-bucket sites (`logical_predicate.go`'s
+  `projCol{name: qual + "." + bare}`). Converting the seed representation alone
+  leaves the other side of the comparison translator-produced, so the site does
+  not retire.
+
+**The claim holds for one sub-channel, and that is where the leverage is.**
+Killing `rebaseUnnestOuterLegPredicate`'s mint
+(`query/cascades_translator.go:3925`, the merged-QOV leg channel) mechanically
+retires FOUR readers at once: `groupByOutputBaker`'s qualification probe,
+`rebaseOuterLegValueOrdinal`'s default arm, `rebaseOuterLegValue`, and `legRef`.
+That is the single highest-leverage kill in the whole list — one producer, four
+entries — and it is the piece the bucket-level reading obscures, because all five
+sit in the same bucket and look like five independent fixes.
+
+**Decomposition of the 12 `dotted` authorities:** 5 downstream of a dotted mint
+(the merged-QOV channel above, plus the group-by alias pair), 2 downstream of
+other buckets (the two reversed edges), 5 independent or self-paired.
+
+**The ordering constraint that used to gate all of this is GONE.** The stated
+reason to sequence `dotted` last was a live wrong-rows hazard:
+`groupByOutputOrdinals`' name map is last-wins (`keys[full] = ord`), so two group
+keys sharing a leaf collapse to one slot, and the argument was that they were
+separated only because the name channel still carried the qualifier — making
+dotted's debt load-bearing for correctness. **That is no longer true.**
+`groupKeyOrdinalByStructure` decides WHICH key a reference is from the two Values
+(`SameColumnPath` + `sameQuantifierRoot`) and overrides the last-wins slot at both
+baker arms and at the ORDER BY consumer. It is pinned IN THE POST-DOTTED STATE:
+`group_key_structural_ordinal_test.go` builds the maps with the qualified aliases
+`O.K`/`I.K` deliberately ABSENT — the world where the name channel no longer
+carries the qualifier — and each of the three arms is detected by its own
+mutation. So the ordinal-identity replacement the constraint was waiting for is
+already in place, and a refuted blocker must LOWER the estimate rather than leave
+it standing. What survives is narrow and falsifiable: the structural decider
+declines when either side has `Resolved == nil`, and on a decline last-wins is the
+sole decider again.
 
 ## Rejected alternatives
 
