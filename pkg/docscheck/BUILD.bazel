@@ -10,6 +10,7 @@ go_library(
 go_test(
     name = "docscheck_test",
     srcs = [
+        "accessor_arity_census_test.go",
         "api_parity_options_test.go",
         "build_constrained_filename_test.go",
         "build_membership_test.go",
