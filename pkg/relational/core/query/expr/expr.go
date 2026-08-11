@@ -291,14 +291,15 @@ func (r *Resolver) ResolveIdentifierPath(segs []semantic.Identifier) (values.Val
 	// keeps the descent additive: the layout the root ordinal indexes, the
 	// correlation it binds and the pin it carries are all decided by the
 	// arms below, and the nested steps ride along as a suffix.
+	//
+	// The chain is handed to resolveScopedColumn rather than applied to its
+	// result: an unfused root is not a value any caller of that function can
+	// obtain, so forgetting the descent is not a thing this call site can do.
+	refID := id
 	if len(accessors) > 0 {
-		root, rerr := r.resolveScopedColumn(col, src, qualifier, col.Id)
-		if rerr != nil {
-			return nil, rerr
-		}
-		return fuseNestedAccessors(root, accessors)
+		refID = col.Id
 	}
-	return r.resolveScopedColumn(col, src, qualifier, id)
+	return r.resolveScopedColumn(col, src, qualifier, refID, accessors)
 }
 
 // fuseNestedAccessorsIfAny is fuseNestedAccessors for the mints that may or may
@@ -367,7 +368,15 @@ func (e *NestedDescentError) Error() string {
 // direct column, and the STRUCT column's name for a reference that descends
 // into one, because it is the struct column whose presence decides whether the
 // resolution fell through to a parent scope.
-func (r *Resolver) resolveScopedColumn(col semantic.Column, src semantic.ScopeSource, qualifier, refID semantic.Identifier) (values.Value, error) {
+//
+// accessors is the descent the reference spelled, and it is a REQUIRED
+// parameter rather than something the caller applies afterwards. Every arm
+// below returns through the fuse, so the root each arm builds is a local that
+// no caller can reach — the same shape Java has, where lookupNestedField's
+// accessor list is a local (SemanticAnalyzer.java:578-597) and only the fused
+// Expression escapes (SemanticAnalyzer.java:598-601). An empty chain is the
+// ordinary flat reference and fuses to the root unchanged.
+func (r *Resolver) resolveScopedColumn(col semantic.Column, src semantic.ScopeSource, qualifier, refID semantic.Identifier, accessors []semantic.NestedAccessor) (values.Value, error) {
 	id := refID
 	// Resolve to the OUTPUT column name verbatim (Java's SemanticAnalyzer.lookup
 	// returns the output attribute as-is; FieldValue is indexed by the output
@@ -419,7 +428,6 @@ func (r *Resolver) resolveScopedColumn(col semantic.Column, src semantic.ScopeSo
 			}
 			return nil, &semantic.CorrelatedShadowError{Qualifier: qualifier.Name(), Field: field}
 		}
-		corrID := values.NamedCorrelationIdentifier(src.CorrelationName)
 		// The CORRELATED arm binds the SOURCE-RELATIVE ordinal at
 		// construction (Java's FieldValue.ofFieldName against the referent's
 		// result type). The node is SourceRelativeBaked — UNPINNED and
@@ -430,28 +438,7 @@ func (r *Resolver) resolveScopedColumn(col semantic.Column, src semantic.ScopeSo
 		// reads the same slot a name lookup would have found. Unresolvable
 		// (computed alias, empty derived-table catalog) is LOUD at plan
 		// time (UnresolvableOrdinalError — born-baked, slice 2).
-		if ord, flowed, domain, ok := sourceColumnOrdinal(src, field); ok {
-			// The quantifier object CARRIES the row it flows, as Java's always
-			// does (Quantifier.java:801-803). It used to be minted untyped, and
-			// the cost was measured rather than theoretical: every consumer that
-			// derives a frontier from this child — `legSlotIdentity` and the
-			// join-rebase machinery through it — got an UNKNOWN domain and
-			// declined the reference, beside the correct ordinal stamped on its
-			// own path one argument later. All 126 leg-correlated reads on the
-			// real-FDB corpus declined that way, which is what left the
-			// qualified-name channel carrying reads that already knew their slot.
-			//
-			// What "the row it flows" IS for this source is sourceColumnOrdinal's
-			// answer, not this call site's — see flowedTypeFor.
-			return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-				values.NewQuantifiedObjectValueOfType(corrID, flowed),
-				field,
-				ord,
-				columnCascadesType(col),
-				domain,
-			), nil
-		}
-		return nil, &UnresolvableOrdinalError{Field: field, Source: src.CorrelationName}
+		return correlatedColumnRef(col, src, accessors)
 	}
 	// Bind the LOGICAL ordinal at plan time (Java's FieldValue.ofFieldName
 	// resolving against the referent's result type, FieldValue.java:273-299).
@@ -466,10 +453,7 @@ func (r *Resolver) resolveScopedColumn(col semantic.Column, src semantic.ScopeSo
 	// The row type is discarded here and only here: this arm emits a CHILDLESS
 	// (source-relative) reference, which has no quantifier object to carry it.
 	// Its domain still states the layout the ordinal indexes.
-	if ord, _, domain, ok := sourceColumnOrdinal(src, field); ok {
-		return values.NewFieldValueWithResolvedOrdinalInDomain(field, ord, columnCascadesType(col), domain), nil
-	}
-	return nil, &UnresolvableOrdinalError{Field: field, Source: src.Alias.Name()}
+	return sourceRelativeColumnRef(col, src, accessors)
 }
 
 // UnresolvableOrdinalError reports a column resolution whose source
@@ -587,6 +571,100 @@ func sourceColumnOrdinal(src semantic.ScopeSource, field string) (int, values.Ty
 	return 0, nil, values.OrdinalDomain{}, false
 }
 
+// sourceRelativeColumnRef is THE mint for a column reference that needs no
+// correlation — the CHILDLESS (source-relative) shape, emitted when a single
+// unambiguous source resolves the name.
+//
+// Like correlatedColumnRef it takes the descent as a REQUIRED parameter and
+// returns only the fused value; the two mints are deliberately the same shape
+// so that "which mint" is a question about the reference's correlation and
+// never a question about whether the descent survives.
+func sourceRelativeColumnRef(col semantic.Column, src semantic.ScopeSource, accessors []semantic.NestedAccessor) (values.Value, error) {
+	field := col.Id.Name()
+	// The row type is discarded here and ONLY here: this arm emits a childless
+	// reference, which has no quantifier object to carry it. Its domain still
+	// states the layout the ordinal indexes.
+	ord, _, domain, ok := sourceColumnOrdinal(src, field)
+	if !ok {
+		return nil, &UnresolvableOrdinalError{Field: field, Source: src.Alias.Name()}
+	}
+	root := values.NewFieldValueWithResolvedOrdinalInDomain(field, ord, columnCascadesType(col), domain)
+	return fuseNestedAccessorsIfAny(root, accessors)
+}
+
+// correlatedColumnRef is THE mint for a column reference that binds a
+// CORRELATED source. Every such reference in this package is born here: the
+// root read the (col, src) pair names, with the descent the reference spelled
+// already fused onto it.
+//
+// The accessor chain is a REQUIRED parameter and the root is a LOCAL, so the
+// function has no signature by which a caller could obtain a root and forget
+// the descent. That is the whole point of it existing, and it is Java's shape
+// rather than an invention: lookupNestedField builds its accessor list as a
+// local (SemanticAnalyzer.java:578-597), resolves the field path and fuses it
+// onto the existing expression, and returns only the fused Expression
+// (SemanticAnalyzer.java:598-601). Nothing in Java's tree can hold the chain
+// apart from the value it belongs to. Go's analyzer, by contrast, RETURNS the
+// chain to its callers — that is the one structural difference that made a
+// wrong-column read expressible at all, and this function is where it stops.
+// Minting the root alone reads the whole struct where a member was named,
+// which no error reports and which a client scanning into `any` cannot see.
+//
+// THE FLOWED TYPE IS NOT THIS FUNCTION'S DECISION, AND IT WAS NEVER THE CALL
+// SITES' EITHER. The two mints this replaces documented their `flowed`
+// argument differently, which read like two rules needing a parameter to keep
+// apart. They are one rule. Both passed sourceColumnOrdinal's answer through
+// unmodified; neither computed anything. What differed was only what each
+// caller could LOCALLY PROVE about that answer:
+//
+//   - the projection mint said it does not get to decide the question, because
+//     a later-dup leg can also be a lateral unnest's binding, so it could not
+//     rule out a shadowing source;
+//   - the shadowing mint said it is reached only for a shadowing source, so the
+//     answer is always UNKNOWN — the element is a scalar, never the virtual
+//     one-column row that made its name resolve.
+//
+// The second is an observation about a caller's precondition, not a different
+// construction rule: it predicts which branch of flowedTypeFor will be taken,
+// and predicting a decision is not making one. The decision itself has a single
+// site — flowedTypeFor, reached once per resolution through sourceColumnOrdinal,
+// whose own contract is that "the shadowing narrowing is applied here once, for
+// everyone, by construction". So there is nothing here to parameterize; a flag
+// varying it would give call sites a way to override a decision neither of them
+// was making. Both arms are driven through this one mint by test, because a rule
+// asserted to be shared and exercised on one arm is a rule with an untested arm.
+//
+// The DOMAIN is likewise sourceColumnOrdinal's answer, unnarrowed, for the
+// reason flowedTypeFor states: the domain names the layout the ordinal indexes,
+// which is the virtual table's column list either way.
+func correlatedColumnRef(col semantic.Column, src semantic.ScopeSource, accessors []semantic.NestedAccessor) (values.Value, error) {
+	// OUTPUT column name verbatim (see ResolveIdentifier).
+	field := col.Id.Name()
+	ord, flowed, domain, ok := sourceColumnOrdinal(src, field)
+	if !ok {
+		// Unresolvable (computed alias, empty derived-table catalog) is LOUD at
+		// plan time — never a lazy FieldValue that dies later as a runtime
+		// OrdinalResolutionError or, worse, reads by name.
+		return nil, &UnresolvableOrdinalError{Field: field, Source: src.CorrelationName}
+	}
+	// The quantifier object CARRIES the row it flows, as Java's always does
+	// (Quantifier.java:801-803). It used to be minted untyped, and the cost was
+	// measured rather than theoretical: every consumer that derives a frontier
+	// from this child — `legSlotIdentity` and the join-rebase machinery through
+	// it — got an UNKNOWN domain and declined the reference, beside the correct
+	// ordinal stamped on its own path one argument later. All 126 leg-correlated
+	// reads on the real-FDB corpus declined that way, which is what left the
+	// qualified-name channel carrying reads that already knew their slot.
+	root := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+		values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(src.CorrelationName), flowed),
+		field,
+		ord,
+		columnCascadesType(col),
+		domain,
+	)
+	return fuseNestedAccessorsIfAny(root, accessors)
+}
+
 // ResolveQualifiedProjection resolves a QUALIFIED projection reference on the
 // join path: it ALWAYS runs the per-attribute ambiguity check (Java's 42702)
 // and returns a non-nil Value only when the reference binds to a LATER
@@ -642,29 +720,12 @@ func (r *Resolver) ResolveQualifiedProjectionPath(segs []semantic.Identifier) (v
 	// flat-name projection mint).
 	// A dup-alias branch under UNION ALL reaches here too and bakes the
 	// same per-binding way — no upstream decline remains.
-	if ord, flowed, domain, ok := sourceColumnOrdinal(src, col.Id.Name()); ok {
-		// The quantifier object states the flowed type sourceColumnOrdinal
-		// answers — which is NOT the declared row for a shadowing source. A
-		// later-dup leg can also be a lateral unnest's binding, so this mint is
-		// as much a shadowing mint as ResolveColumnShadowingQualified is; it
-		// does not get to decide the question locally (flowedTypeFor).
-		root := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-			values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(src.CorrelationName), flowed),
-			col.Id.Name(),
-			ord,
-			columnCascadesType(col),
-			domain,
-		)
-		// A reference that DESCENDED into a struct column resolves to the leaf,
-		// and the descent is fused onto the root here for the same reason it is
-		// fused in ResolveIdentifier: Java's lookupNestedField never hands a
-		// caller a root plus a chain to apply — it returns the already-fused
-		// value and the LEAF's type (SemanticAnalyzer.java:599-600). Minting the
-		// root alone reads the whole struct where a member was asked for, which
-		// is a wrong-column read that no error reports.
-		return fuseNestedAccessorsIfAny(root, accessors)
-	}
-	return nil, &UnresolvableOrdinalError{Field: col.Id.Name(), Source: src.CorrelationName}
+	// This mint is as much a shadowing mint as ResolveColumnShadowingQualified
+	// is — a later-dup leg can also be a lateral unnest's binding — so it does
+	// not get to decide the flowed type locally, and it no longer has anywhere
+	// to state one: correlatedColumnRef owns the whole construction, descent
+	// included.
+	return correlatedColumnRef(col, src, accessors)
 }
 
 // QualifierIsDuplicated reports whether the given qualifier ALIAS names MORE
@@ -711,35 +772,19 @@ func (r *Resolver) ResolveColumnShadowingQualified(qualifier, id semantic.Identi
 	if !src.Shadowing || src.CorrelationName == "" {
 		return nil, false, nil
 	}
-	// OUTPUT column name verbatim (see ResolveIdentifier).
-	field := col.Id.Name()
-	corrID := values.NamedCorrelationIdentifier(src.CorrelationName)
-	// Bind the source-relative ordinal at construction when the shadowing
-	// source's declared column order resolves it (see ResolveIdentifier's
-	// correlated arm); unresolvable is LOUD at plan time (born-baked).
-	if ord, flowed, domain, ok := sourceColumnOrdinal(src, field); ok {
-		// This helper is reached ONLY for a shadowing source (the guard above),
-		// so the flowed type sourceColumnOrdinal answers here is always
-		// UNKNOWN — the element is a scalar, never the virtual one-column row
-		// that made its name resolve (flowedTypeFor). Stating that row instead
-		// makes values.IsMixedSeedElementType read the element as a join leg.
-		root := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-			values.NewQuantifiedObjectValueOfType(corrID, flowed),
-			field,
-			ord,
-			columnCascadesType(col),
-			domain,
-		)
-		// Fused for the same reason as in ResolveQualifiedProjection: a descent
-		// into a struct denotes the LEAF, and Java's lookupNestedField returns it
-		// already fused (SemanticAnalyzer.java:599-600).
-		fused, ferr := fuseNestedAccessorsIfAny(root, accessors)
-		if ferr != nil {
-			return nil, false, ferr
-		}
-		return fused, true, nil
+	// This helper is reached ONLY for a shadowing source (the guard above), so
+	// the flowed type correlatedColumnRef states here is always UNKNOWN — the
+	// element is a scalar, never the virtual one-column row that made its name
+	// resolve (flowedTypeFor). Stating that row instead makes
+	// values.IsMixedSeedElementType read the element as a join leg. That is a
+	// PREDICTION about which branch flowedTypeFor takes for a shadowing source,
+	// not a second construction rule: the mint is the same one the projection
+	// path uses, and neither caller states a flowed type of its own.
+	v, err := correlatedColumnRef(col, src, accessors)
+	if err != nil {
+		return nil, false, err
 	}
-	return nil, false, &UnresolvableOrdinalError{Field: field, Source: src.CorrelationName}
+	return v, true, nil
 }
 
 // ResolveArithmetic wraps left/right Values in a cascades
