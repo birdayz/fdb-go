@@ -109,24 +109,30 @@ package javacorpus_test
 // THE ALARM ON THAT ENTRY IS NOW INVERTED: 4 is the steady state and 6 coming
 // back means the resolver regressed at the DDL, not that a file was added.
 //
-// groupby-tests.yamsql then rests on `engine-gap:nested-path-group-key`, a NEW
-// class for a grouping key that descends into a struct column. It is NOT a
-// re-skip of the file this commit just unblocked: the file executes 33 of its
-// 44 queries before the block's shuffle reaches the refusal and aborts, and
-// those 33 are in the `queries` total above — booked and unbooked both measure
-// queries=1775, so the entry moves the file's STATUS and not its coverage. That
-// is the whole difference from the queries=0 DDL state it came from. RFC-230's
-// upgradeAggregateOperands arm retires it; see the entry in gaps.go for what
-// goes red when it lands.
+// groupby-tests.yamsql then rested on `engine-gap:nested-path-group-key` for
+// one revision, and RFC-230 RETIRED that class entirely: a grouping key that
+// descends into a struct column now answers, the file passes outright, and the
+// class is deleted rather than emptied — a label nothing emits reads as a
+// covered case.
 //
-// `pass` 68 → 69 is nested-with-nulls.yamsql, which now runs and passes
-// outright.
-const pinnedLedger = "pass=69 fail=0 skip=169 queries=1775 file_skips{conformance:go-accepts-what-java-rejects=4," +
+// THAT RETIREMENT IS WHERE THIS REVISION'S `queries` JUMP COMES FROM
+// (1775 → 1952), and the mechanism is worth stating because the previous
+// revision's note says the opposite about a booking. A gap ENTRY cannot move
+// `queries` — Census.accumulate adds f.QueriesRun outside the status switch, so
+// booked and unbooked measured the same 1775. What moved coverage is that the
+// file no longer ABORTS: its block used to run 33 of 44 queries and stop at the
+// refusal on line 61, taking every later block with it. All of it runs now, and
+// the inner_skips that grew (plan-assertion 787 → 828, prepared 218 → 219,
+// continuation 34 → 36) are the per-query classes of the part that had never
+// executed.
+//
+// `pass` 69 → 70 is groupby-tests.yamsql itself.
+const pinnedLedger = "pass=70 fail=0 skip=168 queries=1952 file_skips{conformance:go-accepts-what-java-rejects=4," +
 	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
 	"engine-gap:correlated-exists-setop=1,engine-gap:derived-table-join-on=1," +
 	"engine-gap:dml-returning-result-set=2,engine-gap:error-class=2," +
 	"engine-gap:inline-values-table=1,engine-gap:multiple-lateral-unnests=1," +
-	"engine-gap:nested-path-group-key=1,engine-gap:nested-recursive-with=2," +
+	"engine-gap:nested-recursive-with=2," +
 	"engine-gap:planner-declines=6,engine-gap:result-metadata=3," +
 	"engine-gap:returning-dry-run=1,engine-gap:serialization-options=1," +
 	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=1,fragment=2," +
@@ -141,15 +147,15 @@ const pinnedLedger = "pass=69 fail=0 skip=169 queries=1775 file_skips{conformanc
 	"engine-gap:correlated-exists-setop=1,engine-gap:derived-table-join-on=1," +
 	"engine-gap:dml-returning-result-set=2,engine-gap:error-class=2," +
 	"engine-gap:inline-values-table=1,engine-gap:multiple-lateral-unnests=1," +
-	"engine-gap:nested-path-group-key=1,engine-gap:nested-recursive-with=2," +
+	"engine-gap:nested-recursive-with=2," +
 	"engine-gap:planner-declines=6,engine-gap:result-metadata=3," +
 	"engine-gap:returning-dry-run=1,engine-gap:serialization-options=1," +
 	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=1," +
-	"no-checks=8,plan-assertion=787,polarity:negative-execution=26," +
+	"no-checks=8,plan-assertion=828,polarity:negative-execution=26," +
 	"unsupported-DDL:function=11,unsupported-DDL:other=11," +
 	"unsupported-DDL:struct-index=4,unsupported:check-cache=145," +
-	"unsupported:continuation=34,unsupported:debugger=3," +
-	"unsupported:multi-cluster=2,unsupported:prepared=218," +
+	"unsupported:continuation=36,unsupported:debugger=3," +
+	"unsupported:multi-cluster=2,unsupported:prepared=219," +
 	"unsupported:random-injection=25,unsupported:result-metadata-nested=85," +
 	"unsupported:schema-command=16,unsupported:temporary-function=197}"
 
@@ -166,15 +172,14 @@ const pinnedFileTotal = 238
 // on mismatch the test dumps the full assignment, which is the artefact worth
 // diffing.
 //
-// THIS REVISION MOVED EXACTLY TWO LINES, and they were diffed rather than
-// re-blessed on the hash — the assignment was captured at the parent commit and
-// at this one and compared line by line:
+// THIS REVISION MOVED EXACTLY ONE LINE, and it was diffed rather than
+// re-blessed on the hash — the 238-line assignment was captured at the parent
+// commit (in a detached worktree, with this digest forced to mismatch so the
+// dump would be emitted) and at this one, sorted, and compared:
 //
-//	-groupby-tests.yamsql      skip unsupported-DDL:struct-index
-//	+groupby-tests.yamsql      skip engine-gap:nested-path-group-key
-//	-nested-with-nulls.yamsql  skip unsupported-DDL:struct-index
-//	+nested-with-nulls.yamsql  pass -
+//	-groupby-tests.yamsql  skip engine-gap:nested-path-group-key
+//	+groupby-tests.yamsql  pass -
 //
-// Both files were blocked at CREATE SCHEMA TEMPLATE by a three-segment
-// nested-path index; both now run. Nothing else moved and nothing swapped.
-const pinnedAssignmentDigest = "b7f9223cb11d368caa3e5ee0589092c1bf135498f437fa7e67d8d7e500d5e8d6"
+// Nothing else moved and nothing swapped. The file's grouping key descends into
+// a struct column, which now resolves.
+const pinnedAssignmentDigest = "c260e8748ec839555e143786a647f6d30561db1c19de69f7cafe814faa2eaf70"

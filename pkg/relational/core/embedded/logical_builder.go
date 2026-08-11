@@ -158,8 +158,16 @@ func buildAggregateOutputSlots(keys []logical.GroupKey, aggCols []aggSelectCol, 
 				switch {
 				case qualifierStripped:
 					// The builder deliberately collapsed a same-source
-					// qualifier on both the GroupKey and aggregate output.
-					same = !key.Qualified && strings.EqualFold(groupName, key.Bare)
+					// qualifier on both the GroupKey and aggregate output, so
+					// the two POST-STRIP renderings are the identity. It is
+					// Display rather than Bare because a key that DESCENDS into
+					// a struct keeps its segments through the strip
+					// (`a.r.v.z` -> Display "R.V.Z", Bare "Z"), and Bare alone
+					// would then name only the leaf — the slot went unbound and
+					// the projection failed its native-ordinal contract. For a
+					// flat stripped key Display and Bare are the same string,
+					// so this is the previous rule at that shape.
+					same = strings.EqualFold(groupName, key.Display)
 				case ac.groupColBare != "" && key.Bare != "":
 					same = ac.groupColQualified == key.Qualified &&
 						strings.EqualFold(ac.groupColBare, key.Bare) &&
@@ -587,10 +595,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		for i := range keys {
 			stripped := strip(keys[i].Display)
 			if stripped != keys[i].Display {
-				// The single-source prefix was baked away: the key is
-				// BARE from here on — stale qualification segments would
-				// chase a qualifier the runtime row no longer carries.
-				keys[i] = logical.GroupKey{Display: stripped, Bare: stripped}
+				keys[i] = stripGroupKeyLeadingSegment(keys[i], stripped)
 			}
 		}
 		aggCalls, hasDistinct := logicalAggregateCalls(sq.aggCols, sq.countStar, strip)

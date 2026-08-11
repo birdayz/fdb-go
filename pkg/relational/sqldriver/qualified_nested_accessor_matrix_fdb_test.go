@@ -91,33 +91,30 @@ func TestFDB_QualifiedNestedAccessorShapeMatrix(t *testing.T) {
 		// --- the self-building mints: duplicate alias forces the per-binding bake ---
 		{"dup_alias_select", "SELECT n.co FROM t1 AS a, t2 AS a ORDER BY id", "CO|300;200"},
 		{"dup_alias_order_by", "SELECT id, n.co FROM t1 AS a, t2 AS a ORDER BY n.co", "ID,CO|2 200;1 300"},
-		// GROUP BY never reaches the mint at all: an upstream gate refuses a
-		// nested grouping key outright, for every FROM shape. Pinned as the LOUD
-		// decline it is, not as rows — if that gate is ever lifted, this arm
-		// starts failing and the reference it then admits must be re-pointed at
-		// `CO|200;300`, because the GROUP BY qualified path
-		// (upgradeAggregateOperands) is one of the callers of the mint this file
-		// exists to guard.
+		// --- GROUP BY, which used to be refused outright and now mints ---
 		//
-		// THIS GATE IS ALSO WHAT KEEPS ONE FUSE UNREACHABLE. The group-key path
-		// is the ONLY caller that passes a NON-ZERO qualifier to
-		// ResolveColumnShadowingQualified; the other three pass a zero qualifier
-		// and the bare arm never descends. So this refusal, and the shadowing one
-		// below, are jointly the reason that helper's descent cannot fire from
-		// SQL. It is driven directly by
-		// TestShadowingQualifiedResolvesTheLeafNotTheStructRoot in the expr
-		// package — when this arm changes, that fuse goes live.
+		// These two arms were pinned as the LOUD decline an upstream gate spent
+		// on any nested grouping key, WITH the instruction that lifting the gate
+		// would fail them and the admitted reference must then be re-pointed at
+		// `CO|200;300`. That is exactly what happened, and exactly what they now
+		// assert — measured, not predicted. The GROUP BY qualified path
+		// (upgradeAggregateOperands) is one of the callers of the mint this file
+		// exists to guard, so these are the arms that put it under test.
+		//
+		// THE HARD FROM SHAPES ARE THE POINT. Both go through the ladder's
+		// struct-descent arm over a source the SELECT arms do not exercise: a
+		// DUPLICATE alias, where a childless bake would misread the other leg's
+		// slot over the merged row, and a lateral unnest binding whose element is
+		// a struct, where the reference's root is the unnest element rather than
+		// a base table. A key that bound the struct ROOT would show here as the
+		// column name `N`/`E` and a struct-shaped cell.
 		{
 			"dup_alias_group_by", "SELECT n.co FROM t1 AS a, t2 AS a GROUP BY n.co ORDER BY n.co",
-			`ERROR: 0AF00: grouping by the nested field "N.CO" is not supported`,
+			"CO|200;300",
 		},
-		// The same refusal over a SHADOWING source — a lateral unnest binding
-		// whose element is a struct. This is the exact reference shape that would
-		// reach ResolveColumnShadowingQualified's qualified arm, so it is the
-		// closest SQL gets to that fuse today.
 		{
 			"unnest_group_by_element_field", "SELECT e.co FROM t3, t3.arr AS e GROUP BY e.co ORDER BY e.co",
-			`ERROR: 0AF00: grouping by the nested field "E.CO" is not supported`,
+			"CO|200;300",
 		},
 	}
 

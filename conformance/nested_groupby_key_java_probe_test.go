@@ -6,11 +6,14 @@ package conformance_test
 // BY key that DESCENDS INTO a struct column, and for the three-segment
 // `alias.struct.member` spelling of the same descent.
 //
-// Why this exists: the pins in pkg/relational/sqldriver refuse a nested
-// grouping key with 0AF00 rather than 42703, on the grounds that Java gets such
-// a key PAST semantic analysis — so "undefined column" would misreport a
-// reference Java resolves. That was read out of the Java source. This probe
-// observes it instead, and the comments it backs cite these rows.
+// Why this exists: it decided an ERROR CODE, and then it decided a CAPABILITY.
+// The pins in pkg/relational/sqldriver once refused a nested grouping key with
+// 0AF00 rather than 42703, on the grounds that Java gets such a key PAST
+// semantic analysis — read out of the Java source, and observed here instead.
+// Those same rows then measured what the refusal cost, and RFC-230 closed it:
+// Go ANSWERS a nested grouping key now, so this file measures AGREEMENT rather
+// than a gap. Its structure is deliberately unchanged, which is what lets the
+// before and the after be compared cell by cell.
 //
 // WHICH ROWS CARRY THAT CONCLUSION. Two of them, and neither depends on whether
 // the planner could find an access path — which matters because index
@@ -21,13 +24,13 @@ package conformance_test
 //   - nested_select_control (`SELECT n.sk FROM T_NG1`) is answered by both. The
 //     reference is well-formed, so 42703 would name a column that exists.
 //
-// indexed_nested_key makes the conclusion STRONGER than a layer argument.
-// MEASURED live, not inferred: with an index over the path,
-// `SELECT COUNT(*) FROM T_NG3 GROUP BY n.sk` returns [[2] [1]] out of Java
-// while Go answers 0AF00, and the flat twin `GROUP BY k` over its own index
-// returns the same [[2] [1]] from both. Java HAS the capability; Go lacks it.
-// That is what UNSUPPORTED_QUERY means and precisely what UNDEFINED_COLUMN
-// would misreport.
+// indexed_nested_key is the row that carried the capability claim, and it has
+// INVERTED. MEASURED live, not inferred: with an index over the path,
+// `SELECT COUNT(*) FROM T_NG3 GROUP BY n.sk` returns [[2] [1]] out of Java, and
+// Go now returns the same [[2] [1]] — as does the flat twin `GROUP BY k` over
+// its own index, from both engines. Java HAD a capability Go lacked; it no
+// longer does, and the row that measured the gap is the row that measures its
+// closure.
 //
 // INDEX AVAILABILITY IS THE OPERATIVE VARIABLE, and it is now a variable rather
 // than a constant held at NONE. Java's Cascades has no physical sort operator,
@@ -85,14 +88,19 @@ package conformance_test
 // segments and answers the same rows, so those rows are ordinary both_answer
 // agreement and the two classes that described the gap are retired.
 //
-// What did NOT move is the GROUP BY spelling. A nested grouping key is refused
-// in Go at BOTH arities with 0AF00 — the gate this file documents — so the
-// three-segment grouping rows now sit with their two-segment twins in
-// java_semantic_ok_go_0af00. Keeping them is the point: the two spellings of
-// ONE key must agree about which layer refuses them, and they did not. The
-// descent test behind the gate could see only two segments, so for
-// `GROUP BY a.n.sk` it was really asking whether a source called "A.N" exists,
-// answering no, and letting the key fall through to undefined-column.
+// THE GROUP BY SPELLING HAS NOW MOVED TOO, and it is the reason this file no
+// longer documents a gate. A nested grouping key was refused in Go at both
+// arities with 0AF00; RFC-230 implemented it. The three-segment grouping rows
+// still sit with their two-segment twins — that has always been the point, the
+// two spellings of ONE key must agree — but what they agree on is the answer.
+// They disagreed once, and instructively: the descent test behind the old gate
+// could see only two segments, so for `GROUP BY a.n.sk` it was really asking
+// whether a source called "A.N" exists, answering no, and letting the key fall
+// through to undefined-column while its two-segment twin took 0AF00.
+//
+// WHAT THIS FILE MEASURES NOW is that nesting has stopped being a variable at
+// all: the nested rows land in the SAME classes as their flat controls, in both
+// columns of the table above. The instrument is unchanged; only the cells moved.
 
 import (
 	"context"
@@ -159,19 +167,37 @@ var _ = Describe("NestedGroupByKeyJavaProbe", func() {
 		//       This is the NO-ACCESS-PATH signature, not a nesting signature:
 		//       the flat unindexed key lands here too, which is exactly why it
 		//       decides nothing on its own.
-		//   java_answers_grouping / java_answers_grouping_go_0af00 — the same
-		//       shapes with an index over the grouping key. These are the
-		//       POSITIVE arms that make the decline class readable; without
-		//       them "nested is unsupported" and "unordered input is
-		//       unplannable" are indistinguishable.
+		//   java_answers_grouping — the same shapes with an index over the
+		//       grouping key. This is the POSITIVE arm that makes the decline
+		//       class readable; without it "nested is unsupported" and
+		//       "unordered input is unplannable" are indistinguishable.
 		//   both_42703 — the semantic-refusal signature. Its presence is what
 		//       makes "the nested key is not 42703 in Java" non-vacuous.
 		//   both_answer — the reference resolves outside GROUP BY in both.
-		//   java_semantic_ok_go_0af00 — the shape under test.
-		//       java_semantic_ok_go_0af00 also carries the THREE-SEGMENT
-		//       grouping spelling, which is the same key with its source named
-		//       and must therefore reach the same refusal. It reached 42703
-		//       until the resolver stopped joining the leading segments.
+		//
+		// TWO CLASSES ARE RETIRED, and what they measured is the RESULT rather
+		// than a gap in the instrument. `java_semantic_ok_go_0af00` and
+		// `java_answers_grouping_go_0af00` both encoded "Go refuses this with
+		// 0AF00"; RFC-230 implemented nested-path grouping keys, so no probe
+		// produces either and their floors were unsatisfiable. They are DELETED
+		// rather than relaxed, and the rows they held moved to the classes that
+		// describe what now happens:
+		//
+		//   - the indexed nested key is `java_answers_grouping` — Java and Go
+		//     BOTH return [[2] [1]], the same rows as the indexed FLAT twin.
+		//     This is the cell §2.5 of RFC-230 could only cite second-hand;
+		//     it is now measured on both sides in one run.
+		//   - every UNINDEXED nested shape is `java_plans_none_go_serves`, i.e.
+		//     the SAME class the unindexed FLAT key control sits in. That is the
+		//     whole conclusion in one line: with nesting no longer the operative
+		//     variable, the nested rows are indistinguishable from the flat ones
+		//     in both columns of the table. Go serving what Java's Cascades
+		//     declines for want of an access path is the sanctioned read-side
+		//     divergence, not a nesting divergence.
+		//
+		// The direction that is now watched is the reverse one: a nested shape
+		// falling OUT of these classes means the capability regressed, and the
+		// class arms below say so in their failure text.
 		probes := []struct{ name, sql, expect string }{
 			{"flat_key_control", "SELECT sk, COUNT(*) FROM T_NG2 GROUP BY sk", "java_plans_none_go_serves"},
 			// THE POSITIVE ARM the decline rows are read against: the SAME
@@ -185,9 +211,9 @@ var _ = Describe("NestedGroupByKeyJavaProbe", func() {
 			// Java answering a nested grouping key at this tag
 			// (groupby-tests.yamsql:61-62, `group by r.v.z` over index i2), so
 			// this row measures live what that file asserts statically — and it
-			// is what makes Go's 0AF00 a capability gap rather than a layer
-			// disagreement.
-			{"indexed_nested_key", "SELECT COUNT(*) FROM T_NG3 GROUP BY n.sk", "java_answers_grouping_go_0af00"},
+			// is now the row that says Go MATCHES it, having been the row that
+			// said Go did not.
+			{"indexed_nested_key", "SELECT COUNT(*) FROM T_NG3 GROUP BY n.sk", "java_answers_grouping"},
 			{"bogus_qualifier_control", "SELECT COUNT(*) FROM T_NG2 GROUP BY zzz.sk", "both_42703"},
 			// The reference outside GROUP BY: nested paths answer at all.
 			{"nested_select_control", "SELECT n.sk FROM T_NG1", "both_answer"},
@@ -195,15 +221,15 @@ var _ = Describe("NestedGroupByKeyJavaProbe", func() {
 			// The shape itself, across the three dimensions the Go defect got
 			// wrong INDEPENDENTLY: the table (flat leaf twin present or not),
 			// the projection (key projected, or only COUNT(*)), the member.
-			{"nested_key_projected", "SELECT n.sk, COUNT(*) FROM T_NG1 GROUP BY n.sk", "java_semantic_ok_go_0af00"},
-			{"nested_key_unprojected", "SELECT COUNT(*) FROM T_NG1 GROUP BY n.sk", "java_semantic_ok_go_0af00"},
-			{"nested_key_no_agg", "SELECT n.sk FROM T_NG1 GROUP BY n.sk", "java_semantic_ok_go_0af00"},
-			{"nested_key_two_members", "SELECT n.sk, n.co, COUNT(*) FROM T_NG1 GROUP BY n.sk, n.co", "java_semantic_ok_go_0af00"},
-			{"nested_key_flat_twin", "SELECT n.sk, COUNT(*) FROM T_NG2 GROUP BY n.sk", "java_semantic_ok_go_0af00"},
-			{"nested_key_no_twin_member", "SELECT COUNT(*) FROM T_NG2 GROUP BY n.co", "java_semantic_ok_go_0af00"},
+			{"nested_key_projected", "SELECT n.sk, COUNT(*) FROM T_NG1 GROUP BY n.sk", "java_plans_none_go_serves"},
+			{"nested_key_unprojected", "SELECT COUNT(*) FROM T_NG1 GROUP BY n.sk", "java_plans_none_go_serves"},
+			{"nested_key_no_agg", "SELECT n.sk FROM T_NG1 GROUP BY n.sk", "java_plans_none_go_serves"},
+			{"nested_key_two_members", "SELECT n.sk, n.co, COUNT(*) FROM T_NG1 GROUP BY n.sk, n.co", "java_plans_none_go_serves"},
+			{"nested_key_flat_twin", "SELECT n.sk, COUNT(*) FROM T_NG2 GROUP BY n.sk", "java_plans_none_go_serves"},
+			{"nested_key_no_twin_member", "SELECT COUNT(*) FROM T_NG2 GROUP BY n.co", "java_plans_none_go_serves"},
 			// THREE SEGMENTS: the same descent with the source name in front.
-			{"nested_key_alias_qualified", "SELECT a.n.sk, COUNT(*) FROM T_NG2 AS a GROUP BY a.n.sk", "java_semantic_ok_go_0af00"},
-			{"nested_key_table_qualified", "SELECT T_NG2.n.sk, COUNT(*) FROM T_NG2 GROUP BY T_NG2.n.sk", "java_semantic_ok_go_0af00"},
+			{"nested_key_alias_qualified", "SELECT a.n.sk, COUNT(*) FROM T_NG2 AS a GROUP BY a.n.sk", "java_plans_none_go_serves"},
+			{"nested_key_table_qualified", "SELECT T_NG2.n.sk, COUNT(*) FROM T_NG2 GROUP BY T_NG2.n.sk", "java_plans_none_go_serves"},
 			// Three segments OUTSIDE GROUP BY. These separate "GROUP BY refuses
 			// this" from "this spelling resolves at all", which is what makes the
 			// grouping refusal above a capability statement rather than a
@@ -297,9 +323,18 @@ var _ = Describe("NestedGroupByKeyJavaProbe", func() {
 						"'decline == semantically accepted' reading this file rests on is stale")
 				}
 				if gr.Err != nil {
-					bad("Go stopped serving a shape it served")
+					bad("Go stopped serving a shape it served. For a NESTED grouping " +
+						"key this is a capability regression, not a divergence: the " +
+						"shape is pinned end-to-end in sqldriver and answers there")
+				} else if len(gr.Rows.Rows) == 0 {
+					// "Go serves it" asserted as rows and not as the absence of
+					// an error: every fixture here has at least one group, so a
+					// zero-row answer is a silent pass against a bare error check
+					// — the same empty-set false positive the decline classes are
+					// built to avoid.
+					bad("Go answered ZERO rows, so 'Go serves it' is vacuous")
 				}
-			case "java_answers_grouping", "java_answers_grouping_go_0af00":
+			case "java_answers_grouping":
 				// JAVA ANSWERS, asserted by the GROUP COUNT and not by the
 				// absence of an error. A decline is an error and would be caught
 				// either way, but a query that answered zero rows — or that
@@ -319,14 +354,13 @@ var _ = Describe("NestedGroupByKeyJavaProbe", func() {
 						"and n.sk. One row means the grouping was dropped; zero means the "+
 						"query answered nothing and 'answers' is vacuous", n)
 				}
-				if p.expect == "java_answers_grouping" {
-					if gr.Err != nil {
-						bad("Go stopped serving an INDEXED flat grouping key")
-					}
-				} else if goState(gr) != "0AF00" {
-					bad("Go's nested-key refusal moved off 0AF00 on the indexed shape. " +
-						"If Go now ANSWERS it, nested grouping keys have landed and this " +
-						"row becomes a both_answer")
+				if gr.Err != nil {
+					bad("Go stopped serving an INDEXED grouping key")
+				} else if n := len(gr.Rows.Rows); n != 2 {
+					bad("Go answered %d rows, want 2 — the SAME two groups Java "+
+						"answers. This arm holds the flat and the nested key side by "+
+						"side over one indexed table, so a disagreement here is the "+
+						"cross-engine result the whole file is for", n)
 				}
 			case "both_42703":
 				if javaState(jr) != "42703" {
@@ -343,15 +377,6 @@ var _ = Describe("NestedGroupByKeyJavaProbe", func() {
 				if gr.Err != nil {
 					bad("Go stopped answering a nested reference outside GROUP BY")
 				}
-			case "java_semantic_ok_go_0af00":
-				if !javaSemanticallyAccepted(jr) {
-					bad("Java no longer gets the nested grouping key past semantic " +
-						"analysis. If it now carries 42703, Go's 0AF00 is the wrong " +
-						"code and the sqldriver pins must move with it")
-				}
-				if goState(gr) != "0AF00" {
-					bad("Go's nested-key refusal moved off 0AF00")
-				}
 			default:
 				bad("unknown expectation class %q", p.expect)
 			}
@@ -361,12 +386,10 @@ var _ = Describe("NestedGroupByKeyJavaProbe", func() {
 		// against.
 		for _, class := range []string{
 			"java_plans_none_go_serves", "both_42703", "both_answer",
-			"java_semantic_ok_go_0af00",
-			// The two POSITIVE arms are floored beside the rest for the same
-			// reason: a decline class read without a matching answering class is
-			// a one-cell table, which is the confound this file was rebuilt to
-			// remove.
-			"java_answers_grouping", "java_answers_grouping_go_0af00",
+			// The POSITIVE arm is floored beside the rest for the same reason: a
+			// decline class read without a matching answering class is a one-cell
+			// table, which is the confound this file was rebuilt to remove.
+			"java_answers_grouping",
 		} {
 			Expect(seen[class]).To(BeNumerically(">", 0),
 				"expectation class %q exercised no probe; its verdict is vacuous", class)

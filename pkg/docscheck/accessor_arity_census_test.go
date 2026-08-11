@@ -93,42 +93,49 @@ type accessorAritySite struct {
 // accessorAritySites is the classified population, keyed `file#symbol`.
 var accessorAritySites = map[string]accessorAritySite{
 	// ---------------------------------------------------------------------
-	// (b) BLOCKERS — the three sites RFC-230 must change.
-	// ---------------------------------------------------------------------
-
-	"pkg/relational/core/query/cascades_translator.go#groupByOutputBaker": {
-		class: arityBlocker, exprs: 1,
-		why: "the early return `len(Accessors) > 1 -> return node` is right for a nested " +
-			"reference INTO a source row and wrong for one that has BECOME a grouping key: " +
-			"the key never rebinds to the aggregate's output ordinal, so every consumer fed " +
-			"by this one baker (SELECT projection, HAVING, ORDER BY) keeps a dead " +
-			"input-relative ordinal. This is the single decisive site — the post-aggregate " +
-			"rebind belongs here, ABOVE canonicalizeAggregateOutputValue, not as a " +
-			"relaxation of it.",
-	},
-	"pkg/relational/core/query/cascades_translator.go#cascadesTranslator.translateSort": {
-		class: arityBlocker, exprs: 1,
-		why: "ORDER BY canonicalisation onto the aggregate output ordinal accepts only a " +
-			"childless single-accessor bake. DOWNSTREAM of groupByOutputBaker rather than " +
-			"independent: it reads bakeGroupByOutputRefs' result, which returns a " +
-			"multi-accessor node unchanged, so the `tmp[0] != v` arm never fires for a " +
-			"nested key. Fixing the baker may satisfy this site without touching it — but it " +
-			"is a blocker, not a correct decline, because the shape it refuses is legitimate.",
-	},
-	"pkg/relational/core/embedded/logical_predicate.go#groupedScalarSortKeys": {
-		class: arityBlocker, exprs: 1,
-		why: "the CORRELATED-SCALAR-SUBQUERY grouped ORDER BY path. A walked+bound key is " +
-			"accepted only at `len(Accessors) == 1`; a nested key leaves `ordinal < 0` and " +
-			"takes ErrCodeGroupingError (\"must reference a grouping column or a selected " +
-			"aggregate\") on legal SQL. This is the arm RFC-230 §7(b) flagged as running " +
-			"WITHOUT the main ladder's gates, so its post-Phase-0 behaviour cannot be " +
-			"predicted from the main ladder's — it needs its own pin.",
-	},
-
-	// ---------------------------------------------------------------------
 	// (a) CORRECT DECLINES — refusing a value that genuinely cannot be what
 	//     the site needs. A decline here costs an optimization, never rows.
 	// ---------------------------------------------------------------------
+
+	// THE THREE FORMER (b) BLOCKERS. Nested-path GROUP BY landed with all three
+	// UNCHANGED — cascades_translator.go is byte-identical across that change —
+	// so the classification that made them blockers is refuted by measurement,
+	// not by argument. Each carries what was observed rather than what was read.
+	"pkg/relational/core/query/cascades_translator.go#groupByOutputBaker": {
+		class: arityCorrectDecline, exprs: 1,
+		why: "the early return is LOAD-BEARING, not a structural no-op, and the difference " +
+			"is measured rather than argued: disabling it turns group_by_output_baker_test's " +
+			"`multi` case RED — a 2-accessor path whose Field is COL1, with a nil child and " +
+			"keyOrds{COL1:0}, reaches the name channel and is rewritten into a " +
+			"single-accessor read of output slot 0, i.e. a nested member read silently " +
+			"becomes a read of the whole struct root's slot. So the decline is CORRECT, and " +
+			"a leaf that collides with a group-key output name is what makes it necessary. " +
+			"What keeps a nested grouping key from needing the rebind is UPSTREAM and is a " +
+			"different mechanism: rebaseHavingGroupKeyPredicate asks the shared decider " +
+			"(cascades.PredicatePushesBelowGroupBy) and, for every predicate that will NOT " +
+			"be pushed, rebasePostAggregateGroupKeyValue pins the reference to a " +
+			"single-accessor FrontierPinned value addressed against the aggregate output " +
+			"row — so it exits at the FrontierPinned guard ABOVE this expression and never " +
+			"reaches it. Pushdown handles only the narrow complement: " +
+			"predicateReferencesOnlyKeys admits a SINGLE ComparisonPredicate with a " +
+			"key-only comparand, and buildGroupKeySet disables pushdown outright when two " +
+			"keys share an accessor path, so AND / OR / NOT and any aggregate reference stay " +
+			"above and travel the pinning route. Both routes are exercised end-to-end by " +
+			"TestFDB_GroupByNestedPathKey. The predicted post-aggregate rebind was therefore " +
+			"never needed HERE — it already exists one layer up.",
+	},
+	"pkg/relational/core/query/cascades_translator.go#cascadesTranslator.translateSort": {
+		class: arityCorrectDecline, exprs: 1,
+		why: "MEASURED: a nested ORDER BY key over a grouped nested key never enters the " +
+			"block this expression lives in. Instrumenting the arm selection, `GROUP BY " +
+			"r.v.z ORDER BY r.v.z` arrives with AggregateOutputValueExact set, so it takes " +
+			"the canonicalizeAggregateOutputValue arm and the `sortGB != nil && " +
+			"!exactAggregateValue` block is skipped entirely; the correlated-scalar variant " +
+			"arrives with HasAggregateOutputOrdinal set and takes the ordinal arm. Both " +
+			"upstream arms hand this site a value already rebound to ONE accessor of the " +
+			"aggregate output row, which is Java's FieldPath.ofSingle — so the arity test " +
+			"passes rather than blocking.",
+	},
 
 	"pkg/relational/core/query/cascades_translator.go#canonicalizeAggregateOutputValue": {
 		class: arityCorrectDecline, exprs: 1,
@@ -210,6 +217,19 @@ var accessorAritySites = map[string]accessorAritySite{
 	// ---------------------------------------------------------------------
 	// (c) ALREADY CORRECT FOR NESTING.
 	// ---------------------------------------------------------------------
+
+	"pkg/relational/core/embedded/logical_predicate.go#groupedScalarSortKeys": {
+		class: arityNestingOK, exprs: 1,
+		why: "the CORRELATED-SCALAR-SUBQUERY grouped ORDER BY path, classified a blocker on " +
+			"the reading that a nested key would leave `ordinal < 0` and take " +
+			"ErrCodeGroupingError on legal SQL. MEASURED, it does not: " +
+			"bindPostAggregateValueToNativeOrdinals rebinds the walked nested key to a " +
+			"SINGLE-accessor reference over the aggregate's native output row BEFORE this " +
+			"test runs, so the test sees 1 accessor and binds the slot. `SELECT id, (SELECT " +
+			"max(n2.id) FROM nested AS n2 WHERE n2.id = nested.id GROUP BY n2.r.v.z ORDER BY " +
+			"n2.r.v.z LIMIT 1) FROM nested` answers. The arity test is the CONSUMER of that " +
+			"rebind, not a second gate in front of it.",
+	},
 
 	"pkg/recordlayer/query/plan/cascades/values/values.go#FieldValue.descendResolvedPath": {
 		class: arityNestingOK, exprs: 1,
@@ -328,22 +348,37 @@ var accessorAritySites = map[string]accessorAritySite{
 	// (?) UNCERTAIN — recorded with the reason, not guessed.
 	// ---------------------------------------------------------------------
 
+	// ---------------------------------------------------------------------
+	// (d) LIVE DEFECT — mis-handled on this base RIGHT NOW.
+	// ---------------------------------------------------------------------
+
 	"pkg/relational/core/embedded/cascades_generator.go#deriveColumnsFromProjection": {
-		class: arityUncertain, exprs: 2,
-		why: "the two arity tests gate ORDINAL type inheritance to single-accessor reads, " +
-			"and that gate is right: a leg-relative multi-accessor root ordinal is not an " +
-			"index into the flattened inner columns. What is unresolved is the FALL-THROUGH " +
-			"it selects — `innerByName[fv.Field]`, and for a fused nested reference minted " +
-			"by fuseNestedAccessors (expr.go) `Field` is the struct ROOT, not the leaf " +
-			"(deriveProjectionColumnDef's own doc says so). So if the enclosing " +
-			"`TypeName == \"\" || == \"UNKNOWN\"` precondition is reachable for a nested " +
-			"reference, the column inherits the STRUCT's type for a leaf column. I could " +
-			"NOT construct a reachable case — the resolver types the leaf from the catalog " +
-			"via columnCascadesType, so TypeName is normally already known — and I could " +
-			"NOT prove it unreachable either (derived-table / CTE legs are the open " +
-			"direction). Classified honestly rather than guessed; resolving it needs an " +
-			"end-to-end metadata probe over a nested projection whose leaf type the catalog " +
-			"cannot state.",
+		class: arityLiveDefect, exprs: 2,
+		why: "WAS (?), and the uncertainty was resolved the only way it could be — by " +
+			"instrumenting the arm and running a query, not by reading. The two arity tests " +
+			"gate ORDINAL type inheritance to single-accessor reads and that gate is right; " +
+			"the defect is the FALL-THROUGH it selects, `innerByName[fv.Field]`, where for " +
+			"a fused nested reference `Field` is the struct ROOT. The open question was " +
+			"whether the enclosing `TypeName == \"\" || == \"UNKNOWN\"` precondition is " +
+			"reachable for a nested reference; the reason for doubt was that the catalog " +
+			"types the leaf, so TypeName is normally known. That holds for every SCALAR " +
+			"leaf and for no other: an ARRAY or BYTES leaf is a kind the type derivation " +
+			"has no name for. MEASURED end-to-end over " +
+			"`STRUCT sarr (vals BIGINT ARRAY, label STRING, bin BYTES)`, and re-measured " +
+			"after rebasing onto #718 rather than inherited across the base change: " +
+			"`SELECT q.s.vals FROM (SELECT s FROM t) AS q` reports DatabaseTypeName " +
+			"\"STRUCT\" for a BIGINT ARRAY member and `q.s.bin` reports \"STRUCT\" for a " +
+			"BYTES member — the lookup found the struct ROOT, a different column of a " +
+			"different type. THE CONTROL THAT IDENTIFIES THE MECHANISM: `q.s.label`, a " +
+			"SCALAR member under the same projection, is CORRECT (\"STRING\"), because the " +
+			"catalog types it and the fall-through never runs. Over a BASE scan the failing " +
+			"reads report UNKNOWN — swallowed by the arm's own `ic.TypeName != \"UNKNOWN\"` " +
+			"guard, which is exactly why the suite stayed green; a PROJECTION underneath " +
+			"types the root and the wrong hit fires. The identical kinds at TOP level " +
+			"(`top BIGINT ARRAY`, `topbin BYTES`) report BIGINT and BINARY in both shapes, " +
+			"so this is nesting-specific and not an array- or bytes-typing gap. FIXED on " +
+			"the field-mint reconciliation branch, NOT on this one — this entry records the " +
+			"state of THIS base, and must be re-read (not carried) if that lands first.",
 	},
 }
 
@@ -549,12 +584,16 @@ func TestAccessorArityCensusIsClassified(t *testing.T) {
 func TestAccessorArityClassCounts(t *testing.T) {
 	t.Parallel()
 
+	// RECLASSIFICATION MOVES TWO CELLS, NEVER ONE — this is a POPULATION, so a
+	// member leaving (?) must arrive somewhere and the total is the check that
+	// it did. deriveColumnsFromProjection went (?) -> (d): uncertain 1 -> 0,
+	// live defect 0 -> 1, total 36 unchanged.
 	pinned := map[accessorArityClass]int{
-		arityCorrectDecline: 11,
-		arityBlocker:        3,
-		arityNestingOK:      21,
-		arityLiveDefect:     0,
-		arityUncertain:      1,
+		arityCorrectDecline: 13,
+		arityBlocker:        0,
+		arityNestingOK:      22,
+		arityLiveDefect:     1,
+		arityUncertain:      0,
 	}
 
 	got := map[accessorArityClass]int{}
@@ -584,25 +623,49 @@ func TestAccessorArityClassCounts(t *testing.T) {
 			total, len(accessorAritySites))
 	}
 
-	// The (d) floor INVERTS on the day one is found: today zero is the measured
-	// steady state, so the alarm direction is GROWTH. A (d) appearing here means
-	// a multi-accessor value is mis-handled on master RIGHT NOW, which outranks
-	// every RFC-230 blocker — that is why it gets its own message rather than
-	// riding the generic count check.
-	if got[arityLiveDefect] > 0 {
-		t.Errorf("%d site(s) classified (d) LIVE DEFECT. Stop the survey: verify each "+
-			"end-to-end against real FDB with values that make the wrong answer visible as "+
-			"wrong DATA, fix it, and pin the reproducer — before any RFC-230 work builds on "+
-			"top of it", got[arityLiveDefect])
+	// THE (d) FLOOR HAS FIRED, AND IT IS RECONCILED RATHER THAN RELAXED. It said
+	// zero was the measured steady state and the alarm direction was GROWTH.
+	// Growth happened: deriveColumnsFromProjection was (?), and the uncertainty
+	// resolved to a live wrong-column type read. So zero is no longer the
+	// expected value and a floor demanding it would be unsatisfiable — the count
+	// check above now owns the arithmetic in both directions (a SECOND (d), and
+	// a silent drop back to none without the fix landing on this base).
+	//
+	// What is left for this block is the part a number cannot carry: a (d) is
+	// only ever recordable from a MEASUREMENT. Every wrong classification this
+	// census has produced came from reading a condition and reasoning about it —
+	// three (b) blockers refuted that way, and this very site sat at (?) for two
+	// revisions because reading could not settle it. So the entry must show it
+	// was executed, not argued.
+	for key, site := range accessorAritySites {
+		if site.class != arityLiveDefect {
+			continue
+		}
+		if !strings.Contains(site.why, "MEASURED") {
+			t.Errorf("%s is classified (d) LIVE DEFECT with no measurement in its reason.\n"+
+				"\tA live defect is a claim about what the engine DOES, and this census has "+
+				"been wrong every time it answered that by reading. Run it end-to-end "+
+				"against real FDB with values that make the wrong answer visible as wrong "+
+				"DATA, record what you saw, and keep a control that separates the defect "+
+				"from the shape merely being unsupported.", key)
+		}
 	}
 
-	// The (b) floor guards the OTHER direction: if every blocker were resolved,
-	// RFC-230's Phase 1 would be complete, and that must be an explicit edit
-	// here rather than a quiet drift to zero.
-	if got[arityBlocker] == 0 {
-		t.Error("no (b) blockers remain. If RFC-230's post-aggregate rebind has landed, say " +
-			"so in the RFC and retire this floor deliberately — a floor that silently reaches " +
-			"zero stops watching anything")
+	// The (b) floor HAS INVERTED, and the inversion is retired deliberately
+	// rather than deleted. It used to guard against a quiet drift to zero,
+	// because zero would have meant RFC-230's Phase 1 was silently complete.
+	// Zero is now the MEASURED steady state: nested-path GROUP BY landed with
+	// all three former blockers unchanged (RFC-230 §7.4), because each was
+	// classified from reading and each was refuted by instrumenting the arm it
+	// actually takes. So the alarm direction flips to GROWTH — a (b) here means
+	// a site has been found that genuinely refuses a legitimate nested grouping
+	// key, i.e. a capability that works today has been taken away or a new arm
+	// blocks a shape the shipped tests do not cover.
+	if got[arityBlocker] > 0 {
+		t.Errorf("%d site(s) classified (b) BLOCKER. Nested-path GROUP BY is IMPLEMENTED and "+
+			"its shapes are pinned end-to-end, so a blocker is no longer a to-do item — it is "+
+			"a refusal of something that works. Name the SQL shape it blocks and show it "+
+			"failing against real FDB before recording the class", got[arityBlocker])
 	}
 }
 
