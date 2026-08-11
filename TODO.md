@@ -17036,6 +17036,33 @@ None is speculative: each was re-verified against the tree before booking.
   fix keys both on `RootIsLegRelativeUnpinned()` and fuses `Accessors[1:]`, which
   is what this entry prescribed.
   The sentinel was CONVERTED, not deleted, and now asserts rows.
+  (c) the present-tense prose above — "on a comment still asserting that
+  multi-accessor nodes are machinery-owned" — described the state at the time and
+  is no longer true. That claim was carried in THREE places, not one: the two
+  walks' comments, `FieldValue.SourceRelativeBaked`'s own doc
+  (`values.go`), and `TestSourceRelativeBaked`, whose assertion message stated it
+  outright. All three are corrected; the test keeps its assertion, loses its
+  reason, and gains the paired `RootIsLegRelativeUnpinned` check that makes the
+  `false` discriminating instead of ambiguous.
+  (d) THE MUTATION RECORD FOR THE SILENT ARM WAS STATED IMPRECISELY, and the
+  correction strengthens the result rather than weakening it. The shipped commit
+  said mutation M4 — "restore `SourceRelativeBaked` in the bake" — reddens the two
+  outer-only arms as a SILENT `EK|`. Reverting the BAKE ALONE does not do that: it
+  fails LOUD with `0AF00: Cascades planner could not plan query`, because the
+  WIDENED WATCHDOG (`unnestExistsRefSurvivesUnbaked`, now keyed on
+  `RootIsLegRelativeUnpinned`) catches the unbaked reference and declines. The
+  silent `EK|` requires reverting BOTH sites (call it M4b: bake AND net together).
+  THAT THE TWO MUTATIONS DIFFER IN KIND IS THE POINT, and it is the strongest
+  evidence in the change that the net and the bake no longer share a blind spot:
+  before the fix both keyed on the same single-accessor predicate, so the net
+  could not see what the bake missed and the failure was silent; after it,
+  breaking the bake alone is caught BY the net and converted into a loud decline.
+  A net that only reproduces the original silence when it is itself disabled is a
+  net that is actually independent.
+  Also load-bearing, and measured under M4b: the converted sentinel's flat arm
+  reports `flat member = [], want [1]`. The extra `u.uk = 10` data row added
+  during the conversion is what makes that `want` non-empty — without it the arm
+  would assert `[]` against `[]` and pass with the defect fully present.
 ---
 
 - [x] **The unnest element's struct fields reached only ONE of the four scopes that bind it, so a member reference resolved outside EXISTS and raised 42703 inside it.**
@@ -17057,9 +17084,19 @@ None is speculative: each was re-verified against the tree before booking.
   `existsSubqueryPlanner.tryBuildCorrelatedPrimaryUnnest` that does not call the
   shared helper at all — the one a census of the helper's call sites cannot see.
   The three remaining `unnestVirtualScopeSource(j)` (fields-less) call sites are
-  CORRECT: `logical_predicate.go:7719,8101,8337` consume only the binding's
-  TOP-LEVEL column NAMES (star expansion and the column-name census), which the
-  element's fields do not change. Census command:
+  CORRECT — they consume only the binding's TOP-LEVEL column NAMES (star
+  expansion and the column-name census), which the element's fields do not
+  change. Cited BY SYMBOL, because the line numbers rotted the first time this
+  was written: all three live in `logical_predicate.go`, in
+  `expandQualifiedStars`, `expandBareStarForRowVersion` and
+  `expandProjQualifier`. Re-derive the lines rather than trusting any written
+  here:
+  `grep -n "unnestVirtualScopeSource(j)" pkg/relational/core/embedded/logical_predicate.go`
+  A PRIOR REVISION OF THIS ENTRY CITED `:7719, :8101, :8337`, WHICH ARE WRONG BY
+  EXACTLY +200 and now point at unrelated code. They were correct when measured
+  and rotted when this branch rebased onto a change that grew the same file — a
+  line number in a re-check instruction is a trap precisely because it is right
+  when written. Census command for the full set:
   `grep -rn "unnestVirtualScopeSource" --include='*.go' .`
   Fixing resolution armed two paths that were masked behind the refusal, both
   fixed in the same change:
@@ -17391,3 +17428,44 @@ None is speculative: each was re-verified against the tree before booking.
   explicitly that its tally is symbol-granular and the per-expression verdicts
   live in prose — and the nine other multi-expression symbols get audited for
   mixed class either way.
+
+---
+
+- [ ] **`evaluateCorrelated` resolves an `OrdinalRow` binding BEFORE a datum binding, so a carrier that is both takes the row reading — and the two readings only coincide at a SINGLE accessor.**
+  `pkg/recordlayer/query/plan/cascades/values/values.go`, the `*RowEvalContext`
+  correlation arm:
+  ```go
+  if row, ok := bound.(OrdinalRow); ok {
+      return f.evaluateOrdinal(row)
+  }
+  return f.evaluateDatumBinding(bound)
+  ```
+  THE TWO ARMS CONSUME THE ROOT ACCESSOR DIFFERENTLY, which is the whole of it.
+  `evaluateOrdinal` treats `Accessors[0].Ordinal` as a SLOT INDEX INTO THE ROW.
+  `evaluateDatumBinding` treats the BINDING ITSELF as the root read — the leg
+  adapter has already unwrapped the carrier, so the root accessor is consumed by
+  the binding and `descendResolvedPath` applies `Accessors[1:]`. For a
+  SINGLE-accessor path the two agree by coincidence: slot 0 of a one-slot carrier
+  and "the carrier itself" are the same value, and there is no remainder to
+  misplace. For a MULTI-accessor path they diverge — the ordinal arm indexes the
+  ROW and then descends the remainder inside whatever it found there, while the
+  datum arm descends the remainder inside the bound value itself.
+  WHY IT IS WORTH BOOKING NOW RATHER THAN WHENEVER: multi-accessor references
+  over a DATUM binding are newly common. An unnest struct-element MEMBER
+  (`x.ek`, `x.d.dk`) is exactly that shape — the Explode binds the element as one
+  proto message and the member is the path's remainder — and until the fix that
+  booked the entries above, such references could not resolve inside an EXISTS at
+  all. The precedence was therefore never exercised by them.
+  NOT A KNOWN LIVE DEFECT, and stated that way deliberately. The element datum in
+  the measured paths is a `proto.Message`, which does NOT implement `OrdinalRow`,
+  so it takes the datum arm and the fix's row assertions
+  (`TestFDB_UnnestElementMemberInExists`) pass. The exposure is a carrier that
+  satisfies BOTH interfaces reaching this arm with a multi-accessor path; nothing
+  currently enumerates which carriers those are, which is the gap.
+  DONE = either the precedence is shown safe by enumerating every `OrdinalRow`
+  implementor that can be a correlation binding and pinning that none of them is
+  also a datum carrier (a negative result, pinned like
+  `TestFDB_UnnestElementMemberInGather`), or the arm is made to decide on
+  something other than interface satisfaction order — the path's own arity or an
+  explicit carrier kind — so "both interfaces" stops being resolved by which
+  `if` was written first.

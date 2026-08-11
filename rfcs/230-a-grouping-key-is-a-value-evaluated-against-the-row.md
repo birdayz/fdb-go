@@ -1395,6 +1395,29 @@ gating on it:
 - `cascades_translator.go#rewriteUnnestPredicate` — a second expression, the
   member-rebase arm, the positive twin of that function's existing decline.
 
+**AND THEN 60 → 68, in the same change.** The census's failure message says to
+update the census and this RFC *together*, and the first revision of this note
+recorded only the `58 → 60` move — so the gate did its job and the document did
+not follow it. Recorded here rather than left to the next reader to re-derive.
+
+The `+8` is **the census acquiring sites it was blind to**, not the tree growing.
+`TestSourceRelativeBakedSitesAreVisibleToTheCensus` now enumerates every
+`SourceRelativeBaked()` call site and requires each to be CLASSIFIED in the site
+table or LEGIBLE by a comment quoting `len(Accessors)`. Eight of ten were
+neither: they performed an arity decision while containing no arity expression,
+because the requirement is spelled inside the predicate's *name*. All eight now
+carry a site-specific legibility comment, and every one of those comments lands
+in `arityCommentLines` — so the decomposition moves `arityCommentLines 3 → 11`
+with **`arityCodeLines` unchanged at 49**. A legibility comment states what the
+predicate requires; it never states what the site does with it, so it enumerates
+without classifying. Those eight are ENUMERATED and still UNCLASSIFIED, booked
+in `TODO.md`.
+
+This is §7.5's discard class turning out to have a member inside §7.3's own
+population, which is worth stating plainly: the census was never complete for
+"arity decisions", only for "arity *expressions*", and the gap between those two
+is exactly where the live defect sat.
+
 **A superseded claim retired while here.** `rewriteUnnestPredicate`'s census
 entry asserted that no query's rows were demonstrably corrected because the
 emblematic shape (`WHERE i.sku = 'x'` over `orders.items AS i`) "returns ZERO
