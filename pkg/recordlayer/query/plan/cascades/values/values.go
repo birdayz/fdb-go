@@ -233,21 +233,25 @@ type FieldValue struct {
 	// which is loud at evaluation but conflates duplicate same-named columns
 	// in plan-time matching.
 	//
-	// Field is DISPLAY ONLY, and it does NOT reliably equal the last accessor's
-	// name. That was stated here as an invariant and it holds for one producer
-	// only: the planner's rewrite machinery (compose, the rebase/withChildren
+	// Field is DISPLAY ONLY, and it names the LAST accessor. Java's fused
+	// FieldValue has no root-name accessor at all — the one single-name question
+	// askable of it is getLastFieldName (FieldValue.java:134-135 → FieldPath's
+	// at :463-466, `getOptionalFieldNames().get(size()-1)`) — so the leaf is the
+	// only answer with a spec behind it, and every mint of the fused shape now
+	// gives it: the planner's rewrite machinery (compose, the rebase/withChildren
 	// fuse arms, select-merge, match-info merge, index expansion, unnest, the
-	// left-outer wrappers) sets Field to the fused last accessor. The SQL
-	// RESOLVER does the opposite — fuseNestedAccessors copies the node whole,
-	// updates Typ to the leaf, and leaves Field as the struct ROOT — so a
-	// resolver-produced `n.sk` is FieldValue{Field:"N", Accessors:[N,SK]}.
+	// left-outer wrappers) and the SQL resolver's fuseNestedAccessors alike. A
+	// resolver-produced `n.sk` is FieldValue{Field:"SK", Accessors:[N,SK]}.
 	//
-	// Nothing enforces either shape: there is no WithSuffix postcondition and no
-	// construction-time validator, and the one assertion that exists covers the
-	// simplifier alone. So the two producers disagree and no test notices. That
-	// asymmetry is not cosmetic — reading Field as the column's identity is what
-	// collapsed two ORDER BY keys of one struct root (RFC-227), and the same
-	// read is still live in the group-key namer.
+	// It was NOT always so. fuseNestedAccessors copied the root node whole and
+	// left Field naming the struct ROOT, so `Field` answered differently
+	// depending on which mint made the value — which is why nothing downstream
+	// may read Field as the column's IDENTITY even now that the two agree.
+	// Identity is the resolved path (AccessorNamePath / FieldPath.Equals); Field
+	// is a label. Reading it as identity is what collapsed two ORDER BY keys of
+	// one struct root (RFC-227), and a value whose Field disagrees with its last
+	// accessor is still expressible — nothing validates it at construction, so
+	// the naming authorities stay path-based by design rather than by luck.
 	Resolved *FieldPath
 }
 
@@ -1723,15 +1727,17 @@ func ContainsAggregate(v Value) bool {
 //
 // THE DEFINITION OF "NESTED" IS THE MULTI-ACCESSOR RESOLVED PATH, and it is one
 // function because the predicate is the whole subtlety. The SQL resolver FUSES
-// `n.sk` into ONE FieldValue whose `Field` is the struct ROOT `N` with
-// Resolved=[N,SK] — Java does exactly the same fuse
-// (SemanticAnalyzer.lookupNestedField, SemanticAnalyzer.java:598
+// `n.sk` into ONE FieldValue with Resolved=[N,SK] — Java does exactly the same
+// fuse (SemanticAnalyzer.lookupNestedField, SemanticAnalyzer.java:598
 // `FieldValue.ofFieldsAndFuseIfPossible`) and then names the result by the
 // REQUESTED IDENTIFIER `n.sk` rather than by the fused value
-// (SemanticAnalyzer.java:599). So `Field` answers "what struct does this read
-// out of", never "which column is this": `n.sk` and `n.co` share it.
+// (SemanticAnalyzer.java:599).
 //
-// Every output-naming authority that answers the second question must take the
+// `Field` cannot substitute, and the reason SURVIVED the mint fix that made it
+// the LEAF name. It used to answer "what struct does this read out of", so
+// `n.sk` and `n.co` shared it; it now answers "which member", so `t1.n.sk` and
+// a flat `sk` share it instead. Either way it is one segment of a path and the
+// question here needs all of them. Every output-naming authority must take the
 // path. Reading `Field` there spells two different columns alike, and a
 // name-keyed reader then serves one of them where the other was asked for.
 //
@@ -1790,9 +1796,11 @@ func NestedResolvedPath(v Value) (string, bool) {
 //
 // The nested arm is NOT a special case bolted on: it is the same rule the sort
 // side already applies (sortKeyExtraColumnName) and the same rule Java applies
-// to every resolved reference. `Field` is the struct root, so without it
-// `SELECT n.sk, n.co` emits two slots named `N` — measured, and visible to the
-// user as duplicate column labels over correct data.
+// to every resolved reference. `Field` carries ONE segment — the struct root
+// when this was written, the leaf now — so without the path `SELECT n.sk, n.co`
+// emitted two slots named `N` (measured, visible to the user as duplicate
+// column labels over correct data) and `SELECT t1.n.sk, sk` would emit two
+// named `SK`. The path is what separates them.
 func ProjectionColumnName(v Value) string {
 	if path, nested := NestedResolvedPath(v); nested {
 		return path

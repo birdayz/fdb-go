@@ -114,11 +114,12 @@ func NewGroupByExpression(
 // the name from here so a baked ordinal and the emitted positional slot can never
 // disagree.
 //
-// A NESTED key takes its resolved PATH, never the flat struct root. The root is
-// shared by every member of one struct — `n.sk` and `n.co` are both `N` — and
-// this name is a MAP KEY in three downstream last-wins maps, so the flat
-// spelling silently collapses two grouping columns into one and returns too few
-// groups. Nested-path GROUP BY does not plan today, which is the
+// A NESTED key takes its resolved PATH, never a single segment of it. `Field`
+// carries one segment — the struct root when this was written, so `n.sk` and
+// `n.co` were both `N`; the leaf now, so `t1.n.sk` and a flat `sk` are both
+// `SK` — and this name is a MAP KEY in three downstream last-wins maps, so
+// either spelling silently collapses two grouping columns into one and returns
+// too few groups. Nested-path GROUP BY does not plan today, which is the
 // only reason that is latent rather than live; the conversion lands FIRST so
 // implementing the feature cannot arm it.
 //

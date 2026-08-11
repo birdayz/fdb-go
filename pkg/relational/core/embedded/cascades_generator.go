@@ -4281,6 +4281,19 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 					// slot 1 as "_1" (correctly typed). Resolve by ordinal
 					// first; the name map serves lazy (unbaked) reads.
 					inherited := false
+					// A MULTI-ACCESSOR reference inherits from nothing here. Every
+					// arm below recovers a column by a NAME, and the only name a
+					// fused reference has is its leaf — a member of the enclosing
+					// struct's namespace, offered to maps keyed by the RECORD's. A
+					// shared spelling then types this column from an unrelated
+					// column. The reference already carries the leaf's own type on
+					// its resolved path (Java's FieldValue.computeResultType is
+					// fieldPath.getLastFieldType, FieldValue.java:143-148), so
+					// declining to inherit leaves the RIGHT answer standing rather
+					// than a guess.
+					if fv.Resolved != nil && len(fv.Resolved.Accessors) > 1 {
+						inherited = true
+					}
 					// Ordinal inheritance only for the FLAT read: a
 					// QUANTIFIER-ADDRESSED read over a JOIN carries a
 					// LEG-relative ordinal, which is not an index into the
@@ -4420,10 +4433,12 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 func deriveProjectionColumnDef(v values.Value, alias string, aliasMinted bool, idx int, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
 	// A NESTED reference is named by its resolved PATH, read from the one
 	// predicate every naming authority shares, and it is tested FIRST because it
-	// subsumes both arms below: `Field` is the struct ROOT, shared by every
-	// member, so `n.sk` and `n.co` were both named `N` here — duplicate labels
-	// over correct data, measured. Java names the fused reference by the
-	// requested identifier `n.sk` for exactly this reason
+	// subsumes both arms below: `Field` is ONE segment of the path, so it cannot
+	// name a nested column no matter which segment it holds. It held the struct
+	// ROOT when this arm was written and `n.sk` and `n.co` were both named `N`
+	// here — duplicate labels over correct data, measured; it holds the LEAF now
+	// and `SELECT t1.n.sk, sk` would collide the other way. Java names the fused
+	// reference by the requested identifier `n.sk` for exactly this reason
 	// (SemanticAnalyzer.java:598-599) and the top-level projection then clears
 	// the qualifier, so the user sees SK and CO.
 	//
@@ -4510,11 +4525,14 @@ func deriveProjectionColumnDef(v values.Value, alias string, aliasMinted bool, i
 	displayLabel := label
 	if label == "" {
 		if _, isField := v.(*values.FieldValue); isField && name != "" {
-			// The label is the bare LEAF of the column's NAME, not of fv.Field.
-			// Those differ for exactly one shape and it is the one that matters:
-			// a fused nested reference carries the struct ROOT in Field, so
-			// reading Field labelled `n.sk` as `N` — and `n.co` as `N` too.
-			// Java takes the leaf of the resolved identifier
+			// The label is the bare LEAF of the column's NAME, derived above,
+			// never of fv.Field. The two happen to agree for a fused nested
+			// reference today — the mint names it after its leaf — and that
+			// agreement is exactly what must not be relied on: it did not hold
+			// when this arm was written (Field carried the struct ROOT, so
+			// `n.sk` and `n.co` both labelled `N`), and Field is one segment
+			// where the label is a function of the whole NAME, qualifier
+			// included. Java takes the leaf of the resolved identifier
 			// (Identifier.withoutQualifier, Identifier.java:101-106) applied by
 			// the top-level clearQualifier, which is SK and CO.
 			displayLabel = strings.ToUpper(parseColRef(name).bare())
@@ -5507,35 +5525,69 @@ func valueTypeName(v values.Value, desc protoreflect.MessageDescriptor) string {
 			return "BIGINT"
 		}
 	}
-	if t := v.Type(); t != nil {
-		switch t.Code() {
-		case values.TypeCodeInt:
-			return "INTEGER"
-		case values.TypeCodeLong:
-			return "BIGINT"
-		case values.TypeCodeFloat:
-			return "FLOAT"
-		case values.TypeCodeDouble:
-			return "DOUBLE"
-		case values.TypeCodeString:
-			return "STRING"
-		case values.TypeCodeBoolean:
-			return "BOOLEAN"
-		case values.TypeCodeDate:
-			return "DATE"
-		case values.TypeCodeTimestamp:
-			return "TIMESTAMP"
-		case values.TypeCodeUuid:
-			// JDBC getColumnTypeName for a UUID is the catch-all "OTHER"
-			// (Java: DataType.Code.UUID → Types.OTHER → "OTHER"), matching the
-			// field-path protoFieldTypeName so all metadata paths agree.
-			return "OTHER"
-		case values.TypeCodeRecord:
-			// A STRUCT column (java.sql.Types.STRUCT; api.SQLTypeNameStruct) —
-			// without this case a record-typed value (a struct-array unnest
-			// ELEMENT) fell through to "" and the BIGINT fallback silently
-			// mistyped it (review finding, pinned).
-			return "STRUCT"
+	return cascadesTypeName(v.Type())
+}
+
+// cascadesTypeName is the SQL type NAME of a cascades Type — the tail of
+// valueTypeName, split out because the ARRAY arm needs to ask the same question
+// of its element type and a value is the wrong thing to synthesize for that.
+//
+// "" means "this type has no ResultSet name here"; every caller has its own
+// fallback for that and none of them wants a guess.
+func cascadesTypeName(t values.Type) string {
+	if t == nil {
+		return ""
+	}
+	switch t.Code() {
+	case values.TypeCodeInt:
+		return "INTEGER"
+	case values.TypeCodeLong:
+		return "BIGINT"
+	case values.TypeCodeFloat:
+		return "FLOAT"
+	case values.TypeCodeDouble:
+		return "DOUBLE"
+	case values.TypeCodeString:
+		return "STRING"
+	case values.TypeCodeBytes:
+		// BINARY, not "BYTES": the JDBC type name for a SQL binary column, which
+		// is what the descriptor-side authority protoKindToTypeName already
+		// returns for BytesKind. The DDL keyword stays BYTES. Missing, this
+		// branch cost the same as the ARRAY one below and for the same reason —
+		// a BYTES member of a struct has no descriptor to fall back on, so it
+		// reported UNKNOWN where the identical column at top level reported
+		// BINARY.
+		return "BINARY"
+	case values.TypeCodeBoolean:
+		return "BOOLEAN"
+	case values.TypeCodeDate:
+		return "DATE"
+	case values.TypeCodeTimestamp:
+		return "TIMESTAMP"
+	case values.TypeCodeUuid:
+		// JDBC getColumnTypeName for a UUID is the catch-all "OTHER"
+		// (Java: DataType.Code.UUID → Types.OTHER → "OTHER"), matching the
+		// field-path protoFieldTypeName so all metadata paths agree.
+		return "OTHER"
+	case values.TypeCodeRecord:
+		// A STRUCT column (java.sql.Types.STRUCT; api.SQLTypeNameStruct) —
+		// without this case a record-typed value (a struct-array unnest
+		// ELEMENT) fell through to "" and the BIGINT fallback silently
+		// mistyped it (review finding, pinned).
+		return "STRUCT"
+	case values.TypeCodeArray:
+		// The ELEMENT's name, which is CQ-74's truncation and NOT a fresh
+		// decision: a TOP-LEVEL array column already reports the bare element
+		// type, because its stored descriptor resolves and protoFieldTypeName
+		// reads the repeated field's kind (TestFDB_ArrayColumnMetadataIsTruncated
+		// is that behaviour's live sentinel, and it is where this changes back).
+		// An array leaf reached through a STRUCT PATH has no descriptor to
+		// resolve — descriptorForColumn matches BARE names against the join-leaf
+		// descriptors and a struct member is not a top-level field of any of
+		// them — so without this arm it fell to "" and then to "UNKNOWN", and one
+		// array answered two ways depending on how it was addressed.
+		if at, ok := t.(*values.ArrayType); ok {
+			return cascadesTypeName(at.ElementType)
 		}
 	}
 	return ""
@@ -5555,6 +5607,24 @@ func arithTypeNameViaDesc(a *values.ArithmeticValue, desc protoreflect.MessageDe
 func operandTypeNameViaDesc(v values.Value, desc protoreflect.MessageDescriptor) string {
 	switch t := v.(type) {
 	case *values.FieldValue:
+		// A MULTI-ACCESSOR reference has already stated its type: it descended
+		// into a struct and its declared type is the LEAF's, which is exactly
+		// Java's answer — FieldValue.computeResultType is
+		// `fieldPath.getLastFieldType()` (FieldValue.java:143-148), with no
+		// name-keyed re-derivation anywhere upstream of it. The descriptor
+		// cannot improve on that and can only be WRONG: `t.Field` names a
+		// member of the enclosing STRUCT's namespace, while the descriptor is
+		// the RECORD's, and a lookup that crosses the two silently answers
+		// about a different column that happens to share the spelling.
+		//
+		// The arity test is on the resolved path and NOT on `t.Child`: the
+		// source-relative mint (expr.sourceRelativeColumnRef) produces a fused
+		// multi-accessor value with a nil Child, so childlessness is a
+		// statement about correlation, never about how many segments the
+		// reference has.
+		if t.Resolved != nil && len(t.Resolved.Accessors) > 1 {
+			return valueTypeName(v, desc)
+		}
 		if desc != nil {
 			if n := protoFieldTypeName(desc, t.Field); n != "UNKNOWN" {
 				return n

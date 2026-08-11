@@ -330,7 +330,15 @@ func fuseNestedAccessorsIfAny(root values.Value, accessors []semantic.NestedAcce
 // by name and a positional nested row by ordinal (descendResolvedPath).
 //
 // The value's declared type becomes the LEAF's type — the reference denotes
-// the leaf, not the struct it descended through.
+// the leaf, not the struct it descended through. Its display Field becomes the
+// LEAF's name for the same reason, and to agree with every other mint of this
+// shape: Java's fused FieldValue has no root-name accessor at all, and the one
+// single-name question that can be asked of it — getLastFieldName
+// (FieldValue.java:134-135, delegating to FieldPath.getLastFieldName at
+// FieldValue.java:463-466, which reads getOptionalFieldNames().get(size()-1)) —
+// answers with the LAST accessor. Copying the node whole left Field naming the
+// struct ROOT while Typ and Resolved described the leaf, so a consumer reading
+// Field got a different answer depending on which mint produced the value.
 func fuseNestedAccessors(root values.Value, accessors []semantic.NestedAccessor) (values.Value, error) {
 	fv, ok := root.(*values.FieldValue)
 	if !ok || fv.Resolved == nil {
@@ -345,10 +353,11 @@ func fuseNestedAccessors(root values.Value, accessors []semantic.NestedAccessor)
 	for i, a := range accessors {
 		suffix[i] = values.ResolvedAccessor{Field: a.Name, Ordinal: a.Ordinal}
 	}
-	leaf := accessors[len(accessors)-1].Col
+	leaf := accessors[len(accessors)-1]
 	out := *fv
 	out.Resolved = fv.Resolved.WithSuffix(&values.FieldPath{Accessors: suffix})
-	out.Typ = columnCascadesType(leaf)
+	out.Typ = columnCascadesType(leaf.Col)
+	out.Field = leaf.Name
 	return &out, nil
 }
 

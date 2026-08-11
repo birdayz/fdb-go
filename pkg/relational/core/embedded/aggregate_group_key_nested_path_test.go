@@ -7,10 +7,15 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// nestedGroupKey builds the shape the SQL resolver produces for `n.sk`: ONE
-// FieldValue whose Field is the struct ROOT with a multi-accessor resolved path.
-// Java's resolver fuses identically (SemanticAnalyzer.java:598) — which is why
-// the root cannot be the column's identity in either engine.
+// nestedGroupKey builds the fused shape the SQL resolver produces for `n.sk`:
+// ONE FieldValue with a multi-accessor resolved path. Java's resolver fuses
+// identically (SemanticAnalyzer.java:598) — which is why no single segment can
+// be the column's identity in either engine.
+//
+// `Field` is held at the struct ROOT here on purpose. The resolver minted that
+// when this was written and names the LEAF now, but the assertion is that the
+// namer reads the PATH, and only a fixture whose `Field` disagrees with its last
+// accessor can distinguish that from reading `Field` and getting lucky.
 func nestedGroupKey(leaf string, ordinal int) *values.FieldValue {
 	return &values.FieldValue{Field: "N", Resolved: &values.FieldPath{
 		Accessors: []values.ResolvedAccessor{{Field: "N", Ordinal: 0}, {Field: leaf, Ordinal: ordinal}},

@@ -547,6 +547,14 @@ func clusterProjectionsResolvable(p *logical.LogicalProject, csq logical.Correla
 				case *values.FieldValue:
 					// A source-relative baked ref resolves like its lazy twin
 					// (the pull-up re-bakes it); machinery-owned baked nodes decline.
+					//
+					// THIS IS ALSO THE ARITY GATE, which the name does not convey:
+					// SourceRelativeBaked() requires len(Accessors) == 1
+					// (values.go:1367-1368), so a MULTI-ACCESSOR nested reference
+					// declines here and never reaches the name-keyed lookups below
+					// (FieldIndexUnique / clusterFieldResolvable, which take
+					// n.Field — one segment of a path). Named because the guard
+					// reads as being about machinery ownership alone.
 					if n.Resolved != nil && !n.SourceRelativeBaked() {
 						ok = false
 						return false
