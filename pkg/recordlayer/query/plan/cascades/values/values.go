@@ -1395,7 +1395,21 @@ func (f *FieldValue) resolveOrdinal() (int, bool) {
 // (join box seed, gathered seed, merged concat, group-by output): the
 // translator's rebase/collection walks over composed rows MUST rebind it
 // through the walk's own authority (and count it as a leg reference), whereas
-// a FrontierPinned (machinery-owned) or multi-accessor path is final. At
+// a FrontierPinned (machinery-owned) path is final.
+//
+// A MULTI-ACCESSOR PATH IS NOT FINAL, and this doc used to say it was — the
+// arity clause reads like a second way of being machinery-owned and is not one.
+// Machinery-ownership is the FRONTIER PIN alone; arity is orthogonal to it. An
+// UNPINNED multi-accessor path (a user-written nested descent, minted as one
+// node with a leg-relative root) still addresses its own source row and still
+// has to be rebound — but this predicate answers false for it, so a walk that
+// selects candidates with SourceRelativeBaked SKIPS it. That is not a
+// conservative decline; it is a silent miss, and it shipped as one: an element
+// MEMBER reference was skipped, mis-resolved over the composed row, and EXISTS
+// dropped every row without an error. Use RootIsLegRelativeUnpinned to ask "is
+// this still leg-relative", which is the question every rebase/collection walk
+// actually has; use this predicate only where SINGLE-accessor is genuinely the
+// requirement. At
 // runtime it reads through its source's leg window (legWindowBinder). This is
 // the source-vs-machinery half of the Go two-level-lowering bridge Java has no
 // analog for (see FieldPath.FrontierPinned).

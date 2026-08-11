@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"go/ast"
 	"go/parser"
-	"go/printer"
 	"go/token"
 	"os"
 	"path/filepath"
@@ -129,14 +128,13 @@ func TestSourceRelativeBakedSitesAreVisibleToTheCensus(t *testing.T) {
 			if !ok || sel.Sel == nil || sel.Sel.Name != "SourceRelativeBaked" {
 				return true
 			}
-			// A method VALUE or a call on something other than a value is still
-			// a use; what is excluded is the DECLARATION, which is a FuncDecl
-			// and never a CallExpr, so nothing extra is needed here.
-			var recv bytes.Buffer
-			if err := printer.Fprint(&recv, fset, sel.X); err != nil {
-				t.Fatalf("render receiver in %s: %v", rel, err)
-			}
-
+			// The receiver is deliberately NOT inspected. Any call of this
+			// selector is a use whatever it is called on, and the DECLARATION is
+			// a FuncDecl rather than a CallExpr so it never reaches here — there
+			// is nothing a receiver check could exclude that is not already
+			// excluded. (An earlier revision rendered the receiver into a buffer
+			// and never read it, which read like a filter that had been
+			// forgotten rather than one deliberately not needed.)
 			line := fset.Position(call.Pos()).Line
 			symbol := enclosingSymbol(symbols, call.Pos())
 			s := site{rel: rel, line: line, symbol: symbol}

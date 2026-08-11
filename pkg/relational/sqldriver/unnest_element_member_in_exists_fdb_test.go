@@ -36,6 +36,17 @@ import (
 // evaluated to zero rows, because the bake and its own safety net both keyed on
 // a single-accessor predicate and waved a member ref through.
 //
+// THE TWO SITES ARE NOW INDEPENDENT, and the way to see that is that breaking
+// them separately fails DIFFERENTLY. Reverting the BAKE alone
+// (bakeUnnestElementRefOrdinal) does NOT reproduce the silence: it fails LOUD
+// with `0AF00: Cascades planner could not plan query`, because the widened
+// watchdog (unnestExistsRefSurvivesUnbaked, keyed on RootIsLegRelativeUnpinned)
+// now catches the unbaked reference and declines. Reproducing the original
+// silent `EK|` requires reverting BOTH. Before the fix the two shared one
+// single-accessor predicate, so the net could not see what the bake missed and
+// the failure was silent; a net that only reproduces that silence when it is
+// itself disabled is a net that is genuinely independent of what it watches.
+//
 // The controls are load-bearing. A green from a dead family (no rows, no
 // unnest, or a gate refusing everything) would be indistinguishable from the
 // fix working, so each EXISTS arm is paired with the same reference in a shape
