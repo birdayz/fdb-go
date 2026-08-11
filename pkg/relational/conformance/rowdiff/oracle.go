@@ -121,11 +121,19 @@ func finalizeSingleTable(out []Row, q Query, projection []string, c *Case) []Row
 	if cols == nil {
 		cols = append([]string{"ID"}, colNames(c.Table)...)
 	}
+	outCols := make([]string, len(cols))
+	for i, col := range cols {
+		outCols[i] = OutputAlias(col)
+	}
 	projected := make([]Row, 0, len(out))
 	for _, r := range out {
 		p := make(Row, len(cols))
 		for _, col := range cols {
-			p[col] = r[col]
+			// Keyed by the OUTPUT alias, which is the column itself for a flat
+			// projection and `N_A` for a nested one — matching the alias the
+			// renderer emits, because the harness compares engine rows to
+			// oracle rows by output column name.
+			p[OutputAlias(col)] = r[col]
 		}
 		projected = append(projected, p)
 	}
@@ -136,7 +144,7 @@ func finalizeSingleTable(out []Row, q Query, projection []string, c *Case) []Row
 		seen := make(map[string]struct{}, len(projected))
 		dedup := projected[:0]
 		for _, r := range projected {
-			key := distinctKey(r, cols)
+			key := distinctKey(r, outCols)
 			if _, dup := seen[key]; dup {
 				continue
 			}
@@ -291,6 +299,10 @@ func oracleUnionRows(c *Case, q Query, projection []string) ([]Row, error) {
 	if cols == nil {
 		cols = append([]string{"ID"}, colNames(c.Table)...)
 	}
+	outCols := make([]string, len(cols))
+	for i, col := range cols {
+		outCols[i] = OutputAlias(col)
+	}
 	filterProject := func(where *BoolNode) ([]Row, error) {
 		var out []Row
 		for _, r := range c.Rows {
@@ -305,7 +317,7 @@ func oracleUnionRows(c *Case, q Query, projection []string) ([]Row, error) {
 			}
 			p := make(Row, len(cols))
 			for _, col := range cols {
-				p[col] = r[col]
+				p[OutputAlias(col)] = r[col]
 			}
 			out = append(out, p)
 		}
@@ -328,7 +340,7 @@ func oracleUnionRows(c *Case, q Query, projection []string) ([]Row, error) {
 	seen := make(map[string]struct{}, len(combined))
 	dedup := combined[:0]
 	for _, r := range combined {
-		key := distinctKey(r, cols)
+		key := distinctKey(r, outCols)
 		if _, dup := seen[key]; dup {
 			continue
 		}

@@ -313,7 +313,7 @@ func (r *Runner) Run(ctx context.Context, cand Candidate) Outcome {
 	out.Scenario = scenario
 	out.Header = factorycorpus.Header{
 		Name:          cand.Name(),
-		Generator:     GeneratorVersion,
+		Generator:     cand.GeneratorVersionOf(),
 		Seed:          cand.Seed,
 		QueryIndex:    cand.QueryIndex,
 		Projection:    cand.ProjIndex,

@@ -32,6 +32,11 @@ type Sweep struct {
 	// dedup-rejected must not be offered now, or a re-emission would grow the
 	// corpus as a side effect of rewriting it.
 	Filter func(Candidate) bool
+	// Nested sweeps the NESTED candidate family instead of the flat one: same
+	// seeds, a different derivation, a disjoint file namespace. It is a mode
+	// rather than an additional pass because a seed materializes ONE schema and
+	// the two families need different ones.
+	Nested bool
 }
 
 // RunSeed evaluates every candidate of one seed and offers each outcome to the
@@ -40,6 +45,11 @@ type Sweep struct {
 // construction — so it returns cleanly with nothing offered.
 func (s Sweep) RunSeed(ctx context.Context, seed uint64, batch *Batch) ([]Outcome, error) {
 	cands := Candidates(seed)
+	schemaPrefix := "fc"
+	if s.Nested {
+		cands = NestedCandidates(seed)
+		schemaPrefix = "fcn"
+	}
 	if s.Filter != nil {
 		kept := cands[:0]
 		for _, c := range cands {
@@ -56,7 +66,7 @@ func (s Sweep) RunSeed(ctx context.Context, seed uint64, batch *Batch) ([]Outcom
 		batch.CountCandidate()
 	}
 
-	schema := fmt.Sprintf("fc%d", seed)
+	schema := fmt.Sprintf("%s%d", schemaPrefix, seed)
 	tmpl := schema + "t"
 	ddl := cands[0].Case.DDL()
 	for _, stmt := range []string{

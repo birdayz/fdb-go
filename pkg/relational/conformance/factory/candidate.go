@@ -42,19 +42,36 @@ const MaxExpectationRows = 80
 // Candidate is one generation unit — a case, one query within it, one
 // projection variant — that the TLP oracle can be built over.
 type Candidate struct {
-	Seed          uint64
-	QueryIndex    int
-	ProjIndex     int
-	Case          *rowdiff.Case
-	Query         rowdiff.Query
-	Projection    []string
+	Seed       uint64
+	QueryIndex int
+	ProjIndex  int
+	Case       *rowdiff.Case
+	Query      rowdiff.Query
+	Projection []string
+	// Nested marks a candidate derived by NestedCandidates: its case carries a
+	// struct column and its projections name dotted paths. It selects the
+	// generator version stamped into the emitted header, and it keeps the file
+	// NAME disjoint from the flat family so the two can share a seed number.
+	Nested        bool
 	FeatureVector string
 }
 
 // Name is the candidate's stable file name: seed, query and projection, which
 // together identify it uniquely and reproducibly.
 func (c Candidate) Name() string {
-	return fmt.Sprintf("fc_%010d_q%d_p%d", c.Seed, c.QueryIndex, c.ProjIndex)
+	prefix := "fc"
+	if c.Nested {
+		prefix = "fcn"
+	}
+	return fmt.Sprintf("%s_%010d_q%d_p%d", prefix, c.Seed, c.QueryIndex, c.ProjIndex)
+}
+
+// GeneratorVersionOf is the generator string the candidate's header declares.
+func (c Candidate) GeneratorVersionOf() string {
+	if c.Nested {
+		return NestedGeneratorVersion
+	}
+	return GeneratorVersion
 }
 
 // Ordered reports whether the candidate's query fixes a row order.

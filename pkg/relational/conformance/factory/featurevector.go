@@ -46,6 +46,9 @@ func FeatureVector(c *rowdiff.Case, q rowdiff.Query, projection []string) string
 	parts = append(parts, "shape="+shapeTag(q))
 	parts = append(parts, "idx="+indexTag(c))
 	parts = append(parts, "proj="+projectionTag(q, projection))
+	if tag := nestTag(c, q, projection); tag != "" {
+		parts = append(parts, "nest="+tag)
+	}
 
 	if q.Where != nil {
 		parts = append(parts, "where="+boolTag(q.Where))
@@ -135,6 +138,59 @@ func indexTag(c *rowdiff.Case) string {
 	}
 	sort.Strings(specs)
 	return strings.Join(specs, ",")
+}
+
+// nestTag records WHICH CLAUSES a dotted path reached, and is absent entirely
+// for a flat case so no committed flat feature vector changes.
+//
+// Recording the clause set rather than a bare `nest=1` is the whole point of
+// the axis. Every nested defect this corpus exists to catch was a clause
+// DISAGREEING with another clause -- SELECT resolved a path that ORDER BY
+// refused, GROUP BY produced a plan whose ordinal did not resolve -- so a
+// census that could only say "some nesting happened" would report full
+// coverage for a corpus that only ever projected.
+func nestTag(c *rowdiff.Case, q rowdiff.Query, projection []string) string {
+	if !c.Nested {
+		return ""
+	}
+	var in []string
+	for _, p := range projection {
+		if strings.Contains(p, ".") {
+			in = append(in, "select")
+			break
+		}
+	}
+	if q.Where != nil && strings.Contains(rowdiff.PredicateSQL(q.Where), "n.") {
+		in = append(in, "where")
+	}
+	for _, k := range q.OrderBy {
+		if strings.Contains(k.Col, ".") {
+			in = append(in, "order")
+			break
+		}
+	}
+	if q.Agg != nil {
+		if strings.Contains(q.Agg.Col, ".") {
+			in = append(in, "agg-arg")
+		}
+		for _, g := range q.Agg.GroupBy {
+			if strings.Contains(g, ".") {
+				in = append(in, "group-key")
+				break
+			}
+		}
+	}
+	if q.Exists != nil && strings.Contains(q.Exists.CorrCol, ".") {
+		in = append(in, "exists")
+	}
+	if q.ScalarSub != nil && strings.Contains(q.ScalarSub.OuterCol, ".") {
+		in = append(in, "scalarsub")
+	}
+	if len(in) == 0 {
+		return "schema-only"
+	}
+	sort.Strings(in)
+	return strings.Join(in, "+")
 }
 
 func projectionTag(q rowdiff.Query, projection []string) string {
