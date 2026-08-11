@@ -67,9 +67,15 @@ import (
 //     the deliberate witness because the paren arm also passes for an unrelated
 //     reason (see its note on m1), so it cannot be relied on for the index.
 //     The sibling walk has its own such arm (a_nested_key_in_a_nonzero_slot),
-//     because the two walks record the slot at separate sites and mutating one
-//     leaves the other's arms untouched — that arm is green under this mutation
-//     and red under the sibling's, which is what keeps the two routes distinct;
+//     because the two walks record the slot at separate sites. Do NOT read that
+//     as a clean partition: that arm STRADDLES both routes. It groups by
+//     `q.t + 1, r.v.z`, so it drives the computed walk as well, and it is RED
+//     under a revert of that walk. It is green under the pin-to-zero mutation
+//     for a narrower reason — its computed key sits at slot 0, where pinning to
+//     0 is a NO-OP — not because the mutation cannot reach it. If that key is
+//     ever moved off slot 0, the arm starts reddening here and nothing about the
+//     code will look wrong, so the greenness is a fact about the fixture and is
+//     recorded as one;
 //   - a_duplicate_computed_key… — a NEGATIVE result. The rebase first-matches
 //     where Java raises, and these spellings are refused 42702 before it. The arm
 //     pins that refusal and names what re-arms it. It does NOT claim the refusal
@@ -230,8 +236,9 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// THE SLOT INDEX IS THE BINDING, and a single-key arm cannot tell the
 		// recorded loop index from a hardcoded zero. This arm exists for the
 		// index alone, and it is the DELIBERATE witness for it on the computed
-		// walk — mutating that walk's mint to ordinal 0 reddens this arm and
-		// nothing else.
+		// walk — MEASURED at 14 arms, pinning that walk's mint to ordinal 0
+		// reddens TWO arms: this one and a_parenthesised_computed_key_twin…,
+		// leaving 12 green.
 		//
 		// It is not the only witness, though, and the difference matters when
 		// reading a mutation result. a_parenthesised_computed_key_twin also puts
