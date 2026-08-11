@@ -17662,3 +17662,114 @@ None is speculative: each was re-verified against the tree before booking.
   a copy of it here would be a second ungated home in the very entry that defines
   that as the rot. An earlier draft of this note carried three such magnitudes.
   Read them from `pkg/docscheck`.
+
+---
+
+- [x] **Phase 12 STEP 1 landed, and it closes LESS and MORE than the item
+  predicted — plus the `groupByOutputOrdinals` last-wins site is measured CLOSED
+  and a guard there would be actively harmful.** One block, three findings, two
+  of them corrections to things that were written down and believed.
+
+  **(1) The pull-up guard is in, at THREE sites, not the two the item named.**
+  Both rebase walks (`rebasePostAggregateGroupKeyValue`,
+  `rebasePostAggregateComputedGroupKey`) and the exact-boundary binder
+  (`bindPostAggregateValueToNativeOrdinals`) now COLLECT matching grouping keys
+  and raise `AMBIGUOUS_COLUMN` on more than one instead of taking the first.
+  This is Java's structure: `Expressions.pullUp` asserts `size() == 1` with
+  AMBIGUOUS_COLUMN (`Expressions.java:112`), `Expression.pullUp` is a bare
+  `Iterables.getOnlyElement` (`Expression.java:246`) that throws without the
+  SQLSTATE; both guard LOCALLY at the pull-up and delegate to no upstream
+  duplicate-key gate. Go spends the precise 42702 on both halves — a deliberate
+  refinement of Java's unclassified HAVING failure, documented at the site.
+
+  **(2) THE ITEM'S CLOSABLE SET WAS WRONG: only the HAVING half of
+  `under_a_join_two_equal_keys…` moves, not all four spellings.** The item
+  claimed all four carry a reference and multi-match, citing an instrumented
+  `matches=2 nkeys=2`. Measured here, that reading was taken on the HAVING half
+  and generalized. The two PROJECTED spellings never reach either rebase walk:
+  they are bound by `buildAggregateOutputSlots`
+  (`pkg/relational/core/embedded/logical_builder.go`), whose match is NAME-based
+  over the same `(Qualified, Bare, Qualifier)` triple the gate uses — instrumented,
+  it binds `A.R.V.Z`→key 0 and `R.V.Z`→key 1, ONE match each. Under its own
+  predicate the projected reference is not ambiguous, so there is nothing there
+  to guard; forcing it to refuse IS the STEP 2 predicate convergence. The
+  projected half therefore remains a real but NARROWED Java-raises/Go-answers
+  divergence, pinned in the direction it runs by the renamed arm
+  `under_a_join_the_HAVING_half_is_refused_42702_and_the_projected_half_is_not`.
+  That site's false justification ("duplicate grouping keys were rejected 42702
+  at aggregate build time, so the first match is the only match" — the gate does
+  not fire under a join) is corrected in place, with its arming condition.
+
+  **(3) STEP 1 ALSO CLOSED A DIVERGENCE NOBODY HAD BOOKED.**
+  `GROUP BY a.k, k` inside a correlated scalar subquery was PLANNING in Go while
+  the live JVM refuses the same shape — the cross-engine probe
+  `join_control_single_source` (`conformance/duplicate_groupby_java_probe_test.go`)
+  records `SELECT COUNT(*) FROM T_G1 a GROUP BY a.amount, amount` as
+  `both_42702`. The gate's alias strip does not fire inside that inner, so the
+  two equal keys reached the pull-up. `TestFDB_OrderedGroupedScalarSubquery_`
+  `QualifiedJoinKeyIdentity/repeated_equivalent_single_source_keys` was pinning
+  the WRONG behaviour (asserting Go answers 300, reasoning that "ORDER BY bare k
+  may deterministically use the first" — a description of the defect); it is
+  flipped to assert the refusal and renamed `…_are_refused_42702`.
+
+  **MUTATION EVIDENCE, three DISJOINT arms** (each mutation confirmed landed via
+  `git diff` before running):
+  - `matchCount > 1` → `> 999` reddens ONLY the join HAVING arm; the scalar-subquery
+    arm stays green.
+  - `keyMatches > 1` → `> 999` reddens ONLY the scalar-subquery arm.
+  - `matches > 1` → `> 999` reddens ONLY `TestGroupKeyPullUpGuard_ComputedWalkRefusesAMultiMatch`,
+    leaving its two sibling unit arms green.
+
+  **The COMPUTED walk's guard is UNREACHABLE FROM SQL and is unit-pinned for
+  exactly that reason.** Disabling it leaves `//pkg/relational/sqldriver` green
+  at 6158 subtests — the gate refuses the byte-identical computed twin first, and
+  the parenthesised twin yields `[RecordConstructorValue, ArithmeticValue]`, which
+  a reference matches ONCE. `pkg/relational/core/embedded/group_key_pull_up_guard_test.go`
+  drives it directly, plus a unique-match control asserting slot 1 (not 0) and the
+  collector's first-verdict contract.
+
+  **STILL OPEN for STEP 2** (unchanged in kind, smaller in extent): the projected
+  half above; `a_parenthesised_computed_key_twin…`; and all five
+  `java_42702_go_plans` probes, whose bare `SELECT COUNT(*)` shapes carry no
+  post-aggregate reference for any pull-up to guard.
+
+- [x] **`groupByOutputOrdinals`' `keys[full] = ord` last-wins store is CLOSED, a
+  guard there is INERT AND NON-NEUTRAL, and this is the second time the site has
+  been mistaken for live.** Booked so a third reader does not re-propose it.
+
+  The RFC-197 block above records the hazard as closed by
+  `groupKeyOrdinalByStructure`. Measured directly, over
+  `//pkg/relational/sqldriver:sqldriver_test` at **6159 `=== RUN` lines**, with
+  the store and all three consumers (`cascades_translator.go` ORDER BY ~:1044,
+  baker-stripped ~:1168, baker-direct ~:1190) instrumented:
+
+  - **29 collisions built**, over 4 distinct names (`A.R.V.Z`, `C1`, `K`, `NAME`);
+  - **15 consumer consultations**;
+  - **ZERO consultations on a collided name.** The two populations are DISJOINT.
+
+  Scope is written into the claim on purpose: that reading is the
+  `//pkg/relational/sqldriver` target ONLY. The yamsql corpus and
+  `//pkg/relational/core/embedded` were NOT instrumented.
+
+  **Why it is closed:** the rebase loops now record the slot at the composition
+  that decides it and mark it `FrontierPinned`, so references arrive already
+  bound and the baker returns before any name lookup. Confirmed by mutation —
+  forcing `groupKeyOrdinalByStructure` to always decline (making the last-wins map
+  the SOLE decider at all three consumers) left the full 6159-subtest corpus GREEN
+  and returned byte-identical correct rows for six deliberately-constructed
+  collision shapes over two tables sharing leaf `K` with DIFFERENT values, driving
+  all three consumers (SELECT-list, HAVING, ORDER BY asc and desc). The mutation
+  was confirmed landed: it reddens
+  `//pkg/relational/core/query:query_test -test.run=TestGroupKeyOrdinalByStructure_Arms`.
+
+  **A guard at that store is not merely inert — it is NON-NEUTRAL where it would
+  fire.** Deleting the colliding entry flips `:1150`'s `if _, hit := keyOrds[key];
+  !hit` into its stripped-alias branch and drops `:1185` to `return node`
+  (unbaked, lazy name read). So the cheap-looking "mirror `addKeyAlias`" change
+  would alter behaviour on shapes with no demonstrated defect behind them.
+
+  **Scoped datum for the `Resolved == nil` residual** the RFC-197 block names:
+  at 6159 subtests, **9 of the 15 consultations are declines** (6 ORDER BY,
+  3 baker-stripped) and NONE is on a collided name — so the decline arm is
+  reachable, but has never met an ambiguous name. That is the falsifier to watch:
+  a decline ON a collided name is the residual going live.

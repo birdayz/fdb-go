@@ -179,11 +179,34 @@ func buildAggregateOutputSlots(keys []logical.GroupKey, aggCols []aggSelectCol, 
 					same = strings.EqualFold(strings.TrimSpace(strip(ac.groupCol)), strings.TrimSpace(key.Display))
 				}
 				if same {
-					// At most one key can match: duplicate grouping keys were
-					// rejected 42702 at aggregate build time
-					// (visitSelectGroupBy's groupKeysEquivalent check, the
-					// analogue of Java Expressions.pullUp's ambiguity
-					// assertion), so the first match is the only match.
+					// FIRST-MATCH, AND THE REASON IT IS SAFE IS NOT THE ONE THAT
+					// USED TO BE WRITTEN HERE. The old justification was that
+					// duplicate grouping keys are rejected 42702 at aggregate
+					// build time, so at most one key can match. That gate does
+					// NOT fire under a join: visitSelectGroupBy computes its
+					// alias-strip prefix only when `len(fs.joins) == 0`, so
+					// `GROUP BY a.r.v.z, r.v.z` passes it. Trusting it here was
+					// the same delegate-upstream inversion the post-aggregate
+					// pull-up guard removes.
+					//
+					// What actually keeps this single-matched is that the arms
+					// above compare the SAME (Qualified, Bare, Qualifier) triple
+					// the gate does, so two keys the gate calls different are
+					// different here too. Measured on the shape that defeats the
+					// gate: `GROUP BY a.r.v.z, r.v.z` binds A.R.V.Z to key 0 and
+					// R.V.Z to key 1 — one match each, distinct slots, correct
+					// rows. That is why the projected half of that query still
+					// plans while its HAVING twin now raises 42702: the two
+					// halves decide key identity by DIFFERENT predicates, name
+					// here and semantic at the pull-up, and only the semantic one
+					// sees a duplicate.
+					//
+					// ARMING CONDITION, so this does not rot into the claim it
+					// replaced: converging the two predicates (the separate
+					// gate-convergence step) makes this loop see the multi-match
+					// the pull-up already sees. At that point this `break` must
+					// become a collect-and-raise like the pull-up's, or the
+					// projected half will silently bind the first of two.
 					native = i
 					break
 				}

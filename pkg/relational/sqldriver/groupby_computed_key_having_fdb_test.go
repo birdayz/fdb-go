@@ -652,85 +652,87 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		}
 	})
 
-	t.Run("under_a_join_two_equal_keys_are_NOT_refused_and_Go_answers_where_Java_raises", func(t *testing.T) {
-		// A DIVERGENCE THIS CHANGE DOES NOT CAUSE AND DOES NOT FIX, pinned here
-		// because it is the exact re-arm condition the two duplicate-key arms
-		// above name, and it turns out to be CONSTRUCTIBLE.
+	t.Run("under_a_join_the_HAVING_half_is_refused_42702_and_the_projected_half_is_not", func(t *testing.T) {
+		// THE DIVERGENCE THIS ARM PINNED IS HALF CLOSED, and the SPLIT is the
+		// finding — it contradicts the booking that predicted all four spellings
+		// would move together.
 		//
-		// THE MECHANISM. Those arms hold because the duplicate gate normalizes
-		// the qualifier before comparing: visitSelectGroupBy strips a leading
-		// `aliasPrefix` so `r.v.z` and `nested.r.v.z` both reduce to (Z, R.V).
-		// But that prefix is computed only `if fs.tableAlias != "" &&
-		// len(fs.joins) == 0` — UNDER A JOIN THE STRIP IS OFF. So `a.r.v.z`
+		// THE MECHANISM, unchanged and still why the shape exists. The duplicate
+		// gate normalizes the qualifier before comparing: visitSelectGroupBy
+		// strips a leading `aliasPrefix` so `r.v.z` and `nested.r.v.z` both
+		// reduce to (Z, R.V). That prefix is computed only `if fs.tableAlias !=
+		// "" && len(fs.joins) == 0` — UNDER A JOIN THE STRIP IS OFF. So `a.r.v.z`
 		// keeps Qualifier `A.R.V` while bare `r.v.z` keeps `R.V`,
-		// groupKeysEquivalent compares the two strings, returns false, and no
-		// 42702 fires. Two semantically equal keys then reach the first-match
-		// loop in rebasePostAggregateGroupKeyValue, which binds the FIRST.
+		// groupKeysEquivalent calls them different, and the GATE does not fire.
 		//
-		// JAVA REFUSES HERE, by two different mechanisms depending on the clause,
-		// and the queries below deliberately cover both. The PROJECTED spellings
-		// go through the SELECT-list variant Expressions.pullUp, which asserts
-		// `pulledUpExpressionMap.get(subExpression).size() == 1` with
-		// AMBIGUOUS_COLUMN (Expressions.java:112). The HAVING spellings go
-		// through Expression.pullUp, which ends in a BARE
-		// Iterables.getOnlyElement (Expression.java:246) with NO such assert — it
-		// throws, but not with that SQLSTATE. So "Java raises AMBIGUOUS_COLUMN"
-		// is precise only for the projected half; what both halves share is that
-		// Java stops and Go answers.
+		// WHERE THE TWO HALVES THEN GO IS DIFFERENT, and that is the whole
+		// content of this arm. A HAVING re-read reaches the post-aggregate
+		// pull-up (rebasePostAggregateGroupKeyValue), whose match is SEMANTIC:
+		// the two equal keys both match, and the guard there now raises 42702 —
+		// measured `matchCount=2 nkeys=2`, twice, once per HAVING spelling. A
+		// PROJECTED reference never reaches that walk at all; it is bound by
+		// buildAggregateOutputSlots, whose match is NAME-based over the same
+		// (Qualified, Bare, Qualifier) triple the gate uses. Measured, it binds
+		// A.R.V.Z to key 0 and R.V.Z to key 1 — ONE match each. Under its own
+		// predicate the projected reference is not ambiguous, so there is nothing
+		// there to guard and the query still plans, with correct rows.
 		//
-		// IT IS BOUNDED TO A CONFORMANCE DIVERGENCE, NOT WRONG ROWS, and that
-		// bound is why it is pinned rather than fixed here: the two keys are
-		// SEMANTICALLY EQUAL, so their two output slots hold identical values
-		// and binding either answers correctly. The asserted rows below are the
-		// arithmetically correct ones — Go returns the right answer to a query
-		// Java declines to run.
+		// SO THE BOOKED CLAIM THAT ALL FOUR SPELLINGS MULTI-MATCH IS WRONG.
+		// Only the two HAVING ones do. The instrumented `matches=2 nkeys=2`
+		// reading that claim rested on was taken on the HAVING half and
+		// generalized to the projected half, which takes a different route.
 		//
-		// IT IS PRE-EXISTING AND NOT NESTED-SPECIFIC. The flat twin
-		// (`GROUP BY b.c1, c1`) diverges identically, against the same sibling
-		// walk, and this branch's source delta over post-#719 master is +130/-0 (a
-		// PURE ADDITION: `git diff --stat bd6f0c028 -- pkg/relational/core/`, with
-		// `grep -c '^-[^-]'` = 0) — a diff that deletes nothing cannot have
-		// introduced or widened this.
+		// JAVA REFUSES ALL FOUR, so the projected half remains a real divergence
+		// — a NARROWER one than before, and it needs the gate-convergence step
+		// (one identity predicate shared by the gate, the slot builder and the
+		// pull-up), not a wider guard. Java's own structure is what is ported
+		// here: it guards LOCALLY at the pull-up (Expressions.java:112 asserts
+		// `size() == 1` with AMBIGUOUS_COLUMN; Expression.java:246 is a bare
+		// Iterables.getOnlyElement that throws without that SQLSTATE) rather than
+		// delegating to an upstream duplicate check. Go raises 42702 on both
+		// pull-up halves — a deliberate refinement of Java's unclassified HAVING
+		// failure, since both engines stop and only the code differs.
 		//
-		// THIS ARM IS THE ONE THE SMALL FIX CLOSES, which is why it is worth
-		// separating from the parenthesised arm. (That arm is NOT this walk's:
-		// its two keys are non-FieldValue, so it binds on the COMPUTED walk —
-		// see its own note. The two arms are neighbours in this file and are
-		// bound by different loops, which is exactly the confusion to avoid.)
-		// All four spellings below
-		// carry a post-aggregate reference, and the two equal FieldValue keys
-		// genuinely multi-match: instrumenting this walk's first-match loop
-		// reports `matches=2 nkeys=2` for both the nested (R) and flat (C1)
-		// spellings. So making the loop COLLECT matches and raise on more than
-		// one — exactly where Java guards (Expressions.java:112,
-		// Expression.java:246, locally at the pull-up, delegating to no upstream
-		// duplicate-key check) — turns every query below into a 42702, and this
-		// arm becomes that assertion.
-		//
-		// The parenthesised arm does NOT move with it: a computed twin
-		// yields keys [RecordConstructorValue, ArithmeticValue], a reference
-		// matches only one, and no `>1` guard can fire. That one needs the larger
-		// gate-convergence step. TODO.md Phase 12 carries both, with the closable
-		// sets listed separately so neither step is credited with the other's
-		// work. Until then this arm exists so the behaviour cannot move in EITHER
-		// direction unnoticed: silently starting to refuse is a change worth
-		// seeing too.
-		//
-		// BOOKED in TODO.md Phase 12, together with its computed-route twin
-		// (a_parenthesised_computed_key_twin_is_NOT_refused_either), because the
-		// two share one fix. Read that entry before changing either site.
-		const why = "This arm pins a KNOWN Go-answers/Java-raises divergence, booked in " +
-			"TODO.md Phase 12. If it now errors, check the error is 42702 and flip this " +
-			"arm to assert the refusal — that is the fix landing, not a regression."
+		// BOTH DIRECTIONS ARE ASSERTED so neither half can move unnoticed: the
+		// HAVING half must keep refusing, and the projected half must keep
+		// answering CORRECTLY. If the projected half starts refusing 42702, that
+		// is the convergence step landing — flip it and say so.
+		const projWhy = "The PROJECTED half of this shape is a KNOWN, NARROWED " +
+			"Go-answers/Java-raises divergence: buildAggregateOutputSlots binds each " +
+			"reference to its own key by a name predicate that does not see the " +
+			"duplicate. If this now errors 42702, the gate-convergence step landed — " +
+			"flip this to assert the refusal."
 		eq(t, "SELECT a.r.v.z, r.v.z, max(a.q.s) FROM nested a JOIN flat b ON a.id = b.id "+
-			"GROUP BY a.r.v.z, r.v.z", 3, "[[100 100 203] [140 140 330]]", why)
-		eq(t, "SELECT max(a.q.s) FROM nested a JOIN flat b ON a.id = b.id "+
-			"GROUP BY a.r.v.z, r.v.z HAVING r.v.z > 120", 1, "[[330]]", why)
-		// The FLAT twin, which is what says this is a property of the duplicate
-		// gate under joins and not something nested paths brought with them.
+			"GROUP BY a.r.v.z, r.v.z", 3, "[[100 100 203] [140 140 330]]", projWhy)
 		eq(t, "SELECT b.c1, c1, max(b.c2) FROM nested a JOIN flat b ON a.id = b.id "+
-			"GROUP BY b.c1, c1", 3, "[[100 100 203] [140 140 330]]", why)
-		eq(t, "SELECT max(b.c2) FROM nested a JOIN flat b ON a.id = b.id "+
-			"GROUP BY b.c1, c1 HAVING c1 > 120", 1, "[[330]]", why)
+			"GROUP BY b.c1, c1", 3, "[[100 100 203] [140 140 330]]", projWhy)
+
+		// The HAVING half, in both the nested (R.V.Z) and flat (C1) spellings.
+		for _, c := range []struct{ q, wantCol string }{
+			{"SELECT max(a.q.s) FROM nested a JOIN flat b ON a.id = b.id " +
+				"GROUP BY a.r.v.z, r.v.z HAVING r.v.z > 120", "A.R.V.Z"},
+			{"SELECT max(b.c2) FROM nested a JOIN flat b ON a.id = b.id " +
+				"GROUP BY b.c1, c1 HAVING c1 > 120", "C1"},
+		} {
+			_, err := db.QueryContext(ctx, c.q)
+			if err == nil {
+				t.Errorf("%s: planned, want 42702. The post-aggregate pull-up guard "+
+					"stopped refusing a reference that answers to TWO grouping keys; "+
+					"Go is answering a query Java declines to run.", c.q)
+				continue
+			}
+			// The SQLSTATE and the NAMED COLUMN are both asserted. An error alone
+			// would pass for any unrelated failure, and a 42702 alone would pass
+			// if the guard fired on the wrong key — the name is what says the
+			// refusal is about the duplicated grouping key.
+			if !strings.Contains(err.Error(), "42702") {
+				t.Errorf("%s: got %v, want 42702", c.q, err)
+			}
+			if !strings.Contains(err.Error(), c.wantCol) {
+				t.Errorf("%s: got %v, want the message to name %q — a 42702 that "+
+					"names a different column is the guard firing for another reason",
+					c.q, err, c.wantCol)
+			}
+		}
 	})
 }
