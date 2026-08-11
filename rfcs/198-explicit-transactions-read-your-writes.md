@@ -4,6 +4,16 @@ Status: **ACCEPTED**, revision 2 — dual joint-review ACK (merged as PR #557); 
 Revision 1 was dual-NAK'd; revision 2 folded both reviews plus the converged schema-cache
 condition. A status field that says a reviewed design is still awaiting review is the rot
 RFC-197's header calls out by name — this line carries its state at the head that wrote it.
+
+**Proposed continuation amendment:** RFC-232 keeps this RFC's same-live-
+transaction fence but replaces RFC-203's hidden auto-commit rollover with a
+visible one-execution/one-page boundary. It also states the limit of the
+in-transaction end state explicitly: a token does not extend FDB's read-version
+lifetime, so a transaction already at the time wall normally must abort rather
+than resume elsewhere. RFC-232 supersedes §9's `GO_V0_TX`/pointer-only wire
+mechanism with `GO_V1_TX` plus a random nonce owned by the still-active
+`*embeddedTx`, and narrows §6's resume claim to cooperative boundaries that
+advance state while that transaction remains usable.
 Closes: TODO "driver: NO read-your-writes inside an explicit transaction — SELECT
 auto-commits" (`TODO.md:6846`), the Tier-2 production gate B2.
 
