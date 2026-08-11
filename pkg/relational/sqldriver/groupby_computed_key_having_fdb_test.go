@@ -55,9 +55,12 @@ import (
 //
 //   - two_computed_keys… — every other arm groups by ONE key, so the recorded
 //     slot is always 0 and none of them can tell the loop index from a hardcoded
-//     zero, while that index IS the binding. Mutating the mint to a literal 0
-//     reddens ONLY that arm and leaves the other eight green, which is what says
-//     it tests the ordinal instead of re-testing the walk;
+//     zero, while that index IS the binding. MEASURED: pinning the computed
+//     walk's mint to ordinal 0 reddens ONLY that arm and leaves the other TWELVE
+//     green, which is what says it tests the ordinal instead of re-testing the
+//     walk. The sibling walk has its own such arm (a_nested_key_in_a_nonzero_slot)
+//     because the two walks record the slot at two separate sites, and a mutation
+//     of one leaves the other's arms untouched;
 //   - a_duplicate_computed_key… — a NEGATIVE result. The rebase first-matches
 //     where Java raises; nothing can present two matching keys because the
 //     duplicate-key gate decides identity with the SAME predicate. The arm pins
@@ -75,6 +78,18 @@ import (
 // matcher decide identity by DIFFERENT predicates (a string compare vs semantic
 // equality), so the interlock that is structural for computed keys is only
 // measured for nested ones.
+//
+// A THIRTEENTH ARM PINS A DIVERGENCE THIS FILE'S FIX DOES NOT CAUSE OR CLOSE.
+// Chasing that string-vs-semantic asymmetry to ground found it is not merely a
+// theoretical re-arm condition: the gate's qualifier normalization is switched
+// off when the query has joins, so `… JOIN … GROUP BY a.r.v.z, r.v.z` puts two
+// semantically equal keys in front of the sibling walk's first-match loop and
+// Go answers where Java stops. under_a_join_two_equal_keys… pins it with values.
+// It is PRE-EXISTING (the flat twin diverges identically, and this branch's
+// delta over post-#719 master deletes NO source line — `git diff bd6f0c028 --
+// pkg/relational/core/ | grep -c '^-[^-]'` is 0 — so it cannot have introduced
+// or widened it) and BOUNDED to conformance rather than wrong rows: equal keys
+// hold equal values, so first-match answers correctly.
 func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -253,7 +268,10 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// Values, and that is the SAME predicate rebasePostAggregateComputedGroupKey
 		// matches with. Two keys that would both match a reference are therefore
 		// semantically equal to each other, which is exactly what the gate
-		// rejects.
+		// rejects. That shared predicate is what makes THIS arm's interlock
+		// structural — and it is precisely what the NESTED arm below does not
+		// have, so the two are asserted separately rather than one standing in
+		// for the other.
 		//
 		// WHAT RE-ARMS THE HAZARD, named because that is the point of pinning a
 		// negative: the two predicates diverging. If the duplicate gate is ever
@@ -400,15 +418,15 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// `nested.r.v.z` vs the alias `a.r.v.z`) — so the normalization behind
 		// groupKeysEquivalent is peeling the source name before comparing.
 		//
-		// WHAT RE-ARMS THE HAZARD: a semantic twin whose normalized (Bare,
-		// Qualifier) pair differs. That would slip the string gate while still
-		// matching the walk's semantic predicate, and Go would silently bind the
-		// FIRST key where Java's pull-up raises AMBIGUOUS_COLUMN
-		// (Iterables.getOnlyElement / Expressions.java:112). Both keys being
-		// semantically equal means the ROWS would still be right — the
-		// divergence is that Java errors and Go answers. If a spelling is ever
-		// found that plans, this arm must become the assertion that Go raises
-		// too, and the string gate must be converted to the semantic one.
+		// THE HAZARD THIS NAMES IS REAL, AND IT IS ALREADY ARMED — just not on
+		// the single-source spellings below. A semantic twin whose normalized
+		// (Bare, Qualifier) pair differs slips the string gate while still
+		// matching the walk's semantic predicate. Adding a JOIN produces exactly
+		// that, because the normalization is switched off when the query has
+		// joins: see under_a_join_two_equal_keys_are_NOT_refused…, which pins it
+		// with a reproducer. So the refusals asserted here are a property of the
+		// SINGLE-SOURCE shape, and must not be read as a general guarantee that
+		// two equal keys cannot reach the rebase.
 		for _, q := range []string{
 			"SELECT max(q.s) FROM nested GROUP BY r.v.z, r.v.z HAVING r.v.z > 120",
 			"SELECT max(q.s) FROM nested GROUP BY r.v.z, r.v.z",
@@ -432,5 +450,67 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 					"not the 0AF00 nested-key refusal RFC-230 retired.", q, err)
 			}
 		}
+	})
+
+	t.Run("under_a_join_two_equal_keys_are_NOT_refused_and_Go_answers_where_Java_raises", func(t *testing.T) {
+		// A DIVERGENCE THIS CHANGE DOES NOT CAUSE AND DOES NOT FIX, pinned here
+		// because it is the exact re-arm condition the two duplicate-key arms
+		// above name, and it turns out to be CONSTRUCTIBLE.
+		//
+		// THE MECHANISM. Those arms hold because the duplicate gate normalizes
+		// the qualifier before comparing: visitSelectGroupBy strips a leading
+		// `aliasPrefix` so `r.v.z` and `nested.r.v.z` both reduce to (Z, R.V).
+		// But that prefix is computed only `if fs.tableAlias != "" &&
+		// len(fs.joins) == 0` — UNDER A JOIN THE STRIP IS OFF. So `a.r.v.z`
+		// keeps Qualifier `A.R.V` while bare `r.v.z` keeps `R.V`,
+		// groupKeysEquivalent compares the two strings, returns false, and no
+		// 42702 fires. Two semantically equal keys then reach the first-match
+		// loop in rebasePostAggregateGroupKeyValue, which binds the FIRST.
+		//
+		// JAVA REFUSES HERE, by two different mechanisms depending on the clause,
+		// and the queries below deliberately cover both. The PROJECTED spellings
+		// go through the SELECT-list variant Expressions.pullUp, which asserts
+		// `pulledUpExpressionMap.get(subExpression).size() == 1` with
+		// AMBIGUOUS_COLUMN (Expressions.java:112). The HAVING spellings go
+		// through Expression.pullUp, which ends in a BARE
+		// Iterables.getOnlyElement (Expression.java:246) with NO such assert — it
+		// throws, but not with that SQLSTATE. So "Java raises AMBIGUOUS_COLUMN"
+		// is precise only for the projected half; what both halves share is that
+		// Java stops and Go answers.
+		//
+		// IT IS BOUNDED TO A CONFORMANCE DIVERGENCE, NOT WRONG ROWS, and that
+		// bound is why it is pinned rather than fixed here: the two keys are
+		// SEMANTICALLY EQUAL, so their two output slots hold identical values
+		// and binding either answers correctly. The asserted rows below are the
+		// arithmetically correct ones — Go returns the right answer to a query
+		// Java declines to run.
+		//
+		// IT IS PRE-EXISTING AND NOT NESTED-SPECIFIC. The flat twin
+		// (`GROUP BY b.c1, c1`) diverges identically, against the same sibling
+		// walk, and this branch's source delta over post-#719 master is +130/-0 (a
+		// PURE ADDITION: `git diff --stat bd6f0c028 -- pkg/relational/core/`, with
+		// `grep -c '^-[^-]'` = 0) — a diff that deletes nothing cannot have
+		// introduced or widened this.
+		//
+		// WHEN IT IS FIXED — by making the duplicate gate decide identity
+		// semantically instead of by string, which is what removes the
+		// asymmetry documented at rebasePostAggregateGroupKeyValue's first-match
+		// loop — every query below must start returning 42702, and this arm
+		// becomes that assertion. Until then it exists so the behaviour cannot
+		// move in EITHER direction unnoticed: silently starting to refuse is a
+		// change worth seeing too.
+		const why = "This arm pins a KNOWN Go-answers/Java-raises divergence. If it now " +
+			"errors, check the error is 42702 and flip this arm to assert the refusal — " +
+			"that is the fix landing, not a regression."
+		eq(t, "SELECT a.r.v.z, r.v.z, max(a.q.s) FROM nested a JOIN flat b ON a.id = b.id "+
+			"GROUP BY a.r.v.z, r.v.z", 3, "[[100 100 203] [140 140 330]]", why)
+		eq(t, "SELECT max(a.q.s) FROM nested a JOIN flat b ON a.id = b.id "+
+			"GROUP BY a.r.v.z, r.v.z HAVING r.v.z > 120", 1, "[[330]]", why)
+		// The FLAT twin, which is what says this is a property of the duplicate
+		// gate under joins and not something nested paths brought with them.
+		eq(t, "SELECT b.c1, c1, max(b.c2) FROM nested a JOIN flat b ON a.id = b.id "+
+			"GROUP BY b.c1, c1", 3, "[[100 100 203] [140 140 330]]", why)
+		eq(t, "SELECT max(b.c2) FROM nested a JOIN flat b ON a.id = b.id "+
+			"GROUP BY b.c1, c1 HAVING c1 > 120", 1, "[[330]]", why)
 	})
 }

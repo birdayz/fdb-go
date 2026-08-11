@@ -7478,6 +7478,46 @@ func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggreg
 			if !ok {
 				continue
 			}
+			// THIS LOOP FIRST-MATCHES, AND ITS INTERLOCK IS MEASURED RATHER THAN
+			// STRUCTURAL — which is the opposite of the sibling computed walk
+			// above, so do not carry that function's reasoning over to here.
+			//
+			// There, the duplicate-grouping-key gate and the matcher decide key
+			// identity with the SAME predicate (values.SemanticEqualsUnderAliasMap
+			// over the resolved expression Values), so two keys that could both
+			// match a reference are semantically equal to each other and the gate
+			// has already refused them. That argument does NOT transfer. A key
+			// reaching THIS loop has a non-empty Bare, which sends the gate down
+			// its `default` branch instead: groupKeysEquivalent (plan_visitor.go),
+			// a STRING comparison over the normalized (Bare, Qualified, Qualifier)
+			// triple. Meanwhile the match below is semantic. Two different
+			// predicates, so nothing structural stops a multi-match — only
+			// whatever the string gate happens to catch.
+			//
+			// It does not catch everything, and the hole is measured, not
+			// hypothetical. The gate normalizes by stripping a leading
+			// aliasPrefix, but that prefix is computed only when the query has NO
+			// joins (visitSelectGroupBy's `len(fs.joins) == 0`). Under a join,
+			// `GROUP BY a.r.v.z, r.v.z` keeps qualifiers `A.R.V` and `R.V`, the
+			// string compare says "different", and two semantically equal keys
+			// arrive here — where this loop binds the FIRST. Java refuses a
+			// multi-match on both post-aggregate paths, though not with the same
+			// error and the difference is worth keeping straight: the SELECT-list
+			// variant Expressions.pullUp asserts `size() == 1` with
+			// AMBIGUOUS_COLUMN (Expressions.java:112), while the HAVING variant
+			// Expression.pullUp ends in a BARE Iterables.getOnlyElement
+			// (Expression.java:246) with no such assert. Either way it stops; Go
+			// picks a slot. The rows stay
+			// CORRECT, because equal keys hold equal values in both slots, so the
+			// divergence is conformance-only; it is pinned, with the reproducer,
+			// by TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot's
+			// under_a_join_two_equal_keys… arm.
+			//
+			// Closing it means making the duplicate gate decide identity
+			// semantically for keys with a Bare, the way it already does for
+			// expression keys — not widening the match below, which would only
+			// make more shapes reach a first-match that still cannot raise.
+			//
 			// Two ways a post-aggregate reference is provably THIS group key. A
 			// QUALIFIED key carries the V.V mismatch and matches on structural
 			// equality with the reference as resolved. A BARE key matches through
