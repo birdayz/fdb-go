@@ -190,21 +190,30 @@ func buildAggregateOutputSlots(keys []logical.GroupKey, aggCols []aggSelectCol, 
 					// R.V.Z to key 1 — one match each by a name predicate that
 					// cannot see they are the same column.
 					//
-					// What makes it safe NOW is a different upstream check, and a
-					// sound one: groupByOutputConstructionPullUp refuses two
-					// SEMANTICALLY equal grouping keys at output construction,
-					// which is where Java refuses them (LogicalOperator.java:454
-					// through the asserting Expressions.pullUp). It does not
-					// depend on the alias strip, on the presence of a join, or on
-					// any post-aggregate reference existing — so no pair of keys
-					// this name predicate would conflate can reach this loop.
+					// What makes it safe NOW is groupByOutputConstructionPullUp,
+					// which refuses two SEMANTICALLY equal grouping keys with
+					// 42702 — the check Java performs at LogicalOperator.java:454
+					// through the asserting Expressions.pullUp. It depends on
+					// neither the alias strip, the presence of a join, nor any
+					// post-aggregate reference existing.
 					//
-					// That is a real interlock rather than the delegation the old
-					// comment described, but it is still an interlock: this loop
-					// asks a NARROWER question than the construction guard, and it
-					// is correct only because the broader guard runs first. If
-					// that guard is ever moved after slot construction, or made
-					// conditional, this `break` must become a collect-and-raise.
+					// IT RUNS AFTER THIS LOOP, NOT BEFORE, and saying otherwise
+					// would misdescribe the only thing keeping this `break`
+					// honest. This builder runs inside visitSelectGroupBy at
+					// plan_visitor.go:546 (step 3); the guard runs at
+					// plan_visitor.go:1023 (step 10, via
+					// upgradeAggregateOperands), later in the SAME function. So a
+					// conflatable pair DOES reach this loop and DOES get bound to
+					// slots 0 and 1 — measured — and what makes that harmless is
+					// that the guard then fails the statement and the whole plan
+					// is discarded. The wrong binding is built and thrown away; it
+					// is never executed.
+					//
+					// ARMING CONDITION, stated so it is not already satisfied the
+					// day it is written: this `break` must become a
+					// collect-and-raise if the construction guard is REMOVED, made
+					// conditional, or moved off this path — not if it is "moved
+					// after slot construction", which is where it already is.
 					native = i
 					break
 				}

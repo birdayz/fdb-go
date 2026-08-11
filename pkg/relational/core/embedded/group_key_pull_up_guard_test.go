@@ -13,24 +13,28 @@ package embedded
 // halves — the deliberate refinement is spending the precise code where Java
 // throws unclassified.
 //
-// WHY THESE ARE UNIT PINS. The three guarded sites are NOT equally reachable
-// from SQL, and the corpus reading alone would ship one of them untested:
+// WHY THESE ARE UNIT PINS, and it is now true of ALL THREE sites rather than
+// one. No SQL shape in the corpus drives any of them to a multi-match: the
+// output-construction pull-up refuses duplicates first, so every duplicate
+// query dies before a post-aggregate walk can see two candidates. Measured over
+// the whole //pkg/relational/sqldriver target at 6158 subtests, the three sites
+// are consulted 797 times (binder 414, computed 360, FieldValue walk 23) and not
+// one consultation sees more than one match.
 //
-//   - the FieldValue rebase walk (rebasePostAggregateGroupKeyValue) is driven
-//     end-to-end by TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot's
-//     under_a_join_… arm;
-//   - the exact-boundary binder (bindPostAggregateValueToNativeOrdinals) is
-//     driven by TestFDB_OrderedGroupedScalarSubquery_QualifiedJoinKeyIdentity's
-//     repeated_equivalent_single_source_keys_are_refused_42702 arm;
-//   - the COMPUTED walk (rebasePostAggregateComputedGroupKey) is reachable from
-//     no SQL shape in the corpus. Measured: disabling its `> 1` test leaves the
-//     whole //pkg/relational/sqldriver target green at 6158 subtests. The
-//     duplicate gate refuses the byte-identical computed twin before the walk
-//     runs, and the parenthesised twin — the one spelling that slips the gate —
-//     yields keys [RecordConstructorValue, ArithmeticValue], which a reference
-//     matches exactly ONCE. So it is a ported assert with no live caller, and
-//     without the arm below it would be an untested branch that a later
-//     normalization change makes live.
+// An earlier revision of this header named e2e arms as driving two of them —
+// TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot's under_a_join_… arm and
+// TestFDB_OrderedGroupedScalarSubquery_QualifiedJoinKeyIdentity's
+// repeated_equivalent_single_source_keys_… arm. Both of those now die at
+// construction, so neither reaches the walk it was credited with, and the same
+// file said so 200 lines below. The claim is deleted rather than softened.
+//
+// The COMPUTED walk was the first to become unreachable and its reason is its
+// own: the duplicate gate refuses the byte-identical computed twin before the
+// walk runs, and the parenthesised twin — the one spelling that slips the gate —
+// yields keys [RecordConstructorValue, ArithmeticValue], which a reference
+// matches exactly ONCE. So it is a ported assert with no live caller, and
+// without the arms below every one of the three would be an untested branch
+// that a later normalization change makes live.
 //
 // The population is stated deliberately: the 6158-subtest reading is the
 // //pkg/relational/sqldriver target only. The yamsql corpus and

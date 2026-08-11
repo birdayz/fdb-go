@@ -490,9 +490,12 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// joins: see under_a_join_two_equal_keys_are_refused_42702_at_output_construction,
 		// which pins that shape. Those spellings are now refused too, but by the
 		// OUTPUT-CONSTRUCTION pull-up rather than by this name-based gate — so the
-		// refusals asserted here remain a property of the SINGLE-SOURCE shape and
-		// of the gate, and must not be read as a general guarantee that two equal
-		// keys cannot reach the rebase.
+		// refusals asserted HERE remain a property of the SINGLE-SOURCE shape and
+		// of the gate, and are not themselves evidence about any other shape.
+		// The general guarantee is the construction pull-up's, not this gate's,
+		// and it works by REFUSING THE STATEMENT rather than by keeping equal
+		// keys away from the rebase — the rebase is downstream of it and simply
+		// never runs on a plan that has already failed.
 		for _, q := range []string{
 			"SELECT max(q.s) FROM nested GROUP BY r.v.z, r.v.z HAVING r.v.z > 120",
 			"SELECT max(q.s) FROM nested GROUP BY r.v.z, r.v.z",
