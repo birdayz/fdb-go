@@ -1140,43 +1140,149 @@ flat `"ALIAS.col"` channel and `contract` plus `translator` fall out behind it.
 reader re-derives from the bucket names alone.** The dependency runs at
 SUB-CHANNEL granularity, not bucket granularity, and two edges run BACKWARDS.
 
-**Two reversed edges — a `dotted:` site downstream of another bucket's producer:**
+**RETRACTED: "killing `rebaseUnnestOuterLegPredicate`'s mint retires its whole
+reader list" was the headline of this subsection and it is WRONG.** It is
+retracted in place rather than quietly replaced, because the next reader has to
+be able to see that the earlier RANKING was wrong — not merely that the current
+one differs. The claim named `groupByOutputBaker`'s qualification probe,
+`rebaseOuterLegValueOrdinal`'s default arm, `rebaseOuterLegValue` and `legRef` as
+readers that would retire mechanically behind that single mint, and called it the
+highest-leverage kill in the list. Re-derived by dataflow, NONE of those is a
+reader of that mint. The edges table below carries the measured relationship for
+each.
+
+**The diagnosis is more useful than the correction, because it names a way of
+being wrong that this document is structurally prone to.** The graph was
+assembled by CO-OCCURRENCE of the `LEG.COL` shape, not by dataflow: every named
+site touches a dotted string, and none touches *that producer's*. Co-occurrence
+inflates fan-out in one direction only — it never invents an edge that is too
+weak, only edges that are too strong — so a graph built this way reads as
+leverage and plans as leverage. `dotted:` is a bucket of a SHAPE, and a shape is
+shared by unrelated channels; that is exactly why bucket membership must never be
+read as a dependency.
+
+**A `.`-probe does not retire when minting stops, and that rule already had a
+recorded reason.** `DOUBLE_QUOTE_ID` makes `A.B` and `"A.B"` the same bytes, so a
+site that refuses a dotted name must keep refusing it however few dotted names
+are minted. Such a site retires on `Resolved` ARITY — when every reference
+arrives structured — never on a producer going away. Three of the four retracted
+edges are this case, and the fourth is a different channel entirely:
+`groupByOutputBaker` composes its OWN key from a correlation and a field it
+already holds, and looks it up in the table `groupByOutputOrdinals` built. Were
+the retracted mint's output ever to reach it, the composed key would be a
+TWO-dot `MERGED.LEG.COL`, which that table never registers — so the shapes are
+incompatible as well as the channels being disjoint.
+
+**The actual reader of that mint lives in a third package** and was absent from
+this section altogether: the executor's leg-column resolver, which splits the
+dotted name and matches the qualifier against the merged row's leg table. It is
+the only CONSUMER the mint has.
+
+**Relationship classes.** Conflating these is what produced the retracted claim,
+so the table below states one per edge:
+
+- **consumer** — parses or looks up the minted string. Only a consumer can retire
+  behind its producer, and even then only if that producer is its sole supply.
+- **decliner** — refuses the string. Its TRAFFIC can fall to zero behind a
+  producer fix; its CODE cannot retire, because the shape stays legal.
+- **co-occurring** — touches a same-shaped string from a different producer.
+  Killing the producer moves it not at all.
+
+<!-- FIELD-DEBT-ORDER-EDGES -->
+
+| producer | reader | class | retires | evidence |
+| --- | --- | --- | --- | --- |
+| `rebaseUnnestOuterLegPredicate` | `rowSlotForLegColumn` | consumer | yes | pkg/recordlayer/query/executor/ordinal_join.go |
+| `rebaseUnnestOuterLegPredicate` | `rebaseOuterLegValueOrdinal` | decliner | no | pkg/recordlayer/query/plan/cascades/left_outer_existential.go |
+| `rebaseUnnestOuterLegPredicate` | `rebaseOuterLegValue` | decliner | no | pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go |
+| `rebaseUnnestOuterLegPredicate` | `legRef` | decliner | no | pkg/relational/core/query/ordinal_seed.go |
+| `rebaseUnnestOuterLegPredicate` | `groupByOutputBaker` | co-occurring | no | pkg/relational/core/query/cascades_translator.go |
+| `explainValueOrdinals` | `AccessorNamePath` | decliner | no | pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go |
+| `projCol` | `clusterFieldResolvable` | consumer | no | pkg/relational/core/query/clustered_outer_scalar.go |
+| `projCol` | `clusterSeedSlotByName` | consumer | no | pkg/relational/core/query/clustered_outer_scalar.go |
+| `groupByOutputOrdinals` | `groupByOutputBaker` | consumer | yes | pkg/relational/core/query/cascades_translator.go |
+
+`TestFieldDebtRFCOrderEdgesAreClassified` gates it: every name in either identifier
+column must be a live declaration, every reader must be declared in its evidence
+file, and a `decliner` or `co-occurring` edge may not claim `retires = yes`. What
+that gate CANNOT check is stated at the test — it verifies that an edge is
+well-formed and that the retirement claim is consistent with the class, not that
+the class is the true one. Classifying an edge remains a reading of dataflow.
+
+**The two reversed edges survive, with their readings sharpened:**
 
 - `AccessorNamePath` (`values/accessor_name_path.go`, `dotted:`) is downstream of
   `explainValueOrdinals` (`contract:`). Its dotted witnesses were EXPLAIN renders
   leaking in through `plans/ordering.go:985`, which re-minted a lazy `FieldValue`
   from a display string while the baked identity sat unread beside it. Fixing
   that SINGLE contract-bucket producer COLLAPSED the lazy-render mint class to
-  zero and cut the arm's declines to a lone surviving witness, with nothing in
-  `dotted:` touched. (Magnitudes deliberately omitted: an arrow pair is a
+  zero, with nothing in `dotted:` touched — the direction the edge claims. But
+  the reader is a DECLINER, not a consumer: it refuses a dotted field rather than
+  splitting it, deliberately, because `addr.city` and `T.city` are the same
+  string. So what retired is the arm's TRAFFIC, not the arm. This bullet used to
+  add that the fix "cut the arm's declines to a lone surviving witness"; that is
+  STALE — the witness died at its own producer and the census gate has since been
+  re-pointed from a band to a hard ceiling, with GROWTH as the alarm. Read the
+  gate, not this sentence. (Magnitudes deliberately omitted: an arrow pair is a
   magnitude twice over, and this section states direction. The measured figures
   live in the debt entry at the fix site.)
 - `clusterFieldResolvable` / `clusterSeedSlotByName`
   (`query/clustered_outer_scalar.go`, `dotted:`) compare against strings minted in
   the `translator:` bucket, by `logical_predicate.go`'s
-  `projCol{name: qual + "." + bare}`. Converting the seed representation alone
-  leaves the other side of the comparison translator-produced, so the site does
-  not retire.
-
-**The claim holds for one sub-channel, and that is where the leverage is.**
-Killing `rebaseUnnestOuterLegPredicate`'s mint
-(`query/cascades_translator.go:3925`, the merged-QOV leg channel) mechanically
-retires every reader of that channel at once: `groupByOutputBaker`'s
-qualification probe, `rebaseOuterLegValueOrdinal`'s default arm,
-`rebaseOuterLegValue`, and `legRef`. That is the single highest-leverage kill in
-the whole list — a single producer against that whole list of readers — and it is the
-piece the bucket-level reading obscures, because the mint and its readers all sit
-in the same bucket and look like independent fixes.
+  `projCol{name: qual + "." + bare}`. Both are genuine CONSUMERS — the dotted
+  spelling is the lookup key, matched whole against the seed's composed name.
+  The path is unbroken and carries no re-derivation: the mint reaches
+  `selectQuery.projCols`, becomes `LogicalProject.Projections`, and arrives as the
+  `field` argument. Converting the seed representation alone leaves that argument
+  builder-produced, so the site does not retire. Note the producing package is
+  the SQL→logical builder (`core/embedded`), upstream of the cascades translator
+  the bucket tag names.
 
 **Decomposition of the `dotted` authorities**, by name rather than by tally, so
 it cannot go stale the way a count does:
 
-- *Downstream of a dotted mint:* the merged-QOV channel's readers listed just
-  above, plus the group-by alias pair (`groupByOutputOrdinals`'s registration and
-  `groupByOutputBaker`'s matching read).
+- *Downstream of a dotted mint:* `rowSlotForLegColumn`, plus the group-by alias
+  pair (`groupByOutputOrdinals`'s registration and `groupByOutputBaker`'s matching
+  read). That pair retires TOGETHER or not at all — both ends compose the same
+  spelling from parts they already hold, so converting either alone breaks the
+  round trip.
 - *Downstream of another bucket* — the reversed edges: `AccessorNamePath` and the
   `clusterFieldResolvable` / `clusterSeedSlotByName` pair.
+- *Declines only, and therefore downstream of nothing:* `rebaseOuterLegValue`,
+  `rebaseOuterLegValueOrdinal`'s default arm, `legRef`.
 - *Independent or self-paired:* the remainder.
+
+### What killing the merged-QOV mint actually costs
+
+The retracted ranking made this look like reader-retirement, which is the cheap
+shape. It is not that shape, and the real one is knowable today rather than an
+open question — recording it here so the next reader plans against it.
+
+The ordinal twin ALREADY EXISTS: `rebaseUnnestOuterLegPredicateOrdinal`, in the
+same file, selected wherever a windowed seed makes it correct. Its multi-alias
+branch — the branch resolving within the qualifier's leg window, so a duplicate
+column name bakes the right alias's slot — is WIRED but scope-gated OFF
+end-to-end, and its own doc says by what: `unnestExistsSeedSafe` keeps
+multi-alias outers name-model, coupled to the RULE-level below-FOD executor
+hoist.
+
+So the work is a coordinated planner + executor change, both gates in one
+motion, with `rowSlotForLegColumn` as the consumer that must change:
+
+1. Lift `unnestExistsSeedSafe`'s multi-alias guard. It declines the binary
+   ordinal seed for a multi-alias box whenever a non-EXISTS conjunct references a
+   box leg, expressly because the binary seed has no per-leg merge window and the
+   conjunct would land out of the executor hoist's reach.
+2. Land the RULE-level below-FOD executor hoist, which is what gives that
+   conjunct a window to bake against.
+3. Retire the consumer behind the two.
+
+A refuted justification must LOWER the estimate rather than leave it standing, so
+state the direction plainly: this is materially LARGER than the retracted claim
+advertised — a reader list never fell out behind that deletion — and it
+is materially SMALLER than "blocked on a capability nobody has", because the
+ordinal twin is built and the gate that holds it off is named in its own doc.
+Neither gate is a missing capability; both are scope.
 
 **The ordering constraint that used to gate all of this is GONE.** The stated
 reason to sequence `dotted` last was a live wrong-rows hazard:
