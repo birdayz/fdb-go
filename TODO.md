@@ -17648,7 +17648,17 @@ None is speculative: each was re-verified against the tree before booking.
   authority still listed, or a new concentration nobody wrote down). Mutation-
   proven on two disjoint arms.
 
-  **Method note worth keeping.** Counting these entries per LINE is wrong — 24 of
-  the 44 wrap their `: {` onto a later line, so `^\t"pkg/.*": \{` returns 20. The
-  `go/ast` parse of the map literal returns 44 and agrees with the instrument's
-  own escape total by an independent route; prefer it to any regex.
+  **Method note worth keeping — the MECHANISM, deliberately without magnitudes.**
+  Counting these entries with a line-oriented regex is wrong, because many wrap
+  their `: {` onto a later line, so a pattern like `^\t"pkg/.*": \{` silently
+  matches only the subset that happens to fit on one line. Parse the map literal
+  (`go/ast`) and read each `why`; that agrees with the instrument's own escape
+  total by an independent route. Likewise do not count retirement conditions by
+  grepping for the `RETIREMENT CONDITION` marker — a large minority state their
+  exit in other words, so the marker under-reports.
+
+  The numbers themselves are omitted ON PURPOSE, for the same reason this entry
+  gives above: the census total is the most-gated number in this workstream, and
+  a copy of it here would be a second ungated home in the very entry that defines
+  that as the rot. An earlier draft of this note carried three such magnitudes.
+  Read them from `pkg/docscheck`.

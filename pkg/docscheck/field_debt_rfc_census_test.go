@@ -292,8 +292,23 @@ func orderSectionOf(src string) (string, bool) {
 // So: any BARE INTEGER in `## Order` prose is a violation unless it matches one
 // of the closed exemptions below, and count-shaped word-numbers get their own
 // check. The exemptions are non-census forms the section legitimately needs —
-// source citations, traffic arrows, RFC/CQ references, markdown list markers.
-// Adding an exemption is a deliberate act; failing to imagine a phrasing is not.
+// source citations, RFC/CQ references, markdown list markers. Read the list
+// itself rather than this sentence: an earlier revision of this paragraph went
+// on advertising a traffic-arrow exemption after that exemption was deleted, in
+// the same commit that deleted it, which is the rot this gate is named for
+// turned on the gate's own self-description. Adding an exemption is a deliberate
+// act; failing to imagine a phrasing is not.
+//
+// THE SCOPE STOPS AT `## Order`, DELIBERATELY — this is a decision, not an
+// oversight. `## Decision` opens by declaring its counts to be the sizes each
+// bucket had WHEN ITS PARAGRAPH WAS DRAFTED, names `knownFieldDecisionDebt` as
+// the authority, and states that where the two disagree the test is right. That
+// is a frozen-at-drafting record with a named authority and a tie-break, so
+// counts BELONG there and drift in them is not rot. Measured before deciding:
+// widening this gate to the whole document fires 162 times against the
+// document's own declared convention (150 of them in `## Decision`), versus 0 in
+// `## Order`. `## Order` is the section that claims to describe the CURRENT
+// residual, which is why it — and only it — is held to direction-not-magnitude.
 
 // fieldDebtProseNumericExemptions are the non-census numeric forms permitted in
 // `## Order` prose. They are STRIPPED before the bare-integer scan, so anything
@@ -343,19 +358,6 @@ var fieldDebtProseElidedTally = regexp.MustCompile(
 	`(?i)\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+` +
 		`(?:more\b|that\s|which\s|of\s+(?:them|these|those)\b|remain\b|left\b)`)
 
-// fieldDebtProseScannable strips the parts of a section that are NOT prose: the
-// gated table rows, HTML comment markers, and fenced code blocks.
-//
-// Fence tracking spans lines, which the earlier version's doc comment claimed
-// and its code did not do (it reset state per line, so a fence body passed
-// straight through). Harmless at the time — the section has no fences — but a
-// comment asserting behaviour the code lacks is exactly what this file exists to
-// catch, so the function now does what it says.
-//
-// INLINE BACKTICKS ARE DELIBERATELY NOT STRIPPED. Backticks mark code, not
-// quotation, so `the residual is 33 authorities` is a live claim wearing a
-// costume; exempting them would reopen the hole by another door. Citations
-// inside backticks are already covered by the exemptions above.
 // An HTML comment SPAN, not a whole line. Skipping any line merely STARTING
 // with `<!--` let `<!-- note --> the residual is 33 authorities` through intact:
 // the marker lines this needs to ignore are the census markers, and those are
@@ -371,6 +373,16 @@ var fieldDebtHTMLComment = regexp.MustCompile(`(?s)<!--.*?-->`)
 // the gate reports GREEN over a section it never read. That is the
 // green-from-an-empty-set shape, inside the instrument built to prevent it, so
 // it is surfaced as a failure rather than trusted to never happen.
+//
+// INLINE BACKTICKS ARE DELIBERATELY NOT STRIPPED. Backticks mark code, not
+// quotation, so `the residual is 33 authorities` is a live claim wearing a
+// costume; exempting them would reopen the hole by another door. Citations
+// inside backticks are already covered by the numeric exemptions.
+//
+// Fence tracking spans lines. An earlier version's doc comment claimed exactly
+// that while its code reset the state per line, so fence bodies passed straight
+// through — harmless then (the section has no fences) but precisely the
+// record-outlived-the-code failure this file exists to catch.
 func fieldDebtProseScannable(s string) (prose string, unbalancedFence bool) {
 	var b strings.Builder
 	inFence := false

@@ -390,6 +390,24 @@ func TestFieldDebtOrderProseArms(t *testing.T) {
 			"one of the two reversed edges runs backwards",
 		},
 	}
+	// `one that …` is the BROADEST trigger in the elided-tally pattern, and it
+	// does over-fire on ordinary prose — measured at 129 `fieldDebtProseElidedTally`
+	// hits across `rfcs/*.md`, 43 of them innocuous. That breadth is accepted
+	// deliberately: the gate's scope is ONE section of ONE file, where a false
+	// positive costs a reword and a false negative costs a wrong number nobody
+	// can see. It is pinned as a FIRING case rather than left unexercised so the
+	// next reader meets the over-fire here instead of tripping over it, and so
+	// narrowing the pattern is a deliberate act against a stated measurement.
+	t.Run("the broad one-that trigger fires on ordinary prose, by design", func(t *testing.T) {
+		t.Parallel()
+		got := checkOrderProseHasNoCounts("the one that fires first wins")
+		if !hasProblemContaining(got, "one that") {
+			t.Errorf("the `one that` branch is expected to fire even on innocuous prose; "+
+				"if it was deliberately narrowed, re-derive the measurement in this "+
+				"test's comment rather than deleting the case. got: %v", got)
+		}
+	})
+
 	for _, tc := range quiet {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

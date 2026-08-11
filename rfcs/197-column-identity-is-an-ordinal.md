@@ -995,8 +995,14 @@ group headers claim; authorities are what answers "how much work remains".
 Counts are deliberately ABSENT from the prose here.
 `TestFieldDebtRFCOrderProseStatesNoCounts` enforces that by DENYING bare integers
 and count-shaped word-numbers in this section by default, permitting only a
-closed set of non-census forms: source citations, traffic arrows, RFC and CQ
-references, and list markers.
+closed set of non-census forms: source citations, RFC and CQ references, and
+list markers. An arrow pair is NOT exempt: a bucket size written with an arrow
+is a magnitude twice over, and nothing separates it mechanically from a traffic
+figure — the gate proved that on this very sentence, which first tried to make
+the point by quoting an arrow pair and was correctly rejected for it. This
+sentence also listed arrows as exempt for one commit after the exemption was
+deleted, so read `fieldDebtProseNumericExemptions` as the authority, never this
+list.
 
 That polarity is the point, and it was reached the hard way. The gate's first
 version was an ALLOWLIST of the count phrasings its author had thought of, which

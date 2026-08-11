@@ -230,17 +230,21 @@ func fieldDecisionAllowed(sites []fieldDecisionSite, site string) (fieldDecision
 // improves". Where an entry is genuinely permanent it says WHY rather than
 // inventing an exit.
 //
-// The marker itself splits two ways — `RETIREMENT CONDITION:` and
-// `RETIREMENT CONDITION,` (the latter when a clause like "stated explicitly
-// because..." follows). Any extraction over this list must accept BOTH, or it
-// will silently under-count; that is recorded here rather than left for the next
-// reader to rediscover by getting a wrong number. Prefer the colon form in new
-// entries.
+// DO NOT COUNT THE CONDITIONS BY GREPPING FOR A MARKER. The literal
+// `RETIREMENT CONDITION` string is a convenience for readers, not a census key:
+// a large minority of entries state their exit in other words — "Retires
+// with…", "closes exactly when…", "the site dies when…", "moves only when…" —
+// and are no less complete for it. An earlier version of this comment prescribed
+// accepting the two marker spellings (`:` and `,`); that remedy is WRONG in the
+// direction it warns about, because the marker itself is absent from roughly a
+// third of the entries and the split is at least five ways, not two. Counting on
+// it under-reports badly while looking authoritative.
 //
-// The population is best counted by PARSING the map literal, not by regex: many
-// entries wrap their `: {` onto a later line, so a line-oriented pattern like
-// `^\t"pkg/.*": \{` under-reports badly. `TestFieldDecisionAllowlistIsPerSite`
-// and the bucket census read the literal itself for this reason.
+// The population is counted by PARSING the map literal and reading each `why` —
+// never by a line-oriented regex, since many entries wrap their `: {` onto a
+// later line, so a pattern like `^\t"pkg/.*": \{` misses more than half.
+// `TestFieldDecisionAllowlistIsPerSite` and the bucket census read the literal
+// itself for exactly this reason.
 //
 // fieldDebt records HOW MANY decisions a line hosts, not merely that it hosts
 // one. A single source line can host several: logical_predicate.go:4151 packs
