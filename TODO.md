@@ -16643,3 +16643,162 @@ None is speculative: each was re-verified against the tree before booking.
   `fdb:TestRangeIterator_DivisionIsRowDrivenNotByteDriven` is rewritten against the
   C table rather than relaxed; each mode arm is mutation-checked and the arms redden
   disjointly. Client-review gate (FDB C++ dev + Torvalds) applies.
+- [x] **The rowdiff nightly ate a two-runner CI fleet for ~5h a night for six
+  consecutive nights, and the two instruments built to explain that could not
+  run during it** · M · found while root-causing the 2026-08-11 runner wedge ·
+  FIXED, pinned, and the framing it was reported under was wrong
+  **NOT the "Race detector (SQL layer + client + cascades)" job, and nothing to
+  do with `-race`.** The wedged command
+  (`sqldriver_test --test.run=TestFDB_RowDiff_Smoke --test.v` under
+  `--test_timeout=17400`) is verbatim the "Run rowdiff deep sweep" step of
+  `.github/workflows/nightly-rowdiff.yml`. The race lane sets no `--test_timeout`
+  and never runs a rowdiff target.
+  **NOT a deadlock and NOT an unbounded seed loop** — the other two candidate
+  framings. MEASURED from the timeout panic's goroutine dump, which the incident
+  report believed was never captured but which Go printed into the CI log of run
+  31350088492 (`panic: test timed out after 4h50m0s`, `running tests:
+  TestFDB_RowDiff_Smoke/random_seeds (4h50m0s)` — ONE test, no parallel
+  interleaving with `TestFDB_RowDiff_Paging`, which the filter never selected).
+  The live goroutine sat in
+  `client.(*database).getOrDialConn` -> `transport.dialWith` ->
+  `net.(*netFD).connect` in `[IO wait]`: a TCP connect blackholing against an FDB
+  address that had stopped answering. Forward progress, one seed per 60s context
+  deadline, through a range it could no longer measure anything with.
+  THREE defects, all fixed here:
+  1. **The seed loop had exactly one exit condition — seed exhaustion.** A dead
+     cluster therefore cost the full budget every time. Fixed with an INFRA
+     circuit breaker (10 consecutive INFRA seeds = the cluster is gone, stop) and
+     a wall-clock `ROWDIFF_BUDGET`, both leaving via `break` so the reporting
+     path always runs. Turns a ~5h wedge into a ~10min red that names the cause.
+  2. **`ROWDIFF_TALLY` and the vacuity floor both run AFTER the loop**, so the
+     alarm's SIGQUIT killed them. MEASURED: the 08-10 log contains no
+     ROWDIFF_TALLY line at all, and the workflow summary greps for one — the
+     instruments built to distinguish "the cluster died" from "the engine
+     returned wrong rows" could not speak during the only failure they existed
+     for. `--test_timeout` is now only a backstop; the in-test budget is the
+     control, and `pkg/docscheck`'s `TestRowdiffSweepBudgetBoundsTheTimeout`
+     fails the build if a sweep drops its budget or lets the timeout back in
+     front of it.
+  3. **The 18000-seed range never fit its own timeout, even on a healthy
+     cluster.** The workflow asserted ~1.5 seeds/s. MEASURED across the healthy
+     prefix of four nights (31350088492 / 31290367277 / 31234733111 /
+     31143737482): 0.94, 1.03, 1.07, 1.15 seeds/s — ~1.05. 18000 seeds at 1.05/s
+     is 4h46m against a 4h50m timeout, four minutes of margin.
+     THE FIRST ATTEMPT AT THIS FIX WAS ITSELF WRONG, and the way it was wrong is
+     the durable lesson: it re-sized the seed count against a measured rate and
+     made budget exhaustion an ERROR. Re-measuring after #721 (nested cases)
+     landed showed the paged lane's per-seed cost had moved 3.73x — measured
+     back-to-back on one tree, un-paged 0.864 seeds/s vs paged 0.232 — so the
+     freshly-chosen count was already stale and `ROWDIFF_ABORTED` would have
+     become the nightly steady state. A guard that fires on healthy runs is the
+     failure this file warns about repeatedly, reintroduced by the fix for it.
+     THE SHIPPED DESIGN inverts it: **the clock sizes the night, the seed count
+     is only a CEILING**, and budget exhaustion is a normal logged termination
+     rather than a red. What keeps that honest is a per-lane COVERAGE FLOOR
+     (`ROWDIFF_MIN_SEEDS`, 2000 un-paged / 500 paged) — a truncated night is
+     fine, a night that measured almost nothing is not, and without the floor a
+     tenfold cost regression would walk 200 seeds and report green forever. The
+     floor is per lane because per-seed cost is; one number sized for the fast
+     lane fails the slow one for doing its job. This survives the next generator
+     change, which no absolute seed count does.
+  ALSO FIXED: the PAGING sweep step inherited the default "skip if a previous
+  step failed", so it reported `skipped` on all six nights while the job still
+  recorded a genuine-run heartbeat — nightly-reconcile saw a live net over a half
+  that never ran. It is now `!cancelled()`-guarded and independent.
+  EXPOSURE IS SCOPED TO THIS JOB, not a fleet-wide pattern. From
+  `for f in .github/workflows/nightly-*.yml; do grep -oE "test_timeout=[0-9]+" $f; done`
+  the per-test budgets are 60, 300, 900, 1200, 3600 and — before this change —
+  17400. rowdiff's was ~5x the next largest, which is why one wedge here cost
+  ~5h of a two-runner fleet and why no sibling nightly can do the same. The
+  other jobs need no equivalent change.
+  PINNED: `TestRowdiffSweepStopsWhenTheClusterDies` drives every arm of the
+  stopping policy from explicit state — both fire arms, both disabled arms, the
+  precedence arm, the SEVERITY of each stop, and the load-bearing negatives
+  (scattered INFRA must never accumulate; a zero budget must mean unbounded
+  rather than instant abort). `TestRowdiffCoverageFloor` drives the floor in
+  both directions, including the negative that makes it safe to ship: the
+  25-seed PR smoke slice walked everything it was asked for and must not trip a
+  thousands-scale floor. `TestRowdiffSweepBudgetBoundsTheTimeout` +
+  `TestRowdiffSweepBudgetGateArms` pin the workflow ordering, the presence of
+  the floor, and the gate's own comparison. EIGHT independent mutations were
+  each confirmed RED across the two designs; the final four redden DISJOINT
+  arms (severity, floor-collapse, floor-ceiling, workflow-declaration).
+
+- [ ] **The FDB testcontainer dies ~34 minutes into the rowdiff sweep, on every
+  night measured — the ROOT cause under the wedge above, and it is still open** ·
+  size unknown until reproduced · found by the same investigation
+  The fix above bounds the DAMAGE of the cluster dying. It does not explain why
+  the cluster dies, and the timing says it is systematic rather than
+  infrastructural bad luck. MEASURED, elapsed from the `random_seeds` RUN line to
+  the first INFRA line, four consecutive nights:
+  ```
+  run 31350088492  1909 seeds  33m60s
+  run 31290367277  2111 seeds  34m17s
+  run 31234733111  2235 seeds  34m47s
+  run 31143737482  2304 seeds  33m27s
+  ```
+  It tracks ELAPSED TIME, not work done — the seed counts vary by 20% while the
+  time does not. First symptom is
+  `WARN fdbgo: connection to server failed address=172.16.0.3:4500`, and
+  thereafter a TCP connect that hangs rather than being refused, i.e. a blackhole
+  and not a listener that went away cleanly.
+  Widened to EIGHT nights across FIVE distinct runners (drain-0/1/2/3 and
+  gh-runner-fdb): 31m39s, 32m46s, 31m31s, 32m27s, 33m47s, 33m17s, ~34m00s,
+  31m45s — mean 1959s, sigma ~55s (2.8%). Five hosts holding 2.8% rules out a
+  single wedged box: this is software-deterministic.
+  DID NOT REPRODUCE LOCALLY in a 42-minute run of the same sweep, and the reason
+  is itself the lead. `pkg/testcontainers/foundationdb/foundationdb.go:166-208`
+  mounts `/var/fdb/data` as a SIZE-LESS tmpfs, i.e. 50% of host RAM — ~32 GB on
+  the dev box against ~3.78 GB on a 7745 MB runner — so a tmpfs page allocation
+  can never fail here.
+  RULED OUT, each with evidence: Ryuk reaping (the `Reaper.connect` goroutine is
+  alive in the 4h50m dump; its timeouts are 1m/10s, not 33m); the client giving
+  up (`pkg/fdbgo/client/topology.go:23-62` polls every 5s forever, and it is a
+  FRESH dial that hangs); the memory storage engine filling
+  (`KeyValueStoreMemory.actor.cpp:152-156` returns `Never()` on out-of-space
+  rather than exiting, and measured growth — 21.7 MB at 16min, 63.6 MB at 42min
+  of a 1 GiB budget — needs ~10h); an fd leak (23 fds against a 1024 soft
+  limit); a slow-down ramp before the cliff (seed rate was 1.16/s at t+17m,
+  1.26/s in the final 306s — flat right up to the stop).
+  MECHANISM REPRODUCED DELIBERATELY: filling the data tmpfs makes fdbserver log
+  `Fatal Error: Disk i/o operation failed`, trace
+  `SharedTLogFailed`/`io_error`/1510 then `StopAfterError`, and exit 1 with
+  **`OOMKilled=false`** — with `RestartPolicy=no`, so the container Exits and its
+  bridge IP blackholes, which is why the CI stack sits in `net.(*netFD).connect`
+  instead of taking an RST. A live container with a dead process would refuse the
+  connection. The false OOM flag is why this has looked inexplicable.
+  INFERRED, not proven: on the 7.6 GB runner the tmpfs shares the page budget
+  with the Bazel JVM and the test process, a write returns ENOSPC, and the above
+  path runs. NOT yet confirmed on the runner itself.
+  IN FLIGHT: this change adds a "Capture FDB container forensics" step
+  (`docker inspect` exit/OOM, `docker logs`, `Severity="40"` trace events, host
+  `free`/`df`/kernel OOM lines) that runs on success or failure. Its three
+  outcomes are mutually exclusive — exit 1 + io_error/1510 = tmpfs ENOSPC;
+  exit 137 + OOMKilled=true = kernel OOM-kill; exit 143 + no fatal trace =
+  stopped externally — so the NEXT run settles this without further guessing.
+  DONE = mechanism confirmed from that artifact, the cause fixed rather than
+  absorbed by the circuit breaker, and a pin that reds if the sweep's usable
+  lifetime regresses below its budget again.
+
+- [ ] **`sqldriver_test` leaks ~17 MB/min under the rowdiff sweep and blows past
+  its own declared Bazel memory tag in about half an hour** · S-M · found while
+  root-causing the rowdiff container death · plausibly its CAUSE, worth fixing
+  either way
+  MEASURED over one 42-minute local sweep, process RSS: 249 MB at 8min, 300 MB
+  at 11min, **808 MB at 42min** — roughly linear at ~17 MB/min, so ~675 MB by the
+  33-minute mark and multiple GB over a full-length job. The target declares
+  `tags = ["resources:memory:700"]`
+  (`pkg/relational/sqldriver/BUILD.bazel:602`), which the sweep exceeds in ~30
+  minutes; Bazel schedules against that number, so every co-scheduled target on
+  the box is sized against a figure the sweep stopped honouring half an hour in.
+  This is a real defect independent of the outage. It is ALSO the most plausible
+  supply of the memory pressure in the tmpfs-ENOSPC hypothesis above, which is
+  why the two are booked together — but the leak stands on its own measurement
+  and does not depend on that hypothesis being right.
+  NOT YET LOCATED. The obvious suspects are per-seed state the loop accumulates
+  (nothing drops the ~2000 schemas each sweep creates —
+  `grep -rn "DROP SCHEMA|DROP DATABASE" pkg/relational/conformance/rowdiff/`
+  returns 0 hits) and per-seed `sql.DB` handles opened in
+  `rowdiff.RunCase` (`pkg/relational/conformance/rowdiff/run.go:104-120`).
+  DONE = the retention named from a heap profile, fixed, and a pin that fails if
+  RSS growth per seed regresses past a declared bound.

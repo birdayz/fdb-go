@@ -43,6 +43,7 @@ go_test(
         "qualifier_recovery_gate_test.go",
         "race_lane_scope_test.go",
         "result_type_stub_census_test.go",
+        "rowdiff_sweep_budget_test.go",
         "rowvalue_map_expectation_test.go",
         "slot_order_derivation_test.go",
         "source_hygiene_test.go",
@@ -69,6 +70,12 @@ go_test(
         "//:README.md",
         "//:RELEASE.md",
         "//:TODO.md",
+        # keep: the GitHub Actions workflows, read by the nightly-window gate and
+        # by TestRowdiffSweepBudgetBoundsTheTimeout (which checks that every
+        # rowdiff sweep's in-test ROWDIFF_BUDGET fires before its Bazel
+        # --test_timeout). Without these staged the tests read an absent directory
+        # and fail loudly rather than scanning an empty set.
+        "//:github_workflows",
         "//:go.mod",
         # keep: the yamsql corpus and the corpus-wide plan rendering, staged so
         # TestYamsqlPlanClaimsAreAsserted can read the scenarios it gates and

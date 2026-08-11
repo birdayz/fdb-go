@@ -5,12 +5,35 @@ name: Nightly RowDiff
 # enough to find anything. RFC-183's exit criteria ask for >=50k seeds; this
 # job is where that scale actually happens.
 #
-# Seed budget (~18k, down from 50k): the generator now emits 3-way self-joins,
-# whose Cascades build-order search costs ~15x a single-table query, dropping
-# throughput from ~3.7 to ~1.5 seeds/s. To keep the un-paged sweep near ~3.3h
-# (leaving room for the paging step inside the 5h job), it covers ~18k seeds/
-# night. The day-of-year seed rotation still accumulates >50k across a few
-# nights, and the 3-way class alone adds thousands of samples every night.
+# Seed budget (10k). The previous 18k was sized against an ESTIMATED ~1.5
+# seeds/s and never fit. MEASURED on this runner, from the healthy prefix of
+# four consecutive nights (seeds walked before the cluster died, over the
+# elapsed time from the `random_seeds` RUN line to the first INFRA line):
+#
+#   run 31350088492  1909 seeds / 2040s = 0.94/s
+#   run 31290367277  2111 seeds / 2057s = 1.03/s
+#   run 31234733111  2235 seeds / 2087s = 1.07/s
+#   run 31143737482  2304 seeds / 2007s = 1.15/s
+#
+# So ~1.05 seeds/s, not 1.5. At that rate 18000 seeds needs 4h46m against what
+# was a 4h50m timeout — four minutes of margin, i.e. the sweep was structurally
+# unable to finish and one slow night from timing out even with a perfectly
+# healthy cluster. It never did finish: it timed out on six consecutive nights.
+#
+# THE CLOCK SIZES THE NIGHT, NOT THE SEED COUNT. 15000 is a CEILING, and
+# ROWDIFF_BUDGET is what actually ends the sweep; running out of clock is a
+# normal termination that logs its coverage rather than failing. This is
+# deliberate, because every seed count picked here has a short shelf life: when
+# the nested case family landed, the paged lane's per-seed cost moved 3.73x
+# (measured back-to-back on one tree: un-paged 0.864 seeds/s, paged 0.232), and
+# any absolute number chosen against last week's generator is wrong after the
+# next one. A clock is not.
+#
+# What keeps that honest is ROWDIFF_MIN_SEEDS, the per-lane coverage FLOOR: a
+# truncated night is fine, a night that measured almost nothing is not, and
+# without a floor a tenfold cost regression would walk 200 seeds and report
+# green forever. The floor is per lane because per-seed cost is — one number
+# sized for the fast lane fails the slow one for doing its job.
 #
 # It does NOT gate PRs (far too heavy); a red run here is a release blocker,
 # surfaced like the nightly-fuzz and nightly-stress failures.
@@ -22,14 +45,14 @@ name: Nightly RowDiff
 on:
   schedule:
     # 00:17 UTC daily — an off-minute, early in the nightly window so the
-    # ~3.75h sweep finishes well before the 04:23 stress job wants the runner.
+    # ~3h sweep finishes well before the 04:23 stress job wants the runner.
     - cron: '17 0 * * *'
   workflow_dispatch:
     inputs:
       seeds:
-        description: 'Seed count (default 18000; 3-way joins ~15x/query slow the sweep)'
+        description: 'Seed count (default 10000; measured ~1.05 seeds/s on this runner)'
         required: false
-        default: '18000'
+        default: '15000'
       seed_start:
         description: 'First seed (default: rotated by day-of-year)'
         required: false
@@ -72,7 +95,7 @@ jobs:
           # for no gain". The gain is measurable: allocation hours observed over this
           # job's scheduled history are 03,04 and 20, and the 20:00 landing was
           # discarded as "daytime". An evening is not a workday. 18:00-12:00 admits
-          # all three, and the ~4.7h sweep still finishes before the excluded block.
+          # all three, and the ~4h sweep still finishes before the excluded block.
           WINDOW_START=18
           WINDOW_END=12
           HOUR=$(date -u +%-H)
@@ -84,7 +107,7 @@ jobs:
           if [ "$IN" -eq 1 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the ${WINDOW_START}:00-${WINDOW_END}:00 window for this ~4.7h sweep (the self-hosted queue delayed dispatch) — skipping to protect the workday CI slot; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the ${WINDOW_START}:00-${WINDOW_END}:00 window for this ~4h sweep (the self-hosted queue delayed dispatch) — skipping to protect the workday CI slot; it fires again at tomorrow's scheduled time. No heartbeat is recorded, so nightly-reconcile.yml will fail if this repeats."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -113,7 +136,7 @@ jobs:
         # can replay with ROWDIFF_SEED_START.
         run: |
           SEEDS="${{ github.event.inputs.seeds }}"
-          SEEDS="${SEEDS:-18000}"
+          SEEDS="${SEEDS:-15000}"
           START="${{ github.event.inputs.seed_start }}"
           if [ -z "$START" ]; then
             DOY=$(date -u +%-j)
@@ -129,43 +152,158 @@ jobs:
         # pipefail is REQUIRED: GitHub Actions runs `bash -e` but NOT pipefail,
         # so `bazelisk test … | tee` would return tee's exit (0) and SILENTLY
         # PASS a red sweep — the cardinal CI sin.
+        #
+        # ROWDIFF_BUDGET is the CONTROL; --test_timeout is only the backstop, and
+        # the gap between them is deliberate. MEASURED (runs 31350088492 and five
+        # nights either side): when the FDB container died mid-sweep, every
+        # remaining seed spent a full 60s deadline in a TCP connect to a dead
+        # address, so the sweep could only end by timeout — and the Go alarm's
+        # SIGQUIT killed the process before the tally or the vacuity floor, both
+        # of which run after the seed loop, could print anything. The 4h50m log
+        # contains no ROWDIFF_TALLY line at all. A budget that fires INSIDE the
+        # test stops the loop, reports the coverage actually achieved, and names
+        # the cause; a Bazel timeout can only kill.
+        #
+        # 3h30m against a 4h backstop: 10000 seeds at the worst measured rate is
+        # 2h57m, so the budget has headroom for a normal night and still leaves
+        # the backstop 30 minutes clear of it. The old 17400s (4h50m) was not
+        # sized against anything — it was one wedge silently costing ~5 hours of
+        # a two-runner fleet before anyone noticed CI had gone quiet. The INFRA
+        # circuit breaker in the test is what actually catches THIS failure, in
+        # ~10 minutes rather than ~5 hours; the budget catches the other one, a
+        # range that genuinely outgrew its slot.
         run: |
           set -o pipefail
           bazelisk test //pkg/relational/sqldriver:sqldriver_test \
             --test_output=streamed \
             --test_arg="--test.run=TestFDB_RowDiff_Smoke" \
             --test_arg="--test.v" \
-            --test_timeout=17400 \
+            --test_timeout=14400 \
             --nocache_test_results \
+            --test_env=ROWDIFF_BUDGET=3h30m \
+            --test_env=ROWDIFF_MIN_SEEDS=2000 \
             --test_env=ROWDIFF_SEEDS=${{ steps.seeds.outputs.seeds }} \
             --test_env=ROWDIFF_SEED_START=${{ steps.seeds.outputs.start }} \
             2>&1 | tee rowdiff-output.txt
 
       - name: Run rowdiff PAGING sweep
-        if: steps.window.outputs.ok == 'true'
+        # `!cancelled()` rather than the default "skip if a previous step failed".
+        # The two sweeps test DIFFERENT properties — un-paged row soundness and
+        # continuation soundness across a page boundary — so a red un-paged sweep
+        # is no reason to learn nothing about continuations. MEASURED: on every
+        # night from 2026-08-05 to 2026-08-10 the un-paged step timed out and this
+        # step reported `skipped`, so the paging gate contributed ZERO coverage for
+        # six consecutive nights while the job still recorded a genuine-run
+        # heartbeat — nightly-reconcile saw a live net over a half that never ran.
+        # Running it unconditionally is now cheap even on a dead cluster: the
+        # INFRA circuit breaker stops it in ~10 minutes instead of its full budget.
+        if: ${{ !cancelled() && steps.window.outputs.ok == 'true' }}
         id: paging
         # Paging mode (a small scanned-rows limit forces INTERNAL paging) tests
         # CONTINUATION soundness generatively — resume across a page boundary
         # must return the rows a single-pass run does — the class BUG C
         # (paginated DISTINCT re-admission) belonged to, which the un-paged sweep
         # above cannot reach (its 20..120-row cases fit in one page). Fewer seeds
-        # than the un-paged sweep (paging is ~2.5x slower per seed) over a fresh,
-        # disjoint range (+5e8) so it is free coverage, not a re-walk; the ~58min
-        # this adds fits under the 5h job timeout after the ~3.75h un-paged sweep.
+        # than the un-paged sweep over a fresh, disjoint range (+5e8) so it is
+        # free coverage, not a re-walk.
+        #
+        # Seed count sized from a MEASURED ratio, because this step has never
+        # actually executed in CI — it reported `skipped` on every night of its
+        # recorded history, so there is no nightly throughput for it and the old
+        # "~2.5x slower, ~58min for 5000 seeds" was an estimate resting on
+        # nothing. Measured back-to-back on one box (25 seeds each, same tree):
+        # un-paged 42.1s = 0.593 seeds/s, paged 75.1s = 0.333 seeds/s, so paging
+        # costs 1.78x per seed, not 2.5x. Against the un-paged rate measured on
+        # the runner (~1.05 seeds/s) that puts paging at ~0.59 seeds/s there, so
+        # the old 5000 seeds would have needed ~2h21m — over double its budget
+        # and over triple the ~58min claimed. 2000 seeds is ~57min at that rate,
+        # inside the 70m ROWDIFF_BUDGET, and the whole job lands near 3h36m.
+        # The RATIO is what transfers between boxes; the absolute local rates do
+        # not, and are not used as anything but the ratio's two terms.
         # pipefail as above: else `| tee` masks a red sweep.
         run: |
           set -o pipefail
           PSTART=$(( ${{ steps.seeds.outputs.start }} + 500000000 ))
-          echo "Paging-sweeping seeds $PSTART..$(( PSTART + 5000 - 1 )) (5000 seeds, scanLimit=4)"
+          echo "Paging-sweeping seeds $PSTART..$(( PSTART + 5000 - 1 )) (5000 seeds ceiling, scanLimit=4)"
           bazelisk test //pkg/relational/sqldriver:sqldriver_test \
             --test_output=streamed \
             --test_arg="--test.run=TestFDB_RowDiff_Paging" \
             --test_arg="--test.v" \
             --test_timeout=5400 \
             --nocache_test_results \
+            --test_env=ROWDIFF_BUDGET=70m \
+            --test_env=ROWDIFF_MIN_SEEDS=500 \
             --test_env=ROWDIFF_SEEDS=5000 \
             --test_env=ROWDIFF_SEED_START=$PSTART \
             2>&1 | tee rowdiff-paging-output.txt
+
+      - name: Capture FDB container forensics
+        # The sweep's FDB testcontainer dies partway through EVERY night this job
+        # has run, and this step exists to name the mechanism the next time it
+        # does. Runs on success or failure — a healthy night's output is the
+        # control the failing night is read against — and before any cleanup, so
+        # the exited container is still inspectable.
+        #
+        # MEASURED across eight nights on FIVE distinct runners, elapsed from the
+        # `random_seeds` RUN line to the first `WARN fdbgo: connection to server
+        # failed`: 31m39s, 32m46s, 31m31s, 32m27s, 33m47s, 33m17s, ~34m00s,
+        # 31m45s — mean 1959s, sigma ~55s (2.8%). Five hosts holding 2.8% is a
+        # software-deterministic failure, not a wedged box; and it tracks ELAPSED
+        # TIME rather than seeds walked (which vary 20% across the same nights).
+        #
+        # What it is NOT, each ruled out with evidence: Ryuk reaping (the
+        # Reaper.connect goroutine is alive in the 4h50m dump, and its timeouts
+        # are 1m/10s, not 33m); the client giving up (topology.go polls every 5s
+        # forever, and a FRESH dial is what hangs); the memory storage engine
+        # filling (KeyValueStoreMemory returns Never() on out-of-space, it does
+        # not exit, and measured growth needs ~10h to reach the limit); an fd
+        # leak (23 fds against a 1024 soft limit).
+        #
+        # The surviving hypothesis is that the container EXITS and its bridge IP
+        # then blackholes — which matches the CI stack blocking in
+        # net.(*netFD).connect rather than getting an RST, because a live
+        # container with a dead process would refuse the connection. That was
+        # reproduced deliberately by filling the data tmpfs: fdbserver logs
+        # `Fatal Error: Disk i/o operation failed` and traces
+        # `SharedTLogFailed`/`io_error`/1510, then `StopAfterError`, and the
+        # container exits 1 with **OOMKilled=false** — which is exactly why an
+        # OOM check has never explained this. The helper mounts /var/fdb/data as
+        # a SIZE-LESS tmpfs (50% of host RAM), so on a 7.6 GB runner that is
+        # ~3.78 GB and shares the page budget with the Bazel JVM and a test
+        # process measured leaking ~17 MB/min.
+        #
+        # These three outcomes are distinguishable and this dump separates them:
+        #   exit 1  + StopAfterError/io_error/1510 -> tmpfs ENOSPC
+        #   exit 137 + OOMKilled=true              -> kernel OOM-kill
+        #   exit 143 + no fatal trace              -> stopped externally
+        # `|| true` throughout: forensics must never turn a green sweep red.
+        if: ${{ !cancelled() && steps.window.outputs.ok == 'true' }}
+        run: |
+          {
+            echo "=== host ==="; free -m || true; df -h || true
+            journalctl -k --since "-6h" 2>/dev/null | grep -iE "oom|killed process" | tail -40 || true
+            echo "=== containers (including exited) ==="
+            docker ps -a --format '{{.ID}} {{.Image}} {{.Status}} {{.Names}}' || true
+            for c in $(docker ps -aq --filter ancestor=foundationdb/foundationdb:7.3.77); do
+              echo "=== inspect $c ==="
+              docker inspect "$c" --format 'exit={{.State.ExitCode}} oom={{.State.OOMKilled}} err={{.State.Error}} restarts={{.RestartCount}} started={{.State.StartedAt}} finished={{.State.FinishedAt}}' || true
+              echo "=== docker logs $c (tail) ==="
+              docker logs --tail 80 "$c" 2>&1 || true
+              echo "=== fdbserver Severity=40 trace events $c ==="
+              docker exec "$c" sh -c 'grep -ho "Severity=\"40\"[^>]*" /var/fdb/logs/*.xml 2>/dev/null | tail -40' 2>/dev/null || true
+              echo "=== container disk $c ==="
+              docker exec "$c" df -h /var/fdb/data 2>/dev/null || true
+            done
+          } > fdb-forensics.txt 2>&1 || true
+          tail -200 fdb-forensics.txt || true
+
+      - name: Upload FDB container forensics
+        if: ${{ !cancelled() && steps.window.outputs.ok == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: rowdiff-fdb-forensics
+          path: fdb-forensics.txt
+          if-no-files-found: warn
 
       - name: Report sweep summary
         # Runs on success OR failure, but not when the sweep step was skipped
