@@ -22,21 +22,38 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // rfc198IndexedDB creates a table with a secondary index on v, so a predicate
 // on v has an index access path and a predicate on id has the primary-key one.
 func rfc198IndexedDB(t *testing.T, dbPath, tmpl string) *sql.DB {
 	t.Helper()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	return rfc198IndexedDBOn(t, clusterFilePath, dbPath, tmpl)
+}
+
+// rfc198IndexedDBOn is rfc198IndexedDB against a named backend key, so a test
+// can put the SAME schema on a database whose record layer measures elapsed
+// time on an injected clock. Every handle in a test must come from one key or
+// the isolation assertions would be comparing two unrelated stores.
+func rfc198IndexedDBOn(t *testing.T, key, dbPath, tmpl string) *sql.DB {
+	t.Helper()
 	ctx := context.Background()
-	setup := openTestDB(t, dbPath)
+	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbPath, key))
+	if err != nil {
+		t.Fatalf("sql.Open setup: %v", err)
+	}
+	t.Cleanup(func() { _ = setup.Close() })
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE "+tmpl+
 			" CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
 			" CREATE INDEX idx_v ON t (v)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+tmpl)
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, key))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -48,13 +65,19 @@ func rfc198IndexedDB(t *testing.T, dbPath, tmpl string) *sql.DB {
 // explainInTx returns the EXPLAIN text for query, executed INSIDE tx so the
 // plan is the one that transaction's statements actually get (the catalog is
 // transaction-bound — RFC-198 Decision 8b).
-func explainInTx(t *testing.T, ctx context.Context, tx *sql.Tx, query string) string {
-	t.Helper()
+//
+// It RETURNS its driver error rather than fatalling, and that is what makes it
+// usable from inside a retried transaction body. An EXPLAIN is a read page like
+// any other, so it is a place the whole-transaction budget pre-emption can
+// arrive; a helper that fatalled there would end the test before the retry loop
+// ever saw the error, which is precisely the assumption being closed. The
+// caller keeps fatalling on a WRONG PLAN — that is a verdict, not a transient.
+func explainInTx(ctx context.Context, tx *sql.Tx, query string) (string, error) {
 	var plan string
 	if err := tx.QueryRowContext(ctx, "EXPLAIN "+query).Scan(&plan); err != nil {
-		t.Fatalf("EXPLAIN %q: %v", query, err)
+		return "", fmt.Errorf("EXPLAIN %q: %w", query, err)
 	}
-	return plan
+	return plan, nil
 }
 
 func mustUseIndexScan(t *testing.T, plan, query string) {
@@ -126,7 +149,11 @@ func TestFDB_RFC198_ReadYourWritesThroughIndex(t *testing.T) {
 		}
 
 		const q = "SELECT id FROM t WHERE v = 777"
-		mustUseIndexScan(t, explainInTx(t, ctx, a.tx, q), q)
+		plan, err := explainInTx(ctx, a.tx, q)
+		if err != nil {
+			return err
+		}
+		mustUseIndexScan(t, plan, q)
 
 		rows, err := a.tx.QueryContext(ctx, q)
 		if err != nil {
@@ -187,86 +214,142 @@ func TestFDB_RFC198_ReadYourWritesOverClearedRange(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := rfc198IndexedDB(t, "/testdb_rfc198_rywdel", "rfc198rywdel")
+	// A one-shot clock spike, so the retry below is not a guard against a
+	// condition nobody ever produces: attempt 1 is pre-empted on its first
+	// in-transaction READ page, the retry ends the spike, attempt 2 runs clean.
+	// The arm that decides whether the conversion is correct therefore executes
+	// on EVERY run rather than only on a loaded machine.
+	//
+	// Arming it for the whole test is safe because preflightTxBudget runs under
+	// `if r.tx != nil`: the seed INSERTs below are autocommit and never meet it.
+	key, clk := spikedClusterKey(t, 30*time.Second)
+	db := rfc198IndexedDBOn(t, key, "/testdb_rfc198_rywdel", "rfc198rywdel")
 	for _, v := range []struct{ id, v int64 }{{1, 100}, {2, 100}, {3, 100}, {4, 900}} {
 		mwjoMustExec(t, db, ctx,
 			fmt.Sprintf("INSERT INTO t (id, v) VALUES (%d, %d)", v.id, v.v))
 	}
 
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
+	// EVERYTHING THE TRANSACTION SAW, captured so the assertions can run ONCE.
+	//
+	// Two things forced this shape, and both are properties of the retry rather
+	// than of the test. First, subtests cannot live inside the body: a second
+	// attempt would re-register `index_scan_over_cleared_range` under a name
+	// already taken, and Go renames the duplicate rather than failing, so the
+	// suite would report subtests that silently describe a discarded attempt.
+	// Second, a helper that fatals inside the body ends the test before the
+	// retry loop can classify the error. So the body only READS and returns
+	// driver errors, and every verdict is passed on the captured values below,
+	// after an attempt has succeeded in full.
+	type observed struct {
+		deletedRows           int64
+		indexPlan, recordPlan string
+		indexIDs, recordIDs   []int64
+		survivingIDs          []int64
+		outsideCount          int64
 	}
-	defer tx.Rollback() //nolint:errcheck
-
-	// Clear a RANGE of primary keys: ids 1..3, all with v=100. Their index
-	// entries under idx_v go with them.
-	res, err := tx.ExecContext(ctx, "DELETE FROM t WHERE id >= 1 AND id <= 3")
-	if err != nil {
-		t.Fatalf("in-tx DELETE: %v", err)
-	}
-	if n, err := res.RowsAffected(); err != nil || n != 3 {
-		t.Fatalf("in-tx DELETE affected %d rows (err %v), want 3", n, err)
-	}
+	var obs observed
 
 	// idsInTx runs query inside the transaction and returns the ids it yields.
-	// The EXPLAINed text and the executed text are the SAME string in every
-	// arm below: EXPLAINing one query and running another would assert the
-	// plan shape of a statement nobody executed.
-	idsInTx := func(t *testing.T, query string) []int64 {
-		t.Helper()
+	// The EXPLAINed text and the executed text are the SAME string in every arm
+	// below: EXPLAINing one query and running another would assert the plan
+	// shape of a statement nobody executed.
+	idsInTx := func(tx *sql.Tx, query string) ([]int64, error) {
 		rows, err := tx.QueryContext(ctx, query)
 		if err != nil {
-			t.Fatalf("in-tx %q: %v", query, err)
+			return nil, fmt.Errorf("in-tx %q: %w", query, err)
 		}
 		defer rows.Close()
 		var ids []int64
 		for rows.Next() {
 			var id int64
 			if err := rows.Scan(&id); err != nil {
-				t.Fatalf("scan: %v", err)
+				return nil, fmt.Errorf("scan %q: %w", query, err)
 			}
 			ids = append(ids, id)
 		}
 		if err := rows.Err(); err != nil {
-			t.Fatalf("rows.Err on %q: %v", query, err)
+			return nil, fmt.Errorf("rows.Err on %q: %w", query, err)
 		}
-		return ids
+		return ids, nil
+	}
+
+	var attemptsRun int
+	retryTx(t, db, spikeOnce(clk, &attemptsRun), func(a txAttempt) error {
+		// Reset per attempt: a partially-filled observed from a discarded
+		// attempt must never reach the assertions.
+		obs = observed{}
+
+		// Clear a RANGE of primary keys: ids 1..3, all with v=100. Their index
+		// entries under idx_v go with them. Re-done inside EVERY attempt, which
+		// is the point of restarting the whole transaction — the clears the
+		// reads below must see belong to the transaction doing the reading.
+		res, err := a.tx.ExecContext(ctx, "DELETE FROM t WHERE id >= 1 AND id <= 3")
+		if err != nil {
+			return err
+		}
+		if obs.deletedRows, err = res.RowsAffected(); err != nil {
+			return err
+		}
+
+		const indexQ = "SELECT id FROM t WHERE v = 100"
+		if obs.indexPlan, err = explainInTx(ctx, a.tx, indexQ); err != nil {
+			return err
+		}
+		if obs.indexIDs, err = idsInTx(a.tx, indexQ); err != nil {
+			return err
+		}
+
+		const recordQ = "SELECT id FROM t WHERE id >= 1 AND id <= 3"
+		if obs.recordPlan, err = explainInTx(ctx, a.tx, recordQ); err != nil {
+			return err
+		}
+		if obs.recordIDs, err = idsInTx(a.tx, recordQ); err != nil {
+			return err
+		}
+		if obs.survivingIDs, err = idsInTx(a.tx, "SELECT id FROM t"); err != nil {
+			return err
+		}
+
+		// Read from OUTSIDE while this transaction is still open — the only
+		// window in which the isolation claim means anything.
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM t").Scan(&obs.outsideCount); err != nil {
+			return err
+		}
+		return nil
+	})
+	mustHaveRetried(t, attemptsRun)
+
+	if obs.deletedRows != 3 {
+		t.Fatalf("in-tx DELETE affected %d rows, want 3", obs.deletedRows)
 	}
 
 	t.Run("index_scan_over_cleared_range", func(t *testing.T) {
-		const q = "SELECT id FROM t WHERE v = 100"
-		mustUseIndexScan(t, explainInTx(t, ctx, tx, q), q)
-		if ids := idsInTx(t, q); len(ids) != 0 {
+		mustUseIndexScan(t, obs.indexPlan, "SELECT id FROM t WHERE v = 100")
+		if len(obs.indexIDs) != 0 {
 			t.Fatalf("in-tx index scan on v=100 returned ids %v, want none: the "+
 				"transaction does not see its own index-entry clears "+
-				"(RFC-198 criterion 4)", ids)
+				"(RFC-198 criterion 4)", obs.indexIDs)
 		}
 	})
 
 	t.Run("record_scan_over_cleared_range", func(t *testing.T) {
-		const q = "SELECT id FROM t WHERE id >= 1 AND id <= 3"
-		mustNotUseIndexScan(t, explainInTx(t, ctx, tx, q), q)
-		if ids := idsInTx(t, q); len(ids) != 0 {
+		mustNotUseIndexScan(t, obs.recordPlan, "SELECT id FROM t WHERE id >= 1 AND id <= 3")
+		if len(obs.recordIDs) != 0 {
 			t.Fatalf("in-tx record scan over the cleared key range returned ids "+
 				"%v, want none: the transaction does not see its own record "+
-				"clears (RFC-198 criterion 4)", ids)
+				"clears (RFC-198 criterion 4)", obs.recordIDs)
 		}
 		// The row OUTSIDE the cleared range is untouched — without this the
 		// two asserts above would also pass on a store that lost everything.
-		if ids := idsInTx(t, "SELECT id FROM t"); len(ids) != 1 || ids[0] != 4 {
+		if len(obs.survivingIDs) != 1 || obs.survivingIDs[0] != 4 {
 			t.Fatalf("in-tx full scan returned ids %v, want [4] (the row outside "+
-				"the cleared range survives)", ids)
+				"the cleared range survives)", obs.survivingIDs)
 		}
 	})
 
-	// Still uncommitted: a separate connection sees all four rows.
-	var outside int64
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM t").Scan(&outside); err != nil {
-		t.Fatalf("outside count: %v", err)
-	}
-	if outside != 4 {
+	// Still uncommitted: a separate connection saw all four rows.
+	if obs.outsideCount != 4 {
 		t.Fatalf("a separate connection sees %d rows, want 4: the in-tx DELETE "+
-			"is not isolated, which would make the asserts above vacuous", outside)
+			"is not isolated, which would make the asserts above vacuous", obs.outsideCount)
 	}
 }

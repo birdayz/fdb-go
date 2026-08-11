@@ -2,11 +2,10 @@ package sqldriver_test
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // RFC-210 §5.1 clause 4: a SPARSE (WHERE-filtered) UNIQUE index proves NOTHING
@@ -47,7 +46,11 @@ func TestFDB_SparseUniqueIndexDoesNotProveDistinct(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_sparseu")
+	// A one-shot clock spike, so the retry below fires on EVERY run. Safe to arm
+	// for the whole test: preflightTxBudget runs under `if r.tx != nil`, so the
+	// DDL and seed statements below — all autocommit — never meet it.
+	key, clk := spikedClusterKey(t, 30*time.Second)
+	setup := openSpiked(t, key, "/testdb_sparseu", "")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_sparseu")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE sparseu "+
@@ -62,12 +65,7 @@ func TestFDB_SparseUniqueIndexDoesNotProveDistinct(t *testing.T) {
 			"CREATE UNIQUE INDEX full_u AS SELECT email FROM fu ORDER BY email")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sparseu/s WITH TEMPLATE sparseu")
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_sparseu?cluster_file=%s&schema=s", clusterFilePath)
-	db, err := sql.Open("fdbsql", dsn)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := openSpiked(t, key, "/testdb_sparseu", "s")
 
 	mwjoMustExec(t, db, ctx, "INSERT INTO sp (id, email, keep) VALUES "+
 		"(1, 'a@x', 1), (2, 'b@x', 1), (3, 'a@x', 0), (4, 'a@x', 0), (5, 'c@x', 0)")
@@ -86,14 +84,36 @@ func TestFDB_SparseUniqueIndexDoesNotProveDistinct(t *testing.T) {
 	// The control immediately below is the assertion that keeps this honest: it
 	// demands that a FULL unique index on the same table shape DOES draw a
 	// proof here, so a refusal on the sparse table is a refusal of that index.
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer func() { _ = tx.Rollback() }()
+	// THE WHOLE TRANSACTION IS RETRYABLE, and it must be, because the whole
+	// point of the shape is that all three statements share ONE read version —
+	// which is precisely the thing that expires. The retry restarts the whole
+	// transaction so the control EXPLAIN, the sparse EXPLAIN and the row drain
+	// are all produced at the SAME (new) read version. Re-reading only the
+	// statement that was pre-empted would split the comparison across two read
+	// versions and quietly destroy the property the test exists to pin.
+	var fullExplain, sparseExplain string
+	var got []string
+	var attemptsRun int
+	retryTx(t, db, spikeOnce(clk, &attemptsRun), func(a txAttempt) error {
+		fullExplain, sparseExplain, got = "", "", nil
+		var err error
 
-	// ---- the control fires ---------------------------------------------
-	fullExplain := explainPlanOn(t, ctx, tx, "SELECT DISTINCT email FROM fu")
+		// ---- the control fires ------------------------------------------
+		if fullExplain, err = explainPlanOnErr(ctx, a.tx, "SELECT DISTINCT email FROM fu"); err != nil {
+			return err
+		}
+		// ---- the sparse index is refused ---------------------------------
+		if sparseExplain, err = explainPlanOnErr(ctx, a.tx, "SELECT DISTINCT email FROM sp"); err != nil {
+			return err
+		}
+		// ---- and the rows are right --------------------------------------
+		if got, err = dusrvDrainTxErr(ctx, a.tx, "SELECT DISTINCT email FROM sp"); err != nil {
+			return err
+		}
+		return nil
+	})
+	mustHaveRetried(t, attemptsRun)
+
 	t.Logf("EXPLAIN control  => %s", fullExplain)
 	if !strings.Contains(fullExplain, "narrowed-by:FULL_U") {
 		t.Fatalf("the CONTROL did not draw a proof from its full unique index: %s\n"+
@@ -103,7 +123,6 @@ func TestFDB_SparseUniqueIndexDoesNotProveDistinct(t *testing.T) {
 	}
 
 	// ---- the sparse index is refused ------------------------------------
-	sparseExplain := explainPlanOn(t, ctx, tx, "SELECT DISTINCT email FROM sp")
 	t.Logf("EXPLAIN sparse   => %s", sparseExplain)
 	if !strings.Contains(sparseExplain, "Distinct(") {
 		t.Fatalf("the DISTINCT was ELIDED over a SPARSE unique index: %s\n"+
@@ -140,28 +159,14 @@ func TestFDB_SparseUniqueIndexDoesNotProveDistinct(t *testing.T) {
 	// mutation. Keeping the query unordered keeps this assertion aimed at the
 	// unordered shape the EXPLAIN above pins.
 	//
-	// Run on the SAME TRANSACTION as the EXPLAINs, for the same reason they
-	// need one: a wrong admission of the sparse candidate can only produce
-	// duplicate rows where the proof is licensed at all. In auto-commit the
-	// proof is withheld unconditionally, the full operator runs, and three rows
-	// come back whether or not clause 4 does its job — so this assertion would
-	// hold vacuously exactly when it matters most.
-	rows, qerr := tx.QueryContext(ctx, "SELECT DISTINCT email FROM sp")
-	if qerr != nil {
-		t.Fatalf("query: %v", qerr)
-	}
-	defer func() { _ = rows.Close() }()
-	var got []string
-	for rows.Next() {
-		var email string
-		if scanErr := rows.Scan(&email); scanErr != nil {
-			t.Fatalf("scan: %v", scanErr)
-		}
-		got = append(got, email)
-	}
-	if rerr := rows.Err(); rerr != nil {
-		t.Fatalf("rows: %v", rerr)
-	}
+	// Run on the SAME TRANSACTION as the EXPLAINs — and, after the conversion to
+	// a retried transaction, on the same ATTEMPT as well. That is what the
+	// whole-transaction retry buys: a wrong admission of the sparse candidate
+	// can only produce duplicate rows where the proof is licensed at all, and in
+	// auto-commit the proof is withheld unconditionally, so three rows come back
+	// whether or not clause 4 does its job. Re-reading the rows outside the
+	// transaction that produced the EXPLAINs would put this assertion back in
+	// exactly that vacuous position.
 	sort.Strings(got)
 	want := []string{"a@x", "b@x", "c@x"}
 	if len(got) != len(want) {

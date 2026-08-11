@@ -28,6 +28,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"fdb.dev/pkg/dst"
 
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/internal/fdbclient"
@@ -68,7 +71,12 @@ func sharedStoreTimerBackend(t *testing.T) fdb.BackendDatabase {
 // exercised — both must end with an instrumented database, and the two paths that
 // make that true are different code (EnableStoreTimer's own cache lookup, versus
 // applyStoreTimer at registration).
-func armTimer(t *testing.T, key string, armFirst bool) *recordlayer.StoreTimer {
+// clock, when supplied, becomes the record layer's elapsed-time source for this
+// database. It exists so the explicit-transaction test can force the
+// whole-transaction budget pre-emption through the SAME registered backend the
+// timer is bound to — the timer and the clock have to live on one database, or
+// the scrape would describe a different store from the one that was pre-empted.
+func armTimer(t *testing.T, key string, armFirst bool, clock ...dst.Clock) *recordlayer.StoreTimer {
 	t.Helper()
 
 	var timer *recordlayer.StoreTimer
@@ -77,6 +85,9 @@ func armTimer(t *testing.T, key string, armFirst bool) *recordlayer.StoreTimer {
 	}
 
 	db := recordlayer.NewFDBDatabaseWithBackend(sharedStoreTimerBackend(t))
+	if len(clock) == 1 {
+		db.SetEnv(&dst.Env{Clock: clock[0]})
+	}
 	db.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	t.Cleanup(sqldriver.RegisterBackend(key, db))
 
@@ -399,7 +410,9 @@ func TestFDB_StoreTimerExporter_ExplicitTransactionIsInstrumented(t *testing.T) 
 	ctx := context.Background()
 
 	const key = "storetimer-metrics-explicit-tx"
-	timer := armTimer(t, key, true)
+	// One-shot spike on the SAME database the timer is bound to.
+	clk := newLateClock(30 * time.Second)
+	timer := armTimer(t, key, true, clk)
 
 	dsn := fmt.Sprintf("fdbsql:///testdb_sttimer_tx?cluster_file=%s", key)
 	setup, err := sql.Open("fdbsql", dsn)
@@ -422,19 +435,32 @@ func TestFDB_StoreTimerExporter_ExplicitTransactionIsInstrumented(t *testing.T) 
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id) VALUES (1)")
 	timer.Reset()
 
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatalf("BeginTx: %v", err)
-	}
+	// Four in-transaction statements on one read version, so this transaction
+	// carries the budget assumption like any other — and it is the one case where
+	// retrying naively would corrupt the measurement rather than merely repeat
+	// it. A pre-empted attempt still charged its own INSERTs to the exporter, so
+	// the counters below would read 8 saves after one retry and the exact
+	// assertion would have quietly become an inequality nobody wrote.
+	//
+	// BeforeAttempt re-zeroes the timer at the start of EVERY attempt, so the
+	// scrape describes exactly the attempt that succeeded. That keeps `want 4`
+	// and `want 1 commit` meaning what they say.
 	const rows = 4
-	for i := 10; i < 10+rows; i++ {
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO t (id) VALUES (%d)", i)); err != nil {
-			t.Fatalf("INSERT in tx: %v", err)
+	var attemptsRun int
+	opts := spikeOnce(clk, &attemptsRun)
+	opts.BeforeAttempt = func(i int) {
+		attemptsRun = i
+		timer.Reset()
+	}
+	retryTx(t, db, opts, func(a txAttempt) error {
+		for i := 10; i < 10+rows; i++ {
+			if _, err := a.tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO t (id) VALUES (%d)", i)); err != nil {
+				return err
+			}
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
+		return a.tx.Commit()
+	})
+	mustHaveRetried(t, attemptsRun)
 
 	got := scrape(t, timer)
 	if v := got["fdb_recordlayer_save_record_seconds_count"]; v != rows {
