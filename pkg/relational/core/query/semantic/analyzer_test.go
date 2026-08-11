@@ -179,7 +179,7 @@ func TestAnalyzer_ResolveColumnRef(t *testing.T) {
 	scope, _, _ := buildScope(t)
 
 	// Bare: qualifier zero.
-	col, src, err := a.ResolveColumnRef(scope, Identifier{}, NewUnquoted("name"))
+	col, src, acc, err := a.ResolveColumnRefNested(scope, Identifier{}, NewUnquoted("name"))
 	if err != nil {
 		t.Fatalf("bare: %v", err)
 	}
@@ -189,9 +189,12 @@ func TestAnalyzer_ResolveColumnRef(t *testing.T) {
 	if col.Id.Name() != "NAME" {
 		t.Fatalf("bare col: got %q", col.Id.Name())
 	}
+	if len(acc) != 0 {
+		t.Fatalf("bare: got accessor chain %v, want empty — a one-segment reference has no prefix to descend through", acc)
+	}
 
 	// Qualified.
-	col, src, err = a.ResolveColumnRef(scope, NewUnquoted("o"), NewUnquoted("order_id"))
+	col, src, acc, err = a.ResolveColumnRefNested(scope, NewUnquoted("o"), NewUnquoted("order_id"))
 	if err != nil {
 		t.Fatalf("qualified: %v", err)
 	}
@@ -201,12 +204,15 @@ func TestAnalyzer_ResolveColumnRef(t *testing.T) {
 	if col.Id.Name() != "ORDER_ID" {
 		t.Fatalf("qualified col: got %q", col.Id.Name())
 	}
+	if len(acc) != 0 {
+		t.Fatalf("qualified: got accessor chain %v, want empty — `o.order_id` addresses a SOURCE column directly, it does not descend into a struct", acc)
+	}
 }
 
 func TestAnalyzer_ResolveColumnRef_NilScope(t *testing.T) {
 	t.Parallel()
 	a := NewAnalyzer(buildTestCatalog(), false)
-	_, _, err := a.ResolveColumnRef(nil, Identifier{}, NewUnquoted("x"))
+	_, _, _, err := a.ResolveColumnRefNested(nil, Identifier{}, NewUnquoted("x"))
 	if err == nil {
 		t.Fatal("expected error for nil scope")
 	}

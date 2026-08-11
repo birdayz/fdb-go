@@ -74,25 +74,27 @@ func (a *Analyzer) ResolveColumn(table Table, id Identifier) (Column, error) {
 	return c, nil
 }
 
-// ResolveColumnRef is the one-shot column-reference resolver: given
-// a qualifier (may be zero) and a column identifier, dispatch to
-// bare or qualified lookup against the provided scope. This is the
-// analyzer's top-level hook for every identifier reference the
-// expression resolver sees.
+// ResolveColumnRefNested is the one-shot column-reference resolver: given a
+// qualifier (may be zero) and a column identifier, dispatch to bare or
+// qualified lookup against the provided scope. This is the analyzer's top-level
+// hook for every identifier reference the expression resolver sees.
 //
 // - qualifier.IsZero() → Scope.ResolveColumn (bare).
-// - qualifier non-zero → Scope.ResolveQualifiedColumn.
+// - qualifier non-zero → Scope.ResolveQualifiedColumnNested.
 //
-// Returns the same typed errors as the underlying scope methods.
-func (a *Analyzer) ResolveColumnRef(scope *Scope, qualifier, id Identifier) (Column, ScopeSource, error) {
-	c, src, _, err := a.ResolveColumnRefNested(scope, qualifier, id)
-	return c, src, err
-}
-
-// ResolveColumnRefNested is ResolveColumnRef plus the accessor chain a
-// reference that descends INTO a struct column resolves to — Java's
-// lookupNestedField result (SemanticAnalyzer.java:578-601). The chain is
+// Returns the same typed errors as the underlying scope methods, plus the
+// accessor chain a reference that descends INTO a struct column resolves to —
+// Java's lookupNestedField result (SemanticAnalyzer.java:578-601). The chain is
 // empty for every reference that addresses a source column directly.
+//
+// The chain is part of the RESULT, not an optional extra: a caller that mints a
+// value from (Column, ScopeSource) alone and ignores the chain has resolved
+// `struct.member` to the whole struct — a wrong-column read that raises no
+// error. There is deliberately no chain-discarding sibling of this method for a
+// caller to reach for; Java has no such split either, because lookupNestedField
+// fuses the descent onto the value before any caller sees it
+// (SemanticAnalyzer.java:599-600). expr.fuseNestedAccessorsIfAny is the Go side
+// of that fuse and every mint routes through it.
 //
 // The BARE arm never descends, and that is Java's rule, not an omission:
 // lookupNestedField returns empty immediately when the requested identifier
