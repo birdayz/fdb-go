@@ -17020,6 +17020,83 @@ None is speculative: each was re-verified against the tree before booking.
   DONE: the wrong-rows half is fixed upstream. This entry closes when the scope
   divergence is fixed and the element bake/net are corrected in the same change,
   with the sentinel converted to a row assertion.
+  **CLOSED — all three conditions met together, in the entry two below this one.**
+  Two corrections to the prose above, which must not be carried forward:
+  (a) the scope divergence was NOT one dropped argument at
+  `logical_predicate.go:9302`. That site is real but is only ONE of THREE
+  fields-less mints, and it is not the one the `SELECT … FROM t.arr AS x` shape
+  reaches — that shape is served by a FOURTH, hand-rolled inline mint inside
+  `tryBuildCorrelatedPrimaryUnnest` which never calls the shared helper, so a
+  census of the helper's call sites cannot see it.
+  (b) "it cannot be reached" understated the risk once it was: with the scope
+  repaired, the element bake did not merely admit an unbaked nested ref — the
+  outer-only conjunct channel returned ZERO ROWS SILENTLY (`EK|` for a query
+  whose answer is `EK|10`), measured, and the net reported the tree clean. The
+  fix keys both on `RootIsLegRelativeUnpinned()` and fuses `Accessors[1:]`, which
+  is what this entry prescribed.
+  The sentinel was CONVERTED, not deleted, and now asserts rows.
+---
+
+- [x] **The unnest element's struct fields reached only ONE of the four scopes that bind it, so a member reference resolved outside EXISTS and raised 42703 inside it.**
+  MEASURED on master `3179bd6984d028d6324e3f7a3324feb60414aaa9`:
+  `SELECT t.id FROM t WHERE EXISTS (SELECT x FROM t.arr AS x WHERE x.ek = 20)`
+  → `ERROR: 42703: column "EK" does not exist`, while
+  `SELECT x.ek FROM t, t.arr AS x` answers. Java answers both
+  (`valid-identifiers.yamsql:221,226` drive the flat and the two-level member on
+  a lateral struct-element alias from inside an EXISTS body; Java gets there
+  structurally because the unnest quantifier's flowed object type IS the element
+  type — `LogicalOperator.generateCorrelatedFieldAccess`).
+  Go carries the element's fields onto a VIRTUAL one-column source instead, and
+  only `unnestScopeSourceAdder` (the SELECT scope) was passing them. THREE other
+  mints were not, each independently pinned by a mutation that reddens its own
+  arm and nothing else:
+  `buildOuterScopeSources` (a correlated subquery's OUTER scope),
+  `addCorrelatedJoinScopeSource` (a correlated subquery's inner JOIN leg), and
+  a FOURTH, hand-rolled inline mint inside
+  `existsSubqueryPlanner.tryBuildCorrelatedPrimaryUnnest` that does not call the
+  shared helper at all — the one a census of the helper's call sites cannot see.
+  The three remaining `unnestVirtualScopeSource(j)` (fields-less) call sites are
+  CORRECT: `logical_predicate.go:7719,8101,8337` consume only the binding's
+  TOP-LEVEL column NAMES (star expansion and the column-name census), which the
+  element's fields do not change. Census command:
+  `grep -rn "unnestVirtualScopeSource" --include='*.go' .`
+  Fixing resolution armed two paths that were masked behind the refusal, both
+  fixed in the same change:
+  (a) the correlated-primary member reached the executor as an unbound leaf —
+  it is now rebased onto the Explode's flowed element
+  (`rebaseUnnestElementMemberOntoExplode`), which is the datum-binding contract
+  the runtime already implements;
+  (b) an outer-only conjunct naming an element MEMBER inside a correlated EXISTS
+  body returned ZERO ROWS SILENTLY. `bakeUnnestElementRefOrdinal` skipped it and
+  `unnestExistsRefSurvivesUnbaked` declared the tree clean, because BOTH keyed on
+  `SourceRelativeBaked()`, which additionally demands a SINGLE accessor and so
+  waved a two-accessor member path through. Both now key on
+  `RootIsLegRelativeUnpinned()`, and the bake keeps the accessors below the root.
+  The scalar-element twin was never affected (its ref is single-accessor) and is
+  pinned as a control.
+  Pinned by `pkg/relational/sqldriver/unnest_element_member_in_exists_fdb_test.go`
+  (15 row-asserting arms; 5 mutations, and the three scope-site mutations redden
+  three DISJOINT arm sets).
+  The projection gate this change did NOT close is booked as its own UNCHECKED
+  item immediately below — deliberately not as prose inside this completed one,
+  where nothing would ever pick it up.
+
+- [ ] **A correlated array EXISTS refuses every inner projection except the bare
+  element alias, including the `SELECT *` form Java's own corpus uses.**
+  The correlated
+  primary unnest in an EXISTS body refuses any projection other than the bare
+  element alias — `SELECT *` / `SELECT 1` / `SELECT x.ek` all give
+  `0AF00: correlated array EXISTS currently requires projecting its element
+  alias` (`logical_predicate.go`, the projection gate in
+  `tryBuildCorrelatedPrimaryUnnest`). Java accepts `select * from t.arr as x
+  where …` and returns rows, so this is the shape its own yamsql corpus uses.
+  It is a LOUD refusal, never a wrong answer, and it is upstream of everything
+  above — it is why the tests spell the projection `SELECT x`. Pinned as a
+  divergence sentinel by the `projection_gate_still_refuses_star_divergence_sentinel`
+  arm, whose re-arm note says to assert rows (`ID|1`) when the gate is widened.
+  DONE for the gate = EXISTS ignores the inner projection as Java does (EXISTS
+  observes cardinality only), with the projection still validated rather than
+  skipped, and that sentinel arm converted to a row assertion.
 - [ ] **The duplicate-GROUP-BY-key gate and the post-aggregate rebase decide key
   identity by DIFFERENT predicates, so two semantically-equal grouping keys reach
   a first-match loop and Go answers where Java raises** · M · found while folding

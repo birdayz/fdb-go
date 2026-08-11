@@ -2692,6 +2692,33 @@ func unnestElementStructFields(scope *semantic.Scope, j joinClause) []semantic.C
 	return col.StructFields
 }
 
+// unnestElementStructFieldsFromSources types a lateral unnest's element against
+// a scope-source LIST rather than a live Scope — the shape buildOuterScopeSources
+// works in, which accumulates sources instead of building a Scope. A lateral
+// unnest's array always lives on a source to its LEFT, so the sources gathered
+// so far are exactly the ones the resolution must see.
+//
+// An AddSource rejection is ignored rather than fatal: duplicate outer aliases
+// are legal in that builder, and a duplicate simply makes the array reference
+// ambiguous, which the resolution below already declines by returning nil.
+func unnestElementStructFieldsFromSources(sources []semantic.ScopeSource, j joinClause) []semantic.Column {
+	scope := semantic.NewScope(nil)
+	for _, src := range sources {
+		if src.Table == nil {
+			continue
+		}
+		_ = scope.AddSource(src)
+	}
+	return unnestElementStructFields(scope, j)
+}
+
+// unnestVirtualScopeSource builds the unnest binding WITHOUT element fields.
+// That is correct only for consumers that need the binding's TOP-LEVEL column
+// NAMES — star expansion and the column-name census — where the element is the
+// whole struct and its fields contribute no additional names. Any consumer that
+// RESOLVES a reference through the binding must call
+// unnestVirtualScopeSourceWithElement instead, or a struct member reference
+// declines 42703.
 func unnestVirtualScopeSource(j joinClause) (semantic.ScopeSource, bool) {
 	return unnestVirtualScopeSourceWithElement(j, nil)
 }
@@ -8979,7 +9006,13 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, sch
 		// execution. RFC-142.
 		visible := visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], resolvesToTable)
 		if isLateralUnnestJoin(j, visible, resolvesToTable) {
-			if src, ok := unnestVirtualScopeSource(j); ok {
+			// The element's DECLARED FIELDS travel with the binding, exactly as
+			// they do on the SELECT scope (unnestScopeSourceAdder). Without them
+			// the outer scope exposes a fieldless element column and a correlated
+			// reference to a STRUCT member (`… WHERE m.id = x.ek`) died 42703
+			// while the identical reference resolved outside the subquery — one
+			// binding described two ways.
+			if src, ok := unnestVirtualScopeSourceWithElement(j, unnestElementStructFieldsFromSources(sources, j)); ok {
 				sources = append(sources, src)
 			}
 			continue
@@ -9184,12 +9217,27 @@ func (p *existsSubqueryPlanner) tryBuildCorrelatedPrimaryUnnest(
 	}
 	aliasID := semantic.FromNormalized(innerAlias)
 	innerScope := semantic.NewScope(outerScope)
+	// The element column carries the array element's DECLARED FIELDS when that
+	// element is a struct, so `x.ek` / `x.d.dk` inside the EXISTS body descend
+	// through the ordinary struct-descent (Column.LookupStructField), exactly as
+	// they do on the SELECT-scope binding. col.Type already names the ELEMENT
+	// kind ("RECORD" for a struct array, the scalar kind otherwise) and
+	// col.StructFields already IS the element's field list — dropping it here
+	// left a "RECORD" column with no fields, which no descent can enter, so the
+	// member reference died 42703 while resolving fine outside EXISTS. Java has
+	// no such split: the unnest quantifier's flowed type IS the element type, so
+	// the element's fields are the quantifier's own attributes
+	// (LogicalOperator.generateCorrelatedFieldAccess emits one output per struct
+	// field). This mint is the correlated-primary sibling of
+	// unnestVirtualScopeSourceWithElement; the two must agree on what an element
+	// binding exposes.
 	virtual := &semantic.StaticTable{
 		TableName: semantic.FromSegments([]string{innerAlias}, false),
 		TableColumns: []semantic.Column{{
-			Id:       aliasID,
-			Type:     col.Type,
-			Nullable: true,
+			Id:           aliasID,
+			Type:         col.Type,
+			Nullable:     true,
+			StructFields: col.StructFields,
 		}},
 	}
 	if addErr := innerScope.AddSource(semantic.ScopeSource{
@@ -9472,7 +9520,12 @@ func (p *existsSubqueryPlanner) addCorrelatedJoinScopeSource(innerScope *semanti
 	resolvesToTable := newUnnestTableResolver(p.md, p.effectiveSchemaName())
 	visible := visibleFromAliases(primaryTable, primaryAlias, priorJoins, resolvesToTable)
 	if isLateralUnnestJoin(j, visible, resolvesToTable) {
-		if src, ok := unnestVirtualScopeSource(j); ok {
+		// innerScope already holds the primary source and every prior leg, which
+		// is where the unnested array column lives — so the element's declared
+		// fields are typeable here and travel with the binding, as they do on the
+		// SELECT scope. A fieldless element column would make `x.ek` in this
+		// leg's ON / the inner WHERE decline 42703.
+		if src, ok := unnestVirtualScopeSourceWithElement(j, unnestElementStructFields(innerScope, j)); ok {
 			_ = innerScope.AddSource(src)
 		}
 		return nil
