@@ -53,17 +53,23 @@ import (
 // TWO ARMS TEST THE BINDING RATHER THAN THE WALK, and they are here because
 // every other arm is correct by coincidence in the same way the defect was:
 //
-//   - two_computed_keys… — every other arm that REACHES THE COMPUTED WALK groups
-//     by ONE key, so the recorded slot is always 0 and none of them can tell the
-//     loop index from a hardcoded zero, while that index IS the binding. (Other
-//     arms do use two keys, but none of them reaches this walk with a bindable
-//     multi-key shape: the duplicate arms are refused 42702 before it, and the
-//     join and parenthesised arms are the sibling walk's.) MEASURED: pinning the computed
-//     walk's mint to ordinal 0 reddens ONLY that arm and leaves the other TWELVE
-//     green, which is what says it tests the ordinal instead of re-testing the
-//     walk. The sibling walk has its own such arm (a_nested_key_in_a_nonzero_slot)
-//     because the two walks record the slot at two separate sites, and a mutation
-//     of one leaves the other's arms untouched;
+//   - two_computed_keys… — it is the DELIBERATE witness for the computed walk's
+//     slot index. Most arms group by one key, so the recorded slot is always 0
+//     and cannot be told from a hardcoded zero, while that index IS the binding.
+//     Of the arms that do use two keys, the duplicate ones are refused 42702
+//     before the walk runs and the join one binds through the SIBLING FieldValue
+//     walk; the parenthesised one, however, DOES reach this walk — both its keys
+//     are non-FieldValue, so it binds at slot 1.
+//     MEASURED at 14 arms: pinning the computed walk's mint to ordinal 0 reddens
+//     TWO arms — this one and a_parenthesised_computed_key_twin… — leaving 12
+//     green. Both reddening is itself the proof that the paren arm is on the
+//     computed route, since that mutation touches no other walk. This arm stays
+//     the deliberate witness because the paren arm also passes for an unrelated
+//     reason (see its note on m1), so it cannot be relied on for the index.
+//     The sibling walk has its own such arm (a_nested_key_in_a_nonzero_slot),
+//     because the two walks record the slot at separate sites and mutating one
+//     leaves the other's arms untouched — that arm is green under this mutation
+//     and red under the sibling's, which is what keeps the two routes distinct;
 //   - a_duplicate_computed_key… — a NEGATIVE result. The rebase first-matches
 //     where Java raises, and these spellings are refused 42702 before it. The arm
 //     pins that refusal and names what re-arms it. It does NOT claim the refusal
@@ -592,7 +598,17 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// passes by COINCIDENCE. Without the walk the HAVING reference reads
 		// output slot 1, which here holds `(c1+1)` — the key's own value — so
 		// `> 120` separates 101 from 141 exactly as the correct binding does.
-		// That is a property of this fixture, not a guard. The DELIBERATE witness
+		// That is a property of this fixture, not a guard.
+		//
+		// IT DOES REDDEN UNDER THE OTHER MUTATION, and the two results only look
+		// contradictory until the mutations are told apart: REVERTING the computed
+		// walk (m1) leaves this green for the fixture reason above, while pinning
+		// that walk's MINT to ordinal 0 reddens it, because the reference then
+		// binds slot 0 — which holds `(c1+1)` as a RecordConstructorValue — rather
+		// than slot 1. The second result is what proves this arm reaches the
+		// COMPUTED walk at all.
+		//
+		// The DELIBERATE witness
 		// for the computed walk's slot index is
 		// two_computed_keys_bind_their_own_slot_and_not_slot_zero; this arm is an
 		// incidental second one (its HAVING reference is an ArithmeticValue
@@ -670,7 +686,11 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// introduced or widened this.
 		//
 		// THIS ARM IS THE ONE THE SMALL FIX CLOSES, which is why it is worth
-		// separating from its parenthesised sibling. All four spellings below
+		// separating from the parenthesised arm. (That arm is NOT this walk's:
+		// its two keys are non-FieldValue, so it binds on the COMPUTED walk —
+		// see its own note. The two arms are neighbours in this file and are
+		// bound by different loops, which is exactly the confusion to avoid.)
+		// All four spellings below
 		// carry a post-aggregate reference, and the two equal FieldValue keys
 		// genuinely multi-match: instrumenting this walk's first-match loop
 		// reports `matches=2 nkeys=2` for both the nested (R) and flat (C1)
@@ -680,7 +700,7 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// duplicate-key check) — turns every query below into a 42702, and this
 		// arm becomes that assertion.
 		//
-		// Its sibling arm does NOT move with it: a parenthesised computed twin
+		// The parenthesised arm does NOT move with it: a computed twin
 		// yields keys [RecordConstructorValue, ArithmeticValue], a reference
 		// matches only one, and no `>1` guard can fire. That one needs the larger
 		// gate-convergence step. TODO.md Phase 12 carries both, with the closable
