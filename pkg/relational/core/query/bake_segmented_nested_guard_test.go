@@ -23,12 +23,23 @@ package query
 // fused value is constructed here and handed to the function directly.
 //
 // REACHABILITY. The hazard is unreachable today, and only by agreement among
-// callers: each of bakeSegmentedColumnRef's call sites admits its argument
-// behind `fv == minted`, and every `minted` is a freshly built lazy FieldValue
-// with nil Resolved and nil Child. That is a property of the call sites, not
-// of the function, and pointer identity is not an invariant anyone should be
-// asked to preserve by hand. This test is what makes the contract the
-// function's own, so the guard cannot be read as dead code and deleted.
+// callers. The enumeration is given as the command that produces it rather
+// than as a bare number, because this count has already moved three times:
+//
+//	grep -rn "bakeSegmentedColumnRef(" pkg/ --include="*.go" | grep -v _test.go
+//
+// returns the definition plus SIX callers — five in cascades_translator.go and
+// one in clustered_outer_scalar.go. Each admits its argument behind
+// `fv == minted`, and every `minted` is a freshly built lazy FieldValue with
+// nil Resolved and nil Child. That is a property of the call sites, not of the
+// function, and pointer identity is not an invariant anyone should be asked to
+// preserve by hand. This test is what makes the contract the function's own, so
+// the guard cannot be read as dead code and deleted.
+//
+// The guard is a PASS-THROUGH, not a refusal: a resolved value arrives already
+// addressed and stays evaluable, so reaching this function with one is not an
+// error — only re-baking it is. An assertion here would convert a correct value
+// into a planner failure, which is why no arm below expects one.
 
 import (
 	"strconv"
@@ -107,12 +118,14 @@ func TestBakeSegmentedColumnRef_DeclinesAFusedNestedDescent(t *testing.T) {
 // at the entry would pass the test above and still hand back a leg-window
 // ordinal here.
 //
-// It is also the argument shape that separates the call sites. Of the five,
-// four pass a real leg table (the ORDER-BY sort keys, the two projection
-// passes and the group-key/aggregate-operand passes) and one passes nil legs.
-// Driving both means the pin covers what actually varies between callers,
-// rather than covering one caller five times: every site funnels into this one
-// function, so the caller-facing axis is the arguments, not the call.
+// It is also the argument shape that separates the call sites. Of the six the
+// grep in the header returns, FOUR pass a real leg table (the ORDER-BY sort
+// keys, one of the two translateProject passes, and the group-key and
+// aggregate-operand passes) and TWO pass nil legs (the other translateProject
+// pass and clustered_outer_scalar.go). Driving both means the pin covers what
+// actually varies between callers, rather than covering one caller six times:
+// every site funnels into this one function, so the caller-facing axis is the
+// arguments, not the call.
 func TestBakeSegmentedColumnRef_DeclinesAFusedNestedDescentBeforeTheLegWindow(t *testing.T) {
 	t.Parallel()
 
@@ -138,6 +151,46 @@ func TestBakeSegmentedColumnRef_DeclinesAFusedNestedDescentBeforeTheLegWindow(t 
 			"no error. The guard must decline at the FUNCTION ENTRY, ahead of "+
 			"both the flat first-match and this lookup; a guard placed between "+
 			"the two closes only half the hazard.", accessorPathOf(fv))
+	}
+}
+
+// TestBakeSegmentedColumnRef_PassesThroughAChildBearingRef drives the guard's
+// OTHER arm. The guard is a disjunction — `fv.Child != nil || fv.Resolved !=
+// nil` — and the two pins above drive only the Resolved side, so without this
+// the Child half ships untested and reads as covered.
+//
+// The value is built so ONLY the Child arm can answer: Resolved is nil, so a
+// guard reduced to `fv.Resolved != nil` falls straight through to the
+// first-match loop. Field is "N" and "N" IS an output column, so that loop
+// would bake it — and baking a quantifier-addressed read against the FLAT
+// output layout drops the correlation the value was addressed through, which
+// is the same shape of loss as the nested case: a slot resolved against the
+// wrong row.
+func TestBakeSegmentedColumnRef_PassesThroughAChildBearingRef(t *testing.T) {
+	t.Parallel()
+
+	cols := []string{"ID", "N"}
+	ref := logical.ColumnRef{Present: true, Bare: "N", Qualifier: "Q", Qualified: true}
+
+	child := &values.FieldValue{
+		Field: "N",
+		Typ:   values.UnknownType,
+		Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("Q")),
+	}
+	if child.Resolved != nil {
+		t.Fatalf("fixture error: the Child-arm pin must carry a NIL Resolved, "+
+			"otherwise the Resolved arm answers and this test measures nothing. "+
+			"got Resolved=%v", child.Resolved)
+	}
+
+	got := bakeSegmentedColumnRef(child, ref, cols, nil)
+	if got != values.Value(child) {
+		t.Fatalf("bakeSegmentedColumnRef REWROTE a child-bearing reference to %#v.\n\n"+
+			"  A FieldValue with a Child is addressed THROUGH its quantifier, not "+
+			"against the flat output layout. Re-baking it to a flat ordinal "+
+			"discards the correlation and binds the read to a different row. "+
+			"The guard is a disjunction and this is its second arm: if only "+
+			"`fv.Resolved != nil` survives, this is what escapes.", got)
 	}
 }
 
