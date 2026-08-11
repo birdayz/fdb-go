@@ -1,6 +1,12 @@
 load("@rules_go//go:def.bzl", "go_library")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 
+# The parser codegen script is also read as DATA by
+# //pkg/docscheck:docscheck_test — TestCodegenOwnedGlobsCoverTheGenerateRecipes
+# follows `just generate`'s bazel-run steps into the script they execute to learn
+# which source-tree paths codegen writes.
+exports_files(["generate_parser.sh"])
+
 go_library(
     name = "grammar",
     srcs = ["sync.go"],

@@ -542,6 +542,45 @@ install-hooks:
       echo "  BUILD.bazel entries together — a test file in no test target fails the build."
     fi
 
+    # The paths `just generate` can actually WRITE, as shell patterns matched
+    # against `git ls-files --others` output (repo-relative). Read off the recipe
+    # chain `generate: ensure-buf generate-mocks generate-parser generate-frl`:
+    # its `rm -rf` targets, its `find … -delete` pattern, the gazelle runs that
+    # write BUILD.bazel, and the buf download in ensure-buf.
+    #
+    # This list exists because the hook can only observe that a file APPEARED
+    # while codegen was running — never that codegen wrote it. Over a multi-minute
+    # `just generate`, in a tree several agents share, "appeared during" catches
+    # scratch logs and redirect targets too, and blaming codegen for those sends
+    # the reader to stage exactly what must never be staged.
+    #
+    # Widening a recipe to write somewhere new means widening this list:
+    # TestCodegenOwnedGlobsCoverTheGenerateRecipes derives the paths from the
+    # recipes and fails the build when one is not covered, so the narrowing
+    # cannot silently start missing real codegen output.
+    #
+    # `.tools/` is gitignored, so nothing under it can reach the untracked list at
+    # all; the entry keeps the list a complete statement of what codegen writes
+    # rather than of what git happens to report.
+    codegen_owned_globs='gen/*
+    cmd/frl/gen/*
+    pkg/relational/core/parser/gen/*
+    pkg/relational/api/*mocks_*.go
+    BUILD.bazel
+    */BUILD.bazel
+    .tools/*'
+
+    path_is_codegen_owned() {
+      local f="$1" g
+      while IFS= read -r g; do
+        [ -n "$g" ] || continue
+        # $g is deliberately unquoted: it is a pattern, not a literal.
+        # shellcheck disable=SC2254
+        case "$f" in $g) return 0 ;; esac
+      done <<< "$codegen_owned_globs"
+      return 1
+    }
+
     # Snapshot the tree BEFORE codegen. `git diff --exit-code` alone cannot tell a
     # dirty tree from genuine codegen drift: it reports both identically, so a
     # message naming either one is confidently wrong half the time.
@@ -560,15 +599,42 @@ install-hooks:
     after="$(git diff)"
     after_untracked="$(git ls-files --others --exclude-standard)"
 
-    if [ "$before" != "$after" ] || [ "$before_untracked" != "$after_untracked" ]; then
-      echo "ERROR: 'just generate' produced changes — generated files are out of date."
+    # Split the files that arrived during codegen by whether codegen could have
+    # written them at all. Only the owned half is attributable; the rest merely
+    # shares a time window with it.
+    owned_new=""
+    foreign_new=""
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      if path_is_codegen_owned "$f"; then
+        owned_new+="$f"$'\n'
+      else
+        foreign_new+="$f"$'\n'
+      fi
+    done < <(comm -13 <(printf '%s\n' "$before_untracked") <(printf '%s\n' "$after_untracked"))
+
+    if [ "$before" != "$after" ] || [ -n "$owned_new" ]; then
+      echo "ERROR: generated files are out of date — the tree changed across 'just generate',"
+      echo "  in paths the codegen recipes write."
       echo "  Stage the regenerated files and retry."
       git diff --stat
       # --stat covers modified tracked files only; a file codegen CREATED shows up
       # nowhere else, and is the case most likely to be missed when staging.
-      comm -13 <(printf '%s\n' "$before_untracked") <(printf '%s\n' "$after_untracked") \
-        | sed 's/^/  new file: /'
+      if [ -n "$owned_new" ]; then
+        printf '%s' "$owned_new" | sed 's/^/  new file: /'
+      fi
       exit 1
+    fi
+
+    if [ -n "$foreign_new" ]; then
+      echo "NOTE: file(s) appeared in the tree while the hook was running, outside every"
+      echo "  path 'just generate' writes:"
+      printf '%s' "$foreign_new" | sed 's/^/  /'
+      echo "  The hook only saw them arrive during that window — it cannot tell what wrote"
+      echo "  them, and does not attribute them to codegen. The two usual causes are a"
+      echo "  concurrent writer in this shared worktree and a command inside the repo"
+      echo "  redirecting its output to a path here."
+      echo "  Do NOT stage them to silence this note."
     fi
 
     if [ -n "$before" ]; then
