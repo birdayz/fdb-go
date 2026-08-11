@@ -305,10 +305,16 @@ func orderSectionOf(src string) (string, bool) {
 // the authority, and states that where the two disagree the test is right. That
 // is a frozen-at-drafting record with a named authority and a tie-break, so
 // counts BELONG there and drift in them is not rot. Measured before deciding:
-// widening this gate to the whole document fires 162 times against the
-// document's own declared convention (150 of them in `## Decision`), versus 0 in
-// `## Order`. `## Order` is the section that claims to describe the CURRENT
-// residual, which is why it — and only it — is held to direction-not-magnitude.
+// widening this gate fires 162 times against the document's own declared
+// convention (150 of them in `## Decision`), versus 0 in `## Order`. That 162 is
+// the SECTIONWISE total — the sum over the document's `##` sections, which is
+// how this gate reads a document. Scanning the file as one blob gives 169; the
+// extra 7 live in the front matter before `## The problem` and belong to no
+// section. The qualifier is stated because a bare "162" invites the next reader
+// to re-derive 169 and conclude the record rotted.
+//
+// `## Order` is the section that claims to describe the CURRENT residual, which
+// is why it — and only it — is held to direction-not-magnitude.
 
 // fieldDebtProseNumericExemptions are the non-census numeric forms permitted in
 // `## Order` prose. They are STRIPPED before the bare-integer scan, so anything

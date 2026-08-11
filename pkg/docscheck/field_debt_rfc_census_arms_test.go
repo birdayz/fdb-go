@@ -392,7 +392,16 @@ func TestFieldDebtOrderProseArms(t *testing.T) {
 	}
 	// `one that …` is the BROADEST trigger in the elided-tally pattern, and it
 	// does over-fire on ordinary prose — measured at 129 `fieldDebtProseElidedTally`
-	// hits across `rfcs/*.md`, 43 of them innocuous. That breadth is accepted
+	// hits across `rfcs/*.md`, 43 of them the `one that` form.
+	//
+	// Both figures are LINE-BY-LINE, which is how the checker scans. Running the
+	// same pattern over each file as one blob gives 145, because `\s` then
+	// matches across newlines and joins a trailing number to the next line's
+	// first word — something the checker never does. The scan method is recorded
+	// with the number so a reader who reproduces it differently sees a
+	// methodology difference rather than a rotted record.
+	//
+	// That breadth is accepted
 	// deliberately: the gate's scope is ONE section of ONE file, where a false
 	// positive costs a reword and a false negative costs a wrong number nobody
 	// can see. It is pinned as a FIRING case rather than left unexercised so the

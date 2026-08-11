@@ -233,8 +233,12 @@ func fieldDecisionAllowed(sites []fieldDecisionSite, site string) (fieldDecision
 // DO NOT COUNT THE CONDITIONS BY GREPPING FOR A MARKER. The literal
 // `RETIREMENT CONDITION` string is a convenience for readers, not a census key:
 // a large minority of entries state their exit in other words — "Retires
-// with…", "closes exactly when…", "the site dies when…", "moves only when…" —
-// and are no less complete for it. An earlier version of this comment prescribed
+// with…", "closes exactly when…", "the site dies when…", "WHAT CLOSES IT:…" —
+// and are no less complete for it. Those four are quoted verbatim from entry
+// `why` strings and each is findable; an earlier revision listed "moves only
+// when…" as a fifth, which occurs in NO entry — it was lifted from the
+// `contract:` BUCKET DESCRIPTION one screen above, i.e. from the wrong
+// population, inside the very comment telling readers to parse the entries. An earlier version of this comment prescribed
 // accepting the two marker spellings (`:` and `,`); that remedy is WRONG in the
 // direction it warns about, because the marker itself is absent from roughly a
 // third of the entries and the split is at least five ways, not two. Counting on
