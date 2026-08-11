@@ -574,10 +574,18 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		//
 		// BOUND AND OWNERSHIP: identical to the join divergence below. The rows
 		// are arithmetically correct, so this is conformance-only — Go answers
-		// where Java refuses. Booked with the join case in TODO.md Phase 12,
-		// whose FIRST step is small and local: make both rebase loops collect
-		// matches and raise on >1, which is what Java does at the pull-up site
-		// and is safe in every ordering.
+		// where Java refuses.
+		//
+		// THE SMALL FIX DOES NOT CLOSE THIS ARM, and that asymmetry is the point
+		// of pinning it separately from the join one. Making the rebase loops
+		// raise on a multi-match closes the JOIN arm (its two equal FieldValue
+		// keys measure `matches=2`), but here the keys are
+		// [RecordConstructorValue, ArithmeticValue] and a reference matches only
+		// ONE — `matches=1`, so no `>1` guard can ever fire. Closing this needs
+		// the larger step: converge the duplicate gate's identity predicate with
+		// the loops'. TODO.md Phase 12 lists what each step closes, so neither is
+		// credited with the other's work and neither DONE criterion can be
+		// satisfied by the wrong change.
 		//
 		// WHY THIS ARM STAYS GREEN UNDER THE m1 MUTATION (reverting the computed
 		// walk), which would otherwise look like evidence it tests nothing: it
@@ -661,14 +669,23 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// `grep -c '^-[^-]'` = 0) — a diff that deletes nothing cannot have
 		// introduced or widened this.
 		//
-		// WHEN IT IS FIXED, every query below must start returning 42702 and this
-		// arm becomes that assertion. The FIRST step is small and local, and is
-		// not the gate rework it looks like: make this walk's first-match loop
-		// COLLECT matches and raise on more than one, which is exactly where Java
-		// guards (Expressions.java:112, Expression.java:246 — locally, at the
-		// pull-up, delegating to no upstream duplicate-key check). Converging the
-		// gate's identity predicate is a separate, larger step that can follow.
-		// Until then this arm exists so the behaviour cannot move in EITHER
+		// THIS ARM IS THE ONE THE SMALL FIX CLOSES, which is why it is worth
+		// separating from its parenthesised sibling. All four spellings below
+		// carry a post-aggregate reference, and the two equal FieldValue keys
+		// genuinely multi-match: instrumenting this walk's first-match loop
+		// reports `matches=2 nkeys=2` for both the nested (R) and flat (C1)
+		// spellings. So making the loop COLLECT matches and raise on more than
+		// one — exactly where Java guards (Expressions.java:112,
+		// Expression.java:246, locally at the pull-up, delegating to no upstream
+		// duplicate-key check) — turns every query below into a 42702, and this
+		// arm becomes that assertion.
+		//
+		// Its sibling arm does NOT move with it: a parenthesised computed twin
+		// yields keys [RecordConstructorValue, ArithmeticValue], a reference
+		// matches only one, and no `>1` guard can fire. That one needs the larger
+		// gate-convergence step. TODO.md Phase 12 carries both, with the closable
+		// sets listed separately so neither step is credited with the other's
+		// work. Until then this arm exists so the behaviour cannot move in EITHER
 		// direction unnoticed: silently starting to refuse is a change worth
 		// seeing too.
 		//

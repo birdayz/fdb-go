@@ -17064,9 +17064,15 @@ None is speculative: each was re-verified against the tree before booking.
   `walkRecordConstructorInner` does not — unwrapping in the walk collapses the
   projection case and REINTRODUCES a divergence Go already closed. Beware
   `walk.go:37`: its summary list still says "1-element unnamed → unwrap", stale
-  prose contradicting the function it summarizes at `walk.go:1479-1494`. That
-  line misled an earlier revision of this entry; fixing it is pre-existing
-  cleanup, not part of this item.
+  prose contradicting the function it summarizes at `walk.go:1479-1494`.
+
+  DELETE THAT LINE AS PART OF STEP 2 — it is not open-ended cleanup and must not
+  outlive this item. It was left untouched deliberately while #723 was in flight,
+  because editing another package's comment would have forfeited that PR's
+  "pure addition, cannot have widened a pre-existing divergence" property for
+  cosmetics. That reason expires the moment this item is worked. The line has
+  already misled one review chain into proposing a "fix" that would have
+  REINTRODUCED a divergence Go closed; leaving it is leaving the trap armed.
 
   JAVA REFUSES ANYWAY — MEASURED, and this is the fact the whole entry rests on.
   The natural inference from the paragraph above is that Java sees the same
@@ -17131,6 +17137,28 @@ None is speculative: each was re-verified against the tree before booking.
   blast radius; that was wrong and would have got this deferred as though it were
   the big one.
 
+  THE ERROR SHAPE THAT PRODUCED THIS ITEM, recorded because it will recur here
+  and because it is what makes the entry above worth its length. Every wrong
+  claim in this item's history — five collapsed "structural interlock" arguments
+  in the Go comments, and two separate review hypotheses about what Java does —
+  had the same form: a TRUE PREMISE with an INVALID INFERENCE drawn from it, and
+  in every case only measurement settled it.
+
+    - "The gate and the matcher both use SemanticEqualsUnderAliasMap" was true of
+      one of the gate's three arms; "therefore no multi-match can reach the loop"
+      did not follow.
+    - "Java does not unwrap a one-element record constructor" is true
+      (ExpressionVisitor.java:918-925); "therefore Java sees the same asymmetry
+      and also declines to refuse" did not follow — `Expressions.pullUp` compares
+      FieldPath DERIVATIONS, not the Values, and descends through the wrapper.
+    - "Making the loops raise on a multi-match is the Java port" is true;
+      "therefore it closes the pinned divergences" did not follow, since a guard
+      is inert where no post-aggregate reference exists.
+
+  The practical rule this item should be worked under: an argument that some
+  shape CANNOT occur is not evidence until a probe has failed to construct it.
+  Every impossibility claim here that went unmeasured turned out to be false.
+
   STEP 1 — THE LOOP GUARD, and it IS the Java port. Make both rebase loops
   (`rebasePostAggregateComputedGroupKey` and `rebasePostAggregateGroupKeyValue`)
   COLLECT matching keys and raise `AMBIGUOUS_COLUMN` on more than one, instead of
@@ -17142,6 +17170,31 @@ None is speculative: each was re-verified against the tree before booking.
   shape outside these two loops, needs no RFC-scale review, and is SAFE IN EVERY
   ORDERING: once it is in, closing any normalization gap can only turn a silent
   answer into a raise, which is the direction Java is already in. DO THIS FIRST.
+
+  WHAT STEP 1 ACTUALLY CLOSES, and it is LESS than the obvious reading — measured,
+  because a DONE criterion that step 1 cannot satisfy is how an item rots. A loop
+  guard only fires where a POST-AGGREGATE REFERENCE exists for a loop to match, so
+  it is inert on any shape that has neither a HAVING nor a grouping key in the
+  SELECT list.
+
+    - CLOSED by step 1: the Go-side arm `under_a_join_two_equal_keys…`. All four
+      of its spellings carry a reference, and the two equal `FieldValue` keys
+      genuinely multi-match — instrumenting the sibling loop reports
+      `matches=2 nkeys=2` for both the nested (`R`) and flat (`C1`) spellings. A
+      `>1` guard raises on exactly these.
+    - NOT closed by step 1: the Go-side arm
+      `a_parenthesised_computed_key_twin…`. Its keys are
+      [RecordConstructorValue, ArithmeticValue], so a reference matches only ONE
+      of them (`matches=1`, the measurement recorded above) and no `>1` guard can
+      trip. It needs step 2.
+    - NOT closed by step 1: ALL FIVE `java_42702_go_plans` probes.
+      `paren_twin_aggonly`, `cmp_twin` and `join_qualified_vs_bare` are bare
+      `SELECT COUNT(*)` with no HAVING and no key projected, so there is no
+      reference and the guard never runs; `paren_twin_proj` and
+      `paren_twin_having` have a reference but are the `matches=1` case. Java
+      refuses all five at GROUP BY CONSTRUCTION — pulling up the group-by result
+      itself, not a user reference — and Go's analog of that site is the duplicate
+      gate, i.e. step 2.
 
   STEP 2 — NORMALIZATION, at leisure and behind its own RFC. Converge the gate's
   identity predicate with the loops' so the two sites ask one question; this is
@@ -17157,7 +17210,14 @@ None is speculative: each was re-verified against the tree before booking.
   VALUES), plus the `java_42702_go_plans` probes above (cross-engine, and they red
   if EITHER Java stops refusing or Go starts).
 
-  DONE = step 1 landed with both loops raising on a multi-match; all five
-  `java_42702_go_plans` probes moved to `both_42702`; and the two Go-side arms
-  flipped to assert the refusal. Step 2 may land later, and this item should be
-  split rather than held open for it.
+  STEP 1 DONE = both loops collect matches and raise `AMBIGUOUS_COLUMN` on more
+  than one, AND `under_a_join_two_equal_keys…` flipped to assert 42702 on all four
+  spellings. Nothing else moves, and nothing else should be expected to.
+
+  STEP 2 DONE = the gate and the loops share one identity predicate; all five
+  `java_42702_go_plans` probes moved to `both_42702`; and
+  `a_parenthesised_computed_key_twin…` flipped to assert the refusal.
+
+  SPLIT THIS ITEM when step 1 lands rather than holding it open — the two steps
+  have different blast radii, different review requirements, and, as the lists
+  above show, disjoint closable sets.

@@ -7426,6 +7426,14 @@ func aggregateGroupKeyOutputName(gkv values.Value) string {
 // than delegating to a duplicate-key check. Booked in TODO.md Phase 12, whose
 // FIRST step is making both rebase loops collect matches and raise on >1; that
 // guard is small, local, and safe in every ordering.
+//
+// THAT GUARD DOES NOT CLOSE THE PARENTHESISED CASE, though it does close the
+// join one. Here the keys are [RecordConstructorValue, ArithmeticValue] and a
+// reference matches exactly ONE of them, so a `>1` guard never fires; the join
+// route's two equal FieldValue keys measure `matches=2` and do trip it. Do not
+// read the guard as closing this divergence — that takes the separate
+// gate-convergence step, and the booking lists the two closable sets apart so
+// neither step can be marked done on the other's evidence.
 func rebasePostAggregateComputedGroupKey(v values.Value, agg *logical.LogicalAggregate) values.Value {
 	return values.Replace(v, func(node values.Value) values.Value {
 		// A FieldValue is the SIBLING walk's business, and leaving it entirely
