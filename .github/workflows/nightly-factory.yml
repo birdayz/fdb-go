@@ -11,6 +11,22 @@ name: Nightly Factory
 #     rather than pushing: a batch is reviewable content, and §5.2's per-run
 #     quota exists so that review is possible.
 #
+# The growth lane's branch is ROLLING (`factory/batch`), not date-stamped. A
+# date-stamped branch mints a new PR every night and abandons the previous one
+# the instant anything touches the corpus, because the census baseline conflicts
+# on every corpus merge — so the abandoned PR is permanently unmergeable and
+# nothing in the system ever revisits it. That accumulates one dead PR per
+# corpus-touching merge, each carrying a full night of generated coverage into
+# the ground. Rolling instead: tonight's batch is generated ON TOP of the
+# pending one, so review latency delays a merge rather than destroying content.
+#
+# Closing the stale PR instead was the obvious alternative and it loses: a
+# closed batch still discards its scenarios, which is exactly what §5.2's quota
+# exists to protect, and it would do so on every night that review lags by one
+# day. Turning a review-latency problem into permanent coverage loss is the
+# wrong direction; the reviewable UNIT survives accumulation anyway, because the
+# rolling branch keeps one commit and one manifest comment per run.
+#
 # The FULL corpus also runs in every `just test` and every PR CI run (owner
 # ruling 2026-08-01: the committed corpus is ordinary suite content). The
 # `corpus` job here is therefore redundant as coverage, but it is KEPT: it is
@@ -176,11 +192,10 @@ jobs:
       - name: Checkout
         if: steps.window.outputs.ok == 'true'
         uses: actions/checkout@v5
-
-      - name: Check Docker
-        if: steps.window.outputs.ok == 'true'
-        run: |
-          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the factory cannot generate a batch"; exit 1; }
+        with:
+          # The rolling branch is rebased onto the checked-out master below, so
+          # the batch needs real history, not the default depth-1 tip.
+          fetch-depth: 0
 
       - name: Resolve seed range and date
         if: steps.window.outputs.ok == 'true'
@@ -194,6 +209,9 @@ jobs:
         # (RFC-201 §5.4) — that is what lets a committed file be regenerated
         # byte-identically — so the workflow supplies it as an input and the
         # emitted headers record it.
+        #
+        # Resolved BEFORE the adopt step below, which needs the date to
+        # recognise its own same-day batch on the rolling branch.
         run: |
           SEEDS="${{ github.event.inputs.seeds }}"; SEEDS="${SEEDS:-4000}"
           QUOTA="${{ github.event.inputs.quota }}"; QUOTA="${QUOTA:-1000}"
@@ -206,6 +224,88 @@ jobs:
           echo "quota=$QUOTA" >> "$GITHUB_OUTPUT"
           echo "start=$START" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Adopt the pending batch, if review has not caught up
+        if: steps.window.outputs.ok == 'true'
+        id: adopt
+        # Generation runs on top of the pending batch rather than on bare
+        # master, and that is load-bearing twice over.
+        #
+        # It is what makes the lane rolling — see the header for why a
+        # date-stamped branch rots and why closing it loses. But it also closes
+        # a dedup hole the dated design had: the generator deduplicates
+        # candidates against the corpus it can SEE, and on bare master it cannot
+        # see an unmerged batch. Two consecutive unmerged nights would each
+        # rediscover the same shapes and the second PR would be largely a
+        # reprint of the first, with the duplication invisible until both
+        # merged.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CENSUS: pkg/relational/conformance/factorycorpus/census_baseline.json
+        run: |
+          set -euo pipefail
+          git config user.name "factory-run"
+          git config user.email "factory-run@users.noreply.github.com"
+
+          # Any open PR whose head is a batch branch, newest first. The
+          # startswith covers the date-stamped branches this lane used to mint,
+          # so a batch left open by the old shape is adopted and carried forward
+          # instead of being stranded.
+          PENDING="$(gh pr list --state open --limit 50 \
+            --json number,headRefName \
+            --jq '[.[] | select(.headRefName | startswith("factory/batch"))]
+                  | sort_by(.number) | last | .headRefName // empty')"
+
+          if [ -z "$PENDING" ]; then
+            echo "no pending batch PR — this batch starts from master"
+            git checkout -B factory/batch
+            echo "adopted=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "adopting pending batch branch $PENDING"
+          git fetch --no-tags origin "+refs/heads/$PENDING:refs/remotes/origin/$PENDING"
+          git checkout -B factory/batch "refs/remotes/origin/$PENDING"
+
+          # A same-day RE-RUN replaces its own batch instead of stacking a
+          # near-empty second one on top. Under the old dated branch this came
+          # free (the branch was recut from master each time); under a rolling
+          # branch the re-run would deduplicate its whole seed range against the
+          # scenarios it committed hours earlier, commit nothing, and exit 3 —
+          # reporting "the pipeline is broken" for a re-run that worked. One
+          # commit per run means the tip is the only same-date one.
+          if git log -1 --format=%s | grep -qF "batch ${{ steps.params.outputs.date }}"; then
+            echo "tip is already this date's batch — dropping it so this run replaces rather than stacks"
+            git reset --hard HEAD~1
+          fi
+
+          if ! git rebase "$GITHUB_SHA"; then
+            CONFLICTS="$(git diff --name-only --diff-filter=U)"
+            if [ "$CONFLICTS" != "$CENSUS" ]; then
+              git rebase --abort
+              echo "::error::the pending batch does not rebase onto master with only the derived census conflicting. Conflicting paths: ${CONFLICTS//$'\n'/, }. Family files are append-only, so a conflict in one is a real divergence and wants a human, not a resolution rule."
+              exit 1
+            fi
+            # The census is DERIVED, never merged. A hand-merged census is a
+            # number nobody re-derived, which is how a census stops describing
+            # its corpus while still passing its own gate. Keep the PENDING
+            # batch's copy — deliberately the stronger of the two baselines,
+            # since it names every scenario the rebase must preserve, so a
+            # scenario dropped by the rebase trips the ratchet below rather
+            # than passing under master's lower numbers. `--theirs` during a
+            # rebase is the commit being replayed, i.e. the batch.
+            git checkout --theirs -- "$CENSUS"
+            git add -- "$CENSUS"
+            GIT_EDITOR=true git rebase --continue
+          fi
+          # -update-census re-renders this from the rebased FILES before the
+          # commit below, so the placeholder above never reaches the PR.
+          echo "adopted=$PENDING" >> "$GITHUB_OUTPUT"
+
+      - name: Check Docker
+        if: steps.window.outputs.ok == 'true'
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the factory cannot generate a batch"; exit 1; }
 
       - name: Generate the batch
         if: steps.window.outputs.ok == 'true'
@@ -298,18 +398,24 @@ jobs:
             batch.log
           if-no-files-found: ignore
 
-      - name: Open the batch PR
+      - name: Open or update the rolling batch PR
         if: ${{ success() && steps.window.outputs.ok == 'true' }}
-        # One PR per run, carrying the manifest (seeds, counts, dedup stats,
-        # oracle stats) in the description — §5.1's materialize stage. The
-        # branch is named by date so a re-run replaces rather than accumulates.
+        # ONE rolling PR, carrying each run's manifest (seeds, counts, dedup
+        # stats, oracle stats) — §5.1's materialize stage. The branch is
+        # `factory/batch`, undated; see the header for why the date-stamped
+        # shape rotted and why closing the stale PR loses.
+        #
+        # The reviewable UNIT is not the PR, it is the run: one commit and one
+        # manifest comment per night. §5.2's quota still bounds what a single
+        # night adds, and accumulation across nights is a visible review-backlog
+        # signal in one place rather than N abandoned PRs.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          BRANCH="factory/batch-${{ steps.params.outputs.date }}"
+          BRANCH="factory/batch"
+          ADOPTED="${{ steps.adopt.outputs.adopted }}"
           git config user.name "factory-run"
           git config user.email "factory-run@users.noreply.github.com"
-          git checkout -b "$BRANCH"
           git add pkg/relational/conformance/factorycorpus/
           if git diff --cached --quiet; then
             echo "no new scenarios — the feature-vector frontier has flattened for this seed range"
@@ -347,5 +453,32 @@ jobs:
           # commit message is its own defect, and it survived only because git
           # has no limit where the GitHub API does.
           git commit -m "factory: batch ${{ steps.params.outputs.date }} (${{ steps.params.outputs.seeds }} seeds from ${{ steps.params.outputs.start }})"
-          git push -u origin "$BRANCH"
-          gh pr create --title "factory: batch ${{ steps.params.outputs.date }}" --body-file factory-pr-body.md
+          # Force, because the rolling branch was rebased onto master above.
+          # --force-with-lease is deliberately NOT used: the lease would be
+          # against the ref this job fetched minutes ago, and the only writer to
+          # this branch is this job, so a lease here would buy nothing and would
+          # wedge the lane on any manual rebase a reviewer performed.
+          git push -f origin "$BRANCH"
+
+          if gh pr view "$BRANCH" --json state -q .state 2>/dev/null | grep -q OPEN; then
+            # Already open: the PR body describes the run that OPENED it, so
+            # this run's manifest goes on as a comment. Overwriting the body
+            # would delete the earlier runs' manifests, and those are the
+            # per-run reviewable units the accumulated diff is made of.
+            gh pr comment "$BRANCH" --body-file factory-pr-body.md
+            gh pr edit "$BRANCH" --title "factory: batch — pending scenarios through ${{ steps.params.outputs.date }}"
+          else
+            gh pr create --head "$BRANCH" \
+              --title "factory: batch — pending scenarios through ${{ steps.params.outputs.date }}" \
+              --body-file factory-pr-body.md
+          fi
+
+          # A date-stamped batch PR adopted from the old shape is closed only
+          # HERE, after its scenarios have been rebased, regenerated against and
+          # pushed to the rolling branch — so this discards a duplicate pointer,
+          # never coverage. Closing a batch that had NOT been carried forward
+          # would throw away a night of generated tests, which is the thing
+          # §5.2's quota exists to prevent.
+          if [ -n "$ADOPTED" ] && [ "$ADOPTED" != "$BRANCH" ]; then
+            gh pr close "$ADOPTED" --delete-branch --comment "Superseded by the rolling batch branch \`$BRANCH\`. Every scenario from this PR was rebased onto master and pushed there, and tonight's batch was generated on top of it, so no generated coverage is discarded — only this duplicate pointer to it. The lane is rolling now precisely so a date-stamped branch can no longer be stranded by a census conflict."
+          fi
