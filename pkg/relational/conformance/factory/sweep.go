@@ -39,18 +39,42 @@ type Sweep struct {
 	Nested bool
 }
 
+// seedCandidates derives one seed's candidates under EXACTLY ONE family, and
+// names the schema prefix that family writes under.
+//
+// The choice is expressed as early RETURNS, so the exclusivity is structural
+// rather than a property of statement order. The form this replaces was
+//
+//	cands, prefix := Candidates(seed), "fc"
+//	if s.Nested {
+//		cands, prefix = NestedCandidates(seed), "fcn"
+//	}
+//
+// which READS as an either/or and is not one: a short variable declaration
+// evaluates its right-hand side before the following `if` runs, so the FLAT
+// derivation executed on every nested seed and was immediately overwritten —
+// a whole seed's generation and feature-vector computation done for nothing.
+// A comment above it asserted the opposite, and the wasted work was the lesser
+// problem: source that claims a behaviour it does not have is the same defect
+// class this corpus's census exists to keep out.
+//
+// The two derivations therefore arrive as PARAMETERS. That is the only shape in
+// which the one-family claim is a property a test can COUNT rather than read,
+// and reading is precisely what produced the wrong verdict on the previous
+// attempt at this fix.
+func seedCandidates(nested bool, flat, nest func(uint64) []Candidate, seed uint64) ([]Candidate, string) {
+	if nested {
+		return nest(seed), "fcn"
+	}
+	return flat(seed), "fc"
+}
+
 // RunSeed evaluates every candidate of one seed and offers each outcome to the
 // batch. A seed with no TLP-eligible candidate is not an error — the generator
 // emits aggregates, unions and LIMIT queries the partition oracle declines by
 // construction — so it returns cleanly with nothing offered.
 func (s Sweep) RunSeed(ctx context.Context, seed uint64, batch *Batch) ([]Outcome, error) {
-	// Derive under ONE family, not both: the flat derivation used to run
-	// unconditionally and be thrown away whenever s.Nested, which is a whole
-	// seed's generation and planning done for nothing.
-	cands, schemaPrefix := Candidates(seed), "fc"
-	if s.Nested {
-		cands, schemaPrefix = NestedCandidates(seed), "fcn"
-	}
+	cands, schemaPrefix := seedCandidates(s.Nested, Candidates, NestedCandidates, seed)
 	if s.Filter != nil {
 		kept := cands[:0]
 		for _, c := range cands {

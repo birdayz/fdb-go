@@ -48,6 +48,7 @@ go_test(
         "pipeline_test.go",
         "pr_summary_test.go",
         "second_plan_fdb_test.go",
+        "sweep_derivation_test.go",
         "tlp_render_test.go",
     ],
     # keep: the determinism gate regenerates every COMMITTED file from its seed,
