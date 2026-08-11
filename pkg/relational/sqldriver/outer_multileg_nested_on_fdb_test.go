@@ -119,73 +119,77 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 		return out, rows.Err()
 	}
 
-	// planHas / planLacks are EXPLAIN substring assertions, set only where the
-	// plan SHAPE is part of the claim. Rows alone cannot see the move that
-	// matters for arm I, and the standing plan-shape golden cannot either — the
-	// golden pins the corpus, and the corpus has no shape of this family.
+	// EXPLAIN assertions, in two flavours, because the two claims are different.
+	//
+	// planIs is EXACT and it is the NO-REGRESSION half: A/B/C/E answered
+	// correctly before the gate widened, so their plans must be byte-identical
+	// after — rows alone cannot say that, since a shape can keep its rows while
+	// silently acquiring a worse plan. All four were measured on both sides of
+	// the edit-1 mutation and are unchanged. Exact match rather than a substring
+	// is deliberate: the whole claim is "nothing moved", so any movement at all
+	// should fire, and the brittleness IS the instrument.
+	//
+	// planHas / planLacks are substrings, for the one arm whose plan is SUPPOSED
+	// to move (I) and its control (D). The standing plan-shape golden cannot
+	// speak to either: it pins the corpus, and the corpus has no shape of this
+	// family, so a byte-unmoved golden is silence rather than evidence.
 	for _, tc := range []struct {
 		name, query string
 		want        []string
+		planIs      string
 		planHas     []string
 		planLacks   []string
 	}{
 		// ---- A–E: already correct before the fix; they pin that it moved nothing.
 		{
-			"A_two-way-inner-nested",
-			"SELECT l.id FROM nt AS l JOIN nt AS r ON l.n.sk = r.n.sk ORDER BY l.id",
-			[]string{"1", "1", "2", "2", "3"},
-			nil,
-			nil,
+			name:   "A_two-way-inner-nested",
+			query:  "SELECT l.id FROM nt AS l JOIN nt AS r ON l.n.sk = r.n.sk ORDER BY l.id",
+			want:   []string{"1", "1", "2", "2", "3"},
+			planIs: "Project([L.ID#0], FlatMap(outer=Scan(NT), inner=PredicatesFilter(Scan(NT), [1 preds])))",
 		},
 		{
-			"B_two-way-outer-nested",
-			"SELECT l.id FROM nt AS l LEFT JOIN nt AS r ON l.n.sk = r.n.sk ORDER BY l.id",
-			[]string{"1", "1", "2", "2", "3"},
-			nil,
-			nil,
+			name:   "B_two-way-outer-nested",
+			query:  "SELECT l.id FROM nt AS l LEFT JOIN nt AS r ON l.n.sk = r.n.sk ORDER BY l.id",
+			want:   []string{"1", "1", "2", "2", "3"},
+			planIs: "Project([L.ID#0], FlatMap(outer=Scan(NT), inner=DefaultOnEmpty(PredicatesFilter(Scan(NT), [1 preds]))))",
 		},
 		{
-			"C_three-way-inner-nested",
-			"SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id JOIN nt AS r ON m.n.sk = r.n.sk ORDER BY l.id",
-			[]string{"1", "1", "2", "2", "3"},
-			nil,
-			nil,
+			name:   "C_three-way-inner-nested",
+			query:  "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id JOIN nt AS r ON m.n.sk = r.n.sk ORDER BY l.id",
+			want:   []string{"1", "1", "2", "2", "3"},
+			planIs: "Project([L.ID#0], InMemorySort([L.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], FlatMap(outer=Scan(NT), inner=Scan(NT, [=])), Scan(NT))))",
 		},
 		{
 			// The flat twin of F. Same three legs, same outer third leg, ONE
 			// accessor — this is the arm the old arity gate admitted, and its
 			// row set differs from F's, which is what makes F's assertion a
 			// statement about the descent rather than about the join shape.
-			"D_three-way-outer-flat",
-			"SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id LEFT JOIN nt AS r ON m.sk = r.sk ORDER BY l.id",
-			[]string{"1", "2", "3"},
+			name:  "D_three-way-outer-flat",
+			query: "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id LEFT JOIN nt AS r ON m.sk = r.sk ORDER BY l.id",
+			want:  []string{"1", "2", "3"},
 			// The PLAN CONTROL for arm I. `m.sk` is not a comparand any scan of
 			// NT can be keyed on, so this shape keeps its residual-predicate
 			// nested loop with the fix as without it. Measured identical on both
 			// sides of the mutation — which is what makes arm I's move
 			// attributable to the nested reference rather than to the fix
 			// re-planning every three-leg outer join.
-			[]string{"NestedLoopJoin(LEFT OUTER"},
-			nil,
+			planHas: []string{"NestedLoopJoin(LEFT OUTER"},
 		},
 		{
 			// Nested on the NULL-supplied side only: no reference reads the
 			// multi-leg side, so the bake was never asked.
-			"E_three-way-outer-nested-preserved-only",
-			"SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id LEFT JOIN nt AS r ON m.sk = r.n.sk ORDER BY l.id",
-			[]string{"1", "2", "3"},
-			nil,
-			nil,
+			name:   "E_three-way-outer-nested-preserved-only",
+			query:  "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id LEFT JOIN nt AS r ON m.sk = r.n.sk ORDER BY l.id",
+			want:   []string{"1", "2", "3"},
+			planIs: "Project([L.ID#0], InMemorySort([L.ID#0 ASC], NestedLoopJoin(LEFT OUTER, [1 preds], FlatMap(outer=Scan(NT), inner=Scan(NT, [=])), Scan(NT))))",
 		},
 
 		// ---- F–H: the three arms that failed loud. m.n.sk is 1,1,2 over
 		// m.id 1,2,3, so a correct descent multiplies rows 1 and 2 by two.
 		{
-			"F_three-way-outer-nested-both",
-			"SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id LEFT JOIN nt AS r ON m.n.sk = r.n.sk ORDER BY l.id",
-			[]string{"1", "1", "2", "2", "3"},
-			nil,
-			nil,
+			name:  "F_three-way-outer-nested-both",
+			query: "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id LEFT JOIN nt AS r ON m.n.sk = r.n.sk ORDER BY l.id",
+			want:  []string{"1", "1", "2", "2", "3"},
 		},
 		{
 			// Nested on the MULTI-LEG side only, against a flat r.sk (10/20/30)
@@ -194,18 +198,14 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 			// matches nothing, so this arm alone cannot separate the two; it is
 			// here because it is a distinct failing shape, and F/H carry the
 			// discrimination.
-			"G_three-way-outer-nested-multileg-only",
-			"SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id LEFT JOIN nt AS r ON m.n.sk = r.sk ORDER BY l.id",
-			[]string{"1", "2", "3"},
-			nil,
-			nil,
+			name:  "G_three-way-outer-nested-multileg-only",
+			query: "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id LEFT JOIN nt AS r ON m.n.sk = r.sk ORDER BY l.id",
+			want:  []string{"1", "2", "3"},
 		},
 		{
-			"H_three-way-outer-nested-first-leg",
-			"SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id LEFT JOIN nt AS r ON l.n.sk = r.n.sk ORDER BY l.id",
-			[]string{"1", "1", "2", "2", "3"},
-			nil,
-			nil,
+			name:  "H_three-way-outer-nested-first-leg",
+			query: "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id LEFT JOIN nt AS r ON l.n.sk = r.n.sk ORDER BY l.id",
+			want:  []string{"1", "1", "2", "2", "3"},
 		},
 
 		// ---- The CLASS, not just the case.
@@ -217,9 +217,9 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 			// `m.n.sk` is 1,1,2 and `r.id` is 1,2,3, so m=1 and m=2 both match
 			// r=1 while m=3 matches r=2 — a multiplicity no flat key here
 			// reproduces.
-			"I_three-way-outer-mixed-nested-and-flat",
-			"SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id LEFT JOIN nt AS r ON m.n.sk = r.id ORDER BY l.id",
-			[]string{"1", "2", "3"},
+			name:  "I_three-way-outer-mixed-nested-and-flat",
+			query: "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id LEFT JOIN nt AS r ON m.n.sk = r.id ORDER BY l.id",
+			want:  []string{"1", "2", "3"},
 			// MEASURED, both sides of the mutation. Declined:
 			//   NestedLoopJoin(LEFT OUTER, [1 preds], FlatMap(…), Scan(NT))
 			// admitted:
@@ -228,18 +228,16 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 			// so the residual predicate over a full inner scan becomes an
 			// equality probe. This is the one place the fix moves a plan, and it
 			// moves it strictly downward in cost.
-			[]string{"DefaultOnEmpty(Scan(NT, [=]))"},
-			[]string{"NestedLoopJoin"},
+			planHas:   []string{"DefaultOnEmpty(Scan(NT, [=]))"},
+			planLacks: []string{"NestedLoopJoin"},
 		},
 		{
 			// DEPTH 3. legRef is arity-blind and FuseNestedSuffix loops, so this
 			// needs no new mechanism — which is exactly why it needs a
 			// measurement rather than an argument.
-			"J_three-way-outer-nested-depth-three",
-			"SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id LEFT JOIN nt AS r ON m.n.d.dk = r.n.d.dk ORDER BY l.id",
-			[]string{"1", "1", "2", "2", "3"},
-			nil,
-			nil,
+			name:  "J_three-way-outer-nested-depth-three",
+			query: "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id LEFT JOIN nt AS r ON m.n.d.dk = r.n.d.dk ORDER BY l.id",
+			want:  []string{"1", "1", "2", "2", "3"},
 		},
 		{
 			// RIGHT and FULL are the other two outer flavours. The defect was
@@ -248,40 +246,41 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 			// LEFT" is a claim, so both are driven. RIGHT preserves r, so every
 			// r row survives and the l side is null-supplied where it does not
 			// match: r.n.sk 1,1,2 against m.n.sk 1,1,2 gives 2+2+1 matches.
-			"K_three-way-right-outer-nested",
-			"SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id RIGHT JOIN nt AS r ON m.n.sk = r.n.sk ORDER BY l.id",
-			[]string{"1", "1", "2", "2", "3"},
-			nil,
-			nil,
+			name:  "K_three-way-right-outer-nested",
+			query: "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id RIGHT JOIN nt AS r ON m.n.sk = r.n.sk ORDER BY l.id",
+			want:  []string{"1", "1", "2", "2", "3"},
 		},
 		{
 			// FULL: every row matches on both sides here, so no padding is
 			// added and the row set equals the inner one. The arm is about the
 			// join FLAVOUR reaching the bake, not about null supply.
-			"L_three-way-full-outer-nested",
-			"SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id FULL JOIN nt AS r ON m.n.sk = r.n.sk ORDER BY l.id",
-			[]string{"1", "1", "2", "2", "3"},
-			nil,
-			nil,
+			name:  "L_three-way-full-outer-nested",
+			query: "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id FULL JOIN nt AS r ON m.n.sk = r.n.sk ORDER BY l.id",
+			want:  []string{"1", "1", "2", "2", "3"},
 		},
 		{
 			// FOUR legs. Not a deeper version of the three-leg case — a wider
 			// cluster takes a different admission path — so it is driven rather
 			// than reasoned about. m/p join l on id; the outer leg's ON reads
 			// p.n.sk (1,1,2), matching r.n.sk with multiplicity 2,2,1.
-			"M_four-way-outer-nested",
-			"SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id JOIN nt AS p ON m.id = p.id " +
+			name: "M_four-way-outer-nested",
+			query: "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id JOIN nt AS p ON m.id = p.id " +
 				"LEFT JOIN nt AS r ON p.n.sk = r.n.sk ORDER BY l.id",
-			[]string{"1", "1", "2", "2", "3"},
-			nil,
-			nil,
+			want: []string{"1", "1", "2", "2", "3"},
 		},
 	} {
-		if len(tc.planHas) > 0 || len(tc.planLacks) > 0 {
+		if tc.planIs != "" || len(tc.planHas) > 0 || len(tc.planLacks) > 0 {
 			var plan string
 			if err := db.QueryRowContext(ctx, "EXPLAIN "+tc.query).Scan(&plan); err != nil {
 				t.Errorf("%s: EXPLAIN %s: %v", tc.name, tc.query, err)
 			} else {
+				if tc.planIs != "" && plan != tc.planIs {
+					t.Errorf("%s: plan MOVED.\n\t got %s\n\twant %s\n"+
+						"This arm answered correctly before the gate widened, so its plan must be "+
+						"byte-identical after. A moved plan here means the widening reached a shape "+
+						"it was never about — measure that shape before blessing this string.",
+						tc.name, plan, tc.planIs)
+				}
 				for _, want := range tc.planHas {
 					if !strings.Contains(plan, want) {
 						t.Errorf("%s: plan does not contain %q\n\tplan: %s", tc.name, want, plan)
