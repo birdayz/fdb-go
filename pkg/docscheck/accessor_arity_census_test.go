@@ -69,6 +69,22 @@ import (
 // for exhaustive: a site that DISCARDS an accessor chain without ever testing
 // its length is invisible to a `len(...Accessors)` sweep. Sweeping by one
 // behaviour is still sweeping by one behaviour.
+//
+// THAT BLIND SPOT IS NO LONGER HYPOTHETICAL, and it is worth knowing how badly
+// it read. cascades_generator.go#operandTypeNameViaDesc took a FieldValue's
+// `Field` straight into a top-level descriptor lookup with no arity test at all.
+// It is in a file this census already covers, in the same function family as the
+// one site the census could not classify — and it is where the live defect
+// actually was. The sweep could not see it precisely BECAUSE it was unguarded:
+// the census finds sites that ASK about arity, so a site that never asks is
+// absent from the population by the same property that makes it wrong. A site's
+// absence from this list is therefore not evidence about the site.
+//
+// Two consequences for anyone extending this census. First, the complement sweep
+// — the reads of `.Field` on a value that may be fused — is the one that would
+// have found it, and it has not been done. Second, every gate added since is
+// visible here only because it was added; fixing an unguarded site GROWS this
+// population, so a rising count is the instrument working rather than drifting.
 
 // accessorArityClass is the classification of one arity site.
 type accessorArityClass string
@@ -344,41 +360,128 @@ var accessorAritySites = map[string]accessorAritySite{
 			"getFieldPathNames (IndexPredicate.java:562-566).",
 	},
 
-	// ---------------------------------------------------------------------
-	// (?) UNCERTAIN — recorded with the reason, not guessed.
-	// ---------------------------------------------------------------------
-
-	// ---------------------------------------------------------------------
-	// (d) LIVE DEFECT — mis-handled on this base RIGHT NOW.
-	// ---------------------------------------------------------------------
-
 	"pkg/relational/core/embedded/cascades_generator.go#deriveColumnsFromProjection": {
-		class: arityLiveDefect, exprs: 2,
-		why: "WAS (?), and the uncertainty was resolved the only way it could be — by " +
-			"instrumenting the arm and running a query, not by reading. The two arity tests " +
-			"gate ORDINAL type inheritance to single-accessor reads and that gate is right; " +
-			"the defect is the FALL-THROUGH it selects, `innerByName[fv.Field]`, where for " +
-			"a fused nested reference `Field` is the struct ROOT. The open question was " +
-			"whether the enclosing `TypeName == \"\" || == \"UNKNOWN\"` precondition is " +
-			"reachable for a nested reference; the reason for doubt was that the catalog " +
-			"types the leaf, so TypeName is normally known. That holds for every SCALAR " +
-			"leaf and for no other: an ARRAY or BYTES leaf is a kind the type derivation " +
-			"has no name for. MEASURED end-to-end over " +
-			"`STRUCT sarr (vals BIGINT ARRAY, label STRING, bin BYTES)`, and re-measured " +
-			"after rebasing onto #718 rather than inherited across the base change: " +
-			"`SELECT q.s.vals FROM (SELECT s FROM t) AS q` reports DatabaseTypeName " +
-			"\"STRUCT\" for a BIGINT ARRAY member and `q.s.bin` reports \"STRUCT\" for a " +
-			"BYTES member — the lookup found the struct ROOT, a different column of a " +
-			"different type. THE CONTROL THAT IDENTIFIES THE MECHANISM: `q.s.label`, a " +
-			"SCALAR member under the same projection, is CORRECT (\"STRING\"), because the " +
-			"catalog types it and the fall-through never runs. Over a BASE scan the failing " +
-			"reads report UNKNOWN — swallowed by the arm's own `ic.TypeName != \"UNKNOWN\"` " +
-			"guard, which is exactly why the suite stayed green; a PROJECTION underneath " +
-			"types the root and the wrong hit fires. The identical kinds at TOP level " +
-			"(`top BIGINT ARRAY`, `topbin BYTES`) report BIGINT and BINARY in both shapes, " +
-			"so this is nesting-specific and not an array- or bytes-typing gap. FIXED on " +
-			"the field-mint reconciliation branch, NOT on this one — this entry records the " +
-			"state of THIS base, and must be re-read (not carried) if that lands first.",
+		class: arityNestingOK, exprs: 3,
+		why: "WAS (?), THEN (d) LIVE DEFECT, NOW FIXED. RFC-230's base recorded the (d) and " +
+			"instructed that the entry be RE-READ rather than carried if the fix landed " +
+			"afterwards; it did, and this is that re-read. It stays as an entry rather than " +
+			"being deleted because a (d) that outlives its defect and a (d) that silently " +
+			"vanishes are the same unwatched-revival failure — the class moved because the " +
+			"CODE moved, not because the verdict was revised. THE CONTROL THAT IDENTIFIES " +
+			"THE MECHANISM, kept from that base: `q.s.label`, a SCALAR member under the same " +
+			"projection, was always CORRECT (\"STRING\"), because the catalog types it and " +
+			"the fall-through never runs; and the identical kinds at TOP level " +
+			"(`top BIGINT ARRAY`, `topbin BYTES`) reported BIGINT and BINARY in both shapes, " +
+			"so the defect was nesting-specific and not an array- or bytes-typing gap. " +
+			"THE DETAIL: the fall-through was REACHABLE and it was a LIVE " +
+			"DEFECT, now fixed at its cause. The two arity tests gate ORDINAL type " +
+			"inheritance to single-accessor reads and that gate was always right — a " +
+			"leg-relative multi-accessor root ordinal is not an index into the flattened " +
+			"inner columns. What could not be decided by reading was the FALL-THROUGH it " +
+			"selects, `innerByName[fv.Field]`. Measured by instrumenting the arm and running " +
+			"a real query: `SELECT s.vals FROM t` over `STRUCT sarr(vals BIGINT ARRAY,...)` " +
+			"reaches it with accs=2, because an ARRAY leaf is the one leaf valueTypeName had " +
+			"no name for, so TypeName really did arrive UNKNOWN. The prior entry's reason " +
+			"for doubt (\"the catalog types the leaf, so TypeName is known\") held for every " +
+			"SCALAR leaf and for no other. With fuseNestedAccessors naming the reference " +
+			"after the struct ROOT the lookup found the ROOT COLUMN — `found=true`, a " +
+			"different column of a different type. Over a base scan the hit was discarded by " +
+			"the arm's own `ic.TypeName != \"UNKNOWN\"` guard (a scan derives a struct " +
+			"column UNKNOWN), which is why no test saw it; put a PROJECTION underneath and " +
+			"the guard passes, and `SELECT q.s.vals FROM (SELECT s FROM t) AS q` reported " +
+			"STRUCT — the enclosing struct's type — for a BIGINT ARRAY member. FIXED at the " +
+			"MINT, not here: fuseNestedAccessors now names the fused value after its LEAF, " +
+			"agreeing with every other mint of the shape and with Java's getLastFieldName " +
+			"(FieldValue.java:134-135/463-466), so the lookup asks for the member it means. " +
+			"valueTypeName also grew the ARRAY arm that made the shape reachable. Pinned " +
+			"end-to-end by TestFDB_NestedArrayLeafDoesNotInheritTheStructRootsMetadata. " +
+			"THE SITE HAS SINCE BEEN EDITED, and the earlier text here claimed it never " +
+			"would need to be — that fixing the mint was sufficient because the arm 'handles " +
+			"a multi-accessor path correctly once it is handed a correctly-named one'. That " +
+			"is true of the ORDINAL arms and false of the three NAME arms, which recover a " +
+			"column from the reference's single display name whatever that name is. A " +
+			"correctly-named fused value still offers a LEAF, and a leaf lives in the " +
+			"enclosing struct's namespace while these maps are keyed by the record's; a " +
+			"shared spelling types the column from an unrelated one. A third expression now " +
+			"declines inheritance outright for a multi-accessor reference, which leaves the " +
+			"leaf's own type standing — Java's answer (FieldValue.computeResultType is " +
+			"fieldPath.getLastFieldType, FieldValue.java:143-148). NOT reached by any query " +
+			"in //pkg/relational/... — instrumented and measured at 0 hits across the full " +
+			"suite including the FDB corpus, so the gate is fail-safe rather than " +
+			"corpus-proven, and that is recorded here rather than dressed up as coverage.",
+	},
+
+	"pkg/relational/core/embedded/cascades_generator.go#operandTypeNameViaDesc": {
+		class: arityNestingOK, exprs: 1,
+		why: "THE SITE THIS CENSUS COULD NOT HAVE SEEN, and the one the live defect was " +
+			"actually at — see the header's blind-spot note. It read `t.Field` straight into " +
+			"a top-level descriptor lookup with NO arity test, so it was absent from a " +
+			"`len(...Accessors)` sweep by the same property that made it wrong. For an " +
+			"arithmetic operand that is a fused nested reference the lookup asked the " +
+			"RECORD's namespace for a name minted in a STRUCT's, and a shared spelling " +
+			"answered: with `STRUCT nn(sk BIGINT)` beside a top-level `sk DOUBLE`, " +
+			"`SELECT n.sk + 1` reported DOUBLE where BIGINT is right. MEASURED both ways — " +
+			"the defect appeared exactly when fuseNestedAccessors began naming a fused value " +
+			"after its LEAF, because the previous ROOT name (`N`) was a MessageKind that " +
+			"protoFieldTypeName answered UNKNOWN for, so the guard skipped and the value's " +
+			"own type won. Master was therefore right BY ACCIDENT, and the accident does not " +
+			"survive a leaf name that names a real flat column. FIXED by declining the " +
+			"descriptor for a multi-accessor reference and returning the value's own type, " +
+			"which is Java's rule and not a Go choice: FieldValue.computeResultType is " +
+			"`fieldPath.getLastFieldType()` (FieldValue.java:143-148) and there is no " +
+			"name-keyed re-derivation upstream of it anywhere — this whole function is a " +
+			"Go-only invention. Pinned by " +
+			"TestFDB_NestedOperandTypeComesFromItsOwnLeafNotAFlatNamesake, whose fixture " +
+			"KEEPS the type collision because without it the test is green either way.",
+	},
+
+	"pkg/relational/core/query/cascades_translator.go#rewriteUnnestPredicate": {
+		class: arityCorrectDecline, exprs: 1,
+		why: "The element-substitution arm rewrites a reference that IS the bound unnest " +
+			"element into the element's quantifier object, selecting that arm by comparing " +
+			"the reference's single display name against the binding's AS/AT alias. A " +
+			"DESCENT into the element is never the element, so it must not reach those arms: " +
+			"the QOV they return carries the accessor suffix nowhere, and substituting it " +
+			"reads the whole struct where a member was named. MEASURED, and the measurement " +
+			"is why this is a decline rather than a shrug: under the mint that named a fused " +
+			"value after its struct ROOT the comparison matched for EVERY member reference, " +
+			"because the root of a descent through an unnest binding IS the alias — " +
+			"`WHERE i.sku = 'x'` over `orders.items AS i` reached this switch with " +
+			"Field=\"I\" and MATCHED. Naming the value after its LEAF narrowed that to the " +
+			"shapes where a member is spelled like the alias, which the resolver currently " +
+			"refuses 42702 before any consumer sees it (pinned by " +
+			"TestFDB_NestedMemberSpelledLikeItsUnnestAliasIsRefused — a NEGATIVE result " +
+			"pinned because this gate's reachability rests on it). The gate closes the " +
+			"remainder so the arm is correct without depending on that refusal. " +
+			"NO REPRODUCER — the same epistemic class as rebaseUnnestOuterLegPredicateOrdinal " +
+			"and deriveColumnsFromProjection's name arms, and stated as plainly here so the " +
+			"MEASURED history above does not read as coverage it does not have. What was " +
+			"measured is an ARM-LEVEL wrong READ under the old mint; no query's ROWS are " +
+			"demonstrably corrected, because the emblematic shape " +
+			"(`WHERE i.sku = 'x'` over `orders.items AS i`) returns ZERO ROWS identically " +
+			"before and after — a SEPARATE, still-open defect in the correlated-unnest " +
+			"predicate path that MASKS this one end-to-end. The row-level coverage in the " +
+			"sqldriver suite does not reach this function either: its `[x y]` control is a " +
+			"PROJECTION, while every caller here is a PREDICATE path (unnest_gather.go:283; " +
+			"cascades_translator.go:3086, 3101, 3264, 3477, 3531). So this gate is " +
+			"fail-closed and argued, not corpus-proven.",
+	},
+
+	"pkg/relational/core/query/cascades_translator.go#rebaseUnnestOuterLegPredicateOrdinal": {
+		class: arityCorrectDecline, exprs: 1,
+		why: "The rebase resolves a slot by NAME within the qualifier's per-leg window and " +
+			"bakes it with NewFieldValueOfOrdinal, which keeps the ordinal and DROPS the " +
+			"accessor suffix. For a multi-accessor reference that is a read of the struct " +
+			"ROOT where a member was named — and it is silent, because the name offered to " +
+			"the window is one segment of a path: it either misses (the rebase declines, " +
+			"which is fine) or hits a DIFFERENT column sharing the leaf's spelling, which " +
+			"is not. Declining is the fail-closed direction this function already takes for " +
+			"an unresolvable slot, and it is the honest one — a rebase that cannot carry the " +
+			"suffix must not pretend it did. NOT reached by any query in //pkg/relational/... " +
+			"— instrumented and measured at 0 hits across the full suite including the FDB " +
+			"corpus. That is a statement about the corpus's coverage of correlated nested " +
+			"references over a multi-leg outer, NOT a proof of unreachability, and it is " +
+			"recorded that way on purpose.",
 	},
 }
 
@@ -386,16 +489,33 @@ var accessorAritySites = map[string]accessorAritySite{
 // asserted independently so a shift between them (e.g. a code line becoming a
 // comment) is not absorbed silently by the total.
 const (
-	// rfcPublishedPopulation is RFC-230 rev 6 §7.3's sweep-2 result:
-	// `git grep -n "len(.*Accessors)" -- '*.go' | grep -v _test.go | wc -l`.
-	// Reproduced exactly. It is a count of grep LINES, not of gates.
-	rfcPublishedPopulation = 52
-	// The decomposition of those 52 lines.
+	// rfcPublishedPopulation started as RFC-230 rev 6 §7.3's sweep-2 result:
+	// `git grep -n "len(.*Accessors)" -- '*.go' | grep -v _test.go | wc -l`,
+	// reproduced exactly at 52. It is a count of grep LINES, not of gates, and it
+	// is a MEASUREMENT rather than a budget — it moves when the tree does, and the
+	// mover has to say what moved.
+	//
+	// 52 → 56: four arity gates were ADDED, closing name-keyed reads that took a
+	// fused reference's single display name and looked it up in a namespace that
+	// is not the one the name came from. Three are new symbols
+	// (operandTypeNameViaDesc, rewriteUnnestPredicate,
+	// rebaseUnnestOuterLegPredicateOrdinal) and the fourth is a third expression
+	// inside deriveColumnsFromProjection, which was already classified.
+	// 56 → 58: two of those gates are spelled `SourceRelativeBaked()`, whose name
+	// does not convey that it requires len(Accessors) == 1, so each carries a
+	// one-line comment SAYING it does — and those comments quote the predicate,
+	// which the sweep's regexp matches. The lines are prose, not gates, so they
+	// land in arityCommentLines and the CODE population is unchanged. Worth
+	// knowing before someone "fixes" the drift by rewording a comment: making the
+	// arity meaning legible is exactly the readability failure these comments
+	// exist to prevent, and it costs two lines in the wrong bucket.
+	rfcPublishedPopulation = 58
+	// The decomposition of those 58 lines.
 	arityGeneratedLines = 8  // protobuf marshal loops over PFieldPath.FieldAccessors
-	arityCommentLines   = 1  // prose inside a doc comment
-	arityCodeLines      = 43 // the real population
-	// Four of the 43 code lines hold more than one arity expression.
-	arityExpressions = 47
+	arityCommentLines   = 3  // prose inside a doc comment (see above: 1 + 2 legibility notes)
+	arityCodeLines      = 47 // the real population
+	// Four of the 47 code lines hold more than one arity expression.
+	arityExpressions = 51
 )
 
 // accessorArityLine is the RFC's own sweep, as a regexp.
@@ -585,14 +705,39 @@ func TestAccessorArityClassCounts(t *testing.T) {
 	t.Parallel()
 
 	// RECLASSIFICATION MOVES TWO CELLS, NEVER ONE — this is a POPULATION, so a
-	// member leaving (?) must arrive somewhere and the total is the check that
-	// it did. deriveColumnsFromProjection went (?) -> (d): uncertain 1 -> 0,
-	// live defect 0 -> 1, total 36 unchanged.
+	// member leaving a class must arrive somewhere, and the total is the check
+	// that it did.
+	//
+	// THIS IS THE RECONCILIATION OF TWO CHANGES THAT BOTH EDITED THIS FILE, done
+	// as arithmetic rather than by picking a side. RFC-230 landed first and left
+	// the base at (a) 13, (b) 0, (c) 22, (d) 1, (?) 0 — total 36: it retired all
+	// three (b) BLOCKERS to (a) after instrumenting the arms each was said to
+	// block, and it recorded deriveColumnsFromProjection as (d) LIVE DEFECT with
+	// an explicit instruction to RE-READ rather than carry that entry if the fix
+	// landed afterwards. It did. Two independent movements then apply:
+	//
+	//	the FIX      (d) 1 → 0, (c) 22 → 23   deriveColumnsFromProjection,
+	//	                                      fixed at the mint, not reclassified
+	//	the GATES    (a) 13 → 15, (c) 23 → 24  three name-keyed reads that had NO
+	//	                                      arity test are now gated, so each
+	//	                                      becomes a site this census can SEE
+	//	                                      for the first time
+	//
+	// giving (a) 15, (b) 0, (c) 24, (d) 0, (?) 0 — total 39, and 36 symbols → 39.
+	// The gates are rewriteUnnestPredicate and
+	// rebaseUnnestOuterLegPredicateOrdinal (both (a) — they decline, fail-closed)
+	// and operandTypeNameViaDesc ((c) — it answers correctly for a multi-accessor
+	// value). A fourth gate is a third expression inside
+	// deriveColumnsFromProjection and so moves exprs, not the symbol count.
+	//
+	// FIXING AN UNGUARDED READ GROWS THIS POPULATION BY CONSTRUCTION — see the
+	// header's blind-spot note. A rising count here is the instrument working,
+	// not drift.
 	pinned := map[accessorArityClass]int{
-		arityCorrectDecline: 13,
+		arityCorrectDecline: 15,
 		arityBlocker:        0,
-		arityNestingOK:      22,
-		arityLiveDefect:     1,
+		arityNestingOK:      24,
+		arityLiveDefect:     0,
 		arityUncertain:      0,
 	}
 
@@ -623,20 +768,46 @@ func TestAccessorArityClassCounts(t *testing.T) {
 			total, len(accessorAritySites))
 	}
 
-	// THE (d) FLOOR HAS FIRED, AND IT IS RECONCILED RATHER THAN RELAXED. It said
-	// zero was the measured steady state and the alarm direction was GROWTH.
-	// Growth happened: deriveColumnsFromProjection was (?), and the uncertainty
-	// resolved to a live wrong-column type read. So zero is no longer the
-	// expected value and a floor demanding it would be unsatisfiable — the count
-	// check above now owns the arithmetic in both directions (a SECOND (d), and
-	// a silent drop back to none without the fix landing on this base).
+	// THE (d) FLOOR IS RESTORED, AND ITS ALARM DIRECTION IS GROWTH AGAIN.
+	// RFC-230's base deleted it on a premise that was correct at the time: zero
+	// had stopped being the steady state, because deriveColumnsFromProjection had
+	// resolved from (?) to a live wrong-column type read, and a floor demanding
+	// zero would have been unsatisfiable. That premise EXPIRED when the fix
+	// landed. Zero is the steady state once more, so the floor comes back rather
+	// than staying deleted — a deleted floor is an unwatched revival, which is
+	// the same failure mode as a (d) that outlives its defect.
 	//
-	// What is left for this block is the part a number cannot carry: a (d) is
-	// only ever recordable from a MEASUREMENT. Every wrong classification this
-	// census has produced came from reading a condition and reasoning about it —
-	// three (b) blockers refuted that way, and this very site sat at (?) for two
-	// revisions because reading could not settle it. So the entry must show it
-	// was executed, not argued.
+	// READ THE ZERO CORRECTLY: it means FOUND AND FIXED, twice, not "never
+	// present". Two sites have held (d), and both returned to zero BY A FIX and
+	// not by a reclassification:
+	//
+	//   - deriveColumnsFromProjection, reached through an ARRAY leaf of a struct;
+	//   - operandTypeNameViaDesc, which this census could not see AT ALL because
+	//     it never tested arity (header, blind-spot note). It reported an
+	//     arithmetic operand's type from a top-level column that merely shared
+	//     the nested leaf's spelling.
+	//
+	// The second is the one to remember when reading this zero, because it says
+	// what the zero does NOT cover: a (d) can only be counted here once someone
+	// has written the gate that makes the site visible. A live defect can be
+	// sitting in an unguarded read right now and this floor will report zero.
+	if got[arityLiveDefect] > 0 {
+		t.Errorf("%d site(s) classified (d) LIVE DEFECT. Zero is the measured steady state "+
+			"on this base and the alarm direction here is GROWTH, so this is a REGRESSION "+
+			"rather than a backlog entry. Stop the survey: verify each end-to-end against "+
+			"real FDB with values that make the wrong answer visible as wrong DATA, fix it, "+
+			"and pin the reproducer — before any further work builds on top of it",
+			got[arityLiveDefect])
+	}
+
+	// Kept from RFC-230's base and still load-bearing even at a population of
+	// zero: a (d) is only ever recordable from a MEASUREMENT. Every wrong
+	// classification this census has produced came from reading a condition and
+	// reasoning about it — three (b) blockers refuted that way, and
+	// deriveColumnsFromProjection sat at (?) for two revisions because reading
+	// could not settle it. So an entry must show it was executed, not argued.
+	// This is retained for the NEXT (d) rather than deleted along with the last
+	// one; it runs over an empty population today and costs nothing.
 	for key, site := range accessorAritySites {
 		if site.class != arityLiveDefect {
 			continue
@@ -649,6 +820,22 @@ func TestAccessorArityClassCounts(t *testing.T) {
 				"DATA, record what you saw, and keep a control that separates the defect "+
 				"from the shape merely being unsupported.", key)
 		}
+	}
+
+	// The (?) guard, whose direction INVERTED when the last unknown was
+	// resolved. While a (?) existed the danger was that it quietly stayed one —
+	// an unknown carried long enough to read as a verdict. It is now zero and
+	// the danger is GROWTH: a new (?) means the survey has stopped being able to
+	// answer for a site, and the site it could not answer for last time turned
+	// out to be a live defect that a downstream guard was accidentally masking.
+	// So a (?) is a STOP, not a bookkeeping entry. The pinned-count check above
+	// already fails on it; this says what the failure MEANS.
+	if got[arityUncertain] > 0 {
+		t.Errorf("%d site(s) are back to (?) UNCERTAIN. The census reached a complete "+
+			"classification; re-opening one is a finding. Instrument the site and run a real "+
+			"query through it rather than reasoning about reachability from the source — "+
+			"that is what settled the last one, and reading it had produced the wrong answer "+
+			"twice", got[arityUncertain])
 	}
 
 	// The (b) floor HAS INVERTED, and the inversion is retired deliberately

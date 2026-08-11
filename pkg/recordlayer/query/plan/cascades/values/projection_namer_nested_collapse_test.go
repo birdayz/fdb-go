@@ -9,9 +9,13 @@ import "testing"
 // §2.3 is deliberately nested-only and does not touch the fallback arm.
 //
 // The fixtures are not invented. A fused nested reference really is ONE
-// FieldValue whose `Field` is the struct ROOT with a multi-accessor `Resolved`:
-// the SQL resolver's fuseNestedAccessors copies the node whole, updates `Typ`
-// to the leaf type, and leaves `Field` alone. Java's resolver fuses identically
+// FieldValue with a multi-accessor `Resolved`, and the `Field` these fixtures
+// carry is the struct ROOT because that is what fuseNestedAccessors minted when
+// they were written — it copied the root node whole. The mint now names the
+// fused value after its LEAF, and the fixtures are deliberately NOT updated to
+// follow: the namer must take the path, so a fixture whose `Field` disagrees
+// with its last accessor is the one that can tell whether it does. Reading
+// either segment is the same bug. Java's resolver fuses identically
 // (SemanticAnalyzer.java:598, FieldValue.ofFieldsAndFuseIfPossible) and then
 // names the result by the REQUESTED IDENTIFIER `n.sk` rather than by the fused
 // value (SemanticAnalyzer.java:599) — which is the whole of §2.3 in one line of

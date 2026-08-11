@@ -2234,6 +2234,11 @@ func rewriteUnnestPredicate(p predicates.QueryPredicate, u *logical.LogicalUnnes
 					!withOrdinality &&
 					asAlias != "" &&
 					strings.EqualFold(fv.Field, asAlias) &&
+					// SourceRelativeBaked() IS THIS ARM'S ARITY GATE: it requires
+					// len(Accessors) == 1 (values.go:1367-1368). It does not read
+					// as one, so it is named here — without it this looks like an
+					// ungated twin of the childful arm below, matching fv.Field
+					// against the alias with nothing bounding the path length.
 					fv.SourceRelativeBaked() &&
 					fv.Resolved.Accessors[0].Ordinal == 0 {
 					return values.NewQuantifiedObjectValueOfType(
@@ -2245,6 +2250,30 @@ func rewriteUnnestPredicate(p predicates.QueryPredicate, u *logical.LogicalUnnes
 			}
 			qov, ok := fv.Child.(*values.QuantifiedObjectValue)
 			if !ok || qov.Correlation != unnestCorr {
+				return node
+			}
+			// A reference that DESCENDED into the element (`i.sku`) names a
+			// MEMBER of the element, and no member is the element itself. The arms
+			// below answer "this reference IS the whole flowed element (or its
+			// ordinality companion)", so a descent must not reach them: the element
+			// QOV they return carries the descent nowhere, and returning it reads
+			// the whole struct where a member was asked for.
+			//
+			// The gate is on the ACCESSOR COUNT and cannot be on fv.Field, because
+			// the name is one segment of the path and so collides by construction.
+			// Under the mint that named a fused value after its ROOT it collided
+			// ALWAYS — the root of a descent through an unnest binding IS the alias,
+			// so every `i.<member>` matched here and was replaced by the bare
+			// element (measured: `WHERE i.sku = 'x'` over `orders.items AS i`
+			// reached this switch with Field="I"). Naming the fused value after its
+			// LEAF narrows that to the shapes where a member is spelled like the
+			// alias (`AS sku` … `sku.sku`) — narrower, and still wrong. Neither is a
+			// question one segment can answer, so the arity is what decides.
+			//
+			// The comment above already asserted that "a field below a record
+			// element has a child or a longer path and remains a real field access".
+			// The longer-path half of that was never tested; this is it.
+			if fv.Resolved != nil && len(fv.Resolved.Accessors) > 1 {
 				return node
 			}
 			switch strings.ToUpper(fv.Field) {
@@ -4059,6 +4088,22 @@ func rebaseUnnestOuterLegPredicateOrdinal(
 			// The MAP lookup above is keyed by upper text (the outerLegs set is built
 			// from the same text channel), but the WINDOW resolution below is an
 			// identity question and takes the correlation itself.
+			// A DESCENT cannot be rebased by name. The slot this resolves is the
+			// slot of a whole column in the leg's window, and the bake below
+			// (NewFieldValueOfOrdinal) keeps only that ordinal — the accessor
+			// suffix is dropped. For a multi-accessor reference that is a read of
+			// the struct ROOT where a member was named, and it is silent: the name
+			// offered to the window is one segment of the path, so it either misses
+			// (and the rebase declines, which is fine) or hits a DIFFERENT column
+			// that happens to share the leaf's spelling, which is not.
+			//
+			// Declining is the fail-closed direction this function already uses for
+			// an unresolvable slot, and it is the correct one: a rebase that cannot
+			// carry the suffix must not pretend it did.
+			if fv.Resolved != nil && len(fv.Resolved.Accessors) > 1 {
+				ok = false
+				return node
+			}
 			ord, found := ordinalSlotInLegWindow(outerLegType, qov.Correlation, strings.ToUpper(fv.Field), len(outerLegs) > 1)
 			if !found {
 				ok = false
@@ -5114,13 +5159,17 @@ func sortKeyFieldRef(k logical.SortKey) string {
 // the wrong column (RFC-141 R4 P2b). Returns nil for a computed key.
 func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
 	// A NESTED key carries its whole path on the Value and must never be routed
-	// through the rendered name. `n.sk` resolves to ONE FieldValue whose Field is
-	// the struct ROOT (`N`) and whose Resolved holds the full `[N, SK]` path, so
-	// rendering it yields `N` (sorts by the struct) or `T1.N.SK` (whose last-dot
-	// split yields `SK`, a column that does not exist). The path is in hand; the
-	// only thing needed is to re-state its ROOT ordinal in the layout the fold
-	// evaluates against, since the carried root is stated in the reference's own
-	// source row.
+	// through the rendered name. `n.sk` resolves to ONE FieldValue whose Resolved
+	// holds the full `[N, SK]` path while its Field is a SINGLE segment of that
+	// path — the LEAF, `SK` (the fused mint answers Java's getLastFieldName). So
+	// the flat rendering yields `SK`, which is not a column of the outer row at
+	// all unless one happens to be spelled that way, in which case it is a
+	// DIFFERENT column that the rendering cannot be told apart from this one; the
+	// qualified rendering `T1.N.SK` fares no better, since its last-dot split
+	// also yields `SK`. Either way one segment is being asked to stand for a
+	// path. The path is in hand; the only thing needed is to re-state its ROOT
+	// ordinal in the layout the fold evaluates against, since the carried root is
+	// stated in the reference's own source row.
 	//
 	// Derive-and-assert, never trust-and-carry: a carried ordinal that is not
 	// comparable (a different layout) is re-derived, and one that IS comparable
@@ -5380,12 +5429,17 @@ func extraSortColOfValue(extra []extraSortCol, val values.Value) int {
 // sortKeyExtraColumnName names the hidden column a sort key gets appended as.
 //
 // A NESTED key is named by its RESOLVED PATH (`N.CO`), never by sortKeyFieldRef's
-// flat rendering, which for an unqualified nested key returns the struct ROOT
-// (`N` — fv.Child is nil, so the ToUpper(fv.Field) arm fires). The flat name is a
-// faithful answer to "what does this key spell" and a wrong answer to "which
+// flat rendering, which for an unqualified nested key returns a SINGLE segment of
+// the path — the LEAF, `CO`. (fv.Child is nil, so the ToUpper(fv.Field) arm
+// fires. Childlessness is what selects that arm and it says nothing about how
+// many segments the key has: the source-relative mint fuses a whole descent onto
+// a childless root, so a nested key reaches this arm routinely.) The flat name is
+// a faithful answer to "what does this key spell" and a wrong answer to "which
 // column is this", which is the question an appended field's name is asked. Two
 // members of one struct root would otherwise be spelled alike in a single
-// RecordConstructorValue.
+// RecordConstructorValue — and a leaf name additionally collides with any
+// top-level column sharing its spelling, which is a different column of a
+// possibly different type.
 //
 // The nested-over-JOIN shape already renders the path (fv.Child is the leg's QOV,
 // so sortKeyFieldRef takes the ColumnNameValue branch), and this recomputes the

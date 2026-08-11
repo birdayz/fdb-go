@@ -14,11 +14,19 @@ package cascades
 //	pinned  (FrontierPinned) -> the baked arm, which called Resolved.Single()
 //	unpinned                 -> the NAME arm, which looked up Field in the leg type
 //
-// A nested reference's Field is its struct ROOT (`N`), so the NAME arm FOUND it,
-// baked `Offset+ordinal(N)` and DROPPED the `.SK` — a merged address that is a
-// real column of the wrong type, which is the silent class the whole re-anchor
-// exists to remove. Only the pinned arm declined. A pin driving one form would
-// have reported the other as covered.
+// A nested reference's Field was its struct ROOT (`N`) when this was written, so
+// the NAME arm FOUND it, baked `Offset+ordinal(N)` and DROPPED the `.SK` — a
+// merged address that is a real column of the wrong type, which is the silent
+// class the whole re-anchor exists to remove. Only the pinned arm declined. A
+// pin driving one form would have reported the other as covered.
+//
+// The mint now names a fused reference after its LEAF, which does NOT retire
+// this: the NAME arm is wrong for a nested reference either way. It looks up ONE
+// segment in a flat leg type, so with the leaf it finds a same-named FLAT column
+// where one exists and drops the descent just as silently. The fixtures below
+// keep the root spelling because that is the shape that produced the measured
+// break; a name-arm bake of a multi-accessor path is the defect, not the
+// particular segment it was named after.
 //
 // Every case below calls the production symbol by name. The controls are not
 // decoration: a decline whose control also declines is uninterpretable, because a
@@ -80,10 +88,15 @@ func nestedLegFixtureOfKnownness(t *testing.T, known bool) (leg *values.RecordTy
 	return leg, mergedQOV
 }
 
-// nestedLegRef is the nested reference `L.N.SK`: ONE FieldValue whose Field is
-// the struct root and whose resolved path is the full [N@1, SK@0], stated in the
-// LEG's own layout. This is the shape the resolver's fuseNestedAccessors emits
-// and the shape the fold carries.
+// nestedLegRef is the nested reference `L.N.SK`: ONE FieldValue whose resolved
+// path is the full [N@1, SK@0], stated in the LEG's own layout — the shape the
+// resolver's fuseNestedAccessors emits and the shape the fold carries.
+//
+// Its Field is held at the struct ROOT, which the resolver no longer mints (it
+// names the leaf). Kept deliberately: the arm under test looks ONE segment up in
+// a flat leg type, and a fixture whose Field disagrees with its last accessor is
+// what makes a Field-read distinguishable from a path-read. A leaf-named fixture
+// would let the NAME arm look correct here for the wrong reason.
 func nestedLegRef(leg *values.RecordType, pinned bool) *values.FieldValue {
 	return nestedLegRefTo(leg, pinned, "SK", 0)
 }

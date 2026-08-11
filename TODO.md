@@ -16357,3 +16357,51 @@ None is speculative: each was re-verified against the tree before booking.
   before typing its outputs, the way `buildFromOnlySelectScope` already does for
   star expansion. Its blast radius is when the scope is constructed, which is why
   it did not ride along with the typing fix.
+
+- [ ] **A member predicate over a correlated UNNEST binding returns ZERO ROWS**
+  · M · found while auditing name-keyed reads of a fused nested reference
+  (RFC-231 §7)
+
+  ```
+  CREATE TYPE AS STRUCT item (sku STRING, qty BIGINT)
+  CREATE TABLE orders (order_id BIGINT, items item ARRAY, PRIMARY KEY (order_id))
+  INSERT INTO orders VALUES (1, [('x', 10), ('y', 20)]), (2, [('z', 30)])
+
+  SELECT order_id FROM orders, orders.items AS i WHERE i.sku = 'x'
+    -> rows=0, err=<nil>          MUST be [1]
+  ```
+
+  The projection of the same reference is CORRECT — `SELECT i.sku FROM orders,
+  orders.items AS i` returns `[x y z]` — so the descent resolves and the element
+  flows; it is the PREDICATE path that drops the rows, silently and with no
+  error. The existing coverage of this shape
+  (`TestStructDDL_UnnestStructArrayFieldAccess`) asserts only that the query
+  PLANS, which is why it has stayed green.
+
+  THE THREE-WAY MEASUREMENT, RECORDED BECAUSE IT IS THE ONLY THING THAT KEEPS
+  THIS FROM BEING MIS-DIAGNOSED. This defect and RFC-231's unnest
+  element-substitution wrong-read sit at the SAME binding and are
+  observationally identical — on master the substitution arm would ALSO have
+  yielded zero rows here, because it replaced `i.sku` with the whole element and
+  no struct equals `'x'`. Measured on all three:
+
+  ```
+  origin/master (root mint, no arity gate)   rows=0
+  RFC-231 rev 1 (leaf mint, no arity gate)   rows=0     <-- THE DISCRIMINATOR
+  RFC-231 rev 2 (leaf mint, arity gate)      rows=0
+  ```
+
+  Rev 1 is the discriminator: the substitution no longer fires there (`Field`
+  became `SKU`, which is not the alias `I`, measured `MATCHED=false`), and the
+  rows are still zero. So the substitution arm is NOT the cause, and the two
+  findings are independent.
+
+  WITHOUT THIS ROW, the likely failure mode is concrete and expensive: someone
+  re-diagnoses this as RFC-231's wrong read and "fixes" it by reverting the mint
+  to name a fused value after its struct ROOT — which restores a wrong read
+  (every `i.<member>` matching the alias again), re-breaks the arithmetic-operand
+  metadata RFC-231 fixed, and still returns zero rows.
+
+  DONE means: the query returns `[1]`, the mechanism is named at its site, and
+  the regression asserts ROWS rather than plannability — with the colliding-alias
+  and multi-member shapes covered, not just the one spelling above.
