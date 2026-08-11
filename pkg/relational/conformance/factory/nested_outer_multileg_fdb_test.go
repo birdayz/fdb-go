@@ -34,10 +34,18 @@ import (
 //   - the nested path read FROM that multi-leg side (a nested path on the
 //     NULL-extended right side answers, and so does a flat column on the left).
 //
-// Fixing it is a Cascades change and gated accordingly; this pin is what stops
-// it drifting. It fails when the defect is fixed, at which point the failing
-// arms flip to value assertions — the same discipline
-// TestFDB_NestedProjectionAxes uses for its booked gaps.
+// Its status is: KNOWN-BROKEN, PINNED, ROOT-CAUSE UNDER INVESTIGATION. It is
+// not gated behind anything and nothing is waiting on a decision — the fix is a
+// Cascades change and the investigation into where the multi-leg row loses the
+// source-relative ordinal is open.
+//
+// This pin is what stops the shape drifting meanwhile, and it re-arms in both
+// directions. It goes red if the defect is FIXED — at which point the failing
+// arms flip to value assertions, the same discipline TestFDB_NestedProjectionAxes
+// uses for its booked gaps, and the rows must be checked against Java first
+// because an unbound correlation that starts resolving can resolve to the wrong
+// leg. It also goes red if the failure MOVES off the pinned signature, or if
+// any of the four neighbouring shapes that must keep working stops working.
 func TestFDB_NestedPathOnAMultiLegOuterSide(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -90,8 +98,10 @@ func TestFDB_NestedPathOnAMultiLegOuterSide(t *testing.T) {
 		},
 		{
 			// Nested on the NULL-EXTENDED side only. That side is a single-leg
-			// row, so it resolves.
-			name: "three-way-outer-nested-on-preserved-side",
+			// row, so it resolves. In `(l JOIN m) LEFT JOIN r` the PRESERVED
+			// side is the composite (l, m) and `r` is the null-extended one, so
+			// a nested path on `r` is the opposite of the failing case.
+			name: "three-way-outer-nested-on-null-extended-side",
 			query: "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id " +
 				"LEFT JOIN nt AS r ON m.sk = r.n.sk ORDER BY l.id",
 			want: []string{"1", "2", "3"},
