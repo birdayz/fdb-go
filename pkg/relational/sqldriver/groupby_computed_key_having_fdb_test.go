@@ -53,43 +53,55 @@ import (
 // TWO ARMS TEST THE BINDING RATHER THAN THE WALK, and they are here because
 // every other arm is correct by coincidence in the same way the defect was:
 //
-//   - two_computed_keys… — every other arm groups by ONE key, so the recorded
-//     slot is always 0 and none of them can tell the loop index from a hardcoded
-//     zero, while that index IS the binding. MEASURED: pinning the computed
+//   - two_computed_keys… — every other arm that REACHES THE COMPUTED WALK groups
+//     by ONE key, so the recorded slot is always 0 and none of them can tell the
+//     loop index from a hardcoded zero, while that index IS the binding. (Other
+//     arms do use two keys, but none of them reaches this walk with a bindable
+//     multi-key shape: the duplicate arms are refused 42702 before it, and the
+//     join and parenthesised arms are the sibling walk's.) MEASURED: pinning the computed
 //     walk's mint to ordinal 0 reddens ONLY that arm and leaves the other TWELVE
 //     green, which is what says it tests the ordinal instead of re-testing the
 //     walk. The sibling walk has its own such arm (a_nested_key_in_a_nonzero_slot)
 //     because the two walks record the slot at two separate sites, and a mutation
 //     of one leaves the other's arms untouched;
 //   - a_duplicate_computed_key… — a NEGATIVE result. The rebase first-matches
-//     where Java raises; nothing can present two matching keys because the
-//     duplicate-key gate decides identity with the SAME predicate. The arm pins
-//     the refusal that makes it unreachable and names what re-arms it.
+//     where Java raises, and these spellings are refused 42702 before it. The arm
+//     pins that refusal and names what re-arms it. It does NOT claim the refusal
+//     is guaranteed: the "both sites use the same predicate" argument that once
+//     stood here is false, and the arm below
+//     (a_parenthesised_computed_key_twin…) is the counterexample.
 //
 // THREE FURTHER ARMS COVER THE NESTED ROUTE, which is a DIFFERENT walk. RFC-230
 // retired the refusal that made a nested path unusable as a grouping key, so
 // `GROUP BY r.v.z HAVING r.v.z > 120` became constructible at the same moment
 // this file's fix changed how a re-read key binds; the two shapes had never run
 // together. A nested key resolves to a fused multi-accessor FieldValue, so it is
-// bound by the SIBLING FieldValue walk rather than by the computed walk the nine
-// arms above drive — a route those arms cannot speak for. All three were
-// measured CORRECT on first run; they are pins, not fixes. The duplicate arm is
-// the sharpest of them: on the nested route the duplicate gate and the rebase
-// matcher decide identity by DIFFERENT predicates (a string compare vs semantic
-// equality), so the interlock that is structural for computed keys is only
-// measured for nested ones.
+// bound by the SIBLING FieldValue walk rather than by the computed walk the arms
+// above drive — a route those arms cannot speak for. All three were measured
+// CORRECT on first run; they are pins, not fixes. The duplicate arm is the
+// sharpest of them: on the nested route the duplicate gate and the rebase matcher
+// decide identity by DIFFERENT predicates (a name-based compare vs semantic
+// equality), so that interlock is measured rather than structural.
 //
-// A THIRTEENTH ARM PINS A DIVERGENCE THIS FILE'S FIX DOES NOT CAUSE OR CLOSE.
-// Chasing that string-vs-semantic asymmetry to ground found it is not merely a
-// theoretical re-arm condition: the gate's qualifier normalization is switched
-// off when the query has joins, so `… JOIN … GROUP BY a.r.v.z, r.v.z` puts two
-// semantically equal keys in front of the sibling walk's first-match loop and
-// Go answers where Java stops. under_a_join_two_equal_keys… pins it with values.
-// It is PRE-EXISTING (the flat twin diverges identically, and this branch's
-// delta over post-#719 master deletes NO source line — `git diff bd6f0c028 --
-// pkg/relational/core/ | grep -c '^-[^-]'` is 0 — so it cannot have introduced
-// or widened it) and BOUNDED to conformance rather than wrong rows: equal keys
-// hold equal values, so first-match answers correctly.
+// SO IS THE COMPUTED ONE, and saying otherwise was this file's own mistake for
+// two revisions. The computed gate arm is nominally semantic, but it runs only
+// when both keys resolve through a walk WEAKER than the one that mints them, and
+// it returns false on `(c1 + 1)` vs `c1 + 1` even when it does run. NEITHER route
+// has a structural guarantee; they differ only in how easy the counterexample is
+// to write.
+//
+// TWO ARMS PIN DIVERGENCES THIS FILE'S FIX DOES NOT CAUSE OR CLOSE. Chasing that
+// asymmetry to ground found it is not a theoretical re-arm condition on either
+// route. Under a join the gate's qualifier normalization is switched off, so
+// `… JOIN … GROUP BY a.r.v.z, r.v.z` puts two semantically equal keys in front of
+// the sibling walk; and on a plain table `GROUP BY (c1 + 1), c1 + 1` slips the
+// computed gate on a Value-type mismatch. Go answers where Java stops in both.
+// They are PRE-EXISTING (the flat twin of the join case diverges identically, and
+// this branch's delta over post-#719 master deletes NO source line — `git diff
+// bd6f0c028 -- pkg/relational/core/ | grep -c '^-[^-]'` is 0 — so it cannot have
+// introduced or widened them) and BOUNDED to conformance rather than wrong rows:
+// equal keys hold equal values, so first-match answers correctly. Both are booked
+// together in TODO.md Phase 12, because they share one fix.
 func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -209,10 +221,15 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 	})
 
 	t.Run("two_computed_keys_bind_their_own_slot_and_not_slot_zero", func(t *testing.T) {
-		// EVERY OTHER ARM IN THIS FILE GROUPS BY ONE KEY, so the slot the
-		// rebase records is always 0 and none of them can tell the loop index
-		// from a hardcoded zero — while that index IS the binding. This arm
-		// exists for the index alone.
+		// NO OTHER ARM PUTS A SECOND BINDABLE KEY IN FRONT OF THE COMPUTED WALK,
+		// so without this one the slot that walk records is always 0 and nothing
+		// could tell the recorded loop index from a hardcoded zero — while that
+		// index IS the binding. This arm exists for the index alone.
+		//
+		// Other arms DO group by two keys; none of them substitutes. The two
+		// duplicate arms are refused 42702 before the walk runs at all, and the
+		// join and parenthesised arms bind through the SIBLING FieldValue walk,
+		// whose slot index has its own arm (a_nested_key_in_a_nonzero_slot).
 		//
 		// The groups are the eight (c1+1, c2+1) pairs: (101,201..204) and
 		// (141,328..331). The predicates are chosen so that reading the OTHER
@@ -262,16 +279,25 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// `GROUP BY c1 + 1, c1 + 1` is refused 42702 upstream, carrying Java's
 		// own wording verbatim.
 		//
-		// THE INTERLOCK IS THAT BOTH SITES ASK THE SAME QUESTION. The duplicate
-		// gate (plan_visitor.go, visitSelectGroupBy) decides key identity with
-		// values.SemanticEqualsUnderAliasMap over the resolved expression
-		// Values, and that is the SAME predicate rebasePostAggregateComputedGroupKey
-		// matches with. Two keys that would both match a reference are therefore
-		// semantically equal to each other, which is exactly what the gate
-		// rejects. That shared predicate is what makes THIS arm's interlock
-		// structural — and it is precisely what the NESTED arm below does not
-		// have, so the two are asserted separately rather than one standing in
-		// for the other.
+		// THE REFUSAL IS MEASURED, NOT STRUCTURAL, and an earlier version of this
+		// comment claimed otherwise. The claim was: the gate decides key identity
+		// with values.SemanticEqualsUnderAliasMap, the SAME predicate the rebase
+		// matches with, so two keys that could both match are semantically equal
+		// and already refused. That is an impossibility proof, and it is invalid.
+		//
+		// The gate is a three-arm switch and its semantic arm needs BOTH keys to
+		// resolve through Resolver.WalkExpression, which is weaker than the
+		// WalkExpressionForProjection that mints the key Value — it will not fold
+		// a comparison. And even when the semantic arm DOES run it can return
+		// false for one expression written two ways: `(c1 + 1)` resolves to a
+		// RecordConstructorValue wrapping what `c1 + 1` resolves to bare. Both
+		// holes are measured and pinned by
+		// a_parenthesised_computed_key_twin_is_NOT_refused_either.
+		//
+		// What survives is the OBSERVATION, which is what this arm asserts: these
+		// spellings are refused 42702 before the rebase. Instrumenting the
+		// first-match loop shows it never sees a multi-match — but that is the
+		// wrapper mismatch keeping the keys distinguishable, not the gate.
 		//
 		// WHAT RE-ARMS THE HAZARD, named because that is the point of pinning a
 		// negative: the two predicates diverging. If the duplicate gate is ever
@@ -341,9 +367,13 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 	// change breaks silently, and because a nested key reaches the binder by a
 	// DIFFERENT route than the computed key this file was written for: it is a
 	// FieldValue, so it is the SIBLING walk's business, not
-	// rebasePostAggregateComputedGroupKey's. A file whose nine other arms all
-	// drive the computed walk cannot speak for the FieldValue walk over a fused
-	// multi-accessor root, which is the one shape that walk never saw before.
+	// rebasePostAggregateComputedGroupKey's. The arms written before these ran
+	// the computed walk almost exclusively — the two exceptions prove nothing
+	// about the nested route either, since a_bare_key_is_the_control drives the
+	// FieldValue walk over a FLAT single-accessor key and
+	// a_duplicate_computed_key never reaches a walk at all. None of them can
+	// speak for the FieldValue walk over a fused multi-accessor root, which is
+	// the one shape that walk never saw before.
 
 	t.Run("a_nested_bare_key_reread_in_having_binds_its_own_slot", func(t *testing.T) {
 		// The wrong-slot signature here is LOUD rather than silent, and the
@@ -401,17 +431,18 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// for the same reason, which is the point of asserting it separately
 		// rather than assuming the flat argument covers it.
 		//
-		// THE TWO GATES ARE DIFFERENT PREDICATES. For a COMPUTED key the
-		// duplicate gate resolves both keys and compares them with
-		// values.SemanticEqualsUnderAliasMap — the SAME predicate
-		// rebasePostAggregateComputedGroupKey matches with, which is what makes
-		// that arm's interlock airtight. A NESTED key has a non-empty Bare, so
-		// it takes the gate's `default` branch instead: groupKeysEquivalent, a
-		// STRING comparison over the normalized (Bare, Qualified, Qualifier)
-		// triple (plan_visitor.go). Meanwhile the SIBLING walk that binds it
-		// matches with SemanticEqualsUnderAliasMap. So on this route the two
-		// sites decide identity by different means, and the interlock is a
-		// MEASURED fact rather than a structural one.
+		// THE TWO GATES ARE DIFFERENT PREDICATES, and NEITHER route has a
+		// structural guarantee — the computed one does not either, which an
+		// earlier version of this comment got wrong. A NESTED key has a non-empty
+		// Bare, so it takes the gate's `default` branch: groupKeysEquivalent, a
+		// NAME-BASED comparison over the normalized (Bare, Qualifier) pair plus
+		// the Qualified flag (plan_visitor.go). Meanwhile the SIBLING walk that
+		// binds it matches with SemanticEqualsUnderAliasMap. The computed route's
+		// gate arm is nominally semantic, but it is reached only when both keys
+		// resolve through a weaker walk than the one that mints them, and it
+		// returns false on `(c1 + 1)` vs `c1 + 1` even when reached. So on BOTH
+		// routes the two sites decide identity by different means, and both
+		// interlocks are MEASURED facts rather than structural ones.
 		//
 		// Measured: every spelling below is refused 42702 before reaching the
 		// rebase, including the ones whose qualifier text differs (`r.v.z` vs
@@ -420,7 +451,7 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		//
 		// THE HAZARD THIS NAMES IS REAL, AND IT IS ALREADY ARMED — just not on
 		// the single-source spellings below. A semantic twin whose normalized
-		// (Bare, Qualifier) pair differs slips the string gate while still
+		// (Bare, Qualifier) pair differs slips the name-based gate while still
 		// matching the walk's semantic predicate. Adding a JOIN produces exactly
 		// that, because the normalization is switched off when the query has
 		// joins: see under_a_join_two_equal_keys_are_NOT_refused…, which pins it
@@ -448,6 +479,88 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 					"refusal (Java's AMBIGUOUS_COLUMN), not an unrelated rejection that "+
 					"happens to keep the shape away from the rebase — and in particular "+
 					"not the 0AF00 nested-key refusal RFC-230 retired.", q, err)
+			}
+		}
+	})
+
+	t.Run("a_parenthesised_computed_key_twin_is_NOT_refused_either", func(t *testing.T) {
+		// THE COMPUTED DUPLICATE GATE IS ALSO ONLY MEASURED, NOT STRUCTURAL —
+		// and this arm is why the arm above no longer claims otherwise. One pair
+		// of parentheses defeats it, on a PLAIN TABLE, with no join and no
+		// derived source.
+		//
+		// THE MECHANISM, INSTRUMENTED RATHER THAN INFERRED. Running the gate
+		// with the walk results printed:
+		//
+		//   GROUP BY (c1 + 1), c1 + 1
+		//     walk[0] err=<nil> val=*values.RecordConstructorValue
+		//     walk[1] err=<nil> val=*values.ArithmeticValue
+		//
+		// BOTH walks SUCCEED, so the gate's SEMANTIC arm is the one that runs —
+		// and it still returns false, because `(c1 + 1)` resolves to a
+		// one-element RecordConstructorValue WRAPPING the arithmetic while
+		// `c1 + 1` resolves to the bare ArithmeticValue. Semantically the same
+		// expression, structurally two different Value types. So the gate is not
+		// defeated by falling back to a weaker predicate here; it is defeated
+		// while running its STRONGEST one, on inputs the walk failed to
+		// normalize. WalkExpression's doc says a 1-element unnamed
+		// RecordConstructor is unwrapped; on this path it is not.
+		//
+		// THE COMPARISON SPELLING FAILS DIFFERENTLY, and is worth pinning beside
+		// it because it is a second, independent route to the same place:
+		//
+		//   GROUP BY (c1 = 1), c1 = 1
+		//     walk[0] err=unsupported shape: *antlrgen.BinaryComparisonPredicateContext
+		//     walk[1] err=unsupported shape: *antlrgen.BinaryComparisonPredicateContext
+		//
+		// The gate resolves with WalkExpression (posPredicate), which refuses to
+		// fold a comparison to a Value, while the grouping key is MINTED with
+		// WalkExpressionForProjection (posProjection), which folds it happily.
+		// Both gate walks fail, so identity falls to the GetText token-stream
+		// compare, where "(c1=1)" and "c1=1" differ and nothing is refused.
+		//
+		// NO MULTI-MATCH REACHES THE REBASE, and that is measured, not assumed.
+		// Instrumenting the first-match loop to count matching keys reports
+		// `matches=1` for every query here, over keys
+		// [RecordConstructorValue, ArithmeticValue] — the same wrapper mismatch
+		// that defeats the gate also keeps the two keys distinguishable at the
+		// loop, so it binds the one correct slot. The loop's CONCLUSION holds;
+		// what does not hold is the reason previously given for it.
+		//
+		// BOUND AND OWNERSHIP: identical to the join divergence below. The rows
+		// are arithmetically correct, so this is conformance-only — Go answers
+		// where Java raises AMBIGUOUS_COLUMN. Both divergences share one fix
+		// (converge the gate and the walk on one predicate) and are booked
+		// together in TODO.md Phase 12; neither is folded here, because that fix
+		// changes every GROUP BY shape in the engine.
+		const why = "This arm pins a KNOWN Go-answers/Java-raises divergence, booked in " +
+			"TODO.md Phase 12. If it now errors, check for 42702 and flip this arm to " +
+			"assert the refusal — that is the fix landing, not a regression."
+		// The keys are (101,101) and (141,141): duplicated, so the rows are the
+		// same ones the single-key spelling returns. Both directions.
+		eq(t, "SELECT max(c2) FROM flat GROUP BY (c1 + 1), c1 + 1", 1, "[[203] [330]]", why)
+		eq(t, "SELECT max(c2) FROM flat GROUP BY (c1 + 1), c1 + 1 HAVING c1 + 1 > 120",
+			1, "[[330]]", why)
+		eq(t, "SELECT max(c2) FROM flat GROUP BY (c1 + 1), c1 + 1 HAVING c1 + 1 < 120",
+			1, "[[203]]", why)
+		// The comparison route, and a derived source, which the instrumentation
+		// showed reaches the same place by the paren mechanism rather than by
+		// buildSelectScope returning nil (the resolver was non-nil there).
+		eq(t, "SELECT max(c2) FROM flat GROUP BY (c1 = 1), c1 = 1", 1, "[[330]]", why)
+		eq(t, "SELECT max(c2) FROM (SELECT id, c1, c2 FROM flat) t "+
+			"GROUP BY (c1 + 1), c1 + 1 HAVING c1 + 1 > 120", 1, "[[330]]", why)
+		// THE CONTROL that keeps this arm honest: with the parentheses removed
+		// the texts coincide and the refusal DOES fire, so what is pinned above
+		// is the normalization hole and not a claim that the gate never works.
+		for _, q := range []string{
+			"SELECT max(c2) FROM flat GROUP BY c1 = 1, c1 = 1",
+			"SELECT max(c2) FROM flat GROUP BY c1 + 1, c1 + 1",
+		} {
+			if _, err := db.QueryContext(ctx, q); err == nil ||
+				!strings.Contains(err.Error(), "42702") {
+				t.Fatalf("%s: got %v, want 42702 — the duplicate gate's control "+
+					"regressed, which would mean the hole is wider than the "+
+					"parenthesised spelling this arm pins", q, err)
 			}
 		}
 	})
@@ -492,16 +605,19 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// `grep -c '^-[^-]'` = 0) — a diff that deletes nothing cannot have
 		// introduced or widened this.
 		//
-		// WHEN IT IS FIXED — by making the duplicate gate decide identity
-		// semantically instead of by string, which is what removes the
-		// asymmetry documented at rebasePostAggregateGroupKeyValue's first-match
-		// loop — every query below must start returning 42702, and this arm
-		// becomes that assertion. Until then it exists so the behaviour cannot
-		// move in EITHER direction unnoticed: silently starting to refuse is a
-		// change worth seeing too.
-		const why = "This arm pins a KNOWN Go-answers/Java-raises divergence. If it now " +
-			"errors, check the error is 42702 and flip this arm to assert the refusal — " +
-			"that is the fix landing, not a regression."
+		// WHEN IT IS FIXED — by converging the duplicate gate and the rebase on
+		// ONE predicate, which is what removes the asymmetry documented at
+		// rebasePostAggregateGroupKeyValue's first-match loop — every query below
+		// must start returning 42702, and this arm becomes that assertion. Until
+		// then it exists so the behaviour cannot move in EITHER direction
+		// unnoticed: silently starting to refuse is a change worth seeing too.
+		//
+		// BOOKED in TODO.md Phase 12, together with its computed-route twin
+		// (a_parenthesised_computed_key_twin_is_NOT_refused_either), because the
+		// two share one fix. Read that entry before changing either site.
+		const why = "This arm pins a KNOWN Go-answers/Java-raises divergence, booked in " +
+			"TODO.md Phase 12. If it now errors, check the error is 42702 and flip this " +
+			"arm to assert the refusal — that is the fix landing, not a regression."
 		eq(t, "SELECT a.r.v.z, r.v.z, max(a.q.s) FROM nested a JOIN flat b ON a.id = b.id "+
 			"GROUP BY a.r.v.z, r.v.z", 3, "[[100 100 203] [140 140 330]]", why)
 		eq(t, "SELECT max(a.q.s) FROM nested a JOIN flat b ON a.id = b.id "+

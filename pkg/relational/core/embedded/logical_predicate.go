@@ -7380,20 +7380,41 @@ func aggregateGroupKeyOutputName(gkv values.Value) string {
 // returns on, so a rebased computed key passes through it untouched instead of
 // being reconsidered as a field.
 //
-// IT FIRST-MATCHES WHERE JAVA RAISES, and that is safe only because of an
-// interlock worth naming. Java's pull-up ends in Iterables.getOnlyElement, which
-// throws on a multi-match, and its SELECT twin asserts exactly one match with
-// AMBIGUOUS_COLUMN (Expressions.java:112); the loop below takes the FIRST key
-// that matches. No query can present two keys that both match: the
-// duplicate-grouping-key gate (plan_visitor.go, visitSelectGroupBy) decides key
-// identity with values.SemanticEqualsUnderAliasMap over the resolved expression
-// Values — the SAME predicate matched here — so two keys that would both match a
-// reference are semantically equal to each other, which is what that gate
-// refuses with 42702 carrying Java's own wording. The two predicates diverging
-// is what re-arms the hazard: narrow the gate, or widen this matcher (a
-// non-identity alias map, say), and Go silently binds a slot where Java raises.
-// Pinned, with that consequence spelled out, by
-// TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot's duplicate-key arm.
+// IT FIRST-MATCHES WHERE JAVA RAISES, and no multi-match has been found that
+// reaches it — but that is a MEASURED result, not a structural guarantee, and
+// the difference matters to anyone changing either site.
+//
+// Java's HAVING pull-up ends in a BARE Iterables.getOnlyElement
+// (Expression.java:246), which throws on a multi-match; its SELECT-list twin
+// Expressions.pullUp additionally asserts exactly one match with
+// AMBIGUOUS_COLUMN (Expressions.java:112). Either way Java stops. The loop below
+// instead takes the FIRST key that matches.
+//
+// THE OBVIOUS IMPOSSIBILITY ARGUMENT IS WRONG, so it is recorded here rather
+// than repeated. It runs: the duplicate-grouping-key gate decides identity with
+// values.SemanticEqualsUnderAliasMap, the same predicate matched here, so two
+// keys that could both match are semantically equal and the gate already refused
+// them. That fails on inputs, not in principle. The gate is a three-arm switch
+// (plan_visitor.go, visitSelectGroupBy) and the semantic arm needs BOTH keys to
+// resolve through Resolver.WalkExpression — a strictly weaker walk than the
+// WalkExpressionForProjection that MINTS GroupKey.Value, since only the latter
+// folds a comparison to a Value. Measured: `GROUP BY (c1 = 1), c1 = 1` fails
+// both gate walks and falls to a GetText token compare that the parentheses
+// defeat. Worse, `GROUP BY (c1 + 1), c1 + 1` resolves BOTH walks and still is
+// not refused, because `(c1 + 1)` resolves to a RecordConstructorValue wrapping
+// the arithmetic while `c1 + 1` resolves to the bare ArithmeticValue — the
+// semantic arm runs and returns false on two spellings of one expression.
+//
+// WHAT ACTUALLY KEEPS THIS LOOP SINGLE-MATCHED is that same wrapper mismatch:
+// instrumenting the loop to count matches reports 1 for every such query, over
+// keys [RecordConstructorValue, ArithmeticValue]. So the loop is protected by a
+// normalization GAP rather than by an interlock — and if that gap is ever closed
+// (making the walk unwrap the paren, which is what its own doc promises) without
+// converging the two sites on one predicate, a genuine multi-match becomes
+// constructible here. Closing it is a change to the gate affecting every GROUP BY
+// shape, so it is booked in TODO.md Phase 12 with the join divergence it shares a
+// fix with, and pinned both directions by
+// TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot's parenthesised-twin arm.
 func rebasePostAggregateComputedGroupKey(v values.Value, agg *logical.LogicalAggregate) values.Value {
 	return values.Replace(v, func(node values.Value) values.Value {
 		// A FieldValue is the SIBLING walk's business, and leaving it entirely
@@ -7479,27 +7500,26 @@ func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggreg
 				continue
 			}
 			// THIS LOOP FIRST-MATCHES, AND ITS INTERLOCK IS MEASURED RATHER THAN
-			// STRUCTURAL — which is the opposite of the sibling computed walk
-			// above, so do not carry that function's reasoning over to here.
+			// STRUCTURAL. So is the sibling computed walk's, above — NEITHER route
+			// has a structural guarantee, and the difference between them is only
+			// which way the gate fails and how easy the counterexample is to
+			// write. This one is trivially constructible; that one required
+			// instrumenting the gate to see that it fails while running its
+			// strongest predicate.
 			//
-			// There, the duplicate-grouping-key gate and the matcher decide key
-			// identity with the SAME predicate (values.SemanticEqualsUnderAliasMap
-			// over the resolved expression Values), so two keys that could both
-			// match a reference are semantically equal to each other and the gate
-			// has already refused them. That argument does NOT transfer. A key
-			// reaching THIS loop has a non-empty Bare, which sends the gate down
-			// its `default` branch instead: groupKeysEquivalent (plan_visitor.go),
-			// a STRING comparison over the normalized (Bare, Qualified, Qualifier)
-			// triple. Meanwhile the match below is semantic. Two different
+			// A key reaching THIS loop has a non-empty Bare, which sends the gate
+			// down its `default` branch: groupKeysEquivalent (plan_visitor.go), a
+			// NAME-BASED comparison over the normalized (Bare, Qualifier) pair
+			// plus the Qualified flag. The match below is semantic. Two different
 			// predicates, so nothing structural stops a multi-match — only
-			// whatever the string gate happens to catch.
+			// whatever the name-based gate happens to catch.
 			//
 			// It does not catch everything, and the hole is measured, not
 			// hypothetical. The gate normalizes by stripping a leading
 			// aliasPrefix, but that prefix is computed only when the query has NO
 			// joins (visitSelectGroupBy's `len(fs.joins) == 0`). Under a join,
 			// `GROUP BY a.r.v.z, r.v.z` keeps qualifiers `A.R.V` and `R.V`, the
-			// string compare says "different", and two semantically equal keys
+			// name compare says "different", and two semantically equal keys
 			// arrive here — where this loop binds the FIRST. Java refuses a
 			// multi-match on both post-aggregate paths, though not with the same
 			// error and the difference is worth keeping straight: the SELECT-list
@@ -7513,10 +7533,14 @@ func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggreg
 			// by TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot's
 			// under_a_join_two_equal_keys… arm.
 			//
-			// Closing it means making the duplicate gate decide identity
-			// semantically for keys with a Bare, the way it already does for
-			// expression keys — not widening the match below, which would only
-			// make more shapes reach a first-match that still cannot raise.
+			// Closing it means converging BOTH sites on one predicate so the gate
+			// and this loop ask the same question — not widening the match below,
+			// and not merely extending the alias strip to joins. Either of those
+			// makes the name compare agree more often by accident while leaving
+			// two predicates that still disagree, which is the symptom rather than
+			// the property. Booked with its computed-route twin in TODO.md
+			// Phase 12; it is a change to groupKeysEquivalent affecting every
+			// GROUP BY shape, so it carries its own RFC and review lap.
 			//
 			// Two ways a post-aggregate reference is provably THIS group key. A
 			// QUALIFIED key carries the V.V mismatch and matches on structural

@@ -17020,3 +17020,79 @@ None is speculative: each was re-verified against the tree before booking.
   DONE: the wrong-rows half is fixed upstream. This entry closes when the scope
   divergence is fixed and the element bake/net are corrected in the same change,
   with the sentinel converted to a row assertion.
+- [ ] **The duplicate-GROUP-BY-key gate and the post-aggregate rebase decide key
+  identity by DIFFERENT predicates, so two semantically-equal grouping keys reach
+  a first-match loop and Go answers where Java raises** · M · found while folding
+  review conditions on PR #723 · **query-engine change — needs a Graefe ACK and
+  its own RFC before merge**
+
+  Two sites must agree on "are these the same grouping key" and do not. The gate
+  (`plan_visitor.go`, `visitSelectGroupBy`) refuses duplicates with 42702; the
+  post-aggregate rebase (`logical_predicate.go`, `rebasePostAggregateGroupKeyValue`
+  and `rebasePostAggregateComputedGroupKey`) binds a re-read key by taking the
+  FIRST matching key. When the gate says "different" and the rebase's semantic
+  matcher says "same", the loop silently picks a slot where Java stops.
+
+  BOTH ROUTES ARE AFFECTED, by different mechanisms, and both are MEASURED:
+
+  1. NESTED / name-keyed route. `plan_visitor.go:1402` gates the alias strip on
+     `len(fs.joins) == 0`, so under a JOIN the normalization is off and
+     `groupKeysEquivalent` compares unequal `(Bare, Qualifier)` pairs:
+     - `SELECT a.r.v.z, r.v.z, max(a.q.s) FROM nested a JOIN flat b ON a.id = b.id
+       GROUP BY a.r.v.z, r.v.z` -> `[[100 100 203] [140 140 330]]`
+     - `SELECT max(b.c2) FROM nested a JOIN flat b ON a.id = b.id
+       GROUP BY b.c1, c1 HAVING c1 > 120` -> `[[330]]`
+     The FLAT twin diverging identically is what proves this is PRE-EXISTING and
+     NOT nested-specific — it must not be mis-attributed to RFC-230.
+
+  2. COMPUTED / expression route. The gate's semantic arm needs both keys to
+     resolve through `Resolver.WalkExpression` (`posPredicate`), which is strictly
+     weaker than the `WalkExpressionForProjection` (`posProjection`) that MINTS
+     `GroupKey.Value` — only the latter folds a comparison. Measured with the gate
+     instrumented:
+     - `GROUP BY (c1 = 1), c1 = 1` — both gate walks fail
+       (`unsupported shape: *antlrgen.BinaryComparisonPredicateContext`), identity
+       falls to a `GetText` token compare, and the parentheses defeat it.
+     - `GROUP BY (c1 + 1), c1 + 1` — both gate walks SUCCEED, so the semantic arm
+       runs, and it STILL returns false: `(c1 + 1)` resolves to a
+       `RecordConstructorValue` wrapping the arithmetic that `c1 + 1` resolves to
+       bare. One expression, two Value types. `WalkExpression`'s own doc says a
+       1-element unnamed RecordConstructor is unwrapped; on this path it is not.
+
+  THE BOUND, and it is why this is not an emergency: rows are ARITHMETICALLY
+  CORRECT in every measured case. Two semantically-equal keys hold identical
+  values in their two output slots, so binding either answers correctly. This is a
+  CONFORMANCE divergence, not wrong rows.
+
+  A CURRENT ACCIDENT WORTH KNOWING: on the computed route the rebase loop is
+  instrumented to report `matches=1` for every one of these queries, because the
+  same `RecordConstructorValue`/`ArithmeticValue` mismatch that defeats the gate
+  also keeps the two keys distinguishable at the loop. So the loop is protected by
+  a NORMALIZATION GAP, not by an interlock. Closing that gap alone — teaching the
+  walk to unwrap the paren, which is what its doc promises — would ARM a genuine
+  multi-match. Do not fix the unwrap without converging the predicates.
+
+  JAVA'S SIDE, precisely, because it differs by clause: `Expressions.java:112`
+  asserts `size() == 1` with `AMBIGUOUS_COLUMN` and its message is verbatim the Go
+  wording at `plan_visitor.go:1492`; `Expression.java:246` is a BARE
+  `Iterables.getOnlyElement` with no assert. So only the PROJECTED half spends
+  that SQLSTATE, and a fix must not write "Java raises AMBIGUOUS_COLUMN" flatly
+  for the HAVING path.
+
+  THE FIX: converge BOTH sites on `values.SemanticEqualsUnderAliasMap` so the gate
+  and the walk ask the same question. The tempting alternatives are symptom fixes —
+  widening the rebase matcher, or extending the alias strip to joins, only makes
+  the name compare agree more often by accident while leaving two predicates that
+  still disagree. It changes `groupKeysEquivalent`, which affects EVERY GROUP BY
+  shape in the engine, which is why it was not folded into #723.
+
+  PINNED MEANWHILE, both directions, in
+  `pkg/relational/sqldriver/groupby_computed_key_having_fdb_test.go`:
+  `under_a_join_two_equal_keys_are_NOT_refused_and_Go_answers_where_Java_raises`
+  and `a_parenthesised_computed_key_twin_is_NOT_refused_either`. Both assert
+  VALUES and name this entry, so a silent move in EITHER direction — starting to
+  refuse, or starting to answer differently — reds.
+
+  DONE = one predicate shared by both sites, every pinned query returning 42702,
+  those two arms flipped to assert the refusal, and the paren-unwrap hole closed
+  in the same change rather than separately.
