@@ -44,11 +44,12 @@ type Sweep struct {
 // emits aggregates, unions and LIMIT queries the partition oracle declines by
 // construction — so it returns cleanly with nothing offered.
 func (s Sweep) RunSeed(ctx context.Context, seed uint64, batch *Batch) ([]Outcome, error) {
-	cands := Candidates(seed)
-	schemaPrefix := "fc"
+	// Derive under ONE family, not both: the flat derivation used to run
+	// unconditionally and be thrown away whenever s.Nested, which is a whole
+	// seed's generation and planning done for nothing.
+	cands, schemaPrefix := Candidates(seed), "fc"
 	if s.Nested {
-		cands = NestedCandidates(seed)
-		schemaPrefix = "fcn"
+		cands, schemaPrefix = NestedCandidates(seed), "fcn"
 	}
 	if s.Filter != nil {
 		kept := cands[:0]
