@@ -3,7 +3,6 @@ package docscheck
 import (
 	"bytes"
 	"go/build/constraint"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -293,9 +292,14 @@ func satisfiable(expr constraint.Expr, declared map[string]bool) (bool, []string
 // fdb-record-layer/ (the Java checkout), bazel-* (convenience symlinks) and
 // .claude/worktrees/ (other agents' checkouts) are all untracked, so no path list
 // has to enumerate them and a newly-gitignored tree needs no maintenance here.
-// The fallback walk is a SUPERSET of the tracked set, so it can only make the
-// gate stricter, never quieter — the correct direction for a check whose entire
-// purpose is catching files nothing else sees.
+//
+// The fallback walk cannot inherit that for free — it has no tracked set to
+// consult — so it names its exclusions (fallbackWalkSkippedTrees) instead. That
+// list is closed, which is what makes the fallback a SUPERSET of the tracked set
+// and therefore able to make the gate only stricter, never quieter: an ignored
+// tree nobody listed gets walked and its files reported. The rule it replaced —
+// skip anything whose name starts with a dot — got that backwards and dropped
+// the 31 tracked paths under .claude/skills and .github.
 func trackedFiles(t *testing.T, root, pattern string) []string {
 	t.Helper()
 	out, err := exec.Command("git", "-C", root, "ls-files", "-z", "--", pattern).Output()
@@ -308,34 +312,12 @@ func trackedFiles(t *testing.T, root, pattern string) []string {
 		}
 		return files
 	}
-	t.Logf("git ls-files unavailable (%v) — falling back to a filesystem walk (superset of tracked)", err)
+	t.Logf("git ls-files unavailable (%v) — falling back to a filesystem walk over everything but the "+
+		"named excluded trees (%v), a superset of tracked", err, sortedFallbackWalkSkips())
 	base := filepath.Base(pattern)
-	var files []string
-	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		name := d.Name()
-		if d.IsDir() {
-			if path != root && (strings.HasPrefix(name, ".") ||
-				strings.HasPrefix(name, "bazel-") ||
-				name == "fdb-record-layer" || name == "node_modules") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.Type()&fs.ModeSymlink != 0 {
-			return nil
-		}
-		if ok, _ := filepath.Match(base, name); !ok {
-			return nil
-		}
-		rel, relErr := filepath.Rel(root, path)
-		if relErr != nil {
-			rel = path
-		}
-		files = append(files, filepath.ToSlash(rel))
-		return nil
+	files, walkErr := fallbackWalk(root, func(name string) bool {
+		ok, _ := filepath.Match(base, name)
+		return ok
 	})
 	if walkErr != nil {
 		t.Fatalf("walking %s: %v", root, walkErr)
