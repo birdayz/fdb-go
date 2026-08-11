@@ -188,6 +188,14 @@ func TestFDB_DuplicateFromAliasReachesTheQualifiedArm(t *testing.T) {
 		{"derived table duplicated", "SELECT d.k FROM (SELECT k FROM zn) AS d, (SELECT k FROM zs) AS d", "D.K"},
 		// Quoted spellings that genuinely ARE the same alias.
 		{"both aliases quoted, same case", `SELECT "a".k FROM zn AS "a", zs AS "a"`, "a.K"},
+		// A THREE-SEGMENT reference where BOTH same-aliased sources carry the
+		// struct column — the only three-segment shape that produces two
+		// candidates, and therefore the only one that belongs here. Java agrees
+		// down to the message text: 42702 "Ambiguous reference A.N.SK", measured
+		// live (duplicate_alias_java_probe_test.go seg3_dup_both_carry and
+		// seg3_dup_self). Its answering siblings, where only one source carries
+		// the column, are in the per-attribute test.
+		{"three-segment reference, both legs carry the struct", "SELECT a.n.sk FROM zn AS a, zn AS a", "A.N.SK"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rows, err := db.QueryContext(ctx, tc.query)
@@ -352,6 +360,37 @@ func TestFDB_DuplicateFromAliasPerAttributeBindsTheRightLeg(t *testing.T) {
 			control: "SELECT a.id, b.pid FROM zn AS a, zp AS b",
 			want:    [][]int64{{1, 5}, {1, 7}, {1, 9}, {2, 5}, {2, 7}, {2, 9}},
 		},
+		// THREE-SEGMENT references through the duplicate. The per-attribute rule
+		// does not change with depth: `n` is carried only by zn and `m` only by
+		// zp, so each has exactly one candidate and each answers. Java agrees,
+		// measured live (duplicate_alias_java_probe_test.go, seg3_dup_first /
+		// seg3_dup_second).
+		{
+			name:    "three-segment reference, carrying leg is the FIRST source",
+			query:   "SELECT a.n.sk FROM zn AS a, zp AS a",
+			control: "SELECT a.n.sk FROM zn AS a, zp AS b",
+			want:    [][]int64{{11}, {11}, {11}, {21}, {21}, {21}},
+		},
+		{
+			// THE ARM THAT CATCHES A FIRST-MATCH READER. Its carrying leg is the
+			// SECOND source, so a resolver that took the first same-aliased
+			// source and looked for the struct there answers the row above
+			// correctly and this one from the wrong leg — or not at all. The two
+			// legs' member values are disjoint, so the failure is a different
+			// number rather than an error.
+			name:    "three-segment reference, carrying leg is the SECOND source",
+			query:   "SELECT a.m.sk FROM zn AS a, zp AS a",
+			control: "SELECT b.m.sk FROM zn AS a, zp AS b",
+			want:    [][]int64{{31}, {31}, {41}, {41}, {51}, {51}},
+		},
+		{
+			// The OTHER member through the same descent, so a fix that resolved
+			// the struct root and stopped returns sk for both.
+			name:    "three-segment reference, second member of the same struct",
+			query:   "SELECT a.n.co FROM zn AS a, zp AS a",
+			control: "SELECT a.n.co FROM zn AS a, zp AS b",
+			want:    [][]int64{{12}, {12}, {12}, {22}, {22}, {22}},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := dupAliasQueryInts(t, db, ctx, tc.query, !tc.ordered)
@@ -404,29 +443,33 @@ func TestFDB_DuplicateQualifierShapesCaughtByAnotherGate(t *testing.T) {
 				"  per-attribute path, where a shadowing source silently outranks a real\n" +
 				"  column of the same name — wrong rows, not an error.",
 		},
-		{
-			name:     "three-segment reference through a duplicated qualifier",
-			query:    "SELECT a.n.sk FROM zn AS a, zp AS a",
-			wantCode: "42703",
-			why: "Three-segment paths do not resolve on this route at all yet — the\n" +
-				"  reference is refused before any duplicate-alias question is asked, and\n" +
-				"  the UNDUPLICATED control below refuses identically, which is what shows\n" +
-				"  the refusal is about arity rather than about the duplicate.\n" +
-				"  THIS IS A TRIPWIRE. Work to make three-segment paths resolve is in\n" +
-				"  flight; when it lands this shape becomes reachable and must be routed\n" +
-				"  through the qualified multi-match arm (`a` is carried by two sources)\n" +
-				"  rather than resolved first-match. Do not simply update the expected\n" +
-				"  code here — add the shape to the 42702 group and prove it with a\n" +
-				"  mutation.",
-		},
-		{
-			name:     "three-segment reference, UNDUPLICATED control",
-			query:    "SELECT a.n.sk FROM zn AS a, zp AS b",
-			wantCode: "42703",
-			why: "The control for the tripwire above. It shares no alias, so if it ever\n" +
-				"  diverges from the duplicated form, three-segment resolution has landed\n" +
-				"  and the duplicated form needs the 42702 treatment.",
-		},
+		// THE THREE-SEGMENT TRIPWIRE THAT LIVED HERE HAS FIRED, and its two arms
+		// moved rather than being re-coded in place.
+		//
+		// It asserted that `SELECT a.n.sk FROM zn AS a, zp AS a` is refused 42703
+		// before any duplicate-alias question is asked, and instructed that when
+		// three-segment resolution landed the shape "must be routed through the
+		// qualified multi-match arm (`a` is carried by two sources) rather than
+		// resolved first-match" — i.e. that it belongs in the 42702 group.
+		//
+		// THAT INSTRUCTION WAS WRONG, and wrong in the one way this file is
+		// otherwise careful about: it adjudicates per-ALIAS. The rule established
+		// by TestFDB_DuplicateFromAliasResolvesPerAttribute is per-ATTRIBUTE —
+		// two candidates arise only when BOTH same-aliased sources carry the
+		// referenced column. `zn` has `n` and `zp` has `m`, so `a.n.sk` has
+		// exactly one candidate and must ANSWER.
+		//
+		// MEASURED LIVE against Java 4.12.11.0, not reasoned about
+		// (conformance/duplicate_alias_java_probe_test.go, the seg3_dup_* rows):
+		//
+		//	SELECT a.n.sk FROM T_S1 AS a, T_S2 AS a   Java [[11] [21] [11] [21]]
+		//	SELECT a.m.sk FROM T_S1 AS a, T_S2 AS a   Java [[31] [31] [41] [41]]
+		//	SELECT a.n.sk FROM T_S1 AS a, T_S3 AS a   Java 42702 "Ambiguous reference A.N.SK"
+		//
+		// Go matches all three, message text included. So the ANSWERING pair went
+		// to the per-attribute test (with the `a.m.sk` twin, which is the arm that
+		// catches a first-match reader — its carrying leg is the SECOND source),
+		// and the genuinely two-candidate shape went to the 42702 group.
 		{
 			name:     "quoted lowercase beside unquoted: NOT a duplicate",
 			query:    `SELECT a.id, a.pid FROM zn AS "a", zp AS a`,

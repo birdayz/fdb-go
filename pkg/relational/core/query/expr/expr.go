@@ -206,8 +206,31 @@ func (r *Resolver) functionCatalog() *semantic.FunctionCatalog {
 // A resolution FAILURE reports false with the error, so a caller gating on the
 // descent never converts an unrelated lookup failure into its own verdict —
 // existence and ambiguity stay owned by the checks that already report them.
+// Scope returns the FROM-side scope this resolver binds against.
+//
+// It exists for star expansion, which is the one caller that needs the sources'
+// OUTPUT rather than an answer about one reference. Java hands the same thing to
+// the same caller: expandStar takes the plan fragment's LogicalOperators and
+// reads getExpressions().nonEphemeralVisible() off them
+// (SemanticAnalyzer.java:323-330). Reaching for the scope instead of
+// re-deriving the source list from the FROM parse tree is what keeps the star
+// and the resolver naming the same columns.
+func (r *Resolver) Scope() *semantic.Scope { return r.scope }
+
 func (r *Resolver) DescendsIntoStruct(qualifier, id semantic.Identifier) (bool, error) {
-	_, _, accessors, err := r.analyzer.ResolveColumnRefNested(r.scope, qualifier, id)
+	if qualifier.IsZero() {
+		return r.DescendsIntoStructPath([]semantic.Identifier{id})
+	}
+	return r.DescendsIntoStructPath([]semantic.Identifier{qualifier, id})
+}
+
+// DescendsIntoStructPath is DescendsIntoStruct over the full segment list. The
+// two-part form can only ask about the first two segments, so an
+// alias-qualified descent (`a.n.sk`) looked like a lookup of a source "A.N",
+// failed, and reported "does not descend" — which let a nested grouping key
+// past the gate that exists to refuse it.
+func (r *Resolver) DescendsIntoStructPath(segs []semantic.Identifier) (bool, error) {
+	_, _, accessors, err := r.analyzer.ResolveColumnRefPath(r.scope, segs)
 	if err != nil {
 		return false, err
 	}
@@ -234,9 +257,30 @@ func (r *Resolver) DescendsIntoStruct(qualifier, id semantic.Identifier) (bool, 
 // Returns the underlying semantic errors verbatim so callers can
 // match via errors.As.
 func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.Value, error) {
-	col, src, accessors, err := r.analyzer.ResolveColumnRefNested(r.scope, qualifier, id)
+	if qualifier.IsZero() {
+		return r.ResolveIdentifierPath([]semantic.Identifier{id})
+	}
+	return r.ResolveIdentifierPath([]semantic.Identifier{qualifier, id})
+}
+
+// ResolveIdentifierPath is ResolveIdentifier for a dotted reference of
+// ARBITRARY depth — the segment list exactly as the parse tree spelled it,
+// never a joined string. Joining is lossy in both directions: a delimited
+// identifier may CONTAIN a dot, and a three-segment reference joined into a
+// two-part (qualifier, name) pair produces a qualifier ("A.N") that names
+// neither a source nor a column, which is how `SELECT a.n.sk` came to be
+// refused as an undefined column.
+func (r *Resolver) ResolveIdentifierPath(segs []semantic.Identifier) (values.Value, error) {
+	col, src, accessors, err := r.analyzer.ResolveColumnRefPath(r.scope, segs)
 	if err != nil {
 		return nil, err
+	}
+	var qualifier, id semantic.Identifier
+	if len(segs) > 0 {
+		id = segs[len(segs)-1]
+	}
+	if len(segs) > 1 {
+		qualifier = segs[0]
 	}
 	// A reference that descended INTO a struct column resolves to ONE
 	// FieldValue carrying the whole path, not a chain of them — Java's
@@ -543,7 +587,18 @@ func sourceColumnOrdinal(src semantic.ScopeSource, field string) (int, values.Ty
 // sort/group key with 42702 before those helpers run — the swallow is not a
 // dead error path, do not "fix" it into one.
 func (r *Resolver) ResolveQualifiedProjection(qualifier, id semantic.Identifier) (values.Value, error) {
-	col, src, err := r.analyzer.ResolveColumnRef(r.scope, qualifier, id)
+	return r.ResolveQualifiedProjectionPath([]semantic.Identifier{qualifier, id})
+}
+
+// ResolveQualifiedProjectionPath is ResolveQualifiedProjection over the full
+// segment list, so a projection that DESCENDS into a struct on the join path
+// (`a.n.sk`) binds the same leg the flat reference would and then carries the
+// descent as an accessor suffix — Java's ofFieldsAndFuseIfPossible applied to
+// the leg-correlated root (SemanticAnalyzer.java:598-599). Resolving only the
+// first two segments here would bind the right leg and read the WRONG column:
+// the struct itself instead of the member the reference names.
+func (r *Resolver) ResolveQualifiedProjectionPath(segs []semantic.Identifier) (values.Value, error) {
+	col, src, accessors, err := r.analyzer.ResolveColumnRefPath(r.scope, segs)
 	if err != nil {
 		var ambig *semantic.AmbiguousColumnError
 		if errors.As(err, &ambig) {
@@ -577,13 +632,17 @@ func (r *Resolver) ResolveQualifiedProjection(qualifier, id semantic.Identifier)
 		// later-dup leg can also be a lateral unnest's binding, so this mint is
 		// as much a shadowing mint as ResolveColumnShadowingQualified is; it
 		// does not get to decide the question locally (flowedTypeFor).
-		return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
+		root := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
 			values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(src.CorrelationName), flowed),
 			col.Id.Name(),
 			ord,
 			columnCascadesType(col),
 			domain,
-		), nil
+		)
+		if len(accessors) > 0 {
+			return fuseNestedAccessors(root, accessors)
+		}
+		return root, nil
 	}
 	return nil, &UnresolvableOrdinalError{Field: col.Id.Name(), Source: src.CorrelationName}
 }

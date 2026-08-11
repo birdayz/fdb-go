@@ -4545,9 +4545,8 @@ func deriveProjectionColumnDef(v values.Value, alias string, aliasMinted bool, i
 		// parenthesis heuristic is recorded as its own DECLINE rather than
 		// folded into "bare", because a rejection made by looking for `()` in a
 		// rendering is the thing under measurement, not a clean non-split.
-		recordDisplayLabelStrip(label, v)
-		if ref := parseColRef(label); isPlainQualifiedColumnReference(label) && ref.isQualified() {
-			displayLabel = strings.ToUpper(ref.bare())
+		if stripped, did := stripDisplayLabelQualifier(label, v); did {
+			displayLabel = stripped
 		}
 	}
 	nullable := api.ColumnNullable

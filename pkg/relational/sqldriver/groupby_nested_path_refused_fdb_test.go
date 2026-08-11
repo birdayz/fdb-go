@@ -33,28 +33,51 @@ import (
 // "undefined column" would name a column that demonstrably exists.
 //
 // MEASURED, not inferred: conformance/nested_groupby_key_java_probe_test.go
-// runs these shapes against the live Java server at tag 4.12.11.0. Java gets a
-// nested grouping key PAST semantic analysis — every nested key produces the
-// same outcome as a FLAT key ("Cascades planner could not plan query", no
-// SQLSTATE), while a qualifier that resolves to nothing produces 42703
-// ("Attempting to query non existing column ZZZ.SK"). Java therefore spends
-// 42703 on a reference that does not resolve and does NOT spend it here; the
-// layer that turns the nested key away in Java is the planner, not the
-// resolver. UNSUPPORTED_QUERY is also the code Java's own visitGroupByItem
-// spends on a GROUP BY item it will not take (ExpressionVisitor.java:250-258).
+// runs these shapes against the live Java server at tag 4.12.11.0. Given an
+// index over the path, JAVA ANSWERS a nested grouping key —
+// `SELECT COUNT(*) FROM T_NG3 GROUP BY n.sk` returns [[2] [1]], the same rows
+// as its indexed FLAT twin `GROUP BY k` — while Go answers 0AF00. The vendored
+// corpus agrees statically: `select max(q.s) from nested group by r.v.z having
+// r.v.z > 120` → `[{330}]` over index i2 (groupby-tests.yamsql:29,61-62). This
+// is a capability Java has and Go lacks, which is what UNSUPPORTED_QUERY
+// reports. Java reserves 42703 for a qualifier resolving to nothing
+// (`GROUP BY zzz.sk` → "Attempting to query non existing column ZZZ.SK") and
+// does not spend it here. UNSUPPORTED_QUERY is also the code Java's own
+// visitGroupByItem spends on a GROUP BY item it will not take
+// (ExpressionVisitor.java:250-258).
 //
-// What the measurement does NOT say: Java does not ANSWER a nested grouping
-// key at this tag either — its Cascades declines the flat key too, absent a
-// matching aggregate index. The claim is about WHICH LAYER refuses, which is
-// exactly what the error-code choice turns on.
+// A PLANNER DECLINE OUT OF JAVA IS NOT A NESTING SIGNATURE, and a prior version
+// of this note read it as one. Java's Cascades has no physical sort, so a GROUP
+// BY plans only when an index supplies the key's ordering; without one it
+// declines with "Cascades planner could not plan query" and no SQLSTATE — for a
+// FLAT key exactly as much as a nested one. The probe's unindexed rows are all
+// in that state and decide nothing on their own; the indexed rows above are
+// what carry the conclusion.
+//
+// WHAT ACTUALLY BLOCKS THE FEATURE IN GO is ONE INPUT, not a missing
+// capability. Measured by disabling rejectNestedPathGroupKey and running these
+// shapes: `SELECT COUNT(*) FROM t1 GROUP BY n.sk` dies with `ordinal
+// resolution: field "N.SK" not resolvable in the runtime row (ordinal -1, row
+// columns [ID N]) — malformed plan`, and the projected spelling dies earlier
+// with 42703 out of validateGroupByProjection's leaf check. That output fits
+// two different causes — a pipeline that cannot address nested keys, or a
+// working pipeline handed a degraded value — and it is the second:
+// upgradeAggregateOperands mints the key as `colRef{table: Qualifier, col:
+// Bare}`, reading a qualified key as `table.column` and never as
+// `column.member`, so a nested key degrades to a flat dotted FieldValue no
+// runtime row can answer. RFC-230 carries that arm.
+//
+// The group-key NAMER is NOT the blocker, and the sentence that used to stand
+// here saying it was — that AggregateKeyColumnName returns
+// strings.ToUpper(fv.Field), so two members of one struct share an output name
+// — was already false when it was written. That function takes the resolved
+// PATH for a nested key (cascades/expressions/group_by.go), pinned by
+// expressions/group_by_naming_test.go's
+// TestAggregateKeyColumnName_NestedKeyTakesTheResolvedPath.
 //
 // WHEN NESTED GROUPING KEYS LAND, delete the gate and assert the answers: over
 // the seeded (1,1)(1,2)(2,1)(2,2)(1,1) in t1, `GROUP BY n.sk, n.co` is 4 groups
-// and each single-key query is 2. Check FIRST that the group-key namer no
-// longer renders the flat struct ROOT — on this commit AggregateKeyColumnName
-// (cascades/expressions/group_by.go) returns strings.ToUpper(fv.Field), so two
-// members of one struct would share an output name and the later key would
-// overwrite the earlier, returning too few groups silently.
+// and each single-key query is 2.
 func TestFDB_GroupByNestedPathRefusedCleanly(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -283,38 +306,84 @@ func TestFDB_GroupByNestedPathRefusedCleanly(t *testing.T) {
 		}
 	})
 
-	t.Run("a qualifier Go cannot resolve keeps its own error", func(t *testing.T) {
+	t.Run("the three-segment spelling reaches the SAME refusal", func(t *testing.T) {
 		t.Parallel()
-		// The refusal must not swallow the existence check: a qualifier that
-		// resolves to nothing is still 42703, decided where it always was. If
-		// this started reporting 0AF00, the new gate would be deciding
-		// existence too — and a genuinely misspelled key would be reported as
-		// an unsupported feature.
+		// THE TRIPWIRE THAT FIRED, flipped to what the fix actually does.
 		//
-		// WHAT THIS PINS IS CURRENT GO BEHAVIOUR, NOT A SEMANTIC RULE. Go does
-		// not resolve the THREE-SEGMENT `alias.struct.member` spelling at all —
-		// anywhere, not just in GROUP BY — so `A.N` reaches the existence check
-		// as an unresolvable qualifier and that check answers 42703. That is a
-		// Go limitation. Java RESOLVES the spelling and answers rows: measured
-		// live at tag 4.12.11.0 by conformance/nested_groupby_key_java_probe_test.go,
-		// whose three_segment_select_control runs `SELECT a.n.sk FROM t AS a`
-		// and gets [[1] [1] [2]] out of Java while Go returns this same 42703.
+		// This arm used to assert 42703 for `GROUP BY a.n.sk`, and it said so
+		// explicitly as a statement about Go and not about semantics: Go did not
+		// resolve the three-segment `alias.struct.member` spelling ANYWHERE, so
+		// "A.N" reached the existence check as an unresolvable qualifier and that
+		// check answered 42703 — while Java resolved the spelling and answered
+		// rows ([[1] [1] [2]] for three_segment_select_control, measured live at
+		// 4.12.11.0). It carried the instruction that when Go learned the
+		// spelling the case would move to the 0AF00 group, because it is the same
+		// struct descent, and must not silently keep answering 42703 on the way.
+		// Go learned it; this is that move.
 		//
-		// So this assertion says "42703 is what Go produces today, from the
-		// existence check", NOT "a three-segment qualifier cannot exist". When
-		// Go learns the spelling, this case moves to the 0AF00 group above —
-		// it is the same struct descent — and it must not silently keep
-		// answering 42703 on the way there.
-		const q = "SELECT a.n.sk, COUNT(*) FROM t2 AS a GROUP BY a.n.sk"
-		_, err := db.QueryContext(ctx, q)
-		if err == nil {
-			t.Fatalf("%s planned. Go may have learned the three-segment spelling; "+
-				"if so this key is a struct descent and belongs with the 0AF00 "+
-				"group above, not here", q)
+		// The two spellings of ONE key must agree about WHICH LAYER refuses them.
+		// Before the fix the descent test behind the gate could see only two
+		// segments, so for `a.n.sk` it was really asking whether a source called
+		// "A.N" exists, answering no, and letting the key fall through to
+		// undefined-column — a capability gap reported as a missing column.
+		for _, q := range []string{
+			"SELECT a.n.sk, COUNT(*) FROM t2 AS a GROUP BY a.n.sk",
+			"SELECT t2.n.sk, COUNT(*) FROM t2 GROUP BY t2.n.sk",
+			"SELECT COUNT(*) FROM t2 AS a GROUP BY a.n.co",
+		} {
+			rows, err := db.QueryContext(ctx, q)
+			if err == nil {
+				rows.Close()
+				t.Errorf("%s now PLANS. If nested grouping keys have landed, this "+
+					"arm belongs with the answers named in this file's header.", q)
+				continue
+			}
+			if !strings.Contains(err.Error(), "0AF00") {
+				t.Errorf("%s: got %v, want 0AF00.\n"+
+					"  A 42703 here means the three-segment spelling is being decided by "+
+					"the EXISTENCE check again — the two arities of one key disagreeing "+
+					"about which layer refuses them, which is the defect this arm was "+
+					"flipped from.", q, err)
+			}
+			// The message must name the key AS WRITTEN. A refusal that reported
+			// the two-segment spelling would hide which reference was rejected.
+			if !strings.Contains(err.Error(), "A.N.SK") &&
+				!strings.Contains(err.Error(), "T2.N.SK") &&
+				!strings.Contains(err.Error(), "A.N.CO") {
+				t.Errorf("%s: refusal %v does not name the key as written", q, err)
+			}
 		}
-		if !strings.Contains(err.Error(), "42703") {
-			t.Errorf("%s: got %v, want 42703 — existence stays owned by the "+
-				"existence check, not by the nested-key refusal.", q, err)
+	})
+
+	t.Run("a qualifier that resolves to nothing keeps its own error", func(t *testing.T) {
+		t.Parallel()
+		// THE CONTROL THAT MAKES THE FLIP ABOVE SAFE, and it is the half the
+		// original arm was really protecting: the nested-key refusal must not
+		// swallow the existence check. A qualifier resolving to nothing is still
+		// 42703, decided where it always was. If these started reporting 0AF00,
+		// a genuinely misspelled key would be reported as an unsupported feature.
+		//
+		// Java draws the same line — `GROUP BY zzz.sk` gets "Attempting to query
+		// non existing column ZZZ.SK", 42703, out of the live server.
+		for _, q := range []string{
+			"SELECT COUNT(*) FROM t2 GROUP BY zzz.sk",
+			// THREE segments, so it travels the same carrier as the arm above
+			// and differs only in that the leading segment names nothing.
+			"SELECT COUNT(*) FROM t2 AS a GROUP BY zzz.n.sk",
+			// The leading segment resolves and the MEMBER does not: still an
+			// existence question, not a capability one.
+			"SELECT COUNT(*) FROM t2 AS a GROUP BY a.n.zzz",
+		} {
+			rows, err := db.QueryContext(ctx, q)
+			if err == nil {
+				rows.Close()
+				t.Errorf("%s planned, and it names nothing", q)
+				continue
+			}
+			if !strings.Contains(err.Error(), "42703") {
+				t.Errorf("%s: got %v, want 42703 — existence stays owned by the "+
+					"existence check, not by the nested-key refusal.", q, err)
+			}
 		}
 	})
 }

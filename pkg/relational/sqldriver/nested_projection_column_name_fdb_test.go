@@ -201,8 +201,11 @@ func TestFDB_NestedProjectionColumnNameIsThePath(t *testing.T) {
 			"sources the resolver emits every reference through its quantifier, so " +
 			"the fused nested node carries QOV(T1) and the INTERNAL slot name " +
 			"becomes T1.N.SK rather than N.SK — MEASURED via EXPLAIN, which reads " +
-			"Project([T1.N#1.SK#0], NestedLoopJoin(...)) here against " +
-			"Project([N#1.SK#0], Scan(T1)) for the single-source form. The " +
+			"Project([T1.N#2.SK#0], NestedLoopJoin(...)) here against " +
+			"Project([N#2.SK#0], Scan(T1)) for the single-source form (N is t1's " +
+			"third declared column, SK the struct's first member). That spelling " +
+			"is ASSERTED, not merely described, by the three-part arm at the foot " +
+			"of this file, which drives EXPLAIN directly. The " +
 			"user-visible LABEL is SK either way, because the display side strips " +
 			"to the bare leaf exactly as Java clears the qualifier at the " +
 			"top-level projection (Identifier.withoutQualifier, Identifier.java:101). " +
@@ -239,33 +242,113 @@ func TestFDB_NestedProjectionColumnNameIsThePath(t *testing.T) {
 		})
 	}
 
-	// HOW THE QUALIFIED ARM IS *NOT* REACHED, pinned because the obvious guess is
-	// wrong and a reader who assumes it would write an unreachable test. The
-	// three-part spelling `t1.n.sk` does not resolve at all — the qualified arm
-	// above is reached by the BARE `n.sk` under a multi-source FROM. If this ever
-	// starts resolving, the qualified arm gains a second entry point and the
-	// EXPLAIN spelling asserted above must be re-measured for it.
-	t.Run("the three-part qualified spelling does not resolve", func(t *testing.T) {
+	// THE SECOND ENTRY POINT INTO THE QUALIFIED ARM, and the re-measurement this
+	// arm was written to demand.
+	//
+	// It used to assert that `t1.n.sk` does NOT resolve — the qualified nested
+	// arm above was reachable only through the bare `n.sk` under a multi-source
+	// FROM — and it carried the instruction that if the three-part spelling ever
+	// started resolving, its EXPLAIN spelling and its user-visible label had to
+	// be re-measured rather than assumed to match. The three-segment resolver
+	// landed, so the spelling resolves, and this is that re-measurement.
+	//
+	// BOTH ENTRY POINTS MUST AGREE, which is the whole point of asserting them
+	// side by side: `t1.n.sk` and the bare `n.sk` under the same FROM are the
+	// SAME descent written two ways, so their EXPLAIN, their labels and their
+	// rows are all asserted to be identical. A resolver that peeled the alias
+	// segment into a second, differently-anchored read would answer correct rows
+	// through a different plan, and only the EXPLAIN comparison sees that.
+	t.Run("the three-part qualified spelling resolves to the same read", func(t *testing.T) {
 		t.Parallel()
-		for _, q := range []string{
-			"SELECT t1.n.sk FROM t1, t2",
-			"SELECT t1.n.sk, t1.n.co FROM t1, t2",
+		explain := func(t *testing.T, q string) string {
+			t.Helper()
+			var plan string
+			if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
+				t.Fatalf("EXPLAIN %s: %v", q, err)
+			}
+			return plan
+		}
+		for _, tc := range []struct {
+			qualified string
+			bare      string
+			wantCols  []string
+			wantRows  []string
+		}{{
+			qualified: "SELECT t1.n.sk FROM t1, t2 ORDER BY t1.id",
+			bare:      "SELECT n.sk FROM t1, t2 ORDER BY t1.id",
+			wantCols:  []string{"SK"},
+			wantRows:  []string{"10", "11"},
+		}, {
+			qualified: "SELECT t1.n.sk, t1.n.co FROM t1, t2 ORDER BY t1.id",
+			bare:      "SELECT n.sk, n.co FROM t1, t2 ORDER BY t1.id",
+			wantCols:  []string{"SK", "CO"},
+			wantRows:  []string{"10|21", "11|22"},
+		}} {
+			cols, out := query(t, tc.qualified)
+			if strings.Join(cols, ",") != strings.Join(tc.wantCols, ",") {
+				t.Errorf("%s\n  columns = %v, want %v\n  The display side strips to the "+
+					"bare leaf exactly as Java clears the qualifier at the top-level "+
+					"projection (Identifier.withoutQualifier, Identifier.java:101), so "+
+					"naming the source changes nothing the user sees.",
+					tc.qualified, cols, tc.wantCols)
+			}
+			if strings.Join(out, " ") != strings.Join(tc.wantRows, " ") {
+				t.Errorf("%s\n  rows = %v, want %v", tc.qualified, out, tc.wantRows)
+			}
+			// The bare spelling is re-asserted here rather than borrowed from the
+			// table above, because the comparison below is only meaningful if
+			// both sides are known good independently.
+			bareCols, bareOut := query(t, tc.bare)
+			if strings.Join(bareCols, ",") != strings.Join(tc.wantCols, ",") ||
+				strings.Join(bareOut, " ") != strings.Join(tc.wantRows, " ") {
+				t.Fatalf("the BARE spelling %s moved: columns %v rows %v, want %v / %v",
+					tc.bare, bareCols, bareOut, tc.wantCols, tc.wantRows)
+			}
+			qPlan, bPlan := explain(t, tc.qualified), explain(t, tc.bare)
+			if qPlan != bPlan {
+				t.Errorf("the two spellings of one descent plan DIFFERENTLY.\n"+
+					"  %s\n    %s\n  %s\n    %s\n"+
+					"  Naming the source is not a second capability — the alias segment "+
+					"is peeled and the remainder is the same struct descent, so the "+
+					"internal slot (T1.N.SK) and the plan must be identical. A "+
+					"divergence here means the qualified spelling built its own read.",
+					tc.qualified, qPlan, tc.bare, bPlan)
+			}
+			// The INTERNAL slot name, asserted rather than described: it is
+			// qualified by the quantifier under a multi-source FROM, which is what
+			// distinguishes this arm from the single-source shape.
+			if !strings.Contains(qPlan, "T1.N#2.SK#0") {
+				t.Errorf("%s\n  EXPLAIN = %s\n  want the qualified nested slot T1.N#2.SK#0 "+
+					"(N is t1's third declared column, SK the struct's first member). "+
+					"With >=2 FROM sources the resolver emits every reference through its "+
+					"quantifier; a bare N#1.SK#0 here means the correlation was dropped.",
+					tc.qualified, qPlan)
+			}
+		}
+	})
+
+	// A THREE-PART SPELLING THAT NAMES NOTHING IS STILL 42703 — the control that
+	// stops the arm above from passing because the resolver became permissive.
+	// Each query differs from an answering one in exactly one segment.
+	t.Run("a three-part spelling that names nothing is refused", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct{ sql, why string }{
+			{"SELECT t2.n.sk FROM t1, t2", "RIGHT SOURCE, WRONG SOURCE — t2 has no struct column N. " +
+				"A resolver that ignored an unmatched leading segment would answer t1's rows."},
+			{"SELECT zz.n.sk FROM t1, t2", "no source and no column is named ZZ."},
+			{"SELECT t1.n.zz FROM t1, t2", "the leading two segments resolve and only the member does not."},
+			{"SELECT t1.zz.sk FROM t1, t2", "both ends exist and the middle does not."},
 		} {
-			rows, err := db.QueryContext(ctx, q)
+			rows, err := db.QueryContext(ctx, tc.sql)
 			if err == nil {
 				rows.Close()
-				t.Errorf("%s now RESOLVES.\n"+
-					"  This file assumes the qualified nested arm is reached only "+
-					"through the bare `n.sk` under a multi-source FROM. A "+
-					"table-qualified struct descent is a second entry point: "+
-					"re-measure its EXPLAIN spelling and its user-visible label "+
-					"before assuming they match the cases above.", q)
+				t.Errorf("%s ANSWERS, and it must not.\n  %s", tc.sql, tc.why)
 				continue
 			}
 			if !strings.Contains(err.Error(), "42703") {
-				t.Errorf("%s was refused with %v, want 42703 (undefined_column).\n"+
-					"  A refusal for an unrelated reason would let this pin pass "+
-					"while the shape it describes had changed.", q, err)
+				t.Errorf("%s was refused with %v, want 42703 (undefined_column).\n  %s\n"+
+					"  A refusal for an unrelated reason would let this control pass while "+
+					"the shape it describes had changed.", tc.sql, err, tc.why)
 			}
 		}
 	})

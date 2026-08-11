@@ -334,13 +334,36 @@ func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
 			class: values.QualRecBare,
 			why:   "no dot in the label; 22 of the sqldriver corpus's 750 calls and 2 of this package's 6",
 		},
+		{
+			name:  "AGREED_three_segment",
+			label: "A.N.SK",
+			v:     values.NewFieldValue(qov("A"), "N", values.UnknownType),
+			class: values.QualRecAgreed,
+			why: "an alias-qualified struct descent. The SOURCE qualifier is the " +
+				"LEADING segment, and it agrees with the correlation; the second " +
+				"dot is inside the struct path and is not a qualifier boundary at " +
+				"all. Split at the LAST dot this reads as a source \"A.N\" and " +
+				"records DIVERGED against an identity that plainly says A — which " +
+				"is what it did, and what made the census fire on a correct read",
+		},
+		{
+			name:  "DIVERGED_three_segment",
+			label: "Z.N.SK",
+			v:     values.NewFieldValue(qov("A"), "N", values.UnknownType),
+			class: values.QualRecDiverged,
+			why: "the leading segment names Z and the value names A, so the label " +
+				"is not a rendering of this identity. DIVERGED must stay reachable " +
+				"at three segments too: the arm above makes the common case agree, " +
+				"and without this one that agreement could be a split that never " +
+				"disagrees with anything",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := qualRecDelta(t, values.QualRecSiteDisplayLabelStrip, tc.class, func() {
-				recordDisplayLabelStrip(tc.label, tc.v)
+				_, _ = stripDisplayLabelQualifier(tc.label, tc.v)
 			})
 			if got < 1 {
 				t.Fatalf("displayLabelStrip recorded %d %v decision(s) for %q — want at least 1.\n%s",

@@ -109,6 +109,26 @@ func (a *Analyzer) ResolveColumnRefNested(scope *Scope, qualifier, id Identifier
 	return scope.ResolveQualifiedColumnNested(qualifier, id)
 }
 
+// ResolveColumnRefPath is ResolveColumnRefNested for a reference of ARBITRARY
+// segment depth — `a.n.sk` and deeper. Java has no arity cap on this path
+// (`fullId : uid (DOT uid)*` in the grammar, an unbounded remainingPath loop in
+// SemanticAnalyzer.lookupNestedField), so neither does this.
+//
+// A single segment takes the BARE arm, which never descends: Java's
+// lookupNestedField returns empty immediately for a one-segment identifier
+// (SemanticAnalyzer.java:557-559), because a descent needs a prefix to consume
+// before there is anything left to walk into.
+func (a *Analyzer) ResolveColumnRefPath(scope *Scope, segs []Identifier) (Column, ScopeSource, []NestedAccessor, error) {
+	if scope == nil {
+		var leaf Identifier
+		if len(segs) > 0 {
+			leaf = segs[len(segs)-1]
+		}
+		return Column{}, ScopeSource{}, nil, &ColumnNotFoundError{Id: leaf}
+	}
+	return scope.ResolvePathNested(segs)
+}
+
 // ResolveTableRef is the parse-tree convenience wrapper over
 // ResolveTable. Reads the IFullIdContext (ANTLR's table reference
 // node), builds a QualifiedName with the analyzer's case-sensitivity,

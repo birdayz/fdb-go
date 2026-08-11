@@ -461,7 +461,7 @@ func buildDerivedTableSourceFromTerm(
 	}
 	if len(innerSQ.aggCols) > 0 || innerSQ.countStar {
 		if len(innerSQ.joins) == 0 && innerSQ.tableName != "" {
-			return buildDerivedTableSourceFromAgg(alias, innerSQ)
+			return buildDerivedTableSourceFromAgg(alias, innerSQ, md)
 		}
 		return semantic.ScopeSource{}, false
 	}
@@ -832,10 +832,117 @@ func derivedJoinBodySource(alias string, columns []semantic.Column) semantic.Sco
 }
 
 // aggOutputCol is one VISIBLE output column of an aggregate SELECT body.
+//
+// carried, when set, is the SOURCE column this output column IS — a grouping
+// key, or a type-preserving aggregate over a bare column. It is carried WHOLE
+// rather than reduced to (typ, nullable) for the reason renameCarriedColumn
+// documents: a rebuilt {Id, Type, Nullable} drops StructFields and IsArray, a
+// struct column then types UNKNOWN, and UNKNOWN is deliberately admitted by the
+// comparison operand gate — so a whole-struct comparison that rejects 0AF00 on
+// the base table plans straight through the derived table.
 type aggOutputCol struct {
 	name     string
 	typ      string
 	nullable bool
+	carried  semantic.Column
+	hasCol   bool
+}
+
+// column renders one output column as the semantic.Column the derived-table
+// schema installs.
+func (c aggOutputCol) column() semantic.Column {
+	if c.hasCol {
+		return renameCarriedColumn(c.carried, c.name)
+	}
+	return semantic.Column{Id: semantic.FromNormalized(c.name), Type: c.typ, Nullable: c.nullable}
+}
+
+// aggBodySourceColumns resolves the aggregate body's single FROM table to its
+// declared columns, which is what typing an aggregate's OUTPUT needs: Java
+// derives the result type from the ARGUMENT's type, so the argument has to be
+// resolvable. A nil result means "not derivable here", and every caller must
+// treat that as UNKNOWN rather than as an empty column list — the two are
+// different claims and only one of them is honest.
+//
+// A body with joins is declined rather than searched: with more than one source
+// a bare argument name can be ambiguous, and answering it by first-match would
+// type an output column off the wrong table.
+func aggBodySourceColumns(sq *selectQuery, md *recordlayer.RecordMetaData) []semantic.Column {
+	if sq == nil || md == nil || sq.tableName == "" || len(sq.joins) > 0 {
+		return nil
+	}
+	// A DERIVED body is not the rare case, it is the corpus's case:
+	// `SELECT MIN(x.col2) … FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1`
+	// aggregates over a subquery, and tableName then holds that subquery's
+	// ALIAS rather than a catalog table. Resolving the alias against the
+	// catalog fails, so typing off it alone would have declined exactly the
+	// shape this typing exists for — measured: with only the base-table arm,
+	// the corpus row still reported INTEGER.
+	if sq.derivedQuery != nil {
+		src, ok := buildDerivedTableSource(md, sq.tableName, sq.derivedQuery)
+		if !ok || src.Table == nil {
+			return nil
+		}
+		return src.Table.Columns()
+	}
+	analyzer := semantic.NewAnalyzer(rlcatalog.Wrap(md), false)
+	tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(sq.tableName, "."), false))
+	if err != nil || tbl == nil {
+		return nil
+	}
+	return tbl.Columns()
+}
+
+// aggregateOutputColumn types ONE aggregate output column the way Java does.
+// Java has no table of SQL-level aggregate result types; the type falls out of
+// which PhysicalOperator `encapsulate` selects for the (function, argument
+// TypeCode) pair (NumericAggregationValue.java:194-213), and that lookup is
+// EXACT — there is no widening, so SUM over an INT column is INT and not
+// BIGINT. Reading the operators off the enum:
+//
+//   - COUNT, COUNT(*): always LONG. CountValue's two operators both carry
+//     TypeCode.LONG (CountValue.java:241-243) and getResultType returns it
+//     unconditionally (:140-141). The argument's type is irrelevant.
+//   - AVG: always DOUBLE. AVG_I, AVG_L, AVG_F and AVG_D all declare
+//     TypeCode.DOUBLE as their result (NumericAggregationValue.java:634-676),
+//     so an integer average widens.
+//   - SUM, MIN, MAX: the ARGUMENT's type, exactly. SUM_I/L/F/D and the MIN_*
+//     and MAX_* families each pair an argument TypeCode with the SAME result
+//     TypeCode (:629-632, :679-687).
+//
+// NULLABILITY is `true` for every aggregate, which is also Java's:
+// getResultType builds `Type.primitiveType(resultTypeCode)` and the one-argument
+// overload defaults isNullable to true (Type.java:404-405). That includes COUNT.
+//
+// UNKNOWN is the answer whenever the argument's type is not in hand — a computed
+// argument expression, or a body whose source columns could not be resolved. It
+// is what this function returned for EVERY aggregate before, so it is the
+// established meaning of "no type", not a new state.
+func aggregateOutputColumn(ac aggSelectCol, name string, srcCols []semantic.Column) aggOutputCol {
+	unknown := aggOutputCol{name: name, typ: "UNKNOWN", nullable: true}
+	switch strings.ToUpper(ac.aggFunc) {
+	case "COUNT":
+		return aggOutputCol{name: name, typ: "BIGINT", nullable: true}
+	case "AVG":
+		return aggOutputCol{name: name, typ: "DOUBLE", nullable: true}
+	case "SUM", "MIN", "MAX":
+		if ac.aggExpr != nil || srcCols == nil {
+			return unknown
+		}
+		arg, found := lookupSourceColumn(srcCols, ac.aggArgBare, ac.aggArg)
+		if !found {
+			return unknown
+		}
+		// The whole column, renamed — the result type IS the argument type, so
+		// the argument column IS the output column. Carrying it keeps
+		// StructFields and IsArray, and NULLABILITY is forced to true
+		// independently of the argument's: an aggregate over an empty group
+		// yields NULL even when the column is declared NOT NULL.
+		arg.Nullable = true
+		arg.Type = baseSQLType(arg.Type)
+		return aggOutputCol{name: name, typ: arg.Type, nullable: true, carried: arg, hasCol: true}
+	}
+	return unknown
 }
 
 // aggOutputCols returns the aggregate body's VISIBLE output columns in install
@@ -847,7 +954,19 @@ type aggOutputCol struct {
 // advertised in the schema nor counted by the dup gate (else e.g.
 // `SELECT COUNT(*) … HAVING COUNT(*) > 0` false-collides its lone output).
 // countStar is set only for a SELECT-list COUNT(*), so it is always visible.
-func aggOutputCols(sq *selectQuery) []aggOutputCol {
+//
+// EVERY OUTPUT IS TYPED, and it used to be that only the SELECT-list COUNT(*)
+// was: every other entry was minted "UNKNOWN". That is not a missing-metadata
+// state, it is a dropped one — the body's source table is right there — and it
+// crossed the derived-table boundary as a loss of the column's real type. The
+// visible symptom is arithmetic: `SELECT G + 4 FROM (SELECT MIN(col2) AS G …)
+// AS Y` returned an Integer where Java returns a Long, because G arrived
+// untyped and the addition fell back to the narrow lane.
+//
+// md may be nil — the type simply stays UNKNOWN then, exactly as before. It is
+// never a reason to decline the source: the NAMES are what the caller's dedup
+// gate and the enclosing resolver need, and they do not depend on the types.
+func aggOutputCols(sq *selectQuery, md *recordlayer.RecordMetaData) []aggOutputCol {
 	var out []aggOutputCol
 	if sq.countStar {
 		name := "COUNT(*)"
@@ -856,6 +975,7 @@ func aggOutputCols(sq *selectQuery) []aggOutputCol {
 		}
 		out = append(out, aggOutputCol{name: name, typ: "BIGINT", nullable: false})
 	}
+	srcCols := aggBodySourceColumns(sq, md)
 	for _, ac := range sq.aggCols {
 		if !ac.visible {
 			continue
@@ -868,19 +988,37 @@ func aggOutputCols(sq *selectQuery) []aggOutputCol {
 				continue
 			}
 		}
-		out = append(out, aggOutputCol{name: name, typ: "UNKNOWN", nullable: true})
+		if ac.aggFunc == "" {
+			// A GROUPING KEY, not an aggregate: the output column IS the source
+			// column, so it is carried whole under the output name. Grouping
+			// does not change a value's type, and a key over a struct column
+			// (`GROUP BY n`) must keep its StructFields for the same reason
+			// renameCarriedColumn exists.
+			if srcCols != nil {
+				if src, found := lookupSourceColumn(srcCols, ac.groupColBare, ac.groupCol); found {
+					out = append(out, aggOutputCol{
+						name: name, typ: baseSQLType(src.Type), nullable: src.Nullable,
+						carried: src, hasCol: true,
+					})
+					continue
+				}
+			}
+			out = append(out, aggOutputCol{name: name, typ: "UNKNOWN", nullable: true})
+			continue
+		}
+		out = append(out, aggregateOutputColumn(ac, name, srcCols))
 	}
 	return out
 }
 
-func buildDerivedTableSourceFromAgg(alias string, sq *selectQuery) (semantic.ScopeSource, bool) {
-	cols := aggOutputCols(sq)
+func buildDerivedTableSourceFromAgg(alias string, sq *selectQuery, md *recordlayer.RecordMetaData) (semantic.ScopeSource, bool) {
+	cols := aggOutputCols(sq, md)
 	if len(cols) == 0 {
 		return semantic.ScopeSource{}, false
 	}
 	columns := make([]semantic.Column, len(cols))
 	for i, c := range cols {
-		columns[i] = semantic.Column{Id: semantic.FromNormalized(c.name), Type: c.typ, Nullable: c.nullable}
+		columns[i] = c.column()
 	}
 	aliasID := semantic.FromNormalized(alias)
 	virtualTable := &semantic.StaticTable{
@@ -1421,7 +1559,7 @@ func buildCTEColumnSource(
 		return semantic.ScopeSource{}, false
 	}
 	if len(innerSQ.aggCols) > 0 || innerSQ.countStar {
-		src, ok := buildDerivedTableSourceFromAgg(cteName, innerSQ)
+		src, ok := buildDerivedTableSourceFromAgg(cteName, innerSQ, md)
 		if !ok {
 			return semantic.ScopeSource{}, false
 		}
@@ -2155,7 +2293,7 @@ func buildCTEOnOnlySource(
 			return semantic.ScopeSource{}, false
 		}
 		aggSeen := make(map[string]int)
-		for _, c := range aggOutputCols(innerSQ) {
+		for _, c := range aggOutputCols(innerSQ, md) {
 			aggSeen[strings.ToUpper(c.name)]++
 		}
 		for _, n := range aggSeen {
@@ -2163,7 +2301,7 @@ func buildCTEOnOnlySource(
 				return semantic.ScopeSource{}, false
 			}
 		}
-		return buildDerivedTableSourceFromAgg(cteName, innerSQ)
+		return buildDerivedTableSourceFromAgg(cteName, innerSQ, md)
 	}
 	if innerSQ.projCols == nil {
 		return semantic.ScopeSource{}, false // SELECT * over a multi-leg/derived body: no name authority
@@ -2866,7 +3004,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				continue
 			}
 			if col.bare != "" {
-				if err := resolveColumnRefStructural(resolver, col.bare, col.qualifier, col.qualified); err != nil {
+				if err := resolveColumnRefStructural(resolver, col.bare, col.qualifier, col.qualified, col.segs); err != nil {
 					return nil, err
 				}
 			} else if err := resolveColumnName(resolver, col.name); err != nil {
@@ -2945,7 +3083,8 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 						// Twin of the PlanVisitor's qualified-projection bind
 						// (incl. the DUPLICATED-bare-leaf qualified output pin).
 						cr := colRef{table: col.qualifier, col: col.bare}
-						if bv := resolveQualifiedBaked(resolver, cr); bv != nil {
+						if bv := resolveQualifiedBakedPath(resolver,
+							colRefIdentifiers(col.bare, col.qualifier, col.qualified, col.segs)); bv != nil {
 							// A qualified projection's structural bake —
 							// duplicated qualifiers included (per-attribute
 							// resolution addresses one leg by its binding;
@@ -2969,12 +3108,8 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 						}
 					}
 				} else {
-					var qualifier semantic.Identifier
-					id := semantic.FromNormalized(colBareOrName(col))
-					if col.qualified {
-						qualifier = semantic.FromNormalized(col.qualifier)
-					}
-					if v, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
+					if v, err := resolver.ResolveIdentifierPath(
+						colRefIdentifiers(colBareOrName(col), col.qualifier, col.qualified, col.segs)); err == nil {
 						if i < len(proj.ProjectedValues) {
 							proj.ProjectedValues[i] = v
 						}
@@ -3057,7 +3192,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 						// rewritten colName through the scope; if it
 						// resolves, the reference is valid.
 						if ob.bare != "" {
-							if resolveColumnRefStructural(resolver, ob.bare, ob.qualifier, ob.qualified) == nil {
+							if resolveColumnRefStructural(resolver, ob.bare, ob.qualifier, ob.qualified, ob.segs) == nil {
 								continue
 							}
 						} else if ob.colName != "" && resolveColumnName(resolver, ob.colName) == nil {
@@ -3077,7 +3212,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				continue
 			}
 			if gb.bare != "" {
-				if err := resolveColumnRefStructural(resolver, gb.bare, gb.qualifier, gb.qualified); err != nil {
+				if err := resolveColumnRefStructural(resolver, gb.bare, gb.qualifier, gb.qualified, gb.segs); err != nil {
 					return nil, err
 				}
 				// KEEP THIS EVEN THOUGH NOTHING REACHES IT TODAY, and do not
@@ -3103,7 +3238,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				// build path, or any reordering that lets this builder see a
 				// grouping key first, makes it the only thing standing between
 				// a nested key and the executor.
-				if err := rejectNestedPathGroupKey(resolver, gb.bare, gb.qualifier, gb.qualified); err != nil {
+				if err := rejectNestedPathGroupKey(resolver, gb.bare, gb.qualifier, gb.qualified, gb.segs); err != nil {
 					return nil, err
 				}
 			} else if err := resolveColumnName(resolver, gb.display); err != nil {
@@ -3116,7 +3251,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		for _, ac := range sq.aggCols {
 			if ac.aggArg != "" && ac.aggExpr == nil {
 				if ac.aggArgBare != "" {
-					if err := resolveColumnRefStructural(resolver, ac.aggArgBare, ac.aggArgQualifier, ac.aggArgQualified); err != nil {
+					if err := resolveColumnRefStructural(resolver, ac.aggArgBare, ac.aggArgQualifier, ac.aggArgQualified, ac.aggArgSegs); err != nil {
 						return nil, err
 					}
 				} else if err := resolveColumnName(resolver, ac.aggArg); err != nil {
@@ -3144,7 +3279,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			if ac.groupCol == "" || ac.groupColBare == "" || exprKeyDisplays[ac.groupCol] {
 				continue
 			}
-			if err := resolveColumnRefStructural(resolver, ac.groupColBare, ac.groupColQualifier, ac.groupColQualified); err != nil {
+			if err := resolveColumnRefStructural(resolver, ac.groupColBare, ac.groupColQualifier, ac.groupColQualified, ac.groupColSegs); err != nil {
 				return nil, err
 			}
 		}
@@ -3646,9 +3781,63 @@ func isBareIdentifierExpr(e antlrgen.IExpressionContext) bool {
 // phantom qualifier (WS-N Phase A slice 1; the segments arrive
 // quote-stripped with quoted case preserved, so identifiers are built
 // case-sensitively — no re-fold).
-func resolveColumnRefStructural(resolver *expr.Resolver, bare, qualifier string, qualified bool) error {
+// colRefIdentifiers renders a captured column reference as the ordered
+// Identifier list resolution consumes. The leading segments name SOURCES and
+// STRUCT COLUMNS, which are registered folded; the LEAF keeps the verbatim
+// spelling, matching what the two-part path has always passed.
+//
+// segs is authoritative when present. The (qualifier, bare) fallback exists
+// for carriers that capture no segments, and it can only ever express two —
+// which is exactly the flattening that made a three-segment reference look up
+// a source literally named "A.N".
+func colRefIdentifiers(bare, qualifier string, qualified bool, segs []string) []semantic.Identifier {
+	if len(segs) > 0 {
+		ids := make([]semantic.Identifier, len(segs))
+		for i, s := range segs {
+			if i == len(segs)-1 {
+				ids[i] = semantic.New(s, true)
+			} else {
+				ids[i] = semantic.FromNormalized(s)
+			}
+		}
+		return ids
+	}
+	if qualified && qualifier != "" {
+		return []semantic.Identifier{semantic.FromNormalized(qualifier), semantic.FromNormalized(bare)}
+	}
+	return []semantic.Identifier{semantic.FromNormalized(bare)}
+}
+
+func resolveColumnRefStructural(resolver *expr.Resolver, bare, qualifier string, qualified bool, segs []string) error {
 	if resolver == nil || bare == "" {
 		return nil
+	}
+	// A reference of THREE OR MORE segments (`a.n.sk`) can only be resolved
+	// from its segment list: the two-part (qualifier, name) form joins the
+	// leading segments into "A.N", which names neither a source nor a column,
+	// so the reference died as UNDEFINED_COLUMN while Java answered it.
+	// Java's resolver has no arity cap on this path — Identifier carries the
+	// segments as a list and lookupNestedField consumes a matched prefix and
+	// walks whatever remains (SemanticAnalyzer.java:559-601).
+	if len(segs) > 2 {
+		ids := colRefIdentifiers(bare, qualifier, qualified, segs)
+		_, err := resolver.ResolveIdentifierPath(ids)
+		if err != nil {
+			var notFound *semantic.ColumnNotFoundError
+			if errors.As(err, &notFound) {
+				// The same folded retry the two-segment arm performs below, for
+				// the same reason: a derived or virtual schema registers its
+				// columns folded, so a verbatim miss re-tries the folded leaf.
+				ids[len(ids)-1] = semantic.NewUnquoted(segs[len(segs)-1])
+				if _, retryErr := resolver.ResolveIdentifierPath(ids); retryErr == nil {
+					return nil
+				}
+			}
+		}
+		// The reference renders AS WRITTEN — all of its segments. Rebuilding it
+		// from (qualifier, bare) would report a two-part name the user did not
+		// type, which is the same flattening that caused the refusal.
+		return mapColumnResolveError(err, strings.Join(segs, "."))
 	}
 	var qual semantic.Identifier
 	display := bare
@@ -3684,29 +3873,68 @@ func resolveColumnRefStructural(resolver *expr.Resolver, bare, qualifier string,
 	return mapColumnResolveError(err, display)
 }
 
+// nestedKeyDisplay renders a refused grouping key AS WRITTEN. segs is
+// authoritative; the pair is the fallback for carriers that capture none.
+func nestedKeyDisplay(bare, qualifier string, segs []string) string {
+	if len(segs) > 0 {
+		return strings.Join(segs, ".")
+	}
+	return qualifier + "." + bare
+}
+
 // rejectNestedPathGroupKey refuses a GROUP BY key that descends INTO a struct
-// column (`GROUP BY n.sk`), which the aggregate path cannot yet carry.
+// column (`GROUP BY n.sk`).
+//
+// WHAT ACTUALLY BLOCKS IT, and it is one input rather than a missing
+// capability. Measured by disabling this refusal and running the shapes:
+// `SELECT COUNT(*) FROM t1 GROUP BY n.sk` dies with `ordinal resolution: field
+// "N.SK" not resolvable in the runtime row (ordinal -1, row columns [ID N]) —
+// malformed plan`, and the projected spelling dies earlier with 42703 out of
+// validateGroupByProjection's leaf check. That output fits two very different
+// causes — a pipeline that cannot address nested keys, or a working pipeline
+// fed a degraded value — and it is the SECOND: upgradeAggregateOperands mints
+// the key reference as `colRef{table: Qualifier, col: Bare}`, which reads a
+// qualified key as `table.column` and never as `column.member`, so a nested key
+// degrades to a flat dotted FieldValue that no runtime row can answer. RFC-230
+// carries that arm; it is not implemented here, and this refusal stands until
+// it is.
+//
+// A prior note here named the group-key NAMER as the blocker — that two members
+// of one struct would collide on one output name. That is not the blocker and
+// was already false when it was written: AggregateKeyColumnName takes the
+// resolved path for a nested key (expressions/group_by.go), pinned by
+// TestAggregateKeyColumnName_NestedKeyTakesTheResolvedPath. A refuted
+// justification is evidence the gap is SMALLER than advertised, not neutral.
 //
 // It is a REFUSAL, not a resolution failure, and the distinction is the whole
 // point. The reference is perfectly well-formed — `n.sk` answers in SELECT,
 // WHERE and ORDER BY over the same table — so reporting it as an undefined
 // column would describe a column that demonstrably exists.
 //
-// Java draws the same line in the same place, MEASURED against the live server
-// at tag 4.12.11.0 by conformance/nested_groupby_key_java_probe_test.go: a
-// nested grouping key reaches Java's PLANNER — every nested shape lands on the
-// same outcome as a flat key ("Cascades planner could not plan query", no
-// SQLSTATE) — while a qualifier resolving to nothing is refused earlier with
-// 42703. Java spends "undefined column" on a reference that does not resolve
-// and does not spend it here. UNSUPPORTED_QUERY is also the code Java's own
-// visitGroupByItem spends on a GROUP BY item it will not take
+// UNSUPPORTED_QUERY is the right code because JAVA HAS THE CAPABILITY AND GO
+// DOES NOT. Measured live against the 4.12.11.0 server by
+// conformance/nested_groupby_key_java_probe_test.go: given an index over the
+// path, `SELECT COUNT(*) FROM T_NG3 GROUP BY n.sk` returns [[2] [1]] out of
+// Java, the same rows its indexed FLAT twin returns, while Go answers 0AF00.
+// The vendored corpus says the same statically —
+// `select max(q.s) from nested group by r.v.z having r.v.z > 120` → `[{330}]`
+// over index i2 (groupby-tests.yamsql:29,61-62). A capability Java has and Go
+// lacks is exactly what UNSUPPORTED_QUERY reports; UNDEFINED_COLUMN would claim
+// the column does not exist.
+//
+// The same probe pins the other end: Java spends 42703 on a qualifier that
+// resolves to NOTHING (`GROUP BY zzz.sk` → "Attempting to query non existing
+// column ZZZ.SK") and does not spend it here. UNSUPPORTED_QUERY is also the
+// code Java's own visitGroupByItem spends on a GROUP BY item it will not take
 // (`Assert.isNullUnchecked(ctx.order, ErrorCode.UNSUPPORTED_QUERY, "ordering
 // grouping column is not supported")`, ExpressionVisitor.java:250-258).
 //
-// The measurement is about WHICH LAYER refuses, which is what the error-code
-// choice turns on. It does not say Java ANSWERS a nested grouping key: at this
-// tag Java's Cascades declines the flat key too, absent a matching aggregate
-// index.
+// WHAT A JAVA "PLANNER DECLINE" DOES AND DOES NOT MEAN. Java's Cascades has no
+// physical sort, so a GROUP BY plans only when an index supplies the key's
+// ordering; without one it declines with "Cascades planner could not plan
+// query" and no SQLSTATE — for a FLAT key just as much as a nested one. So a
+// decline is a no-access-path signature, never a nesting signature, and the
+// probe now varies index availability instead of holding it at NONE.
 //
 // Two properties of the OLD behaviour this replaces, both measured:
 //
@@ -3728,11 +3956,17 @@ func resolveColumnRefStructural(resolver *expr.Resolver, bare, qualifier string,
 // prefix to consume, so an unqualified name mints no accessors. Unlike the
 // error-code choice above, this one is not separately measured; it is pinned on
 // the Go side by expr's DescendsIntoStruct tests.
-func rejectNestedPathGroupKey(resolver *expr.Resolver, bare, qualifier string, qualified bool) error {
+//
+// The descent question is asked over the FULL segment list. Asked over a
+// joined (qualifier, name) pair it could only see two segments, so the
+// alias-qualified spelling of the very same key (`GROUP BY a.n.sk`) answered
+// "not nested" and walked past this refusal into the wrong-error territory the
+// gate exists to end.
+func rejectNestedPathGroupKey(resolver *expr.Resolver, bare, qualifier string, qualified bool, segs []string) error {
 	if resolver == nil || bare == "" || !qualified {
 		return nil
 	}
-	nested, err := resolver.DescendsIntoStruct(semantic.FromNormalized(qualifier), semantic.New(bare, true))
+	nested, err := resolver.DescendsIntoStructPath(colRefIdentifiers(bare, qualifier, qualified, segs))
 	if err != nil || !nested {
 		// A lookup failure is deliberately silent here: existence and
 		// ambiguity are reported by resolveColumnRefStructural, which runs
@@ -3741,7 +3975,7 @@ func rejectNestedPathGroupKey(resolver *expr.Resolver, bare, qualifier string, q
 		return nil
 	}
 	return api.NewErrorf(api.ErrCodeUnsupportedQuery,
-		"grouping by the nested field %q is not supported", qualifier+"."+bare)
+		"grouping by the nested field %q is not supported", nestedKeyDisplay(bare, qualifier, segs))
 }
 
 // resolveColumnName is the RENDERED-STRING arm for call sites whose
@@ -4560,9 +4794,21 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		// is qualified (`MIN(PID)` vs aggArg `C.PID`) — the main builder
 		// strips a same-source qualifier when naming the slot. Match the
 		// bare form too so the resolved-operand path engages for it.
-		bare := ""
-		if ac.aggArgQualified {
-			bare = ac.aggArgBare
+		// Every SUFFIX of the reference is a candidate spelling, not just the
+		// whole thing and its last segment. The builder strips a same-source
+		// qualifier when naming the slot, so a three-segment argument
+		// (`COUNT(a.n.sk)`) is named "N.SK" there while the parsed arg still
+		// reads "A.N.SK" — matching only the two ends missed it entirely, the
+		// operand stayed unresolved, and the translator fell back to a lazy
+		// FieldValue{"N.SK"} that no runtime row can answer. For a two-segment
+		// argument the suffix set is exactly the pair this replaces.
+		spellings := []string{arg}
+		if segs := ac.aggArgSegs; len(segs) > 1 {
+			for i := 1; i < len(segs); i++ {
+				spellings = append(spellings, strings.Join(segs[i:], "."))
+			}
+		} else if ac.aggArgQualified && ac.aggArgBare != "" {
+			spellings = append(spellings, ac.aggArgBare)
 		}
 		wantFunc := strings.ToUpper(ac.aggFunc)
 		var idxs []int
@@ -4570,8 +4816,11 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			if call.Func != wantFunc || call.Distinct != ac.aggDistinct {
 				continue
 			}
-			if strings.EqualFold(call.Operand, arg) || (bare != "" && strings.EqualFold(call.Operand, bare)) {
-				idxs = append(idxs, i)
+			for _, sp := range spellings {
+				if sp != "" && strings.EqualFold(call.Operand, sp) {
+					idxs = append(idxs, i)
+					break
+				}
 			}
 		}
 		if len(idxs) == 0 {
@@ -4594,11 +4843,8 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			if bareArg == "" {
 				bareArg = ac.aggArg
 			}
-			var qualID semantic.Identifier
-			if ac.aggArgQualified {
-				qualID = semantic.FromNormalized(ac.aggArgQualifier)
-			}
-			qv, rerr := resolver.ResolveIdentifier(qualID, semantic.FromNormalized(bareArg))
+			qv, rerr := resolver.ResolveIdentifierPath(
+				colRefIdentifiers(bareArg, ac.aggArgQualifier, ac.aggArgQualified, ac.aggArgSegs))
 			if rerr != nil || qv == nil {
 				var unresArg *expr.UnresolvableOrdinalError
 				if errors.As(rerr, &unresArg) {
@@ -7938,6 +8184,119 @@ func expandBareStarForRowVersion(sq *selectQuery, md *recordlayer.RecordMetaData
 	sq.projExprs = make([]antlrgen.IExpressionContext, len(cols))
 	sq.projStarQualifiers = make([]string, len(cols))
 	return true
+}
+
+// starColumnsFromScope is Java's expandStar, Case 1 and Case 2
+// (SemanticAnalyzer.java:321-368): the star expands to the FROM-side operators'
+// output columns, in FROM order, filtered by nonEphemeralVisible
+// (Expressions.java:163-166). Case 2 restricts that output to one qualifier.
+//
+// The semantic scope IS that output. Deriving the list from the scope rather
+// than re-walking the FROM parse tree is the point: the scope already carries
+// derived-table bodies, CTEs and lateral unnest bindings under a single rule, so
+// the star cannot name a source differently from the resolver that binds a
+// reference to it. HiddenColumns is Go's carrier for Java's isVisible() — the
+// right-hand copy of a JOIN … USING column.
+//
+// A GROUP BY alias is deliberately NOT a candidate here. Java files an aliased
+// grouping item as an EphemeralExpression (ExpressionVisitor.java:252-256) and
+// splices it into the operator output for NAME RESOLUTION only
+// (QueryVisitor.java:281-286); expandStar's nonEphemeralVisible filter drops it
+// again. That is why `select * from (select col1 from T1) as X group by col1 AS Y`
+// outputs COL1 and not Y.
+//
+// ok=false means the sources' columns are not knowable, which every caller must
+// treat as "cannot expand" — never as "expands to nothing". An empty expansion
+// and an unresolvable one are the same value in a naive encoding, and they have
+// opposite correct handling.
+func starColumnsFromScope(resolver *expr.Resolver, qualifier string) ([]projCol, bool) {
+	if resolver == nil {
+		return nil, false
+	}
+	scope := resolver.Scope()
+	if scope == nil {
+		return nil, false
+	}
+	sources := scope.Sources()
+	if len(sources) == 0 {
+		return nil, false
+	}
+	if qualifier != "" {
+		var kept []semantic.ScopeSource
+		for _, s := range sources {
+			if strings.EqualFold(s.Alias.String(), qualifier) {
+				kept = append(kept, s)
+			}
+		}
+		if len(kept) == 0 {
+			return nil, false
+		}
+		sources = kept
+	}
+	// The qualified spelling is used whenever more than one source is in
+	// play, matching expandBareStarForRowVersion's rule: a bare name would be
+	// ambiguous across legs, and the alias is used VERBATIM because source
+	// aliases arrive already normalized (a quoted `AS "l"` is case-sensitive).
+	single := len(sources) == 1
+	var cols []projCol
+	for _, s := range sources {
+		if s.Table == nil {
+			return nil, false
+		}
+		tableCols := s.Table.Columns()
+		if len(tableCols) == 0 {
+			// A source with no declared columns cannot contribute, and
+			// treating it as contributing nothing would silently shorten the
+			// star. Decline the whole expansion instead.
+			return nil, false
+		}
+		for _, c := range tableCols {
+			bare := c.Id.Name()
+			if _, hidden := s.HiddenColumns[strings.ToUpper(bare)]; hidden {
+				continue
+			}
+			if single {
+				cols = append(cols, projCol{name: bare, bare: bare})
+				continue
+			}
+			qual := s.Alias.String()
+			cols = append(cols, projCol{name: qual + "." + bare, bare: bare, qualifier: qual, qualified: true})
+		}
+	}
+	if len(cols) == 0 {
+		return nil, false
+	}
+	return cols, true
+}
+
+// starExpanderFromScope adapts a FROM-only semantic scope into the expander
+// classifySelectElements consumes. Nil resolver yields a nil expander, which the
+// classifier treats as "no expansion available" rather than "expands to
+// nothing".
+func starExpanderFromScope(resolver *expr.Resolver) starExpander {
+	if resolver == nil {
+		return nil
+	}
+	return func(qualifier string) ([]projCol, bool) {
+		return starColumnsFromScope(resolver, qualifier)
+	}
+}
+
+// buildFromOnlySelectScope builds the semantic scope from the FROM clause
+// ALONE, before the SELECT list is classified.
+//
+// Star expansion needs the sources' columns, and classification needs the star
+// expansion, so the scope has to exist first. buildSelectScope reads only the
+// FROM-derived fields of its selectQuery (tableName, tableAlias, derivedQuery,
+// joins), so a classification-free shell is a complete input — this is not a
+// partial build that later grows. Java has the same ordering: the select-where
+// operator is generated (QueryVisitor.java:275) before visitSelectElements
+// expands the star against it (QueryVisitor.java:286).
+func buildFromOnlySelectScope(fs *fromSource, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) *expr.Resolver {
+	if fs == nil || md == nil {
+		return nil
+	}
+	return buildSelectScope(selectQueryFromClassification(&selectClassification{}, fs), md, schemaName, cteScopes)
 }
 
 func expandProjQualifier(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string) {

@@ -267,6 +267,31 @@ var engineGaps = []EngineGap{
 	// classifier, which runs before any schema is available to expand against.
 	// Booked to that gap at its own exact rejection, so the struct class no
 	// longer claims the file and the real blocker is counted under its own name.
+	// A GROUP BY key that descends into a struct column. The file's FIRST test
+	// is `select max(q.s) from nested group by r.v.z having r.v.z > 120`, which
+	// Java answers `[{330}]` off index i2 (groupby-tests.yamsql:29,61-62);
+	// rejectNestedPathGroupKey refuses it with 0AF00.
+	//
+	// THE FILE STILL RUNS, and that is why this is a booking rather than a
+	// re-skip. It executes 33 of its 44 queries before the block's shuffle
+	// reaches line 61 and aborts there, and those 33 are counted in the ledger's
+	// `queries` total either way — MEASURED: booked and unbooked both report
+	// queries=1775. What this entry changes is the file's STATUS, not its
+	// coverage. Before the three-segment resolver landed the same file was
+	// `unsupported-DDL:struct-index queries=0` — its CREATE SCHEMA TEMPLATE died
+	// on the three-segment index `I2` and NOTHING ran. That is the state this
+	// entry must not be confused with.
+	//
+	// WHAT RETIRES IT: the arm at upgradeAggregateOperands that mints a grouping
+	// key as `colRef{table: gk.Qualifier, col: gk.Bare}` — a spelling that reads
+	// a qualified key as `table.column` and can never express `column.member`, so
+	// a nested key degrades to a flat dotted FieldValue no runtime row can
+	// answer. RFC-230 carries it. When that lands the refusal disappears, this
+	// signature stops matching, and the run goes RED until the entry is deleted.
+	// THAT REDNESS IS THE POINT: it is the pin failing in the direction of
+	// noticing. Do not answer it by widening the signature or by relabelling the
+	// class — delete the entry, and re-measure the ledger string.
+	{"groupby-tests.yamsql", SkipGapNestedPathGroupKey, `grouping by the nested field "R.V.Z" is not supported`, "RFC-230"},
 	{"select-a-star.yamsql", SkipGapStarGroupBy, "SELECT qualifier.* expands to columns not in GROUP BY", "CQ-72"},
 
 	// NOT struct-related, re-armed by the struct DML landing (these files'

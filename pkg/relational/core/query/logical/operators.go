@@ -401,6 +401,11 @@ type SortKey struct {
 	Bare      string
 	Qualifier string
 	Qualified bool
+	// Segs is the FULL ordered segment list of the reference (`a.n.sk` ->
+	// [A N SK]). Resolution consumes Segs; Qualifier is a rendering that
+	// cannot say where one segment ends and the next begins, so a deeper
+	// reference resolved through it looks for a source named "A.N".
+	Segs []string
 	// BareRef marks a key whose source text is a plain ONE-segment column
 	// reference — the only shape SQL binds to an output alias. False for
 	// qualified references (`ORDER BY d.x`), aggregates and computed

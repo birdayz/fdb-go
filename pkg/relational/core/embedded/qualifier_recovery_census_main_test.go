@@ -132,6 +132,13 @@ var qualifierRecoveryNegativeControls = map[values.QualifierRecoverySite]map[str
 	},
 	values.QualRecSiteDisplayLabelStrip: {
 		`"A.NAME" vs identity "Z"`: {},
+		// The THREE-SEGMENT reach. It is listed separately rather than folded
+		// into the two-segment one because the arity is the thing under test:
+		// at three segments the leading segment and "everything before the last
+		// dot" are different strings, and a split that confuses them reports
+		// DIVERGED for a perfectly correct read. Only a disagreement in the
+		// LEADING segment may reach this bucket now.
+		`"Z.N.SK" vs identity "A"`: {},
 	},
 }
 
