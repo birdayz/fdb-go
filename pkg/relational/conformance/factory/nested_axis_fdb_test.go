@@ -49,6 +49,15 @@ type nestedAxis struct {
 	// CONDITION, not a build break, so there is deliberately no floor under it.
 	// When a gap closes the axis fails here with its real rows in the log, and
 	// the fix is to drop this field and pin `want`.
+	//
+	// It currently has NO users: the only gap ever booked here was RFC-230's
+	// nested group key, in two shapes, and RFC-230 landed — both are pinned to
+	// rows above. The field stays because the mechanism is what makes the next
+	// gap bookable rather than omitted, and it is not dead code: every arm of
+	// its classification is driven by TestClassifyAxisDrivesEveryVerdict, which
+	// is the whole reason those arms were unit-pinned instead of left to the
+	// corpus reading. An empty `declines` is the instrument working, not the
+	// instrument idle — `refuses` is what keeps the gate from going vacuous.
 	declines string
 
 	// refuses names a BY-DESIGN refusal: a shape where declining IS the correct
@@ -169,16 +178,25 @@ func nestedAxes() []nestedAxis {
 		{axis: "order-by-qualified-depth3", query: "SELECT a.id FROM nt AS a ORDER BY a.n.dp.sk DESC", want: []string{"3", "2", "1"}},
 		{axis: "agg-arg-depth2", query: "SELECT MAX(n.sk) FROM nt", want: []string{"33"}},
 		{axis: "agg-arg-depth3", query: "SELECT SUM(n.dp.sk) FROM nt", want: []string{"666"}},
-		// Two SHAPES of ONE gap, not two gaps. Both die on the same 0AF00 from
-		// the same site (logical_predicate.go, `grouping by the nested field %q
-		// is not supported`), booked as RFC-230, and the same gap is already
-		// forcing Java's own groupby-tests.yamsql to be skipped in
-		// javacorpus/gaps.go. Java supports both; Go is behind on both; they
-		// close together. Keeping the second shape is worth it — HAVING reaches
-		// the group key through a different path than the SELECT list does — but
-		// a count of these entries is a count of shapes, not of gaps.
-		{axis: "group-by-depth2", query: "SELECT n.sk, COUNT(*) FROM nt GROUP BY n.sk ORDER BY n.sk", declines: `grouping by the nested field "N.SK" is not supported`},
-		{axis: "having-depth2", query: "SELECT n.sk FROM nt GROUP BY n.sk HAVING COUNT(*) > 0 ORDER BY n.sk", declines: `grouping by the nested field "N.SK" is not supported`},
+		// These two were booked as a GAP — two shapes of one, both dying on
+		// `grouping by the nested field %q is not supported` from a single site,
+		// tracked as RFC-230. RFC-230 landed, that refusal no longer exists, and
+		// both shapes now answer. They are pinned to rows here, which is the
+		// transition the `declines` field exists to make: a gap drains, and
+		// draining is the success condition rather than a build break.
+		//
+		// The gate is what surfaced it, and it surfaced it as instructions
+		// rather than as a puzzle — "2 booked GAPS now answer ... drop the
+		// axis's `declines` and pin its rows in `want`", with the rows in the
+		// log. Keeping the HAVING shape beside the GROUP BY one is still worth
+		// it: HAVING reaches the group key by a different path than the SELECT
+		// list does, so they can regress independently even though they closed
+		// together.
+		//
+		// Each `n.sk` is distinct across the three probe rows, so every group
+		// holds exactly one row and `HAVING COUNT(*) > 0` keeps all three.
+		{axis: "group-by-depth2", query: "SELECT n.sk, COUNT(*) FROM nt GROUP BY n.sk ORDER BY n.sk", want: []string{"11|1", "22|1", "33|1"}},
+		{axis: "having-depth2", query: "SELECT n.sk FROM nt GROUP BY n.sk HAVING COUNT(*) > 0 ORDER BY n.sk", want: []string{"11", "22", "33"}},
 		{axis: "join-on-depth2", query: "SELECT l.id, r.id FROM nt AS l JOIN nt AS r ON l.n.sk = r.n.sk ORDER BY l.id", want: []string{"1|1", "2|2", "3|3"}},
 		{axis: "join-on-depth3", query: "SELECT l.id FROM nt AS l JOIN nt AS r ON l.n.dp.sk = r.n.dp.sk ORDER BY l.id", want: []string{"1", "2", "3"}},
 
