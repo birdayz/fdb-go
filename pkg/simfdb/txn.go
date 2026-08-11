@@ -638,7 +638,15 @@ func (tx *simTxn) rangeRows(begin, end []byte, limit int, reverse bool) ([]fdb.K
 // the caller must record its read conflict over. The client caps begin/end before issuing the
 // read for exactly that reason (client/ryw.go:667-673); conflicting over the REQUESTED window
 // instead claims a read of keys past the cap that provably never happened.
-func (tx *simTxn) fetchRange(begin, end []byte, limit int, reverse bool) (
+// byteTarget is the reply's per-fetch byte budget (fdb.ByteLimitUnlimited for none). It is
+// applied HERE rather than by the caller because it has to take effect before the
+// unreadable-cap predicate below reads `more`: on a real cluster the storage server truncates
+// the reply, so a byte-limited fetch comes back short WITH more=true, and the client's
+// "would iteration continue into the unreadable position?" test sees a filled batch. Cutting
+// the rows after fetchRange returned would leave `more` describing the untruncated read, and a
+// scan that should have crossed a batch boundary and continued would instead raise
+// accessed_unreadable on its first fetch having yielded nothing.
+func (tx *simTxn) fetchRange(begin, end []byte, limit int, byteTarget int, reverse bool) (
 	kvs []fdb.KeyValue, more bool, cBegin, cEnd []byte, err error,
 ) {
 	cBegin, cEnd = begin, end
@@ -655,7 +663,40 @@ func (tx *simTxn) fetchRange(begin, end []byte, limit int, reverse bool) (
 			cEnd = capKey
 		}
 	}
+	// Bound the STORE WALK by the byte target as well as the row budget. Without this an
+	// unlimited cursor asks for its whole remaining row budget (effectiveLimit(0) = MaxInt32)
+	// and the walk clones, maps and sorts the entire remaining tail on EVERY fetch, with the
+	// byte cut trimming it afterwards — a saturated drain then costs O(n) per page and O(n^2)
+	// overall. The real client does not have this problem because the row budget it puts on the
+	// wire is clamped and the STORAGE SERVER stops reading at the byte limit; this is the
+	// simulator's equivalent of that stop.
+	//
+	// The ceiling can never cut a row the server would have returned: the cheapest possible row
+	// costs 1 (shortest key) + 0 (empty value) + serverRowOverheadBytes against the budget, so
+	// no reply limited to byteTarget can contain more than byteTarget/minRowCost + 1 rows.
+	// serverByteCut below still decides the actual boundary — this only stops the walk.
+	//
+	// WHY A ROW CEILING HERE RATHER THAN A BYTE-AWARE WALK, which looks tidier: the walk reads
+	// STORED rows, while the division must be taken over the MERGED rows the fetch returns —
+	// local writes add, remove and resize rows before the boundary is decided. Byte accounting
+	// inside the walk would therefore be measuring a different collection from the one the
+	// boundary is about, and serverByteCut would STILL have to make the real cut afterwards.
+	// That splits the authority for the batch boundary across two accountings over two
+	// different row sets, which is exactly how the two drift apart later. This ceiling is a
+	// pure performance guard that provably cannot move the boundary, so the boundary keeps a
+	// single definition.
+	if byteTarget != fdb.ByteLimitUnlimited {
+		const minRowCost = 1 + serverRowOverheadBytes
+		if maxRows := byteTarget/minRowCost + 1; maxRows < limit {
+			limit = maxRows
+		}
+	}
 	kvs, more = tx.rangeRows(cBegin, cEnd, limit, reverse)
+	// Stand in for the storage server truncating the reply at the request's byte limit.
+	if cut := serverByteCut(kvs, byteTarget); cut < len(kvs) {
+		kvs = kvs[:cut]
+		more = true
+	}
 	if capKey == nil {
 		return kvs, more, cBegin, cEnd, nil
 	}

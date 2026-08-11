@@ -401,7 +401,7 @@ func TestRYWSnapshotCache_GetRangeCachesServerResult(t *testing.T) {
 
 	var c rywCache
 	calls := 0
-	serverGetRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	serverGetRange := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		calls++
 		return []KeyValue{
 			{Key: []byte("a"), Value: []byte("1")},
@@ -411,14 +411,14 @@ func TestRYWSnapshotCache_GetRangeCachesServerResult(t *testing.T) {
 	}
 
 	// First call.
-	kvs, more, err := c.getRange(context.Background(), []byte("a"), []byte("d"), 0, false, serverGetRange)
+	kvs, more, err := c.getRange(context.Background(), []byte("a"), []byte("d"), 0, ByteLimitUnlimited, false, serverGetRange)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(more).To(BeFalse())
 	g.Expect(kvs).To(HaveLen(3))
 	g.Expect(calls).To(Equal(1))
 
 	// Second call: fully cached.
-	kvs, more, err = c.getRange(context.Background(), []byte("a"), []byte("d"), 0, false, serverGetRange)
+	kvs, more, err = c.getRange(context.Background(), []byte("a"), []byte("d"), 0, ByteLimitUnlimited, false, serverGetRange)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(more).To(BeFalse())
 	g.Expect(kvs).To(HaveLen(3))
@@ -431,7 +431,7 @@ func TestRYWSnapshotCache_GetRangeSubrangeHit(t *testing.T) {
 
 	var c rywCache
 	calls := 0
-	serverGetRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	serverGetRange := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		calls++
 		return []KeyValue{
 			{Key: []byte("a"), Value: []byte("1")},
@@ -441,11 +441,11 @@ func TestRYWSnapshotCache_GetRangeSubrangeHit(t *testing.T) {
 	}
 
 	// Fetch full range.
-	c.getRange(context.Background(), []byte("a"), []byte("d"), 0, false, serverGetRange)
+	c.getRange(context.Background(), []byte("a"), []byte("d"), 0, ByteLimitUnlimited, false, serverGetRange)
 	g.Expect(calls).To(Equal(1))
 
 	// Sub-range of cached data.
-	kvs, more, err := c.getRange(context.Background(), []byte("b"), []byte("d"), 0, false, serverGetRange)
+	kvs, more, err := c.getRange(context.Background(), []byte("b"), []byte("d"), 0, ByteLimitUnlimited, false, serverGetRange)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(more).To(BeFalse())
 	g.Expect(kvs).To(HaveLen(2)) // b, c
@@ -459,7 +459,7 @@ func TestRYWSnapshotCache_GetRangeReverseFromCache(t *testing.T) {
 
 	var c rywCache
 	calls := 0
-	serverGetRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	serverGetRange := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		calls++
 		// Simulate forward fetch.
 		return []KeyValue{
@@ -470,11 +470,11 @@ func TestRYWSnapshotCache_GetRangeReverseFromCache(t *testing.T) {
 	}
 
 	// Fetch in forward direction.
-	c.getRange(context.Background(), []byte("a"), []byte("d"), 0, false, serverGetRange)
+	c.getRange(context.Background(), []byte("a"), []byte("d"), 0, ByteLimitUnlimited, false, serverGetRange)
 	g.Expect(calls).To(Equal(1))
 
 	// Now request the same range in reverse — should come from cache.
-	kvs, _, err := c.getRange(context.Background(), []byte("a"), []byte("d"), 0, true, serverGetRange)
+	kvs, _, err := c.getRange(context.Background(), []byte("a"), []byte("d"), 0, ByteLimitUnlimited, true, serverGetRange)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(kvs).To(HaveLen(3))
 	g.Expect(kvs[0].Key).To(Equal([]byte("c"))) // reverse order
@@ -489,7 +489,7 @@ func TestRYWSnapshotCache_GetRangeWithWritesMerge(t *testing.T) {
 
 	var c rywCache
 	calls := 0
-	serverGetRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	serverGetRange := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		calls++
 		return []KeyValue{
 			{Key: []byte("a"), Value: []byte("1")},
@@ -498,14 +498,14 @@ func TestRYWSnapshotCache_GetRangeWithWritesMerge(t *testing.T) {
 	}
 
 	// First call populates cache.
-	c.getRange(context.Background(), []byte("a"), []byte("d"), 0, false, serverGetRange)
+	c.getRange(context.Background(), []byte("a"), []byte("d"), 0, ByteLimitUnlimited, false, serverGetRange)
 	g.Expect(calls).To(Equal(1))
 
 	// Add a local write.
 	c.set([]byte("b"), []byte("2"))
 
 	// Second call: has writes, but server cache should prevent re-fetch.
-	kvs, _, err := c.getRange(context.Background(), []byte("a"), []byte("d"), 0, false, serverGetRange)
+	kvs, _, err := c.getRange(context.Background(), []byte("a"), []byte("d"), 0, ByteLimitUnlimited, false, serverGetRange)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(kvs).To(HaveLen(3)) // a, b (write), c
 	g.Expect(kvs[1].Key).To(Equal([]byte("b")))
@@ -519,7 +519,7 @@ func TestRYWSnapshotCache_GetRangeWithClearsMerge(t *testing.T) {
 
 	var c rywCache
 	calls := 0
-	serverGetRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	serverGetRange := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		calls++
 		return []KeyValue{
 			{Key: []byte("a"), Value: []byte("1")},
@@ -529,14 +529,14 @@ func TestRYWSnapshotCache_GetRangeWithClearsMerge(t *testing.T) {
 	}
 
 	// First call populates cache.
-	c.getRange(context.Background(), []byte("a"), []byte("d"), 0, false, serverGetRange)
+	c.getRange(context.Background(), []byte("a"), []byte("d"), 0, ByteLimitUnlimited, false, serverGetRange)
 	g.Expect(calls).To(Equal(1))
 
 	// Clear a key locally.
 	c.clear([]byte("b"))
 
 	// Second call: has clears, but server cache prevents re-fetch.
-	kvs, _, err := c.getRange(context.Background(), []byte("a"), []byte("d"), 0, false, serverGetRange)
+	kvs, _, err := c.getRange(context.Background(), []byte("a"), []byte("d"), 0, ByteLimitUnlimited, false, serverGetRange)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(kvs).To(HaveLen(2)) // a, c (b was cleared)
 	g.Expect(calls).To(Equal(1)) // still 1
@@ -569,7 +569,7 @@ func TestRYWSnapshotCache_GetRangeWithLimit(t *testing.T) {
 
 	var c rywCache
 	calls := 0
-	serverGetRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	serverGetRange := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		calls++
 		return []KeyValue{
 			{Key: []byte("a"), Value: []byte("1")},
@@ -579,10 +579,10 @@ func TestRYWSnapshotCache_GetRangeWithLimit(t *testing.T) {
 	}
 
 	// Fetch full range (no limit).
-	c.getRange(context.Background(), []byte("a"), []byte("d"), 0, false, serverGetRange)
+	c.getRange(context.Background(), []byte("a"), []byte("d"), 0, ByteLimitUnlimited, false, serverGetRange)
 
 	// Now request with limit from cache.
-	kvs, more, err := c.getRange(context.Background(), []byte("a"), []byte("d"), 2, false, serverGetRange)
+	kvs, more, err := c.getRange(context.Background(), []byte("a"), []byte("d"), 2, ByteLimitUnlimited, false, serverGetRange)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(kvs).To(HaveLen(2))
 	g.Expect(more).To(BeTrue())
@@ -595,7 +595,7 @@ func TestRYWSnapshotCache_PartialServerMoreSlowPath(t *testing.T) {
 
 	var c rywCache
 	calls := 0
-	serverGetRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	serverGetRange := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		calls++
 		// Simulate paged results for the slow path's iterative loop.
 		if string(begin) <= "a" {
@@ -613,14 +613,14 @@ func TestRYWSnapshotCache_PartialServerMoreSlowPath(t *testing.T) {
 	c.set([]byte("a1"), []byte("inserted"))
 
 	// First call: slow path iterates, caching both server chunks.
-	kvs, more, err := c.getRange(context.Background(), []byte("a"), []byte("d"), 0, false, serverGetRange)
+	kvs, more, err := c.getRange(context.Background(), []byte("a"), []byte("d"), 0, ByteLimitUnlimited, false, serverGetRange)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(kvs).To(HaveLen(4)) // a, a1 (write), b, c
 	g.Expect(more).To(BeFalse())
 	g.Expect(calls).To(Equal(2))
 
 	// Second call: both server chunks cached — no additional server calls.
-	kvs, more, err = c.getRange(context.Background(), []byte("a"), []byte("d"), 0, false, serverGetRange)
+	kvs, more, err = c.getRange(context.Background(), []byte("a"), []byte("d"), 0, ByteLimitUnlimited, false, serverGetRange)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(kvs).To(HaveLen(4))
 	g.Expect(more).To(BeFalse())
@@ -633,7 +633,7 @@ func TestRYWSnapshotCache_FastPathCachesServerMore(t *testing.T) {
 
 	var c rywCache
 	calls := 0
-	serverGetRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	serverGetRange := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		calls++
 		return []KeyValue{
 			{Key: []byte("a"), Value: []byte("1")},
@@ -642,14 +642,14 @@ func TestRYWSnapshotCache_FastPathCachesServerMore(t *testing.T) {
 	}
 
 	// Fast path: returns server result as-is, but caches partial range.
-	kvs, more, err := c.getRange(context.Background(), []byte("a"), []byte("d"), 0, false, serverGetRange)
+	kvs, more, err := c.getRange(context.Background(), []byte("a"), []byte("d"), 0, ByteLimitUnlimited, false, serverGetRange)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(kvs).To(HaveLen(2))
 	g.Expect(more).To(BeTrue())
 	g.Expect(calls).To(Equal(1))
 
 	// Sub-range [a, b\x00) is cached — request for [a, b] hits cache.
-	kvs, more, err = c.getRange(context.Background(), []byte("a"), []byte("b"), 0, false, serverGetRange)
+	kvs, more, err = c.getRange(context.Background(), []byte("a"), []byte("b"), 0, ByteLimitUnlimited, false, serverGetRange)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(kvs).To(HaveLen(1)) // just "a" (end "b" is exclusive)
 	g.Expect(more).To(BeFalse())
@@ -663,7 +663,7 @@ func TestRYWSnapshotCache_GetAfterRangeCacheHit(t *testing.T) {
 	var c rywCache
 	rangeCalls := 0
 	getCalls := 0
-	serverGetRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	serverGetRange := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		rangeCalls++
 		return []KeyValue{
 			{Key: []byte("a"), Value: []byte("1")},
@@ -676,7 +676,7 @@ func TestRYWSnapshotCache_GetAfterRangeCacheHit(t *testing.T) {
 	}
 
 	// Range scan populates cache for [a, d).
-	c.getRange(context.Background(), []byte("a"), []byte("d"), 0, false, serverGetRange)
+	c.getRange(context.Background(), []byte("a"), []byte("d"), 0, ByteLimitUnlimited, false, serverGetRange)
 	g.Expect(rangeCalls).To(Equal(1))
 
 	// Single key Get for "b" — should be served from range cache.

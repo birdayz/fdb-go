@@ -27,11 +27,19 @@ func conflictStrings(tx *simTxn) []string {
 func TestAbandonedCursorConflictsOnlyOverWhatItFetched(t *testing.T) {
 	t.Parallel()
 	db := New(nil)
-	seed(db, "a", "1", "b", "2", "c", "3", "d", "4", "e", "5", "f", "6", "g", "7", "h", "8")
+	// FAT rows, because the division is byte-driven: ITERATOR's first fetch targets 4096 bytes
+	// and a row costs key+value+serverRowOverheadBytes against it, with the row that REACHES the
+	// budget included. At a 1-byte key and lazyValueLen(2048) a row costs 1+2048+24 = 2073, so
+	// row 1 leaves the reply under budget (2073 < 4096) and row 2 reaches it (4146 >= 4096) —
+	// the reply stops at two rows with more still pending. With the 1-byte values this fixture
+	// used to carry, all eight rows cost 8*26 = 208 bytes and arrived in ONE fetch: there was no
+	// boundary left to abandon the cursor at, so the assertion below could not fail.
+	seed(db, "a", fatValue("1"), "b", fatValue("2"), "c", fatValue("3"), "d", fatValue("4"),
+		"e", fatValue("5"), "f", fatValue("6"), "g", fatValue("7"), "h", fatValue("8"))
 
 	tx := db.newTxn()
-	// StreamingModeSmall fetches 10 rows per batch; a 2-row limit on the ITERATOR mode's first
-	// batch is what makes the boundary observable, so use Iterator mode (2, 4, 8, ... rows).
+	// ITERATOR mode: its first fetch is the smallest byte target any mode gives (4096), which is
+	// what puts the boundary after two of the rows seeded above.
 	it := tx.GetRange(fdb.KeyRange{Begin: k("a"), End: k("z")},
 		fdb.RangeOptions{Mode: fdb.StreamingModeIterator}).Iterator()
 	var got []string
@@ -110,27 +118,49 @@ func TestDrainedCursorConflictsOverTheWholeRange(t *testing.T) {
 }
 
 // TestCursorBatchSizesFollowTheStreamingMode pins that the sim batches by the SAME rule as the
-// client (fdb.BatchSize), not by some sim-local convention. Batch boundaries are where a
-// continuation lands and where each conflict range ends, so a different rule means a different
-// paging and a different conflict shape.
+// client (fdb.ModeTargetBytes plus the server's truncation), not by some sim-local convention.
+// Batch boundaries are where a continuation lands and where each conflict range ends, so a
+// different rule means a different paging and a different conflict shape.
+//
+// The rule is BYTE-driven: the streaming mode supplies a per-fetch byte target, and the reply
+// accumulates rows until key+value+serverRowOverheadBytes reaches it, INCLUDING the row that
+// reaches it. So what distinguishes the modes here is how many of these rows fit in 4096, 256
+// and 80000 bytes — not a per-mode row page, which no longer exists.
 func TestCursorBatchSizesFollowTheStreamingMode(t *testing.T) {
 	t.Parallel()
 	keys := []string{
 		"k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9",
 		"ka", "kb", "kc", "kd", "ke", "kf",
 	}
+	// FAT rows, so the modes' byte targets actually divide these 16 rows differently. The keys
+	// are 2 bytes and lazyValueLen is 2048, so one row costs 2+2048+24 = 2074 bytes against a
+	// reply's budget, with the row that REACHES the budget included. With the 1-byte values this
+	// fixture used to carry a row cost 27 bytes and every mode swallowed all 16 rows in its
+	// first fetch — the arms became indistinguishable and the test stopped saying anything about
+	// the mode.
 	var kvs []string
 	for _, key := range keys {
-		kvs = append(kvs, key, "v")
+		kvs = append(kvs, key, fatValue("v"))
 	}
 
+	// Every expected division below is derived from the mode's byte target and the 2074-byte row
+	// cost, never read back off a run:
+	//
+	//	ITERATOR, targets 4096, 6144, 9216, 13824 (fdb_c.cpp:1006, one per iteration):
+	//	  4096: 2074, 4148 -> stops at 2 rows (4148 >= 4096)
+	//	  6144: 2074, 4148, 6222 -> 3 rows
+	//	  9216: 4*2074 = 8296 < 9216, 5*2074 = 10370 -> 5 rows
+	//	  13824: 6 rows are left and cost 12444 < 13824, so the range exhausts first -> 6 rows
+	//	SMALL, target 256 (fdb_c.cpp:1002): the FIRST row already costs 2074 >= 256, so every
+	//	  fetch carries exactly one row -> sixteen 1-row fetches.
+	//	WANT_ALL is rewritten to SERIAL, target 80000: 16*2074 = 33184 < 80000, one fetch.
 	for _, tc := range []struct {
 		mode  fdb.StreamingMode
 		name  string
 		batch []int // rows per fetched batch, in order
 	}{
-		{fdb.StreamingModeIterator, "iterator doubles", []int{2, 4, 8, 2}},
-		{fdb.StreamingModeSmall, "small caps at 10", []int{10, 6}},
+		{fdb.StreamingModeIterator, "iterator follows the byte progression", []int{2, 3, 5, 6}},
+		{fdb.StreamingModeSmall, "small carries one fat row per fetch", repeatN(1, 16)},
 		{fdb.StreamingModeWantAll, "want-all fetches everything", []int{16}},
 	} {
 		tc := tc
@@ -255,24 +285,41 @@ func TestRangeOptionValidationPerSurface(t *testing.T) {
 }
 
 // TestCursorBatchSizesSaturate pins the SATURATION half of the ITERATOR progression, which
-// TestCursorBatchSizesFollowTheStreamingMode cannot reach: with 16 rows the scan ends at
-// iteration 4, long before the clamp bites, so that test is green whether or not the
-// progression is bounded.
+// TestCursorBatchSizesFollowTheStreamingMode cannot reach: with 16 rows that scan ends at
+// iteration 4, long before the clamp bites, so it is green whether or not the progression is
+// bounded.
 //
-// libfdb_c gives ITERATOR a byte target from a fixed table and clamps the index into it
-// (bindings/c/fdb_c.cpp:1006 table, :1019 `iteration = std::min(iteration, max_iteration)`),
-// so its per-fetch target stops growing. This client's budget is a row count that used to
-// double without a clamp, which made one fetch eventually cover the whole remaining range.
-// Because batch boundaries are where a continuation lands and where each conflict range
-// ends, the sim has to saturate at exactly the point the client does — so this pins it on
-// the sim's own iterator, through the client's trace surface, the same way the batching
-// rule itself is pinned.
+// WHAT SATURATES IS THE BYTE TARGET, NOT A ROW COUNT. libfdb_c gives ITERATOR a per-fetch byte
+// target from a fixed table (bindings/c/fdb_c.cpp:1006, "goes 1.5 * previous") and CLAMPS the
+// index into it (:1019 `iteration = std::min(iteration, max_iteration)`), so the target stops
+// growing at the table's last entry, 120000 bytes, and no fetch ever targets more. Without the
+// clamp the target keeps multiplying and every fetch is bigger than the last, so one fetch
+// eventually covers the whole remaining range.
+//
+// Because batch boundaries are where a continuation lands and where each conflict range ends,
+// the sim has to saturate at exactly the point the client does — so this pins it on the sim's
+// own iterator, through the client's trace surface, the same way the batching rule itself is
+// pinned. The client-side counterpart against real FDB is
+// fdb:TestRangeIterator_DrainsPastIteratorSaturation.
 func TestCursorBatchSizesSaturate(t *testing.T) {
 	t.Parallel()
 
-	// Enough rows to run well past the saturation point: the doubling phase consumes
-	// 2+4+...+1024 = 2046 rows, so 6000 leaves several fully-saturated batches behind it.
-	const nRows = 6000
+	// rowCost is what one seeded row charges against a reply's byte budget: a 7-byte key
+	// ("k" + 6 digits), a 1-byte value, and the server's per-row overhead.
+	const rowCost = 7 + 1 + serverRowOverheadBytes // 32
+
+	// saturateTargets is libfdb_c's iteration_progression (fdb_c.cpp:1006) written out here
+	// rather than read back from fdb.ModeTargetBytes: a test that asks the implementation what
+	// it does agrees with any implementation, including one that never clamps. The LAST entry
+	// is the saturated target — from the tenth iteration on, every fetch targets it.
+	saturateTargets := []int{4096, 6144, 9216, 13824, 20736, 31104, 46656, 69984, 80000, 120000}
+
+	// Enough rows that the growth phase is followed by SEVERAL fetches at the saturated target.
+	// Growth consumes the sum of the first nine targets, 281760 bytes = 8805 rows at 32 bytes
+	// each; each saturated fetch then takes 120000/32 = 3750. 25000 rows leaves four full
+	// saturated fetches plus a short final one, so the plateau is unmistakable. (The old 6000-row
+	// seed drains during growth and never reaches the clamp at all.)
+	const nRows = 25000
 	var kvs []string
 	for i := 0; i < nRows; i++ {
 		kvs = append(kvs, fmt.Sprintf("k%06d", i), "v")
@@ -280,22 +327,24 @@ func TestCursorBatchSizesSaturate(t *testing.T) {
 	db := New(nil)
 	seed(db, kvs...)
 
-	// The expected progression, written out independently of fdb.BatchSize rather than
-	// derived from it — a test that asked the implementation what it does would agree with
-	// any implementation, including the unbounded one.
-	const wantCap = 1024
+	// The expected division, derived from the targets above and rowCost — never read off a run.
+	// A reply accumulates rows until the running byte sum REACHES its target, including the row
+	// that reaches it, so a target of T admits ceil(T/rowCost) rows; the final fetch is short
+	// because the range runs out. That yields
+	// [128 192 288 432 648 972 1458 2187 2500 3750 3750 3750 3750 1195].
 	var want []int
-	remaining := nRows
-	for size := 2; remaining > 0; size *= 2 {
-		if size > wantCap {
-			size = wantCap
+	for i, remaining := 0, nRows; remaining > 0; i++ {
+		target := saturateTargets[min(i, len(saturateTargets)-1)]
+		rows := (target + rowCost - 1) / rowCost
+		if rows > remaining {
+			rows = remaining
 		}
-		if size > remaining {
-			size = remaining
-		}
-		want = append(want, size)
-		remaining -= size
+		want = append(want, rows)
+		remaining -= rows
 	}
+	// The saturated fetch size, which is also the ceiling on ANY fetch: the clamp is what keeps
+	// the eleventh iteration from targeting 180000 bytes and returning 5625 rows.
+	wantPeak := (saturateTargets[len(saturateTargets)-1] + rowCost - 1) / rowCost // 3750
 
 	tx := db.newTxn()
 	it := tx.GetRange(fdb.KeyRange{Begin: k("k"), End: k("l")},
@@ -303,7 +352,7 @@ func TestCursorBatchSizesSaturate(t *testing.T) {
 	var got []int
 	it.SetTraceLog(func(_, _, returned int, _ bool, _ error) {
 		if returned == 0 {
-			return // the trailing empty fetch returns no rows
+			return // a trailing empty fetch returns no rows
 		}
 		got = append(got, returned)
 	})
@@ -321,13 +370,42 @@ func TestCursorBatchSizesSaturate(t *testing.T) {
 			peak = n
 		}
 	}
-	if peak > wantCap {
-		t.Fatalf("peak batch = %d, want <= %d — the ITERATOR progression must SATURATE, "+
-			"not keep doubling; batches were %v", peak, wantCap, got)
+	if peak > wantPeak {
+		t.Fatalf("peak batch = %d rows, want <= %d — the ITERATOR byte target must SATURATE at "+
+			"the progression's last entry (%d bytes, fdb_c.cpp:1019); an unclamped target keeps "+
+			"multiplying by 1.5 and every fetch outgrows the last. batches were %v",
+			peak, wantPeak, saturateTargets[len(saturateTargets)-1], got)
 	}
-	if peak != wantCap {
-		t.Fatalf("peak batch = %d, want exactly %d — the progression must still grow up to "+
-			"the saturation point; batches were %v", peak, wantCap, got)
+	if peak != wantPeak {
+		t.Fatalf("peak batch = %d rows, want exactly %d — the target must still GROW up to the "+
+			"clamp; batches were %v", peak, wantPeak, got)
+	}
+	// And it must have grown to get there: a client that targeted the saturated value from
+	// iteration 1 would satisfy the two checks above while skipping the progression entirely.
+	// The first fetch targets 4096 bytes, well under a thirtieth of the peak.
+	if len(got) < 2 || got[0] >= peak {
+		t.Fatalf("first fetch returned %d rows against a peak of %d — the progression starts at "+
+			"%d bytes and grows 1.5x per iteration, so a first fetch already at the peak means "+
+			"the iteration number never reached the target derivation; batches were %v",
+			got[0], peak, saturateTargets[0], got)
+	}
+	// At least three fetches must sit AT the saturated size, excluding the short final one: that
+	// plateau is the clamp made observable, and it is what a still-growing progression cannot
+	// produce.
+	const wantSaturatedFetches = 3
+	saturated := 0
+	for i, n := range got {
+		if i == len(got)-1 {
+			continue // the range ran out here; it is not evidence either way about the clamp
+		}
+		if n == wantPeak {
+			saturated++
+		}
+	}
+	if saturated < wantSaturatedFetches {
+		t.Fatalf("only %d fetch(es) sat at the saturated size of %d rows, want >= %d — without "+
+			"the clamp no plateau ever forms; batches were %v",
+			saturated, wantPeak, wantSaturatedFetches, got)
 	}
 	if len(got) != len(want) {
 		t.Fatalf("batches = %v (%d fetches), want %v (%d fetches)",
@@ -339,6 +417,8 @@ func TestCursorBatchSizesSaturate(t *testing.T) {
 				i+1, got[i], want[i], got, want)
 		}
 	}
+	t.Logf("MEASURED iterator division over %d rows: %v (peak %d, %d at the plateau)",
+		nRows, got, peak, saturated)
 }
 
 // TestCursorPageCostsThePageNotTheTail is the sim's cost pin, the counterpart to the client's

@@ -71,17 +71,19 @@ func effectiveLimit(limit int) int {
 }
 
 func (rr goRangeResult) doRangeWithLimit(begin, end []byte, limit int) ([]client.KeyValue, bool, error) {
+	return rr.doRange(begin, end, limit, client.ByteLimitUnlimited)
+}
+
+// doRange issues one range read carrying BOTH dimensions: a row budget and a per-fetch byte
+// target. byteTarget is client.ByteLimitUnlimited for callers that have no streaming mode to
+// derive one from (GetSliceWithError, which drains the whole range) and the mode's own target
+// for the batching iterator.
+func (rr goRangeResult) doRange(begin, end []byte, limit, byteTarget int) ([]client.KeyValue, bool, error) {
 	if rr.snapshot {
 		snap := rr.tx.inner.Snapshot()
-		if rr.options.Reverse {
-			return snap.GetRangeReverse(rr.tx.ctx, begin, end, limit)
-		}
-		return snap.GetRange(rr.tx.ctx, begin, end, limit)
+		return snap.GetRangeWithByteTarget(rr.tx.ctx, begin, end, limit, byteTarget, rr.options.Reverse)
 	}
-	if rr.options.Reverse {
-		return rr.tx.inner.GetRangeReverse(rr.tx.ctx, begin, end, limit)
-	}
-	return rr.tx.inner.GetRange(rr.tx.ctx, begin, end, limit)
+	return rr.tx.inner.GetRangeWithByteTarget(rr.tx.ctx, begin, end, limit, byteTarget, rr.options.Reverse)
 }
 
 // GetSliceWithError returns all key-value pairs in the range as a slice.
@@ -166,87 +168,17 @@ func (rr goRangeResult) Iterator() RangeIterator {
 	}
 }
 
-// BatchSize returns the number of rows to fetch for a given streaming mode and iteration
-// number (1-based). Exported because the SimFDB backend (pkg/simfdb) is a third implementation
-// of this interface and has to batch IDENTICALLY: batch boundaries are where a range read takes
-// its per-batch read-conflict range and where a cursor's continuation lands, so a sim that
-// batched differently would disagree with the client about both. Duplicating the rule there
-// would let the two drift silently.
-func BatchSize(mode StreamingMode, iteration int, remaining int) int {
-	return batchSize(mode, iteration, remaining)
-}
-
 // EffectiveRowLimit returns the row budget for a range read: Limit 0 and -1 both mean
-// unlimited. Exported for the same reason as BatchSize.
+// unlimited. Exported because the SimFDB backend (pkg/simfdb) is a third implementation of this
+// interface and has to interpret a row budget identically.
+//
+// Its former companion BatchSize is deliberately gone rather than left unused. It returned a
+// per-mode ROW page, which is how this client divided a range before the division became
+// byte-driven; an exported function still handing out the old rule is an unwatched revival —
+// a future caller would reintroduce row batching while every division test kept passing,
+// because nothing would be calling the byte path. The batching rule now has exactly one
+// exported form, ModeTargetBytes.
 func EffectiveRowLimit(limit int) int { return effectiveLimit(limit) }
-
-// iteratorMaxIteration is libfdb_c's max_iteration for FDB_STREAMING_MODE_ITERATOR: the
-// length of its iteration_progression table (bindings/c/fdb_c.cpp:1006-1011). It is the
-// index at which the C client stops growing the per-fetch target, and the point this
-// client's row progression saturates for the same reason — see batchSize.
-const iteratorMaxIteration = 10
-
-// batchSize returns the number of rows to fetch for a given streaming mode
-// and iteration number. Matches the C client's behavior:
-//   - WANT_ALL: fetch everything
-//   - EXACT: fetch exact limit
-//   - ITERATOR: start small, double each iteration, saturate at iteration 10
-//   - SMALL/MEDIUM/LARGE/SERIAL: fixed sizes
-func batchSize(mode StreamingMode, iteration int, remaining int) int {
-	switch mode {
-	case StreamingModeWantAll:
-		return remaining
-	case StreamingModeExact:
-		return remaining
-	case StreamingModeIterator:
-		// libfdb_c models ITERATOR as a per-fetch BYTE target that grows ~1.5x per
-		// iteration and then SATURATES (bindings/c/fdb_c.cpp:1006):
-		//
-		//	{4096, 6144, 9216, 13824, 20736, 31104, 46656, 69984, 80000, 120000}
-		//
-		// with fdb_c.cpp:1019 clamping `iteration = std::min(iteration, max_iteration)`.
-		// Past the end of the table the C client re-uses the LAST target rather than
-		// growing, so no single C fetch ever targets more than 120000 bytes.
-		//
-		// This client's per-fetch budget is a ROW count, not a byte target: the whole
-		// range stack — getRangeImpl, the RYW merge loop, RFC-121 conflict extents, and
-		// simfdb's parallel implementation — carries a one-dimensional row budget where
-		// C++ carries a two-dimensional GetRangeLimits{rows, bytes}. Porting the byte
-		// model is a separate, wider change: C++'s mode_bytes_array (fdb_c.cpp:1002) is
-		// one unified BYTE table for every mode (SMALL 256, MEDIUM 1000, LARGE 4096,
-		// SERIAL 80000, WANT_ALL→SERIAL) where the arms below are row counts, so
-		// converting only ITERATOR would leave the mode table incoherent, and converting
-		// all of them moves every batch boundary — hence every read-conflict range and
-		// every cursor continuation — across the client, simfdb, and the record layer.
-		//
-		// What IS separable from the byte model, and is what this ports, is the
-		// SATURATION: the progression is clamped at the same iteration index C++ clamps
-		// at. Without it the batch is 2^iteration rows, so a large scan eventually asks
-		// for a batch the size of the whole remaining range (measured: ~951k rows in a
-		// single fetch at 2M rows) and getRangeImpl materializes all of it before the
-		// iterator sees a row — peak memory Θ(rows), where libfdb_c never exceeds one
-		// ~120 KB target per fetch. The byte dimension of that bound has its own
-		// mechanism here, the opt-in WithRangeByteCeiling (RFC-115 §2).
-		if iteration > iteratorMaxIteration {
-			iteration = iteratorMaxIteration
-		}
-		base := 2 << (iteration - 1) // 2, 4, 8, ... 1024, then 1024 forever
-		if base <= 0 || base > remaining {
-			return remaining
-		}
-		return base
-	case StreamingModeSmall:
-		return min(10, remaining)
-	case StreamingModeMedium:
-		return min(100, remaining)
-	case StreamingModeLarge:
-		return min(1000, remaining)
-	case StreamingModeSerial:
-		return min(500, remaining)
-	default:
-		return remaining
-	}
-}
 
 // RangeIterator returns key-value pairs one at a time from a range read.
 // Fetches data lazily in batches based on the StreamingMode.
@@ -303,10 +235,31 @@ func (ri *goRangeIterator) Advance() bool {
 	// RFC-121 clamps the first batch's conflict to its returned prefix: the rows in later
 	// batches would carry no read-conflict, so a concurrent write to one of them could let
 	// this transaction commit with stale data (lost serializability).
-	batch := batchSize(ri.rr.options.Mode, ri.iteration, ri.remaining)
+	// libfdb_c derives a per-fetch BYTE target from the streaming mode and iteration
+	// (fdb_c.cpp:1011-1029) and passes the caller's ROW limit through unchanged. The division
+	// into batches then comes from the byte dimension: the target goes on the request, the
+	// storage server truncates against it, and the client's soft byte limit ends the call at
+	// that reply. So the row budget here is simply what is left of the user's limit — a
+	// per-mode ROW batch would be a second, disagreeing divider.
+	//
+	// EXACT resolves to ByteLimitUnlimited (mode_bytes_array[EXACT]), so it keeps no byte
+	// target, the soft byte limit cannot fire, and the read stays a single row-bounded batch.
+	// That is agreement with C, not a shortfall.
+	// ri.iteration is already 1-based (initialised to 1), and the C API's iteration is 1-based
+	// too — bindings/java/.../RangeQuery.java:121 holds `iteration = 0` and passes `++iteration`
+	// at :225, so a fresh iterator's FIRST fetch is iteration 1 and takes
+	// iterationProgression[0] = 4096. Adding one here instead made the first fetch target 6144
+	// and made the table's first entry unreachable by any real scan, while the trace below —
+	// which logs the pre-increment value — still called that fetch iteration 1.
+	byteTarget, err := modeTargetBytes(ri.rr.options.Mode, ri.iteration)
+	if err != nil {
+		ri.err = err
+		return false
+	}
+	batch := ri.remaining
 	ri.iteration++
 
-	kvs, more, err := ri.rr.doRangeWithLimit(ri.begin, ri.end, batch)
+	kvs, more, err := ri.rr.doRange(ri.begin, ri.end, batch, byteTarget)
 
 	// Trace: log every batch for debugging premature exhaustion.
 	if ri.traceLog != nil {

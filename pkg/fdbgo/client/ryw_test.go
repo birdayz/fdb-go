@@ -23,7 +23,7 @@ func TestRYWGetRange_AllClearedServerMore(t *testing.T) {
 	// Mock server: first call returns [A, B, C] with more=true,
 	// second call returns [D, E] with more=false.
 	callCount := 0
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		callCount++
 		switch callCount {
 		case 1:
@@ -44,7 +44,7 @@ func TestRYWGetRange_AllClearedServerMore(t *testing.T) {
 		}
 	}
 
-	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, false, mockServer)
+	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestRYWGetRange_WritesAndClears(t *testing.T) {
 	// Clear key "C".
 	c.clear([]byte("C"))
 
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return []KeyValue{
 			{Key: []byte("A"), Value: []byte("server-a")},
 			{Key: []byte("B"), Value: []byte("server-b")},
@@ -83,7 +83,7 @@ func TestRYWGetRange_WritesAndClears(t *testing.T) {
 		}, false, nil
 	}
 
-	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, false, mockServer)
+	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestRYWGetRange_WritesBeyondBoundary(t *testing.T) {
 	c.set([]byte("F"), []byte("local-f"))
 
 	callCount := 0
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		callCount++
 		switch callCount {
 		case 1:
@@ -137,7 +137,7 @@ func TestRYWGetRange_WritesBeyondBoundary(t *testing.T) {
 		}
 	}
 
-	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, false, mockServer)
+	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestRYWGetRange_ReverseAllCleared(t *testing.T) {
 	c.clearRange([]byte("C"), []byte("Z"))
 
 	callCount := 0
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		if !reverse {
 			t.Fatal("expected reverse=true")
 		}
@@ -193,7 +193,7 @@ func TestRYWGetRange_ReverseAllCleared(t *testing.T) {
 		}
 	}
 
-	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, true, mockServer)
+	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, ByteLimitUnlimited, true, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestRYWGetRange_ReverseWriteBetweenBatches(t *testing.T) {
 	c.set([]byte("C"), []byte("local-c"))
 
 	callCount := 0
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		if !reverse {
 			t.Fatal("expected reverse=true")
 		}
@@ -248,7 +248,7 @@ func TestRYWGetRange_ReverseWriteBetweenBatches(t *testing.T) {
 		}
 	}
 
-	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, true, mockServer)
+	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, ByteLimitUnlimited, true, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -283,13 +283,13 @@ func TestRYWGetRange_AtomicResolution(t *testing.T) {
 	// Atomic ADD 5 to key "A" (unknown base → resolve from server).
 	c.atomic(MutAddValue, []byte("A"), []byte{5, 0, 0, 0, 0, 0, 0, 0})
 
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return []KeyValue{
 			{Key: []byte("A"), Value: []byte{10, 0, 0, 0, 0, 0, 0, 0}}, // base = 10
 		}, false, nil
 	}
 
-	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, false, mockServer)
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestRYWGetRange_LimitWithMore(t *testing.T) {
 	// Local write at "B".
 	c.set([]byte("B"), []byte("local"))
 
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return []KeyValue{
 			{Key: []byte("A"), Value: []byte("a")},
 			{Key: []byte("C"), Value: []byte("c")},
@@ -320,7 +320,7 @@ func TestRYWGetRange_LimitWithMore(t *testing.T) {
 	}
 
 	// Limit 2: should get A, B and more=true (C, D remain).
-	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 2, false, mockServer)
+	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 2, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -342,12 +342,12 @@ func TestRYWGetRange_NoWritesOrClears(t *testing.T) {
 	c := &rywCache{}
 
 	called := false
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		called = true
 		return []KeyValue{{Key: []byte("X"), Value: []byte("x")}}, false, nil
 	}
 
-	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, false, mockServer)
+	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestRYWGetRange_MultipleClearedBatches(t *testing.T) {
 	c.clearRange([]byte("A"), []byte("M"))
 
 	callCount := 0
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		callCount++
 		switch callCount {
 		case 1:
@@ -401,7 +401,7 @@ func TestRYWGetRange_MultipleClearedBatches(t *testing.T) {
 		}
 	}
 
-	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, false, mockServer)
+	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestRYWGetRange_InterleavedWritesAndServer(t *testing.T) {
 	c.set([]byte("D"), []byte("write-d"))
 	c.set([]byte("F"), []byte("write-f"))
 
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return []KeyValue{
 			{Key: []byte("A"), Value: []byte("server-a")},
 			{Key: []byte("C"), Value: []byte("server-c")},
@@ -441,7 +441,7 @@ func TestRYWGetRange_InterleavedWritesAndServer(t *testing.T) {
 		}, false, nil
 	}
 
-	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, false, mockServer)
+	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -479,7 +479,7 @@ func TestRYWGetRange_InterleavedReverse(t *testing.T) {
 	c.set([]byte("B"), []byte("write-b"))
 	c.set([]byte("D"), []byte("write-d"))
 
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		if !reverse {
 			t.Fatal("expected reverse")
 		}
@@ -490,7 +490,7 @@ func TestRYWGetRange_InterleavedReverse(t *testing.T) {
 		}, false, nil
 	}
 
-	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, true, mockServer)
+	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, ByteLimitUnlimited, true, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -523,7 +523,7 @@ func TestRYWGetRange_WriteOverridesServer(t *testing.T) {
 	c.set([]byte("A"), []byte("write-a"))
 	c.set([]byte("C"), []byte("write-c"))
 
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return []KeyValue{
 			{Key: []byte("A"), Value: []byte("server-a")},
 			{Key: []byte("B"), Value: []byte("server-b")},
@@ -531,7 +531,7 @@ func TestRYWGetRange_WriteOverridesServer(t *testing.T) {
 		}, false, nil
 	}
 
-	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, false, mockServer)
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -563,7 +563,7 @@ func TestRYWGetRange_ManyWritesFewInRange(t *testing.T) {
 	c.set([]byte("B"), []byte("write-b"))
 	c.set([]byte("D"), []byte("write-d"))
 
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return []KeyValue{
 			{Key: []byte("A"), Value: []byte("a")},
 			{Key: []byte("C"), Value: []byte("c")},
@@ -571,7 +571,7 @@ func TestRYWGetRange_ManyWritesFewInRange(t *testing.T) {
 		}, false, nil
 	}
 
-	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("F"), 10, false, mockServer)
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("F"), 10, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -598,13 +598,13 @@ func TestRYWGetRange_HasWritesInRangeBinarySearch(t *testing.T) {
 	c.set([]byte("Z3"), []byte("out"))
 
 	serverCalled := false
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		serverCalled = true
 		return []KeyValue{{Key: []byte("B"), Value: []byte("b")}}, false, nil
 	}
 
 	// Scan [A, F) — no writes in range, but clears check needed.
-	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("F"), 10, false, mockServer)
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("F"), 10, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -626,7 +626,7 @@ func TestRYWGetRange_ServerMoreWithLimit(t *testing.T) {
 	c.clear([]byte("B"))
 	c.set([]byte("A\x01"), []byte("inserted"))
 
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return []KeyValue{
 			{Key: []byte("A"), Value: []byte("a")},
 			{Key: []byte("B"), Value: []byte("b")},
@@ -635,7 +635,7 @@ func TestRYWGetRange_ServerMoreWithLimit(t *testing.T) {
 	}
 
 	// Limit 2: A, A\x01 (B cleared, C not taken). Server had more → more=true.
-	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 2, false, mockServer)
+	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 2, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -659,12 +659,12 @@ func TestRYWGetRange_EmptyRange(t *testing.T) {
 	c := &rywCache{}
 	c.set([]byte("A"), []byte("v"))
 
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return nil, false, nil
 	}
 
 	// begin >= end → empty range (should not return writes either)
-	result, more, err := c.getRange(context.Background(), []byte("Z"), []byte("A"), 10, false, mockServer)
+	result, more, err := c.getRange(context.Background(), []byte("Z"), []byte("A"), 10, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -712,7 +712,7 @@ func TestRYWGetRange_WriteAtBoundaryKey(t *testing.T) {
 	c.set([]byte("C"), []byte("write-c"))
 
 	callCount := 0
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		callCount++
 		switch callCount {
 		case 1:
@@ -732,7 +732,7 @@ func TestRYWGetRange_WriteAtBoundaryKey(t *testing.T) {
 		}
 	}
 
-	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, false, mockServer)
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -760,7 +760,7 @@ func TestRYWGetRange_CompareAndClearInRange(t *testing.T) {
 	// CompareAndClear: if server value == param, clear the key.
 	c.atomic(MutCompareAndClear, []byte("B"), []byte("match"))
 
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return []KeyValue{
 			{Key: []byte("A"), Value: []byte("a")},
 			{Key: []byte("B"), Value: []byte("match")}, // matches → cleared
@@ -768,7 +768,7 @@ func TestRYWGetRange_CompareAndClearInRange(t *testing.T) {
 		}, false, nil
 	}
 
-	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, false, mockServer)
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -794,7 +794,7 @@ func TestRYWGetRange_SetThenClearRange(t *testing.T) {
 	c.set([]byte("B"), []byte("written"))
 	c.clearRange([]byte("B"), []byte("C"))
 
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return []KeyValue{
 			{Key: []byte("A"), Value: []byte("a")},
 			{Key: []byte("B"), Value: []byte("server-b")},
@@ -802,7 +802,7 @@ func TestRYWGetRange_SetThenClearRange(t *testing.T) {
 		}, false, nil
 	}
 
-	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, false, mockServer)
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -824,14 +824,14 @@ func TestRYWGetRange_ClearThenSet(t *testing.T) {
 	c.clearRange([]byte("A"), []byte("Z"))
 	c.set([]byte("B"), []byte("restored"))
 
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return []KeyValue{
 			{Key: []byte("A"), Value: []byte("a")},
 			{Key: []byte("C"), Value: []byte("c")},
 		}, false, nil
 	}
 
-	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, false, mockServer)
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -859,11 +859,11 @@ func TestRYWGetRange_Limit1Reverse(t *testing.T) {
 	c.set([]byte("B"), []byte("2"))
 	c.set([]byte("C"), []byte("3"))
 
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return nil, false, nil
 	}
 
-	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 1, true, mockServer)
+	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 1, ByteLimitUnlimited, true, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -941,10 +941,10 @@ func TestRYWGetRange_AtomicOnClearedKeyInvalidatesSortedKeys(t *testing.T) {
 	c.set([]byte("X"), []byte("x"))
 
 	// Step 2: trigger ensureSortedLocked via hasWritesInRangeLocked.
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return nil, false, nil
 	}
-	c.getRange(context.Background(), []byte("X"), []byte("Z"), 10, false, mockServer)
+	c.getRange(context.Background(), []byte("X"), []byte("Z"), 10, ByteLimitUnlimited, false, mockServer)
 
 	// Step 3: clearRange [A, B) — no writes in range, sortedKeys stays valid.
 	c.clearRange([]byte("A"), []byte("B"))
@@ -953,7 +953,7 @@ func TestRYWGetRange_AtomicOnClearedKeyInvalidatesSortedKeys(t *testing.T) {
 	c.atomic(MutAddValue, []byte("A"), []byte{5, 0, 0, 0, 0, 0, 0, 0})
 
 	// Step 5: getRange [A, B) must see the write at "A".
-	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("B"), 10, false, mockServer)
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("B"), 10, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -1053,7 +1053,7 @@ func BenchmarkRYWGetRange_WithClears(b *testing.B) {
 	c.clearRange([]byte{0}, []byte{128})
 
 	calls := 0
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		calls++
 		if calls%2 == 1 {
 			// First call: return cleared keys.
@@ -1075,7 +1075,7 @@ func BenchmarkRYWGetRange_WithClears(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		calls = 0
-		c.getRange(ctx, []byte{0}, []byte{255}, 10, false, mockServer)
+		c.getRange(ctx, []byte{0}, []byte{255}, 10, ByteLimitUnlimited, false, mockServer)
 	}
 }
 
@@ -1177,12 +1177,12 @@ func TestRYWGetRange_UnlimitedWithClears(t *testing.T) {
 	c.set([]byte("C"), []byte("c"))
 	c.clear([]byte("B"))
 
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return nil, false, nil // empty server — all data is local
 	}
 
 	// limit=0 means unlimited.
-	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 0, false, mockServer)
+	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 0, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -1205,14 +1205,14 @@ func TestRYWGetRange_UnlimitedWithWrites(t *testing.T) {
 
 	c.set([]byte("B"), []byte("local-b"))
 
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return []KeyValue{
 			{Key: []byte("A"), Value: []byte("server-a")},
 			{Key: []byte("C"), Value: []byte("server-c")},
 		}, false, nil
 	}
 
-	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 0, false, mockServer)
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 0, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -1234,14 +1234,14 @@ func TestRYWGetRange_UnlimitedReverse(t *testing.T) {
 	c.set([]byte("C"), []byte("c"))
 	c.clear([]byte("B"))
 
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		if !reverse {
 			t.Fatal("expected reverse=true")
 		}
 		return nil, false, nil
 	}
 
-	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 0, true, mockServer)
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 0, ByteLimitUnlimited, true, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -1265,10 +1265,10 @@ func TestRYWGetRange_V2AtomicOnPresentEmpty(t *testing.T) {
 	c.atomic(MutXor, []byte("k"), []byte(""))    // k → present with empty value
 	c.atomic(MutMinV2, []byte("k"), []byte("0")) // 0x30; min("","0")=0x00, NOT operand 0x30
 
-	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return nil, false, nil // k absent in storage
 	}
-	result, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, false, mockServer)
+	result, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, ByteLimitUnlimited, false, mockServer)
 	if err != nil {
 		t.Fatalf("getRange: %v", err)
 	}
@@ -1298,12 +1298,12 @@ func TestRYW_VersionstampedAbsentNoPhantom(t *testing.T) {
 	c.atomic(MutSetVersionstampedValue, []byte("vsk"), val)
 
 	absent := func(ctx context.Context, key []byte) ([]byte, error) { return nil, nil }
-	absentRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	absentRange := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return nil, false, nil
 	}
 
 	// A scan whose iteration reaches the pending key fails with 1036.
-	_, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, false, absentRange)
+	_, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, ByteLimitUnlimited, false, absentRange)
 	assertFDBErrorCode(t, err, ErrAccessedUnreadable)
 	// Get fails with 1036.
 	_, err = c.get(context.Background(), []byte("vsk"), absent)
@@ -1328,7 +1328,7 @@ func TestRYW_VersionstampedOverClearedOrPlainNoPhantom(t *testing.T) {
 	withStorage := func(ctx context.Context, key []byte) ([]byte, error) {
 		return []byte("storage"), nil
 	}
-	withStorageRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	withStorageRange := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return []KeyValue{{Key: []byte("vsk"), Value: []byte("storage")}}, false, nil
 	}
 
@@ -1338,7 +1338,7 @@ func TestRYW_VersionstampedOverClearedOrPlainNoPhantom(t *testing.T) {
 	// txn's pending op, not storage).
 	assertUnreadable := func(t *testing.T, c *rywCache) {
 		t.Helper()
-		_, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, false, withStorageRange)
+		_, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, ByteLimitUnlimited, false, withStorageRange)
 		assertFDBErrorCode(t, err, ErrAccessedUnreadable)
 		_, err = c.get(context.Background(), []byte("vsk"), withStorage)
 		assertFDBErrorCode(t, err, ErrAccessedUnreadable)
@@ -1380,14 +1380,14 @@ func TestRYW_VersionstampUnreadableIsSticky(t *testing.T) {
 	t.Parallel()
 	val := make([]byte, 14)
 	absent := func(ctx context.Context, key []byte) ([]byte, error) { return nil, nil }
-	absentRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	absentRange := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return nil, false, nil
 	}
 	// FLIPPED by RFC-098: stickiness now surfaces as accessed_unreadable
 	// (1036) instead of the absent-approximation.
 	assertUnreadable := func(t *testing.T, c *rywCache) {
 		t.Helper()
-		_, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, false, absentRange)
+		_, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, ByteLimitUnlimited, false, absentRange)
 		assertFDBErrorCode(t, err, ErrAccessedUnreadable)
 		_, err = c.get(context.Background(), []byte("vsk"), absent)
 		assertFDBErrorCode(t, err, ErrAccessedUnreadable)

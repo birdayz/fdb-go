@@ -526,7 +526,7 @@ func (c *rywCache) getKeyRYW(
 	ctx context.Context,
 	selectorKey []byte, orEqual bool, offset int32,
 	maxKey []byte, includeWrites bool,
-	serverGetRange func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error),
+	serverGetRange func(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool) ([]KeyValue, bool, error),
 ) ([]byte, error) {
 	key := append([]byte(nil), selectorKey...)
 	// Resolution direction is fixed by the ORIGINAL selector: offset<=0 → backward
@@ -569,7 +569,7 @@ func (c *rywCache) getKeyRYW(
 		var err error
 		var insBegin, insEnd []byte
 		if backward {
-			kvs, more, err = serverGetRange(ctx, res.unknownBegin, res.key, fillBatch, true)
+			kvs, more, err = serverGetRange(ctx, res.unknownBegin, res.key, fillBatch, ByteLimitUnlimited, true)
 			if err != nil {
 				return nil, err
 			}
@@ -583,7 +583,7 @@ func (c *rywCache) getKeyRYW(
 				insBegin = kvs[0].Key // truncated below the smallest returned key — stays unknown
 			}
 		} else {
-			kvs, more, err = serverGetRange(ctx, res.key, res.unknownEnd, fillBatch, false)
+			kvs, more, err = serverGetRange(ctx, res.key, res.unknownEnd, fillBatch, ByteLimitUnlimited, false)
 			if err != nil {
 				return nil, err
 			}

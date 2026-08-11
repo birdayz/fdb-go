@@ -270,13 +270,22 @@ func TestDifferential_SimUnreadable(t *testing.T) {
 		if cD.rows == 0 || cD.rows >= nSeed {
 			t.Fatalf("cgo rows before the stamp = %d, want 0 < rows < %d", cD.rows, nSeed)
 		}
-		// Sharper on the sim side, where the batch budget IS a row count and so is checkable:
-		// more rows than one SMALL batch holds means at least one boundary was genuinely
-		// crossed before the 1036 was raised.
-		if smallBatch := gofdb.BatchSize(gofdb.StreamingModeSmall, 1, nSeed); simD.rows <= smallBatch {
-			t.Fatalf("sim rows before the stamp = %d, want > one SMALL batch (%d) — the scan never "+
-				"crossed a batch boundary, so this arm proved nothing about the boundary",
-				simD.rows, smallBatch)
+		// Sharper on the sim side: more rows than a single SMALL fetch can hold means at least
+		// one boundary was genuinely crossed before the 1036 was raised.
+		//
+		// The bound is derived from SMALL's own BYTE target rather than from a row page. SMALL
+		// is 256 bytes (fdb_c.cpp:1002) and a row costs key+value+24 against it, so with these
+		// seeded rows — a ~30-byte key and a 23-byte value — one fetch holds at most
+		// 256/(30+23+24) ≈ 4 rows. Using the seeded value length keeps this honest if the
+		// fixture changes; the previous form called fdb.BatchSize, which returned SMALL's
+		// old per-mode ROW page and no longer describes how anything batches.
+		const smallTargetBytes = 256
+		minRowCost := len(rPfx) + len("k000") + len("payload-payload-payload") + 24
+		smallBatch := smallTargetBytes/minRowCost + 1
+		if simD.rows <= smallBatch {
+			t.Fatalf("sim rows before the stamp = %d, want > one SMALL fetch (%d rows at this row "+
+				"size) — the scan never crossed a batch boundary, so this arm proved nothing "+
+				"about the boundary", simD.rows, smallBatch)
 		}
 	})
 

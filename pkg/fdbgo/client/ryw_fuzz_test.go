@@ -80,7 +80,7 @@ func FuzzRYWCache(f *testing.F) {
 		serverGet := func(_ context.Context, key []byte) ([]byte, error) {
 			return serverData[string(key)], nil
 		}
-		serverGetRange := func(_ context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		serverGetRange := func(_ context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 			var result []KeyValue
 			for k, v := range serverData {
 				if bytes.Compare([]byte(k), begin) >= 0 && bytes.Compare([]byte(k), end) < 0 {
@@ -174,7 +174,7 @@ func FuzzRYWCache(f *testing.F) {
 					readEnd += "\x00" // land the end BETWEEN keys as well as ON one
 				}
 				if _, _, err := cache.getRange(ctx, []byte(keys[keyIdx]), []byte(readEnd),
-					int(flags&3), flags&4 != 0, serverGetRange); err != nil {
+					int(flags&3), ByteLimitUnlimited, flags&4 != 0, serverGetRange); err != nil {
 					t.Fatalf("range read [%s,%s): %v", keys[keyIdx], readEnd, err)
 				}
 				assertSnapshotCacheInvariants(t, &cache.serverCache, "after bounded range read")
@@ -209,7 +209,7 @@ func FuzzRYWCache(f *testing.F) {
 		}
 
 		// Verify forward GetRange.
-		gotKVs, _, err := cache.getRange(ctx, []byte("k00"), []byte("k99"), 100, false, serverGetRange)
+		gotKVs, _, err := cache.getRange(ctx, []byte("k00"), []byte("k99"), 100, ByteLimitUnlimited, false, serverGetRange)
 		if err != nil {
 			t.Fatalf("getRange: %v", err)
 		}
@@ -239,7 +239,7 @@ func FuzzRYWCache(f *testing.F) {
 		assertSnapshotCacheInvariants(t, &cache.serverCache, "after forward getRange")
 
 		// Verify reverse GetRange.
-		gotRev, _, err := cache.getRange(ctx, []byte("k00"), []byte("k99"), 100, true, serverGetRange)
+		gotRev, _, err := cache.getRange(ctx, []byte("k00"), []byte("k99"), 100, ByteLimitUnlimited, true, serverGetRange)
 		if err != nil {
 			t.Fatalf("reverse getRange: %v", err)
 		}

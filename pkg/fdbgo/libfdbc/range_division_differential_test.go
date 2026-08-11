@@ -29,20 +29,22 @@ import (
 //
 //  1. AN INVARIANT. Concatenating C's batches must reproduce exactly the rows the pure-Go
 //     client returns for the same range. That must hold forever; a failure is a real bug.
-//  2. A MEASURED DIVERGENCE, pinned as currently-true. libfdb_c derives target_bytes PER MODE
-//     from mode_bytes_array (SMALL 256, MEDIUM 1000, LARGE 4096, SERIAL 80000 — recorded at
-//     fdb/range_result.go:215-217 from fdb_c.cpp:1002), so a C SMALL fetch stops at ~256 bytes.
-//     The pure-Go client pins LimitBytes to 80000 on EVERY request (client/readpath.go:1102,
-//     constant at :27) regardless of mode, because StreamingMode never reaches pkg/fdbgo/client
-//     at all — its batching budget is rows-only (fdb.BatchSize). So the two divide the same
-//     range differently, and a Go SMALL fetch asks the storage server for 80000 bytes where C
-//     asks for 256.
+//  2. CONVERGENCE. The two clients must divide the range IDENTICALLY, per mode, and both must
+//     match the literal division recorded per arm below.
 //
-// Assertion 2 pins a DIVERGENCE, not desired behaviour, and its direction is the point: it
-// fails when the divergence GOES AWAY. That is the signal that the byte-dimension port booked
-// in TODO.md Phase 12 has landed, at which point this test must be rewritten to assert the two
-// divisions AGREE. Leaving it asserting the old expectation after that would be an unwatched
-// revival of the very thing the port removed.
+// Assertion 2 used to pin the opposite — a measured DIVERGENCE, stated as currently-true,
+// failing when it went away — because the pure-Go client had no byte dimension in this decision
+// and pinned LimitBytes to 80000 on every request regardless of mode. That is history now: the
+// client derives target_bytes per mode from the same table C does (fdb.ModeTargetBytes, from
+// fdb_c.cpp:1002/1006), puts it on the request where the storage server truncates against it,
+// and ends the call at that reply via the soft byte limit. The old expectation is not kept
+// anywhere as a fallback — leaving it would be an unwatched revival of exactly what the port
+// removed.
+//
+// The LITERAL divisions are asserted alongside the agreement on purpose. Both sides now derive
+// from one table, so a bare equality check has two arms sharing a derivation and would hold
+// vacuously against anything that moved both at once — a wrong table, or the Go->C enum offset
+// being applied in the wrong direction.
 func TestLibFDBC_RangeBatchDivision(t *testing.T) {
 	t.Parallel()
 
@@ -129,39 +131,70 @@ func TestLibFDBC_RangeBatchDivision(t *testing.T) {
 		}
 	}
 
-	// goDivision is the division the pure-Go client's iterator WOULD take for the same mode:
-	// fdb.BatchSize is exported precisely so the batching rule has one definition.
-	goDivision := func(mode gofdb.StreamingMode) []int {
-		var counts []int
-		remaining := n
-		for iteration := 1; remaining > 0; iteration++ {
-			b := gofdb.BatchSize(mode, iteration, remaining)
-			if b > remaining {
-				b = remaining
+	// goDivision drives the REAL pure-Go client one fetch at a time, mirroring cDivision
+	// exactly: the mode's own per-fetch byte target (fdb.ModeTargetBytes, the single definition
+	// of the rule), an unlimited row budget, and a begin key advanced past the last row
+	// returned. It deliberately does NOT model the division — an earlier version of this test
+	// predicted it from fdb.BatchSize, which is a ROW rule and therefore could not observe the
+	// byte dimension at all, so it reported the pre-port division no matter what the client did.
+	goDivision := func(mode gofdb.StreamingMode) (rows []fdbclient.KeyValue, counts []int) {
+		gtx := goDB.CreateTransaction()
+		defer gtx.Cancel()
+		curBegin := append([]byte(nil), begin...)
+		for iteration := 1; ; iteration++ {
+			target, err := gofdb.ModeTargetBytes(mode, iteration)
+			if err != nil {
+				t.Fatalf("ModeTargetBytes(mode=%v, iteration=%d): %v", mode, iteration, err)
 			}
-			counts = append(counts, b)
-			remaining -= b
+			batch, more, err := gtx.GetRangeWithByteTarget(ctx, curBegin, end,
+				0 /* limit: unlimited */, target, false /* reverse */)
+			if err != nil {
+				t.Fatalf("pure-Go GetRangeWithByteTarget(mode=%v, iteration=%d): %v", mode, iteration, err)
+			}
+			counts = append(counts, len(batch))
+			rows = append(rows, batch...)
+			if !more || len(batch) == 0 {
+				return rows, counts
+			}
+			last := batch[len(batch)-1].Key
+			curBegin = append(append([]byte(nil), last...), 0) // keyAfter
+			if iteration > 500 {
+				t.Fatalf("mode=%v did not terminate within 500 fetches", mode)
+			}
 		}
-		return counts
 	}
 
 	for _, c := range []struct {
 		name  string
 		cMode int
 		goDe  gofdb.StreamingMode
-		// byteBound is true when C's per-mode target_bytes is small enough that it, rather
+		// want is the LITERAL division both clients must produce for 60 rows of 200 bytes.
+		// Asserted as well as the two clients agreeing with each other, because since the
+		// GetRangeLimits port both sides derive from the SAME table (fdb_c.cpp:1002 on one
+		// side, fdb.ModeTargetBytes on the other) — so an equality check alone would hold
+		// vacuously under any change that moved both, which is exactly what a wrong table or
+		// a wrong enum offset would do.
+		want []int
+		// byteBound is true when the per-mode target_bytes is small enough that it, rather
 		// than any row count, decides the split for 200-byte rows.
 		byteBound bool
 	}{
-		{"small", libfdbc.CStreamingModeSmall, gofdb.StreamingModeSmall, true},
-		{"medium", libfdbc.CStreamingModeMedium, gofdb.StreamingModeMedium, true},
-		{"large", libfdbc.CStreamingModeLarge, gofdb.StreamingModeLarge, true},
-		{"serial", libfdbc.CStreamingModeSerial, gofdb.StreamingModeSerial, false},
+		{"small", libfdbc.CStreamingModeSmall, gofdb.StreamingModeSmall, repeatInts(2, 30), true},
+		{"medium", libfdbc.CStreamingModeMedium, gofdb.StreamingModeMedium, repeatInts(5, 12), true},
+		{"large", libfdbc.CStreamingModeLarge, gofdb.StreamingModeLarge, []int{18, 18, 18, 6}, true},
+		{"serial", libfdbc.CStreamingModeSerial, gofdb.StreamingModeSerial, []int{60}, false},
+		// ITERATOR is the arm whose target depends on the ITERATION NUMBER
+		// (iteration_progression, fdb_c.cpp:1006: 4096, 6144, 9216, ...), so it is the one
+		// that catches a client which derived a byte target but never threaded the iteration
+		// count — such a client would divide every fetch at 4096 and still pass every other
+		// arm here. 18 rows at the first target, then the range finishes inside the second.
+		{"iterator", libfdbc.CStreamingModeIterator, gofdb.StreamingModeIterator, []int{18, 26, 16}, true},
 	} {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
 			cRows, cCounts := cDivision(c.cMode)
-			gCounts := goDivision(c.goDe)
+			goDivRows, gCounts := goDivision(c.goDe)
+			_ = goDivRows
 
 			// (1) THE INVARIANT — the two clients must agree on the answer.
 			if len(cRows) != len(goRows) {
@@ -177,46 +210,65 @@ func TestLibFDBC_RangeBatchDivision(t *testing.T) {
 				}
 			}
 			// A drain whose last fetch reported more=true ends with an empty confirming fetch;
-			// it is a property of this loop, not of the division, so drop it before comparing.
+			// it is a property of this loop, not of the division, so drop it on BOTH sides
+			// before comparing — the two clients need not agree on whether they spent that
+			// extra probe, only on where they cut the data.
 			cCounts = trimTrailingZero(cCounts)
+			gCounts = trimTrailingZero(gCounts)
 
-			t.Logf("MEASURED %-7s libfdb_c division %v (%d fetches) | pure-Go modelled division %v (%d)",
+			t.Logf("MEASURED %-7s libfdb_c division %v (%d fetches) | pure-Go division %v (%d)",
 				c.name, cCounts, len(cCounts), gCounts, len(gCounts))
 
-			if !c.byteBound {
-				// POSITIVE CONTROL. SERIAL is the one mode whose C target_bytes (80000) equals
-				// the value the pure-Go client pins for EVERY mode, so it is the arm where the
-				// two must divide identically. It is what proves the divergences below are
-				// specific to the per-mode byte table and not an artifact of driving C's loop
-				// by hand — without it, "the divisions differ" is equally consistent with this
-				// harness simply not reproducing C's loop correctly.
-				if !equalInts(cCounts, gCounts) {
-					t.Fatalf("%s: libfdb_c divided %v but the pure-Go model says %v. These must "+
-						"agree: SERIAL's C byte target (80000) is exactly what the pure-Go client "+
-						"pins for every mode, so a difference here means this harness is not "+
-						"reproducing C's loop and the divergence arms above cannot be trusted",
-						c.name, cCounts, gCounts)
-				}
-				return
+			// (2) CONVERGENCE. Both clients must divide identically, AND both must match the
+			// literal expected division. The literal is what keeps this from being a pair whose
+			// two sides move together: since the port, both derive from the same byte table, so
+			// "they agree" alone would survive a wrong table, a wrong enum offset, or the byte
+			// target failing to reach the request on both paths at once.
+			if !equalInts(cCounts, c.want) {
+				t.Errorf("%s: libfdb_c divided %v, want %v — this is C's own measured division "+
+					"and the reference the port targets; a change here means the C client or the "+
+					"storage server's reply-size accounting moved, not that Go regressed",
+					c.name, cCounts, c.want)
+			}
+			if !equalInts(gCounts, c.want) {
+				t.Errorf("%s: the pure-Go client divided %v, want %v. The per-mode byte target "+
+					"must reach the REQUEST (so the storage server truncates there) and the soft "+
+					"byte limit must END the call at that reply. Either half missing changes this: "+
+					"without the request half the loop absorbs and re-queries to one big batch; "+
+					"without the loop half it cuts a row late (19 where C cuts 18 at 4096)",
+					c.name, gCounts, c.want)
+			}
+			if !equalInts(cCounts, gCounts) {
+				t.Errorf("%s: libfdb_c divided %v but the pure-Go client divided %v — the two "+
+					"clients must batch identically, since a batch boundary is where a per-batch "+
+					"read-conflict range is taken (RFC-121) and where a cursor continuation lands",
+					c.name, cCounts, gCounts)
 			}
 
-			if len(cCounts) < 2 {
-				t.Fatalf("libfdb_c split %d rows into %d fetch(es) %v — this arm is vacuous as a "+
+			if c.byteBound && len(cCounts) < 2 {
+				t.Errorf("libfdb_c split %d rows into %d fetch(es) %v — this arm is vacuous as a "+
 					"DIVISION measurement unless C crosses at least one boundary", len(cRows),
 					len(cCounts), cCounts)
 			}
-
-			// (2) THE MEASURED DIVERGENCE — pinned as currently true, failing when it is FIXED.
-			if equalInts(cCounts, gCounts) {
-				t.Fatalf("libfdb_c and the pure-Go client now divide %s identically (%v). That is "+
-					"the OUTCOME WE WANT, not a passing state for this assertion: it means the "+
-					"byte-dimension budget booked in TODO.md Phase 12 has landed and the pure-Go "+
-					"client no longer pins LimitBytes to 80000 for every mode. Rewrite this arm to "+
-					"assert the divisions AGREE, and drop the divergence note from the TODO item.",
+			if !c.byteBound && len(cCounts) != 1 {
+				// POSITIVE CONTROL, inverted since the port. SERIAL's target (80000) exceeds
+				// this whole 12 KB range, so it must stay a SINGLE fetch on both sides. If
+				// SERIAL starts splitting, a byte target is being applied where none should
+				// bite, and the byte-bound arms above cannot be trusted either.
+				t.Errorf("%s: expected a single undivided fetch, got %v. SERIAL's 80000-byte "+
+					"target is larger than this entire range, so nothing should cut it",
 					c.name, cCounts)
 			}
 		})
 	}
+}
+
+func repeatInts(v, n int) []int {
+	out := make([]int, n)
+	for i := range out {
+		out[i] = v
+	}
+	return out
 }
 
 func equalInts(a, b []int) bool {

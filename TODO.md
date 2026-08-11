@@ -16711,11 +16711,42 @@ None is speculative: each was re-verified against the tree before booking.
     `libfdbc:TestLibFDBC_RangeBatchDivision` (C's division per mode) and
     `fdb:TestRangeIterator_DivisionIsRowDrivenNotByteDriven` (Go's, asserted as
     row-driven and size-invariant, which is the divergence stated as currently-true).
-  - [ ] PORT, server path — per-mode `target_bytes` onto the request's `LimitBytes`
-    (`min` with `replyByteLimit`), PLUS the soft-byte-limit early return in
-    `rangeScanImpl` so a byte-limited call stops after the first non-empty reply
-    instead of absorbing and re-querying. BOTH halves, per the refutation above;
-    the loop half alone divides LARGE as 19 where C divides it 18.
+  - [x] PORT, server path — LANDED. Per-mode `target_bytes` onto the request's
+    `LimitBytes` (`min` with `replyByteLimit`, porting `transformRangeLimits`) PLUS
+    the soft-byte-limit early return in `rangeScanImpl`, so a byte-limited call stops
+    after the first non-empty reply instead of absorbing and re-querying. Both halves,
+    per the refutation above; each alone is measurably wrong (request-only divides
+    `[60]`, loop-only divides LARGE as 19 where C divides 18).
+    CONVERGED, measured against libfdb_c over 60 rows of 200 bytes — SMALL `[2]x30`,
+    MEDIUM `[5]x12`, LARGE `[18 18 18 6]`, SERIAL `[60]`, ITERATOR `[18 26 16]`, and
+    bounded reads (`medium/250 = [24 x10, 10]`, `small/25 = [7 7 7 4]`). EXACT stays a
+    single batch as AGREEMENT with C, not a Go limit: `mode_bytes_array[EXACT]` is
+    UNLIMITED so the soft limit can never fire.
+    THE ENUM OFFSET is handled at one named site, `fdb.cModeIndex`, unit-tested against
+    both numberings; mutating it to drop the `-1` reddens with SMALL reading MEDIUM's
+    target, the exact silent failure the booking predicted.
+    THREE BUGS FOUND DURING THE PORT, all by tests rather than by review:
+    (1) the iterator derived its byte target from `iteration+1` while its counter was
+    already 1-based, so the first fetch targeted 6144 and `iterationProgression[0]`
+    (4096) was unreachable by any real scan — pinned now by
+    `fdb:TestRangeIterator_FirstFetchUsesFirstProgressionEntry`, the dimension no
+    existing test could see (the differential drives its own iteration loop; the
+    saturation test asserts only relative shape);
+    (2) `pkg/simfdb` applied the byte cut AFTER `fetchRange` returned, so `more`
+    described the untruncated read and the unreadable-cap predicate raised 1036 on the
+    first fetch having yielded nothing — the cut now happens inside `fetchRange`;
+    (3) the row budget handed down became the whole remaining limit, which left
+    simfdb's view build unbounded and a saturated drain quadratic — bounded now by
+    `byteTarget/minRowCost`, a guard that provably cannot move the boundary.
+    `fdb.BatchSize` was DELETED rather than left unused: an exported function still
+    handing out the removed per-mode ROW page is an unwatched revival, since a future
+    caller would reinstate row batching with every division test still green.
+    THE SERVER'S ACCOUNTING, measured because it is not the client's and cannot be
+    derived from it: a reply accumulates rows until `key+value+24` reaches the target,
+    INCLUDING the row that crosses. Fits all 10 cross-client measurements across 4 row
+    shapes; recorded as `serverRowOverheadBytes` in `pkg/simfdb/range_result.go`, which
+    is the only place that has to model it — the real client sends the target and lets
+    the real server apply its own rule.
   - [ ] PORT, RYW path — byte accounting into the merge helpers, guarded by the
     differential above.
   NOTHING IN THE PORT IS STARTED. The two landed items are test-only; no production

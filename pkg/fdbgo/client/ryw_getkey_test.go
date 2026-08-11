@@ -17,7 +17,7 @@ type mockStorage struct {
 	calls int
 }
 
-func (m *mockStorage) rangeFn(_ context.Context, begin, end []byte, _ int, _ bool) ([]KeyValue, bool, error) {
+func (m *mockStorage) rangeFn(_ context.Context, begin, end []byte, _ int, _ int, _ bool) ([]KeyValue, bool, error) {
 	m.calls++
 	var ks []string
 	for k := range m.keys {
@@ -59,7 +59,7 @@ func TestGetKeyRYW_FullyCached(t *testing.T) {
 		c.serverCache.insert([]byte(lo), []byte(hi), kvs)
 		return c
 	}
-	noServer := func(_ context.Context, _, _ []byte, _ int, _ bool) ([]KeyValue, bool, error) {
+	noServer := func(_ context.Context, _, _ []byte, _ int, _ int, _ bool) ([]KeyValue, bool, error) {
 		t.Fatalf("server read must not happen — resolution should be fully cached")
 		return nil, false, nil
 	}
@@ -200,7 +200,7 @@ func TestGetKeyRYW_SnapshotBypassesWrites(t *testing.T) {
 	})
 	c.set([]byte("b"), []byte("x")) // pending — must be ignored when includeWrites=false
 
-	noServer := func(_ context.Context, _, _ []byte, _ int, _ bool) ([]KeyValue, bool, error) {
+	noServer := func(_ context.Context, _, _ []byte, _ int, _ int, _ bool) ([]KeyValue, bool, error) {
 		t.Fatalf("server read must not happen")
 		return nil, false, nil
 	}
@@ -222,7 +222,7 @@ func TestGetKeyRYW_SnapshotBypassesWrites(t *testing.T) {
 // if flat/negligible, the materializer is adequate and the refactor is dropped.
 func BenchmarkGetKeyRYW_CacheSize(b *testing.B) {
 	maxKey := []byte("\xff")
-	noServer := func(_ context.Context, _, _ []byte, _ int, _ bool) ([]KeyValue, bool, error) {
+	noServer := func(_ context.Context, _, _ []byte, _ int, _ int, _ bool) ([]KeyValue, bool, error) {
 		return nil, false, nil
 	}
 	for _, n := range []int{1, 100, 1000, 10000, 100000} {

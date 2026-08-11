@@ -616,6 +616,17 @@ func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool,
 // Snapshot reads go through the RYW cache unless snapshot RYW is net-disabled
 // (snapshotRYWDisableCount > 0).
 func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
+	return s.getRangeDir(ctx, begin, end, limit, ByteLimitUnlimited, false)
+}
+
+// GetRangeWithByteTarget is GetRange carrying a per-fetch BYTE target, the dimension libfdb_c
+// derives from the streaming mode (fdb_c.cpp:1002/1006). ByteLimitUnlimited means "no target",
+// which is what the plain GetRange passes and what EXACT resolves to.
+func (s *Snapshot) GetRangeWithByteTarget(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
+	return s.getRangeDir(ctx, begin, end, limit, byteTarget, reverse)
+}
+
+func (s *Snapshot) getRangeDir(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, false, s.tx.trackReadError(err)
 	}
@@ -627,10 +638,10 @@ func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) (
 		return nil, false, &wire.FDBError{Code: ErrRangeLimitsInvalid}
 	}
 	if s.tx.rywDisabled || s.tx.snapshotRYWDisableCount > 0 {
-		kvs, more, err := s.tx.getRange(ctx, begin, end, limit, false)
+		kvs, more, err := s.tx.getRange(ctx, begin, end, limit, byteTarget, reverse)
 		return kvs, more, s.tx.trackReadError(err)
 	}
-	kvs, more, err := s.tx.ryw.getRange(ctx, begin, end, limit, false, s.tx.getRange)
+	kvs, more, err := s.tx.ryw.getRange(ctx, begin, end, limit, byteTarget, reverse, s.tx.getRange)
 	return kvs, more, s.tx.trackReadError(err)
 }
 
@@ -638,22 +649,7 @@ func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) (
 // Snapshot reads go through the RYW cache unless snapshot RYW is net-disabled
 // (snapshotRYWDisableCount > 0).
 func (s *Snapshot) GetRangeReverse(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
-	if err := s.tx.ensureReadVersion(ctx); err != nil {
-		return nil, false, s.tx.trackReadError(err)
-	}
-	maxKey := s.tx.maxReadKey()
-	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
-		return nil, false, &wire.FDBError{Code: 2004}
-	}
-	if limit < -1 { // range_limits_invalid — see getRangeDir
-		return nil, false, &wire.FDBError{Code: ErrRangeLimitsInvalid}
-	}
-	if s.tx.rywDisabled || s.tx.snapshotRYWDisableCount > 0 {
-		kvs, more, err := s.tx.getRange(ctx, begin, end, limit, true)
-		return kvs, more, s.tx.trackReadError(err)
-	}
-	kvs, more, err := s.tx.ryw.getRange(ctx, begin, end, limit, true, s.tx.getRange)
-	return kvs, more, s.tx.trackReadError(err)
+	return s.getRangeDir(ctx, begin, end, limit, ByteLimitUnlimited, true)
 }
 
 // GetReadVersion returns the read version for this transaction via its snapshot view.
@@ -1312,16 +1308,26 @@ func isSpecialKey(key []byte) bool {
 
 // GetRange reads a range of keys [begin, end) in forward order.
 func (tx *Transaction) GetRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
-	return tx.getRangeDir(ctx, begin, end, limit, false)
+	return tx.getRangeDir(ctx, begin, end, limit, ByteLimitUnlimited, false)
 }
 
 // GetRangeReverse reads a range of keys [begin, end) in reverse order.
 // Matches C++ where negative limit = reverse scan.
 func (tx *Transaction) GetRangeReverse(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
-	return tx.getRangeDir(ctx, begin, end, limit, true)
+	return tx.getRangeDir(ctx, begin, end, limit, ByteLimitUnlimited, true)
 }
 
-func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+// GetRangeWithByteTarget is GetRange carrying a per-fetch BYTE target — the dimension libfdb_c
+// derives from the streaming mode and puts on the request, where the storage server truncates
+// against it. That truncation, not any client-side accounting, is what divides a scan into
+// batches; see rangeScanImpl's soft byte limit for the half that ends the call.
+// ByteLimitUnlimited means "no target", which is what plain GetRange passes and what EXACT
+// resolves to.
+func (tx *Transaction) GetRangeWithByteTarget(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
+	return tx.getRangeDir(ctx, begin, end, limit, byteTarget, reverse)
+}
+
+func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return nil, false, tx.trackReadError(err)
 	}
@@ -1343,9 +1349,9 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 	var more bool
 	var err error
 	if tx.rywDisabled {
-		kvs, more, err = tx.getRange(ctx, begin, end, limit, reverse)
+		kvs, more, err = tx.getRange(ctx, begin, end, limit, byteTarget, reverse)
 	} else {
-		kvs, more, err = tx.ryw.getRange(ctx, begin, end, limit, reverse, tx.getRange)
+		kvs, more, err = tx.ryw.getRange(ctx, begin, end, limit, byteTarget, reverse, tx.getRange)
 	}
 	if err != nil {
 		// C++ adds the read-conflict only in the read's SUCCESS branch
