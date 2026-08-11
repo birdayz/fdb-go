@@ -38,6 +38,7 @@ go_test(
         "panic_boundary_test.go",
         "pinned_ordinal_domain_test.go",
         "plan_proto_schema_test.go",
+        "pr_check_gate_test.go",
         "precommit_hook_message_test.go",
         "qualifier_recovery_gate_test.go",
         "race_lane_scope_test.go",

@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "verify-pr-checks_lib",
+    srcs = [
+        "classify.go",
+        "main.go",
+    ],
+    importpath = "fdb.dev/cmd/verify-pr-checks",
+    visibility = ["//visibility:private"],
+    deps = ["@in_gopkg_yaml_v3//:yaml_v3"],
+)
+
+go_binary(
+    name = "verify-pr-checks",
+    embed = [":verify-pr-checks_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "verify-pr-checks_test",
+    srcs = ["classify_test.go"],
+    embed = [":verify-pr-checks_lib"],
+)

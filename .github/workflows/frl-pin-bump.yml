@@ -10,8 +10,53 @@
 # The frl release workflow builds GOWORK=off too, so even a stale pin can
 # never ship a broken release; this bot just keeps staleness bounded to ~a day.
 #
-# Note: PRs opened with the default GITHUB_TOKEN don't auto-trigger CI
-# (GitHub's anti-loop rule). If the PR shows no checks, close and reopen it.
+# Note: this PR's workflow runs are CREATED but then HELD, awaiting maintainer
+# approval, and a held run does not surface as a check run — so `gh pr checks`
+# prints "no checks reported" and the merge state reads UNSTABLE rather than
+# blocked. Nothing has failed; nothing has run. Those are different states, and
+# PR #637 was merged out of the confusion between them.
+#
+# The hold is keyed on the run's ACTOR, and it leaves a signature that
+# reproduces. Every run this branch's PR creates is born held; approving it
+# starts a fresh attempt owned by the approver:
+#
+#     $ gh api 'repos/{owner}/{repo}/actions/runs?branch=bot/frl-pin-bump' \
+#         --jq '.workflow_runs[] | "\(.status)/\(.conclusion) actor=\(.actor.login) trig=\(.triggering_actor.login) attempt=\(.run_attempt)"'
+#
+# Read the attempt column, not any single value. attempt=1 with
+# triggering_actor=github-actions[bot] and conclusion=action_required is a held
+# run — created, 0s duration, never executed. Every green run on this branch is
+# attempt>=2 with triggering_actor=<a human>, i.e. it ran only because someone
+# approved it. A run whose actor is a human (a direct push to the branch) is
+# attempt=1 and never held. The remedy is to approve:
+#
+#     $ gh api -X POST repos/{owner}/{repo}/actions/runs/{run_id}/approve
+#
+# or the "Approve and run" button on the PR's checks tab. Closing and reopening
+# does NOT help — the re-opened PR's runs are held for the same reason.
+#
+# Do NOT re-derive this as the fork-PR approval policy. That theory is wrong and
+# has been written into this file once already:
+# `actions/permissions/fork-pr-contributor-approval` governs pull requests FROM
+# FORKS, and every PR this bot has ever opened is a same-repo branch PR:
+#
+#     $ gh pr list --state all --author 'app/github-actions' --limit 100 \
+#         --json isCrossRepository --jq '[.[].isCrossRepository] | unique'
+#
+# That set is `[false]` — no element is ever true, which is the invariant, not the
+# count. Its value is therefore irrelevant to the hold, whatever it happens to
+# read; and most of those PRs are already merged, so no contributor-novelty policy
+# would describe the bot as an outside or first-time author anyway.
+#
+# An earlier version of this note blamed GITHUB_TOKEN's anti-recursion rule and
+# prescribed close-and-reopen; a later one blamed the fork-PR policy and pasted an
+# approval_policy value that did not reproduce. Both were wrong, and the first was
+# believed: it sent an investigation into rebuilding CI as a reusable workflow to
+# solve a problem that did not exist. That is why the durable form here is a
+# command plus what to look for in its output, rather than a pasted result —
+# a quoted value goes stale silently, and stale prose about CI is what merged
+# #637. cmd/verify-pr-checks is the gate that now makes the real state — expected
+# checks ABSENT — fail loudly instead of reading as green.
 
 name: frl pin bump
 
@@ -101,5 +146,8 @@ jobs:
 
           A \`GOWORK=off\` build and vet passed before this PR was opened/updated.
 
-          If no CI checks appear (PRs from the Actions token don't auto-trigger them), close and reopen this PR."
+          If this PR shows no checks, they are HELD awaiting approval, not missing: workflow runs whose actor is
+          github-actions[bot] are created at \`action_required\` with a 0s duration and never surface as check
+          runs. Approve them from the checks tab. **Do not read \"no checks reported\" as \"nothing failed\"** —
+          nothing ran. Closing and reopening does not help."
           fi
