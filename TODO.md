@@ -16521,3 +16521,100 @@ None is speculative: each was re-verified against the tree before booking.
   DONE = the arm returns a retryable error (or otherwise preserves `more`) instead
   of a silent short read, with an injected-reply test that reds on the current
   `break` and names the silent-truncation direction in its failure message.
+
+- [ ] **Port `GetRangeLimits{rows, bytes}` and `isReached()` into the pure-Go
+  range path, so batch division matches libfdb_c per streaming mode** · L ·
+  the fix for the divergence measured by `libfdbc:TestLibFDBC_RangeBatchDivision`
+  THE DIVERGENCE. libfdb_c derives a per-mode BYTE target and ends a range call
+  when either dimension is satisfied. The pure-Go client has no byte dimension in
+  that decision, so it divides by rows alone and issues a different number of
+  round trips with different batch boundaries. Measured, same seed, 60 rows of 200
+  bytes:
+  ```
+  small   libfdb_c [2]x30       | pure-Go [10]x6
+  medium  libfdb_c [5]x12       | pure-Go [60]
+  large   libfdb_c [18 18 18 6] | pure-Go [60]
+  serial  libfdb_c [60]         | pure-Go [60]   <- agrees only because SERIAL's target IS 80000
+  ```
+  Design principle 2 makes this a bug in Go. It is NOT merely a round-trip-count
+  difference: batch boundaries are where each per-batch read-conflict range is
+  taken (RFC-121) and where a cursor continuation lands, so an abandoned scan
+  conflicts over a different extent in the two clients.
+  THE SPEC, read rather than inferred (7.3.77):
+  - `bindings/c/fdb_c.cpp:1002` — `mode_bytes_array[] = { BYTE_LIMIT_UNLIMITED,
+    256, 1000, 4096, 80000 }`, indexed EXACT=0, SMALL=1, MEDIUM=2, LARGE=3,
+    SERIAL=4.
+  - `:1006` — `iteration_progression[] = { 4096, 6144, 9216, 13824, 20736, 31104,
+    46656, 69984, 80000, 120000 }`, "Goes 1.5 * previous".
+  - `:1009,1019` — `max_iteration` is the table length (10) and `iteration` is
+    CLAMPED to it before indexing. Easy to miss; ITERATOR is the arm most likely
+    to be subtly wrong because its target depends on the iteration number, which
+    the Go range path does not currently thread anywhere.
+  - `:1011` — WANT_ALL maps to SERIAL.
+  - `:1017` — ITERATOR with `iteration <= 0` is `client_invalid_operation`.
+  - `:1026-1029` — an explicit `target_bytes` is combined as
+    `min(target_bytes, mode_bytes)`; unset takes `mode_bytes`.
+  - `fdbclient/ClientKnobs.cpp:66` — `REPLY_BYTE_LIMIT` 80000 is the per-REPLY
+    CEILING, not the per-mode target. Conflating the two is the present bug:
+    `client/readpath.go:1102` sends the ceiling as the limit for every mode.
+  WHAT WILL NOT WORK, measured so nobody repeats it: setting `LimitBytes` per mode
+  on the request changes NOTHING observable. `rangeScanImpl` absorbs a truncated
+  reply and re-queries the same shard until the ROW budget is filled, so the
+  request's byte limit never reaches the division. Dropping `replyByteLimit` from
+  80000 to 256 — below SMALL's own target — left every division byte-for-byte
+  identical. The division is decided by the LOOP TERMINATION CONDITION, which is
+  why the port has to reach `rangeScanImpl` and `batchSize`, not the request
+  builder. C++ has the same absorbing loop; the only difference is that its
+  `limits` carries bytes (`NativeAPI.actor.cpp:4761`, `:4814`).
+  EXACT IS UNAFFECTED and must stay single-batch: `mode_bytes_array[EXACT]` is
+  UNLIMITED, so EXACT has no byte target and remains row-bounded. C behaves the
+  same (measured: one call returns all 100 rows across 97 KB). If this port makes
+  `fdb:TestRangeIterator_ExactModeIsStructurallySingleBatch` or
+  `libfdbc:TestLibFDBC_ExactModeAbsorbsByteCappedReplies` fail, the port is wrong —
+  they are not casualties to be updated.
+  BLAST RADIUS, stated so it is not discovered halfway: mode and iteration must be
+  threaded from `fdb.goRangeIterator` through `doRangeWithLimit`,
+  `client.Transaction.GetRange`/`getRangeDir`, `rangeScanImpl` and the RYW layer
+  (`client/ryw.go`), all of which currently carry a one-dimensional row budget.
+  `pkg/simfdb` must mirror it exactly or the simulator stops standing in for the
+  client. Every batch boundary moves, hence every per-batch read-conflict range and
+  every cursor continuation, so record-layer cursor tests are in scope.
+  THE ENUM OFFSET, which is the landmine in this port. `mode_bytes_array` is
+  indexed by the **C** streaming-mode numbering, and Go does not use it:
+  ```
+  C   (fdb_c_options.g.h:526-544):  WANT_ALL=-2 ITERATOR=-1 EXACT=0 SMALL=1 MEDIUM=2 LARGE=3 SERIAL=4
+  Go  (fdb/range.go:93-116):        WantAll=-1  Iterator=0  Exact=1 Small=2  Medium=3  Large=4  Serial=5
+  ```
+  Go's value is the C value PLUS ONE. Indexing `mode_bytes_array` with a Go mode
+  silently hands SMALL the MEDIUM target (1000 instead of 256), MEDIUM the LARGE
+  target, LARGE the SERIAL target, and reads out of bounds for Serial. It would
+  compile, run, and produce a division that is wrong in a way the existing
+  row-count assertions cannot see. Convert once, at one named site, and unit-test
+  the conversion against both tables rather than open-coding `-1` at each use.
+  THE PRIMITIVES, so they are not re-derived from the batch counts:
+  - `GetRangeLimits{rows, bytes, minRows}`; `isReached() = rows == 0 || (bytes == 0
+    && minRows == 0)` (`NativeAPI.actor.cpp:2856`).
+  - per-row byte accounting is `bytes -= 8 + key.size() + value.size()`, floored at
+    0 (`:2823` single-KV form). The 8 is a fixed per-row overhead and is NOT
+    optional — dropping it inflates every batch.
+  - `reachedBy` (`:2861`) is the look-ahead form used to stop BEFORE appending.
+  - `hasSatisfiedMinRows() = hasByteLimit() && minRows == 0` (`:2875`); `minRows`
+    is what stops a byte-limited request from returning zero rows, and RYW derives
+    its per-request limit with it (`ReadYourWrites.actor.cpp:580-597`).
+  STAGING, if it is not landed in one go: applying the byte limit in the SERVER
+  path (`rangeScanImpl`) alone already converges the no-local-writes case, which is
+  what the division tests exercise. The RYW merged path (`client/ryw.go`, mirroring
+  C++'s separate forward/reverse implementations at
+  `ReadYourWrites.actor.cpp:597-899` and `:900-1230`, each with byte-limit early
+  exits at `:693` and `:1000`) is the harder half and the one carrying real risk:
+  its row-only merge helpers (`applyLimitAndDirection`, `computeMore`,
+  `limitReached`, `cacheWalkBudget`) decide what a read RETURNS, not merely how it
+  is divided, so a wrong byte accounting there is silent read-your-writes
+  corruption rather than a visible batching difference. Stage it separately and
+  test it against local writes straddling a byte boundary.
+  DONE = `TestLibFDBC_RangeBatchDivision` asserts the two clients AGREE per mode
+  AND asserts the literal expected counts (`[2]x30`, `[5]x12`, `[18 18 18 6]`) —
+  an equality check alone is vacuous once both sides derive from one table;
+  `fdb:TestRangeIterator_DivisionIsRowDrivenNotByteDriven` is rewritten against the
+  C table rather than relaxed; each mode arm is mutation-checked and the arms redden
+  disjointly. Client-review gate (FDB C++ dev + Torvalds) applies.
