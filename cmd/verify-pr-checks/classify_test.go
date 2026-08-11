@@ -42,6 +42,41 @@ func TestZeroChecksIsAViolationNotAPass(t *testing.T) {
 	}
 }
 
+// A DIRTY pull request reaches the gate as the SAME input as a held one — zero
+// observations — and must fail identically, but its diagnosis differs.
+//
+// GitHub cannot compute `refs/pull/N/merge` for a pull request with a merge
+// conflict, so `pull_request` workflows never fire AT ALL. No run is created, so
+// there is nothing to approve; `gh pr checks` prints the same "no checks
+// reported" as the approval hold does, and `mergeStateStatus` reads DIRTY rather
+// than UNSTABLE. Three distinct causes, one indistinguishable rendering.
+//
+// The classification is therefore not the interesting part (ABSENT either way,
+// which is the point — it fails closed on a cause it cannot see). What must be
+// pinned is that the REASON text does not send the reader to the wrong remedy:
+// "approve the held runs" is useless advice for a conflict.
+func TestAbsentReasonNamesEveryCauseNotJustTheHold(t *testing.T) {
+	t.Parallel()
+
+	// The DIRTY shape: a required check with no observation whatsoever.
+	v := Classify([]string{"Build, Lint & Test"}, nil)[0]
+
+	if v.State != StateAbsent {
+		t.Fatalf("a DIRTY pull request reports no checks at all and must classify ABSENT; got %s", v.State)
+	}
+	for _, cause := range []struct{ needle, why string }{
+		{"never created", "the workflow was deleted or renamed — nothing to approve, nothing to unblock"},
+		{"action_required", "the run exists but is held; the remedy is to approve it"},
+		{"DIRTY", "a merge conflict; the remedy is to resolve it, and no amount of approving helps"},
+		{"refs/pull/N/merge", "names the actual GitHub mechanism, not just the symptom"},
+	} {
+		if !strings.Contains(v.Why, cause.needle) {
+			t.Errorf("the ABSENT reason must name %q (%s), so the reader is not handed one explanation for "+
+				"three different states; got %q", cause.needle, cause.why, v.Why)
+		}
+	}
+}
+
 // The three states GitHub collapses into one must stay distinct, and only one
 // of them may permit a merge.
 func TestClassifyThreeStates(t *testing.T) {

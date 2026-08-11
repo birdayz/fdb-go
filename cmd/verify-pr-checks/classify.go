@@ -3,9 +3,9 @@
 // requires actually RUN and PASS?
 //
 // The distinction is not pedantic. A pull request whose workflow runs are held
-// at `action_required` — awaiting maintainer approval, which this repository's
-// `all_external_contributors` policy imposes on every PR opened by
-// github-actions[bot] — reports `mergeStateStatus: UNSTABLE` and
+// at `action_required` — awaiting maintainer approval, which this repository
+// imposes on every run whose actor is github-actions[bot], see the header of
+// .github/workflows/frl-pin-bump.yml — reports `mergeStateStatus: UNSTABLE` and
 // `gh pr checks` prints "no checks reported on the '<branch>' branch". Held
 // runs are created, then never surface as check runs. Neither signal is an
 // error, so a merge decision made from either reads "nothing failed" out of
@@ -125,10 +125,18 @@ func Classify(expected []string, observed []ObservedCheck) []Verdict {
 	for _, name := range expected {
 		o, ok := byName[name]
 		if !ok {
+			// Name the CAUSES, not just the outcome. All three produce a byte
+			// for byte identical "no checks reported", and they take different
+			// remedies — approve the run, resolve the conflict, restore the
+			// workflow. A reader handed only "ABSENT" reaches for the first
+			// explanation they have heard, which is how this repository spent an
+			// investigation on GITHUB_TOKEN's anti-recursion rule.
 			verdicts = append(verdicts, Verdict{
 				Name:  name,
 				State: StateAbsent,
-				Why:   "no check run reported for this name (never created, or held at action_required awaiting approval)",
+				Why: "no check run reported for this name: never created, or held at action_required awaiting " +
+					"approval, or the pull request is DIRTY (a merge conflict stops GitHub computing " +
+					"refs/pull/N/merge, so pull_request workflows never fire at all)",
 			})
 			continue
 		}
@@ -179,9 +187,10 @@ func Unsatisfied(verdicts []Verdict) []Verdict {
 // `gh pr list` truncates at --limit and reports nothing about having done so,
 // which on an auditing gate is the worst available failure: it inspects a subset
 // and reports on the whole, and the report is indistinguishable from a complete
-// one. Measured on this repository, 149 pull requests merged inside the default
-// 14-day window, so the original 100 limit silently skipped roughly a third of
-// them while printing a clean summary.
+// one. When this was found, 149 pull requests had merged inside the default
+// 14-day window against a limit of 100 — a third of them silently skipped under a
+// clean summary. That count only grows with merge rate, so it is a floor on the
+// problem rather than a fixed measurement; do not treat it as a budget to tune.
 //
 // A saturated page is therefore an ERROR, never a quietly narrowed sweep.
 func checkListSaturation(state string, got, limit int) error {
