@@ -116,6 +116,17 @@ type EmbeddedConnection struct {
 	// Go-only read-path extension (a non-exact egress ceiling — the
 	// estimate is the cheap encoded length, not exact heap).
 	maxResultBytes int64
+
+	// explicitPageMode is the programmatic-only migration gate for RFC-232's
+	// one-data-page-per-execution contract. When enabled, a row-returning
+	// statement may execute one data page, but it must not transparently fetch
+	// another page. Until GO_V1 can encode the self-contained SQL continuation,
+	// a non-terminal first page therefore fails 0A000 before Rows are published.
+	//
+	// This is deliberately not an api.OptionName, DSN property, or SQL option.
+	// It is also not OptAllowUnprotectedPlanContinuation: this transitional
+	// policy neither enables nor claims support for minting or redeeming GO_V1.
+	explicitPageMode bool
 }
 
 // Options returns the connection's api.Options, or api.NoOptions() when
@@ -162,6 +173,20 @@ func (c *EmbeddedConnection) SetOptions(o *api.Options) {
 // errors (54F01) instead of paginating. Default false.
 func (c *EmbeddedConnection) SetFailOnScanLimitReached(v bool) {
 	c.failOnScanLimitReached = v
+}
+
+// SetExplicitPageMode enables or disables RFC-232's programmatic-only
+// one-data-page-per-execution migration mode. With the mode enabled at this
+// implementation stage, a terminal read succeeds normally and a non-terminal
+// read fails 0A000 before publishing Rows because GO_V1 continuation encoding
+// is not installed yet. It does not enable a continuation capability. DML
+// retains its existing drain behavior.
+//
+// The value is captured when a statement starts. Like SetOptions, this method
+// is not safe to call concurrently with query execution on the same connection.
+// ResetSession always disables the mode before a pooled connection is reused.
+func (c *EmbeddedConnection) SetExplicitPageMode(enabled bool) {
+	c.explicitPageMode = enabled
 }
 
 // SetStatementTimeout sets the per-Execute wall-clock deadline (RFC-106a).
@@ -831,6 +856,8 @@ func (c *EmbeddedConnection) SetDefaultSchema(s string) {
 //     the next checkout)
 //   - schemaCache → cleared (schema evolution between checkouts would
 //     otherwise serve a stale descriptor)
+//   - explicitPageMode → disabled (the transitional execution policy must
+//     never leak to the next borrower)
 func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 	if c.closed.Load() {
 		return driver.ErrBadConn
@@ -846,6 +873,7 @@ func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 		tx.terminate()
 		tx.rctx.Cancel()
 	}
+	c.explicitPageMode = false
 	c.sess.ResetSchemaCache()
 	c.invalidatePlanCache()
 	return nil

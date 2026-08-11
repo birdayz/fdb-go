@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "driver.go",
         "dsn.go",
+        "page_rows.go",
     ],
     importpath = "fdb.dev/pkg/relational/sqldriver",
     visibility = ["//visibility:public"],
@@ -411,6 +412,7 @@ go_test(
         "outer_multileg_nested_on_fdb_test.go",
         "outer_projected_scalar_fdb_test.go",
         "overflow_probe_test.go",
+        "page_rows_test.go",
         "pagination_limit_fdb_test.go",
         "param_rendering_probe_test.go",
         "param_string_edge_probe_test.go",

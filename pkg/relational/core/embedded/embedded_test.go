@@ -456,6 +456,7 @@ func TestEmbeddedConnection_ResetSessionClearsPerRequestState(t *testing.T) {
 		// activeTx left nil — rolling back a nil tx must not panic, but the
 		// reset must still run to completion (the schema-cache cleanup would
 		// be skipped if we early-returned on activeTx presence).
+		explicitPageMode: true,
 	}
 	if err := conn.ResetSession(context.TODO()); err != nil {
 		t.Fatalf("ResetSession: unexpected error: %v", err)
@@ -468,6 +469,9 @@ func TestEmbeddedConnection_ResetSessionClearsPerRequestState(t *testing.T) {
 	}
 	if conn.activeTx != nil {
 		t.Errorf("activeTx not cleared: %v", conn.activeTx)
+	}
+	if conn.explicitPageMode {
+		t.Error("explicitPageMode not disabled: a pooled connection would leak the programmatic page policy to its next borrower")
 	}
 }
 
