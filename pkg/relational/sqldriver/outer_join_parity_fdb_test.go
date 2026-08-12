@@ -645,12 +645,16 @@ func TestFDB_OuterParity_NullSupplyingNullability(t *testing.T) {
 	// (#4274) answer, but it reaches that answer through SOURCE nullability
 	// rather than per-slot join metadata: with scalar NOT NULL unexpressible
 	// every scalar column is proto OPTIONAL, and the NoNulls derivation keys
-	// on proto REQUIRED, which no DDL shape produces. The first-match hole in
-	// descriptorForColumn's agreement gate (the null-born upgrade keyed on
-	// descriptor identity) is therefore LATENT rather than fixed — see
+	// on proto REQUIRED, which no DDL shape produces — see
 	// TestFDB_CrossLegAgreementGate_NullBornNotCovered for the pin of that
-	// unreachability. Positional metadata derived from the plan's own flowed
-	// result type (the D3 deliverable) remains the real per-slot mechanism.
+	// unreachability. For a QUANTIFIER-ADDRESSED read the first-match hole in
+	// descriptorForColumn's agreement gate is now CLOSED: the leg is resolved
+	// structurally (leg plan + leg-relative ordinal), pinned per-slot by
+	// TestCrossLegNullBorn_RequiredColumnOnNullSupplyingLeg on record-layer
+	// metadata, which unlike DDL can carry a REQUIRED field. It stays latent
+	// for the FLAT read, which has no correlation to resolve a leg from;
+	// positional metadata derived from the plan's own flowed result type (the
+	// D3 deliverable) remains the real per-slot mechanism there.
 	// The flag is non-load-bearing meanwhile: query rows and INSERT…SELECT
 	// correctness use RUNTIME values (the NULL-padded d.id is a genuine SQL
 	// NULL, proven in (1) and by the INSERT…SELECT test below), not this

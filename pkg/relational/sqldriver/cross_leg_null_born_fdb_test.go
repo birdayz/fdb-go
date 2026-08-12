@@ -21,16 +21,30 @@ package sqldriver_test
 // and ARRAY NOT NULL columns are flat REPEATED, not REQUIRED — so no
 // DDL-expressible column ever derives ColumnNoNulls, the null-born upgrade
 // (NoNulls → Nullable) is vacuous, and first-match cannot produce an
-// observable wrong answer on this axis. Both slots below report nullable,
+// observable wrong answer on this axis. That emitter property is PINNED, not
+// merely asserted here: TestDDLEmitterNeverEmitsRequired
+// (pkg/relational/core/metadata) fails if any column shape starts emitting
+// REQUIRED, and names this test as one of the things it re-arms. Both slots below report nullable,
 // which is also Java's (#4274) answer for the null-supplying slot. If either
 // assertion goes red because a column reports NoNulls again, some shape
 // re-armed the agreement-gate hole — re-read the file-top comment before
 // touching the assertions; positional (D3) metadata is the real per-slot fix.
 //
-// No choice function inside descriptorForColumn can repair the hole itself:
-// both result slots hand it the SAME candidate list, while the correct answer
-// differs per slot — (NoNulls, Nullable). Only positional metadata flowed from
-// the plan's own result type (the D3 deliverable) can answer per slot.
+// No choice function INSIDE descriptorForColumn can repair the hole: both
+// result slots hand it the SAME candidate list, while the correct answer
+// differs per slot — (NoNulls, Nullable). The repair therefore had to stop
+// asking it. A QUANTIFIER-ADDRESSED read now resolves its leg structurally
+// (leg plan + leg-relative ordinal), which answers per slot. Not "never a
+// name", as this comment first put it: the leg is found by correlation ALIAS
+// and an unbaked read still falls back to a leaf-name match. What it no longer
+// does is search a COLUMN name across the legs, which is the step that gave
+// both slots the same answer;
+// TestCrossLegNullBorn_RequiredColumnOnNullSupplyingLeg pins that on
+// record-layer metadata, the only input that can carry the REQUIRED field this
+// path needs. The FLAT (childless) read has no correlation to resolve a leg
+// from and still goes through the name lookup, so for that form positional
+// metadata flowed from the plan's own result type (the D3 deliverable) remains
+// the answer.
 
 import (
 	"context"

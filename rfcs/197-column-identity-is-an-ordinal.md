@@ -1037,11 +1037,11 @@ the same fact.
 | --- | --- | --- |
 | boundary | 1 | 2 |
 | contract | 8 | 12 |
-| dotted | 12 | 13 |
+| dotted | 11 | 12 |
 | harness | 1 | 1 |
 | name-keyed | 4 | 4 |
-| translator | 9 | 12 |
-| TOTAL | 33 | 44 |
+| translator | 10 | 12 |
+| TOTAL | 34 | 43 |
 
 The per-bucket authority column sums to MORE than the distinct total, because two
 declarations owe debt in more than a single bucket — `deriveColumnsFromProjection`
@@ -1066,7 +1066,7 @@ left. Which authorities, and how many each, is the table below.
 | authority | escapes |
 | --- | --- |
 | `groupByOutputBaker` | 5 |
-| `deriveColumnsFromProjection` | 4 |
+| `deriveColumnsFromProjection` | 2 |
 | `explainValueOrdinals` | 3 |
 
 `AggregateResultColumnName` used to head this table and is GONE: its

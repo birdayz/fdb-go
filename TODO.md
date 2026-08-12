@@ -12341,7 +12341,7 @@ None is speculative: each was re-verified against the tree before booking.
   | `cascades_translator.go:3598` | CQ-53's SURVIVING producer — `QOV(leg).COL` → `QOV(merged)."LEG.COL"` on the unnest-merge path |
   | `cascades_translator.go:886` | registers the QUALIFIED spelling of a group key as an alias of its output ordinal |
   | `cascades_translator.go:978` | the READ side of that same alias table |
-  | `cascades_generator.go:3073` | `CORR.FIELD` as the key into the null-supplying-window metadata map |
+  | `cascades_generator.go:3073` | `CORR.FIELD` for the null-born nullability upgrade. **RETIRED**, and this row's stated MECHANISM was wrong even when it was live — kept visible rather than deleted with the entry, because the correction lived only on the debt entry that retiring the site removed. The composed string was never "the key into the null-supplying-window metadata map": that map is keyed by protoreflect `FullName`, and the string went to `descriptorForColumn`, which matches by BARE name across the join leaves and uses the qualifier only to tie-break against the DESCRIPTOR's name — a table, never a correlation — so it could not separate legs at all. Converted to structural leg addressing (leg plan + leg-relative ordinal), which is how Java identifies the reference (`ResolvedAccessor` compares `getOrdinal()` alone) |
   | `logical_predicate.go:9340` | the correlated-scalar column key, qualified or bare depending on a scoping test made elsewhere |
   | `values.go:1720` (`contract`) | `FieldPath.toString` rendering — debt through `ColumnNameValue`, not through `ExplainValue` beside it |
 
