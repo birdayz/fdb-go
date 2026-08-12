@@ -4224,7 +4224,7 @@ func resolveLegRead(inner plans.RecordQueryPlan, md *recordlayer.RecordMetaData,
 //     compares getOrdinal() ALONE — the name is not part of identity
 //     (FieldValue.java:684,:689).
 //   - the leaf NAME. Java's UNRESOLVED accessor compares ordinal AND name
-//     (FieldValue.java:633, hashCode :637), which is what a carrier with no
+//     (FieldValue.java:633, hashCode :638), which is what a carrier with no
 //     usable ordinal falls back to here.
 //
 // So the two-key split is not an ad-hoc fallback ladder; it is the same split

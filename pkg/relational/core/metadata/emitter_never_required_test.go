@@ -1,7 +1,24 @@
 package metadata
 
 // The pin for a load-bearing NEGATIVE result: the SQL DDL descriptor emitter
-// never produces a proto2 REQUIRED field, for ANY column shape it can express.
+// never produces a proto2 REQUIRED field.
+//
+// THE CLAIM IS STRUCTURAL, NOT SAMPLED. An earlier wording here said "for ANY
+// column shape it can express", resting universality on the template below —
+// which is a sample (8 columns, no boolean, no enum, no nullable integer), so
+// it could not carry that weight. The real ground is that addField cannot
+// express REQUIRED at all: it contains exactly THREE label assignments and no
+// REQUIRED branch —
+//
+//	builder.go:951  LABEL_OPTIONAL   nullable array (wrapper message)
+//	builder.go:957  LABEL_REPEATED   non-nullable array (flat repeated)
+//	builder.go:963  LABEL_OPTIONAL   everything else — scalars and structs
+//
+// so no input can steer it to REQUIRED, whatever column kinds exist. The
+// template below CORROBORATES that over the shapes it covers; it does not
+// establish it. That ordering also makes this pin robust against a column kind
+// added tomorrow: the structural claim still holds, and the template not
+// covering the new kind is no longer a hole in the argument.
 //
 // WHY THIS IS PINNED RATHER THAN LEFT AS PROSE. Several comments elsewhere rest
 // on it as a fact about reachability, not as a stylistic note:
@@ -41,9 +58,28 @@ import (
 )
 
 // TestDDLEmitterNeverEmitsRequired walks every field of every message in the
-// emitted descriptor for a template exercising each expressible column shape —
-// nullable and non-nullable scalars, both array flavours, and nested structs —
-// and asserts none is REQUIRED.
+// emitted descriptor for a template covering nullable and non-nullable scalars,
+// both array flavours, and nested structs, and asserts none is REQUIRED.
+//
+// MUTATION-CHECKED, and the count only means anything WITH the mutation that
+// produced it. Two different edits to this same one line yield two different
+// counts, so a bare "reddens at N fields" is unreproducible; both are recorded
+// here with the edit that produces them:
+//
+//	CANONICAL. builder.go:963, LABEL_OPTIONAL -> LABEL_REQUIRED
+//	           (unconditional): reddens at 10 fields —
+//	           T.ID, T.S_NULL, T.S_NOTNULL, T.B_NOTNULL, T.D_NOTNULL, T.REC,
+//	           OUTER.ON, OUTER.OI, INNER.IX, INNER.IY.
+//
+//	NARROWER.  builder.go:963 gated on !dt.IsNullable(): reddens at 6 —
+//	           T.ID, T.S_NOTNULL, T.B_NOTNULL, T.D_NOTNULL, OUTER.ON, INNER.IY.
+//	           It misses the nullable scalar (T.S_NULL) and the three
+//	           message-typed struct columns (T.REC, OUTER.OI, INNER.IX), which
+//	           are non-array and so take the same branch.
+//
+// The unconditional one is canonical: it is the minimal edit to the line the
+// claim is about, it needs no added conditional, and its 10 fields strictly
+// contain the other's 6. Reproduce with that one and you get 10.
 func TestDDLEmitterNeverEmitsRequired(t *testing.T) {
 	t.Parallel()
 
@@ -100,9 +136,12 @@ func TestDDLEmitterNeverEmitsRequired(t *testing.T) {
 				fields++
 				if f.Cardinality() == protoreflect.Required {
 					t.Errorf("%s.%s is REQUIRED. The SQL DDL emitter is not supposed to be "+
-						"able to produce a REQUIRED field for ANY column shape (addField "+
-						"assigns LABEL_OPTIONAL, or LABEL_REPEATED for a flat array), and "+
-						"three things depend on that:\n"+
+						"able to produce a REQUIRED field at all: addField holds exactly "+
+						"three label assignments (builder.go:951 OPTIONAL for a nullable "+
+						"array, :957 REPEATED for a flat array, :963 OPTIONAL for every "+
+						"scalar and struct) and no REQUIRED branch, so this is a change to "+
+						"that function, not an unlucky column shape. Three things depend "+
+						"on it:\n"+
 						"  - the null-born nullability upgrade in deriveColumnsFromProjection "+
 						"is gated on a column deriving api.ColumnNoNulls, which this re-arms;\n"+
 						"  - TestFDB_CrossLegAgreementGate_NullBornNotCovered pins the "+
