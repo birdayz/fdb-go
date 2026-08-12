@@ -1192,7 +1192,7 @@ so the table below states one per edge:
 
 | producer | producer evidence | reader | reader evidence | class | retires |
 | --- | --- | --- | --- | --- | --- |
-| `rebaseUnnestOuterLegPredicate` | pkg/relational/core/query/cascades_translator.go | `rowSlotForLegColumn` | pkg/recordlayer/query/executor/ordinal_join.go | consumer | yes |
+| `rebaseUnnestOuterLegPredicate` | pkg/relational/core/query/cascades_translator.go | `rowSlotForLegColumn` | pkg/recordlayer/query/executor/ordinal_join.go | co-occurring | no |
 | `rebaseUnnestOuterLegPredicate` | pkg/relational/core/query/cascades_translator.go | `rebaseOuterLegValueOrdinal` | pkg/recordlayer/query/plan/cascades/left_outer_existential.go | decliner | no |
 | `rebaseUnnestOuterLegPredicate` | pkg/relational/core/query/cascades_translator.go | `rebaseOuterLegValue` | pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go | decliner | no |
 | `rebaseUnnestOuterLegPredicate` | pkg/relational/core/query/cascades_translator.go | `legRef` | pkg/relational/core/query/ordinal_seed.go | decliner | no |
@@ -1265,30 +1265,41 @@ shape. It is not that shape, and the real one is knowable today rather than an
 open question — recording it here so the next reader plans against it.
 
 The ordinal twin ALREADY EXISTS: `rebaseUnnestOuterLegPredicateOrdinal`, in the
-same file, selected wherever a windowed seed makes it correct. Its multi-alias
-branch — the branch resolving within the qualifier's leg window, so a duplicate
-column name bakes the right alias's slot — is WIRED but scope-gated OFF
-end-to-end, and its own doc says by what: `unnestExistsSeedSafe` keeps
-multi-alias outers name-model, coupled to the RULE-level below-FOD executor
-hoist.
+same file, selected wherever a windowed seed makes it correct.
 
-So the work is a coordinated planner + executor change, both gates in one
-motion, with `rowSlotForLegColumn` as the consumer that must change:
+**The three-step plan that used to sit here is REFUTED, and every step of it was
+already done.** It read: lift `unnestExistsSeedSafe`'s multi-alias guard, land the
+RULE-level below-FOD executor hoist, then retire `rowSlotForLegColumn` behind the
+two. It is recorded rather than deleted because it was planned from twice, and
+because its source was a doc comment in `cascades_translator.go` that asserted the
+multi-alias branch was *"WIRED but scope-gated OFF end-to-end"* — a false comment,
+since corrected in place. A plan is only as good as the comment it was read off,
+and this is what that costs.
 
-1. Lift `unnestExistsSeedSafe`'s multi-alias guard. It declines the binary
-   ordinal seed for a multi-alias box whenever a non-EXISTS conjunct references a
-   box leg, expressly because the binary seed has no per-leg merge window and the
-   conjunct would land out of the executor hoist's reach.
-2. Land the RULE-level below-FOD executor hoist, which is what gives that
-   conjunct a window to bake against.
-3. Retire the consumer behind the two.
+Measured at the head that corrected it:
 
-A refuted justification must LOWER the estimate rather than leave it standing, so
-state the direction plainly: this is materially LARGER than the retracted claim
-advertised — a reader list never fell out behind that deletion — and it
-is materially SMALLER than "blocked on a capability nobody has", because the
-ordinal twin is built and the gate that holds it off is named in its own doc.
-Neither gate is a missing capability; both are scope.
+1. **The guard is already lifted for the shape in question.** `unnestExistsSeedSafe`
+   ends in a disjunction whose second arm is `t.boxGatesFresh(left)`, so a
+   fresh-gating multi-alias OUTER box is ADMITTED. `TestMultiAliasOuterGatesOrdinal`
+   pins the dispatched path, and `TestThreeWayBoxCrossAgreement` now asserts the
+   verdict directly rather than describing it in prose. What still declines is a
+   multi-alias INNER cluster and a box whose leg buries an outer box — deliberate,
+   because an INNER cluster's seed cannot express the flattened multi-source outer
+   and a buried box has no recorded `[Start,Width)` bounds.
+2. **The executor hoist is already landed**, unconditional, in
+   `rule_implement_nested_loop_join.go` and `left_outer_existential.go`.
+3. **`rowSlotForLegColumn` is not fed by this mint at all**, so there is nothing
+   behind it to retire. Its non-test call site passes a leg TYPE's field name,
+   not a predicate's `FieldValue.Field` — which is why the edges table above now
+   classes that edge `co-occurring / no`. `AssertUnnestLegMintCensus` asserts the
+   minted-name set and the executor's dotted-hit set are DISJOINT and records
+   `distinct minted names: NONE` over the real-FDB corpus.
+
+So the honest direction is DOWN, not up: the retracted leverage claim
+overstated the fan-out, and this plan overstated the remaining build. What is
+actually left on this channel is a LATENT mint with no consumer — retiring it
+closes its own entry and no other, and the corpus being green is not evidence it
+is already gone.
 
 **The ordering constraint that used to gate all of this is GONE.** The stated
 reason to sequence `dotted` last was a live wrong-rows hazard:

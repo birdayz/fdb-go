@@ -4039,9 +4039,23 @@ func chainedPredScanPushable(p predicates.QueryPredicate, outerLegs map[string]s
 // NEVER a flat first-match (which would silently read another alias's same-named
 // column). Consumes the same rt.Legs metadata OrdinalSeedLegWindows emits for
 // the serve side — one layout authority, so translator-rebase and executor
-// windows agree. NOTE: the multi-alias branch is wired but scope-gated OFF
-// end-to-end (unnestExistsSeedSafe keeps multi-alias outers name-model); it
-// goes live only when that guard lifts (channel 2).
+// windows agree.
+//
+// SCOPE OF THE MULTI-ALIAS BRANCH, stated because the previous note here was
+// FALSE and manufactured work that did not exist: it claimed the branch was
+// "wired but scope-gated OFF end-to-end (unnestExistsSeedSafe keeps multi-alias
+// outers name-model)". It is LIVE. unnestExistsSeedSafe's terminal disjunct is
+// `len(outerBoundAliases(left)) == 1 || t.boxGatesFresh(left)`, so a multi-alias
+// FULL OUTER box that gates fresh is ADMITTED and reaches this branch with
+// rt.Legs populated. What the branch SERVES is a fresh-gating OUTER box
+// (LEFT/RIGHT/FULL) whose legs are simple; what it DECLINES is a multi-alias
+// INNER cluster and a box whose leg exposes a buried outer box. Those declines
+// are DELIBERATE and permanent-until-verified, not a guard awaiting a lift: an
+// INNER cluster's seed cannot express the flattened multi-source outer, and a
+// buried outer box has no recorded [Start,Width) bounds, so building positional
+// over either yields an unrebased ref rather than a slower plan. See
+// boxGatesFresh for the exclusion list and TestMultiAliasOuterGatesOrdinal /
+// TestMultiSourceInnerClusterDeclines for the admit and decline pins.
 //
 // multiAlias is the CALLER's structural fact (len(outerLegs) > 1). The flat
 // whole-row name fallback is legitimate ONLY for a single-alias prefix (the
@@ -4107,12 +4121,19 @@ func ordinalSlotInLegWindow(rt *values.RecordType, leg values.CorrelationIdentif
 // existential inner plan (the under-∃ placement of a subquery-internal
 // outer-only conjunct). For a single-alias outer the leg is the pristine merged
 // PREFIX at offset 0, so an outer column's ordinal in the outer leg type IS its
-// merged-row ordinal — the ONLY shape reachable today. The multi-alias branch (a
+// merged-row ordinal. The multi-alias branch (a
 // box with rt.Legs, ordinal resolved WITHIN the qualifier's leg window via
 // ordinalSlotInLegWindow so a dup-named column bakes the right alias's slot) is
-// WIRED but scope-gated OFF end-to-end (unnestExistsSeedSafe keeps multi-alias
-// outers name-model); it goes live only when that guard lifts (channel 2, coupled
-// with the RULE-level below-FOD executor hoist). The baked ref is then exactly the
+// WIRED AND LIVE — the note that used to sit here calling it "scope-gated OFF
+// end-to-end (unnestExistsSeedSafe keeps multi-alias outers name-model)" was
+// FALSE and is corrected in place, because two investigations planned a
+// guard-lift off it. unnestExistsSeedSafe ends in
+// `len(outerBoundAliases(left)) == 1 || t.boxGatesFresh(left)`, so a fresh-gating
+// multi-alias OUTER box is ADMITTED (TestMultiAliasOuterGatesOrdinal pins it).
+// The shapes that stay name-model are a multi-alias INNER cluster and a box with
+// a buried outer-box leg, and those are deliberate declines rather than a
+// pending lift — see ordinalSlotInLegWindow's scope note and boxGatesFresh.
+// The baked ref is exactly the
 // shape the disabled-build probe binds positionally below the FOD. The
 // translator is the SINGLE rebase authority for buried refs (RULE-level
 // predicates stay the executor hoist's), so no double-rebase exists. Returns

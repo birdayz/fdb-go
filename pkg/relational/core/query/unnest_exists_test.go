@@ -487,12 +487,34 @@ func TestOrdinalSlotInLegWindow(t *testing.T) {
 // builder against the executor's own span computation; this test closes the
 // planner-walk <-> seed-window leg, so all three agree. A drift here is a
 // silent wrong-alias slot on a dup-named column. The box outer is built
-// directly (bypassing unnestExistsSeedSafe, which still declines it
-// end-to-end) — a white-box layout pin, not a dispatch change.
+// directly rather than dispatched through translateUnnestJoin — a white-box
+// layout pin, not a dispatch change.
+//
+// THE PRIOR PARENTHETICAL HERE WAS FALSE and is corrected rather than deleted,
+// because it contradicted its own sibling in this file and two investigations
+// planned work off it. It read "bypassing unnestExistsSeedSafe, which still
+// declines it end-to-end". A FULL OUTER box is exactly the shape that gate
+// ADMITS: boxGatesFresh gates every OUTER box fresh (pinned directly by
+// TestBoxGatePredicates), and unnestExistsSeedSafe's terminal disjunct is
+// `len(outerBoundAliases(left)) == 1 || t.boxGatesFresh(left)`, so this
+// two-alias box passes on the second arm. TestMultiAliasOuterGatesOrdinal
+// dispatches this SAME box shape under EXISTS and proves the ordinal seed
+// fires. The direct build here is for white-box access to ordinalLegType, not
+// a way around a decline — and the assertion below pins that, so the false
+// reading cannot come back as prose.
 func TestThreeWayBoxCrossAgreement(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)
 	box := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")
+	// The gate ADMITS this box under EXISTS. Asserted, not asserted-about: a
+	// comment claiming the opposite survived here for two investigations.
+	tr.unnestUnderExistential = true
+	if !tr.unnestExistsSeedSafe(box, false) {
+		t.Fatal("unnestExistsSeedSafe DECLINED a multi-alias FULL OUTER box under EXISTS — " +
+			"it must ADMIT it via boxGatesFresh, and TestMultiAliasOuterGatesOrdinal " +
+			"depends on the same verdict through the dispatched path")
+	}
+	tr.unnestUnderExistential = false
 	boxType := tr.ordinalLegType(box)
 	if boxType == nil || len(boxType.Legs) < 2 {
 		t.Fatalf("box ordinalLegType has no per-leg boundaries: %+v", boxType)
