@@ -3963,7 +3963,11 @@ func descriptorForColumn(name string, descs []protoreflect.MessageDescriptor) pr
 	// So that consumer no longer asks this function. A QUANTIFIER-ADDRESSED
 	// read resolves its leg structurally instead (legRead: the leg plan the
 	// correlation names, then that leg's own column at the read's leg-relative
-	// ordinal), which answers per slot because it never consults a name.
+	// ordinal). That answers PER SLOT, which is the property this function
+	// cannot have. It is not name-free — legRead resolves the leg by
+	// correlation ALIAS and falls back to a leaf-name match for an unbaked
+	// read — but neither of those is a COLUMN name searched across legs, which
+	// is the specific thing that collapses two slots onto one answer here.
 	// TestCrossLegNullBorn_RequiredColumnOnNullSupplyingLeg pins exactly the
 	// shape above. What still arrives here is the FLAT (childless) read, which
 	// carries no correlation to resolve a leg from; for that form the
@@ -4184,11 +4188,18 @@ func legHasDefaultOnEmpty(p plans.RecordQueryPlan) bool {
 // and whether the leg is null-supplying (an outer join's null-extended side).
 //
 // Both arms of deriveColumnsFromProjection that need a QOV read's leg column —
-// the null-born nullability upgrade and the type inheritance — go through here
-// so the two cannot drift. They used to derive it independently, and they had
-// already drifted: the type arm addressed the leg structurally while the
-// nullability arm composed a "CORR.FIELD" string for a descriptor lookup that
-// cannot separate legs at all.
+// the null-born nullability upgrade and the type inheritance — go through here,
+// so the ADDRESSING is derived once. They used to derive it independently, and
+// they had already drifted: the type arm addressed the leg structurally while
+// the nullability arm composed a "CORR.FIELD" string for a descriptor lookup
+// that cannot separate legs at all.
+//
+// Sharing the addressing is NOT the same as the two arms behaving alike, and
+// this comment used to claim it was. They consume the result differently and
+// deliberately: the nullability arm short-circuits on nullSupplying before it
+// ever addresses a column (see nullExtended), and the type arm has its own
+// fallbacks after this returns. What is guaranteed here is one derivation of
+// "which leg, which slot" — nothing about what each caller then does with it.
 type legRead struct {
 	cols          []executor.ColumnDef
 	nullSupplying bool
@@ -4206,24 +4217,62 @@ func resolveLegRead(inner plans.RecordQueryPlan, md *recordlayer.RecordMetaData,
 	return legRead{cols: deriveColumnsFromPlan(legPlan, md), nullSupplying: nullSupplying}, true
 }
 
-// column returns the leg column this read addresses. The BAKED LEG-RELATIVE
-// ordinal is the identity: Java's ResolvedAccessor compares getOrdinal() alone
-// and the name is not part of identity (FieldValue.java:684,:689). The leaf
-// NAME resolves only an UNBAKED (lazy) read, which carries no ordinal — and it
-// is a genuinely weaker key, since a leg that duplicates an output name keeps
-// only one of them under it.
+// column returns the leg column this read addresses, by one of two keys that
+// mirror Java's own two accessor kinds exactly:
+//
+//   - the BAKED LEG-RELATIVE ordinal, tried first. Java's RESOLVED accessor
+//     compares getOrdinal() ALONE — the name is not part of identity
+//     (FieldValue.java:684,:689).
+//   - the leaf NAME. Java's UNRESOLVED accessor compares ordinal AND name
+//     (FieldValue.java:633, hashCode :637), which is what a carrier with no
+//     usable ordinal falls back to here.
+//
+// So the two-key split is not an ad-hoc fallback ladder; it is the same split
+// Java draws between a resolved and an unresolved accessor.
+//
+// The name key serves an UNBAKED (lazy) read, which carries no ordinal — and
+// ALSO a baked read whose ordinal is out of range for this leg, which the
+// earlier wording denied. It is a genuinely weaker key either way, since a leg
+// that duplicates an output name keeps only one of them under it.
+//
+// Accessors[0] is the whole story for the single-accessor case: the leaf
+// derivation emits one column per TOP-LEVEL proto field, so a struct occupies
+// exactly one slot and root ordinals stay aligned with r.cols. No re-anchoring
+// is needed to reach the right slot.
 func (r legRead) column(fv *values.FieldValue) (executor.ColumnDef, bool) {
 	if fv.Resolved != nil {
-		// A MULTI-ACCESSOR (struct-descent) reference is not addressable
-		// against this leg's columns by EITHER key. Its root ordinal is not an
-		// index into the leg's flattened columns, and the only NAME it carries
-		// is its leaf — a member of the enclosing struct's namespace, offered
-		// to columns keyed by the RECORD's, where a shared spelling answers
-		// with an unrelated column. Declining leaves the reference's own
-		// resolved type and nullability standing, which is Java's answer
-		// (FieldValue.computeResultType is fieldPath.getLastFieldType,
-		// FieldValue.java:143-148). The decline lives HERE rather than in each
-		// caller so the type arm and the nullability arm cannot drift on it.
+		// A reference that is not exactly single-accessor is not addressable
+		// against this leg's columns by EITHER key. A multi-accessor root
+		// ordinal is not an index into the leg's flattened columns, and the
+		// only NAME such a reference carries is its leaf — a member of the
+		// enclosing struct's namespace, offered to columns keyed by the
+		// RECORD's, where a shared spelling answers with an unrelated column.
+		// Declining leaves the reference's own resolved type and nullability
+		// standing, which is Java's answer (FieldValue.computeResultType is
+		// fieldPath.getLastFieldType, FieldValue.java:143-148).
+		//
+		// WHAT THIS DECLINE ACTUALLY CHANGES, per arm — it is not one guard
+		// covering both, and describing it as merely "moved here" was wrong:
+		//
+		//   - MULTI-accessor, TYPE arm: already declined before this existed.
+		//     deriveColumnsFromProjection sets inherited=true for
+		//     len(Accessors) > 1 and the whole QOV block sits under
+		//     `if !inherited`, so such a read never reaches this function.
+		//     Redundant here, kept because this function must be correct on
+		//     its own terms rather than on its caller's.
+		//   - ZERO-accessor, TYPE arm: a NEW restriction. A Resolved carrying
+		//     no accessors passed both of those upstream tests and did reach
+		//     the leg's leaf-name loop; now it declines.
+		//   - EITHER, NULLABILITY arm: new, and this is the only guard there
+		//     is — that arm reaches this function through nullExtended with no
+		//     upstream arity test at all.
+		//
+		// MEASURED over the sqldriver suite (6159 tests) at the commit that
+		// added this: 13 entries into this function, ALL single-accessor —
+		// zero multi-accessor, zero zero-accessor, zero unbaked. So the new
+		// restriction is LATENT, not a live behaviour change, and this decline
+		// is fail-safe rather than corpus-proven. Recorded rather than dressed
+		// up as coverage.
 		if len(fv.Resolved.Accessors) != 1 {
 			return executor.ColumnDef{}, false
 		}
@@ -4244,6 +4293,17 @@ func (r legRead) column(fv *values.FieldValue) (executor.ColumnDef, bool) {
 // unmatched rows) or the leg's own derivation already made the column
 // nullable. Callers only ever UPGRADE off this answer — a false here is "no
 // evidence of nullability", never "provably NOT NULL".
+//
+// THE ORDER OF THE TWO TESTS IS LOAD-BEARING, and it is why a struct-descent
+// read on a null-extended leg still upgrades even though column() would
+// decline it: nullSupplying is answered FIRST, so the leg's null extension
+// never depends on resolving a leaf. That mirrors Java, where the flowed
+// nullability is DISJUNCTIVE with the path rather than gated on it —
+// computeResultType's `childValue.getResultType().isNullable() ||
+// fieldPath.areAnyFieldTypesNullable()` (FieldValue.java:147). A consequence
+// worth stating plainly: on a null-supplying leg this function bypasses
+// column() entirely, so the decline there is NOT in force for the case this
+// arm most cares about.
 func (r legRead) nullExtended(fv *values.FieldValue) bool {
 	if r.nullSupplying {
 		return true
@@ -4271,13 +4331,21 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 	// nullable too — clients then handle a NULL that never comes, never the
 	// reverse.
 	//
-	// THAT COARSENESS NOW SCOPES TO THE FLAT (childless) READ ONLY. A
-	// QUANTIFIER-ADDRESSED read resolves its leg structurally through legRead
-	// and never consults this map, so the self-join case it describes — both
-	// sides sharing one descriptor — is answered exactly for that form: the
+	// THAT COARSENESS IS NOW NARROWED, NOT SCOPED AWAY — an earlier wording
+	// here said "the FLAT (childless) read ONLY", which the fallback about
+	// fifty lines down contradicts. Two kinds of read still land on this map:
+	//
+	//   - the FLAT (childless) read, which carries no correlation at all and
+	//     so has no leg to resolve;
+	//   - a QUANTIFIER-ADDRESSED read whose alias names no UNAMBIGUOUS leg,
+	//     where legPlanFor declines (a folded block's duplicated alias) and
+	//     the structural path cannot answer.
+	//
+	// What did change is that a QOV read WITH a resolvable leg no longer
+	// consults this map, so the self-join case described above — both sides
+	// sharing one descriptor — is answered exactly for that form: the
 	// preserved leg reports its own nullability and only the null-supplying
-	// leg is upgraded. The map survives for the flat read, which carries no
-	// correlation and therefore has no leg to resolve.
+	// leg is upgraded.
 	nullBorn := map[protoreflect.FullName]struct{}{}
 	plans.Walk(proj.GetInner(), func(n plans.RecordQueryPlan) bool {
 		if doe, ok := n.(*plans.RecordQueryDefaultOnEmptyPlan); ok {
@@ -4472,6 +4540,20 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 									inherited = true
 								}
 							}
+							// THE DECLINE IN legRead.column ONLY NARROWS THIS ARM, it
+							// does not close it. When column() refuses, the lookup
+							// below still recovers a column by NAME — `legPrefix +
+							// fv.Field` against innerByName — which is the same
+							// leaf-vs-record-namespace hazard the decline exists to
+							// avoid, one map further out. The NULLABILITY arm has no
+							// such tail: a resolved leg there sets structural=true
+							// and suppresses every fallback, so for that arm the
+							// hazard really is closed. This tail is pre-existing and
+							// unreachable today for the multi-accessor case
+							// (deriveColumnsFromProjection's upstream
+							// `len(Accessors) > 1` sets inherited, and this block
+							// sits under `if !inherited`); it shuts entirely when the
+							// qualified-name inner keys go away.
 							if !inherited {
 								legPrefix := strings.ToUpper(qov.Correlation.Name()) + "."
 								if ic, found := innerByName[legPrefix+strings.ToUpper(fv.Field)]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {

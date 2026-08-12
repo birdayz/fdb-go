@@ -384,12 +384,23 @@ var accessorAritySites = map[string]accessorAritySite{
 			"the shared-spelling hazard this census already recorded for the three NAME arms. " +
 			"Declining leaves the reference's own resolved type standing, Java's answer " +
 			"(FieldValue.computeResultType is fieldPath.getLastFieldType, " +
-			"FieldValue.java:143-148). THE DECLINE IS DELIBERATELY PLACED HERE, not in the " +
-			"callers: the type arm already had an equivalent multi-accessor guard upstream, " +
-			"and the nullability arm — which reaches this helper through nullExtended — had " +
-			"NONE, so extracting the helper without moving the decline into it would have " +
-			"handed the name loop a struct leaf on exactly the path that had no guard. Two " +
-			"arms sharing one derivation must share its declines too, or they drift. " +
+			"FieldValue.java:143-148). IT IS A NEW RESTRICTION, NOT A RELOCATED ONE, and the " +
+			"first version of this entry got that wrong by describing it as merely moved. " +
+			"Per arm, traced to the enforcing path rather than asserted: (i) MULTI-accessor " +
+			"on the TYPE arm was ALREADY declined at base -- deriveColumnsFromProjection sets " +
+			"inherited=true for len(Accessors) > 1 and the entire QOV block sits under " +
+			"`if !inherited`, so such a read never reached the helper's predecessor code; the " +
+			"decline is redundant there. (ii) ZERO-accessor on the TYPE arm is NEW: a Resolved " +
+			"with no accessors passed both upstream tests and DID reach the leg's leaf-name " +
+			"loop, and now declines. (iii) EITHER kind on the NULLABILITY arm is new and this " +
+			"is the only guard that exists, because that arm reaches the helper through " +
+			"nullExtended with no upstream arity test. MEASURED over the sqldriver suite " +
+			"(6159 tests): 13 entries into the helper, ALL single-accessor -- zero " +
+			"multi-accessor, zero zero-accessor, zero unbaked -- so the new restriction is " +
+			"LATENT, not a live behaviour change. NOT a claim that the arms now behave alike: " +
+			"nullExtended answers nullSupplying BEFORE addressing a column, so on a " +
+			"null-supplying leg it bypasses this decline entirely (correctly -- Java's " +
+			"nullability is disjunctive with the path, FieldValue.java:147). " +
 			"NOT reachable through SQL today: the nullability arm is gated on a column " +
 			"deriving NoNulls, which needs a proto REQUIRED field the DDL emitter never " +
 			"emits (metadata/builder.go addField has no LABEL_REQUIRED branch). MEASURED at " +
@@ -610,10 +621,19 @@ const (
 	// a legibility comment states a FACT (what the predicate requires), never a
 	// verdict. Those eight sites are ENUMERATED but still UNCLASSIFIED, and that
 	// debt is booked in TODO.md rather than discharged by the comment.
-	rfcPublishedPopulation = 68
-	// The decomposition of those 68 lines.
+	//
+	// 68 → 70: two more prose lines, same bucket and same reason as 56 → 58.
+	// Extracting legRead out of deriveColumnsFromProjection needed its decline
+	// documented PER ARM — the type arm's multi-accessor case was already
+	// declined upstream by `len(Accessors) > 1`, the zero-accessor case was not
+	// — and stating which arm each clause covers means quoting the upstream
+	// predicate, which this sweep's regexp matches. CODE population unchanged
+	// at 49/53: the helper's own arity expression MOVED out of
+	// deriveColumnsFromProjection rather than being added.
+	rfcPublishedPopulation = 70
+	// The decomposition of those 70 lines.
 	arityGeneratedLines = 8  // protobuf marshal loops over PFieldPath.FieldAccessors
-	arityCommentLines   = 11 // prose inside a doc comment (1 + 2 + the 8 legibility notes)
+	arityCommentLines   = 13 // prose inside a doc comment (1 + 2 + the 8 legibility notes + 2 per-arm decline notes)
 	arityCodeLines      = 49 // the real population
 	// Four of the 49 code lines hold more than one arity expression.
 	arityExpressions = 53

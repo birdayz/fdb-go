@@ -11,7 +11,10 @@ package sqldriver_test
 // The SQL DDL emitter never emits one — metadata/builder.go's addField assigns
 // LABEL_OPTIONAL to every scalar and struct and LABEL_REPEATED to a flat array,
 // and has no LABEL_REQUIRED branch at all, mirroring Java's
-// Type.Record.defineProtoType. MEASURED over the full factorycorpus at the
+// Type.Record.defineProtoType. That emitter property is not left as prose here:
+// TestDDLEmitterNeverEmitsRequired (pkg/relational/core/metadata) pins it and
+// names this test as one of the three things that go live if it ever changes.
+// MEASURED over the full factorycorpus at the
 // commit that added this test: 216,848 projection slots derived, ZERO reaching
 // the NoNulls guard, while 58,232 of those slots came from plans whose
 // null-supplying (DefaultOnEmpty) set was NON-EMPTY. That second number is what
