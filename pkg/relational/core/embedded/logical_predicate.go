@@ -4510,8 +4510,15 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 		// ORDER-BY rebase uses — so the projection reads the element, not a missing
 		// `V.V` key (→ NULL). RFC-142.
 		if len(proj.AggregateOutputOrdinals) != len(proj.Projections) {
+			// One collector for the whole projection list: an ambiguous
+			// reference is a property of the statement, and Java raises out of
+			// the same per-statement pull-up (Expressions.pullUp).
+			var amb groupKeyPullUpAmbiguity
 			for i := range vals {
-				vals[i] = rebasePostAggregateGroupKeyValue(vals[i], agg)
+				vals[i] = rebasePostAggregateGroupKeyValue(vals[i], agg, &amb)
+			}
+			if err := amb.err(); err != nil {
+				return err
 			}
 		}
 		proj.ProjectedValues = vals
@@ -4982,7 +4989,77 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			}
 		}
 	}
+	return groupByOutputConstructionPullUp(agg)
+}
+
+// groupByOutputConstructionPullUp is Java's group-by OUTPUT construction guard,
+// and it is the one that decides duplicate grouping keys for every shape.
+//
+// LogicalOperator.java:454 builds the operator's output by pulling the grouping
+// expressions up against the GroupByExpression's own result value:
+//
+//	groupByExpressions.concat(aggregates).pullUp(groupByExpression.getResultValue(), …)
+//
+// That routes through the ASSERTING Expressions.pullUp (Expressions.java:112),
+// whose multimap holds one entry per matched result column. The sub-expressions
+// being pulled up ARE the grouping keys, so two semantically equal keys produce
+// two entries for one key and the `size() == 1` assert raises AMBIGUOUS_COLUMN.
+//
+// THREE CONSEQUENCES, each of which was got wrong here before:
+//
+//  1. It fires at OPERATOR CONSTRUCTION, before the SELECT-list
+//     (QueryVisitor.java:301) or HAVING (:303) pull-up is reached, and
+//     INDEPENDENTLY of whether any post-aggregate reference exists. A bare
+//     `SELECT COUNT(*) … GROUP BY a.amount, amount` has nothing to pull up
+//     later and Java still refuses it — measured, `join_qualified_vs_bare` in
+//     conformance/duplicate_groupby_java_probe_test.go.
+//  2. It therefore covers the PROJECTED half, which reaches none of the
+//     post-aggregate guards: a projected key is bound by
+//     buildAggregateOutputSlots, whose match is name-based. Instrumented, that
+//     site binds `A.R.V.Z`→key 0 and `R.V.Z`→key 1 while the post-aggregate walk
+//     reports two matches for the same query. One shape, two verdicts, decided by
+//     two different predicates — an incoherence with no Java counterpart, which a
+//     construction-time guard removes rather than documents.
+//  3. It is NOT the name-based duplicate gate (groupKeysEquivalent) and does not
+//     replace it. The gate keeps its own predicate; this adds the SEMANTIC
+//     question Java asks, at the point Java asks it.
+//
+// The relation is the pull-up's own matcher, so the construction guard and the
+// post-aggregate guards cannot disagree about what "the same key" means.
+func groupByOutputConstructionPullUp(agg *logical.LogicalAggregate) error {
+	if agg == nil || len(agg.GroupKeys) < 2 {
+		return nil
+	}
+	for i := range agg.GroupKeys {
+		ki := agg.GroupKeys[i].Value
+		if ki == nil {
+			continue
+		}
+		for j := range agg.GroupKeys {
+			if j == i || agg.GroupKeys[j].Value == nil {
+				continue
+			}
+			if !groupKeysPullUpEqual(ki, agg.GroupKeys[j].Value) {
+				continue
+			}
+			// Java's Assert throws on the FIRST ambiguous sub-expression, so the
+			// name reported is the first key that answers to more than one
+			// column — not whichever the scan happened to end on.
+			return api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous columns for %s",
+				aggregateGroupKeyOutputName(ki))
+		}
+	}
 	return nil
+}
+
+// groupKeysPullUpEqual is the identity the pull-up uses, applied key-to-key. A
+// QUALIFIED key carries its correlation, so two reads of one column through two
+// DIFFERENT quantifiers (`GROUP BY o.k, i.k`) are structurally unequal and stay
+// two keys; two spellings of the SAME column (`a.amount` and bare `amount` over
+// one source) are equal and are one.
+func groupKeysPullUpEqual(a, b values.Value) bool {
+	return values.ValuesStructurallyEqual(a, b) ||
+		values.SemanticEqualsUnderAliasMap(a, b, values.AliasMap{})
 }
 
 func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, subqPlanner *existsSubqueryPlanner) error {
@@ -5033,9 +5110,17 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 	// pushed BELOW the aggregate (PushFilterThroughGroupByRule) and MUST stay
 	// qualified there (the pre-aggregate row binds `V.V`, the unnest element);
 	// rebaseHavingGroupKeyPredicate keeps that case untouched. RFC-142.
+	// The HAVING half of Java's pull-up (Expression.pullUp) also stops on a
+	// multi-match, via a bare Iterables.getOnlyElement; Go spends the precise
+	// 42702 there rather than an unclassified failure. See the guard note on the
+	// rebase walks.
+	var havingAmb groupKeyPullUpAmbiguity
 	agg.HavingPredicate = rebaseHavingGroupKeyPredicate(
-		rewriteAggregateRefsInPredicate(pred, agg), agg,
+		rewriteAggregateRefsInPredicate(pred, agg), agg, &havingAmb,
 	)
+	if err := havingAmb.err(); err != nil {
+		return err
+	}
 	if subqPlanner != nil && len(subqPlanner.subqueries) > 0 {
 		agg.HavingExistsSubqueries = subqPlanner.subqueries
 		subqPlanner.subqueries = nil
@@ -5243,14 +5328,45 @@ func bindPostAggregateValueToNativeOrdinals(v values.Value, agg *logical.Logical
 
 		// Pre-order matching binds a whole computed GROUP BY expression before
 		// considering any of its leaves.
-		keyMatch := -1
+		//
+		// IT COLLECTS RATHER THAN FIRST-MATCHING, because Java's pull-up asserts
+		// `pulledUpExpressionMap.get(subExpression).size() == 1` with
+		// AMBIGUOUS_COLUMN (Expressions.java:112) before taking the element, and
+		// this binder is a pull-up.
+		//
+		// IT IS NOT WHAT CLOSES THE DUPLICATE-KEY DIVERGENCE, and an earlier
+		// revision of this comment claimed it was — asserting that a projected
+		// reference under `... JOIN ... GROUP BY a.r.v.z, r.v.z` reaches THIS
+		// loop. Instrumented, it does not: that reference is bound by
+		// buildAggregateOutputSlots, and this loop is consulted zero times for
+		// the shape. The claim was refuted by the file's own test, which had the
+		// projected half planning — if the reference arrived here, the matcher
+		// below is semantic and the two equal keys would have raised.
+		//
+		// Duplicates are refused upstream now, at output construction
+		// (groupByOutputConstructionPullUp), which is where Java refuses them
+		// (LogicalOperator.java:454) and which needs no reference at all. This
+		// guard is therefore UNREACHABLE from SQL — measured over the whole
+		// //pkg/relational/sqldriver target at 6158 subtests, this site is
+		// consulted 414 times and never sees more than one match. It is kept
+		// because Java keeps the assert at every pull-up site, and it is driven
+		// directly by TestGroupKeyPullUpGuard_ExactBoundaryBinderRefusesAMultiMatch
+		// so that unreachable does not become untested.
+		keyMatch, keyMatches := -1, 0
 		for i, key := range agg.GroupKeys {
 			if key.Value != nil &&
 				(values.SemanticEqualsUnderAliasMap(node, key.Value, values.AliasMap{}) ||
 					fieldValueMatchesAggregateGroupKey(node, key.Value, agg)) {
-				keyMatch = i
-				break
+				if keyMatches == 0 {
+					keyMatch = i
+				}
+				keyMatches++
 			}
+		}
+		if keyMatches > 1 {
+			bindErr = api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous columns for %s",
+				aggregateGroupKeyOutputName(agg.GroupKeys[keyMatch].Value))
+			return node
 		}
 		if keyMatch >= 0 {
 			// keyMatch is the key's index in agg.GroupKeys, which IS its output
@@ -7461,14 +7577,67 @@ func aggregateGroupKeyOutputName(gkv values.Value) string {
 // read the guard as closing this divergence — that takes the separate
 // gate-convergence step, and the booking lists the two closable sets apart so
 // neither step can be marked done on the other's evidence.
-func rebasePostAggregateComputedGroupKey(v values.Value, agg *logical.LogicalAggregate) values.Value {
+// groupKeyPullUpAmbiguity carries an AMBIGUOUS_COLUMN verdict out of the two
+// post-aggregate rebase walks. Both run inside value-replacement callbacks whose
+// signature is Value->Value, so there is no error channel at the point the
+// ambiguity is discovered; the walks record here and the two top-level callers
+// (the projection list and the HAVING predicate) raise before the plan is built.
+//
+// It deliberately keeps only the FIRST name it is handed, and the walks feeding
+// it likewise keep their FIRST matching key rather than their last. Java's
+// Assert throws on the first ambiguous sub-expression it reaches
+// (Expressions.java:112), so one fact per statement, taken at the front, is the
+// same behaviour.
+//
+// THE FIRST-VS-LAST CHOICE IS NOT OBSERVABLE IN THE MESSAGE, and that is a
+// structural property rather than a gap in the tests. The reported name comes
+// from aggregateGroupKeyOutputName of the MATCHED key, and matching requires the
+// keys denote the same column — so every key in an ambiguous set renders the
+// same name by construction. What the tests can and do pin is the slot chosen on
+// a UNIQUE match (asserted as a value, not merely as "something bound"), and
+// this collector's own first-wins contract. A test asserting the reported column
+// distinguishes an ambiguity from an unrelated failure; it cannot distinguish
+// which of the equal keys was taken, and no test written against this mechanism
+// could.
+type groupKeyPullUpAmbiguity struct {
+	name string
+	hit  bool
+}
+
+func (a *groupKeyPullUpAmbiguity) record(name string) {
+	if a == nil || a.hit {
+		return
+	}
+	a.name, a.hit = name, true
+}
+
+// err returns the 42702 Java spends at the pull-up site, or nil. The wording
+// matches the duplicate-key gate's (plan_visitor.go) so one ambiguity does not
+// read as two different diagnoses depending on which site caught it.
+func (a *groupKeyPullUpAmbiguity) err() error {
+	if a == nil || !a.hit {
+		return nil
+	}
+	return api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous columns for %s", a.name)
+}
+
+func rebasePostAggregateComputedGroupKey(v values.Value, agg *logical.LogicalAggregate, amb *groupKeyPullUpAmbiguity) values.Value {
 	return values.Replace(v, func(node values.Value) values.Value {
+		// Once a verdict is recorded the walk stops rewriting, matching the
+		// exact-boundary binder's bindErr short-circuit. The caller discards the
+		// tree on an error either way; leaving the two shapes different is how one
+		// of them later grows a side effect the other does not have.
+		if amb != nil && amb.hit {
+			return node
+		}
 		// A FieldValue is the SIBLING walk's business, and leaving it entirely
 		// alone here is what keeps this addition from changing any shape that
 		// worked before: the two walks partition the node kinds between them.
 		if _, isField := node.(*values.FieldValue); isField {
 			return node
 		}
+		matches := 0
+		slot := 0
 		for i, gk := range agg.GroupKeys {
 			if gk.Value == nil {
 				continue
@@ -7484,8 +7653,23 @@ func rebasePostAggregateComputedGroupKey(v values.Value, agg *logical.LogicalAgg
 			// and Java pulls a post-aggregate reference up by that loop index
 			// (CompensateRecordConstructorRule.java:88-92) rather than by a name.
 			// The name is the display label only.
+			if matches == 0 {
+				slot = i
+			}
+			matches++
+		}
+		// COLLECT-THEN-DECIDE, because Java guards at the pull-up site rather
+		// than trusting an upstream duplicate-key gate: Expressions.pullUp
+		// asserts the pulled-up set has exactly one element before taking it
+		// (Expressions.java:112). Taking the first of several here is answering
+		// a question the reference does not determine.
+		if matches > 1 {
+			amb.record(aggregateGroupKeyOutputName(agg.GroupKeys[slot].Value))
+			return node
+		}
+		if matches == 1 {
 			return values.NewFieldValueWithPinnedOrdinalInDomain(
-				aggregateGroupKeyOutputName(gk.Value), i, node.Type(),
+				aggregateGroupKeyOutputName(agg.GroupKeys[slot].Value), slot, node.Type(),
 				aggregateNativeOutputDomain(agg))
 		}
 		return node
@@ -7513,14 +7697,17 @@ func rebasePostAggregateComputedGroupKey(v values.Value, agg *logical.LogicalAgg
 // needs the rewrite; a bare group key already keys under its own name, so its
 // references read the aggregate output as-is and the structural match is a no-op.
 // RFC-142.
-func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggregate) values.Value {
+func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggregate, amb *groupKeyPullUpAmbiguity) values.Value {
 	if v == nil || agg == nil || len(agg.GroupKeys) == 0 {
 		return v
 	}
 	// COMPUTED keys are rebased FIRST, over whole sub-expressions, because a
 	// walk that only visits FieldValues cannot see them at all (below).
-	v = rebasePostAggregateComputedGroupKey(v, agg)
+	v = rebasePostAggregateComputedGroupKey(v, agg, amb)
 	return values.MapFieldValues(v, func(fv *values.FieldValue) values.Value {
+		if amb != nil && amb.hit {
+			return fv
+		}
 		// A node that already carries a RECORDED slot is addressed against the
 		// aggregate's OUTPUT row and is not a candidate for anything here. The
 		// guard is load-bearing, not defensive: by the time this runs the tree's
@@ -7537,6 +7724,8 @@ func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggreg
 		if fv.Resolved != nil && fv.Resolved.FrontierPinned {
 			return fv
 		}
+		matchCount, matchSlot := 0, 0
+		var matchKey *values.FieldValue
 		for i, gk := range agg.GroupKeys {
 			if gk.Value == nil {
 				continue
@@ -7545,20 +7734,17 @@ func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggreg
 			if !ok {
 				continue
 			}
-			// THIS LOOP FIRST-MATCHES, AND ITS INTERLOCK IS MEASURED RATHER THAN
-			// STRUCTURAL. So is the sibling computed walk's, above — NEITHER route
-			// has a structural guarantee, and the difference between them is only
-			// which way the gate fails and how easy the counterexample is to
-			// write. This one is trivially constructible; that one required
-			// instrumenting the gate to see that it fails while running its
-			// strongest predicate.
+			// THIS LOOP COLLECTS AND GUARDS; IT DOES NOT FIRST-MATCH. The
+			// interlock that once justified first-matching was MEASURED, not
+			// structural, and neither this walk nor the sibling computed one had a
+			// guarantee behind it.
 			//
-			// A key reaching THIS loop has a non-empty Bare, which sends the gate
-			// down its `default` branch: groupKeysEquivalent (plan_visitor.go), a
-			// NAME-BASED comparison over the normalized (Bare, Qualifier) pair
-			// plus the Qualified flag. The match below is semantic. Two different
-			// predicates, so nothing structural stops a multi-match — only
-			// whatever the name-based gate happens to catch.
+			// A key reaching THIS loop has a non-empty Bare, which sends the
+			// duplicate gate down its `default` branch: groupKeysEquivalent
+			// (plan_visitor.go), a NAME-BASED comparison over the normalized
+			// (Bare, Qualifier) pair plus the Qualified flag. The match below is
+			// semantic. Two different predicates, so nothing structural stops a
+			// multi-match — only whatever the name-based gate happens to catch.
 			//
 			// It does not catch everything, and the hole is measured, not
 			// hypothetical. The gate normalizes by stripping a leading
@@ -7566,27 +7752,27 @@ func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggreg
 			// joins (visitSelectGroupBy's `len(fs.joins) == 0`). Under a join,
 			// `GROUP BY a.r.v.z, r.v.z` keeps qualifiers `A.R.V` and `R.V`, the
 			// name compare says "different", and two semantically equal keys
-			// arrive here — where this loop binds the FIRST. Java refuses a
-			// multi-match on both post-aggregate paths, though not with the same
-			// error and the difference is worth keeping straight: the SELECT-list
-			// variant Expressions.pullUp asserts `size() == 1` with
-			// AMBIGUOUS_COLUMN (Expressions.java:112), while the HAVING variant
-			// Expression.pullUp ends in a BARE Iterables.getOnlyElement
-			// (Expression.java:246) with no such assert. Either way it stops; Go
-			// picks a slot. The rows stay
-			// CORRECT, because equal keys hold equal values in both slots, so the
-			// divergence is conformance-only; it is pinned, with the reproducer,
-			// by TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot's
-			// under_a_join_two_equal_keys… arm.
+			// arrive here. Java refuses such a multi-match at the PULL-UP SITE
+			// rather than delegating to any upstream duplicate-key check, which is
+			// the structure ported here: the SELECT-list variant Expressions.pullUp
+			// asserts `size() == 1` with AMBIGUOUS_COLUMN (Expressions.java:112),
+			// while the HAVING variant Expression.pullUp ends in a BARE
+			// Iterables.getOnlyElement (Expression.java:246) that throws without
+			// that SQLSTATE. Go raises AMBIGUOUS_COLUMN on BOTH paths: both
+			// engines stop, and spending the precise code on the HAVING half too
+			// is a deliberate, documented refinement of Java's bare
+			// getOnlyElement — the alternative is an unclassified internal error
+			// for a user-visible ambiguity.
 			//
-			// Closing it means converging BOTH sites on one predicate so the gate
-			// and this loop ask the same question — not widening the match below,
-			// and not merely extending the alias strip to joins. Either of those
-			// makes the name compare agree more often by accident while leaving
-			// two predicates that still disagree, which is the symptom rather than
-			// the property. Booked with its computed-route twin in TODO.md
-			// Phase 12; it is a change to groupKeysEquivalent affecting every
-			// GROUP BY shape, so it carries its own RFC and review lap.
+			// THE GUARD DOES NOT CLOSE THE NORMALIZATION GAP, and must not be read
+			// as doing so. It stops the engine where the reference is genuinely
+			// undetermined; it does not make the gate and this loop ask the same
+			// question. Shapes that carry NO post-aggregate reference still plan,
+			// because there is nothing here to pull up. Converging the two
+			// predicates is the separate step, and the tempting shortcuts —
+			// widening the match below, or extending the alias strip to joins —
+			// make the name compare agree more often by accident while leaving two
+			// predicates that still disagree.
 			//
 			// Two ways a post-aggregate reference is provably THIS group key. A
 			// QUALIFIED key carries the V.V mismatch and matches on structural
@@ -7601,6 +7787,10 @@ func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggreg
 					fieldValueMatchesAggregateGroupKey(fv, gk.Value, agg)
 			}
 			if matched {
+				if matchCount == 0 {
+					matchSlot, matchKey = i, qfv
+				}
+				matchCount++
 				// The SLOT is recorded HERE, at the composition that decides it:
 				// `i` is this key's index in agg.GroupKeys, and the aggregate
 				// output row is [group keys in this order..., aggregates...]
@@ -7629,10 +7819,19 @@ func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggreg
 				// addresses the aggregate's native output row, so that is the
 				// token — never the source layout the reference was resolved
 				// from, whose ordinals collide with these at every width.
-				name := aggregateGroupKeyOutputName(qfv)
-				return values.NewFieldValueWithPinnedOrdinalInDomain(
-					name, i, fv.Typ, aggregateNativeOutputDomain(agg))
 			}
+		}
+		// COLLECT-THEN-DECIDE — see the pull-up guard note above. A reference
+		// that answers to two grouping keys does not determine a slot, and
+		// picking one is answering anyway.
+		if matchCount > 1 {
+			amb.record(aggregateGroupKeyOutputName(matchKey))
+			return fv
+		}
+		if matchCount == 1 {
+			return values.NewFieldValueWithPinnedOrdinalInDomain(
+				aggregateGroupKeyOutputName(matchKey), matchSlot, fv.Typ,
+				aggregateNativeOutputDomain(agg))
 		}
 		return fv
 	})
@@ -7655,14 +7854,14 @@ func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggreg
 // qualified); everything else is rebased (it stays above, reads bare). The two
 // deciders cannot drift — both ask "is this a single group-key comparison?".
 // RFC-142.
-func rebaseHavingGroupKeyPredicate(pred predicates.QueryPredicate, agg *logical.LogicalAggregate) predicates.QueryPredicate {
+func rebaseHavingGroupKeyPredicate(pred predicates.QueryPredicate, agg *logical.LogicalAggregate, amb *groupKeyPullUpAmbiguity) predicates.QueryPredicate {
 	if pred == nil || agg == nil || len(agg.GroupKeys) == 0 {
 		return pred
 	}
 	if havingPredicatePushesBelowAggregate(pred, agg) {
 		return pred // stays qualified; PushFilterThroughGroupByRule pushes it pre-aggregate
 	}
-	return rebasePostAggregateGroupKeyPredicate(pred, agg)
+	return rebasePostAggregateGroupKeyPredicate(pred, agg, amb)
 }
 
 // havingPredicatePushesBelowAggregate asks the Cascades rule's OWN decider
@@ -7692,13 +7891,13 @@ func havingPredicatePushesBelowAggregate(pred predicates.QueryPredicate, agg *lo
 // rewriteAggregateRefsInPredicate's tree walk so a grouped-unnest group-key
 // reference reads the bare aggregate-output column, not the qualified pre-aggregate
 // `V.V`. RFC-142.
-func rebasePostAggregateGroupKeyPredicate(pred predicates.QueryPredicate, agg *logical.LogicalAggregate) predicates.QueryPredicate {
+func rebasePostAggregateGroupKeyPredicate(pred predicates.QueryPredicate, agg *logical.LogicalAggregate, amb *groupKeyPullUpAmbiguity) predicates.QueryPredicate {
 	if pred == nil || agg == nil || len(agg.GroupKeys) == 0 {
 		return pred
 	}
 	switch p := pred.(type) {
 	case *predicates.ComparisonPredicate:
-		lhs := rebasePostAggregateGroupKeyValue(p.Operand, agg)
+		lhs := rebasePostAggregateGroupKeyValue(p.Operand, agg, amb)
 		// Copy the whole Comparison and replace ONLY the rebased RHS operand,
 		// preserving Escape (the LIKE escape rune, e.g. `LIKE 'a!_%' ESCAPE '!'`)
 		// and every other Comparison subclass field (ParameterName, the Text*
@@ -7707,22 +7906,22 @@ func rebasePostAggregateGroupKeyPredicate(pred predicates.QueryPredicate, agg *l
 		// semantics — a LIKE pattern would evaluate with the wrong wildcard
 		// meaning once its escape is lost. RFC-142.
 		cmp := p.Comparison
-		cmp.Operand = rebasePostAggregateGroupKeyValue(p.Comparison.Operand, agg)
+		cmp.Operand = rebasePostAggregateGroupKeyValue(p.Comparison.Operand, agg, amb)
 		return predicates.NewComparisonPredicate(lhs, cmp)
 	case *predicates.AndPredicate:
 		subs := make([]predicates.QueryPredicate, len(p.SubPredicates))
 		for i, s := range p.SubPredicates {
-			subs[i] = rebasePostAggregateGroupKeyPredicate(s, agg)
+			subs[i] = rebasePostAggregateGroupKeyPredicate(s, agg, amb)
 		}
 		return predicates.NewAnd(subs...)
 	case *predicates.OrPredicate:
 		subs := make([]predicates.QueryPredicate, len(p.SubPredicates))
 		for i, s := range p.SubPredicates {
-			subs[i] = rebasePostAggregateGroupKeyPredicate(s, agg)
+			subs[i] = rebasePostAggregateGroupKeyPredicate(s, agg, amb)
 		}
 		return predicates.NewOr(subs...)
 	case *predicates.NotPredicate:
-		return predicates.NewNot(rebasePostAggregateGroupKeyPredicate(p.Child, agg))
+		return predicates.NewNot(rebasePostAggregateGroupKeyPredicate(p.Child, agg, amb))
 	}
 	return pred
 }

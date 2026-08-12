@@ -281,14 +281,47 @@ func TestFDB_OrderedGroupedScalarSubquery_QualifiedJoinKeyIdentity(t *testing.T)
 		})
 	}
 
-	t.Run("repeated_equivalent_single_source_keys", func(t *testing.T) {
-		// Qualified a.k and bare k resolve to the same producer value on this
-		// single-source inner. Both native grouping slots are equal, so ORDER BY
-		// bare k may deterministically use the first. This must not weaken the
-		// joined a.k/b.k distinction proved above.
+	t.Run("repeated_equivalent_single_source_keys_are_refused_42702", func(t *testing.T) {
+		// THIS ARM USED TO ASSERT THE WRONG BEHAVIOUR. It required Go to ANSWER
+		// `GROUP BY a.k, k` (300), reasoning that "both native grouping slots are
+		// equal, so ORDER BY bare k may deterministically use the first". That
+		// reasoning describes first-matching on a DUPLICATE grouping key, which
+		// is the thing Java refuses.
+		//
+		// JAVA REFUSES THIS SHAPE, and it is measured rather than argued: the
+		// cross-engine probe `join_control_single_source`
+		// (conformance/duplicate_groupby_java_probe_test.go) runs
+		// `SELECT COUNT(*) FROM T_G1 a GROUP BY a.amount, amount` against the
+		// live JVM at 4.12.11.0 and records `both_42702` — qualified-vs-bare over
+		// ONE source is a duplicate key in both engines. The shape here is that
+		// shape; the correlated scalar subquery around it is orthogonal to the
+		// duplicate.
+		//
+		// WHY GO USED TO ANSWER IT, so the arm cannot be "fixed" by re-arming the
+		// old expectation: the duplicate gate strips a leading alias only under
+		// its own preconditions, and inside this correlated inner it does not
+		// fire, so the two equal keys reached the post-aggregate pull-up. The
+		// pull-up now guards there — collect, and raise AMBIGUOUS_COLUMN on more
+		// than one match — which is where Java guards (Expressions.java:112,
+		// Expression.java:246), locally, delegating to no upstream check.
+		//
+		// The joined a.k/b.k distinction proved above is UNAFFECTED and must stay
+		// so: those are two different columns, they multi-match nothing, and all
+		// four cases above still answer.
 		q := "SELECT (SELECT SUM(a.amount) FROM ga a WHERE a.customer_id = c.id GROUP BY a.k, k ORDER BY k LIMIT 1)" + outer
-		if got, ok := ogsScalar(t, ctx, db, q); !ok || got != 300 {
-			t.Fatalf("repeated equivalent keys: got %d (valid=%v), want 300; query=%s", got, ok, q)
+		_, err := db.QueryContext(ctx, q)
+		if err == nil {
+			t.Fatalf("repeated equivalent keys: planned, want 42702. Go is answering a "+
+				"duplicate grouping key the live JVM refuses (probe "+
+				"join_control_single_source = both_42702); query=%s", q)
+		}
+		if !strings.Contains(err.Error(), "42702") {
+			t.Fatalf("repeated equivalent keys: got %v, want 42702; query=%s", err, q)
+		}
+		if !strings.Contains(err.Error(), "K") {
+			t.Fatalf("repeated equivalent keys: got %v, want the message to name K — "+
+				"a 42702 naming another column is the guard firing for another "+
+				"reason; query=%s", err, q)
 		}
 	})
 }

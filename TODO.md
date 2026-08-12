@@ -17416,14 +17416,25 @@ None is speculative: each was re-verified against the tree before booking.
       [RecordConstructorValue, ArithmeticValue], so a reference matches only ONE
       of them (`matches=1`, the measurement recorded above) and no `>1` guard can
       trip. It needs step 2.
-    - NOT closed by step 1: ALL FIVE `java_42702_go_plans` probes.
-      `paren_twin_aggonly`, `cmp_twin` and `join_qualified_vs_bare` are bare
-      `SELECT COUNT(*)` with no HAVING and no key projected, so there is no
-      reference and the guard never runs; `paren_twin_proj` and
-      `paren_twin_having` have a reference but are the `matches=1` case. Java
-      refuses all five at GROUP BY CONSTRUCTION — pulling up the group-by result
-      itself, not a user reference — and Go's analog of that site is the duplicate
-      gate, i.e. step 2.
+    - NOT closed by step 1: the `java_42702_go_plans` probes — FIVE when this was
+      written, FOUR now. `paren_twin_aggonly`, `cmp_twin` and
+      `join_qualified_vs_bare` are bare `SELECT COUNT(*)` with no HAVING and no
+      key projected, so there is no reference and a post-aggregate guard never
+      runs; `paren_twin_proj` and `paren_twin_having` have a reference but are the
+      `matches=1` case.
+
+      THE DIAGNOSIS IN THE NEXT SENTENCE WAS RIGHT AND ITS PRESCRIPTION WAS
+      WRONG, which is why `join_qualified_vs_bare` has since closed WITHOUT step
+      2. Java does refuse at GROUP BY CONSTRUCTION, pulling up the group-by result
+      itself rather than a user reference (LogicalOperator.java:454 through the
+      asserting Expressions.pullUp) — that part is exactly right. But Go's analog
+      of that site is NOT the name-based duplicate gate: it is a SEMANTIC pull-up
+      at the same construction point, which is what `groupByOutputConstructionPullUp`
+      now does. `join_qualified_vs_bare` measured `both_42702` against the live
+      JVM once it landed. The four paren/cmp probes remain open and DO need the
+      normalization step, because no semantic matcher equates a
+      RecordConstructorValue with an ArithmeticValue. See the closing block at the
+      end of this file.
 
   STEP 2 — NORMALIZATION, at leisure and behind its own RFC. Converge the gate's
   identity predicate with the loops' so the two sites ask one question; this is
@@ -17434,9 +17445,12 @@ None is speculative: each was re-verified against the tree before booking.
 
   PINNED MEANWHILE, both directions, on both sides of the engine boundary:
   `pkg/relational/sqldriver/groupby_computed_key_having_fdb_test.go` arms
-  `under_a_join_two_equal_keys_are_NOT_refused_and_Go_answers_where_Java_raises`
-  and `a_parenthesised_computed_key_twin_is_NOT_refused_either` (Go-side, assert
-  VALUES), plus the `java_42702_go_plans` probes above (cross-engine, and they red
+  `under_a_join_two_equal_keys_are_refused_42702_at_output_construction`
+  (renamed and flipped to assert the REFUSAL when the output-construction pull-up
+  landed; see the block at the end of this file)
+  and `a_parenthesised_computed_key_twin_is_NOT_refused_either` (Go-side, still
+  asserts VALUES because the construction guard cannot equate a
+  RecordConstructorValue with an ArithmeticValue), plus the `java_42702_go_plans` probes above (cross-engine, and they red
   if EITHER Java stops refusing or Go starts).
 
   STEP 1 DONE = both loops collect matches and raise `AMBIGUOUS_COLUMN` on more
@@ -17662,3 +17676,133 @@ None is speculative: each was re-verified against the tree before booking.
   a copy of it here would be a second ungated home in the very entry that defines
   that as the rot. An earlier draft of this note carried three such magnitudes.
   Read them from `pkg/docscheck`.
+
+---
+
+- [x] **Phase 12 STEP 1 landed, and the guard belongs at OUTPUT CONSTRUCTION —
+  the post-aggregate-only reading was wrong, and so were both of my reasons for
+  it.** One block; the corrections matter more than the fix.
+
+  **(1) WHERE THE GUARD GOES.** `groupByOutputConstructionPullUp`
+  (`pkg/relational/core/embedded/logical_predicate.go`) refuses two SEMANTICALLY
+  equal grouping keys with 42702 at aggregate construction. That is Java:
+  `LogicalOperator.java:454` pulls the grouping expressions up against the
+  GroupByExpression's own result value through the ASSERTING `Expressions.pullUp`
+  (`Expressions.java:112`), so two equal keys yield two entries for one key and
+  `size() == 1` raises. It fires BEFORE the SELECT-list
+  (`QueryVisitor.java:301`) and HAVING (`:303`) pull-ups and **independently of
+  whether any post-aggregate reference exists**. The name-based gate
+  (`groupKeysEquivalent`) is untouched.
+
+  **(2) TWO REFUTED CLAIMS OF MINE, both recorded here because both were written
+  down and believed.**
+  - *"A projected reference reaches `bindPostAggregateValueToNativeOrdinals`."*
+    FALSE. Instrumented, that site is consulted ZERO times for the projected
+    join spelling; the reference is bound by `buildAggregateOutputSlots` by a
+    NAME predicate (`A.R.V.Z`→key 0, `R.V.Z`→key 1). My own shipped test
+    contradicted the comment I wrote.
+  - *"The `java_42702_go_plans` probes stay open because a bare `SELECT COUNT(*)`
+    carries no post-aggregate reference for any pull-up to guard."* FALSE, and
+    refuted by this repo's own probe data in the same document:
+    `join_qualified_vs_bare` IS a bare `SELECT COUNT(*)` and Java 42702s it. A
+    construction-time pull-up needs no reference.
+
+  **(3) THE "TWO PREDICATES, TWO VERDICTS" SEAM IS GONE, not documented.** One
+  query shape no longer gets a refusal from its HAVING spelling and an answer
+  from its projected one. That incoherence had no Java counterpart.
+
+  **CLOSED, measured:** all six spellings of the join arm — projected, HAVING,
+  and two carrying NO post-aggregate reference at all (the shapes that prove the
+  guard is at construction) — now raise 42702.
+  `under_a_join_two_equal_keys_are_refused_42702_at_output_construction`. Also
+  still closed: the correlated-scalar-subquery duplicate
+  (`repeated_equivalent_single_source_keys_are_refused_42702`), which the live
+  JVM refuses per `join_control_single_source` = `both_42702`.
+
+  **NOT CLOSED, and the guard cannot close it:** the parenthesised computed twin.
+  `(c1 + 1)` is a RecordConstructorValue and `c1 + 1` an ArithmeticValue, so no
+  semantic matcher equates them at construction either — measured, that arm still
+  plans. It needs the NORMALIZATION step, not a guard, and the same is true of
+  `paren_twin_aggonly` / `paren_twin_proj` / `paren_twin_having` / `cmp_twin`.
+  Do not credit the construction guard with those four.
+
+  **THE THREE POST-AGGREGATE GUARDS ARE NOW UNREACHABLE FROM SQL, and are kept
+  and unit-driven rather than deleted.** Measured over the whole
+  `//pkg/relational/sqldriver` target **at 6158 subtests**: the three sites are
+  consulted **797 times** (binder 414, computed 360, FieldValue walk 23) and NOT
+  ONE consultation sees more than one match — the construction guard refuses
+  first, exactly as Java's ordering predicts. They are kept because Java keeps
+  its assert at every pull-up site and because one normalization change separates
+  "no duplicate reaches here" from "one does"; deleting them would re-arm silent
+  first-match at three sites at once. Every arm is driven from
+  `pkg/relational/core/embedded/group_key_pull_up_guard_test.go` (8 tests), so
+  unreachable never means untested.
+
+  **FIRST-VS-LAST: fixed, and NOT observable in the message.** All three walks
+  kept their LAST matching key while the collector documented "keeps only the
+  FIRST" — two directions in one mechanism. Now all take the first, matching
+  Java's Assert throwing on the first ambiguous sub-expression. The choice cannot
+  be pinned by asserting the reported column: the name derives from the matched
+  key's column and matching requires the same column, so every key in an
+  ambiguous set renders the same name. What IS pinned is the slot on a unique
+  match (asserted as a value, not "something bound") and the collector's
+  first-wins contract.
+
+  **Mutation-checked, DISJOINT arms**, each confirmed landed before running:
+  construction guard → reddens the join arm and the scalar-subquery arm;
+  `matchCount > 1` → the FieldValue-walk unit arm only; `keyMatches > 1` → the
+  binder unit arm only; `matches > 1` → the computed-walk unit arm only.
+
+  **STILL OPEN for the normalization step:** the four paren/cmp probes
+  (`paren_twin_aggonly`, `paren_twin_proj`, `paren_twin_having`, `cmp_twin`),
+  MEASURED against the live JVM as still `java_42702_go_plans` in the same run
+  that closed the join one — Go answers all four.
+
+  **`join_qualified_vs_bare` MOVED TO `both_42702`, measured against the live
+  JVM, not asserted from the Go side.** The cross-engine probe reddened on the
+  pre-commit hook the moment the construction guard landed, with its own message
+  naming the remedy, and the expectation was moved in the same commit. It is a
+  bare `SELECT COUNT(*)` with no projected key and no HAVING — the shape the
+  post-aggregate-only guards provably could not reach — so it is also the
+  cleanest evidence that the guard belongs at construction.
+
+- [x] **`groupByOutputOrdinals`' `keys[full] = ord` last-wins store is CLOSED, a
+  guard there is INERT AND NON-NEUTRAL, and this is the second time the site has
+  been mistaken for live.** Booked so a third reader does not re-propose it.
+
+  The RFC-197 block above records the hazard as closed by
+  `groupKeyOrdinalByStructure`. Measured directly, over
+  `//pkg/relational/sqldriver:sqldriver_test` at **6158 `=== RUN` lines**, with
+  the store and all three consumers (`cascades_translator.go` ORDER BY ~:1044,
+  baker-stripped ~:1168, baker-direct ~:1190) instrumented:
+
+  - **21 collisions built**, over 2 distinct names (`K`, `NAME`) — down from 29 over 4, because the `A.R.V.Z` and `C1` collisions belonged to shapes the output-construction pull-up now refuses outright;
+  - **15 consumer consultations**;
+  - **ZERO consultations on a collided name.** The two populations are DISJOINT.
+
+  Scope is written into the claim on purpose: that reading is the
+  `//pkg/relational/sqldriver` target ONLY. The yamsql corpus and
+  `//pkg/relational/core/embedded` were NOT instrumented.
+
+  **Why it is closed:** the rebase loops now record the slot at the composition
+  that decides it and mark it `FrontierPinned`, so references arrive already
+  bound and the baker returns before any name lookup. Confirmed by mutation —
+  forcing `groupKeyOrdinalByStructure` to always decline (making the last-wins map
+  the SOLE decider at all three consumers) left the full corpus GREEN
+  and returned byte-identical correct rows for six deliberately-constructed
+  collision shapes over two tables sharing leaf `K` with DIFFERENT values, driving
+  all three consumers (SELECT-list, HAVING, ORDER BY asc and desc). The mutation
+  was confirmed landed: it reddens
+  `//pkg/relational/core/query:query_test -test.run=TestGroupKeyOrdinalByStructure_Arms`.
+
+  **A guard at that store is not merely inert — it is NON-NEUTRAL where it would
+  fire.** Deleting the colliding entry flips `:1150`'s `if _, hit := keyOrds[key];
+  !hit` into its stripped-alias branch and drops `:1185` to `return node`
+  (unbaked, lazy name read). So the cheap-looking "mirror `addKeyAlias`" change
+  would alter behaviour on shapes with no demonstrated defect behind them.
+
+  **Scoped datum for the `Resolved == nil` residual** the RFC-197 block names:
+  at 6158 subtests, **9 of the 15 consultations are declines** (6 ORDER BY,
+  3 baker-stripped) and NONE is on a collided name — so the decline arm is
+  reachable, but has never met an ambiguous name. That is the falsifier to watch:
+  a decline ON a collided name is the residual going live.

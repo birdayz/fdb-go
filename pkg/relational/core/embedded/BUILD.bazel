@@ -122,6 +122,7 @@ go_test(
         "float_ordering_claim_plan_test.go",
         "group_count_companion_ddl_test.go",
         "group_existence_cost_decision_test.go",
+        "group_key_pull_up_guard_test.go",
         "having_pushdown_decider_test.go",
         "in_over_intersection_relink_test.go",
         "index_asselect_aggregate_test.go",
@@ -358,6 +359,7 @@ go_test(
         "aggregate_group_key_nested_path_test.go",
         "agg_output_cols_nullability_test.go",
         "unnest_element_struct_fields_nested_test.go",
+        "group_key_pull_up_guard_test.go",
     ],
     deps = [
         "//gen",
