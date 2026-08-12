@@ -566,6 +566,7 @@ go_test(
         "unnest_element_member_in_gather_fdb_test.go",
         "unnest_element_member_rebase_gate_fdb_test.go",
         "unnest_exists_gather_fdb_test.go",
+        "unnest_leg_mint_name_arm_search_space_test.go",
         "unnest_member_predicate_rows_fdb_test.go",
         "unnest_ordinality_pushdown_fdb_test.go",
         "unordered_union_continuation_fdb_test.go",
