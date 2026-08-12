@@ -48,17 +48,27 @@ import (
 //	    than a confident wrong classification; that is precisely what cost this
 //	    census five revisions.
 //
-// THE POPULATION IS NOT 52 SITES. It is 52 grep LINES, and they decompose:
+// THE POPULATION IS NOT 52 SITES. It is 52 grep LINES, and they decompose —
+// AT THE INCEPTION SWEEP (rev 6), which is the only thing these particular
+// numbers ever described:
 //
 //	52 = 8 generated + 1 comment + 43 code lines
 //
 // The 8 are protobuf marshal/unmarshal loops over `PFieldPath.FieldAccessors`
 // in gen/record_query_plan_vtproto.pb.go — a wire-format field list, not a
 // `values.FieldPath`, and not a gate of any kind. The 1 is prose inside a doc
-// comment. The 43 code lines carry 47 arity EXPRESSIONS (four lines hold more
+// comment. The 43 code lines carried 47 arity EXPRESSIONS (four lines hold more
 // than one, e.g. `len(a.Accessors) == 0 || len(a.Accessors) != len(b.Accessors)`)
-// spread over 36 enclosing symbols. Those 36 symbols are the thing worth
+// spread over 36 enclosing symbols. Those symbols are the thing worth
 // classifying, and they are what accessorAritySites pins.
+//
+// DO NOT READ 43 / 47 / 36 AS CURRENT — they are an inception snapshot and the
+// population has grown since, exactly as the blind-spot note below predicts it
+// must. The LIVE figures are the gate-checked ones and only those: arityCodeLines
+// and arityExpressions below, and len(accessorAritySites) for the symbol count.
+// Prose cannot be the authority here, because prose is what went stale: this
+// block claimed 43/47/36 while the constants held 49/53, and the class-count
+// note further down claimed a total of 39 against a table of 40.
 //
 // Sites are keyed by `file#symbol`, NEVER by line. The RFC's own anchors drifted
 // across three bases during its review (the group-key ladder moved +86 lines
@@ -360,8 +370,37 @@ var accessorAritySites = map[string]accessorAritySite{
 			"getFieldPathNames (IndexPredicate.java:562-566).",
 	},
 
+	"pkg/relational/core/embedded/cascades_generator.go#legRead.column": {
+		class: arityCorrectDecline, exprs: 1,
+		why: "EXTRACTED from deriveColumnsFromProjection, which is why that entry's exprs " +
+			"dropped 3 -> 2; the symbol count moved, no verdict was revised. legRead.column " +
+			"is the SHARED leg-addressing helper both projection arms now use — the type " +
+			"inheritance and, newly, the null-born nullability upgrade, which used to compose " +
+			"'CORR.FIELD' for a descriptor lookup that cannot separate legs at all. " +
+			"(a) CORRECT DECLINE: a multi-accessor reference is not addressable against a " +
+			"leg's columns by EITHER key. Its root ordinal is not an index into the leg's " +
+			"flattened columns, and the only name it carries is its LEAF, which lives in the " +
+			"enclosing struct's namespace while the leg's columns are keyed by the RECORD's — " +
+			"the shared-spelling hazard this census already recorded for the three NAME arms. " +
+			"Declining leaves the reference's own resolved type standing, Java's answer " +
+			"(FieldValue.computeResultType is fieldPath.getLastFieldType, " +
+			"FieldValue.java:143-148). THE DECLINE IS DELIBERATELY PLACED HERE, not in the " +
+			"callers: the type arm already had an equivalent multi-accessor guard upstream, " +
+			"and the nullability arm — which reaches this helper through nullExtended — had " +
+			"NONE, so extracting the helper without moving the decline into it would have " +
+			"handed the name loop a struct leaf on exactly the path that had no guard. Two " +
+			"arms sharing one derivation must share its declines too, or they drift. " +
+			"NOT reachable through SQL today: the nullability arm is gated on a column " +
+			"deriving NoNulls, which needs a proto REQUIRED field the DDL emitter never " +
+			"emits (metadata/builder.go addField has no LABEL_REQUIRED branch). MEASURED at " +
+			"the commit that added this entry, over the full factorycorpus: 216,848 " +
+			"projection slots derived, 0 reaching the NoNulls guard, 58,232 of them from " +
+			"plans with a NON-EMPTY null-supplying set. Recorded as fail-safe rather than " +
+			"dressed up as coverage.",
+	},
+
 	"pkg/relational/core/embedded/cascades_generator.go#deriveColumnsFromProjection": {
-		class: arityNestingOK, exprs: 3,
+		class: arityNestingOK, exprs: 2,
 		why: "WAS (?), THEN (d) LIVE DEFECT, NOW FIXED. RFC-230's base recorded the (d) and " +
 			"instructed that the entry be RE-READ rather than carried if the fix landed " +
 			"afterwards; it did, and this is that re-read. It stays as an entry rather than " +
@@ -785,18 +824,27 @@ func TestAccessorArityClassCounts(t *testing.T) {
 	//	                                      becomes a site this census can SEE
 	//	                                      for the first time
 	//
-	// giving (a) 15, (b) 0, (c) 24, (d) 0, (?) 0 — total 39, and 36 symbols → 39.
+	// giving, AT THAT POINT, (a) 15, (b) 0, (c) 24, (d) 0, (?) 0. That trail is
+	// history and is not re-derived on each change; the LIVE numbers are the
+	// `pinned` map immediately below, which the test compares against the table
+	// and which therefore cannot go stale the way this paragraph did — it read
+	// "total 39" against a table that already held 40.
 	// The gates are rewriteUnnestPredicate and
 	// rebaseUnnestOuterLegPredicateOrdinal (both (a) — they decline, fail-closed)
 	// and operandTypeNameViaDesc ((c) — it answers correctly for a multi-accessor
-	// value). A fourth gate is a third expression inside
-	// deriveColumnsFromProjection and so moves exprs, not the symbol count.
+	// value).
+	//
+	// SINCE THEN: extracting legRead.column out of deriveColumnsFromProjection
+	// moved one expression and added one symbol — (a) 15 → 16 — while the
+	// expression total held, because the arity test moved rather than appeared.
+	// That is a symbol-count movement with no new gate, the one shape the
+	// "a rising count is the instrument working" note does NOT cover.
 	//
 	// FIXING AN UNGUARDED READ GROWS THIS POPULATION BY CONSTRUCTION — see the
 	// header's blind-spot note. A rising count here is the instrument working,
 	// not drift.
 	pinned := map[accessorArityClass]int{
-		arityCorrectDecline: 15,
+		arityCorrectDecline: 16,
 		arityBlocker:        0,
 		arityNestingOK:      25,
 		arityLiveDefect:     0,

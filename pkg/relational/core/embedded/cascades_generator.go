@@ -3956,12 +3956,23 @@ func descriptorForColumn(name string, descs []protoreflect.MessageDescriptor) pr
 	// LEFTT(VAL BIGINT NOT NULL) LEFT JOIN RIGHTT(VAL BIGINT NOT NULL) agrees
 	// on (BIGINT, required) for VAL, first-match answers LEFTT, and RIGHTT's
 	// null-born upgrade never fires — B.VAL reports NoNulls where Java (#4274)
-	// reports the null-supplying column nullable. No choice function here can
+	// reports the null-supplying column nullable. No choice function HERE can
 	// repair that: BOTH result slots receive the SAME candidate list while the
-	// correct answer differs per slot — (NoNulls, Nullable) — so only
-	// positional metadata flowed from the plan's own result type (the D3
-	// deliverable) can be right. TestFDB_CrossLegAgreementGate_NullBornNotCovered
-	// pins the known-wrong answer until then.
+	// correct answer differs per slot — (NoNulls, Nullable).
+	//
+	// So that consumer no longer asks this function. A QUANTIFIER-ADDRESSED
+	// read resolves its leg structurally instead (legRead: the leg plan the
+	// correlation names, then that leg's own column at the read's leg-relative
+	// ordinal), which answers per slot because it never consults a name.
+	// TestCrossLegNullBorn_RequiredColumnOnNullSupplyingLeg pins exactly the
+	// shape above. What still arrives here is the FLAT (childless) read, which
+	// carries no correlation to resolve a leg from; for that form the
+	// first-match hole stands, and positional metadata flowed from the plan's
+	// own result type (the D3 deliverable) is still the general answer.
+	// TestFDB_CrossLegAgreementGate_NullBornNotCovered pins the fact that no
+	// SQL-DDL-expressible column can reach either path — the emitter produces
+	// no REQUIRED field, so nothing derives NoNulls and the upgrade is vacuous
+	// through the driver.
 	//
 	// STRUCT nested-field disagreement is likewise uncovered by this gate —
 	// two candidates agreeing on ("STRUCT", cardinality) can nest entirely
@@ -4168,6 +4179,79 @@ func legHasDefaultOnEmpty(p plans.RecordQueryPlan) bool {
 	return has
 }
 
+// legRead is the STRUCTURAL resolution of a QUANTIFIER-ADDRESSED projected
+// read: the join leg its correlation names, that leg's OWN derived columns,
+// and whether the leg is null-supplying (an outer join's null-extended side).
+//
+// Both arms of deriveColumnsFromProjection that need a QOV read's leg column —
+// the null-born nullability upgrade and the type inheritance — go through here
+// so the two cannot drift. They used to derive it independently, and they had
+// already drifted: the type arm addressed the leg structurally while the
+// nullability arm composed a "CORR.FIELD" string for a descriptor lookup that
+// cannot separate legs at all.
+type legRead struct {
+	cols          []executor.ColumnDef
+	nullSupplying bool
+}
+
+// resolveLegRead resolves a correlation to its leg and derives that leg's own
+// columns. found=false when the alias names no unambiguous leg of this plan
+// (legPlanFor declines on a duplicated alias), which leaves callers on their
+// name-keyed fallbacks.
+func resolveLegRead(inner plans.RecordQueryPlan, md *recordlayer.RecordMetaData, corr string) (legRead, bool) {
+	legPlan, nullSupplying, found := legPlanFor(inner, corr)
+	if !found {
+		return legRead{}, false
+	}
+	return legRead{cols: deriveColumnsFromPlan(legPlan, md), nullSupplying: nullSupplying}, true
+}
+
+// column returns the leg column this read addresses. The BAKED LEG-RELATIVE
+// ordinal is the identity: Java's ResolvedAccessor compares getOrdinal() alone
+// and the name is not part of identity (FieldValue.java:684,:689). The leaf
+// NAME resolves only an UNBAKED (lazy) read, which carries no ordinal — and it
+// is a genuinely weaker key, since a leg that duplicates an output name keeps
+// only one of them under it.
+func (r legRead) column(fv *values.FieldValue) (executor.ColumnDef, bool) {
+	if fv.Resolved != nil {
+		// A MULTI-ACCESSOR (struct-descent) reference is not addressable
+		// against this leg's columns by EITHER key. Its root ordinal is not an
+		// index into the leg's flattened columns, and the only NAME it carries
+		// is its leaf — a member of the enclosing struct's namespace, offered
+		// to columns keyed by the RECORD's, where a shared spelling answers
+		// with an unrelated column. Declining leaves the reference's own
+		// resolved type and nullability standing, which is Java's answer
+		// (FieldValue.computeResultType is fieldPath.getLastFieldType,
+		// FieldValue.java:143-148). The decline lives HERE rather than in each
+		// caller so the type arm and the nullability arm cannot drift on it.
+		if len(fv.Resolved.Accessors) != 1 {
+			return executor.ColumnDef{}, false
+		}
+		if ord := fv.Resolved.Accessors[0].Ordinal; ord >= 0 && ord < len(r.cols) {
+			return r.cols[ord], true
+		}
+	}
+	for _, ic := range r.cols {
+		if strings.EqualFold(parseColRef(ic.Name).bare(), fv.Field) {
+			return ic, true
+		}
+	}
+	return executor.ColumnDef{}, false
+}
+
+// nullExtended reports whether the addressed column serves SQL NULL on this
+// plan's rows: either the whole leg is null-supplying (the outer join pads
+// unmatched rows) or the leg's own derivation already made the column
+// nullable. Callers only ever UPGRADE off this answer — a false here is "no
+// evidence of nullability", never "provably NOT NULL".
+func (r legRead) nullExtended(fv *values.FieldValue) bool {
+	if r.nullSupplying {
+		return true
+	}
+	ic, ok := r.column(fv)
+	return ok && ic.Nullable == api.ColumnNullable
+}
+
 func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
 	// A projection over a join references columns from MULTIPLE record types,
 	// so resolve each column's type against every join leaf, not just the
@@ -4186,6 +4270,14 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 	// direction: a self-joined table on both sides marks the preserved read
 	// nullable too — clients then handle a NULL that never comes, never the
 	// reverse.
+	//
+	// THAT COARSENESS NOW SCOPES TO THE FLAT (childless) READ ONLY. A
+	// QUANTIFIER-ADDRESSED read resolves its leg structurally through legRead
+	// and never consults this map, so the self-join case it describes — both
+	// sides sharing one descriptor — is answered exactly for that form: the
+	// preserved leg reports its own nullability and only the null-supplying
+	// leg is upgraded. The map survives for the flat read, which carries no
+	// correlation and therefore has no leg to resolve.
 	nullBorn := map[protoreflect.FullName]struct{}{}
 	plans.Walk(proj.GetInner(), func(n plans.RecordQueryPlan) bool {
 		if doe, ok := n.(*plans.RecordQueryDefaultOnEmptyPlan); ok {
@@ -4234,23 +4326,43 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		if cd.Nullable == api.ColumnNoNulls {
 			// The projected reference is either a FLAT (childless) read — its
 			// Field may carry the "LEG.COL" qualifier — or the resolver's
-			// QUANTIFIER-ADDRESSED bake (FieldValue{Child: QOV(leg), COL});
-			// compose the qualified lookup for the latter so the null-born
-			// upgrade fires for both emissions (the QOV form skipped it and
-			// reported a null-supplying window's column NoNulls).
-			lookup := ""
+			// QUANTIFIER-ADDRESSED bake (FieldValue{Child: QOV(leg), COL}).
+			//
+			// The QOV form resolves its leg STRUCTURALLY, through the same
+			// legRead the type-inheritance arm below uses. It previously
+			// composed "CORR.FIELD" and handed the string to
+			// descriptorForColumn, which cannot answer it across legs: that
+			// lookup matches by BARE name over every join-leaf descriptor and
+			// consults the qualifier only as a tie-break against d.Name() —
+			// the PROTO/TABLE name — so a correlation never matches for an
+			// aliased source (`FROM orders o` composed "O.VAL" against a
+			// descriptor named ORDERS). First-match then answered the
+			// PRESERVED leg and a null-supplying window's column reported
+			// NoNulls. Java addresses the same reference by ordinal identity
+			// alone — ResolvedAccessor.equals/hashCode compare getOrdinal()
+			// and the name is not part of identity (FieldValue.java:684,:689).
 			if fv, ok := v.(*values.FieldValue); ok {
-				switch child := fv.Child.(type) {
-				case nil:
-					lookup = fv.Field
-				case *values.QuantifiedObjectValue:
-					lookup = child.Correlation.Name() + "." + fv.Field
+				structural := false
+				if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
+					if r, found := resolveLegRead(proj.GetInner(), md, qov.Correlation.Name()); found {
+						structural = true
+						if r.nullExtended(fv) {
+							cd.Nullable = api.ColumnNullable
+						}
+					}
 				}
-			}
-			if lookup != "" {
-				if d := descriptorForColumn(lookup, descs); d != nil {
-					if _, born := nullBorn[d.FullName()]; born {
-						cd.Nullable = api.ColumnNullable
+				// A FLAT read carries no correlation to resolve a leg from, and
+				// a QOV read whose alias names no unambiguous leg (a folded
+				// block's duplicated alias, where legPlanFor declines) has none
+				// either. Both fall back to the descriptor-identity test on the
+				// reference's OWN name — coarse across legs, but composing
+				// nothing: the qualifier the mint used to add could only ever
+				// have tie-broken against a table name.
+				if !structural {
+					if d := descriptorForColumn(fv.Field, descs); d != nil {
+						if _, born := nullBorn[d.FullName()]; born {
+							cd.Nullable = api.ColumnNullable
+						}
 					}
 				}
 			}
@@ -4350,32 +4462,14 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 							// projected EXISTS stays NoNulls on a CROSS join),
 							// and the null-supplying flag applies the LEFT-JOIN
 							// null extension only where it exists.
-							if legPlan, nullSupplying, found := legPlanFor(proj.GetInner(), qov.Correlation.Name()); found {
-								legCols := deriveColumnsFromPlan(legPlan, md)
-								if fv.Resolved != nil && len(fv.Resolved.Accessors) == 1 {
-									if ord := fv.Resolved.Accessors[0].Ordinal; ord >= 0 && ord < len(legCols) {
-										if ic := legCols[ord]; ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
-											cd.TypeName = ic.TypeName
-											cd.Nullable = ic.Nullable
-											if nullSupplying {
-												cd.Nullable = api.ColumnNullable
-											}
-											inherited = true
-										}
+							if r, found := resolveLegRead(proj.GetInner(), md, qov.Correlation.Name()); found {
+								if ic, ok := r.column(fv); ok && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
+									cd.TypeName = ic.TypeName
+									cd.Nullable = ic.Nullable
+									if r.nullSupplying {
+										cd.Nullable = api.ColumnNullable
 									}
-								}
-								if !inherited {
-									for _, ic := range legCols {
-										if strings.EqualFold(parseColRef(ic.Name).bare(), fv.Field) && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
-											cd.TypeName = ic.TypeName
-											cd.Nullable = ic.Nullable
-											if nullSupplying {
-												cd.Nullable = api.ColumnNullable
-											}
-											inherited = true
-											break
-										}
-									}
+									inherited = true
 								}
 							}
 							if !inherited {
