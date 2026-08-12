@@ -15035,11 +15035,19 @@ None is speculative: each was re-verified against the tree before booking.
     alone produces a stranded read, not a fix.
 
   The work is therefore to make those seeds ORDINAL, which is
-  `unnestExistsSeedSafe`'s scope gate (`cascades_translator.go:1317`), and that
-  gate is coupled to the executor's below-FOD hoist — `:3841-3843` states the
-  multi-alias branch is "WIRED but scope-gated OFF end-to-end … it goes live only
-  when that guard lifts (channel 2, coupled with the RULE-level below-FOD executor
-  hoist)". That is the SAME `executor.bindMergedOuterLegs` runtime
+  `unnestExistsSeedSafe`'s scope gate. **THE CITATION THAT USED TO SIT HERE IS
+  REFUTED.** It quoted `cascades_translator.go` as stating the multi-alias branch
+  is "WIRED but scope-gated OFF end-to-end … it goes live only when that guard
+  lifts (channel 2, coupled with the RULE-level below-FOD executor hoist)". That
+  source comment was FALSE and has been corrected: `unnestExistsSeedSafe` ends in
+  `len(outerBoundAliases(left)) == 1 || t.boxGatesFresh(left)`, so a fresh-gating
+  multi-alias OUTER box is ALREADY ADMITTED and the multi-alias branch is LIVE
+  (`TestMultiAliasOuterGatesOrdinal` pins it). There is no guard here awaiting a
+  lift for that shape. What remains name-model is a multi-alias INNER cluster and
+  a box with a buried outer-box leg, and those are deliberate declines. Any
+  estimate for this item that rested on "the branch is off" must come DOWN
+  accordingly. The executor coupling below is a separate claim and is not
+  refuted by this correction. That is the SAME `executor.bindMergedOuterLegs` runtime
   binding-namespace widening (DIVERGENCES.md) that CQ-68 owns on the read axis.
   **CQ-79 and CQ-68 are two axes of one executor-widening piece of work.** They
   stay booked separately — the residues are genuinely different, and folding them
@@ -16052,10 +16060,15 @@ None is speculative: each was re-verified against the tree before booking.
 
   The original entry conditions, preserved because two of them are what the
   measurement refuted:
-  - `unnestExistsSeedSafe`'s scope gate (`cascades_translator.go:1317`) lifts. That
-    gate is coupled to the executor's below-FOD hoist — `:3841-3843` states the
-    multi-alias branch is "WIRED but scope-gated OFF end-to-end … it goes live only
-    when that guard lifts".
+  - `unnestExistsSeedSafe`'s scope gate lifts. **ALSO REFUTED, on the same
+    measurement as the copy higher in this file.** The supporting quote —
+    `cascades_translator.go` stating the multi-alias branch is "WIRED but
+    scope-gated OFF end-to-end … it goes live only when that guard lifts" — was a
+    false source comment, now corrected. The gate's terminal disjunct is
+    `len(outerBoundAliases(left)) == 1 || t.boxGatesFresh(left)`; a fresh-gating
+    multi-alias OUTER box is admitted today and the branch is LIVE. So this
+    condition is not "unlifted", it is ALREADY SATISFIED for the shape it names,
+    and it cannot be carried as a blocker.
   - The same `executor.bindMergedOuterLegs` runtime binding-namespace widening that
     CQ-68 owns on the read axis. **CQ-95 and CQ-68 are two axes of one executor
     widening; CQ-79 is the residue CQ-95 retires.** They stay booked separately —
@@ -17632,12 +17645,20 @@ None is speculative: each was re-verified against the tree before booking.
   mint class to zero and cut the arm's declines to a lone witness, touching
   nothing in `dotted:`); and `clusterFieldResolvable` / `clusterSeedSlotByName`
   compare against strings minted in the `translator:` bucket, by
-  `logical_predicate.go`'s `projCol{name: qual + "." + bare}`. The claim holds
-  for one SUB-CHANNEL, which is where the leverage is: killing
-  `rebaseUnnestOuterLegPredicate`'s mint (`cascades_translator.go:3925`)
-  mechanically retires every reader of that channel — `groupByOutputBaker`'s
-  qualification probe, `rebaseOuterLegValueOrdinal`'s default arm,
-  `rebaseOuterLegValue`, `legRef`.
+  `logical_predicate.go`'s `projCol{name: qual + "." + bare}`. **THE
+  "SURVIVING SUB-CHANNEL" RESCUE OF THE RETRACTED CLAIM IS ITSELF REFUTED.** This
+  paragraph used to end: "The claim holds for one SUB-CHANNEL, which is where the
+  leverage is: killing `rebaseUnnestOuterLegPredicate`'s mint mechanically
+  retires every reader of that channel — `groupByOutputBaker`'s qualification
+  probe, `rebaseOuterLegValueOrdinal`'s default arm, `rebaseOuterLegValue`,
+  `legRef`." That is the SAME four-reader list the RFC retracted, re-asserted
+  behind a narrower quantifier, and it is wrong for the same reason: three of the
+  four are `.`-probe DECLINERS that retire on `Resolved` arity rather than on a
+  producer, and the fourth is the read half of a closed pair on a different
+  channel whose composed key would be a two-dot `MERGED.LEG.COL` this mint never
+  produces. There is no sub-channel on which the leverage survives. The
+  bucket-granularity point above (two edges run BACKWARDS) stands on its own
+  evidence and is untouched by this correction.
 
   COUNTS ARE DELIBERATELY ABSENT HERE, and that is not stylistic. `TODO.md` is a
   durable home in its own right, this entry is open and planned-from, and nothing
