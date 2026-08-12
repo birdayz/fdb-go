@@ -17827,3 +17827,36 @@ None is speculative: each was re-verified against the tree before booking.
   3 baker-stripped) and NONE is on a collided name — so the decline arm is
   reachable, but has never met an ambiguous name. That is the falsifier to watch:
   a decline ON a collided name is the residual going live.
+
+## factorycorpus/full stalls at 6x its runtime, and master cannot see it
+
+`//pkg/relational/conformance/factorycorpus/full:full_test` consumed **3606s**
+(100% of its `eternal` budget, TIMEOUT) on a run whose assertions were entirely
+green — 0 failing. Re-run on the **identical SHA**: `PASSED in 392.9s`. Master
+baseline at `82275082a`, uncached: **390s**. So the stall is ~9x with no code
+difference, and it is not a regression: same-box A/B over identical 8151 cases
+measured merge-base 261s/211s vs branch 218s/195s.
+
+**Mechanism (measured, from the CI goroutine dump at the wall):** 4934 goroutines
+parked at `t.Parallel()`, only 4 inside `RunScenario` — waiting for a slot, not
+doing work. Contention, not workload. The target's own `BUILD.bazel` records a
+prior identical 3612s timeout with the same diagnosis, so this recurs.
+
+**Why nobody sees it:** on master this target is served from cache
+(`(cached) PASSED in 404.6s`) on every commit that does not touch
+`core/embedded`. It genuinely executes only when that package changes, so the
+real cost is invisible most of the time — and a local `just test` reports
+`Executed 6 out of 88 tests: 88 tests pass` while never running it. Master is
+exposed to exactly the same stall and would not report it either.
+
+**Do not raise the timeout budget.** The budget gate is what caught this; moving
+it converts a measured stall into an invisible one. Its message is already
+explicit that the next occurrence burns the whole budget and blocks the merge
+queue.
+
+Also stale while you are here: that `BUILD.bazel` comment still says 5000 cases;
+the corpus is **8150** (roughly doubled on 2026-08-11 by #720).
+
+Open question, and the reason this is booked rather than fixed: whether the
+contention is `--local_test_jobs=4` interacting with per-scenario parallelism, or
+a runner-level resource limit. Both are checkable; neither was checked.
