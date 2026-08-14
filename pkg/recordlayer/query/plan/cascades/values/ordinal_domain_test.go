@@ -16,7 +16,7 @@ import "testing"
 func recordLayout(name string, cols ...string) *RecordType {
 	fields := make([]Field, len(cols))
 	for i, c := range cols {
-		fields[i] = Field{Name: c, FieldType: UnknownType, Ordinal: i}
+		fields[i] = Field{Name: c, FieldType: NotNullLong, Ordinal: i}
 	}
 	return NewRecordType(name, false, fields)
 }
@@ -34,7 +34,7 @@ func TestOrdinalIn_AnswersOnlyInsideItsOwnDomain(t *testing.T) {
 	}
 
 	// SOURCE-RELATIVE (unpinned) bake: answers in its own source's layout.
-	statusOfOrders := NewFieldValueWithResolvedOrdinalInDomain("STATUS", 1, UnknownType, ordersDomain)
+	statusOfOrders := newFieldValueWithResolvedOrdinalInDomain("STATUS", 1, UnknownType, ordersDomain)
 	if got, ok := statusOfOrders.OrdinalIn(ordersDomain); !ok || got != 1 {
 		t.Fatalf("source-relative reference in its OWN domain = (%d,%v), want (1,true)", got, ok)
 	}
@@ -49,12 +49,12 @@ func TestOrdinalIn_AnswersOnlyInsideItsOwnDomain(t *testing.T) {
 	// FRONTIER-PINNED bake: the machinery-owned form, stamped by the
 	// constructor that resolved it, answers in the frontier it is final for
 	// and nowhere else.
-	pinned, err := NewFieldValueOfOrdinal(NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("Q"), orders), 2)
+	pinned, err := newFieldValueOfOrdinal(mustQOV(t, NamedCorrelationIdentifier("Q"), orders), 2)
 	if err != nil {
 		t.Fatalf("pinned bake: %v", err)
 	}
 	if !pinned.Resolved.FrontierPinned {
-		t.Fatal("NewFieldValueOfOrdinal must produce a FrontierPinned path")
+		t.Fatal("newFieldValueOfOrdinal must produce a FrontierPinned path")
 	}
 	if got, ok := pinned.OrdinalIn(ordersDomain); !ok || got != 2 {
 		t.Fatalf("pinned reference in its OWN frontier = (%d,%v), want (2,true)", got, ok)
@@ -74,10 +74,10 @@ func TestOrdinalIn_SameLeafNameDifferentQuantifiers(t *testing.T) {
 	right := recordLayout("DEPT", "NAME", "ID")
 	leftDomain, rightDomain := OrdinalDomainOfType(left), OrdinalDomainOfType(right)
 
-	empName := NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		NewQuantifiedObjectValue(NamedCorrelationIdentifier("E")), "NAME", 1, UnknownType, leftDomain)
-	deptName := NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		NewQuantifiedObjectValue(NamedCorrelationIdentifier("D")), "NAME", 0, UnknownType, rightDomain)
+	empName := newCorrelatedFieldValueWithResolvedOrdinalInDomain(
+		mustQOV(t, NamedCorrelationIdentifier("E")), "NAME", 1, UnknownType, leftDomain)
+	deptName := newCorrelatedFieldValueWithResolvedOrdinalInDomain(
+		mustQOV(t, NamedCorrelationIdentifier("D")), "NAME", 0, UnknownType, rightDomain)
 
 	if got, ok := empName.OrdinalIn(leftDomain); !ok || got != 1 {
 		t.Fatalf("E.NAME in EMP = (%d,%v), want (1,true)", got, ok)
@@ -102,7 +102,7 @@ func TestOrdinalIn_FailsClosed(t *testing.T) {
 
 	t.Run("lazy value has no ordinal", func(t *testing.T) {
 		t.Parallel()
-		lazy := NewFlatFieldValue("A", UnknownType)
+		lazy := newFlatFieldValue("A", UnknownType)
 		if _, ok := lazy.OrdinalIn(domain); ok {
 			t.Fatal("a LAZY value answered — its display name is not an ordinal")
 		}
@@ -110,7 +110,7 @@ func TestOrdinalIn_FailsClosed(t *testing.T) {
 
 	t.Run("nil path", func(t *testing.T) {
 		t.Parallel()
-		var p *FieldPath
+		var p *fieldPath
 		if _, ok := p.OrdinalIn(domain); ok {
 			t.Fatal("a nil path answered")
 		}
@@ -120,8 +120,8 @@ func TestOrdinalIn_FailsClosed(t *testing.T) {
 		t.Parallel()
 		// `t.addr.city` fused into one node: the root ordinal is ADDR's, so
 		// answering with it drops the nested descent.
-		fused := NewFieldPathOfSingleInDomain("ADDR", 1, false, domain).
-			WithSuffix(NewFieldPathOfSingle("CITY", 0, false))
+		fused := newFieldPathOfSingleInDomain("ADDR", 1, false, domain).
+			WithSuffix(newFieldPathOfSingle("CITY", 0, false))
 		if got, ok := fused.OrdinalIn(domain); ok {
 			t.Fatalf("a FUSED path answered %d — that is ADDR's slot, not the leaf's", got)
 		}
@@ -129,12 +129,12 @@ func TestOrdinalIn_FailsClosed(t *testing.T) {
 
 	t.Run("negative name-only ordinal", func(t *testing.T) {
 		t.Parallel()
-		// Java asserts ordinal >= 0 at ResolvedAccessor construction
+		// Java asserts ordinal >= 0 at resolvedAccessor construction
 		// (FieldValue.java:651); Go mints -1 name-only accessors at the
 		// unnest/gather/index-expansion seeds, where two accessors are
 		// ordinal-equal by construction. Answering -1 would hand the caller
 		// an ordinal that matches every other name-only accessor.
-		nameOnly := NewFieldPathOfSingleInDomain("ARR", -1, false, domain)
+		nameOnly := newFieldPathOfSingleInDomain("ARR", -1, false, domain)
 		if got, ok := nameOnly.OrdinalIn(domain); ok {
 			t.Fatalf("a NAME-ONLY (-1) accessor answered %d", got)
 		}
@@ -142,7 +142,7 @@ func TestOrdinalIn_FailsClosed(t *testing.T) {
 
 	t.Run("value states no domain", func(t *testing.T) {
 		t.Parallel()
-		untaught := NewFieldValueWithResolvedOrdinal("A", 0, UnknownType)
+		untaught := newFieldValueWithResolvedOrdinal("A", 0, UnknownType)
 		if _, ok := untaught.OrdinalIn(domain); ok {
 			t.Fatal("a value with no domain token answered — an untaught producer must fail closed")
 		}
@@ -150,7 +150,7 @@ func TestOrdinalIn_FailsClosed(t *testing.T) {
 
 	t.Run("caller states no frontier", func(t *testing.T) {
 		t.Parallel()
-		v := NewFieldValueWithResolvedOrdinalInDomain("A", 0, UnknownType, domain)
+		v := newFieldValueWithResolvedOrdinalInDomain("A", 0, UnknownType, domain)
 		if _, ok := v.OrdinalIn(OrdinalDomain{}); ok {
 			t.Fatal("an UNKNOWN frontier answered — a caller that cannot name its layout has nothing to check")
 		}
@@ -158,7 +158,7 @@ func TestOrdinalIn_FailsClosed(t *testing.T) {
 
 	t.Run("domain mismatch", func(t *testing.T) {
 		t.Parallel()
-		v := NewFieldValueWithResolvedOrdinalInDomain("A", 0, UnknownType, domain)
+		v := newFieldValueWithResolvedOrdinalInDomain("A", 0, UnknownType, domain)
 		if _, ok := v.OrdinalIn(other); ok {
 			t.Fatal("a MISMATCHED domain answered")
 		}
@@ -166,7 +166,7 @@ func TestOrdinalIn_FailsClosed(t *testing.T) {
 
 	t.Run("nil receiver", func(t *testing.T) {
 		t.Parallel()
-		var fv *FieldValue
+		var fv *fieldValue
 		if _, ok := fv.OrdinalIn(domain); ok {
 			t.Fatal("a nil FieldValue answered")
 		}
@@ -234,14 +234,14 @@ func TestOrdinalDomain_ExcludedFromIdentityAndHash(t *testing.T) {
 	// producers must still intern as ONE memo member. If the domain leaked
 	// into identity, every rule that dedups values would start splitting them
 	// by provenance.
-	withDomain := NewFieldValueWithResolvedOrdinalInDomain("A", 0, UnknownType, OrdinalDomainOfType(recordLayout("T", "A")))
-	withOther := NewFieldValueWithResolvedOrdinalInDomain("A", 0, UnknownType, OrdinalDomainOfType(recordLayout("U", "A", "B")))
-	withNone := NewFieldValueWithResolvedOrdinal("A", 0, UnknownType)
+	withDomain := newFieldValueWithResolvedOrdinalInDomain("A", 0, UnknownType, OrdinalDomainOfType(recordLayout("T", "A")))
+	withOther := newFieldValueWithResolvedOrdinalInDomain("A", 0, UnknownType, OrdinalDomainOfType(recordLayout("U", "A", "B")))
+	withNone := newFieldValueWithResolvedOrdinal("A", 0, UnknownType)
 
 	if !withDomain.Resolved.Equals(withOther.Resolved) || !withDomain.Resolved.Equals(withNone.Resolved) {
 		t.Fatal("FieldPath.Equals must ignore the domain token (ordinal-list equality, Java FieldValue.java:411-420)")
 	}
-	for _, other := range []*FieldValue{withOther, withNone} {
+	for _, other := range []*fieldValue{withOther, withNone} {
 		if !SemanticEqualsUnderAliasMap(withDomain, other, nil) {
 			t.Fatalf("semantic equality must ignore the domain token: %v vs %v", withDomain.Resolved.Domain, other.Resolved.Domain)
 		}
@@ -265,21 +265,24 @@ func TestOrdinalDomain_PreservedAcrossCopyAndRebuild(t *testing.T) {
 	domain := OrdinalDomainOfType(layout)
 	src := NamedCorrelationIdentifier("SRC")
 	tgt := NamedCorrelationIdentifier("TGT")
-	base := NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		NewQuantifiedObjectValue(src), "ADDR", 1, UnknownType, domain)
+	baseValue, err := resolveFieldOrdinalInDomain(mustQOV(t, src, layout), 1, domain)
+	if err != nil {
+		t.Fatalf("resolve exact ADDR field in source domain: %v", err)
+	}
+	base := baseValue.(*fieldValue)
 
 	t.Run("WithChildren rebuild", func(t *testing.T) {
 		t.Parallel()
-		rebuilt := WithChildren(base, []Value{NewQuantifiedObjectValue(tgt)})
-		if _, ok := rebuilt.(*FieldValue).OrdinalIn(domain); !ok {
+		rebuilt := WithChildren(base, []Value{mustQOV(t, tgt, layout)})
+		if _, ok := rebuilt.(*fieldValue).OrdinalIn(domain); !ok {
 			t.Fatal("WithChildren dropped the domain token")
 		}
 	})
 
 	t.Run("rebase", func(t *testing.T) {
 		t.Parallel()
-		rebased := RebaseValue(base, AliasMap{src: tgt})
-		if _, ok := rebased.(*FieldValue).OrdinalIn(domain); !ok {
+		rebased := RebaseValue(base, mustAliasMap(t, AliasPair{Source: src, Target: tgt}))
+		if _, ok := rebased.(*fieldValue).OrdinalIn(domain); !ok {
 			t.Fatal("Rebase dropped the domain token")
 		}
 	})
@@ -289,7 +292,7 @@ func TestOrdinalDomain_PreservedAcrossCopyAndRebuild(t *testing.T) {
 		// The fused path's root is still the receiver's, so the token rides
 		// along — and the fused path still declines OrdinalIn for being
 		// multi-accessor, which is a different arm.
-		fused := base.Resolved.WithSuffix(NewFieldPathOfSingle("CITY", 0, false))
+		fused := base.Resolved.WithSuffix(newFieldPathOfSingle("CITY", 0, false))
 		if fused.Domain != domain {
 			t.Fatalf("WithSuffix lost the receiver's domain: %v", fused.Domain)
 		}
@@ -300,11 +303,11 @@ func TestOrdinalDomain_PreservedAcrossCopyAndRebuild(t *testing.T) {
 		// The pulled-up reference is re-framed onto the RC's OUTPUT layout, so
 		// it must state THAT layout — not the input's, and not nothing.
 		rc := NewRecordConstructorValue(RecordConstructorField{Name: "ADDR", Value: base})
-		up := PullUpValue(base, rc, tgt)
+		up := mustPullUpValue(t, base, rc, tgt)
 		if up == nil {
 			t.Fatal("pull-up produced nothing")
 		}
-		upFV, ok := up.(*FieldValue)
+		upFV, ok := up.(*fieldValue)
 		if !ok {
 			t.Fatalf("pull-up produced %T", up)
 		}

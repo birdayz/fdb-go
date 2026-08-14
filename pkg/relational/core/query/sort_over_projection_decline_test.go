@@ -82,13 +82,15 @@ func TestTranslateSort_AcceptsTheLayeringTheBuildersActuallyEmit(t *testing.T) {
 	t.Parallel()
 
 	md := sortDeclineMetaData(t)
+	row := demoTableQOV(t, "Order", "o")
 
 	// Project ABOVE Sort — what every builder emits.
 	sortOverScan := logical.NewSort(
 		logical.NewScan("Order", "o"),
-		[]logical.SortKey{{Expr: "ORDER_ID"}},
+		[]logical.SortKey{{Expr: "ORDER_ID", Value: exactTestField(t, row, 0)}},
 	)
 	projOverSort := logical.NewProject(sortOverScan, []string{"ORDER_ID"}, []string{""})
+	projOverSort.InputOrdinals = []int{0}
 
 	if _, _, err := TranslateToCascadesWithError(projOverSort, md); err != nil {
 		t.Fatalf("Project-over-Sort — the layering the builders emit — was rejected: %v", err)

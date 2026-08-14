@@ -10,6 +10,45 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustRFC190EnumerationConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct RFC-190 enumeration fixture: " + err.Error())
+	}
+	return value
+}
+
+func rfc190EnumerationRowType() *values.RecordType {
+	names := []string{
+		"a", "b", "c", "inner", "inner-a", "inner-b", "not-a",
+		"source-a", "source-b", "source-c",
+		"outer-source-a", "outer-source-b",
+		"inner-source-a", "inner-source-b",
+	}
+	fields := make([]values.Field, len(names))
+	for i, name := range names {
+		fields[i] = values.Field{Name: name, FieldType: values.NullableLong}
+	}
+	return values.NewRecordType("RFC190EnumerationRow", false, fields)
+}
+
+func rfc190EnumerationField(columnName string) values.Value {
+	rowType := rfc190EnumerationRowType()
+	ordinal := -1
+	for i, field := range rowType.Fields {
+		if field.Name == columnName {
+			ordinal = i
+			break
+		}
+	}
+	if ordinal < 0 {
+		panic("unknown RFC-190 enumeration column " + columnName)
+	}
+	root := mustRFC190EnumerationConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("rfc190_enumeration"), rowType))
+	return mustRFC190EnumerationConstruct(values.ResolveFieldOrdinals(
+		root, []int{ordinal}))
+}
+
 func TestRFC190OrderedJoinLegPairsCaseOneExhaustiveRetainsSourcePartitions(t *testing.T) {
 	t.Parallel()
 
@@ -431,7 +470,7 @@ func rfc190EnumerationOrdering(
 	bindingMap := make(map[values.Value][]properties.OrderingBinding, len(columnNames))
 	keys := make([]values.Value, 0, len(columnNames))
 	for _, columnName := range columnNames {
-		key := &values.FieldValue{Field: columnName, Typ: values.UnknownType}
+		key := rfc190EnumerationField(columnName)
 		bindingMap[key] = []properties.OrderingBinding{
 			properties.SortedBinding(properties.ProvidedSortOrderAscending),
 		}
@@ -445,8 +484,8 @@ func rfc190EnumerationFixedPrefixOrdering(
 	fixedColumn string,
 	sortedColumn string,
 ) *properties.RichOrdering {
-	fixed := &values.FieldValue{Field: fixedColumn, Typ: values.UnknownType}
-	sorted := &values.FieldValue{Field: sortedColumn, Typ: values.UnknownType}
+	fixed := rfc190EnumerationField(fixedColumn)
+	sorted := rfc190EnumerationField(sortedColumn)
 	return properties.NewRichOrdering(
 		map[values.Value][]properties.OrderingBinding{
 			fixed:  {properties.FixedBinding("fixed")},
@@ -464,10 +503,7 @@ func rfc190EnumerationRequest(
 	parts := make([]properties.RequestedOrderingPart, 0, len(columnNames))
 	for _, columnName := range columnNames {
 		parts = append(parts, properties.RequestedOrderingPart{
-			Value: &values.FieldValue{
-				Field: columnName,
-				Typ:   values.UnknownType,
-			},
+			Value:     rfc190EnumerationField(columnName),
 			SortOrder: properties.RequestedSortOrderAscending,
 		})
 	}
@@ -475,11 +511,11 @@ func rfc190EnumerationRequest(
 }
 
 func rfc190EnumerationExpression(name string) expressions.RelationalExpression {
-	return plans.NewRecordQueryScanPlan(
+	return mustRFC190EnumerationConstruct(plans.NewRecordQueryScanPlan(
 		[]string{name},
-		values.UnknownType,
+		rfc190EnumerationRowType(),
 		false,
-	)
+	))
 }
 
 func rfc190EnumerationExpressionName(

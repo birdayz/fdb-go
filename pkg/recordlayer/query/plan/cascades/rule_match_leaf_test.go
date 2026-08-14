@@ -61,20 +61,20 @@ func TestMatchLeafRule_MatchingScan(t *testing.T) {
 	t.Parallel()
 
 	// Query side: a FullUnorderedScanExpression over record type "T".
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	queryRef := expressions.InitialOf(queryScan)
+	queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	queryRef := mustMatchInitial(t, queryScan)
 
 	// Candidate side: an equivalent FullUnorderedScanExpression,
 	// wrapped in a Traversal via a MatchCandidate.
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	candidateRef := expressions.InitialOf(candidateScan)
+	candidateScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	candidateRef := mustMatchInitial(t, candidateScan)
 	traversal := NewTraversal(candidateRef)
 
 	mc := &testMatchCandidate{name: "idx_t", traversal: traversal}
 	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
 
 	rule := NewMatchLeafRule()
-	FireExpressionRuleWithMemo(rule, queryRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, rule, queryRef, ctx, nil)
 
 	// Verify: a PartialMatch should be stored on queryRef for the
 	// candidate.
@@ -100,18 +100,12 @@ func TestMatchLeafRule_MatchingCorrelatedExplodeEnumeratesOuterAlias(t *testing.
 
 	queryAlias := values.UniqueCorrelationIdentifier()
 	candidateAlias := values.UniqueCorrelationIdentifier()
-	queryExplode := expressions.NewExplodeExpression(values.NewFieldValue(
-		values.NewQuantifiedObjectValue(queryAlias),
-		"TAGS",
-		values.NewArrayType(true, values.NotNullString),
-	))
-	candidateExplode := expressions.NewExplodeExpression(values.NewFieldValue(
-		values.NewQuantifiedObjectValue(candidateAlias),
-		"TAGS",
-		values.NewArrayType(true, values.NotNullString),
-	))
-	queryRef := expressions.InitialOf(queryExplode)
-	candidateRef := expressions.InitialOf(candidateExplode)
+	queryExplode := mustMatchExplode(t, mustMatchField(t,
+		mustMatchQOV(t, queryAlias, matchRuleRowType()), "TAGS"))
+	candidateExplode := mustMatchExplode(t, mustMatchField(t,
+		mustMatchQOV(t, candidateAlias, matchRuleRowType()), "TAGS"))
+	queryRef := mustMatchInitial(t, queryExplode)
+	candidateRef := mustMatchInitial(t, candidateExplode)
 	matchCandidate := &testMatchCandidate{
 		name:      "tags",
 		traversal: NewTraversal(candidateRef),
@@ -120,7 +114,7 @@ func TestMatchLeafRule_MatchingCorrelatedExplodeEnumeratesOuterAlias(t *testing.
 		candidates: []MatchCandidate{matchCandidate},
 	}
 
-	FireExpressionRuleWithMemo(NewMatchLeafRule(), queryRef, context, nil)
+	mustFireExpressionRuleWithMemo(t, NewMatchLeafRule(), queryRef, context, nil)
 
 	partialMatches := GetPartialMatchesForCandidate(queryRef, matchCandidate)
 	if len(partialMatches) != 1 {
@@ -137,20 +131,10 @@ func TestMatchLeafRule_CorrelatedExplodeDifferentFieldDoesNotMatch(t *testing.T)
 
 	queryAlias := values.UniqueCorrelationIdentifier()
 	candidateAlias := values.UniqueCorrelationIdentifier()
-	queryRef := expressions.InitialOf(expressions.NewExplodeExpression(
-		values.NewFieldValue(
-			values.NewQuantifiedObjectValue(queryAlias),
-			"TAGS",
-			values.NewArrayType(true, values.NotNullString),
-		),
-	))
-	candidateRef := expressions.InitialOf(expressions.NewExplodeExpression(
-		values.NewFieldValue(
-			values.NewQuantifiedObjectValue(candidateAlias),
-			"CATEGORIES",
-			values.NewArrayType(true, values.NotNullString),
-		),
-	))
+	queryRef := mustMatchInitial(t, mustMatchExplode(t, mustMatchField(t,
+		mustMatchQOV(t, queryAlias, matchRuleRowType()), "TAGS")))
+	candidateRef := mustMatchInitial(t, mustMatchExplode(t, mustMatchField(t,
+		mustMatchQOV(t, candidateAlias, matchRuleRowType()), "CATEGORIES")))
 	matchCandidate := &testMatchCandidate{
 		name:      "categories",
 		traversal: NewTraversal(candidateRef),
@@ -159,7 +143,7 @@ func TestMatchLeafRule_CorrelatedExplodeDifferentFieldDoesNotMatch(t *testing.T)
 		candidates: []MatchCandidate{matchCandidate},
 	}
 
-	FireExpressionRuleWithMemo(NewMatchLeafRule(), queryRef, context, nil)
+	mustFireExpressionRuleWithMemo(t, NewMatchLeafRule(), queryRef, context, nil)
 
 	if got := len(GetPartialMatchesForCandidate(queryRef, matchCandidate)); got != 0 {
 		t.Fatalf("different-field correlated Explode partial matches = %d, want 0", got)
@@ -170,18 +154,18 @@ func TestMatchLeafRule_DifferentRecordType_NoMatch(t *testing.T) {
 	t.Parallel()
 
 	// Query scans type "A", candidate scans type "B".
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	queryRef := expressions.InitialOf(queryScan)
+	queryScan := mustMatchScan(t, []string{"A"}, matchRuleRowType())
+	queryRef := mustMatchInitial(t, queryScan)
 
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
-	candidateRef := expressions.InitialOf(candidateScan)
+	candidateScan := mustMatchScan(t, []string{"B"}, matchRuleRowType())
+	candidateRef := mustMatchInitial(t, candidateScan)
 	traversal := NewTraversal(candidateRef)
 
 	mc := &testMatchCandidate{name: "idx_b", traversal: traversal}
 	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
 
 	rule := NewMatchLeafRule()
-	FireExpressionRuleWithMemo(rule, queryRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, rule, queryRef, ctx, nil)
 
 	pms := GetPartialMatchesForCandidate(queryRef, mc)
 	if len(pms) != 0 {
@@ -193,25 +177,25 @@ func TestMatchLeafRule_NonLeafSkipped(t *testing.T) {
 	t.Parallel()
 
 	// Build a non-leaf expression: Filter(scan).
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	filter := expressions.NewLogicalFilterExpression(
+	scan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	scanQ := expressions.ForEachQuantifier(mustMatchInitial(t, scan))
+	filter := mustMatchFilter(t,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		scanQ,
 	)
-	queryRef := expressions.InitialOf(filter)
+	queryRef := mustMatchInitial(t, filter)
 
 	// Candidate: a leaf scan that could match the inner scan but
 	// should NOT match the filter (non-leaf).
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	candidateRef := expressions.InitialOf(candidateScan)
+	candidateScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	candidateRef := mustMatchInitial(t, candidateScan)
 	traversal := NewTraversal(candidateRef)
 
 	mc := &testMatchCandidate{name: "idx_t", traversal: traversal}
 	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
 
 	rule := NewMatchLeafRule()
-	FireExpressionRuleWithMemo(rule, queryRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, rule, queryRef, ctx, nil)
 
 	pms := GetPartialMatchesForCandidate(queryRef, mc)
 	if len(pms) != 0 {
@@ -222,15 +206,15 @@ func TestMatchLeafRule_NonLeafSkipped(t *testing.T) {
 func TestMatchLeafRule_NoCandidates_NoPanic(t *testing.T) {
 	t.Parallel()
 
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	queryRef := expressions.InitialOf(queryScan)
+	queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	queryRef := mustMatchInitial(t, queryScan)
 
 	// Empty context: no candidates.
 	ctx := testPlanContextForMatching{candidates: nil}
 
 	rule := NewMatchLeafRule()
 	// Should not panic.
-	FireExpressionRuleWithMemo(rule, queryRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, rule, queryRef, ctx, nil)
 
 	raw := queryRef.GetAllPartialMatches()
 	if len(raw) != 0 {
@@ -241,15 +225,15 @@ func TestMatchLeafRule_NoCandidates_NoPanic(t *testing.T) {
 func TestMatchLeafRule_NilTraversal_Skipped(t *testing.T) {
 	t.Parallel()
 
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	queryRef := expressions.InitialOf(queryScan)
+	queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	queryRef := mustMatchInitial(t, queryScan)
 
 	// Candidate with nil traversal.
 	mc := &testMatchCandidate{name: "no_trav", traversal: nil}
 	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
 
 	rule := NewMatchLeafRule()
-	FireExpressionRuleWithMemo(rule, queryRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, rule, queryRef, ctx, nil)
 
 	pms := GetPartialMatchesForCandidate(queryRef, mc)
 	if len(pms) != 0 {
@@ -260,13 +244,13 @@ func TestMatchLeafRule_NilTraversal_Skipped(t *testing.T) {
 func TestMatchLeafRule_MultipleCandidates(t *testing.T) {
 	t.Parallel()
 
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	queryRef := expressions.InitialOf(queryScan)
+	queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	queryRef := mustMatchInitial(t, queryScan)
 
 	// Two candidates, both matching.
 	makeCand := func(name string) *testMatchCandidate {
-		s := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-		ref := expressions.InitialOf(s)
+		s := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+		ref := mustMatchInitial(t, s)
 		return &testMatchCandidate{name: name, traversal: NewTraversal(ref)}
 	}
 
@@ -275,7 +259,7 @@ func TestMatchLeafRule_MultipleCandidates(t *testing.T) {
 	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc1, mc2}}
 
 	rule := NewMatchLeafRule()
-	FireExpressionRuleWithMemo(rule, queryRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, rule, queryRef, ctx, nil)
 
 	pms1 := GetPartialMatchesForCandidate(queryRef, mc1)
 	pms2 := GetPartialMatchesForCandidate(queryRef, mc2)
@@ -290,18 +274,18 @@ func TestMatchLeafRule_MultipleCandidates(t *testing.T) {
 func TestMatchLeafRule_PartialMatchFields(t *testing.T) {
 	t.Parallel()
 
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	queryRef := expressions.InitialOf(queryScan)
+	queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	queryRef := mustMatchInitial(t, queryScan)
 
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	candidateRef := expressions.InitialOf(candidateScan)
+	candidateScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	candidateRef := mustMatchInitial(t, candidateScan)
 	traversal := NewTraversal(candidateRef)
 
 	mc := &testMatchCandidate{name: "primary", traversal: traversal}
 	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
 
 	rule := NewMatchLeafRule()
-	FireExpressionRuleWithMemo(rule, queryRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, rule, queryRef, ctx, nil)
 
 	pms := GetPartialMatchesForCandidate(queryRef, mc)
 	if len(pms) != 1 {

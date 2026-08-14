@@ -42,6 +42,8 @@ const (
 	partEquatable
 	partSub
 	partTypes
+	partMappedAlias
+	partLayout
 )
 
 // part is one identifying field. Constructed only via the typed builder
@@ -58,6 +60,8 @@ type part struct {
 	preds     []predicates.QueryPredicate
 	typ       values.Type
 	types     []values.Type
+	alias     values.CorrelationIdentifier
+	layout    values.OrdinalLayout
 	scanComps []*predicates.ComparisonRange
 	iptr      *int
 	sks       []SortKey
@@ -103,6 +107,25 @@ func (k *structuralKey) Strs(ss []string) *structuralKey {
 // hand-rolled site that wrote alias.Name() / compared alias != o.alias.
 func (k *structuralKey) Alias(a values.CorrelationIdentifier) *structuralKey {
 	return k.Str(a.Name())
+}
+
+// MappedAlias folds a correlation identifier whose name is local to this
+// expression's child quantifiers. Raw plan equality still compares the exact
+// identifier; expression equality maps it through the memo's alpha-renaming.
+// Its hash deliberately omits the spelling so alpha-equivalent plans enter the
+// same bucket and let EqualUnderAliases decide.
+func (k *structuralKey) MappedAlias(a values.CorrelationIdentifier) *structuralKey {
+	k.parts = append(k.parts, part{kind: partMappedAlias, alias: a})
+	return k
+}
+
+// Layout folds an immutable physical output layout. Raw plan equality uses
+// exact source aliases; memo equality translates those aliases, while hashing
+// uses the layout's alias-free digest. A nil layout represents the explicitly
+// dynamic AnyRecord property and compares only with another nil layout.
+func (k *structuralKey) Layout(layout values.OrdinalLayout) *structuralKey {
+	k.parts = append(k.parts, part{kind: partLayout, layout: layout})
+	return k
 }
 
 func (k *structuralKey) Value(v values.Value) *structuralKey {
@@ -228,6 +251,74 @@ func (k *structuralKey) Equal(o *structuralKey) bool {
 	return true
 }
 
+// EqualUnderAliases is Equal at an expression/memo boundary. Only typed parts
+// that can carry a child-local correlation are translated; every scalar and
+// opaque part retains its raw equality contract.
+func (k *structuralKey) EqualUnderAliases(o *structuralKey, aliases values.AliasMap) bool {
+	if len(k.parts) != len(o.parts) {
+		return false
+	}
+	for i := range k.parts {
+		a, b := k.parts[i], o.parts[i]
+		if a.kind != b.kind {
+			return false
+		}
+		switch a.kind {
+		case partMappedAlias:
+			target := a.alias
+			if aliases != nil {
+				if mapped, ok := aliases.Target(a.alias); ok {
+					target = mapped
+				}
+			}
+			if target != b.alias {
+				return false
+			}
+		case partValue:
+			if !values.SemanticEqualsUnderAliasMap(a.v, b.v, aliases) {
+				return false
+			}
+		case partValues:
+			if len(a.vs) != len(b.vs) {
+				return false
+			}
+			for j := range a.vs {
+				if !values.SemanticEqualsUnderAliasMap(a.vs[j], b.vs[j], aliases) {
+					return false
+				}
+			}
+		case partPreds:
+			if len(a.preds) != len(b.preds) {
+				return false
+			}
+			for j := range a.preds {
+				if !predicates.SemanticEqualsUnderAliasMap(a.preds[j], b.preds[j], aliases) {
+					return false
+				}
+			}
+		case partLayout:
+			if a.layout == nil || b.layout == nil {
+				if a.layout != nil || b.layout != nil {
+					return false
+				}
+				continue
+			}
+			if !a.layout.EqualUnderAliases(b.layout, aliases) {
+				return false
+			}
+		case partSub:
+			if !a.sub.EqualUnderAliases(b.sub, aliases) {
+				return false
+			}
+		default:
+			if !partEqual(a, b) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func partEqual(a, b part) bool {
 	if a.kind != b.kind {
 		return false
@@ -305,6 +396,13 @@ func partEqual(a, b part) bool {
 		return a.eq(b.obj)
 	case partSub:
 		return a.sub.Equal(b.sub)
+	case partMappedAlias:
+		return a.alias == b.alias
+	case partLayout:
+		if a.layout == nil || b.layout == nil {
+			return a.layout == nil && b.layout == nil
+		}
+		return a.layout.RawEqual(b.layout)
 	}
 	return false
 }
@@ -428,6 +526,17 @@ func (k *structuralKey) writeParts(w hash.Hash64) {
 			binary.BigEndian.PutUint64(buf[:], uint64(len(p.sub.parts)))
 			w.Write(buf[:])
 			p.sub.writeParts(w)
+		case partMappedAlias:
+			// Alias spelling is intentionally omitted. EqualUnderAliases maps
+			// this part through the memo's bijection.
+		case partLayout:
+			if p.layout == nil {
+				w.Write([]byte{0})
+				continue
+			}
+			w.Write([]byte{1})
+			binary.BigEndian.PutUint64(buf[:], p.layout.AliasFreeHash())
+			w.Write(buf[:])
 		}
 	}
 }

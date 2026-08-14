@@ -10,20 +10,51 @@ import (
 // bakedQovField builds a plan-time-BAKED FieldValue over a QuantifiedObjectValue
 // child — the "QOV(alias).col @ ordinal" shape join predicates carry after
 // construction-time ordinal binding.
-func bakedQovField(alias, col string, ord int) *values.FieldValue {
-	return values.NewCorrelatedFieldValueWithResolvedOrdinal(
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(alias)),
-		col, ord, values.UnknownType,
+func bakedQovField(t testing.TB, alias, col string, ord int) values.FieldValue {
+	t.Helper()
+	fields := make([]values.Field, ord+1)
+	for i := range fields {
+		fields[i] = values.Field{Name: "C" + string(rune('0'+i)), FieldType: values.NotNullLong, Ordinal: i}
+	}
+	fields[ord].Name = col
+	qov, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier(alias),
+		values.NewRecordType("", false, fields),
 	)
+	if err != nil {
+		t.Fatalf("NewQuantifiedObjectValue(%s): %v", alias, err)
+	}
+	resolved, err := values.ResolveFieldOrdinals(qov, []int{ord})
+	if err != nil {
+		t.Fatalf("ResolveFieldOrdinals(%s,%d): %v", alias, ord, err)
+	}
+	field, ok := values.AsFieldValue(resolved)
+	if !ok {
+		t.Fatalf("ResolveFieldOrdinals(%s,%d) = %T, want exact FieldValue", alias, ord, resolved)
+	}
+	return field
 }
 
-// lazyQovField builds the UNBAKED QOV-child shape — must DECLINE the hash fast
-// path (no plan-time ordinal to evaluate; the linear path would loud-error it).
-func lazyQovField(alias, col string) *values.FieldValue {
-	return values.NewFieldValue(
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(alias)),
-		col, values.UnknownType,
-	)
+// fusedQovField builds an exact two-accessor QOV-child shape. It must DECLINE
+// the hash fast path because its root addresses an intermediate record rather
+// than a column in the supplied leg row.
+func fusedQovField(t testing.TB, alias, col string) values.FieldValue {
+	t.Helper()
+	nested := values.NewRecordType("", false, []values.Field{{Name: col, FieldType: values.NotNullLong, Ordinal: 0}})
+	root := values.NewRecordType("", false, []values.Field{{Name: "N", FieldType: nested, Ordinal: 0}})
+	qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(alias), root)
+	if err != nil {
+		t.Fatalf("NewQuantifiedObjectValue(%s): %v", alias, err)
+	}
+	resolved, err := values.ResolveFieldOrdinals(qov, []int{0, 0})
+	if err != nil {
+		t.Fatalf("ResolveFieldOrdinals(%s,[0,0]): %v", alias, err)
+	}
+	field, ok := values.AsFieldValue(resolved)
+	if !ok {
+		t.Fatalf("ResolveFieldOrdinals(%s,[0,0]) = %T, want exact FieldValue", alias, resolved)
+	}
+	return field
 }
 
 // TestExtractEquijoinOperands_SideClassification pins the NLJ hash-join operand
@@ -36,8 +67,8 @@ func lazyQovField(alias, col string) *values.FieldValue {
 func TestExtractEquijoinOperands_SideClassification(t *testing.T) {
 	t.Parallel()
 
-	innerOp := bakedQovField("T2", "T1_ID", 1)
-	outerOp := bakedQovField("T1", "ID", 0)
+	innerOp := bakedQovField(t, "T2", "T1_ID", 1)
+	outerOp := bakedQovField(t, "T1", "ID", 0)
 
 	// p: t2.t1_id = t1.id  (inner side on the LHS, outer side on the RHS)
 	p := predicates.NewComparisonPredicate(
@@ -46,7 +77,7 @@ func TestExtractEquijoinOperands_SideClassification(t *testing.T) {
 	)
 	gotOuter, gotInner := extractEquijoinOperands(
 		[]predicates.QueryPredicate{p}, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
-	if gotOuter != values.Value(outerOp) || gotInner != values.Value(innerOp) {
+	if gotOuter != outerOp || gotInner != innerOp {
 		t.Errorf("inner-on-LHS: got (outer=%v, inner=%v), want (T1.ID, T2.T1_ID)", gotOuter, gotInner)
 	}
 
@@ -57,7 +88,7 @@ func TestExtractEquijoinOperands_SideClassification(t *testing.T) {
 	)
 	gotOuter, gotInner = extractEquijoinOperands(
 		[]predicates.QueryPredicate{p2}, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
-	if gotOuter != values.Value(outerOp) || gotInner != values.Value(innerOp) {
+	if gotOuter != outerOp || gotInner != innerOp {
 		t.Errorf("outer-on-LHS: got (outer=%v, inner=%v), want (T1.ID, T2.T1_ID)", gotOuter, gotInner)
 	}
 }
@@ -74,35 +105,36 @@ func TestExtractEquijoinOperands_Declines(t *testing.T) {
 		pred predicates.QueryPredicate
 	}{
 		{
-			// UNBAKED QOV-child operand: no plan-time ordinal.
-			name: "lazy operand",
+			// A fused path has an exact ordinal vector, but not the single leg-local
+			// accessor required by the fast path.
+			name: "fused operand",
 			pred: predicates.NewComparisonPredicate(
-				lazyQovField("T2", "T1_ID"),
-				predicates.Comparison{Type: predicates.ComparisonEquals, Operand: bakedQovField("T1", "ID", 0)},
+				fusedQovField(t, "T2", "T1_ID"),
+				predicates.Comparison{Type: predicates.ComparisonEquals, Operand: bakedQovField(t, "T1", "ID", 0)},
 			),
 		},
 		{
-			// Legacy flat "ALIAS.COL" Field string: no leg QOV to classify.
-			name: "flat qualified operand",
+			// A computed scalar has no leg QOV to classify.
+			name: "computed operand",
 			pred: predicates.NewComparisonPredicate(
-				values.NewFlatFieldValue("T2.T1_ID", values.UnknownType),
-				predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.NewFlatFieldValue("T1.ID", values.UnknownType)},
+				&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
+				predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}},
 			),
 		},
 		{
 			// Correlation naming NEITHER leg (a buried leg of a lower join).
 			name: "foreign correlation",
 			pred: predicates.NewComparisonPredicate(
-				bakedQovField("T9", "K", 0),
-				predicates.Comparison{Type: predicates.ComparisonEquals, Operand: bakedQovField("T1", "ID", 0)},
+				bakedQovField(t, "T9", "K", 0),
+				predicates.Comparison{Type: predicates.ComparisonEquals, Operand: bakedQovField(t, "T1", "ID", 0)},
 			),
 		},
 		{
 			// Same leg on both sides: not a cross-leg equijoin.
 			name: "same-leg equality",
 			pred: predicates.NewComparisonPredicate(
-				bakedQovField("T1", "A", 0),
-				predicates.Comparison{Type: predicates.ComparisonEquals, Operand: bakedQovField("T1", "B", 1)},
+				bakedQovField(t, "T1", "A", 0),
+				predicates.Comparison{Type: predicates.ComparisonEquals, Operand: bakedQovField(t, "T1", "B", 1)},
 			),
 		},
 	}
@@ -124,7 +156,7 @@ func TestEvalLegKey_ReadsLegLocalOrdinal(t *testing.T) {
 	t.Parallel()
 
 	corr := values.NamedCorrelationIdentifier("T2")
-	op := bakedQovField("T2", "T1_ID", 1)
+	op := bakedQovField(t, "T2", "T1_ID", 1)
 	leg := &PositionalRow{
 		Type:  positionalTypeFromNames([]string{"ID", "T1_ID"}),
 		Slots: []any{int64(7), int64(42)},
@@ -140,7 +172,7 @@ func TestEvalLegKey_ReadsLegLocalOrdinal(t *testing.T) {
 
 	// Out-of-range ordinal: ok=false (the caller declines the fast path; the
 	// linear path surfaces the loud OrdinalResolutionError).
-	bad := bakedQovField("T2", "MISSING", 9)
+	bad := bakedQovField(t, "T2", "MISSING", 9)
 	if _, ok := evalLegKey(bad, corr, leg); ok {
 		t.Fatal("evalLegKey: out-of-range ordinal must not resolve")
 	}

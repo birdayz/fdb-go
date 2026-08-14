@@ -6,8 +6,110 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+// orderedScanTestRowType is the one exact descriptor shared by the ordered
+// primary/index and bare-primary scan fixtures.  Each test selects the subset
+// of columns it needs, while a common layout keeps query, candidate, and
+// physical-plan roots type-identical.
+func orderedScanTestRowType() *values.RecordType {
+	address := values.NewRecordType("ORDER_ADDRESS", false, []values.Field{{
+		Name:      "CITY",
+		FieldType: values.NullableString,
+		Ordinal:   0,
+	}})
+	return values.NewRecordType("ORDER_ROW", false, []values.Field{
+		{Name: "TENANT_ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "STATUS", FieldType: values.NotNullString, Ordinal: 2},
+		{Name: "DATE", FieldType: values.NotNullLong, Ordinal: 3},
+		{Name: "AMOUNT", FieldType: values.NotNullLong, Ordinal: 4},
+		{Name: "TAGS", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 5},
+		{Name: "CITY", FieldType: values.NullableString, Ordinal: 6},
+		{Name: "ADDR", FieldType: address, Ordinal: 7},
+	})
+}
+
+func mustOrderedScanFull(
+	t testing.TB,
+	recordTypes []string,
+) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	scan, err := expressions.NewFullUnorderedScanExpression(recordTypes, orderedScanTestRowType())
+	return mustConstruct(t, scan, err)
+}
+
+func mustOrderedScanInitial(
+	t testing.TB,
+	expression expressions.RelationalExpression,
+) *expressions.Reference {
+	t.Helper()
+	reference, err := InitialOf(expression)
+	return mustConstruct(t, reference, err)
+}
+
+func mustOrderedScanSort(
+	t testing.TB,
+	keys []expressions.SortKey,
+	inner expressions.Quantifier,
+) *expressions.LogicalSortExpression {
+	t.Helper()
+	sort, err := expressions.NewLogicalSortExpression(keys, inner)
+	return mustConstruct(t, sort, err)
+}
+
+func mustOrderedScanFilter(
+	t testing.TB,
+	queryPredicates []predicates.QueryPredicate,
+	inner expressions.Quantifier,
+) *expressions.LogicalFilterExpression {
+	t.Helper()
+	filter, err := expressions.NewLogicalFilterExpression(queryPredicates, inner)
+	return mustConstruct(t, filter, err)
+}
+
+func mustOrderedScanFlowed(
+	t testing.TB,
+	quantifier expressions.Quantifier,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	flowed, err := quantifier.RequireFlowedObjectValue()
+	return mustConstruct(t, flowed, err)
+}
+
+func mustOrderedScanQOV(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	qov, err := values.NewQuantifiedObjectValue(alias, orderedScanTestRowType())
+	return mustConstruct(t, qov, err)
+}
+
+func mustOrderedScanField(
+	t testing.TB,
+	root values.Value,
+	name string,
+) values.Value {
+	t.Helper()
+	request, err := values.FieldByName(name)
+	request = mustConstruct(t, request, err)
+	field, err := values.ResolveFieldAccess(root, []values.FieldRequest{request})
+	return mustConstruct(t, field, err)
+}
+
+func mustOrderedScanPlan(
+	t testing.TB,
+	recordTypes []string,
+	reverse bool,
+) *plans.RecordQueryScanPlan {
+	t.Helper()
+	plan, err := plans.NewRecordQueryScanPlan(recordTypes, orderedScanTestRowType(), reverse)
+	return mustConstruct(t, plan, err)
+}
 
 type indexProbeRule struct {
 	m matching.BindingMatcher
@@ -40,8 +142,9 @@ func TestRuleIndex_BucketsByRootOperator(t *testing.T) {
 		t.Fatalf("sort bucket size = %d, want 1", got)
 	}
 
-	sortExpr := expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(
-		expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))))
+	sortScan := mustOrderedScanFull(t, []string{"T"})
+	sortExpr := mustOrderedScanSort(t, nil, expressions.ForEachQuantifier(
+		mustOrderedScanInitial(t, sortScan)))
 
 	got := ix.rulesFor(sortExpr)
 	if len(got) != 2 || got[0] != ExpressionRule(sortRule) || got[1] != ExpressionRule(anyRule) {
@@ -54,7 +157,7 @@ func TestRuleIndex_BucketsByRootOperator(t *testing.T) {
 	}
 
 	// A type with no indexed rules gets exactly the always bucket.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustOrderedScanFull(t, []string{"T"})
 	if got := ix.rulesFor(scan); len(got) != 1 || got[0] != ExpressionRule(anyRule) {
 		t.Fatalf("rulesFor(scan) = %d rules, want just the always rule", len(got))
 	}

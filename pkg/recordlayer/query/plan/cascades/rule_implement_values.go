@@ -22,7 +22,11 @@ func (r *ImplementValuesRule) Matcher() matching.BindingMatcher { return r.match
 
 func (r *ImplementValuesRule) OnMatch(call *ExpressionRuleCall) {
 	ve := matching.Get[*expressions.LogicalValuesExpression](call.Bindings, r.matcher)
-	plan := plans.NewRecordQueryValuesPlan(ve.GetColumns())
+	plan, err := plans.NewRecordQueryValuesPlan(ve.GetColumns())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	// The values plan is its own cascades expression now (RFC-184 W2) — a bare
 	// leaf carrying its stable result identity, no physicalValuesWrapper.
 	call.Yield(plan)

@@ -99,9 +99,9 @@ func TestFDB_StarBodyCTEJoinLeg(t *testing.T) {
 	// (1,100),(1,200),(2,300) — T4(11)'s empty SCARR contributes nothing —
 	// × 3 CC rows.
 	want("enclosed_qualified", starCTE+`SELECT "S"."ID", "S"."X" FROM "S", T4 AS "CC"`, []string{
-		"S.ID=1|S.X=100", "S.ID=1|S.X=100", "S.ID=1|S.X=100",
-		"S.ID=1|S.X=200", "S.ID=1|S.X=200", "S.ID=1|S.X=200",
-		"S.ID=2|S.X=300", "S.ID=2|S.X=300", "S.ID=2|S.X=300",
+		"ID=1|X=100", "ID=1|X=100", "ID=1|X=100",
+		"ID=1|X=200", "ID=1|X=200", "ID=1|X=200",
+		"ID=2|X=300", "ID=2|X=300", "ID=2|X=300",
 	})
 
 	// A BARE unique-name read over the enclosed leg.
@@ -113,22 +113,21 @@ func TestFDB_StarBodyCTEJoinLeg(t *testing.T) {
 
 	// WITH ORDINALITY in the body: (X,O) = (100,1),(200,2),(300,1), × 3 CC rows.
 	want("at_body", `WITH "S" AS (SELECT * FROM T4, T4."SCARR" AS "X" AT "O") SELECT "S"."X", "S"."O" FROM "S", T4 AS "CC"`, []string{
-		"S.X=100|S.O=1", "S.X=100|S.O=1", "S.X=100|S.O=1",
-		"S.X=200|S.O=2", "S.X=200|S.O=2", "S.X=200|S.O=2",
-		"S.X=300|S.O=1", "S.X=300|S.O=1", "S.X=300|S.O=1",
+		"X=100|O=1", "X=100|O=1", "X=100|O=1",
+		"X=200|O=2", "X=200|O=2", "X=200|O=2",
+		"X=300|O=1", "X=300|O=1", "X=300|O=1",
 	})
 
 	// A body WHERE (plain filter above the unnest join): S = (1,200),(2,300).
 	want("where_body", `WITH "S" AS (SELECT * FROM T4, T4."SCARR" AS "X" WHERE "X" > 150) SELECT "S"."ID", "S"."X" FROM "S", T4 AS "CC"`, []string{
-		"S.ID=1|S.X=200", "S.ID=1|S.X=200", "S.ID=1|S.X=200",
-		"S.ID=2|S.X=300", "S.ID=2|S.X=300", "S.ID=2|S.X=300",
+		"ID=1|X=200", "ID=1|X=200", "ID=1|X=200",
+		"ID=2|X=300", "ID=2|X=300", "ID=2|X=300",
 	})
 
 	// The DERIVED-TABLE twin (LogicalCTE directly in leg position). Its runtime
-	// row's INTERNAL field names are the bare column names (the derived-boundary
-	// projection resolves the qualified reads to the leg's own columns), unlike
-	// the WITH form's qualified S.ID/S.X — but the DRIVER-visible labels are
-	// bare [ID X] for BOTH forms, unchanged from the name model (pinned below).
+	// row's output field names are the bare column names. The WITH form retains
+	// its authored S.ID/S.X source identity only while logical alternatives are
+	// interned; its final SQL projection publishes the same bare [ID X] schema.
 	want("derived_twin", `SELECT "S"."ID", "S"."X" FROM (SELECT * FROM T4, T4."SCARR" AS "X") AS "S", T4 AS "CC"`, []string{
 		"ID=1|X=100", "ID=1|X=100", "ID=1|X=100",
 		"ID=1|X=200", "ID=1|X=200", "ID=1|X=200",
@@ -160,9 +159,9 @@ func TestFDB_StarBodyCTEJoinLeg(t *testing.T) {
 	// conformance question for the whole RFC-142 unnest surface, documented at
 	// derivedBodyStarOrdinalLeg.)
 	want("colliding_label_shadow", `WITH "S2" AS (SELECT * FROM T4, T4."SCARR" AS "SUB") SELECT "S2"."SUB" FROM "S2", T4 AS "CC"`, []string{
-		"S2.SUB=100", "S2.SUB=100", "S2.SUB=100",
-		"S2.SUB=200", "S2.SUB=200", "S2.SUB=200",
-		"S2.SUB=300", "S2.SUB=300", "S2.SUB=300",
+		"SUB=100", "SUB=100", "SUB=100",
+		"SUB=200", "SUB=200", "SUB=200",
+		"SUB=300", "SUB=300", "SUB=300",
 	})
 
 	// The colliding DERIVED-TABLE twin used to serve the OUTER scalar (999/20)
@@ -185,17 +184,17 @@ func TestFDB_StarBodyCTEJoinLeg(t *testing.T) {
 	// A unique-label read over the colliding body keeps answering (Java answers
 	// it too — only the DUPLICATE label is ambiguous there).
 	want("colliding_unique_read", `WITH "S2" AS (SELECT * FROM T4, T4."SCARR" AS "SUB") SELECT "S2"."ID" FROM "S2", T4 AS "CC"`, []string{
-		"S2.ID=1", "S2.ID=1", "S2.ID=1",
-		"S2.ID=1", "S2.ID=1", "S2.ID=1",
-		"S2.ID=2", "S2.ID=2", "S2.ID=2",
+		"ID=1", "ID=1", "ID=1",
+		"ID=1", "ID=1", "ID=1",
+		"ID=2", "ID=2", "ID=2",
 	})
 
 	// The AT-alias collision (`AS "E" AT "SUB"` — the ORDINAL alias shadows the
 	// outer scalar): S2.SUB serves the 1-based ordinals, same shadow rule.
 	want("colliding_at_alias", `WITH "S2" AS (SELECT * FROM T4, T4."SCARR" AS "E" AT "SUB") SELECT "S2"."SUB" FROM "S2", T4 AS "CC"`, []string{
-		"S2.SUB=1", "S2.SUB=1", "S2.SUB=1",
-		"S2.SUB=1", "S2.SUB=1", "S2.SUB=1",
-		"S2.SUB=2", "S2.SUB=2", "S2.SUB=2",
+		"SUB=1", "SUB=1", "SUB=1",
+		"SUB=1", "SUB=1", "SUB=1",
+		"SUB=2", "SUB=2", "SUB=2",
 	})
 
 	// The CHAINED colliding twin (`X.SUB AS SUB`): the name-model parent used
@@ -203,33 +202,28 @@ func TestFDB_StarBodyCTEJoinLeg(t *testing.T) {
 	// inverted against the WITH single-link form's element rows). The admission
 	// serves the chained element, consistent across the whole colliding class.
 	want("chained_colliding_label", `WITH "S" AS (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "SUB") SELECT "S"."SUB" FROM "S", T4 AS "CC"`, []string{
-		"S.SUB=1", "S.SUB=1", "S.SUB=1",
-		"S.SUB=2", "S.SUB=2", "S.SUB=2",
-		"S.SUB=3", "S.SUB=3", "S.SUB=3",
-		"S.SUB=4", "S.SUB=4", "S.SUB=4",
+		"SUB=1", "SUB=1", "SUB=1",
+		"SUB=2", "SUB=2", "SUB=2",
+		"SUB=3", "SUB=3", "SUB=3",
+		"SUB=4", "SUB=4", "SUB=4",
 	})
 
 	// A PROJECTION directly over the colliding CTE (no parent join) used to
 	// LOUD-fail ("S2.SUB not resolvable … ordinal -1" — the un-normalized body
 	// merged into the parent select); the normalized boundary serves it.
 	want("colliding_no_parent_join", `WITH "S2" AS (SELECT * FROM T4, T4."SCARR" AS "SUB") SELECT "S2"."SUB" FROM "S2"`, []string{
-		"S2.SUB=100", "S2.SUB=200", "S2.SUB=300",
+		"SUB=100", "SUB=200", "SUB=300",
 	})
 
-	// A PARENT WHERE over a join with a join/unnest-bodied CTE leg is a
-	// PRE-EXISTING loud reach gap INDEPENDENT of the star admission: the
-	// resolver cannot derive the CTE's column schema for the WHERE scope
-	// (the buildCTEColumnSource decline — the bare-projected class
-	// `WITH D AS (SELECT "X" AS "XV" …) … WHERE D."XV" = 1` fails the same
-	// way, verified pre-change), so the predicate never resolves and the
-	// filter loud-declines (0AF00). Pinned so the gap stays LOUD and its
-	// eventual fix consciously updates this.
-	t.Run("parent_where_preexisting_loud", func(t *testing.T) {
-		q := starCTE + `SELECT "S"."X" FROM "S", T4 AS "CC" WHERE "CC"."ID" = 2`
-		if _, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil); perr == nil {
-			t.Fatalf("parent WHERE over a CTE-leg join planned — the resolver reach gap closed; " +
-				"add row assertions for the parent-WHERE shapes (cross-leg straddle included)")
-		}
+	// Parent WHERE predicates now retain the CTE leg's exact output schema.
+	// Pin both a predicate owned solely by the sibling leg and a cross-leg
+	// predicate: the latter must address S.ID and CC.ID through different
+	// ordinal windows even though their bare leaf names collide.
+	want("parent_where_sibling", starCTE+`SELECT "S"."X" FROM "S", T4 AS "CC" WHERE "CC"."ID" = 2`, []string{
+		"X=100", "X=200", "X=300",
+	})
+	want("parent_where_cross_leg", starCTE+`SELECT "S"."X", "CC"."ID" FROM "S", T4 AS "CC" WHERE "S"."ID" = "CC"."ID" AND "S"."X" > 150`, []string{
+		"X=200|ID=1", "X=300|ID=2",
 	})
 }
 
@@ -312,13 +306,13 @@ func TestFDB_ChainedStarBodyCTE(t *testing.T) {
 	const chainedCTE = `WITH "S" AS (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y") `
 
 	want("qualified_y", chainedCTE+`SELECT "S"."Y" FROM "S", T4 AS "CC"`,
-		times3("S.Y=1", "S.Y=2", "S.Y=3", "S.Y=4"))
+		times3("Y=1", "Y=2", "Y=3", "Y=4"))
 
 	want("qualified_id", chainedCTE+`SELECT "S"."ID" FROM "S", T4 AS "CC"`,
-		times3("S.ID=1", "S.ID=1", "S.ID=1", "S.ID=2"))
+		times3("ID=1", "ID=1", "ID=1", "ID=2"))
 
 	want("id_and_y", chainedCTE+`SELECT "S"."ID", "S"."Y" FROM "S", T4 AS "CC"`,
-		times3("S.ID=1|S.Y=1", "S.ID=1|S.Y=2", "S.ID=1|S.Y=3", "S.ID=2|S.Y=4"))
+		times3("ID=1|Y=1", "ID=1|Y=2", "ID=1|Y=3", "ID=2|Y=4"))
 
 	// A BARE unique-name read over the enclosed chained leg.
 	want("bare_y", chainedCTE+`SELECT "Y" FROM "S", T4 AS "CC"`,
@@ -327,11 +321,11 @@ func TestFDB_ChainedStarBodyCTE(t *testing.T) {
 	// WITH ORDINALITY on the chained link: (Y,O) = (1,1),(2,2) within elem{1,2};
 	// (3,1) within elem{3}; (4,1) within elem{4}.
 	want("at_chained_link", `WITH "S" AS (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" AT "O") SELECT "S"."Y", "S"."O" FROM "S", T4 AS "CC"`,
-		times3("S.Y=1|S.O=1", "S.Y=2|S.O=2", "S.Y=3|S.O=1", "S.Y=4|S.O=1"))
+		times3("Y=1|O=1", "Y=2|O=2", "Y=3|O=1", "Y=4|O=1"))
 
 	// A body WHERE (plain filter above the chained spine): Y > 2 keeps {3,4}.
 	want("where_body", `WITH "S" AS (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE "Y" > 2) SELECT "S"."Y" FROM "S", T4 AS "CC"`,
-		times3("S.Y=3", "S.Y=4"))
+		times3("Y=3", "Y=4"))
 
 	// The DERIVED-TABLE twin (LogicalCTE directly in leg position) — bare
 	// internal labels, same values (the single-link star class's twin rule).

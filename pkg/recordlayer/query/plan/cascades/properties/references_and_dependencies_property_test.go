@@ -16,10 +16,10 @@ func TestEvaluateReferencesAndDependencies_Nil(t *testing.T) {
 
 func TestEvaluateReferencesAndDependencies_SingleRef(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
 	ref := expressions.InitialOf(scan)
 	inner := expressions.ForEachQuantifier(ref)
-	filter := expressions.NewLogicalFilterExpression(nil, inner)
+	filter := mustLogicalFilterExpression(t, nil, inner)
 
 	got := EvaluateReferencesAndDependencies(filter)
 	// One ref (between scan and filter).
@@ -33,7 +33,7 @@ func TestEvaluateReferencesAndDependencies_SingleRef(t *testing.T) {
 
 func TestEvaluateReferencesAndDependenciesForRef(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
 	ref := expressions.InitialOf(scan)
 
 	got := EvaluateReferencesAndDependenciesForRef(ref)
@@ -47,13 +47,13 @@ func TestEvaluateReferencesAndDependenciesForRef(t *testing.T) {
 
 func TestEvaluateReferencesAndDependencies_Chain(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
 	ref1 := expressions.InitialOf(scan)
 	q1 := expressions.ForEachQuantifier(ref1)
-	filter := expressions.NewLogicalFilterExpression(nil, q1)
+	filter := mustLogicalFilterExpression(t, nil, q1)
 	ref2 := expressions.InitialOf(filter)
 	q2 := expressions.ForEachQuantifier(ref2)
-	tf := expressions.NewLogicalTypeFilterExpression([]string{"T"}, q2)
+	tf := mustLogicalTypeFilterExpression(t, []string{"T"}, q2)
 
 	got := EvaluateReferencesAndDependencies(tf)
 	// Two refs: ref1 and ref2.

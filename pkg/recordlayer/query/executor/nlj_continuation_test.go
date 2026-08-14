@@ -19,30 +19,31 @@ import (
 // continuation's check value.
 func nljTestRows(field string, n int) []QueryResult {
 	rows := make([]QueryResult, n)
+	rowType := exactTestRowType(values.Field{Name: field, FieldType: values.NullableLong})
 	for i := range rows {
-		r := dmap(map[string]any{field: int64(i)})
-		r.PrimaryKey = tuple.Tuple{field, int64(i)}
-		rows[i] = r
+		rows[i] = QueryResult{
+			Positional: &PositionalRow{Type: rowType, Slots: []any{int64(i)}},
+			PrimaryKey: tuple.Tuple{field, int64(i)},
+		}
 	}
 	return rows
 }
 
 // nljEquiPreds builds the baked O.K = I.J equijoin predicate.
-func nljEquiPreds() []predicates.QueryPredicate {
+func nljEquiPreds(t testing.TB) []predicates.QueryPredicate {
+	t.Helper()
+	outer := mustTestFieldOrdinal(t, mustTestQOV(t,
+		values.NamedCorrelationIdentifier("O"),
+		exactTestRowType(values.Field{Name: "K", FieldType: values.NullableLong})), 0)
+	inner := mustTestFieldOrdinal(t, mustTestQOV(t,
+		values.NamedCorrelationIdentifier("I"),
+		exactTestRowType(values.Field{Name: "J", FieldType: values.NullableLong})), 0)
 	return []predicates.QueryPredicate{
 		&predicates.ComparisonPredicate{
-			Operand: &values.FieldValue{
-				Child:    &values.QuantifiedObjectValue{Correlation: values.NamedCorrelationIdentifier("O")},
-				Field:    "K",
-				Resolved: values.NewFieldPathOfSingle("K", 0, false),
-			},
+			Operand: outer,
 			Comparison: predicates.Comparison{
-				Type: predicates.ComparisonEquals,
-				Operand: &values.FieldValue{
-					Child:    &values.QuantifiedObjectValue{Correlation: values.NamedCorrelationIdentifier("I")},
-					Field:    "J",
-					Resolved: values.NewFieldPathOfSingle("J", 0, false),
-				},
+				Type:    predicates.ComparisonEquals,
+				Operand: inner,
 			},
 		},
 	}
@@ -50,7 +51,7 @@ func nljEquiPreds() []predicates.QueryPredicate {
 
 func nljTestCursor(t *testing.T, outer recordlayer.RecordCursor[QueryResult], inner []QueryResult, jt plans.JoinType, preds []predicates.QueryPredicate) *nljCursor {
 	t.Helper()
-	c, err := newNLJCursor(outer, inner, jt, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), preds, nil, EmptyEvaluationContext(), recordlayer.NewExecuteState(0))
+	c, err := newNLJCursor(outer, inner, jt, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), preds, nil, nil, nil, EmptyEvaluationContext(), recordlayer.NewExecuteState(0))
 	if err != nil {
 		t.Fatalf("newNLJCursor: %v", err)
 	}
@@ -103,10 +104,10 @@ func TestNLJContinuation_ResumeEverySplitPoint(t *testing.T) {
 		outers int
 		inners int
 		jt     plans.JoinType
-		preds  func() []predicates.QueryPredicate
+		preds  func(testing.TB) []predicates.QueryPredicate
 	}{
 		// Cross join (nil preds): every pair emits — pure mid-inner sweep.
-		{"cross_linear", 3, 3, plans.JoinInner, func() []predicates.QueryPredicate { return nil }},
+		{"cross_linear", 3, 3, plans.JoinInner, func(testing.TB) []predicates.QueryPredicate { return nil }},
 		// Equijoin, LEFT OUTER: outers beyond the inner key range are
 		// UNMATCHED and emit null-padded — the matched flag must survive
 		// the page boundary or resumed pages emit duplicate/missing pads.
@@ -123,7 +124,7 @@ func TestNLJContinuation_ResumeEverySplitPoint(t *testing.T) {
 			outers := nljTestRows("K", tc.outers)
 			inners := nljTestRows("J", tc.inners)
 
-			full := nljTestCursor(t, recordlayer.FromList(outers), inners, tc.jt, tc.preds())
+			full := nljTestCursor(t, recordlayer.FromList(outers), inners, tc.jt, tc.preds(t))
 			fullKeys, conts := drainNLJ(t, full)
 			if len(fullKeys) == 0 {
 				t.Fatal("fixture emitted no rows — the sweep pins nothing")
@@ -139,7 +140,7 @@ func TestNLJContinuation_ResumeEverySplitPoint(t *testing.T) {
 				}
 				resumed := nljTestCursor(t,
 					recordlayer.FromListWithContinuation(outers, outerCont),
-					inners, tc.jt, tc.preds())
+					inners, tc.jt, tc.preds(t))
 				resumed.armResume(outerCont, rs)
 				gotKeys, _ := drainNLJ(t, resumed)
 				want := fullKeys[split:]
@@ -176,7 +177,7 @@ func TestNLJContinuation_HashBucketUsesCandidatePositions(t *testing.T) {
 		dmapPK(tuple.Tuple{"outer", matchKey}, map[string]any{"K": matchKey}),
 	}
 
-	full := nljTestCursor(t, recordlayer.FromList(outers), inners, plans.JoinInner, nljEquiPreds())
+	full := nljTestCursor(t, recordlayer.FromList(outers), inners, plans.JoinInner, nljEquiPreds(t))
 	defer full.Close()
 	if full.hashIndex == nil {
 		t.Fatal("fixture must build the hash index")
@@ -197,7 +198,7 @@ func TestNLJContinuation_HashBucketUsesCandidatePositions(t *testing.T) {
 		}
 		resumed := nljTestCursor(t,
 			recordlayer.FromListWithContinuation(outers, outerCont),
-			inners, plans.JoinInner, nljEquiPreds())
+			inners, plans.JoinInner, nljEquiPreds(t))
 		resumed.armResume(outerCont, resumeState)
 		got, _ := drainNLJ(t, resumed)
 		_ = resumed.Close()
@@ -223,7 +224,7 @@ func TestNLJContinuation_HashBucketRepositionsByInnerPK(t *testing.T) {
 	outers := []QueryResult{
 		dmapPK(tuple.Tuple{"outer", matchKey}, map[string]any{"K": matchKey}),
 	}
-	full := nljTestCursor(t, recordlayer.FromList(outers), inners, plans.JoinInner, nljEquiPreds())
+	full := nljTestCursor(t, recordlayer.FromList(outers), inners, plans.JoinInner, nljEquiPreds(t))
 	defer full.Close()
 	fullKeys, conts := drainNLJ(t, full)
 	if len(fullKeys) != 2 {
@@ -248,7 +249,7 @@ func TestNLJContinuation_HashBucketRepositionsByInnerPK(t *testing.T) {
 	mutated = append(mutated, inners[5:]...)
 	resumed := nljTestCursor(t,
 		recordlayer.FromListWithContinuation(outers, outerCont),
-		mutated, plans.JoinInner, nljEquiPreds())
+		mutated, plans.JoinInner, nljEquiPreds(t))
 	defer resumed.Close()
 	if resumed.hashIndex == nil {
 		t.Fatal("mutated fixture must rebuild the hash index and mapped candidate bucket")
@@ -281,7 +282,7 @@ func TestNLJContinuation_DegradedHashProbeUsesIdentityView(t *testing.T) {
 		dmapPK(tuple.Tuple{"outer", int64(1)}, map[string]any{"K": target}),
 	}
 
-	full := nljTestCursor(t, recordlayer.FromList(outers), inners, plans.JoinInner, nljEquiPreds())
+	full := nljTestCursor(t, recordlayer.FromList(outers), inners, plans.JoinInner, nljEquiPreds(t))
 	defer full.Close()
 	if full.hashIndex == nil {
 		t.Fatal("string inner keys must build the hash index")
@@ -303,7 +304,7 @@ func TestNLJContinuation_DegradedHashProbeUsesIdentityView(t *testing.T) {
 		}
 		resumed := nljTestCursor(t,
 			recordlayer.FromListWithContinuation(outers, outerCont),
-			inners, plans.JoinInner, nljEquiPreds())
+			inners, plans.JoinInner, nljEquiPreds(t))
 		resumed.armResume(outerCont, resumeState)
 		got, _ := drainNLJ(t, resumed)
 		_ = resumed.Close()
@@ -385,11 +386,14 @@ func TestNLJContinuation_FullOuterExecutorRejectsAllTokens(t *testing.T) {
 			}
 		}
 	}
-	plan := plans.NewRecordQueryNestedLoopJoinPlan(
-		plans.NewRecordQueryTempTableScanPlan(outerAlias),
-		plans.NewRecordQueryTempTableScanPlan(innerAlias),
-		nil, plans.JoinFullOuter, values.NamedCorrelationIdentifier("TO"), values.NamedCorrelationIdentifier("TI"), nil,
-	)
+	outerScan := mustTempTableScan(t, evalCtx, outerAlias)
+	innerScan := mustTempTableScan(t, evalCtx, innerAlias)
+	plan := mustExecutorConstruct(plans.NewRecordQueryNestedLoopJoinPlan(
+		outerScan,
+		innerScan,
+		nil, plans.JoinFullOuter, values.NamedCorrelationIdentifier("TO"), values.NamedCorrelationIdentifier("TI"),
+		mustConcatPlanResultQOV(t, outerScan, innerScan),
+	))
 	baseVersionToken, err := (&nljContinuation{hasInner: true, innerIdx: 1, outerMatched: true}).ToBytes()
 	if err != nil {
 		t.Fatalf("encode: %v", err)

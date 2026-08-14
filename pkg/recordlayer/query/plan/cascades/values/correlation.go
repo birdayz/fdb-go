@@ -31,7 +31,21 @@ import (
 // (underlying string) so CorrelationIdentifiers can live in maps.
 type CorrelationIdentifier struct {
 	name string
+	kind correlationKind
 }
+
+// correlationKind is deliberately private: rendered text is for explain and
+// diagnostics, never an authority for reconstructing correlation identity.
+// In particular, a user-named "_current" remains distinct from the reserved
+// current-row correlation.
+type correlationKind uint8
+
+const (
+	correlationKindInvalid correlationKind = iota
+	correlationKindNamed
+	correlationKindUnique
+	correlationKindCurrent
+)
 
 var uniqueCorrelationCounter atomic.Uint64
 
@@ -48,14 +62,14 @@ func UniqueCorrelationIdentifier() CorrelationIdentifier {
 	b.WriteString("q$")
 	// Avoid fmt import for a one-shot format.
 	b.WriteString(uitoa(n))
-	return CorrelationIdentifier{name: b.String()}
+	return CorrelationIdentifier{name: b.String(), kind: correlationKindUnique}
 }
 
 // NamedCorrelationIdentifier wraps an explicit name (e.g. a SQL
 // alias). Two NamedCorrelationIdentifiers with the same name are
 // equal — unlike UniqueCorrelationIdentifier which always allocates.
 func NamedCorrelationIdentifier(name string) CorrelationIdentifier {
-	return CorrelationIdentifier{name: name}
+	return CorrelationIdentifier{name: name, kind: correlationKindNamed}
 }
 
 // Name returns the underlying identifier string.
@@ -66,7 +80,13 @@ func (c CorrelationIdentifier) String() string { return c.name }
 
 // IsZero reports whether c is the zero-value CorrelationIdentifier.
 // Useful for nil-checks without a pointer.
-func (c CorrelationIdentifier) IsZero() bool { return c.name == "" }
+func (c CorrelationIdentifier) IsZero() bool {
+	return c.kind == correlationKindInvalid || c.name == ""
+}
+
+func (c CorrelationIdentifier) isCurrent() bool {
+	return c.kind == correlationKindCurrent
+}
 
 // SameLeg reports whether two identifiers name the same quantifier — the
 // CORRELATION element of RFC-197's identity triple, compared in ONE place so
@@ -112,18 +132,21 @@ func (c CorrelationIdentifier) IsZero() bool { return c.name == "" }
 // slots: every caller reads true as "this correlation names this leg". Declining
 // turns the omission into the miss it actually is.
 func SameLeg(a, b CorrelationIdentifier) bool {
-	if a.name == "" || b.name == "" {
+	if a.IsZero() || b.IsZero() {
 		return false
 	}
-	return a.name == b.name
+	return a == b
 }
 
-// CurrentAlias is the well-known CorrelationIdentifier representing
-// "the current row". Mirrors Java's `Quantifier.current()` — used by
-// set-operation comparison key values and other contexts where a Value
-// references "the row currently being processed" without binding to a
-// specific named Quantifier.
-var CurrentAlias = CorrelationIdentifier{name: "_current"}
+var currentCorrelation = CorrelationIdentifier{
+	name: "_current",
+	kind: correlationKindCurrent,
+}
+
+// CurrentCorrelation returns the reserved current-row correlation. It is
+// stable and comparable by value but is not assignable package state; its
+// private kind cannot be forged through NamedCorrelationIdentifier.
+func CurrentCorrelation() CorrelationIdentifier { return currentCorrelation }
 
 // Correlated is the interface Java's `Correlated<T>` maps to. A
 // Correlated value knows which CorrelationIdentifiers it depends

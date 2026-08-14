@@ -5,19 +5,18 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func TestPushTypeFilterBelowFilterRule_Fires(t *testing.T) {
 	t.Parallel()
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order", "Customer"}, values.UnknownType)
+	scan := typeRewriteScan("Order", "Customer")
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	innerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
+	innerF := mustTypeRewriteConstruct(expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ))
 	innerFQ := expressions.ForEachQuantifier(expressions.InitialOf(innerF))
-	src := expressions.NewLogicalTypeFilterExpression([]string{"Order"}, innerFQ)
+	src := typeRewriteFilter([]string{"Order"}, innerFQ)
 	ref := expressions.InitialOf(src)
-	yielded := FireExpressionRule(NewPushTypeFilterBelowFilterRule(), ref)
+	yielded := fireTypeRewriteRule(t, NewPushTypeFilterBelowFilterRule(), ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded %d, want 1", len(yielded))
 	}
@@ -39,11 +38,11 @@ func TestPushTypeFilterBelowFilterRule_Fires(t *testing.T) {
 
 func TestPushTypeFilterBelowFilterRule_DeclinesOnNonFilterInner(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := typeRewriteScan("Order")
 	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	src := expressions.NewLogicalTypeFilterExpression([]string{"Order"}, q)
+	src := typeRewriteFilter([]string{"Order"}, q)
 	ref := expressions.InitialOf(src)
-	yielded := FireExpressionRule(NewPushTypeFilterBelowFilterRule(), ref)
+	yielded := fireTypeRewriteRule(t, NewPushTypeFilterBelowFilterRule(), ref)
 	if len(yielded) != 0 {
 		t.Fatalf("yielded %d on non-Filter inner, want 0", len(yielded))
 	}
@@ -52,13 +51,13 @@ func TestPushTypeFilterBelowFilterRule_DeclinesOnNonFilterInner(t *testing.T) {
 func TestPushTypeFilterBelowFilterRule_FixpointTerminates(t *testing.T) {
 	t.Parallel()
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := typeRewriteScan("Order")
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	innerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
+	innerF := mustTypeRewriteConstruct(expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ))
 	innerFQ := expressions.ForEachQuantifier(expressions.InitialOf(innerF))
-	src := expressions.NewLogicalTypeFilterExpression([]string{"Order"}, innerFQ)
+	src := typeRewriteFilter([]string{"Order"}, innerFQ)
 	ref := expressions.InitialOf(src)
-	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewPushTypeFilterBelowFilterRule()}, nil), ref)
+	progress, converged := exploreTypeRewriting(NewPlanner([]ExpressionRule{NewPushTypeFilterBelowFilterRule()}, nil), ref)
 	if !converged {
 		t.Fatalf("exploration did not converge — tasks=%d, members=%d", progress, len(ref.Members()))
 	}

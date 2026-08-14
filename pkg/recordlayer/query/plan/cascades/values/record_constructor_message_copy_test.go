@@ -120,3 +120,93 @@ func TestCopyFieldsByNumberMatchingShapeStillCopies(t *testing.T) {
 		t.Fatalf("value not copied: got %d, want 7", got)
 	}
 }
+
+func stampRecordConstructorForMessageTest(t testing.TB, constructor *RecordConstructorValue) protoreflect.MessageDescriptor {
+	t.Helper()
+	repository := NewTypeProtoRepository()
+	descriptor, err := repository.MessageDescriptorFor(constructor.Type())
+	if err != nil {
+		t.Fatalf("record constructor descriptor: %v", err)
+	}
+	constructor.SetMessageDescriptor(descriptor)
+	return descriptor
+}
+
+func TestRecordConstructorNullableArrayPreservesEmptyAndNull(t *testing.T) {
+	t.Parallel()
+	arrayType := NewArrayType(false, NotNullInt)
+	newConstructor := func(value Value) *RecordConstructorValue {
+		return NewRecordConstructorValue(RecordConstructorField{
+			Name: "ARR", Value: value,
+		})
+	}
+
+	empty := newConstructor(NewCastValue(
+		NewArrayConstructorValue(NoneType, nil), arrayType))
+	emptyDescriptor := stampRecordConstructorForMessageTest(t, empty)
+	emptyResult, err := empty.Evaluate(nil)
+	if err != nil {
+		t.Fatalf("evaluate empty nullable array: %v", err)
+	}
+	emptyMessage, ok := emptyResult.(proto.Message)
+	if !ok {
+		t.Fatalf("empty result = %T, want proto.Message", emptyResult)
+	}
+	emptyField := emptyDescriptor.Fields().Get(0)
+	inner, wrapped, list := EffectiveListField(emptyField)
+	if !list || !wrapped || inner == nil {
+		t.Fatalf("empty ARR descriptor is not the exact nullable-array wrapper: %v", emptyField)
+	}
+	if !emptyMessage.ProtoReflect().Has(emptyField) {
+		t.Fatal("empty array omitted its wrapper and collapsed to SQL NULL")
+	}
+	emptyRowValue, ok := ProtoFieldToRowValue(
+		emptyField, emptyMessage.ProtoReflect().Get(emptyField)).([]any)
+	if !ok || len(emptyRowValue) != 0 {
+		t.Fatalf("empty array round trip = %#v, want []any{}", emptyRowValue)
+	}
+
+	null := newConstructor(NewCastValue(
+		&ConstantValue{Value: nil, Typ: arrayType}, arrayType))
+	nullDescriptor := stampRecordConstructorForMessageTest(t, null)
+	nullResult, err := null.Evaluate(nil)
+	if err != nil {
+		t.Fatalf("evaluate NULL nullable array: %v", err)
+	}
+	nullMessage, ok := nullResult.(proto.Message)
+	if !ok {
+		t.Fatalf("NULL result = %T, want proto.Message", nullResult)
+	}
+	nullField := nullDescriptor.Fields().Get(0)
+	if nullMessage.ProtoReflect().Has(nullField) {
+		t.Fatal("NULL array materialized a present wrapper and collapsed to []")
+	}
+}
+
+func TestRecordConstructorNullableArrayRejectsForeignElementType(t *testing.T) {
+	t.Parallel()
+	foreignDescriptor := oneFieldMessage(
+		t, "foreign_array_element.proto", "ForeignArrayElement",
+		descriptorpb.FieldDescriptorProto_TYPE_STRING, false)
+	foreign := dynamicpb.NewMessage(foreignDescriptor)
+	foreign.Set(foreignDescriptor.Fields().Get(0), protoreflect.ValueOfString("wrong"))
+	arrayType := NewArrayType(false, NotNullInt)
+	constant := NewCastValue(
+		&ConstantValue{Value: []any{foreign}, Typ: arrayType}, arrayType)
+	constructor := NewRecordConstructorValue(RecordConstructorField{
+		Name: "ARR", Value: constant,
+	})
+	descriptor := stampRecordConstructorForMessageTest(t, constructor)
+
+	result, err := constructor.Evaluate(nil)
+	if result != nil || err == nil {
+		t.Fatalf("foreign array element = (%T,%v), want nil,error", result, err)
+	}
+	var typeErr *ProtoTypeError
+	if !errors.As(err, &typeErr) {
+		t.Fatalf("foreign array element error = %T: %v, want *ProtoTypeError", err, err)
+	}
+	if constructor.Fields[0].Value != constant || constructor.MessageDescriptor() != descriptor {
+		t.Fatal("failed array materialization mutated the constructor source or descriptor")
+	}
+}

@@ -7,6 +7,13 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func aggregateShortcutRowType() *values.RecordType {
+	return &values.RecordType{Fields: []values.Field{
+		{Name: "CUSTOMER_ID", Ordinal: 0, FieldType: values.NullableString},
+		{Name: "AMOUNT", Ordinal: 1, FieldType: values.NullableLong},
+	}}
+}
+
 // TestAggregateCandidateDeclinedByRawIndexShortcuts pins the admission gates
 // that keep an aggregate index out of the planner's raw, name-based index
 // shortcuts.
@@ -56,7 +63,7 @@ func TestAggregateCandidateDeclinedByRawIndexShortcuts(t *testing.T) {
 		[]string{"CUSTOMER_ID"},
 		expressions.AggSum,
 		"AMOUNT",
-		values.UnknownType,
+		aggregateShortcutRowType(),
 		[]values.Type{values.NullableString},
 		1,
 	)
@@ -126,13 +133,21 @@ func TestAggregateCandidateDeclinedByRawIndexShortcuts(t *testing.T) {
 		// a raw aggregate-index scan. Verified by exactly that mutation. The
 		// single-gate deletions are covered by the two sibling arms above, which
 		// assert the gate FUNCTIONS directly; this arm is the composite.
-		scan := expressions.NewFullUnorderedScanExpression([]string{"ORDERS"}, values.UnknownType)
-		gb := expressions.NewGroupByExpression(
-			[]values.Value{&values.FieldValue{Field: "CUSTOMER_ID", Typ: values.UnknownType}},
+		scan := mustFullUnorderedScan(t, []string{"ORDERS"}, aggregateShortcutRowType())
+		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+		groupingRoot, err := scanQ.RequireFlowedObjectValue()
+		groupingRoot = mustConstruct(t, groupingRoot, err)
+		customerID, err := values.ResolveFieldOrdinals(groupingRoot, []int{0})
+		if err != nil {
+			t.Fatalf("resolve CUSTOMER_ID grouping key: %v", err)
+		}
+		gbValue, err := expressions.NewGroupByExpression(
+			[]values.Value{customerID},
 			[]expressions.AggregateSpec{{Function: expressions.AggCount}},
-			expressions.ForEachQuantifier(expressions.InitialOf(scan)),
+			scanQ,
 		)
-		results := FireExpressionRuleWithMemo(
+		gb := mustConstruct(t, gbValue, err)
+		results := mustFireExpressionRuleWithMemo(t,
 			NewStreamingAggFromIndexRule(),
 			expressions.InitialOf(gb),
 			&indexTestPlanContext{candidates: []MatchCandidate{agg}},
@@ -169,7 +184,7 @@ func TestAggregateCandidateToScanPlanIsARawFetchingIndexPlan(t *testing.T) {
 		[]string{"CUSTOMER_ID"},
 		expressions.AggSum,
 		"AMOUNT",
-		values.UnknownType,
+		aggregateShortcutRowType(),
 		[]values.Type{values.NullableString},
 		1,
 	)

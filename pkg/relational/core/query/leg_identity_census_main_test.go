@@ -73,16 +73,14 @@ func TestMain(m *testing.M) {
 // memo may explore a rule once or many times for one query), so a floor at the
 // measured value would fail on exploration order. The floor detects COLLAPSE —
 // the shapes stopping, a recorder being routed around — not drift.
-// Measured over this corpus: recursiveRemap 13 calls (carried 4, MANUFACTURED 3,
-// leafOnly 2, bare 4), existsSortSplit 5, derivedUnnestSource 4.
+// Measured over this corpus after recursive remapping was retired:
+// existsSortSplit 5, derivedUnnestSource 4.
 //
 // THE PROVENANCE OF EACH FLOOR IS NOT THE SAME, and reading them as one kind of
 // number is how a floor comes to guarantee something it does not:
 //
-//   - recursiveRemap's population is PRODUCTION traffic — this package's tests
-//     plan recursive CTE bodies and the site is reached through them. Its floor
-//     says the shapes still plan. It is also the ONLY corpus that reports this
-//     site's MANUFACTURED bucket at all: the real-FDB corpus reports 0.
+//   - recursiveRemap is intentionally zero: recursiveRemapValues is a retired
+//     compatibility no-op, pinned by TestQualRecWiring_RetiredRecursiveRemapIsInert.
 //   - existsSortSplit's and derivedUnnestSource's populations here are FIXTURE
 //     traffic, driven entirely by qualifier_recovery_wiring_test.go. Their
 //     floors say THE PINS STILL RUN — nothing more. Production coverage of
@@ -104,12 +102,10 @@ func TestMain(m *testing.M) {
 // times for a single query. The floor detects COLLAPSE, not drift.
 var translatorQualifierRecoveryFloors = values.QualifierRecoveryFloors{
 	Calls: [6]int{
-		values.QualRecSiteRecursiveRemap:      4,
 		values.QualRecSiteExistsSortSplit:     2,
 		values.QualRecSiteDerivedUnnestSource: 2,
 	},
 	Split: [6]int{
-		values.QualRecSiteRecursiveRemap:      3,
 		values.QualRecSiteExistsSortSplit:     2,
 		values.QualRecSiteDerivedUnnestSource: 2,
 	},
@@ -184,11 +180,12 @@ var qualifierRecoveryNegativeControls = map[values.QualifierRecoverySite]map[str
 // The floor detects COLLAPSE — the shapes stopping, a reader being routed around
 // — not drift.
 // Measured over this corpus: text-vs-identity 44, finalizeSeedWindows 7,
-// ordinalSlotInLegWindow 37, expressionOutputLegs 5.
+// ordinalSlotInLegWindow 37. expressionOutputLegs is a retired producer with
+// no callers; keeping a population floor for it would assert traffic through
+// dead compatibility code rather than exercise a live identity boundary.
 var translatorLegIdentityFloors = map[values.LegIdentitySite]int64{
 	values.LegSiteTextVsIdentity:         8,
 	values.LegSiteFinalizeSeedWindows:    2,
-	values.LegSiteSelectOutputLegs:       2,
 	values.LegSiteOrdinalSlotInLegWindow: 8,
 }
 

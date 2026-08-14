@@ -32,6 +32,7 @@ go_test(
         "optional_if_present_matcher_test.go",
         "satisfying_matcher_test.go",
         "some_elements_matcher_test.go",
+        "test_helpers_test.go",
         "typed_matcher_test.go",
     ],
     embed = [":matching"],

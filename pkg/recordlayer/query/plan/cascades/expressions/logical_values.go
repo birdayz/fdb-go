@@ -2,7 +2,9 @@ package expressions
 
 import (
 	"encoding/binary"
+	"fmt"
 	"hash/fnv"
+	"slices"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -11,19 +13,27 @@ import (
 // of constant values — the Cascades equivalent of SQL's VALUES (a, b, c).
 // Zero quantifiers (it's a source, not a transformer).
 type LogicalValuesExpression struct {
-	columns []values.Value
+	columns     []values.Value
+	resultValue *values.RecordConstructorValue
 }
 
-func NewLogicalValuesExpression(columns []values.Value) *LogicalValuesExpression {
-	return &LogicalValuesExpression{columns: columns}
+func NewLogicalValuesExpression(columns []values.Value) (*LogicalValuesExpression, error) {
+	resultValue, err := values.ProjectionResultValue(columns, nil)
+	if err != nil {
+		return nil, fmt.Errorf("LogicalValuesExpression result: %w", err)
+	}
+	if _, err := snapshotExpressionResultType("LogicalValuesExpression", resultValue.Type()); err != nil {
+		return nil, err
+	}
+	return &LogicalValuesExpression{columns: slices.Clone(columns), resultValue: resultValue}, nil
 }
 
 func (e *LogicalValuesExpression) GetColumns() []values.Value {
-	return e.columns
+	return slices.Clone(e.columns)
 }
 
 func (e *LogicalValuesExpression) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+	return e.resultValue
 }
 
 func (e *LogicalValuesExpression) GetQuantifiers() []Quantifier { return nil }
@@ -67,8 +77,11 @@ func (e *LogicalValuesExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-func (e *LogicalValuesExpression) WithQuantifiers(_ []Quantifier) RelationalExpression {
-	return e
+func (e *LogicalValuesExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("LogicalValuesExpression", len(quantifiers), 0); err != nil {
+		return nil, err
+	}
+	return e, nil
 }
 
 var _ RelationalExpression = (*LogicalValuesExpression)(nil)

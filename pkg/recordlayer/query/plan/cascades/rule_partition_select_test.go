@@ -18,29 +18,54 @@ func aliasSet(names ...string) map[values.CorrelationIdentifier]struct{} {
 	return s
 }
 
+func mustPartitionConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct partition-select fixture: " + err.Error())
+	}
+	return value
+}
+
+func partitionSelectRowType(name string) *values.RecordType {
+	return values.NewRecordType(name, false, []values.Field{
+		{Name: "col", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "NEXT_ID", FieldType: values.NotNullLong, Ordinal: 2},
+	})
+}
+
+func partitionField(alias, name string) values.Value {
+	rowType := partitionSelectRowType(alias)
+	root := mustPartitionConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier(alias), rowType))
+	request := mustPartitionConstruct(values.FieldByName(name))
+	return mustPartitionConstruct(values.ResolveFieldAccess(
+		root, []values.FieldRequest{request}))
+}
+
 // joinPred builds an equi-predicate `a.col = b.col` whose
 // GetCorrelatedToOfPredicate is {a, b} — the shape PartitionSelectRule
 // classifies. Each side is a FieldValue over a QuantifiedObjectValue(alias).
 func joinPred(a, b string) predicates.QueryPredicate {
-	left := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(a)),
-		"col", values.UnknownType,
-	)
-	right := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(b)),
-		"col", values.UnknownType,
-	)
 	return predicates.NewComparisonPredicate(
-		left,
-		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: right},
+		partitionField(a, "col"),
+		predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: partitionField(b, "col"),
+		},
 	)
 }
 
 // scanQuantifier builds a named ForEach quantifier over a fresh base scan,
 // standing in for a SQL table source aliased `name`.
 func scanQuantifier(name string) expressions.Quantifier {
-	scan := &expressions.FullUnorderedScanExpression{}
-	tf := expressions.NewLogicalTypeFilterExpression([]string{strings.ToUpper(name)}, pbForEachOf(scan))
+	return typedPartitionScanQuantifier(name, partitionSelectRowType(name))
+}
+
+func typedPartitionScanQuantifier(name string, rowType values.Type) expressions.Quantifier {
+	scan := mustPartitionConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{strings.ToUpper(name)}, rowType))
+	tf := mustPartitionConstruct(expressions.NewLogicalTypeFilterExpression(
+		[]string{strings.ToUpper(name)}, expressions.ForEachQuantifier(expressions.InitialOf(scan))))
 	return expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier(name),
 		expressions.InitialOf(tf),
@@ -55,14 +80,15 @@ func TestPartitionSelect_StrictSingleFailsClosed(t *testing.T) {
 	b := expressions.NamedForEachStrictSingleQuantifier(
 		bBase.GetAlias(), bBase.GetRangesOver())
 	c := scanQuantifier("C")
-	sel := expressions.NewSelectExpressionWithAliases(
-		a.GetFlowedObjectValue(),
+	result := mustPartitionConstruct(a.RequireFlowedObjectValue())
+	sel := mustPartitionConstruct(expressions.NewSelectExpressionWithAliases(
+		result,
 		[]expressions.Quantifier{a, b, c},
 		[]predicates.QueryPredicate{joinPred("A", "B"), joinPred("B", "C")},
 		[]string{"A", "B", "C"},
-	)
+	))
 
-	yielded := FireExpressionRule(NewPartitionSelectRule(), expressions.InitialOf(sel))
+	yielded := mustFireExpressionRule(t, NewPartitionSelectRule(), expressions.InitialOf(sel))
 	if len(yielded) != 0 {
 		t.Fatalf("N-way strict-single select yielded %d partition(s), want fail-closed zero", len(yielded))
 	}
@@ -80,15 +106,16 @@ func TestPartitionSelect_OuterJoinFailsClosed(t *testing.T) {
 	a := scanQuantifier("A")
 	b := scanQuantifier("B")
 	c := scanQuantifier("C")
-	sel := expressions.NewSelectExpressionWithJoinType(
-		a.GetFlowedObjectValue(),
+	result := mustPartitionConstruct(a.RequireFlowedObjectValue())
+	sel := mustPartitionConstruct(expressions.NewSelectExpressionWithJoinType(
+		result,
 		[]expressions.Quantifier{a, b, c},
 		[]predicates.QueryPredicate{joinPred("A", "B"), joinPred("B", "C")},
 		[]string{"A", "B", "C"},
 		expressions.JoinLeftOuter,
-	)
+	))
 
-	yielded := FireExpressionRule(NewPartitionSelectRule(), expressions.InitialOf(sel))
+	yielded := mustFireExpressionRule(t, NewPartitionSelectRule(), expressions.InitialOf(sel))
 	if len(yielded) != 0 {
 		t.Fatalf("LEFT OUTER N-way select yielded %d partition(s), want fail-closed zero", len(yielded))
 	}
@@ -99,10 +126,10 @@ func TestPartitionSelect_OuterJoinFailsClosed(t *testing.T) {
 // PartitionSelectRule routes to the upper level.
 func chainEqPred(a, aCol, b, bCol string) predicates.QueryPredicate {
 	return predicates.NewComparisonPredicate(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(a)), aCol, values.UnknownType),
+		partitionField(a, aCol),
 		predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(b)), bCol, values.UnknownType),
+			Operand: partitionField(b, bCol),
 		},
 	)
 }
@@ -196,10 +223,12 @@ func TestTransitiveCorrelationOrder_RangesOverEdges(t *testing.T) {
 	// A quantifier whose EXPRESSION references PB — the Explode shape (any
 	// correlated member works; a filter carrying a QOV(PB) predicate is the
 	// simplest constructible stand-in).
-	correlated := expressions.NewLogicalFilterExpression(
+	correlatedScan := mustPartitionConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"X"}, partitionSelectRowType("X")))
+	correlated := mustPartitionConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{joinPred("PB", "X")},
-		pbForEachOf(&expressions.FullUnorderedScanExpression{}),
-	)
+		expressions.ForEachQuantifier(expressions.InitialOf(correlatedScan)),
+	))
 	x := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier("X"),
 		expressions.InitialOf(correlated),
@@ -224,22 +253,20 @@ func TestTransitiveCorrelationOrder_RangesOverEdges(t *testing.T) {
 func TestBoundAliasesOfReference(t *testing.T) {
 	t.Parallel()
 
-	inner := expressions.NewSelectExpressionWithAliases(
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("B2")),
-		[]expressions.Quantifier{
-			expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("B2"),
-				expressions.InitialOf(&expressions.FullUnorderedScanExpression{})),
-			expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("C"),
-				expressions.InitialOf(&expressions.FullUnorderedScanExpression{})),
-		},
-		nil, nil)
-	outer := expressions.NewSelectExpressionWithAliases(
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("Q")),
-		[]expressions.Quantifier{
-			expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("Q"),
-				expressions.InitialOf(inner)),
-		},
-		nil, nil)
+	b2 := scanQuantifier("B2")
+	c := scanQuantifier("C")
+	innerResult := mustPartitionConstruct(b2.RequireFlowedObjectValue())
+	inner := mustPartitionConstruct(expressions.NewSelectExpressionWithAliases(
+		innerResult,
+		[]expressions.Quantifier{b2, c},
+		nil, nil))
+	q := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("Q"), expressions.InitialOf(inner))
+	outerResult := mustPartitionConstruct(q.RequireFlowedObjectValue())
+	outer := mustPartitionConstruct(expressions.NewSelectExpressionWithAliases(
+		outerResult,
+		[]expressions.Quantifier{q},
+		nil, nil))
 
 	got := boundAliasesOfReference(expressions.InitialOf(outer))
 	for _, want := range []string{"Q", "B2", "C"} {

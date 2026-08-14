@@ -143,10 +143,36 @@ type specimen struct {
 // cannot be reached from outside the package.
 const resultValueIsMinted = "constructor-minted QuantifiedObjectValue, returned by GetResultValue() which stampNodeLocalValues stamps first"
 
+// RFC-232 made PlanExprBase own the exact, constructor-minted result QOV for
+// every physical plan. Reflection therefore sees the embedded base itself as a
+// value carrier. Callers cannot plant a sentinel inside it, but its only value
+// is the same GetResultValue() contract stampNodeLocalValues visits first.
+const planExprBaseResultIsMinted = "embedded base owns the constructor-minted exact result QOV returned by GetResultValue(), which stampNodeLocalValues stamps first"
+
+func globallyProvenStampableField(field string) string {
+	if field == "PlanExprBase" {
+		return planExprBaseResultIsMinted
+	}
+	return ""
+}
+
 func sentinel() *values.RecordConstructorValue {
 	return values.NewRecordConstructorValue(values.RecordConstructorField{
 		Name:  "S",
 		Value: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+	})
+}
+
+func mustFinalizeConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct finalize-plan fixture: " + err.Error())
+	}
+	return value
+}
+
+func finalizeRowType(name string) values.Type {
+	return values.NewRecordType(name, false, []values.Field{
+		{Name: "S", FieldType: values.NullableLong, Ordinal: 0},
 	})
 }
 
@@ -166,7 +192,7 @@ func sentinelRange(t *testing.T, s values.Value) *predicates.ComparisonRange {
 // answers "did GetChildren() return this edge?".
 func sentinelChild() (plans.RecordQueryPlan, *values.RecordConstructorValue) {
 	s := sentinel()
-	return plans.NewRecordQueryValuesPlan([]values.Value{s}), s
+	return mustFinalizeConstruct(plans.NewRecordQueryValuesPlan([]values.Value{s})), s
 }
 
 // uncostedPlanTypes names the plan types that answer NO cost/proof contract and
@@ -239,11 +265,12 @@ var specimens = map[string]specimen{
 			// by design, mirroring Java's RecordQueryPlanWithNoChildren), so
 			// only a dedicated arm reaches its comparands.
 			s := sentinel()
-			idx := plans.NewRecordQueryIndexPlan(
+			idx := mustFinalizeConstruct(plans.NewRecordQueryIndexPlan(
 				"IDX", []*predicates.ComparisonRange{sentinelRange(t, s)},
-				[]string{"T"}, values.UnknownType, false,
-			)
-			p := plans.NewRecordQueryAggregateIndexPlan(idx, "T", values.UnknownType, "COUNT")
+				[]string{"T"}, finalizeRowType("T"), false,
+			))
+			p := mustFinalizeConstruct(plans.NewRecordQueryAggregateIndexPlan(
+				idx, "T", finalizeRowType("AggregateResult"), "COUNT"))
 			return p, map[string]*values.RecordConstructorValue{"indexPlan": s}
 		},
 		allow: map[string]string{"resultValue": resultValueIsMinted},
@@ -255,11 +282,11 @@ var specimens = map[string]specimen{
 			// reason: the wrapped index plan is a FIELD, GetChildren returns nil,
 			// so only a dedicated arm reaches the inner scan's comparands.
 			s := sentinel()
-			idx := plans.NewRecordQueryIndexPlan(
+			idx := mustFinalizeConstruct(plans.NewRecordQueryIndexPlan(
 				"IDX", []*predicates.ComparisonRange{sentinelRange(t, s)},
-				[]string{"T"}, values.UnknownType, false,
-			)
-			return plans.NewRecordQueryCoveringIndexPlan(idx),
+				[]string{"T"}, finalizeRowType("T"), false,
+			))
+			return mustFinalizeConstruct(plans.NewRecordQueryCoveringIndexPlan(idx)),
 				map[string]*values.RecordConstructorValue{"indexPlan": s}
 		},
 		allow: map[string]string{"resultValue": resultValueIsMinted},
@@ -269,8 +296,8 @@ var specimens = map[string]specimen{
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
 			key := sentinel()
-			p := plans.NewRecordQueryComparatorPlan(
-				[]plans.RecordQueryPlan{child}, []values.Value{key}, 0, false, false)
+			p := mustFinalizeConstruct(plans.NewRecordQueryComparatorPlan(
+				[]plans.RecordQueryPlan{child}, []values.Value{key}, 0, false, false))
 			return p, map[string]*values.RecordConstructorValue{
 				"childQs":             cs,
 				"comparisonKeyValues": key,
@@ -281,9 +308,16 @@ var specimens = map[string]specimen{
 	"RecordQueryDefaultOnEmptyPlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
-			def := sentinel()
-			return plans.NewRecordQueryDefaultOnEmptyPlan(child, def),
-				map[string]*values.RecordConstructorValue{"innerQ": cs, "defaultValue": def}
+			// A VALUES plan emits a row around each column. Build the default
+			// through that same row-shaping authority so it is exactly compatible
+			// with the child. The derived outer slot name is not protobuf-safe, so
+			// probe the nested constructor: reaching it still proves FinalizePlan
+			// traversed the defaultValue field.
+			defaultSentinel := sentinel()
+			def := mustFinalizeConstruct(values.ProjectionResultValue(
+				[]values.Value{defaultSentinel}, nil))
+			return mustFinalizeConstruct(plans.NewRecordQueryDefaultOnEmptyPlan(child, def)),
+				map[string]*values.RecordConstructorValue{"innerQ": cs, "defaultValue": defaultSentinel}
 		},
 	},
 
@@ -291,7 +325,7 @@ var specimens = map[string]specimen{
 		writeFed: true,
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
-			return plans.NewRecordQueryDeletePlan(child, "T"),
+			return mustFinalizeConstruct(plans.NewRecordQueryDeletePlan(child, "T")),
 				map[string]*values.RecordConstructorValue{"innerQ": cs}
 		},
 	},
@@ -299,7 +333,7 @@ var specimens = map[string]specimen{
 	"RecordQueryDistinctPlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
-			return plans.NewRecordQueryDistinctPlan(child),
+			return mustFinalizeConstruct(plans.NewRecordQueryDistinctPlan(child)),
 				map[string]*values.RecordConstructorValue{"innerQ": cs}
 		},
 	},
@@ -307,7 +341,8 @@ var specimens = map[string]specimen{
 	"RecordQueryExplodePlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			coll := sentinel()
-			return plans.NewRecordQueryExplodePlan(coll),
+			array := values.NewArrayConstructorValue(coll.Type(), []values.Value{coll})
+			return mustFinalizeConstruct(plans.NewRecordQueryExplodePlan(array)),
 				map[string]*values.RecordConstructorValue{"collectionValue": coll}
 		},
 		allow: map[string]string{"resultValue": resultValueIsMinted},
@@ -316,9 +351,9 @@ var specimens = map[string]specimen{
 	"RecordQueryFetchFromPartialRecordPlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
-			p := plans.NewRecordQueryFetchFromPartialRecordPlan(
-				child, plans.UnableToTranslate, values.UnknownType,
-				plans.FetchIndexRecordsPrimaryKey)
+			p := mustFinalizeConstruct(plans.NewRecordQueryFetchFromPartialRecordPlan(
+				child, plans.UnableToTranslate, finalizeRowType("T"),
+				plans.FetchIndexRecordsPrimaryKey))
 			return p, map[string]*values.RecordConstructorValue{"innerQ": cs}
 		},
 	},
@@ -327,8 +362,8 @@ var specimens = map[string]specimen{
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
 			pv := sentinel()
-			p := plans.NewRecordQueryFilterPlan(
-				[]predicates.QueryPredicate{predicates.NewValuePredicate(pv)}, child)
+			p := mustFinalizeConstruct(plans.NewRecordQueryFilterPlan(
+				[]predicates.QueryPredicate{predicates.NewValuePredicate(pv)}, child))
 			return p, map[string]*values.RecordConstructorValue{"innerQ": cs, "predicates": pv}
 		},
 	},
@@ -337,7 +372,7 @@ var specimens = map[string]specimen{
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
 			def := sentinel()
-			return plans.NewRecordQueryFirstOrDefaultPlan(child, def),
+			return mustFinalizeConstruct(plans.NewRecordQueryFirstOrDefaultPlan(child, def)),
 				map[string]*values.RecordConstructorValue{"innerQ": cs, "defaultValue": def}
 		},
 	},
@@ -347,9 +382,9 @@ var specimens = map[string]specimen{
 			outer, os := sentinelChild()
 			inner, is := sentinelChild()
 			res := sentinel()
-			p := plans.NewRecordQueryFlatMapPlan(outer, inner,
+			p := mustFinalizeConstruct(plans.NewRecordQueryFlatMapPlan(outer, inner,
 				values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier(),
-				res, false)
+				res, false))
 			return p, map[string]*values.RecordConstructorValue{
 				"outerQ": os, "innerQ": is, "resultValue": res,
 			}
@@ -359,7 +394,7 @@ var specimens = map[string]specimen{
 	"RecordQueryInJoinPlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
-			return plans.NewRecordQueryInJoinPlan(child, "b", false, false),
+			return mustFinalizeConstruct(plans.NewRecordQueryInJoinPlan(child, "b", false, false)),
 				map[string]*values.RecordConstructorValue{"innerQ": cs}
 		},
 	},
@@ -368,8 +403,8 @@ var specimens = map[string]specimen{
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
 			key := sentinel()
-			p := plans.NewRecordQueryInMemorySortPlan(child,
-				[]plans.SortKey{{Field: "S", ValueExpr: key}})
+			p := mustFinalizeConstruct(plans.NewRecordQueryInMemorySortPlan(child,
+				[]plans.SortKey{{Field: "S", ValueExpr: key}}))
 			return p, map[string]*values.RecordConstructorValue{"innerQ": cs, "sortKeys": key}
 		},
 	},
@@ -378,7 +413,8 @@ var specimens = map[string]specimen{
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
 			key := sentinel()
-			p := plans.NewRecordQueryInUnionPlan(child, []string{"b"}, []values.Value{key}, false)
+			p := mustFinalizeConstruct(plans.NewRecordQueryInUnionPlan(
+				child, []string{"b"}, []values.Value{key}, false))
 			return p, map[string]*values.RecordConstructorValue{
 				"innerQ": cs, "comparisonKeys": key,
 			}
@@ -389,10 +425,10 @@ var specimens = map[string]specimen{
 		build: func(t *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			comp := sentinel()
 			pk := sentinel()
-			p := plans.NewRecordQueryIndexPlan(
+			p := mustFinalizeConstruct(plans.NewRecordQueryIndexPlan(
 				"IDX", []*predicates.ComparisonRange{sentinelRange(t, comp)},
-				[]string{"T"}, values.UnknownType, false,
-			).WithCommonPrimaryKey([]values.Value{pk})
+				[]string{"T"}, finalizeRowType("T"), false,
+			)).WithCommonPrimaryKey([]values.Value{pk})
 			return p, map[string]*values.RecordConstructorValue{
 				"scanComparisons": comp, "commonPrimaryKeyValues": pk,
 			}
@@ -404,7 +440,8 @@ var specimens = map[string]specimen{
 		writeFed: true,
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
-			return plans.NewRecordQueryInsertPlan(child, "T", values.UnknownType),
+			return mustFinalizeConstruct(plans.NewRecordQueryInsertPlan(
+					child, "T", finalizeRowType("T"))),
 				map[string]*values.RecordConstructorValue{"innerQ": cs}
 		},
 	},
@@ -418,16 +455,13 @@ var specimens = map[string]specimen{
 			// comparisonKeyOrderingParts. If NaturalComparisonKeyValues ever
 			// stops returning the parts' raw Values, this goes red.
 			key := sentinel()
-			p := plans.NewRecordQueryIntersectionPlanWithOrdering(
+			p := mustFinalizeConstruct(plans.NewRecordQueryIntersectionPlanWithOrdering(
 				[]plans.RecordQueryPlan{child},
 				[]properties.ProvidedOrderingPart{{
 					Value: key, SortOrder: properties.ProvidedSortOrderAscending,
 				}},
 				false,
-			)
-			if p == nil {
-				panic("intersection-with-ordering constructor failed closed")
-			}
+			))
 			return p, map[string]*values.RecordConstructorValue{
 				"childQs":                    cs,
 				"comparisonKeyValues":        key,
@@ -440,7 +474,7 @@ var specimens = map[string]specimen{
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
 			lim := sentinel()
-			return plans.NewRecordQueryLimitPlanWithValue(child, lim, 0),
+			return mustFinalizeConstruct(plans.NewRecordQueryLimitPlanWithValue(child, lim, 0)),
 				map[string]*values.RecordConstructorValue{"innerQ": cs, "limitValue": lim}
 		},
 	},
@@ -449,7 +483,7 @@ var specimens = map[string]specimen{
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
 			res := sentinel()
-			return plans.NewRecordQueryMapPlan(child, res),
+			return mustFinalizeConstruct(plans.NewRecordQueryMapPlan(child, res)),
 				map[string]*values.RecordConstructorValue{"innerQ": cs, "resultValue": res}
 		},
 	},
@@ -458,8 +492,8 @@ var specimens = map[string]specimen{
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
 			key := sentinel()
-			p := plans.NewRecordQueryMergeSortUnionPlan(
-				[]plans.RecordQueryPlan{child}, []values.Value{key}, false, false)
+			p := mustFinalizeConstruct(plans.NewRecordQueryMergeSortUnionPlan(
+				[]plans.RecordQueryPlan{child}, []values.Value{key}, false, false))
 			return p, map[string]*values.RecordConstructorValue{
 				"childQs": cs, "comparisonKeys": key,
 			}
@@ -471,8 +505,8 @@ var specimens = map[string]specimen{
 			child, cs := sentinelChild()
 			key := sentinel()
 			res := sentinel()
-			p := plans.NewRecordQueryMultiIntersectionOnValuesPlan(
-				[]plans.RecordQueryPlan{child}, []values.Value{key}, res)
+			p := mustFinalizeConstruct(plans.NewRecordQueryMultiIntersectionOnValuesPlan(
+				[]plans.RecordQueryPlan{child}, []values.Value{key}, res))
 			return p, map[string]*values.RecordConstructorValue{
 				"childQs": cs, "comparisonKey": key, "resultValue": res,
 			}
@@ -485,11 +519,11 @@ var specimens = map[string]specimen{
 			inner, is := sentinelChild()
 			pv := sentinel()
 			res := sentinel()
-			p := plans.NewRecordQueryNestedLoopJoinPlan(outer, inner,
+			p := mustFinalizeConstruct(plans.NewRecordQueryNestedLoopJoinPlan(outer, inner,
 				[]predicates.QueryPredicate{predicates.NewValuePredicate(pv)},
 				plans.JoinInner,
 				values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier(),
-				res)
+				res))
 			return p, map[string]*values.RecordConstructorValue{
 				"outerQ": os, "innerQ": is, "predicates": pv, "resultValue": res,
 			}
@@ -500,8 +534,8 @@ var specimens = map[string]specimen{
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
 			pv := sentinel()
-			p := plans.NewRecordQueryPredicatesFilterPlan(child,
-				[]predicates.QueryPredicate{predicates.NewValuePredicate(pv)})
+			p := mustFinalizeConstruct(plans.NewRecordQueryPredicatesFilterPlan(child,
+				[]predicates.QueryPredicate{predicates.NewValuePredicate(pv)}))
 			return p, map[string]*values.RecordConstructorValue{"innerQ": cs, "predicates": pv}
 		},
 	},
@@ -510,17 +544,18 @@ var specimens = map[string]specimen{
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
 			proj := sentinel()
-			return plans.NewRecordQueryProjectionPlan([]values.Value{proj}, child),
+			return mustFinalizeConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{proj}, child)),
 				map[string]*values.RecordConstructorValue{"innerQ": cs, "projections": proj}
 		},
+		allow: map[string]string{"resultValue": resultValueIsMinted},
 	},
 
 	"RecordQueryRecursiveDfsJoinPlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			root, rs := sentinelChild()
 			child, cs := sentinelChild()
-			p := plans.NewRecordQueryRecursiveDfsJoinPlan(root, child,
-				values.UniqueCorrelationIdentifier(), plans.DfsPreorder)
+			p := mustFinalizeConstruct(plans.NewRecordQueryRecursiveDfsJoinPlan(root, child,
+				values.UniqueCorrelationIdentifier(), plans.DfsPreorder))
 			return p, map[string]*values.RecordConstructorValue{"rootQ": rs, "childQ": cs}
 		},
 	},
@@ -529,8 +564,8 @@ var specimens = map[string]specimen{
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			initial, is := sentinelChild()
 			rec, rs := sentinelChild()
-			p := plans.NewRecordQueryRecursiveLevelUnionPlan(initial, rec,
-				values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier())
+			p := mustFinalizeConstruct(plans.NewRecordQueryRecursiveLevelUnionPlan(initial, rec,
+				values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier()))
 			return p, map[string]*values.RecordConstructorValue{"initialQ": is, "recursiveQ": rs}
 		},
 	},
@@ -539,7 +574,8 @@ var specimens = map[string]specimen{
 		build: func(t *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			comp := sentinel()
 			pk := sentinel()
-			p := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+			p := mustFinalizeConstruct(plans.NewRecordQueryScanPlan(
+				[]string{"T"}, finalizeRowType("T"), false)).
 				WithScanComparisons([]*predicates.ComparisonRange{sentinelRange(t, comp)}).
 				WithPrimaryKey([]values.Value{pk})
 			return p, map[string]*values.RecordConstructorValue{
@@ -552,7 +588,7 @@ var specimens = map[string]specimen{
 	"RecordQueryScoreForRankPlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
-			return plans.NewRecordQueryScoreForRankPlan(child, nil),
+			return mustFinalizeConstruct(plans.NewRecordQueryScoreForRankPlan(child, nil)),
 				map[string]*values.RecordConstructorValue{"innerQ": cs}
 		},
 	},
@@ -560,8 +596,8 @@ var specimens = map[string]specimen{
 	"RecordQuerySelectorPlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
-			p := plans.NewRecordQuerySelectorPlanWithProbabilities(
-				[]plans.RecordQueryPlan{child}, []int{100}, false)
+			p := mustFinalizeConstruct(plans.NewRecordQuerySelectorPlanWithProbabilities(
+				[]plans.RecordQueryPlan{child}, []int{100}, false))
 			return p, map[string]*values.RecordConstructorValue{"childQs": cs}
 		},
 	},
@@ -571,19 +607,20 @@ var specimens = map[string]specimen{
 			child, cs := sentinelChild()
 			grp := sentinel()
 			agg := sentinel()
-			p := plans.NewRecordQueryStreamingAggregationPlan(child,
+			p := mustFinalizeConstruct(plans.NewRecordQueryStreamingAggregationPlan(child,
 				[]values.Value{grp},
-				[]expressions.AggregateSpec{{Function: expressions.AggSum, Operand: agg}})
+				[]expressions.AggregateSpec{{Function: expressions.AggSum, Operand: agg}}))
 			return p, map[string]*values.RecordConstructorValue{
 				"innerQ": cs, "groupingKeys": grp, "aggregates": agg,
 			}
 		},
+		allow: map[string]string{"resultValue": resultValueIsMinted},
 	},
 
 	"RecordQueryTableFunctionPlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			sv := sentinel()
-			return plans.NewRecordQueryTableFunctionPlan(sv),
+			return mustFinalizeConstruct(plans.NewRecordQueryTableFunctionPlan(sv)),
 				map[string]*values.RecordConstructorValue{"streamValue": sv}
 		},
 		allow: map[string]string{"resultValue": resultValueIsMinted},
@@ -593,15 +630,16 @@ var specimens = map[string]specimen{
 		writeFed: true,
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
-			p := plans.NewRecordQueryTempTableInsertPlan(child,
-				values.UniqueCorrelationIdentifier(), true)
+			p := mustFinalizeConstruct(plans.NewRecordQueryTempTableInsertPlan(child,
+				values.UniqueCorrelationIdentifier(), true))
 			return p, map[string]*values.RecordConstructorValue{"innerQ": cs}
 		},
 	},
 
 	"RecordQueryTempTableScanPlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
-			return plans.NewRecordQueryTempTableScanPlan(values.UniqueCorrelationIdentifier()), nil
+			return mustFinalizeConstruct(plans.NewRecordQueryTempTableScanPlan(
+				values.UniqueCorrelationIdentifier(), finalizeRowType("Temp"))), nil
 		},
 		allow: map[string]string{"resultValue": resultValueIsMinted},
 	},
@@ -609,7 +647,7 @@ var specimens = map[string]specimen{
 	"RecordQueryTypeFilterPlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
-			return plans.NewRecordQueryTypeFilterPlan([]string{"T"}, child),
+			return mustFinalizeConstruct(plans.NewRecordQueryTypeFilterPlan([]string{"T"}, child)),
 				map[string]*values.RecordConstructorValue{"innerQ": cs}
 		},
 	},
@@ -617,7 +655,7 @@ var specimens = map[string]specimen{
 	"RecordQueryUnionPlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
-			return plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{child}),
+			return mustFinalizeConstruct(plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{child})),
 				map[string]*values.RecordConstructorValue{"childQs": cs}
 		},
 	},
@@ -625,7 +663,7 @@ var specimens = map[string]specimen{
 	"RecordQueryUnorderedPrimaryKeyDistinctPlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
-			return plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(child),
+			return mustFinalizeConstruct(plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(child)),
 				map[string]*values.RecordConstructorValue{"innerQ": cs}
 		},
 	},
@@ -633,7 +671,8 @@ var specimens = map[string]specimen{
 	"RecordQueryUnorderedUnionPlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
-			return plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{child}),
+			return mustFinalizeConstruct(plans.NewRecordQueryUnorderedUnionPlan(
+					[]plans.RecordQueryPlan{child})),
 				map[string]*values.RecordConstructorValue{"childQs": cs}
 		},
 	},
@@ -643,8 +682,8 @@ var specimens = map[string]specimen{
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
 			nv := sentinel()
-			p := plans.NewRecordQueryUpdatePlan(child, "T",
-				[]expressions.UpdateTransform{{FieldPath: "A", NewValue: nv}})
+			p := mustFinalizeConstruct(plans.NewRecordQueryUpdatePlan(child, "T",
+				[]expressions.UpdateTransform{{FieldPath: "A", NewValue: nv}}))
 			return p, map[string]*values.RecordConstructorValue{"innerQ": cs, "transforms": nv}
 		},
 	},
@@ -652,7 +691,7 @@ var specimens = map[string]specimen{
 	"RecordQueryValuesPlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			col := sentinel()
-			return plans.NewRecordQueryValuesPlan([]values.Value{col}),
+			return mustFinalizeConstruct(plans.NewRecordQueryValuesPlan([]values.Value{col})),
 				map[string]*values.RecordConstructorValue{"columns": col}
 		},
 		allow: map[string]string{"resultValue": resultValueIsMinted},
@@ -663,10 +702,10 @@ var specimens = map[string]specimen{
 			pre := sentinel()
 			qv := sentinel()
 			k := sentinel()
-			p := plans.NewRecordQueryVectorIndexPlan(
+			p := mustFinalizeConstruct(plans.NewRecordQueryVectorIndexPlan(
 				"VIDX", []*predicates.ComparisonRange{sentinelRange(t, pre)},
 				qv, k, predicates.ComparisonDistanceRankLessThanOrEq,
-				nil, nil, []string{"T"}, values.UnknownType)
+				nil, nil, []string{"T"}, finalizeRowType("T")))
 			return p, map[string]*values.RecordConstructorValue{
 				"prefixComparisons": pre, "queryVector": qv, "k": k,
 			}
@@ -696,9 +735,16 @@ func TestFinalizePlanCoversStructuralKey(t *testing.T) {
 		fields := stampableFields(planType)
 		spec, hasSpec := specimens[name]
 
-		if len(fields) == 0 {
+		requiresSpecimen := false
+		for _, field := range fields {
+			if globallyProvenStampableField(field) == "" {
+				requiresSpecimen = true
+				break
+			}
+		}
+		if !requiresSpecimen {
 			if hasSpec {
-				t.Errorf("%s: has a specimen but no value-bearing fields; drop the specimen", name)
+				t.Errorf("%s: has a specimen but no plantable value-bearing fields; drop the specimen", name)
 			}
 			continue
 		}
@@ -718,6 +764,9 @@ func TestFinalizePlanCoversStructuralKey(t *testing.T) {
 			for _, f := range fields {
 				_, isPlanted := planted[f]
 				reason := spec.allow[f]
+				if reason == "" {
+					reason = globallyProvenStampableField(f)
+				}
 				if !isPlanted && reason == "" {
 					t.Errorf("%s.%s carries values FinalizePlan must stamp, and nothing "+
 						"proves the walk reaches it. Either add an arm to "+
@@ -794,15 +843,15 @@ func TestFinalizePlanStampsCoveringIndexInnerScan(t *testing.T) {
 
 	comparand := sentinel()
 	pk := sentinel()
-	idx := plans.NewRecordQueryIndexPlan(
+	idx := mustFinalizeConstruct(plans.NewRecordQueryIndexPlan(
 		"IDX", []*predicates.ComparisonRange{sentinelRange(t, comparand)},
-		[]string{"T"}, values.UnknownType, false,
-	).WithCommonPrimaryKey([]values.Value{pk})
+		[]string{"T"}, finalizeRowType("T"), false,
+	)).WithCommonPrimaryKey([]values.Value{pk})
 
-	covering := plans.NewRecordQueryCoveringIndexPlan(idx)
-	root := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		covering, plans.UnableToTranslate, values.UnknownType,
-		plans.FetchIndexRecordsPrimaryKey)
+	covering := mustFinalizeConstruct(plans.NewRecordQueryCoveringIndexPlan(idx))
+	root := mustFinalizeConstruct(plans.NewRecordQueryFetchFromPartialRecordPlan(
+		covering, plans.UnableToTranslate, finalizeRowType("T"),
+		plans.FetchIndexRecordsPrimaryKey))
 
 	FinalizePlan(root)
 

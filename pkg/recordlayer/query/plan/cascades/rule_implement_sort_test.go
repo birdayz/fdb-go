@@ -8,14 +8,37 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func sortRuleRowType() *values.RecordType {
+	return values.NewRecordType("SortRuleRow", false, []values.Field{
+		{Name: "id", FieldType: values.NotNullLong},
+		{Name: "name", FieldType: values.NullableString},
+		{Name: "a", FieldType: values.NullableLong},
+	})
+}
+
+func mustSortRuleConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct sort-rule fixture: " + err.Error())
+	}
+	return value
+}
+
+func sortRuleScanAndQOV() (*expressions.FullUnorderedScanExpression, values.QuantifiedObjectValue) {
+	scan := mustSortRuleConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, sortRuleRowType()))
+	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	return scan, mustSortRuleConstruct(q.RequireFlowedObjectValue())
+}
+
 func TestImplementSortRule_GetRequestedOrderings(t *testing.T) {
 	t.Parallel()
+	scan, root := sortRuleScanAndQOV()
 	keys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Reverse: false},
-		{Value: &values.FieldValue{Field: "name", Typ: values.UnknownType}, Reverse: true},
+		{Value: mustSortRuleConstruct(values.ResolveFieldOrdinals(root, []int{0})), Reverse: false},
+		{Value: mustSortRuleConstruct(values.ResolveFieldOrdinals(root, []int{1})), Reverse: true},
 	}
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	sort := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+	sort := mustSortRuleConstruct(expressions.NewLogicalSortExpression(
+		keys, expressions.ForEachQuantifier(expressions.InitialOf(scan))))
 
 	rule := NewImplementSortRule()
 	orderings := rule.GetRequestedOrderings(sort)
@@ -36,8 +59,9 @@ func TestImplementSortRule_GetRequestedOrderings(t *testing.T) {
 
 func TestImplementSortRule_PreserveOrdering(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	sort := expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+	scan, _ := sortRuleScanAndQOV()
+	sort := mustSortRuleConstruct(expressions.NewLogicalSortExpression(
+		nil, expressions.ForEachQuantifier(expressions.InitialOf(scan))))
 
 	rule := NewImplementSortRule()
 	orderings := rule.GetRequestedOrderings(sort)
@@ -51,11 +75,12 @@ func TestImplementSortRule_PreserveOrdering(t *testing.T) {
 
 func TestSortExpressionToRequestedOrdering(t *testing.T) {
 	t.Parallel()
+	scan, root := sortRuleScanAndQOV()
 	keys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, Reverse: false},
+		{Value: mustSortRuleConstruct(values.ResolveFieldOrdinals(root, []int{2})), Reverse: false},
 	}
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	sort := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+	sort := mustSortRuleConstruct(expressions.NewLogicalSortExpression(
+		keys, expressions.ForEachQuantifier(expressions.InitialOf(scan))))
 
 	req := sortExpressionToRequestedOrdering(sort)
 	if req.Size() != 1 {

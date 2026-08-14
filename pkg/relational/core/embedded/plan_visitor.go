@@ -223,7 +223,8 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 			} else {
 				// Declared but not globally derivable (join/unnest body): the
 				// ON-only registration keeps an enclosing explicit join's ON
-				// resolvable — or LOUDLY dropped (marker) — never silent.
+				// resolvable and supplies a complete sole-source block locally;
+				// marker entries remain unpromoted and loud.
 				if regErr := registerCTEOnOnlyScope(v.cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), v.md, v.schemaName, v.cteScopes); regErr != nil {
 					return nil, regErr
 				}
@@ -379,6 +380,9 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 		}
 		main = cte
 	}
+	if err := bindExactCTEOutputMetadata(main, v.md); err != nil {
+		return nil, err
+	}
 	return main, nil
 }
 
@@ -497,6 +501,10 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 	if err := validateQualifiedStarSourcesFromClassification(cls, fs, v.md); err != nil {
 		return nil, err
 	}
+	resolvesToTable := newUnnestTableResolver(v.md, v.schemaName)
+	if err := rejectDuplicateUnnestAliasesInFrom(fs.tableName, fs.tableAlias, fs.joins, resolvesToTable); err != nil {
+		return nil, err
+	}
 
 	op, err := v.visitFrom(simpleTable, fs)
 	if err != nil {
@@ -600,11 +608,13 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 	// visit methods above; the selectQuery carries parse-tree metadata
 	// that the upgrade functions need for semantic resolution.
 	sq := selectQueryFromClassification(cls, fs)
+	rememberSchemaAliasTableQualifiers(sq, resolvesToTable)
+	queryCTEScopes := singleSourceQueryBlockCTEScopes(sq, v.cteScopes, v.cteOnScopes)
 
 	// Build the semantic scope once. All identifier resolution goes
 	// through this scope — same architecture as Java's QueryVisitor
 	// holding a SemanticAnalyzer.
-	resolver := buildSelectScope(sq, v.md, v.schemaName, v.cteScopes)
+	resolver := buildSelectScope(sq, v.md, v.schemaName, queryCTEScopes)
 
 	// (1) Expand qualified stars (a.*) in the projection list.
 	needRebuild := false
@@ -615,18 +625,18 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 	// A bare `SELECT *` over a JOIN … USING expands explicitly so the
 	// right-side USING copies drop out (Java hides them; expandStar
 	// filters hidden).
-	if expandBareStarOverUsingJoins(sq, v.md, v.schemaName, v.cteScopes) {
+	if expandBareStarOverUsingJoins(sq, v.md, v.schemaName, queryCTEScopes) {
 		needRebuild = true
 	}
 	// A bare `SELECT *` over version-storing base tables expands into an
 	// explicit non-ephemeral projection (the __ROW_VERSION pseudo-field must
 	// not surface through the star — Java's nonEphemeralVisible star over the
 	// ephemeral table-access attribute).
-	if expandBareStarForRowVersion(sq, v.md, v.schemaName, v.cteScopes) {
+	if expandBareStarForRowVersion(sq, v.md, v.schemaName, queryCTEScopes) {
 		needRebuild = true
 	}
 	if hasAnyQualifiedStar(sq) {
-		if starErr := expandQualifiedStars(sq, v.md, v.schemaName, v.cteScopes); starErr != nil {
+		if starErr := expandQualifiedStars(sq, v.md, v.schemaName, queryCTEScopes); starErr != nil {
 			return nil, starErr
 		}
 		needRebuild = true
@@ -741,14 +751,14 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 				// correlated arm, so no childless value is produced there in the
 				// first place.
 				if proj.ProjectedValues == nil || (i < len(proj.ProjectedValues) && proj.ProjectedValues[i] == nil) {
-					rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, id)
+					rv, rerr := resolveBareProjectionValue(resolver, col.bare)
 					if rerr == nil {
-						if fv := resolveBaked(rv, true); fv != nil {
+						if resolved := resolveProjectionValue(rv); resolved != nil {
 							if proj.ProjectedValues == nil {
 								proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 							}
 							if i < len(proj.ProjectedValues) {
-								proj.ProjectedValues[i] = fv
+								proj.ProjectedValues[i] = resolved
 							}
 						}
 					}
@@ -782,7 +792,7 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 					if i < len(proj.ProjectedValues) {
 						if qv != nil {
 							proj.ProjectedValues[i] = qv
-						} else if bv := resolveQualifiedBakedPath(resolver,
+						} else if bv := resolveQualifiedProjectionValuePath(resolver,
 							colRefIdentifiers(col.bare, col.qualifier, col.qualified, col.segs)); bv != nil {
 							// A qualified projection over a join emits the
 							// resolver's QUANTIFIER-ADDRESSED source-relative
@@ -794,7 +804,7 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 							// do not collapse; a unique leaf keys bare.
 							proj.ProjectedValues[i] = bv
 							if bareLeafDuplicated(sq.projCols, sq.projAliases, i) {
-								mintQualifiedDatumKey(proj, i, col.name)
+								mintQualifiedDatumKey(proj, i, col)
 							}
 						} else {
 							// Born-baked (slice 3; the dup-alias flat-name
@@ -1013,14 +1023,14 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 
 	// (9) Upgrade JOIN ON predicates.
 	if len(sq.joins) > 0 {
-		if err := upgradeJoinOnPredicates(op, sq, v.md, v.schemaName, v.cteScopes, v.cteOnScopes); err != nil {
+		if err := upgradeJoinOnPredicates(op, sq, v.md, v.schemaName, queryCTEScopes, v.cteOnScopes); err != nil {
 			return nil, err
 		}
 	}
 
 	// (10) Upgrade aggregate operands + GROUP BY key values.
 	if len(sq.aggCols) > 0 {
-		if uerr := upgradeAggregateOperands(op, sq, v.md, v.schemaName, v.cteScopes); uerr != nil {
+		if uerr := upgradeAggregateOperands(op, sq, v.md, v.schemaName, queryCTEScopes); uerr != nil {
 			return nil, uerr
 		}
 	}
@@ -1029,7 +1039,7 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 	existsPlanner := &existsSubqueryPlanner{
 		md:          v.md,
 		schemaName:  v.schemaName,
-		outerScopes: buildOuterScopeSources(sq, v.md, v.schemaName, v.cteScopes),
+		outerScopes: buildOuterScopeSources(sq, v.md, v.schemaName, queryCTEScopes),
 		cteScopes:   v.cteScopes,
 		cteOnScopes: v.cteOnScopes,
 		cteBodies:   v.cteBodies,
@@ -1037,11 +1047,10 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 
 	// (12) Upgrade projection values.
 	if len(sq.projExprs) > 0 || len(sq.postAggExprs) > 0 {
-		if err := upgradeProjectionValues(op, sq, v.md, v.schemaName, v.cteScopes, existsPlanner); err != nil {
+		if err := upgradeProjectionValues(op, sq, v.md, v.schemaName, queryCTEScopes, existsPlanner); err != nil {
 			return nil, err
 		}
 	}
-
 	// (13) Attach scalar subqueries from projections.
 	if len(existsPlanner.scalarSubqueries) > 0 {
 		if proj := findProjection(op); proj != nil {
@@ -1058,7 +1067,7 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 
 	// (14) Upgrade HAVING predicate.
 	if sq.havingExpr != nil {
-		if herr := upgradeHavingPredicate(op, sq, v.md, v.schemaName, v.cteScopes, existsPlanner); herr != nil {
+		if herr := upgradeHavingPredicate(op, sq, v.md, v.schemaName, queryCTEScopes, existsPlanner); herr != nil {
 			return nil, herr
 		}
 		// RFC-180 correct-or-loud: a CORRELATED scalar subquery minted by the
@@ -1074,7 +1083,7 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 	}
 
 	// (15) Upgrade sort key values.
-	if err := upgradeSortKeyValues(op, sq, v.md, v.schemaName, v.cteScopes); err != nil {
+	if err := upgradeSortKeyValues(op, sq, v.md, v.schemaName, queryCTEScopes); err != nil {
 		return nil, err
 	}
 
@@ -1110,7 +1119,7 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 	if sq.whereExpr == nil {
 		// No WHERE, but a QUALIFY filter (vector K-NN ROW_NUMBER() <= K) must
 		// still be attached — synthesize a filter above the scan if none exists.
-		qualPred, qErr := buildQualifyPredicate(v.md, v.schemaName, sq, v.cteScopes)
+		qualPred, qErr := buildQualifyPredicate(v.md, v.schemaName, sq, queryCTEScopes)
 		if qErr != nil {
 			return nil, qErr
 		}
@@ -1173,7 +1182,7 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 				"EXISTS within an OR (disjunction) is not supported")
 		}
-		combined, qErr := combineQualifyPred(v.md, v.schemaName, sq, v.cteScopes, pred)
+		combined, qErr := combineQualifyPred(v.md, v.schemaName, sq, queryCTEScopes, pred)
 		if qErr != nil {
 			return nil, qErr
 		}
@@ -1204,7 +1213,7 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 
 	if preWalkPred != nil {
 		pred := predicates.SimplifyPredicateValues(preWalkPred)
-		combined, qErr := combineQualifyPred(v.md, v.schemaName, sq, v.cteScopes, pred)
+		combined, qErr := combineQualifyPred(v.md, v.schemaName, sq, queryCTEScopes, pred)
 		if qErr != nil {
 			return nil, qErr
 		}
@@ -1217,15 +1226,15 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 
 	var pred predicates.QueryPredicate
 	var predOk bool
-	if v.cteScopes != nil && len(sq.joins) == 0 {
-		if src, found := v.cteScopes[strings.ToUpper(sq.tableName)]; found && src.Table != nil {
+	if queryCTEScopes != nil && len(sq.joins) == 0 {
+		if src, found := queryCTEScopes[strings.ToUpper(sq.tableName)]; found && src.Table != nil {
 			// A TOMBSTONE entry (nil Table: declared CTE, schema underivable)
 			// must not reach scope construction — ResolveColumn nil-derefs.
 			pred, predOk = buildWherePredicateFromCTEScope(src, sq.tableAlias, sq.whereExpr, v.md)
 		}
 	}
-	if !predOk && v.cteScopes != nil && len(sq.joins) > 0 {
-		pred, predOk = buildWherePredicateForJoinsWithCTEScopes(v.md, v.schemaName, sq, sq.whereExpr, v.cteScopes)
+	if !predOk && queryCTEScopes != nil && len(sq.joins) > 0 {
+		pred, predOk = buildWherePredicateForJoinsWithCTEScopes(v.md, v.schemaName, sq, sq.whereExpr, queryCTEScopes)
 	}
 	if !predOk {
 		pred, predOk = buildWherePredicate(v.md, v.schemaName, sq, sq.whereExpr)
@@ -1253,7 +1262,13 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 // carries them into the upgrade functions.
 func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fromSource) (logical.LogicalOperator, error) {
 	var op logical.LogicalOperator
-	if fs.derivedQuery != nil {
+	if fs.inlineValues != nil {
+		var err error
+		op, err = buildInlineValuesLogical(fs.inlineValues, fs.tableAlias, "", v.md)
+		if err != nil {
+			return nil, err
+		}
+	} else if fs.derivedQuery != nil {
 		// Derived table: recursively build inner plan via the visitor.
 		// CTE scopes flow naturally through the visitor instance, and
 		// inner plans get catalog-aware upgrades.
@@ -1306,7 +1321,13 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 	resolvesToTable := newUnnestTableResolver(v.md, v.schemaName)
 	for i, j := range fs.joins {
 		var right logical.LogicalOperator
-		if j.catalogAwareInnerPlan != nil {
+		if j.inlineValues != nil {
+			var err error
+			right, err = buildInlineValuesLogical(j.inlineValues, j.alias, j.bindingID, v.md)
+			if err != nil {
+				return nil, err
+			}
+		} else if j.catalogAwareInnerPlan != nil {
 			// Use the pre-built inner plan from the visitor.
 			if j.alias != "" {
 				cte := logical.NewCTE(j.alias, j.catalogAwareInnerPlan,
@@ -1858,17 +1879,29 @@ func bareLeafDuplicated(projCols []projCol, projAliases []string, i int) bool {
 //
 // An existing alias is left alone: the user named the slot, so there is no
 // collision to break and nothing to mark.
-func mintQualifiedDatumKey(proj *logical.LogicalProject, i int, qualifiedName string) {
+func mintQualifiedDatumKey(proj *logical.LogicalProject, i int, col projCol) {
 	if proj.Aliases == nil {
 		proj.Aliases = make([]string, len(proj.Projections))
 	}
 	if proj.AliasMinted == nil {
 		proj.AliasMinted = make([]bool, len(proj.Projections))
 	}
+	if proj.AliasSources == nil {
+		proj.AliasSources = make([]values.ProjectionAliasSource, len(proj.Projections))
+	}
 	if i < len(proj.Aliases) && proj.Aliases[i] == "" {
-		proj.Aliases[i] = strings.ToUpper(qualifiedName)
+		proj.Aliases[i] = strings.ToUpper(col.name)
 		if i < len(proj.AliasMinted) {
 			proj.AliasMinted[i] = true
+		}
+		// The parse-tree segment vector is the authority. In particular,
+		// `A.N.SK` was authored against source A; splitting the rendered alias
+		// at its last dot would manufacture source A.N, while reading the later
+		// physical Value can produce `_current`. If segments were not captured,
+		// leave the source absent rather than guess from the alias bytes.
+		if i < len(proj.AliasSources) && col.qualified && len(col.segs) > 1 {
+			proj.AliasSources[i] = values.NewProjectionAliasSource(
+				values.NamedCorrelationIdentifier(col.segs[0]))
 		}
 	}
 }
@@ -1923,19 +1956,48 @@ func mintQualifiedDatumKey(proj *logical.LogicalProject, i int, qualifiedName st
 // A non-FieldValue, a lazy result, or a shape the caller did not admit returns
 // nil, leaving the caller's existing emission — loud at runtime, never a silent
 // wrong-slot read.
-func resolveBaked(rv values.Value, childlessOK bool) *values.FieldValue {
-	fv, isFV := rv.(*values.FieldValue)
+func resolveBaked(rv values.Value, _ bool) values.FieldValue {
+	fv, isFV := values.AsFieldValue(rv)
 	if !isFV {
 		return nil
 	}
-	if fv.Child != nil && fv.RootIsLegRelativeUnpinned() {
-		return fv
-	}
-	// SourceRelativeBaked() requires len(Accessors) == 1, so only a FLAT childless bake resolves here; a childless DESCENT is declined by arity, not by scope.
-	if childlessOK && fv.Child == nil && fv.SourceRelativeBaked() {
+	if _, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); isQOV && !fv.Path().IsFrontierPinned() {
 		return fv
 	}
 	return nil
+}
+
+// resolveProjectionValue keeps either exact resolver shape a SELECT slot may
+// own: a field access baked against a declared row, or the whole-object QOV of
+// a scalar lateral-unnest binding. WITH ORDINALITY takes the first form (AS and
+// AT are distinct fields of one exact two-slot row); non-ordinal UNNEST takes
+// the second (the element itself is the flowed object).
+func resolveProjectionValue(rv values.Value) values.Value {
+	if baked := resolveBaked(rv, true); baked != nil {
+		return baked
+	}
+	if qov, ok := values.AsQuantifiedObjectValue(rv); ok && qov.FlowedType().Code() != values.TypeCodeRecord {
+		return qov
+	}
+	return nil
+}
+
+// resolveBareProjectionValue resolves the parser's normalized bare spelling
+// first, then applies the same folded fallback used by
+// resolveColumnRefStructural. Synthesized derived/virtual sources currently
+// register some DDL-backed names folded while preserving explicit AS/AT names;
+// resolving the Value must make exactly the same choice as the preceding
+// validation or a validated SELECT slot can be left nil.
+func resolveBareProjectionValue(resolver *expr.Resolver, bare string) (values.Value, error) {
+	rv, err := resolver.ResolveIdentifier(semantic.Identifier{}, semantic.FromNormalized(bare))
+	if err == nil {
+		return rv, nil
+	}
+	var notFound *semantic.ColumnNotFoundError
+	if !errors.As(err, &notFound) {
+		return nil, err
+	}
+	return resolver.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted(bare))
 }
 
 // resolveQualifiedBaked resolves a QUALIFIED column reference through the scope
@@ -1979,6 +2041,23 @@ func resolveQualifiedBakedPath(resolver *expr.Resolver, segs []semantic.Identifi
 		return fv
 	}
 	return nil
+}
+
+// resolveQualifiedProjectionValuePath is the qualified projection caller's
+// exact-value gate. Most sources resolve to a FieldValue baked against their
+// declared row, but a non-ordinal scalar lateral unnest flows the element as
+// the whole QuantifiedObjectValue. Rejecting that second exact shape made a
+// correctly expanded `V.*` report that V declared no column order even though
+// the source's declared contract is precisely the scalar QOV.
+func resolveQualifiedProjectionValuePath(resolver *expr.Resolver, segs []semantic.Identifier) values.Value {
+	if len(segs) < 2 {
+		return nil
+	}
+	rv, err := resolver.ResolveIdentifierPath(segs)
+	if err != nil || rv == nil {
+		return nil
+	}
+	return resolveProjectionValue(rv)
 }
 
 func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver) error {

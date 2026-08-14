@@ -2,6 +2,7 @@ package expr_test
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
@@ -43,16 +44,11 @@ func TestResolver_ResolveIdentifier_Bare(t *testing.T) {
 	if err != nil {
 		t.Fatalf("name: %v", err)
 	}
-	fv, ok := v.(*values.FieldValue)
-	if !ok {
-		t.Fatalf("expected *FieldValue, got %T", v)
+	fv := mustExprField(t, v)
+	if fv.DisplayName() != "NAME" {
+		t.Fatalf("Field: got %q, want NAME", fv.DisplayName())
 	}
-	if fv.Field != "NAME" {
-		t.Fatalf("Field: got %q, want NAME", fv.Field)
-	}
-	if fv.Typ != values.TypeString {
-		t.Fatalf("Typ: got %v, want TypeString", fv.Typ)
-	}
+	requireExprType(t, fv.ResultType(), values.TypeString)
 }
 
 func TestResolver_ResolveIdentifier_Qualified(t *testing.T) {
@@ -64,12 +60,64 @@ func TestResolver_ResolveIdentifier_Qualified(t *testing.T) {
 	if err != nil {
 		t.Fatalf("u.active: %v", err)
 	}
-	fv := v.(*values.FieldValue)
-	if fv.Field != "ACTIVE" {
-		t.Fatalf("Field: got %q", fv.Field)
+	fv := mustExprField(t, v)
+	if fv.DisplayName() != "ACTIVE" {
+		t.Fatalf("Field: got %q", fv.DisplayName())
 	}
-	if fv.Typ != values.TypeBool {
-		t.Fatalf("Typ: got %v, want TypeBool", fv.Typ)
+	requireExprType(t, fv.ResultType(), values.TypeBool)
+}
+
+func TestResolver_PreservesExactNestedStructIdentity(t *testing.T) {
+	t.Parallel()
+	inner := semantic.Column{
+		Id:             semantic.NewUnquoted("inner"),
+		Type:           "RECORD",
+		StructTypeName: "catalog.test.Inner",
+		Nullable:       true,
+		StructFields: []semantic.Column{{
+			Id: semantic.NewUnquoted("leaf"), Type: "BIGINT", Nullable: true,
+		}},
+	}
+	table := &semantic.StaticTable{
+		TableName: semantic.ParseQualifiedName("T", false),
+		TableColumns: []semantic.Column{{
+			Id:             semantic.NewUnquoted("outer"),
+			Type:           "RECORD",
+			StructTypeName: "catalog.test.Outer",
+			Nullable:       true,
+			StructFields:   []semantic.Column{inner},
+		}},
+	}
+	scope := semantic.NewScope(nil)
+	if err := scope.AddSource(semantic.ScopeSource{
+		Table: table, Alias: semantic.NewUnquoted("T"), CorrelationName: "T",
+	}); err != nil {
+		t.Fatalf("add source: %v", err)
+	}
+	resolver := expr.New(semantic.NewAnalyzer(semantic.NewInMemoryCatalog(table), false), scope)
+	resolved, err := resolver.ResolveIdentifierPath([]semantic.Identifier{
+		semantic.NewUnquoted("T"), semantic.NewUnquoted("outer"),
+		semantic.NewUnquoted("inner"), semantic.NewUnquoted("leaf"),
+	})
+	if err != nil {
+		t.Fatalf("resolve T.outer.inner.leaf: %v", err)
+	}
+	field := mustExprField(t, resolved)
+	root := mustExprQOV(t, field.ChildValue())
+	row, ok := root.FlowedType().(*values.RecordType)
+	if !ok || len(row.Fields) != 1 {
+		t.Fatalf("root flowed type = %v, want one-field exact row", root.FlowedType())
+	}
+	outer, ok := row.Fields[0].FieldType.(*values.RecordType)
+	if !ok || outer.RecordName != "catalog.test.Outer" || len(outer.Fields) != 1 {
+		t.Fatalf("outer field type = %v, want nominal catalog.test.Outer", row.Fields[0].FieldType)
+	}
+	innerType, ok := outer.Fields[0].FieldType.(*values.RecordType)
+	if !ok || innerType.RecordName != "catalog.test.Inner" {
+		t.Fatalf("inner field type = %v, want nominal catalog.test.Inner", outer.Fields[0].FieldType)
+	}
+	if got := field.Path().Ordinals(); !reflect.DeepEqual(got, []int{0, 0, 0}) {
+		t.Fatalf("resolved path = %v, want [0 0 0]", got)
 	}
 }
 
@@ -96,7 +144,9 @@ func TestResolver_ResolveIdentifier_TypeMapping(t *testing.T) {
 			{Id: semantic.NewUnquoted("b"), Type: "BOOL", Nullable: true},
 			{Id: semantic.NewUnquoted("f"), Type: "FLOAT", Nullable: true},
 			{Id: semantic.NewUnquoted("by"), Type: "BYTES", Nullable: true},
-			{Id: semantic.NewUnquoted("rec"), Type: "RECORD", Nullable: true},
+			{Id: semantic.NewUnquoted("rec"), Type: "RECORD", Nullable: true, StructFields: []semantic.Column{
+				{Id: semantic.NewUnquoted("x"), Type: "INT"},
+			}},
 		},
 	}
 	cat := semantic.NewInMemoryCatalog(tbl)
@@ -117,16 +167,18 @@ func TestResolver_ResolveIdentifier_TypeMapping(t *testing.T) {
 		"b":     values.TypeBool,
 		"f":     values.NullableFloat, // FLOAT is a genuine 32-bit type; DOUBLE seeds NullableDouble (both still reject a bare WHERE with 42804)
 		"by":    values.NullableBytes, // BYTES → seed bytes type
-		"rec":   values.TypeUnknown,   // no struct/record type yet
+		"rec": values.NewRecordType("RECORD", true, []values.Field{
+			{Name: "X", Ordinal: 0, FieldType: values.NotNullInt},
+		}),
 	}
 	for col, want := range cases {
 		v, err := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted(col))
 		if err != nil {
 			t.Fatalf("resolve %q: %v", col, err)
 		}
-		fv := v.(*values.FieldValue)
-		if fv.Typ != want {
-			t.Errorf("%s: got %v, want %v", col, fv.Typ, want)
+		fv := mustExprField(t, v)
+		if got := fv.ResultType(); got == nil || !got.Equals(want) {
+			t.Errorf("%s: got %v, want exact %v", col, got, want)
 		}
 	}
 }
@@ -696,10 +748,13 @@ func TestResolver_FeedsCascadesSimplify(t *testing.T) {
 	combined := r.ResolveAnd(tautology, nonFold)
 
 	// Run through the simplifier.
-	simplified := cascades.Simplify(combined, cascades.DefaultSimplifyRules())
+	simplified, err := cascades.Simplify(combined, cascades.DefaultSimplifyRules())
+	if err != nil {
+		t.Fatalf("Simplify: %v", err)
+	}
 
 	// Tautology should fold; `id > 0` survives alone.
-	if got, want := simplified.Explain(), "ID#0 > 0"; got != want {
+	if got, want := simplified.Explain(), "U.ID#0 > 0"; got != want {
 		t.Fatalf("Simplify: got %q, want %q", got, want)
 	}
 }
@@ -746,7 +801,7 @@ func TestResolver_Integration_AgeGreaterEighteen(t *testing.T) {
 	}
 
 	// Explain output should read cleanly.
-	if got, want := pred.Explain(), "(ID#0 + 1) > 5"; got != want {
+	if got, want := pred.Explain(), "(U.ID#0 + 1) > 5"; got != want {
 		t.Fatalf("Explain: got %q, want %q", got, want)
 	}
 }
@@ -845,12 +900,9 @@ func TestResolveIdentifier_BornBaked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	fv, ok := v.(*values.FieldValue)
-	if !ok {
-		t.Fatalf("expected *FieldValue, got %T", v)
-	}
-	if fv.Resolved == nil {
-		t.Fatal("resolution must be BORN BAKED (Resolved != nil)")
+	fv := mustExprField(t, v)
+	if fv.Path() == nil || fv.Path().Len() == 0 {
+		t.Fatal("resolution must be exact and carry a non-empty resolved path")
 	}
 
 	// A source that RESOLVES the column but declares no column order

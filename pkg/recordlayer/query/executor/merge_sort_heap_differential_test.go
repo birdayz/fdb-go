@@ -176,9 +176,9 @@ func rowsToCursors(legs [][]QueryResult) []recordlayer.RecordCursor[QueryResult]
 func runDifferential(t *testing.T, legs [][]QueryResult, reverse, dedup bool) []mergeSortStep {
 	t.Helper()
 	ctx := context.Background()
-	heapCursor := newMergeSortCursor(rowsToCursors(legs), idKey(), reverse, dedup)
+	heapCursor := newMergeSortCursor(rowsToCursors(legs), idKey(t), reverse, dedup)
 	defer heapCursor.Close()
-	refCursor := newMergeSortCursor(rowsToCursors(legs), idKey(), reverse, dedup)
+	refCursor := newMergeSortCursor(rowsToCursors(legs), idKey(t), reverse, dedup)
 	defer refCursor.Close()
 
 	var steps []mergeSortStep
@@ -265,7 +265,7 @@ func TestMergeSortCursor_HeapMatchesLinearScan_Resume(t *testing.T) {
 			}
 			contBytes := hexToBytes(t, st.contHex)
 
-			resumedHeap, err := newMergeSortCursorFromFactories(factories, idKey(), reverse, dedup, contBytes)
+			resumedHeap, err := newMergeSortCursorFromFactories(factories, idKey(t), reverse, dedup, contBytes)
 			if err != nil {
 				t.Fatalf("trial legs=%v round %d: resume construction: %v", legs, i, err)
 			}
@@ -279,7 +279,7 @@ func TestMergeSortCursor_HeapMatchesLinearScan_Resume(t *testing.T) {
 					legs, reverse, dedup, i, gotHeap, wantSuffix)
 			}
 
-			resumedRef, err := newMergeSortCursorFromFactories(factories, idKey(), reverse, dedup, contBytes)
+			resumedRef, err := newMergeSortCursorFromFactories(factories, idKey(t), reverse, dedup, contBytes)
 			if err != nil {
 				t.Fatalf("trial legs=%v round %d: reference resume construction: %v", legs, i, err)
 			}

@@ -1,10 +1,12 @@
 package executor
 
 import (
+	"context"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // TestPositionalAuthority_ScalarElement is the MANDATORY
@@ -25,16 +27,10 @@ func TestPositionalAuthority_ScalarElement(t *testing.T) {
 	})
 	outerCorr := values.NamedCorrelationIdentifier("T")
 	innerCorr := values.NamedCorrelationIdentifier("X")
-	outerQOV := values.NewQuantifiedObjectValueOfType(outerCorr, outerType)
-	o0, err := values.NewFieldValueOfOrdinal(outerQOV, 0)
-	if err != nil {
-		t.Fatalf("bake o0: %v", err)
-	}
-	o1, err := values.NewFieldValueOfOrdinal(outerQOV, 1)
-	if err != nil {
-		t.Fatalf("bake o1: %v", err)
-	}
-	elementQOV := values.NewQuantifiedObjectValueOfType(innerCorr, values.NotNullLong)
+	outerQOV := mustTestQOV(t, outerCorr, outerType)
+	o0 := mustExecutorConstruct(values.ResolveOrdinalSeedField(outerQOV, 0))
+	o1 := mustExecutorConstruct(values.ResolveOrdinalSeedField(outerQOV, 1))
+	elementQOV := mustTestQOV(t, innerCorr, values.NotNullLong)
 	mixed := values.NewRawRecordConstructorValue(
 		values.RecordConstructorField{Name: "ID", Value: o0},
 		values.RecordConstructorField{Name: "ARR", Value: o1},
@@ -84,6 +80,88 @@ func TestPositionalAuthority_ScalarElement(t *testing.T) {
 	}
 }
 
+// TestFlatMapScalarOuterBindsTheDatumAndShadowsEnclosingExactValue pins the
+// non-build execution path for a bare scalar OUTER. Go transports an Explode
+// element in a one-slot PositionalRow, but the quantifier object is the scalar
+// datum itself. The local FlatMap binding must also replace an enclosing exact
+// binding for the same alias/type: Java's nearest correlation wins.
+func TestFlatMapScalarOuterBindsTheDatumAndShadowsEnclosingExactValue(t *testing.T) {
+	t.Parallel()
+
+	outerAlias := values.NamedCorrelationIdentifier("SCALAR_OUTER")
+	innerAlias := values.NamedCorrelationIdentifier("SCALAR_INNER")
+	outer := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+		Value: []any{int64(42)},
+		Typ:   values.NewArrayType(false, values.NotNullLong),
+	}))
+	outerObject := mustTestQOV(t, outerAlias, values.NotNullLong)
+	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{outerObject}))
+	innerObject := mustTestQOV(t, innerAlias, inner.GetResultType())
+	plan := mustExecutorConstruct(plans.NewRecordQueryFlatMapPlan(
+		outer, inner, outerAlias, innerAlias, innerObject, false,
+	))
+
+	// If computeResult/inner execution consults the enclosing exact map instead
+	// of installing the nearer FlatMap leg, the emitted value is 999. If the
+	// scalar transport is not unwrapped, it is a *PositionalRow instead of 42.
+	evalCtx, err := EmptyEvaluationContext().withQuantifiedBinding(outerObject, int64(999), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor, err := ExecutePlan(
+		context.Background(), plan, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cursor.Close() }()
+	result, err := cursor.OnNext(context.Background())
+	if err != nil || !result.HasNext() {
+		t.Fatalf("FlatMap scalar row = (%v, %v), want one row", result, err)
+	}
+	row := result.GetValue().Positional
+	if row == nil || len(row.Slots) != 1 || row.Slots[0] != int64(42) {
+		t.Fatalf("FlatMap scalar row = %#v, want one slot containing local datum 42", row)
+	}
+	end, err := cursor.OnNext(context.Background())
+	if err != nil || end.HasNext() {
+		t.Fatalf("FlatMap scalar tail = (%v, %v), want exhausted", end, err)
+	}
+}
+
+func TestExactPlanObjectBindingRejectsNullForNonNullableScalar(t *testing.T) {
+	t.Parallel()
+
+	object := mustTestQOV(t, values.NamedCorrelationIdentifier("SCALAR"), values.NotNullLong)
+	if got, absent, err := exactPlanObjectBinding(
+		object, values.OrdinalCarrierScalar,
+		scalarPositionalRowOfType(nil, values.NotNullLong), false,
+	); got != nil || absent || err == nil {
+		t.Fatalf("non-nullable scalar binding = (%v, %t, %v), want loud nullability rejection", got, absent, err)
+	}
+	if got, absent, err := exactPlanObjectBinding(
+		object, values.OrdinalCarrierScalar,
+		scalarPositionalRowOfType(nil, values.NotNullLong), true,
+	); got != nil || !absent || err != nil {
+		t.Fatalf("explicit missing scalar binding = (%v, %t, %v), want (nil, true, nil)", got, absent, err)
+	}
+}
+
+func TestExactPlanObjectBindingRejectsWrongRecordTransport(t *testing.T) {
+	t.Parallel()
+
+	declared := exactTestRowType(values.Field{Name: "ID", FieldType: values.NotNullLong})
+	wrong := values.NewRecordType("FOREIGN", false, []values.Field{{
+		Name: "ID", Ordinal: 0, FieldType: values.NotNullLong,
+	}})
+	object := mustTestQOV(t, values.NamedCorrelationIdentifier("ROW"), declared)
+	if got, absent, err := exactPlanObjectBinding(
+		object, values.OrdinalCarrierRecord,
+		&PositionalRow{Type: wrong, Slots: []any{int64(1)}}, false,
+	); got != nil || absent || err == nil {
+		t.Fatalf("wrong record binding = (%v, %t, %v), want loud exact-type rejection", got, absent, err)
+	}
+}
+
 // TestOrdinalAliasCollision pins the ordinal-alias-collision handling via
 // PRODUCER CONTEXT: a WITH-ORDINALITY Explode leg (marked in OrdinalityLegs by
 // newFlatMapCursorWithOuterProperties) binds STRICTLY POSITIONALLY (slot i = row[_i]) — so a user
@@ -117,7 +195,7 @@ func TestOrdinalAliasCollision(t *testing.T) {
 		legs := map[values.CorrelationIdentifier]values.OrdinalRow{}
 		raw := map[values.CorrelationIdentifier]any{}
 		row := ordRow
-		if err := b.bindLeg(legs, raw, innerCorr.Name(), &row); err != nil {
+		if err := b.bindLeg(legs, raw, innerCorr, &row); err != nil {
 			t.Fatalf("bindLeg: %v", err)
 		}
 		return legs[innerCorr]
@@ -177,14 +255,11 @@ func TestPositionalAuthority_NullElement(t *testing.T) {
 	})
 	outerCorr := values.NamedCorrelationIdentifier("T")
 	innerCorr := values.NamedCorrelationIdentifier("X")
-	outerQOV := values.NewQuantifiedObjectValueOfType(outerCorr, outerType)
-	o0, err := values.NewFieldValueOfOrdinal(outerQOV, 0)
-	if err != nil {
-		t.Fatalf("bake o0: %v", err)
-	}
+	outerQOV := mustTestQOV(t, outerCorr, outerType)
+	o0 := mustExecutorConstruct(values.ResolveOrdinalSeedField(outerQOV, 0))
 	mixed := values.NewRawRecordConstructorValue(
 		values.RecordConstructorField{Name: "ID", Value: o0},
-		values.RecordConstructorField{Name: "X", Value: values.NewQuantifiedObjectValueOfType(innerCorr, values.NotNullLong)},
+		values.RecordConstructorField{Name: "X", Value: mustTestQOV(t, innerCorr, values.NotNullLong)},
 	)
 	c, err := newFlatMapCursorWithOuterProperties(
 		recordlayer.FromList([]QueryResult{}), nil, nil, nil, EmptyEvaluationContext(),

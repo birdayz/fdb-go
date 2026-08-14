@@ -1,10 +1,8 @@
 package docscheck
 
 import (
-	"bytes"
 	"go/build/constraint"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -12,7 +10,7 @@ import (
 	"testing"
 )
 
-// Build-membership gate: every tracked *_test.go file must either be in the srcs
+// Build-membership gate: every deliverable *_test.go file must either be in the srcs
 // of a Bazel test target, or be excused by a lane that demonstrably runs it.
 //
 // A test file that exists on disk and is in no BUILD srcs is SILENT FALSE
@@ -284,36 +282,31 @@ func satisfiable(expr constraint.Expr, declared map[string]bool) (bool, []string
 	return false, undeclared
 }
 
-// trackedFiles enumerates tracked paths matching a git pathspec — the same scope
-// rule TestSourceCommentHygiene uses (the tracked set is what CI builds), with
-// the same fallback to a filesystem walk when git is unavailable.
+// trackedFiles enumerates the local deliverable matching a git pathspec:
+// tracked files plus untracked, non-ignored files, with tracked-but-deleted
+// paths removed. That is the same scope rule TestSourceCommentHygiene uses,
+// with the same fallback to a filesystem walk when git is unavailable.
 //
-// The tracked set is what makes the gitignored trees drop out for free:
+// The deliverable set is what makes the gitignored trees drop out for free:
 // fdb-record-layer/ (the Java checkout), bazel-* (convenience symlinks) and
-// .claude/worktrees/ (other agents' checkouts) are all untracked, so no path list
+// .claude/worktrees/ (other agents' checkouts) are ignored, so no path list
 // has to enumerate them and a newly-gitignored tree needs no maintenance here.
 //
 // The fallback walk cannot inherit that for free — it has no tracked set to
 // consult — so it names its exclusions (fallbackWalkSkippedTrees) instead. That
-// list is closed, which is what makes the fallback a SUPERSET of the tracked set
+// list is closed, which is what makes the fallback a SUPERSET of the deliverable set
 // and therefore able to make the gate only stricter, never quieter: an ignored
 // tree nobody listed gets walked and its files reported. The rule it replaced —
 // skip anything whose name starts with a dot — got that backwards and dropped
 // the 31 tracked paths under .claude/skills and .github.
 func trackedFiles(t *testing.T, root, pattern string) []string {
 	t.Helper()
-	out, err := exec.Command("git", "-C", root, "ls-files", "-z", "--", pattern).Output()
-	if err == nil && len(out) > 0 {
-		var files []string
-		for _, rel := range bytes.Split(bytes.TrimRight(out, "\x00"), []byte{0}) {
-			if len(rel) > 0 {
-				files = append(files, filepath.ToSlash(string(rel)))
-			}
-		}
+	files, err := gitDeliverableFiles(root, pattern)
+	if err == nil && len(files) > 0 {
 		return files
 	}
-	t.Logf("git ls-files unavailable (%v) — falling back to a filesystem walk over everything but the "+
-		"named excluded trees (%v), a superset of tracked", err, sortedFallbackWalkSkips())
+	t.Logf("git deliverable-file enumeration unavailable (%v) — falling back to a filesystem walk over everything but the "+
+		"named excluded trees (%v), a superset of tracked plus untracked non-ignored files", err, sortedFallbackWalkSkips())
 	base := filepath.Base(pattern)
 	files, walkErr := fallbackWalk(root, func(name string) bool {
 		ok, _ := filepath.Match(base, name)

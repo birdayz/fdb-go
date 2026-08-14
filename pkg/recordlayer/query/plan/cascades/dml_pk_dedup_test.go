@@ -5,8 +5,56 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+func dmlDedupRowType() *values.RecordType {
+	return values.NewRecordType("Order", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "STATUS", FieldType: values.NullableString, Ordinal: 1},
+	})
+}
+
+func dmlDedupFullScan(
+	t testing.TB,
+	rowType values.Type,
+) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	scan, err := expressions.NewFullUnorderedScanExpression([]string{"Order"}, rowType)
+	return mustConstruct(t, scan, err)
+}
+
+func dmlDedupScanPlan(
+	t testing.TB,
+	rowType values.Type,
+) *plans.RecordQueryScanPlan {
+	t.Helper()
+	scan, err := plans.NewRecordQueryScanPlan([]string{"Order"}, rowType, false)
+	return mustConstruct(t, scan, err)
+}
+
+func dmlDedupDelete(
+	t testing.TB,
+	inner expressions.Quantifier,
+) *expressions.DeleteExpression {
+	t.Helper()
+	del, err := expressions.NewDeleteExpression(inner, "Order")
+	return mustConstruct(t, del, err)
+}
+
+func dmlDedupMustFireExpressionRule(
+	t testing.TB,
+	rule ExpressionRule,
+	ref *expressions.Reference,
+) []expressions.RelationalExpression {
+	t.Helper()
+	yielded, err := FireExpressionRule(rule, ref)
+	if err != nil {
+		t.Fatalf("FireExpressionRule() unexpected error: %v", err)
+	}
+	return yielded
+}
 
 // The DML implementation rules interpose a primary-key dedup between the access
 // path and the mutation. Every arm of that decision is driven here rather than
@@ -35,13 +83,15 @@ func dedupInnerOf(inner plans.RecordQueryPlan) plans.RecordQueryPlan {
 
 func TestImplementUpdateRule_DedupsEvenOverADistinctAccessPath(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, nil)
+	rowType := dmlDedupRowType()
+	scan := dmlDedupFullScan(t, rowType)
 	innerRef := expressions.InitialOf(scan)
-	upd := expressions.NewUpdateExpression(
-		expressions.ForEachQuantifier(innerRef), "Order", nil)
+	upd, err := expressions.NewUpdateExpression(
+		expressions.ForEachQuantifier(innerRef), "Order", rowType, nil)
+	upd = mustConstruct(t, upd, err)
 	topRef := expressions.InitialOf(upd)
 
-	FireExpressionRule(NewPrimaryScanRule(), innerRef)
+	dmlDedupMustFireExpressionRule(t, NewPrimaryScanRule(), innerRef)
 
 	// A primary scan IS distinct — this is precisely the case a DELETE elides
 	// and an UPDATE does not. Asserting it here is what keeps the two rules
@@ -58,11 +108,22 @@ func TestImplementUpdateRule_DedupsEvenOverADistinctAccessPath(t *testing.T) {
 		}
 	}
 
-	yielded := FireExpressionRule(NewImplementUpdateRule(), topRef)
+	yielded := dmlDedupMustFireExpressionRule(t, NewImplementUpdateRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementUpdateRule yielded %d, want 1", len(yielded))
 	}
 	plan := yielded[0].(*plans.RecordQueryUpdatePlan)
+	logicalType := upd.GetResultValue().Type()
+	physicalType := plan.GetResultType()
+	if physicalType == nil || !physicalType.Equals(logicalType) {
+		t.Fatalf("UPDATE plan result type = %v, want exact logical type %v",
+			physicalType, logicalType)
+	}
+	resultRow, ok := physicalType.(*values.RecordType)
+	if !ok || len(resultRow.Fields) != 2 ||
+		resultRow.Fields[0].Name != "OLD" || resultRow.Fields[1].Name != "NEW" {
+		t.Fatalf("UPDATE plan result = %v, want exact two-field {OLD, NEW} row", physicalType)
+	}
 	inner := dedupInnerOf(plan.GetInner())
 	if inner == nil {
 		t.Fatalf("UPDATE inner = %T, want the primary-key dedup Java inserts "+
@@ -75,15 +136,15 @@ func TestImplementUpdateRule_DedupsEvenOverADistinctAccessPath(t *testing.T) {
 
 func TestImplementDeleteRule_ElidesDedupOverADistinctAccessPath(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, nil)
+	rowType := dmlDedupRowType()
+	scan := dmlDedupFullScan(t, rowType)
 	innerRef := expressions.InitialOf(scan)
-	del := expressions.NewDeleteExpression(
-		expressions.ForEachQuantifier(innerRef), "Order")
+	del := dmlDedupDelete(t, expressions.ForEachQuantifier(innerRef))
 	topRef := expressions.InitialOf(del)
 
-	FireExpressionRule(NewPrimaryScanRule(), innerRef)
+	dmlDedupMustFireExpressionRule(t, NewPrimaryScanRule(), innerRef)
 
-	yielded := FireExpressionRule(NewImplementDeleteRule(), topRef)
+	yielded := dmlDedupMustFireExpressionRule(t, NewImplementDeleteRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementDeleteRule yielded %d, want 1", len(yielded))
 	}
@@ -107,8 +168,10 @@ func TestImplementDeleteRule_ElidesDedupOverADistinctAccessPath(t *testing.T) {
 // combination the arm exists for.
 func TestImplementDeleteRule_DedupsOverANonDistinctAccessPath(t *testing.T) {
 	t.Parallel()
-	scanPlan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-	proj := plans.NewRecordQueryProjectionPlan(nil, scanPlan)
+	rowType := dmlDedupRowType()
+	scanPlan := dmlDedupScanPlan(t, rowType)
+	proj, err := plans.NewRecordQueryProjectionPlan(nil, scanPlan)
+	proj = mustConstruct(t, proj, err)
 	innerRef := expressions.FinalOfAtStage(proj, expressions.StageCanonical)
 	computeRefPlanProperties(innerRef)
 
@@ -124,9 +187,8 @@ func TestImplementDeleteRule_DedupsOverANonDistinctAccessPath(t *testing.T) {
 			"else this test drives the short-circuit arm instead of the dedup arm")
 	}
 
-	del := expressions.NewDeleteExpression(
-		expressions.ForEachQuantifier(innerRef), "Order")
-	yielded := FireExpressionRule(NewImplementDeleteRule(), expressions.InitialOf(del))
+	del := dmlDedupDelete(t, expressions.ForEachQuantifier(innerRef))
+	yielded := dmlDedupMustFireExpressionRule(t, NewImplementDeleteRule(), expressions.InitialOf(del))
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementDeleteRule yielded %d, want 1", len(yielded))
 	}
@@ -146,9 +208,10 @@ func TestImplementDeleteRule_DedupsOverANonDistinctAccessPath(t *testing.T) {
 // therefore pass the whole suite.
 func TestStoredRecordDMLCandidates_ExcludesNonStoredAccessPaths(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, nil)
+	rowType := dmlDedupRowType()
+	scan := dmlDedupFullScan(t, rowType)
 	innerRef := expressions.InitialOf(scan)
-	FireExpressionRule(NewPrimaryScanRule(), innerRef)
+	dmlDedupMustFireExpressionRule(t, NewPrimaryScanRule(), innerRef)
 
 	admitted := storedRecordDMLCandidates(innerRef)
 	if len(admitted) == 0 {
@@ -177,8 +240,9 @@ func TestStoredRecordDMLCandidates_ExcludesNonStoredAccessPaths(t *testing.T) {
 	// visitFirstOrDefaultPlan returns false (StoredRecordProperty.java:265-266)
 	// — because it substitutes a default row for an empty stream and that row
 	// is not a stored record. A mutation over it has nothing to write back.
-	notStored := plans.NewRecordQueryFirstOrDefaultPlan(
-		plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false), nil)
+	notStored, err := plans.NewRecordQueryFirstOrDefaultPlan(
+		dmlDedupScanPlan(t, rowType), nil)
+	notStored = mustConstruct(t, notStored, err)
 	notStoredRef := expressions.FinalOfAtStage(notStored, expressions.StageCanonical)
 	computeRefPlanProperties(notStoredRef)
 

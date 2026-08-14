@@ -26,6 +26,70 @@ import (
 
 var testDB *recordlayer.FDBDatabase
 
+// These are the exact physical row types emitted by the record-to-positional
+// conversion used by the integration store.  Keeping the helpers next to the
+// store fixture makes every plan/value in this file name its real row shape;
+// the old tests passed nil/Unknown and therefore could not prove that an
+// ordinal was resolved against the row that execution actually emits.
+func integrationOrderType() *values.RecordType {
+	return PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false)
+}
+
+func integrationCustomerType() *values.RecordType {
+	return PositionalTypeForRecordLayout((&gen.Customer{}).ProtoReflect().Descriptor(), false)
+}
+
+func integrationTypedRecordType() *values.RecordType {
+	return PositionalTypeForRecordLayout((&gen.TypedRecord{}).ProtoReflect().Descriptor(), false)
+}
+
+func integrationField(t testing.TB, owner plans.RecordQueryPlan, ordinal int) values.Value {
+	t.Helper()
+	if owner == nil || owner.GetResultValue() == nil {
+		t.Fatal("integration field owner has no exact result value")
+	}
+	return mustTestFieldOrdinal(t, owner.GetResultValue(), ordinal)
+}
+
+func integrationJoinResult(
+	t testing.TB,
+	outer, inner plans.RecordQueryPlan,
+	outerAlias, innerAlias values.CorrelationIdentifier,
+	joinType plans.JoinType,
+) values.Value {
+	t.Helper()
+	if !values.SameLeg(outerAlias, outerAlias) || !values.SameLeg(innerAlias, innerAlias) ||
+		values.SameLeg(outerAlias, innerAlias) {
+		t.Fatalf("join result requires two stated, distinct source aliases: outer=%q inner=%q", outerAlias, innerAlias)
+	}
+	outerType, ok := outer.GetResultType().(*values.RecordType)
+	if !ok || outerType == nil {
+		t.Fatalf("join outer type = %T, want exact record", outer.GetResultType())
+	}
+	innerType, ok := inner.GetResultType().(*values.RecordType)
+	if !ok || innerType == nil {
+		t.Fatalf("join inner type = %T, want exact record", inner.GetResultType())
+	}
+	fields := make([]values.RecordConstructorField, 0, len(outerType.Fields)+len(innerType.Fields))
+	appendFields := func(alias values.CorrelationIdentifier, source *values.RecordType, nullSupplying bool) {
+		var flowed values.Type = source
+		if nullSupplying {
+			flowed = values.WithNullability(flowed, true)
+		}
+		qov := mustTestQOV(t, alias, flowed)
+		for ordinal, field := range source.Fields {
+			resolved, err := values.ResolveOrdinalSeedField(qov, ordinal)
+			if err != nil {
+				t.Fatalf("resolve join source %s field %d: %v", alias, ordinal, err)
+			}
+			fields = append(fields, values.RecordConstructorField{Name: field.Name, Value: resolved})
+		}
+	}
+	appendFields(outerAlias, outerType, joinType == plans.JoinFullOuter)
+	appendFields(innerAlias, innerType, joinType == plans.JoinLeftOuter || joinType == plans.JoinFullOuter)
+	return values.NewRawRecordConstructorValue(fields...)
+}
+
 func TestMain(m *testing.M) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -160,7 +224,7 @@ func TestIntegration_ScanPlan_AllRecords(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan(nil, nil, false)
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan(nil, values.NewAnyRecordType(false), false))
 		cursor, err := ExecutePlan(ctx, scan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
 			t.Fatalf("ExecutePlan: %v", err)
@@ -216,8 +280,8 @@ func TestIntegration_ScanPlan_TypeFilter(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan(nil, nil, false)
-		typeFilter := plans.NewRecordQueryTypeFilterPlan([]string{"Order"}, scan)
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan(nil, values.NewAnyRecordType(false), false))
+		typeFilter := mustExecutorConstruct(plans.NewRecordQueryTypeFilterPlan([]string{"Order"}, scan))
 
 		cursor, err := ExecutePlan(ctx, typeFilter, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -266,11 +330,11 @@ func TestIntegration_FilterPlan(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		filter := plans.NewRecordQueryFilterPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		filter := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
+					integrationField(t, scan, 2),
 					predicates.Comparison{
 						Type:    predicates.ComparisonGreaterThan,
 						Operand: values.LiteralValue(int64(100)),
@@ -278,7 +342,7 @@ func TestIntegration_FilterPlan(t *testing.T) {
 				),
 			},
 			scan,
-		)
+		))
 
 		cursor, err := ExecutePlan(ctx, filter, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -324,12 +388,12 @@ func TestIntegration_SortLimitPlan(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		sorted := plans.NewRecordQueryInMemorySortPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		sorted := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(
 			scan,
-			[]plans.SortKey{{Field: "PRICE", ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Desc: false}},
-		)
-		limited := plans.NewRecordQueryLimitPlan(sorted, 2, 0)
+			[]plans.SortKey{{Field: "PRICE", ValueExpr: integrationField(t, scan, 2), Desc: false}},
+		))
+		limited := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(sorted, 2, 0))
 
 		cursor, err := ExecutePlan(ctx, limited, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -406,15 +470,15 @@ func TestIntegration_SortContinuation_BytesKeyStraddle_F33(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-			sorted := plans.NewRecordQueryInMemorySortPlan(
+			scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+			sorted := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(
 				scan,
 				[]plans.SortKey{{
 					Field:     "VECTOR_DATA",
-					ValueExpr: values.NewFieldValueWithResolvedOrdinal("VECTOR_DATA", vectorDataOrdinal, values.UnknownType),
+					ValueExpr: integrationField(t, scan, vectorDataOrdinal),
 					Desc:      false,
 				}},
-			)
+			))
 			// Stop the inner scan after 2 records per transaction so the sort buffer
 			// straddles page boundaries and rides the continuation.
 			props := recordlayer.DefaultExecuteProperties().WithScannedRecordsLimit(2)
@@ -536,15 +600,15 @@ func TestIntegration_SortContinuation_ArrayStructStraddle_F53(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-			sorted := plans.NewRecordQueryInMemorySortPlan(
+			scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+			sorted := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(
 				scan,
 				[]plans.SortKey{{
 					Field:     "PRICE",
-					ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", priceOrdinal, values.UnknownType),
+					ValueExpr: integrationField(t, scan, priceOrdinal),
 					Desc:      false,
 				}},
-			)
+			))
 			// Stop the inner scan after 2 records per transaction so the sort buffer
 			// (with its ARRAY + STRUCT slots) straddles page boundaries and rides
 			// the continuation.
@@ -679,8 +743,8 @@ func TestIntegration_DeletePlan(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		del := plans.NewRecordQueryDeletePlan(scan, "Order")
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		del := mustExecutorConstruct(plans.NewRecordQueryDeletePlan(scan, "Order"))
 
 		cursor, err := ExecutePlan(ctx, del, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -740,13 +804,13 @@ func TestIntegration_IndexScan(t *testing.T) {
 			t.Fatal("merge failed")
 		}
 
-		indexPlan := plans.NewRecordQueryIndexPlan(
+		indexPlan := mustExecutorConstruct(plans.NewRecordQueryIndexPlan(
 			"order_price_idx",
 			[]*predicates.ComparisonRange{res.Range},
 			[]string{"Order"},
-			nil,
+			integrationOrderType(),
 			false,
-		).WithKeyComponentTypes([]values.Type{values.NullableInt})
+		)).WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		cursor, err := ExecutePlan(ctx, indexPlan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -793,11 +857,11 @@ func TestIntegration_UpdatePlan(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		filter := plans.NewRecordQueryFilterPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		filter := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType),
+					integrationField(t, scan, 0),
 					predicates.Comparison{
 						Type:    predicates.ComparisonEquals,
 						Operand: values.LiteralValue(int64(601)),
@@ -805,10 +869,10 @@ func TestIntegration_UpdatePlan(t *testing.T) {
 				),
 			},
 			scan,
-		)
-		update := plans.NewRecordQueryUpdatePlan(filter, "Order", []expressions.UpdateTransform{
+		))
+		update := mustExecutorConstruct(plans.NewRecordQueryUpdatePlan(filter, "Order", []expressions.UpdateTransform{
 			{FieldPath: "PRICE", NewValue: values.LiteralValue(int64(999))},
-		})
+		}))
 
 		cursor, err := ExecutePlan(ctx, update, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -854,6 +918,161 @@ func TestIntegration_UpdatePlan(t *testing.T) {
 	}
 }
 
+// TestIntegration_UpdatePlan_ExactTargetOwnerBinding pins the two names that
+// legitimately address an UPDATE input row. The selected physical child owns
+// a generated quantifier edge, while SQL SET expressions retain the target
+// record name. Both must bind the same exact row without erasing nested values.
+func TestIntegration_UpdatePlan_ExactTargetOwnerBinding(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+	wantFlower := &gen.Flower{Type: proto.String("rose"), Color: gen.Color_BLUE.Enum()}
+
+	insertOrders(t, store,
+		&gen.Order{
+			OrderId: proto.Int64(603),
+			Price:   proto.Int32(100),
+			Flower:  proto.Clone(wantFlower).(*gen.Flower),
+		},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		rowType := integrationOrderType()
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, rowType, false))
+		target := mustTestQOV(t, values.NamedCorrelationIdentifier("Order"), rowType)
+		update := mustExecutorConstruct(plans.NewRecordQueryUpdatePlan(scan, "Order", []expressions.UpdateTransform{
+			{
+				FieldPath: "PRICE",
+				NewValue: &values.ArithmeticValue{
+					Op:    values.OpAdd,
+					Left:  mustTestFieldOrdinal(t, target, 2),
+					Right: values.LiteralValue(int64(7)),
+				},
+			},
+			{
+				FieldPath: "FLOWER",
+				NewValue:  mustTestFieldOrdinal(t, target, 1),
+			},
+		}))
+
+		cursor, err := ExecutePlan(ctx, update, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("update returned %d results, want 1", len(results))
+		}
+
+		rec, err := s.LoadRecord(tuple.Tuple{int64(603)})
+		if err != nil {
+			t.Fatalf("LoadRecord: %v", err)
+		}
+		updated := rec.Record.(*gen.Order)
+		if updated.GetPrice() != 107 {
+			t.Errorf("price after target-owned arithmetic = %d, want 107", updated.GetPrice())
+		}
+		if !proto.Equal(updated.GetFlower(), wantFlower) {
+			t.Errorf("nested FLOWER identity update = %v, want %v", updated.GetFlower(), wantFlower)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_UpdatePlan_ExactTargetOwnerRejectsForeignViews proves that
+// adding the SQL target owner is not a name-based fallback. A same-spelled
+// owner with another exact type conflicts, and an unrelated owner remains
+// unbound; neither failed transform may stage a write.
+func TestIntegration_UpdatePlan_ExactTargetOwnerRejectsForeignViews(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		value    func(testing.TB, *values.RecordType) values.Value
+		wantCode values.ResolutionErrorCode
+	}{
+		{
+			name: "same spelling wrong exact type",
+			value: func(t testing.TB, _ *values.RecordType) values.Value {
+				wrongType := exactTestRowType(values.Field{Name: "PRICE", FieldType: values.NullableLong})
+				wrongOwner := mustTestQOV(t, values.NamedCorrelationIdentifier("Order"), wrongType)
+				return mustTestFieldOrdinal(t, wrongOwner, 0)
+			},
+			wantCode: values.CorrelationTypeConflict,
+		},
+		{
+			name: "foreign owner",
+			value: func(t testing.TB, rowType *values.RecordType) values.Value {
+				foreignOwner := mustTestQOV(t, values.NamedCorrelationIdentifier("Other"), rowType)
+				return mustTestFieldOrdinal(t, foreignOwner, 2)
+			},
+			wantCode: values.UnboundCorrelation,
+		},
+	}
+
+	for i, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := setupStore(t)
+			id := int64(604 + i)
+			insertOrders(t, store, &gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(100)})
+
+			_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				s, err := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+					SetSubspace(testSubspace(t)).Open()
+				if err != nil {
+					return nil, err
+				}
+
+				rowType := integrationOrderType()
+				scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, rowType, false))
+				update := mustExecutorConstruct(plans.NewRecordQueryUpdatePlan(scan, "Order", []expressions.UpdateTransform{
+					{FieldPath: "PRICE", NewValue: test.value(t, rowType)},
+				}))
+
+				cursor, execErr := ExecutePlan(ctx, update, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+				if cursor != nil {
+					defer cursor.Close()
+					if execErr == nil {
+						_, execErr = CollectAll(ctx, cursor)
+					}
+				}
+				var resolutionErr *values.ResolutionError
+				if !errors.As(execErr, &resolutionErr) || resolutionErr.Code() != test.wantCode {
+					t.Fatalf("ExecutePlan error = %v, want resolution code %d", execErr, test.wantCode)
+				}
+
+				rec, err := s.LoadRecord(tuple.Tuple{id})
+				if err != nil {
+					t.Fatalf("LoadRecord: %v", err)
+				}
+				if got := rec.Record.(*gen.Order).GetPrice(); got != 100 {
+					t.Fatalf("failed transform staged PRICE=%d, want unchanged 100", got)
+				}
+				return nil, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 // TestIntegration_ScanDatum_Shape verifies that scan datum maps contain
 // the correct keys and values from proto deserialization.
 func TestIntegration_ScanDatum_Shape(t *testing.T) {
@@ -873,7 +1092,7 @@ func TestIntegration_ScanDatum_Shape(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 
 		cursor, err := ExecutePlan(ctx, scan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -938,13 +1157,13 @@ func TestIntegration_IndexScan_Equality(t *testing.T) {
 			t.Fatal("merge failed")
 		}
 
-		indexPlan := plans.NewRecordQueryIndexPlan(
+		indexPlan := mustExecutorConstruct(plans.NewRecordQueryIndexPlan(
 			"order_price_idx",
 			[]*predicates.ComparisonRange{res.Range},
 			[]string{"Order"},
-			nil,
+			integrationOrderType(),
 			false,
-		).WithKeyComponentTypes([]values.Type{values.NullableInt})
+		)).WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		cursor, err := ExecutePlan(ctx, indexPlan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -1009,13 +1228,13 @@ func TestIntegration_IndexScan_BoundedRange(t *testing.T) {
 			t.Fatal("merge high failed")
 		}
 
-		indexPlan := plans.NewRecordQueryIndexPlan(
+		indexPlan := mustExecutorConstruct(plans.NewRecordQueryIndexPlan(
 			"order_price_idx",
 			[]*predicates.ComparisonRange{highRes.Range},
 			[]string{"Order"},
-			nil,
+			integrationOrderType(),
 			false,
-		).WithKeyComponentTypes([]values.Type{values.NullableInt})
+		)).WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		cursor, err := ExecutePlan(ctx, indexPlan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -1066,11 +1285,11 @@ func TestIntegration_FilterSortLimit_Pipeline(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		filter := plans.NewRecordQueryFilterPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		filter := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
+					integrationField(t, scan, 2),
 					predicates.Comparison{
 						Type:    predicates.ComparisonGreaterThan,
 						Operand: values.LiteralValue(int64(150)),
@@ -1078,12 +1297,12 @@ func TestIntegration_FilterSortLimit_Pipeline(t *testing.T) {
 				),
 			},
 			scan,
-		)
-		sorted := plans.NewRecordQueryInMemorySortPlan(
+		))
+		sorted := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(
 			filter,
-			[]plans.SortKey{{Field: "PRICE", ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Desc: true}},
-		)
-		limited := plans.NewRecordQueryLimitPlan(sorted, 2, 0)
+			[]plans.SortKey{{Field: "PRICE", ValueExpr: integrationField(t, scan, 2), Desc: true}},
+		))
+		limited := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(sorted, 2, 0))
 
 		cursor, err := ExecutePlan(ctx, limited, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -1135,11 +1354,11 @@ func TestIntegration_ResultSet_TypedAccess(t *testing.T) {
 
 		// Project ORDER_ID, PRICE so the executor emits an ordinal output row aligned
 		// to the result-set columns — the name-keyed Datum no longer backs the read.
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		proj := plans.NewRecordQueryProjectionPlan(
-			[]values.Value{values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType), values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+			[]values.Value{integrationField(t, scan, 0), integrationField(t, scan, 2)},
 			scan,
-		)
+		))
 		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
 			t.Fatalf("ExecutePlan: %v", err)
@@ -1213,11 +1432,11 @@ func TestIntegration_ResultSet_StringCoercion(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		proj := plans.NewRecordQueryProjectionPlan(
-			[]values.Value{values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+			[]values.Value{integrationField(t, scan, 2)},
 			scan,
-		)
+		))
 		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
 			t.Fatalf("ExecutePlan: %v", err)
@@ -1277,11 +1496,11 @@ func TestIntegration_ResultSet_FilterPipeline(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		filter := plans.NewRecordQueryFilterPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		filter := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
+					integrationField(t, scan, 2),
 					predicates.Comparison{
 						Type:    predicates.ComparisonGreaterThanEq,
 						Operand: values.LiteralValue(int64(30)),
@@ -1289,16 +1508,16 @@ func TestIntegration_ResultSet_FilterPipeline(t *testing.T) {
 				),
 			},
 			scan,
-		)
-		sorted := plans.NewRecordQueryInMemorySortPlan(
+		))
+		sorted := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(
 			filter,
-			[]plans.SortKey{{Field: "PRICE", ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Desc: false}},
-		)
+			[]plans.SortKey{{Field: "PRICE", ValueExpr: integrationField(t, scan, 2), Desc: false}},
+		))
 		// Project PRICE, ORDER_ID so the output row is ordinal-aligned to the columns.
-		proj := plans.NewRecordQueryProjectionPlan(
-			[]values.Value{values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType)},
+		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+			[]values.Value{integrationField(t, scan, 2), integrationField(t, scan, 0)},
 			sorted,
-		)
+		))
 
 		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -1358,11 +1577,11 @@ func TestIntegration_ResultSet_ByName(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		proj := plans.NewRecordQueryProjectionPlan(
-			[]values.Value{values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType), values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+			[]values.Value{integrationField(t, scan, 0), integrationField(t, scan, 2)},
 			scan,
-		)
+		))
 		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
 			t.Fatalf("ExecutePlan: %v", err)
@@ -1447,13 +1666,13 @@ func TestIntegration_ProjectionPlan(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		proj := plans.NewRecordQueryProjectionPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
 			[]values.Value{
-				values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
+				integrationField(t, scan, 2),
 			},
 			scan,
-		)
+		))
 
 		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -1503,14 +1722,14 @@ func TestIntegration_ProjectionPlan_MultiColumn(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		proj := plans.NewRecordQueryProjectionPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
 			[]values.Value{
-				values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType),
-				values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
+				integrationField(t, scan, 0),
+				integrationField(t, scan, 2),
 			},
 			scan,
-		)
+		))
 
 		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -1563,8 +1782,8 @@ func TestIntegration_DistinctPlan(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		distinct := plans.NewRecordQueryDistinctPlan(scan)
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		distinct := mustExecutorConstruct(plans.NewRecordQueryDistinctPlan(scan))
 
 		cursor, err := ExecutePlan(ctx, distinct, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -1616,11 +1835,11 @@ func TestIntegration_ParameterBinding_Filter(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		filter := plans.NewRecordQueryFilterPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		filter := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
+					integrationField(t, scan, 2),
 					predicates.Comparison{
 						Type:    predicates.ComparisonGreaterThan,
 						Operand: values.NewParameterValue(1),
@@ -1628,7 +1847,7 @@ func TestIntegration_ParameterBinding_Filter(t *testing.T) {
 				),
 			},
 			scan,
-		)
+		))
 
 		evalCtx := EmptyEvaluationContext().WithParams([]any{int64(40)})
 		cursor, err := ExecutePlan(ctx, filter, s, evalCtx, nil, recordlayer.DefaultExecuteProperties())
@@ -1687,13 +1906,13 @@ func TestIntegration_ParameterBinding_IndexScan(t *testing.T) {
 			t.Fatal("merge failed")
 		}
 
-		indexPlan := plans.NewRecordQueryIndexPlan(
+		indexPlan := mustExecutorConstruct(plans.NewRecordQueryIndexPlan(
 			"order_price_idx",
 			[]*predicates.ComparisonRange{res.Range},
 			[]string{"Order"},
-			nil,
+			integrationOrderType(),
 			false,
-		).WithKeyComponentTypes([]values.Type{values.NullableInt})
+		)).WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		evalCtx := EmptyEvaluationContext().WithParams([]any{int64(50)})
 		cursor, err := ExecutePlan(ctx, indexPlan, s, evalCtx, nil, recordlayer.DefaultExecuteProperties())
@@ -1747,15 +1966,17 @@ func TestIntegration_NestedLoopJoin_CrossJoin(t *testing.T) {
 			return nil, err
 		}
 
-		outerScan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		innerScan := plans.NewRecordQueryScanPlan([]string{"Customer"}, nil, false)
-		nlj := plans.NewRecordQueryNestedLoopJoinPlan(
+		outerScan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		innerScan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Customer"}, integrationCustomerType(), false))
+		outerAlias := values.NamedCorrelationIdentifier("ORDER")
+		innerAlias := values.NamedCorrelationIdentifier("CUSTOMER")
+		nlj := mustExecutorConstruct(plans.NewRecordQueryNestedLoopJoinPlan(
 			outerScan, innerScan,
 			nil,
 			plans.JoinInner,
-			values.NamedCorrelationIdentifier("ORDER"), values.NamedCorrelationIdentifier("CUSTOMER"),
-			nil,
-		)
+			outerAlias, innerAlias,
+			integrationJoinResult(t, outerScan, innerScan, outerAlias, innerAlias, plans.JoinInner),
+		))
 
 		cursor, err := ExecutePlan(ctx, nlj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -1811,14 +2032,16 @@ func TestIntegration_NestedLoopJoin_WithPredicate(t *testing.T) {
 			return nil, err
 		}
 
-		outerScan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		innerScan := plans.NewRecordQueryScanPlan([]string{"Customer"}, nil, false)
+		outerScan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		innerScan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Customer"}, integrationCustomerType(), false))
+		outerAlias := values.NamedCorrelationIdentifier("ORDER")
+		innerAlias := values.NamedCorrelationIdentifier("CUSTOMER")
 
-		nlj := plans.NewRecordQueryNestedLoopJoinPlan(
+		nlj := mustExecutorConstruct(plans.NewRecordQueryNestedLoopJoinPlan(
 			outerScan, innerScan,
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType),
+					integrationField(t, outerScan, 4),
 					predicates.Comparison{
 						Type:    predicates.ComparisonEquals,
 						Operand: values.LiteralValue(int64(5)),
@@ -1826,9 +2049,9 @@ func TestIntegration_NestedLoopJoin_WithPredicate(t *testing.T) {
 				),
 			},
 			plans.JoinInner,
-			values.NamedCorrelationIdentifier("ORDER"), values.NamedCorrelationIdentifier("CUSTOMER"),
-			nil,
-		)
+			outerAlias, innerAlias,
+			integrationJoinResult(t, outerScan, innerScan, outerAlias, innerAlias, plans.JoinInner),
+		))
 
 		cursor, err := ExecutePlan(ctx, nlj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -1882,14 +2105,16 @@ func TestIntegration_NestedLoopJoin_LeftOuter(t *testing.T) {
 			return nil, err
 		}
 
-		outerScan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		innerScan := plans.NewRecordQueryScanPlan([]string{"Customer"}, nil, false)
+		outerScan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		innerScan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Customer"}, integrationCustomerType(), false))
+		outerAlias := values.NamedCorrelationIdentifier("ORDER")
+		innerAlias := values.NamedCorrelationIdentifier("CUSTOMER")
 
-		nlj := plans.NewRecordQueryNestedLoopJoinPlan(
+		nlj := mustExecutorConstruct(plans.NewRecordQueryNestedLoopJoinPlan(
 			outerScan, innerScan,
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType),
+					integrationField(t, outerScan, 4),
 					predicates.Comparison{
 						Type:    predicates.ComparisonEquals,
 						Operand: values.LiteralValue(int64(5)),
@@ -1897,9 +2122,9 @@ func TestIntegration_NestedLoopJoin_LeftOuter(t *testing.T) {
 				),
 			},
 			plans.JoinLeftOuter,
-			values.NamedCorrelationIdentifier("ORDER"), values.NamedCorrelationIdentifier("CUSTOMER"),
-			nil,
-		)
+			outerAlias, innerAlias,
+			integrationJoinResult(t, outerScan, innerScan, outerAlias, innerAlias, plans.JoinLeftOuter),
+		))
 
 		cursor, err := ExecutePlan(ctx, nlj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -1961,11 +2186,11 @@ func TestIntegration_UpdatePlan_WithParameter(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		filter := plans.NewRecordQueryFilterPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		filter := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType),
+					integrationField(t, scan, 0),
 					predicates.Comparison{
 						Type:    predicates.ComparisonEquals,
 						Operand: values.LiteralValue(int64(8201)),
@@ -1973,10 +2198,10 @@ func TestIntegration_UpdatePlan_WithParameter(t *testing.T) {
 				),
 			},
 			scan,
-		)
-		update := plans.NewRecordQueryUpdatePlan(filter, "Order", []expressions.UpdateTransform{
+		))
+		update := mustExecutorConstruct(plans.NewRecordQueryUpdatePlan(filter, "Order", []expressions.UpdateTransform{
 			{FieldPath: "PRICE", NewValue: values.NewParameterValue(1)},
-		})
+		}))
 
 		evalCtx := EmptyEvaluationContext().WithParams([]any{int64(777)})
 		cursor, err := ExecutePlan(ctx, update, s, evalCtx, nil, recordlayer.DefaultExecuteProperties())
@@ -2011,7 +2236,10 @@ func TestIntegration_UpdatePlan_WithParameter(t *testing.T) {
 	}
 }
 
-// TestIntegration_UnionPlan tests UNION ALL of two scans against real FDB.
+// TestIntegration_UnionPlan tests UNION ALL of two type-compatible scans
+// against real FDB. A union of Order and Customer used to construct only
+// because both inputs hid behind UnknownType; exact set-plan admission now
+// correctly rejects that malformed shape before execution.
 func TestIntegration_UnionPlan(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -2019,10 +2247,6 @@ func TestIntegration_UnionPlan(t *testing.T) {
 
 	insertOrders(t, store,
 		&gen.Order{OrderId: proto.Int64(10001), Price: proto.Int32(100)},
-	)
-	insertCustomers(t, store,
-		&gen.Customer{CustomerId: proto.Int64(20001), Name: proto.String("Gina")},
-		&gen.Customer{CustomerId: proto.Int64(20002), Name: proto.String("Hank")},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -2033,9 +2257,9 @@ func TestIntegration_UnionPlan(t *testing.T) {
 			return nil, err
 		}
 
-		orderScan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		customerScan := plans.NewRecordQueryScanPlan([]string{"Customer"}, nil, false)
-		union := plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{orderScan, customerScan})
+		firstScan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		secondScan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		union := mustExecutorConstruct(plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{firstScan, secondScan}))
 
 		cursor, err := ExecutePlan(ctx, union, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -2047,8 +2271,8 @@ func TestIntegration_UnionPlan(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CollectAll: %v", err)
 		}
-		if len(results) != 3 {
-			t.Fatalf("union returned %d results, want 3 (1 order + 2 customers)", len(results))
+		if len(results) != 2 {
+			t.Fatalf("union returned %d results, want 2 (the one Order from each UNION ALL arm)", len(results))
 		}
 		return nil, nil
 	})
@@ -2077,12 +2301,12 @@ func TestIntegration_IntersectionPlan(t *testing.T) {
 			return nil, err
 		}
 
-		scan1 := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		scan2 := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		intersection := plans.NewRecordQueryIntersectionPlan(
+		scan1 := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		scan2 := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		intersection := mustExecutorConstruct(plans.NewRecordQueryIntersectionPlan(
 			[]plans.RecordQueryPlan{scan1, scan2},
 			nil,
-		)
+		))
 
 		cursor, err := ExecutePlan(ctx, intersection, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -2125,15 +2349,15 @@ func TestIntegration_StreamingAggregation_CountAndSum(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		agg := plans.NewRecordQueryStreamingAggregationPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		agg := mustExecutorConstruct(plans.NewRecordQueryStreamingAggregationPlan(
 			scan,
-			[]values.Value{values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
+			[]values.Value{integrationField(t, scan, 2)},
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType)},
-				{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType)},
+				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "ORDER_ID"},
+				{Function: expressions.AggSum, Operand: integrationField(t, scan, 4), OperandName: "QUANTITY"},
 			},
-		)
+		))
 
 		cursor, err := ExecutePlan(ctx, agg, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -2202,16 +2426,16 @@ func TestIntegration_Aggregation_NoGroupBy(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		agg := plans.NewRecordQueryStreamingAggregationPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		agg := mustExecutorConstruct(plans.NewRecordQueryStreamingAggregationPlan(
 			scan,
 			nil,
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType)},
-				{Function: expressions.AggMin, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
-				{Function: expressions.AggMax, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
+				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "ORDER_ID"},
+				{Function: expressions.AggMin, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
+				{Function: expressions.AggMax, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
 			},
-		)
+		))
 
 		cursor, err := ExecutePlan(ctx, agg, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -2266,13 +2490,13 @@ func TestIntegration_IndexScan_Reverse(t *testing.T) {
 			return nil, err
 		}
 
-		indexPlan := plans.NewRecordQueryIndexPlan(
+		indexPlan := mustExecutorConstruct(plans.NewRecordQueryIndexPlan(
 			"order_price_idx",
 			nil,
 			[]string{"Order"},
-			nil,
+			integrationOrderType(),
 			true, // reverse
-		).WithKeyComponentTypes([]values.Type{values.NullableInt})
+		)).WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		cursor, err := ExecutePlan(ctx, indexPlan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -2324,13 +2548,13 @@ func TestIntegration_LimitWithOffset(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		sorted := plans.NewRecordQueryInMemorySortPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		sorted := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(
 			scan,
-			[]plans.SortKey{{Field: "PRICE", ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Desc: false}},
-		)
+			[]plans.SortKey{{Field: "PRICE", ValueExpr: integrationField(t, scan, 2), Desc: false}},
+		))
 		// OFFSET 2, LIMIT 2 — skip first 2 (price=10,20), take next 2 (price=30,40)
-		limited := plans.NewRecordQueryLimitPlan(sorted, 2, 2)
+		limited := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(sorted, 2, 2))
 
 		cursor, err := ExecutePlan(ctx, limited, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -2382,16 +2606,16 @@ func TestIntegration_Aggregation_MinMaxAvg(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		agg := plans.NewRecordQueryStreamingAggregationPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		agg := mustExecutorConstruct(plans.NewRecordQueryStreamingAggregationPlan(
 			scan,
 			nil, // no grouping keys — aggregate over all
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggMin, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
-				{Function: expressions.AggMax, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
-				{Function: expressions.AggAvg, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
+				{Function: expressions.AggMin, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
+				{Function: expressions.AggMax, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
+				{Function: expressions.AggAvg, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
 			},
-		)
+		))
 
 		cursor, err := ExecutePlan(ctx, agg, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -2445,11 +2669,11 @@ func TestIntegration_DeletePlan_WithFilter(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		filter := plans.NewRecordQueryFilterPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		filter := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
+					integrationField(t, scan, 2),
 					predicates.Comparison{
 						Type:    predicates.ComparisonGreaterThan,
 						Operand: values.LiteralValue(int64(75)),
@@ -2457,8 +2681,8 @@ func TestIntegration_DeletePlan_WithFilter(t *testing.T) {
 				),
 			},
 			scan,
-		)
-		del := plans.NewRecordQueryDeletePlan(filter, "Order")
+		))
+		del := mustExecutorConstruct(plans.NewRecordQueryDeletePlan(filter, "Order"))
 
 		cursor, err := ExecutePlan(ctx, del, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -2475,7 +2699,7 @@ func TestIntegration_DeletePlan_WithFilter(t *testing.T) {
 		}
 
 		// Verify only the low-price order remains.
-		scanAll := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		scanAll := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 		cursor2, err := ExecutePlan(ctx, scanAll, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
 			t.Fatalf("verify scan: %v", err)
@@ -2519,11 +2743,11 @@ func TestIntegration_ParameterBinding_Delete(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		filter := plans.NewRecordQueryFilterPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		filter := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType),
+					integrationField(t, scan, 0),
 					predicates.Comparison{
 						Type:    predicates.ComparisonEquals,
 						Operand: &values.ParameterValue{Ordinal: 1},
@@ -2531,8 +2755,8 @@ func TestIntegration_ParameterBinding_Delete(t *testing.T) {
 				),
 			},
 			scan,
-		)
-		del := plans.NewRecordQueryDeletePlan(filter, "Order")
+		))
+		del := mustExecutorConstruct(plans.NewRecordQueryDeletePlan(filter, "Order"))
 
 		evalCtx := EmptyEvaluationContext().WithParams([]any{int64(15402)})
 		cursor, err := ExecutePlan(ctx, del, s, evalCtx, nil, recordlayer.DefaultExecuteProperties())
@@ -2550,7 +2774,7 @@ func TestIntegration_ParameterBinding_Delete(t *testing.T) {
 		}
 
 		// Verify 2 orders remain.
-		scanAll := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		scanAll := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 		cursor2, err := ExecutePlan(ctx, scanAll, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
 			t.Fatalf("verify scan: %v", err)
@@ -2591,17 +2815,17 @@ func TestIntegration_Aggregation_GroupBy_MultiFunc(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		agg := plans.NewRecordQueryStreamingAggregationPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		agg := mustExecutorConstruct(plans.NewRecordQueryStreamingAggregationPlan(
 			scan,
-			[]values.Value{values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
+			[]values.Value{integrationField(t, scan, 2)},
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType)},
-				{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType)},
-				{Function: expressions.AggMin, Operand: values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType)},
-				{Function: expressions.AggMax, Operand: values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType)},
+				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "ORDER_ID"},
+				{Function: expressions.AggSum, Operand: integrationField(t, scan, 4), OperandName: "QUANTITY"},
+				{Function: expressions.AggMin, Operand: integrationField(t, scan, 4), OperandName: "QUANTITY"},
+				{Function: expressions.AggMax, Operand: integrationField(t, scan, 4), OperandName: "QUANTITY"},
 			},
-		)
+		))
 
 		cursor, err := ExecutePlan(ctx, agg, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -2684,11 +2908,11 @@ func TestIntegration_FilterSortProjection_Pipeline(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		filter := plans.NewRecordQueryFilterPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		filter := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
+					integrationField(t, scan, 2),
 					predicates.Comparison{
 						Type:    predicates.ComparisonGreaterThan,
 						Operand: values.LiteralValue(int64(200)),
@@ -2696,19 +2920,19 @@ func TestIntegration_FilterSortProjection_Pipeline(t *testing.T) {
 				),
 			},
 			scan,
-		)
-		sorted := plans.NewRecordQueryInMemorySortPlan(
+		))
+		sorted := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(
 			filter,
-			[]plans.SortKey{{Field: "PRICE", ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Desc: false}},
-		)
-		proj := plans.NewRecordQueryProjectionPlan(
+			[]plans.SortKey{{Field: "PRICE", ValueExpr: integrationField(t, scan, 2), Desc: false}},
+		))
+		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
 			[]values.Value{
-				values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
-				values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType),
+				integrationField(t, scan, 2),
+				integrationField(t, scan, 4),
 			},
 			sorted,
-		)
-		limited := plans.NewRecordQueryLimitPlan(proj, 2, 0)
+		))
+		limited := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(proj, 2, 0))
 
 		cursor, err := ExecutePlan(ctx, limited, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -2762,8 +2986,8 @@ func TestIntegration_InsertPlan_DuplicateError(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		ins := plans.NewRecordQueryInsertPlan(scan, "Order", nil)
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		ins := mustExecutorConstruct(plans.NewRecordQueryInsertPlan(scan, "Order", integrationOrderType()))
 
 		_, err = ExecutePlan(ctx, ins, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err == nil {
@@ -2799,11 +3023,29 @@ func TestIntegration_InsertPlan_ValuesExplode(t *testing.T) {
 			values.RecordConstructorField{Name: "price", Value: &values.ConstantValue{Value: price, Typ: values.NullableLong}},
 		)
 	}
-	arr := values.NewArrayConstructorValue(values.UnknownType, []values.Value{mkRow(7001, 42), mkRow(7002, 43)})
-	explode := plans.NewRecordQueryExplodePlan(arr)
-	ins := plans.NewRecordQueryInsertPlan(explode, "Order", nil)
+	firstRow := mkRow(7001, 42)
+	arr := values.NewArrayConstructorValue(firstRow.Type(), []values.Value{firstRow, mkRow(7002, 43)})
+	explode := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(arr))
+	ins := mustExecutorConstruct(plans.NewRecordQueryInsertPlan(explode, "Order", integrationOrderType()))
+	probe, err := ExecutePlan(ctx, explode, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("execute VALUES explode: %v", err)
+	}
+	probeRows, err := CollectAll(ctx, probe)
+	_ = probe.Close()
+	if err != nil {
+		t.Fatalf("collect VALUES explode: %v", err)
+	}
+	if len(probeRows) != 2 {
+		t.Fatalf("VALUES explode emitted %d rows, want 2", len(probeRows))
+	}
+	for i, row := range probeRows {
+		if row.Positional == nil || !row.Positional.Type.Equals(explode.GetResultType()) {
+			t.Fatalf("VALUES explode row %d type = %v, want declared %v", i, row.Positional, explode.GetResultType())
+		}
+	}
 
-	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+	_, err = testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		s, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
 			SetSubspace(testSubspace(t)).Open()
@@ -2836,7 +3078,7 @@ func TestIntegration_InsertPlan_ValuesExplode(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 		cursor, err := ExecutePlan(ctx, scan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
 			return nil, err
@@ -2879,17 +3121,17 @@ func TestIntegration_Aggregation_EmptyInput(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		agg := plans.NewRecordQueryStreamingAggregationPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		agg := mustExecutorConstruct(plans.NewRecordQueryStreamingAggregationPlan(
 			scan,
 			nil,
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType)},
-				{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
-				{Function: expressions.AggMin, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
-				{Function: expressions.AggMax, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
+				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "ORDER_ID"},
+				{Function: expressions.AggSum, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
+				{Function: expressions.AggMin, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
+				{Function: expressions.AggMax, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
 			},
-		)
+		))
 
 		cursor, err := ExecutePlan(ctx, agg, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -2943,11 +3185,11 @@ func TestIntegration_UpdatePlan_MultipleFields(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		filter := plans.NewRecordQueryFilterPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		filter := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType),
+					integrationField(t, scan, 0),
 					predicates.Comparison{
 						Type:    predicates.ComparisonEquals,
 						Operand: values.LiteralValue(int64(17201)),
@@ -2955,11 +3197,11 @@ func TestIntegration_UpdatePlan_MultipleFields(t *testing.T) {
 				),
 			},
 			scan,
-		)
-		update := plans.NewRecordQueryUpdatePlan(filter, "Order", []expressions.UpdateTransform{
+		))
+		update := mustExecutorConstruct(plans.NewRecordQueryUpdatePlan(filter, "Order", []expressions.UpdateTransform{
 			{FieldPath: "PRICE", NewValue: values.LiteralValue(int64(999))},
 			{FieldPath: "QUANTITY", NewValue: values.LiteralValue(int64(42))},
-		})
+		}))
 
 		cursor, err := ExecutePlan(ctx, update, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3028,13 +3270,13 @@ func TestIntegration_IndexScan_EqualityRange(t *testing.T) {
 			t.Fatal("merge failed")
 		}
 
-		idxScan := plans.NewRecordQueryIndexPlan(
+		idxScan := mustExecutorConstruct(plans.NewRecordQueryIndexPlan(
 			"order_price_idx",
 			[]*predicates.ComparisonRange{res.Range},
 			[]string{"Order"},
-			nil,
+			integrationOrderType(),
 			false,
-		).WithKeyComponentTypes([]values.Type{values.NullableInt})
+		)).WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		cursor, err := ExecutePlan(ctx, idxScan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3084,14 +3326,14 @@ func TestIntegration_SortPlan_MultiKey(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		sorted := plans.NewRecordQueryInMemorySortPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		sorted := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(
 			scan,
 			[]plans.SortKey{
-				{Field: "PRICE", ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Desc: false},
-				{Field: "QUANTITY", ValueExpr: values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType), Desc: true},
+				{Field: "PRICE", ValueExpr: integrationField(t, scan, 2), Desc: false},
+				{Field: "QUANTITY", ValueExpr: integrationField(t, scan, 4), Desc: true},
 			},
-		)
+		))
 
 		cursor, err := ExecutePlan(ctx, sorted, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3151,11 +3393,11 @@ func TestIntegration_UnionPlan_DisjointLegs(t *testing.T) {
 			return nil, err
 		}
 
-		scanA := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		filterLow := plans.NewRecordQueryFilterPlan(
+		scanA := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		filterLow := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
+					integrationField(t, scanA, 2),
 					predicates.Comparison{
 						Type:    predicates.ComparisonLessThan,
 						Operand: values.LiteralValue(int64(100)),
@@ -3163,13 +3405,13 @@ func TestIntegration_UnionPlan_DisjointLegs(t *testing.T) {
 				),
 			},
 			scanA,
-		)
+		))
 
-		scanB := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		filterHigh := plans.NewRecordQueryFilterPlan(
+		scanB := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		filterHigh := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
+					integrationField(t, scanB, 2),
 					predicates.Comparison{
 						Type:    predicates.ComparisonGreaterThan,
 						Operand: values.LiteralValue(int64(100)),
@@ -3177,9 +3419,9 @@ func TestIntegration_UnionPlan_DisjointLegs(t *testing.T) {
 				),
 			},
 			scanB,
-		)
+		))
 
-		union := plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{filterLow, filterHigh})
+		union := mustExecutorConstruct(plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{filterLow, filterHigh}))
 
 		cursor, err := ExecutePlan(ctx, union, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3232,11 +3474,11 @@ func TestIntegration_FilterPlan_NoMatch(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		filter := plans.NewRecordQueryFilterPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		filter := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
+					integrationField(t, scan, 2),
 					predicates.Comparison{
 						Type:    predicates.ComparisonEquals,
 						Operand: values.LiteralValue(int64(99999)),
@@ -3244,7 +3486,7 @@ func TestIntegration_FilterPlan_NoMatch(t *testing.T) {
 				),
 			},
 			scan,
-		)
+		))
 
 		cursor, err := ExecutePlan(ctx, filter, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3287,8 +3529,8 @@ func TestIntegration_DeletePlan_AllRecords(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		del := plans.NewRecordQueryDeletePlan(scan, "Order")
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		del := mustExecutorConstruct(plans.NewRecordQueryDeletePlan(scan, "Order"))
 
 		cursor, err := ExecutePlan(ctx, del, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3358,8 +3600,20 @@ func TestIntegration_TypeFilter_MixedRecordTypes(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order", "TypedRecord"}, nil, false)
-		typeFilter := plans.NewRecordQueryTypeFilterPlan([]string{"Order"}, scan)
+		orderRecordType := s.GetMetaData().GetRecordType("Order")
+		if orderRecordType == nil || orderRecordType.Descriptor == nil {
+			return nil, fmt.Errorf("missing Order record descriptor")
+		}
+		orderRowType := PositionalTypeForRecordLayout(
+			orderRecordType.Descriptor, s.GetMetaData().IsStoreRecordVersions())
+		// Deliberately scan the shared multi-type stream while publishing the
+		// exact row contract the enclosing Order TypeFilter guarantees. The raw
+		// scan encounters TypedRecord rows too; they must be discarded before the
+		// Order layout is attached, while surviving Order rows remain exact.
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan(
+			[]string{"Order", "TypedRecord"}, orderRowType, false,
+		))
+		typeFilter := mustExecutorConstruct(plans.NewRecordQueryTypeFilterPlan([]string{"Order"}, scan))
 
 		cursor, err := ExecutePlan(ctx, typeFilter, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3407,7 +3661,7 @@ func TestIntegration_ScanPlan_UnsetFieldsOmitted(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 
 		cursor, err := ExecutePlan(ctx, scan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3465,16 +3719,16 @@ func TestIntegration_FilterPlan_IsNull(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		filter := plans.NewRecordQueryFilterPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		filter := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType),
+					integrationField(t, scan, 4),
 					predicates.Comparison{Type: predicates.ComparisonIsNull},
 				),
 			},
 			scan,
-		)
+		))
 
 		cursor, err := ExecutePlan(ctx, filter, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3521,14 +3775,14 @@ func TestIntegration_Aggregation_AVG(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		agg := plans.NewRecordQueryStreamingAggregationPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		agg := mustExecutorConstruct(plans.NewRecordQueryStreamingAggregationPlan(
 			scan,
 			nil,
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggAvg, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
+				{Function: expressions.AggAvg, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
 			},
-		)
+		))
 
 		cursor, err := ExecutePlan(ctx, agg, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3578,18 +3832,18 @@ func TestIntegration_StreamingAggregation_SortedInput(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		sort := plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{
-			{Field: "QUANTITY", ValueExpr: values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType), Desc: false},
-		})
-		agg := plans.NewRecordQueryStreamingAggregationPlan(
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		sort := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{
+			{Field: "QUANTITY", ValueExpr: integrationField(t, scan, 4), Desc: false},
+		}))
+		agg := mustExecutorConstruct(plans.NewRecordQueryStreamingAggregationPlan(
 			sort,
-			[]values.Value{values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.NullableLong)},
+			[]values.Value{integrationField(t, scan, 4)},
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}},
-				{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.NullableLong)},
+				{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}, OperandName: "CONSTANT"},
+				{Function: expressions.AggSum, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
 			},
-		)
+		))
 
 		cursor, err := ExecutePlan(ctx, agg, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3649,16 +3903,22 @@ func TestIntegration_ProjectionOverJoin(t *testing.T) {
 			return nil, err
 		}
 
-		scan1 := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		scan2 := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		nlj := plans.NewRecordQueryNestedLoopJoinPlan(scan1, scan2, nil, plans.JoinInner, values.NamedCorrelationIdentifier("ORDER"), values.NamedCorrelationIdentifier("ORDER"), nil)
-		proj := plans.NewRecordQueryProjectionPlan(
+		scan1 := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		scan2 := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		outerAlias := values.NamedCorrelationIdentifier("OUTER_ORDER")
+		innerAlias := values.NamedCorrelationIdentifier("INNER_ORDER")
+		nlj := mustExecutorConstruct(plans.NewRecordQueryNestedLoopJoinPlan(
+			scan1, scan2, nil, plans.JoinInner,
+			outerAlias, innerAlias,
+			integrationJoinResult(t, scan1, scan2, outerAlias, innerAlias, plans.JoinInner),
+		))
+		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
 			[]values.Value{
-				values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.NullableLong),
-				values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.NullableLong),
+				integrationField(t, nlj, 0),
+				integrationField(t, nlj, 2),
 			},
 			nlj,
-		)
+		))
 
 		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3711,10 +3971,10 @@ func TestIntegration_SortPlan_Reverse(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		sort := plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{
-			{Field: "PRICE", ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Desc: true},
-		})
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		sort := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{
+			{Field: "PRICE", ValueExpr: integrationField(t, scan, 2), Desc: true},
+		}))
 
 		cursor, err := ExecutePlan(ctx, sort, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3764,17 +4024,17 @@ func TestIntegration_FilterPlan_CompoundPredicate(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 		pricePred := predicates.NewComparisonPredicate(
-			values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.NullableLong),
+			integrationField(t, scan, 2),
 			predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(100)),
 		)
 		qtyPred := predicates.NewComparisonPredicate(
-			values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.NullableLong),
+			integrationField(t, scan, 4),
 			predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
 		)
 		andPred := predicates.NewAnd(pricePred, qtyPred)
-		filter := plans.NewRecordQueryFilterPlan([]predicates.QueryPredicate{andPred}, scan)
+		filter := mustExecutorConstruct(plans.NewRecordQueryFilterPlan([]predicates.QueryPredicate{andPred}, scan))
 
 		cursor, err := ExecutePlan(ctx, filter, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3821,11 +4081,11 @@ func TestIntegration_LimitOverSort(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		sort := plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{
-			{Field: "PRICE", ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Desc: true},
-		})
-		limit := plans.NewRecordQueryLimitPlan(sort, int64(3), int64(0))
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		sort := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{
+			{Field: "PRICE", ValueExpr: integrationField(t, scan, 2), Desc: true},
+		}))
+		limit := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(sort, int64(3), int64(0)))
 
 		cursor, err := ExecutePlan(ctx, limit, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3872,10 +4132,10 @@ func TestIntegration_UpdatePlan_ClearField(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		update := plans.NewRecordQueryUpdatePlan(scan, "Order", []expressions.UpdateTransform{
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+		update := mustExecutorConstruct(plans.NewRecordQueryUpdatePlan(scan, "Order", []expressions.UpdateTransform{
 			{FieldPath: "QUANTITY", NewValue: values.LiteralValue(nil)},
-		})
+		}))
 
 		cursor, err := ExecutePlan(ctx, update, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3928,17 +4188,17 @@ func TestIntegration_FilterPlan_OrPredicate(t *testing.T) {
 			return nil, err
 		}
 
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 		lowPred := predicates.NewComparisonPredicate(
-			values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.NullableLong),
+			integrationField(t, scan, 2),
 			predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(20)),
 		)
 		highPred := predicates.NewComparisonPredicate(
-			values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.NullableLong),
+			integrationField(t, scan, 2),
 			predicates.NewLiteralComparison(predicates.ComparisonGreaterThanEq, int64(100)),
 		)
 		orPred := predicates.NewOr(lowPred, highPred)
-		filter := plans.NewRecordQueryFilterPlan([]predicates.QueryPredicate{orPred}, scan)
+		filter := mustExecutorConstruct(plans.NewRecordQueryFilterPlan([]predicates.QueryPredicate{orPred}, scan))
 
 		cursor, err := ExecutePlan(ctx, filter, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3987,13 +4247,13 @@ func TestIntegration_IndexScan_FullRange(t *testing.T) {
 			return nil, err
 		}
 
-		idxPlan := plans.NewRecordQueryIndexPlan(
+		idxPlan := mustExecutorConstruct(plans.NewRecordQueryIndexPlan(
 			"order_price_idx",
 			nil,
 			[]string{"Order"},
-			values.UnknownType,
+			integrationOrderType(),
 			false,
-		).WithKeyComponentTypes([]values.Type{values.NullableInt})
+		)).WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		cursor, err := ExecutePlan(ctx, idxPlan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -4049,7 +4309,7 @@ func TestIntegration_LoadByKeys_Resume(t *testing.T) {
 
 	// Key 99 has no record — skipped without consuming an output slot.
 	keys := []tuple.Tuple{{int64(1)}, {int64(99)}, {int64(2)}, {int64(3)}}
-	p := plans.NewRecordQueryLoadByKeysPlanFromKeys(keys)
+	p := mustExecutorConstruct(plans.NewRecordQueryLoadByKeysPlanFromKeys(keys, integrationOrderType()))
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		s, err := recordlayer.NewStoreBuilder().

@@ -515,11 +515,11 @@ func TestComparisonPredicate_IsNull_NonConstantLHS(t *testing.T) {
 	// The LHS carries its plan-time ordinal (sole column "name" →
 	// slot 0), read positionally from the row.
 	isNull := NewComparisonPredicate(
-		pbake("name", values.TypeString, "name"),
+		pbake(t, "name", values.TypeString, "name"),
 		Comparison{Type: ComparisonIsNull},
 	)
 	isNotNull := NewComparisonPredicate(
-		pbake("name", values.TypeString, "name"),
+		pbake(t, "name", values.TypeString, "name"),
 		Comparison{Type: ComparisonIsNotNull},
 	)
 	cases := []struct {
@@ -544,15 +544,17 @@ func TestComparisonPredicate_IsNull_NonConstantLHS(t *testing.T) {
 	}
 
 	// "Missing from row" is not a silent NULL: an absent column (an
-	// out-of-range ordinal) is a LOUD *OrdinalResolutionError, surfaced by
+	// out-of-range ordinal) is a LOUD coded ResolutionError, surfaced by
 	// Eval as (TriUnknown, error) — a malformed plan, not TRUE. This differs
 	// from a sparse name-map lookup, where a missing column reads as SQL NULL.
 	t.Run("missing from row is loud", func(t *testing.T) {
 		t.Parallel()
 		got, err := isNull.Eval(predRow(map[string]any{}))
-		var ordErr *values.OrdinalResolutionError
-		if !errors.As(err, &ordErr) {
-			t.Fatalf("missing column must be a loud *OrdinalResolutionError, got (%v, %v)", got, err)
+		var coded interface {
+			Code() values.ResolutionErrorCode
+		}
+		if !errors.As(err, &coded) || coded.Code() != values.LayoutRuntimeShape {
+			t.Fatalf("missing column must be a loud LayoutRuntimeShape error, got (%v, %v)", got, err)
 		}
 		if got != TriUnknown {
 			t.Fatalf("missing column IS NULL: got %v, want TriUnknown (error swallowed)", got)
@@ -563,18 +565,12 @@ func TestComparisonPredicate_IsNull_NonConstantLHS(t *testing.T) {
 // Explain of a unary predicate has no RHS literal.
 func TestComparisonPredicate_Explain_Unary(t *testing.T) {
 	t.Parallel()
-	p := NewComparisonPredicate(
-		&values.FieldValue{Field: "middle_name", Typ: values.TypeString},
-		Comparison{Type: ComparisonIsNull},
-	)
-	if got, want := p.Explain(), "middle_name IS NULL"; got != want {
+	p := NewComparisonPredicate(predicateTestField(t, "middle_name", values.TypeString), Comparison{Type: ComparisonIsNull})
+	if got, want := p.Explain(), "predicate_test_middle_name.middle_name#0 IS NULL"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
-	p2 := NewComparisonPredicate(
-		&values.FieldValue{Field: "email", Typ: values.TypeString},
-		Comparison{Type: ComparisonIsNotNull},
-	)
-	if got, want := p2.Explain(), "email IS NOT NULL"; got != want {
+	p2 := NewComparisonPredicate(predicateTestField(t, "email", values.TypeString), Comparison{Type: ComparisonIsNotNull})
+	if got, want := p2.Explain(), "predicate_test_email.email#0 IS NOT NULL"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
@@ -593,75 +589,48 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 	}{
 		{
 			name: "string RHS is quoted",
-			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "name", Typ: values.TypeString},
-				Comparison{Type: ComparisonEquals, Operand: values.LiteralValue("bob")},
-			),
-			want: "name = 'bob'",
+			pred: NewComparisonPredicate(predicateTestField(t, "name", values.TypeString), Comparison{Type: ComparisonEquals, Operand: values.LiteralValue("bob")}),
+			want: "predicate_test_name.name#0 = 'bob'",
 		},
 		{
 			name: "int RHS is bare",
-			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "id", Typ: values.NullableLong},
-				Comparison{Type: ComparisonGreaterThan, Operand: values.LiteralValue(int64(5))},
-			),
-			want: "id > 5",
+			pred: NewComparisonPredicate(predicateTestField(t, "id", values.NullableLong), Comparison{Type: ComparisonGreaterThan, Operand: values.LiteralValue(int64(5))}),
+			want: "predicate_test_id.id#0 > 5",
 		},
 		{
 			name: "NULL RHS (rare but possible via constant-fold)",
-			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "id", Typ: values.NullableLong},
-				Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(nil)},
-			),
-			want: "id = NULL",
+			pred: NewComparisonPredicate(predicateTestField(t, "id", values.NullableLong), Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(nil)}),
+			want: "predicate_test_id.id#0 = NULL",
 		},
 		{
 			name: "IN list with mixed types",
-			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "role", Typ: values.TypeString},
-				Comparison{Type: ComparisonIn, Operand: values.LiteralValue([]any{"admin", "owner", nil})},
-			),
-			want: "role IN ('admin', 'owner', NULL)",
+			pred: NewComparisonPredicate(predicateTestField(t, "role", values.TypeString), Comparison{Type: ComparisonIn, Operand: values.LiteralValue([]any{"admin", "owner", nil})}),
+			want: "predicate_test_role.role#0 IN ('admin', 'owner', NULL)",
 		},
 		{
 			name: "IN list of ints",
-			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "id", Typ: values.NullableLong},
-				Comparison{Type: ComparisonIn, Operand: values.LiteralValue([]any{int64(1), int64(2), int64(3)})},
-			),
-			want: "id IN (1, 2, 3)",
+			pred: NewComparisonPredicate(predicateTestField(t, "id", values.NullableLong), Comparison{Type: ComparisonIn, Operand: values.LiteralValue([]any{int64(1), int64(2), int64(3)})}),
+			want: "predicate_test_id.id#0 IN (1, 2, 3)",
 		},
 		{
 			name: "bool RHS uppercased",
-			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "active", Typ: values.TypeBool},
-				Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(true)},
-			),
-			want: "active = TRUE",
+			pred: NewComparisonPredicate(predicateTestField(t, "active", values.TypeBool), Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(true)}),
+			want: "predicate_test_active.active#0 = TRUE",
 		},
 		{
 			name: "bool FALSE uppercased",
-			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "active", Typ: values.TypeBool},
-				Comparison{Type: ComparisonNotEquals, Operand: values.LiteralValue(false)},
-			),
-			want: "active <> FALSE",
+			pred: NewComparisonPredicate(predicateTestField(t, "active", values.TypeBool), Comparison{Type: ComparisonNotEquals, Operand: values.LiteralValue(false)}),
+			want: "predicate_test_active.active#0 <> FALSE",
 		},
 		{
 			name: "bytes as SQL hex literal",
-			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "digest", Typ: values.TypeUnknown},
-				Comparison{Type: ComparisonEquals, Operand: values.LiteralValue([]byte{0x01, 0x02, 0xff})},
-			),
-			want: "digest = X'0102ff'",
+			pred: NewComparisonPredicate(predicateTestField(t, "digest", values.TypeUnknown), Comparison{Type: ComparisonEquals, Operand: values.LiteralValue([]byte{0x01, 0x02, 0xff})}),
+			want: "predicate_test_digest.digest#0 = X'0102ff'",
 		},
 		{
 			name: "empty bytes literal",
-			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "digest", Typ: values.TypeUnknown},
-				Comparison{Type: ComparisonEquals, Operand: values.LiteralValue([]byte{})},
-			),
-			want: "digest = X''",
+			pred: NewComparisonPredicate(predicateTestField(t, "digest", values.TypeUnknown), Comparison{Type: ComparisonEquals, Operand: values.LiteralValue([]byte{})}),
+			want: "predicate_test_digest.digest#0 = X''",
 		},
 	}
 	for _, tc := range cases {
@@ -713,7 +682,7 @@ func TestComparisonPredicate_EndToEnd(t *testing.T) {
 	// Predicate: field `age >= 18` against a row represented as a
 	// map. FieldValue.Evaluate resolves the column by its plan-time ordinal
 	// (sole column "age" → slot 0); Value.Evaluate drives the predicate.
-	operand := pbake("age", values.NullableLong, "age")
+	operand := pbake(t, "age", values.NullableLong, "age")
 	cmp := Comparison{Type: ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))}
 	pred := NewComparisonPredicate(operand, cmp)
 
@@ -733,7 +702,7 @@ func TestComparisonPredicate_EndToEnd(t *testing.T) {
 	// The baked operand carries its plan-time ordinal, so ExplainValue renders it
 	// with the ordinal suffix ("age#0") — the injective (name, ordinal)
 	// rendering. The predicate still composes as `operand OP rhs`.
-	if got := pred.Explain(); got != "age#0 >= 18" {
+	if got := pred.Explain(); got != "pred_row_age.age#0 >= 18" {
 		t.Fatalf("Explain: got %q", got)
 	}
 }
@@ -756,9 +725,9 @@ func TestComparisonPredicate_ComposesWithKleeneConnectives(t *testing.T) {
 	// (age >= 18) AND (rank < 5) — each ref carries its plan-time
 	// ordinal (sorted {age, rank} → age=0, rank=1).
 	tree := NewAnd(
-		NewComparisonPredicate(pbake("age", values.NullableLong, "age", "rank"),
+		NewComparisonPredicate(pbake(t, "age", values.NullableLong, "age", "rank"),
 			Comparison{Type: ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))}),
-		NewComparisonPredicate(pbake("rank", values.NullableLong, "age", "rank"),
+		NewComparisonPredicate(pbake(t, "rank", values.NullableLong, "age", "rank"),
 			Comparison{Type: ComparisonLessThan, Operand: values.LiteralValue(int64(5))}),
 	)
 	if got, _ := tree.Eval(predRow(row)); got != TriTrue {
@@ -778,8 +747,8 @@ func TestComparisonPredicate_ArithmeticOperand(t *testing.T) {
 	// (sorted {a, b} → a=0, b=1).
 	sum := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  pbake("a", values.NullableLong, "a", "b"),
-		Right: pbake("b", values.NullableLong, "a", "b"),
+		Left:  pbake(t, "a", values.NullableLong, "a", "b"),
+		Right: pbake(t, "b", values.NullableLong, "a", "b"),
 	}
 	pred := NewComparisonPredicate(sum,
 		Comparison{Type: ComparisonGreaterThan, Operand: values.LiteralValue(int64(10))})
@@ -806,8 +775,8 @@ func TestComparisonPredicate_NonConstantRHS(t *testing.T) {
 	// age = rank_cutoff (both FieldValues) — each carries its
 	// plan-time ordinal (sorted {age, cutoff} → age=0, cutoff=1).
 	pred := NewComparisonPredicate(
-		pbake("age", values.NullableLong, "age", "cutoff"),
-		Comparison{Type: ComparisonEquals, Operand: pbake("cutoff", values.NullableLong, "age", "cutoff")},
+		pbake(t, "age", values.NullableLong, "age", "cutoff"),
+		Comparison{Type: ComparisonEquals, Operand: pbake(t, "cutoff", values.NullableLong, "age", "cutoff")},
 	)
 
 	cases := []struct {
@@ -840,12 +809,12 @@ func TestComparisonPredicate_IsDistinctFrom_NonConstantRHS(t *testing.T) {
 	t.Parallel()
 	// Each side carries its plan-time ordinal (sorted {a, b} → a=0, b=1).
 	dist := NewComparisonPredicate(
-		pbake("a", values.NullableLong, "a", "b"),
-		Comparison{Type: ComparisonIsDistinctFrom, Operand: pbake("b", values.NullableLong, "a", "b")},
+		pbake(t, "a", values.NullableLong, "a", "b"),
+		Comparison{Type: ComparisonIsDistinctFrom, Operand: pbake(t, "b", values.NullableLong, "a", "b")},
 	)
 	notDist := NewComparisonPredicate(
-		pbake("a", values.NullableLong, "a", "b"),
-		Comparison{Type: ComparisonNotDistinctFrom, Operand: pbake("b", values.NullableLong, "a", "b")},
+		pbake(t, "a", values.NullableLong, "a", "b"),
+		Comparison{Type: ComparisonNotDistinctFrom, Operand: pbake(t, "b", values.NullableLong, "a", "b")},
 	)
 
 	cases := []struct {
@@ -879,12 +848,12 @@ func TestComparisonPredicate_NonConstantRHS_Arithmetic(t *testing.T) {
 	t.Parallel()
 	// Each ref carries its plan-time ordinal (sorted {a, b} → a=0, b=1).
 	pred := NewComparisonPredicate(
-		pbake("a", values.NullableLong, "a", "b"),
+		pbake(t, "a", values.NullableLong, "a", "b"),
 		Comparison{
 			Type: ComparisonEquals,
 			Operand: &values.ArithmeticValue{
 				Op:    values.OpAdd,
-				Left:  pbake("b", values.NullableLong, "a", "b"),
+				Left:  pbake(t, "b", values.NullableLong, "a", "b"),
 				Right: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
 			},
 		},
@@ -910,23 +879,18 @@ func TestComparisonPredicate_Explain_NonConstantRHS(t *testing.T) {
 	}{
 		{
 			name: "FieldValue RHS",
-			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "age", Typ: values.NullableLong},
-				Comparison{Type: ComparisonEquals, Operand: &values.FieldValue{Field: "cutoff", Typ: values.NullableLong}},
-			),
-			want: "age = cutoff",
+			pred: NewComparisonPredicate(predicateTestField(t, "age", values.NullableLong), Comparison{Type: ComparisonEquals, Operand: predicateTestField(t, "cutoff", values.NullableLong)}),
+			want: "predicate_test_age.age#0 = predicate_test_cutoff.cutoff#0",
 		},
 		{
 			name: "Arithmetic RHS over fields",
-			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "a", Typ: values.NullableLong},
-				Comparison{Type: ComparisonLessThan, Operand: &values.ArithmeticValue{
-					Op:    values.OpAdd,
-					Left:  &values.FieldValue{Field: "b", Typ: values.NullableLong},
-					Right: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
-				}},
+			pred: NewComparisonPredicate(predicateTestField(t, "a", values.NullableLong), Comparison{Type: ComparisonLessThan, Operand: &values.ArithmeticValue{
+				Op:    values.OpAdd,
+				Left:  predicateTestField(t, "b", values.NullableLong),
+				Right: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+			}},
 			),
-			want: "a < (b + 1)",
+			want: "predicate_test_a.a#0 < (predicate_test_b.b#0 + 1)",
 		},
 		{
 			// The CAST target is named EXPLICITLY. These two cases used
@@ -938,21 +902,15 @@ func TestComparisonPredicate_Explain_NonConstantRHS(t *testing.T) {
 			// where CAST(v AS BIGINT) succeeds, so the two are not the same
 			// operation.
 			name: "CastValue RHS over field",
-			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "id", Typ: values.NullableLong},
-				Comparison{Type: ComparisonEquals, Operand: values.NewCastValue(&values.FieldValue{Field: "raw", Typ: values.TypeString}, values.NullableLong)},
-			),
-			want: "id = CAST(raw AS BIGINT)",
+			pred: NewComparisonPredicate(predicateTestField(t, "id", values.NullableLong), Comparison{Type: ComparisonEquals, Operand: values.NewCastValue(predicateTestField(t, "raw", values.TypeString), values.NullableLong)}),
+			want: "predicate_test_id.id#0 = CAST(predicate_test_raw.raw#0 AS BIGINT)",
 		},
 		{
 			// A genuine 32-bit INT target, so the two widths are covered as
 			// the distinct renderings they are.
 			name: "CastValue RHS to INT renders distinctly from BIGINT",
-			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "id", Typ: values.NullableLong},
-				Comparison{Type: ComparisonEquals, Operand: values.NewCastValue(&values.FieldValue{Field: "raw", Typ: values.TypeString}, values.NullableInt)},
-			),
-			want: "id = CAST(raw AS INT)",
+			pred: NewComparisonPredicate(predicateTestField(t, "id", values.NullableLong), Comparison{Type: ComparisonEquals, Operand: values.NewCastValue(predicateTestField(t, "raw", values.TypeString), values.NullableInt)}),
+			want: "predicate_test_id.id#0 = CAST(predicate_test_raw.raw#0 AS INT)",
 		},
 		{
 			// Composite constant RHS (CAST over literal) — Explain
@@ -960,11 +918,8 @@ func TestComparisonPredicate_Explain_NonConstantRHS(t *testing.T) {
 			// to the folded literal. The simplifier handles the fold;
 			// rendering doesn't.
 			name: "CastValue RHS over constant preserves shape",
-			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "x", Typ: values.NullableLong},
-				Comparison{Type: ComparisonEquals, Operand: values.NewCastValue(&values.ConstantValue{Value: int64(5), Typ: values.NullableLong}, values.NullableLong)},
-			),
-			want: "x = CAST(5 AS BIGINT)",
+			pred: NewComparisonPredicate(predicateTestField(t, "x", values.NullableLong), Comparison{Type: ComparisonEquals, Operand: values.NewCastValue(&values.ConstantValue{Value: int64(5), Typ: values.NullableLong}, values.NullableLong)}),
+			want: "predicate_test_x.x#0 = CAST(5 AS BIGINT)",
 		},
 	}
 	for _, tc := range cases {
@@ -1111,15 +1066,13 @@ func TestLikeMatch_Escape(t *testing.T) {
 // output round-trips back to recognisable SQL.
 func TestComparisonPredicate_Explain_LikeEscape(t *testing.T) {
 	t.Parallel()
-	pred := NewComparisonPredicate(
-		&values.FieldValue{Field: "name", Typ: values.TypeString},
-		Comparison{
-			Type:    ComparisonLike,
-			Operand: values.LiteralValue(`a\%b`),
-			Escape:  '\\',
-		},
+	pred := NewComparisonPredicate(predicateTestField(t, "name", values.TypeString), Comparison{
+		Type:    ComparisonLike,
+		Operand: values.LiteralValue(`a\%b`),
+		Escape:  '\\',
+	},
 	)
-	want := `name LIKE 'a\%b' ESCAPE '\'`
+	want := `predicate_test_name.name#0 LIKE 'a\%b' ESCAPE '\'`
 	if got := pred.Explain(); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -1131,15 +1084,13 @@ func TestComparisonPredicate_Explain_LikeEscape(t *testing.T) {
 // would be unbalanced and unparseable.
 func TestComparisonPredicate_Explain_LikeEscape_SingleQuoteEscape(t *testing.T) {
 	t.Parallel()
-	pred := NewComparisonPredicate(
-		&values.FieldValue{Field: "name", Typ: values.TypeString},
-		Comparison{
-			Type:    ComparisonLike,
-			Operand: values.LiteralValue("a%b"),
-			Escape:  '\'',
-		},
+	pred := NewComparisonPredicate(predicateTestField(t, "name", values.TypeString), Comparison{
+		Type:    ComparisonLike,
+		Operand: values.LiteralValue("a%b"),
+		Escape:  '\'',
+	},
 	)
-	want := `name LIKE 'a%b' ESCAPE ''''`
+	want := `predicate_test_name.name#0 LIKE 'a%b' ESCAPE ''''`
 	if got := pred.Explain(); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -1148,11 +1099,8 @@ func TestComparisonPredicate_Explain_LikeEscape_SingleQuoteEscape(t *testing.T) 
 // LIKE without ESCAPE doesn't emit a stray "ESCAPE ”" clause.
 func TestComparisonPredicate_Explain_LikeNoEscape(t *testing.T) {
 	t.Parallel()
-	pred := NewComparisonPredicate(
-		&values.FieldValue{Field: "name", Typ: values.TypeString},
-		Comparison{Type: ComparisonLike, Operand: values.LiteralValue("hel%")},
-	)
-	want := `name LIKE 'hel%'`
+	pred := NewComparisonPredicate(predicateTestField(t, "name", values.TypeString), Comparison{Type: ComparisonLike, Operand: values.LiteralValue("hel%")})
+	want := `predicate_test_name.name#0 LIKE 'hel%'`
 	if got := pred.Explain(); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -1185,7 +1133,7 @@ func TestComparisonPredicate_FloatComparisons(t *testing.T) {
 	t.Parallel()
 	// "price" carries its plan-time ordinal (sole column → slot 0).
 	pred := NewComparisonPredicate(
-		pbake("price", values.NullableDouble, "price"),
+		pbake(t, "price", values.NullableDouble, "price"),
 		Comparison{Type: ComparisonGreaterThan, Operand: values.LiteralValue(float64(3.14))},
 	)
 	cases := []struct {
@@ -1218,10 +1166,10 @@ func TestComparisonPredicate_Like_FieldValueRHS(t *testing.T) {
 	// Each ref carries its plan-time ordinal (sorted {name, pattern}
 	// → name=0, pattern=1).
 	pred := NewComparisonPredicate(
-		pbake("name", values.TypeString, "name", "pattern"),
+		pbake(t, "name", values.TypeString, "name", "pattern"),
 		Comparison{
 			Type:    ComparisonLike,
-			Operand: pbake("pattern", values.TypeString, "name", "pattern"),
+			Operand: pbake(t, "pattern", values.TypeString, "name", "pattern"),
 		},
 	)
 	cases := []struct {

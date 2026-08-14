@@ -14,10 +14,68 @@ import (
 // They are self-contained so the test file compiles independently
 // of helpers that may or may not exist in other test files.
 
-// pbFieldValue creates a FieldValue referencing a quantifier's field.
-// Mirrors Java's fieldValue(Quantifier, String).
-func pbFieldValue(q expressions.Quantifier, field string) *values.FieldValue {
-	return values.NewFieldValue(q.GetFlowedObjectValue(), field, values.TypeUnknown)
+func mustPartitionBinaryConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct partition-binary fixture: " + err.Error())
+	}
+	return value
+}
+
+func mustFirePartitionExpressionRule(
+	t testing.TB,
+	rule ExpressionRule,
+	ref *expressions.Reference,
+) []expressions.RelationalExpression {
+	t.Helper()
+	yielded, err := FireExpressionRule(rule, ref)
+	if err != nil {
+		t.Fatalf("FireExpressionRule() unexpected error: %v", err)
+	}
+	return yielded
+}
+
+// partitionBinaryRowType is the common exact row flowed by the T and TAU
+// fixtures. Keeping the rows identical lets the tests isolate partitioning
+// behavior; g remains a real array-of-record so Explode's element contract is
+// also exercised instead of being inferred from UnknownType.
+func partitionBinaryRowType() *values.RecordType {
+	return values.NewRecordType("partition_binary_row", false, []values.Field{
+		{Name: "a", FieldType: values.NotNullLong},
+		{Name: "b", FieldType: values.NullableString},
+		{Name: "c", FieldType: values.NullableString},
+		{Name: "alpha", FieldType: values.NotNullLong},
+		{Name: "beta", FieldType: values.NullableString},
+		{Name: "gamma", FieldType: values.NullableString},
+		{Name: "g", FieldType: values.NewArrayType(false, partitionBinaryExplodedRowType())},
+	})
+}
+
+func partitionBinaryExplodedRowType() *values.RecordType {
+	return values.NewRecordType("partition_binary_g_element", false, []values.Field{
+		{Name: "one", FieldType: values.NotNullString},
+		{Name: "two", FieldType: values.NullableString},
+		{Name: "three", FieldType: values.NullableString},
+	})
+}
+
+func partitionBinaryScan(recordType string) *expressions.FullUnorderedScanExpression {
+	return mustPartitionBinaryConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{recordType}, partitionBinaryRowType()))
+}
+
+func partitionBinaryTypeFilter(recordType string) *expressions.LogicalTypeFilterExpression {
+	return mustPartitionBinaryConstruct(expressions.NewLogicalTypeFilterExpression(
+		[]string{recordType}, pbForEachOf(partitionBinaryScan(recordType))))
+}
+
+// pbFieldValue resolves the semantic field against the quantifier's exact
+// flowed QOV. This pins the source-relative ordinal used by the partition
+// rewrites while retaining the field name as diagnostic metadata.
+func pbFieldValue(q expressions.Quantifier, field string) values.Value {
+	qov := mustPartitionBinaryConstruct(q.RequireFlowedObjectValue())
+	request := mustPartitionBinaryConstruct(values.FieldByName(field))
+	return mustPartitionBinaryConstruct(values.ResolveFieldAccess(
+		qov, []values.FieldRequest{request}))
 }
 
 // pbFieldPred creates a ComparisonPredicate on a quantifier's field.
@@ -36,7 +94,19 @@ func pbValueCmp(typ predicates.ComparisonType, v values.Value) predicates.Compar
 
 // pbLiteralCmp creates a comparison with a literal operand.
 func pbLiteralCmp(typ predicates.ComparisonType, lit any) predicates.Comparison {
-	return predicates.NewLiteralComparison(typ, lit)
+	var literalType values.Type
+	switch lit.(type) {
+	case int64:
+		literalType = values.NotNullLong
+	case string:
+		literalType = values.NotNullString
+	default:
+		panic("construct partition-binary fixture: unsupported literal type")
+	}
+	return predicates.Comparison{
+		Type:    typ,
+		Operand: &values.ConstantValue{Value: lit, Typ: literalType},
+	}
 }
 
 // pbForEachOf wraps an expression in a ForEach quantifier.
@@ -45,39 +115,32 @@ func pbForEachOf(expr expressions.RelationalExpression) expressions.Quantifier {
 }
 
 // pbSelectWithPreds creates a SelectExpression with one quantifier and
-// the given predicates, using qun.GetFlowedObjectValue() as the result value.
+// the given predicates, using the quantifier's exact flowed QOV as the result.
 func pbSelectWithPreds(qun expressions.Quantifier, preds ...predicates.QueryPredicate) *expressions.SelectExpression {
-	return expressions.NewSelectExpression(
-		qun.GetFlowedObjectValue(),
+	return mustPartitionBinaryConstruct(expressions.NewSelectExpression(
+		mustPartitionBinaryConstruct(qun.RequireFlowedObjectValue()),
 		[]expressions.Quantifier{qun},
 		preds,
-	)
+	))
 }
 
 // baseT mirrors Java's RuleTestHelper.baseT(): LogicalTypeFilter("T") over
 // FullUnorderedScan, wrapped in a ForEach quantifier.
 func baseT() expressions.Quantifier {
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
-	tf := expressions.NewLogicalTypeFilterExpression([]string{"T"}, scanQ)
-	return pbForEachOf(tf)
+	return pbForEachOf(partitionBinaryTypeFilter("T"))
 }
 
 // baseTau mirrors Java's RuleTestHelper.baseTau(): LogicalTypeFilter("TAU")
 // over FullUnorderedScan, wrapped in a ForEach quantifier.
 func baseTau() expressions.Quantifier {
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
-	tf := expressions.NewLogicalTypeFilterExpression([]string{"TAU"}, scanQ)
-	return pbForEachOf(tf)
+	return pbForEachOf(partitionBinaryTypeFilter("TAU"))
 }
 
 // explodeFieldQ mirrors Java's RuleTestHelper.explodeField(qun, "fieldName"):
 // ForEach(ExplodeExpression(fieldValue(qun, fieldName))).
 func explodeFieldQ(qun expressions.Quantifier, fieldName string) expressions.Quantifier {
-	return pbForEachOf(expressions.NewExplodeExpression(pbFieldValue(qun, fieldName)))
+	return pbForEachOf(mustPartitionBinaryConstruct(
+		expressions.NewExplodeExpression(pbFieldValue(qun, fieldName))))
 }
 
 // joinBuilder accumulates quantifiers, result columns, and predicates
@@ -110,7 +173,37 @@ func (b *joinBuilder) addPredicate(pred predicates.QueryPredicate) *joinBuilder 
 
 // buildSelect seals the expansion and builds the SelectExpression.
 func (b *joinBuilder) buildSelect() *expressions.SelectExpression {
-	return b.gb.Build().Seal().BuildSelect()
+	return mustPartitionBinaryConstruct(b.gb.Build().Seal().BuildSelect())
+}
+
+func partitionBinaryAliasField(alias, field string) values.Value {
+	qov := mustPartitionBinaryConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier(alias), partitionBinaryRowType()))
+	request := mustPartitionBinaryConstruct(values.FieldByName(field))
+	return mustPartitionBinaryConstruct(values.ResolveFieldAccess(
+		qov, []values.FieldRequest{request}))
+}
+
+func partitionBinaryJoinPredicate(left, right string) predicates.QueryPredicate {
+	return predicates.NewComparisonPredicate(
+		partitionBinaryAliasField(left, "a"),
+		pbValueCmp(predicates.ComparisonEquals, partitionBinaryAliasField(right, "a")),
+	)
+}
+
+func partitionBinaryNamedScanQuantifier(name string) expressions.Quantifier {
+	return expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier(name),
+		expressions.InitialOf(partitionBinaryTypeFilter(name)),
+	)
+}
+
+func partitionBinaryAliasSet(names ...string) map[values.CorrelationIdentifier]struct{} {
+	set := make(map[values.CorrelationIdentifier]struct{}, len(names))
+	for _, name := range names {
+		set[values.NamedCorrelationIdentifier(name)] = struct{}{}
+	}
+	return set
 }
 
 // --- Uncorrelated join tests ---
@@ -134,7 +227,7 @@ func TestPartitionBinarySelectRule_PartitionSimpleSelect(t *testing.T) {
 		buildSelect()
 
 	ref := expressions.InitialOf(sel)
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), ref)
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), ref)
 
 	// Both orderings are explored (no correlation between the two
 	// independent quantifiers). Each ordering pushes predicates to
@@ -196,7 +289,7 @@ func TestPartitionBinarySelectRule_PushJoinCriterionBothSides(t *testing.T) {
 		buildSelect()
 
 	ref := expressions.InitialOf(sel)
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), ref)
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), ref)
 
 	// For each ordering, the join predicate references both aliases.
 	// It goes to the "right" side (the one whose alias appears in the
@@ -250,8 +343,8 @@ func TestPartitionBinarySelectRule_PushUncorrelatedPredicateOppositeToJoin(t *te
 
 	// Uncorrelated predicate: 42 = <constant>. References no quantifier alias.
 	uncorrelatedPred := &predicates.ComparisonPredicate{
-		Operand:    values.LiteralValue(int64(42)),
-		Comparison: predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(99))},
+		Operand:    &values.ConstantValue{Value: int64(42), Typ: values.NotNullLong},
+		Comparison: pbLiteralCmp(predicates.ComparisonEquals, int64(99)),
 	}
 
 	sel := joinOf(tQ, tauQ).
@@ -262,7 +355,7 @@ func TestPartitionBinarySelectRule_PushUncorrelatedPredicateOppositeToJoin(t *te
 		buildSelect()
 
 	ref := expressions.InitialOf(sel)
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), ref)
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), ref)
 
 	// Two orderings -> 2 yields. Each yield has both predicates pushed
 	// into sub-selects, leaving the outer empty.
@@ -316,7 +409,7 @@ func TestPartitionBinarySelectRule_PartitionWhenOneSideNotInResultValue(t *testi
 		buildSelect()
 
 	ref := expressions.InitialOf(sel)
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), ref)
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), ref)
 
 	if len(yielded) < 2 {
 		t.Fatalf("expected at least 2 yielded expressions, got %d", len(yielded))
@@ -355,17 +448,20 @@ func TestPartitionBinarySelectRule_SkipsExistentialQuantifiers(t *testing.T) {
 	)
 	tauQ := expressions.ExistentialQuantifier(tauExistsRef)
 
-	sel := expressions.NewSelectExpression(
-		tQ.GetFlowedObjectValue(),
+	sel := mustPartitionBinaryConstruct(expressions.NewSelectExpression(
+		mustPartitionBinaryConstruct(tQ.RequireFlowedObjectValue()),
 		[]expressions.Quantifier{tQ, tauQ},
 		[]predicates.QueryPredicate{
-			predicates.NewExistentialAlias(tauQ.GetAlias()),
+			mustPartitionBinaryConstruct(predicates.NewExistentialAlias(
+				tauQ.GetAlias(),
+				mustPartitionBinaryConstruct(tauQ.GetFlowedObjectType()),
+			)),
 			pbFieldPred(tQ, "c", predicates.Comparison{Type: predicates.ComparisonIsNotNull}),
 		},
-	)
+	))
 	ref := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), ref)
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), ref)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (existential quantifiers are skipped by Go rule), got %d", len(yielded))
 	}
@@ -402,7 +498,7 @@ func TestPartitionBinarySelectRule_PushSimplePredicatesWithCorrelatedQuantifiers
 		buildSelect()
 
 	ref := expressions.InitialOf(sel)
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), ref)
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), ref)
 
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yielded expression, got %d", len(yielded))
@@ -445,7 +541,7 @@ func TestPartitionBinarySelectRule_PushCorrelatedPredicate(t *testing.T) {
 		buildSelect()
 
 	ref := expressions.InitialOf(sel)
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), ref)
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), ref)
 
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yielded expression, got %d", len(yielded))
@@ -494,7 +590,7 @@ func TestPartitionBinarySelectRule_PartitionWithExplodeNotInResult(t *testing.T)
 		buildSelect()
 
 	ref := expressions.InitialOf(sel)
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), ref)
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), ref)
 
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yielded expression, got %d", len(yielded))
@@ -545,7 +641,7 @@ func TestPartitionBinarySelectRule_PartitionWithExplodeInResult(t *testing.T) {
 		buildSelect()
 
 	ref := expressions.InitialOf(sel)
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), ref)
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), ref)
 
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yielded expression, got %d", len(yielded))
@@ -579,7 +675,7 @@ func TestPartitionBinarySelectRule_NoPredicates(t *testing.T) {
 		buildSelect()
 
 	ref := expressions.InitialOf(sel)
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), ref)
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), ref)
 
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (no predicates to push), got %d", len(yielded))
@@ -596,10 +692,10 @@ func TestPartitionBinarySelectRule_StrictSingleFailsClosed(t *testing.T) {
 	sel := joinOf(tQ, tauQ).
 		addResultColumn(tQ, "a").
 		addResultColumn(tauQ, "alpha").
-		addPredicate(joinPred(tQ.GetAlias().Name(), tauQ.GetAlias().Name())).
+		addPredicate(partitionBinaryJoinPredicate(tQ.GetAlias().Name(), tauQ.GetAlias().Name())).
 		buildSelect()
 
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), expressions.InitialOf(sel))
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), expressions.InitialOf(sel))
 	if len(yielded) != 0 {
 		t.Fatalf("binary strict-single select yielded %d partition(s), want fail-closed zero", len(yielded))
 	}
@@ -612,16 +708,16 @@ func TestPartitionBinarySelectRule_SingleQuantifier(t *testing.T) {
 
 	tQ := baseT()
 
-	sel := expressions.NewSelectExpression(
-		tQ.GetFlowedObjectValue(),
+	sel := mustPartitionBinaryConstruct(expressions.NewSelectExpression(
+		mustPartitionBinaryConstruct(tQ.RequireFlowedObjectValue()),
 		[]expressions.Quantifier{tQ},
 		[]predicates.QueryPredicate{
 			pbFieldPred(tQ, "a", pbLiteralCmp(predicates.ComparisonEquals, int64(42))),
 		},
-	)
+	))
 	ref := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), ref)
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), ref)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (single quantifier), got %d", len(yielded))
 	}
@@ -637,16 +733,16 @@ func TestPartitionBinarySelectRule_ThreeQuantifiers(t *testing.T) {
 	tauQ := baseTau()
 	extraQ := baseT()
 
-	sel := expressions.NewSelectExpression(
-		tQ.GetFlowedObjectValue(),
+	sel := mustPartitionBinaryConstruct(expressions.NewSelectExpression(
+		mustPartitionBinaryConstruct(tQ.RequireFlowedObjectValue()),
 		[]expressions.Quantifier{tQ, tauQ, extraQ},
 		[]predicates.QueryPredicate{
 			pbFieldPred(tQ, "a", pbLiteralCmp(predicates.ComparisonEquals, int64(1))),
 		},
-	)
+	))
 	ref := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), ref)
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), ref)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (three quantifiers, rule requires exactly 2), got %d", len(yielded))
 	}
@@ -668,7 +764,7 @@ func TestPartitionBinarySelectRule_PredicateOnOneSideOnly(t *testing.T) {
 		buildSelect()
 
 	ref := expressions.InitialOf(sel)
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), ref)
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), ref)
 
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yielded expression, got %d", len(yielded))
@@ -728,7 +824,7 @@ func TestPartitionBinarySelectRule_IdempotencyGuard(t *testing.T) {
 	ref := expressions.InitialOf(sel)
 	ref.Insert(noopSel)
 
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), ref)
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), ref)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (idempotency guard: predicate-free partition over the same alias set already present), got %d", len(yielded))
 	}
@@ -764,7 +860,7 @@ func TestPartitionBinarySelectRule_DistinctBipartitionNotBlocked(t *testing.T) {
 	ref := expressions.InitialOf(sel)
 	ref.Insert(otherSel)
 
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), ref)
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), ref)
 	if len(yielded) == 0 {
 		t.Fatal("expected >0 yields: a predicate-free binary over a DIFFERENT alias set is a sibling bipartition, not this select's own re-fire — the guard must not block it")
 	}
@@ -787,7 +883,7 @@ func TestPartitionBinarySelectRule_ResultValuePreserved(t *testing.T) {
 
 	originalResultValue := sel.GetResultValue()
 	ref := expressions.InitialOf(sel)
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), ref)
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), ref)
 
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yielded expression, got %d", len(yielded))
@@ -826,10 +922,7 @@ func TestPartitionBinarySelectRule_DeclinesAbsorbIntoNullOnEmptyLeg(t *testing.T
 	// to the box. Both orderings route the predicate into the noe leg, so the
 	// rule must yield nothing.
 	tQ := baseT()
-	tauNoeQ := pbForEachNoeOf(expressions.NewLogicalTypeFilterExpression(
-		[]string{"TAU"},
-		expressions.ForEachQuantifier(expressions.InitialOf(&expressions.FullUnorderedScanExpression{})),
-	))
+	tauNoeQ := pbForEachNoeOf(partitionBinaryTypeFilter("TAU"))
 
 	sel := joinOf(tQ, tauNoeQ).
 		addResultColumn(tQ, "a").
@@ -837,7 +930,7 @@ func TestPartitionBinarySelectRule_DeclinesAbsorbIntoNullOnEmptyLeg(t *testing.T
 		addPredicate(pbFieldPred(tauNoeQ, "beta", pbLiteralCmp(predicates.ComparisonGreaterThan, "world"))).
 		buildSelect()
 
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), expressions.InitialOf(sel))
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), expressions.InitialOf(sel))
 	if len(yielded) != 0 {
 		t.Fatalf("expected no yields (predicate absorbed into a null-on-empty leg), got %d: %T", len(yielded), yielded[0])
 	}
@@ -850,10 +943,7 @@ func TestPartitionBinarySelectRule_PreservesNullOnEmptyOnUntouchedLeg(t *testing
 	// preserved side commutes with the box — and the null-on-empty leg, which
 	// absorbs nothing, must pass through VERBATIM with its flag intact.
 	tQ := baseT()
-	tauNoeQ := pbForEachNoeOf(expressions.NewLogicalTypeFilterExpression(
-		[]string{"TAU"},
-		expressions.ForEachQuantifier(expressions.InitialOf(&expressions.FullUnorderedScanExpression{})),
-	))
+	tauNoeQ := pbForEachNoeOf(partitionBinaryTypeFilter("TAU"))
 
 	sel := joinOf(tQ, tauNoeQ).
 		addResultColumn(tQ, "a").
@@ -861,7 +951,7 @@ func TestPartitionBinarySelectRule_PreservesNullOnEmptyOnUntouchedLeg(t *testing
 		addPredicate(pbFieldPred(tQ, "b", pbLiteralCmp(predicates.ComparisonGreaterThan, "hello"))).
 		buildSelect()
 
-	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), expressions.InitialOf(sel))
+	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), expressions.InitialOf(sel))
 	if len(yielded) == 0 {
 		t.Fatal("expected the preserved-leg predicate to partition")
 	}

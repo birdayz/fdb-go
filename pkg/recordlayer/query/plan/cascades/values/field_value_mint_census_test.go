@@ -245,6 +245,6 @@ func BenchmarkNewFlatFieldValueGateOff(b *testing.B) {
 	b.Cleanup(func() { SetLegIdentityCensusEnabled(prev) })
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = NewFlatFieldValue("AID", UnknownType)
+		_ = newFlatFieldValue("AID", UnknownType)
 	}
 }

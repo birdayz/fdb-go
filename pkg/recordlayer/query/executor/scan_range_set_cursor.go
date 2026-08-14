@@ -23,10 +23,11 @@ type scanRangeMaterializer func(choices []uint32) (recordlayer.TupleRange, error
 // all-zero-length odometer position). An explicitly empty spec represents no
 // leaf at all and must not provide a materializer.
 type scanRangeSetSpec struct {
-	fingerprint       []byte
-	alternativeCounts []uint32
-	empty             bool
-	materialize       scanRangeMaterializer
+	fingerprint            []byte
+	compatibleFingerprints [][]byte
+	alternativeCounts      []uint32
+	empty                  bool
+	materialize            scanRangeMaterializer
 }
 
 // scanRangeLeafFactory opens one physical leaf at its optional inner
@@ -105,6 +106,7 @@ func newScanRangeSetCursor[T any](
 	childProperties := properties.WithExecuteProperties(executeProperties.ClearSkipAndLimit())
 
 	fingerprint := bytes.Clone(spec.fingerprint)
+	compatibleFingerprints := cloneFingerprintSet(spec.compatibleFingerprints)
 	alternativeCounts := append([]uint32(nil), spec.alternativeCounts...)
 	choices := make([]uint32, len(alternativeCounts))
 	var innerContinuation []byte
@@ -113,6 +115,7 @@ func newScanRangeSetCursor[T any](
 			continuation,
 			fingerprint,
 			alternativeCounts,
+			compatibleFingerprints...,
 		)
 		if err != nil {
 			return nil, err
@@ -137,12 +140,13 @@ func parseScanRangeSetContinuation(
 	raw []byte,
 	fingerprint []byte,
 	alternativeCounts []uint32,
+	compatibleFingerprints ...[]byte,
 ) ([]uint32, []byte, error) {
 	var continuation gen.ScanRangeSetContinuation
 	if err := continuation.UnmarshalVT(raw); err != nil {
 		return nil, nil, scanRangeSetContinuationError(raw, err)
 	}
-	if !bytes.Equal(continuation.Fingerprint, fingerprint) {
+	if !fingerprintAccepted(continuation.Fingerprint, fingerprint, compatibleFingerprints) {
 		return nil, nil, scanRangeSetContinuationError(
 			raw,
 			fmt.Errorf("fingerprint does not match the evaluated range set"),
@@ -187,6 +191,29 @@ func parseScanRangeSetContinuation(
 	return append([]uint32(nil), continuation.Choices...),
 		bytes.Clone(continuation.InnerContinuation),
 		nil
+}
+
+func cloneFingerprintSet(fingerprints [][]byte) [][]byte {
+	if len(fingerprints) == 0 {
+		return nil
+	}
+	cloned := make([][]byte, len(fingerprints))
+	for i, fingerprint := range fingerprints {
+		cloned[i] = bytes.Clone(fingerprint)
+	}
+	return cloned
+}
+
+func fingerprintAccepted(candidate, current []byte, compatible [][]byte) bool {
+	if bytes.Equal(candidate, current) {
+		return true
+	}
+	for _, fingerprint := range compatible {
+		if bytes.Equal(candidate, fingerprint) {
+			return true
+		}
+	}
+	return false
 }
 
 func scanRangeSetContinuationError(raw []byte, cause error) error {

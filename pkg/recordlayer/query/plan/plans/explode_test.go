@@ -9,7 +9,7 @@ import (
 
 func newTestArrayValue(elems ...any) values.Value {
 	return &values.ConstantValue{
-		Typ:   &values.ArrayType{ElementType: values.UnknownType},
+		Typ:   &values.ArrayType{ElementType: values.NotNullLong},
 		Value: elems,
 	}
 }
@@ -17,7 +17,9 @@ func newTestArrayValue(elems ...any) values.Value {
 func TestExplodePlan_Construction(t *testing.T) {
 	t.Parallel()
 	v := newTestArrayValue(1)
-	p := NewRecordQueryExplodePlan(v)
+	p := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlan(v)
+	})
 	if p.GetCollectionValue() != v {
 		t.Fatal("collection value mismatch")
 	}
@@ -25,7 +27,9 @@ func TestExplodePlan_Construction(t *testing.T) {
 
 func TestExplodePlan_GetChildren_Nil(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryExplodePlan(nil)
+	p := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlan(newTestArrayValue())
+	})
 	if cs := p.GetChildren(); cs != nil {
 		t.Fatalf("GetChildren() = %v, want nil", cs)
 	}
@@ -38,34 +42,76 @@ func TestExplodePlan_GetResultType_ArrayElement(t *testing.T) {
 		Typ:   &values.ArrayType{ElementType: elemType},
 		Value: []any{1},
 	}
-	p := NewRecordQueryExplodePlan(v)
+	p := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlan(v)
+	})
 	if !p.GetResultType().Equals(elemType) {
 		t.Fatalf("GetResultType() = %v, want %v", p.GetResultType(), elemType)
 	}
 }
 
-func TestExplodePlan_GetResultType_NilCollection(t *testing.T) {
+func TestExplodePlan_FreezesResultTypeAgainstCollectionMutation(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryExplodePlan(nil)
-	if !values.UnknownType.Equals(p.GetResultType()) {
-		t.Fatalf("GetResultType() = %v, want UnknownType", p.GetResultType())
+	row := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NotNullInt},
+	}}
+	collection := values.NewArrayConstructorValue(row, nil)
+	plain := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlan(collection)
+	})
+	ordinal := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlanWithOrdinality(collection, true)
+	})
+	plainWant := plain.GetResultType()
+	ordinalWant := ordinal.GetResultType()
+
+	// The collection Value is intentionally an ordinary mutable graph. A plan
+	// that rereads it after publishing a layout can emit a differently typed row
+	// than that layout admits.
+	row.Fields[0].FieldType = values.NullableInt
+	row.Fields[0].Name = "MUTATED"
+	if got := plain.GetResultType(); !got.Equals(plainWant) {
+		t.Fatalf("plain result type drifted to %v, want frozen %v", got, plainWant)
+	}
+	if got := plain.GetElementType(); !got.Equals(plainWant) {
+		t.Fatalf("plain element type drifted to %v, want frozen %v", got, plainWant)
+	}
+	if got := ordinal.GetResultType(); !got.Equals(ordinalWant) {
+		t.Fatalf("ordinal result type drifted to %v, want frozen %v", got, ordinalWant)
+	}
+	ordinalRow := ordinal.GetResultType().(*values.RecordType)
+	if got := ordinal.GetElementType(); !got.Equals(ordinalRow.Fields[0].FieldType) {
+		t.Fatalf("ordinal element type = %v, want frozen result slot %v", got, ordinalRow.Fields[0].FieldType)
 	}
 }
 
-func TestExplodePlan_GetResultType_NonArrayType(t *testing.T) {
+func TestExplodePlan_ConstructorRejectsNilCollection(t *testing.T) {
 	t.Parallel()
-	v := &values.ConstantValue{Typ: values.UnknownType, Value: "not_an_array"}
-	p := NewRecordQueryExplodePlan(v)
-	if !values.UnknownType.Equals(p.GetResultType()) {
-		t.Fatalf("GetResultType() = %v, want UnknownType for non-array", p.GetResultType())
+	if _, err := NewRecordQueryExplodePlan(nil); err == nil {
+		t.Fatal("constructor accepted a nil collection")
+	}
+	if got := (&RecordQueryExplodePlan{}).GetElementType(); !values.UnknownType.Equals(got) {
+		t.Fatalf("malformed zero-value GetElementType() = %v, want UnknownType", got)
+	}
+}
+
+func TestExplodePlan_ConstructorRejectsNonArrayType(t *testing.T) {
+	t.Parallel()
+	v := &values.ConstantValue{Typ: values.NotNullString, Value: "not_an_array"}
+	if _, err := NewRecordQueryExplodePlan(v); err == nil {
+		t.Fatal("constructor accepted a non-array collection")
 	}
 }
 
 func TestExplodePlan_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
 	v := newTestArrayValue(1)
-	a := NewRecordQueryExplodePlan(v)
-	b := NewRecordQueryExplodePlan(v)
+	a := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlan(v)
+	})
+	b := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlan(v)
+	})
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same collection value should be equal")
 	}
@@ -75,8 +121,12 @@ func TestExplodePlan_EqualsWithoutChildren_Different(t *testing.T) {
 	t.Parallel()
 	v1 := newTestArrayValue(1)
 	v2 := newTestArrayValue(2)
-	a := NewRecordQueryExplodePlan(v1)
-	b := NewRecordQueryExplodePlan(v2)
+	a := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlan(v1)
+	})
+	b := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlan(v2)
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different collection values should not be equal")
 	}
@@ -84,8 +134,12 @@ func TestExplodePlan_EqualsWithoutChildren_Different(t *testing.T) {
 
 func TestExplodePlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryExplodePlan(nil)
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	p := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlan(newTestArrayValue())
+	})
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	if p.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("ExplodePlan should not equal a ScanPlan")
 	}
@@ -94,8 +148,12 @@ func TestExplodePlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 func TestExplodePlan_HashCodeWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
 	v := newTestArrayValue(1)
-	a := NewRecordQueryExplodePlan(v)
-	b := NewRecordQueryExplodePlan(v)
+	a := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlan(v)
+	})
+	b := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlan(v)
+	})
 	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
 		t.Fatal("same collection value should produce same hash")
 	}
@@ -103,7 +161,9 @@ func TestExplodePlan_HashCodeWithoutChildren_Same(t *testing.T) {
 
 func TestExplodePlan_HashCodeWithoutChildren_Consistent(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryExplodePlan(nil)
+	p := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlan(newTestArrayValue())
+	})
 	h1 := p.HashCodeWithoutChildren()
 	h2 := p.HashCodeWithoutChildren()
 	if h1 != h2 {
@@ -114,7 +174,9 @@ func TestExplodePlan_HashCodeWithoutChildren_Consistent(t *testing.T) {
 func TestExplodePlan_Explain(t *testing.T) {
 	t.Parallel()
 	v := newTestArrayValue(1, 2)
-	p := NewRecordQueryExplodePlan(v)
+	p := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlan(v)
+	})
 	exp := p.Explain()
 	if !strings.Contains(exp, "Explode") {
 		t.Fatalf("Explain = %q, want 'Explode'", exp)
@@ -123,7 +185,7 @@ func TestExplodePlan_Explain(t *testing.T) {
 
 func TestExplodePlan_Explain_Nil(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryExplodePlan(nil)
+	p := &RecordQueryExplodePlan{}
 	if got := p.Explain(); got != "Explode(<nil>)" {
 		t.Fatalf("Explain = %q, want 'Explode(<nil>)'", got)
 	}
@@ -138,8 +200,12 @@ func TestExplodePlan_WithOrdinality(t *testing.T) {
 	arr := values.NewArrayConstructorValue(values.NotNullLong, []values.Value{
 		values.LiteralValue(int64(1)),
 	})
-	plain := NewRecordQueryExplodePlan(arr)
-	ord := NewRecordQueryExplodePlanWithOrdinality(arr, true)
+	plain := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlan(arr)
+	})
+	ord := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlanWithOrdinality(arr, true)
+	})
 
 	if !ord.IsWithOrdinality() || plain.IsWithOrdinality() {
 		t.Fatal("IsWithOrdinality flag mismatch")

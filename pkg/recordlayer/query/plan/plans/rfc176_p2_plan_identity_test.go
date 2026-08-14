@@ -14,21 +14,22 @@ import (
 // true. The pool spans the discriminator axes the RFC-176 migration must
 // keep: field text, resolved ordinal vs literal-'#' identifier, constant
 // literals, and correlation aliases.
-func rfc176ValuePool() [][]values.Value {
+func rfc176ValuePool(t testing.TB) [][]values.Value {
+	t.Helper()
 	return [][]values.Value{
-		{values.NewFlatFieldValue("A", values.UnknownType)},
-		{values.NewFlatFieldValue("B", values.UnknownType)},
-		{values.NewFlatFieldValue("A", values.UnknownType), values.NewFlatFieldValue("B", values.UnknownType)},
-		{values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType)},
-		{values.NewFieldValueWithResolvedOrdinal("X", 1, values.UnknownType)},
-		{values.NewFlatFieldValue("X#0", values.UnknownType)},
+		{testField(t, "A", values.NullableLong)},
+		{testField(t, "B", values.NullableLong)},
+		{testField(t, "A", values.NullableLong), testField(t, "B", values.NullableLong)},
+		{testFieldAt(t, "X", 0, values.NullableLong)},
+		{testFieldAt(t, "X", 1, values.NullableLong)},
+		{testField(t, "X#0", values.NullableLong)},
 		{&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}},
 		{&values.ConstantValue{Value: int64(2), Typ: values.NotNullLong}},
-		{values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("q1"))},
-		{values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("q2"))},
+		{mustTestQOV(t, "q1", values.NullableLong)},
+		{mustTestQOV(t, "q2", values.NullableLong)},
 		// Duplicate of entry 0 — guarantees at least one genuinely equal,
 		// non-identical pair per plan type.
-		{values.NewFlatFieldValue("A", values.UnknownType)},
+		{testField(t, "A", values.NullableLong)},
 	}
 }
 
@@ -40,14 +41,19 @@ type rfc176PlanBuilder struct {
 	build func(vs []values.Value) RecordQueryPlan
 }
 
-func rfc176PlanBuilders() []rfc176PlanBuilder {
+func rfc176PlanBuilders(t testing.TB) []rfc176PlanBuilder {
+	t.Helper()
 	inner := stub("Inner")
 	return []rfc176PlanBuilder{
 		{"MultiIntersection", func(vs []values.Value) RecordQueryPlan {
-			return NewRecordQueryMultiIntersectionOnValuesPlan([]RecordQueryPlan{inner, inner}, vs, vs[0])
+			return mustChecked(t, func() (*RecordQueryMultiIntersectionOnValuesPlan, error) {
+				return NewRecordQueryMultiIntersectionOnValuesPlan([]RecordQueryPlan{inner, inner}, vs, vs[0])
+			})
 		}},
 		{"Projection", func(vs []values.Value) RecordQueryPlan {
-			return NewRecordQueryProjectionPlan(vs, inner)
+			return mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+				return NewRecordQueryProjectionPlan(vs, inner)
+			})
 		}},
 		// NOTE: the sort operator is intentionally absent here. The RFC-176 P2
 		// semantic-Value-identity plan was RecordQuerySortPlan, which is now
@@ -58,26 +64,40 @@ func rfc176PlanBuilders() []rfc176PlanBuilder {
 		// it cannot satisfy this suite's "identical payloads rebuilt compare
 		// equal" guard (distinct-but-semantically-equal Value instances).
 		{"StreamingAggregation", func(vs []values.Value) RecordQueryPlan {
-			return NewRecordQueryStreamingAggregationPlan(inner, vs,
-				[]expressions.AggregateSpec{{Function: expressions.AggCount, Operand: vs[0]}})
+			return mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+				return NewRecordQueryStreamingAggregationPlan(inner, vs,
+					[]expressions.AggregateSpec{{Function: expressions.AggCount, Operand: vs[0]}})
+			})
 		}},
 		{"Values", func(vs []values.Value) RecordQueryPlan {
-			return NewRecordQueryValuesPlan(vs)
+			return mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+				return NewRecordQueryValuesPlan(vs)
+			})
 		}},
 		{"Map", func(vs []values.Value) RecordQueryPlan {
-			return NewRecordQueryMapPlan(inner, vs[0])
+			return mustChecked(t, func() (*RecordQueryMapPlan, error) {
+				return NewRecordQueryMapPlan(inner, vs[0])
+			})
 		}},
 		{"DefaultOnEmpty", func(vs []values.Value) RecordQueryPlan {
-			return NewRecordQueryDefaultOnEmptyPlan(inner, vs[0])
+			return mustChecked(t, func() (*RecordQueryDefaultOnEmptyPlan, error) {
+				return NewRecordQueryDefaultOnEmptyPlan(inner, vs[0])
+			})
 		}},
 		{"FirstOrDefault", func(vs []values.Value) RecordQueryPlan {
-			return NewRecordQueryFirstOrDefaultPlan(inner, vs[0])
+			return mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+				return NewRecordQueryFirstOrDefaultPlan(inner, vs[0])
+			})
 		}},
 		{"Comparator", func(vs []values.Value) RecordQueryPlan {
-			return NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, vs, 0, false, false)
+			return mustChecked(t, func() (*RecordQueryComparatorPlan, error) {
+				return NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, vs, 0, false, false)
+			})
 		}},
 		{"MergeSortUnion", func(vs []values.Value) RecordQueryPlan {
-			return NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, vs, false, true)
+			return mustChecked(t, func() (*RecordQueryMergeSortUnionPlan, error) {
+				return NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, vs, false, true)
+			})
 		}},
 	}
 }
@@ -92,8 +112,8 @@ func rfc176PlanBuilders() []rfc176PlanBuilder {
 // hash on the full key renderings).
 func TestPlanIdentity_EqualImpliesSameHash_AllNine_RFC176(t *testing.T) {
 	t.Parallel()
-	pool := rfc176ValuePool()
-	for _, b := range rfc176PlanBuilders() {
+	pool := rfc176ValuePool(t)
+	for _, b := range rfc176PlanBuilders(t) {
 		instances := make([]RecordQueryPlan, len(pool))
 		for i, vs := range pool {
 			instances[i] = b.build(vs)
@@ -129,11 +149,15 @@ func TestPlanIdentity_EqualImpliesSameHash_AllNine_RFC176(t *testing.T) {
 func TestComparatorPlan_KeysJoinIdentity_RFC176(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
-	kA := []values.Value{values.NewFlatFieldValue("A", values.UnknownType)}
-	kB := []values.Value{values.NewFlatFieldValue("B", values.UnknownType)}
+	kA := []values.Value{testField(t, "A", values.NullableLong)}
+	kB := []values.Value{testField(t, "B", values.NullableLong)}
 
-	a := NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, kA, 0, false, false)
-	b := NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, kB, 0, false, false)
+	a := mustChecked(t, func() (*RecordQueryComparatorPlan, error) {
+		return NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, kA, 0, false, false)
+	})
+	b := mustChecked(t, func() (*RecordQueryComparatorPlan, error) {
+		return NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, kB, 0, false, false)
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatalf("comparator plans with different comparison keys must NOT compare equal "+
 			"(key-count-only equality + rendering-keyed hash = equal⟹same-hash violation): hashes %#x vs %#x",
@@ -142,17 +166,23 @@ func TestComparatorPlan_KeysJoinIdentity_RFC176(t *testing.T) {
 
 	// Genuinely equal plans (same keys, ref index, reverse) stay equal and
 	// hash equal; the non-Value discriminators still break equality.
-	c := NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, kA, 0, false, false)
+	c := mustChecked(t, func() (*RecordQueryComparatorPlan, error) {
+		return NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, kA, 0, false, false)
+	})
 	if !a.EqualsPlanWithoutChildren(c) {
 		t.Fatal("identical comparator plans must compare equal")
 	}
 	if a.HashCodeWithoutChildren() != c.HashCodeWithoutChildren() {
 		t.Fatal("identical comparator plans must hash equal")
 	}
-	if a.EqualsPlanWithoutChildren(NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, kA, 1, false, false)) {
+	if a.EqualsPlanWithoutChildren(mustChecked(t, func() (*RecordQueryComparatorPlan, error) {
+		return NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, kA, 1, false, false)
+	})) {
 		t.Fatal("different reference plan index must break equality")
 	}
-	if a.EqualsPlanWithoutChildren(NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, kA, 0, true, false)) {
+	if a.EqualsPlanWithoutChildren(mustChecked(t, func() (*RecordQueryComparatorPlan, error) {
+		return NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, kA, 0, true, false)
+	})) {
 		t.Fatal("different reverse flag must break equality")
 	}
 }
@@ -164,28 +194,38 @@ func TestComparatorPlan_KeysJoinIdentity_RFC176(t *testing.T) {
 func TestMergeSortUnionPlan_KeysJoinIdentity_RFC176(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
-	kA := []values.Value{values.NewFlatFieldValue("A", values.UnknownType)}
-	kB := []values.Value{values.NewFlatFieldValue("B", values.UnknownType)}
+	kA := []values.Value{testField(t, "A", values.NullableLong)}
+	kB := []values.Value{testField(t, "B", values.NullableLong)}
 
-	a := NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, kA, false, true)
-	b := NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, kB, false, true)
+	a := mustChecked(t, func() (*RecordQueryMergeSortUnionPlan, error) {
+		return NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, kA, false, true)
+	})
+	b := mustChecked(t, func() (*RecordQueryMergeSortUnionPlan, error) {
+		return NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, kB, false, true)
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatalf("merge-sort-union plans with different comparison keys must NOT compare equal "+
 			"(key-count-only equality + rendering-keyed hash = equal⟹same-hash violation): hashes %#x vs %#x",
 			a.HashCodeWithoutChildren(), b.HashCodeWithoutChildren())
 	}
 
-	c := NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, kA, false, true)
+	c := mustChecked(t, func() (*RecordQueryMergeSortUnionPlan, error) {
+		return NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, kA, false, true)
+	})
 	if !a.EqualsPlanWithoutChildren(c) {
 		t.Fatal("identical merge-sort-union plans must compare equal")
 	}
 	if a.HashCodeWithoutChildren() != c.HashCodeWithoutChildren() {
 		t.Fatal("identical merge-sort-union plans must hash equal")
 	}
-	if a.EqualsPlanWithoutChildren(NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, kA, true, true)) {
+	if a.EqualsPlanWithoutChildren(mustChecked(t, func() (*RecordQueryMergeSortUnionPlan, error) {
+		return NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, kA, true, true)
+	})) {
 		t.Fatal("different reverse flag must break equality")
 	}
-	if a.EqualsPlanWithoutChildren(NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, kA, false, false)) {
+	if a.EqualsPlanWithoutChildren(mustChecked(t, func() (*RecordQueryMergeSortUnionPlan, error) {
+		return NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, kA, false, false)
+	})) {
 		t.Fatal("different removeDuplicates flag must break equality")
 	}
 }
@@ -201,14 +241,18 @@ func TestMergeSortUnionPlan_KeysJoinIdentity_RFC176(t *testing.T) {
 func TestPlanIdentity_SemanticHashAliasInvariant_RFC176(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
-	q1 := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("q1"))
-	q2 := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("q2"))
+	q1 := mustTestQOV(t, "q1", values.NullableLong)
+	q2 := mustTestQOV(t, "q2", values.NullableLong)
 
 	// Consistency precondition: the two reads ARE semantically equal under
 	// {q1→q2} — the map-relative equality the alias-invariant hash serves.
-	if !values.SemanticEqualsUnderAliasMap(q1, q2, values.AliasMap{
-		values.NamedCorrelationIdentifier("q1"): values.NamedCorrelationIdentifier("q2"),
-	}) {
+	aliases := mustChecked(t, func() (values.AliasMap, error) {
+		return values.NewAliasMap([]values.AliasPair{{
+			Source: values.NamedCorrelationIdentifier("q1"),
+			Target: values.NamedCorrelationIdentifier("q2"),
+		}})
+	})
+	if !values.SemanticEqualsUnderAliasMap(q1, q2, aliases) {
 		t.Fatal("q1 and q2 reads must be semantically equal under the map {q1→q2}")
 	}
 
@@ -217,10 +261,17 @@ func TestPlanIdentity_SemanticHashAliasInvariant_RFC176(t *testing.T) {
 		a, b RecordQueryPlan
 	}
 	pairs := []pair{
-		{"Map", NewRecordQueryMapPlan(inner, q1), NewRecordQueryMapPlan(inner, q2)},
+		{"Map", mustChecked(t, func() (*RecordQueryMapPlan, error) {
+			return NewRecordQueryMapPlan(inner, q1)
+		}), mustChecked(t, func() (*RecordQueryMapPlan, error) {
+			return NewRecordQueryMapPlan(inner, q2)
+		})},
 		{
-			"Projection", NewRecordQueryProjectionPlan([]values.Value{q1}, inner),
-			NewRecordQueryProjectionPlan([]values.Value{q2}, inner),
+			"Projection", mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+				return NewRecordQueryProjectionPlan([]values.Value{q1}, inner)
+			}), mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+				return NewRecordQueryProjectionPlan([]values.Value{q2}, inner)
+			}),
 		},
 	}
 	for _, p := range pairs {
@@ -234,13 +285,14 @@ func TestPlanIdentity_SemanticHashAliasInvariant_RFC176(t *testing.T) {
 	}
 }
 
-// TestPlanIdentity_NilValueArms_RFC176 pins the nil-Value handling of the
-// migrated identity: nil result/default Values compare equal to nil, unequal
-// to non-nil, and hash deterministically — no panics on any arm.
+// TestPlanIdentity_NilValueArms_RFC176 pins method totality for package-local
+// malformed zero values: nil result/default Values compare equal to nil,
+// unequal to non-nil, and hash deterministically. Public constructors still
+// reject nil where the Value defines the plan's result carrier.
 func TestPlanIdentity_NilValueArms_RFC176(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
-	fv := values.NewFlatFieldValue("A", values.UnknownType)
+	fv := testField(t, "A", values.NullableLong)
 
 	type pair struct {
 		name             string
@@ -249,32 +301,32 @@ func TestPlanIdentity_NilValueArms_RFC176(t *testing.T) {
 	}
 	pairs := []pair{
 		{
-			"MultiIntersection",
-			NewRecordQueryMultiIntersectionOnValuesPlan([]RecordQueryPlan{inner}, nil, nil),
-			NewRecordQueryMultiIntersectionOnValuesPlan([]RecordQueryPlan{inner}, nil, fv),
-			NewRecordQueryMultiIntersectionOnValuesPlan([]RecordQueryPlan{inner}, nil, nil),
-			NewRecordQueryMultiIntersectionOnValuesPlan([]RecordQueryPlan{inner}, nil, fv),
+			"MultiIntersection", &RecordQueryMultiIntersectionOnValuesPlan{}, mustChecked(t, func() (*RecordQueryMultiIntersectionOnValuesPlan, error) {
+				return NewRecordQueryMultiIntersectionOnValuesPlan([]RecordQueryPlan{inner}, nil, fv)
+			}), &RecordQueryMultiIntersectionOnValuesPlan{}, mustChecked(t, func() (*RecordQueryMultiIntersectionOnValuesPlan, error) {
+				return NewRecordQueryMultiIntersectionOnValuesPlan([]RecordQueryPlan{inner}, nil, fv)
+			}),
 		},
 		{
-			"Map",
-			NewRecordQueryMapPlan(inner, nil),
-			NewRecordQueryMapPlan(inner, fv),
-			NewRecordQueryMapPlan(inner, nil),
-			NewRecordQueryMapPlan(inner, fv),
+			"Map", &RecordQueryMapPlan{}, mustChecked(t, func() (*RecordQueryMapPlan, error) {
+				return NewRecordQueryMapPlan(inner, fv)
+			}), &RecordQueryMapPlan{}, mustChecked(t, func() (*RecordQueryMapPlan, error) {
+				return NewRecordQueryMapPlan(inner, fv)
+			}),
 		},
 		{
-			"DefaultOnEmpty",
-			NewRecordQueryDefaultOnEmptyPlan(inner, nil),
-			NewRecordQueryDefaultOnEmptyPlan(inner, fv),
-			NewRecordQueryDefaultOnEmptyPlan(inner, nil),
-			NewRecordQueryDefaultOnEmptyPlan(inner, fv),
+			"DefaultOnEmpty", &RecordQueryDefaultOnEmptyPlan{}, mustChecked(t, func() (*RecordQueryDefaultOnEmptyPlan, error) {
+				return NewRecordQueryDefaultOnEmptyPlan(inner, fv)
+			}), &RecordQueryDefaultOnEmptyPlan{}, mustChecked(t, func() (*RecordQueryDefaultOnEmptyPlan, error) {
+				return NewRecordQueryDefaultOnEmptyPlan(inner, fv)
+			}),
 		},
 		{
-			"FirstOrDefault",
-			NewRecordQueryFirstOrDefaultPlan(inner, nil),
-			NewRecordQueryFirstOrDefaultPlan(inner, fv),
-			NewRecordQueryFirstOrDefaultPlan(inner, nil),
-			NewRecordQueryFirstOrDefaultPlan(inner, fv),
+			"FirstOrDefault", &RecordQueryFirstOrDefaultPlan{}, mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+				return NewRecordQueryFirstOrDefaultPlan(inner, fv)
+			}), &RecordQueryFirstOrDefaultPlan{}, mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+				return NewRecordQueryFirstOrDefaultPlan(inner, fv)
+			}),
 		},
 	}
 	for _, p := range pairs {
@@ -297,6 +349,13 @@ func TestPlanIdentity_NilValueArms_RFC176(t *testing.T) {
 			}
 		})
 	}
+	if _, err := NewRecordQueryMultiIntersectionOnValuesPlan(
+		[]RecordQueryPlan{inner}, nil, nil); err == nil {
+		t.Fatal("multi-intersection constructor accepted a nil result Value")
+	}
+	if _, err := NewRecordQueryMapPlan(inner, nil); err == nil {
+		t.Fatal("map constructor accepted a nil result Value")
+	}
 }
 
 // TestPlanIdentity_VectorLiteralConstant_RFC176 pins slice-carrying constant
@@ -314,8 +373,19 @@ func TestPlanIdentity_VectorLiteralConstant_RFC176(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
 	mk := func(v any) RecordQueryPlan {
-		return NewRecordQueryProjectionPlan(
-			[]values.Value{&values.ConstantValue{Value: v, Typ: values.UnknownType}}, inner)
+		var typ values.Type
+		switch v.(type) {
+		case []float32:
+			typ = &values.ArrayType{ElementType: values.NotNullFloat}
+		case []float64:
+			typ = &values.ArrayType{ElementType: values.NotNullDouble}
+		default:
+			t.Fatalf("unsupported vector literal type %T", v)
+		}
+		return mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+			return NewRecordQueryProjectionPlan(
+				[]values.Value{&values.ConstantValue{Value: v, Typ: typ}}, inner)
+		})
 	}
 
 	// Equal-content DISTINCT slice instances: equal, no panic, hash coherent.

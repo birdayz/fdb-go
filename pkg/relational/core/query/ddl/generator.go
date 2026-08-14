@@ -18,6 +18,7 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
+	querycore "fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
@@ -174,19 +175,41 @@ type storageNames struct {
 // (folded) name when the ordinal lies outside the descriptor — the
 // __ROW_VERSION pseudo-slot sits one past the descriptor's fields and its
 // name is identical in both namespaces.
-func (s storageNames) fieldName(path []values.ResolvedAccessor, depth int) string {
+type fieldAccessor struct {
+	ordinal int
+	name    string
+	typ     values.Type
+}
+
+func fieldAccessors(field values.FieldValue) ([]fieldAccessor, bool) {
+	if field == nil || field.Path() == nil || field.Path().Len() == 0 {
+		return nil, false
+	}
+	path := make([]fieldAccessor, field.Path().Len())
+	for i := range path {
+		accessor, ok := field.Path().Accessor(i)
+		if !ok || accessor.Ordinal() < 0 {
+			return nil, false
+		}
+		name, _ := accessor.DisplayName()
+		path[i] = fieldAccessor{ordinal: accessor.Ordinal(), name: name, typ: accessor.FieldType()}
+	}
+	return path, true
+}
+
+func (s storageNames) fieldName(path []fieldAccessor, depth int) string {
 	desc := s.root
 	for i := 0; i < depth && desc != nil; i++ {
-		if path[i].Ordinal < 0 || path[i].Ordinal >= desc.Fields().Len() {
+		if path[i].ordinal < 0 || path[i].ordinal >= desc.Fields().Len() {
 			desc = nil
 			break
 		}
-		desc = desc.Fields().Get(path[i].Ordinal).Message()
+		desc = desc.Fields().Get(path[i].ordinal).Message()
 	}
-	if desc == nil || path[depth].Ordinal < 0 || path[depth].Ordinal >= desc.Fields().Len() {
-		return path[depth].Field
+	if desc == nil || path[depth].ordinal < 0 || path[depth].ordinal >= desc.Fields().Len() {
+		return path[depth].name
 	}
-	return string(desc.Fields().Get(path[depth].Ordinal).Name())
+	return string(desc.Fields().Get(path[depth].ordinal).Name())
 }
 
 // sortOrderFunction maps a sort key's direction to the ordering-function
@@ -236,10 +259,13 @@ func sortOrderFunction(k logical.SortKey) string {
 // rebased sort values compare equal to the output values by construction; Go
 // compares structurally and then canonicalises to the projection instance.
 //
-// projected == nil means SELECT * — no final projection exists, the sort
-// resolved against the source scope, and every source column is projected, so
-// the subset test is vacuously satisfied (RFC-202 D3; Java expanded the star
-// before taking the difference). The sort key's own value is used then.
+// SELECT * is expanded to exact source FieldValues before this helper is
+// called. Passing that expansion as projected is load-bearing: it
+// canonicalizes an ORDER BY field to the very same Value instance and lets
+// reorderValues remove the field from the covering tail. Treating star as a
+// nil projection prepended the sort-key copy and then retained the expanded
+// copy, producing a false "multiple disconnected references" rejection (and
+// could hide the array-field semantic rejection behind it).
 func orderByValues(sort *logical.LogicalSort, projected []values.Value) ([]values.Value, map[values.Value]string, error) {
 	if sort == nil {
 		return nil, map[values.Value]string{}, nil
@@ -271,7 +297,7 @@ func orderByValues(sort *logical.LogicalSort, projected []values.Value) ([]value
 			if projected != nil {
 				found := false
 				for _, pv := range projected {
-					if pv != nil && values.ValuesStructurallyEqual(v, pv) {
+					if pv != nil && projectedValueMatches(v, pv) {
 						v = pv // canonicalise to the projection's instance
 						found = true
 						break
@@ -290,6 +316,36 @@ func orderByValues(sort *logical.LogicalSort, projected []values.Value) ([]value
 		out = append(out, v)
 	}
 	return out, fns, nil
+}
+
+// projectedValueMatches is the single-source DDL equivalent of Java's
+// alias-aware Value equality. Most values compare structurally. A resolved
+// field also admits the same exact accessor path and leaf type when the two
+// producer-local QOV roots differ: SELECT * expansion owns the scan-shaped
+// QOV while ORDER BY owns a rebased logical-plan QOV. The decomposer has
+// already restricted this generator to one source, so ignoring that
+// producer-local root cannot conflate two join legs.
+func projectedValueMatches(ordering, projected values.Value) bool {
+	if values.ValuesStructurallyEqual(ordering, projected) {
+		return true
+	}
+	orderingField, orderingOK := values.AsFieldValue(ordering)
+	projectedField, projectedOK := values.AsFieldValue(projected)
+	if !orderingOK || !projectedOK || orderingField.Path() == nil || projectedField.Path() == nil {
+		return false
+	}
+	orderingOrdinals := orderingField.Path().Ordinals()
+	projectedOrdinals := projectedField.Path().Ordinals()
+	if len(orderingOrdinals) != len(projectedOrdinals) {
+		return false
+	}
+	for i := range orderingOrdinals {
+		if orderingOrdinals[i] != projectedOrdinals[i] {
+			return false
+		}
+	}
+	orderingType, projectedType := orderingField.ResultType(), projectedField.ResultType()
+	return orderingType != nil && projectedType != nil && orderingType.Equals(projectedType)
 }
 
 // reorderValues puts the ORDER BY values first, in ORDER BY order, then the
@@ -331,11 +387,9 @@ func generateValue(d *decomposed, md *recordlayer.RecordMetaData, res storageNam
 	if err != nil {
 		return nil, err
 	}
-	var projectedForSubset []values.Value
-	if d.project != nil {
-		projectedForSubset = fieldValues
-	}
-	orderBy, orderingFns, err := orderByValues(d.sort, projectedForSubset)
+	// projectedValues expands SELECT * to the exact output list, so both star
+	// and explicit projections use one canonical membership/identity path.
+	orderBy, orderingFns, err := orderByValues(d.sort, fieldValues)
 	if err != nil {
 		return nil, err
 	}
@@ -356,8 +410,8 @@ func buildValueIndex(table string, fieldValues, orderBy []values.Value, ordering
 	// the COUNT decides the index type (≤1, and VERSION instead of VALUE).
 	versionCount := 0
 	for _, v := range fieldValues {
-		if fv, ok := v.(*values.FieldValue); ok &&
-			fv.Typ != nil && fv.Typ.Code() == values.TypeCodeVersion && fv.Typ.IsNullable() {
+		if fv, ok := values.AsFieldValue(v); ok &&
+			fv.ResultType() != nil && fv.ResultType().Code() == values.TypeCodeVersion && fv.ResultType().IsNullable() {
 			versionCount++
 		}
 	}
@@ -451,36 +505,40 @@ func starValues(scan *logical.LogicalScan, md *recordlayer.RecordMetaData) ([]va
 			"Unknown table %q", scan.Table)
 	}
 	fields := rt.Descriptor.Fields()
+	rowFields := make([]values.Field, fields.Len())
+	for i := 0; i < fields.Len(); i++ {
+		field := fields.Get(i)
+		rowFields[i] = values.Field{
+			Name:      strings.ToUpper(string(field.Name())),
+			Ordinal:   i,
+			FieldType: querycore.TargetTypeForFD(field),
+		}
+	}
+	corrName := scan.Binding
+	if corrName == "" {
+		corrName = scan.Alias
+	}
+	if corrName == "" {
+		corrName = scan.Table
+	}
+	qov, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier(corrName),
+		&values.RecordType{RecordName: string(rt.Descriptor.Name()), Fields: rowFields},
+	)
+	if err != nil {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"Unsupported index definition, cannot type star expansion: %v", err)
+	}
 	out := make([]values.Value, 0, fields.Len())
 	for i := 0; i < fields.Len(); i++ {
-		f := fields.Get(i)
-		fv := &values.FieldValue{
-			Field:    strings.ToUpper(string(f.Name())),
-			Resolved: values.NewFieldPathOfSingle(string(f.Name()), i, false),
-			// The ARRAY-ness must be carried. The generator's array rejection
-			// keys on Typ (fieldPathExpression), so an untyped star column
-			// walked straight past it and the repeated field only surfaced far
-			// downstream, as an XX000 metadata-validation failure. The
-			// equivalent EXPLICIT projection carries a type and gets the
-			// intended 0A000 at the semantic boundary; a star must not be a
-			// cheaper way past a check.
-			Typ: starFieldType(f),
+		fv, resolveErr := values.ResolveFieldOrdinals(qov, []int{i})
+		if resolveErr != nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"Unsupported index definition, cannot resolve star column %d: %v", i, resolveErr)
 		}
 		out = append(out, fv)
 	}
 	return out, nil
-}
-
-// starFieldType types a star-expanded column far enough for the generator's
-// admission checks. Only the ARRAY distinction is load-bearing here — every
-// scalar lane reaches the same field key expression — so a repeated field
-// becomes an ArrayType with an unresolved element type and everything else
-// stays untyped, exactly as it was.
-func starFieldType(f protoreflect.FieldDescriptor) values.Type {
-	if f.IsList() {
-		return values.NewArrayType(true, nil)
-	}
-	return nil
 }
 
 // generateKeyExpression is the expression builder
@@ -499,8 +557,8 @@ func generateKeyExpression(vals []values.Value, orderingFns map[values.Value]str
 	var components []recordlayer.KeyExpression
 	i := 0
 	for i < len(vals) {
-		fv, isField := vals[i].(*values.FieldValue)
-		if !isField || fv.Resolved == nil {
+		_, isField := values.AsFieldValue(vals[i])
+		if !isField {
 			expr, err := leafKeyExpression(vals[i], orderingFns, res)
 			if err != nil {
 				return nil, err
@@ -552,12 +610,12 @@ func concatFlat(components []recordlayer.KeyExpression) recordlayer.KeyExpressio
 // (FieldValueTrieNode.java): a compressed trie over resolved accessor paths.
 // value is non-nil at a leaf that terminates a projected FieldValue.
 type fieldTrieNode struct {
-	value    *values.FieldValue
+	value    values.FieldValue
 	children []trieChild // insertion-ordered (Java's ImmutableMap preserves it)
 }
 
 type trieChild struct {
-	accessor values.ResolvedAccessor
+	accessor fieldAccessor
 	node     *fieldTrieNode
 }
 
@@ -568,8 +626,8 @@ type trieChild struct {
 // same array distinct. Go's ResolvedAccessor carries no explode marker yet
 // (the unnest shapes do not reach this generator — decompose rejects them),
 // so ordinal equality is exact here.
-func accessorKeyEqual(a, b values.ResolvedAccessor) bool {
-	return a.Ordinal == b.Ordinal
+func accessorKeyEqual(a, b fieldAccessor) bool {
+	return a.ordinal == b.ordinal
 }
 
 // computeTrieForValues consumes the maximal run of FieldValues starting at
@@ -588,11 +646,14 @@ func computeTrieAtDepth(vals []values.Value, start, depth int) (*fieldTrieNode, 
 	node := &fieldTrieNode{}
 	i := start
 	for i < len(vals) {
-		fv, ok := vals[i].(*values.FieldValue)
-		if !ok || fv.Resolved == nil {
+		fv, ok := values.AsFieldValue(vals[i])
+		if !ok {
 			break
 		}
-		path := fv.Resolved.Accessors
+		path, ok := fieldAccessors(fv)
+		if !ok {
+			break
+		}
 		if len(path) == depth {
 			// The path terminates exactly at this prefix.
 			if depth == 0 {
@@ -625,12 +686,22 @@ func computeTrieAtDepth(vals []values.Value, start, depth int) (*fieldTrieNode, 
 // on the first depth accessors — the "prefix.isPrefixOf(fieldPath)" walk of
 // Java's iterator version, expressed over the slice.
 func prefixMatches(vals []values.Value, start, i, depth int) bool {
-	base := vals[start].(*values.FieldValue).Resolved.Accessors
-	cur, ok := vals[i].(*values.FieldValue)
-	if !ok || cur.Resolved == nil {
+	baseField, ok := values.AsFieldValue(vals[start])
+	if !ok {
 		return false
 	}
-	path := cur.Resolved.Accessors
+	base, ok := fieldAccessors(baseField)
+	if !ok {
+		return false
+	}
+	cur, ok := values.AsFieldValue(vals[i])
+	if !ok {
+		return false
+	}
+	path, ok := fieldAccessors(cur)
+	if !ok {
+		return false
+	}
 	if len(path) < depth || len(base) < depth {
 		return false
 	}
@@ -671,13 +742,13 @@ func (n *fieldTrieNode) validateNoOverlaps(others []*fieldTrieNode) error {
 // (MaterializedViewIndexGenerator.java:584-609): each child becomes a field
 // expression, nested when it has children of its own; the ordering wrapper is
 // applied at the LEAF (:598-600), never at the root.
-func trieKeyExpression(n *fieldTrieNode, orderingFns map[values.Value]string, res storageNames, prefix []values.ResolvedAccessor) (recordlayer.KeyExpression, error) {
+func trieKeyExpression(n *fieldTrieNode, orderingFns map[values.Value]string, res storageNames, prefix []fieldAccessor) (recordlayer.KeyExpression, error) {
 	if len(n.children) == 0 {
 		return nil, api.NewError(api.ErrCodeInternalError, "index generator: empty trie node")
 	}
 	parts := make([]recordlayer.KeyExpression, 0, len(n.children))
 	for _, c := range n.children {
-		childPath := make([]values.ResolvedAccessor, 0, len(prefix)+1)
+		childPath := make([]fieldAccessor, 0, len(prefix)+1)
 		childPath = append(append(childPath, prefix...), c.accessor)
 		name := res.fieldName(childPath, len(childPath)-1)
 		leaf, err := fieldLeafExpression(c.accessor, name, c.node.value)
@@ -716,14 +787,14 @@ func trieKeyExpression(n *fieldTrieNode, orderingFns map[values.Value]string, re
 // identical in both namespaces. leafValue (nil for an intermediate rendered
 // as a nesting parent) supplies the field's type — Go's ResolvedAccessor
 // carries no type, the FieldValue's leaf Typ does.
-func fieldLeafExpression(acc values.ResolvedAccessor, name string, leafValue *values.FieldValue) (recordlayer.KeyExpression, error) {
+func fieldLeafExpression(acc fieldAccessor, name string, leafValue values.FieldValue) (recordlayer.KeyExpression, error) {
 	// The __ROW_VERSION pseudo-field renders as the version key expression —
 	// name AND type must both match (Java's toFieldKeyExpression,
 	// MaterializedViewIndexGenerator.java:821-823).
-	if leafValue != nil && values.IsRowVersionPseudoField(acc.Field, leafValue.Typ) {
+	if leafValue != nil && values.IsRowVersionPseudoField(acc.name, leafValue.ResultType()) {
 		return recordlayer.VersionKey(), nil
 	}
-	if leafValue != nil && leafValue.Typ != nil && leafValue.Typ.Code() == values.TypeCodeArray {
+	if leafValue != nil && leafValue.ResultType() != nil && leafValue.ResultType().Code() == values.TypeCodeArray {
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"Unsupported index definition, cannot create index on array field '%s' without unnesting",
 			name)
@@ -748,13 +819,14 @@ func leafKeyExpression(v values.Value, orderingFns map[values.Value]string, res 
 // valueKeyExpression is toKeyExpression(Value)
 // (MaterializedViewIndexGenerator.java:551-582).
 func valueKeyExpression(v values.Value, res storageNames) (recordlayer.KeyExpression, error) {
+	if field, ok := values.AsFieldValue(v); ok {
+		return fieldPathExpression(field, recordlayer.FanTypeNone, res)
+	}
 	switch val := v.(type) {
-	case *values.FieldValue:
-		return fieldPathExpression(val, recordlayer.FanTypeNone, res)
 	case *values.CardinalityValue:
 		// CARDINALITY consumes the materialised array: the field is accessed
 		// with Concatenate, not FanOut (:555-566).
-		child, ok := val.Child.(*values.FieldValue)
+		child, ok := values.AsFieldValue(val.Child)
 		if !ok {
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 				"CARDINALITY() must be applied to a `field()` in an index key expression.")
@@ -872,19 +944,19 @@ func bitFunctionName(fn string) (string, bool) {
 // fanTypeForArray applies only to an array LEAF; Go's accessors carry no
 // per-step type, and an intermediate array step is unreachable (dotted access
 // through an array requires an unnest, which decompose rejects).
-func fieldPathExpression(fv *values.FieldValue, fanTypeForArray recordlayer.FanType, res storageNames) (recordlayer.KeyExpression, error) {
-	if fv.Resolved == nil {
+func fieldPathExpression(fv values.FieldValue, fanTypeForArray recordlayer.FanType, res storageNames) (recordlayer.KeyExpression, error) {
+	accs, ok := fieldAccessors(fv)
+	if !ok {
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"Unsupported index definition, cannot resolve column %q", fv.Field)
+			"Unsupported index definition, cannot resolve column %q", fv.DisplayName())
 	}
-	accs := fv.Resolved.Accessors
 	// The __ROW_VERSION pseudo-field is always a single top-level accessor;
 	// it renders as the version key expression (name AND type — Java's
 	// toFieldKeyExpression, MaterializedViewIndexGenerator.java:821-823).
-	if len(accs) == 1 && values.IsRowVersionPseudoField(accs[0].Field, fv.Typ) {
+	if len(accs) == 1 && values.IsRowVersionPseudoField(accs[0].name, fv.ResultType()) {
 		return recordlayer.VersionKey(), nil
 	}
-	isArray := fv.Typ != nil && fv.Typ.Code() == values.TypeCodeArray
+	isArray := fv.ResultType() != nil && fv.ResultType().Code() == values.TypeCodeArray
 	var leaf recordlayer.KeyExpression
 	leafName := res.fieldName(accs, len(accs)-1)
 	switch {

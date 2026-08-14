@@ -12,23 +12,33 @@ import (
 // noLayoutFlatMapLeg builds the leg shape the corpus census names as the ENTIRE
 // residue of the layout derivation: a leg whose chosen plan is a
 // *plans.RecordQueryFlatMapPlan — the accumulated side of an N-way join — whose
-// result value is a bare *values.QuantifiedObjectValue.
+// result value is a bare scalar QuantifiedObjectValue.
 //
 // That result value is the defect. A FlatMap's row is whatever its result value
-// computes, so the layout is the result value's to state, and a bare quantifier
-// object states nothing: the quantifier it names carries no row type. Booked as
-// CQ-63.
-func noLayoutFlatMapLeg(alias values.CorrelationIdentifier) plans.RecordQueryPlan {
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	inner := plans.NewRecordQueryScanPlan([]string{"U"}, values.UnknownType, false)
-	return plans.NewRecordQueryFlatMapPlan(
+// computes, so the layout is the result value's to state. RFC-232 makes an
+// untyped QOV unconstructible; the exact remaining no-row shape is a scalar
+// result, which deliberately states a value type but no record layout.
+func noLayoutFlatMapLeg(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+) plans.RecordQueryPlan {
+	t.Helper()
+	rowType := values.NewRecordType("Leaf", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	scanValue, err := plans.NewRecordQueryScanPlan([]string{"T"}, rowType, false)
+	scan := mustConstruct(t, scanValue, err)
+	innerValue, err := plans.NewRecordQueryScanPlan([]string{"U"}, rowType, false)
+	inner := mustConstruct(t, innerValue, err)
+	result, err := values.NewQuantifiedObjectValue(alias, values.NotNullLong)
+	exactResult := mustConstruct(t, result, err)
+	flatMap, err := plans.NewRecordQueryFlatMapPlan(
 		scan, inner,
 		values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"),
-		// The measured shape: the FlatMap flows its outer quantifier's object
-		// straight through, and that object is UNTYPED.
-		values.NewQuantifiedObjectValue(alias),
+		exactResult,
 		false,
 	)
+	return mustConstruct(t, flatMap, err)
 }
 
 // TestOrdinalSeedLegWindows_DeclinesANoLayoutFlatMapLeg pins a NEGATIVE result
@@ -49,12 +59,12 @@ func TestOrdinalSeedLegWindows_DeclinesANoLayoutFlatMapLeg(t *testing.T) {
 	t.Parallel()
 
 	legAlias := values.NamedCorrelationIdentifier("A")
-	plan := noLayoutFlatMapLeg(legAlias)
+	plan := noLayoutFlatMapLeg(t, legAlias)
 
 	// 1. The shape itself: the result value is not a record constructor, so the
 	// seed authority cannot even be consulted. This is the measured decline point —
 	// the corpus witness reads "seed escape DECLINES: result value is
-	// *values.QuantifiedObjectValue, not a record constructor".
+	// values.QuantifiedObjectValue, not a record constructor".
 	fm := plan.(*plans.RecordQueryFlatMapPlan)
 	if rc, isRC := fm.GetResultValue().(*values.RecordConstructorValue); isRC {
 		t.Fatalf("the fixture's FlatMap result value is a %d-field record constructor, "+
@@ -90,11 +100,12 @@ func TestOrdinalSeedLegWindows_DeclinesANoLayoutFlatMapLeg(t *testing.T) {
 	// element types that far, and `SELECT "X" FROM TS, TS."ITEMS" AS "X"` stops
 	// resolving (measured). The discrimination lives on the leg side or nowhere.
 	typedLeg := func(name string) values.Value {
-		return values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(name),
-			&values.RecordType{Nullable: true, Fields: []values.Field{
+		qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(name),
+			values.NewRecordType("TypedLeg", true, []values.Field{
 				{Name: "C1", FieldType: values.NotNullLong, Ordinal: 0},
 				{Name: "C2", FieldType: values.NotNullLong, Ordinal: 1},
-			}})
+			}))
+		return mustConstruct(t, qov, err)
 	}
 	twoTypedLegs := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "A", Value: typedLeg("A")},
@@ -129,30 +140,24 @@ func TestOrdinalSeedLegWindows_DeclinesANoLayoutFlatMapLeg(t *testing.T) {
 			"structural recognizer.", len(windows), merged)
 	}
 
-	// The residual, stated rather than implied: an UNTYPED quantifier object is
-	// still admitted as a one-column element, because that is what a struct-array
-	// element looks like and there is no way to tell the two apart from the type
-	// alone. It is not the hazard above only because a LEG is no longer untyped —
-	// measured flowed 848 of 848 leg derivations, underivable 0, and
-	// ASSERTED by the bakeability census gate. If that gate ever goes yellow, this
-	// is what it re-arms.
-	untypedPair := values.NewRecordConstructorValue(
-		values.RecordConstructorField{Name: "A", Value: values.NewQuantifiedObjectValue(legAlias)},
-		values.RecordConstructorField{Name: "B", Value: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("B"))},
+	// The exact scalar control preserves the legitimate one-column-element arm
+	// without reviving the retired untyped QOV representation.
+	scalarA, err := values.NewQuantifiedObjectValue(legAlias, values.NotNullLong)
+	exactScalarA := mustConstruct(t, scalarA, err)
+	scalarB, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("B"), values.NotNullLong)
+	exactScalarB := mustConstruct(t, scalarB, err)
+	scalarPair := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "A", Value: exactScalarA},
+		values.RecordConstructorField{Name: "B", Value: exactScalarB},
 	)
-	windows, merged := values.OrdinalSeedLegWindows(untypedPair)
+	windows, merged := values.OrdinalSeedLegWindows(scalarPair)
 	if windows == nil || merged == nil {
-		t.Fatalf("OrdinalSeedLegWindows now DECLINES a record constructor of bare " +
-			"untyped quantifier objects. That is the safer answer, and it may be the " +
-			"right one — but it also declines the struct-array whole-object element, " +
-			"which is untyped for an unrelated reason, and the executor twin " +
-			"(unnestMixedSeedSpans/ordinalJoinSpans) has to move with it or the " +
-			"cross-agreement invariant breaks. Re-measure both sides before adopting " +
-			"this as the new expectation.")
+		t.Fatal("OrdinalSeedLegWindows declined two exact scalar whole-object elements")
 	}
 	for alias, w := range windows {
 		if len(w.Typ.Fields) != 1 {
-			t.Fatalf("window %s has %d columns; an untyped quantifier object is admitted "+
+			t.Fatalf("window %s has %d columns; an exact scalar quantifier object is admitted "+
 				"as a ONE-column whole-object element", alias, len(w.Typ.Fields))
 		}
 	}
@@ -172,11 +177,11 @@ func TestLegRowTypes_UnderivableLegStatesNothing(t *testing.T) {
 	t.Parallel()
 
 	legAlias := values.NamedCorrelationIdentifier("A")
-	plan := noLayoutFlatMapLeg(legAlias)
+	plan := noLayoutFlatMapLeg(t, legAlias)
 
-	// A quantifier over an UNTYPED reference: what the residue's legs carry, and
-	// the reason the faithful instrument declines them.
-	ref := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	// A quantifier over an exact scalar reference states no row layout, so the
+	// faithful instrument must decline without inventing one.
+	ref := expressions.InitialOf(mustFullUnorderedScan(t, []string{"T"}, values.NotNullLong))
 	q := expressions.NamedForEachQuantifier(legAlias, ref)
 
 	got := legRowTypesFromQuantifiers(legRowTypeSource{Quantifier: q, Plan: plan, Alias: legAlias})
@@ -202,8 +207,11 @@ func TestLegRowTypes_FaithfulInstrumentAnswersFromTheQuantifier(t *testing.T) {
 	t.Parallel()
 
 	legAlias := values.NamedCorrelationIdentifier("A")
-	rt := nljTestLayouts["OUTER"] // ID, CATEGORY
-	ref := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"OUTER"}, values.Type(rt)))
+	rt := values.NewRecordType("OUTER", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "CATEGORY", FieldType: values.NotNullLong, Ordinal: 1},
+	})
+	ref := expressions.InitialOf(mustFullUnorderedScan(t, []string{"OUTER"}, values.Type(rt)))
 	q := expressions.NamedForEachQuantifier(legAlias, ref)
 
 	got := legRowTypesFromQuantifiers(legRowTypeSource{Quantifier: q, Alias: legAlias})

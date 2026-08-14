@@ -344,21 +344,23 @@ func orderColNotNull(col string) bool {
 }
 
 // sortKeysMatchOrderBy reports whether an in-memory sort's keys line up 1:1 with
-// the query's ORDER BY — same count, same UNQUALIFIED column, same direction per
-// key. Used only to confirm a sort IS the ORDER BY sort before reasoning about
-// its redundancy; a mismatch skips the sort (never a false flag).
+// the query's ORDER BY — same count, same resolved top-level UNQUALIFIED column,
+// and same direction per key. Used only to confirm a sort IS the ORDER BY sort
+// before reasoning about its redundancy; a mismatch skips the sort (never a
+// false flag).
 //
-// A QUALIFIED key is REFUSED rather than matched on its leaf, and that refusal is
-// the whole of what this function can honestly say about one. The comparison has
-// a plan sort key's Field on one side — a LEAF name — and an OrderKey on the
-// other, whose SQL rendering is `strings.ToLower(Qual) + "." + Col` (gen.go). So
-// the leaf is a FRAGMENT of the ORDER BY text, not the text: matching on it
-// discards exactly the half that distinguishes one leg from another. The
-// generator's own join shapes make that concrete — a self-join orders by
-// `l.id, r.id` and a 3-way by `l.id, m.id, r.id`, key vectors whose leaf names
-// are all "ID" and whose legs are not. One vector of plan keys [ID, ID] would
-// then "match" both `ORDER BY l.id DESC, r.id` and `ORDER BY r.id DESC, l.id`,
-// which is a claim about which sort this is that the leaf name cannot support.
+// SortKey.Field is display-only and now renders the complete resolved access
+// (for example T_RD.B#2), so it is not an identity channel. RFC-232's ValueExpr
+// is the authority: it must be an admitted one-step FieldValue, and the ORDER BY
+// name must resolve to that same ordinal in the FieldValue's exact root record.
+// A nil/unresolved/nested ValueExpr fails closed instead of reviving a leaf-name
+// fallback.
+//
+// A QUALIFIED key is still REFUSED. The generated OrderKey qualifier names a SQL
+// leg (L/R/M), while the physical FieldValue root carries a planner correlation;
+// this layer has no authority mapping one namespace to the other. Treating the
+// resolved leaf ordinal as sufficient would again conflate `l.id, r.id` with
+// `r.id, l.id`.
 //
 // Two callers' fences keep qualified keys away from here today (checkPlanOrdering
 // gates on singleTablePlain, and requestedOrdering answers nil for a qualified
@@ -374,7 +376,31 @@ func sortKeysMatchOrderBy(keys []plans.SortKey, orderBy []OrderKey) bool {
 		if orderBy[i].Qual != "" {
 			return false
 		}
-		if !strings.EqualFold(keys[i].Field, orderBy[i].Col) {
+		field, ok := values.AsFieldValue(keys[i].ValueExpr)
+		if !ok {
+			return false
+		}
+		path := field.Path()
+		if path == nil || path.Len() != 1 {
+			return false
+		}
+		accessor, ok := path.Accessor(0)
+		if !ok {
+			return false
+		}
+		root := field.ChildValue()
+		if root == nil {
+			return false
+		}
+		recordType, ok := root.Type().(*values.RecordType)
+		if !ok || recordType == nil {
+			return false
+		}
+		// The flat generator stores canonical SQL identifiers in upper case;
+		// preserve the guard's prior case-insensitive SQL-name behavior while
+		// resolving against the exact root type rather than display text.
+		ordinal, ok := recordType.FieldIndexUnique(strings.ToUpper(orderBy[i].Col))
+		if !ok || accessor.Ordinal() != ordinal {
 			return false
 		}
 		if keys[i].Desc != orderBy[i].Desc {

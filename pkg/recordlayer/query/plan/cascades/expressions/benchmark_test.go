@@ -27,8 +27,8 @@ import (
 // Scan expressions, no quantifiers, no permutations. Pins the
 // hot-path cost.
 func BenchmarkSemanticEquals_LeafPair(b *testing.B) {
-	a := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	c := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	a := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
+	c := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
 	if !SemanticEquals(a, c, EmptyAliasMap()) {
 		b.Fatal("SemanticEquals said two identical leaf scans differ — the benchmark would time an early-out, not a comparison")
 	}
@@ -43,12 +43,11 @@ func BenchmarkSemanticEquals_LeafPair(b *testing.B) {
 // child Reference walking.
 func BenchmarkSemanticEquals_FilterTree(b *testing.B) {
 	build := func() RelationalExpression {
-		scan := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
 		q := ForEachQuantifier(InitialOf(scan))
-		return NewLogicalFilterExpression(
+		return mustExpression(NewLogicalFilterExpression(
 			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-			q,
-		)
+			q))
 	}
 	a, c := build(), build()
 	if !SemanticEquals(a, c, EmptyAliasMap()) {
@@ -68,10 +67,10 @@ func BenchmarkSemanticEquals_UnionPermuted(b *testing.B) {
 	build := func(order []string) *LogicalUnionExpression {
 		qs := make([]Quantifier, len(order))
 		for i, name := range order {
-			scan := NewFullUnorderedScanExpression([]string{name}, values.UnknownType)
+			scan := mustExpression(NewFullUnorderedScanExpression([]string{name}, testRecordType()))
 			qs[i] = ForEachQuantifier(InitialOf(scan))
 		}
-		return NewLogicalUnionExpression(qs)
+		return mustExpression(NewLogicalUnionExpression(qs))
 	}
 	a := build([]string{"A", "B", "C", "D"})
 	c := build([]string{"D", "C", "B", "A"}) // worst-case permutation
@@ -115,7 +114,7 @@ func BenchmarkAliasMap_Compose(b *testing.B) {
 // when inserting a duplicate. Pins the EqualsWithoutChildren +
 // sameChildReferences gate cost.
 func BenchmarkReference_Insert_Dedup(b *testing.B) {
-	scan := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
 	r := InitialOf(scan)
 	// Dedup must REJECT the duplicate (Insert=false, membership unchanged). If
 	// it stopped firing, this would silently become the append benchmark under
@@ -137,8 +136,8 @@ func BenchmarkReference_Insert_Dedup(b *testing.B) {
 // expression IS new — exercises the full Insert path including the
 // append. Use a fresh Reference per iteration so we don't accumulate.
 func BenchmarkReference_Insert_Distinct(b *testing.B) {
-	scanA := NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanB := NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	scanA := mustExpression(NewFullUnorderedScanExpression([]string{"A"}, testRecordType()))
+	scanB := mustExpression(NewFullUnorderedScanExpression([]string{"B"}, testRecordType()))
 	// The mirror of the dedup case: the distinct insert must ACCEPT and grow to
 	// 2. A dedup that over-matched would reject here and turn the full append
 	// path this benchmark exists to time into an early-out. The probe uses its

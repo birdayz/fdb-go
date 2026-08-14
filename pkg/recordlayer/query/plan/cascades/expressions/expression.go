@@ -31,8 +31,24 @@
 package expressions
 
 import (
+	"errors"
+	"fmt"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
+
+// ErrQuantifierArity reports that a relational expression was rebuilt with a
+// different number of child quantifiers. It is intentionally a stable sentinel
+// so generic reconstruction callers can distinguish malformed rewrites without
+// depending on an operator-specific error string.
+var ErrQuantifierArity = errors.New("relational expression quantifier arity mismatch")
+
+func requireQuantifierArity(operator string, got, want int) error {
+	if got == want {
+		return nil
+	}
+	return fmt.Errorf("%w: %s requires %d, got %d", ErrQuantifierArity, operator, want, got)
+}
 
 // RelationalExpression is the root interface for every node in the
 // logical query plan tree. Implementations are immutable.
@@ -113,14 +129,14 @@ type RelationalExpression interface {
 	// set-bag-shaped or whose Java code marks them as ChildrenAsSet.
 	ChildrenAsSet() bool
 
-	// WithQuantifiers returns a copy of this expression with the
-	// given quantifiers replacing the original children. The new
-	// quantifiers must be in the same positional order as
-	// GetQuantifiers(). Leaf expressions (no quantifiers) return
-	// themselves.
+	// WithQuantifiers returns a copy of this expression with the given
+	// quantifiers replacing the original children. The new quantifiers must have
+	// the same arity and be in the same positional order as GetQuantifiers(). An
+	// arity mismatch returns ErrQuantifierArity and no expression. Leaf
+	// expressions accept only an empty slice and return themselves.
 	//
 	// Ports Java's RelationalExpression.withQuantifiers.
-	WithQuantifiers(quantifiers []Quantifier) RelationalExpression
+	WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error)
 }
 
 // SemanticEquals walks two expression trees and reports whether they
@@ -193,21 +209,17 @@ const MaxPermutationChildren = 8
 // positional pairing then maps one alias to two partners, which is simply
 // "not equal", not a crash.
 func composeChildAliasPairs(aliases *AliasMap, aQs, bQs []Quantifier) (*AliasMap, bool) {
-	out := EmptyAliasMap()
-	for s, t := range aliases.forward {
-		out.forward[s] = t
-		out.reverse[t] = s
+	out := aliases
+	if out == nil {
+		out = EmptyAliasMap()
 	}
 	for i := range aQs {
 		s, t := aQs[i].GetAlias(), bQs[i].GetAlias()
-		if et, ok := out.forward[s]; ok && et != t {
+		var ok bool
+		out, ok = out.With(s, t)
+		if !ok {
 			return nil, false
 		}
-		if es, ok := out.reverse[t]; ok && es != s {
-			return nil, false
-		}
-		out.forward[s] = t
-		out.reverse[t] = s
 	}
 	return out, true
 }

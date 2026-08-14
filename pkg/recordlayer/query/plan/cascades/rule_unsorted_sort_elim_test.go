@@ -9,12 +9,12 @@ import (
 
 func TestUnsortedSortElimRule_FiresOnUnsortedSort(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := smallRewriteScan("T")
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	s := expressions.UnsortedLogicalSortExpression(scanQ)
+	s := mustSmallRewriteConstruct(expressions.UnsortedLogicalSortExpression(scanQ))
 	ref := expressions.InitialOf(s)
 	rule := NewUnsortedSortElimRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := fireSmallRewriteRule(t, rule, ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
 	}
@@ -25,13 +25,13 @@ func TestUnsortedSortElimRule_FiresOnUnsortedSort(t *testing.T) {
 
 func TestUnsortedSortElimRule_DeclinesOnSortedSort(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := smallRewriteScan("T")
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	keys := []expressions.SortKey{{Value: values.NewBooleanValue(true), Reverse: false}}
-	s := expressions.NewLogicalSortExpression(keys, scanQ)
+	s := mustSmallRewriteConstruct(expressions.NewLogicalSortExpression(keys, scanQ))
 	ref := expressions.InitialOf(s)
 	rule := NewUnsortedSortElimRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := fireSmallRewriteRule(t, rule, ref)
 	if len(yielded) != 0 {
 		t.Fatalf("rule fired on a sort with keys — yielded %d, want 0", len(yielded))
 	}
@@ -39,10 +39,10 @@ func TestUnsortedSortElimRule_DeclinesOnSortedSort(t *testing.T) {
 
 func TestUnsortedSortElimRule_DeclinesOnNonSort(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := smallRewriteScan("T")
 	ref := expressions.InitialOf(scan)
 	rule := NewUnsortedSortElimRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := fireSmallRewriteRule(t, rule, ref)
 	if len(yielded) != 0 {
 		t.Fatalf("rule fired on Scan (no Sort) — yielded %d, want 0", len(yielded))
 	}

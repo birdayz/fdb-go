@@ -1,6 +1,10 @@
 package values
 
-import "google.golang.org/protobuf/reflect/protoreflect"
+import (
+	"strings"
+
+	"google.golang.org/protobuf/reflect/protoreflect"
+)
 
 // FieldTypeForProtoField maps a proto field descriptor to the logical column
 // Type the engine gives that field's slot. It is THE single authority for
@@ -22,24 +26,45 @@ import "google.golang.org/protobuf/reflect/protoreflect"
 //
 // Conventions, all deliberate:
 //
-//   - Every type is NULLABLE. A row layout carries no per-column NOT NULL
-//     constraint, and an unset proto field materializes as a nil slot.
-//   - Repeated and map fields are UnknownType: their slot holds a list, not
-//     the element scalar, so naming the element type would misdescribe the
-//     slot.
+//   - Nullability follows the value the row materializer can actually emit:
+//     optional/presence-bearing fields may be nil, while proto3 scalars,
+//     required fields, and flat repeated fields always have a value.
+//   - Repeated fields are exact ARRAYs. ProtoFieldToRowValue materializes them
+//     as []any, so returning the element scalar (the old bug) or Unknown (the
+//     old workaround) both misdescribe the executable slot.
+//   - Proto maps remain UnknownType: ProtoFieldToRowValue intentionally keeps
+//     their native protoreflect.Map carrier and the Type algebra has no map
+//     kind. An executable exact-type boundary therefore rejects map-bearing
+//     rows instead of laundering them as a record or array.
 //   - The tuple_fields.UUID wrapper message is UUID — it materializes as a
 //     neutral [16]byte, not as a raw message (see protoScalarToRowValue).
 //     Any OTHER message field is UnknownType: its slot stays a raw
 //     proto.Message, and a recursive message has no finite structural type.
-//   - Enums, groups and the UNSIGNED integer kinds are UnknownType. They have
-//     no faithful column type here — an enum slot is a bare int64 ordinal with
-//     no enum descriptor attached, and an unsigned 64-bit value is reinterpreted
-//     as a signed int64 on the way in.
+//   - Known message descriptors become structural RECORDs. Cyclic back-edges
+//     become exact AnyRecord leaves: the carrier is still a record, but a
+//     finite FieldValue path may not descend through the erased recursive
+//     edge. UUID keeps its dedicated scalar representation.
+//   - Enums keep their descriptor identity when it is representable by the
+//     Type algebra. Aliased enums and unsigned integers use LONG, matching the
+//     int64 carrier emitted by ProtoScalarKindToRowValue.
 func FieldTypeForProtoField(fd protoreflect.FieldDescriptor) Type {
-	if fd == nil || fd.IsList() || fd.IsMap() {
+	return fieldTypeForProtoField(fd, make(map[protoreflect.FullName]struct{}))
+}
+
+func fieldTypeForProtoField(fd protoreflect.FieldDescriptor, active map[protoreflect.FullName]struct{}) Type {
+	if fd == nil || fd.IsMap() {
 		return UnknownType
 	}
-	return ScalarTypeForProtoKind(fd)
+	if list, wrapped, ok := EffectiveListField(fd); ok {
+		element := scalarTypeForProtoField(list, active)
+		if IsUnresolved(element) {
+			return UnknownType
+		}
+		// A flat repeated field materializes as an empty (never nil) list.
+		// A nullable-array wrapper preserves absent wrapper as SQL NULL.
+		return NewArrayType(wrapped, withNullability(element, false))
+	}
+	return withNullability(scalarTypeForProtoField(fd, active), protoFieldNullable(fd))
 }
 
 // ScalarTypeForProtoKind is FieldTypeForProtoField's kind switch with
@@ -55,6 +80,10 @@ func FieldTypeForProtoField(fd protoreflect.FieldDescriptor) Type {
 // the same single copy of the mapping: FieldTypeForProtoField is this
 // switch plus the collapse, never a parallel transcription of it.
 func ScalarTypeForProtoKind(fd protoreflect.FieldDescriptor) Type {
+	return scalarTypeForProtoField(fd, make(map[protoreflect.FullName]struct{}))
+}
+
+func scalarTypeForProtoField(fd protoreflect.FieldDescriptor, active map[protoreflect.FullName]struct{}) Type {
 	if fd == nil {
 		return UnknownType
 	}
@@ -76,11 +105,65 @@ func ScalarTypeForProtoKind(fd protoreflect.FieldDescriptor) Type {
 		return NewPrimitiveType(TypeCodeString, true)
 	case protoreflect.BytesKind:
 		return NewPrimitiveType(TypeCodeBytes, true)
-	case protoreflect.MessageKind:
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return NewPrimitiveType(TypeCodeLong, true)
+	case protoreflect.EnumKind:
+		return enumTypeForProto(fd.Enum())
+	case protoreflect.MessageKind, protoreflect.GroupKind:
 		if msg := fd.Message(); msg != nil && string(msg.FullName()) == uuidProtoMessageName {
 			return NewPrimitiveType(TypeCodeUuid, true)
 		}
-		return UnknownType
+		return recordTypeForProtoMessage(fd.Message(), active)
 	}
 	return UnknownType
+}
+
+func protoFieldNullable(fd protoreflect.FieldDescriptor) bool {
+	return fd != nil && fd.HasPresence() && fd.Cardinality() != protoreflect.Required
+}
+
+func recordTypeForProtoMessage(md protoreflect.MessageDescriptor, active map[protoreflect.FullName]struct{}) Type {
+	if md == nil {
+		return UnknownType
+	}
+	name := md.FullName()
+	if _, recursive := active[name]; recursive {
+		return NewAnyRecordType(true)
+	}
+	active[name] = struct{}{}
+	defer delete(active, name)
+
+	fields := md.Fields()
+	recordFields := make([]Field, fields.Len())
+	for i := 0; i < fields.Len(); i++ {
+		field := fields.Get(i)
+		recordFields[i] = Field{
+			Name:      strings.ToUpper(string(field.Name())),
+			FieldType: fieldTypeForProtoField(field, active),
+			Ordinal:   i,
+		}
+	}
+	return NewRecordType(string(name), true, recordFields)
+}
+
+func enumTypeForProto(ed protoreflect.EnumDescriptor) Type {
+	if ed == nil {
+		return UnknownType
+	}
+	declared := ed.Values()
+	values := make([]EnumValue, 0, declared.Len())
+	seenNumbers := make(map[protoreflect.EnumNumber]struct{}, declared.Len())
+	for i := 0; i < declared.Len(); i++ {
+		value := declared.Get(i)
+		if _, alias := seenNumbers[value.Number()]; alias {
+			// The engine's EnumType deliberately rejects number aliases while
+			// the runtime carrier is the number. LONG is the exact executable
+			// carrier until the enum algebra grows alias support.
+			return NewPrimitiveType(TypeCodeLong, true)
+		}
+		seenNumbers[value.Number()] = struct{}{}
+		values = append(values, EnumValue{Name: string(value.Name()), Number: int32(value.Number())})
+	}
+	return NewEnumType(string(ed.FullName()), true, values)
 }

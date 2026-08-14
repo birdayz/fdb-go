@@ -72,6 +72,122 @@ func TestRecursiveRow_SiblingStructDescriptorResolves(t *testing.T) {
 	}
 }
 
+// TestTempTableScan_RestampsContinuationDecodedUnknownSchema pins the exact
+// boundary between the recursive continuation codec and the selected physical
+// scan. The token deliberately stores names + slots, so decodeRecursiveRow
+// cannot reconstruct field types; the TempTableScan's admitted record layout
+// is the first authority allowed to restore them.
+func TestTempTableScan_RestampsContinuationDecodedUnknownSchema(t *testing.T) {
+	t.Parallel()
+
+	expected := values.NewRecordType("recursive_row", true, []values.Field{{
+		Name: "N", FieldType: values.NullableLong,
+	}})
+	source := QueryResult{Positional: &PositionalRow{
+		Type:  expected,
+		Slots: []any{int64(7)},
+	}}
+	encoded, err := encodeRecursiveRow(source)
+	if err != nil {
+		t.Fatalf("encode recursive row: %v", err)
+	}
+	decoded, err := decodeRecursiveRow(encoded, nil)
+	if err != nil {
+		t.Fatalf("decode recursive row: %v", err)
+	}
+	if got := decoded.Positional.Type.Fields[0].FieldType.Code(); got != values.TypeCodeUnknown {
+		t.Fatalf("decoded field type = %s, want UNKNOWN codec placeholder", got)
+	}
+
+	// The purpose helper is copy-on-write and preserves every slot while
+	// replacing only the codec-lost schema.
+	restamped, err := restampDecodedTempTableRow(decoded, expected)
+	if err != nil {
+		t.Fatalf("restamp decoded row: %v", err)
+	}
+	if restamped.Positional == decoded.Positional {
+		t.Fatal("restamp reused the decoded PositionalRow")
+	}
+	if restamped.Positional.Type != expected {
+		t.Fatal("restamp did not install the selected exact record declaration")
+	}
+	if len(restamped.Positional.Slots) != 1 || restamped.Positional.Slots[0] != int64(7) {
+		t.Fatalf("restamped slots = %v, want [7]", restamped.Positional.Slots)
+	}
+	restamped.Positional.Slots[0] = int64(99)
+	if decoded.Positional.Slots[0] != int64(7) {
+		t.Fatal("restamp mutated/shared the decoded row's slot storage")
+	}
+
+	// Exercise the real scan boundary: after restamping, ExecutePlan's generic
+	// adapter can attach the selected layout and expose the exact row.
+	alias := values.NamedCorrelationIdentifier("recursive_resume")
+	evalCtx := EmptyEvaluationContext()
+	if err := evalCtx.GetOrCreateTempTable(alias, nil).Add(decoded); err != nil {
+		t.Fatalf("seed decoded temp table: %v", err)
+	}
+	plan := mustExecutorConstruct(plans.NewRecordQueryTempTableScanPlan(alias, expected))
+	cursor, err := ExecutePlan(context.Background(), plan, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("execute temp-table scan: %v", err)
+	}
+	defer cursor.Close()
+	result, err := cursor.OnNext(context.Background())
+	if err != nil || !result.HasNext() {
+		t.Fatalf("scan next = (%v, %v), want resumed row", result, err)
+	}
+	got := result.GetValue().Positional
+	if got == nil || !got.Type.Equals(expected) || len(got.Slots) != 1 || got.Slots[0] != int64(7) {
+		t.Fatalf("scan row = %+v, want exact N LONG row [7]", got)
+	}
+	layout, err := plan.ProvidedOutputLayout()
+	if err != nil {
+		t.Fatalf("provided output layout: %v", err)
+	}
+	if got.Layout != layout {
+		t.Fatal("scan did not attach its exact provided layout")
+	}
+	if decoded.Positional.Layout != nil || decoded.Positional.Type.Fields[0].FieldType.Code() != values.TypeCodeUnknown {
+		t.Fatal("scan mutated the continuation-decoded source row")
+	}
+
+	assertRejected := func(name string, row *PositionalRow, want values.ResolutionErrorCode) {
+		t.Helper()
+		_, rejectErr := restampDecodedTempTableRow(QueryResult{Positional: row}, expected)
+		var coded interface {
+			Code() values.ResolutionErrorCode
+		}
+		if !errors.As(rejectErr, &coded) || coded.Code() != want {
+			t.Fatalf("%s error = %v, want code %d", name, rejectErr, want)
+		}
+	}
+	assertRejected("wrong name", &PositionalRow{
+		Type: positionalTypeFromNames([]string{"OTHER"}), Slots: []any{int64(7)},
+	}, values.LayoutCarrierMismatch)
+	assertRejected("wrong ordinal", &PositionalRow{
+		Type: &values.RecordType{Fields: []values.Field{{
+			Name: "N", Ordinal: 1, FieldType: values.UnknownType,
+		}}},
+		Slots: []any{int64(7)},
+	}, values.LayoutCarrierMismatch)
+	assertRejected("wrong width", &PositionalRow{
+		Type: positionalTypeFromNames([]string{"N", "EXTRA"}), Slots: []any{int64(7), int64(8)},
+	}, values.LayoutCarrierMismatch)
+	assertRejected("concrete type drift", &PositionalRow{
+		Type:  exactTestRowType(values.Field{Name: "N", FieldType: values.NullableString}),
+		Slots: []any{"seven"},
+	}, values.LayoutTypeMismatch)
+	assertRejected("non-codec record envelope", &PositionalRow{
+		Type: &values.RecordType{
+			RecordName: "invented",
+			Fields: []values.Field{{
+				Name: "N", Ordinal: 0, FieldType: values.UnknownType,
+			}},
+		},
+		Slots: []any{int64(7)},
+	}, values.LayoutCarrierMismatch)
+}
+
 // TestRecursiveUnionCursor_HeldContinuationImmuneToLaterLevelTransition is the
 // required regression for Bug 3 (the recursiveUnionContinuation /
 // tempTableInsertContinuation live-*TempTable hazard): a row's continuation
@@ -102,15 +218,21 @@ func TestRecursiveUnionCursor_HeldContinuationImmuneToLaterLevelTransition(t *te
 	scanAlias := values.NamedCorrelationIdentifier("scan")
 	insertAlias := values.NamedCorrelationIdentifier("insert")
 
-	initial := plans.NewRecordQueryTempTableInsertPlan(
-		plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{int64(1), int64(2), int64(3)}}),
+	initial := mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(
+		mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+			Value: []any{int64(1), int64(2), int64(3)},
+			Typ:   values.NewArrayType(false, values.NullableLong),
+		})),
 		insertAlias, false,
-	)
-	recursive := plans.NewRecordQueryTempTableInsertPlan(
-		plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{int64(100)}}),
+	))
+	recursive := mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(
+		mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+			Value: []any{int64(100)},
+			Typ:   values.NewArrayType(false, values.NullableLong),
+		})),
 		insertAlias, false,
-	)
-	plan := plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias)
+	))
+	plan := mustExecutorConstruct(plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias))
 
 	cur, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -184,15 +306,21 @@ func TestRecursiveUnionCursor_HeldContinuationImmuneToLaterLevelTransition(t *te
 func neverTerminatingLevelUnionPlan() *plans.RecordQueryRecursiveLevelUnionPlan {
 	scanAlias := values.NamedCorrelationIdentifier("scan")
 	insertAlias := values.NamedCorrelationIdentifier("insert")
-	initial := plans.NewRecordQueryTempTableInsertPlan(
-		plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{int64(1), int64(2), int64(3)}}),
+	initial := mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(
+		mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+			Value: []any{int64(1), int64(2), int64(3)},
+			Typ:   values.NewArrayType(false, values.NullableLong),
+		})),
 		insertAlias, true,
-	)
-	recursive := plans.NewRecordQueryTempTableInsertPlan(
-		plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{int64(100)}}),
+	))
+	recursive := mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(
+		mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+			Value: []any{int64(100)},
+			Typ:   values.NewArrayType(false, values.NullableLong),
+		})),
 		insertAlias, true,
-	)
-	return plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias)
+	))
+	return mustExecutorConstruct(plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias))
 }
 
 // TestRecursiveUnionCursor_CyclicSinglePage_HitsDepthCap is the "non-paging"
@@ -308,8 +436,10 @@ type countdownExplodeValue struct {
 }
 
 func (c *countdownExplodeValue) Children() []values.Value { return []values.Value{} }
-func (c *countdownExplodeValue) Type() values.Type        { return values.UnknownType }
-func (c *countdownExplodeValue) Name() string             { return "countdown" }
+func (c *countdownExplodeValue) Type() values.Type {
+	return values.NewArrayType(false, values.NullableLong)
+}
+func (c *countdownExplodeValue) Name() string { return "countdown" }
 func (c *countdownExplodeValue) Evaluate(any) (any, error) {
 	if *c.remaining <= 0 {
 		return []any{}, nil
@@ -337,20 +467,23 @@ var _ values.Value = (*countdownExplodeValue)(nil)
 func naturallyTerminatingLevelUnionPlan(targetDepth int) *plans.RecordQueryRecursiveLevelUnionPlan {
 	scanAlias := values.NamedCorrelationIdentifier("scan")
 	insertAlias := values.NamedCorrelationIdentifier("insert")
-	initial := plans.NewRecordQueryTempTableInsertPlan(
-		plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{int64(1)}}),
+	initial := mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(
+		mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+			Value: []any{int64(1)},
+			Typ:   values.NewArrayType(false, values.NullableLong),
+		})),
 		insertAlias, true,
-	)
+	))
 	// The first targetDepth-1 recursive-leg starts must each insert a row (so
 	// each is followed by another checkDepth call); the targetDepth-th must
 	// insert nothing (so the recursion stops right there, without a
 	// (targetDepth+1)-th checkDepth call).
 	remaining := targetDepth - 1
-	recursive := plans.NewRecordQueryTempTableInsertPlan(
-		plans.NewRecordQueryExplodePlan(&countdownExplodeValue{remaining: &remaining}),
+	recursive := mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(
+		mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&countdownExplodeValue{remaining: &remaining})),
 		insertAlias, true,
-	)
-	return plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias)
+	))
+	return mustExecutorConstruct(plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias))
 }
 
 // drainRecursiveUnion pulls every row from cur, returning the row count and
@@ -512,8 +645,10 @@ type levelCounterExplodeValue struct {
 }
 
 func (c *levelCounterExplodeValue) Children() []values.Value { return []values.Value{} }
-func (c *levelCounterExplodeValue) Type() values.Type        { return values.UnknownType }
-func (c *levelCounterExplodeValue) Name() string             { return "levelCounter" }
+func (c *levelCounterExplodeValue) Type() values.Type {
+	return values.NewArrayType(false, values.NullableLong)
+}
+func (c *levelCounterExplodeValue) Name() string { return "levelCounter" }
 func (c *levelCounterExplodeValue) Evaluate(evalCtx any) (any, error) {
 	ec, ok := evalCtx.(*EvaluationContext)
 	if !ok {
@@ -556,15 +691,18 @@ var _ values.Value = (*levelCounterExplodeValue)(nil)
 // completes naturally with exactly `target` recursive-leg starts (same
 // counting convention as naturallyTerminatingLevelUnionPlan).
 func independentCounterLevelUnionPlan(scanAlias, insertAlias values.CorrelationIdentifier, target int) *plans.RecordQueryRecursiveLevelUnionPlan {
-	initial := plans.NewRecordQueryTempTableInsertPlan(
-		plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{int64(0)}}),
+	initial := mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(
+		mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+			Value: []any{int64(0)},
+			Typ:   values.NewArrayType(false, values.NullableLong),
+		})),
 		insertAlias, true,
-	)
-	recursive := plans.NewRecordQueryTempTableInsertPlan(
-		plans.NewRecordQueryExplodePlan(&levelCounterExplodeValue{scanAlias: scanAlias, target: target}),
+	))
+	recursive := mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(
+		mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&levelCounterExplodeValue{scanAlias: scanAlias, target: target})),
 		insertAlias, true,
-	)
-	return plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias)
+	))
+	return mustExecutorConstruct(plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias))
 }
 
 // TestRecursiveUnionCursor_ConcurrentInvocations_NoFalsePositive is the
@@ -610,8 +748,8 @@ func TestRecursiveUnionCursor_ConcurrentInvocations_NoFalsePositive(t *testing.T
 	// slot is that leg's OWN counter, which independently walks 0..perLegDepth
 	// across all 3 legs — ties happen often enough (every leg passes through
 	// every counter value) that the merge always finds an order to run in.
-	compKey := values.NewOrdinalFieldValue(nil, 0, values.UnknownType)
-	p := plans.NewRecordQueryInUnionPlan(inner, []string{"in_concurrent"}, []values.Value{compKey}, false)
+	compKey := mustNamedTestField(t, values.OrdinalFieldName(0), values.NullableLong)
+	p := mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(inner, []string{"in_concurrent"}, []values.Value{compKey}, false))
 	p.SetInSources([][]any{{int64(1), int64(2), int64(3)}})
 
 	cur, err := ExecutePlan(ctx, p, nil, EmptyEvaluationContext(), nil, props)
@@ -644,12 +782,12 @@ func TestRecursiveUnionCursor_ConcurrentInvocations_NoFalsePositive(t *testing.T
 // stop it is the depth cap in executeRecursiveDfsJoinStreaming's childFn.
 func neverTerminatingDfsPlan() *plans.RecordQueryRecursiveDfsJoinPlan {
 	node := func() *plans.RecordQueryValuesPlan {
-		return plans.NewRecordQueryValuesPlan([]values.Value{
+		return mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 			&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeLong, false)},
-		})
+		}))
 	}
 	prior := values.NamedCorrelationIdentifier("prior")
-	return plans.NewRecordQueryRecursiveDfsJoinPlan(node(), node(), prior, plans.DfsPreorder)
+	return mustExecutorConstruct(plans.NewRecordQueryRecursiveDfsJoinPlan(node(), node(), prior, plans.DfsPreorder))
 }
 
 // TestRecursiveDfsJoinStreaming_HitsDepthCap is the DFS-arm half of the

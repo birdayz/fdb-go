@@ -16,6 +16,7 @@ go_library(
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
+        "//pkg/relational/core/query",
         "//pkg/relational/core/query/logical",
         "@org_golang_google_protobuf//reflect/protoreflect",
     ],
@@ -23,9 +24,13 @@ go_library(
 
 go_test(
     name = "ddl_test",
-    srcs = ["generator_guard_test.go"],
+    srcs = [
+        "generator_guard_test.go",
+        "projected_value_match_test.go",
+    ],
     embed = [":ddl"],
     deps = [
+        "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
         "//pkg/relational/core/query/logical",
     ],

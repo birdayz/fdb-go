@@ -27,15 +27,15 @@ type RecordQueryLimitPlan struct {
 	limitValue values.Value
 }
 
-func NewRecordQueryLimitPlan(inner RecordQueryPlan, limit, offset int64) *RecordQueryLimitPlan {
-	return &RecordQueryLimitPlan{innerQ: QuantifierOverPlan(inner), limit: limit, offset: offset}
+func NewRecordQueryLimitPlan(inner RecordQueryPlan, limit, offset int64) (*RecordQueryLimitPlan, error) {
+	return NewRecordQueryLimitPlanFromQuantifier(QuantifierOverPlan(inner), limit, offset, nil)
 }
 
 // NewRecordQueryLimitPlanWithValue builds a LIMIT whose row cap is a runtime
 // Value, evaluated at execution against the bound parameters. The static limit
 // is the no-cap sentinel (-1); only limitValue is consulted.
-func NewRecordQueryLimitPlanWithValue(inner RecordQueryPlan, limitValue values.Value, offset int64) *RecordQueryLimitPlan {
-	return &RecordQueryLimitPlan{innerQ: QuantifierOverPlan(inner), limit: -1, offset: offset, limitValue: limitValue}
+func NewRecordQueryLimitPlanWithValue(inner RecordQueryPlan, limitValue values.Value, offset int64) (*RecordQueryLimitPlan, error) {
+	return NewRecordQueryLimitPlanFromQuantifier(QuantifierOverPlan(inner), -1, offset, limitValue)
 }
 
 // NewRecordQueryLimitPlanFromQuantifier builds a LIMIT whose child is a LIVE
@@ -47,8 +47,12 @@ func NewRecordQueryLimitPlanWithValue(inner RecordQueryPlan, limitValue values.V
 // edge. limitValue is the optional runtime cap (nil for a static literal LIMIT);
 // when non-nil the caller passes limit=-1, the no-cap sentinel, exactly as
 // NewRecordQueryLimitPlanWithValue does.
-func NewRecordQueryLimitPlanFromQuantifier(innerQ expressions.Quantifier, limit, offset int64, limitValue values.Value) *RecordQueryLimitPlan {
-	return &RecordQueryLimitPlan{innerQ: innerQ, limit: limit, offset: offset, limitValue: limitValue}
+func NewRecordQueryLimitPlanFromQuantifier(innerQ expressions.Quantifier, limit, offset int64, limitValue values.Value) (*RecordQueryLimitPlan, error) {
+	base, err := newPlanExprBaseForQuantifier("RecordQueryLimitPlan", innerQ)
+	if err != nil {
+		return nil, err
+	}
+	return &RecordQueryLimitPlan{PlanExprBase: base, innerQ: innerQ, limit: limit, offset: offset, limitValue: limitValue}, nil
 }
 
 // GetLimitValue returns the optional runtime row-cap Value (nil for a static
@@ -58,10 +62,8 @@ func (p *RecordQueryLimitPlan) GetLimitValue() values.Value { return p.limitValu
 // WithInner returns a shallow copy bound to a new inner plan, preserving the
 // cap (static or runtime). Used when an implementation rule rebuilds the wrapper
 // around a folded leaf so the runtime limitValue is never dropped.
-func (p *RecordQueryLimitPlan) WithInner(inner RecordQueryPlan) *RecordQueryLimitPlan {
-	cp := *p
-	cp.innerQ = QuantifierOverPlan(inner)
-	return &cp
+func (p *RecordQueryLimitPlan) WithInner(inner RecordQueryPlan) (*RecordQueryLimitPlan, error) {
+	return NewRecordQueryLimitPlanFromQuantifier(QuantifierOverPlan(inner), p.limit, p.offset, p.limitValue)
 }
 
 // GetQuantifiers reports the real child quantifier, overriding
@@ -73,7 +75,7 @@ func (p *RecordQueryLimitPlan) GetQuantifiers() []expressions.Quantifier {
 	return []expressions.Quantifier{p.innerQ}
 }
 
-func (p *RecordQueryLimitPlan) GetResultType() values.Type { return values.UnknownType }
+func (p *RecordQueryLimitPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 func (p *RecordQueryLimitPlan) GetChildren() []RecordQueryPlan {
 	inner := p.GetInner()
@@ -143,13 +145,18 @@ func (p *RecordQueryLimitPlan) EqualsWithoutChildren(other expressions.Relationa
 
 // WithQuantifiers returns a copy ranging over the given child quantifier —
 // Java's copy-on-write withChild(Reference).
-func (p *RecordQueryLimitPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 1 {
-		return p
+func (p *RecordQueryLimitPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryLimitPlan", len(qs), 1); err != nil {
+		return nil, err
 	}
 	cp := *p
 	cp.innerQ = qs[0]
-	return &cp
+	base, err := newPlanExprBaseForQuantifier("RecordQueryLimitPlan", qs[0])
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
+	return &cp, nil
 }
 
 // WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
@@ -164,7 +171,7 @@ func (p *RecordQueryLimitPlan) WithChildren(qs []expressions.Quantifier) (expres
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("RecordQueryLimitPlan.WithChildren: expected 1 child, got %d", len(qs))
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

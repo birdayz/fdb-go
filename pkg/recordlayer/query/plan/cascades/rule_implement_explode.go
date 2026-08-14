@@ -27,8 +27,12 @@ func (r *ImplementExplodeRule) OnMatch(call *ExpressionRuleCall) {
 	explode := matching.Get[*expressions.ExplodeExpression](call.Bindings, r.matcher)
 	// The explode is its own Cascades expression now (RFC-184 W2) — a bare leaf
 	// plan, no physicalExplodeWrapper adapter needed.
-	plan := plans.NewRecordQueryExplodePlanWithOrdinality(
+	plan, err := plans.NewRecordQueryExplodePlanWithOrdinality(
 		explode.GetCollectionValue(), explode.GetWithOrdinality())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	call.Yield(plan)
 }
 

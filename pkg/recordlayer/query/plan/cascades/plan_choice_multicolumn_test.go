@@ -9,24 +9,69 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func planChoiceRowType(recordType string) *values.RecordType {
+	return values.NewRecordType(recordType, false, []values.Field{
+		{Name: "CUSTOMER_ID", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "STATUS", FieldType: values.NullableString, Ordinal: 1},
+		{Name: "AMOUNT", FieldType: values.NullableLong, Ordinal: 2},
+		{Name: "TOTAL", FieldType: values.NullableLong, Ordinal: 3},
+		{Name: "EMAIL", FieldType: values.NullableString, Ordinal: 4},
+		{Name: "UNINDEXED_COL", FieldType: values.NullableLong, Ordinal: 5},
+		{Name: "CATEGORY", FieldType: values.NullableString, Ordinal: 6},
+	})
+}
+
+func planChoiceScan(
+	t testing.TB,
+	recordType string,
+) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	return mustFullUnorderedScan(t, []string{recordType}, planChoiceRowType(recordType))
+}
+
+func planChoiceField(
+	t testing.TB,
+	quantifier expressions.Quantifier,
+	name string,
+) values.Value {
+	t.Helper()
+	rootValue, rootErr := quantifier.RequireFlowedObjectValue()
+	root := mustConstruct(t, rootValue, rootErr)
+	request, requestErr := values.FieldByName(name)
+	fieldValue, fieldErr := values.ResolveFieldAccess(
+		root, []values.FieldRequest{mustConstruct(t, request, requestErr)})
+	return mustConstruct(t, fieldValue, fieldErr)
+}
+
+func planChoiceFilter(
+	t testing.TB,
+	preds []predicates.QueryPredicate,
+	quantifier expressions.Quantifier,
+) *expressions.LogicalFilterExpression {
+	t.Helper()
+	filterValue, filterErr := expressions.NewLogicalFilterExpression(preds, quantifier)
+	return mustConstruct(t, filterValue, filterErr)
+}
+
 func TestPlanChoice_MultiColumnIndexPrefix(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := planChoiceScan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
 
 	// WHERE customer_id = 42 AND status = 'shipped'
 	pred1 := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "CUSTOMER_ID", Typ: values.UnknownType},
+		planChoiceField(t, q, "CUSTOMER_ID"),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)),
 	)
 	pred2 := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "STATUS", Typ: values.UnknownType},
+		planChoiceField(t, q, "STATUS"),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "shipped"),
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := planChoiceFilter(t,
 		[]predicates.QueryPredicate{pred1, pred2},
-		expressions.ForEachQuantifier(scanRef),
+		q,
 	)
 	rootRef := expressions.InitialOf(filter)
 
@@ -84,17 +129,18 @@ func TestPlanChoice_MultiColumnIndexPrefix(t *testing.T) {
 func TestPlanChoice_NoIndexForNonMatchingColumn(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := planChoiceScan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
 
 	// WHERE total > 500 — no index on "total"
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "TOTAL", Typ: values.UnknownType},
+		planChoiceField(t, q, "TOTAL"),
 		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(500)),
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := planChoiceFilter(t,
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(scanRef),
+		q,
 	)
 	rootRef := expressions.InitialOf(filter)
 
@@ -140,17 +186,18 @@ func TestPlanChoice_NoIndexForNonMatchingColumn(t *testing.T) {
 func TestPlanChoice_UniqueIndexPointLookup(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"User"}, values.UnknownType)
+	scan := planChoiceScan(t, "User")
 	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
 
 	// WHERE email = 'user@example.com' on UNIQUE index
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "EMAIL", Typ: values.UnknownType},
+		planChoiceField(t, q, "EMAIL"),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "user@example.com"),
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := planChoiceFilter(t,
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(scanRef),
+		q,
 	)
 	rootRef := expressions.InitialOf(filter)
 
@@ -190,17 +237,18 @@ func TestPlanChoice_UniqueIndexPointLookup(t *testing.T) {
 func TestPlanChoice_PicksBestIndexAmongMultiple(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := planChoiceScan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
 
 	// WHERE status = 'shipped' — matches idx_status (1 col) not idx_customer (different col)
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "STATUS", Typ: values.UnknownType},
+		planChoiceField(t, q, "STATUS"),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "shipped"),
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := planChoiceFilter(t,
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(scanRef),
+		q,
 	)
 	rootRef := expressions.InitialOf(filter)
 
@@ -251,17 +299,18 @@ func TestPlanChoice_PicksBestIndexAmongMultiple(t *testing.T) {
 func TestPlanChoice_InequalityRangeScan(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := planChoiceScan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
 
 	// WHERE amount > 1000 on index(amount)
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "AMOUNT", Typ: values.UnknownType},
+		planChoiceField(t, q, "AMOUNT"),
 		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(1000)),
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := planChoiceFilter(t,
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(scanRef),
+		q,
 	)
 	rootRef := expressions.InitialOf(filter)
 
@@ -311,21 +360,22 @@ func TestPlanChoice_InequalityRangeScan(t *testing.T) {
 func TestPlanChoice_EqualityPlusInequality(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := planChoiceScan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
 
 	// WHERE customer_id = 42 AND amount > 100
 	pred1 := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "CUSTOMER_ID", Typ: values.UnknownType},
+		planChoiceField(t, q, "CUSTOMER_ID"),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)),
 	)
 	pred2 := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "AMOUNT", Typ: values.UnknownType},
+		planChoiceField(t, q, "AMOUNT"),
 		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(100)),
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := planChoiceFilter(t,
 		[]predicates.QueryPredicate{pred1, pred2},
-		expressions.ForEachQuantifier(scanRef),
+		q,
 	)
 	rootRef := expressions.InitialOf(filter)
 
@@ -378,17 +428,18 @@ func TestPlanChoice_EqualityPlusInequality(t *testing.T) {
 func TestPlanChoice_PartialPrefixMatch(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := planChoiceScan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
 
 	// WHERE customer_id = 42 (only first column of 2-column index)
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "CUSTOMER_ID", Typ: values.UnknownType},
+		planChoiceField(t, q, "CUSTOMER_ID"),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)),
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := planChoiceFilter(t,
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(scanRef),
+		q,
 	)
 	rootRef := expressions.InitialOf(filter)
 
@@ -471,15 +522,16 @@ func planHasIndexScan(p plans.RecordQueryPlan) bool {
 func TestPlanChoice_GapInPrefix(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := planChoiceScan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "AMOUNT", Typ: values.UnknownType},
+		planChoiceField(t, q, "AMOUNT"),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(100)),
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := planChoiceFilter(t,
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(scanRef),
+		q,
 	)
 	rootRef := expressions.InitialOf(filter)
 	ctx := NewPlanContextFromIndexDefs([]IndexDef{
@@ -504,20 +556,21 @@ func TestPlanChoice_GapInPrefix(t *testing.T) {
 func TestPlanChoice_InequalityStopsPrefix(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := planChoiceScan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
-	filter := expressions.NewLogicalFilterExpression(
+	q := expressions.ForEachQuantifier(scanRef)
+	filter := planChoiceFilter(t,
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "STATUS", Typ: values.UnknownType},
-				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(5)),
+				planChoiceField(t, q, "STATUS"),
+				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, "M"),
 			),
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "AMOUNT", Typ: values.UnknownType},
+				planChoiceField(t, q, "AMOUNT"),
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(100)),
 			),
 		},
-		expressions.ForEachQuantifier(scanRef),
+		q,
 	)
 	rootRef := expressions.InitialOf(filter)
 	ctx := NewPlanContextFromIndexDefs([]IndexDef{
@@ -532,9 +585,9 @@ func TestPlanChoice_InequalityStopsPrefix(t *testing.T) {
 	}
 	physicalPlan := extractWinnerPlan(t, bestExpr)
 	var idx *plans.RecordQueryIndexPlan
-	plans.Walk(physicalPlan, func(n plans.RecordQueryPlan) bool {
-		if ip, ok := n.(*plans.RecordQueryIndexPlan); ok {
-			idx = ip
+	plans.Walk(physicalPlan, func(node plans.RecordQueryPlan) bool {
+		if found, ok := plans.IndexPlanOf(node); ok {
+			idx = found
 			return false
 		}
 		return true
@@ -561,15 +614,16 @@ func TestPlanChoice_InequalityStopsPrefix(t *testing.T) {
 func TestPlanChoice_AllPredicatesResidual(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := planChoiceScan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "UNINDEXED_COL", Typ: values.UnknownType},
+		planChoiceField(t, q, "UNINDEXED_COL"),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)),
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := planChoiceFilter(t,
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(scanRef),
+		q,
 	)
 	rootRef := expressions.InitialOf(filter)
 	ctx := NewPlanContextFromIndexDefs([]IndexDef{
@@ -596,21 +650,22 @@ func TestPlanChoice_AllPredicatesResidual(t *testing.T) {
 func TestPlanChoice_ParameterizedResidualKeepsIndex(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := planChoiceScan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
 	param := values.NewConstantObjectValue(values.UniqueCorrelationIdentifier(), "p1", values.NullableLong)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := planChoiceFilter(t,
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "CUSTOMER_ID", Typ: values.UnknownType},
+				planChoiceField(t, q, "CUSTOMER_ID"),
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)),
 			),
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "TOTAL", Typ: values.UnknownType},
+				planChoiceField(t, q, "TOTAL"),
 				predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: param},
 			),
 		},
-		expressions.ForEachQuantifier(scanRef),
+		q,
 	)
 	rootRef := expressions.InitialOf(filter)
 	ctx := NewPlanContextFromIndexDefs([]IndexDef{

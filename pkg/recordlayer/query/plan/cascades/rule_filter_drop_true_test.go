@@ -5,21 +5,20 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func TestFilterDropTruePredicatesRule_DropsOne(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := filterRuleScan("T")
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
 	pF := predicates.NewConstantPredicate(predicates.TriFalse)
-	f := expressions.NewLogicalFilterExpression(
+	f := filterRuleFilter(
 		[]predicates.QueryPredicate{pT, pF, pT}, scanQ,
 	)
 	ref := expressions.InitialOf(f)
 	rule := NewFilterDropTruePredicatesRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := fireFilterRule(t, rule, ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
 	}
@@ -35,16 +34,16 @@ func TestFilterDropTruePredicatesRule_DropsOne(t *testing.T) {
 
 func TestFilterDropTruePredicatesRule_DeclinesNoTrue(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := filterRuleScan("T")
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	pF := predicates.NewConstantPredicate(predicates.TriFalse)
 	pU := predicates.NewConstantPredicate(predicates.TriUnknown)
-	f := expressions.NewLogicalFilterExpression(
+	f := filterRuleFilter(
 		[]predicates.QueryPredicate{pF, pU}, scanQ,
 	)
 	ref := expressions.InitialOf(f)
 	rule := NewFilterDropTruePredicatesRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := fireFilterRule(t, rule, ref)
 	if len(yielded) != 0 {
 		t.Fatalf("rule fired despite no TriTrue predicate — yielded %d, want 0", len(yielded))
 	}
@@ -52,15 +51,15 @@ func TestFilterDropTruePredicatesRule_DeclinesNoTrue(t *testing.T) {
 
 func TestFilterDropTruePredicatesRule_DropsAll(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := filterRuleScan("T")
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
-	f := expressions.NewLogicalFilterExpression(
+	f := filterRuleFilter(
 		[]predicates.QueryPredicate{pT, pT}, scanQ,
 	)
 	ref := expressions.InitialOf(f)
 	rule := NewFilterDropTruePredicatesRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := fireFilterRule(t, rule, ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
 	}
@@ -72,10 +71,10 @@ func TestFilterDropTruePredicatesRule_DropsAll(t *testing.T) {
 
 func TestFilterDropTruePredicatesRule_ComposesWithNoOpFilter(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := filterRuleScan("T")
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
-	f := expressions.NewLogicalFilterExpression(
+	f := filterRuleFilter(
 		[]predicates.QueryPredicate{pT, pT}, scanQ,
 	)
 	ref := expressions.InitialOf(f)
@@ -83,7 +82,7 @@ func TestFilterDropTruePredicatesRule_ComposesWithNoOpFilter(t *testing.T) {
 		NewFilterDropTruePredicatesRule(),
 		NewNoOpFilterRule(),
 	}
-	if _, converged := exploreRewriting(NewPlanner(rules, nil), ref); !converged {
+	if _, converged := exploreFilterRewriting(NewPlanner(rules, nil), ref); !converged {
 		t.Fatal("did not converge")
 	}
 	// The Scan member below requires the full DropTrue → NoOp chain

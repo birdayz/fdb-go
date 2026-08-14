@@ -18,38 +18,82 @@ import (
 // the ordinal join seed shape in miniature.
 func bakedLegRC(t *testing.T, corr values.CorrelationIdentifier) *values.RecordConstructorValue {
 	t.Helper()
-	legType := values.NewRecordType("", false, []values.Field{
-		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
-		{Name: "V", FieldType: values.NotNullLong, Ordinal: 1},
-	})
-	qov := values.NewQuantifiedObjectValueOfType(corr, legType)
-	baked0, err := values.NewFieldValueOfOrdinal(qov, 0)
-	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
-	}
-	baked1, err := values.NewFieldValueOfOrdinal(qov, 1)
-	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
-	}
-	return values.NewRecordConstructorValue(
+	legType := ordinalChildRowType()
+	qov, err := values.NewQuantifiedObjectValue(corr, legType)
+	qov = mustConstruct(t, qov, err)
+	baked0, err := values.ResolveOrdinalSeedField(qov, 0)
+	baked0 = mustConstruct(t, baked0, err)
+	baked1, err := values.ResolveOrdinalSeedField(qov, 1)
+	baked1 = mustConstruct(t, baked1, err)
+	result := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "ID", Value: baked0},
 		values.RecordConstructorField{Name: "V", Value: baked1},
 	)
+	if !values.ContainsBakedOrdinal(result) {
+		t.Fatal("fixture: ordinal child result contains no frontier-pinned field")
+	}
+	return result
+}
+
+func ordinalChildRowType() *values.RecordType {
+	return values.NewRecordType("ORDINAL_CHILD", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "V", FieldType: values.NotNullLong, Ordinal: 1},
+	})
 }
 
 // ordinalChildSelect builds an inner-equivalent child SelectExpression whose
 // result value is BAKED (an ordinal 2-way select as SelectMergeRule sees it).
 func ordinalChildSelect(t *testing.T) *expressions.SelectExpression {
 	t.Helper()
-	scan := &expressions.FullUnorderedScanExpression{}
+	scan, err := expressions.NewFullUnorderedScanExpression(
+		[]string{"ORDINAL_CHILD"}, ordinalChildRowType())
+	scan = mustConstruct(t, scan, err)
 	q := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier("leg"), expressions.InitialOf(scan),
 	)
-	return expressions.NewSelectExpression(
+	selectExpr, err := expressions.NewSelectExpression(
 		bakedLegRC(t, values.NamedCorrelationIdentifier("leg")),
 		[]expressions.Quantifier{q},
 		nil,
 	)
+	return mustConstruct(t, selectExpr, err)
+}
+
+func ordinalChildScan(t *testing.T, recordType string) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	scan, err := expressions.NewFullUnorderedScanExpression(
+		[]string{recordType}, ordinalChildRowType())
+	return mustConstruct(t, scan, err)
+}
+
+func ordinalChildFlowed(t *testing.T, q expressions.Quantifier) values.QuantifiedObjectValue {
+	t.Helper()
+	flowed, err := q.RequireFlowedObjectValue()
+	return mustConstruct(t, flowed, err)
+}
+
+func ordinalChildSelectExpression(
+	t *testing.T,
+	result values.Value,
+	quantifiers []expressions.Quantifier,
+) *expressions.SelectExpression {
+	t.Helper()
+	selectExpr, err := expressions.NewSelectExpression(result, quantifiers, nil)
+	return mustConstruct(t, selectExpr, err)
+}
+
+func fireOrdinalSelectRule(
+	t *testing.T,
+	rule ExpressionRule,
+	ref *expressions.Reference,
+) []expressions.RelationalExpression {
+	t.Helper()
+	yielded, err := FireExpressionRule(rule, ref)
+	if err != nil {
+		t.Fatalf("FireExpressionRule: %v", err)
+	}
+	return yielded
 }
 
 // TestSelectMergeRule_OrdinalChildComposes pins the SelectMerge composition
@@ -65,13 +109,12 @@ func TestSelectMergeRule_OrdinalChildComposes(t *testing.T) {
 	// child quantifiers in.
 	child := ordinalChildSelect(t)
 	childQ := expressions.ForEachQuantifier(expressions.InitialOf(child))
-	otherQ := expressions.ForEachQuantifier(expressions.InitialOf(&expressions.FullUnorderedScanExpression{}))
-	parent := expressions.NewSelectExpression(
-		childQ.GetFlowedObjectValue(),
+	otherQ := expressions.ForEachQuantifier(expressions.InitialOf(ordinalChildScan(t, "OTHER")))
+	parent := ordinalChildSelectExpression(t,
+		ordinalChildFlowed(t, childQ),
 		[]expressions.Quantifier{childQ, otherQ},
-		nil,
 	)
-	yieldedMulti := FireExpressionRule(NewSelectMergeRule(), expressions.InitialOf(parent))
+	yieldedMulti := fireOrdinalSelectRule(t, NewSelectMergeRule(), expressions.InitialOf(parent))
 	if len(yieldedMulti) == 0 {
 		t.Fatal("ordinal child into multi-quantifier parent must MERGE (composition is legal), got no yields")
 	}
@@ -109,12 +152,11 @@ func TestSelectMergeRule_OrdinalChildComposes(t *testing.T) {
 	// already counts).
 	child2 := ordinalChildSelect(t)
 	wrapperQ := expressions.ForEachQuantifier(expressions.InitialOf(child2))
-	wrapper := expressions.NewSelectExpression(
-		wrapperQ.GetFlowedObjectValue(),
+	wrapper := ordinalChildSelectExpression(t,
+		ordinalChildFlowed(t, wrapperQ),
 		[]expressions.Quantifier{wrapperQ},
-		nil,
 	)
-	yielded := FireExpressionRule(NewSelectMergeRule(), expressions.InitialOf(wrapper))
+	yielded := fireOrdinalSelectRule(t, NewSelectMergeRule(), expressions.InitialOf(wrapper))
 	if len(yielded) != 1 {
 		t.Fatalf("pure-wrapper merge over an ordinal child must proceed, got %d yields", len(yielded))
 	}
@@ -134,22 +176,26 @@ func TestSelectMergeRule_OrdinalChildComposes(t *testing.T) {
 	// joined-preserved), which an earlier any-WithPredicates assertion
 	// boundary false-positived on — pinned here as a no-panic merge.
 	child3 := ordinalChildSelect(t)
+	filterInnerQ := expressions.ForEachQuantifier(expressions.InitialOf(child3))
+	filterRoot := ordinalChildFlowed(t, filterInnerQ)
+	filterOperand, err := values.ResolveFieldOrdinals(filterRoot, []int{0})
+	filterOperand = mustConstruct(t, filterOperand, err)
 	filterPred := &predicates.ComparisonPredicate{
-		Operand:    &values.FieldValue{Field: "ID"},
+		Operand:    filterOperand,
 		Comparison: predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1)}},
 	}
-	filter := expressions.NewLogicalFilterExpression(
+	filter, err := expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{filterPred},
-		expressions.ForEachQuantifier(expressions.InitialOf(child3)),
+		filterInnerQ,
 	)
+	filter = mustConstruct(t, filter, err)
 	filterQ := expressions.ForEachQuantifier(expressions.InitialOf(filter))
-	otherQ2 := expressions.ForEachQuantifier(expressions.InitialOf(&expressions.FullUnorderedScanExpression{}))
-	multiParent := expressions.NewSelectExpression(
-		filterQ.GetFlowedObjectValue(),
+	otherQ2 := expressions.ForEachQuantifier(expressions.InitialOf(ordinalChildScan(t, "OTHER_FILTER")))
+	multiParent := ordinalChildSelectExpression(t,
+		ordinalChildFlowed(t, filterQ),
 		[]expressions.Quantifier{filterQ, otherQ2},
-		nil,
 	)
-	yielded = FireExpressionRule(NewSelectMergeRule(), expressions.InitialOf(multiParent))
+	yielded = fireOrdinalSelectRule(t, NewSelectMergeRule(), expressions.InitialOf(multiParent))
 	if len(yielded) == 0 {
 		t.Fatal("filter-over-ordinal-box merge in a multi-quantifier parent must proceed (no panic, no decline), got 0 yields")
 	}

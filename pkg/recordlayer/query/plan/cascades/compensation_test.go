@@ -724,7 +724,7 @@ func TestPredicateCompensationFunc_Impossible(t *testing.T) {
 func TestOfPredicateCompensation_Identity(t *testing.T) {
 	t.Parallel()
 	pred := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "X"},
+		Operand: mustCompensationField(t, "X"),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: int64(5)},
@@ -752,9 +752,10 @@ func TestOfPredicateCompensation_WithAliasRebase(t *testing.T) {
 	t.Parallel()
 	srcAlias := values.NamedCorrelationIdentifier("src")
 	tgtAlias := values.NamedCorrelationIdentifier("tgt")
+	src := mustCompensationQOV(t, srcAlias, values.NotNullLong)
 
 	pred := &predicates.ComparisonPredicate{
-		Operand: values.NewQuantifiedObjectValue(srcAlias),
+		Operand: src,
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: int64(10)},
@@ -772,12 +773,12 @@ func TestOfPredicateCompensation_WithAliasRebase(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate, got %T", preds[0])
 	}
-	qov, ok := cp.Operand.(*values.QuantifiedObjectValue)
+	qov, ok := values.AsQuantifiedObjectValue(cp.Operand)
 	if !ok {
-		t.Fatalf("expected *QuantifiedObjectValue, got %T", cp.Operand)
+		t.Fatalf("expected exact QuantifiedObjectValue, got %T", cp.Operand)
 	}
-	if qov.Correlation != tgtAlias {
-		t.Errorf("operand alias = %s, want %s", qov.Correlation.Name(), tgtAlias.Name())
+	if qov.Correlation() != tgtAlias {
+		t.Errorf("operand alias = %s, want %s", qov.Correlation().Name(), tgtAlias.Name())
 	}
 }
 
@@ -800,7 +801,7 @@ func TestPredicateCompensationMap_RealEntries(t *testing.T) {
 	t.Parallel()
 	p1 := predicates.NewConstantPredicate(predicates.TriTrue)
 	p2 := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "Y"},
+		Operand: mustCompensationField(t, "Y"),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: int64(3)},
@@ -829,7 +830,7 @@ func TestPredicateCompensationMap_RealEntries(t *testing.T) {
 func TestPredicateCompensationMap_ApplyCompensations(t *testing.T) {
 	t.Parallel()
 	pred := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "Z"},
+		Operand: mustCompensationField(t, "Z"),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: int64(7)},
@@ -882,7 +883,7 @@ func TestPredicateCompensationMap_NilSafe(t *testing.T) {
 
 func TestResultCompensation_OfValue(t *testing.T) {
 	t.Parallel()
-	v := &values.FieldValue{Field: "COL"}
+	v := mustCompensationField(t, "COL")
 	f := ResultCompensationOfValue(v)
 	if !f.IsNeeded() {
 		t.Fatal("should be needed")
@@ -901,17 +902,17 @@ func TestResultCompensation_ApplyWithRebase(t *testing.T) {
 	srcAlias := values.NamedCorrelationIdentifier("src")
 	tgtAlias := values.NamedCorrelationIdentifier("tgt")
 
-	v := values.NewQuantifiedObjectValue(srcAlias)
+	v := mustCompensationQOV(t, srcAlias, values.NotNullLong)
 	f := ResultCompensationOfValue(v)
 
 	tm := TranslationMapOfAliases(srcAlias, tgtAlias)
 	result := f.ApplyCompensationForResult(tm)
-	qov, ok := result.(*values.QuantifiedObjectValue)
+	qov, ok := values.AsQuantifiedObjectValue(result)
 	if !ok {
-		t.Fatalf("expected *QuantifiedObjectValue, got %T", result)
+		t.Fatalf("expected exact QuantifiedObjectValue, got %T", result)
 	}
-	if qov.Correlation != tgtAlias {
-		t.Errorf("correlation = %s, want %s", qov.Correlation.Name(), tgtAlias.Name())
+	if qov.Correlation() != tgtAlias {
+		t.Errorf("correlation = %s, want %s", qov.Correlation().Name(), tgtAlias.Name())
 	}
 }
 
@@ -928,7 +929,7 @@ func TestResultCompensation_NilApply(t *testing.T) {
 
 func TestForMatchCompensation_Apply_NoCompensation(t *testing.T) {
 	t.Parallel()
-	scan := &expressions.FullUnorderedScanExpression{}
+	scan := mustCompensationScan(t)
 	c := NewForMatchCompensation(
 		false, NoCompensation, EmptyPredicateCompensationMap(),
 		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
@@ -944,9 +945,9 @@ func TestForMatchCompensation_Apply_NoCompensation(t *testing.T) {
 
 func TestForMatchCompensation_Apply_WithPredicates(t *testing.T) {
 	t.Parallel()
-	scan := &expressions.FullUnorderedScanExpression{}
+	scan := mustCompensationScan(t)
 	pred := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "X"},
+		Operand: mustCompensationField(t, "X"),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: int64(5)},
@@ -982,12 +983,10 @@ func TestForMatchCompensation_NeededBaseInvariant(t *testing.T) {
 		[]predicates.QueryPredicate{predicate},
 		[]PredicateCompensationFunc{OfPredicateCompensation(predicate, false)},
 	)
-	forEach1 := namedForEachQuantifier("q1")
-	forEach2 := namedForEachQuantifier("q2")
-	exists := namedExistentialQuantifier("qe")
-	ref := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-	)
+	forEach1 := compensationNamedForEachQuantifier(t, "q1")
+	forEach2 := compensationNamedForEachQuantifier(t, "q2")
+	exists := compensationNamedExistentialQuantifier(t, "qe")
+	ref := expressions.InitialOf(mustCompensationScan(t))
 	zeroAliasForEach := expressions.NamedForEachQuantifier(values.CorrelationIdentifier{}, ref)
 	duplicateAliasExists := expressions.NamedExistentialQuantifier(forEach1.GetAlias(), ref)
 
@@ -1086,7 +1085,7 @@ func TestForMatchCompensation_NeededBaseInvariant(t *testing.T) {
 		[]expressions.Quantifier{forEach1},
 		nil,
 		aliasesOf(forEach1),
-		ResultCompensationOfValue(values.NewQuantifiedObjectValue(forEach1.GetAlias())),
+		ResultCompensationOfValue(mustCompensationQOV(t, forEach1.GetAlias(), compensationRFC232RowType())),
 		EmptyGroupByMappings(),
 	)
 	parent := NewForMatchCompensation(
@@ -1112,7 +1111,7 @@ func TestForMatchCompensation_ApplyFailsClosed(t *testing.T) {
 		[]predicates.QueryPredicate{predicate},
 		[]PredicateCompensationFunc{OfPredicateCompensation(predicate, false)},
 	)
-	childBase := namedForEachQuantifier("child_base")
+	childBase := compensationNamedForEachQuantifier(t, "child_base")
 	child := NewForMatchCompensation(
 		false,
 		NoCompensation,
@@ -1123,7 +1122,7 @@ func TestForMatchCompensation_ApplyFailsClosed(t *testing.T) {
 		NoResultCompensation(),
 		EmptyGroupByMappings(),
 	)
-	outerExists := namedExistentialQuantifier("only_exists")
+	outerExists := compensationNamedExistentialQuantifier(t, "only_exists")
 	invalidOuter := NewForMatchCompensation(
 		false,
 		child,
@@ -1139,7 +1138,7 @@ func TestForMatchCompensation_ApplyFailsClosed(t *testing.T) {
 	}
 
 	translationCalls := 0
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustCompensationScan(t)
 	applied, ok := invalidOuter.Apply(scan, func(values.CorrelationIdentifier) TranslationMap {
 		translationCalls++
 		return EmptyTranslationMap()
@@ -1155,7 +1154,7 @@ func TestForMatchCompensation_ApplyFailsClosed(t *testing.T) {
 func TestForMatchCompensation_ApplyFinalFailsOnMissingResult(t *testing.T) {
 	t.Parallel()
 
-	base := namedForEachQuantifier("q_base")
+	base := compensationNamedForEachQuantifier(t, "q_base")
 	compensation := NewForMatchCompensation(
 		false,
 		NoCompensation,
@@ -1170,7 +1169,7 @@ func TestForMatchCompensation_ApplyFinalFailsOnMissingResult(t *testing.T) {
 		t.Fatal("setup: valid base compensation was marked impossible")
 	}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustCompensationScan(t)
 	applied, ok := compensation.ApplyFinal(scan, nil)
 	if ok || applied != nil {
 		t.Fatalf("ApplyFinal with a missing result returned (%T, %v), want (nil, false)", applied, ok)
@@ -1390,9 +1389,9 @@ func TestForMatchCompensation_Intersect_DiscardsLegLocalImpossibleResidual(t *te
 func TestForMatchCompensation_Intersect_RejectsDifferentAliasResponsibility(t *testing.T) {
 	t.Parallel()
 
-	base := namedForEachQuantifier("q_base")
-	leftExists := namedExistentialQuantifier("q_left_exists")
-	rightExists := namedExistentialQuantifier("q_right_exists")
+	base := compensationNamedForEachQuantifier(t, "q_base")
+	leftExists := compensationNamedExistentialQuantifier(t, "q_left_exists")
+	rightExists := compensationNamedExistentialQuantifier(t, "q_right_exists")
 	shared := predicates.NewConstantPredicate(predicates.TriTrue)
 	sharedMap := NewPredicateCompensationMap(
 		[]predicates.QueryPredicate{shared},
@@ -1456,15 +1455,15 @@ func TestForMatchCompensation_Intersect_GroupByMappingsMerge(t *testing.T) {
 	t.Parallel()
 
 	// Build distinct Value instances for groupings and aggregates.
-	gkA := &values.FieldValue{Field: "group_a"}
-	gvA := &values.FieldValue{Field: "group_a_cand"}
-	gkB := &values.FieldValue{Field: "group_b"}
-	gvB := &values.FieldValue{Field: "group_b_cand"}
+	gkA := mustCompensationField(t, "group_a")
+	gvA := mustCompensationField(t, "group_a_cand")
+	gkB := mustCompensationField(t, "group_b")
+	gvB := mustCompensationField(t, "group_b_cand")
 
-	akX := &values.FieldValue{Field: "agg_x"}
-	avX := &values.FieldValue{Field: "agg_x_cand"}
-	akY := &values.FieldValue{Field: "agg_y"}
-	avY := &values.FieldValue{Field: "agg_y_cand"}
+	akX := mustCompensationField(t, "agg_x")
+	avX := mustCompensationField(t, "agg_x_cand")
+	akY := mustCompensationField(t, "agg_y")
+	avY := mustCompensationField(t, "agg_y_cand")
 
 	// Side 1: matched grouping {A→A'}, matched aggregate {X→X'}
 	mg1 := NewValueBiMap()
@@ -1760,12 +1759,12 @@ func TestResultCompensation_Amend_ReplacesUnmatched(t *testing.T) {
 	}
 
 	// Build the unmatchedAggregateMap: unmatchedID → FieldValue("SUM_X")
-	queryAgg := &values.FieldValue{Field: "SUM_X"}
+	queryAgg := mustCompensationField(t, "SUM_X")
 	unmatchedAggMap := NewCorrValueBiMap()
 	unmatchedAggMap.Put(unmatchedID, queryAgg)
 
 	// Build the amendedMatchedAggregateMap: FieldValue("SUM_X") → FieldValue("IDX_SUM")
-	idxSum := &values.FieldValue{Field: "IDX_SUM"}
+	idxSum := mustCompensationField(t, "IDX_SUM")
 	amendedMatchedAggMap := map[values.Value]values.Value{
 		queryAgg: idxSum,
 	}
@@ -1779,12 +1778,12 @@ func TestResultCompensation_Amend_ReplacesUnmatched(t *testing.T) {
 	}
 
 	result := amended.ApplyCompensationForResult(nil)
-	fv, ok := result.(*values.FieldValue)
+	fv, ok := values.AsFieldValue(result)
 	if !ok {
-		t.Fatalf("expected *FieldValue, got %T", result)
+		t.Fatalf("expected exact FieldValue, got %T", result)
 	}
-	if fv.Field != "IDX_SUM" {
-		t.Fatalf("expected field IDX_SUM, got %s", fv.Field)
+	if fv.DisplayName() != "IDX_SUM" {
+		t.Fatalf("expected field IDX_SUM, got %s", fv.DisplayName())
 	}
 }
 
@@ -1804,7 +1803,7 @@ func TestResultCompensation_IsImpossible_WithUnmatched(t *testing.T) {
 func TestResultCompensation_IsImpossible_WithoutUnmatched(t *testing.T) {
 	t.Parallel()
 
-	f := ResultCompensationOfValue(&values.FieldValue{Field: "X"})
+	f := ResultCompensationOfValue(mustCompensationField(t, "X"))
 	if f.IsImpossible() {
 		t.Fatal("ResultCompensation with FieldValue should not be impossible")
 	}
@@ -2233,7 +2232,7 @@ func TestUnionResultCompensation(t *testing.T) {
 func TestForMatchCompensation_PrimaryKeyDistinctOnly(t *testing.T) {
 	t.Parallel()
 
-	base := namedForEachQuantifier("distinct_base")
+	base := compensationNamedForEachQuantifier(t, "distinct_base")
 	compensation := NewForMatchCompensationWithPrimaryKeyDistinct(
 		false,
 		NoCompensation,
@@ -2259,10 +2258,7 @@ func TestForMatchCompensation_PrimaryKeyDistinctOnly(t *testing.T) {
 		t.Fatal("primary-key distinct obligation was not retained")
 	}
 
-	scan := expressions.NewFullUnorderedScanExpression(
-		[]string{"T"},
-		values.UnknownType,
-	)
+	scan := mustCompensationScan(t)
 	translationCalls := 0
 	applied, ok := compensation.ApplyAllNeeded(
 		scan,
@@ -2295,7 +2291,7 @@ func TestForMatchCompensation_PrimaryKeyDistinctOnly(t *testing.T) {
 func TestForMatchCompensation_PrimaryKeyDistinctOrdering(t *testing.T) {
 	t.Parallel()
 
-	base := namedForEachQuantifier("ordered_distinct_base")
+	base := compensationNamedForEachQuantifier(t, "ordered_distinct_base")
 	residual := predicates.NewConstantPredicate(predicates.TriTrue)
 	predicateMap := NewPredicateCompensationMap(
 		[]predicates.QueryPredicate{residual},
@@ -2309,16 +2305,13 @@ func TestForMatchCompensation_PrimaryKeyDistinctOrdering(t *testing.T) {
 		nil,
 		aliasesOf(base),
 		ResultCompensationOfValue(
-			values.NewQuantifiedObjectValue(base.GetAlias()),
+			mustCompensationQOV(t, base.GetAlias(), compensationRFC232RowType()),
 		),
 		EmptyGroupByMappings(),
 		true,
 	)
 
-	scan := expressions.NewFullUnorderedScanExpression(
-		[]string{"T"},
-		values.UnknownType,
-	)
+	scan := mustCompensationScan(t)
 	var translatedAliases []values.CorrelationIdentifier
 	applied, ok := compensation.ApplyAllNeeded(
 		scan,
@@ -2378,7 +2371,7 @@ func TestForMatchCompensation_PrimaryKeyDistinctOrdering(t *testing.T) {
 func TestForMatchCompensation_NestedPrimaryKeyDistinct(t *testing.T) {
 	t.Parallel()
 
-	childBase := namedForEachQuantifier("nested_distinct_base")
+	childBase := compensationNamedForEachQuantifier(t, "nested_distinct_base")
 	child := NewForMatchCompensationWithPrimaryKeyDistinct(
 		false,
 		NoCompensation,
@@ -2411,10 +2404,7 @@ func TestForMatchCompensation_NestedPrimaryKeyDistinct(t *testing.T) {
 		t.Fatal("cardinality-only child must not make an existential owner filter")
 	}
 
-	scan := expressions.NewFullUnorderedScanExpression(
-		[]string{"T"},
-		values.UnknownType,
-	)
+	scan := mustCompensationScan(t)
 	applied, ok := parent.ApplyAllNeeded(scan, nil)
 	if !ok {
 		t.Fatal("nested cardinality-only compensation was skipped or failed")
@@ -2435,7 +2425,7 @@ func TestForMatchCompensation_NestedPrimaryKeyDistinct(t *testing.T) {
 func TestForMatchCompensation_PrimaryKeyDistinctCompositionUsesOR(t *testing.T) {
 	t.Parallel()
 
-	base := namedForEachQuantifier("composed_distinct_base")
+	base := compensationNamedForEachQuantifier(t, "composed_distinct_base")
 	distinct := NewForMatchCompensationWithPrimaryKeyDistinct(
 		false,
 		NoCompensation,
@@ -2516,7 +2506,7 @@ func TestForMatchCompensation_PrimaryKeyDistinctCompositionUsesOR(t *testing.T) 
 // planner can produce for an appliable compensation — it left Apply with no
 // alias to rebuild on. These helpers give the intersect/union algebra tests a
 // well-formed subject so they exercise the algebra, not an invalid state.
-var baseForEachQ = namedForEachQuantifier("qBase")
+var baseForEachQ = compensationNamedForEachQuantifier(nil, "qBase")
 
 func baseMatched() []expressions.Quantifier {
 	return []expressions.Quantifier{baseForEachQ}
@@ -2540,4 +2530,65 @@ func aliasesOf(qs ...expressions.Quantifier) map[values.CorrelationIdentifier]st
 		out[q.GetAlias()] = struct{}{}
 	}
 	return out
+}
+
+// compensationRFC232RowType gives every fixture a fully stated, exact row shape.
+// RFC-232 deliberately rejects UnknownType at QOV and memo boundaries, so the
+// compensation tests must not recreate the old untyped placeholder graph.
+func compensationRFC232RowType() *values.RecordType {
+	return &values.RecordType{Fields: []values.Field{
+		{Name: "VALUE", Ordinal: 0, FieldType: values.NotNullLong},
+	}}
+}
+
+func mustCompensationScan(t testing.TB) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	return mustFullUnorderedScan(t, []string{"T"}, compensationRFC232RowType())
+}
+
+func compensationNamedForEachQuantifier(t testing.TB, name string) expressions.Quantifier {
+	scan, err := expressions.NewFullUnorderedScanExpression([]string{"T"}, compensationRFC232RowType())
+	if t == nil {
+		// baseForEachQ is package fixture state initialized before a testing.TB
+		// exists. Keep its construction checked instead of publishing nil.
+		if err != nil {
+			panic(err)
+		}
+	} else {
+		t.Helper()
+		scan = mustConstruct(t, scan, err)
+	}
+	return expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier(name), expressions.InitialOf(scan))
+}
+
+func compensationNamedExistentialQuantifier(t testing.TB, name string) expressions.Quantifier {
+	t.Helper()
+	scan := mustCompensationScan(t)
+	return expressions.NamedExistentialQuantifier(
+		values.NamedCorrelationIdentifier(name), expressions.InitialOf(scan))
+}
+
+func mustCompensationQOV(
+	t testing.TB,
+	correlation values.CorrelationIdentifier,
+	flowedType values.Type,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	qov, err := values.NewQuantifiedObjectValue(correlation, flowedType)
+	return mustConstruct(t, qov, err)
+}
+
+func mustCompensationField(t testing.TB, name string) values.Value {
+	t.Helper()
+	rowType := &values.RecordType{Fields: []values.Field{
+		{Name: name, Ordinal: 0, FieldType: values.NotNullLong},
+	}}
+	root := mustCompensationQOV(t, values.UniqueCorrelationIdentifier(), rowType)
+	field, err := values.ResolveFieldOrdinals(root, []int{0})
+	field = mustConstruct(t, field, err)
+	if _, ok := values.AsFieldValue(field); !ok {
+		t.Fatalf("resolved compensation field %q has unexpected type %T", name, field)
+	}
+	return field
 }

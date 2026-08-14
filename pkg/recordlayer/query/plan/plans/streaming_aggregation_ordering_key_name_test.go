@@ -9,8 +9,7 @@ import (
 )
 
 // The group-key output NAME that RecordQueryStreamingAggregationPlan.HintOrdering
-// stamps on its advertised keys is NOT a display label. It is half of the ordering
-// MATCH KEY, and dropping it costs a plan.
+// stamps on its advertised keys remains part of the complete accessor path.
 //
 // RFC-197 item 5 lists `expressions.AggregateKeyColumnName` as a naming authority
 // whose consumers must become ordinal before the authority can return a
@@ -21,15 +20,13 @@ import (
 // corpus — FDB driver suite, yamsql, rowdiff, plandiff, explaindiff, memoinvariant
 // — staying green. Only tests that assert the emitted spelling itself notice.
 //
-// This consumer is different, and this file exists because it was flagged as
-// "possibly display-only" and is not. `properties.RichOrdering` addresses its
-// ordering set by `values.ExplainValue` — a RENDERED STRING (rich_ordering.go,
-// orderingKeyFor). The streaming aggregate's PROVIDED key and the ORDER BY's
-// REQUESTED key are two independently constructed FieldValues that meet only as
-// that rendering, and they render alike solely because both sides derive the
-// spelling from this one authority: HintOrdering through AggregateKeyColumnName,
-// the translator's sort rebase through GroupByOutputColumnNames, which is the same
-// function over the same keys.
+// RFC-232 gives the streaming aggregate's PROVIDED key a tagged-current owner,
+// while the ORDER BY's independently constructed REQUESTED key remains rooted
+// at its named logical quantifier. Their ExplainValue renderings therefore
+// differ by design. RichOrdering first tries that display-key fast path, then
+// crosses this exact phase boundary through CanBridgeOrderingValueRoots, which
+// requires one tagged-current root plus the same complete accessor path,
+// ordinal, and result type. It never equates two arbitrary named roots.
 //
 // Change the spelling on one side and the match misses, the aggregate's group-key
 // order stops satisfying the ORDER BY, and the planner stacks a second
@@ -38,9 +35,8 @@ import (
 // (TestFDB_GroupByHavingOverOrdinalJoin: "want exactly 1 InMemorySort (group-key
 // sort, reused by ORDER BY), got 2") and moves the corpus plan-shape golden.
 //
-// So the name is load-bearing here, and this test is what re-arms if someone
-// makes AggregateKeyColumnName return a display-only carrier without first
-// converting the ordering property to a structural (ordinal + domain) match.
+// The name/path is still load-bearing here, but correlation rendering is not.
+// This test pins both the typed phase bridge and its end-to-end consequence.
 func TestStreamingAggregation_ProvidedOrderingMatchesTheSortRebaseSpelling(t *testing.T) {
 	t.Parallel()
 
@@ -52,19 +48,24 @@ func TestStreamingAggregation_ProvidedOrderingMatchesTheSortRebaseSpelling(t *te
 		{Name: "K2", FieldType: values.NullableLong, Ordinal: 1},
 		{Name: "V", FieldType: values.NullableLong, Ordinal: 2},
 	})
-	qov := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("T"), inputType)
-	keyA, err := values.NewFieldValueOfOrdinal(qov, 0)
+	qov := mustTestQOV(t, "T", inputType)
+	keyA, err := values.ResolveFieldOrdinals(qov, []int{0})
 	if err != nil {
 		t.Fatalf("NewFieldValueOfOrdinal(0): %v", err)
 	}
-	keyB, err := values.NewFieldValueOfOrdinal(qov, 1)
+	keyB, err := values.ResolveFieldOrdinals(qov, []int{1})
 	if err != nil {
 		t.Fatalf("NewFieldValueOfOrdinal(1): %v", err)
 	}
 	groupKeys := []values.Value{keyA, keyB}
 	aggs := []expressions.AggregateSpec{{Function: expressions.AggCount}}
 
-	plan := NewRecordQueryStreamingAggregationPlan(nil, groupKeys, aggs)
+	inner := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, inputType, false)
+	})
+	plan := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(inner, groupKeys, aggs)
+	})
 	provided := plan.HintOrdering()
 	if !provided.IsKnown || len(provided.Keys) != len(groupKeys) {
 		t.Fatalf("HintOrdering = %#v, want %d known keys", provided, len(groupKeys))
@@ -78,19 +79,18 @@ func TestStreamingAggregation_ProvidedOrderingMatchesTheSortRebaseSpelling(t *te
 		t.Fatalf("GroupByOutputColumnNames = %v, want at least %d entries", outNames, len(groupKeys))
 	}
 
-	// (1) The mechanism. RichOrdering.orderingKeyFor's exact-match arm compares
-	// values.ExplainValue renderings, so the two sides must render identically.
+	// (1) The mechanism. Provider and request roots name different phases, so
+	// their renderings differ; the narrow typed root bridge must relate them.
 	for i := range groupKeys {
-		requested := values.NewFieldValueWithResolvedOrdinal(outNames[i], i, values.UnknownType)
+		requested := testFieldAt(t, outNames[i], i, values.NullableLong)
 		gotProvided := values.ExplainValue(provided.Keys[i])
 		gotRequested := values.ExplainValue(requested)
-		if gotProvided != gotRequested {
-			t.Errorf("ordering key %d renders as %q provided vs %q requested — "+
-				"RichOrdering matches these two independently built values BY THIS STRING, "+
-				"so a divergence here silently stops the aggregate's group-key order from "+
-				"satisfying an ORDER BY over the same key and stacks a second sort. "+
-				"Both spellings must keep coming from expressions.AggregateKeyColumnName",
-				i, gotProvided, gotRequested)
+		if gotProvided == gotRequested {
+			t.Errorf("ordering key %d unexpectedly erased its phase-root distinction: %q", i, gotProvided)
+		}
+		if !values.CanBridgeOrderingValueRoots(requested, provided.Keys[i]) {
+			t.Errorf("ordering key %d did not bridge named request %q to current provider %q",
+				i, gotRequested, gotProvided)
 		}
 	}
 
@@ -109,7 +109,7 @@ func TestStreamingAggregation_ProvidedOrderingMatchesTheSortRebaseSpelling(t *te
 	parts := make([]properties.RequestedOrderingPart, len(groupKeys))
 	for i := range groupKeys {
 		parts[i] = properties.RequestedOrderingPart{
-			Value:     values.NewFieldValueWithResolvedOrdinal(outNames[i], i, values.UnknownType),
+			Value:     testFieldAt(t, outNames[i], i, values.NullableLong),
 			SortOrder: properties.RequestedSortOrderAscending,
 		}
 	}
@@ -118,10 +118,46 @@ func TestStreamingAggregation_ProvidedOrderingMatchesTheSortRebaseSpelling(t *te
 	if !rich.Satisfies(requested) {
 		t.Errorf("the streaming aggregate's provided group-key ordering does NOT satisfy "+
 			"an ORDER BY over the same group keys.\nprovided=%v\nrequested=%v\n"+
-			"This is the spurious-second-InMemorySort regression: the two sides are matched "+
-			"by rendered string, and they only agree because both spell the key through "+
-			"expressions.AggregateKeyColumnName",
+			"This is the spurious-second-InMemorySort regression: the typed current-to-request "+
+			"phase bridge must preserve the aggregate-key accessor path",
 			renderKeys(provided.Keys), renderParts(parts))
+	}
+}
+
+func TestStreamingAggregation_DuplicateGroupKeyNamesMatchLogicalNativeRow(t *testing.T) {
+	t.Parallel()
+	inputType := values.NewRecordType("", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	inner := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, inputType, false)
+	})
+	innerQ := QuantifierOverPlan(inner)
+	inputQOV, err := innerQ.RequireFlowedObjectValue()
+	if err != nil {
+		t.Fatalf("input flowed object: %v", err)
+	}
+	key, err := values.ResolveFieldOrdinals(inputQOV, []int{0})
+	if err != nil {
+		t.Fatalf("grouping key: %v", err)
+	}
+	keys := []values.Value{key, key}
+	aggs := []expressions.AggregateSpec{{Function: expressions.AggCount}}
+
+	logical, err := expressions.NewGroupByExpression(keys, aggs, innerQ)
+	if err != nil {
+		t.Fatalf("logical group by: %v", err)
+	}
+	physical := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlanFromQuantifier(innerQ, keys, aggs)
+	})
+	if !logical.GetResultValue().Type().Equals(physical.GetResultValue().Type()) {
+		t.Fatalf("logical/physical native aggregate rows disagree: %s vs %s",
+			logical.GetResultValue().Type(), physical.GetResultValue().Type())
+	}
+	logicalType := logical.GetResultValue().Type().(*values.RecordType)
+	if got := []string{logicalType.Fields[0].Name, logicalType.Fields[1].Name}; got[0] != "ID" || got[1] != "ID" {
+		t.Fatalf("private aggregate row de-duplicated positional group keys: %v", got)
 	}
 }
 

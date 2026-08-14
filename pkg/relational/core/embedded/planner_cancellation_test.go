@@ -58,10 +58,11 @@ func TestPlanScalarSubqueryPlansPreservesPlannerCancellation(t *testing.T) {
 	ctx := newCancelAfterChecksContext(3)
 	subqueries := []query.ScalarSubqueryPlan{{
 		Alias: values.NamedCorrelationIdentifier("scalar"),
-		Plan:  logical.NewScan("T", "t"),
+		Plan:  logical.NewScan("Customer", "t"),
 	}}
+	md := buildTestMetaData(t)
 
-	planned, err := planScalarSubqueryPlans(ctx, subqueries, nil, nil, plannerOptionsFrom(nil))
+	planned, err := planScalarSubqueryPlans(ctx, subqueries, md, nil, plannerOptionsFrom(nil))
 	if planned != nil {
 		t.Fatalf("planScalarSubqueryPlans() plans = %v, want nil", planned)
 	}

@@ -38,9 +38,9 @@ import (
 func TestAliasOnlyDifferenceSplitsTheMemoDeliberately(t *testing.T) {
 	t.Parallel()
 
-	k := &values.FieldValue{Field: "K"}
-	a := NewLogicalProjectionExpressionWithAliases([]values.Value{k}, []string{"A"}, Quantifier{})
-	b := NewLogicalProjectionExpressionWithAliases([]values.Value{k}, []string{"B"}, Quantifier{})
+	k := testField("K", values.NotNullLong)
+	a := mustExpression(NewLogicalProjectionExpressionWithAliases([]values.Value{k}, []string{"A"}, Quantifier{}))
+	b := mustExpression(NewLogicalProjectionExpressionWithAliases([]values.Value{k}, []string{"B"}, Quantifier{}))
 
 	if a.EqualsWithoutChildren(b, &AliasMap{}) {
 		t.Fatal("two projections differing ONLY in output alias compared EQUAL.\n" +
@@ -62,8 +62,8 @@ func TestAliasOnlyDifferenceSplitsTheMemoDeliberately(t *testing.T) {
 	// intern. An implementation that passed the assertions above by making every
 	// projection distinct would fail here, which is the only thing separating
 	// "the alias is in identity" from "identity is broken".
-	none1 := NewLogicalProjectionExpression([]values.Value{k}, Quantifier{})
-	none2 := NewLogicalProjectionExpression([]values.Value{k}, Quantifier{})
+	none1 := mustExpression(NewLogicalProjectionExpression([]values.Value{k}, Quantifier{}))
+	none2 := mustExpression(NewLogicalProjectionExpression([]values.Value{k}, Quantifier{}))
 	if !none1.EqualsWithoutChildren(none2, &AliasMap{}) {
 		t.Fatal("two identical UNALIASED projections compared unequal — interning is " +
 			"broken, and the alias assertions above are passing for the wrong reason")
@@ -71,5 +71,59 @@ func TestAliasOnlyDifferenceSplitsTheMemoDeliberately(t *testing.T) {
 	if h1, h2 := none1.HashCodeWithoutChildren(), none2.HashCodeWithoutChildren(); h1 != h2 {
 		t.Fatalf("identical unaliased projections hashed %d vs %d — equal values must "+
 			"hash equal or the memo cannot find them", h1, h2)
+	}
+}
+
+func TestFrozenOutputNameDifferenceSplitsTheMemo(t *testing.T) {
+	t.Parallel()
+
+	k := testField("K", values.NotNullLong)
+	bare := mustExpression(NewLogicalProjectionExpressionWithOutputSchema(
+		[]values.Value{k}, nil, nil, []string{"ID"}, Quantifier{}))
+	qualified := mustExpression(NewLogicalProjectionExpressionWithOutputSchema(
+		[]values.Value{k}, nil, nil, []string{"S.ID"}, Quantifier{}))
+
+	if bare.EqualsWithoutChildren(qualified, &AliasMap{}) {
+		t.Fatal("same Value/aliases with different frozen output names compared equal")
+	}
+	if bare.HashCodeWithoutChildren() == qualified.HashCodeWithoutChildren() {
+		t.Fatal("different frozen output names hashed equal")
+	}
+
+	same := mustExpression(NewLogicalProjectionExpressionWithOutputSchema(
+		[]values.Value{k}, nil, nil, []string{"ID"}, Quantifier{}))
+	if !bare.EqualsWithoutChildren(same, &AliasMap{}) ||
+		bare.HashCodeWithoutChildren() != same.HashCodeWithoutChildren() {
+		t.Fatal("identical frozen output schemas must remain equal and hash-equal")
+	}
+}
+
+func TestAuthoredSourceIdentityDoesNotLeakIntoProjectionSchema(t *testing.T) {
+	t.Parallel()
+
+	k := testField("K", values.NotNullLong)
+	bare := mustExpression(NewLogicalProjectionExpressionWithOutputSchema(
+		[]values.Value{k}, nil, nil, []string{"ID"}, Quantifier{}))
+	qualified := mustExpression(bare.WithAuthoredOutputIdentity([]string{"S.ID"}))
+
+	if got := bare.GetOutputNames(); len(got) != 1 || got[0] != "ID" {
+		t.Fatalf("bare output schema = %v, want [ID]", got)
+	}
+	if got := qualified.GetOutputNames(); len(got) != 1 || got[0] != "ID" {
+		t.Fatalf("authored source identity leaked into output schema: got %v, want [ID]", got)
+	}
+	if bare.EqualsWithoutChildren(qualified, &AliasMap{}) {
+		t.Fatal("authored S.ID identity coalesced with the bare projection")
+	}
+	if bare.HashCodeWithoutChildren() == qualified.HashCodeWithoutChildren() {
+		t.Fatal("authored S.ID identity did not participate in the projection hash")
+	}
+
+	rebuilt := mustExpression(NewLogicalProjectionExpressionWithOutputSchema(
+		[]values.Value{k}, nil, nil, []string{"ID"}, Quantifier{})).
+		WithInheritedOutputIdentity(qualified)
+	if !qualified.EqualsWithoutChildren(rebuilt, &AliasMap{}) ||
+		qualified.HashCodeWithoutChildren() != rebuilt.HashCodeWithoutChildren() {
+		t.Fatal("row-program-preserving rebuild dropped the authored output identity")
 	}
 }

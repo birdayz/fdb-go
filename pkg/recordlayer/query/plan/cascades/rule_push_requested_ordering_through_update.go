@@ -3,6 +3,7 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // PushRequestedOrderingThroughUpdateRule is a PLANNING-phase
@@ -12,11 +13,9 @@ import (
 // counting/projection), so the requested ordering passes through
 // unchanged to the child Reference.
 //
-// Java's version translates orderings through makeComputationValue
-// (a RecordConstructor with old/new columns). Go's UpdateExpression
-// does not yet model that structure -- GetResultValue returns the
-// inner's flowed object value directly -- so the pass-through is
-// correct for Go's current expression model.
+// Like Java, concrete orderings are translated through the OLD/NEW computation
+// row. Only OLD fields can become input-provided ordering keys; NEW is bound
+// after mutation and therefore reduces to a preserve request at this boundary.
 //
 // This rule fires during the top-down constraint-propagation pass
 // (constraintOnly=true). During the bottom-up implementation pass
@@ -55,7 +54,24 @@ func (r *PushRequestedOrderingThroughUpdateRule) OnMatch(call *ImplementationRul
 		return
 	}
 
-	call.PushConstraint(innerRef, orderings)
+	oldValue, err := upd.GetInner().RequireFlowedObjectValue()
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	// The NEW object is a computation-time binding, deliberately distinct from
+	// the input edge. pushDMLRequestedOrderingsThroughValue filters it after the
+	// structural push-down, matching Java's constant/correlation scope gate.
+	computationValue := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "OLD", Value: oldValue},
+		values.RecordConstructorField{
+			Name: "NEW",
+			Value: values.NewObjectValue(
+				values.UniqueCorrelationIdentifier(), upd.GetTargetType()),
+		},
+	)
+	call.PushConstraint(innerRef, pushDMLRequestedOrderingsThroughValue(
+		orderings, computationValue, upd.GetInner().GetAlias()))
 }
 
 var _ ImplementationRule = (*PushRequestedOrderingThroughUpdateRule)(nil)

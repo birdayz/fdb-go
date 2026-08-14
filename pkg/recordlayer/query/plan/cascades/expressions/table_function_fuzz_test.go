@@ -24,7 +24,7 @@ func FuzzTableFunctionExpression_NoPanic(f *testing.F) {
 			values.LiteralValue(begin),
 			values.LiteralValue(end),
 			values.LiteralValue(step))
-		tf := NewTableFunctionExpression(r)
+		tf := mustExpression(NewTableFunctionExpression(r))
 
 		// Property 1: no panic on Children() / GetResultValue / etc.
 		_ = tf.GetQuantifiers()
@@ -59,7 +59,7 @@ func FuzzExplodeExpression_NoPanic(f *testing.F) {
 			elements[i] = values.LiteralValue(int64(i))
 		}
 		arr := values.NewArrayConstructorValue(values.NotNullLong, elements)
-		ex := NewExplodeExpression(arr)
+		ex := mustExpression(NewExplodeExpression(arr))
 
 		// Property 1: no panic.
 		_ = ex.GetQuantifiers()

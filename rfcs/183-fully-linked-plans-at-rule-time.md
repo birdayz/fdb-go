@@ -277,14 +277,15 @@ It claimed P5 was gated on universal prune-to-one-final-member, citing
 "1186 references hold multiple finals (max 52), 1125 multiple PHYSICAL
 finals". That measurement was taken at RULE TIME, while rules were still
 firing, where a group legitimately holds alternatives — the whole point of a
-memo. It says nothing about the property P5 actually needs, which is
-one-final-member AT EXTRACTION, after the stack drains and OptimizeGroup has
-pruned. Measured there: ZERO violations across the corpus and the entire
-test suite, pinned by `TestOneFinalPlanPerReference`.
+memo. RFC-224 later corrected the second half too: singleton finals are
+Java's mechanism, not Go's extraction property. Go's actual requirement is a
+total winner/compatible-physical-fallback selection on every dereferenced
+Reference, pinned by `TestExtractionIsUnambiguous` with explicit reach and
+dead-end counts.
 
-So prune-to-1 and PLANNING re-derivation parity are NOT P5 blockers. They
-remain open items in their own right (DIVERGENCES.md), but they are not on
-this critical path.
+So PLANNING re-derivation parity is not a P5 blocker and remains a separate
+tracked concern. Prune-to-1 is not an open goal at all: RFC-224 records
+multi-final property retention as intentional Cascades behavior in Go.
 
 The real blocker is in §11, and it is a different thing entirely: the two
 storage locations do not hold the same fact.
@@ -531,9 +532,11 @@ deletion.**
 
 ### The measurement
 
-`TestOneFinalPlanPerReference` pins one-final-member **at extraction**, and
-its own doc says mid-planning groups legitimately hold many. Nothing had
-ever measured RULE TIME. Instrumenting `ExpressionRuleCall.Yield` — the
+The now-retired `TestOneFinalPlanPerReference` attempted to pin
+one-final-member **at extraction**, and its own doc said mid-planning groups
+legitimately hold many. RFC-224 later showed that walk was blind and replaced
+the assertion with extraction-selection totality. Nothing had ever measured
+RULE TIME. Instrumenting `ExpressionRuleCall.Yield` — the
 single choke point covering every construction path, including the four
 composite-literal wrappers a `New*Wrapper` grep misses — over the full
 2407-query corpus:
@@ -578,8 +581,9 @@ a `DefaultOnEmpty` (wrong outer-join NULL semantics) and residual filters
 
 Everything P0-P4 and P5 steps 1-2 established still holds and is still
 worth having: shells are gone at their source, the hierarchy is unified,
-plans carry quantifiers, plans answer all 76 cost/ordering hints, and the
-one-final-member property is real AT EXTRACTION. Zero plan drift throughout.
+plans carry quantifiers, plans answer all 76 cost/ordering hints, and
+Reference dereference is unambiguous along the extraction-selected path
+(RFC-224). Zero plan drift throughout.
 
 What is invalidated is the terminal claim — that deleting the wrappers is a
 deletion. It is not. While a rule deliberately puts different things in the

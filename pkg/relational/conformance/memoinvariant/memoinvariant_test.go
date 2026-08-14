@@ -163,7 +163,10 @@ var familyProbes = []familyProbe{
 	{
 		name:   "InJoin",
 		schema: probeOrdersSchema,
-		sql:    "SELECT id, customer_id FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id",
+		// No ORDER BY: an ID ordering request deliberately selects InUnion,
+		// whose merge supplies that order directly. The unordered form selects
+		// InJoin and keeps this probe deterministic for the family it owns.
+		sql: "SELECT id, customer_id FROM orders WHERE customer_id IN (0, 1, 2, 3, 4)",
 	},
 	{
 		name:   "FlatMap",

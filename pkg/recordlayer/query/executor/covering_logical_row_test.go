@@ -22,7 +22,12 @@ func TestBuildCoveringLogicalRow(t *testing.T) {
 
 	// mci_t(id, a, b, c) with index (a, b): logical order [ID A B C],
 	// index layout [A B ID].
-	logical := positionalTypeFromNames([]string{"ID", "A", "B", "C"})
+	logical := exactTestRowType(
+		values.Field{Name: "ID", FieldType: values.NotNullLong},
+		values.Field{Name: "A", FieldType: values.NotNullString},
+		values.Field{Name: "B", FieldType: values.NotNullLong},
+		values.Field{Name: "C", FieldType: values.NullableString},
+	)
 	posNames := []string{"A", "B", "ID"}
 
 	ords := coveringLogicalOrdinals(posNames, logical)
@@ -57,7 +62,8 @@ func TestBuildCoveringLogicalRow(t *testing.T) {
 
 	// The regression axis: a reference baked to B's LOGICAL ordinal (2)
 	// evaluates to the b value, not the id.
-	bRef := values.NewFieldValueWithResolvedOrdinal("B", 2, values.UnknownType)
+	bRef := mustTestFieldOrdinal(t,
+		mustTestQOV(t, values.NamedCorrelationIdentifier("covering-logical-row"), logical), 2)
 	got, err := bRef.Evaluate(values.OrdinalRow(row))
 	if err != nil {
 		t.Fatalf("baked read: %v", err)
@@ -81,7 +87,10 @@ func TestBuildCoveringLogicalRowDoesNotGuessUnsafePrimaryKeyNames(t *testing.T) 
 	// stamps no PK coverage names, and the executor must honor that empty list;
 	// re-deriving FieldNames would write the literal after the correct index value
 	// and silently change ID from 42 to 7.
-	logical := positionalTypeFromNames([]string{"ID", "PRICE"})
+	logical := exactTestRowType(
+		values.Field{Name: "ID", FieldType: values.NotNullLong},
+		values.Field{Name: "PRICE", FieldType: values.NullableDouble},
+	)
 	ords := coveringLogicalOrdinals([]string{"ID"}, logical)
 	row := buildCoveringLogicalRow(
 		[]string{"ID"}, nil,
@@ -104,7 +113,10 @@ func TestCoveringIndexCursor_PropagatesFullPrimaryKey(t *testing.T) {
 		Key:   tuple.Tuple{"covered", "record_type", int64(42)},
 	}
 	expectedPrimaryKey := tuple.Tuple{"record_type", int64(42)}
-	logicalType := positionalTypeFromNames([]string{"ID", "A"})
+	logicalType := exactTestRowType(
+		values.Field{Name: "ID", FieldType: values.NotNullLong},
+		values.Field{Name: "A", FieldType: values.NotNullString},
+	)
 	cursor := &coveringIndexCursor{
 		inner:       recordlayer.FromList([]*recordlayer.IndexEntry{entry}),
 		columns:     []string{"A"},
@@ -142,7 +154,10 @@ func TestCoveringIndexCursor_PropagatesFullPrimaryKey(t *testing.T) {
 // error }` at the construction site.
 func TestCoveringLogicalOrdinals_Fallback(t *testing.T) {
 	t.Parallel()
-	logical := positionalTypeFromNames([]string{"ID", "A"})
+	logical := exactTestRowType(
+		values.Field{Name: "ID", FieldType: values.NotNullLong},
+		values.Field{Name: "A", FieldType: values.NotNullString},
+	)
 	if got := coveringLogicalOrdinals([]string{"A", "ADDR.CITY", "ID"}, logical); got != nil {
 		t.Fatalf("unmappable (nested) column must yield nil (→ loud refusal), got %v", got)
 	}

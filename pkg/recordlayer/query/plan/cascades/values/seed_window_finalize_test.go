@@ -108,10 +108,10 @@ func TestOrdinalSeedLegWindows_CaseDisjointLegsAreTwoWindows(t *testing.T) {
 		for i, c := range cols {
 			fields[i] = Field{Name: c, FieldType: NotNullLong, Ordinal: i}
 		}
-		qov := NewQuantifiedObjectValueOfType(corr, &RecordType{Fields: fields})
+		qov := mustQOV(t, corr, &RecordType{Fields: fields})
 		out := make([]RecordConstructorField, len(cols))
 		for i, c := range cols {
-			fv, err := NewFieldValueOfOrdinal(qov, i)
+			fv, err := newFieldValueOfOrdinal(qov, i)
 			if err != nil {
 				t.Fatalf("bake %s.%s: %v", corr.Name(), c, err)
 			}

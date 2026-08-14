@@ -195,7 +195,12 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 				srcs[i] = q.GetAlias().Name() // a fresh lower/merge quantifier: alias IS its source
 			}
 		}
-		return expressions.NewSelectExpressionWithAliases(s.GetResultValue(), qs, s.GetPredicates(), srcs)
+		rebuilt, err := expressions.NewSelectExpressionWithAliases(s.GetResultValue(), qs, s.GetPredicates(), srcs)
+		if err != nil {
+			call.Fail(err)
+			return nil
+		}
+		return rebuilt
 	}
 
 	// Build alias → quantifier map.
@@ -613,15 +618,30 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		if noLowersCorrelatedToByUpperAliases && noLowersCorrelatedToByUppers {
 			// Case 1: No upper-to-lower correlation. Lower result is a
 			// literal scalar 1 (cross-product style).
-			lowerBuilder.AddColumn("", values.LiteralValue(int64(1)))
-			lowerSelectExpr := lowerBuilder.Build().Seal().BuildSelect()
+			lowerBuilder.AddColumn("", &values.ConstantValue{
+				Value: int64(1),
+				Typ:   values.NotNullLong,
+			})
+			lowerSelectExpr, err := lowerBuilder.Build().Seal().BuildSelect()
+			if err != nil {
+				call.Fail(err)
+				return
+			}
 
+			lowerSelectExpr = applyExistentialSourceAliases(lowerSelectExpr)
+			if lowerSelectExpr == nil {
+				return
+			}
 			newLowerQ := expressions.NamedForEachQuantifier(
 				lowerAliasCorrelatedToByUpperAliases,
-				call.MemoizeExpression(applyExistentialSourceAliases(lowerSelectExpr)),
+				call.MemoizeExpression(lowerSelectExpr),
 			)
-			upperSelectExpression = addUpper(newLowerQ).Build().Seal().
+			upperSelectExpression, err = addUpper(newLowerQ).Build().Seal().
 				BuildSelectWithResultValue(resultValue)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
 
 		} else if len(lowersCorrelatedToByUppers) >= 2 {
 			// Merge case: ≥2 live lower tables. The POSITIONAL merge arm is the
@@ -630,7 +650,11 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			if upperSelectExpression == nil {
 				continue
 			}
-			call.Yield(applyExistentialSourceAliases(upperSelectExpression))
+			upperSelectExpression = applyExistentialSourceAliases(upperSelectExpression)
+			if upperSelectExpression == nil {
+				return
+			}
+			call.Yield(upperSelectExpression)
 			continue
 		} else {
 			// Case 2: Exactly one live lower alias. Lower's result value is that
@@ -660,15 +684,23 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			// precisely what the agreement verification exists to refuse. Declining
 			// costs one bipartition; the others still yield, and the rules that do not
 			// partition are untouched.
-			flowedValue, flowedErr := aliasToQ[lowerAlias].GetFlowedObjectValueTyped()
+			flowedValue, flowedErr := aliasToQ[lowerAlias].RequireFlowedObjectValue()
 			if flowedErr != nil {
 				continue
 			}
-			lowerSelectExpr := lowerBuilder.Build().Seal().BuildSelectWithResultValue(flowedValue)
+			lowerSelectExpr, err := lowerBuilder.Build().Seal().BuildSelectWithResultValue(flowedValue)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
 
+			lowerSelectExpr = applyExistentialSourceAliases(lowerSelectExpr)
+			if lowerSelectExpr == nil {
+				return
+			}
 			newLowerQ := expressions.NamedForEachQuantifier(
 				lowerAlias,
-				call.MemoizeExpression(applyExistentialSourceAliases(lowerSelectExpr)),
+				call.MemoizeExpression(lowerSelectExpr),
 			)
 			// The lower flows its single live table's row UNDER ITS ORIGINAL
 			// ALIAS, so an upper predicate referencing that alias still resolves
@@ -676,11 +708,19 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			// (Every lower alias a spanning predicate touches is added to the live
 			// set, so with exactly one live lower the only lower alias an upper
 			// predicate can name is this one.)
-			upperSelectExpression = addUpper(newLowerQ).Build().Seal().
+			upperSelectExpression, err = addUpper(newLowerQ).Build().Seal().
 				BuildSelectWithResultValue(resultValue)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
 		}
 
-		call.Yield(applyExistentialSourceAliases(upperSelectExpression))
+		upperSelectExpression = applyExistentialSourceAliases(upperSelectExpression)
+		if upperSelectExpression == nil {
+			return
+		}
+		call.Yield(upperSelectExpression)
 	}
 }
 

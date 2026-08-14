@@ -2,6 +2,7 @@ package expressions
 
 import (
 	"encoding/binary"
+	"fmt"
 	"hash/fnv"
 	"slices"
 
@@ -34,29 +35,66 @@ type LogicalProjectionExpression struct {
 	// differing only in it emit the same rows under the same output names and
 	// must intern as one memo member.
 	aliasMinted []bool
-	inner       Quantifier
+	// aliasSources is the frozen structured source for each machinery-minted
+	// alias. It is metadata provenance, not the owner of the Value program: the
+	// latter can be alpha-rebased onto a physical `_current` carrier while the
+	// former continues to name the authored source that supplied the alias.
+	// Like aliasMinted, it is excluded from memo identity and hashing.
+	aliasSources []values.ProjectionAliasSource
+	inner        Quantifier
+	resultValue  *values.RecordConstructorValue
+	// outputNameOverrides contains only frozen SQL-boundary names that differ
+	// from the Value/alias-derived schema. Internal correlation-derived names
+	// are deliberately absent so projection hash remains alias-invariant.
+	outputNameOverrides []string
+	// authoredOutputIdentityOverrides separates an authored source-qualified
+	// identity from the row schema this projection publishes. A top-level
+	// `SELECT C.ID` emits the bare field ID, but C.ID can still be load-bearing
+	// while logical alternatives are interned (notably a WITH-CTE source beside
+	// its derived-table twin). Generated correlation names never enter this
+	// vector; it is populated only from captured SQL identifier segments.
+	authoredOutputIdentityOverrides []string
 }
 
 // NewLogicalProjectionExpression constructs a projection over `inner`
 // emitting the given Value list. The list is copied defensively.
-func NewLogicalProjectionExpression(projectedValues []values.Value, inner Quantifier) *LogicalProjectionExpression {
-	copied := make([]values.Value, len(projectedValues))
-	copy(copied, projectedValues)
-	return &LogicalProjectionExpression{
-		projectedValues: copied,
-		inner:           inner,
-	}
+func NewLogicalProjectionExpression(projectedValues []values.Value, inner Quantifier) (*LogicalProjectionExpression, error) {
+	return NewLogicalProjectionExpressionWithAliases(projectedValues, nil, inner)
 }
 
 // NewLogicalProjectionExpressionWithAliases includes output column aliases.
-func NewLogicalProjectionExpressionWithAliases(projectedValues []values.Value, aliases []string, inner Quantifier) *LogicalProjectionExpression {
+func NewLogicalProjectionExpressionWithAliases(projectedValues []values.Value, aliases []string, inner Quantifier) (*LogicalProjectionExpression, error) {
+	return newLogicalProjectionExpression(projectedValues, aliases, nil, nil, inner)
+}
+
+func newLogicalProjectionExpression(
+	projectedValues []values.Value,
+	aliases []string,
+	aliasMinted []bool,
+	outputNames []string,
+	inner Quantifier,
+) (*LogicalProjectionExpression, error) {
+	resultValue, err := values.ProjectionResultValueForOutputSchema(projectedValues, aliases, outputNames)
+	if err != nil {
+		return nil, fmt.Errorf("LogicalProjectionExpression result: %w", err)
+	}
+	outputNameOverrides, err := values.ProjectionOutputSchemaIdentityOverrides(projectedValues, aliases, outputNames)
+	if err != nil {
+		return nil, fmt.Errorf("LogicalProjectionExpression output identity: %w", err)
+	}
+	if _, err := snapshotExpressionResultType("LogicalProjectionExpression", resultValue.Type()); err != nil {
+		return nil, err
+	}
 	copied := make([]values.Value, len(projectedValues))
 	copy(copied, projectedValues)
 	return &LogicalProjectionExpression{
-		projectedValues: copied,
-		aliases:         slices.Clone(aliases),
-		inner:           inner,
-	}
+		projectedValues:     copied,
+		aliases:             slices.Clone(aliases),
+		aliasMinted:         slices.Clone(aliasMinted),
+		inner:               inner,
+		resultValue:         resultValue,
+		outputNameOverrides: outputNameOverrides,
+	}, nil
 }
 
 // GetProjectedValues returns a defensive copy of the projection list.
@@ -70,10 +108,54 @@ func (e *LogicalProjectionExpression) GetProjectedValues() []values.Value {
 // hands an existing projection's aliases to a new expression must come through
 // here, or the provenance is dropped and a machinery key starts reading as a
 // user label.
-func NewLogicalProjectionExpressionWithAliasProvenance(projectedValues []values.Value, aliases []string, aliasMinted []bool, inner Quantifier) *LogicalProjectionExpression {
-	e := NewLogicalProjectionExpressionWithAliases(projectedValues, aliases, inner)
-	e.aliasMinted = slices.Clone(aliasMinted)
-	return e
+func NewLogicalProjectionExpressionWithAliasProvenance(projectedValues []values.Value, aliases []string, aliasMinted []bool, inner Quantifier) (*LogicalProjectionExpression, error) {
+	return newLogicalProjectionExpression(projectedValues, aliases, aliasMinted, nil, inner)
+}
+
+// NewLogicalProjectionExpressionWithOutputSchema freezes the SQL-visible
+// output names independently of the Value program used to compute each slot.
+// This is required when a scalar leg is represented by a whole QOV: its Value
+// display name describes the leg, while the SELECT item can name a different
+// column (for example an UNNEST AT ordinal named "AT").
+func NewLogicalProjectionExpressionWithOutputSchema(
+	projectedValues []values.Value,
+	aliases []string,
+	aliasMinted []bool,
+	outputNames []string,
+	inner Quantifier,
+) (*LogicalProjectionExpression, error) {
+	return newLogicalProjectionExpression(projectedValues, aliases, aliasMinted, outputNames, inner)
+}
+
+// WithAuthoredOutputIdentity records a captured SQL source-qualified identity
+// without changing the projection's emitted result schema. outputNames is a
+// complete, slot-aligned name vector. Only differences from the Value/alias
+// derived schema are retained, so alpha-renamable generated correlation names
+// remain outside memo equality and hashing.
+func (e *LogicalProjectionExpression) WithAuthoredOutputIdentity(outputNames []string) (*LogicalProjectionExpression, error) {
+	if e == nil {
+		return nil, fmt.Errorf("LogicalProjectionExpression output identity: nil expression")
+	}
+	overrides, err := values.ProjectionOutputSchemaIdentityOverrides(
+		e.projectedValues, e.aliases, outputNames)
+	if err != nil {
+		return nil, fmt.Errorf("LogicalProjectionExpression authored output identity: %w", err)
+	}
+	copy := *e
+	copy.authoredOutputIdentityOverrides = overrides
+	return &copy, nil
+}
+
+// WithInheritedOutputIdentity carries the captured authored identity through a
+// row-program-preserving logical rewrite. The target's output schema remains
+// its own; only the source's independently recorded memo discriminator moves.
+func (e *LogicalProjectionExpression) WithInheritedOutputIdentity(source *LogicalProjectionExpression) *LogicalProjectionExpression {
+	if e == nil || source == nil {
+		return e
+	}
+	copy := *e
+	copy.authoredOutputIdentityOverrides = slices.Clone(source.authoredOutputIdentityOverrides)
+	return &copy
 }
 
 // GetAliases returns a defensive copy of the output column aliases.
@@ -81,11 +163,50 @@ func (e *LogicalProjectionExpression) GetAliases() []string {
 	return slices.Clone(e.aliases)
 }
 
+// GetOutputNames returns the exact, deduplicated slot names frozen when the
+// logical projection was constructed. A physical implementation may rebase
+// its Value program onto a fresh quantifier edge, but that alpha-renaming must
+// not rename the projection's result record.
+func (e *LogicalProjectionExpression) GetOutputNames() []string {
+	if e == nil || e.resultValue == nil {
+		return nil
+	}
+	names := make([]string, len(e.resultValue.Fields))
+	for i := range e.resultValue.Fields {
+		names[i] = e.resultValue.Fields[i].Name
+	}
+	return names
+}
+
 // GetAliasMinted returns a defensive copy of the per-slot alias provenance,
 // parallel to GetAliases. A nil or short result reads as "the user named it"
 // for every slot it does not cover.
 func (e *LogicalProjectionExpression) GetAliasMinted() []bool {
 	return slices.Clone(e.aliasMinted)
+}
+
+// GetAliasSources returns a defensive copy of the structured per-slot source
+// identities captured for machinery-minted aliases. A short/nil slice means
+// the source was not captured; consumers must not recover it from alias text.
+func (e *LogicalProjectionExpression) GetAliasSources() []values.ProjectionAliasSource {
+	return slices.Clone(e.aliasSources)
+}
+
+// WithAliasSources returns a copy carrying checked structured alias-source
+// provenance. The marker is metadata-only and therefore deliberately excluded
+// from equality and hashing, just like aliasMinted.
+func (e *LogicalProjectionExpression) WithAliasSources(
+	sources []values.ProjectionAliasSource,
+) (*LogicalProjectionExpression, error) {
+	if e == nil {
+		return nil, fmt.Errorf("LogicalProjectionExpression alias sources: nil expression")
+	}
+	if err := values.ValidateProjectionAliasSources(sources, e.aliasMinted, len(e.projectedValues)); err != nil {
+		return nil, fmt.Errorf("LogicalProjectionExpression alias sources: %w", err)
+	}
+	copy := *e
+	copy.aliasSources = slices.Clone(sources)
+	return &copy, nil
 }
 
 // GetInner returns the inner Quantifier.
@@ -139,11 +260,7 @@ func (e *LogicalProjectionExpression) GetInner() Quantifier { return e.inner }
 // measured identity projections is a LOWER bound on how often this arm is taken,
 // not a count of it.
 func (e *LogicalProjectionExpression) GetResultValue() values.Value {
-	rv, err := values.ProjectionResultValue(e.projectedValues, e.aliases)
-	if err != nil {
-		return values.NewQuantifiedObjectValue(e.inner.GetAlias())
-	}
-	return rv
+	return e.resultValue
 }
 
 // GetQuantifiers returns the single inner Quantifier.
@@ -179,6 +296,17 @@ func (e *LogicalProjectionExpression) EqualsWithoutChildren(other RelationalExpr
 		return false
 	}
 	if len(e.projectedValues) != len(o.projectedValues) {
+		return false
+	}
+	// The frozen schema is an independent output contract. Two projections can
+	// compute the same ordinal Values without aliases yet publish different
+	// positional keys. Interning them would make the surviving schema depend on
+	// insertion order, so compare the explicit schema delta in addition to the
+	// Value/alias discriminator below.
+	if !slices.Equal(e.outputNameOverrides, o.outputNameOverrides) {
+		return false
+	}
+	if !slices.Equal(e.authoredOutputIdentityOverrides, o.authoredOutputIdentityOverrides) {
 		return false
 	}
 	// Alias-aware projected-Value equality (RFC-040 040.2). Inert under the
@@ -234,6 +362,20 @@ func (e *LogicalProjectionExpression) HashCodeWithoutChildren() uint64 {
 		binary.LittleEndian.PutUint64(buf[:], uint64(len(outputIdentity)))
 		h.Write(buf[:])
 		h.Write([]byte(outputIdentity))
+		outputName := ""
+		if i < len(e.outputNameOverrides) {
+			outputName = e.outputNameOverrides[i]
+		}
+		binary.LittleEndian.PutUint64(buf[:], uint64(len(outputName)))
+		h.Write(buf[:])
+		h.Write([]byte(outputName))
+		authoredName := ""
+		if i < len(e.authoredOutputIdentityOverrides) {
+			authoredName = e.authoredOutputIdentityOverrides[i]
+		}
+		binary.LittleEndian.PutUint64(buf[:], uint64(len(authoredName)))
+		h.Write(buf[:])
+		h.Write([]byte(authoredName))
 	}
 	return h.Sum64()
 }
@@ -266,10 +408,13 @@ func projectionAliasAt(aliases []string, ordinal int) string {
 // the whole struct rather than re-listing fields: a field-by-field literal
 // silently drops anything added later, and this runs on EVERY memo child
 // rewrite — the one place a dropped alias provenance would be invisible.
-func (e *LogicalProjectionExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	cp := *e
-	cp.inner = quantifiers[0]
-	return &cp
+func (e *LogicalProjectionExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("LogicalProjectionExpression", len(quantifiers), 1); err != nil {
+		return nil, err
+	}
+	copy := *e
+	copy.inner = quantifiers[0]
+	return &copy, nil
 }
 
 var _ RelationalExpression = (*LogicalProjectionExpression)(nil)

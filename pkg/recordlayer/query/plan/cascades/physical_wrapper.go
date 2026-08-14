@@ -345,17 +345,13 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 // a large fraction of rules silently decline. That number is also why P5's
 // terminal form is not reachable yet — see below.
 //
-// P5 BLOCKER, quantified. Java dereferences a quantifier straight to its plan:
-// Quantifier.Physical.getRangesOverPlan() is
-// Iterables.getOnlyElement(getRangesOver().getFinalExpressions()) — it REQUIRES
-// exactly one final expression. Go does not have that property: 1186
-// references here hold multiple finals (max 52), and 1125 hold multiple
-// PHYSICAL finals, so getOnlyElement would throw on every one. Making plans
-// hold quantifiers is therefore gated on universal prune-to-one-final-member,
-// which unified_tasks.go's stage-boundary arm records was ATTEMPTED AND
-// REVERTED: it lost canonical alternatives Go's PLANNING cannot re-derive
-// (RFC-153 buried-leg, cross-join-EXISTS). The root gate is Java per-phase
-// rule-set parity, tracked in DIVERGENCES.md.
+// Java dereferences a physical quantifier with getOnlyElement over final
+// expressions, but RFC-224 established that singleton finals are Java's
+// mechanism, not Go's invariant. Go deliberately keeps alternatives required
+// by distinct physical properties and makes extraction unambiguous through a
+// stamped winner or cheapest compatible physical fallback. The 1186/1125
+// multi-final measurements here were taken MID-PLANNING, where alternatives
+// are expected; they are not a blocker to plans holding quantifiers.
 //
 // DO NOT make this cost-ranked. Picking the "cheapest" member here looks like
 // an obvious improvement, but it is wrong, and measurably so: ranking with

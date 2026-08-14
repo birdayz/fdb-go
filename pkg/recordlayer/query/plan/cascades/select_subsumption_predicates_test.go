@@ -14,23 +14,18 @@ type selectSubsumptionPredicateTestAlternative struct {
 }
 
 func selectSubsumptionPredicateTestRef() *expressions.Reference {
-	return expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression(
-			[]string{"T"},
-			values.UnknownType,
-		),
-	)
+	return selectSubsumptionTestInitial(selectSubsumptionTestScan("T"))
 }
 
 func selectSubsumptionPredicateTestSelect(
 	quantifiers []expressions.Quantifier,
 	queryPredicates []predicates.QueryPredicate,
 ) *expressions.SelectExpression {
-	return expressions.NewSelectExpression(
+	return selectSubsumptionMust(expressions.NewSelectExpression(
 		values.NewRecordConstructorValue(),
 		quantifiers,
 		queryPredicates,
-	)
+	))
 }
 
 func selectSubsumptionPredicateTestComparison(
@@ -39,11 +34,7 @@ func selectSubsumptionPredicateTestComparison(
 	literal int64,
 ) *predicates.ComparisonPredicate {
 	return predicates.NewComparisonPredicate(
-		values.NewFieldValue(
-			values.NewQuantifiedObjectValue(alias),
-			field,
-			values.UnknownType,
-		),
+		selectSubsumptionTestField(alias, field),
 		predicates.NewLiteralComparison(
 			predicates.ComparisonEquals,
 			literal,
@@ -275,11 +266,7 @@ func TestSelectSubsumptionPredicateAlternativesSharedPlaceholderRetainsResidual(
 	parameterAlias := values.NamedCorrelationIdentifier("parameter")
 	placeholder := predicates.NewPlaceholder(
 		parameterAlias,
-		values.NewFieldValue(
-			values.NewQuantifiedObjectValue(candidateAlias),
-			"x",
-			values.UnknownType,
-		),
+		selectSubsumptionTestField(candidateAlias, "x"),
 	)
 	candidateSelect := selectSubsumptionPredicateTestSelect(
 		[]expressions.Quantifier{candidateQuantifier},
@@ -374,22 +361,14 @@ func TestSelectSubsumptionPredicateAlternativesParameterComparisonBindsPlacehold
 	parameterAlias := values.NamedCorrelationIdentifier("candidate_parameter")
 	placeholder := predicates.NewPlaceholder(
 		parameterAlias,
-		values.NewFieldValue(
-			values.NewQuantifiedObjectValue(candidateAlias),
-			"x",
-			values.UnknownType,
-		),
+		selectSubsumptionTestField(candidateAlias, "x"),
 	)
 	candidateSelect := selectSubsumptionPredicateTestSelect(
 		[]expressions.Quantifier{candidateQuantifier},
 		[]predicates.QueryPredicate{placeholder},
 	)
 	queryPredicate := predicates.NewComparisonPredicate(
-		values.NewFieldValue(
-			values.NewQuantifiedObjectValue(candidateAlias),
-			"x",
-			values.UnknownType,
-		),
+		selectSubsumptionTestField(candidateAlias, "x"),
 		predicates.Comparison{
 			Type:          predicates.ComparisonEquals,
 			ParameterName: "query_parameter",
@@ -519,11 +498,7 @@ func TestSelectSubsumptionPredicateAlternativesCandidateNonFilteringGate(
 	parameterAlias := values.NamedCorrelationIdentifier("parameter")
 	placeholder := predicates.NewPlaceholder(
 		parameterAlias,
-		values.NewFieldValue(
-			values.NewQuantifiedObjectValue(candidateAlias),
-			"x",
-			values.UnknownType,
-		),
+		selectSubsumptionTestField(candidateAlias, "x"),
 	)
 	candidateTrue := predicates.NewConstantPredicate(predicates.TriTrue)
 
@@ -618,116 +593,32 @@ func TestSelectSubsumptionPredicateAlternativesCandidateNonFilteringGate(
 	})
 }
 
-func TestSelectSubsumptionPredicateAlternativesNestedTypedNilValuesFailClosed(
+func TestSelectSubsumptionPredicateAlternativesRejectMalformedValuesAtAdmission(
 	t *testing.T,
 ) {
 	t.Parallel()
 
-	ref := selectSubsumptionPredicateTestRef()
-	candidateAlias := values.NamedCorrelationIdentifier("candidate_nested_bad")
-	candidateQuantifier := expressions.NamedForEachQuantifier(
-		candidateAlias,
-		ref,
-	)
-	validQuery := selectSubsumptionPredicateTestComparison(
-		candidateAlias,
-		"x",
-		1,
-	)
-	var typedNilValue *values.QuantifiedObjectValue
-	nestedTypedNilValue := &values.FieldValue{
-		Field: "nested_bad",
-		Typ:   values.UnknownType,
-		Child: typedNilValue,
+	request, err := values.FieldByName("nested_bad")
+	if err != nil {
+		t.Fatalf("FieldByName() unexpected error: %v", err)
 	}
-	malformedQuery := predicates.NewComparisonPredicate(
-		nestedTypedNilValue,
-		predicates.Comparison{
-			Type: predicates.ComparisonIsNull,
-		},
-	)
-	malformedPlaceholder := &predicates.Placeholder{
-		ParameterAlias: values.NamedCorrelationIdentifier("parameter_nested_bad"),
-		Value:          nestedTypedNilValue,
-		CompRange:      predicates.EmptyComparisonRange(),
+	if malformed, err := values.ResolveFieldAccess(
+		nil,
+		[]values.FieldRequest{request},
+	); err == nil || malformed != nil {
+		t.Fatalf(
+			"ResolveFieldAccess(nil) = (%v, %v), want (nil, error)",
+			malformed,
+			err,
+		)
 	}
-	nestedComparison := predicates.Comparison{
-		Type:    predicates.ComparisonEquals,
-		Operand: nestedTypedNilValue,
-	}
-	malformedRangePlaceholder := &predicates.Placeholder{
-		ParameterAlias: values.NamedCorrelationIdentifier("parameter_range_nested_bad"),
-		Value: values.NewFieldValue(
-			values.NewQuantifiedObjectValue(candidateAlias),
-			"x",
-			values.UnknownType,
-		),
-		CompRange: predicates.EmptyComparisonRange().
-			Merge(&nestedComparison).
-			Range,
-	}
-
-	tests := []struct {
-		name                 string
-		originalPredicates   []predicates.QueryPredicate
-		translatedPredicates []predicates.QueryPredicate
-		candidatePredicates  []predicates.QueryPredicate
-	}{
-		{
-			name:                 "query value descendant",
-			originalPredicates:   []predicates.QueryPredicate{malformedQuery},
-			translatedPredicates: []predicates.QueryPredicate{malformedQuery},
-			candidatePredicates: []predicates.QueryPredicate{
-				predicates.NewConstantPredicate(predicates.TriTrue),
-			},
-		},
-		{
-			name:                 "candidate value descendant",
-			originalPredicates:   []predicates.QueryPredicate{validQuery},
-			translatedPredicates: []predicates.QueryPredicate{validQuery},
-			candidatePredicates: []predicates.QueryPredicate{
-				malformedPlaceholder,
-			},
-		},
-		{
-			name:                 "candidate range comparand descendant",
-			originalPredicates:   []predicates.QueryPredicate{validQuery},
-			translatedPredicates: []predicates.QueryPredicate{validQuery},
-			candidatePredicates: []predicates.QueryPredicate{
-				malformedRangePlaceholder,
-			},
-		},
-	}
-
-	for _, test := range tests {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			defer func() {
-				if recovered := recover(); recovered != nil {
-					t.Fatalf(
-						"nested typed-nil predicate value panicked instead of failing closed: %v",
-						recovered,
-					)
-				}
-			}()
-			candidateSelect := selectSubsumptionPredicateTestSelect(
-				[]expressions.Quantifier{candidateQuantifier},
-				test.candidatePredicates,
-			)
-			if alternatives := collectSelectSubsumptionPredicateTestAlternatives(
-				t,
-				test.originalPredicates,
-				test.translatedPredicates,
-				candidateSelect,
-				EmptyAliasMap(),
-			); len(alternatives) != 0 {
-				t.Fatalf(
-					"malformed value produced %d predicate alternatives",
-					len(alternatives),
-				)
-			}
-		})
+	alias := values.NamedCorrelationIdentifier("candidate_nested_bad")
+	if malformed, err := values.NewQuantifiedObjectValue(alias, nil); err == nil || malformed != nil {
+		t.Fatalf(
+			"NewQuantifiedObjectValue(nil type) = (%v, %v), want (nil, error)",
+			malformed,
+			err,
+		)
 	}
 }
 
@@ -738,11 +629,7 @@ func TestSelectSubsumptionPredicateAlternativesMergeParameterBindingsChecked(
 	candidateAlias := values.NamedCorrelationIdentifier("candidate")
 	candidateQuantifier := expressions.NamedForEachQuantifier(candidateAlias, ref)
 	parameterAlias := values.NamedCorrelationIdentifier("shared_parameter")
-	placeholderValue := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(candidateAlias),
-		"x",
-		values.UnknownType,
-	)
+	placeholderValue := selectSubsumptionTestField(candidateAlias, "x")
 	placeholderOne := predicates.NewPlaceholder(parameterAlias, placeholderValue)
 	placeholderTwo := predicates.NewPlaceholder(parameterAlias, placeholderValue)
 	candidateSelect := selectSubsumptionPredicateTestSelect(
@@ -805,11 +692,7 @@ func TestSelectSubsumptionPredicateAlternativesPlaceholderIsLegSpecific(
 	parameterAlias := values.NamedCorrelationIdentifier("parameter")
 	placeholder := predicates.NewPlaceholder(
 		parameterAlias,
-		values.NewFieldValue(
-			values.NewQuantifiedObjectValue(candidateAliasA),
-			"x",
-			values.UnknownType,
-		),
+		selectSubsumptionTestField(candidateAliasA, "x"),
 	)
 	candidateSelect := selectSubsumptionPredicateTestSelect(
 		candidateQuantifiers,
@@ -875,19 +758,21 @@ func TestSelectSubsumptionPredicateAlternativesPlaceholderIsLegSpecific(
 	)
 
 	outerAlias := values.NamedCorrelationIdentifier("outer")
-	localAndOuterValue := values.NewFieldValue(
-		values.NewRecordConstructorValue(
-			values.RecordConstructorField{
-				Name:  "local",
-				Value: values.NewQuantifiedObjectValue(candidateAliasA),
-			},
-			values.RecordConstructorField{
-				Name:  "outer",
-				Value: values.NewQuantifiedObjectValue(outerAlias),
-			},
-		),
-		"x",
-		values.UnknownType,
+	localAndOuterValue := values.NewRecordConstructorValue(
+		values.RecordConstructorField{
+			Name: "local",
+			Value: selectSubsumptionTestQOV(
+				candidateAliasA,
+				selectSubsumptionTestRowType(),
+			),
+		},
+		values.RecordConstructorField{
+			Name: "outer",
+			Value: selectSubsumptionTestQOV(
+				outerAlias,
+				selectSubsumptionTestRowType(),
+			),
+		},
 	)
 	localAndOuterQuery := predicates.NewComparisonPredicate(
 		localAndOuterValue,

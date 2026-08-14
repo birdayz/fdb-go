@@ -18,21 +18,39 @@ func TestValueSemanticHashCode_AllCorrelationBearingTypesAreAliasInvariant(t *te
 	t.Parallel()
 	a := values.NamedCorrelationIdentifier("alias_a")
 	b := values.NamedCorrelationIdentifier("alias_b")
-	ut := values.UnknownType
+	rowType := semanticHashRowType()
 
 	cases := []struct {
 		name string
-		mk   func(c values.CorrelationIdentifier) values.Value
+		mk   func(testing.TB, values.CorrelationIdentifier) values.Value
 	}{
-		{"QuantifiedObjectValue", func(c values.CorrelationIdentifier) values.Value { return values.NewQuantifiedObjectValue(c) }},
-		{"QuantifiedRecordValue", func(c values.CorrelationIdentifier) values.Value { return values.NewQuantifiedRecordValue(c, ut) }},
-		{"ObjectValue", func(c values.CorrelationIdentifier) values.Value { return values.NewObjectValue(c, ut) }},
-		{"ConstantObjectValue", func(c values.CorrelationIdentifier) values.Value { return values.NewConstantObjectValue(c, "k", ut) }},
-		{"ExistsValue", func(c values.CorrelationIdentifier) values.Value { return values.NewExistsValue(c) }},
-		{"ScalarSubqueryValue", func(c values.CorrelationIdentifier) values.Value { return values.NewScalarSubqueryValue(c, nil) }},
-		{"UnmatchedAggregateValue", func(c values.CorrelationIdentifier) values.Value { return values.NewUnmatchedAggregateValue(c) }},
-		{"IndexEntryObjectValue", func(c values.CorrelationIdentifier) values.Value {
-			return values.NewIndexEntryObjectValue(c, values.TupleSourceKey, []int{0}, ut)
+		{"QuantifiedObjectValue", func(t testing.TB, c values.CorrelationIdentifier) values.Value {
+			return requireSemanticHashQOV(t, c)
+		}},
+		{"QuantifiedRecordValue", func(_ testing.TB, c values.CorrelationIdentifier) values.Value {
+			return values.NewQuantifiedRecordValue(c, rowType)
+		}},
+		{"ObjectValue", func(_ testing.TB, c values.CorrelationIdentifier) values.Value {
+			return values.NewObjectValue(c, rowType)
+		}},
+		{"ConstantObjectValue", func(_ testing.TB, c values.CorrelationIdentifier) values.Value {
+			return values.NewConstantObjectValue(c, "k", values.NotNullLong)
+		}},
+		{"ExistsValue", func(t testing.TB, c values.CorrelationIdentifier) values.Value {
+			value, err := values.NewExistsValue(c, rowType)
+			if err != nil {
+				t.Fatalf("construct exact ExistsValue: %v", err)
+			}
+			return value
+		}},
+		{"ScalarSubqueryValue", func(_ testing.TB, c values.CorrelationIdentifier) values.Value {
+			return values.NewScalarSubqueryValue(c, values.NotNullLong)
+		}},
+		{"UnmatchedAggregateValue", func(_ testing.TB, c values.CorrelationIdentifier) values.Value {
+			return values.NewUnmatchedAggregateValue(c)
+		}},
+		{"IndexEntryObjectValue", func(_ testing.TB, c values.CorrelationIdentifier) values.Value {
+			return values.NewIndexEntryObjectValue(c, values.TupleSourceKey, []int{0}, values.NotNullLong)
 		}},
 	}
 
@@ -40,8 +58,8 @@ func TestValueSemanticHashCode_AllCorrelationBearingTypesAreAliasInvariant(t *te
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			va := tc.mk(a)
-			vb := tc.mk(b)
+			va := tc.mk(t, a)
+			vb := tc.mk(t, b)
 			if values.SemanticHashCode(va) != values.SemanticHashCode(vb) {
 				t.Fatalf("%s: hash depends on the alias — must be alias-invariant (missing ValueSemanticHashCode case → falls to default)", tc.name)
 			}

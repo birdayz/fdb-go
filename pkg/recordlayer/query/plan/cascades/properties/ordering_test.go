@@ -1,18 +1,17 @@
-package properties_test
+package properties
 
 import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func TestEstimateOrdering_Scan_NotKnown(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	o := properties.EstimateOrdering(scan)
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
+	o := EstimateOrdering(scan)
 	if o.IsKnown {
 		t.Fatalf("FullUnorderedScan ordering = known, want unknown")
 	}
@@ -20,12 +19,12 @@ func TestEstimateOrdering_Scan_NotKnown(t *testing.T) {
 
 func TestEstimateOrdering_Sort_KnownByKeys(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
 	keys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.NotNullLong}},
+		{Value: propertyField(t, "id", values.NotNullLong)},
 	}
-	sort := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
-	o := properties.EstimateOrdering(sort)
+	sort := mustLogicalSortExpression(t, keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+	o := EstimateOrdering(sort)
 	if !o.IsKnown {
 		t.Fatal("Sort ordering = unknown, want known")
 	}
@@ -36,17 +35,17 @@ func TestEstimateOrdering_Sort_KnownByKeys(t *testing.T) {
 
 func TestEstimateOrdering_Filter_InheritsInner(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
 	keys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.NotNullLong}},
+		{Value: propertyField(t, "id", values.NotNullLong)},
 	}
-	sort := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+	sort := mustLogicalSortExpression(t, keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustLogicalFilterExpression(t,
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(expressions.InitialOf(sort)),
-	)
-	o := properties.EstimateOrdering(filter)
+		expressions.ForEachQuantifier(expressions.InitialOf(sort)))
+
+	o := EstimateOrdering(filter)
 	if !o.IsKnown {
 		t.Fatal("Filter(Sort(...)) ordering = unknown, want known (Filter preserves order)")
 	}
@@ -55,13 +54,13 @@ func TestEstimateOrdering_Filter_InheritsInner(t *testing.T) {
 func TestEstimateOrdering_FilterOverScan_NotKnown(t *testing.T) {
 	t.Parallel()
 	// Filter over an unordered scan inherits unknown.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustLogicalFilterExpression(t,
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
-	)
-	o := properties.EstimateOrdering(filter)
+		expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+
+	o := EstimateOrdering(filter)
 	if o.IsKnown {
 		t.Fatal("Filter(Scan) ordering = known, want unknown")
 	}
@@ -69,16 +68,16 @@ func TestEstimateOrdering_FilterOverScan_NotKnown(t *testing.T) {
 
 func TestIsOrdered_Convenience(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	if properties.IsOrdered(scan) {
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
+	if IsOrdered(scan) {
 		t.Fatal("IsOrdered(Scan) = true, want false")
 	}
 
 	keys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.NotNullLong}},
+		{Value: propertyField(t, "id", values.NotNullLong)},
 	}
-	sort := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
-	if !properties.IsOrdered(sort) {
+	sort := mustLogicalSortExpression(t, keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+	if !IsOrdered(sort) {
 		t.Fatal("IsOrdered(Sort) = false, want true")
 	}
 }
@@ -89,17 +88,17 @@ func TestIsOrdered_Convenience(t *testing.T) {
 // sorted scan, the DML output can be assumed sorted too.
 func TestEstimateOrdering_InsertInheritsInner(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Source"}, values.UnknownType)
+	scan := mustFullUnorderedScanExpression(t, []string{"Source"}, propertyTestFlowedType())
 	keys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.NotNullLong}},
+		{Value: propertyField(t, "id", values.NotNullLong)},
 	}
-	sort := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
-	ins := expressions.NewInsertExpression(
+	sort := mustLogicalSortExpression(t, keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+	ins := mustInsertExpression(t,
 		expressions.ForEachQuantifier(expressions.InitialOf(sort)),
 		"Target",
-		values.UnknownType,
-	)
-	o := properties.EstimateOrdering(ins)
+		propertyTestFlowedType())
+
+	o := EstimateOrdering(ins)
 	if !o.IsKnown {
 		t.Fatal("Insert(Sort(...)) ordering = unknown, want known (DML pass-through)")
 	}
@@ -107,16 +106,16 @@ func TestEstimateOrdering_InsertInheritsInner(t *testing.T) {
 
 func TestEstimateOrdering_DeleteInheritsInner(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := mustFullUnorderedScanExpression(t, []string{"Order"}, propertyTestFlowedType())
 	keys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.NotNullLong}},
+		{Value: propertyField(t, "id", values.NotNullLong)},
 	}
-	sort := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
-	del := expressions.NewDeleteExpression(
+	sort := mustLogicalSortExpression(t, keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+	del := mustDeleteExpression(t,
 		expressions.ForEachQuantifier(expressions.InitialOf(sort)),
-		"Order",
-	)
-	o := properties.EstimateOrdering(del)
+		"Order")
+
+	o := EstimateOrdering(del)
 	if !o.IsKnown {
 		t.Fatal("Delete(Sort(...)) ordering = unknown, want known (DML pass-through)")
 	}
@@ -124,13 +123,14 @@ func TestEstimateOrdering_DeleteInheritsInner(t *testing.T) {
 
 func TestEstimateOrdering_Union_NotKnown(t *testing.T) {
 	t.Parallel()
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	scanA := mustFullUnorderedScanExpression(t, []string{"A"}, propertyTestFlowedType())
+	scanB := mustFullUnorderedScanExpression(t, []string{"B"}, propertyTestFlowedType())
+	union := mustLogicalUnionExpression(t, []expressions.Quantifier{
 		expressions.ForEachQuantifier(expressions.InitialOf(scanA)),
 		expressions.ForEachQuantifier(expressions.InitialOf(scanB)),
 	})
-	o := properties.EstimateOrdering(union)
+
+	o := EstimateOrdering(union)
 	if o.IsKnown {
 		t.Fatal("Union ordering = known, want unknown (concat loses ordering)")
 	}
@@ -141,13 +141,13 @@ func TestEstimateOrdering_Union_NotKnown(t *testing.T) {
 // rows, just drops duplicates.
 func TestEstimateOrdering_DistinctOverSortPreserves(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
 	keys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.NotNullLong}},
+		{Value: propertyField(t, "id", values.NotNullLong)},
 	}
-	sort := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
-	dist := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(expressions.InitialOf(sort)))
-	o := properties.EstimateOrdering(dist)
+	sort := mustLogicalSortExpression(t, keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+	dist := mustLogicalDistinctExpression(t, expressions.ForEachQuantifier(expressions.InitialOf(sort)))
+	o := EstimateOrdering(dist)
 	if !o.IsKnown {
 		t.Fatal("Distinct(Sort(...)) ordering = unknown, want known (Distinct preserves)")
 	}
@@ -157,9 +157,9 @@ func TestEstimateOrdering_DistinctOverSortPreserves(t *testing.T) {
 // Distinct over an unsorted scan still produces unknown.
 func TestEstimateOrdering_DistinctOverScanNotKnown(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	dist := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(expressions.InitialOf(scan)))
-	o := properties.EstimateOrdering(dist)
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
+	dist := mustLogicalDistinctExpression(t, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+	o := EstimateOrdering(dist)
 	if o.IsKnown {
 		t.Fatal("Distinct(Scan) ordering = known, want unknown (scan is unordered)")
 	}
@@ -170,13 +170,13 @@ func TestEstimateOrdering_DistinctOverScanNotKnown(t *testing.T) {
 // Distinct.
 func TestEstimateOrdering_UniqueOverSortPreserves(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
 	keys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.NotNullLong}},
+		{Value: propertyField(t, "id", values.NotNullLong)},
 	}
-	sort := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
-	uq := expressions.NewLogicalUniqueExpression(expressions.ForEachQuantifier(expressions.InitialOf(sort)))
-	o := properties.EstimateOrdering(uq)
+	sort := mustLogicalSortExpression(t, keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+	uq := mustLogicalUniqueExpression(t, expressions.ForEachQuantifier(expressions.InitialOf(sort)))
+	o := EstimateOrdering(uq)
 	if !o.IsKnown {
 		t.Fatal("Unique(Sort(...)) ordering = unknown, want known (Unique preserves)")
 	}

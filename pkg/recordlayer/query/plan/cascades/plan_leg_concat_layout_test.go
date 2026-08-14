@@ -7,6 +7,21 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustLegConcatConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct leg-concat fixture: " + err.Error())
+	}
+	return value
+}
+
+func legConcatLayout(name string, cols ...string) *values.RecordType {
+	fields := make([]values.Field, len(cols))
+	for i, col := range cols {
+		fields[i] = values.Field{Name: col, FieldType: values.NotNullLong, Ordinal: i}
+	}
+	return values.NewRecordType(name, false, fields)
+}
+
 // PlanLegConcatLayout is EXPORTED, so its result crosses a package boundary and
 // the immutability of a plan's result type stops being something this package
 // can enforce by inspection.
@@ -20,8 +35,9 @@ func TestPlanLegConcatLayout_ReturnsADefensiveCopy(t *testing.T) {
 	t.Parallel()
 
 	alias := values.NamedCorrelationIdentifier("A")
-	rt := nljTestLayouts["OUTER"] // ID, CATEGORY
-	scan := plans.NewRecordQueryScanPlan([]string{"OUTER"}, values.Type(rt), false)
+	rt := legConcatLayout("OUTER", "ID", "CATEGORY")
+	scan := mustLegConcatConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"OUTER"}, values.Type(rt), false))
 
 	planType, isRT := scan.GetResultType().(*values.RecordType)
 	if !isRT {
@@ -74,8 +90,8 @@ func TestPlanBuriedLegConcat_DoesNotAppendIntoALegPlansBackingArray(t *testing.T
 
 	// len 2, cap 8 — the spare capacity an append can write into.
 	backing := make([]values.Field, 2, 8)
-	backing[0] = values.Field{Name: "ID", FieldType: values.UnknownType, Ordinal: 0}
-	backing[1] = values.Field{Name: "CATEGORY", FieldType: values.UnknownType, Ordinal: 1}
+	backing[0] = values.Field{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0}
+	backing[1] = values.Field{Name: "CATEGORY", FieldType: values.NotNullString, Ordinal: 1}
 	outerRT := &values.RecordType{RecordName: "OUTER", Fields: backing}
 	if cap(outerRT.Fields) <= len(outerRT.Fields) {
 		t.Fatalf("fixture: outer fields cap %d must exceed len %d, or the append "+
@@ -87,14 +103,20 @@ func TestPlanBuriedLegConcat_DoesNotAppendIntoALegPlansBackingArray(t *testing.T
 	joinAlias := values.NamedCorrelationIdentifier("J")
 
 	// ONE outer scan plan, reused as the outer leg of two different joins.
-	sharedOuter := plans.NewRecordQueryScanPlan([]string{"OUTER"}, values.Type(outerRT), false)
+	sharedOuter := mustLegConcatConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"OUTER"}, values.Type(outerRT), false))
 	mkJoin := func(table string, rt *values.RecordType, innerAlias string) plans.RecordQueryPlan {
-		return plans.NewRecordQueryNestedLoopJoinPlan(
-			sharedOuter, plans.NewRecordQueryScanPlan([]string{table}, values.Type(rt), false),
-			nil, plans.JoinInner, outerAlias, values.NamedCorrelationIdentifier(innerAlias), nil)
+		inner := mustLegConcatConstruct(plans.NewRecordQueryScanPlan(
+			[]string{table}, values.Type(rt), false))
+		resultType := legConcatLayout("JoinResult", "OUTER_ID", "OUTER_CATEGORY", "INNER_ID", "INNER_VALUE")
+		result := values.NewQueriedValue(nil, resultType)
+		return mustLegConcatConstruct(plans.NewRecordQueryNestedLoopJoinPlan(
+			sharedOuter, inner, nil, plans.JoinInner, outerAlias,
+			values.NamedCorrelationIdentifier(innerAlias), result))
 	}
 
-	fields1, _, ok := planBuriedLegConcat(mkJoin("INNER", nljTestLayouts["INNER"], "B"), joinAlias, 0)
+	fields1, _, ok := planBuriedLegConcat(mkJoin(
+		"INNER", legConcatLayout("INNER", "ID", "OUTER_ID"), "B"), joinAlias, 0)
 	if !ok || len(fields1) == 0 {
 		t.Fatal("fixture: the walk declined the first join — an INNER NLJ over two " +
 			"scans is exactly the shape it reduces, so a decline means the fixture " +
@@ -107,7 +129,8 @@ func TestPlanBuriedLegConcat_DoesNotAppendIntoALegPlansBackingArray(t *testing.T
 
 	// A SECOND concat over the same outer leg. With the append-onto-outer form
 	// this writes through into `backing[2:]`, which is where fields1's tail lives.
-	if _, _, ok2 := planBuriedLegConcat(mkJoin("SHADOW", nljTestLayouts["SHADOW"], "C"), joinAlias, 0); !ok2 {
+	if _, _, ok2 := planBuriedLegConcat(mkJoin(
+		"SHADOW", legConcatLayout("SHADOW", "ID", "NOTE"), "C"), joinAlias, 0); !ok2 {
 		t.Fatal("fixture: the walk declined the second join — see the first")
 	}
 

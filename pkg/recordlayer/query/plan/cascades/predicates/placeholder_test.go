@@ -9,7 +9,7 @@ import (
 func TestPlaceholder_Construction(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("p1")
-	val := &values.FieldValue{Field: "age"}
+	val := predicateTestField(t, "age", values.NullableLong)
 	p := NewPlaceholder(alias, val)
 
 	if got := p.GetParameterAlias(); got != alias {
@@ -23,7 +23,7 @@ func TestPlaceholder_Construction(t *testing.T) {
 func TestPlaceholder_DefaultComparisonRangeIsEmpty(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("p2")
-	val := &values.FieldValue{Field: "name"}
+	val := predicateTestField(t, "name", values.NullableLong)
 	p := NewPlaceholder(alias, val)
 
 	cr := p.GetComparisonRange()
@@ -38,7 +38,7 @@ func TestPlaceholder_DefaultComparisonRangeIsEmpty(t *testing.T) {
 func TestPlaceholder_WithRangeCreatesNewPlaceholder(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("p3")
-	val := &values.FieldValue{Field: "salary"}
+	val := predicateTestField(t, "salary", values.NullableLong)
 	original := NewPlaceholder(alias, val)
 
 	// Build a non-empty equality range.
@@ -77,7 +77,7 @@ func TestPlaceholder_WithRangeCreatesNewPlaceholder(t *testing.T) {
 func TestPlaceholder_IsConstraining(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("p4")
-	val := &values.FieldValue{Field: "col"}
+	val := predicateTestField(t, "col", values.NullableLong)
 	p := NewPlaceholder(alias, val)
 
 	// Empty range = not constraining.
@@ -104,10 +104,10 @@ func TestPlaceholder_IsConstraining(t *testing.T) {
 func TestPlaceholder_Explain(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("param0")
-	val := &values.FieldValue{Field: "score"}
+	val := predicateTestField(t, "score", values.NullableLong)
 	p := NewPlaceholder(alias, val)
 
-	want := "Placeholder(param0, score)"
+	want := "Placeholder(param0, predicate_test_score.score#0)"
 	if got := p.Explain(); got != want {
 		t.Fatalf("Explain() = %q, want %q", got, want)
 	}
@@ -132,7 +132,7 @@ func TestPlaceholder_SatisfiesQueryPredicateInterface(t *testing.T) {
 func TestPlaceholder_IsLeaf(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("leaf")
-	val := &values.FieldValue{Field: "id"}
+	val := predicateTestField(t, "id", values.NullableLong)
 	p := NewPlaceholder(alias, val)
 
 	if got := len(p.Children()); got != 0 {
@@ -146,7 +146,7 @@ func TestPlaceholder_IsLeaf(t *testing.T) {
 func TestPlaceholder_EvalIsUnknown(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("e")
-	p := NewPlaceholder(alias, &values.FieldValue{Field: "x"})
+	p := NewPlaceholder(alias, predicateTestField(t, "x", values.NullableLong))
 	if got, _ := p.Eval(nil); got != TriUnknown {
 		t.Fatalf("Eval = %v, want TriUnknown", got)
 	}
@@ -155,7 +155,7 @@ func TestPlaceholder_EvalIsUnknown(t *testing.T) {
 func TestPlaceholder_Negate(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("n")
-	p := NewPlaceholder(alias, &values.FieldValue{Field: "y"})
+	p := NewPlaceholder(alias, predicateTestField(t, "y", values.NullableLong))
 	neg := p.Negate()
 	if neg != p {
 		t.Fatal("Negate() should return the same placeholder")
@@ -165,7 +165,7 @@ func TestPlaceholder_Negate(t *testing.T) {
 func TestPlaceholder_GetCorrelatedTo_IncludesAlias(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("corr_alias")
-	val := &values.FieldValue{Field: "z"}
+	val := predicateTestField(t, "z", values.NullableLong)
 	p := NewPlaceholder(alias, val)
 
 	corr := p.GetCorrelatedTo()
@@ -178,7 +178,7 @@ func TestPlaceholder_GetCorrelatedTo_IncludesValueCorrelations(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("p_alias")
 	qAlias := values.NamedCorrelationIdentifier("q_source")
-	val := values.NewQuantifiedObjectValue(qAlias)
+	val := mustQOV(t, qAlias)
 	p := NewPlaceholder(alias, val)
 
 	corr := p.GetCorrelatedTo()
@@ -211,7 +211,7 @@ func TestPlaceholder_GetCorrelatedTo_IncludesRangeComparands(t *testing.T) {
 			comparandAlias := values.NamedCorrelationIdentifier("comparand_" + tc.name)
 			comparison := Comparison{
 				Type:    tc.typ,
-				Operand: values.NewQuantifiedObjectValue(comparandAlias),
+				Operand: mustQOV(t, comparandAlias),
 			}
 			merged := EmptyComparisonRange().Merge(&comparison)
 			if !merged.Ok {
@@ -220,7 +220,7 @@ func TestPlaceholder_GetCorrelatedTo_IncludesRangeComparands(t *testing.T) {
 
 			placeholder := NewPlaceholder(
 				parameterAlias,
-				values.NewQuantifiedObjectValue(valueAlias),
+				mustQOV(t, valueAlias),
 			).WithRange(merged.Range)
 			correlations := placeholder.GetCorrelatedTo()
 			for _, want := range []values.CorrelationIdentifier{
@@ -246,11 +246,11 @@ func TestPlaceholder_GetCorrelatedTo_IncludesEveryInequalityComparand(t *testing
 	upperAlias := values.NamedCorrelationIdentifier("upper")
 	lower := Comparison{
 		Type:    ComparisonGreaterThan,
-		Operand: values.NewQuantifiedObjectValue(lowerAlias),
+		Operand: mustQOV(t, lowerAlias),
 	}
 	upper := Comparison{
 		Type:    ComparisonLessThan,
-		Operand: values.NewQuantifiedObjectValue(upperAlias),
+		Operand: mustQOV(t, upperAlias),
 	}
 	merged := EmptyComparisonRange().Merge(&lower)
 	if !merged.Ok {
@@ -280,7 +280,7 @@ func TestPlaceholder_GetCorrelatedTo_NilRange(t *testing.T) {
 	valueAlias := values.NamedCorrelationIdentifier("value_nil_range")
 	placeholder := NewPlaceholder(
 		parameterAlias,
-		values.NewQuantifiedObjectValue(valueAlias),
+		mustQOV(t, valueAlias),
 	).WithRange(nil)
 
 	correlations := placeholder.GetCorrelatedTo()
@@ -297,7 +297,7 @@ func TestPlaceholder_GetCorrelatedTo_NilRange(t *testing.T) {
 func TestPlaceholder_GetCorrelatedToOfPredicate_Integration(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("ph_alias")
-	val := &values.FieldValue{Field: "col"}
+	val := predicateTestField(t, "col", values.NullableLong)
 	p := NewPlaceholder(alias, val)
 
 	// Use the package-level helper.

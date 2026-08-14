@@ -18,7 +18,7 @@ import (
 func authorityRow() QueryResult {
 	return QueryResult{
 		Positional: &PositionalRow{
-			Type:  positionalTypeFromNames([]string{"V"}),
+			Type:  exactTestRowType(values.Field{Name: "V", FieldType: values.NullableLong}),
 			Slots: []any{int64(42)},
 		},
 	}
@@ -34,7 +34,7 @@ func authorityInner(t *testing.T, evalCtx *EvaluationContext, alias string) plan
 	if err := tt.Add(authorityRow()); err != nil {
 		t.Fatalf("temp table add: %v", err)
 	}
-	return plans.NewRecordQueryTempTableScanPlan(corr)
+	return mustTempTableScan(t, evalCtx, corr)
 }
 
 func authorityCollect(t *testing.T, p plans.RecordQueryPlan, evalCtx *EvaluationContext) []QueryResult {
@@ -58,17 +58,18 @@ func authorityCollect(t *testing.T, p plans.RecordQueryPlan, evalCtx *Evaluation
 // subtest reads or filters on V and asserts 42, pinning that the site
 // genuinely resolves it off the ordinal row. The final subtest pins the
 // complementary half: a reference to a column that ISN'T in the positional
-// type at all must surface a loud OrdinalResolutionError — there is no
+// type at all must surface a loud runtime-shape ResolutionError — there is no
 // fallback row model to silently paper over the miss.
 func TestFrontierOrdinalAuthority(t *testing.T) {
 	t.Parallel()
-	fieldV := values.NewFieldValueWithResolvedOrdinal("V", 0, values.UnknownType)
 
 	t.Run("projection", func(t *testing.T) {
 		t.Parallel()
 		evalCtx := EmptyEvaluationContext()
-		proj := plans.NewRecordQueryProjectionPlan(
-			[]values.Value{fieldV}, authorityInner(t, evalCtx, "auth_proj"))
+		inner := authorityInner(t, evalCtx, "auth_proj")
+		fieldV := mustTestFieldOrdinal(t, inner.GetResultValue(), 0)
+		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+			[]values.Value{fieldV}, inner))
 		rows := authorityCollect(t, proj, evalCtx)
 		if len(rows) != 1 {
 			t.Fatalf("got %d rows, want 1", len(rows))
@@ -82,12 +83,14 @@ func TestFrontierOrdinalAuthority(t *testing.T) {
 	t.Run("filter", func(t *testing.T) {
 		t.Parallel()
 		evalCtx := EmptyEvaluationContext()
+		inner := authorityInner(t, evalCtx, "auth_filter")
+		fieldV := mustTestFieldOrdinal(t, inner.GetResultValue(), 0)
 		pred := predicates.NewComparisonPredicate(fieldV, predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: int64(42), Typ: values.NullableLong},
 		})
-		filter := plans.NewRecordQueryFilterPlan(
-			[]predicates.QueryPredicate{pred}, authorityInner(t, evalCtx, "auth_filter"))
+		filter := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
+			[]predicates.QueryPredicate{pred}, inner))
 		rows := authorityCollect(t, filter, evalCtx)
 		if len(rows) != 1 {
 			t.Fatalf("executeFilter kept %d rows, want 1 — `V = 42` must evaluate TRUE against the positional row", len(rows))
@@ -97,23 +100,52 @@ func TestFrontierOrdinalAuthority(t *testing.T) {
 	t.Run("predicates_filter", func(t *testing.T) {
 		t.Parallel()
 		evalCtx := EmptyEvaluationContext()
+		inner := authorityInner(t, evalCtx, "auth_pfilter")
+		fieldV := mustTestFieldOrdinal(t, inner.GetResultValue(), 0)
 		pred := predicates.NewComparisonPredicate(fieldV, predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: int64(42), Typ: values.NullableLong},
 		})
-		pfilter := plans.NewRecordQueryPredicatesFilterPlan(
-			authorityInner(t, evalCtx, "auth_pfilter"), []predicates.QueryPredicate{pred})
+		pfilter := mustExecutorConstruct(plans.NewRecordQueryPredicatesFilterPlan(
+			inner, []predicates.QueryPredicate{pred}))
 		rows := authorityCollect(t, pfilter, evalCtx)
 		if len(rows) != 1 {
 			t.Fatalf("executePredicatesFilter kept %d rows, want 1 — `V = 42` must evaluate TRUE against the positional row", len(rows))
 		}
 	})
 
+	t.Run("predicates_filter_declared_alias", func(t *testing.T) {
+		t.Parallel()
+		evalCtx := EmptyEvaluationContext()
+		inner := authorityInner(t, evalCtx, "auth_pfilter_declared")
+		logicalAlias := values.NamedCorrelationIdentifier("T")
+		logicalQOV, err := values.NewQuantifiedObjectValue(logicalAlias, inner.GetResultType())
+		if err != nil {
+			t.Fatalf("logical input QOV: %v", err)
+		}
+		fieldV := mustTestFieldOrdinal(t, logicalQOV, 0)
+		pred := predicates.NewComparisonPredicate(fieldV, predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(42), Typ: values.NullableLong},
+		})
+		pfilter := mustExecutorConstruct(plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+			inner, []predicates.QueryPredicate{pred}, logicalAlias))
+		if got := pfilter.GetInnerQuantifier().GetAlias(); got == logicalAlias {
+			t.Fatalf("test requires distinct physical and declared aliases, both are %q", got.Name())
+		}
+		rows := authorityCollect(t, pfilter, evalCtx)
+		if len(rows) != 1 {
+			t.Fatalf("executePredicatesFilter kept %d rows, want 1 — declared alias T must bind the exact input row", len(rows))
+		}
+	})
+
 	t.Run("map", func(t *testing.T) {
 		t.Parallel()
 		evalCtx := EmptyEvaluationContext()
+		inner := authorityInner(t, evalCtx, "auth_map")
+		fieldV := mustTestFieldOrdinal(t, inner.GetResultValue(), 0)
 		rc := values.NewRecordConstructorValue(values.RecordConstructorField{Name: "OUT", Value: fieldV})
-		mp := plans.NewRecordQueryMapPlan(authorityInner(t, evalCtx, "auth_map"), rc)
+		mp := mustExecutorConstruct(plans.NewRecordQueryMapPlan(inner, rc))
 		rows := authorityCollect(t, mp, evalCtx)
 		if len(rows) != 1 {
 			t.Fatalf("got %d rows, want 1", len(rows))
@@ -127,19 +159,31 @@ func TestFrontierOrdinalAuthority(t *testing.T) {
 	t.Run("loud_miss_no_fallback", func(t *testing.T) {
 		t.Parallel()
 		evalCtx := EmptyEvaluationContext()
-		// ID is not a column of the row's [V] positional type: the projection
-		// must LOUD-error, never silently invent a value.
-		proj := plans.NewRecordQueryProjectionPlan(
-			[]values.Value{values.NewFlatFieldValue("ID", values.UnknownType)},
-			authorityInner(t, evalCtx, "auth_miss"))
+		// ID is declared by the scan but absent from its runtime [V] carrier.
+		// Exact layout publication must reject that disagreement before the
+		// projection can read an ambient ordinal or silently invent a value.
+		declared := exactTestRowType(
+			values.Field{Name: "V", FieldType: values.NullableLong},
+			values.Field{Name: "ID", FieldType: values.NullableLong},
+		)
+		alias := values.NamedCorrelationIdentifier("auth_miss")
+		if err := evalCtx.GetOrCreateTempTable(alias, nil).Add(authorityRow()); err != nil {
+			t.Fatalf("temp table add: %v", err)
+		}
+		inner := mustExecutorConstruct(plans.NewRecordQueryTempTableScanPlan(alias, declared))
+		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+			[]values.Value{mustTestFieldOrdinal(t, inner.GetResultValue(), 1)}, inner))
 		cursor, err := ExecutePlan(context.Background(), proj, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
 			t.Fatalf("ExecutePlan: %v", err)
 		}
 		_, err = CollectAll(context.Background(), cursor)
-		var ore *values.OrdinalResolutionError
-		if !errors.As(err, &ore) {
-			t.Fatalf("frontier miss on ID must surface a loud OrdinalResolutionError through the cursor (no fallback), got %v", err)
+		var resolutionErr *values.ResolutionError
+		if !errors.As(err, &resolutionErr) {
+			t.Fatalf("frontier miss on ID must surface a loud ResolutionError through the cursor (no fallback), got %v", err)
+		}
+		if resolutionErr.Code() != values.LayoutCarrierMismatch {
+			t.Fatalf("frontier miss code = %v, want LayoutCarrierMismatch: %v", resolutionErr.Code(), err)
 		}
 	})
 }

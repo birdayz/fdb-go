@@ -145,11 +145,11 @@ func TranslateCorrelation(v values.Value, alias values.CorrelationIdentifier, re
 		return nil
 	}
 	return values.ReplaceLeavesMaybe(v, func(leaf values.Value) values.Value {
-		qov, ok := leaf.(*values.QuantifiedObjectValue)
+		qov, ok := values.AsQuantifiedObjectValue(leaf)
 		if !ok {
 			return leaf
 		}
-		if qov.Correlation == alias {
+		if qov.Correlation() == alias {
 			return replacement
 		}
 		return leaf
@@ -164,11 +164,11 @@ func TranslateCorrelations(v values.Value, aliasMap map[values.CorrelationIdenti
 		return v
 	}
 	return values.ReplaceLeavesMaybe(v, func(leaf values.Value) values.Value {
-		qov, ok := leaf.(*values.QuantifiedObjectValue)
+		qov, ok := values.AsQuantifiedObjectValue(leaf)
 		if !ok {
 			return leaf
 		}
-		if replacement, found := aliasMap[qov.Correlation]; found {
+		if replacement, found := aliasMap[qov.Correlation()]; found {
 			return replacement
 		}
 		return leaf

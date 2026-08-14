@@ -48,13 +48,19 @@ type RecordQueryScoreForRankPlan struct {
 }
 
 // NewRecordQueryScoreForRankPlan constructs a score-for-rank plan.
-func NewRecordQueryScoreForRankPlan(inner RecordQueryPlan, ranks []ScoreForRank) *RecordQueryScoreForRankPlan {
+func NewRecordQueryScoreForRankPlan(inner RecordQueryPlan, ranks []ScoreForRank) (*RecordQueryScoreForRankPlan, error) {
+	innerQ := QuantifierOverPlan(inner)
+	base, err := newPlanExprBaseForQuantifier("RecordQueryScoreForRankPlan", innerQ)
+	if err != nil {
+		return nil, err
+	}
 	copied := make([]ScoreForRank, len(ranks))
 	copy(copied, ranks)
 	return &RecordQueryScoreForRankPlan{
-		innerQ: QuantifierOverPlan(inner),
-		ranks:  copied,
-	}
+		PlanExprBase: base,
+		innerQ:       innerQ,
+		ranks:        copied,
+	}, nil
 }
 
 // GetInner returns the wrapped inner plan, dereferenced through the quantifier.
@@ -85,13 +91,7 @@ func (p *RecordQueryScoreForRankPlan) IsReverse() bool {
 // GetResultType returns the inner plan's result type (score-for-rank
 // doesn't reshape rows — it binds scores into the evaluation context,
 // then delegates row production to the inner plan).
-func (p *RecordQueryScoreForRankPlan) GetResultType() values.Type {
-	inner := p.GetInner()
-	if inner == nil {
-		return values.UnknownType
-	}
-	return inner.GetResultType()
-}
+func (p *RecordQueryScoreForRankPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryScoreForRankPlan) GetChildren() []RecordQueryPlan {
@@ -149,13 +149,18 @@ func (p *RecordQueryScoreForRankPlan) EqualsWithoutChildren(other expressions.Re
 
 // WithQuantifiers returns a copy ranging over the given child quantifier —
 // Java's copy-on-write withChild(Reference).
-func (p *RecordQueryScoreForRankPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 1 {
-		return p
+func (p *RecordQueryScoreForRankPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryScoreForRankPlan", len(qs), 1); err != nil {
+		return nil, err
 	}
 	cp := *p
 	cp.innerQ = qs[0]
-	return &cp
+	base, err := newPlanExprBaseForQuantifier("RecordQueryScoreForRankPlan", qs[0])
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
+	return &cp, nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

@@ -130,9 +130,14 @@ func (r *ImplementRecursiveDfsJoinRule) OnMatch(call *ExpressionRuleCall) {
 	childQ := expressions.ForEachQuantifier(call.MemoizeFinalExpression(&scanPlanExpression{plan: childPlan}))
 	// The plan carries its two leg edges directly — no separate physical
 	// wrapper (RFC-184 W2).
-	call.Yield(plans.NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers(
+	plan, err := plans.NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers(
 		rootQ, childQ, priorCorrelation, strategy, recUnion.IsDistinct(),
-	))
+	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(plan)
 }
 
 // stripTempTableInsertTop unwraps a TempTableInsert at the top of a leg plan

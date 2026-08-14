@@ -8,6 +8,55 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+var phase2FuzzColumns = []string{"A", "B", "C", "D", "STATUS", "AMOUNT", "DATE", "OTHER"}
+
+func phase2FuzzRowType() *values.RecordType {
+	fields := make([]values.Field, len(phase2FuzzColumns))
+	for ordinal, name := range phase2FuzzColumns {
+		fields[ordinal] = values.Field{
+			Name: name, FieldType: values.NullableLong, Ordinal: ordinal,
+		}
+	}
+	return values.NewRecordType("T", false, fields)
+}
+
+func phase2FuzzScan(t testing.TB) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	return mustFullUnorderedScan(t, []string{"T"}, phase2FuzzRowType())
+}
+
+func phase2FuzzField(
+	t testing.TB,
+	quantifier expressions.Quantifier,
+	name string,
+) values.Value {
+	t.Helper()
+	ordinal := -1
+	for i, candidate := range phase2FuzzColumns {
+		if candidate == name {
+			ordinal = i
+			break
+		}
+	}
+	if ordinal < 0 {
+		t.Fatalf("phase-2 fuzz field %q is outside the exact row", name)
+	}
+	rootValue, rootErr := quantifier.RequireFlowedObjectValue()
+	root := mustConstruct(t, rootValue, rootErr)
+	fieldValue, fieldErr := values.ResolveFieldOrdinals(root, []int{ordinal})
+	return mustConstruct(t, fieldValue, fieldErr)
+}
+
+func phase2FuzzFilter(
+	t testing.TB,
+	preds []predicates.QueryPredicate,
+	quantifier expressions.Quantifier,
+) *expressions.LogicalFilterExpression {
+	t.Helper()
+	filterValue, filterErr := expressions.NewLogicalFilterExpression(preds, quantifier)
+	return mustConstruct(t, filterValue, filterErr)
+}
+
 // FuzzDataAccessScan_NoPanic exercises the data-access scan path (the sole scan
 // producer after RFC-076 retired ImplementIndexScanRule) with random
 // predicate/column combinations to ensure no panics. It provides actual
@@ -19,7 +68,7 @@ func FuzzDataAccessScan_NoPanic(f *testing.F) {
 	f.Add(byte(255), byte(255), byte(255), byte(255))
 	f.Add(byte(0), byte(1), byte(0), byte(1))
 
-	colPool := []string{"A", "B", "C", "D", "STATUS", "AMOUNT", "DATE"}
+	colPool := phase2FuzzColumns[:7]
 	cmpTypes := []predicates.ComparisonType{
 		predicates.ComparisonEquals,
 		predicates.ComparisonGreaterThan,
@@ -44,13 +93,13 @@ func FuzzDataAccessScan_NoPanic(f *testing.F) {
 			[]string{"T"},
 			candCols,
 			aliases,
-			values.UnknownType,
+			phase2FuzzRowType(),
 			numCols%2 == 0,
 			nil,
 		)
 		ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scan := phase2FuzzScan(t)
 		scanRef := expressions.InitialOf(scan)
 		q := expressions.ForEachQuantifier(scanRef)
 
@@ -59,12 +108,12 @@ func FuzzDataAccessScan_NoPanic(f *testing.F) {
 			col := colPool[int(predSeed+byte(i))%len(colPool)]
 			cmpType := cmpTypes[int(predSeed+byte(i*3))%len(cmpTypes)]
 			preds[i] = predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: col, Typ: values.NullableLong},
+				phase2FuzzField(t, q, col),
 				predicates.NewLiteralComparison(cmpType, int64(i+1)),
 			)
 		}
 
-		filter := expressions.NewLogicalFilterExpression(preds, q)
+		filter := phase2FuzzFilter(t, preds, q)
 		filterRef := expressions.InitialOf(filter)
 
 		// Drive the full planner (data-access path) for panics on random shapes —
@@ -89,7 +138,7 @@ func FuzzInExplode_NoPanic(f *testing.F) {
 		nList := int(listSize % 20)
 		nExtra := int(extraPreds % 5)
 
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scan := phase2FuzzScan(t)
 		scanRef := expressions.InitialOf(scan)
 		q := expressions.ForEachQuantifier(scanRef)
 
@@ -100,16 +149,19 @@ func FuzzInExplode_NoPanic(f *testing.F) {
 			for i := range items {
 				items[i] = int64(i)
 			}
-			inList := &values.ConstantValue{Value: items, Typ: values.TypeUnknown}
+			inList := &values.ConstantValue{
+				Value: items,
+				Typ:   values.NewArrayType(false, values.NotNullLong),
+			}
 			preds = append(preds, predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "STATUS", Typ: values.NullableLong},
+				phase2FuzzField(t, q, "STATUS"),
 				predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
 			))
 		}
 
 		for i := 0; i < nExtra; i++ {
 			preds = append(preds, predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "OTHER", Typ: values.NullableLong},
+				phase2FuzzField(t, q, "OTHER"),
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(i)),
 			))
 		}
@@ -118,11 +170,11 @@ func FuzzInExplode_NoPanic(f *testing.F) {
 			preds = append(preds, predicates.NewConstantPredicate(predicates.TriTrue))
 		}
 
-		filter := expressions.NewLogicalFilterExpression(preds, q)
+		filter := phase2FuzzFilter(t, preds, q)
 		ref := expressions.InitialOf(filter)
 
 		rule := NewInComparisonToExplodeRule()
-		FireExpressionRuleWithMemo(rule, ref, EmptyPlanContext(), nil)
+		mustFireExpressionRuleWithMemo(t, rule, ref, EmptyPlanContext(), nil)
 	})
 }
 
@@ -150,13 +202,13 @@ func FuzzOrderedIndexScan_NoPanic(f *testing.F) {
 			[]string{"T"},
 			candCols,
 			aliases,
-			values.UnknownType,
+			phase2FuzzRowType(),
 			false,
 			nil,
 		)
 		ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scan := phase2FuzzScan(t)
 		scanRef := expressions.InitialOf(scan)
 		q := expressions.ForEachQuantifier(scanRef)
 
@@ -164,15 +216,16 @@ func FuzzOrderedIndexScan_NoPanic(f *testing.F) {
 		for i := range sortKeys {
 			col := colPool[(int(seed)+i*2)%len(colPool)]
 			sortKeys[i] = expressions.SortKey{
-				Value: &values.FieldValue{Field: col, Typ: values.UnknownType},
+				Value: phase2FuzzField(t, q, col),
 			}
 		}
 
-		sort := expressions.NewLogicalSortExpression(sortKeys, q)
+		sortValue, sortErr := expressions.NewLogicalSortExpression(sortKeys, q)
+		sort := mustConstruct(t, sortValue, sortErr)
 		sortRef := expressions.InitialOf(sort)
 
 		rule := NewOrderedIndexScanRule()
-		FireExpressionRuleWithMemo(rule, sortRef, ctx, nil)
+		mustFireExpressionRuleWithMemo(t, rule, sortRef, ctx, nil)
 	})
 }
 

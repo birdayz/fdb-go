@@ -10,7 +10,7 @@ import (
 // makeFilter wraps `inner` in a LogicalFilter that tests `pred`.
 // Convenience for the SemanticEquals tests.
 func makeFilter(pred predicates.QueryPredicate, inner Quantifier) *LogicalFilterExpression {
-	return NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, inner)
+	return mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, inner))
 }
 
 // leafScan is a zero-child RelationalExpression placeholder used by
@@ -20,7 +20,9 @@ type leafScan struct {
 	name string
 }
 
-func (l *leafScan) GetResultValue() values.Value    { return values.NewNullValue(values.UnknownType) }
+func (l *leafScan) GetResultValue() values.Value {
+	return values.NewQueriedValue(nil, testRecordType())
+}
 func (l *leafScan) GetQuantifiers() []Quantifier    { return nil }
 func (l *leafScan) CanCorrelate() bool              { return false }
 func (l *leafScan) ChildrenAsSet() bool             { return false }
@@ -34,7 +36,12 @@ func (l *leafScan) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap
 	return ok && o.name == l.name
 }
 
-func (l *leafScan) WithQuantifiers(_ []Quantifier) RelationalExpression { return l }
+func (l *leafScan) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("leafScan", len(quantifiers), 0); err != nil {
+		return nil, err
+	}
+	return l, nil
+}
 
 func TestSemanticEquals_NilHandling(t *testing.T) {
 	t.Parallel()

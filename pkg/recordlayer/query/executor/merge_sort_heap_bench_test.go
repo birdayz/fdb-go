@@ -45,7 +45,7 @@ func benchDrainMergeSort(b *testing.B, numLegs, rowsPerLeg int, useHeap bool) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		legs := buildBenchLegs(numLegs, rowsPerLeg)
-		c := newMergeSortCursor(rowsToCursors(legs), idKey(), false, true)
+		c := newMergeSortCursor(rowsToCursors(legs), idKey(b), false, true)
 		b.StartTimer()
 
 		var n int64

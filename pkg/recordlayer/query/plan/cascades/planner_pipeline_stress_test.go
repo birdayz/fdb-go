@@ -3,6 +3,7 @@ package cascades
 import (
 	"fmt"
 	"math/rand"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -10,6 +11,85 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
+
+var pipelineGeneratedCorrelation = regexp.MustCompile(`q\$[0-9]+`)
+
+// canonicalPipelineExplain renumbers generated correlations by first
+// appearance. RFC-232 makes their exact ownership visible in Explain output;
+// the process-global allocator value is not plan identity, while alias topology
+// (same vs different occurrences) remains load-bearing and is preserved here.
+func canonicalPipelineExplain(explain string) string {
+	ids := make(map[string]string)
+	next := 0
+	return pipelineGeneratedCorrelation.ReplaceAllStringFunc(explain, func(id string) string {
+		if canonical, ok := ids[id]; ok {
+			return canonical
+		}
+		canonical := fmt.Sprintf("q$%d", next)
+		next++
+		ids[id] = canonical
+		return canonical
+	})
+}
+
+func mustPipelineStressConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct planner pipeline stress fixture: " + err.Error())
+	}
+	return value
+}
+
+func pipelineStressRowType() values.Type {
+	return values.NewRecordType("PipelineStressRow", false, []values.Field{
+		{Name: "X", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "Y", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "Z", FieldType: values.NotNullLong, Ordinal: 2},
+		{Name: "W", FieldType: values.NotNullLong, Ordinal: 3},
+	})
+}
+
+func pipelineStressRoot(q expressions.Quantifier) values.QuantifiedObjectValue {
+	flowedType := mustPipelineStressConstruct(q.GetFlowedObjectType())
+	return mustPipelineStressConstruct(values.NewQuantifiedObjectValue(q.GetAlias(), flowedType))
+}
+
+func pipelineStressFieldAt(q expressions.Quantifier, ordinal int) values.Value {
+	flowedType := mustPipelineStressConstruct(q.GetFlowedObjectType())
+	recordType, ok := flowedType.(*values.RecordType)
+	if !ok || len(recordType.Fields) == 0 {
+		panic(fmt.Sprintf("planner pipeline stress fixture: non-record or empty flowed type %v", flowedType))
+	}
+	ordinal %= len(recordType.Fields)
+	return mustPipelineStressConstruct(values.ResolveFieldOrdinals(
+		pipelineStressRoot(q), []int{ordinal}))
+}
+
+func pipelineStressFieldNamed(q expressions.Quantifier, name string) values.Value {
+	request := mustPipelineStressConstruct(values.FieldByName(name))
+	return mustPipelineStressConstruct(values.ResolveFieldAccess(
+		pipelineStressRoot(q), []values.FieldRequest{request}))
+}
+
+type pipelineStressIndexDef struct {
+	name        string
+	columns     []string
+	recordTypes []string
+}
+
+func (d *pipelineStressIndexDef) IndexName() string              { return d.name }
+func (d *pipelineStressIndexDef) IndexColumnNames() []string     { return d.columns }
+func (d *pipelineStressIndexDef) IndexRecordTypes() []string     { return d.recordTypes }
+func (*pipelineStressIndexDef) IndexIsUnique() bool              { return false }
+func (*pipelineStressIndexDef) IndexPrimaryKeyColumns() []string { return nil }
+func (*pipelineStressIndexDef) IndexCreatesDuplicates() bool     { return false }
+func (*pipelineStressIndexDef) IndexRowType() values.Type        { return pipelineStressRowType() }
+func (d *pipelineStressIndexDef) IndexKeyComponentTypes() []values.Type {
+	result := make([]values.Type, len(d.columns))
+	for i := range result {
+		result[i] = values.NotNullLong
+	}
+	return result
+}
 
 // TestPipeline_CostTieDeterminism builds a query where two alternative
 // plans have identical cost (filter on col A with index on A, plus
@@ -24,26 +104,19 @@ func TestPipeline_CostTieDeterminism(t *testing.T) {
 	t.Parallel()
 
 	buildTree := func() expressions.RelationalExpression {
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scan := mustPipelineStressConstruct(expressions.NewFullUnorderedScanExpression(
+			[]string{"T"}, determinismRowType()))
 		scanRef := expressions.InitialOf(scan)
 		scanQ := expressions.ForEachQuantifier(scanRef)
-		return expressions.NewLogicalFilterExpression(
+		return mustPipelineStressConstruct(expressions.NewLogicalFilterExpression(
 			[]predicates.QueryPredicate{
-				&predicates.ComparisonPredicate{
-					Operand: &values.FieldValue{Field: "A", Typ: values.UnknownType},
-					Comparison: predicates.Comparison{
-						Type:    predicates.ComparisonEquals,
-						Operand: &values.ConstantValue{Value: int64(1)},
-					},
-				},
-				&predicates.ComparisonPredicate{
-					Operand: &values.FieldValue{Field: "B", Typ: values.UnknownType},
-					Comparison: predicates.Comparison{
-						Type:    predicates.ComparisonEquals,
-						Operand: &values.ConstantValue{Value: int64(2)},
-					},
-				},
-			}, scanQ)
+				predicates.NewComparisonPredicate(
+					pipelineStressFieldNamed(scanQ, "A"),
+					predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1))),
+				predicates.NewComparisonPredicate(
+					pipelineStressFieldNamed(scanQ, "B"),
+					predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(2))),
+			}, scanQ))
 	}
 
 	indexes := []IndexDef{
@@ -54,7 +127,7 @@ func TestPipeline_CostTieDeterminism(t *testing.T) {
 	var firstPlan string
 	for i := 0; i < 50; i++ {
 		root := buildTree()
-		plan := planPipeline(t, root, indexes...)
+		plan := canonicalPipelineExplain(planPipeline(t, root, indexes...))
 		if i == 0 {
 			firstPlan = plan
 			t.Logf("plan: %s", plan)
@@ -75,26 +148,27 @@ func TestPipeline_StreamingAggCostTie(t *testing.T) {
 	t.Parallel()
 
 	buildTree := func() expressions.RelationalExpression {
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scan := mustPipelineStressConstruct(expressions.NewFullUnorderedScanExpression(
+			[]string{"T"}, determinismRowType()))
 		scanRef := expressions.InitialOf(scan)
 		scanQ := expressions.ForEachQuantifier(scanRef)
 
-		groupBy := expressions.NewGroupByExpression(
-			[]values.Value{&values.FieldValue{Field: "A", Typ: values.UnknownType}},
+		groupBy := mustPipelineStressConstruct(expressions.NewGroupByExpression(
+			[]values.Value{pipelineStressFieldNamed(scanQ, "A")},
 			[]expressions.AggregateSpec{
 				{Function: expressions.AggCount},
 			},
 			scanQ,
-		)
+		))
 		groupByRef := expressions.InitialOf(groupBy)
 		groupByQ := expressions.ForEachQuantifier(groupByRef)
 
-		return expressions.NewLogicalSortExpression(
+		return mustPipelineStressConstruct(expressions.NewLogicalSortExpression(
 			[]expressions.SortKey{
-				{Value: &values.FieldValue{Field: "A", Typ: values.UnknownType}},
+				{Value: pipelineStressFieldAt(groupByQ, 0)},
 			},
 			groupByQ,
-		)
+		))
 	}
 
 	indexes := []IndexDef{idx("idx_a", "A")}
@@ -102,7 +176,7 @@ func TestPipeline_StreamingAggCostTie(t *testing.T) {
 	var firstPlan string
 	for i := 0; i < 50; i++ {
 		root := buildTree()
-		plan := planPipeline(t, root, indexes...)
+		plan := canonicalPipelineExplain(planPipeline(t, root, indexes...))
 		if i == 0 {
 			firstPlan = plan
 			t.Logf("plan: %s", plan)
@@ -132,7 +206,7 @@ func TestPipeline_RandomTreeStress(t *testing.T) {
 	var indexes []IndexDef
 	for _, col := range columns[:2] {
 		for _, tbl := range tables[:1] {
-			indexes = append(indexes, &stubIndexDef{
+			indexes = append(indexes, &pipelineStressIndexDef{
 				name:        fmt.Sprintf("idx_%s_%s", strings.ToLower(tbl), strings.ToLower(col)),
 				columns:     []string{col},
 				recordTypes: []string{tbl},
@@ -170,31 +244,24 @@ func TestPipeline_RandomTreeStress(t *testing.T) {
 		return result{plan: ExplainPhysicalPlan(best)}
 	}
 
-	randomField := func() *values.FieldValue {
-		return &values.FieldValue{
-			Field: columns[rng.Intn(len(columns))],
-			Typ:   values.UnknownType,
-		}
+	randomField := func(q expressions.Quantifier) values.Value {
+		return pipelineStressFieldAt(q, rng.Intn(len(columns)))
 	}
 
-	randomPred := func() predicates.QueryPredicate {
+	randomPred := func(q expressions.Quantifier) predicates.QueryPredicate {
 		ops := []predicates.ComparisonType{
 			predicates.ComparisonEquals,
 			predicates.ComparisonLessThan,
 			predicates.ComparisonGreaterThan,
 		}
-		return &predicates.ComparisonPredicate{
-			Operand: randomField(),
-			Comparison: predicates.Comparison{
-				Type:    ops[rng.Intn(len(ops))],
-				Operand: &values.ConstantValue{Value: int64(rng.Intn(100))},
-			},
-		}
+		return predicates.NewComparisonPredicate(
+			randomField(q),
+			predicates.NewLiteralComparison(ops[rng.Intn(len(ops))], int64(rng.Intn(100))))
 	}
 
 	randomScan := func() expressions.RelationalExpression {
-		return expressions.NewFullUnorderedScanExpression(
-			[]string{tables[rng.Intn(len(tables))]}, values.UnknownType)
+		return mustPipelineStressConstruct(expressions.NewFullUnorderedScanExpression(
+			[]string{tables[rng.Intn(len(tables))]}, pipelineStressRowType()))
 	}
 
 	// Build a random tree of depth 1-3.
@@ -212,38 +279,41 @@ func TestPipeline_RandomTreeStress(t *testing.T) {
 			nPreds := 1 + rng.Intn(3)
 			preds := make([]predicates.QueryPredicate, nPreds)
 			for i := range preds {
-				preds[i] = randomPred()
+				preds[i] = randomPred(innerQ)
 			}
-			return expressions.NewLogicalFilterExpression(preds, innerQ)
+			return mustPipelineStressConstruct(expressions.NewLogicalFilterExpression(preds, innerQ))
 		case 1: // projection
 			nCols := 1 + rng.Intn(3)
 			cols := make([]values.Value, nCols)
 			for i := range cols {
-				cols[i] = randomField()
+				cols[i] = randomField(innerQ)
 			}
-			return expressions.NewLogicalProjectionExpression(cols, innerQ)
+			return mustPipelineStressConstruct(expressions.NewLogicalProjectionExpression(cols, innerQ))
 		case 2: // sort
-			return expressions.NewLogicalSortExpression(
+			return mustPipelineStressConstruct(expressions.NewLogicalSortExpression(
 				[]expressions.SortKey{
-					{Value: randomField(), Reverse: rng.Intn(2) == 1},
-				}, innerQ)
+					{Value: randomField(innerQ), Reverse: rng.Intn(2) == 1},
+				}, innerQ))
 		case 3: // distinct
-			return expressions.NewLogicalDistinctExpression(innerQ)
+			return mustPipelineStressConstruct(expressions.NewLogicalDistinctExpression(innerQ))
 		case 4: // limit
-			return expressions.NewLogicalLimitExpression(
-				int64(1+rng.Intn(100)), 0, innerQ)
+			return mustPipelineStressConstruct(expressions.NewLogicalLimitExpression(
+				int64(1+rng.Intn(100)), 0, innerQ))
 		case 5: // group by
-			return expressions.NewGroupByExpression(
-				[]values.Value{randomField()},
+			return mustPipelineStressConstruct(expressions.NewGroupByExpression(
+				[]values.Value{randomField(innerQ)},
 				[]expressions.AggregateSpec{
 					{Function: expressions.AggCount},
-				}, innerQ)
+				}, innerQ))
 		case 6: // union
-			other := randomScan()
+			// Exact set operations require identical child layouts. Duplicate the
+			// independently referenced subtree so this branch remains a valid
+			// UNION ALL after projections and aggregates change the row shape.
+			other := inner
 			otherRef := expressions.InitialOf(other)
 			otherQ := expressions.ForEachQuantifier(otherRef)
-			return expressions.NewLogicalUnionExpression(
-				[]expressions.Quantifier{innerQ, otherQ})
+			return mustPipelineStressConstruct(expressions.NewLogicalUnionExpression(
+				[]expressions.Quantifier{innerQ, otherQ}))
 		default:
 			return inner
 		}
@@ -305,7 +375,7 @@ func FuzzPipeline_NoPanic(f *testing.F) {
 
 		rootRef := expressions.InitialOf(root)
 		ctx := NewPlanContextFromIndexDefs([]IndexDef{
-			&stubIndexDef{name: "idx_x", columns: []string{"X"}, recordTypes: []string{"T"}},
+			&pipelineStressIndexDef{name: "idx_x", columns: []string{"X"}, recordTypes: []string{"T"}},
 		})
 		p := NewPlanner(rules, ctx).
 			WithPlanningExpressionRules(BatchAExpressionRules()).
@@ -324,7 +394,7 @@ func buildFuzzPipelineTree(b []byte) expressions.RelationalExpression {
 	}
 
 	tables := []string{"T", "U"}
-	fields := []string{"X", "Y", "Z"}
+	fieldCount := 3
 
 	pos := 0
 	next := func() byte {
@@ -336,8 +406,8 @@ func buildFuzzPipelineTree(b []byte) expressions.RelationalExpression {
 		return v
 	}
 
-	scan := expressions.NewFullUnorderedScanExpression(
-		[]string{tables[int(next())%len(tables)]}, values.UnknownType)
+	scan := mustPipelineStressConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{tables[int(next())%len(tables)]}, pipelineStressRowType()))
 
 	depth := int(next()) % 4
 	var current expressions.RelationalExpression = scan
@@ -345,34 +415,32 @@ func buildFuzzPipelineTree(b []byte) expressions.RelationalExpression {
 	for d := 0; d < depth; d++ {
 		ref := expressions.InitialOf(current)
 		q := expressions.ForEachQuantifier(ref)
-		field := fields[int(next())%len(fields)]
+		fieldOrdinal := int(next()) % fieldCount
+		field := pipelineStressFieldAt(q, fieldOrdinal)
 
 		switch int(next()) % 6 {
 		case 0:
-			current = expressions.NewLogicalFilterExpression(
+			current = mustPipelineStressConstruct(expressions.NewLogicalFilterExpression(
 				[]predicates.QueryPredicate{
-					&predicates.ComparisonPredicate{
-						Operand: &values.FieldValue{Field: field, Typ: values.UnknownType},
-						Comparison: predicates.Comparison{
-							Type:    predicates.ComparisonEquals,
-							Operand: &values.ConstantValue{Value: int64(next())},
-						},
-					},
-				}, q)
+					predicates.NewComparisonPredicate(
+						field,
+						predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(next()))),
+				}, q))
 		case 1:
-			current = expressions.NewLogicalProjectionExpression(
-				[]values.Value{&values.FieldValue{Field: field, Typ: values.UnknownType}}, q)
+			current = mustPipelineStressConstruct(expressions.NewLogicalProjectionExpression(
+				[]values.Value{field}, q))
 		case 2:
-			current = expressions.NewLogicalSortExpression(
-				[]expressions.SortKey{{Value: &values.FieldValue{Field: field, Typ: values.UnknownType}, Reverse: next()%2 == 1}}, q)
+			current = mustPipelineStressConstruct(expressions.NewLogicalSortExpression(
+				[]expressions.SortKey{{Value: field, Reverse: next()%2 == 1}}, q))
 		case 3:
-			current = expressions.NewLogicalDistinctExpression(q)
+			current = mustPipelineStressConstruct(expressions.NewLogicalDistinctExpression(q))
 		case 4:
-			current = expressions.NewLogicalLimitExpression(int64(1+int(next())%50), 0, q)
+			current = mustPipelineStressConstruct(expressions.NewLogicalLimitExpression(
+				int64(1+int(next())%50), 0, q))
 		case 5:
-			current = expressions.NewGroupByExpression(
-				[]values.Value{&values.FieldValue{Field: field, Typ: values.UnknownType}},
-				[]expressions.AggregateSpec{{Function: expressions.AggCount}}, q)
+			current = mustPipelineStressConstruct(expressions.NewGroupByExpression(
+				[]values.Value{field},
+				[]expressions.AggregateSpec{{Function: expressions.AggCount}}, q))
 		}
 	}
 

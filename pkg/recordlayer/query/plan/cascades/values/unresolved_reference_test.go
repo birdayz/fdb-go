@@ -51,7 +51,7 @@ func TestFieldValue_OrdinalMiss_IsLoud(t *testing.T) {
 	// carries "COUNT(*)", the "COUNT(1)" read is an unresolved reference — a loud
 	// *OrdinalResolutionError, not a silent NULL.
 	row := &attributedOrdinalRow{names: []string{"COUNT(*)", "STATUS"}, slots: []any{int64(3), "shipped"}}
-	v, err := (&FieldValue{Field: "COUNT(1)"}).Evaluate(row)
+	v, err := (&fieldValue{Field: "COUNT(1)"}).Evaluate(row)
 	if v != nil {
 		t.Fatalf("missing local ref must not yield a value, got %v", v)
 	}
@@ -76,13 +76,13 @@ func TestFieldValue_OrdinalPresentNil_IsNull(t *testing.T) {
 
 	// Each reference carries its plan-time ordinal — the field's slot
 	// in the row (COUNT(*)=0, SUM(AMOUNT)=1), read positionally. Present-nil reads NULL.
-	v, err := NewFieldValueWithResolvedOrdinal("SUM(AMOUNT)", 1, UnknownType).Evaluate(row)
+	v, err := newFieldValueWithResolvedOrdinal("SUM(AMOUNT)", 1, UnknownType).Evaluate(row)
 	require.NoError(t, err)
 	if v != nil {
 		t.Fatalf("present nil-valued key: want nil value, got %v", v)
 	}
 
-	v, err = NewFieldValueWithResolvedOrdinal("COUNT(*)", 0, UnknownType).Evaluate(row)
+	v, err = newFieldValueWithResolvedOrdinal("COUNT(*)", 0, UnknownType).Evaluate(row)
 	require.NoError(t, err)
 	if v != int64(3) {
 		t.Fatalf("present key: want 3, got %v", v)
@@ -95,7 +95,7 @@ func TestFieldValue_OrdinalMiss_CarriesAvailableKeys(t *testing.T) {
 	// The diagnostic carries the row's actual name set so a violation is
 	// attributable (what was materialised vs what was asked for).
 	row := &attributedOrdinalRow{names: []string{"A", "COUNT(*)"}, slots: []any{1, 2}}
-	_, err := (&FieldValue{Field: "B"}).Evaluate(row)
+	_, err := (&fieldValue{Field: "B"}).Evaluate(row)
 	var ordErr *OrdinalResolutionError
 	if !errors.As(err, &ordErr) {
 		t.Fatalf("want *OrdinalResolutionError, got %v", err)

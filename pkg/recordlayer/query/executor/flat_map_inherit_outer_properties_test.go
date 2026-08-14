@@ -8,7 +8,6 @@ import (
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -46,8 +45,8 @@ func TestFlatMapInheritOuterRecordProperties(t *testing.T) {
 					nil,
 					nil,
 					EmptyEvaluationContext(),
-					qovA.Correlation,
-					qovB.Correlation,
+					qovA.Correlation(),
+					qovB.Correlation(),
 					seed,
 					recordlayer.ExecuteProperties{},
 					tc.inherit,
@@ -78,17 +77,17 @@ func TestFlatMapInheritOuterRecordProperties(t *testing.T) {
 
 	t.Run("identity_inner_payload_still_uses_outer_identity", func(t *testing.T) {
 		t.Parallel()
-		outerPlan := plans.NewRecordQueryScanPlan([]string{"A"}, legA, false)
-		innerPlan := plans.NewRecordQueryScanPlan([]string{"B"}, legB, false)
+		outerPlan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"A"}, legA, false))
+		innerPlan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"B"}, legB, false))
 		c, err := newFlatMapCursorWithOuterProperties(
 			recordlayer.FromList([]QueryResult{}),
 			outerPlan,
 			innerPlan,
 			nil,
 			EmptyEvaluationContext(),
-			qovA.Correlation,
-			qovB.Correlation,
-			values.NewQuantifiedObjectValueOfType(qovB.Correlation, legB),
+			qovA.Correlation(),
+			qovB.Correlation(),
+			qovB,
 			recordlayer.ExecuteProperties{},
 			true,
 		)

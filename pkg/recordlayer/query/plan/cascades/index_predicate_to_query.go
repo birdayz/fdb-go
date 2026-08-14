@@ -104,11 +104,17 @@ func indexValuePredicateToQuery(vp *gen.ValuePredicate, base values.Value) (pred
 	if len(path) == 0 {
 		return nil, fmt.Errorf("value predicate without field path")
 	}
-	// Nested paths are field-of-field chains, exactly like the query side's
-	// dotted access.
-	v := base
-	for _, name := range path {
-		v = values.NewFieldValue(v, name, values.UnknownType)
+	requests := make([]values.FieldRequest, len(path))
+	for i, name := range path {
+		request, err := values.FieldByName(name)
+		if err != nil {
+			return nil, err
+		}
+		requests[i] = request
+	}
+	v, err := values.ResolveFieldAccess(base, requests)
+	if err != nil {
+		return nil, fmt.Errorf("resolve stored index predicate field path: %w", err)
 	}
 	cmp, err := indexComparisonToQuery(vp.GetComparison())
 	if err != nil {

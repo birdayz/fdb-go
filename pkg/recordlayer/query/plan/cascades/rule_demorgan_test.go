@@ -1,11 +1,41 @@
 package cascades
 
 import (
+	"fmt"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
+
+func mustDeMorganConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct De Morgan fixture: " + err.Error())
+	}
+	return value
+}
+
+func demorganField(name string, typ values.Type) values.Value {
+	rowType := values.NewRecordType("DeMorgan", false, []values.Field{
+		{Name: name, FieldType: typ},
+	})
+	root := mustDeMorganConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("demorgan_"+name), rowType))
+	return mustDeMorganConstruct(values.ResolveFieldOrdinals(root, []int{0}))
+}
+
+func demorganLiteral(literal any) values.Value {
+	var typ values.Type
+	switch literal.(type) {
+	case int, int32, int64:
+		typ = values.NotNullLong
+	case string:
+		typ = values.NotNullString
+	default:
+		panic(fmt.Sprintf("unsupported De Morgan literal type %T", literal))
+	}
+	return &values.ConstantValue{Value: literal, Typ: typ}
+}
 
 // TestDeMorgan_NotOverAnd pins the canonical case:
 //
@@ -15,13 +45,13 @@ import (
 func TestDeMorgan_NotOverAnd(t *testing.T) {
 	t.Parallel()
 	rule := NewDeMorganRule()
-	a := &values.FieldValue{Field: "a", Typ: values.TypeString}
-	b := &values.FieldValue{Field: "b", Typ: values.TypeString}
-	p1 := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("Hello")})
-	p2 := predicates.NewComparisonPredicate(b, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("World")})
+	a := demorganField("a", values.TypeString)
+	b := demorganField("b", values.TypeString)
+	p1 := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral("Hello")})
+	p2 := predicates.NewComparisonPredicate(b, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral("World")})
 	pred := predicates.NewNot(predicates.NewAnd(p1, p2))
 
-	got := FireRule(rule, pred)
+	got := mustFireRule(t, rule, pred)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(got))
 	}
@@ -51,13 +81,13 @@ func TestDeMorgan_NotOverAnd(t *testing.T) {
 func TestDeMorgan_NotOverOr(t *testing.T) {
 	t.Parallel()
 	rule := NewDeMorganRule()
-	a := &values.FieldValue{Field: "a", Typ: values.TypeString}
-	b := &values.FieldValue{Field: "b", Typ: values.TypeString}
-	p1 := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("x")})
-	p2 := predicates.NewComparisonPredicate(b, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("y")})
+	a := demorganField("a", values.TypeString)
+	b := demorganField("b", values.TypeString)
+	p1 := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral("x")})
+	p2 := predicates.NewComparisonPredicate(b, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral("y")})
 	pred := predicates.NewNot(predicates.NewOr(p1, p2))
 
-	got := FireRule(rule, pred)
+	got := mustFireRule(t, rule, pred)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(got))
 	}
@@ -80,9 +110,9 @@ func TestDeMorgan_NotOverOr(t *testing.T) {
 func TestDeMorgan_NotOverLeaf_DoesNotFire(t *testing.T) {
 	t.Parallel()
 	rule := NewDeMorganRule()
-	a := &values.FieldValue{Field: "a", Typ: values.TypeString}
-	pred := predicates.NewNot(predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("x")}))
-	if got := FireRule(rule, pred); len(got) != 0 {
+	a := demorganField("a", values.TypeString)
+	pred := predicates.NewNot(predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral("x")}))
+	if got := mustFireRule(t, rule, pred); len(got) != 0 {
 		t.Fatalf("expected no yield (leaf child), got %d yields", len(got))
 	}
 }
@@ -93,10 +123,10 @@ func TestDeMorgan_NotOverLeaf_DoesNotFire(t *testing.T) {
 func TestDeMorgan_NestedNot_DoesNotFire(t *testing.T) {
 	t.Parallel()
 	rule := NewDeMorganRule()
-	a := &values.FieldValue{Field: "a", Typ: values.TypeString}
-	leaf := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("x")})
+	a := demorganField("a", values.TypeString)
+	leaf := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral("x")})
 	pred := predicates.NewNot(predicates.NewNot(leaf))
-	if got := FireRule(rule, pred); len(got) != 0 {
+	if got := mustFireRule(t, rule, pred); len(got) != 0 {
 		t.Fatalf("expected no yield (NOT child), got %d yields", len(got))
 	}
 }
@@ -107,15 +137,15 @@ func TestDeMorgan_NestedNot_DoesNotFire(t *testing.T) {
 func TestDeMorgan_PreservesOrder(t *testing.T) {
 	t.Parallel()
 	rule := NewDeMorganRule()
-	a := &values.FieldValue{Field: "a", Typ: values.NullableLong}
-	b := &values.FieldValue{Field: "b", Typ: values.NullableLong}
-	c := &values.FieldValue{Field: "c", Typ: values.NullableLong}
-	p1 := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))})
-	p2 := predicates.NewComparisonPredicate(b, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(2))})
-	p3 := predicates.NewComparisonPredicate(c, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(3))})
+	a := demorganField("a", values.NullableLong)
+	b := demorganField("b", values.NullableLong)
+	c := demorganField("c", values.NullableLong)
+	p1 := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral(int64(1))})
+	p2 := predicates.NewComparisonPredicate(b, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral(int64(2))})
+	p3 := predicates.NewComparisonPredicate(c, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral(int64(3))})
 
 	pred := predicates.NewNot(predicates.NewAnd(p1, p2, p3))
-	got := FireRule(rule, pred)
+	got := mustFireRule(t, rule, pred)
 	or := got[0].(*predicates.OrPredicate)
 	want := []predicates.QueryPredicate{p1, p2, p3}
 	for i, sp := range or.SubPredicates {
@@ -134,11 +164,11 @@ func TestDeMorgan_PreservesOrder(t *testing.T) {
 // Concretely: NOT(a = 5 OR FALSE) → a <> 5.
 func TestNormalizationRules_AppliesDeMorganThenSimplify(t *testing.T) {
 	t.Parallel()
-	a := &values.FieldValue{Field: "a", Typ: values.NullableLong}
-	cp := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(5))})
+	a := demorganField("a", values.NullableLong)
+	cp := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral(int64(5))})
 
 	pred := predicates.NewNot(predicates.NewOr(cp, predicates.NewConstantPredicate(predicates.TriFalse)))
-	got := Simplify(pred, NormalizationRules())
+	got := mustSimplify(t, pred, NormalizationRules())
 
 	out, ok := got.(*predicates.ComparisonPredicate)
 	if !ok {
@@ -162,15 +192,15 @@ func TestNormalizationRules_AppliesDeMorganThenSimplify(t *testing.T) {
 // simplifier.go.
 func TestNormalizationRules_NestedNotDistributesRecursively(t *testing.T) {
 	t.Parallel()
-	a := &values.FieldValue{Field: "a", Typ: values.TypeString}
-	b := &values.FieldValue{Field: "b", Typ: values.TypeString}
-	c := &values.FieldValue{Field: "c", Typ: values.TypeString}
-	p := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("x")})
-	q := predicates.NewComparisonPredicate(b, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("y")})
-	r := predicates.NewComparisonPredicate(c, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("z")})
+	a := demorganField("a", values.TypeString)
+	b := demorganField("b", values.TypeString)
+	c := demorganField("c", values.TypeString)
+	p := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral("x")})
+	q := predicates.NewComparisonPredicate(b, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral("y")})
+	r := predicates.NewComparisonPredicate(c, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral("z")})
 
 	pred := predicates.NewNot(predicates.NewAnd(p, predicates.NewOr(q, r)))
-	got := Simplify(pred, NormalizationRules())
+	got := mustSimplify(t, pred, NormalizationRules())
 
 	// After full distribution + NotComparisonRewrite:
 	// OR(p<>, AND(q<>, r<>))
@@ -211,7 +241,7 @@ func TestNormalizationRules_NestedNotDistributesRecursively(t *testing.T) {
 func TestNormalizationRules_VPConstantFoldChain(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewNot(predicates.NewValuePredicate(values.NewBooleanValue(true)))
-	got := Simplify(pred, NormalizationRules())
+	got := mustSimplify(t, pred, NormalizationRules())
 	cp, ok := got.(*predicates.ConstantPredicate)
 	if !ok {
 		t.Fatalf("expected ConstantPredicate after NOT(VP(true)) fold, got %T %s", got, got.Explain())
@@ -239,7 +269,7 @@ func TestNormalizationRules_DeMorganIntoVPFold(t *testing.T) {
 		predicates.NewValuePredicate(values.NewBooleanValue(true)),
 		predicates.NewValuePredicate(values.NewBooleanValue(false)),
 	))
-	got := Simplify(pred, NormalizationRules())
+	got := mustSimplify(t, pred, NormalizationRules())
 	cp, ok := got.(*predicates.ConstantPredicate)
 	if !ok {
 		t.Fatalf("expected ConstantPredicate, got %T %s", got, got.Explain())
@@ -262,10 +292,10 @@ func TestNormalizationRules_DeMorganIntoVPFold(t *testing.T) {
 // Pins the rule pipeline doesn't fall through any of the 4 transforms.
 func TestNormalizationRules_DeMorganMixed(t *testing.T) {
 	t.Parallel()
-	a := &values.FieldValue{Field: "a", Typ: values.NullableLong}
-	cp := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(5))})
+	a := demorganField("a", values.NullableLong)
+	cp := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral(int64(5))})
 	pred := predicates.NewNot(predicates.NewAnd(cp, predicates.NewValuePredicate(values.NewBooleanValue(false))))
-	got := Simplify(pred, NormalizationRules())
+	got := mustSimplify(t, pred, NormalizationRules())
 	out, ok := got.(*predicates.ConstantPredicate)
 	if !ok {
 		t.Fatalf("expected ConstantPredicate (TRUE absorbs), got %T %s", got, got.Explain())
@@ -282,14 +312,14 @@ func TestNormalizationRules_DeMorganMixed(t *testing.T) {
 // behaviour we want.
 func TestNormalizationRules_NotOverAndProducesOr(t *testing.T) {
 	t.Parallel()
-	a := &values.FieldValue{Field: "a", Typ: values.TypeString}
-	b := &values.FieldValue{Field: "b", Typ: values.TypeString}
-	p1 := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("x")})
-	p2 := predicates.NewComparisonPredicate(b, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("y")})
+	a := demorganField("a", values.TypeString)
+	b := demorganField("b", values.TypeString)
+	p1 := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral("x")})
+	p2 := predicates.NewComparisonPredicate(b, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral("y")})
 	pred := predicates.NewNot(predicates.NewAnd(p1, p2))
 
 	// Under default rules: NOT(AND(...)) survives.
-	defaultGot := Simplify(pred, DefaultSimplifyRules())
+	defaultGot := mustSimplify(t, pred, DefaultSimplifyRules())
 	if _, ok := defaultGot.(*predicates.NotPredicate); !ok {
 		t.Fatalf("default rules: expected NotPredicate (no De Morgan), got %T", defaultGot)
 	}
@@ -297,7 +327,7 @@ func TestNormalizationRules_NotOverAndProducesOr(t *testing.T) {
 	// Under normalisation rules: distributes into OR(NOT, NOT) ->
 	// NotComparisonRewriteRule then turns each NOT(=) into <>, so
 	// final shape is OR(<>, <>).
-	normGot := Simplify(pred, NormalizationRules())
+	normGot := mustSimplify(t, pred, NormalizationRules())
 	or, ok := normGot.(*predicates.OrPredicate)
 	if !ok {
 		t.Fatalf("normalisation rules: expected OrPredicate, got %T: %s", normGot, normGot.Explain())
@@ -322,28 +352,28 @@ func TestNormalizationRules_NotOverAndProducesOr(t *testing.T) {
 func TestNormalizationRules_Idempotent(t *testing.T) {
 	t.Parallel()
 	rules := NormalizationRules()
-	a := &values.FieldValue{Field: "a", Typ: values.TypeString}
-	b := &values.FieldValue{Field: "b", Typ: values.TypeString}
-	age := &values.FieldValue{Field: "age", Typ: values.NullableLong}
+	a := demorganField("a", values.TypeString)
+	b := demorganField("b", values.TypeString)
+	age := demorganField("age", values.NullableLong)
 	samples := []predicates.QueryPredicate{
 		// DeMorgan-then-NOT-rewrite: NOT(AND(a=x, b=y)) → OR(a<>x, b<>y).
 		predicates.NewNot(predicates.NewAnd(
-			predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("x")}),
-			predicates.NewComparisonPredicate(b, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("y")}),
+			predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral("x")}),
+			predicates.NewComparisonPredicate(b, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral("y")}),
 		)),
 		// VP-fold chain: NOT(VP(true)) → ConstantPredicate(FALSE).
 		predicates.NewNot(predicates.NewValuePredicate(values.NewBooleanValue(true))),
 		// Mixed-shape DeMorgan + VP-fold + AND-identity collapse to TRUE.
 		predicates.NewNot(predicates.NewAnd(
-			predicates.NewComparisonPredicate(age, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(5))}),
+			predicates.NewComparisonPredicate(age, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: demorganLiteral(int64(5))}),
 			predicates.NewValuePredicate(values.NewBooleanValue(false)),
 		)),
 		// Opaque field VP: identity (no rule fires).
-		predicates.NewValuePredicate(&values.FieldValue{Field: "flag", Typ: values.TypeBool}),
+		predicates.NewValuePredicate(demorganField("flag", values.TypeBool)),
 	}
 	for _, s := range samples {
-		once := Simplify(s, rules)
-		twice := Simplify(once, rules)
+		once := mustSimplify(t, s, rules)
+		twice := mustSimplify(t, once, rules)
 		if once != twice {
 			t.Fatalf("not idempotent for %s: once=%s twice=%s",
 				s.Explain(), once.Explain(), twice.Explain())

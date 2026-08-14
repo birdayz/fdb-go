@@ -41,12 +41,17 @@ type RecordQueryTextIndexPlan struct {
 }
 
 // NewRecordQueryTextIndexPlan constructs a text index plan.
-func NewRecordQueryTextIndexPlan(indexName string, textScan TextScan, reverse bool) *RecordQueryTextIndexPlan {
-	return &RecordQueryTextIndexPlan{
-		indexName: indexName,
-		textScan:  textScan,
-		reverse:   reverse,
+func NewRecordQueryTextIndexPlan(indexName string, textScan TextScan, flowedType values.Type, reverse bool) (*RecordQueryTextIndexPlan, error) {
+	base, err := newPlanExprBaseForType("RecordQueryTextIndexPlan", flowedType)
+	if err != nil {
+		return nil, err
 	}
+	return &RecordQueryTextIndexPlan{
+		PlanExprBase: base,
+		indexName:    indexName,
+		textScan:     textScan,
+		reverse:      reverse,
+	}, nil
 }
 
 // GetIndexName returns the index name.
@@ -58,11 +63,7 @@ func (p *RecordQueryTextIndexPlan) GetTextScan() TextScan { return p.textScan }
 // IsReverse reports the scan direction.
 func (p *RecordQueryTextIndexPlan) IsReverse() bool { return p.reverse }
 
-// GetResultType returns UnknownType — the text index plan's result
-// type is determined at execution time from the index metadata.
-// Mirrors Java where getResultValue() returns new QueriedValue()
-// (untyped).
-func (p *RecordQueryTextIndexPlan) GetResultType() values.Type { return values.UnknownType }
+func (p *RecordQueryTextIndexPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 // GetChildren returns nil — text index scans are leaves.
 func (p *RecordQueryTextIndexPlan) GetChildren() []RecordQueryPlan { return nil }
@@ -114,8 +115,11 @@ func (p *RecordQueryTextIndexPlan) EqualsWithoutChildren(other expressions.Relat
 
 // WithQuantifiers returns this plan unchanged — it has no quantifiers to
 // replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryTextIndexPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+func (p *RecordQueryTextIndexPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryTextIndexPlan", len(qs), 0); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

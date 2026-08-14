@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -10,6 +11,112 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func edgeCaseRowType() *values.RecordType {
+	return values.NewRecordType("EdgeRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+}
+
+func edgeCaseScan(
+	t testing.TB,
+	recordTypes []string,
+	flowedType values.Type,
+) *plans.RecordQueryScanPlan {
+	t.Helper()
+	plan, err := plans.NewRecordQueryScanPlan(recordTypes, flowedType, false)
+	return mustConstruct(t, plan, err)
+}
+
+func edgeCaseIndexScan(
+	t testing.TB,
+	indexName string,
+	recordTypes []string,
+	flowedType values.Type,
+) *plans.RecordQueryIndexPlan {
+	t.Helper()
+	plan, err := plans.NewRecordQueryIndexPlan(indexName, nil, recordTypes, flowedType, false)
+	return mustConstruct(t, plan, err)
+}
+
+func edgeCaseUnique(
+	t testing.TB,
+	inner expressions.Quantifier,
+) *expressions.LogicalUniqueExpression {
+	t.Helper()
+	unique, err := expressions.NewLogicalUniqueExpression(inner)
+	return mustConstruct(t, unique, err)
+}
+
+func edgeCaseUnion(
+	t testing.TB,
+	quantifiers []expressions.Quantifier,
+) *expressions.LogicalUnionExpression {
+	t.Helper()
+	union, err := expressions.NewLogicalUnionExpression(quantifiers)
+	return mustConstruct(t, union, err)
+}
+
+type edgeCasePlanContext struct {
+	recordType string
+}
+
+func (edgeCasePlanContext) GetPlannerConfiguration() PlannerConfiguration {
+	return DefaultPlannerConfiguration()
+}
+
+func (edgeCasePlanContext) GetMatchCandidates() []MatchCandidate { return nil }
+
+func (c edgeCasePlanContext) GetPrimaryKeyColumns(recordType string) []string {
+	if recordType != c.recordType {
+		return nil
+	}
+	return []string{"ID"}
+}
+
+func edgeCasePlanWithImplementationRules(
+	t testing.TB,
+	rootRef *expressions.Reference,
+	implementationRules []ImplementationRule,
+	ctx PlanContext,
+) {
+	t.Helper()
+	planner := NewPlanner(DefaultExpressionRules(), ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(implementationRules)
+	if _, _, err := planner.PlanWithContext(context.Background(), rootRef); err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+}
+
+func edgeCaseFireImplementationRule(
+	t testing.TB,
+	rule ImplementationRule,
+	ref *expressions.Reference,
+) []expressions.RelationalExpression {
+	t.Helper()
+	results, err := FireImplementationRule(rule, ref)
+	return mustConstruct(t, results, err)
+}
+
+func edgeCaseOrderingValues(t testing.TB) (values.Value, values.Value, values.Value) {
+	t.Helper()
+	rowType := values.NewRecordType("OrderingRow", false, []values.Field{
+		{Name: "a", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "b", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "c", FieldType: values.NotNullLong, Ordinal: 2},
+	})
+	root, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("EDGE_ORDER"), rowType)
+	root = mustConstruct(t, root, err)
+	a, err := values.ResolveFieldOrdinals(root, []int{0})
+	a = mustConstruct(t, a, err)
+	b, err := values.ResolveFieldOrdinals(root, []int{1})
+	b = mustConstruct(t, b, err)
+	c, err := values.ResolveFieldOrdinals(root, []int{2})
+	c = mustConstruct(t, c, err)
+	return a, b, c
+}
+
 // ---------------------------------------------------------------------------
 // 1. RollUpPlanPartitions preserves expression pointer identity.
 // ---------------------------------------------------------------------------
@@ -17,8 +124,9 @@ import (
 func TestEdge_RollUpPartitions_PreservesExpressionIdentity(t *testing.T) {
 	t.Parallel()
 
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
+	rowType := edgeCaseRowType()
+	scanA := edgeCaseScan(t, []string{"A"}, rowType)
+	scanB := edgeCaseScan(t, []string{"B"}, rowType)
 	wA := scanA
 	wB := scanB
 
@@ -70,7 +178,7 @@ func TestEdge_ToPlanPartitions_NoPlanProperties(t *testing.T) {
 
 	// Create a Reference with only exploratory members (via InitialOf).
 	// No final members, no plan properties set.
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := edgeCaseScan(t, []string{"T"}, edgeCaseRowType())
 	wrapper := scan
 	ref := expressions.InitialOf(wrapper)
 
@@ -95,10 +203,11 @@ func TestEdge_ToPlanPartitions_NoPlanProperties(t *testing.T) {
 func TestEdge_ComputeRefPlanProperties_MultiplePlans(t *testing.T) {
 	t.Parallel()
 
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	rowType := edgeCaseRowType()
+	scan := edgeCaseScan(t, []string{"T"}, rowType)
 	scanW := scan
 
-	idx := plans.NewRecordQueryIndexPlan("idx1", nil, []string{"T"}, values.UnknownType, false)
+	idx := edgeCaseIndexScan(t, "idx1", []string{"T"}, rowType)
 	// Stamp the candidate fan-out signal (RFC-188 M4): a non-fan-out index does
 	// not create duplicates → distinct. Without the signal the property returns
 	// false (Java's empty-candidate default).
@@ -177,24 +286,21 @@ func TestEdge_PlanPartition_EmptyPartition(t *testing.T) {
 func TestEdge_ImplementUniqueRule_ChainedUnique(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	rowType := edgeCaseRowType()
+	scan := mustFullUnorderedScan(t, []string{"T"}, rowType)
 	scanRef := expressions.InitialOf(scan)
 
-	innerUnique := expressions.NewLogicalUniqueExpression(
-		expressions.ForEachQuantifier(scanRef),
-	)
+	innerUnique := edgeCaseUnique(t, expressions.ForEachQuantifier(scanRef))
 	innerUniqueRef := expressions.InitialOf(innerUnique)
 
-	outerUnique := expressions.NewLogicalUniqueExpression(
-		expressions.ForEachQuantifier(innerUniqueRef),
-	)
+	outerUnique := edgeCaseUnique(t, expressions.ForEachQuantifier(innerUniqueRef))
 	rootRef := expressions.InitialOf(outerUnique)
 
-	planWithImplRulesAndContext(
+	edgeCasePlanWithImplementationRules(
 		t,
 		rootRef,
 		DefaultImplementationRules(),
-		uniqueAbsorptionPlanContext{recordType: "T"},
+		edgeCasePlanContext{recordType: "T"},
 	)
 
 	// After planning, the root should have the bare scan plan in its members
@@ -228,9 +334,10 @@ func TestEdge_ImplementUniqueRule_ChainedUnique(t *testing.T) {
 func TestEdge_ImplementUnorderedUnionRule_ThreeChildren(t *testing.T) {
 	t.Parallel()
 
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	scanC := plans.NewRecordQueryScanPlan([]string{"C"}, values.UnknownType, false)
+	rowType := edgeCaseRowType()
+	scanA := edgeCaseScan(t, []string{"A"}, rowType)
+	scanB := edgeCaseScan(t, []string{"B"}, rowType)
+	scanC := edgeCaseScan(t, []string{"C"}, rowType)
 	wA := scanA
 	wB := scanB
 	wC := scanC
@@ -250,14 +357,14 @@ func TestEdge_ImplementUnorderedUnionRule_ThreeChildren(t *testing.T) {
 	pmC.Add(wC)
 	refC.SetPlanProperties(pmC)
 
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	union := edgeCaseUnion(t, []expressions.Quantifier{
 		expressions.ForEachQuantifier(refA),
 		expressions.ForEachQuantifier(refB),
 		expressions.ForEachQuantifier(refC),
 	})
 	outerRef := expressions.InitialOf(union)
 
-	results := FireImplementationRule(NewImplementUnorderedUnionRule(), outerRef)
+	results := edgeCaseFireImplementationRule(t, NewImplementUnorderedUnionRule(), outerRef)
 	if len(results) == 0 {
 		t.Fatal("ImplementUnorderedUnionRule should yield expressions for 3 children")
 	}
@@ -333,9 +440,7 @@ func TestEdge_CrossProduct_LargeInput(t *testing.T) {
 func TestEdge_RichOrdering_MultiKeyOrdering(t *testing.T) {
 	t.Parallel()
 
-	a := fieldVal("a")
-	b := fieldVal("b")
-	c := fieldVal("c")
+	a, b, c := edgeCaseOrderingValues(t)
 
 	o := properties.NewRichOrdering(
 		map[values.Value][]properties.OrderingBinding{
@@ -405,11 +510,12 @@ func TestEdge_PlanExtraction_PrefersFinalOverExploratory(t *testing.T) {
 	t.Parallel()
 
 	// Build a Reference with a logical expression as an exploratory member.
-	logicalScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	rowType := edgeCaseRowType()
+	logicalScan := mustFullUnorderedScan(t, []string{"T"}, rowType)
 	ref := expressions.InitialOf(logicalScan)
 
 	// Simulate PLANNING phase: insert a physical wrapper as a final member.
-	physScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	physScan := edgeCaseScan(t, []string{"T"}, rowType)
 	wrapper := physScan
 	ref.Insert(wrapper)
 

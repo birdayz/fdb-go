@@ -21,6 +21,25 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustRFC153P2Construct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct RFC-153 P2 fixture: " + err.Error())
+	}
+	return value
+}
+
+func rfc153P2RowType(fieldName string) *values.RecordType {
+	return values.NewRecordType("", false, []values.Field{{
+		Name:      fieldName,
+		FieldType: values.NotNullLong,
+	}})
+}
+
+func rfc153P2Field(alias values.CorrelationIdentifier, rowType values.Type) values.Value {
+	root := mustRFC153P2Construct(values.NewQuantifiedObjectValue(alias, rowType))
+	return mustRFC153P2Construct(values.ResolveFieldOrdinals(root, []int{0}))
+}
+
 func rfc153P2EqRange(comparand values.Value) *predicates.ComparisonRange {
 	eq := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: comparand}
 	return predicates.EmptyComparisonRange().Merge(&eq).Range
@@ -34,8 +53,9 @@ func rfc153P2EqRange(comparand values.Value) *predicates.ComparisonRange {
 func TestRFC153P2_PKScanProbe_ReportsOuterCorrelation(t *testing.T) {
 	t.Parallel()
 	outer := values.NamedCorrelationIdentifier("E")
-	fk := values.NewFieldValue(values.NewQuantifiedObjectValue(outer), "id", values.UnknownType)
-	pkScan := plans.NewRecordQueryScanPlan([]string{"M"}, values.UnknownType, false).
+	fk := rfc153P2Field(outer, rfc153P2RowType("id"))
+	pkScan := mustRFC153P2Construct(plans.NewRecordQueryScanPlan(
+		[]string{"M"}, rfc153P2RowType("id"), false)).
 		WithScanComparisons([]*predicates.ComparisonRange{rfc153P2EqRange(fk)})
 
 	expr := &scanPlanExpression{plan: pkScan}
@@ -50,7 +70,8 @@ func TestRFC153P2_PKScanProbe_ReportsOuterCorrelation(t *testing.T) {
 // exclusion the physical scan wrappers already apply).
 func TestRFC153P2_PKScanProbe_ParamNotCorrelation(t *testing.T) {
 	t.Parallel()
-	litScan := plans.NewRecordQueryScanPlan([]string{"M"}, values.UnknownType, false).
+	litScan := mustRFC153P2Construct(plans.NewRecordQueryScanPlan(
+		[]string{"M"}, rfc153P2RowType("id"), false)).
 		WithScanComparisons([]*predicates.ComparisonRange{rfc153P2EqRange(predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(7)).Operand)})
 	expr := &scanPlanExpression{plan: litScan}
 	if corr := expr.GetCorrelatedToWithoutChildren(); len(corr) != 0 {
@@ -67,20 +88,27 @@ func TestRFC153P2_RebasedInner_ReportsMergeNotBuried(t *testing.T) {
 	t.Parallel()
 	merge := values.NamedCorrelationIdentifier(`$m"1`)
 	buriedA := values.NamedCorrelationIdentifier("A")
+	innerType := rfc153P2RowType("c_a_id")
 
 	// Un-rebased inner: c_a_id = QOV(A).id → reports A.
-	origComparand := values.NewFieldValue(values.NewQuantifiedObjectValue(buriedA), "id", values.UnknownType)
-	origIdx := plans.NewRecordQueryIndexPlan("c_a_id", []*predicates.ComparisonRange{rfc153P2EqRange(origComparand)}, []string{"C"}, values.UnknownType, false)
-	origInner := plans.NewRecordQueryDefaultOnEmptyPlan(origIdx, values.NewNullValue(values.UnknownType))
+	origComparand := rfc153P2Field(buriedA, rfc153P2RowType("id"))
+	origIdx := mustRFC153P2Construct(plans.NewRecordQueryIndexPlan(
+		"c_a_id", []*predicates.ComparisonRange{rfc153P2EqRange(origComparand)},
+		[]string{"C"}, innerType, false))
+	origInner := mustRFC153P2Construct(plans.NewRecordQueryDefaultOnEmptyPlan(
+		origIdx, values.NewNullValue(innerType)))
 	origCorr := (&scanPlanExpression{plan: origInner}).GetCorrelatedToWithoutChildren()
 	if _, ok := origCorr[buriedA]; !ok {
 		t.Fatalf("un-rebased inner must report the buried alias A (else the test fixture is wrong), got %v", origCorr)
 	}
 
 	// Rebased inner: c_a_id = FieldValue(QOV($m), "A.ID") → must report $m, NOT A.
-	rebasedComparand := values.NewFieldValue(values.NewQuantifiedObjectValue(merge), "A.ID", values.UnknownType)
-	rebasedIdx := plans.NewRecordQueryIndexPlan("c_a_id", []*predicates.ComparisonRange{rfc153P2EqRange(rebasedComparand)}, []string{"C"}, values.UnknownType, false)
-	rebasedInner := plans.NewRecordQueryDefaultOnEmptyPlan(rebasedIdx, values.NewNullValue(values.UnknownType))
+	rebasedComparand := rfc153P2Field(merge, rfc153P2RowType("A.ID"))
+	rebasedIdx := mustRFC153P2Construct(plans.NewRecordQueryIndexPlan(
+		"c_a_id", []*predicates.ComparisonRange{rfc153P2EqRange(rebasedComparand)},
+		[]string{"C"}, innerType, false))
+	rebasedInner := mustRFC153P2Construct(plans.NewRecordQueryDefaultOnEmptyPlan(
+		rebasedIdx, values.NewNullValue(innerType)))
 	rebasedCorr := (&scanPlanExpression{plan: rebasedInner}).GetCorrelatedToWithoutChildren()
 	if _, ok := rebasedCorr[merge]; !ok {
 		t.Errorf("rebased inner must report the merge correlation $m, got %v", rebasedCorr)

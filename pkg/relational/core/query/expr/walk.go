@@ -2340,11 +2340,15 @@ func (r *Resolver) walkExistsPredicate(ctx *antlrgen.ExistsExpressionAtomContext
 	if q == nil {
 		return nil, &UnsupportedExpressionShapeError{Shape: "EXISTS without inner Query"}
 	}
-	alias, err := r.subqueryPlanner.BuildExists(q)
+	alias, flowed, err := r.subqueryPlanner.BuildExists(q)
 	if err != nil {
 		return nil, err
 	}
-	return predicates.ExistsValueToQueryPredicate(values.NewExistsValue(alias)), nil
+	exists, err := values.NewExistsValue(alias, flowed)
+	if err != nil {
+		return nil, err
+	}
+	return predicates.ExistsValueToQueryPredicate(exists), nil
 }
 
 // walkExistsValue handles `EXISTS (SELECT ...)` in a SELECT-element /
@@ -2364,11 +2368,11 @@ func (r *Resolver) walkExistsValue(ctx *antlrgen.ExistsExpressionAtomContext) (v
 	if q == nil {
 		return nil, &UnsupportedExpressionShapeError{Shape: "EXISTS without inner Query"}
 	}
-	alias, err := r.subqueryPlanner.BuildExists(q)
+	alias, flowed, err := r.subqueryPlanner.BuildExists(q)
 	if err != nil {
 		return nil, err
 	}
-	return values.NewExistsValue(alias), nil
+	return values.NewExistsValue(alias, flowed)
 }
 
 // existsAtomOf returns the ExistsExpressionAtomContext if ctx is (or wraps) an

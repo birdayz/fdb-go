@@ -8,8 +8,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 type plannerCancellationTwoBindingMatcher struct{}
@@ -53,58 +52,6 @@ func (r *plannerCancellationRule) OnMatch(call *ExpressionRuleCall) {
 		r.planner.capErr = r.taskErr
 	}
 	r.cancel(r.cause)
-}
-
-type plannerCancellationExtractionExpr struct {
-	plan   plans.RecordQueryPlan
-	cancel context.CancelCauseFunc
-	cause  error
-	calls  int
-}
-
-func (e *plannerCancellationExtractionExpr) GetResultValue() values.Value {
-	return values.NewNullValue(values.UnknownType)
-}
-
-func (*plannerCancellationExtractionExpr) GetQuantifiers() []expressions.Quantifier {
-	return nil
-}
-
-func (*plannerCancellationExtractionExpr) CanCorrelate() bool  { return false }
-func (*plannerCancellationExtractionExpr) ChildrenAsSet() bool { return false }
-
-func (*plannerCancellationExtractionExpr) HashCodeWithoutChildren() uint64 {
-	return 0x637137
-}
-
-func (*plannerCancellationExtractionExpr) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return nil
-}
-
-func (e *plannerCancellationExtractionExpr) EqualsWithoutChildren(
-	other expressions.RelationalExpression,
-	_ *expressions.AliasMap,
-) bool {
-	_, ok := other.(*plannerCancellationExtractionExpr)
-	return ok
-}
-
-func (e *plannerCancellationExtractionExpr) WithQuantifiers(
-	_ []expressions.Quantifier,
-) expressions.RelationalExpression {
-	return e
-}
-
-func (e *plannerCancellationExtractionExpr) GetRecordQueryPlan() plans.RecordQueryPlan {
-	return e.plan
-}
-
-func (e *plannerCancellationExtractionExpr) WithChildren(
-	_ []expressions.Quantifier,
-) (expressions.RelationalExpression, error) {
-	e.calls++
-	e.cancel(e.cause)
-	return e, nil
 }
 
 func TestPlanner_PreCanceledContextIsZeroWorkAndConsumesPlanner(t *testing.T) {
@@ -185,7 +132,7 @@ func TestPlanner_NilContextConsumesPlannerButCanceledNilRootDoesNot(t *testing.T
 		t.Fatalf("retry after nil context err=%v, want ErrPlannerAlreadyUsed", retryErr)
 	}
 
-	nilRootPlanner := NewPlanner(DefaultExpressionRules(), nil)
+	nilRootPlanner := plannerLifecycleTestPlanner()
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	if got, gotTasks, gotErr := nilRootPlanner.PlanWithContext(canceled, nil); got != nil || gotTasks != 0 || gotErr != nil {
@@ -250,22 +197,29 @@ func TestPlanner_ExtractionCancellationWinsAfterSuccessfulRebuild(t *testing.T) 
 
 	cause := errors.New("cancel during extraction rebuild")
 	ctx, cancel := context.WithCancelCause(context.Background())
-	expr := &plannerCancellationExtractionExpr{
-		plan:   plans.NewRecordQueryValuesPlan(nil),
-		cancel: cancel,
-		cause:  cause,
-	}
-	p := NewPlanner(nil, nil)
+	calls := 0
+	p := plannerLifecycleTestPlanner().withPlanExtractorForTest(func(
+		extractCtx context.Context,
+		root *expressions.Reference,
+		selector BestMemberSelector,
+		stats properties.StatisticsProvider,
+	) (expressions.RelationalExpression, error) {
+		calls++
+		plan, err := ExtractBestPlanFromSelectorContext(
+			extractCtx, root, selector, stats)
+		cancel(cause)
+		return plan, err
+	})
 
-	plan, tasks, err := p.PlanWithContext(ctx, expressions.InitialOf(expr))
+	plan, tasks, err := p.PlanWithContext(ctx, plannerLifecycleTestRef())
 	if plan != nil {
 		t.Fatalf("extraction cancellation returned %T, want nil", plan)
 	}
 	if !errors.Is(err, context.Canceled) || !errors.Is(err, cause) {
 		t.Fatalf("extraction err=%v, want context.Canceled and cause", err)
 	}
-	if expr.calls != 1 {
-		t.Fatalf("WithChildren calls=%d, want 1", expr.calls)
+	if calls != 1 {
+		t.Fatalf("extractor calls=%d, want 1", calls)
 	}
 	if tasks == 0 || len(p.stack) != 0 {
 		t.Fatalf("extraction fixture tasks=%d residual stack=%d, want drained task phase", tasks, len(p.stack))

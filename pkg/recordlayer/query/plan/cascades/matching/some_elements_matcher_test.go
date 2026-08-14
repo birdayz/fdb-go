@@ -15,9 +15,9 @@ func TestSomeElementsMatcher_AnyMatchSucceeds(t *testing.T) {
 	// Downstream matches only ConstantValue.
 	m := NewSomeElementsMatcher(NewConstantMatcher())
 	in := []any{
-		&values.FieldValue{Field: "x", Typ: values.NullableLong},
+		mustMatchingField(t, "x", values.NullableLong),
 		&values.ConstantValue{Value: int64(7), Typ: values.NullableLong},
-		&values.FieldValue{Field: "y", Typ: values.TypeString},
+		mustMatchingField(t, "y", values.TypeString),
 	}
 	got := m.BindMatches(NewBindings(), in)
 	if len(got) != 1 {
@@ -54,8 +54,8 @@ func TestSomeElementsMatcher_NoMatch(t *testing.T) {
 	t.Parallel()
 	m := NewSomeElementsMatcher(NewConstantMatcher())
 	in := []any{
-		&values.FieldValue{Field: "x", Typ: values.NullableLong},
-		&values.FieldValue{Field: "y", Typ: values.TypeString},
+		mustMatchingField(t, "x", values.NullableLong),
+		mustMatchingField(t, "y", values.TypeString),
 	}
 	if got := m.BindMatches(NewBindings(), in); got != nil {
 		t.Fatalf("expected nil (no match), got %d bindings", len(got))

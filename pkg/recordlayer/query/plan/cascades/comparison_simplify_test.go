@@ -20,11 +20,20 @@ import (
 func TestComparisonConstantSimplify_NonConstantRHS_NoFold(t *testing.T) {
 	t.Parallel()
 	rule := NewComparisonConstantSimplifyRule()
+	rowType := values.NewRecordType("comparison_row", false, []values.Field{{Name: "COL", FieldType: values.NullableLong}})
+	qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("comparison"), rowType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	field, err := values.ResolveFieldOrdinals(qov, []int{0})
+	if err != nil {
+		t.Fatal(err)
+	}
 	pred := predicates.NewComparisonPredicate(
 		&values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
-		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.FieldValue{Field: "col", Typ: values.NullableLong}},
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: field},
 	)
-	if got := FireRule(rule, pred); len(got) != 0 {
+	if got := mustFireRule(t, rule, pred); len(got) != 0 {
 		t.Fatalf("expected no yield (non-constant RHS), got %d", len(got))
 	}
 }
@@ -42,7 +51,7 @@ func TestComparisonConstantSimplify_TypeMismatch_DeclinesToFold(t *testing.T) {
 		&values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: "abc", Typ: values.TypeString}},
 	)
-	got := FireRule(rule, pred)
+	got := mustFireRule(t, rule, pred)
 	if len(got) != 0 {
 		t.Fatalf("WHERE 5 = 'abc': expected no yield (type-mismatch declines to fold), got %d: %v", len(got), got)
 	}
@@ -66,7 +75,7 @@ func TestComparisonConstantSimplify_DeeplyNestedConstants_Folds(t *testing.T) {
 		&values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: rhs},
 	)
-	got := FireRule(rule, pred)
+	got := mustFireRule(t, rule, pred)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(got))
 	}
@@ -89,7 +98,7 @@ func TestComparisonConstantSimplify_ConstantValueRHS_Folds(t *testing.T) {
 		&values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(5), Typ: values.NullableLong}},
 	)
-	got := FireRule(rule, pred)
+	got := mustFireRule(t, rule, pred)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(got))
 	}
@@ -118,7 +127,7 @@ func TestComparisonConstantSimplify_CompositeConstantLHS_Folds(t *testing.T) {
 		lhs,
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(5), Typ: values.NullableLong}},
 	)
-	got := FireRule(rule, pred)
+	got := mustFireRule(t, rule, pred)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 yield (composite-constant fold), got %d", len(got))
 	}
@@ -212,7 +221,7 @@ func TestSimplify_StringPredicates_FoldEndToEnd(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := FireRule(rule, tc.pred)
+			got := mustFireRule(t, rule, tc.pred)
 			if len(got) != 1 {
 				t.Fatalf("expected 1 yield, got %d", len(got))
 			}
@@ -273,7 +282,7 @@ func TestSimplify_IsDistinctFrom_FoldsEndToEnd(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			pred := predicates.NewComparisonPredicate(tc.lhs, predicates.Comparison{Type: tc.op, Operand: tc.rhs})
-			got := FireRule(rule, pred)
+			got := mustFireRule(t, rule, pred)
 			if len(got) != 1 {
 				t.Fatalf("expected 1 yield, got %d", len(got))
 			}
@@ -300,7 +309,7 @@ func TestComparisonConstantSimplify_CastFloat_Folds(t *testing.T) {
 		values.NewCastValue(&values.ConstantValue{Value: int64(5), Typ: values.NullableLong}, values.NullableDouble),
 		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(float64(3.14))},
 	)
-	got := FireRule(rule, pred)
+	got := mustFireRule(t, rule, pred)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(got))
 	}

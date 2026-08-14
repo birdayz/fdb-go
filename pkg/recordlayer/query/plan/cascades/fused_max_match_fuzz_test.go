@@ -1,15 +1,13 @@
 package cascades
 
-// Fuzzes the fused-path max-match expansion. The pre-existing
-// FuzzComputeMaxMatchMap generator emits only FLAT single-accessor
-// FieldValues, so it never reaches expandFusedFieldValue (guarded on
-// len(Accessors) >= 2). This target builds FUSED paths of fuzz-driven depth
-// and drives ComputeMaxMatchMap against every split-point candidate shape —
-// asserting no panic and the full-member-set invariant (a fused query
-// matches its fully-fused, every partial-split, and fully-chained
-// candidate).
+// Fuzzes canonical fused-path max matching. RFC-232 admits one representation
+// for a resolved nested read: a QOV-rooted FieldValue carrying the complete
+// ordinal vector. Building the same descent one step at a time must therefore
+// converge on the direct full-path value, and max-match must recognize every
+// construction sequence without expanding back into chained FieldValues.
 
 import (
+	"slices"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -22,85 +20,83 @@ func FuzzFusedMaxMatch_NoPanic(f *testing.F) {
 	f.Add(byte(6))
 	f.Fuzz(func(t *testing.T, raw byte) {
 		depth := int(raw%5) + 2 // 2..6
-		// Build a depth-nested record type: top → l(depth-1) → … → leaf{C}.
-		typ := values.NewRecordType("", false, []values.Field{{Name: "C", FieldType: values.NotNullLong, Ordinal: 0}})
+		// Build a depth-nested record type: top -> _0 -> ... -> leaf{C}.
+		typ := values.NewRecordType("Leaf", false, []values.Field{
+			{Name: "C", FieldType: values.NotNullLong, Ordinal: 0},
+		})
 		for i := 0; i < depth-1; i++ {
-			typ = values.NewRecordType("", false, []values.Field{{Name: values.OrdinalFieldName(0), FieldType: typ, Ordinal: 0}})
+			typ = values.NewRecordType("", false, []values.Field{
+				{Name: values.OrdinalFieldName(0), FieldType: typ, Ordinal: 0},
+			})
 		}
-		q := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("m"), typ)
+		qov, err := values.NewQuantifiedObjectValue(
+			values.NamedCorrelationIdentifier("m"), typ)
+		qov = mustConstruct(t, qov, err)
 
-		// The fused query: descend all `depth` ordinals, then SimplifyValue to fuse.
-		chained := func(steps int) *values.FieldValue {
-			var cur values.Value = q
-			var fv *values.FieldValue
-			for i := 0; i < steps; i++ {
-				next, err := values.NewFieldValueOfOrdinal(cur, 0)
-				if err != nil {
-					return nil // deeper than the type nests — skip
-				}
-				cur, fv = next, next
+		ordinals := make([]int, depth)
+		direct, err := values.ResolveFieldOrdinals(qov, ordinals)
+		direct = mustConstruct(t, direct, err)
+		directField, ok := values.AsFieldValue(direct)
+		if !ok || directField.Path() == nil {
+			t.Fatalf("depth %d: direct path = %T, want exact FieldValue", depth, direct)
+		}
+		if got := directField.Path().Ordinals(); !slices.Equal(got, ordinals) {
+			t.Fatalf("depth %d: direct path = %v, want %v", depth, got, ordinals)
+		}
+
+		// The inverse fused->chain expansion was deliberately retired: exact
+		// scalar paths have no alternative representation to publish.
+		if forms := expandValueForMatching(direct); len(forms) != 0 {
+			t.Fatalf("depth %d: canonical scalar path produced %d alternate forms", depth, len(forms))
+		}
+		if match := ComputeMaxMatchMap(direct, direct, nil); match.Size() < 1 {
+			t.Fatalf("depth %d: canonical path must max-match itself", depth)
+		}
+
+		// Resolve a prefix atomically, then append the suffix one ordinal at a
+		// time. Every split must canonicalize to the same QOV-rooted full path.
+		for prefixLen := 1; prefixLen < depth; prefixLen++ {
+			candidate := candidateAtSplit(t, qov, depth, prefixLen)
+			if !values.ValuesStructurallyEqual(direct, candidate) {
+				t.Fatalf("depth %d split %d: candidate did not canonicalize to direct path",
+					depth, prefixLen)
 			}
-			return fv
-		}
-		deepest := chained(depth)
-		if deepest == nil {
-			return
-		}
-		fusedV := values.SimplifyValue(deepest)
-		fused, ok := fusedV.(*values.FieldValue)
-		if !ok || fused.Resolved == nil || len(fused.Resolved.Accessors) != depth {
-			return // compose didn't fully fuse (unexpected but not this target's bug)
-		}
-
-		// expandFusedFieldValue must yield exactly depth-1 forms, no panic.
-		forms := expandFusedFieldValue(fused)
-		if len(forms) != depth-1 {
-			t.Fatalf("depth %d: expected %d split forms, got %d", depth, depth-1, len(forms))
-		}
-
-		// Every split-point candidate (a p-accessor fused prefix + chained
-		// suffix) and the fully-fused candidate must max-match the fused query.
-		if mmm := ComputeMaxMatchMap(fused, fused, nil); mmm.Size() < 1 {
-			t.Fatalf("depth %d: fused-vs-fused must match", depth)
-		}
-		for p := 1; p <= depth-1; p++ {
-			cand := candidateAtSplit(t, q, depth, p)
-			if cand == nil {
-				continue
+			candidateField, isField := values.AsFieldValue(candidate)
+			if !isField || candidateField.Path() == nil ||
+				!slices.Equal(candidateField.Path().Ordinals(), ordinals) {
+				t.Fatalf("depth %d split %d: candidate = %T path %v, want %v",
+					depth, prefixLen, candidate, fieldOrdinals(candidate), ordinals)
 			}
-			if mmm := ComputeMaxMatchMap(fused, cand, nil); mmm.Size() < 1 {
-				t.Fatalf("depth %d split p=%d: fused query must match this candidate shape", depth, p)
+			if match := ComputeMaxMatchMap(direct, candidate, nil); match.Size() < 1 {
+				t.Fatalf("depth %d split %d: canonical equivalents must max-match", depth, prefixLen)
 			}
 		}
 	})
 }
 
-// candidateAtSplit builds a candidate at split point p: a p-accessor fused
-// prefix over q, then depth-p single-accessor chained nodes.
-func candidateAtSplit(t *testing.T, q *values.QuantifiedObjectValue, depth, p int) *values.FieldValue {
+// candidateAtSplit resolves a prefix of length prefixLen, then resolves each
+// remaining step separately. ResolveFieldOrdinals fuses each new step onto the
+// admitted prefix's original exact QOV root.
+func candidateAtSplit(
+	t testing.TB,
+	qov values.QuantifiedObjectValue,
+	depth, prefixLen int,
+) values.Value {
 	t.Helper()
-	// Fused prefix of p accessors.
-	var cur values.Value = q
-	for i := 0; i < p; i++ {
-		next, err := values.NewFieldValueOfOrdinal(cur, 0)
-		if err != nil {
-			return nil
-		}
-		cur = next
+	prefix := make([]int, prefixLen)
+	current, err := values.ResolveFieldOrdinals(qov, prefix)
+	current = mustConstruct(t, current, err)
+	for i := prefixLen; i < depth; i++ {
+		next, resolveErr := values.ResolveFieldOrdinals(current, []int{0})
+		current = mustConstruct(t, next, resolveErr)
 	}
-	prefix, ok := values.SimplifyValue(cur).(*values.FieldValue)
-	if !ok || len(prefix.Resolved.Accessors) != p {
+	return current
+}
+
+func fieldOrdinals(value values.Value) []int {
+	field, ok := values.AsFieldValue(value)
+	if !ok || field.Path() == nil {
 		return nil
 	}
-	// Chain the remaining depth-p accessors as single-accessor nodes.
-	cur = prefix
-	var last *values.FieldValue
-	for i := p; i < depth; i++ {
-		next, err := values.NewFieldValueOfOrdinal(cur, 0)
-		if err != nil {
-			return nil
-		}
-		cur, last = next, next
-	}
-	return last
+	return field.Path().Ordinals()
 }

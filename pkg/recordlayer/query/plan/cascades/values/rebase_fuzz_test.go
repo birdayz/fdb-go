@@ -14,14 +14,14 @@ func FuzzRebaseValue_NoPanic(f *testing.F) {
 	f.Fuzz(func(t *testing.T, srcName, tgtName string, typeIdx byte) {
 		src := NamedCorrelationIdentifier(srcName)
 		tgt := NamedCorrelationIdentifier(tgtName)
-		aliases := AliasMap{src: tgt}
+		aliases := mustAliasMap(t, AliasPair{Source: src, Target: tgt})
 
 		var v Value
 		switch typeIdx % 13 {
 		case 0:
-			v = &QuantifiedObjectValue{Correlation: src, Typ: UnknownType}
+			v = mustQOV(t, src)
 		case 1:
-			v = &FieldValue{Field: "col", Typ: UnknownType}
+			v = &fieldValue{Field: "col", Typ: UnknownType}
 		case 2:
 			v = &ConstantValue{Value: int64(42)}
 		case 3:
@@ -31,32 +31,32 @@ func FuzzRebaseValue_NoPanic(f *testing.F) {
 		case 5:
 			v = &ArithmeticValue{
 				Op:    OpAdd,
-				Left:  &QuantifiedObjectValue{Correlation: src},
+				Left:  mustQOV(t, src),
 				Right: &ConstantValue{Value: int64(1)},
 			}
 		case 6:
-			v = NewCastValue(&QuantifiedObjectValue{Correlation: src}, UnknownType)
+			v = NewCastValue(mustQOV(t, src), UnknownType)
 		case 7:
 			v = &PromoteValue{
-				Child:  &QuantifiedObjectValue{Correlation: src},
+				Child:  mustQOV(t, src),
 				Target: UnknownType,
 			}
 		case 8:
 			v = &ScalarFunctionValue{
 				FuncName: "COALESCE",
-				Args:     []Value{&QuantifiedObjectValue{Correlation: src}},
+				Args:     []Value{mustQOV(t, src)},
 				Typ:      UnknownType,
 			}
 		case 9:
 			v = &RecordConstructorValue{
 				Fields: []RecordConstructorField{
-					{Name: "f", Value: &QuantifiedObjectValue{Correlation: src}},
+					{Name: "f", Value: mustQOV(t, src)},
 				},
 			}
 		case 10:
-			v = &NotValue{Child: &QuantifiedObjectValue{Correlation: src}}
+			v = &NotValue{Child: mustQOV(t, src)}
 		case 11:
-			v = NewAggregateValue(AggSum, &QuantifiedObjectValue{Correlation: src})
+			v = NewAggregateValue(AggSum, mustQOV(t, src))
 		case 12:
 			v = NewAggregateValue(AggCountStar, nil)
 		}

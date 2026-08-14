@@ -10,6 +10,37 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustRFC190OrderingConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct RFC-190 ordering fixture: " + err.Error())
+	}
+	return value
+}
+
+func rfc190OrderingRowType(columnName string) *values.RecordType {
+	return values.NewRecordType("RFC190OrderingRow", false, []values.Field{{
+		Name:      columnName,
+		FieldType: values.NullableLong,
+	}})
+}
+
+func rfc190OrderingOutputType() *values.RecordType {
+	return values.NewRecordType("", false, []values.Field{
+		{Name: "outer_out", FieldType: values.NullableLong},
+		{Name: "inner_out", FieldType: values.NullableLong},
+	})
+}
+
+func rfc190Scan(table, columnName string, reverse bool) *plans.RecordQueryScanPlan {
+	return mustRFC190OrderingConstruct(plans.NewRecordQueryScanPlan(
+		[]string{table}, rfc190OrderingRowType(columnName), reverse))
+}
+
+func rfc190PlanField(plan plans.RecordQueryPlan) values.Value {
+	return mustRFC190OrderingConstruct(values.ResolveFieldOrdinals(
+		plan.GetResultValue(), []int{0}))
+}
+
 // These tests pin the three branches of Java 4.12.11
 // OrderingProperty.visitFlatMapPlan. They deliberately use finals-only
 // singleton child references: only that private-reference shape prevents a
@@ -18,11 +49,9 @@ import (
 func TestRFC190FlatMapOrderingCase1MaxOneOuterUsesInner(t *testing.T) {
 	t.Parallel()
 
-	outerKey := rfc190Field("outer_pk")
-	innerKey := rfc190Field("inner_key")
-	outer := plans.NewRecordQueryScanPlan(
-		[]string{"OUTER"}, values.UnknownType, false,
-	).WithPrimaryKey([]values.Value{outerKey}).
+	outerBase := rfc190Scan("OUTER", "outer_pk", false)
+	outerKey := rfc190PlanField(outerBase)
+	outer := outerBase.WithPrimaryKey([]values.Value{outerKey}).
 		WithScanComparisons([]*predicates.ComparisonRange{rfc190EqualityRange(t, int64(7))}).
 		WithKeyComponentTypes([]values.Type{values.NullableLong})
 	inner := rfc190Index("INNER_IDX", "inner_key", true, true)
@@ -33,9 +62,7 @@ func TestRFC190FlatMapOrderingCase1MaxOneOuterUsesInner(t *testing.T) {
 	}
 
 	flatMap, _, innerAlias, _ := rfc190FlatMap(
-		"case1", expressions.FinalOf(outer), expressions.FinalOf(inner),
-		outerKey, innerKey,
-	)
+		"case1", expressions.FinalOf(outer), expressions.FinalOf(inner))
 	got := computeWrapperRichOrdering(flatMap)
 	rfc190AssertOrdering(t, got, true, []rfc190ExpectedOrderingPart{
 		{
@@ -48,11 +75,9 @@ func TestRFC190FlatMapOrderingCase1MaxOneOuterUsesInner(t *testing.T) {
 func TestRFC190FlatMapOrderingCase2aNonDistinctOuterUsesOuterOnly(t *testing.T) {
 	t.Parallel()
 
-	outerKey := rfc190Field("outer_key")
-	innerKey := rfc190Field("inner_key")
-	outer := plans.NewRecordQueryScanPlan(
-		[]string{"OUTER"}, values.UnknownType, true,
-	).WithPrimaryKey([]values.Value{outerKey}).
+	outerBase := rfc190Scan("OUTER", "outer_key", true)
+	outerKey := rfc190PlanField(outerBase)
+	outer := outerBase.WithPrimaryKey([]values.Value{outerKey}).
 		WithKeyComponentTypes([]values.Type{values.NullableLong})
 	// Make the ignored inner suffix visibly different and strict. Case 2a must
 	// still report only the non-distinct outer ordering.
@@ -67,9 +92,7 @@ func TestRFC190FlatMapOrderingCase2aNonDistinctOuterUsesOuterOnly(t *testing.T) 
 	}
 
 	flatMap, outerAlias, _, _ := rfc190FlatMap(
-		"case2a", expressions.FinalOf(outer), expressions.FinalOf(inner),
-		outerKey, innerKey,
-	)
+		"case2a", expressions.FinalOf(outer), expressions.FinalOf(inner))
 	got := computeWrapperRichOrdering(flatMap)
 	rfc190AssertOrdering(t, got, false, []rfc190ExpectedOrderingPart{
 		{
@@ -82,15 +105,13 @@ func TestRFC190FlatMapOrderingCase2aNonDistinctOuterUsesOuterOnly(t *testing.T) 
 func TestRFC190FlatMapOrderingCase2bDistinctOuterConcatenatesInner(t *testing.T) {
 	t.Parallel()
 
-	outerKey := rfc190Field("outer_key")
-	innerKey := rfc190Field("inner_key")
 	outer := rfc190Index("OUTER_IDX", "outer_key", false, true)
 	// The inner is intentionally non-distinct. Java concatenation requires the
 	// left/outer ordering to be distinct, but takes RESULT distinctness from
 	// the right/inner ordering.
-	inner := plans.NewRecordQueryScanPlan(
-		[]string{"INNER"}, values.UnknownType, true,
-	).WithPrimaryKey([]values.Value{innerKey}).
+	innerBase := rfc190Scan("INNER", "inner_key", true)
+	innerKey := rfc190PlanField(innerBase)
+	inner := innerBase.WithPrimaryKey([]values.Value{innerKey}).
 		WithKeyComponentTypes([]values.Type{values.NullableLong})
 
 	if !computeWrapperRichOrdering(outer).IsDistinct() {
@@ -101,9 +122,7 @@ func TestRFC190FlatMapOrderingCase2bDistinctOuterConcatenatesInner(t *testing.T)
 	}
 
 	flatMap, outerAlias, innerAlias, resultValue := rfc190FlatMap(
-		"case2b", expressions.FinalOf(outer), expressions.FinalOf(inner),
-		outerKey, innerKey,
-	)
+		"case2b", expressions.FinalOf(outer), expressions.FinalOf(inner))
 	outerOutput := rfc190OutputField(outerAlias, "outer_out")
 	innerOutput := rfc190OutputField(innerAlias, "inner_out")
 	got := computeWrapperRichOrdering(flatMap)
@@ -120,8 +139,8 @@ func TestRFC190FlatMapOrderingCase2bDistinctOuterConcatenatesInner(t *testing.T)
 		properties.DistinctnessNotDistinct,
 		false,
 	)
-	pulledOuter := computeWrapperRichOrdering(outer).
-		PullUpThroughValue(resultValue, outerAlias)
+	pulledOuter := mustRFC190OrderingConstruct(computeWrapperRichOrdering(outer).
+		PullUpThroughValue(resultValue, outerAlias))
 	if pulledOuter.Satisfies(requested) {
 		t.Fatal("case 2b precondition: outer alone unexpectedly satisfies the combined request")
 	}
@@ -143,19 +162,16 @@ func TestRFC190FlatMapOrderingRequiresExactFinalChildReferences(t *testing.T) {
 	t.Run("exploratory_child_is_not_safe", func(t *testing.T) {
 		t.Parallel()
 
-		outerKey := rfc190Field("outer_key")
-		innerKey := rfc190Field("inner_key")
-		outer := plans.NewRecordQueryScanPlan(
-			[]string{"OUTER"}, values.UnknownType, false,
-		).WithPrimaryKey([]values.Value{outerKey})
+		outerBase := rfc190Scan("OUTER", "outer_key", false)
+		outerKey := rfc190PlanField(outerBase)
+		outer := outerBase.WithPrimaryKey([]values.Value{outerKey}).
+			WithKeyComponentTypes([]values.Type{values.NullableLong})
 		inner := rfc190Index("INNER_IDX", "inner_key", false, true)
 
 		flatMap, _, _, _ := rfc190FlatMap(
 			"unsafe_exploratory",
 			expressions.InitialOf(outer),
 			expressions.FinalOf(inner),
-			outerKey,
-			innerKey,
 		)
 		rfc190AssertUnsafeJoinOrdering(t, flatMap)
 	})
@@ -163,11 +179,10 @@ func TestRFC190FlatMapOrderingRequiresExactFinalChildReferences(t *testing.T) {
 	t.Run("multi_final_child_is_not_safe", func(t *testing.T) {
 		t.Parallel()
 
-		outerKey := rfc190Field("outer_key")
-		innerKey := rfc190Field("inner_key")
-		outer := plans.NewRecordQueryScanPlan(
-			[]string{"OUTER"}, values.UnknownType, false,
-		).WithPrimaryKey([]values.Value{outerKey})
+		outerBase := rfc190Scan("OUTER", "outer_key", false)
+		outerKey := rfc190PlanField(outerBase)
+		outer := outerBase.WithPrimaryKey([]values.Value{outerKey}).
+			WithKeyComponentTypes([]values.Type{values.NullableLong})
 		inner := rfc190Index("INNER_ASC", "inner_key", false, true)
 		innerAlternative := rfc190Index("INNER_DESC", "inner_key", true, true)
 		innerRef := expressions.FinalOf(inner)
@@ -179,8 +194,6 @@ func TestRFC190FlatMapOrderingRequiresExactFinalChildReferences(t *testing.T) {
 			"unsafe_multi_final",
 			expressions.FinalOf(outer),
 			innerRef,
-			outerKey,
-			innerKey,
 		)
 		rfc190AssertUnsafeJoinOrdering(t, flatMap)
 	})
@@ -191,19 +204,20 @@ type rfc190ExpectedOrderingPart struct {
 	sortOrder properties.ProvidedSortOrder
 }
 
-func rfc190Field(name string) values.Value {
-	return &values.FieldValue{Field: name, Typ: values.UnknownType}
-}
-
 func rfc190OutputField(
 	alias values.CorrelationIdentifier,
 	name string,
 ) values.Value {
-	return values.NewFieldValue(
-		values.NewQuantifiedObjectValue(alias),
-		name,
-		values.UnknownType,
-	)
+	ordinal := 0
+	if name == "inner_out" {
+		ordinal = 1
+	} else if name != "outer_out" {
+		panic("unknown RFC-190 output field " + name)
+	}
+	root := mustRFC190OrderingConstruct(values.NewQuantifiedObjectValue(
+		alias, rfc190OrderingOutputType()))
+	return mustRFC190OrderingConstruct(values.ResolveFieldOrdinals(
+		root, []int{ordinal}))
 }
 
 func rfc190EqualityRange(t *testing.T, literal any) *predicates.ComparisonRange {
@@ -222,9 +236,9 @@ func rfc190Index(
 	reverse bool,
 	distinct bool,
 ) *plans.RecordQueryIndexPlan {
-	index := plans.NewRecordQueryIndexPlan(
-		indexName, nil, []string{"T"}, values.UnknownType, reverse,
-	).WithKeyComponentTypes([]values.Type{values.NullableLong}).
+	index := mustRFC190OrderingConstruct(plans.NewRecordQueryIndexPlan(
+		indexName, nil, []string{"T"}, rfc190OrderingRowType(columnName), reverse,
+	)).WithKeyComponentTypes([]values.Type{values.NullableLong}).
 		WithIndexMetadata([]string{columnName}, nil, false)
 	if distinct {
 		index = index.WithStrictlySorted()
@@ -236,23 +250,27 @@ func rfc190FlatMap(
 	name string,
 	outerRef *expressions.Reference,
 	innerRef *expressions.Reference,
-	outerKey values.Value,
-	innerKey values.Value,
 ) (*plans.RecordQueryFlatMapPlan, values.CorrelationIdentifier, values.CorrelationIdentifier, values.Value) {
 	outerAlias := values.NamedCorrelationIdentifier("rfc190_" + name + "_outer")
 	innerAlias := values.NamedCorrelationIdentifier("rfc190_" + name + "_inner")
+	outerQ := expressions.NamedPhysicalQuantifier(outerAlias, outerRef)
+	innerQ := expressions.NamedPhysicalQuantifier(innerAlias, innerRef)
+	outerObject := mustRFC190OrderingConstruct(outerQ.RequireFlowedObjectValue())
+	innerObject := mustRFC190OrderingConstruct(innerQ.RequireFlowedObjectValue())
+	outerKey := mustRFC190OrderingConstruct(values.ResolveFieldOrdinals(outerObject, []int{0}))
+	innerKey := mustRFC190OrderingConstruct(values.ResolveFieldOrdinals(innerObject, []int{0}))
 	resultValue := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "outer_out", Value: outerKey},
 		values.RecordConstructorField{Name: "inner_out", Value: innerKey},
 	)
-	flatMap := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
-		expressions.NamedPhysicalQuantifier(outerAlias, outerRef),
-		expressions.NamedPhysicalQuantifier(innerAlias, innerRef),
+	flatMap := mustRFC190OrderingConstruct(plans.NewRecordQueryFlatMapPlanFromQuantifiers(
+		outerQ,
+		innerQ,
 		outerAlias,
 		innerAlias,
 		resultValue,
 		false,
-	)
+	))
 	return flatMap, outerAlias, innerAlias, resultValue
 }
 

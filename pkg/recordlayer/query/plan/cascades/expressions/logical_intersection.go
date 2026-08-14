@@ -18,12 +18,17 @@ import (
 type LogicalIntersectionExpression struct {
 	quantifiers         []Quantifier
 	comparisonKeyValues []values.Value
+	resultValue         values.QuantifiedObjectValue
 }
 
 // NewLogicalIntersectionExpression builds an N-way intersection.
 // `comparisonKeyValues` defines the row-equality key (typically the
 // primary-key columns of the result type). Both lists are copied.
-func NewLogicalIntersectionExpression(quantifiers []Quantifier, comparisonKeyValues []values.Value) *LogicalIntersectionExpression {
+func NewLogicalIntersectionExpression(quantifiers []Quantifier, comparisonKeyValues []values.Value) (*LogicalIntersectionExpression, error) {
+	resultValue, err := requireSetOperationResult("LogicalIntersectionExpression", quantifiers)
+	if err != nil {
+		return nil, err
+	}
 	copiedQ := make([]Quantifier, len(quantifiers))
 	copy(copiedQ, quantifiers)
 	copiedK := make([]values.Value, len(comparisonKeyValues))
@@ -31,7 +36,8 @@ func NewLogicalIntersectionExpression(quantifiers []Quantifier, comparisonKeyVal
 	return &LogicalIntersectionExpression{
 		quantifiers:         copiedQ,
 		comparisonKeyValues: copiedK,
-	}
+		resultValue:         resultValue,
+	}, nil
 }
 
 // GetComparisonKeyValues returns the row-equality key list. Read-only.
@@ -50,7 +56,7 @@ func (e *LogicalIntersectionExpression) GetComparisonKeyValues() []values.Value 
 // existential filter is worth carrying while it cannot fire, is
 // setOperationResultValue.
 func (e *LogicalIntersectionExpression) GetResultValue() values.Value {
-	return setOperationResultValue(e.quantifiers)
+	return e.resultValue
 }
 
 // GetQuantifiers returns the children.
@@ -112,12 +118,11 @@ func (e *LogicalIntersectionExpression) HashCodeWithoutChildren() uint64 {
 	return h
 }
 
-func (e *LogicalIntersectionExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	copied := make([]Quantifier, len(quantifiers))
-	copy(copied, quantifiers)
-	cp := *e
-	cp.quantifiers = copied
-	return &cp
+func (e *LogicalIntersectionExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("LogicalIntersectionExpression", len(quantifiers), len(e.quantifiers)); err != nil {
+		return nil, err
+	}
+	return NewLogicalIntersectionExpression(quantifiers, e.comparisonKeyValues)
 }
 
 var _ RelationalExpression = (*LogicalIntersectionExpression)(nil)

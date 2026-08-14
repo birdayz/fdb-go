@@ -9,7 +9,9 @@ import (
 
 func TestRecordQueryScanPlan_LeafShape(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false)
+	p := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"Order"}, exactTestRecordType(), false)
+	})
 	if got := len(p.GetChildren()); got != 0 {
 		t.Fatalf("scan has %d children, want 0", got)
 	}
@@ -21,7 +23,9 @@ func TestRecordQueryScanPlan_LeafShape(t *testing.T) {
 func TestRecordQueryScanPlan_DedupTypes(t *testing.T) {
 	t.Parallel()
 	// Duplicates collapse via dedupSortedStrings.
-	p := NewRecordQueryScanPlan([]string{"T", "U", "T"}, values.UnknownType, false)
+	p := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T", "U", "T"}, exactTestRecordType(), false)
+	})
 	rts := p.GetRecordTypes()
 	if len(rts) != 2 || rts[0] != "T" || rts[1] != "U" {
 		t.Fatalf("record types = %v, want [T, U]", rts)
@@ -30,9 +34,13 @@ func TestRecordQueryScanPlan_DedupTypes(t *testing.T) {
 
 func TestRecordQueryFilterPlan_WrapsInner(t *testing.T) {
 	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, scan)
+	filter := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, scan)
+	})
 	cs := filter.GetChildren()
 	if len(cs) != 1 || cs[0] != scan {
 		t.Fatalf("filter children = %v, want [scan]", cs)
@@ -41,16 +49,28 @@ func TestRecordQueryFilterPlan_WrapsInner(t *testing.T) {
 
 func TestEquals_Recursive(t *testing.T) {
 	t.Parallel()
-	scanA := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	scanB := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scanA := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	scanB := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filterA := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, scanA)
-	filterB := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, scanB)
+	filterA := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, scanA)
+	})
+	filterB := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, scanB)
+	})
 	if !Equals(filterA, filterB) {
 		t.Fatal("structurally-equal filter plans should compare equal")
 	}
-	scanC := NewRecordQueryScanPlan([]string{"U"}, values.UnknownType, false)
-	filterC := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, scanC)
+	scanC := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"U"}, exactTestRecordType(), false)
+	})
+	filterC := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, scanC)
+	})
 	if Equals(filterA, filterC) {
 		t.Fatal("filter plans over different scans should NOT be equal")
 	}
@@ -61,7 +81,9 @@ func TestEquals_NilHandling(t *testing.T) {
 	if !Equals(nil, nil) {
 		t.Fatal("Equals(nil, nil) should be true")
 	}
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	if Equals(scan, nil) || Equals(nil, scan) {
 		t.Fatal("Equals(plan, nil) should be false")
 	}
@@ -69,12 +91,18 @@ func TestEquals_NilHandling(t *testing.T) {
 
 func TestSize_CountsAllNodes(t *testing.T) {
 	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, scan)
+	filter := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, scan)
+	})
 
-	keys := []SortKey{{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}}}
-	sort := NewRecordQueryInMemorySortPlan(filter, keys)
+	keys := []SortKey{{Field: "id", ValueExpr: testField(t, "id", values.NullableLong)}}
+	sort := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(filter, keys)
+	})
 	if got := Size(sort); got != 3 {
 		t.Fatalf("Size(InMemorySort(Filter(Scan))) = %d, want 3", got)
 	}
@@ -82,12 +110,16 @@ func TestSize_CountsAllNodes(t *testing.T) {
 
 func TestExplain_Renders(t *testing.T) {
 	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, true)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"Order"}, exactTestRecordType(), true)
+	})
 	if got := scan.Explain(); got != "Scan(Order) REVERSE" {
 		t.Fatalf("scan Explain = %q", got)
 	}
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, scan)
+	filter := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, scan)
+	})
 	got := filter.Explain()
 	want := "Filter([1 preds], Scan(Order) REVERSE)"
 	if got != want {
@@ -102,7 +134,9 @@ func TestExplain_Renders(t *testing.T) {
 func TestRecordQueryIndexPlan_StrictlySorted(t *testing.T) {
 	t.Parallel()
 
-	orig := NewRecordQueryIndexPlan("idx_a", nil, []string{"T"}, values.UnknownType, false)
+	orig := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("idx_a", nil, []string{"T"}, exactTestRecordType(), false)
+	})
 	if orig.IsStrictlySorted() {
 		t.Fatal("new index plan should not be strictlySorted")
 	}
@@ -124,8 +158,8 @@ func TestRecordQueryIndexPlan_StrictlySorted(t *testing.T) {
 	if strict.IsReverse() != orig.IsReverse() {
 		t.Fatalf("reverse = %v, want %v", strict.IsReverse(), orig.IsReverse())
 	}
-	if !values.UnknownType.Equals(strict.GetFlowedType()) {
-		t.Fatalf("flowed type changed")
+	if !orig.GetFlowedType().Equals(strict.GetFlowedType()) {
+		t.Fatalf("flowed type changed: got %v, want %v", strict.GetFlowedType(), orig.GetFlowedType())
 	}
 
 	// EqualsWithoutChildren distinguishes strictlySorted from non-.
@@ -150,7 +184,9 @@ func TestRecordQueryIndexPlan_StrictlySorted(t *testing.T) {
 func TestRecordQueryIndexPlan_WithStrictlySorted_Reverse(t *testing.T) {
 	t.Parallel()
 
-	orig := NewRecordQueryIndexPlan("idx_b", nil, []string{"T"}, values.UnknownType, true)
+	orig := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("idx_b", nil, []string{"T"}, exactTestRecordType(), true)
+	})
 	strict := orig.WithStrictlySorted()
 
 	if !strict.IsReverse() {

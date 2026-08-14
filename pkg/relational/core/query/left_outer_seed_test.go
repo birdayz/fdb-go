@@ -27,7 +27,7 @@ func TestLeftOuterSeedShape(t *testing.T) {
 	t.Parallel()
 	tr := newDisjointUnnestTranslator(t)
 
-	checkSeed := func(t *testing.T, kind logical.JoinKind, nullSide string) {
+	checkSeed := func(t *testing.T, kind logical.JoinKind, nullSides ...string) {
 		t.Helper()
 		j := logical.NewJoin(scan("SRC", "s"), scan("AUX", "x"), kind, "")
 		d := tr.ordinalWedgeGateDecide(j)
@@ -48,21 +48,31 @@ func TestLeftOuterSeedShape(t *testing.T) {
 			t.Fatalf("seed field order = [%s .. %s ..], want declaration [SID .. XID ..]", rc.Fields[0].Name, rc.Fields[2].Name)
 		}
 		for _, f := range rc.Fields {
-			fv := f.Value.(*values.FieldValue)
-			qov := fv.Child.(*values.QuantifiedObjectValue)
-			// Key on the STORED Typ: QOV.Type() blanket-wraps nullable (a
-			// pre-existing Go-side rule), so the record-level marker is only
-			// observable on q.Typ — which is what seed consumers read.
-			rt := qov.Typ.(*values.RecordType)
-			wantNullable := strings.EqualFold(qov.Correlation.Name(), nullSide)
+			fv, ok := values.AsFieldValue(f.Value)
+			if !ok {
+				t.Fatalf("seed field %s = %T, want exact FieldValue", f.Name, f.Value)
+			}
+			qov, ok := values.AsQuantifiedObjectValue(fv.ChildValue())
+			if !ok {
+				t.Fatalf("seed field %s owner = %T, want exact QOV", f.Name, fv.ChildValue())
+			}
+			rt, ok := qov.FlowedType().(*values.RecordType)
+			if !ok {
+				t.Fatalf("seed field %s owner type = %T, want record", f.Name, qov.FlowedType())
+			}
+			wantNullable := false
+			for _, nullSide := range nullSides {
+				wantNullable = wantNullable || strings.EqualFold(qov.Correlation().Name(), nullSide)
+			}
 			if rt.Nullable != wantNullable {
 				t.Fatalf("%v box: leg %s record-level nullable = %v, want %v (nullability lives on the null-supplying QOV's RECORD type)",
-					kind, qov.Correlation, rt.Nullable, wantNullable)
+					kind, qov.Correlation(), rt.Nullable, wantNullable)
 			}
 		}
 	}
-	checkSeed(t, logical.JoinLeft, "x")  // LEFT: right operand null-supplies
-	checkSeed(t, logical.JoinRight, "s") // RIGHT: left operand null-supplies
+	checkSeed(t, logical.JoinLeft, "x")      // LEFT: right operand null-supplies
+	checkSeed(t, logical.JoinRight, "s")     // RIGHT: left operand null-supplies
+	checkSeed(t, logical.JoinFull, "s", "x") // FULL: both operands null-supply
 
 	// A comma cluster as the preserved leg GATES at the box root too — its
 	// buried sources are nameable per-leg via binding-keyed windows and

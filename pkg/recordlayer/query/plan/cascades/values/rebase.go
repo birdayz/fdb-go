@@ -1,10 +1,5 @@
 package values
 
-// AliasMap maps old correlation identifiers to new ones. Used during
-// plan construction when a quantifier's alias changes and downstream
-// values need to reference the new alias.
-type AliasMap map[CorrelationIdentifier]CorrelationIdentifier
-
 // RebaseValue replaces correlation references in a value tree
 // according to the alias map. Returns the original value if no
 // references match.
@@ -20,69 +15,98 @@ type AliasMap map[CorrelationIdentifier]CorrelationIdentifier
 // rebaseLeaf(); non-leaf values use the default rebase() which
 // recurses children and calls withChildren().
 func RebaseValue(v Value, aliases AliasMap) Value {
-	if v == nil || len(aliases) == 0 {
-		return v
+	rebased, err := RebaseValueChecked(v, aliases)
+	if err != nil {
+		return nil
+	}
+	return rebased
+}
+
+// RebaseValueChecked performs the alias-only rebase through the same checked
+// reconstruction authority used by TranslationMap. It preserves exact QOV
+// types, rejects current-kind changes through the validated AliasMap, and
+// returns no original/partial tree when an enclosing FieldValue cannot be
+// rebuilt.
+func RebaseValueChecked(v Value, aliases AliasMap) (Value, error) {
+	if v == nil || aliasMapEmpty(aliases) {
+		return v, nil
+	}
+	validated, ok := asAliasMap(aliases)
+	if !ok {
+		return nil, resolutionError(RewriteInvalidTranslation, "rebase.aliases", "alias map is not values-owned")
+	}
+	return rebaseValueChecked(v, validated)
+}
+
+func rebaseValueChecked(v Value, validated *aliasMap) (Value, error) {
+	if v == nil {
+		return nil, resolutionError(RewriteNilReplacement, "rebase.value", "rebase encountered a nil Value")
 	}
 
 	// Handle leaf values with correlation aliases first.
 	switch val := v.(type) {
-	case *QuantifiedObjectValue:
-		if newAlias, ok := aliases[val.Correlation]; ok {
-			return &QuantifiedObjectValue{
-				Correlation: newAlias,
-				Typ:         val.Typ,
-			}
+	case *quantifiedObjectValue:
+		if newAlias, ok := validated.Target(val.correlation); ok {
+			return &quantifiedObjectValue{
+				correlation:  newAlias,
+				flowed:       val.flowed,
+				sourceLayout: val.sourceLayout,
+			}, nil
 		}
-		return v
+		return v, nil
 	case *QuantifiedRecordValue:
-		if newAlias, ok := aliases[val.Alias]; ok {
+		if newAlias, ok := validated.Target(val.Alias); ok {
 			return &QuantifiedRecordValue{
 				Alias:      newAlias,
 				ResultType: val.ResultType,
-			}
+			}, nil
 		}
-		return v
+		return v, nil
 	case *ScalarSubqueryValue:
-		if newAlias, ok := aliases[val.Alias]; ok {
-			return &ScalarSubqueryValue{Alias: newAlias, Typ: val.Typ}
+		if newAlias, ok := validated.Target(val.Alias); ok {
+			return &ScalarSubqueryValue{Alias: newAlias, Typ: val.Typ}, nil
 		}
-		return v
+		return v, nil
 	case *ObjectValue:
-		if newAlias, ok := aliases[val.Alias]; ok {
-			return &ObjectValue{Alias: newAlias, ResultType: val.ResultType}
+		if newAlias, ok := validated.Target(val.Alias); ok {
+			return &ObjectValue{Alias: newAlias, ResultType: val.ResultType}, nil
 		}
-		return v
+		return v, nil
 	case *UnmatchedAggregateValue:
-		if newAlias, ok := aliases[val.UnmatchedID]; ok {
-			return &UnmatchedAggregateValue{UnmatchedID: newAlias}
+		if newAlias, ok := validated.Target(val.UnmatchedID); ok {
+			return &UnmatchedAggregateValue{UnmatchedID: newAlias}, nil
 		}
-		return v
+		return v, nil
 	case *ConstantObjectValue:
-		if newAlias, ok := aliases[val.Alias]; ok {
-			return &ConstantObjectValue{Alias: newAlias, ConstantID: val.ConstantID, ResultType: val.ResultType}
+		if newAlias, ok := validated.Target(val.Alias); ok {
+			return &ConstantObjectValue{Alias: newAlias, ConstantID: val.ConstantID, ResultType: val.ResultType}, nil
 		}
-		return v
+		return v, nil
 	}
 
 	// For all other leaf values (FieldValue, ConstantValue, NullValue,
 	// BooleanValue, ParameterValue, etc.), no rebase needed.
 	children := v.Children()
 	if len(children) == 0 {
-		return v
+		return v, nil
 	}
 
 	// Recursively rebase children.
 	changed := false
 	newChildren := make([]Value, len(children))
 	for i, child := range children {
-		newChildren[i] = RebaseValue(child, aliases)
+		var err error
+		newChildren[i], err = rebaseValueChecked(child, validated)
+		if err != nil {
+			return nil, err
+		}
 		if newChildren[i] != child {
 			changed = true
 		}
 	}
 	if !changed {
-		return v
+		return v, nil
 	}
 
-	return WithChildren(v, newChildren)
+	return withChildrenChecked(v, newChildren)
 }

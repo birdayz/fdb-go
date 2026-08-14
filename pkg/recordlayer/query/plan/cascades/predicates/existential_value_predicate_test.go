@@ -9,7 +9,7 @@ import (
 func TestExistentialValuePredicate_LeafShape(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("subq1")
-	p := NewExistentialAlias(alias)
+	p := mustExistentialAlias(t, alias)
 	if got := len(p.Children()); got != 0 {
 		t.Fatalf("ExistentialValuePredicate children = %d, want 0", got)
 	}
@@ -18,9 +18,35 @@ func TestExistentialValuePredicate_LeafShape(t *testing.T) {
 	}
 }
 
+func TestNewExistentialAliasRejectsInvalidQOVInput(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		alias  values.CorrelationIdentifier
+		flowed values.Type
+	}{
+		{name: "zero alias", flowed: values.NullableLong},
+		{name: "unresolved type", alias: values.NamedCorrelationIdentifier("subq"), flowed: values.UnknownType},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			predicate, err := NewExistentialAlias(tc.alias, tc.flowed)
+			if err == nil {
+				t.Fatal("NewExistentialAlias accepted invalid QOV input")
+			}
+			if predicate != nil {
+				t.Fatalf("NewExistentialAlias returned %T with error %v", predicate, err)
+			}
+		})
+	}
+}
+
 func TestExistentialValuePredicate_EvalIsUnknown(t *testing.T) {
 	t.Parallel()
-	p := NewExistentialAlias(values.NamedCorrelationIdentifier("x"))
+	p := mustExistentialAlias(t, values.NamedCorrelationIdentifier("x"))
 	if got, _ := p.Eval(nil); got != TriUnknown {
 		t.Fatalf("Eval = %v, want TriUnknown (per-row eval not supported for EXISTS)", got)
 	}
@@ -28,7 +54,7 @@ func TestExistentialValuePredicate_EvalIsUnknown(t *testing.T) {
 
 func TestExistentialValuePredicate_ExplainRenders(t *testing.T) {
 	t.Parallel()
-	p := NewExistentialAlias(values.NamedCorrelationIdentifier("subq"))
+	p := mustExistentialAlias(t, values.NamedCorrelationIdentifier("subq"))
 	if got := p.Explain(); got != "EXISTS(subq)" {
 		t.Fatalf("Explain = %q, want EXISTS(subq)", got)
 	}
@@ -37,7 +63,7 @@ func TestExistentialValuePredicate_ExplainRenders(t *testing.T) {
 func TestExistentialValuePredicate_CorrelatedTo(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("subq")
-	p := NewExistentialAlias(alias)
+	p := mustExistentialAlias(t, alias)
 	cs := p.GetCorrelatedTo()
 	if len(cs) != 1 {
 		t.Fatalf("CorrelatedTo size = %d, want 1", len(cs))
@@ -53,10 +79,10 @@ func TestExistentialValuePredicate_CorrelatedToIncludesComparison(t *testing.T) 
 	existsAlias := values.NamedCorrelationIdentifier("subq")
 	comparandAlias := values.NamedCorrelationIdentifier("outer")
 	predicate := MustNewExistentialValuePredicate(
-		values.NewQuantifiedObjectValue(existsAlias),
+		mustQOV(t, existsAlias),
 		Comparison{
 			Type:    ComparisonEquals,
-			Operand: values.NewQuantifiedObjectValue(comparandAlias),
+			Operand: mustQOV(t, comparandAlias),
 		},
 	)
 
@@ -73,7 +99,7 @@ func TestExistentialValuePredicate_CorrelatedToIncludesComparison(t *testing.T) 
 
 func TestExistentialValuePredicate_ComparisonIsNotNull(t *testing.T) {
 	t.Parallel()
-	p := NewExistentialAlias(values.NamedCorrelationIdentifier("x"))
+	p := mustExistentialAlias(t, values.NamedCorrelationIdentifier("x"))
 	if p.Comparison.Type != ComparisonIsNotNull {
 		t.Fatalf("comparison = %v, want ComparisonIsNotNull", p.Comparison.Type)
 	}
@@ -86,7 +112,7 @@ func TestMustNewExistentialValuePredicate_RejectsNonQOV(t *testing.T) {
 			t.Fatal("constructing with a non-QuantifiedObjectValue should panic")
 		}
 	}()
-	_ = MustNewExistentialValuePredicate(values.NewFieldValue(nil, "f", nil), Comparison{Type: ComparisonIsNotNull})
+	_ = MustNewExistentialValuePredicate(predicateTestField(t, "f", values.NullableLong), Comparison{Type: ComparisonIsNotNull})
 }
 
 func TestExistentialValuePredicate_SatisfiesInterface(t *testing.T) {
@@ -99,26 +125,26 @@ func TestIsExistentialPredicate(t *testing.T) {
 	alias := values.NamedCorrelationIdentifier("e")
 
 	// The ExistentialValuePredicate itself.
-	if got, ok := IsExistentialPredicate(NewExistentialAlias(alias)); !ok || got != alias {
+	if got, ok := IsExistentialPredicate(mustExistentialAlias(t, alias)); !ok || got != alias {
 		t.Fatalf("IsExistentialPredicate(EVP) = (%v, %v), want (%v, true)", got, ok, alias)
 	}
 
 	// An ExistentialValuePredicate constructed with a non-NOT_NULL comparison must NOT be
 	// classified as a positive EXISTS: the exported constructor permits any comparison,
 	// and only "IS NOT NULL over the QOV" is the existential semi-join shape.
-	wrongComp := MustNewExistentialValuePredicate(values.NewQuantifiedObjectValue(alias), Comparison{Type: ComparisonIsNull})
+	wrongComp := MustNewExistentialValuePredicate(mustQOV(t, alias), Comparison{Type: ComparisonIsNull})
 	if _, ok := IsExistentialPredicate(wrongComp); ok {
 		t.Fatal("an ExistentialValuePredicate with IS NULL must NOT be classified as existential")
 	}
 
 	// The residual ComparisonPredicate shape (QOV operand + NOT_NULL).
-	residual := NewComparisonPredicate(values.NewQuantifiedObjectValue(alias), Comparison{Type: ComparisonIsNotNull})
+	residual := NewComparisonPredicate(mustQOV(t, alias), Comparison{Type: ComparisonIsNotNull})
 	if got, ok := IsExistentialPredicate(residual); !ok || got != alias {
 		t.Fatalf("IsExistentialPredicate(residual) = (%v, %v), want (%v, true)", got, ok, alias)
 	}
 
 	// A non-existential ComparisonPredicate (wrong comparison type).
-	notIt := NewComparisonPredicate(values.NewQuantifiedObjectValue(alias), Comparison{Type: ComparisonIsNull})
+	notIt := NewComparisonPredicate(mustQOV(t, alias), Comparison{Type: ComparisonIsNull})
 	if _, ok := IsExistentialPredicate(notIt); ok {
 		t.Fatal("IS NULL over a QOV must NOT be classified as existential")
 	}
@@ -133,13 +159,13 @@ func TestIsNotExistentialPredicate(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("e")
 
-	notExists := NewNot(NewExistentialAlias(alias))
+	notExists := NewNot(mustExistentialAlias(t, alias))
 	if got, ok := IsNotExistentialPredicate(notExists); !ok || got != alias {
 		t.Fatalf("IsNotExistentialPredicate(NOT EVP) = (%v, %v), want (%v, true)", got, ok, alias)
 	}
 
 	// A bare EXISTS is not a NOT-EXISTS.
-	if _, ok := IsNotExistentialPredicate(NewExistentialAlias(alias)); ok {
+	if _, ok := IsNotExistentialPredicate(mustExistentialAlias(t, alias)); ok {
 		t.Fatal("bare existential must NOT be classified as NOT-existential")
 	}
 
@@ -152,7 +178,10 @@ func TestIsNotExistentialPredicate(t *testing.T) {
 func TestExistsValueToQueryPredicate(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("subq")
-	ev := values.NewExistsValue(alias)
+	ev, err := values.NewExistsValue(alias, values.NullableLong)
+	if err != nil {
+		t.Fatalf("NewExistsValue: %v", err)
+	}
 	p := ExistsValueToQueryPredicate(ev)
 	evp, ok := p.(*ExistentialValuePredicate)
 	if !ok {
@@ -172,7 +201,7 @@ func TestExistsValueToQueryPredicate(t *testing.T) {
 func TestContainsExistentialPredicate(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("e")
-	evp := NewExistentialAlias(alias)
+	evp := mustExistentialAlias(t, alias)
 	other := NewConstantPredicate(TriTrue)
 
 	cases := []struct {

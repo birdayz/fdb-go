@@ -25,13 +25,13 @@ import (
 // Used by rule_push_filter_below_join.go and
 // rule_implement_nested_loop_join.go to strip alias prefixes from
 // FieldValues at arbitrary nesting depth.
-func MapFieldValues(v Value, transform func(*FieldValue) Value) Value {
+func MapFieldValues(v Value, transform func(*fieldValue) Value) Value {
 	if v == nil {
 		return nil
 	}
 
 	// FieldValue: apply the transform directly.
-	if fv, ok := v.(*FieldValue); ok {
+	if fv, ok := v.(*fieldValue); ok {
 		return transform(fv)
 	}
 
@@ -326,14 +326,20 @@ func EqualsWithoutChildren(a, b Value) bool {
 	}
 
 	switch av := a.(type) {
-	case *FieldValue:
-		bv, ok := b.(*FieldValue)
+	case *fieldValue:
+		bv, ok := b.(*fieldValue)
 		if !ok {
 			return false
 		}
+		admittedA, admittedB := isAdmittedFieldValue(av), isAdmittedFieldValue(bv)
+		if admittedA || admittedB {
+			return admittedA && admittedB &&
+				exactTypesEqual(av.rootType, bv.rootType) &&
+				av.Resolved.Equals(bv.Resolved)
+		}
 		// BAKED nodes (Resolved != nil) compare by their ordinal PATH
 		// alone — Java's semantics exactly
-		// (ResolvedAccessor.equals is getOrdinal()-only, FieldValue.java:
+		// (resolvedAccessor.equals is getOrdinal()-only, FieldValue.java:
 		// 675-689; two same-named columns at different ordinals stay distinct,
 		// the duplicate-name pin; alias-mapped twins over same-shaped legs
 		// intern as one member). Baked vs lazy is UNEQUAL by contract: worst
@@ -341,7 +347,7 @@ func EqualsWithoutChildren(a, b Value) bool {
 		// name-only (lazy nodes are plan-time-only carriers). FrontierPinned is
 		// deliberately NOT compared: an evaluation-contract marker, not a
 		// value distinction (like Java excluding name/type from
-		// ResolvedAccessor equality).
+		// resolvedAccessor equality).
 		if (av.Resolved != nil) != (bv.Resolved != nil) {
 			return false
 		}
@@ -370,9 +376,9 @@ func EqualsWithoutChildren(a, b Value) bool {
 			return false
 		}
 		return av.Ordinal == bv.Ordinal && av.ParamName == bv.ParamName
-	case *QuantifiedObjectValue:
-		bv, ok := b.(*QuantifiedObjectValue)
-		return ok && av.Correlation == bv.Correlation
+	case *quantifiedObjectValue:
+		bv, ok := b.(*quantifiedObjectValue)
+		return ok && av.correlation == bv.correlation && exactTypesEqual(av.flowed, bv.flowed)
 	case *QuantifiedRecordValue:
 		bv, ok := b.(*QuantifiedRecordValue)
 		return ok && av.Alias == bv.Alias

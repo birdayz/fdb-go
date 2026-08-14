@@ -19,10 +19,85 @@ func posResult(cols []ColumnDef, m map[string]any) QueryResult {
 	fields := make([]values.Field, len(cols))
 	slots := make([]any, len(cols))
 	for i, c := range cols {
-		fields[i] = values.Field{Name: c.Name, FieldType: values.UnknownType, Ordinal: i}
-		slots[i] = m[c.Name]
+		value := m[c.Name]
+		fields[i] = values.Field{Name: c.Name, FieldType: resultSetTestFieldType(c, value), Ordinal: i}
+		slots[i] = value
 	}
 	return QueryResult{Positional: &PositionalRow{Type: &values.RecordType{Fields: fields}, Slots: slots}}
+}
+
+// resultSetTestFieldType keeps the reader fixtures honest: their ColumnDef is
+// the declared result metadata, so the positional row must carry that same
+// concrete type rather than an unrelated UnknownType placeholder. A nil sample
+// widens the fixture field because that row demonstrably permits SQL NULL even
+// when a particular metadata test intentionally supplied the default
+// ColumnNoNulls flag.
+func resultSetTestFieldType(column ColumnDef, sample any) values.Type {
+	nullable := column.Nullable != api.ColumnNoNulls || sample == nil
+	switch column.TypeName {
+	case "BIGINT":
+		if nullable {
+			return values.NullableLong
+		}
+		return values.NotNullLong
+	case "STRING":
+		if nullable {
+			return values.NullableString
+		}
+		return values.NotNullString
+	case "DOUBLE":
+		if nullable {
+			return values.NullableDouble
+		}
+		return values.NotNullDouble
+	case "BOOLEAN":
+		if nullable {
+			return values.NullableBoolean
+		}
+		return values.NotNullBoolean
+	case "BYTES":
+		if nullable {
+			return values.NullableBytes
+		}
+		return values.NotNullBytes
+	default:
+		panic("resultset test fixture has no exact type for " + column.TypeName)
+	}
+}
+
+func TestPosResult_CarriesDeclaredExactTypes(t *testing.T) {
+	t.Parallel()
+	result := posResult(
+		[]ColumnDef{
+			{Name: "ID", TypeName: "BIGINT"},
+			{Name: "NAME", TypeName: "STRING", Nullable: api.ColumnNullable},
+			{Name: "SCORE", TypeName: "DOUBLE"},
+			{Name: "ACTIVE", TypeName: "BOOLEAN"},
+			{Name: "PAYLOAD", TypeName: "BYTES"},
+		},
+		map[string]any{
+			"ID":      int64(1),
+			"NAME":    "alice",
+			"SCORE":   nil,
+			"ACTIVE":  true,
+			"PAYLOAD": []byte{1},
+		},
+	)
+	want := []values.Type{
+		values.NotNullLong,
+		values.NullableString,
+		values.NullableDouble,
+		values.NotNullBoolean,
+		values.NotNullBytes,
+	}
+	for i, field := range result.Positional.Type.Fields {
+		if field.FieldType == nil || !field.FieldType.Equals(want[i]) {
+			t.Fatalf("field %d type = %v, want exact %v", i, field.FieldType, want[i])
+		}
+		if field.FieldType.Equals(values.UnknownType) {
+			t.Fatalf("field %d regressed to UnknownType", i)
+		}
+	}
 }
 
 func TestResultSet_IterateRows(t *testing.T) {
@@ -544,10 +619,10 @@ func TestResultSet_PositionalDupNameRead(t *testing.T) {
 	// The gated 2-way ordinal join's `SELECT *` shape over a(id,name) × b(id,name):
 	// merged type [ID NAME ID NAME] (duplicates preserved — raw RecordType).
 	mergedType := &values.RecordType{Fields: []values.Field{
-		{Name: "ID", FieldType: values.UnknownType, Ordinal: 0},
-		{Name: "NAME", FieldType: values.UnknownType, Ordinal: 1},
-		{Name: "ID", FieldType: values.UnknownType, Ordinal: 2},
-		{Name: "NAME", FieldType: values.UnknownType, Ordinal: 3},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "NAME", FieldType: values.NotNullString, Ordinal: 1},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2},
+		{Name: "NAME", FieldType: values.NotNullString, Ordinal: 3},
 	}}
 	pos := &PositionalRow{Type: mergedType, Slots: []any{int64(1), "alpha", int64(1), "x"}}
 	cursor := recordlayer.FromList([]QueryResult{
@@ -590,7 +665,7 @@ func TestResultSet_DottedAliasPositionalAlign(t *testing.T) {
 	ctx := context.Background()
 
 	rowType := &values.RecordType{Fields: []values.Field{
-		{Name: "A.B", FieldType: values.UnknownType, Ordinal: 0},
+		{Name: "A.B", FieldType: values.NotNullLong, Ordinal: 0},
 	}}
 	pos := &PositionalRow{Type: rowType, Slots: []any{int64(7)}}
 	cursor := recordlayer.FromList([]QueryResult{{Positional: pos}})
@@ -612,13 +687,55 @@ func TestResultSet_DottedAliasPositionalAlign(t *testing.T) {
 	// Guard: a permuted qualifier must NOT falsely align (slot X.NAME vs label
 	// Y.NAME are different columns; stripping both sides would wrongly match).
 	permRow := &PositionalRow{
-		Type:  &values.RecordType{Fields: []values.Field{{Name: "X.NAME", FieldType: values.UnknownType, Ordinal: 0}}},
+		Type:  &values.RecordType{Fields: []values.Field{{Name: "X.NAME", FieldType: values.NotNullString, Ordinal: 0}}},
 		Slots: []any{"wrong"},
 	}
 	permRS := NewRecordLayerResultSet(ctx, recordlayer.FromList([]QueryResult{{Positional: permRow}}), []ColumnDef{{Name: "Y.NAME", Label: "Y.NAME", TypeName: "STRING"}})
 	defer permRS.Close()
 	if permRS.positionalAligned(permRow) {
 		t.Fatal("permuted qualifier (X.NAME slot vs Y.NAME label) must NOT positionally align")
+	}
+}
+
+func TestResultSet_DuplicateDisplayNamesAlignDeduplicatedExactSlotsByOrdinal(t *testing.T) {
+	t.Parallel()
+	row := &PositionalRow{
+		Type: &values.RecordType{Fields: []values.Field{
+			{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
+			{Name: "ID_2", FieldType: values.NullableLong, Ordinal: 1},
+			{Name: "COUNT(*)", FieldType: values.NotNullLong, Ordinal: 2},
+		}},
+		Slots: []any{int64(2), int64(7), int64(1)},
+	}
+	columns := []ColumnDef{
+		{Name: "PO.ID", Label: "ID", TypeName: "BIGINT"},
+		{Name: "PI.ID", Label: "ID", TypeName: "BIGINT"},
+		{Name: "COUNT(*)", Label: "COUNT(*)", TypeName: "BIGINT"},
+	}
+	rs := NewRecordLayerResultSet(
+		context.Background(), recordlayer.FromList([]QueryResult{{Positional: row}}), columns)
+	defer rs.Close()
+	if !rs.Next() {
+		t.Fatalf("expected row: %v", rs.Err())
+	}
+	for i, want := range []any{int64(2), int64(7), int64(1)} {
+		got, err := rs.Object(i + 1)
+		if err != nil || got != want {
+			t.Fatalf("Object(%d) = (%v,%v), want (%v,nil)", i+1, got, err, want)
+		}
+	}
+
+	// A unique output name still cannot borrow the duplicate-display exception.
+	badColumns := append([]ColumnDef(nil), columns...)
+	badColumns[1] = ColumnDef{Name: "PI.ID", Label: "OTHER", TypeName: "BIGINT"}
+	bad := NewRecordLayerResultSet(
+		context.Background(), recordlayer.FromList([]QueryResult{{Positional: row}}), badColumns)
+	defer bad.Close()
+	if !bad.Next() {
+		t.Fatalf("expected bad-control row: %v", bad.Err())
+	}
+	if _, err := bad.Object(2); err == nil {
+		t.Fatal("unique mismatched display name was accepted as duplicate output")
 	}
 }
 
@@ -634,8 +751,8 @@ func TestResultSet_PositionalMisalignedIsLoud(t *testing.T) {
 	ctx := context.Background()
 
 	srcType := &values.RecordType{Fields: []values.Field{
-		{Name: "ID", FieldType: values.UnknownType, Ordinal: 0},
-		{Name: "NAME", FieldType: values.UnknownType, Ordinal: 1},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "NAME", FieldType: values.NotNullString, Ordinal: 1},
 	}}
 
 	assertLoud := func(t *testing.T, err error) {
@@ -742,6 +859,8 @@ func TestResultSet_PreRFC229SortContinuationNamesFailClosed(t *testing.T) {
 	// root named after the root, which is the defect §2.3 fixed.
 	oldToken := &PositionalRow{
 		Type: &values.RecordType{Fields: []values.Field{
+			// PRE-229 continuation payloads encoded names only; the legacy
+			// decoder therefore has no declared scalar type to recover here.
 			{Name: "N", FieldType: values.UnknownType, Ordinal: 0},
 			{Name: "N", FieldType: values.UnknownType, Ordinal: 1},
 		}},

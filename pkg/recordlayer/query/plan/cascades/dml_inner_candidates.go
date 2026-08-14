@@ -135,12 +135,15 @@ func storedRecordDMLCandidates(ref *expressions.Reference) []dmlInnerCandidate {
 // so the two cannot drift apart there.
 func dmlDedupedInnerQuantifier(
 	call *ExpressionRuleCall, candidate dmlInnerCandidate, alreadyDistinct bool,
-) expressions.Quantifier {
+) (expressions.Quantifier, error) {
 	innerQ := expressions.ForEachQuantifier(call.MemoizeMemberPlansFromOther(
 		candidate.source, []expressions.RelationalExpression{candidate.expr}))
 	if alreadyDistinct {
-		return innerQ
+		return innerQ, nil
 	}
-	dedup := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(innerQ)
-	return expressions.ForEachQuantifier(call.MemoizeFinalExpression(dedup))
+	dedup, err := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(innerQ)
+	if err != nil {
+		return expressions.Quantifier{}, err
+	}
+	return expressions.ForEachQuantifier(call.MemoizeFinalExpression(dedup)), nil
 }

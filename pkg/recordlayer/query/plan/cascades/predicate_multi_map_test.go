@@ -7,6 +7,42 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func predicateMultiMapRowType() values.Type {
+	return values.NewRecordType("PredicateMultiMapRow", false, []values.Field{
+		{Name: "SUM_X", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "IDX_SUM", FieldType: values.NullableLong, Ordinal: 1},
+		{Name: "X", FieldType: values.NullableLong, Ordinal: 2},
+		{Name: "A", FieldType: values.NullableLong, Ordinal: 3},
+		{Name: "B", FieldType: values.NullableLong, Ordinal: 4},
+		{Name: "C", FieldType: values.NullableLong, Ordinal: 5},
+		{Name: "qty", FieldType: values.NullableLong, Ordinal: 6},
+		{Name: "zone", FieldType: values.NullableLong, Ordinal: 7},
+		{Name: "embedding", FieldType: values.NullableLong, Ordinal: 8},
+	})
+}
+
+func predicateMultiMapField(field string) values.Value {
+	root, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("predicate_multi_map"), predicateMultiMapRowType())
+	if err != nil {
+		panic("construct predicate multi-map QOV: " + err.Error())
+	}
+	request, err := values.FieldByName(field)
+	if err != nil {
+		panic("construct predicate multi-map field request: " + err.Error())
+	}
+	resolved, err := values.ResolveFieldAccess(root, []values.FieldRequest{request})
+	if err != nil {
+		panic("resolve predicate multi-map field: " + err.Error())
+	}
+	return resolved
+}
+
+func predicateMultiMapFieldNamed(value values.Value, name string) bool {
+	field, ok := values.AsFieldValue(value)
+	return ok && field.DisplayName() == name
+}
+
 func TestMappingKind_Values(t *testing.T) {
 	t.Parallel()
 
@@ -693,12 +729,12 @@ func TestPredicateCompensation_Amend_ReplacesUnmatched(t *testing.T) {
 	}
 
 	// Build unmatchedAggMap: unmatchedID → FieldValue("SUM_X")
-	queryAgg := &values.FieldValue{Field: "SUM_X"}
+	queryAgg := predicateMultiMapField("SUM_X")
 	unmatchedAggMap := NewCorrValueBiMap()
 	unmatchedAggMap.Put(unmatchedID, queryAgg)
 
 	// Build amendedMatchedAggMap: FieldValue("SUM_X") → FieldValue("IDX_SUM")
-	idxSum := &values.FieldValue{Field: "IDX_SUM"}
+	idxSum := predicateMultiMapField("IDX_SUM")
 	amendedMatchedAggMap := map[values.Value]values.Value{
 		queryAgg: idxSum,
 	}
@@ -720,12 +756,12 @@ func TestPredicateCompensation_Amend_ReplacesUnmatched(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate, got %T", preds[0])
 	}
-	fv, ok := cp.Operand.(*values.FieldValue)
+	fv, ok := values.AsFieldValue(cp.Operand)
 	if !ok {
-		t.Fatalf("expected operand to be *FieldValue, got %T", cp.Operand)
+		t.Fatalf("expected operand to be an exact FieldValue, got %T", cp.Operand)
 	}
-	if fv.Field != "IDX_SUM" {
-		t.Fatalf("expected operand field IDX_SUM, got %s", fv.Field)
+	if fv.DisplayName() != "IDX_SUM" {
+		t.Fatalf("expected operand field IDX_SUM, got %s", fv.DisplayName())
 	}
 }
 
@@ -752,7 +788,7 @@ func TestPredicateCompensation_IsImpossible_Normal(t *testing.T) {
 	t.Parallel()
 
 	pred := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "X"},
+		Operand: predicateMultiMapField("X"),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: int64(5)},
@@ -770,7 +806,7 @@ func TestPredicateCompensation_IsImpossible_Normal(t *testing.T) {
 func TestReplacePredicateValues_ComparisonPredicate(t *testing.T) {
 	t.Parallel()
 
-	targetA := &values.FieldValue{Field: "A"}
+	targetA := predicateMultiMapField("A")
 	pred := &predicates.ComparisonPredicate{
 		Operand: targetA,
 		Comparison: predicates.Comparison{
@@ -779,9 +815,9 @@ func TestReplacePredicateValues_ComparisonPredicate(t *testing.T) {
 		},
 	}
 
-	replacementB := &values.FieldValue{Field: "B"}
+	replacementB := predicateMultiMapField("B")
 	replaced := replacePredicateValues(pred, func(v values.Value) values.Value {
-		if fv, ok := v.(*values.FieldValue); ok && fv.Field == "A" {
+		if predicateMultiMapFieldNamed(v, "A") {
 			return replacementB
 		}
 		return v
@@ -791,12 +827,12 @@ func TestReplacePredicateValues_ComparisonPredicate(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate, got %T", replaced)
 	}
-	fv, ok := cp.Operand.(*values.FieldValue)
+	fv, ok := values.AsFieldValue(cp.Operand)
 	if !ok {
-		t.Fatalf("expected operand to be *FieldValue, got %T", cp.Operand)
+		t.Fatalf("expected operand to be an exact FieldValue, got %T", cp.Operand)
 	}
-	if fv.Field != "B" {
-		t.Fatalf("expected operand field B, got %s", fv.Field)
+	if fv.DisplayName() != "B" {
+		t.Fatalf("expected operand field B, got %s", fv.DisplayName())
 	}
 	// Comparison operand should be unchanged.
 	cv, ok := cp.Comparison.Operand.(*values.ConstantValue)
@@ -811,7 +847,7 @@ func TestReplacePredicateValues_ComparisonPredicate(t *testing.T) {
 func TestReplacePredicateValues_And(t *testing.T) {
 	t.Parallel()
 
-	targetA := &values.FieldValue{Field: "A"}
+	targetA := predicateMultiMapField("A")
 	child1 := &predicates.ComparisonPredicate{
 		Operand: targetA,
 		Comparison: predicates.Comparison{
@@ -820,7 +856,7 @@ func TestReplacePredicateValues_And(t *testing.T) {
 		},
 	}
 	child2 := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "C"},
+		Operand: predicateMultiMapField("C"),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: int64(2)},
@@ -828,9 +864,9 @@ func TestReplacePredicateValues_And(t *testing.T) {
 	}
 	andPred := predicates.NewAnd(child1, child2)
 
-	replacementB := &values.FieldValue{Field: "B"}
+	replacementB := predicateMultiMapField("B")
 	replaced := replacePredicateValues(andPred, func(v values.Value) values.Value {
-		if fv, ok := v.(*values.FieldValue); ok && fv.Field == "A" {
+		if predicateMultiMapFieldNamed(v, "A") {
 			return replacementB
 		}
 		return v
@@ -849,12 +885,12 @@ func TestReplacePredicateValues_And(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected first child *ComparisonPredicate, got %T", andResult.SubPredicates[0])
 	}
-	fv, ok := cp1.Operand.(*values.FieldValue)
+	fv, ok := values.AsFieldValue(cp1.Operand)
 	if !ok {
-		t.Fatalf("expected first child operand *FieldValue, got %T", cp1.Operand)
+		t.Fatalf("expected first child operand exact FieldValue, got %T", cp1.Operand)
 	}
-	if fv.Field != "B" {
-		t.Fatalf("expected first child operand field B, got %s", fv.Field)
+	if fv.DisplayName() != "B" {
+		t.Fatalf("expected first child operand field B, got %s", fv.DisplayName())
 	}
 
 	// Second child should be unchanged (same pointer).
@@ -868,7 +904,7 @@ func TestValueContainsUncompensatable_Positive(t *testing.T) {
 
 	// IndexOnlyAggregateValue is uncompensatable.
 	v := values.NewIndexOnlyAggregateValue(values.IndexOnlyMaxEverLong,
-		&values.FieldValue{Field: "qty"})
+		predicateMultiMapField("qty"))
 	if !valueContainsUncompensatable(v) {
 		t.Fatal("IndexOnlyAggregateValue should be uncompensatable")
 	}
@@ -888,15 +924,15 @@ func TestValueContainsUncompensatable_Positive(t *testing.T) {
 	// compensation both rely on; both are pinned by TestVectorPlan_QualifyPlansToVectorScan,
 	// and removing either there fails that test (neither guard can drift silently).
 	rn := values.NewRowNumberValue(
-		[]values.Value{&values.FieldValue{Field: "zone"}},
-		[]values.Value{&values.FieldValue{Field: "embedding"}}, nil, nil)
+		[]values.Value{predicateMultiMapField("zone")},
+		[]values.Value{predicateMultiMapField("embedding")}, nil, nil)
 	if !valueContainsUncompensatable(rn) {
 		t.Fatal("RowNumberValue should be uncompensatable (index-only)")
 	}
 
 	drn := values.NewEuclideanDistanceRowNumberValue(
-		[]values.Value{&values.FieldValue{Field: "zone"}},
-		[]values.Value{&values.FieldValue{Field: "embedding"}})
+		[]values.Value{predicateMultiMapField("zone")},
+		[]values.Value{predicateMultiMapField("embedding")})
 	if !valueContainsUncompensatable(drn) {
 		t.Fatal("EuclideanDistanceRowNumberValue should be uncompensatable (index-only)")
 	}
@@ -905,7 +941,7 @@ func TestValueContainsUncompensatable_Positive(t *testing.T) {
 func TestValueContainsUncompensatable_Negative(t *testing.T) {
 	t.Parallel()
 
-	v := &values.FieldValue{Field: "X"}
+	v := predicateMultiMapField("X")
 	if valueContainsUncompensatable(v) {
 		t.Fatal("FieldValue should not be uncompensatable")
 	}

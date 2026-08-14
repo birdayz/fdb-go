@@ -14,14 +14,28 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func compensationRowType(names ...string) *values.RecordType {
+	fields := make([]values.Field, len(names))
+	for i, name := range names {
+		fields[i] = values.Field{Name: name, Ordinal: i, FieldType: values.NullableLong}
+	}
+	return &values.RecordType{RecordName: "compensation_row", Fields: fields}
+}
+
 func namedForEachQuantifier(name string) expressions.Quantifier {
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan, err := expressions.NewFullUnorderedScanExpression([]string{"T"}, compensationRowType("ID"))
+	if err != nil {
+		panic(err)
+	}
 	return expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier(name), expressions.InitialOf(scan))
 }
 
 func namedExistentialQuantifier(name string) expressions.Quantifier {
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan, err := expressions.NewFullUnorderedScanExpression([]string{"T"}, compensationRowType("ID"))
+	if err != nil {
+		panic(err)
+	}
 	return expressions.NamedExistentialQuantifier(
 		values.NamedCorrelationIdentifier(name), expressions.InitialOf(scan))
 }
@@ -139,15 +153,46 @@ func TestCompensationIntersect_QuantifierOrderDeterministic(t *testing.T) {
 // satisfies exactly its own 9-column ordering and nothing else.
 func TestBestSatisfyingMember_WideOrderingsExact(t *testing.T) {
 	t.Parallel()
-	inner := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	columnNames := make([]string, 0, 10)
+	for i := 0; i < 8; i++ {
+		columnNames = append(columnNames, fmt.Sprintf("C%d", i))
+	}
+	columnNames = append(columnNames, "I", "J")
+	rowType := compensationRowType(columnNames...)
+	inner, err := plans.NewRecordQueryScanPlan([]string{"T"}, rowType, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("wide"), rowType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	field := func(name string) values.Value {
+		t.Helper()
+		for i := range columnNames {
+			if columnNames[i] == name {
+				value, resolveErr := values.ResolveFieldOrdinals(qov, []int{i})
+				if resolveErr != nil {
+					t.Fatal(resolveErr)
+				}
+				return value
+			}
+		}
+		t.Fatalf("unknown fixture field %q", name)
+		return nil
+	}
 	mk := func(ninth string) *plans.RecordQueryInMemorySortPlan {
 		keys := make([]plans.SortKey, 9)
 		for i := 0; i < 8; i++ {
 			f := fmt.Sprintf("C%d", i)
-			keys[i] = plans.SortKey{Field: f, ValueExpr: values.NewFlatFieldValue(f, values.UnknownType), NullsFirst: true}
+			keys[i] = plans.SortKey{Field: f, ValueExpr: field(f), NullsFirst: true}
 		}
-		keys[8] = plans.SortKey{Field: ninth, ValueExpr: values.NewFlatFieldValue(ninth, values.UnknownType), NullsFirst: true}
-		return plans.NewRecordQueryInMemorySortPlan(inner, keys)
+		keys[8] = plans.SortKey{Field: ninth, ValueExpr: field(ninth), NullsFirst: true}
+		plan, planErr := plans.NewRecordQueryInMemorySortPlan(inner, keys)
+		if planErr != nil {
+			t.Fatal(planErr)
+		}
+		return plan
 	}
 
 	provider := mk("I")
@@ -157,9 +202,9 @@ func TestBestSatisfyingMember_WideOrderingsExact(t *testing.T) {
 		parts := make([]properties.RequestedOrderingPart, 9)
 		for i := 0; i < 8; i++ {
 			f := fmt.Sprintf("C%d", i)
-			parts[i] = properties.RequestedOrderingPart{Value: values.NewFlatFieldValue(f, values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}
+			parts[i] = properties.RequestedOrderingPart{Value: field(f), SortOrder: properties.RequestedSortOrderAscending}
 		}
-		parts[8] = properties.RequestedOrderingPart{Value: values.NewFlatFieldValue(ninth, values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}
+		parts[8] = properties.RequestedOrderingPart{Value: field(ninth), SortOrder: properties.RequestedSortOrderAscending}
 		return properties.NewRequestedOrdering(parts, properties.DistinctnessPreserveDistinctness, false)
 	}
 
@@ -181,10 +226,16 @@ func TestBestSatisfyingMember_WideOrderingsExact(t *testing.T) {
 func TestPlannerComplexityGuards(t *testing.T) {
 	t.Parallel()
 	buildRef := func() *expressions.Reference {
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+		scan, err := expressions.NewFullUnorderedScanExpression([]string{"T"}, compensationRowType("ID"))
+		if err != nil {
+			panic(err)
+		}
 		q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-		filter := expressions.NewLogicalFilterExpression(
+		filter, err := expressions.NewLogicalFilterExpression(
 			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)}, q)
+		if err != nil {
+			panic(err)
+		}
 		return expressions.InitialOf(filter)
 	}
 
@@ -258,10 +309,22 @@ func TestPlannerComplexityGuards(t *testing.T) {
 func TestRollUpPlanPartitions_MergesByPropertyEquality(t *testing.T) {
 	t.Parallel()
 	mkPart := func() *PlanPartition {
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+		scan, err := expressions.NewFullUnorderedScanExpression([]string{"T"}, compensationRowType("A"))
+		if err != nil {
+			panic(err)
+		}
+		qov, err := values.NewQuantifiedObjectValue(
+			values.NamedCorrelationIdentifier("partition_ordering"), compensationRowType("A"))
+		if err != nil {
+			panic(err)
+		}
+		key, resolveErr := values.ResolveFieldOrdinals(qov, []int{0})
+		if resolveErr != nil {
+			panic(resolveErr)
+		}
 		ord := properties.Ordering{
 			IsKnown:    true,
-			Keys:       []values.Value{values.NewFlatFieldValue("A", values.UnknownType)},
+			Keys:       []values.Value{key},
 			Descending: []bool{false},
 		}
 		return &PlanPartition{
@@ -286,7 +349,18 @@ func TestRollUpPlanPartitions_MergesByPropertyEquality(t *testing.T) {
 // merge), while absent vs explicit [true] on ASC are the SAME (must merge).
 func TestOrderingsEqual_NullsFirstSemantics(t *testing.T) {
 	t.Parallel()
-	key := func() values.Value { return values.NewFlatFieldValue("A", values.UnknownType) }
+	rowType := compensationRowType("A")
+	key := func() values.Value {
+		qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("ordering"), rowType)
+		if err != nil {
+			panic(err)
+		}
+		value, err := values.ResolveFieldOrdinals(qov, []int{0})
+		if err != nil {
+			panic(err)
+		}
+		return value
+	}
 	natural := properties.Ordering{IsKnown: true, Keys: []values.Value{key()}, Descending: []bool{false}}
 	explicitTrue := properties.Ordering{IsKnown: true, Keys: []values.Value{key()}, Descending: []bool{false}, NullsFirst: []bool{true}}
 	counterflow := properties.Ordering{IsKnown: true, Keys: []values.Value{key()}, Descending: []bool{false}, NullsFirst: []bool{false}}
@@ -330,7 +404,10 @@ func TestPlannerCapTrips(t *testing.T) {
 
 	t.Run("rule_match_cap_trips", func(t *testing.T) {
 		t.Parallel()
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+		scan, err := expressions.NewFullUnorderedScanExpression([]string{"T"}, compensationRowType("ID"))
+		if err != nil {
+			t.Fatal(err)
+		}
 		ref := expressions.InitialOf(scan)
 		p := NewPlanner(nil, nil)
 		p.MaxNumMatchesPerRuleCall = 1
@@ -346,9 +423,16 @@ func TestPlannerCapTrips(t *testing.T) {
 		// Java counts ONE numMatches stream per rule call, with quantifier
 		// permutations inside it. Neither leg alone exceeds the cap here
 		// (2 primary, 2 swapped, cap 3); only the cumulative count trips.
-		qA := expressions.ForEachQuantifier(expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)))
-		qB := expressions.ForEachQuantifier(expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"U"}, nil)))
-		sel := expressions.NewSelectExpression(qA.GetFlowedObjectValue(), []expressions.Quantifier{qA, qB}, nil)
+		qA := expressions.ForEachQuantifier(expressions.InitialOf(mustFullUnorderedScan(t, []string{"T"}, compensationRowType("ID"))))
+		qB := expressions.ForEachQuantifier(expressions.InitialOf(mustFullUnorderedScan(t, []string{"U"}, compensationRowType("ID"))))
+		resultValue, err := qA.RequireFlowedObjectValue()
+		if err != nil {
+			t.Fatal(err)
+		}
+		sel, err := expressions.NewSelectExpression(resultValue, []expressions.Quantifier{qA, qB}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
 		ref := expressions.InitialOf(sel)
 		p := NewPlanner(nil, nil)
 		p.MaxNumMatchesPerRuleCall = 3
@@ -361,7 +445,10 @@ func TestPlannerCapTrips(t *testing.T) {
 
 	t.Run("round_cap_trips", func(t *testing.T) {
 		t.Parallel()
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+		scan, err := expressions.NewFullUnorderedScanExpression([]string{"T"}, compensationRowType("ID"))
+		if err != nil {
+			t.Fatal(err)
+		}
 		ref := expressions.InitialOf(scan)
 		// Epoch-model divergence fixture (RFC-181 WS-P stage (b)): member
 		// growth no longer re-rounds a group, so the old shape — Insert a

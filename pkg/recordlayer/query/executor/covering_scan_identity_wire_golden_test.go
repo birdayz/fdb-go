@@ -32,13 +32,18 @@ const (
 )
 
 func saltGoldenPlan() *plans.RecordQueryIndexPlan {
-	return plans.NewRecordQueryIndexPlan(
+	flowedType := exactTestRowType(
+		values.Field{Name: "ID", FieldType: values.NotNullLong},
+		values.Field{Name: "A", FieldType: values.NotNullString},
+		values.Field{Name: "B", FieldType: values.NotNullDouble},
+	)
+	return mustExecutorConstruct(plans.NewRecordQueryIndexPlan(
 		"IDX_SALT",
 		[]*predicates.ComparisonRange{predicates.EmptyComparisonRange()},
 		[]string{"T"},
-		values.UnknownType,
+		flowedType,
 		false,
-	).WithKeyComponentTypes([]values.Type{values.NotNullDouble}).
+	)).WithKeyComponentTypes([]values.Type{values.NotNullDouble}).
 		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false)
 }
 
@@ -58,24 +63,27 @@ func saltGoldenPlan() *plans.RecordQueryIndexPlan {
 func TestScanIdentitySaltDigestsAreWireStable(t *testing.T) {
 	t.Parallel()
 
-	plain, err := indexScanRangeFingerprintSalt(saltGoldenPlan(), recordlayer.IndexScanByValue)
+	plan := saltGoldenPlan()
+	plain, err := legacyIndexScanRangeFingerprintSaltFields(
+		plan, recordlayer.IndexScanByValue, false, nil)
 	if err != nil {
-		t.Fatalf("plain salt: %v", err)
+		t.Fatalf("legacy plain salt: %v", err)
+	}
+	coveringPlan := mustExecutorConstruct(plans.NewRecordQueryCoveringIndexPlan(plan))
+	covering, err := legacyIndexScanRangeFingerprintSaltFields(
+		plan, recordlayer.IndexScanByValue, true, coveringPlan.GetCoveringColumns())
+	if err != nil {
+		t.Fatalf("legacy covering salt: %v", err)
 	}
 	if got := hex.EncodeToString([]byte(plain)); got != saltGoldenPlainDigestHex {
-		t.Fatalf("NON-COVERING index-scan salt digest changed.\n got  %s\n want %s\n"+
+		t.Errorf("NON-COVERING index-scan salt digest changed.\n got  %s\n want %s\n"+
 			"This digest reaches the user-visible continuation token. A change here "+
 			"rejects every in-flight continuation for an ordinary index scan. Restore "+
 			"the salt's fields — do NOT re-bless this constant.", got, saltGoldenPlainDigestHex)
 	}
 
-	covering, err := coveringIndexScanRangeFingerprintSalt(
-		plans.NewRecordQueryCoveringIndexPlan(saltGoldenPlan()), recordlayer.IndexScanByValue)
-	if err != nil {
-		t.Fatalf("covering salt: %v", err)
-	}
 	if got := hex.EncodeToString([]byte(covering)); got != saltGoldenCoveringDigestHex {
-		t.Fatalf("COVERING index-scan salt digest changed.\n got  %s\n want %s\n"+
+		t.Errorf("COVERING index-scan salt digest changed.\n got  %s\n want %s\n"+
 			"RFC-220 moved coveringness from a bool on RecordQueryIndexPlan to its own "+
 			"plan type; that move MUST be invisible to this digest, or every in-flight "+
 			"covering-scan continuation is rejected on upgrade. Restore the field order, "+
@@ -89,5 +97,41 @@ func TestScanIdentitySaltDigestsAreWireStable(t *testing.T) {
 	if plain == covering {
 		t.Fatal("the covering and non-covering salts are EQUAL; a covering plan " +
 			"could resume from a fetching scan's continuation")
+	}
+
+	currentPlain, err := indexScanRangeFingerprintSalt(plan, recordlayer.IndexScanByValue)
+	if err != nil {
+		t.Fatalf("current plain salt: %v", err)
+	}
+	currentCovering, err := coveringIndexScanRangeFingerprintSalt(
+		coveringPlan, recordlayer.IndexScanByValue)
+	if err != nil {
+		t.Fatalf("current covering salt: %v", err)
+	}
+	if currentPlain == plain || currentCovering == covering {
+		t.Fatal("exact flowed schema did not strengthen the current scan identity")
+	}
+
+	legacySpec, err := bindScanComparisonsToRangeSet(
+		plan.GetScanComparisons(), plan.GetKeyComponentTypes(), nil,
+		plan.IsReverse(), plain)
+	if err != nil {
+		t.Fatalf("bind legacy range set: %v", err)
+	}
+	currentSpec, err := bindScanComparisonsToRangeSet(
+		plan.GetScanComparisons(), plan.GetKeyComponentTypes(), nil,
+		plan.IsReverse(), currentPlain, plain)
+	if err != nil {
+		t.Fatalf("bind current range set: %v", err)
+	}
+	started := false
+	legacyToken := marshalRangeSetContinuationForTest(
+		t, legacySpec.fingerprint,
+		make([]uint32, len(legacySpec.alternativeCounts)), nil, &started)
+	if _, _, err := parseScanRangeSetContinuation(
+		legacyToken, currentSpec.fingerprint, currentSpec.alternativeCounts,
+		currentSpec.compatibleFingerprints...,
+	); err != nil {
+		t.Fatalf("exact plan rejected its pre-exact-schema continuation: %v", err)
 	}
 }

@@ -160,7 +160,7 @@ func TestPlannerBindings_MergedWith_DisjointMatchers(t *testing.T) {
 	m1 := NewConstantMatcher()
 	m2 := NewFieldMatcher()
 	cv := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
-	fv := &values.FieldValue{Field: "x", Typ: values.NullableLong}
+	fv := mustMatchingField(t, "x", values.NullableLong)
 
 	left := NewBindings().Bind(m1, cv)
 	right := NewBindings().Bind(m2, fv)
@@ -267,7 +267,7 @@ func TestAnyValue_RejectsNonValue(t *testing.T) {
 func TestInstance_NewConstantMatcher_RejectsField(t *testing.T) {
 	t.Parallel()
 	m := NewConstantMatcher()
-	fv := &values.FieldValue{Field: "x", Typ: values.NullableLong}
+	fv := mustMatchingField(t, "x", values.NullableLong)
 	if got := m.BindMatches(NewBindings(), fv); got != nil {
 		t.Fatalf("ConstantMatcher matched a FieldValue: %v", got)
 	}
@@ -280,6 +280,19 @@ func TestInstance_NewFieldMatcher_RejectsConstant(t *testing.T) {
 	cv := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
 	if got := m.BindMatches(NewBindings(), cv); got != nil {
 		t.Fatalf("FieldMatcher matched a ConstantValue: %v", got)
+	}
+}
+
+type embeddedFieldMatcherFake struct {
+	values.FieldValue
+}
+
+func TestInstance_NewFieldMatcher_RejectsEmbeddedInterfaceFake(t *testing.T) {
+	t.Parallel()
+
+	matcher := NewFieldMatcher()
+	if got := matcher.BindMatches(NewBindings(), &embeddedFieldMatcherFake{}); got != nil {
+		t.Fatalf("FieldMatcher admitted embedded FieldValue interface fake: %v", got)
 	}
 }
 

@@ -20,23 +20,37 @@ import (
 //
 // Ports Java's VectorIndexExpansionVisitor.expand / createDistanceValuePlaceholder.
 func ExpandVectorIndex(c *VectorIndexScanMatchCandidate) *Traversal {
+	if c == nil || c.partitionCount < 0 || c.partitionCount >= len(c.columnNames) ||
+		len(c.parameters) != c.partitionCount+1 {
+		return nil
+	}
 	columnNames := c.columnNames
 	recordTypes := c.recordTypes
+	baseType, ok := candidateBaseType(c)
+	if !ok {
+		return nil
+	}
 
-	scan := expressions.NewFullUnorderedScanExpression(recordTypes, values.UnknownType)
+	scan, err := expressions.NewFullUnorderedScanExpression(recordTypes, baseType)
+	if err != nil {
+		return nil
+	}
 	baseQuantifier := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	baseAlias := baseQuantifier.GetAlias()
+	baseObject, err := baseQuantifier.RequireFlowedObjectValue()
+	if err != nil {
+		return nil
+	}
 
 	builder := NewGraphExpansionBuilder()
 	builder.AddQuantifier(baseQuantifier)
 
 	// Partition (key) columns → FieldValue placeholders.
 	partFields := make([]values.Value, 0, c.partitionCount)
-	for i := 0; i < c.partitionCount && i < len(columnNames) && i < len(c.parameters); i++ {
-		fv := values.NewFieldValue(
-			values.NewQuantifiedObjectValue(baseAlias),
-			columnNames[i], values.UnknownType,
-		)
+	for i := 0; i < c.partitionCount; i++ {
+		fv, ok := resolveVectorIndexColumn(baseObject, columnNames[i])
+		if !ok {
+			return nil
+		}
 		partFields = append(partFields, fv)
 		ph := predicates.NewPlaceholder(c.parameters[i], fv)
 		builder.AddPredicate(ph)
@@ -44,28 +58,50 @@ func ExpandVectorIndex(c *VectorIndexScanMatchCandidate) *Traversal {
 	}
 
 	// Vector (value) column → the distance placeholder.
-	if c.partitionCount < len(columnNames) {
-		vecField := values.NewFieldValue(
-			values.NewQuantifiedObjectValue(baseAlias),
-			columnNames[c.partitionCount], values.UnknownType,
-		)
-		distValue := newDistanceRowNumberValueForMetric(c.metric, partFields, []values.Value{vecField})
-		distPh := predicates.NewPlaceholder(c.distanceAlias, distValue)
-		builder.AddPredicate(distPh)
-		builder.AddPlaceholder(distPh)
+	vecField, ok := resolveVectorIndexColumn(baseObject, columnNames[c.partitionCount])
+	if !ok {
+		return nil
 	}
+	distValue := newDistanceRowNumberValueForMetric(c.metric, partFields, []values.Value{vecField})
+	distPh := predicates.NewPlaceholder(c.distanceAlias, distValue)
+	builder.AddPredicate(distPh)
+	builder.AddPlaceholder(distPh)
 
 	expansion := builder.Build()
 	sealed := expansion.Seal()
-	selectExpr := sealed.BuildSelectWithResultValue(baseQuantifier.GetFlowedObjectValue())
+	selectExpr, err := sealed.BuildSelectWithResultValue(baseObject)
+	if err != nil {
+		return nil
+	}
 
 	// The ordering the index provides is over the partition aliases (the
 	// distance placeholder is not an ordering alias).
 	if len(c.orderingAliases) == 0 {
 		return NewTraversal(expressions.InitialOf(selectExpr))
 	}
-	matchableSort := expressions.NewMatchableSortExpressionFromExpr(c.orderingAliases, false, selectExpr)
+	matchableSort, err := expressions.NewMatchableSortExpressionFromExpr(c.orderingAliases, false, selectExpr)
+	if err != nil {
+		return nil
+	}
 	return NewTraversal(expressions.InitialOf(matchableSort))
+}
+
+func resolveVectorIndexColumn(
+	base values.QuantifiedObjectValue,
+	columnName string,
+) (values.Value, bool) {
+	request, err := values.FieldByName(columnName)
+	if err != nil {
+		return nil, false
+	}
+	field, resolved, err := values.TryResolveFieldAccess(
+		base,
+		[]values.FieldRequest{request},
+	)
+	if err != nil || !resolved {
+		return nil, false
+	}
+	return field, true
 }
 
 // newDistanceRowNumberValueForMetric builds the metric-specific

@@ -27,6 +27,7 @@ type AliasMap struct {
 	// every (s, t) pair has Forward[s] == t and Reverse[t] == s.
 	forward map[values.CorrelationIdentifier]values.CorrelationIdentifier
 	reverse map[values.CorrelationIdentifier]values.CorrelationIdentifier
+	view    values.AliasMap
 }
 
 // EmptyAliasMap returns the unique empty AliasMap singleton-equivalent.
@@ -36,6 +37,7 @@ func EmptyAliasMap() *AliasMap {
 	return &AliasMap{
 		forward: map[values.CorrelationIdentifier]values.CorrelationIdentifier{},
 		reverse: map[values.CorrelationIdentifier]values.CorrelationIdentifier{},
+		view:    values.EmptyAliasMap(),
 	}
 }
 
@@ -58,6 +60,15 @@ func AliasMapOf(pairs ...values.CorrelationIdentifier) *AliasMap {
 		m.forward[s] = t
 		m.reverse[t] = s
 	}
+	valuePairs := make([]values.AliasPair, 0, len(m.forward))
+	for source, target := range m.forward {
+		valuePairs = append(valuePairs, values.AliasPair{Source: source, Target: target})
+	}
+	view, err := values.NewAliasMap(valuePairs)
+	if err != nil {
+		panic("AliasMapOf: " + err.Error())
+	}
+	m.view = view
 	return m
 }
 
@@ -124,6 +135,15 @@ func (a *AliasMap) Compose(other *AliasMap) *AliasMap {
 		out.forward[s] = t
 		out.reverse[t] = s
 	}
+	valuePairs := make([]values.AliasPair, 0, len(out.forward))
+	for source, target := range out.forward {
+		valuePairs = append(valuePairs, values.AliasPair{Source: source, Target: target})
+	}
+	view, err := values.NewAliasMap(valuePairs)
+	if err != nil {
+		panic("AliasMap.Compose: " + err.Error())
+	}
+	out.view = view
 	return out
 }
 
@@ -153,6 +173,11 @@ func (a *AliasMap) With(source, target values.CorrelationIdentifier) (*AliasMap,
 	}
 	out.forward[source] = target
 	out.reverse[target] = source
+	view, compatible, err := values.ExtendAliasMap(a.view, []values.AliasPair{{Source: source, Target: target}})
+	if err != nil || !compatible {
+		return a, false
+	}
+	out.view = view
 	return out, true
 }
 
@@ -183,9 +208,9 @@ func (a *AliasMap) GetTargetOrDefault(source, def values.CorrelationIdentifier) 
 // yields a nil values.AliasMap, which the helpers read as identity-alias.
 func (a *AliasMap) ToValuesAliasMap() values.AliasMap {
 	if a == nil {
-		return nil
+		return values.EmptyAliasMap()
 	}
-	return values.AliasMap(a.forward)
+	return a.view
 }
 
 // Equals reports whether two AliasMaps have identical bindings.

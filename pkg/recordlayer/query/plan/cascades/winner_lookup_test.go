@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"fmt"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -10,14 +11,106 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustWinnerLookupConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic(fmt.Sprintf("construct winner-lookup fixture: %v", err))
+	}
+	return value
+}
+
+func mustWinnerLookupFireRule(
+	t testing.TB,
+	rule ExpressionRule,
+	ref *expressions.Reference,
+) []expressions.RelationalExpression {
+	t.Helper()
+	yielded, err := FireExpressionRule(rule, ref)
+	if err != nil {
+		t.Fatalf("FireExpressionRule(): %v", err)
+	}
+	return yielded
+}
+
+func mustWinnerLookupWithQuantifiers(
+	t testing.TB,
+	expression expressions.RelationalExpression,
+	quantifiers []expressions.Quantifier,
+) expressions.RelationalExpression {
+	t.Helper()
+	rebuilt, err := expression.WithQuantifiers(quantifiers)
+	if err != nil {
+		t.Fatalf("WithQuantifiers(): %v", err)
+	}
+	if rebuilt == nil {
+		t.Fatal("WithQuantifiers() returned nil without an error")
+	}
+	return rebuilt
+}
+
+func winnerLookupRowType(columns ...string) *values.RecordType {
+	fields := make([]values.Field, len(columns))
+	for ordinal, column := range columns {
+		fields[ordinal] = values.Field{Name: column, FieldType: values.NullableLong, Ordinal: ordinal}
+	}
+	return values.NewRecordType("winner_lookup_row", false, fields)
+}
+
+func winnerLookupFullScan(
+	t testing.TB,
+	recordType string,
+	columns ...string,
+) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	return mustWinnerLookupConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{recordType}, winnerLookupRowType(columns...)))
+}
+
+func winnerLookupPlanScan(
+	t testing.TB,
+	recordType string,
+	columns ...string,
+) *plans.RecordQueryScanPlan {
+	t.Helper()
+	return mustWinnerLookupConstruct(plans.NewRecordQueryScanPlan(
+		[]string{recordType}, winnerLookupRowType(columns...), false))
+}
+
+func winnerLookupField(t testing.TB, owner values.Value, ordinal int) values.Value {
+	t.Helper()
+	return mustWinnerLookupConstruct(values.ResolveFieldOrdinals(owner, []int{ordinal}))
+}
+
+func winnerLookupQuantifiedField(
+	t testing.TB,
+	quantifier expressions.Quantifier,
+	ordinal int,
+) values.Value {
+	t.Helper()
+	owner := mustWinnerLookupConstruct(quantifier.RequireFlowedObjectValue())
+	return winnerLookupField(t, owner, ordinal)
+}
+
+func winnerLookupSortValue(t testing.TB, expression expressions.RelationalExpression) values.Value {
+	t.Helper()
+	sortPlan, ok := expression.(*plans.RecordQueryInMemorySortPlan)
+	if !ok {
+		t.Fatalf("ordering fixture = %T, want *plans.RecordQueryInMemorySortPlan", expression)
+	}
+	keys := sortPlan.GetSortKeys()
+	if len(keys) != 1 || keys[0].ValueExpr == nil {
+		t.Fatalf("ordering fixture has %d sort keys, want one baked key", len(keys))
+	}
+	return keys[0].ValueExpr
+}
+
 func TestGetWinnerForOrdering_PreserveReturnsNoPropsWinner(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := winnerLookupFullScan(t, "T", "ID")
 	ref := expressions.InitialOf(scan)
 
 	scanRule := NewPrimaryScanRule()
-	FireExpressionRule(scanRule, ref)
+	mustWinnerLookupFireRule(t, scanRule, ref)
 
 	physExpr := findPhysicalExpr(ref)
 	if physExpr == nil {
@@ -40,11 +133,11 @@ func TestGetWinnerForOrdering_PreserveReturnsNoPropsWinner(t *testing.T) {
 func TestGetWinnerForOrdering_FallbackToFindBestWhenNoWinner(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := winnerLookupFullScan(t, "T", "ID")
 	ref := expressions.InitialOf(scan)
 
 	scanRule := NewPrimaryScanRule()
-	FireExpressionRule(scanRule, ref)
+	mustWinnerLookupFireRule(t, scanRule, ref)
 
 	// No winner stamped — getWinnerForOrdering should fall back to findBestValidPhysicalExpr
 	winner, _ := getWinnerForOrdering(ref, properties.PreserveOrdering(), nil)
@@ -59,11 +152,11 @@ func TestGetWinnerForOrdering_FallbackToFindBestWhenNoWinner(t *testing.T) {
 func TestGetWinnerForOrdering_OrderingLookup(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := winnerLookupFullScan(t, "T", "NAME")
 	ref := expressions.InitialOf(scan)
 
 	scanRule := NewPrimaryScanRule()
-	FireExpressionRule(scanRule, ref)
+	mustWinnerLookupFireRule(t, scanRule, ref)
 
 	physExpr := findPhysicalExpr(ref)
 	if physExpr == nil {
@@ -78,7 +171,7 @@ func TestGetWinnerForOrdering_OrderingLookup(t *testing.T) {
 
 	// Look up by RequestedOrdering on the same column
 	parts := []properties.RequestedOrderingPart{
-		{Value: values.NewFlatFieldValue("NAME", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending},
+		{Value: winnerLookupSortValue(t, sorted), SortOrder: properties.RequestedSortOrderAscending},
 	}
 	reqOrd := properties.NewRequestedOrdering(parts, properties.DistinctnessPreserveDistinctness, false)
 
@@ -88,6 +181,21 @@ func TestGetWinnerForOrdering_OrderingLookup(t *testing.T) {
 	}
 	if winner != sorted {
 		t.Fatalf("getWinnerForOrdering must return the ordering-providing member, got %T", winner)
+	}
+
+	// CONTROL: the same display name at another ordinal and in another exact
+	// layout is not the same ordering coordinate. This is the mutation-sensitive
+	// replacement for the retired name-only fixture; correlations themselves are
+	// alpha-renamable and therefore deliberately are not the discriminator.
+	foreignOwner := mustWinnerLookupConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("foreign_name"), winnerLookupRowType("OTHER", "NAME")))
+	foreignReq := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{
+			Value: winnerLookupField(t, foreignOwner, 1), SortOrder: properties.RequestedSortOrderAscending,
+		}},
+		properties.DistinctnessPreserveDistinctness, false)
+	if got := bestSatisfyingMember(ref, foreignReq, nil); got != nil {
+		t.Fatalf("same-name field under a foreign correlation satisfied the sort: %T", got)
 	}
 }
 
@@ -103,18 +211,18 @@ func sortedMemberOn(t *testing.T, fields ...string) expressions.RelationalExpres
 // true for ASC) sets each key's NULL placement.
 func sortedMemberWithNulls(t *testing.T, fields []string, nullsFirst []bool) expressions.RelationalExpression {
 	t.Helper()
-	inner := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	inner := winnerLookupPlanScan(t, "T", fields...)
 	keys := make([]plans.SortKey, len(fields))
 	for i, f := range fields {
 		nf := true // natural for ASC
 		if nullsFirst != nil {
 			nf = nullsFirst[i]
 		}
-		keys[i] = plans.SortKey{Field: f, ValueExpr: values.NewFlatFieldValue(f, values.UnknownType), NullsFirst: nf}
+		keys[i] = plans.SortKey{Field: f, ValueExpr: winnerLookupField(t, inner.GetResultValue(), i), NullsFirst: nf}
 	}
 	// Since RFC-184 W2 the bare in-memory sort IS its own physical member (no
 	// physicalInMemorySortWrapper) — its HintOrdering carries the sort keys.
-	return plans.NewRecordQueryInMemorySortPlan(inner, keys)
+	return mustWinnerLookupConstruct(plans.NewRecordQueryInMemorySortPlan(inner, keys))
 }
 
 // TestBestSatisfyingMember_CounterflowNullsGate pins the RFC-180 D2 core:
@@ -129,32 +237,32 @@ func TestBestSatisfyingMember_CounterflowNullsGate(t *testing.T) {
 	natural := sortedMemberWithNulls(t, []string{"S"}, []bool{true})      // ASC NULLS FIRST (natural)
 	counterflow := sortedMemberWithNulls(t, []string{"S"}, []bool{false}) // ASC NULLS LAST
 
-	reqOn := func(so properties.RequestedSortOrder) *properties.RequestedOrdering {
+	reqOn := func(member expressions.RelationalExpression, so properties.RequestedSortOrder) *properties.RequestedOrdering {
 		return properties.NewRequestedOrdering(
-			[]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("S", values.UnknownType), SortOrder: so}},
+			[]properties.RequestedOrderingPart{{Value: winnerLookupSortValue(t, member), SortOrder: so}},
 			properties.DistinctnessPreserveDistinctness, false)
 	}
 
 	refNatural := expressions.InitialOf(natural)
-	if w := bestSatisfyingMember(refNatural, reqOn(properties.RequestedSortOrderAscendingNullsLast), nil); w != nil {
+	if w := bestSatisfyingMember(refNatural, reqOn(natural, properties.RequestedSortOrderAscendingNullsLast), nil); w != nil {
 		t.Fatalf("ASC NULLS LAST must not be satisfied by a natural-ASC provider; got %T", w)
 	}
-	if w := bestSatisfyingMember(refNatural, reqOn(properties.RequestedSortOrderAscending), nil); w != natural {
+	if w := bestSatisfyingMember(refNatural, reqOn(natural, properties.RequestedSortOrderAscending), nil); w != natural {
 		t.Fatalf("natural ASC request should be satisfied by the natural-ASC provider; got %T", w)
 	}
 
 	refCounter := expressions.InitialOf(counterflow)
-	if w := bestSatisfyingMember(refCounter, reqOn(properties.RequestedSortOrderAscending), nil); w != nil {
+	if w := bestSatisfyingMember(refCounter, reqOn(counterflow, properties.RequestedSortOrderAscending), nil); w != nil {
 		t.Fatalf("natural ASC must not be satisfied by an ASC-NULLS-LAST provider; got %T", w)
 	}
-	if w := bestSatisfyingMember(refCounter, reqOn(properties.RequestedSortOrderAscendingNullsLast), nil); w != counterflow {
+	if w := bestSatisfyingMember(refCounter, reqOn(counterflow, properties.RequestedSortOrderAscendingNullsLast), nil); w != counterflow {
 		t.Fatalf("ASC NULLS LAST request should be satisfied by the ASC-NULLS-LAST provider; got %T", w)
 	}
 
 	// getWinnerForOrdering falls back to the cheapest plan when nothing
 	// satisfies — it must not return the counterflow-mismatched member AS
 	// the satisfying winner, but it still returns a plan (the sort stays).
-	if w, _ := getWinnerForOrdering(refNatural, reqOn(properties.RequestedSortOrderAscendingNullsLast), nil); w != natural {
+	if w, _ := getWinnerForOrdering(refNatural, reqOn(natural, properties.RequestedSortOrderAscendingNullsLast), nil); w != natural {
 		t.Fatalf("fallback should return the cheapest member, got %T", w)
 	}
 }
@@ -163,14 +271,14 @@ func TestFindPhysicalPlanVsFindBestPhysicalExpr_InsertionOrderMatters(t *testing
 	t.Parallel()
 
 	// Create two scan expressions and implement them, yielding two physical wrappers.
-	scan1 := expressions.NewFullUnorderedScanExpression([]string{"Table1"}, values.UnknownType)
+	scan1 := winnerLookupFullScan(t, "Table1", "ID")
 	ref1 := expressions.InitialOf(scan1)
-	FireExpressionRule(NewPrimaryScanRule(), ref1)
+	mustWinnerLookupFireRule(t, NewPrimaryScanRule(), ref1)
 	phys1 := findPhysicalExpr(ref1)
 
-	scan2 := expressions.NewFullUnorderedScanExpression([]string{"Table2"}, values.UnknownType)
+	scan2 := winnerLookupFullScan(t, "Table2", "ID")
 	ref2 := expressions.InitialOf(scan2)
-	FireExpressionRule(NewPrimaryScanRule(), ref2)
+	mustWinnerLookupFireRule(t, NewPrimaryScanRule(), ref2)
 	phys2 := findPhysicalExpr(ref2)
 
 	if phys1 == nil || phys2 == nil {
@@ -214,23 +322,22 @@ func TestProjectionRule_WrapsWinnerNotFirst(t *testing.T) {
 	// Build: Projection(inner-ref)
 	// Inner-ref has two physical plans. Verify the Projection wraps
 	// the winner (cost-model best), not the first.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := winnerLookupFullScan(t, "Order", "ID")
 	innerRef := expressions.InitialOf(scan)
 
 	scanRule := NewPrimaryScanRule()
-	FireExpressionRule(scanRule, innerRef)
+	mustWinnerLookupFireRule(t, scanRule, innerRef)
 
-	projVals := []values.Value{
-		&values.FieldValue{Field: "ID", Typ: values.UnknownType},
-	}
-	proj := expressions.NewLogicalProjectionExpression(
+	projectionQ := expressions.ForEachQuantifier(innerRef)
+	projVals := []values.Value{winnerLookupQuantifiedField(t, projectionQ, 0)}
+	proj := mustWinnerLookupConstruct(expressions.NewLogicalProjectionExpression(
 		projVals,
-		expressions.ForEachQuantifier(innerRef),
-	)
+		projectionQ,
+	))
 	topRef := expressions.InitialOf(proj)
 
 	projRule := NewImplementProjectionRule()
-	yielded := FireExpressionRule(projRule, topRef)
+	yielded := mustWinnerLookupFireRule(t, projRule, topRef)
 	if len(yielded) == 0 {
 		t.Fatal("ImplementProjectionRule yielded nothing")
 	}
@@ -246,11 +353,11 @@ func TestProjectionRule_WrapsWinnerNotFirst(t *testing.T) {
 func TestGetWinnerForOrdering_PreserveOnRefWithMultiplePhysical(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := winnerLookupFullScan(t, "T", "ID")
 	ref := expressions.InitialOf(scan)
 
 	scanRule := NewPrimaryScanRule()
-	FireExpressionRule(scanRule, ref)
+	mustWinnerLookupFireRule(t, scanRule, ref)
 
 	// Verify findPhysicalPlan finds something
 	plan := findPhysicalPlan(ref)
@@ -290,21 +397,21 @@ func TestFilterRule_UsesWinnerPerOrdering(t *testing.T) {
 	t.Parallel()
 
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := winnerLookupFullScan(t, "Order", "ID")
 	innerRef := expressions.InitialOf(scan)
 
 	scanRule := NewPrimaryScanRule()
-	FireExpressionRule(scanRule, innerRef)
+	mustWinnerLookupFireRule(t, scanRule, innerRef)
 
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustWinnerLookupConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
 		expressions.ForEachQuantifier(innerRef),
-	)
+	))
 	topRef := expressions.InitialOf(filter)
 
 	// Fire without constraints — should still yield at least 1 plan (PRESERVE fallback)
 	filterRule := NewImplementFilterRule()
-	yielded := FireExpressionRule(filterRule, topRef)
+	yielded := mustWinnerLookupFireRule(t, filterRule, topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementFilterRule yielded %d without constraints, want 1", len(yielded))
 	}
@@ -327,9 +434,9 @@ func TestPinOrderedSpine(t *testing.T) {
 	t.Parallel()
 
 	ordered := sortedMemberOn(t, "S")
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := winnerLookupFullScan(t, "T", "S")
 	srcRef := expressions.InitialOf(scan)
-	FireExpressionRule(NewPrimaryScanRule(), srcRef)
+	mustWinnerLookupFireRule(t, NewPrimaryScanRule(), srcRef)
 	cheap := findPhysicalExpr(srcRef)
 	if cheap == nil {
 		t.Fatal("no physical scan")
@@ -339,14 +446,14 @@ func TestPinOrderedSpine(t *testing.T) {
 	srcRef.InsertFinal(ordered)
 	srcRef.SetWinner(cheap)
 
-	basePlan := plans.NewRecordQueryPredicatesFilterPlan(
-		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+	basePlan := mustWinnerLookupConstruct(plans.NewRecordQueryPredicatesFilterPlan(
+		winnerLookupPlanScan(t, "T", "S"),
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-	)
-	wrapper := basePlan.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(srcRef)})
+	))
+	wrapper := mustWinnerLookupWithQuantifiers(t, basePlan, []expressions.Quantifier{expressions.ForEachQuantifier(srcRef)})
 
 	reqS := properties.NewRequestedOrdering(
-		[]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("S", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}},
+		[]properties.RequestedOrderingPart{{Value: winnerLookupSortValue(t, ordered), SortOrder: properties.RequestedSortOrderAscending}},
 		properties.DistinctnessPreserveDistinctness, false)
 
 	pinned := pinOrderedSpine(wrapper, reqS, nil)
@@ -356,6 +463,9 @@ func TestPinOrderedSpine(t *testing.T) {
 	qs := pinned.GetQuantifiers()
 	if len(qs) != 1 {
 		t.Fatalf("pinned wrapper must keep its single quantifier, got %d", len(qs))
+	}
+	if !qs[0].GetRangesOver().IsPinnedFinal() {
+		t.Fatal("the ordered spine edge must carry the explicit physical-selection pin")
 	}
 	members := qs[0].GetRangesOver().AllMembers()
 	if len(members) != 1 || members[0] != ordered {
@@ -369,7 +479,7 @@ func TestPinOrderedSpine(t *testing.T) {
 
 	// Unpinnable (no satisfying member) declines with nil.
 	loneRef := expressions.InitialOf(cheap)
-	loneWrapper := basePlan.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(loneRef)})
+	loneWrapper := mustWinnerLookupWithQuantifiers(t, basePlan, []expressions.Quantifier{expressions.ForEachQuantifier(loneRef)})
 	if got := pinOrderedSpine(loneWrapper, reqS, nil); got != nil {
 		t.Fatalf("delegator over an orderless group must decline, got %T", got)
 	}
@@ -390,21 +500,24 @@ func TestPinOrderedSpine_DeclinesWhenRelinkRefused(t *testing.T) {
 	// set) delegating over an in-memory sort on S.
 	sorted := sortedMemberOn(t, "S")
 	sortedRef := expressions.InitialOf(sorted)
-	orderedProjection := plans.NewRecordQueryProjectionPlanFromQuantifier(
-		[]values.Value{values.NewFlatFieldValue("S", values.UnknownType)},
+	projectionQ := expressions.ForEachQuantifier(sortedRef)
+	orderedProjection := mustWinnerLookupConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{winnerLookupQuantifiedField(t, projectionQ, 0)},
 		nil,
-		expressions.ForEachQuantifier(sortedRef),
-	)
+		projectionQ,
+	))
 
 	srcRef := expressions.InitialOf(orderedProjection)
 
-	wrapper := plans.NewRecordQueryPredicatesFilterPlan(
-		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+	wrapperBase := mustWinnerLookupConstruct(plans.NewRecordQueryPredicatesFilterPlan(
+		mustWinnerLookupConstruct(plans.NewRecordQueryScanPlan(
+			[]string{"T"}, orderedProjection.GetResultValue().Type(), false)),
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-	).WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(srcRef)})
+	))
+	wrapper := mustWinnerLookupWithQuantifiers(t, wrapperBase, []expressions.Quantifier{expressions.ForEachQuantifier(srcRef)})
 
 	reqS := properties.NewRequestedOrdering(
-		[]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("S", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}},
+		[]properties.RequestedOrderingPart{{Value: winnerLookupSortValue(t, sorted), SortOrder: properties.RequestedSortOrderAscending}},
 		properties.DistinctnessPreserveDistinctness, false)
 
 	if got := pinOrderedSpine(wrapper, reqS, nil); got != nil {
@@ -434,9 +547,9 @@ func TestPinOrderedSpine_DeclinesWhenRelinkRefused(t *testing.T) {
 func TestGetWinnerForOrdering_SatisfiedContract(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := winnerLookupFullScan(t, "T", "ID")
 	ref := expressions.InitialOf(scan)
-	FireExpressionRule(NewPrimaryScanRule(), ref)
+	mustWinnerLookupFireRule(t, NewPrimaryScanRule(), ref)
 	phys := findPhysicalExpr(ref)
 	if phys == nil {
 		t.Fatal("no physical expr after PrimaryScanRule")
@@ -454,8 +567,10 @@ func TestGetWinnerForOrdering_SatisfiedContract(t *testing.T) {
 	t.Run("unsatisfiable ordering yields the fallback with satisfied=false", func(t *testing.T) {
 		t.Parallel()
 		// A bare unordered primary scan cannot satisfy an ordering on X.
+		xOwner := mustWinnerLookupConstruct(values.NewQuantifiedObjectValue(
+			values.NamedCorrelationIdentifier("requested_x"), winnerLookupRowType("X")))
 		reqX := properties.NewRequestedOrdering(
-			[]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("X", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}},
+			[]properties.RequestedOrderingPart{{Value: winnerLookupField(t, xOwner, 0), SortOrder: properties.RequestedSortOrderAscending}},
 			properties.DistinctnessPreserveDistinctness, false)
 		w, satisfied := getWinnerForOrdering(ref, reqX, nil)
 		if w == nil {

@@ -266,11 +266,15 @@ func TestReadPathAgreement_EmptyArrayAndAbsence(t *testing.T) {
 			// Path 1: the base-scan positional row, read by ordinal.
 			got1 := normalizeReadPathValue(posRow.Slots[fd.Index()])
 
-			// Path 2: the struct descent in the values package. A FieldValue
-			// with no child, evaluated against a MESSAGE context, resolves
-			// through protoFieldByName — the same helper (and the same
-			// presence guard) the grouping path's leaf accessors use.
-			raw2, err := values.NewFieldValue(nil, tc.field, values.UnknownType).Evaluate(msg.Interface())
+			// Path 2: the exact struct descent in the values package. The
+			// descriptor-shaped QOV is bound to the message and the resolved
+			// ordinal reads through the same presence-aware proto authority.
+			corr := values.NamedCorrelationIdentifier("read_path_proto")
+			qov := mustTestQOV(t, corr, PositionalTypeForDescriptor(desc))
+			field := mustTestFieldOrdinal(t, qov, fd.Index())
+			raw2, err := field.Evaluate(&values.RowEvalContext{
+				Correlations: stubBinder{corr: msg.Interface()},
+			})
 			if err != nil {
 				t.Fatalf("values.FieldValue.Evaluate(%q): %v", tc.field, err)
 			}

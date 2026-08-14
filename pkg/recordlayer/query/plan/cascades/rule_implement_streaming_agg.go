@@ -96,6 +96,7 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	if innerRef == nil {
 		return
 	}
+	inputAlias := gb.GetInner().GetAlias()
 
 	innerPlan := findPhysicalPlan(innerRef)
 	if innerPlan == nil {
@@ -122,8 +123,13 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 				}
 				// Count-only, no grouping keys → no ordering precondition, so carry
 				// the LIVE shared-group edge (RFC-184 W2, no physicalStreamingAggWrapper).
-				coveringQ := expressions.ForEachQuantifier(call.MemoizeExpression(coveringPlan))
-				call.Yield(plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(coveringQ, groupingKeys, gb.GetAggregates()))
+				coveringQ := expressions.NamedPhysicalQuantifier(inputAlias, call.MemoizeExpression(coveringPlan))
+				aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(coveringQ, groupingKeys, gb.GetAggregates())
+				if err != nil {
+					call.Fail(err)
+					return
+				}
+				call.Yield(aggPlan)
 			}
 		}
 		// Yield an aggregate over EVERY physical alternative of the
@@ -146,8 +152,13 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 			// Count-only, no grouping keys → no ordering precondition, so carry the
 			// LIVE shared-group edge over the member (RFC-184 W2, no
 			// physicalStreamingAggWrapper). GetInner resolves the member's plan.
-			innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(m))
-			call.Yield(plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(innerQ, groupingKeys, gb.GetAggregates()))
+			innerQ := expressions.NamedPhysicalQuantifier(inputAlias, call.MemoizeExpression(m))
+			aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(innerQ, groupingKeys, gb.GetAggregates())
+			if err != nil {
+				call.Fail(err)
+				return
+			}
+			call.Yield(aggPlan)
 		}
 		return
 	}
@@ -181,12 +192,7 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 		// at plan time; Field is DISPLAY-ONLY (Explain + the ordering-hint
 		// name match): a bare childless key renders its bare name, anything
 		// else the full explain rendering.
-		field := ""
-		if fv, ok := gk.(*values.FieldValue); ok && fv.Child == nil && fv.Resolved == nil {
-			field = fv.Field
-		} else {
-			field = values.ExplainValue(gk)
-		}
+		field := values.ExplainValue(gk)
 		// NullsFirst: the pre-aggregate sort is ascending, and the default for
 		// ascending order is NULLS FIRST (Java ParseHelpers.isNullsLast —
 		// `ASC NULLS FIRST, DESC NULLS LAST` — which is also FDB tuple order,
@@ -209,9 +215,22 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 		// grouping-key order intrinsically. Build the bare sort over the first
 		// physical member's plan (a frozen QuantifierOverPlan snapshot) and carry it
 		// as the LIVE shared-group edge under the aggregation.
-		sortedPlan := plans.NewRecordQueryInMemorySortPlan(innerPlan, sortKeys)
-		sortQ := expressions.ForEachQuantifier(call.MemoizeExpression(sortedPlan))
-		call.Yield(plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(sortQ, groupingKeys, gb.GetAggregates()))
+		sortInputQ := expressions.NamedPhysicalQuantifier(
+			inputAlias,
+			expressions.FinalOfAtStage(innerPlan, expressions.StageCanonical),
+		)
+		sortedPlan, err := plans.NewRecordQueryInMemorySortPlanFromQuantifier(sortInputQ, sortKeys)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		sortQ := expressions.NamedPhysicalQuantifier(inputAlias, call.MemoizeExpression(sortedPlan))
+		aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(sortQ, groupingKeys, gb.GetAggregates())
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		call.Yield(aggPlan)
 	}
 
 	// If an ordered physical expression exists (e.g. index scan whose
@@ -247,7 +266,7 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 			// group to its winner — a cheaper UNORDERED sibling would put
 			// equal keys in separate runs and silently split groups.
 			// pinOrderedSpine bakes each delegation level to its cheapest
-			// satisfying member as a FinalOf singleton and verifies the pin
+			// satisfying member as a PinnedFinalOf singleton and verifies the pin
 			// reached the EXECUTABLE plan; a non-delegator passes through
 			// unchanged. Java bakes the concrete ordered child at rule time
 			// (memoizePlan); this is that discipline extended through the
@@ -265,12 +284,17 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 			pinned := pinOrderedSpine(orderedExpr, groupReq, call.CostModel())
 			if _, isPE := pinned.(physicalPlanExpression); pinned != nil && isPE {
 				// The ordered inner is a DELEGATING spine (Fetch/Filter over an
-				// index): pinOrderedSpine baked it to FinalOf singletons so it
+				// index): pinOrderedSpine baked it to PinnedFinalOf singletons so it
 				// cannot float to an unordered sibling and split groups. Carry that
 				// FROZEN edge — the correct freeze for a delegating ordered inner
 				// (RFC-184 W2, no physicalStreamingAggWrapper).
-				orderedQ := expressions.ForEachQuantifier(expressions.FinalOf(pinned))
-				call.Yield(plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(orderedQ, groupingKeys, gb.GetAggregates()))
+				orderedQ := expressions.NamedPhysicalQuantifier(inputAlias, expressions.FinalOf(pinned))
+				aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(orderedQ, groupingKeys, gb.GetAggregates())
+				if err != nil {
+					call.Fail(err)
+					return
+				}
+				call.Yield(aggPlan)
 			}
 		}
 	}

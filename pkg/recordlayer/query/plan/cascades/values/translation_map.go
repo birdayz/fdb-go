@@ -111,8 +111,8 @@ func (b *TranslationMapBuilder) Build() TranslationMap {
 // (constants, parameters) report ok=false and pass through untranslated.
 func ownCorrelationOfLeaf(v Value) (CorrelationIdentifier, bool) {
 	switch q := v.(type) {
-	case *QuantifiedObjectValue:
-		return q.Correlation, true
+	case *quantifiedObjectValue:
+		return q.correlation, true
 	case *QuantifiedRecordValue:
 		return q.Alias, true
 	case *ScalarSubqueryValue:
@@ -132,26 +132,48 @@ func ownCorrelationOfLeaf(v Value) (CorrelationIdentifier, bool) {
 // early-out, then replaceLeavesMaybe with visitNewLeaves=false (Go's
 // ReplaceLeavesOnceMaybe — replacement leaves are never re-translated, the
 // load-bearing semantics for self-referential substitutions). Rebuilds go
-// through withChildren, where a baked enclosing FieldValue FUSES over a baked
-// FieldValue replacement (replace.go — Java's withNewChild =
-// ofFieldsAndFuseIfPossible). Pointer-stable when nothing translates.
+// through the checked rewrite authority, where an enclosing exact FieldValue
+// FUSES over an exact FieldValue replacement (replace.go — Java's
+// withNewChild = ofFieldsAndFuseIfPossible). Pointer-stable when nothing
+// translates. This Value-only compatibility surface cannot return the typed
+// reconstruction error, so it returns nil on failure; callers that need the
+// diagnostic use TranslateCorrelationsChecked.
 func TranslateCorrelations(v Value, m TranslationMap) Value {
+	translated, err := TranslateCorrelationsChecked(v, m)
+	if err != nil {
+		// The legacy Value-only surface cannot carry the typed reconstruction
+		// error. Fail closed: nil is an invalid translated tree and therefore
+		// cannot be mistaken for either the original value or a partial rebuild.
+		return nil
+	}
+	return translated
+}
+
+// TranslateCorrelationsChecked applies a TranslationMap through the checked
+// rewrite spine. In particular, a FieldValue whose QOV leaf changes is rebuilt
+// from the replacement's exact root; incompatible replacements return a typed
+// error and no original or partially rebuilt Value.
+func TranslateCorrelationsChecked(v Value, m TranslationMap) (Value, error) {
 	if v == nil || m == nil {
-		return v
+		return v, nil
 	}
 	// Typed-nil guard: a nil *RegularTranslationMap inside a non-nil interface
 	// passes the check above but would deref in DefinesOnlyIdentities.
 	if rm, ok := m.(*RegularTranslationMap); ok && rm == nil {
-		return v
+		return v, nil
 	}
 	if m.DefinesOnlyIdentities() {
-		return v
+		return v, nil
 	}
-	return ReplaceLeavesOnceMaybe(v, func(leaf Value) Value {
+	return replaceLeavesOnceMaybeChecked(v, func(leaf Value) (Value, error) {
 		alias, ok := ownCorrelationOfLeaf(leaf)
 		if !ok || !m.ContainsSourceAlias(alias) {
-			return leaf
+			return leaf, nil
 		}
-		return m.ApplyTranslationFunction(alias, leaf)
+		replacement := m.ApplyTranslationFunction(alias, leaf)
+		if replacement == nil {
+			return nil, resolutionError(RewriteNilReplacement, "translation.replacement", "translation callback returned nil")
+		}
+		return replacement, nil
 	})
 }

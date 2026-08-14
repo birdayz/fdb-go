@@ -113,7 +113,7 @@ func TestMergeSortCursor_PullErrorOnFirstInitLeg(t *testing.T) {
 			plainCursor(20),
 			plainCursor(30),
 		},
-		idKey(), false, false,
+		idKey(t), false, false,
 	)
 	defer c.Close()
 
@@ -139,7 +139,7 @@ func TestMergeSortCursor_PullErrorOnMiddleInitLeg(t *testing.T) {
 			mkErrThenOKCursor(1, 20), // errors on its very first pull
 			plainCursor(30),
 		},
-		idKey(), false, false,
+		idKey(t), false, false,
 	)
 	defer c.Close()
 
@@ -167,7 +167,7 @@ func TestMergeSortCursor_PullErrorOnLaterRoundAdmit(t *testing.T) {
 			plainCursor(20),
 			plainCursor(30, 50),
 		},
-		idKey(), false, false,
+		idKey(t), false, false,
 	)
 	defer c.Close()
 

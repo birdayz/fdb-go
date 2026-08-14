@@ -19,26 +19,33 @@ func flatMapOverDistinct(t *testing.T, outerRows, innerRows int) (*EvaluationCon
 	outerAlias := values.NamedCorrelationIdentifier("fm_outer_" + t.Name())
 	innerAlias := values.NamedCorrelationIdentifier("fm_inner_" + t.Name())
 	innerSrc := values.NamedCorrelationIdentifier("fm_src_" + t.Name())
+	outerType := exactTestRowType(values.Field{Name: "O", FieldType: values.NotNullLong})
+	innerType := exactTestRowType(values.Field{Name: "V", FieldType: values.NotNullLong})
+	typedRow := func(typ *values.RecordType, value int64) QueryResult {
+		row := NewPositionalRow(typ)
+		row.Set(0, value)
+		return QueryResult{Positional: row}
+	}
 
 	outerTbl := evalCtx.GetOrCreateTempTable(outerAlias, nil)
 	for i := 0; i < outerRows; i++ {
-		if err := outerTbl.Add(dmap(map[string]any{"O": int64(i)})); err != nil {
+		if err := outerTbl.Add(typedRow(outerType, int64(i))); err != nil {
 			t.Fatalf("seed outer: %v", err)
 		}
 	}
 	innerTbl := evalCtx.GetOrCreateTempTable(innerSrc, nil)
 	for i := 0; i < innerRows; i++ {
-		if err := innerTbl.Add(dmap(map[string]any{"V": int64(i)})); err != nil {
+		if err := innerTbl.Add(typedRow(innerType, int64(i))); err != nil {
 			t.Fatalf("seed inner: %v", err)
 		}
 	}
-	plan := plans.NewRecordQueryFlatMapPlan(
-		plans.NewRecordQueryTempTableScanPlan(outerAlias),
-		plans.NewRecordQueryDistinctPlan(plans.NewRecordQueryTempTableScanPlan(innerSrc)),
+	plan := mustExecutorConstruct(plans.NewRecordQueryFlatMapPlan(
+		mustTempTableScan(t, evalCtx, outerAlias),
+		mustExecutorConstruct(plans.NewRecordQueryDistinctPlan(mustTempTableScan(t, evalCtx, innerSrc))),
 		outerAlias, innerAlias,
-		values.NewQuantifiedObjectValue(innerAlias),
+		mustTestQOV(t, innerAlias, innerType),
 		false,
-	)
+	))
 	return evalCtx, plan
 }
 

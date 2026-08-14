@@ -2,6 +2,8 @@ package predicates
 
 import (
 	"sort"
+	"strings"
+	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -40,13 +42,33 @@ func (r predRow) Get(ord int) (any, bool) {
 // of column names the row(s) carry (a fixed schema across a table of rows);
 // pass every column so ordinals are stable. pbake panics if field is absent
 // from schema (a test bug).
-func pbake(field string, typ values.Type, schema ...string) *values.FieldValue {
+func pbake(t testing.TB, field string, typ values.Type, schema ...string) values.Value {
+	t.Helper()
 	sorted := append([]string(nil), schema...)
 	sort.Strings(sorted)
+	fields := make([]values.Field, len(sorted))
+	for i, name := range sorted {
+		fieldType := values.NullableLong
+		if name == field {
+			fieldType = typ
+		}
+		fields[i] = values.Field{Name: name, FieldType: fieldType, Ordinal: i}
+	}
+	rowType := values.NewRecordType("pred_row_"+strings.Join(sorted, "_"), false, fields)
+	root := mustQOV(t, values.NamedCorrelationIdentifier("pred_row_"+strings.Join(sorted, "_")), rowType)
 	for i, k := range sorted {
 		if k == field {
-			return values.NewFieldValueWithResolvedOrdinal(field, i, typ)
+			request, err := values.FieldByNameAndOrdinal(field, i)
+			if err != nil {
+				t.Fatalf("pbake request: %v", err)
+			}
+			resolved, err := values.ResolveFieldAccess(root, []values.FieldRequest{request})
+			if err != nil {
+				t.Fatalf("pbake resolve: %v", err)
+			}
+			return resolved
 		}
 	}
-	panic("pbake: field not in schema: " + field)
+	t.Fatalf("pbake: field not in schema: %s", field)
+	return nil
 }

@@ -17,6 +17,7 @@ import (
 type coveredOrdinalSet struct {
 	domain   values.OrdinalDomain
 	ordinals map[int]struct{}
+	rowType  values.ExactTypeHandle
 }
 
 // buildCoveredOrdinalSets resolves a covered-column NAME set against each row
@@ -50,6 +51,10 @@ func buildCoveredOrdinalSets(rowTypes []values.Type, coveredColumns map[string]s
 		if !ok {
 			continue
 		}
+		exactRowType, err := values.SnapshotExactType(rt)
+		if err != nil {
+			continue
+		}
 		ordinals := make(map[int]struct{}, len(coveredColumns))
 		for i, f := range rt.Fields {
 			if _, covered := coveredColumns[strings.ToUpper(f.Name)]; covered {
@@ -59,32 +64,27 @@ func buildCoveredOrdinalSets(rowTypes []values.Type, coveredColumns map[string]s
 		if len(ordinals) == 0 {
 			continue
 		}
-		sets = append(sets, coveredOrdinalSet{domain: domain, ordinals: ordinals})
+		sets = append(sets, coveredOrdinalSet{domain: domain, ordinals: ordinals, rowType: exactRowType})
 	}
 	return sets
 }
 
-// pushCoveredOrdinal is the match-time half: it answers with the covered
-// ordinal a reference reads, or declines.
-//
-// The domain is a PARAMETER of the question, so the per-site proof ("the
-// frontier here IS the record descriptor") is a predicate the accessor checks
-// rather than a comment the next caller does not read. Everything OrdinalIn
-// declines — a lazy value, a fused multi-accessor path, a negative name-only
-// ordinal, an ordinal that indexes some other layout — declines here too, and
-// nothing falls back to the display name.
-func pushCoveredOrdinal(sets []coveredOrdinalSet, fv *values.FieldValue) (int, values.OrdinalDomain, bool) {
+func pushCoveredOrdinalWithType(
+	sets []coveredOrdinalSet,
+	fv values.FieldValue,
+) (int, values.OrdinalDomain, values.Type, bool) {
 	for _, set := range sets {
-		ord, ok := fv.OrdinalIn(set.domain)
+		identity, ok := values.CorrelatedFieldIdentityIn(fv, set.domain)
 		if !ok {
 			continue
 		}
+		ord := identity.Ordinal
 		if _, covered := set.ordinals[ord]; covered {
-			return ord, set.domain, true
+			return ord, set.domain, set.rowType.Type(), true
 		}
 		// The value's layout IS this set's layout and the ordinal is not
 		// covered: a definite NO, not a reason to try another layout.
-		return 0, values.OrdinalDomain{}, false
+		return 0, values.OrdinalDomain{}, nil, false
 	}
-	return 0, values.OrdinalDomain{}, false
+	return 0, values.OrdinalDomain{}, nil, false
 }

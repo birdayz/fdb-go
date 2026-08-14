@@ -6,24 +6,31 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
+
+func requestedOrderingDistinctFixture() (
+	expressions.Quantifier,
+	*expressions.LogicalDistinctExpression,
+	*expressions.Reference,
+) {
+	q := requestedOrderingQuantifier("T", "distinct_input")
+	distinct := mustRequestedOrderingConstruct(expressions.NewLogicalDistinctExpression(q))
+	return q, distinct, expressions.InitialOf(distinct)
+}
 
 func TestPushRequestedOrderingThroughDistinct_PropagatesConstraint(t *testing.T) {
 	t.Parallel()
 
 	// Build: Distinct(Scan)
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	distinct := expressions.NewLogicalDistinctExpression(scanQ)
-	distinctRef := expressions.InitialOf(distinct)
+	scanQ, distinct, distinctRef := requestedOrderingDistinctFixture()
+	col1 := requestedOrderingField(scanQ, "COL1")
 
 	// Set a requested ordering constraint on the Distinct's Reference
 	// (as if pushed by a parent Sort rule).
 	cm := NewConstraintMap()
 	ordering := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+			{Value: col1, SortOrder: properties.RequestedSortOrderAscending},
 		},
 		properties.DistinctnessNotDistinct, false,
 	)
@@ -42,7 +49,7 @@ func TestPushRequestedOrderingThroughDistinct_PropagatesConstraint(t *testing.T)
 		Constraints:    cm,
 		constraintOnly: true,
 	}
-	rule.OnMatch(call)
+	mustRunRequestedOrderingRule(t, rule, call)
 
 	// The constraint should now be pushed to the inner (scan) Reference.
 	innerRef := distinct.GetInner().GetRangesOver()
@@ -57,10 +64,7 @@ func TestPushRequestedOrderingThroughDistinct_PropagatesConstraint(t *testing.T)
 	if len(parts) != 1 {
 		t.Fatalf("expected 1 ordering part, got %d", len(parts))
 	}
-	fv, ok := parts[0].Value.(*values.FieldValue)
-	if !ok || fv.Field != "col1" {
-		t.Fatalf("expected ordering on col1, got %v", parts[0].Value)
-	}
+	assertRequestedOrderingField(t, parts[0].Value, col1)
 	if parts[0].SortOrder != properties.RequestedSortOrderAscending {
 		t.Fatal("expected ASC sort order")
 	}
@@ -69,10 +73,7 @@ func TestPushRequestedOrderingThroughDistinct_PropagatesConstraint(t *testing.T)
 func TestPushRequestedOrderingThroughDistinct_NoConstraintDoesNotPush(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	distinct := expressions.NewLogicalDistinctExpression(scanQ)
-	distinctRef := expressions.InitialOf(distinct)
+	_, distinct, distinctRef := requestedOrderingDistinctFixture()
 
 	cm := NewConstraintMap()
 
@@ -84,7 +85,7 @@ func TestPushRequestedOrderingThroughDistinct_NoConstraintDoesNotPush(t *testing
 		Constraints:    cm,
 		constraintOnly: true,
 	}
-	rule.OnMatch(call)
+	mustRunRequestedOrderingRule(t, rule, call)
 
 	// No constraint set on parent → nothing pushed to child.
 	innerRef := distinct.GetInner().GetRangesOver()
@@ -97,15 +98,13 @@ func TestPushRequestedOrderingThroughDistinct_NoConstraintDoesNotPush(t *testing
 func TestPushRequestedOrderingThroughDistinct_NotConstraintOnlyDoesNotPush(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	distinct := expressions.NewLogicalDistinctExpression(scanQ)
-	distinctRef := expressions.InitialOf(distinct)
+	scanQ, distinct, distinctRef := requestedOrderingDistinctFixture()
+	col1 := requestedOrderingField(scanQ, "COL1")
 
 	cm := NewConstraintMap()
 	ordering := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+			{Value: col1, SortOrder: properties.RequestedSortOrderAscending},
 		},
 		properties.DistinctnessNotDistinct, false,
 	)
@@ -119,7 +118,7 @@ func TestPushRequestedOrderingThroughDistinct_NotConstraintOnlyDoesNotPush(t *te
 		Constraints:    cm,
 		constraintOnly: false, // bottom-up implementation pass
 	}
-	rule.OnMatch(call)
+	mustRunRequestedOrderingRule(t, rule, call)
 
 	// constraintOnly=false → rule is a no-op, nothing pushed.
 	innerRef := distinct.GetInner().GetRangesOver()
@@ -132,16 +131,15 @@ func TestPushRequestedOrderingThroughDistinct_NotConstraintOnlyDoesNotPush(t *te
 func TestPushRequestedOrderingThroughDistinct_MultipleSortKeys(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	distinct := expressions.NewLogicalDistinctExpression(scanQ)
-	distinctRef := expressions.InitialOf(distinct)
+	scanQ, distinct, distinctRef := requestedOrderingDistinctFixture()
+	a := requestedOrderingField(scanQ, "A")
+	b := requestedOrderingField(scanQ, "B")
 
 	cm := NewConstraintMap()
 	ordering := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
-			{Value: &values.FieldValue{Field: "b", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderDescending},
+			{Value: a, SortOrder: properties.RequestedSortOrderAscending},
+			{Value: b, SortOrder: properties.RequestedSortOrderDescending},
 		},
 		properties.DistinctnessNotDistinct, false,
 	)
@@ -155,7 +153,7 @@ func TestPushRequestedOrderingThroughDistinct_MultipleSortKeys(t *testing.T) {
 		Constraints:    cm,
 		constraintOnly: true,
 	}
-	rule.OnMatch(call)
+	mustRunRequestedOrderingRule(t, rule, call)
 
 	innerRef := distinct.GetInner().GetRangesOver()
 	pushed, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
@@ -166,26 +164,25 @@ func TestPushRequestedOrderingThroughDistinct_MultipleSortKeys(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("expected 2 ordering parts, got %d", len(parts))
 	}
-	if fv := parts[0].Value.(*values.FieldValue); fv.Field != "a" || parts[0].SortOrder != properties.RequestedSortOrderAscending {
-		t.Fatalf("first part: want a ASC, got %s %v", fv.Field, parts[0].SortOrder)
-	}
-	if fv := parts[1].Value.(*values.FieldValue); fv.Field != "b" || parts[1].SortOrder != properties.RequestedSortOrderDescending {
-		t.Fatalf("second part: want b DESC, got %s %v", fv.Field, parts[1].SortOrder)
+	assertRequestedOrderingField(t, parts[0].Value, a)
+	assertRequestedOrderingField(t, parts[1].Value, b)
+	if parts[0].SortOrder != properties.RequestedSortOrderAscending ||
+		parts[1].SortOrder != properties.RequestedSortOrderDescending {
+		t.Fatalf("sort directions = [%v, %v], want [ASC, DESC]",
+			parts[0].SortOrder, parts[1].SortOrder)
 	}
 }
 
 func TestPushRequestedOrderingThroughDistinct_DescPreserved(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	distinct := expressions.NewLogicalDistinctExpression(scanQ)
-	distinctRef := expressions.InitialOf(distinct)
+	scanQ, distinct, distinctRef := requestedOrderingDistinctFixture()
+	a := requestedOrderingField(scanQ, "A")
 
 	cm := NewConstraintMap()
 	ordering := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderDescending},
+			{Value: a, SortOrder: properties.RequestedSortOrderDescending},
 		},
 		properties.DistinctnessNotDistinct, false,
 	)
@@ -199,7 +196,7 @@ func TestPushRequestedOrderingThroughDistinct_DescPreserved(t *testing.T) {
 		Constraints:    cm,
 		constraintOnly: true,
 	}
-	rule.OnMatch(call)
+	mustRunRequestedOrderingRule(t, rule, call)
 
 	innerRef := distinct.GetInner().GetRangesOver()
 	pushed, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
@@ -215,15 +212,13 @@ func TestPushRequestedOrderingThroughDistinct_NoYield(t *testing.T) {
 	t.Parallel()
 
 	// The constraint-push rule should never yield expressions.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	distinct := expressions.NewLogicalDistinctExpression(scanQ)
-	distinctRef := expressions.InitialOf(distinct)
+	scanQ, distinct, distinctRef := requestedOrderingDistinctFixture()
+	a := requestedOrderingField(scanQ, "A")
 
 	cm := NewConstraintMap()
 	ordering := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+			{Value: a, SortOrder: properties.RequestedSortOrderAscending},
 		},
 		properties.DistinctnessNotDistinct, false,
 	)
@@ -237,7 +232,7 @@ func TestPushRequestedOrderingThroughDistinct_NoYield(t *testing.T) {
 		Constraints:    cm,
 		constraintOnly: true,
 	}
-	rule.OnMatch(call)
+	mustRunRequestedOrderingRule(t, rule, call)
 
 	if len(call.yielded) != 0 {
 		t.Fatalf("constraint-push rule should not yield expressions, but yielded %d", len(call.yielded))

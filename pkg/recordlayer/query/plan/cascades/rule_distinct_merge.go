@@ -36,7 +36,11 @@ func (r *DistinctMergeRule) OnMatch(call *ExpressionRuleCall) {
 	if !ok {
 		return
 	}
-	rewritten := expressions.NewLogicalDistinctExpression(inner.GetInner())
+	rewritten, err := expressions.NewLogicalDistinctExpression(inner.GetInner())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	call.Yield(rewritten)
 }
 

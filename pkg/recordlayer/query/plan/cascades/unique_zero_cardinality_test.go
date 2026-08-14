@@ -12,15 +12,23 @@ import (
 // two: the executor reads both signs and a unique index can hold both keys.
 func TestUniqueIndexZeroEqualityIsNotAtMostOne(t *testing.T) {
 	t.Parallel()
+	row := values.NewRecordType("UniqueZeroRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "V", FieldType: values.NullableDouble},
+	})
 	mk := func(lit any) *plans.RecordQueryIndexPlan {
 		cr := predicates.EmptyComparisonRange()
 		res := cr.Merge(&predicates.Comparison{
 			Type: predicates.ComparisonEquals, Operand: values.LiteralValue(lit),
 		})
-		return plans.NewRecordQueryIndexPlan("IDX",
+		plan, err := plans.NewRecordQueryIndexPlan("IDX",
 			[]*predicates.ComparisonRange{res.Range},
-			[]string{"T"}, values.UnknownType, false,
-		).WithKeyComponentTypes([]values.Type{values.NullableDouble}).
+			[]string{"T"}, row, false,
+		)
+		if err != nil {
+			t.Fatalf("NewRecordQueryIndexPlan: %v", err)
+		}
+		return plan.WithKeyComponentTypes([]values.Type{values.NullableDouble}).
 			WithIndexMetadata([]string{"V"}, []string{"ID"}, true)
 	}
 	nonZero := computeCardinalities(nil, mk(float64(5)))

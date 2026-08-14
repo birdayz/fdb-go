@@ -468,12 +468,24 @@ func TestBiMap_StructuralEquality(t *testing.T) {
 	t.Parallel()
 
 	bm := NewValueBiMap()
+	rowType := values.NewRecordType("BiMapRow", false, []values.Field{
+		{Name: "col1", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "agg_sum", FieldType: values.NullableLong, Ordinal: 1},
+	})
+	resolved := func(ordinal int) values.Value {
+		t.Helper()
+		root, err := values.NewQuantifiedObjectValue(
+			values.NamedCorrelationIdentifier("BIMAP"), rowType)
+		root = mustConstruct(t, root, err)
+		value, err := values.ResolveFieldOrdinals(root, []int{ordinal})
+		return mustConstruct(t, value, err)
+	}
 
 	// Create two structurally identical but pointer-different Values.
-	v1 := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
-	v2 := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
+	v1 := resolved(0)
+	v2 := resolved(0)
 
-	target := &values.FieldValue{Field: "agg_sum", Typ: values.NullableLong}
+	target := resolved(1)
 
 	bm.Put(v1, target)
 
@@ -487,7 +499,7 @@ func TestBiMap_StructuralEquality(t *testing.T) {
 	}
 
 	// Inverse lookup with a different pointer to the same structure.
-	target2 := &values.FieldValue{Field: "agg_sum", Typ: values.NullableLong}
+	target2 := resolved(1)
 	invKey, ok := bm.GetInverse(target2)
 	if !ok {
 		t.Fatal("structural equality inverse lookup failed — BiMap using pointer identity")

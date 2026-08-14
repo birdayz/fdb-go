@@ -25,11 +25,8 @@ type RecordQueryDeletePlan struct {
 }
 
 // NewRecordQueryDeletePlan constructs the DELETE plan.
-func NewRecordQueryDeletePlan(inner RecordQueryPlan, targetRecordType string) *RecordQueryDeletePlan {
-	return &RecordQueryDeletePlan{
-		innerQ:           QuantifierOverPlan(inner),
-		targetRecordType: targetRecordType,
-	}
+func NewRecordQueryDeletePlan(inner RecordQueryPlan, targetRecordType string) (*RecordQueryDeletePlan, error) {
+	return NewRecordQueryDeletePlanFromQuantifier(QuantifierOverPlan(inner), targetRecordType)
 }
 
 // NewRecordQueryDeletePlanFromQuantifier builds a DELETE whose child is a LIVE
@@ -39,11 +36,16 @@ func NewRecordQueryDeletePlan(inner RecordQueryPlan, targetRecordType string) *R
 // child edge directly: the memo holds it without a physical wrapper, and
 // GetInner / GetQuantifiers / GetResultValue all resolve through the one live
 // edge (RFC-184 W2).
-func NewRecordQueryDeletePlanFromQuantifier(innerQ expressions.Quantifier, targetRecordType string) *RecordQueryDeletePlan {
+func NewRecordQueryDeletePlanFromQuantifier(innerQ expressions.Quantifier, targetRecordType string) (*RecordQueryDeletePlan, error) {
+	base, err := newPlanExprBaseForQuantifier("RecordQueryDeletePlan", innerQ)
+	if err != nil {
+		return nil, err
+	}
 	return &RecordQueryDeletePlan{
+		PlanExprBase:     base,
 		innerQ:           innerQ,
 		targetRecordType: targetRecordType,
-	}
+	}, nil
 }
 
 // GetInner returns the source plan, dereferenced through the quantifier.
@@ -53,7 +55,7 @@ func (p *RecordQueryDeletePlan) GetInner() RecordQueryPlan { return planFromQuan
 // DELETE passes its inner's rows through, so the result identity is the inner's,
 // the value physicalDeleteWrapper.GetResultValue supplied (RFC-184 W2).
 func (p *RecordQueryDeletePlan) GetResultValue() values.Value {
-	return p.innerQ.GetFlowedObjectValue()
+	return p.PlanExprBase.GetResultValue()
 }
 
 // GetTargetRecordType returns the destination record-type name.
@@ -69,13 +71,7 @@ func (p *RecordQueryDeletePlan) GetQuantifiers() []expressions.Quantifier {
 }
 
 // GetResultType returns the inner's result type.
-func (p *RecordQueryDeletePlan) GetResultType() values.Type {
-	inner := p.GetInner()
-	if inner == nil {
-		return values.UnknownType
-	}
-	return inner.GetResultType()
-}
+func (p *RecordQueryDeletePlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryDeletePlan) GetChildren() []RecordQueryPlan {
@@ -123,13 +119,18 @@ func (p *RecordQueryDeletePlan) EqualsWithoutChildren(other expressions.Relation
 
 // WithQuantifiers returns a copy ranging over the given child quantifier —
 // Java's copy-on-write withChild(Reference).
-func (p *RecordQueryDeletePlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 1 {
-		return p
+func (p *RecordQueryDeletePlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryDeletePlan", len(qs), 1); err != nil {
+		return nil, err
 	}
 	cp := *p
+	base, err := newPlanExprBaseForQuantifier("RecordQueryDeletePlan", qs[0])
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
 	cp.innerQ = qs[0]
-	return &cp
+	return &cp, nil
 }
 
 // WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
@@ -141,7 +142,7 @@ func (p *RecordQueryDeletePlan) WithChildren(qs []expressions.Quantifier) (expre
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("RecordQueryDeletePlan.WithChildren: expected 1 child, got %d", len(qs))
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

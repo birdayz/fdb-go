@@ -17,7 +17,7 @@ func TestGetCorrelatedToWithoutChildrenOfValue(t *testing.T) {
 	}
 
 	assertOnlyAlias(t, GetCorrelatedToWithoutChildrenOfValue(
-		NewQuantifiedObjectValue(alias),
+		mustQOV(t, alias),
 	))
 	assertOnlyAlias(t, GetCorrelatedToWithoutChildrenOfValue(
 		NewQuantifiedRecordValue(alias, UnknownType),
@@ -26,8 +26,8 @@ func TestGetCorrelatedToWithoutChildrenOfValue(t *testing.T) {
 		NewConstantObjectValue(alias, "constant", UnknownType),
 	))
 
-	field := NewFieldValue(
-		NewQuantifiedObjectValue(alias),
+	field := newFieldValue(
+		mustQOV(t, alias),
 		"x",
 		NullableLong,
 	)
@@ -35,7 +35,7 @@ func TestGetCorrelatedToWithoutChildrenOfValue(t *testing.T) {
 		t.Fatalf("FieldValue root correlations = %v, want empty", got)
 	}
 	if got := GetCorrelatedToWithoutChildrenOfValue(
-		NewExistsValueWithChild(NewQuantifiedObjectValue(alias)),
+		NewExistsValueWithChild(mustQOV(t, alias)),
 	); len(got) != 0 {
 		t.Fatalf("ExistsValue root correlations = %v, want empty", got)
 	}

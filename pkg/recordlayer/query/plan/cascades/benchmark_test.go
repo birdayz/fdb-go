@@ -66,6 +66,44 @@ func (r benchRow) Get(ordinal int) (any, bool) {
 	return r[ordinal], true
 }
 
+// benchExactFields constructs one immutable QOV-rooted field set whose
+// declared ordinal order matches benchRow. Benchmark fixtures used to mint
+// childless/Unknown FieldValues, so a constructor failure made the timed loop
+// measure an error fast-path. Keeping the exact root outside the timed loop
+// preserves the benchmark boundary while making that regression impossible.
+func benchExactFields(tb testing.TB, names ...string) (values.Value, []values.Value) {
+	tb.Helper()
+	fields := make([]values.Field, len(names))
+	for i, name := range names {
+		fields[i] = values.Field{Name: name, Ordinal: i, FieldType: values.NullableLong}
+	}
+	root, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("BENCH"),
+		&values.RecordType{Fields: fields},
+	)
+	root = mustConstruct(tb, root, err)
+	resolved := make([]values.Value, len(names))
+	for i := range names {
+		resolved[i], err = values.ResolveFieldOrdinals(root, []int{i})
+		resolved[i] = mustConstruct(tb, resolved[i], err)
+	}
+	return root, resolved
+}
+
+func benchRowType(names ...string) *values.RecordType {
+	fields := make([]values.Field, len(names))
+	for i, name := range names {
+		fields[i] = values.Field{Name: name, Ordinal: i, FieldType: values.NullableLong}
+	}
+	return &values.RecordType{Fields: fields}
+}
+
+func benchResolved(tb testing.TB, root values.Value, ordinal int) values.Value {
+	tb.Helper()
+	resolved, err := values.ResolveFieldOrdinals(root, []int{ordinal})
+	return mustConstruct(tb, resolved, err)
+}
+
 func BenchmarkConstantValue_Evaluate(b *testing.B) {
 	v := &values.ConstantValue{Value: int64(42), Typ: values.NullableLong}
 	if got, err := v.Evaluate(nil); err != nil || got != int64(42) {
@@ -78,7 +116,8 @@ func BenchmarkConstantValue_Evaluate(b *testing.B) {
 }
 
 func BenchmarkFieldValue_Evaluate(b *testing.B) {
-	v := values.NewFieldValueWithResolvedOrdinal("age", 0, values.NullableLong)
+	_, fields := benchExactFields(b, "age")
+	v := fields[0]
 	row := benchRow{int64(30)}
 	if got, err := v.Evaluate(row); err != nil || got != int64(30) {
 		b.Fatalf("Evaluate = %v, err %v; want 30, nil", got, err)
@@ -91,17 +130,18 @@ func BenchmarkFieldValue_Evaluate(b *testing.B) {
 
 func BenchmarkArithmeticValue_Evaluate(b *testing.B) {
 	// (a + b) * (c - d)
+	_, fields := benchExactFields(b, "a", "b", "c", "d")
 	v := &values.ArithmeticValue{
 		Op: values.OpMul,
 		Left: &values.ArithmeticValue{
 			Op:    values.OpAdd,
-			Left:  values.NewFieldValueWithResolvedOrdinal("a", 0, values.NullableLong),
-			Right: values.NewFieldValueWithResolvedOrdinal("b", 1, values.NullableLong),
+			Left:  fields[0],
+			Right: fields[1],
 		},
 		Right: &values.ArithmeticValue{
 			Op:    values.OpSub,
-			Left:  values.NewFieldValueWithResolvedOrdinal("c", 2, values.NullableLong),
-			Right: values.NewFieldValueWithResolvedOrdinal("d", 3, values.NullableLong),
+			Left:  fields[2],
+			Right: fields[3],
 		},
 	}
 	row := benchRow{int64(3), int64(4), int64(10), int64(5)}
@@ -116,8 +156,9 @@ func BenchmarkArithmeticValue_Evaluate(b *testing.B) {
 }
 
 func BenchmarkComparisonPredicate_Eval(b *testing.B) {
+	_, fields := benchExactFields(b, "age")
 	pred := predicates.NewComparisonPredicate(
-		values.NewFieldValueWithResolvedOrdinal("age", 0, values.NullableLong),
+		fields[0],
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	row := benchRow{int64(30)}
@@ -139,9 +180,10 @@ func BenchmarkComparisonPredicate_Eval(b *testing.B) {
 // both fields. Eval reads both LHS and RHS via map lookup before
 // EvalAgainst's int64 promotion and comparison.
 func BenchmarkComparisonPredicate_Eval_NonConstantRHS(b *testing.B) {
+	_, fields := benchExactFields(b, "age", "cutoff")
 	pred := predicates.NewComparisonPredicate(
-		values.NewFieldValueWithResolvedOrdinal("age", 0, values.NullableLong),
-		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.NewFieldValueWithResolvedOrdinal("cutoff", 1, values.NullableLong)},
+		fields[0],
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: fields[1]},
 	)
 	row := benchRow{int64(18), int64(18)}
 	if got, err := pred.Eval(row); err != nil || got != predicates.TriTrue {
@@ -155,12 +197,13 @@ func BenchmarkComparisonPredicate_Eval_NonConstantRHS(b *testing.B) {
 
 func BenchmarkKleeneAnd_Eval(b *testing.B) {
 	// (age >= 18) AND (rank < 5) AND (score > 50)
+	_, fields := benchExactFields(b, "age", "rank", "score")
 	tree := predicates.NewAnd(
-		predicates.NewComparisonPredicate(values.NewFieldValueWithResolvedOrdinal("age", 0, values.NullableLong),
+		predicates.NewComparisonPredicate(fields[0],
 			predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))}),
-		predicates.NewComparisonPredicate(values.NewFieldValueWithResolvedOrdinal("rank", 1, values.NullableLong),
+		predicates.NewComparisonPredicate(fields[1],
 			predicates.Comparison{Type: predicates.ComparisonLessThan, Operand: values.LiteralValue(int64(5))}),
-		predicates.NewComparisonPredicate(values.NewFieldValueWithResolvedOrdinal("score", 2, values.NullableLong),
+		predicates.NewComparisonPredicate(fields[2],
 			predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(50))}),
 	)
 	row := benchRow{int64(30), int64(3), int64(80)}
@@ -183,10 +226,11 @@ func BenchmarkArithmeticMatcher_BindMatches(b *testing.B) {
 	lhs := matching.NewConstantMatcher()
 	rhs := matching.NewFieldMatcher()
 	matcher := &matching.ArithmeticMatcher{Op: values.OpAdd, Left: lhs, Right: rhs}
+	_, fields := benchExactFields(b, "x")
 	expr := &values.ArithmeticValue{
 		Op:    values.OpAdd,
 		Left:  &values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
-		Right: &values.FieldValue{Field: "x", Typ: values.NullableLong},
+		Right: fields[0],
 	}
 	outer := matching.NewBindings()
 	if got := matcher.BindMatches(outer, expr); len(got) == 0 {
@@ -219,8 +263,9 @@ func BenchmarkAllOf_BindMatches(b *testing.B) {
 // known capstone.
 func BenchmarkSimplify_FullPipeline(b *testing.B) {
 	b.ReportAllocs()
+	_, fields := benchExactFields(b, "age")
 	agePred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.NullableLong},
+		fields[0],
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	// Build fresh each iter — Simplify sees a pristine tree, not a
@@ -243,12 +288,12 @@ func BenchmarkSimplify_FullPipeline(b *testing.B) {
 	// The whole tree must collapse to `agePred` (same expectation as
 	// TestSimplify_FullPipeline). A rule set that stops firing would leave the
 	// full tree standing and time a cheap no-op as if it were the pipeline.
-	if got := Simplify(build(), rules); got != predicates.QueryPredicate(agePred) {
+	if got := mustSimplify(b, build(), rules); got != predicates.QueryPredicate(agePred) {
 		b.Fatalf("Simplify = %T %s; want agePred", got, got.Explain())
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = Simplify(build(), rules)
+		_ = mustSimplify(b, build(), rules)
 	}
 }
 
@@ -258,25 +303,26 @@ func BenchmarkSimplify_FullPipeline(b *testing.B) {
 // shift post-compaction).
 func BenchmarkSimplify_Absorption(b *testing.B) {
 	b.ReportAllocs()
+	_, fields := benchExactFields(b, "a", "b")
 	p := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "a", Typ: values.NullableLong},
+		fields[0],
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))},
 	)
 	q := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "b", Typ: values.NullableLong},
+		fields[1],
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(2))},
 	)
 	rules := DefaultSimplifyRules()
 	// Absorption must reduce `p AND (p OR q)` to `p`; if it stops firing the
 	// benchmark would time the un-absorbed tree and read as a speedup.
-	if got := Simplify(predicates.NewAnd(p, predicates.NewOr(p, q)), rules); got != predicates.QueryPredicate(p) {
+	if got := mustSimplify(b, predicates.NewAnd(p, predicates.NewOr(p, q)), rules); got != predicates.QueryPredicate(p) {
 		b.Fatalf("Simplify = %T %s; want p (absorption)", got, got.Explain())
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		// Fresh per-iteration so we don't memoise.
 		pred := predicates.NewAnd(p, predicates.NewOr(p, q))
-		_ = Simplify(pred, rules)
+		_ = mustSimplify(b, pred, rules)
 	}
 }
 
@@ -287,9 +333,10 @@ func BenchmarkSimplify_Absorption(b *testing.B) {
 func BenchmarkListMatcher_BindMatches(b *testing.B) {
 	b.ReportAllocs()
 	matcher := matching.NewListMatcher(matching.NewConstantMatcher(), matching.NewFieldMatcher(), matching.NewConstantMatcher())
+	_, fields := benchExactFields(b, "x")
 	in := []any{
 		&values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
-		&values.FieldValue{Field: "x", Typ: values.NullableLong},
+		fields[0],
 		&values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
 	}
 	outer := matching.NewBindings()
@@ -330,8 +377,9 @@ func BenchmarkAllElementsMatcher_BindMatches(b *testing.B) {
 // extra rule set's overhead vs DefaultSimplifyRules-only.
 func BenchmarkSimplify_DeMorgan(b *testing.B) {
 	b.ReportAllocs()
-	a := &values.FieldValue{Field: "a", Typ: values.NullableLong}
-	bb := &values.FieldValue{Field: "b", Typ: values.NullableLong}
+	_, fields := benchExactFields(b, "a", "b")
+	a := fields[0]
+	bb := fields[1]
 	build := func() predicates.QueryPredicate {
 		return predicates.NewNot(predicates.NewAnd(
 			predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))}),
@@ -341,13 +389,13 @@ func BenchmarkSimplify_DeMorgan(b *testing.B) {
 	rules := NormalizationRules()
 	// De Morgan must turn the NOT(AND(...)) into an OR. Timing an input the
 	// rules no longer rewrite would misreport the normalization cost as cheap.
-	if got, ok := Simplify(build(), rules).(*predicates.OrPredicate); !ok {
+	if got, ok := mustSimplify(b, build(), rules).(*predicates.OrPredicate); !ok {
 		b.Fatalf("Simplify = %T; want *predicates.OrPredicate (De Morgan)", got)
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		// Fresh tree per iter — Simplify mutates via rebuild.
-		_ = Simplify(build(), rules)
+		_ = mustSimplify(b, build(), rules)
 	}
 }
 
@@ -356,20 +404,21 @@ func BenchmarkSimplify_DeMorgan(b *testing.B) {
 // pays per predicate that can't be folded.
 func BenchmarkSimplify_NoOp(b *testing.B) {
 	b.ReportAllocs()
+	_, fields := benchExactFields(b, "age")
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.NullableLong},
+		fields[0],
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	rules := DefaultSimplifyRules()
 	// The point of this benchmark is that NOTHING yields: the driver must walk
 	// every rule and hand back the identical predicate. If some rule starts
 	// rewriting it, this stops being the pure-dispatch baseline it claims to be.
-	if got := Simplify(pred, rules); got != predicates.QueryPredicate(pred) {
+	if got := mustSimplify(b, pred, rules); got != predicates.QueryPredicate(pred) {
 		b.Fatalf("Simplify rewrote the opaque predicate to %T %s; the no-op baseline is no longer a no-op", got, got.Explain())
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = Simplify(pred, rules)
+		_ = mustSimplify(b, pred, rules)
 	}
 }
 
@@ -378,12 +427,14 @@ func BenchmarkSimplify_NoOp(b *testing.B) {
 // BenchmarkFireExpressionRule_FilterMerge exercises the per-rule hot
 // path: matcher binds, OnMatch yields, Reference dedups.
 func BenchmarkFireExpressionRule_FilterMerge(b *testing.B) {
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustFullUnorderedScan(b, []string{"T"}, benchRowType("ID"))
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
-	innerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
+	innerFValue, err := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
+	innerF := mustConstruct(b, innerFValue, err)
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerF))
-	outerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerQ)
+	outerFValue, err := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerQ)
+	outerF := mustConstruct(b, outerFValue, err)
 	rule := NewFilterMergeRule()
 	// A rule that stops matching yields nothing and returns almost instantly —
 	// the fastest possible "hot path" and a pure regression. Each iteration
@@ -391,7 +442,7 @@ func BenchmarkFireExpressionRule_FilterMerge(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		ref := expressions.InitialOf(outerF) // fresh ref each iter
-		if yielded := FireExpressionRule(rule, ref); len(yielded) == 0 {
+		if yielded := mustFireExpressionRule(b, rule, ref); len(yielded) == 0 {
 			b.Fatal("FilterMergeRule yielded nothing — the rule no longer fires on nested filters")
 		}
 	}
@@ -399,10 +450,11 @@ func BenchmarkFireExpressionRule_FilterMerge(b *testing.B) {
 
 // BenchmarkExpressionMatcher_BindMatch — the per-call match cost.
 func BenchmarkExpressionMatcher_BindMatch(b *testing.B) {
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustFullUnorderedScan(b, []string{"T"}, benchRowType("ID"))
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
-	f := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
+	fValue, err := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
+	f := mustConstruct(b, fValue, err)
 	matcher := NewExpressionMatcher[*expressions.LogicalFilterExpression]("logical_filter")
 	outer := matching.NewBindings()
 	if got := matcher.BindMatches(outer, f); len(got) == 0 {
@@ -424,18 +476,23 @@ func BenchmarkExpressionMatcher_BindMatch(b *testing.B) {
 // for that rewrite chain.
 func BenchmarkOptimise_StackedSorts(b *testing.B) {
 	build := func() *expressions.Reference {
-		scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+		scan := mustFullUnorderedScan(b, []string{"Order"}, benchRowType("K1", "K2", "K3"))
 		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-		k3 := []expressions.SortKey{{Value: &values.FieldValue{Field: "k3", Typ: values.UnknownType}}}
-		s3 := expressions.NewLogicalSortExpression(k3, scanQ)
+		root := scan.GetResultValue()
+		k3 := []expressions.SortKey{{Value: benchResolved(b, root, 2)}}
+		s3Value, err := expressions.NewLogicalSortExpression(k3, scanQ)
+		s3 := mustConstruct(b, s3Value, err)
 		s3Q := expressions.ForEachQuantifier(expressions.InitialOf(s3))
-		k2 := []expressions.SortKey{{Value: &values.FieldValue{Field: "k2", Typ: values.UnknownType}}}
-		s2 := expressions.NewLogicalSortExpression(k2, s3Q)
+		k2 := []expressions.SortKey{{Value: benchResolved(b, root, 1)}}
+		s2Value, err := expressions.NewLogicalSortExpression(k2, s3Q)
+		s2 := mustConstruct(b, s2Value, err)
 		s2Q := expressions.ForEachQuantifier(expressions.InitialOf(s2))
-		k1 := []expressions.SortKey{{Value: &values.FieldValue{Field: "k1", Typ: values.UnknownType}}}
-		s1 := expressions.NewLogicalSortExpression(k1, s2Q)
+		k1 := []expressions.SortKey{{Value: benchResolved(b, root, 0)}}
+		s1Value, err := expressions.NewLogicalSortExpression(k1, s2Q)
+		s1 := mustConstruct(b, s1Value, err)
 		s1Q := expressions.ForEachQuantifier(expressions.InitialOf(s1))
-		d := expressions.NewLogicalDistinctExpression(s1Q)
+		dValue, err := expressions.NewLogicalDistinctExpression(s1Q)
+		d := mustConstruct(b, dValue, err)
 		return expressions.InitialOf(d)
 	}
 	rules := DefaultExpressionRules()
@@ -461,18 +518,23 @@ func BenchmarkOptimise_StackedSorts(b *testing.B) {
 // benchmark is exactly the GetBest call, not the optimiser run.
 func BenchmarkOptimise_GetBest(b *testing.B) {
 	build := func() *expressions.Reference {
-		scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+		scan := mustFullUnorderedScan(b, []string{"Order"}, benchRowType("ID"))
 		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-		innerD := expressions.NewLogicalDistinctExpression(scanQ)
+		innerDValue, err := expressions.NewLogicalDistinctExpression(scanQ)
+		innerD := mustConstruct(b, innerDValue, err)
 		innerDQ := expressions.ForEachQuantifier(expressions.InitialOf(innerD))
-		outerD := expressions.NewLogicalDistinctExpression(innerDQ)
+		outerDValue, err := expressions.NewLogicalDistinctExpression(innerDQ)
+		outerD := mustConstruct(b, outerDValue, err)
 		outerDQ := expressions.ForEachQuantifier(expressions.InitialOf(outerD))
 		pT := predicates.NewConstantPredicate(predicates.TriTrue)
-		innerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, outerDQ)
+		innerFValue, err := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, outerDQ)
+		innerF := mustConstruct(b, innerFValue, err)
 		innerFQ := expressions.ForEachQuantifier(expressions.InitialOf(innerF))
-		outerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerFQ)
+		outerFValue, err := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerFQ)
+		outerF := mustConstruct(b, outerFValue, err)
 		outerFQ := expressions.ForEachQuantifier(expressions.InitialOf(outerF))
-		topD := expressions.NewLogicalDistinctExpression(outerFQ)
+		topDValue, err := expressions.NewLogicalDistinctExpression(outerFQ)
+		topD := mustConstruct(b, topDValue, err)
 		return expressions.InitialOf(topD)
 	}
 	rules := DefaultExpressionRules()
@@ -494,18 +556,23 @@ func BenchmarkOptimise_GetBest(b *testing.B) {
 // small SELECT (Distinct/Filter/Distinct/Distinct/Scan cascade).
 func BenchmarkPlanner_RealisticTree(b *testing.B) {
 	build := func() *expressions.Reference {
-		scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+		scan := mustFullUnorderedScan(b, []string{"Order"}, benchRowType("ID"))
 		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-		innerD := expressions.NewLogicalDistinctExpression(scanQ)
+		innerDValue, err := expressions.NewLogicalDistinctExpression(scanQ)
+		innerD := mustConstruct(b, innerDValue, err)
 		innerDQ := expressions.ForEachQuantifier(expressions.InitialOf(innerD))
-		outerD := expressions.NewLogicalDistinctExpression(innerDQ)
+		outerDValue, err := expressions.NewLogicalDistinctExpression(innerDQ)
+		outerD := mustConstruct(b, outerDValue, err)
 		outerDQ := expressions.ForEachQuantifier(expressions.InitialOf(outerD))
 		pT := predicates.NewConstantPredicate(predicates.TriTrue)
-		innerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, outerDQ)
+		innerFValue, err := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, outerDQ)
+		innerF := mustConstruct(b, innerFValue, err)
 		innerFQ := expressions.ForEachQuantifier(expressions.InitialOf(innerF))
-		outerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerFQ)
+		outerFValue, err := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerFQ)
+		outerF := mustConstruct(b, outerFValue, err)
 		outerFQ := expressions.ForEachQuantifier(expressions.InitialOf(outerF))
-		topD := expressions.NewLogicalDistinctExpression(outerFQ)
+		topDValue, err := expressions.NewLogicalDistinctExpression(outerFQ)
+		topD := mustConstruct(b, topDValue, err)
 		return expressions.InitialOf(topD)
 	}
 	rules := DefaultExpressionRules()
@@ -524,12 +591,14 @@ func BenchmarkPlanner_RealisticTree(b *testing.B) {
 // on top of EXPLORE.
 func BenchmarkPlanner_FullPlan(b *testing.B) {
 	build := func() *expressions.Reference {
-		scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+		scan := mustFullUnorderedScan(b, []string{"Order"}, benchRowType("ID"))
 		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-		innerD := expressions.NewLogicalDistinctExpression(scanQ)
+		innerDValue, err := expressions.NewLogicalDistinctExpression(scanQ)
+		innerD := mustConstruct(b, innerDValue, err)
 		innerDQ := expressions.ForEachQuantifier(expressions.InitialOf(innerD))
 		pT := predicates.NewConstantPredicate(predicates.TriTrue)
-		f := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerDQ)
+		fValue, err := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerDQ)
+		f := mustConstruct(b, fValue, err)
 		return expressions.InitialOf(f)
 	}
 	rules := DefaultExpressionRules()
@@ -556,15 +625,19 @@ func BenchmarkPlanner_FullPlan(b *testing.B) {
 // isolation (no optimiser). Useful baseline for B6's task-stack
 // planner perf budget.
 func BenchmarkBestRefCost(b *testing.B) {
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := mustFullUnorderedScan(b, []string{"Order"}, benchRowType("ID"))
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
-	f := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
-	d := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(expressions.InitialOf(f)))
+	fValue, err := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
+	f := mustConstruct(b, fValue, err)
+	dValue, err := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(expressions.InitialOf(f)))
+	d := mustConstruct(b, dValue, err)
 	ref := expressions.InitialOf(d)
 	// Insert a few alternatives so GetBest does real work.
-	ref.Insert(expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(expressions.InitialOf(f))))
-	ref.Insert(expressions.NewLogicalDistinctExpression(scanQ))
+	sortValue, err := expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(expressions.InitialOf(f)))
+	ref.Insert(mustConstruct(b, sortValue, err))
+	distinctValue, err := expressions.NewLogicalDistinctExpression(scanQ)
+	ref.Insert(mustConstruct(b, distinctValue, err))
 	// GetBest over an empty Reference returns nil immediately; the loop below
 	// re-reads one fixed Reference, so a single pre-loop check covers it.
 	if best := ref.GetBest(properties.CostLess); best == nil {
@@ -578,7 +651,7 @@ func BenchmarkBestRefCost(b *testing.B) {
 
 func BenchmarkMemo_MemoizeExpression_LeafHit(b *testing.B) {
 	m := NewMemo(nil)
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustFullUnorderedScan(b, []string{"T"}, benchRowType("ID"))
 	want := m.MemoizeExpression(scan)
 
 	// "Hit" is the whole claim: the equivalent leaf must resolve to the
@@ -586,7 +659,7 @@ func BenchmarkMemo_MemoizeExpression_LeafHit(b *testing.B) {
 	// a different code path with a different cost, under a name that lies.
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		s := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		s := mustFullUnorderedScan(b, []string{"T"}, benchRowType("ID"))
 		if r := m.MemoizeExpression(s); r != want {
 			b.Fatal("MemoizeExpression missed — the leaf was not deduped onto the existing Reference")
 		}
@@ -595,15 +668,17 @@ func BenchmarkMemo_MemoizeExpression_LeafHit(b *testing.B) {
 
 func BenchmarkMemo_MemoizeExpression_NonLeafHit(b *testing.B) {
 	m := NewMemo(nil)
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustFullUnorderedScan(b, []string{"T"}, benchRowType("ID"))
 	scanRef := m.MemoizeExpression(scan)
 	pred := []predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)}
-	filter := expressions.NewLogicalFilterExpression(pred, expressions.ForEachQuantifier(scanRef))
+	filterValue, err := expressions.NewLogicalFilterExpression(pred, expressions.ForEachQuantifier(scanRef))
+	filter := mustConstruct(b, filterValue, err)
 	want := m.MemoizeExpression(filter)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		f := expressions.NewLogicalFilterExpression(pred, expressions.ForEachQuantifier(scanRef))
+		fValue, err := expressions.NewLogicalFilterExpression(pred, expressions.ForEachQuantifier(scanRef))
+		f := mustConstruct(b, fValue, err)
 		if r := m.MemoizeExpression(f); r != want {
 			b.Fatal("MemoizeExpression missed — the non-leaf was not deduped onto the existing Reference")
 		}
@@ -613,15 +688,17 @@ func BenchmarkMemo_MemoizeExpression_NonLeafHit(b *testing.B) {
 func BenchmarkPlanner_ExploreWithMemo(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scan := mustFullUnorderedScan(b, []string{"T"}, benchRowType("ID"))
 		scanRef := expressions.InitialOf(scan)
-		sort := expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(scanRef))
+		sortValue, err := expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(scanRef))
+		sort := mustConstruct(b, sortValue, err)
 		sortRef := expressions.InitialOf(sort)
 		pred := predicates.NewConstantPredicate(predicates.TriTrue)
-		filter := expressions.NewLogicalFilterExpression(
+		filterValue, err := expressions.NewLogicalFilterExpression(
 			[]predicates.QueryPredicate{pred},
 			expressions.ForEachQuantifier(sortRef),
 		)
+		filter := mustConstruct(b, filterValue, err)
 		rootRef := expressions.InitialOf(filter)
 		p := NewPlanner(DefaultExpressionRules(), nil)
 		if tasks, converged := exploreRewriting(p, rootRef); !converged || tasks == 0 {
@@ -633,12 +710,13 @@ func BenchmarkPlanner_ExploreWithMemo(b *testing.B) {
 func BenchmarkPlanner_PlanWithIndexCandidates(b *testing.B) {
 	a1 := values.UniqueCorrelationIdentifier()
 	a2 := values.UniqueCorrelationIdentifier()
+	rowType := benchRowType("A", "B")
 	cand := newKnownDistinctValueIndexCandidate(
 		"T$a_b",
 		[]string{"T"},
 		[]string{"A", "B"},
 		[]values.CorrelationIdentifier{a1, a2},
-		values.UnknownType,
+		rowType,
 		false,
 		nil,
 	)
@@ -647,28 +725,31 @@ func BenchmarkPlanner_PlanWithIndexCandidates(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scan := mustFullUnorderedScan(b, []string{"T"}, rowType)
 		scanRef := expressions.InitialOf(scan)
 		q := expressions.ForEachQuantifier(scanRef)
-		filter := expressions.NewLogicalFilterExpression(
+		root := scan.GetResultValue()
+		filterValue, err := expressions.NewLogicalFilterExpression(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "A", Typ: values.NullableLong},
+					benchResolved(b, root, 0),
 					predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
 				),
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "B", Typ: values.NullableLong},
+					benchResolved(b, root, 1),
 					predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(10)),
 				),
 			},
 			q,
 		)
+		filter := mustConstruct(b, filterValue, err)
 		filterRef := expressions.InitialOf(filter)
 		filterQ := expressions.ForEachQuantifier(filterRef)
-		sort := expressions.NewLogicalSortExpression(
-			[]expressions.SortKey{{Value: &values.FieldValue{Field: "B", Typ: values.UnknownType}}},
+		sortValue, err := expressions.NewLogicalSortExpression(
+			[]expressions.SortKey{{Value: benchResolved(b, root, 1)}},
 			filterQ,
 		)
+		sort := mustConstruct(b, sortValue, err)
 		ref := expressions.InitialOf(sort)
 
 		p := NewPlanner(rules, ctx).
@@ -680,12 +761,13 @@ func BenchmarkPlanner_PlanWithIndexCandidates(b *testing.B) {
 
 func BenchmarkPlanner_PlanAggregation(b *testing.B) {
 	a1 := values.UniqueCorrelationIdentifier()
+	rowType := benchRowType("REGION", "ID")
 	cand := newKnownDistinctValueIndexCandidate(
 		"T$region",
 		[]string{"T"},
 		[]string{"region"},
 		[]values.CorrelationIdentifier{a1},
-		values.UnknownType,
+		rowType,
 		false,
 		nil,
 	)
@@ -694,22 +776,25 @@ func BenchmarkPlanner_PlanAggregation(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scan := mustFullUnorderedScan(b, []string{"T"}, rowType)
 		scanRef := expressions.InitialOf(scan)
 		scanQ := expressions.ForEachQuantifier(scanRef)
-		sort := expressions.NewLogicalSortExpression(
-			[]expressions.SortKey{{Value: &values.FieldValue{Field: "region", Typ: values.UnknownType}}},
+		root := scan.GetResultValue()
+		sortValue, err := expressions.NewLogicalSortExpression(
+			[]expressions.SortKey{{Value: benchResolved(b, root, 0)}},
 			scanQ,
 		)
+		sort := mustConstruct(b, sortValue, err)
 		sortRef := expressions.InitialOf(sort)
 		sortQ := expressions.ForEachQuantifier(sortRef)
-		gb := expressions.NewGroupByExpression(
-			[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+		gbValue, err := expressions.NewGroupByExpression(
+			[]values.Value{benchResolved(b, root, 0)},
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+				{Function: expressions.AggCount, Operand: benchResolved(b, root, 1), OperandName: "ID"},
 			},
 			sortQ,
 		)
+		gb := mustConstruct(b, gbValue, err)
 		ref := expressions.InitialOf(gb)
 
 		p := NewPlanner(rules, ctx).
@@ -721,12 +806,13 @@ func BenchmarkPlanner_PlanAggregation(b *testing.B) {
 
 func BenchmarkPlanner_PlanAggregationFromIndex(b *testing.B) {
 	a1 := values.UniqueCorrelationIdentifier()
+	rowType := benchRowType("REGION", "ID")
 	cand := newKnownDistinctValueIndexCandidate(
 		"T$region",
 		[]string{"T"},
 		[]string{"region"},
 		[]values.CorrelationIdentifier{a1},
-		values.UnknownType,
+		rowType,
 		false,
 		nil,
 	)
@@ -735,16 +821,18 @@ func BenchmarkPlanner_PlanAggregationFromIndex(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scan := mustFullUnorderedScan(b, []string{"T"}, rowType)
 		scanRef := expressions.InitialOf(scan)
 		scanQ := expressions.ForEachQuantifier(scanRef)
-		gb := expressions.NewGroupByExpression(
-			[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+		root := scan.GetResultValue()
+		gbValue, err := expressions.NewGroupByExpression(
+			[]values.Value{benchResolved(b, root, 0)},
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+				{Function: expressions.AggCount, Operand: benchResolved(b, root, 1), OperandName: "ID"},
 			},
 			scanQ,
 		)
+		gb := mustConstruct(b, gbValue, err)
 		ref := expressions.InitialOf(gb)
 
 		p := NewPlanner(rules, ctx).

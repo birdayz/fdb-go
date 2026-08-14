@@ -170,7 +170,7 @@ func TestExplodeCollectionsAreOrdinalBaked(t *testing.T) {
 func TestBoxCollectionOrdinalIndexesTheMergedRow(t *testing.T) {
 	t.Parallel()
 
-	bake := func(t *testing.T, outer logical.LogicalOperator) *values.FieldValue {
+	bake := func(t *testing.T, outer logical.LogicalOperator) values.FieldValue {
 		t.Helper()
 		tr := newGateTranslator(t)
 		j := logical.NewJoin(outer,
@@ -185,9 +185,9 @@ func TestBoxCollectionOrdinalIndexesTheMergedRow(t *testing.T) {
 		if len(colls) != 1 {
 			t.Fatalf("want exactly one Explode collection, got %d", len(colls))
 		}
-		fv, isFV := colls[0].(*values.FieldValue)
-		if !isFV || fv.Resolved == nil {
-			t.Fatalf("collection = %#v, want a resolved *FieldValue", colls[0])
+		fv, isFV := values.AsFieldValue(colls[0])
+		if !isFV || fv.Path() == nil {
+			t.Fatalf("collection = %#v, want an admitted exact FieldValue", colls[0])
 		}
 		return fv
 	}
@@ -197,16 +197,21 @@ func TestBoxCollectionOrdinalIndexesTheMergedRow(t *testing.T) {
 		logical.NewJoin(scan("Customer", "c"), scan("Order", "o"), logical.JoinInner, ""),
 		scan("TypedRecord", "d"), logical.JoinFull, ""))
 
-	if single.Resolved.Domain == box.Resolved.Domain {
+	if single.Path().RootDomain() == box.Path().RootDomain() {
 		t.Fatalf("the single-source and box collections claim the SAME ordinal domain (%v) — "+
 			"then their ordinals are two readings of one layout and the box arm proves "+
-			"nothing about owner windows", single.Resolved.Domain)
+			"nothing about owner windows", single.Path().RootDomain())
 	}
-	if single.Resolved.Accessors[0].Ordinal == box.Resolved.Accessors[0].Ordinal {
+	singleRoot, singleOK := single.Path().Accessor(0)
+	boxRoot, boxOK := box.Path().Accessor(0)
+	if !singleOK || !boxOK {
+		t.Fatal("collection is missing its root accessor")
+	}
+	if singleRoot.Ordinal() == boxRoot.Ordinal() {
 		t.Fatalf("both collections root at ordinal %d — the fixture stopped placing the "+
 			"owner off the merged row's front, which is the only arrangement that can "+
 			"tell an owner-window bake from a bare first-match",
-			single.Resolved.Accessors[0].Ordinal)
+			singleRoot.Ordinal())
 	}
 }
 
@@ -220,6 +225,8 @@ func TestNameModelCollectionIsRejectedByTheGate(t *testing.T) {
 	t.Parallel()
 
 	arrType := values.NewArrayType(true, values.NullableString)
+	dottedType := &values.RecordType{Fields: []values.Field{{Name: "O.TAGS", Ordinal: 0, FieldType: arrType}}}
+	dotted := exactTestField(t, exactTestQOV(t, "D$BOX", dottedType), 0)
 	for _, tc := range []struct {
 		name string
 		coll values.Value
@@ -229,33 +236,16 @@ func TestNameModelCollectionIsRejectedByTheGate(t *testing.T) {
 			// The multi-namespace mint: leg packed into the name, read off the
 			// merged flow leg's row.
 			name: "dotted read off the merged row",
-			coll: &values.FieldValue{
-				Field: "O.TAGS", Typ: arrType,
-				Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("D$BOX")),
-			},
+			coll: dotted,
 			want: "packs its owning leg into the name",
 		},
 		{
-			// The single-namespace mint: bare, but still LAZY, so it resolves
-			// by name against whatever row it lands on.
-			name: "lazy bare read",
-			coll: values.NewFieldValue(
-				values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("O")),
-				"TAGS", arrType),
-			want: "is LAZY",
-		},
-		{
-			// Baked, but CHILDLESS: an ordinal with no quantifier under it, so
-			// there is no owner for a bipartition to keep the Explode with. The
-			// bake alone is not the property — the correlation it hangs off is.
-			name: "baked but childless",
-			coll: &values.FieldValue{
-				Field: "TAGS", Typ: arrType,
-				Resolved: &values.FieldPath{
-					Accessors: []values.ResolvedAccessor{{Field: "TAGS", Ordinal: 3}},
-				},
-			},
-			want: "correlates to nothing",
+			// Lazy and childless FieldValues are no longer constructible:
+			// RFC-232 admits only exact QOV-rooted, completely resolved fields.
+			// A non-field Value still proves the gate rejects a foreign shape.
+			name: "non-field value",
+			coll: values.LiteralValue("not-a-field"),
+			want: "is not an exact FieldValue",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -273,51 +263,58 @@ func TestNameModelCollectionIsRejectedByTheGate(t *testing.T) {
 }
 
 // TestUnnestBakedRootCollectionFusesAMultiSegmentPath covers the MULTI-SEGMENT
-// arm (`FROM t, t.rec.arr AS x`), which has no coverage through
-// translateUnnestJoin because no metadata reachable from SQL can express it —
-// see TestStructColumnIsRejectedAtDDL (pkg/relational/core/embedded), which
-// pins the gate that makes it unreachable and names what re-arms this.
+// arm (`FROM t, t.rec.arr AS x`) at its own entry point. The fixture supplies a
+// real exact nested ARRAY: using the catalog's scalar Order.FLOWER.TYPE here
+// would now correctly decline at the exact collection-type gate and would no
+// longer exercise fused-array construction.
 //
-// The arm is exercised at its own entry point instead of being left untested:
-// the root segment must bake POSITIONALLY (the owner's window offset) and only
-// the suffix may stay name-addressed, because a struct materializes as a proto
-// message rather than a positional row. Getting that split wrong is how a
-// multi-segment path silently reads the wrong column.
+// The root segment must bake POSITIONALLY (the owner's window offset) and the
+// suffix must resolve exactly within the nested record. Getting either part
+// wrong is how a multi-segment path silently reads the wrong column.
 func TestUnnestBakedRootCollectionFusesAMultiSegmentPath(t *testing.T) {
 	t.Parallel()
 
 	tr := newGateTranslator(t)
-	outer := scan("Order", "o")
-	u := &logical.LogicalUnnest{Segments: []string{"o", "FLOWER", "TYPE"}, Alias: "X"}
-	got := tr.unnestBakedRootCollection(outer, values.NamedCorrelationIdentifier("O"),
-		u, "TYPE", values.NullableString, 1, -1)
+	outer, u, elementType := nestedArrayUnnestFixture(t)
+	got := tr.unnestBakedRootCollection(outer, values.NamedCorrelationIdentifier("D"),
+		u, "ARR", elementType, 1, -1)
 
-	fv, isFV := got.(*values.FieldValue)
-	if !isFV || fv.Resolved == nil {
-		t.Fatalf("multi-segment bake = %#v, want a resolved *FieldValue", got)
+	fv, isFV := values.AsFieldValue(got)
+	if !isFV || fv.Path() == nil {
+		t.Fatalf("multi-segment bake = %#v, want an admitted exact FieldValue", got)
 	}
-	if n := len(fv.Resolved.Accessors); n != 2 {
-		t.Fatalf("accessors = %v, want exactly root+suffix", fv.Resolved.Accessors)
+	if !fv.Path().IsFrontierPinned() {
+		t.Fatal("multi-segment collection root lacks the seed-purpose frontier pin")
 	}
-	// FLOWER is Order's second column. The ROOT is positional: the whole point
-	// is that the outer row is ordinal-addressed at this build, so a name-keyed
-	// root has nothing to resolve against.
-	if root := fv.Resolved.Accessors[0]; root.Ordinal != 1 {
-		t.Fatalf("root accessor = %#v, want ordinal 1 (FLOWER's offset in Order) — a "+
+	if n := fv.Path().Len(); n != 2 {
+		t.Fatalf("accessors = %v, want exactly root+suffix", fv.Path().Ordinals())
+	}
+	// N is the projected leg's first column. The ROOT is positional: the whole
+	// point is that the outer row is ordinal-addressed at this build, so a
+	// name-keyed root has nothing to resolve against.
+	root, ok := fv.Path().Accessor(0)
+	if !ok {
+		t.Fatal("multi-segment field has no root accessor")
+	}
+	if root.Ordinal() != 0 {
+		t.Fatalf("root accessor = %#v, want ordinal 0 (N's offset in the projected leg) — a "+
 			"root that is not positional is the name model with extra steps", root)
 	}
-	// The suffix descends a struct VALUE, so its ordinal is the loud -1
-	// sentinel: out of range everywhere, never a silent slot read.
-	suffix := fv.Resolved.Accessors[1]
-	if suffix.Field != "TYPE" || suffix.Ordinal != -1 {
-		t.Fatalf("suffix accessor = %#v, want {TYPE -1} — a real ordinal here would be "+
-			"read as a positional slot of a proto message", suffix)
+	// The suffix descends an exact struct value and therefore carries the exact
+	// ARR field ordinal too; RFC-232 admits no name-only -1 accessor.
+	suffix, ok := fv.Path().Accessor(1)
+	if !ok {
+		t.Fatal("multi-segment field has no suffix accessor")
+	}
+	suffixName, _ := suffix.DisplayName()
+	if suffixName != "ARR" || suffix.Ordinal() != 0 {
+		t.Fatalf("suffix accessor = %#v, want exact {ARR 0}", suffix)
 	}
 	if corr := values.GetCorrelatedToOfValue(fv); len(corr) != 1 {
-		t.Fatalf("multi-segment collection correlates to %v, want exactly the owner O", corr)
+		t.Fatalf("multi-segment collection correlates to %v, want exactly the owner D", corr)
 	}
-	if _, hasOwner := values.GetCorrelatedToOfValue(fv)[values.NamedCorrelationIdentifier("O")]; !hasOwner {
-		t.Fatal("multi-segment collection does not correlate to its owner O")
+	if _, hasOwner := values.GetCorrelatedToOfValue(fv)[values.NamedCorrelationIdentifier("D")]; !hasOwner {
+		t.Fatal("multi-segment collection does not correlate to its owner D")
 	}
 }
 
@@ -348,38 +345,39 @@ func TestMultiSegmentUnnestIsRejectedBeforeTheBake(t *testing.T) {
 // must emit, or the reason it is not. Shared by the routing arms and by the
 // rejection test that proves it discriminates.
 func whyNotOrdinalBaked(coll values.Value, wantOwner string, wantRootOrdinal int) string {
-	fv, isFV := coll.(*values.FieldValue)
+	fv, isFV := values.AsFieldValue(coll)
 	if !isFV {
-		return "Explode collection is not a *FieldValue read of the owner's column"
+		return "Explode collection is not an exact FieldValue read of the owner's column"
 	}
-	if strings.Contains(fv.Field, ".") {
-		return "Explode collection field " + fv.Field + " packs its owning leg into the " +
+	if strings.Contains(fv.DisplayName(), ".") {
+		return "Explode collection field " + fv.DisplayName() + " packs its owning leg into the " +
 			"name — qualification must be the bake's ordinal, not a string prefix"
-	}
-	if fv.Resolved == nil {
-		return "Explode collection " + fv.Field + " is LAZY (Resolved == nil) — a name-keyed " +
-			"read of a merged row, the qualified-name channel this lowering must not reopen"
 	}
 	corr := values.GetCorrelatedToOfValue(coll)
 	if len(corr) == 0 {
-		return "Explode collection " + fv.Field + " correlates to nothing — no owner edge " +
+		return "Explode collection " + fv.DisplayName() + " correlates to nothing — no owner edge " +
 			"for the bipartition rules to respect"
 	}
 	if _, ok := corr[values.NamedCorrelationIdentifier(wantOwner)]; !ok || len(corr) != 1 {
-		return "Explode collection " + fv.Field + " correlates to something other than its " +
+		return "Explode collection " + fv.DisplayName() + " correlates to something other than its " +
 			"owner " + wantOwner
 	}
-	if len(fv.Resolved.Accessors) == 0 {
-		return "Explode collection " + fv.Field + " has no resolved accessor"
+	path := fv.Path()
+	if path == nil || path.Len() == 0 {
+		return "Explode collection " + fv.DisplayName() + " has no resolved accessor"
 	}
-	if got := fv.Resolved.Accessors[0].Ordinal; got != wantRootOrdinal {
-		return "Explode collection " + fv.Field + " roots at ordinal " +
+	root, ok := path.Accessor(0)
+	if !ok {
+		return "Explode collection " + fv.DisplayName() + " has no resolved root accessor"
+	}
+	if got := root.Ordinal(); got != wantRootOrdinal {
+		return "Explode collection " + fv.DisplayName() + " roots at ordinal " +
 			strconv.Itoa(got) + ", want " + strconv.Itoa(wantRootOrdinal) +
 			" — the array's offset in the row the collection reads is the fact the " +
 			"dotted qualifier used to carry, so a wrong offset is a wrong column"
 	}
-	if !fv.Resolved.Domain.IsKnown() {
-		return "Explode collection " + fv.Field + " carries no ordinal DOMAIN — without it " +
+	if !path.RootDomain().IsKnown() {
+		return "Explode collection " + fv.DisplayName() + " carries no ordinal DOMAIN — without it " +
 			"the ordinal is an unchecked integer rather than an addressed slot, and " +
 			"OrdinalIn declines for it downstream"
 	}

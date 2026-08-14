@@ -18,14 +18,45 @@ import (
 func TestGetWinnerForOrdering_DeterministicCheapestAmongSatisfyingMembers(t *testing.T) {
 	t.Parallel()
 
+	rowType := values.NewRecordType("WinnerRow", false, []values.Field{
+		{Name: "A", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "B", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "C", FieldType: values.NotNullLong, Ordinal: 2},
+	})
+	inner, err := plans.NewRecordQueryScanPlan([]string{"T"}, rowType, false)
+	inner = mustConstruct(t, inner, err)
+	resolve := func(ordinal int) values.Value {
+		t.Helper()
+		value, resolveErr := values.ResolveFieldOrdinals(inner.GetResultValue(), []int{ordinal})
+		return mustConstruct(t, value, resolveErr)
+	}
+	a, b, c := resolve(0), resolve(1), resolve(2)
+	sortedMember := func(keys ...values.Value) expressions.RelationalExpression {
+		t.Helper()
+		sortKeys := make([]plans.SortKey, len(keys))
+		for i, key := range keys {
+			field, ok := values.AsFieldValue(key)
+			if !ok {
+				t.Fatalf("sort key[%d] = %T, want exact FieldValue", i, key)
+			}
+			sortKeys[i] = plans.SortKey{
+				Field:      field.DisplayName(),
+				ValueExpr:  key,
+				NullsFirst: true,
+			}
+		}
+		plan, constructErr := plans.NewRecordQueryInMemorySortPlan(inner, sortKeys)
+		return mustConstruct(t, plan, constructErr)
+	}
+
 	// Two members ordered (A,B) and (A,C): both satisfy a request of (A asc).
-	w1 := sortedMemberOn(t, "A", "B")
-	w2 := sortedMemberOn(t, "A", "C")
+	w1 := sortedMember(a, b)
+	w2 := sortedMember(a, c)
 	ref := expressions.InitialOf(w1)
 	ref.Insert(w2)
 
 	reqOrd := properties.NewRequestedOrdering(
-		[]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("A", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}},
+		[]properties.RequestedOrderingPart{{Value: a, SortOrder: properties.RequestedSortOrderAscending}},
 		properties.DistinctnessPreserveDistinctness, false)
 
 	// A rank map gives an explicit, controllable total order over the two members.
@@ -65,17 +96,21 @@ func TestGetWinnerForOrdering_DeterministicCheapestAmongSatisfyingMembers(t *tes
 }
 
 // eqIndexScan builds an index scan on `idx` with a single equality comparand.
-func eqIndexScan(t *testing.T, lit any) *plans.RecordQueryIndexPlan {
+func eqIndexScan(t *testing.T, lit int64) *plans.RecordQueryIndexPlan {
 	t.Helper()
 	res := predicates.EmptyComparisonRange().Merge(&predicates.Comparison{
 		Type:    predicates.ComparisonEquals,
-		Operand: values.LiteralValue(lit),
+		Operand: &values.ConstantValue{Value: lit, Typ: values.NotNullLong},
 	})
 	if !res.Ok {
 		t.Fatalf("merge failed for = %v", lit)
 	}
-	return plans.NewRecordQueryIndexPlan("idx",
-		[]*predicates.ComparisonRange{res.Range}, []string{"T"}, values.UnknownType, false)
+	rowType := values.NewRecordType("IndexRow", false, []values.Field{
+		{Name: "c", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	plan, err := plans.NewRecordQueryIndexPlan("idx",
+		[]*predicates.ComparisonRange{res.Range}, []string{"T"}, rowType, false)
+	return mustConstruct(t, plan, err)
 }
 
 // TestMemoizeLeaf_IndexScanComparandNotCollapsed (F21 memo-level) pins that two

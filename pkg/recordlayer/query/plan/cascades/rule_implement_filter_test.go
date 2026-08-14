@@ -9,23 +9,47 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustImplementFilterConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct implement-filter fixture: " + err.Error())
+	}
+	return value
+}
+
+func implementFilterRowType() *values.RecordType {
+	return values.NewRecordType("", false, []values.Field{
+		{Name: "active", FieldType: values.NotNullBoolean},
+		{Name: "ID", FieldType: values.NotNullLong},
+	})
+}
+
+func implementFilterScan(recordType string) *expressions.FullUnorderedScanExpression {
+	return mustImplementFilterConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{recordType}, implementFilterRowType()))
+}
+
+func implementFilterField(quantifier expressions.Quantifier, ordinal int) values.Value {
+	root := mustImplementFilterConstruct(quantifier.RequireFlowedObjectValue())
+	return mustImplementFilterConstruct(values.ResolveFieldOrdinals(root, []int{ordinal}))
+}
+
 func TestImplementFilterRule_FiresAfterScanImplemented(t *testing.T) {
 	t.Parallel()
 	// Build Filter(P, Scan). Run PrimaryScanRule to add a physical
 	// wrapper to the inner Reference. Then ImplementFilterRule should
 	// fire and yield a FilterPlan.
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := implementFilterScan("Order")
 	innerRef := expressions.InitialOf(scan)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustImplementFilterConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
 		expressions.ForEachQuantifier(innerRef),
-	)
+	))
 	topRef := expressions.InitialOf(filter)
 
 	// Step 1: Implement the scan.
 	scanRule := NewPrimaryScanRule()
-	FireExpressionRule(scanRule, innerRef)
+	mustFireExpressionRule(t, scanRule, innerRef)
 	// innerRef should now have 2 members (logical scan + physical wrapper).
 	if got := len(innerRef.Members()); got != 2 {
 		t.Fatalf("after PrimaryScanRule, innerRef has %d members, want 2", got)
@@ -33,7 +57,7 @@ func TestImplementFilterRule_FiresAfterScanImplemented(t *testing.T) {
 
 	// Step 2: Fire ImplementFilterRule on the top Reference.
 	filterRule := NewImplementFilterRule()
-	yielded := FireExpressionRule(filterRule, topRef)
+	yielded := mustFireExpressionRule(t, filterRule, topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementFilterRule yielded %d, want 1", len(yielded))
 	}
@@ -62,15 +86,15 @@ func TestImplementFilterRule_NoFireWithoutPhysicalInner(t *testing.T) {
 	// Filter(P, Scan) WITHOUT firing PrimaryScanRule first — inner
 	// has no physical wrapper, so ImplementFilterRule should skip.
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
-	filter := expressions.NewLogicalFilterExpression(
+	scan := implementFilterScan("Order")
+	filter := mustImplementFilterConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
 		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
-	)
+	))
 	topRef := expressions.InitialOf(filter)
 
 	filterRule := NewImplementFilterRule()
-	yielded := FireExpressionRule(filterRule, topRef)
+	yielded := mustFireExpressionRule(t, filterRule, topRef)
 	if len(yielded) != 0 {
 		t.Fatalf("ImplementFilterRule fired without physical inner; yielded %d", len(yielded))
 	}
@@ -85,12 +109,13 @@ func TestImplementFilterRule_NoFireWithoutPhysicalInner(t *testing.T) {
 // them over the logical equivalent.
 func TestBatchA_CostExtraction_PicksPhysicalOverLogical(t *testing.T) {
 	t.Parallel()
-	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
-	filter := expressions.NewLogicalFilterExpression(
+	scan := implementFilterScan("Order")
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	pred := predicates.NewValuePredicate(implementFilterField(innerQ, 0))
+	filter := mustImplementFilterConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
-	)
+		innerQ,
+	))
 	ref := expressions.InitialOf(filter)
 
 	// Physical wrappers are produced during PLANNING in the production
@@ -120,31 +145,32 @@ func TestBatchA_CostExtraction_PicksPhysicalOverLogical(t *testing.T) {
 // over Distinct can be physical-implemented WITHOUT push rules first.
 func TestImplementFilterRule_FiresOnFilterOverDistinct(t *testing.T) {
 	t.Parallel()
-	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := implementFilterScan("Order")
 
-	distinctInner := expressions.NewLogicalDistinctExpression(
+	distinctInner := mustImplementFilterConstruct(expressions.NewLogicalDistinctExpression(
 		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
-	)
+	))
 	distinctRef := expressions.InitialOf(distinctInner)
-	filter := expressions.NewLogicalFilterExpression(
+	filterQ := expressions.ForEachQuantifier(distinctRef)
+	pred := predicates.NewValuePredicate(implementFilterField(filterQ, 0))
+	filter := mustImplementFilterConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(distinctRef),
-	)
+		filterQ,
+	))
 	topRef := expressions.InitialOf(filter)
 
 	scanRef := distinctInner.GetQuantifiers()[0].GetRangesOver()
-	FireExpressionRule(NewPrimaryScanRule(), scanRef)
+	mustFireExpressionRule(t, NewPrimaryScanRule(), scanRef)
 	// Directly create physical distinct wrapper (ImplementDistinctRule
 	// removed in D-3; distinct now happens in PLANNING phase).
 	scanPlan := findPhysicalPlan(scanRef)
-	distPlan := plans.NewRecordQueryDistinctPlan(scanPlan)
+	distPlan := mustImplementFilterConstruct(plans.NewRecordQueryDistinctPlan(scanPlan))
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(findPhysicalExpr(scanRef)))
 	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryDistinctPlan (no
 	// physicalDistinctWrapper).
-	distinctRef.Insert(distPlan.WithQuantifiers([]expressions.Quantifier{innerQ}))
+	distinctRef.Insert(mustWithQuantifiers(t, distPlan, []expressions.Quantifier{innerQ}))
 
-	yielded := FireExpressionRule(NewImplementFilterRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewImplementFilterRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementFilterRule yielded %d, want 1 (Filter over physical Distinct)", len(yielded))
 	}
@@ -165,41 +191,38 @@ func TestImplementFilterRule_FiresOnFilterOverDistinct(t *testing.T) {
 // wrappers as physical inners.
 func TestImplementFilterRule_FiresOverPhysicalIntersection(t *testing.T) {
 	t.Parallel()
-	rt := &values.RecordType{
-		RecordName: "T",
-		Fields: []values.Field{{
-			Name:      "ID",
-			FieldType: values.NotNullLong,
-			Ordinal:   0,
-		}},
-	}
-	comparisonKey := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
-	scanA := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false).
-		WithKeyComponentTypes([]values.Type{values.NullableLong}).
+	rt := values.NewRecordType("T", false, []values.Field{{
+		Name: "ID", FieldType: values.NotNullLong,
+	}})
+	keyRoot := mustImplementFilterConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("implement_filter_intersection_key"), rt))
+	comparisonKey := mustImplementFilterConstruct(values.ResolveFieldOrdinals(keyRoot, []int{0}))
+	scanA := mustImplementFilterConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, rt, false)).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithPrimaryKey([]values.Value{comparisonKey})
-	scanB := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false).
-		WithKeyComponentTypes([]values.Type{values.NullableLong}).
+	scanB := mustImplementFilterConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, rt, false)).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithPrimaryKey([]values.Value{comparisonKey})
 	refA := expressions.InitialOf(scanA)
 	refB := expressions.InitialOf(scanB)
-	intr := expressions.NewLogicalIntersectionExpression(
+	intr := mustImplementFilterConstruct(expressions.NewLogicalIntersectionExpression(
 		[]expressions.Quantifier{
 			expressions.ForEachQuantifier(refA),
 			expressions.ForEachQuantifier(refB),
 		},
 		[]values.Value{comparisonKey},
-	)
+	))
 	intrRef := expressions.InitialOf(intr)
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustImplementFilterConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
 		expressions.ForEachQuantifier(intrRef),
-	)
+	))
 	topRef := expressions.InitialOf(filter)
 
-	FireExpressionRule(NewImplementIntersectionRule(), intrRef)
+	mustFireExpressionRule(t, NewImplementIntersectionRule(), intrRef)
 
-	yielded := FireExpressionRule(NewImplementFilterRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewImplementFilterRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementFilterRule yielded %d, want 1 (Filter over physical Intersection)", len(yielded))
 	}
@@ -219,29 +242,29 @@ func TestImplementFilterRule_FiresOverPhysicalIntersection(t *testing.T) {
 // union are physically implemented.
 func TestImplementFilterRule_FiresOverPhysicalUnion(t *testing.T) {
 	t.Parallel()
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	scanA := implementFilterScan("A")
+	scanB := implementFilterScan("B")
 	refA := expressions.InitialOf(scanA)
 	refB := expressions.InitialOf(scanB)
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	union := mustImplementFilterConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
 		expressions.ForEachQuantifier(refA),
 		expressions.ForEachQuantifier(refB),
-	})
+	}))
 	unionRef := expressions.InitialOf(union)
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustImplementFilterConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
 		expressions.ForEachQuantifier(unionRef),
-	)
+	))
 	topRef := expressions.InitialOf(filter)
 
 	// Step 1: Implement both scans.
-	FireExpressionRule(NewPrimaryScanRule(), refA)
-	FireExpressionRule(NewPrimaryScanRule(), refB)
+	mustFireExpressionRule(t, NewPrimaryScanRule(), refA)
+	mustFireExpressionRule(t, NewPrimaryScanRule(), refB)
 	// Step 2: Implement the union.
-	FireExpressionRule(NewImplementUnionRule(), unionRef)
+	mustFireExpressionRule(t, NewImplementUnionRule(), unionRef)
 	// Step 3: Now Filter's inner Reference has a bare RecordQueryUnionPlan.
-	yielded := FireExpressionRule(NewImplementFilterRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewImplementFilterRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementFilterRule yielded %d, want 1 (Filter over physical Union)", len(yielded))
 	}
@@ -262,11 +285,11 @@ func TestPlannerWithBatchA_ImplementsFilterOverScan(t *testing.T) {
 	// Reference holding a physical FilterPlan-over-ScanPlan member
 	// alongside the logical shapes.
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
-	filter := expressions.NewLogicalFilterExpression(
+	scan := implementFilterScan("Order")
+	filter := mustImplementFilterConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
 		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
-	)
+	))
 	ref := expressions.InitialOf(filter)
 
 	// Physical wrappers are produced during PLANNING in the production

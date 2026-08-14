@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"fmt"
 	"math"
 	"testing"
 
@@ -8,6 +9,35 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+func mustPointProbeConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct point-probe fixture: " + err.Error())
+	}
+	return value
+}
+
+type pointProbePKCtx struct {
+	indexTestPlanContext
+	pk []string
+}
+
+func (c *pointProbePKCtx) GetPrimaryKeyColumns(string) []string { return c.pk }
+
+func pointProbeLiteral(lit any) values.Value {
+	var typ values.Type
+	switch lit.(type) {
+	case int64:
+		typ = values.NotNullLong
+	case float32:
+		typ = values.NotNullFloat
+	case float64:
+		typ = values.NotNullDouble
+	default:
+		panic(fmt.Sprintf("unsupported point-probe literal type %T", lit))
+	}
+	return &values.ConstantValue{Value: lit, Typ: typ}
+}
 
 // predicatesFilterIsFullPKPointProbe answers a cardinality question — "does
 // this filter over a full scan touch at most one record?" — and it used to
@@ -51,7 +81,7 @@ func pointProbeLayout(name string, cols ...string) *values.RecordType {
 // domain. corr is the quantifier whose row it reads; the zero identifier makes
 // it CHILDLESS, which by the ColumnIdentity contract means "this value's own
 // source" — the shape most filter operands really have.
-func pointProbeRef(t *testing.T, rt string, corr values.CorrelationIdentifier, field string) *values.FieldValue {
+func pointProbeRef(t *testing.T, rt string, corr values.CorrelationIdentifier, field string) values.Value {
 	t.Helper()
 	layout, ok := pointProbeIdentityLayouts[rt]
 	if !ok {
@@ -61,34 +91,30 @@ func pointProbeRef(t *testing.T, rt string, corr values.CorrelationIdentifier, f
 	if !found {
 		t.Fatalf("setup: %s does not declare %q", rt, field)
 	}
-	domain := values.OrdinalDomainOfType(layout)
-	resolved, _ := layout.GetField(ord)
-	if corr.IsZero() {
-		return values.NewFieldValueWithResolvedOrdinalInDomain(field, ord, resolved.FieldType, domain)
-	}
-	return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		values.NewQuantifiedObjectValue(corr), field, ord, resolved.FieldType, domain)
+	root := mustPointProbeConstruct(values.NewQuantifiedObjectValue(corr, layout))
+	return mustPointProbeConstruct(values.ResolveFieldOrdinals(root, []int{ord}))
 }
 
 func pointProbeEqFilter(
 	t *testing.T,
 	rt string,
 	innerAlias values.CorrelationIdentifier,
-	operands ...*values.FieldValue,
+	operands ...values.Value,
 ) (*plans.RecordQueryPredicatesFilterPlan, *plans.RecordQueryScanPlan) {
 	t.Helper()
 	layout, ok := pointProbeIdentityLayouts[rt]
 	if !ok {
 		t.Fatalf("setup: no layout registered for %q", rt)
 	}
-	scan := plans.NewRecordQueryScanPlan([]string{rt}, layout, false).
+	scan := mustPointProbeConstruct(plans.NewRecordQueryScanPlan([]string{rt}, layout, false)).
 		WithKeyComponentTypes(pointProbeIdentityPKTypes[rt])
 	preds := make([]predicates.QueryPredicate, 0, len(operands))
 	for _, op := range operands {
 		preds = append(preds, predicates.NewComparisonPredicate(op,
 			predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1))))
 	}
-	return plans.NewRecordQueryPredicatesFilterPlanWithAlias(scan, preds, innerAlias), scan
+	return mustPointProbeConstruct(plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+		scan, preds, innerAlias)), scan
 }
 
 // TestPredicatesFilterIsFullPKPointProbe_Identity probes each element of the
@@ -104,7 +130,7 @@ func TestPredicatesFilterIsFullPKPointProbe_Identity(t *testing.T) {
 	t.Parallel()
 
 	ordersAlias := values.NamedCorrelationIdentifier("O")
-	ctx := &pkGateTestCtx{pk: []string{"ID"}}
+	ctx := &pointProbePKCtx{pk: []string{"ID"}}
 
 	t.Run("a correlated OUTER reference is not this scan's primary key", func(t *testing.T) {
 		t.Parallel()
@@ -159,17 +185,15 @@ func TestPredicatesFilterIsFullPKPointProbe_Identity(t *testing.T) {
 		}
 	})
 
-	t.Run("a CHILDLESS own-row reference binds it", func(t *testing.T) {
+	t.Run("an exact own-row reference binds it", func(t *testing.T) {
 		t.Parallel()
-		// The majority shape in the corpus: no QOV child, so the zero
-		// correlation, which the ColumnIdentity contract reads as "this value's
-		// own source". It must still count, or the bound disappears for most
-		// real plans.
-		childless := pointProbeRef(t, "ORDERS", values.CorrelationIdentifier{}, "ID")
-		filter, scan := pointProbeEqFilter(t, "ORDERS", ordersAlias, childless)
+		// RFC-232 admits field reads only through an exact quantified row. The
+		// filter's own alias is therefore explicit rather than encoded as an
+		// ambiguous childless field.
+		ownID := pointProbeRef(t, "ORDERS", ordersAlias, "ID")
+		filter, scan := pointProbeEqFilter(t, "ORDERS", ordersAlias, ownID)
 		if !predicatesFilterIsFullPKPointProbe(filter, scan, ctx) {
-			t.Fatal("a childless own-row `ID = ?` equality was not recognised as a point probe — " +
-				"the zero correlation means the value's own source, not `some other leg`")
+			t.Fatal("an exact own-row `ID = ?` equality was not recognised as a point probe")
 		}
 	})
 
@@ -184,7 +208,7 @@ func TestPredicatesFilterIsFullPKPointProbe_Identity(t *testing.T) {
 
 	t.Run("a partial prefix of a composite key is still a range", func(t *testing.T) {
 		t.Parallel()
-		compositeCtx := &pkGateTestCtx{pk: []string{"TENANT", "LINE_NO"}}
+		compositeCtx := &pointProbePKCtx{pk: []string{"TENANT", "LINE_NO"}}
 		tenant := pointProbeRef(t, "LINES", ordersAlias, "TENANT")
 		filter, scan := pointProbeEqFilter(t, "LINES", ordersAlias, tenant)
 		if predicatesFilterIsFullPKPointProbe(filter, scan, compositeCtx) {
@@ -199,21 +223,61 @@ func TestPredicatesFilterIsFullPKPointProbe_Identity(t *testing.T) {
 		}
 	})
 
-	t.Run("a scan with no declared column order fails closed", func(t *testing.T) {
+	t.Run("a scan with no declared column order is rejected", func(t *testing.T) {
 		t.Parallel()
-		// No layout means no domain to state the proof in. The probe declines
-		// rather than falling back to the names the operands still carry.
-		untyped := plans.NewRecordQueryScanPlan([]string{"ORDERS"}, values.UnknownType, false)
-		ownID := pointProbeRef(t, "ORDERS", ordersAlias, "ID")
-		filter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(untyped,
-			[]predicates.QueryPredicate{predicates.NewComparisonPredicate(ownID,
-				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)))},
-			ordersAlias)
-		if predicatesFilterIsFullPKPointProbe(filter, untyped, ctx) {
-			t.Fatal("a scan with no declared column order was declared a point probe — " +
-				"there was no layout to resolve the primary key's name against")
+		// No layout means no domain in which a primary-key proof can even be
+		// stated. RFC-232 rejects that scan at construction instead of allowing
+		// it to reach the cost proof and fall back to display names.
+		if _, err := plans.NewRecordQueryScanPlan(
+			[]string{"ORDERS"}, nil, false); err == nil {
+			t.Fatal("a scan with no declared column order was admitted")
 		}
 	})
+}
+
+func TestResidualFieldReadsScanCarrierRequiresExactCurrentOwner(t *testing.T) {
+	t.Parallel()
+
+	rowType := pointProbeIdentityLayouts["ORDERS"]
+	first := mustPointProbeConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"ORDERS"}, rowType, false))
+	second := mustPointProbeConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"ORDERS"}, rowType, false))
+	firstLayout := mustPointProbeConstruct(first.ProvidedOutputLayout())
+	secondLayout := mustPointProbeConstruct(second.ProvidedOutputLayout())
+	if firstLayout.Carrier() == secondLayout.Carrier() {
+		t.Fatal("independent scan fixtures unexpectedly share a current carrier")
+	}
+	firstID := mustPointProbeConstruct(values.ResolveFieldOrdinals(
+		firstLayout.Carrier(), []int{0}))
+	secondID := mustPointProbeConstruct(values.ResolveFieldOrdinals(
+		secondLayout.Carrier(), []int{0}))
+	firstField, ok := values.AsFieldValue(firstID)
+	if !ok {
+		t.Fatal("first scan ID is not an exact FieldValue")
+	}
+	secondField, ok := values.AsFieldValue(secondID)
+	if !ok {
+		t.Fatal("second scan ID is not an exact FieldValue")
+	}
+	frontier := values.OrdinalDomainOfType(rowType)
+	firstIdentity, ok := values.CorrelatedFieldIdentityIn(firstField, frontier)
+	if !ok {
+		t.Fatal("first scan ID has no identity in ORDERS")
+	}
+	secondIdentity, ok := values.CorrelatedFieldIdentityIn(secondField, frontier)
+	if !ok {
+		t.Fatal("second scan ID has no identity in ORDERS")
+	}
+	innerAlias := values.NamedCorrelationIdentifier("O")
+	if !residualFieldReadsScanCarrier(
+		firstField, firstIdentity, innerAlias, firstLayout.Carrier()) {
+		t.Fatal("the scan's exact current carrier was rejected")
+	}
+	if residualFieldReadsScanCarrier(
+		secondField, secondIdentity, innerAlias, firstLayout.Carrier()) {
+		t.Fatal("a same-shaped current carrier from another scan was accepted")
+	}
 }
 
 func residualPointProbe(
@@ -226,20 +290,18 @@ func residualPointProbe(
 		Name: "K", FieldType: physicalType, Ordinal: 0,
 	}})
 	alias := values.NamedCorrelationIdentifier("r")
-	key := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		values.NewQuantifiedObjectValue(alias), "K", 0, physicalType,
-		values.OrdinalDomainOfType(layout),
-	)
-	scan := plans.NewRecordQueryScanPlan([]string{"R"}, layout, false).
+	root := mustPointProbeConstruct(values.NewQuantifiedObjectValue(alias, layout))
+	key := mustPointProbeConstruct(values.ResolveFieldOrdinals(root, []int{0}))
+	scan := mustPointProbeConstruct(plans.NewRecordQueryScanPlan([]string{"R"}, layout, false)).
 		WithKeyComponentTypes([]values.Type{physicalType})
-	filter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+	filter := mustPointProbeConstruct(plans.NewRecordQueryPredicatesFilterPlanWithAlias(
 		scan,
 		[]predicates.QueryPredicate{predicates.NewComparisonPredicate(key, predicates.Comparison{
 			Type: predicates.ComparisonEquals, Operand: rhs,
 		})},
 		alias,
-	)
-	return filter, scan, &pkGateTestCtx{pk: []string{"K"}}
+	))
+	return filter, scan, &pointProbePKCtx{pk: []string{"K"}}
 }
 
 // Residual predicates do not execute the exact-or-loud scan binder. Their
@@ -254,16 +316,16 @@ func TestPredicatesFilterIsFullPKPointProbe_LogicalEqualityClasses(t *testing.T)
 		rhs          values.Value
 		want         bool
 	}{
-		{name: "DOUBLE positive zero", physicalType: values.NotNullDouble, rhs: values.LiteralValue(float64(0))},
-		{name: "DOUBLE negative zero", physicalType: values.NotNullDouble, rhs: values.LiteralValue(math.Copysign(0, -1))},
-		{name: "FLOAT zero", physicalType: values.NotNullFloat, rhs: values.LiteralValue(float32(0))},
-		{name: "DOUBLE NaN", physicalType: values.NotNullDouble, rhs: values.LiteralValue(math.NaN())},
+		{name: "DOUBLE positive zero", physicalType: values.NotNullDouble, rhs: pointProbeLiteral(float64(0))},
+		{name: "DOUBLE negative zero", physicalType: values.NotNullDouble, rhs: pointProbeLiteral(math.Copysign(0, -1))},
+		{name: "FLOAT zero", physicalType: values.NotNullFloat, rhs: pointProbeLiteral(float32(0))},
+		{name: "DOUBLE NaN", physicalType: values.NotNullDouble, rhs: pointProbeLiteral(math.NaN())},
 		{name: "dynamic DOUBLE", physicalType: values.NotNullDouble, rhs: &values.ParameterValue{Ordinal: 1, Typ: values.NotNullDouble}},
 		{name: "LONG dynamic DOUBLE", physicalType: values.NotNullLong, rhs: &values.ParameterValue{Ordinal: 1, Typ: values.NotNullDouble}},
-		{name: "LONG precision cliff", physicalType: values.NotNullLong, rhs: values.LiteralValue(float64(1 << 53))},
-		{name: "DOUBLE finite nonzero", physicalType: values.NotNullDouble, rhs: values.LiteralValue(float64(5)), want: true},
-		{name: "LONG integer", physicalType: values.NotNullLong, rhs: values.LiteralValue(int64(5)), want: true},
-		{name: "LONG exactly represented float", physicalType: values.NotNullLong, rhs: values.LiteralValue(float64(5)), want: true},
+		{name: "LONG precision cliff", physicalType: values.NotNullLong, rhs: pointProbeLiteral(float64(1 << 53))},
+		{name: "DOUBLE finite nonzero", physicalType: values.NotNullDouble, rhs: pointProbeLiteral(float64(5)), want: true},
+		{name: "LONG integer", physicalType: values.NotNullLong, rhs: pointProbeLiteral(int64(5)), want: true},
+		{name: "LONG exactly represented float", physicalType: values.NotNullLong, rhs: pointProbeLiteral(float64(5)), want: true},
 	}
 	for _, test := range tests {
 		test := test
@@ -292,43 +354,36 @@ func TestPredicatesFilterIsFullPKPointProbe_LogicalEqualityClasses(t *testing.T)
 // about a value chosen afresh from each row.
 func TestPredicatesFilterIsFullPKPointProbe_ComparandMustBeRowInvariant(t *testing.T) {
 	t.Parallel()
-	base, scan, ctx := residualPointProbe(t, values.NotNullLong, values.LiteralValue(int64(5)))
+	base, scan, ctx := residualPointProbe(t, values.NotNullLong, pointProbeLiteral(int64(5)))
 	key := base.GetPredicates()[0].(*predicates.ComparisonPredicate).Operand
 	innerAlias := base.GetInnerAlias()
 	layout := scan.GetResultType()
-	domain := values.OrdinalDomainOfType(layout)
-	childlessKey := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"K", 0, values.NotNullLong, domain,
-	)
-	innerKey := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		values.NewQuantifiedObjectValue(innerAlias), "K", 0, values.NotNullLong, domain,
-	)
-	outerKey := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("outer")),
-		"K", 0, values.NotNullLong, domain,
-	)
+	innerRoot := mustPointProbeConstruct(values.NewQuantifiedObjectValue(innerAlias, layout))
+	innerKey := mustPointProbeConstruct(values.ResolveFieldOrdinals(innerRoot, []int{0}))
+	outerRoot := mustPointProbeConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("outer"), layout))
+	outerKey := mustPointProbeConstruct(values.ResolveFieldOrdinals(outerRoot, []int{0}))
 
 	for _, test := range []struct {
 		name string
 		rhs  values.Value
 		want bool
 	}{
-		{name: "literal", rhs: values.LiteralValue(int64(5)), want: true},
+		{name: "literal", rhs: pointProbeLiteral(int64(5)), want: true},
 		{name: "parameter", rhs: &values.ParameterValue{Ordinal: 1, Typ: values.NotNullLong}, want: true},
 		{name: "outer correlated field", rhs: outerKey, want: true},
-		{name: "childless current-row field", rhs: childlessKey},
 		{name: "explicit current-row field", rhs: innerKey},
 	} {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			filter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+			filter := mustPointProbeConstruct(plans.NewRecordQueryPredicatesFilterPlanWithAlias(
 				scan,
 				[]predicates.QueryPredicate{predicates.NewComparisonPredicate(
 					key, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: test.rhs},
 				)},
 				innerAlias,
-			)
+			))
 			if got := predicatesFilterIsFullPKPointProbe(filter, scan, ctx); got != test.want {
 				t.Fatalf("predicatesFilterIsFullPKPointProbe = %v, want %v", got, test.want)
 			}
@@ -348,10 +403,11 @@ func TestPredicatesFilterIsFullPKPointProbe_PhysicalTypeAlignment(t *testing.T) 
 	t.Parallel()
 	filter, baseScan, ctx := residualPointProbe(
 		t, values.NotNullDouble,
-		values.LiteralValue(int64(0)),
+		pointProbeLiteral(int64(0)),
 	)
+	key := filter.GetPredicates()[0].(*predicates.ComparisonPredicate).Operand
 	prefixedPK := []values.Value{
-		values.NewRecordTypeValue(nil), &values.FieldValue{Field: "K"},
+		values.NewRecordTypeValue(nil), key,
 	}
 	for _, test := range []struct {
 		name      string
@@ -366,9 +422,9 @@ func TestPredicatesFilterIsFullPKPointProbe_PhysicalTypeAlignment(t *testing.T) 
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			scan := baseScan.WithPrimaryKey(prefixedPK).WithKeyComponentTypes(test.types)
-			rebound := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+			rebound := mustPointProbeConstruct(plans.NewRecordQueryPredicatesFilterPlanWithAlias(
 				scan, filter.GetPredicates(), filter.GetInnerAlias(),
-			)
+			))
 			if got := predicatesFilterIsFullPKPointProbe(rebound, scan, ctx); got != test.wantProof {
 				t.Fatalf("predicatesFilterIsFullPKPointProbe = %v, want %v", got, test.wantProof)
 			}
@@ -377,41 +433,48 @@ func TestPredicatesFilterIsFullPKPointProbe_PhysicalTypeAlignment(t *testing.T) 
 
 	// A statically non-zero DOUBLE proves the positive direction even when the
 	// structural RecordTypeValue occupies a full physical coordinate.
-	nonzeroFilter, _, _ := residualPointProbe(t, values.NotNullDouble, values.LiteralValue(float64(5)))
+	nonzeroFilter, _, _ := residualPointProbe(t, values.NotNullDouble, pointProbeLiteral(float64(5)))
 	nonzeroScan := baseScan.WithPrimaryKey(prefixedPK).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong, values.NotNullDouble})
-	nonzero := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+	nonzero := mustPointProbeConstruct(plans.NewRecordQueryPredicatesFilterPlanWithAlias(
 		nonzeroScan, nonzeroFilter.GetPredicates(), nonzeroFilter.GetInnerAlias(),
-	)
+	))
 	if !predicatesFilterIsFullPKPointProbe(nonzero, nonzeroScan, ctx) {
 		t.Fatal("full-coordinate nonzero DOUBLE equality lost its valid at-most-one proof")
 	}
 }
 
 // residualPrimaryKeyPhysicalTypes consumes two ordered translations of one
-// primary-key expression. It must preserve their coordinates even when two
-// FieldValues render identically; Field is not column identity and cannot be a
-// map key for the signed-zero multiplicity proof.
-func TestResidualPrimaryKeyPhysicalTypes_DuplicateDisplayNamesStayPositional(t *testing.T) {
+// primary-key expression. It must preserve their coordinates in primary-key
+// component order. RFC-232 exact record layouts reject duplicate semantic
+// names at their boundary, so the former duplicate-display-name adversary is
+// no longer a constructible Value; reversed type order remains the positional
+// discriminator.
+func TestResidualPrimaryKeyPhysicalTypes_StayPositional(t *testing.T) {
 	t.Parallel()
-	domain := values.OrdinalDomainOfColumnNames([]string{"DUP", "DUP"})
+	layout := values.NewRecordType("PositionalPhysicalTypes", false, []values.Field{
+		{Name: "DOUBLE_KEY", FieldType: values.NotNullDouble, Ordinal: 0},
+		{Name: "FLOAT_KEY", FieldType: values.NotNullFloat, Ordinal: 1},
+	})
+	root := mustPointProbeConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("positional_physical"), layout))
 	pk := []values.Value{
-		values.NewFieldValueWithResolvedOrdinalInDomain("DUP", 1, values.NotNullFloat, domain),
-		values.NewFieldValueWithResolvedOrdinalInDomain("DUP", 0, values.NotNullDouble, domain),
+		mustPointProbeConstruct(values.ResolveFieldOrdinals(root, []int{1})),
+		mustPointProbeConstruct(values.ResolveFieldOrdinals(root, []int{0})),
 	}
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	scan := mustPointProbeConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, layout, false)).
 		WithPrimaryKey(pk).
 		WithKeyComponentTypes([]values.Type{values.NotNullFloat, values.NotNullDouble})
 	got, ok := residualPrimaryKeyPhysicalTypes(scan, 2)
 	if !ok {
-		t.Fatal("coordinate-aligned duplicate display names were declined")
+		t.Fatal("coordinate-aligned primary-key fields were declined")
 	}
 	if len(got) != 2 || got[0] != values.NotNullFloat || got[1] != values.NotNullDouble {
 		t.Fatalf("physical types = %v, want [FLOAT DOUBLE] in PK-component order", got)
 	}
 
 	prefixed := scan.WithPrimaryKey(append([]values.Value{values.NewRecordTypeValue(nil)}, pk...)).
-		WithKeyComponentTypes([]values.Type{values.UnknownType, values.NotNullFloat, values.NotNullDouble})
+		WithKeyComponentTypes([]values.Type{values.NotNullLong, values.NotNullFloat, values.NotNullDouble})
 	got, ok = residualPrimaryKeyPhysicalTypes(prefixed, 2)
 	if !ok || len(got) != 2 || got[0] != values.NotNullFloat || got[1] != values.NotNullDouble {
 		t.Fatalf("record-type-prefixed physical types = %v ok=%v, want [FLOAT DOUBLE]", got, ok)

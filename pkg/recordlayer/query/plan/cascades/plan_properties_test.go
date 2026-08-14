@@ -10,13 +10,59 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustPropertiesConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct plan-properties fixture: " + err.Error())
+	}
+	return value
+}
+
+func planPropertiesRowType() values.Type {
+	return values.NewRecordType("PropertiesRow", false, []values.Field{
+		{Name: "id", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "name", FieldType: values.NotNullString, Ordinal: 1},
+		{Name: "dept", FieldType: values.NotNullLong, Ordinal: 2},
+	})
+}
+
+func planPropertiesScan(recordType string) *plans.RecordQueryScanPlan {
+	return mustPropertiesConstruct(plans.NewRecordQueryScanPlan(
+		[]string{recordType}, planPropertiesRowType(), false))
+}
+
+func planPropertiesField(name string, ordinal int) values.Value {
+	root := mustPropertiesConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("properties_row"), planPropertiesRowType()))
+	field := mustPropertiesConstruct(values.ResolveOrdinalSeedField(root, ordinal))
+	view, ok := values.AsFieldValue(field)
+	if !ok || view.DisplayName() != name {
+		panic("construct plan-properties fixture: resolved field name mismatch")
+	}
+	return field
+}
+
+func planPropertiesAggregation(recordType string) *plans.RecordQueryStreamingAggregationPlan {
+	return mustPropertiesConstruct(plans.NewRecordQueryStreamingAggregationPlan(
+		planPropertiesScan(recordType),
+		[]values.Value{planPropertiesField("dept", 2)},
+		[]expressions.AggregateSpec{{
+			Function: expressions.AggSum,
+			Operand:  planPropertiesField("id", 0),
+		}},
+	))
+}
+
+func planPropertiesValues() *plans.RecordQueryValuesPlan {
+	return mustPropertiesConstruct(plans.NewRecordQueryValuesPlan(nil))
+}
+
 // ---------------------------------------------------------------------------
 // computeDistinctRecords
 // ---------------------------------------------------------------------------
 
 func TestComputeDistinctRecords_ScanIsTrue(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := planPropertiesScan("T")
 	wrapper := scan
 	got := computeDistinctRecords(wrapper, scan)
 	if !got {
@@ -34,7 +80,8 @@ func TestComputeDistinctRecords_ScanIsTrue(t *testing.T) {
 func TestComputeDistinctRecords_IndexFanOutSignal(t *testing.T) {
 	t.Parallel()
 	mk := func() *plans.RecordQueryIndexPlan {
-		return plans.NewRecordQueryIndexPlan("idx1", nil, []string{"T"}, values.UnknownType, false)
+		return mustPropertiesConstruct(plans.NewRecordQueryIndexPlan(
+			"idx1", nil, []string{"T"}, planPropertiesRowType(), false))
 	}
 
 	// No candidate signal → false (Java empty-candidate default).
@@ -66,7 +113,7 @@ func TestComputeDistinctRecords_IndexFanOutSignal(t *testing.T) {
 func TestComputeDistinctRecords_FilterInheritsFromChild(t *testing.T) {
 	t.Parallel()
 	// Build: predicates-filter over a bare scan expression (distinct=true).
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := planPropertiesScan("T")
 
 	// Put the scan in a Reference and compute its properties.
 	innerRef := expressions.InitialOf(scan)
@@ -75,9 +122,10 @@ func TestComputeDistinctRecords_FilterInheritsFromChild(t *testing.T) {
 	innerRef.SetPlanProperties(pm)
 
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(scan, []predicates.QueryPredicate{pred})
+	filterPlan := mustPropertiesConstruct(plans.NewRecordQueryPredicatesFilterPlan(
+		scan, []predicates.QueryPredicate{pred}))
 	innerQ := expressions.ForEachQuantifier(innerRef)
-	filterWrapper := filterPlan.WithQuantifiers([]expressions.Quantifier{innerQ}).(*plans.RecordQueryPredicatesFilterPlan)
+	filterWrapper := mustWithQuantifiers(t, filterPlan, []expressions.Quantifier{innerQ}).(*plans.RecordQueryPredicatesFilterPlan)
 
 	got := computeDistinctRecords(filterWrapper, filterPlan)
 	if !got {
@@ -87,8 +135,7 @@ func TestComputeDistinctRecords_FilterInheritsFromChild(t *testing.T) {
 
 func TestComputeDistinctRecords_StreamingAggIsFalse(t *testing.T) {
 	t.Parallel()
-	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
-	aggPlan := plans.NewRecordQueryStreamingAggregationPlan(nil, keys, nil)
+	aggPlan := planPropertiesAggregation("T")
 	// Since RFC-184 W2 the memo holds the bare plan (no physicalStreamingAggWrapper).
 	got := computeDistinctRecords(aggPlan, aggPlan)
 	if got {
@@ -98,12 +145,12 @@ func TestComputeDistinctRecords_StreamingAggIsFalse(t *testing.T) {
 
 func TestComputeDistinctRecords_DistinctPlanIsTrue(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	dp := plans.NewRecordQueryDistinctPlan(scan)
+	scan := planPropertiesScan("T")
+	dp := mustPropertiesConstruct(plans.NewRecordQueryDistinctPlan(scan))
 	scanW := scan
 	innerRef := expressions.InitialOf(scanW)
 	innerQ := expressions.ForEachQuantifier(innerRef)
-	dw := dp.WithQuantifiers([]expressions.Quantifier{innerQ}).(*plans.RecordQueryDistinctPlan)
+	dw := mustWithQuantifiers(t, dp, []expressions.Quantifier{innerQ}).(*plans.RecordQueryDistinctPlan)
 	got := computeDistinctRecords(dw, dp)
 	if !got {
 		t.Fatal("distinct plan should produce distinct records")
@@ -115,12 +162,12 @@ func TestComputeDistinctRecords_UnionPlanIsFalse(t *testing.T) {
 	// RecordQueryUnionPlan is Go's NO-DEDUP UNION ALL variant — it must report
 	// non-distinct records, else an enclosing SELECT DISTINCT is wrongly elided
 	// and duplicates leak through.
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	up := plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{scan})
+	scan := planPropertiesScan("T")
+	up := mustPropertiesConstruct(plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{scan}))
 	scanW := scan
 	innerRef := expressions.InitialOf(scanW)
 	qs := []expressions.Quantifier{expressions.ForEachQuantifier(innerRef)}
-	uw := plans.NewRecordQueryUnionPlanFromQuantifiers(qs)
+	uw := mustPropertiesConstruct(plans.NewRecordQueryUnionPlanFromQuantifiers(qs))
 	got := computeDistinctRecords(uw, up)
 	if got {
 		t.Fatal("no-dedup UNION ALL plan must NOT report distinct records")
@@ -133,7 +180,7 @@ func TestComputeDistinctRecords_UnionPlanIsFalse(t *testing.T) {
 
 func TestComputeStoredRecord_ScanIsTrue(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := planPropertiesScan("T")
 	if !computeStoredRecord(scan) {
 		t.Fatal("scan should produce stored records")
 	}
@@ -141,7 +188,8 @@ func TestComputeStoredRecord_ScanIsTrue(t *testing.T) {
 
 func TestComputeStoredRecord_IndexIsTrue(t *testing.T) {
 	t.Parallel()
-	idx := plans.NewRecordQueryIndexPlan("idx1", nil, []string{"T"}, values.UnknownType, false)
+	idx := mustPropertiesConstruct(plans.NewRecordQueryIndexPlan(
+		"idx1", nil, []string{"T"}, planPropertiesRowType(), false))
 	if !computeStoredRecord(idx) {
 		t.Fatal("index scan should produce stored records")
 	}
@@ -149,7 +197,7 @@ func TestComputeStoredRecord_IndexIsTrue(t *testing.T) {
 
 func TestComputeStoredRecord_DistinctIsTrue(t *testing.T) {
 	t.Parallel()
-	dp := plans.NewRecordQueryDistinctPlan(nil)
+	dp := mustPropertiesConstruct(plans.NewRecordQueryDistinctPlan(planPropertiesScan("T")))
 	if !computeStoredRecord(dp) {
 		t.Fatal("distinct plan should produce stored records")
 	}
@@ -157,9 +205,10 @@ func TestComputeStoredRecord_DistinctIsTrue(t *testing.T) {
 
 func TestComputeStoredRecord_FilterInheritsFromScan(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := planPropertiesScan("T")
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	fp := plans.NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, scan)
+	fp := mustPropertiesConstruct(plans.NewRecordQueryFilterPlan(
+		[]predicates.QueryPredicate{pred}, scan))
 	if !computeStoredRecord(fp) {
 		t.Fatal("filter over scan should inherit storedRecord=true")
 	}
@@ -167,7 +216,7 @@ func TestComputeStoredRecord_FilterInheritsFromScan(t *testing.T) {
 
 func TestComputeStoredRecord_StreamingAggIsFalse(t *testing.T) {
 	t.Parallel()
-	aggPlan := plans.NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
+	aggPlan := planPropertiesAggregation("T")
 	if computeStoredRecord(aggPlan) {
 		t.Fatal("streaming aggregation should NOT produce stored records")
 	}
@@ -175,8 +224,9 @@ func TestComputeStoredRecord_StreamingAggIsFalse(t *testing.T) {
 
 func TestComputeStoredRecord_UnorderedUnionOfScansIsTrue(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	uup := plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{scan})
+	scan := planPropertiesScan("T")
+	uup := mustPropertiesConstruct(plans.NewRecordQueryUnorderedUnionPlan(
+		[]plans.RecordQueryPlan{scan}))
 	if !computeStoredRecord(uup) {
 		t.Fatal("unordered union of scans should produce stored records (allChildren)")
 	}
@@ -184,9 +234,10 @@ func TestComputeStoredRecord_UnorderedUnionOfScansIsTrue(t *testing.T) {
 
 func TestComputeStoredRecord_UnionAllChildrenStored(t *testing.T) {
 	t.Parallel()
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	up := plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{scanA, scanB})
+	scanA := planPropertiesScan("A")
+	scanB := planPropertiesScan("B")
+	up := mustPropertiesConstruct(plans.NewRecordQueryUnionPlan(
+		[]plans.RecordQueryPlan{scanA, scanB}))
 	if !computeStoredRecord(up) {
 		t.Fatal("union of scans should produce stored records")
 	}
@@ -198,7 +249,7 @@ func TestComputeStoredRecord_UnionAllChildrenStored(t *testing.T) {
 
 func TestPlanPropertiesMap_AddAndRetrieve(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := planPropertiesScan("T")
 	wrapper := scan
 
 	pm := NewPlanPropertiesMap()
@@ -219,8 +270,8 @@ func TestPlanPropertiesMap_AddAndRetrieve(t *testing.T) {
 
 func TestPlanPropertiesMap_Expressions(t *testing.T) {
 	t.Parallel()
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
+	scanA := planPropertiesScan("A")
+	scanB := planPropertiesScan("B")
 	wA := scanA
 	wB := scanB
 
@@ -237,7 +288,7 @@ func TestPlanPropertiesMap_Expressions(t *testing.T) {
 func TestPlanPropertiesMap_GetProperties_Missing(t *testing.T) {
 	t.Parallel()
 	pm := NewPlanPropertiesMap()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := planPropertiesScan("T")
 	wrapper := scan
 	props := pm.GetProperties(wrapper)
 	if props != nil {
@@ -251,7 +302,7 @@ func TestPlanPropertiesMap_GetProperties_Missing(t *testing.T) {
 
 func TestComputeRefPlanProperties_StoresMapOnReference(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := planPropertiesScan("T")
 	wrapper := scan
 	ref := expressions.InitialOf(wrapper)
 
@@ -279,7 +330,9 @@ func TestGetRefPlanPropertiesMap_NilRef(t *testing.T) {
 
 func TestGetRefPlanPropertiesMap_NoProperties(t *testing.T) {
 	t.Parallel()
-	ref := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil))
+	logicalExpr := mustPropertiesConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, planPropertiesRowType()))
+	ref := expressions.InitialOf(logicalExpr)
 	if pm := GetRefPlanPropertiesMap(ref); pm != nil {
 		t.Fatalf("GetRefPlanPropertiesMap on ref with no plan properties = %v, want nil", pm)
 	}
@@ -287,7 +340,8 @@ func TestGetRefPlanPropertiesMap_NoProperties(t *testing.T) {
 
 func TestComputeRefPlanProperties_SkipsLogicalExpressions(t *testing.T) {
 	t.Parallel()
-	logicalExpr := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	logicalExpr := mustPropertiesConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, planPropertiesRowType()))
 	ref := expressions.InitialOf(logicalExpr)
 
 	computeRefPlanProperties(ref)
@@ -307,10 +361,10 @@ func TestComputeRefPlanProperties_SkipsLogicalExpressions(t *testing.T) {
 
 func TestComputeDistinctRecords_MergeSortUnionIsTrue(t *testing.T) {
 	t.Parallel()
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	msu := plans.NewRecordQueryMergeSortUnionPlan(
-		[]plans.RecordQueryPlan{scanA, scanB}, nil, false, true)
+	scanA := planPropertiesScan("A")
+	scanB := planPropertiesScan("B")
+	msu := mustPropertiesConstruct(plans.NewRecordQueryMergeSortUnionPlan(
+		[]plans.RecordQueryPlan{scanA, scanB}, nil, false, true))
 	if !computeDistinctRecords(msu, msu) {
 		t.Fatal("MergeSortUnion should be distinct")
 	}
@@ -325,10 +379,10 @@ func TestComputeDistinctRecords_MergeSortUnionIsTrue(t *testing.T) {
 // ImplementDistinctFinalRule elide a needed dedup wrapper.
 func TestComputeDistinctRecords_MergeSortUnionRemoveDuplicatesFalseIsFalse(t *testing.T) {
 	t.Parallel()
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	msu := plans.NewRecordQueryMergeSortUnionPlan(
-		[]plans.RecordQueryPlan{scanA, scanB}, nil, false, false)
+	scanA := planPropertiesScan("A")
+	scanB := planPropertiesScan("B")
+	msu := mustPropertiesConstruct(plans.NewRecordQueryMergeSortUnionPlan(
+		[]plans.RecordQueryPlan{scanA, scanB}, nil, false, false))
 	if computeDistinctRecords(msu, msu) {
 		t.Fatal("MergeSortUnion with removeDuplicates=false should not claim distinct records")
 	}
@@ -336,10 +390,11 @@ func TestComputeDistinctRecords_MergeSortUnionRemoveDuplicatesFalseIsFalse(t *te
 
 func TestComputeDistinctRecords_InUnionIsTrue(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := planPropertiesScan("T")
 	// The InUnion is its own physical expression now (RFC-184 W2) — it IS the
 	// physicalPlanExpression computeDistinctRecords inspects.
-	iup := plans.NewRecordQueryInUnionPlan(scan, []string{"b"}, nil, false)
+	iup := mustPropertiesConstruct(plans.NewRecordQueryInUnionPlan(
+		scan, []string{"b"}, nil, false))
 	if !computeDistinctRecords(iup, iup) {
 		t.Fatal("InUnion should be distinct")
 	}
@@ -424,12 +479,12 @@ func TestComputeCardinalities_InUnionLiteralFanout(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			inUnion := plans.NewRecordQueryInUnionPlan(
-				plans.NewRecordQueryValuesPlan(nil),
+			inUnion := mustPropertiesConstruct(plans.NewRecordQueryInUnionPlan(
+				planPropertiesValues(),
 				test.bindings,
 				nil,
 				false,
-			)
+			))
 			inUnion.SetInSources(test.sources)
 			got := computeCardinalities(inUnion, inUnion)
 			if !got.Equal(test.want) {
@@ -442,9 +497,10 @@ func TestComputeCardinalities_InUnionLiteralFanout(t *testing.T) {
 func TestComputeCardinalities_InUnionMultipliesChildAndDegradesOverflow(t *testing.T) {
 	t.Parallel()
 
-	child := plans.NewRecordQueryValuesPlan(nil)
+	child := planPropertiesValues()
 	newInUnion := func(bindings []string, sources [][]any, childCardinality int64) *plans.RecordQueryInUnionPlan {
-		inUnion := plans.NewRecordQueryInUnionPlan(child, bindings, nil, false)
+		inUnion := mustPropertiesConstruct(plans.NewRecordQueryInUnionPlan(
+			child, bindings, nil, false))
 		inUnion.SetInSources(sources)
 		childRef := inUnion.GetInnerQuantifier().GetRangesOver()
 		pm := NewPlanPropertiesMap()
@@ -493,8 +549,8 @@ func TestComputeCardinalities_InUnionMultipliesChildAndDegradesOverflow(t *testi
 
 func TestComputeDistinctRecords_FirstOrDefaultIsTrue(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	fod := plans.NewRecordQueryFirstOrDefaultPlan(scan, nil)
+	scan := planPropertiesScan("T")
+	fod := mustPropertiesConstruct(plans.NewRecordQueryFirstOrDefaultPlan(scan, nil))
 	w := scan
 	if !computeDistinctRecords(w, fod) {
 		t.Fatal("FirstOrDefault should be distinct")
@@ -503,8 +559,8 @@ func TestComputeDistinctRecords_FirstOrDefaultIsTrue(t *testing.T) {
 
 func TestComputeStoredRecord_FirstOrDefaultIsFalse(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	fod := plans.NewRecordQueryFirstOrDefaultPlan(scan, nil)
+	scan := planPropertiesScan("T")
+	fod := mustPropertiesConstruct(plans.NewRecordQueryFirstOrDefaultPlan(scan, nil))
 	if computeStoredRecord(fod) {
 		t.Fatal("FirstOrDefault should NOT produce stored records")
 	}
@@ -512,17 +568,31 @@ func TestComputeStoredRecord_FirstOrDefaultIsFalse(t *testing.T) {
 
 func TestComputeStoredRecord_DefaultOnEmptyIsFalse(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	doe := plans.NewRecordQueryDefaultOnEmptyPlan(scan, nil)
+	scan := planPropertiesScan("T")
+	doe := mustPropertiesConstruct(plans.NewRecordQueryDefaultOnEmptyPlan(
+		scan, values.NewNullValue(values.WithNullability(planPropertiesRowType(), true))))
 	if computeStoredRecord(doe) {
 		t.Fatal("DefaultOnEmpty should NOT produce stored records")
 	}
 }
 
+func TestComputeProperties_InMemorySortIsTransparent(t *testing.T) {
+	t.Parallel()
+	scan := planPropertiesScan("T")
+	sorted := mustPropertiesConstruct(plans.NewRecordQueryInMemorySortPlan(scan, nil))
+	if !computeStoredRecord(sorted) {
+		t.Fatal("InMemorySort must preserve its child's stored-record property")
+	}
+	if !computeDistinctRecords(sorted, sorted) {
+		t.Fatal("InMemorySort must preserve its child's distinct-record property")
+	}
+}
+
 func TestComputeStoredRecord_InJoinInheritsFromScan(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	ijp := plans.NewRecordQueryInJoinPlan(scan, "b", false, false)
+	scan := planPropertiesScan("T")
+	ijp := mustPropertiesConstruct(plans.NewRecordQueryInJoinPlan(
+		scan, "b", false, false))
 	if !computeStoredRecord(ijp) {
 		t.Fatal("InJoin over scan should produce stored records")
 	}
@@ -530,10 +600,10 @@ func TestComputeStoredRecord_InJoinInheritsFromScan(t *testing.T) {
 
 func TestComputeStoredRecord_MergeSortUnionAllStored(t *testing.T) {
 	t.Parallel()
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	msu := plans.NewRecordQueryMergeSortUnionPlan(
-		[]plans.RecordQueryPlan{scanA, scanB}, nil, false, true)
+	scanA := planPropertiesScan("A")
+	scanB := planPropertiesScan("B")
+	msu := mustPropertiesConstruct(plans.NewRecordQueryMergeSortUnionPlan(
+		[]plans.RecordQueryPlan{scanA, scanB}, nil, false, true))
 	if !computeStoredRecord(msu) {
 		t.Fatal("MergeSortUnion of scans should produce stored records")
 	}
@@ -541,8 +611,8 @@ func TestComputeStoredRecord_MergeSortUnionAllStored(t *testing.T) {
 
 func TestComputePrimaryKey_ScanWithPK(t *testing.T) {
 	t.Parallel()
-	pk := []values.Value{&values.FieldValue{Field: "id", Typ: values.UnknownType}}
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).WithPrimaryKey(pk)
+	pk := []values.Value{planPropertiesField("id", 0)}
+	scan := planPropertiesScan("T").WithPrimaryKey(pk)
 	result := computePrimaryKey(scan)
 	if result == nil {
 		t.Fatal("scan with PK should return non-nil PK")
@@ -555,7 +625,7 @@ func TestComputePrimaryKey_ScanWithPK(t *testing.T) {
 
 func TestComputePrimaryKey_ScanWithoutPK(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := planPropertiesScan("T")
 	result := computePrimaryKey(scan)
 	if result != nil {
 		t.Fatal("scan without PK should return nil")
@@ -564,9 +634,9 @@ func TestComputePrimaryKey_ScanWithoutPK(t *testing.T) {
 
 func TestComputePrimaryKey_FilterInheritsFromScan(t *testing.T) {
 	t.Parallel()
-	pk := []values.Value{&values.FieldValue{Field: "id", Typ: values.UnknownType}}
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).WithPrimaryKey(pk)
-	filter := plans.NewRecordQueryFilterPlan(nil, scan)
+	pk := []values.Value{planPropertiesField("id", 0)}
+	scan := planPropertiesScan("T").WithPrimaryKey(pk)
+	filter := mustPropertiesConstruct(plans.NewRecordQueryFilterPlan(nil, scan))
 	result := computePrimaryKey(filter)
 	if result == nil {
 		t.Fatal("filter should inherit PK from child scan")
@@ -575,10 +645,11 @@ func TestComputePrimaryKey_FilterInheritsFromScan(t *testing.T) {
 
 func TestComputePrimaryKey_UnionCommonPK(t *testing.T) {
 	t.Parallel()
-	pk := []values.Value{&values.FieldValue{Field: "id", Typ: values.UnknownType}}
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false).WithPrimaryKey(pk)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false).WithPrimaryKey(pk)
-	union := plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{scanA, scanB})
+	pk := []values.Value{planPropertiesField("id", 0)}
+	scanA := planPropertiesScan("A").WithPrimaryKey(pk)
+	scanB := planPropertiesScan("B").WithPrimaryKey(pk)
+	union := mustPropertiesConstruct(plans.NewRecordQueryUnionPlan(
+		[]plans.RecordQueryPlan{scanA, scanB}))
 	result := computePrimaryKey(union)
 	if result == nil {
 		t.Fatal("union with common PK should return non-nil")
@@ -587,11 +658,12 @@ func TestComputePrimaryKey_UnionCommonPK(t *testing.T) {
 
 func TestComputePrimaryKey_UnionDifferentPK(t *testing.T) {
 	t.Parallel()
-	pkA := []values.Value{&values.FieldValue{Field: "id", Typ: values.UnknownType}}
-	pkB := []values.Value{&values.FieldValue{Field: "name", Typ: values.UnknownType}}
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false).WithPrimaryKey(pkA)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false).WithPrimaryKey(pkB)
-	union := plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{scanA, scanB})
+	pkA := []values.Value{planPropertiesField("id", 0)}
+	pkB := []values.Value{planPropertiesField("name", 1)}
+	scanA := planPropertiesScan("A").WithPrimaryKey(pkA)
+	scanB := planPropertiesScan("B").WithPrimaryKey(pkB)
+	union := mustPropertiesConstruct(plans.NewRecordQueryUnionPlan(
+		[]plans.RecordQueryPlan{scanA, scanB}))
 	result := computePrimaryKey(union)
 	if result != nil {
 		t.Fatal("union with different PKs should return nil")

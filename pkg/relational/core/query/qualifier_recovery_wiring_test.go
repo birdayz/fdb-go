@@ -9,7 +9,7 @@ package query
 // they miss are precisely the ones the census was built to watch:
 //
 //	site                 sqldriver corpus                 translator corpus
-//	recursiveRemap       MANUFACTURED 0, carried 0        MANUFACTURED 3, carried 4
+//	recursiveRemap       retired/no traffic               retired/no traffic
 //	existsSortSplit      AGREED 44, everything else 0     5 calls, FIXTURE traffic only
 //	derivedUnnestSource  bare 13, everything else 0       4 calls, FIXTURE traffic only
 //
@@ -17,9 +17,7 @@ package query
 // site is reached" would be circular — the pins below are what reaches it — so
 // they are named as fixture traffic and carry no claim about production. The
 // production coverage of those two sites is the sqldriver column and nothing
-// else; recursiveRemap is the one site whose translator-corpus population is
-// real planning traffic, and it is the only corpus anywhere that reports this
-// family's MANUFACTURED bucket from a producer.
+// else. recursiveRemap is retained only as an inert compatibility entry.
 //
 // So MANUFACTURED at existsSortSplit, DIVERGED anywhere, and every dotted class
 // at derivedUnnestSource are invisible to every corpus that runs: the counter is
@@ -74,81 +72,6 @@ func qualRecDelta(t *testing.T, site values.QualifierRecoverySite, class values.
 	return after[site][class] - before[site][class]
 }
 
-// TestQualRecWiring_RecursiveRemapCountsEveryArm pins the four classes
-// recursiveRemapValues can reach.
-//
-// This is the site the census header calls STRICTLY THE WORST: its MANUFACTURED
-// arm does not build a qualifier string to look up in a table, it builds a
-// CorrelationIdentifier out of the bytes before the FIRST dot. A misread there
-// does not fail to resolve — it resolves against a correlation that does not
-// exist. It is also the site whose debt bucket the real-FDB corpus reports as 0
-// while the translator corpus reports 2, which is the concrete reason a claim
-// made from one corpus about this family is not a claim about Go.
-func TestQualRecWiring_RecursiveRemapCountsEveryArm(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name       string
-		cols       []string
-		verbatim   []bool
-		positional bool
-		class      values.QualifierRecoveryClass
-		why        string
-	}{
-		{
-			name:     "MANUFACTURED",
-			cols:     []string{"B.ID"},
-			verbatim: []bool{true},
-			class:    values.QualRecManufactured,
-			why: "a verbatim identifier carrying a dot became QOV(\"B\") — a correlation " +
-				"invented from bytes, with nothing at this site to check it against. " +
-				"cols is []string; there is no identity here to convert TO, which is why " +
-				"this site's debt is a PRODUCER change and not a local edit",
-		},
-		{
-			name:     "carried",
-			cols:     []string{"(B.ID + 1)"},
-			verbatim: []bool{false},
-			class:    values.QualRecCarried,
-			why: "the NAME-PROVENANCE flag declined the split. A structured fact decided " +
-				"the outcome, which is what carried means — and it is the arm that stops " +
-				"a computed rendering's dots from being read as qualifier boundaries",
-		},
-		{
-			name:     "bare",
-			cols:     []string{"ID"},
-			verbatim: []bool{true},
-			class:    values.QualRecBare,
-			why: "no dot, nothing manufactured. Counted because it shares the site with " +
-				"the debt class, and a census reporting only debt cannot tell a CLEAN " +
-				"site from a DARK one",
-		},
-		{
-			name:       "leafOnly",
-			cols:       []string{"C.ORDER_ID"},
-			verbatim:   []bool{true},
-			positional: true,
-			class:      values.QualRecLeafOnly,
-			why: "an ORDINALIZED body reads slot i by ordinal, so the qualifier is sliced " +
-				"off and DISCARDED rather than manufactured into anything. Not debt, and " +
-				"bucketed apart so it is never banked as some",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := qualRecDelta(t, values.QualRecSiteRecursiveRemap, tc.class, func() {
-				recursiveRemapValues(tc.cols, tc.verbatim, false, tc.positional)
-			})
-			if got < 1 {
-				t.Fatalf("recursiveRemap recorded %d %v decision(s) for %q — want at least 1.\n%s",
-					got, tc.class, tc.cols, tc.why)
-			}
-		})
-	}
-}
-
 // TestQualRecWiring_ExistsSortSplitCountsEveryArm pins the classes at the site
 // whose ENTIRE measured population is a single class.
 //
@@ -165,6 +88,9 @@ func TestQualRecWiring_ExistsSortSplitCountsEveryArm(t *testing.T) {
 	t.Parallel()
 
 	src := sortSource{isJoin: true, legAliases: []string{"T1", "T2"}, legTypes: []*values.RecordType{nil, nil}}
+	agreedType := &values.RecordType{Fields: []values.Field{
+		{Name: "SK", Ordinal: 0, FieldType: values.NotNullLong},
+	}}
 
 	cases := []struct {
 		name  string
@@ -173,10 +99,8 @@ func TestQualRecWiring_ExistsSortSplitCountsEveryArm(t *testing.T) {
 		why   string
 	}{
 		{
-			name: "AGREED",
-			key: logical.SortKey{Value: values.NewFieldValue(
-				values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T2")),
-				"SK", values.UnknownType)},
+			name:  "AGREED",
+			key:   logical.SortKey{Value: exactTestField(t, exactTestQOV(t, "T2", agreedType), 0)},
 			class: values.QualRecAgreed,
 			why: "THE ROUND TRIP. sortKeyFieldRef RENDERS `T2.SK` out of the very " +
 				"correlation the key already holds, and splitQualifier then slices that " +
@@ -213,7 +137,7 @@ func TestQualRecWiring_ExistsSortSplitCountsEveryArm(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := qualRecDelta(t, values.QualRecSiteExistsSortSplit, tc.class, func() {
-				src.sortKeySourceValue(tc.key)
+				src.sortKeyName(tc.key)
 			})
 			if got < 1 {
 				t.Fatalf("existsSortSplit recorded %d %v decision(s) — want at least 1.\n%s",
@@ -223,26 +147,18 @@ func TestQualRecWiring_ExistsSortSplitCountsEveryArm(t *testing.T) {
 	}
 }
 
-// TestQualRecWiring_ExistsSortSplitCountsTheOtherCaller pins the SECOND caller.
-//
-// splitQualifier is reached from two places and only one of them is covered
-// above. resolveKeyName is the other, and a recorder present at one caller and
-// missing at the other produces a census that is quietly measuring half the
-// site — with a healthy total, a passing floor, and a hard zero that is a zero
-// over the wrong population.
-func TestQualRecWiring_ExistsSortSplitCountsTheOtherCaller(t *testing.T) {
+// Source-value recovery no longer parses rendered sort text. Exact values pass
+// through unchanged; missing resolver metadata makes the fold inapplicable.
+func TestQualRecWiring_SortKeySourceValueDoesNotRecoverFromText(t *testing.T) {
 	t.Parallel()
-
-	src := sortSource{isJoin: true, legAliases: []string{"T1", "T2"}, legTypes: []*values.RecordType{nil, nil}}
-	key := logical.SortKey{Expr: "T2.SK", Bare: "SK", Qualifier: "T9", Qualified: true}
-
-	got := qualRecDelta(t, values.QualRecSiteExistsSortSplit, values.QualRecDiverged, func() {
-		src.sortKeyName(key)
-	})
-	if got < 1 {
-		t.Fatalf("existsSortSplit recorded %d DIVERGED decision(s) through resolveKeyName — "+
-			"want at least 1. sortKeySourceValue is not the only caller, and a census wired "+
-			"at one of two callers reports a healthy total for half a site", got)
+	src := sortSource{isJoin: true, legAliases: []string{"T1", "T2"}}
+	typ := &values.RecordType{Fields: []values.Field{{Name: "SK", Ordinal: 0, FieldType: values.NotNullLong}}}
+	exact := exactTestField(t, exactTestQOV(t, "T2", typ), 0)
+	if got := src.sortKeySourceValue(logical.SortKey{Expr: "OTHER.SK", Value: exact}); got != exact {
+		t.Fatalf("exact sort value was reconstructed: got %v, want original value", got)
+	}
+	if got := src.sortKeySourceValue(logical.SortKey{Expr: "T2.SK"}); got != nil {
+		t.Fatalf("text-only sort key recovered %v, want nil without exact resolver authority", got)
 	}
 }
 

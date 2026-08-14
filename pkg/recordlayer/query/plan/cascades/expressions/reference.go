@@ -1,6 +1,7 @@
 package expressions
 
 import (
+	"bytes"
 	"sync/atomic"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -51,6 +52,18 @@ const (
 type Reference struct {
 	members      []RelationalExpression
 	finalMembers []RelationalExpression
+	// pinnedFinal marks a deliberately disentangled physical selection. Unlike
+	// an ordinary one-member plan group, a pinned reference must not be grown by
+	// physical rewrites: its parent was constructed over this exact member.
+	pinnedFinal bool
+
+	// These two fields are the transitional prepared-admission checkpoint.
+	// The root cascades package freezes the exact RELATION result type before
+	// any member hash/equality method is called; the version then proves that
+	// the member sets did not change between pure preparation and apply.
+	// RFC-232's memostore-backed immutable handle replaces both fields.
+	admittedResultType values.ExactTypeHandle
+	memberVersion      uint64
 
 	plannerStage PlannerStage
 	explState    explorationState
@@ -122,6 +135,19 @@ func FinalOf(e RelationalExpression) *Reference {
 	return &Reference{finalMembers: []RelationalExpression{e}, plannerStage: StagePlanned}
 }
 
+// PinnedFinalOf returns the exact physical-selection shape used by a parent
+// alternative that was constructed over one concrete child member. It is
+// intentionally distinct from FinalOf: an ordinary singleton plan group may
+// still be explored and gain equivalent physical rewrites, while a pinned
+// reference is the memo equivalent of baking that child into the parent.
+func PinnedFinalOf(e RelationalExpression) *Reference {
+	return &Reference{
+		finalMembers: []RelationalExpression{e},
+		plannerStage: StagePlanned,
+		pinnedFinal:  true,
+	}
+}
+
 // FinalOfAtStage returns a Reference holding e as its only FINAL member at
 // the CALLER'S stage, decoupling "which member set" from "which planner
 // stage".
@@ -139,6 +165,151 @@ func FinalOf(e RelationalExpression) *Reference {
 // intend.
 func FinalOfAtStage(e RelationalExpression, stage PlannerStage) *Reference {
 	return &Reference{finalMembers: []RelationalExpression{e}, plannerStage: stage}
+}
+
+// ReferenceMemberSet identifies one of the two separately interned member
+// lanes. It is intentionally smaller than planner stage: exploratory/final is
+// member placement, while stage records planner progress.
+type ReferenceMemberSet uint8
+
+const (
+	ReferenceExploratoryMembers ReferenceMemberSet = iota + 1
+	ReferenceFinalMembers
+)
+
+// ReferenceAdmissionView is an immutable, defensive snapshot used by the
+// RFC-232 transitional prepared-commit boundary. Its fields stay private so an
+// apply can exact-recognize the view and tie it to the Reference/version from
+// which it was read.
+type ReferenceAdmissionView struct {
+	reference   *Reference
+	version     uint64
+	resultType  values.ExactTypeHandle
+	exploratory []RelationalExpression
+	final       []RelationalExpression
+}
+
+// AdmissionView returns one defensive view without compressing a forwarded
+// Reference chain. Avoiding path compression matters on a failed preparation:
+// even memo topology and lazy forwarding caches must remain unchanged.
+func (r *Reference) AdmissionView() *ReferenceAdmissionView {
+	r = canonicalReferenceReadOnly(r)
+	if r == nil {
+		return nil
+	}
+	return &ReferenceAdmissionView{
+		reference:   r,
+		version:     r.memberVersion,
+		resultType:  r.admittedResultType,
+		exploratory: append([]RelationalExpression(nil), r.members...),
+		final:       append([]RelationalExpression(nil), r.finalMembers...),
+	}
+}
+
+// Members returns a defensive copy of the requested member lane.
+func (v *ReferenceAdmissionView) Members(set ReferenceMemberSet) []RelationalExpression {
+	if v == nil {
+		return nil
+	}
+	switch set {
+	case ReferenceExploratoryMembers:
+		return append([]RelationalExpression(nil), v.exploratory...)
+	case ReferenceFinalMembers:
+		return append([]RelationalExpression(nil), v.final...)
+	default:
+		return nil
+	}
+}
+
+// ResultType returns the immutable exact RELATION type already stored for this
+// group, or nil while a legacy-created group has not crossed checked admission.
+func (v *ReferenceAdmissionView) ResultType() values.ExactTypeHandle {
+	if v == nil {
+		return nil
+	}
+	return v.resultType
+}
+
+func canonicalReferenceReadOnly(r *Reference) *Reference {
+	for r != nil && r.forwardedTo != nil {
+		r = r.forwardedTo
+	}
+	return r
+}
+
+// ApplyPreparedMemberBatch is the sole transitional method-free member apply
+// adapter. The root cascades package first exact-recognizes and freezes the
+// complete batch, validates one exact RELATION type, and precomputes dedup. This
+// method then verifies the exact view/version and performs only slice/counter
+// writes; it invokes no proposed expression method and cannot fail after its
+// first mutation.
+//
+// RFC-232 slice 3 replaces this exported source-gated seam with memostore's
+// locked transaction. Keeping it narrow makes that deletion mechanical.
+func (r *Reference) ApplyPreparedMemberBatch(
+	view *ReferenceAdmissionView,
+	relationType values.ExactTypeHandle,
+	exploratory []RelationalExpression,
+	final []RelationalExpression,
+	aliasAwareDedups int,
+) error {
+	canonical := canonicalReferenceReadOnly(r)
+	if canonical == nil || view == nil || view.reference != canonical {
+		return &values.ResolutionError{ErrorCode: values.MemoInvalidHandle, Path: "memo.reference", Detail: "prepared view does not belong to Reference"}
+	}
+	exact, ok := values.AsExactTypeHandle(relationType)
+	if !ok || exact == nil {
+		return &values.ResolutionError{ErrorCode: values.MemoMissingRelationWrapper, Path: "memo.resultType", Detail: "prepared batch has no exact relation type"}
+	}
+	inner, relation := exact.RelationInner()
+	if !relation || inner == nil {
+		return &values.ResolutionError{ErrorCode: values.MemoMissingRelationWrapper, Path: "memo.resultType", Detail: "prepared batch type is not RELATION<T>"}
+	}
+	if _, doubled := inner.RelationInner(); doubled {
+		return &values.ResolutionError{ErrorCode: values.MemoDoubleRelationWrapper, Path: "memo.resultType", Detail: "prepared batch type is RELATION<RELATION<T>>"}
+	}
+	if canonical.memberVersion != view.version {
+		return &values.ResolutionError{ErrorCode: values.MemoBatchConflict, Path: "memo.reference", Detail: "Reference members changed after preparation"}
+	}
+	if canonical.admittedResultType != nil &&
+		!bytes.Equal(canonical.admittedResultType.CanonicalBytes(), exact.CanonicalBytes()) {
+		return &values.ResolutionError{ErrorCode: values.MemoResultTypeMismatch, Path: "memo.resultType", Detail: "prepared relation type disagrees with Reference"}
+	}
+	if aliasAwareDedups < 0 {
+		return &values.ResolutionError{ErrorCode: values.MemoBatchConflict, Path: "memo.reference", Detail: "negative alias-aware dedup delta"}
+	}
+	for _, member := range exploratory {
+		if member == nil {
+			return &values.ResolutionError{ErrorCode: values.MemoUnsupportedExpression, Path: "memo.member", Detail: "nil exploratory member in prepared batch"}
+		}
+	}
+	for _, member := range final {
+		if member == nil {
+			return &values.ResolutionError{ErrorCode: values.MemoUnsupportedExpression, Path: "memo.member", Detail: "nil final member in prepared batch"}
+		}
+	}
+
+	// Everything that can fail is above this line.
+	if canonical.admittedResultType != nil && len(exploratory) == 0 && len(final) == 0 && aliasAwareDedups == 0 {
+		return nil
+	}
+	canonical.members = append(canonical.members, exploratory...)
+	canonical.finalMembers = append(canonical.finalMembers, final...)
+	canonical.aliasAwareDedups += aliasAwareDedups
+	canonical.admittedResultType = exact
+	canonical.memberVersion++
+	if len(exploratory)+len(final) > 0 {
+		// Prepared admission is the planner's normal insertion path. A winner
+		// ranks the member set that existed when it was stamped; publishing any
+		// genuinely new member invalidates that snapshot just as Insert and
+		// InsertFinal do.
+		canonical.winner = nil
+		canonical.correlatedToCache = nil
+	}
+	if len(final) > 0 {
+		finalsGeneration.Add(uint64(len(final)))
+	}
+	return nil
 }
 
 // Canonical follows the forwarding chain to the surviving Reference and
@@ -242,7 +413,10 @@ func (r *Reference) Absorb(loser *Reference) {
 // Returns nil if the Reference is empty (defensive; InitialOf never
 // constructs one).
 func (r *Reference) Get() RelationalExpression {
-	r = r.Canonical()
+	r = canonicalReferenceReadOnly(r)
+	if r == nil {
+		return nil
+	}
 	if len(r.members) == 0 {
 		// A finals-only Reference (FinalOf — a spine-pinned singleton) has
 		// no exploratory members; its identity for semantic equality and
@@ -259,10 +433,13 @@ func (r *Reference) Get() RelationalExpression {
 	return r.members[0]
 }
 
-// Members returns the exploratory members. The slice is read-only.
+// Members returns a defensive copy of the exploratory members.
 func (r *Reference) Members() []RelationalExpression {
-	r = r.Canonical()
-	return r.members
+	r = canonicalReferenceReadOnly(r)
+	if r == nil {
+		return nil
+	}
+	return append([]RelationalExpression(nil), r.members...)
 }
 
 // AliasAwareDedups returns how many incoming members this Reference collapsed
@@ -270,20 +447,43 @@ func (r *Reference) Members() []RelationalExpression {
 // A regression test sums this across the memo to bound the join
 // re-enumeration task count.
 func (r *Reference) AliasAwareDedups() int {
-	return r.Canonical().aliasAwareDedups
+	r = canonicalReferenceReadOnly(r)
+	if r == nil {
+		return 0
+	}
+	return r.aliasAwareDedups
 }
 
 // AllMembers returns all members of this Reference — both exploratory
 // and final. Mirrors Java's getAllMembers() which unions the two sets.
 func (r *Reference) AllMembers() []RelationalExpression {
-	r = r.Canonical()
-	if len(r.finalMembers) == 0 {
-		return r.members
+	r = canonicalReferenceReadOnly(r)
+	if r == nil {
+		return nil
 	}
 	all := make([]RelationalExpression, 0, len(r.members)+len(r.finalMembers))
 	all = append(all, r.members...)
 	all = append(all, r.finalMembers...)
 	return all
+}
+
+// ResultType returns the exact stored RELATION result type for a group that
+// has crossed checked root admission. Empty, legacy-unadmitted, and forwarded
+// invalid reads are errors rather than absence. Type() thaws a fresh graph, so
+// callers cannot mutate the Reference's identity.
+func (r *Reference) ResultType() (values.Type, error) {
+	r = canonicalReferenceReadOnly(r)
+	if r == nil {
+		return nil, &values.ResolutionError{ErrorCode: values.MemoInvalidHandle, Path: "memo.reference", Detail: "Reference is nil"}
+	}
+	if len(r.members)+len(r.finalMembers) == 0 {
+		return nil, &values.ResolutionError{ErrorCode: values.MemoEmptyReference, Path: "memo.reference", Detail: "Reference has no members"}
+	}
+	exact, ok := values.AsExactTypeHandle(r.admittedResultType)
+	if !ok || exact == nil {
+		return nil, &values.ResolutionError{ErrorCode: values.MemoInvalidHandle, Path: "memo.resultType", Detail: "Reference has not crossed checked result-type admission"}
+	}
+	return exact.Type(), nil
 }
 
 // GetBest returns the cheapest member of this Reference under the
@@ -437,8 +637,50 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 		}
 	}
 	r.members = append(r.members, e)
+	// A winner is a choice over the member set that existed when OptimizeGroup
+	// stamped it. Growing that set invalidates the choice: implementation and
+	// data-access rules can publish a cheaper alternative after an earlier
+	// OptimizeGroup task has run. Leaving the old winner installed makes every
+	// winner-first consumer (plan construction, ordering lookup, extraction)
+	// permanently prefer the earlier member and turns task order into plan
+	// quality. Duplicate insertions do not mutate the set and therefore keep the
+	// existing winner.
+	r.winner = nil
+	// A direct legacy insertion did not cross the root registry. Never retain
+	// stale exact authority across it; the next prepared ingress re-admits the
+	// complete group before hashing.
+	r.admittedResultType = nil
+	r.memberVersion++
 	r.correlatedToCache = nil
 	return true
+}
+
+// PreparedMemberDuplicate runs Reference's three memo-equality tiers without
+// mutating a Reference. The root cascades admission boundary calls it only
+// after every expression in the complete batch has been exact-recognized and
+// result-type checked. It is not itself an admission API: it deliberately
+// invokes expression hash/equality methods. Its dedicated equality traversal
+// follows forwarding read-only and uses invocation-local correlation state, so
+// preparation neither path-compresses child References nor fills shared caches.
+//
+// aliasAwareOnly reports that only the third tier found the duplicate, so the
+// later method-free apply can preserve Reference's diagnostic counter.
+func PreparedMemberDuplicate(members []RelationalExpression, e RelationalExpression) (duplicate bool, aliasAwareOnly bool) {
+	eHash := e.HashCodeWithoutChildren()
+	aliasAware := InternsAliasAware(e)
+	for _, m := range members {
+		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && preparedSameChildReferences(m, e) {
+			return true, false
+		}
+		mHash := m.HashCodeWithoutChildren()
+		if mHash == eHash && preparedSemanticEquals(m, e, EmptyAliasMap()) {
+			return true, false
+		}
+		if aliasAware && mHash == eHash && preparedMemoEqual(m, e) {
+			return true, true
+		}
+	}
+	return false, false
 }
 
 // aliasAwareInterner is implemented by expressions whose quantifier aliases are
@@ -497,8 +739,11 @@ func SetDisableAliasAwareInterning(v bool) { disableAliasAwareInterning = v }
 // FinalMembers returns PLANNING-phase physical plans. Empty until
 // implementation rules or data access generation populate it.
 func (r *Reference) FinalMembers() []RelationalExpression {
-	r = r.Canonical()
-	return r.finalMembers
+	r = canonicalReferenceReadOnly(r)
+	if r == nil {
+		return nil
+	}
+	return append([]RelationalExpression(nil), r.finalMembers...)
 }
 
 // InsertFinal adds e to the finalMembers set only. Does NOT add to
@@ -528,6 +773,11 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 		}
 	}
 	r.finalMembers = append(r.finalMembers, e)
+	// See Insert: the previously stamped winner was computed over a smaller
+	// physical candidate set and is no longer authoritative.
+	r.winner = nil
+	r.admittedResultType = nil
+	r.memberVersion++
 	r.correlatedToCache = nil
 	finalsGeneration.Add(1)
 	return true
@@ -566,6 +816,7 @@ func (r *Reference) AdvancePlannerStage(newStage PlannerStage) {
 	r.plannerStage = newStage
 	r.members = append(r.members[:0], r.finalMembers...)
 	r.finalMembers = r.finalMembers[:0]
+	r.memberVersion++
 	finalsGeneration.Add(1)
 	r.planProperties = nil
 	r.explState = explorationNever
@@ -578,6 +829,13 @@ func (r *Reference) AdvancePlannerStage(newStage PlannerStage) {
 
 // Stage returns the current planner stage.
 func (r *Reference) Stage() PlannerStage { r = r.Canonical(); return r.plannerStage }
+
+// IsPinnedFinal reports whether this reference is an exact physical child
+// selection rather than an ordinary equivalence group.
+func (r *Reference) IsPinnedFinal() bool {
+	r = canonicalReferenceReadOnly(r)
+	return r != nil && r.pinnedFinal
+}
 
 // AdvanceStagePreservingMembers is the stage-boundary transition for a
 // group that has NO finals to promote as the next stage's seed — its
@@ -598,6 +856,11 @@ func (r *Reference) Stage() PlannerStage { r = r.Canonical(); return r.plannerSt
 func (r *Reference) AdvanceStagePreservingMembers(newStage PlannerStage) {
 	r = r.Canonical()
 	r.plannerStage = newStage
+	// A prepared member lane is phase-sensitive: committing an exploratory
+	// intent after this transition could publish it into the wrong phase. Make
+	// the transition conflict with every earlier admission view even though it
+	// deliberately preserves the member slices.
+	r.memberVersion++
 	r.planProperties = nil
 	r.explState = explorationNever
 	r.explRounds = 0
@@ -668,6 +931,8 @@ func (r *Reference) ContainsExactly(expr RelationalExpression) bool {
 func (r *Reference) PruneWith(expr RelationalExpression) {
 	r = r.Canonical()
 	r.finalMembers = append(r.finalMembers[:0], expr)
+	r.winner = nil
+	r.memberVersion++
 	finalsGeneration.Add(1)
 }
 
@@ -683,6 +948,8 @@ func (r *Reference) PruneToSet(keep map[RelationalExpression]struct{}) {
 		}
 	}
 	r.finalMembers = kept
+	r.winner = nil
+	r.memberVersion++
 	finalsGeneration.Add(1)
 }
 
@@ -690,6 +957,8 @@ func (r *Reference) PruneToSet(keep map[RelationalExpression]struct{}) {
 func (r *Reference) ClearFinalMembers() {
 	r = r.Canonical()
 	r.finalMembers = r.finalMembers[:0]
+	r.winner = nil
+	r.memberVersion++
 	finalsGeneration.Add(1)
 }
 
@@ -845,8 +1114,8 @@ func (r *Reference) getCorrelatedToGuarded(visited map[*Reference]struct{}) map[
 // Quantifier count AND every Quantifier's Reference resolves to the
 // same canonical Reference on both sides. Used by Reference.Insert as
 // the second clause of the dedup contract. Comparison is via
-// GetRangesOver (which canonicalizes), so a merged-away child and its
-// survivor compare equal.
+// GetRangesOver (which resolves forwarding read-only), so a merged-away child
+// and its survivor compare equal without mutating topology during comparison.
 func sameChildReferences(a, b RelationalExpression) bool {
 	aQs := a.GetQuantifiers()
 	bQs := b.GetQuantifiers()

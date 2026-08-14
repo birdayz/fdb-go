@@ -2,13 +2,13 @@ package plans
 
 import (
 	"testing"
-
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // scanFixture builds a trivial leaf plan to sit under the operators below.
-func cwdScanFixture() RecordQueryPlan {
-	return NewRecordQueryScanPlan([]string{"Orders"}, values.UnknownType, false)
+func cwdScanFixture(t testing.TB) RecordQueryPlan {
+	return mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"Orders"}, exactTestRecordType(), false)
+	})
 }
 
 // TestContinuableWithoutDuplicates_PerPlanType pins the property's verdict for
@@ -34,7 +34,9 @@ func TestContinuableWithoutDuplicates_PerPlanType(t *testing.T) {
 	}{
 		{
 			name: "unordered primary-key distinct",
-			plan: NewRecordQueryUnorderedPrimaryKeyDistinctPlan(cwdScanFixture()),
+			plan: mustChecked(t, func() (*RecordQueryUnorderedPrimaryKeyDistinctPlan, error) {
+				return NewRecordQueryUnorderedPrimaryKeyDistinctPlan(cwdScanFixture(t))
+			}),
 			want: true,
 			why: "Java returns FALSE here (per-execution HashSet lost across the continuation). " +
 				"Go carries the seen-set across pages by reference through the ExecutionScratch, " +
@@ -42,7 +44,9 @@ func TestContinuableWithoutDuplicates_PerPlanType(t *testing.T) {
 		},
 		{
 			name: "unordered by-row distinct",
-			plan: NewRecordQueryDistinctPlan(cwdScanFixture()),
+			plan: mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
+				return NewRecordQueryDistinctPlan(cwdScanFixture(t))
+			}),
 			want: true,
 			why: "Java's RecordQueryUnorderedDistinctPlan counterpart, FALSE in Java for the same " +
 				"reason. Go is resume-clean on BOTH executors — the streaming form rides its last " +
@@ -50,7 +54,7 @@ func TestContinuableWithoutDuplicates_PerPlanType(t *testing.T) {
 		},
 		{
 			name: "bare scan (default arm)",
-			plan: cwdScanFixture(),
+			plan: cwdScanFixture(t),
 			want: true,
 			why:  "a leaf that resumes positionally",
 		},
@@ -98,15 +102,18 @@ func TestContinuableWithoutDuplicates_FoldsChildren(t *testing.T) {
 	if !v.fromChildren(nil) {
 		t.Fatal("fromChildren(nil) = false, want true — a childless plan is decided by its own arm")
 	}
-	if !v.fromChildren([]RecordQueryPlan{cwdScanFixture(), cwdScanFixture()}) {
+	if !v.fromChildren([]RecordQueryPlan{cwdScanFixture(t), cwdScanFixture(t)}) {
 		t.Fatal("fromChildren over two safe children = false, want true")
 	}
 
 	// A stack of operators over a safe leaf stays safe. Under Java's false set
 	// this exact shape is doubly false, so reading false here means Go imported
 	// that conclusion.
-	stacked := NewRecordQueryUnorderedPrimaryKeyDistinctPlan(
-		NewRecordQueryDistinctPlan(cwdScanFixture()))
+	stacked := mustChecked(t, func() (*RecordQueryUnorderedPrimaryKeyDistinctPlan, error) {
+		return NewRecordQueryUnorderedPrimaryKeyDistinctPlan(mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
+			return NewRecordQueryDistinctPlan(cwdScanFixture(t))
+		}))
+	})
 	if !EvaluateContinuableWithoutDuplicates(stacked) {
 		t.Fatal("a distinct over a distinct over a scan is not continuable-without-duplicates — " +
 			"under Java's false set this shape is doubly false, and reading false here means " +
@@ -144,11 +151,13 @@ func TestContinuableWithoutDuplicates_FoldsChildren(t *testing.T) {
 func TestContinuableWithoutDuplicates_FalseSetIsEmpty(t *testing.T) {
 	t.Parallel()
 
-	scan := cwdScanFixture()
+	scan := cwdScanFixture(t)
 	for _, p := range []RecordQueryPlan{
-		scan,
-		NewRecordQueryDistinctPlan(scan),
-		NewRecordQueryUnorderedPrimaryKeyDistinctPlan(scan),
+		scan, mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
+			return NewRecordQueryDistinctPlan(scan)
+		}), mustChecked(t, func() (*RecordQueryUnorderedPrimaryKeyDistinctPlan, error) {
+			return NewRecordQueryUnorderedPrimaryKeyDistinctPlan(scan)
+		}),
 	} {
 		if !EvaluateContinuableWithoutDuplicates(p) {
 			t.Fatalf("%T is continuation-UNSAFE, so the false set is no longer empty. Adding it to "+

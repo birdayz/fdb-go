@@ -147,50 +147,65 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 			"index %q references unknown table %q", indexName, tableName)
 	}
 	fields := rt.Descriptor.Fields()
+	rowFields := make([]values.Field, 0, fields.Len()+1)
+	for i := 0; i < fields.Len(); i++ {
+		field := fields.Get(i)
+		rowFields = append(rowFields, values.Field{
+			Name:      strings.ToUpper(string(field.Name())),
+			Ordinal:   i,
+			FieldType: query.TargetTypeForFD(field),
+		})
+	}
+	if md.IsStoreRecordVersions() && fields.ByName(protoreflect.Name(values.PseudoFieldRowVersion)) == nil {
+		rowFields = append(rowFields, values.Field{
+			Name:      values.PseudoFieldRowVersion,
+			Ordinal:   len(rowFields),
+			FieldType: values.NullableVersion,
+		})
+	}
+	rowQOV, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier(tableName),
+		&values.RecordType{RecordName: string(rt.Descriptor.Name()), Fields: rowFields},
+	)
+	if err != nil {
+		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"index %q cannot type table %q exactly: %v", indexName, tableName, err)
+	}
 
 	// One resolved Column per identifier, reused by projection and sort —
 	// Java's originalOutputMap yields ONE Column instance per name
 	// (OnSourceIndexGenerator.java:183-194), and the generator's ordering
 	// functions are identity-keyed (RFC-202 D12), so instance reuse is
 	// load-bearing, not an optimisation.
-	resolvedByName := make(map[string]*values.FieldValue)
-	resolve := func(name string) (*values.FieldValue, error) {
+	resolvedByName := make(map[string]values.FieldValue)
+	resolve := func(name string) (values.FieldValue, error) {
 		if fv, ok := resolvedByName[name]; ok {
 			return fv, nil
 		}
-		var fv *values.FieldValue
+		ordinal := -1
 		if fd := fields.ByName(protoreflect.Name(name)); fd != nil {
-			typ := query.FieldTypeForFD(fd)
-			if _, _, isArr := values.EffectiveListField(fd); isArr {
-				// A repeated field must flow as an ARRAY-coded type: the
-				// generator's key rendering rejects a non-unnested array
-				// (MaterializedViewIndexGenerator.java:814-819), and
-				// FieldTypeForFD collapses repeated fields to UnknownType,
-				// which would silently render a plain field instead. Only the
-				// type CODE is read on this path, so the element type may stay
-				// unmodelled.
-				typ = values.NewArrayType(true, values.UnknownType)
-			}
-			fv = &values.FieldValue{
-				Field:    strings.ToUpper(name),
-				Typ:      typ,
-				Resolved: values.NewFieldPathOfSingle(string(fd.Name()), fd.Index(), false),
-			}
+			ordinal = fd.Index()
 		} else if name == values.PseudoFieldRowVersion && md.IsStoreRecordVersions() {
 			// The planner-facing layout appends the __ROW_VERSION pseudo-field
 			// one past the descriptor's fields when the template stores row
 			// versions and no REAL column shadows it (real-column-wins — the
 			// ByName branch above; Java: RecordMetaData.getPlannerType →
 			// Type.Record.addPseudoFields, RecordMetaData.java:732-739).
-			fv = &values.FieldValue{
-				Field:    values.PseudoFieldRowVersion,
-				Typ:      values.NullableVersion,
-				Resolved: values.NewFieldPathOfSingle(values.PseudoFieldRowVersion, fields.Len(), false),
-			}
+			ordinal = fields.Len()
 		} else {
 			// Java: Assert.notNullUnchecked(column, ErrorCode.UNDEFINED_COLUMN,
 			// "could not find " + identifier) — OnSourceIndexGenerator.java:203,209.
 			return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "could not find %s", name)
+		}
+		resolved, resolveErr := values.ResolveFieldOrdinals(rowQOV, []int{ordinal})
+		if resolveErr != nil {
+			return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+				"index %q cannot resolve column %q: %v", indexName, name, resolveErr)
+		}
+		fv, ok := values.AsFieldValue(resolved)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInternalError,
+				"index %q resolved column %q to %T", indexName, name, resolved)
 		}
 		resolvedByName[name] = fv
 		return fv, nil

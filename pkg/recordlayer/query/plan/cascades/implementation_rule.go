@@ -36,6 +36,31 @@ type ImplementationRuleCall struct {
 	yielded              []expressions.RelationalExpression
 	constraintOnly       bool
 	constraintPushedRefs []*expressions.Reference
+	pendingConstraints   []pendingRequestedOrderingConstraint
+	indexYieldedInMemo   bool
+	err                  error
+}
+
+type pendingRequestedOrderingConstraint struct {
+	ref       *expressions.Reference
+	orderings []*properties.RequestedOrdering
+}
+
+// Fail records the first rule-body failure. Drivers check Err before applying
+// any staged yield or constraint effect.
+func (c *ImplementationRuleCall) Fail(err error) {
+	if c == nil || err == nil || c.err != nil {
+		return
+	}
+	c.err = err
+}
+
+// Err returns the first error reported by the rule body.
+func (c *ImplementationRuleCall) Err() error {
+	if c == nil {
+		return nil
+	}
+	return c.err
 }
 
 // CancellationErr reports whether the owning planning run was canceled.
@@ -62,7 +87,7 @@ func (c *ImplementationRuleCall) CostModel() func(a, b expressions.RelationalExp
 // Yield records a final expression to be inserted into the
 // Reference's final members after the rule completes.
 func (c *ImplementationRuleCall) Yield(expr expressions.RelationalExpression) {
-	if c.constraintOnly || c.CancellationErr() != nil {
+	if c.constraintOnly || c.Err() != nil || c.CancellationErr() != nil {
 		return
 	}
 	c.yielded = append(c.yielded, expr)
@@ -103,15 +128,20 @@ func (c *ImplementationRuleCall) PushConstraint(
 	childRef *expressions.Reference,
 	orderings []*properties.RequestedOrdering,
 ) {
-	if c.CancellationErr() != nil {
+	if c.Err() != nil || c.CancellationErr() != nil {
 		return
 	}
-	// Set IS the combiner (Java pushProperty): the former pre-combine
-	// here duplicated it. A SUBSUMED push schedules no re-exploration —
-	// Java's empty Optional schedules nothing; enqueueing on every push
-	// held groups in re-exploration for constraint no-ops.
-	if Set(c.Constraints, childRef, RequestedOrderingConstraintKey, orderings) {
-		c.constraintPushedRefs = append(c.constraintPushedRefs, childRef)
+	c.pendingConstraints = append(c.pendingConstraints, pendingRequestedOrderingConstraint{
+		ref:       childRef,
+		orderings: append([]*properties.RequestedOrdering(nil), orderings...),
+	})
+}
+
+func (c *ImplementationRuleCall) applyPendingConstraints() {
+	for _, pending := range c.pendingConstraints {
+		if Set(c.Constraints, pending.ref, RequestedOrderingConstraintKey, pending.orderings) {
+			c.constraintPushedRefs = append(c.constraintPushedRefs, pending.ref)
+		}
 	}
 }
 
@@ -143,7 +173,20 @@ func (c *ImplementationRuleCall) MemoizeFinalExpressionsFromOther(
 	// list. That is the same defect the twin was written to avoid, live here
 	// across nine call sites. One implementation now, so the two cannot drift
 	// apart again.
-	return newRestrictedFinalReference("MemoizeFinalExpressionsFromOther", source, exprs)
+	restricted := newRestrictedFinalReference(
+		"MemoizeFinalExpressionsFromOther", source, exprs, expressions.StageCanonical)
+	// The new reference is the same constrained child domain narrowed to one
+	// plan partition. Preserve the requested-ordering requirement that caused
+	// that partition to be selected; otherwise its OptimizeGroup pass sees an
+	// unconstrained singleton/group and can prune the ordered member the parent
+	// is about to rely on. Java's partition reference is ordering-homogeneous,
+	// so this copy is implicit there; Go's separately-keyed ConstraintMap needs
+	// it stated explicitly.
+	if orderings, ok := Get(c.Constraints, source, RequestedOrderingConstraintKey); ok {
+		Set(c.Constraints, restricted, RequestedOrderingConstraintKey,
+			append([]*properties.RequestedOrdering(nil), orderings...))
+	}
+	return restricted
 }
 
 // MemoizeFinalExpression creates a new Reference holding expr as its single
@@ -159,14 +202,14 @@ func (c *ImplementationRuleCall) MemoizeFinalExpression(
 // FireImplementationRule runs an ImplementationRule against a Reference,
 // matching each member and collecting yielded expressions.
 // Returns the yielded expressions (also inserted into ref.Members).
-func FireImplementationRule(rule ImplementationRule, ref *expressions.Reference, constraints ...*ConstraintMap) []expressions.RelationalExpression {
+func FireImplementationRule(rule ImplementationRule, ref *expressions.Reference, constraints ...*ConstraintMap) ([]expressions.RelationalExpression, error) {
 	return FireImplementationRuleWithContext(rule, ref, nil, nil, constraints...)
 }
 
 // FireImplementationRuleWithContext is like FireImplementationRule but
 // threads a PlanContext through to the rule call. The planner uses this
 // to provide PK / match-candidate info to rules that need it.
-func FireImplementationRuleWithContext(rule ImplementationRule, ref *expressions.Reference, ctx PlanContext, memo *Memo, constraints ...*ConstraintMap) []expressions.RelationalExpression {
+func FireImplementationRuleWithContext(rule ImplementationRule, ref *expressions.Reference, ctx PlanContext, memo *Memo, constraints ...*ConstraintMap) ([]expressions.RelationalExpression, error) {
 	var cm *ConstraintMap
 	if len(constraints) > 0 {
 		cm = constraints[0]
@@ -176,7 +219,11 @@ func FireImplementationRuleWithContext(rule ImplementationRule, ref *expressions
 	}
 	var allYielded []expressions.RelationalExpression
 	for _, member := range ref.AllMembers() {
-		allYielded = append(allYielded, fireImplRuleOnMember(rule, ref, member, ctx, cm, memo)...)
+		yielded, err := fireImplRuleOnMember(rule, ref, member, ctx, cm, memo)
+		if err != nil {
+			return nil, err
+		}
+		allYielded = append(allYielded, yielded...)
 
 		if sel, ok := member.(*expressions.SelectExpression); ok && sel.ChildrenAsSet() {
 			qs := sel.GetQuantifiers()
@@ -184,11 +231,15 @@ func FireImplementationRuleWithContext(rule ImplementationRule, ref *expressions
 				qs[0].Kind() == expressions.QuantifierForEach &&
 				qs[1].Kind() == expressions.QuantifierForEach {
 				swapped := sel.WithSwappedQuantifiers()
-				allYielded = append(allYielded, fireImplRuleOnMember(rule, ref, swapped, ctx, cm, memo)...)
+				yielded, err := fireImplRuleOnMember(rule, ref, swapped, ctx, cm, memo)
+				if err != nil {
+					return nil, err
+				}
+				allYielded = append(allYielded, yielded...)
 			}
 		}
 	}
-	return allYielded
+	return allYielded, nil
 }
 
 // fireImplRuleOnMember runs a single implementation rule against a single
@@ -202,7 +253,7 @@ func fireImplRuleOnMember(
 	ctx PlanContext,
 	cm *ConstraintMap,
 	memo *Memo,
-) []expressions.RelationalExpression {
+) ([]expressions.RelationalExpression, error) {
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), member)
 	var yielded []expressions.RelationalExpression
 	for _, b := range bindings {
@@ -214,10 +265,29 @@ func fireImplRuleOnMember(
 			memo:        memo,
 		}
 		rule.OnMatch(call)
+		if err := call.Err(); err != nil {
+			return nil, err
+		}
+		if len(call.yielded) > 0 {
+			intents := make([]referenceMemberIntent, len(call.yielded))
+			for i, y := range call.yielded {
+				intents[i] = referenceMemberIntent{set: expressions.ReferenceFinalMembers, expression: y}
+			}
+			batch, err := prepareReferenceMemberBatch(ref, intents)
+			if err != nil {
+				return nil, err
+			}
+			if err := batch.commit(); err != nil {
+				return nil, err
+			}
+		}
+		call.applyPendingConstraints()
 		for _, y := range call.yielded {
-			ref.InsertFinal(y)
+			if call.indexYieldedInMemo && memo != nil {
+				memo.AddExpression(ref, y)
+			}
 		}
 		yielded = append(yielded, call.yielded...)
 	}
-	return yielded
+	return yielded, nil
 }

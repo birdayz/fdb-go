@@ -16,8 +16,8 @@ type RecordQueryDefaultOnEmptyPlan struct {
 	defaultValue values.Value
 }
 
-func NewRecordQueryDefaultOnEmptyPlan(inner RecordQueryPlan, defaultValue values.Value) *RecordQueryDefaultOnEmptyPlan {
-	return &RecordQueryDefaultOnEmptyPlan{innerQ: QuantifierOverPlan(inner), defaultValue: defaultValue}
+func NewRecordQueryDefaultOnEmptyPlan(inner RecordQueryPlan, defaultValue values.Value) (*RecordQueryDefaultOnEmptyPlan, error) {
+	return NewRecordQueryDefaultOnEmptyPlanFromQuantifier(QuantifierOverPlan(inner), defaultValue)
 }
 
 // NewRecordQueryDefaultOnEmptyPlanFromQuantifier builds a default-on-empty whose
@@ -26,8 +26,72 @@ func NewRecordQueryDefaultOnEmptyPlan(inner RecordQueryPlan, defaultValue values
 // own cascades expression carrying its child edge directly: the memo holds it
 // without a physical wrapper, and GetInner / GetQuantifiers / GetResultValue all
 // resolve through the one live edge (RFC-184 W2).
-func NewRecordQueryDefaultOnEmptyPlanFromQuantifier(innerQ expressions.Quantifier, defaultValue values.Value) *RecordQueryDefaultOnEmptyPlan {
-	return &RecordQueryDefaultOnEmptyPlan{innerQ: innerQ, defaultValue: defaultValue}
+func NewRecordQueryDefaultOnEmptyPlanFromQuantifier(innerQ expressions.Quantifier, defaultValue values.Value) (*RecordQueryDefaultOnEmptyPlan, error) {
+	base, err := newDefaultOnEmptyPlanExprBase(innerQ, defaultValue)
+	if err != nil {
+		return nil, err
+	}
+	return &RecordQueryDefaultOnEmptyPlan{PlanExprBase: base, innerQ: innerQ, defaultValue: defaultValue}, nil
+}
+
+// newDefaultOnEmptyPlanExprBase admits the two result alternatives together.
+// Java verifies that the child and default types are identical after widening
+// each root to nullable, then chooses whichever original type is nullable (or
+// the child when both have the same nullability). The output is therefore not
+// necessarily the child's type: a NOT NULL child plus a typed NULL default
+// produces a nullable result.
+//
+// Physically, the operator still consumes its one child in that child's exact
+// layout. Its provided layout is a fresh identity layout for the reconciled
+// output type: the fabricated default row does not provide any source windows
+// the child happened to carry, so forwarding those windows would be unsound.
+func newDefaultOnEmptyPlanExprBase(
+	innerQ expressions.Quantifier,
+	defaultValue values.Value,
+) (PlanExprBase, error) {
+	const owner = "RecordQueryDefaultOnEmptyPlan"
+	if defaultValue == nil {
+		return PlanExprBase{}, fmt.Errorf("%s default Value: value is nil", owner)
+	}
+
+	childBase, err := newPlanExprBaseForQuantifier(owner, innerQ)
+	if err != nil {
+		return PlanExprBase{}, err
+	}
+	childType := childBase.GetResultValue().Type()
+	defaultTypeHandle, err := values.SnapshotExactType(defaultValue.Type())
+	if err != nil {
+		return PlanExprBase{}, fmt.Errorf("%s default Value: %w", owner, err)
+	}
+	defaultType := defaultTypeHandle.Type()
+	if !values.WithNullability(childType, true).Equals(values.WithNullability(defaultType, true)) {
+		return PlanExprBase{}, fmt.Errorf(
+			"%s result Value: child type %s is incompatible with default type %s",
+			owner, childType, defaultType)
+	}
+
+	resultType := childType
+	if !childType.IsNullable() && defaultType.IsNullable() {
+		resultType = defaultType
+	}
+	provided, err := newIdentityOutputLayout(resultType)
+	if err != nil {
+		return PlanExprBase{}, fmt.Errorf("%s provided output layout: %w", owner, err)
+	}
+	childProperties, err := childBase.OrdinalPhysicalProperties()
+	if err != nil {
+		return PlanExprBase{}, fmt.Errorf("%s required input layout: %w", owner, err)
+	}
+	requirement, err := RequireExactLayout(childProperties.ProvidedOutputLayout())
+	if err != nil {
+		return PlanExprBase{}, fmt.Errorf("%s required input layout: %w", owner, err)
+	}
+	return newPlanExprBaseWithProperties(
+		owner,
+		provided.Carrier(),
+		[]OrdinalLayoutRequirement{requirement},
+		provided,
+	)
 }
 
 func (p *RecordQueryDefaultOnEmptyPlan) GetInner() RecordQueryPlan {
@@ -43,12 +107,11 @@ func (p *RecordQueryDefaultOnEmptyPlan) GetInnerQuantifier() expressions.Quantif
 	return p.innerQ
 }
 
-// GetResultValue returns the flowed object value of the live child quantifier —
-// a default-on-empty passes its input's rows through (with an empty→default row),
-// so its row identity IS the inner's. This is the identity
-// physicalDefaultOnEmptyWrapper.GetResultValue supplied (RFC-184 W2).
+// GetResultValue returns the stable exact carrier admitted from both result
+// alternatives. It is nullable when either the child or default is nullable,
+// matching Java's DerivedValue(child, default) result contract.
 func (p *RecordQueryDefaultOnEmptyPlan) GetResultValue() values.Value {
-	return p.innerQ.GetFlowedObjectValue()
+	return p.PlanExprBase.GetResultValue()
 }
 
 func (p *RecordQueryDefaultOnEmptyPlan) GetDefaultValue() values.Value { return p.defaultValue }
@@ -62,12 +125,7 @@ func (p *RecordQueryDefaultOnEmptyPlan) GetQuantifiers() []expressions.Quantifie
 	return []expressions.Quantifier{p.innerQ}
 }
 
-func (p *RecordQueryDefaultOnEmptyPlan) GetResultType() values.Type {
-	if inner := p.GetInner(); inner != nil {
-		return inner.GetResultType()
-	}
-	return values.UnknownType
-}
+func (p *RecordQueryDefaultOnEmptyPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 func (p *RecordQueryDefaultOnEmptyPlan) GetChildren() []RecordQueryPlan {
 	inner := p.GetInner()
@@ -113,13 +171,18 @@ func (p *RecordQueryDefaultOnEmptyPlan) EqualsWithoutChildren(other expressions.
 
 // WithQuantifiers returns a copy ranging over the given child quantifier —
 // Java's copy-on-write withChild(Reference).
-func (p *RecordQueryDefaultOnEmptyPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 1 {
-		return p
+func (p *RecordQueryDefaultOnEmptyPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryDefaultOnEmptyPlan", len(qs), 1); err != nil {
+		return nil, err
 	}
 	cp := *p
+	base, err := newDefaultOnEmptyPlanExprBase(qs[0], p.defaultValue)
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
 	cp.innerQ = qs[0]
-	return &cp
+	return &cp, nil
 }
 
 // WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
@@ -133,7 +196,7 @@ func (p *RecordQueryDefaultOnEmptyPlan) WithChildren(qs []expressions.Quantifier
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("RecordQueryDefaultOnEmptyPlan.WithChildren: expected 1 child, got %d", len(qs))
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

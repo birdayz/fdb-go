@@ -151,10 +151,13 @@ func TestSameLeg_IsExact_AndPreservesMintedNamespaceDisjointness(t *testing.T) {
 		t.Fatal("SameLeg(q$5, Q$5) = true — scope.go's anti-forgery disjointness is erased")
 	}
 
-	// Accept direction, so exactness is not satisfied by refusing everything.
-	if !SameLeg(minted, NamedCorrelationIdentifier(minted.String())) {
-		t.Fatal("SameLeg declined a leg against its own spelling — exactness must still " +
-			"recognize identical identifiers")
+	// Kind is part of identity: rendering a unique ID and naming that text is a
+	// forgery attempt, not reconstruction of the unique identifier.
+	if SameLeg(minted, NamedCorrelationIdentifier(minted.String())) {
+		t.Fatal("SameLeg accepted a named alias forged from a unique identifier's rendering")
+	}
+	if !SameLeg(minted, minted) {
+		t.Fatal("SameLeg declined the same unique correlation value")
 	}
 	if !SameLeg(NamedCorrelationIdentifier("O"), NamedCorrelationIdentifier("O")) {
 		t.Fatal("SameLeg declined two identical user aliases")

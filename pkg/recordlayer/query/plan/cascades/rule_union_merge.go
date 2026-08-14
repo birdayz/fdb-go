@@ -50,7 +50,12 @@ func (r *UnionMergeRule) OnMatch(call *ExpressionRuleCall) {
 	if !sawNested {
 		return
 	}
-	call.Yield(expressions.NewLogicalUnionExpression(flat))
+	merged, err := expressions.NewLogicalUnionExpression(flat)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(merged)
 }
 
 // flattenUnionChildren walks `qs`, replacing any Quantifier ranging

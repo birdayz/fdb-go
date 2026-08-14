@@ -25,12 +25,12 @@ const (
 // (InValuesJoin, InParameterJoin, InComparandJoin).
 type RecordQueryInJoinPlan struct {
 	PlanExprBase
-	innerQ      expressions.Quantifier
-	bindingName string
-	sorted      bool
-	reverse     bool
-	inValues    []any
-	sourceKind  InSourceKind
+	innerQ       expressions.Quantifier
+	bindingAlias values.CorrelationIdentifier
+	sorted       bool
+	reverse      bool
+	inValues     []any
+	sourceKind   InSourceKind
 }
 
 func NewRecordQueryInJoinPlan(
@@ -38,13 +38,23 @@ func NewRecordQueryInJoinPlan(
 	bindingName string,
 	sorted bool,
 	reverse bool,
-) *RecordQueryInJoinPlan {
-	return &RecordQueryInJoinPlan{
-		innerQ:      QuantifierOverPlan(inner),
-		bindingName: bindingName,
-		sorted:      sorted,
-		reverse:     reverse,
-	}
+) (*RecordQueryInJoinPlan, error) {
+	return NewRecordQueryInJoinPlanWithBindingAlias(
+		inner, values.NamedCorrelationIdentifier(bindingName), sorted, reverse)
+}
+
+// NewRecordQueryInJoinPlanWithBindingAlias preserves the exact correlation
+// kind of the IN binding. Planner-minted q$ aliases are Unique identifiers; a
+// string round-trip remints them as Named identifiers with the same rendering,
+// which exact QOV lookup correctly treats as a different runtime binding.
+func NewRecordQueryInJoinPlanWithBindingAlias(
+	inner RecordQueryPlan,
+	bindingAlias values.CorrelationIdentifier,
+	sorted bool,
+	reverse bool,
+) (*RecordQueryInJoinPlan, error) {
+	return NewRecordQueryInJoinPlanFromQuantifierWithBindingAlias(
+		QuantifierOverPlan(inner), bindingAlias, sorted, reverse)
 }
 
 // NewRecordQueryInJoinPlanFromQuantifier builds the InJoin over the LIVE inner
@@ -58,13 +68,28 @@ func NewRecordQueryInJoinPlanFromQuantifier(
 	bindingName string,
 	sorted bool,
 	reverse bool,
-) *RecordQueryInJoinPlan {
-	return &RecordQueryInJoinPlan{
-		innerQ:      innerQ,
-		bindingName: bindingName,
-		sorted:      sorted,
-		reverse:     reverse,
+) (*RecordQueryInJoinPlan, error) {
+	return NewRecordQueryInJoinPlanFromQuantifierWithBindingAlias(
+		innerQ, values.NamedCorrelationIdentifier(bindingName), sorted, reverse)
+}
+
+func NewRecordQueryInJoinPlanFromQuantifierWithBindingAlias(
+	innerQ expressions.Quantifier,
+	bindingAlias values.CorrelationIdentifier,
+	sorted bool,
+	reverse bool,
+) (*RecordQueryInJoinPlan, error) {
+	base, err := newPlanExprBaseForQuantifier("RecordQueryInJoinPlan", innerQ)
+	if err != nil {
+		return nil, err
 	}
+	return &RecordQueryInJoinPlan{
+		PlanExprBase: base,
+		innerQ:       innerQ,
+		bindingAlias: bindingAlias,
+		sorted:       sorted,
+		reverse:      reverse,
+	}, nil
 }
 
 func (p *RecordQueryInJoinPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
@@ -83,7 +108,7 @@ func (p *RecordQueryInJoinPlan) GetInnerQuantifier() expressions.Quantifier {
 // inner's. This is the identity physicalInJoinWrapper.GetResultValue supplied
 // (RFC-184 W2).
 func (p *RecordQueryInJoinPlan) GetResultValue() values.Value {
-	return p.innerQ.GetFlowedObjectValue()
+	return p.PlanExprBase.GetResultValue()
 }
 
 // GetQuantifiers reports the real child quantifier, overriding
@@ -98,12 +123,20 @@ func (p *RecordQueryInJoinPlan) GetQuantifiers() []expressions.Quantifier {
 // WithInner returns a copy with the inner replaced and EVERY other field
 // preserved — the extraction-relink rebuild path; reconstructing via the
 // constructor risks silently dropping fields the setters carry.
-func (p *RecordQueryInJoinPlan) WithInner(inner RecordQueryPlan) *RecordQueryInJoinPlan {
+func (p *RecordQueryInJoinPlan) WithInner(inner RecordQueryPlan) (*RecordQueryInJoinPlan, error) {
 	cp := *p
 	cp.innerQ = QuantifierOverPlan(inner)
-	return &cp
+	base, err := newPlanExprBaseForQuantifier("RecordQueryInJoinPlan", cp.innerQ)
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
+	return &cp, nil
 }
-func (p *RecordQueryInJoinPlan) GetBindingName() string       { return p.bindingName }
+func (p *RecordQueryInJoinPlan) GetBindingName() string { return p.bindingAlias.Name() }
+func (p *RecordQueryInJoinPlan) GetBindingAlias() values.CorrelationIdentifier {
+	return p.bindingAlias
+}
 func (p *RecordQueryInJoinPlan) IsSorted() bool               { return p.sorted }
 func (p *RecordQueryInJoinPlan) IsReverse() bool              { return p.reverse }
 func (p *RecordQueryInJoinPlan) GetInValues() []any           { return p.inValues }
@@ -111,15 +144,7 @@ func (p *RecordQueryInJoinPlan) SetInValues(vals []any)       { p.inValues = val
 func (p *RecordQueryInJoinPlan) GetSourceKind() InSourceKind  { return p.sourceKind }
 func (p *RecordQueryInJoinPlan) SetSourceKind(k InSourceKind) { p.sourceKind = k }
 
-func (p *RecordQueryInJoinPlan) GetResultType() values.Type {
-	if p.innerQ.GetRangesOver() == nil {
-		return values.UnknownType
-	}
-	// TYPE resolution, not identity: the inner is a deferred-winner group still
-	// multi-member during planning; every alternative shares the row shape, so
-	// any member answers without tripping the singleton guard (RFC-184 W2).
-	return planTypeFromQuantifier(p.innerQ).GetResultType()
-}
+func (p *RecordQueryInJoinPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 func (p *RecordQueryInJoinPlan) GetChildren() []RecordQueryPlan {
 	inner := p.GetInner()
@@ -205,13 +230,18 @@ func (p *RecordQueryInJoinPlan) EqualsWithoutChildren(other expressions.Relation
 
 // WithQuantifiers returns a copy ranging over the given child quantifier —
 // Java's copy-on-write withChild(Reference).
-func (p *RecordQueryInJoinPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 1 {
-		return p
+func (p *RecordQueryInJoinPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryInJoinPlan", len(qs), 1); err != nil {
+		return nil, err
 	}
 	cp := *p
+	base, err := newPlanExprBaseForQuantifier("RecordQueryInJoinPlan", qs[0])
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
 	cp.innerQ = qs[0]
-	return &cp
+	return &cp, nil
 }
 
 // WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
@@ -226,7 +256,7 @@ func (p *RecordQueryInJoinPlan) WithChildren(qs []expressions.Quantifier) (expre
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("RecordQueryInJoinPlan.WithChildren: expected 1 child, got %d", len(qs))
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

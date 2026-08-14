@@ -10,6 +10,57 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustPlannerFuzzConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct planner-fuzz fixture: " + err.Error())
+	}
+	return value
+}
+
+func plannerFuzzRowType() values.Type {
+	return values.NewRecordType("PlannerFuzzRow", false, []values.Field{
+		{Name: "K", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "g", FieldType: values.NullableLong, Ordinal: 1},
+		{Name: "x", FieldType: values.NullableLong, Ordinal: 2},
+	})
+}
+
+func plannerFuzzRoot(q expressions.Quantifier) values.QuantifiedObjectValue {
+	flowedType := mustPlannerFuzzConstruct(q.GetFlowedObjectType())
+	return mustPlannerFuzzConstruct(values.NewQuantifiedObjectValue(q.GetAlias(), flowedType))
+}
+
+func plannerFuzzField(q expressions.Quantifier, ordinal int) values.Value {
+	root := plannerFuzzRoot(q)
+	recordType, ok := root.FlowedType().(*values.RecordType)
+	if !ok || len(recordType.Fields) == 0 {
+		panic("planner-fuzz field input does not have a non-empty exact record type")
+	}
+	if ordinal >= len(recordType.Fields) {
+		ordinal = len(recordType.Fields) - 1
+	}
+	return mustPlannerFuzzConstruct(values.ResolveFieldOrdinals(root, []int{ordinal}))
+}
+
+func plannerFuzzProjectedFields(q expressions.Quantifier) []values.Value {
+	root := plannerFuzzRoot(q)
+	recordType, ok := root.FlowedType().(*values.RecordType)
+	if !ok {
+		panic("planner-fuzz projection input does not have an exact record type")
+	}
+	projected := make([]values.Value, len(recordType.Fields))
+	for i := range recordType.Fields {
+		projected[i] = mustPlannerFuzzConstruct(values.ResolveFieldOrdinals(root, []int{i}))
+	}
+	return projected
+}
+
+func plannerFuzzSameResultType(left, right expressions.Quantifier) bool {
+	leftType := mustPlannerFuzzConstruct(left.GetFlowedObjectType())
+	rightType := mustPlannerFuzzConstruct(right.GetFlowedObjectType())
+	return leftType.Equals(rightType)
+}
+
 // FuzzPlanner_Determinism pins that the task-stack Planner produces
 // the SAME final Reference state on identical inputs. Two fresh
 // Planner instances, same expression tree, same rules, same order →
@@ -197,35 +248,39 @@ func FuzzPlanner_InitialMemberPreserved(f *testing.F) {
 // byte stream. Shared by the planner and cost fuzzers.
 func buildFuzzExpression(b []byte, start, depth int) expressions.RelationalExpression {
 	if depth >= 3 || len(b) == 0 {
-		return expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		return mustPlannerFuzzConstruct(expressions.NewFullUnorderedScanExpression(
+			[]string{"T"}, plannerFuzzRowType()))
 	}
 	op := b[start%len(b)] % 10
 	switch op {
 	case 0:
-		return expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		return mustPlannerFuzzConstruct(expressions.NewFullUnorderedScanExpression(
+			[]string{"T"}, plannerFuzzRowType()))
 	case 1:
 		// Filter over a random child.
 		inner := buildFuzzExpression(b, (start+1)%len(b), depth+1)
 		q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
 		pT := predicates.NewConstantPredicate(predicates.TriTrue)
-		return expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, q)
+		return mustPlannerFuzzConstruct(expressions.NewLogicalFilterExpression(
+			[]predicates.QueryPredicate{pT}, q))
 	case 2:
 		// Distinct over a random child.
 		inner := buildFuzzExpression(b, (start+1)%len(b), depth+1)
 		q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
-		return expressions.NewLogicalDistinctExpression(q)
+		return mustPlannerFuzzConstruct(expressions.NewLogicalDistinctExpression(q))
 	case 3:
-		// Projection over a random child (single column = inner's
-		// flowed object — identity projection, exercises ProjectionElim).
+		// Per-field identity projection over a random child's exact row,
+		// exercising projection planning without constructing a one-slot
+		// whole-row wrapper.
 		inner := buildFuzzExpression(b, (start+1)%len(b), depth+1)
 		q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
-		return expressions.NewLogicalProjectionExpression(
-			[]values.Value{q.GetFlowedObjectValue()}, q)
+		return mustPlannerFuzzConstruct(expressions.NewLogicalProjectionExpression(
+			plannerFuzzProjectedFields(q), q))
 	case 4:
 		// TypeFilter over a random child.
 		inner := buildFuzzExpression(b, (start+1)%len(b), depth+1)
 		q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
-		return expressions.NewLogicalTypeFilterExpression([]string{"X"}, q)
+		return mustPlannerFuzzConstruct(expressions.NewLogicalTypeFilterExpression([]string{"X"}, q))
 	case 5:
 		// Union of two random children — exercises UnionMerge,
 		// UnionSingletonElim, and any future Union-aware rule.
@@ -233,53 +288,58 @@ func buildFuzzExpression(b []byte, start, depth int) expressions.RelationalExpre
 		right := buildFuzzExpression(b, (start+2)%len(b), depth+1)
 		ql := expressions.ForEachQuantifier(expressions.InitialOf(left))
 		qr := expressions.ForEachQuantifier(expressions.InitialOf(right))
-		return expressions.NewLogicalUnionExpression([]expressions.Quantifier{ql, qr})
+		if !plannerFuzzSameResultType(ql, qr) {
+			// SQL has coerced both UNION legs to one row shape before this
+			// boundary. Random bytes have not; keep the generated tree valid.
+			return left
+		}
+		return mustPlannerFuzzConstruct(expressions.NewLogicalUnionExpression(
+			[]expressions.Quantifier{ql, qr}))
 	case 6:
 		// Single-child Union — exercises UnionSingletonElim directly.
 		inner := buildFuzzExpression(b, (start+1)%len(b), depth+1)
 		q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
-		return expressions.NewLogicalUnionExpression([]expressions.Quantifier{q})
+		return mustPlannerFuzzConstruct(expressions.NewLogicalUnionExpression(
+			[]expressions.Quantifier{q}))
 	case 7:
 		// A sorted intersection over two typed PK scans. The intersection
 		// executor is a merge, so arbitrary random children are not a valid
 		// fixture: every leg must emit the non-empty comparison key
 		// monotonically and the runtime key must be ordinal-bakeable.
-		rt := &values.RecordType{
-			RecordName: "T",
-			Fields: []values.Field{{
-				Name:      "K",
-				FieldType: values.NotNullLong,
-				Ordinal:   0,
-			}},
-		}
-		key := &values.FieldValue{Field: "K", Typ: values.NotNullLong}
-		left := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false).
+		rt := plannerFuzzRowType()
+		keyRoot := mustPlannerFuzzConstruct(values.NewQuantifiedObjectValue(
+			values.NamedCorrelationIdentifier("planner_fuzz_intersection_key"), rt))
+		key := mustPlannerFuzzConstruct(values.ResolveOrdinalSeedField(keyRoot, 0))
+		left := mustPlannerFuzzConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, rt, false)).
 			WithPrimaryKey([]values.Value{key}).
 			WithKeyComponentTypes([]values.Type{values.NotNullLong})
-		right := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false).
+		right := mustPlannerFuzzConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, rt, false)).
 			WithPrimaryKey([]values.Value{key}).
 			WithKeyComponentTypes([]values.Type{values.NotNullLong})
 		ql := expressions.ForEachQuantifier(expressions.InitialOf(left))
 		qr := expressions.ForEachQuantifier(expressions.InitialOf(right))
-		return expressions.NewLogicalIntersectionExpression(
+		return mustPlannerFuzzConstruct(expressions.NewLogicalIntersectionExpression(
 			[]expressions.Quantifier{ql, qr},
 			[]values.Value{key},
-		)
+		))
 	case 8:
 		// GroupBy over a random child — exercises GroupByExpression
 		// integration with cost model and ordering property.
 		inner := buildFuzzExpression(b, (start+1)%len(b), depth+1)
 		q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
-		return expressions.NewGroupByExpression(
-			[]values.Value{&values.FieldValue{Field: "g", Typ: values.UnknownType}},
-			[]expressions.AggregateSpec{{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "x", Typ: values.UnknownType}}},
+		return mustPlannerFuzzConstruct(expressions.NewGroupByExpression(
+			[]values.Value{plannerFuzzField(q, 1)},
+			[]expressions.AggregateSpec{{
+				Function: expressions.AggCount,
+				Operand:  plannerFuzzField(q, 2),
+			}},
 			q,
-		)
+		))
 	default:
 		// UnsortedSort over a random child.
 		inner := buildFuzzExpression(b, (start+1)%len(b), depth+1)
 		q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
-		return expressions.UnsortedLogicalSortExpression(q)
+		return mustPlannerFuzzConstruct(expressions.UnsortedLogicalSortExpression(q))
 	}
 }
 

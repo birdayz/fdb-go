@@ -47,20 +47,20 @@ func TestUnnestSeed_NonOrdinality(t *testing.T) {
 	}
 	// Every outer field is a baked ofOrdinal.
 	for i := 0; i < wantOuter; i++ {
-		fv, ok := rc.Fields[i].Value.(*values.FieldValue)
-		if !ok || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
+		fv, ok := values.AsFieldValue(rc.Fields[i].Value)
+		if !ok || !fv.Path().IsFrontierPinned() {
 			t.Fatalf("outer field %d is %T, want a baked frontier-pinned ofOrdinal", i, rc.Fields[i].Value)
 		}
 	}
 	// The LAST field is the element: a DIRECT bare QOV over the inner correlation
 	// (a whole-object leg — Java's primitive branch), NOT a baked FieldValue.
 	last := rc.Fields[len(rc.Fields)-1]
-	qov, ok := last.Value.(*values.QuantifiedObjectValue)
+	qov, ok := values.AsQuantifiedObjectValue(last.Value)
 	if !ok {
 		t.Fatalf("element field is %T, want a DIRECT *QuantifiedObjectValue (Java's isPrimitive branch)", last.Value)
 	}
-	if qov.Correlation != innerCorr {
-		t.Errorf("element QOV correlation = %s, want %s (the unnest AS alias)", qov.Correlation, innerCorr)
+	if qov.Correlation() != innerCorr {
+		t.Errorf("element QOV correlation = %s, want %s (the unnest AS alias)", qov.Correlation(), innerCorr)
 	}
 	if last.Name != "X" {
 		t.Errorf("element field name = %q, want X (the AS alias — the output column)", last.Name)
@@ -100,22 +100,23 @@ func TestUnnestSeed_WithOrdinality(t *testing.T) {
 	}
 	// Both inner fields are baked ofOrdinal over the SAME inner QOV, whose leg
 	// type is named by the AS/AT aliases (X, O) — the leg-window resolution key.
-	efv, ok := elem.Value.(*values.FieldValue)
-	if !ok || efv.Resolved == nil || !efv.Resolved.FrontierPinned {
+	efv, ok := values.AsFieldValue(elem.Value)
+	if !ok || !efv.Path().IsFrontierPinned() {
 		t.Fatalf("element field is %T, want a baked ofOrdinal", elem.Value)
 	}
-	iqov, ok := efv.Child.(*values.QuantifiedObjectValue)
+	iqov, ok := values.AsQuantifiedObjectValue(efv.ChildValue())
 	if !ok {
-		t.Fatalf("element ofOrdinal child is %T, want the inner *QuantifiedObjectValue", efv.Child)
+		t.Fatalf("element ofOrdinal child is %T, want the inner *QuantifiedObjectValue", efv.ChildValue())
 	}
-	legType, ok := iqov.Type().(*values.RecordType)
+	legType, ok := iqov.FlowedType().(*values.RecordType)
 	if !ok || len(legType.Fields) != 2 || legType.Fields[0].Name != "X" || legType.Fields[1].Name != "O" {
-		t.Fatalf("inner leg type = %v, want a 2-field record named [X O] (the AS/AT aliases)", iqov.Type())
+		t.Fatalf("inner leg type = %v, want a 2-field record named [X O] (the AS/AT aliases)", iqov.FlowedType())
 	}
-	// The ordinal column is INT NOT NULL (the 1-based position).
-	ofv := ord.Value.(*values.FieldValue)
-	if ofv.Typ.IsNullable() {
-		t.Errorf("ordinal (AT) column must be NOT NULL, got %s", ofv.Typ)
+	// An emitted Explode row is present, so the 1-based AT ordinal remains INT
+	// NOT NULL through exact FieldValue result-type derivation.
+	ofv := exactTestFieldView(t, ord.Value)
+	if ofv.ResultType().Code() != values.TypeCodeInt || ofv.ResultType().IsNullable() {
+		t.Errorf("accessed ordinal (AT) column = %s, want INT NOT NULL", ofv.ResultType())
 	}
 }
 
@@ -144,55 +145,74 @@ func TestUnnestSeed_ATOnly(t *testing.T) {
 	}
 }
 
+// nestedArrayUnnestFixture supplies a real exact nested-array path without
+// depending on a catalog descriptor having one. The projected leg flows one
+// column N whose value is RECORD<ARR ARRAY<LONG NOT NULL>>, so both the root
+// and suffix can be resolved exactly and the collection's final type agrees
+// with the unnest element type.
+func nestedArrayUnnestFixture(t testing.TB) (logical.LogicalOperator, *logical.LogicalUnnest, values.Type) {
+	t.Helper()
+	elementType := values.NotNullLong
+	arrayType := values.NewArrayType(true, elementType)
+	nestedType := &values.RecordType{Fields: []values.Field{
+		{Name: "ARR", Ordinal: 0, FieldType: arrayType},
+	}}
+	sourceType := &values.RecordType{Fields: []values.Field{
+		{Name: "N", Ordinal: 0, FieldType: nestedType},
+	}}
+	outer := &logical.LogicalProject{
+		Input:           scan("Customer", "src"),
+		Projections:     []string{"N"},
+		ProjectedValues: []values.Value{exactTestField(t, exactTestQOV(t, "SRC", sourceType), 0)},
+	}
+	u := &logical.LogicalUnnest{Segments: []string{"D", "N", "ARR"}, Alias: "X"}
+	return outer, u, elementType
+}
+
 // TestUnnestBakedRootCollection_MultiSegment pins the multi-segment fused
 // baked collection (`FROM t, t.rec.arr AS x`, len(Segments)>2): the
 // collection ROOT is baked POSITIONALLY as ofOrdinal over the outer leg
-// type, and the remaining segments ride as a NAME-addressed suffix. This is
-// what lets the single-source multi-segment unnest ORDINALIZE — the
-// name-keyed arrayValue does NOT descend under the ordinal-seed build
-// (proven by the corresponding FDB subtest, which fails the moment the
-// guard is relaxed WITHOUT this bake: "field NARR not resolvable in the
-// runtime row, ordinal -1"). The bake itself is array-agnostic (the
-// classifier validates arrayness upstream), so Order.flower (a nested
-// struct) exercises the root-bake + suffix-descent shape directly.
+// type, and the remaining segment is an exactly resolved fused suffix. This
+// is what lets the single-source multi-segment unnest ORDINALIZE — the
+// collection must carry the positional seed-purpose authority at its root,
+// while exact type descent determines the suffix ordinal.
 func TestUnnestBakedRootCollection_MultiSegment(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)
-	outer := scan("Order", "o")
-	outerCorr := values.NamedCorrelationIdentifier("o")
-	// Order.flower is a nested struct (Flower{type, color}); descend to `type`.
-	u := &logical.LogicalUnnest{Segments: []string{"ORDER", "FLOWER", "TYPE"}, Alias: "X"}
+	outer, u, elementType := nestedArrayUnnestFixture(t)
+	outerCorr := values.NamedCorrelationIdentifier("D")
 
-	coll := tr.unnestBakedRootCollection(outer, outerCorr, u, "TYPE", values.NotNullLong, 1, -1)
+	coll := tr.unnestBakedRootCollection(outer, outerCorr, u, "ARR", elementType, 1, -1)
 	if coll == nil {
 		t.Fatal("multi-segment single-source unnest must bake a fused collection, got nil (declined)")
 	}
-	fv, ok := coll.(*values.FieldValue)
+	fv, ok := values.AsFieldValue(coll)
 	if !ok {
 		t.Fatalf("baked collection = %T, want *FieldValue", coll)
 	}
-	if fv.Resolved == nil || !fv.Resolved.FrontierPinned {
+	if !fv.Path().IsFrontierPinned() {
 		t.Fatal("baked collection root must be a frontier-pinned ofOrdinal (positional), not a name read")
 	}
-	if len(fv.Resolved.Accessors) != 2 {
-		t.Fatalf("baked collection has %d accessors, want 2 (ofOrdinal root + name suffix)", len(fv.Resolved.Accessors))
+	if fv.Path().Len() != 2 {
+		t.Fatalf("baked collection has %d accessors, want 2 (ofOrdinal root + exact suffix)", fv.Path().Len())
 	}
-	// Root accessor: baked POSITIONAL (ordinal >= 0). Suffix: NAME-addressed (-1).
-	if fv.Resolved.Accessors[0].Ordinal < 0 {
-		t.Errorf("root accessor ordinal = %d, want >= 0 (baked positional)", fv.Resolved.Accessors[0].Ordinal)
+	root, rootOK := fv.Path().Accessor(0)
+	leaf, leafOK := fv.Path().Accessor(1)
+	if !rootOK || root.Ordinal() < 0 {
+		t.Errorf("root accessor = %v, want a non-negative exact ordinal", root)
 	}
-	if fv.Resolved.Accessors[1].Field != "TYPE" || fv.Resolved.Accessors[1].Ordinal != -1 {
-		t.Errorf("suffix accessor = {%q, %d}, want {TYPE, -1} (name-addressed struct descent)",
-			fv.Resolved.Accessors[1].Field, fv.Resolved.Accessors[1].Ordinal)
+	leafName, named := leaf.DisplayName()
+	if !leafOK || !named || leafName != "ARR" || leaf.Ordinal() != 0 {
+		t.Errorf("suffix accessor = {%q, %d}, want exact ARR ordinal 0", leafName, leaf.Ordinal())
 	}
 	// The child is the outer QOV carrying the outer LEG TYPE, so the root ordinal
 	// resolves positionally against the ordinal-seed build row.
-	qov, ok := fv.Child.(*values.QuantifiedObjectValue)
-	if !ok || qov.Correlation != outerCorr {
-		t.Fatalf("baked collection child = %T, want the outer *QuantifiedObjectValue %s", fv.Child, outerCorr)
+	qov, ok := values.AsQuantifiedObjectValue(fv.ChildValue())
+	if !ok || qov.Correlation() != outerCorr {
+		t.Fatalf("baked collection child = %T, want the outer *QuantifiedObjectValue %s", fv.ChildValue(), outerCorr)
 	}
-	if _, isRT := qov.Type().(*values.RecordType); !isRT {
-		t.Fatalf("outer QOV must carry the leg RecordType for positional resolution, got %T", qov.Type())
+	if _, isRT := qov.FlowedType().(*values.RecordType); !isRT {
+		t.Fatalf("outer QOV must carry the leg RecordType for positional resolution, got %T", qov.FlowedType())
 	}
 }
 

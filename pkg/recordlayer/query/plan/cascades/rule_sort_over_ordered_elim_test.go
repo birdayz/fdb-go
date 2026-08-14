@@ -9,6 +9,61 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustSortOverOrderedConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct sort-over-ordered fixture: " + err.Error())
+	}
+	return value
+}
+
+func sortOverOrderedRowType(recordName string) *values.RecordType {
+	return values.NewRecordType(recordName, false, []values.Field{
+		{Name: "STATUS", FieldType: values.NullableString},
+		{Name: "DATE", FieldType: values.NullableLong},
+		{Name: "AMOUNT", FieldType: values.NullableLong},
+		{Name: "A", FieldType: values.NotNullLong},
+		{Name: "B", FieldType: values.NotNullLong},
+		{Name: "C", FieldType: values.NotNullLong},
+		{Name: "ID", FieldType: values.NotNullLong},
+	})
+}
+
+func sortOverOrderedScan(recordName string) *expressions.FullUnorderedScanExpression {
+	return mustSortOverOrderedConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{recordName}, sortOverOrderedRowType(recordName)))
+}
+
+func sortOverOrderedPhysicalScan(recordName string) *plans.RecordQueryScanPlan {
+	return mustSortOverOrderedConstruct(plans.NewRecordQueryScanPlan(
+		[]string{recordName}, sortOverOrderedRowType(recordName), false))
+}
+
+func sortOverOrderedIndex(indexName string) *plans.RecordQueryIndexPlan {
+	return mustSortOverOrderedConstruct(plans.NewRecordQueryIndexPlan(
+		indexName, nil, []string{"T"}, sortOverOrderedRowType("T"), false))
+}
+
+func sortOverOrderedField(quantifier expressions.Quantifier, name string) values.Value {
+	root := mustSortOverOrderedConstruct(quantifier.RequireFlowedObjectValue())
+	request := mustSortOverOrderedConstruct(values.FieldByName(name))
+	return mustSortOverOrderedConstruct(values.ResolveFieldAccess(
+		root, []values.FieldRequest{request}))
+}
+
+func sortOverOrderedFilter(
+	quantifier expressions.Quantifier,
+	comparisonType predicates.ComparisonType,
+	operand any,
+) *expressions.LogicalFilterExpression {
+	return mustSortOverOrderedConstruct(expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{predicates.NewComparisonPredicate(
+			sortOverOrderedField(quantifier, "STATUS"),
+			predicates.NewLiteralComparison(comparisonType, operand),
+		)},
+		quantifier,
+	))
+}
+
 // TestSortElim_IndexProvidesSortOrder verifies that Sort(col) over an
 // index scan that provides col ordering is eliminated during PLANNING
 // by ImplementSortRule (matching Java's RemoveSortRule).
@@ -22,31 +77,23 @@ func TestSortElim_IndexProvidesSortOrder(t *testing.T) {
 		[]string{"Order"},
 		[]string{"STATUS", "DATE"},
 		[]values.CorrelationIdentifier{a1, a2},
-		values.UnknownType,
+		sortOverOrderedRowType("Order"),
 		false,
 		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := sortOverOrderedScan("Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{
-			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
-				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
-			),
-		},
-		q,
-	)
+	filter := sortOverOrderedFilter(q, predicates.ComparisonEquals, "active")
 	filterRef := expressions.InitialOf(filter)
 
 	filterQ := expressions.ForEachQuantifier(filterRef)
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "DATE", Typ: values.UnknownType}}},
+	sort := mustSortOverOrderedConstruct(expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: sortOverOrderedField(filterQ, "DATE")}},
 		filterQ,
-	)
+	))
 	sortRef := expressions.InitialOf(sort)
 
 	rules := DefaultExpressionRules()
@@ -79,34 +126,26 @@ func TestSortElim_MultiKeySortMatchesIndex(t *testing.T) {
 		[]string{"Order"},
 		[]string{"STATUS", "DATE", "AMOUNT"},
 		[]values.CorrelationIdentifier{a1, a2, a3},
-		values.UnknownType,
+		sortOverOrderedRowType("Order"),
 		false,
 		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := sortOverOrderedScan("Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{
-			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
-				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
-			),
-		},
-		q,
-	)
+	filter := sortOverOrderedFilter(q, predicates.ComparisonEquals, "active")
 	filterRef := expressions.InitialOf(filter)
 
 	filterQ := expressions.ForEachQuantifier(filterRef)
-	sort := expressions.NewLogicalSortExpression(
+	sort := mustSortOverOrderedConstruct(expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "DATE", Typ: values.UnknownType}},
-			{Value: &values.FieldValue{Field: "AMOUNT", Typ: values.UnknownType}},
+			{Value: sortOverOrderedField(filterQ, "DATE")},
+			{Value: sortOverOrderedField(filterQ, "AMOUNT")},
 		},
 		filterQ,
-	)
+	))
 	sortRef := expressions.InitialOf(sort)
 
 	rules := DefaultExpressionRules()
@@ -138,34 +177,26 @@ func TestSortElim_PartialSortKeyMatch(t *testing.T) {
 		[]string{"Order"},
 		[]string{"STATUS", "DATE"},
 		[]values.CorrelationIdentifier{a1, a2},
-		values.UnknownType,
+		sortOverOrderedRowType("Order"),
 		false,
 		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := sortOverOrderedScan("Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{
-			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
-				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
-			),
-		},
-		q,
-	)
+	filter := sortOverOrderedFilter(q, predicates.ComparisonEquals, "active")
 	filterRef := expressions.InitialOf(filter)
 
 	filterQ := expressions.ForEachQuantifier(filterRef)
-	sort := expressions.NewLogicalSortExpression(
+	sort := mustSortOverOrderedConstruct(expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "DATE", Typ: values.UnknownType}},
-			{Value: &values.FieldValue{Field: "AMOUNT", Typ: values.UnknownType}},
+			{Value: sortOverOrderedField(filterQ, "DATE")},
+			{Value: sortOverOrderedField(filterQ, "AMOUNT")},
 		},
 		filterQ,
-	)
+	))
 	sortRef := expressions.InitialOf(sort)
 
 	rules := DefaultExpressionRules()
@@ -200,33 +231,25 @@ func TestSortElim_RangeScanProvidesSortOrder(t *testing.T) {
 		[]string{"Order"},
 		[]string{"STATUS"},
 		[]values.CorrelationIdentifier{a1},
-		values.UnknownType,
+		sortOverOrderedRowType("Order"),
 		false,
 		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := sortOverOrderedScan("Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{
-			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
-				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, "a"),
-			),
-		},
-		q,
-	)
+	filter := sortOverOrderedFilter(q, predicates.ComparisonGreaterThan, "a")
 	filterRef := expressions.InitialOf(filter)
 
 	filterQ := expressions.ForEachQuantifier(filterRef)
-	sort := expressions.NewLogicalSortExpression(
+	sort := mustSortOverOrderedConstruct(expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+			{Value: sortOverOrderedField(filterQ, "STATUS")},
 		},
 		filterQ,
-	)
+	))
 	sortRef := expressions.InitialOf(sort)
 
 	rules := DefaultExpressionRules()
@@ -257,32 +280,24 @@ func TestSortElim_SortKeyNotProvidedByIndex(t *testing.T) {
 		[]string{"Order"},
 		[]string{"STATUS", "DATE"},
 		[]values.CorrelationIdentifier{a1, a2},
-		values.UnknownType,
+		sortOverOrderedRowType("Order"),
 		false,
 		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := sortOverOrderedScan("Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{
-			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
-				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
-			),
-		},
-		q,
-	)
+	filter := sortOverOrderedFilter(q, predicates.ComparisonEquals, "active")
 	filterRef := expressions.InitialOf(filter)
 
 	// Sort by AMOUNT — index provides DATE ordering, not AMOUNT.
 	filterQ := expressions.ForEachQuantifier(filterRef)
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "AMOUNT", Typ: values.UnknownType}}},
+	sort := mustSortOverOrderedConstruct(expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: sortOverOrderedField(filterQ, "AMOUNT")}},
 		filterQ,
-	)
+	))
 	sortRef := expressions.InitialOf(sort)
 
 	rules := DefaultExpressionRules()
@@ -316,20 +331,20 @@ func TestSortElim_DescSortEliminated(t *testing.T) {
 		[]string{"Order"},
 		[]string{"STATUS"},
 		[]values.CorrelationIdentifier{a1},
-		values.UnknownType,
+		sortOverOrderedRowType("Order"),
 		false,
 		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := sortOverOrderedScan("Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}, Reverse: true}},
+	sort := mustSortOverOrderedConstruct(expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: sortOverOrderedField(q, "STATUS"), Reverse: true}},
 		q,
-	)
+	))
 	sortRef := expressions.InitialOf(sort)
 
 	rules := DefaultExpressionRules()
@@ -368,7 +383,7 @@ func TestSortElim_DescSortEliminated(t *testing.T) {
 func TestStrictlySorted_UniqueIndexFullCoverage(t *testing.T) {
 	t.Parallel()
 
-	idx := plans.NewRecordQueryIndexPlan("idx_u", nil, []string{"T"}, values.UnknownType, false)
+	idx := sortOverOrderedIndex("idx_u")
 	w := idx.WithIndexMetadata([]string{"A", "B"}, nil, true).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong, values.NotNullLong})
 
@@ -388,7 +403,7 @@ func TestStrictlySorted_UniqueIndexFullCoverage(t *testing.T) {
 func TestStrictlySorted_UniqueIndexPartialCoverage(t *testing.T) {
 	t.Parallel()
 
-	idx := plans.NewRecordQueryIndexPlan("idx_u", nil, []string{"T"}, values.UnknownType, false)
+	idx := sortOverOrderedIndex("idx_u")
 	w := idx.WithIndexMetadata([]string{"A", "B", "C"}, nil, true).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong, values.NotNullLong, values.NotNullLong})
 
@@ -416,9 +431,8 @@ func TestStrictlySorted_UniqueStorageKeyMustMatchLogicalEquality(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			index := plans.NewRecordQueryIndexPlan(
-				"idx_u", nil, []string{"T"}, values.UnknownType, false,
-			).WithIndexMetadata([]string{"A"}, nil, true).
+			index := sortOverOrderedIndex("idx_u").
+				WithIndexMetadata([]string{"A"}, nil, true).
 				WithKeyComponentTypes([]values.Type{test.typ})
 			if strictlyOrderedIfUnique(index, 1) {
 				t.Fatal("storage UNIQUE was treated as globally strict although raw tuple uniqueness is not congruent with logical equality")
@@ -432,7 +446,7 @@ func TestStrictlySorted_UniqueStorageKeyMustMatchLogicalEquality(t *testing.T) {
 func TestStrictlySorted_NonUniqueIndex(t *testing.T) {
 	t.Parallel()
 
-	idx := plans.NewRecordQueryIndexPlan("idx_nu", nil, []string{"T"}, values.UnknownType, false)
+	idx := sortOverOrderedIndex("idx_nu")
 	w := idx.WithIndexMetadata([]string{"A"}, nil, false)
 
 	if strictlyOrderedIfUnique(w, 1) {
@@ -448,7 +462,7 @@ func TestStrictlySorted_NonUniqueIndex(t *testing.T) {
 func TestStrictlyOrderedIfUnique_NonIndexExpression(t *testing.T) {
 	t.Parallel()
 
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := sortOverOrderedPhysicalScan("T")
 	w := scan
 
 	if strictlyOrderedIfUnique(w, 100) {
@@ -466,10 +480,13 @@ func TestStrictlyOrderedIfUnique_NonIndexExpression(t *testing.T) {
 func TestMakeStrictlySorted_IndexScan(t *testing.T) {
 	t.Parallel()
 
-	idx := plans.NewRecordQueryIndexPlan("idx_x", nil, []string{"T"}, values.UnknownType, false)
+	idx := sortOverOrderedIndex("idx_x")
 	orig := idx.WithIndexMetadata([]string{"A", "B"}, nil, true)
 
-	result := makeStrictlySorted(orig)
+	result, err := makeStrictlySorted(orig)
+	if err != nil {
+		t.Fatalf("makeStrictlySorted() error = %v", err)
+	}
 
 	// Must return a new *plans.RecordQueryIndexPlan, not the same pointer.
 	resultW, ok := result.(*plans.RecordQueryIndexPlan)
@@ -504,10 +521,13 @@ func TestMakeStrictlySorted_IndexScan(t *testing.T) {
 func TestMakeStrictlySorted_NonIndexScan(t *testing.T) {
 	t.Parallel()
 
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := sortOverOrderedPhysicalScan("T")
 	w := scan
 
-	result := makeStrictlySorted(w)
+	result, err := makeStrictlySorted(w)
+	if err != nil {
+		t.Fatalf("makeStrictlySorted() error = %v", err)
+	}
 	if result != w {
 		t.Fatal("makeStrictlySorted on non-index expression should return the same pointer")
 	}
@@ -518,10 +538,13 @@ func TestMakeStrictlySorted_NonIndexScan(t *testing.T) {
 func TestMakeStrictlySorted_Idempotent(t *testing.T) {
 	t.Parallel()
 
-	idx := plans.NewRecordQueryIndexPlan("idx_idem", nil, []string{"T"}, values.UnknownType, false)
+	idx := sortOverOrderedIndex("idx_idem")
 	orig := idx.WithStrictlySorted().WithIndexMetadata([]string{"A"}, nil, true)
 
-	result := makeStrictlySorted(orig)
+	result, err := makeStrictlySorted(orig)
+	if err != nil {
+		t.Fatalf("makeStrictlySorted() error = %v", err)
+	}
 	resultW := result.(*plans.RecordQueryIndexPlan)
 	if !resultW.IsStrictlySorted() {
 		t.Fatal("double makeStrictlySorted should still be strictlySorted")
@@ -560,7 +583,7 @@ func buildStatusActiveIndexScan(t *testing.T, cand MatchCandidate) expressions.R
 		}
 		idxWrapper := innerIdx.WithIndexMetadata(cand.GetColumnNames(), nil, cand.IsUnique())
 		fetchQ := expressions.ForEachQuantifier(expressions.InitialOf(idxWrapper))
-		return fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
+		return mustWithQuantifiers(t, fetchPlan, []expressions.Quantifier{fetchQ})
 	}
 	if ip := extractIndexPlan(idxPlan); ip != nil {
 		return ip.WithIndexMetadata(cand.GetColumnNames(), nil, cand.IsUnique())
@@ -590,7 +613,7 @@ func TestPlanner_StrictlySorted_UniqueIndex(t *testing.T) {
 		[]string{"Order"},
 		[]string{"STATUS", "DATE"},
 		[]values.CorrelationIdentifier{a1, a2},
-		values.UnknownType,
+		sortOverOrderedRowType("Order"),
 		true, // unique
 		nil,
 	).WithKeyComponentTypes([]values.Type{values.NotNullLong, values.NotNullLong})
@@ -603,15 +626,15 @@ func TestPlanner_StrictlySorted_UniqueIndex(t *testing.T) {
 
 	// Build Sort(DATE ASC) over the prepared inner Reference.
 	sortQ := expressions.ForEachQuantifier(innerRef)
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "DATE", Typ: values.UnknownType}}},
+	sort := mustSortOverOrderedConstruct(expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: sortOverOrderedField(sortQ, "DATE")}},
 		sortQ,
-	)
+	))
 	sortRef := expressions.InitialOf(sort)
 
 	// Fire ImplementSortRule directly on the sort reference.
 	rule := NewImplementSortRule()
-	yielded := FireImplementationRule(rule, sortRef)
+	yielded := mustFireImplementationRule(t, rule, sortRef)
 
 	// Check that at least one yielded expression is strictlySorted.
 	// With Fetch wrappers, look for an index plan at any level.
@@ -644,7 +667,7 @@ func TestPlanner_StrictlySorted_NonUniqueIndex(t *testing.T) {
 		[]string{"Order"},
 		[]string{"STATUS", "DATE"},
 		[]values.CorrelationIdentifier{a1, a2},
-		values.UnknownType,
+		sortOverOrderedRowType("Order"),
 		false, // non-unique
 		nil,
 	)
@@ -655,14 +678,14 @@ func TestPlanner_StrictlySorted_NonUniqueIndex(t *testing.T) {
 	computeRefPlanProperties(innerRef)
 
 	sortQ := expressions.ForEachQuantifier(innerRef)
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "DATE", Typ: values.UnknownType}}},
+	sort := mustSortOverOrderedConstruct(expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: sortOverOrderedField(sortQ, "DATE")}},
 		sortQ,
-	)
+	))
 	sortRef := expressions.InitialOf(sort)
 
 	rule := NewImplementSortRule()
-	yielded := FireImplementationRule(rule, sortRef)
+	yielded := mustFireImplementationRule(t, rule, sortRef)
 
 	// The rule should yield the plan (sort eliminated) but NOT strictlySorted.
 	for _, e := range yielded {
@@ -678,6 +701,51 @@ func TestPlanner_StrictlySorted_NonUniqueIndex(t *testing.T) {
 	// Verify the rule DID yield something (sort was eliminated).
 	if len(yielded) == 0 {
 		t.Fatal("ImplementSortRule should yield at least one expression (sort eliminated)")
+	}
+}
+
+// TestPlanner_RequestedEqualityKeyDoesNotDoubleCountStrictCoverage pins the
+// other coverage calculation in ImplementSortRule. A fixed A is already one
+// equality-bound coordinate; requesting ORDER BY A must not count that same
+// coordinate a second time and thereby claim that the uncovered B of UNIQUE
+// (A, B) is covered too.
+//
+// The exact roots are load-bearing: the request is q.A#0 while the index
+// advertises _current.A#0. ExplainValue-string membership misses that these are
+// the same column and leaves equalityBoundUnsorted one too large.
+func TestPlanner_RequestedEqualityKeyDoesNotDoubleCountStrictCoverage(t *testing.T) {
+	t.Parallel()
+
+	comparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1))
+	merged := predicates.EmptyComparisonRange().Merge(&comparison)
+	if !merged.Ok {
+		t.Fatal("failed to construct the fixed A comparison range")
+	}
+	layout := distinctnessProbeLayout(values.NotNullLong)
+	idx := mustSortOverOrderedConstruct(plans.NewRecordQueryIndexPlan(
+		"T_AB", []*predicates.ComparisonRange{merged.Range}, []string{"T"}, layout, false,
+	)).WithIndexMetadata(
+		[]string{"A", "B"}, nil, true,
+	).WithKeyComponentTypes(
+		[]values.Type{values.NotNullLong, values.NotNullLong},
+	).WithDistinctRecordsSignal(false)
+
+	innerRef := expressions.InitialOf(idx)
+	computeRefPlanProperties(innerRef)
+	innerQ := expressions.ForEachQuantifier(innerRef)
+	sortExpr := mustSortOverOrderedConstruct(expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: sortOverOrderedField(innerQ, "A")}}, innerQ,
+	))
+	yielded := mustFireImplementationRule(
+		t, NewImplementSortRule(), expressions.InitialOf(sortExpr),
+	)
+	if len(yielded) == 0 {
+		t.Fatal("the fixed A coordinate should satisfy ORDER BY A")
+	}
+	for _, expr := range yielded {
+		if plan, ok := expr.(*plans.RecordQueryIndexPlan); ok && plan.IsStrictlySorted() {
+			t.Fatal("ORDER BY fixed A double-counted A and falsely covered UNIQUE (A, B)")
+		}
 	}
 }
 
@@ -699,13 +767,10 @@ func distinctnessProbeLayout(bType values.Type) values.Type {
 // "A" while the advertised key explains as "A#0", so the coverage loop compares
 // two strings that never agree and the arm is skipped — which is how a test can
 // look like it exercises this and exercise nothing.
-func distinctnessProbeSortKey(layout values.Type, name string) values.Value {
-	ident, ok := values.OrdinalOfNameIn(layout, name)
-	if !ok {
-		panic("distinctness probe: " + name + " is not in the probe layout")
-	}
-	return values.NewFieldValueWithResolvedOrdinalInDomain(
-		name, ident.Ordinal, values.UnknownType, ident.Domain)
+func distinctnessProbeSortKey(root values.Value, name string) values.Value {
+	request := mustSortOverOrderedConstruct(values.FieldByName(name))
+	return mustSortOverOrderedConstruct(values.ResolveFieldAccess(
+		root, []values.FieldRequest{request}))
 }
 
 // ImplementSortRule's distinct-partition arm marks a plan STRICTLY sorted on
@@ -750,9 +815,9 @@ func TestPlanner_NaNBarrierPrefixIsOrderedButNotStrict(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			layout := distinctnessProbeLayout(test.bType)
-			idx := plans.NewRecordQueryIndexPlan(
+			idx := mustSortOverOrderedConstruct(plans.NewRecordQueryIndexPlan(
 				"T_AB", nil, []string{"T"}, layout, false,
-			).WithIndexMetadata(
+			)).WithIndexMetadata(
 				[]string{"A", "B"}, []string{"ID"}, false,
 			).WithKeyComponentTypes(
 				[]values.Type{values.NotNullLong, test.bType},
@@ -762,16 +827,18 @@ func TestPlanner_NaNBarrierPrefixIsOrderedButNotStrict(t *testing.T) {
 
 			innerRef := expressions.InitialOf(idx)
 			computeRefPlanProperties(innerRef)
+			innerQ := expressions.ForEachQuantifier(innerRef)
+			root := mustSortOverOrderedConstruct(innerQ.RequireFlowedObjectValue())
 			keys := make([]expressions.SortKey, 0, len(test.sortKeys))
 			for _, name := range test.sortKeys {
 				keys = append(keys, expressions.SortKey{
-					Value: distinctnessProbeSortKey(layout, name),
+					Value: distinctnessProbeSortKey(root, name),
 				})
 			}
-			sortExpr := expressions.NewLogicalSortExpression(
-				keys, expressions.ForEachQuantifier(innerRef),
-			)
-			yielded := FireImplementationRule(
+			sortExpr := mustSortOverOrderedConstruct(expressions.NewLogicalSortExpression(
+				keys, innerQ,
+			))
+			yielded := mustFireImplementationRule(t,
 				NewImplementSortRule(), expressions.InitialOf(sortExpr),
 			)
 			if len(yielded) == 0 {

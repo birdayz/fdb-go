@@ -9,7 +9,8 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-func fireConstraintRule(rule ImplementationRule, ref *expressions.Reference, cm *ConstraintMap) {
+func fireConstraintRule(t testing.TB, rule ImplementationRule, ref *expressions.Reference, cm *ConstraintMap) {
+	t.Helper()
 	for _, member := range ref.AllMembers() {
 		bindings := rule.Matcher().BindMatches(matching.NewBindings(), member)
 		for _, b := range bindings {
@@ -21,31 +22,65 @@ func fireConstraintRule(rule ImplementationRule, ref *expressions.Reference, cm 
 				constraintOnly: true,
 			}
 			rule.OnMatch(call)
+			if err := call.Err(); err != nil {
+				t.Fatalf("%T.OnMatch: %v", rule, err)
+			}
+			call.applyPendingConstraints()
 		}
 	}
+}
+
+func referencedFieldsRowType() *values.RecordType {
+	return values.NewRecordType("ReferencedFieldsRow", false, []values.Field{
+		{Name: "X", FieldType: values.NullableLong},
+		{Name: "A", FieldType: values.NullableLong},
+		{Name: "B", FieldType: values.NullableLong},
+		{Name: "COL", FieldType: values.NullableLong},
+		{Name: "WHERE_COL", FieldType: values.NullableLong},
+		{Name: "SELECT_COL", FieldType: values.NullableLong},
+		{Name: "PK", FieldType: values.NotNullLong},
+		{Name: "COL1", FieldType: values.NullableLong},
+	})
+}
+
+func mustReferencedFieldsConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct referenced-fields fixture: " + err.Error())
+	}
+	return value
+}
+
+func referencedFieldsScanQ() (*expressions.Reference, expressions.Quantifier) {
+	scan := mustReferencedFieldsConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, referencedFieldsRowType()))
+	ref := expressions.InitialOf(scan)
+	return ref, expressions.ForEachQuantifier(ref)
+}
+
+func referencedField(q expressions.Quantifier, ordinal int) values.Value {
+	root := mustReferencedFieldsConstruct(q.RequireFlowedObjectValue())
+	return mustReferencedFieldsConstruct(values.ResolveFieldOrdinals(root, []int{ordinal}))
 }
 
 func TestPushReferencedFieldsThroughFilter(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanRef, scanQ := referencedFieldsScanQ()
 
 	pred := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "X"},
+		Operand: referencedField(scanQ, 0),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: &values.ConstantValue{Value: int64(5)},
+			Operand: &values.ConstantValue{Value: int64(5), Typ: values.NotNullLong},
 		},
 	}
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustReferencedFieldsConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred}, scanQ,
-	)
+	))
 	filterRef := expressions.InitialOf(filter)
 
 	cm := NewConstraintMap()
-	fireConstraintRule(NewPushReferencedFieldsThroughFilterRule(), filterRef, cm)
+	fireConstraintRule(t, NewPushReferencedFieldsThroughFilterRule(), filterRef, cm)
 
 	rf, ok := Get(cm, scanRef, ReferencedFieldsConstraintKey)
 	if !ok {
@@ -59,24 +94,22 @@ func TestPushReferencedFieldsThroughFilter(t *testing.T) {
 func TestPushReferencedFieldsThroughFilter_Multiple(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanRef, scanQ := referencedFieldsScanQ()
 
 	p1 := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "A"},
+		Operand: referencedField(scanQ, 1),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: &values.FieldValue{Field: "B"},
+			Operand: referencedField(scanQ, 2),
 		},
 	}
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustReferencedFieldsConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{p1}, scanQ,
-	)
+	))
 	filterRef := expressions.InitialOf(filter)
 
 	cm := NewConstraintMap()
-	fireConstraintRule(NewPushReferencedFieldsThroughFilterRule(), filterRef, cm)
+	fireConstraintRule(t, NewPushReferencedFieldsThroughFilterRule(), filterRef, cm)
 
 	rf, ok := Get(cm, scanRef, ReferencedFieldsConstraintKey)
 	if !ok {
@@ -90,18 +123,16 @@ func TestPushReferencedFieldsThroughFilter_Multiple(t *testing.T) {
 func TestPushReferencedFieldsThroughDistinct(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanRef, scanQ := referencedFieldsScanQ()
 
-	distinct := expressions.NewLogicalDistinctExpression(scanQ)
+	distinct := mustReferencedFieldsConstruct(expressions.NewLogicalDistinctExpression(scanQ))
 	distinctRef := expressions.InitialOf(distinct)
 
 	incoming := NewReferencedFields(map[string]struct{}{"COL": {}})
 	cm := NewConstraintMap()
 	Set(cm, distinctRef, ReferencedFieldsConstraintKey, incoming)
 
-	fireConstraintRule(NewPushReferencedFieldsThroughDistinctRule(), distinctRef, cm)
+	fireConstraintRule(t, NewPushReferencedFieldsThroughDistinctRule(), distinctRef, cm)
 
 	rf, ok := Get(cm, scanRef, ReferencedFieldsConstraintKey)
 	if !ok {
@@ -115,27 +146,25 @@ func TestPushReferencedFieldsThroughDistinct(t *testing.T) {
 func TestPushReferencedFieldsThroughSelect(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanRef, scanQ := referencedFieldsScanQ()
 
 	pred := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "WHERE_COL"},
+		Operand: referencedField(scanQ, 4),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: &values.ConstantValue{Value: int64(1)},
+			Operand: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
 		},
 	}
-	resultVal := &values.FieldValue{Field: "SELECT_COL"}
-	sel := expressions.NewSelectExpression(
+	resultVal := referencedField(scanQ, 5)
+	sel := mustReferencedFieldsConstruct(expressions.NewSelectExpression(
 		resultVal,
 		[]expressions.Quantifier{scanQ},
 		[]predicates.QueryPredicate{pred},
-	)
+	))
 	selRef := expressions.InitialOf(sel)
 
 	cm := NewConstraintMap()
-	fireConstraintRule(NewPushReferencedFieldsThroughSelectRule(), selRef, cm)
+	fireConstraintRule(t, NewPushReferencedFieldsThroughSelectRule(), selRef, cm)
 
 	rf, ok := Get(cm, scanRef, ReferencedFieldsConstraintKey)
 	if !ok {
@@ -152,18 +181,16 @@ func TestPushReferencedFieldsThroughSelect(t *testing.T) {
 func TestPushReferencedFieldsThroughUnique(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanRef, scanQ := referencedFieldsScanQ()
 
-	unique := expressions.NewLogicalUniqueExpression(scanQ)
+	unique := mustReferencedFieldsConstruct(expressions.NewLogicalUniqueExpression(scanQ))
 	uniqueRef := expressions.InitialOf(unique)
 
 	incoming := NewReferencedFields(map[string]struct{}{"PK": {}})
 	cm := NewConstraintMap()
 	Set(cm, uniqueRef, ReferencedFieldsConstraintKey, incoming)
 
-	fireConstraintRule(NewPushReferencedFieldsThroughUniqueRule(), uniqueRef, cm)
+	fireConstraintRule(t, NewPushReferencedFieldsThroughUniqueRule(), uniqueRef, cm)
 
 	rf, ok := Get(cm, scanRef, ReferencedFieldsConstraintKey)
 	if !ok {
@@ -229,7 +256,8 @@ func TestReferencedFields_NilSafe(t *testing.T) {
 func TestFieldValuesFromValue(t *testing.T) {
 	t.Parallel()
 
-	v := &values.FieldValue{Field: "COL1"}
+	_, q := referencedFieldsScanQ()
+	v := referencedField(q, 7)
 	rf := FieldValuesFromValue(v)
 	if !rf.Contains("COL1") {
 		t.Fatal("expected COL1")

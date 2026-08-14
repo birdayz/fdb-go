@@ -520,32 +520,11 @@ type foldStep1LegDecline struct {
 	Witness        string
 }
 
-// quantifiedObjectValueIsTyped reports whether a QOV carries a REAL flowed type,
-// as opposed to the UnknownType placeholder that stands for "nobody typed this".
-//
-// It exists because the obvious spelling is a tautology. `Typ != nil` is TRUE for
-// every QOV that can be constructed: NewQuantifiedObjectValue stamps
-// `Typ: UnknownType` and NewQuantifiedObjectValueOfType degrades a nil argument to
-// the same, and UnknownType is a non-nil Type (a `*PrimitiveType` with
-// TypeCodeUnknown). So a nil check answers a question nothing can make false, and
-// the witness that was supposed to separate the untyped population from the typed
-// one printed `typed=true` for all of it.
-//
-// That matters beyond a cosmetic log line. This witness is the instrument the
-// bare-untyped-QOV residue is measured with — the population Java cannot even
-// express. Both of QuantifiedObjectValue's factory overloads resolve a Type:
-// of(alias, Type) takes one outright (QuantifiedObjectValue.java:187) and
-// of(Quantifier) derives it (`:182`) through Quantifier.getFlowedObjectType,
-// which is a Verify.verify plus requireNonNull (Quantifier.java:805-810). An
-// instrument that reports the target
-// state before any work is done would have reported that sweep complete on the day
-// it started, with the whole population untouched underneath.
-//
-// The discriminator is the type CODE, not pointer identity against the UnknownType
-// singleton: an equivalent unknown built elsewhere is just as untyped, and keying on
-// the shared variable would call it typed.
-func quantifiedObjectValueIsTyped(qov *values.QuantifiedObjectValue) bool {
-	return qov.Typ != nil && qov.Typ.Code() != values.TypeCodeUnknown
+// quantifiedObjectValueIsTyped remains as the census discriminator while the
+// historical untyped bucket ages out. Exact QOV admission now rejects every
+// unresolved type, so every QOV recognized by values is typed by construction.
+func quantifiedObjectValueIsTyped(qov values.QuantifiedObjectValue) bool {
+	return qov != nil
 }
 
 // describeQOVType spells the flowed type the boolean above collapses.
@@ -557,14 +536,15 @@ func quantifiedObjectValueIsTyped(qov *values.QuantifiedObjectValue) bool {
 // population can be re-measured, found typed, and still be the same residue.
 // For a record type the ARITY is what the layout authority needs, so it is what
 // is printed.
-func describeQOVType(qov *values.QuantifiedObjectValue) string {
-	if qov.Typ == nil {
+func describeQOVType(qov values.QuantifiedObjectValue) string {
+	if qov == nil {
 		return "<nil>"
 	}
-	if rt, ok := qov.Typ.(*values.RecordType); ok {
+	typ := qov.FlowedType()
+	if rt, ok := typ.(*values.RecordType); ok {
 		return fmt.Sprintf("RecordType(%d)", len(rt.Fields))
 	}
-	return qov.Typ.Code().String()
+	return typ.Code().String()
 }
 
 // declinedLegOriginSuffix is the producer attribution appended to a bare-QOV
@@ -614,10 +594,11 @@ func classifyDeclinedLeg(node plans.RecordQueryPlan) (foldStep1LegShape, string)
 		rc := rv.(*values.RecordConstructorValue)
 		return foldStep1LegShapePositionalMerge, fmt.Sprintf("%T rv=positional-merge RC(%d)", node, len(rc.Fields))
 	}
-	switch t := rv.(type) {
-	case *values.QuantifiedObjectValue:
+	if qov, ok := values.AsQuantifiedObjectValue(rv); ok {
 		return foldStep1LegShapeBareQOV, fmt.Sprintf("%T rv=bare QOV (typed=%t rvtype=%s%s)",
-			node, quantifiedObjectValueIsTyped(t), describeQOVType(t), declinedLegOriginSuffix(rv))
+			node, quantifiedObjectValueIsTyped(qov), describeQOVType(qov), declinedLegOriginSuffix(rv))
+	}
+	switch t := rv.(type) {
 	case *values.RecordConstructorValue:
 		return foldStep1LegShapeRCNotMerge, fmt.Sprintf("%T rv=RC(%d) NOT a positional merge", node, len(t.Fields))
 	default:
@@ -970,7 +951,7 @@ func recordFlatMapResultValue(site flatMapProducerSite, rv values.Value) {
 	case values.IsPositionalMergeRC(rv):
 		shape = fmt.Sprintf("POSITIONAL-MERGE RC(%d)", len(rv.(*values.RecordConstructorValue).Fields))
 	default:
-		if qov, isQOV := rv.(*values.QuantifiedObjectValue); isQOV {
+		if qov, isQOV := values.AsQuantifiedObjectValue(rv); isQOV {
 			shape = fmt.Sprintf("QOV(typed=%t %s)", quantifiedObjectValueIsTyped(qov), describeQOVType(qov))
 		} else {
 			shape = fmt.Sprintf("%T", rv)
@@ -981,20 +962,22 @@ func recordFlatMapResultValue(site flatMapProducerSite, rv values.Value) {
 	defer flatMapProducerMu.Unlock()
 	c := &flatMapProducerCounts
 	c.Calls[site]++
-	switch v := rv.(type) {
-	case nil:
-		c.OtherRV[site]++
-	case *values.QuantifiedObjectValue:
-		if quantifiedObjectValueIsTyped(v) {
+	if qov, isQOV := values.AsQuantifiedObjectValue(rv); isQOV {
+		if quantifiedObjectValueIsTyped(qov) {
 			c.TypedQOV[site]++
 		} else {
 			c.UntypedQOV[site]++
 		}
-	default:
-		if values.IsPositionalMergeRC(rv) {
-			c.MergeRC[site]++
-		} else {
+	} else {
+		switch rv.(type) {
+		case nil:
 			c.OtherRV[site]++
+		default:
+			if values.IsPositionalMergeRC(rv) {
+				c.MergeRC[site]++
+			} else {
+				c.OtherRV[site]++
+			}
 		}
 	}
 	if c.Shapes[site] == nil {

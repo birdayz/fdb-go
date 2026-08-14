@@ -99,7 +99,7 @@ CREATE TABLE S5 (id BIGINT, hid BIGINT, PRIMARY KEY (id))`
 
 // fiveSpokeStarSQL is the hub+5 all-live star. Its Cascades twin
 // (buildOrdinalStar(5)) is the narrowest all-live star that exhausts the
-// 100,000-task budget at default settings.
+// embedded planner task budget at default settings.
 const fiveSpokeStarSQL = "SELECT H.id, S1.id, S2.id, S3.id, S4.id, S5.id " +
 	"FROM H, S1, S2, S3, S4, S5 " +
 	"WHERE H.id = S1.hid AND H.id = S2.hid AND H.id = S3.hid AND H.id = S4.hid AND H.id = S5.hid"
@@ -128,8 +128,8 @@ func TestPlannerOptions_PlanRightDeep(t *testing.T) {
 	if plan == nil {
 		t.Fatal("PLAN_RIGHT_DEEP converged but produced no plan")
 	}
-	if rdTasks >= 100_000 {
-		t.Fatalf("PLAN_RIGHT_DEEP tasks=%d is not under the 100,000 cap", rdTasks)
+	if rdTasks >= embeddedRightDeepPlannerMaxTasks {
+		t.Fatalf("PLAN_RIGHT_DEEP tasks=%d is not under the %d cap", rdTasks, embeddedRightDeepPlannerMaxTasks)
 	}
 	t.Logf("hub+5 star: default CAPS; PLAN_RIGHT_DEEP converges in %d tasks", rdTasks)
 
@@ -157,7 +157,7 @@ func TestPlannerOptions_DisabledPlannerRules(t *testing.T) {
 	// A bare IndexScan IS a fetching scan since RFC-220 (Java semantics), and
 	// MergeFetchIntoCoveringIndexRule collapses Fetch(Covering(Index)) into it.
 	// The fixture still starts from an INDEX plan, which is all the contrast needs.
-	const wantBase = "Project([ID#0, C#3], IndexScan(IDX_A, [=]))"
+	const wantBase = "Project([_current.ID#0, _current.C#3], IndexScan(IDX_A, [=]))"
 	if base != wantBase {
 		t.Fatalf("default plan = %q, want %q — the fixture must start from an INDEX plan for "+
 			"the disabled-rule contrast to mean anything", base, wantBase)
@@ -166,7 +166,7 @@ func TestPlannerOptions_DisabledPlannerRules(t *testing.T) {
 	disabled := api.NewOptionsBuilder().
 		Set(api.OptDisabledPlannerRules, []string{"MatchLeafRule"}).Build()
 	got := explainWithOptions(t, sql, indexedTableDDL, disabled)
-	const wantDisabled = "Project([ID#0, C#3], PredicatesFilter(Scan(T), [1 preds]))"
+	const wantDisabled = "Project([_current.ID#0, _current.C#3], PredicatesFilter(Scan(T), [1 preds]))"
 	if got != wantDisabled {
 		t.Fatalf("with MatchLeafRule disabled, plan = %q, want %q — the option is accepted and "+
 			"ignored if the plan is unchanged", got, wantDisabled)
@@ -264,7 +264,7 @@ func TestPlannerOptions_DisablePlannerRewriting(t *testing.T) {
 
 		base := explainWithOptions(t, sql, indexedTableDDL, nil)
 		// See the note above: the inner index scan fetches its own records now.
-		const wantBase = "Project([T.ID#0], FlatMap(outer=Scan(T), inner=DefaultOnEmpty(IndexScan(IDX_AB, [=, *]))))"
+		const wantBase = "Project([_current.ID#0], FlatMap(outer=Scan(T), inner=DefaultOnEmpty(IndexScan(IDX_AB, [=, *]))))"
 		if base != wantBase {
 			t.Fatalf("default plan = %q, want %q — the fixture must start from the REWRITTEN "+
 				"outer join for the contrast to mean anything", base, wantBase)
@@ -272,7 +272,7 @@ func TestPlannerOptions_DisablePlannerRewriting(t *testing.T) {
 
 		off := api.NewOptionsBuilder().Set(api.OptDisablePlannerRewriting, true).Build()
 		got := explainWithOptions(t, sql, indexedTableDDL, off)
-		const wantOff = "Project([T.ID#0], NestedLoopJoin(LEFT OUTER, [1 preds], Scan(T), Scan(T)))"
+		const wantOff = "Project([_current.ID#0], NestedLoopJoin(LEFT OUTER, [1 preds], Scan(T), Scan(T)))"
 		if got != wantOff {
 			t.Fatalf("with rewriting disabled, plan = %q, want %q — the option is accepted and "+
 				"ignored if the plan is unchanged", got, wantOff)

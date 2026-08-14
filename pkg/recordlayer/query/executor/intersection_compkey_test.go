@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -53,4 +54,121 @@ func TestIntersectionCompKeyFunc_Int32Widened(t *testing.T) {
 		}
 		assertPacks(t, tup)
 	})
+}
+
+// An admitted child row carries a current-only OrdinalLayout, which disables
+// ambient positional fallback for named QOVs. The comparison-key program owns
+// a synthetic exact row QOV shared by every intersection leg; both comparison
+// key closures must explicitly declare it as the phase's input edge.
+func TestIntersectionCompKeyFunc_DeclaresSyntheticInputOverLayoutRow(t *testing.T) {
+	t.Parallel()
+	rowType := values.NewRecordType("aggregate_index_row", false, []values.Field{
+		{Name: "G", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "SUM(V)", FieldType: values.NullableLong, Ordinal: 1},
+	})
+	root := mustTestQOV(t, values.UniqueCorrelationIdentifier(), rowType)
+	key := mustTestFieldOrdinal(t, root, 0)
+	layout, err := values.NewOrdinalLayoutForCarrierType(rowType, []values.OrdinalTileSpec{{
+		Start: 0, Width: 2, Kind: values.OrdinalTileFlat,
+	}}, nil)
+	if err != nil {
+		t.Fatalf("layout: %v", err)
+	}
+	row, err := NewLayoutPositionalRow(rowType, layout)
+	if err != nil {
+		t.Fatalf("layout row: %v", err)
+	}
+	row.Slots[0], row.Slots[1] = int64(7), int64(42)
+	qr := QueryResult{Positional: row}
+
+	for name, fn := range map[string]recordlayer.ComparisonKeyFunc[QueryResult]{
+		"intersection":       intersectionCompKeyFunc([]values.Value{key}),
+		"multi-intersection": multiIntersectionCompKeyFunc([]values.Value{key}),
+	} {
+		name, fn := name, fn
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, err := fn(qr)
+			if err != nil {
+				t.Fatalf("comparison key: %v", err)
+			}
+			if len(got) != 1 || got[0] != int64(7) {
+				t.Fatalf("comparison key = %v, want [7]", got)
+			}
+		})
+	}
+}
+
+// The current root is supplied by the admitted layout's carrier, not by a
+// physical quantifier edge. Treating it as an edge is both redundant and
+// invalid: the edge binder rejects the reserved current correlation so it
+// cannot be forged into another source namespace.
+func TestIntersectionCompKeyFunc_UsesLayoutCarrierForCurrentRoot(t *testing.T) {
+	t.Parallel()
+	rowType := values.NewRecordType("current_key_row", false, []values.Field{
+		{Name: "K", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	layout, err := values.NewOrdinalLayoutForCarrierType(rowType, []values.OrdinalTileSpec{{
+		Start: 0, Width: 1, Kind: values.OrdinalTileFlat,
+	}}, nil)
+	if err != nil {
+		t.Fatalf("layout: %v", err)
+	}
+	key := mustTestFieldOrdinal(t, layout.Carrier(), 0)
+	row, err := NewLayoutPositionalRow(rowType, layout)
+	if err != nil {
+		t.Fatalf("layout row: %v", err)
+	}
+	row.Slots[0] = int64(9)
+	qr := QueryResult{Positional: row}
+
+	for name, fn := range map[string]recordlayer.ComparisonKeyFunc[QueryResult]{
+		"intersection":       intersectionCompKeyFunc([]values.Value{key}),
+		"multi-intersection": multiIntersectionCompKeyFunc([]values.Value{key}),
+	} {
+		name, fn := name, fn
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, keyErr := fn(qr)
+			if keyErr != nil {
+				t.Fatalf("comparison key: %v", keyErr)
+			}
+			if len(got) != 1 || got[0] != int64(9) {
+				t.Fatalf("comparison key = %v, want [9]", got)
+			}
+		})
+	}
+}
+
+func TestMultiIntersectionCompKeyFunc_AcceptsSiblingAggregatePayloadType(t *testing.T) {
+	t.Parallel()
+	keyType := values.NewRecordType("first_aggregate_index_row", false, []values.Field{
+		{Name: "G", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "SUM(V)", FieldType: values.NullableLong, Ordinal: 1},
+	})
+	rowType := values.NewRecordType("sibling_aggregate_index_row", false, []values.Field{
+		{Name: "G", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "COUNT(*)", FieldType: values.NullableLong, Ordinal: 1},
+	})
+	root := mustTestQOV(t, values.UniqueCorrelationIdentifier(), keyType)
+	key := mustTestFieldOrdinal(t, root, 0)
+	layout, err := values.NewOrdinalLayoutForCarrierType(rowType, []values.OrdinalTileSpec{{
+		Start: 0, Width: 2, Kind: values.OrdinalTileFlat,
+	}}, nil)
+	if err != nil {
+		t.Fatalf("layout: %v", err)
+	}
+	row, err := NewLayoutPositionalRow(rowType, layout)
+	if err != nil {
+		t.Fatalf("layout row: %v", err)
+	}
+	row.Slots[0], row.Slots[1] = int64(7), int64(1)
+
+	got, err := multiIntersectionCompKeyFunc([]values.Value{key})(QueryResult{Positional: row})
+	if err != nil {
+		t.Fatalf("comparison key: %v", err)
+	}
+	if len(got) != 1 || got[0] != int64(7) {
+		t.Fatalf("comparison key = %v, want [7]", got)
+	}
 }

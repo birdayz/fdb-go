@@ -29,14 +29,14 @@ func TestFieldValue_UnboundEvalContext_IsLoud(t *testing.T) {
 	}
 
 	// (1) A flat (unpinned) FieldValue over an unrecognized non-nil context.
-	flat := NewFlatFieldValue("A", UnknownType)
+	flat := newFlatFieldValue("A", UnknownType)
 	v, err := flat.Evaluate(weirdCtx{x: 1})
 	assertUnbound("flat over struct ctx", v, err)
 
 	// (2) A correlated FieldValue whose correlation is UNBOUND — a RowEvalContext
 	// with a binder that lacks this correlation and no Positional row (dangling ref).
 	corr := NamedCorrelationIdentifier("q")
-	lazy := NewFieldValue(NewQuantifiedObjectValue(corr), "COL", UnknownType)
+	lazy := newFieldValue(mustQOV(t, corr), "COL", UnknownType)
 	otherBinder := &ordEvalBinder{
 		id:    NamedCorrelationIdentifier("other"),
 		bound: &fakeOrdinalRow{names: []string{"COL"}, slots: []any{int64(1)}},

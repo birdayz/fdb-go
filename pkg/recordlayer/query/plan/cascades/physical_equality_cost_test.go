@@ -14,11 +14,23 @@ func TestPhysicalEqualityConcreteCost_AgreesWithPlanAndProperty(t *testing.T) {
 	t.Parallel()
 	comps := []*predicates.ComparisonRange{pkGateEq(t, float64(0)), pkGateEq(t, float32(0))}
 	types := []values.Type{values.NotNullDouble, values.NotNullFloat}
+	rowType := values.NewRecordType("T", false, []values.Field{
+		{Name: "V1", FieldType: values.NotNullDouble, Ordinal: 0},
+		{Name: "V2", FieldType: values.NotNullFloat, Ordinal: 1},
+	})
+	rootValue, rootErr := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("physical_equality"), rowType)
+	root := mustConstruct(t, rootValue, rootErr)
+	firstValue, firstErr := values.ResolveFieldOrdinals(root, []int{0})
+	first := mustConstruct(t, firstValue, firstErr)
+	secondValue, secondErr := values.ResolveFieldOrdinals(root, []int{1})
+	second := mustConstruct(t, secondValue, secondErr)
 	pk := []values.Value{
-		&values.FieldValue{Field: "V1", Typ: values.NotNullDouble},
-		&values.FieldValue{Field: "V2", Typ: values.NotNullFloat},
+		first,
+		second,
 	}
-	plan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	planValue, planErr := plans.NewRecordQueryScanPlan([]string{"T"}, rowType, false)
+	plan := mustConstruct(t, planValue, planErr).
 		WithPrimaryKey(pk).
 		WithScanComparisons(comps).
 		WithKeyComponentTypes(types)
@@ -53,7 +65,7 @@ func TestPhysicalEqualityConcreteCost_AgreesWithPlanAndProperty(t *testing.T) {
 
 func TestPhysicalEqualityScanLikeCost_DynamicAndOverflowRemainFinite(t *testing.T) {
 	t.Parallel()
-	dynamic := &values.ParameterValue{Ordinal: 1, Typ: values.UnknownType}
+	dynamic := &values.ParameterValue{Ordinal: 1, Typ: values.NotNullDouble}
 	comparison := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: dynamic}
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
 	if !merged.Ok {

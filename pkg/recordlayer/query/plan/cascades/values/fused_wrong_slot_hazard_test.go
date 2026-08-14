@@ -52,7 +52,7 @@ func TestFusedUnpinned_WrongSlotHazard(t *testing.T) {
 	}
 
 	corrB := NamedCorrelationIdentifier("b")
-	qovB := NewQuantifiedObjectValue(corrB)
+	qovB := mustQOV(t, corrB)
 	hdrType := NewRecordType("", false, []Field{{Name: "SUB", FieldType: NotNullLong, Ordinal: 0}})
 
 	assertLoud := func(t *testing.T, site string, _ any, err error) {
@@ -69,7 +69,7 @@ func TestFusedUnpinned_WrongSlotHazard(t *testing.T) {
 	// (control) The SINGLE-accessor leg reference B.HDR#0 — already loud over a
 	// multi-leg row (SourceRelativeBaked catches it). Kept to prove the fused
 	// twin is held to the SAME correct-or-loud bar as its single-accessor peer.
-	single := NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "HDR", 0, hdrType)
+	single := newCorrelatedFieldValueWithResolvedOrdinal(qovB, "HDR", 0, hdrType)
 	if !single.SourceRelativeBaked() {
 		t.Fatal("control: single-accessor leg ref must be SourceRelativeBaked")
 	}
@@ -81,13 +81,13 @@ func TestFusedUnpinned_WrongSlotHazard(t *testing.T) {
 	// Build the FUSED spelling via the ACTUAL producer named in the finding:
 	// composeFieldOverField(field(field(qovB, HDR#0), SUB#0)) fuses the chain
 	// into one node carrying [{HDR,0},{SUB,0}], root UNPINNED and leg-relative.
-	inner := &FieldValue{Field: "HDR", Typ: hdrType, Child: qovB, Resolved: NewFieldPathOfSingle("HDR", 0, false)}
-	outer := &FieldValue{Field: "SUB", Typ: NotNullLong, Child: inner, Resolved: NewFieldPathOfSingle("SUB", 0, false)}
+	inner := &fieldValue{Field: "HDR", Typ: hdrType, Child: qovB, Resolved: newFieldPathOfSingle("HDR", 0, false)}
+	outer := &fieldValue{Field: "SUB", Typ: NotNullLong, Child: inner, Resolved: newFieldPathOfSingle("SUB", 0, false)}
 	fusedV := composeFieldOverField(outer)
 	if fusedV == nil {
 		t.Fatal("composeFieldOverField declined the baked-over-baked chain")
 	}
-	fused := fusedV.(*FieldValue)
+	fused := fusedV.(*fieldValue)
 
 	// The shape that used to slip the guard: MULTI-accessor, root UNPINNED. The
 	// OLD guard keyed on SourceRelativeBaked (which requires a single accessor)
@@ -104,8 +104,8 @@ func TestFusedUnpinned_WrongSlotHazard(t *testing.T) {
 	if !fused.RootIsLegRelativeUnpinned() {
 		t.Fatal("fused node MUST be RootIsLegRelativeUnpinned — the new guard's key")
 	}
-	if _, isQOV := fused.Child.(*QuantifiedObjectValue); !isQOV {
-		t.Fatalf("fused node child = %T, want *QuantifiedObjectValue (eval routes correlated)", fused.Child)
+	if _, isQOV := fused.Child.(*quantifiedObjectValue); !isQOV {
+		t.Fatalf("fused node child = %T, want *quantifiedObjectValue (eval routes correlated)", fused.Child)
 	}
 
 	// The fused twin over the SAME multi-leg context — both eval arms. Old code
@@ -120,9 +120,9 @@ func TestFusedUnpinned_WrongSlotHazard(t *testing.T) {
 	// FieldValue child) must produce the SAME fused shape and be held to the
 	// same loud bar — Java's withNewChild == ofFieldsAndFuseIfPossible.
 	rebuiltV := withChildren(outer, []Value{inner})
-	rebuilt, ok := rebuiltV.(*FieldValue)
+	rebuilt, ok := rebuiltV.(*fieldValue)
 	if !ok {
-		t.Fatalf("withChildren rebuild produced %T, want *FieldValue", rebuiltV)
+		t.Fatalf("withChildren rebuild produced %T, want *fieldValue", rebuiltV)
 	}
 	if len(rebuilt.Resolved.Accessors) != 2 || rebuilt.Resolved.FrontierPinned {
 		t.Fatalf("withChildren rebuild shape = (accessors %d, pinned %v), want (2, false) — identical to composeFieldOverField", len(rebuilt.Resolved.Accessors), rebuilt.Resolved.FrontierPinned)
@@ -171,39 +171,39 @@ func TestFusedUnpinned_RCCollapse_RebasesToCorrectLeg(t *testing.T) {
 	hdrType := NewRecordType("HDR", false, []Field{{Name: "SUB", FieldType: NotNullLong, Ordinal: 0}})
 	legAType := NewRecordType("A", false, []Field{{Name: "X", FieldType: NotNullLong, Ordinal: 0}, {Name: "Y", FieldType: NotNullLong, Ordinal: 1}})
 	legBType := NewRecordType("B", false, []Field{{Name: "HDR", FieldType: hdrType, Ordinal: 0}, {Name: "Z", FieldType: NotNullLong, Ordinal: 1}})
-	qovA := NewQuantifiedObjectValueOfType(corrA, legAType)
-	qovB := NewQuantifiedObjectValueOfType(corrB, legBType)
+	qovA := mustQOV(t, corrA, legAType)
+	qovB := mustQOV(t, corrB, legBType)
 
 	// The machinery seed RC: each field a FrontierPinned FieldValue over its OWN
 	// leg's QOV, legs concatenated (NewRawRecordConstructorValue) —
 	// [A.X, A.Y, B.HDR, B.Z]. B.HDR sits at seed slot 2, leg-relative slot 0.
-	mk := func(qov *QuantifiedObjectValue, ord int) RecordConstructorField {
-		fv, err := NewFieldValueOfOrdinal(qov, ord)
+	mk := func(qov *quantifiedObjectValue, ord int) RecordConstructorField {
+		fv, err := newFieldValueOfOrdinal(qov, ord)
 		if err != nil {
-			t.Fatalf("NewFieldValueOfOrdinal(%v, %d): %v", qov.Correlation, ord, err)
+			t.Fatalf("newFieldValueOfOrdinal(%v, %d): %v", qov.Correlation(), ord, err)
 		}
 		return RecordConstructorField{Name: fv.Field, Value: fv}
 	}
 	seedRC := NewRawRecordConstructorValue(mk(qovA, 0), mk(qovA, 1), mk(qovB, 0), mk(qovB, 1))
 
 	// The FUSED unpinned reference B.HDR.SUB: leg-relative root ordinal 0.
-	inner := &FieldValue{Field: "HDR", Typ: hdrType, Child: qovB, Resolved: NewFieldPathOfSingle("HDR", 0, false)}
-	outer := &FieldValue{Field: "SUB", Typ: NotNullLong, Child: inner, Resolved: NewFieldPathOfSingle("SUB", 0, false)}
-	fused := composeFieldOverField(outer).(*FieldValue)
+	inner := &fieldValue{Field: "HDR", Typ: hdrType, Child: qovB, Resolved: newFieldPathOfSingle("HDR", 0, false)}
+	outer := &fieldValue{Field: "SUB", Typ: NotNullLong, Child: inner, Resolved: newFieldPathOfSingle("SUB", 0, false)}
+	fused := composeFieldOverField(outer).(*fieldValue)
 
 	// Collapse over the seed RC (the merge TranslationMap's QOV→seed replacement).
-	collapsed, ok := withChildren(fused, []Value{seedRC}).(*FieldValue)
+	collapsed, ok := withChildren(fused, []Value{seedRC}).(*fieldValue)
 	if !ok {
-		t.Fatalf("collapse produced %T, want *FieldValue", withChildren(fused, []Value{seedRC}))
+		t.Fatalf("collapse produced %T, want *fieldValue", withChildren(fused, []Value{seedRC}))
 	}
-	childQov, ok := collapsed.Child.(*QuantifiedObjectValue)
+	childQov, ok := collapsed.Child.(*quantifiedObjectValue)
 	if !ok {
-		t.Fatalf("collapsed child = %T, want *QuantifiedObjectValue (fused onto a leg seed field)", collapsed.Child)
+		t.Fatalf("collapsed child = %T, want *quantifiedObjectValue (fused onto a leg seed field)", collapsed.Child)
 	}
 	// The discriminator: the collapse must land on leg B (the reference's own
 	// leg), NOT leg A (seed slot 0). Raw-root collapse picked corrA.
-	if childQov.Correlation != corrB {
-		t.Fatalf("collapsed onto correlation %v, want %v (leg B) — the fused suffix fused onto the WRONG leg's seed field (raw-root collapse)", childQov.Correlation, corrB)
+	if childQov.Correlation() != corrB {
+		t.Fatalf("collapsed onto correlation %v, want %v (leg B) — the fused suffix fused onto the WRONG leg's seed field (raw-root collapse)", childQov.Correlation(), corrB)
 	}
 	// And the fused path descends HDR then SUB (leg B's HDR record's SUB).
 	if len(collapsed.Resolved.Accessors) != 2 || collapsed.Resolved.Accessors[0].Ordinal != 0 || collapsed.Resolved.Accessors[1].Field != "SUB" {

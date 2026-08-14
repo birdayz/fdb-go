@@ -13,6 +13,15 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func emptyNullableLongExplode(t *testing.T) *plans.RecordQueryExplodePlan {
+	t.Helper()
+	collection := &values.ConstantValue{
+		Value: []any{},
+		Typ:   values.NewArrayType(false, values.NullableLong),
+	}
+	return mustExecutorConstruct(plans.NewRecordQueryExplodePlan(collection))
+}
+
 // TestDefaultOnEmpty_DefaultRow_ResumableAndNoReEmit pins F1: executeDefaultOnEmpty
 // routes through OrElse (Java RecordQueryDefaultOnEmptyPlan.executePlan →
 // RecordCursor.orElse), so the empty-inner default row is emitted with the OrElse
@@ -25,8 +34,8 @@ func TestDefaultOnEmpty_DefaultRow_ResumableAndNoReEmit(t *testing.T) {
 	ctx := context.Background()
 
 	// Empty inner (Explode over a nil collection) + a NULL default value.
-	inner := plans.NewRecordQueryExplodePlan(nil)
-	p := plans.NewRecordQueryDefaultOnEmptyPlan(inner, values.NewNullValue(values.UnknownType))
+	inner := emptyNullableLongExplode(t)
+	p := mustExecutorConstruct(plans.NewRecordQueryDefaultOnEmptyPlan(inner, values.NewNullValue(values.NullableLong)))
 
 	cur, err := executeDefaultOnEmpty(ctx, p, nil, EmptyEvaluationContext(), nil, recordlayer.ExecuteProperties{})
 	if err != nil {
@@ -67,6 +76,65 @@ func TestDefaultOnEmpty_DefaultRow_ResumableAndNoReEmit(t *testing.T) {
 	}
 }
 
+func TestDefaultOnEmpty_RecordBranchesPublishTheReconciledType(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	recordType := values.NewRecordType("default_record", false, []values.Field{{
+		Name: "ID", FieldType: values.NotNullLong, Ordinal: 0,
+	}})
+
+	t.Run("inner row is widened", func(t *testing.T) {
+		inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
+			&values.ConstantValue{Value: int64(7), Typ: values.NotNullLong},
+		}))
+		innerType := inner.GetResultType().(*values.RecordType)
+		plan := mustExecutorConstruct(plans.NewRecordQueryDefaultOnEmptyPlan(
+			inner, values.NewNullValue(innerType)))
+		cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.ExecuteProperties{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = cursor.Close() }()
+		result, err := cursor.OnNext(ctx)
+		if err != nil || !result.HasNext() {
+			t.Fatalf("inner row = (%v, %v), want row", result, err)
+		}
+		row := result.GetValue().Positional
+		if !row.Type.Equals(plan.GetResultType()) || row.Layout == nil {
+			t.Fatalf("inner row type/layout = (%s, %v), want reconciled %s with layout",
+				row.Type, row.Layout, plan.GetResultType())
+		}
+		if got, ok := row.Get(0); !ok || got != int64(7) {
+			t.Fatalf("inner row slot = %v (ok=%v), want 7", got, ok)
+		}
+	})
+
+	t.Run("record default has the declared width", func(t *testing.T) {
+		inner := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+			Value: []any{}, Typ: values.NewArrayType(false, recordType),
+		}))
+		plan := mustExecutorConstruct(plans.NewRecordQueryDefaultOnEmptyPlan(
+			inner, values.NewNullValue(recordType)))
+		cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.ExecuteProperties{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = cursor.Close() }()
+		result, err := cursor.OnNext(ctx)
+		if err != nil || !result.HasNext() {
+			t.Fatalf("default row = (%v, %v), want row", result, err)
+		}
+		row := result.GetValue().Positional
+		if !row.Type.Equals(plan.GetResultType()) || row.Layout == nil || len(row.Slots) != 1 {
+			t.Fatalf("default row type/layout/width = (%s, %v, %d), want (%s, set, 1)",
+				row.Type, row.Layout, len(row.Slots), plan.GetResultType())
+		}
+		if got, ok := row.Get(0); !ok || got != nil {
+			t.Fatalf("default row slot = %v (ok=%v), want NULL", got, ok)
+		}
+	})
+}
+
 // (The former TestFlatMapLeftOuter_ResumedMidInner_NoSpuriousNull pinned the F2
 // spurious-null resume bug on the cursor's in-memory leftOuter/innerHadMatch flag
 // pair. That flag pair was dead in production — LEFT OUTER lowers to
@@ -87,12 +155,12 @@ func TestFlatMap_CheckValueMismatch_RestartsNotErrors(t *testing.T) {
 	outerRow := QueryResult{PrimaryKey: tuple.Tuple{int64(7)}}
 	c := &flatMapCursor{
 		outerCursor:       recordlayer.FromList([]QueryResult{outerRow}),
-		innerPlan:         plans.NewRecordQueryExplodePlan(nil), // empty
+		innerPlan:         emptyNullableLongExplode(t), // empty
 		store:             nil,
 		evalCtx:           EmptyEvaluationContext(),
 		outerAlias:        values.NamedCorrelationIdentifier("O"),
 		innerAlias:        values.NamedCorrelationIdentifier("I"),
-		resultValue:       values.LiteralValue(int64(1)),
+		resultValue:       &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
 		props:             recordlayer.ExecuteProperties{},
 		initialInnerCont:  []byte("stale"),
 		hasPendingInner:   true,

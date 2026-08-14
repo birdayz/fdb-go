@@ -8,28 +8,67 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func phase2OrderType() *values.RecordType {
+	return values.NewRecordType("Order", false, []values.Field{
+		{Name: "STATUS", FieldType: values.NotNullString, Ordinal: 0},
+		{Name: "AMOUNT", FieldType: values.NullableLong, Ordinal: 1},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2},
+	})
+}
+
+func phase2Scan(t testing.TB) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	return mustFullUnorderedScan(t, []string{"Order"}, phase2OrderType())
+}
+
+func phase2Field(
+	t testing.TB,
+	quantifier expressions.Quantifier,
+	ordinal int,
+) values.Value {
+	t.Helper()
+	rootValue, rootErr := quantifier.RequireFlowedObjectValue()
+	root := mustConstruct(t, rootValue, rootErr)
+	fieldValue, fieldErr := values.ResolveFieldOrdinals(root, []int{ordinal})
+	return mustConstruct(t, fieldValue, fieldErr)
+}
+
+func phase2Filter(
+	t testing.TB,
+	queryPredicates []predicates.QueryPredicate,
+	quantifier expressions.Quantifier,
+) *expressions.LogicalFilterExpression {
+	t.Helper()
+	filterValue, filterErr := expressions.NewLogicalFilterExpression(
+		queryPredicates, quantifier)
+	return mustConstruct(t, filterValue, filterErr)
+}
+
 // TestInExplode_SingleElement verifies that IN('x') produces a simple
 // equality filter (not a union).
 func TestInExplode_SingleElement(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := phase2Scan(t)
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	inList := &values.ConstantValue{Value: []any{"active"}, Typ: values.TypeUnknown}
+	inList := &values.ConstantValue{
+		Value: []any{"active"},
+		Typ:   values.NewArrayType(false, values.NotNullString),
+	}
 	inPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+		phase2Field(t, q, 0),
 		predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := phase2Filter(t,
 		[]predicates.QueryPredicate{inPred},
 		q,
 	)
 	ref := expressions.InitialOf(filter)
 
 	rule := NewInComparisonToExplodeRule()
-	results := FireExpressionRuleWithMemo(rule, ref, EmptyPlanContext(), nil)
+	results := mustFireExpressionRuleWithMemo(t, rule, ref, EmptyPlanContext(), nil)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(results))
@@ -61,26 +100,29 @@ func TestInExplode_MultiColumnIndex(t *testing.T) {
 		[]string{"Order"},
 		[]string{"STATUS", "AMOUNT"},
 		[]values.CorrelationIdentifier{a1, a2},
-		values.UnknownType,
+		phase2OrderType(),
 		false,
 		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := phase2Scan(t)
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	inList := &values.ConstantValue{Value: []any{"active", "pending"}, Typ: values.TypeUnknown}
+	inList := &values.ConstantValue{
+		Value: []any{"active", "pending"},
+		Typ:   values.NewArrayType(false, values.NotNullString),
+	}
 	inPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+		phase2Field(t, q, 0),
 		predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
 	)
 	eqPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "AMOUNT", Typ: values.NullableLong},
+		phase2Field(t, q, 1),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(50)),
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := phase2Filter(t,
 		[]predicates.QueryPredicate{inPred, eqPred},
 		q,
 	)
@@ -120,20 +162,18 @@ func TestUnknownValueIndexCandidateDoesNotReachDataAccess(t *testing.T) {
 	t.Parallel()
 
 	buildQuery := func() *expressions.Reference {
-		scan := expressions.NewFullUnorderedScanExpression(
-			[]string{"Order"},
-			values.UnknownType,
-		)
+		scan := phase2Scan(t)
+		quantifier := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 		predicate := predicates.NewComparisonPredicate(
-			values.NewFieldValue(nil, "STATUS", values.TypeString),
+			phase2Field(t, quantifier, 0),
 			predicates.NewLiteralComparison(
 				predicates.ComparisonEquals,
 				"active",
 			),
 		)
-		filter := expressions.NewLogicalFilterExpression(
+		filter := phase2Filter(t,
 			[]predicates.QueryPredicate{predicate},
-			expressions.ForEachQuantifier(expressions.InitialOf(scan)),
+			quantifier,
 		)
 		return expressions.InitialOf(filter)
 	}
@@ -153,7 +193,7 @@ func TestUnknownValueIndexCandidateDoesNotReachDataAccess(t *testing.T) {
 		[]string{"Order"},
 		[]string{"STATUS"},
 		[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
-		values.UnknownType,
+		phase2OrderType(),
 		false,
 		[]string{"ID"},
 	)
@@ -253,20 +293,20 @@ func TestPlanContext_FromIndexDefs_UniqueFlag(t *testing.T) {
 func TestPlanner_MemoDeduplicatesEquivalentScans(t *testing.T) {
 	t.Parallel()
 
-	scan1 := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
-	scan2 := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan1 := phase2Scan(t)
+	scan2 := phase2Scan(t)
 	ref1 := expressions.InitialOf(scan1)
 	ref2 := expressions.InitialOf(scan2)
 
 	q1 := expressions.ForEachQuantifier(ref1)
 	q2 := expressions.ForEachQuantifier(ref2)
-	filter1 := expressions.NewLogicalFilterExpression(
+	filter1 := phase2Filter(t,
 		[]predicates.QueryPredicate{
 			predicates.NewConstantPredicate(predicates.TriTrue),
 		},
 		q1,
 	)
-	filter2 := expressions.NewLogicalFilterExpression(
+	filter2 := phase2Filter(t,
 		[]predicates.QueryPredicate{
 			predicates.NewConstantPredicate(predicates.TriTrue),
 		},
@@ -292,25 +332,28 @@ func TestPlanner_MemoDeduplicatesEquivalentScans(t *testing.T) {
 func TestInExplode_DuplicateElements(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := phase2Scan(t)
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
 	// [1, 1, 2] → the IN-list is deduped (RFC-066, mirroring Java's
 	// ArrayDistinctValue), leaving the two distinct values [1, 2].
-	inList := &values.ConstantValue{Value: []any{int64(1), int64(1), int64(2)}, Typ: values.TypeUnknown}
+	inList := &values.ConstantValue{
+		Value: []any{int64(1), int64(1), int64(2)},
+		Typ:   values.NewArrayType(false, values.NotNullLong),
+	}
 	inPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "STATUS", Typ: values.NullableLong},
+		phase2Field(t, q, 1),
 		predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := phase2Filter(t,
 		[]predicates.QueryPredicate{inPred},
 		q,
 	)
 	ref := expressions.InitialOf(filter)
 
 	rule := NewInComparisonToExplodeRule()
-	results := FireExpressionRuleWithMemo(rule, ref, EmptyPlanContext(), nil)
+	results := mustFireExpressionRuleWithMemo(t, rule, ref, EmptyPlanContext(), nil)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(results))

@@ -91,7 +91,7 @@ func TestClusteredOuterSeed_NonContiguousLegsAreRejectedAtTheSeed(t *testing.T) 
 			{binding: "I", start: pad + 2, typ: legB},
 		},
 	}
-	_ = clusteredOuterOrdinalSeed(pu, values.NamedCorrelationIdentifier("q$77"), "S", "SUMV")
+	_ = clusteredOuterOrdinalSeed(pu, values.NamedCorrelationIdentifier("q$77"), "S", "SUMV", values.NotNullLong)
 }
 
 // PROPAGATION, NEVER INFERENCE — the line the corrected §1.1 must not cross

@@ -40,6 +40,11 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 	if innerRef == nil {
 		return
 	}
+	sortInput, err := s.GetInner().RequireFlowedObjectValue()
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	// Top-down: push ordering constraint to inner reference so
 	// downstream rules (index scans) can satisfy it.
@@ -56,10 +61,6 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	requestedParts := requestedOrdering.GetParts()
-	sortValueNames := make(map[string]struct{}, len(requestedParts))
-	for _, part := range requestedParts {
-		sortValueNames[values.ExplainValue(part.Value)] = struct{}{}
-	}
 	preserveDistinctReq := properties.NewRequestedOrdering(
 		requestedParts,
 		properties.DistinctnessPreserveDistinctness,
@@ -88,25 +89,32 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 				// at the bottom-up sort boundary where both child groups are
 				// complete. Each candidate is verified through the same rich
 				// property before the enforcer is removed.
-				for _, candidate := range orderedFlatMapCandidatesAtSort(
-					call, expr, preserveDistinctReq) {
+				candidates, err := orderedFlatMapCandidatesAtSort(
+					call, expr, preserveDistinctReq, sortInput)
+				if err != nil {
+					call.Fail(err)
+					return
+				}
+				for _, candidate := range candidates {
 					call.YieldFinalExpression(candidate)
 				}
 				continue
 			}
 
 			eqBound := ordering.GetEqualityBoundValues()
-			eqBoundNames := make(map[string]struct{}, len(eqBound))
-			for v := range eqBound {
-				eqBoundNames[values.ExplainValue(v)] = struct{}{}
+			eqBoundValues := make([]values.Value, 0, len(eqBound))
+			for value := range eqBound {
+				eqBoundValues = append(eqBoundValues, value)
 			}
 			equalityBoundUnsorted := len(eqBound)
-			seenEqBound := make(map[string]bool, len(requestedParts))
+			seenEqBound := make([]bool, len(eqBoundValues))
 			for _, part := range requestedParts {
-				name := values.ExplainValue(part.Value)
-				if _, ok := eqBoundNames[name]; ok && !seenEqBound[name] {
-					seenEqBound[name] = true
-					equalityBoundUnsorted--
+				for i, value := range eqBoundValues {
+					if !seenEqBound[i] && sortCoverageValuesEqual(part.Value, value) {
+						seenEqBound[i] = true
+						equalityBoundUnsorted--
+						break
+					}
 				}
 			}
 
@@ -116,12 +124,23 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 			if partition.IsDistinct() && expressionStorageOrderingIsComplete(expr) {
 				allCovered := true
 				for _, v := range ordering.GetOrderingKeys() {
-					name := values.ExplainValue(v)
-					_, inSort := sortValueNames[name]
+					inSort := false
+					for _, part := range requestedParts {
+						if sortCoverageValuesEqual(part.Value, v) {
+							inSort = true
+							break
+						}
+					}
 					// inEq can be true for mixed-binding keys (one fixed +
 					// one sorted) — GetOrderingKeys excludes all-fixed but
 					// GetEqualityBoundValues includes any-fixed.
-					_, inEq := eqBoundNames[name]
+					inEq := false
+					for _, value := range eqBoundValues {
+						if sortCoverageValuesEqual(value, v) {
+							inEq = true
+							break
+						}
+					}
 					if !inSort && !inEq {
 						allCovered = false
 						break
@@ -129,7 +148,12 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 				}
 				if allCovered {
 					if pinned := pinOrderedSpine(expr, preserveDistinctReq, call.CostModel()); pinned != nil {
-						call.YieldFinalExpression(makeStrictlySorted(pinned))
+						strict, err := makeStrictlySorted(pinned)
+						if err != nil {
+							call.Fail(err)
+							return
+						}
+						call.YieldFinalExpression(strict)
 					}
 					continue
 				}
@@ -150,7 +174,12 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 				continue
 			}
 			if strictlyOrderedIfUnique(pinned, numKeys) {
-				call.YieldFinalExpression(makeStrictlySorted(pinned))
+				strict, err := makeStrictlySorted(pinned)
+				if err != nil {
+					call.Fail(err)
+					return
+				}
+				call.YieldFinalExpression(strict)
 			} else {
 				call.YieldFinalExpression(pinned)
 			}
@@ -158,56 +187,99 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 	}
 }
 
+// sortCoverageValuesEqual compares the exact keys used by the two sides of
+// sort elimination. A logical sort names a column through its owning
+// quantifier, while a physical ordering provider names the same column through
+// the values-owned current-row carrier. RichOrdering.Satisfies bridges that
+// phase boundary; the coverage checks that license a strictness claim must use
+// the same bridge rather than falling back to ExplainValue text.
+//
+// Field reads are identity-bearing. Decide them with SameOrderingColumn first
+// so equal ordinals from different layouts cannot meet through the structural
+// comparator; CanBridgeOrderingValueRoots then handles only its documented
+// current-row/owning-quantifier seam. Non-field expressions retain structural
+// equality, with the same narrow root bridge for wrapped ordering values.
+func sortCoverageValuesEqual(left, right values.Value) bool {
+	if values.OrderingFieldPair(left, right) {
+		return values.SameOrderingColumn(left, right) ||
+			values.CanBridgeOrderingValueRoots(left, right)
+	}
+	return values.ValuesStructurallyEqual(left, right) ||
+		values.CanBridgeOrderingValueRoots(left, right)
+}
+
 func orderedFlatMapCandidatesAtSort(
 	call *ImplementationRuleCall,
 	base expressions.RelationalExpression,
 	requested *properties.RequestedOrdering,
-) []expressions.RelationalExpression {
+	sortInput values.QuantifiedObjectValue,
+) ([]expressions.RelationalExpression, error) {
 	flatMap, ok := base.(*plans.RecordQueryFlatMapPlan)
 	if !ok || requested == nil || requested.IsPreserve() {
-		return nil
+		return nil, nil
 	}
 	quantifiers := flatMap.GetQuantifiers()
 	if len(quantifiers) != 2 {
-		return nil
+		return nil, nil
 	}
 	outerRef := quantifiers[0].GetRangesOver()
 	innerRef := quantifiers[1].GetRangesOver()
 	resultValue := flatMap.GetResultValue()
 	if outerRef == nil || innerRef == nil || resultValue == nil {
-		return nil
+		return nil, nil
+	}
+	outputRequested, admitted, err := requestedOrderingOnExactPlanOutput(
+		requested, sortInput, flatMap)
+	if err != nil {
+		return nil, err
+	}
+	if !admitted {
+		return nil, nil
 	}
 	outerOrderingResultValue := flatMapOrderingResultForChild(
-		flatMap, quantifiers[0].GetAlias(), true)
+		flatMap, flatMap.GetOuterAlias(), true)
 
 	localAliases := map[values.CorrelationIdentifier]struct{}{
-		quantifiers[0].GetAlias(): {},
-		quantifiers[1].GetAlias(): {},
+		flatMap.GetOuterAlias(): {},
+		flatMap.GetInnerAlias(): {},
 	}
-	outerRequested := pushRequestedOrderingToSelectChild(
-		requested, outerOrderingResultValue,
-		quantifiers[0].GetAlias(), localAliases)
-	innerRequested := pushRequestedOrderingToSelectChild(
-		requested, resultValue, quantifiers[1].GetAlias(), localAliases)
+	outerRequested := pushRequestedOrderingToSelectChildThroughOutput(
+		outputRequested, outerOrderingResultValue,
+		values.CurrentCorrelation(), flatMap.GetOuterAlias(), localAliases)
+	innerRequested := pushRequestedOrderingToSelectChildThroughOutput(
+		outputRequested, resultValue,
+		values.CurrentCorrelation(), flatMap.GetInnerAlias(), localAliases)
 	less := lessWithHashTieBreak(call.CostModel())
 
-	rawOuters := collectJoinLegOrderingVariants(
+	rawOuters, err := collectJoinLegOrderingVariants(
 		outerRef, properties.PreserveOrdering(), outerOrderingResultValue,
-		quantifiers[0].GetAlias(), less, false, call.Context)
-	rawInners := collectJoinLegOrderingVariants(
+		flatMap.GetOuterAlias(), less, false, call.Context)
+	if err != nil {
+		return nil, err
+	}
+	rawInners, err := collectJoinLegOrderingVariants(
 		innerRef, properties.PreserveOrdering(), resultValue,
-		quantifiers[1].GetAlias(), less, false, call.Context)
-	orderedOuters := collectJoinLegOrderingVariants(
+		flatMap.GetInnerAlias(), less, false, call.Context)
+	if err != nil {
+		return nil, err
+	}
+	orderedOuters, err := collectJoinLegOrderingVariants(
 		outerRef, outerRequested, outerOrderingResultValue,
-		quantifiers[0].GetAlias(), less, true, call.Context)
-	orderedInners := collectJoinLegOrderingVariants(
+		flatMap.GetOuterAlias(), less, true, call.Context)
+	if err != nil {
+		return nil, err
+	}
+	orderedInners, err := collectJoinLegOrderingVariants(
 		innerRef, innerRequested, resultValue,
-		quantifiers[1].GetAlias(), less, true, call.Context)
+		flatMap.GetInnerAlias(), less, true, call.Context)
+	if err != nil {
+		return nil, err
+	}
 	rebuild := func(
 		outer, inner expressions.RelationalExpression,
-	) expressions.RelationalExpression {
+	) (expressions.RelationalExpression, error) {
 		if outer == nil || inner == nil {
-			return nil
+			return nil, nil
 		}
 		exactQuantifiers := []expressions.Quantifier{
 			expressions.RebuildQuantifier(
@@ -219,15 +291,26 @@ func orderedFlatMapCandidatesAtSort(
 	}
 
 	var result []expressions.RelationalExpression
-	add := func(outer, inner expressions.RelationalExpression) {
-		candidate := rebuild(outer, inner)
+	add := func(outer, inner expressions.RelationalExpression) error {
+		candidate, err := rebuild(outer, inner)
+		if err != nil {
+			return err
+		}
 		ph, ok := candidate.(physicalPlanExpression)
 		if !ok {
-			return
+			return nil
+		}
+		candidateRequested, candidateAdmitted, err := requestedOrderingOnExactPlanOutput(
+			requested, sortInput, ph.GetRecordQueryPlan())
+		if err != nil {
+			return err
+		}
+		if !candidateAdmitted {
+			return nil
 		}
 		ordering := computeWrapperRichOrdering(ph)
-		if ordering == nil || !ordering.Satisfies(requested) {
-			return
+		if ordering == nil || !ordering.Satisfies(candidateRequested) {
+			return nil
 		}
 		for _, existing := range result {
 			existingPhysical, ok := existing.(physicalPlanExpression)
@@ -235,19 +318,113 @@ func orderedFlatMapCandidatesAtSort(
 				existingPhysical.GetRecordQueryPlan(),
 				ph.GetRecordQueryPlan(),
 			) {
-				return
+				return nil
 			}
 		}
 		result = append(result, candidate)
+		return nil
 	}
 
 	for _, pair := range orderedJoinLegPairs(
 		rawOuters, rawInners, orderedOuters, orderedInners,
-		requested, less,
+		outputRequested, less,
 	) {
-		add(pair.outer, pair.inner)
+		if err := add(pair.outer, pair.inner); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
+}
+
+// requestedOrderingOnExactPlanOutput moves a Sort's requested keys from its
+// declared input edge onto one selected plan's exact current-row carrier. This
+// is deliberately local to FlatMap recovery: two ordinary named roots are
+// distinct owners and must not be made equivalent by the generic ordering
+// comparator.
+//
+// Admission requires every requested part to be rewritten from the declared
+// edge and to end exclusively in the selected carrier's correlation space. An
+// independently minted current root, a foreign named root, or a same-alias
+// exact-type drift therefore declines instead of borrowing this boundary.
+func requestedOrderingOnExactPlanOutput(
+	requested *properties.RequestedOrdering,
+	declaration values.QuantifiedObjectValue,
+	plan plans.RecordQueryPlan,
+) (*properties.RequestedOrdering, bool, error) {
+	if requested == nil || requested.IsPreserve() || declaration == nil || plan == nil {
+		return nil, false, nil
+	}
+	layout, err := plan.ProvidedOutputLayout()
+	if err != nil {
+		return nil, false, err
+	}
+	if layout == nil || layout.Carrier() == nil ||
+		layout.Carrier().Correlation() != values.CurrentCorrelation() {
+		return nil, false, nil
+	}
+
+	parts := make([]properties.RequestedOrderingPart, len(requested.GetParts()))
+	for i, part := range requested.GetParts() {
+		translated, translateErr := values.TranslateDeclaredEdgeRoot(
+			part.Value, declaration, layout.Carrier())
+		if translateErr != nil {
+			return nil, false, translateErr
+		}
+		if translated == part.Value {
+			if _, isCurrent := values.GetCorrelatedToOfValue(part.Value)[values.CurrentCorrelation()]; isCurrent {
+				// A current root that did not match the Sort's declared input edge
+				// belongs to an independently constructed physical phase. Neither
+				// the retained-leg producer bridge nor a structural layout reanchor
+				// may claim it.
+				return nil, false, nil
+			}
+			// A Sort can retain a leg key (O.ID) even though its declared input
+			// edge names the complete FlatMap row. The selected FlatMap result
+			// program is the checked source-to-output ordinal authority. Restrict
+			// the producer bridge to the two declared runtime legs (plus any exact
+			// retained windows) so its ordinary unique-name fallback cannot claim
+			// a same-named foreign sibling.
+			if flatMap, ok := plan.(*plans.RecordQueryFlatMapPlan); ok {
+				owned := map[values.CorrelationIdentifier]struct{}{
+					flatMap.GetOuterAlias(): {},
+					flatMap.GetInnerAlias(): {},
+				}
+				for _, source := range layout.WindowSources() {
+					owned[source.Correlation()] = struct{}{}
+				}
+				translated, translateErr = values.ReanchorOwnedValueThroughProducer(
+					part.Value, flatMap.GetResultValue(), layout.Carrier(), owned)
+				if translateErr != nil {
+					return nil, false, translateErr
+				}
+			}
+		}
+		if translated == part.Value {
+			// A retained layout window can prove a buried leg that the top result
+			// program does not spell directly. This remains fail-closed for an
+			// undeclared source, exact type drift, or independently owned current.
+			translated, translateErr = values.ReanchorValueForLayout(
+				part.Value, layout.Carrier(), layout)
+			if translateErr != nil {
+				return nil, false, translateErr
+			}
+			if translated == part.Value {
+				return nil, false, nil
+			}
+		}
+		correlations := values.GetCorrelatedToOfValue(translated)
+		if len(correlations) != 1 {
+			return nil, false, nil
+		}
+		if _, ok := correlations[layout.Carrier().Correlation()]; !ok {
+			return nil, false, nil
+		}
+		parts[i] = properties.RequestedOrderingPart{
+			Value: translated, SortOrder: part.SortOrder,
+		}
+	}
+	return properties.NewRequestedOrdering(
+		parts, requested.GetDistinctness(), requested.IsExhaustive()), true, nil
 }
 
 func (r *ImplementSortRule) GetRequestedOrderings(
@@ -440,11 +617,11 @@ func indexHasStreamEnforcedUniqueKey(p *plans.RecordQueryIndexPlan) bool {
 // indexScanUnderOrderPreservingWrappers descends through: a shape the walk
 // admits but this function returns unchanged is a claim that was proved and then
 // silently dropped, so the two enumerations move together.
-func makeStrictlySorted(expr expressions.RelationalExpression) expressions.RelationalExpression {
+func makeStrictlySorted(expr expressions.RelationalExpression) (expressions.RelationalExpression, error) {
 	if p, ok := expr.(*plans.RecordQueryIndexPlan); ok {
 		// WithStrictlySorted is a struct copy — it preserves the index metadata
 		// (columns/pk/unique) the plan already carries (RFC-184 W2).
-		return p.WithStrictlySorted()
+		return p.WithStrictlySorted(), nil
 	}
 	// A COVERING scan is the shape the access path now emits (RFC-220), so it
 	// must be stamped too. Omitting it does not fail loudly: the walk above
@@ -453,7 +630,7 @@ func makeStrictlySorted(expr expressions.RelationalExpression) expressions.Relat
 	// it would have eliminated reappears. The stamp goes on the INNER scan, which
 	// is where strictlySorted lives and where IsStrictlySorted() reads it from.
 	if cov, ok := expr.(*plans.RecordQueryCoveringIndexPlan); ok {
-		return cov.WithIndexPlan(cov.GetIndexPlan().WithStrictlySorted())
+		return cov.WithIndexPlan(cov.GetIndexPlan().WithStrictlySorted()), nil
 	}
 	if fw, ok := expr.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 		inner := fw.GetInner()
@@ -485,7 +662,7 @@ func makeStrictlySorted(expr expressions.RelationalExpression) expressions.Relat
 			)
 		}
 	}
-	return expr
+	return expr, nil
 }
 
 var _ ImplementationRule = (*ImplementSortRule)(nil)

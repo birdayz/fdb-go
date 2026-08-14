@@ -59,10 +59,13 @@ type Planner struct {
 	// TransformExprTask/TransformImplTask/OptimizeInputsTask, and
 	// depends on LIFO pop order for bottom-up exploration (children
 	// before parents).
-	stack []Task
-	rules []ExpressionRule
-	ctx   PlanContext
-	memo  *Memo
+	stack                 []Task
+	pendingExploreGroups  map[exploreGroupTaskKey]int
+	pendingExploreExprs   map[exploreExprTaskKey]struct{}
+	pendingOptimizeGroups map[exploreGroupTaskKey]struct{}
+	rules                 []ExpressionRule
+	ctx                   PlanContext
+	memo                  *Memo
 
 	// rewritingImplRules run during PhaseRewriting. They yield
 	// final expressions (FinalizeExpressionsRule promotes exploratory
@@ -134,11 +137,12 @@ type Planner struct {
 	verifyRewritingCoherence     bool
 	rewritingCoherenceViolations []string
 
-	// verifyOneFinal turns on RFC-183 P5's precondition check after the
-	// task stack drains; oneFinalViolations holds what it found. Off by
-	// default — it walks the whole reference graph.
-	verifyOneFinal     bool
-	oneFinalViolations []string
+	// verifyExtractionUnambiguous turns on RFC-224's post-drain check of
+	// the exact Reference path extraction selects. The report records reach,
+	// dead ends, and retained-property coherence. Off by default because it
+	// performs a second selected-path traversal.
+	verifyExtractionUnambiguous bool
+	extractionVerification      ExtractionVerificationReport
 
 	// reach is the optional RFC-183 plan-reachability tally, scoped to this
 	// Planner so two concurrent planning runs cannot sum into one number.
@@ -157,6 +161,13 @@ type Planner struct {
 	// set, the cost model uses real record counts instead of the
 	// default 1e6 constant.
 	stats properties.StatisticsProvider
+
+	// extractPlan is an invocation-local extraction seam. Production leaves it
+	// nil and uses ExtractBestPlanFromSelectorContext; focused lifecycle tests
+	// replace it to exercise post-drain error and cancellation exits without
+	// admitting foreign expression implementations into the closed memo
+	// manifest. It is planner-owned, so parallel planning tests share no state.
+	extractPlan plannerPlanExtractor
 
 	// maxObservedExplRounds records the maximum exploration rounds any
 	// Reference started this planning run — the WS-P round-cap retirement
@@ -196,6 +207,30 @@ type Planner struct {
 	exprRuleIdx map[PlannerPhase]*ruleIndex[ExpressionRule]
 	implRuleIdx map[PlannerPhase]*ruleIndex[ImplementationRule]
 }
+
+type exploreGroupTaskKey struct {
+	phase PlannerPhase
+	ref   *expressions.Reference
+	// stage is captured for exploration tasks because a task that advances a
+	// group into the next stage must enqueue its convergence continuation at
+	// the new stage. A pre-transition task for a group later forwarded into the
+	// same canonical Reference is not equivalent: it can sit below a parent
+	// optimizer on the LIFO stack.
+	stage expressions.PlannerStage
+}
+
+type exploreExprTaskKey struct {
+	phase PlannerPhase
+	ref   *expressions.Reference
+	expr  expressions.RelationalExpression
+}
+
+type plannerPlanExtractor func(
+	context.Context,
+	*expressions.Reference,
+	BestMemberSelector,
+	properties.StatisticsProvider,
+) (expressions.RelationalExpression, error)
 
 // NewPlanner builds a planner with the given rule set + context.
 // Pass DefaultExpressionRules() for the standard rule set.
@@ -393,7 +428,7 @@ func (p *Planner) plan(ctx context.Context, rootRef *expressions.Reference) (exp
 	// groups) must schedule the re-round its epoch re-arm requires —
 	// dirtiness without a task is silently never explored.
 	p.memo.SetReExploreScheduler(func(ref *expressions.Reference) {
-		p.push(&ExploreGroupTask{Phase: p.activePhase, Ref: ref})
+		p.push(&ExploreGroupTask{Phase: p.activePhase, Ref: ref, forceNew: true})
 	})
 	// The scheduler closes over this Planner's mutable task stack and is useful
 	// only while the run is actively draining it. Memo is observable after the
@@ -408,6 +443,7 @@ func (p *Planner) plan(ctx context.Context, rootRef *expressions.Reference) (exp
 	p.capErr = nil
 	p.dscope = newDesignationScope()
 	p.rewritingCoherenceViolations = nil
+	p.extractionVerification = ExtractionVerificationReport{}
 
 	// One task-stack drives both REWRITING and PLANNING phases.
 	// InitiatePlannerPhase(REWRITING) pushes ExploreGroup + OptimizeGroup
@@ -443,24 +479,28 @@ func (p *Planner) plan(ctx context.Context, rootRef *expressions.Reference) (exp
 		}
 	}
 
-	// After the task-stack drains, each Reference's FinalMembers has
-	// been pruned to exactly one physical plan by OptimizeGroup.
+	// After the task stack drains, extraction must have one physical answer
+	// at every Reference it dereferences. Go obtains that answer from the
+	// stamped winner or a cheapest compatible physical fallback; it does not
+	// require Java's singleton-final mechanism because OptimizeGroup legally
+	// retains one member per required physical property.
 	//
-	// RFC-183 P5 checks that claim rather than trusting it: set
-	// RFC183_VERIFY_ONE_FINAL to have the planner report every reference
-	// that still holds two. It is the precondition for a plan holding a
-	// Quantifier instead of a raw child pointer (Java's getRangesOverPlan
-	// is getOnlyElement over the final expressions).
-	if p.verifyOneFinal {
+	// RFC-224 verifies that selected path, including positional ordinal-layout
+	// requirements and coherence of every retained multi-final alternative.
+	if p.verifyExtractionUnambiguous {
 		if err := plannerContextErr(ctx); err != nil {
 			return nil, p.tasksRun, err
 		}
-		p.oneFinalViolations = VerifyOneFinalPlanPerReference(rootRef)
+		p.extractionVerification = VerifyExtractionIsUnambiguous(rootRef, p, p.stats)
 	}
 	if err := plannerContextErr(ctx); err != nil {
 		return nil, p.tasksRun, err
 	}
-	plan, err := ExtractBestPlanFromSelectorContext(ctx, rootRef, p, p.stats)
+	extractor := p.extractPlan
+	if extractor == nil {
+		extractor = ExtractBestPlanFromSelectorContext
+	}
+	plan, err := extractor(ctx, rootRef, p, p.stats)
 	if err != nil {
 		// Return an explicit nil, not the extracted plan value: on error there is
 		// no valid plan to hand back, and forwarding the callee's value would make
@@ -485,10 +525,12 @@ func (p *Planner) plan(ctx context.Context, rootRef *expressions.Reference) (exp
 		return nil, p.tasksRun, err
 	}
 	// When the Java !isIndexOnly() ImplementFilterRule gate instead left the best
-	// plan NON-physical (no producer realized the index-only LogicalFilter), the
-	// physical walk above sees nothing — surface the same clean error from the
-	// logical side rather than letting the caller report the internal type.
-	if plan != nil && !isPhysical(plan) {
+	// plan NON-physical (or, after RFC-224's physical-only extraction, NIL
+	// because no producer realized the index-only LogicalFilter), the physical
+	// walk above sees nothing — surface the same clean error from the logical
+	// side rather than letting the caller report the internal type / generic
+	// "no plan found".
+	if plan == nil || !isPhysical(plan) {
 		if bad := findIndexOnlyLogicalResidual(rootRef); bad != nil {
 			return nil, p.tasksRun, &UnplannableIndexOnlyResidualError{Predicate: bad.Explain()}
 		}
@@ -600,9 +642,126 @@ func newRuleMatchCapError(limit, observed int) *PlannerBudgetExceededError {
 	}
 }
 
-// push appends a task to the stack (LIFO).
+// push appends a task to the stack (LIFO). Equivalent group exploration,
+// expression exploration, and group optimization already waiting on the stack
+// are coalesced. The running task is removed from the pending set by pop,
+// before Run can schedule fresh work that observes newly admitted members or
+// constraints.
 func (p *Planner) push(t Task) {
+	switch typed := t.(type) {
+	case *ExploreGroupTask:
+		key := exploreGroupTaskKey{
+			phase: typed.Phase,
+			ref:   typed.Ref.Canonical(),
+			stage: typed.Ref.Stage(),
+		}
+		if p.pendingExploreGroups == nil {
+			p.pendingExploreGroups = make(map[exploreGroupTaskKey]int)
+		}
+		if !typed.forceNew {
+			for pendingKey := range p.pendingExploreGroups {
+				if pendingKey.phase == key.phase && pendingKey.stage == key.stage &&
+					pendingKey.ref.Canonical() == key.ref {
+					return
+				}
+			}
+		}
+		p.pendingExploreGroups[key]++
+		typed.pendingKey = key
+		typed.pending = true
+	case *ExploreExprTask:
+		key := exploreExprTaskKey{phase: typed.Phase, ref: typed.Ref.Canonical(), expr: typed.Expr}
+		if p.pendingExploreExprs == nil {
+			p.pendingExploreExprs = make(map[exploreExprTaskKey]struct{})
+		}
+		for pendingKey := range p.pendingExploreExprs {
+			if pendingKey.phase == key.phase && pendingKey.expr == key.expr && pendingKey.ref.Canonical() == key.ref {
+				return
+			}
+		}
+		p.pendingExploreExprs[key] = struct{}{}
+		typed.pendingKey = key
+		typed.pending = true
+	case *OptimizeGroupTask:
+		key := exploreGroupTaskKey{phase: typed.Phase, ref: typed.Ref.Canonical()}
+		if p.pendingOptimizeGroups == nil {
+			p.pendingOptimizeGroups = make(map[exploreGroupTaskKey]struct{})
+		}
+		for pendingKey := range p.pendingOptimizeGroups {
+			if pendingKey.phase == key.phase && pendingKey.ref.Canonical() == key.ref {
+				return
+			}
+		}
+		p.pendingOptimizeGroups[key] = struct{}{}
+		typed.pendingKey = key
+		typed.pending = true
+	}
 	p.stack = append(p.stack, t)
+}
+
+// scheduleExploreGroupsBeforeBatch makes child exploration a real LIFO
+// dependency without duplicating work. If a stage-transition task is already
+// pending below the parent batch, move that exact task to the top; moving the
+// whole parent batch below it would also cross unrelated work and needlessly
+// expand the search. Children already in the target stage use ordinary global
+// coalescing. Children with no pending task are pushed normally and run first.
+func (p *Planner) scheduleExploreGroupsBeforeBatch(
+	phase PlannerPhase,
+	refs []*expressions.Reference,
+	batchFloor int,
+) {
+	if len(refs) == 0 {
+		return
+	}
+	if batchFloor < 0 {
+		batchFloor = 0
+	}
+	if batchFloor > len(p.stack) {
+		batchFloor = len(p.stack)
+	}
+
+	seen := make(map[*expressions.Reference]struct{}, len(refs))
+	for _, ref := range refs {
+		if ref == nil {
+			continue
+		}
+		canonical := ref.Canonical()
+		if _, duplicate := seen[canonical]; duplicate {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		stage := ref.Stage()
+		// Once a child is already in this phase's stage, an existing pending
+		// task may safely absorb the request: its current finals are visible to
+		// the parent and any constraint-driven follow-up is independently
+		// re-armed. The load-bearing ordering case is the stage boundary itself;
+		// parent implementation must not run while the child is still canonical
+		// (the nested-UNION no-plan regression).
+		if !stage.Precedes(phase.TargetStage()) {
+			p.push(&ExploreGroupTask{Phase: phase, Ref: ref})
+			continue
+		}
+		found := -1
+		for i := batchFloor - 1; i >= 0; i-- {
+			pending, ok := p.stack[i].(*ExploreGroupTask)
+			if !ok || pending.Phase != phase || pending.pendingKey.stage != stage {
+				continue
+			}
+			if pending.Ref.Canonical() == canonical {
+				found = i
+				break
+			}
+		}
+		if found < 0 {
+			p.push(&ExploreGroupTask{Phase: phase, Ref: ref})
+			continue
+		}
+		if found != len(p.stack)-1 {
+			pending := p.stack[found]
+			copy(p.stack[found:], p.stack[found+1:])
+			p.stack[len(p.stack)-1] = pending
+		}
+	}
 }
 
 // pop removes and returns the top of stack. Caller must check
@@ -611,6 +770,27 @@ func (p *Planner) pop() Task {
 	n := len(p.stack)
 	t := p.stack[n-1]
 	p.stack = p.stack[:n-1]
+	switch typed := t.(type) {
+	case *ExploreGroupTask:
+		if typed.pending {
+			if remaining := p.pendingExploreGroups[typed.pendingKey] - 1; remaining > 0 {
+				p.pendingExploreGroups[typed.pendingKey] = remaining
+			} else {
+				delete(p.pendingExploreGroups, typed.pendingKey)
+			}
+			typed.pending = false
+		}
+	case *ExploreExprTask:
+		if typed.pending {
+			delete(p.pendingExploreExprs, typed.pendingKey)
+			typed.pending = false
+		}
+	case *OptimizeGroupTask:
+		if typed.pending {
+			delete(p.pendingOptimizeGroups, typed.pendingKey)
+			typed.pending = false
+		}
+	}
 	return t
 }
 

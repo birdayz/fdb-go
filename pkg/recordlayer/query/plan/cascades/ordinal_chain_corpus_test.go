@@ -10,45 +10,76 @@ import (
 
 // buildOrdinalChainSelect builds an n-table chain T1—T2—…—Tn, each link
 // Ti.NEXT_ID = T(i+1).ID, SEEDED with the flat N-leg ORDINAL join RC — one
-// values.NewFieldValueOfOrdinal per leg column over each leg's typed QOV, the
+// values.ResolveOrdinalSeedField per leg column over each leg's exact QOV, the
 // exact shape the translator's buildOrdinalJoinResultValue produces for a gated
 // maximal inner-join cluster. This is the SOLE seed shape the name-model
 // producer has been retired in favor of; PartitionSelectRule routes its
 // ≥2-live merges through the positional arm (positionalMergeCase) —
 // structurally the only arm now. The chain corpus feeds the interning/task
 // baselines and the leg-row-type derivations.
-func buildOrdinalChainSelect(n int) *expressions.SelectExpression {
+func buildOrdinalChainSelect(t testing.TB, n int) *expressions.SelectExpression {
+	t.Helper()
 	var quants []expressions.Quantifier
 	var aliases []string
 	var preds []predicates.QueryPredicate
 	var fields []values.RecordConstructorField
+	legRoots := make(map[string]values.QuantifiedObjectValue, n)
 	for i := 1; i <= n; i++ {
-		quants = append(quants, scanQuantifier(tName(i)))
-		aliases = append(aliases, tName(i))
-		legType := values.NewRecordType(tName(i), false, []values.Field{
+		alias := tName(i)
+		legType := values.NewRecordType(alias, false, []values.Field{
 			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 			{Name: "NEXT_ID", FieldType: values.NotNullLong, Ordinal: 1},
 		})
-		qov := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(tName(i)), legType)
+		quants = append(quants, typedPartitionScanQuantifier(alias, legType))
+		aliases = append(aliases, alias)
+		qovValue, qovErr := values.NewQuantifiedObjectValue(
+			values.NamedCorrelationIdentifier(alias), legType)
+		qov := mustConstruct(t, qovValue, qovErr)
+		legRoots[alias] = qov
 		for col := range legType.Fields {
-			fv, err := values.NewFieldValueOfOrdinal(qov, col)
-			if err != nil {
-				// Impossible by construction (col ranges over the type's own
-				// fields) — loud, matching the translator seed and the assert.
-				panic("buildOrdinalChainSelect: " + err.Error())
-			}
-			fields = append(fields, values.RecordConstructorField{Name: fv.Field, Value: fv})
+			fv := mustOrdinalSeedField(t, qov, col)
+			fields = append(fields, values.RecordConstructorField{Name: fv.DisplayName(), Value: fv})
 		}
 	}
 	for i := 1; i < n; i++ {
-		preds = append(preds, chainEqPred(tName(i), "NEXT_ID", tName(i+1), "ID"))
+		preds = append(preds, ordinalFieldEquality(
+			t, legRoots[tName(i)], 1, legRoots[tName(i+1)], 0))
 	}
 	seed := values.NewRawRecordConstructorValue(fields...)
 	// An ordinal seed that lands without AssertOrdinalJoinSeed is a bug on
 	// sight — this corpus asserts the same pristine shape the translator
 	// guarantees.
 	values.AssertOrdinalJoinSeed(seed)
-	return expressions.NewSelectExpressionWithAliases(seed, quants, preds, aliases)
+	selectExpression, selectErr := expressions.NewSelectExpressionWithAliases(seed, quants, preds, aliases)
+	return mustConstruct(t, selectExpression, selectErr)
+}
+
+func mustOrdinalSeedField(t testing.TB, root values.Value, ordinal int) values.FieldValue {
+	t.Helper()
+	resolvedValue, resolveErr := values.ResolveOrdinalSeedField(root, ordinal)
+	resolved := mustConstruct(t, resolvedValue, resolveErr)
+	field, ok := values.AsFieldValue(resolved)
+	if !ok {
+		t.Fatalf("ordinal seed field %d resolved to %T, want exact FieldValue", ordinal, resolved)
+	}
+	return field
+}
+
+func ordinalFieldEquality(
+	t testing.TB,
+	left values.Value,
+	leftOrdinal int,
+	right values.Value,
+	rightOrdinal int,
+) predicates.QueryPredicate {
+	t.Helper()
+	return predicates.NewComparisonPredicate(
+		mustOrdinalSeedField(t, left, leftOrdinal),
+		predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: mustOrdinalSeedField(t, right, rightOrdinal),
+		},
+	)
 }
 
 // buildOrdinalBoxChainSelect is buildOrdinalChainSelect with the LAST leg a
@@ -57,25 +88,28 @@ func buildOrdinalChainSelect(n int) *expressions.SelectExpression {
 // preserved leg names the box). The seed stays pristine (every column baked
 // ordinal over its leg QOV, runs 0..width-1), so the values/executor twins
 // accept it — the ordinal-seeded-box corpus.
-func buildOrdinalBoxChainSelect(n int) *expressions.SelectExpression {
+func buildOrdinalBoxChainSelect(t testing.TB, n int) *expressions.SelectExpression {
+	t.Helper()
 	var quants []expressions.Quantifier
 	var aliases []string
 	var preds []predicates.QueryPredicate
 	var fields []values.RecordConstructorField
+	legRoots := make(map[string]values.QuantifiedObjectValue, n)
 	for i := 1; i < n; i++ {
-		quants = append(quants, scanQuantifier(tName(i)))
-		aliases = append(aliases, tName(i))
-		legType := values.NewRecordType(tName(i), false, []values.Field{
+		alias := tName(i)
+		legType := values.NewRecordType(alias, false, []values.Field{
 			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 			{Name: "NEXT_ID", FieldType: values.NotNullLong, Ordinal: 1},
 		})
-		qov := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(tName(i)), legType)
+		quants = append(quants, typedPartitionScanQuantifier(alias, legType))
+		aliases = append(aliases, alias)
+		qovValue, qovErr := values.NewQuantifiedObjectValue(
+			values.NamedCorrelationIdentifier(alias), legType)
+		qov := mustConstruct(t, qovValue, qovErr)
+		legRoots[alias] = qov
 		for col := range legType.Fields {
-			fv, err := values.NewFieldValueOfOrdinal(qov, col)
-			if err != nil {
-				panic("buildOrdinalBoxChainSelect: " + err.Error())
-			}
-			fields = append(fields, values.RecordConstructorField{Name: fv.Field, Value: fv})
+			fv := mustOrdinalSeedField(t, qov, col)
+			fields = append(fields, values.RecordConstructorField{Name: fv.DisplayName(), Value: fv})
 		}
 	}
 	// The box leg: buried B (2 cols) + rightmost leaf Tn (2 cols), named Tn.
@@ -87,26 +121,35 @@ func buildOrdinalBoxChainSelect(n int) *expressions.SelectExpression {
 			{Name: "NEXT_ID", FieldType: values.NotNullLong, Ordinal: 3},
 		},
 		Legs: []values.RecordTypeLeg{
-			{Name: "B", Start: 0, Width: 2},
-			{Name: tName(n), Start: 2, Width: 2},
+			values.NewRecordTypeLeg(
+				values.LegKindFlatRun, values.NamedCorrelationIdentifier("B"), "B", 0, 2),
+			values.NewRecordTypeLeg(
+				values.LegKindFlatRun, values.NamedCorrelationIdentifier(tName(n)), tName(n), 2, 2),
 		},
 	}
-	quants = append(quants, scanQuantifier(tName(n)))
+	quants = append(quants, typedPartitionScanQuantifier(tName(n), boxTyp))
 	aliases = append(aliases, tName(n))
-	boxQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(tName(n)), boxTyp)
+	boxQOVValue, boxQOVErr := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier(tName(n)), boxTyp)
+	boxQOV := mustConstruct(t, boxQOVValue, boxQOVErr)
+	legRoots[tName(n)] = boxQOV
 	for col := range boxTyp.Fields {
-		fv, err := values.NewFieldValueOfOrdinal(boxQOV, col)
-		if err != nil {
-			panic("buildOrdinalBoxChainSelect: " + err.Error())
-		}
-		fields = append(fields, values.RecordConstructorField{Name: fv.Field, Value: fv})
+		fv := mustOrdinalSeedField(t, boxQOV, col)
+		fields = append(fields, values.RecordConstructorField{Name: fv.DisplayName(), Value: fv})
 	}
 	for i := 1; i < n; i++ {
-		preds = append(preds, chainEqPred(tName(i), "NEXT_ID", tName(i+1), "ID"))
+		rightOrdinal := 0
+		if i+1 == n {
+			// The named rightmost leaf begins after the buried B run.
+			rightOrdinal = 2
+		}
+		preds = append(preds, ordinalFieldEquality(
+			t, legRoots[tName(i)], 1, legRoots[tName(i+1)], rightOrdinal))
 	}
 	seed := values.NewRawRecordConstructorValue(fields...)
 	values.AssertOrdinalJoinSeed(seed)
-	return expressions.NewSelectExpressionWithAliases(seed, quants, preds, aliases)
+	selectExpression, selectErr := expressions.NewSelectExpressionWithAliases(seed, quants, preds, aliases)
+	return mustConstruct(t, selectExpression, selectErr)
 }
 
 // TestOrdinalBoxSeedChainConverges pins that a chain whose last leg carries a
@@ -118,7 +161,7 @@ func buildOrdinalBoxChainSelect(n int) *expressions.SelectExpression {
 func TestOrdinalBoxSeedChainConverges(t *testing.T) {
 	t.Parallel()
 	for _, n := range []int{2, 3} {
-		ref := expressions.InitialOf(buildOrdinalBoxChainSelect(n))
+		ref := expressions.InitialOf(buildOrdinalBoxChainSelect(t, n))
 		if _, tasks, err := fullChainPlanner().Plan(ref); err != nil {
 			t.Errorf("%d-leg ORDINAL BOX chain did not plan: %v (tasks=%d)", n, err, tasks)
 		}
@@ -136,7 +179,7 @@ func TestExplorationRounds_EvidenceUnderCap(t *testing.T) {
 	t.Parallel()
 	for _, n := range []int{2, 3, 4} {
 		p := fullChainPlanner()
-		ref := expressions.InitialOf(buildOrdinalChainSelect(n))
+		ref := expressions.InitialOf(buildOrdinalChainSelect(t, n))
 		if _, tasks, err := p.Plan(ref); err != nil {
 			t.Fatalf("%d-leg chain did not plan: %v (tasks=%d)", n, err, tasks)
 		}

@@ -22,7 +22,7 @@ func FuzzGetCorrelatedToOfValue(f *testing.F) {
 		if len(b) < 2 {
 			return
 		}
-		v, expected := buildFuzzValue(b, 0, 0)
+		v, expected := buildFuzzValue(t, b, 0, 0)
 		got := GetCorrelatedToOfValue(v)
 		// EXACT equality, not subset. `expected` is the construction-time
 		// ground truth (buildFuzzValue records each QuantifiedObjectValue's
@@ -52,7 +52,7 @@ func FuzzGetCorrelatedToOfValue(f *testing.F) {
 // buildFuzzValue builds a small Value tree from `b`. Returns the
 // Value AND the set of aliases it actually references — soundness
 // check.
-func buildFuzzValue(b []byte, start, depth int) (Value, map[CorrelationIdentifier]struct{}) {
+func buildFuzzValue(t testing.TB, b []byte, start, depth int) (Value, map[CorrelationIdentifier]struct{}) {
 	if depth >= 4 || len(b) == 0 {
 		return &ConstantValue{Value: int64(0), Typ: NullableLong}, map[CorrelationIdentifier]struct{}{}
 	}
@@ -62,16 +62,16 @@ func buildFuzzValue(b []byte, start, depth int) (Value, map[CorrelationIdentifie
 		return &ConstantValue{Value: int64(b[start%len(b)]), Typ: NullableLong}, map[CorrelationIdentifier]struct{}{}
 	case 1:
 		alias := NamedCorrelationIdentifier(string(rune('A' + b[start%len(b)]%26)))
-		return NewQuantifiedObjectValue(alias), map[CorrelationIdentifier]struct{}{alias: {}}
+		return mustQOV(t, alias), map[CorrelationIdentifier]struct{}{alias: {}}
 	case 2:
 		// Arithmetic over two random sub-values.
-		l, ls := buildFuzzValue(b, (start+1)%len(b), depth+1)
-		r, rs := buildFuzzValue(b, (start+2)%len(b), depth+1)
+		l, ls := buildFuzzValue(t, b, (start+1)%len(b), depth+1)
+		r, rs := buildFuzzValue(t, b, (start+2)%len(b), depth+1)
 		out := mergeSets(ls, rs)
 		return &ArithmeticValue{Op: OpAdd, Left: l, Right: r}, out
 	default:
 		// NotValue over a sub-value.
-		c, cs := buildFuzzValue(b, (start+1)%len(b), depth+1)
+		c, cs := buildFuzzValue(t, b, (start+1)%len(b), depth+1)
 		return NewNotValue(c), cs
 	}
 }

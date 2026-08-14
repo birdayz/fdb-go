@@ -137,10 +137,12 @@ func (m *Memo) MergeCount() int { return m.mergeCount }
 func (m *Memo) MarkPlanningActive() { m.planningActive = true }
 
 // AliasAwareDedups sums, over every Reference in the memo, the extra dedup the
-// alias-aware interning tier performed (Reference.AliasAwareDedups) — the
-// "shadow" of the merge re-enumeration's shared-sub-product collapse.
-// TestAliasAwareInterningShadowDelta asserts this equals the member-count
-// delta between alias-aware interning and the alias-identity baseline.
+// alias-aware interning tier performed (Reference.AliasAwareDedups): proposals
+// for which only tier 3's MemoEqual recognized the duplicate. Prepared
+// ExpressionRule admission now absorbs earlier memo-equal proposals before
+// scheduling their phantom descendants, so the chain corpus legitimately has
+// a zero shadow; the prepared-equality unit test separately pins a direct
+// alias-aware-only hit.
 func (m *Memo) AliasAwareDedups() int {
 	total := 0
 	seen := make(map[*expressions.Reference]struct{}, len(m.refs))
@@ -156,11 +158,10 @@ func (m *Memo) AliasAwareDedups() int {
 }
 
 // TotalMembers sums the exploratory + final member count over every canonical
-// Reference in the memo. With the alias-aware interning tier live this is the
-// deduped population; the shadow-delta pin re-plans with the tier disabled to
-// recover the alias-identity population. The difference EXCEEDS AliasAwareDedups
-// (the direct dedups): each collapsed merge sub-product would otherwise
-// re-explode, so one direct dedup saves several downstream members (cascade).
+// Reference in the memo. The shadow-delta pin compares this population with
+// the alias-aware tier disabled. A non-zero difference means tier 3 changed
+// the realized population; zero means an earlier equality tier or prepared
+// admission already prevented the proposal from producing descendants.
 func (m *Memo) TotalMembers() int {
 	total := 0
 	seen := make(map[*expressions.Reference]struct{}, len(m.refs))

@@ -13,9 +13,13 @@ import (
 func TestPredicateSemanticHashCode_AliasInvariant(t *testing.T) {
 	t.Parallel()
 	mkCmp := func(c values.CorrelationIdentifier, k int64) predicates.QueryPredicate {
+		root, err := values.NewQuantifiedObjectValue(c, values.NotNullLong)
+		if err != nil {
+			t.Fatalf("construct semantic-hash QOV: %v", err)
+		}
 		return predicates.NewComparisonPredicate(
-			values.NewQuantifiedObjectValue(c),
-			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: k}},
+			root,
+			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: k, Typ: values.NotNullLong}},
 		)
 	}
 	a := mkCmp(values.NamedCorrelationIdentifier("q_a"), 1)
@@ -28,8 +32,8 @@ func TestPredicateSemanticHashCode_AliasInvariant(t *testing.T) {
 		t.Fatal("different RHS constant must hash differently")
 	}
 	// ExistentialValuePredicate: alias excluded.
-	ea := predicates.NewExistentialAlias(values.NamedCorrelationIdentifier("e_a"))
-	eb := predicates.NewExistentialAlias(values.NamedCorrelationIdentifier("e_b"))
+	ea := mustExistentialAlias(t, values.NamedCorrelationIdentifier("e_a"))
+	eb := mustExistentialAlias(t, values.NamedCorrelationIdentifier("e_b"))
 	if predicates.SemanticHashCode(ea) != predicates.SemanticHashCode(eb) {
 		t.Fatal("ExistentialValuePredicate must hash alias-invariantly")
 	}

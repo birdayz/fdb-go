@@ -26,21 +26,14 @@ type RecordQueryFirstOrDefaultPlan struct {
 
 // NewRecordQueryFirstOrDefaultPlan constructs a first-or-default plan
 // over the given inner plan and default value.
-func NewRecordQueryFirstOrDefaultPlan(inner RecordQueryPlan, defaultValue values.Value) *RecordQueryFirstOrDefaultPlan {
-	return &RecordQueryFirstOrDefaultPlan{
-		innerQ:       QuantifierOverPlan(inner),
-		defaultValue: defaultValue,
-	}
+func NewRecordQueryFirstOrDefaultPlan(inner RecordQueryPlan, defaultValue values.Value) (*RecordQueryFirstOrDefaultPlan, error) {
+	return NewRecordQueryFirstOrDefaultPlanFromQuantifier(QuantifierOverPlan(inner), defaultValue)
 }
 
 // NewRecordQueryFirstOrDefaultPlanStrict constructs a first-or-default plan that
 // raises a cardinality violation (21000) when the inner yields more than one row.
-func NewRecordQueryFirstOrDefaultPlanStrict(inner RecordQueryPlan, defaultValue values.Value) *RecordQueryFirstOrDefaultPlan {
-	return &RecordQueryFirstOrDefaultPlan{
-		innerQ:       QuantifierOverPlan(inner),
-		defaultValue: defaultValue,
-		strict:       true,
-	}
+func NewRecordQueryFirstOrDefaultPlanStrict(inner RecordQueryPlan, defaultValue values.Value) (*RecordQueryFirstOrDefaultPlan, error) {
+	return NewRecordQueryFirstOrDefaultPlanStrictFromQuantifier(QuantifierOverPlan(inner), defaultValue)
 }
 
 // NewRecordQueryFirstOrDefaultPlanFromQuantifier builds a first-or-default whose
@@ -58,15 +51,23 @@ func NewRecordQueryFirstOrDefaultPlanStrict(inner RecordQueryPlan, defaultValue 
 // DML DELETE/UPDATE-WHERE-EXISTS path is preserved. The wrapper's second live
 // edge (which floated to the bare winner and dropped the filter) is gone; the
 // single frozen edge does both jobs.
-func NewRecordQueryFirstOrDefaultPlanFromQuantifier(innerQ expressions.Quantifier, defaultValue values.Value) *RecordQueryFirstOrDefaultPlan {
-	return &RecordQueryFirstOrDefaultPlan{innerQ: innerQ, defaultValue: defaultValue}
+func NewRecordQueryFirstOrDefaultPlanFromQuantifier(innerQ expressions.Quantifier, defaultValue values.Value) (*RecordQueryFirstOrDefaultPlan, error) {
+	return newRecordQueryFirstOrDefaultPlan(innerQ, defaultValue, false)
 }
 
 // NewRecordQueryFirstOrDefaultPlanStrictFromQuantifier is the strict
 // (at-most-one-row → 21000) form of NewRecordQueryFirstOrDefaultPlanFromQuantifier.
 // It preserves BOTH the empty→default value AND the strict cardinality flag.
-func NewRecordQueryFirstOrDefaultPlanStrictFromQuantifier(innerQ expressions.Quantifier, defaultValue values.Value) *RecordQueryFirstOrDefaultPlan {
-	return &RecordQueryFirstOrDefaultPlan{innerQ: innerQ, defaultValue: defaultValue, strict: true}
+func NewRecordQueryFirstOrDefaultPlanStrictFromQuantifier(innerQ expressions.Quantifier, defaultValue values.Value) (*RecordQueryFirstOrDefaultPlan, error) {
+	return newRecordQueryFirstOrDefaultPlan(innerQ, defaultValue, true)
+}
+
+func newRecordQueryFirstOrDefaultPlan(innerQ expressions.Quantifier, defaultValue values.Value, strict bool) (*RecordQueryFirstOrDefaultPlan, error) {
+	base, err := newPlanExprBaseForQuantifier("RecordQueryFirstOrDefaultPlan", innerQ)
+	if err != nil {
+		return nil, err
+	}
+	return &RecordQueryFirstOrDefaultPlan{PlanExprBase: base, innerQ: innerQ, defaultValue: defaultValue, strict: strict}, nil
 }
 
 // GetInner returns the wrapped inner plan, dereferenced through the quantifier.
@@ -88,7 +89,7 @@ func (p *RecordQueryFirstOrDefaultPlan) GetInnerQuantifier() expressions.Quantif
 // so its row identity IS the inner's. This is the identity
 // physicalFirstOrDefaultWrapper.GetResultValue supplied (RFC-184 W2).
 func (p *RecordQueryFirstOrDefaultPlan) GetResultValue() values.Value {
-	return p.innerQ.GetFlowedObjectValue()
+	return p.PlanExprBase.GetResultValue()
 }
 
 // GetQuantifiers reports the real child quantifier, overriding
@@ -109,13 +110,7 @@ func (p *RecordQueryFirstOrDefaultPlan) GetDefaultValue() values.Value { return 
 func (p *RecordQueryFirstOrDefaultPlan) IsStrict() bool { return p.strict }
 
 // GetResultType returns the inner's result type.
-func (p *RecordQueryFirstOrDefaultPlan) GetResultType() values.Type {
-	inner := p.GetInner()
-	if inner == nil {
-		return values.UnknownType
-	}
-	return inner.GetResultType()
-}
+func (p *RecordQueryFirstOrDefaultPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryFirstOrDefaultPlan) GetChildren() []RecordQueryPlan {
@@ -169,13 +164,18 @@ func (p *RecordQueryFirstOrDefaultPlan) EqualsWithoutChildren(other expressions.
 
 // WithQuantifiers returns a copy ranging over the given child quantifier —
 // Java's copy-on-write withChild(Reference).
-func (p *RecordQueryFirstOrDefaultPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 1 {
-		return p
+func (p *RecordQueryFirstOrDefaultPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryFirstOrDefaultPlan", len(qs), 1); err != nil {
+		return nil, err
 	}
 	cp := *p
+	base, err := newPlanExprBaseForQuantifier("RecordQueryFirstOrDefaultPlan", qs[0])
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
 	cp.innerQ = qs[0]
-	return &cp
+	return &cp, nil
 }
 
 // WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
@@ -192,7 +192,7 @@ func (p *RecordQueryFirstOrDefaultPlan) WithChildren(qs []expressions.Quantifier
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("RecordQueryFirstOrDefaultPlan.WithChildren: expected 1 child, got %d", len(qs))
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

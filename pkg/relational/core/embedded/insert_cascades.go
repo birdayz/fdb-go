@@ -236,7 +236,37 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 		rows = append(rows, values.NewRecordConstructorValue(fields...))
 	}
 
-	return values.NewArrayConstructorValue(values.UnknownType, rows), nil
+	// The Explode expression is executable memo input, so its array element
+	// cannot use the former Unknown placeholder. Every VALUES row is built in
+	// descriptor order and every cell above is stamped with its target field's
+	// exact type; state that row type once on the array and verify that no row
+	// construction path drifted from it before publishing the Value.
+	rowFields := make([]values.Field, desc.Fields().Len())
+	for i := range rowFields {
+		fd := desc.Fields().Get(i)
+		rowFields[i] = values.Field{
+			Name:      string(fd.Name()),
+			FieldType: query.FieldTypeForFD(fd),
+			Ordinal:   i,
+		}
+	}
+	var elementType values.Type = &values.RecordType{Fields: rowFields}
+	if len(rows) > 0 {
+		rowTypes := make([]values.Type, len(rows))
+		for i, row := range rows {
+			if row == nil || row.Type() == nil {
+				return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
+					"INSERT VALUES row %d has no exact type", i)
+			}
+			rowTypes[i] = row.Type()
+		}
+		elementType = values.MaximumTypeOfMany(rowTypes...)
+		if elementType == nil || values.IsUnresolved(elementType) {
+			return nil, api.NewError(api.ErrCodeCannotConvertType,
+				"INSERT VALUES rows do not have one exact compatible type")
+		}
+	}
+	return values.NewArrayConstructorValue(elementType, rows), nil
 }
 
 // parseRecordField is the target-type push-down: Java's

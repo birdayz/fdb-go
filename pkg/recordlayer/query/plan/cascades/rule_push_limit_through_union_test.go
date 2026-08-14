@@ -8,23 +8,66 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func pushLimitUnionRowType() *values.RecordType {
+	return values.NewRecordType("PUSH_LIMIT_UNION_ROW", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+}
+
+func mustPushLimitUnionConstruct[T any](t testing.TB, value T, err error) T {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("construct push-limit-through-union fixture: %v", err)
+	}
+	return value
+}
+
+func pushLimitUnionScan(t testing.TB, recordType string) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	scan, err := expressions.NewFullUnorderedScanExpression(
+		[]string{recordType}, pushLimitUnionRowType())
+	return mustPushLimitUnionConstruct(t, scan, err)
+}
+
+func pushLimitUnion(
+	t testing.TB,
+	quantifiers ...expressions.Quantifier,
+) *expressions.LogicalUnionExpression {
+	t.Helper()
+	union, err := expressions.NewLogicalUnionExpression(quantifiers)
+	return mustPushLimitUnionConstruct(t, union, err)
+}
+
+func pushLimitUnionLimit(
+	t testing.TB,
+	limit, offset int64,
+	inner expressions.Quantifier,
+) *expressions.LogicalLimitExpression {
+	t.Helper()
+	limitExpr, err := expressions.NewLogicalLimitExpression(limit, offset, inner)
+	return mustPushLimitUnionConstruct(t, limitExpr, err)
+}
+
 func TestPushLimitThroughUnion(t *testing.T) {
 	t.Parallel()
 
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	scanA := pushLimitUnionScan(t, "A")
+	scanB := pushLimitUnionScan(t, "B")
 	qA := expressions.ForEachQuantifier(expressions.InitialOf(scanA))
 	qB := expressions.ForEachQuantifier(expressions.InitialOf(scanB))
 
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{qA, qB})
+	union := pushLimitUnion(t, qA, qB)
 	unionRef := expressions.InitialOf(union)
 	unionQ := expressions.ForEachQuantifier(unionRef)
 
-	limit := expressions.NewLogicalLimitExpression(10, 5, unionQ)
+	limit := pushLimitUnionLimit(t, 10, 5, unionQ)
 	ref := expressions.InitialOf(limit)
 
 	rule := cascades.NewPushLimitThroughUnionRule()
-	results := cascades.FireExpressionRule(rule, ref)
+	results, err := cascades.FireExpressionRule(rule, ref)
+	if err != nil {
+		t.Fatalf("FireExpressionRule: %v", err)
+	}
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -61,20 +104,23 @@ func TestPushLimitThroughUnion(t *testing.T) {
 func TestPushLimitThroughUnion_NoOffset(t *testing.T) {
 	t.Parallel()
 
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	scanA := pushLimitUnionScan(t, "A")
+	scanB := pushLimitUnionScan(t, "B")
 	qA := expressions.ForEachQuantifier(expressions.InitialOf(scanA))
 	qB := expressions.ForEachQuantifier(expressions.InitialOf(scanB))
 
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{qA, qB})
+	union := pushLimitUnion(t, qA, qB)
 	unionRef := expressions.InitialOf(union)
 	unionQ := expressions.ForEachQuantifier(unionRef)
 
-	limit := expressions.NewLogicalLimitExpression(10, 0, unionQ)
+	limit := pushLimitUnionLimit(t, 10, 0, unionQ)
 	ref := expressions.InitialOf(limit)
 
 	rule := cascades.NewPushLimitThroughUnionRule()
-	results := cascades.FireExpressionRule(rule, ref)
+	results, err := cascades.FireExpressionRule(rule, ref)
+	if err != nil {
+		t.Fatalf("FireExpressionRule: %v", err)
+	}
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -92,15 +138,18 @@ func TestPushLimitThroughUnion_NoOffset(t *testing.T) {
 func TestPushLimitThroughUnion_NotUnion(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pushLimitUnionScan(t, "T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	limit := expressions.NewLogicalLimitExpression(10, 0, scanQ)
+	limit := pushLimitUnionLimit(t, 10, 0, scanQ)
 	ref := expressions.InitialOf(limit)
 
 	rule := cascades.NewPushLimitThroughUnionRule()
-	results := cascades.FireExpressionRule(rule, ref)
+	results, err := cascades.FireExpressionRule(rule, ref)
+	if err != nil {
+		t.Fatalf("FireExpressionRule: %v", err)
+	}
 	if len(results) != 0 {
 		t.Fatalf("expected 0 results for non-union, got %d", len(results))
 	}

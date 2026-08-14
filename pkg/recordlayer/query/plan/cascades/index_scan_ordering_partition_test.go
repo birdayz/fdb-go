@@ -29,12 +29,19 @@ import (
 func TestToPlanPartitions_SeparatesFixedBoundIndexScanFromSortedUnboundIndexScan(t *testing.T) {
 	t.Parallel()
 
-	unbound := plans.NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, values.UnknownType, false).
+	rowType := values.NewRecordType("T", false, []values.Field{
+		{Name: "A", FieldType: values.NullableLong},
+		{Name: "B", FieldType: values.NullableLong},
+		{Name: "ID", FieldType: values.NullableLong},
+	})
+	unboundPlan, err := plans.NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, rowType, false)
+	unbound := mustConstruct(t, unboundPlan, err).
 		WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong}).
 		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NullableLong})
-	bound := plans.NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, values.UnknownType, false).
-		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))}).
+	boundPlan, err := plans.NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, rowType, false)
+	bound := mustConstruct(t, boundPlan, err).
+		WithScanComparisons([]*predicates.ComparisonRange{indexOrderingEqualityRange(t, int64(7))}).
 		WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong}).
 		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NullableLong})
@@ -93,4 +100,17 @@ func TestToPlanPartitions_SeparatesFixedBoundIndexScanFromSortedUnboundIndexScan
 	if !sawUnbound || !sawBound {
 		t.Fatalf("expected one partition per member, sawUnbound=%v sawBound=%v", sawUnbound, sawBound)
 	}
+}
+
+func indexOrderingEqualityRange(t testing.TB, literal int64) *predicates.ComparisonRange {
+	t.Helper()
+	comparison := &predicates.Comparison{
+		Type:    predicates.ComparisonEquals,
+		Operand: &values.ConstantValue{Value: literal, Typ: values.NotNullLong},
+	}
+	rangeResult := predicates.EmptyComparisonRange().Merge(comparison)
+	if !rangeResult.Ok {
+		t.Fatal("construct exact index equality range")
+	}
+	return rangeResult.Range
 }

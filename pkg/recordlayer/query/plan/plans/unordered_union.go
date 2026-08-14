@@ -26,8 +26,8 @@ type RecordQueryUnorderedUnionPlan struct {
 	childQs []expressions.Quantifier
 }
 
-func NewRecordQueryUnorderedUnionPlan(inners []RecordQueryPlan) *RecordQueryUnorderedUnionPlan {
-	return &RecordQueryUnorderedUnionPlan{childQs: QuantifiersOverPlans(inners)}
+func NewRecordQueryUnorderedUnionPlan(inners []RecordQueryPlan) (*RecordQueryUnorderedUnionPlan, error) {
+	return NewRecordQueryUnorderedUnionPlanFromQuantifiers(QuantifiersOverPlans(inners))
 }
 
 // NewRecordQueryUnorderedUnionPlanFromQuantifiers builds the union over the LIVE
@@ -35,10 +35,14 @@ func NewRecordQueryUnorderedUnionPlan(inners []RecordQueryPlan) *RecordQueryUnor
 // group whose per-ordering winner is resolved at extraction via ref.Winner()
 // (planFromQuantifier) — the deferred-winner set-op case. The plan carries each
 // leg edge once, with no wrapper snapshot (RFC-184 W2).
-func NewRecordQueryUnorderedUnionPlanFromQuantifiers(childQs []expressions.Quantifier) *RecordQueryUnorderedUnionPlan {
+func NewRecordQueryUnorderedUnionPlanFromQuantifiers(childQs []expressions.Quantifier) (*RecordQueryUnorderedUnionPlan, error) {
+	base, err := newPlanExprBaseForFirstQuantifier("RecordQueryUnorderedUnionPlan", childQs)
+	if err != nil {
+		return nil, err
+	}
 	cp := make([]expressions.Quantifier, len(childQs))
 	copy(cp, childQs)
-	return &RecordQueryUnorderedUnionPlan{childQs: cp}
+	return &RecordQueryUnorderedUnionPlan{PlanExprBase: base, childQs: cp}, nil
 }
 
 // GetInners returns the legs, dereferenced through the quantifiers. Order is
@@ -48,15 +52,7 @@ func (p *RecordQueryUnorderedUnionPlan) GetInners() []RecordQueryPlan {
 	return plansFromQuantifiers(p.childQs)
 }
 
-func (p *RecordQueryUnorderedUnionPlan) GetResultType() values.Type {
-	if len(p.childQs) == 0 {
-		return values.UnknownType
-	}
-	// TYPE resolution, not identity: the legs are deferred-winner groups still
-	// multi-member during planning; every alternative shares the row shape, so
-	// any member answers without tripping the singleton guard (RFC-184 W2).
-	return planTypeFromQuantifier(p.childQs[0]).GetResultType()
-}
+func (p *RecordQueryUnorderedUnionPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 func (p *RecordQueryUnorderedUnionPlan) GetChildren() []RecordQueryPlan { return p.GetInners() }
 
@@ -114,13 +110,18 @@ func (p *RecordQueryUnorderedUnionPlan) GetQuantifiers() []expressions.Quantifie
 // Java's copy-on-write withChildrenReferences. The receiver is never mutated,
 // which is what keeps a memoized plan safe to share; the incoming slice is
 // copied so the caller cannot alias the copy's storage either.
-func (p *RecordQueryUnorderedUnionPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != len(p.childQs) {
-		return p
+func (p *RecordQueryUnorderedUnionPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryUnorderedUnionPlan", len(qs), len(p.childQs)); err != nil {
+		return nil, err
 	}
 	cp := *p
+	base, err := newPlanExprBaseForFirstQuantifier("RecordQueryUnorderedUnionPlan", qs)
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
 	cp.childQs = append([]expressions.Quantifier(nil), qs...)
-	return &cp
+	return &cp, nil
 }
 
 // ChildrenAsSet reports that the legs of this set operation are commutative,
@@ -131,10 +132,7 @@ func (p *RecordQueryUnorderedUnionPlan) ChildrenAsSet() bool { return true }
 // column-aligned, so any leg's shape stands in); falls back to a fresh
 // quantified object value when there are no legs.
 func (p *RecordQueryUnorderedUnionPlan) GetResultValue() values.Value {
-	if len(p.childQs) == 0 {
-		return p.PlanExprBase.GetResultValue()
-	}
-	return p.childQs[0].GetFlowedObjectValue()
+	return p.PlanExprBase.GetResultValue()
 }
 
 // WithChildren rebuilds over fresh leg quantifiers — the interface plan
@@ -143,7 +141,7 @@ func (p *RecordQueryUnorderedUnionPlan) WithChildren(qs []expressions.Quantifier
 	if len(qs) != len(p.childQs) {
 		return nil, fmt.Errorf("RecordQueryUnorderedUnionPlan.WithChildren: expected %d legs, got %d", len(p.childQs), len(qs))
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

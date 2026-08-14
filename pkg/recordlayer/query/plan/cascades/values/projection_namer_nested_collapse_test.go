@@ -29,9 +29,9 @@ func TestProjectionNamerCollapsesANestedPath(t *testing.T) {
 	// of it. RFC-229 §2.3 is nested-only and leaves this arm alone; the mask
 	// that keeps it from reaching a user is isPlainColumnRef in the result-set
 	// layer, pinned separately.
-	lazy := &FieldValue{Field: "N"}
-	baked := &FieldValue{Field: "N", Resolved: &FieldPath{
-		Accessors: []ResolvedAccessor{{Field: "N", Ordinal: 0}},
+	lazy := &fieldValue{Field: "N"}
+	baked := &fieldValue{Field: "N", Resolved: &fieldPath{
+		Accessors: []resolvedAccessor{{Field: "N", Ordinal: 0}},
 	}}
 	one := &ConstantValue{Value: int64(1)}
 	lazyExpr := &ArithmeticValue{Left: lazy, Right: one, Op: OpAdd}
@@ -68,11 +68,11 @@ func TestProjectionNamerCollapsesANestedPath(t *testing.T) {
 	// DEFECT 2 — FIXED (RFC-229 §2.3). Two references reading DIFFERENT leaves
 	// of one struct root used to take the SAME output name, because the namer
 	// read the flat root. They now take their resolved PATH.
-	nested := &FieldValue{Field: "N", Resolved: &FieldPath{
-		Accessors: []ResolvedAccessor{{Field: "N", Ordinal: 0}, {Field: "SK", Ordinal: 1}},
+	nested := &fieldValue{Field: "N", Resolved: &fieldPath{
+		Accessors: []resolvedAccessor{{Field: "N", Ordinal: 0}, {Field: "SK", Ordinal: 1}},
 	}}
-	nested2 := &FieldValue{Field: "N", Resolved: &FieldPath{
-		Accessors: []ResolvedAccessor{{Field: "N", Ordinal: 0}, {Field: "CO", Ordinal: 2}},
+	nested2 := &fieldValue{Field: "N", Resolved: &fieldPath{
+		Accessors: []resolvedAccessor{{Field: "N", Ordinal: 0}, {Field: "CO", Ordinal: 2}},
 	}}
 
 	a, b := ProjectionColumnName(nested), ProjectionColumnName(nested2)
@@ -135,9 +135,9 @@ func TestProjectionNamerCollapsesANestedPath(t *testing.T) {
 	// `Project([N#1.SK#0, N#1.CO#1], Scan(T1))` for the single-source form.
 	// (`SELECT t1.n.sk ...` — the three-part qualified spelling — is refused
 	// 42703 and is not how this shape is reached.)
-	qualified := &FieldValue{Field: "N", Resolved: &FieldPath{
-		Accessors: []ResolvedAccessor{{Field: "N", Ordinal: 1}, {Field: "SK", Ordinal: 0}},
-	}, Child: NewQuantifiedObjectValue(NamedCorrelationIdentifier("T1"))}
+	qualified := &fieldValue{Field: "N", Resolved: &fieldPath{
+		Accessors: []resolvedAccessor{{Field: "N", Ordinal: 1}, {Field: "SK", Ordinal: 0}},
+	}, Child: mustQOV(t, NamedCorrelationIdentifier("T1"))}
 	if got, want := ProjectionColumnName(qualified), "T1.N.SK"; got != want {
 		t.Fatalf("a QUALIFIED nested projection names its slot %q, want %q.\n"+
 			"  The qualifier is KEPT deliberately: over `FROM t1, t2` where both "+
@@ -150,7 +150,7 @@ func TestProjectionNamerCollapsesANestedPath(t *testing.T) {
 	}
 	// What the qualifier buys, asserted rather than argued.
 	otherSource := *qualified
-	otherSource.Child = NewQuantifiedObjectValue(NamedCorrelationIdentifier("T2"))
+	otherSource.Child = mustQOV(t, NamedCorrelationIdentifier("T2"))
 	if a, b := ProjectionColumnName(qualified), ProjectionColumnName(&otherSource); a == b {
 		t.Fatalf("the same nested path off TWO sources both name %q — the "+
 			"cross-source collapse the qualifier prevents is back", a)

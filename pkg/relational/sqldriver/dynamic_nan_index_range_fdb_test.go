@@ -92,13 +92,17 @@ func TestFDB_DynamicNaNCompositeIndexCorrectOrLoud(t *testing.T) {
 				t.Fatalf("create store: %v", createErr)
 			}
 
-			plan := plans.NewRecordQueryIndexPlan(
+			plan, planErr := plans.NewRecordQueryIndexPlan(
 				"V_W",
 				[]*predicates.ComparisonRange{parameterRange, suffixRange},
 				[]string{"T"},
-				values.UnknownType,
+				executor.PositionalTypeForDescriptor(md.GetRecordType("T").Descriptor),
 				false,
-			).WithKeyComponentTypes([]values.Type{physicalType, values.NotNullLong})
+			)
+			if planErr != nil {
+				t.Fatalf("construct exact %s index plan: %v", width, planErr)
+			}
+			plan = plan.WithKeyComponentTypes([]values.Type{physicalType, values.NotNullLong})
 
 			var executeErr error
 			_, runErr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {

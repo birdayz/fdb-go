@@ -4,11 +4,156 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+func descendingInUnionRowType(name string) *values.RecordType {
+	return values.NewRecordType(name, false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "K", FieldType: values.NullableLong, Ordinal: 1},
+	})
+}
+
+func descendingInUnionQOV(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+	typ values.Type,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	qov, err := values.NewQuantifiedObjectValue(alias, typ)
+	return mustConstruct(t, qov, err)
+}
+
+func descendingInUnionField(
+	t testing.TB,
+	root values.Value,
+	ordinal int,
+) values.Value {
+	t.Helper()
+	field, err := values.ResolveFieldOrdinals(root, []int{ordinal})
+	return mustConstruct(t, field, err)
+}
+
+func descendingInUnionExplode(t testing.TB) *expressions.ExplodeExpression {
+	t.Helper()
+	collection := values.NewArrayConstructorValue(values.NotNullLong, []values.Value{
+		values.LiteralValue(int64(1)),
+		values.LiteralValue(int64(2)),
+	})
+	explode, err := expressions.NewExplodeExpression(collection)
+	return mustConstruct(t, explode, err)
+}
+
+func descendingInUnionFullScan(
+	t testing.TB,
+	recordTypes []string,
+	flowedType values.Type,
+) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	scan, err := expressions.NewFullUnorderedScanExpression(recordTypes, flowedType)
+	return mustConstruct(t, scan, err)
+}
+
+func descendingInUnionSelect(
+	t testing.TB,
+	result values.Value,
+	quantifiers []expressions.Quantifier,
+) *expressions.SelectExpression {
+	t.Helper()
+	selectExpression, err := expressions.NewSelectExpression(result, quantifiers, nil)
+	return mustConstruct(t, selectExpression, err)
+}
+
+func descendingInUnionScan(
+	t testing.TB,
+	recordTypes []string,
+	flowedType values.Type,
+	reverse bool,
+) *plans.RecordQueryScanPlan {
+	t.Helper()
+	scan, err := plans.NewRecordQueryScanPlan(recordTypes, flowedType, reverse)
+	return mustConstruct(t, scan, err)
+}
+
+func descendingInUnionFlowedObject(
+	t testing.TB,
+	quantifier expressions.Quantifier,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	qov, err := quantifier.RequireFlowedObjectValue()
+	return mustConstruct(t, qov, err)
+}
+
+func descendingInUnionLogicalUnion(
+	t testing.TB,
+	quantifiers []expressions.Quantifier,
+) *expressions.LogicalUnionExpression {
+	t.Helper()
+	union, err := expressions.NewLogicalUnionExpression(quantifiers)
+	return mustConstruct(t, union, err)
+}
+
+func descendingInUnionLogicalDistinct(
+	t testing.TB,
+	inner expressions.Quantifier,
+) *expressions.LogicalDistinctExpression {
+	t.Helper()
+	distinct, err := expressions.NewLogicalDistinctExpression(inner)
+	return mustConstruct(t, distinct, err)
+}
+
+func descendingInUnionKeyTypes(size int) []values.Type {
+	types := make([]values.Type, size)
+	for i := range types {
+		types[i] = values.NullableLong
+	}
+	return types
+}
+
+func fireDescendingConstraintOnlyRule(
+	t testing.TB,
+	rule ImplementationRule,
+	subject expressions.RelationalExpression,
+	ref *expressions.Reference,
+	constraints *ConstraintMap,
+) {
+	t.Helper()
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), subject)
+	if len(bindings) != 1 {
+		t.Fatalf("%T matcher produced %d bindings, want one", rule, len(bindings))
+	}
+	call := &ImplementationRuleCall{
+		Bindings:       bindings[0],
+		Reference:      ref,
+		Constraints:    constraints,
+		constraintOnly: true,
+	}
+	rule.OnMatch(call)
+	if err := call.Err(); err != nil {
+		t.Fatalf("%T.OnMatch() unexpected error: %v", rule, err)
+	}
+	call.applyPendingConstraints()
+}
+
+func requireDescendingPushedOrdering(
+	t testing.TB,
+	constraints *ConstraintMap,
+	ref *expressions.Reference,
+) *properties.RequestedOrdering {
+	t.Helper()
+	pushed, ok := Get(constraints, ref, RequestedOrderingConstraintKey)
+	if !ok {
+		t.Fatal("requested ordering was not pushed to the child reference")
+	}
+	if len(pushed) != 1 {
+		t.Fatalf("pushed %d requested orderings, want one", len(pushed))
+	}
+	return pushed[0]
+}
 
 // The three dimensions below are the ones that let `WHERE pk IN (...) ORDER BY
 // pk DESC` plan an in-memory sort over a forward IN-join while its ascending
@@ -26,6 +171,7 @@ func TestPrimaryScanMatchCandidateReportsKeyOrder(t *testing.T) {
 
 	idAlias := values.UniqueCorrelationIdentifier()
 	kAlias := values.UniqueCorrelationIdentifier()
+	rowType := descendingInUnionRowType("TBL")
 	candidate := NewPrimaryScanMatchCandidate(
 		nil,
 		[]values.CorrelationIdentifier{idAlias, kAlias},
@@ -33,8 +179,8 @@ func TestPrimaryScanMatchCandidateReportsKeyOrder(t *testing.T) {
 		[]string{"TBL"},
 		[]string{"ID", "K"},
 		true,
-		values.UnknownType,
-	).WithKeyComponentTypes(syntheticIndexKeyTypes(2))
+		rowType,
+	).WithKeyComponentTypes(descendingInUnionKeyTypes(2))
 
 	eqComparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(7))
 	equality := predicates.EmptyComparisonRange().Merge(&eqComparison)
@@ -66,7 +212,11 @@ func TestPrimaryScanMatchCandidateReportsKeyOrder(t *testing.T) {
 				t.Fatalf("got %d ordering parts, want one per primary-key column", len(parts))
 			}
 			for i, wantCol := range []string{"ID", "K"} {
-				if got := values.ColumnNameValue(parts[i].GetValue()); got != wantCol {
+				field, ok := values.AsFieldValue(parts[i].GetValue())
+				if !ok {
+					t.Fatalf("part %d value = %T, want exact FieldValue", i, parts[i].GetValue())
+				}
+				if got := field.DisplayName(); got != wantCol {
 					t.Fatalf("part %d orders by %q, want %q", i, got, wantCol)
 				}
 				if parts[i].GetMatchedSortOrder() != tc.want {
@@ -97,6 +247,7 @@ func TestPrimaryScanMatchCandidateStopsAtUnknownParameter(t *testing.T) {
 	idAlias := values.UniqueCorrelationIdentifier()
 	kAlias := values.UniqueCorrelationIdentifier()
 	stranger := values.UniqueCorrelationIdentifier()
+	rowType := descendingInUnionRowType("TBL")
 	candidate := NewPrimaryScanMatchCandidate(
 		nil,
 		[]values.CorrelationIdentifier{idAlias, kAlias},
@@ -104,8 +255,8 @@ func TestPrimaryScanMatchCandidateStopsAtUnknownParameter(t *testing.T) {
 		[]string{"TBL"},
 		[]string{"ID", "K"},
 		true,
-		values.UnknownType,
-	).WithKeyComponentTypes(syntheticIndexKeyTypes(2))
+		rowType,
+	).WithKeyComponentTypes(descendingInUnionKeyTypes(2))
 
 	parts := candidate.ComputeMatchedOrderingParts(
 		nil,
@@ -115,7 +266,11 @@ func TestPrimaryScanMatchCandidateStopsAtUnknownParameter(t *testing.T) {
 	if len(parts) != 1 {
 		t.Fatalf("got %d ordering parts, want the prefix up to the unknown parameter", len(parts))
 	}
-	if got := values.ColumnNameValue(parts[0].GetValue()); got != "ID" {
+	field, ok := values.AsFieldValue(parts[0].GetValue())
+	if !ok {
+		t.Fatalf("reported prefix value = %T, want exact FieldValue", parts[0].GetValue())
+	}
+	if got := field.DisplayName(); got != "ID" {
 		t.Fatalf("reported prefix orders by %q, want ID", got)
 	}
 }
@@ -133,25 +288,26 @@ func TestPrimaryScanMatchCandidateStopsAtUnknownParameter(t *testing.T) {
 func TestSelectRulePushesOrderingWhenResultIsOneChildsRow(t *testing.T) {
 	t.Parallel()
 
-	explodeRef := expressions.InitialOf(
-		expressions.NewExplodeExpression(values.LiteralValue([]any{int64(1), int64(2)})),
-	)
+	explodeRef := expressions.InitialOf(descendingInUnionExplode(t))
 	explodeQ := expressions.ForEachQuantifier(explodeRef)
+	rowType := descendingInUnionRowType("TBL")
 	innerRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"TBL"}, values.UnknownType),
+		descendingInUnionFullScan(t, []string{"TBL"}, rowType),
 	)
 	innerQ := expressions.ForEachQuantifier(innerRef)
-	sel := expressions.NewSelectExpression(
-		values.NewQuantifiedObjectValue(innerQ.GetAlias()),
+	innerRow := descendingInUnionFlowedObject(t, innerQ)
+	sel := descendingInUnionSelect(
+		t,
+		innerRow,
 		[]expressions.Quantifier{explodeQ, innerQ},
-		nil,
 	)
 	selRef := expressions.InitialOf(sel)
 
-	// A correlation-free sort key, exactly as the SQL translator bakes it.
+	// RFC-232 makes the translator's resolved sort key explicitly owned by the
+	// passthrough child. The result-is-child-row arm must retain that exact key.
 	parentOrdering := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{{
-			Value:     values.NewFlatFieldValue("ID", values.NullableLong),
+			Value:     descendingInUnionField(t, innerRow, 0),
 			SortOrder: properties.RequestedSortOrderDescending,
 		}},
 		properties.DistinctnessNotDistinct,
@@ -161,7 +317,7 @@ func TestSelectRulePushesOrderingWhenResultIsOneChildsRow(t *testing.T) {
 	Set(constraints, selRef, RequestedOrderingConstraintKey,
 		[]*properties.RequestedOrdering{parentOrdering})
 
-	fireConstraintOnlyRule(
+	fireDescendingConstraintOnlyRule(
 		t,
 		NewPushRequestedOrderingThroughSelectRule(),
 		sel,
@@ -169,7 +325,7 @@ func TestSelectRulePushesOrderingWhenResultIsOneChildsRow(t *testing.T) {
 		constraints,
 	)
 
-	pushed := requirePushedOrdering(t, constraints, innerRef)
+	pushed := requireDescendingPushedOrdering(t, constraints, innerRef)
 	if pushed.IsPreserve() {
 		t.Fatal("the inner child was asked to preserve order, not to produce the requested one")
 	}
@@ -183,39 +339,45 @@ func TestSelectRulePushesOrderingWhenResultIsOneChildsRow(t *testing.T) {
 }
 
 // TestSelectRuleDeclinesUnownedOrderingForCompositeResult is the other side of
-// the same guard, and the reason it cannot simply be deleted: when the SELECT's
-// result composes several children, a correlation-free sort key has no
-// defensible owner and must not be pushed to any leg.
+// the same guard. RFC-232 makes every admitted field's owner explicit, so the
+// exact equivalent pins that a key owned by one leg is not claimed by a
+// same-shaped sibling leg.
 func TestSelectRuleDeclinesUnownedOrderingForCompositeResult(t *testing.T) {
 	t.Parallel()
 
+	leftType := descendingInUnionRowType("L")
 	leftRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"L"}, values.UnknownType),
+		descendingInUnionFullScan(t, []string{"L"}, leftType),
 	)
 	leftQ := expressions.ForEachQuantifier(leftRef)
+	leftRow := descendingInUnionFlowedObject(t, leftQ)
+	rightType := descendingInUnionRowType("R")
 	rightRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"R"}, values.UnknownType),
+		descendingInUnionFullScan(t, []string{"R"}, rightType),
 	)
 	rightQ := expressions.ForEachQuantifier(rightRef)
-	sel := expressions.NewSelectExpression(
+	rightRow := descendingInUnionFlowedObject(t, rightQ)
+	leftID := descendingInUnionField(t, leftRow, 0)
+	rightID := descendingInUnionField(t, rightRow, 0)
+	sel := descendingInUnionSelect(
+		t,
 		values.NewRecordConstructorValue(
 			values.RecordConstructorField{
-				Name:  "L_ROW",
-				Value: values.NewQuantifiedObjectValue(leftQ.GetAlias()),
+				Name:  "L_ID",
+				Value: leftID,
 			},
 			values.RecordConstructorField{
-				Name:  "R_ROW",
-				Value: values.NewQuantifiedObjectValue(rightQ.GetAlias()),
+				Name:  "R_ID",
+				Value: rightID,
 			},
 		),
 		[]expressions.Quantifier{leftQ, rightQ},
-		nil,
 	)
 	selRef := expressions.InitialOf(sel)
 
 	parentOrdering := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{{
-			Value:     values.NewFlatFieldValue("ID", values.NullableLong),
+			Value:     leftID,
 			SortOrder: properties.RequestedSortOrderAscending,
 		}},
 		properties.DistinctnessNotDistinct,
@@ -225,7 +387,7 @@ func TestSelectRuleDeclinesUnownedOrderingForCompositeResult(t *testing.T) {
 	Set(constraints, selRef, RequestedOrderingConstraintKey,
 		[]*properties.RequestedOrdering{parentOrdering})
 
-	fireConstraintOnlyRule(
+	fireDescendingConstraintOnlyRule(
 		t,
 		NewPushRequestedOrderingThroughSelectRule(),
 		sel,
@@ -256,24 +418,26 @@ func mixedDirectionInLikeSelect(
 ) (*expressions.SelectExpression, *expressions.Reference, *ConstraintMap) {
 	t.Helper()
 
-	explodeRef := expressions.InitialOf(
-		expressions.NewExplodeExpression(values.LiteralValue([]any{int64(1), int64(2)})),
-	)
+	explodeRef := expressions.InitialOf(descendingInUnionExplode(t))
 	explodeQ := expressions.ForEachQuantifier(explodeRef)
+	explodeValue := descendingInUnionFlowedObject(t, explodeQ)
 
 	// The scan's ID column is equality-bound to the explode binding — that
 	// correlation is what lets the rule promote ID to a directional key.
 	comparison := predicates.Comparison{
 		Type:    predicates.ComparisonEquals,
-		Operand: values.NewQuantifiedObjectValue(explodeQ.GetAlias()),
+		Operand: explodeValue,
 	}
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
 	if !merged.Ok {
 		t.Fatal("fixture: equality range did not merge")
 	}
-	idValue := values.NewFieldValue(nil, "ID", values.UnknownType)
-	kValue := values.NewFieldValue(nil, "K", values.UnknownType)
-	scan := plans.NewRecordQueryScanPlan([]string{"TBL"}, values.UnknownType, scanReverse).
+	rowType := descendingInUnionRowType("TBL")
+	innerAlias := values.UniqueCorrelationIdentifier()
+	innerRow := descendingInUnionQOV(t, innerAlias, rowType)
+	idValue := descendingInUnionField(t, innerRow, 0)
+	kValue := descendingInUnionField(t, innerRow, 1)
+	scan := descendingInUnionScan(t, []string{"TBL"}, rowType, scanReverse).
 		WithPrimaryKey([]values.Value{idValue, kValue}).
 		WithScanComparisons([]*predicates.ComparisonRange{merged.Range}).
 		WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
@@ -282,18 +446,18 @@ func mixedDirectionInLikeSelect(
 	// The rule reads plan PARTITIONS, which the planner populates on the
 	// reference before implementation rules run.
 	computeRefPlanProperties(innerRef)
-	innerQ := expressions.ForEachQuantifier(innerRef)
-	sel := expressions.NewSelectExpression(
-		values.NewQuantifiedObjectValue(innerQ.GetAlias()),
+	innerQ := expressions.NamedForEachQuantifier(innerAlias, innerRef)
+	sel := descendingInUnionSelect(
+		t,
+		innerRow,
 		[]expressions.Quantifier{explodeQ, innerQ},
-		nil,
 	)
 	selRef := expressions.InitialOf(sel)
 
 	requested := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{
-			{Value: values.NewFlatFieldValue("ID", values.NullableLong), SortOrder: idDir},
-			{Value: values.NewFlatFieldValue("K", values.NullableLong), SortOrder: kDir},
+			{Value: idValue, SortOrder: idDir},
+			{Value: kValue, SortOrder: kDir},
 		},
 		properties.DistinctnessPreserveDistinctness,
 		false,
@@ -311,7 +475,11 @@ func fireInUnionRule(
 	cm *ConstraintMap,
 ) []expressions.RelationalExpression {
 	t.Helper()
-	return FireImplementationRule(NewImplementInUnionRule(), selRef, cm)
+	yielded, err := FireImplementationRule(NewImplementInUnionRule(), selRef, cm)
+	if err != nil {
+		t.Fatalf("FireImplementationRule() unexpected error: %v", err)
+	}
+	return yielded
 }
 
 // TestInUnionRuleRefusesMixedDirectionMerge drives ImplementInUnionRule itself,
@@ -384,36 +552,39 @@ func mixedDirectionDistinctUnion(
 ) (*expressions.Reference, *ConstraintMap) {
 	t.Helper()
 
-	idValue := values.NewFieldValue(nil, "ID", values.UnknownType)
-	kValue := values.NewFieldValue(nil, "K", values.UnknownType)
+	rowType := descendingInUnionRowType("T")
+	keyRoot := descendingInUnionQOV(
+		t, values.UniqueCorrelationIdentifier(), rowType)
+	idValue := descendingInUnionField(t, keyRoot, 0)
+	kValue := descendingInUnionField(t, keyRoot, 1)
 	leg := func(literal int64) *expressions.Reference {
 		comparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, literal)
 		merged := predicates.EmptyComparisonRange().Merge(&comparison)
 		if !merged.Ok {
 			t.Fatal("fixture: equality range did not merge")
 		}
-		scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+		scan := descendingInUnionScan(t, []string{"T"}, rowType, false).
 			WithPrimaryKey([]values.Value{idValue, kValue}).
 			WithScanComparisons([]*predicates.ComparisonRange{merged.Range}).
-			WithKeyComponentTypes([]values.Type{values.NullableLong})
+			WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
 		ref := expressions.FinalOf(scan)
 		computeRefPlanProperties(ref)
 		return ref
 	}
 
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	union := descendingInUnionLogicalUnion(t, []expressions.Quantifier{
 		expressions.ForEachQuantifier(leg(1)),
 		expressions.ForEachQuantifier(leg(2)),
 	})
-	distinct := expressions.NewLogicalDistinctExpression(
+	distinct := descendingInUnionLogicalDistinct(t,
 		expressions.ForEachQuantifier(expressions.InitialOf(union)),
 	)
 	distinctRef := expressions.InitialOf(distinct)
 
 	requested := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{
-			{Value: values.NewFlatFieldValue("ID", values.NullableLong), SortOrder: idDir},
-			{Value: values.NewFlatFieldValue("K", values.NullableLong), SortOrder: kDir},
+			{Value: idValue, SortOrder: idDir},
+			{Value: kValue, SortOrder: kDir},
 		},
 		properties.DistinctnessPreserveDistinctness,
 		false,
@@ -438,18 +609,21 @@ func mixedDirectionDistinctUnion(
 func TestDistinctUnionMergedOrderingCarriesNoEqualityBoundKeys(t *testing.T) {
 	t.Parallel()
 
-	idValue := values.NewFieldValue(nil, "ID", values.UnknownType)
-	kValue := values.NewFieldValue(nil, "K", values.UnknownType)
+	rowType := descendingInUnionRowType("T")
+	keyRoot := descendingInUnionQOV(
+		t, values.UniqueCorrelationIdentifier(), rowType)
+	idValue := descendingInUnionField(t, keyRoot, 0)
+	kValue := descendingInUnionField(t, keyRoot, 1)
 	legOrdering := func(literal int64) *properties.RichOrdering {
 		comparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, literal)
 		merged := predicates.EmptyComparisonRange().Merge(&comparison)
 		if !merged.Ok {
 			t.Fatal("fixture: equality range did not merge")
 		}
-		scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+		scan := descendingInUnionScan(t, []string{"T"}, rowType, false).
 			WithPrimaryKey([]values.Value{idValue, kValue}).
 			WithScanComparisons([]*predicates.ComparisonRange{merged.Range}).
-			WithKeyComponentTypes([]values.Type{values.NullableLong})
+			WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
 		return computeWrapperRichOrdering(scan)
 	}
 

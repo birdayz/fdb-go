@@ -12,15 +12,16 @@ import (
 func TestPlanChoice_IndexScanChosenOverFullScan(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Product"}, values.UnknownType)
+	scan := planChoiceScan(t, "Product")
 	scanRef := expressions.InitialOf(scan)
+	quantifier := expressions.ForEachQuantifier(scanRef)
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "CATEGORY", Typ: values.UnknownType},
+		planChoiceField(t, quantifier, "CATEGORY"),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "electronics"),
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := planChoiceFilter(t,
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(scanRef),
+		quantifier,
 	)
 	rootRef := expressions.InitialOf(filter)
 
@@ -76,6 +77,23 @@ func (d *planChoiceIndexDef) IndexRecordTypes() []string       { return d.record
 func (d *planChoiceIndexDef) IndexIsUnique() bool              { return d.unique }
 func (d *planChoiceIndexDef) IndexPrimaryKeyColumns() []string { return nil }
 func (d *planChoiceIndexDef) IndexCreatesDuplicates() bool     { return false }
+func (d *planChoiceIndexDef) IndexRowType() values.Type {
+	recordType := "IndexRow"
+	if len(d.recordTypes) == 1 {
+		recordType = d.recordTypes[0]
+	}
+	return planChoiceRowType(recordType)
+}
+
 func (d *planChoiceIndexDef) IndexKeyComponentTypes() []values.Type {
-	return syntheticIndexKeyTypes(len(d.columns))
+	row := d.IndexRowType().(*values.RecordType)
+	result := make([]values.Type, len(d.columns))
+	for i, column := range d.columns {
+		field, ok := row.LookupFieldUnique(column)
+		if !ok {
+			panic("unknown plan-choice index column " + column)
+		}
+		result[i] = field.FieldType
+	}
+	return result
 }

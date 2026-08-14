@@ -16,7 +16,7 @@ func TestEvaluateRecordTypes_Nil(t *testing.T) {
 
 func TestEvaluateRecordTypes_FullScan(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Customer", "Order"}, nil)
+	scan := mustFullUnorderedScanExpression(t, []string{"Customer", "Order"}, propertyTestFlowedType())
 	got := EvaluateRecordTypes(scan)
 	if len(got) != 2 {
 		t.Fatalf("len = %d, want 2", len(got))
@@ -31,10 +31,10 @@ func TestEvaluateRecordTypes_FullScan(t *testing.T) {
 
 func TestEvaluateRecordTypes_TypeFilter(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Customer", "Order"}, nil)
+	scan := mustFullUnorderedScanExpression(t, []string{"Customer", "Order"}, propertyTestFlowedType())
 	ref := expressions.InitialOf(scan)
 	inner := expressions.ForEachQuantifier(ref)
-	tf := expressions.NewLogicalTypeFilterExpression([]string{"Customer"}, inner)
+	tf := mustLogicalTypeFilterExpression(t, []string{"Customer"}, inner)
 	got := EvaluateRecordTypes(tf)
 	if len(got) != 1 {
 		t.Fatalf("len = %d, want 1", len(got))
@@ -46,10 +46,10 @@ func TestEvaluateRecordTypes_TypeFilter(t *testing.T) {
 
 func TestEvaluateRecordTypes_FilterPreservesChild(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Customer"}, nil)
+	scan := mustFullUnorderedScanExpression(t, []string{"Customer"}, propertyTestFlowedType())
 	ref := expressions.InitialOf(scan)
 	inner := expressions.ForEachQuantifier(ref)
-	filter := expressions.NewLogicalFilterExpression(nil, inner)
+	filter := mustLogicalFilterExpression(t, nil, inner)
 	got := EvaluateRecordTypes(filter)
 	if len(got) != 1 {
 		t.Fatalf("len = %d, want 1", len(got))
@@ -61,13 +61,13 @@ func TestEvaluateRecordTypes_FilterPreservesChild(t *testing.T) {
 
 func TestEvaluateRecordTypes_UnionMultipleTypes(t *testing.T) {
 	t.Parallel()
-	scan1 := expressions.NewFullUnorderedScanExpression([]string{"A"}, nil)
-	scan2 := expressions.NewFullUnorderedScanExpression([]string{"B"}, nil)
+	scan1 := mustFullUnorderedScanExpression(t, []string{"A"}, propertyTestFlowedType())
+	scan2 := mustFullUnorderedScanExpression(t, []string{"B"}, propertyTestFlowedType())
 	ref1 := expressions.InitialOf(scan1)
 	ref2 := expressions.InitialOf(scan2)
 	q1 := expressions.ForEachQuantifier(ref1)
 	q2 := expressions.ForEachQuantifier(ref2)
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{q1, q2})
+	union := mustLogicalUnionExpression(t, []expressions.Quantifier{q1, q2})
 	got := EvaluateRecordTypes(union)
 	if len(got) != 2 {
 		t.Fatalf("len = %d, want 2", len(got))

@@ -2,14 +2,13 @@ package plans
 
 import (
 	"testing"
-
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // carrierTestIndexPlan is a minimal index scan to wrap.
-func carrierTestIndexPlan(name string) *RecordQueryIndexPlan {
-	return NewRecordQueryIndexPlan(name, nil, []string{"T"}, values.UnknownType, false).
-		WithIndexMetadata([]string{"A"}, []string{"ID"}, false)
+func carrierTestIndexPlan(t testing.TB, name string) *RecordQueryIndexPlan {
+	return mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan(name, nil, []string{"T"}, exactTestRecordType(), false)
+	}).WithIndexMetadata([]string{"A"}, []string{"ID"}, false)
 }
 
 // TestIndexPlanOf_SeesThroughTheCoveringWrapper pins the behaviour the whole
@@ -24,8 +23,10 @@ func carrierTestIndexPlan(name string) *RecordQueryIndexPlan {
 // things worse.
 func TestIndexPlanOf_SeesThroughTheCoveringWrapper(t *testing.T) {
 	t.Parallel()
-	idx := carrierTestIndexPlan("IDX_A")
-	cov := NewRecordQueryCoveringIndexPlan(idx)
+	idx := carrierTestIndexPlan(t, "IDX_A")
+	cov := mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+		return NewRecordQueryCoveringIndexPlan(idx)
+	})
 
 	bare, ok := IndexPlanOf(idx)
 	if !ok || bare != idx {
@@ -49,7 +50,9 @@ func TestIndexPlanOf_RejectsNonIndexScans(t *testing.T) {
 	t.Parallel()
 
 	// A scan plan is a leaf, but a PRIMARY-KEY one: it has no index.
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	if got, ok := IndexPlanOf(scan); ok {
 		t.Errorf("IndexPlanOf(primary-key scan) = (%v, true); a table scan reads no index", got)
 	}
@@ -59,7 +62,9 @@ func TestIndexPlanOf_RejectsNonIndexScans(t *testing.T) {
 	// emitting one row per GROUP rather than one per entry. The seal is what
 	// keeps it out; without it, a caller asking for the scan behind an index
 	// access would silently be handed an aggregate scan's inner.
-	agg := NewRecordQueryAggregateIndexPlan(carrierTestIndexPlan("IDX_G"), "T", values.UnknownType, "COUNT")
+	agg := mustChecked(t, func() (*RecordQueryAggregateIndexPlan, error) {
+		return NewRecordQueryAggregateIndexPlan(carrierTestIndexPlan(t, "IDX_G"), "T", exactTestRecordType(), "COUNT")
+	})
 	if got, ok := IndexPlanOf(agg); ok {
 		t.Errorf("IndexPlanOf(aggregate index plan) = (%v, true); it emits one row per GROUP, "+
 			"not one per entry, so it is not interchangeable with an index scan. The unexported "+
@@ -109,10 +114,12 @@ func TestIndexPlanOf_TypedNilCarrierIsNotAnIndexScan(t *testing.T) {
 // implementing rather than only failing to build.
 func TestIndexScanCarrier_BothPlanTypesImplementIt(t *testing.T) {
 	t.Parallel()
-	idx := carrierTestIndexPlan("IDX_A")
+	idx := carrierTestIndexPlan(t, "IDX_A")
 	for name, plan := range map[string]RecordQueryPlan{
 		"bare index scan": idx,
-		"covering scan":   NewRecordQueryCoveringIndexPlan(idx),
+		"covering scan": mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+			return NewRecordQueryCoveringIndexPlan(idx)
+		}),
 	} {
 		if _, ok := plan.(IndexScanCarrier); !ok {
 			t.Errorf("%s does not implement IndexScanCarrier; every site the docscheck gate "+

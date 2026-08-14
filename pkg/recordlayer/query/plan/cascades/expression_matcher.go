@@ -80,18 +80,22 @@ type ExpressionRule interface {
 // Production rule driving lives in the planner's task stack
 // (unified_tasks.go); this helper is the testable entry point — same
 // pattern as FireRule for predicate/value rules.
-func FireExpressionRule(rule ExpressionRule, ref *expressions.Reference) []expressions.RelationalExpression {
+func FireExpressionRule(rule ExpressionRule, ref *expressions.Reference) ([]expressions.RelationalExpression, error) {
 	return FireExpressionRuleWithMemo(rule, ref, EmptyPlanContext(), nil)
 }
 
 // FireExpressionRuleWithMemo is like FireExpressionRule but passes a
 // PlanContext and Memo to the rule call, enabling cross-Reference
 // memoization when running inside the Planner.
-func FireExpressionRuleWithMemo(rule ExpressionRule, ref *expressions.Reference, ctx PlanContext, memo *Memo) []expressions.RelationalExpression {
+func FireExpressionRuleWithMemo(rule ExpressionRule, ref *expressions.Reference, ctx PlanContext, memo *Memo) ([]expressions.RelationalExpression, error) {
 	matcher := rule.Matcher()
 	var all []expressions.RelationalExpression
 	for _, member := range ref.Members() {
-		all = append(all, fireExprRuleOnMember(rule, matcher, ref, member, ctx, memo)...)
+		yielded, err := fireExprRuleOnMember(rule, matcher, ref, member, ctx, memo)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, yielded...)
 
 		// ChildrenAsSet permutation: for expressions whose children are
 		// order-independent (SelectExpression with INNER or CROSS joins),
@@ -108,11 +112,15 @@ func FireExpressionRuleWithMemo(rule ExpressionRule, ref *expressions.Reference,
 				qs[0].Kind() == expressions.QuantifierForEach &&
 				qs[1].Kind() == expressions.QuantifierForEach {
 				swapped := sel.WithSwappedQuantifiers()
-				all = append(all, fireExprRuleOnMember(rule, matcher, ref, swapped, ctx, memo)...)
+				yielded, err := fireExprRuleOnMember(rule, matcher, ref, swapped, ctx, memo)
+				if err != nil {
+					return nil, err
+				}
+				all = append(all, yielded...)
 			}
 		}
 	}
-	return all
+	return all, nil
 }
 
 // fireExprRuleOnMember runs a single expression rule against a single
@@ -125,7 +133,7 @@ func fireExprRuleOnMember(
 	member expressions.RelationalExpression,
 	ctx PlanContext,
 	memo *Memo,
-) []expressions.RelationalExpression {
+) ([]expressions.RelationalExpression, error) {
 	matches := matcher.BindMatches(matching.NewBindings(), member)
 	var out []expressions.RelationalExpression
 	for _, b := range matches {
@@ -136,7 +144,29 @@ func fireExprRuleOnMember(
 			call = NewExpressionRuleCall(ref, b, ctx)
 		}
 		rule.OnMatch(call)
-		out = append(out, call.Yielded()...)
+		if err := call.Err(); err != nil {
+			return nil, err
+		}
+		yielded := call.Yielded()
+		if len(yielded) > 0 {
+			intents := make([]referenceMemberIntent, len(yielded))
+			for i, y := range yielded {
+				intents[i] = referenceMemberIntent{set: expressions.ReferenceExploratoryMembers, expression: y}
+			}
+			batch, err := prepareReferenceMemberBatch(ref, intents)
+			if err != nil {
+				return nil, err
+			}
+			if err := batch.commit(); err != nil {
+				return nil, err
+			}
+		}
+		for _, y := range yielded {
+			if memo != nil {
+				memo.Integrate(ref, y)
+			}
+			out = append(out, y)
+		}
 	}
-	return out
+	return out, nil
 }

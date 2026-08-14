@@ -34,7 +34,7 @@ import (
 func TestStorageCompleteness_EmptyOrderingCannotBeComplete(t *testing.T) {
 	t.Parallel()
 
-	a := bindingTranslationField("a")
+	a := bindingTranslationField(t, "a")
 
 	t.Run("stamping complete on a zero-key ordering is refused", func(t *testing.T) {
 		t.Parallel()

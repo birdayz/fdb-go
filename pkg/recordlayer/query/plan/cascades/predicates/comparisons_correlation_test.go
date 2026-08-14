@@ -35,8 +35,8 @@ func TestComparisonPredicate_GetCorrelatedTo_IncludesQueryVector(t *testing.T) {
 
 	cmp, ok := NewDistanceRankComparison(
 		ComparisonDistanceRankLessThanOrEq,
-		values.NewQuantifiedObjectValue(vecAlias), // query vector: the ONLY mention
-		values.NewQuantifiedObjectValue(rhsAlias),
+		mustQOV(t, vecAlias), // query vector: the ONLY mention
+		mustQOV(t, rhsAlias),
 		nil, nil,
 	)
 	if !ok {
@@ -46,7 +46,7 @@ func TestComparisonPredicate_GetCorrelatedTo_IncludesQueryVector(t *testing.T) {
 		t.Fatal("setup: the comparison itself does not report its query-vector correlation")
 	}
 
-	pred := NewComparisonPredicate(values.NewQuantifiedObjectValue(lhsAlias), cmp)
+	pred := NewComparisonPredicate(mustQOV(t, lhsAlias), cmp)
 
 	correlations := pred.GetCorrelatedTo()
 	if _, ok := correlations[lhsAlias]; !ok {

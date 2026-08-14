@@ -116,7 +116,11 @@ func (r *PredicatePushDownRule) OnMatch(call *ExpressionRuleCall) {
 
 		var newBelowExpressions []expressions.RelationalExpression
 		for _, member := range childRef.AllMembers() {
-			pushed := pushPredicateToExpression(call, pushable, pushQ, member)
+			pushed, err := pushPredicateToExpression(call, pushable, pushQ, member)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
 			if pushed != nil {
 				newBelowExpressions = append(newBelowExpressions, pushed)
 			}
@@ -152,13 +156,17 @@ func (r *PredicatePushDownRule) OnMatch(call *ExpressionRuleCall) {
 		}
 
 		// Build the new SelectExpression with the remaining (fixed) predicates.
-		newSel := expressions.NewSelectExpressionWithJoinType(
+		newSel, err := expressions.NewSelectExpressionWithJoinType(
 			sel.GetResultValue(),
 			newQuantifiers,
 			fixed,
 			sel.GetSourceAliases(),
 			sel.GetJoinType(),
 		)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		call.Yield(newSel)
 		return // One quantifier per rule firing, matching Java's behavior.
 	}
@@ -173,7 +181,7 @@ func pushPredicateToExpression(
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	belowExpression expressions.RelationalExpression,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, error) {
 	switch expr := belowExpression.(type) {
 	case *expressions.LogicalFilterExpression:
 		return pushIntoLogicalFilter(originalPredicates, pushQuantifier, expr)
@@ -189,7 +197,7 @@ func pushPredicateToExpression(
 		return pushThroughUnique(call, originalPredicates, pushQuantifier, expr)
 	default:
 		// By default, we cannot push things down. Return nil.
-		return nil
+		return nil, nil
 	}
 }
 
@@ -201,15 +209,19 @@ func pushIntoLogicalFilter(
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	filter *expressions.LogicalFilterExpression,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, error) {
 	inner := filter.GetInner()
 	if inner.Kind() != expressions.QuantifierForEach {
-		return nil
+		return nil, nil
 	}
 
 	// Rebase: pushQuantifier.alias -> inner.alias
-	aliasMap := values.AliasMap{
-		pushQuantifier.GetAlias(): inner.GetAlias(),
+	aliasMap, err := values.NewAliasMap([]values.AliasPair{{
+		Source: pushQuantifier.GetAlias(),
+		Target: inner.GetAlias(),
+	}})
+	if err != nil {
+		return nil, err
 	}
 
 	// Combine: existing filter predicates + rebased original predicates.
@@ -219,8 +231,12 @@ func pushIntoLogicalFilter(
 		newPredicates = append(newPredicates, predicates.RebasePredicate(p, aliasMap))
 	}
 
+	flowed, err := inner.RequireFlowedObjectValue()
+	if err != nil {
+		return nil, err
+	}
 	return expressions.NewSelectExpression(
-		inner.GetFlowedObjectValue(),
+		flowed,
 		[]expressions.Quantifier{inner},
 		newPredicates,
 	)
@@ -254,13 +270,13 @@ func pushIntoSelect(
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	selectExpr *expressions.SelectExpression,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, error) {
 	// An OUTER-join child (FULL/LEFT/RIGHT) is opaque to predicate
 	// absorption: see the function doc. ChildrenAsSet() is Go's existing
 	// commutative/inner-equivalent marker (select.go) — false for every
 	// outer join type, matching the opacity gate every sibling rule uses.
 	if !selectExpr.ChildrenAsSet() {
-		return nil
+		return nil, nil
 	}
 
 	// A plain parent edge can still range over a Select that owns the strict
@@ -269,7 +285,7 @@ func pushIntoSelect(
 	// predicate to hide a second row before cardinality is checked. Treat the
 	// nested carrier as opaque just like a directly flagged push quantifier.
 	if hasStrictSingleQuantifier(selectExpr.GetQuantifiers()) {
-		return nil
+		return nil, nil
 	}
 
 	// Build a TranslationMap: pushQuantifier.alias -> selectExpr.resultValue.
@@ -306,10 +322,14 @@ func pushOverChild(
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	child expressions.Quantifier,
-) expressions.Quantifier {
+) (expressions.Quantifier, error) {
 	// Rebase: pushQuantifier.alias -> child.alias
-	aliasMap := values.AliasMap{
-		pushQuantifier.GetAlias(): child.GetAlias(),
+	aliasMap, err := values.NewAliasMap([]values.AliasPair{{
+		Source: pushQuantifier.GetAlias(),
+		Target: child.GetAlias(),
+	}})
+	if err != nil {
+		return expressions.Quantifier{}, err
 	}
 
 	newPredicates := make([]predicates.QueryPredicate, len(originalPredicates))
@@ -317,12 +337,19 @@ func pushOverChild(
 		newPredicates[i] = predicates.RebasePredicate(p, aliasMap)
 	}
 
-	newSelect := expressions.NewSelectExpression(
-		child.GetFlowedObjectValue(),
+	flowed, err := child.RequireFlowedObjectValue()
+	if err != nil {
+		return expressions.Quantifier{}, err
+	}
+	newSelect, err := expressions.NewSelectExpression(
+		flowed,
 		[]expressions.Quantifier{child},
 		newPredicates,
 	)
-	return expressions.ForEachQuantifier(call.MemoizeExpression(newSelect))
+	if err != nil {
+		return expressions.Quantifier{}, err
+	}
+	return expressions.ForEachQuantifier(call.MemoizeExpression(newSelect)), nil
 }
 
 // pushThroughUnion pushes predicates through a LogicalUnionExpression by
@@ -333,14 +360,18 @@ func pushThroughUnion(
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	union *expressions.LogicalUnionExpression,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, error) {
 	qs := union.GetQuantifiers()
 	newChildren := make([]expressions.Quantifier, len(qs))
 	for i, q := range qs {
 		if q.Kind() != expressions.QuantifierForEach {
-			return nil
+			return nil, nil
 		}
-		newChildren[i] = pushOverChild(call, originalPredicates, pushQuantifier, q)
+		newChild, err := pushOverChild(call, originalPredicates, pushQuantifier, q)
+		if err != nil {
+			return nil, err
+		}
+		newChildren[i] = newChild
 	}
 	return expressions.NewLogicalUnionExpression(newChildren)
 }
@@ -353,12 +384,15 @@ func pushThroughSort(
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	sort *expressions.LogicalSortExpression,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, error) {
 	inner := sort.GetInner()
 	if inner.Kind() != expressions.QuantifierForEach {
-		return nil
+		return nil, nil
 	}
-	newChild := pushOverChild(call, originalPredicates, pushQuantifier, inner)
+	newChild, err := pushOverChild(call, originalPredicates, pushQuantifier, inner)
+	if err != nil {
+		return nil, err
+	}
 	return expressions.NewLogicalSortExpression(sort.GetSortKeys(), newChild)
 }
 
@@ -370,12 +404,15 @@ func pushThroughDistinct(
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	distinct *expressions.LogicalDistinctExpression,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, error) {
 	inner := distinct.GetInner()
 	if inner.Kind() != expressions.QuantifierForEach {
-		return nil
+		return nil, nil
 	}
-	newChild := pushOverChild(call, originalPredicates, pushQuantifier, inner)
+	newChild, err := pushOverChild(call, originalPredicates, pushQuantifier, inner)
+	if err != nil {
+		return nil, err
+	}
 	return expressions.NewLogicalDistinctExpression(newChild)
 }
 
@@ -387,12 +424,15 @@ func pushThroughUnique(
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	unique *expressions.LogicalUniqueExpression,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, error) {
 	inner := unique.GetInner()
 	if inner.Kind() != expressions.QuantifierForEach {
-		return nil
+		return nil, nil
 	}
-	newChild := pushOverChild(call, originalPredicates, pushQuantifier, inner)
+	newChild, err := pushOverChild(call, originalPredicates, pushQuantifier, inner)
+	if err != nil {
+		return nil, err
+	}
 	return unique.WithQuantifiers([]expressions.Quantifier{newChild})
 }
 

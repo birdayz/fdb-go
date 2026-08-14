@@ -39,6 +39,9 @@ func (e *IncompatibleOrderingTypeError) Error() string {
 // immutable and structurally shared, so suppliers returning the same node
 // are fine.
 func PrimitiveAccessorsForType(typ Type, base func() Value) ([]Value, error) {
+	if _, erasedRecord := typ.(anyRecordType); erasedRecord {
+		return nil, &IncompatibleOrderingTypeError{Typ: typ}
+	}
 	rt, isRecord := typ.(*RecordType)
 	if !isRecord {
 		if typ != nil {
@@ -51,10 +54,14 @@ func PrimitiveAccessorsForType(typ Type, base func() Value) ([]Value, error) {
 	}
 	out := make([]Value, 0, len(rt.Fields))
 	for i := range rt.Fields {
-		// One accessor node per field step (NewFieldValueOfOrdinal bakes the
-		// ordinal against rt and applies Java's computeResultType nullability
-		// rule); the recursion descends through it for nested records.
-		fv, err := NewFieldValueOfOrdinal(base(), i)
+		request, err := FieldByOrdinal(i)
+		if err != nil {
+			return nil, err
+		}
+		// Resolve the ordinal against the supplied base's exact type. The
+		// recursive call accepts the admitted FieldValue and the public resolver
+		// fuses the next step onto its QOV root.
+		fv, err := ResolveFieldAccess(base(), []FieldRequest{request})
 		if err != nil {
 			return nil, err
 		}

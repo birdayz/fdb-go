@@ -31,26 +31,29 @@ import (
 
 func TestAggregateInputIsFlatFrontier_UnorderedPrimaryKeyDistinct(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan(
+	joinType := exactTestRowType(values.Field{Name: "K", FieldType: values.NullableLong})
+	scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan(
 		[]string{"T"},
-		values.UnknownType,
+		joinType,
 		false,
-	)
+	))
 	if !aggregateInputIsFlatFrontier(
-		plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(scan),
+		mustExecutorConstruct(plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(scan)),
 	) {
 		t.Fatal("primary-key distinct must transparently preserve a flat scan frontier")
 	}
-	join := plans.NewRecordQueryNestedLoopJoinPlan(
-		nil,
-		nil,
+	outer := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"OUTER"}, joinType, false))
+	inner := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"INNER"}, joinType, false))
+	join := mustExecutorConstruct(plans.NewRecordQueryNestedLoopJoinPlan(
+		outer,
+		inner,
 		nil,
 		plans.JoinInner,
 		values.NamedCorrelationIdentifier("outer"), values.NamedCorrelationIdentifier("inner"),
-		nil,
-	)
+		mustConcatPlanResultQOV(t, outer, inner),
+	))
 	if aggregateInputIsFlatFrontier(
-		plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(join),
+		mustExecutorConstruct(plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(join)),
 	) {
 		t.Fatal("primary-key distinct must not turn a multi-source join into a flat frontier")
 	}
@@ -91,7 +94,8 @@ func decodeAggRowContinuation(t *testing.T, cont recordlayer.RecordCursorContinu
 // aggGroupedFixture returns (rows, groupingKeys, aggregates) for
 // SUM(amount) GROUP BY dept over dept-sorted rows. qr/dmap lays columns out
 // alphabetically: amount@0, dept@1.
-func aggGroupedFixture() ([]QueryResult, []values.Value, []expressions.AggregateSpec) {
+func aggGroupedFixture(t testing.TB) ([]QueryResult, []values.Value, []expressions.AggregateSpec) {
+	t.Helper()
 	rows := []QueryResult{
 		qr("dept", "A", "amount", int64(10)),
 		qr("dept", "A", "amount", int64(20)),
@@ -99,9 +103,18 @@ func aggGroupedFixture() ([]QueryResult, []values.Value, []expressions.Aggregate
 		qr("dept", "B", "amount", int64(40)),
 		qr("dept", "C", "amount", int64(50)),
 	}
-	groupKeys := []values.Value{values.NewFieldValueWithResolvedOrdinal("dept", 1, values.TypeString)}
+	rowType := exactTestRowType(
+		values.Field{Name: "amount", FieldType: values.NullableLong},
+		values.Field{Name: "dept", FieldType: values.TypeString},
+	)
+	root := mustTestQOV(t, values.UniqueCorrelationIdentifier(), rowType)
+	groupKeys := []values.Value{mustTestFieldOrdinal(t, root, 1)}
 	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("amount", 0, values.NullableLong)},
+		{
+			Function:    expressions.AggSum,
+			Operand:     mustTestFieldOrdinal(t, root, 0),
+			OperandName: "amount",
+		},
 	}
 	return rows, groupKeys, aggs
 }
@@ -115,7 +128,7 @@ func aggGroupedFixture() ([]QueryResult, []values.Value, []expressions.Aggregate
 func TestAggregateCursor_GroupBreakContinuation_ResumesRemainingGroups(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rows, groupKeys, aggs := aggGroupedFixture()
+	rows, groupKeys, aggs := aggGroupedFixture(t)
 
 	c := newAggregateCursor(recordlayer.FromList(rows), groupKeys, aggs, nil, nil)
 	defer c.Close()
@@ -178,9 +191,14 @@ func TestAggregateCursor_SingleElementGroups_ContinuationAdvance(t *testing.T) {
 		qr("dept", "B", "amount", int64(2)),
 		qr("dept", "C", "amount", int64(3)),
 	}
-	groupKeys := []values.Value{values.NewFieldValueWithResolvedOrdinal("dept", 1, values.TypeString)}
+	rowType := exactTestRowType(
+		values.Field{Name: "amount", FieldType: values.NullableLong},
+		values.Field{Name: "dept", FieldType: values.TypeString},
+	)
+	root := mustTestQOV(t, values.UniqueCorrelationIdentifier(), rowType)
+	groupKeys := []values.Value{mustTestFieldOrdinal(t, root, 1)}
 	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("amount", 0, values.NullableLong)},
+		{Function: expressions.AggSum, Operand: mustTestFieldOrdinal(t, root, 0)},
 	}
 
 	c := newAggregateCursor(recordlayer.FromList(rows), groupKeys, aggs, nil, nil)
@@ -295,7 +313,7 @@ func TestCustomSortCursor_EmitContinuation_ResumesRemainingRows(t *testing.T) {
 		qr("X", int64(2)),
 	})
 	c := newCustomSortCursor(inner, expressionSortFn([]expressions.SortKey{
-		{Value: values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType)},
+		{Value: mustNamedTestField(t, "X", values.NullableLong)},
 	}), nil)
 	defer c.Close()
 

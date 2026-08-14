@@ -49,24 +49,23 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// qualifiedLeaf builds the plan-time shape of `<corr>.<leaf>`: a FieldValue for
-// the leaf rooted at its quantifier. AccessorNamePath stops at that root, so two
-// of these with different corr and the same leaf are path-equal.
-func qualifiedLeaf(corr, leaf string) values.Value {
-	return &values.FieldValue{
-		Field: leaf,
-		Typ:   values.UnknownType,
-		Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(corr)),
-	}
+// qualifiedLeaf builds the exact plan-time shape of `<corr>.<leaf>`: a
+// resolver-produced FieldValue rooted at a typed QOV. AccessorNamePath stops at
+// that root, so two values with different correlations and the same leaf remain
+// path-equal while their execution identities stay distinct.
+func qualifiedLeaf(t testing.TB, corr, leaf string) values.Value {
+	t.Helper()
+	root := mustPushFilterQOV(t, values.NamedCorrelationIdentifier(corr))
+	return mustPushFilterField(t, root, leaf)
 }
 
 func TestPredicatePushesBelowGroupBy_TwoKeysOneNamePath_RefusesToPush(t *testing.T) {
 	t.Parallel()
 
 	// `GROUP BY o.k, i.k` — two keys, one renderable path.
-	ambiguous := []values.Value{qualifiedLeaf("O", "K"), qualifiedLeaf("I", "K")}
+	ambiguous := []values.Value{qualifiedLeaf(t, "O", "K"), qualifiedLeaf(t, "I", "K")}
 	pred := predicates.NewComparisonPredicate(
-		qualifiedLeaf("I", "K"),
+		qualifiedLeaf(t, "I", "K"),
 		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(15)),
 	)
 
@@ -80,7 +79,7 @@ func TestPredicatePushesBelowGroupBy_TwoKeysOneNamePath_RefusesToPush(t *testing
 
 	// The control: distinct paths still push, so the refusal above is the
 	// AMBIGUITY and not this rule going dark for every multi-key GROUP BY.
-	distinct := []values.Value{qualifiedLeaf("O", "K"), qualifiedLeaf("I", "J")}
+	distinct := []values.Value{qualifiedLeaf(t, "O", "K"), qualifiedLeaf(t, "I", "J")}
 	if got := PredicatePushesBelowGroupBy(pred, distinct); !got {
 		t.Errorf("PredicatePushesBelowGroupBy(k > 15, [o.k, i.j]) = false, want true — "+
 			"two grouping keys with DISTINCT paths must still push; got a rule that "+
@@ -91,9 +90,9 @@ func TestPredicatePushesBelowGroupBy_TwoKeysOneNamePath_RefusesToPush(t *testing
 func TestRebindGroupKeyRefToInner_TwoKeysOneNamePath_LeavesTheRefAlone(t *testing.T) {
 	t.Parallel()
 
-	first := qualifiedLeaf("O", "K")
-	second := qualifiedLeaf("I", "K")
-	ref := qualifiedLeaf("I", "K")
+	first := qualifiedLeaf(t, "O", "K")
+	second := qualifiedLeaf(t, "I", "K")
+	ref := qualifiedLeaf(t, "I", "K")
 
 	// Second line of defence, pinned independently of the decider above: even
 	// handed an ambiguous key list directly, the rebind must not pick.
@@ -111,7 +110,7 @@ func TestRebindGroupKeyRefToInner_TwoKeysOneNamePath_LeavesTheRefAlone(t *testin
 
 	// Control: an UNambiguous list must still rebind, or the guard above is
 	// satisfied by a function that rebinds nothing.
-	other := qualifiedLeaf("I", "J")
+	other := qualifiedLeaf(t, "I", "J")
 	if got := rebindGroupKeyRefToInner([]values.Value{first, other})(ref); got != first {
 		t.Errorf("rebindGroupKeyRefToInner([o.k, i.j])(i.k) = %v, want the o.k grouping "+
 			"key — an unambiguous single path match must still rebind to that key's own "+

@@ -1,14 +1,62 @@
 package cascades
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+func mustPlannerTestConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct planner test fixture: " + err.Error())
+	}
+	return value
+}
+
+func plannerTestRowType() values.Type {
+	return values.NewRecordType("PlannerTestRow", false, []values.Field{
+		{Name: "active", FieldType: values.NotNullBoolean, Ordinal: 0},
+		{Name: "x", FieldType: values.NotNullBoolean, Ordinal: 1},
+	})
+}
+
+func plannerTestScan(recordTypes ...string) *expressions.FullUnorderedScanExpression {
+	return mustPlannerTestConstruct(expressions.NewFullUnorderedScanExpression(
+		recordTypes, plannerTestRowType()))
+}
+
+func plannerTestField(q expressions.Quantifier, ordinal int) values.Value {
+	flowedType := mustPlannerTestConstruct(q.GetFlowedObjectType())
+	root := mustPlannerTestConstruct(values.NewQuantifiedObjectValue(q.GetAlias(), flowedType))
+	return mustPlannerTestConstruct(values.ResolveFieldOrdinals(root, []int{ordinal}))
+}
+
+func plannerTestFullPlanner() *Planner {
+	return NewPlanner(DefaultExpressionRules(), nil).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
+}
+
+func plannerTestDataAccessScan() *expressions.FullUnorderedScanExpression {
+	return mustPlannerTestConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, dataAccessTestRow))
+}
+
+// plannerTestDataAccessPlan is an exact, executable composite plan, so the
+// data-access adapter keeps wrapping it in scanPlanExpression. A bare primary
+// scan intentionally bypasses that adapter and would not exercise this seam.
+func plannerTestDataAccessPlan() plans.RecordQueryPlan {
+	scan := mustPlannerTestConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, dataAccessTestRow, false))
+	return mustPlannerTestConstruct(plans.NewRecordQueryTypeFilterPlan(
+		[]string{"T"}, scan))
+}
 
 // exploreRewriting drives the production unified task stack through the
 // REWRITING phase only — the same ExploreGroupTask / ExploreExprTask /
@@ -63,7 +111,7 @@ func TestPlanner_NilRefIsNoOp(t *testing.T) {
 
 func TestPlanner_ConvergesOnEmptyTree(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := plannerTestScan("T")
 	ref := expressions.InitialOf(scan)
 	p := NewPlanner(DefaultExpressionRules(), nil)
 	tasks, conv := exploreRewriting(p, ref)
@@ -82,15 +130,13 @@ func TestPlanner_FiltersThroughDistinct(t *testing.T) {
 	t.Parallel()
 	// Filter(P, Distinct(Scan)) — PushFilterThroughDistinct should
 	// yield Distinct(Filter(P, Scan)) as an alternative member.
-	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	dist := expressions.NewLogicalDistinctExpression(
-		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
-	)
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(expressions.InitialOf(dist)),
-	)
+	scan := plannerTestScan("T")
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	pred := predicates.NewValuePredicate(plannerTestField(scanQ, 0))
+	dist := mustPlannerTestConstruct(expressions.NewLogicalDistinctExpression(scanQ))
+	distQ := expressions.ForEachQuantifier(expressions.InitialOf(dist))
+	filter := mustPlannerTestConstruct(expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred}, distQ))
 	ref := expressions.InitialOf(filter)
 
 	p := NewPlanner(DefaultExpressionRules(), nil)
@@ -123,12 +169,12 @@ func TestPlanner_FiltersThroughDistinct(t *testing.T) {
 func TestPlanner_IdempotentOnReExplore(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	src := expressions.NewLogicalFilterExpression(
+	src := mustPlannerTestConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
 		expressions.ForEachQuantifier(expressions.InitialOf(
-			expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
+			plannerTestScan("T"),
 		)),
-	)
+	))
 	ref := expressions.InitialOf(src)
 
 	p := NewPlanner(DefaultExpressionRules(), nil)
@@ -149,18 +195,16 @@ func TestPlanner_IdempotentOnReExplore(t *testing.T) {
 // REWRITING + PLANNING in one call. Returns the extracted best plan.
 func TestPlanner_Plan_FullPipeline(t *testing.T) {
 	t.Parallel()
-	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	dist := expressions.NewLogicalDistinctExpression(
-		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
-	)
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(expressions.InitialOf(dist)),
-	)
+	scan := plannerTestScan("T")
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	pred := predicates.NewValuePredicate(plannerTestField(scanQ, 0))
+	dist := mustPlannerTestConstruct(expressions.NewLogicalDistinctExpression(scanQ))
+	distQ := expressions.ForEachQuantifier(expressions.InitialOf(dist))
+	filter := mustPlannerTestConstruct(expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred}, distQ))
 	ref := expressions.InitialOf(filter)
 
-	p := NewPlanner(DefaultExpressionRules(), nil)
+	p := plannerTestFullPlanner()
 	plan, tasks, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan err=%v", err)
@@ -177,7 +221,7 @@ func TestPlanner_Plan_FullPipeline(t *testing.T) {
 // the task stack hits MaxTasks.
 func TestPlanner_Plan_MaxTasksHit(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := plannerTestScan("T")
 	ref := expressions.InitialOf(scan)
 	p := NewPlanner(DefaultExpressionRules(), nil)
 	p.MaxTasks = 1
@@ -221,13 +265,14 @@ func TestPlanner_Plan_MaxTasksHit(t *testing.T) {
 // gating — so no per-child winner is asserted here.)
 func TestPlanner_BestMember_StampedAfterPlan(t *testing.T) {
 	t.Parallel()
-	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := plannerTestScan("T")
 	innerRef := expressions.InitialOf(scan)
-	filter := expressions.NewLogicalFilterExpression(
+	innerQ := expressions.ForEachQuantifier(innerRef)
+	pred := predicates.NewValuePredicate(plannerTestField(innerQ, 0))
+	filter := mustPlannerTestConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(innerRef),
-	)
+		innerQ,
+	))
 	topRef := expressions.InitialOf(filter)
 
 	p := NewPlanner(DefaultExpressionRules(), nil).
@@ -250,12 +295,12 @@ func TestPlanner_BestMember_StampedAfterPlan(t *testing.T) {
 // Reference.
 func TestPlanner_MemoPopulatedAfterExploration(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := plannerTestScan("T")
 	scanRef := expressions.InitialOf(scan)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustPlannerTestConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		expressions.ForEachQuantifier(scanRef),
-	)
+	))
 	rootRef := expressions.InitialOf(filter)
 
 	p := NewPlanner(DefaultExpressionRules(), nil)
@@ -285,11 +330,11 @@ func TestPlanner_GenerateDataAccess_InsertsScans(t *testing.T) {
 	t.Parallel()
 
 	// Build a simple scan expression with a Reference.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := plannerTestDataAccessScan()
 	ref := expressions.InitialOf(scan)
 
 	// Create a test PartialMatch with a known plan.
-	plan := &testPlan{name: "data_access_scan"}
+	plan := plannerTestDataAccessPlan()
 	pm := makeDataAccessTestPartialMatch("idx_test", 2, plan)
 
 	// Register the PartialMatch on the Reference for its candidate.
@@ -302,7 +347,7 @@ func TestPlanner_GenerateDataAccess_InsertsScans(t *testing.T) {
 
 	// Run the full pipeline. The data access phase should insert a
 	// scanPlanExpression into the Reference.
-	p := NewPlanner(DefaultExpressionRules(), nil)
+	p := plannerTestFullPlanner()
 	_, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -335,10 +380,10 @@ func TestPlanner_GenerateDataAccess_InsertsScans(t *testing.T) {
 func TestPlanner_GenerateDataAccess_NoMatchesIsNoOp(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := plannerTestDataAccessScan()
 	ref := expressions.InitialOf(scan)
 
-	p := NewPlanner(DefaultExpressionRules(), nil)
+	p := plannerTestFullPlanner()
 	_, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -358,21 +403,26 @@ func TestPlanner_GenerateDataAccess_BottomUp(t *testing.T) {
 	t.Parallel()
 
 	// Build Filter(Scan) — two References.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := plannerTestDataAccessScan()
 	scanRef := expressions.InitialOf(scan)
-	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "x", Typ: values.TypeBool})
-	filter := expressions.NewLogicalFilterExpression(
+	scanQ := expressions.ForEachQuantifier(scanRef)
+	root := mustPlannerTestConstruct(values.NewQuantifiedObjectValue(
+		scanQ.GetAlias(), dataAccessTestRow))
+	field := mustPlannerTestConstruct(values.ResolveFieldOrdinals(root, []int{0}))
+	pred := predicates.NewComparisonPredicate(field,
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)))
+	filter := mustPlannerTestConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(scanRef),
-	)
+		scanQ,
+	))
 	rootRef := expressions.InitialOf(filter)
 
 	// Register a PartialMatch on the inner (scan) Reference only.
-	childPlan := &testPlan{name: "child_scan"}
+	childPlan := plannerTestDataAccessPlan()
 	pm := makeDataAccessTestPartialMatch("child_idx", 1, childPlan)
 	AddPartialMatchForCandidate(scanRef, pm.GetMatchCandidate(), pm)
 
-	p := NewPlanner(DefaultExpressionRules(), nil)
+	p := plannerTestFullPlanner()
 	_, _, err := p.Plan(rootRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -409,17 +459,18 @@ func TestPlanner_MemoSharesSubExpressions(t *testing.T) {
 	// the original Sort(Scan) and any rule-derived Sort(Scan) share the
 	// same Reference.
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := plannerTestScan("T")
 	scanRef := expressions.InitialOf(scan)
 
-	sort := expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(scanRef))
+	sort := mustPlannerTestConstruct(expressions.NewLogicalSortExpression(
+		nil, expressions.ForEachQuantifier(scanRef)))
 	sortRef := expressions.InitialOf(sort)
 
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustPlannerTestConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
 		expressions.ForEachQuantifier(sortRef),
-	)
+	))
 	rootRef := expressions.InitialOf(filter)
 
 	p := NewPlanner(DefaultExpressionRules(), nil)
@@ -460,7 +511,7 @@ type plannerExtractionErrorExpr struct {
 }
 
 func (e *plannerExtractionErrorExpr) GetResultValue() values.Value {
-	return values.NewNullValue(values.UnknownType)
+	return values.NewNullValue(values.NullableLong)
 }
 
 func (*plannerExtractionErrorExpr) GetQuantifiers() []expressions.Quantifier { return nil }
@@ -484,9 +535,12 @@ func (e *plannerExtractionErrorExpr) EqualsWithoutChildren(
 }
 
 func (e *plannerExtractionErrorExpr) WithQuantifiers(
-	_ []expressions.Quantifier,
-) expressions.RelationalExpression {
-	return e
+	quantifiers []expressions.Quantifier,
+) (expressions.RelationalExpression, error) {
+	if err := requireTestQuantifierArity("plannerExtractionErrorExpr", len(quantifiers), 0); err != nil {
+		return nil, err
+	}
+	return e, nil
 }
 
 func (e *plannerExtractionErrorExpr) GetRecordQueryPlan() plans.RecordQueryPlan {
@@ -511,15 +565,47 @@ func (e *plannerExtractionErrorExpr) WithChildren(
 func TestPlanner_Plan_ExtractionErrorReturnsNilPlan(t *testing.T) {
 	t.Parallel()
 
-	expr := &plannerExtractionErrorExpr{plan: plans.NewRecordQueryValuesPlan(nil)}
-	p := NewPlanner(nil, nil)
+	partial := mustPlannerTestConstruct(plans.NewRecordQueryValuesPlan(nil))
+	p := plannerTestFullPlanner().withPlanExtractorForTest(func(
+		context.Context,
+		*expressions.Reference,
+		BestMemberSelector,
+		properties.StatisticsProvider,
+	) (expressions.RelationalExpression, error) {
+		return partial, errPlannerRuleBrokeExtractionContract
+	})
 
-	plan, _, err := p.Plan(expressions.InitialOf(expr))
+	plan, _, err := p.Plan(plannerLifecycleTestRef())
 	if !errors.Is(err, errPlannerRuleBrokeExtractionContract) {
 		t.Fatalf("err=%v, want errPlannerRuleBrokeExtractionContract", err)
 	}
 	if plan != nil {
 		t.Fatalf("plan=%T (%v), want nil on the extraction-error path", plan, plan)
+	}
+}
+
+// TestPlanner_TestExtractorSeamIsInvocationLocal pins that the post-drain
+// lifecycle hook belongs to one Planner. A package-global test hook would make
+// the ordinary planner observe the injected error when these runs overlap.
+func TestPlanner_TestExtractorSeamIsInvocationLocal(t *testing.T) {
+	t.Parallel()
+
+	injected := errors.New("injected local extraction failure")
+	hooked := plannerTestFullPlanner().withPlanExtractorForTest(func(
+		context.Context,
+		*expressions.Reference,
+		BestMemberSelector,
+		properties.StatisticsProvider,
+	) (expressions.RelationalExpression, error) {
+		return nil, injected
+	})
+	ordinary := plannerTestFullPlanner()
+
+	if plan, _, err := hooked.Plan(plannerLifecycleTestRef()); plan != nil || !errors.Is(err, injected) {
+		t.Fatalf("hooked Plan = (%T, %v), want (nil, injected error)", plan, err)
+	}
+	if plan, tasks, err := ordinary.Plan(plannerLifecycleTestRef()); plan == nil || tasks == 0 || err != nil {
+		t.Fatalf("ordinary Plan = (%T, %d, %v), want unaffected success", plan, tasks, err)
 	}
 }
 
@@ -535,7 +621,9 @@ func TestPlanner_Plan_ExtractionErrorReturnsNilPlan(t *testing.T) {
 func TestRebuildWithFreshChildren_WithChildrenErrorReturnsNilExpression(t *testing.T) {
 	t.Parallel()
 
-	expr := &plannerExtractionErrorExpr{plan: plans.NewRecordQueryValuesPlan(nil)}
+	expr := &plannerExtractionErrorExpr{
+		plan: mustPlannerTestConstruct(plans.NewRecordQueryValuesPlan(nil)),
+	}
 
 	rebuilt, err := rebuildWithFreshChildren(expr, nil)
 	if !errors.Is(err, errPlannerRuleBrokeExtractionContract) {
@@ -556,7 +644,9 @@ func TestRebuildWithFreshChildren_WithChildrenErrorReturnsNilExpression(t *testi
 func TestExtractBestPlanWith_ChokePointErrorReturnsNilPlan(t *testing.T) {
 	t.Parallel()
 
-	expr := &plannerExtractionErrorExpr{plan: plans.NewRecordQueryValuesPlan(nil)}
+	expr := &plannerExtractionErrorExpr{
+		plan: mustPlannerTestConstruct(plans.NewRecordQueryValuesPlan(nil)),
+	}
 	ref := expressions.InitialOf(expr)
 
 	plan, err := ExtractBestPlanWith(ref, nil)

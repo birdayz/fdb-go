@@ -32,6 +32,7 @@ type RecordQueryIntersectionPlan struct {
 	childQs                    []expressions.Quantifier
 	comparisonKeyOrderingParts []properties.ProvidedOrderingPart
 	comparisonKeyValues        []values.Value
+	comparisonKeysOnCarrier    bool
 	reverse                    bool
 }
 
@@ -40,7 +41,7 @@ type RecordQueryIntersectionPlan struct {
 // primary-key columns of the result type). This compatibility constructor
 // builds the historical forward, naturally-ascending contract; directional
 // producers use NewRecordQueryIntersectionPlanWithOrdering.
-func NewRecordQueryIntersectionPlan(inners []RecordQueryPlan, comparisonKeyValues []values.Value) *RecordQueryIntersectionPlan {
+func NewRecordQueryIntersectionPlan(inners []RecordQueryPlan, comparisonKeyValues []values.Value) (*RecordQueryIntersectionPlan, error) {
 	parts := ascendingIntersectionParts(comparisonKeyValues)
 	return newRecordQueryIntersectionPlan(
 		QuantifiersOverPlans(inners), parts, comparisonKeyValues, false,
@@ -56,10 +57,10 @@ func NewRecordQueryIntersectionPlanWithOrdering(
 	inners []RecordQueryPlan,
 	comparisonKeyOrderingParts []properties.ProvidedOrderingPart,
 	reverse bool,
-) *RecordQueryIntersectionPlan {
+) (*RecordQueryIntersectionPlan, error) {
 	comparisonKeyValues, ok := properties.NaturalComparisonKeyValues(comparisonKeyOrderingParts, reverse)
 	if !ok {
-		return nil
+		return nil, fmt.Errorf("RecordQueryIntersectionPlan: comparison ordering cannot be evaluated naturally")
 	}
 	return newRecordQueryIntersectionPlan(
 		QuantifiersOverPlans(inners), comparisonKeyOrderingParts, comparisonKeyValues, reverse,
@@ -72,7 +73,7 @@ func NewRecordQueryIntersectionPlanWithOrdering(
 // snapshots over plans. This makes the intersection its own cascades expression
 // carrying its leg edges directly — the memo holds it without a physical wrapper
 // (RFC-184 W2). comparisonKeyValues carries over verbatim.
-func NewRecordQueryIntersectionPlanFromQuantifiers(qs []expressions.Quantifier, comparisonKeyValues []values.Value) *RecordQueryIntersectionPlan {
+func NewRecordQueryIntersectionPlanFromQuantifiers(qs []expressions.Quantifier, comparisonKeyValues []values.Value) (*RecordQueryIntersectionPlan, error) {
 	parts := ascendingIntersectionParts(comparisonKeyValues)
 	return newRecordQueryIntersectionPlan(qs, parts, comparisonKeyValues, false)
 }
@@ -84,13 +85,34 @@ func NewRecordQueryIntersectionPlanFromQuantifiersWithOrdering(
 	qs []expressions.Quantifier,
 	comparisonKeyOrderingParts []properties.ProvidedOrderingPart,
 	reverse bool,
-) *RecordQueryIntersectionPlan {
+) (*RecordQueryIntersectionPlan, error) {
 	comparisonKeyValues, ok := properties.NaturalComparisonKeyValues(comparisonKeyOrderingParts, reverse)
 	if !ok {
-		return nil
+		return nil, fmt.Errorf("RecordQueryIntersectionPlan: comparison ordering cannot be evaluated naturally")
 	}
 	return newRecordQueryIntersectionPlan(
 		qs, comparisonKeyOrderingParts, comparisonKeyValues, reverse,
+	)
+}
+
+// NewRecordQueryIntersectionPlanFromQuantifiersWithOrderingAndSource is the
+// exact-carrier constructor used when the ordering proof declares one physical
+// current-row phase for every comparison key. The source handle is authority:
+// only top-level fields rooted at that exact QOV are moved onto the
+// intersection's provided-output carrier. A same-shaped current QOV minted by
+// another layout is not interchangeable and fails construction.
+func NewRecordQueryIntersectionPlanFromQuantifiersWithOrderingAndSource(
+	qs []expressions.Quantifier,
+	comparisonKeyOrderingParts []properties.ProvidedOrderingPart,
+	reverse bool,
+	comparisonKeySource values.QuantifiedObjectValue,
+) (*RecordQueryIntersectionPlan, error) {
+	comparisonKeyValues, ok := properties.NaturalComparisonKeyValues(comparisonKeyOrderingParts, reverse)
+	if !ok {
+		return nil, fmt.Errorf("RecordQueryIntersectionPlan: comparison ordering cannot be evaluated naturally")
+	}
+	return newRecordQueryIntersectionPlanWithSource(
+		qs, comparisonKeyOrderingParts, comparisonKeyValues, reverse, comparisonKeySource,
 	)
 }
 
@@ -99,13 +121,82 @@ func newRecordQueryIntersectionPlan(
 	comparisonKeyOrderingParts []properties.ProvidedOrderingPart,
 	comparisonKeyValues []values.Value,
 	reverse bool,
-) *RecordQueryIntersectionPlan {
+) (*RecordQueryIntersectionPlan, error) {
+	base, err := newPlanExprBaseForFirstQuantifier("RecordQueryIntersectionPlan", qs)
+	if err != nil {
+		return nil, err
+	}
 	return &RecordQueryIntersectionPlan{
+		PlanExprBase:               base,
 		childQs:                    append([]expressions.Quantifier(nil), qs...),
 		comparisonKeyOrderingParts: append([]properties.ProvidedOrderingPart(nil), comparisonKeyOrderingParts...),
 		comparisonKeyValues:        append([]values.Value(nil), comparisonKeyValues...),
 		reverse:                    reverse,
+	}, nil
+}
+
+func newRecordQueryIntersectionPlanWithSource(
+	qs []expressions.Quantifier,
+	comparisonKeyOrderingParts []properties.ProvidedOrderingPart,
+	comparisonKeyValues []values.Value,
+	reverse bool,
+	comparisonKeySource values.QuantifiedObjectValue,
+) (*RecordQueryIntersectionPlan, error) {
+	base, err := newPlanExprBaseForFirstQuantifier("RecordQueryIntersectionPlan", qs)
+	if err != nil {
+		return nil, err
 	}
+	layout, err := base.ProvidedOutputLayout()
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryIntersectionPlan comparison-key output layout: %w", err)
+	}
+	normalizedParts, err := normalizeIntersectionOrderingParts(
+		comparisonKeyOrderingParts, comparisonKeySource, layout.Carrier())
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryIntersectionPlan comparison key: %w", err)
+	}
+	normalizedValues, ok := properties.NaturalComparisonKeyValues(normalizedParts, reverse)
+	if !ok || len(normalizedValues) != len(comparisonKeyValues) {
+		return nil, fmt.Errorf("RecordQueryIntersectionPlan: normalized comparison ordering cannot be evaluated naturally")
+	}
+	return &RecordQueryIntersectionPlan{
+		PlanExprBase:               base,
+		childQs:                    append([]expressions.Quantifier(nil), qs...),
+		comparisonKeyOrderingParts: normalizedParts,
+		comparisonKeyValues:        normalizedValues,
+		comparisonKeysOnCarrier:    true,
+		reverse:                    reverse,
+	}, nil
+}
+
+func normalizeIntersectionOrderingParts(
+	parts []properties.ProvidedOrderingPart,
+	source values.QuantifiedObjectValue,
+	target values.QuantifiedObjectValue,
+) ([]properties.ProvidedOrderingPart, error) {
+	if source == nil || source.Correlation() != values.CurrentCorrelation() {
+		return nil, fmt.Errorf("comparison-key source must be an exact current carrier")
+	}
+	normalized := make([]properties.ProvidedOrderingPart, len(parts))
+	for i, part := range parts {
+		field, isField := values.AsFieldValue(part.Value)
+		if !isField || field.Path() == nil || field.Path().Len() != 1 {
+			return nil, fmt.Errorf("part %d is not an exact top-level field", i)
+		}
+		root, isRoot := values.AsQuantifiedObjectValue(field.ChildValue())
+		if !isRoot || root != source {
+			return nil, fmt.Errorf("part %d is not rooted at the declared comparison-key source", i)
+		}
+		translated, err := values.TranslatePhaseRoot(part.Value, source, target)
+		if err != nil {
+			return nil, fmt.Errorf("part %d: %w", i, err)
+		}
+		normalized[i] = properties.ProvidedOrderingPart{
+			Value:     translated,
+			SortOrder: part.SortOrder,
+		}
+	}
+	return normalized, nil
 }
 
 func ascendingIntersectionParts(comparisonKeyValues []values.Value) []properties.ProvidedOrderingPart {
@@ -141,12 +232,7 @@ func (p *RecordQueryIntersectionPlan) IsReverse() bool { return p.reverse }
 
 // GetResultType returns the first inner's result type, or
 // UnknownType if there are no inners.
-func (p *RecordQueryIntersectionPlan) GetResultType() values.Type {
-	if len(p.childQs) == 0 {
-		return values.UnknownType
-	}
-	return planFromQuantifier(p.childQs[0]).GetResultType()
-}
+func (p *RecordQueryIntersectionPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 // GetChildren returns the inner plans.
 func (p *RecordQueryIntersectionPlan) GetChildren() []RecordQueryPlan { return p.GetInners() }
@@ -216,13 +302,39 @@ func (p *RecordQueryIntersectionPlan) GetQuantifiers() []expressions.Quantifier 
 // Java's copy-on-write withChildrenReferences. The receiver is never mutated,
 // which is what keeps a memoized plan safe to share; the incoming slice is
 // copied so the caller cannot alias the copy's storage either.
-func (p *RecordQueryIntersectionPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != len(p.childQs) {
-		return p
+func (p *RecordQueryIntersectionPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryIntersectionPlan", len(qs), len(p.childQs)); err != nil {
+		return nil, err
 	}
 	cp := *p
+	base, err := newPlanExprBaseForFirstQuantifier("RecordQueryIntersectionPlan", qs)
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
 	cp.childQs = append([]expressions.Quantifier(nil), qs...)
-	return &cp
+	if p.comparisonKeysOnCarrier {
+		oldLayout, oldLayoutErr := p.ProvidedOutputLayout()
+		if oldLayoutErr != nil {
+			return nil, fmt.Errorf("RecordQueryIntersectionPlan old comparison-key output layout: %w", oldLayoutErr)
+		}
+		newLayout, newLayoutErr := base.ProvidedOutputLayout()
+		if newLayoutErr != nil {
+			return nil, fmt.Errorf("RecordQueryIntersectionPlan new comparison-key output layout: %w", newLayoutErr)
+		}
+		normalizedParts, normalizeErr := normalizeIntersectionOrderingParts(
+			p.comparisonKeyOrderingParts, oldLayout.Carrier(), newLayout.Carrier())
+		if normalizeErr != nil {
+			return nil, fmt.Errorf("RecordQueryIntersectionPlan relink comparison key: %w", normalizeErr)
+		}
+		normalizedValues, natural := properties.NaturalComparisonKeyValues(normalizedParts, p.reverse)
+		if !natural {
+			return nil, fmt.Errorf("RecordQueryIntersectionPlan: relinked comparison ordering cannot be evaluated naturally")
+		}
+		cp.comparisonKeyOrderingParts = normalizedParts
+		cp.comparisonKeyValues = normalizedValues
+	}
+	return &cp, nil
 }
 
 // ChildrenAsSet reports that the legs of this set operation are commutative.
@@ -239,10 +351,7 @@ func (p *RecordQueryIntersectionPlan) IsIntersection() {}
 // physicalIntersectionWrapper (RFC-184 W2); an empty intersection falls back to
 // PlanExprBase's fresh stand-in.
 func (p *RecordQueryIntersectionPlan) GetResultValue() values.Value {
-	if len(p.childQs) == 0 {
-		return p.PlanExprBase.GetResultValue()
-	}
-	return p.childQs[0].GetFlowedObjectValue()
+	return p.PlanExprBase.GetResultValue()
 }
 
 // WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
@@ -250,7 +359,7 @@ func (p *RecordQueryIntersectionPlan) GetResultValue() values.Value {
 // is a quantifier swap: WithQuantifiers rebinds the legs and GetInners re-resolves
 // through the new references (RFC-184 W2, replacing physicalIntersectionWrapper.WithChildren).
 func (p *RecordQueryIntersectionPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

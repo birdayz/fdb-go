@@ -43,7 +43,7 @@ func legLayoutFixture(table string, cols ...string) (plans.RecordQueryPlan, *Pos
 		slots[i] = int64(i)
 	}
 	rt := &values.RecordType{Fields: fields}
-	return plans.NewRecordQueryScanPlan([]string{table}, rt, false), &PositionalRow{Type: rt, Slots: slots}
+	return mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{table}, rt, false)), &PositionalRow{Type: rt, Slots: slots}
 }
 
 // legWindowsOf renders a row type's leg table as comparable text: identity, start,
@@ -70,10 +70,10 @@ func TestLegLayout_PlannerAndRuntimeAgree(t *testing.T) {
 	outerPlan, outerRow := legLayoutFixture("OUTER", "A0", "A1", "A2")
 	innerPlan, innerRow := legLayoutFixture("INNER", "B0", "B1")
 
-	nlj := plans.NewRecordQueryNestedLoopJoinPlan(
+	nlj := mustExecutorConstruct(plans.NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan, nil, plans.JoinInner, outerAlias, innerAlias,
 		values.NewRecordConstructorValue(),
-	)
+	))
 
 	planner := cascades.PlanLegConcatLayout(nlj, joinAlias)
 	if planner == nil {
@@ -162,10 +162,10 @@ func TestLegLayout_PlannerAndRuntimeAgreeOnOffsetsWhenNamesDiverge(t *testing.T)
 	outerPlan, outerRow := legLayoutFixture("OUTER", "A0", "A1")
 	innerPlan, innerRow := legLayoutFixture("ELEM", values.OrdinalFieldName(0))
 
-	nlj := plans.NewRecordQueryNestedLoopJoinPlan(
+	nlj := mustExecutorConstruct(plans.NewRecordQueryNestedLoopJoinPlan(
 		outerPlan, innerPlan, nil, plans.JoinInner, outerAlias, innerAlias,
 		values.NewRecordConstructorValue(),
-	)
+	))
 	planner := cascades.PlanLegConcatLayout(nlj, joinAlias)
 	if planner == nil {
 		t.Fatal("the planner walk declined the width-1 element leg shape")

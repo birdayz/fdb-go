@@ -887,25 +887,24 @@ func inPlanPenaltyRank(e expressions.RelationalExpression) int {
 // expression is not an IN-plan. Matches Java's OptionalInt return:
 // empty → (0, false), present(0) → (0, true), present(1) → (1, true).
 func compareInOperator(expr expressions.RelationalExpression) (int, bool) {
-	var bindingNames []string
+	var bindingAliases []values.CorrelationIdentifier
 	switch w := expr.(type) {
 	// The InJoin is its own physical expression now (RFC-184 W2).
 	case *plans.RecordQueryInJoinPlan:
-		bindingNames = []string{w.GetBindingName()}
+		bindingAliases = []values.CorrelationIdentifier{w.GetBindingAlias()}
 	// The InUnion is its own physical expression now (RFC-184 W2).
 	case *plans.RecordQueryInUnionPlan:
-		bindingNames = w.GetBindingNames()
+		bindingAliases = w.GetBindingAliases()
 	default:
 		return 0, false
 	}
-	if len(bindingNames) == 0 {
+	if len(bindingAliases) == 0 {
 		return 0, false
 	}
 
 	sargedAliases := collectSargedAliases(expr)
 
-	for _, name := range bindingNames {
-		alias := values.NamedCorrelationIdentifier(name)
+	for _, alias := range bindingAliases {
 		if _, found := sargedAliases[alias]; found {
 			return 0, true
 		}
@@ -2573,12 +2572,17 @@ func predicatesFilterIsFullPKPointProbe(pl *plans.RecordQueryPredicatesFilterPla
 	if len(pkCols) == 0 {
 		return false
 	}
-	// The scanned row's own layout. Every ordinal below is stated in it, and
-	// the primary key's metadata names are resolved against it exactly once.
-	// Unknown means there is no declared column order to state the proof in, so
-	// the probe declines rather than falling back to the names it still has.
-	layout := scan.GetResultType()
-	recordResultTypeRead("predicatesFilterIsFullPKPointProbe", layout)
+	// The scanned row's exact physical layout. Filter construction normalizes
+	// its own-row predicate fields onto this carrier, so the cost proof must use
+	// the same authority rather than comparing them to the filter's historical
+	// logical binding alias. The carrier handle is load-bearing: a separately
+	// minted same-shaped `_current` belongs to another evaluation phase.
+	provided, err := scan.ProvidedOutputLayout()
+	if err != nil || provided == nil || provided.Carrier() == nil {
+		return false
+	}
+	carrier := provided.Carrier()
+	layout := carrier.FlowedType()
 	frontier := values.OrdinalDomainOfType(layout)
 	if !frontier.IsKnown() {
 		return false
@@ -2596,11 +2600,12 @@ func predicatesFilterIsFullPKPointProbe(pl *plans.RecordQueryPredicatesFilterPla
 	// mis-ranking this bound exists to prevent, pointed the other way.
 	//
 	// An operand qualifies only if it reads THIS scan's row: its ordinal must
-	// index this layout (the domain check), and its correlation must be the
-	// filter's own inner quantifier. A CHILDLESS operand carries the zero
-	// correlation, which by the ColumnIdentity contract means "the value's own
-	// source" — that is this row, so it qualifies; a QOV rooted at any OTHER
-	// quantifier is an outer reference and does not.
+	// index this layout (the domain check), and its root must be either the
+	// filter's logical inner alias or this scan's exact physical carrier. A
+	// CHILDLESS operand carries the zero correlation, which by the
+	// ColumnIdentity contract means "the value's own source" — that is this
+	// row, so it qualifies; a QOV rooted at any OTHER quantifier/current phase
+	// is an outer reference and does not.
 	innerAlias := pl.GetInnerAlias()
 	eqColumns := make(map[values.ColumnIdentity][]predicates.Comparison)
 	for _, pred := range pl.GetPredicates() {
@@ -2616,15 +2621,15 @@ func predicatesFilterIsFullPKPointProbe(pl *plans.RecordQueryPredicatesFilterPla
 		if !residualComparandIsRowInvariant(cp.Comparison.Operand, innerAlias) {
 			continue
 		}
-		fv, ok := cp.Operand.(*values.FieldValue)
+		fv, ok := values.AsFieldValue(cp.Operand)
 		if !ok {
 			continue
 		}
-		id, ok := fv.IdentityIn(frontier)
+		id, ok := values.CorrelatedFieldIdentityIn(fv, frontier)
 		if !ok {
 			continue
 		}
-		if !id.Correlation.IsZero() && id.Correlation != innerAlias {
+		if !residualFieldReadsScanCarrier(fv, id, innerAlias, carrier) {
 			continue
 		}
 		key := id.WithCorrelation(values.CorrelationIdentifier{})
@@ -2666,12 +2671,35 @@ func predicatesFilterIsFullPKPointProbe(pl *plans.RecordQueryPredicatesFilterPla
 	return true
 }
 
+// residualFieldReadsScanCarrier proves the correlation component of a
+// residual PK field. Logical/legacy spellings use the filter's declared inner
+// alias (or zero for the old source-local form). Exact physical spellings use
+// reserved current and must share the scan's owner-minted carrier handle; row
+// shape and the reserved spelling alone do not identify an evaluation phase.
+func residualFieldReadsScanCarrier(
+	field values.FieldValue,
+	identity values.ColumnIdentity,
+	innerAlias values.CorrelationIdentifier,
+	carrier values.QuantifiedObjectValue,
+) bool {
+	switch {
+	case identity.Correlation.IsZero(), identity.Correlation == innerAlias:
+		return true
+	case identity.Correlation == values.CurrentCorrelation():
+		root, rooted := values.AsQuantifiedObjectValue(field.ChildValue())
+		return rooted && root == carrier
+	default:
+		return false
+	}
+}
+
 // residualComparandIsRowInvariant proves that v has one value for the whole
 // residual filter execution, rather than being recomputed from each scanned
 // row. Constants and parameters are invariant. A value rooted in an outer
-// quantifier is invariant as long as its tree neither mentions the filter's
-// own quantifier nor contains a childless FieldValue (the legacy childless
-// shape implicitly reads the current frontier row).
+// quantifier is invariant as long as its tree mentions neither the filter's
+// logical inner alias nor the selected child's reserved-current carrier, and
+// contains no childless FieldValue (the legacy childless shape implicitly
+// reads the current frontier row).
 //
 // Unknown childless Value kinds fail closed. For composite Values the Value
 // contract is functional over Children(), so recursively invariant children
@@ -2684,20 +2712,35 @@ func residualComparandIsRowInvariant(
 	if v == nil {
 		return false
 	}
-	if _, dependsOnInner := values.GetCorrelatedToOfValue(v)[innerAlias]; dependsOnInner {
+	correlated := values.GetCorrelatedToOfValue(v)
+	if _, dependsOnInner := correlated[innerAlias]; dependsOnInner {
+		return false
+	}
+	// Exact filter construction moves the logical inner alias onto the
+	// selected child's reserved-current carrier. A comparand rooted there is
+	// still recomputed for every scanned row (`K = K`), not an outer constant.
+	// Current's kind is owner-reserved, so a named alias whose text happens to
+	// be "_current" does not enter this branch.
+	if _, dependsOnCurrent := correlated[values.CurrentCorrelation()]; dependsOnCurrent {
 		return false
 	}
 	if values.IsConstantValue(v) {
 		return true
 	}
-	switch value := v.(type) {
+	if _, isQOV := values.AsQuantifiedObjectValue(v); isQOV {
+		// The inner alias was rejected above, so this QOV is bound outside the
+		// filter execution and is invariant for every row of this scan.
+		return true
+	}
+	if _, isField := values.AsFieldValue(v); isField {
+		// Any inner-correlated field was rejected above. A remaining field is
+		// rooted in an outer binding and is invariant for this scan execution.
+		return true
+	}
+	switch v.(type) {
 	case *values.ParameterValue, *values.ParameterObjectValue:
 		return true
-	case *values.FieldValue:
-		if value.Child == nil {
-			return false
-		}
-	case *values.QuantifiedObjectValue, *values.QuantifiedRecordValue,
+	case *values.QuantifiedRecordValue,
 		*values.ObjectValue, *values.ScalarSubqueryValue,
 		*values.ConstantObjectValue, *values.UnmatchedAggregateValue:
 		// These are correlation-bearing leaves. The inner alias was rejected
@@ -2751,8 +2794,8 @@ func residualPrimaryKeyPhysicalTypes(
 			}
 			continue
 		}
-		field, isField := component.(*values.FieldValue)
-		if !isField || field.Child != nil {
+		field, isField := values.AsFieldValue(component)
+		if !isField || field.ChildValue() == nil || field.Path().Len() != 1 {
 			return nil, false
 		}
 		result = append(result, aligned[i])

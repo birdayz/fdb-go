@@ -6,7 +6,73 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+func mustAdjustMatchConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct adjust-match fixture: " + err.Error())
+	}
+	return value
+}
+
+func adjustMatchRowType() *values.RecordType {
+	return values.NewRecordType("AdjustMatchRow", false, []values.Field{{
+		Name:      "ID",
+		FieldType: values.NotNullLong,
+	}})
+}
+
+func adjustMatchScan() *expressions.FullUnorderedScanExpression {
+	return mustAdjustMatchConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, adjustMatchRowType()))
+}
+
+func adjustMatchFilter(inner expressions.Quantifier) *expressions.LogicalFilterExpression {
+	return mustAdjustMatchConstruct(expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		inner,
+	))
+}
+
+func adjustMatchLong(value int64) values.Value {
+	return &values.ConstantValue{Value: value, Typ: values.NotNullLong}
+}
+
+type adjustMatchCandidate struct {
+	name      string
+	traversal *Traversal
+}
+
+func (c adjustMatchCandidate) CandidateName() string  { return c.name }
+func (adjustMatchCandidate) GetColumnNames() []string { return nil }
+func (adjustMatchCandidate) GetSargableAliases() []values.CorrelationIdentifier {
+	return nil
+}
+func (adjustMatchCandidate) GetRecordTypes() []string { return nil }
+func (adjustMatchCandidate) IsUnique() bool           { return false }
+func (c adjustMatchCandidate) GetTraversal() *Traversal {
+	return c.traversal
+}
+
+func (adjustMatchCandidate) ComputeBoundParameterPrefixMap(
+	bindings map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+) map[values.CorrelationIdentifier]*predicates.ComparisonRange {
+	prefix := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
+	for alias, binding := range bindings {
+		if binding != nil && !binding.IsEmpty() {
+			prefix[alias] = binding
+		}
+	}
+	return prefix
+}
+
+func (adjustMatchCandidate) ToScanPlan(
+	map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+	bool,
+) plans.RecordQueryPlan {
+	return nil
+}
 
 // adjustableFilterExpression wraps a LogicalFilterExpression and
 // implements ExpressionMatchAdjuster so that AdjustMatches can absorb
@@ -28,22 +94,19 @@ func TestAdjustMatches_ScanToFilter(t *testing.T) {
 	t.Parallel()
 
 	// --- Query side: bare scan ---
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScan := adjustMatchScan()
 	queryScanRef := expressions.InitialOf(queryScan)
 
 	// --- Candidate side: adjustableFilter(scan) ---
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	candidateScan := adjustMatchScan()
 	candidateScanRef := expressions.InitialOf(candidateScan)
 	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
-	innerFilter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-		candidateScanQ,
-	)
+	innerFilter := adjustMatchFilter(candidateScanQ)
 	candidateFilter := &adjustableFilterExpression{LogicalFilterExpression: innerFilter}
 	candidateFilterRef := expressions.InitialOf(candidateFilter)
 	traversal := NewTraversal(candidateFilterRef)
 
-	mc := &testMatchCandidate{name: "idx_adj", traversal: traversal}
+	mc := &adjustMatchCandidate{name: "idx_adj", traversal: traversal}
 
 	// Seed the leaf match: queryScanRef matched against candidateScanRef.
 	seedMI := NewRegularMatchInfo(nil, EmptyAliasMap(), nil, nil, nil, EmptyGroupByMappings(), nil, nil)
@@ -103,35 +166,29 @@ func TestAdjustMatches_MultiLevel(t *testing.T) {
 	t.Parallel()
 
 	// --- Query side: filter(scan) ---
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScan := adjustMatchScan()
 	queryScanRef := expressions.InitialOf(queryScan)
 	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
-	queryFilter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-		queryScanQ,
-	)
+	queryFilter := adjustMatchFilter(queryScanQ)
 	queryFilterRef := expressions.InitialOf(queryFilter)
 
 	// --- Candidate side: adjustableSort(adjustableFilter(scan)) ---
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	candidateScan := adjustMatchScan()
 	candidateScanRef := expressions.InitialOf(candidateScan)
 	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
 
-	innerFilter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-		candidateScanQ,
-	)
+	innerFilter := adjustMatchFilter(candidateScanQ)
 	candidateFilter := &adjustableFilterExpression{LogicalFilterExpression: innerFilter}
 	candidateFilterRef := expressions.InitialOf(candidateFilter)
 	candidateFilterQ := expressions.ForEachQuantifier(candidateFilterRef)
 
 	// Use LogicalSortExpression wrapped in adjustable for the sort level.
-	innerSort := expressions.NewLogicalSortExpression(nil, candidateFilterQ)
+	innerSort := mustAdjustMatchConstruct(expressions.NewLogicalSortExpression(nil, candidateFilterQ))
 	candidateSort := &adjustableSortExpression{LogicalSortExpression: innerSort}
 	candidateSortRef := expressions.InitialOf(candidateSort)
 	traversal := NewTraversal(candidateSortRef)
 
-	mc := &testMatchCandidate{name: "idx_multi", traversal: traversal}
+	mc := &adjustMatchCandidate{name: "idx_multi", traversal: traversal}
 
 	// Seed leaf match: queryScanRef -> candidateScanRef.
 	leafMI := NewRegularMatchInfo(nil, EmptyAliasMap(), nil, nil, nil, EmptyGroupByMappings(), nil, nil)
@@ -195,27 +252,27 @@ func TestAdjustMatches_MultipleQuantifiers(t *testing.T) {
 	t.Parallel()
 
 	// --- Query side: bare scan ---
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScan := adjustMatchScan()
 	queryScanRef := expressions.InitialOf(queryScan)
 
 	// --- Candidate side: Select(scanA, scanB) — two quantifiers ---
-	candidateScanA := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	candidateScanA := adjustMatchScan()
 	candidateScanRefA := expressions.InitialOf(candidateScanA)
 	candidateQA := expressions.ForEachQuantifier(candidateScanRefA)
 
-	candidateScanB := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	candidateScanB := adjustMatchScan()
 	candidateScanRefB := expressions.InitialOf(candidateScanB)
 	candidateQB := expressions.ForEachQuantifier(candidateScanRefB)
 
-	candidateSelect := expressions.NewSelectExpression(
+	candidateSelect := mustAdjustMatchConstruct(expressions.NewSelectExpression(
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{candidateQA, candidateQB},
 		nil,
-	)
+	))
 	candidateSelectRef := expressions.InitialOf(candidateSelect)
 	traversal := NewTraversal(candidateSelectRef)
 
-	mc := &testMatchCandidate{name: "idx_multi_q", traversal: traversal}
+	mc := &adjustMatchCandidate{name: "idx_multi_q", traversal: traversal}
 
 	// Seed leaf match: queryScanRef -> candidateScanRefA.
 	seedMI := NewRegularMatchInfo(nil, EmptyAliasMap(), nil, nil, nil, EmptyGroupByMappings(), nil, nil)
@@ -241,7 +298,7 @@ func TestAdjustMatches_MultipleQuantifiers(t *testing.T) {
 func TestAdjustMatches_NoExistingMatches(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := adjustMatchScan()
 	scanRef := expressions.InitialOf(scan)
 
 	// No partial matches seeded. Should not panic.
@@ -261,21 +318,18 @@ func TestAdjustMatches_NonAdjustableExpression(t *testing.T) {
 	t.Parallel()
 
 	// --- Query side: bare scan ---
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScan := adjustMatchScan()
 	queryScanRef := expressions.InitialOf(queryScan)
 
 	// --- Candidate side: plain filter(scan) — NOT adjustable ---
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	candidateScan := adjustMatchScan()
 	candidateScanRef := expressions.InitialOf(candidateScan)
 	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
-	candidateFilter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-		candidateScanQ,
-	)
+	candidateFilter := adjustMatchFilter(candidateScanQ)
 	candidateFilterRef := expressions.InitialOf(candidateFilter)
 	traversal := NewTraversal(candidateFilterRef)
 
-	mc := &testMatchCandidate{name: "idx_noadj", traversal: traversal}
+	mc := &adjustMatchCandidate{name: "idx_noadj", traversal: traversal}
 
 	// Seed leaf match.
 	seedMI := NewRegularMatchInfo(nil, EmptyAliasMap(), nil, nil, nil, EmptyGroupByMappings(), nil, nil)
@@ -300,26 +354,23 @@ func TestAdjustMatches_CandidateRefMismatch(t *testing.T) {
 	t.Parallel()
 
 	// --- Query side: bare scan ---
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScan := adjustMatchScan()
 	queryScanRef := expressions.InitialOf(queryScan)
 
 	// --- Candidate side: filter(scan) ---
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	candidateScan := adjustMatchScan()
 	candidateScanRef := expressions.InitialOf(candidateScan)
 	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
-	innerFilter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-		candidateScanQ,
-	)
+	innerFilter := adjustMatchFilter(candidateScanQ)
 	candidateFilter := &adjustableFilterExpression{LogicalFilterExpression: innerFilter}
 	candidateFilterRef := expressions.InitialOf(candidateFilter)
 	traversal := NewTraversal(candidateFilterRef)
 
-	mc := &testMatchCandidate{name: "idx_mismatch", traversal: traversal}
+	mc := &adjustMatchCandidate{name: "idx_mismatch", traversal: traversal}
 
 	// Seed a leaf match that points to a DIFFERENT candidate ref
 	// (not candidateScanRef).
-	otherScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	otherScan := adjustMatchScan()
 	otherRef := expressions.InitialOf(otherScan)
 	seedMI := NewRegularMatchInfo(nil, EmptyAliasMap(), nil, nil, nil, EmptyGroupByMappings(), nil, nil)
 	seedPM := NewPartialMatch(EmptyAliasMap(), mc, queryScanRef, queryScan, otherRef, seedMI)
@@ -340,17 +391,14 @@ func TestAdjustMatches_CandidateRefMismatch(t *testing.T) {
 // adjustableFilter(scan), seeds a leaf PartialMatch on queryScanRef pointing at
 // the candidate's scan ref, and returns the candidate + the parent (filter) ref
 // that a successful adjustment should produce a match on.
-func seedAdjustableCandidate(name string, queryScanRef *expressions.Reference, queryScan expressions.RelationalExpression) (*testMatchCandidate, *expressions.Reference) {
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+func seedAdjustableCandidate(name string, queryScanRef *expressions.Reference, queryScan expressions.RelationalExpression) (*adjustMatchCandidate, *expressions.Reference) {
+	candidateScan := adjustMatchScan()
 	candidateScanRef := expressions.InitialOf(candidateScan)
 	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
-	innerFilter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-		candidateScanQ,
-	)
+	innerFilter := adjustMatchFilter(candidateScanQ)
 	candidateFilter := &adjustableFilterExpression{LogicalFilterExpression: innerFilter}
 	candidateFilterRef := expressions.InitialOf(candidateFilter)
-	mc := &testMatchCandidate{name: name, traversal: NewTraversal(candidateFilterRef)}
+	mc := &adjustMatchCandidate{name: name, traversal: NewTraversal(candidateFilterRef)}
 
 	seedMI := NewRegularMatchInfo(nil, EmptyAliasMap(), nil, nil, nil, EmptyGroupByMappings(), nil, nil)
 	seedPM := NewPartialMatch(EmptyAliasMap(), mc, queryScanRef, queryScan, candidateScanRef, seedMI)
@@ -379,7 +427,7 @@ func candHasAdjustedMatch(ref *expressions.Reference, mc MatchCandidate, parentR
 func TestAdjustPartialMatches_LateSeededCandidateWaveStillAdjusted(t *testing.T) {
 	t.Parallel()
 
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScan := adjustMatchScan()
 	queryScanRef := expressions.InitialOf(queryScan)
 
 	// Wave 1: candidate A.
@@ -408,7 +456,7 @@ func TestAdjustPartialMatches_LateSeededCandidateWaveStillAdjusted(t *testing.T)
 func TestAdjustPartialMatches_NoDuplicateExplosionOnRepeatedCalls(t *testing.T) {
 	t.Parallel()
 
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScan := adjustMatchScan()
 	queryScanRef := expressions.InitialOf(queryScan)
 	mc, _ := seedAdjustableCandidate("idx_X", queryScanRef, queryScan)
 
@@ -428,26 +476,26 @@ func TestAdjustPartialMatches_NoDuplicateExplosionOnRepeatedCalls(t *testing.T) 
 func TestAdjustMatchForSelect_RejectsMultiMemberLowerReference(t *testing.T) {
 	t.Parallel()
 
-	firstLower := expressions.NewSelectExpression(
-		values.LiteralValue(int64(1)),
+	firstLower := mustAdjustMatchConstruct(expressions.NewSelectExpression(
+		adjustMatchLong(1),
 		nil,
 		nil,
-	)
-	secondLower := expressions.NewSelectExpression(
-		values.LiteralValue(int64(2)),
+	))
+	secondLower := mustAdjustMatchConstruct(expressions.NewSelectExpression(
+		adjustMatchLong(2),
 		nil,
 		nil,
-	)
+	))
 	lowerRef := expressions.InitialOf(firstLower)
 	inner := expressions.ForEachQuantifier(lowerRef)
-	upperResult := values.NewQuantifiedObjectValue(inner.GetAlias())
-	upperSelect := expressions.NewSelectExpression(
+	upperResult := mustAdjustMatchConstruct(inner.RequireFlowedObjectValue())
+	upperSelect := mustAdjustMatchConstruct(expressions.NewSelectExpression(
 		upperResult,
 		[]expressions.Quantifier{inner},
 		nil,
-	)
+	))
 
-	matchedValue := values.LiteralValue(int64(7))
+	matchedValue := adjustMatchLong(7)
 	maxMatchMap := NewMaxMatchMap(
 		map[values.Value]values.Value{matchedValue: matchedValue},
 		matchedValue,
@@ -455,7 +503,7 @@ func TestAdjustMatchForSelect_RejectsMultiMemberLowerReference(t *testing.T) {
 	)
 	matchedGroupings := NewValueBiMap()
 	matchedGroupings.Put(
-		values.LiteralValue(int64(8)),
+		adjustMatchLong(8),
 		matchedValue,
 	)
 	matchInfo := NewRegularMatchInfo(
@@ -472,10 +520,10 @@ func TestAdjustMatchForSelect_RejectsMultiMemberLowerReference(t *testing.T) {
 		nil,
 		nil,
 	)
-	queryExpression := expressions.NewSelectExpression(matchedValue, nil, nil)
+	queryExpression := mustAdjustMatchConstruct(expressions.NewSelectExpression(matchedValue, nil, nil))
 	partialMatch := NewPartialMatch(
 		EmptyAliasMap(),
-		stubMatchCandidate{name: "adjust_select_singleton_guard"},
+		adjustMatchCandidate{name: "adjust_select_singleton_guard"},
 		expressions.InitialOf(queryExpression),
 		queryExpression,
 		expressions.InitialOf(firstLower),
@@ -508,14 +556,14 @@ func TestAdjustMatchForSelect_BailsOnNonTautologyPredicate(t *testing.T) {
 	t.Parallel()
 
 	build := func(preds []predicates.QueryPredicate) (*expressions.SelectExpression, *PartialMatchImpl) {
-		lower := expressions.NewSelectExpression(values.LiteralValue(int64(1)), nil, nil)
+		lower := mustAdjustMatchConstruct(expressions.NewSelectExpression(adjustMatchLong(1), nil, nil))
 		inner := expressions.ForEachQuantifier(expressions.InitialOf(lower))
-		upper := expressions.NewSelectExpression(
-			values.NewQuantifiedObjectValue(inner.GetAlias()),
+		upper := mustAdjustMatchConstruct(expressions.NewSelectExpression(
+			mustAdjustMatchConstruct(inner.RequireFlowedObjectValue()),
 			[]expressions.Quantifier{inner},
 			preds,
-		)
-		matchedValue := values.LiteralValue(int64(7))
+		))
+		matchedValue := adjustMatchLong(7)
 		maxMatchMap := NewMaxMatchMap(
 			map[values.Value]values.Value{matchedValue: matchedValue},
 			matchedValue,
@@ -525,10 +573,10 @@ func TestAdjustMatchForSelect_BailsOnNonTautologyPredicate(t *testing.T) {
 			nil, EmptyAliasMap(), nil, nil, maxMatchMap,
 			EmptyGroupByMappings(), nil, nil,
 		)
-		queryExpression := expressions.NewSelectExpression(matchedValue, nil, nil)
+		queryExpression := mustAdjustMatchConstruct(expressions.NewSelectExpression(matchedValue, nil, nil))
 		pm := NewPartialMatch(
 			EmptyAliasMap(),
-			stubMatchCandidate{name: "adjust_select_tautology_guard"},
+			adjustMatchCandidate{name: "adjust_select_tautology_guard"},
 			expressions.InitialOf(queryExpression),
 			queryExpression,
 			expressions.InitialOf(lower),
@@ -548,7 +596,7 @@ func TestAdjustMatchForSelect_BailsOnNonTautologyPredicate(t *testing.T) {
 		"constant_false": predicates.NewConstantPredicate(predicates.TriFalse),
 		"constant_null":  predicates.NewConstantPredicate(predicates.TriUnknown),
 		"comparison": predicates.NewComparisonPredicate(
-			values.LiteralValue(int64(3)),
+			adjustMatchLong(3),
 			predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(200)),
 		),
 	} {

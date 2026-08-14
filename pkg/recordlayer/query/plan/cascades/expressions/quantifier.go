@@ -205,16 +205,11 @@ func (q Quantifier) GetAlias() values.CorrelationIdentifier { return q.alias }
 
 // GetRangesOver returns the Reference holding the inner expression.
 //
-// Resolves through Canonical() so that if the child Reference has been
-// merged away (RFC-037 cross-group merging), every consumer transparently
-// sees the surviving Reference. This single accessor is the only reader of
-// the raw rangesOver field, so resolving here covers all consumers without
-// rewriting in-flight expressions.
+// Resolves forwarding read-only so that if the child Reference has been merged
+// away (RFC-037 cross-group merging), every consumer transparently sees the
+// survivor without path-compressing shared topology during a fallible read.
 func (q Quantifier) GetRangesOver() *Reference {
-	if q.rangesOver == nil {
-		return nil
-	}
-	return q.rangesOver.Canonical()
+	return canonicalReferenceReadOnly(q.rangesOver)
 }
 
 // IsNullOnEmpty returns true for ForEach quantifiers that should
@@ -224,37 +219,6 @@ func (q Quantifier) IsNullOnEmpty() bool { return q.nullOnEmpty }
 // IsStrictSingle returns true for a correlated-scalar-subquery inner quantifier
 // that must yield at most one row per outer row (a second row → 21000).
 func (q Quantifier) IsStrictSingle() bool { return q.strictSingle }
-
-// GetFlowedObjectValue returns a Value representing "the row currently
-// flowing along this Quantifier". Predicates / projections in the
-// owning expression use this Value (via FieldValue accesses) to refer
-// to columns of the inner expression's output.
-//
-// Java's `Quantifier.getFlowedObjectValue()` verbatim (Quantifier.java:801-803):
-// `QuantifiedObjectValue.of(getAlias(), getFlowedObjectType())`, i.e. ALWAYS
-// carrying the row type when the ranged-over reference states one.
-//
-// It used to mint the alias with no type, and the reason recorded for that was
-// that typing it "changes expression identity across the whole planner". That is
-// measured FALSE and pinned: a QuantifiedObjectValue's identity is its
-// CORRELATION in all three paths that decide it — EqualsWithoutChildren,
-// SemanticEqualsUnderAliasMap, and SemanticHashCode, which folds the tag "qov"
-// with the alias excluded. Typing one changes what it SAYS, never which
-// expression it IS. (TestTypingAQuantifiedObjectValueDoesNotChangeItsIdentity.)
-//
-// On a member DISAGREEMENT this returns the alias with no type, because it has no
-// error channel to report one through. That is NOT the collapse
-// GetFlowedObjectValueTyped's doc forbids: a caller that BAKES AN ORDINAL against
-// this row must use that accessor and refuse to proceed, because for it a row
-// shape chosen by memo insertion order is a wrong-slot read. A caller merely
-// reporting what flows loses type information it never had.
-func (q Quantifier) GetFlowedObjectValue() values.Value {
-	rt, err := q.GetFlowedObjectType()
-	if err != nil || rt == nil {
-		return values.NewQuantifiedObjectValue(q.alias)
-	}
-	return values.NewQuantifiedObjectValueOfType(q.alias, rt)
-}
 
 // MemberResultTypeDisagreementError reports that a Reference's members do not
 // agree on their result type, so no member is authoritative for the quantifier's
@@ -279,9 +243,23 @@ func (e *MemberResultTypeDisagreementError) Error() string {
 		e.Alias.Name(), e.Left, e.Right)
 }
 
-// GetFlowedObjectType returns the ROW type of the rows flowing along this
-// quantifier — Java's Quantifier.getFlowedObjectType() (Quantifier.java:806-810:
-// the ranged-over Reference's result type, unwrapped from its RELATION wrapper).
+// FlowedObjectTypeUnavailableError reports that a Quantifier cannot derive the
+// exact object or scalar type required by a QOV. Empty and memberless
+// References are invalid quantifier inputs; they are not represented by an
+// untyped placeholder value.
+type FlowedObjectTypeUnavailableError struct {
+	Alias  values.CorrelationIdentifier
+	Reason string
+}
+
+func (e *FlowedObjectTypeUnavailableError) Error() string {
+	return fmt.Sprintf("quantifier %s: flowed object type unavailable: %s", e.Alias.Name(), e.Reason)
+}
+
+// GetFlowedObjectType returns the exact object or scalar type flowing along this
+// quantifier. It follows Java's Quantifier.getFlowedObjectType(): every member's
+// relational result is represented as exactly RELATION<result>, that one
+// wrapper is removed, and NullOnEmpty widens the object once at this edge.
 //
 // Java resolves it from the Reference, whose getResultType() REDUCES over every
 // member expression and verifies each pair agrees (Reference.java:504-513). That
@@ -299,53 +277,54 @@ func (e *MemberResultTypeDisagreementError) Error() string {
 // unavailable" and keep the untyped QOV they used before. That is a REPORTING
 // gap, never a substitute — a caller that needs the type to bake an ordinal must
 // not invent one.
-func (q Quantifier) GetFlowedObjectType() (*values.RecordType, error) {
+func (q Quantifier) GetFlowedObjectType() (values.Type, error) {
 	ref := q.GetRangesOver()
 	if ref == nil {
-		return nil, nil
+		return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "quantifier has no Reference"}
 	}
 	// Java's getAllMemberExpressions() — exploratory AND final. A final member is
 	// the one a physical plan is built from, so excluding it would verify the
 	// agreement over exactly the members that do not end up in the plan.
 	members := ref.AllMembers()
 	if len(members) == 0 {
-		return nil, nil
+		return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "Reference has no members"}
 	}
-	var found *values.RecordType
+	var found values.Type
 	for _, member := range members {
 		if member == nil {
-			continue
+			return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "Reference contains a nil member"}
 		}
 		rv := member.GetResultValue()
 		if rv == nil {
-			continue
+			return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "member has no result Value"}
 		}
-		rt := rowTypeOf(rv.Type())
-		if rt == nil {
-			// An untyped member cannot contradict a typed one — it reports nothing.
-			// Java has no such member; Go's logical expressions do, and the reporting
-			// gap is documented above.
-			continue
+		relation, err := values.ExactRelationOf(rv.Type())
+		if err != nil {
+			return nil, fmt.Errorf("quantifier %s member result type: %w", q.alias.Name(), err)
 		}
+		inner, ok := relation.RelationInner()
+		if !ok {
+			return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "member result is missing its relation wrapper"}
+		}
+		rt := inner.Type()
 		if found == nil {
 			found = rt
 			continue
 		}
-		refined, agree := refineRowTypes(found, rt)
-		if !agree {
-			// The ACCUMULATED row on the left, not the first typed member's. Those
-			// differ from the third member onwards, and the error used to report the
-			// first — a row that was not what the failing comparison saw. On the shape
-			// this reduction exists for (one member unresolved, a later one resolving
-			// it, a third conflicting) the reported left-hand row still carried the
-			// UNKNOWN the second member had already resolved, so the message described
-			// a conflict nobody had, and the real one was invisible. Both sides are the
-			// unwrapped ROW types, because those are what refineRowTypes compared.
+		if !found.Equals(rt) {
 			return nil, &MemberResultTypeDisagreementError{
 				Alias: q.alias, Left: found, Right: rt,
 			}
 		}
-		found = refined
+	}
+	if found == nil {
+		return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "Reference has no usable members"}
+	}
+	if q.nullOnEmpty {
+		found = values.WithNullability(found, true)
+		if _, err := values.SnapshotExactType(found); err != nil {
+			return nil, fmt.Errorf("quantifier %s NullOnEmpty flowed type: %w", q.alias.Name(), err)
+		}
 	}
 	return found, nil
 }
@@ -543,46 +522,19 @@ func isUnstatedType(t values.Type) bool {
 	return t == nil || t.Code() == values.TypeCodeUnknown
 }
 
-// rowTypeOf unwraps a member's result type to its ROW type, through the RELATION
-// wrapper a relational expression's result value carries. nil when it is neither.
-func rowTypeOf(t values.Type) *values.RecordType {
-	switch t := t.(type) {
-	case *values.RecordType:
-		return t
-	case *values.RelationType:
-		if rt, isRT := t.InnerType.(*values.RecordType); isRT {
-			return rt
-		}
-	}
-	return nil
-}
-
-// GetFlowedObjectValueTyped is GetFlowedObjectValue with the member DISAGREEMENT
-// surfaced instead of swallowed. Both accessors type the value; they differ only
-// in what they do when the reference's members cannot agree on the row they flow.
-//
-// So the choice between them is NOT "do I want the type" — it is "can I proceed
-// without one". Callers that BAKE ORDINALS against the flowed row use this and
-// refuse to proceed on the error, because for them an invented row shape is a
-// wrong-slot read that no test can predict; an untyped QOV degrades a reference
-// to source-relative, and a source-relative operand pushed into a scan evaluates
-// to NULL against the build-bound row, so the join returns zero rows with no
-// error. Callers merely reporting what flows take GetFlowedObjectValue and lose
-// type information they never had.
-//
-// The error is the DISAGREEMENT only (see MemberResultTypeDisagreementError),
-// never the ordinary "no type yet": that returns the untyped QOV and a nil error.
-// A caller must not collapse the two — falling back to the untyped value on a
-// disagreement is choosing a row shape by memo insertion order.
-func (q Quantifier) GetFlowedObjectValueTyped() (values.Value, error) {
-	rt, err := q.GetFlowedObjectType()
+// RequireFlowedObjectValue constructs the only legal QOV for this edge. There
+// is no reporting-only or UnknownType fallback: absence, invalidity, and member
+// disagreement are returned before a Value is published.
+func (q Quantifier) RequireFlowedObjectValue() (values.QuantifiedObjectValue, error) {
+	flowedType, err := q.GetFlowedObjectType()
 	if err != nil {
 		return nil, err
 	}
-	if rt != nil {
-		return values.NewQuantifiedObjectValueOfType(q.alias, rt), nil
+	qov, err := values.NewQuantifiedObjectValue(q.alias, flowedType)
+	if err != nil {
+		return nil, fmt.Errorf("quantifier %s flowed QOV: %w", q.alias.Name(), err)
 	}
-	return values.NewQuantifiedObjectValue(q.alias), nil
+	return qov, nil
 }
 
 // GetCorrelatedTo returns the set of CorrelationIdentifiers the inner

@@ -188,8 +188,9 @@ func TestOrderingSatisfactionAndSortCoverageAgreeInOneCorrelationSpace(t *testin
 	// resolving its column list against the layout it flows puts the coverage
 	// disagreement straight back, and a hand-built provided key could never
 	// notice.
-	ordering := plans.NewRecordQueryIndexPlan(
-		"IDX_ID", nil, []string{"T"}, layout, false).
+	indexPlan, indexErr := plans.NewRecordQueryIndexPlan(
+		"IDX_ID", nil, []string{"T"}, layout, false)
+	ordering := mustConstruct(t, indexPlan, indexErr).
 		WithKeyComponentTypes([]values.Type{values.NullableLong}).
 		WithIndexMetadata([]string{"ID"}, nil, false).
 		WithStrictlySorted().
@@ -204,8 +205,16 @@ func TestOrderingSatisfactionAndSortCoverageAgreeInOneCorrelationSpace(t *testin
 	// the same ordinal in the same layout. Measured over the corpus this is the
 	// overwhelmingly common shape -- the bare-name request the old theory assumed
 	// is essentially absent.
-	requestedValue := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"ID", 0, values.UnknownType, domain)
+	providedField, isField := values.AsFieldValue(provided)
+	if !isField {
+		t.Fatalf("test setup: provider key %T is not an exact FieldValue", provided)
+	}
+	providedRoot, isRoot := values.AsQuantifiedObjectValue(providedField.ChildValue())
+	if !isRoot {
+		t.Fatalf("test setup: provider key root %T is not an exact QOV", providedField.ChildValue())
+	}
+	requestedValue, requestedErr := values.ResolveFieldOrdinals(providedRoot, []int{0})
+	requestedValue = mustConstruct(t, requestedValue, requestedErr)
 	requested := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{{
 			Value:     requestedValue,
@@ -256,16 +265,19 @@ func TestCrossCorrelationIsTheWholeResidualDisagreement(t *testing.T) {
 	t.Parallel()
 
 	layout := identityDecisionsLayout()
-	domain := values.OrdinalDomainOfType(layout)
-	if !domain.IsKnown() {
-		t.Fatalf("test setup: %v has no layout token", layout)
-	}
-
-	provided := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"ID", 0, values.UnknownType, domain)
-	requestedValue := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("C")),
-		"ID", 0, values.UnknownType, domain)
+	currentLayout, currentLayoutErr := values.NewOrdinalLayoutForCarrierType(
+		layout,
+		[]values.OrdinalTileSpec{{Start: 0, Width: 2, Kind: values.OrdinalTileFlat}},
+		nil,
+	)
+	currentLayout = mustConstruct(t, currentLayout, currentLayoutErr)
+	provided, providedErr := values.ResolveFieldOrdinals(currentLayout.Carrier(), []int{0})
+	provided = mustConstruct(t, provided, providedErr)
+	requestRoot, requestRootErr := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("C"), layout)
+	requestRoot = mustConstruct(t, requestRoot, requestRootErr)
+	requestedValue, requestedErr := values.ResolveFieldOrdinals(requestRoot, []int{0})
+	requestedValue = mustConstruct(t, requestedValue, requestedErr)
 
 	providedIdent, providedOK := values.OrderingIdentityOf(provided)
 	requestedIdent, requestedOK := values.OrderingIdentityOf(requestedValue)

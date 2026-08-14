@@ -93,7 +93,11 @@ func (r *PushDistinctBelowFilterRule) OnMatch(call *ImplementationRuleCall) {
 	)
 	newDistinctInnerQ := expressions.NamedForEachQuantifier(baseQ.GetAlias(),
 		call.MemoizeFinalExpression(filterInnerPlan))
-	newDistinctPlan := plans.NewRecordQueryDistinctPlanFromQuantifier(newDistinctInnerQ, streaming)
+	newDistinctPlan, err := plans.NewRecordQueryDistinctPlanFromQuantifier(newDistinctInnerQ, streaming)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	// Memoize the new distinct.
 	distinctRef := call.MemoizeFinalExpression(newDistinctPlan)
@@ -104,7 +108,11 @@ func (r *PushDistinctBelowFilterRule) OnMatch(call *ImplementationRuleCall) {
 	// Rebase predicates: translate from old filter's inner alias to new quantifier alias.
 	oldAlias := filterW.GetInnerQuantifier().GetAlias()
 	newAlias := newQOverDistinct.GetAlias()
-	rebasedPreds := rebasePredicates(filterW.GetPredicates(), oldAlias, newAlias)
+	rebasedPreds, err := rebasePredicates(filterW.GetPredicates(), oldAlias, newAlias)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	// Build: Filter([P'], Distinct(inner)) as its own cascades expression carrying
 	// a DISENTANGLED FINAL edge over the concrete newDistinctPlan
@@ -114,23 +122,30 @@ func (r *PushDistinctBelowFilterRule) OnMatch(call *ImplementationRuleCall) {
 	// newDistinctPlan, not the shared-group winner.
 	newFilterInnerQ := expressions.NamedForEachQuantifier(newQOverDistinct.GetAlias(),
 		call.MemoizeFinalExpression(newDistinctPlan))
-	newFilterPlan := plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(newFilterInnerQ, rebasedPreds)
+	newFilterPlan, err := plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(newFilterInnerQ, rebasedPreds)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	call.Yield(newFilterPlan)
 }
 
 // rebasePredicates translates predicate alias references from old to
 // new via a single-entry AliasMap.
-func rebasePredicates(preds []predicates.QueryPredicate, oldAlias, newAlias values.CorrelationIdentifier) []predicates.QueryPredicate {
+func rebasePredicates(preds []predicates.QueryPredicate, oldAlias, newAlias values.CorrelationIdentifier) ([]predicates.QueryPredicate, error) {
 	if oldAlias == newAlias {
-		return preds
+		return preds, nil
 	}
-	am := values.AliasMap{oldAlias: newAlias}
+	am, err := values.NewAliasMap([]values.AliasPair{{Source: oldAlias, Target: newAlias}})
+	if err != nil {
+		return nil, err
+	}
 	result := make([]predicates.QueryPredicate, len(preds))
 	for i, p := range preds {
 		result[i] = predicates.RebasePredicate(p, am)
 	}
-	return result
+	return result, nil
 }
 
 var _ ImplementationRule = (*PushDistinctBelowFilterRule)(nil)

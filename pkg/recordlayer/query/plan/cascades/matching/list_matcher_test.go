@@ -17,7 +17,7 @@ func TestListMatcher_PairsByPosition(t *testing.T) {
 	m := NewListMatcher(d0, d1, d2)
 
 	cv0 := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
-	fv := &values.FieldValue{Field: "x", Typ: values.NullableLong}
+	fv := mustMatchingField(t, "x", values.NullableLong)
 	cv2 := &values.ConstantValue{Value: int64(2), Typ: values.NullableLong}
 	in := []any{cv0, fv, cv2}
 
@@ -29,7 +29,7 @@ func TestListMatcher_PairsByPosition(t *testing.T) {
 	if Get[*values.ConstantValue](b, d0) != cv0 {
 		t.Fatal("d0 didn't bind cv0")
 	}
-	if Get[*values.FieldValue](b, d1) != fv {
+	if Get[values.FieldValue](b, d1) != fv {
 		t.Fatal("d1 didn't bind fv")
 	}
 	if Get[*values.ConstantValue](b, d2) != cv2 {
@@ -102,7 +102,7 @@ func TestListMatcher_BindsHostNode(t *testing.T) {
 	m := NewListMatcher(NewAnyValue(), NewAnyValue())
 	in := []any{
 		&values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
-		&values.FieldValue{Field: "x", Typ: values.NullableLong},
+		mustMatchingField(t, "x", values.NullableLong),
 	}
 	got := m.BindMatches(NewBindings(), in)
 	if len(got) != 1 {
@@ -150,7 +150,7 @@ func TestNewListMatcher_ZeroDownstreamsPanics(t *testing.T) {
 func TestListMatcher_ThreadsOuterBindings(t *testing.T) {
 	t.Parallel()
 	outerMatcher := NewAnyValue()
-	preset := &values.FieldValue{Field: "preset", Typ: values.NullableLong}
+	preset := mustMatchingField(t, "preset", values.NullableLong)
 	outer := NewBindings().Bind(outerMatcher, preset)
 
 	m := NewListMatcher(NewAnyValue())

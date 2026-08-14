@@ -33,8 +33,9 @@ import (
 )
 
 // idKey is the single comparison key (ordinal 0, "id") the merge pins use.
-func idKey() []values.Value {
-	return []values.Value{values.NewFieldValueWithResolvedOrdinal("id", 0, values.NullableLong)}
+func idKey(t testing.TB) []values.Value {
+	t.Helper()
+	return []values.Value{mustNamedTestField(t, "id", values.NullableLong)}
 }
 
 // mustBytes renders a continuation to bytes, failing the test on error.
@@ -103,7 +104,7 @@ func TestMergeSortCursor_EmittedRowContinuation_PeekedChildDoesNotAdvance(t *tes
 
 	left := recordlayer.FromList([]QueryResult{qr("id", int64(1)), qr("id", int64(3))})
 	right := recordlayer.FromList([]QueryResult{qr("id", int64(2)), qr("id", int64(4))})
-	c := newMergeSortCursor([]recordlayer.RecordCursor[QueryResult]{left, right}, idKey(), false, true)
+	c := newMergeSortCursor([]recordlayer.RecordCursor[QueryResult]{left, right}, idKey(t), false, true)
 	defer c.Close()
 
 	r, err := c.OnNext(ctx)
@@ -144,7 +145,7 @@ func TestMergeSortCursor_ExhaustedChildFlags(t *testing.T) {
 
 	left := recordlayer.FromList([]QueryResult{qr("id", int64(1))})
 	right := recordlayer.FromList([]QueryResult{qr("id", int64(2)), qr("id", int64(3))})
-	c := newMergeSortCursor([]recordlayer.RecordCursor[QueryResult]{left, right}, idKey(), false, true)
+	c := newMergeSortCursor([]recordlayer.RecordCursor[QueryResult]{left, right}, idKey(t), false, true)
 	defer c.Close()
 
 	// Emit 1 (left consumed), then 2: pulling left again exhausts it, so row
@@ -180,7 +181,7 @@ func TestMergeSortCursor_ExhaustedChildFlags(t *testing.T) {
 			poisoned,
 			listFactory([]QueryResult{qr("id", int64(2)), qr("id", int64(3))}),
 		},
-		idKey(), false, true, mustBytes(t, second.GetContinuation()))
+		idKey(t), false, true, mustBytes(t, second.GetContinuation()))
 	if err != nil {
 		t.Fatalf("resume construction: %v", err)
 	}
@@ -208,7 +209,7 @@ func TestMergeSortCursor_DedupAdvanceAllEqual_ResumeMidTie(t *testing.T) {
 	rightRows := []QueryResult{qr("id", int64(2)), qr("id", int64(3))}
 	factories := []recordlayer.CursorFactory[QueryResult]{listFactory(leftRows), listFactory(rightRows)}
 
-	fresh, err := newMergeSortCursorFromFactories(factories, idKey(), false, true, nil)
+	fresh, err := newMergeSortCursorFromFactories(factories, idKey(t), false, true, nil)
 	if err != nil {
 		t.Fatalf("construction: %v", err)
 	}
@@ -229,7 +230,7 @@ func TestMergeSortCursor_DedupAdvanceAllEqual_ResumeMidTie(t *testing.T) {
 
 	// Resume from each row's continuation: suffix equality, no dup, no drop.
 	for i, cont := range rowConts {
-		resumed, rErr := newMergeSortCursorFromFactories(factories, idKey(), false, true, cont)
+		resumed, rErr := newMergeSortCursorFromFactories(factories, idKey(t), false, true, cont)
 		if rErr != nil {
 			t.Fatalf("resume %d construction: %v", i, rErr)
 		}
@@ -258,7 +259,7 @@ func TestMergeSortCursor_NoDedup_TiedRowsBothEmitted(t *testing.T) {
 	rightRows := []QueryResult{qr("id", int64(2)), qr("id", int64(5))}
 	factories := []recordlayer.CursorFactory[QueryResult]{listFactory(leftRows), listFactory(rightRows)}
 
-	c, err := newMergeSortCursorFromFactories(factories, idKey(), false, false, nil)
+	c, err := newMergeSortCursorFromFactories(factories, idKey(t), false, false, nil)
 	if err != nil {
 		t.Fatalf("construction: %v", err)
 	}
@@ -276,7 +277,7 @@ func TestMergeSortCursor_NoDedup_TiedRowsBothEmitted(t *testing.T) {
 		t.Fatalf("UNION ALL merge after first tied row = %v, want [2 5] (both tied rows emitted)", rest)
 	}
 
-	resumed, err := newMergeSortCursorFromFactories(factories, idKey(), false, false, mustBytes(t, r1.GetContinuation()))
+	resumed, err := newMergeSortCursorFromFactories(factories, idKey(t), false, false, mustBytes(t, r1.GetContinuation()))
 	if err != nil {
 		t.Fatalf("resume construction: %v", err)
 	}
@@ -304,7 +305,7 @@ func TestMergeSortCursor_InBandChildStop_PropagatesWithSnapshot(t *testing.T) {
 	limited := recordlayer.LimitRowsCursor(recordlayer.FromList(leftRows), 1)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{limited, recordlayer.FromList(rightRows)},
-		idKey(), false, true)
+		idKey(t), false, true)
 	defer c.Close()
 
 	r1, err := c.OnNext(ctx)
@@ -340,7 +341,7 @@ func TestMergeSortCursor_InBandChildStop_PropagatesWithSnapshot(t *testing.T) {
 	// after its consumed id=1 → [3]; right was PEEKED only → re-reads id=2.
 	resumed, err := newMergeSortCursorFromFactories(
 		[]recordlayer.CursorFactory[QueryResult]{listFactory(leftRows), listFactory(rightRows)},
-		idKey(), false, true, mustBytes(t, r2.GetContinuation()))
+		idKey(t), false, true, mustBytes(t, r2.GetContinuation()))
 	if err != nil {
 		t.Fatalf("resume construction: %v", err)
 	}
@@ -361,7 +362,7 @@ func TestMergeSortCursor_OutOfBandChildStop_StrongestReason(t *testing.T) {
 
 	stopped := &stubStopCursor{reason: recordlayer.TimeLimitReached, cont: recordlayer.NewBytesContinuation([]byte("LPOS"))}
 	right := recordlayer.FromList([]QueryResult{qr("id", int64(2))})
-	c := newMergeSortCursor([]recordlayer.RecordCursor[QueryResult]{stopped, right}, idKey(), false, true)
+	c := newMergeSortCursor([]recordlayer.RecordCursor[QueryResult]{stopped, right}, idKey(t), false, true)
 	defer c.Close()
 
 	r, err := c.OnNext(ctx)
@@ -395,7 +396,7 @@ func TestMergeSortCursor_ContinuationDecodeErrors(t *testing.T) {
 		listFactory([]QueryResult{qr("id", int64(2))}),
 	}
 
-	if _, err := newMergeSortCursorFromFactories(factories, idKey(), false, true, []byte{0xFF, 0xFF, 0xFF}); err == nil {
+	if _, err := newMergeSortCursorFromFactories(factories, idKey(t), false, true, []byte{0xFF, 0xFF, 0xFF}); err == nil {
 		t.Fatal("corrupt continuation must fail construction, not silently restart")
 	} else {
 		var parseErr *recordlayer.ContinuationParseError
@@ -412,7 +413,7 @@ func TestMergeSortCursor_ContinuationDecodeErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if _, err := newMergeSortCursorFromFactories(factories, idKey(), false, true, b); err == nil {
+	if _, err := newMergeSortCursorFromFactories(factories, idKey(t), false, true, b); err == nil {
 		t.Fatal("child-count mismatch must fail construction (a 3-child token cannot resume a 2-child merge)")
 	}
 }

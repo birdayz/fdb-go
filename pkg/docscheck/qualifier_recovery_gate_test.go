@@ -41,10 +41,10 @@ import (
 // THE HOISTED CALLERS ARE PART OF THE PROPERTY. recordExistsSortSplit's own body
 // is allocation-free — ClassifyQualifierRecovery slices substrings and compares
 // them — so a gate inside it buys nothing measurable. That site's census-off
-// cost is sortKeyQualifierIdentity, which the EXISTS fold's two sort-key readers
-// call for no reason but to hand this recorder a counterparty, and which
+// cost is sortKeyQualifierIdentity, which the EXISTS fold's sort-key reader calls
+// for no reason but to hand this recorder a counterparty, and which
 // upper-cases a qualifier per sort key. So the gate is hoisted ABOVE that call
-// at both callers, and a gate on the recorder alone would leave the real cost
+// at its caller, and a gate on the recorder alone would leave the real cost
 // exactly where it was.
 
 // censusGateFunc is one recorder whose FIRST statement must be the gate check.
@@ -411,7 +411,7 @@ var censusOnlyHelpers = []censusOnlyHelper{
 	{
 		file:     "pkg/relational/core/query/cascades_translator.go",
 		fn:       "sortKeyQualifierIdentity",
-		minCalls: 2,
+		minCalls: 1,
 		why: "it is computed for the census and for nothing else — neither resolveKeyName's " +
 			"answer nor sortKeySourceValue's value depends on it — and it upper-cases a " +
 			"qualifier per sort key. Ungated, every sort key of every EXISTS fold over a join " +

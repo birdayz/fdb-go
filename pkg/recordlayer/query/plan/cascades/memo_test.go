@@ -9,6 +9,21 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func memoTestScan(t testing.TB, name string) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	return mustFullUnorderedScan(t, []string{name}, values.NotNullLong)
+}
+
+func memoTestFilter(
+	t testing.TB,
+	queryPredicates []predicates.QueryPredicate,
+	inner expressions.Quantifier,
+) *expressions.LogicalFilterExpression {
+	t.Helper()
+	filter, err := expressions.NewLogicalFilterExpression(queryPredicates, inner)
+	return mustConstruct(t, filter, err)
+}
+
 func TestMemo_NewMemo_NilRoot(t *testing.T) {
 	t.Parallel()
 	m := NewMemo(nil)
@@ -23,10 +38,10 @@ func TestMemo_NewMemo_NilRoot(t *testing.T) {
 func TestMemo_NewMemo_IndexesDAG(t *testing.T) {
 	t.Parallel()
 	// Build: Filter(P, Scan)
-	scan := expressions.NewFullUnorderedScanExpression([]string{"MyRecord"}, nil)
+	scan := memoTestScan(t, "MyRecord")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := memoTestFilter(t,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		scanQ,
 	)
@@ -51,8 +66,8 @@ func TestMemo_MemoizeExpression_LeafReuse(t *testing.T) {
 	t.Parallel()
 	// Two structurally-equal leaf scans should be memoized into the
 	// same Reference.
-	scan1 := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
-	scan2 := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan1 := memoTestScan(t, "T")
+	scan2 := memoTestScan(t, "T")
 
 	m := NewMemo(nil)
 	ref1 := m.MemoizeExpression(scan1)
@@ -69,8 +84,8 @@ func TestMemo_MemoizeExpression_LeafReuse(t *testing.T) {
 func TestMemo_MemoizeExpression_LeafDistinct(t *testing.T) {
 	t.Parallel()
 	// Two scans with different record types are different.
-	scan1 := expressions.NewFullUnorderedScanExpression([]string{"A"}, nil)
-	scan2 := expressions.NewFullUnorderedScanExpression([]string{"B"}, nil)
+	scan1 := memoTestScan(t, "A")
+	scan2 := memoTestScan(t, "B")
 
 	m := NewMemo(nil)
 	ref1 := m.MemoizeExpression(scan1)
@@ -85,14 +100,14 @@ func TestMemo_MemoizeExpression_NonLeafReuse(t *testing.T) {
 	t.Parallel()
 	// Two structurally-equal filters over the SAME child Reference
 	// should be memoized into the same Reference.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan := memoTestScan(t, "T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ1 := expressions.ForEachQuantifier(scanRef)
 	scanQ2 := expressions.ForEachQuantifier(scanRef)
 
 	pred := []predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)}
-	filter1 := expressions.NewLogicalFilterExpression(pred, scanQ1)
-	filter2 := expressions.NewLogicalFilterExpression(pred, scanQ2)
+	filter1 := memoTestFilter(t, pred, scanQ1)
+	filter2 := memoTestFilter(t, pred, scanQ2)
 
 	m := NewMemo(nil)
 	// Register the scan Reference first (simulates prior memoization).
@@ -108,17 +123,18 @@ func TestMemo_MemoizeExpression_NonLeafReuse(t *testing.T) {
 
 func TestMemo_MemoizeExpression_ProjectionAliasesDoNotCollapse(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan := memoTestScan(t, "T")
 	scanRef := expressions.InitialOf(scan)
 	m := NewMemo(nil)
 	m.RegisterReference(scanRef)
 
 	projection := func(alias string) *expressions.LogicalProjectionExpression {
-		return expressions.NewLogicalProjectionExpressionWithAliases(
+		projection, err := expressions.NewLogicalProjectionExpressionWithAliases(
 			[]values.Value{values.NewBooleanValue(true)},
 			[]string{alias},
 			expressions.ForEachQuantifier(scanRef),
 		)
+		return mustConstruct(t, projection, err)
 	}
 
 	refA := m.MemoizeExpression(projection("A"))
@@ -133,17 +149,19 @@ func TestMemo_MemoizeExpression_ProjectionAliasesDoNotCollapse(t *testing.T) {
 
 func TestMemo_MemoizeExpression_PhysicalProjectionAliasesDoNotCollapse(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan, scanErr := plans.NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
+	scan = mustConstruct(t, scan, scanErr)
 	scanRef := expressions.InitialOf(scan)
 	m := NewMemo(nil)
 	m.RegisterReference(scanRef)
 
 	projection := func(alias string) *plans.RecordQueryProjectionPlan {
-		return plans.NewRecordQueryProjectionPlanFromQuantifier(
+		projection, err := plans.NewRecordQueryProjectionPlanFromQuantifier(
 			[]values.Value{values.NewBooleanValue(true)},
 			[]string{alias},
 			expressions.ForEachQuantifier(scanRef),
 		)
+		return mustConstruct(t, projection, err)
 	}
 
 	refA := m.MemoizeExpression(projection("A"))
@@ -160,14 +178,14 @@ func TestMemo_MemoizeExpression_NonLeafDistinctChildren(t *testing.T) {
 	t.Parallel()
 	// Two filters that are structurally the same node-info but point to
 	// DIFFERENT child References are in different equivalence classes.
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, nil)
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, nil)
+	scanA := memoTestScan(t, "A")
+	scanB := memoTestScan(t, "B")
 	refA := expressions.InitialOf(scanA)
 	refB := expressions.InitialOf(scanB)
 
 	pred := []predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)}
-	filter1 := expressions.NewLogicalFilterExpression(pred, expressions.ForEachQuantifier(refA))
-	filter2 := expressions.NewLogicalFilterExpression(pred, expressions.ForEachQuantifier(refB))
+	filter1 := memoTestFilter(t, pred, expressions.ForEachQuantifier(refA))
+	filter2 := memoTestFilter(t, pred, expressions.ForEachQuantifier(refB))
 
 	m := NewMemo(nil)
 	m.RegisterReference(refA)
@@ -184,10 +202,10 @@ func TestMemo_MemoizeExpression_NonLeafDistinctChildren(t *testing.T) {
 func TestMemo_MemoizeExpression_IntegrationWithPlanner(t *testing.T) {
 	t.Parallel()
 	// Build a simple tree and verify the Planner's Memo is populated.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan := memoTestScan(t, "T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := memoTestFilter(t,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		scanQ,
 	)
@@ -211,8 +229,8 @@ func TestMemo_MemoizeExpression_IntegrationWithPlanner(t *testing.T) {
 
 func TestMemo_MemoizeExpressions_Batch(t *testing.T) {
 	t.Parallel()
-	scan1 := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
-	scan2 := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan1 := memoTestScan(t, "T")
+	scan2 := memoTestScan(t, "T")
 
 	m := NewMemo(nil)
 	ref := m.MemoizeExpressions([]expressions.RelationalExpression{scan1, scan2})
@@ -223,7 +241,7 @@ func TestMemo_MemoizeExpressions_Batch(t *testing.T) {
 	}
 
 	// Memoizing again returns the same Reference.
-	scan3 := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan3 := memoTestScan(t, "T")
 	ref2 := m.MemoizeExpression(scan3)
 	if ref != ref2 {
 		t.Fatal("expected same Reference from subsequent memoize")
@@ -232,7 +250,7 @@ func TestMemo_MemoizeExpressions_Batch(t *testing.T) {
 
 func TestMemo_AddExpression_UpdatesIndex(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan := memoTestScan(t, "T")
 	scanRef := expressions.InitialOf(scan)
 
 	m := NewMemo(nil)
@@ -241,7 +259,7 @@ func TestMemo_AddExpression_UpdatesIndex(t *testing.T) {
 	// Now create a filter over scanRef and add it to a new Reference.
 	pred := []predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)}
 	q := expressions.ForEachQuantifier(scanRef)
-	filter := expressions.NewLogicalFilterExpression(pred, q)
+	filter := memoTestFilter(t, pred, q)
 	filterRef := expressions.InitialOf(filter)
 	m.RegisterReference(filterRef)
 
@@ -261,7 +279,7 @@ func TestMemo_AddExpression_UpdatesIndex(t *testing.T) {
 	// Now memoize a second filter with same pred over the same scanRef —
 	// should find filterRef.
 	q2 := expressions.ForEachQuantifier(scanRef)
-	filter2 := expressions.NewLogicalFilterExpression(pred, q2)
+	filter2 := memoTestFilter(t, pred, q2)
 	ref := m.MemoizeExpression(filter2)
 	if ref != filterRef {
 		t.Fatal("expected memoization to reuse filterRef")
@@ -278,7 +296,7 @@ func TestMemo_CrossReferenceSharing_ThroughRules(t *testing.T) {
 	// Both branches have "Filter(P, Scan("T"))" — with memoization,
 	// they should share the same Reference for the Filter node.
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan := memoTestScan(t, "T")
 
 	m := NewMemo(nil)
 	scanRef := m.MemoizeExpression(scan)
@@ -287,12 +305,12 @@ func TestMemo_CrossReferenceSharing_ThroughRules(t *testing.T) {
 
 	// First branch creates Filter(P, scanRef).
 	q1 := expressions.ForEachQuantifier(scanRef)
-	filter1 := expressions.NewLogicalFilterExpression(pred, q1)
+	filter1 := memoTestFilter(t, pred, q1)
 	filterRef1 := m.MemoizeExpression(filter1)
 
 	// Second branch independently creates Filter(P, scanRef).
 	q2 := expressions.ForEachQuantifier(scanRef)
-	filter2 := expressions.NewLogicalFilterExpression(pred, q2)
+	filter2 := memoTestFilter(t, pred, q2)
 	filterRef2 := m.MemoizeExpression(filter2)
 
 	// They should be the same Reference.
@@ -303,12 +321,12 @@ func TestMemo_CrossReferenceSharing_ThroughRules(t *testing.T) {
 
 func TestMemo_ExpressionRuleCall_MemoizeExpression_WithMemo(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan := memoTestScan(t, "T")
 	scanRef := expressions.InitialOf(scan)
 
 	// Create a parent Reference (the one the rule fires on) that is
 	// DIFFERENT from scanRef — otherwise the self-reference guard triggers.
-	filter := expressions.NewLogicalFilterExpression(
+	filter := memoTestFilter(t,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		expressions.ForEachQuantifier(scanRef),
 	)
@@ -321,7 +339,7 @@ func TestMemo_ExpressionRuleCall_MemoizeExpression_WithMemo(t *testing.T) {
 	call := NewExpressionRuleCallWithMemo(parentRef, nil, nil, m)
 
 	// MemoizeExpression should find scanRef via the Memo.
-	scan2 := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan2 := memoTestScan(t, "T")
 	ref := call.MemoizeExpression(scan2)
 	if ref != scanRef {
 		t.Fatal("expected MemoizeExpression via rule call to find existing scanRef")
@@ -333,14 +351,14 @@ func TestMemo_ExpressionRuleCall_SelfRefGuard(t *testing.T) {
 	// When the Memo would return the SAME Reference the rule is
 	// yielding into, the self-reference guard creates a fresh Reference
 	// to prevent cycles.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan := memoTestScan(t, "T")
 	scanRef := expressions.InitialOf(scan)
 
 	m := NewMemo(nil)
 	m.RegisterReference(scanRef)
 
 	call := NewExpressionRuleCallWithMemo(scanRef, nil, nil, m)
-	scan2 := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan2 := memoTestScan(t, "T")
 	ref := call.MemoizeExpression(scan2)
 	// Guard prevents returning scanRef (would be a cycle).
 	if ref == scanRef {
@@ -353,12 +371,12 @@ func TestMemo_ExpressionRuleCall_SelfRefGuard(t *testing.T) {
 
 func TestMemo_ExpressionRuleCall_MemoizeExpression_WithoutMemo(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan := memoTestScan(t, "T")
 	scanRef := expressions.InitialOf(scan)
 
 	// No Memo — should fall back to InitialOf.
 	call := NewExpressionRuleCall(scanRef, nil, nil)
-	scan2 := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan2 := memoTestScan(t, "T")
 	ref := call.MemoizeExpression(scan2)
 	// Without Memo, a fresh Reference is created.
 	if ref == scanRef {

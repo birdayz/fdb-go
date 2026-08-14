@@ -11,7 +11,7 @@ func TestExplode_Construction(t *testing.T) {
 	arr := values.NewArrayConstructorValue(values.NotNullLong, []values.Value{
 		values.LiteralValue(int64(1)),
 	})
-	e := NewExplodeExpression(arr)
+	e := mustExpression(NewExplodeExpression(arr))
 	if e.GetCollectionValue() != arr {
 		t.Fatal("GetCollectionValue mismatch")
 	}
@@ -30,42 +30,45 @@ func TestExplode_GetResultValueArrayElement(t *testing.T) {
 		values.LiteralValue(int64(1)),
 		values.LiteralValue(int64(2)),
 	})
-	e := NewExplodeExpression(arr)
+	e := mustExpression(NewExplodeExpression(arr))
 	rv := e.GetResultValue()
 	if !rv.Type().Equals(values.NotNullLong) {
 		t.Fatalf("ResultValue type = %v, want NotNullLong (array element)", rv.Type())
 	}
 }
 
-func TestExplode_GetResultValueNonArrayFallsBackToUnknown(t *testing.T) {
+func TestExplode_RejectsNonArrayCollection(t *testing.T) {
 	t.Parallel()
-	// Non-array CollectionValue → result type falls back to UnknownType.
-	e := NewExplodeExpression(values.LiteralValue(int64(1)))
-	rv := e.GetResultValue()
-	if !rv.Type().Equals(values.UnknownType) {
-		t.Fatalf("ResultValue type = %v, want UnknownType (degenerate, non-array)", rv.Type())
+	e, err := NewExplodeExpression(values.LiteralValue(int64(1)))
+	if err == nil {
+		t.Fatal("non-array collection succeeded")
+	}
+	if e != nil {
+		t.Fatalf("non-array collection returned %T together with error %v", e, err)
 	}
 }
 
-func TestExplode_GetResultValueNilCollection(t *testing.T) {
+func TestExplode_RejectsNilCollection(t *testing.T) {
 	t.Parallel()
-	e := NewExplodeExpression(nil)
-	rv := e.GetResultValue()
-	if !rv.Type().Equals(values.UnknownType) {
-		t.Fatalf("ResultValue type = %v, want UnknownType (nil collection)", rv.Type())
+	e, err := NewExplodeExpression(nil)
+	if err == nil {
+		t.Fatal("nil collection succeeded")
+	}
+	if e != nil {
+		t.Fatalf("nil collection returned %T together with error %v", e, err)
 	}
 }
 
 func TestExplode_EqualsWithoutChildren(t *testing.T) {
 	t.Parallel()
 	arr := values.NewArrayConstructorValue(values.NotNullLong, nil)
-	e1 := NewExplodeExpression(arr)
-	e2 := NewExplodeExpression(arr)
+	e1 := mustExpression(NewExplodeExpression(arr))
+	e2 := mustExpression(NewExplodeExpression(arr))
 	if !e1.EqualsWithoutChildren(e2, nil) {
 		t.Fatal("two Explodes over same Value should be EqualsWithoutChildren")
 	}
 	// vs different expression type:
-	scan := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
 	if e1.EqualsWithoutChildren(scan, nil) {
 		t.Fatal("Explode should NOT equal Scan")
 	}
@@ -76,18 +79,18 @@ func TestExplode_EqualsWithoutChildren_CorrelatedFieldUnderAliasMap(t *testing.T
 
 	queryAlias := values.UniqueCorrelationIdentifier()
 	candidateAlias := values.UniqueCorrelationIdentifier()
-	queryCollection := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(queryAlias),
+	queryCollection := testCorrelatedField(
+		queryAlias,
 		"TAGS",
 		values.NewArrayType(true, values.NotNullString),
 	)
-	candidateCollection := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(candidateAlias),
+	candidateCollection := testCorrelatedField(
+		candidateAlias,
 		"TAGS",
 		values.NewArrayType(true, values.NotNullString),
 	)
-	queryExplode := NewExplodeExpression(queryCollection)
-	candidateExplode := NewExplodeExpression(candidateCollection)
+	queryExplode := mustExpression(NewExplodeExpression(queryCollection))
+	candidateExplode := mustExpression(NewExplodeExpression(candidateCollection))
 
 	if queryExplode.EqualsWithoutChildren(candidateExplode, EmptyAliasMap()) {
 		t.Fatal("correlated Explodes with different unmapped aliases must not compare equal")
@@ -103,29 +106,29 @@ func TestExplode_EqualsWithoutChildren_RejectsDifferentFieldAndOrdinality(t *tes
 
 	queryAlias := values.UniqueCorrelationIdentifier()
 	candidateAlias := values.UniqueCorrelationIdentifier()
-	queryCollection := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(queryAlias),
+	queryCollection := testCorrelatedField(
+		queryAlias,
 		"TAGS",
 		values.NewArrayType(true, values.NotNullString),
 	)
-	differentField := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(candidateAlias),
+	differentField := testCorrelatedField(
+		candidateAlias,
 		"CATEGORIES",
 		values.NewArrayType(true, values.NotNullString),
 	)
 	aliases := AliasMapOf(queryAlias, candidateAlias)
 
-	queryExplode := NewExplodeExpression(queryCollection)
-	if queryExplode.EqualsWithoutChildren(NewExplodeExpression(differentField), aliases) {
+	queryExplode := mustExpression(NewExplodeExpression(queryCollection))
+	if queryExplode.EqualsWithoutChildren(mustExpression(NewExplodeExpression(differentField)), aliases) {
 		t.Fatal("alias mapping must not make Explodes over different fields equal")
 	}
-	sameField := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(candidateAlias),
+	sameField := testCorrelatedField(
+		candidateAlias,
 		"TAGS",
 		values.NewArrayType(true, values.NotNullString),
 	)
 	if queryExplode.EqualsWithoutChildren(
-		NewExplodeExpressionWithOrdinality(sameField, true),
+		mustExpression(NewExplodeExpressionWithOrdinality(sameField, true)),
 		aliases,
 	) {
 		t.Fatal("alias mapping must not conflate ordinal and non-ordinal Explodes")
@@ -134,8 +137,9 @@ func TestExplode_EqualsWithoutChildren_RejectsDifferentFieldAndOrdinality(t *tes
 
 func TestExplode_GetCorrelatedToFromCollectionValue(t *testing.T) {
 	t.Parallel()
-	// LiteralValue has no correlations — empty correlation set.
-	e := NewExplodeExpression(values.LiteralValue(int64(1)))
+	// An array of literals has no correlations — empty correlation set.
+	e := mustExpression(NewExplodeExpression(
+		values.NewArrayConstructorValue(values.NotNullLong, []values.Value{values.LiteralValue(int64(1))})))
 	if got := e.GetCorrelatedToWithoutChildren(); len(got) != 0 {
 		t.Fatalf("GetCorrelatedTo over LiteralValue = %v, want empty", got)
 	}
@@ -144,21 +148,11 @@ func TestExplode_GetCorrelatedToFromCollectionValue(t *testing.T) {
 func TestExplode_HashCodeStable(t *testing.T) {
 	t.Parallel()
 	arr := values.NewArrayConstructorValue(values.NotNullLong, nil)
-	e := NewExplodeExpression(arr)
+	e := mustExpression(NewExplodeExpression(arr))
 	h1 := e.HashCodeWithoutChildren()
 	h2 := e.HashCodeWithoutChildren()
 	if h1 != h2 {
 		t.Fatalf("HashCodeWithoutChildren non-deterministic: %d vs %d", h1, h2)
-	}
-}
-
-func TestExplode_HashCodeNilCollection(t *testing.T) {
-	t.Parallel()
-	e := NewExplodeExpression(nil)
-	h := e.HashCodeWithoutChildren()
-	// Non-zero — class discriminator constant.
-	if h == 0 {
-		t.Fatal("HashCodeWithoutChildren = 0, want non-zero class discriminator")
 	}
 }
 
@@ -172,8 +166,8 @@ func TestExplode_WithOrdinalityDistinct(t *testing.T) {
 	arr := values.NewArrayConstructorValue(values.NotNullLong, []values.Value{
 		values.LiteralValue(int64(1)),
 	})
-	plain := NewExplodeExpression(arr)
-	ord := NewExplodeExpressionWithOrdinality(arr, true)
+	plain := mustExpression(NewExplodeExpression(arr))
+	ord := mustExpression(NewExplodeExpressionWithOrdinality(arr, true))
 
 	if plain.EqualsWithoutChildren(ord, nil) {
 		t.Fatal("ordinal and non-ordinal Explode over the same array must NOT be equal")
@@ -189,7 +183,7 @@ func TestExplode_WithOrdinalityDistinct(t *testing.T) {
 	}
 
 	// Two ordinal Explodes over the same array ARE equal.
-	ord2 := NewExplodeExpressionWithOrdinality(arr, true)
+	ord2 := mustExpression(NewExplodeExpressionWithOrdinality(arr, true))
 	if !ord.EqualsWithoutChildren(ord2, nil) {
 		t.Fatal("two WITH ORDINALITY Explodes over the same array should be equal")
 	}
@@ -202,13 +196,16 @@ func TestExplode_OrdinalityResultType(t *testing.T) {
 	arr := values.NewArrayConstructorValue(values.NotNullLong, []values.Value{
 		values.LiteralValue(int64(1)),
 	})
-	ord := NewExplodeExpressionWithOrdinality(arr, true)
+	ord := mustExpression(NewExplodeExpressionWithOrdinality(arr, true))
 	rt, ok := ord.GetExplodeResultType().(*values.RecordType)
 	if !ok {
 		t.Fatalf("ordinality result type = %T, want *RecordType", ord.GetExplodeResultType())
 	}
 	if len(rt.Fields) != 2 {
 		t.Fatalf("ordinality record has %d fields, want 2", len(rt.Fields))
+	}
+	if rt.IsNullable() {
+		t.Fatal("an emitted ordinality row must be NOT NULL")
 	}
 	if rt.Fields[0].Name != values.OrdinalFieldName(0) || rt.Fields[1].Name != values.OrdinalFieldName(1) {
 		t.Fatalf("ordinality field names = %q,%q, want _0,_1", rt.Fields[0].Name, rt.Fields[1].Name)
@@ -218,7 +215,7 @@ func TestExplode_OrdinalityResultType(t *testing.T) {
 	}
 
 	// Non-ordinal: bare element type (NotNullLong), not a record.
-	plain := NewExplodeExpression(arr)
+	plain := mustExpression(NewExplodeExpression(arr))
 	if _, isRec := plain.GetExplodeResultType().(*values.RecordType); isRec {
 		t.Fatal("non-ordinal Explode result type must be the bare element, not a record")
 	}

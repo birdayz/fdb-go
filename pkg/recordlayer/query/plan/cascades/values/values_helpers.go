@@ -22,9 +22,9 @@ package values
 // is expected to check via the returned slice's length (zero =
 // not-record OR record with zero fields, either of which is a
 // degenerate case).
-func DeconstructRecord(v Value) []Value {
+func DeconstructRecord(v Value) ([]Value, error) {
 	if v == nil {
-		return nil
+		return nil, nil
 	}
 	// If v is itself a RecordConstructorValue, return its children
 	// directly — they're already the per-field Values.
@@ -33,7 +33,7 @@ func DeconstructRecord(v Value) []Value {
 		for i, f := range rc.Fields {
 			out[i] = f.Value
 		}
-		return out
+		return out, nil
 	}
 	// For other record-typed Values, build FieldValue accessors per
 	// field by enumerating the *RecordType's Fields — mirroring
@@ -41,20 +41,28 @@ func DeconstructRecord(v Value) []Value {
 	// *RecordType (erased / unknown shapes) return nil below.
 	rt := v.Type()
 	if rt == nil {
-		return nil
+		return nil, nil
 	}
 	if rt.Code() != TypeCodeRecord {
-		return nil
+		return nil, nil
 	}
 	// Type.Record has a Fields slice we can read.
 	if rec, ok := rt.(*RecordType); ok {
 		out := make([]Value, 0, len(rec.Fields))
-		for _, f := range rec.Fields {
-			out = append(out, &FieldValue{Field: f.Name, Typ: f.FieldType})
+		for i := range rec.Fields {
+			request, err := FieldByOrdinal(i)
+			if err != nil {
+				return nil, err
+			}
+			field, err := ResolveFieldAccess(v, []FieldRequest{request})
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, field)
 		}
-		return out
+		return out, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // SimplifyAll batch-applies SimplifyValue to a list of Values.

@@ -1,6 +1,9 @@
 package values
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // TestFieldValue_ResolveOrdinal pins resolveOrdinal's contract: a FieldValue
 // over a record-typed child does not resolve an ordinal from its name at
@@ -15,10 +18,10 @@ func TestFieldValue_ResolveOrdinal(t *testing.T) {
 		{Name: "id", FieldType: NotNullLong, Ordinal: 0},
 		{Name: "name", FieldType: NullableString, Ordinal: 1},
 	})
-	qov := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("q"), rec)
+	qov := mustQOV(t, NamedCorrelationIdentifier("q"), rec)
 
 	// A LAZY typed-child node does not derive an ordinal by name.
-	if _, ok := NewFieldValue(qov, "name", NullableString).resolveOrdinal(); ok {
+	if _, ok := newFieldValue(qov, "name", NullableString).resolveOrdinal(); ok {
 		t.Fatal("lazy typed-child must DECLINE (name-derive not supported)")
 	}
 	// The declared ordinal for "name" is its slice position (1), and it round-trips
@@ -31,32 +34,30 @@ func TestFieldValue_ResolveOrdinal(t *testing.T) {
 		t.Fatalf("round-trip: GetField(%d).Name = %q, want %q", ord, got.Name, "name")
 	}
 	// A BAKED accessor carries that ordinal — resolveOrdinal returns it directly.
-	baked := NewCorrelatedFieldValueWithResolvedOrdinal(qov, "name", ord, NullableString)
+	baked := newCorrelatedFieldValueWithResolvedOrdinal(qov, "name", ord, NullableString)
 	if bord, bok := baked.resolveOrdinal(); !bok || bord != 1 {
 		t.Fatalf("baked resolveOrdinal(name) = (%d,%v), want (1,true)", bord, bok)
 	}
 
 	// nil-Child leaf: unresolvable (no child type to bind against).
-	if _, ok := NewFlatFieldValue("id", NotNullLong).resolveOrdinal(); ok {
+	if _, ok := newFlatFieldValue("id", NotNullLong).resolveOrdinal(); ok {
 		t.Error("nil-Child leaf must not resolve an ordinal")
 	}
 	// Non-record child: unresolvable.
-	prim := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("p"), NotNullLong)
-	if _, ok := NewFieldValue(prim, "x", NotNullLong).resolveOrdinal(); ok {
+	prim := mustQOV(t, NamedCorrelationIdentifier("p"), NotNullLong)
+	if _, ok := newFieldValue(prim, "x", NotNullLong).resolveOrdinal(); ok {
 		t.Error("non-record child must not resolve an ordinal")
 	}
 	// Absent field: unresolvable.
-	if _, ok := NewFieldValue(qov, "missing", UnknownType).resolveOrdinal(); ok {
+	if _, ok := newFieldValue(qov, "missing", UnknownType).resolveOrdinal(); ok {
 		t.Error("absent field must not resolve an ordinal")
 	}
 }
 
 // TestFieldValue_ResolveOrdinal_RawDivergentRecord pins a robustness
-// requirement: resolveOrdinal returns the SLICE POSITION (RecordType.FieldIndexUnique),
-// which is the Java ordinal, so it is sound even for a RAW RecordType that
-// bypassed NewRecordType's normalization and carries a stored Field.Ordinal
-// that diverges from position. This is the axis the enforcement test can't
-// reach (NewRecordType normalizes the divergence away).
+// Exact QOV admission rejects a RAW RecordType whose stored field ordinal
+// diverges from its slice position. Letting that shape through would give the
+// same field two ordinal identities depending on which reader is consulted.
 func TestFieldValue_ResolveOrdinal_RawDivergentRecord(t *testing.T) {
 	t.Parallel()
 	// Raw record (bypasses NewRecordType): field "b" is at slice position 1 but
@@ -65,25 +66,20 @@ func TestFieldValue_ResolveOrdinal_RawDivergentRecord(t *testing.T) {
 		{Name: "a", FieldType: NotNullLong, Ordinal: 1},
 		{Name: "b", FieldType: NotNullLong, Ordinal: 0},
 	}}
-	// The ordinal is bound at PLAN time. The plan-time derivation
-	// (RecordType.FieldIndexUnique) uses the SLICE POSITION (1), NOT the stored
-	// Field.Ordinal (0) — so a raw divergent record bakes the correct slot. A lazy
-	// node declines (name-derive not supported); the baked node returns the derived slot.
+	// The legacy name resolver still answers by slice position. That does not
+	// make the graph exact: its stored ordinal metadata disagrees and admission
+	// must reject the contradiction before a QOV exists.
 	ord, ok := raw.FieldIndexUnique("b")
 	if !ok || ord != 1 {
 		t.Fatalf("raw-record FieldIndexUnique(b) = (%d,%v), want (1,true) — the SLICE POSITION, not the stored Ordinal 0", ord, ok)
 	}
-	qov := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("raw"), raw)
-	if _, lok := NewFieldValue(qov, "b", NotNullLong).resolveOrdinal(); lok {
-		t.Fatal("lazy typed-child must DECLINE (name-derive not supported)")
+	qov, err := NewQuantifiedObjectValue(NamedCorrelationIdentifier("raw"), raw)
+	if qov != nil {
+		t.Fatalf("malformed record produced partial QOV %T", qov)
 	}
-	fv := NewCorrelatedFieldValueWithResolvedOrdinal(qov, "b", ord, NotNullLong)
-	rord, rok := fv.resolveOrdinal()
-	if !rok || rord != 1 {
-		t.Fatalf("baked resolveOrdinal(b) = (%d,%v), want (1,true)", rord, rok)
-	}
-	if g, _ := raw.GetField(rord); g.Name != "b" {
-		t.Fatalf("raw round-trip: GetField(%d).Name = %q, want b", rord, g.Name)
+	var resolution *ResolutionError
+	if !errors.As(err, &resolution) || resolution.Code() != TypeMalformedOrdinal {
+		t.Fatalf("malformed record error = %v, want TypeMalformedOrdinal", err)
 	}
 }
 
@@ -108,7 +104,7 @@ func TestFieldValue_OrdinalOrderingPrecondition(t *testing.T) {
 	if !ok || ordB != 1 {
 		t.Fatalf("ordered: FieldIndexUnique(b) = (%d,%v), want (1,true)", ordB, ok)
 	}
-	fvB := NewCorrelatedFieldValueWithResolvedOrdinal(NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("q"), ordered), "b", ordB, NotNullLong)
+	fvB := newCorrelatedFieldValueWithResolvedOrdinal(mustQOV(t, NamedCorrelationIdentifier("q"), ordered), "b", ordB, NotNullLong)
 	if o, bok := fvB.resolveOrdinal(); !bok || o != 1 {
 		t.Fatalf("ordered: baked resolveOrdinal(b) = (%d,%v), want (1,true)", o, bok)
 	}
@@ -131,7 +127,7 @@ func TestFieldValue_OrdinalOrderingPrecondition(t *testing.T) {
 	if !ok || ordA != 0 {
 		t.Fatalf("normalised: FieldIndexUnique(a) = (%d,%v), want (0,true)", ordA, ok)
 	}
-	fvA := NewCorrelatedFieldValueWithResolvedOrdinal(NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("n"), normalized), "a", ordA, NotNullLong)
+	fvA := newCorrelatedFieldValueWithResolvedOrdinal(mustQOV(t, NamedCorrelationIdentifier("n"), normalized), "a", ordA, NotNullLong)
 	if o, aok := fvA.resolveOrdinal(); !aok || o != 0 {
 		t.Fatalf("normalised: baked resolveOrdinal(a) = (%d,%v), want (0,true)", o, aok)
 	}

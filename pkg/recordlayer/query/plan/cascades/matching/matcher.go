@@ -196,10 +196,16 @@ func NewConstantMatcher() *Instance {
 	}}
 }
 
-// NewFieldMatcher produces a matcher that only matches *FieldValue.
+// NewFieldMatcher produces a matcher that only matches an admitted immutable
+// FieldValue. Recognition goes through values.AsFieldValue so an embedded
+// interface impostor cannot enter planner bindings.
 func NewFieldMatcher() *Instance {
 	return &Instance{rootType: "FieldValue", matches: func(in any) bool {
-		_, ok := in.(*values.FieldValue)
+		value, ok := in.(values.Value)
+		if !ok {
+			return false
+		}
+		_, ok = values.AsFieldValue(value)
 		return ok
 	}}
 }

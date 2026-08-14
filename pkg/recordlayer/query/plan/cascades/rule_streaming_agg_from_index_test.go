@@ -8,29 +8,61 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustStreamingAggIndexConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct streaming-aggregate-from-index fixture: " + err.Error())
+	}
+	return value
+}
+
+func streamingAggIndexRowType() *values.RecordType {
+	return values.NewRecordType("STREAMING_AGG_INDEX_ROW", false, []values.Field{
+		{Name: "region", FieldType: values.NotNullString},
+		{Name: "city", FieldType: values.NotNullString},
+		{Name: "amount", FieldType: values.NotNullLong},
+		{Name: "id", FieldType: values.NotNullLong},
+		{Name: "status", FieldType: values.NotNullString},
+		{Name: "TAGS", FieldType: values.NewArrayType(false, values.NotNullString)},
+	})
+}
+
+func streamingAggIndexScanQ() (
+	*expressions.FullUnorderedScanExpression,
+	expressions.Quantifier,
+) {
+	scan := mustStreamingAggIndexConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, streamingAggIndexRowType()))
+	return scan, expressions.ForEachQuantifier(expressions.InitialOf(scan))
+}
+
+func streamingAggIndexField(q expressions.Quantifier, name string) values.Value {
+	root := mustStreamingAggIndexConstruct(q.RequireFlowedObjectValue())
+	request := mustStreamingAggIndexConstruct(values.FieldByName(name))
+	return mustStreamingAggIndexConstruct(values.ResolveFieldAccess(
+		root, []values.FieldRequest{request}))
+}
+
 func TestStreamingAggFromIndex_Fires(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	_, scanQ := streamingAggIndexScanQ()
 
-	gb := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+	gb := mustStreamingAggIndexConstruct(expressions.NewGroupByExpression(
+		[]values.Value{streamingAggIndexField(scanQ, "region")},
 		[]expressions.AggregateSpec{
 			{Function: expressions.AggCount},
 		},
 		scanQ,
-	)
+	))
 	gbRef := expressions.InitialOf(gb)
 
 	aliases := []values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()}
 	cand := newKnownDistinctValueIndexCandidate(
-		"T$region", []string{"T"}, []string{"region"}, aliases, values.UnknownType, false,
+		"T$region", []string{"T"}, []string{"region"}, aliases, streamingAggIndexRowType(), false,
 		nil,
 	)
 
-	results := FireExpressionRuleWithMemo(
+	results := mustFireExpressionRuleWithMemo(t,
 		NewStreamingAggFromIndexRule(),
 		gbRef,
 		&indexTestPlanContext{candidates: []MatchCandidate{cand}},
@@ -48,27 +80,25 @@ func TestStreamingAggFromIndex_Fires(t *testing.T) {
 func TestStreamingAggFromIndex_DoesNotFireWhenNoMatchingIndex(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	_, scanQ := streamingAggIndexScanQ()
 
-	gb := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+	gb := mustStreamingAggIndexConstruct(expressions.NewGroupByExpression(
+		[]values.Value{streamingAggIndexField(scanQ, "region")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+			{Function: expressions.AggCount, Operand: streamingAggIndexField(scanQ, "id")},
 		},
 		scanQ,
-	)
+	))
 	gbRef := expressions.InitialOf(gb)
 
 	// Index is on "status", not "region".
 	aliases := []values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()}
 	cand := newKnownDistinctValueIndexCandidate(
-		"T$status", []string{"T"}, []string{"status"}, aliases, values.UnknownType, false,
+		"T$status", []string{"T"}, []string{"status"}, aliases, streamingAggIndexRowType(), false,
 		nil,
 	)
 
-	results := FireExpressionRuleWithMemo(
+	results := mustFireExpressionRuleWithMemo(t,
 		NewStreamingAggFromIndexRule(),
 		gbRef,
 		&indexTestPlanContext{candidates: []MatchCandidate{cand}},
@@ -82,27 +112,25 @@ func TestStreamingAggFromIndex_DoesNotFireWhenNoMatchingIndex(t *testing.T) {
 func TestStreamingAggFromIndex_DoesNotFireWhenAggregateNotCovered(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	_, scanQ := streamingAggIndexScanQ()
 
 	// Index covers the grouping key (region) but NOT the aggregate operand (amount).
-	gb := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+	gb := mustStreamingAggIndexConstruct(expressions.NewGroupByExpression(
+		[]values.Value{streamingAggIndexField(scanQ, "region")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "amount", Typ: values.UnknownType}},
+			{Function: expressions.AggSum, Operand: streamingAggIndexField(scanQ, "amount")},
 		},
 		scanQ,
-	)
+	))
 	gbRef := expressions.InitialOf(gb)
 
 	aliases := []values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()}
 	cand := newKnownDistinctValueIndexCandidate(
-		"T$region", []string{"T"}, []string{"region"}, aliases, values.UnknownType, false,
+		"T$region", []string{"T"}, []string{"region"}, aliases, streamingAggIndexRowType(), false,
 		nil,
 	)
 
-	results := FireExpressionRuleWithMemo(
+	results := mustFireExpressionRuleWithMemo(t,
 		NewStreamingAggFromIndexRule(),
 		gbRef,
 		&indexTestPlanContext{candidates: []MatchCandidate{cand}},
@@ -116,20 +144,18 @@ func TestStreamingAggFromIndex_DoesNotFireWhenAggregateNotCovered(t *testing.T) 
 func TestStreamingAggFromIndex_MultiColumn(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	_, scanQ := streamingAggIndexScanQ()
 
-	gb := expressions.NewGroupByExpression(
+	gb := mustStreamingAggIndexConstruct(expressions.NewGroupByExpression(
 		[]values.Value{
-			&values.FieldValue{Field: "region", Typ: values.UnknownType},
-			&values.FieldValue{Field: "city", Typ: values.UnknownType},
+			streamingAggIndexField(scanQ, "region"),
+			streamingAggIndexField(scanQ, "city"),
 		},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "amount", Typ: values.UnknownType}},
+			{Function: expressions.AggSum, Operand: streamingAggIndexField(scanQ, "amount")},
 		},
 		scanQ,
-	)
+	))
 	gbRef := expressions.InitialOf(gb)
 
 	aliases := []values.CorrelationIdentifier{
@@ -138,11 +164,11 @@ func TestStreamingAggFromIndex_MultiColumn(t *testing.T) {
 		values.UniqueCorrelationIdentifier(),
 	}
 	cand := newKnownDistinctValueIndexCandidate(
-		"T$region_city_amount", []string{"T"}, []string{"region", "city", "amount"}, aliases, values.UnknownType, false,
+		"T$region_city_amount", []string{"T"}, []string{"region", "city", "amount"}, aliases, streamingAggIndexRowType(), false,
 		nil,
 	)
 
-	results := FireExpressionRuleWithMemo(
+	results := mustFireExpressionRuleWithMemo(t,
 		NewStreamingAggFromIndexRule(),
 		gbRef,
 		&indexTestPlanContext{candidates: []MatchCandidate{cand}},
@@ -159,27 +185,25 @@ func TestStreamingAggFromIndex_MultiColumn(t *testing.T) {
 func TestStreamingAggFromIndex_DoesNotFireForGlobalAgg(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	_, scanQ := streamingAggIndexScanQ()
 
 	// Global aggregate — no grouping keys.
-	gb := expressions.NewGroupByExpression(
+	gb := mustStreamingAggIndexConstruct(expressions.NewGroupByExpression(
 		[]values.Value{},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+			{Function: expressions.AggCount, Operand: streamingAggIndexField(scanQ, "id")},
 		},
 		scanQ,
-	)
+	))
 	gbRef := expressions.InitialOf(gb)
 
 	aliases := []values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()}
 	cand := newKnownDistinctValueIndexCandidate(
-		"T$region", []string{"T"}, []string{"region"}, aliases, values.UnknownType, false,
+		"T$region", []string{"T"}, []string{"region"}, aliases, streamingAggIndexRowType(), false,
 		nil,
 	)
 
-	results := FireExpressionRuleWithMemo(
+	results := mustFireExpressionRuleWithMemo(t,
 		NewStreamingAggFromIndexRule(),
 		gbRef,
 		&indexTestPlanContext{candidates: []MatchCandidate{cand}},
@@ -207,7 +231,7 @@ func TestStreamingAggFromIndex_RejectsFanOutCandidate(t *testing.T) {
 			[]string{"TAGS"},
 			nil,
 			[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
-			values.UnknownType,
+			streamingAggIndexRowType(),
 			false,
 			nil,
 			createsDuplicates,
@@ -219,7 +243,7 @@ func TestStreamingAggFromIndex_RejectsFanOutCandidate(t *testing.T) {
 		[]string{"TAGS"},
 		[]string{FunctionKindCardinality},
 		[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
-		values.UnknownType,
+		streamingAggIndexRowType(),
 		false,
 		nil,
 		&scalar,
@@ -230,13 +254,13 @@ func TestStreamingAggFromIndex_RejectsFanOutCandidate(t *testing.T) {
 		newCandidate("T$tags_scalar", &scalar),
 	}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	groupBy := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "TAGS", Typ: values.UnknownType}},
+	_, scanQ := streamingAggIndexScanQ()
+	groupBy := mustStreamingAggIndexConstruct(expressions.NewGroupByExpression(
+		[]values.Value{streamingAggIndexField(scanQ, "TAGS")},
 		[]expressions.AggregateSpec{{Function: expressions.AggCount}},
-		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
-	)
-	results := FireExpressionRuleWithMemo(
+		scanQ,
+	))
+	results := mustFireExpressionRuleWithMemo(t,
 		NewStreamingAggFromIndexRule(),
 		expressions.InitialOf(groupBy),
 		ctx,

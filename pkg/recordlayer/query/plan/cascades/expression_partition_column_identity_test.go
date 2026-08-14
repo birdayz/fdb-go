@@ -17,13 +17,26 @@ func TestOrderingPartitionHash_NestedShadowsTopLevel(t *testing.T) {
 	t.Parallel()
 
 	src := values.NamedCorrelationIdentifier("T")
+	addressType := values.NewRecordType("Address", false, []values.Field{
+		{Name: "CITY", FieldType: values.NotNullString, Ordinal: 0},
+	})
+	rowType := values.NewRecordType("PartitionColumns", false, []values.Field{
+		{Name: "CITY", FieldType: values.NotNullString, Ordinal: 0},
+		{Name: "ADDR", FieldType: addressType, Ordinal: 1},
+		{Name: "NAME", FieldType: values.NotNullString, Ordinal: 2},
+	})
+	root, err := values.NewQuantifiedObjectValue(src, rowType)
+	root = mustConstruct(t, root, err)
+	resolve := func(ordinals ...int) values.Value {
+		t.Helper()
+		value, resolveErr := values.ResolveFieldOrdinals(root, ordinals)
+		return mustConstruct(t, value, resolveErr)
+	}
 	flatCity := func() values.Value {
-		return values.NewFieldValue(values.NewQuantifiedObjectValue(src), "CITY", values.UnknownType)
+		return resolve(0)
 	}
 	nestedAddrCity := func() values.Value {
-		return values.NewFieldValue(
-			values.NewFieldValue(values.NewQuantifiedObjectValue(src), "ADDR", values.UnknownType),
-			"CITY", values.UnknownType)
+		return resolve(1, 0)
 	}
 	ord := func(k values.Value) properties.Ordering {
 		return properties.Ordering{IsKnown: true, Keys: []values.Value{k}, Descending: []bool{false}}
@@ -45,7 +58,7 @@ func TestOrderingPartitionHash_NestedShadowsTopLevel(t *testing.T) {
 	}
 
 	// A different leaf must also differ.
-	nameH := orderingPartitionHash(ord(values.NewFieldValue(values.NewQuantifiedObjectValue(src), "NAME", values.UnknownType)))
+	nameH := orderingPartitionHash(ord(resolve(2)))
 	if nameH == flatH {
 		t.Fatal("orderings on distinct columns name and city hash identically")
 	}

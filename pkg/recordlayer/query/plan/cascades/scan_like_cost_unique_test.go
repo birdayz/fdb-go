@@ -9,6 +9,16 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func scanLikeEq(t testing.TB, value int64) *predicates.ComparisonRange {
+	t.Helper()
+	comparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, value)
+	merged := predicates.EmptyComparisonRange().Merge(&comparison)
+	if !merged.Ok {
+		t.Fatalf("build equality range for %d", value)
+	}
+	return merged.Range
+}
+
 // TestScanLikeCost_UniqueGating pins the RFC-069 fix: a fully
 // equality-bound access in the concrete join-ordering leaf cost is priced as a
 // single row ONLY when provably unique. A primary-key scan / unique index passes
@@ -61,22 +71,34 @@ func TestConcreteJoinCostUniqueCompositePrefixIsNotPointProbe(t *testing.T) {
 		name: "UNIQUE_AB", columns: []string{"A", "B"},
 		recordTypes: []string{"T"}, unique: true,
 	}})
-	prefix := plans.NewRecordQueryIndexPlan(
+	row := values.NewRecordType("ScanLikeCostRow", false, []values.Field{
+		{Name: "A", FieldType: values.NotNullLong},
+		{Name: "B", FieldType: values.NotNullLong},
+	})
+	prefix, err := plans.NewRecordQueryIndexPlan(
 		"UNIQUE_AB",
-		[]*predicates.ComparisonRange{pkGateEq(t, int64(7))},
-		[]string{"T"}, values.UnknownType, false,
-	).WithKeyComponentTypes([]values.Type{values.NotNullLong})
+		[]*predicates.ComparisonRange{scanLikeEq(t, int64(7))},
+		[]string{"T"}, row, false,
+	)
+	if err != nil {
+		t.Fatalf("prefix index plan: %v", err)
+	}
+	prefix = prefix.WithKeyComponentTypes([]values.Type{values.NotNullLong})
 	if cost := concretePlanCost(prefix, stats, ctx); cost.Cardinality == 1 {
 		t.Fatalf("partial UNIQUE(A,B) prefix priced as point probe: %+v", cost)
 	}
 
-	full := plans.NewRecordQueryIndexPlan(
+	full, err := plans.NewRecordQueryIndexPlan(
 		"UNIQUE_AB",
 		[]*predicates.ComparisonRange{
-			pkGateEq(t, int64(7)), pkGateEq(t, int64(9)),
+			scanLikeEq(t, int64(7)), scanLikeEq(t, int64(9)),
 		},
-		[]string{"T"}, values.UnknownType, false,
-	).WithKeyComponentTypes([]values.Type{values.NotNullLong, values.NotNullLong})
+		[]string{"T"}, row, false,
+	)
+	if err != nil {
+		t.Fatalf("full index plan: %v", err)
+	}
+	full = full.WithKeyComponentTypes([]values.Type{values.NotNullLong, values.NotNullLong})
 	if cost := concretePlanCost(full, stats, ctx); cost.Cardinality != 1 {
 		t.Fatalf("fully bound UNIQUE(A,B) not priced as point probe: %+v", cost)
 	}

@@ -194,18 +194,26 @@ func scanRowRead(t *testing.T, keyColumn, column string) values.Value {
 	if !ok {
 		t.Fatalf("scan row declares no column %s", column)
 	}
-	return values.NewFieldValueWithResolvedOrdinalInDomain(
-		column, id.Ordinal, values.NullableString, id.Domain)
+	root, rootErr := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("scan_row_"+keyColumn),
+		uniqueIndexScanRowType(keyColumn),
+	)
+	root = mustConstruct(t, root, rootErr)
+	resolved, err := values.ResolveFieldOrdinals(root, []int{id.Ordinal})
+	return mustConstruct(t, resolved, err)
 }
 
 // uniqueIndexScanOn builds a covering unique index scan on one NULLABLE STRING
 // key column — the shape every SQL-expressible secondary unique index has, and
 // therefore the shape on which R1 is false and only R2 can license the claim.
 func uniqueIndexScanOn(
+	t testing.TB,
 	column string, comps []*predicates.ComparisonRange,
 ) *plans.RecordQueryIndexPlan {
+	t.Helper()
 	rowType := uniqueIndexScanRowType(column)
-	return plans.NewRecordQueryIndexPlan("T$"+column+"_unique", comps, []string{"T"}, rowType, false).
+	scan, err := plans.NewRecordQueryIndexPlan("T$"+column+"_unique", comps, []string{"T"}, rowType, false)
+	return mustConstruct(t, scan, err).
 		WithIndexMetadata([]string{column}, []string{"ID"}, true).
 		WithKeyComponentTypes([]values.Type{values.NullableString})
 }
@@ -225,13 +233,13 @@ func uniqueIndexScanOn(
 func TestStrictlyOrderedIfUnique_ScanRangeRouteLicensesTheClaim(t *testing.T) {
 	t.Parallel()
 
-	unconstrained := uniqueIndexScanOn("EMAIL", nil)
+	unconstrained := uniqueIndexScanOn(t, "EMAIL", nil)
 	if strictlyOrderedIfUnique(unconstrained, 1) {
 		t.Fatal("an unconstrained scan of a UNIQUE index on a NULLABLE column has " +
 			"genuine ties among its NULL entries; the claim must be declined")
 	}
 
-	notNull := uniqueIndexScanOn("EMAIL", []*predicates.ComparisonRange{
+	notNull := uniqueIndexScanOn(t, "EMAIL", []*predicates.ComparisonRange{
 		rangeOf(t, unaryComparison(predicates.ComparisonIsNotNull)),
 	})
 	if !strictlyOrderedIfUnique(notNull, 1) {
@@ -242,7 +250,7 @@ func TestStrictlyOrderedIfUnique_ScanRangeRouteLicensesTheClaim(t *testing.T) {
 	// The trap, end to end: IS NULL is an equality-typed scan range that seeks
 	// the NULL entries, which is the one stream where the ties are ALL that is
 	// left.
-	isNull := uniqueIndexScanOn("EMAIL", []*predicates.ComparisonRange{
+	isNull := uniqueIndexScanOn(t, "EMAIL", []*predicates.ComparisonRange{
 		rangeOf(t, unaryComparison(predicates.ComparisonIsNull)),
 	})
 	if strictlyOrderedIfUnique(isNull, 1) {
@@ -264,7 +272,7 @@ func TestStrictlyOrderedIfUnique_ScanRangeRouteLicensesTheClaim(t *testing.T) {
 func TestStrictlyOrderedIfUnique_EqualsNullRangeIsAdmittedBecauseItIsEmpty(t *testing.T) {
 	t.Parallel()
 
-	equalsNull := uniqueIndexScanOn("EMAIL", []*predicates.ComparisonRange{
+	equalsNull := uniqueIndexScanOn(t, "EMAIL", []*predicates.ComparisonRange{
 		rangeOf(t, predicates.NewLiteralComparison(predicates.ComparisonEquals, nil)),
 	})
 	if !strictlyOrderedIfUnique(equalsNull, 1) {
@@ -274,7 +282,7 @@ func TestStrictlyOrderedIfUnique_EqualsNullRangeIsAdmittedBecauseItIsEmpty(t *te
 
 	// The sibling that is NOT empty: null-safe equality against NULL selects the
 	// NULL tuple key, which is the whole tie class.
-	notDistinct := uniqueIndexScanOn("EMAIL", []*predicates.ComparisonRange{
+	notDistinct := uniqueIndexScanOn(t, "EMAIL", []*predicates.ComparisonRange{
 		rangeOf(t, predicates.NewLiteralComparison(predicates.ComparisonNotDistinctFrom, nil)),
 	})
 	if strictlyOrderedIfUnique(notDistinct, 1) {
@@ -300,7 +308,8 @@ func TestStrictlyOrderedIfUnique_NumKeysStillBounds(t *testing.T) {
 		rangeOf(t, unaryComparison(predicates.ComparisonIsNotNull)),
 		rangeOf(t, unaryComparison(predicates.ComparisonIsNotNull)),
 	}
-	scan := plans.NewRecordQueryIndexPlan("T$ab_unique", comps, []string{"T"}, rowType, false).
+	scanBase, scanErr := plans.NewRecordQueryIndexPlan("T$ab_unique", comps, []string{"T"}, rowType, false)
+	scan := mustConstruct(t, scanBase, scanErr).
 		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, true).
 		WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableString})
 
@@ -313,9 +322,10 @@ func TestStrictlyOrderedIfUnique_NumKeysStillBounds(t *testing.T) {
 
 	// Partial NULL rejection over a composite key: (1, NULL) and (1, NULL) are
 	// two legitimate entries, so `A IS NOT NULL` alone is not enough.
-	partial := plans.NewRecordQueryIndexPlan("T$ab_unique",
+	partialBase, partialErr := plans.NewRecordQueryIndexPlan("T$ab_unique",
 		[]*predicates.ComparisonRange{comps[0], predicates.EmptyComparisonRange()},
-		[]string{"T"}, rowType, false).
+		[]string{"T"}, rowType, false)
+	partial := mustConstruct(t, partialBase, partialErr).
 		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, true).
 		WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableString})
 	if strictlyOrderedIfUnique(partial, 2) {
@@ -352,26 +362,30 @@ func TestStrictlyOrderedIfUnique_ResidualFilterEvidenceIsRefused(t *testing.T) {
 	// neither isScanRangeCompatible nor isSargableComparisonForMatch, so it can
 	// only ever arrive as a residual filter. It is the strongest case for reading
 	// a filter here, and it is still refused.
-	unconstrained := uniqueIndexScanOn("EMAIL", nil)
+	unconstrained := uniqueIndexScanOn(t, "EMAIL", nil)
+	legacyFilter, legacyFilterErr := plans.NewRecordQueryFilterPlan(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				scanRowRead(t, "EMAIL", "EMAIL"),
+				predicates.NewLiteralComparison(predicates.ComparisonNotEquals, "zzz")),
+		}, unconstrained)
+	legacyFilter = mustConstruct(t, legacyFilter, legacyFilterErr)
+	predicatesFilter, predicatesFilterErr := plans.NewRecordQueryPredicatesFilterPlan(
+		unconstrained,
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				scanRowRead(t, "EMAIL", "EMAIL"),
+				predicates.NewLiteralComparison(predicates.ComparisonNotEquals, "zzz")),
+		})
+	predicatesFilter = mustConstruct(t, predicatesFilter, predicatesFilterErr)
 	for _, tc := range []struct {
 		name string
 		expr expressions.RelationalExpression
 	}{
-		{"record_query_filter", plans.NewRecordQueryFilterPlan(
-			[]predicates.QueryPredicate{
-				predicates.NewComparisonPredicate(
-					scanRowRead(t, "EMAIL", "EMAIL"),
-					predicates.NewLiteralComparison(predicates.ComparisonNotEquals, "zzz")),
-			}, unconstrained)},
+		{"record_query_filter", legacyFilter},
 		// The shape the SQL planner actually produces. A refusal that knew only
 		// the type above would be satisfied by no real query.
-		{"predicates_filter", plans.NewRecordQueryPredicatesFilterPlan(
-			unconstrained,
-			[]predicates.QueryPredicate{
-				predicates.NewComparisonPredicate(
-					scanRowRead(t, "EMAIL", "EMAIL"),
-					predicates.NewLiteralComparison(predicates.ComparisonNotEquals, "zzz")),
-			})},
+		{"predicates_filter", predicatesFilter},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -392,11 +406,15 @@ func TestStrictlyOrderedIfUnique_ResidualFilterEvidenceIsRefused(t *testing.T) {
 func TestMakeStrictlySorted_MarksOnlyWhatTheWalkAdmits(t *testing.T) {
 	t.Parallel()
 
-	scan := uniqueIndexScanOn("EMAIL", []*predicates.ComparisonRange{
+	scan := uniqueIndexScanOn(t, "EMAIL", []*predicates.ComparisonRange{
 		rangeOf(t, unaryComparison(predicates.ComparisonIsNotNull)),
 	})
 
-	marked, ok := makeStrictlySorted(scan).(*plans.RecordQueryIndexPlan)
+	markedExpr, err := makeStrictlySorted(scan)
+	if err != nil {
+		t.Fatalf("makeStrictlySorted(indexScan) error = %v", err)
+	}
+	marked, ok := markedExpr.(*plans.RecordQueryIndexPlan)
 	if !ok || !marked.IsStrictlySorted() {
 		t.Fatalf("makeStrictlySorted(indexScan) = %T, not marked", marked)
 	}
@@ -406,13 +424,18 @@ func TestMakeStrictlySorted_MarksOnlyWhatTheWalkAdmits(t *testing.T) {
 
 	// The walk refuses a filter, so the marker must leave one alone — otherwise a
 	// later relaxation of the walk would silently arm the false claim above.
-	filtered := plans.NewRecordQueryPredicatesFilterPlan(scan,
+	filteredBase, filteredErr := plans.NewRecordQueryPredicatesFilterPlan(scan,
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
 				scanRowRead(t, "EMAIL", "OTHER"),
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, "x")),
 		})
-	if got := makeStrictlySorted(filtered); got != expressions.RelationalExpression(filtered) {
+	filtered := mustConstruct(t, filteredBase, filteredErr)
+	got, err := makeStrictlySorted(filtered)
+	if err != nil {
+		t.Fatalf("makeStrictlySorted(filter) error = %v", err)
+	}
+	if got != expressions.RelationalExpression(filtered) {
 		t.Fatalf("makeStrictlySorted rebuilt a filter the walk refuses (%T); the two "+
 			"enumerations have drifted apart", got)
 	}

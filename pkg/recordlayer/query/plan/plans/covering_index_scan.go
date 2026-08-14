@@ -1,6 +1,8 @@
 package plans
 
 import (
+	"fmt"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -66,12 +68,20 @@ type RecordQueryCoveringIndexPlan struct {
 // (index key values ++ entry value tuple). A mismatch there is not a loud
 // failure; it silently reads a value into the wrong logical slot. Deriving
 // removes the failure mode instead of documenting it.
-func NewRecordQueryCoveringIndexPlan(indexPlan *RecordQueryIndexPlan) *RecordQueryCoveringIndexPlan {
+func NewRecordQueryCoveringIndexPlan(indexPlan *RecordQueryIndexPlan) (*RecordQueryCoveringIndexPlan, error) {
+	if indexPlan == nil {
+		return nil, fmt.Errorf("RecordQueryCoveringIndexPlan: index plan is nil")
+	}
+	base, err := newPlanExprBaseForType("RecordQueryCoveringIndexPlan", indexPlan.GetResultType())
+	if err != nil {
+		return nil, err
+	}
 	return &RecordQueryCoveringIndexPlan{
+		PlanExprBase:    base,
 		indexPlan:       indexPlan,
 		coveringColumns: indexPlan.AllCoveredEntryColumns(),
-		resultValue:     values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
-	}
+		resultValue:     base.resultValue,
+	}, nil
 }
 
 // GetIndexPlan returns the wrapped index scan. It is a field, not a child:
@@ -193,8 +203,11 @@ func (p *RecordQueryCoveringIndexPlan) EqualsWithoutChildren(other expressions.R
 
 // WithQuantifiers returns this plan unchanged — it has no quantifiers. The
 // inner index plan is a field and is deliberately not exposed as one.
-func (p *RecordQueryCoveringIndexPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+func (p *RecordQueryCoveringIndexPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryCoveringIndexPlan", len(qs), 0); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // GetCorrelatedToWithoutChildren reports the correlations reached through the

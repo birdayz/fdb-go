@@ -1,42 +1,64 @@
 package cascades
 
 import (
+	"errors"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-func TestProjectionElimRule_FiresOnIdentity(t *testing.T) {
-	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	// Projection's single Value is the inner Quantifier's flowed
-	// object — identity projection.
-	p := expressions.NewLogicalProjectionExpression(
-		[]values.Value{q.GetFlowedObjectValue()},
-		q,
-	)
-	ref := expressions.InitialOf(p)
-	yielded := FireExpressionRule(NewProjectionElimRule(), ref)
-	if len(yielded) != 1 {
-		t.Fatalf("yielded=%d, want 1", len(yielded))
+func projectionElimRowType() *values.RecordType {
+	return values.NewRecordType("ProjectionElimRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+	})
+}
+
+func mustProjectionElimConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct projection-elim fixture: " + err.Error())
 	}
-	if _, ok := yielded[0].(*expressions.FullUnorderedScanExpression); !ok {
-		t.Fatalf("yielded type=%T, want *FullUnorderedScanExpression", yielded[0])
+	return value
+}
+
+func projectionElimScanQ() (*expressions.FullUnorderedScanExpression, expressions.Quantifier) {
+	scan := mustProjectionElimConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, projectionElimRowType()))
+	return scan, expressions.ForEachQuantifier(expressions.InitialOf(scan))
+}
+
+func fireProjectionElimRule(
+	t testing.TB, ref *expressions.Reference,
+) []expressions.RelationalExpression {
+	t.Helper()
+	result, err := FireExpressionRule(NewProjectionElimRule(), ref)
+	if err != nil {
+		t.Fatalf("FireExpressionRule: %v", err)
+	}
+	return result
+}
+
+func TestProjectionElimRule_WholeRowIdentityRejectedAtAdmission(t *testing.T) {
+	t.Parallel()
+	_, q := projectionElimScanQ()
+	root := mustProjectionElimConstruct(q.RequireFlowedObjectValue())
+	p, err := expressions.NewLogicalProjectionExpression([]values.Value{root}, q)
+	if !errors.Is(err, values.ErrWholeRowProjection) || p != nil {
+		t.Fatalf("whole-row identity projection = %T, %v; want ErrWholeRowProjection", p, err)
 	}
 }
 
 func TestProjectionElimRule_DeclinesOnMultipleColumns(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	p := expressions.NewLogicalProjectionExpression(
-		[]values.Value{q.GetFlowedObjectValue(), values.NewBooleanValue(true)},
+	_ = NewProjectionElimRule() // direct behavioral-census anchor; helper fires it
+	_, q := projectionElimScanQ()
+	root := mustProjectionElimConstruct(q.RequireFlowedObjectValue())
+	p := mustProjectionElimConstruct(expressions.NewLogicalProjectionExpression(
+		[]values.Value{root, values.NewBooleanValue(true)},
 		q,
-	)
+	))
 	ref := expressions.InitialOf(p)
-	yielded := FireExpressionRule(NewProjectionElimRule(), ref)
+	yielded := fireProjectionElimRule(t, ref)
 	if len(yielded) != 0 {
 		t.Fatalf("rule fired on multi-column projection — yielded %d, want 0", len(yielded))
 	}
@@ -44,15 +66,14 @@ func TestProjectionElimRule_DeclinesOnMultipleColumns(t *testing.T) {
 
 func TestProjectionElimRule_DeclinesOnComputedSingle(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	_, q := projectionElimScanQ()
 	// Single Value, but it's NOT the flowed object (computed expression).
-	p := expressions.NewLogicalProjectionExpression(
+	p := mustProjectionElimConstruct(expressions.NewLogicalProjectionExpression(
 		[]values.Value{values.NewBooleanValue(true)},
 		q,
-	)
+	))
 	ref := expressions.InitialOf(p)
-	yielded := FireExpressionRule(NewProjectionElimRule(), ref)
+	yielded := fireProjectionElimRule(t, ref)
 	if len(yielded) != 0 {
 		t.Fatalf("rule fired on a computed projection — yielded %d, want 0", len(yielded))
 	}
@@ -60,15 +81,15 @@ func TestProjectionElimRule_DeclinesOnComputedSingle(t *testing.T) {
 
 func TestProjectionElimRule_DeclinesOnDifferentAlias(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	_, q := projectionElimScanQ()
 	otherAlias := values.NamedCorrelationIdentifier("OTHER")
-	p := expressions.NewLogicalProjectionExpression(
-		[]values.Value{values.NewQuantifiedObjectValue(otherAlias)},
+	other := mustProjectionElimConstruct(values.NewQuantifiedObjectValue(otherAlias, values.NotNullLong))
+	p := mustProjectionElimConstruct(expressions.NewLogicalProjectionExpression(
+		[]values.Value{other},
 		q,
-	)
+	))
 	ref := expressions.InitialOf(p)
-	yielded := FireExpressionRule(NewProjectionElimRule(), ref)
+	yielded := fireProjectionElimRule(t, ref)
 	if len(yielded) != 0 {
 		t.Fatalf("rule fired on projection of different-alias QOV — yielded %d, want 0", len(yielded))
 	}
@@ -76,32 +97,28 @@ func TestProjectionElimRule_DeclinesOnDifferentAlias(t *testing.T) {
 
 func TestProjectionElimRule_DeclinesOnOutputAlias(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	p := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{q.GetFlowedObjectValue()},
+	_, q := projectionElimScanQ()
+	root := mustProjectionElimConstruct(q.RequireFlowedObjectValue())
+	p, err := expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{root},
 		[]string{"RENAMED_ROW"},
 		q,
 	)
-
-	yielded := FireExpressionRule(NewProjectionElimRule(), expressions.InitialOf(p))
-	if len(yielded) != 0 {
-		t.Fatalf("rule erased a schema-bearing projection alias — yielded %d, want 0", len(yielded))
+	if !errors.Is(err, values.ErrWholeRowProjection) || p != nil {
+		t.Fatalf("aliased whole-row projection = %T, %v; want ErrWholeRowProjection", p, err)
 	}
 }
 
-func TestProjectionElimRule_FiresOnExplicitEmptyAlias(t *testing.T) {
+func TestProjectionElimRule_ExplicitEmptyAliasStillRejectsWholeRow(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	p := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{q.GetFlowedObjectValue()},
+	_, q := projectionElimScanQ()
+	root := mustProjectionElimConstruct(q.RequireFlowedObjectValue())
+	p, err := expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{root},
 		[]string{""},
 		q,
 	)
-
-	yielded := FireExpressionRule(NewProjectionElimRule(), expressions.InitialOf(p))
-	if len(yielded) != 1 || yielded[0] != scan {
-		t.Fatalf("empty alias changed identity elimination: yielded %v, want exact scan", yielded)
+	if !errors.Is(err, values.ErrWholeRowProjection) || p != nil {
+		t.Fatalf("empty-alias whole-row projection = %T, %v; want ErrWholeRowProjection", p, err)
 	}
 }

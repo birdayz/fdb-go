@@ -40,63 +40,65 @@ type selectSemanticRouteExactSubsetFixture struct {
 }
 
 func newSelectSemanticRouteExactSubsetFixture(
+	t testing.TB,
 	name string,
 ) *selectSemanticRouteExactSubsetFixture {
-	queryForEachScan := expressions.NewFullUnorderedScanExpression(
+	t.Helper()
+	queryForEachScan := mustMatchScan(t,
 		[]string{"T"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	queryForEachRef := expressions.InitialOf(queryForEachScan)
+	queryForEachRef := mustMatchInitial(t, queryForEachScan)
 	queryForEach := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier(name+"_query_fe"),
 		queryForEachRef,
 	)
-	queryExistentialScan := expressions.NewFullUnorderedScanExpression(
+	queryExistentialScan := mustMatchScan(t,
 		[]string{"U"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	queryExistentialRef := expressions.InitialOf(queryExistentialScan)
+	queryExistentialRef := mustMatchInitial(t, queryExistentialScan)
 	queryExistential := expressions.NamedExistentialQuantifier(
 		values.NamedCorrelationIdentifier(name+"_query_e"),
 		queryExistentialRef,
 	)
-	querySelect := expressions.NewSelectExpression(
-		queryForEach.GetFlowedObjectValue(),
+	querySelect := mustMatchSelect(t,
+		mustMatchFlowed(t, queryForEach),
 		[]expressions.Quantifier{
 			queryForEach,
 			queryExistential,
 		},
 		nil,
 	)
-	querySelectRef := expressions.InitialOf(querySelect)
+	querySelectRef := mustMatchInitial(t, querySelect)
 
-	candidateForEachScan := expressions.NewFullUnorderedScanExpression(
+	candidateForEachScan := mustMatchScan(t,
 		[]string{"T"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	candidateForEachRef := expressions.InitialOf(candidateForEachScan)
+	candidateForEachRef := mustMatchInitial(t, candidateForEachScan)
 	candidateForEach := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier(name+"_candidate_fe"),
 		candidateForEachRef,
 	)
-	candidateExistentialScan := expressions.NewFullUnorderedScanExpression(
+	candidateExistentialScan := mustMatchScan(t,
 		[]string{"U"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	candidateExistentialRef := expressions.InitialOf(candidateExistentialScan)
+	candidateExistentialRef := mustMatchInitial(t, candidateExistentialScan)
 	candidateExistential := expressions.NamedExistentialQuantifier(
 		values.NamedCorrelationIdentifier(name+"_candidate_e"),
 		candidateExistentialRef,
 	)
-	candidateSelect := expressions.NewSelectExpression(
-		candidateForEach.GetFlowedObjectValue(),
+	candidateSelect := mustMatchSelect(t,
+		mustMatchFlowed(t, candidateForEach),
 		[]expressions.Quantifier{
 			candidateForEach,
 			candidateExistential,
 		},
 		nil,
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 	candidate := &testMatchCandidate{
 		name:      name,
 		traversal: NewTraversal(candidateSelectRef),
@@ -183,17 +185,19 @@ type selectSemanticRouteOneLegSelect struct {
 }
 
 func newSelectSemanticRouteOneLegSelect(
+	t testing.TB,
 	name string,
 	recordType string,
 	predicateBuilder func(
 		expressions.Quantifier,
 	) []predicates.QueryPredicate,
 ) *selectSemanticRouteOneLegSelect {
-	child := expressions.NewFullUnorderedScanExpression(
+	t.Helper()
+	child := mustMatchScan(t,
 		[]string{recordType},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	childRef := expressions.InitialOf(child)
+	childRef := mustMatchInitial(t, child)
 	quantifier := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier(name),
 		childRef,
@@ -202,8 +206,8 @@ func newSelectSemanticRouteOneLegSelect(
 	if predicateBuilder != nil {
 		queryPredicates = predicateBuilder(quantifier)
 	}
-	selectExpr := expressions.NewSelectExpression(
-		quantifier.GetFlowedObjectValue(),
+	selectExpr := mustMatchSelect(t,
+		mustMatchFlowed(t, quantifier),
 		[]expressions.Quantifier{quantifier},
 		queryPredicates,
 	)
@@ -212,7 +216,7 @@ func newSelectSemanticRouteOneLegSelect(
 		childRef:   childRef,
 		quantifier: quantifier,
 		selectExpr: selectExpr,
-		selectRef:  expressions.InitialOf(selectExpr),
+		selectRef:  mustMatchInitial(t, selectExpr),
 	}
 }
 
@@ -270,7 +274,7 @@ func (f *selectSemanticRouteExactSubsetFixture) match() {
 func TestMatchIntermediateSelectSemantic_ExactDoesNotSuppressSubset(
 	t *testing.T,
 ) {
-	fixture := newSelectSemanticRouteExactSubsetFixture(
+	fixture := newSelectSemanticRouteExactSubsetFixture(t,
 		"idx_select_exact_and_subset",
 	)
 	fixture.seedExactChildren(t)
@@ -360,11 +364,7 @@ func TestMatchIntermediateSelectSemantic_ExactPredicateProductIsNotDuplicated(
 	) []predicates.QueryPredicate {
 		return []predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				values.NewFieldValue(
-					quantifier.GetFlowedObjectValue(),
-					"key",
-					values.UnknownType,
-				),
+				mustMatchField(t, mustMatchFlowed(t, quantifier), "key"),
 				predicates.NewLiteralComparison(
 					predicates.ComparisonEquals,
 					int64(11),
@@ -372,12 +372,12 @@ func TestMatchIntermediateSelectSemantic_ExactPredicateProductIsNotDuplicated(
 			),
 		}
 	}
-	query := newSelectSemanticRouteOneLegSelect(
+	query := newSelectSemanticRouteOneLegSelect(t,
 		"exact_predicate_query_fe",
 		"T",
 		buildPredicate,
 	)
-	candidateLeg := newSelectSemanticRouteOneLegSelect(
+	candidateLeg := newSelectSemanticRouteOneLegSelect(t,
 		"exact_predicate_candidate_fe",
 		"T",
 		buildPredicate,
@@ -437,7 +437,7 @@ func TestMatchIntermediateSelectSemantic_ExactPredicateProductIsNotDuplicated(
 func TestMatchIntermediateSelectSemantic_SharedBudgetStopsAfterExactTier(
 	t *testing.T,
 ) {
-	fixture := newSelectSemanticRouteExactSubsetFixture(
+	fixture := newSelectSemanticRouteExactSubsetFixture(t,
 		"idx_select_exact_budget",
 	)
 	parameter := values.NamedCorrelationIdentifier("select_exact_budget_parameter")
@@ -529,42 +529,34 @@ func TestMatchIntermediateSelectSemantic_SharedBudgetStopsAfterExactTier(
 func TestMatchIntermediateSelectSemantic_EmitsResidualCardinalityAndResultState(
 	t *testing.T,
 ) {
-	queryScan := expressions.NewFullUnorderedScanExpression(
+	queryScan := mustMatchScan(t,
 		[]string{"T"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	queryScanRef := expressions.InitialOf(queryScan)
+	queryScanRef := mustMatchInitial(t, queryScan)
 	queryForEach := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier("result_state_query_fe"),
 		queryScanRef,
 	)
-	queryExistsRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression(
+	queryExistsRef := mustMatchInitial(t,
+		mustMatchScan(t,
 			[]string{"U"},
-			values.UnknownType,
+			matchRuleRowType(),
 		),
 	)
 	queryExists := expressions.NamedExistentialQuantifier(
 		values.NamedCorrelationIdentifier("result_state_query_e"),
 		queryExistsRef,
 	)
-	queryResult := values.NewFieldValue(
-		queryForEach.GetFlowedObjectValue(),
-		"projected",
-		values.UnknownType,
-	)
+	queryResult := mustMatchField(t, mustMatchFlowed(t, queryForEach), "projected")
 	queryPredicate := predicates.NewComparisonPredicate(
-		values.NewFieldValue(
-			queryForEach.GetFlowedObjectValue(),
-			"filtered",
-			values.UnknownType,
-		),
+		mustMatchField(t, mustMatchFlowed(t, queryForEach), "filtered"),
 		predicates.NewLiteralComparison(
 			predicates.ComparisonEquals,
 			int64(42),
 		),
 	)
-	querySelect := expressions.NewSelectExpression(
+	querySelect := mustMatchSelect(t,
 		queryResult,
 		[]expressions.Quantifier{
 			queryForEach,
@@ -572,33 +564,29 @@ func TestMatchIntermediateSelectSemantic_EmitsResidualCardinalityAndResultState(
 		},
 		[]predicates.QueryPredicate{queryPredicate},
 	)
-	querySelectRef := expressions.InitialOf(querySelect)
+	querySelectRef := mustMatchInitial(t, querySelect)
 
-	candidateScan := expressions.NewFullUnorderedScanExpression(
+	candidateScan := mustMatchScan(t,
 		[]string{"T"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScanRef := mustMatchInitial(t, candidateScan)
 	candidateForEach := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier("result_state_candidate_fe"),
 		candidateScanRef,
 	)
-	candidateExistsRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression(
+	candidateExistsRef := mustMatchInitial(t,
+		mustMatchScan(t,
 			[]string{"U"},
-			values.UnknownType,
+			matchRuleRowType(),
 		),
 	)
 	candidateExists := expressions.NamedExistentialQuantifier(
 		values.NamedCorrelationIdentifier("result_state_candidate_e"),
 		candidateExistsRef,
 	)
-	candidateResult := values.NewFieldValue(
-		candidateForEach.GetFlowedObjectValue(),
-		"projected",
-		values.UnknownType,
-	)
-	candidateSelect := expressions.NewSelectExpression(
+	candidateResult := mustMatchField(t, mustMatchFlowed(t, candidateForEach), "projected")
+	candidateSelect := mustMatchSelect(t,
 		candidateResult,
 		[]expressions.Quantifier{
 			candidateForEach,
@@ -606,7 +594,7 @@ func TestMatchIntermediateSelectSemantic_EmitsResidualCardinalityAndResultState(
 		},
 		nil,
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 	candidate := &testMatchCandidate{
 		name:      "idx_select_result_state",
 		traversal: NewTraversal(candidateSelectRef),
@@ -731,63 +719,64 @@ func TestMatchIntermediateSelectSemantic_EmitsResidualCardinalityAndResultState(
 func TestMatchIntermediateSelectSemantic_ExistentialToForEachMarksDistinctRepair(
 	t *testing.T,
 ) {
-	queryBase := expressions.NewFullUnorderedScanExpression(
+	queryBase := mustMatchScan(t,
 		[]string{"T"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	queryBaseRef := expressions.InitialOf(queryBase)
+	queryBaseRef := mustMatchInitial(t, queryBase)
 	queryForEach := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier("e_to_fe_route_query_fe"),
 		queryBaseRef,
 	)
-	queryFanout := expressions.NewFullUnorderedScanExpression(
+	queryFanout := mustMatchScan(t,
 		[]string{"U"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	queryFanoutRef := expressions.InitialOf(queryFanout)
+	queryFanoutRef := mustMatchInitial(t, queryFanout)
 	queryExistential := expressions.NamedExistentialQuantifier(
 		values.NamedCorrelationIdentifier("e_to_fe_route_query_e"),
 		queryFanoutRef,
 	)
-	querySelect := expressions.NewSelectExpression(
-		queryForEach.GetFlowedObjectValue(),
+	querySelect := mustMatchSelect(t,
+		mustMatchFlowed(t, queryForEach),
 		[]expressions.Quantifier{queryForEach, queryExistential},
 		[]predicates.QueryPredicate{
-			predicates.NewExistentialAlias(queryExistential.GetAlias()),
+			mustExistentialAlias(t, queryExistential.GetAlias()),
 		},
 	)
-	querySelectRef := expressions.InitialOf(querySelect)
+	querySelectRef := mustMatchInitial(t, querySelect)
 
-	candidateBase := expressions.NewFullUnorderedScanExpression(
+	candidateBase := mustMatchScan(t,
 		[]string{"T"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	candidateBaseRef := expressions.InitialOf(candidateBase)
+	candidateBaseRef := mustMatchInitial(t, candidateBase)
 	candidateForEach := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier("e_to_fe_route_candidate_fe"),
 		candidateBaseRef,
 	)
-	candidateFanout := expressions.NewFullUnorderedScanExpression(
+	candidateFanout := mustMatchScan(t,
 		[]string{"U"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	candidateFanoutRef := expressions.InitialOf(candidateFanout)
+	candidateFanoutRef := mustMatchInitial(t, candidateFanout)
 	candidateFanoutForEach := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier("e_to_fe_route_candidate_fanout"),
 		candidateFanoutRef,
 	)
-	candidateSelect := expressions.NewSelectExpression(
-		candidateForEach.GetFlowedObjectValue(),
+	candidateSelect := mustMatchSelect(t,
+		mustMatchFlowed(t, candidateForEach),
 		[]expressions.Quantifier{candidateForEach, candidateFanoutForEach},
 		nil,
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
-	scanPlan := plans.NewRecordQueryScanPlan(
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
+	scanPlan := mustMatchScanPlan(t,
 		[]string{"T"},
-		values.UnknownType,
+		matchRuleRowType(),
 		false,
-	).WithPrimaryKey([]values.Value{
-		&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+	)
+	scanPlan = scanPlan.WithPrimaryKey([]values.Value{
+		mustMatchField(t, scanPlan.GetResultValue(), "ID"),
 	})
 	candidate := &selectSemanticFixedPlanCandidate{
 		testMatchCandidate: &testMatchCandidate{
@@ -873,9 +862,9 @@ func TestMatchIntermediateSelectSemantic_ExistentialToForEachMarksDistinctRepair
 	}
 	innerRef.SetPlanProperties(planProperties)
 
-	implemented := FireImplementationRule(
+	implemented := mustFireImplementationRule(t,
 		NewImplementUniqueRule(),
-		expressions.InitialOf(unique),
+		mustMatchInitial(t, unique),
 	)
 	if len(implemented) != 1 {
 		t.Fatalf("required Unique implementations = %d, want 1", len(implemented))
@@ -892,57 +881,57 @@ func TestMatchIntermediateSelectSemantic_ExistentialToForEachMarksDistinctRepair
 func TestMatchIntermediateSelectSemantic_ExistentialToExistentialNeedsNoDistinctRepair(
 	t *testing.T,
 ) {
-	queryBase := expressions.NewFullUnorderedScanExpression(
+	queryBase := mustMatchScan(t,
 		[]string{"T"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	queryBaseRef := expressions.InitialOf(queryBase)
+	queryBaseRef := mustMatchInitial(t, queryBase)
 	queryForEach := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier("e_to_e_route_query_fe"),
 		queryBaseRef,
 	)
-	queryExists := expressions.NewFullUnorderedScanExpression(
+	queryExists := mustMatchScan(t,
 		[]string{"U"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	queryExistsRef := expressions.InitialOf(queryExists)
+	queryExistsRef := mustMatchInitial(t, queryExists)
 	queryExistential := expressions.NamedExistentialQuantifier(
 		values.NamedCorrelationIdentifier("e_to_e_route_query_e"),
 		queryExistsRef,
 	)
-	querySelect := expressions.NewSelectExpression(
-		queryForEach.GetFlowedObjectValue(),
+	querySelect := mustMatchSelect(t,
+		mustMatchFlowed(t, queryForEach),
 		[]expressions.Quantifier{queryForEach, queryExistential},
 		[]predicates.QueryPredicate{
-			predicates.NewExistentialAlias(queryExistential.GetAlias()),
+			mustExistentialAlias(t, queryExistential.GetAlias()),
 		},
 	)
-	querySelectRef := expressions.InitialOf(querySelect)
+	querySelectRef := mustMatchInitial(t, querySelect)
 
-	candidateBase := expressions.NewFullUnorderedScanExpression(
+	candidateBase := mustMatchScan(t,
 		[]string{"T"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	candidateBaseRef := expressions.InitialOf(candidateBase)
+	candidateBaseRef := mustMatchInitial(t, candidateBase)
 	candidateForEach := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier("e_to_e_route_candidate_fe"),
 		candidateBaseRef,
 	)
-	candidateExists := expressions.NewFullUnorderedScanExpression(
+	candidateExists := mustMatchScan(t,
 		[]string{"U"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	candidateExistsRef := expressions.InitialOf(candidateExists)
+	candidateExistsRef := mustMatchInitial(t, candidateExists)
 	candidateExistential := expressions.NamedExistentialQuantifier(
 		values.NamedCorrelationIdentifier("e_to_e_route_candidate_e"),
 		candidateExistsRef,
 	)
-	candidateSelect := expressions.NewSelectExpression(
-		candidateForEach.GetFlowedObjectValue(),
+	candidateSelect := mustMatchSelect(t,
+		mustMatchFlowed(t, candidateForEach),
 		[]expressions.Quantifier{candidateForEach, candidateExistential},
 		nil,
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 	candidate := &testMatchCandidate{
 		name:      "idx_select_e_to_e_no_distinct_repair",
 		traversal: NewTraversal(candidateSelectRef),
@@ -1004,18 +993,14 @@ func TestMatchIntermediateSelectSemantic_BindsPlaceholderWithoutLegacyAdapter(
 		"semantic_placeholder_parameter",
 	)
 	var queryPredicate *predicates.ComparisonPredicate
-	query := newSelectSemanticRouteOneLegSelect(
+	query := newSelectSemanticRouteOneLegSelect(t,
 		"semantic_placeholder_query_fe",
 		"T",
 		func(
 			queryQuantifier expressions.Quantifier,
 		) []predicates.QueryPredicate {
 			queryPredicate = predicates.NewComparisonPredicate(
-				values.NewFieldValue(
-					queryQuantifier.GetFlowedObjectValue(),
-					"key",
-					values.UnknownType,
-				),
+				mustMatchField(t, mustMatchFlowed(t, queryQuantifier), "key"),
 				predicates.NewLiteralComparison(
 					predicates.ComparisonEquals,
 					int64(17),
@@ -1025,7 +1010,7 @@ func TestMatchIntermediateSelectSemantic_BindsPlaceholderWithoutLegacyAdapter(
 		},
 	)
 	var candidatePlaceholder *predicates.Placeholder
-	candidateLeg := newSelectSemanticRouteOneLegSelect(
+	candidateLeg := newSelectSemanticRouteOneLegSelect(t,
 		"semantic_placeholder_candidate_fe",
 		"T",
 		func(
@@ -1033,11 +1018,7 @@ func TestMatchIntermediateSelectSemantic_BindsPlaceholderWithoutLegacyAdapter(
 		) []predicates.QueryPredicate {
 			candidatePlaceholder = predicates.NewPlaceholder(
 				parameter,
-				values.NewFieldValue(
-					candidateQuantifier.GetFlowedObjectValue(),
-					"key",
-					values.UnknownType,
-				),
+				mustMatchField(t, mustMatchFlowed(t, candidateQuantifier), "key"),
 			)
 			return []predicates.QueryPredicate{candidatePlaceholder}
 		},
@@ -1129,33 +1110,22 @@ func TestMatchIntermediateSelectSemantic_FlattensTranslatedAndConjuncts(
 	outerAlias := values.NamedCorrelationIdentifier("and_join_outer")
 	var joinKey, residual *predicates.ComparisonPredicate
 	var topLevelAnd *predicates.AndPredicate
-	query := newSelectSemanticRouteOneLegSelect(
+	query := newSelectSemanticRouteOneLegSelect(t,
 		"and_join_query_fe",
 		"T",
 		func(
 			queryQuantifier expressions.Quantifier,
 		) []predicates.QueryPredicate {
 			joinKey = predicates.NewComparisonPredicate(
-				values.NewFieldValue(
-					queryQuantifier.GetFlowedObjectValue(),
-					"join_key",
-					values.UnknownType,
-				),
+				mustMatchField(t, mustMatchFlowed(t, queryQuantifier), "join_key"),
 				predicates.Comparison{
 					Type: predicates.ComparisonEquals,
-					Operand: values.NewFieldValue(
-						values.NewQuantifiedObjectValue(outerAlias),
-						"probe_key",
-						values.UnknownType,
-					),
+					Operand: mustMatchField(t,
+						mustMatchQOV(t, outerAlias, matchRuleRowType()), "probe_key"),
 				},
 			)
 			residual = predicates.NewComparisonPredicate(
-				values.NewFieldValue(
-					queryQuantifier.GetFlowedObjectValue(),
-					"payload",
-					values.UnknownType,
-				),
+				mustMatchField(t, mustMatchFlowed(t, queryQuantifier), "payload"),
 				predicates.NewLiteralComparison(
 					predicates.ComparisonGreaterThan,
 					int64(3),
@@ -1167,7 +1137,7 @@ func TestMatchIntermediateSelectSemantic_FlattensTranslatedAndConjuncts(
 	)
 
 	var candidatePlaceholder *predicates.Placeholder
-	candidateLeg := newSelectSemanticRouteOneLegSelect(
+	candidateLeg := newSelectSemanticRouteOneLegSelect(t,
 		"and_join_candidate_fe",
 		"T",
 		func(
@@ -1175,11 +1145,7 @@ func TestMatchIntermediateSelectSemantic_FlattensTranslatedAndConjuncts(
 		) []predicates.QueryPredicate {
 			candidatePlaceholder = predicates.NewPlaceholder(
 				parameter,
-				values.NewFieldValue(
-					candidateQuantifier.GetFlowedObjectValue(),
-					"join_key",
-					values.UnknownType,
-				),
+				mustMatchField(t, mustMatchFlowed(t, candidateQuantifier), "join_key"),
 			)
 			// Candidate Selects can retain the same top-level AND shape.
 			return []predicates.QueryPredicate{
@@ -1302,22 +1268,22 @@ func TestMatchIntermediateSelectSemantic_RejectsUnsafeMappingsAtRoute(
 	t *testing.T,
 ) {
 	t.Run("candidate ForEach must be fully covered", func(t *testing.T) {
-		query := newSelectSemanticRouteOneLegSelect(
+		query := newSelectSemanticRouteOneLegSelect(t,
 			"coverage_query_fe",
 			"T",
 			nil,
 		)
 
-		candidateTRef := expressions.InitialOf(
-			expressions.NewFullUnorderedScanExpression(
+		candidateTRef := mustMatchInitial(t,
+			mustMatchScan(t,
 				[]string{"T"},
-				values.UnknownType,
+				matchRuleRowType(),
 			),
 		)
-		candidateURef := expressions.InitialOf(
-			expressions.NewFullUnorderedScanExpression(
+		candidateURef := mustMatchInitial(t,
+			mustMatchScan(t,
 				[]string{"U"},
-				values.UnknownType,
+				matchRuleRowType(),
 			),
 		)
 		candidateT := expressions.NamedForEachQuantifier(
@@ -1328,12 +1294,12 @@ func TestMatchIntermediateSelectSemantic_RejectsUnsafeMappingsAtRoute(
 			values.NamedCorrelationIdentifier("coverage_candidate_u"),
 			candidateURef,
 		)
-		candidateSelect := expressions.NewSelectExpression(
-			candidateT.GetFlowedObjectValue(),
+		candidateSelect := mustMatchSelect(t,
+			mustMatchFlowed(t, candidateT),
 			[]expressions.Quantifier{candidateT, candidateU},
 			nil,
 		)
-		candidateSelectRef := expressions.InitialOf(candidateSelect)
+		candidateSelectRef := mustMatchInitial(t, candidateSelect)
 		candidate := &testMatchCandidate{
 			name:      "idx_select_incomplete_fe",
 			traversal: NewTraversal(candidateSelectRef),
@@ -1362,21 +1328,21 @@ func TestMatchIntermediateSelectSemantic_RejectsUnsafeMappingsAtRoute(
 	})
 
 	t.Run("unmatched candidate existential cannot filter", func(t *testing.T) {
-		query := newSelectSemanticRouteOneLegSelect(
+		query := newSelectSemanticRouteOneLegSelect(t,
 			"filtering_exists_query_fe",
 			"T",
 			nil,
 		)
-		candidateTRef := expressions.InitialOf(
-			expressions.NewFullUnorderedScanExpression(
+		candidateTRef := mustMatchInitial(t,
+			mustMatchScan(t,
 				[]string{"T"},
-				values.UnknownType,
+				matchRuleRowType(),
 			),
 		)
-		candidateERef := expressions.InitialOf(
-			expressions.NewFullUnorderedScanExpression(
+		candidateERef := mustMatchInitial(t,
+			mustMatchScan(t,
 				[]string{"U"},
-				values.UnknownType,
+				matchRuleRowType(),
 			),
 		)
 		candidateForEach := expressions.NamedForEachQuantifier(
@@ -1391,19 +1357,19 @@ func TestMatchIntermediateSelectSemantic_RejectsUnsafeMappingsAtRoute(
 			),
 			candidateERef,
 		)
-		candidateSelect := expressions.NewSelectExpression(
-			candidateForEach.GetFlowedObjectValue(),
+		candidateSelect := mustMatchSelect(t,
+			mustMatchFlowed(t, candidateForEach),
 			[]expressions.Quantifier{
 				candidateForEach,
 				candidateExists,
 			},
 			[]predicates.QueryPredicate{
-				predicates.NewExistentialAlias(
+				mustExistentialAlias(t,
 					candidateExists.GetAlias(),
 				),
 			},
 		)
-		candidateSelectRef := expressions.InitialOf(candidateSelect)
+		candidateSelectRef := mustMatchInitial(t, candidateSelect)
 		candidate := &testMatchCandidate{
 			name:      "idx_select_filtering_exists",
 			traversal: NewTraversal(candidateSelectRef),
@@ -1432,49 +1398,49 @@ func TestMatchIntermediateSelectSemantic_RejectsUnsafeMappingsAtRoute(
 	})
 
 	t.Run("selected candidate leg cannot depend on unmatched existential", func(t *testing.T) {
-		query := newSelectSemanticRouteOneLegSelect(
+		query := newSelectSemanticRouteOneLegSelect(t,
 			"dependency_query_fe",
 			"T",
 			nil,
 		)
-		candidateExistsRef := expressions.InitialOf(
-			expressions.NewFullUnorderedScanExpression(
+		candidateExistsRef := mustMatchInitial(t,
+			mustMatchScan(t,
 				[]string{"U"},
-				values.UnknownType,
+				matchRuleRowType(),
 			),
 		)
 		candidateExists := expressions.NamedExistentialQuantifier(
 			values.NamedCorrelationIdentifier("dependency_candidate_e"),
 			candidateExistsRef,
 		)
-		dependentScanRef := expressions.InitialOf(
-			expressions.NewFullUnorderedScanExpression(
+		dependentScanRef := mustMatchInitial(t,
+			mustMatchScan(t,
 				[]string{"T"},
-				values.UnknownType,
+				matchRuleRowType(),
 			),
 		)
-		dependentFilter := expressions.NewLogicalFilterExpression(
+		dependentFilter := mustMatchFilter(t,
 			[]predicates.QueryPredicate{
-				predicates.NewExistentialAlias(
+				mustExistentialAlias(t,
 					candidateExists.GetAlias(),
 				),
 			},
 			expressions.ForEachQuantifier(dependentScanRef),
 		)
-		dependentFilterRef := expressions.InitialOf(dependentFilter)
+		dependentFilterRef := mustMatchInitial(t, dependentFilter)
 		candidateForEach := expressions.NamedForEachQuantifier(
 			values.NamedCorrelationIdentifier("dependency_candidate_fe"),
 			dependentFilterRef,
 		)
-		candidateSelect := expressions.NewSelectExpression(
-			candidateForEach.GetFlowedObjectValue(),
+		candidateSelect := mustMatchSelect(t,
+			mustMatchFlowed(t, candidateForEach),
 			[]expressions.Quantifier{
 				candidateForEach,
 				candidateExists,
 			},
 			nil,
 		)
-		candidateSelectRef := expressions.InitialOf(candidateSelect)
+		candidateSelectRef := mustMatchInitial(t, candidateSelect)
 		candidate := &testMatchCandidate{
 			name:      "idx_select_unmatched_dependency",
 			traversal: NewTraversal(candidateSelectRef),
@@ -1506,7 +1472,7 @@ func TestMatchIntermediateSelectSemantic_RejectsUnsafeMappingsAtRoute(
 		parameter := values.NamedCorrelationIdentifier(
 			"child_conflict_parameter",
 		)
-		query := newSelectSemanticRouteOneLegSelect(
+		query := newSelectSemanticRouteOneLegSelect(t,
 			"child_conflict_query_fe",
 			"T",
 			func(
@@ -1514,11 +1480,7 @@ func TestMatchIntermediateSelectSemantic_RejectsUnsafeMappingsAtRoute(
 			) []predicates.QueryPredicate {
 				return []predicates.QueryPredicate{
 					predicates.NewComparisonPredicate(
-						values.NewFieldValue(
-							queryQuantifier.GetFlowedObjectValue(),
-							"key",
-							values.UnknownType,
-						),
+						mustMatchField(t, mustMatchFlowed(t, queryQuantifier), "key"),
 						predicates.NewLiteralComparison(
 							predicates.ComparisonEquals,
 							int64(9),
@@ -1527,7 +1489,7 @@ func TestMatchIntermediateSelectSemantic_RejectsUnsafeMappingsAtRoute(
 				}
 			},
 		)
-		candidateLeg := newSelectSemanticRouteOneLegSelect(
+		candidateLeg := newSelectSemanticRouteOneLegSelect(t,
 			"child_conflict_candidate_fe",
 			"T",
 			func(
@@ -1536,11 +1498,7 @@ func TestMatchIntermediateSelectSemantic_RejectsUnsafeMappingsAtRoute(
 				return []predicates.QueryPredicate{
 					predicates.NewPlaceholder(
 						parameter,
-						values.NewFieldValue(
-							candidateQuantifier.GetFlowedObjectValue(),
-							"key",
-							values.UnknownType,
-						),
+						mustMatchField(t, mustMatchFlowed(t, candidateQuantifier), "key"),
 					),
 				}
 			},

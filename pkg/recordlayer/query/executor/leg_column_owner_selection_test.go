@@ -214,7 +214,10 @@ func TestLegColumnOwner_TheDestinationLegTypeCarriesNoLegTable(t *testing.T) {
 func TestLegColumnOwner_TheLegTableReachesNoMemoIdentity(t *testing.T) {
 	t.Parallel()
 
-	fields := []values.Field{{Name: "ID", Ordinal: 0}, {Name: "QTY", Ordinal: 1}}
+	fields := []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "QTY", FieldType: values.NotNullLong, Ordinal: 1},
+	}
 	bare := &values.RecordType{Fields: fields}
 	withLegs := &values.RecordType{
 		Fields: fields,
@@ -226,17 +229,13 @@ func TestLegColumnOwner_TheLegTableReachesNoMemoIdentity(t *testing.T) {
 	corr := values.NamedCorrelationIdentifier("Q")
 
 	fieldValueOver := func(rt *values.RecordType) values.Value {
-		fv, err := values.NewFieldValueOfOrdinal(values.NewQuantifiedObjectValueOfType(corr, rt), 1)
-		if err != nil {
-			t.Fatalf("ofOrdinal over the leg-table fixture failed: %v", err)
-		}
-		return fv
+		return mustExecutorConstruct(values.ResolveOrdinalSeedField(mustTestQOV(t, corr, rt), 1))
 	}
 	rcOver := func(rt *values.RecordType) values.Value {
 		return values.NewRawRecordConstructorValue(
 			values.RecordConstructorField{
 				Name:  values.OrdinalFieldName(0),
-				Value: values.NewQuantifiedObjectValueOfType(corr, rt),
+				Value: mustTestQOV(t, corr, rt),
 			})
 	}
 
@@ -246,8 +245,8 @@ func TestLegColumnOwner_TheLegTableReachesNoMemoIdentity(t *testing.T) {
 	}{
 		{
 			carrier: "a typed QuantifiedObjectValue — how a leg's row reaches a seed",
-			a:       values.NewQuantifiedObjectValueOfType(corr, bare),
-			b:       values.NewQuantifiedObjectValueOfType(corr, withLegs),
+			a:       mustTestQOV(t, corr, bare),
+			b:       mustTestQOV(t, corr, withLegs),
 		},
 		{
 			carrier: "a baked FieldValue over that QOV — how a seed slot addresses it",
@@ -270,7 +269,7 @@ func TestLegColumnOwner_TheLegTableReachesNoMemoIdentity(t *testing.T) {
 				"label-safe' argument in this file and in RFC-200 is void until this is "+
 				"fixed at the hash, not here.", tc.carrier, ha, hb)
 		}
-		if !values.SemanticEqualsUnderAliasMap(tc.a, tc.b, values.AliasMap{}) {
+		if !values.SemanticEqualsUnderAliasMap(tc.a, tc.b, values.EmptyAliasMap()) {
 			t.Errorf("%s: SemanticEqualsUnderAliasMap says a leg table changes the value's "+
 				"identity.\n"+
 				"  This is the equality half of the same claim, and it is the half that "+

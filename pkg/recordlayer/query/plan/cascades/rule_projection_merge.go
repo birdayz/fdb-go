@@ -78,42 +78,36 @@ func (r *ProjectionMergeRule) OnMatch(call *ExpressionRuleCall) {
 	}
 	outerVals := outer.GetProjectedValues()
 	composed := make([]values.Value, len(outerVals))
+	innerSlots := make([]int, len(outerVals))
 	for i, v := range outerVals {
 		recordProjectionMergeSlot()
-		fv, isFV := v.(*values.FieldValue)
-		if !isFV || fv.Child != nil {
+		fv, isFV := values.AsFieldValue(v)
+		if !isFV {
+			recordProjectionMergeNotComposable()
+			return
+		}
+		root, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
+		if !isQOV || root.Correlation() != outer.GetInner().GetAlias() {
 			recordProjectionMergeNotComposable()
 			return // not provably composable — keep both projections
 		}
-		switch {
-		case fv.Resolved != nil && len(fv.Resolved.Accessors) == 1:
-			// BAKED read: substitute the inner's value at that output slot.
-			recordProjectionMergeBaked()
-			ord := fv.Resolved.Accessors[0].Ordinal
-			if ord < 0 || ord >= len(innerVals) || innerVals[ord] == nil {
-				return
-			}
-			composed[i] = innerVals[ord]
-		case fv.Resolved == nil:
-			// A LAZY outer read (Resolved == nil) carries only a display
-			// name, and a name cannot select a slot: two inner slots may
-			// share one output name, and one slot may be addressed by two
-			// names. DECLINE — both projections remain, which is the
-			// behaviour this function's contract has always claimed for an
-			// "unresolved lazy name". The resolver bakes a projection-output
-			// reference to its output ordinal before it reaches here, so the
-			// decline costs nothing on real traffic; if that upstream baking
-			// regresses, the observable is a LOST merge (an extra Projection
-			// operator), never a wrong column — and LazyOuterReads going
-			// nonzero is what says so out loud, since a decline is silent.
-			recordProjectionMergeLazyRead()
-			return
-		default:
-			// A resolved path with more than one accessor: a nested field
-			// read, which composition cannot prove.
+		ordinals := fv.Path().Ordinals()
+		if len(ordinals) == 0 || ordinals[0] < 0 || ordinals[0] >= len(innerVals) || innerVals[ordinals[0]] == nil {
 			recordProjectionMergeNotComposable()
 			return
 		}
+		recordProjectionMergeBaked()
+		innerSlots[i] = ordinals[0]
+		if len(ordinals) == 1 {
+			composed[i] = innerVals[ordinals[0]]
+			continue
+		}
+		nested, err := values.ResolveFieldOrdinals(innerVals[ordinals[0]], ordinals[1:])
+		if err != nil {
+			recordProjectionMergeNotComposable()
+			return
+		}
+		composed[i] = nested
 	}
 	// The OUTER's EFFECTIVE output names name the merged output — the flat
 	// projection replaces the outer, so its output schema must be identical.
@@ -128,18 +122,25 @@ func (r *ProjectionMergeRule) OnMatch(call *ExpressionRuleCall) {
 	// the output schema; the RFC-186 winner-flip triage caught exactly that
 	// as a vanished column).
 	outerAliases := outer.GetAliases()
+	outerOutputNames := outer.GetOutputNames()
+	if len(outerOutputNames) != len(outerVals) {
+		return
+	}
 	if outerAliases != nil && len(outerAliases) != len(outerVals) {
 		return // malformed outer alias list — decline, mirroring the inner guard
 	}
 	outerMinted := outer.GetAliasMinted()
+	outerSources := outer.GetAliasSources()
+	innerSources := innerProj.GetAliasSources()
 	mergedAliases := make([]string, len(outerVals))
 	mergedMinted := make([]bool, len(outerVals))
-	for i, v := range outerVals {
+	mergedSources := make([]values.ProjectionAliasSource, len(outerVals))
+	for i := range outerVals {
 		alias := ""
 		if outerAliases != nil {
 			alias = outerAliases[i]
 		}
-		mergedAliases[i] = values.OutputColumnName(v, alias)
+		mergedAliases[i] = outerOutputNames[i]
 		// Provenance composes, it does not copy. A slot the outer had NOT
 		// aliased gets its effective name written into the alias vector right
 		// here — by this rule, not by the user — so it becomes machinery-named
@@ -150,14 +151,37 @@ func (r *ProjectionMergeRule) OnMatch(call *ExpressionRuleCall) {
 		// u.name`'s label. A slot the outer DID alias keeps the outer's marker,
 		// user alias and machinery key alike.
 		mergedMinted[i] = alias == "" || (i < len(outerMinted) && outerMinted[i])
+		switch {
+		case alias == "":
+			// This rule minted the effective output name. Its structured source
+			// can only come from the exact inner slot this outer ordinal read;
+			// an absent inner source stays absent rather than being recovered
+			// from the newly written alias spelling.
+			if innerSlot := innerSlots[i]; innerSlot >= 0 && innerSlot < len(innerSources) {
+				mergedSources[i] = innerSources[innerSlot]
+			}
+		case i < len(outerMinted) && outerMinted[i] && i < len(outerSources):
+			// An existing machinery alias keeps the outer projection's source.
+			mergedSources[i] = outerSources[i]
+		}
 	}
-	flat := expressions.NewLogicalProjectionExpressionWithAliasProvenance(
+	flat, err := expressions.NewLogicalProjectionExpressionWithOutputSchema(
 		composed,
 		mergedAliases,
 		mergedMinted,
+		outer.GetOutputNames(),
 		innerProj.GetInner(),
 	)
-	call.Yield(flat)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	flat, err = flat.WithAliasSources(mergedSources)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(flat.WithInheritedOutputIdentity(outer))
 }
 
 var _ ExpressionRule = (*ProjectionMergeRule)(nil)

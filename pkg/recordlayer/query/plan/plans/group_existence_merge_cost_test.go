@@ -34,9 +34,11 @@ import (
 func TestMultiIntersectionHintCost_DrivingBranchIsLive(t *testing.T) {
 	t.Parallel()
 
-	keys := []values.Value{&values.FieldValue{Field: "gk", Typ: values.NotNullLong}}
-	base := NewRecordQueryMultiIntersectionOnValuesPlan(
-		[]RecordQueryPlan{stub("COUNT_LEG"), stub("SUM_LEG")}, keys, nil)
+	keys := []values.Value{testField(t, "gk", values.NotNullLong)}
+	base := mustChecked(t, func() (*RecordQueryMultiIntersectionOnValuesPlan, error) {
+		return NewRecordQueryMultiIntersectionOnValuesPlan(
+			[]RecordQueryPlan{stub("COUNT_LEG"), stub("SUM_LEG")}, keys, exactEmptyRecordValue())
+	})
 
 	qs := base.GetQuantifiers()
 	if len(qs) != 2 {

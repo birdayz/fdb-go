@@ -631,7 +631,7 @@ func TestIsConstantValue_BooleanValueNil(t *testing.T) {
 
 func TestIsConstantValue_FieldValue(t *testing.T) {
 	t.Parallel()
-	if IsConstantValue(&FieldValue{Field: "x", Typ: NotNullLong}) {
+	if IsConstantValue(&fieldValue{Field: "x", Typ: NotNullLong}) {
 		t.Fatal("FieldValue should NOT be constant")
 	}
 }
@@ -670,7 +670,7 @@ func TestIsConstantValue_CompositeWithField(t *testing.T) {
 	t.Parallel()
 	v := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &FieldValue{Field: "x", Typ: NotNullLong},
+		Left:  &fieldValue{Field: "x", Typ: NotNullLong},
 		Right: &ConstantValue{Value: int64(1), Typ: NotNullLong},
 	}
 	if IsConstantValue(v) {
@@ -702,7 +702,7 @@ func TestContainsAggregate_NestedAggregate(t *testing.T) {
 	// ArithmeticValue wrapping an aggregate: SUM(x) + 1
 	v := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  NewAggregateValue(AggSum, &FieldValue{Field: "x", Typ: NotNullLong}),
+		Left:  NewAggregateValue(AggSum, &fieldValue{Field: "x", Typ: NotNullLong}),
 		Right: &ConstantValue{Value: int64(1), Typ: NotNullLong},
 	}
 	if !ContainsAggregate(v) {
@@ -725,7 +725,7 @@ func TestIsNonEvaluable_QuantifiedObjectValue(t *testing.T) {
 	t.Parallel()
 	// QuantifiedObjectValue does NOT implement NonEvaluable — it has
 	// a working Evaluate method. IsNonEvaluable returns false.
-	v := NewQuantifiedObjectValue(NamedCorrelationIdentifier("t"))
+	v := mustQOV(t, NamedCorrelationIdentifier("t"))
 	if IsNonEvaluable(v) {
 		t.Fatal("QuantifiedObjectValue should NOT be NonEvaluable")
 	}

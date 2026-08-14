@@ -2031,13 +2031,10 @@ func TestPlanHarness_BareDoubleWhereRejected(t *testing.T) {
 }
 
 // TestPlanHarness_BareCTEBooleanColumnWhere — the inverse of the DOUBLE
-// rejection: a CTE/derived column holding a boolean expression (`NOT flag`) is
-// UNKNOWN-typed in the outer scope (its projected type isn't propagated), so it
-// MUST stay on the permissive UNKNOWN path and PLAN as a bare WHERE predicate,
-// NOT be rejected 42804. This pins the exact shape the stricter rework was
-// reverted to protect — a *FieldValue of UNKNOWN type is not always non-boolean.
-// Without this pin, a future "be stricter about UNKNOWN" change re-breaks
-// boolean CTE columns with green CI (the dimensional-gap trap).
+// rejection: a CTE/derived column holding a boolean expression (`NOT flag`)
+// must carry its exact BOOLEAN type across the CTE boundary and PLAN as a bare
+// WHERE predicate, not be rejected 42804. RFC-232 permits no UNKNOWN-typed QOV
+// escape hatch here: the CTE output schema itself is the type authority.
 func TestPlanHarness_BareCTEBooleanColumnWhere(t *testing.T) {
 	t.Parallel()
 	const sch = `CREATE TABLE A (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))`

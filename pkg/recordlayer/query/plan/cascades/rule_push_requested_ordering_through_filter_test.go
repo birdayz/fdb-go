@@ -7,22 +7,29 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
+
+func requestedOrderingFilterFixture() (
+	expressions.Quantifier,
+	*expressions.LogicalFilterExpression,
+	*expressions.Reference,
+) {
+	q := requestedOrderingQuantifier("T", "filter_input")
+	filter := mustRequestedOrderingConstruct(expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)}, q))
+	return q, filter, expressions.InitialOf(filter)
+}
 
 func TestPushRequestedOrderingThroughFilter_PropagatesConstraint(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	pT := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
-	filterRef := expressions.InitialOf(filter)
+	scanQ, filter, filterRef := requestedOrderingFilterFixture()
+	id := requestedOrderingField(scanQ, "ID")
 
 	cm := NewConstraintMap()
 	ordering := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+			{Value: id, SortOrder: properties.RequestedSortOrderAscending},
 		},
 		properties.DistinctnessNotDistinct, false,
 	)
@@ -40,7 +47,7 @@ func TestPushRequestedOrderingThroughFilter_PropagatesConstraint(t *testing.T) {
 		Constraints:    cm,
 		constraintOnly: true,
 	}
-	rule.OnMatch(call)
+	mustRunRequestedOrderingRule(t, rule, call)
 
 	innerRef := filter.GetInner().GetRangesOver()
 	pushed, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
@@ -54,20 +61,13 @@ func TestPushRequestedOrderingThroughFilter_PropagatesConstraint(t *testing.T) {
 	if len(parts) != 1 {
 		t.Fatalf("expected 1 ordering part, got %d", len(parts))
 	}
-	fv, ok := parts[0].Value.(*values.FieldValue)
-	if !ok || fv.Field != "id" {
-		t.Fatalf("expected ordering on id, got %v", parts[0].Value)
-	}
+	assertRequestedOrderingField(t, parts[0].Value, id)
 }
 
 func TestPushRequestedOrderingThroughFilter_NoConstraintDoesNotPush(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	pT := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
-	filterRef := expressions.InitialOf(filter)
+	_, filter, filterRef := requestedOrderingFilterFixture()
 
 	cm := NewConstraintMap()
 
@@ -79,7 +79,7 @@ func TestPushRequestedOrderingThroughFilter_NoConstraintDoesNotPush(t *testing.T
 		Constraints:    cm,
 		constraintOnly: true,
 	}
-	rule.OnMatch(call)
+	mustRunRequestedOrderingRule(t, rule, call)
 
 	innerRef := filter.GetInner().GetRangesOver()
 	_, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
@@ -91,16 +91,13 @@ func TestPushRequestedOrderingThroughFilter_NoConstraintDoesNotPush(t *testing.T
 func TestPushRequestedOrderingThroughFilter_NotConstraintOnlyDoesNotPush(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	pT := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
-	filterRef := expressions.InitialOf(filter)
+	scanQ, filter, filterRef := requestedOrderingFilterFixture()
+	id := requestedOrderingField(scanQ, "ID")
 
 	cm := NewConstraintMap()
 	ordering := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+			{Value: id, SortOrder: properties.RequestedSortOrderAscending},
 		},
 		properties.DistinctnessNotDistinct, false,
 	)
@@ -114,7 +111,7 @@ func TestPushRequestedOrderingThroughFilter_NotConstraintOnlyDoesNotPush(t *test
 		Constraints:    cm,
 		constraintOnly: false,
 	}
-	rule.OnMatch(call)
+	mustRunRequestedOrderingRule(t, rule, call)
 
 	innerRef := filter.GetInner().GetRangesOver()
 	_, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
@@ -126,16 +123,13 @@ func TestPushRequestedOrderingThroughFilter_NotConstraintOnlyDoesNotPush(t *test
 func TestPushRequestedOrderingThroughFilter_NoYield(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	pT := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
-	filterRef := expressions.InitialOf(filter)
+	scanQ, filter, filterRef := requestedOrderingFilterFixture()
+	id := requestedOrderingField(scanQ, "ID")
 
 	cm := NewConstraintMap()
 	ordering := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+			{Value: id, SortOrder: properties.RequestedSortOrderAscending},
 		},
 		properties.DistinctnessNotDistinct, false,
 	)
@@ -149,7 +143,7 @@ func TestPushRequestedOrderingThroughFilter_NoYield(t *testing.T) {
 		Constraints:    cm,
 		constraintOnly: true,
 	}
-	rule.OnMatch(call)
+	mustRunRequestedOrderingRule(t, rule, call)
 
 	if len(call.yielded) != 0 {
 		t.Fatalf("constraint-push rule should not yield expressions, but yielded %d", len(call.yielded))

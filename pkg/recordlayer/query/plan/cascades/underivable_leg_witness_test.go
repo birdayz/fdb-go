@@ -23,23 +23,33 @@ import (
 func TestDescribeLegQuantifier_DiscriminatesTheDecliningShapes(t *testing.T) {
 	t.Parallel()
 
-	typed := values.Type(nljTestLayouts["OUTER"]) // ID, CATEGORY
+	typed := values.Type(values.NewRecordType("WitnessRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "CATEGORY", FieldType: values.NullableString},
+	}))
 
 	// A quantifier ranging over nothing at all.
 	empty := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier("EMPTY"), nil)
 
-	// A reference whose single member flows an UNTYPED result value — the shape
-	// the CQ-63 residue is actually made of.
-	untypedRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"OUTER"}, values.UnknownType))
+	// A legacy malformed reference whose single member is nil. RFC-232 no longer
+	// admits an untyped relational member, so nil is the only representable
+	// diagnostic adversary for "the reference has a member but no result type".
+	untypedRef := expressions.InitialOf(nil)
 	untyped := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier("UNTYPED"), untypedRef)
 
 	// A reference whose member flows a real row type.
-	typedRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"OUTER"}, typed))
-	typedRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"OUTER"}, typed, false))
+	typedScan, err := expressions.NewFullUnorderedScanExpression([]string{"OUTER"}, typed)
+	if err != nil {
+		t.Fatalf("typed logical scan: %v", err)
+	}
+	typedRef := expressions.InitialOf(typedScan)
+	typedPlan, err := plans.NewRecordQueryScanPlan([]string{"OUTER"}, typed, false)
+	if err != nil {
+		t.Fatalf("typed physical scan: %v", err)
+	}
+	typedRef.InsertFinal(typedPlan)
 	typedQ := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier("TYPED"), typedRef)
 
@@ -51,9 +61,9 @@ func TestDescribeLegQuantifier_DiscriminatesTheDecliningShapes(t *testing.T) {
 	for _, pair := range []struct {
 		aName, a, bName, b string
 	}{
-		{"ranges-over-nothing", emptyW, "untyped-member", untypedW},
+		{"ranges-over-nothing", emptyW, "nil-member", untypedW},
 		{"ranges-over-nothing", emptyW, "typed-member", typedW},
-		{"untyped-member", untypedW, "typed-member", typedW},
+		{"nil-member", untypedW, "typed-member", typedW},
 	} {
 		if pair.a == pair.b {
 			t.Fatalf("witness for %s and %s render IDENTICALLY (%q).\n"+

@@ -108,9 +108,14 @@ func TestBoundSelectivity_CostMonotonicity(t *testing.T) {
 // merging it into an empty range (the same construction the planner uses).
 func mkComparisonRange(t *testing.T, typ predicates.ComparisonType) *predicates.ComparisonRange {
 	t.Helper()
+	operand, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("b"), values.NullableLong)
+	if err != nil {
+		t.Fatalf("construct exact comparison operand: %v", err)
+	}
 	comp := predicates.Comparison{
 		Type:    typ,
-		Operand: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("b")),
+		Operand: operand,
 	}
 	mr := predicates.EmptyComparisonRange().Merge(&comp)
 	if !mr.Ok {

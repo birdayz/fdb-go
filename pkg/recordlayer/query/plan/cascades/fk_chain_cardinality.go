@@ -65,7 +65,11 @@ type pkThread struct {
 	recordType string
 	pkValues   []values.Value
 	pkTypes    []values.Type
-	ok         bool
+	// pkOutputNames is parallel to pkValues. A non-empty entry is unresolved
+	// projection metadata, deliberately kept outside Value until the next
+	// concrete row layout resolves it.
+	pkOutputNames []string
+	ok            bool
 }
 
 // computePKThread walks a concrete RecordQueryPlan subtree and proves (or
@@ -218,8 +222,8 @@ func alignIndexPKTypesByCoordinate(
 			aligned[i] = values.UnknownType
 			continue
 		}
-		field, ok := component.(*values.FieldValue)
-		if !ok || field.Child != nil {
+		field, ok := values.AsFieldValue(component)
+		if !ok || field.ChildValue() == nil || field.Path().Len() != 1 {
 			return nil, false
 		}
 		if visiblePosition >= len(physicalTypes) {
@@ -292,14 +296,13 @@ func computeProjectionPKThread(pl *plans.RecordQueryProjectionPlan) pkThread {
 	}
 	childAlias := pl.GetInnerQuantifier().GetAlias()
 	projections := pl.GetProjections()
-	aliases := pl.GetAliases()
+	outputNames := pl.GetOutputNames()
 	fields := make([]namedValue, len(projections))
 	for i, v := range projections {
-		alias := ""
-		if i < len(aliases) {
-			alias = aliases[i]
+		if i >= len(outputNames) || outputNames[i] == "" {
+			return pkThread{}
 		}
-		fields[i] = namedValue{name: values.OutputColumnName(v, alias), value: v}
+		fields[i] = namedValue{name: outputNames[i], value: v}
 	}
 	return pkThreadThroughFields(childThread, childAlias, singleChildRowLayout(pl.GetChildren()), fields)
 }
@@ -329,7 +332,7 @@ func pkThreadThroughResultValue(
 	if !childThread.ok {
 		return pkThread{}
 	}
-	if qov, ok := resultValue.(*values.QuantifiedObjectValue); ok && qov.Correlation == childAlias {
+	if qov, ok := values.AsQuantifiedObjectValue(resultValue); ok && qov.Correlation() == childAlias {
 		return childThread
 	}
 	rc, ok := resultValue.(*values.RecordConstructorValue)
@@ -384,13 +387,15 @@ func pkThreadThroughFields(
 	}
 	newPK := make([]values.Value, 0, len(childThread.pkValues))
 	newPKTypes := make([]values.Type, 0, len(childThread.pkTypes))
+	newPKNames := make([]string, 0, len(childThread.pkValues))
 	for i, pv := range childThread.pkValues {
 		if _, isRecordType := pv.(*values.RecordTypeValue); isRecordType {
 			newPK = append(newPK, pv)
 			newPKTypes = append(newPKTypes, childThread.pkTypes[i])
+			newPKNames = append(newPKNames, "")
 			continue
 		}
-		wanted, ok := leafFieldIdentity(pv, childLayout)
+		wanted, ok := threadPKIdentity(childThread, i, childLayout)
 		if !ok {
 			return pkThread{} // a non-flat-FieldValue PK component — fail closed
 		}
@@ -402,14 +407,16 @@ func pkThreadThroughFields(
 		// the slot's own naming authority, which is what the NEXT hop's layout
 		// declares. It is resolved against that layout when it is next
 		// consulted, never compared as a name.
-		newPK = append(newPK, &values.FieldValue{Field: outName})
+		newPK = append(newPK, nil)
 		newPKTypes = append(newPKTypes, childThread.pkTypes[i])
+		newPKNames = append(newPKNames, outName)
 	}
 	return pkThread{
-		recordType: childThread.recordType,
-		pkValues:   newPK,
-		pkTypes:    newPKTypes,
-		ok:         true,
+		recordType:    childThread.recordType,
+		pkValues:      newPK,
+		pkTypes:       newPKTypes,
+		pkOutputNames: newPKNames,
+		ok:            true,
 	}
 }
 
@@ -525,7 +532,7 @@ func innerFullyBindsThread(fm *plans.RecordQueryFlatMapPlan, outerThread pkThrea
 		if _, isRecordType := pv.(*values.RecordTypeValue); isRecordType {
 			continue // per-thread constant — never a discriminating column, see doc comment
 		}
-		key, ok := leafFieldIdentity(pv, outerLayout)
+		key, ok := threadPKIdentity(outerThread, i, outerLayout)
 		if !ok {
 			return false // a non-flat-FieldValue PK component — fail closed
 		}
@@ -591,11 +598,30 @@ func innerFullyBindsThread(fm *plans.RecordQueryFlatMapPlan, outerThread pkThrea
 // are not a flat single field and fail closed, as does a name the layout does
 // not declare or a layout with no declared column order.
 func leafFieldIdentity(v values.Value, layout values.Type) (values.ColumnIdentity, bool) {
-	fv, ok := v.(*values.FieldValue)
-	if !ok || fv.Child != nil {
+	fv, ok := values.AsFieldValue(v)
+	if !ok || fv.Path().Len() != 1 {
 		return values.ColumnIdentity{}, false
 	}
-	return values.OrdinalOfNameIn(layout, fv.Field)
+	accessor, ok := fv.Path().Accessor(0)
+	if !ok {
+		return values.ColumnIdentity{}, false
+	}
+	ordinal := accessor.Ordinal()
+	rt, ok := layout.(*values.RecordType)
+	if !ok || ordinal < 0 || ordinal >= len(rt.Fields) {
+		return values.ColumnIdentity{}, false
+	}
+	return values.ColumnIdentity{Domain: values.OrdinalDomainOfType(layout), Ordinal: ordinal}, true
+}
+
+func threadPKIdentity(thread pkThread, position int, layout values.Type) (values.ColumnIdentity, bool) {
+	if position < 0 || position >= len(thread.pkValues) {
+		return values.ColumnIdentity{}, false
+	}
+	if position < len(thread.pkOutputNames) && thread.pkOutputNames[position] != "" {
+		return values.OrdinalOfNameIn(layout, thread.pkOutputNames[position])
+	}
+	return leafFieldIdentity(thread.pkValues[position], layout)
 }
 
 // correlatedFieldIdentity returns the IDENTITY of the column a comparand
@@ -622,11 +648,7 @@ func leafFieldIdentity(v values.Value, layout values.Type) (values.ColumnIdentit
 // the two sides comparable in the element that is actually the identity,
 // instead of in the one that merely looks like it.
 func correlatedFieldIdentity(v values.Value, frontier values.OrdinalDomain) (values.ColumnIdentity, bool) {
-	fv, isField := v.(*values.FieldValue)
-	if !isField {
-		return values.ColumnIdentity{}, false
-	}
-	return fv.CorrelatedIdentityIn(frontier)
+	return values.CorrelatedFieldIdentityIn(v, frontier)
 }
 
 // planRowLayout is a plan's output row layout — the frontier the identities
@@ -656,11 +678,11 @@ func planRowLayout(p plans.RecordQueryPlan) values.Type {
 		if pl == nil {
 			return nil
 		}
-		qov, ok := pl.GetResultValue().(*values.QuantifiedObjectValue)
+		qov, ok := values.AsQuantifiedObjectValue(pl.GetResultValue())
 		if !ok {
 			return nil
 		}
-		switch qov.Correlation {
+		switch qov.Correlation() {
 		case pl.GetInnerAlias():
 			return planRowLayout(pl.GetInner())
 		case pl.GetOuterAlias():

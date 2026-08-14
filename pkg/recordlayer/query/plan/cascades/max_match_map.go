@@ -208,13 +208,14 @@ func ComputeMaxMatchMapWithEquivalence(
 	// Run the recursive matching algorithm.
 	matchers := make([]*incrementalValueMatcher, 0, 8)
 	memoMap := make(map[values.Value]map[values.Value]matchResult) // identity-keyed in Go via pointer
+	inProgress := make(map[values.Value]struct{})
 	var veArgs []ValueEquivalence
 	if valueEquivalence != nil {
 		veArgs = []ValueEquivalence{valueEquivalence}
 	}
 	resultsMap := recurseQueryResultValue(
 		queryValue, candidateValue, rangedOverAliases,
-		-1, matchers, math.MaxInt32, memoMap,
+		-1, matchers, math.MaxInt32, memoMap, inProgress,
 		veArgs...,
 	)
 
@@ -264,8 +265,8 @@ func shortCircuitMaybe(
 		singularAlias = a
 	}
 
-	qov, ok := candidateValue.(*values.QuantifiedObjectValue)
-	if !ok || qov.Correlation != singularAlias {
+	qov, ok := values.AsQuantifiedObjectValue(candidateValue)
+	if !ok || qov.Correlation() != singularAlias {
 		return nil
 	}
 
@@ -320,6 +321,7 @@ func recurseQueryResultValue(
 	parentMatchers []*incrementalValueMatcher,
 	maxDepthBound int,
 	memoMap map[values.Value]map[values.Value]matchResult,
+	inProgress map[values.Value]struct{},
 	valueEquivalence ...ValueEquivalence,
 ) map[values.Value]matchResult {
 	if maxDepthBound == 0 {
@@ -350,6 +352,18 @@ func recurseQueryResultValue(
 			return cached
 		}
 	}
+
+	// Exact record-typed QOVs expand into record constructors whose resolved
+	// field children are rooted at that same QOV. Following such a field's
+	// child can therefore revisit a value that is already being explored on
+	// this recursion path. Decline only that cyclic branch. This is deliberately
+	// separate from memoMap: a cycle is not a completed negative result, and a
+	// sibling reached under different parent matchers must still be explored.
+	if _, active := inProgress[currentQueryValue]; active {
+		return map[values.Value]matchResult{currentQueryValue: notMatched()}
+	}
+	inProgress[currentQueryValue] = struct{}{}
+	defer delete(inProgress, currentQueryValue)
 
 	// Create a matcher for this level.
 	currentMatcher := initialMatcher(currentQueryValue, candidateValue)
@@ -443,7 +457,7 @@ func recurseQueryResultValue(
 			for i, child := range children {
 				childResultMap := recurseQueryResultValue(
 					child, candidateValue, rangedOverAliases,
-					i, localMatchers, childrenMaxDepthBound, memoMap,
+					i, localMatchers, childrenMaxDepthBound, memoMap, inProgress,
 					valueEquivalence...,
 				)
 				entries := make([]childResultEntry, 0, len(childResultMap))
@@ -493,7 +507,7 @@ func recurseQueryResultValue(
 		for _, expanded := range expandValueForMatching(currentQueryValue) {
 			expandedResults := recurseQueryResultValue(
 				expanded, candidateValue, rangedOverAliases,
-				descendOrdinal, parentMatchers, maxDepthBound, memoMap,
+				descendOrdinal, parentMatchers, maxDepthBound, memoMap, inProgress,
 				valueEquivalence...,
 			)
 			for v, r := range expandedResults {
@@ -766,8 +780,8 @@ func (m *MaxMatchMap) TranslateQueryValueMaybe(
 		// RecordConstructor result value mis-projects (every column becomes the
 		// whole record / a wrong column). The identity case (part == root) still
 		// resolves to QOV(alias) here via that same case-1, so it is unchanged.
-		pulledUp := values.PullUpValue(entry.candidateValue, m.candidateValue, candidateAlias)
-		if pulledUp == nil {
+		pulledUp, err := values.PullUpValue(entry.candidateValue, m.candidateValue, candidateAlias)
+		if err != nil || pulledUp == nil {
 			// Java returns Optional.empty() when a part cannot be pulled up
 			// against the root — no QOV fallback. Fail the whole translation
 			// (fail-closed); a translate that can't express a part must fail,
@@ -869,88 +883,19 @@ func expandValueForMatching(v values.Value) []values.Value {
 		}
 	}
 
-	// ExpandFusedFieldValueRule (Java ExpandFusedFieldValueRule.onMatch,
-	// resident ONLY in MaxMatchMapSimplificationRuleSet.java:50 — never in
-	// the general simplifier, per the stack-overflow warning against
-	// co-residing with the compose rule): a FUSED multi-accessor FieldValue
-	// (produced by the TranslationMap rebase) emits every split
-	// form — a p-accessor fused prefix with the remaining suffix chained,
-	// for each p — so a candidate in ANY partial-to-full split shape (the
-	// fully-chained pre-compose shape AND the one-step-split shape a
-	// candidate builder may produce) matches. Matching-only, Java's exact
-	// placement.
-	if fv, isFV := v.(*values.FieldValue); isFV && fv.Resolved != nil && len(fv.Resolved.Accessors) >= 2 {
-		results = append(results, expandFusedFieldValue(fv)...)
-	}
+	// Java also expands fused paths into chained alternatives here. RFC-232
+	// makes the Go representation canonical instead: both sides are one
+	// QOV-rooted full path, so no alternate chained form can be admitted.
 
 	return results
-}
-
-// expandFusedFieldValue emits every split form of a fused path — Java's FULL
-// re-explored member set (ExpandFusedFieldValueRule splits the last accessor
-// and yieldResultAndReExplore re-runs on the prefix, cascading to every
-// member; Go's max-match recursion does NOT re-expand a nested fused prefix
-// before comparing the child, so every member must be emitted DIRECTLY, not
-// left to recursion). For each split point p in [1, n-1]: a p-accessor fused
-// prefix over the child, then the remaining n-p accessors chained as
-// single-accessor nodes. p=1 is fully chained (one node per accessor —
-// matches a pre-compose CHAINED candidate); p=n-1 is the one-step split
-// FV(FV(child,[a1..a(n-1)]),[an]) — matches a partially-fused candidate. The
-// fully-fused form (p=n) needs no expansion: the caller compares v directly.
-// FrontierPinned rides every node (an evaluation-contract marker excluded
-// from identity; these nodes are match-only, never evaluated); every node but
-// the outermost carries UnknownType — the ordinal-only baked identity never
-// consults Typ.
-func expandFusedFieldValue(fv *values.FieldValue) []values.Value {
-	accs := fv.Resolved.Accessors
-	pinned := fv.Resolved.FrontierPinned
-	n := len(accs)
-	forms := make([]values.Value, 0, n-1)
-	for p := 1; p <= n-1; p++ {
-		prefixAccs := make([]values.ResolvedAccessor, p)
-		copy(prefixAccs, accs[:p])
-		var cur values.Value = &values.FieldValue{
-			Field: accs[p-1].Field,
-			Typ:   values.UnknownType, // intermediate: never the outermost, Typ unread by matching
-			Child: fv.Child,
-			// The PREFIX is still rooted at the fused node's root read context,
-			// so it keeps the domain token (RFC-197 step 0) exactly as it
-			// keeps the pin.
-			Resolved: &values.FieldPath{Accessors: prefixAccs, FrontierPinned: pinned, Domain: fv.Resolved.Domain},
-		}
-		for i := p; i < n; i++ {
-			typ := values.Type(values.UnknownType)
-			if i == n-1 {
-				typ = fv.Typ // the outermost node keeps the fused node's flowed type
-			}
-			cur = &values.FieldValue{
-				Field: accs[i].Field,
-				Typ:   typ,
-				Child: cur,
-				// No domain: a CHAINED tail step reads a NESTED RECORD served
-				// by the node below it, not a positional row of the fused
-				// node's layout. Inheriting the root's token here would claim
-				// a layout this ordinal does not index — the conflation
-				// OrdinalIn exists to refuse.
-				Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{accs[i]}, FrontierPinned: pinned},
-			}
-		}
-		forms = append(forms, cur)
-	}
-	return forms
 }
 
 // expandRecordValue expands a non-RCV value with Record type into a
 // RecordConstructorValue with FieldValue children. Ports Java's
 // ExpandRecordRule.onMatch.
 //
-// Java's FieldValue has a child value (base) + FieldPath, so the
-// expansion produces FV(v, "field_i") for each field. Go's FieldValue
-// is a flat field name with no child, so the expansion produces bare
-// FV("field_i"). This is correct for structural matching (the
-// candidate RCV also has bare FV children) but loses the base-value
-// reference. When Go's FieldValue gains a child value (tracking
-// Java's FieldValue architecture), this expansion should use it.
+// Every produced FieldValue keeps v as its typed base and resolves its ordinal
+// immediately. Unsupported computed-record roots decline the expansion.
 func expandRecordValue(v values.Value) values.Value {
 	typ := v.Type()
 	if typ == nil {
@@ -966,9 +911,13 @@ func expandRecordValue(v values.Value) values.Value {
 
 	fields := make([]values.RecordConstructorField, len(rt.Fields))
 	for i, f := range rt.Fields {
+		fieldValue, err := values.ResolveFieldOrdinals(v, []int{i})
+		if err != nil {
+			return nil
+		}
 		fields[i] = values.RecordConstructorField{
 			Name:  f.Name,
-			Value: &values.FieldValue{Field: f.Name, Typ: f.FieldType},
+			Value: fieldValue,
 		}
 	}
 	return &values.RecordConstructorValue{Fields: fields}

@@ -12,6 +12,19 @@ import (
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
+// exactScalarInner models the materialized one-column output that reaches the
+// seed builder in production. Passing a base scan while asking for a synthetic
+// title such as MAXORDER is no longer a valid fixture: exact type resolution
+// correctly declines a title absent from that scan's schema.
+func exactScalarInner(t testing.TB, title string, typ values.Type) logical.LogicalOperator {
+	t.Helper()
+	return &logical.LogicalProject{
+		Input:           scan("Order", "sq"),
+		Projections:     []string{title},
+		ProjectedValues: []values.Value{exactTestNamedField(t, "SQ_SOURCE", title, typ)},
+	}
+}
+
 // TestScalarSeed_Shape pins the ordinal seed a SINGLE-SOURCE outer produces:
 // every outer column a baked ofOrdinal(QOV(outer), i), then ONE inner
 // ofOrdinal(QOV(inner), 0) named EXACTLY <inner>.<scalarCol> and NULLABLE
@@ -21,8 +34,9 @@ import (
 func TestScalarSeed_Shape(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)
+	inner := exactScalarInner(t, "MAXORDER", values.NotNullLong)
 
-	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), scan("Order", "sq"), values.UniqueCorrelationIdentifier(), "SQ", "MAXORDER")
+	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), inner, values.UniqueCorrelationIdentifier(), "SQ", "MAXORDER")
 	if seed == nil {
 		t.Fatal("single-source outer must ordinalize, got nil (declined)")
 	}
@@ -46,12 +60,40 @@ func TestScalarSeed_Shape(t *testing.T) {
 	if last.Name != "SQ.MAXORDER" {
 		t.Errorf("inner field name = %q, want SQ.MAXORDER (what replaceScalarSubqueryRef reads)", last.Name)
 	}
-	ifv, ok := last.Value.(*values.FieldValue)
-	if !ok || ifv.Resolved == nil {
+	ifv, ok := values.AsFieldValue(last.Value)
+	if !ok {
 		t.Fatalf("inner field is %T, want a baked *FieldValue", last.Value)
 	}
-	if !ifv.Typ.IsNullable() {
-		t.Errorf("inner scalar ordinal must be NULLABLE-wrapped (LEFT-OUTER null-fill), got %s", ifv.Typ)
+	if !ifv.ResultType().IsNullable() {
+		t.Errorf("inner scalar ordinal must be NULLABLE-wrapped (LEFT-OUTER null-fill), got %s", ifv.ResultType())
+	}
+	innerOwner, ok := values.AsQuantifiedObjectValue(ifv.ChildValue())
+	if !ok {
+		t.Fatalf("inner scalar owner = %T, want exact QOV", ifv.ChildValue())
+	}
+	if !innerOwner.Type().IsNullable() {
+		t.Errorf("inner scalar source row must be NULLABLE for the LEFT-OUTER leg, got %s", innerOwner.Type())
+	}
+}
+
+// A materialised aggregate is one exact positional field whose display title
+// contains a dot inside an expression.  The dot is not a qualifier boundary;
+// parsing `SUM(C.VAL)` as one made the scalar lookup search for `VAL)` and
+// decline an otherwise exact ordinal seed.
+func TestScalarSeed_AggregateDisplayTitleUsesTheOnlyExactSlot(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+	inner := exactScalarInner(t, "SUM(C.VAL)", values.NullableLong)
+
+	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), inner,
+		values.UniqueCorrelationIdentifier(), "SQ", "SUM(C.VAL)")
+	if seed == nil {
+		t.Fatal("one-field aggregate projection must ordinalize by its exact slot, not parse its display title")
+	}
+	rc := seed.(*values.RecordConstructorValue)
+	got := exactTestFieldView(t, rc.Fields[len(rc.Fields)-1].Value).ResultType()
+	if got.Code() != values.TypeCodeLong || !got.IsNullable() {
+		t.Fatalf("aggregate scalar slot type = %v, want nullable LONG", got)
 	}
 }
 
@@ -88,9 +130,10 @@ func TestScalarSeed_OuterGate(t *testing.T) {
 func TestScalarSeed_UniqueInnerCorrelation(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)
+	inner := exactScalarInner(t, "MAXORDER", values.NotNullLong)
 
 	innerCorr := values.UniqueCorrelationIdentifier()
-	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), scan("Order", "sq"), innerCorr, "SQ", "MAXORDER")
+	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), inner, innerCorr, "SQ", "MAXORDER")
 	if seed == nil {
 		t.Fatal("single-source outer must ordinalize")
 	}
@@ -99,19 +142,27 @@ func TestScalarSeed_UniqueInnerCorrelation(t *testing.T) {
 	if last.Name != "SQ.MAXORDER" {
 		t.Errorf("inner field name = %q, want SQ.MAXORDER (the SQL-alias read key)", last.Name)
 	}
-	qov := last.Value.(*values.FieldValue).Child.(*values.QuantifiedObjectValue)
-	if qov.Correlation != innerCorr {
-		t.Errorf("inner leg keyed by %s, want the fresh unique id %s", qov.Correlation, innerCorr)
+	innerField := exactTestFieldView(t, last.Value)
+	qov, ok := values.AsQuantifiedObjectValue(innerField.ChildValue())
+	if !ok {
+		t.Fatalf("inner scalar owner = %T, want exact QOV", innerField.ChildValue())
 	}
-	if qov.Correlation.Name() == "SQ" {
+	if qov.Correlation() != innerCorr {
+		t.Errorf("inner leg keyed by %s, want the fresh unique id %s", qov.Correlation(), innerCorr)
+	}
+	if qov.Correlation().Name() == "SQ" {
 		t.Error("inner leg keyed by the SQL alias — the JOIN-inner type collision returns")
 	}
 
 	// Two seeds must never share an inner correlation (uniqueness is the whole
 	// decouple).
-	seed2 := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), scan("Order", "sq"), values.UniqueCorrelationIdentifier(), "SQ", "MAXORDER")
-	qov2 := seed2.(*values.RecordConstructorValue).Fields[len(rc.Fields)-1].Value.(*values.FieldValue).Child.(*values.QuantifiedObjectValue)
-	if qov2.Correlation == qov.Correlation {
+	seed2 := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), inner, values.UniqueCorrelationIdentifier(), "SQ", "MAXORDER")
+	secondField := exactTestFieldView(t, seed2.(*values.RecordConstructorValue).Fields[len(rc.Fields)-1].Value)
+	qov2, ok := values.AsQuantifiedObjectValue(secondField.ChildValue())
+	if !ok {
+		t.Fatalf("second inner scalar owner = %T, want exact QOV", secondField.ChildValue())
+	}
+	if qov2.Correlation() == qov.Correlation() {
 		t.Error("two seeds share an inner correlation id")
 	}
 }
@@ -147,13 +198,14 @@ func TestScalarSeed_InnerScalarTypeFlowsFromInner(t *testing.T) {
 	}
 	rc := seed.(*values.RecordConstructorValue)
 	last := rc.Fields[len(rc.Fields)-1]
-	ifv := last.Value.(*values.FieldValue)
+	ifv := exactTestFieldView(t, last.Value)
+	innerType := ifv.ResultType()
 
-	if ifv.Typ == nil || ifv.Typ.Code() == values.TypeCodeUnknown {
+	if innerType == nil || innerType.Code() == values.TypeCodeUnknown {
 		t.Fatalf("inner scalar leg typed %v — the catalog knows Order.PRICE, so an "+
 			"Unknown here throws away a known type and forces a name-keyed "+
 			"re-derivation downstream (the cross-leg same-name-different-type "+
-			"wrong-metadata bug)", ifv.Typ)
+			"wrong-metadata bug)", innerType)
 	}
 	// It must be the INNER's type, not merely "some type": compare against the
 	// inner leg's own derived column.
@@ -166,13 +218,13 @@ func TestScalarSeed_InnerScalarTypeFlowsFromInner(t *testing.T) {
 	if want == nil {
 		t.Fatal("fixture drift: Order has no PRICE column to flow")
 	}
-	if ifv.Typ.Code() != want.Code() {
+	if innerType.Code() != want.Code() {
 		t.Errorf("inner scalar leg type code = %v, want %v (Order.PRICE's own type)",
-			ifv.Typ.Code(), want.Code())
+			innerType.Code(), want.Code())
 	}
 	// Nullability is independent of the flowed type and is always true here:
 	// the join is LEFT-OUTER, so an unmatched outer row NULL-fills this slot.
-	if !ifv.Typ.IsNullable() {
-		t.Errorf("inner scalar ordinal must stay NULLABLE-wrapped after typing, got %s", ifv.Typ)
+	if !innerType.IsNullable() {
+		t.Errorf("inner scalar ordinal must stay NULLABLE-wrapped after typing, got %s", innerType)
 	}
 }

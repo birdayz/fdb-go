@@ -51,6 +51,113 @@ type preorderCandidate struct {
 	expr expressions.RelationalExpression
 }
 
+// mustPreorder is the local successful-construction fixture boundary. It has
+// no testing.TB parameter so Go can forward a constructor's (value, error)
+// pair directly; like the package's established mustExpression helper, an
+// impossible positive fixture aborts immediately instead of publishing nil.
+func mustPreorder[T any](value T, err error) T {
+	if err != nil {
+		panic(fmt.Sprintf("construct total-preorder fixture: %v", err))
+	}
+	return value
+}
+
+func preorderRowType() *values.RecordType {
+	return values.NewRecordType("cost_preorder_row", false, []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NullableLong},
+		{Name: "K", Ordinal: 1, FieldType: values.NullableLong},
+		{Name: "A", Ordinal: 2, FieldType: values.NullableLong},
+		{Name: "B", Ordinal: 3, FieldType: values.NullableLong},
+	})
+}
+
+func preorderLongLiteral(value int64) values.Value {
+	return &values.ConstantValue{Value: value, Typ: values.NotNullLong}
+}
+
+func mustPreorderScan(t testing.TB, recordTypes ...string) *plans.RecordQueryScanPlan {
+	t.Helper()
+	return mustPreorder(plans.NewRecordQueryScanPlan(recordTypes, preorderRowType(), false))
+}
+
+func mustPreorderIndex(
+	t testing.TB,
+	name string,
+	ranges []*predicates.ComparisonRange,
+	recordTypes ...string,
+) *plans.RecordQueryIndexPlan {
+	t.Helper()
+	return mustPreorder(plans.NewRecordQueryIndexPlan(name, ranges, recordTypes, preorderRowType(), false))
+}
+
+func mustPreorderQOV(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+	typ values.Type,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	return mustPreorder(values.NewQuantifiedObjectValue(alias, typ))
+}
+
+func mustPreorderField(t testing.TB, fieldName string) values.Value {
+	t.Helper()
+	rowType := preorderRowType()
+	root := mustPreorderQOV(t, values.UniqueCorrelationIdentifier(), rowType)
+	for ordinal, field := range rowType.Fields {
+		if field.Name == fieldName {
+			resolved := mustPreorder(values.ResolveFieldOrdinals(root, []int{ordinal}))
+			if _, ok := values.AsFieldValue(resolved); !ok {
+				t.Fatalf("resolved preorder field %q has unexpected type %T", fieldName, resolved)
+			}
+			return resolved
+		}
+	}
+	t.Fatalf("preorder row has no field %q", fieldName)
+	return nil
+}
+
+func preorderEqualityRange(t testing.TB, operand values.Value) *predicates.ComparisonRange {
+	t.Helper()
+	comparison := &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: operand}
+	merged := predicates.EmptyComparisonRange().Merge(comparison)
+	if !merged.Ok {
+		t.Fatal("failed to create preorder equality comparison range")
+	}
+	return merged.Range
+}
+
+func preorderPredicate(t testing.TB, fieldName string) predicates.QueryPredicate {
+	t.Helper()
+	return predicates.NewComparisonPredicate(
+		mustPreorderField(t, fieldName),
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
+	)
+}
+
+func preorderCriterion7Primary(
+	t testing.TB,
+	ranges ...*predicates.ComparisonRange,
+) plans.RecordQueryPlan {
+	t.Helper()
+	scan := mustPreorderScan(t, "T").WithScanComparisons(ranges)
+	return mustPreorder(plans.NewRecordQueryTypeFilterPlan([]string{"T"}, scan))
+}
+
+func preorderCriterion7Index(
+	t testing.TB,
+	name string,
+	fetches int,
+	ranges ...*predicates.ComparisonRange,
+) plans.RecordQueryPlan {
+	t.Helper()
+	var current plans.RecordQueryPlan = mustPreorderIndex(t, name, ranges, "T")
+	for range fetches {
+		current = mustPreorder(plans.NewRecordQueryFetchFromPartialRecordPlan(
+			current, nil, preorderRowType(), plans.FetchIndexRecordsPrimaryKey))
+	}
+	return current
+}
+
 // preorderCompareFn is the shape shared by every criterion under test here:
 // negative means a is preferred, positive means b is preferred, 0 is a tie —
 // exactly planningCostModelCompareWith's own convention.
@@ -218,18 +325,19 @@ func inPlanCorpus(t *testing.T) []preorderCandidate {
 	t.Helper()
 	bindingName := "in_value"
 	sargedRange := []*predicates.ComparisonRange{
-		rungEqualityRange(t, values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(bindingName))),
+		preorderEqualityRange(t, mustPreorderQOV(
+			t, values.NamedCorrelationIdentifier(bindingName), values.NullableLong)),
 	}
-	indexSarged := plans.NewRecordQueryIndexPlan("idx_pre_in_sarged", sargedRange, []string{"T"}, values.UnknownType, false)
-	indexUnsarged := plans.NewRecordQueryIndexPlan("idx_pre_in_unsarged", nil, []string{"T"}, values.UnknownType, false)
-	plainIndex := plans.NewRecordQueryIndexPlan("idx_pre_in_plain", nil, []string{"T"}, values.UnknownType, false)
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	indexSarged := mustPreorderIndex(t, "idx_pre_in_sarged", sargedRange, "T")
+	indexUnsarged := mustPreorderIndex(t, "idx_pre_in_unsarged", nil, "T")
+	plainIndex := mustPreorderIndex(t, "idx_pre_in_plain", nil, "T")
+	scan := mustPreorderScan(t, "T")
 
 	return []preorderCandidate{
-		{"inJoin_sarged", plans.NewRecordQueryInJoinPlan(indexSarged, bindingName, false, false)},
-		{"inJoin_unsarged", plans.NewRecordQueryInJoinPlan(indexUnsarged, bindingName, false, false)},
-		{"inUnion_sarged", plans.NewRecordQueryInUnionPlan(indexSarged, []string{bindingName}, nil, false)},
-		{"inUnion_unsarged", plans.NewRecordQueryInUnionPlan(indexUnsarged, []string{bindingName}, nil, false)},
+		{"inJoin_sarged", mustPreorder(plans.NewRecordQueryInJoinPlan(indexSarged, bindingName, false, false))},
+		{"inJoin_unsarged", mustPreorder(plans.NewRecordQueryInJoinPlan(indexUnsarged, bindingName, false, false))},
+		{"inUnion_sarged", mustPreorder(plans.NewRecordQueryInUnionPlan(indexSarged, []string{bindingName}, nil, false))},
+		{"inUnion_unsarged", mustPreorder(plans.NewRecordQueryInUnionPlan(indexUnsarged, []string{bindingName}, nil, false))},
 		{"plainIndex", plainIndex},
 		{"plainScan", scan},
 	}
@@ -255,23 +363,25 @@ func TestCostModel_CompareInPlan_TotalPreorderAndFoldStable(t *testing.T) {
 
 func primaryVsIndexFoldCorpus(t *testing.T) []preorderCandidate {
 	t.Helper()
-	one := rungEqualityRange(t, values.LiteralValue(int64(1)))
-	two := rungEqualityRange(t, values.LiteralValue(int64(2)))
-	covering := plans.NewRecordQueryCoveringIndexPlan(
-		plans.NewRecordQueryIndexPlan("idx_pre_fold_covering",
-			[]*predicates.ComparisonRange{one}, []string{"T"}, values.UnknownType, false).
-			WithIndexMetadata([]string{"K"}, nil, false))
+	one := preorderEqualityRange(t, preorderLongLiteral(1))
+	two := preorderEqualityRange(t, preorderLongLiteral(2))
+	coveringIndex := mustPreorderIndex(
+		t, "idx_pre_fold_covering", []*predicates.ComparisonRange{one}, "T").
+		WithIndexMetadata([]string{"K"}, nil, false)
+	covering := mustPreorder(plans.NewRecordQueryCoveringIndexPlan(coveringIndex))
+	primary := mustPreorderScan(t, "T")
+	sortedPrimary := mustPreorder(plans.NewRecordQueryInMemorySortPlan(
+		mustPreorderScan(t, "T"), nil))
 
 	return []preorderCandidate{
-		{"primary", plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)},
-		{"primary+tf", makeCriterion7Primary(t)},
-		{"primary+tf+1sarg", makeCriterion7Primary(t, one)},
-		{"primary+tf+2sargs", makeCriterion7Primary(t, one, two)},
-		{"index+1sarg", makeCriterion7Index(t, "idx_pre_fold_1", 1, one)},
-		{"index+2sargs", makeCriterion7Index(t, "idx_pre_fold_2", 1, one, two)},
+		{"primary", primary},
+		{"primary+tf", preorderCriterion7Primary(t)},
+		{"primary+tf+1sarg", preorderCriterion7Primary(t, one)},
+		{"primary+tf+2sargs", preorderCriterion7Primary(t, one, two)},
+		{"index+1sarg", preorderCriterion7Index(t, "idx_pre_fold_1", 1, one)},
+		{"index+2sargs", preorderCriterion7Index(t, "idx_pre_fold_2", 1, one, two)},
 		{"coveringNoFetch", covering},
-		{"sortedPrimary", plans.NewRecordQueryInMemorySortPlan(
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false), nil)},
+		{"sortedPrimary", sortedPrimary},
 	}
 }
 
@@ -315,24 +425,26 @@ func physicalVsLogicalCompare(a, b expressions.RelationalExpression) int {
 	}
 }
 
-func physicalVsLogicalCorpus() []preorderCandidate {
-	scanRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+func physicalVsLogicalCorpus(t testing.TB) []preorderCandidate {
+	t.Helper()
+	logicalScan := mustPreorder(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, preorderRowType()))
+	scanRef := expressions.InitialOf(logicalScan)
 	quantifier := expressions.ForEachQuantifier(scanRef)
-	logicalSelect := expressions.NewSelectExpression(
-		values.NewQuantifiedObjectValue(quantifier.GetAlias()),
-		[]expressions.Quantifier{quantifier}, nil)
+	logicalSelect := mustPreorder(expressions.NewSelectExpression(
+		mustPreorder(quantifier.RequireFlowedObjectValue()),
+		[]expressions.Quantifier{quantifier}, nil))
 
 	return []preorderCandidate{
-		{"physicalScan", plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)},
-		{"physicalIndex", plans.NewRecordQueryIndexPlan("idx_phys_gate", nil, []string{"T"}, values.UnknownType, false)},
+		{"physicalScan", mustPreorderScan(t, "T")},
+		{"physicalIndex", mustPreorderIndex(t, "idx_phys_gate", nil, "T")},
 		{"logicalSelect", logicalSelect},
 	}
 }
 
 func TestCostModel_PhysicalVsLogicalGate_TotalPreorderAndFoldStable(t *testing.T) {
 	t.Parallel()
-	corpus := physicalVsLogicalCorpus()
+	corpus := physicalVsLogicalCorpus(t)
 	assertTotalPreorder(t, "physical-vs-logical gate", physicalVsLogicalCompare, corpus)
 	assertFoldStable(t, "physical-vs-logical gate", physicalVsLogicalCompare, corpus)
 }
@@ -477,29 +589,61 @@ func TestCostModel_DepthCriteria_AbstentionIsPositionallyGuarded(t *testing.T) {
 // exercised only by the excluded-criteria tests below).
 func structuralCorpus(t *testing.T) []preorderCandidate {
 	t.Helper()
-	one := rungEqualityRange(t, values.LiteralValue(int64(1)))
-	two := rungEqualityRange(t, values.LiteralValue(int64(2)))
+	one := preorderEqualityRange(t, preorderLongLiteral(1))
+	two := preorderEqualityRange(t, preorderLongLiteral(2))
 
 	scan := func() *plans.RecordQueryScanPlan {
-		return plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+		return mustPreorderScan(t, "T")
 	}
 	idx := func(name string, fetches int, ranges ...*predicates.ComparisonRange) plans.RecordQueryPlan {
-		var cur plans.RecordQueryPlan = plans.NewRecordQueryIndexPlan(name, ranges, []string{"T"}, values.UnknownType, false)
-		for i := 0; i < fetches; i++ {
-			cur = plans.NewRecordQueryFetchFromPartialRecordPlan(cur, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey)
+		var cur plans.RecordQueryPlan = mustPreorderIndex(t, name, ranges, "T")
+		for range fetches {
+			cur = mustPreorder(plans.NewRecordQueryFetchFromPartialRecordPlan(
+				cur, nil, preorderRowType(), plans.FetchIndexRecordsPrimaryKey))
 		}
 		return cur
 	}
 
-	nestedInJoins := plans.NewRecordQueryMapPlan(
-		plans.NewRecordQueryInJoinPlan(
-			plans.NewRecordQueryInJoinPlan(idx("idx_struct_nested_in", 0), "inner_in", false, false),
-			"outer_in", false, false),
-		nil)
-	singleInJoin := plans.NewRecordQueryMapPlan(
-		plans.NewRecordQueryLimitPlan(
-			plans.NewRecordQueryInJoinPlan(idx("idx_struct_single_in", 0), "single_in", false, false), 1, 0),
-		nil)
+	innerInJoin := mustPreorder(plans.NewRecordQueryInJoinPlan(
+		idx("idx_struct_nested_in", 0), "inner_in", false, false))
+	outerInJoin := mustPreorder(plans.NewRecordQueryInJoinPlan(
+		innerInJoin, "outer_in", false, false))
+	nestedInJoins := mustPreorder(plans.NewRecordQueryMapPlan(
+		outerInJoin, outerInJoin.GetResultValue()))
+	singleJoin := mustPreorder(plans.NewRecordQueryInJoinPlan(
+		idx("idx_struct_single_in", 0), "single_in", false, false))
+	singleLimit := mustPreorder(plans.NewRecordQueryLimitPlan(singleJoin, 1, 0))
+	singleInJoin := mustPreorder(plans.NewRecordQueryMapPlan(
+		singleLimit, singleLimit.GetResultValue()))
+
+	typeFilterOne := mustPreorder(plans.NewRecordQueryTypeFilterPlan([]string{"T1"}, scan()))
+	typeFilterThree := mustPreorder(plans.NewRecordQueryTypeFilterPlan(
+		[]string{"T1", "T2", "T3"}, scan()))
+	typeFilterForDeep := mustPreorder(plans.NewRecordQueryTypeFilterPlan(
+		[]string{"T1", "T2"}, scan()))
+	typeFilterDeep := mustPreorder(plans.NewRecordQueryLimitPlan(typeFilterForDeep, 10, 0))
+	sortedScan := mustPreorder(plans.NewRecordQueryInMemorySortPlan(scan(), nil))
+	sortedIndex := mustPreorder(plans.NewRecordQueryInMemorySortPlan(
+		idx("idx_struct_sorted", 1, one), nil))
+	distinctScan := mustPreorder(plans.NewRecordQueryDistinctPlan(scan()))
+	unorderedDistinct := mustPreorder(plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(
+		idx("idx_struct_distinct_deep", 0)))
+	distinctIndexDeep := mustPreorder(plans.NewRecordQueryLimitPlan(unorderedDistinct, 10, 0))
+	pfilterOnePred := mustPreorder(plans.NewRecordQueryPredicatesFilterPlan(
+		scan(), []predicates.QueryPredicate{preorderPredicate(t, "A")}))
+	pfilterTwoPred := mustPreorder(plans.NewRecordQueryPredicatesFilterPlan(
+		scan(), []predicates.QueryPredicate{
+			preorderPredicate(t, "A"), preorderPredicate(t, "B"),
+		}))
+	mapInner := scan()
+	mapWrapped := mustPreorder(plans.NewRecordQueryMapPlan(mapInner, mapInner.GetResultValue()))
+	defaultInner := scan()
+	defaultOnEmpty := mustPreorder(plans.NewRecordQueryDefaultOnEmptyPlanFromQuantifier(
+		expressions.NewPhysicalQuantifier(expressions.InitialOf(defaultInner)),
+		values.NewNullValue(preorderRowType())))
+	multiIntersection := mustPreorder(plans.NewRecordQueryIntersectionPlan([]plans.RecordQueryPlan{
+		idx("idx_struct_int_a", 0, one), idx("idx_struct_int_b", 0, two),
+	}, nil))
 
 	return []preorderCandidate{
 		{"bareScan", scan()},
@@ -508,27 +652,20 @@ func structuralCorpus(t *testing.T) []preorderCandidate {
 		{"indexWithFetch", idx("idx_struct_fetch1", 1)},
 		{"indexWithTwoFetches", idx("idx_struct_fetch2", 2)},
 		{"indexSargedWithFetch", idx("idx_struct_sarged_fetch", 1, one, two)},
-		{"typeFilterOne", plans.NewRecordQueryTypeFilterPlan([]string{"T1"}, scan())},
-		{"typeFilterThree", plans.NewRecordQueryTypeFilterPlan([]string{"T1", "T2", "T3"}, scan())},
-		{"typeFilterDeep", plans.NewRecordQueryLimitPlan(
-			plans.NewRecordQueryTypeFilterPlan([]string{"T1", "T2"}, scan()), 10, 0)},
-		{"sortedScan", plans.NewRecordQueryInMemorySortPlan(scan(), nil)},
-		{"sortedIndex", plans.NewRecordQueryInMemorySortPlan(idx("idx_struct_sorted", 1, one), nil)},
-		{"distinctScan", plans.NewRecordQueryDistinctPlan(scan())},
-		{"distinctIndexDeep", plans.NewRecordQueryLimitPlan(
-			plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(idx("idx_struct_distinct_deep", 0)), 10, 0)},
-		{"pfilterOnePred", plans.NewRecordQueryPredicatesFilterPlan(scan(), []predicates.QueryPredicate{rungPredicate("A")})},
-		{"pfilterTwoPred", plans.NewRecordQueryPredicatesFilterPlan(scan(),
-			[]predicates.QueryPredicate{rungPredicate("A"), rungPredicate("B")})},
-		{"mapWrapped", plans.NewRecordQueryMapPlan(scan(), nil)},
+		{"typeFilterOne", typeFilterOne},
+		{"typeFilterThree", typeFilterThree},
+		{"typeFilterDeep", typeFilterDeep},
+		{"sortedScan", sortedScan},
+		{"sortedIndex", sortedIndex},
+		{"distinctScan", distinctScan},
+		{"distinctIndexDeep", distinctIndexDeep},
+		{"pfilterOnePred", pfilterOnePred},
+		{"pfilterTwoPred", pfilterTwoPred},
+		{"mapWrapped", mapWrapped},
 		{"nestedInJoins", nestedInJoins},
 		{"singleInJoin", singleInJoin},
-		{"defaultOnEmpty", plans.NewRecordQueryDefaultOnEmptyPlanFromQuantifier(
-			expressions.NewPhysicalQuantifier(expressions.InitialOf(scan())),
-			values.NewNullValue(values.UnknownType))},
-		{"multiIntersection", plans.NewRecordQueryIntersectionPlan([]plans.RecordQueryPlan{
-			idx("idx_struct_int_a", 0, one), idx("idx_struct_int_b", 0, two),
-		}, nil)},
+		{"defaultOnEmpty", defaultOnEmpty},
+		{"multiIntersection", multiIntersection},
 	}
 }
 
@@ -585,25 +722,30 @@ func TestCostModel_StructuralCriteria_TotalPreorderAndFoldStable(t *testing.T) {
 // this corpus, rather than excluded, so the composed-comparator's
 // transitivity/fold-stability checks exercise the axis on every run; if a
 // real cycle is lurking here it will fail THIS test, not go unnoticed.
-func cardinalityBoundaryCorpus() []preorderCandidate {
-	pk := []values.Value{&values.FieldValue{Field: "ID", Typ: values.NullableLong}}
+func cardinalityBoundaryCorpus(t testing.TB) []preorderCandidate {
+	t.Helper()
+	pk := []values.Value{mustPreorderField(t, "ID")}
+	pointLookupStamped := mustPreorderScan(t, "P2").
+		WithPrimaryKey(pk).
+		WithScanComparisons([]*predicates.ComparisonRange{
+			rungEqualityRangeUnchecked(preorderLongLiteral(1)),
+		})
+	pointLookupCtxOnly := mustPreorderScan(t, "P").
+		WithScanComparisons([]*predicates.ComparisonRange{
+			rungEqualityRangeUnchecked(preorderLongLiteral(1)),
+		})
 	return []preorderCandidate{
-		{"pointLookupStamped", plans.NewRecordQueryScanPlan([]string{"P2"}, values.UnknownType, false).
-			WithPrimaryKey(pk).
-			WithScanComparisons([]*predicates.ComparisonRange{
-				rungEqualityRangeUnchecked(values.LiteralValue(int64(1))),
-			})},
-		{"pointLookupCtxOnly", plans.NewRecordQueryScanPlan([]string{"P"}, values.UnknownType, false).
-			WithScanComparisons([]*predicates.ComparisonRange{
-				rungEqualityRangeUnchecked(values.LiteralValue(int64(1))),
-			})},
-		{"unboundedScan", plans.NewRecordQueryScanPlan([]string{"Q"}, values.UnknownType, false)},
-		{"uniqueIndexPointLookup", plans.NewRecordQueryIndexPlan(
-			"idx_card_unique", []*predicates.ComparisonRange{rungEqualityRangeUnchecked(values.LiteralValue(int64(1)))},
-			[]string{"T"}, values.UnknownType, false)},
-		{"nonUniqueIndexEquality", plans.NewRecordQueryIndexPlan(
-			"idx_card_nonunique", []*predicates.ComparisonRange{rungEqualityRangeUnchecked(values.LiteralValue(int64(1)))},
-			[]string{"T"}, values.UnknownType, false)},
+		{"pointLookupStamped", pointLookupStamped},
+		{"pointLookupCtxOnly", pointLookupCtxOnly},
+		{"unboundedScan", mustPreorderScan(t, "Q")},
+		{"uniqueIndexPointLookup", mustPreorderIndex(t,
+			"idx_card_unique",
+			[]*predicates.ComparisonRange{rungEqualityRangeUnchecked(preorderLongLiteral(1))},
+			"T")},
+		{"nonUniqueIndexEquality", mustPreorderIndex(t,
+			"idx_card_nonunique",
+			[]*predicates.ComparisonRange{rungEqualityRangeUnchecked(preorderLongLiteral(1))},
+			"T")},
 	}
 }
 
@@ -639,9 +781,9 @@ func newComposedComparatorPlanContext() PlanContext {
 		indexTestPlanContext: indexTestPlanContext{
 			candidates: []MatchCandidate{
 				newKnownDistinctValueIndexCandidate(
-					"idx_card_unique", []string{"T"}, []string{"K"}, nil, values.UnknownType, true, nil),
+					"idx_card_unique", []string{"T"}, []string{"K"}, nil, preorderRowType(), true, nil),
 				newKnownDistinctValueIndexCandidate(
-					"idx_card_nonunique", []string{"T"}, []string{"K"}, nil, values.UnknownType, false, nil),
+					"idx_card_nonunique", []string{"T"}, []string{"K"}, nil, preorderRowType(), false, nil),
 			},
 		},
 	}
@@ -652,9 +794,9 @@ func composedCorpus(t *testing.T) []preorderCandidate {
 	var corpus []preorderCandidate
 	corpus = append(corpus, inPlanCorpus(t)...)
 	corpus = append(corpus, primaryVsIndexFoldCorpus(t)...)
-	corpus = append(corpus, physicalVsLogicalCorpus()...)
+	corpus = append(corpus, physicalVsLogicalCorpus(t)...)
 	corpus = append(corpus, structuralCorpus(t)...)
-	corpus = append(corpus, cardinalityBoundaryCorpus()...)
+	corpus = append(corpus, cardinalityBoundaryCorpus(t)...)
 	// Dedupe-proof the names (several sub-corpora reuse "primary"/"bareScan"
 	// style names): make every entry's name unique so violation messages stay
 	// legible, without changing which expressions are compared.
@@ -708,30 +850,32 @@ func TestCostModel_ComposedComparator_FoldStable(t *testing.T) {
 // covers both plus every other pair the corpus can form.
 // ============================================================================
 
-func joinOrderingCorpus() ([]preorderCandidate, properties.StatisticsProvider) {
+func joinOrderingCorpus(t testing.TB) ([]preorderCandidate, properties.StatisticsProvider) {
+	t.Helper()
 	stats := properties.MapStatistics{PerType: map[string]float64{
 		"T0": 1, "T1": 2, "T2": 3, "T4": 8,
 		"U_o1": 1, "U_i1000": 1000, "U_o100": 100, "U_i1": 1, "U_i220": 220,
 	}}
 	mkFlatMap := func(outerT, innerT string, suffix int) *plans.RecordQueryFlatMapPlan {
-		outer := plans.NewRecordQueryScanPlan([]string{outerT}, values.UnknownType, false)
-		inner := plans.NewRecordQueryScanPlan([]string{innerT}, values.UnknownType, false)
-		return plans.NewRecordQueryFlatMapPlan(
+		outer := mustPreorderScan(t, outerT)
+		inner := mustPreorderScan(t, innerT)
+		return mustPreorder(plans.NewRecordQueryFlatMapPlan(
 			outer, inner,
 			values.NamedCorrelationIdentifier(fmt.Sprintf("o%d", suffix)),
 			values.NamedCorrelationIdentifier(fmt.Sprintf("i%d", suffix)),
-			values.LiteralValue(int64(1)), false)
+			preorderLongLiteral(1), false))
 	}
 	mkNLJ := func(outerT, innerT string, suffix int) *plans.RecordQueryNestedLoopJoinPlan {
-		outer := plans.NewRecordQueryScanPlan([]string{outerT}, values.UnknownType, false)
-		inner := plans.NewRecordQueryScanPlan([]string{innerT}, values.UnknownType, false)
+		outer := mustPreorderScan(t, outerT)
+		inner := mustPreorderScan(t, innerT)
 		pred := predicates.NewComparisonPredicate(
-			&values.FieldValue{Field: "K", Typ: values.NullableLong},
+			mustPreorderField(t, "K"),
 			predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)))
-		return plans.NewRecordQueryNestedLoopJoinPlan(
+		return mustPreorder(plans.NewRecordQueryNestedLoopJoinPlan(
 			outer, inner, []predicates.QueryPredicate{pred}, plans.JoinInner,
 			values.NamedCorrelationIdentifier(fmt.Sprintf("no%d", suffix)),
-			values.NamedCorrelationIdentifier(fmt.Sprintf("ni%d", suffix)), nil)
+			values.NamedCorrelationIdentifier(fmt.Sprintf("ni%d", suffix)),
+			preorderLongLiteral(1)))
 	}
 
 	return []preorderCandidate{
@@ -748,7 +892,7 @@ func joinOrderingCorpus() ([]preorderCandidate, properties.StatisticsProvider) {
 
 func TestCostModel_CompareJoinOrdering_TotalPreorderAndFoldStable(t *testing.T) {
 	t.Parallel()
-	corpus, stats := joinOrderingCorpus()
+	corpus, stats := joinOrderingCorpus(t)
 	compare := func(a, b expressions.RelationalExpression) int {
 		return compareJoinOrdering(a, b, stats, nil)
 	}
@@ -785,20 +929,17 @@ func TestCostModel_CompareJoinOrdering_TotalPreorderAndFoldStable(t *testing.T) 
 // never cycle or produce an intransitive tie.
 // ============================================================================
 
-func recursiveCTECorpus() []preorderCandidate {
-	dfs := plans.NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers(
-		expressions.NewPhysicalQuantifier(expressions.InitialOf(
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false))),
-		expressions.NewPhysicalQuantifier(expressions.InitialOf(
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false))),
-		values.NamedCorrelationIdentifier("prior"), plans.DfsPreorder, false)
-	level := plans.NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers(
-		expressions.NewPhysicalQuantifier(expressions.InitialOf(
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false))),
-		expressions.NewPhysicalQuantifier(expressions.InitialOf(
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false))),
-		values.NamedCorrelationIdentifier("scan"), values.NamedCorrelationIdentifier("insert"), false)
-	unclassified := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+func recursiveCTECorpus(t testing.TB) []preorderCandidate {
+	t.Helper()
+	dfs := mustPreorder(plans.NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers(
+		expressions.NewPhysicalQuantifier(expressions.InitialOf(mustPreorderScan(t, "T"))),
+		expressions.NewPhysicalQuantifier(expressions.InitialOf(mustPreorderScan(t, "T"))),
+		values.NamedCorrelationIdentifier("prior"), plans.DfsPreorder, false))
+	level := mustPreorder(plans.NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers(
+		expressions.NewPhysicalQuantifier(expressions.InitialOf(mustPreorderScan(t, "T"))),
+		expressions.NewPhysicalQuantifier(expressions.InitialOf(mustPreorderScan(t, "T"))),
+		values.NamedCorrelationIdentifier("scan"), values.NamedCorrelationIdentifier("insert"), false))
+	unclassified := mustPreorderScan(t, "T")
 
 	return []preorderCandidate{
 		{"DFS", dfs},
@@ -809,7 +950,7 @@ func recursiveCTECorpus() []preorderCandidate {
 
 func TestCostModel_CompareRecursiveCTE_TotalPreorderAndFoldStable(t *testing.T) {
 	t.Parallel()
-	corpus := recursiveCTECorpus()
+	corpus := recursiveCTECorpus(t)
 	compare := compareRecursiveCTE
 	assertTotalPreorder(t, "compareRecursiveCTE", compare, corpus)
 	assertFoldStable(t, "compareRecursiveCTE", compare, corpus)

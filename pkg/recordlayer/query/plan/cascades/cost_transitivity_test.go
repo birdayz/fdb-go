@@ -9,6 +9,39 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustTransitivity[T any](value T, err error) T {
+	if err != nil {
+		panic(fmt.Sprintf("construct cost-transitivity fixture: %v", err))
+	}
+	return value
+}
+
+func transitivityRowType() *values.RecordType {
+	return values.NewRecordType("cost_transitivity_row", false, []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NullableLong},
+		{Name: "f0", Ordinal: 1, FieldType: values.NullableLong},
+		{Name: "f1", Ordinal: 2, FieldType: values.NullableLong},
+		{Name: "f2", Ordinal: 3, FieldType: values.NullableLong},
+	})
+}
+
+func transitivityIndex(name string) *plans.RecordQueryIndexPlan {
+	return mustTransitivity(plans.NewRecordQueryIndexPlan(
+		name, nil, []string{"T"}, transitivityRowType(), false))
+}
+
+func transitivityField(fieldName string) values.Value {
+	rowType := transitivityRowType()
+	root := mustTransitivity(values.NewQuantifiedObjectValue(
+		values.UniqueCorrelationIdentifier(), rowType))
+	for ordinal, field := range rowType.Fields {
+		if field.Name == fieldName {
+			return mustTransitivity(values.ResolveFieldOrdinals(root, []int{ordinal}))
+		}
+	}
+	panic("cost-transitivity fixture has no field " + fieldName)
+}
+
 // RFC-190 190.2 — cost-comparator transitivity regression.
 //
 // Before 190.2, planningCostModelCompareWith gated five structural rungs
@@ -66,28 +99,28 @@ type planChainSpec struct {
 func (s planChainSpec) indexName() string { return "idx_" + s.name }
 
 func (s planChainSpec) build() plans.RecordQueryPlan {
-	var cur plans.RecordQueryPlan = plans.NewRecordQueryIndexPlan(
-		s.indexName(), nil, []string{"T"}, values.UnknownType, false)
+	var cur plans.RecordQueryPlan = transitivityIndex(s.indexName())
 	if s.distinct && !s.distinctTop {
-		cur = plans.NewRecordQueryDistinctPlan(cur)
+		cur = mustTransitivity(plans.NewRecordQueryDistinctPlan(cur))
 	}
-	for i := 0; i < s.fetches; i++ {
-		cur = plans.NewRecordQueryFetchFromPartialRecordPlan(cur, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey)
+	for range s.fetches {
+		cur = mustTransitivity(plans.NewRecordQueryFetchFromPartialRecordPlan(
+			cur, nil, transitivityRowType(), plans.FetchIndexRecordsPrimaryKey))
 	}
 	if s.distinct && s.distinctTop {
-		cur = plans.NewRecordQueryDistinctPlan(cur)
+		cur = mustTransitivity(plans.NewRecordQueryDistinctPlan(cur))
 	}
 	if s.typeFilter {
-		cur = plans.NewRecordQueryTypeFilterPlan([]string{"T"}, cur)
+		cur = mustTransitivity(plans.NewRecordQueryTypeFilterPlan([]string{"T"}, cur))
 	}
-	for i := 0; i < s.predFilterNodes; i++ {
-		cur = plans.NewRecordQueryPredicatesFilterPlan(cur, nil)
+	for range s.predFilterNodes {
+		cur = mustTransitivity(plans.NewRecordQueryPredicatesFilterPlan(cur, nil))
 	}
-	for i := 0; i < s.topMaps; i++ {
-		cur = plans.NewRecordQueryMapPlan(cur, nil)
+	for range s.topMaps {
+		cur = mustTransitivity(plans.NewRecordQueryMapPlan(cur, cur.GetResultValue()))
 	}
 	if s.sorted {
-		cur = plans.NewRecordQueryInMemorySortPlan(cur, nil)
+		cur = mustTransitivity(plans.NewRecordQueryInMemorySortPlan(cur, nil))
 	}
 	return cur
 }
@@ -150,16 +183,19 @@ func buildTransitivityCtx(specs []planChainSpec) PlanContext {
 // are not depended on to produce the pinned cycle below, only to broaden the
 // brute-force sweep).
 func nljPlan(name string, numPredicates int) plans.RecordQueryPlan {
-	outer := plans.NewRecordQueryIndexPlan("idx_"+name+"_outer", nil, []string{"T"}, values.UnknownType, false)
-	inner := plans.NewRecordQueryIndexPlan("idx_"+name+"_inner", nil, []string{"T"}, values.UnknownType, false)
+	outer := transitivityIndex("idx_" + name + "_outer")
+	inner := transitivityIndex("idx_" + name + "_inner")
 	preds := make([]predicates.QueryPredicate, numPredicates)
 	for i := range preds {
 		preds[i] = predicates.NewComparisonPredicate(
-			&values.FieldValue{Field: fmt.Sprintf("f%d", i), Typ: values.NullableLong},
+			transitivityField(fmt.Sprintf("f%d", i)),
 			predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(i)),
 		)
 	}
-	return plans.NewRecordQueryNestedLoopJoinPlan(outer, inner, preds, plans.JoinInner, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil)
+	return mustTransitivity(plans.NewRecordQueryNestedLoopJoinPlan(
+		outer, inner, preds, plans.JoinInner,
+		values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"),
+		outer.GetResultValue()))
 }
 
 // namedPlan pairs a plan with a label for failure reporting.
@@ -204,19 +240,14 @@ type namedPlan struct {
 //	that "which rung decides" is pair-dependent under the old gate, not just a
 //	single alternate fallback as in A/B/C.
 func buildFetchDepthInJoinCycle() []namedPlan {
-	d2 := plans.NewRecordQueryIndexPlan("idx_D2", nil, []string{"T"}, values.UnknownType, false)
-	e2 := plans.NewRecordQueryMapPlan(
-		plans.NewRecordQueryInJoinPlan(
-			plans.NewRecordQueryIndexPlan("idx_E2", nil, []string{"T"}, values.UnknownType, false),
-			"b", false, false),
-		nil)
-	f2 := plans.NewRecordQueryInMemorySortPlan(
-		plans.NewRecordQueryMapPlan(
-			plans.NewRecordQueryInJoinPlan(
-				plans.NewRecordQueryIndexPlan("idx_F2", nil, []string{"T"}, values.UnknownType, false),
-				"b", false, false),
-			nil),
-		nil)
+	d2 := transitivityIndex("idx_D2")
+	e2Join := mustTransitivity(plans.NewRecordQueryInJoinPlan(
+		transitivityIndex("idx_E2"), "b", false, false))
+	e2 := mustTransitivity(plans.NewRecordQueryMapPlan(e2Join, e2Join.GetResultValue()))
+	f2Join := mustTransitivity(plans.NewRecordQueryInJoinPlan(
+		transitivityIndex("idx_F2"), "b", false, false))
+	f2Map := mustTransitivity(plans.NewRecordQueryMapPlan(f2Join, f2Join.GetResultValue()))
+	f2 := mustTransitivity(plans.NewRecordQueryInMemorySortPlan(f2Map, nil))
 	return []namedPlan{
 		{name: "D2_bare_leaf", plan: d2},
 		{name: "E2_map_injoin_leaf", plan: e2},
@@ -305,8 +336,7 @@ func buildTransitivityCorpus() ([]namedPlan, PlanContext) {
 	// tie-consistency loop would be vacuous.
 	out = append(out, namedPlan{
 		name: "sf_tf0_f0_equivalent",
-		plan: plans.NewRecordQueryIndexPlan(
-			"idx_sf_tf0_f0", nil, []string{"T"}, values.UnknownType, false),
+		plan: transitivityIndex("idx_sf_tf0_f0"),
 	})
 	// NLJ diversity — nljPredicateCount / join-shape coverage.
 	out = append(out, namedPlan{name: "nlj_1pred", plan: nljPlan("nlj1", 1)})

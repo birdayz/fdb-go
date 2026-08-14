@@ -12,6 +12,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -1135,7 +1136,27 @@ func encodeSortContinuation(
 // minimum_key): true means the inner was exhausted when the continuation was
 // taken and buf is the remaining SORTED output — the resumed cursor must go
 // straight to emit (loaded=true), never re-run the fill loop.
-func decodeSortContinuation(data []byte, resolve protoDescriptorResolver) (innerContinuation []byte, buf []QueryResult, innerExhausted bool, err error) {
+func decodeSortContinuation(
+	data []byte,
+	resolve protoDescriptorResolver,
+	expectedLayouts ...values.OrdinalLayout,
+) (innerContinuation []byte, buf []QueryResult, innerExhausted bool, err error) {
+	if len(expectedLayouts) > 1 {
+		return nil, nil, false, fmt.Errorf("sort continuation: %d expected layouts, want at most one", len(expectedLayouts))
+	}
+	var expectedLayout values.OrdinalLayout
+	var expectedType *values.RecordType
+	if len(expectedLayouts) == 1 {
+		expectedLayout = expectedLayouts[0]
+		if expectedLayout == nil || expectedLayout.CarrierKind() != values.OrdinalCarrierRecord || expectedLayout.Carrier() == nil {
+			return nil, nil, false, fmt.Errorf("sort continuation: expected layout is not a concrete record carrier")
+		}
+		var ok bool
+		expectedType, ok = expectedLayout.Carrier().FlowedType().(*values.RecordType)
+		if !ok || expectedType == nil {
+			return nil, nil, false, fmt.Errorf("sort continuation: expected record layout carries %T", expectedLayout.Carrier().FlowedType())
+		}
+	}
 	msg := &gen.MemorySortContinuation{}
 	if err := proto.Unmarshal(data, msg); err != nil {
 		return nil, nil, false, fmt.Errorf("failed to unmarshal sort continuation: %w", err)
@@ -1194,7 +1215,36 @@ func decodeSortContinuation(data []byte, resolve protoDescriptorResolver) (inner
 			}
 			slots[si] = rv
 		}
-		positional := &PositionalRow{Type: positionalTypeFromNames(pp.N), Slots: slots}
+		rowType := positionalTypeFromNames(pp.N)
+		if expectedType != nil {
+			if len(expectedType.Fields) != len(pp.N) {
+				return nil, nil, false, fmt.Errorf(
+					"sorted record %d: continuation has %d columns, selected plan expects %d",
+					i, len(pp.N), len(expectedType.Fields),
+				)
+			}
+			for fieldOrdinal := range expectedType.Fields {
+				if expectedType.Fields[fieldOrdinal].Name != pp.N[fieldOrdinal] {
+					return nil, nil, false, fmt.Errorf(
+						"sorted record %d: continuation column %d is %q, selected plan expects %q",
+						i, fieldOrdinal, pp.N[fieldOrdinal], expectedType.Fields[fieldOrdinal].Name,
+					)
+				}
+			}
+			for fieldOrdinal := range slots {
+				if slotErr := validateContinuationDatum(slots[fieldOrdinal], expectedType.Fields[fieldOrdinal].FieldType); slotErr != nil {
+					return nil, nil, false, fmt.Errorf(
+						"sorted record %d column %d (%q): %w",
+						i, fieldOrdinal, expectedType.Fields[fieldOrdinal].Name, slotErr,
+					)
+				}
+			}
+			rowType = expectedType
+		}
+		positional := &PositionalRow{Type: rowType, Slots: slots}
+		if expectedLayout != nil {
+			positional.Layout = expectedLayout
+		}
 		var pk tuple.Tuple
 		if sr.PrimaryKey != nil {
 			var pkErr error
@@ -1207,4 +1257,78 @@ func decodeSortContinuation(data []byte, resolve protoDescriptorResolver) (inner
 	}
 
 	return msg.Continuation, buf, innerExhausted, nil
+}
+
+func validateContinuationDatum(value any, expected values.Type) error {
+	if expected == nil {
+		return fmt.Errorf("selected plan has no exact field type")
+	}
+	if value == nil {
+		if expected.IsNullable() {
+			return nil
+		}
+		return fmt.Errorf("SQL NULL is not valid for %s", expected)
+	}
+	switch expected.Code() {
+	case values.TypeCodeBoolean:
+		if _, ok := value.(bool); ok {
+			return nil
+		}
+	case values.TypeCodeInt:
+		switch value.(type) {
+		case int, int32, int64:
+			return nil
+		}
+	case values.TypeCodeLong:
+		switch value.(type) {
+		case int, int32, int64, uint64, *big.Int, big.Int:
+			return nil
+		}
+	case values.TypeCodeFloat, values.TypeCodeDouble:
+		switch value.(type) {
+		case float32, float64:
+			return nil
+		}
+	case values.TypeCodeString, values.TypeCodeDate, values.TypeCodeTimestamp:
+		if _, ok := value.(string); ok {
+			return nil
+		}
+	case values.TypeCodeBytes, values.TypeCodeVersion:
+		if _, ok := value.([]byte); ok {
+			return nil
+		}
+	case values.TypeCodeUuid:
+		switch value.(type) {
+		case [16]byte, tuple.UUID:
+			return nil
+		}
+	case values.TypeCodeEnum:
+		switch value.(type) {
+		case int, int32, int64:
+			return nil
+		}
+	case values.TypeCodeRecord:
+		if _, ok := value.(proto.Message); ok {
+			return nil
+		}
+		if _, ok := value.(values.OrdinalRow); ok {
+			return nil
+		}
+	case values.TypeCodeArray:
+		array, ok := value.([]any)
+		if !ok {
+			break
+		}
+		arrayType, ok := expected.(*values.ArrayType)
+		if !ok || arrayType.ElementType == nil {
+			return fmt.Errorf("selected plan has an erased ARRAY element type")
+		}
+		for elementIndex := range array {
+			if err := validateContinuationDatum(array[elementIndex], arrayType.ElementType); err != nil {
+				return fmt.Errorf("array element %d: %w", elementIndex, err)
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("runtime value %T does not match %s", value, expected)
 }

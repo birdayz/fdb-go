@@ -38,6 +38,7 @@ go_test(
         "predicatevalue_equals_test.go",
         "predrow_test.go",
         "resolve_identifier_ordinal_bind_test.go",
+        "rfc232_test_helpers_test.go",
         "shadowing_flowed_type_test.go",
         "shadowing_qualified_nested_descent_test.go",
         "typed_literal_suffix_test.go",

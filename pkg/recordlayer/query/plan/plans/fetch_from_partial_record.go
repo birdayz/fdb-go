@@ -48,47 +48,33 @@ func NewRecordQueryFetchFromPartialRecordPlan(
 	translateValueFunction TranslateValueFunction,
 	resultType values.Type,
 	fetchIndexRecords FetchIndexRecords,
-) *RecordQueryFetchFromPartialRecordPlan {
-	if resultType == nil {
-		resultType = values.UnknownType
-	}
-	if translateValueFunction == nil {
-		translateValueFunction = UnableToTranslate
-	}
-	return &RecordQueryFetchFromPartialRecordPlan{
-		innerQ:                 QuantifierOverPlan(inner),
-		translateValueFunction: translateValueFunction,
-		resultType:             resultType,
-		fetchIndexRecords:      fetchIndexRecords,
-	}
+) (*RecordQueryFetchFromPartialRecordPlan, error) {
+	return NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+		QuantifierOverPlan(inner), translateValueFunction, resultType, fetchIndexRecords)
 }
 
 // NewRecordQueryFetchFromPartialRecordPlanFromQuantifier builds a fetch whose
-// child is a LIVE memo quantifier (a push/data-access rule passes a
-// ForEachQuantifier over the freshly-memoized covering-scan singleton) instead
-// of a snapshot over a single plan. This makes the fetch its own cascades
-// expression carrying its child edge directly: the memo holds it without a
-// physical wrapper, and GetInner / GetQuantifiers / OrderingSourceRef all
-// resolve through the one live edge (RFC-184 W2). Mirrors the field defaulting
-// of NewRecordQueryFetchFromPartialRecordPlan.
+// child is a LIVE memo quantifier.
 func NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 	innerQ expressions.Quantifier,
 	translateValueFunction TranslateValueFunction,
 	resultType values.Type,
 	fetchIndexRecords FetchIndexRecords,
-) *RecordQueryFetchFromPartialRecordPlan {
-	if resultType == nil {
-		resultType = values.UnknownType
+) (*RecordQueryFetchFromPartialRecordPlan, error) {
+	base, err := newPlanExprBaseForType("RecordQueryFetchFromPartialRecordPlan", resultType)
+	if err != nil {
+		return nil, err
 	}
 	if translateValueFunction == nil {
 		translateValueFunction = UnableToTranslate
 	}
 	return &RecordQueryFetchFromPartialRecordPlan{
+		PlanExprBase:           base,
 		innerQ:                 innerQ,
 		translateValueFunction: translateValueFunction,
 		resultType:             resultType,
 		fetchIndexRecords:      fetchIndexRecords,
-	}
+	}, nil
 }
 
 // GetInner returns the inner plan (typically a covering index scan),
@@ -214,13 +200,13 @@ func (p *RecordQueryFetchFromPartialRecordPlan) EqualsWithoutChildren(other expr
 
 // WithQuantifiers returns a copy ranging over the given child quantifier —
 // Java's copy-on-write withChild(Reference).
-func (p *RecordQueryFetchFromPartialRecordPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 1 {
-		return p
+func (p *RecordQueryFetchFromPartialRecordPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryFetchFromPartialRecordPlan", len(qs), 1); err != nil {
+		return nil, err
 	}
 	cp := *p
 	cp.innerQ = qs[0]
-	return &cp
+	return &cp, nil
 }
 
 // WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
@@ -234,7 +220,7 @@ func (p *RecordQueryFetchFromPartialRecordPlan) WithChildren(qs []expressions.Qu
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("RecordQueryFetchFromPartialRecordPlan.WithChildren: expected 1 child, got %d", len(qs))
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

@@ -73,7 +73,11 @@ func (r *LimitMergeRule) OnMatch(call *ExpressionRuleCall) {
 		}
 	}
 
-	merged := expressions.NewLogicalLimitExpression(combinedLimit, combinedOffset, inner.GetInner())
+	merged, err := expressions.NewLogicalLimitExpression(combinedLimit, combinedOffset, inner.GetInner())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	call.Yield(merged)
 }
 

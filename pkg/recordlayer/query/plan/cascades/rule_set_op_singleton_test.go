@@ -9,11 +9,11 @@ import (
 
 func TestUnionSingletonElimRule_FiresOnSingleton(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := smallRewriteScan("T")
 	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	u := expressions.NewLogicalUnionExpression([]expressions.Quantifier{q})
+	u := mustSmallRewriteConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{q}))
 	ref := expressions.InitialOf(u)
-	yielded := FireExpressionRule(NewUnionSingletonElimRule(), ref)
+	yielded := fireSmallRewriteRule(t, NewUnionSingletonElimRule(), ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
 	}
@@ -24,13 +24,13 @@ func TestUnionSingletonElimRule_FiresOnSingleton(t *testing.T) {
 
 func TestUnionSingletonElimRule_DeclinesOnTwoChildren(t *testing.T) {
 	t.Parallel()
-	leaf := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	u := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	leaf := smallRewriteScan("T")
+	u := mustSmallRewriteConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
 		expressions.ForEachQuantifier(expressions.InitialOf(leaf)),
 		expressions.ForEachQuantifier(expressions.InitialOf(leaf)),
-	})
+	}))
 	ref := expressions.InitialOf(u)
-	yielded := FireExpressionRule(NewUnionSingletonElimRule(), ref)
+	yielded := fireSmallRewriteRule(t, NewUnionSingletonElimRule(), ref)
 	if len(yielded) != 0 {
 		t.Fatalf("rule fired on 2-child union — yielded %d, want 0", len(yielded))
 	}
@@ -38,24 +38,21 @@ func TestUnionSingletonElimRule_DeclinesOnTwoChildren(t *testing.T) {
 
 func TestUnionSingletonElimRule_DeclinesOnEmpty(t *testing.T) {
 	t.Parallel()
-	u := expressions.NewLogicalUnionExpression(nil)
-	ref := expressions.InitialOf(u)
-	yielded := FireExpressionRule(NewUnionSingletonElimRule(), ref)
-	if len(yielded) != 0 {
-		t.Fatalf("rule fired on empty union — yielded %d, want 0", len(yielded))
+	if _, err := expressions.NewLogicalUnionExpression(nil); err == nil {
+		t.Fatal("empty UNION was admitted before the singleton rewrite boundary")
 	}
 }
 
 func TestIntersectionSingletonElimRule_FiresOnSingleton(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := smallRewriteScan("T")
 	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	x := expressions.NewLogicalIntersectionExpression(
+	x := mustSmallRewriteConstruct(expressions.NewLogicalIntersectionExpression(
 		[]expressions.Quantifier{q},
 		[]values.Value{values.NewBooleanValue(true)},
-	)
+	))
 	ref := expressions.InitialOf(x)
-	yielded := FireExpressionRule(NewIntersectionSingletonElimRule(), ref)
+	yielded := fireSmallRewriteRule(t, NewIntersectionSingletonElimRule(), ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
 	}
@@ -63,16 +60,16 @@ func TestIntersectionSingletonElimRule_FiresOnSingleton(t *testing.T) {
 
 func TestIntersectionSingletonElimRule_DeclinesOnTwoChildren(t *testing.T) {
 	t.Parallel()
-	leaf := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	x := expressions.NewLogicalIntersectionExpression(
+	leaf := smallRewriteScan("T")
+	x := mustSmallRewriteConstruct(expressions.NewLogicalIntersectionExpression(
 		[]expressions.Quantifier{
 			expressions.ForEachQuantifier(expressions.InitialOf(leaf)),
 			expressions.ForEachQuantifier(expressions.InitialOf(leaf)),
 		},
 		[]values.Value{values.NewBooleanValue(true)},
-	)
+	))
 	ref := expressions.InitialOf(x)
-	yielded := FireExpressionRule(NewIntersectionSingletonElimRule(), ref)
+	yielded := fireSmallRewriteRule(t, NewIntersectionSingletonElimRule(), ref)
 	if len(yielded) != 0 {
 		t.Fatalf("rule fired on 2-child intersection — yielded %d, want 0", len(yielded))
 	}

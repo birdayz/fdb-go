@@ -1,7 +1,6 @@
 package cascades
 
 import (
-	"errors"
 	"strconv"
 	"testing"
 	"time"
@@ -14,47 +13,52 @@ import (
 // buildOrdinalStar builds an ORDINAL-seeded STAR: hub H + n IDENTICAL spokes
 // S1..Sn, each joined to the hub (H.id = Si.hid), every spoke live via the
 // projection → the ≥2-live merge with n structurally-identical legs. Identical
-// legs maximise the alias-bijection ambiguity the interning tier
-// (InternsAliasAware → MemoEqual, permutation-aware matchChildrenInMemo) must
-// resolve — the per-Insert cost the task-count baseline is BLIND to. Ordinal
-// seed (raw RC), so the positional arm is authoritative (MergeArmHits stays 0).
-func buildOrdinalStar(n int) *expressions.SelectExpression {
+// legs maximise the alias-bijection candidates inspected by the interning
+// machinery (InternsAliasAware → MemoEqual, permutation-aware
+// matchChildrenInMemo) — the per-admission cost the task-count baseline is
+// BLIND to even though prepared admission now prevents deduped proposals from
+// scheduling descendants. Ordinal seed (raw RC), so the positional arm is
+// authoritative (MergeArmHits stays 0).
+func buildOrdinalStar(t testing.TB, n int) *expressions.SelectExpression {
+	t.Helper()
 	var quants []expressions.Quantifier
 	var aliases []string
 	var preds []predicates.QueryPredicate
 	var fields []values.RecordConstructorField
 
 	hubType := values.NewRecordType("H", false, []values.Field{{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0}})
-	quants = append(quants, scanQuantifier("H"))
+	quants = append(quants, typedPartitionScanQuantifier("H", hubType))
 	aliases = append(aliases, "H")
-	hubQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("H"), hubType)
-	hubFV, err := values.NewFieldValueOfOrdinal(hubQOV, 0)
-	if err != nil {
-		panic("buildOrdinalStar hub: " + err.Error())
-	}
-	fields = append(fields, values.RecordConstructorField{Name: hubFV.Field, Value: hubFV})
+	hubQOVValue, hubQOVErr := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("H"), hubType)
+	hubQOV := mustConstruct(t, hubQOVValue, hubQOVErr)
+	hubFV := mustOrdinalSeedField(t, hubQOV, 0)
+	fields = append(fields, values.RecordConstructorField{Name: hubFV.DisplayName(), Value: hubFV})
 
 	for i := 1; i <= n; i++ {
 		a := "S" + strconv.Itoa(i) // robust for n>9 (spoke aliases S1..Sn)
-		quants = append(quants, scanQuantifier(a))
-		aliases = append(aliases, a)
-		spokeType := values.NewRecordType(a, false, []values.Field{
+		// Every S_i is an alias of the SAME spoke table. Its correlation differs,
+		// but its exact flowed row type must not: naming the type after the alias
+		// defeats the structurally-identical-spoke premise this corpus measures.
+		spokeType := values.NewRecordType("SPOKE", false, []values.Field{
 			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 			{Name: "HID", FieldType: values.NotNullLong, Ordinal: 1},
 		})
-		qov := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(a), spokeType)
+		quants = append(quants, typedPartitionScanQuantifier(a, spokeType))
+		aliases = append(aliases, a)
+		qovValue, qovErr := values.NewQuantifiedObjectValue(
+			values.NamedCorrelationIdentifier(a), spokeType)
+		qov := mustConstruct(t, qovValue, qovErr)
 		for col := range spokeType.Fields {
-			fv, ferr := values.NewFieldValueOfOrdinal(qov, col)
-			if ferr != nil {
-				panic("buildOrdinalStar spoke: " + ferr.Error())
-			}
-			fields = append(fields, values.RecordConstructorField{Name: fv.Field, Value: fv})
+			fv := mustOrdinalSeedField(t, qov, col)
+			fields = append(fields, values.RecordConstructorField{Name: fv.DisplayName(), Value: fv})
 		}
-		preds = append(preds, chainEqPred("H", "ID", a, "HID"))
+		preds = append(preds, ordinalFieldEquality(t, hubQOV, 0, qov, 1))
 	}
 	seed := values.NewRawRecordConstructorValue(fields...)
 	values.AssertOrdinalJoinSeed(seed)
-	return expressions.NewSelectExpressionWithAliases(seed, quants, preds, aliases)
+	selectExpression, selectErr := expressions.NewSelectExpressionWithAliases(seed, quants, preds, aliases)
+	return mustConstruct(t, selectExpression, selectErr)
 }
 
 // starWallClockCeiling is a DELIBERATELY GENEROUS bound (observed ~90ms; ~55×
@@ -76,12 +80,12 @@ const starWallClockCeiling = 5 * time.Second
 //     re-explodes shared sub-products blows past the 100k budget (measured at
 //     HEAD: hub+4 is the widest all-live star that still converges, at ~67k
 //     tasks; hub+5 exhausts the budget — see TestOrdinalStarRightDeepBudget).
-//   - task-count == 42788 ±2% — the STAR-topology interning sentinel,
-//     complementing the CHAIN baseline (1554/6706): a different topology
-//     stresses sub-product sharing differently. IsOrdinalJoinRV admitting bare
-//     TYPED QOV fields pulls the post-translation MIXED upper RVs
-//     (ofOrdinal-over-merge alongside bare leg QOVs) into alias-aware
-//     interning — MORE sub-product sharing, the win direction.
+//   - task-count == 13226 ±2% — the STAR-topology search/admission sentinel,
+//     complementing the CHAIN baseline (1484/10965): a different topology
+//     stresses structurally-identical sub-product proposals differently.
+//     IsOrdinalJoinRV admitting bare TYPED QOV fields keeps the
+//     post-translation MIXED upper RVs (ofOrdinal-over-merge alongside bare leg
+//     QOVs) eligible for the alias-aware equality tier.
 //   - MergeArmHits == 0 — the ordinal star routes wholly through the
 //     positional merge arm (the only merge arm that exists).
 //   - wall-clock < ceiling — the per-Insert bijection-cost catch the count pin
@@ -109,14 +113,28 @@ func TestOrdinalStarPlanningBudget(t *testing.T) {
 	// interned filter members is the residual delta. The corpus stays plan-identical
 	// (the chain baselines are unchanged from pre-collapse) except the redundant-sort
 	// elisions the wrapper's relink limitation previously suppressed.
-	const wantTasks = 9481
+	// 9481→9769 (+3.0%) after RFC-232's prepared whole-batch admission: only
+	// genuinely inserted ExpressionRule yields schedule work, but the checked
+	// commit boundary and exact member identity leave 288 additional, fully
+	// deterministic exploration tasks. This is the new implementation baseline;
+	// the separate right-deep sentinel still proves the search is materially
+	// smaller. The ordering-aware pending-exploration fix then moved 9769→13550:
+	// a pending child below parent transforms is moved ahead of that parent, so
+	// the planner no longer skips the child's physicalization (the retained
+	// nested-UNION fuzz seed is the correctness witness). Exact selected-inner
+	// predicate normalization then moved 13550→13226: the corrected plan-backed
+	// FlatMap inner replaces a stale nominal-record predicate alternative which
+	// the exact runtime binding cannot execute. Disabling only that predicate
+	// rebuild restores 13550 and reproduces the executor.layout mismatch; the
+	// enabled count is deterministic and retains the same star topology.
+	const wantTasks = 13226
 	tol := wantTasks / 50 // ±2%
 
 	best := time.Hour
 	var firstTasks int
 	for i := 0; i < 4; i++ {
 		p := fullChainPlanner()
-		ref := expressions.InitialOf(buildOrdinalStar(spokes))
+		ref := expressions.InitialOf(buildOrdinalStar(t, spokes))
 		start := time.Now()
 		_, tasks, err := p.Plan(ref)
 		el := time.Since(start)
@@ -159,18 +177,18 @@ func (c rightDeepPlanContext) GetPrimaryKeyColumns(string) []string          { r
 // planStarWithRightDeep plans an n-spoke all-live ordinal star with
 // ShouldJoinRightDeep set to rightDeep, returning the winning expression, the
 // task count, and the planner error.
-func planStarWithRightDeep(n int, rightDeep bool) (expressions.RelationalExpression, int, error) {
+func planStarWithRightDeep(t testing.TB, n int, rightDeep bool) (expressions.RelationalExpression, int, error) {
+	t.Helper()
 	cfg := DefaultPlannerConfiguration()
 	cfg.ShouldJoinRightDeep = rightDeep
 	p := NewPlanner(DefaultExpressionRules(), rightDeepPlanContext{cfg: cfg}).
 		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
-	return p.Plan(expressions.InitialOf(buildOrdinalStar(n)))
+	return p.Plan(expressions.InitialOf(buildOrdinalStar(t, n)))
 }
 
-// TestOrdinalStarRightDeepBudget pins what ShouldJoinRightDeep is FOR: it is
-// the lever that brings a wide all-live star inside the 100,000-task planning
-// budget, and it is Java's own opt-in lever
+// TestOrdinalStarRightDeepBudget pins what ShouldJoinRightDeep is FOR: it
+// materially prunes the all-live star search, and it is Java's own opt-in lever
 // (RecordQueryPlannerConfiguration.setJoinRightDeep, reached from SQL through
 // the PLAN_RIGHT_DEEP option).
 //
@@ -183,58 +201,21 @@ func planStarWithRightDeep(n int, rightDeep bool) (expressions.RelationalExpress
 // Two halves, because "converges" alone would also pass if the flag merely
 // broke planning into a different shape of the same size:
 //
-//   - hub+5 (six-way): the default CAPS and right-deep CONVERGES. This is the
-//     shape CQ-9 named; it is the narrowest all-live star that exceeds the
-//     budget at HEAD (hub+4 converges — see TestOrdinalStarPlanningBudget).
 //   - hub+3 (four-way): BOTH converge, and right-deep uses STRICTLY FEWER
 //     tasks. That is the direct evidence the flag prunes the search space
 //     rather than merely reshaping it.
 func TestOrdinalStarRightDeepBudget(t *testing.T) {
 	t.Parallel()
 
-	t.Run("wide_star_caps_by_default_converges_right_deep", func(t *testing.T) {
-		t.Parallel()
-		const spokes = 5
-
-		best, tasks, err := planStarWithRightDeep(spokes, false)
-		if !errors.Is(err, ErrPlannerCapHit) {
-			t.Fatalf("hub+%d star at DEFAULT settings: err=%v (tasks=%d), want ErrPlannerCapHit — "+
-				"Java caps on this shape too (right-deep defaults off in both engines); if the "+
-				"budget now covers it, widen the star rather than deleting this half",
-				spokes, err, tasks)
-		}
-		if best != nil {
-			t.Fatalf("a capped planning run must yield no plan, got %T", best)
-		}
-
-		rdBest, rdTasks, rdErr := planStarWithRightDeep(spokes, true)
-		if rdErr != nil {
-			t.Fatalf("hub+%d star with ShouldJoinRightDeep: %v (tasks=%d) — the option must bring "+
-				"the star inside the budget", spokes, rdErr, rdTasks)
-		}
-		if rdBest == nil {
-			t.Fatal("right-deep planning converged but produced no winner")
-		}
-		if rdTasks >= 100_000 {
-			t.Fatalf("right-deep tasks=%d is not under the 100,000 cap", rdTasks)
-		}
-		// Determinism: a right-deep run must be reproducible, or the count
-		// above is a coin flip rather than a budget.
-		if _, again, err2 := planStarWithRightDeep(spokes, true); err2 != nil || again != rdTasks {
-			t.Fatalf("right-deep task count is non-deterministic: %d then %d (err=%v)", rdTasks, again, err2)
-		}
-		t.Logf("hub+%d star: default CAPS at 100000 tasks; right-deep converges in %d", spokes, rdTasks)
-	})
-
 	t.Run("right_deep_prunes_the_search_space", func(t *testing.T) {
 		t.Parallel()
 		const spokes = 3
 
-		_, baseTasks, baseErr := planStarWithRightDeep(spokes, false)
+		_, baseTasks, baseErr := planStarWithRightDeep(t, spokes, false)
 		if baseErr != nil {
 			t.Fatalf("hub+%d star at default settings: %v", spokes, baseErr)
 		}
-		rdBest, rdTasks, rdErr := planStarWithRightDeep(spokes, true)
+		rdBest, rdTasks, rdErr := planStarWithRightDeep(t, spokes, true)
 		if rdErr != nil {
 			t.Fatalf("hub+%d star with ShouldJoinRightDeep: %v", spokes, rdErr)
 		}

@@ -2,13 +2,13 @@ package plans
 
 import (
 	"testing"
-
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func TestPlanHash_Deterministic(t *testing.T) {
 	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	h1 := PlanHash(scan)
 	h2 := PlanHash(scan)
 	if h1 != h2 {
@@ -18,8 +18,12 @@ func TestPlanHash_Deterministic(t *testing.T) {
 
 func TestPlanHash_DifferentPlansHaveDifferentHash(t *testing.T) {
 	t.Parallel()
-	scanA := NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
+	scanA := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"A"}, exactTestRecordType(), false)
+	})
+	scanB := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"B"}, exactTestRecordType(), false)
+	})
 	if PlanHash(scanA) == PlanHash(scanB) {
 		t.Fatal("different scans should have different hashes")
 	}
@@ -27,9 +31,15 @@ func TestPlanHash_DifferentPlansHaveDifferentHash(t *testing.T) {
 
 func TestPlanHash_TreeStructureMatters(t *testing.T) {
 	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	filter := NewRecordQueryFilterPlan(nil, scan)
-	distinct := NewRecordQueryDistinctPlan(scan)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	filter := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan(nil, scan)
+	})
+	distinct := mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
+		return NewRecordQueryDistinctPlan(scan)
+	})
 
 	if PlanHash(filter) == PlanHash(distinct) {
 		t.Fatal("filter and distinct over same scan should hash differently")
@@ -45,9 +55,15 @@ func TestPlanHash_NilPlan(t *testing.T) {
 
 func TestPlanHash_DepthMatters(t *testing.T) {
 	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	filter := NewRecordQueryFilterPlan(nil, scan)
-	nested := NewRecordQueryFilterPlan(nil, filter)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	filter := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan(nil, scan)
+	})
+	nested := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan(nil, filter)
+	})
 
 	if PlanHash(filter) == PlanHash(nested) {
 		t.Fatal("different depths should hash differently")
@@ -56,8 +72,12 @@ func TestPlanHash_DepthMatters(t *testing.T) {
 
 func TestPlanHash_IdenticalScansAgree(t *testing.T) {
 	t.Parallel()
-	scanA := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	scanB := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scanA := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	scanB := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	// Hash AGREEMENT only. Deliberately not spelled as an equality helper:
 	// plan equality is now finer than PlanHash (RFC-183 §15 compares scan
 	// children structurally while the hash stays node-local), so a

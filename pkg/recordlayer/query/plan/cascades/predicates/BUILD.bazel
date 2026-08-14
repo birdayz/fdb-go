@@ -57,6 +57,7 @@ go_test(
         "simplifier_predicate_values_test.go",
         "structural_equal_test.go",
         "tautology_test.go",
+        "test_helpers_test.go",
         "translate_leaf_predicates_test.go",
     ],
     embed = [":predicates"],

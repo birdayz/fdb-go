@@ -46,11 +46,21 @@ func (r *PushLimitThroughProjectionRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	newLimit := expressions.NewLogicalLimitExpression(
+	newLimit, err := expressions.NewLogicalLimitExpression(
 		limit.GetLimit(), limit.GetOffset(), proj.GetInner(),
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	limitRef := expressions.InitialOf(newLimit)
-	limitQ := expressions.ForEachQuantifier(limitRef)
+	// The rewritten Projection retains the original projection program. Keep
+	// that program's declared input alias on the new LIMIT edge: LIMIT is a
+	// row-preserving wrapper, so changing the edge identity without rebasing the
+	// Values severs their only binding. This is observable when the child is a
+	// materializing sort, whose output is deliberately current-only — the stale
+	// source QOV cannot be recovered from a source window after materialization.
+	limitQ := expressions.NamedForEachQuantifier(proj.GetInner().GetAlias(), limitRef)
 
 	// Carry the projection's output ALIASES across the rebuild. Dropping
 	// them changed only the result METADATA, so rows stayed correct while
@@ -58,9 +68,18 @@ func (r *PushLimitThroughProjectionRule) OnMatch(call *ExpressionRuleCall) {
 	// `SELECT l.id AS l_id, r.id AS r_id FROM t AS l JOIN t AS r ON …
 	// LIMIT k` reported two columns both named ID. Same query without the
 	// LIMIT — no push, no rebuild — kept l_id/r_id.
-	newProj := expressions.NewLogicalProjectionExpressionWithAliasProvenance(
-		proj.GetProjectedValues(), proj.GetAliases(), proj.GetAliasMinted(), limitQ)
-	call.Yield(newProj)
+	newProj, err := expressions.NewLogicalProjectionExpressionWithOutputSchema(
+		proj.GetProjectedValues(), proj.GetAliases(), proj.GetAliasMinted(), proj.GetOutputNames(), limitQ)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	newProj, err = newProj.WithAliasSources(proj.GetAliasSources())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(newProj.WithInheritedOutputIdentity(proj))
 }
 
 var _ ExpressionRule = (*PushLimitThroughProjectionRule)(nil)

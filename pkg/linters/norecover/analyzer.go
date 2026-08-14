@@ -47,6 +47,9 @@ var Allowlist = map[string]int{
 	"pkg/relational/core/embedded/cascades_generator.go": 1,
 	// record layer: tuple.Pack on user-derived comparison keys
 	"pkg/recordlayer/merge_cursor.go": 1,
+	// RFC-232 binding admission: a hostile implementation of the open Value
+	// interface becomes a typed layout error instead of crashing the planner.
+	"pkg/recordlayer/query/plan/cascades/values/required_bindings.go": 1,
 	// binding-tester harness binary (cgo-dependent build)
 	"cmd/fdb-stacktester/directory_ops.go": 1,
 	// RFC-183 EXPLAIN-differ: a planner panic on ONE corpus query becomes a

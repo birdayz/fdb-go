@@ -7,7 +7,7 @@ package values
 // row where the array column is unbound, which yields zero rows.
 //
 // That dependency used to be recovered from a STRING: the collection was minted
-// as `FieldValue{Field:"A.ARR", Child:QOV(B)}` (B the flow leg, A the buried
+// as `fieldValue{Field:"A.ARR", Child:QOV(B)}` (B the flow leg, A the buried
 // one), GetCorrelatedToOfValue reported only {B}, and a helper here sliced "A"
 // off the field name and re-added it. The slice is a name-keyed correlation —
 // the identity of a quantifier decided by text — and it is wrong in both
@@ -48,8 +48,8 @@ func GetCorrelatedToOfValue(v Value) map[CorrelationIdentifier]struct{} {
 	out := map[CorrelationIdentifier]struct{}{}
 	WalkValue(v, func(node Value) bool {
 		switch q := node.(type) {
-		case *QuantifiedObjectValue:
-			out[q.Correlation] = struct{}{}
+		case *quantifiedObjectValue:
+			out[q.correlation] = struct{}{}
 		case *QuantifiedRecordValue:
 			out[q.Alias] = struct{}{}
 		// ExistsValue is a transparent composite (RFC-141): its child
@@ -82,8 +82,8 @@ func GetCorrelatedToWithoutChildrenOfValue(
 ) map[CorrelationIdentifier]struct{} {
 	out := map[CorrelationIdentifier]struct{}{}
 	switch correlated := v.(type) {
-	case *QuantifiedObjectValue:
-		out[correlated.Correlation] = struct{}{}
+	case *quantifiedObjectValue:
+		out[correlated.correlation] = struct{}{}
 	case *QuantifiedRecordValue:
 		out[correlated.Alias] = struct{}{}
 	case *ScalarSubqueryValue:

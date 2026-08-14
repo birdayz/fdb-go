@@ -1,29 +1,25 @@
 package embedded
 
-// planAndVerifyOneFinal plans sql and returns every reference reachable at
-// extraction that holds more than one PHYSICAL final expression — RFC-183
-// P5's precondition (Java's getRangesOverPlan is getOnlyElement over the final
-// expressions, which throws on two).
+import cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
+
+// planAndVerifyExtraction plans sql and returns RFC-224's report for the exact
+// Reference path selector-based extraction dereferences. Unlike the retired
+// one-final check, the report treats property-retained alternatives as legal
+// and makes vacuity visible through explicit visited/dead-end counts.
 //
-// READ THE COMMENT ON TestOneFinalPlanPerReference BEFORE TRUSTING WHAT THIS
-// RETURNS. An empty result does not mean the property holds: the underlying
-// walk terminates at any reference with an empty final set, and the property
-// itself is Java's mechanism rather than a Go invariant. RFC-224 settles both.
+// It lives in a _test.go file because it has no consumer outside this
+// package's invariant tests. The rest of plan_harness.go is genuine
+// cross-package API and remains production code.
 //
-// It lives in a _test.go file because it is the one function in the planning
-// harness with no consumer outside this package's tests. The rest of
-// plan_harness.go is genuine cross-package API — `PlanRecordQueryWithMetadata`
-// alone has 110 call sites elsewhere, and `explaindiff.go` (a NON-test file in
-// another package) calls `PlanPhysicalForTestWithReachability` — so the file as
-// a whole is production code despite its ForTest names, and moving it wholesale
-// broke the build.
-//
-// Safe under t.Parallel: verifyOneFinal is a per-Planner flag and the
-// violations are RETURNED, so nothing is shared between callers.
-func planAndVerifyOneFinal(sql, schema string) ([]string, error) {
-	_, violations, err := planPhysicalForTest(sql, schema, nil, true, nil, plannerOptionsFrom(nil))
+// Safe under t.Parallel: both the enable flag and report belong to the one
+// Planner created for this call; no package-global measurement is shared.
+func planAndVerifyExtraction(sql, schema string) (cascades.ExtractionVerificationReport, error) {
+	_, report, err := planPhysicalForTest(sql, schema, nil, true, nil, plannerOptionsFrom(nil))
 	if err != nil {
-		return nil, err
+		return cascades.ExtractionVerificationReport{}, err
 	}
-	return violations, nil
+	if report == nil {
+		return cascades.ExtractionVerificationReport{}, nil
+	}
+	return *report, nil
 }

@@ -46,7 +46,12 @@ func (r *FilterDedupPredicatesRule) OnMatch(call *ExpressionRuleCall) {
 	if !removed {
 		return
 	}
-	call.Yield(expressions.NewLogicalFilterExpression(deduped, f.GetInner()))
+	rewritten, err := expressions.NewLogicalFilterExpression(deduped, f.GetInner())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(rewritten)
 }
 
 // dedupFilterPredicates returns a slice where each predicate's

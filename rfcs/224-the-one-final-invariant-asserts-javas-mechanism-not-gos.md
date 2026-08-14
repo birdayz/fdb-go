@@ -1,6 +1,6 @@
 # RFC-224 — The one-final invariant asserts Java's mechanism, not Go's property
 
-Status: proposed (implementation gated on Graefe + Torvalds ACK)
+Status: implemented
 Java reference: fdb-record-layer 4.12.11.0 (pinned `MODULE.bazel:117`)
 
 ## 1. The defect
@@ -130,15 +130,19 @@ Each pin mutation-checked, one mutation per independent failure direction:
    This is the direction that made the old green vacuous.
 2. **A reference with no winner and no physical best member is reported.** Mutation:
    clear a winner stamp on one group; the walk names that reference.
-3. **A multi-final group is NOT a violation.** The `join` shape holds four physical
-   finals and must pass — a test that goes red here has reintroduced (A).
+3. **A multi-final group is NOT a violation.**
+   `TestVerifyExtractionIsUnambiguousAllowsNonOrderingPropertyRetention` builds the
+   concrete StoredRecord-partition case: a fetching Index and a costlier Fetch are both
+   retained and must pass. A test that goes red here has reintroduced (A), or has reduced
+   "physical property" to ordering alone.
 4. **A retained final satisfying no requested ordering IS a violation** (item 3's
    coherence half). Mutation: add a final to the keep set unconditionally; the test
    names it.
-5. **Extraction agreement.** For each of the 20 shapes, the set of references the
-   verifier visits equals the set plan extraction visits. This is what makes the walk's
-   claim to follow extraction checkable rather than asserted in a comment — on the
-   current `join` case those sets are 2 and 5.
+5. **Extraction agreement.** Focused tests put a dead-ended decoy behind an unselected
+   alternative and prove it is not visited, while a physical exploratory fallback with
+   no final is visited; a second fixture proves verifier and extractor choose the same
+   ordinal-layout-compatible child instead of the cheaper incompatible global winner.
+   The 20 SQL shapes then assert positive reach and zero dead ends after real planning.
 
 The new file is confirmed present in its Bazel target's `srcs` via `just gazelle` plus a
 grep of the target output for a line only that test emits.
@@ -146,13 +150,11 @@ grep of the target output for a line only that test emits.
 ## 5. Blast radius
 
 `VerifyOneFinalPlanPerReference`, `SetVerifyOneFinal`, `OneFinalViolations` and
-`planner.verifyOneFinal` are the whole surface; `planAndVerifyOneFinal`
-(`plan_harness_support_test.go`) is the only caller and is test-only. One planner comment
-cites the test by name — `plans/plan_expression.go:172`, the sole hit of
-`grep -rn TestOneFinalPlanPerReference pkg/` outside the test's own file — and must be
-rewritten to cite the winner stamp instead. `cascades/physical_wrapper.go:331` already
-states outright that Go does not have the one-final property; it becomes consistent with
-the code rather than contradicting a green test.
+`planner.verifyOneFinal` were the whole old surface; `planAndVerifyOneFinal` was its only
+test caller. The implementation replaces them with `VerifyExtractionIsUnambiguous`, a
+per-Planner `ExtractionVerificationReport`, and `planAndVerifyExtraction`. The stale
+`plan_expression.go` assertion now cites the winner/fallback mechanism and this verifier
+instead of singleton finals.
 
 No plan shape changes, no golden moves, no wire surface: this is an assertion change plus
 a walk. `planner.go`'s post-drain comment ("each Reference's FinalMembers has been pruned

@@ -346,8 +346,8 @@ func selectSubsumptionExistentialOwned(
 		if !ok || existentialPredicate == nil {
 			continue
 		}
-		qov, ok := existentialPredicate.Value.(*values.QuantifiedObjectValue)
-		if !ok || qov == nil || qov.Correlation != alias ||
+		qov, ok := values.AsQuantifiedObjectValue(existentialPredicate.Value)
+		if !ok || qov.Correlation() != alias ||
 			existentialPredicate.Comparison.Type !=
 				predicates.ComparisonIsNotNull {
 			continue
@@ -448,8 +448,8 @@ func selectSubsumptionPredicateTreeWellFormed(
 		return false
 	}
 	if existentialPredicate, ok := queryPredicate.(*predicates.ExistentialValuePredicate); ok {
-		qov, isQOV := existentialPredicate.Value.(*values.QuantifiedObjectValue)
-		if !isQOV || qov == nil ||
+		_, isQOV := values.AsQuantifiedObjectValue(existentialPredicate.Value)
+		if !isQOV ||
 			existentialPredicate.Comparison.Type !=
 				predicates.ComparisonIsNotNull {
 			return false

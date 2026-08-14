@@ -374,10 +374,14 @@ func selectSubsumptionPredicateImpliedMappingMaybe(
 		).Build(), true
 	}
 
+	valuesAliasMap, err := bindingAliasMap.ForwardMap()
+	if err != nil {
+		return nil, false
+	}
 	if !predicates.SemanticEqualsUnderAliasMap(
 		translatedQueryPredicate,
 		candidatePredicate,
-		bindingAliasMap.ForwardMap(),
+		valuesAliasMap,
 	) {
 		return nil, false
 	}
@@ -599,7 +603,7 @@ func bindSelectSubsumptionComparisonToPlaceholder(
 		) {
 			continue
 		}
-		if fieldValue, isFieldValue := orientation.column.(*values.FieldValue); isFieldValue &&
+		if fieldValue, isFieldValue := values.AsFieldValue(orientation.column); isFieldValue &&
 			!comparisonTypesCompatible(
 				fieldValue,
 				&orientation.comparison,

@@ -9,6 +9,37 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func mustBatchAFuzzConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct Batch-A fuzz fixture: " + err.Error())
+	}
+	return value
+}
+
+func batchAFuzzRowType(columns []string) values.Type {
+	fields := make([]values.Field, 0, len(columns)+1)
+	for i, name := range columns {
+		fields = append(fields, values.Field{
+			Name: name, FieldType: values.NullableLong, Ordinal: i,
+		})
+	}
+	fields = append(fields, values.Field{
+		Name: "id", FieldType: values.NotNullLong, Ordinal: len(fields),
+	})
+	return values.NewRecordType("BatchAFuzzRow", false, fields)
+}
+
+func batchAFuzzRoot(q expressions.Quantifier) values.Value {
+	flowedType := mustBatchAFuzzConstruct(q.GetFlowedObjectType())
+	return mustBatchAFuzzConstruct(values.NewQuantifiedObjectValue(q.GetAlias(), flowedType))
+}
+
+func batchAFuzzField(root values.Value, name string) values.Value {
+	request := mustBatchAFuzzConstruct(values.FieldByName(name))
+	return mustBatchAFuzzConstruct(values.ResolveFieldAccess(
+		root, []values.FieldRequest{request}))
+}
+
 // FuzzPlanner_WithBatchA_NoPanic pins that the Planner with
 // DefaultExpressionRules (EXPLORE) + BatchAExpressionRules (PLANNING)
 // terminates and doesn't panic on random expression trees. The
@@ -100,6 +131,7 @@ func FuzzPlanner_WithIndexCandidates_NoPanic(f *testing.F) {
 	f.Add(byte(2), byte(1), byte(0), byte(128)) // GroupBy path (seed >= 128)
 
 	colPool := []string{"A", "B", "C", "D", "STATUS", "AMOUNT", "DATE"}
+	rowType := batchAFuzzRowType(colPool)
 
 	f.Fuzz(func(t *testing.T, numPreds, numCands, numSort, seed byte) {
 		nPreds := int(numPreds%4) + 1
@@ -120,40 +152,43 @@ func FuzzPlanner_WithIndexCandidates_NoPanic(f *testing.F) {
 				[]string{"T"},
 				cols,
 				aliases,
-				values.UnknownType,
+				rowType,
 				seed%5 == 0,
 				nil,
 			))
 		}
 		ctx := &indexTestPlanContext{candidates: candidates}
 
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scan := mustBatchAFuzzConstruct(expressions.NewFullUnorderedScanExpression(
+			[]string{"T"}, rowType))
 		scanRef := expressions.InitialOf(scan)
 		q := expressions.ForEachQuantifier(scanRef)
+		scanRoot := batchAFuzzRoot(q)
 
 		preds := make([]predicates.QueryPredicate, nPreds)
 		for i := range preds {
 			col := colPool[(int(seed)+i)%len(colPool)]
 			preds[i] = predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: col, Typ: values.NullableLong},
+				batchAFuzzField(scanRoot, col),
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(i+1)),
 			)
 		}
 
-		filter := expressions.NewLogicalFilterExpression(preds, q)
+		filter := mustBatchAFuzzConstruct(expressions.NewLogicalFilterExpression(preds, q))
 		var topRef *expressions.Reference
 
 		if nSort > 0 {
 			filterRef := expressions.InitialOf(filter)
 			filterQ := expressions.ForEachQuantifier(filterRef)
+			filterRoot := batchAFuzzRoot(filterQ)
 			sortKeys := make([]expressions.SortKey, nSort)
 			for i := range sortKeys {
 				col := colPool[(int(seed)+i*2)%len(colPool)]
 				sortKeys[i] = expressions.SortKey{
-					Value: &values.FieldValue{Field: col, Typ: values.UnknownType},
+					Value: batchAFuzzField(filterRoot, col),
 				}
 			}
-			sort := expressions.NewLogicalSortExpression(sortKeys, filterQ)
+			sort := mustBatchAFuzzConstruct(expressions.NewLogicalSortExpression(sortKeys, filterQ))
 			topRef = expressions.InitialOf(sort)
 		} else {
 			topRef = expressions.InitialOf(filter)
@@ -162,21 +197,20 @@ func FuzzPlanner_WithIndexCandidates_NoPanic(f *testing.F) {
 		// Optionally wrap with GroupBy (seed >= 128 triggers agg path).
 		if seed >= 128 {
 			topQ := expressions.ForEachQuantifier(topRef)
+			topRoot := batchAFuzzRoot(topQ)
 			nGroupKeys := int(seed%3) + 1
 			groupKeys := make([]values.Value, nGroupKeys)
 			for i := range groupKeys {
-				groupKeys[i] = &values.FieldValue{
-					Field: colPool[(int(seed)+i*5)%len(colPool)],
-					Typ:   values.UnknownType,
-				}
+				groupKeys[i] = batchAFuzzField(
+					topRoot, colPool[(int(seed)+i*5)%len(colPool)])
 			}
-			gb := expressions.NewGroupByExpression(
+			gb := mustBatchAFuzzConstruct(expressions.NewGroupByExpression(
 				groupKeys,
 				[]expressions.AggregateSpec{
-					{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+					{Function: expressions.AggCount, Operand: batchAFuzzField(topRoot, "id")},
 				},
 				topQ,
-			)
+			))
 			topRef = expressions.InitialOf(gb)
 		}
 

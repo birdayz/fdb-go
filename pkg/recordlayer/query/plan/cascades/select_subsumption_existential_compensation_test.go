@@ -85,12 +85,7 @@ func existentialCompensationTestParent(
 	setChild bool,
 ) *PartialMatchImpl {
 	t.Helper()
-	childRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression(
-			[]string{"E"},
-			values.UnknownType,
-		),
-	)
+	childRef := selectSubsumptionTestInitial(selectSubsumptionTestScan("E"))
 	var quantifier expressions.Quantifier
 	switch kind {
 	case expressions.QuantifierExistential:
@@ -100,12 +95,14 @@ func existentialCompensationTestParent(
 	default:
 		t.Fatalf("unsupported owner kind %v", kind)
 	}
-	queryExpression := expressions.NewSelectExpression(
+	queryExpression := selectSubsumptionMust(expressions.NewSelectExpression(
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{quantifier},
-		[]predicates.QueryPredicate{predicates.NewExistentialAlias(alias)},
-	)
-	queryRef := expressions.InitialOf(queryExpression)
+		[]predicates.QueryPredicate{
+			mustExistentialAlias(t, alias, selectSubsumptionTestRowType()),
+		},
+	))
+	queryRef := selectSubsumptionTestInitial(queryExpression)
 	matchInfo := NewRegularMatchInfo(
 		nil,
 		EmptyAliasMap(),
@@ -138,13 +135,12 @@ func existentialCompensationTestSemanticMapping(
 	candidateAlias := values.NamedCorrelationIdentifier(
 		queryAlias.Name() + "_candidate",
 	)
-	candidateRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression(
-			[]string{"E"},
-			values.UnknownType,
-		),
+	candidateRef := selectSubsumptionTestInitial(selectSubsumptionTestScan("E"))
+	candidatePredicate := mustExistentialAlias(
+		t,
+		candidateAlias,
+		selectSubsumptionTestRowType(),
 	)
-	candidatePredicate := predicates.NewExistentialAlias(candidateAlias)
 	mapping, ok := selectSubsumptionPredicateImpliedMappingMaybe(
 		queryPredicate,
 		queryPredicate,
@@ -173,7 +169,11 @@ func TestSelectSubsumptionExistentialCompensation_SemanticEqualityChildStates(
 	t *testing.T,
 ) {
 	queryAlias := values.NamedCorrelationIdentifier("evp_query_owner")
-	queryPredicate := predicates.NewExistentialAlias(queryAlias)
+	queryPredicate := mustExistentialAlias(
+		t,
+		queryAlias,
+		selectSubsumptionTestRowType(),
+	)
 	mapping := existentialCompensationTestSemanticMapping(
 		t,
 		queryPredicate,
@@ -313,10 +313,11 @@ func TestSelectSubsumptionExistentialCompensation_SemanticEqualityChildStates(
 						values.CorrelationIdentifier,
 						values.LeafValue,
 					) values.Value {
-						return values.NewQuantifiedObjectValue(
+						return selectSubsumptionTestQOV(
 							values.NamedCorrelationIdentifier(
 								"must_not_rebase_evp",
 							),
+							selectSubsumptionTestRowType(),
 						)
 					}).
 					Build(),
@@ -354,7 +355,11 @@ func TestSelectSubsumptionExistentialCompensation_ResidualAndNilSafety(
 	t *testing.T,
 ) {
 	queryAlias := values.NamedCorrelationIdentifier("evp_residual_owner")
-	queryPredicate := predicates.NewExistentialAlias(queryAlias)
+	queryPredicate := mustExistentialAlias(
+		t,
+		queryAlias,
+		selectSubsumptionTestRowType(),
+	)
 	parameterBindings, predicateMap, ok := buildSelectSubsumptionPredicateAlternative(
 		[]predicates.QueryPredicate{queryPredicate},
 		[]predicates.QueryPredicate{queryPredicate},

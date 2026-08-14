@@ -127,15 +127,22 @@ package javacorpus_test
 // executed.
 //
 // `pass` 69 → 70 is groupby-tests.yamsql itself.
-const pinnedLedger = "pass=70 fail=0 skip=168 queries=1952 file_skips{conformance:go-accepts-what-java-rejects=4," +
+//
+// RFC-232 closes the inline-VALUES table-source gap. array-join-at and
+// table-functions each execute nine additional result-consuming configs before
+// reaching their next explicit boundary, so `queries` grows 1952 → 1970 and
+// `plan-assertion` grows 828 → 839. Neither file passes yet: the former is now
+// booked to multiple lateral unnests and the latter to a table-valued function
+// in FROM. The removed inline-values class therefore has no zero-count residue.
+const pinnedLedger = "pass=70 fail=0 skip=168 queries=1970 file_skips{conformance:go-accepts-what-java-rejects=4," +
 	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
 	"engine-gap:correlated-exists-setop=1,engine-gap:derived-table-join-on=1," +
 	"engine-gap:dml-returning-result-set=2,engine-gap:error-class=2," +
-	"engine-gap:inline-values-table=1,engine-gap:multiple-lateral-unnests=1," +
+	"engine-gap:multiple-lateral-unnests=2," +
 	"engine-gap:nested-recursive-with=2," +
-	"engine-gap:planner-declines=6,engine-gap:result-metadata=3," +
+	"engine-gap:planner-declines=5,engine-gap:result-metadata=3," +
 	"engine-gap:returning-dry-run=1,engine-gap:serialization-options=1," +
-	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=1,fragment=2," +
+	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=1,engine-gap:table-valued-function=1,fragment=2," +
 	"no-checks=1,plan-assertion=8,polarity:fixed-version-meta=9," +
 	"polarity:negative-execution=26,polarity:negative-parse=25," +
 	"unsupported-DDL:function=11,unsupported-DDL:other=11," +
@@ -146,12 +153,12 @@ const pinnedLedger = "pass=70 fail=0 skip=168 queries=1952 file_skips{conformanc
 	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
 	"engine-gap:correlated-exists-setop=1,engine-gap:derived-table-join-on=1," +
 	"engine-gap:dml-returning-result-set=2,engine-gap:error-class=2," +
-	"engine-gap:inline-values-table=1,engine-gap:multiple-lateral-unnests=1," +
+	"engine-gap:multiple-lateral-unnests=2," +
 	"engine-gap:nested-recursive-with=2," +
-	"engine-gap:planner-declines=6,engine-gap:result-metadata=3," +
+	"engine-gap:planner-declines=5,engine-gap:result-metadata=3," +
 	"engine-gap:returning-dry-run=1,engine-gap:serialization-options=1," +
-	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=1," +
-	"no-checks=8,plan-assertion=828,polarity:negative-execution=26," +
+	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=1,engine-gap:table-valued-function=1," +
+	"no-checks=8,plan-assertion=839,polarity:negative-execution=26," +
 	"unsupported-DDL:function=11,unsupported-DDL:other=11," +
 	"unsupported-DDL:struct-index=4,unsupported:check-cache=145," +
 	"unsupported:continuation=36,unsupported:debugger=3," +
@@ -172,14 +179,15 @@ const pinnedFileTotal = 238
 // on mismatch the test dumps the full assignment, which is the artefact worth
 // diffing.
 //
-// THIS REVISION MOVED EXACTLY ONE LINE, and it was diffed rather than
-// re-blessed on the hash — the 238-line assignment was captured at the parent
-// commit (in a detached worktree, with this digest forced to mismatch so the
-// dump would be emitted) and at this one, sorted, and compared:
+// THIS REVISION MOVED EXACTLY TWO LINES, and they were diffed rather than
+// re-blessed on the hash. Both files now execute every inline-VALUES statement
+// that previously blocked them and reach their next explicit engine boundary:
 //
-//	-groupby-tests.yamsql  skip engine-gap:nested-path-group-key
-//	+groupby-tests.yamsql  pass -
+//	-array-join-at.yamsql  skip engine-gap:planner-declines
+//	+array-join-at.yamsql  skip engine-gap:multiple-lateral-unnests
+//	-table-functions.yamsql  skip engine-gap:inline-values-table
+//	+table-functions.yamsql  skip engine-gap:table-valued-function
 //
-// Nothing else moved and nothing swapped. The file's grouping key descends into
-// a struct column, which now resolves.
-const pinnedAssignmentDigest = "c260e8748ec839555e143786a647f6d30561db1c19de69f7cafe814faa2eaf70"
+// Nothing else moved or swapped; the full 238-line assignment emitted by the
+// mismatch gate was inspected before this digest was updated.
+const pinnedAssignmentDigest = "62b4b60c68a71a5a12a134a8818a90e62c960e4640367ef09fb235f2e3c04969"

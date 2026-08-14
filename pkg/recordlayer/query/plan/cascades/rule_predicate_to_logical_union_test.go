@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"context"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -8,19 +9,128 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+const predicateUnionSourceAlias = "predicate_union_source"
+
+func mustPredicateUnionConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct predicate-to-logical-union fixture: " + err.Error())
+	}
+	return value
+}
+
+func mustFirePredicateUnionRule(
+	t testing.TB,
+	rule ExpressionRule,
+	ref *expressions.Reference,
+) []expressions.RelationalExpression {
+	t.Helper()
+	yielded, err := FireExpressionRule(rule, ref)
+	if err != nil {
+		t.Fatalf("FireExpressionRule() unexpected error: %v", err)
+	}
+	return yielded
+}
+
+func predicateUnionRowType() *values.RecordType {
+	return values.NewRecordType("predicate_to_logical_union_row", false, []values.Field{
+		{Name: "x", FieldType: values.NotNullLong},
+		{Name: "y", FieldType: values.NotNullLong},
+		{Name: "a", FieldType: values.NotNullLong},
+	})
+}
+
+func predicateUnionScan(recordType string) *expressions.FullUnorderedScanExpression {
+	return mustPredicateUnionConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{recordType}, predicateUnionRowType()))
+}
+
+func predicateUnionForEach(recordType, alias string) expressions.Quantifier {
+	return expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier(alias),
+		expressions.InitialOf(predicateUnionScan(recordType)),
+	)
+}
+
+func predicateUnionField(alias, field string) values.Value {
+	root := mustPredicateUnionConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier(alias), predicateUnionRowType()))
+	request := mustPredicateUnionConstruct(values.FieldByName(field))
+	return mustPredicateUnionConstruct(values.ResolveFieldAccess(
+		root, []values.FieldRequest{request}))
+}
+
+func predicateUnionEquals(alias, field string, operand int64) predicates.QueryPredicate {
+	return predicates.NewComparisonPredicate(
+		predicateUnionField(alias, field),
+		predicates.Comparison{
+			Type: predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{
+				Value: operand,
+				Typ:   values.NotNullLong,
+			},
+		},
+	)
+}
+
+func assertPredicateUnionOnlyAlias(
+	t testing.TB,
+	correlations map[values.CorrelationIdentifier]struct{},
+	alias string,
+) {
+	t.Helper()
+	want := values.NamedCorrelationIdentifier(alias)
+	if len(correlations) != 1 {
+		t.Fatalf("correlations = %v, want exactly {%s}", correlations, alias)
+	}
+	if _, ok := correlations[want]; !ok {
+		t.Fatalf("correlations = %v, want exactly {%s}", correlations, alias)
+	}
+}
+
 // makeSelectWithOrPredicates builds a SelectExpression with a single ForEach
 // quantifier over a scan, carrying the given predicates.
 func makeSelectWithOrPredicates(preds []predicates.QueryPredicate) (*expressions.SelectExpression, *expressions.Reference) {
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	q := expressions.ForEachQuantifier(scanRef)
-	sel := expressions.NewSelectExpression(
-		q.GetFlowedObjectValue(),
+	q := predicateUnionForEach("T", predicateUnionSourceAlias)
+	sel := mustPredicateUnionConstruct(expressions.NewSelectExpression(
+		mustPredicateUnionConstruct(q.RequireFlowedObjectValue()),
 		[]expressions.Quantifier{q},
 		preds,
-	)
+	))
 	ref := expressions.InitialOf(sel)
 	return sel, ref
+}
+
+func mustExplorePredicateUnionRewriting(
+	t testing.TB,
+	p *Planner,
+	rootRef *expressions.Reference,
+) (int, bool) {
+	t.Helper()
+	if rootRef == nil {
+		return 0, true
+	}
+	if p.memo == nil {
+		p.memo = NewMemo(rootRef)
+	}
+	if p.constraintMap == nil {
+		p.constraintMap = NewConstraintMap()
+	}
+	if p.dataAccessConsumed == nil {
+		p.dataAccessConsumed = make(map[*expressions.Reference]int)
+	}
+	p.push(&OptimizeGroupTask{Phase: PhaseRewriting, Ref: rootRef})
+	p.push(&ExploreGroupTask{Phase: PhaseRewriting, Ref: rootRef})
+	for len(p.stack) > 0 {
+		if p.tasksRun >= p.MaxTasks {
+			return p.tasksRun, false
+		}
+		p.pop().Run(context.Background(), p)
+		p.tasksRun++
+		if p.capErr != nil {
+			t.Fatalf("rewriting task failed: %v", p.capErr)
+		}
+	}
+	return p.tasksRun, true
 }
 
 func TestPredicateToLogicalUnionRule_SingleOR(t *testing.T) {
@@ -33,7 +143,7 @@ func TestPredicateToLogicalUnionRule_SingleOR(t *testing.T) {
 
 	_, ref := makeSelectWithOrPredicates([]predicates.QueryPredicate{orPred})
 	rule := NewPredicateToLogicalUnionRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := mustFirePredicateUnionRule(t, rule, ref)
 
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
@@ -43,6 +153,10 @@ func TestPredicateToLogicalUnionRule_SingleOR(t *testing.T) {
 	distinct, ok := yielded[0].(*expressions.LogicalDistinctExpression)
 	if !ok {
 		t.Fatalf("yielded type=%T, want *LogicalDistinctExpression", yielded[0])
+	}
+	if got := distinct.GetResultValue().Type(); !got.Equals(predicateUnionRowType()) {
+		t.Fatalf("simple rewrite result type = %v, want exact source row %v",
+			got, predicateUnionRowType())
 	}
 
 	// Inside: Union with 2 legs.
@@ -86,20 +200,19 @@ func TestPredicateToLogicalUnionRule_SingleOR(t *testing.T) {
 func TestPredicateToLogicalUnionRule_StrictSingleFailsClosed(t *testing.T) {
 	t.Parallel()
 
-	scanRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	scanRef := expressions.InitialOf(predicateUnionScan("T"))
 	alias := values.NamedCorrelationIdentifier("STRICT")
 	q := expressions.NamedForEachStrictSingleQuantifier(alias, scanRef)
-	sel := expressions.NewSelectExpression(
-		q.GetFlowedObjectValue(),
+	sel := mustPredicateUnionConstruct(expressions.NewSelectExpression(
+		mustPredicateUnionConstruct(q.RequireFlowedObjectValue()),
 		[]expressions.Quantifier{q},
 		[]predicates.QueryPredicate{predicates.NewOr(
 			predicates.NewConstantPredicate(predicates.TriTrue),
 			predicates.NewConstantPredicate(predicates.TriFalse),
 		)},
-	)
+	))
 
-	yielded := FireExpressionRule(
+	yielded := mustFirePredicateUnionRule(t,
 		NewPredicateToLogicalUnionRule(), expressions.InitialOf(sel))
 	if len(yielded) != 0 {
 		t.Fatalf("strict-single OR select yielded %d logical-union rewrite(s), want zero", len(yielded))
@@ -111,17 +224,14 @@ func TestPredicateToLogicalUnionRule_ORWithFixedPredicates(t *testing.T) {
 
 	// SELECT WHERE fixed AND (A OR B)
 	// -> DISTINCT(UNION(UNIQUE(SELECT WHERE fixed AND A), UNIQUE(SELECT WHERE fixed AND B)))
-	fixed := &predicates.ComparisonPredicate{
-		Operand:    values.NewFlatFieldValue("x", values.UnknownType),
-		Comparison: predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1)}},
-	}
+	fixed := predicateUnionEquals(predicateUnionSourceAlias, "x", 1)
 	pA := predicates.NewConstantPredicate(predicates.TriTrue)
 	pB := predicates.NewConstantPredicate(predicates.TriFalse)
 	orPred := predicates.NewOr(pA, pB)
 
 	_, ref := makeSelectWithOrPredicates([]predicates.QueryPredicate{fixed, orPred})
 	rule := NewPredicateToLogicalUnionRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := mustFirePredicateUnionRule(t, rule, ref)
 
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
@@ -144,6 +254,12 @@ func TestPredicateToLogicalUnionRule_ORWithFixedPredicates(t *testing.T) {
 		if len(sel.GetPredicates()) != 2 {
 			t.Fatalf("leg %d predicate count=%d, want 2", i, len(sel.GetPredicates()))
 		}
+		if sel.GetPredicates()[0] != fixed {
+			t.Fatalf("leg %d did not preserve the fixed predicate as its first conjunct", i)
+		}
+		assertPredicateUnionOnlyAlias(t,
+			predicates.GetCorrelatedToOfPredicate(sel.GetPredicates()[0]),
+			predicateUnionSourceAlias)
 	}
 }
 
@@ -159,20 +275,14 @@ func TestPredicateToLogicalUnionRule_MultipleORs(t *testing.T) {
 	//    ))
 	pA := predicates.NewConstantPredicate(predicates.TriTrue)
 	pB := predicates.NewConstantPredicate(predicates.TriFalse)
-	pC := &predicates.ComparisonPredicate{
-		Operand:    values.NewFlatFieldValue("x", values.UnknownType),
-		Comparison: predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1)}},
-	}
-	pD := &predicates.ComparisonPredicate{
-		Operand:    values.NewFlatFieldValue("y", values.UnknownType),
-		Comparison: predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(2)}},
-	}
+	pC := predicateUnionEquals(predicateUnionSourceAlias, "x", 1)
+	pD := predicateUnionEquals(predicateUnionSourceAlias, "y", 2)
 	or1 := predicates.NewOr(pA, pB)
 	or2 := predicates.NewOr(pC, pD)
 
 	_, ref := makeSelectWithOrPredicates([]predicates.QueryPredicate{or1, or2})
 	rule := NewPredicateToLogicalUnionRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := mustFirePredicateUnionRule(t, rule, ref)
 
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
@@ -196,7 +306,7 @@ func TestPredicateToLogicalUnionRule_DeclinesNoOR(t *testing.T) {
 
 	_, ref := makeSelectWithOrPredicates([]predicates.QueryPredicate{pA, pB})
 	rule := NewPredicateToLogicalUnionRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := mustFirePredicateUnionRule(t, rule, ref)
 
 	if len(yielded) != 0 {
 		t.Fatalf("rule fired despite no OR predicates — yielded %d, want 0", len(yielded))
@@ -208,7 +318,7 @@ func TestPredicateToLogicalUnionRule_DeclinesNoPredicates(t *testing.T) {
 
 	_, ref := makeSelectWithOrPredicates(nil)
 	rule := NewPredicateToLogicalUnionRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := mustFirePredicateUnionRule(t, rule, ref)
 
 	if len(yielded) != 0 {
 		t.Fatalf("rule fired despite no predicates — yielded %d, want 0", len(yielded))
@@ -218,11 +328,9 @@ func TestPredicateToLogicalUnionRule_DeclinesNoPredicates(t *testing.T) {
 func TestPredicateToLogicalUnionRule_DeclinesExistentialQuantifier(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	forEachQ := expressions.ForEachQuantifier(scanRef)
+	forEachQ := predicateUnionForEach("T", predicateUnionSourceAlias)
 
-	subquery := expressions.NewFullUnorderedScanExpression([]string{"S"}, values.UnknownType)
+	subquery := predicateUnionScan("S")
 	existQ := expressions.ExistentialQuantifier(expressions.InitialOf(subquery))
 
 	orPred := predicates.NewOr(
@@ -230,15 +338,15 @@ func TestPredicateToLogicalUnionRule_DeclinesExistentialQuantifier(t *testing.T)
 		predicates.NewConstantPredicate(predicates.TriFalse),
 	)
 
-	sel := expressions.NewSelectExpression(
-		forEachQ.GetFlowedObjectValue(),
+	sel := mustPredicateUnionConstruct(expressions.NewSelectExpression(
+		mustPredicateUnionConstruct(forEachQ.RequireFlowedObjectValue()),
 		[]expressions.Quantifier{forEachQ, existQ},
 		[]predicates.QueryPredicate{orPred},
-	)
+	))
 	ref := expressions.InitialOf(sel)
 
 	rule := NewPredicateToLogicalUnionRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := mustFirePredicateUnionRule(t, rule, ref)
 
 	if len(yielded) != 0 {
 		t.Fatalf("rule fired despite existential quantifier — yielded %d, want 0", len(yielded))
@@ -249,25 +357,23 @@ func TestPredicateToLogicalUnionRule_DeclinesMultipleForEach(t *testing.T) {
 	t.Parallel()
 
 	// Two ForEach quantifiers (a join) — rule should decline.
-	scan1 := expressions.NewFullUnorderedScanExpression([]string{"T1"}, values.UnknownType)
-	scan2 := expressions.NewFullUnorderedScanExpression([]string{"T2"}, values.UnknownType)
-	q1 := expressions.ForEachQuantifier(expressions.InitialOf(scan1))
-	q2 := expressions.ForEachQuantifier(expressions.InitialOf(scan2))
+	q1 := predicateUnionForEach("T1", "predicate_union_left")
+	q2 := predicateUnionForEach("T2", "predicate_union_right")
 
 	orPred := predicates.NewOr(
 		predicates.NewConstantPredicate(predicates.TriTrue),
 		predicates.NewConstantPredicate(predicates.TriFalse),
 	)
 
-	sel := expressions.NewSelectExpression(
-		q1.GetFlowedObjectValue(),
+	sel := mustPredicateUnionConstruct(expressions.NewSelectExpression(
+		mustPredicateUnionConstruct(q1.RequireFlowedObjectValue()),
 		[]expressions.Quantifier{q1, q2},
 		[]predicates.QueryPredicate{orPred},
-	)
+	))
 	ref := expressions.InitialOf(sel)
 
 	rule := NewPredicateToLogicalUnionRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := mustFirePredicateUnionRule(t, rule, ref)
 
 	if len(yielded) != 0 {
 		t.Fatalf("rule fired despite multiple ForEach quantifiers — yielded %d, want 0", len(yielded))
@@ -279,13 +385,11 @@ func TestPredicateToLogicalUnionRule_NonSimpleResultValue(t *testing.T) {
 
 	// When the result value is NOT a simple QuantifiedObjectValue, the
 	// rule wraps the result in an outer SelectExpression.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	q := expressions.ForEachQuantifier(scanRef)
+	q := predicateUnionForEach("T", predicateUnionSourceAlias)
 
 	// Use a RecordConstructorValue as a non-simple result value.
 	resultValue := values.NewRecordConstructorValue(values.RecordConstructorField{
-		Name: "a", Value: values.NewFlatFieldValue("a", values.UnknownType),
+		Name: "a", Value: predicateUnionField(predicateUnionSourceAlias, "a"),
 	})
 
 	orPred := predicates.NewOr(
@@ -293,15 +397,15 @@ func TestPredicateToLogicalUnionRule_NonSimpleResultValue(t *testing.T) {
 		predicates.NewConstantPredicate(predicates.TriFalse),
 	)
 
-	sel := expressions.NewSelectExpression(
+	sel := mustPredicateUnionConstruct(expressions.NewSelectExpression(
 		resultValue,
 		[]expressions.Quantifier{q},
 		[]predicates.QueryPredicate{orPred},
-	)
+	))
 	ref := expressions.InitialOf(sel)
 
 	rule := NewPredicateToLogicalUnionRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := mustFirePredicateUnionRule(t, rule, ref)
 
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
@@ -316,6 +420,16 @@ func TestPredicateToLogicalUnionRule_NonSimpleResultValue(t *testing.T) {
 	// No predicates on the outer select.
 	if len(outerSel.GetPredicates()) != 0 {
 		t.Fatalf("outer select predicate count=%d, want 0", len(outerSel.GetPredicates()))
+	}
+	if outerSel.GetResultValue() != resultValue {
+		t.Fatal("outer select did not retain the original non-simple projection value")
+	}
+	assertPredicateUnionOnlyAlias(t,
+		values.GetCorrelatedToOfValue(outerSel.GetResultValue()),
+		predicateUnionSourceAlias)
+	if got := outerSel.GetQuantifiers()[0].GetAlias(); got != values.NamedCorrelationIdentifier(predicateUnionSourceAlias) {
+		t.Fatalf("outer quantifier alias = %s, want retained source alias %s",
+			got.Name(), predicateUnionSourceAlias)
 	}
 
 	// Inner should be Distinct.
@@ -341,7 +455,7 @@ func TestPredicateToLogicalUnionRule_Convergence(t *testing.T) {
 		NewNormalizePredicatesRule(),
 		NewPredicateToLogicalUnionRule(),
 	}
-	_, converged := exploreRewriting(NewPlanner(rules, nil), ref)
+	_, converged := mustExplorePredicateUnionRewriting(t, NewPlanner(rules, nil), ref)
 	if !converged {
 		t.Fatal("did not converge — rule is re-firing on its own output")
 	}
@@ -353,15 +467,12 @@ func TestPredicateToLogicalUnionRule_ThreeWayOR(t *testing.T) {
 	// SELECT WHERE (A OR B OR C) -> DISTINCT(UNION(3 legs))
 	pA := predicates.NewConstantPredicate(predicates.TriTrue)
 	pB := predicates.NewConstantPredicate(predicates.TriFalse)
-	pC := &predicates.ComparisonPredicate{
-		Operand:    values.NewFlatFieldValue("x", values.UnknownType),
-		Comparison: predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1)}},
-	}
+	pC := predicateUnionEquals(predicateUnionSourceAlias, "x", 1)
 	orPred := predicates.NewOr(pA, pB, pC)
 
 	_, ref := makeSelectWithOrPredicates([]predicates.QueryPredicate{orPred})
 	rule := NewPredicateToLogicalUnionRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := mustFirePredicateUnionRule(t, rule, ref)
 
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
@@ -380,14 +491,8 @@ func TestOrsToDNFTerms_TwoByTwo(t *testing.T) {
 
 	pA := predicates.NewConstantPredicate(predicates.TriTrue)
 	pB := predicates.NewConstantPredicate(predicates.TriFalse)
-	pC := &predicates.ComparisonPredicate{
-		Operand:    values.NewFlatFieldValue("x", values.UnknownType),
-		Comparison: predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1)}},
-	}
-	pD := &predicates.ComparisonPredicate{
-		Operand:    values.NewFlatFieldValue("y", values.UnknownType),
-		Comparison: predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(2)}},
-	}
+	pC := predicateUnionEquals(predicateUnionSourceAlias, "x", 1)
+	pD := predicateUnionEquals(predicateUnionSourceAlias, "y", 2)
 
 	or1 := predicates.NewOr(pA, pB)
 	or2 := predicates.NewOr(pC, pD)
@@ -416,10 +521,7 @@ func TestOrsToDNFTerms_ThreeByTwo(t *testing.T) {
 
 	pA := predicates.NewConstantPredicate(predicates.TriTrue)
 	pB := predicates.NewConstantPredicate(predicates.TriFalse)
-	pC := &predicates.ComparisonPredicate{
-		Operand:    values.NewFlatFieldValue("x", values.UnknownType),
-		Comparison: predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1)}},
-	}
+	pC := predicateUnionEquals(predicateUnionSourceAlias, "x", 1)
 
 	or1 := predicates.NewOr(pA, pB)
 	or2 := predicates.NewOr(pC)

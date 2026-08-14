@@ -16,7 +16,9 @@ func TestPredicatesFilterPlan_Construction(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
 	inner := stub("Inner")
-	p := NewRecordQueryPredicatesFilterPlan(inner, []predicates.QueryPredicate{pred})
+	p := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(inner, []predicates.QueryPredicate{pred})
+	})
 	if p == nil {
 		t.Fatal("constructor returned nil")
 	}
@@ -30,26 +32,31 @@ func TestPredicatesFilterPlan_Construction(t *testing.T) {
 
 func TestPredicatesFilterPlan_GetResultType_DelegatesInner(t *testing.T) {
 	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
+	})
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	p := NewRecordQueryPredicatesFilterPlan(scan, []predicates.QueryPredicate{pred})
+	p := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(scan, []predicates.QueryPredicate{pred})
+	})
 	if !values.NotNullLong.Equals(p.GetResultType()) {
 		t.Fatalf("GetResultType() = %v, want NotNullLong (from inner)", p.GetResultType())
 	}
 }
 
-func TestPredicatesFilterPlan_GetResultType_NilInner(t *testing.T) {
+func TestPredicatesFilterPlan_ConstructorRejectsNilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryPredicatesFilterPlan(nil, nil)
-	if !values.UnknownType.Equals(p.GetResultType()) {
-		t.Fatalf("GetResultType() = %v, want UnknownType for nil inner", p.GetResultType())
+	if _, err := NewRecordQueryPredicatesFilterPlan(nil, nil); err == nil {
+		t.Fatal("constructor accepted a nil inner plan")
 	}
 }
 
 func TestPredicatesFilterPlan_GetChildren(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
-	p := NewRecordQueryPredicatesFilterPlan(inner, nil)
+	p := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(inner, nil)
+	})
 	cs := p.GetChildren()
 	if len(cs) != 1 || cs[0] != inner {
 		t.Fatalf("GetChildren() = %v, want [inner]", cs)
@@ -58,7 +65,9 @@ func TestPredicatesFilterPlan_GetChildren(t *testing.T) {
 
 func TestPredicatesFilterPlan_GetChildren_NilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryPredicatesFilterPlan(nil, nil)
+	// Package-local zero values remain useful adversaries for method totality,
+	// but they are not valid constructor inputs.
+	p := &RecordQueryPredicatesFilterPlan{}
 	if cs := p.GetChildren(); cs != nil {
 		t.Fatalf("GetChildren() = %v, want nil", cs)
 	}
@@ -67,7 +76,9 @@ func TestPredicatesFilterPlan_GetChildren_NilInner(t *testing.T) {
 func TestPredicatesFilterPlan_Explain_ContainsPredicatesFilter(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	p := NewRecordQueryPredicatesFilterPlan(stub("Scan(T)"), []predicates.QueryPredicate{pred})
+	p := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(stub("Scan(T)"), []predicates.QueryPredicate{pred})
+	})
 	got := p.Explain()
 	if !strings.Contains(got, "PredicatesFilter") {
 		t.Fatalf("Explain = %q, missing 'PredicatesFilter'", got)
@@ -79,7 +90,7 @@ func TestPredicatesFilterPlan_Explain_ContainsPredicatesFilter(t *testing.T) {
 
 func TestPredicatesFilterPlan_Explain_NilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryPredicatesFilterPlan(nil, nil)
+	p := &RecordQueryPredicatesFilterPlan{}
 	got := p.Explain()
 	if !strings.Contains(got, "<nil>") {
 		t.Fatalf("Explain = %q, missing '<nil>' for nil inner", got)
@@ -88,7 +99,9 @@ func TestPredicatesFilterPlan_Explain_NilInner(t *testing.T) {
 
 func TestPredicatesFilterPlan_Explain_EmptyPredicates(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryPredicatesFilterPlan(stub("Scan(T)"), nil)
+	p := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(stub("Scan(T)"), nil)
+	})
 	got := p.Explain()
 	if !strings.Contains(got, "0 preds") {
 		t.Fatalf("Explain = %q, missing '0 preds'", got)
@@ -98,8 +111,12 @@ func TestPredicatesFilterPlan_Explain_EmptyPredicates(t *testing.T) {
 func TestPredicatesFilterPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	a := NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pred})
-	b := NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pred})
+	a := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(stub("A"), []predicates.QueryPredicate{pred})
+	})
+	b := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(stub("B"), []predicates.QueryPredicate{pred})
+	})
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same predicates should be equal")
 	}
@@ -109,8 +126,12 @@ func TestPredicatesFilterPlan_EqualsWithoutChildren_DifferentPredicateCount(t *t
 	t.Parallel()
 	p1 := predicates.NewConstantPredicate(predicates.TriTrue)
 	p2 := predicates.NewConstantPredicate(predicates.TriFalse)
-	a := NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{p1})
-	b := NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{p1, p2})
+	a := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(stub("A"), []predicates.QueryPredicate{p1})
+	})
+	b := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(stub("B"), []predicates.QueryPredicate{p1, p2})
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different predicate counts should not be equal")
 	}
@@ -118,11 +139,15 @@ func TestPredicatesFilterPlan_EqualsWithoutChildren_DifferentPredicateCount(t *t
 
 func TestPredicatesFilterPlan_EqualsWithoutChildren_DifferentPredicate(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{
-		predicates.NewConstantPredicate(predicates.TriTrue),
+	a := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(stub("A"), []predicates.QueryPredicate{
+			predicates.NewConstantPredicate(predicates.TriTrue),
+		})
 	})
-	b := NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{
-		predicates.NewConstantPredicate(predicates.TriFalse),
+	b := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(stub("B"), []predicates.QueryPredicate{
+			predicates.NewConstantPredicate(predicates.TriFalse),
+		})
 	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different predicates should not be equal")
@@ -131,8 +156,12 @@ func TestPredicatesFilterPlan_EqualsWithoutChildren_DifferentPredicate(t *testin
 
 func TestPredicatesFilterPlan_EqualsWithoutChildren_BothEmpty(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryPredicatesFilterPlan(nil, nil)
-	b := NewRecordQueryPredicatesFilterPlan(nil, nil)
+	a := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(stub("A"), nil)
+	})
+	b := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(stub("B"), nil)
+	})
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("two PredicatesFilterPlans with nil predicates should be equal")
 	}
@@ -140,8 +169,12 @@ func TestPredicatesFilterPlan_EqualsWithoutChildren_BothEmpty(t *testing.T) {
 
 func TestPredicatesFilterPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
-	pf := NewRecordQueryPredicatesFilterPlan(nil, nil)
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	pf := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(stub("Inner"), nil)
+	})
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	if pf.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("PredicatesFilterPlan should not equal ScanPlan")
 	}
@@ -150,8 +183,12 @@ func TestPredicatesFilterPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 func TestPredicatesFilterPlan_EqualsWithoutChildren_NotEqualToFilterPlan(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	pf := NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pred})
-	f := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, nil)
+	pf := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(stub("PredicatesInner"), []predicates.QueryPredicate{pred})
+	})
+	f := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, stub("FilterInner"))
+	})
 	if pf.EqualsPlanWithoutChildren(f) {
 		t.Fatal("PredicatesFilterPlan should not equal FilterPlan")
 	}
@@ -160,7 +197,9 @@ func TestPredicatesFilterPlan_EqualsWithoutChildren_NotEqualToFilterPlan(t *test
 func TestPredicatesFilterPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	p := NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pred})
+	p := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(stub("Inner"), []predicates.QueryPredicate{pred})
+	})
 	h1 := p.HashCodeWithoutChildren()
 	h2 := p.HashCodeWithoutChildren()
 	if h1 != h2 {
@@ -170,11 +209,15 @@ func TestPredicatesFilterPlan_HashCodeWithoutChildren_Deterministic(t *testing.T
 
 func TestPredicatesFilterPlan_HashCodeWithoutChildren_DiffersForDifferentPreds(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{
-		predicates.NewConstantPredicate(predicates.TriTrue),
+	a := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(stub("A"), []predicates.QueryPredicate{
+			predicates.NewConstantPredicate(predicates.TriTrue),
+		})
 	})
-	b := NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{
-		predicates.NewConstantPredicate(predicates.TriFalse),
+	b := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(stub("B"), []predicates.QueryPredicate{
+			predicates.NewConstantPredicate(predicates.TriFalse),
+		})
 	})
 	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
 		t.Fatal("different predicates should (very likely) produce different hashes")
@@ -183,7 +226,9 @@ func TestPredicatesFilterPlan_HashCodeWithoutChildren_DiffersForDifferentPreds(t
 
 func TestPredicatesFilterPlan_HashCodeWithoutChildren_EmptyPreds(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryPredicatesFilterPlan(nil, nil)
+	p := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(stub("Inner"), nil)
+	})
 	h1 := p.HashCodeWithoutChildren()
 	h2 := p.HashCodeWithoutChildren()
 	if h1 != h2 {
@@ -194,7 +239,9 @@ func TestPredicatesFilterPlan_HashCodeWithoutChildren_EmptyPreds(t *testing.T) {
 func TestPredicatesFilterPlan_CopiesPredicateSlice(t *testing.T) {
 	t.Parallel()
 	preds := []predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)}
-	p := NewRecordQueryPredicatesFilterPlan(nil, preds)
+	p := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(stub("Inner"), preds)
+	})
 	// Mutate the original slice.
 	preds[0] = predicates.NewConstantPredicate(predicates.TriFalse)
 	// The plan's copy should be unaffected.
@@ -211,8 +258,10 @@ func TestPredicatesFilterPlan_CopiesPredicateSlice(t *testing.T) {
 func TestMapPlan_Construction(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
-	rv := &values.FieldValue{Field: "id", Typ: values.NotNullLong}
-	p := NewRecordQueryMapPlan(inner, rv)
+	rv := testField(t, "id", values.NotNullLong)
+	p := mustChecked(t, func() (*RecordQueryMapPlan, error) {
+		return NewRecordQueryMapPlan(inner, rv)
+	})
 	if p == nil {
 		t.Fatal("constructor returned nil")
 	}
@@ -226,25 +275,28 @@ func TestMapPlan_Construction(t *testing.T) {
 
 func TestMapPlan_GetResultType_FromResultValue(t *testing.T) {
 	t.Parallel()
-	rv := &values.FieldValue{Field: "id", Typ: values.NotNullLong}
-	p := NewRecordQueryMapPlan(stub("X"), rv)
+	rv := testField(t, "id", values.NotNullLong)
+	p := mustChecked(t, func() (*RecordQueryMapPlan, error) {
+		return NewRecordQueryMapPlan(stub("X"), rv)
+	})
 	if !values.NotNullLong.Equals(p.GetResultType()) {
 		t.Fatalf("GetResultType() = %v, want NotNullLong (from result value)", p.GetResultType())
 	}
 }
 
-func TestMapPlan_GetResultType_NilResultValue(t *testing.T) {
+func TestMapPlan_ConstructorRejectsNilResultValue(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryMapPlan(stub("X"), nil)
-	if !values.UnknownType.Equals(p.GetResultType()) {
-		t.Fatalf("GetResultType() = %v, want UnknownType for nil result value", p.GetResultType())
+	if _, err := NewRecordQueryMapPlan(stub("X"), nil); err == nil {
+		t.Fatal("constructor accepted a nil result value")
 	}
 }
 
 func TestMapPlan_GetChildren(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
-	p := NewRecordQueryMapPlan(inner, nil)
+	p := mustChecked(t, func() (*RecordQueryMapPlan, error) {
+		return NewRecordQueryMapPlan(inner, testField(t, "id", values.NotNullLong))
+	})
 	cs := p.GetChildren()
 	if len(cs) != 1 || cs[0] != inner {
 		t.Fatalf("GetChildren() = %v, want [inner]", cs)
@@ -253,7 +305,7 @@ func TestMapPlan_GetChildren(t *testing.T) {
 
 func TestMapPlan_GetChildren_NilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryMapPlan(nil, nil)
+	p := &RecordQueryMapPlan{}
 	if cs := p.GetChildren(); cs != nil {
 		t.Fatalf("GetChildren() = %v, want nil", cs)
 	}
@@ -261,8 +313,10 @@ func TestMapPlan_GetChildren_NilInner(t *testing.T) {
 
 func TestMapPlan_Explain_ContainsMap(t *testing.T) {
 	t.Parallel()
-	rv := &values.FieldValue{Field: "id", Typ: values.UnknownType}
-	p := NewRecordQueryMapPlan(stub("Scan(T)"), rv)
+	rv := testField(t, "id", values.NullableLong)
+	p := mustChecked(t, func() (*RecordQueryMapPlan, error) {
+		return NewRecordQueryMapPlan(stub("Scan(T)"), rv)
+	})
 	got := p.Explain()
 	if !strings.Contains(got, "Map") {
 		t.Fatalf("Explain = %q, missing 'Map'", got)
@@ -274,8 +328,8 @@ func TestMapPlan_Explain_ContainsMap(t *testing.T) {
 
 func TestMapPlan_Explain_NilInner(t *testing.T) {
 	t.Parallel()
-	rv := &values.FieldValue{Field: "id", Typ: values.UnknownType}
-	p := NewRecordQueryMapPlan(nil, rv)
+	rv := testField(t, "id", values.NullableLong)
+	p := &RecordQueryMapPlan{resultValue: rv}
 	got := p.Explain()
 	if !strings.Contains(got, "<nil>") {
 		t.Fatalf("Explain = %q, missing '<nil>' for nil inner", got)
@@ -284,7 +338,7 @@ func TestMapPlan_Explain_NilInner(t *testing.T) {
 
 func TestMapPlan_Explain_NilResultValue(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryMapPlan(stub("Scan(T)"), nil)
+	p := &RecordQueryMapPlan{innerQ: QuantifierOverPlan(stub("Scan(T)"))}
 	got := p.Explain()
 	// ExplainValue(nil) returns "", so Map(Scan(T), )
 	if !strings.Contains(got, "Map") {
@@ -294,9 +348,13 @@ func TestMapPlan_Explain_NilResultValue(t *testing.T) {
 
 func TestMapPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
-	rv := &values.FieldValue{Field: "id", Typ: values.UnknownType}
-	a := NewRecordQueryMapPlan(nil, rv)
-	b := NewRecordQueryMapPlan(nil, rv)
+	rv := testField(t, "id", values.NullableLong)
+	a := mustChecked(t, func() (*RecordQueryMapPlan, error) {
+		return NewRecordQueryMapPlan(stub("A"), rv)
+	})
+	b := mustChecked(t, func() (*RecordQueryMapPlan, error) {
+		return NewRecordQueryMapPlan(stub("B"), rv)
+	})
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same result value should be equal")
 	}
@@ -304,8 +362,12 @@ func TestMapPlan_EqualsWithoutChildren_Same(t *testing.T) {
 
 func TestMapPlan_EqualsWithoutChildren_DifferentResultValue(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryMapPlan(nil, &values.FieldValue{Field: "id", Typ: values.UnknownType})
-	b := NewRecordQueryMapPlan(nil, &values.FieldValue{Field: "name", Typ: values.UnknownType})
+	a := mustChecked(t, func() (*RecordQueryMapPlan, error) {
+		return NewRecordQueryMapPlan(stub("A"), testField(t, "id", values.NullableLong))
+	})
+	b := mustChecked(t, func() (*RecordQueryMapPlan, error) {
+		return NewRecordQueryMapPlan(stub("B"), testField(t, "name", values.NullableLong))
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different result values should not be equal")
 	}
@@ -313,8 +375,8 @@ func TestMapPlan_EqualsWithoutChildren_DifferentResultValue(t *testing.T) {
 
 func TestMapPlan_EqualsWithoutChildren_BothNilResultValue(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryMapPlan(nil, nil)
-	b := NewRecordQueryMapPlan(nil, nil)
+	a := &RecordQueryMapPlan{}
+	b := &RecordQueryMapPlan{}
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("two MapPlans with nil result values should be equal")
 	}
@@ -322,8 +384,12 @@ func TestMapPlan_EqualsWithoutChildren_BothNilResultValue(t *testing.T) {
 
 func TestMapPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
-	m := NewRecordQueryMapPlan(nil, nil)
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	m := mustChecked(t, func() (*RecordQueryMapPlan, error) {
+		return NewRecordQueryMapPlan(stub("Inner"), testField(t, "id", values.NullableLong))
+	})
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	if m.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("MapPlan should not equal ScanPlan")
 	}
@@ -331,8 +397,10 @@ func TestMapPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 
 func TestMapPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 	t.Parallel()
-	rv := &values.FieldValue{Field: "id", Typ: values.UnknownType}
-	p := NewRecordQueryMapPlan(nil, rv)
+	rv := testField(t, "id", values.NullableLong)
+	p := mustChecked(t, func() (*RecordQueryMapPlan, error) {
+		return NewRecordQueryMapPlan(stub("Inner"), rv)
+	})
 	h1 := p.HashCodeWithoutChildren()
 	h2 := p.HashCodeWithoutChildren()
 	if h1 != h2 {
@@ -342,8 +410,12 @@ func TestMapPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 
 func TestMapPlan_HashCodeWithoutChildren_DiffersForDifferentValues(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryMapPlan(nil, &values.FieldValue{Field: "id", Typ: values.UnknownType})
-	b := NewRecordQueryMapPlan(nil, &values.FieldValue{Field: "name", Typ: values.UnknownType})
+	a := mustChecked(t, func() (*RecordQueryMapPlan, error) {
+		return NewRecordQueryMapPlan(stub("A"), testField(t, "id", values.NullableLong))
+	})
+	b := mustChecked(t, func() (*RecordQueryMapPlan, error) {
+		return NewRecordQueryMapPlan(stub("B"), testField(t, "name", values.NullableLong))
+	})
 	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
 		t.Fatal("different result values should (very likely) produce different hashes")
 	}
@@ -351,7 +423,7 @@ func TestMapPlan_HashCodeWithoutChildren_DiffersForDifferentValues(t *testing.T)
 
 func TestMapPlan_HashCodeWithoutChildren_NilResultValue(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryMapPlan(nil, nil)
+	p := &RecordQueryMapPlan{}
 	h1 := p.HashCodeWithoutChildren()
 	h2 := p.HashCodeWithoutChildren()
 	if h1 != h2 {
@@ -367,7 +439,9 @@ func TestFirstOrDefaultPlan_Construction(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
 	dv := values.LiteralValue(int64(0))
-	p := NewRecordQueryFirstOrDefaultPlan(inner, dv)
+	p := mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+		return NewRecordQueryFirstOrDefaultPlan(inner, dv)
+	})
 	if p == nil {
 		t.Fatal("constructor returned nil")
 	}
@@ -381,25 +455,30 @@ func TestFirstOrDefaultPlan_Construction(t *testing.T) {
 
 func TestFirstOrDefaultPlan_GetResultType_DelegatesInner(t *testing.T) {
 	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
-	p := NewRecordQueryFirstOrDefaultPlan(scan, nil)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
+	})
+	p := mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+		return NewRecordQueryFirstOrDefaultPlan(scan, nil)
+	})
 	if !values.NotNullLong.Equals(p.GetResultType()) {
 		t.Fatalf("GetResultType() = %v, want NotNullLong (from inner)", p.GetResultType())
 	}
 }
 
-func TestFirstOrDefaultPlan_GetResultType_NilInner(t *testing.T) {
+func TestFirstOrDefaultPlan_ConstructorRejectsNilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryFirstOrDefaultPlan(nil, nil)
-	if !values.UnknownType.Equals(p.GetResultType()) {
-		t.Fatalf("GetResultType() = %v, want UnknownType for nil inner", p.GetResultType())
+	if _, err := NewRecordQueryFirstOrDefaultPlan(nil, nil); err == nil {
+		t.Fatal("constructor accepted a nil inner plan")
 	}
 }
 
 func TestFirstOrDefaultPlan_GetChildren(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
-	p := NewRecordQueryFirstOrDefaultPlan(inner, nil)
+	p := mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+		return NewRecordQueryFirstOrDefaultPlan(inner, nil)
+	})
 	cs := p.GetChildren()
 	if len(cs) != 1 || cs[0] != inner {
 		t.Fatalf("GetChildren() = %v, want [inner]", cs)
@@ -408,7 +487,7 @@ func TestFirstOrDefaultPlan_GetChildren(t *testing.T) {
 
 func TestFirstOrDefaultPlan_GetChildren_NilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryFirstOrDefaultPlan(nil, nil)
+	p := &RecordQueryFirstOrDefaultPlan{}
 	if cs := p.GetChildren(); cs != nil {
 		t.Fatalf("GetChildren() = %v, want nil", cs)
 	}
@@ -416,7 +495,9 @@ func TestFirstOrDefaultPlan_GetChildren_NilInner(t *testing.T) {
 
 func TestFirstOrDefaultPlan_Explain_ContainsFirstOrDefault(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryFirstOrDefaultPlan(stub("Scan(T)"), nil)
+	p := mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+		return NewRecordQueryFirstOrDefaultPlan(stub("Scan(T)"), nil)
+	})
 	got := p.Explain()
 	if !strings.Contains(got, "FirstOrDefault") {
 		t.Fatalf("Explain = %q, missing 'FirstOrDefault'", got)
@@ -428,7 +509,7 @@ func TestFirstOrDefaultPlan_Explain_ContainsFirstOrDefault(t *testing.T) {
 
 func TestFirstOrDefaultPlan_Explain_NilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryFirstOrDefaultPlan(nil, nil)
+	p := &RecordQueryFirstOrDefaultPlan{}
 	got := p.Explain()
 	if !strings.Contains(got, "<nil>") {
 		t.Fatalf("Explain = %q, missing '<nil>' for nil inner", got)
@@ -438,8 +519,12 @@ func TestFirstOrDefaultPlan_Explain_NilInner(t *testing.T) {
 func TestFirstOrDefaultPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
 	dv := values.LiteralValue(int64(42))
-	a := NewRecordQueryFirstOrDefaultPlan(nil, dv)
-	b := NewRecordQueryFirstOrDefaultPlan(nil, dv)
+	a := mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+		return NewRecordQueryFirstOrDefaultPlan(stub("A"), dv)
+	})
+	b := mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+		return NewRecordQueryFirstOrDefaultPlan(stub("B"), dv)
+	})
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same default value should be equal")
 	}
@@ -447,8 +532,12 @@ func TestFirstOrDefaultPlan_EqualsWithoutChildren_Same(t *testing.T) {
 
 func TestFirstOrDefaultPlan_EqualsWithoutChildren_DifferentDefaultValue(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryFirstOrDefaultPlan(nil, values.LiteralValue(int64(1)))
-	b := NewRecordQueryFirstOrDefaultPlan(nil, values.LiteralValue(int64(2)))
+	a := mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+		return NewRecordQueryFirstOrDefaultPlan(stub("A"), values.LiteralValue(int64(1)))
+	})
+	b := mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+		return NewRecordQueryFirstOrDefaultPlan(stub("B"), values.LiteralValue(int64(2)))
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different default values should not be equal")
 	}
@@ -456,8 +545,12 @@ func TestFirstOrDefaultPlan_EqualsWithoutChildren_DifferentDefaultValue(t *testi
 
 func TestFirstOrDefaultPlan_EqualsWithoutChildren_BothNilDefaultValue(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryFirstOrDefaultPlan(nil, nil)
-	b := NewRecordQueryFirstOrDefaultPlan(nil, nil)
+	a := mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+		return NewRecordQueryFirstOrDefaultPlan(stub("A"), nil)
+	})
+	b := mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+		return NewRecordQueryFirstOrDefaultPlan(stub("B"), nil)
+	})
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("two FirstOrDefaultPlans with nil default values should be equal")
 	}
@@ -465,8 +558,12 @@ func TestFirstOrDefaultPlan_EqualsWithoutChildren_BothNilDefaultValue(t *testing
 
 func TestFirstOrDefaultPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
-	fod := NewRecordQueryFirstOrDefaultPlan(nil, nil)
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	fod := mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+		return NewRecordQueryFirstOrDefaultPlan(stub("Inner"), nil)
+	})
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	if fod.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("FirstOrDefaultPlan should not equal ScanPlan")
 	}
@@ -476,8 +573,12 @@ func TestFirstOrDefaultPlan_EqualsWithoutChildren_NotEqualToMapPlan(t *testing.T
 	t.Parallel()
 	// Both compare their single Value semantically (RFC-176 P2), but the
 	// concrete plan type is the first discriminator and must prevent a match.
-	fod := NewRecordQueryFirstOrDefaultPlan(nil, nil)
-	m := NewRecordQueryMapPlan(nil, nil)
+	fod := mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+		return NewRecordQueryFirstOrDefaultPlan(stub("FirstInner"), nil)
+	})
+	m := mustChecked(t, func() (*RecordQueryMapPlan, error) {
+		return NewRecordQueryMapPlan(stub("MapInner"), &values.ConstantValue{Value: int64(0), Typ: values.NotNullLong})
+	})
 	if fod.EqualsPlanWithoutChildren(m) {
 		t.Fatal("FirstOrDefaultPlan should not equal MapPlan")
 	}
@@ -486,7 +587,9 @@ func TestFirstOrDefaultPlan_EqualsWithoutChildren_NotEqualToMapPlan(t *testing.T
 func TestFirstOrDefaultPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 	t.Parallel()
 	dv := values.LiteralValue(int64(42))
-	p := NewRecordQueryFirstOrDefaultPlan(nil, dv)
+	p := mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+		return NewRecordQueryFirstOrDefaultPlan(stub("Inner"), dv)
+	})
 	h1 := p.HashCodeWithoutChildren()
 	h2 := p.HashCodeWithoutChildren()
 	if h1 != h2 {
@@ -496,8 +599,12 @@ func TestFirstOrDefaultPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) 
 
 func TestFirstOrDefaultPlan_HashCodeWithoutChildren_DiffersForDifferentDefaults(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryFirstOrDefaultPlan(nil, values.LiteralValue(int64(1)))
-	b := NewRecordQueryFirstOrDefaultPlan(nil, values.LiteralValue(int64(2)))
+	a := mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+		return NewRecordQueryFirstOrDefaultPlan(stub("A"), values.LiteralValue(int64(1)))
+	})
+	b := mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+		return NewRecordQueryFirstOrDefaultPlan(stub("B"), values.LiteralValue(int64(2)))
+	})
 	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
 		t.Fatal("different default values should (very likely) produce different hashes")
 	}
@@ -505,7 +612,9 @@ func TestFirstOrDefaultPlan_HashCodeWithoutChildren_DiffersForDifferentDefaults(
 
 func TestFirstOrDefaultPlan_HashCodeWithoutChildren_NilDefaultValue(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryFirstOrDefaultPlan(nil, nil)
+	p := mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+		return NewRecordQueryFirstOrDefaultPlan(stub("Inner"), nil)
+	})
 	h1 := p.HashCodeWithoutChildren()
 	h2 := p.HashCodeWithoutChildren()
 	if h1 != h2 {
@@ -520,13 +629,25 @@ func TestFirstOrDefaultPlan_HashCodeWithoutChildren_NilDefaultValue(t *testing.T
 func TestNewPlanTypes_DistinctTypeHashes(t *testing.T) {
 	t.Parallel()
 	hashes := map[string]uint64{
-		"PredicatesFilter": NewRecordQueryPredicatesFilterPlan(nil, nil).HashCodeWithoutChildren(),
-		"Map":              NewRecordQueryMapPlan(nil, nil).HashCodeWithoutChildren(),
-		"FirstOrDefault":   NewRecordQueryFirstOrDefaultPlan(nil, nil).HashCodeWithoutChildren(),
+		"PredicatesFilter": mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+			return NewRecordQueryPredicatesFilterPlan(stub("PredicatesInner"), nil)
+		}).HashCodeWithoutChildren(),
+		"Map": mustChecked(t, func() (*RecordQueryMapPlan, error) {
+			return NewRecordQueryMapPlan(stub("MapInner"), &values.ConstantValue{Value: int64(0), Typ: values.NotNullLong})
+		}).HashCodeWithoutChildren(),
+		"FirstOrDefault": mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
+			return NewRecordQueryFirstOrDefaultPlan(stub("FirstInner"), nil)
+		}).HashCodeWithoutChildren(),
 		// Include existing types to verify no collisions with the new ones.
-		"Filter":   NewRecordQueryFilterPlan(nil, nil).HashCodeWithoutChildren(),
-		"Distinct": NewRecordQueryDistinctPlan(nil).HashCodeWithoutChildren(),
-		"Scan":     NewRecordQueryScanPlan(nil, values.UnknownType, false).HashCodeWithoutChildren(),
+		"Filter": mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+			return NewRecordQueryFilterPlan(nil, stub("FilterInner"))
+		}).HashCodeWithoutChildren(),
+		"Distinct": mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
+			return NewRecordQueryDistinctPlan(stub("DistinctInner"))
+		}).HashCodeWithoutChildren(),
+		"Scan": mustChecked(t, func() (*RecordQueryScanPlan, error) {
+			return NewRecordQueryScanPlan(nil, exactTestRecordType(), false)
+		}).HashCodeWithoutChildren(),
 	}
 	seen := make(map[uint64]string)
 	for name, h := range hashes {

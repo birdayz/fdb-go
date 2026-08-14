@@ -10,6 +10,20 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+type pointProbeIndexDef struct {
+	name        string
+	columns     []string
+	recordTypes []string
+	unique      bool
+}
+
+func (d pointProbeIndexDef) IndexName() string                { return d.name }
+func (d pointProbeIndexDef) IndexColumnNames() []string       { return d.columns }
+func (d pointProbeIndexDef) IndexRecordTypes() []string       { return d.recordTypes }
+func (d pointProbeIndexDef) IndexIsUnique() bool              { return d.unique }
+func (d pointProbeIndexDef) IndexPrimaryKeyColumns() []string { return nil }
+func (d pointProbeIndexDef) IndexCreatesDuplicates() bool     { return false }
+
 // FOUR independent proofs concluded "unique index + all equalities = exactly one
 // row": computeCardinalities, plans.isProvablePointProbe, indexProvableMaxCard
 // and scanLikeCost. A zero-valued float equality breaks all four, because the
@@ -38,28 +52,41 @@ func TestPointProbeProofsAgreeOnWideningEquality(t *testing.T) {
 	}
 
 	mkIndex := func(lit any) *plans.RecordQueryIndexPlan {
+		keyType := physicalType(lit)
+		layout := values.NewRecordType("PointProbeProofIndex", false, []values.Field{
+			{Name: "V", FieldType: keyType, Ordinal: 0},
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1},
+		})
 		cr := predicates.EmptyComparisonRange()
 		res := cr.Merge(&predicates.Comparison{
-			Type: predicates.ComparisonEquals, Operand: values.LiteralValue(lit),
+			Type: predicates.ComparisonEquals, Operand: pointProbeLiteral(lit),
 		})
-		return plans.NewRecordQueryIndexPlan("IDX",
+		return mustPointProbeConstruct(plans.NewRecordQueryIndexPlan("IDX",
 			[]*predicates.ComparisonRange{res.Range},
-			[]string{"T"}, values.UnknownType, false,
-		).WithKeyComponentTypes([]values.Type{physicalType(lit)}).
+			[]string{"T"}, layout, false,
+		)).WithKeyComponentTypes([]values.Type{keyType}).
 			WithIndexMetadata([]string{"V"}, []string{"ID"}, true)
 	}
 
 	// A scan with its primary key STAMPED on the plan — the shape that took
 	// pkFullyEqualityBound's early-return path, the one the guard used to miss.
 	mkScan := func(lit any) *plans.RecordQueryScanPlan {
+		keyType := physicalType(lit)
+		layout := values.NewRecordType("PointProbeProofScan", false, []values.Field{
+			{Name: "V", FieldType: keyType, Ordinal: 0},
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1},
+		})
 		cr := predicates.EmptyComparisonRange()
 		res := cr.Merge(&predicates.Comparison{
-			Type: predicates.ComparisonEquals, Operand: values.LiteralValue(lit),
+			Type: predicates.ComparisonEquals, Operand: pointProbeLiteral(lit),
 		})
-		return plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
-			WithPrimaryKey([]values.Value{&values.FieldValue{Field: "V", Typ: physicalType(lit)}}).
+		root := mustPointProbeConstruct(values.NewQuantifiedObjectValue(
+			values.NamedCorrelationIdentifier("point_probe_scan"), layout))
+		key := mustPointProbeConstruct(values.ResolveFieldOrdinals(root, []int{0}))
+		return mustPointProbeConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, layout, false)).
+			WithPrimaryKey([]values.Value{key}).
 			WithScanComparisons([]*predicates.ComparisonRange{res.Range}).
-			WithKeyComponentTypes([]values.Type{physicalType(lit)})
+			WithKeyComponentTypes([]values.Type{keyType})
 	}
 
 	cases := []struct {
@@ -167,9 +194,13 @@ func TestUniqueIndexProofsAgreeOnNullableNullAndComparisonGaps(t *testing.T) {
 	}
 	isNull := rangeOf(predicates.Comparison{Type: predicates.ComparisonIsNull})
 	equality := rangeOf(predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(7)))
-	ctx := NewPlanContextFromIndexDefs([]IndexDef{testIndexDef{
+	ctx := NewPlanContextFromIndexDefs([]IndexDef{pointProbeIndexDef{
 		name: "U", columns: []string{"V"}, recordTypes: []string{"T"}, unique: true,
 	}})
+	proofLayout := values.NewRecordType("UniqueIndexProof", false, []values.Field{
+		{Name: "V", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1},
+	})
 	for _, test := range []struct {
 		name      string
 		comps     []*predicates.ComparisonRange
@@ -185,9 +216,9 @@ func TestUniqueIndexProofsAgreeOnNullableNullAndComparisonGaps(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			plan := plans.NewRecordQueryIndexPlan(
-				"U", test.comps, []string{"T"}, values.UnknownType, false,
-			).WithKeyComponentTypes(test.types).
+			plan := mustPointProbeConstruct(plans.NewRecordQueryIndexPlan(
+				"U", test.comps, []string{"T"}, proofLayout, false,
+			)).WithKeyComponentTypes(test.types).
 				WithIndexMetadata([]string{"V"}, []string{"ID"}, true)
 
 			propertyMax := computeCardinalities(nil, plan).GetMaxCardinality()

@@ -6,6 +6,8 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // InitiatePlannerPhaseTask starts a planner phase. Pushed once per phase.
@@ -45,6 +47,18 @@ func (t *InitiatePlannerPhaseTask) Run(ctx context.Context, p *Planner) {
 type ExploreGroupTask struct {
 	Phase PlannerPhase
 	Ref   *expressions.Reference
+	// forceNew keeps an explicit constraint/member-growth re-arm from being
+	// absorbed by older pending work. Stage continuations are distinguished by
+	// their captured stage; child dependency batches use the stack-ordering
+	// helper below instead.
+	forceNew bool
+
+	// pendingKey is the canonical group identity captured when the planner
+	// enqueues this task. A group can forward to another group while the task
+	// is waiting on the LIFO stack, so pop must remove the captured key rather
+	// than recomputing it from Ref.
+	pendingKey exploreGroupTaskKey
+	pending    bool
 }
 
 func (t *ExploreGroupTask) Run(ctx context.Context, p *Planner) {
@@ -93,6 +107,39 @@ func (t *ExploreGroupTask) Run(ctx context.Context, p *Planner) {
 			// stage without this reset was the RFC-182 asymmetric-union
 			// no-plan bug.
 			t.Ref.AdvanceStagePreservingMembers(targetStage)
+		}
+	}
+
+	// PinnedFinalOf is the planner's pinned physical-spine shape: a StagePlanned
+	// reference with no exploratory members and exactly one physical final. It
+	// represents a parent that was deliberately constructed over that concrete
+	// child. Re-exploring the singleton would let physical transformation rules
+	// add competitors and a child-local winner would then mutate the parent onto
+	// a different plan — precisely undoing the restriction.
+	//
+	// Validate every exact ordinal requirement before accepting the pin. A pin
+	// is a choice, not a license to bypass layout compatibility.
+	if t.Ref.IsPinnedFinal() && targetStage == expressions.StagePlanned && len(t.Ref.Members()) == 0 {
+		finals := t.Ref.FinalMembers()
+		if len(finals) == 1 && isPhysical(finals[0]) {
+			pinned := finals[0]
+			if requirements, ok := Get(p.constraintMap, t.Ref, OrdinalLayoutConstraintKey); ok {
+				for _, requirement := range requirements {
+					compatible, err := memberSatisfiesOrdinalRequirement(pinned, requirement)
+					if err != nil {
+						p.capErr = fmt.Errorf("pinned child ordinal layout: %w", err)
+						return
+					}
+					if !compatible {
+						p.capErr = fmt.Errorf("pinned child ordinal layout: selected final is incompatible")
+						return
+					}
+				}
+			}
+			t.Ref.SetWinner(pinned)
+			computeRefPlanProperties(t.Ref)
+			t.Ref.ConstraintsMap().SetExplored()
+			return
 		}
 	}
 
@@ -217,6 +264,11 @@ type ExploreExprTask struct {
 	Phase PlannerPhase
 	Ref   *expressions.Reference
 	Expr  expressions.RelationalExpression
+
+	// See ExploreGroupTask.pendingKey. Expression tasks need the same captured
+	// identity because memo integration can forward Ref before this task pops.
+	pendingKey exploreExprTaskKey
+	pending    bool
 }
 
 func (t *ExploreExprTask) Run(ctx context.Context, p *Planner) {
@@ -230,6 +282,9 @@ func (t *ExploreExprTask) Run(ctx context.Context, p *Planner) {
 	exprIdx, implIdx := p.ruleIndexesForPhase(t.Phase)
 	exprRules := exprIdx.rulesFor(t.Expr)
 	implRules := implIdx.rulesFor(t.Expr)
+	// Everything pushed before child exploration is a dependent batch: it may
+	// only run after every child group has reached its pending exploration.
+	dependentFloor := len(p.stack)
 
 	// 1. Push match-partition rules (fire LAST — deepest on LIFO).
 	// Data access generation from PartialMatches.
@@ -263,15 +318,20 @@ func (t *ExploreExprTask) Run(ctx context.Context, p *Planner) {
 		p.push(&TransformExprTask{Phase: t.Phase, Ref: t.Ref, Expr: t.Expr, Rule: exprRules[i]})
 	}
 
-	// 4. Push ExploreGroup for each child quantifier's Reference.
+	// 4. Schedule every child exploration before the dependent batch. When a
+	// matching task is already pending deeper in the LIFO stack, move the batch
+	// behind that task rather than either running the parent early or minting a
+	// duplicate exploration task.
+	childRefs := make([]*expressions.Reference, 0, len(t.Expr.GetQuantifiers()))
 	for _, q := range t.Expr.GetQuantifiers() {
 		if ctx.Err() != nil {
 			return
 		}
 		if childRef := q.GetRangesOver(); childRef != nil {
-			p.push(&ExploreGroupTask{Phase: t.Phase, Ref: childRef})
+			childRefs = append(childRefs, childRef)
 		}
 	}
+	p.scheduleExploreGroupsBeforeBatch(t.Phase, childRefs, dependentFloor)
 
 	// 5. Push preorder implementation rules (fire FIRST — topmost on LIFO).
 	for i := len(implRules) - 1; i >= 0; i-- {
@@ -310,30 +370,6 @@ func (t *TransformExprTask) Run(ctx context.Context, p *Planner) {
 	// convergence crutch; rule matching on finals runs through the
 	// per-expression exploration tasks, and ContainsExactly admits
 	// finals).
-	var yieldFn func(expressions.RelationalExpression) bool
-	if t.Phase == PhasePlanning {
-		yieldFn = func(expr expressions.RelationalExpression) bool {
-			if ctx.Err() != nil {
-				return false
-			}
-			// Same unconditional verifyChildrenMemoized as the two
-			// ImplementationRuleCall yield sites. This one carries most of
-			// the surface: as the comment above says, expression rules
-			// produce PHYSICAL wrappers during PLANNING, and they reach the
-			// memo here rather than through ImplementationRuleCall. Guarding
-			// only the implementation path would leave the large majority of
-			// physical yields unchecked and make the invariant decorative.
-			if err := verifyChildrenMemoized(expr, p.reach); err != nil {
-				p.capErr = err
-				return false
-			}
-			if ctx.Err() != nil {
-				return false
-			}
-			return t.Ref.InsertFinal(expr)
-		}
-	}
-
 	// Java's per-rule-call match cap counts ONE stream per rule invocation
 	// (CascadesPlanner.execute: a single numMatches over bindMatches, which
 	// enumerates quantifier permutations inside the same stream). The swapped
@@ -364,7 +400,6 @@ func (t *TransformExprTask) Run(ctx context.Context, p *Planner) {
 				Constraints: p.constraintMap,
 				Stats:       p.stats,
 				memo:        p.memo,
-				yieldFn:     yieldFn,
 			}
 			// React to NEW PARTIAL MATCHES, not just new expressions. A matching
 			// rule (MatchIntermediateRule / MatchLeafRule) seeds PartialMatches on
@@ -390,13 +425,63 @@ func (t *TransformExprTask) Run(ctx context.Context, p *Planner) {
 			if ctx.Err() != nil {
 				return
 			}
+			if err := call.Err(); err != nil {
+				p.capErr = err
+				return
+			}
+
+			yielded := call.Yielded()
+			inserted := make([]bool, len(yielded))
+			// Validate the complete invocation-local batch before publishing
+			// any member. A later invalid yield must not leave an earlier
+			// expression inserted into the memo.
+			if t.Phase == PhasePlanning {
+				for _, newExpr := range yielded {
+					if err := verifyChildrenMemoized(newExpr, p.reach); err != nil {
+						p.capErr = err
+						return
+					}
+				}
+			}
+
+			// Exact-result admission and memo equality are prepared for the WHOLE
+			// batch; apply is method-free and has no fallible operation after its
+			// first write.
+			if len(yielded) > 0 {
+				set := expressions.ReferenceExploratoryMembers
+				if t.Phase == PhasePlanning {
+					set = expressions.ReferenceFinalMembers
+				}
+				intents := make([]referenceMemberIntent, len(yielded))
+				for i, newExpr := range yielded {
+					intents[i] = referenceMemberIntent{set: set, expression: newExpr}
+				}
+				batch, err := prepareReferenceMemberBatch(t.Ref, intents)
+				if err != nil {
+					p.capErr = err
+					return
+				}
+				if err := batch.commit(); err != nil {
+					p.capErr = err
+					return
+				}
+				copy(inserted, batch.inserted)
+			}
+			if t.Phase != PhasePlanning && p.memo != nil {
+				for _, newExpr := range yielded {
+					p.memo.Integrate(t.Ref, newExpr)
+				}
+			}
 			if t.Phase == PhasePlanning && len(t.Ref.GetAllPartialMatches()) > matchesBefore {
 				p.pushDataAccessTasks(t.Ref, t.Expr)
 			}
 
-			for _, newExpr := range call.Yielded() {
+			for i, newExpr := range yielded {
 				if ctx.Err() != nil {
 					return
+				}
+				if !inserted[i] {
+					continue
 				}
 				// OptimizeInputs only for PHYSICAL yields — the other half of the B1
 				// task-graph invariant (the executeRuleCall analog). Java's
@@ -486,6 +571,36 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 		if ctx.Err() != nil {
 			return
 		}
+		if err := call.Err(); err != nil {
+			p.capErr = err
+			return
+		}
+
+		// Preflight every yield before applying either member insertions or
+		// requested-ordering constraints. This makes the rule call atomic on
+		// both an explicit Fail and an invalid later yield.
+		for _, y := range call.yielded {
+			if err := verifyChildrenMemoized(y, p.reach); err != nil {
+				p.capErr = err
+				return
+			}
+		}
+		if len(call.yielded) > 0 {
+			intents := make([]referenceMemberIntent, len(call.yielded))
+			for i, y := range call.yielded {
+				intents[i] = referenceMemberIntent{set: expressions.ReferenceFinalMembers, expression: y}
+			}
+			batch, err := prepareReferenceMemberBatch(t.Ref, intents)
+			if err != nil {
+				p.capErr = err
+				return
+			}
+			if err := batch.commit(); err != nil {
+				p.capErr = err
+				return
+			}
+		}
+		call.applyPendingConstraints()
 
 		// Handle yields: insert into FinalMembers and push explore+optimize
 		// for genuinely new expressions. Skip re-exploration for
@@ -493,12 +608,6 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 		// exploratory members promoted to final).
 		for _, y := range call.yielded {
 			if ctx.Err() != nil {
-				return
-			}
-			// Java's unconditional verifyChildrenMemoized, at the same point:
-			// before the yielded expression enters the memo.
-			if err := verifyChildrenMemoized(y, p.reach); err != nil {
-				p.capErr = err
 				return
 			}
 			// InsertFinal only — deliberately NO re-prune of a stamped group
@@ -512,7 +621,9 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 			// RFC-186 designation re-computes on growth (the insert bumps
 			// the finals generation), so the virtual prune stays fresh while
 			// the member set keeps every alternative PLANNING needs.
-			t.Ref.InsertFinal(y)
+			if call.indexYieldedInMemo && p.memo != nil {
+				p.memo.AddExpression(t.Ref, y)
+			}
 			if !isExploratoryMember(t.Ref, y) {
 				// OptimizeInputs only for PHYSICAL yields — third of the three gated
 				// rule-yield sites (with ExploreGroupTask + the TransformExprTask yield).
@@ -534,7 +645,7 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 				if ctx.Err() != nil {
 					return
 				}
-				p.push(&ExploreGroupTask{Phase: t.Phase, Ref: childRef})
+				p.push(&ExploreGroupTask{Phase: t.Phase, Ref: childRef, forceNew: true})
 			}
 		}
 	}
@@ -578,15 +689,39 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 					if ctx.Err() != nil {
 						return
 					}
+					if err := call.Err(); err != nil {
+						p.capErr = err
+						return
+					}
 					for _, y := range call.yielded {
-						if ctx.Err() != nil {
-							return
-						}
 						if err := verifyChildrenMemoized(y, p.reach); err != nil {
 							p.capErr = err
 							return
 						}
-						t.Ref.InsertFinal(y)
+					}
+					if len(call.yielded) > 0 {
+						intents := make([]referenceMemberIntent, len(call.yielded))
+						for i, y := range call.yielded {
+							intents[i] = referenceMemberIntent{set: expressions.ReferenceFinalMembers, expression: y}
+						}
+						batch, err := prepareReferenceMemberBatch(t.Ref, intents)
+						if err != nil {
+							p.capErr = err
+							return
+						}
+						if err := batch.commit(); err != nil {
+							p.capErr = err
+							return
+						}
+					}
+					call.applyPendingConstraints()
+					for _, y := range call.yielded {
+						if ctx.Err() != nil {
+							return
+						}
+						if call.indexYieldedInMemo && p.memo != nil {
+							p.memo.AddExpression(t.Ref, y)
+						}
 						if !isExploratoryMember(t.Ref, y) {
 							// NOTE: this 4th OptimizeInputs site — the
 							// swapped-quantifier impl yield — is INTENTIONALLY NOT gated to
@@ -608,6 +743,14 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 							p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
 						}
 					}
+					if call.Constraints != nil {
+						for _, childRef := range call.constraintPushedRefs {
+							if ctx.Err() != nil {
+								return
+							}
+							p.push(&ExploreGroupTask{Phase: t.Phase, Ref: childRef, forceNew: true})
+						}
+					}
 				}
 			}
 		}
@@ -619,6 +762,12 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 type OptimizeGroupTask struct {
 	Phase PlannerPhase
 	Ref   *expressions.Reference
+
+	// Captured at enqueue time for the same forwarding-safe pending-only
+	// coalescing used by ExploreGroupTask. A single eventual optimizer observes
+	// the group's latest final set and accumulated constraints when it pops.
+	pendingKey exploreGroupTaskKey
+	pending    bool
 }
 
 func (t *OptimizeGroupTask) Run(ctx context.Context, p *Planner) {
@@ -650,19 +799,52 @@ func (t *OptimizeGroupTask) Run(ctx context.Context, p *Planner) {
 	}
 
 	// Winner-per-(group, properties) retention (Graefe 1995 §2): pruning to
-	// the single overall cost winner would destroy a costlier-but-ORDERED
-	// final that a pushed RequestedOrderingConstraint asked this group for —
-	// before the parent's ordered lookup (bestSatisfyingMember) or the
-	// extraction elision seam can choose it, silently forcing an avoidable
-	// enforcer sort. Java parents don't hit this because they bake concrete
-	// child plans at rule time (memoizePlan); Go wrappers range over child
-	// References resolved at lookup/extraction, so the group must retain,
-	// per requested ordering, the cheapest final satisfying it. Orderings
-	// nothing requested stay dead weight and are pruned with the losers.
+	// the single overall cost winner would destroy a costlier final required
+	// by a parent — either an ordered provider needed to avoid an enforcer
+	// sort, or an ordinal layout against which the parent's retained Values
+	// were finalized. Java parents usually bake concrete child plans at rule
+	// time (memoizePlan); Go plans range over child References resolved at
+	// lookup/extraction, so the group retains the cheapest final satisfying
+	// each pushed property in addition to its global winner.
+	//
+	// DistinctRecords and StoredRecord are also parent-visible interesting
+	// properties even when no explicit constraint was pushed. A parent rule can
+	// make a locally costlier partition member globally cheaper: most notably a
+	// Projection can push through Fetch(Covering(Index)) and remove the Fetch,
+	// while it cannot perform that rewrite over the locally cheaper fetching
+	// Index member. Retaining only the global child winner therefore prevents the
+	// cheaper parent tree from ever being constructed. Keep the cheapest member
+	// of every (distinct, stored) class; ordering is deliberately excluded here
+	// and remains demand-driven below, so an unrequested sort is still pruned.
 	keep := map[expressions.RelationalExpression]struct{}{bestFinal: {}}
 	if t.Phase == PhasePlanning {
+		type nonOrderingPartition struct {
+			distinct bool
+			stored   bool
+		}
+		tieBrokenLess := lessWithHashTieBreak(costModel)
+		partitionWinners := make(map[nonOrderingPartition]expressions.RelationalExpression)
+		if planProperties := GetRefPlanPropertiesMap(t.Ref); planProperties != nil {
+			for _, member := range t.Ref.FinalMembers() {
+				memberProperties := planProperties.GetProperties(member)
+				if memberProperties == nil {
+					continue
+				}
+				partition := nonOrderingPartition{
+					distinct: memberProperties.GetBool(properties.PropDistinctRecords),
+					stored:   memberProperties.GetBool(properties.PropStoredRecord),
+				}
+				winner := partitionWinners[partition]
+				if winner == nil || tieBrokenLess(member, winner) {
+					partitionWinners[partition] = member
+				}
+			}
+		}
+		for _, winner := range partitionWinners {
+			keep[winner] = struct{}{}
+		}
+
 		if ros, ok := Get(p.constraintMap, t.Ref, RequestedOrderingConstraintKey); ok {
-			tieBrokenLess := lessWithHashTieBreak(costModel)
 			for _, ro := range ros {
 				if ctx.Err() != nil {
 					return
@@ -685,6 +867,24 @@ func (t *OptimizeGroupTask) Run(ctx context.Context, p *Planner) {
 				if best != nil {
 					keep[best] = struct{}{}
 				}
+			}
+		}
+		if requirements, ok := Get(p.constraintMap, t.Ref, OrdinalLayoutConstraintKey); ok {
+			for _, requirement := range requirements {
+				if ctx.Err() != nil {
+					return
+				}
+				best, err := bestOrdinalCompatiblePhysicalMemberAmong(
+					t.Ref.FinalMembers(), requirement, tieBrokenLess)
+				if err != nil {
+					p.capErr = fmt.Errorf("ordinal layout winner for child group: %w", err)
+					return
+				}
+				if best == nil {
+					p.capErr = fmt.Errorf("ordinal layout winner for child group: no compatible final member remains")
+					return
+				}
+				keep[best] = struct{}{}
 			}
 		}
 	}
@@ -742,7 +942,25 @@ func (t *OptimizeInputsTask) Run(ctx context.Context, p *Planner) {
 	if t.Ref != nil && !t.Ref.ContainsExactly(t.Expr) {
 		return
 	}
-	for _, q := range t.Expr.GetQuantifiers() {
+	if t.Phase == PhasePlanning && t.Ref != nil {
+		// OptimizeInputs tasks for sibling physical alternatives are popped in
+		// LIFO order. Accumulate every still-live sibling's positional
+		// requirements before the first one is allowed to schedule a child
+		// prune; otherwise the last-pushed parent could prune away a layout
+		// required by an earlier sibling whose task has not run yet.
+		if err := pushOrdinalInputRequirementsForMembers(p.constraintMap, t.Ref.AllMembers()); err != nil {
+			p.capErr = err
+			return
+		}
+	}
+	requirements, err := ordinalInputRequirementsOf(t.Expr)
+	if err != nil {
+		p.capErr = err
+		return
+	}
+	dependentFloor := len(p.stack)
+	childRefs := make([]*expressions.Reference, 0, len(t.Expr.GetQuantifiers()))
+	for i, q := range t.Expr.GetQuantifiers() {
 		if ctx.Err() != nil {
 			return
 		}
@@ -750,9 +968,56 @@ func (t *OptimizeInputsTask) Run(ctx context.Context, p *Planner) {
 		if childRef == nil {
 			continue
 		}
+		if t.Phase == PhasePlanning && len(requirements) != 0 {
+			// The positional vector was validated against quantifier arity by
+			// ordinalInputRequirementsOf. Set combines requirements from
+			// multiple finalized parents sharing this child group; the
+			// immediately scheduled Explore/Optimize pair observes the grown
+			// constraint before it can prune the compatible alternative.
+			Set(p.constraintMap, childRef, OrdinalLayoutConstraintKey,
+				[]plans.OrdinalLayoutRequirement{requirements[i]})
+		}
 		p.push(&OptimizeGroupTask{Phase: t.Phase, Ref: childRef})
-		p.push(&ExploreGroupTask{Phase: t.Phase, Ref: childRef})
+		childRefs = append(childRefs, childRef)
 	}
+	p.scheduleExploreGroupsBeforeBatch(t.Phase, childRefs, dependentFloor)
+}
+
+// pushOrdinalInputRequirementsForMembers performs the group-local prepass used
+// by OptimizeInputs. It is deliberately limited to members already live in the
+// same parent group; requirements from unrelated groups still flow only when
+// their own physical parent is optimized. Repeated members and repeated exact
+// requirements are harmless because the constraint lattice subsumes them.
+func pushOrdinalInputRequirementsForMembers(
+	constraints *ConstraintMap,
+	members []expressions.RelationalExpression,
+) error {
+	seen := make(map[expressions.RelationalExpression]struct{}, len(members))
+	for _, member := range members {
+		if member == nil {
+			continue
+		}
+		if _, duplicate := seen[member]; duplicate {
+			continue
+		}
+		seen[member] = struct{}{}
+		requirements, err := ordinalInputRequirementsOf(member)
+		if err != nil {
+			return err
+		}
+		if len(requirements) == 0 {
+			continue
+		}
+		for i, q := range member.GetQuantifiers() {
+			childRef := q.GetRangesOver()
+			if childRef == nil {
+				continue
+			}
+			Set(constraints, childRef, OrdinalLayoutConstraintKey,
+				[]plans.OrdinalLayoutRequirement{requirements[i]})
+		}
+	}
+	return nil
 }
 
 // isFinalMember checks if expr is already in the Reference's final members.

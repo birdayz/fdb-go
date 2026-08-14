@@ -60,8 +60,8 @@ func TestMain(m *testing.M) {
 // Set below the measured values because these totals vary run to run. The floor
 // detects COLLAPSE — the shapes stopping, a recorder being routed around — not
 // drift.
-// Measured over this corpus: recursiveRemap 2, derivedUnnestSource 8,
-// projScopeClassify 18, projQualVsScan 4, displayLabelStrip 11,
+// Measured over this corpus after recursive remapping was retired:
+// derivedUnnestSource 8, projScopeClassify 18, projQualVsScan 4, displayLabelStrip 11,
 // existsSortSplit 6.
 //
 // existsSortSplit's zero was the header's own point about zeros: it read "this
@@ -77,27 +77,22 @@ func TestMain(m *testing.M) {
 // WHAT IS PRODUCTION TRAFFIC HERE AND WHAT IS FIXTURE, because the two do not
 // support the same claims and a merged total hides which:
 //
-//   - PRODUCTION: derivedUnnestSource's `TD.ARR` AGREED, and displayLabelStrip's
-//     `MAX(E.SALARY)` heuristic decline plus its `E.SALARY` / `E.SAL-ARY`
-//     MANUFACTURED pair. These are ordinary SQL planned through the generator,
-//     and all four are invisible to both other corpora.
+//   - PRODUCTION: derivedUnnestSource's `TD.ARR` AGREED. The display-label
+//     wiring fixture drives `MAX(E.SALARY)`'s heuristic decline plus exact
+//     `E.SALARY` / `E.SAL-ARY` AGREED pairs; the latter carry frozen source E,
+//     matching the source that minted the qualified machinery alias even after
+//     the Value program is physically reanchored.
 //   - FIXTURE: everything spelled `T.COL`, `T2.SK`, `A.NAME` and `SUM(A.VAL).X`
 //     comes from qualifier_recovery_wiring_test.go, which exists to prove the
 //     dotted buckets are reachable at the two embedded sites no corpus
 //     populates. Those calls make the floors below say "the pins still run";
 //     they say nothing about production reach.
 //
-// recursiveRemap's floor is 1 against a measured 2, and it is the one that had
-// to be argued rather than halved. Its population is the smallest here, so
-// "below the measured value" leaves exactly one rung — and an earlier revision
-// set it AT the measured 2, which is the shape this block's own policy exists to
-// forbid: a floor equal to the measurement is a drift detector wearing a
-// collapse detector's clothes, and it reds when the corpus grows a second
-// recursive body or the memo explores one fewer time. 1 still detects the only
-// thing this floor is for, the site ceasing to be reached at all.
+// recursiveRemap is intentionally zero: recursiveRemapValues is a retired
+// compatibility no-op, and the query-package wiring pin proves it records no
+// traffic.
 var embeddedQualifierRecoveryFloors = values.QualifierRecoveryFloors{
 	Calls: [6]int{
-		values.QualRecSiteRecursiveRemap:      1,
 		values.QualRecSiteExistsSortSplit:     3,
 		values.QualRecSiteDerivedUnnestSource: 4,
 		values.QualRecSiteProjScopeClassify:   6,
@@ -105,10 +100,8 @@ var embeddedQualifierRecoveryFloors = values.QualifierRecoveryFloors{
 		values.QualRecSiteDisplayLabelStrip:   4,
 	},
 	Split: [6]int{
-		values.QualRecSiteRecursiveRemap:      1,
 		values.QualRecSiteExistsSortSplit:     3,
 		values.QualRecSiteDerivedUnnestSource: 4,
-		values.QualRecSiteProjScopeClassify:   6,
 		values.QualRecSiteProjQualVsScan:      2,
 		values.QualRecSiteDisplayLabelStrip:   4,
 	},

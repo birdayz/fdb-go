@@ -13880,7 +13880,7 @@ None is speculative: each was re-verified against the tree before booking.
   `UnknownType` is a non-nil `*PrimitiveType`. So the instrument reported
   `typed=true` for all 102, and a typing sweep would have read as complete on the
   day it started. Pinned by
-  `TestFoldStep1Census_BareQOVWitnessSeparatesTypedFromUntyped` in both
+  `TestFoldStep1Census_BareQOVWitnessReportsAdmittedExactTypes` in both
   directions.
 
   ---
@@ -17787,46 +17787,16 @@ None is speculative: each was re-verified against the tree before booking.
   post-aggregate-only guards provably could not reach — so it is also the
   cleanest evidence that the guard belongs at construction.
 
-- [x] **`groupByOutputOrdinals`' `keys[full] = ord` last-wins store is CLOSED, a
-  guard there is INERT AND NON-NEUTRAL, and this is the second time the site has
-  been mistaken for live.** Booked so a third reader does not re-propose it.
+- [x] **The former `groupByOutputOrdinals` last-wins store and its
+  `groupByOutputBaker` consumer are retired.** Their pre-RFC-232 corpus
+  measurement found no consultation on a collided name; RFC-232 then removed
+  the compatibility channel altogether and now carries each aggregate output
+  as an exact ordinal value.
 
-  The RFC-197 block above records the hazard as closed by
-  `groupKeyOrdinalByStructure`. Measured directly, over
-  `//pkg/relational/sqldriver:sqldriver_test` at **6158 `=== RUN` lines**, with
-  the store and all three consumers (`cascades_translator.go` ORDER BY ~:1044,
-  baker-stripped ~:1168, baker-direct ~:1190) instrumented:
-
-  - **21 collisions built**, over 2 distinct names (`K`, `NAME`) — down from 29 over 4, because the `A.R.V.Z` and `C1` collisions belonged to shapes the output-construction pull-up now refuses outright;
-  - **15 consumer consultations**;
-  - **ZERO consultations on a collided name.** The two populations are DISJOINT.
-
-  Scope is written into the claim on purpose: that reading is the
-  `//pkg/relational/sqldriver` target ONLY. The yamsql corpus and
-  `//pkg/relational/core/embedded` were NOT instrumented.
-
-  **Why it is closed:** the rebase loops now record the slot at the composition
-  that decides it and mark it `FrontierPinned`, so references arrive already
-  bound and the baker returns before any name lookup. Confirmed by mutation —
-  forcing `groupKeyOrdinalByStructure` to always decline (making the last-wins map
-  the SOLE decider at all three consumers) left the full corpus GREEN
-  and returned byte-identical correct rows for six deliberately-constructed
-  collision shapes over two tables sharing leaf `K` with DIFFERENT values, driving
-  all three consumers (SELECT-list, HAVING, ORDER BY asc and desc). The mutation
-  was confirmed landed: it reddens
-  `//pkg/relational/core/query:query_test -test.run=TestGroupKeyOrdinalByStructure_Arms`.
-
-  **A guard at that store is not merely inert — it is NON-NEUTRAL where it would
-  fire.** Deleting the colliding entry flips `:1150`'s `if _, hit := keyOrds[key];
-  !hit` into its stripped-alias branch and drops `:1185` to `return node`
-  (unbaked, lazy name read). So the cheap-looking "mirror `addKeyAlias`" change
-  would alter behaviour on shapes with no demonstrated defect behind them.
-
-  **Scoped datum for the `Resolved == nil` residual** the RFC-197 block names:
-  at 6158 subtests, **9 of the 15 consultations are declines** (6 ORDER BY,
-  3 baker-stripped) and NONE is on a collided name — so the decline arm is
-  reachable, but has never met an ambiguous name. That is the falsifier to watch:
-  a decline ON a collided name is the residual going live.
+  The live mutation-sensitive guards are
+  `//pkg/relational/core/embedded:embedded_test -test.run='TestGroupKeyPullUpGuard_(ConstructionKeepsTwoQuantifiersApart|ExactBoundaryBinderRefusesAMultiMatch)'`.
+  They prove distinct owners do not collapse and an ambiguous exact boundary
+  declines, without depending on a display-name map or a retired test helper.
 
 ## factorycorpus/full stalls at 6x its runtime, and master cannot see it
 

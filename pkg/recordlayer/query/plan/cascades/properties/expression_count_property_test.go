@@ -16,7 +16,7 @@ func TestEvaluateExpressionCount_Nil(t *testing.T) {
 
 func TestEvaluateExpressionCount_SingleLeaf(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
 	if got := EvaluateExpressionCount(scan, nil); got != 1 {
 		t.Fatalf("EvaluateExpressionCount(leaf) = %d, want 1", got)
 	}
@@ -24,10 +24,10 @@ func TestEvaluateExpressionCount_SingleLeaf(t *testing.T) {
 
 func TestEvaluateExpressionCount_WithFilter(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
 	ref := expressions.InitialOf(scan)
 	inner := expressions.ForEachQuantifier(ref)
-	filter := expressions.NewLogicalFilterExpression(nil, inner)
+	filter := mustLogicalFilterExpression(t, nil, inner)
 
 	// Count all: should be 2 (filter + scan).
 	all := EvaluateExpressionCount(filter, nil)
@@ -57,16 +57,16 @@ func TestEvaluateExpressionCount_WithFilter(t *testing.T) {
 func TestEvaluateExpressionCount_DeepTree(t *testing.T) {
 	t.Parallel()
 	// scan -> filter -> projection -> sort = 4 nodes
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
 	ref1 := expressions.InitialOf(scan)
 	inner1 := expressions.ForEachQuantifier(ref1)
-	filter := expressions.NewLogicalFilterExpression(nil, inner1)
+	filter := mustLogicalFilterExpression(t, nil, inner1)
 	ref2 := expressions.InitialOf(filter)
 	inner2 := expressions.ForEachQuantifier(ref2)
-	proj := expressions.NewLogicalProjectionExpression([]values.Value{&values.FieldValue{Field: "x"}}, inner2)
+	proj := mustLogicalProjectionExpression(t, []values.Value{propertyField(t, "x", values.NullableLong)}, inner2)
 	ref3 := expressions.InitialOf(proj)
 	inner3 := expressions.ForEachQuantifier(ref3)
-	sort := expressions.NewLogicalSortExpression([]expressions.SortKey{{Value: &values.FieldValue{Field: "x"}}}, inner3)
+	sort := mustLogicalSortExpression(t, []expressions.SortKey{{Value: propertyField(t, "x", values.NullableLong)}}, inner3)
 
 	if got := EvaluateExpressionCount(sort, nil); got != 4 {
 		t.Fatalf("count deep tree = %d, want 4", got)

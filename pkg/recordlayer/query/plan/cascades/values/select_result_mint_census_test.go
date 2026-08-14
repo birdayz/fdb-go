@@ -18,37 +18,23 @@ func TestSelectResultMintCensus_SeparatesTypedFromUntyped(t *testing.T) {
 	t.Parallel()
 
 	corr := NamedCorrelationIdentifier("A")
-	rowType := &RecordType{Fields: []Field{{Name: "ID", Ordinal: 0}, {Name: "K", Ordinal: 1}}}
+	rowType := &RecordType{Fields: []Field{
+		{Name: "ID", FieldType: NotNullLong, Ordinal: 0},
+		{Name: "K", FieldType: NotNullLong, Ordinal: 1},
+	}}
 
 	for _, tc := range []struct {
 		name  string
-		qov   *QuantifiedObjectValue
+		qov   *quantifiedObjectValue
 		typed bool
 		spell string
 	}{
 		{
 			// What Java always builds: overQuantifier.getFlowedObjectValue().
 			name:  "a typed mint reports its ARITY",
-			qov:   NewQuantifiedObjectValueOfType(corr, rowType),
+			qov:   mustQOV(t, corr, rowType),
 			typed: true,
 			spell: "RecordType(2)",
-		},
-		{
-			// What the translator actually builds, and what Java cannot express.
-			name:  "a bare mint reports UNKNOWN, not an arity",
-			qov:   NewQuantifiedObjectValue(corr),
-			typed: false,
-			spell: "UNKNOWN",
-		},
-		{
-			// An explicit UnknownType is untyped for the same reason the implicit
-			// one is: the placeholder is the absence of a type, not a type. A
-			// `Typ != nil` spelling would call this typed, which is the tautology
-			// that let a whole population read as converted on day one.
-			name:  "an EXPLICIT UnknownType is untyped too",
-			qov:   NewQuantifiedObjectValueOfType(corr, UnknownType),
-			typed: false,
-			spell: "UNKNOWN",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -200,7 +186,7 @@ func TestSelectResultMintCensus_GateOffRecordsNothing(t *testing.T) {
 	defer SetLegIdentityCensusEnabled(restore)
 
 	before := SelectResultMintCensus()
-	rv := NewQuantifiedObjectValue(NamedCorrelationIdentifier("GATEOFF"))
+	rv := mustQOV(t, NamedCorrelationIdentifier("GATEOFF"))
 	RecordSelectResultMint(SelectResultMintExistsSelect, rv)
 	after := SelectResultMintCensus()
 
@@ -232,7 +218,7 @@ func TestSelectResultMintCensus_SnapshotDeepCopiesShapes(t *testing.T) {
 	defer SetLegIdentityCensusEnabled(restore)
 
 	RecordSelectResultMint(SelectResultMintExistsSelect,
-		NewQuantifiedObjectValue(NamedCorrelationIdentifier("SNAP1")))
+		mustQOV(t, NamedCorrelationIdentifier("SNAP1")))
 	snap := SelectResultMintCensus()
 	shapes := snap.Shapes[SelectResultMintExistsSelect]
 	if len(shapes) == 0 {
@@ -246,7 +232,7 @@ func TestSelectResultMintCensus_SnapshotDeepCopiesShapes(t *testing.T) {
 	was := shapes[key]
 
 	RecordSelectResultMint(SelectResultMintExistsSelect,
-		NewQuantifiedObjectValue(NamedCorrelationIdentifier("SNAP2")))
+		mustQOV(t, NamedCorrelationIdentifier("SNAP2")))
 
 	if got := snap.Shapes[SelectResultMintExistsSelect][key]; got != was {
 		t.Fatalf("shape %q in a SNAPSHOT moved %d -> %d when the census was written again. "+

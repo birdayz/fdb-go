@@ -90,21 +90,22 @@ func TestFDB_InMemorySortRowsRead_RFC184(t *testing.T) {
 	}
 
 	scan := func() plans.RecordQueryPlan {
-		return plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		return mustExecutorConstruct(plans.NewRecordQueryScanPlan(
+			[]string{"Order"}, PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false), false))
 	}
 	sortByPK := func(inner plans.RecordQueryPlan) plans.RecordQueryPlan {
-		return plans.NewRecordQueryInMemorySortPlan(inner, []plans.SortKey{{
+		return mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(inner, []plans.SortKey{{
 			Field:      "ORDER_ID",
-			ValueExpr:  values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType),
+			ValueExpr:  mustTestFieldOrdinal(t, inner.GetResultValue(), 0),
 			NullsFirst: true,
-		}})
+		}}))
 	}
 
 	// (1) FIX — PK-ordered ORDER BY under a LIMIT: elimination reads ≤5, the
 	// redundant materialized sort reads the whole input.
 	t.Run("pk_ordered_limit_elides_reads_few", func(t *testing.T) {
-		elided := plans.NewRecordQueryLimitPlan(scan(), 1, 0)                 // planner's post-fix choice
-		materialized := plans.NewRecordQueryLimitPlan(sortByPK(scan()), 1, 0) // pre-fix wrong choice
+		elided := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(scan(), 1, 0))                 // planner's post-fix choice
+		materialized := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(sortByPK(scan()), 1, 0)) // pre-fix wrong choice
 
 		if !scansAtMost(t, elided, 5) {
 			t.Fatalf("elided Limit(1, Scan) scanned > 5 of %d rows — expected a streaming ~1-row read", seeded)
@@ -154,13 +155,14 @@ func TestFDB_InMemorySortRowsRead_RFC184(t *testing.T) {
 	t.Run("selective_index_reads_fewer_than_full_scan", func(t *testing.T) {
 		res := predicates.EmptyComparisonRange().Merge(&predicates.Comparison{
 			Type:    predicates.ComparisonGreaterThanEq,
-			Operand: values.LiteralValue(int64(398)),
+			Operand: &values.ConstantValue{Value: int64(398), Typ: values.NotNullLong},
 		})
 		if !res.Ok {
 			t.Fatal("build price>=398 comparison range")
 		}
-		selectiveIndex := plans.NewRecordQueryIndexPlan(
-			"order_price_idx", []*predicates.ComparisonRange{res.Range}, []string{"Order"}, nil, false).
+		selectiveIndex := mustExecutorConstruct(plans.NewRecordQueryIndexPlan(
+			"order_price_idx", []*predicates.ComparisonRange{res.Range}, []string{"Order"},
+			PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false), false)).
 			WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		if scansAtMost(t, scan(), 50) {

@@ -10,29 +10,40 @@ import (
 // aggOrderingInnerIndexPlan builds the index scan that feeds a streaming
 // aggregation in the tests below: an index on (K) over table T, in the given
 // direction.
-func aggOrderingInnerIndexPlan(reverse bool) *RecordQueryIndexPlan {
-	return NewRecordQueryIndexPlan("IDX_K", nil, []string{"T"}, values.UnknownType, reverse).
+func aggOrderingInnerIndexPlan(t testing.TB, reverse bool) *RecordQueryIndexPlan {
+	t.Helper()
+	return mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("IDX_K", nil, []string{"T"}, exactTestRecordType(), reverse)
+	}).
 		WithIndexMetadata([]string{"K"}, []string{"ID"}, false)
 }
 
 // aggOrderingFetchOverCovering builds Fetch(Covering(IndexScan)) — the shape
 // the access path now builds unconditionally, and therefore the shape an
 // ordered inner beneath a streaming aggregation normally has.
-func aggOrderingFetchOverCovering(reverse bool) RecordQueryPlan {
-	cov := NewRecordQueryCoveringIndexPlan(aggOrderingInnerIndexPlan(reverse))
-	return NewRecordQueryFetchFromPartialRecordPlan(cov, nil, values.UnknownType, FetchIndexRecordsPrimaryKey)
+func aggOrderingFetchOverCovering(t testing.TB, reverse bool) RecordQueryPlan {
+	t.Helper()
+	cov := mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+		return NewRecordQueryCoveringIndexPlan(aggOrderingInnerIndexPlan(t, reverse))
+	})
+	return mustChecked(t, func() (*RecordQueryFetchFromPartialRecordPlan, error) {
+		return NewRecordQueryFetchFromPartialRecordPlan(cov, nil, exactTestRecordType(), FetchIndexRecordsPrimaryKey)
+	})
 }
 
 // aggOverInner builds StreamingAggregation(GROUP BY K, COUNT(*)) over the
 // given physical inner, carried as a frozen single-plan edge exactly as the
 // implementation rule carries its pinned ordered inner.
-func aggOverInner(inner RecordQueryPlan) *RecordQueryStreamingAggregationPlan {
+func aggOverInner(t testing.TB, inner RecordQueryPlan) *RecordQueryStreamingAggregationPlan {
+	t.Helper()
 	q := expressions.ForEachQuantifier(expressions.FinalOf(inner))
-	return NewRecordQueryStreamingAggregationPlanFromQuantifier(
-		q,
-		[]values.Value{&values.FieldValue{Field: "K", Typ: values.UnknownType}},
-		[]expressions.AggregateSpec{{Function: expressions.AggCount}},
-	)
+	return mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlanFromQuantifier(
+			q,
+			[]values.Value{testFieldIn(t, exactTestRecordType(), "agg_input", "K")},
+			[]expressions.AggregateSpec{{Function: expressions.AggCount}},
+		)
+	})
 }
 
 // TestStreamingAggOrdering_ReverseDirectionSurvivesCoveringInner pins that the
@@ -58,25 +69,29 @@ func TestStreamingAggOrdering_ReverseDirectionSurvivesCoveringInner(t *testing.T
 		inner   func(reverse bool) RecordQueryPlan
 		reverse bool
 	}{
-		{"bare_forward", func(r bool) RecordQueryPlan { return aggOrderingInnerIndexPlan(r) }, false},
-		{"bare_reverse", func(r bool) RecordQueryPlan { return aggOrderingInnerIndexPlan(r) }, true},
+		{"bare_forward", func(r bool) RecordQueryPlan { return aggOrderingInnerIndexPlan(t, r) }, false},
+		{"bare_reverse", func(r bool) RecordQueryPlan { return aggOrderingInnerIndexPlan(t, r) }, true},
 		{"covering_forward", func(r bool) RecordQueryPlan {
-			return NewRecordQueryCoveringIndexPlan(aggOrderingInnerIndexPlan(r))
+			return mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+				return NewRecordQueryCoveringIndexPlan(aggOrderingInnerIndexPlan(t, r))
+			})
 		}, false},
 		{"covering_reverse", func(r bool) RecordQueryPlan {
-			return NewRecordQueryCoveringIndexPlan(aggOrderingInnerIndexPlan(r))
+			return mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+				return NewRecordQueryCoveringIndexPlan(aggOrderingInnerIndexPlan(t, r))
+			})
 		}, true},
 		{"fetch_over_covering_forward", func(r bool) RecordQueryPlan {
-			return aggOrderingFetchOverCovering(r)
+			return aggOrderingFetchOverCovering(t, r)
 		}, false},
 		{"fetch_over_covering_reverse", func(r bool) RecordQueryPlan {
-			return aggOrderingFetchOverCovering(r)
+			return aggOrderingFetchOverCovering(t, r)
 		}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			agg := aggOverInner(tc.inner(tc.reverse))
+			agg := aggOverInner(t, tc.inner(tc.reverse))
 			o := agg.HintOrdering()
 			if !o.IsKnown {
 				t.Fatalf("ordering claim should be known for %s", tc.name)

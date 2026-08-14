@@ -104,10 +104,14 @@ func (r *OrderedPrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
 	// supply: the physical key types the executor's range binder requires.
 	physicalTypes := physicalTypesFromFlatRow(scan.GetFlowedType(), pkCols, nil)
 
-	plan := plans.NewRecordQueryScanPlan(scan.GetRecordTypes(), scan.GetFlowedType(), reverse)
-	pkVals := make([]values.Value, len(pkCols))
-	for i, col := range pkCols {
-		pkVals[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
+	plan, err := plans.NewRecordQueryScanPlan(scan.GetRecordTypes(), scan.GetFlowedType(), reverse)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	pkVals := resolvedColumnsInRow(scan.GetFlowedType(), pkCols)
+	if len(pkVals) != len(pkCols) {
+		return
 	}
 	plan = plan.WithPrimaryKey(pkVals).
 		WithKeyComponentTypes(physicalTypes)

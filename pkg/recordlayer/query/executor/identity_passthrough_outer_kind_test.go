@@ -25,8 +25,8 @@ import (
 func TestIdentityPassThroughDiscriminatesOuterKind(t *testing.T) {
 	t.Parallel()
 	legA, legB, _, _, seed := ojWiringLegs(t) // A(ID,V), B(ID,W); seed = [A.ID,A.V,B.ID,B.W]
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, legA, false)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, legB, false)
+	scanA := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"A"}, legA, false))
+	scanB := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"B"}, legB, false))
 	mergedCorr := values.NamedCorrelationIdentifier("M")
 	existCorr := values.NamedCorrelationIdentifier("EX")
 
@@ -34,14 +34,17 @@ func TestIdentityPassThroughDiscriminatesOuterKind(t *testing.T) {
 	// WHERE-EXISTS shape. A leg-independent exists inner (a plain scan, no baked
 	// outer refs) leaves outerBakedType nil, so the disabled-build probe can't
 	// recognise the ordinal outer that way.
-	identityRV := values.NewQuantifiedObjectValue(mergedCorr)
-	legIndependentInner := plans.NewRecordQueryScanPlan([]string{"C"}, values.UnknownType, false)
+	identityRV := mustTestQOV(t, mergedCorr, seed.Type())
+	legIndependentType := exactTestRowType(values.Field{Name: "CID", FieldType: values.NotNullLong})
+	legIndependentInner := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"C"}, legIndependentType, false))
 
-	innerRow := dmap(map[string]any{})
+	innerPos := NewPositionalRow(legIndependentType)
+	innerPos.Slots[0] = int64(1)
+	innerRow := QueryResult{Positional: innerPos}
 
 	// GATED ORDINAL OUTER: the step-1 NLJ carries the ordinal seed → outerMergedType
 	// set (from downstreamLegWindowsTyped), outerBakedType nil (leg-independent inner).
-	gatedOuter := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), seed)
+	gatedOuter := mustExecutorConstruct(plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), seed))
 	cGated, err := newFlatMapCursorWithOuterProperties(recordlayer.FromList([]QueryResult{}), gatedOuter, legIndependentInner, nil,
 		EmptyEvaluationContext(), mergedCorr, existCorr, identityRV, recordlayer.ExecuteProperties{}, false)
 	if err != nil {
@@ -74,15 +77,21 @@ func TestIdentityPassThroughDiscriminatesOuterKind(t *testing.T) {
 		t.Fatalf("propagated positional slot 2 (B.ID) = (%v,%v), want (2,true) — the seed-layout row flows verbatim (adapt no-op)", v, ok)
 	}
 
-	// NAME-MODEL OUTER: the outer NLJ carries a NAME-MODEL RC (lazy dotted refs,
+	// NAME-MODEL OUTER: the outer NLJ carries a NAME-MODEL RC (ordinary,
+	// source-relative dotted refs,
 	// not FrontierPinned) → ordinalJoinSpansOf rejects it → outerMergedType NIL.
 	// The pass-through must NOT recognise it — this is the discriminator that keeps
 	// the name-model existential class (CorrelatedExistsCrossJoin) untouched.
-	nameModelRV := values.NewRawRecordConstructorValue(
-		values.RecordConstructorField{Name: "A.ID", Value: &values.FieldValue{Field: "A.ID", Typ: values.NotNullLong}},
-		values.RecordConstructorField{Name: "B.ID", Value: &values.FieldValue{Field: "B.ID", Typ: values.NotNullLong}},
+	nameType := exactTestRowType(
+		values.Field{Name: "A.ID", FieldType: values.NotNullLong},
+		values.Field{Name: "B.ID", FieldType: values.NotNullLong},
 	)
-	nameModelOuter := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), nameModelRV)
+	nameRoot := mustTestQOV(t, values.UniqueCorrelationIdentifier(), nameType)
+	nameModelRV := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "A.ID", Value: mustTestFieldOrdinal(t, nameRoot, 0)},
+		values.RecordConstructorField{Name: "B.ID", Value: mustTestFieldOrdinal(t, nameRoot, 1)},
+	)
+	nameModelOuter := mustExecutorConstruct(plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), nameModelRV))
 	cName, err := newFlatMapCursorWithOuterProperties(recordlayer.FromList([]QueryResult{}), nameModelOuter, legIndependentInner, nil,
 		EmptyEvaluationContext(), mergedCorr, existCorr, identityRV, recordlayer.ExecuteProperties{}, false)
 	if err != nil {

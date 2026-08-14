@@ -11,6 +11,7 @@ import (
 type RecordQueryTempTableScanPlan struct {
 	PlanExprBase
 	tempTableAlias values.CorrelationIdentifier
+	flowedType     values.Type
 	// resultValue is the stable per-instance QuantifiedObjectValue standing for
 	// the rows this temp-table scan emits — minted once at construction, returned
 	// by GetResultValue, EXCLUDED from Equals/Hash (its correlation id is unique
@@ -21,27 +22,30 @@ type RecordQueryTempTableScanPlan struct {
 	resultValue values.Value
 }
 
-func NewRecordQueryTempTableScanPlan(alias values.CorrelationIdentifier) *RecordQueryTempTableScanPlan {
-	return &RecordQueryTempTableScanPlan{
-		tempTableAlias: alias,
-		resultValue:    values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+func NewRecordQueryTempTableScanPlan(alias values.CorrelationIdentifier, flowedType values.Type) (*RecordQueryTempTableScanPlan, error) {
+	base, err := newPlanExprBaseForType("RecordQueryTempTableScanPlan", flowedType)
+	if err != nil {
+		return nil, err
 	}
+	return &RecordQueryTempTableScanPlan{
+		PlanExprBase:   base,
+		tempTableAlias: alias,
+		flowedType:     base.resultValue.Type(),
+		resultValue:    base.resultValue,
+	}, nil
 }
 
 func (p *RecordQueryTempTableScanPlan) GetTempTableAlias() values.CorrelationIdentifier {
 	return p.tempTableAlias
 }
 
-func (p *RecordQueryTempTableScanPlan) GetResultType() values.Type { return values.UnknownType }
+func (p *RecordQueryTempTableScanPlan) GetResultType() values.Type { return p.flowedType }
 
 // GetResultValue returns the temp-table scan's STABLE per-instance result value —
 // the single correlation identity a bare temp-table scan carries as its own memo
 // expression (RFC-184 W2). Falls back to PlanExprBase (a fresh QOV per call) for
 // struct-literal test plans that bypass the constructor (resultValue is nil).
 func (p *RecordQueryTempTableScanPlan) GetResultValue() values.Value {
-	if p.resultValue == nil {
-		return p.PlanExprBase.GetResultValue()
-	}
 	return p.resultValue
 }
 
@@ -80,8 +84,11 @@ func (p *RecordQueryTempTableScanPlan) EqualsWithoutChildren(other expressions.R
 
 // WithQuantifiers returns this plan unchanged — it has no quantifiers to
 // replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryTempTableScanPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+func (p *RecordQueryTempTableScanPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryTempTableScanPlan", len(qs), 0); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

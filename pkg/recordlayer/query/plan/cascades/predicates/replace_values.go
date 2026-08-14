@@ -29,12 +29,36 @@ func ReplaceValues(p QueryPredicate, fn func(values.Value) values.Value) QueryPr
 // interior nodes — and shares the exact predicate spine ReplaceValues uses,
 // so the two rewrite families cannot diverge. Pointer-stable.
 func TranslateLeafPredicates(p QueryPredicate, m values.TranslationMap) QueryPredicate {
-	if m == nil || m.DefinesOnlyIdentities() {
-		return p
+	translated, err := TranslateLeafPredicatesChecked(p, m)
+	if err != nil {
+		return nil
 	}
-	return transformEmbeddedValues(p, func(v values.Value) values.Value {
-		return values.TranslateCorrelations(v, m)
+	return translated
+}
+
+// TranslateLeafPredicatesChecked is the atomic, error-bearing translation
+// authority. A failed Value reconstruction returns no predicate graph; it
+// never embeds a nil Value in an otherwise valid predicate or publishes a
+// partially translated conjunction.
+func TranslateLeafPredicatesChecked(p QueryPredicate, m values.TranslationMap) (QueryPredicate, error) {
+	if m == nil || m.DefinesOnlyIdentities() {
+		return p, nil
+	}
+	return transformEmbeddedValuesChecked(p, func(v values.Value) (values.Value, error) {
+		return values.TranslateCorrelationsChecked(v, m)
 	})
+}
+
+// TransformEmbeddedValuesChecked applies transform once to every complete
+// Value tree owned by p. It does not independently revisit interior Value
+// nodes: callers that need a recursive Value rewrite perform that recursion
+// inside transform. Predicate rebuilding is invocation-local and atomic; the
+// first error returns no predicate graph.
+func TransformEmbeddedValuesChecked(
+	p QueryPredicate,
+	transform func(values.Value) (values.Value, error),
+) (QueryPredicate, error) {
+	return transformEmbeddedValuesChecked(p, transform)
 }
 
 // DependsOnStatementClock reports whether any Value tree embedded in the
@@ -157,6 +181,186 @@ func transformEmbeddedValues(p QueryPredicate, transform func(values.Value) valu
 	default:
 		return p
 	}
+}
+
+// transformEmbeddedValuesChecked is the fallible twin of
+// transformEmbeddedValues. It builds only invocation-local predicate nodes and
+// returns no graph after the first Value or structural error.
+func transformEmbeddedValuesChecked(
+	p QueryPredicate,
+	transform func(values.Value) (values.Value, error),
+) (QueryPredicate, error) {
+	if p == nil {
+		return nil, nil
+	}
+	switch pred := p.(type) {
+	case *ComparisonPredicate:
+		newOperand, err := transform(pred.Operand)
+		if err != nil {
+			return nil, err
+		}
+		newCmp, cmpChanged, err := transformComparisonChecked(pred.Comparison, transform)
+		if err != nil {
+			return nil, err
+		}
+		if newOperand == pred.Operand && !cmpChanged {
+			return p, nil
+		}
+		return &ComparisonPredicate{Operand: newOperand, Comparison: newCmp}, nil
+	case *ValuePredicate:
+		newVal, err := transform(pred.Value)
+		if err != nil {
+			return nil, err
+		}
+		if newVal == pred.Value {
+			return p, nil
+		}
+		return NewValuePredicate(newVal), nil
+	case *AndPredicate:
+		changed := false
+		newSubs := make([]QueryPredicate, len(pred.SubPredicates))
+		for i, sub := range pred.SubPredicates {
+			translatedSub, err := transformEmbeddedValuesChecked(sub, transform)
+			if err != nil {
+				return nil, err
+			}
+			newSubs[i] = translatedSub
+			changed = changed || newSubs[i] != sub
+		}
+		if !changed {
+			return p, nil
+		}
+		return NewAnd(newSubs...), nil
+	case *OrPredicate:
+		changed := false
+		newSubs := make([]QueryPredicate, len(pred.SubPredicates))
+		for i, sub := range pred.SubPredicates {
+			translatedSub, err := transformEmbeddedValuesChecked(sub, transform)
+			if err != nil {
+				return nil, err
+			}
+			newSubs[i] = translatedSub
+			changed = changed || newSubs[i] != sub
+		}
+		if !changed {
+			return p, nil
+		}
+		return NewOr(newSubs...), nil
+	case *NotPredicate:
+		newChild, err := transformEmbeddedValuesChecked(pred.Child, transform)
+		if err != nil {
+			return nil, err
+		}
+		if newChild == pred.Child {
+			return p, nil
+		}
+		return NewNot(newChild), nil
+	case *Placeholder:
+		newVal, err := transform(pred.Value)
+		if err != nil {
+			return nil, err
+		}
+		if newVal == pred.Value {
+			return p, nil
+		}
+		return &Placeholder{ParameterAlias: pred.ParameterAlias, Value: newVal, CompRange: pred.CompRange}, nil
+	case *ExistentialValuePredicate:
+		newVal, err := transform(pred.Value)
+		if err != nil {
+			return nil, err
+		}
+		newCmp, cmpChanged, err := transformComparisonChecked(pred.Comparison, transform)
+		if err != nil {
+			return nil, err
+		}
+		if newVal == pred.Value && !cmpChanged {
+			return p, nil
+		}
+		if _, ok := values.AsQuantifiedObjectValue(newVal); !ok {
+			return nil, &values.ResolutionError{
+				ErrorCode: values.RewriteInvalidCallbackOutput,
+				Path:      "predicate.existential.value",
+				Detail:    "translated existential value is not an exact QuantifiedObjectValue",
+			}
+		}
+		return &ExistentialValuePredicate{Value: newVal, Comparison: newCmp}, nil
+	case *PredicateWithValueAndRanges:
+		newVal, err := transform(pred.GetValue())
+		if err != nil {
+			return nil, err
+		}
+		changed := newVal != pred.GetValue()
+		newRanges := make([]*RangeConstraints, len(pred.GetRanges()))
+		for i, ranges := range pred.GetRanges() {
+			newRanges[i], err = transformRangeConstraintsChecked(ranges, transform)
+			if err != nil {
+				return nil, err
+			}
+			changed = changed || newRanges[i] != ranges
+		}
+		if !changed {
+			return p, nil
+		}
+		return NewPredicateWithValueAndRanges(newVal, newRanges), nil
+	default:
+		return p, nil
+	}
+}
+
+func transformComparisonChecked(
+	cmp Comparison,
+	transform func(values.Value) (values.Value, error),
+) (Comparison, bool, error) {
+	changed := false
+	if cmp.Operand != nil {
+		newOperand, err := transform(cmp.Operand)
+		if err != nil {
+			return Comparison{}, false, err
+		}
+		if newOperand != cmp.Operand {
+			cmp.Operand = newOperand
+			changed = true
+		}
+	}
+	if cmp.QueryVector != nil {
+		newVector, err := transform(cmp.QueryVector)
+		if err != nil {
+			return Comparison{}, false, err
+		}
+		if newVector != cmp.QueryVector {
+			cmp.QueryVector = newVector
+			changed = true
+		}
+	}
+	return cmp, changed, nil
+}
+
+func transformRangeConstraintsChecked(
+	ranges *RangeConstraints,
+	transform func(values.Value) (values.Value, error),
+) (*RangeConstraints, error) {
+	changed := false
+	builder := NewRangeConstraintsBuilder()
+	for _, comparison := range ranges.GetCompilableComparisons() {
+		translated, comparisonChanged, err := transformComparisonChecked(comparison, transform)
+		if err != nil {
+			return nil, err
+		}
+		changed = changed || comparisonChanged
+		builder.AddComparisonMaybe(translated)
+	}
+	for _, comparison := range ranges.GetDeferredRanges() {
+		translated, comparisonChanged, err := transformComparisonChecked(comparison, transform)
+		if err != nil {
+			return nil, err
+		}
+		changed = changed || comparisonChanged
+		builder.AddComparisonMaybe(translated)
+	}
+	if !changed {
+		return ranges, nil
+	}
+	return builder.Build(), nil
 }
 
 // transformComparison applies transform to every VALUE-BEARING field of a

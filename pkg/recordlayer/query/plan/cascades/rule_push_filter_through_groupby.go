@@ -84,16 +84,83 @@ func (r *PushFilterThroughGroupByRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	pushed := expressions.NewLogicalFilterExpression(pushable, gb.GetInner())
+	pushed, err := expressions.NewLogicalFilterExpression(pushable, gb.GetInner())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	pushedQ := expressions.ForEachQuantifier(call.MemoizeExpression(pushed))
-	newGB := expressions.NewGroupByExpression(gb.GetGroupingKeys(), gb.GetAggregates(), pushedQ)
+	// The new GroupBy ranges over the freshly memoized pushed Filter. Its keys
+	// and aggregate operands formerly read gb.inner directly, so carry them
+	// across that new quantifier boundary with a checked exact-value rebase.
+	rebasedKeys, rebasedAggregates, err := rebasePushFilterGroupByInputs(
+		gb.GetGroupingKeys(),
+		gb.GetAggregates(),
+		gb.GetInner().GetAlias(),
+		pushedQ.GetAlias(),
+	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	newGB, err := expressions.NewGroupByExpression(rebasedKeys, rebasedAggregates, pushedQ)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	if len(residual) == 0 {
 		call.Yield(newGB)
 	} else {
 		gbQ := expressions.ForEachQuantifier(call.MemoizeExpression(newGB))
-		call.Yield(expressions.NewLogicalFilterExpression(residual, gbQ))
+		// Residual predicates still address the original GroupBy-output
+		// quantifier. The replacement GroupBy has a fresh quantifier alias.
+		rebasedResidual, err := rebasePushFilterPredicates(
+			residual, f.GetInner().GetAlias(), gbQ.GetAlias())
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		outer, err := expressions.NewLogicalFilterExpression(rebasedResidual, gbQ)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		call.Yield(outer)
 	}
+}
+
+func rebasePushFilterGroupByInputs(
+	groupingKeys []values.Value,
+	aggregates []expressions.AggregateSpec,
+	source, target values.CorrelationIdentifier,
+) ([]values.Value, []expressions.AggregateSpec, error) {
+	rebasedKeys := append([]values.Value(nil), groupingKeys...)
+	rebasedAggregates := append([]expressions.AggregateSpec(nil), aggregates...)
+	if source == target {
+		return rebasedKeys, rebasedAggregates, nil
+	}
+	aliases, err := values.NewAliasMap([]values.AliasPair{{Source: source, Target: target}})
+	if err != nil {
+		return nil, nil, err
+	}
+	for i, key := range rebasedKeys {
+		rebasedKeys[i], err = values.RebaseValueChecked(key, aliases)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	for i := range rebasedAggregates {
+		if rebasedAggregates[i].Operand == nil {
+			continue
+		}
+		rebasedAggregates[i].Operand, err = values.RebaseValueChecked(
+			rebasedAggregates[i].Operand, aliases)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return rebasedKeys, rebasedAggregates, nil
 }
 
 // rebindGroupKeyRefToInner returns the Value replacement that rewrites a
@@ -131,7 +198,7 @@ func (r *PushFilterThroughGroupByRule) OnMatch(call *ExpressionRuleCall) {
 // this by taking the first match, which is the wrong-rows read described above.
 func rebindGroupKeyRefToInner(keys []values.Value) func(values.Value) values.Value {
 	return func(v values.Value) values.Value {
-		if _, ok := v.(*values.FieldValue); !ok {
+		if _, ok := values.AsFieldValue(v); !ok {
 			return v
 		}
 		// Match by full accessor path, not leaf name (RFC-187 S7): a predicate
@@ -246,14 +313,15 @@ func comparandReferencesOnlyKeys(c predicates.Comparison, keySet map[string]stru
 	if c.Type.IsUnary() || c.Operand == nil {
 		return true
 	}
-	switch rhs := c.Operand.(type) {
-	case *values.FieldValue:
+	if rhs, isField := values.AsFieldValue(c.Operand); isField {
 		key, ok := values.AccessorNamePathKey(rhs)
 		if !ok {
 			return false
 		}
 		_, inKeys := keySet[key]
 		return inKeys
+	}
+	switch c.Operand.(type) {
 	case *values.ConstantValue, *values.NullValue, *values.BooleanValue:
 		return true
 	default:

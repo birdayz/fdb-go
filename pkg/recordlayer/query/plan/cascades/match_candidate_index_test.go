@@ -10,6 +10,38 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+func matchCandidateQOV(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+	rowType values.Type,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	qov, err := values.NewQuantifiedObjectValue(alias, rowType)
+	return mustConstruct(t, qov, err)
+}
+
+func matchCandidateField(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+	rowType values.Type,
+	ordinals []int,
+	frontierPinned bool,
+) values.Value {
+	t.Helper()
+	root := matchCandidateQOV(t, alias, rowType)
+	var field values.Value
+	var err error
+	if frontierPinned {
+		if len(ordinals) != 1 {
+			t.Fatalf("frontier-pinned match-candidate field needs one ordinal, got %v", ordinals)
+		}
+		field, err = values.ResolveOrdinalSeedField(root, ordinals[0])
+	} else {
+		field, err = values.ResolveFieldOrdinals(root, ordinals)
+	}
+	return mustConstruct(t, field, err)
+}
+
 func TestValueIndexScanMatchCandidate_PrefixMap_AllEquality(t *testing.T) {
 	t.Parallel()
 	a1 := values.UniqueCorrelationIdentifier()
@@ -19,7 +51,7 @@ func TestValueIndexScanMatchCandidate_PrefixMap_AllEquality(t *testing.T) {
 		[]string{"Order"},
 		[]string{"STATUS", "DATE"},
 		[]values.CorrelationIdentifier{a1, a2},
-		values.UnknownType,
+		testRecordRowType("Order", "STATUS", "DATE"),
 		false,
 		nil,
 	)
@@ -48,7 +80,7 @@ func TestValueIndexScanMatchCandidate_PrefixMap_StopsAtEmpty(t *testing.T) {
 		[]string{"T"},
 		[]string{"A", "B", "C"},
 		[]values.CorrelationIdentifier{a1, a2, a3},
-		values.UnknownType,
+		testRecordRowType("T", "A", "B", "C"),
 		false,
 		nil,
 	)
@@ -75,7 +107,7 @@ func TestValueIndexScanMatchCandidate_PrefixMap_StopsAfterInequality(t *testing.
 		[]string{"T"},
 		[]string{"A", "B", "C"},
 		[]values.CorrelationIdentifier{a1, a2, a3},
-		values.UnknownType,
+		testRecordRowType("T", "A", "B", "C"),
 		false,
 		nil,
 	)
@@ -109,12 +141,12 @@ func TestValueIndexScanMatchCandidate_ToScanPlan(t *testing.T) {
 		[]string{"Order"},
 		[]string{"STATUS", "DATE"},
 		[]values.CorrelationIdentifier{a1, a2},
-		values.UnknownType,
+		testRecordRowType("Order", "STATUS", "DATE"),
 		false,
 		nil,
 	)
 	eq := predicates.EmptyComparisonRange()
-	eqRes := eq.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("active")})
+	eqRes := eq.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))})
 
 	prefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{
 		a1: eqRes.Range,
@@ -164,7 +196,14 @@ func TestValueIndexScanMatchCandidate_PushValueThroughFetch_ChainedFieldDeclines
 	src := values.NamedCorrelationIdentifier("SRC")
 	tgt := values.NamedCorrelationIdentifier("TGT")
 	sarg := values.UniqueCorrelationIdentifier()
-	rowType := testRecordRowType("T", "ID", "ADDR", "CITY")
+	addressType := values.NewRecordType("Address", false, []values.Field{
+		{Name: "CITY", FieldType: values.NullableLong, Ordinal: 0},
+	})
+	rowType := values.NewRecordType("T", false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "ADDR", FieldType: addressType, Ordinal: 1},
+		{Name: "CITY", FieldType: values.NullableLong, Ordinal: 2},
+	})
 	c := newKnownDistinctValueIndexCandidate(
 		"idx_city",
 		[]string{"T"},
@@ -175,11 +214,10 @@ func TestValueIndexScanMatchCandidate_PushValueThroughFetch_ChainedFieldDeclines
 		nil,
 	)
 
-	// Chained ADDR.CITY: FieldValue{CITY, Child: FieldValue{ADDR, Child: QOV(SRC)}}.
-	// Its leaf name (CITY) collides with the covered top-level column but the value
-	// is a different indexed Value — must decline.
-	inner := testColumnRef(values.NewQuantifiedObjectValue(src), rowType, "ADDR", values.UnknownType)
-	chained := values.NewFieldValue(inner, "CITY", values.UnknownType)
+	// Chained ADDR.CITY is one exact, fused two-step access rooted at QOV(SRC).
+	// Its leaf name collides with the covered top-level column but its full path
+	// denotes a different value, so it must decline.
+	chained := matchCandidateField(t, src, rowType, []int{1, 0}, false)
 	got, ok := c.PushValueThroughFetch(chained, src, tgt)
 	if ok {
 		t.Fatalf("chained ADDR.CITY must NOT push through fetch (leaf-name collision), got ok=true value=%v", got)
@@ -187,43 +225,38 @@ func TestValueIndexScanMatchCandidate_PushValueThroughFetch_ChainedFieldDeclines
 
 	// Bare top-level CITY over the source: FieldValue{CITY, Child: QOV(SRC)} — the
 	// legitimate case that must STILL translate (guard against over-restriction).
-	bare := testColumnRef(values.NewQuantifiedObjectValue(src), rowType, "CITY", values.UnknownType)
+	bare := matchCandidateField(t, src, rowType, []int{2}, false)
 	gotBare, okBare := c.PushValueThroughFetch(bare, src, tgt)
 	if !okBare {
 		t.Fatal("bare top-level CITY over the source must push through fetch")
 	}
-	fv, isFV := gotBare.(*values.FieldValue)
-	if !isFV || fv.Field != "CITY" {
+	fv, isFV := values.AsFieldValue(gotBare)
+	if !isFV || fv.DisplayName() != "CITY" {
 		t.Fatalf("translated value=%v, want FieldValue{CITY, ...}", gotBare)
 	}
-	childQOV, isQOV := fv.Child.(*values.QuantifiedObjectValue)
-	if !isQOV || childQOV.Correlation != tgt {
-		t.Fatalf("translated child=%v, want QOV(TGT)", fv.Child)
+	childQOV, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
+	if !isQOV || childQOV.Correlation() != tgt {
+		t.Fatalf("translated child=%v, want QOV(TGT)", fv.ChildValue())
 	}
 
-	// BAKED bare column: FieldValue{CITY, Child: nil, Resolved} — the
-	// post-ordinalization (resolved-ordinal / leaf) shape the covering merge
-	// actually produces. An over-restrictive "Child must be QOV(SRC)" check
-	// WRONGLY declined this and regressed the covering-index merge; only this
-	// childless case (not the bare-QOV case above) reveals that. It must STILL
-	// translate.
-	baked := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"CITY", 2, values.UnknownType, values.OrdinalDomainOfType(rowType),
-	)
+	// The machinery-owned, frontier-pinned form is still QOV-rooted under
+	// RFC-232. It must translate without losing the exact ordinal address.
+	baked := matchCandidateField(t, src, rowType, []int{2}, true)
 	gotBaked, okBaked := c.PushValueThroughFetch(baked, src, tgt)
 	if !okBaked {
-		t.Fatal("baked bare CITY (Child==nil, the post-ordinalization covering shape) must push through fetch")
+		t.Fatal("frontier-pinned bare CITY must push through fetch")
 	}
-	if bfv, isFV := gotBaked.(*values.FieldValue); !isFV || bfv.Field != "CITY" {
+	if bfv, isFV := values.AsFieldValue(gotBaked); !isFV || bfv.DisplayName() != "CITY" {
 		t.Fatalf("translated baked value=%v, want FieldValue{CITY, ...}", gotBaked)
 	}
 
-	// A FieldValue over a NON-QOV, non-nil composite child (here a constant) is not
-	// a bare column and must DECLINE — pins the allowlist (Child==nil || Child==QOV),
-	// not a chained-only blocklist that would let this slip through and drop the child.
-	overConst := values.NewFieldValue(&values.ConstantValue{Value: "x", Typ: values.UnknownType}, "CITY", values.UnknownType)
-	if got2, ok2 := c.PushValueThroughFetch(overConst, src, tgt); ok2 {
-		t.Fatalf("FieldValue over a non-QOV composite must NOT push through fetch, got ok=true value=%v", got2)
+	// RFC-232 closes the old non-QOV composite-child escape hatch at construction:
+	// such a node cannot enter PushValueThroughFetch and therefore cannot have its
+	// child silently discarded by this rewrite.
+	if invalid, err := values.ResolveFieldOrdinals(
+		&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}, []int{0},
+	); err == nil || invalid != nil {
+		t.Fatalf("non-QOV scalar unexpectedly published a FieldValue: (%v, %v)", invalid, err)
 	}
 }
 
@@ -233,7 +266,11 @@ func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testin
 	tagAlias := values.UniqueCorrelationIdentifier()
 	scoreAlias := values.UniqueCorrelationIdentifier()
 	reportedNoDuplicates := false
-	itemRowType := testRecordRowType("Item", "ID", "TAGS", "SCORE")
+	itemRowType := values.NewRecordType("Item", false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "TAGS", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 1},
+		{Name: "SCORE", FieldType: values.NullableLong, Ordinal: 2},
+	})
 	fanOutCandidate := NewValueIndexScanMatchCandidateWithFunctions(
 		"item_tags_score",
 		[]string{"Item"},
@@ -263,7 +300,7 @@ func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testin
 		[]string{"TAGS"},
 		nil,
 		[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
-		values.UnknownType,
+		itemRowType,
 		false,
 		nil,
 		nil,
@@ -280,10 +317,13 @@ func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testin
 	// The covering question is asked in ordinals now, so a probe carries the
 	// ordinal AND the layout it indexes — the shape the resolver mints.
 	field := func(name string) values.Value {
-		return testColumnRef(
-			values.NewQuantifiedObjectValue(sourceAlias),
-			itemRowType, name, values.UnknownType,
-		)
+		for ordinal, declared := range itemRowType.Fields {
+			if declared.Name == name {
+				return matchCandidateField(t, sourceAlias, itemRowType, []int{ordinal}, false)
+			}
+		}
+		t.Fatalf("test row has no field %q", name)
+		return nil
 	}
 
 	if translated, ok := fanOutCandidate.PushValueThroughFetch(
@@ -297,7 +337,7 @@ func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testin
 		)
 	}
 	if translated, ok := fanOutCandidate.PushValueThroughFetch(
-		testColumnRef(nil, itemRowType, "TAGS", values.UnknownType),
+		matchCandidateField(t, sourceAlias, itemRowType, []int{1}, true),
 		sourceAlias,
 		targetAlias,
 	); ok {
@@ -319,8 +359,8 @@ func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testin
 				coveredColumn,
 			)
 		}
-		translatedField, ok := translated.(*values.FieldValue)
-		if !ok || translatedField.Field != coveredColumn {
+		translatedField, ok := values.AsFieldValue(translated)
+		if !ok || translatedField.DisplayName() != coveredColumn {
 			t.Fatalf(
 				"translated %s = %#v, want the same field over target",
 				coveredColumn,
@@ -403,12 +443,13 @@ func TestValueIndexScanMatchCandidate_WholeRecordIsNotCovered(t *testing.T) {
 	t.Parallel()
 
 	columnAlias := values.UniqueCorrelationIdentifier()
+	itemRowType := testRecordRowType("Item", "ID", "SCORE")
 	candidate := newKnownDistinctValueIndexCandidate(
 		"item_score",
 		[]string{"Item"},
 		[]string{"SCORE"},
 		[]values.CorrelationIdentifier{columnAlias},
-		values.UnknownType,
+		itemRowType,
 		false,
 		nil,
 	)
@@ -416,7 +457,7 @@ func TestValueIndexScanMatchCandidate_WholeRecordIsNotCovered(t *testing.T) {
 	targetAlias := values.NamedCorrelationIdentifier("target")
 
 	if translated, ok := candidate.PushValueThroughFetch(
-		values.NewQuantifiedObjectValue(sourceAlias),
+		matchCandidateQOV(t, sourceAlias, itemRowType),
 		sourceAlias,
 		targetAlias,
 	); ok {
@@ -427,7 +468,7 @@ func TestValueIndexScanMatchCandidate_WholeRecordIsNotCovered(t *testing.T) {
 	}
 
 	uncorrelatedAlias := values.NamedCorrelationIdentifier("uncorrelated")
-	uncorrelated := values.NewQuantifiedObjectValue(uncorrelatedAlias)
+	uncorrelated := matchCandidateQOV(t, uncorrelatedAlias, itemRowType)
 	translated, ok := candidate.PushValueThroughFetch(
 		uncorrelated,
 		sourceAlias,
@@ -449,7 +490,11 @@ func TestValueIndexScanMatchCandidate_FunctionKeyCoversOnlyPKAndAbstainsOrdering
 
 	createsDuplicates := false
 	alias := values.UniqueCorrelationIdentifier()
-	itemRowType := testRecordRowType("Item", "ID", "TAGS", "B")
+	itemRowType := values.NewRecordType("Item", false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "TAGS", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 1},
+		{Name: "B", FieldType: values.NullableLong, Ordinal: 2},
+	})
 	candidate := NewValueIndexScanMatchCandidateWithFunctions(
 		"item_cardinality_tags",
 		[]string{"Item"},
@@ -479,7 +524,7 @@ func TestValueIndexScanMatchCandidate_FunctionKeyCoversOnlyPKAndAbstainsOrdering
 	source := values.UniqueCorrelationIdentifier()
 	target := values.UniqueCorrelationIdentifier()
 	translated, ok := candidate.PushValueThroughFetch(
-		testColumnRef(values.NewQuantifiedObjectValue(source), itemRowType, "TAGS", values.UnknownType),
+		matchCandidateField(t, source, itemRowType, []int{1}, false),
 		source,
 		target,
 	)
@@ -491,7 +536,7 @@ func TestValueIndexScanMatchCandidate_FunctionKeyCoversOnlyPKAndAbstainsOrdering
 		)
 	}
 	translated, ok = candidate.PushValueThroughFetch(
-		testColumnRef(values.NewQuantifiedObjectValue(source), itemRowType, "B", values.UnknownType),
+		matchCandidateField(t, source, itemRowType, []int{2}, false),
 		source,
 		target,
 	)
@@ -503,7 +548,7 @@ func TestValueIndexScanMatchCandidate_FunctionKeyCoversOnlyPKAndAbstainsOrdering
 		)
 	}
 	translated, ok = candidate.PushValueThroughFetch(
-		testColumnRef(values.NewQuantifiedObjectValue(source), itemRowType, "ID", values.UnknownType),
+		matchCandidateField(t, source, itemRowType, []int{0}, false),
 		source,
 		target,
 	)
@@ -544,13 +589,18 @@ func TestValueIndexScanMatchCandidate_FanOutOrderingMatchesJava(t *testing.T) {
 	tagAlias := values.UniqueCorrelationIdentifier()
 	scoreAlias := values.UniqueCorrelationIdentifier()
 	duplicates := true
+	itemRowType := values.NewRecordType("Item", false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "TAGS", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 1},
+		{Name: "SCORE", FieldType: values.NullableLong, Ordinal: 2},
+	})
 	candidate := NewValueIndexScanMatchCandidateWithFunctions(
 		"item_tags_score",
 		[]string{"Item"},
 		[]string{"TAGS", "SCORE"},
 		nil,
 		[]values.CorrelationIdentifier{tagAlias, scoreAlias},
-		values.UnknownType,
+		itemRowType,
 		false,
 		nil,
 		&duplicates,
@@ -596,8 +646,8 @@ func TestValueIndexScanMatchCandidate_FanOutOrderingMatchesJava(t *testing.T) {
 			scoreAlias,
 		)
 	}
-	scoreValue, ok := parts[0].GetValue().(*values.FieldValue)
-	if !ok || scoreValue.Field != "SCORE" {
+	scoreValue, ok := values.AsFieldValue(parts[0].GetValue())
+	if !ok || scoreValue.DisplayName() != "SCORE" {
 		t.Fatalf(
 			"ordering value = %#v, want scalar SCORE (never TAGS array)",
 			parts[0].GetValue(),
@@ -666,7 +716,7 @@ func TestValueIndexScanMatchCandidate_FanOutOrderingMatchesJava(t *testing.T) {
 		[]string{"SCORE"},
 		nil,
 		[]values.CorrelationIdentifier{scalarAlias},
-		values.UnknownType,
+		itemRowType,
 		false,
 		nil,
 		&noDuplicates,

@@ -96,8 +96,8 @@ func collectFieldNamesFromValue(v values.Value, out map[string]struct{}) {
 	if v == nil {
 		return
 	}
-	if fv, ok := v.(*values.FieldValue); ok {
-		out[fv.Field] = struct{}{}
+	if fv, ok := values.AsFieldValue(v); ok {
+		out[fv.DisplayName()] = struct{}{}
 	}
 	for _, child := range v.Children() {
 		collectFieldNamesFromValue(child, out)

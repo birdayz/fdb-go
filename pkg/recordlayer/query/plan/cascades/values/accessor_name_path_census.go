@@ -43,7 +43,7 @@ import (
 // than a reason to relax: Java's FieldValue is resolved AT CONSTRUCTION
 // (FieldValue.java:303-342 all route through resolveFieldPath at :273), so a
 // lazy accessor does not exist, and accessor identity is the ORDINAL ALONE —
-// ResolvedAccessor.equals compares getOrdinal() and nothing else (:684), and
+// resolvedAccessor.equals compares getOrdinal() and nothing else (:684), and
 // hashCode is Objects.hash(getOrdinal()) (:689). The name survives only for
 // rendering (:431, :695). Every arm counted here is therefore an artifact of
 // Go's lazy plan-time node, and the counts say how much of that artifact is

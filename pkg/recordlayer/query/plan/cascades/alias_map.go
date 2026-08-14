@@ -204,11 +204,17 @@ func (m *AliasMap) IsEmpty() bool { return len(m.forward) == 0 }
 // Size returns the number of mappings.
 func (m *AliasMap) Size() int { return len(m.forward) }
 
-// ForwardMap returns the forward (source→target) map suitable for
-// passing to values.RebaseValue. This is the bridge between the
-// cascades-level AliasMap and the values-level rebase infrastructure.
-func (m *AliasMap) ForwardMap() values.AliasMap {
-	return values.AliasMap(m.forward)
+// ForwardMap returns a validated immutable values-level alias map suitable for
+// passing to values.RebaseValue. This is the checked bridge between the
+// cascades-level AliasMap and the values-level rebase infrastructure: in
+// particular, it rejects an attempted mapping between the reserved current
+// correlation and an ordinary correlation.
+func (m *AliasMap) ForwardMap() (values.AliasMap, error) {
+	pairs := make([]values.AliasPair, 0, len(m.forward))
+	for source, target := range m.forward {
+		pairs = append(pairs, values.AliasPair{Source: source, Target: target})
+	}
+	return values.NewAliasMap(pairs)
 }
 
 // Sources returns all source aliases.

@@ -7,7 +7,7 @@ package embedded
 // the aggregate's OUTPUT row and must be rebased onto it. A disagreement is not a
 // lost optimization — it is a reference bound against the wrong row.
 //
-// havingPredicatePushesBelowAggregate used to be a hand-rolled MIRROR of
+// hpdPredicatePushesBelowAggregate used to be a hand-rolled MIRROR of
 // PushFilterThroughGroupByRule.predicateReferencesOnlyKeys carrying a comment
 // saying the two "cannot drift". They had drifted in three ways, and each is
 // pinned below. All three were LATENT — the switch to the shared decider left the
@@ -31,6 +31,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/logical"
@@ -44,19 +45,46 @@ func hpdAgg(keys ...values.Value) *logical.LogicalAggregate {
 	return &logical.LogicalAggregate{Input: logical.NewScan("t", ""), GroupKeys: gks}
 }
 
-// hpdBare is a top-level column reference: one accessor, name only.
-func hpdBare(name string) *values.FieldValue {
-	return &values.FieldValue{Field: name, Typ: values.UnknownType}
+func hpdSourceType() *values.RecordType {
+	address := &values.RecordType{Fields: []values.Field{{Name: "CITY", Ordinal: 0, FieldType: values.NotNullString}}}
+	return &values.RecordType{Fields: []values.Field{
+		{Name: "CITY", Ordinal: 0, FieldType: values.NotNullString},
+		{Name: "POP", Ordinal: 1, FieldType: values.NotNullLong},
+		{Name: "ADDR", Ordinal: 2, FieldType: address},
+		{Name: "V.V", Ordinal: 3, FieldType: values.NotNullLong},
+	}}
 }
 
-// hpdNested is `root.leaf` as a STRUCTURED path — the shape the rule's group-key
-// set distinguishes from a top-level column of the same leaf name.
-func hpdNested(root, leaf string) *values.FieldValue {
-	return &values.FieldValue{
-		Field: leaf,
-		Typ:   values.UnknownType,
-		Child: &values.FieldValue{Field: root, Typ: values.UnknownType},
+func hpdResolve(t testing.TB, ordinals ...int) values.Value {
+	t.Helper()
+	qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T"), hpdSourceType())
+	if err != nil {
+		t.Fatalf("NewQuantifiedObjectValue: %v", err)
 	}
+	value, err := values.ResolveFieldOrdinals(qov, ordinals)
+	if err != nil {
+		t.Fatalf("ResolveFieldOrdinals(%v): %v", ordinals, err)
+	}
+	return value
+}
+
+// hpdBare is an exact top-level column reference.
+func hpdBare(t testing.TB, name string) values.Value {
+	t.Helper()
+	ordinal, ok := hpdSourceType().FieldIndexUnique(name)
+	if !ok {
+		t.Fatalf("unknown fixture column %q", name)
+	}
+	return hpdResolve(t, ordinal)
+}
+
+// hpdNested is `ADDR.CITY` as one exact multi-accessor path.
+func hpdNested(t testing.TB, root, leaf string) values.Value {
+	t.Helper()
+	if root != "ADDR" || leaf != "CITY" {
+		t.Fatalf("unknown fixture path %s.%s", root, leaf)
+	}
+	return hpdResolve(t, 2, 0)
 }
 
 func hpdCmp(operand values.Value, rhs values.Value) predicates.QueryPredicate {
@@ -65,7 +93,18 @@ func hpdCmp(operand values.Value, rhs values.Value) predicates.QueryPredicate {
 	})
 }
 
-func hpdConst() values.Value { return &values.ConstantValue{Value: int64(1), Typ: values.UnknownType} }
+func hpdConst() values.Value { return values.LiteralValue(int64(1)) }
+
+// hpdPredicatePushesBelowAggregate is a test-side adapter around the live rule
+// decider. Keeping the adapter here avoids carrying a production helper whose
+// only callers are this fixture.
+func hpdPredicatePushesBelowAggregate(pred predicates.QueryPredicate, agg *logical.LogicalAggregate) bool {
+	keys := make([]values.Value, 0, len(agg.GroupKeys))
+	for _, key := range agg.GroupKeys {
+		keys = append(keys, key.Value)
+	}
+	return cascades.PredicatePushesBelowGroupBy(pred, keys)
+}
 
 // TestHavingPushdownDeciderAgreesOnTheTrivialCase is the positive control: a
 // plain group-key comparison against a constant IS pushed below, and must stay
@@ -73,8 +112,8 @@ func hpdConst() values.Value { return &values.ConstantValue{Value: int64(1), Typ
 func TestHavingPushdownDeciderAgreesOnTheTrivialCase(t *testing.T) {
 	t.Parallel()
 
-	agg := hpdAgg(hpdBare("CITY"))
-	if !havingPredicatePushesBelowAggregate(hpdCmp(hpdBare("CITY"), hpdConst()), agg) {
+	agg := hpdAgg(hpdBare(t, "CITY"))
+	if !hpdPredicatePushesBelowAggregate(hpdCmp(hpdBare(t, "CITY"), hpdConst()), agg) {
 		t.Fatal("a bare group-key comparison against a constant no longer pushes below the " +
 			"GroupBy; the HAVING rebase would now rebase it onto the aggregate output row " +
 			"while the rule still pushes it pre-aggregate")
@@ -89,8 +128,8 @@ func TestHavingPushdownDeciderComparesTheWholePath(t *testing.T) {
 	t.Parallel()
 
 	// Group by the NESTED addr.city; the HAVING names a top-level CITY.
-	nestedKey := hpdAgg(hpdNested("ADDR", "CITY"))
-	if havingPredicatePushesBelowAggregate(hpdCmp(hpdBare("CITY"), hpdConst()), nestedKey) {
+	nestedKey := hpdAgg(hpdNested(t, "ADDR", "CITY"))
+	if hpdPredicatePushesBelowAggregate(hpdCmp(hpdBare(t, "CITY"), hpdConst()), nestedKey) {
 		t.Fatal("a top-level CITY reference was matched against a nested ADDR.CITY grouping " +
 			"key on their shared LEAF NAME: PushFilterThroughGroupByRule keys its group-key " +
 			"set by the whole accessor path, so it will NOT push this predicate, and the " +
@@ -98,13 +137,13 @@ func TestHavingPushdownDeciderComparesTheWholePath(t *testing.T) {
 	}
 
 	// The mirror image: group by top-level CITY, HAVING names ADDR.CITY.
-	bareKey := hpdAgg(hpdBare("CITY"))
-	if havingPredicatePushesBelowAggregate(hpdCmp(hpdNested("ADDR", "CITY"), hpdConst()), bareKey) {
+	bareKey := hpdAgg(hpdBare(t, "CITY"))
+	if hpdPredicatePushesBelowAggregate(hpdCmp(hpdNested(t, "ADDR", "CITY"), hpdConst()), bareKey) {
 		t.Fatal("a nested ADDR.CITY reference was matched against a top-level CITY grouping key")
 	}
 
 	// And the genuine nested match still pushes.
-	if !havingPredicatePushesBelowAggregate(hpdCmp(hpdNested("ADDR", "CITY"), hpdConst()), nestedKey) {
+	if !hpdPredicatePushesBelowAggregate(hpdCmp(hpdNested(t, "ADDR", "CITY"), hpdConst()), nestedKey) {
 		t.Fatal("a nested reference no longer matches the identical nested grouping key")
 	}
 }
@@ -116,36 +155,37 @@ func TestHavingPushdownDeciderComparesTheWholePath(t *testing.T) {
 func TestHavingPushdownDeciderChecksTheComparand(t *testing.T) {
 	t.Parallel()
 
-	agg := hpdAgg(hpdBare("CITY"))
-	if havingPredicatePushesBelowAggregate(hpdCmp(hpdBare("CITY"), hpdBare("POP")), agg) {
+	agg := hpdAgg(hpdBare(t, "CITY"))
+	if hpdPredicatePushesBelowAggregate(hpdCmp(hpdBare(t, "CITY"), hpdBare(t, "POP")), agg) {
 		t.Fatal("a group-key comparison whose COMPARAND is a non-key column was reported as " +
 			"pushable: comparandReferencesOnlyKeys refuses it, so the rule leaves the " +
 			"predicate above the GroupBy and the HAVING reference must be rebased onto the " +
 			"aggregate output row")
 	}
 	// A comparand that IS a grouping key is fine.
-	two := hpdAgg(hpdBare("CITY"), hpdBare("POP"))
-	if !havingPredicatePushesBelowAggregate(hpdCmp(hpdBare("CITY"), hpdBare("POP")), two) {
+	two := hpdAgg(hpdBare(t, "CITY"), hpdBare(t, "POP"))
+	if !hpdPredicatePushesBelowAggregate(hpdCmp(hpdBare(t, "CITY"), hpdBare(t, "POP")), two) {
 		t.Fatal("a comparison between two grouping keys no longer pushes")
 	}
 }
 
 // TestHavingPushdownDeciderDisablesOnAnUnidentifiableKey pins drift 3: the rule
-// builds NO group-key set at all when any grouping key's identity cannot be
-// established (a flat-dotted lazy name is ambiguous between a nested path and an
-// alias-qualified leaf, so AccessorNamePathKey declines it), which disables
-// pushdown for EVERY predicate. The mirror kept matching the other keys.
+// builds NO group-key set at all when any grouping key's column identity cannot
+// be established, which disables pushdown for EVERY predicate. RFC-232 exact
+// fields always carry a resolved accessor — even a semantic field name that
+// contains a dot — so the negative fixture is a constant grouping expression,
+// not the retired lazy flat-dotted field shape.
 func TestHavingPushdownDeciderDisablesOnAnUnidentifiableKey(t *testing.T) {
 	t.Parallel()
 
-	agg := hpdAgg(hpdBare("CITY"), hpdBare("V.V"))
-	if havingPredicatePushesBelowAggregate(hpdCmp(hpdBare("CITY"), hpdConst()), agg) {
+	agg := hpdAgg(hpdBare(t, "CITY"), values.LiteralValue(int64(7)))
+	if hpdPredicatePushesBelowAggregate(hpdCmp(hpdBare(t, "CITY"), hpdConst()), agg) {
 		t.Fatal("pushdown was reported for a GroupBy one of whose keys has no establishable " +
 			"identity: buildGroupKeySet returns nil there and the rule pushes nothing, so " +
 			"every HAVING reference stays above and must be rebased")
 	}
 	// A nil grouping-key value is the same answer for the same reason.
-	if havingPredicatePushesBelowAggregate(hpdCmp(hpdBare("CITY"), hpdConst()), hpdAgg(hpdBare("CITY"), nil)) {
+	if hpdPredicatePushesBelowAggregate(hpdCmp(hpdBare(t, "CITY"), hpdConst()), hpdAgg(hpdBare(t, "CITY"), nil)) {
 		t.Fatal("pushdown was reported for a GroupBy with a nil grouping-key value")
 	}
 }
@@ -193,7 +233,7 @@ func TestHavingPushdownDeciderMovesTheFilterAcrossTheAggregate(t *testing.T) {
 	}
 	if !strings.Contains(plan, "PredicatesFilter(StreamingAgg(") {
 		t.Fatalf("the HAVING filter is no longer ABOVE the streaming aggregate.\n  plan: %s\n"+
-			"havingPredicatePushesBelowAggregate answered that this predicate pushes BELOW the "+
+			"hpdPredicatePushesBelowAggregate answered that this predicate pushes BELOW the "+
 			"GroupBy, so the reference was left in its pre-aggregate qualified form and the rule "+
 			"then pushed the filter under the aggregate. The decider and "+
 			"PushFilterThroughGroupByRule have drifted apart, which binds the HAVING reference "+

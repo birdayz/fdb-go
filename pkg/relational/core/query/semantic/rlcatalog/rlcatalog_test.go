@@ -250,6 +250,14 @@ func TestWrap_ProtoKindToSQL_FullMapping(t *testing.T) {
 	if flower.Type != "RECORD" {
 		t.Errorf("flower.Type: got %q, want RECORD", flower.Type)
 	}
+	flowerDescriptor := gen.File_record_layer_demo_proto.Messages().ByName("Order").Fields().ByName("flower")
+	wantStructTypeName := string(flowerDescriptor.Message().FullName())
+	if flower.StructTypeName != wantStructTypeName {
+		t.Errorf("flower.StructTypeName: got %q, want descriptor identity %q", flower.StructTypeName, wantStructTypeName)
+	}
+	if flower.StructTypeName == flower.Type {
+		t.Error("flower lost its nominal descriptor identity and retained only the coarse RECORD kind")
+	}
 	tags, _ := order.LookupColumn(semantic.NewUnquoted("tags"))
 	if tags.Type != "STRING" {
 		t.Errorf("tags.Type: got %q, want STRING", tags.Type)

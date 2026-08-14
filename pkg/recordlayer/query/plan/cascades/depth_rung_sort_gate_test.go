@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"fmt"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -8,6 +9,33 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+func mustDepthRung[T any](value T, err error) T {
+	if err != nil {
+		panic(fmt.Sprintf("construct depth-rung fixture: %v", err))
+	}
+	return value
+}
+
+func depthRungRowType() *values.RecordType {
+	return values.NewRecordType("depth_rung_row", false, []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NullableLong},
+		{Name: "a", Ordinal: 1, FieldType: values.NullableLong},
+		{Name: "b", Ordinal: 2, FieldType: values.NullableLong},
+	})
+}
+
+func depthRungField(fieldName string) values.Value {
+	rowType := depthRungRowType()
+	root := mustDepthRung(values.NewQuantifiedObjectValue(
+		values.UniqueCorrelationIdentifier(), rowType))
+	for ordinal, field := range rowType.Fields {
+		if field.Name == fieldName {
+			return mustDepthRung(values.ResolveFieldOrdinals(root, []int{ordinal}))
+		}
+	}
+	panic("depth-rung fixture has no field " + fieldName)
+}
 
 // RFC-190 190.2: the three structural DEPTH tiebreaks (type-filter / fetch /
 // distinct) and the map/filter-node-count tiebreak used to be gated to
@@ -43,11 +71,12 @@ import (
 // sort-free case.
 
 func scanT() plans.RecordQueryPlan {
-	return plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	return mustDepthRung(plans.NewRecordQueryScanPlan([]string{"T"}, depthRungRowType(), false))
 }
 
 func indexT() plans.RecordQueryPlan {
-	return plans.NewRecordQueryIndexPlan("idx", nil, []string{"T"}, values.UnknownType, false)
+	return mustDepthRung(plans.NewRecordQueryIndexPlan(
+		"idx", nil, []string{"T"}, depthRungRowType(), false))
 }
 
 // TestExpressionDepth_LogicalFallbackSortTransparent pins the logical memo
@@ -58,17 +87,17 @@ func indexT() plans.RecordQueryPlan {
 func TestExpressionDepth_LogicalFallbackSortTransparent(t *testing.T) {
 	t.Parallel()
 
-	fetch := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		indexT(), nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey)
+	fetch := mustDepthRung(plans.NewRecordQueryFetchFromPartialRecordPlan(
+		indexT(), nil, depthRungRowType(), plans.FetchIndexRecordsPrimaryKey))
 	logicalOver := func(child plans.RecordQueryPlan) expressions.RelationalExpression {
-		return expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+		return mustDepthRung(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
 			expressions.ForEachQuantifier(expressions.FinalOf(child)),
-		})
+		}))
 	}
 
 	plainDepth := costExprDepth(logicalOver(fetch), matchFetch)
 	sortedDepth := costExprDepth(
-		logicalOver(plans.NewRecordQueryInMemorySortPlan(fetch, nil)),
+		logicalOver(mustDepthRung(plans.NewRecordQueryInMemorySortPlan(fetch, nil))),
 		matchFetch)
 	if plainDepth != 1 {
 		t.Fatalf("logical fallback fetch depth without sort = %d, want 1", plainDepth)
@@ -88,8 +117,10 @@ func TestDepthRung_TypeFilterDepth_SortInvariant(t *testing.T) {
 	t.Parallel()
 	// Same node multiset (1 limit, 1 type filter, 1 scan) — only the type-filter
 	// depth differs. Deeper: Limit(TypeFilter(Scan)); shallower: TypeFilter(Limit(Scan)).
-	deeper := plans.NewRecordQueryLimitPlan(plans.NewRecordQueryTypeFilterPlan([]string{"T"}, scanT()), 10, 0)
-	shallower := plans.NewRecordQueryTypeFilterPlan([]string{"T"}, plans.NewRecordQueryLimitPlan(scanT(), 10, 0))
+	deeperFilter := mustDepthRung(plans.NewRecordQueryTypeFilterPlan([]string{"T"}, scanT()))
+	deeper := mustDepthRung(plans.NewRecordQueryLimitPlan(deeperFilter, 10, 0))
+	shallowerLimit := mustDepthRung(plans.NewRecordQueryLimitPlan(scanT(), 10, 0))
+	shallower := mustDepthRung(plans.NewRecordQueryTypeFilterPlan([]string{"T"}, shallowerLimit))
 
 	if !PlanningCostModelLess(deeper, shallower) {
 		t.Error("type-filter-depth rung must fire between sort-free plans: deeper type filter wins")
@@ -101,7 +132,7 @@ func TestDepthRung_TypeFilterDepth_SortInvariant(t *testing.T) {
 	// Promoted sort-count rung: a redundant sort added to ONLY the
 	// (structurally) winning deeper side makes the SORT-FREE shallower plan
 	// win instead — the structural rung never gets a chance to fire.
-	deeperSorted := plans.NewRecordQueryInMemorySortPlan(deeper, nil)
+	deeperSorted := mustDepthRung(plans.NewRecordQueryInMemorySortPlan(deeper, nil))
 	if !PlanningCostModelLess(shallower, deeperSorted) {
 		t.Error("promoted inMemorySortCount rung must reject the redundant sort before the type-filter-depth rung can fire")
 	}
@@ -112,7 +143,7 @@ func TestDepthRung_TypeFilterDepth_SortInvariant(t *testing.T) {
 	// Sort-invariance: the SAME sort added to BOTH sides re-ties sort count,
 	// and the (now sort-invariant) depth rung decides exactly like the
 	// sort-free case — the deeper type filter wins again.
-	shallowerSorted := plans.NewRecordQueryInMemorySortPlan(shallower, nil)
+	shallowerSorted := mustDepthRung(plans.NewRecordQueryInMemorySortPlan(shallower, nil))
 	if !PlanningCostModelLess(deeperSorted, shallowerSorted) {
 		t.Error("type-filter-depth rung must be sort-invariant once both sides tie on sort count: the deeper type filter must win")
 	}
@@ -129,11 +160,12 @@ func TestDepthRung_TypeFilterDepth_SortInvariant(t *testing.T) {
 func TestDepthRung_FetchDepth_SortInvariant(t *testing.T) {
 	t.Parallel()
 	fetch := func(inner plans.RecordQueryPlan) plans.RecordQueryPlan {
-		return plans.NewRecordQueryFetchFromPartialRecordPlan(inner, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey)
+		return mustDepthRung(plans.NewRecordQueryFetchFromPartialRecordPlan(
+			inner, nil, depthRungRowType(), plans.FetchIndexRecordsPrimaryKey))
 	}
 	// Same node multiset (1 limit, 1 fetch, 1 index) — only the fetch depth differs.
-	shallower := fetch(plans.NewRecordQueryLimitPlan(indexT(), 10, 0)) // Fetch(Limit(Index)) — fetchDepth 0
-	deeper := plans.NewRecordQueryLimitPlan(fetch(indexT()), 10, 0)    // Limit(Fetch(Index)) — fetchDepth 1
+	shallower := fetch(mustDepthRung(plans.NewRecordQueryLimitPlan(indexT(), 10, 0))) // Fetch(Limit(Index)) — fetchDepth 0
+	deeper := mustDepthRung(plans.NewRecordQueryLimitPlan(fetch(indexT()), 10, 0))    // Limit(Fetch(Index)) — fetchDepth 1
 
 	if !PlanningCostModelLess(shallower, deeper) {
 		t.Error("fetch-depth rung must fire between sort-free plans: shallower fetch wins")
@@ -144,7 +176,7 @@ func TestDepthRung_FetchDepth_SortInvariant(t *testing.T) {
 
 	// Promoted sort-count rung: a redundant sort added to ONLY the winning
 	// shallower side makes the sort-free deeper plan win instead.
-	shallowerSorted := plans.NewRecordQueryInMemorySortPlan(shallower, nil)
+	shallowerSorted := mustDepthRung(plans.NewRecordQueryInMemorySortPlan(shallower, nil))
 	if !PlanningCostModelLess(deeper, shallowerSorted) {
 		t.Error("promoted inMemorySortCount rung must reject the redundant sort before the fetch-depth rung can fire")
 	}
@@ -154,7 +186,7 @@ func TestDepthRung_FetchDepth_SortInvariant(t *testing.T) {
 
 	// Sort-invariance: the SAME sort on both sides re-ties sort count, and
 	// the shallower fetch wins again.
-	deeperSorted := plans.NewRecordQueryInMemorySortPlan(deeper, nil)
+	deeperSorted := mustDepthRung(plans.NewRecordQueryInMemorySortPlan(deeper, nil))
 	if !PlanningCostModelLess(shallowerSorted, deeperSorted) {
 		t.Error("fetch-depth rung must be sort-invariant once both sides tie on sort count: the shallower fetch must win")
 	}
@@ -171,15 +203,17 @@ func TestStructuralRung_MapFilterCount_SortInvariant(t *testing.T) {
 	t.Parallel()
 	pred := func(field string) predicates.QueryPredicate {
 		return predicates.NewComparisonPredicate(
-			&values.FieldValue{Field: field, Typ: values.NullableLong},
+			depthRungField(field),
 			predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)))
 	}
 	// Same total residual (2 preds) but different filter-NODE count: one node vs a
 	// pushdown-split two nodes. Only the map/filter count differs.
-	oneNode := plans.NewRecordQueryPredicatesFilterPlan(scanT(), []predicates.QueryPredicate{pred("a"), pred("b")})
-	twoNodes := plans.NewRecordQueryPredicatesFilterPlan(
-		plans.NewRecordQueryPredicatesFilterPlan(scanT(), []predicates.QueryPredicate{pred("a")}),
-		[]predicates.QueryPredicate{pred("b")})
+	oneNode := mustDepthRung(plans.NewRecordQueryPredicatesFilterPlan(
+		scanT(), []predicates.QueryPredicate{pred("a"), pred("b")}))
+	twoNodesInner := mustDepthRung(plans.NewRecordQueryPredicatesFilterPlan(
+		scanT(), []predicates.QueryPredicate{pred("a")}))
+	twoNodes := mustDepthRung(plans.NewRecordQueryPredicatesFilterPlan(
+		twoNodesInner, []predicates.QueryPredicate{pred("b")}))
 
 	if !PlanningCostModelLess(oneNode, twoNodes) {
 		t.Error("map/filter-count rung must fire between sort-free plans: fewer filter nodes wins")
@@ -190,7 +224,7 @@ func TestStructuralRung_MapFilterCount_SortInvariant(t *testing.T) {
 
 	// Promoted sort-count rung: a redundant sort added to ONLY the winning
 	// fewer-node side makes the sort-free two-node plan win instead.
-	oneNodeSorted := plans.NewRecordQueryInMemorySortPlan(oneNode, nil)
+	oneNodeSorted := mustDepthRung(plans.NewRecordQueryInMemorySortPlan(oneNode, nil))
 	if !PlanningCostModelLess(twoNodes, oneNodeSorted) {
 		t.Error("promoted inMemorySortCount rung must reject the redundant sort before the map/filter-count rung can fire")
 	}
@@ -200,7 +234,7 @@ func TestStructuralRung_MapFilterCount_SortInvariant(t *testing.T) {
 
 	// Sort-invariance: the SAME sort on both sides re-ties sort count, and
 	// the fewer-node plan wins again.
-	twoNodesSorted := plans.NewRecordQueryInMemorySortPlan(twoNodes, nil)
+	twoNodesSorted := mustDepthRung(plans.NewRecordQueryInMemorySortPlan(twoNodes, nil))
 	if !PlanningCostModelLess(oneNodeSorted, twoNodesSorted) {
 		t.Error("map/filter-count rung must be sort-invariant once both sides tie on sort count: fewer filter nodes must win")
 	}
@@ -216,8 +250,10 @@ func TestStructuralRung_MapFilterCount_SortInvariant(t *testing.T) {
 func TestDepthRung_DistinctDepth_SortInvariant(t *testing.T) {
 	t.Parallel()
 	// Same node multiset (1 limit, 1 distinct, 1 scan) — only the distinct depth differs.
-	deeper := plans.NewRecordQueryLimitPlan(plans.NewRecordQueryDistinctPlan(scanT()), 10, 0)
-	shallower := plans.NewRecordQueryDistinctPlan(plans.NewRecordQueryLimitPlan(scanT(), 10, 0))
+	deeperDistinct := mustDepthRung(plans.NewRecordQueryDistinctPlan(scanT()))
+	deeper := mustDepthRung(plans.NewRecordQueryLimitPlan(deeperDistinct, 10, 0))
+	shallowerLimit := mustDepthRung(plans.NewRecordQueryLimitPlan(scanT(), 10, 0))
+	shallower := mustDepthRung(plans.NewRecordQueryDistinctPlan(shallowerLimit))
 
 	if !PlanningCostModelLess(deeper, shallower) {
 		t.Error("distinct-depth rung must fire between sort-free plans: deeper distinct wins")
@@ -228,7 +264,7 @@ func TestDepthRung_DistinctDepth_SortInvariant(t *testing.T) {
 
 	// Promoted sort-count rung: a redundant sort added to ONLY the winning
 	// deeper side makes the sort-free shallower plan win instead.
-	deeperSorted := plans.NewRecordQueryInMemorySortPlan(deeper, nil)
+	deeperSorted := mustDepthRung(plans.NewRecordQueryInMemorySortPlan(deeper, nil))
 	if !PlanningCostModelLess(shallower, deeperSorted) {
 		t.Error("promoted inMemorySortCount rung must reject the redundant sort before the distinct-depth rung can fire")
 	}
@@ -238,7 +274,7 @@ func TestDepthRung_DistinctDepth_SortInvariant(t *testing.T) {
 
 	// Sort-invariance: the SAME sort on both sides re-ties sort count, and
 	// the deeper distinct wins again.
-	shallowerSorted := plans.NewRecordQueryInMemorySortPlan(shallower, nil)
+	shallowerSorted := mustDepthRung(plans.NewRecordQueryInMemorySortPlan(shallower, nil))
 	if !PlanningCostModelLess(deeperSorted, shallowerSorted) {
 		t.Error("distinct-depth rung must be sort-invariant once both sides tie on sort count: the deeper distinct must win")
 	}

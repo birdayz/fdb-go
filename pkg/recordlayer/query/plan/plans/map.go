@@ -21,11 +21,8 @@ type RecordQueryMapPlan struct {
 
 // NewRecordQueryMapPlan constructs a map plan over the given inner
 // plan and result value.
-func NewRecordQueryMapPlan(inner RecordQueryPlan, resultValue values.Value) *RecordQueryMapPlan {
-	return &RecordQueryMapPlan{
-		innerQ:      QuantifierOverPlan(inner),
-		resultValue: resultValue,
-	}
+func NewRecordQueryMapPlan(inner RecordQueryPlan, resultValue values.Value) (*RecordQueryMapPlan, error) {
+	return NewRecordQueryMapPlanFromQuantifier(QuantifierOverPlan(inner), resultValue)
 }
 
 // NewRecordQueryMapPlanFromQuantifier builds a map whose child is a LIVE memo
@@ -36,8 +33,12 @@ func NewRecordQueryMapPlan(inner RecordQueryPlan, resultValue values.Value) *Rec
 // OrderingSourceRef / GetResultValue all resolve through the one live edge
 // (RFC-184 W2). resultValue is the PROJECTION (a RecordConstructor over the
 // projection list), unchanged from NewRecordQueryMapPlan.
-func NewRecordQueryMapPlanFromQuantifier(innerQ expressions.Quantifier, resultValue values.Value) *RecordQueryMapPlan {
-	return &RecordQueryMapPlan{innerQ: innerQ, resultValue: resultValue}
+func NewRecordQueryMapPlanFromQuantifier(innerQ expressions.Quantifier, resultValue values.Value) (*RecordQueryMapPlan, error) {
+	base, err := newPlanExprBaseForValue("RecordQueryMapPlan", resultValue)
+	if err != nil {
+		return nil, err
+	}
+	return &RecordQueryMapPlan{PlanExprBase: base, innerQ: innerQ, resultValue: resultValue}, nil
 }
 
 // GetInner returns the wrapped inner plan, dereferenced through the quantifier.
@@ -67,12 +68,7 @@ func (p *RecordQueryMapPlan) GetResultValue() values.Value {
 }
 
 // GetResultType returns the result value's type.
-func (p *RecordQueryMapPlan) GetResultType() values.Type {
-	if p.resultValue == nil {
-		return values.UnknownType
-	}
-	return p.resultValue.Type()
-}
+func (p *RecordQueryMapPlan) GetResultType() values.Type { return p.resultValue.Type() }
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryMapPlan) GetChildren() []RecordQueryPlan {
@@ -135,13 +131,13 @@ func (p *RecordQueryMapPlan) EqualsWithoutChildren(other expressions.RelationalE
 
 // WithQuantifiers returns a copy ranging over the given child quantifier —
 // Java's copy-on-write withChild(Reference).
-func (p *RecordQueryMapPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 1 {
-		return p
+func (p *RecordQueryMapPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryMapPlan", len(qs), 1); err != nil {
+		return nil, err
 	}
 	cp := *p
 	cp.innerQ = qs[0]
-	return &cp
+	return &cp, nil
 }
 
 // WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
@@ -156,7 +152,7 @@ func (p *RecordQueryMapPlan) WithChildren(qs []expressions.Quantifier) (expressi
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("RecordQueryMapPlan.WithChildren: expected 1 child, got %d", len(qs))
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

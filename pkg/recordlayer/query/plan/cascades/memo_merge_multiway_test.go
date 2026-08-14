@@ -18,18 +18,53 @@ import (
 // crashed there; this exercises the exact shape that did.
 func TestMemoMerge_MultiWayJoinNoPanic(t *testing.T) {
 	t.Parallel()
-	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
-	scanT := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
-	scanU := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"U"}, values.UnknownType))
+	tRow := values.NewRecordType("T", false, []values.Field{
+		{Name: "active", FieldType: values.TypeBool, Ordinal: 0},
+	})
+	uRow := values.NewRecordType("U", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	predRoot, predRootErr := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("predicate_source"),
+		tRow,
+	)
+	predRoot = mustConstruct(t, predRoot, predRootErr)
+	predValue, predValueErr := values.ResolveFieldOrdinals(predRoot, []int{0})
+	predValue = mustConstruct(t, predValue, predValueErr)
+	pred := predicates.NewValuePredicate(predValue)
+	scanT := expressions.InitialOf(mustFullUnorderedScan(t, []string{"T"}, tRow))
+	scanU := expressions.InitialOf(mustFullUnorderedScan(t, []string{"U"}, uRow))
 	// Two join inputs that rewrite to the same sub-product (merge candidates).
-	distinctRef := expressions.InitialOf(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(scanT)))
-	a := expressions.InitialOf(expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, expressions.ForEachQuantifier(distinctRef)))
-	innerFilter := expressions.InitialOf(expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, expressions.ForEachQuantifier(scanT)))
-	b := expressions.InitialOf(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(innerFilter)))
+	distinct, distinctErr := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(scanT))
+	distinct = mustConstruct(t, distinct, distinctErr)
+	distinctRef := expressions.InitialOf(distinct)
+	filterA, filterAErr := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(distinctRef),
+	)
+	filterA = mustConstruct(t, filterA, filterAErr)
+	a := expressions.InitialOf(filterA)
+	innerFilterExpr, innerFilterErr := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(scanT),
+	)
+	innerFilterExpr = mustConstruct(t, innerFilterExpr, innerFilterErr)
+	innerFilter := expressions.InitialOf(innerFilterExpr)
+	distinctB, distinctBErr := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(innerFilter))
+	distinctB = mustConstruct(t, distinctB, distinctBErr)
+	b := expressions.InitialOf(distinctB)
 	qA := expressions.ForEachQuantifier(a)
 	qB := expressions.ForEachQuantifier(b)
 	qC := expressions.ForEachQuantifier(scanU)
-	join := expressions.InitialOf(expressions.NewSelectExpression(qA.GetFlowedObjectValue(), []expressions.Quantifier{qA, qB, qC}, nil))
+	result, resultErr := qA.RequireFlowedObjectValue()
+	result = mustConstruct(t, result, resultErr)
+	joinExpr, joinErr := expressions.NewSelectExpression(
+		result,
+		[]expressions.Quantifier{qA, qB, qC},
+		nil,
+	)
+	joinExpr = mustConstruct(t, joinExpr, joinErr)
+	join := expressions.InitialOf(joinExpr)
 
 	p := NewPlanner(DefaultExpressionRules(), nil)
 	// Must not panic, and must converge.

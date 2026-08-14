@@ -20,8 +20,8 @@ func TestLegColumnProvenanceClassification(t *testing.T) {
 	legged := func(legs ...values.RecordTypeLeg) *values.RecordType {
 		return &values.RecordType{
 			Fields: []values.Field{
-				{Name: "ID", FieldType: values.UnknownType, Ordinal: 0},
-				{Name: "CV", FieldType: values.UnknownType, Ordinal: 1},
+				{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+				{Name: "CV", FieldType: values.NotNullLong, Ordinal: 1},
 			},
 			Legs: legs,
 		}

@@ -188,6 +188,88 @@ func TestWithBinding_Chaining(t *testing.T) {
 	}
 }
 
+func TestWithQuantifiedBindingSeparatesSameCorrelationExactTypes(t *testing.T) {
+	t.Parallel()
+
+	alias := values.NamedCorrelationIdentifier("ELEMENT")
+	recordType := values.NewRecordType("OUTER", false, []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong},
+		{Name: "ELEMENT", Ordinal: 1, FieldType: values.NotNullLong},
+	})
+	whole, err := values.NewQuantifiedObjectValue(alias, recordType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scalar, err := values.NewQuantifiedObjectValue(alias, values.NotNullLong)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wholeValue := &PositionalRow{Type: recordType, Slots: []any{int64(7), int64(42)}}
+	context, err := EmptyEvaluationContext().withQuantifiedBinding(whole, wholeValue, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	context, err = context.withQuantifiedBinding(scalar, int64(42), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, test := range map[string]struct {
+		qov  values.QuantifiedObjectValue
+		want any
+	}{
+		"whole":  {qov: whole, want: wholeValue},
+		"scalar": {qov: scalar, want: int64(42)},
+	} {
+		got, present, lookupErr := context.GetQuantifiedBinding(test.qov)
+		if lookupErr != nil || !present || got != test.want {
+			t.Fatalf("%s lookup = (%v, %t, %v), want (%v, true, nil)", name, got, present, lookupErr, test.want)
+		}
+		evaluated, evalErr := test.qov.Evaluate(context)
+		if evalErr != nil || evaluated != test.want {
+			t.Fatalf("%s Evaluate = (%v, %v), want (%v, nil)", name, evaluated, evalErr, test.want)
+		}
+		rowContextEvaluated, rowContextErr := test.qov.Evaluate(context.RowContext())
+		if rowContextErr != nil || rowContextEvaluated != test.want {
+			t.Fatalf("%s Evaluate(RowContext) = (%v, %v), want (%v, nil)",
+				name, rowContextEvaluated, rowContextErr, test.want)
+		}
+		positionalEvaluated, positionalErr := test.qov.Evaluate(
+			context.RowContextPositional(&PositionalRow{Type: recordType, Slots: []any{int64(-1), int64(-2)}}))
+		if positionalErr != nil || positionalEvaluated != test.want {
+			t.Fatalf("%s Evaluate(RowContextPositional) = (%v, %v), want exact bound (%v, nil)",
+				name, positionalEvaluated, positionalErr, test.want)
+		}
+	}
+	sameWhole, err := values.NewQuantifiedObjectValue(alias, recordType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, present, lookupErr := context.GetQuantifiedBinding(sameWhole); lookupErr != nil || !present || got != wholeValue {
+		t.Fatalf("equivalent declaration lookup = (%v, %t, %v), want exact whole row", got, present, lookupErr)
+	}
+	foreignRecordType := values.NewRecordType("FOREIGN_OUTER", false, []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong},
+		{Name: "ELEMENT", Ordinal: 1, FieldType: values.NotNullLong},
+	})
+	foreignRecord, err := values.NewQuantifiedObjectValue(alias, foreignRecordType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, present, lookupErr := context.GetQuantifiedBinding(foreignRecord); got != nil || present || lookupErr == nil {
+		t.Fatalf("foreign-record lookup = (%v, %t, %v), want loud exact-name rejection", got, present, lookupErr)
+	}
+	foreignType, err := values.NewQuantifiedObjectValue(alias, values.NotNullString)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, present, lookupErr := context.GetQuantifiedBinding(foreignType); got != nil || present || lookupErr == nil {
+		t.Fatalf("foreign-type lookup = (%v, %t, %v), want loud rejection", got, present, lookupErr)
+	}
+	if _, present, _ := EmptyEvaluationContext().GetQuantifiedBinding(scalar); present {
+		t.Fatal("quantified binding mutated the source context")
+	}
+}
+
 func TestGetBinding_MissingKey(t *testing.T) {
 	t.Parallel()
 	ec := EmptyEvaluationContext()

@@ -9,6 +9,38 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustHashConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct cost-model hash fixture: " + err.Error())
+	}
+	return value
+}
+
+func hashRowType() values.Type {
+	return values.NewRecordType("HashRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "GID", FieldType: values.NotNullLong, Ordinal: 1},
+	})
+}
+
+func hashScan(recordType string) *plans.RecordQueryScanPlan {
+	return mustHashConstruct(plans.NewRecordQueryScanPlan(
+		[]string{recordType}, hashRowType(), false))
+}
+
+func hashField(q expressions.Quantifier, ordinal int) values.Value {
+	flowedType := mustHashConstruct(q.GetFlowedObjectType())
+	root := mustHashConstruct(values.NewQuantifiedObjectValue(q.GetAlias(), flowedType))
+	return mustHashConstruct(values.ResolveFieldOrdinals(root, []int{ordinal}))
+}
+
+func hashResultValue() values.Value {
+	return values.NewRawRecordConstructorValue(values.RecordConstructorField{
+		Name:  "VALUE",
+		Value: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
+	})
+}
+
 // TestCostModel_PlanHashOrderSensitive pins the #17 tie-break's operand-order
 // sensitivity: the two operand orders of a symmetric join MUST hash
 // differently, or cost-tied swapped-operand alternatives compare equal and
@@ -18,18 +50,24 @@ import (
 // child fold (`h ^= f(child)`) fails this; the fold must be positional.
 func TestCostModel_PlanHashOrderSensitive(t *testing.T) {
 	t.Parallel()
-	scanA := plans.NewRecordQueryScanPlan([]string{"PA"}, nil, false)
-	scanB := plans.NewRecordQueryScanPlan([]string{"PB"}, nil, false)
+	scanA := hashScan("PA")
+	scanB := hashScan("PB")
 
-	ab := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), nil)
-	ba := plans.NewRecordQueryNestedLoopJoinPlan(scanB, scanA, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), nil)
+	ab := mustHashConstruct(plans.NewRecordQueryNestedLoopJoinPlan(
+		scanA, scanB, nil, plans.JoinInner,
+		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), hashResultValue()))
+	ba := mustHashConstruct(plans.NewRecordQueryNestedLoopJoinPlan(
+		scanB, scanA, nil, plans.JoinInner,
+		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), hashResultValue()))
 
 	if stablePlanHash(ab) == stablePlanHash(ba) {
 		t.Fatal("stablePlanHash is operand-order-INSENSITIVE: NLJ(A,B) == NLJ(B,A) — the #17 tie-break cannot discriminate swapped-operand ties and the winner follows task arrival order")
 	}
 
 	// Same-child sanity: identical trees still hash identically.
-	ab2 := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), nil)
+	ab2 := mustHashConstruct(plans.NewRecordQueryNestedLoopJoinPlan(
+		scanA, scanB, nil, plans.JoinInner,
+		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), hashResultValue()))
 	if stablePlanHash(ab) != stablePlanHash(ab2) {
 		t.Fatal("stablePlanHash is not structural: two identical trees hashed differently")
 	}
@@ -47,25 +85,25 @@ func TestCostModel_PlanHashOrderSensitive(t *testing.T) {
 func TestCostModel_PlanHashMintedAliasBlind(t *testing.T) {
 	t.Parallel()
 	build := func(outerAlias, innerAlias, filterAlias string) plans.RecordQueryPlan {
-		scanA := plans.NewRecordQueryScanPlan([]string{"PA"}, nil, false)
-		scanG := plans.NewRecordQueryScanPlan([]string{"PG"}, nil, false)
+		scanA := hashScan("PA")
+		scanG := hashScan("PG")
 		// The predicate REFERENCES the minted alias (a correlated comparison
 		// over QOV(filterAlias)) — the shape the rebased existential
 		// correlation predicates actually carry — so the PredicatesFilter
 		// arm's alias-blindness is genuinely exercised, not just its (never
 		// hashed) alias field.
-		pred := predicates.NewComparisonPredicate(
-			values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(filterAlias)), "GID", values.NotNullLong),
-			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))},
-		)
-		filtered := plans.NewRecordQueryPredicatesFilterPlanWithAlias(scanG,
-			[]predicates.QueryPredicate{pred}, values.NamedCorrelationIdentifier(filterAlias))
-		return plans.NewRecordQueryFlatMapPlan(
+		filterID := values.NamedCorrelationIdentifier(filterAlias)
+		filterQ := expressions.NamedForEachQuantifier(filterID, expressions.FinalOf(scanG))
+		pred := predicates.NewComparisonPredicate(hashField(filterQ, 1),
+			predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)))
+		filtered := mustHashConstruct(plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+			filterQ, []predicates.QueryPredicate{pred}, filterID))
+		return mustHashConstruct(plans.NewRecordQueryFlatMapPlan(
 			scanA, filtered,
 			values.NamedCorrelationIdentifier(outerAlias),
 			values.NamedCorrelationIdentifier(innerAlias),
-			nil, false,
-		)
+			hashResultValue(), false,
+		))
 	}
 	p1 := build("q$100", "q$101", "q$102")
 	p2 := build("q$900", "q$901", "q$902")
@@ -89,13 +127,13 @@ func TestCostModel_PlanHashMintedAliasBlind(t *testing.T) {
 func TestCostModel_PlanHashContentSensitive(t *testing.T) {
 	t.Parallel()
 	build := func(lit int64) plans.RecordQueryPlan {
-		scanG := plans.NewRecordQueryScanPlan([]string{"PG"}, nil, false)
-		pred := predicates.NewComparisonPredicate(
-			values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("q$1")), "GID", values.NotNullLong),
-			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(lit)},
-		)
-		return plans.NewRecordQueryPredicatesFilterPlanWithAlias(scanG,
-			[]predicates.QueryPredicate{pred}, values.NamedCorrelationIdentifier("q$1"))
+		scanG := hashScan("PG")
+		alias := values.NamedCorrelationIdentifier("q$1")
+		q := expressions.NamedForEachQuantifier(alias, expressions.FinalOf(scanG))
+		pred := predicates.NewComparisonPredicate(hashField(q, 1),
+			predicates.NewLiteralComparison(predicates.ComparisonEquals, lit))
+		return mustHashConstruct(plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+			q, []predicates.QueryPredicate{pred}, alias))
 	}
 	if stablePlanHash(build(1)) == stablePlanHash(build(2)) {
 		t.Fatal("stablePlanHash is content-blind: predicates differing only in their literal hashed equal — such ties fall to arrival order")
@@ -104,17 +142,15 @@ func TestCostModel_PlanHashContentSensitive(t *testing.T) {
 
 func TestCostModel_ProjectionSchemaIdentityDoesNotPerturbTieBreak(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"SCORES"}, values.UnknownType, false)
+	scan := hashScan("SCORES")
 	scanRef := expressions.InitialOf(scan)
 	innerQ := expressions.ForEachQuantifier(scanRef)
-	projected := []values.Value{
-		values.NewFieldValueWithResolvedOrdinal("ID", 0, values.UnknownType),
-	}
+	projected := []values.Value{hashField(innerQ, 0)}
 
-	logicalScore := expressions.NewLogicalProjectionExpressionWithAliases(
-		projected, []string{"SCORE"}, innerQ)
-	logicalPoints := expressions.NewLogicalProjectionExpressionWithAliases(
-		projected, []string{"POINTS"}, innerQ)
+	logicalScore := mustHashConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+		projected, []string{"SCORE"}, innerQ))
+	logicalPoints := mustHashConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+		projected, []string{"POINTS"}, innerQ))
 	logicalMemo := NewMemo(nil)
 	logicalMemo.RegisterReference(scanRef)
 	if logicalMemo.MemoizeExpression(logicalScore) == logicalMemo.MemoizeExpression(logicalPoints) {
@@ -138,10 +174,10 @@ func TestCostModel_ProjectionSchemaIdentityDoesNotPerturbTieBreak(t *testing.T) 
 		t.Fatal("logical projection output schema perturbed the rewriting designation tie-break")
 	}
 
-	physicalScore := plans.NewRecordQueryProjectionPlanFromQuantifier(
-		projected, []string{"SCORE"}, innerQ)
-	physicalPoints := plans.NewRecordQueryProjectionPlanFromQuantifier(
-		projected, []string{"POINTS"}, innerQ)
+	physicalScore := mustHashConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+		projected, []string{"SCORE"}, innerQ))
+	physicalPoints := mustHashConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+		projected, []string{"POINTS"}, innerQ))
 	physicalMemo := NewMemo(nil)
 	physicalMemo.RegisterReference(scanRef)
 	if physicalMemo.MemoizeExpression(physicalScore) == physicalMemo.MemoizeExpression(physicalPoints) {
@@ -163,15 +199,13 @@ func TestCostModel_ProjectionSchemaIdentityDoesNotPerturbTieBreak(t *testing.T) 
 
 func TestCostModel_ScanPlanExpressionProjectionSchemaDoesNotPerturbTieBreak(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"SCORES"}, values.UnknownType, false)
+	scan := hashScan("SCORES")
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	projected := []values.Value{
-		values.NewFieldValueWithResolvedOrdinal("ID", 0, values.UnknownType),
-	}
-	wrappedScore := &scanPlanExpression{plan: plans.NewRecordQueryProjectionPlanFromQuantifier(
-		projected, []string{"SCORE"}, innerQ)}
-	wrappedPoints := &scanPlanExpression{plan: plans.NewRecordQueryProjectionPlanFromQuantifier(
-		projected, []string{"POINTS"}, innerQ)}
+	projected := []values.Value{hashField(innerQ, 0)}
+	wrappedScore := &scanPlanExpression{plan: mustHashConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+		projected, []string{"SCORE"}, innerQ))}
+	wrappedPoints := &scanPlanExpression{plan: mustHashConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+		projected, []string{"POINTS"}, innerQ))}
 
 	memo := NewMemo(nil)
 	if memo.MemoizeExpression(wrappedScore) == memo.MemoizeExpression(wrappedPoints) {
@@ -196,64 +230,70 @@ func TestCostModel_ScanPlanExpressionProjectionSchemaDoesNotPerturbTieBreak(t *t
 	}
 }
 
-func TestCostModel_UnaliasedProjectionDisplayNamesAreMemoOnly(t *testing.T) {
+func TestCostModel_UnaliasedProjectionCanonicalFieldNamesAreTieNeutral(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"SCORES"}, values.UnknownType, false)
+	scan := hashScan("SCORES")
 	scanRef := expressions.InitialOf(scan)
 	innerQ := expressions.ForEachQuantifier(scanRef)
-	readA := values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType)
-	readB := values.NewFieldValueWithResolvedOrdinal("B", 0, values.UnknownType)
-	if !values.SemanticEqualsUnderAliasMap(readA, readB, values.AliasMap{}) {
-		t.Fatal("test requires same-ordinal baked reads to be semantically equal")
+	readByOrdinal := hashField(innerQ, 0)
+	request := mustHashConstruct(values.FieldByName("ID"))
+	flowedType := mustHashConstruct(innerQ.GetFlowedObjectType())
+	root := mustHashConstruct(values.NewQuantifiedObjectValue(innerQ.GetAlias(), flowedType))
+	readByName := mustHashConstruct(values.ResolveFieldAccess(
+		root, []values.FieldRequest{request}))
+	if !values.SemanticEqualsUnderAliasMap(readByOrdinal, readByName, values.EmptyAliasMap()) {
+		t.Fatal("name and ordinal resolution of the same exact slot must be semantically equal")
 	}
 
-	logicalA := expressions.NewLogicalProjectionExpression([]values.Value{readA}, innerQ)
-	logicalB := expressions.NewLogicalProjectionExpression([]values.Value{readB}, innerQ)
+	logicalA := mustHashConstruct(expressions.NewLogicalProjectionExpression(
+		[]values.Value{readByOrdinal}, innerQ))
+	logicalB := mustHashConstruct(expressions.NewLogicalProjectionExpression(
+		[]values.Value{readByName}, innerQ))
 	logicalMemo := NewMemo(nil)
 	logicalMemo.RegisterReference(scanRef)
-	if logicalMemo.MemoizeExpression(logicalA) == logicalMemo.MemoizeExpression(logicalB) {
-		t.Fatal("unaliased logical projections with different derived names collapsed in memo identity")
+	if logicalMemo.MemoizeExpression(logicalA) != logicalMemo.MemoizeExpression(logicalB) {
+		t.Fatal("equivalent exact logical projections did not collapse in memo identity")
 	}
 	if tieBreakNodeHash(logicalA) != tieBreakNodeHash(logicalB) {
-		t.Fatal("derived display-only names perturbed the historical logical tie-break hash")
+		t.Fatal("equivalent exact field requests perturbed the logical tie-break hash")
 	}
 
-	physicalA := plans.NewRecordQueryProjectionPlanFromQuantifier(
-		[]values.Value{readA}, nil, innerQ)
-	physicalB := plans.NewRecordQueryProjectionPlanFromQuantifier(
-		[]values.Value{readB}, nil, innerQ)
+	physicalA := mustHashConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{readByOrdinal}, nil, innerQ))
+	physicalB := mustHashConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{readByName}, nil, innerQ))
 	physicalMemo := NewMemo(nil)
 	physicalMemo.RegisterReference(scanRef)
-	if physicalMemo.MemoizeExpression(physicalA) == physicalMemo.MemoizeExpression(physicalB) {
-		t.Fatal("unaliased physical projections with different derived names collapsed in memo identity")
+	if physicalMemo.MemoizeExpression(physicalA) != physicalMemo.MemoizeExpression(physicalB) {
+		t.Fatal("equivalent exact physical projections did not collapse in memo identity")
 	}
 	if tieBreakNodeHash(physicalA) != tieBreakNodeHash(physicalB) {
-		t.Fatal("derived display-only names perturbed the historical physical tie-break hash")
+		t.Fatal("equivalent exact field requests perturbed the physical tie-break hash")
 	}
 }
 
 func TestCostModel_ProjectionSemanticContentChangesTieBreakHash(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"SCORES"}, values.UnknownType, false)
+	scan := hashScan("SCORES")
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	read0 := values.NewFieldValueWithResolvedOrdinal("ID", 0, values.UnknownType)
-	read1 := values.NewFieldValueWithResolvedOrdinal("ID", 1, values.UnknownType)
-	if values.SemanticEqualsUnderAliasMap(read0, read1, values.AliasMap{}) {
+	read0 := hashField(innerQ, 0)
+	read1 := hashField(innerQ, 1)
+	if values.SemanticEqualsUnderAliasMap(read0, read1, values.EmptyAliasMap()) {
 		t.Fatal("test requires different ordinals to be a genuine semantic Value change")
 	}
 
-	logical0 := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{read0}, []string{"SCORE"}, innerQ)
-	logical1 := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{read1}, []string{"SCORE"}, innerQ)
+	logical0 := mustHashConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{read0}, []string{"SCORE"}, innerQ))
+	logical1 := mustHashConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{read1}, []string{"SCORE"}, innerQ))
 	if tieBreakNodeHash(logical0) == tieBreakNodeHash(logical1) {
 		t.Fatal("historical logical tie-break hash ignored a genuine projected-Value change")
 	}
 
-	physical0 := plans.NewRecordQueryProjectionPlanFromQuantifier(
-		[]values.Value{read0}, []string{"SCORE"}, innerQ)
-	physical1 := plans.NewRecordQueryProjectionPlanFromQuantifier(
-		[]values.Value{read1}, []string{"SCORE"}, innerQ)
+	physical0 := mustHashConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{read0}, []string{"SCORE"}, innerQ))
+	physical1 := mustHashConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{read1}, []string{"SCORE"}, innerQ))
 	if tieBreakNodeHash(physical0) == tieBreakNodeHash(physical1) {
 		t.Fatal("historical physical tie-break hash ignored a genuine projected-Value change")
 	}
@@ -261,11 +301,9 @@ func TestCostModel_ProjectionSemanticContentChangesTieBreakHash(t *testing.T) {
 
 func TestCostModel_ProjectionAliasVariantsRemainComparatorTies(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"SCORES"}, values.UnknownType, false)
+	scan := hashScan("SCORES")
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	projected := []values.Value{
-		values.NewFieldValueWithResolvedOrdinal("ID", 0, values.UnknownType),
-	}
+	projected := []values.Value{hashField(innerQ, 0)}
 
 	testCases := []struct {
 		name       string
@@ -274,17 +312,17 @@ func TestCostModel_ProjectionAliasVariantsRemainComparatorTies(t *testing.T) {
 	}{
 		{
 			name: "logical",
-			scorePlan: expressions.NewLogicalProjectionExpressionWithAliases(
-				projected, []string{"SCORE"}, innerQ),
-			pointsPlan: expressions.NewLogicalProjectionExpressionWithAliases(
-				projected, []string{"POINTS"}, innerQ),
+			scorePlan: mustHashConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+				projected, []string{"SCORE"}, innerQ)),
+			pointsPlan: mustHashConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+				projected, []string{"POINTS"}, innerQ)),
 		},
 		{
 			name: "physical",
-			scorePlan: plans.NewRecordQueryProjectionPlanFromQuantifier(
-				projected, []string{"SCORE"}, innerQ),
-			pointsPlan: plans.NewRecordQueryProjectionPlanFromQuantifier(
-				projected, []string{"POINTS"}, innerQ),
+			scorePlan: mustHashConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+				projected, []string{"SCORE"}, innerQ)),
+			pointsPlan: mustHashConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+				projected, []string{"POINTS"}, innerQ)),
 		},
 	}
 	comparators := []struct {

@@ -6,23 +6,21 @@ func TestRebaseValue_QOV(t *testing.T) {
 	t.Parallel()
 	oldAlias := NamedCorrelationIdentifier("old")
 	newAlias := NamedCorrelationIdentifier("new")
-	v := &QuantifiedObjectValue{Correlation: oldAlias}
-	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
-	qov, ok := result.(*QuantifiedObjectValue)
+	v := mustQOV(t, oldAlias)
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: oldAlias, Target: newAlias}))
+	qov, ok := result.(*quantifiedObjectValue)
 	if !ok {
-		t.Fatalf("expected *QuantifiedObjectValue, got %T", result)
+		t.Fatalf("expected *quantifiedObjectValue, got %T", result)
 	}
-	if qov.Correlation != newAlias {
-		t.Fatalf("expected correlation %v, got %v", newAlias, qov.Correlation)
+	if qov.Correlation() != newAlias {
+		t.Fatalf("expected correlation %v, got %v", newAlias, qov.Correlation())
 	}
 }
 
 func TestRebaseValue_QOV_NoMatch(t *testing.T) {
 	t.Parallel()
-	v := &QuantifiedObjectValue{Correlation: NamedCorrelationIdentifier("other")}
-	result := RebaseValue(v, AliasMap{
-		NamedCorrelationIdentifier("old"): NamedCorrelationIdentifier("new"),
-	})
+	v := mustQOV(t, NamedCorrelationIdentifier("other"))
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: NamedCorrelationIdentifier("old"), Target: NamedCorrelationIdentifier("new")}))
 	if result != v {
 		t.Fatal("non-matching QOV should return same pointer")
 	}
@@ -30,10 +28,8 @@ func TestRebaseValue_QOV_NoMatch(t *testing.T) {
 
 func TestRebaseValue_Field(t *testing.T) {
 	t.Parallel()
-	v := &FieldValue{Field: "x", Typ: UnknownType}
-	result := RebaseValue(v, AliasMap{
-		NamedCorrelationIdentifier("old"): NamedCorrelationIdentifier("new"),
-	})
+	v := &fieldValue{Field: "x", Typ: UnknownType}
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: NamedCorrelationIdentifier("old"), Target: NamedCorrelationIdentifier("new")}))
 	if result != v {
 		t.Fatal("FieldValue should return same pointer (no correlation)")
 	}
@@ -42,9 +38,7 @@ func TestRebaseValue_Field(t *testing.T) {
 func TestRebaseValue_Constant(t *testing.T) {
 	t.Parallel()
 	v := &ConstantValue{Value: 42}
-	result := RebaseValue(v, AliasMap{
-		NamedCorrelationIdentifier("old"): NamedCorrelationIdentifier("new"),
-	})
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: NamedCorrelationIdentifier("old"), Target: NamedCorrelationIdentifier("new")}))
 	if result != v {
 		t.Fatal("ConstantValue should return same pointer")
 	}
@@ -52,7 +46,7 @@ func TestRebaseValue_Constant(t *testing.T) {
 
 func TestRebaseValue_Nil(t *testing.T) {
 	t.Parallel()
-	result := RebaseValue(nil, AliasMap{})
+	result := RebaseValue(nil, mustAliasMap(t))
 	if result != nil {
 		t.Fatal("nil value should return nil")
 	}
@@ -60,7 +54,7 @@ func TestRebaseValue_Nil(t *testing.T) {
 
 func TestRebaseValue_EmptyAliasMap(t *testing.T) {
 	t.Parallel()
-	v := &QuantifiedObjectValue{Correlation: NamedCorrelationIdentifier("x")}
+	v := mustQOV(t, NamedCorrelationIdentifier("x"))
 	result := RebaseValue(v, nil)
 	if result != v {
 		t.Fatal("nil alias map should return same pointer")
@@ -73,20 +67,20 @@ func TestRebaseValue_ArithmeticRecursion(t *testing.T) {
 	newAlias := NamedCorrelationIdentifier("new")
 	v := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &QuantifiedObjectValue{Correlation: oldAlias},
+		Left:  mustQOV(t, oldAlias),
 		Right: &ConstantValue{Value: 1},
 	}
-	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: oldAlias, Target: newAlias}))
 	arith, ok := result.(*ArithmeticValue)
 	if !ok {
 		t.Fatalf("expected *ArithmeticValue, got %T", result)
 	}
-	qov, ok := arith.Left.(*QuantifiedObjectValue)
+	qov, ok := arith.Left.(*quantifiedObjectValue)
 	if !ok {
-		t.Fatalf("expected left to be *QuantifiedObjectValue, got %T", arith.Left)
+		t.Fatalf("expected left to be *quantifiedObjectValue, got %T", arith.Left)
 	}
-	if qov.Correlation != newAlias {
-		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation)
+	if qov.Correlation() != newAlias {
+		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation())
 	}
 	if arith.Right != v.Right {
 		t.Fatal("right side (constant) should be preserved")
@@ -100,9 +94,7 @@ func TestRebaseValue_ArithmeticNoChange(t *testing.T) {
 		Left:  &ConstantValue{Value: 1},
 		Right: &ConstantValue{Value: 2},
 	}
-	result := RebaseValue(v, AliasMap{
-		NamedCorrelationIdentifier("old"): NamedCorrelationIdentifier("new"),
-	})
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: NamedCorrelationIdentifier("old"), Target: NamedCorrelationIdentifier("new")}))
 	if result != v {
 		t.Fatal("arithmetic with no matching aliases should return same pointer")
 	}
@@ -112,27 +104,25 @@ func TestRebaseValue_CastRecursion(t *testing.T) {
 	t.Parallel()
 	oldAlias := NamedCorrelationIdentifier("old")
 	newAlias := NamedCorrelationIdentifier("new")
-	v := NewCastValue(&QuantifiedObjectValue{Correlation: oldAlias}, NullableLong)
-	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	v := NewCastValue(mustQOV(t, oldAlias), NullableLong)
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: oldAlias, Target: newAlias}))
 	cast, ok := result.(*CastValue)
 	if !ok {
 		t.Fatalf("expected *CastValue, got %T", result)
 	}
-	qov, ok := cast.Child.(*QuantifiedObjectValue)
+	qov, ok := cast.Child.(*quantifiedObjectValue)
 	if !ok {
-		t.Fatalf("expected child to be *QuantifiedObjectValue, got %T", cast.Child)
+		t.Fatalf("expected child to be *quantifiedObjectValue, got %T", cast.Child)
 	}
-	if qov.Correlation != newAlias {
-		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation)
+	if qov.Correlation() != newAlias {
+		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation())
 	}
 }
 
 func TestRebaseValue_CastNoChange(t *testing.T) {
 	t.Parallel()
 	v := NewCastValue(&ConstantValue{Value: 42}, NullableLong)
-	result := RebaseValue(v, AliasMap{
-		NamedCorrelationIdentifier("old"): NamedCorrelationIdentifier("new"),
-	})
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: NamedCorrelationIdentifier("old"), Target: NamedCorrelationIdentifier("new")}))
 	if result != v {
 		t.Fatal("cast with no matching aliases should return same pointer")
 	}
@@ -145,12 +135,12 @@ func TestRebaseValue_ScalarFunction(t *testing.T) {
 	v := &ScalarFunctionValue{
 		FuncName: "COALESCE",
 		Args: []Value{
-			&QuantifiedObjectValue{Correlation: oldAlias},
+			mustQOV(t, oldAlias),
 			&ConstantValue{Value: 0},
 		},
 		Typ: UnknownType,
 	}
-	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: oldAlias, Target: newAlias}))
 	fn, ok := result.(*ScalarFunctionValue)
 	if !ok {
 		t.Fatalf("expected *ScalarFunctionValue, got %T", result)
@@ -158,12 +148,12 @@ func TestRebaseValue_ScalarFunction(t *testing.T) {
 	if fn.FuncName != "COALESCE" {
 		t.Fatalf("function name = %q, want COALESCE", fn.FuncName)
 	}
-	qov, ok := fn.Args[0].(*QuantifiedObjectValue)
+	qov, ok := fn.Args[0].(*quantifiedObjectValue)
 	if !ok {
-		t.Fatalf("expected arg[0] to be *QuantifiedObjectValue, got %T", fn.Args[0])
+		t.Fatalf("expected arg[0] to be *quantifiedObjectValue, got %T", fn.Args[0])
 	}
-	if qov.Correlation != newAlias {
-		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation)
+	if qov.Correlation() != newAlias {
+		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation())
 	}
 }
 
@@ -173,11 +163,11 @@ func TestRebaseValue_RecordConstructor(t *testing.T) {
 	newAlias := NamedCorrelationIdentifier("new")
 	v := &RecordConstructorValue{
 		Fields: []RecordConstructorField{
-			{Name: "a", Value: &QuantifiedObjectValue{Correlation: oldAlias}},
+			{Name: "a", Value: mustQOV(t, oldAlias)},
 			{Name: "b", Value: &ConstantValue{Value: 42}},
 		},
 	}
-	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: oldAlias, Target: newAlias}))
 	rc, ok := result.(*RecordConstructorValue)
 	if !ok {
 		t.Fatalf("expected *RecordConstructorValue, got %T", result)
@@ -185,12 +175,12 @@ func TestRebaseValue_RecordConstructor(t *testing.T) {
 	if len(rc.Fields) != 2 {
 		t.Fatalf("fields count = %d, want 2", len(rc.Fields))
 	}
-	qov, ok := rc.Fields[0].Value.(*QuantifiedObjectValue)
+	qov, ok := rc.Fields[0].Value.(*quantifiedObjectValue)
 	if !ok {
-		t.Fatalf("expected field[0].Value to be *QuantifiedObjectValue, got %T", rc.Fields[0].Value)
+		t.Fatalf("expected field[0].Value to be *quantifiedObjectValue, got %T", rc.Fields[0].Value)
 	}
-	if qov.Correlation != newAlias {
-		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation)
+	if qov.Correlation() != newAlias {
+		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation())
 	}
 }
 
@@ -198,27 +188,25 @@ func TestRebaseValue_NotValue_Rebases(t *testing.T) {
 	t.Parallel()
 	oldAlias := NamedCorrelationIdentifier("old")
 	newAlias := NamedCorrelationIdentifier("new")
-	v := &NotValue{Child: &QuantifiedObjectValue{Correlation: oldAlias}}
-	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	v := &NotValue{Child: mustQOV(t, oldAlias)}
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: oldAlias, Target: newAlias}))
 	nv, ok := result.(*NotValue)
 	if !ok {
 		t.Fatalf("expected *NotValue, got %T", result)
 	}
-	qov, ok := nv.Child.(*QuantifiedObjectValue)
+	qov, ok := nv.Child.(*quantifiedObjectValue)
 	if !ok {
-		t.Fatalf("expected child to be *QuantifiedObjectValue, got %T", nv.Child)
+		t.Fatalf("expected child to be *quantifiedObjectValue, got %T", nv.Child)
 	}
-	if qov.Correlation != newAlias {
-		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation)
+	if qov.Correlation() != newAlias {
+		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation())
 	}
 }
 
 func TestRebaseValue_NotValue_NoChange(t *testing.T) {
 	t.Parallel()
 	v := &NotValue{Child: &ConstantValue{Value: true}}
-	result := RebaseValue(v, AliasMap{
-		NamedCorrelationIdentifier("old"): NamedCorrelationIdentifier("new"),
-	})
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: NamedCorrelationIdentifier("old"), Target: NamedCorrelationIdentifier("new")}))
 	if result != v {
 		t.Fatal("NOT with no matching aliases should return same pointer")
 	}
@@ -228,8 +216,8 @@ func TestRebaseValue_AggregateValue_Rebases(t *testing.T) {
 	t.Parallel()
 	oldAlias := NamedCorrelationIdentifier("old")
 	newAlias := NamedCorrelationIdentifier("new")
-	v := NewAggregateValue(AggSum, &QuantifiedObjectValue{Correlation: oldAlias})
-	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	v := NewAggregateValue(AggSum, mustQOV(t, oldAlias))
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: oldAlias, Target: newAlias}))
 	agg, ok := result.(*AggregateValue)
 	if !ok {
 		t.Fatalf("expected *AggregateValue, got %T", result)
@@ -237,21 +225,19 @@ func TestRebaseValue_AggregateValue_Rebases(t *testing.T) {
 	if agg.Op != AggSum {
 		t.Fatalf("op = %v, want AggSum", agg.Op)
 	}
-	qov, ok := agg.Operand.(*QuantifiedObjectValue)
+	qov, ok := agg.Operand.(*quantifiedObjectValue)
 	if !ok {
-		t.Fatalf("expected operand to be *QuantifiedObjectValue, got %T", agg.Operand)
+		t.Fatalf("expected operand to be *quantifiedObjectValue, got %T", agg.Operand)
 	}
-	if qov.Correlation != newAlias {
-		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation)
+	if qov.Correlation() != newAlias {
+		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation())
 	}
 }
 
 func TestRebaseValue_AggregateValue_NoChange(t *testing.T) {
 	t.Parallel()
 	v := NewAggregateValue(AggSum, &ConstantValue{Value: 42})
-	result := RebaseValue(v, AliasMap{
-		NamedCorrelationIdentifier("old"): NamedCorrelationIdentifier("new"),
-	})
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: NamedCorrelationIdentifier("old"), Target: NamedCorrelationIdentifier("new")}))
 	if result != v {
 		t.Fatal("aggregate with no matching aliases should return same pointer")
 	}
@@ -260,9 +246,7 @@ func TestRebaseValue_AggregateValue_NoChange(t *testing.T) {
 func TestRebaseValue_AggregateValue_CountStar(t *testing.T) {
 	t.Parallel()
 	v := NewAggregateValue(AggCountStar, nil)
-	result := RebaseValue(v, AliasMap{
-		NamedCorrelationIdentifier("old"): NamedCorrelationIdentifier("new"),
-	})
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: NamedCorrelationIdentifier("old"), Target: NamedCorrelationIdentifier("new")}))
 	if result != v {
 		t.Fatal("COUNT(*) (nil operand) should return same pointer")
 	}
@@ -273,7 +257,7 @@ func TestRebaseValue_QuantifiedRecordValue(t *testing.T) {
 	oldAlias := NamedCorrelationIdentifier("old")
 	newAlias := NamedCorrelationIdentifier("new")
 	v := &QuantifiedRecordValue{Alias: oldAlias, ResultType: NullableLong}
-	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: oldAlias, Target: newAlias}))
 	qrv, ok := result.(*QuantifiedRecordValue)
 	if !ok {
 		t.Fatalf("expected *QuantifiedRecordValue, got %T", result)
@@ -290,19 +274,19 @@ func TestRebaseValue_ExistsValue(t *testing.T) {
 	t.Parallel()
 	oldAlias := NamedCorrelationIdentifier("old")
 	newAlias := NamedCorrelationIdentifier("new")
-	v := NewExistsValue(oldAlias)
-	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	v := mustExistsValue(t, oldAlias)
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: oldAlias, Target: newAlias}))
 	ev, ok := result.(*ExistsValue)
 	if !ok {
 		t.Fatalf("expected *ExistsValue, got %T", result)
 	}
 	// RFC-141: the alias lives on the child QuantifiedObjectValue now.
-	qov, ok := ev.GetChild().(*QuantifiedObjectValue)
+	qov, ok := ev.GetChild().(*quantifiedObjectValue)
 	if !ok {
-		t.Fatalf("child should be *QuantifiedObjectValue, got %T", ev.GetChild())
+		t.Fatalf("child should be *quantifiedObjectValue, got %T", ev.GetChild())
 	}
-	if qov.Correlation != newAlias {
-		t.Fatalf("expected alias %v, got %v", newAlias, qov.Correlation)
+	if qov.Correlation() != newAlias {
+		t.Fatalf("expected alias %v, got %v", newAlias, qov.Correlation())
 	}
 }
 
@@ -311,7 +295,7 @@ func TestRebaseValue_ScalarSubqueryValue(t *testing.T) {
 	oldAlias := NamedCorrelationIdentifier("old")
 	newAlias := NamedCorrelationIdentifier("new")
 	v := &ScalarSubqueryValue{Alias: oldAlias}
-	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: oldAlias, Target: newAlias}))
 	ssv, ok := result.(*ScalarSubqueryValue)
 	if !ok {
 		t.Fatalf("expected *ScalarSubqueryValue, got %T", result)
@@ -326,7 +310,7 @@ func TestRebaseValue_ObjectValue(t *testing.T) {
 	oldAlias := NamedCorrelationIdentifier("old")
 	newAlias := NamedCorrelationIdentifier("new")
 	v := &ObjectValue{Alias: oldAlias, ResultType: TypeString}
-	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: oldAlias, Target: newAlias}))
 	ov, ok := result.(*ObjectValue)
 	if !ok {
 		t.Fatalf("expected *ObjectValue, got %T", result)
@@ -343,8 +327,8 @@ func TestRebaseValue_AndOrValue_Generic(t *testing.T) {
 	t.Parallel()
 	oldAlias := NamedCorrelationIdentifier("old")
 	newAlias := NamedCorrelationIdentifier("new")
-	v := NewAndOrValue(AndOrAnd, &QuantifiedObjectValue{Correlation: oldAlias}, &ConstantValue{Value: true})
-	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	v := NewAndOrValue(AndOrAnd, mustQOV(t, oldAlias), &ConstantValue{Value: true})
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: oldAlias, Target: newAlias}))
 	aov, ok := result.(*AndOrValue)
 	if !ok {
 		t.Fatalf("expected *AndOrValue, got %T", result)
@@ -352,12 +336,12 @@ func TestRebaseValue_AndOrValue_Generic(t *testing.T) {
 	if aov.Op != AndOrAnd {
 		t.Fatalf("op should be AND, got %v", aov.Op)
 	}
-	qov, ok := aov.Left.(*QuantifiedObjectValue)
+	qov, ok := aov.Left.(*quantifiedObjectValue)
 	if !ok {
-		t.Fatalf("expected Left to be *QuantifiedObjectValue, got %T", aov.Left)
+		t.Fatalf("expected Left to be *quantifiedObjectValue, got %T", aov.Left)
 	}
-	if qov.Correlation != newAlias {
-		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation)
+	if qov.Correlation() != newAlias {
+		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation())
 	}
 }
 
@@ -366,20 +350,20 @@ func TestRebaseValue_LikeOperatorValue_Generic(t *testing.T) {
 	oldAlias := NamedCorrelationIdentifier("old")
 	newAlias := NamedCorrelationIdentifier("new")
 	v := &LikeOperatorValue{
-		Probe:   &QuantifiedObjectValue{Correlation: oldAlias},
+		Probe:   mustQOV(t, oldAlias),
 		Pattern: &ConstantValue{Value: "%test%"},
 	}
-	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: oldAlias, Target: newAlias}))
 	lv, ok := result.(*LikeOperatorValue)
 	if !ok {
 		t.Fatalf("expected *LikeOperatorValue, got %T", result)
 	}
-	qov, ok := lv.Probe.(*QuantifiedObjectValue)
+	qov, ok := lv.Probe.(*quantifiedObjectValue)
 	if !ok {
-		t.Fatalf("expected Probe to be *QuantifiedObjectValue, got %T", lv.Probe)
+		t.Fatalf("expected Probe to be *quantifiedObjectValue, got %T", lv.Probe)
 	}
-	if qov.Correlation != newAlias {
-		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation)
+	if qov.Correlation() != newAlias {
+		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation())
 	}
 }
 
@@ -389,20 +373,20 @@ func TestRebaseValue_PickValue_Generic(t *testing.T) {
 	newAlias := NamedCorrelationIdentifier("new")
 	v := &PickValue{
 		Selector:     &ConstantValue{Value: 0},
-		Alternatives: []Value{&QuantifiedObjectValue{Correlation: oldAlias}, &ConstantValue{Value: 42}},
+		Alternatives: []Value{mustQOV(t, oldAlias), &ConstantValue{Value: 42}},
 		Typ:          UnknownType,
 	}
-	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	result := RebaseValue(v, mustAliasMap(t, AliasPair{Source: oldAlias, Target: newAlias}))
 	pv, ok := result.(*PickValue)
 	if !ok {
 		t.Fatalf("expected *PickValue, got %T", result)
 	}
-	qov, ok := pv.Alternatives[0].(*QuantifiedObjectValue)
+	qov, ok := pv.Alternatives[0].(*quantifiedObjectValue)
 	if !ok {
-		t.Fatalf("expected Alternatives[0] to be *QuantifiedObjectValue, got %T", pv.Alternatives[0])
+		t.Fatalf("expected Alternatives[0] to be *quantifiedObjectValue, got %T", pv.Alternatives[0])
 	}
-	if qov.Correlation != newAlias {
-		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation)
+	if qov.Correlation() != newAlias {
+		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation())
 	}
 }
 
@@ -415,8 +399,8 @@ func TestRebaseValue_CorrelationRoundTrip(t *testing.T) {
 
 	tree := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &QuantifiedObjectValue{Correlation: oldA},
-		Right: &ScalarFunctionValue{FuncName: "F", Args: []Value{&QuantifiedObjectValue{Correlation: oldB}}, Typ: UnknownType},
+		Left:  mustQOV(t, oldA),
+		Right: &ScalarFunctionValue{FuncName: "F", Args: []Value{mustQOV(t, oldB)}, Typ: UnknownType},
 	}
 
 	before := GetCorrelatedToOfValue(tree)
@@ -427,7 +411,10 @@ func TestRebaseValue_CorrelationRoundTrip(t *testing.T) {
 		t.Fatal("before: missing oldB")
 	}
 
-	rebased := RebaseValue(tree, AliasMap{oldA: newA, oldB: newB})
+	rebased := RebaseValue(tree, mustAliasMap(t,
+		AliasPair{Source: oldA, Target: newA},
+		AliasPair{Source: oldB, Target: newB},
+	))
 	after := GetCorrelatedToOfValue(rebased)
 	if _, ok := after[newA]; !ok {
 		t.Fatal("after: missing newA")
@@ -445,9 +432,9 @@ func TestRebaseValue_CorrelationRoundTrip(t *testing.T) {
 
 func TestRebaseValue_LeafNoChange(t *testing.T) {
 	t.Parallel()
-	aliases := AliasMap{NamedCorrelationIdentifier("old"): NamedCorrelationIdentifier("new")}
+	aliases := mustAliasMap(t, AliasPair{Source: NamedCorrelationIdentifier("old"), Target: NamedCorrelationIdentifier("new")})
 	leaves := []Value{
-		&FieldValue{Field: "x"},
+		&fieldValue{Field: "x"},
 		&ConstantValue{Value: 42},
 		&NullValue{},
 		&BooleanValue{},
@@ -494,7 +481,7 @@ func TestUnmatchedAggregateValue_FullIntegration(t *testing.T) {
 
 	// RebaseValue
 	newID := NamedCorrelationIdentifier("new_id")
-	rebased := RebaseValue(v, AliasMap{id: newID})
+	rebased := RebaseValue(v, mustAliasMap(t, AliasPair{Source: id, Target: newID}))
 	uav, ok := rebased.(*UnmatchedAggregateValue)
 	if !ok {
 		t.Fatalf("rebased should be *UnmatchedAggregateValue, got %T", rebased)
@@ -525,14 +512,14 @@ func TestValuesStructurallyEqual_Nil(t *testing.T) {
 	if !ValuesStructurallyEqual(nil, nil) {
 		t.Fatal("nil == nil should be true")
 	}
-	if ValuesStructurallyEqual(nil, &FieldValue{Field: "x"}) {
+	if ValuesStructurallyEqual(nil, &fieldValue{Field: "x"}) {
 		t.Fatal("nil != non-nil should be false")
 	}
 }
 
 func TestValuesStructurallyEqual_SamePointer(t *testing.T) {
 	t.Parallel()
-	v := &FieldValue{Field: "x"}
+	v := &fieldValue{Field: "x"}
 	if !ValuesStructurallyEqual(v, v) {
 		t.Fatal("same pointer should be equal")
 	}
@@ -540,12 +527,12 @@ func TestValuesStructurallyEqual_SamePointer(t *testing.T) {
 
 func TestValuesStructurallyEqual_Leaf(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "COL"}
-	b := &FieldValue{Field: "COL"}
+	a := &fieldValue{Field: "COL"}
+	b := &fieldValue{Field: "COL"}
 	if !ValuesStructurallyEqual(a, b) {
 		t.Fatal("identical FieldValues should be equal")
 	}
-	c := &FieldValue{Field: "OTHER"}
+	c := &fieldValue{Field: "OTHER"}
 	if ValuesStructurallyEqual(a, c) {
 		t.Fatal("different FieldValues should not be equal")
 	}
@@ -566,7 +553,7 @@ func TestValuesStructurallyEqual_Composite(t *testing.T) {
 
 func TestValuesStructurallyEqual_DifferentTypes(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "x"}
+	a := &fieldValue{Field: "x"}
 	b := &ConstantValue{Value: "x"}
 	if ValuesStructurallyEqual(a, b) {
 		t.Fatal("different types should not be equal")

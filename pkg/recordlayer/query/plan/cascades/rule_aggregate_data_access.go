@@ -107,7 +107,12 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 			if mergePlan == nil {
 				continue
 			}
-			call.Yield(mergePlan)
+			logicalPlan, err := projectAggregateResultToGroupBy(mergePlan, gb)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
+			call.Yield(logicalPlan)
 			singleMatched = true
 			continue
 		}
@@ -126,14 +131,32 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 		if rts := aggCand.GetRecordTypes(); len(rts) > 0 {
 			recordTypeName = rts[0]
 		}
-		aggPlan := plans.NewRecordQueryAggregateIndexPlan(
-			idxPlan, recordTypeName, values.UnknownType, aggCand.aggFunction.String(),
-		).WithGroupColumns(aggCand.groupCols, aggCand.aggColumn).
+		resultType, ok := aggregateIndexOutputType(aggCand)
+		if !ok {
+			continue
+		}
+		aggPlan, err := plans.NewRecordQueryAggregateIndexPlan(
+			idxPlan, recordTypeName, resultType, aggCand.aggFunction.String(),
+		)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		aggPlan = aggPlan.WithGroupColumns(aggCand.groupCols, aggCand.aggColumn).
 			WithGroupColumnLayout(aggCand.GetBaseRowType()).
 			WithLiveGroupsOnly(dropsVacatedGroups(aggCand))
+		logicalPlan, err := projectAggregateResultToGroupBy(aggPlan, gb)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 
-		// The aggregate-index plan is its own cascades expression now (RFC-184 W2).
-		call.Yield(aggPlan)
+		// The aggregate-index cursor emits canonical physical column names such as
+		// COUNT(*) and SUM(AMOUNT). A GroupBy owns its logical output names, including
+		// aggregate aliases. Keep the leaf canonical for execution and publish the
+		// GroupBy row through an ordinal projection so the yielded member states the
+		// exact same result type as the Reference it joins.
+		call.Yield(logicalPlan)
 		singleMatched = true
 	}
 	if singleMatched {
@@ -143,6 +166,28 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 	// Path 2: multi-aggregate intersection — multiple candidates, each
 	// covering one of the GroupBy's aggregates with identical grouping.
 	tryMultiAggregateIntersection(call, gb, candidates, scanTypes, innerFilterPreds)
+}
+
+func projectAggregateResultToGroupBy(
+	aggPlan plans.RecordQueryPlan,
+	groupBy *expressions.GroupByExpression,
+) (plans.RecordQueryPlan, error) {
+	innerQ := plans.QuantifierOverPlan(aggPlan)
+	root, err := innerQ.RequireFlowedObjectValue()
+	if err != nil {
+		return nil, err
+	}
+	outputNames := expressions.GroupByOutputColumnNames(
+		groupBy.GetGroupingKeys(), groupBy.GetAggregates())
+	projected := make([]values.Value, len(outputNames))
+	for i := range projected {
+		projected[i], err = values.ResolveFieldOrdinals(root, []int{i})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return plans.NewRecordQueryProjectionPlanFromQuantifierWithOutputSchema(
+		projected, nil, nil, outputNames, innerQ)
 }
 
 // dropsVacatedGroups reports whether a scan of this candidate may drop entries
@@ -296,9 +341,18 @@ func buildGroupExistenceMerge(
 		if rts := cand.GetRecordTypes(); len(rts) > 0 {
 			recordTypeName = rts[0]
 		}
-		childPlans[i] = plans.NewRecordQueryAggregateIndexPlan(
-			idxPlan, recordTypeName, values.UnknownType, cand.aggFunction.String(),
-		).WithGroupColumns(cand.groupCols, cand.aggColumn).
+		resultType, ok := aggregateIndexOutputType(cand)
+		if !ok {
+			return nil
+		}
+		aggPlan, err := plans.NewRecordQueryAggregateIndexPlan(
+			idxPlan, recordTypeName, resultType, cand.aggFunction.String(),
+		)
+		if err != nil {
+			call.Fail(err)
+			return nil
+		}
+		childPlans[i] = aggPlan.WithGroupColumns(cand.groupCols, cand.aggColumn).
 			WithGroupColumnLayout(cand.GetBaseRowType()).
 			// The COMPANION carries the vacated-group drop, and it is load-bearing
 			// here: the companion is itself subject to the over-approximation
@@ -315,25 +369,43 @@ func buildGroupExistenceMerge(
 	// cannot state a component's type the candidate already carries Unknown for
 	// it, so the honest answer flows through unchanged.
 	groupKeyTypes := owner.GetKeyComponentTypes()
+	comparisonRoot, ok := aggregateRowQOV(childPlans[0].GetResultType())
+	if !ok {
+		return nil
+	}
 	comparisonKey := make([]values.Value, len(groupCols))
-	for i, col := range groupCols {
-		comparisonKey[i] = values.NewFieldValueWithResolvedOrdinal(col, i, groupKeyTypes[i])
+	for i := range groupCols {
+		resolved, resolveErr := values.ResolveFieldOrdinals(comparisonRoot, []int{i})
+		if resolveErr != nil || !sameExactType(resolved.Type(), groupKeyTypes[i]) {
+			return nil
+		}
+		comparisonKey[i] = resolved
 	}
 
 	// Result row = grouping columns from the DRIVING stream, then the owner's
 	// aggregate from its own stream. The grouping values must come from the
 	// companion: for a group the owner has no entry for, the owner's slots are
 	// the absent filler and carry nothing.
+	mergedRoot, ok := aggregateMergedRowQOV(childPlans)
+	if !ok {
+		return nil
+	}
 	fields := make([]values.RecordConstructorField, 0, len(groupCols)+1)
 	for i, col := range groupCols {
+		field, resolveErr := values.ResolveFieldOrdinals(mergedRoot, []int{i})
+		if resolveErr != nil || !sameExactType(field.Type(), groupKeyTypes[i]) {
+			return nil
+		}
 		fields = append(fields, values.RecordConstructorField{
 			Name:  col,
-			Value: values.NewFieldValueWithResolvedOrdinal(col, i, groupKeyTypes[i]),
+			Value: field,
 		})
 	}
 	aggName := aggregateFlowedColumnName(owner.aggFunction.String(), owner.aggColumn)
-	aggField := values.Value(values.NewFieldValueWithResolvedOrdinal(
-		aggName, childWidth+len(groupCols), values.UnknownType))
+	aggField, err := values.ResolveFieldOrdinals(mergedRoot, []int{childWidth + len(groupCols)})
+	if err != nil {
+		return nil
+	}
 	fields = append(fields, values.RecordConstructorField{
 		Name:  aggName,
 		Value: emptyGroupIdentity(owner, aggField),
@@ -344,8 +416,12 @@ func buildGroupExistenceMerge(
 		childQuants[i] = expressions.NewPhysicalQuantifier(
 			call.MemoizeFinalExpression(&scanPlanExpression{plan: cp}))
 	}
-	merge := plans.NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers(
+	merge, err := plans.NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers(
 		childQuants, comparisonKey, values.NewRecordConstructorValue(fields...))
+	if err != nil {
+		call.Fail(err)
+		return nil
+	}
 	// Leg 0 is the companion, and the designation travels as its ALIAS so a
 	// later relink cannot silently point it at the aggregate stream.
 	return merge.WithDrivingStream(childQuants[0].GetAlias())
@@ -363,7 +439,7 @@ func emptyGroupIdentity(owner *AggregateIndexMatchCandidate, pickUp values.Value
 	if owner.countsRows || owner.aggFunction != expressions.AggCount {
 		return pickUp
 	}
-	return values.NewScalarFunctionValue("COALESCE", values.UnknownType,
+	return values.NewScalarFunctionValue("COALESCE", pickUp.Type(),
 		pickUp, &values.ConstantValue{Value: int64(0)})
 }
 
@@ -428,7 +504,7 @@ func groupColEqualityIndex(cp *predicates.ComparisonPredicate, groupCols []strin
 	if cp.Comparison.Type != predicates.ComparisonEquals {
 		return -1
 	}
-	fv, ok := cp.Operand.(*values.FieldValue)
+	fv, ok := values.AsFieldValue(cp.Operand)
 	if !ok {
 		return -1
 	}
@@ -464,7 +540,7 @@ func valueReadsField(v values.Value) bool {
 	if v == nil {
 		return false
 	}
-	if _, ok := v.(*values.FieldValue); ok {
+	if _, ok := values.AsFieldValue(v); ok {
 		return true
 	}
 	for _, c := range v.Children() {
@@ -536,6 +612,129 @@ func aggregateFlowedColumnName(aggFunc, aggColumn string) string {
 		return aggFunc + "(*)"
 	}
 	return aggFunc + "(" + aggColumn + ")"
+}
+
+// aggregateIndexOutputType is the exact row schema emitted by one aggregate
+// index cursor: grouping keys in logical order followed by the aggregate
+// result. Optional candidates whose metadata cannot prove every field type are
+// declined instead of minting UnknownType into an executable QOV.
+func aggregateIndexOutputType(cand *AggregateIndexMatchCandidate) (*values.RecordType, bool) {
+	if cand == nil {
+		return nil, false
+	}
+	groupTypes := cand.GetKeyComponentTypes()
+	if len(groupTypes) != len(cand.groupCols) {
+		return nil, false
+	}
+	fields := make([]values.Field, 0, len(groupTypes)+1)
+	for i, groupType := range groupTypes {
+		if _, err := values.SnapshotExactType(groupType); err != nil {
+			return nil, false
+		}
+		fields = append(fields, values.Field{
+			Name: cand.groupCols[i], FieldType: groupType, Ordinal: i,
+		})
+	}
+
+	aggregateType, ok := aggregateIndexResultType(cand)
+	if !ok {
+		return nil, false
+	}
+	fields = append(fields, values.Field{
+		Name:      aggregateFlowedColumnName(cand.aggFunction.String(), cand.aggColumn),
+		FieldType: aggregateType,
+		Ordinal:   len(fields),
+	})
+	result := &values.RecordType{Fields: fields}
+	exact, err := values.SnapshotExactType(result)
+	if err != nil {
+		return nil, false
+	}
+	resolved, ok := exact.Type().(*values.RecordType)
+	return resolved, ok
+}
+
+func aggregateIndexResultType(cand *AggregateIndexMatchCandidate) (values.Type, bool) {
+	switch cand.aggFunction {
+	case expressions.AggCount:
+		return values.NullableLong, true
+	case expressions.AggAvg:
+		return values.NullableDouble, aggregateIndexOperandIsNumeric(cand)
+	case expressions.AggSum, expressions.AggMin, expressions.AggMax:
+		operand, ok := aggregateIndexOperandType(cand)
+		if !ok {
+			return nil, false
+		}
+		if _, ok := values.JavaAggregateResultCode(cand.aggFunction.String(), operand.Code()); !ok {
+			return nil, false
+		}
+		result := values.WithNullability(operand, true)
+		if _, err := values.SnapshotExactType(result); err != nil {
+			return nil, false
+		}
+		return result, true
+	default:
+		return nil, false
+	}
+}
+
+func aggregateIndexOperandIsNumeric(cand *AggregateIndexMatchCandidate) bool {
+	operand, ok := aggregateIndexOperandType(cand)
+	if !ok {
+		return false
+	}
+	_, ok = values.JavaAggregateResultCode(cand.aggFunction.String(), operand.Code())
+	return ok
+}
+
+func aggregateIndexOperandType(cand *AggregateIndexMatchCandidate) (values.Type, bool) {
+	rowType, ok := cand.GetBaseRowType().(*values.RecordType)
+	if !ok || cand.aggColumn == "" {
+		return nil, false
+	}
+	field, ok := rowType.LookupFieldUnique(cand.aggColumn)
+	if !ok || field.FieldType == nil {
+		return nil, false
+	}
+	exact, err := values.SnapshotExactType(field.FieldType)
+	if err != nil {
+		return nil, false
+	}
+	return exact.Type(), true
+}
+
+func aggregateRowQOV(rowType values.Type) (values.QuantifiedObjectValue, bool) {
+	qov, err := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier(), rowType)
+	return qov, err == nil
+}
+
+// aggregateMergedRowQOV describes the actual flat carrier consumed by the
+// multi-intersection result program. Its field order is the executor's child
+// order, and each child contributes its complete exact aggregate row.
+func aggregateMergedRowQOV(children []plans.RecordQueryPlan) (values.QuantifiedObjectValue, bool) {
+	fields := make([]values.Field, 0)
+	for _, child := range children {
+		if child == nil {
+			return nil, false
+		}
+		row, ok := child.GetResultType().(*values.RecordType)
+		if !ok {
+			return nil, false
+		}
+		for _, field := range row.Fields {
+			if _, err := values.SnapshotExactType(field.FieldType); err != nil {
+				return nil, false
+			}
+			fields = append(fields, values.Field{
+				Name: field.Name, FieldType: field.FieldType, Ordinal: len(fields),
+			})
+		}
+	}
+	merged := &values.RecordType{Fields: fields}
+	if _, err := values.SnapshotExactType(merged); err != nil {
+		return nil, false
+	}
+	return aggregateRowQOV(merged)
 }
 
 // tryMultiAggregateIntersection attempts to satisfy a multi-aggregate
@@ -721,9 +920,18 @@ func tryMultiAggregateIntersection(
 		if rts := mc.GetRecordTypes(); len(rts) > 0 {
 			recordTypeName = rts[0]
 		}
-		childPlans[i] = plans.NewRecordQueryAggregateIndexPlan(
-			idxPlan, recordTypeName, values.UnknownType, mc.aggFunction.String(),
-		).WithGroupColumns(mc.groupCols, mc.aggColumn).
+		resultType, ok := aggregateIndexOutputType(mc)
+		if !ok {
+			return
+		}
+		aggPlan, err := plans.NewRecordQueryAggregateIndexPlan(
+			idxPlan, recordTypeName, resultType, mc.aggFunction.String(),
+		)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		childPlans[i] = aggPlan.WithGroupColumns(mc.groupCols, mc.aggColumn).
 			WithGroupColumnLayout(mc.GetBaseRowType()).
 			WithLiveGroupsOnly(dropsVacatedGroups(mc))
 	}
@@ -736,9 +944,18 @@ func tryMultiAggregateIntersection(
 	// Each child row's layout is [groupCols..., FUNC(col)] (the
 	// aggregateIndexCursor's posType), so a grouping-column comparison key IS
 	// slot i — baked at plan time, read positionally per child row.
+	comparisonRoot, ok := aggregateRowQOV(childPlans[0].GetResultType())
+	if !ok {
+		return
+	}
 	comparisonKey := make([]values.Value, len(groupCols))
-	for i, col := range groupCols {
-		comparisonKey[i] = values.NewFieldValueWithResolvedOrdinal(col, i, values.UnknownType)
+	for i := range groupCols {
+		resolved, resolveErr := values.ResolveFieldOrdinals(comparisonRoot, []int{i})
+		if resolveErr != nil {
+			call.Fail(resolveErr)
+			return
+		}
+		comparisonKey[i] = resolved
 	}
 
 	// Result value = Record(groupCol0, ..., agg0, agg1, ...).
@@ -770,18 +987,31 @@ func tryMultiAggregateIntersection(
 	if needsCompanion && drivingLeg > 0 {
 		groupingBase = drivingLeg * childWidth
 	}
+	mergedRoot, ok := aggregateMergedRowQOV(childPlans)
+	if !ok {
+		return
+	}
 	fields := make([]values.RecordConstructorField, 0, len(groupCols)+len(aggs))
 	for i, col := range groupCols {
+		groupValue, resolveErr := values.ResolveFieldOrdinals(mergedRoot, []int{groupingBase + i})
+		if resolveErr != nil {
+			call.Fail(resolveErr)
+			return
+		}
 		fields = append(fields, values.RecordConstructorField{
 			Name:  col,
-			Value: values.NewFieldValueWithResolvedOrdinal(col, groupingBase+i, values.UnknownType),
+			Value: groupValue,
 		})
 	}
 	for i := range aggs {
 		colName := aggregateFlowedColumnName(matched[i].aggFunction.String(), matched[i].aggColumn)
 		// aggLegOffset shifts past the driving companion when one is present.
-		pickUp := values.Value(values.NewFieldValueWithResolvedOrdinal(
-			colName, (i+aggLegOffset)*childWidth+len(groupCols), values.UnknownType))
+		pickUp, resolveErr := values.ResolveFieldOrdinals(
+			mergedRoot, []int{(i+aggLegOffset)*childWidth + len(groupCols)})
+		if resolveErr != nil {
+			call.Fail(resolveErr)
+			return
+		}
 		if needsCompanion {
 			// A group the companion lists but this aggregate's index has no entry
 			// for arrives as NULL, which is already SUM's empty-group answer but
@@ -812,15 +1042,24 @@ func tryMultiAggregateIntersection(
 	}
 
 	// The multi-intersection carries its stream edges directly (RFC-184 W2).
-	merge := plans.NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers(
+	merge, err := plans.NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers(
 		childQuants, comparisonKey, resultValue,
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	if needsCompanion {
 		// The designation travels as an ALIAS so a later relink cannot silently
 		// point it at a different stream.
 		merge = merge.WithDrivingStream(childQuants[drivingLeg].GetAlias())
 	}
-	call.Yield(merge)
+	logicalPlan, err := projectAggregateResultToGroupBy(merge, gb)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(logicalPlan)
 }
 
 var _ ExpressionRule = (*AggregateDataAccessRule)(nil)

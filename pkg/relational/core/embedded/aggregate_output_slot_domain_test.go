@@ -1,13 +1,6 @@
 package embedded
 
-// The pinned ordinal's THIRD element: which layout it indexes.
-//
-// aggregate_output_slot_recorded_test.go pins that a post-aggregate reference
-// carries the ordinal its composition chose. That is two thirds of an identity.
-// The remaining third is the layout the integer addresses, and without it the
-// recorded slot is an integer no consumer may act on — which is why the
-// `FrontierPinned` provenance bit was standing in for a domain at every
-// downstream comparison.
+// The translated ordinal's layout and owner.
 //
 // The hazard is documented from production one file over: a group key's
 // SOURCE-relative ordinal and an aggregate's OUTPUT-row ordinal met in one
@@ -30,46 +23,8 @@ package embedded
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
-
-// pinnedDomains collects, for every PINNED flat FieldValue in a predicate's
-// value trees, its display name and the domain token its path carries.
-func pinnedDomains(t *testing.T, pred predicates.QueryPredicate) map[string]values.OrdinalDomain {
-	t.Helper()
-	got := map[string]values.OrdinalDomain{}
-	visitValue := func(v values.Value) {
-		values.WalkValue(v, func(n values.Value) bool {
-			fv, ok := n.(*values.FieldValue)
-			if !ok || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
-				return true
-			}
-			got[fv.Field] = fv.Resolved.Domain
-			return true
-		})
-	}
-	var visit func(predicates.QueryPredicate)
-	visit = func(p predicates.QueryPredicate) {
-		switch x := p.(type) {
-		case *predicates.ComparisonPredicate:
-			visitValue(x.Operand)
-			visitValue(x.Comparison.Operand)
-		case *predicates.AndPredicate:
-			for _, s := range x.SubPredicates {
-				visit(s)
-			}
-		case *predicates.OrPredicate:
-			for _, s := range x.SubPredicates {
-				visit(s)
-			}
-		case *predicates.NotPredicate:
-			visit(x.Child)
-		}
-	}
-	visit(pred)
-	return got
-}
 
 func TestPinnedAggregateReferenceStatesTheLayoutItsOrdinalIndexes(t *testing.T) {
 	t.Parallel()
@@ -135,10 +90,7 @@ func TestPinnedAggregateReferenceStatesTheLayoutItsOrdinalIndexes(t *testing.T) 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			agg := aggregateFor(t, tc.sql, ddl)
-			if agg.HavingPredicate == nil {
-				t.Fatalf("%s: no HAVING predicate to inspect", tc.sql)
-			}
+			_, having, owner := translatedHavingFor(t, tc.sql, ddl)
 			want := values.OrdinalDomainOfColumnNames(tc.outCols)
 			if !want.IsKnown() {
 				t.Fatalf("test expectation %v is itself unknown", tc.outCols)
@@ -149,32 +101,19 @@ func TestPinnedAggregateReferenceStatesTheLayoutItsOrdinalIndexes(t *testing.T) 
 					"token, so this case cannot tell them apart", tc.outCols, tc.srcCols)
 			}
 
-			got := pinnedDomains(t, agg.HavingPredicate)
-			if len(got) == 0 {
-				t.Fatalf("%s: no pinned reference in the HAVING predicate at all — the "+
-					"composition-recorded slot is what carries the domain", tc.sql)
+			got := values.OrdinalDomainOfType(owner.FlowedType())
+			if got != want {
+				extra := ""
+				if got == source {
+					extra = " That is the SOURCE table's layout: the HAVING quantifier " +
+						"owns the row consumed by the aggregate rather than the row it emits."
+				}
+				t.Errorf("%s: translated HAVING owner declares %v, want the aggregate's "+
+					"native output layout %v (%v).%s\n%s",
+					tc.sql, got, tc.outCols, want, extra, tc.why)
 			}
-			for field, domain := range got {
-				if !domain.IsKnown() {
-					t.Errorf("%s: pinned reference %q carries %v.\n%s\n"+
-						"A pinned ordinal says \"this slot is a recorded fact\"; an unknown "+
-						"domain says \"against an unstated row\". Together they are the "+
-						"comparison FieldPath.Domain exists to refuse, and every consumer "+
-						"downstream fails closed on it — silently.",
-						tc.sql, field, domain, tc.why)
-					continue
-				}
-				if domain != want {
-					extra := ""
-					if domain == source {
-						extra = " That is the SOURCE table's layout: the ordinal is being " +
-							"reported against the row the reference was resolved from " +
-							"rather than the row the composition numbered it against."
-					}
-					t.Errorf("%s: pinned reference %q declares %v, want the aggregate's "+
-						"native output layout %v (%v).%s\n%s",
-						tc.sql, field, domain, tc.outCols, want, extra, tc.why)
-				}
+			if slots := translatedSlots(t, having, owner); len(slots) == 0 {
+				t.Fatalf("%s: translated HAVING predicate contains no aggregate-output FieldValue", tc.sql)
 			}
 		})
 	}

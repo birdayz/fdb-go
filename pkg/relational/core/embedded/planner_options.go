@@ -206,6 +206,20 @@ func (p plannerOptions) cacheKeyPart() string {
 //
 // planningRules are the phase-PLANNING expression rules the callsite needs
 // (BatchA for SELECT, BatchA + DML wrappers for DML).
+//
+// RFC-232's ordering-safe child-stage handoff makes every parent wait for the
+// physicalization it consumes. That closes a genuine nil-plan hole, but also
+// turns formerly skipped work into counted planner tasks. 150k retains the
+// ordinary complexity tripwire. PLAN_RIGHT_DEEP explicitly selects the
+// smaller search topology but its six-way SQL authority now completes at
+// ~176k correctness-required tasks, so that opt-in mode receives a separate
+// 250k ceiling. The unrestricted bushy shape still exceeds 150k and fails
+// closed.
+const (
+	embeddedPlannerMaxTasks          = 150_000
+	embeddedRightDeepPlannerMaxTasks = 250_000
+)
+
 func newCascadesPlanner(
 	md *recordlayer.RecordMetaData,
 	popts plannerOptions,
@@ -215,11 +229,15 @@ func newCascadesPlanner(
 	rules := cascades.DefaultExpressionRules()
 	rules = append(rules, cascades.RewritingRules()...)
 	planCtx := buildCascadesPlanContext(md, popts.config)
+	maxTasks := embeddedPlannerMaxTasks
+	if popts.config.ShouldJoinRightDeep {
+		maxTasks = embeddedRightDeepPlannerMaxTasks
+	}
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
 		WithPlanningExpressionRules(planningRules).
 		WithStatistics(stats).
-		WithMaxTasks(100_000)
+		WithMaxTasks(maxTasks)
 	planner.DisabledRules = popts.disabledRules
 	return planner
 }

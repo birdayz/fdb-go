@@ -10,6 +10,22 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func lazyLegLayout(name string, columns ...string) *values.RecordType {
+	fields := make([]values.Field, len(columns))
+	for i, column := range columns {
+		fields[i] = values.Field{Name: column, FieldType: values.NullableLong, Ordinal: i}
+	}
+	return values.NewRecordType(name, false, fields)
+}
+
+func lazyLegLayouts() map[string]*values.RecordType {
+	return map[string]*values.RecordType{
+		"OUTER":  lazyLegLayout("OUTER", "ID", "CATEGORY"),
+		"INNER":  lazyLegLayout("INNER", "ID", "OUTER_ID"),
+		"SHADOW": lazyLegLayout("SHADOW", "ID", "NOTE"),
+	}
+}
+
 // buildTwoLegExistentialSelect assembles the shape OnMatch routes to
 // implementJoinWithExistential: exactly two ForEach legs plus one trailing
 // Existential in a single flat Select (`SELECT … FROM L, R WHERE EXISTS
@@ -25,18 +41,20 @@ import (
 // assert what the layout derivation says about this exact shape. Without that,
 // "the mint still fires" is unfalsifiable: it would also hold for a shape whose
 // layouts are underivable, which is the case that proves nothing.
-func buildTwoLegExistentialSelect() ([]expressions.RelationalExpression, expressions.Quantifier, expressions.Quantifier) {
+func buildTwoLegExistentialSelect(t testing.TB) ([]expressions.RelationalExpression, expressions.Quantifier, expressions.Quantifier) {
 	legA := values.NamedCorrelationIdentifier("L")
 	legB := values.NamedCorrelationIdentifier("R")
 	existAlias := values.NamedCorrelationIdentifier("E")
 
-	aType := values.Type(nljTestLayouts["OUTER"])  // ID, CATEGORY
-	bType := values.Type(nljTestLayouts["SHADOW"]) // ID, NOTE
-	eType := values.Type(nljTestLayouts["INNER"])  // ID, OUTER_ID
+	layouts := lazyLegLayouts()
+	aType := values.Type(layouts["OUTER"])  // ID, CATEGORY
+	bType := values.Type(layouts["SHADOW"]) // ID, NOTE
+	eType := values.Type(layouts["INNER"])  // ID, OUTER_ID
 
 	newLeg := func(table string, rt values.Type) *expressions.Reference {
-		ref := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{table}, rt))
-		ref.InsertFinal(plans.NewRecordQueryScanPlan([]string{table}, rt, false))
+		ref := expressions.InitialOf(mustFullUnorderedScan(t, []string{table}, rt))
+		scan, err := plans.NewRecordQueryScanPlan([]string{table}, rt, false)
+		ref.InsertFinal(mustConstruct(t, scan, err))
 		return ref
 	}
 
@@ -57,23 +75,32 @@ func buildTwoLegExistentialSelect() ([]expressions.RelationalExpression, express
 	// the arm's firings arrives with a resolved path in its leg's own domain and
 	// none arrives lazy. A lazy fixture therefore drove the arm's DECLINE while
 	// claiming to cover the path production takes.
-	innerRef := values.NewFieldValue(
-		values.NewQuantifiedObjectValueOfType(existAlias, eType), "OUTER_ID", values.UnknownType)
-	outerLegRef := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		values.NewQuantifiedObjectValueOfType(legA, aType), "ID", 0, values.UnknownType,
-		values.OrdinalDomainOfType(aType))
+	innerRoot, err := values.NewQuantifiedObjectValue(existAlias, eType)
+	exactInnerRoot := mustConstruct(t, innerRoot, err)
+	innerRef, err := values.ResolveFieldOrdinals(exactInnerRoot, []int{1})
+	innerRef = mustConstruct(t, innerRef, err)
+	outerRoot, err := values.NewQuantifiedObjectValue(legA, aType)
+	exactOuterRoot := mustConstruct(t, outerRoot, err)
+	outerLegRef, err := values.ResolveFieldOrdinals(exactOuterRoot, []int{0})
+	outerLegRef = mustConstruct(t, outerLegRef, err)
 
-	sel := expressions.NewSelectExpressionWithAliases(
-		values.NewQuantifiedObjectValue(legA),
+	selectResult, err := values.NewQuantifiedObjectValue(legA, aType)
+	exactSelectResult := mustConstruct(t, selectResult, err)
+	sel, err := expressions.NewSelectExpressionWithAliases(
+		exactSelectResult,
 		[]expressions.Quantifier{qA, qB, qE},
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(innerRef,
 				predicates.Comparison{Type: predicates.ComparisonEquals, Operand: outerLegRef}),
-			predicates.NewExistentialAlias(existAlias),
+			mustExistentialAlias(t, existAlias, eType),
 		},
 		[]string{"L", "R", "E"},
 	)
-	return FireExpressionRule(NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel)), qA, qB
+	return mustFireExpressionRule(
+		t,
+		NewImplementNestedLoopJoinRule(),
+		expressions.InitialOf(mustConstruct(t, sel, err)),
+	), qA, qB
 }
 
 // dottedLegRefsOf collects every FieldValue reachable from the yielded plans
@@ -88,11 +115,11 @@ func buildTwoLegExistentialSelect() ([]expressions.RelationalExpression, express
 // projected EXISTS carries its rebased projection in the FlatMap's result
 // value. A surface this misses makes the test FAIL, never pass vacuously —
 // the safe direction for a liveness assertion.
-func dottedLegRefsOf(yielded []expressions.RelationalExpression) []*values.FieldValue {
-	var out []*values.FieldValue
+func dottedLegRefsOf(yielded []expressions.RelationalExpression) []values.FieldValue {
+	var out []values.FieldValue
 	visit := func(v values.Value) values.Value {
-		if fv, ok := v.(*values.FieldValue); ok && strings.Contains(fv.Field, ".") {
-			if _, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
+		if fv, ok := values.AsFieldValue(v); ok && strings.Contains(fv.DisplayName(), ".") {
+			if _, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); isQOV {
 				out = append(out, fv)
 			}
 		}
@@ -153,11 +180,11 @@ func dottedLegRefsOf(yielded []expressions.RelationalExpression) []*values.Field
 // produces when it can state the leg's layout. Mirrors dottedLegRefsOf's walk
 // exactly (same surfaces, same node kinds) so the two are comparable: a reference
 // counted by one and not the other has genuinely changed form.
-func legLocalLegRefsOf(yielded []expressions.RelationalExpression, leg values.CorrelationIdentifier) []*values.FieldValue {
-	var out []*values.FieldValue
+func legLocalLegRefsOf(yielded []expressions.RelationalExpression, leg values.CorrelationIdentifier) []values.FieldValue {
+	var out []values.FieldValue
 	visit := func(v values.Value) values.Value {
-		if fv, ok := v.(*values.FieldValue); ok {
-			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV && qov.Correlation == leg {
+		if fv, ok := values.AsFieldValue(v); ok {
+			if qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); isQOV && qov.Correlation() == leg {
 				out = append(out, fv)
 			}
 		}
@@ -236,7 +263,7 @@ func legLocalLegRefsOf(yielded []expressions.RelationalExpression, leg values.Co
 func TestRebaseOuterLegValue_DerivableLegKeepsTheLegLocalRead(t *testing.T) {
 	t.Parallel()
 
-	yielded, qA, qB := buildTwoLegExistentialSelect()
+	yielded, qA, qB := buildTwoLegExistentialSelect(t)
 	if len(yielded) == 0 {
 		t.Fatal("ImplementNestedLoopJoinRule yielded nothing for the two-leg + " +
 			"trailing-Existential select: OnMatch no longer routes this shape to " +
@@ -274,7 +301,7 @@ func TestRebaseOuterLegValue_DerivableLegKeepsTheLegLocalRead(t *testing.T) {
 	// RFC-197 channel and this arm no longer has it.
 	var dotted []string
 	for _, fv := range dottedLegRefsOf(yielded) {
-		dotted = append(dotted, fv.Field)
+		dotted = append(dotted, fv.DisplayName())
 	}
 	if len(dotted) > 0 {
 		t.Fatalf("qualified merged-row keys reached a yielded plan: %v.\n"+
@@ -301,73 +328,40 @@ func TestRebaseOuterLegValue_DerivableLegKeepsTheLegLocalRead(t *testing.T) {
 			"read was moved somewhere this walk does not look.", len(yielded), layouts)
 	}
 	for _, fv := range refs {
-		if !strings.EqualFold(fv.Field, "ID") {
+		if !strings.EqualFold(fv.DisplayName(), "ID") {
 			t.Errorf("a surviving leg-L read names %q, want the BARE column ID — a "+
 				"qualified spelling on a leg-correlated read is the merged-row key under "+
-				"another anchor", fv.Field)
+				"another anchor", fv.DisplayName())
 		}
-		if fv.Resolved == nil {
+		if fv.Path() == nil || fv.Path().Len() != 1 {
 			t.Errorf("the surviving leg-L read %q carries NO ordinal. The pass-through's "+
 				"whole justification is that the reference already states its column in "+
 				"its own leg's domain; one that does not is a reference the arm should "+
 				"have declined, and it will resolve at runtime by whatever its display "+
-				"name spells.", fv.Field)
+				"name spells.", fv.DisplayName())
 		}
 	}
 }
 
-// TestRebaseOuterLegValue_DeclinesAReadThatStatesNoIdentity pins the arm's
-// residue disposition on the two inputs that used to produce the qualified mint:
-// a read with no resolved path at all, once with NO leg layout in hand and once
-// with a layout that DECLARES the read's column.
-//
-// Both inputs are kept, and keeping both is the point: they differ on the layout
-// and the disposition must not start depending on it. A layout answers "does
-// this LEG have a row"; a bake needs "can this READ state an ordinal in it". The
-// two came apart once already — LayoutAvailable reached 126 of 126 while
-// IdentityInLegDomain was zero, and a migration step was scheduled against the
-// proxy — so a fixture that has the layout and lacks the identity is the exact
-// shape that must not silently start being rewritten.
-//
-// The former disposition was `QOV(merged)."L.ID"`: the read's DISPLAY NAME
-// standing in for the identity it could not state, resolved at runtime by string
-// against the merged row. That is the RFC-197 channel itself, and it is deleted
-// rather than kept as a fallback — a fallback that spells a name is how such a
-// channel survives the migration meant to end it. What is left is the truth: the
-// arm cannot place this read, so it does not move it, and the defect stays
-// visible at the producer that built the reference unresolved.
-func TestRebaseOuterLegValue_DeclinesAReadThatStatesNoIdentity(t *testing.T) {
+// TestRebaseOuterLegValue_NoIdentityReadIsUnconstructible pins RFC-232's
+// stronger boundary for the old decline arm: an unresolved FieldValue can no
+// longer be published in the first place. Neither an unknown QOV nor a missing
+// field in an exact row can manufacture the display-name-only read that once
+// reached rebaseOuterLegValue and tempted it to mint `QOV(merged)."L.ID"`.
+func TestRebaseOuterLegValue_NoIdentityReadIsUnconstructible(t *testing.T) {
 	t.Parallel()
 
 	legA := values.NamedCorrelationIdentifier("L")
-	merged := values.UniqueCorrelationIdentifier()
-	aType := nljTestLayouts["OUTER"] // ID, CATEGORY
+	if root, err := values.NewQuantifiedObjectValue(legA, values.UnknownType); err == nil || root != nil {
+		t.Fatalf("unknown QOV construction = (%v, %v), want (nil, error)", root, err)
+	}
 
-	for _, tc := range []struct {
-		name     string
-		legTypes map[values.CorrelationIdentifier]*values.RecordType
-		because  string
-	}{
-		{"no leg layout", nil, "no leg layout was supplied at all"},
-		{
-			"layout declaring the column",
-			map[values.CorrelationIdentifier]*values.RecordType{legA: aType},
-			"a layout for leg L WAS supplied and declares ID",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			read := values.NewFieldValue(
-				values.NewQuantifiedObjectValueOfType(legA, values.Type(aType)), "ID", values.UnknownType)
-			out := rebaseOuterLegValue(read, []string{"L"}, merged, nil, tc.legTypes, legRebaseOrigin{Site: legRebaseSiteExists})
-			if out != values.Value(read) {
-				t.Fatalf("the arm rewrote a read that states NO identity to %v (%s).\n"+
-					"  It has nothing to place the read BY except the display name, and\n"+
-					"  minting a qualified merged-row key from that name is the channel this\n"+
-					"  arm no longer has. A read arriving here unresolved is a PRODUCER\n"+
-					"  defect — find the producer; do not restore the mint.", out, tc.because)
-			}
-		})
+	aType := lazyLegLayouts()["OUTER"] // ID, CATEGORY
+	root, err := values.NewQuantifiedObjectValue(legA, aType)
+	exactRoot := mustConstruct(t, root, err)
+	missing, err := values.ResolveFieldOrdinals(exactRoot, []int{len(aType.Fields)})
+	if err == nil || missing != nil {
+		t.Fatalf("out-of-range FieldValue construction = (%v, %v), want (nil, error)", missing, err)
 	}
 
 	// The census's own classification of the three outcomes. The outcome the arm
@@ -390,7 +384,7 @@ func TestRebaseOuterLegValue_DeclinesAReadThatStatesNoIdentity(t *testing.T) {
 		t.Fatalf("a MINTED read with a layout declaring its column classified as %v, "+
 			"want legLocalBakeClassLayoutAvailable", got)
 	}
-	if got := classifyLegLocalBake(legLocalBakeMergedReAnchor, values.UnknownType, "ID"); got != legLocalBakeClassUntypedLeg {
+	if got := classifyLegLocalBake(legLocalBakeMergedReAnchor, values.NotNullLong, "ID"); got != legLocalBakeClassUntypedLeg {
 		t.Fatalf("a MINTED read with no layout classified as %v, want untypedLeg", got)
 	}
 	if got := classifyLegLocalBake(legLocalBakeMergedReAnchor, values.Type(aType), "NOSUCH"); got != legLocalBakeClassColumnAbsent {
@@ -438,18 +432,24 @@ func TestRebaseOuterLegValue_PassesThroughAnAlreadyCorrectLegLocalRead(t *testin
 
 	legA := values.NamedCorrelationIdentifier("L")
 	merged := values.UniqueCorrelationIdentifier()
-	aType := nljTestLayouts["OUTER"] // ID, CATEGORY
+	aType := lazyLegLayouts()["OUTER"] // ID, CATEGORY
 	legDomain := values.OrdinalDomainOfType(values.Type(aType))
 
 	// The production shape: baked against the LEG's own layout, hung off a
 	// quantifier object that STATES that same layout — which is what the
 	// resolver now mints (its correlated arm carries the source's declared row).
-	read := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		values.NewQuantifiedObjectValueOfType(legA, values.Type(aType)), "CATEGORY", 1, values.UnknownType, legDomain)
+	legARoot, err := values.NewQuantifiedObjectValue(legA, aType)
+	exactLegARoot := mustConstruct(t, legARoot, err)
+	readValue, err := values.ResolveFieldOrdinals(exactLegARoot, []int{1})
+	read := mustConstruct(t, readValue, err)
+	readField, ok := values.AsFieldValue(read)
+	if !ok {
+		t.Fatalf("resolved leg-L read = %T, want exact FieldValue", read)
+	}
 
 	// Premise 1: the read DOES state a correct leg-local identity — asked in the
 	// leg's real layout, which is what a bake would index.
-	id, stated := read.CorrelatedIdentityIn(legDomain)
+	id, stated := values.CorrelatedFieldIdentityIn(read, legDomain)
 	if !stated || id.Ordinal != 1 || id.Correlation != legA {
 		t.Fatalf("the fixture is not the production shape: CorrelatedIdentityIn in the "+
 			"leg's own layout gave (%+v, %v), want ordinal 1 on leg L. Every claim below "+
@@ -461,7 +461,7 @@ func TestRebaseOuterLegValue_PassesThroughAnAlreadyCorrectLegLocalRead(t *testin
 	// It reads its frontier off the child's stored type, so this is exactly what
 	// typing the resolver's mints bought: measured, the corpus moved from
 	// identityOtherDomain 126 / identityInLegDomain 0 to identityInLegDomain 126.
-	if _, ok := legSlotIdentity(read); !ok {
+	if _, ok := legSlotIdentity(readField); !ok {
 		t.Fatal("legSlotIdentity DECLINED a read whose quantifier object states the " +
 			"leg's own row. That decline used to be universal — the resolver minted " +
 			"untyped children and all 126 corpus firings reported " +
@@ -483,8 +483,8 @@ func TestRebaseOuterLegValue_PassesThroughAnAlreadyCorrectLegLocalRead(t *testin
 
 	// The pass-through: the SAME value comes back, so the ordinal, the domain and
 	// the leg correlation are all intact by identity rather than by re-derivation.
-	out := rebaseOuterLegValue(read, aliasSet, merged, nil, legTypes, legRebaseOrigin{Site: legRebaseSiteExists})
-	if out != values.Value(read) {
+	out := rebaseOuterLegValue(read, aliasSet, merged, nil, nil, legTypes, legRebaseOrigin{Site: legRebaseSiteExists})
+	if out != read {
 		t.Fatalf("a read that ALREADY carried the right leg-local ordinal was rewritten "+
 			"to %v.\n"+
 			"  Whatever it was rewritten to, it can state at most what the read already\n"+
@@ -500,10 +500,16 @@ func TestRebaseOuterLegValue_PassesThroughAnAlreadyCorrectLegLocalRead(t *testin
 	// CATEGORY columns share a name, a leg-relative ordinal and an ordinal domain
 	// — the correlation is the whole of the difference — so a lookup that keyed on
 	// anything else lands on R's slot and the test says which.
-	twinRead := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		values.NewQuantifiedObjectValueOfType(legB, values.Type(aType)), "CATEGORY", 1, values.UnknownType, legDomain)
-	idL, _ := legSlotIdentity(read)
-	idR, okR := legSlotIdentity(twinRead)
+	legBRoot, err := values.NewQuantifiedObjectValue(legB, aType)
+	exactLegBRoot := mustConstruct(t, legBRoot, err)
+	twinReadValue, err := values.ResolveFieldOrdinals(exactLegBRoot, []int{1})
+	twinRead := mustConstruct(t, twinReadValue, err)
+	twinReadField, ok := values.AsFieldValue(twinRead)
+	if !ok {
+		t.Fatalf("resolved leg-R read = %T, want exact FieldValue", twinRead)
+	}
+	idL, _ := legSlotIdentity(readField)
+	idR, okR := legSlotIdentity(twinReadField)
 	if !okR || idL == idR {
 		t.Fatalf("the twin fixture is degenerate: leg L's identity %+v and leg R's %+v "+
 			"must be DISTINCT (stated=%v) or the wrong-leg assertion below cannot "+
@@ -512,20 +518,38 @@ func TestRebaseOuterLegValue_PassesThroughAnAlreadyCorrectLegLocalRead(t *testin
 	}
 	const slotL, slotR = 4, 9
 	layout := map[values.ColumnIdentity]int{idL: slotL, idR: slotR}
+	mergedFields := make([]values.Field, slotR+1)
+	for i := range mergedFields {
+		mergedFields[i] = values.Field{
+			Name:      values.OrdinalFieldName(i),
+			FieldType: values.NullableLong,
+			Ordinal:   i,
+		}
+	}
+	mergedType := values.NewRecordType("MergedLegs", false, mergedFields)
 	for _, tc := range []struct {
 		name string
-		read *values.FieldValue
+		read values.Value
 		want int
 	}{
 		{"leg L", read, slotL},
 		{"leg R", twinRead, slotR},
 	} {
-		anchored, isFV := rebaseOuterLegValue(tc.read, aliasSet, merged, layout, legTypes, legRebaseOrigin{Site: legRebaseSiteExists}).(*values.FieldValue)
-		if !isFV || anchored.Resolved == nil {
+		anchoredValue := rebaseOuterLegValue(
+			tc.read,
+			aliasSet,
+			merged,
+			mergedType,
+			layout,
+			legTypes,
+			legRebaseOrigin{Site: legRebaseSiteExists},
+		)
+		anchored, isFV := values.AsFieldValue(anchoredValue)
+		if !isFV || anchored.Path() == nil || anchored.Path().Len() != 1 {
 			t.Fatalf("%s: the merged re-anchor produced %v, which states no ordinal",
 				tc.name, anchored)
 		}
-		if got := anchored.Resolved.Root().Ordinal; got != tc.want {
+		if got := anchored.Path().Ordinals()[0]; got != tc.want {
 			t.Errorf("%s's read re-anchored to merged slot %d, want %d.\n"+
 				"  Both legs carry the same layout, so their CATEGORY columns agree on\n"+
 				"  name, leg-relative ordinal and ordinal domain; only the correlation\n"+
@@ -534,8 +558,8 @@ func TestRebaseOuterLegValue_PassesThroughAnAlreadyCorrectLegLocalRead(t *testin
 				"  value from the wrong leg, on every row, with no error.",
 				tc.name, got, tc.want)
 		}
-		if qov, isQ := anchored.Child.(*values.QuantifiedObjectValue); !isQ || qov.Correlation != merged {
-			t.Errorf("%s: re-anchored child = %T, want QOV(merged)", tc.name, anchored.Child)
+		if qov, isQ := values.AsQuantifiedObjectValue(anchored.ChildValue()); !isQ || qov.Correlation() != merged {
+			t.Errorf("%s: re-anchored child = %T, want QOV(merged)", tc.name, anchored.ChildValue())
 		}
 	}
 }

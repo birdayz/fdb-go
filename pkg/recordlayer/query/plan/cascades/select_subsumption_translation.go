@@ -167,7 +167,13 @@ func buildSelectSubsumptionTranslationMapMaybe(
 					expressions.QuantifierForEach {
 				return nil, false
 			}
-			aliasRebase := values.AliasMap{queryAlias: candidateAlias}
+			aliasRebase, err := values.NewAliasMap([]values.AliasPair{{
+				Source: queryAlias,
+				Target: candidateAlias,
+			}})
+			if err != nil {
+				return nil, false
+			}
 			translation = func(
 				_ values.CorrelationIdentifier,
 				leaf values.Value,
@@ -267,10 +273,13 @@ func translateSelectSubsumptionInputs(
 		}
 	}
 
-	translatedResult := values.TranslateCorrelations(
+	translatedResult, translateErr := values.TranslateCorrelationsChecked(
 		queryResult,
 		translation,
 	)
+	if translateErr != nil {
+		return nil, nil, false
+	}
 	if !selectSubsumptionValueTreeWellFormed(translatedResult) {
 		return nil, nil, false
 	}
@@ -279,10 +288,13 @@ func translateSelectSubsumptionInputs(
 		len(queryPredicates),
 	)
 	for predicateIndex, queryPredicate := range queryPredicates {
-		translatedPredicate := predicates.TranslateLeafPredicates(
+		translatedPredicate, translateErr := predicates.TranslateLeafPredicatesChecked(
 			queryPredicate,
 			translation,
 		)
+		if translateErr != nil {
+			return nil, nil, false
+		}
 		if !selectSubsumptionPredicateEmbeddedValuesWellFormed(
 			translatedPredicate,
 		) {
@@ -356,18 +368,17 @@ func selectSubsumptionPredicateTranslationSafe(
 			!comparisonSafe(queryPredicate.Comparison) {
 			return false
 		}
-		existentialQOV, isQOV := queryPredicate.Value.(*values.QuantifiedObjectValue)
-		if !isQOV || existentialQOV == nil ||
-			existentialQOV.Correlation.IsZero() {
+		existentialQOV, isQOV := values.AsQuantifiedObjectValue(queryPredicate.Value)
+		if !isQOV || existentialQOV.Correlation().IsZero() {
 			return false
 		}
-		if localKind, local := localQuantifierKinds[existentialQOV.Correlation]; local {
+		if localKind, local := localQuantifierKinds[existentialQOV.Correlation()]; local {
 			if localKind != expressions.QuantifierExistential {
 				return false
 			}
 		} else if translation != nil &&
 			translation.ContainsSourceAlias(
-				existentialQOV.Correlation,
+				existentialQOV.Correlation(),
 			) {
 			return false
 		}

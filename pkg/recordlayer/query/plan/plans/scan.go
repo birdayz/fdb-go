@@ -53,16 +53,18 @@ type RecordQueryScanPlan struct {
 // NewRecordQueryScanPlan builds a scan over the given record types
 // in the given direction. recordTypes is normalised (sorted +
 // deduped); empty slice → scan over all types.
-func NewRecordQueryScanPlan(recordTypes []string, flowedType values.Type, reverse bool) *RecordQueryScanPlan {
-	if flowedType == nil {
-		flowedType = values.UnknownType
+func NewRecordQueryScanPlan(recordTypes []string, flowedType values.Type, reverse bool) (*RecordQueryScanPlan, error) {
+	base, err := newPlanExprBaseForType("RecordQueryScanPlan", flowedType)
+	if err != nil {
+		return nil, err
 	}
 	return &RecordQueryScanPlan{
-		recordTypes: dedupSortedStrings(recordTypes),
-		flowedType:  flowedType,
-		reverse:     reverse,
-		resultValue: values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
-	}
+		PlanExprBase: base,
+		recordTypes:  dedupSortedStrings(recordTypes),
+		flowedType:   base.resultValue.Type(),
+		reverse:      reverse,
+		resultValue:  base.resultValue,
+	}, nil
 }
 
 // WithPrimaryKey returns a copy of the scan plan with PK values set.
@@ -137,9 +139,6 @@ func (p *RecordQueryScanPlan) GetChildren() []RecordQueryPlan { return nil }
 // Falls back to PlanExprBase for struct-literal test plans that bypass the
 // constructor (resultValue is nil there).
 func (p *RecordQueryScanPlan) GetResultValue() values.Value {
-	if p.resultValue == nil {
-		return p.PlanExprBase.GetResultValue()
-	}
 	return p.resultValue
 }
 
@@ -287,8 +286,11 @@ func (p *RecordQueryScanPlan) EqualsWithoutChildren(other expressions.Relational
 
 // WithQuantifiers returns this plan unchanged — it has no quantifiers to
 // replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryScanPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+func (p *RecordQueryScanPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryScanPlan", len(qs), 0); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // GetCorrelatedToWithoutChildren reports the correlations reached through this

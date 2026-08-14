@@ -17,7 +17,7 @@ import (
 type RecordQueryInUnionPlan struct {
 	PlanExprBase
 	innerQ         expressions.Quantifier
-	bindingNames   []string
+	bindingAliases []values.CorrelationIdentifier
 	comparisonKeys []values.Value
 	reverse        bool
 	maxSize        int
@@ -29,17 +29,50 @@ func NewRecordQueryInUnionPlan(
 	bindingNames []string,
 	comparisonKeys []values.Value,
 	reverse bool,
-) *RecordQueryInUnionPlan {
-	bn := make([]string, len(bindingNames))
-	copy(bn, bindingNames)
+) (*RecordQueryInUnionPlan, error) {
+	bindingAliases := make([]values.CorrelationIdentifier, len(bindingNames))
+	for i, name := range bindingNames {
+		bindingAliases[i] = values.NamedCorrelationIdentifier(name)
+	}
+	return NewRecordQueryInUnionPlanWithBindingAliases(
+		inner, bindingAliases, comparisonKeys, reverse)
+}
+
+// NewRecordQueryInUnionPlanWithBindingAliases preserves the exact correlation
+// kind of every IN binding. Planner-minted aliases are Unique identifiers; a
+// string round-trip remints them as Named identifiers with the same spelling,
+// which exact QOV lookup correctly treats as a different binding.
+func NewRecordQueryInUnionPlanWithBindingAliases(
+	inner RecordQueryPlan,
+	bindingAliases []values.CorrelationIdentifier,
+	comparisonKeys []values.Value,
+	reverse bool,
+) (*RecordQueryInUnionPlan, error) {
+	return NewRecordQueryInUnionPlanFromQuantifierWithBindingAliases(
+		QuantifierOverPlan(inner), bindingAliases, comparisonKeys, reverse, 0)
+}
+
+func newRecordQueryInUnionPlanFromQuantifier(
+	innerQ expressions.Quantifier,
+	bindingAliases []values.CorrelationIdentifier,
+	comparisonKeys []values.Value,
+	reverse bool,
+	maxSize int,
+) (*RecordQueryInUnionPlan, error) {
+	base, err := newPlanExprBaseForQuantifier("RecordQueryInUnionPlan", innerQ)
+	if err != nil {
+		return nil, err
+	}
 	ck := make([]values.Value, len(comparisonKeys))
 	copy(ck, comparisonKeys)
 	return &RecordQueryInUnionPlan{
-		innerQ:         QuantifierOverPlan(inner),
-		bindingNames:   bn,
+		PlanExprBase:   base,
+		innerQ:         innerQ,
+		bindingAliases: append([]values.CorrelationIdentifier(nil), bindingAliases...),
 		comparisonKeys: ck,
 		reverse:        reverse,
-	}
+		maxSize:        maxSize,
+	}, nil
 }
 
 func NewRecordQueryInUnionPlanWithMaxSize(
@@ -48,10 +81,24 @@ func NewRecordQueryInUnionPlanWithMaxSize(
 	comparisonKeys []values.Value,
 	reverse bool,
 	maxSize int,
-) *RecordQueryInUnionPlan {
-	p := NewRecordQueryInUnionPlan(inner, bindingNames, comparisonKeys, reverse)
+) (*RecordQueryInUnionPlan, error) {
+	p, err := NewRecordQueryInUnionPlan(inner, bindingNames, comparisonKeys, reverse)
+	if err != nil {
+		return nil, err
+	}
 	p.maxSize = maxSize
-	return p
+	return p, nil
+}
+
+func NewRecordQueryInUnionPlanWithBindingAliasesAndMaxSize(
+	inner RecordQueryPlan,
+	bindingAliases []values.CorrelationIdentifier,
+	comparisonKeys []values.Value,
+	reverse bool,
+	maxSize int,
+) (*RecordQueryInUnionPlan, error) {
+	return NewRecordQueryInUnionPlanFromQuantifierWithBindingAliases(
+		QuantifierOverPlan(inner), bindingAliases, comparisonKeys, reverse, maxSize)
 }
 
 // NewRecordQueryInUnionPlanFromQuantifier builds the InUnion over the LIVE inner
@@ -66,18 +113,24 @@ func NewRecordQueryInUnionPlanFromQuantifier(
 	comparisonKeys []values.Value,
 	reverse bool,
 	maxSize int,
-) *RecordQueryInUnionPlan {
-	bn := make([]string, len(bindingNames))
-	copy(bn, bindingNames)
-	ck := make([]values.Value, len(comparisonKeys))
-	copy(ck, comparisonKeys)
-	return &RecordQueryInUnionPlan{
-		innerQ:         innerQ,
-		bindingNames:   bn,
-		comparisonKeys: ck,
-		reverse:        reverse,
-		maxSize:        maxSize,
+) (*RecordQueryInUnionPlan, error) {
+	bindingAliases := make([]values.CorrelationIdentifier, len(bindingNames))
+	for i, name := range bindingNames {
+		bindingAliases[i] = values.NamedCorrelationIdentifier(name)
 	}
+	return NewRecordQueryInUnionPlanFromQuantifierWithBindingAliases(
+		innerQ, bindingAliases, comparisonKeys, reverse, maxSize)
+}
+
+func NewRecordQueryInUnionPlanFromQuantifierWithBindingAliases(
+	innerQ expressions.Quantifier,
+	bindingAliases []values.CorrelationIdentifier,
+	comparisonKeys []values.Value,
+	reverse bool,
+	maxSize int,
+) (*RecordQueryInUnionPlan, error) {
+	return newRecordQueryInUnionPlanFromQuantifier(
+		innerQ, bindingAliases, comparisonKeys, reverse, maxSize)
 }
 
 func (p *RecordQueryInUnionPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
@@ -96,7 +149,7 @@ func (p *RecordQueryInUnionPlan) GetInnerQuantifier() expressions.Quantifier {
 // inner's. This is the identity physicalInUnionWrapper.GetResultValue supplied
 // (RFC-184 W2).
 func (p *RecordQueryInUnionPlan) GetResultValue() values.Value {
-	return p.innerQ.GetFlowedObjectValue()
+	return p.PlanExprBase.GetResultValue()
 }
 
 // GetQuantifiers reports the real child quantifier, overriding
@@ -111,12 +164,28 @@ func (p *RecordQueryInUnionPlan) GetQuantifiers() []expressions.Quantifier {
 // WithInner returns a copy with the inner replaced and EVERY other field
 // preserved (bindingNames, comparisonKeys, reverse, maxSize, inSources) —
 // the extraction-relink rebuild path.
-func (p *RecordQueryInUnionPlan) WithInner(inner RecordQueryPlan) *RecordQueryInUnionPlan {
+func (p *RecordQueryInUnionPlan) WithInner(inner RecordQueryPlan) (*RecordQueryInUnionPlan, error) {
 	cp := *p
 	cp.innerQ = QuantifierOverPlan(inner)
-	return &cp
+	base, err := newPlanExprBaseForQuantifier("RecordQueryInUnionPlan", cp.innerQ)
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
+	return &cp, nil
 }
-func (p *RecordQueryInUnionPlan) GetBindingNames() []string         { return p.bindingNames }
+
+func (p *RecordQueryInUnionPlan) GetBindingNames() []string {
+	result := make([]string, len(p.bindingAliases))
+	for i, alias := range p.bindingAliases {
+		result[i] = alias.Name()
+	}
+	return result
+}
+
+func (p *RecordQueryInUnionPlan) GetBindingAliases() []values.CorrelationIdentifier {
+	return append([]values.CorrelationIdentifier(nil), p.bindingAliases...)
+}
 func (p *RecordQueryInUnionPlan) GetComparisonKeys() []values.Value { return p.comparisonKeys }
 func (p *RecordQueryInUnionPlan) IsReverse() bool                   { return p.reverse }
 func (p *RecordQueryInUnionPlan) GetMaxSize() int                   { return p.maxSize }
@@ -141,7 +210,7 @@ func (p *RecordQueryInUnionPlan) LiteralFanout() (fanout int64, known bool) {
 	if len(p.inSources) == 0 {
 		return 1, true
 	}
-	if len(p.bindingNames) == 0 || len(p.inSources) != len(p.bindingNames) {
+	if len(p.bindingAliases) == 0 || len(p.inSources) != len(p.bindingAliases) {
 		return 0, false
 	}
 	// A single known-empty dimension makes the whole Cartesian product empty,
@@ -166,15 +235,7 @@ func (p *RecordQueryInUnionPlan) LiteralFanout() (fanout int64, known bool) {
 	return fanout, true
 }
 
-func (p *RecordQueryInUnionPlan) GetResultType() values.Type {
-	if p.innerQ.GetRangesOver() == nil {
-		return values.UnknownType
-	}
-	// TYPE resolution, not identity: the inner is a deferred-winner group still
-	// multi-member during planning; every alternative shares the row shape, so
-	// any member answers without tripping the singleton guard (RFC-184 W2).
-	return planTypeFromQuantifier(p.innerQ).GetResultType()
-}
+func (p *RecordQueryInUnionPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 func (p *RecordQueryInUnionPlan) GetChildren() []RecordQueryPlan {
 	inner := p.GetInner()
@@ -206,7 +267,7 @@ func (p *RecordQueryInUnionPlan) structuralKey() *structuralKey {
 	}
 	return newStructuralKey().
 		Bool(p.reverse).
-		Int(len(p.bindingNames)).
+		Int(len(p.bindingAliases)).
 		Values(p.comparisonKeys).
 		Equatable(p.inSources, func(other any) bool {
 			o, ok := other.([][]any)
@@ -234,7 +295,7 @@ func (p *RecordQueryInUnionPlan) Explain() string {
 	}
 	// The binding correlation aliases (process-global counters) are not rendered —
 	// only the COUNT of IN bindings is structural (RFC-164 WS-4; see in_join.go).
-	return fmt.Sprintf("InUnion(%s, bindings=%d, %s)", innerLabel, len(p.bindingNames), dir)
+	return fmt.Sprintf("InUnion(%s, bindings=%d, %s)", innerLabel, len(p.bindingAliases), dir)
 }
 
 var (
@@ -250,13 +311,18 @@ func (p *RecordQueryInUnionPlan) EqualsWithoutChildren(other expressions.Relatio
 
 // WithQuantifiers returns a copy ranging over the given child quantifier —
 // Java's copy-on-write withChild(Reference).
-func (p *RecordQueryInUnionPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 1 {
-		return p
+func (p *RecordQueryInUnionPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryInUnionPlan", len(qs), 1); err != nil {
+		return nil, err
 	}
 	cp := *p
+	base, err := newPlanExprBaseForQuantifier("RecordQueryInUnionPlan", qs[0])
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
 	cp.innerQ = qs[0]
-	return &cp
+	return &cp, nil
 }
 
 // WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
@@ -271,7 +337,7 @@ func (p *RecordQueryInUnionPlan) WithChildren(qs []expressions.Quantifier) (expr
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("RecordQueryInUnionPlan.WithChildren: expected 1 child, got %d", len(qs))
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

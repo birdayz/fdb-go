@@ -4,26 +4,27 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // distinctOverSort builds Distinct(Sort([sortKey], Scan)).
-func distinctOverSort(sortKey string) *expressions.LogicalDistinctExpression {
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+func distinctOverSort(t testing.TB, sortOrdinal int) *expressions.LogicalDistinctExpression {
+	t.Helper()
+	scan := distinctRuleScan(t, "T")
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	scanRoot := mustDistinctConstruct(scanQ.RequireFlowedObjectValue())
 	keys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: sortKey, Typ: values.UnknownType}, Reverse: false},
+		{Value: distinctRuleField(t, scanRoot, sortOrdinal), Reverse: false},
 	}
-	sort := expressions.NewLogicalSortExpression(keys, scanQ)
+	sort := mustDistinctConstruct(expressions.NewLogicalSortExpression(keys, scanQ))
 	sortQ := expressions.ForEachQuantifier(expressions.InitialOf(sort))
-	return expressions.NewLogicalDistinctExpression(sortQ)
+	return distinctRuleDistinct(t, sortQ)
 }
 
 func TestDistinctOverSortElimRule_Fires(t *testing.T) {
 	t.Parallel()
-	d := distinctOverSort("k")
+	d := distinctOverSort(t, 0)
 	ref := expressions.InitialOf(d)
-	yielded := FireExpressionRule(NewDistinctOverSortElimRule(), ref)
+	yielded := mustFireDistinctExpressionRule(t, NewDistinctOverSortElimRule(), ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded %d, want 1", len(yielded))
 	}
@@ -40,11 +41,11 @@ func TestDistinctOverSortElimRule_Fires(t *testing.T) {
 
 func TestDistinctOverSortElimRule_DeclinesOnNonSortInner(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := distinctRuleScan(t, "T")
 	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	d := expressions.NewLogicalDistinctExpression(q)
+	d := distinctRuleDistinct(t, q)
 	ref := expressions.InitialOf(d)
-	yielded := FireExpressionRule(NewDistinctOverSortElimRule(), ref)
+	yielded := mustFireDistinctExpressionRule(t, NewDistinctOverSortElimRule(), ref)
 	if len(yielded) != 0 {
 		t.Fatalf("yielded %d on non-Sort inner, want 0", len(yielded))
 	}
@@ -52,9 +53,9 @@ func TestDistinctOverSortElimRule_DeclinesOnNonSortInner(t *testing.T) {
 
 func TestDistinctOverSortElimRule_FixpointTerminates(t *testing.T) {
 	t.Parallel()
-	d := distinctOverSort("k")
+	d := distinctOverSort(t, 0)
 	ref := expressions.InitialOf(d)
-	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewDistinctOverSortElimRule()}, nil), ref)
+	progress, converged := exploreDistinctRewriting(NewPlanner([]ExpressionRule{NewDistinctOverSortElimRule()}, nil), ref)
 	if !converged {
 		t.Fatalf("exploration did not converge — tasks=%d, members=%d", progress, len(ref.Members()))
 	}

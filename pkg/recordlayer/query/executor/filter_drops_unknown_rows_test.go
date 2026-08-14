@@ -48,7 +48,8 @@ func TestFilterDropsUnknownRows_R2Ground(t *testing.T) {
 		{"EMAIL": "b@example.com"},
 		{"EMAIL": nil},
 	}
-	email := values.NewFieldValueWithResolvedOrdinal("EMAIL", 0, values.TypeString)
+	rowType := exactTestRowType(values.Field{Name: "EMAIL", FieldType: values.TypeString})
+	directEmail := mustNamedTestField(t, "EMAIL", values.TypeString)
 
 	cases := []struct {
 		name string
@@ -64,7 +65,7 @@ func TestFilterDropsUnknownRows_R2Ground(t *testing.T) {
 			name: "not_equals_drops_null",
 			cmp: predicates.Comparison{
 				Type:    predicates.ComparisonNotEquals,
-				Operand: values.LiteralValue("zzz@example.com"),
+				Operand: &values.ConstantValue{Value: "zzz@example.com", Typ: values.NotNullString},
 			},
 			want: []any{"a@example.com", "b@example.com"},
 			why: "`EMAIL <> 'zzz@example.com'` is UNKNOWN for a NULL EMAIL. If the " +
@@ -81,7 +82,7 @@ func TestFilterDropsUnknownRows_R2Ground(t *testing.T) {
 			name: "equals_null_drops_everything",
 			cmp: predicates.Comparison{
 				Type:    predicates.ComparisonEquals,
-				Operand: values.LiteralValue(nil),
+				Operand: values.NewNullValue(values.TypeString),
 			},
 			want: nil,
 			why: "`EMAIL = NULL` is UNKNOWN for every row. Passing UNKNOWN as TRUE " +
@@ -94,7 +95,7 @@ func TestFilterDropsUnknownRows_R2Ground(t *testing.T) {
 			name: "control_equals_keeps_the_true_row",
 			cmp: predicates.Comparison{
 				Type:    predicates.ComparisonEquals,
-				Operand: values.LiteralValue("a@example.com"),
+				Operand: &values.ConstantValue{Value: "a@example.com", Typ: values.NotNullString},
 			},
 			want: []any{"a@example.com"},
 			why:  "a TRUE predicate must still pass its row",
@@ -105,14 +106,14 @@ func TestFilterDropsUnknownRows_R2Ground(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			pred := predicates.NewComparisonPredicate(email, tc.cmp)
+			directPred := predicates.NewComparisonPredicate(directEmail, tc.cmp)
 
 			// The tri-state itself, asserted before the executor is asked about
 			// it. Without this the row-count assertions below cannot tell a
 			// correctly-dropped UNKNOWN from a predicate that merely returned
 			// FALSE, and R2's admission of NotEquals rests on the former.
 			if tc.name != "control_equals_keeps_the_true_row" {
-				got, err := pred.Eval(dmap(map[string]any{"EMAIL": nil}).Positional)
+				got, err := directPred.Eval(&PositionalRow{Type: rowType, Slots: []any{nil}})
 				if err != nil {
 					t.Fatalf("Eval over a NULL EMAIL: %v", err)
 				}
@@ -127,14 +128,14 @@ func TestFilterDropsUnknownRows_R2Ground(t *testing.T) {
 
 			for _, carrier := range []struct {
 				kind string
-				plan func(inner plans.RecordQueryPlan) plans.RecordQueryPlan
+				plan func(inner plans.RecordQueryPlan, pred predicates.QueryPredicate) plans.RecordQueryPlan
 			}{
-				{"RecordQueryFilterPlan", func(inner plans.RecordQueryPlan) plans.RecordQueryPlan {
-					return plans.NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, inner)
+				{"RecordQueryFilterPlan", func(inner plans.RecordQueryPlan, pred predicates.QueryPredicate) plans.RecordQueryPlan {
+					return mustExecutorConstruct(plans.NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, inner))
 				}},
-				{"RecordQueryPredicatesFilterPlan", func(inner plans.RecordQueryPlan) plans.RecordQueryPlan {
-					return plans.NewRecordQueryPredicatesFilterPlan(
-						inner, []predicates.QueryPredicate{pred})
+				{"RecordQueryPredicatesFilterPlan", func(inner plans.RecordQueryPlan, pred predicates.QueryPredicate) plans.RecordQueryPlan {
+					return mustExecutorConstruct(plans.NewRecordQueryPredicatesFilterPlan(
+						inner, []predicates.QueryPredicate{pred}))
 				}},
 			} {
 				carrier := carrier
@@ -145,11 +146,17 @@ func TestFilterDropsUnknownRows_R2Ground(t *testing.T) {
 					evalCtx := EmptyEvaluationContext()
 					table := evalCtx.GetOrCreateTempTable(alias, nil)
 					for i, m := range rows {
-						if err := table.Add(dmapPK(tuple.Tuple{"T", int64(i)}, m)); err != nil {
+						if err := table.Add(QueryResult{
+							Positional: &PositionalRow{Type: rowType, Slots: []any{m["EMAIL"]}},
+							PrimaryKey: tuple.Tuple{"T", int64(i)},
+						}); err != nil {
 							t.Fatalf("seed temp table: %v", err)
 						}
 					}
-					plan := carrier.plan(plans.NewRecordQueryTempTableScanPlan(alias))
+					scan := mustTempTableScan(t, evalCtx, alias)
+					planPred := predicates.NewComparisonPredicate(
+						mustTestFieldOrdinal(t, scan.GetResultValue(), 0), tc.cmp)
+					plan := carrier.plan(scan, planPred)
 					out := executePKDistinctCardinalityPlan(t, plan, evalCtx)
 
 					got := make([]any, 0, len(out))

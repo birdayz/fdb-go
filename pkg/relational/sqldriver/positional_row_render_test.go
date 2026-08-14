@@ -364,6 +364,32 @@ func TestUnnestSprintIsStableAcrossBuilds(t *testing.T) {
 	}
 }
 
+func TestUnnestSprintRendersExactOrdinalRecordStructurally(t *testing.T) {
+	t.Parallel()
+
+	nestedType := values.NewRecordType("NESTED", false, []values.Field{{
+		Name: "DEEP", FieldType: values.NotNullLong, Ordinal: 0,
+	}})
+	elementType := values.NewRecordType("ELEM", false, []values.Field{
+		{Name: "SUB", FieldType: values.NewArrayType(false, values.NotNullLong), Ordinal: 0},
+		{Name: "K", FieldType: values.NullableLong, Ordinal: 1},
+		{Name: "NESTED", FieldType: values.NewArrayType(false, nestedType), Ordinal: 2},
+	})
+	row := &executor.PositionalRow{Type: elementType, Slots: []any{
+		[]any{int64(1), int64(7)}, int64(0), []any{
+			&executor.PositionalRow{Type: nestedType, Slots: []any{int64(11)}},
+			&executor.PositionalRow{Type: nestedType, Slots: []any{int64(13)}},
+		},
+	}}
+
+	if got, want := unnestSprint(row), "SUB:1 SUB:7 K:0 NESTED:{DEEP:11} NESTED:{DEEP:13}"; got != want {
+		t.Fatalf("ordinal record rendering = %q, want %q", got, want)
+	}
+	if row.Slots[1] != int64(0) {
+		t.Fatalf("renderer mutated source row: %#v", row.Slots)
+	}
+}
+
 // unnestStringInsideABlob stands in for a proto message carrying a string field
 // whose own value contains a double space — the case the whitespace collapse
 // cannot distinguish from prototext's separator.

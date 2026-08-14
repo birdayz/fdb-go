@@ -36,19 +36,16 @@ func TestAggregateCursor_OutputRowIdentityIsTheSlotNotTheName(t *testing.T) {
 	// Two sources, each with a column named X — the collision shape. The keys
 	// read slots 0 and 1 of a flat input row; both render their display name as
 	// the bare leaf X (expressions.AggregateKeyColumnName).
-	rowType := values.NewRecordType("", false, []values.Field{
+	rowType := &values.RecordType{Fields: []values.Field{
 		{Name: "X", FieldType: values.NullableLong, Ordinal: 0},
-		{Name: "Y", FieldType: values.NullableLong, Ordinal: 1},
-	})
-	qov := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("T"), rowType)
-	keyA, err := values.NewFieldValueOfOrdinal(qov, 0)
-	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal(0): %v", err)
-	}
+		{Name: "X", FieldType: values.NullableLong, Ordinal: 1},
+	}}
+	qov := mustTestQOV(t, values.NamedCorrelationIdentifier("T"), rowType)
+	keyA := mustTestFieldOrdinal(t, qov, 0)
 	// The second key reads slot 1 but RENDERS as X too — the display-name
 	// collision the contract has to survive, expressed without needing a join.
 	// The executor sees two keys and one name.
-	keyB := values.NewFieldValueWithResolvedOrdinal("X", 1, values.NullableLong)
+	keyB := mustTestFieldOrdinal(t, qov, 1)
 
 	c := &aggregateCursor{
 		groupingKeys: []values.Value{keyA, keyB},
@@ -91,5 +88,33 @@ func TestAggregateCursor_OutputRowIdentityIsTheSlotNotTheName(t *testing.T) {
 	if a, b := out.Positional.Type.Fields[0].Name, out.Positional.Type.Fields[1].Name; a != "X" || b != "X" {
 		t.Errorf("emitted labels = (%q, %q), want both X — the display name is the "+
 			"user's and stays colliding; only the BINDING is a slot", a, b)
+	}
+}
+
+// COUNT(*) has no operand Value: the row itself is what gets counted. This is
+// deliberately exercised through accumulateRow rather than by planting the
+// final count, so reintroducing operand evaluation for the nil COUNT(*) carrier
+// panics here before it can silently escape into the SQL harness.
+func TestAggregateCursor_CountStarConsumesTheRowWithoutAnOperand(t *testing.T) {
+	t.Parallel()
+
+	c := &aggregateCursor{
+		aggregates: []expressions.AggregateSpec{{Function: expressions.AggCount}},
+	}
+	c.current = c.newGroupState()
+	row := QueryResult{Positional: &PositionalRow{
+		Type:  values.NewRecordType("count_star_input", false, nil),
+		Slots: []any{},
+	}}
+	for range 3 {
+		if err := c.accumulateRow(row); err != nil {
+			t.Fatalf("accumulate COUNT(*): %v", err)
+		}
+	}
+
+	out := c.finalizeGroup()
+	got, ok := out.Positional.Get(0)
+	if !ok || got != int64(3) {
+		t.Fatalf("COUNT(*) slot = %v (ok=%v), want 3", got, ok)
 	}
 }

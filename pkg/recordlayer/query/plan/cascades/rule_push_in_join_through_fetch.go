@@ -87,12 +87,16 @@ func (r *PushInJoinThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	innerQ := expressions.NewPhysicalQuantifier(
 		call.MemoizeFinalExpressionsFromOther(fetchInnerRef, []expressions.RelationalExpression{fetchInnerExpr}),
 	)
-	pushedInJoinPlan := plans.NewRecordQueryInJoinPlanFromQuantifier(
+	pushedInJoinPlan, err := plans.NewRecordQueryInJoinPlanFromQuantifierWithBindingAlias(
 		innerQ,
-		inJoinPlan.GetBindingName(),
+		inJoinPlan.GetBindingAlias(),
 		inJoinPlan.IsSorted(),
 		inJoinPlan.IsReverse(),
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	if inValues := inJoinPlan.GetInValues(); inValues != nil {
 		pushedInJoinPlan.SetInValues(inValues)
 	}
@@ -104,12 +108,16 @@ func (r *PushInJoinThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	// Build: Fetch(InJoin(fetchInner)) as its own cascades expression carrying
 	// the live pushedInJoinRef edge (RFC-184 W2).
 	newFetchQ := expressions.ForEachQuantifier(pushedInJoinRef)
-	newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+	newFetchPlan, err := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 		newFetchQ,
 		fetchPlan.GetTranslateValueFunction(),
 		fetchPlan.GetResultType(),
 		fetchPlan.GetFetchIndexRecords(),
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	call.Yield(newFetchPlan)
 }

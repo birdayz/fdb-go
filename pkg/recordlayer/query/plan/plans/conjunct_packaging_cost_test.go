@@ -54,8 +54,12 @@ func TestFilterCostFormulas_PackagingInvariant(t *testing.T) {
 
 			t.Run("RecordQueryFilterPlan", func(t *testing.T) {
 				t.Parallel()
-				listCost := NewRecordQueryFilterPlan(list, nil).HintCost(child, nil)
-				andedCost := NewRecordQueryFilterPlan(anded, nil).HintCost(child, nil)
+				listCost := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+					return NewRecordQueryFilterPlan(list, stub("ListInner"))
+				}).HintCost(child, nil)
+				andedCost := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+					return NewRecordQueryFilterPlan(anded, stub("AndInner"))
+				}).HintCost(child, nil)
 				if listCost != andedCost {
 					t.Fatalf("n=%d: list-packaged cost %+v != AndPredicate-packaged cost %+v", n, listCost, andedCost)
 				}
@@ -68,8 +72,12 @@ func TestFilterCostFormulas_PackagingInvariant(t *testing.T) {
 
 			t.Run("RecordQueryPredicatesFilterPlan", func(t *testing.T) {
 				t.Parallel()
-				listCost := NewRecordQueryPredicatesFilterPlan(nil, list).HintCost(child, nil)
-				andedCost := NewRecordQueryPredicatesFilterPlan(nil, anded).HintCost(child, nil)
+				listCost := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+					return NewRecordQueryPredicatesFilterPlan(stub("ListInner"), list)
+				}).HintCost(child, nil)
+				andedCost := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+					return NewRecordQueryPredicatesFilterPlan(stub("AndInner"), anded)
+				}).HintCost(child, nil)
 				if listCost != andedCost {
 					t.Fatalf("n=%d: list-packaged cost %+v != AndPredicate-packaged cost %+v", n, listCost, andedCost)
 				}
@@ -109,7 +117,12 @@ func TestNestedLoopJoinAndPredicatesFilterCost_AgreeOnSameLogicalResidual(t *tes
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 
-				nlj := NewRecordQueryNestedLoopJoinPlan(nil, nil, tc.preds, JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), nil)
+				nlj := mustChecked(t, func() (*RecordQueryNestedLoopJoinPlan, error) {
+					return NewRecordQueryNestedLoopJoinPlan(
+						stub("Outer"), stub("Inner"), tc.preds, JoinInner,
+						values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"),
+						exactEmptyRecordValue())
+				})
 				nljCost := nlj.HintCost([]properties.Cost{outer, inner}, nil)
 
 				// The FlatMap's own inner already contains the join predicate
@@ -117,7 +130,9 @@ func TestNestedLoopJoinAndPredicatesFilterCost_AgreeOnSameLogicalResidual(t *tes
 				// establishes) — so the residual filter's selectivity, applied
 				// to the SAME raw inner cardinality, must shrink innerCard by
 				// exactly the factor NestedLoopJoinCost applies internally.
-				filterCost := NewRecordQueryPredicatesFilterPlan(nil, tc.preds).HintCost([]properties.Cost{inner}, nil)
+				filterCost := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+					return NewRecordQueryPredicatesFilterPlan(stub("FilteredInner"), tc.preds)
+				}).HintCost([]properties.Cost{inner}, nil)
 
 				wantSel := math.Pow(properties.FilterSelectivity, float64(n))
 				wantNLJCard := outer.Cardinality * inner.Cardinality * wantSel

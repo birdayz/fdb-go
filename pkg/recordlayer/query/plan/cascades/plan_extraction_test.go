@@ -7,17 +7,36 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// scan returns a Reference holding a single FullUnorderedScan over
-// the given record types.
-func scan(types ...string) *expressions.Reference {
-	return expressions.InitialOf(expressions.NewFullUnorderedScanExpression(types, nil))
+func extractionRowType(_ string) values.Type {
+	return values.NewRecordType("ExtractionRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
 }
 
-// scanQ wraps `scan(types...)` in a ForEach Quantifier.
-func scanQ(types ...string) expressions.Quantifier {
-	return expressions.ForEachQuantifier(scan(types...))
+func mustExtractionConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct plan-extraction fixture: " + err.Error())
+	}
+	return value
+}
+
+// extractionScan returns a Reference holding one exact FullUnorderedScan over
+// the given record type. These extraction tests only need a single-record-type
+// leaf; spelling its flowed type prevents malformed nil layouts from hiding at
+// the plan-extraction boundary.
+func extractionScan(t testing.TB, recordType string) *expressions.Reference {
+	t.Helper()
+	return expressions.InitialOf(mustFullUnorderedScan(
+		t, []string{recordType}, extractionRowType(recordType)))
+}
+
+// extractionScanQ wraps extractionScan in a ForEach Quantifier.
+func extractionScanQ(t testing.TB, recordType string) expressions.Quantifier {
+	t.Helper()
+	return expressions.ForEachQuantifier(extractionScan(t, recordType))
 }
 
 func TestExtractBestPlan_NilOrEmptyReturnsNil(t *testing.T) {
@@ -40,7 +59,7 @@ func TestExtractBestPlan_NilOrEmptyReturnsNil(t *testing.T) {
 
 func TestExtractBestPlan_LeafScan(t *testing.T) {
 	t.Parallel()
-	r := scan("T")
+	r := extractionScan(t, "T")
 	got, err := ExtractBestPlan(r)
 	if err != nil {
 		t.Fatalf("ExtractBestPlan err=%v", err)
@@ -61,11 +80,11 @@ func TestExtractBestPlan_FreshReferences(t *testing.T) {
 	// extracted plan's Quantifier.Reference is NOT the same pointer
 	// as the input's.
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	innerRef := scan("T")
-	f := expressions.NewLogicalFilterExpression(
+	innerRef := extractionScan(t, "T")
+	f := mustExtractionConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
 		expressions.ForEachQuantifier(innerRef),
-	)
+	))
 	topRef := expressions.InitialOf(f)
 
 	extracted, err := ExtractBestPlan(topRef)
@@ -90,11 +109,11 @@ func TestExtractBestPlan_PicksCheapestMember(t *testing.T) {
 	// Reference with two members: cheaper Filter and pricier Sort.
 	// ExtractBestPlan returns the Filter (the cheapest).
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	cheap := expressions.NewLogicalFilterExpression(
+	cheap := mustExtractionConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
-		scanQ("T"),
-	)
-	pricy := expressions.NewLogicalSortExpression(nil, scanQ("T"))
+		extractionScanQ(t, "T"),
+	))
+	pricy := mustExtractionConstruct(expressions.NewLogicalSortExpression(nil, extractionScanQ(t, "T")))
 
 	r := expressions.InitialOf(cheap)
 	r.Insert(pricy)
@@ -125,18 +144,18 @@ func TestExtractBestPlan_RecursivelyExtractsChildren(t *testing.T) {
 	// So Filter wins. The extracted plan's outer Sort's inner is
 	// the Filter, NOT the bare Scan.
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filterMember := expressions.NewLogicalFilterExpression(
+	filterMember := mustExtractionConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
-		scanQ("T"),
-	)
-	scanMember := expressions.NewFullUnorderedScanExpression([]string{"U"}, nil)
+		extractionScanQ(t, "T"),
+	))
+	scanMember := mustFullUnorderedScan(t, []string{"U"}, extractionRowType("U"))
 	innerRef := expressions.InitialOf(filterMember)
 	innerRef.Insert(scanMember)
 
-	sort := expressions.NewLogicalSortExpression(
+	sort := mustExtractionConstruct(expressions.NewLogicalSortExpression(
 		nil,
 		expressions.ForEachQuantifier(innerRef),
-	)
+	))
 	topRef := expressions.InitialOf(sort)
 
 	extracted, err := ExtractBestPlan(topRef)
@@ -155,11 +174,11 @@ func TestExtractBestPlan_RecursivelyExtractsChildren(t *testing.T) {
 
 func TestExtractBestPlan_UnionPreservesAllChildren(t *testing.T) {
 	t.Parallel()
-	u := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
-		scanQ("A"),
-		scanQ("B"),
-		scanQ("C"),
-	})
+	u := mustExtractionConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+		extractionScanQ(t, "A"),
+		extractionScanQ(t, "B"),
+		extractionScanQ(t, "C"),
+	}))
 	r := expressions.InitialOf(u)
 	got, err := ExtractBestPlan(r)
 	if err != nil {
@@ -178,8 +197,8 @@ func TestExtractBestPlan_DeleteExpression(t *testing.T) {
 	t.Parallel()
 	// DML: DeleteExpression over a scan. Verify the extracted shape
 	// preserves target type + recurses into inner.
-	innerQ := scanQ("Order")
-	del := expressions.NewDeleteExpression(innerQ, "Order")
+	innerQ := extractionScanQ(t, "Order")
+	del := mustExtractionConstruct(expressions.NewDeleteExpression(innerQ, "Order"))
 	r := expressions.InitialOf(del)
 	got, err := ExtractBestPlan(r)
 	if err != nil {
@@ -201,7 +220,7 @@ func TestExtractBestPlan_DeleteExpression(t *testing.T) {
 
 func TestExtractBestPlanWith_NilStats(t *testing.T) {
 	t.Parallel()
-	r := scan("T")
+	r := extractionScan(t, "T")
 	got, err := ExtractBestPlanWith(r, nil)
 	if err != nil {
 		t.Fatalf("err=%v", err)
@@ -261,48 +280,53 @@ func TestExtractBestPlanFromSelector_NilRef(t *testing.T) {
 
 func TestExtractBestPlanFromSelector_NilSelector(t *testing.T) {
 	t.Parallel()
-	r := scan("T")
+	r := extractionScan(t, "T")
 	got, err := ExtractBestPlanFromSelector(r, nil, nil)
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
-	if _, ok := got.(*expressions.FullUnorderedScanExpression); !ok {
-		t.Fatalf("got %T, want *FullUnorderedScanExpression", got)
+	if got != nil {
+		t.Fatalf("got %T, want nil: selector extraction has no physical member", got)
 	}
 }
 
-func TestExtractBestPlanFromSelector_NonPhysicalSelectorFallsToCost(t *testing.T) {
+// The selector deliberately names a logical member and the ordinary cost
+// model ranks that logical Filter below the physical Scan. RFC-224's fallback
+// must filter to physical candidates BEFORE comparing, or extraction and its
+// verifier disagree and the returned root is not executable.
+func TestExtractBestPlanFromSelector_NonPhysicalSelectorFallsToPhysicalCost(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustExtractionConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
-		scanQ("T"),
-	)
-	scanMember := expressions.NewFullUnorderedScanExpression([]string{"U"}, nil)
+		extractionScanQ(t, "T"),
+	))
+	scanMember := mustExtractionConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, extractionRowType("T"), false))
 	r := expressions.InitialOf(filter)
 	r.Insert(scanMember)
 
 	sel := &mockSelector{
 		winners: map[*expressions.Reference]expressions.RelationalExpression{
-			r: scanMember,
+			r: filter,
 		},
 	}
 	got, err := ExtractBestPlanFromSelector(r, sel, nil)
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
-	if _, ok := got.(*expressions.LogicalFilterExpression); !ok {
-		t.Fatalf("got %T, want *LogicalFilterExpression (cost model picks cheaper filter over scan)", got)
+	if _, ok := got.(*plans.RecordQueryScanPlan); !ok {
+		t.Fatalf("got %T, want physical Scan fallback", got)
 	}
 }
 
 func TestExtractBestPlanFromSelector_FallsBackToCostWhenSelectorHasNoBest(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustExtractionConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
-		scanQ("T"),
-	)
+		extractionScanQ(t, "T"),
+	))
 	r := expressions.InitialOf(filter)
 
 	sel := &mockSelector{winners: map[*expressions.Reference]expressions.RelationalExpression{}}
@@ -310,14 +334,16 @@ func TestExtractBestPlanFromSelector_FallsBackToCostWhenSelectorHasNoBest(t *tes
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
-	if _, ok := got.(*expressions.LogicalFilterExpression); !ok {
-		t.Fatalf("got %T, want *LogicalFilterExpression (cost fallback)", got)
+	if got != nil {
+		t.Fatalf("got %T, want nil when no physical fallback exists", got)
 	}
 }
 
 func TestExtractBestPlanFromSelector_SingleMember(t *testing.T) {
 	t.Parallel()
-	r := scan("T")
+	scan := mustExtractionConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, extractionRowType("T"), false))
+	r := expressions.FinalOf(scan)
 	got, err := ExtractBestPlanFromSelector(r, nil, nil)
 	if err != nil {
 		t.Fatalf("err=%v", err)
@@ -329,8 +355,9 @@ func TestExtractBestPlanFromSelector_SingleMember(t *testing.T) {
 
 func TestExtractBestPlanFromSelector_WinnerUsedWhenPhysical(t *testing.T) {
 	t.Parallel()
-	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
-	r := expressions.InitialOf(scanExpr)
+	scanExpr := mustExtractionConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, extractionRowType("T"), false))
+	r := expressions.FinalOf(scanExpr)
 	r.SetWinner(scanExpr)
 
 	got, err := ExtractBestPlanFromSelector(r, nil, nil)
@@ -344,19 +371,17 @@ func TestExtractBestPlanFromSelector_WinnerUsedWhenPhysical(t *testing.T) {
 
 func TestExtractBestPlanFromSelector_RecursivelyExtractsChildWithSelector(t *testing.T) {
 	t.Parallel()
-	innerScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
-	innerRef := expressions.InitialOf(innerScan)
-
-	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(innerRef),
-	)
-	topRef := expressions.InitialOf(filter)
+	innerScan := mustExtractionConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, extractionRowType("T"), false))
+	innerRef := expressions.FinalOf(innerScan)
+	limit := mustExtractionConstruct(plans.NewRecordQueryLimitPlanFromQuantifier(
+		expressions.NewPhysicalQuantifier(innerRef), 1, 0, nil))
+	topRef := expressions.FinalOf(limit)
 
 	sel := &mockSelector{
 		winners: map[*expressions.Reference]expressions.RelationalExpression{
 			innerRef: innerScan,
+			topRef:   limit,
 		},
 	}
 
@@ -364,11 +389,15 @@ func TestExtractBestPlanFromSelector_RecursivelyExtractsChildWithSelector(t *tes
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
-	exFilter, ok := got.(*expressions.LogicalFilterExpression)
+	exLimit, ok := got.(*plans.RecordQueryLimitPlan)
 	if !ok {
-		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+		t.Fatalf("got %T, want *RecordQueryLimitPlan", got)
 	}
-	exInnerRef := exFilter.GetInner().GetRangesOver()
+	quantifiers := exLimit.GetQuantifiers()
+	if len(quantifiers) != 1 {
+		t.Fatalf("extracted Limit quantifiers = %d, want 1", len(quantifiers))
+	}
+	exInnerRef := quantifiers[0].GetRangesOver()
 	if exInnerRef == innerRef {
 		t.Fatal("extracted inner Reference is same pointer — should be fresh")
 	}
@@ -384,8 +413,8 @@ func TestExtractBestPlanFromSelector_RecursivelyExtractsChildWithSelector(t *tes
 func TestExtractBestPlan_CostTieDeterministicAcrossInsertionOrder(t *testing.T) {
 	t.Parallel()
 	build := func(first, second string) *expressions.Reference {
-		r := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{first}, nil))
-		r.Insert(expressions.NewFullUnorderedScanExpression([]string{second}, nil))
+		r := expressions.InitialOf(mustFullUnorderedScan(t, []string{first}, extractionRowType(first)))
+		r.Insert(mustFullUnorderedScan(t, []string{second}, extractionRowType(second)))
 		return r
 	}
 	winner := func(t *testing.T, r *expressions.Reference) string {
@@ -422,8 +451,8 @@ func TestExtractBestPlan_HashTieFallsBackToTypeKey(t *testing.T) {
 		{Name: "B", FieldType: values.TypeString, Ordinal: 0},
 	})
 	build := func(first, second values.Type) *expressions.Reference {
-		r := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, first))
-		r.Insert(expressions.NewFullUnorderedScanExpression([]string{"T"}, second))
+		r := expressions.InitialOf(mustFullUnorderedScan(t, []string{"T"}, first))
+		r.Insert(mustFullUnorderedScan(t, []string{"T"}, second))
 		return r
 	}
 	winner := func(t *testing.T, r *expressions.Reference) string {
@@ -455,18 +484,22 @@ func TestExtractBestPlan_HashTieFallsBackToTypeKey(t *testing.T) {
 func TestExtractBestPlan_ExplodeFieldTieDeterministic(t *testing.T) {
 	t.Parallel()
 	arr := values.NewArrayType(true, values.NotNullLong)
+	rowType := values.NewRecordType("T", false, []values.Field{
+		{Name: "ARR1", FieldType: arr, Ordinal: 0},
+		{Name: "ARR2", FieldType: arr, Ordinal: 1},
+	})
 	fieldOf := func(name string) values.Value {
-		qov := values.NewQuantifiedObjectValueOfType(
-			values.NamedCorrelationIdentifier("T"),
-			values.NewRecordType("T", false, []values.Field{
-				{Name: "ARR1", FieldType: arr, Ordinal: 0},
-				{Name: "ARR2", FieldType: arr, Ordinal: 1},
-			}))
-		return values.NewFieldValue(qov, name, arr)
+		qov := mustExtractionConstruct(values.NewQuantifiedObjectValue(
+			values.NamedCorrelationIdentifier("T"), rowType))
+		ordinal := 0
+		if name == "ARR2" {
+			ordinal = 1
+		}
+		return mustExtractionConstruct(values.ResolveFieldOrdinals(qov, []int{ordinal}))
 	}
 	build := func(first, second string) *expressions.Reference {
-		r := expressions.InitialOf(expressions.NewExplodeExpression(fieldOf(first)))
-		r.Insert(expressions.NewExplodeExpression(fieldOf(second)))
+		r := expressions.InitialOf(mustExtractionConstruct(expressions.NewExplodeExpression(fieldOf(first))))
+		r.Insert(mustExtractionConstruct(expressions.NewExplodeExpression(fieldOf(second))))
 		return r
 	}
 	winner := func(t *testing.T, r *expressions.Reference) string {
@@ -479,11 +512,11 @@ func TestExtractBestPlan_ExplodeFieldTieDeterministic(t *testing.T) {
 		if !ok {
 			t.Fatalf("got %T, want *ExplodeExpression", got)
 		}
-		fv, ok := ex.GetCollectionValue().(*values.FieldValue)
+		fv, ok := values.AsFieldValue(ex.GetCollectionValue())
 		if !ok {
-			t.Fatalf("collection %T, want *FieldValue", ex.GetCollectionValue())
+			t.Fatalf("collection %T, want exact FieldValue", ex.GetCollectionValue())
 		}
-		return fv.Field
+		return fv.DisplayName()
 	}
 	ab := winner(t, build("ARR1", "ARR2"))
 	ba := winner(t, build("ARR2", "ARR1"))
@@ -497,11 +530,11 @@ func TestExtractBestPlan_ExplodeFieldTieDeterministic(t *testing.T) {
 // extractor walks every Quantifier and rebuilds the tree.
 func BenchmarkExtractBestPlan_DeepTree(b *testing.B) {
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	innerQ := scanQ("Order")
+	innerQ := extractionScanQ(b, "Order")
 	for i := 0; i < 5; i++ {
-		f := expressions.NewLogicalFilterExpression(
+		f := mustExtractionConstruct(expressions.NewLogicalFilterExpression(
 			[]predicates.QueryPredicate{pred}, innerQ,
-		)
+		))
 		innerQ = expressions.ForEachQuantifier(expressions.InitialOf(f))
 	}
 	r := innerQ.GetRangesOver()
@@ -523,19 +556,19 @@ func BenchmarkExtractBestPlan_DeepTree(b *testing.B) {
 // over a shared inner. Memoisation kicks in for the cost computation.
 func BenchmarkExtractBestPlan_WideAlternatives(b *testing.B) {
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	innerScan := scan("Order")
-	r := expressions.InitialOf(expressions.NewLogicalFilterExpression(
+	innerScan := extractionScan(b, "Order")
+	r := expressions.InitialOf(mustExtractionConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
 		expressions.ForEachQuantifier(innerScan),
-	))
+	)))
 	for i := 2; i <= 5; i++ {
 		preds := make([]predicates.QueryPredicate, i)
 		for j := range preds {
 			preds[j] = pred
 		}
-		r.Insert(expressions.NewLogicalFilterExpression(
+		r.Insert(mustExtractionConstruct(expressions.NewLogicalFilterExpression(
 			preds, expressions.ForEachQuantifier(innerScan),
-		))
+		)))
 	}
 	if best, err := ExtractBestPlan(r); err != nil || best == nil {
 		b.Fatalf("ExtractBestPlan = %v, err %v; want a plan", best, err)

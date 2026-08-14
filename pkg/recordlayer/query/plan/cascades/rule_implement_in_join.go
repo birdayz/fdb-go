@@ -84,8 +84,8 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	qov, ok := resultValue.(*values.QuantifiedObjectValue)
-	if !ok || qov.Correlation != innerQuantifier.GetAlias() {
+	qov, ok := values.AsQuantifiedObjectValue(resultValue)
+	if !ok || qov.Correlation() != innerQuantifier.GetAlias() {
 		return
 	}
 
@@ -193,9 +193,13 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 						// currentRef inner edge (RFC-184 W2); its per-ordering winner
 						// resolves at extraction via ref.Winner(). No plan snapshot —
 						// the deferred-winner case.
-						inJoinPlan := plans.NewRecordQueryInJoinPlanFromQuantifier(
+						inJoinPlan, err := plans.NewRecordQueryInJoinPlanFromQuantifierWithBindingAlias(
 							expressions.NewPhysicalQuantifier(currentRef),
-							source.bindingName, sorted, source.reverse)
+							source.bindingAlias, sorted, source.reverse)
+						if err != nil {
+							call.Fail(err)
+							return
+						}
 						if inValues != nil {
 							inJoinPlan.SetInValues(inValues)
 						}
@@ -219,10 +223,10 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 }
 
 type inJoinSource struct {
-	bindingName string
-	sorted      bool
-	reverse     bool
-	quantifier  expressions.Quantifier
+	bindingAlias values.CorrelationIdentifier
+	sorted       bool
+	reverse      bool
+	quantifier   expressions.Quantifier
 }
 
 // enumerateSourceOrderingsForRequestedOrdering walks the requested
@@ -326,10 +330,10 @@ func (r *ImplementInJoinRule) enumerateSourceOrderingsForRequestedOrdering(
 		}
 
 		prefix = append(prefix, inJoinSource{
-			bindingName: correlatedAlias.String(),
-			sorted:      sorted,
-			reverse:     reverse,
-			quantifier:  explodeAliasMap[correlatedAlias],
+			bindingAlias: correlatedAlias,
+			sorted:       sorted,
+			reverse:      reverse,
+			quantifier:   explodeAliasMap[correlatedAlias],
 		})
 		delete(available, correlatedAlias)
 	}
@@ -385,9 +389,9 @@ func (r *ImplementInJoinRule) buildSourcesFromProvided(
 					continue
 				}
 				prefix = append(prefix, inJoinSource{
-					bindingName: alias.String(),
-					sorted:      true,
-					quantifier:  explodeAliasMap[alias],
+					bindingAlias: alias,
+					sorted:       true,
+					quantifier:   explodeAliasMap[alias],
 				})
 				used[alias] = struct{}{}
 			}
@@ -418,8 +422,8 @@ func (r *ImplementInJoinRule) appendRemaining(
 		alias := eq.GetAlias()
 		if _, ok := available[alias]; ok {
 			remaining = append(remaining, inJoinSource{
-				bindingName: alias.String(),
-				quantifier:  eq,
+				bindingAlias: alias,
+				quantifier:   eq,
 			})
 		}
 	}
@@ -431,14 +435,14 @@ func (r *ImplementInJoinRule) appendRemaining(
 		return [][]inJoinSource{result}
 	}
 
-	remainingNames := make([]string, len(remaining))
-	nameToSource := make(map[string]inJoinSource, len(remaining))
+	remainingAliases := make([]values.CorrelationIdentifier, len(remaining))
+	aliasToSource := make(map[values.CorrelationIdentifier]inJoinSource, len(remaining))
 	for i, s := range remaining {
-		remainingNames[i] = s.bindingName
-		nameToSource[s.bindingName] = s
+		remainingAliases[i] = s.bindingAlias
+		aliasToSource[s.bindingAlias] = s
 	}
 
-	iter := combinatorics.Permutations(remainingNames)
+	iter := combinatorics.Permutations(remainingAliases)
 	var results [][]inJoinSource
 	for {
 		if runCtx != nil && runCtx.Err() != nil {
@@ -450,11 +454,11 @@ func (r *ImplementInJoinRule) appendRemaining(
 		}
 		result := make([]inJoinSource, 0, len(prefix)+len(perm))
 		result = append(result, prefix...)
-		for _, name := range perm {
+		for _, alias := range perm {
 			if runCtx != nil && runCtx.Err() != nil {
 				return nil
 			}
-			result = append(result, nameToSource[name])
+			result = append(result, aliasToSource[alias])
 		}
 		results = append(results, result)
 	}
@@ -472,25 +476,25 @@ func (r *ImplementInJoinRule) enumerateDefaultSources(
 		sources := make([]inJoinSource, len(explodeQuantifiers))
 		for i, eq := range explodeQuantifiers {
 			sources[i] = inJoinSource{
-				bindingName: eq.GetAlias().String(),
-				quantifier:  eq,
+				bindingAlias: eq.GetAlias(),
+				quantifier:   eq,
 			}
 		}
 		return [][]inJoinSource{sources}
 	}
 
-	names := make([]string, len(explodeQuantifiers))
-	nameToSource := make(map[string]inJoinSource, len(explodeQuantifiers))
+	aliases := make([]values.CorrelationIdentifier, len(explodeQuantifiers))
+	aliasToSource := make(map[values.CorrelationIdentifier]inJoinSource, len(explodeQuantifiers))
 	for i, eq := range explodeQuantifiers {
-		name := eq.GetAlias().String()
-		names[i] = name
-		nameToSource[name] = inJoinSource{
-			bindingName: name,
-			quantifier:  eq,
+		alias := eq.GetAlias()
+		aliases[i] = alias
+		aliasToSource[alias] = inJoinSource{
+			bindingAlias: alias,
+			quantifier:   eq,
 		}
 	}
 
-	iter := combinatorics.Permutations(names)
+	iter := combinatorics.Permutations(aliases)
 	var results [][]inJoinSource
 	for {
 		if runCtx != nil && runCtx.Err() != nil {
@@ -501,11 +505,11 @@ func (r *ImplementInJoinRule) enumerateDefaultSources(
 			break
 		}
 		result := make([]inJoinSource, len(perm))
-		for i, name := range perm {
+		for i, alias := range perm {
 			if runCtx != nil && runCtx.Err() != nil {
 				return nil
 			}
-			result[i] = nameToSource[name]
+			result[i] = aliasToSource[alias]
 		}
 		results = append(results, result)
 	}
@@ -539,11 +543,12 @@ func classifyInSourceKind(q expressions.Quantifier) plans.InSourceKind {
 	if cv == nil {
 		return plans.InSourceValues
 	}
+	if _, isQOV := values.AsQuantifiedObjectValue(cv); isQOV {
+		return plans.InSourceParameter
+	}
 	switch cv.(type) {
 	case *values.ConstantValue:
 		return plans.InSourceValues
-	case *values.QuantifiedObjectValue:
-		return plans.InSourceParameter
 	default:
 		if values.IsConstantValue(cv) {
 			return plans.InSourceComparand
@@ -581,8 +586,23 @@ func isSupportedExplodeValue(v values.Value) bool {
 	if v == nil {
 		return false
 	}
+	// An ARRAY<RECORD> Explode is a relation source (inline VALUES is the
+	// concrete SQL producer), not an IN-list source. InJoin extracts constant
+	// values before FinalizePlan and binds each record as a name-keyed map;
+	// exact FieldValue evaluation is deliberately ordinal/protobuf-only, so
+	// treating that relation as an IN source makes every correlated child read
+	// NULL and silently returns zero rows. Leave record-valued Explodes to the
+	// NestedLoopJoin/FlatMap implementation. Scalar arrays retain Java's IN
+	// source path unchanged.
+	if array, ok := v.Type().(*values.ArrayType); ok && array.ElementType != nil &&
+		array.ElementType.Code() == values.TypeCodeRecord {
+		return false
+	}
+	if _, isQOV := values.AsQuantifiedObjectValue(v); isQOV {
+		return true
+	}
 	switch v.(type) {
-	case *values.ConstantValue, *values.QuantifiedObjectValue:
+	case *values.ConstantValue:
 		return true
 	}
 	return values.IsConstantValue(v)

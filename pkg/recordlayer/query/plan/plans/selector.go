@@ -87,20 +87,26 @@ type RecordQuerySelectorPlan struct {
 }
 
 // NewRecordQuerySelectorPlan constructs a selector plan.
-// Panics if children is empty.
+// Returns an error if children is empty or their exact result types disagree.
 func NewRecordQuerySelectorPlan(
 	children []RecordQueryPlan,
 	planSelector PlanSelector,
 	reverse bool,
-) *RecordQuerySelectorPlan {
+) (*RecordQuerySelectorPlan, error) {
 	if len(children) == 0 {
-		panic("selector plan should have at least one plan")
+		return nil, fmt.Errorf("selector plan should have at least one plan")
+	}
+	childQs := QuantifiersOverPlans(children)
+	base, err := newPlanExprBaseForFirstQuantifier("RecordQuerySelectorPlan", childQs)
+	if err != nil {
+		return nil, err
 	}
 	return &RecordQuerySelectorPlan{
-		childQs:      QuantifiersOverPlans(children),
+		PlanExprBase: base,
+		childQs:      childQs,
 		planSelector: planSelector,
 		reverse:      reverse,
-	}
+	}, nil
 }
 
 // NewRecordQuerySelectorPlanWithProbabilities constructs a selector
@@ -110,9 +116,9 @@ func NewRecordQuerySelectorPlanWithProbabilities(
 	children []RecordQueryPlan,
 	probabilities []int,
 	reverse bool,
-) *RecordQuerySelectorPlan {
+) (*RecordQuerySelectorPlan, error) {
 	if len(children) != len(probabilities) {
-		panic("number of plans and number of relative probabilities should be the same")
+		return nil, fmt.Errorf("number of plans and number of relative probabilities should be the same")
 	}
 	return NewRecordQuerySelectorPlan(
 		children,
@@ -129,12 +135,7 @@ func (p *RecordQuerySelectorPlan) IsReverse() bool { return p.reverse }
 
 // GetResultType returns the first child's result type, or UnknownType
 // if there are no children.
-func (p *RecordQuerySelectorPlan) GetResultType() values.Type {
-	if len(p.childQs) == 0 {
-		return values.UnknownType
-	}
-	return planFromQuantifier(p.childQs[0]).GetResultType()
-}
+func (p *RecordQuerySelectorPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 // GetChildren returns the child plans, dereferenced through the quantifiers
 // and in the order PlanSelector's index refers to.
@@ -208,13 +209,18 @@ func (p *RecordQuerySelectorPlan) GetQuantifiers() []expressions.Quantifier {
 // The arity check keeps the PlanSelector's index meaningful: a probability
 // list is sized to the child count at construction, so only a same-length
 // replacement is admissible.
-func (p *RecordQuerySelectorPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != len(p.childQs) {
-		return p
+func (p *RecordQuerySelectorPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQuerySelectorPlan", len(qs), len(p.childQs)); err != nil {
+		return nil, err
 	}
 	cp := *p
 	cp.childQs = append([]expressions.Quantifier(nil), qs...)
-	return &cp
+	base, err := newPlanExprBaseForFirstQuantifier("RecordQuerySelectorPlan", qs)
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
+	return &cp, nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

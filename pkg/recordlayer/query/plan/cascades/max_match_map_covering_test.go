@@ -22,8 +22,19 @@ func TestTranslateQueryValueMaybe_CoveringIndexMultiColumnProjection(t *testing.
 	t.Parallel()
 
 	alias := values.NamedCorrelationIdentifier("candidate")
-	fx := &values.FieldValue{Field: "X", Typ: values.NullableLong}
-	fy := &values.FieldValue{Field: "Y", Typ: values.NullableLong}
+	sourceType := values.NewRecordType("Source", false, []values.Field{
+		{Name: "X", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "Y", FieldType: values.NullableLong, Ordinal: 1},
+	})
+	source, sourceErr := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("source"),
+		sourceType,
+	)
+	source = mustConstruct(t, source, sourceErr)
+	fx, fxErr := values.ResolveFieldOrdinals(source, []int{0})
+	fx = mustConstruct(t, fx, fxErr)
+	fy, fyErr := values.ResolveFieldOrdinals(source, []int{1})
+	fy = mustConstruct(t, fy, fyErr)
 
 	qv := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "a", Value: fx},
@@ -55,11 +66,11 @@ func TestTranslateQueryValueMaybe_CoveringIndexMultiColumnProjection(t *testing.
 	// QOV(alias). Field "a" → col0, field "b" → col1.
 	fv0 := assertFieldRef(t, rc.Fields[0], "a")
 	fv1 := assertFieldRef(t, rc.Fields[1], "b")
-	if fv0.Field != "col0" {
-		t.Fatalf("query column a must project candidate column col0, got %q", fv0.Field)
+	if fv0.DisplayName() != "col0" {
+		t.Fatalf("query column a must project candidate column col0, got %q", fv0.DisplayName())
 	}
-	if fv1.Field != "col1" {
-		t.Fatalf("query column b must project candidate column col1, got %q", fv1.Field)
+	if fv1.DisplayName() != "col1" {
+		t.Fatalf("query column b must project candidate column col1, got %q", fv1.DisplayName())
 	}
 	// Cross-check that survives any future pull-up shape change: the two
 	// projected values must DIFFER (the self-pull-up bug makes both QOV(alias),
@@ -70,14 +81,14 @@ func TestTranslateQueryValueMaybe_CoveringIndexMultiColumnProjection(t *testing.
 }
 
 // assertFieldRef fails unless field.Name == wantName and field.Value is a
-// *FieldValue (a per-column projection), returning that FieldValue. The
-// self-pull-up bug produces a *QuantifiedObjectValue here instead.
-func assertFieldRef(t *testing.T, field values.RecordConstructorField, wantName string) *values.FieldValue {
+// exact FieldValue (a per-column projection), returning that FieldValue. The
+// self-pull-up bug produces a QuantifiedObjectValue here instead.
+func assertFieldRef(t *testing.T, field values.RecordConstructorField, wantName string) values.FieldValue {
 	t.Helper()
 	if field.Name != wantName {
 		t.Fatalf("expected result field %q, got %q", wantName, field.Name)
 	}
-	fv, ok := field.Value.(*values.FieldValue)
+	fv, ok := values.AsFieldValue(field.Value)
 	if !ok {
 		t.Fatalf("field %q must project a column FieldValue, got %T (self-pull-up collapse to QOV)", wantName, field.Value)
 	}

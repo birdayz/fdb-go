@@ -234,7 +234,7 @@ func TestTrackedEnumerationReportsWhichBranchIsLive(t *testing.T) {
 	root := sourceTreeRoot(t)
 
 	gitPath, lookErr := exec.LookPath("git")
-	out, runErr := exec.Command("git", "-C", root, "ls-files", "-z", "--", "*.go").Output()
+	out, runErr := exec.Command("git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.go").Output()
 	live := "fallback filesystem walk"
 	if runErr == nil && len(out) > 0 {
 		live = "git ls-files"
@@ -247,5 +247,55 @@ func TestTrackedEnumerationReportsWhichBranchIsLive(t *testing.T) {
 	if len(files) == 0 {
 		t.Fatalf("BRANCH-PROBE: %s enumerated zero Go files under %s; a gate scanning an empty set "+
 			"reports green while checking nothing", live, root)
+	}
+}
+
+// TestGitGoFilesIncludesTheWholeDeliverable pins the shared-worktree seam: a
+// new source file is part of the build before it is staged, so it must already
+// be part of every docs census. The fixture also proves ignored scratch stays
+// out and the union cannot report one path twice.
+func TestGitGoFilesIncludesTheWholeDeliverable(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if out, err := exec.Command("git", "-C", root, "init", "--quiet").CombinedOutput(); err != nil {
+		t.Skipf("git init unavailable: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	write := func(rel, contents string) {
+		t.Helper()
+		abs := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(abs, []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	write(".gitignore", "ignored/\n")
+	write("pkg/tracked.go", "package pkg\n")
+	write("pkg/deleted.go", "package pkg\n")
+	write("pkg/untracked.go", "package pkg\n")
+	write("ignored/scratch.go", "package ignored\n")
+	write("pkg/not_go.txt", "not go\n")
+	if out, err := exec.Command("git", "-C", root, "add", ".gitignore", "pkg/tracked.go", "pkg/deleted.go").CombinedOutput(); err != nil {
+		t.Fatalf("git add fixture: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	if err := os.Remove(filepath.Join(root, "pkg/deleted.go")); err != nil {
+		t.Fatalf("delete tracked fixture: %v", err)
+	}
+
+	got, err := gitGoFiles(root)
+	if err != nil {
+		t.Fatalf("gitGoFiles: %v", err)
+	}
+	want := []string{"pkg/tracked.go", "pkg/untracked.go"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("tracked + untracked non-ignored union = %v, want %v", got, want)
+	}
+	seen := map[string]bool{}
+	for _, rel := range got {
+		if seen[rel] {
+			t.Fatalf("gitGoFiles returned duplicate %q in %v", rel, got)
+		}
+		seen[rel] = true
 	}
 }

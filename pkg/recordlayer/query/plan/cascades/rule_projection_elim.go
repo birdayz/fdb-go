@@ -54,12 +54,21 @@ func (r *ProjectionElimRule) OnMatch(call *ExpressionRuleCall) {
 	if len(aliases) > 1 || len(aliases) == 1 && aliases[0] != "" {
 		return
 	}
-	qov, ok := pvs[0].(*values.QuantifiedObjectValue)
+	qov, ok := values.AsQuantifiedObjectValue(pvs[0])
 	if !ok {
 		return
 	}
+	// A scalar QOV is one projected scalar column, not a whole-row identity.
+	// Eliminating that projection changes RELATION<RECORD<X scalar>> into the
+	// inner relation (and, for a gathered UNNEST, can expose all retained outer
+	// columns). QOVs became exact and may legitimately be scalar under RFC-232,
+	// so the old "any bare QOV" shortcut must remain record-only.
+	flowedType := qov.FlowedType()
+	if flowedType == nil || flowedType.Code() != values.TypeCodeRecord {
+		return
+	}
 	innerAlias := p.GetInner().GetAlias()
-	if qov.Correlation != innerAlias {
+	if qov.Correlation() != innerAlias {
 		return
 	}
 	call.Yield(p.GetInner().GetRangesOver().Get())

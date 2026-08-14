@@ -19,13 +19,13 @@ type LeafValue interface {
 }
 
 // Compile-time interface satisfaction checks.
-var _ LeafValue = (*QuantifiedObjectValue)(nil)
+var _ LeafValue = (*quantifiedObjectValue)(nil)
 
 // RebaseLeaf on QuantifiedObjectValue returns a new
 // QuantifiedObjectValue with the target alias, preserving the type.
 // Ports Java's QuantifiedObjectValue.rebaseLeaf.
-func (q *QuantifiedObjectValue) RebaseLeaf(targetAlias CorrelationIdentifier) Value {
+func (q *quantifiedObjectValue) RebaseLeaf(targetAlias CorrelationIdentifier) Value {
 	cp := *q
-	cp.Correlation = targetAlias
+	cp.correlation = targetAlias
 	return &cp
 }

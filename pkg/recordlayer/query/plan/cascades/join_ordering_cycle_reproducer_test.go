@@ -32,8 +32,40 @@ import (
 // whose concrete cost is deterministic given stats[recordType] = total:
 // Cardinality = 0.9*total, CPU = 0.045*total (scanLikeCost, sel=1, no
 // equality bind).
-func fullScanLeaf(recordType string) *plans.RecordQueryScanPlan {
-	return plans.NewRecordQueryScanPlan([]string{recordType}, values.UnknownType, false)
+func joinOrderingRowType() values.Type {
+	return values.NewRecordType("JoinOrderingRow", false, []values.Field{
+		{Name: "flag", FieldType: values.NullableLong},
+	})
+}
+
+func fullScanLeaf(t testing.TB, recordType string) *plans.RecordQueryScanPlan {
+	t.Helper()
+	scan, err := plans.NewRecordQueryScanPlan([]string{recordType}, joinOrderingRowType(), false)
+	return mustConstruct(t, scan, err)
+}
+
+func joinOrderingResultValue(t testing.TB) values.Value {
+	t.Helper()
+	result, err := values.NewQuantifiedObjectValue(
+		values.UniqueCorrelationIdentifier(),
+		joinOrderingRowType(),
+	)
+	return mustConstruct(t, result, err)
+}
+
+func joinOrderingPredicate(
+	t testing.TB,
+	outerAlias values.CorrelationIdentifier,
+) predicates.QueryPredicate {
+	t.Helper()
+	outer, err := values.NewQuantifiedObjectValue(outerAlias, joinOrderingRowType())
+	exactOuter := mustConstruct(t, outer, err)
+	flag, err := values.ResolveFieldOrdinals(exactOuter, []int{0})
+	exactFlag := mustConstruct(t, flag, err)
+	return predicates.NewComparisonPredicate(
+		exactFlag,
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
+	)
 }
 
 // TestCompareJoinOrdering_ShapeMismatchTransitivityHolds constructs the exact
@@ -59,7 +91,7 @@ func TestCompareJoinOrdering_ShapeMismatchTransitivityHolds(t *testing.T) {
 
 	aliasOuter := values.NamedCorrelationIdentifier("O")
 	aliasInner := values.NamedCorrelationIdentifier("I")
-	resVal := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+	resVal := joinOrderingResultValue(t)
 
 	stats := properties.MapStatistics{PerType: map[string]float64{
 		"A_outer": 1, "A_inner": 1000,
@@ -67,19 +99,19 @@ func TestCompareJoinOrdering_ShapeMismatchTransitivityHolds(t *testing.T) {
 		"C_outer": 100, "C_inner": 1,
 	}}
 
-	planA := plans.NewRecordQueryFlatMapPlan(
-		fullScanLeaf("A_outer"), fullScanLeaf("A_inner"), aliasOuter, aliasInner, resVal, false)
+	planAValue, err := plans.NewRecordQueryFlatMapPlan(
+		fullScanLeaf(t, "A_outer"), fullScanLeaf(t, "A_inner"), aliasOuter, aliasInner, resVal, false)
+	planA := mustConstruct(t, planAValue, err)
 
-	pred := predicates.NewComparisonPredicate(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(aliasOuter), "flag", values.UnknownType),
-		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
-	)
-	planB := plans.NewRecordQueryNestedLoopJoinPlan(
-		fullScanLeaf("B_outer"), fullScanLeaf("B_inner"),
+	pred := joinOrderingPredicate(t, aliasOuter)
+	planBValue, err := plans.NewRecordQueryNestedLoopJoinPlan(
+		fullScanLeaf(t, "B_outer"), fullScanLeaf(t, "B_inner"),
 		[]predicates.QueryPredicate{pred}, plans.JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), resVal)
+	planB := mustConstruct(t, planBValue, err)
 
-	planC := plans.NewRecordQueryFlatMapPlan(
-		fullScanLeaf("C_outer"), fullScanLeaf("C_inner"), aliasOuter, aliasInner, resVal, false)
+	planCValue, err := plans.NewRecordQueryFlatMapPlan(
+		fullScanLeaf(t, "C_outer"), fullScanLeaf(t, "C_inner"), aliasOuter, aliasInner, resVal, false)
+	planC := mustConstruct(t, planCValue, err)
 
 	costA := concretePlanCost(planA, stats, nil)
 	costB := concretePlanCost(planB, stats, nil)
@@ -176,20 +208,19 @@ func TestCompareJoinOrdering_RankIsATotalPreorder(t *testing.T) {
 
 	aliasOuter := values.NamedCorrelationIdentifier("O")
 	aliasInner := values.NamedCorrelationIdentifier("I")
-	resVal := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
-	pred := predicates.NewComparisonPredicate(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(aliasOuter), "flag", values.UnknownType),
-		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
-	)
+	resVal := joinOrderingResultValue(t)
+	pred := joinOrderingPredicate(t, aliasOuter)
 
 	flatMap := func(outerT, innerT string) plans.RecordQueryPlan {
-		return plans.NewRecordQueryFlatMapPlan(
-			fullScanLeaf(outerT), fullScanLeaf(innerT), aliasOuter, aliasInner, resVal, false)
+		plan, err := plans.NewRecordQueryFlatMapPlan(
+			fullScanLeaf(t, outerT), fullScanLeaf(t, innerT), aliasOuter, aliasInner, resVal, false)
+		return mustConstruct(t, plan, err)
 	}
 	nlj := func(outerT, innerT string) plans.RecordQueryPlan {
-		return plans.NewRecordQueryNestedLoopJoinPlan(
-			fullScanLeaf(outerT), fullScanLeaf(innerT),
+		plan, err := plans.NewRecordQueryNestedLoopJoinPlan(
+			fullScanLeaf(t, outerT), fullScanLeaf(t, innerT),
 			[]predicates.QueryPredicate{pred}, plans.JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), resVal)
+		return mustConstruct(t, plan, err)
 	}
 
 	stats := properties.MapStatistics{PerType: map[string]float64{

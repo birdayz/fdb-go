@@ -8,6 +8,16 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func mergeTestLong(value int64) values.Value {
+	return &values.ConstantValue{Value: value, Typ: values.NotNullLong}
+}
+
+func mergeTestSelect(t testing.TB, result values.Value) *expressions.SelectExpression {
+	t.Helper()
+	selectExpression, err := expressions.NewSelectExpression(result, nil, nil)
+	return mustConstruct(t, selectExpression, err)
+}
+
 func mergeTestRange(
 	t *testing.T,
 	comparisons ...predicates.Comparison,
@@ -32,23 +42,15 @@ func mergeTestGroupPartialMatch(
 ) (*PartialMatchImpl, values.Value, values.Value) {
 	t.Helper()
 
-	queryResult := values.LiteralValue(int64(101))
-	queryExpression := expressions.NewSelectExpression(queryResult, nil, nil)
+	queryResult := mergeTestLong(101)
+	queryExpression := mergeTestSelect(t, queryResult)
 	queryRef := expressions.InitialOf(queryExpression)
 
-	candidateResult := values.LiteralValue(int64(202))
-	candidateExpression := expressions.NewSelectExpression(
-		candidateResult,
-		nil,
-		nil,
-	)
+	candidateResult := mergeTestLong(202)
+	candidateExpression := mergeTestSelect(t, candidateResult)
 	candidateRef := expressions.InitialOf(candidateExpression)
 	if candidateMemberCount == 2 {
-		if !candidateRef.Insert(expressions.NewSelectExpression(
-			values.LiteralValue(int64(303)),
-			nil,
-			nil,
-		)) {
+		if !candidateRef.Insert(mergeTestSelect(t, mergeTestLong(303))) {
 			t.Fatal("failed to add the second candidate member")
 		}
 	}
@@ -270,14 +272,11 @@ func TestTryMergeRegularMatchInfo_MetadataAndChildInvariants(t *testing.T) {
 		expressions.RelationalExpression,
 		*expressions.Reference,
 	) {
-		queryExpr := expressions.NewFullUnorderedScanExpression(
-			[]string{recordType},
-			values.UnknownType,
-		)
-		candidateExpr := expressions.NewFullUnorderedScanExpression(
-			[]string{recordType},
-			values.UnknownType,
-		)
+		rowType := values.NewRecordType(recordType+"Row", false, []values.Field{
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		})
+		queryExpr := mustFullUnorderedScan(t, []string{recordType}, rowType)
+		candidateExpr := mustFullUnorderedScan(t, []string{recordType}, rowType)
 		return expressions.InitialOf(queryExpr), queryExpr, expressions.InitialOf(candidateExpr)
 	}
 
@@ -285,7 +284,7 @@ func TestTryMergeRegularMatchInfo_MetadataAndChildInvariants(t *testing.T) {
 	queryRefB, queryExprB, candidateRefB := newLeaf("B")
 	ordering := []*MatchedOrderingPart{NewMatchedOrderingPart(
 		values.NamedCorrelationIdentifier("order_p"),
-		values.LiteralValue(int64(1)),
+		mergeTestLong(1),
 		predicates.EmptyComparisonRange(),
 		MatchedSortOrderAscending,
 	)}
@@ -302,7 +301,7 @@ func TestTryMergeRegularMatchInfo_MetadataAndChildInvariants(t *testing.T) {
 		ordering,
 		NewMaxMatchMap(nil, nil, nil),
 		EmptyGroupByMappings(),
-		[]values.Value{values.LiteralValue(int64(11))},
+		[]values.Value{mergeTestLong(11)},
 		NewQueryPlanConstraint(childConstraintPredicate),
 		true,
 	)
@@ -373,7 +372,7 @@ func TestTryMergeRegularMatchInfo_MetadataAndChildInvariants(t *testing.T) {
 			),
 		},
 		predicateMap,
-		NewMaxMatchMap(nil, values.LiteralValue(int64(3)), values.LiteralValue(int64(3))),
+		NewMaxMatchMap(nil, mergeTestLong(3), mergeTestLong(3)),
 		EmptyGroupByMappings(),
 		nil,
 		NewQueryPlanConstraint(localConstraintPredicate),
@@ -465,7 +464,7 @@ func TestTryMergeRegularMatchInfo_MetadataAndChildInvariants(t *testing.T) {
 		nil,
 		NewMaxMatchMap(nil, nil, nil),
 		EmptyGroupByMappings(),
-		[]values.Value{values.LiteralValue(int64(22))},
+		[]values.Value{mergeTestLong(22)},
 		nil,
 	); ok {
 		t.Fatal("local plus child roll-up should conflict")
@@ -509,11 +508,11 @@ func TestPutValueBiMapChecked_ExplainCollisionFailsClosed(t *testing.T) {
 	}
 	firstKey := &values.ConstantValue{
 		Value: opaqueLiteral{X: 1},
-		Typ:   values.UnknownType,
+		Typ:   values.NotNullLong,
 	}
 	secondKey := &values.ConstantValue{
 		Value: opaqueLiteral{X: 2},
-		Typ:   values.UnknownType,
+		Typ:   values.NotNullLong,
 	}
 	if values.ExplainValue(firstKey) != values.ExplainValue(secondKey) {
 		t.Fatalf(
@@ -530,14 +529,14 @@ func TestPutValueBiMapChecked_ExplainCollisionFailsClosed(t *testing.T) {
 	if !putValueBiMapChecked(
 		target,
 		firstKey,
-		values.LiteralValue(int64(1)),
+		mergeTestLong(1),
 	) {
 		t.Fatal("first mapping rejected")
 	}
 	if putValueBiMapChecked(
 		target,
 		secondKey,
-		values.LiteralValue(int64(1)),
+		mergeTestLong(1),
 	) {
 		t.Fatal("Explain-colliding distinct key should fail closed")
 	}
@@ -720,7 +719,7 @@ func TestTryMergeRegularMatchInfo_MatchedMapExplainCollision(t *testing.T) {
 	}
 	pulledKey := &values.ConstantValue{
 		Value: opaqueLiteral{X: 1},
-		Typ:   values.UnknownType,
+		Typ:   values.NotNullLong,
 	}
 	childPartialMatch, _, _ := mergeTestGroupPartialMatch(
 		t,
@@ -748,7 +747,7 @@ func TestTryMergeRegularMatchInfo_MatchedMapExplainCollision(t *testing.T) {
 
 	localKey := &values.ConstantValue{
 		Value: opaqueLiteral{X: 2},
-		Typ:   values.UnknownType,
+		Typ:   values.NotNullLong,
 	}
 	if values.ExplainValue(localKey) != values.ExplainValue(pulledKey) {
 		t.Fatalf(
@@ -762,9 +761,14 @@ func TestTryMergeRegularMatchInfo_MatchedMapExplainCollision(t *testing.T) {
 	}
 
 	localMatchedGroupings := NewValueBiMap()
+	candidateObject, candidateObjectErr := values.NewQuantifiedObjectValue(
+		candidateAlias,
+		values.NotNullLong,
+	)
+	candidateObject = mustConstruct(t, candidateObject, candidateObjectErr)
 	localMatchedGroupings.Put(
 		localKey,
-		values.NewQuantifiedObjectValue(candidateAlias),
+		candidateObject,
 	)
 	additional := NewGroupByMappings(
 		localMatchedGroupings,

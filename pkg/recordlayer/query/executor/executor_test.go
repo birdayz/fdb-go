@@ -42,7 +42,7 @@ func TestExecuteValues_SingleRow(t *testing.T) {
 	cols := []values.Value{
 		&values.ConstantValue{Value: int64(42), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
 	}
-	plan := plans.NewRecordQueryValuesPlan(cols)
+	plan := mustExecutorConstruct(plans.NewRecordQueryValuesPlan(cols))
 	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -56,13 +56,61 @@ func TestExecuteValues_SingleRow(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
+	declared, ok := plan.GetResultType().(*values.RecordType)
+	if !ok {
+		t.Fatalf("VALUES declared result type = %T, want record", plan.GetResultType())
+	}
+	emitted := results[0].Positional
+	if emitted == nil || emitted.Type == nil {
+		t.Fatalf("VALUES emitted row without a positional type: %#v", results[0])
+	}
+	if !emitted.Type.Equals(declared) {
+		t.Fatalf("VALUES emitted type = %v, want its declared type %v", emitted.Type, declared)
+	}
+	if len(emitted.Type.Fields) != 1 || emitted.Type.Fields[0].FieldType == nil ||
+		emitted.Type.Fields[0].FieldType.Code() != values.TypeCodeInt ||
+		emitted.Type.Fields[0].FieldType.IsNullable() {
+		t.Fatalf("VALUES emitted field type = %v, want exact INT NOT NULL", emitted.Type.Fields)
+	}
+	if emitted.Type.Fields[0].Name == "constant" {
+		t.Fatal("VALUES re-derived the runtime label from ConstantValue.Name instead of using its declared output name")
+	}
 
 	row, ok := rowMapOK(results[0])
 	if !ok {
 		t.Fatalf("datum = %T, want map[string]any", results[0].Positional)
 	}
-	if row["constant"] != int64(42) {
-		t.Errorf("row['constant'] = %v, want 42", row["constant"])
+	declaredName := declared.Fields[0].Name
+	if row[declaredName] != int64(42) {
+		t.Errorf("row[%q] = %v, want 42", declaredName, row[declaredName])
+	}
+}
+
+func TestResultFromValue_RecordConstructorUsesDeclaredExactType(t *testing.T) {
+	t.Parallel()
+	rc := values.NewRecordConstructorValue(
+		values.RecordConstructorField{
+			Name:  "N",
+			Value: &values.ConstantValue{Value: int64(7), Typ: values.NullableLong},
+		},
+		values.RecordConstructorField{
+			Name:  "S",
+			Value: &values.ConstantValue{Value: "x", Typ: values.TypeString},
+		},
+	)
+	result, err := resultFromValue(rc)
+	if err != nil {
+		t.Fatalf("resultFromValue: %v", err)
+	}
+	declared := rc.Type().(*values.RecordType)
+	if result.Positional == nil || result.Positional.Type == nil ||
+		!result.Positional.Type.Equals(declared) {
+		t.Fatalf("record-constructor emitted type = %v, want declared %v", result.Positional, declared)
+	}
+	for i, field := range result.Positional.Type.Fields {
+		if field.FieldType == nil || field.FieldType.Code() == values.TypeCodeUnknown {
+			t.Fatalf("record-constructor field %d lost its exact type: %v", i, field)
+		}
 	}
 }
 
@@ -70,7 +118,7 @@ func TestExecuteValues_EmptyColumns(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	plan := plans.NewRecordQueryValuesPlan(nil)
+	plan := mustExecutorConstruct(plans.NewRecordQueryValuesPlan(nil))
 	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -93,11 +141,11 @@ func TestExecuteFilter_OverValues(t *testing.T) {
 	cols := []values.Value{
 		&values.ConstantValue{Value: int64(10), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
 	}
-	inner := plans.NewRecordQueryValuesPlan(cols)
-	filterPlan := plans.NewRecordQueryFilterPlan(
+	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan(cols))
+	filterPlan := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		inner,
-	)
+	))
 
 	cursor, err := ExecutePlan(ctx, filterPlan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -121,11 +169,11 @@ func TestExecuteFilter_RejectsAll(t *testing.T) {
 	cols := []values.Value{
 		&values.ConstantValue{Value: int64(10), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
 	}
-	inner := plans.NewRecordQueryValuesPlan(cols)
-	filterPlan := plans.NewRecordQueryFilterPlan(
+	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan(cols))
+	filterPlan := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
 		inner,
-	)
+	))
 
 	cursor, err := ExecutePlan(ctx, filterPlan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -149,8 +197,8 @@ func TestExecuteLimit_CapsResults(t *testing.T) {
 	cols := []values.Value{
 		&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
 	}
-	inner := plans.NewRecordQueryValuesPlan(cols)
-	limitPlan := plans.NewRecordQueryLimitPlan(inner, 0, 0)
+	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan(cols))
+	limitPlan := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(inner, 0, 0))
 
 	cursor, err := ExecutePlan(ctx, limitPlan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -174,8 +222,8 @@ func TestExecuteDistinct_DedupsValues(t *testing.T) {
 	cols := []values.Value{
 		&values.ConstantValue{Value: int64(42), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
 	}
-	inner := plans.NewRecordQueryValuesPlan(cols)
-	distinctPlan := plans.NewRecordQueryDistinctPlan(inner)
+	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan(cols))
+	distinctPlan := mustExecutorConstruct(plans.NewRecordQueryDistinctPlan(inner))
 
 	cursor, err := ExecutePlan(ctx, distinctPlan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -200,18 +248,25 @@ func TestExecuteUnorderedPrimaryKeyDistinct_PrimaryKeySemantics(t *testing.T) {
 	table := evalCtx.GetOrCreateTempTable(alias, nil)
 	pk1 := tuple.Tuple{"type", int64(1)}
 	pk2 := tuple.Tuple{"type", int64(2)}
+	rowType := exactTestRowType(values.Field{Name: "V", FieldType: values.NullableString})
+	mkRow := func(pk tuple.Tuple, value string) QueryResult {
+		return QueryResult{
+			Positional: &PositionalRow{Type: rowType, Slots: []any{value}},
+			PrimaryKey: pk,
+		}
+	}
 	for _, row := range []QueryResult{
-		dmapPK(pk1, map[string]any{"V": "same projected row"}),
-		dmapPK(pk2, map[string]any{"V": "same projected row"}),
-		dmapPK(pk1, map[string]any{"V": "different fanout value"}),
+		mkRow(pk1, "same projected row"),
+		mkRow(pk2, "same projected row"),
+		mkRow(pk1, "different fanout value"),
 	} {
 		if err := table.Add(row); err != nil {
 			t.Fatalf("seed temp table: %v", err)
 		}
 	}
-	plan := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(
-		plans.NewRecordQueryTempTableScanPlan(alias),
-	)
+	plan := mustExecutorConstruct(plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(
+		mustTempTableScan(t, evalCtx, alias),
+	))
 	cursor, err := ExecutePlan(
 		ctx,
 		plan,
@@ -267,18 +322,25 @@ func TestExecuteUnorderedPrimaryKeyDistinct_ContinuationCarriesSeenSet(
 	table := evalCtx.GetOrCreateTempTable(alias, nil)
 	pk1 := tuple.Tuple{int64(1)}
 	pk2 := tuple.Tuple{int64(2)}
+	rowType := exactTestRowType(values.Field{Name: "V", FieldType: values.NullableString})
+	mkRow := func(pk tuple.Tuple, value string) QueryResult {
+		return QueryResult{
+			Positional: &PositionalRow{Type: rowType, Slots: []any{value}},
+			PrimaryKey: pk,
+		}
+	}
 	for _, row := range []QueryResult{
-		dmapPK(pk1, map[string]any{"V": "first"}),
-		dmapPK(pk1, map[string]any{"V": "duplicate after boundary"}),
-		dmapPK(pk2, map[string]any{"V": "second"}),
+		mkRow(pk1, "first"),
+		mkRow(pk1, "duplicate after boundary"),
+		mkRow(pk2, "second"),
 	} {
 		if err := table.Add(row); err != nil {
 			t.Fatalf("seed temp table: %v", err)
 		}
 	}
-	plan := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(
-		plans.NewRecordQueryTempTableScanPlan(alias),
-	)
+	plan := mustExecutorConstruct(plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(
+		mustTempTableScan(t, evalCtx, alias),
+	))
 	state := recordlayer.NewExecuteState(1 << 20)
 	props := recordlayer.DefaultExecuteProperties()
 	props.State = state
@@ -357,13 +419,16 @@ func TestExecuteUnorderedPrimaryKeyDistinct_NilPrimaryKeyFailsLoudly(
 	alias := values.NamedCorrelationIdentifier("pk_distinct_nil")
 	evalCtx := EmptyEvaluationContext()
 	if err := evalCtx.GetOrCreateTempTable(alias, nil).Add(
-		dmap(map[string]any{"V": "computed row"}),
+		QueryResult{Positional: &PositionalRow{
+			Type:  exactTestRowType(values.Field{Name: "V", FieldType: values.NullableString}),
+			Slots: []any{"computed row"},
+		}},
 	); err != nil {
 		t.Fatalf("seed temp table: %v", err)
 	}
-	plan := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(
-		plans.NewRecordQueryTempTableScanPlan(alias),
-	)
+	plan := mustExecutorConstruct(plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(
+		mustTempTableScan(t, evalCtx, alias),
+	))
 	cursor, err := ExecutePlan(
 		context.Background(),
 		plan,
@@ -386,15 +451,15 @@ func TestExecuteProjection_FieldExtraction(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	inner := plans.NewRecordQueryValuesPlan([]values.Value{
+	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(100), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
-	projPlan := plans.NewRecordQueryProjectionPlan(
+	}))
+	projPlan := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
 		[]values.Value{
 			&values.ConstantValue{Value: "projected", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
 		},
 		inner,
-	)
+	))
 
 	cursor, err := ExecutePlan(ctx, projPlan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -420,10 +485,10 @@ func TestExecuteSort_OverValues(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	inner := plans.NewRecordQueryValuesPlan([]values.Value{
+	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(42), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
-	sortPlan := plans.NewRecordQueryInMemorySortPlan(inner, nil)
+	}))
+	sortPlan := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(inner, nil))
 
 	cursor, err := ExecutePlan(ctx, sortPlan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -444,13 +509,15 @@ func TestExecuteUnion_ConcatenatesInners(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	a := plans.NewRecordQueryValuesPlan([]values.Value{
-		&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
-	b := plans.NewRecordQueryValuesPlan([]values.Value{
-		&values.ConstantValue{Value: int64(2), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
-	union := plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{a, b})
+	a := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+		Value: []any{int64(1)},
+		Typ:   values.NewArrayType(false, values.NullableLong),
+	}))
+	b := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+		Value: []any{int64(2)},
+		Typ:   values.NewArrayType(false, values.NullableLong),
+	}))
+	union := mustExecutorConstruct(plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{a, b}))
 
 	cursor, err := ExecutePlan(ctx, union, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -467,24 +534,18 @@ func TestExecuteUnion_ConcatenatesInners(t *testing.T) {
 	}
 }
 
-func TestExecuteUnion_Empty(t *testing.T) {
+func TestExecuteUnion_EmptyRejectedAtConstruction(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
 
-	union := plans.NewRecordQueryUnionPlan(nil)
-
-	cursor, err := ExecutePlan(ctx, union, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
-	if err != nil {
-		t.Fatalf("ExecutePlan: %v", err)
+	union, err := plans.NewRecordQueryUnionPlan(nil)
+	if err == nil {
+		t.Fatal("empty union construction unexpectedly succeeded")
 	}
-	defer cursor.Close()
-
-	results, err := CollectAll(ctx, cursor)
-	if err != nil {
-		t.Fatalf("CollectAll: %v", err)
+	if union != nil {
+		t.Fatalf("empty union returned partial plan %#v alongside error %v", union, err)
 	}
-	if len(results) != 0 {
-		t.Fatalf("got %d results, want 0", len(results))
+	if got := err.Error(); !strings.Contains(got, "at least one input quantifier is required") {
+		t.Fatalf("empty union error = %q, want missing-input diagnostic", got)
 	}
 }
 
@@ -492,13 +553,13 @@ func TestExecuteIntersection_CommonRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	a := plans.NewRecordQueryValuesPlan([]values.Value{
+	a := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(42), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
-	b := plans.NewRecordQueryValuesPlan([]values.Value{
+	}))
+	b := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(42), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
-	intersection := plans.NewRecordQueryIntersectionPlan([]plans.RecordQueryPlan{a, b}, nil)
+	}))
+	intersection := mustExecutorConstruct(plans.NewRecordQueryIntersectionPlan([]plans.RecordQueryPlan{a, b}, nil))
 
 	cursor, err := ExecutePlan(ctx, intersection, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -519,13 +580,19 @@ func TestExecuteIntersection_NoCommonRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	a := plans.NewRecordQueryValuesPlan([]values.Value{
-		&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
-	b := plans.NewRecordQueryValuesPlan([]values.Value{
-		&values.ConstantValue{Value: int64(2), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
-	intersection := plans.NewRecordQueryIntersectionPlan([]plans.RecordQueryPlan{a, b}, nil)
+	mkBranch := func(v int64) plans.RecordQueryPlan {
+		literal := &values.ConstantValue{
+			Value: v,
+			Typ:   values.NewPrimitiveType(values.TypeCodeInt, false),
+		}
+		input := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{literal}))
+		return mustExecutorConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
+			[]values.Value{literal}, []string{"V"}, input,
+		))
+	}
+	a := mkBranch(1)
+	b := mkBranch(2)
+	intersection := mustExecutorConstruct(plans.NewRecordQueryIntersectionPlan([]plans.RecordQueryPlan{a, b}, nil))
 
 	cursor, err := ExecutePlan(ctx, intersection, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -720,8 +787,12 @@ func TestExpressionSortFn(t *testing.T) {
 
 	// dmap lays columns out alphabetically: AGE@0, NAME@1 — the sort key is
 	// BAKED to NAME's slot (no runtime name resolution).
+	rowType := exactTestRowType(
+		values.Field{Name: "AGE", FieldType: values.NullableLong},
+		values.Field{Name: "NAME", FieldType: values.TypeString},
+	)
 	sortFn := expressionSortFn([]expressions.SortKey{
-		{Value: values.NewFieldValueWithResolvedOrdinal("NAME", 1, values.UnknownType)},
+		{Value: mustTestFieldOrdinal(t, mustTestQOV(t, values.UniqueCorrelationIdentifier(), rowType), 1)},
 	})
 	if err := sortFn(items); err != nil {
 		t.Fatalf("sortFn: %v", err)
@@ -740,25 +811,25 @@ func TestExecute_CompositeFilterSortLimitProject(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	inner := plans.NewRecordQueryValuesPlan([]values.Value{
+	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(99), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
+	}))
 
-	filtered := plans.NewRecordQueryFilterPlan(
+	filtered := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		inner,
-	)
+	))
 
-	sorted := plans.NewRecordQueryInMemorySortPlan(filtered, nil)
+	sorted := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(filtered, nil))
 
-	limited := plans.NewRecordQueryLimitPlan(sorted, 10, 0)
+	limited := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(sorted, 10, 0))
 
-	projected := plans.NewRecordQueryProjectionPlan(
+	projected := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
 		[]values.Value{
 			&values.ConstantValue{Value: "result", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
 		},
 		limited,
-	)
+	))
 
 	cursor, err := ExecutePlan(ctx, projected, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -784,20 +855,26 @@ func TestProjection_MultiColumnFieldValue(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	inner := plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+	rowType := exactTestRowType(
+		values.Field{Name: "A", FieldType: values.NullableLong},
+		values.Field{Name: "B", FieldType: values.TypeString},
+		values.Field{Name: "C", FieldType: values.NotNullBoolean},
+	)
+	inner := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
 		Value: []any{
 			map[string]any{"A": int64(1), "B": "hello", "C": true},
 		},
-		Typ: values.UnknownType,
-	})
+		Typ: values.NewArrayType(false, rowType),
+	}))
+	root := inner.GetResultValue()
 
-	projected := plans.NewRecordQueryProjectionPlan(
+	projected := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
 		[]values.Value{
-			values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType),
-			values.NewFieldValueWithResolvedOrdinal("B", 1, values.UnknownType),
+			mustTestFieldOrdinal(t, root, 0),
+			mustTestFieldOrdinal(t, root, 1),
 		},
 		inner,
-	)
+	))
 
 	cursor, err := ExecutePlan(ctx, projected, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -1230,20 +1307,21 @@ func TestParameterBinding_Filter(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	inner := plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+	rowType := exactTestRowType(values.Field{Name: "X", FieldType: values.NullableLong})
+	inner := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
 		Value: []any{
 			map[string]any{"X": int64(10)},
 			map[string]any{"X": int64(20)},
 			map[string]any{"X": int64(30)},
 		},
-		Typ: values.UnknownType,
-	})
+		Typ: values.NewArrayType(false, rowType),
+	}))
 
 	param1 := values.NewParameterValue(1)
-	filter := plans.NewRecordQueryFilterPlan(
+	filter := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType),
+				mustTestFieldOrdinal(t, inner.GetResultValue(), 0),
 				predicates.Comparison{
 					Type:    predicates.ComparisonGreaterThan,
 					Operand: param1,
@@ -1251,7 +1329,7 @@ func TestParameterBinding_Filter(t *testing.T) {
 			),
 		},
 		inner,
-	)
+	))
 
 	evalCtx := EmptyEvaluationContext().WithParams([]any{int64(15)})
 	cursor, err := ExecutePlan(ctx, filter, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
@@ -1279,7 +1357,8 @@ func TestParameterBinding_Values(t *testing.T) {
 	ctx := context.Background()
 
 	param1 := values.NewParameterValue(1)
-	vplan := plans.NewRecordQueryValuesPlan([]values.Value{param1})
+	param1.Typ = values.NullableLong
+	vplan := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{param1}))
 
 	evalCtx := EmptyEvaluationContext().WithParams([]any{int64(99)})
 	cursor, err := ExecutePlan(ctx, vplan, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
@@ -1296,8 +1375,10 @@ func TestParameterBinding_Values(t *testing.T) {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
 	datum, _ := rowMapOK(results[0])
-	if datum["param"] != int64(99) {
-		t.Errorf("param = %v, want 99", datum["param"])
+	declared := vplan.GetResultType().(*values.RecordType)
+	name := declared.Fields[0].Name
+	if datum[name] != int64(99) {
+		t.Errorf("parameter under declared name %q = %v, want 99", name, datum[name])
 	}
 }
 
@@ -1305,14 +1386,18 @@ func TestExecuteNestedLoopJoin_CrossJoin(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	left := plans.NewRecordQueryValuesPlan([]values.Value{
+	left := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
-	right := plans.NewRecordQueryValuesPlan([]values.Value{
+	}))
+	right := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: "hello", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
-	})
+	}))
 
-	join := plans.NewRecordQueryNestedLoopJoinPlan(left, right, nil, plans.JoinCross, values.NamedCorrelationIdentifier(""), values.NamedCorrelationIdentifier(""), nil)
+	join := mustExecutorConstruct(plans.NewRecordQueryNestedLoopJoinPlan(
+		left, right, nil, plans.JoinCross,
+		values.NamedCorrelationIdentifier(""), values.NamedCorrelationIdentifier(""),
+		mustConcatPlanResultQOV(t, left, right),
+	))
 	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -1327,8 +1412,10 @@ func TestExecuteNestedLoopJoin_CrossJoin(t *testing.T) {
 		t.Fatalf("got %d results, want 1 (1×1 cross)", len(results))
 	}
 	row, _ := rowMapOK(results[0])
-	if row["constant"] != "hello" {
-		t.Errorf("constant = %v, want 'hello' (inner overwrites)", row["constant"])
+	rightType := right.GetResultType().(*values.RecordType)
+	rightName := rightType.Fields[0].Name
+	if row[rightName] != "hello" {
+		t.Errorf("right value under declared name %q = %v, want 'hello'", rightName, row[rightName])
 	}
 }
 
@@ -1336,20 +1423,20 @@ func TestExecuteNestedLoopJoin_InnerJoin_WithPredicate(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	left := plans.NewRecordQueryValuesPlan([]values.Value{
+	left := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(5), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
-	right := plans.NewRecordQueryValuesPlan([]values.Value{
+	}))
+	right := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(5), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
+	}))
 
-	join := plans.NewRecordQueryNestedLoopJoinPlan(
+	join := mustExecutorConstruct(plans.NewRecordQueryNestedLoopJoinPlan(
 		left, right,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		plans.JoinInner,
 		values.NamedCorrelationIdentifier(""), values.NamedCorrelationIdentifier(""),
-		nil,
-	)
+		mustConcatPlanResultQOV(t, left, right),
+	))
 	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -1369,20 +1456,20 @@ func TestExecuteNestedLoopJoin_InnerJoin_PredicateRejects(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	left := plans.NewRecordQueryValuesPlan([]values.Value{
+	left := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
-	right := plans.NewRecordQueryValuesPlan([]values.Value{
+	}))
+	right := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(2), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
+	}))
 
-	join := plans.NewRecordQueryNestedLoopJoinPlan(
+	join := mustExecutorConstruct(plans.NewRecordQueryNestedLoopJoinPlan(
 		left, right,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
 		plans.JoinInner,
 		values.NamedCorrelationIdentifier(""), values.NamedCorrelationIdentifier(""),
-		nil,
-	)
+		mustConcatPlanResultQOV(t, left, right),
+	))
 	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -1402,20 +1489,22 @@ func TestExecuteNestedLoopJoin_LeftOuter_NoInnerMatch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	left := plans.NewRecordQueryValuesPlan([]values.Value{
+	left := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
-	right := plans.NewRecordQueryValuesPlan([]values.Value{
+	}))
+	right := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(2), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
+	}))
+	outerAlias := values.NamedCorrelationIdentifier("LEFT_VALUE")
+	innerAlias := values.NamedCorrelationIdentifier("RIGHT_VALUE")
 
-	join := plans.NewRecordQueryNestedLoopJoinPlan(
+	join := mustExecutorConstruct(plans.NewRecordQueryNestedLoopJoinPlan(
 		left, right,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
 		plans.JoinLeftOuter,
-		values.NamedCorrelationIdentifier(""), values.NamedCorrelationIdentifier(""),
-		nil,
-	)
+		outerAlias, innerAlias,
+		mustRetainedJoinResult(t, left, right, outerAlias, innerAlias, plans.JoinLeftOuter),
+	))
 	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -1429,15 +1518,19 @@ func TestExecuteNestedLoopJoin_LeftOuter_NoInnerMatch(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1 (left outer preserves unmatched)", len(results))
 	}
+	if results[0].Positional == nil || len(results[0].Positional.Slots) != 2 ||
+		results[0].Positional.Slots[0] != int64(1) || results[0].Positional.Slots[1] != nil {
+		t.Fatalf("left outer row = %#v, want [1 NULL]", results[0].Positional)
+	}
 }
 
 func TestExecuteStreamingAggregation_CountGroupBy(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	inner := plans.NewRecordQueryValuesPlan([]values.Value{
+	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(42), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
+	}))
 
 	groupKeys := []values.Value{
 		&values.ConstantValue{Value: int64(42), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
@@ -1446,7 +1539,7 @@ func TestExecuteStreamingAggregation_CountGroupBy(t *testing.T) {
 		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)}},
 	}
 
-	plan := plans.NewRecordQueryStreamingAggregationPlan(inner, groupKeys, aggs)
+	plan := mustExecutorConstruct(plans.NewRecordQueryStreamingAggregationPlan(inner, groupKeys, aggs))
 	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -1470,16 +1563,16 @@ func TestExecuteStreamingAggregation_NoGroups_Count(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	inner := plans.NewRecordQueryValuesPlan([]values.Value{
+	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(10), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
+	}))
 
 	aggs := []expressions.AggregateSpec{
 		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)}},
 		{Function: expressions.AggSum, Operand: &values.ConstantValue{Value: int64(10), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)}},
 	}
 
-	plan := plans.NewRecordQueryStreamingAggregationPlan(inner, nil, aggs)
+	plan := mustExecutorConstruct(plans.NewRecordQueryStreamingAggregationPlan(inner, nil, aggs))
 	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -1507,18 +1600,18 @@ func TestExecuteAggregation_EmptyInput_NoGroupKeys(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	inner := plans.NewRecordQueryFilterPlan(
+	inner := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
-		plans.NewRecordQueryValuesPlan([]values.Value{
+		mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 			&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-		}),
-	)
+		})),
+	))
 
 	aggs := []expressions.AggregateSpec{
 		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)}},
 	}
 
-	plan := plans.NewRecordQueryStreamingAggregationPlan(inner, nil, aggs)
+	plan := mustExecutorConstruct(plans.NewRecordQueryStreamingAggregationPlan(inner, nil, aggs))
 	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -1542,9 +1635,12 @@ func TestExecuteExplode_List(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	plan := plans.NewRecordQueryExplodePlan(
-		&values.ConstantValue{Value: []any{int64(1), int64(2), int64(3)}, Typ: values.UnknownType},
-	)
+	plan := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(
+		&values.ConstantValue{
+			Value: []any{int64(1), int64(2), int64(3)},
+			Typ:   values.NewArrayType(false, values.NullableLong),
+		},
+	))
 	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -1569,7 +1665,10 @@ func TestExecuteExplode_Nil(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	plan := plans.NewRecordQueryExplodePlan(values.LiteralValue(nil))
+	plan := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+		Value: nil,
+		Typ:   values.NewArrayType(true, values.NullableLong),
+	}))
 	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -1591,10 +1690,10 @@ func TestExecuteTempTable_InsertAndScan(t *testing.T) {
 	evalCtx := EmptyEvaluationContext()
 	alias := values.NamedCorrelationIdentifier("cte1")
 
-	inner := plans.NewRecordQueryValuesPlan([]values.Value{
+	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(42), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-	})
-	insertPlan := plans.NewRecordQueryTempTableInsertPlan(inner, alias, false)
+	}))
+	insertPlan := mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(inner, alias, false))
 	cursor, err := ExecutePlan(ctx, insertPlan, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("insert: %v", err)
@@ -1606,8 +1705,15 @@ func TestExecuteTempTable_InsertAndScan(t *testing.T) {
 	if len(inserted) != 1 {
 		t.Fatalf("insert returned %d rows, want 1", len(inserted))
 	}
+	declared, ok := inner.GetResultType().(*values.RecordType)
+	if !ok {
+		t.Fatalf("VALUES declared result type = %T, want record", inner.GetResultType())
+	}
+	if inserted[0].Positional == nil || !inserted[0].Positional.Type.Equals(declared) {
+		t.Fatalf("inserted row type = %v, want VALUES declaration %v", inserted[0].Positional, declared)
+	}
 
-	scanPlan := plans.NewRecordQueryTempTableScanPlan(alias)
+	scanPlan := mustTempTableScan(t, evalCtx, alias)
 	cursor2, err := ExecutePlan(ctx, scanPlan, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("scan: %v", err)
@@ -1619,9 +1725,13 @@ func TestExecuteTempTable_InsertAndScan(t *testing.T) {
 	if len(scanned) != 1 {
 		t.Fatalf("scan returned %d rows, want 1", len(scanned))
 	}
+	if scanned[0].Positional == nil || !scanned[0].Positional.Type.Equals(declared) {
+		t.Fatalf("scanned row type = %v, want inserted declaration %v", scanned[0].Positional, declared)
+	}
 	row, _ := rowMapOK(scanned[0])
-	if row["constant"] != int64(42) {
-		t.Errorf("scanned value = %v, want 42", row["constant"])
+	declaredName := declared.Fields[0].Name
+	if row[declaredName] != int64(42) {
+		t.Errorf("scanned value under declared name %q = %v, want 42", declaredName, row[declaredName])
 	}
 }
 
@@ -1631,7 +1741,7 @@ func TestExecuteTempTable_EmptyScan(t *testing.T) {
 	evalCtx := EmptyEvaluationContext()
 	alias := values.NamedCorrelationIdentifier("empty_tt")
 
-	scanPlan := plans.NewRecordQueryTempTableScanPlan(alias)
+	scanPlan := mustExecutorConstruct(plans.NewRecordQueryTempTableScanPlan(alias, exactTestRowType()))
 	cursor, err := ExecutePlan(ctx, scanPlan, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("scan: %v", err)
@@ -1651,22 +1761,22 @@ func TestExecuteTempTable_MultipleInserts(t *testing.T) {
 	evalCtx := EmptyEvaluationContext()
 	alias := values.NamedCorrelationIdentifier("multi")
 
-	for _, val := range []int64{1, 2, 3} {
-		inner := plans.NewRecordQueryValuesPlan([]values.Value{
-			&values.ConstantValue{Value: val, Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-		})
-		insertPlan := plans.NewRecordQueryTempTableInsertPlan(inner, alias, false)
+	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	}))
+	for insertion := 1; insertion <= 3; insertion++ {
+		insertPlan := mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(inner, alias, false))
 		cursor, err := ExecutePlan(ctx, insertPlan, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
-			t.Fatalf("insert %d: %v", val, err)
+			t.Fatalf("insert %d: %v", insertion, err)
 		}
 		_, err = CollectAll(ctx, cursor)
 		if err != nil {
-			t.Fatalf("collect %d: %v", val, err)
+			t.Fatalf("collect %d: %v", insertion, err)
 		}
 	}
 
-	scanPlan := plans.NewRecordQueryTempTableScanPlan(alias)
+	scanPlan := mustTempTableScan(t, evalCtx, alias)
 	cursor, err := ExecutePlan(ctx, scanPlan, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("scan: %v", err)
@@ -1684,9 +1794,12 @@ func TestExecuteTableFunction_StreamValue(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	plan := plans.NewRecordQueryTableFunctionPlan(
-		&values.ConstantValue{Value: []any{int64(10), int64(20)}, Typ: values.UnknownType},
-	)
+	plan := mustExecutorConstruct(plans.NewRecordQueryTableFunctionPlan(
+		&values.ConstantValue{
+			Value: []any{int64(10), int64(20)},
+			Typ:   values.NewArrayType(false, values.NullableLong),
+		},
+	))
 	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -1709,7 +1822,10 @@ func TestExecuteTableFunction_Nil(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	plan := plans.NewRecordQueryTableFunctionPlan(nil)
+	plan := mustExecutorConstruct(plans.NewRecordQueryTableFunctionPlan(&values.ConstantValue{
+		Value: nil,
+		Typ:   values.NewArrayType(true, values.NullableLong),
+	}))
 	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -1755,7 +1871,7 @@ func TestExpressionSortFn_Descending(t *testing.T) {
 	}
 
 	sortFn := expressionSortFn([]expressions.SortKey{
-		{Value: values.NewFieldValueWithResolvedOrdinal("AGE", 0, values.UnknownType), Reverse: true},
+		{Value: mustNamedTestField(t, "AGE", values.NullableLong), Reverse: true},
 	})
 	if err := sortFn(items); err != nil {
 		t.Fatalf("sortFn: %v", err)
@@ -1777,18 +1893,22 @@ func TestRecursiveLevelUnion_SingleLevel(t *testing.T) {
 	scanAlias := values.NamedCorrelationIdentifier("scan")
 	insertAlias := values.NamedCorrelationIdentifier("insert")
 
-	initial := plans.NewRecordQueryTempTableInsertPlan(
-		plans.NewRecordQueryValuesPlan([]values.Value{
-			&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-		}),
+	initial := mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(
+		mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+			Value: []any{int64(1)},
+			Typ:   values.NewArrayType(false, values.NullableLong),
+		})),
 		insertAlias, false,
-	)
-	recursive := plans.NewRecordQueryTempTableInsertPlan(
-		plans.NewRecordQueryExplodePlan(nil),
+	))
+	recursive := mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(
+		mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+			Value: []any{},
+			Typ:   values.NewArrayType(false, values.NullableLong),
+		})),
 		insertAlias, false,
-	)
+	))
 
-	plan := plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias)
+	plan := mustExecutorConstruct(plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias))
 	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -1811,19 +1931,23 @@ func TestRecursiveLevelUnion_EmptyRecursive(t *testing.T) {
 	scanAlias := values.NamedCorrelationIdentifier("scan")
 	insertAlias := values.NamedCorrelationIdentifier("insert")
 
-	initial := plans.NewRecordQueryTempTableInsertPlan(
-		plans.NewRecordQueryValuesPlan([]values.Value{
-			&values.ConstantValue{Value: "root", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
-		}),
+	initial := mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(
+		mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+			Value: []any{"root"},
+			Typ:   values.NewArrayType(false, values.TypeString),
+		})),
 		insertAlias, false,
-	)
+	))
 
-	recursive := plans.NewRecordQueryTempTableInsertPlan(
-		plans.NewRecordQueryExplodePlan(nil),
+	recursive := mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(
+		mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+			Value: []any{},
+			Typ:   values.NewArrayType(false, values.TypeString),
+		})),
 		insertAlias, false,
-	)
+	))
 
-	plan := plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias)
+	plan := mustExecutorConstruct(plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias))
 
 	evalCtx := EmptyEvaluationContext()
 	cursor, err := ExecutePlan(ctx, plan, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
@@ -1845,13 +1969,17 @@ func TestRecursiveDfsJoin_Preorder(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	root := plans.NewRecordQueryValuesPlan([]values.Value{
-		&values.ConstantValue{Value: "A", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
-	})
-	child := plans.NewRecordQueryExplodePlan(nil)
+	root := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+		Value: []any{"A"},
+		Typ:   values.NewArrayType(false, values.TypeString),
+	}))
+	child := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+		Value: []any{},
+		Typ:   values.NewArrayType(false, values.TypeString),
+	}))
 
 	prior := values.NamedCorrelationIdentifier("prior")
-	plan := plans.NewRecordQueryRecursiveDfsJoinPlan(root, child, prior, plans.DfsPreorder)
+	plan := mustExecutorConstruct(plans.NewRecordQueryRecursiveDfsJoinPlan(root, child, prior, plans.DfsPreorder))
 
 	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -1872,13 +2000,17 @@ func TestRecursiveDfsJoin_Postorder(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	root := plans.NewRecordQueryValuesPlan([]values.Value{
-		&values.ConstantValue{Value: "A", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
-	})
-	child := plans.NewRecordQueryExplodePlan(nil)
+	root := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+		Value: []any{"A"},
+		Typ:   values.NewArrayType(false, values.TypeString),
+	}))
+	child := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+		Value: []any{},
+		Typ:   values.NewArrayType(false, values.TypeString),
+	}))
 
 	prior := values.NamedCorrelationIdentifier("prior")
-	plan := plans.NewRecordQueryRecursiveDfsJoinPlan(root, child, prior, plans.DfsPostorder)
+	plan := mustExecutorConstruct(plans.NewRecordQueryRecursiveDfsJoinPlan(root, child, prior, plans.DfsPostorder))
 
 	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -2740,7 +2872,7 @@ func TestToFloat64_Nil(t *testing.T) {
 
 func TestAggKeyName_FieldValue(t *testing.T) {
 	t.Parallel()
-	fv := &values.FieldValue{Field: "status", Typ: values.TypeString}
+	fv := mustNamedTestField(t, "status", values.TypeString)
 	if got := aggKeyName(fv); got != "STATUS" {
 		t.Fatalf("expected STATUS, got %s", got)
 	}
@@ -2761,8 +2893,9 @@ func TestAggKeyName_NonFieldValue(t *testing.T) {
 func TestAggResultName_Count(t *testing.T) {
 	t.Parallel()
 	agg := expressions.AggregateSpec{
-		Function: expressions.AggCount,
-		Operand:  &values.FieldValue{Field: "id", Typ: values.NullableLong},
+		Function:    expressions.AggCount,
+		Operand:     mustNamedTestField(t, "id", values.NullableLong),
+		OperandName: "id",
 	}
 	if got := aggResultName(agg); got != "COUNT(ID)" {
 		t.Fatalf("expected COUNT(ID), got %s", got)
@@ -2772,8 +2905,9 @@ func TestAggResultName_Count(t *testing.T) {
 func TestAggResultName_Sum(t *testing.T) {
 	t.Parallel()
 	agg := expressions.AggregateSpec{
-		Function: expressions.AggSum,
-		Operand:  &values.FieldValue{Field: "price", Typ: values.NullableLong},
+		Function:    expressions.AggSum,
+		Operand:     mustNamedTestField(t, "price", values.NullableLong),
+		OperandName: "price",
 	}
 	if got := aggResultName(agg); got != "SUM(PRICE)" {
 		t.Fatalf("expected SUM(PRICE), got %s", got)
@@ -2783,8 +2917,9 @@ func TestAggResultName_Sum(t *testing.T) {
 func TestAggResultName_Min(t *testing.T) {
 	t.Parallel()
 	agg := expressions.AggregateSpec{
-		Function: expressions.AggMin,
-		Operand:  &values.FieldValue{Field: "price", Typ: values.NullableLong},
+		Function:    expressions.AggMin,
+		Operand:     mustNamedTestField(t, "price", values.NullableLong),
+		OperandName: "price",
 	}
 	if got := aggResultName(agg); got != "MIN(PRICE)" {
 		t.Fatalf("expected MIN(PRICE), got %s", got)
@@ -2794,8 +2929,9 @@ func TestAggResultName_Min(t *testing.T) {
 func TestAggResultName_Max(t *testing.T) {
 	t.Parallel()
 	agg := expressions.AggregateSpec{
-		Function: expressions.AggMax,
-		Operand:  &values.FieldValue{Field: "price", Typ: values.NullableLong},
+		Function:    expressions.AggMax,
+		Operand:     mustNamedTestField(t, "price", values.NullableLong),
+		OperandName: "price",
 	}
 	if got := aggResultName(agg); got != "MAX(PRICE)" {
 		t.Fatalf("expected MAX(PRICE), got %s", got)
@@ -2805,8 +2941,9 @@ func TestAggResultName_Max(t *testing.T) {
 func TestAggResultName_Avg(t *testing.T) {
 	t.Parallel()
 	agg := expressions.AggregateSpec{
-		Function: expressions.AggAvg,
-		Operand:  &values.FieldValue{Field: "price", Typ: values.NullableLong},
+		Function:    expressions.AggAvg,
+		Operand:     mustNamedTestField(t, "price", values.NullableLong),
+		OperandName: "price",
 	}
 	if got := aggResultName(agg); got != "AVG(PRICE)" {
 		t.Fatalf("expected AVG(PRICE), got %s", got)
@@ -2824,8 +2961,9 @@ func TestAggResultName_NilOperand(t *testing.T) {
 func TestAggResultName_UnknownFunction(t *testing.T) {
 	t.Parallel()
 	agg := expressions.AggregateSpec{
-		Function: expressions.AggregateFunction(99),
-		Operand:  &values.FieldValue{Field: "x", Typ: values.NullableLong},
+		Function:    expressions.AggregateFunction(99),
+		Operand:     mustNamedTestField(t, "x", values.NullableLong),
+		OperandName: "x",
 	}
 	if got := aggResultName(agg); got != "AGG(X)" {
 		t.Fatalf("expected AGG(X), got %s", got)
@@ -2999,9 +3137,14 @@ func TestIntersectionCompKeyFunc_NoKeyVals_NoPK(t *testing.T) {
 func TestIntersectionCompKeyFunc_WithKeyVals(t *testing.T) {
 	t.Parallel()
 	qr := dmap(map[string]any{"NAME": "alice", "AGE": int64(30)})
+	rowType := exactTestRowType(
+		values.Field{Name: "AGE", FieldType: values.NullableLong},
+		values.Field{Name: "NAME", FieldType: values.TypeString},
+	)
+	root := mustTestQOV(t, values.UniqueCorrelationIdentifier(), rowType)
 	keyVals := []values.Value{
-		values.NewFieldValueWithResolvedOrdinal("NAME", 1, values.TypeString),
-		values.NewFieldValueWithResolvedOrdinal("AGE", 0, values.NullableLong),
+		mustTestFieldOrdinal(t, root, 1),
+		mustTestFieldOrdinal(t, root, 0),
 	}
 	fn := intersectionCompKeyFunc(keyVals)
 	got, err := fn(qr)
@@ -3327,7 +3470,7 @@ func TestPassesJoinPredicates_MatchingPredicate(t *testing.T) {
 	t.Parallel()
 	qr := dmap(map[string]any{"PRICE": int64(100)})
 	pred := predicates.NewComparisonPredicate(
-		values.NewFieldValueWithResolvedOrdinal("PRICE", 0, values.NullableLong),
+		mustNamedTestField(t, "PRICE", values.NullableLong),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(100)),
 	)
 	ok, err := passesJoinPredicatesLegs(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext(), nil)
@@ -3343,7 +3486,7 @@ func TestPassesJoinPredicates_NonMatchingPredicate(t *testing.T) {
 	t.Parallel()
 	qr := dmap(map[string]any{"PRICE": int64(100)})
 	pred := predicates.NewComparisonPredicate(
-		values.NewFieldValueWithResolvedOrdinal("PRICE", 0, values.NullableLong),
+		mustNamedTestField(t, "PRICE", values.NullableLong),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(999)),
 	)
 	ok, err := passesJoinPredicatesLegs(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext(), nil)
@@ -3355,12 +3498,12 @@ func TestPassesJoinPredicates_NonMatchingPredicate(t *testing.T) {
 	}
 }
 
-// --- projectionColumnName unit tests ---
+// --- shared ProjectionColumnName contract tests ---
 
 func TestProjectionColumnName_FieldValue(t *testing.T) {
 	t.Parallel()
-	fv := &values.FieldValue{Field: "MY_COL", Typ: values.TypeString}
-	if got := projectionColumnName(fv); got != "MY_COL" {
+	fv := mustNamedTestField(t, "MY_COL", values.TypeString)
+	if got := values.ProjectionColumnName(fv); got != "MY_COL" {
 		t.Fatalf("expected MY_COL, got %s", got)
 	}
 }
@@ -3369,7 +3512,7 @@ func TestProjectionColumnName_NonFieldValue(t *testing.T) {
 	t.Parallel()
 	cv := &values.ConstantValue{Value: int64(42), Typ: values.NullableLong}
 	want := strings.ToUpper(values.ExplainValue(cv))
-	if got := projectionColumnName(cv); got != want {
+	if got := values.ProjectionColumnName(cv); got != want {
 		t.Fatalf("expected %s, got %s", want, got)
 	}
 }
@@ -3481,7 +3624,7 @@ func TestEvaluationContext_RowContext_CorrelationBinding(t *testing.T) {
 	if !ok || v != int64(42) {
 		t.Fatalf("expected correlation binding 42, got %v (ok=%v)", v, ok)
 	}
-	qov := values.NewQuantifiedObjectValue(id)
+	qov := mustTestQOV(t, id, values.NullableLong)
 	result, err := qov.Evaluate(rc)
 	if err != nil {
 		t.Fatalf("QOV.Evaluate(RowEvalContext) error: %v", err)
@@ -3585,8 +3728,14 @@ func TestExpressionSortFn_MultipleKeys(t *testing.T) {
 		dmap(map[string]any{"A": int64(1), "B": int64(1)}),
 	}
 	sortFn := expressionSortFn([]expressions.SortKey{
-		{Value: values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType)},
-		{Value: values.NewFieldValueWithResolvedOrdinal("B", 1, values.UnknownType)},
+		{Value: mustTestFieldOrdinal(t, mustTestQOV(t, values.UniqueCorrelationIdentifier(), exactTestRowType(
+			values.Field{Name: "A", FieldType: values.NullableLong},
+			values.Field{Name: "B", FieldType: values.NullableLong},
+		)), 0)},
+		{Value: mustTestFieldOrdinal(t, mustTestQOV(t, values.UniqueCorrelationIdentifier(), exactTestRowType(
+			values.Field{Name: "A", FieldType: values.NullableLong},
+			values.Field{Name: "B", FieldType: values.NullableLong},
+		)), 1)},
 	})
 	if err := sortFn(items); err != nil {
 		t.Fatalf("sortFn: %v", err)
@@ -4148,13 +4297,19 @@ func TestMergeRows_DerivedTableAlias(t *testing.T) {
 	t.Parallel()
 
 	// Derived table output: (SELECT ida AS x FROM a) AS sq1 -> row {IDA, X}.
-	outer := dmap(map[string]any{
-		"IDA": int64(1),
-		"X":   int64(1),
-	})
-	inner := dmap(map[string]any{
-		"IDB": int64(4),
-	})
+	outer := QueryResult{Positional: &PositionalRow{
+		Type: exactTestRowType(
+			values.Field{Name: "IDA", FieldType: values.NullableLong},
+			values.Field{Name: "X", FieldType: values.NullableLong},
+		),
+		Slots: []any{int64(1), int64(1)},
+	}}
+	inner := QueryResult{Positional: &PositionalRow{
+		Type: exactTestRowType(
+			values.Field{Name: "IDB", FieldType: values.NullableLong},
+		),
+		Slots: []any{int64(4)},
+	}}
 
 	merged := mergeRows(outer, inner, values.NamedCorrelationIdentifier("SQ1"), values.NamedCorrelationIdentifier("B"))
 	// Qualified reads resolve leg-locally through the alias windows (a baked
@@ -4250,7 +4405,7 @@ func TestMergeSortCursor_TwoSortedInputs(t *testing.T) {
 		qr("id", int64(6)),
 	})
 
-	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.NullableLong)
+	compKey := mustNamedTestField(t, "id", values.NullableLong)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -4288,7 +4443,7 @@ func TestMergeSortCursor_Deduplication(t *testing.T) {
 		qr("id", int64(4)),
 	})
 
-	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.NullableLong)
+	compKey := mustNamedTestField(t, "id", values.NullableLong)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -4327,7 +4482,7 @@ func TestMergeSortCursor_Reverse(t *testing.T) {
 		qr("id", int64(2)),
 	})
 
-	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.NullableLong)
+	compKey := mustNamedTestField(t, "id", values.NullableLong)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -4356,7 +4511,7 @@ func TestMergeSortCursor_EmptyInputs(t *testing.T) {
 	left := recordlayer.FromList([]QueryResult{})
 	right := recordlayer.FromList([]QueryResult{})
 
-	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.NullableLong)
+	compKey := mustNamedTestField(t, "id", values.NullableLong)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -4375,7 +4530,7 @@ func TestMergeSortCursor_ZeroCursors(t *testing.T) {
 	t.Parallel()
 
 	// No cursors at all.
-	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.NullableLong)
+	compKey := mustNamedTestField(t, "id", values.NullableLong)
 	c := newMergeSortCursor(
 		nil,
 		[]values.Value{compKey},
@@ -4400,7 +4555,7 @@ func TestMergeSortCursor_SingleInputPassthrough(t *testing.T) {
 		qr("id", int64(30)),
 	})
 
-	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.NullableLong)
+	compKey := mustNamedTestField(t, "id", values.NullableLong)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{input},
 		[]values.Value{compKey},
@@ -4451,7 +4606,7 @@ func TestMergeSortCursor_NullComparisonKeys(t *testing.T) {
 		qr("id", nil),
 	})
 
-	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.NullableLong)
+	compKey := mustNamedTestField(t, "id", values.NullableLong)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -4501,7 +4656,7 @@ func TestMergeSortCursor_UnequalLengthInputs(t *testing.T) {
 		qr("id", int64(7)),
 	})
 
-	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.NullableLong)
+	compKey := mustNamedTestField(t, "id", values.NullableLong)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -4539,7 +4694,7 @@ func TestMergeSortCursor_DedupWithAllDuplicates(t *testing.T) {
 		qr("id", int64(3)),
 	})
 
-	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.NullableLong)
+	compKey := mustNamedTestField(t, "id", values.NullableLong)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -4583,7 +4738,7 @@ func TestMergeSortCursor_DedupTieBreak_PicksOrigIndexLeastLeg(t *testing.T) {
 		qr("id", int64(5), "tag", "B"),
 	})
 
-	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.NullableLong)
+	compKey := mustNamedTestField(t, "id", values.NullableLong)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{legA, legB},
 		[]values.Value{compKey},
@@ -4627,7 +4782,7 @@ func TestMergeSortCursor_ThreeInputs(t *testing.T) {
 		qr("id", int64(9)),
 	})
 
-	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.NullableLong)
+	compKey := mustNamedTestField(t, "id", values.NullableLong)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{a, b, ch},
 		[]values.Value{compKey},
@@ -4665,8 +4820,14 @@ func TestMergeSortCursor_MultipleComparisonKeys(t *testing.T) {
 	})
 
 	compKeys := []values.Value{
-		values.NewFieldValueWithResolvedOrdinal("group", 0, values.NullableLong),
-		values.NewFieldValueWithResolvedOrdinal("id", 1, values.NullableLong),
+		mustTestFieldOrdinal(t, mustTestQOV(t, values.UniqueCorrelationIdentifier(), exactTestRowType(
+			values.Field{Name: "group", FieldType: values.NullableLong},
+			values.Field{Name: "id", FieldType: values.NullableLong},
+		)), 0),
+		mustTestFieldOrdinal(t, mustTestQOV(t, values.UniqueCorrelationIdentifier(), exactTestRowType(
+			values.Field{Name: "group", FieldType: values.NullableLong},
+			values.Field{Name: "id", FieldType: values.NullableLong},
+		)), 1),
 	}
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
@@ -4704,7 +4865,7 @@ func TestMergeSortCursor_OneEmptyOneNonEmpty(t *testing.T) {
 		qr("id", int64(2)),
 	})
 
-	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.NullableLong)
+	compKey := mustNamedTestField(t, "id", values.NullableLong)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -4738,7 +4899,7 @@ func TestMergeSortCursor_StringComparisonKeys(t *testing.T) {
 		qr("name", "dave"),
 	})
 
-	compKey := values.NewFieldValueWithResolvedOrdinal("name", 0, values.TypeString)
+	compKey := mustNamedTestField(t, "name", values.TypeString)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -4765,7 +4926,7 @@ func TestMergeSortCursor_CloseIdempotent(t *testing.T) {
 	t.Parallel()
 
 	input := recordlayer.FromList([]QueryResult{qr("id", int64(1))})
-	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.NullableLong)
+	compKey := mustNamedTestField(t, "id", values.NullableLong)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{input},
 		[]values.Value{compKey},
@@ -4803,7 +4964,7 @@ func TestMergeSortCursor_ReverseDedup(t *testing.T) {
 		qr("id", int64(2)),
 	})
 
-	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.NullableLong)
+	compKey := mustNamedTestField(t, "id", values.NullableLong)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -4854,7 +5015,7 @@ func TestAggregateContinuation_RoundTrip_SumCount(t *testing.T) {
 	t.Parallel()
 
 	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggSum, Operand: values.NewFlatFieldValue("amount", values.NullableLong)},
+		{Function: expressions.AggSum, Operand: mustNamedTestField(t, "amount", values.NullableLong)},
 		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: nil}}, // COUNT(*)
 	}
 
@@ -4953,7 +5114,7 @@ func TestAggregateContinuation_FloatMinMax(t *testing.T) {
 	t.Parallel()
 
 	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggMin, Operand: values.NewFlatFieldValue("price", values.NullableDouble)},
+		{Function: expressions.AggMin, Operand: mustNamedTestField(t, "price", values.NullableDouble)},
 	}
 	gs := &groupState{
 		keyVals: []any{"x"},
@@ -5043,8 +5204,8 @@ func TestAggregateContinuation_TypesPreserved_F5(t *testing.T) {
 
 	bigInt := int64(1<<60 + 1) // 1152921504606846977 — not representable in float64
 	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggMin, Operand: values.NewFlatFieldValue("v", values.NullableLong)},
-		{Function: expressions.AggMax, Operand: values.NewFlatFieldValue("w", values.NullableDouble)},
+		{Function: expressions.AggMin, Operand: mustNamedTestField(t, "v", values.NullableLong)},
+		{Function: expressions.AggMax, Operand: mustNamedTestField(t, "w", values.NullableDouble)},
 	}
 	gs := &groupState{
 		keyVals: []any{[]byte{1, 2}, float64(2.0), bigInt},
@@ -5476,11 +5637,11 @@ func TestUnorderedUnionCursor_CloseIdempotent(t *testing.T) {
 func TestExecuteUnorderedUnion_SingleChildKeepsSkipLimit(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	plan := plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{
-		plans.NewRecordQueryValuesPlan([]values.Value{
+	plan := mustExecutorConstruct(plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{
+		mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 			&values.ConstantValue{Value: int64(7), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-		}),
-	})
+		})),
+	}))
 	props := recordlayer.DefaultExecuteProperties().WithSkip(1)
 	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, props)
 	if err != nil {
@@ -5684,7 +5845,7 @@ func TestSortCursor_SortsCorrectly(t *testing.T) {
 
 	// qr/dmap lays columns out alphabetically: AGE@0, NAME@1.
 	c := newCustomSortCursor(inner, expressionSortFn([]expressions.SortKey{
-		{Value: values.NewFieldValueWithResolvedOrdinal("AGE", 0, values.UnknownType)},
+		{Value: mustNamedTestField(t, "AGE", values.NullableLong)},
 	}), nil) // ASC
 	defer c.Close()
 
@@ -5711,7 +5872,7 @@ func TestSortCursor_SortsDescending(t *testing.T) {
 	})
 
 	c := newCustomSortCursor(inner, expressionSortFn([]expressions.SortKey{
-		{Value: values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType), Reverse: true},
+		{Value: mustNamedTestField(t, "X", values.NullableLong), Reverse: true},
 	}), nil) // DESC
 	defer c.Close()
 
@@ -5741,29 +5902,37 @@ func TestSortCursor_EmptyInput(t *testing.T) {
 	}
 }
 
-// TestSortCursor_UnbakedKeyIsLoud pins the correct-or-loud contract on the
-// sort path: a LAZY sort key (no plan-time ordinal) cannot resolve against
-// the positional row and must surface a loud OrdinalResolutionError — never a
-// silent name read or a silent NULL ordering.
-func TestSortCursor_UnbakedKeyIsLoud(t *testing.T) {
+// TestSortCursor_DeclaredOrdinalMissingIsLoud pins the correct-or-loud
+// contract on the sort path after RFC-232 made an unbaked FieldValue
+// unrepresentable. The exact field is declared at ordinal 1, while the runtime
+// row has only ordinal 0. A name fallback could still find X and silently sort;
+// the sealed layout evaluator must instead report the runtime-shape mismatch.
+func TestSortCursor_DeclaredOrdinalMissingIsLoud(t *testing.T) {
 	t.Parallel()
 
 	inner := recordlayer.FromList([]QueryResult{
 		qr("X", int64(1)),
 		qr("X", int64(2)),
 	})
-	c := newCustomSortCursor(inner, expressionSortFn([]expressions.SortKey{
-		{Value: values.NewFlatFieldValue("X", values.UnknownType)},
-	}), nil)
+	declared := exactTestRowType(
+		values.Field{Name: "Y", FieldType: values.NullableLong},
+		values.Field{Name: "X", FieldType: values.NullableLong},
+	)
+	key := mustTestFieldOrdinal(t,
+		mustTestQOV(t, values.UniqueCorrelationIdentifier(), declared), 1)
+	c := newCustomSortCursor(inner, expressionSortFn([]expressions.SortKey{{Value: key}}), nil)
 	defer c.Close()
 
 	_, err := c.OnNext(context.Background())
 	if err == nil {
-		t.Fatal("expected a loud error for an unbaked sort key")
+		t.Fatal("expected a loud error for a missing declared ordinal")
 	}
-	var ore *values.OrdinalResolutionError
-	if !errors.As(err, &ore) {
-		t.Fatalf("expected *values.OrdinalResolutionError, got %T: %v", err, err)
+	var resolutionErr *values.ResolutionError
+	if !errors.As(err, &resolutionErr) {
+		t.Fatalf("expected *values.ResolutionError, got %T: %v", err, err)
+	}
+	if resolutionErr.Code() != values.LayoutRuntimeShape {
+		t.Fatalf("resolution error code = %v, want LayoutRuntimeShape: %v", resolutionErr.Code(), err)
 	}
 }
 
@@ -5817,7 +5986,7 @@ func TestAggregateCursor_ScalarOnEmpty(t *testing.T) {
 	}
 
 	// The default row itself: the OrElse alternative's single-row payload.
-	m, _ := rowMapOK(emptyScalarAggregateRow(aggs))
+	m, _ := rowMapOK(emptyScalarAggregateRow(aggs, nil))
 	if m["COUNT(*)"] != int64(0) {
 		t.Errorf("COUNT(*) default row = %v, want 0", m["COUNT(*)"])
 	}
@@ -5834,9 +6003,18 @@ func TestAggregateCursor_GroupedSum(t *testing.T) {
 		qr("dept", "B", "amount", int64(30)),
 	})
 
-	groupKeys := []values.Value{values.NewFieldValueWithResolvedOrdinal("dept", 1, values.TypeString)}
+	rowType := exactTestRowType(
+		values.Field{Name: "amount", FieldType: values.NullableLong},
+		values.Field{Name: "dept", FieldType: values.TypeString},
+	)
+	root := mustTestQOV(t, values.UniqueCorrelationIdentifier(), rowType)
+	groupKeys := []values.Value{mustTestFieldOrdinal(t, root, 1)}
 	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("amount", 0, values.NullableLong)},
+		{
+			Function:    expressions.AggSum,
+			Operand:     mustTestFieldOrdinal(t, root, 0),
+			OperandName: "amount",
+		},
 	}
 	c := newAggregateCursor(inner, groupKeys, aggs, nil, nil)
 	defer c.Close()
@@ -5893,7 +6071,7 @@ func TestCustomSortCursor_ReverseSort(t *testing.T) {
 	})
 
 	sortFn := expressionSortFn([]expressions.SortKey{
-		{Value: values.NewFieldValueWithResolvedOrdinal("N", 0, values.UnknownType), Reverse: true},
+		{Value: mustNamedTestField(t, "N", values.NullableLong), Reverse: true},
 	})
 	c := newCustomSortCursor(inner, sortFn, nil)
 	defer c.Close()
@@ -6137,11 +6315,16 @@ func TestExecuteUnorderedUnion_ResumeContract(t *testing.T) {
 	ctx := context.Background()
 
 	mkValues := func(v int64) plans.RecordQueryPlan {
-		return plans.NewRecordQueryValuesPlan([]values.Value{
-			&values.ConstantValue{Value: v, Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-		})
+		literal := &values.ConstantValue{
+			Value: v,
+			Typ:   values.NewPrimitiveType(values.TypeCodeInt, false),
+		}
+		input := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{literal}))
+		return mustExecutorConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
+			[]values.Value{literal}, []string{"V"}, input,
+		))
 	}
-	plan := plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{mkValues(1), mkValues(2)})
+	plan := mustExecutorConstruct(plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{mkValues(1), mkValues(2)}))
 
 	// Fresh start (nil continuation) executes and yields both branches' rows.
 	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -6221,17 +6404,22 @@ func TestRecursiveResume_CorruptTokensFailLoudly(t *testing.T) {
 	scanAlias := values.NamedCorrelationIdentifier("scan")
 	insertAlias := values.NamedCorrelationIdentifier("insert")
 	mkPlan := func() *plans.RecordQueryRecursiveLevelUnionPlan {
-		initial := plans.NewRecordQueryTempTableInsertPlan(
-			plans.NewRecordQueryValuesPlan([]values.Value{
-				&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
-			}),
+		elementType := values.NullableLong
+		initial := mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(
+			mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+				Value: []any{int64(1)},
+				Typ:   values.NewArrayType(false, elementType),
+			})),
 			insertAlias, false,
-		)
-		recursive := plans.NewRecordQueryTempTableInsertPlan(
-			plans.NewRecordQueryExplodePlan(nil),
+		))
+		recursive := mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(
+			mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+				Value: []any{},
+				Typ:   values.NewArrayType(false, elementType),
+			})),
 			insertAlias, false,
-		)
-		return plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias)
+		))
+		return mustExecutorConstruct(plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias))
 	}
 
 	// A mid-stream list-index token from a prior page (4 bytes) — exactly
@@ -6248,8 +6436,8 @@ func TestRecursiveResume_CorruptTokensFailLoudly(t *testing.T) {
 	// The DISTINCT extension resumes by position-replay; its token is the
 	// lossless-codec {position, boundary row} pair — the same foreign
 	// bytes fail its decode as the same typed parse error.
-	distinct := plans.NewRecordQueryRecursiveLevelUnionPlanDistinct(
-		mkPlan().GetInitialState(), mkPlan().GetRecursiveState(), scanAlias, insertAlias)
+	distinct := mustExecutorConstruct(plans.NewRecordQueryRecursiveLevelUnionPlanDistinct(
+		mkPlan().GetInitialState(), mkPlan().GetRecursiveState(), scanAlias, insertAlias))
 	_, err = ExecutePlan(ctx, distinct, nil, EmptyEvaluationContext(), fakeToken, recordlayer.DefaultExecuteProperties())
 	if !errors.As(err, &parseErr) {
 		t.Fatalf("a corrupt token on a DISTINCT recursive CTE must fail loudly with ContinuationParseError, got %v", err)
@@ -6257,7 +6445,7 @@ func TestRecursiveResume_CorruptTokensFailLoudly(t *testing.T) {
 
 	// The DFS twin streams via the RecursiveCursor port; its token is the
 	// RecursiveContinuation proto — foreign bytes fail the parse.
-	dfs := plans.NewRecordQueryRecursiveDfsJoinPlan(mkPlan().GetInitialState(), mkPlan().GetRecursiveState(), scanAlias, plans.DfsPreorder)
+	dfs := mustExecutorConstruct(plans.NewRecordQueryRecursiveDfsJoinPlan(mkPlan().GetInitialState(), mkPlan().GetRecursiveState(), scanAlias, plans.DfsPreorder))
 	_, err = ExecutePlan(ctx, dfs, nil, EmptyEvaluationContext(), fakeToken, recordlayer.DefaultExecuteProperties())
 	if !errors.As(err, &parseErr) {
 		t.Fatalf("a corrupt token on a recursive DFS join must fail loudly with ContinuationParseError, got %v", err)
@@ -6286,8 +6474,8 @@ func (p *unsupportedTestPlan) EqualsWithoutChildren(other expressions.Relational
 	return ok && p.EqualsPlanWithoutChildren(o)
 }
 
-func (p *unsupportedTestPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+func (p *unsupportedTestPlan) WithQuantifiers(_ []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	return p, nil
 }
 
 // TestCTEDedupKeyer_DuplicatedColumnRefuses pins the split between the two ways

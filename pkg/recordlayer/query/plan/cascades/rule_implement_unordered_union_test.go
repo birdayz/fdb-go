@@ -16,10 +16,10 @@ import (
 func TestImplementUnorderedUnionRule_MatchesLogicalUnionExpression(t *testing.T) {
 	t.Parallel()
 	rule := NewImplementUnorderedUnionRule()
-	scanRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil))
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	scanRef := expressions.InitialOf(unionRuleFullScan("T"))
+	union := mustUnionRuleConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
 		expressions.ForEachQuantifier(scanRef),
-	})
+	}))
 
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), union)
 	if len(bindings) == 0 {
@@ -38,14 +38,16 @@ func TestPhysicalPlanColumnNames_StreamingAggNotUnwrapped(t *testing.T) {
 	t.Parallel()
 	// StreamingAgg over a Project whose output column is [P] — the pre-aggregation
 	// input name that must NOT leak out as the aggregate branch's column name.
-	scan := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	innerProj := plans.NewRecordQueryProjectionPlanWithAliases(
-		[]values.Value{&values.FieldValue{Field: "V"}}, []string{"P"}, scan,
-	)
-	agg := plans.NewRecordQueryStreamingAggregationPlan(
+	scan := unionRulePlanScan("A")
+	root := mustUnionRuleQOV(scan.GetResultValue())
+	projected := mustUnionRuleConstruct(values.ResolveFieldOrdinals(root, []int{1}))
+	innerProj := mustUnionRuleConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{projected}, []string{"P"}, scan,
+	))
+	agg := mustUnionRuleConstruct(plans.NewRecordQueryStreamingAggregationPlan(
 		innerProj, nil,
-		[]expressions.AggregateSpec{{Function: expressions.AggSum, Alias: "X"}},
-	)
+		[]expressions.AggregateSpec{{Function: expressions.AggCount, Alias: "X"}},
+	))
 	if got := physicalPlanColumnNames(agg); got != nil {
 		t.Fatalf("physicalPlanColumnNames(StreamingAgg) must NOT unwrap to inner names; got %v, want nil", got)
 	}
@@ -54,8 +56,9 @@ func TestPhysicalPlanColumnNames_StreamingAggNotUnwrapped(t *testing.T) {
 func TestImplementUnorderedUnionRule_SkipsNonMatching(t *testing.T) {
 	t.Parallel()
 	rule := NewImplementUnorderedUnionRule()
-	scanRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil))
-	filter := expressions.NewLogicalFilterExpression(nil, expressions.ForEachQuantifier(scanRef))
+	scanRef := expressions.InitialOf(unionRuleFullScan("T"))
+	filter := mustUnionRuleConstruct(expressions.NewLogicalFilterExpression(
+		nil, expressions.ForEachQuantifier(scanRef)))
 
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), filter)
 	if len(bindings) != 0 {
@@ -66,8 +69,9 @@ func TestImplementUnorderedUnionRule_SkipsNonMatching(t *testing.T) {
 func TestImplementUnorderedUnionRule_SkipsLogicalUniqueExpression(t *testing.T) {
 	t.Parallel()
 	rule := NewImplementUnorderedUnionRule()
-	scanRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil))
-	unique := expressions.NewLogicalUniqueExpression(expressions.ForEachQuantifier(scanRef))
+	scanRef := expressions.InitialOf(unionRuleFullScan("T"))
+	unique := mustUnionRuleConstruct(expressions.NewLogicalUniqueExpression(
+		expressions.ForEachQuantifier(scanRef)))
 
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), unique)
 	if len(bindings) != 0 {
@@ -82,8 +86,8 @@ func TestImplementUnorderedUnionRule_SkipsLogicalUniqueExpression(t *testing.T) 
 func TestImplementUnorderedUnionRule_CreatesUnorderedUnionPlan(t *testing.T) {
 	t.Parallel()
 	// Build two inner references, each holding a bare scan plan.
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
+	scanA := unionRulePlanScan("A")
+	scanB := unionRulePlanScan("B")
 	wA := scanA
 	wB := scanB
 
@@ -98,13 +102,13 @@ func TestImplementUnorderedUnionRule_CreatesUnorderedUnionPlan(t *testing.T) {
 	refB.SetPlanProperties(pmB)
 
 	// Build the logical union over the two refs.
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	union := mustUnionRuleConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
 		expressions.ForEachQuantifier(refA),
 		expressions.ForEachQuantifier(refB),
-	})
+	}))
 	outerRef := expressions.InitialOf(union)
 
-	results := FireImplementationRule(NewImplementUnorderedUnionRule(), outerRef)
+	results := fireUnionImplementationRule(t, NewImplementUnorderedUnionRule(), outerRef)
 	if len(results) == 0 {
 		t.Fatal("ImplementUnorderedUnionRule should yield at least one expression")
 	}
@@ -127,25 +131,21 @@ func TestImplementUnorderedUnionRule_CreatesUnorderedUnionPlan(t *testing.T) {
 
 func TestImplementUnorderedUnionRule_NoYieldForEmptyQuantifiers(t *testing.T) {
 	t.Parallel()
-	union := expressions.NewLogicalUnionExpression(nil)
-	outerRef := expressions.InitialOf(union)
-
-	results := FireImplementationRule(NewImplementUnorderedUnionRule(), outerRef)
-	if len(results) != 0 {
-		t.Fatalf("ImplementUnorderedUnionRule should yield nothing for empty quantifiers, got %d", len(results))
+	if union, err := expressions.NewLogicalUnionExpression(nil); err == nil || union != nil {
+		t.Fatalf("empty logical union = %T, %v; want atomic constructor rejection", union, err)
 	}
 }
 
 func TestImplementUnorderedUnionRule_NoYieldForSingleChildWithNoPhysicalPlans(t *testing.T) {
 	t.Parallel()
 	// Single child ref with only logical expressions (no physical wrappers).
-	logicalRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil))
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	logicalRef := expressions.InitialOf(unionRuleFullScan("T"))
+	union := mustUnionRuleConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
 		expressions.ForEachQuantifier(logicalRef),
-	})
+	}))
 	outerRef := expressions.InitialOf(union)
 
-	results := FireImplementationRule(NewImplementUnorderedUnionRule(), outerRef)
+	results := fireUnionImplementationRule(t, NewImplementUnorderedUnionRule(), outerRef)
 	// With no physical plans in the inner reference, ToPlanPartitions
 	// may return empty and the rule bails.
 	// This is fine — verify no panic.
@@ -256,10 +256,11 @@ func TestPhysicalPlanColumnNames_StopsAtProjection(t *testing.T) {
 		{Name: "ID", FieldType: values.NotNullLong},
 		{Name: "A", FieldType: values.NotNullLong},
 	})
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, innerRow, false)
-	proj := plans.NewRecordQueryProjectionPlanWithAliases(
-		[]values.Value{values.NewFieldValueWithResolvedOrdinal("A", 1, values.NotNullLong)},
-		[]string{"RENAMED"}, scan)
+	scan := mustUnionRuleConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, innerRow, false))
+	root := mustUnionRuleQOV(scan.GetResultValue())
+	field := mustUnionRuleConstruct(values.ResolveFieldOrdinals(root, []int{1}))
+	proj := mustUnionRuleConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{field}, []string{"RENAMED"}, scan))
 
 	got := physicalPlanColumnNames(proj)
 	if len(got) != 1 || got[0] != "RENAMED" {

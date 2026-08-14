@@ -31,7 +31,7 @@ tests:
     error_code: "42701"
   # Multi-column ORDER BY — Go extension: in-memory sort handles this.
   - query: SELECT id, b FROM t ORDER BY b, id
-    plan_contains: "InMemorySort([B ASC, ID ASC], Scan(T))"
+    plan_contains: "InMemorySort([T.B#1 ASC, T.ID#0 ASC], Scan(T))"
     rows:
       - [1, 10]
       - [2, 20]
@@ -42,8 +42,8 @@ tests:
     error_code: "42701"
   # Multi-column ORDER BY with expression — Go extension: in-memory sort.
   - query: SELECT b FROM t ORDER BY b + 1, b + 1
-    plan_contains: "InMemorySort([(B#1 + 1) ASC], Scan(T))"
-    plan_not_contains: "(B#1 + 1) ASC, (B#1 + 1) ASC"
+    plan_contains: "InMemorySort([(T.B#1 + 1) ASC], Scan(T))"
+    plan_not_contains: "(T.B#1 + 1) ASC, (T.B#1 + 1) ASC"
     rows:
       - [10]
       - [20]

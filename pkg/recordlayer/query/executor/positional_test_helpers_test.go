@@ -3,10 +3,161 @@ package executor
 import (
 	"sort"
 	"strings"
+	"testing"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+// mustExecutorConstruct keeps test plan fixtures concise while preserving the
+// production constructor boundary: every fallible constructor still validates
+// exact types/arity, and an invalid fixture fails immediately instead of
+// retaining a partial plan.
+func mustExecutorConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return value
+}
+
+func mustTestQOV(t testing.TB, correlation values.CorrelationIdentifier, flowed values.Type) values.QuantifiedObjectValue {
+	t.Helper()
+	qov, err := values.NewQuantifiedObjectValue(correlation, flowed)
+	if err != nil {
+		t.Fatalf("NewQuantifiedObjectValue(%s): %v", correlation, err)
+	}
+	return qov
+}
+
+func mustTestFieldOrdinal(t testing.TB, child values.Value, ordinal int) values.Value {
+	t.Helper()
+	field, err := values.ResolveFieldOrdinals(child, []int{ordinal})
+	if err != nil {
+		t.Fatalf("ResolveFieldOrdinals(%d): %v", ordinal, err)
+	}
+	return field
+}
+
+// exactTestRowType builds the immutable-source row declaration used by unit
+// fixtures. Callers name every field and its real SQL type; there is no
+// UnknownType filler, so a test cannot accidentally reintroduce the unresolved
+// FieldValue state RFC-232 removes.
+func exactTestRowType(fields ...values.Field) *values.RecordType {
+	copyFields := append([]values.Field(nil), fields...)
+	for i := range copyFields {
+		copyFields[i].Ordinal = i
+	}
+	return &values.RecordType{Fields: copyFields}
+}
+
+func mustTestFieldAt(
+	t testing.TB,
+	root *values.RecordType,
+	ordinal int,
+) values.Value {
+	t.Helper()
+	qov := mustTestQOV(t, values.UniqueCorrelationIdentifier(), root)
+	return mustTestFieldOrdinal(t, qov, ordinal)
+}
+
+func mustNamedTestField(t testing.TB, name string, typ values.Type) values.Value {
+	t.Helper()
+	return mustTestFieldAt(t, exactTestRowType(values.Field{Name: name, FieldType: typ}), 0)
+}
+
+// mustConcatPlanResultQOV declares the exact row a non-build join emits when it
+// concatenates its two child rows. Keeping this type derived from the children
+// makes the fixture follow a changed child shape and preserves duplicate column
+// names, just like concatLegPositionals does at runtime.
+func mustConcatPlanResultQOV(
+	t testing.TB,
+	plansToConcat ...plans.RecordQueryPlan,
+) values.Value {
+	t.Helper()
+	var fields []values.Field
+	for i, plan := range plansToConcat {
+		if plan == nil {
+			t.Fatalf("concat result child %d is nil", i)
+		}
+		recordType, ok := plan.GetResultType().(*values.RecordType)
+		if !ok || recordType == nil {
+			t.Fatalf("concat result child %d type = %T, want exact record", i, plan.GetResultType())
+		}
+		for _, field := range recordType.Fields {
+			fields = append(fields, values.Field{Name: field.Name, FieldType: field.FieldType})
+		}
+	}
+	return mustTestQOV(t, values.UniqueCorrelationIdentifier(), exactTestRowType(fields...))
+}
+
+// mustRetainedJoinResult builds the exact ordinal result program for a join
+// that retains every field of both source rows. Null-supplying source QOVs are
+// widened at the edge before their fields are resolved, so the plan layout and
+// executor build share one nullability authority.
+func mustRetainedJoinResult(
+	t testing.TB,
+	outer, inner plans.RecordQueryPlan,
+	outerAlias, innerAlias values.CorrelationIdentifier,
+	joinType plans.JoinType,
+) values.Value {
+	t.Helper()
+	if !values.SameLeg(outerAlias, outerAlias) || !values.SameLeg(innerAlias, innerAlias) ||
+		values.SameLeg(outerAlias, innerAlias) {
+		t.Fatalf("retained join requires two stated, distinct aliases: outer=%q inner=%q", outerAlias, innerAlias)
+	}
+	outerType, outerOK := outer.GetResultType().(*values.RecordType)
+	innerType, innerOK := inner.GetResultType().(*values.RecordType)
+	if !outerOK || outerType == nil || !innerOK || innerType == nil {
+		t.Fatalf("retained join sources must be exact records: outer=%T inner=%T", outer.GetResultType(), inner.GetResultType())
+	}
+	var outerFlowed values.Type = outerType
+	var innerFlowed values.Type = innerType
+	if joinType == plans.JoinFullOuter {
+		outerFlowed = values.WithNullability(outerFlowed, true)
+	}
+	if joinType == plans.JoinLeftOuter || joinType == plans.JoinFullOuter {
+		innerFlowed = values.WithNullability(innerFlowed, true)
+	}
+	outerSource := mustTestQOV(t, outerAlias, outerFlowed)
+	innerSource := mustTestQOV(t, innerAlias, innerFlowed)
+	fields := make([]values.RecordConstructorField, 0, len(outerType.Fields)+len(innerType.Fields))
+	appendSource := func(source values.QuantifiedObjectValue, typ *values.RecordType) {
+		for ordinal, field := range typ.Fields {
+			resolved, err := values.ResolveOrdinalSeedField(source, ordinal)
+			if err != nil {
+				t.Fatalf("resolve retained join source %s field %d: %v", source.Correlation(), ordinal, err)
+			}
+			fields = append(fields, values.RecordConstructorField{Name: field.Name, Value: resolved})
+		}
+	}
+	appendSource(outerSource, outerType)
+	appendSource(innerSource, innerType)
+	return values.NewRawRecordConstructorValue(fields...)
+}
+
+// mustTempTableScan derives the scan's exact flowed type from the already
+// materialized test table. A mixed or empty table has no honest single result
+// type and fails the fixture instead of introducing an UnknownType escape.
+func mustTempTableScan(
+	t testing.TB,
+	evalCtx *EvaluationContext,
+	alias values.CorrelationIdentifier,
+) *plans.RecordQueryTempTableScanPlan {
+	t.Helper()
+	rows := evalCtx.GetOrCreateTempTable(alias, nil).Snapshot()
+	if len(rows) == 0 || rows[0].Positional == nil || rows[0].Positional.Type == nil {
+		t.Fatalf("temp table %s has no row from which to derive an exact flowed type", alias)
+	}
+	flowed := values.Type(rows[0].Positional.Type)
+	for i := 1; i < len(rows); i++ {
+		if rows[i].Positional == nil || rows[i].Positional.Type == nil ||
+			!flowed.Equals(rows[i].Positional.Type) {
+			t.Fatalf("temp table %s row %d disagrees with exact flowed type %v", alias, i, flowed)
+		}
+	}
+	return mustExecutorConstruct(plans.NewRecordQueryTempTableScanPlan(alias, flowed))
+}
 
 // Test helpers for the executor's ordinal PositionalRow row model — there is
 // no name-keyed map[string]any row in production. These helpers build and
@@ -114,10 +265,23 @@ func legRead(pos *PositionalRow, alias, col string) (any, bool) {
 			if !strings.EqualFold(pos.Type.Fields[k].Name, col) {
 				continue
 			}
-			fv := values.NewCorrelatedFieldValueWithResolvedOrdinal(
-				values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(alias)),
-				col, k-leg.Start, values.UnknownType)
-			v, err := fv.Evaluate(frontierRowContext(pos, nil, false))
+			legType := &values.RecordType{Fields: append([]values.Field(nil), pos.Type.Fields[leg.Start:end]...)}
+			for i := range legType.Fields {
+				legType.Fields[i].Ordinal = i
+			}
+			qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(alias), legType)
+			if err != nil {
+				return nil, false
+			}
+			fv, err := values.ResolveFieldOrdinals(qov, []int{k - leg.Start})
+			if err != nil {
+				return nil, false
+			}
+			rowCtx, err := frontierRowContext(pos, nil, false)
+			if err != nil {
+				return nil, false
+			}
+			v, err := fv.Evaluate(rowCtx)
 			if err != nil {
 				return nil, false
 			}

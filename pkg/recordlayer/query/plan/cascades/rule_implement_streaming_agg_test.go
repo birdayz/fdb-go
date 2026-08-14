@@ -9,27 +9,75 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustStreamingAggConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct streaming-aggregation fixture: " + err.Error())
+	}
+	return value
+}
+
+func streamingAggRowType(recordName string) *values.RecordType {
+	names := []string{"customer_id", "id", "region", "amount", "x", "a", "b", "y", "G", "S"}
+	fields := make([]values.Field, len(names))
+	for i, name := range names {
+		fields[i] = values.Field{Name: name, FieldType: values.NullableLong}
+	}
+	return values.NewRecordType(recordName, false, fields)
+}
+
+func streamingAggLogicalScan(recordName string) *expressions.FullUnorderedScanExpression {
+	return mustStreamingAggConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{recordName}, streamingAggRowType(recordName)))
+}
+
+func streamingAggPhysicalScan(recordName string) *plans.RecordQueryScanPlan {
+	return mustStreamingAggConstruct(plans.NewRecordQueryScanPlan(
+		[]string{recordName}, streamingAggRowType(recordName), false))
+}
+
+func streamingAggField(root values.Value, name string) values.Value {
+	request := mustStreamingAggConstruct(values.FieldByName(name))
+	return mustStreamingAggConstruct(values.ResolveFieldAccess(
+		root, []values.FieldRequest{request}))
+}
+
+func streamingAggQuantifierField(quantifier expressions.Quantifier, name string) values.Value {
+	root := mustStreamingAggConstruct(quantifier.RequireFlowedObjectValue())
+	return streamingAggField(root, name)
+}
+
+func streamingAggMetadataFields(names ...string) []values.Value {
+	root := mustStreamingAggConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("streaming_aggregation_fixture"),
+		streamingAggRowType("T")))
+	fields := make([]values.Value, len(names))
+	for i, name := range names {
+		fields[i] = streamingAggField(root, name)
+	}
+	return fields
+}
+
 func TestImplementStreamingAgg_UnorderedScanFires(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
+	scan := streamingAggLogicalScan("Orders")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	gb := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "customer_id", Typ: values.UnknownType}},
+	gb := mustStreamingAggConstruct(expressions.NewGroupByExpression(
+		[]values.Value{streamingAggQuantifierField(scanQ, "customer_id")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+			{Function: expressions.AggCount, Operand: streamingAggQuantifierField(scanQ, "id")},
 		},
 		scanQ,
-	)
+	))
 	gbRef := expressions.InitialOf(gb)
 
-	FireExpressionRule(NewPrimaryScanRule(), scanRef)
+	mustFireExpressionRule(t, NewPrimaryScanRule(), scanRef)
 
 	// Streaming agg is the only aggregation implementation, so it fires
 	// regardless of input ordering.
-	results := FireExpressionRule(NewImplementStreamingAggregationRule(), gbRef)
+	results := mustFireExpressionRule(t, NewImplementStreamingAggregationRule(), gbRef)
 	if len(results) == 0 {
 		t.Fatal("streaming agg should fire over unordered scan (only agg implementation)")
 	}
@@ -40,23 +88,23 @@ func TestImplementStreamingAgg_UnorderedInput_Fires(t *testing.T) {
 
 	// GroupBy over a scan with no sort — streaming agg fires regardless
 	// since it is the only aggregation implementation.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
+	scan := streamingAggLogicalScan("Orders")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	gb := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+	gb := mustStreamingAggConstruct(expressions.NewGroupByExpression(
+		[]values.Value{streamingAggQuantifierField(scanQ, "region")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "amount", Typ: values.UnknownType}},
+			{Function: expressions.AggSum, Operand: streamingAggQuantifierField(scanQ, "amount")},
 		},
 		scanQ,
-	)
+	))
 	gbRef := expressions.InitialOf(gb)
 
 	// Physicalize the scan only (no sort).
-	FireExpressionRule(NewPrimaryScanRule(), scanRef)
+	mustFireExpressionRule(t, NewPrimaryScanRule(), scanRef)
 
-	results := FireExpressionRule(NewImplementStreamingAggregationRule(), gbRef)
+	results := mustFireExpressionRule(t, NewImplementStreamingAggregationRule(), gbRef)
 	if len(results) == 0 {
 		t.Fatal("ImplementStreamingAggregationRule should fire with unordered input (only agg implementation)")
 	}
@@ -74,38 +122,38 @@ func TestImplementStreamingAgg_IndexOrderedInput(t *testing.T) {
 		[]string{"Orders"},
 		[]string{"customer_id"},
 		[]values.CorrelationIdentifier{a1},
-		values.UnknownType,
+		streamingAggRowType("Orders"),
 		false,
 		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
+	scan := streamingAggLogicalScan("Orders")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	sortExpr := expressions.NewLogicalSortExpression(
+	sortExpr := mustStreamingAggConstruct(expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "customer_id", Typ: values.UnknownType}},
-		}, scanQ)
+			{Value: streamingAggQuantifierField(scanQ, "customer_id")},
+		}, scanQ))
 	sortRef := expressions.InitialOf(sortExpr)
 	sortQ := expressions.ForEachQuantifier(sortRef)
 
-	gb := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "customer_id", Typ: values.UnknownType}},
+	gb := mustStreamingAggConstruct(expressions.NewGroupByExpression(
+		[]values.Value{streamingAggQuantifierField(sortQ, "customer_id")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+			{Function: expressions.AggCount, Operand: streamingAggQuantifierField(sortQ, "id")},
 		},
 		sortQ,
-	)
+	))
 	gbRef := expressions.InitialOf(gb)
 
 	// OrderedIndexScanRule replaces Sort(Scan) with an index scan.
-	FireExpressionRuleWithMemo(NewOrderedIndexScanRule(), sortRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, NewOrderedIndexScanRule(), sortRef, ctx, nil)
 
 	// Now fire streaming agg — the inner (sortRef) has an index scan
 	// member with ordering on customer_id.
-	results := FireExpressionRule(NewImplementStreamingAggregationRule(), gbRef)
+	results := mustFireExpressionRule(t, NewImplementStreamingAggregationRule(), gbRef)
 	if len(results) == 0 {
 		t.Fatal("ImplementStreamingAggregationRule didn't fire with index-ordered input")
 	}
@@ -123,23 +171,23 @@ func TestImplementStreamingAgg_EmptyGroupingKeys(t *testing.T) {
 
 	// No grouping keys — global aggregate (COUNT(*) with no GROUP BY).
 	// Should fire unconditionally (no ordering requirement).
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := streamingAggLogicalScan("T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	gb := expressions.NewGroupByExpression(
+	gb := mustStreamingAggConstruct(expressions.NewGroupByExpression(
 		nil,
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "x", Typ: values.UnknownType}},
+			{Function: expressions.AggCount, Operand: streamingAggQuantifierField(scanQ, "x")},
 		},
 		scanQ,
-	)
+	))
 	gbRef := expressions.InitialOf(gb)
 
 	// Physicalize the scan.
-	FireExpressionRule(NewPrimaryScanRule(), scanRef)
+	mustFireExpressionRule(t, NewPrimaryScanRule(), scanRef)
 
-	results := FireExpressionRule(NewImplementStreamingAggregationRule(), gbRef)
+	results := mustFireExpressionRule(t, NewImplementStreamingAggregationRule(), gbRef)
 	if len(results) == 0 {
 		t.Fatal("ImplementStreamingAggregationRule should fire with empty grouping keys (global aggregate)")
 	}
@@ -169,13 +217,14 @@ func TestImplementStreamingAgg_CountCoveringRequiresDistinctIndexRecords(t *test
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			indexPlan := plans.NewRecordQueryIndexPlan(
+			rowType := streamingAggRowType("T")
+			indexPlan := mustStreamingAggConstruct(plans.NewRecordQueryIndexPlan(
 				"T$v",
 				nil,
 				[]string{"T"},
-				values.UnknownType,
+				rowType,
 				false,
-			)
+			))
 			if tc.signal != nil {
 				indexPlan = indexPlan.WithDistinctRecordsSignal(*tc.signal)
 			}
@@ -187,18 +236,18 @@ func TestImplementStreamingAgg_CountCoveringRequiresDistinctIndexRecords(t *test
 			// let the rule's general "aggregate over every physical alternative"
 			// loop yield an aggregate over it with no guard consulted, and the
 			// assertion below would read TRUE for every case, guard or no guard.
-			coveringRef := expressions.InitialOf(plans.NewRecordQueryCoveringIndexPlan(indexPlan))
-			fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+			coveringRef := expressions.InitialOf(mustStreamingAggConstruct(plans.NewRecordQueryCoveringIndexPlan(indexPlan)))
+			fetchPlan := mustStreamingAggConstruct(plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 				expressions.ForEachQuantifier(coveringRef),
-				nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
-			)
+				nil, rowType, plans.FetchIndexRecordsPrimaryKey,
+			))
 			innerRef := expressions.InitialOf(fetchPlan)
-			groupBy := expressions.NewGroupByExpression(
+			groupBy := mustStreamingAggConstruct(expressions.NewGroupByExpression(
 				nil,
 				[]expressions.AggregateSpec{{Function: expressions.AggCount}},
 				expressions.ForEachQuantifier(innerRef),
-			)
-			results := FireExpressionRule(
+			))
+			results := mustFireExpressionRule(t,
 				NewImplementStreamingAggregationRule(),
 				expressions.InitialOf(groupBy),
 			)
@@ -223,20 +272,18 @@ func TestImplementStreamingAgg_CountCoveringRequiresDistinctIndexRecords(t *test
 func TestStreamingAggPlan_Explain(t *testing.T) {
 	t.Parallel()
 
-	inner := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	plan := plans.NewRecordQueryStreamingAggregationPlan(
+	inner := streamingAggPhysicalScan("T")
+	fields := streamingAggMetadataFields("a", "b", "x")
+	plan := mustStreamingAggConstruct(plans.NewRecordQueryStreamingAggregationPlan(
 		inner,
-		[]values.Value{
-			&values.FieldValue{Field: "a", Typ: values.UnknownType},
-			&values.FieldValue{Field: "b", Typ: values.UnknownType},
-		},
+		[]values.Value{fields[0], fields[1]},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "x", Typ: values.UnknownType}},
+			{Function: expressions.AggSum, Operand: fields[2]},
 		},
-	)
+	))
 
 	got := plan.Explain()
-	want := "StreamingAgg(keys=[a, b], Scan(T))"
+	want := "StreamingAgg(keys=[streaming_aggregation_fixture.a#5, streaming_aggregation_fixture.b#6], Scan(T))"
 	if got != want {
 		t.Fatalf("Explain() = %q, want %q", got, want)
 	}
@@ -245,28 +292,29 @@ func TestStreamingAggPlan_Explain(t *testing.T) {
 func TestStreamingAggPlan_EqualityAndHash(t *testing.T) {
 	t.Parallel()
 
-	inner := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	p1 := plans.NewRecordQueryStreamingAggregationPlan(
+	inner := streamingAggPhysicalScan("T")
+	fields := streamingAggMetadataFields("a", "b", "x", "y")
+	p1 := mustStreamingAggConstruct(plans.NewRecordQueryStreamingAggregationPlan(
 		inner,
-		[]values.Value{&values.FieldValue{Field: "a", Typ: values.UnknownType}},
+		[]values.Value{fields[0]},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "x", Typ: values.UnknownType}},
+			{Function: expressions.AggCount, Operand: fields[2]},
 		},
-	)
-	p2 := plans.NewRecordQueryStreamingAggregationPlan(
+	))
+	p2 := mustStreamingAggConstruct(plans.NewRecordQueryStreamingAggregationPlan(
 		inner,
-		[]values.Value{&values.FieldValue{Field: "a", Typ: values.UnknownType}},
+		[]values.Value{fields[0]},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "x", Typ: values.UnknownType}},
+			{Function: expressions.AggCount, Operand: fields[2]},
 		},
-	)
-	p3 := plans.NewRecordQueryStreamingAggregationPlan(
+	))
+	p3 := mustStreamingAggConstruct(plans.NewRecordQueryStreamingAggregationPlan(
 		inner,
-		[]values.Value{&values.FieldValue{Field: "b", Typ: values.UnknownType}},
+		[]values.Value{fields[1]},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "y", Typ: values.UnknownType}},
+			{Function: expressions.AggSum, Operand: fields[3]},
 		},
-	)
+	))
 
 	if !p1.EqualsPlanWithoutChildren(p2) {
 		t.Fatal("identical plans should be equal")
@@ -295,16 +343,17 @@ func TestStreamingAgg_OrderedChildPinned(t *testing.T) {
 	a1 := values.UniqueCorrelationIdentifier()
 	cand := newKnownDistinctValueIndexCandidate(
 		"T$g", []string{"T"}, []string{"G"},
-		[]values.CorrelationIdentifier{a1}, values.UnknownType, false, nil)
+		[]values.CorrelationIdentifier{a1}, streamingAggRowType("T"), false, nil)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := streamingAggLogicalScan("T")
 	innerRef := expressions.InitialOf(scan)
-	groupKey := &values.FieldValue{Field: "G", Typ: values.UnknownType}
-	gb := expressions.NewGroupByExpression(
+	innerQ := expressions.ForEachQuantifier(innerRef)
+	groupKey := streamingAggQuantifierField(innerQ, "G")
+	gb := mustStreamingAggConstruct(expressions.NewGroupByExpression(
 		[]values.Value{groupKey}, nil,
-		expressions.ForEachQuantifier(innerRef),
-	)
+		innerQ,
+	))
 	topRef := expressions.InitialOf(gb)
 
 	p := NewPlanner(DefaultExpressionRules(), ctx).
@@ -364,10 +413,16 @@ func TestStreamingAgg_OrderedChildPinned(t *testing.T) {
 func TestImplementStreamingAgg_PinsOrderedSpine(t *testing.T) {
 	t.Parallel()
 
-	ordered := sortedMemberOn(t, "S")
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	orderedScan := streamingAggPhysicalScan("T")
+	ordered := mustStreamingAggConstruct(plans.NewRecordQueryInMemorySortPlan(
+		orderedScan,
+		[]plans.SortKey{{
+			Field: "S", ValueExpr: streamingAggField(orderedScan.GetResultValue(), "S"), NullsFirst: true,
+		}},
+	))
+	scan := streamingAggLogicalScan("T")
 	srcRef := expressions.InitialOf(scan)
-	FireExpressionRule(NewPrimaryScanRule(), srcRef)
+	mustFireExpressionRule(t, NewPrimaryScanRule(), srcRef)
 	cheap := findPhysicalExpr(srcRef)
 	if cheap == nil {
 		t.Fatal("no physical scan")
@@ -377,22 +432,23 @@ func TestImplementStreamingAgg_PinsOrderedSpine(t *testing.T) {
 	srcRef.InsertFinal(ordered)
 	srcRef.SetWinner(cheap)
 
-	filterWrapper := plans.NewRecordQueryPredicatesFilterPlan(
-		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+	filterWrapper := mustWithQuantifiers(t, mustStreamingAggConstruct(plans.NewRecordQueryPredicatesFilterPlan(
+		streamingAggPhysicalScan("T"),
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-	).WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(srcRef)})
+	)), []expressions.Quantifier{expressions.ForEachQuantifier(srcRef)})
 	innerRef := expressions.InitialOf(filterWrapper)
+	innerQ := expressions.ForEachQuantifier(innerRef)
 
-	gb := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "S", Typ: values.UnknownType}},
+	gb := mustStreamingAggConstruct(expressions.NewGroupByExpression(
+		[]values.Value{streamingAggQuantifierField(innerQ, "S")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "S", Typ: values.UnknownType}},
+			{Function: expressions.AggCount, Operand: streamingAggQuantifierField(innerQ, "S")},
 		},
-		expressions.ForEachQuantifier(innerRef),
-	)
+		innerQ,
+	))
 	gbRef := expressions.InitialOf(gb)
 
-	yielded := FireExpressionRule(NewImplementStreamingAggregationRule(), gbRef)
+	yielded := mustFireExpressionRule(t, NewImplementStreamingAggregationRule(), gbRef)
 	if len(yielded) == 0 {
 		t.Fatal("rule should fire")
 	}
@@ -434,8 +490,7 @@ func TestImplementStreamingAgg_PinsOrderedSpine(t *testing.T) {
 	}
 	// And the pin must reach the EXECUTABLE plan: the filter's concrete
 	// child is the ordered member's plan, not the stale scan.
-	orderedPE := ordered.(physicalPlanExpression)
-	if !planHasDirectChild(pinnedFilter.GetRecordQueryPlan(), orderedPE.GetRecordQueryPlan()) {
+	if !planHasDirectChild(pinnedFilter.GetRecordQueryPlan(), ordered) {
 		t.Fatal("the pinned filter's concrete plan does not execute the ordered child (pin did not reach the executable plan)")
 	}
 }
@@ -461,23 +516,25 @@ func coveringInnerGT(t *testing.T, v any) *predicates.ComparisonRange {
 // The two differ only in that field, which is the whole point: a walker has to
 // reach past the covering wrapper to tell them apart.
 func coveringInnerFetch(indexName string, comps []*predicates.ComparisonRange) *plans.RecordQueryFetchFromPartialRecordPlan {
-	idx := plans.NewRecordQueryIndexPlan(indexName, comps, []string{"Orders"}, values.UnknownType, false).
+	rowType := streamingAggRowType("Orders")
+	idx := mustStreamingAggConstruct(plans.NewRecordQueryIndexPlan(indexName, comps, []string{"Orders"}, rowType, false)).
 		WithIndexMetadata([]string{"customer_id", "amount"}, []string{"id"}, false)
-	cov := plans.NewRecordQueryCoveringIndexPlan(idx)
+	cov := mustStreamingAggConstruct(plans.NewRecordQueryCoveringIndexPlan(idx))
 	covQ := expressions.ForEachQuantifier(expressions.InitialOf(cov))
-	return plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
-		covQ, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey)
+	return mustStreamingAggConstruct(plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+		covQ, nil, rowType, plans.FetchIndexRecordsPrimaryKey))
 }
 
 // groupByOverInnerRef builds GROUP BY customer_id, COUNT(id) over innerRef.
 func groupByOverInnerRef(innerRef *expressions.Reference) *expressions.Reference {
-	gb := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "customer_id", Typ: values.UnknownType}},
+	innerQ := expressions.ForEachQuantifier(innerRef)
+	gb := mustStreamingAggConstruct(expressions.NewGroupByExpression(
+		[]values.Value{streamingAggQuantifierField(innerQ, "customer_id")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+			{Function: expressions.AggCount, Operand: streamingAggQuantifierField(innerQ, "id")},
 		},
-		expressions.ForEachQuantifier(innerRef),
-	)
+		innerQ,
+	))
 	return expressions.InitialOf(gb)
 }
 
@@ -525,7 +582,7 @@ func TestImplementStreamingAgg_SelectiveCoveringFetchAlternativeIsYielded(t *tes
 		t.Parallel()
 
 		fetch := coveringInnerFetch("idx_orders_cid", []*predicates.ComparisonRange{coveringInnerGT(t, int64(5))})
-		yielded := FireExpressionRule(NewImplementStreamingAggregationRule(), groupByOverInnerRef(expressions.InitialOf(fetch)))
+		yielded := mustFireExpressionRule(t, NewImplementStreamingAggregationRule(), groupByOverInnerRef(expressions.InitialOf(fetch)))
 		if len(yielded) == 0 {
 			t.Fatal("rule should fire over an ordered covering-backed fetch")
 		}
@@ -540,7 +597,7 @@ func TestImplementStreamingAgg_SelectiveCoveringFetchAlternativeIsYielded(t *tes
 		t.Parallel()
 
 		fetch := coveringInnerFetch("idx_orders_cid", nil)
-		yielded := FireExpressionRule(NewImplementStreamingAggregationRule(), groupByOverInnerRef(expressions.InitialOf(fetch)))
+		yielded := mustFireExpressionRule(t, NewImplementStreamingAggregationRule(), groupByOverInnerRef(expressions.InitialOf(fetch)))
 		if len(yielded) == 0 {
 			t.Fatal("rule should still yield the InMemorySort alternative over a full-range fetch")
 		}
@@ -568,7 +625,8 @@ func TestIsFullRangeFetch_SeesPastTheCoveringWrapper(t *testing.T) {
 // orderedIndexScanOn builds a forward scan of an index leading with
 // customer_id, so its ordering satisfies GROUP BY customer_id.
 func orderedIndexScanOn(indexName string) *plans.RecordQueryIndexPlan {
-	return plans.NewRecordQueryIndexPlan(indexName, nil, []string{"Orders"}, values.UnknownType, false).
+	return mustStreamingAggConstruct(plans.NewRecordQueryIndexPlan(
+		indexName, nil, []string{"Orders"}, streamingAggRowType("Orders"), false)).
 		WithIndexMetadata([]string{"customer_id", "amount"}, []string{"id"}, false)
 }
 
@@ -592,7 +650,7 @@ func orderedIndexScanOn(indexName string) *plans.RecordQueryIndexPlan {
 func TestFindOrderedPhysicalExprs_PrefersFinalsOverExploratory(t *testing.T) {
 	t.Parallel()
 
-	groupingKeys := []values.Value{&values.FieldValue{Field: "customer_id", Typ: values.UnknownType}}
+	groupingKeys := streamingAggMetadataFields("customer_id")
 
 	exploratory := orderedIndexScanOn("idx_exploratory")
 	final := orderedIndexScanOn("idx_final")
@@ -627,13 +685,14 @@ func slicesContainsExpr(xs []expressions.RelationalExpression, want expressions.
 // duplicate-free index — the shape a bare COUNT can answer straight from the
 // index entries, with no primary-key fetch.
 func countableCoveringFetch(indexName string) *plans.RecordQueryFetchFromPartialRecordPlan {
-	idx := plans.NewRecordQueryIndexPlan(indexName, nil, []string{"Orders"}, values.UnknownType, false).
+	rowType := streamingAggRowType("Orders")
+	idx := mustStreamingAggConstruct(plans.NewRecordQueryIndexPlan(indexName, nil, []string{"Orders"}, rowType, false)).
 		WithIndexMetadata([]string{"customer_id"}, []string{"id"}, false).
 		WithDistinctRecordsSignal(false)
-	cov := plans.NewRecordQueryCoveringIndexPlan(idx)
+	cov := mustStreamingAggConstruct(plans.NewRecordQueryCoveringIndexPlan(idx))
 	covQ := expressions.ForEachQuantifier(expressions.InitialOf(cov))
-	return plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
-		covQ, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey)
+	return mustStreamingAggConstruct(plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+		covQ, nil, rowType, plans.FetchIndexRecordsPrimaryKey))
 }
 
 // TestImplementStreamingAgg_EveryCoveringScanYieldsItsOwnCountAlternative pins
@@ -656,12 +715,12 @@ func TestImplementStreamingAgg_EveryCoveringScanYieldsItsOwnCountAlternative(t *
 	innerRef := expressions.InitialOf(narrow)
 	innerRef.Insert(wide)
 
-	gb := expressions.NewGroupByExpression(
+	gb := mustStreamingAggConstruct(expressions.NewGroupByExpression(
 		nil, // no grouping keys: a bare COUNT
 		[]expressions.AggregateSpec{{Function: expressions.AggCount}},
 		expressions.ForEachQuantifier(innerRef),
-	)
-	yielded := FireExpressionRule(NewImplementStreamingAggregationRule(), expressions.InitialOf(gb))
+	))
+	yielded := mustFireExpressionRule(t, NewImplementStreamingAggregationRule(), expressions.InitialOf(gb))
 
 	// Count the DISTINCT covering scans that were given a parent. Yields over
 	// the fetches themselves are the separate, non-covering alternative and are

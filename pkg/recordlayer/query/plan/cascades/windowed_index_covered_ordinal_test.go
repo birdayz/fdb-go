@@ -18,10 +18,56 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// windowedFieldImpostor deliberately embeds the public read view. It satisfies
+// values.Value, but values.AsFieldValue must reject it: only the values-owned
+// immutable concrete node can carry a physical ordinal contract.
+type windowedFieldImpostor struct {
+	values.FieldValue
+}
+
+func windowedRowType(name string, columns ...string) *values.RecordType {
+	fields := make([]values.Field, len(columns))
+	for ordinal, column := range columns {
+		fields[ordinal] = values.Field{Name: column, FieldType: values.NullableLong, Ordinal: ordinal}
+	}
+	return values.NewRecordType(name, false, fields)
+}
+
+func windowedQOV(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+	typ values.Type,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	qov, err := values.NewQuantifiedObjectValue(alias, typ)
+	if err != nil {
+		t.Fatalf("construct windowed QOV: %v", err)
+	}
+	return qov
+}
+
+func windowedFieldAt(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+	typ values.Type,
+	ordinal int,
+) values.FieldValue {
+	t.Helper()
+	resolved, err := values.ResolveFieldOrdinals(windowedQOV(t, alias, typ), []int{ordinal})
+	if err != nil {
+		t.Fatalf("resolve windowed field: %v", err)
+	}
+	field, ok := values.AsFieldValue(resolved)
+	if !ok {
+		t.Fatalf("resolved ordinal %d produced %T, want exact FieldValue", ordinal, resolved)
+	}
+	return field
+}
+
 func TestWindowedCandidate_CoveredPushIsOrdinalAndDomainChecked(t *testing.T) {
 	t.Parallel()
 
-	rowType := testRecordRowType("LEADER", "ID", "SCORE", "TEAM")
+	rowType := windowedRowType("LEADER", "ID", "SCORE", "TEAM")
 	src := values.NamedCorrelationIdentifier("SRC")
 	tgt := values.NamedCorrelationIdentifier("TGT")
 	c := NewWindowedIndexScanMatchCandidate(
@@ -41,25 +87,26 @@ func TestWindowedCandidate_CoveredPushIsOrdinalAndDomainChecked(t *testing.T) {
 	// A covered column of the record layout pushes, and keeps its ordinal: a
 	// reference that arrives below the fetch as a lazy name read is a loud
 	// failure at evaluation, not a soft one.
-	covered := testColumnRef(values.NewQuantifiedObjectValue(src), rowType, "SCORE", values.UnknownType)
+	covered := windowedFieldAt(t, src, rowType, 1)
 	out, ok := c.PushValueThroughFetch(covered, src, tgt)
 	if !ok {
 		t.Fatal("covered column SCORE must push through the rank-index fetch")
 	}
-	fv, isFV := out.(*values.FieldValue)
-	if !isFV || fv.Resolved == nil {
+	fv, isFV := values.AsFieldValue(out)
+	if !isFV || fv.Path() == nil {
 		t.Fatalf("pushed reference must stay BAKED, got %#v", out)
 	}
-	if got := fv.Resolved.Root().Ordinal; got != 1 {
-		t.Fatalf("pushed ordinal = %d, want 1 (SCORE's slot)", got)
+	ordinals := fv.Path().Ordinals()
+	if len(ordinals) != 1 || ordinals[0] != 1 {
+		t.Fatalf("pushed ordinal path = %v, want [1] (SCORE's descriptor slot)", ordinals)
 	}
-	if _, stated := fv.OrdinalIn(values.OrdinalDomainOfType(rowType)); !stated {
+	if identity, stated := values.CorrelatedFieldIdentityIn(fv, values.OrdinalDomainOfType(rowType)); !stated || identity.Ordinal != 1 {
 		t.Fatal("pushed reference must state the layout its ordinal indexes")
 	}
 
 	// A NON-covered column of the same layout declines.
 	if out, ok := c.PushValueThroughFetch(
-		testColumnRef(values.NewQuantifiedObjectValue(src), rowType, "TEAM", values.UnknownType),
+		windowedFieldAt(t, src, rowType, 2),
 		src, tgt,
 	); ok {
 		t.Fatalf("uncovered column TEAM must not push, got %#v", out)
@@ -68,20 +115,23 @@ func TestWindowedCandidate_CoveredPushIsOrdinalAndDomainChecked(t *testing.T) {
 	// The same NAME at the same ORDINAL in a DIFFERENT layout declines: the
 	// integer alone is not identity, which is the failure mode a name check
 	// cannot even express.
-	foreign := testRecordRowType("OTHER", "X", "SCORE")
+	foreign := windowedRowType("OTHER", "X", "SCORE")
 	if out, ok := c.PushValueThroughFetch(
-		testColumnRef(values.NewQuantifiedObjectValue(src), foreign, "SCORE", values.UnknownType),
+		windowedFieldAt(t, src, foreign, 1),
 		src, tgt,
 	); ok {
 		t.Fatalf("SCORE@1 of a foreign layout must not be read as the record's SCORE, got %#v", out)
 	}
 
-	// A LAZY reference carrying only the covered display name declines.
+	// The public constructors cannot mint a lazy/name-only FieldValue. An
+	// embedded read-view impostor carrying the exact covered field underneath is
+	// therefore the mutation-sensitive control: accepting it would re-open a
+	// structural-interface escape hatch around exact recognition.
 	if out, ok := c.PushValueThroughFetch(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(src), "SCORE", values.UnknownType),
+		&windowedFieldImpostor{FieldValue: covered},
 		src, tgt,
 	); ok {
-		t.Fatalf("a LAZY reference must not push on the strength of its name, got %#v", out)
+		t.Fatalf("a foreign FieldValue view must not push on the strength of its display name, got %#v", out)
 	}
 }
 
@@ -104,25 +154,25 @@ func TestCoveredOrdinalSets_UnknownLayoutFailsClosed(t *testing.T) {
 	// answered by the set for the layout it states — the multi-type case the
 	// single flowed type cannot express. A and B place column X at different
 	// ordinals precisely so a single merged set would be provably wrong.
-	typeA := testRecordRowType("A", "X", "Y")
-	typeB := testRecordRowType("B", "Y", "X")
+	typeA := windowedRowType("A", "X", "Y")
+	typeB := windowedRowType("B", "Y", "X")
 	sets := buildCoveredOrdinalSets([]values.Type{typeA, typeB}, map[string]struct{}{"X": {}})
 	if len(sets) != 2 {
 		t.Fatalf("per-record-type sets = %d, want 2", len(sets))
 	}
-	inA := values.NewFieldValueWithResolvedOrdinalInDomain("X", 0, values.UnknownType, values.OrdinalDomainOfType(typeA))
-	inB := values.NewFieldValueWithResolvedOrdinalInDomain("X", 1, values.UnknownType, values.OrdinalDomainOfType(typeB))
-	if ord, _, ok := pushCoveredOrdinal(sets, inA); !ok || ord != 0 {
+	inA := windowedFieldAt(t, values.NamedCorrelationIdentifier("A"), typeA, 0)
+	inB := windowedFieldAt(t, values.NamedCorrelationIdentifier("B"), typeB, 1)
+	if ord, _, _, ok := pushCoveredOrdinalWithType(sets, inA); !ok || ord != 0 {
 		t.Fatalf("A.X = (%d,%v), want (0,true)", ord, ok)
 	}
-	if ord, _, ok := pushCoveredOrdinal(sets, inB); !ok || ord != 1 {
+	if ord, _, _, ok := pushCoveredOrdinalWithType(sets, inB); !ok || ord != 1 {
 		t.Fatalf("B.X = (%d,%v), want (1,true)", ord, ok)
 	}
 	// A's ordinal 1 is Y, which is not covered — and the answer must be a
 	// definite NO, not "try the other type's set", which would let B's X
 	// answer for A's Y.
-	notCovered := values.NewFieldValueWithResolvedOrdinalInDomain("Y", 1, values.UnknownType, values.OrdinalDomainOfType(typeA))
-	if ord, _, ok := pushCoveredOrdinal(sets, notCovered); ok {
+	notCovered := windowedFieldAt(t, values.NamedCorrelationIdentifier("A_Y"), typeA, 1)
+	if ord, _, _, ok := pushCoveredOrdinalWithType(sets, notCovered); ok {
 		t.Fatalf("A.Y answered %d — an uncovered ordinal must not be rescued by another type's set", ord)
 	}
 }
@@ -136,7 +186,7 @@ func TestCoveredOrdinalSets_UnknownLayoutFailsClosed(t *testing.T) {
 func TestWindowedCandidate_ForeignQuantifierDoesNotPush(t *testing.T) {
 	t.Parallel()
 
-	rowType := testRecordRowType("LEADER", "ID", "SCORE", "TEAM")
+	rowType := windowedRowType("LEADER", "ID", "SCORE", "TEAM")
 	q1 := values.NamedCorrelationIdentifier("q1")
 	q2 := values.NamedCorrelationIdentifier("q2")
 	tgt := values.NamedCorrelationIdentifier("TGT")
@@ -154,7 +204,7 @@ func TestWindowedCandidate_ForeignQuantifierDoesNotPush(t *testing.T) {
 		[]string{"ID"},
 	)
 
-	foreign := testColumnRef(values.NewQuantifiedObjectValue(q2), rowType, "SCORE", values.UnknownType)
+	foreign := windowedFieldAt(t, q2, rowType, 1)
 	if out, ok := c.PushValueThroughFetch(foreign, q1, tgt); ok {
 		t.Fatalf("another quantifier's SCORE must not push through q1's rank fetch — only the "+
 			"correlation separates the two, got %#v", out)

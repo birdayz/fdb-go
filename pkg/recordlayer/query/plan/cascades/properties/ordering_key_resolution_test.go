@@ -54,12 +54,8 @@ func orderingOverOneKey(key values.Value) *RichOrdering {
 func TestOrderingKeyForRefusesTwoStatedOrdinals(t *testing.T) {
 	t.Parallel()
 
-	provided := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"COL", 0, values.UnknownType,
-		values.OrdinalDomainOfType(resolutionOneColumnRow()))
-	requested := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"COL", 2, values.UnknownType,
-		values.OrdinalDomainOfType(resolutionThreeColumnRow()))
+	provided := propertyFieldIn(t, resolutionOneColumnRow(), "COL")
+	requested := propertyFieldIn(t, resolutionThreeColumnRow(), "COL")
 
 	if values.ColumnNameValue(provided) != values.ColumnNameValue(requested) {
 		t.Fatalf("test setup: the two must share their ordinal-FREE rendering "+
@@ -83,56 +79,10 @@ func TestOrderingKeyForRefusesTwoStatedOrdinals(t *testing.T) {
 	}
 
 	// The exact arm must still work, so this cannot pass by refusing everything.
-	same := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"COL", 0, values.UnknownType,
-		values.OrdinalDomainOfType(resolutionOneColumnRow()))
+	same := propertyFieldIn(t, resolutionOneColumnRow(), "COL")
 	if _, ok := orderingOverOneKey(provided).orderingKeyFor(same); !ok {
 		t.Fatal("orderingKeyFor no longer resolves a requested key that states " +
 			"the SAME ordinal in the SAME layout as the provided key — that is " +
 			"the common path and every elision depends on it")
-	}
-}
-
-// TestOrderingKeyForStillResolvesAnUnstatedProvidedKeyByName records what is
-// LEFT, and it is deliberately an assertion of the CURRENT state rather than of
-// a desired one.
-//
-// A separate ordinal-free same-column arm was deleted from orderingKeyFor, and
-// it is easy to read that as "the name bridge is gone". It is not. The
-// quantifier-root arm below it begins by calling CanBridgeOrderingFieldValues —
-// the very same ordinal-free name comparison — so a provided key that states no
-// ordinal is still reachable from a requested key that does, purely by spelling.
-// The deletion removed a redundant fast path; the channel is one call deeper.
-//
-// 1824 corpus resolutions still run through that arm, so this must keep
-// answering yes until the request is TRANSLATED into the provider's correlation
-// space before matching (what Java does, and what replaces the arm). When that
-// lands, this test goes red — and the right response is to delete it, not to
-// restore the bridge.
-func TestOrderingKeyForStillResolvesAnUnstatedProvidedKeyByName(t *testing.T) {
-	t.Parallel()
-
-	// The provider states no ordinal at all: the fail-closed shape a candidate
-	// falls back to when it cannot name the layout it flows.
-	provided := values.NewFieldValue(nil, "COL", values.UnknownType)
-	requested := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"COL", 2, values.UnknownType,
-		values.OrdinalDomainOfType(resolutionThreeColumnRow()))
-
-	if _, ok := values.OrderingIdentityOf(provided); ok {
-		t.Fatal("test setup: the provided key must state NO identity, or this " +
-			"is not the shape the name comparison is reached for")
-	}
-
-	if _, ok := orderingOverOneKey(provided).orderingKeyFor(requested); !ok {
-		t.Fatalf("orderingKeyFor no longer resolves a baked request (%q) against "+
-			"a provider that states no ordinal (%q).\n\n"+
-			"If this changed because the requested ordering is now pushed into "+
-			"the provider's space before matching, the name comparison has been "+
-			"RETIRED and this test should be deleted along with it.\n\n"+
-			"If it changed because the comparison was merely tightened, 1824 "+
-			"corpus key resolutions just became misses and sorts appear over "+
-			"plans that were already ordered.",
-			values.ExplainValue(requested), values.ExplainValue(provided))
 	}
 }

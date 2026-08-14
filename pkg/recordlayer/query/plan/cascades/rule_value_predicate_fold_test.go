@@ -7,13 +7,50 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func valueFoldField(ordinal int) values.Value {
+	row := values.NewRecordType("ValueFoldRow", false, []values.Field{
+		{Name: "active", FieldType: values.NotNullBoolean},
+		{Name: "x", FieldType: values.NullableLong},
+	})
+	root, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("VALUE_FOLD"), row)
+	if err != nil {
+		panic("value-fold QOV: " + err.Error())
+	}
+	field, err := values.ResolveFieldOrdinals(root, []int{ordinal})
+	if err != nil {
+		panic("value-fold field: " + err.Error())
+	}
+	return field
+}
+
+func fireValueFoldRule(t testing.TB, rule CascadesRule, input any) []any {
+	t.Helper()
+	result, err := FireRule(rule, input)
+	if err != nil {
+		t.Fatalf("FireRule: %v", err)
+	}
+	return result
+}
+
+func simplifyValueFold(
+	t testing.TB, predicate predicates.QueryPredicate, rules []CascadesRule,
+) predicates.QueryPredicate {
+	t.Helper()
+	result, err := Simplify(predicate, rules)
+	if err != nil {
+		t.Fatalf("Simplify: %v", err)
+	}
+	return result
+}
+
 // TestValuePredicateConstantFold_True pins ConstantValue(true) →
 // ConstantPredicate(TriTrue).
 func TestValuePredicateConstantFold_True(t *testing.T) {
 	t.Parallel()
 	rule := NewValuePredicateConstantFoldRule()
 	pred := predicates.NewValuePredicate(&values.ConstantValue{Value: true, Typ: values.TypeBool})
-	got := FireRule(rule, pred)
+	got := fireValueFoldRule(t, rule, pred)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(got))
 	}
@@ -28,7 +65,7 @@ func TestValuePredicateConstantFold_False(t *testing.T) {
 	t.Parallel()
 	rule := NewValuePredicateConstantFoldRule()
 	pred := predicates.NewValuePredicate(&values.ConstantValue{Value: false, Typ: values.TypeBool})
-	got := FireRule(rule, pred)
+	got := fireValueFoldRule(t, rule, pred)
 	cp := got[0].(*predicates.ConstantPredicate)
 	if cp.Value != predicates.TriFalse {
 		t.Fatalf("got %v, want TriFalse", cp.Value)
@@ -41,7 +78,7 @@ func TestValuePredicateConstantFold_BooleanValue(t *testing.T) {
 	t.Parallel()
 	rule := NewValuePredicateConstantFoldRule()
 	pred := predicates.NewValuePredicate(values.NewBooleanValue(true))
-	got := FireRule(rule, pred)
+	got := fireValueFoldRule(t, rule, pred)
 	cp := got[0].(*predicates.ConstantPredicate)
 	if cp.Value != predicates.TriTrue {
 		t.Fatalf("got %v, want TriTrue", cp.Value)
@@ -56,7 +93,7 @@ func TestValuePredicateConstantFold_Null(t *testing.T) {
 
 	// NullValue.
 	pred := predicates.NewValuePredicate(values.NewNullValue(values.TypeBool))
-	got := FireRule(rule, pred)
+	got := fireValueFoldRule(t, rule, pred)
 	cp := got[0].(*predicates.ConstantPredicate)
 	if cp.Value != predicates.TriUnknown {
 		t.Fatalf("NullValue: got %v, want TriUnknown", cp.Value)
@@ -64,7 +101,7 @@ func TestValuePredicateConstantFold_Null(t *testing.T) {
 
 	// ConstantValue(nil).
 	pred = predicates.NewValuePredicate(&values.ConstantValue{Value: nil, Typ: values.TypeBool})
-	got = FireRule(rule, pred)
+	got = fireValueFoldRule(t, rule, pred)
 	cp = got[0].(*predicates.ConstantPredicate)
 	if cp.Value != predicates.TriUnknown {
 		t.Fatalf("ConstantValue(nil): got %v, want TriUnknown", cp.Value)
@@ -72,7 +109,7 @@ func TestValuePredicateConstantFold_Null(t *testing.T) {
 
 	// BooleanValue with nil (UNKNOWN-typed bool).
 	pred = predicates.NewValuePredicate(&values.BooleanValue{Value: nil})
-	got = FireRule(rule, pred)
+	got = fireValueFoldRule(t, rule, pred)
 	cp = got[0].(*predicates.ConstantPredicate)
 	if cp.Value != predicates.TriUnknown {
 		t.Fatalf("BooleanValue{nil}: got %v, want TriUnknown", cp.Value)
@@ -93,7 +130,7 @@ func TestValuePredicateConstantFold_NonBoolConstantDegrades(t *testing.T) {
 	}
 	for _, child := range cases {
 		pred := predicates.NewValuePredicate(child)
-		got := FireRule(rule, pred)
+		got := fireValueFoldRule(t, rule, pred)
 		cp := got[0].(*predicates.ConstantPredicate)
 		if cp.Value != predicates.TriUnknown {
 			t.Fatalf("ValuePredicate(%v): got %v, want TriUnknown", child.Name(), cp.Value)
@@ -109,19 +146,19 @@ func TestValuePredicateConstantFold_NonConstantValue_Declines(t *testing.T) {
 	t.Parallel()
 	rule := NewValuePredicateConstantFoldRule()
 
-	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
-	if got := FireRule(rule, pred); len(got) != 0 {
+	pred := predicates.NewValuePredicate(valueFoldField(0))
+	if got := fireValueFoldRule(t, rule, pred); len(got) != 0 {
 		t.Fatalf("FieldValue: expected no yield, got %d", len(got))
 	}
 
 	// Arithmetic with field child — composite but not constant.
 	arith := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  &values.FieldValue{Field: "x", Typ: values.NullableLong},
+		Left:  valueFoldField(1),
 		Right: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
 	}
 	pred = predicates.NewValuePredicate(arith)
-	if got := FireRule(rule, pred); len(got) != 0 {
+	if got := fireValueFoldRule(t, rule, pred); len(got) != 0 {
 		t.Fatalf("Arithmetic(field, 1): expected no yield, got %d", len(got))
 	}
 }
@@ -134,7 +171,7 @@ func TestValuePredicateConstantFold_NilValue_Declines(t *testing.T) {
 	t.Parallel()
 	rule := NewValuePredicateConstantFoldRule()
 	pred := &predicates.ValuePredicate{Value: nil}
-	if got := FireRule(rule, pred); len(got) != 0 {
+	if got := fireValueFoldRule(t, rule, pred); len(got) != 0 {
 		t.Fatalf("nil Value: expected no yield, got %d", len(got))
 	}
 }
@@ -144,14 +181,14 @@ func TestValuePredicateConstantFold_NilValue_Declines(t *testing.T) {
 func TestValuePredicateConstantFold_NonValuePredicate_Declines(t *testing.T) {
 	t.Parallel()
 	rule := NewValuePredicateConstantFoldRule()
-	if got := FireRule(rule, predicates.NewConstantPredicate(predicates.TriTrue)); len(got) != 0 {
+	if got := fireValueFoldRule(t, rule, predicates.NewConstantPredicate(predicates.TriTrue)); len(got) != 0 {
 		t.Fatalf("ConstantPredicate: expected no yield (not a ValuePredicate)")
 	}
 	cp := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "x", Typ: values.NullableLong},
+		valueFoldField(1),
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))},
 	)
-	if got := FireRule(rule, cp); len(got) != 0 {
+	if got := fireValueFoldRule(t, rule, cp); len(got) != 0 {
 		t.Fatalf("ComparisonPredicate: expected no yield (not a ValuePredicate)")
 	}
 }
@@ -164,11 +201,11 @@ func TestValuePredicateConstantFold_NonValuePredicate_Declines(t *testing.T) {
 func TestSimplify_ValuePredicateInAndCollapses(t *testing.T) {
 	t.Parallel()
 	cmp := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "x", Typ: values.NullableLong},
+		valueFoldField(1),
 		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(5))},
 	)
 	pred := predicates.NewAnd(predicates.NewValuePredicate(values.NewBooleanValue(true)), cmp)
-	got := Simplify(pred, DefaultSimplifyRules())
+	got := simplifyValueFold(t, pred, DefaultSimplifyRules())
 	if got != predicates.QueryPredicate(cmp) {
 		t.Fatalf("expected the comparison to survive, got %T %s", got, got.Explain())
 	}
@@ -181,11 +218,11 @@ func TestSimplify_ValuePredicateInAndCollapses(t *testing.T) {
 func TestSimplify_ValuePredicateInOrCollapses(t *testing.T) {
 	t.Parallel()
 	cmp := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "x", Typ: values.NullableLong},
+		valueFoldField(1),
 		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(5))},
 	)
 	pred := predicates.NewOr(predicates.NewValuePredicate(values.NewBooleanValue(false)), cmp)
-	got := Simplify(pred, DefaultSimplifyRules())
+	got := simplifyValueFold(t, pred, DefaultSimplifyRules())
 	if got != predicates.QueryPredicate(cmp) {
 		t.Fatalf("expected the comparison to survive, got %T %s", got, got.Explain())
 	}
@@ -202,7 +239,7 @@ func TestSimplify_ValuePredicate_NotValue_FullyFolds(t *testing.T) {
 	pred := predicates.NewValuePredicate(values.NewNotValue(values.NewBooleanValue(true)))
 	// SimplifyPredicateValues handles the inner Value fold first,
 	// then the rule pipeline unwraps. Use Simplify with default rules.
-	got := Simplify(predicates.SimplifyPredicateValues(pred), DefaultSimplifyRules())
+	got := simplifyValueFold(t, predicates.SimplifyPredicateValues(pred), DefaultSimplifyRules())
 	cp, ok := got.(*predicates.ConstantPredicate)
 	if !ok {
 		t.Fatalf("expected ConstantPredicate, got %T %s", got, got.Explain())

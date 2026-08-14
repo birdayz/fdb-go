@@ -202,8 +202,32 @@ func corpus() []Scenario {
 // (review the diff before committing). The capture is asserted deterministic first — a golden is
 // only meaningful if the same scenario yields identical bytes every run.
 //
-// WHY THESE BASELINES MOVED (RFC-220, coveringness as a plan type). Six stanzas
-// changed across setops/joins/orders; aggidx/multikey/subquery are untouched.
+// WHY THESE BASELINES MOVED (RFC-232, exact physical row owners). The reviewed
+// refresh changes 34 PLAN lines across all six scenarios and zero ROWS, column
+// metadata, or datum lines. Three explain changes expose information the
+// physical Values now genuinely carry:
+//
+//   - projection and aggregate-output fields show their exact tagged current
+//     carrier (`_current.ID#0`, `_current.SUM(V)#1`);
+//   - join projections show ordinals in the materialized joined row, not an
+//     ambiguous per-leg ordinal (`OID#2` rather than the old `O.OID#0`);
+//   - enforced sort and streaming-aggregate keys retain their resolved source
+//     or current root (`T.ID#0`, `C.REGION#1`, `_current.REGION#1`).
+//
+// The correlated EXISTS stanza also gains an InMemorySort for its explicit
+// `ORDER BY C.CID`: the selected FlatMap has no proved matching provided
+// ordering across the exact physical boundary, so retaining the enforcement is
+// the fail-closed plan. The row block proves the requested order is unchanged.
+//
+// The audit initially found identical nested Project(Project(...)) shapes over
+// aggregate-index results. Those were NOT accepted into the baseline. Both
+// projection implementation lanes now reuse an already-published physical
+// projection only after proving exact positional identity, canonical result
+// type, output names, aliases, and alias provenance. Reordered, narrowed,
+// renamed, foreign-root, and scalar-QOV controls all retain their wrapper.
+//
+// HISTORICAL RFC-220 REFRESH (coveringness as a plan type). Six stanzas changed
+// across setops/joins/orders; aggidx/multikey/subquery were untouched then.
 //
 // The decisive check is that EVERY changed line is a `PLAN:` line: zero ROWS
 // lines differ, in count, in value, or in ORDER. These goldens capture results

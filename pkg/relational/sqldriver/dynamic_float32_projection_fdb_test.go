@@ -104,13 +104,17 @@ func TestFDB_DynamicFloat32IndexProjection(t *testing.T) {
 	}
 	run := func(t *testing.T, comparisonType predicates.ComparisonType, parameter any) ([]int64, error) {
 		t.Helper()
-		plan := plans.NewRecordQueryIndexPlan(
+		plan, planErr := plans.NewRecordQueryIndexPlan(
 			"F_IDX",
 			[]*predicates.ComparisonRange{comparisonRange(t, comparisonType)},
 			[]string{"T"},
-			values.UnknownType,
+			executor.PositionalTypeForDescriptor(desc),
 			false,
-		).WithKeyComponentTypes([]values.Type{values.NotNullFloat})
+		)
+		if planErr != nil {
+			t.Fatalf("construct exact FLOAT index plan: %v", planErr)
+		}
+		plan = plan.WithKeyComponentTypes([]values.Type{values.NotNullFloat})
 		explain := plan.Explain()
 		if !strings.Contains(explain, "IndexScan(F_IDX") || strings.Contains(explain, "Scan(T") {
 			t.Fatalf("plan = %s, want the physical FLOAT index access path", explain)

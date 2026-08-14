@@ -153,13 +153,17 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 	if len(quantifiers) == len(valuesBoxes) {
 		// All quantifiers are values boxes. Introduce a range(1)
 		// placeholder to avoid creating a Select with no children.
-		rangeOneExpr := expressions.NewTableFunctionExpression(
+		rangeOneExpr, err := expressions.NewTableFunctionExpression(
 			values.NewRangeValue(
 				&values.ConstantValue{Value: int64(0)},
 				&values.ConstantValue{Value: int64(1)},
 				&values.ConstantValue{Value: int64(1)},
 			),
 		)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		rangeRef := call.MemoizeExpression(rangeOneExpr)
 		rangeQ := expressions.ForEachQuantifier(rangeRef)
 		newQuantifiers = append(newQuantifiers, rangeQ)
@@ -183,7 +187,11 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 			if len(lowerCorrelatedTo) == 0 {
 				newMembers = append(newMembers, member)
 			} else {
-				pushed := pushValuesIntoExpression(member, qunsToPushDown, tm, call)
+				pushed, err := pushValuesIntoExpression(member, qunsToPushDown, tm, call)
+				if err != nil {
+					call.Fail(err)
+					return
+				}
 				newMembers = append(newMembers, pushed)
 				anyChanged = true
 			}
@@ -219,7 +227,11 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 		}
 	}
 
-	merged := expressions.NewSelectExpressionWithJoinType(newResultValue, newQuantifiers, newPredicates, newAliases, sel.GetJoinType())
+	merged, err := expressions.NewSelectExpressionWithJoinType(newResultValue, newQuantifiers, newPredicates, newAliases, sel.GetJoinType())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	call.Yield(merged)
 }
 
@@ -247,7 +259,7 @@ func pushValuesIntoExpression(
 	qunsToPushDown map[values.CorrelationIdentifier]expressions.Quantifier,
 	tm TranslationMap,
 	call *ExpressionRuleCall,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, error) {
 	switch e := expr.(type) {
 	case *expressions.SelectExpression:
 		return selectWithQuantifiersPushed(
@@ -286,7 +298,7 @@ func selectWithQuantifiersPushed(
 	preds []predicates.QueryPredicate,
 	sourceAliases []string,
 	joinType expressions.JoinType,
-) *expressions.SelectExpression {
+) (*expressions.SelectExpression, error) {
 	exprCorr := make(map[values.CorrelationIdentifier]struct{})
 	expressionCorrelationSet(expr, exprCorr)
 
@@ -310,7 +322,7 @@ func pushValuesDefault(
 	qunsToPushDown map[values.CorrelationIdentifier]expressions.Quantifier,
 	tm TranslationMap,
 	call *ExpressionRuleCall,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, error) {
 	pushDownAliasSet := make(map[values.CorrelationIdentifier]struct{}, len(qunsToPushDown))
 	for alias := range qunsToPushDown {
 		pushDownAliasSet[alias] = struct{}{}
@@ -319,7 +331,11 @@ func pushValuesDefault(
 	origQs := expr.GetQuantifiers()
 	newQs := make([]expressions.Quantifier, 0, len(origQs))
 	for _, childQ := range origQs {
-		newQs = append(newQs, pushOnTopOfQuantifier(childQ, qunsToPushDown, pushDownAliasSet, call))
+		pushed, err := pushOnTopOfQuantifier(childQ, qunsToPushDown, pushDownAliasSet, call)
+		if err != nil {
+			return nil, err
+		}
+		newQs = append(newQs, pushed)
 	}
 
 	// Rebuild the expression with new quantifiers. For expression types
@@ -341,7 +357,7 @@ func pushOnTopOfQuantifier(
 	qunsToPushDown map[values.CorrelationIdentifier]expressions.Quantifier,
 	pushDownAliasSet map[values.CorrelationIdentifier]struct{},
 	call *ExpressionRuleCall,
-) expressions.Quantifier {
+) (expressions.Quantifier, error) {
 	childCorr := quantifierCorrelationSetLocal(childQ)
 	hasCorrelation := false
 	for alias := range pushDownAliasSet {
@@ -351,7 +367,7 @@ func pushOnTopOfQuantifier(
 		}
 	}
 	if !hasCorrelation {
-		return childQ
+		return childQ, nil
 	}
 
 	newChild := expressions.ForEachQuantifier(childQ.GetRangesOver())
@@ -372,13 +388,20 @@ func pushOnTopOfQuantifier(
 	}
 	newQs = append(newQs, newChild)
 
-	newSelect := expressions.NewSelectExpression(
-		newChild.GetFlowedObjectValue(),
+	flowed, err := newChild.RequireFlowedObjectValue()
+	if err != nil {
+		return expressions.Quantifier{}, err
+	}
+	newSelect, err := expressions.NewSelectExpression(
+		flowed,
 		newQs,
 		nil,
 	)
+	if err != nil {
+		return expressions.Quantifier{}, err
+	}
 	newRef := call.MemoizeExpression(newSelect)
-	return expressions.RebuildQuantifier(childQ, newRef)
+	return expressions.RebuildQuantifier(childQ, newRef), nil
 }
 
 // quantifierCorrelationSetLocal computes the correlation set of a
@@ -412,20 +435,22 @@ func translateValueCorrelations(v values.Value, tm TranslationMap) values.Value 
 	// ReplaceLeavesOnceMaybe so substituted leaves are skipped on the re-descent.
 	return values.ReplaceLeavesOnceMaybe(v, func(val values.Value) values.Value {
 		var alias values.CorrelationIdentifier
-		switch n := val.(type) {
-		case *values.QuantifiedObjectValue:
-			alias = n.Correlation
-		case *values.QuantifiedRecordValue:
-			alias = n.Alias
-		// ExistsValue is a transparent composite (RFC-141), not a leaf —
-		// its child QuantifiedObjectValue is the leaf that gets translated
-		// by the *QuantifiedObjectValue case above.
-		case *values.ScalarSubqueryValue:
-			alias = n.Alias
-		case *values.ObjectValue:
-			alias = n.Alias
-		default:
-			return val
+		if qov, ok := values.AsQuantifiedObjectValue(val); ok {
+			alias = qov.Correlation()
+		} else {
+			switch n := val.(type) {
+			case *values.QuantifiedRecordValue:
+				alias = n.Alias
+				// ExistsValue is a transparent composite (RFC-141), not a leaf —
+				// its child QuantifiedObjectValue is the leaf that gets translated
+				// by the *QuantifiedObjectValue case above.
+			case *values.ScalarSubqueryValue:
+				alias = n.Alias
+			case *values.ObjectValue:
+				alias = n.Alias
+			default:
+				return val
+			}
 		}
 		if !tm.ContainsSourceAlias(alias) {
 			return val

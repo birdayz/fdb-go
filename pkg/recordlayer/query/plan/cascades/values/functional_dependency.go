@@ -9,7 +9,7 @@ package values
 // false if any leaf references a different scope, or if otherValue is
 // not a QOV.
 func IsFunctionallyDependentOn(v Value, otherValue Value) bool {
-	otherQOV, ok := otherValue.(*QuantifiedObjectValue)
+	otherQOV, ok := otherValue.(*quantifiedObjectValue)
 	if !ok {
 		return false
 	}
@@ -21,19 +21,19 @@ func IsFunctionallyDependentOn(v Value, otherValue Value) bool {
 		}
 		// Check ALL correlation-bearing value types, not just QOV.
 		switch n := node.(type) {
-		case *QuantifiedObjectValue:
-			if n.Correlation != otherQOV.Correlation {
+		case *quantifiedObjectValue:
+			if n.correlation != otherQOV.correlation {
 				allDependent = false
 			}
 		case *QuantifiedRecordValue:
-			if n.Alias != otherQOV.Correlation {
+			if n.Alias != otherQOV.correlation {
 				allDependent = false
 			}
 		// ExistsValue is a transparent composite (RFC-141): its child
 		// QuantifiedObjectValue is walked by WalkValue and handled by the
-		// *QuantifiedObjectValue case above.
+		// *quantifiedObjectValue case above.
 		case *ScalarSubqueryValue:
-			if n.Alias != otherQOV.Correlation {
+			if n.Alias != otherQOV.correlation {
 				allDependent = false
 			}
 		}

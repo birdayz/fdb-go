@@ -26,18 +26,24 @@ import (
 type LogicalFilterExpression struct {
 	queryPredicates []predicates.QueryPredicate
 	inner           Quantifier
+	resultValue     values.QuantifiedObjectValue
 }
 
 // NewLogicalFilterExpression constructs a LogicalFilter wrapping
 // `inner` and filtering by the AND of `queryPredicates`. The
 // predicates list is copied defensively.
-func NewLogicalFilterExpression(queryPredicates []predicates.QueryPredicate, inner Quantifier) *LogicalFilterExpression {
+func NewLogicalFilterExpression(queryPredicates []predicates.QueryPredicate, inner Quantifier) (*LogicalFilterExpression, error) {
+	resultValue, err := requireFlowedResult("LogicalFilterExpression", inner)
+	if err != nil {
+		return nil, err
+	}
 	copied := make([]predicates.QueryPredicate, len(queryPredicates))
 	copy(copied, queryPredicates)
 	return &LogicalFilterExpression{
 		queryPredicates: copied,
 		inner:           inner,
-	}
+		resultValue:     resultValue,
+	}, nil
 }
 
 // GetPredicates returns the predicate list. Read-only — callers must
@@ -55,7 +61,7 @@ func (e *LogicalFilterExpression) GetInner() Quantifier {
 // LogicalFilter doesn't reshape rows, only drops some. Java's
 // implementation is identical.
 func (e *LogicalFilterExpression) GetResultValue() values.Value {
-	return e.inner.GetFlowedObjectValue()
+	return e.resultValue
 }
 
 // GetQuantifiers returns the single inner Quantifier.
@@ -124,10 +130,11 @@ func (e *LogicalFilterExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-func (e *LogicalFilterExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	cp := *e
-	cp.inner = quantifiers[0]
-	return &cp
+func (e *LogicalFilterExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("LogicalFilterExpression", len(quantifiers), 1); err != nil {
+		return nil, err
+	}
+	return NewLogicalFilterExpression(e.queryPredicates, quantifiers[0])
 }
 
 // Compile-time check that LogicalFilterExpression implements

@@ -19,10 +19,10 @@ func TestImplementTableFunction_Fires(t *testing.T) {
 	t.Parallel()
 
 	stream := newTestStreamValue()
-	tf := expressions.NewTableFunctionExpression(stream)
+	tf := mustSmallImplementConstruct(expressions.NewTableFunctionExpression(stream))
 	ref := expressions.InitialOf(tf)
 
-	yielded := FireExpressionRule(NewImplementTableFunctionRule(), ref)
+	yielded := fireSmallImplementRule(t, NewImplementTableFunctionRule(), ref)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementTableFunctionRule yielded %d, want 1", len(yielded))
 	}
@@ -41,7 +41,7 @@ func TestImplementTableFunction_ViaPlanner(t *testing.T) {
 	t.Parallel()
 
 	stream := newTestStreamValue()
-	tf := expressions.NewTableFunctionExpression(stream)
+	tf := mustSmallImplementConstruct(expressions.NewTableFunctionExpression(stream))
 	ref := expressions.InitialOf(tf)
 
 	rules := DefaultExpressionRules()
@@ -68,7 +68,7 @@ func TestImplementTableFunction_PlanOutput(t *testing.T) {
 	t.Parallel()
 
 	stream := newTestStreamValue()
-	tf := expressions.NewTableFunctionExpression(stream)
+	tf := mustSmallImplementConstruct(expressions.NewTableFunctionExpression(stream))
 	ref := expressions.InitialOf(tf)
 
 	rules := DefaultExpressionRules()
@@ -97,19 +97,7 @@ func TestImplementTableFunction_PlanOutput(t *testing.T) {
 func TestImplementTableFunction_NilStreamValue(t *testing.T) {
 	t.Parallel()
 
-	tf := expressions.NewTableFunctionExpression(nil)
-	ref := expressions.InitialOf(tf)
-
-	yielded := FireExpressionRule(NewImplementTableFunctionRule(), ref)
-	if len(yielded) != 1 {
-		t.Fatalf("ImplementTableFunctionRule yielded %d for nil stream, want 1", len(yielded))
-	}
-
-	plan := yielded[0].(*plans.RecordQueryTableFunctionPlan)
-	if plan.GetStreamValue() != nil {
-		t.Fatal("expected nil stream value")
-	}
-	if plan.Explain() != "TableFunction(<nil>)" {
-		t.Fatalf("Explain = %q", plan.Explain())
+	if _, err := expressions.NewTableFunctionExpression(nil); err == nil {
+		t.Fatal("nil stream value was admitted into an exact TableFunction expression")
 	}
 }

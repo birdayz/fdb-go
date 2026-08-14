@@ -80,23 +80,25 @@ func NewRecordQueryAggregateIndexPlan(
 	recordTypeName string,
 	resultType values.Type,
 	aggregateFunction string,
-) *RecordQueryAggregateIndexPlan {
-	if resultType == nil {
-		resultType = values.UnknownType
+) (*RecordQueryAggregateIndexPlan, error) {
+	base, err := newPlanExprBaseForType("RecordQueryAggregateIndexPlan", resultType)
+	if err != nil {
+		return nil, err
 	}
 	prefixCount, prefixKnown := 0, false
 	if indexPlan != nil {
 		prefixCount, prefixKnown = indexPlan.physicalGroupingPrefix()
 	}
 	return &RecordQueryAggregateIndexPlan{
+		PlanExprBase:                base,
 		indexPlan:                   indexPlan,
 		recordTypeName:              recordTypeName,
-		resultType:                  resultType,
+		resultType:                  base.resultValue.Type(),
 		aggregateFunction:           aggregateFunction,
 		physicalGroupingPrefixCount: prefixCount,
 		physicalGroupingPrefixKnown: prefixKnown,
-		resultValue:                 values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
-	}
+		resultValue:                 base.resultValue,
+	}, nil
 }
 
 // GetResultValue returns the aggregate-index plan's STABLE per-instance result
@@ -105,9 +107,6 @@ func NewRecordQueryAggregateIndexPlan(
 // per call) for struct-literal test plans that bypass the constructor
 // (resultValue is nil).
 func (p *RecordQueryAggregateIndexPlan) GetResultValue() values.Value {
-	if p.resultValue == nil {
-		return p.PlanExprBase.GetResultValue()
-	}
 	return p.resultValue
 }
 
@@ -289,8 +288,11 @@ func (p *RecordQueryAggregateIndexPlan) EqualsWithoutChildren(other expressions.
 
 // WithQuantifiers returns this plan unchanged — it has no quantifiers to
 // replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryAggregateIndexPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+func (p *RecordQueryAggregateIndexPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryAggregateIndexPlan", len(qs), 0); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

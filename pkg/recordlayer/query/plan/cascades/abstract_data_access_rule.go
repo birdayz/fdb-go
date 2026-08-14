@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"bytes"
+	"fmt"
 	"hash/fnv"
 	"sort"
 
@@ -101,6 +103,10 @@ func PrepareMatchesAndCompensations(
 			len(requestedOrderings),
 		)
 		for _, requestedOrdering := range requestedOrderings {
+			requestedOrdering = pullUpRequestedOrderingToMatchTop(
+				requestedOrdering,
+				pm.GetQueryExpression(),
+			)
 			translatedRequestedOrderings = append(
 				translatedRequestedOrderings,
 				translateIntersectionRequestedOrdering(
@@ -207,7 +213,104 @@ func computeTopToTopTranslationMapMaybe(
 	if maxMatchMap == nil {
 		return nil, false
 	}
-	return maxMatchMap.PullUpMaybe(values.CurrentAlias, values.CurrentAlias)
+	current := values.CurrentCorrelation()
+	return maxMatchMap.PullUpMaybe(current, current)
+}
+
+// pullUpRequestedOrderingToMatchTop expresses a logical request against the
+// query row owned by a partial match before the query-top to candidate-top
+// translation runs. SQL sort keys retain their source quantifier (for example
+// T.SORT_KEY), while ordinal-aware match candidates expose ordering keys from
+// the owner-current physical row. Translating only CurrentCorrelation in the
+// top-to-top map therefore leaves the two exact values in different correlation
+// spaces and makes an otherwise valid ordered scan look unordered.
+//
+// PullUpValue is the exact layout-preserving boundary operation: it resolves
+// every part through the matched query expression's result and reanchors it on
+// the owner-current row. The conversion is all-or-nothing so a partially translated
+// ordering can never mix logical and physical roots.
+func pullUpRequestedOrderingToMatchTop(
+	requested *properties.RequestedOrdering,
+	queryExpression expressions.RelationalExpression,
+) *properties.RequestedOrdering {
+	if requested == nil || requested.IsPreserve() || queryExpression == nil {
+		return requested
+	}
+	queryResult := queryExpression.GetResultValue()
+	if queryResult == nil {
+		return requested
+	}
+
+	// Correlations referenced by node-local predicates but not declared as the
+	// expression's own child edges are genuine outer inputs. They must never be
+	// reinterpreted as an alias for this group's result merely because their row
+	// happens to have the same exact type.
+	external := make(map[values.CorrelationIdentifier]struct{})
+	for alias := range queryExpression.GetCorrelatedToWithoutChildren() {
+		external[alias] = struct{}{}
+	}
+	for _, quantifier := range queryExpression.GetQuantifiers() {
+		delete(external, quantifier.GetAlias())
+	}
+
+	parts := requested.GetParts()
+	pulled := make([]properties.RequestedOrderingPart, len(parts))
+	for i, part := range parts {
+		value, err := values.PullUpValue(
+			part.Value,
+			queryResult,
+			values.CurrentCorrelation(),
+		)
+		if err != nil {
+			return requested
+		}
+		if value == nil {
+			// A requested ordering is attached to a GROUP, while a partial match
+			// is attached to one expression in that group. The request can
+			// therefore be rooted at the parent's alias for the group output
+			// (T.ID), even when this particular expression passes through a fresh
+			// child alias (q$2.ID). Translate output -> expression input first,
+			// then use the ordinary PullUpValue path to reach owner-current.
+			//
+			// This is exact and fail-closed: only an admitted field rooted at a
+			// non-external QOV with the expression result's exact whole-row type
+			// may cross. An outer correlation, a foreign layout, or a value whose
+			// path cannot be rebuilt leaves the original request untouched.
+			field, isField := values.AsFieldValue(part.Value)
+			if !isField {
+				return requested
+			}
+			root, isRoot := values.AsQuantifiedObjectValue(field.ChildValue())
+			if !isRoot || root == nil || root.Correlation() == values.CurrentCorrelation() ||
+				!root.FlowedType().Equals(queryResult.Type()) {
+				return requested
+			}
+			if _, isExternal := external[root.Correlation()]; isExternal {
+				return requested
+			}
+			down := values.PushDownValue(part.Value, queryResult, root.Correlation())
+			if down == nil {
+				return requested
+			}
+			value, err = values.PullUpValue(
+				down,
+				queryResult,
+				values.CurrentCorrelation(),
+			)
+			if err != nil || value == nil {
+				return requested
+			}
+		}
+		pulled[i] = properties.RequestedOrderingPart{
+			Value:     value,
+			SortOrder: part.SortOrder,
+		}
+	}
+	return properties.NewRequestedOrdering(
+		pulled,
+		requested.GetDistinctness(),
+		requested.IsExhaustive(),
+	)
 }
 
 // MaximumCoverageMatches eliminates PartialMatches whose coverage is
@@ -467,7 +570,12 @@ func DataAccessForMatchPartition(
 		// data-access scan look non-unique/unordered, so a non-unique
 		// index could beat the unique one and sorts weren't eliminated.
 		unique := candidateUnique(cand)
-		var expr expressions.RelationalExpression = wrapScanPlanWithCoverage(plan, unique, cand.GetColumnNames(), candidatePKColumns(cand), candidateDistinctSignal(cand))
+		expr, err := wrapScanPlanWithCoverage(plan, unique, cand.GetColumnNames(), candidatePKColumns(cand), candidateDistinctSignal(cand))
+		if err != nil {
+			// A scan is an optional access-path alternative. If its exact row
+			// contract cannot construct the wrapper, exclude that alternative.
+			continue
+		}
 
 		if comp.IsNeeded() {
 			fmc, ok := comp.(*ForMatchCompensation)
@@ -495,6 +603,10 @@ func DataAccessForMatchPartition(
 			}
 			expr = applied
 		}
+		if pmi, ok := pm.(*PartialMatchImpl); ok &&
+			!exactDataAccessResultTypesAgree(expr, pmi.GetQueryExpression()) {
+			continue
+		}
 		resultExprs = append(resultExprs, expr)
 	}
 
@@ -506,8 +618,26 @@ func DataAccessForMatchPartition(
 			resultExprs = append(resultExprs, intersectionResult.GetExpressions()...)
 		}
 	}
-
 	return resultExprs
+}
+
+// exactDataAccessResultTypesAgree checks the contract of the complete physical
+// alternative after every required compensation has been applied. A candidate
+// scan realizes the candidate traversal's top row, which need not be the row
+// produced by a non-root candidate expression that happened to match. Such a
+// partial match is usable only when compensation reshapes the realized scan to
+// the matched query expression's exact result type. Otherwise yielding it into
+// that query Reference crosses two different memo equivalence classes.
+func exactDataAccessResultTypesAgree(realized, matched expressions.RelationalExpression) bool {
+	realizedType, err := admitMemoExpression(realized)
+	if err != nil {
+		return false
+	}
+	matchedType, err := admitMemoExpression(matched)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(realizedType.CanonicalBytes(), matchedType.CanonicalBytes())
 }
 
 // candidateScanProps returns the unique flag and index column order for a
@@ -612,7 +742,7 @@ func candidatePKColumns(cand MatchCandidate) []string {
 
 // wrapAccessScan wraps a per-access scan plan, propagating the access's
 // candidate unique flag + column order (used by the intersection branches).
-func wrapAccessScan(access *SingleMatchedAccess, plan plans.RecordQueryPlan) expressions.RelationalExpression {
+func wrapAccessScan(access *SingleMatchedAccess, plan plans.RecordQueryPlan) (expressions.RelationalExpression, error) {
 	cand := access.GetPartialMatch().GetMatchCandidate()
 	unique, columnNames := candidateScanProps(cand)
 	return wrapScanPlanWithCoverage(plan, unique, columnNames, candidatePKColumns(cand), candidateDistinctSignal(cand))
@@ -642,7 +772,7 @@ func wrapAccessScan(access *SingleMatchedAccess, plan plans.RecordQueryPlan) exp
 // The covering plan holds the index scan as a FIELD and only the covering plan
 // is memoized, exactly as Java does (:280). Nothing here is a quantifier over
 // the index scan.
-func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, unique bool, columnNames []string, pkColumnNames []string, distinctSignal *bool) expressions.RelationalExpression {
+func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, unique bool, columnNames []string, pkColumnNames []string, distinctSignal *bool) (expressions.RelationalExpression, error) {
 	if fetchPlan, ok := plan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 		if innerIdx, ok := fetchPlan.GetInner().(*plans.RecordQueryIndexPlan); ok {
 			// The index scan carries its index metadata (columns/pk/unique) on
@@ -653,7 +783,10 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, unique bool, columnNam
 			if distinctSignal != nil {
 				idxLeaf = idxLeaf.WithDistinctRecordsSignal(*distinctSignal)
 			}
-			covering := plans.NewRecordQueryCoveringIndexPlan(idxLeaf)
+			covering, err := plans.NewRecordQueryCoveringIndexPlan(idxLeaf)
+			if err != nil {
+				return nil, err
+			}
 			covRef := expressions.InitialOf(covering)
 			fetchQ := expressions.ForEachQuantifier(covRef)
 			// The fetch is its own cascades expression carrying the live covRef
@@ -679,13 +812,13 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, unique bool, columnNam
 		if distinctSignal != nil {
 			idxPlan = idxPlan.WithDistinctRecordsSignal(*distinctSignal)
 		}
-		return idxPlan
+		return idxPlan, nil
 	}
 	if vecPlan, ok := plan.(*plans.RecordQueryVectorIndexPlan); ok {
 		// The vector scan is its own Cascades expression now (RFC-184 W2) — a bare
 		// leaf plan carrying a stable per-instance result value, no
 		// physicalVectorIndexScanWrapper adapter needed.
-		return vecPlan
+		return vecPlan, nil
 	}
 	// A BARE primary-key scan is its own Cascades expression now (RFC-184 W2):
 	// RecordQueryScanPlan implements RelationalExpression directly and carries a
@@ -696,9 +829,9 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, unique bool, columnNam
 	// plan that HAS children and compares them deeply (plans.Equals) — the
 	// identity a bare plan cannot yet provide for a multi-node subtree.
 	if bareScan, ok := plan.(*plans.RecordQueryScanPlan); ok {
-		return bareScan
+		return bareScan, nil
 	}
-	return &scanPlanExpression{plan: plan}
+	return &scanPlanExpression{plan: plan}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -719,7 +852,10 @@ type scanPlanExpression struct {
 }
 
 func (s *scanPlanExpression) GetResultValue() values.Value {
-	return values.NewNullValue(values.UnknownType)
+	if s == nil || s.plan == nil {
+		return nil
+	}
+	return s.plan.GetResultValue()
 }
 
 func (s *scanPlanExpression) GetQuantifiers() []expressions.Quantifier {
@@ -808,8 +944,11 @@ func (s *scanPlanExpression) EqualsWithoutChildren(other expressions.RelationalE
 	return plans.Equals(s.plan, o.plan)
 }
 
-func (s *scanPlanExpression) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return s
+func (s *scanPlanExpression) WithQuantifiers(quantifiers []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(quantifiers) != 0 {
+		return nil, fmt.Errorf("%w: scanPlanExpression requires 0, got %d", expressions.ErrQuantifierArity, len(quantifiers))
+	}
+	return s, nil
 }
 
 // GetRecordQueryPlan returns the underlying plan.
@@ -995,14 +1134,6 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 		}
 	}
 
-	// The census's comparison context for the positional walk below. Built only
-	// when the census is counting: it is a per-call allocation on a planning hot
-	// path, and the comparison does not depend on it.
-	var censusContext []values.Value
-	if orderingComparisonCensusOn() {
-		censusContext = orderingPartValues(orderingParts)
-	}
-
 	opIdx := 0
 	for _, reqPart := range ro.GetParts() {
 		reqValue := reqPart.Value
@@ -1024,7 +1155,7 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 				continue
 			}
 
-			if orderingValuesEqualIn(censusContext, reqValue, op.GetValue()) {
+			if orderingValuesEqualIn(reqValue, op.GetValue()) {
 				reqSort := reqPart.SortOrder
 				if reqSort != properties.RequestedSortOrderAny {
 					matchedSort := op.GetMatchedSortOrder()
@@ -1097,16 +1228,10 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 // a CardinalityValue-wrapped pair still crosses it. The census counts how often
 // it is the only arm that decides such a pair, and on today's corpus that count
 // is zero — unexercised, not unreachable, which is why it stays.
-// The `context` parameter is the LIST the caller is scanning. The comparison
-// itself does not depend on it — only the census does, because the root-wildcard
-// ambiguity it counts is a property of a whole list and not of a pair (see
-// recordRootWildcard). Every production call site supplies one; the census counts
-// the ones that do not, so a site added without a context cannot quietly shrink
-// the population the ambiguity assertion covers.
-func orderingValuesEqualIn(context []values.Value, left, right values.Value) bool {
+func orderingValuesEqualIn(left, right values.Value) bool {
 	recordOrderingComparison(
 		OrderingSiteRequestedVsCandidate, left, right,
-		values.CanBridgeOrderingValueRoots, context,
+		values.CanBridgeOrderingValueRoots,
 	)
 	if values.OrderingFieldPair(left, right) {
 		return values.SameOrderingColumn(left, right)
@@ -1119,22 +1244,11 @@ func orderingValuesEqualIn(context []values.Value, left, right values.Value) boo
 
 func orderingValueListContains(haystack []values.Value, needle values.Value) bool {
 	for _, value := range haystack {
-		if orderingValuesEqualIn(haystack, value, needle) {
+		if orderingValuesEqualIn(value, needle) {
 			return true
 		}
 	}
 	return false
-}
-
-// orderingPartValues is the census context for SatisfiesRequestedOrdering's
-// positional walk: the candidate's whole matched-ordering-part list, which is the
-// ordering SET the requested keys are resolved against.
-func orderingPartValues(parts []*MatchedOrderingPart) []values.Value {
-	out := make([]values.Value, 0, len(parts))
-	for _, part := range parts {
-		out = append(out, part.GetValue())
-	}
-	return out
 }
 
 // SatisfiesAnyRequestedOrderings filters requestedOrderings to those
@@ -1148,6 +1262,7 @@ func SatisfiesAnyRequestedOrderings(
 ) ([]*properties.RequestedOrdering, *ScanDirection) {
 	seenForward := false
 	seenReverse := false
+	seenBoth := false
 	var satisfying []*properties.RequestedOrdering
 
 	for _, ro := range requestedOrderings {
@@ -1160,13 +1275,18 @@ func SatisfiesAnyRequestedOrderings(
 			case ScanDirectionReverse:
 				seenReverse = true
 			case ScanDirectionBoth:
-				seenForward = true
-				seenReverse = true
+				// PreserveOrdering is direction-neutral. It says either scan
+				// direction is acceptable; it must not erase a directional request
+				// satisfied by the same access. Treating BOTH as both votes turns
+				// {preserve, DESC} into BOTH, and PrepareMatches consequently emits
+				// a forward scan — losing the reverse intersection / ordered access
+				// path that satisfied DESC in the first place.
+				seenBoth = true
 			}
 		}
 	}
 
-	if !seenForward && !seenReverse {
+	if !seenForward && !seenReverse && !seenBoth {
 		return nil, nil
 	}
 
@@ -1175,8 +1295,10 @@ func SatisfiesAnyRequestedOrderings(
 		resolved = ScanDirectionBoth
 	} else if seenForward {
 		resolved = ScanDirectionForward
-	} else {
+	} else if seenReverse {
 		resolved = ScanDirectionReverse
+	} else {
+		resolved = ScanDirectionBoth
 	}
 	return satisfying, &resolved
 }

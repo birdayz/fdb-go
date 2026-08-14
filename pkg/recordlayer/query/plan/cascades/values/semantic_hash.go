@@ -59,8 +59,9 @@ func writeSemanticHash(h io.Writer, v Value) {
 	}
 	switch t := v.(type) {
 	// Correlation-bearing leaves: per-type tag ONLY, alias excluded.
-	case *QuantifiedObjectValue:
-		_, _ = io.WriteString(h, "qov")
+	case *quantifiedObjectValue:
+		_, _ = io.WriteString(h, "qov:")
+		_, _ = h.Write(t.flowed.canonical)
 	case *QuantifiedRecordValue:
 		_, _ = io.WriteString(h, "qrv")
 	case *ObjectValue:
@@ -109,9 +110,17 @@ func writeSemanticHash(h io.Writer, v Value) {
 		for _, f := range t.Fields {
 			_, _ = io.WriteString(h, f.Name+",")
 		}
-	case *FieldValue:
+	case *fieldValue:
+		if isAdmittedFieldValue(t) {
+			_, _ = io.WriteString(h, "fieldpath:")
+			_, _ = h.Write(t.rootType.canonical)
+			for _, acc := range t.Resolved.Accessors {
+				_, _ = fmt.Fprintf(h, "#%d", acc.Ordinal)
+			}
+			break
+		}
 		// A BAKED node's identity is its ordinal PATH alone
-		// (Java ResolvedAccessor.equals compares getOrdinal() only,
+		// (Java resolvedAccessor.equals compares getOrdinal() only,
 		// FieldValue.java:675-689; the display name is rendering, not
 		// identity) — so the hash folds ONLY the per-step ordinals. Mixing
 		// the name in would break

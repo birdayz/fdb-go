@@ -481,8 +481,8 @@ func recordLegLocalBakeability(outcome legLocalBakeOutcome, leg values.Correlati
 // and legLocalTypes is consulted for no other purpose at this site.
 func recordRebaseOuterLegArm(
 	outcome legLocalBakeOutcome,
-	fv *values.FieldValue,
-	qov *values.QuantifiedObjectValue,
+	fv values.FieldValue,
+	qov values.QuantifiedObjectValue,
 	legLocalTypes map[values.CorrelationIdentifier]*values.RecordType,
 	identity legReadIdentity,
 	origin legRebaseOrigin,
@@ -491,10 +491,10 @@ func recordRebaseOuterLegArm(
 		return
 	}
 	recordLegRebaseSite(origin)
-	legTypeFor, haveLegType := legLocalTypes[qov.Correlation]
-	column := strings.ToUpper(fv.Field)
-	recordLegLocalBakeability(outcome, qov.Correlation,
-		legTypeOrUntyped(legTypeFor, haveLegType, qov.Typ),
+	legTypeFor, haveLegType := legLocalTypes[qov.Correlation()]
+	column := strings.ToUpper(fv.DisplayName())
+	recordLegLocalBakeability(outcome, qov.Correlation(),
+		legTypeOrUntyped(legTypeFor, haveLegType, qov.FlowedType()),
 		column, legLocalTypeKeys(legLocalTypes)...)
 	// EVERY firing is classified, so the three identity counters partition Total.
 	// They partitioned the merged re-anchor alone until that population went to
@@ -505,7 +505,7 @@ func recordRebaseOuterLegArm(
 	if identity != legReadIdentityInLegDomain {
 		why = describeLegIdentityDecline(fv, qov, legTypeFor, haveLegType)
 	}
-	recordLegReadIdentity(qov.Correlation, column, identity, why)
+	recordLegReadIdentity(qov.Correlation(), column, identity, why)
 }
 
 // legReadIdentity is what a leg-correlated read states about its OWN column
@@ -596,27 +596,30 @@ func recordLegReadIdentity(leg values.CorrelationIdentifier, column string, clas
 // layout but whose own QOV cannot say so is a TYPE-PLUMBING gap — the reference
 // carries the right ordinal and the wrong domain token. Those have different
 // fixes and neither is "resolve the display name".
-func describeLegIdentityDecline(fv *values.FieldValue, qov *values.QuantifiedObjectValue, legType *values.RecordType, haveLegType bool) string {
+func describeLegIdentityDecline(fv values.FieldValue, qov values.QuantifiedObjectValue, legType *values.RecordType, haveLegType bool) string {
 	var parts []string
-	if fv.Resolved == nil {
+	path := fv.Path()
+	if path == nil {
 		return "no resolved path"
 	}
-	parts = append(parts, fmt.Sprintf("accessors=%d", len(fv.Resolved.Accessors)))
-	if len(fv.Resolved.Accessors) > 0 {
-		parts = append(parts, fmt.Sprintf("rootOrdinal=%d", fv.Resolved.Root().Ordinal))
+	parts = append(parts, fmt.Sprintf("accessors=%d", path.Len()))
+	ordinals := path.Ordinals()
+	if len(ordinals) > 0 {
+		parts = append(parts, fmt.Sprintf("rootOrdinal=%d", ordinals[0]))
 	}
-	parts = append(parts, fmt.Sprintf("pathDomainKnown=%t", fv.Resolved.Domain.IsKnown()))
-	qovDomain := values.OrdinalDomainOfType(qov.Typ)
+	pathDomain := path.RootDomain()
+	parts = append(parts, fmt.Sprintf("pathDomainKnown=%t", pathDomain.IsKnown()))
+	qovDomain := values.OrdinalDomainOfType(qov.FlowedType())
 	parts = append(parts, fmt.Sprintf("qovTypeDomainKnown=%t", qovDomain.IsKnown()))
-	if qovDomain.IsKnown() && fv.Resolved.Domain.IsKnown() {
-		parts = append(parts, fmt.Sprintf("qovDomainMatches=%t", qovDomain == fv.Resolved.Domain))
+	if qovDomain.IsKnown() && pathDomain.IsKnown() {
+		parts = append(parts, fmt.Sprintf("qovDomainMatches=%t", qovDomain == pathDomain))
 	}
 	// The decisive one: the leg layout the census already reports AVAILABLE.
 	if haveLegType && legType != nil {
 		legDomain := values.OrdinalDomainOfType(legType)
 		parts = append(parts, fmt.Sprintf("legTypeDomainKnown=%t", legDomain.IsKnown()))
-		if legDomain.IsKnown() && fv.Resolved.Domain.IsKnown() {
-			parts = append(parts, fmt.Sprintf("legTypeDomainMatches=%t", legDomain == fv.Resolved.Domain))
+		if legDomain.IsKnown() && pathDomain.IsKnown() {
+			parts = append(parts, fmt.Sprintf("legTypeDomainMatches=%t", legDomain == pathDomain))
 		}
 	} else {
 		parts = append(parts, "noLegType")

@@ -45,9 +45,9 @@ func TestPositionalTypeForDescriptorCarriesDeclaredFieldTypes(t *testing.T) {
 				{Name: proto.String("s"), Number: proto.Int32(5), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum()},
 				{Name: proto.String("b"), Number: proto.Int32(6), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_BYTES.Enum()},
 				{Name: proto.String("flag"), Number: proto.Int32(7), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_BOOL.Enum()},
-				// Repeated: the slot holds a list, not the element scalar, so
-				// the honest answer is UnknownType. Pinned so a future "type
-				// everything" sweep cannot quietly start calling this DOUBLE.
+				// Repeated: the slot holds an exact non-null ARRAY whose element
+				// is the declared non-null DOUBLE. It must not collapse either to
+				// the scalar DOUBLE or to an Unknown placeholder.
 				{Name: proto.String("ds"), Number: proto.Int32(8), Label: descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_DOUBLE.Enum()},
 			},
 		}},
@@ -73,7 +73,7 @@ func TestPositionalTypeForDescriptorCarriesDeclaredFieldTypes(t *testing.T) {
 		{"S", values.TypeCodeString},
 		{"B", values.TypeCodeBytes},
 		{"FLAG", values.TypeCodeBoolean},
-		{"DS", values.TypeCodeUnknown},
+		{"DS", values.TypeCodeArray},
 	}
 	if len(rt.Fields) != len(want) {
 		t.Fatalf("layout has %d fields, want %d: %s", len(rt.Fields), len(want), rt.String())
@@ -90,6 +90,11 @@ func TestPositionalTypeForDescriptorCarriesDeclaredFieldTypes(t *testing.T) {
 				"the full-scan path decides the opposite (layout: %s)",
 				f.Name, f.FieldType, w.code, rt.String())
 		}
+	}
+	ds, ok := rt.Fields[7].FieldType.(*values.ArrayType)
+	if !ok || ds == nil || ds.IsNullable() || ds.ElementType == nil ||
+		ds.ElementType.Code() != values.TypeCodeDouble || ds.ElementType.IsNullable() {
+		t.Fatalf("field DS typed %v, want ARRAY<DOUBLE NOT NULL> NOT NULL", rt.Fields[7].FieldType)
 	}
 
 	// The layout must be identical to the one the plain full-scan leaf derives,

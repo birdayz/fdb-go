@@ -193,9 +193,9 @@ func ordinalSeedLegWindows(rc *RecordConstructorValue, acceptNested bool) (map[C
 		// The element's window lets its `<AS>.<AS>` shadow read resolve, and (H)'s
 		// field-id in the group-by consumes the element by rc index either way.
 		if isMixedSeedElement(f) {
-			elemQOV := f.Value.(*QuantifiedObjectValue)
+			elemQOV := f.Value.(*quantifiedObjectValue)
 			elemName := strings.ToUpper(f.Name)
-			if _, dup := windows[elemQOV.Correlation]; dup {
+			if _, dup := windows[elemQOV.correlation]; dup {
 				return nil, nil, nil // two element fields over one correlation — not a seed
 			}
 			// The window's IDENTITY is the element QOV's own correlation, carried —
@@ -207,7 +207,7 @@ func ordinalSeedLegWindows(rc *RecordConstructorValue, acceptNested bool) (map[C
 			// — the machine namespace is lowercase, so folding a minted q$N yields
 			// Q$N, which is exactly the spelling SameLeg exists to keep out of the
 			// minted leg's window.
-			windows[elemQOV.Correlation] = OrdinalSeedLegWindow{
+			windows[elemQOV.correlation] = OrdinalSeedLegWindow{
 				// The mixed seed's scalar element is a synthesized ONE-COLUMN flat
 				// run, numerically identical to what it has always been. Stamped
 				// rather than left to the zero value because a synthesized window is
@@ -215,15 +215,15 @@ func ordinalSeedLegWindows(rc *RecordConstructorValue, acceptNested bool) (map[C
 				Kind:   LegKindFlatRun,
 				Offset: i,
 				Typ:    &RecordType{Fields: []Field{{Name: elemName, FieldType: elemQOV.Type(), Ordinal: 0}}},
-				Alias:  elemQOV.Correlation,
+				Alias:  elemQOV.correlation,
 			}
-			counts[elemQOV.Correlation] = 1
-			names[elemQOV.Correlation] = strings.ToUpper(elemQOV.Correlation.Name())
+			counts[elemQOV.correlation] = 1
+			names[elemQOV.correlation] = strings.ToUpper(elemQOV.correlation.Name())
 			mergedFields[i] = Field{Name: elemName, FieldType: elemQOV.Type(), Ordinal: i}
 			curAlias = CorrelationIdentifier{}
 			continue
 		}
-		fv, isFV := f.Value.(*FieldValue)
+		fv, isFV := f.Value.(*fieldValue)
 		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
 			return nil, nil, nil
 		}
@@ -231,15 +231,15 @@ func ordinalSeedLegWindows(rc *RecordConstructorValue, acceptNested bool) (map[C
 		if !single {
 			return nil, nil, nil
 		}
-		qov, isQOV := fv.Child.(*QuantifiedObjectValue)
+		qov, isQOV := fv.Child.(*quantifiedObjectValue)
 		if !isQOV {
 			return nil, nil, nil
 		}
-		legType, isRT := qov.Typ.(*RecordType)
-		if !isRT {
+		legType := qov.physicalFlowedRecordType()
+		if legType == nil {
 			return nil, nil, nil
 		}
-		alias := qov.Correlation
+		alias := qov.correlation
 		if alias != curAlias {
 			if _, dup := windows[alias]; dup {
 				return nil, nil, nil // a split run — not pristine
@@ -324,9 +324,9 @@ func positionalMergeWindows(rc *RecordConstructorValue) (map[CorrelationIdentifi
 	for i, f := range rc.Fields {
 		// Guaranteed by IsPositionalMergeRC: every field is a bare QOV of a
 		// DISTINCT quantifier, named OrdinalFieldName(i) in position order.
-		qov := f.Value.(*QuantifiedObjectValue)
+		qov := f.Value.(*quantifiedObjectValue)
 		mergedFields[i] = Field{Name: f.Name, FieldType: qov.Type(), Ordinal: i}
-		names[qov.Correlation] = strings.ToUpper(qov.Correlation.Name())
+		names[qov.correlation] = strings.ToUpper(qov.correlation.Name())
 
 		// THE PER-SLOT RECORD TEST BINDS THE TYPE AND REQUIRES NON-NIL, and both
 		// halves matter.
@@ -338,29 +338,29 @@ func positionalMergeWindows(rc *RecordConstructorValue) (map[CorrelationIdentifi
 		// readers. The assertion is needed for Typ anyway; BINDING it is both the
 		// correct test and the value the window carries. (Binding is also what the
 		// single-authority ban permits — it forbids DISCARDED assertions.)
-		legType, isRT := qov.Typ.(*RecordType)
+		legType, isRT := qov.FlowedType().(*RecordType)
 		if !isRT || legType == nil {
 			// A non-record slot keeps the EXISTING element treatment: a synthesized
 			// 1-field flat window at its own slot, numerically identical to today.
 			// Merge rows with such slots are real — the corpus has 750 of them, every
 			// distinct witness an unnest ELEMENT alias.
 			elemName := strings.ToUpper(f.Name)
-			windows[qov.Correlation] = OrdinalSeedLegWindow{
+			windows[qov.correlation] = OrdinalSeedLegWindow{
 				Kind:   LegKindFlatRun,
 				Offset: i,
 				Typ:    &RecordType{Fields: []Field{{Name: elemName, FieldType: qov.Type(), Ordinal: 0}}},
-				Alias:  qov.Correlation,
+				Alias:  qov.correlation,
 			}
 			continue
 		}
 		// Offset is the FIELD INDEX of the slot holding the whole leg row, not the
 		// first column of a run. Typ is the LEG's own record type, so a reader's
 		// leg-local bound check measures the leg's real width.
-		windows[qov.Correlation] = OrdinalSeedLegWindow{
+		windows[qov.correlation] = OrdinalSeedLegWindow{
 			Kind:   LegKindNested,
 			Offset: i,
 			Typ:    legType,
-			Alias:  qov.Correlation,
+			Alias:  qov.correlation,
 		}
 	}
 	// IsPositionalMergeRC already requires >= 2 fields over DISTINCT quantifiers,
@@ -636,7 +636,7 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 // isMixedSeedElement reports whether an RC field is the MIXED-seed scalar element
 // (at ANY position — the walk is element-anywhere). LOAD-BEARING guard.
 func isMixedSeedElement(f RecordConstructorField) bool {
-	qov, isQOV := f.Value.(*QuantifiedObjectValue)
+	qov, isQOV := f.Value.(*quantifiedObjectValue)
 	return isQOV && IsMixedSeedElementType(qov.Type())
 }
 

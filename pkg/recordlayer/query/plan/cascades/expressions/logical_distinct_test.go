@@ -8,7 +8,7 @@ func TestLogicalDistinct_Construction(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	d := NewLogicalDistinctExpression(q)
+	d := mustExpression(NewLogicalDistinctExpression(q))
 	if d.GetInner().GetAlias() != q.GetAlias() {
 		t.Fatal("inner alias mismatch")
 	}
@@ -25,8 +25,8 @@ func TestLogicalDistinct_EqualsWithoutChildren(t *testing.T) {
 	leaf := &leafScan{name: "T"}
 	q1 := ForEachQuantifier(InitialOf(leaf))
 	q2 := ForEachQuantifier(InitialOf(leaf))
-	d1 := NewLogicalDistinctExpression(q1)
-	d2 := NewLogicalDistinctExpression(q2)
+	d1 := mustExpression(NewLogicalDistinctExpression(q1))
+	d2 := mustExpression(NewLogicalDistinctExpression(q2))
 	if !d1.EqualsWithoutChildren(d2, EmptyAliasMap()) {
 		t.Fatal("two LogicalDistincts reported unequal-without-children — should always be class-equal")
 	}
@@ -39,8 +39,8 @@ func TestLogicalDistinct_HashCodeStable(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	d1 := NewLogicalDistinctExpression(q)
-	d2 := NewLogicalDistinctExpression(q)
+	d1 := mustExpression(NewLogicalDistinctExpression(q))
+	d2 := mustExpression(NewLogicalDistinctExpression(q))
 	if d1.HashCodeWithoutChildren() != d2.HashCodeWithoutChildren() {
 		t.Fatal("two LogicalDistincts produced different constant hashes")
 	}

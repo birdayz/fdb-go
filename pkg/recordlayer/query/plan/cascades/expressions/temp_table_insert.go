@@ -1,6 +1,7 @@
 package expressions
 
 import (
+	"fmt"
 	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -13,18 +14,31 @@ type TempTableInsertExpression struct {
 	inner          Quantifier
 	tempTableAlias values.CorrelationIdentifier
 	owning         bool
+	resultValue    values.Value
 }
 
 func NewTempTableInsertExpression(
 	inner Quantifier,
 	tempTableAlias values.CorrelationIdentifier,
 	owning bool,
-) *TempTableInsertExpression {
+) (*TempTableInsertExpression, error) {
+	if tempTableAlias.IsZero() || tempTableAlias == values.CurrentCorrelation() {
+		return nil, fmt.Errorf("TempTableInsertExpression alias: expected an ordinary non-zero correlation")
+	}
+	flowed, err := requireFlowedResult("TempTableInsertExpression", inner)
+	if err != nil {
+		return nil, err
+	}
+	resultType, err := snapshotExpressionResultType("TempTableInsertExpression", flowed.FlowedType())
+	if err != nil {
+		return nil, err
+	}
 	return &TempTableInsertExpression{
 		inner:          inner,
 		tempTableAlias: tempTableAlias,
 		owning:         owning,
-	}
+		resultValue:    values.NewQueriedValue(nil, resultType.Type()),
+	}, nil
 }
 
 func (e *TempTableInsertExpression) GetInner() Quantifier {
@@ -40,7 +54,7 @@ func (e *TempTableInsertExpression) IsOwning() bool {
 }
 
 func (e *TempTableInsertExpression) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+	return e.resultValue
 }
 
 func (e *TempTableInsertExpression) GetQuantifiers() []Quantifier {
@@ -75,10 +89,11 @@ func (e *TempTableInsertExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-func (e *TempTableInsertExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	cp := *e
-	cp.inner = quantifiers[0]
-	return &cp
+func (e *TempTableInsertExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("TempTableInsertExpression", len(quantifiers), 1); err != nil {
+		return nil, err
+	}
+	return NewTempTableInsertExpression(quantifiers[0], e.tempTableAlias, e.owning)
 }
 
 var _ RelationalExpression = (*TempTableInsertExpression)(nil)

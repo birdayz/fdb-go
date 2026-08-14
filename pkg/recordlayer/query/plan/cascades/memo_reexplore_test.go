@@ -14,8 +14,9 @@ import (
 // — must re-arm the epoch AND schedule a task, or the new member is
 // silently never explored and AdvancePlannerStage discards it.
 
-func convergedLeafRef() *expressions.Reference {
-	ref := expressions.InitialOf(&expressions.FullUnorderedScanExpression{})
+func convergedLeafRef(t testing.TB) *expressions.Reference {
+	t.Helper()
+	ref := expressions.InitialOf(mustFullUnorderedScan(t, []string{"leaf"}, values.NotNullLong))
 	ref.StartExploration()
 	ref.CommitExploration()
 	if ref.NeedsExploration() {
@@ -28,14 +29,16 @@ func convergedLeafRef() *expressions.Reference {
 // path (DecorrelateValuesRule's extras) re-arms and schedules.
 func TestMemoInsertReExploring_SchedulesConvergedRef(t *testing.T) {
 	t.Parallel()
-	ref := convergedLeafRef()
+	ref := convergedLeafRef(t)
 	m := NewMemo(ref)
 
 	var scheduled []*expressions.Reference
 	m.SetReExploreScheduler(func(r *expressions.Reference) { scheduled = append(scheduled, r) })
 
-	extra := expressions.NewLogicalTypeFilterExpression([]string{"T"},
-		expressions.ForEachQuantifier(expressions.InitialOf(&expressions.FullUnorderedScanExpression{})))
+	extraInner := expressions.InitialOf(mustFullUnorderedScan(t, []string{"T"}, values.NotNullLong))
+	extra, extraErr := expressions.NewLogicalTypeFilterExpression(
+		[]string{"T"}, expressions.ForEachQuantifier(extraInner))
+	extra = mustConstruct(t, extra, extraErr)
 	if !m.InsertReExploring(ref, extra) {
 		t.Fatal("insert must add the new member")
 	}
@@ -48,10 +51,12 @@ func TestMemoInsertReExploring_SchedulesConvergedRef(t *testing.T) {
 
 	// A NEVER-explored ref needs nothing: its first round explores every
 	// member when a parent's child-walk reaches it.
-	fresh := expressions.InitialOf(&expressions.FullUnorderedScanExpression{})
+	fresh := expressions.InitialOf(mustFullUnorderedScan(t, []string{"fresh"}, values.NotNullLong))
 	scheduled = nil
-	m.InsertReExploring(fresh, expressions.NewLogicalTypeFilterExpression([]string{"U"},
-		expressions.ForEachQuantifier(expressions.InitialOf(&expressions.FullUnorderedScanExpression{}))))
+	freshInner := expressions.InitialOf(mustFullUnorderedScan(t, []string{"U"}, values.NotNullLong))
+	freshExtra, freshExtraErr := expressions.NewLogicalTypeFilterExpression(
+		[]string{"U"}, expressions.ForEachQuantifier(freshInner))
+	m.InsertReExploring(fresh, mustConstruct(t, freshExtra, freshExtraErr))
 	if len(scheduled) != 0 {
 		t.Fatalf("a never-explored ref must not be scheduled, got %v", scheduled)
 	}
@@ -68,12 +73,18 @@ func TestMemoMerge_SchedulesSurvivor(t *testing.T) {
 	// Equivalence requires the SAME child reference: two structurally
 	// equal selects over one child group land in two parent refs that
 	// integrateOne merges.
-	child := expressions.InitialOf(&expressions.FullUnorderedScanExpression{})
+	child := expressions.InitialOf(mustFullUnorderedScan(t, []string{"child"}, values.NotNullLong))
 	alias := values.NamedCorrelationIdentifier("Q")
-	selA := expressions.NewSelectExpression(values.NewQuantifiedObjectValue(alias),
+	qovA, qovAErr := values.NewQuantifiedObjectValue(alias, values.NotNullLong)
+	qovA = mustConstruct(t, qovA, qovAErr)
+	qovB, qovBErr := values.NewQuantifiedObjectValue(alias, values.NotNullLong)
+	qovB = mustConstruct(t, qovB, qovBErr)
+	selA, selAErr := expressions.NewSelectExpression(qovA,
 		[]expressions.Quantifier{expressions.NamedForEachQuantifier(alias, child)}, nil)
-	selB := expressions.NewSelectExpression(values.NewQuantifiedObjectValue(alias),
+	selA = mustConstruct(t, selA, selAErr)
+	selB, selBErr := expressions.NewSelectExpression(qovB,
 		[]expressions.Quantifier{expressions.NamedForEachQuantifier(alias, child)}, nil)
+	selB = mustConstruct(t, selB, selBErr)
 
 	refA := expressions.InitialOf(selA)
 	refA.StartExploration()

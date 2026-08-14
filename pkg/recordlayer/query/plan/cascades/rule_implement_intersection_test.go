@@ -9,27 +9,78 @@ import (
 )
 
 func intersectionRuleRecordType() *values.RecordType {
-	return &values.RecordType{
-		RecordName: "T",
-		Fields: []values.Field{{
-			Name:      "ID",
-			FieldType: values.NotNullLong,
-			Ordinal:   0,
-		}},
-	}
+	return values.NewRecordType("T", false, []values.Field{{
+		Name:      "ID",
+		FieldType: values.NotNullLong,
+		Ordinal:   0,
+	}})
 }
 
-func intersectionRuleKey() values.Value {
-	return &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
+func mustIntersectionRuleConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct intersection-rule fixture: " + err.Error())
+	}
+	return value
+}
+
+func mustFireIntersectionRule(
+	t testing.TB,
+	rule ExpressionRule,
+	ref *expressions.Reference,
+) []expressions.RelationalExpression {
+	t.Helper()
+	yielded, err := FireExpressionRule(rule, ref)
+	if err != nil {
+		t.Fatalf("FireExpressionRule() unexpected error: %v", err)
+	}
+	return yielded
+}
+
+func mustFireIntersectionRuleWithMemo(
+	t testing.TB,
+	rule ExpressionRule,
+	ref *expressions.Reference,
+	ctx PlanContext,
+	memo *Memo,
+) []expressions.RelationalExpression {
+	t.Helper()
+	yielded, err := FireExpressionRuleWithMemo(rule, ref, ctx, memo)
+	if err != nil {
+		t.Fatalf("FireExpressionRuleWithMemo() unexpected error: %v", err)
+	}
+	return yielded
+}
+
+func intersectionRuleRoot(rt *values.RecordType) values.QuantifiedObjectValue {
+	return mustIntersectionRuleConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("intersection_key"), rt))
+}
+
+func intersectionRuleField(rt *values.RecordType, ordinal int) values.Value {
+	return mustIntersectionRuleConstruct(values.ResolveFieldOrdinals(
+		intersectionRuleRoot(rt), []int{ordinal}))
+}
+
+func intersectionRuleKey(rt *values.RecordType) values.Value {
+	return intersectionRuleField(rt, 0)
+}
+
+func intersectionRuleExpression(
+	quantifiers []expressions.Quantifier,
+	comparisonKeys []values.Value,
+) *expressions.LogicalIntersectionExpression {
+	return mustIntersectionRuleConstruct(expressions.NewLogicalIntersectionExpression(
+		quantifiers, comparisonKeys))
 }
 
 func intersectionRuleOrderedScan(
 	rt *values.RecordType,
 	reverse bool,
 ) *plans.RecordQueryScanPlan {
-	return plans.NewRecordQueryScanPlan([]string{"T"}, rt, reverse).
-		WithKeyComponentTypes([]values.Type{values.NullableLong}).
-		WithPrimaryKey([]values.Value{intersectionRuleKey()})
+	return mustIntersectionRuleConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, rt, reverse)).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
+		WithPrimaryKey([]values.Value{intersectionRuleKey(rt)})
 }
 
 // TestImplementIntersectionRule_FiresAfterAllChildrenImplemented pins
@@ -42,8 +93,8 @@ func TestImplementIntersectionRule_FiresAfterAllChildrenImplemented(t *testing.T
 	scanB := intersectionRuleOrderedScan(rt, false)
 	refA := expressions.InitialOf(scanA)
 	refB := expressions.InitialOf(scanB)
-	keyValues := []values.Value{intersectionRuleKey()}
-	intr := expressions.NewLogicalIntersectionExpression(
+	keyValues := []values.Value{intersectionRuleKey(rt)}
+	intr := intersectionRuleExpression(
 		[]expressions.Quantifier{
 			expressions.ForEachQuantifier(refA),
 			expressions.ForEachQuantifier(refB),
@@ -52,7 +103,7 @@ func TestImplementIntersectionRule_FiresAfterAllChildrenImplemented(t *testing.T
 	)
 	topRef := expressions.InitialOf(intr)
 
-	yielded := FireExpressionRule(NewImplementIntersectionRule(), topRef)
+	yielded := mustFireIntersectionRule(t, NewImplementIntersectionRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementIntersectionRule yielded %d, want 1", len(yielded))
 	}
@@ -66,9 +117,13 @@ func TestImplementIntersectionRule_FiresAfterAllChildrenImplemented(t *testing.T
 	if got := len(plan.GetComparisonKeyValues()); got != 1 {
 		t.Fatalf("comparison keys = %d, want 1 (carried through from logical)", got)
 	}
-	if key, ok := plan.GetComparisonKeyValues()[0].(*values.FieldValue); !ok ||
-		key.Resolved == nil || key.Resolved.Root().Ordinal != 0 {
+	key, ok := values.AsFieldValue(plan.GetComparisonKeyValues()[0])
+	if !ok || key.Path() == nil || key.Path().Len() != 1 {
 		t.Fatalf("comparison key = %#v, want plan-time-baked ordinal 0", plan.GetComparisonKeyValues()[0])
+	}
+	accessor, ok := key.Path().Accessor(0)
+	if !ok || accessor.Ordinal() != 0 {
+		t.Fatalf("comparison key path = %#v, want plan-time-baked ordinal 0", key.Path().Ordinals())
 	}
 	if _, ok := plan.GetInners()[0].(*plans.RecordQueryScanPlan); !ok {
 		t.Fatalf("inner[0] = %T, want *RecordQueryScanPlan", plan.GetInners()[0])
@@ -89,19 +144,20 @@ func TestImplementIntersectionRule_NoFireWhenAnyChildIsLogical(t *testing.T) {
 	t.Parallel()
 	rt := intersectionRuleRecordType()
 	scanA := intersectionRuleOrderedScan(rt, false)
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"T"}, rt)
+	scanB := mustIntersectionRuleConstruct(
+		expressions.NewFullUnorderedScanExpression([]string{"T"}, rt))
 	refA := expressions.InitialOf(scanA)
 	refB := expressions.InitialOf(scanB)
-	intr := expressions.NewLogicalIntersectionExpression(
+	intr := intersectionRuleExpression(
 		[]expressions.Quantifier{
 			expressions.ForEachQuantifier(refA),
 			expressions.ForEachQuantifier(refB),
 		},
-		[]values.Value{intersectionRuleKey()},
+		[]values.Value{intersectionRuleKey(rt)},
 	)
 	topRef := expressions.InitialOf(intr)
 
-	yielded := FireExpressionRule(NewImplementIntersectionRule(), topRef)
+	yielded := mustFireIntersectionRule(t, NewImplementIntersectionRule(), topRef)
 	if len(yielded) != 0 {
 		t.Fatalf("ImplementIntersectionRule fired with one logical child; yielded %d, want 0", len(yielded))
 	}
@@ -113,16 +169,17 @@ func TestImplementIntersectionRule_NoFireWhenAnyChildIsUnordered(t *testing.T) {
 	t.Parallel()
 	rt := intersectionRuleRecordType()
 	ordered := intersectionRuleOrderedScan(rt, false)
-	unordered := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false)
-	intr := expressions.NewLogicalIntersectionExpression(
+	unordered := mustIntersectionRuleConstruct(
+		plans.NewRecordQueryScanPlan([]string{"T"}, rt, false))
+	intr := intersectionRuleExpression(
 		[]expressions.Quantifier{
 			expressions.ForEachQuantifier(expressions.InitialOf(ordered)),
 			expressions.ForEachQuantifier(expressions.InitialOf(unordered)),
 		},
-		[]values.Value{intersectionRuleKey()},
+		[]values.Value{intersectionRuleKey(rt)},
 	)
 
-	if yielded := FireExpressionRule(
+	if yielded := mustFireIntersectionRule(t,
 		NewImplementIntersectionRule(),
 		expressions.InitialOf(intr),
 	); len(yielded) != 0 {
@@ -141,17 +198,17 @@ func TestImplementIntersectionRule_PicksOrderedSibling(t *testing.T) {
 	refA := expressions.InitialOf(reverseOnly)
 	refA.Insert(orderedA)
 	refA.SetWinner(reverseOnly)
-	intr := expressions.NewLogicalIntersectionExpression(
+	intr := intersectionRuleExpression(
 		[]expressions.Quantifier{
 			expressions.ForEachQuantifier(refA),
 			expressions.ForEachQuantifier(expressions.InitialOf(orderedB)),
 		},
-		[]values.Value{intersectionRuleKey()},
+		[]values.Value{intersectionRuleKey(rt)},
 	)
 	topRef := expressions.InitialOf(intr)
 	memo := NewMemo(topRef)
 
-	yielded := FireExpressionRuleWithMemo(
+	yielded := mustFireIntersectionRuleWithMemo(t,
 		NewImplementIntersectionRule(),
 		topRef,
 		EmptyPlanContext(),
@@ -170,38 +227,45 @@ func TestImplementIntersectionRule_PicksOrderedSibling(t *testing.T) {
 }
 
 // TestImplementIntersectionRule_DeclinesStaleBakedOrdinal pins that the
-// runtime comparison key is validated against the common row layout. A
-// same-name key baked to PAYLOAD's slot is not an ordering by ID.
+// RFC-232 resolver rejects a same-name key baked to PAYLOAD's slot, and that
+// the implementation rule also declines the only admissible representation
+// of that slot: an exact PAYLOAD key when both children are ordered by ID.
 func TestImplementIntersectionRule_DeclinesStaleBakedOrdinal(t *testing.T) {
 	t.Parallel()
-	rt := &values.RecordType{
-		RecordName: "T",
-		Fields: []values.Field{
-			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
-			{Name: "PAYLOAD", FieldType: values.NotNullString, Ordinal: 1},
-		},
+	rt := values.NewRecordType("T", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "PAYLOAD", FieldType: values.NotNullString, Ordinal: 1},
+	})
+	id := intersectionRuleField(rt, 0)
+	scanA := mustIntersectionRuleConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, rt, false)).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
+		WithPrimaryKey([]values.Value{id})
+	scanB := mustIntersectionRuleConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, rt, false)).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
+		WithPrimaryKey([]values.Value{id})
+	staleRequest := mustIntersectionRuleConstruct(values.FieldByNameAndOrdinal("ID", 1))
+	staleID, err := values.ResolveFieldAccess(
+		intersectionRuleRoot(rt), []values.FieldRequest{staleRequest})
+	if err == nil || staleID != nil {
+		t.Fatalf("resolve stale ID@1 = (%v, %v), want (nil, error)", staleID, err)
 	}
-	id := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
-	scanA := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false).
-		WithKeyComponentTypes([]values.Type{values.NullableLong}).
-		WithPrimaryKey([]values.Value{id})
-	scanB := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false).
-		WithKeyComponentTypes([]values.Type{values.NullableLong}).
-		WithPrimaryKey([]values.Value{id})
-	staleID := values.NewFieldValueWithResolvedOrdinal("ID", 1, values.NotNullLong)
-	intr := expressions.NewLogicalIntersectionExpression(
+
+	payload := intersectionRuleField(rt, 1)
+	intr := intersectionRuleExpression(
 		[]expressions.Quantifier{
 			expressions.ForEachQuantifier(expressions.InitialOf(scanA)),
 			expressions.ForEachQuantifier(expressions.InitialOf(scanB)),
 		},
-		[]values.Value{staleID},
+		[]values.Value{payload},
 	)
 
-	if yielded := FireExpressionRule(
+	if yielded := mustFireIntersectionRule(t,
 		NewImplementIntersectionRule(),
 		expressions.InitialOf(intr),
 	); len(yielded) != 0 {
-		t.Fatalf("stale baked comparison ordinal yielded %d plans, want 0", len(yielded))
+		t.Fatalf("PAYLOAD comparison key over ID-ordered inputs yielded %d plans, want 0", len(yielded))
 	}
 }
 
@@ -210,7 +274,7 @@ func TestImplementIntersectionRule_DeclinesStaleBakedOrdinal(t *testing.T) {
 func TestImplementIntersectionRule_NoFireWithoutComparisonKey(t *testing.T) {
 	t.Parallel()
 	rt := intersectionRuleRecordType()
-	intr := expressions.NewLogicalIntersectionExpression(
+	intr := intersectionRuleExpression(
 		[]expressions.Quantifier{
 			expressions.ForEachQuantifier(expressions.InitialOf(intersectionRuleOrderedScan(rt, false))),
 			expressions.ForEachQuantifier(expressions.InitialOf(intersectionRuleOrderedScan(rt, false))),
@@ -218,7 +282,7 @@ func TestImplementIntersectionRule_NoFireWithoutComparisonKey(t *testing.T) {
 		nil,
 	)
 
-	if yielded := FireExpressionRule(
+	if yielded := mustFireIntersectionRule(t,
 		NewImplementIntersectionRule(),
 		expressions.InitialOf(intr),
 	); len(yielded) != 0 {
@@ -226,16 +290,15 @@ func TestImplementIntersectionRule_NoFireWithoutComparisonKey(t *testing.T) {
 	}
 }
 
-// TestImplementIntersectionRule_NoFireOnEmptyIntersection pins the
-// empty-intersection guard.
-func TestImplementIntersectionRule_NoFireOnEmptyIntersection(t *testing.T) {
+// TestImplementIntersectionRule_RejectsEmptyIntersection pins the RFC-232
+// admission guard: a set operation without a non-existential child has no
+// exact result layout and cannot reach the implementation rule.
+func TestImplementIntersectionRule_RejectsEmptyIntersection(t *testing.T) {
 	t.Parallel()
-	intr := expressions.NewLogicalIntersectionExpression(nil, nil)
-	topRef := expressions.InitialOf(intr)
 
-	yielded := FireExpressionRule(NewImplementIntersectionRule(), topRef)
-	if len(yielded) != 0 {
-		t.Fatalf("ImplementIntersectionRule fired on empty intersection; yielded %d, want 0", len(yielded))
+	intr, err := expressions.NewLogicalIntersectionExpression(nil, nil)
+	if err == nil || intr != nil {
+		t.Fatalf("NewLogicalIntersectionExpression(nil, nil) = (%v, %v), want (nil, error)", intr, err)
 	}
 }
 
@@ -246,12 +309,12 @@ func TestPlannerWithBatchA_ImplementsIntersectionOverScan(t *testing.T) {
 	rt := intersectionRuleRecordType()
 	scanA := intersectionRuleOrderedScan(rt, false)
 	scanB := intersectionRuleOrderedScan(rt, false)
-	intr := expressions.NewLogicalIntersectionExpression(
+	intr := intersectionRuleExpression(
 		[]expressions.Quantifier{
 			expressions.ForEachQuantifier(expressions.InitialOf(scanA)),
 			expressions.ForEachQuantifier(expressions.InitialOf(scanB)),
 		},
-		[]values.Value{intersectionRuleKey()},
+		[]values.Value{intersectionRuleKey(rt)},
 	)
 	ref := expressions.InitialOf(intr)
 
@@ -284,10 +347,10 @@ func TestImplementIntersectionRule_ThreeChildren(t *testing.T) {
 		refs[i] = expressions.InitialOf(scan)
 		qs[i] = expressions.ForEachQuantifier(refs[i])
 	}
-	intr := expressions.NewLogicalIntersectionExpression(qs, []values.Value{intersectionRuleKey()})
+	intr := intersectionRuleExpression(qs, []values.Value{intersectionRuleKey(rt)})
 	topRef := expressions.InitialOf(intr)
 
-	yielded := FireExpressionRule(NewImplementIntersectionRule(), topRef)
+	yielded := mustFireIntersectionRule(t, NewImplementIntersectionRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementIntersectionRule yielded %d, want 1", len(yielded))
 	}

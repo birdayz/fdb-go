@@ -21,14 +21,19 @@ import (
 type LogicalTypeFilterExpression struct {
 	recordTypes []string // sorted; canonical form for equality + hash
 	inner       Quantifier
+	resultValue values.QuantifiedObjectValue
 }
 
 // NewLogicalTypeFilterExpression builds a type-filter narrowing the
 // inner stream to the given record-type names. The set is normalised
 // (deduped + sorted) for canonical equality.
-func NewLogicalTypeFilterExpression(recordTypes []string, inner Quantifier) *LogicalTypeFilterExpression {
+func NewLogicalTypeFilterExpression(recordTypes []string, inner Quantifier) (*LogicalTypeFilterExpression, error) {
+	resultValue, err := requireFlowedResult("LogicalTypeFilterExpression", inner)
+	if err != nil {
+		return nil, err
+	}
 	deduped := dedupSortedStrings(recordTypes)
-	return &LogicalTypeFilterExpression{recordTypes: deduped, inner: inner}
+	return &LogicalTypeFilterExpression{recordTypes: deduped, inner: inner, resultValue: resultValue}, nil
 }
 
 func dedupSortedStrings(in []string) []string {
@@ -58,7 +63,7 @@ func (e *LogicalTypeFilterExpression) GetInner() Quantifier { return e.inner }
 // (a QuantifiedObjectValue typed at that union) if a consumer ever
 // depends on the narrowed static Type.
 func (e *LogicalTypeFilterExpression) GetResultValue() values.Value {
-	return e.inner.GetFlowedObjectValue()
+	return e.resultValue
 }
 
 // GetQuantifiers returns the single inner Quantifier.
@@ -109,10 +114,11 @@ func (e *LogicalTypeFilterExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-func (e *LogicalTypeFilterExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	cp := *e
-	cp.inner = quantifiers[0]
-	return &cp
+func (e *LogicalTypeFilterExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("LogicalTypeFilterExpression", len(quantifiers), 1); err != nil {
+		return nil, err
+	}
+	return NewLogicalTypeFilterExpression(e.recordTypes, quantifiers[0])
 }
 
 var _ RelationalExpression = (*LogicalTypeFilterExpression)(nil)

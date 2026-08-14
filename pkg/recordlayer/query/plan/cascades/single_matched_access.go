@@ -126,7 +126,7 @@ func (s *SingleMatchedAccess) computePulledUpGroupByMappings() *GroupByMappings 
 	}
 	adjusted, ok := AdjustGroupByMappings(
 		gbm,
-		values.CurrentAlias,
+		values.CurrentCorrelation(),
 		candidateExpr,
 	)
 	if !ok {

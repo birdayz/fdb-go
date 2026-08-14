@@ -112,20 +112,17 @@ func TestChargeCoverage_AllBufferPaths(t *testing.T) {
 			innerRows[i] = dmap(map[string]any{"K": int64(i)})
 		}
 		outer := recordlayer.FromList([]QueryResult{dmap(map[string]any{"K": int64(1)})})
+		joinRowType := values.NewRecordType("JOIN_ROW", false, []values.Field{
+			{Name: "K", FieldType: values.NotNullLong, Ordinal: 0},
+		})
+		outerQOV := mustTestQOV(t, values.NamedCorrelationIdentifier("O"), joinRowType)
+		innerQOV := mustTestQOV(t, values.NamedCorrelationIdentifier("I"), joinRowType)
 		preds := []predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: &values.FieldValue{
-					Child:    &values.QuantifiedObjectValue{Correlation: values.NamedCorrelationIdentifier("O")},
-					Field:    "K",
-					Resolved: values.NewFieldPathOfSingle("K", 0, false),
-				},
+				Operand: mustTestFieldOrdinal(t, outerQOV, 0),
 				Comparison: predicates.Comparison{
-					Type: predicates.ComparisonEquals,
-					Operand: &values.FieldValue{
-						Child:    &values.QuantifiedObjectValue{Correlation: values.NamedCorrelationIdentifier("I")},
-						Field:    "K",
-						Resolved: values.NewFieldPathOfSingle("K", 0, false),
-					},
+					Type:    predicates.ComparisonEquals,
+					Operand: mustTestFieldOrdinal(t, innerQOV, 0),
 				},
 			},
 		}

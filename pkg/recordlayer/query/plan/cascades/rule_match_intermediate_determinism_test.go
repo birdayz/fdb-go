@@ -22,13 +22,15 @@ type matchIntermediateDeterminismCandidate struct {
 }
 
 func newMatchIntermediateDeterminismCandidate(
+	t testing.TB,
 	candidateLabel string,
 ) matchIntermediateDeterminismCandidate {
-	leaf := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	leafRef := expressions.InitialOf(leaf)
+	t.Helper()
+	leaf := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	leafRef := mustMatchInitial(t, leaf)
 
 	newParent := func(label string) matchIntermediateDeterminismParent {
-		parent := expressions.NewLogicalFilterExpression(
+		parent := mustMatchFilter(t,
 			[]predicates.QueryPredicate{
 				predicates.NewConstantPredicate(predicates.TriTrue),
 			},
@@ -36,7 +38,7 @@ func newMatchIntermediateDeterminismCandidate(
 		)
 		return matchIntermediateDeterminismParent{
 			label: label,
-			ref:   expressions.InitialOf(parent),
+			ref:   mustMatchInitial(t, parent),
 			expr:  parent,
 		}
 	}
@@ -50,7 +52,7 @@ func newMatchIntermediateDeterminismCandidate(
 		parentZ,
 		parentA,
 	}
-	root := expressions.NewSelectExpression(
+	root := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{
 			expressions.ForEachQuantifier(parentZ.ref),
@@ -58,7 +60,7 @@ func newMatchIntermediateDeterminismCandidate(
 		},
 		nil,
 	)
-	rootRef := expressions.InitialOf(root)
+	rootRef := mustMatchInitial(t, root)
 	candidate := &testMatchCandidate{
 		name:      candidateLabel,
 		traversal: NewTraversal(rootRef),
@@ -121,19 +123,19 @@ func TestMatchIntermediate_DeterministicCandidateAndParentDiscoveryOrder(t *test
 	const repetitions = 100
 
 	for repetition := 0; repetition < repetitions; repetition++ {
-		queryLeaf := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-		queryLeafRef := expressions.InitialOf(queryLeaf)
+		queryLeaf := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+		queryLeafRef := mustMatchInitial(t, queryLeaf)
 		queryQ := expressions.ForEachQuantifier(queryLeafRef)
-		queryParent := expressions.NewLogicalFilterExpression(
+		queryParent := mustMatchFilter(t,
 			[]predicates.QueryPredicate{
 				predicates.NewConstantPredicate(predicates.TriTrue),
 			},
 			queryQ,
 		)
-		queryParentRef := expressions.InitialOf(queryParent)
+		queryParentRef := mustMatchInitial(t, queryParent)
 
-		candidateA := newMatchIntermediateDeterminismCandidate("candidate_a")
-		candidateZ := newMatchIntermediateDeterminismCandidate("candidate_z")
+		candidateA := newMatchIntermediateDeterminismCandidate(t, "candidate_a")
+		candidateZ := newMatchIntermediateDeterminismCandidate(t, "candidate_z")
 
 		// Seed in non-lexical order and opposite to PlanContext order. OnMatch's
 		// candidate order comes from the child Reference, not either of those
@@ -182,7 +184,7 @@ func TestMatchIntermediate_DeterministicCandidateAndParentDiscoveryOrder(t *test
 			}
 		}
 
-		FireExpressionRuleWithMemo(
+		mustFireExpressionRuleWithMemo(t,
 			NewMatchIntermediateRule(),
 			queryParentRef,
 			context,

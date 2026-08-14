@@ -406,7 +406,7 @@ func derivationsForSetPlan(expr expressions.RelationalExpression, comparisonKeyV
 	if len(comparisonKeyValues) > 0 {
 		for _, ckv := range comparisonKeyValues {
 			for _, rv := range resultVals {
-				translated := properties.TranslateCorrelation(ckv, values.CurrentAlias, rv)
+				translated := properties.TranslateCorrelation(ckv, values.CurrentCorrelation(), rv)
 				localVals = append(localVals, translated)
 			}
 		}
@@ -450,7 +450,7 @@ func derivationsForMultiIntersection(w *plans.RecordQueryMultiIntersectionOnValu
 	if len(compKeys) > 0 {
 		for _, ckv := range compKeys {
 			for _, rv := range resultVals {
-				translated := properties.TranslateCorrelation(ckv, values.CurrentAlias, rv)
+				translated := properties.TranslateCorrelation(ckv, values.CurrentCorrelation(), rv)
 				localVals = append(localVals, translated)
 			}
 		}
@@ -488,10 +488,10 @@ func crossProductHelper(lists [][]values.Value, combo []values.Value, depth int,
 func derivationsForInJoin(w *plans.RecordQueryInJoinPlan) *properties.Derivations {
 	innerDerivs := properties.DerivationsFromQuantifier(w.GetInnerQuantifier())
 
-	// The outer alias is the IN-source binding name. Java uses
-	// inJoinPlan.getInAlias() which returns a CorrelationIdentifier.
-	// Go's InJoinPlan uses a string binding name. Convert it.
-	outerAlias := values.NamedCorrelationIdentifier(w.GetBindingName())
+	// The outer alias is the exact IN-source correlation. Preserve its kind:
+	// planner-minted Unique q$ identifiers are distinct from rendered-equal
+	// user-named identifiers.
+	outerAlias := w.GetBindingAlias()
 
 	// Decorrelate inner values against the in-source.
 	localVals := decorrelateValues(innerDerivs.LocalValues, outerAlias)
@@ -511,11 +511,11 @@ func decorrelateValues(vals []values.Value, outerAlias values.CorrelationIdentif
 	for _, v := range vals {
 		if properties.IsCorrelatedTo(v, outerAlias) {
 			translated := values.ReplaceLeavesMaybe(v, func(leaf values.Value) values.Value {
-				qov, ok := leaf.(*values.QuantifiedObjectValue)
+				qov, ok := values.AsQuantifiedObjectValue(leaf)
 				if !ok {
 					return leaf
 				}
-				if qov.Correlation == outerAlias {
+				if qov.Correlation() == outerAlias {
 					return values.NewQueriedValue(nil, leaf.Type())
 				}
 				return leaf
@@ -533,10 +533,11 @@ func decorrelateValues(vals []values.Value, outerAlias values.CorrelationIdentif
 func derivationsForInUnion(w *plans.RecordQueryInUnionPlan) *properties.Derivations {
 	innerDerivs := properties.DerivationsFromQuantifier(w.GetInnerQuantifier())
 
-	// Collect all outer aliases (binding names).
+	// Collect the exact outer aliases. Planner-minted Unique correlations must
+	// not be round-tripped through strings and reminted as Named identifiers.
 	outerAliases := make(map[values.CorrelationIdentifier]struct{})
-	for _, bn := range w.GetBindingNames() {
-		outerAliases[values.NamedCorrelationIdentifier(bn)] = struct{}{}
+	for _, alias := range w.GetBindingAliases() {
+		outerAliases[alias] = struct{}{}
 	}
 
 	// Decorrelate inner locals.
@@ -552,11 +553,11 @@ func derivationsForInUnion(w *plans.RecordQueryInUnionPlan) *properties.Derivati
 		}
 		if needsTranslate {
 			translated := values.ReplaceLeavesMaybe(v, func(leaf values.Value) values.Value {
-				qov, ok := leaf.(*values.QuantifiedObjectValue)
+				qov, ok := values.AsQuantifiedObjectValue(leaf)
 				if !ok {
 					return leaf
 				}
-				if _, isOuter := outerAliases[qov.Correlation]; isOuter {
+				if _, isOuter := outerAliases[qov.Correlation()]; isOuter {
 					return values.NewQueriedValue(nil, leaf.Type())
 				}
 				return leaf
@@ -580,11 +581,11 @@ func derivationsForInUnion(w *plans.RecordQueryInUnionPlan) *properties.Derivati
 		}
 		if needsTranslate {
 			translated := values.ReplaceLeavesMaybe(v, func(leaf values.Value) values.Value {
-				qov, ok := leaf.(*values.QuantifiedObjectValue)
+				qov, ok := values.AsQuantifiedObjectValue(leaf)
 				if !ok {
 					return leaf
 				}
-				if _, isOuter := outerAliases[qov.Correlation]; isOuter {
+				if _, isOuter := outerAliases[qov.Correlation()]; isOuter {
 					return values.NewQueriedValue(nil, leaf.Type())
 				}
 				return leaf
@@ -599,7 +600,7 @@ func derivationsForInUnion(w *plans.RecordQueryInUnionPlan) *properties.Derivati
 	compKeys := w.GetComparisonKeys()
 	for _, ckv := range compKeys {
 		for _, rv := range resultVals {
-			translated := properties.TranslateCorrelation(ckv, values.CurrentAlias, rv)
+			translated := properties.TranslateCorrelation(ckv, values.CurrentCorrelation(), rv)
 			localVals = append(localVals, translated)
 		}
 	}

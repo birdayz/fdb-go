@@ -53,13 +53,9 @@ func NewRecordQueryRecursiveDfsJoinPlan(
 	root, child RecordQueryPlan,
 	priorCorrelation values.CorrelationIdentifier,
 	strategy DfsTraversalStrategy,
-) *RecordQueryRecursiveDfsJoinPlan {
-	return &RecordQueryRecursiveDfsJoinPlan{
-		rootQ:             QuantifierOverPlan(root),
-		childQ:            QuantifierOverPlan(child),
-		priorCorrelation:  priorCorrelation,
-		traversalStrategy: strategy,
-	}
+) (*RecordQueryRecursiveDfsJoinPlan, error) {
+	return NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers(
+		QuantifierOverPlan(root), QuantifierOverPlan(child), priorCorrelation, strategy, false)
 }
 
 // NewRecordQueryRecursiveDfsJoinPlanDistinct creates a DFS plan with
@@ -68,14 +64,9 @@ func NewRecordQueryRecursiveDfsJoinPlanDistinct(
 	root, child RecordQueryPlan,
 	priorCorrelation values.CorrelationIdentifier,
 	strategy DfsTraversalStrategy,
-) *RecordQueryRecursiveDfsJoinPlan {
-	return &RecordQueryRecursiveDfsJoinPlan{
-		rootQ:             QuantifierOverPlan(root),
-		childQ:            QuantifierOverPlan(child),
-		priorCorrelation:  priorCorrelation,
-		traversalStrategy: strategy,
-		distinct:          true,
-	}
+) (*RecordQueryRecursiveDfsJoinPlan, error) {
+	return NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers(
+		QuantifierOverPlan(root), QuantifierOverPlan(child), priorCorrelation, strategy, true)
 }
 
 // NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers builds a recursive DFS join
@@ -90,14 +81,20 @@ func NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers(
 	priorCorrelation values.CorrelationIdentifier,
 	strategy DfsTraversalStrategy,
 	distinct bool,
-) *RecordQueryRecursiveDfsJoinPlan {
+) (*RecordQueryRecursiveDfsJoinPlan, error) {
+	base, err := newPlanExprBaseForFirstQuantifier(
+		"RecordQueryRecursiveDfsJoinPlan", []expressions.Quantifier{rootQ, childQ})
+	if err != nil {
+		return nil, err
+	}
 	return &RecordQueryRecursiveDfsJoinPlan{
+		PlanExprBase:      base,
 		rootQ:             rootQ,
 		childQ:            childQ,
 		priorCorrelation:  priorCorrelation,
 		traversalStrategy: strategy,
 		distinct:          distinct,
-	}
+	}, nil
 }
 
 func (p *RecordQueryRecursiveDfsJoinPlan) IsDistinct() bool { return p.distinct }
@@ -118,7 +115,9 @@ func (p *RecordQueryRecursiveDfsJoinPlan) GetTraversalStrategy() DfsTraversalStr
 	return p.traversalStrategy
 }
 
-func (p *RecordQueryRecursiveDfsJoinPlan) GetResultType() values.Type { return values.UnknownType }
+func (p *RecordQueryRecursiveDfsJoinPlan) GetResultType() values.Type {
+	return p.GetResultValue().Type()
+}
 
 // GetChildren returns the root leg then the recursive child leg, dereferenced
 // through the quantifiers. The pair is always two entries wide — a nil leg
@@ -140,14 +139,19 @@ func (p *RecordQueryRecursiveDfsJoinPlan) GetQuantifiers() []expressions.Quantif
 // WithQuantifiers returns a copy ranging over the given leg quantifiers, in
 // GetQuantifiers order. The receiver is never mutated, which is what keeps a
 // memoized plan safe to share.
-func (p *RecordQueryRecursiveDfsJoinPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 2 {
-		return p
+func (p *RecordQueryRecursiveDfsJoinPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryRecursiveDfsJoinPlan", len(qs), 2); err != nil {
+		return nil, err
 	}
 	cp := *p
 	cp.rootQ = qs[0]
 	cp.childQ = qs[1]
-	return &cp
+	base, err := newPlanExprBaseForFirstQuantifier("RecordQueryRecursiveDfsJoinPlan", qs)
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
+	return &cp, nil
 }
 
 // structuralKey lists the fields that distinguish this recursive DFS join in
@@ -208,7 +212,7 @@ func (p *RecordQueryRecursiveDfsJoinPlan) WithChildren(qs []expressions.Quantifi
 	if len(qs) != 2 {
 		return nil, fmt.Errorf("RecordQueryRecursiveDfsJoinPlan.WithChildren: expected 2 children, got %d", len(qs))
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

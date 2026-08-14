@@ -89,12 +89,14 @@ func TestInUnionHintCost_UsesValueCombinationCount(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			plan := NewRecordQueryInUnionPlan(
-				NewRecordQueryValuesPlan(nil),
-				test.bindings,
-				nil,
-				false,
-			)
+			plan := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
+				return NewRecordQueryInUnionPlan(mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+					return NewRecordQueryValuesPlan(nil)
+				}), test.bindings,
+					nil,
+					false,
+				)
+			})
 			plan.SetInSources(test.sources)
 
 			got := plan.HintCost([]properties.Cost{child}, properties.DefaultStatistics{})
@@ -132,12 +134,14 @@ func TestInUnionHintCost_SaturatesUnknownFanoutOverflow(t *testing.T) {
 		bindings[i] = "binding"
 		sources[i] = []any{0, 1}
 	}
-	plan := NewRecordQueryInUnionPlan(
-		NewRecordQueryValuesPlan(nil),
-		bindings,
-		nil,
-		false,
-	)
+	plan := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
+		return NewRecordQueryInUnionPlan(mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+			return NewRecordQueryValuesPlan(nil)
+		}), bindings,
+			nil,
+			false,
+		)
+	})
 	plan.SetInSources(sources)
 	if _, known := plan.LiteralFanout(); known {
 		t.Fatal("overflowing literal fanout unexpectedly reported exact")
@@ -188,12 +192,14 @@ func TestLiteralFanout_RejectsMismatchedDimensions(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			plan := NewRecordQueryInUnionPlan(
-				NewRecordQueryValuesPlan(nil),
-				test.bindings,
-				nil,
-				false,
-			)
+			plan := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
+				return NewRecordQueryInUnionPlan(mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+					return NewRecordQueryValuesPlan(nil)
+				}), test.bindings,
+					nil,
+					false,
+				)
+			})
 			plan.SetInSources(test.sources)
 			if fanout, known := plan.LiteralFanout(); known {
 				t.Fatalf("LiteralFanout() = (%d, true), want unknown mismatch", fanout)
@@ -205,11 +211,15 @@ func TestLiteralFanout_RejectsMismatchedDimensions(t *testing.T) {
 func TestDefaultOnEmptyHintCost_TransparentWithFinalOnlyChild(t *testing.T) {
 	t.Parallel()
 
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	defaultOnEmpty := NewRecordQueryDefaultOnEmptyPlan(
-		scan,
-		values.NewNullValue(values.UnknownType),
-	)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	defaultOnEmpty := mustChecked(t, func() (*RecordQueryDefaultOnEmptyPlan, error) {
+		return NewRecordQueryDefaultOnEmptyPlan(
+			scan,
+			values.NewNullValue(values.WithNullability(exactTestRecordType(), true)),
+		)
+	})
 	want := properties.EstimateCost(scan)
 	if got := properties.EstimateCost(defaultOnEmpty); got != want {
 		t.Fatalf("EstimateCost(DefaultOnEmpty(scan)) = %+v, want transparent child cost %+v", got, want)

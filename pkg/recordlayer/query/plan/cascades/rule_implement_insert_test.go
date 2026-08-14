@@ -8,23 +8,53 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func dmlRuleRowType() *values.RecordType {
+	return values.NewRecordType("Order", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "qty", FieldType: values.NullableLong},
+	})
+}
+
+func mustDMLRuleConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct DML-rule fixture: " + err.Error())
+	}
+	return value
+}
+
+func dmlRuleScan() *expressions.FullUnorderedScanExpression {
+	return mustDMLRuleConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"Order"}, dmlRuleRowType()))
+}
+
+func fireDMLRule(
+	t testing.TB, rule ExpressionRule, ref *expressions.Reference,
+) []expressions.RelationalExpression {
+	t.Helper()
+	result, err := FireExpressionRule(rule, ref)
+	if err != nil {
+		t.Fatalf("FireExpressionRule: %v", err)
+	}
+	return result
+}
+
 // TestImplementInsertRule_FiresAfterScanImplemented pins that
 // InsertExpression over a scan with a physical-implemented inner
 // yields a RecordQueryInsertPlan wrapping the inner ScanPlan.
 func TestImplementInsertRule_FiresAfterScanImplemented(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := dmlRuleScan()
 	innerRef := expressions.InitialOf(scan)
-	ins := expressions.NewInsertExpression(
+	ins := mustDMLRuleConstruct(expressions.NewInsertExpression(
 		expressions.ForEachQuantifier(innerRef),
 		"Order",
-		values.UnknownType,
-	)
+		dmlRuleRowType(),
+	))
 	topRef := expressions.InitialOf(ins)
 
-	FireExpressionRule(NewPrimaryScanRule(), innerRef)
+	fireDMLRule(t, NewPrimaryScanRule(), innerRef)
 
-	yielded := FireExpressionRule(NewImplementInsertRule(), topRef)
+	yielded := fireDMLRule(t, NewImplementInsertRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementInsertRule yielded %d, want 1", len(yielded))
 	}
@@ -44,16 +74,16 @@ func TestImplementInsertRule_FiresAfterScanImplemented(t *testing.T) {
 // rule waits if the inner Reference has no physical member.
 func TestImplementInsertRule_NoFireWithoutPhysicalInner(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := dmlRuleScan()
 	innerRef := expressions.InitialOf(scan)
-	ins := expressions.NewInsertExpression(
+	ins := mustDMLRuleConstruct(expressions.NewInsertExpression(
 		expressions.ForEachQuantifier(innerRef),
 		"Order",
-		values.UnknownType,
-	)
+		dmlRuleRowType(),
+	))
 	topRef := expressions.InitialOf(ins)
 
-	yielded := FireExpressionRule(NewImplementInsertRule(), topRef)
+	yielded := fireDMLRule(t, NewImplementInsertRule(), topRef)
 	if len(yielded) != 0 {
 		t.Fatalf("ImplementInsertRule fired without physical inner; yielded %d", len(yielded))
 	}
@@ -63,17 +93,17 @@ func TestImplementInsertRule_NoFireWithoutPhysicalInner(t *testing.T) {
 // DeleteExpression → DeletePlan implementation chain.
 func TestImplementDeleteRule_FiresAfterScanImplemented(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := dmlRuleScan()
 	innerRef := expressions.InitialOf(scan)
-	del := expressions.NewDeleteExpression(
+	del := mustDMLRuleConstruct(expressions.NewDeleteExpression(
 		expressions.ForEachQuantifier(innerRef),
 		"Order",
-	)
+	))
 	topRef := expressions.InitialOf(del)
 
-	FireExpressionRule(NewPrimaryScanRule(), innerRef)
+	fireDMLRule(t, NewPrimaryScanRule(), innerRef)
 
-	yielded := FireExpressionRule(NewImplementDeleteRule(), topRef)
+	yielded := fireDMLRule(t, NewImplementDeleteRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementDeleteRule yielded %d, want 1", len(yielded))
 	}
@@ -92,14 +122,14 @@ func TestImplementDeleteRule_FiresAfterScanImplemented(t *testing.T) {
 // TestImplementDeleteRule_NoFireWithoutPhysicalInner pins the gate.
 func TestImplementDeleteRule_NoFireWithoutPhysicalInner(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
-	del := expressions.NewDeleteExpression(
+	scan := dmlRuleScan()
+	del := mustDMLRuleConstruct(expressions.NewDeleteExpression(
 		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
 		"Order",
-	)
+	))
 	topRef := expressions.InitialOf(del)
 
-	yielded := FireExpressionRule(NewImplementDeleteRule(), topRef)
+	yielded := fireDMLRule(t, NewImplementDeleteRule(), topRef)
 	if len(yielded) != 0 {
 		t.Fatalf("ImplementDeleteRule fired without physical inner; yielded %d", len(yielded))
 	}
@@ -110,21 +140,22 @@ func TestImplementDeleteRule_NoFireWithoutPhysicalInner(t *testing.T) {
 // through unchanged — UpdatePlan applies them per-row at execution.
 func TestImplementUpdateRule_FiresAfterScanImplemented(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := dmlRuleScan()
 	innerRef := expressions.InitialOf(scan)
 	transforms := []expressions.UpdateTransform{
-		{FieldPath: "qty", NewValue: values.LiteralValue(int64(0))},
+		{FieldPath: "qty", NewValue: &values.ConstantValue{Value: int64(0), Typ: values.NotNullLong}},
 	}
-	upd := expressions.NewUpdateExpression(
+	upd := mustDMLRuleConstruct(expressions.NewUpdateExpression(
 		expressions.ForEachQuantifier(innerRef),
 		"Order",
+		dmlRuleRowType(),
 		transforms,
-	)
+	))
 	topRef := expressions.InitialOf(upd)
 
-	FireExpressionRule(NewPrimaryScanRule(), innerRef)
+	fireDMLRule(t, NewPrimaryScanRule(), innerRef)
 
-	yielded := FireExpressionRule(NewImplementUpdateRule(), topRef)
+	yielded := fireDMLRule(t, NewImplementUpdateRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementUpdateRule yielded %d, want 1", len(yielded))
 	}
@@ -156,15 +187,16 @@ func TestImplementUpdateRule_FiresAfterScanImplemented(t *testing.T) {
 // TestImplementUpdateRule_NoFireWithoutPhysicalInner pins the gate.
 func TestImplementUpdateRule_NoFireWithoutPhysicalInner(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
-	upd := expressions.NewUpdateExpression(
+	scan := dmlRuleScan()
+	upd := mustDMLRuleConstruct(expressions.NewUpdateExpression(
 		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
 		"Order",
+		dmlRuleRowType(),
 		nil,
-	)
+	))
 	topRef := expressions.InitialOf(upd)
 
-	yielded := FireExpressionRule(NewImplementUpdateRule(), topRef)
+	yielded := fireDMLRule(t, NewImplementUpdateRule(), topRef)
 	if len(yielded) != 0 {
 		t.Fatalf("ImplementUpdateRule fired without physical inner; yielded %d", len(yielded))
 	}

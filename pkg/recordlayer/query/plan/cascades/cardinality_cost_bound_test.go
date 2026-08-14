@@ -56,6 +56,207 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+const (
+	cardinalityFieldID = iota
+	cardinalityFieldK
+	cardinalityFieldV
+	cardinalityFieldN
+	cardinalityFieldTags
+	cardinalityFieldA
+	cardinalityFieldB
+)
+
+type capturedBuild[T any] struct {
+	value T
+	err   error
+}
+
+// captureBuild lets a fallible constructor's two return values remain one
+// expression at call sites; mustBuild delegates the assertion to the shared
+// RFC-232 helper.
+func captureBuild[T any](value T, err error) capturedBuild[T] {
+	return capturedBuild[T]{value: value, err: err}
+}
+
+func mustBuild[T any](
+	t testing.TB,
+	construction capturedBuild[T],
+) T {
+	t.Helper()
+	return mustConstruct(t, construction.value, construction.err)
+}
+
+// cardinalityRowType is the exact authority shared by these shape-only tests.
+// The tests intentionally exercise cardinality rather than schema variation,
+// so one complete row type keeps every scan and every field-bearing operator
+// executable without smuggling UnknownType or an ownerless FieldValue through
+// the plan constructors.
+func cardinalityRowType() values.Type {
+	return values.NewRecordType("CARDINALITY_ROW", false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong},
+		{Name: "K", FieldType: values.NullableLong},
+		{Name: "V", FieldType: values.NullableDouble},
+		{Name: "N", FieldType: values.NullableLong},
+		{Name: "TAGS", FieldType: values.NewArrayType(false, values.NullableLong)},
+		{Name: "A", FieldType: values.NullableLong},
+		{Name: "B", FieldType: values.NullableLong},
+	})
+}
+
+func cardinalityLong(value int64) values.Value {
+	return &values.ConstantValue{Value: value, Typ: values.NotNullLong}
+}
+
+func cardinalityLiteral(t testing.TB, value any) values.Value {
+	t.Helper()
+	switch typed := value.(type) {
+	case int64:
+		return cardinalityLong(typed)
+	case float64:
+		return &values.ConstantValue{Value: typed, Typ: values.NotNullDouble}
+	default:
+		t.Fatalf("cardinality test has no exact literal type for %T", value)
+		return nil
+	}
+}
+
+func cardinalityFieldOrdinal(name string) (int, bool) {
+	switch name {
+	case "ID":
+		return cardinalityFieldID, true
+	case "K":
+		return cardinalityFieldK, true
+	case "V":
+		return cardinalityFieldV, true
+	case "N":
+		return cardinalityFieldN, true
+	case "TAGS":
+		return cardinalityFieldTags, true
+	case "A":
+		return cardinalityFieldA, true
+	case "B":
+		return cardinalityFieldB, true
+	default:
+		return 0, false
+	}
+}
+
+func mustCardinalityScan(t testing.TB, name string) *plans.RecordQueryScanPlan {
+	t.Helper()
+	return mustBuild(t, captureBuild(plans.NewRecordQueryScanPlan([]string{name}, cardinalityRowType(), false)))
+}
+
+func mustCardinalityIndex(
+	t testing.TB,
+	name string,
+	comparisons []*predicates.ComparisonRange,
+) *plans.RecordQueryIndexPlan {
+	t.Helper()
+	return mustBuild(t, captureBuild(plans.NewRecordQueryIndexPlan(
+		name, comparisons, []string{"T"}, cardinalityRowType(), false)))
+}
+
+func mustCardinalityField(t testing.TB, owner plans.RecordQueryPlan, name string) values.Value {
+	t.Helper()
+	return mustCardinalityFieldFromRoot(t, owner.GetResultValue(), name)
+}
+
+func mustCardinalityFieldFromRoot(t testing.TB, root values.Value, name string) values.Value {
+	t.Helper()
+	ordinal, ok := cardinalityFieldOrdinal(name)
+	if !ok {
+		t.Fatalf("cardinality test requested undeclared field %q", name)
+	}
+	field, err := values.ResolveFieldOrdinals(root, []int{ordinal})
+	return mustConstruct(t, field, err)
+}
+
+func mustCardinalityOrdinalField(t testing.TB, owner plans.RecordQueryPlan, ordinal int) values.Value {
+	t.Helper()
+	field, err := values.ResolveFieldOrdinals(owner.GetResultValue(), []int{ordinal})
+	return mustConstruct(t, field, err)
+}
+
+func mustCardinalityScalarField(t testing.TB, owner plans.RecordQueryPlan) values.Value {
+	t.Helper()
+	// A physical consumer evaluates against the exact row carrier the owner
+	// publishes. ResultValue can be a retained producer program whose root row
+	// type differs from that carrier (notably a nested Projection), so using it
+	// as the field root creates a cross-domain current QOV that checked
+	// admission rightly rejects. This shape generator needs only one scalar
+	// slot; derive it from the admitted output layout instead.
+	layout, err := owner.ProvidedOutputLayout()
+	if err != nil {
+		t.Fatalf("cardinality fixture output layout: %v", err)
+	}
+	root := values.Value(layout.Carrier())
+	typ := root.Type()
+	var ordinals []int
+	for {
+		record, ok := typ.(*values.RecordType)
+		if !ok {
+			break
+		}
+		if len(record.Fields) == 0 {
+			t.Fatal("cardinality fixture has no scalar field")
+		}
+		ordinals = append(ordinals, 0)
+		typ = record.Fields[0].FieldType
+	}
+	if len(ordinals) == 0 {
+		t.Fatalf("cardinality fixture result is scalar %v; expected a row", typ)
+	}
+	field, err := values.ResolveFieldOrdinals(root, ordinals)
+	return mustConstruct(t, field, err)
+}
+
+func cardinalityScalarPredicate(
+	t testing.TB,
+	owner plans.RecordQueryPlan,
+) predicates.QueryPredicate {
+	t.Helper()
+	return predicates.NewComparisonPredicate(
+		mustCardinalityScalarField(t, owner),
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: cardinalityLong(1)},
+	)
+}
+
+func cardinalityPredicate(
+	t testing.TB,
+	owner plans.RecordQueryPlan,
+	name string,
+) predicates.QueryPredicate {
+	t.Helper()
+	return predicates.NewComparisonPredicate(
+		mustCardinalityField(t, owner, name),
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: cardinalityLong(1)},
+	)
+}
+
+func cardinalityNull(owner plans.RecordQueryPlan) values.Value {
+	return values.NewNullValue(owner.GetResultType())
+}
+
+func cardinalityJoinResult(outer, inner plans.RecordQueryPlan) values.Value {
+	return values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "outer", Value: outer.GetResultValue()},
+		values.RecordConstructorField{Name: "inner", Value: inner.GetResultValue()},
+	)
+}
+
+func cardinalityEqualityRange(t testing.TB, literal any) *predicates.ComparisonRange {
+	t.Helper()
+	comparison := predicates.Comparison{
+		Type:    predicates.ComparisonEquals,
+		Operand: cardinalityLiteral(t, literal),
+	}
+	merged := predicates.EmptyComparisonRange().Merge(&comparison)
+	if !merged.Ok {
+		t.Fatal("failed to build cardinality equality range")
+	}
+	return merged.Range
+}
+
 // ============================================================================
 // Harness: prime the property bottom-up, then read both sides.
 // ============================================================================
@@ -127,25 +328,22 @@ type cardinalityCostShape struct {
 }
 
 func cardinalityCostShapes() []cardinalityCostShape {
-	scan := func(t string) *plans.RecordQueryScanPlan {
-		return plans.NewRecordQueryScanPlan([]string{t}, values.UnknownType, false)
-	}
-	pkOf := func(field string) []values.Value {
-		return []values.Value{&values.FieldValue{Field: field, Typ: values.NullableLong}}
+	scan := func(t testing.TB, name string) *plans.RecordQueryScanPlan {
+		return mustCardinalityScan(t, name)
 	}
 	// pointLookupScan is a full-PK-equality primary scan: computeCardinalities
 	// proves AtMostOne (0,1), and HintCost's isProvablePointProbe branch
 	// independently agrees (cardinality=1) -- the two derivations happen to
 	// share this one recognizer, so this shape should never disagree.
 	pointLookupScan := func(t *testing.T, table, field string) *plans.RecordQueryScanPlan {
-		return scan(table).WithPrimaryKey(pkOf(field)).WithScanComparisons(
-			[]*predicates.ComparisonRange{equalityRange(t, int64(1))})
+		base := scan(t, table)
+		return base.WithPrimaryKey([]values.Value{mustCardinalityField(t, base, field)}).WithScanComparisons(
+			[]*predicates.ComparisonRange{cardinalityEqualityRange(t, int64(1))})
 	}
 	uniquePointLookupIndex := func(t *testing.T, name string) *plans.RecordQueryIndexPlan {
-		return plans.NewRecordQueryIndexPlan(name,
-			[]*predicates.ComparisonRange{equalityRange(t, int64(1))},
-			[]string{"T"}, values.UnknownType, false,
-		).WithIndexMetadata([]string{"K"}, []string{"ID"}, true)
+		return mustCardinalityIndex(t, name,
+			[]*predicates.ComparisonRange{cardinalityEqualityRange(t, int64(1))}).
+			WithIndexMetadata([]string{"K"}, []string{"ID"}, true)
 	}
 
 	var shapes []cardinalityCostShape
@@ -155,7 +353,7 @@ func cardinalityCostShapes() []cardinalityCostShape {
 
 	// --- scans -----------------------------------------------------------
 	add("scan/unbounded", func(t *testing.T) plans.RecordQueryPlan {
-		return scan("SCAN_UNB")
+		return scan(t, "SCAN_UNB")
 	})
 	add("scan/pointLookup", func(t *testing.T) plans.RecordQueryPlan {
 		return pointLookupScan(t, "SCAN_PL", "ID")
@@ -173,14 +371,14 @@ func cardinalityCostShapes() []cardinalityCostShape {
 	// actually diverged. A gate that cannot see the one historical divergence
 	// is not a gate.
 	add("scan/zeroFloatEqualityWidens", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryScanPlan([]string{"SCAN_ZF"}, values.UnknownType, false).
-			WithPrimaryKey([]values.Value{&values.FieldValue{Field: "V", Typ: values.NullableDouble}}).
-			WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, float64(0))})
+		base := scan(t, "SCAN_ZF")
+		return base.WithPrimaryKey([]values.Value{mustCardinalityField(t, base, "V")}).
+			WithScanComparisons([]*predicates.ComparisonRange{cardinalityEqualityRange(t, float64(0))})
 	})
 
 	// --- index scans -------------------------------------------------------
 	add("indexScan/nonUnique", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryIndexPlan("IDX_NU", nil, []string{"T"}, values.UnknownType, false)
+		return mustCardinalityIndex(t, "IDX_NU", nil)
 	})
 	add("indexScan/uniquePointLookup", func(t *testing.T) plans.RecordQueryPlan {
 		return uniquePointLookupIndex(t, "IDX_U_PL")
@@ -188,67 +386,85 @@ func cardinalityCostShapes() []cardinalityCostShape {
 
 	// --- fetch (1:1, transparent) -------------------------------------------
 	add("fetch/overNonCoveringUnboundedIndex", func(t *testing.T) plans.RecordQueryPlan {
-		idx := plans.NewRecordQueryIndexPlan("IDX_FETCH_UNB", nil, []string{"T"}, values.UnknownType, false)
-		return plans.NewRecordQueryFetchFromPartialRecordPlan(idx, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey)
+		idx := mustCardinalityIndex(t, "IDX_FETCH_UNB", nil)
+		return mustBuild(t, captureBuild(plans.NewRecordQueryFetchFromPartialRecordPlan(
+			idx, nil, cardinalityRowType(), plans.FetchIndexRecordsPrimaryKey)))
 	})
 	add("fetch/overUniquePointLookupIndex", func(t *testing.T) plans.RecordQueryPlan {
 		idx := uniquePointLookupIndex(t, "IDX_FETCH_PL")
-		return plans.NewRecordQueryFetchFromPartialRecordPlan(idx, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey)
+		return mustBuild(t, captureBuild(plans.NewRecordQueryFetchFromPartialRecordPlan(
+			idx, nil, cardinalityRowType(), plans.FetchIndexRecordsPrimaryKey)))
 	})
 
 	// --- filter / predicates filter (varying predicate counts) -------------
 	add("filter/onePred/overBoundedChild", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryFilterPlan(
-			[]predicates.QueryPredicate{rungPredicate("A")}, pointLookupScan(t, "FILT1", "ID"))
+		child := pointLookupScan(t, "FILT1", "ID")
+		return mustBuild(t, captureBuild(plans.NewRecordQueryFilterPlan(
+			[]predicates.QueryPredicate{cardinalityPredicate(t, child, "A")}, child)))
 	})
 	add("predicatesFilter/twoPreds/overBoundedChild", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryPredicatesFilterPlan(
-			pointLookupScan(t, "FILT2", "ID"),
-			[]predicates.QueryPredicate{rungPredicate("A"), rungPredicate("B")})
+		child := pointLookupScan(t, "FILT2", "ID")
+		return mustBuild(t, captureBuild(plans.NewRecordQueryPredicatesFilterPlan(
+			child, []predicates.QueryPredicate{
+				cardinalityPredicate(t, child, "A"), cardinalityPredicate(t, child, "B"),
+			})))
 	})
 
 	// --- type filter (transparent) ------------------------------------------
 	add("typeFilter/overBoundedChild", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryTypeFilterPlan([]string{"T1"}, pointLookupScan(t, "TF", "ID"))
+		return mustBuild(t, captureBuild(plans.NewRecordQueryTypeFilterPlan(
+			[]string{"T1"}, pointLookupScan(t, "TF", "ID"))))
 	})
 
 	// --- projection / map (cardinality-preserving) --------------------------
 	add("projection/overBoundedChild", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryProjectionPlan(
-			[]values.Value{&values.FieldValue{Field: "K", Typ: values.NullableLong}}, pointLookupScan(t, "PROJ", "ID"))
+		child := pointLookupScan(t, "PROJ", "ID")
+		return mustBuild(t, captureBuild(plans.NewRecordQueryProjectionPlan(
+			[]values.Value{mustCardinalityField(t, child, "K")}, child)))
 	})
 	add("map/overBoundedChild", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryMapPlan(pointLookupScan(t, "MAP", "ID"), nil)
+		child := pointLookupScan(t, "MAP", "ID")
+		return mustBuild(t, captureBuild(plans.NewRecordQueryMapPlan(child, child.GetResultValue())))
 	})
 
 	// --- FlatMap (correlated join): Times(outer, inner) --------------------
 	add("flatMap/bothBounded", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryFlatMapPlan(
-			pointLookupScan(t, "FM_O", "ID"), pointLookupScan(t, "FM_I", "ID"),
+		outer := pointLookupScan(t, "FM_O", "ID")
+		inner := pointLookupScan(t, "FM_I", "ID")
+		return mustBuild(t, captureBuild(plans.NewRecordQueryFlatMapPlan(
+			outer, inner,
 			values.NamedCorrelationIdentifier("fm_o"), values.NamedCorrelationIdentifier("fm_i"),
-			nil, false)
+			cardinalityJoinResult(outer, inner), false)))
 	})
 	add("flatMap/boundedOuterUnboundedInner_blindSpot", func(t *testing.T) plans.RecordQueryPlan {
 		// The inner is unbounded, so the property's Times() propagates unknown
 		// max -- nothing is asserted here, but the cost model still produces a
 		// confident point estimate (outer*inner = 1e6). This is a documented
 		// BLIND SPOT, not a violation: no proven bound exists to check against.
-		return plans.NewRecordQueryFlatMapPlan(
-			pointLookupScan(t, "FM_O2", "ID"), scan("FM_I2"),
+		outer := pointLookupScan(t, "FM_O2", "ID")
+		inner := scan(t, "FM_I2")
+		return mustBuild(t, captureBuild(plans.NewRecordQueryFlatMapPlan(
+			outer, inner,
 			values.NamedCorrelationIdentifier("fm_o2"), values.NamedCorrelationIdentifier("fm_i2"),
-			nil, false)
+			cardinalityJoinResult(outer, inner), false)))
 	})
 
 	// --- NestedLoopJoin (materialized): Times(outer, inner) ----------------
 	add("nestedLoopJoin/bothBounded", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryNestedLoopJoinPlan(
-			pointLookupScan(t, "NLJ_O", "ID"), pointLookupScan(t, "NLJ_I", "ID"),
-			[]predicates.QueryPredicate{rungPredicate("A")}, plans.JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), nil)
+		outer := pointLookupScan(t, "NLJ_O", "ID")
+		inner := pointLookupScan(t, "NLJ_I", "ID")
+		return mustBuild(t, captureBuild(plans.NewRecordQueryNestedLoopJoinPlan(
+			outer, inner,
+			[]predicates.QueryPredicate{cardinalityPredicate(t, outer, "A")},
+			plans.JoinInner, values.NamedCorrelationIdentifier("O"),
+			values.NamedCorrelationIdentifier("I"), cardinalityJoinResult(outer, inner))))
 	})
 
 	// --- InJoin: child cardinalities scaled by in-list size ----------------
 	add("inJoin/pointProbeInner/threeValues", func(t *testing.T) plans.RecordQueryPlan {
-		p := plans.NewRecordQueryInJoinPlan(pointLookupScan(t, "INJ_PP", "ID"), "inj_binding", false, false)
+		p := mustBuild(t, captureBuild(plans.NewRecordQueryInJoinPlan(
+			pointLookupScan(t, "INJ_PP", "ID"), "inj_binding", false, false)))
+
 		p.SetInValues([]any{int64(1), int64(2), int64(3)})
 		return p
 	})
@@ -256,52 +472,57 @@ func cardinalityCostShapes() []cardinalityCostShape {
 		// No SetInValues call -> the in-list size is unknown at plan time, so
 		// the property abstains (UnknownMaxCardinality) -- documented BLIND
 		// SPOT: the cost model still charges a conservative default (10 rows).
-		return plans.NewRecordQueryInJoinPlan(pointLookupScan(t, "INJ_UNK", "ID"), "inj_binding2", false, false)
+		return mustBuild(t, captureBuild(plans.NewRecordQueryInJoinPlan(
+			pointLookupScan(t, "INJ_UNK", "ID"), "inj_binding2", false, false)))
 	})
 
 	// --- InUnion: child cardinalities scaled by literal-source fanout -------
 	add("inUnion/knownFanoutThree", func(t *testing.T) plans.RecordQueryPlan {
-		p := plans.NewRecordQueryInUnionPlan(
-			pointLookupScan(t, "INU_PP", "ID"), []string{"inu_b"},
-			[]values.Value{&values.FieldValue{Field: "K", Typ: values.NullableLong}}, false)
+		child := pointLookupScan(t, "INU_PP", "ID")
+		p := mustBuild(t, captureBuild(plans.NewRecordQueryInUnionPlan(
+			child, []string{"inu_b"},
+			[]values.Value{mustCardinalityField(t, child, "K")}, false)))
+
 		p.SetInSources([][]any{{int64(1), int64(2), int64(3)}})
 		return p
 	})
 	add("inUnion/emptySource", func(t *testing.T) plans.RecordQueryPlan {
-		p := plans.NewRecordQueryInUnionPlan(
-			pointLookupScan(t, "INU_EMPTY", "ID"), []string{"inu_b2"},
-			[]values.Value{&values.FieldValue{Field: "K", Typ: values.NullableLong}}, false)
+		child := pointLookupScan(t, "INU_EMPTY", "ID")
+		p := mustBuild(t, captureBuild(plans.NewRecordQueryInUnionPlan(
+			child, []string{"inu_b2"},
+			[]values.Value{mustCardinalityField(t, child, "K")}, false)))
+
 		p.SetInSources([][]any{{}})
 		return p
 	})
 
 	// --- union variants: sum of children ------------------------------------
 	add("union/bothBounded", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{
+		return mustBuild(t, captureBuild(plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{
 			pointLookupScan(t, "UN_A", "ID"), pointLookupScan(t, "UN_B", "ID"),
-		})
+		})))
 	})
 	add("mergeSortUnion/bothBounded", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryMergeSortUnionPlan(
+		return mustBuild(t, captureBuild(plans.NewRecordQueryMergeSortUnionPlan(
 			[]plans.RecordQueryPlan{pointLookupScan(t, "MSU_A", "ID"), pointLookupScan(t, "MSU_B", "ID")},
-			nil, false, true)
+			nil, false, true)))
 	})
 	add("unorderedUnion/bothBounded", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{
+		return mustBuild(t, captureBuild(plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{
 			pointLookupScan(t, "UU_A", "ID"), pointLookupScan(t, "UU_B", "ID"),
-		})
+		})))
 	})
 
 	// --- intersection: min-of-mins/maxes -------------------------------------
 	add("intersection/bothBounded", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryIntersectionPlan([]plans.RecordQueryPlan{
+		return mustBuild(t, captureBuild(plans.NewRecordQueryIntersectionPlan([]plans.RecordQueryPlan{
 			pointLookupScan(t, "INT_A", "ID"), pointLookupScan(t, "INT_B", "ID"),
-		}, nil)
+		}, nil)))
 	})
 	add("intersection/oneUnbounded_blindSpotOnMax", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryIntersectionPlan([]plans.RecordQueryPlan{
-			pointLookupScan(t, "INT_C", "ID"), scan("INT_D"),
-		}, nil)
+		return mustBuild(t, captureBuild(plans.NewRecordQueryIntersectionPlan([]plans.RecordQueryPlan{
+			pointLookupScan(t, "INT_C", "ID"), scan(t, "INT_D"),
+		}, nil)))
 	})
 
 	// --- distinct (both variants) -------------------------------------------
@@ -312,45 +533,52 @@ func cardinalityCostShapes() []cardinalityCostShape {
 	// selectivity multiplier still computes 0.7; RFC-195's clamp raises it to
 	// the proven floor at the combine step.
 	distinctChild := func(t *testing.T) *plans.RecordQueryFirstOrDefaultPlan {
-		return plans.NewRecordQueryFirstOrDefaultPlan(scan("DISTINCT_SRC"), values.NewNullValue(values.UnknownType))
+		child := scan(t, "DISTINCT_SRC")
+		return mustBuild(t, captureBuild(plans.NewRecordQueryFirstOrDefaultPlan(child, cardinalityNull(child))))
 	}
 	add("distinct/overExactlyOneChild", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryDistinctPlan(distinctChild(t))
+		return mustBuild(t, captureBuild(plans.NewRecordQueryDistinctPlan(distinctChild(t))))
 	})
 	add("unorderedPrimaryKeyDistinct/overExactlyOneChild", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(distinctChild(t))
+		return mustBuild(t, captureBuild(plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(distinctChild(t))))
 	})
 	add("distinct/overUnboundedChild_blindSpot", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryDistinctPlan(scan("DISTINCT_UNB"))
+		return mustBuild(t, captureBuild(plans.NewRecordQueryDistinctPlan(scan(t, "DISTINCT_UNB"))))
 	})
 
 	// --- sort (transparent) --------------------------------------------------
 	add("inMemorySort/overBoundedChild", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryInMemorySortPlan(pointLookupScan(t, "SORT", "ID"), nil)
+		return mustBuild(t, captureBuild(plans.NewRecordQueryInMemorySortPlan(
+			pointLookupScan(t, "SORT", "ID"), nil)))
 	})
 
 	// --- limit, including LIMIT 0 --------------------------------------------
 	add("limit/cappedBelowChild", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryLimitPlan(scan("LIMIT5"), 5, 0)
+		return mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(scan(t, "LIMIT5"), 5, 0)))
 	})
 	add("limit/zero", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryLimitPlan(scan("LIMIT0"), 0, 0)
+		return mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(scan(t, "LIMIT0"), 0, 0)))
 	})
 	add("limit/runtimeValue_transparentBothSides", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryLimitPlanWithValue(
-			scan("LIMIT_RT"), &values.FieldValue{Field: "N", Typ: values.NullableLong}, 0)
+		child := scan(t, "LIMIT_RT")
+		return mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlanWithValue(
+			child, mustCardinalityField(t, child, "N"), 0)))
 	})
 
 	// --- aggregate index (leaf, always unknown-max) --------------------------
 	add("aggregateIndex/leaf_blindSpot", func(t *testing.T) plans.RecordQueryPlan {
-		idx := plans.NewRecordQueryIndexPlan("AGG_IDX", nil, []string{"T"}, values.UnknownType, false)
-		return plans.NewRecordQueryAggregateIndexPlan(idx, "T", values.UnknownType, "COUNT")
+		idx := mustCardinalityIndex(t, "AGG_IDX", nil)
+		resultType := values.NewRecordType("AGG_RESULT", false, []values.Field{
+			{Name: "COUNT", FieldType: values.NullableLong},
+		})
+		return mustBuild(t, captureBuild(plans.NewRecordQueryAggregateIndexPlan(idx, "T", resultType, "COUNT")))
 	})
 
 	// --- streaming aggregation: grouped (unknown) vs ungrouped (KNOWN VIOLATION) ---
 	add("streamingAggregation/grouped", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryStreamingAggregationPlan(
-			scan("SAGG_GROUPED"), []values.Value{&values.FieldValue{Field: "K", Typ: values.NullableLong}}, nil)
+		child := scan(t, "SAGG_GROUPED")
+		return mustBuild(t, captureBuild(plans.NewRecordQueryStreamingAggregationPlan(
+			child, []values.Value{mustCardinalityField(t, child, "K")}, nil)))
 	})
 	// An ungrouped RecordQueryStreamingAggregationPlan structurally emits at
 	// most ONE output row. Its HintCost formula charges in*DistinctSelectivity
@@ -359,13 +587,15 @@ func cardinalityCostShapes() []cardinalityCostShape {
 	// case: every join ordering above an ungrouped aggregate used to be
 	// computed against a row count wrong by 700,000x.
 	add("streamingAggregation/ungrouped", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryStreamingAggregationPlan(scan("SAGG_UNGROUPED"), nil, nil)
+		return mustBuild(t, captureBuild(plans.NewRecordQueryStreamingAggregationPlan(
+			scan(t, "SAGG_UNGROUPED"), nil, nil)))
 	})
 
 	// --- recursive DFS join ---------------------------------------------------
 	add("recursiveDfsJoin/unknownMaxOverUnboundedRoot", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryRecursiveDfsJoinPlan(
-			scan("DFS_ROOT"), scan("DFS_CHILD"), values.NamedCorrelationIdentifier("dfs_prior"), plans.DfsPreorder)
+		return mustBuild(t, captureBuild(plans.NewRecordQueryRecursiveDfsJoinPlan(
+			scan(t, "DFS_ROOT"), scan(t, "DFS_CHILD"),
+			values.NamedCorrelationIdentifier("dfs_prior"), plans.DfsPreorder)))
 	})
 	// The DFS join is the level union's twin: same logical recursion, same
 	// proven bound (root.Min, unknown). It proved NOTHING until RFC-195's
@@ -376,10 +606,11 @@ func cardinalityCostShapes() []cardinalityCostShape {
 	// FlatMap(scan, dfsJoin) costed 0 rows while FlatMap(scan, levelUnion)
 	// costed 1e6 over the SAME children.
 	add("recursiveDfsJoin/recursiveLegCollapsesTowardZero", func(t *testing.T) plans.RecordQueryPlan {
-		seed := plans.NewRecordQueryFirstOrDefaultPlan(scan("DFS_SEED"), values.NewNullValue(values.UnknownType))
-		rec := plans.NewRecordQueryLimitPlan(scan("DFS_REC_ZERO"), 0, 0)
-		return plans.NewRecordQueryRecursiveDfsJoinPlan(
-			seed, rec, values.NamedCorrelationIdentifier("dfs_prior2"), plans.DfsPreorder)
+		seedInput := scan(t, "DFS_SEED")
+		seed := mustBuild(t, captureBuild(plans.NewRecordQueryFirstOrDefaultPlan(seedInput, cardinalityNull(seedInput))))
+		rec := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(scan(t, "DFS_REC_ZERO"), 0, 0)))
+		return mustBuild(t, captureBuild(plans.NewRecordQueryRecursiveDfsJoinPlan(
+			seed, rec, values.NamedCorrelationIdentifier("dfs_prior2"), plans.DfsPreorder)))
 	})
 
 	// --- recursive level union: KNOWN VIOLATION when the recursive leg's cost
@@ -390,12 +621,16 @@ func cardinalityCostShapes() []cardinalityCostShape {
 		// property's proven min (seed.Min = 1). No violation: the defect below
 		// needs the recursive leg's OWN cost estimate to drop under 1, which a
 		// plain point-lookup leg does not do.
-		seed := plans.NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))})
-		rec := plans.NewRecordQueryScanPlan([]string{"LU_REC"}, values.UnknownType, false).
-			WithPrimaryKey([]values.Value{&values.FieldValue{Field: "ID", Typ: values.NullableLong}}).
-			WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, int64(1))})
-		return plans.NewRecordQueryRecursiveLevelUnionPlan(
-			seed, rec, values.NamedCorrelationIdentifier("lu_scan"), values.NamedCorrelationIdentifier("lu_insert"))
+		seed := mustBuild(t, captureBuild(plans.NewRecordQueryValuesPlan(
+			[]values.Value{cardinalityLong(1)})))
+
+		recBase := mustBuild(t, captureBuild(plans.NewRecordQueryScanPlan(
+			[]string{"LU_REC"}, seed.GetResultType(), false)))
+
+		rec := recBase.WithPrimaryKey([]values.Value{mustCardinalityOrdinalField(t, recBase, 0)}).
+			WithScanComparisons([]*predicates.ComparisonRange{cardinalityEqualityRange(t, int64(1))})
+		return mustBuild(t, captureBuild(plans.NewRecordQueryRecursiveLevelUnionPlan(
+			seed, rec, values.NamedCorrelationIdentifier("lu_scan"), values.NamedCorrelationIdentifier("lu_insert"))))
 	})
 	// The property proves min=seed.Min (UNION ALL always emits at least the
 	// seed: a RecordQueryFirstOrDefaultPlan seed structurally guarantees exactly
@@ -408,28 +643,38 @@ func cardinalityCostShapes() []cardinalityCostShape {
 	// derives from its OWN OUTPUT cardinality, it clamps BEFORE charging that
 	// term (HintCostWithin), so the emitted Cost stays internally consistent.
 	add("recursiveLevelUnion/recursiveLegCollapsesTowardZero", func(t *testing.T) plans.RecordQueryPlan {
-		seed := plans.NewRecordQueryFirstOrDefaultPlan(scan("LU_SEED"), values.NewNullValue(values.UnknownType))
-		rec := plans.NewRecordQueryLimitPlan(scan("LU_REC_ZERO"), 0, 0)
-		return plans.NewRecordQueryRecursiveLevelUnionPlan(
-			seed, rec, values.NamedCorrelationIdentifier("lu_scan2"), values.NamedCorrelationIdentifier("lu_insert2"))
+		seedInput := scan(t, "LU_SEED")
+		seed := mustBuild(t, captureBuild(plans.NewRecordQueryFirstOrDefaultPlan(seedInput, cardinalityNull(seedInput))))
+		rec := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(scan(t, "LU_REC_ZERO"), 0, 0)))
+		return mustBuild(t, captureBuild(plans.NewRecordQueryRecursiveLevelUnionPlan(
+			seed, rec, values.NamedCorrelationIdentifier("lu_scan2"), values.NamedCorrelationIdentifier("lu_insert2"))))
 	})
 
 	// --- explode (leaf) --------------------------------------------------------
 	add("explode/literalCollection", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{1, 2, 3, 4}, Typ: values.UnknownType})
+		return mustBuild(t, captureBuild(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+			Value: []any{int64(1), int64(2), int64(3), int64(4)},
+			Typ:   values.NewArrayType(false, values.NotNullLong),
+		})))
 	})
 	add("explode/nonLiteralCollection_blindSpot", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryExplodePlan(&values.FieldValue{Field: "TAGS", Typ: values.UnknownType})
+		root := mustBuild(t, captureBuild(values.NewQuantifiedObjectValue(
+			values.NamedCorrelationIdentifier("explode_owner"), cardinalityRowType())))
+
+		return mustBuild(t, captureBuild(plans.NewRecordQueryExplodePlan(
+			mustCardinalityFieldFromRoot(t, root, "TAGS"))))
 	})
 
 	// --- values (leaf, exactly one row) -----------------------------------------
 	add("values/leaf", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))})
+		return mustBuild(t, captureBuild(plans.NewRecordQueryValuesPlan(
+			[]values.Value{cardinalityLong(1)})))
 	})
 
 	// --- temp-table scan (leaf, always unknown-max) -----------------------------
 	add("tempTableScan/leaf_blindSpot", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryTempTableScanPlan(values.NamedCorrelationIdentifier("tt_alias"))
+		return mustBuild(t, captureBuild(plans.NewRecordQueryTempTableScanPlan(
+			values.NamedCorrelationIdentifier("tt_alias"), cardinalityRowType())))
 	})
 
 	// --- DefaultOnEmpty: KNOWN VIOLATION when the child's cost is genuinely zero --
@@ -438,8 +683,8 @@ func cardinalityCostShapes() []cardinalityCostShape {
 		// happens to already satisfy the property's Floor(1) -- NOT a
 		// violation. Contrast with the excluded shape below, where the child's
 		// cost estimate is a genuine zero.
-		return plans.NewRecordQueryDefaultOnEmptyPlan(
-			pointLookupScan(t, "DOE_OK", "ID"), values.NewNullValue(values.UnknownType))
+		child := pointLookupScan(t, "DOE_OK", "ID")
+		return mustBuild(t, captureBuild(plans.NewRecordQueryDefaultOnEmptyPlan(child, cardinalityNull(child))))
 	})
 	// The property applies child.Floor(1) (DefaultOnEmpty guarantees at least
 	// one row, real-or-default), but HintCost returns the child's cost UNCHANGED
@@ -448,8 +693,8 @@ func cardinalityCostShapes() []cardinalityCostShape {
 	// RFC-195's clamp supplies the floor generically, rather than by adding a
 	// per-formula max(1, ...) that the next operator would get wrong again.
 	add("defaultOnEmpty/overZeroCostChild", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryDefaultOnEmptyPlan(
-			plans.NewRecordQueryLimitPlan(scan("DOE_ZERO"), 0, 0), values.NewNullValue(values.UnknownType))
+		child := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(scan(t, "DOE_ZERO"), 0, 0)))
+		return mustBuild(t, captureBuild(plans.NewRecordQueryDefaultOnEmptyPlan(child, cardinalityNull(child))))
 	})
 
 	// --- typeFilter over an EXACTLY-ONE child --------------------------------
@@ -463,8 +708,10 @@ func cardinalityCostShapes() []cardinalityCostShape {
 	// (min=0), and 0.5 >= 0 never violates. That dimensional gap is why this
 	// shape is kept explicitly rather than left to the random generator.
 	add("typeFilter/overExactlyOneChild", func(t *testing.T) plans.RecordQueryPlan {
-		return plans.NewRecordQueryTypeFilterPlan([]string{"T1"},
-			plans.NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))}))
+		child := mustBuild(t, captureBuild(plans.NewRecordQueryValuesPlan(
+			[]values.Value{cardinalityLong(1)})))
+
+		return mustBuild(t, captureBuild(plans.NewRecordQueryTypeFilterPlan([]string{"T1"}, child)))
 	})
 
 	// --- FirstOrDefault: always exactly one, and the cost model agrees --------
@@ -474,8 +721,8 @@ func cardinalityCostShapes() []cardinalityCostShape {
 		// of the child), so this NEVER violates even over a zero-cost child --
 		// proof the floor is a simple, already-known-correct fix, not a hard
 		// problem.
-		return plans.NewRecordQueryFirstOrDefaultPlan(
-			plans.NewRecordQueryLimitPlan(scan("FOD_ZERO"), 0, 0), values.NewNullValue(values.UnknownType))
+		child := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(scan(t, "FOD_ZERO"), 0, 0)))
+		return mustBuild(t, captureBuild(plans.NewRecordQueryFirstOrDefaultPlan(child, cardinalityNull(child))))
 	})
 
 	return shapes
@@ -551,8 +798,9 @@ func TestCardinalityPropertyBoundsCostEstimate(t *testing.T) {
 // failing subtest in the suite (see cardinalityCostViolations' doc comment).
 func TestCardinalityPropertyBoundsCostEstimate_MutationGuard(t *testing.T) {
 	t.Parallel()
-	plan := plans.NewRecordQueryLimitPlan(
-		plans.NewRecordQueryScanPlan([]string{"MUTGUARD"}, values.UnknownType, false), 5, 0)
+	plan := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(
+		mustCardinalityScan(t, "MUTGUARD"), 5, 0)))
+
 	sh := cardinalityCostShape{name: "mutation-guard/limit5"}
 
 	prov := provenCardinalities(t, plan)
@@ -626,7 +874,7 @@ func cardinalityComboSeed(defaultSeed uint64) uint64 {
 // mutable package state a concurrent caller would race on).
 func randCardinalityPlan(t *testing.T, rng *rand.Rand, depth int, nextCorr func(prefix string) values.CorrelationIdentifier) plans.RecordQueryPlan {
 	scan := func(name string) *plans.RecordQueryScanPlan {
-		return plans.NewRecordQueryScanPlan([]string{name}, values.UnknownType, false)
+		return mustCardinalityScan(t, name)
 	}
 	// RecordQueryValuesPlan (ExactlyOne, min=1) is IN this leaf pool, and that
 	// is load-bearing. It used to be excluded: composed under a TypeFilter
@@ -646,46 +894,80 @@ func randCardinalityPlan(t *testing.T, rng *rand.Rand, depth int, nextCorr func(
 		case 0:
 			return scan("RC_SCAN")
 		case 1:
-			return scan("RC_PL").
-				WithPrimaryKey([]values.Value{&values.FieldValue{Field: "ID", Typ: values.NullableLong}}).
-				WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, int64(1))})
+			base := scan("RC_PL")
+			return base.WithPrimaryKey([]values.Value{mustCardinalityField(t, base, "ID")}).
+				WithScanComparisons([]*predicates.ComparisonRange{cardinalityEqualityRange(t, int64(1))})
 		case 2:
-			return plans.NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))})
+			return mustBuild(t, captureBuild(plans.NewRecordQueryValuesPlan(
+				[]values.Value{cardinalityLong(1)})))
+
 		default:
-			return plans.NewRecordQueryIndexPlan("RC_IDX", nil, []string{"RC_IDX_T"}, values.UnknownType, false)
+			return mustBuild(t, captureBuild(plans.NewRecordQueryIndexPlan(
+				"RC_IDX", nil, []string{"RC_IDX_T"}, cardinalityRowType(), false)))
+
 		}
 	}
 	if depth <= 0 || rng.IntN(3) == 0 {
 		return leaf()
 	}
 	child := func() plans.RecordQueryPlan { return randCardinalityPlan(t, rng, depth-1, nextCorr) }
+	setLeg := func() plans.RecordQueryPlan {
+		// Set operators still draw independent subtrees, but RFC-232 admission
+		// correctly requires their output row programs to agree. A constant
+		// one-column projection is cardinality-preserving and gives both random
+		// legs the same exact type without narrowing the generated tree corpus.
+		return mustBuild(t, captureBuild(plans.NewRecordQueryProjectionPlan(
+			[]values.Value{cardinalityLong(1)}, child())))
+	}
 	switch rng.IntN(11) {
 	case 0:
-		return plans.NewRecordQueryFilterPlan([]predicates.QueryPredicate{rungPredicate("A")}, child())
+		inner := child()
+		return mustBuild(t, captureBuild(plans.NewRecordQueryFilterPlan(
+			[]predicates.QueryPredicate{cardinalityScalarPredicate(t, inner)}, inner)))
+
 	case 1:
-		return plans.NewRecordQueryPredicatesFilterPlan(child(),
-			[]predicates.QueryPredicate{rungPredicate("A"), rungPredicate("B")})
+		inner := child()
+		return mustBuild(t, captureBuild(plans.NewRecordQueryPredicatesFilterPlan(inner,
+			[]predicates.QueryPredicate{
+				cardinalityScalarPredicate(t, inner), cardinalityScalarPredicate(t, inner),
+			})))
+
 	case 2:
-		return plans.NewRecordQueryTypeFilterPlan([]string{"T1"}, child())
+		return mustBuild(t, captureBuild(plans.NewRecordQueryTypeFilterPlan([]string{"T1"}, child())))
 	case 3:
-		return plans.NewRecordQueryProjectionPlan(
-			[]values.Value{&values.FieldValue{Field: "K", Typ: values.NullableLong}}, child())
+		inner := child()
+		return mustBuild(t, captureBuild(plans.NewRecordQueryProjectionPlan(
+			[]values.Value{mustCardinalityScalarField(t, inner)}, inner)))
+
 	case 4:
-		return plans.NewRecordQueryMapPlan(child(), nil)
+		inner := child()
+		return mustBuild(t, captureBuild(plans.NewRecordQueryMapPlan(inner, inner.GetResultValue())))
 	case 5:
-		return plans.NewRecordQueryFlatMapPlan(child(), child(),
-			nextCorr("rc_o"), nextCorr("rc_i"), nil, false)
+		outer, inner := child(), child()
+		return mustBuild(t, captureBuild(plans.NewRecordQueryFlatMapPlan(outer, inner,
+			nextCorr("rc_o"), nextCorr("rc_i"), cardinalityJoinResult(outer, inner), false)))
+
 	case 6:
-		return plans.NewRecordQueryNestedLoopJoinPlan(child(), child(),
-			[]predicates.QueryPredicate{rungPredicate("A")}, plans.JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), nil)
+		outer, inner := child(), child()
+		return mustBuild(t, captureBuild(plans.NewRecordQueryNestedLoopJoinPlan(outer, inner,
+			[]predicates.QueryPredicate{cardinalityScalarPredicate(t, outer)},
+			plans.JoinInner, values.NamedCorrelationIdentifier("O"),
+			values.NamedCorrelationIdentifier("I"), cardinalityJoinResult(outer, inner))))
+
 	case 7:
-		return plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{child(), child()})
+		return mustBuild(t, captureBuild(plans.NewRecordQueryUnionPlan(
+			[]plans.RecordQueryPlan{setLeg(), setLeg()})))
+
 	case 8:
-		return plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{child(), child()})
+		return mustBuild(t, captureBuild(plans.NewRecordQueryUnorderedUnionPlan(
+			[]plans.RecordQueryPlan{setLeg(), setLeg()})))
+
 	case 9:
-		return plans.NewRecordQueryIntersectionPlan([]plans.RecordQueryPlan{child(), child()}, nil)
+		return mustBuild(t, captureBuild(plans.NewRecordQueryIntersectionPlan(
+			[]plans.RecordQueryPlan{setLeg(), setLeg()}, nil)))
+
 	default:
-		return plans.NewRecordQueryInMemorySortPlan(child(), nil)
+		return mustBuild(t, captureBuild(plans.NewRecordQueryInMemorySortPlan(child(), nil)))
 	}
 }
 

@@ -2,6 +2,7 @@ package expressions
 
 import (
 	"encoding/binary"
+	"fmt"
 	"hash/fnv"
 	"sort"
 
@@ -32,22 +33,45 @@ type UpdateTransform struct {
 type UpdateExpression struct {
 	inner            Quantifier
 	targetRecordType string
+	targetType       values.ExactTypeHandle
 	transforms       []UpdateTransform // canonicalised: sorted by FieldPath
+	resultValue      values.Value
 }
 
 // NewUpdateExpression builds an UPDATE. The transforms slice is
 // copied AND sorted by FieldPath (canonicalisation — two UPDATEs
 // with the same SET-list in different SQL textual order should be
 // EqualsWithoutChildren-equal).
-func NewUpdateExpression(inner Quantifier, targetRecordType string, transforms []UpdateTransform) *UpdateExpression {
+func NewUpdateExpression(inner Quantifier, targetRecordType string, targetType values.Type, transforms []UpdateTransform) (*UpdateExpression, error) {
+	oldValue, err := requireFlowedResult("UpdateExpression OLD", inner)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := targetType.(*values.RecordType); !ok {
+		return nil, fmt.Errorf("UpdateExpression target type: expected a record, got %v", targetType)
+	}
+	exactTarget, err := snapshotExpressionResultType("UpdateExpression target", targetType)
+	if err != nil {
+		return nil, err
+	}
+	resultType := &values.RecordType{Fields: []values.Field{
+		{Name: "OLD", Ordinal: 0, FieldType: oldValue.FlowedType()},
+		{Name: "NEW", Ordinal: 1, FieldType: exactTarget.Type()},
+	}}
+	exactResult, err := snapshotExpressionResultType("UpdateExpression", resultType)
+	if err != nil {
+		return nil, err
+	}
 	copied := make([]UpdateTransform, len(transforms))
 	copy(copied, transforms)
 	sort.SliceStable(copied, func(i, j int) bool { return copied[i].FieldPath < copied[j].FieldPath })
 	return &UpdateExpression{
 		inner:            inner,
 		targetRecordType: targetRecordType,
+		targetType:       exactTarget,
 		transforms:       copied,
-	}
+		resultValue:      values.NewQueriedValue(nil, exactResult.Type()),
+	}, nil
 }
 
 // GetInner returns the inner Quantifier.
@@ -55,6 +79,9 @@ func (e *UpdateExpression) GetInner() Quantifier { return e.inner }
 
 // GetTargetRecordType returns the target record-type name.
 func (e *UpdateExpression) GetTargetRecordType() string { return e.targetRecordType }
+
+// GetTargetType returns a defensive copy of the exact target record type.
+func (e *UpdateExpression) GetTargetType() values.Type { return e.targetType.Type() }
 
 // GetTransforms returns the canonical (sorted-by-FieldPath) transform
 // list. Read-only.
@@ -82,7 +109,7 @@ func (e *UpdateExpression) GetTransforms() []UpdateTransform { return e.transfor
 // planner already consults — but it changes what an UPDATE's result value IS and
 // every consumer of it moves with it. Booked in TODO.md beside the INSERT half.
 func (e *UpdateExpression) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValue(e.inner.GetAlias())
+	return e.resultValue
 }
 
 // GetQuantifiers returns the single inner Quantifier.
@@ -117,6 +144,9 @@ func (e *UpdateExpression) EqualsWithoutChildren(other RelationalExpression, ali
 		return false
 	}
 	if e.targetRecordType != o.targetRecordType {
+		return false
+	}
+	if !typeEquals(e.targetType.Type(), o.targetType.Type()) {
 		return false
 	}
 	if len(e.transforms) != len(o.transforms) {
@@ -154,10 +184,11 @@ func (e *UpdateExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-func (e *UpdateExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	cp := *e
-	cp.inner = quantifiers[0]
-	return &cp
+func (e *UpdateExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("UpdateExpression", len(quantifiers), 1); err != nil {
+		return nil, err
+	}
+	return NewUpdateExpression(quantifiers[0], e.targetRecordType, e.targetType.Type(), e.transforms)
 }
 
 var _ RelationalExpression = (*UpdateExpression)(nil)

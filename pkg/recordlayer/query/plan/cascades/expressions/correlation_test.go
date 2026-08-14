@@ -19,10 +19,10 @@ func TestLogicalFilter_GetCorrelatedToWithoutChildren(t *testing.T) {
 	q := ForEachQuantifier(InitialOf(leaf))
 	// Comparison predicate referencing q's flowed object.
 	pred := predicates.NewComparisonPredicate(
-		q.GetFlowedObjectValue(),
+		mustExpression(q.RequireFlowedObjectValue()),
 		predicates.Comparison{Type: predicates.ComparisonIsNull},
 	)
-	f := NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, q)
+	f := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, q))
 	got := f.GetCorrelatedToWithoutChildren()
 	if _, ok := got[q.GetAlias()]; !ok {
 		t.Fatalf("filter correlation set %v doesn't contain q's alias %v", got, q.GetAlias())
@@ -35,7 +35,7 @@ func TestLogicalFilter_GetCorrelatedToWithoutChildren_NoCorrelation(t *testing.T
 	q := ForEachQuantifier(InitialOf(leaf))
 	// Pure constant predicate — no correlations.
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	f := NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, q)
+	f := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, q))
 	got := f.GetCorrelatedToWithoutChildren()
 	if len(got) != 0 {
 		t.Fatalf("filter over constant predicate has correlations: %v", got)
@@ -46,7 +46,8 @@ func TestLogicalProjection_GetCorrelatedToWithoutChildren(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	p := NewLogicalProjectionExpression([]values.Value{q.GetFlowedObjectValue()}, q)
+	p := mustExpression(NewLogicalProjectionExpression(
+		[]values.Value{testCorrelatedField(q.GetAlias(), "ID", values.NotNullLong)}, q))
 	got := p.GetCorrelatedToWithoutChildren()
 	if _, ok := got[q.GetAlias()]; !ok {
 		t.Fatalf("projection correlation set %v doesn't contain q's alias", got)
@@ -57,7 +58,7 @@ func TestLogicalSort_GetCorrelatedToWithoutChildren(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	s := NewLogicalSortExpression([]SortKey{{Value: q.GetFlowedObjectValue(), Reverse: false}}, q)
+	s := mustExpression(NewLogicalSortExpression([]SortKey{{Value: mustExpression(q.RequireFlowedObjectValue()), Reverse: false}}, q))
 	got := s.GetCorrelatedToWithoutChildren()
 	if _, ok := got[q.GetAlias()]; !ok {
 		t.Fatalf("sort correlation set %v doesn't contain q's alias", got)
@@ -69,11 +70,11 @@ func TestSelect_GetCorrelatedToWithoutChildren(t *testing.T) {
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
 	pred := predicates.NewComparisonPredicate(
-		q.GetFlowedObjectValue(),
+		mustExpression(q.RequireFlowedObjectValue()),
 		predicates.Comparison{Type: predicates.ComparisonIsNull},
 	)
-	rv := q.GetFlowedObjectValue()
-	s := NewSelectExpression(rv, []Quantifier{q}, []predicates.QueryPredicate{pred})
+	rv := mustExpression(q.RequireFlowedObjectValue())
+	s := mustExpression(NewSelectExpression(rv, []Quantifier{q}, []predicates.QueryPredicate{pred}))
 	got := s.GetCorrelatedToWithoutChildren()
 	if _, ok := got[q.GetAlias()]; !ok {
 		t.Fatalf("select correlation set %v doesn't contain q's alias", got)
@@ -84,9 +85,10 @@ func TestUpdate_GetCorrelatedToWithoutChildren(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	upd := NewUpdateExpression(q, "Order", []UpdateTransform{
-		{FieldPath: "name", NewValue: q.GetFlowedObjectValue()},
-	})
+	upd := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), []UpdateTransform{
+		{FieldPath: "name", NewValue: mustExpression(q.RequireFlowedObjectValue())},
+	}))
+
 	got := upd.GetCorrelatedToWithoutChildren()
 	if _, ok := got[q.GetAlias()]; !ok {
 		t.Fatalf("update correlation set %v doesn't contain q's alias", got)
@@ -97,11 +99,11 @@ func TestLogicalIntersection_GetCorrelatedToWithoutChildren(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	keys := []values.Value{q.GetFlowedObjectValue()} // references q's alias
-	x := NewLogicalIntersectionExpression(
+	keys := []values.Value{mustExpression(q.RequireFlowedObjectValue())} // references q's alias
+	x := mustExpression(NewLogicalIntersectionExpression(
 		[]Quantifier{q},
-		keys,
-	)
+		keys))
+
 	got := x.GetCorrelatedToWithoutChildren()
 	if _, ok := got[q.GetAlias()]; !ok {
 		t.Fatalf("intersection correlation set %v doesn't contain comparison-key alias %v", got, q.GetAlias())
@@ -110,18 +112,18 @@ func TestLogicalIntersection_GetCorrelatedToWithoutChildren(t *testing.T) {
 
 func TestLeafExpressions_NoCorrelations(t *testing.T) {
 	t.Parallel()
-	scan := NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"Order"}, testRecordType()))
 	if got := scan.GetCorrelatedToWithoutChildren(); len(got) != 0 {
 		t.Fatalf("scan correlation set non-empty: %v", got)
 	}
 
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	d := NewLogicalDistinctExpression(q)
+	d := mustExpression(NewLogicalDistinctExpression(q))
 	if got := d.GetCorrelatedToWithoutChildren(); len(got) != 0 {
 		t.Fatalf("distinct correlation set non-empty: %v", got)
 	}
-	u := NewLogicalUnionExpression([]Quantifier{q})
+	u := mustExpression(NewLogicalUnionExpression([]Quantifier{q}))
 	if got := u.GetCorrelatedToWithoutChildren(); len(got) != 0 {
 		t.Fatalf("union correlation set non-empty: %v", got)
 	}
@@ -135,14 +137,14 @@ func TestCorrelationWalking_PicksUpDeepReference(t *testing.T) {
 	q := ForEachQuantifier(InitialOf(leaf))
 	deep := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  q.GetFlowedObjectValue(),
+		Left:  mustExpression(q.RequireFlowedObjectValue()),
 		Right: values.NewBooleanValue(true),
 	}
 	pred := predicates.NewComparisonPredicate(
 		deep,
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.NewBooleanValue(true)},
 	)
-	f := NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, q)
+	f := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, q))
 	got := f.GetCorrelatedToWithoutChildren()
 	if _, ok := got[q.GetAlias()]; !ok {
 		t.Fatalf("walker didn't descend into nested Arithmetic — got %v", got)
@@ -166,13 +168,13 @@ func TestReference_GetCorrelatedTo_OwnAliasNotFree(t *testing.T) {
 	// Select over inner with a predicate referencing BOTH its own quantifier
 	// (bound) and an outer alias (free).
 	pred := predicates.NewComparisonPredicate(
-		inner.GetFlowedObjectValue(),
+		mustExpression(inner.RequireFlowedObjectValue()),
 		predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: values.NewQuantifiedObjectValue(outer),
+			Operand: mustQOV(outer),
 		},
 	)
-	sel := NewSelectExpression(inner.GetFlowedObjectValue(), []Quantifier{inner}, []predicates.QueryPredicate{pred})
+	sel := mustExpression(NewSelectExpression(mustExpression(inner.RequireFlowedObjectValue()), []Quantifier{inner}, []predicates.QueryPredicate{pred}))
 	ref := InitialOf(sel)
 	got := ref.GetCorrelatedTo()
 	if _, leak := got[inner.GetAlias()]; leak {
@@ -196,13 +198,13 @@ func TestQuantifier_GetCorrelatedTo_Transitive(t *testing.T) {
 	x := values.NamedCorrelationIdentifier("X")
 	// Select over innerQ whose predicate references the external alias X (free).
 	pred := predicates.NewComparisonPredicate(
-		innerQ.GetFlowedObjectValue(),
+		mustExpression(innerQ.RequireFlowedObjectValue()),
 		predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: values.NewQuantifiedObjectValue(x),
+			Operand: mustQOV(x),
 		},
 	)
-	sel := NewSelectExpression(innerQ.GetFlowedObjectValue(), []Quantifier{innerQ}, []predicates.QueryPredicate{pred})
+	sel := mustExpression(NewSelectExpression(mustExpression(innerQ.RequireFlowedObjectValue()), []Quantifier{innerQ}, []predicates.QueryPredicate{pred}))
 	ref := InitialOf(sel)
 
 	// A quantifier ranging over that reference must surface X transitively.
@@ -232,15 +234,15 @@ func TestReference_GetCorrelatedTo_NonCorrelatableParentRetains(t *testing.T) {
 	// from branch 2's perspective (nothing in its own subtree binds A).
 	inner := ForEachQuantifier(InitialOf(&leafScan{name: "U"}))
 	pred := predicates.NewComparisonPredicate(
-		inner.GetFlowedObjectValue(),
+		mustExpression(inner.RequireFlowedObjectValue()),
 		predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")),
+			Operand: mustQOV(values.NamedCorrelationIdentifier("A")),
 		},
 	)
-	branch2 := NewSelectExpression(inner.GetFlowedObjectValue(), []Quantifier{inner}, []predicates.QueryPredicate{pred})
+	branch2 := mustExpression(NewSelectExpression(mustExpression(inner.RequireFlowedObjectValue()), []Quantifier{inner}, []predicates.QueryPredicate{pred}))
 	qB := ForEachQuantifier(InitialOf(branch2))
-	union := NewLogicalUnionExpression([]Quantifier{qA, qB})
+	union := mustExpression(NewLogicalUnionExpression([]Quantifier{qA, qB}))
 	got := InitialOf(union).GetCorrelatedTo()
 	if _, retained := got[values.NamedCorrelationIdentifier("A")]; !retained {
 		t.Fatalf("union (CanCorrelate=false) must RETAIN the branch's free correlation A despite the sibling alias coincidence: %v", got)
@@ -251,14 +253,13 @@ func TestGetCorrelatedToOfExpression_NonCorrelatableParentRetainsOwnedAlias(t *t
 	t.Parallel()
 
 	alias := values.NamedCorrelationIdentifier("reexposed")
-	child := NewSelectExpression(
-		values.NewQuantifiedObjectValue(alias),
+	child := mustExpression(NewSelectExpression(
+		mustQOV(alias),
 		nil,
-		nil,
-	)
-	parent := NewLogicalDistinctExpression(
-		NamedForEachQuantifier(alias, InitialOf(child)),
-	)
+		nil))
+
+	parent := mustExpression(NewLogicalDistinctExpression(
+		NamedForEachQuantifier(alias, InitialOf(child))))
 
 	got := GetCorrelatedToOfExpression(parent)
 	if _, present := got[alias]; !present {
@@ -276,26 +277,35 @@ func TestGetCorrelatedToOfExpression_RecursiveUnionConsumesTempAliases(t *testin
 	scanAlias := values.NamedCorrelationIdentifier("temp_scan")
 	insertAlias := values.NamedCorrelationIdentifier("temp_insert")
 	outerAlias := values.NamedCorrelationIdentifier("outer")
-	initialChild := NewSelectExpression(
+	initialChild := mustExpression(NewSelectExpression(
 		values.NewRecordConstructorValue(
 			values.RecordConstructorField{
 				Name:  "scan",
-				Value: values.NewQuantifiedObjectValue(scanAlias),
+				Value: mustQOV(scanAlias),
 			},
 			values.RecordConstructorField{
 				Name:  "outer",
-				Value: values.NewQuantifiedObjectValue(outerAlias),
+				Value: mustQOV(outerAlias),
 			},
 		),
 		nil,
+		nil))
+
+	recursiveChild := mustExpression(NewSelectExpression(
+		values.NewRecordConstructorValue(
+			values.RecordConstructorField{
+				Name:  "scan",
+				Value: mustQOV(insertAlias),
+			},
+			values.RecordConstructorField{
+				Name:  "outer",
+				Value: mustQOV(outerAlias),
+			},
+		),
 		nil,
-	)
-	recursiveChild := NewSelectExpression(
-		values.NewQuantifiedObjectValue(insertAlias),
-		nil,
-		nil,
-	)
-	expression := NewRecursiveUnionExpression(
+		nil))
+
+	expression := mustExpression(NewRecursiveUnionExpression(
 		NamedForEachQuantifier(
 			values.NamedCorrelationIdentifier("initial"),
 			InitialOf(initialChild),
@@ -306,8 +316,7 @@ func TestGetCorrelatedToOfExpression_RecursiveUnionConsumesTempAliases(t *testin
 		),
 		scanAlias,
 		insertAlias,
-		TraversalAny,
-	)
+		TraversalAny))
 
 	got := GetCorrelatedToOfExpression(expression)
 	if len(got) != 1 {

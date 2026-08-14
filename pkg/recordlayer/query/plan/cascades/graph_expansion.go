@@ -307,18 +307,19 @@ func (s *SealedGraphExpansion) GetResultValue() values.Value { return s.resultVa
 // BuildSelect creates a SelectExpression using the sealed columns'
 // RecordConstructorValue as the result value. Mirrors Java's
 // `Sealed.buildSelect()`.
-func (s *SealedGraphExpansion) BuildSelect() *expressions.SelectExpression {
+func (s *SealedGraphExpansion) BuildSelect() (*expressions.SelectExpression, error) {
 	return expressions.NewSelectExpression(s.resultValue, s.quantifiers, s.predicates)
 }
 
 // BuildSelectWithResultValue creates a SelectExpression with an
 // externally-provided result value. The sealed expansion must have
-// no result columns (panics otherwise, matching Java's
-// `Verify.verify(resultColumns.isEmpty())`). Mirrors Java's
+// no result columns. A violation is returned rather than panicked so rule
+// drivers can discard every staged effect from the failed construction.
+// Mirrors Java's
 // `Sealed.buildSelectWithResultValue(resultValue)`.
-func (s *SealedGraphExpansion) BuildSelectWithResultValue(resultValue values.Value) *expressions.SelectExpression {
+func (s *SealedGraphExpansion) BuildSelectWithResultValue(resultValue values.Value) (*expressions.SelectExpression, error) {
 	if len(s.resultColumns) > 0 {
-		panic("BuildSelectWithResultValue: resultColumns must be empty")
+		return nil, fmt.Errorf("BuildSelectWithResultValue: resultColumns must be empty")
 	}
 	return expressions.NewSelectExpression(resultValue, s.quantifiers, s.predicates)
 }

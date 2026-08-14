@@ -7,25 +7,62 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func pushLimitProjectionRowType() *values.RecordType {
+	return values.NewRecordType("PushLimitProjectionRow", false, []values.Field{
+		{Name: "x", FieldType: values.NullableLong},
+		{Name: "name", FieldType: values.NullableString},
+		{Name: "a", FieldType: values.NullableLong},
+		{Name: "b", FieldType: values.NullableLong},
+		{Name: "c", FieldType: values.NullableLong},
+	})
+}
+
+func mustPushLimitProjectionConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct push-limit/projection fixture: " + err.Error())
+	}
+	return value
+}
+
+func pushLimitProjectionScanQ() (*expressions.FullUnorderedScanExpression, expressions.Quantifier) {
+	scan := mustPushLimitProjectionConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, pushLimitProjectionRowType()))
+	return scan, expressions.ForEachQuantifier(expressions.InitialOf(scan))
+}
+
+func pushLimitProjectionField(q expressions.Quantifier, ordinal int) values.Value {
+	root := mustPushLimitProjectionConstruct(q.RequireFlowedObjectValue())
+	return mustPushLimitProjectionConstruct(values.ResolveFieldOrdinals(root, []int{ordinal}))
+}
+
+func firePushLimitProjectionRule(
+	t testing.TB, ref *expressions.Reference,
+) []expressions.RelationalExpression {
+	t.Helper()
+	result, err := FireExpressionRule(NewPushLimitThroughProjectionRule(), ref)
+	if err != nil {
+		t.Fatalf("FireExpressionRule: %v", err)
+	}
+	return result
+}
+
 func TestPushLimitThroughProjectionRule_Fires(t *testing.T) {
 	t.Parallel()
+	_ = NewPushLimitThroughProjectionRule() // direct behavioral-census anchor
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	_, scanQ := pushLimitProjectionScanQ()
 
-	proj := expressions.NewLogicalProjectionExpression(
-		[]values.Value{&values.FieldValue{Field: "x", Typ: values.UnknownType}},
+	proj := mustPushLimitProjectionConstruct(expressions.NewLogicalProjectionExpression(
+		[]values.Value{pushLimitProjectionField(scanQ, 0)},
 		scanQ,
-	)
+	))
 	projRef := expressions.InitialOf(proj)
 	projQ := expressions.ForEachQuantifier(projRef)
 
-	lim := expressions.NewLogicalLimitExpression(5, 0, projQ)
+	lim := mustPushLimitProjectionConstruct(expressions.NewLogicalLimitExpression(5, 0, projQ))
 	ref := expressions.InitialOf(lim)
 
-	rule := NewPushLimitThroughProjectionRule()
-	results := FireExpressionRule(rule, ref)
+	results := firePushLimitProjectionRule(t, ref)
 	if len(results) == 0 {
 		t.Fatal("rule did not fire")
 	}
@@ -53,21 +90,26 @@ func TestPushLimitThroughProjectionRule_Fires(t *testing.T) {
 	if !found {
 		t.Fatal("expected LogicalLimitExpression inside projection")
 	}
+	if got, want := result.GetInner().GetAlias(), proj.GetInner().GetAlias(); got != want {
+		t.Fatalf("rewritten projection input alias = %v, want retained program owner %v", got, want)
+	}
+	correlated := values.GetCorrelatedToOfValue(result.GetProjectedValues()[0])
+	if _, ok := correlated[result.GetInner().GetAlias()]; !ok {
+		t.Fatalf("rewritten projection program correlations %v do not contain its input edge %v",
+			correlated, result.GetInner().GetAlias())
+	}
 }
 
 func TestPushLimitThroughProjectionRule_DoesNotFireOnFilter(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	_, scanQ := pushLimitProjectionScanQ()
 
 	// Limit over scan directly (no projection)
-	lim := expressions.NewLogicalLimitExpression(5, 0, scanQ)
+	lim := mustPushLimitProjectionConstruct(expressions.NewLogicalLimitExpression(5, 0, scanQ))
 	ref := expressions.InitialOf(lim)
 
-	rule := NewPushLimitThroughProjectionRule()
-	results := FireExpressionRule(rule, ref)
+	results := firePushLimitProjectionRule(t, ref)
 	if len(results) != 0 {
 		t.Fatalf("rule should not fire when inner is not a projection, got %d results", len(results))
 	}
@@ -76,22 +118,19 @@ func TestPushLimitThroughProjectionRule_DoesNotFireOnFilter(t *testing.T) {
 func TestPushLimitThroughProjectionRule_PreservesOffset(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	_, scanQ := pushLimitProjectionScanQ()
 
-	proj := expressions.NewLogicalProjectionExpression(
-		[]values.Value{&values.FieldValue{Field: "name", Typ: values.UnknownType}},
+	proj := mustPushLimitProjectionConstruct(expressions.NewLogicalProjectionExpression(
+		[]values.Value{pushLimitProjectionField(scanQ, 1)},
 		scanQ,
-	)
+	))
 	projRef := expressions.InitialOf(proj)
 	projQ := expressions.ForEachQuantifier(projRef)
 
-	lim := expressions.NewLogicalLimitExpression(10, 20, projQ)
+	lim := mustPushLimitProjectionConstruct(expressions.NewLogicalLimitExpression(10, 20, projQ))
 	ref := expressions.InitialOf(lim)
 
-	rule := NewPushLimitThroughProjectionRule()
-	results := FireExpressionRule(rule, ref)
+	results := firePushLimitProjectionRule(t, ref)
 	if len(results) == 0 {
 		t.Fatal("rule should fire with offset")
 	}
@@ -120,26 +159,23 @@ func TestPushLimitThroughProjectionRule_PreservesOffset(t *testing.T) {
 func TestPushLimitThroughProjectionRule_MultiColumnProjection(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	_, scanQ := pushLimitProjectionScanQ()
 
-	proj := expressions.NewLogicalProjectionExpression(
+	proj := mustPushLimitProjectionConstruct(expressions.NewLogicalProjectionExpression(
 		[]values.Value{
-			&values.FieldValue{Field: "a", Typ: values.UnknownType},
-			&values.FieldValue{Field: "b", Typ: values.UnknownType},
-			&values.FieldValue{Field: "c", Typ: values.UnknownType},
+			pushLimitProjectionField(scanQ, 2),
+			pushLimitProjectionField(scanQ, 3),
+			pushLimitProjectionField(scanQ, 4),
 		},
 		scanQ,
-	)
+	))
 	projRef := expressions.InitialOf(proj)
 	projQ := expressions.ForEachQuantifier(projRef)
 
-	lim := expressions.NewLogicalLimitExpression(1, 0, projQ)
+	lim := mustPushLimitProjectionConstruct(expressions.NewLogicalLimitExpression(1, 0, projQ))
 	ref := expressions.InitialOf(lim)
 
-	rule := NewPushLimitThroughProjectionRule()
-	results := FireExpressionRule(rule, ref)
+	results := firePushLimitProjectionRule(t, ref)
 	if len(results) == 0 {
 		t.Fatal("rule should fire regardless of projection width")
 	}

@@ -11,11 +11,29 @@ import (
 // dummyCollisionPred is any non-nil join predicate — the guard branches on
 // presence, not content.
 func dummyCollisionPred() predicates.QueryPredicate {
+	leftType := &values.RecordType{Fields: []values.Field{{Name: "C", Ordinal: 0, FieldType: values.NullableString}}}
+	rightType := &values.RecordType{Fields: []values.Field{{Name: "X", Ordinal: 0, FieldType: values.NullableString}}}
+	left, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("ST"), leftType)
+	if err != nil {
+		panic(err)
+	}
+	right, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("X"), rightType)
+	if err != nil {
+		panic(err)
+	}
+	leftField, err := values.ResolveFieldOrdinals(left, []int{0})
+	if err != nil {
+		panic(err)
+	}
+	rightField, err := values.ResolveFieldOrdinals(right, []int{0})
+	if err != nil {
+		panic(err)
+	}
 	return predicates.NewComparisonPredicate(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("ST")), "C", values.UnknownType),
+		leftField,
 		predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("X")), "X", values.UnknownType),
+			Operand: rightField,
 		},
 	)
 }

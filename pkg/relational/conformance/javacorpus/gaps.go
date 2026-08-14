@@ -88,8 +88,12 @@ var engineGaps = []EngineGap{
 	// escaped.)
 	{"pseudo-field-clash.yamsql", SkipGapPlannerDeclines, `SELECT (t1.id, t1.col1, t1.`, "CQ-72"},
 
-	// `FROM VALUES (42)` — an inline table as a FROM source.
-	{"table-functions.yamsql", SkipGapInlineValues, "InlineTableItemContext", "CQ-72"},
+	// Inline VALUES now parses, plans and executes, including nested authored
+	// column definitions and derived-table predicates. The file progresses to
+	// its first table-valued function in FROM, which the source parser still
+	// rejects explicitly. Pin the statement because the file contains several
+	// later range() queries and only this first blocker is measured here.
+	{"table-functions.yamsql", SkipGapTableValuedFunction, `"select * from range(1, 4)": 0A000: unsupported table source item *antlrgen.TableValuedFunctionContext; only plain table names are supported`, "CQ-72"},
 
 	// A correlated EXISTS whose body is a set operation (UNION ALL).
 	{"union-empty-tables.yamsql", SkipGapCorrelatedExistsSetOp, "correlated EXISTS: unsupported query body shape", "CQ-72"},
@@ -288,13 +292,11 @@ var engineGaps = []EngineGap{
 	// answers through its sanctioned in-memory sort — the same
 	// Go-accepts-what-Java-rejects class join-tests-outer.yamsql carries.
 	{"uuid-non-prepared.yamsql", SkipConformanceGoAccepts, `"select * from ta where b is not null order by b": expecting statement to throw an error 0AF00, however it succeeded`, "CQ-72"},
-	// A lateral unnest of a DERIVED TABLE's array column with AT — the
-	// correlated-unnest-over-subquery shape Cascades declines. Pinned at the
-	// exact statement: this file is 30 queries of PartiQL AT shapes and the
-	// bare 0AF00 text would have counted a decline on ANY of them as this one.
-	// (The %q-formatted statement text escapes the embedded quotes, so the
-	// signature matches the escaped form.)
-	{"array-join-at.yamsql", SkipGapPlannerDeclines, `"SELECT \"subquery\".\"id\" - 100 AS \"id\", \"at\", \"val\" FROM (SELECT \"id\" + 100 AS \"id\", \"arr1\" FROM T1) AS \"subquery\", \"subquery\".\"arr1\" AS \"val\" AT \"at\"": 0AF00: Cascades planner could not plan query`, "CQ-72"},
+	// The former derived-table + AT blocker now executes. The file progresses
+	// through the inline-VALUES lateral cases and stops at its first FROM clause
+	// with two lateral unnests, the same explicit translator gap booked above.
+	// Pin the exact statement because this file has thirty PartiQL AT shapes.
+	{"array-join-at.yamsql", SkipGapMultipleLateralUnnests, `"SELECT T2.\"id\", \"at1\", \"val1\", \"at2\", \"val2\" FROM T2, T2.\"arr1\" AS \"val1\" AT \"at1\", T2.\"arr2\" AS \"val2\" AT \"at2\"": 0AF00: multiple lateral array unnests in one FROM clause are not yet supported`, "RFC-142"},
 
 	// NULL into a NOT NULL ARRAY column: Go raises the clean 23502 at plan
 	// time (the type-nullability gate, ExpressionVisitor:1067 semantics

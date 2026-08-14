@@ -8,7 +8,7 @@ import (
 
 // scanFixture builds a leaf RelationalExpression for merge tests.
 func scanFixture(name string) RelationalExpression {
-	return NewFullUnorderedScanExpression([]string{name}, values.UnknownType)
+	return mustExpression(NewFullUnorderedScanExpression([]string{name}, testRecordType()))
 }
 
 func TestReference_CanonicalIdentity(t *testing.T) {
@@ -80,10 +80,10 @@ func posMergeSelect(a1, a2 string) *SelectExpression {
 	q1 := NamedForEachQuantifier(values.NamedCorrelationIdentifier(a1), InitialOf(scanFixture("T")))
 	q2 := NamedForEachQuantifier(values.NamedCorrelationIdentifier(a2), InitialOf(scanFixture("T")))
 	rv := values.NewRawRecordConstructorValue(
-		values.RecordConstructorField{Name: "_0", Value: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(a1))},
-		values.RecordConstructorField{Name: "_1", Value: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(a2))},
+		values.RecordConstructorField{Name: "_0", Value: mustQOV(values.NamedCorrelationIdentifier(a1))},
+		values.RecordConstructorField{Name: "_1", Value: mustQOV(values.NamedCorrelationIdentifier(a2))},
 	)
-	return NewSelectExpressionWithAliases(rv, []Quantifier{q1, q2}, nil, []string{a1, a2})
+	return mustExpression(NewSelectExpressionWithAliases(rv, []Quantifier{q1, q2}, nil, []string{a1, a2}))
 }
 
 // TestReference_AbsorbFoldsAliasAwareDedups pins the shadow-delta metric under

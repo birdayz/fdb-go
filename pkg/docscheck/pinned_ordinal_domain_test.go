@@ -231,7 +231,7 @@ func scanPinnedOrdinalMints(f *ast.File, report func(token.Pos, string)) {
 // theDomainLessConstructor is the ONE function whose body may forward the
 // unknown token, because forwarding it is what the function IS.
 //
-// `NewFieldPathOfSingle(f, i, pinned)` is `...InDomain(f, i, pinned, OrdinalDomain{})`
+// `newFieldPathOfSingle(f, i, pinned)` is `...InDomain(f, i, pinned, OrdinalDomain{})`
 // and nothing else. It is a legal, supported shape — an UNPINNED ordinal needs no
 // layout — so it is policed at its CALL SITES (`NewFieldPathOfSingle(..., true)`),
 // which is where the pin becomes a literal and the mint becomes a false claim.
@@ -242,7 +242,15 @@ func scanPinnedOrdinalMints(f *ast.File, report func(token.Pos, string)) {
 // there is no correct version of that name — a reintroduction would be pinned
 // unconditionally, so its body must be flagged even before it has a single
 // caller. That zero-caller window is precisely the state CQ-56 found it in.
-const theDomainLessConstructor = "NewFieldPathOfSingle"
+const theDomainLessConstructor = "newFieldPathOfSingle"
+
+func isDomainLessConstructor(name string) bool {
+	// Keep the exported spelling for the detector's synthetic historical
+	// fixture. Production renamed the private constructor under RFC-232, but the
+	// gate must still prove it recognizes the old API if somebody reintroduces
+	// it while exempting only the one legitimate forwarding body.
+	return name == theDomainLessConstructor || name == "NewFieldPathOfSingle"
+}
 
 func scanDeclForPinnedOrdinalMints(decl ast.Decl, enclosing string, zero map[string]bool, report func(token.Pos, string)) {
 	ast.Inspect(decl, func(n ast.Node) bool {
@@ -263,7 +271,7 @@ func scanDeclForPinnedOrdinalMints(decl ast.Decl, enclosing string, zero map[str
 		// The raw FieldPath constructor with the pin argument hard-coded true.
 		// Signature: (field string, ordinal int, frontierPinned bool). It cannot
 		// state a domain at all, so there is nothing to inspect but the pin.
-		case "NewFieldPathOfSingle":
+		case "NewFieldPathOfSingle", "newFieldPathOfSingle":
 			if len(call.Args) == 3 && isLiteralTrue(call.Args[2]) {
 				report(call.Lparen, "NewFieldPathOfSingle(..., true) — pinned, and this "+
 					"constructor cannot state a domain")
@@ -275,7 +283,7 @@ func scanDeclForPinnedOrdinalMints(decl ast.Decl, enclosing string, zero map[str
 		if !strings.HasSuffix(name, "InDomain") || len(call.Args) == 0 {
 			return true
 		}
-		if enclosing == theDomainLessConstructor {
+		if isDomainLessConstructor(enclosing) {
 			return true
 		}
 		domainArg := call.Args[len(call.Args)-1]
@@ -297,7 +305,7 @@ func scanDeclForPinnedOrdinalMints(decl ast.Decl, enclosing string, zero map[str
 
 		// The pin is an ARGUMENT here, so it can exempt the call — but only when
 		// it is literally `false`.
-		case name == "NewFieldPathOfSingleInDomain":
+		case name == "NewFieldPathOfSingleInDomain" || name == "newFieldPathOfSingleInDomain":
 			if len(call.Args) == 4 && isLiteralFalse(call.Args[2]) {
 				return true
 			}

@@ -1,6 +1,7 @@
 package expressions
 
 import (
+	"fmt"
 	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -41,20 +42,15 @@ type RecursiveUnionExpression struct {
 	tempTableInsertAlias values.CorrelationIdentifier
 	traversalStrategy    TraversalStrategy
 	distinct             bool // UNION DISTINCT (bare UNION) for cycle detection
+	resultValue          values.Value
 }
 
 func NewRecursiveUnionExpression(
 	initialState, recursiveState Quantifier,
 	tempTableScanAlias, tempTableInsertAlias values.CorrelationIdentifier,
 	strategy TraversalStrategy,
-) *RecursiveUnionExpression {
-	return &RecursiveUnionExpression{
-		initialState:         initialState,
-		recursiveState:       recursiveState,
-		tempTableScanAlias:   tempTableScanAlias,
-		tempTableInsertAlias: tempTableInsertAlias,
-		traversalStrategy:    strategy,
-	}
+) (*RecursiveUnionExpression, error) {
+	return newRecursiveUnionExpression(initialState, recursiveState, tempTableScanAlias, tempTableInsertAlias, strategy, false)
 }
 
 // NewRecursiveUnionExpressionDistinct creates a RecursiveUnionExpression
@@ -63,15 +59,43 @@ func NewRecursiveUnionExpressionDistinct(
 	initialState, recursiveState Quantifier,
 	tempTableScanAlias, tempTableInsertAlias values.CorrelationIdentifier,
 	strategy TraversalStrategy,
-) *RecursiveUnionExpression {
+) (*RecursiveUnionExpression, error) {
+	return newRecursiveUnionExpression(initialState, recursiveState, tempTableScanAlias, tempTableInsertAlias, strategy, true)
+}
+
+func newRecursiveUnionExpression(
+	initialState, recursiveState Quantifier,
+	tempTableScanAlias, tempTableInsertAlias values.CorrelationIdentifier,
+	strategy TraversalStrategy,
+	distinct bool,
+) (*RecursiveUnionExpression, error) {
+	initialResult, err := requireFlowedResult("RecursiveUnionExpression initial state", initialState)
+	if err != nil {
+		return nil, err
+	}
+	recursiveResult, err := requireFlowedResult("RecursiveUnionExpression recursive state", recursiveState)
+	if err != nil {
+		return nil, err
+	}
+	if !typeEquals(initialResult.FlowedType(), recursiveResult.FlowedType()) {
+		return nil, fmt.Errorf("RecursiveUnionExpression result: initial type %v disagrees with recursive type %v", initialResult.FlowedType(), recursiveResult.FlowedType())
+	}
+	resultType, err := snapshotExpressionResultType("RecursiveUnionExpression", initialResult.FlowedType())
+	if err != nil {
+		return nil, err
+	}
 	return &RecursiveUnionExpression{
 		initialState:         initialState,
 		recursiveState:       recursiveState,
 		tempTableScanAlias:   tempTableScanAlias,
 		tempTableInsertAlias: tempTableInsertAlias,
 		traversalStrategy:    strategy,
-		distinct:             true,
-	}
+		distinct:             distinct,
+		resultValue: values.NewDerivedValueWithType(
+			[]values.Value{initialResult, recursiveResult},
+			resultType.Type(),
+		),
+	}, nil
 }
 
 func (e *RecursiveUnionExpression) IsDistinct() bool { return e.distinct }
@@ -113,7 +137,7 @@ func (e *RecursiveUnionExpression) LevelAllowed() bool {
 }
 
 func (e *RecursiveUnionExpression) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+	return e.resultValue
 }
 
 func (e *RecursiveUnionExpression) GetQuantifiers() []Quantifier {
@@ -167,11 +191,18 @@ func (e *RecursiveUnionExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-func (e *RecursiveUnionExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	cp := *e
-	cp.initialState = quantifiers[0]
-	cp.recursiveState = quantifiers[1]
-	return &cp
+func (e *RecursiveUnionExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("RecursiveUnionExpression", len(quantifiers), 2); err != nil {
+		return nil, err
+	}
+	return newRecursiveUnionExpression(
+		quantifiers[0],
+		quantifiers[1],
+		e.tempTableScanAlias,
+		e.tempTableInsertAlias,
+		e.traversalStrategy,
+		e.distinct,
+	)
 }
 
 var _ RelationalExpression = (*RecursiveUnionExpression)(nil)

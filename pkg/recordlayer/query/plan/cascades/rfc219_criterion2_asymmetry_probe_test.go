@@ -9,6 +9,20 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustRFC219Criterion2Construct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct RFC-219 criterion-2 fixture: " + err.Error())
+	}
+	return value
+}
+
+func rfc219Criterion2RowType() *values.RecordType {
+	return values.NewRecordType("RFC219Criterion2Row", false, []values.Field{{
+		Name:      "V",
+		FieldType: values.NullableLong,
+	}})
+}
+
 // rfc219LogicalParent wraps a data-access plan in a logical filter with a
 // constant-true predicate so findExpressionsByType takes the LOGICAL
 // memo-descent walk (countLogicalPlanNode) rather than the concrete-plan walk.
@@ -16,10 +30,10 @@ import (
 // straight to concretePlanCounts, which is the very path these probes are
 // contrasting the logical walk against.
 func rfc219LogicalParent(child expressions.RelationalExpression) expressions.RelationalExpression {
-	return expressions.NewLogicalFilterExpression(
+	return mustRFC219Criterion2Construct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		expressions.ForEachQuantifier(expressions.FinalOf(child)),
-	)
+	))
 }
 
 // rfc219UniqueIndexCtx is the PlanContext both index probes run under: it
@@ -33,7 +47,7 @@ func rfc219UniqueIndexCtx() *pkGateTestCtx {
 		[]string{"T"},
 		[]string{"V"},
 		[]values.CorrelationIdentifier{values.NamedCorrelationIdentifier("v")},
-		values.UnknownType,
+		rfc219Criterion2RowType(),
 		true,
 		[]string{"V"},
 	)
@@ -47,15 +61,13 @@ func rfc219UniqueIndexCtx() *pkGateTestCtx {
 // pre-metadata-adapter plan carries: unique=false and nil column names.
 func rfc219UnstampedIndex(t *testing.T) *plans.RecordQueryIndexPlan {
 	t.Helper()
-	return withSyntheticIndexPlanKeyTypes(
-		plans.NewRecordQueryIndexPlan(
-			"IDX",
-			[]*predicates.ComparisonRange{pkGateEq(t, int64(7))},
-			[]string{"T"},
-			values.UnknownType,
-			false,
-		),
-	)
+	return mustRFC219Criterion2Construct(plans.NewRecordQueryIndexPlan(
+		"IDX",
+		[]*predicates.ComparisonRange{pkGateEq(t, int64(7))},
+		[]string{"T"},
+		rfc219Criterion2RowType(),
+		false,
+	)).WithKeyComponentTypes([]values.Type{values.NullableLong})
 }
 
 // TestRFC219_LogicalWalkIndexArmIgnoresContext measures the asymmetry at the
@@ -123,10 +135,10 @@ func TestRFC219_LogicalWalkScanArmHonoursContext(t *testing.T) {
 	t.Parallel()
 
 	ctx := rfc219UniqueIndexCtx()
-	scan := withSyntheticScanPlanKeyTypes(
-		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
-			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))}),
-	)
+	scan := mustRFC219Criterion2Construct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, rfc219Criterion2RowType(), false)).
+		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))}).
+		WithKeyComponentTypes([]values.Type{values.NullableLong})
 	if got := len(scan.GetPrimaryKeyValues()); got != 0 {
 		t.Fatalf("control scan stamped %d primary-key values, want 0 (it must be unstamped, "+
 			"exactly like the index probe, or the comparison proves nothing)", got)

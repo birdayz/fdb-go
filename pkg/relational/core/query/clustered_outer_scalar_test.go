@@ -17,30 +17,58 @@ import (
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
-// corrEq builds the correlated equality `<innerAlias>.<innerCol> = <leg>.<col>`
-// in the exact value shape the builder emits (lazy FieldValues over untyped
-// QOVs — qualifyBareFieldValue's output).
-func corrEq(innerAlias, innerCol, legAlias, legCol string) *predicates.ComparisonPredicate {
+// exactDemoRef resolves a demo-schema field against its real flowed type. The
+// fallback is reserved for deliberate foreign-scope/missing-column controls.
+func exactDemoRef(t *testing.T, alias, col string) values.Value {
+	t.Helper()
+	table := "Order"
+	switch strings.ToUpper(col) {
+	case "CUSTOMER_ID", "NAME", "EMAIL":
+		table = "Customer"
+	case "ID", "VAL_INT32", "VAL_INT64":
+		table = "TypedRecord"
+	}
+	tr := newGateTranslator(t)
+	typ := tr.ordinalLegType(scan(table, alias))
+	if typ != nil {
+		if ordinal, ok := typ.FieldIndexUnique(col); ok {
+			return exactTestField(t, exactTestQOV(t, alias, typ), ordinal)
+		}
+	}
+	return exactTestNamedField(t, alias, col, values.NotNullLong)
+}
+
+// corrEq builds the exact correlated equality
+// `<innerAlias>.<innerCol> = <leg>.<col>`.
+func corrEq(t *testing.T, innerAlias, innerCol, legAlias, legCol string) *predicates.ComparisonPredicate {
 	return &predicates.ComparisonPredicate{
-		Operand: values.NewFieldValue(
-			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(innerAlias)),
-			innerCol, values.NotNullLong),
+		Operand: exactDemoRef(t, innerAlias, innerCol),
 		Comparison: predicates.Comparison{
-			Type: predicates.ComparisonEquals,
-			Operand: values.NewFieldValue(
-				values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(legAlias)),
-				legCol, values.NotNullLong),
+			Type:    predicates.ComparisonEquals,
+			Operand: exactDemoRef(t, legAlias, legCol),
 		},
 	}
 }
 
+// exactScalarProjection gives a direct-tree correlated-scalar fixture the
+// same one-column materialization boundary the SQL builder emits. A bare scan
+// or join is a multi-column row and is not itself a scalar result under the
+// RFC-232 exact-row contract.
+func exactScalarProjection(t *testing.T, input logical.LogicalOperator, alias, col string) *logical.LogicalProject {
+	t.Helper()
+	project := logical.NewProject(input, []string{strings.ToUpper(col)}, []string{""})
+	project.ProjectedValues = []values.Value{exactDemoRef(t, alias, col)}
+	return project
+}
+
 // clusteredCSQ assembles the csq the dispatch tests feed: inner
 // `SELECT order_id FROM Order SQ WHERE SQ.order_id = <leg>.<col>`.
-func clusteredCSQ(legAlias, legCol string) logical.CorrelatedScalarSubquery {
+func clusteredCSQ(t *testing.T, legAlias, legCol string) logical.CorrelatedScalarSubquery {
+	filtered := logical.NewFilterWithPredicate(
+		scan("Order", "SQ"), corrEq(t, "SQ", "ORDER_ID", legAlias, legCol), "")
 	return logical.CorrelatedScalarSubquery{
-		Alias: values.UniqueCorrelationIdentifier(),
-		InnerPlan: logical.NewFilterWithPredicate(
-			scan("Order", "SQ"), corrEq("SQ", "ORDER_ID", legAlias, legCol), ""),
+		Alias:        values.UniqueCorrelationIdentifier(),
+		InnerPlan:    exactScalarProjection(t, filtered, "SQ", "ORDER_ID"),
 		InnerAlias:   "SQ",
 		ScalarCol:    "ORDER_ID",
 		StrictSingle: true,
@@ -48,12 +76,13 @@ func clusteredCSQ(legAlias, legCol string) logical.CorrelatedScalarSubquery {
 }
 
 // clusteredProject wraps a csq over the given outer with dotted projections.
-func clusteredProject(outer logical.LogicalOperator, csq logical.CorrelatedScalarSubquery) *logical.LogicalProject {
+func clusteredProject(t *testing.T, outer logical.LogicalOperator, csq logical.CorrelatedScalarSubquery) *logical.LogicalProject {
+	t.Helper()
 	return &logical.LogicalProject{
 		Input:                      outer,
 		Projections:                []string{"o.order_id", "(subq)"},
 		Aliases:                    []string{"", ""},
-		ProjectedValues:            []values.Value{nil, &values.ScalarSubqueryValue{Alias: csq.Alias}},
+		ProjectedValues:            []values.Value{exactDemoRef(t, "o", "ORDER_ID"), values.NewScalarSubqueryValue(csq.Alias, values.NullableLong)},
 		IsComputed:                 []bool{false, true},
 		CorrelatedScalarSubqueries: []logical.CorrelatedScalarSubquery{csq},
 	}
@@ -106,9 +135,9 @@ func TestClusteredPullUp_BakesAllLegs(t *testing.T) {
 	// One ref per leg (C = non-rightmost... FROM-order first leg is O; the
 	// RIGHTMOST leg is C) + one enclosing-scope ref that must survive lazy.
 	pred := predicates.NewAnd(
-		corrEq("SQ", "ORDER_ID", "c", "CUSTOMER_ID"),
-		corrEq("SQ", "NEXT_ID", "o", "ORDER_ID"),
-		corrEq("SQ", "OTHER", "z", "ZCOL"),
+		corrEq(t, "SQ", "ORDER_ID", "c", "CUSTOMER_ID"),
+		corrEq(t, "SQ", "PRICE", "o", "ORDER_ID"),
+		corrEq(t, "SQ", "OTHER", "z", "ZCOL"),
 	)
 	orig := logical.NewFilterWithPredicate(scan("Order", "SQ"), pred, "")
 
@@ -117,32 +146,32 @@ func TestClusteredPullUp_BakesAllLegs(t *testing.T) {
 		t.Fatalf("rebuild ok=%v missed=%v, want clean bake", ok, pu.missed)
 	}
 
-	countBaked := func(op logical.LogicalOperator) (baked, lazyLeg int) {
+	countBaked := func(op logical.LogicalOperator) (baked, sourceLeg int) {
 		f := op.(*logical.LogicalFilter)
 		predicates.ReplaceValues(f.Predicate, func(v values.Value) values.Value {
-			fv, isFV := v.(*values.FieldValue)
+			fv, isFV := values.AsFieldValue(v)
 			if !isFV {
 				return v
 			}
-			if fv.Resolved != nil {
-				if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV && qov.Correlation == pu.outerCorr {
-					baked++
-				}
+			qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
+			if !isQOV {
 				return v
 			}
-			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
-				a := strings.ToUpper(qov.Correlation.Name())
-				if a == "C" || a == "O" {
-					lazyLeg++
-				}
+			if qov.Correlation() == pu.outerCorr {
+				baked++
+				return v
+			}
+			a := strings.ToUpper(qov.Correlation().Name())
+			if a == "C" || a == "O" {
+				sourceLeg++
 			}
 			return v
 		})
 		return
 	}
-	baked, lazyLeg := countBaked(rebuilt)
-	if baked != 2 || lazyLeg != 0 {
-		t.Errorf("rebuilt: %d baked over the fresh concat QOV, %d lazy leg refs — want 2 baked (ALL legs, rightmost included), 0 lazy stragglers", baked, lazyLeg)
+	baked, sourceLeg := countBaked(rebuilt)
+	if baked != 2 || sourceLeg != 0 {
+		t.Errorf("rebuilt: %d baked over the fresh concat QOV, %d source-leg refs — want 2 baked (ALL legs, rightmost included), 0 source stragglers", baked, sourceLeg)
 	}
 	origBaked, origLazy := countBaked(orig)
 	if origBaked != 0 || origLazy != 2 {
@@ -154,8 +183,8 @@ func TestClusteredPullUp_BakesAllLegs(t *testing.T) {
 	wantC := pu.legByBinding["C"].start + cIdx
 	found := false
 	predicates.ReplaceValues(rebuilt.(*logical.LogicalFilter).Predicate, func(v values.Value) values.Value {
-		if fv, isFV := v.(*values.FieldValue); isFV && fv.Resolved != nil {
-			if acc, single := fv.Resolved.Single(); single && acc.Ordinal == wantC {
+		if fv, isFV := values.AsFieldValue(v); isFV {
+			if got := fv.Path().Ordinals(); len(got) == 1 && got[0] == wantC {
 				found = true
 			}
 		}
@@ -168,7 +197,7 @@ func TestClusteredPullUp_BakesAllLegs(t *testing.T) {
 	// A leg ref to a column ABSENT from the leg's type flips missed → decline.
 	pu2 := tr.buildClusterPullUp(j)
 	_, ok = rebuildInnerWithValues(
-		logical.NewFilterWithPredicate(scan("Order", "SQ"), corrEq("SQ", "X", "c", "NO_SUCH_COL"), ""),
+		logical.NewFilterWithPredicate(scan("Order", "SQ"), corrEq(t, "SQ", "PRICE", "c", "NO_SUCH_COL"), ""),
 		pu2.bake)
 	if !ok || !pu2.missed {
 		t.Errorf("unmappable leg column: ok=%v missed=%v, want ok=true missed=true (caller declines)", ok, pu2.missed)
@@ -188,9 +217,7 @@ func TestClusteredCarrierEnumeration(t *testing.T) {
 	t.Parallel()
 
 	legRef := func() values.Value {
-		return values.NewFieldValue(
-			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("c")),
-			"CUSTOMER_ID", values.NotNullLong)
+		return exactDemoRef(t, "c", "CUSTOMER_ID")
 	}
 	legPred := func() predicates.QueryPredicate {
 		return &predicates.ComparisonPredicate{
@@ -247,8 +274,8 @@ func TestClusteredCarrierEnumeration(t *testing.T) {
 	// unresolvable at runtime (review finding). The enumeration table above
 	// cannot distinguish walk-semantics from rewrite-semantics; this pin does.
 	rewriteAll := func(v values.Value) values.Value {
-		if fv, isFV := v.(*values.FieldValue); isFV && fv.Resolved == nil {
-			return &values.FieldValue{Field: fv.Field, Typ: values.UnknownType}
+		if _, isFV := values.AsFieldValue(v); isFV {
+			return &values.ConstantValue{Value: int64(0)}
 		}
 		return v
 	}
@@ -297,7 +324,7 @@ func TestClusteredSeed_Shape(t *testing.T) {
 	if pu == nil {
 		t.Fatal("pull-up spine")
 	}
-	seed := clusteredOuterOrdinalSeed(pu, values.UniqueCorrelationIdentifier(), "SQ", "ORDER_ID")
+	seed := clusteredOuterOrdinalSeed(pu, values.UniqueCorrelationIdentifier(), "SQ", "ORDER_ID", values.NullableLong)
 	if seed == nil {
 		t.Fatal("gated cluster must seed")
 	}
@@ -320,27 +347,27 @@ func TestClusteredSeed_Shape(t *testing.T) {
 		if !isLeg {
 			t.Fatalf("outer field %d name %q: prefix is not a leg alias", i, f.Name)
 		}
-		fv := f.Value.(*values.FieldValue)
-		acc, _ := fv.Resolved.Single()
-		if acc.Ordinal != i {
-			t.Fatalf("outer field %d baked at ordinal %d, want %d (one full run)", i, acc.Ordinal, i)
+		fv := exactTestFieldView(t, f.Value)
+		path := fv.Path().Ordinals()
+		if len(path) != 1 || path[0] != i {
+			t.Fatalf("outer field %d baked at path %v, want [%d] (one full run)", i, path, i)
 		}
 		idx, found := leg.typ.FieldIndexUnique(f.Name[dot+1:])
 		if !found || leg.start+idx != i {
 			t.Fatalf("outer field %d name %q does not map back to global ordinal %d via its leg span", i, f.Name, i)
 		}
-		qov := fv.Child.(*values.QuantifiedObjectValue)
-		if qov.Correlation != pu.outerCorr {
-			t.Fatalf("outer field %d baked over %s, want the fresh concat QOV %s", i, qov.Correlation, pu.outerCorr)
+		qov, ok := values.AsQuantifiedObjectValue(fv.ChildValue())
+		if !ok || qov.Correlation() != pu.outerCorr {
+			t.Fatalf("outer field %d baked over %T, want the fresh concat QOV %s", i, fv.ChildValue(), pu.outerCorr)
 		}
 	}
 	last := rc.Fields[wantOuter]
 	if last.Name != "SQ.ORDER_ID" {
 		t.Errorf("inner field name = %q, want SQ.ORDER_ID", last.Name)
 	}
-	ifv := last.Value.(*values.FieldValue)
-	if !ifv.Typ.IsNullable() {
-		t.Errorf("inner scalar must be NULLABLE (LEFT-OUTER null-fill), got %s", ifv.Typ)
+	ifv := exactTestFieldView(t, last.Value)
+	if !ifv.ResultType().IsNullable() {
+		t.Errorf("inner scalar must be NULLABLE (LEFT-OUTER null-fill), got %s", ifv.ResultType())
 	}
 }
 
@@ -372,12 +399,13 @@ func TestClusteredDispatch_BothDirections(t *testing.T) {
 
 	// Direction 1: gated comma cluster, correlation to the FIRST leg.
 	tr := newGateTranslator(t)
-	gated := clusteredProject(inner(scan("Order", "o"), scan("Customer", "c")), clusteredCSQ("c", "CUSTOMER_ID"))
+	gated := clusteredProject(t, inner(scan("Order", "o"), scan("Customer", "c")), clusteredCSQ(t, "c", "CUSTOMER_ID"))
 	// Rightmost is O; projections reference o.order_id (dotted) + the csq.
 	gated.Projections = []string{"c.customer_id", "(subq)"}
+	gated.ProjectedValues[0] = exactDemoRef(t, "c", "CUSTOMER_ID")
 	expr := tr.translateProjectWithCorrelatedScalar(gated)
 	if expr == nil {
-		t.Fatal("gated cluster + first-leg correlation must translate (it was 0AF00 on the name model)")
+		t.Fatalf("gated cluster + first-leg correlation must translate (it was 0AF00 on the name model): %v", tr.translateErr)
 	}
 	rc := seedOf(t, expr)
 	values.AssertOrdinalJoinSeed(rc)
@@ -389,7 +417,7 @@ func TestClusteredDispatch_BothDirections(t *testing.T) {
 	left := logical.NewJoin(
 		inner(scan("Order", "o2"), scan("Order", "o")),
 		scan("Customer", "c"), logical.JoinLeft, "")
-	flipped := clusteredProject(left, clusteredCSQ("c", "CUSTOMER_ID"))
+	flipped := clusteredProject(t, left, clusteredCSQ(t, "c", "CUSTOMER_ID"))
 	expr2 := tr2.translateProjectWithCorrelatedScalar(flipped)
 	if expr2 == nil {
 		t.Fatalf("gated joined-preserved outer + rightmost correlation must translate ordinal, err=%v", tr2.translateErr)
@@ -404,7 +432,7 @@ func TestClusteredDispatch_BothDirections(t *testing.T) {
 	// does the correlation mean?), so it declines LOUDLY (correct-or-loud)
 	// instead of seeding an anchored record over indistinguishable legs.
 	tr2b := newGateTranslator(t)
-	dupUngated := clusteredProject(inner(scan("Order", "x"), scan("Customer", "x")), clusteredCSQ("x", "CUSTOMER_ID"))
+	dupUngated := clusteredProject(t, inner(scan("Order", "x"), scan("Customer", "x")), clusteredCSQ(t, "x", "CUSTOMER_ID"))
 	if expr2b := tr2b.translateProjectWithCorrelatedScalar(dupUngated); expr2b != nil {
 		t.Fatal("dup-poisoned outer + correlated scalar must decline LOUDLY (there is no anchored fallback), got a translation")
 	}
@@ -415,7 +443,7 @@ func TestClusteredDispatch_BothDirections(t *testing.T) {
 	// Direction 3: the gated joined-preserved outer + NON-rightmost (buried)
 	// correlation translates ordinal too — the buried-leg spans name it.
 	tr3 := newGateTranslator(t)
-	buried := clusteredProject(left, clusteredCSQ("o2", "ORDER_ID"))
+	buried := clusteredProject(t, left, clusteredCSQ(t, "o2", "ORDER_ID"))
 	if expr3 := tr3.translateProjectWithCorrelatedScalar(buried); expr3 == nil {
 		t.Fatalf("gated outer + buried (non-rightmost) correlation must translate ordinal, err=%v", tr3.translateErr)
 	} else {
@@ -428,7 +456,7 @@ func TestClusteredDispatch_BothDirections(t *testing.T) {
 	// end-to-end in the FDB LEFT matrix).
 	tr4 := newGateTranslator(t)
 	singleLeft := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, "")
-	gatedLeft := clusteredProject(singleLeft, clusteredCSQ("c", "CUSTOMER_ID"))
+	gatedLeft := clusteredProject(t, singleLeft, clusteredCSQ(t, "c", "CUSTOMER_ID"))
 	expr4 := tr4.translateProjectWithCorrelatedScalar(gatedLeft)
 	if expr4 == nil {
 		t.Fatal("gated single-source LEFT outer + correlated scalar must translate ordinal")
@@ -454,17 +482,19 @@ func TestInnerOwnAliasNotOuterRef(t *testing.T) {
 	// outer's first leg; the only OUTER ref is to C (the rightmost leg).
 	innerJoin := logical.NewJoinWithPredicate(
 		scan("TypedRecord", "SQ"), scan("Order", "o"), logical.JoinInner,
-		corrEq("o", "ORDER_ID", "SQ", "NEXT_ID"))
+		corrEq(t, "o", "ORDER_ID", "SQ", "ID"))
 	csq := logical.CorrelatedScalarSubquery{
 		Alias: values.UniqueCorrelationIdentifier(),
-		InnerPlan: logical.NewFilterWithPredicate(
-			innerJoin, corrEq("SQ", "ID", "c", "CUSTOMER_ID"), ""),
+		InnerPlan: exactScalarProjection(t,
+			logical.NewFilterWithPredicate(innerJoin, corrEq(t, "SQ", "ID", "c", "CUSTOMER_ID"), ""),
+			"SQ", "ID"),
 		InnerAlias:   "SQ",
-		ScalarCol:    "ORDER_ID",
+		ScalarCol:    "ID",
 		StrictSingle: true,
 	}
-	p := clusteredProject(inner(scan("Order", "o"), scan("Customer", "c")), csq)
+	p := clusteredProject(t, inner(scan("Order", "o"), scan("Customer", "c")), csq)
 	p.Projections = []string{"c.customer_id", "(subq)"}
+	p.ProjectedValues[0] = exactDemoRef(t, "c", "CUSTOMER_ID")
 
 	expr := tr.translateProjectWithCorrelatedScalar(p)
 	if expr != nil {
@@ -487,11 +517,11 @@ func TestJoinInnerDispatch_Ordinal(t *testing.T) {
 
 	joinInner := logical.NewFilterWithPredicate(
 		logical.NewJoinWithPredicate(scan("Order", "SQ"), scan("TypedRecord", "i"), logical.JoinInner,
-			corrEq("I", "ID", "SQ", "NEXT_ID")),
-		corrEq("SQ", "ORDER_ID", "c", "CUSTOMER_ID"), "")
+			corrEq(t, "I", "ID", "SQ", "ORDER_ID")),
+		corrEq(t, "SQ", "ORDER_ID", "c", "CUSTOMER_ID"), "")
 	csq := logical.CorrelatedScalarSubquery{
 		Alias:        values.UniqueCorrelationIdentifier(),
-		InnerPlan:    joinInner,
+		InnerPlan:    exactScalarProjection(t, joinInner, "SQ", "ORDER_ID"),
 		InnerAlias:   "SQ",
 		ScalarCol:    "ORDER_ID",
 		StrictSingle: true,
@@ -500,13 +530,13 @@ func TestJoinInnerDispatch_Ordinal(t *testing.T) {
 		Input:                      scan("Customer", "c"),
 		Projections:                []string{"c.name", "(subq)"},
 		Aliases:                    []string{"", ""},
-		ProjectedValues:            []values.Value{nil, &values.ScalarSubqueryValue{Alias: csq.Alias}},
+		ProjectedValues:            []values.Value{exactDemoRef(t, "c", "NAME"), values.NewScalarSubqueryValue(csq.Alias, values.NullableLong)},
 		IsComputed:                 []bool{false, true},
 		CorrelatedScalarSubqueries: []logical.CorrelatedScalarSubquery{csq},
 	}
 	expr := tr.translateProjectWithCorrelatedScalar(p)
 	if expr == nil {
-		t.Fatal("single-source outer + JOIN-inner must translate")
+		t.Fatalf("single-source outer + JOIN-inner must translate: %v", tr.translateErr)
 	}
 	proj := expr.(*expressions.LogicalProjectionExpression)
 	sel := proj.GetQuantifiers()[0].GetRangesOver().Members()[0].(*expressions.SelectExpression)
@@ -521,8 +551,9 @@ func TestJoinInnerDispatch_Ordinal(t *testing.T) {
 	}
 	// The seed's inner leg must be keyed by the SAME fresh id (quantifier and
 	// leg reference must agree for the executor's binding).
-	lastQOV := rc.Fields[len(rc.Fields)-1].Value.(*values.FieldValue).Child.(*values.QuantifiedObjectValue)
-	if lastQOV.Correlation != innerQCorr {
-		t.Fatalf("seed inner leg keyed %s but the quantifier carries %s — binding mismatch", lastQOV.Correlation, innerQCorr)
+	lastField := exactTestFieldView(t, rc.Fields[len(rc.Fields)-1].Value)
+	lastQOV, ok := values.AsQuantifiedObjectValue(lastField.ChildValue())
+	if !ok || lastQOV.Correlation() != innerQCorr {
+		t.Fatalf("seed inner leg owner = %T, want quantifier correlation %s", lastField.ChildValue(), innerQCorr)
 	}
 }

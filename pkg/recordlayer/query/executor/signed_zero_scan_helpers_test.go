@@ -199,17 +199,20 @@ func vectorPartitionValidationPlan(
 	physicalTypes []values.Type,
 	ordered bool,
 ) *plans.RecordQueryVectorIndexPlan {
-	plan := plans.NewRecordQueryVectorIndexPlan(
+	plan := mustExecutorConstruct(plans.NewRecordQueryVectorIndexPlan(
 		"vec",
 		comparisons,
-		values.LiteralValue([]float64{0, 1}),
-		values.LiteralValue(2),
+		&values.ConstantValue{Value: []float64{0, 1}, Typ: values.NewArrayType(false, values.NotNullDouble)},
+		&values.ConstantValue{Value: int64(2), Typ: values.NotNullLong},
 		predicates.ComparisonDistanceRankLessThanOrEq,
 		nil,
 		nil,
 		[]string{"T"},
-		values.UnknownType,
-	).WithPartitionKeyComponentTypes(physicalTypes)
+		exactTestRowType(
+			values.Field{Name: "ID", FieldType: values.NotNullLong},
+			values.Field{Name: "DISTANCE", FieldType: values.NotNullDouble},
+		),
+	)).WithPartitionKeyComponentTypes(physicalTypes)
 	if ordered {
 		plan = plan.WithOrderedStream()
 	}

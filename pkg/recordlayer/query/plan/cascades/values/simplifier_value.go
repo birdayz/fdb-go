@@ -202,7 +202,7 @@ func simplifyChildren(v Value) Value {
 // composeFieldOverConstructor implements Java's ComposeFieldValueOverRecordConstructorRule:
 // field(RecordConstructor(..., x as name, ...), "name") → x
 func composeFieldOverConstructor(v Value) Value {
-	fv, ok := v.(*FieldValue)
+	fv, ok := v.(*fieldValue)
 	if !ok || fv.Child == nil {
 		return nil
 	}
@@ -284,16 +284,16 @@ func tryCastConstant(cv *ConstantValue, target Type) (out *ConstantValue) {
 // Java never co-resides the two (Compose in DefaultValueSimplificationRuleSet,
 // Expand only in MaxMatchMapSimplification), and compose-only cannot loop.
 func composeFieldOverField(v Value) Value {
-	outer, ok := v.(*FieldValue)
+	outer, ok := v.(*fieldValue)
 	if !ok || outer.Child == nil || outer.Resolved == nil {
 		return nil
 	}
-	inner, ok := outer.Child.(*FieldValue)
+	inner, ok := outer.Child.(*fieldValue)
 	if !ok || inner.Resolved == nil || inner.Child == nil {
 		return nil
 	}
 	fused := inner.Resolved.WithSuffix(outer.Resolved)
-	return &FieldValue{
+	return &fieldValue{
 		// Display = the LAST step's name (Java getLastFieldName); the fused
 		// node reads exactly what the chain read, so Typ is the OUTER's.
 		Field:    fused.Last().Field,

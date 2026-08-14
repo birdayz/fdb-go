@@ -105,7 +105,16 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 			// unchanged.
 			fodInnerQ := expressions.NamedPhysicalQuantifier(innerQuantifier.GetAlias(),
 				call.MemoizeFinalExpression(currentPlan))
-			fodPlan := plans.NewRecordQueryFirstOrDefaultPlanFromQuantifier(fodInnerQ, values.NewNullValue(values.UnknownType))
+			flowedType, err := fodInnerQ.GetFlowedObjectType()
+			if err != nil {
+				call.Fail(err)
+				return
+			}
+			fodPlan, err := plans.NewRecordQueryFirstOrDefaultPlanFromQuantifier(fodInnerQ, values.NewNullValue(flowedType))
+			if err != nil {
+				call.Fail(err)
+				return
+			}
 			if len(queryPredicates) == 0 && isSimpleResult {
 				call.YieldFinalExpression(fodPlan)
 				continue
@@ -116,7 +125,16 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 		} else if innerQuantifier.Kind() == expressions.QuantifierForEach && innerQuantifier.IsNullOnEmpty() {
 			// The DefaultOnEmpty is its own cascades expression carrying the live
 			// currentQuant edge (RFC-184 W2) — no physicalDefaultOnEmptyWrapper.
-			doePlan := plans.NewRecordQueryDefaultOnEmptyPlanFromQuantifier(currentQuant, values.NewNullValue(values.UnknownType))
+			flowedType, err := currentQuant.GetFlowedObjectType()
+			if err != nil {
+				call.Fail(err)
+				return
+			}
+			doePlan, err := plans.NewRecordQueryDefaultOnEmptyPlanFromQuantifier(currentQuant, values.NewNullValue(flowedType))
+			if err != nil {
+				call.Fail(err)
+				return
+			}
 			if len(queryPredicates) == 0 && isSimpleResult {
 				call.YieldFinalExpression(doePlan)
 				continue
@@ -134,7 +152,11 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 			// push_filter_through_fetch's re-explored pushed member reachable from a
 			// parent that captures this leg; a frozen snapshot strands the pre-push
 			// filter once the merged group canonicalizes to the pushed one.
-			filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(currentQuant, queryPredicates, innerQuantifier.GetAlias())
+			filterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(currentQuant, queryPredicates, innerQuantifier.GetAlias())
+			if err != nil {
+				call.Fail(err)
+				return
+			}
 			filterRef := call.MemoizeFinalExpression(filterPlan)
 			currentQuant = expressions.NewPhysicalQuantifier(filterRef)
 			currentPlan = filterPlan
@@ -147,13 +169,23 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 		if !isSimpleResult {
 			mapResultValue := resultValue
 			if len(queryPredicates) > 0 {
-				mapResultValue = values.RebaseValue(resultValue, values.AliasMap{
-					innerQuantifier.GetAlias(): currentQuant.GetAlias(),
-				})
+				aliases, err := values.NewAliasMap([]values.AliasPair{{
+					Source: innerQuantifier.GetAlias(),
+					Target: currentQuant.GetAlias(),
+				}})
+				if err != nil {
+					call.Fail(err)
+					return
+				}
+				mapResultValue = values.RebaseValue(resultValue, aliases)
 			}
 			// The projection (Map) is its own cascades expression carrying the
 			// live currentQuant edge (RFC-184 W2).
-			mapPlan := plans.NewRecordQueryMapPlanFromQuantifier(currentQuant, mapResultValue)
+			mapPlan, err := plans.NewRecordQueryMapPlanFromQuantifier(currentQuant, mapResultValue)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
 			call.YieldFinalExpression(mapPlan)
 		}
 	}
@@ -166,37 +198,16 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 // QuantifiedObjectValue.isSimpleQuantifiedObjectValueOver + the
 // resultType.equals(flowedType) gate; RFC-144 BC2).
 //
-// Both operands are Java's verbatim ones, and that is load-bearing on each side:
-//
-//   - The right-hand side is the QUANTIFIER's flowed object type
-//     (`Quantifier.GetFlowedObjectType`, Java's
-//     `ImplementSimpleSelectRule.java:129-130` reading
-//     `innerQuantifier.getFlowedObjectType()`). Asking the quantifier's UNTYPED
-//     flowed VALUE for its type instead answers `UNKNOWN` for every quantifier
-//     in the planner, which makes the whole comparison "is v also untyped?" —
-//     agreeing with Java only while nothing carries a type, and inverting the
-//     moment a result value does: an EXACT passthrough of a typed row stops
-//     being recognised and an identity Map is wrapped around a plan that needs
-//     none.
-//   - The left-hand side is the QOV's STORED type, not `v.Type()`. Java's
-//     `QuantifiedObjectValue.getResultType()` returns the constructed result
-//     type verbatim (QuantifiedObjectValue.java:70-73), whereas Go's
-//     `QuantifiedObjectValue.Type()` re-wraps it as nullable unconditionally.
-//     Comparing through that wrapper erases the one distinction this gate
-//     exists to draw, because a widened passthrough and an exact one report the
-//     same nullable type.
-//
-// A type absent on EITHER side is Go's reporting gap, not a mismatch, and the
-// gap is symmetric: an untyped QOV states no type exactly as an underivable
-// flowed type states none. With nothing to compare, alias identity is the whole
-// answer — which is what this site gave every value before any of them carried
-// a type.
+// Both operands are the exact Java authorities: the quantifier's flowed object
+// type and the QOV's stored flowed type. QOV construction rejects unresolved
+// types and preserves nullability, so there is no UNKNOWN/nullable fallback at
+// this gate: an absent or conflicting quantifier type keeps the Map.
 func isSimplePassthroughOf(v values.Value, q expressions.Quantifier) bool {
-	qov, ok := v.(*values.QuantifiedObjectValue)
+	qov, ok := values.AsQuantifiedObjectValue(v)
 	if !ok {
 		return false
 	}
-	if qov.Correlation != q.GetAlias() {
+	if qov.Correlation() != q.GetAlias() {
 		return false
 	}
 	flowedType, err := q.GetFlowedObjectType()
@@ -207,10 +218,7 @@ func isSimplePassthroughOf(v values.Value, q expressions.Quantifier) bool {
 		// never a dropped one.
 		return false
 	}
-	if flowedType == nil || qov.Typ == nil || qov.Typ.Code() == values.TypeCodeUnknown {
-		return true
-	}
-	return qov.Typ.Equals(flowedType)
+	return qov.FlowedType().Equals(flowedType)
 }
 
 var _ ImplementationRule = (*ImplementSimpleSelectRule)(nil)

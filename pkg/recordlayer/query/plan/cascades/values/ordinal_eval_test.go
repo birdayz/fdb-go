@@ -27,8 +27,8 @@ func (r *fakeOrdinalRow) Get(ord int) (any, bool) {
 // position — deterministic across runs (Go map iteration order is
 // randomized). The ordinal PositionalRow (here fakeOrdinalRow) is the sole
 // eval context, and every column reference must carry a plan-time ordinal —
-// a BAKED FieldValue (fomB's baker, or NewFieldValueWithResolvedOrdinal /
-// NewCorrelatedFieldValueWithResolvedOrdinal) reads row.Get(ordinal). A LAZY
+// a BAKED FieldValue (fomB's baker, or newFieldValueWithResolvedOrdinal /
+// newCorrelatedFieldValueWithResolvedOrdinal) reads row.Get(ordinal). A LAZY
 // flat reference does not resolve against fom by name; it fails loud. A key
 // PRESENT with a nil value reads as SQL NULL; an ABSENT key is a loud miss
 // (out-of-range ordinal), never a silent NULL — a test that wants NULL must
@@ -52,13 +52,13 @@ func fom(m map[string]any) *fakeOrdinalRow {
 // ordinal at plan time so runtime access is positional (row.Get(ordinal)),
 // never a name lookup. bk panics if field is absent from the row (a test bug
 // — bake only real columns; loud-miss behavior is exercised with a lazy
-// NewFlatFieldValue instead).
-func fomB(m map[string]any) (*fakeOrdinalRow, func(string, Type) *FieldValue) {
+// newFlatFieldValue instead).
+func fomB(m map[string]any) (*fakeOrdinalRow, func(string, Type) *fieldValue) {
 	r := fom(m)
-	bk := func(field string, typ Type) *FieldValue {
+	bk := func(field string, typ Type) *fieldValue {
 		for i, n := range r.names {
 			if n == field {
-				return NewFieldValueWithResolvedOrdinal(field, i, typ)
+				return newFieldValueWithResolvedOrdinal(field, i, typ)
 			}
 		}
 		panic("fomB: baked field not present in row: " + field)
@@ -94,7 +94,7 @@ func TestFieldValue_OrdinalEval(t *testing.T) {
 	// The CTE rename is handled by BAKING X's ordinal at plan time (there is
 	// no runtime name->ordinal fallback), so the baked "X" reads positional
 	// slot 0 directly.
-	flat := NewFieldValueWithResolvedOrdinal("X", 0, UnknownType)
+	flat := newFieldValueWithResolvedOrdinal("X", 0, UnknownType)
 	renamedRow := &fakeOrdinalRow{names: []string{"X", "Y"}, slots: []any{int64(10), int64(20)}}
 	got, err := flat.Evaluate(renamedRow)
 	if err != nil {
@@ -107,12 +107,12 @@ func TestFieldValue_OrdinalEval(t *testing.T) {
 	// (2) QOV-child FieldValue bound to an ordinal row (correlated path). The QOV
 	// is typed [ID, V]; "V" is BAKED to ordinal 1 → slot 1.
 	rt := NewRecordType("", false, []Field{
-		{Name: "ID", FieldType: UnknownType, Ordinal: 0},
-		{Name: "V", FieldType: UnknownType, Ordinal: 1},
+		{Name: "ID", FieldType: NotNullLong, Ordinal: 0},
+		{Name: "V", FieldType: NotNullLong, Ordinal: 1},
 	})
 	corr := UniqueCorrelationIdentifier()
-	qov := NewQuantifiedObjectValueOfType(corr, rt)
-	fv := NewCorrelatedFieldValueWithResolvedOrdinal(qov, "V", 1, UnknownType)
+	qov := mustQOV(t, corr, rt)
+	fv := newCorrelatedFieldValueWithResolvedOrdinal(qov, "V", 1, UnknownType)
 	binder := &ordEvalBinder{id: corr, bound: &fakeOrdinalRow{slots: []any{int64(10), int64(20)}}}
 	got, err = fv.Evaluate(&RowEvalContext{Correlations: binder})
 	if err != nil {
@@ -124,7 +124,7 @@ func TestFieldValue_OrdinalEval(t *testing.T) {
 
 	// (3) Loud error on a flat miss — NOT a silent NULL.
 	var ore *OrdinalResolutionError
-	if _, err = NewFlatFieldValue("MISSING", UnknownType).Evaluate(renamedRow); !errors.As(err, &ore) {
+	if _, err = newFlatFieldValue("MISSING", UnknownType).Evaluate(renamedRow); !errors.As(err, &ore) {
 		t.Fatalf("flat miss must be a loud OrdinalResolutionError, got %v", err)
 	}
 

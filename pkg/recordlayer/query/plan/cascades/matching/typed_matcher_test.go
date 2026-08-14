@@ -19,7 +19,7 @@ func TestTypedMatcher_ExtractAndMatch(t *testing.T) {
 	in := &values.ArithmeticValue{
 		Op:    values.OpAdd,
 		Left:  &values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
-		Right: &values.FieldValue{Field: "x", Typ: values.NullableLong},
+		Right: mustMatchingField(t, "x", values.NullableLong),
 	}
 	got := m.BindMatches(NewBindings(), in)
 	if len(got) != 1 {
@@ -39,7 +39,7 @@ func TestTypedMatcher_DownstreamFails(t *testing.T) {
 	)
 	in := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  &values.FieldValue{Field: "x", Typ: values.NullableLong},
+		Left:  mustMatchingField(t, "x", values.NullableLong),
 		Right: &values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 	}
 	if got := m.BindMatches(NewBindings(), in); got != nil {

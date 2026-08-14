@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/fnv"
+	"slices"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -94,17 +95,115 @@ type GroupByExpression struct {
 	groupingKeys []values.Value
 	aggregates   []AggregateSpec
 	inner        Quantifier
+	resultValue  *values.RecordConstructorValue
 }
 
 func NewGroupByExpression(
 	groupingKeys []values.Value,
 	aggregates []AggregateSpec,
 	inner Quantifier,
-) *GroupByExpression {
+) (*GroupByExpression, error) {
+	groupingCopy := slices.Clone(groupingKeys)
+	aggregateCopy := slices.Clone(aggregates)
+	names := GroupByOutputColumnNames(groupingCopy, aggregateCopy)
+	fields := make([]values.RecordConstructorField, 0, len(names))
+	for i, groupingKey := range groupingCopy {
+		if groupingKey == nil {
+			return nil, fmt.Errorf("GroupByExpression grouping key %d: value is nil", i)
+		}
+		if _, err := snapshotExpressionResultType("GroupByExpression grouping key", groupingKey.Type()); err != nil {
+			return nil, err
+		}
+		fields = append(fields, values.RecordConstructorField{Name: names[i], Value: groupingKey})
+	}
+	for i, aggregate := range aggregateCopy {
+		result, err := groupByAggregateResultValue(aggregate)
+		if err != nil {
+			return nil, fmt.Errorf("GroupByExpression aggregate %d: %w", i, err)
+		}
+		fields = append(fields, values.RecordConstructorField{
+			Name:  names[len(groupingCopy)+i],
+			Value: result,
+		})
+	}
+	// This is the aggregate's private native ordinal row, not a user-facing
+	// SELECT projection. Duplicate grouping-key names remain duplicate here:
+	// the physical streaming aggregate and executor address these slots by
+	// ordinal and publish the same raw schema. A later output projection owns
+	// SQL name de-duplication.
+	resultValue := values.NewRawRecordConstructorValue(fields...)
+	if _, err := snapshotExpressionResultType("GroupByExpression", resultValue.Type()); err != nil {
+		return nil, err
+	}
 	return &GroupByExpression{
-		groupingKeys: groupingKeys,
-		aggregates:   aggregates,
+		groupingKeys: groupingCopy,
+		aggregates:   aggregateCopy,
 		inner:        inner,
+		resultValue:  resultValue,
+	}, nil
+}
+
+func groupByAggregateResultValue(aggregate AggregateSpec) (values.Value, error) {
+	var (
+		op         values.AggregateOp
+		resultType values.Type
+	)
+	switch aggregate.Function {
+	case AggCount:
+		if aggregate.Operand == nil {
+			op = values.AggCountStar
+		} else {
+			op = values.AggCount
+			if _, err := snapshotExpressionResultType("COUNT operand", aggregate.Operand.Type()); err != nil {
+				return nil, err
+			}
+		}
+		resultType = values.NullableLong
+	case AggAvg, AggSum, AggMin, AggMax:
+		if aggregate.Operand == nil {
+			return nil, fmt.Errorf("%s requires an operand", aggregate.Function)
+		}
+		operandType, err := snapshotExpressionResultType(aggregate.Function.String()+" operand", aggregate.Operand.Type())
+		if err != nil {
+			return nil, err
+		}
+		if !numericAggregateType(operandType.Type()) {
+			return nil, fmt.Errorf("%s requires a numeric operand, got %v", aggregate.Function, operandType.Type())
+		}
+		switch aggregate.Function {
+		case AggAvg:
+			op = values.AggAvg
+			resultType = values.NullableDouble
+		case AggSum:
+			op = values.AggSum
+			resultType = values.WithNullability(operandType.Type(), true)
+		case AggMin:
+			op = values.AggMin
+			resultType = values.WithNullability(operandType.Type(), true)
+		case AggMax:
+			op = values.AggMax
+			resultType = values.WithNullability(operandType.Type(), true)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported aggregate function %d", aggregate.Function)
+	}
+	exactResult, err := snapshotExpressionResultType(aggregate.Function.String(), resultType)
+	if err != nil {
+		return nil, err
+	}
+	aggregateValue := &values.AggregateValue{Op: op, Operand: aggregate.Operand}
+	return values.NewDerivedValueWithType([]values.Value{aggregateValue}, exactResult.Type()), nil
+}
+
+func numericAggregateType(typ values.Type) bool {
+	if typ == nil {
+		return false
+	}
+	switch typ.Code() {
+	case values.TypeCodeInt, values.TypeCodeLong, values.TypeCodeFloat, values.TypeCodeDouble:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -133,8 +232,8 @@ func AggregateKeyColumnName(k values.Value) string {
 	if path, nested := values.NestedResolvedPath(k); nested {
 		return path
 	}
-	if fv, ok := k.(*values.FieldValue); ok {
-		return strings.ToUpper(fv.Field)
+	if fv, ok := values.AsFieldValue(k); ok {
+		return strings.ToUpper(fv.DisplayName())
 	}
 	return strings.ToUpper(values.ColumnNameValue(k))
 }
@@ -215,8 +314,8 @@ func GroupByOutputColumnNames(groupingKeys []values.Value, aggregates []Aggregat
 	return names
 }
 
-func (e *GroupByExpression) GetGroupingKeys() []values.Value { return e.groupingKeys }
-func (e *GroupByExpression) GetAggregates() []AggregateSpec  { return e.aggregates }
+func (e *GroupByExpression) GetGroupingKeys() []values.Value { return slices.Clone(e.groupingKeys) }
+func (e *GroupByExpression) GetAggregates() []AggregateSpec  { return slices.Clone(e.aggregates) }
 func (e *GroupByExpression) GetInner() Quantifier            { return e.inner }
 func (e *GroupByExpression) GetQuantifiers() []Quantifier    { return []Quantifier{e.inner} }
 func (e *GroupByExpression) CanCorrelate() bool              { return false }
@@ -249,7 +348,7 @@ func (e *GroupByExpression) ChildrenAsSet() bool             { return false }
 // work rather than a rider here. Until it lands this site must not be "cleaned up"
 // back onto the typed accessor.
 func (e *GroupByExpression) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValue(e.inner.GetAlias())
+	return e.resultValue
 }
 
 func (e *GroupByExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
@@ -306,13 +405,11 @@ func (e *GroupByExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-func (e *GroupByExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	if len(quantifiers) == 0 {
-		return e
+func (e *GroupByExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("GroupByExpression", len(quantifiers), 1); err != nil {
+		return nil, err
 	}
-	cp := *e
-	cp.inner = quantifiers[0]
-	return &cp
+	return NewGroupByExpression(e.groupingKeys, e.aggregates, quantifiers[0])
 }
 
 var _ RelationalExpression = (*GroupByExpression)(nil)

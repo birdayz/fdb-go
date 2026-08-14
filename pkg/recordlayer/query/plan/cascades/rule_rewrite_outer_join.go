@@ -159,9 +159,16 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 	for _, p := range preds {
 		builder.AddPredicate(p)
 	}
-	innerSelect := builder.Build().Seal().BuildSelectWithResultValue(
-		nullSupplying.GetFlowedObjectValue(),
-	)
+	flowed, err := nullSupplying.RequireFlowedObjectValue()
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	innerSelect, err := builder.Build().Seal().BuildSelectWithResultValue(flowed)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	nullOnEmptyQun := expressions.NamedForEachNullOnEmptyQuantifier(
 		nullSupplying.GetAlias(),
 		call.MemoizeExpression(innerSelect),
@@ -187,13 +194,17 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 
 	// The outer SelectExpression is INNER (outer-join semantics now live entirely in
 	// the null-on-empty quantifier) and carries NO predicates.
-	outerSelect := expressions.NewSelectExpressionWithJoinType(
+	outerSelect, err := expressions.NewSelectExpressionWithJoinType(
 		resultValue,
 		[]expressions.Quantifier{preserved, nullOnEmptyQun},
 		nil,
 		aliases,
 		expressions.JoinInner,
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	call.Yield(outerSelect)
 }
 

@@ -8,17 +8,58 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func directCoverageRowType() *values.RecordType {
+	return values.NewRecordType("DirectCoverageRow", false, []values.Field{{
+		Name: "ID", FieldType: values.NullableLong,
+	}})
+}
+
+func mustDirectCoverageConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct direct-rule fixture: " + err.Error())
+	}
+	return value
+}
+
+func directCoverageScan() *plans.RecordQueryScanPlan {
+	return mustDirectCoverageConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, directCoverageRowType(), false))
+}
+
+func fireDirectExpressionRule(
+	t testing.TB, rule ExpressionRule, ref *expressions.Reference,
+) []expressions.RelationalExpression {
+	t.Helper()
+	result, err := FireExpressionRule(rule, ref)
+	if err != nil {
+		t.Fatalf("FireExpressionRule: %v", err)
+	}
+	return result
+}
+
+func fireDirectImplementationRule(
+	t testing.TB, rule ImplementationRule, ref *expressions.Reference,
+	constraints ...*ConstraintMap,
+) []expressions.RelationalExpression {
+	t.Helper()
+	result, err := FireImplementationRule(rule, ref, constraints...)
+	if err != nil {
+		t.Fatalf("FireImplementationRule: %v", err)
+	}
+	return result
+}
+
 func TestImplementLimitRule_DirectFire(t *testing.T) {
 	t.Parallel()
 
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	limit := expressions.NewLogicalLimitExpression(
+	scan := directCoverageScan()
+	limit := mustDirectCoverageConstruct(expressions.NewLogicalLimitExpression(
 		7,
 		3,
 		expressions.ForEachQuantifier(expressions.FinalOf(scan)),
-	)
+	))
 
-	yielded := FireExpressionRule(NewImplementLimitRule(), expressions.InitialOf(limit))
+	yielded := fireDirectExpressionRule(t, NewImplementLimitRule(), expressions.InitialOf(limit))
 	if len(yielded) != 1 {
 		t.Fatalf("expected one physical LIMIT, got %d", len(yielded))
 	}
@@ -41,18 +82,21 @@ func TestImplementLimitRule_DirectFire(t *testing.T) {
 func TestImplementInMemorySortRule_DirectFire(t *testing.T) {
 	t.Parallel()
 
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := directCoverageScan()
 	innerRef := expressions.FinalOf(scan)
-	sortExpr := expressions.NewLogicalSortExpression(
+	innerQ := expressions.ForEachQuantifier(innerRef)
+	innerRoot := mustDirectCoverageConstruct(innerQ.RequireFlowedObjectValue())
+	id := mustDirectCoverageConstruct(values.ResolveFieldOrdinals(innerRoot, []int{0}))
+	sortExpr := mustDirectCoverageConstruct(expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{{
-			Value:   values.NewFieldValueWithResolvedOrdinal("ID", 0, values.NullableLong),
+			Value:   id,
 			Reverse: true,
 		}},
-		expressions.ForEachQuantifier(innerRef),
-	)
+		innerQ,
+	))
 	constraints := NewConstraintMap()
 
-	yielded := FireImplementationRule(
+	yielded := fireDirectImplementationRule(t,
 		NewImplementInMemorySortRule(),
 		expressions.InitialOf(sortExpr),
 		constraints,

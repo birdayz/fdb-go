@@ -12,6 +12,144 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustPipelineConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct planner pipeline fixture: " + err.Error())
+	}
+	return value
+}
+
+func pipelineRowType() values.Type {
+	return values.NewRecordType("PipelineRow", false, []values.Field{
+		{Name: "A", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "B", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "X", FieldType: values.NotNullLong, Ordinal: 2},
+		{Name: "Y", FieldType: values.NotNullLong, Ordinal: 3},
+		{Name: "Z", FieldType: values.NotNullLong, Ordinal: 4},
+		{Name: "W", FieldType: values.NotNullLong, Ordinal: 5},
+		{Name: "STATUS", FieldType: values.NullableString, Ordinal: 6},
+		{Name: "REGION", FieldType: values.NullableString, Ordinal: 7},
+		{Name: "AMOUNT", FieldType: values.NullableLong, Ordinal: 8},
+		{Name: "CATEGORY", FieldType: values.NullableString, Ordinal: 9},
+		{Name: "PRICE", FieldType: values.NullableLong, Ordinal: 10},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 11},
+	})
+}
+
+func pipelineScan(recordTypes ...string) *expressions.FullUnorderedScanExpression {
+	return mustPipelineConstruct(expressions.NewFullUnorderedScanExpression(
+		recordTypes, pipelineRowType()))
+}
+
+func pipelineRoot(q expressions.Quantifier) values.QuantifiedObjectValue {
+	flowedType := mustPipelineConstruct(q.GetFlowedObjectType())
+	return mustPipelineConstruct(values.NewQuantifiedObjectValue(q.GetAlias(), flowedType))
+}
+
+func pipelineField(q expressions.Quantifier, name string) values.Value {
+	request := mustPipelineConstruct(values.FieldByName(name))
+	return mustPipelineConstruct(values.ResolveFieldAccess(
+		pipelineRoot(q), []values.FieldRequest{request}))
+}
+
+func pipelineFieldAt(q expressions.Quantifier, ordinal int) values.Value {
+	return mustPipelineConstruct(values.ResolveFieldOrdinals(
+		pipelineRoot(q), []int{ordinal}))
+}
+
+func pipelineLongLiteral(value int64) values.Value {
+	return &values.ConstantValue{Value: value, Typ: values.NotNullLong}
+}
+
+func pipelineLongListLiteral(elements ...int64) values.Value {
+	items := make([]any, len(elements))
+	for i, element := range elements {
+		items[i] = element
+	}
+	return &values.ConstantValue{
+		Value: items,
+		Typ:   values.NewArrayType(false, values.NotNullLong),
+	}
+}
+
+func pipelineFilter(q expressions.Quantifier, ps ...predicates.QueryPredicate) *expressions.LogicalFilterExpression {
+	return mustPipelineConstruct(expressions.NewLogicalFilterExpression(ps, q))
+}
+
+func pipelineProjection(q expressions.Quantifier, projected ...values.Value) *expressions.LogicalProjectionExpression {
+	return mustPipelineConstruct(expressions.NewLogicalProjectionExpression(projected, q))
+}
+
+func pipelineSort(q expressions.Quantifier, keys ...expressions.SortKey) *expressions.LogicalSortExpression {
+	return mustPipelineConstruct(expressions.NewLogicalSortExpression(keys, q))
+}
+
+func pipelineDistinct(q expressions.Quantifier) *expressions.LogicalDistinctExpression {
+	return mustPipelineConstruct(expressions.NewLogicalDistinctExpression(q))
+}
+
+func pipelineUnique(q expressions.Quantifier) *expressions.LogicalUniqueExpression {
+	return mustPipelineConstruct(expressions.NewLogicalUniqueExpression(q))
+}
+
+func pipelineLimit(q expressions.Quantifier, limit, offset int64) *expressions.LogicalLimitExpression {
+	return mustPipelineConstruct(expressions.NewLogicalLimitExpression(limit, offset, q))
+}
+
+func pipelineGroupBy(
+	q expressions.Quantifier,
+	keys []values.Value,
+	aggregates []expressions.AggregateSpec,
+) *expressions.GroupByExpression {
+	return mustPipelineConstruct(expressions.NewGroupByExpression(keys, aggregates, q))
+}
+
+func pipelineUnion(qs ...expressions.Quantifier) *expressions.LogicalUnionExpression {
+	return mustPipelineConstruct(expressions.NewLogicalUnionExpression(qs))
+}
+
+type pipelineIndexDef struct {
+	name        string
+	columns     []string
+	recordTypes []string
+	unique      bool
+}
+
+func (d *pipelineIndexDef) IndexName() string              { return d.name }
+func (d *pipelineIndexDef) IndexColumnNames() []string     { return d.columns }
+func (d *pipelineIndexDef) IndexRecordTypes() []string     { return d.recordTypes }
+func (d *pipelineIndexDef) IndexIsUnique() bool            { return d.unique }
+func (*pipelineIndexDef) IndexPrimaryKeyColumns() []string { return nil }
+func (*pipelineIndexDef) IndexCreatesDuplicates() bool     { return false }
+func (*pipelineIndexDef) IndexRowType() values.Type        { return pipelineRowType() }
+func (d *pipelineIndexDef) IndexKeyComponentTypes() []values.Type {
+	row := pipelineRowType().(*values.RecordType)
+	result := make([]values.Type, len(d.columns))
+	for i, column := range d.columns {
+		field, ok := row.LookupFieldUnique(column)
+		if !ok {
+			panic("planner pipeline index fixture: unknown column " + column)
+		}
+		result[i] = field.FieldType
+	}
+	return result
+}
+
+type pipelinePrimaryKeyContext struct{}
+
+func (pipelinePrimaryKeyContext) GetPlannerConfiguration() PlannerConfiguration {
+	return DefaultPlannerConfiguration()
+}
+
+func (pipelinePrimaryKeyContext) GetMatchCandidates() []MatchCandidate { return nil }
+
+func (pipelinePrimaryKeyContext) GetPrimaryKeyColumns(recordType string) []string {
+	if recordType == "T" {
+		return []string{"ID"}
+	}
+	return nil
+}
+
 // planPipeline runs the full Cascades pipeline (logical tree -> Explore ->
 // Plan -> extract physical plan) and returns the explain string of the
 // extracted physical plan. No FDB required.
@@ -50,13 +188,18 @@ func planPipeline(t *testing.T, root expressions.RelationalExpression, indexes .
 
 func TestPlannerPipeline_PreservesIdentityProjectionOutputAlias(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	rowType := values.NewRecordType("Order", false, []values.Field{
+		{Name: "VALUE", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	scan := mustPipelineConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"Order"}, rowType))
 	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	logical := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{q.GetFlowedObjectValue()},
+	logical := mustPipelineConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{mustPipelineConstruct(values.ResolveFieldOrdinals(
+			pipelineRoot(q), []int{0}))},
 		[]string{"RENAMED_ROW"},
 		q,
-	)
+	))
 
 	best, _, err := NewPlanner(DefaultExpressionRules(), nil).
 		WithPlanningExpressionRules(BatchAExpressionRules()).
@@ -140,7 +283,7 @@ func planPipelineWithCandidates(t *testing.T, root expressions.RelationalExpress
 
 // idx builds a stubIndexDef with sensible defaults (recordTypes: ["T"]).
 func idx(name string, columns ...string) IndexDef {
-	return &stubIndexDef{
+	return &pipelineIndexDef{
 		name:        name,
 		columns:     columns,
 		recordTypes: []string{"T"},
@@ -149,7 +292,7 @@ func idx(name string, columns ...string) IndexDef {
 
 // idxUnique builds a unique stubIndexDef.
 func idxUnique(name string, columns ...string) IndexDef {
-	return &stubIndexDef{
+	return &pipelineIndexDef{
 		name:        name,
 		columns:     columns,
 		recordTypes: []string{"T"},
@@ -161,7 +304,7 @@ func idxUnique(name string, columns ...string) IndexDef {
 
 func TestPipeline_Scan(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	plan := planPipeline(t, scan)
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "Scan(T)") {
@@ -171,17 +314,12 @@ func TestPipeline_Scan(t *testing.T) {
 
 func TestPipeline_Filter(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{
-			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "X", Typ: values.UnknownType},
-				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)),
-			),
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+	filter := pipelineFilter(scanQ, predicates.NewComparisonPredicate(
+		pipelineField(scanQ, "X"),
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42))))
 	plan := planPipeline(t, filter)
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "Filter") {
@@ -191,15 +329,11 @@ func TestPipeline_Filter(t *testing.T) {
 
 func TestPipeline_Projection(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
-	proj := expressions.NewLogicalProjectionExpression(
-		[]values.Value{
-			&values.FieldValue{Field: "A", Typ: values.UnknownType},
-			&values.FieldValue{Field: "B", Typ: values.UnknownType},
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+	proj := pipelineProjection(scanQ,
+		pipelineField(scanQ, "A"), pipelineField(scanQ, "B"))
 	plan := planPipeline(t, proj)
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "Project") {
@@ -209,12 +343,12 @@ func TestPipeline_Projection(t *testing.T) {
 
 func TestPipeline_TypeFilter(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T", "U"}, values.UnknownType)
+	scan := pipelineScan("T", "U")
 	scanRef := expressions.InitialOf(scan)
-	tf := expressions.NewLogicalTypeFilterExpression(
+	tf := mustPipelineConstruct(expressions.NewLogicalTypeFilterExpression(
 		[]string{"T"},
 		expressions.ForEachQuantifier(scanRef),
-	)
+	))
 	plan := planPipeline(t, tf)
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "TypeFilter") {
@@ -224,14 +358,12 @@ func TestPipeline_TypeFilter(t *testing.T) {
 
 func TestPipeline_Sort(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "A", Typ: values.UnknownType}, Reverse: false},
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+	sort := pipelineSort(scanQ, expressions.SortKey{
+		Value: pipelineField(scanQ, "A"), Reverse: false,
+	})
 	plan := planPipeline(t, sort)
 	t.Logf("plan: %s", plan)
 	// Sort over an unordered scan produces InMemorySort (Go extension).
@@ -242,11 +374,9 @@ func TestPipeline_Sort(t *testing.T) {
 
 func TestPipeline_Distinct(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
-	distinct := expressions.NewLogicalDistinctExpression(
-		expressions.ForEachQuantifier(scanRef),
-	)
+	distinct := pipelineDistinct(expressions.ForEachQuantifier(scanRef))
 	plan := planPipeline(t, distinct)
 	t.Logf("plan: %s", plan)
 	// Distinct over a scan that already produces distinct records may be
@@ -258,26 +388,34 @@ func TestPipeline_Distinct(t *testing.T) {
 
 func TestPipeline_Unique(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
-	unique := expressions.NewLogicalUniqueExpression(
-		expressions.ForEachQuantifier(scanRef),
-	)
-	plan := planPipeline(t, unique)
+	unique := pipelineUnique(expressions.ForEachQuantifier(scanRef))
+	p := NewPlanner(DefaultExpressionRules(), pipelinePrimaryKeyContext{}).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules()).
+		WithMaxTasks(7_000)
+	best, _, err := p.Plan(expressions.InitialOf(unique))
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+	if best == nil {
+		t.Fatal("Plan returned nil best expression despite exact primary-key proof")
+	}
+	plan := ExplainPhysicalPlan(best)
 	t.Logf("plan: %s", plan)
-	// Unique depends on PK coverage; accept any non-empty plan.
-	if plan == "" {
-		t.Fatal("expected non-empty plan")
+	// Ordinary Unique is absorbed only when one exact child member is both
+	// record-distinct and backed by a primary-key proof.
+	if !strings.Contains(plan, "Scan") {
+		t.Fatalf("expected absorbed Unique to retain its Scan, got: %s", plan)
 	}
 }
 
 func TestPipeline_Limit(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
-	limit := expressions.NewLogicalLimitExpression(10, 0,
-		expressions.ForEachQuantifier(scanRef),
-	)
+	limit := pipelineLimit(expressions.ForEachQuantifier(scanRef), 10, 0)
 	plan := planPipeline(t, limit)
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "Limit") {
@@ -289,17 +427,12 @@ func TestPipeline_Limit(t *testing.T) {
 
 func TestPipeline_IndexScan(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{
-			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "A", Typ: values.UnknownType},
-				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5)),
-			),
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+	filter := pipelineFilter(scanQ, predicates.NewComparisonPredicate(
+		pipelineField(scanQ, "A"),
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5))))
 	plan := planPipeline(t, filter, idx("idx_a", "A"))
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "IndexScan") {
@@ -309,26 +442,19 @@ func TestPipeline_IndexScan(t *testing.T) {
 
 func TestPipeline_OrderedIndexScan(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{
-			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "A", Typ: values.UnknownType},
-				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(0)),
-			),
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+	filter := pipelineFilter(scanQ, predicates.NewComparisonPredicate(
+		pipelineField(scanQ, "A"),
+		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(0))))
 	filterRef := expressions.InitialOf(filter)
+	filterQ := expressions.ForEachQuantifier(filterRef)
 
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "A", Typ: values.UnknownType}, Reverse: false},
-		},
-		expressions.ForEachQuantifier(filterRef),
-	)
+	sort := pipelineSort(filterQ, expressions.SortKey{
+		Value: pipelineField(filterQ, "A"), Reverse: false,
+	})
 	plan := planPipeline(t, sort, idx("idx_a", "A"))
 	t.Logf("plan: %s", plan)
 	// With an index on A, the sort should be eliminated or satisfied by
@@ -340,16 +466,15 @@ func TestPipeline_OrderedIndexScan(t *testing.T) {
 
 func TestPipeline_StreamingAgg(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	groupBy := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "A", Typ: values.UnknownType}},
+	groupBy := pipelineGroupBy(scanQ,
+		[]values.Value{pipelineField(scanQ, "A")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1)}, Alias: "cnt"},
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+			{Function: expressions.AggCount, Operand: pipelineLongLiteral(1), Alias: "cnt"},
+		})
 	plan := planPipeline(t, groupBy, idx("idx_a", "A"))
 	t.Logf("plan: %s", plan)
 	// With an index on the grouping key, streaming aggregation is possible.
@@ -360,16 +485,15 @@ func TestPipeline_StreamingAgg(t *testing.T) {
 
 func TestPipeline_AggregateIndex(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	groupBy := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+	groupBy := pipelineGroupBy(scanQ,
+		[]values.Value{pipelineField(scanQ, "STATUS")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1)}, Alias: "cnt"},
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+			{Function: expressions.AggCount, Operand: pipelineLongLiteral(1), Alias: "cnt"},
+		})
 
 	aggCand := NewAggregateIndexMatchCandidate(
 		"T$count_by_status",
@@ -377,7 +501,7 @@ func TestPipeline_AggregateIndex(t *testing.T) {
 		[]string{"STATUS"},
 		expressions.AggCount,
 		"",
-		values.UnknownType,
+		pipelineRowType(),
 		[]values.Type{values.NullableString},
 		1,
 	)
@@ -391,16 +515,15 @@ func TestPipeline_AggregateIndex(t *testing.T) {
 
 func TestPipeline_AggregateIndexSUM(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	groupBy := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "REGION", Typ: values.UnknownType}},
+	groupBy := pipelineGroupBy(scanQ,
+		[]values.Value{pipelineField(scanQ, "REGION")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "AMOUNT", Typ: values.UnknownType}, Alias: "total"},
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+			{Function: expressions.AggSum, Operand: pipelineField(scanQ, "AMOUNT"), Alias: "total"},
+		})
 
 	aggCand := NewAggregateIndexMatchCandidate(
 		"T$sum_amount_by_region",
@@ -408,7 +531,7 @@ func TestPipeline_AggregateIndexSUM(t *testing.T) {
 		[]string{"REGION"},
 		expressions.AggSum,
 		"AMOUNT",
-		values.UnknownType,
+		pipelineRowType(),
 		[]values.Type{values.NullableString},
 		1,
 	)
@@ -425,16 +548,15 @@ func TestPipeline_AggregateIndexSUM(t *testing.T) {
 
 func TestPipeline_AggregateIndexMAX(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	groupBy := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "CATEGORY", Typ: values.UnknownType}},
+	groupBy := pipelineGroupBy(scanQ,
+		[]values.Value{pipelineField(scanQ, "CATEGORY")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggMax, Operand: &values.FieldValue{Field: "PRICE", Typ: values.UnknownType}, Alias: "max_price"},
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+			{Function: expressions.AggMax, Operand: pipelineField(scanQ, "PRICE"), Alias: "max_price"},
+		})
 
 	aggCand := NewAggregateIndexMatchCandidate(
 		"T$max_price_by_category",
@@ -442,7 +564,7 @@ func TestPipeline_AggregateIndexMAX(t *testing.T) {
 		[]string{"CATEGORY"},
 		expressions.AggMax,
 		"PRICE",
-		values.UnknownType,
+		pipelineRowType(),
 		[]values.Type{values.NullableString},
 		1,
 	)
@@ -456,16 +578,15 @@ func TestPipeline_AggregateIndexMAX(t *testing.T) {
 
 func TestPipeline_AggregateIndex_WithStats(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	groupBy := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+	groupBy := pipelineGroupBy(scanQ,
+		[]values.Value{pipelineField(scanQ, "STATUS")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1)}, Alias: "cnt"},
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+			{Function: expressions.AggCount, Operand: pipelineLongLiteral(1), Alias: "cnt"},
+		})
 
 	aggCand := NewAggregateIndexMatchCandidate(
 		"T$count_by_status",
@@ -473,7 +594,7 @@ func TestPipeline_AggregateIndex_WithStats(t *testing.T) {
 		[]string{"STATUS"},
 		expressions.AggCount,
 		"",
-		values.UnknownType,
+		pipelineRowType(),
 		[]values.Type{values.NullableString},
 		1,
 	)
@@ -493,6 +614,12 @@ func TestPipeline_AggregateIndex_WithStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
+	resultType, ok := best.GetResultValue().Type().(*values.RecordType)
+	if !ok || len(resultType.Fields) != 2 ||
+		resultType.Fields[0].Name != "STATUS" || resultType.Fields[1].Name != "CNT" {
+		t.Fatalf("aggregate-index winner result type = %v, want exact {STATUS,CNT}",
+			best.GetResultValue().Type())
+	}
 	plan := ExplainPhysicalPlan(best)
 	t.Logf("plan (1M stats): %s", plan)
 	if !strings.Contains(plan, "AggregateIndex") {
@@ -502,16 +629,15 @@ func TestPipeline_AggregateIndex_WithStats(t *testing.T) {
 
 func TestPipeline_AggregateIndex_MismatchedFunction(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	groupBy := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+	groupBy := pipelineGroupBy(scanQ,
+		[]values.Value{pipelineField(scanQ, "STATUS")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "AMOUNT", Typ: values.UnknownType}},
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+			{Function: expressions.AggSum, Operand: pipelineField(scanQ, "AMOUNT")},
+		})
 
 	aggCand := NewAggregateIndexMatchCandidate(
 		"T$count_by_status",
@@ -519,7 +645,7 @@ func TestPipeline_AggregateIndex_MismatchedFunction(t *testing.T) {
 		[]string{"STATUS"},
 		expressions.AggCount,
 		"",
-		values.UnknownType,
+		pipelineRowType(),
 		[]values.Type{values.NullableString},
 		1,
 	)
@@ -533,16 +659,15 @@ func TestPipeline_AggregateIndex_MismatchedFunction(t *testing.T) {
 
 func TestPipeline_AggregateIndex_WithRegularIndex(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	groupBy := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+	groupBy := pipelineGroupBy(scanQ,
+		[]values.Value{pipelineField(scanQ, "STATUS")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1)}, Alias: "cnt"},
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+			{Function: expressions.AggCount, Operand: pipelineLongLiteral(1), Alias: "cnt"},
+		})
 
 	aggCand := NewAggregateIndexMatchCandidate(
 		"T$count_by_status",
@@ -550,7 +675,7 @@ func TestPipeline_AggregateIndex_WithRegularIndex(t *testing.T) {
 		[]string{"STATUS"},
 		expressions.AggCount,
 		"",
-		values.UnknownType,
+		pipelineRowType(),
 		[]values.Type{values.NullableString},
 		1,
 	)
@@ -569,12 +694,12 @@ func TestPipeline_AggregateIndex_WithRegularIndex(t *testing.T) {
 
 func TestPipeline_Union(t *testing.T) {
 	t.Parallel()
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	scanA := pipelineScan("A")
+	scanB := pipelineScan("B")
+	union := pipelineUnion(
 		expressions.ForEachQuantifier(expressions.InitialOf(scanA)),
 		expressions.ForEachQuantifier(expressions.InitialOf(scanB)),
-	})
+	)
 	plan := planPipeline(t, union)
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "Union") {
@@ -584,25 +709,32 @@ func TestPipeline_Union(t *testing.T) {
 
 func TestPipeline_Join(t *testing.T) {
 	t.Parallel()
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
+	scanA := pipelineScan("A")
 	scanARef := expressions.InitialOf(scanA)
 	scanAQ := expressions.ForEachQuantifier(scanARef)
 
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	scanB := pipelineScan("B")
 	scanBRef := expressions.InitialOf(scanB)
 	scanBQ := expressions.ForEachQuantifier(scanBRef)
 
 	joinPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "ID", Typ: values.UnknownType},
-		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
+		pipelineField(scanAQ, "ID"),
+		predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: pipelineField(scanBQ, "ID"),
+		},
 	)
 
-	sel := expressions.NewSelectExpressionWithAliases(
-		values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+	result := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "A", Value: pipelineRoot(scanAQ)},
+		values.RecordConstructorField{Name: "B", Value: pipelineRoot(scanBQ)},
+	)
+	sel := mustPipelineConstruct(expressions.NewSelectExpressionWithAliases(
+		result,
 		[]expressions.Quantifier{scanAQ, scanBQ},
 		[]predicates.QueryPredicate{joinPred},
 		[]string{"A", "B"},
-	)
+	))
 	plan := planPipeline(t, sel)
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "NestedLoopJoin") && !strings.Contains(plan, "FlatMap") {
@@ -612,16 +744,15 @@ func TestPipeline_Join(t *testing.T) {
 
 func TestPipeline_StreamingAggNoIndex(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	groupBy := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "A", Typ: values.UnknownType}},
+	groupBy := pipelineGroupBy(scanQ,
+		[]values.Value{pipelineField(scanQ, "A")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1)}, Alias: "cnt"},
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+			{Function: expressions.AggCount, Operand: pipelineLongLiteral(1), Alias: "cnt"},
+		})
 	// No indexes — streaming aggregation is the only implementation.
 	plan := planPipeline(t, groupBy)
 	t.Logf("plan: %s", plan)
@@ -632,27 +763,18 @@ func TestPipeline_StreamingAggNoIndex(t *testing.T) {
 
 func TestPipeline_FilterProjection(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{
-			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "X", Typ: values.UnknownType},
-				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
-			),
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+	filter := pipelineFilter(scanQ, predicates.NewComparisonPredicate(
+		pipelineField(scanQ, "X"),
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1))))
 	filterRef := expressions.InitialOf(filter)
+	filterQ := expressions.ForEachQuantifier(filterRef)
 
-	proj := expressions.NewLogicalProjectionExpression(
-		[]values.Value{
-			&values.FieldValue{Field: "A", Typ: values.UnknownType},
-			&values.FieldValue{Field: "B", Typ: values.UnknownType},
-		},
-		expressions.ForEachQuantifier(filterRef),
-	)
+	proj := pipelineProjection(filterQ,
+		pipelineField(filterQ, "A"), pipelineField(filterQ, "B"))
 	plan := planPipeline(t, proj)
 	t.Logf("plan: %s", plan)
 	// Both operators should be present in the explain tree.
@@ -668,10 +790,10 @@ func TestPipeline_FilterProjection(t *testing.T) {
 
 func TestPipeline_Values(t *testing.T) {
 	t.Parallel()
-	vals := expressions.NewLogicalValuesExpression([]values.Value{
-		&values.ConstantValue{Value: int64(1)},
-		&values.ConstantValue{Value: int64(2)},
-	})
+	vals := mustPipelineConstruct(expressions.NewLogicalValuesExpression([]values.Value{
+		pipelineLongLiteral(1),
+		pipelineLongLiteral(2),
+	}))
 	plan := planPipeline(t, vals)
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "Values") {
@@ -681,9 +803,9 @@ func TestPipeline_Values(t *testing.T) {
 
 func TestPipeline_Explode(t *testing.T) {
 	t.Parallel()
-	explode := expressions.NewExplodeExpression(
-		&values.ConstantValue{Value: []any{int64(1), int64(2), int64(3)}},
-	)
+	explode := mustPipelineConstruct(expressions.NewExplodeExpression(
+		pipelineLongListLiteral(1, 2, 3),
+	))
 	plan := planPipeline(t, explode)
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "Explode") {
@@ -697,25 +819,16 @@ func TestPipeline_Deterministic(t *testing.T) {
 	t.Parallel()
 
 	buildTree := func() expressions.RelationalExpression {
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scan := pipelineScan("T")
 		scanRef := expressions.InitialOf(scan)
-		filter := expressions.NewLogicalFilterExpression(
-			[]predicates.QueryPredicate{
-				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "A", Typ: values.UnknownType},
-					predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
-				),
-			},
-			expressions.ForEachQuantifier(scanRef),
-		)
+		scanQ := expressions.ForEachQuantifier(scanRef)
+		filter := pipelineFilter(scanQ, predicates.NewComparisonPredicate(
+			pipelineField(scanQ, "A"),
+			predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1))))
 		filterRef := expressions.InitialOf(filter)
-		proj := expressions.NewLogicalProjectionExpression(
-			[]values.Value{
-				&values.FieldValue{Field: "A", Typ: values.UnknownType},
-				&values.FieldValue{Field: "B", Typ: values.UnknownType},
-			},
-			expressions.ForEachQuantifier(filterRef),
-		)
+		filterQ := expressions.ForEachQuantifier(filterRef)
+		proj := pipelineProjection(filterQ,
+			pipelineField(filterQ, "A"), pipelineField(filterQ, "B"))
 		return proj
 	}
 
@@ -736,34 +849,23 @@ func TestPipeline_Deterministic(t *testing.T) {
 
 func TestPipeline_SortFilterProjection(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{
-			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "X", Typ: values.UnknownType},
-				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(0)),
-			),
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+	filter := pipelineFilter(scanQ, predicates.NewComparisonPredicate(
+		pipelineField(scanQ, "X"),
+		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(0))))
 	filterRef := expressions.InitialOf(filter)
+	filterQ := expressions.ForEachQuantifier(filterRef)
 
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "A", Typ: values.UnknownType}, Reverse: false},
-		},
-		expressions.ForEachQuantifier(filterRef),
-	)
+	sort := pipelineSort(filterQ, expressions.SortKey{
+		Value: pipelineField(filterQ, "A"), Reverse: false,
+	})
 	sortRef := expressions.InitialOf(sort)
+	sortQ := expressions.ForEachQuantifier(sortRef)
 
-	proj := expressions.NewLogicalProjectionExpression(
-		[]values.Value{
-			&values.FieldValue{Field: "A", Typ: values.UnknownType},
-		},
-		expressions.ForEachQuantifier(sortRef),
-	)
+	proj := pipelineProjection(sortQ, pipelineField(sortQ, "A"))
 	plan := planPipeline(t, proj)
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "Project") {
@@ -775,23 +877,16 @@ func TestPipeline_SortFilterProjection(t *testing.T) {
 
 func TestPipeline_LimitOverFilter(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{
-			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "X", Typ: values.UnknownType},
-				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
-			),
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+	filter := pipelineFilter(scanQ, predicates.NewComparisonPredicate(
+		pipelineField(scanQ, "X"),
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1))))
 	filterRef := expressions.InitialOf(filter)
 
-	limit := expressions.NewLogicalLimitExpression(5, 0,
-		expressions.ForEachQuantifier(filterRef),
-	)
+	limit := pipelineLimit(expressions.ForEachQuantifier(filterRef), 5, 0)
 	plan := planPipeline(t, limit)
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "Limit") {
@@ -803,20 +898,16 @@ func TestPipeline_LimitOverFilter(t *testing.T) {
 
 func TestPipeline_DistinctOverSort(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "A", Typ: values.UnknownType}, Reverse: false},
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+	sort := pipelineSort(scanQ, expressions.SortKey{
+		Value: pipelineField(scanQ, "A"), Reverse: false,
+	})
 	sortRef := expressions.InitialOf(sort)
 
-	distinct := expressions.NewLogicalDistinctExpression(
-		expressions.ForEachQuantifier(sortRef),
-	)
+	distinct := pipelineDistinct(expressions.ForEachQuantifier(sortRef))
 	plan := planPipeline(t, distinct)
 	t.Logf("plan: %s", plan)
 	// DistinctOverSortElimRule may eliminate the distinct or the sort.
@@ -829,20 +920,14 @@ func TestPipeline_DistinctOverSort(t *testing.T) {
 
 func TestPipeline_ProjectionDistinct(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
 
-	distinct := expressions.NewLogicalDistinctExpression(
-		expressions.ForEachQuantifier(scanRef),
-	)
+	distinct := pipelineDistinct(expressions.ForEachQuantifier(scanRef))
 	distinctRef := expressions.InitialOf(distinct)
+	distinctQ := expressions.ForEachQuantifier(distinctRef)
 
-	proj := expressions.NewLogicalProjectionExpression(
-		[]values.Value{
-			&values.FieldValue{Field: "A", Typ: values.UnknownType},
-		},
-		expressions.ForEachQuantifier(distinctRef),
-	)
+	proj := pipelineProjection(distinctQ, pipelineField(distinctQ, "A"))
 	plan := planPipeline(t, proj)
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "Project") {
@@ -854,11 +939,9 @@ func TestPipeline_ProjectionDistinct(t *testing.T) {
 
 func TestPipeline_LimitWithOffset(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
-	limit := expressions.NewLogicalLimitExpression(10, 5,
-		expressions.ForEachQuantifier(scanRef),
-	)
+	limit := pipelineLimit(expressions.ForEachQuantifier(scanRef), 10, 5)
 	plan := planPipeline(t, limit)
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "Limit") {
@@ -871,19 +954,18 @@ func TestPipeline_LimitWithOffset(t *testing.T) {
 
 func TestPipeline_InListExplode(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	inPred := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "A", Typ: values.UnknownType},
-		Comparison: predicates.Comparison{
+	inPred := predicates.NewComparisonPredicate(
+		pipelineField(scanQ, "A"),
+		predicates.Comparison{
 			Type:    predicates.ComparisonIn,
-			Operand: &values.ConstantValue{Value: []any{int64(1), int64(2), int64(3)}},
+			Operand: pipelineLongListLiteral(1, 2, 3),
 		},
-	}
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{inPred}, scanQ)
+	)
+	filter := pipelineFilter(scanQ, inPred)
 	plan := planPipeline(t, filter, idx("idx_a", "A"))
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "InJoin") {
@@ -893,19 +975,18 @@ func TestPipeline_InListExplode(t *testing.T) {
 
 func TestPipeline_InListExplode_WithStats(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	inPred := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "A", Typ: values.UnknownType},
-		Comparison: predicates.Comparison{
+	inPred := predicates.NewComparisonPredicate(
+		pipelineField(scanQ, "A"),
+		predicates.Comparison{
 			Type:    predicates.ComparisonIn,
-			Operand: &values.ConstantValue{Value: []any{int64(1), int64(2), int64(3)}},
+			Operand: pipelineLongListLiteral(1, 2, 3),
 		},
-	}
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{inPred}, scanQ)
+	)
+	filter := pipelineFilter(scanQ, inPred)
 
 	stats := properties.MapStatistics{PerType: map[string]float64{"T": 1_000_000}}
 	plan := planPipelineWithStats(t, filter, stats, idx("idx_a", "A"))
@@ -917,36 +998,27 @@ func TestPipeline_InListExplode_WithStats(t *testing.T) {
 
 func TestPipeline_InListExplodeWithProjectionAndSort(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	inPred := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "A", Typ: values.UnknownType},
-		Comparison: predicates.Comparison{
+	inPred := predicates.NewComparisonPredicate(
+		pipelineField(scanQ, "A"),
+		predicates.Comparison{
 			Type:    predicates.ComparisonIn,
-			Operand: &values.ConstantValue{Value: []any{int64(1), int64(2), int64(3)}},
+			Operand: pipelineLongListLiteral(1, 2, 3),
 		},
-	}
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{inPred}, scanQ)
+	)
+	filter := pipelineFilter(scanQ, inPred)
 	filterRef := expressions.InitialOf(filter)
+	filterQ := expressions.ForEachQuantifier(filterRef)
 
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "B", Typ: values.UnknownType}},
-		},
-		expressions.ForEachQuantifier(filterRef),
-	)
+	sort := pipelineSort(filterQ, expressions.SortKey{Value: pipelineField(filterQ, "B")})
 	sortRef := expressions.InitialOf(sort)
+	sortQ := expressions.ForEachQuantifier(sortRef)
 
-	proj := expressions.NewLogicalProjectionExpression(
-		[]values.Value{
-			&values.FieldValue{Field: "B", Typ: values.UnknownType},
-			&values.FieldValue{Field: "A", Typ: values.UnknownType},
-		},
-		expressions.ForEachQuantifier(sortRef),
-	)
+	proj := pipelineProjection(sortQ,
+		pipelineField(sortQ, "B"), pipelineField(sortQ, "A"))
 
 	rootRef := expressions.InitialOf(proj)
 	rules := DefaultExpressionRules()
@@ -972,26 +1044,17 @@ func TestPipeline_InListExplodeWithProjectionAndSort(t *testing.T) {
 func TestPipeline_Intersection(t *testing.T) {
 	t.Parallel()
 	// Two filters on different indexed columns → potential intersection.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	p1 := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "A", Typ: values.UnknownType},
-		Comparison: predicates.Comparison{
-			Type:    predicates.ComparisonEquals,
-			Operand: &values.ConstantValue{Value: int64(1)},
-		},
-	}
-	p2 := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "B", Typ: values.UnknownType},
-		Comparison: predicates.Comparison{
-			Type:    predicates.ComparisonEquals,
-			Operand: &values.ConstantValue{Value: int64(2)},
-		},
-	}
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{p1, p2}, scanQ)
+	p1 := predicates.NewComparisonPredicate(
+		pipelineField(scanQ, "A"),
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)))
+	p2 := predicates.NewComparisonPredicate(
+		pipelineField(scanQ, "B"),
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(2)))
+	filter := pipelineFilter(scanQ, p1, p2)
 	plan := planPipeline(t, filter,
 		idx("idx_a", "A"),
 		idx("idx_b", "B"),
@@ -1007,18 +1070,15 @@ func TestPipeline_DistinctOverProjection(t *testing.T) {
 	t.Parallel()
 	// DISTINCT over projection — exercises MapPlan distinct-records
 	// property propagation.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	proj := expressions.NewLogicalProjectionExpression(
-		[]values.Value{
-			&values.FieldValue{Field: "A", Typ: values.UnknownType},
-		}, scanQ)
+	proj := pipelineProjection(scanQ, pipelineField(scanQ, "A"))
 	projRef := expressions.InitialOf(proj)
 	projQ := expressions.ForEachQuantifier(projRef)
 
-	distinct := expressions.NewLogicalDistinctExpression(projQ)
+	distinct := pipelineDistinct(projQ)
 	plan := planPipeline(t, distinct)
 	t.Logf("plan: %s", plan)
 	// Should produce a plan (Distinct or direct if eliminated).
@@ -1029,18 +1089,17 @@ func TestPipeline_DistinctOverProjection(t *testing.T) {
 
 func TestPipeline_SortOverDistinct(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	distinct := expressions.NewLogicalDistinctExpression(scanQ)
+	distinct := pipelineDistinct(scanQ)
 	distinctRef := expressions.InitialOf(distinct)
 	distinctQ := expressions.ForEachQuantifier(distinctRef)
 
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "A", Typ: values.UnknownType}}},
-		distinctQ,
-	)
+	sort := pipelineSort(distinctQ, expressions.SortKey{
+		Value: pipelineField(distinctQ, "A"),
+	})
 	plan := planPipeline(t, sort)
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "Sort") || !strings.Contains(plan, "Scan") {
@@ -1050,22 +1109,19 @@ func TestPipeline_SortOverDistinct(t *testing.T) {
 
 func TestPipeline_UnionWithProjection(t *testing.T) {
 	t.Parallel()
-	scan1 := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
+	scan1 := pipelineScan("A")
 	scan1Ref := expressions.InitialOf(scan1)
 	scan1Q := expressions.ForEachQuantifier(scan1Ref)
 
-	scan2 := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	scan2 := pipelineScan("B")
 	scan2Ref := expressions.InitialOf(scan2)
 	scan2Q := expressions.ForEachQuantifier(scan2Ref)
 
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{scan1Q, scan2Q})
+	union := pipelineUnion(scan1Q, scan2Q)
 	unionRef := expressions.InitialOf(union)
 	unionQ := expressions.ForEachQuantifier(unionRef)
 
-	proj := expressions.NewLogicalProjectionExpression(
-		[]values.Value{&values.FieldValue{Field: "ID", Typ: values.UnknownType}},
-		unionQ,
-	)
+	proj := pipelineProjection(unionQ, pipelineField(unionQ, "ID"))
 	plan := planPipeline(t, proj)
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "Union") {
@@ -1080,35 +1136,22 @@ func TestPipeline_UnionWithProjection(t *testing.T) {
 // pattern behind the "order_by_pk_index_filter" perf regression.
 func TestPipeline_SortOnDifferentColumnThanFilter(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{
-			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "A", Typ: values.UnknownType},
-				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)),
-			),
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+	filter := pipelineFilter(scanQ, predicates.NewComparisonPredicate(
+		pipelineField(scanQ, "A"),
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42))))
 	filterRef := expressions.InitialOf(filter)
+	filterQ := expressions.ForEachQuantifier(filterRef)
 
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "B", Typ: values.UnknownType}},
-		},
-		expressions.ForEachQuantifier(filterRef),
-	)
+	sort := pipelineSort(filterQ, expressions.SortKey{Value: pipelineField(filterQ, "B")})
 	sortRef := expressions.InitialOf(sort)
+	sortQ := expressions.ForEachQuantifier(sortRef)
 
-	proj := expressions.NewLogicalProjectionExpression(
-		[]values.Value{
-			&values.FieldValue{Field: "B", Typ: values.UnknownType},
-			&values.FieldValue{Field: "A", Typ: values.UnknownType},
-		},
-		expressions.ForEachQuantifier(sortRef),
-	)
+	proj := pipelineProjection(sortQ,
+		pipelineField(sortQ, "B"), pipelineField(sortQ, "A"))
 
 	plan := planPipeline(t, proj, idx("idx_a", "A"))
 	t.Logf("plan: %s", plan)
@@ -1126,24 +1169,19 @@ func TestPipeline_SortOnDifferentColumnThanFilter(t *testing.T) {
 // "group_by_customer_having" perf regression pattern.
 func TestPipeline_GroupBySortWithIndex(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := pipelineScan("T")
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	groupBy := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "A", Typ: values.UnknownType}},
+	groupBy := pipelineGroupBy(scanQ,
+		[]values.Value{pipelineField(scanQ, "A")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1)}, Alias: "CNT"},
-		},
-		expressions.ForEachQuantifier(scanRef),
-	)
+			{Function: expressions.AggCount, Operand: pipelineLongLiteral(1), Alias: "CNT"},
+		})
 	groupByRef := expressions.InitialOf(groupBy)
+	groupByQ := expressions.ForEachQuantifier(groupByRef)
 
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "A", Typ: values.UnknownType}},
-		},
-		expressions.ForEachQuantifier(groupByRef),
-	)
+	sort := pipelineSort(groupByQ, expressions.SortKey{Value: pipelineFieldAt(groupByQ, 0)})
 
 	plan := planPipeline(t, sort, idx("idx_a", "A"))
 	t.Logf("plan (no HAVING): %s", plan)
@@ -1152,29 +1190,19 @@ func TestPipeline_GroupBySortWithIndex(t *testing.T) {
 	}
 
 	// Now the full regression pattern: GROUP BY A HAVING CNT > 5 ORDER BY A
-	scan2 := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	groupBy2 := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "A", Typ: values.UnknownType}},
+	scan2 := pipelineScan("T")
+	scan2Q := expressions.ForEachQuantifier(expressions.InitialOf(scan2))
+	groupBy2 := pipelineGroupBy(scan2Q,
+		[]values.Value{pipelineField(scan2Q, "A")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1)}, Alias: "CNT"},
-		},
-		expressions.ForEachQuantifier(expressions.InitialOf(scan2)),
-	)
-	havingFilter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{
-			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "CNT", Typ: values.UnknownType},
-				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(5)),
-			),
-		},
-		expressions.ForEachQuantifier(expressions.InitialOf(groupBy2)),
-	)
-	sort2 := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "A", Typ: values.UnknownType}},
-		},
-		expressions.ForEachQuantifier(expressions.InitialOf(havingFilter)),
-	)
+			{Function: expressions.AggCount, Operand: pipelineLongLiteral(1), Alias: "CNT"},
+		})
+	groupBy2Q := expressions.ForEachQuantifier(expressions.InitialOf(groupBy2))
+	havingFilter := pipelineFilter(groupBy2Q, predicates.NewComparisonPredicate(
+		pipelineFieldAt(groupBy2Q, 1),
+		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(5))))
+	havingQ := expressions.ForEachQuantifier(expressions.InitialOf(havingFilter))
+	sort2 := pipelineSort(havingQ, expressions.SortKey{Value: pipelineFieldAt(havingQ, 0)})
 
 	plan2 := planPipeline(t, sort2, idx("idx_a", "A"))
 	t.Logf("plan (with HAVING): %s", plan2)

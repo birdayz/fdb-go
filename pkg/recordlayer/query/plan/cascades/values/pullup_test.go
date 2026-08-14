@@ -8,20 +8,20 @@ func requireCandidateAnchoredField(
 	t *testing.T,
 	value Value,
 	candidateAlias CorrelationIdentifier,
-) *FieldValue {
+) *fieldValue {
 	t.Helper()
-	field, ok := value.(*FieldValue)
+	field, ok := value.(*fieldValue)
 	if !ok {
-		t.Fatalf("pulled-up value = %T, want *FieldValue", value)
+		t.Fatalf("pulled-up value = %T, want *fieldValue", value)
 	}
-	qov, ok := field.Child.(*QuantifiedObjectValue)
+	qov, ok := field.Child.(*quantifiedObjectValue)
 	if !ok {
-		t.Fatalf("pulled-up field child = %T, want *QuantifiedObjectValue", field.Child)
+		t.Fatalf("pulled-up field child = %T, want *quantifiedObjectValue", field.Child)
 	}
-	if qov.Correlation != candidateAlias {
+	if qov.Correlation() != candidateAlias {
 		t.Fatalf(
 			"pulled-up field correlation = %v, want candidate alias %v",
-			qov.Correlation,
+			qov.Correlation(),
 			candidateAlias,
 		)
 	}
@@ -47,19 +47,19 @@ func TestPullUpValue_ExactMatch(t *testing.T) {
 	t.Parallel()
 	// v equals resultValue → QuantifiedObjectValue(alias)
 	alias := NamedCorrelationIdentifier("q1")
-	v := &FieldValue{Field: "x", Typ: NullableString}
-	result := &FieldValue{Field: "x", Typ: NullableString}
+	v := &fieldValue{Field: "x", Typ: NullableString}
+	result := &fieldValue{Field: "x", Typ: NullableString}
 
-	pulled := PullUpValue(v, result, alias)
+	pulled := mustPullUpValue(t, v, result, alias)
 	if pulled == nil {
 		t.Fatal("expected non-nil result")
 	}
-	qov, ok := pulled.(*QuantifiedObjectValue)
+	qov, ok := pulled.(*quantifiedObjectValue)
 	if !ok {
 		t.Fatalf("expected QuantifiedObjectValue, got %T", pulled)
 	}
-	if qov.Correlation != alias {
-		t.Fatalf("expected alias %v, got %v", alias, qov.Correlation)
+	if qov.Correlation() != alias {
+		t.Fatalf("expected alias %v, got %v", alias, qov.Correlation())
 	}
 }
 
@@ -69,16 +69,16 @@ func TestPullUpValue_ThroughRecordConstructor(t *testing.T) {
 
 	// resultValue = RecordConstructor(a=FV("x"), b=FV("y"))
 	resultValue := NewRecordConstructorValue(
-		RecordConstructorField{Name: "a", Value: &FieldValue{Field: "x", Typ: NullableLong}},
-		RecordConstructorField{Name: "b", Value: &FieldValue{Field: "y", Typ: NullableString}},
+		RecordConstructorField{Name: "a", Value: &fieldValue{Field: "x", Typ: NullableLong}},
+		RecordConstructorField{Name: "b", Value: &fieldValue{Field: "y", Typ: NullableString}},
 	)
 
 	// PullUp FV("x") → FV(QOV(q1), "a")
-	pulled := PullUpValue(&FieldValue{Field: "x", Typ: NullableLong}, resultValue, alias)
+	pulled := mustPullUpValue(t, &fieldValue{Field: "x", Typ: NullableLong}, resultValue, alias)
 	if pulled == nil {
 		t.Fatal("expected non-nil result for FV(x)")
 	}
-	fv, ok := pulled.(*FieldValue)
+	fv, ok := pulled.(*fieldValue)
 	if !ok {
 		t.Fatalf("expected FieldValue, got %T", pulled)
 	}
@@ -87,11 +87,11 @@ func TestPullUpValue_ThroughRecordConstructor(t *testing.T) {
 	}
 
 	// PullUp FV("y") → FV(QOV(q1), "b")
-	pulled = PullUpValue(&FieldValue{Field: "y", Typ: NullableString}, resultValue, alias)
+	pulled = mustPullUpValue(t, &fieldValue{Field: "y", Typ: NullableString}, resultValue, alias)
 	if pulled == nil {
 		t.Fatal("expected non-nil result for FV(y)")
 	}
-	fv, ok = pulled.(*FieldValue)
+	fv, ok = pulled.(*fieldValue)
 	if !ok {
 		t.Fatalf("expected FieldValue, got %T", pulled)
 	}
@@ -103,20 +103,102 @@ func TestPullUpValue_ThroughRecordConstructor(t *testing.T) {
 func TestPullUpValue_SourceLocalOrderingKeyThroughOwnedJoinField(t *testing.T) {
 	t.Parallel()
 	alias := NamedCorrelationIdentifier("C")
-	qualifiedName := NewCorrelatedFieldValueWithResolvedOrdinal(
-		NewQuantifiedObjectValue(alias), "NAME", 1, UnknownType)
+	qualifiedName := newCorrelatedFieldValueWithResolvedOrdinal(
+		mustQOV(t, alias), "NAME", 1, NotNullString)
 	resultValue := NewRecordConstructorValue(
 		RecordConstructorField{Name: "NAME", Value: qualifiedName},
 	)
 
-	pulled := PullUpValue(
-		NewFlatFieldValue("name", UnknownType),
+	pulled := mustPullUpValue(t,
+		newFlatFieldValue("name", NotNullString),
 		resultValue,
-		alias,
-	)
+		alias)
+
 	field := requireCandidateAnchoredField(t, pulled, alias)
 	if field.Field != "NAME" {
 		t.Fatalf("pulled field = %q, want NAME", field.Field)
+	}
+}
+
+func TestPullUpPushDownValue_RecordConstructorNormalizesLogicalSourceNameOnly(t *testing.T) {
+	t.Parallel()
+
+	alias := NamedCorrelationIdentifier("T")
+	logicalType := NewRecordType("T", false, []Field{
+		{Name: "ID", Ordinal: 0, FieldType: NotNullLong},
+		{Name: "V", Ordinal: 1, FieldType: NullableLong},
+	})
+	physicalType := NewRecordType("", false, []Field{
+		{Name: "ID", Ordinal: 0, FieldType: NotNullLong},
+		{Name: "V", Ordinal: 1, FieldType: NullableLong},
+	})
+	logical := mustQOV(t, alias, logicalType)
+	physical := mustQOV(t, alias, physicalType)
+	logicalID, err := ResolveFieldOrdinals(logical, []int{0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logicalV, err := ResolveFieldOrdinals(logical, []int{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	physicalV, err := ResolveFieldOrdinals(physical, []int{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := NewRawRecordConstructorValue(
+		RecordConstructorField{Name: "ID", Value: logicalID},
+		RecordConstructorField{Name: "V", Value: logicalV},
+	)
+
+	pulled := requireCandidateAnchoredField(
+		t, mustPullUpValue(t, physicalV, result, alias), alias)
+	if pulled.Resolved == nil || len(pulled.Resolved.Ordinals()) != 1 ||
+		pulled.Resolved.Ordinals()[0] != 1 {
+		t.Fatalf("pulled nominal source path = %v, want result ordinal [1]",
+			pulled.Resolved)
+	}
+	pushed := PushDownValue(physicalV, result, alias)
+	if !ValuesStructurallyEqual(pushed, logicalV) {
+		t.Fatalf("pushed nominal source = %q, want exact retained source %q",
+			ExplainValue(pushed), ExplainValue(logicalV))
+	}
+
+	foreign := mustQOV(t, NamedCorrelationIdentifier("foreign"), physicalType)
+	foreignV, err := ResolveFieldOrdinals(foreign, []int{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrow := mustQOV(t, alias, NewRecordType("", false, []Field{
+		{Name: "V", Ordinal: 0, FieldType: NullableLong},
+	}))
+	narrowV, err := ResolveFieldOrdinals(narrow, []int{0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drifted := mustQOV(t, alias, NewRecordType("", false, []Field{
+		{Name: "ID", Ordinal: 0, FieldType: NotNullLong},
+		{Name: "V", Ordinal: 1, FieldType: NullableString},
+	}))
+	driftedV, err := ResolveFieldOrdinals(drifted, []int{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]Value{
+		"foreign alias": foreignV,
+		"narrow row":    narrowV,
+		"leaf drift":    driftedV,
+	} {
+		value := value
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := mustPullUpValue(t, value, result, alias); got != nil {
+				t.Fatalf("pull-up accepted %s as %q", name, ExplainValue(got))
+			}
+			if got := PushDownValue(value, result, alias); got != nil {
+				t.Fatalf("push-down accepted %s as %q", name, ExplainValue(got))
+			}
+		})
 	}
 }
 
@@ -125,11 +207,11 @@ func TestPullUpValue_ThroughRecordConstructor_NotFound(t *testing.T) {
 	alias := NamedCorrelationIdentifier("q1")
 
 	resultValue := NewRecordConstructorValue(
-		RecordConstructorField{Name: "a", Value: &FieldValue{Field: "x", Typ: NullableLong}},
+		RecordConstructorField{Name: "a", Value: &fieldValue{Field: "x", Typ: NullableLong}},
 	)
 
 	// FV("z") is not in the constructor.
-	pulled := PullUpValue(&FieldValue{Field: "z", Typ: NullableLong}, resultValue, alias)
+	pulled := mustPullUpValue(t, &fieldValue{Field: "z", Typ: NullableLong}, resultValue, alias)
 	if pulled != nil {
 		t.Fatalf("expected nil for unmapped field, got %v", pulled)
 	}
@@ -142,8 +224,8 @@ func TestPullUpValue_ThroughRecordConstructor_ArithmeticChild(t *testing.T) {
 	// resultValue = RecordConstructor(sum = (x + y))
 	arith := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &FieldValue{Field: "x", Typ: NullableLong},
-		Right: &FieldValue{Field: "y", Typ: NullableLong},
+		Left:  &fieldValue{Field: "x", Typ: NullableLong},
+		Right: &fieldValue{Field: "y", Typ: NullableLong},
 	}
 	resultValue := NewRecordConstructorValue(
 		RecordConstructorField{Name: "sum", Value: arith},
@@ -152,14 +234,14 @@ func TestPullUpValue_ThroughRecordConstructor_ArithmeticChild(t *testing.T) {
 	// PullUp (x + y) → FV(QOV(q1), "sum")
 	vArith := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &FieldValue{Field: "x", Typ: NullableLong},
-		Right: &FieldValue{Field: "y", Typ: NullableLong},
+		Left:  &fieldValue{Field: "x", Typ: NullableLong},
+		Right: &fieldValue{Field: "y", Typ: NullableLong},
 	}
-	pulled := PullUpValue(vArith, resultValue, alias)
+	pulled := mustPullUpValue(t, vArith, resultValue, alias)
 	if pulled == nil {
 		t.Fatal("expected non-nil result for arithmetic match")
 	}
-	fv, ok := pulled.(*FieldValue)
+	fv, ok := pulled.(*fieldValue)
 	if !ok {
 		t.Fatalf("expected FieldValue, got %T", pulled)
 	}
@@ -174,14 +256,14 @@ func TestPullUpValue_ThroughQOV(t *testing.T) {
 	innerAlias := NamedCorrelationIdentifier("q_in")
 
 	// resultValue = QOV(q_in) — passthrough
-	resultValue := &QuantifiedObjectValue{Correlation: innerAlias, Typ: UnknownType}
+	resultValue := mustQOV(t, innerAlias)
 
 	// PullUp FV("col") through passthrough → FV(QOV(q_out), "col")
-	pulled := PullUpValue(&FieldValue{Field: "col", Typ: NullableLong}, resultValue, alias)
+	pulled := mustPullUpValue(t, &fieldValue{Field: "col", Typ: NullableLong}, resultValue, alias)
 	if pulled == nil {
 		t.Fatal("expected non-nil result")
 	}
-	fv, ok := pulled.(*FieldValue)
+	fv, ok := pulled.(*fieldValue)
 	if !ok {
 		t.Fatalf("expected FieldValue, got %T", pulled)
 	}
@@ -201,14 +283,14 @@ func TestPullUpValue_RecordConstructorAnchorsDuplicateFieldsOnCandidate(t *testi
 		FieldType: NotNullLong,
 		Ordinal:   0,
 	}})
-	leftID := NewCorrelatedFieldValueWithResolvedOrdinal(
-		NewQuantifiedObjectValueOfType(leftAlias, sourceType),
+	leftID := newCorrelatedFieldValueWithResolvedOrdinal(
+		mustQOV(t, leftAlias, sourceType),
 		"ID",
 		0,
 		NotNullLong,
 	)
-	rightID := NewCorrelatedFieldValueWithResolvedOrdinal(
-		NewQuantifiedObjectValueOfType(rightAlias, sourceType),
+	rightID := newCorrelatedFieldValueWithResolvedOrdinal(
+		mustQOV(t, rightAlias, sourceType),
 		"ID",
 		0,
 		NotNullLong,
@@ -220,12 +302,12 @@ func TestPullUpValue_RecordConstructorAnchorsDuplicateFieldsOnCandidate(t *testi
 
 	pulledLeft := requireCandidateAnchoredField(
 		t,
-		PullUpValue(leftID, resultValue, candidateAlias),
+		mustPullUpValue(t, leftID, resultValue, candidateAlias),
 		candidateAlias,
 	)
 	pulledRight := requireCandidateAnchoredField(
 		t,
-		PullUpValue(rightID, resultValue, candidateAlias),
+		mustPullUpValue(t, rightID, resultValue, candidateAlias),
 		candidateAlias,
 	)
 	if pulledLeft.Resolved == nil || pulledLeft.Resolved.Root().Ordinal != 0 {
@@ -265,15 +347,15 @@ func TestPullUpValue_PassthroughAnchorsSameNamedFieldsPerCandidate(t *testing.T)
 	rightSourceAlias := NamedCorrelationIdentifier("right_source")
 	leftCandidateAlias := NamedCorrelationIdentifier("left_candidate")
 	rightCandidateAlias := NamedCorrelationIdentifier("right_candidate")
-	leftSource := NewQuantifiedObjectValueOfType(leftSourceAlias, sourceType)
+	leftSource := mustQOV(t, leftSourceAlias, sourceType)
 	rightSource := NewObjectValue(rightSourceAlias, sourceType)
-	leftID := NewCorrelatedFieldValueWithResolvedOrdinal(
+	leftID := newCorrelatedFieldValueWithResolvedOrdinal(
 		leftSource,
 		"ID",
 		0,
 		NotNullLong,
 	)
-	rightID := NewCorrelatedFieldValueWithResolvedOrdinal(
+	rightID := newCorrelatedFieldValueWithResolvedOrdinal(
 		rightSource,
 		"ID",
 		0,
@@ -282,12 +364,12 @@ func TestPullUpValue_PassthroughAnchorsSameNamedFieldsPerCandidate(t *testing.T)
 
 	pulledLeft := requireCandidateAnchoredField(
 		t,
-		PullUpValue(leftID, leftSource, leftCandidateAlias),
+		mustPullUpValue(t, leftID, leftSource, leftCandidateAlias),
 		leftCandidateAlias,
 	)
 	pulledRight := requireCandidateAnchoredField(
 		t,
-		PullUpValue(rightID, rightSource, rightCandidateAlias),
+		mustPullUpValue(t, rightID, rightSource, rightCandidateAlias),
 		rightCandidateAlias,
 	)
 	if pulledLeft.Resolved != leftID.Resolved {
@@ -306,10 +388,10 @@ func TestPullUpPushDown_PassthroughCorrelatedBakedPathRoundTrip(t *testing.T) {
 
 	sourceAlias := NamedCorrelationIdentifier("source")
 	upperAlias := NamedCorrelationIdentifier("upper")
-	source := NewQuantifiedObjectValue(sourceAlias)
-	path := NewFieldPathOfSingle("NESTED", 0, true).
-		WithSuffix(NewFieldPathOfSingle("ID", 1, false))
-	original := &FieldValue{
+	source := mustQOV(t, sourceAlias)
+	path := newFieldPathOfSingle("NESTED", 0, true).
+		WithSuffix(newFieldPathOfSingle("ID", 1, false))
+	original := &fieldValue{
 		Field:    "ID",
 		Typ:      NotNullLong,
 		Child:    source,
@@ -318,7 +400,7 @@ func TestPullUpPushDown_PassthroughCorrelatedBakedPathRoundTrip(t *testing.T) {
 
 	pulled := requireCandidateAnchoredField(
 		t,
-		PullUpValue(original, source, upperAlias),
+		mustPullUpValue(t, original, source, upperAlias),
 		upperAlias,
 	)
 	if pulled.Resolved != path ||
@@ -338,7 +420,7 @@ func TestPullUpPushDown_PassthroughCorrelatedBakedPathRoundTrip(t *testing.T) {
 			ExplainValue(original),
 		)
 	}
-	pushedField := pushed.(*FieldValue)
+	pushedField := pushed.(*fieldValue)
 	if pushedField.Child != source || pushedField.Resolved != path {
 		t.Fatal("pushdown did not restore the source child and baked path")
 	}
@@ -351,26 +433,25 @@ func TestPullUpPushDown_PassthroughRejectsForeignAlias(t *testing.T) {
 	foreignAlias := NamedCorrelationIdentifier("foreign")
 	upperAlias := NamedCorrelationIdentifier("upper")
 	foreignUpperAlias := NamedCorrelationIdentifier("foreign_upper")
-	source := NewQuantifiedObjectValue(sourceAlias)
+	source := mustQOV(t, sourceAlias)
 
-	foreignSourceField := NewFieldValue(
-		NewQuantifiedObjectValue(foreignAlias),
+	foreignSourceField := newFieldValue(
+		mustQOV(t, foreignAlias),
 		"ID",
 		NotNullLong,
 	)
-	if pulled := PullUpValue(
+	if pulled := mustPullUpValue(t,
 		foreignSourceField,
 		source,
-		upperAlias,
-	); pulled != nil {
+		upperAlias); pulled != nil {
 		t.Fatalf(
 			"foreign-source pull-up = %s, want nil",
 			ExplainValue(pulled),
 		)
 	}
 
-	foreignUpperField := NewFieldValue(
-		NewQuantifiedObjectValue(foreignUpperAlias),
+	foreignUpperField := newFieldValue(
+		mustQOV(t, foreignUpperAlias),
 		"ID",
 		NotNullLong,
 	)
@@ -393,26 +474,25 @@ func TestPullUpPushDown_PassthroughRejectsLegacyChainedNestedPath(
 
 	sourceAlias := NamedCorrelationIdentifier("source")
 	upperAlias := NamedCorrelationIdentifier("upper")
-	source := NewQuantifiedObjectValue(sourceAlias)
-	sourceNested := NewFieldValue(
-		NewFieldValue(source, "NESTED", UnknownType),
+	source := mustQOV(t, sourceAlias)
+	sourceNested := newFieldValue(
+		newFieldValue(source, "NESTED", UnknownType),
 		"ID",
 		NotNullLong,
 	)
-	if pulled := PullUpValue(
+	if pulled := mustPullUpValue(t,
 		sourceNested,
 		source,
-		upperAlias,
-	); pulled != nil {
+		upperAlias); pulled != nil {
 		t.Fatalf(
 			"legacy chained pull-up = %s, want nil rather than a dropped inner path",
 			ExplainValue(pulled),
 		)
 	}
 
-	upperNested := NewFieldValue(
-		NewFieldValue(
-			NewQuantifiedObjectValue(upperAlias),
+	upperNested := newFieldValue(
+		newFieldValue(
+			mustQOV(t, upperAlias),
 			"NESTED",
 			UnknownType,
 		),
@@ -439,23 +519,23 @@ func TestPullUpValue_WholeResultStillMapsToCandidateQOV(t *testing.T) {
 	results := []Value{
 		NewRecordConstructorValue(RecordConstructorField{
 			Name:  "ID",
-			Value: NewFlatFieldValue("ID", NotNullLong),
+			Value: newFlatFieldValue("ID", NotNullLong),
 		}),
-		NewQuantifiedObjectValue(sourceAlias),
-		NewObjectValue(sourceAlias, UnknownType),
+		mustQOV(t, sourceAlias),
+		NewObjectValue(sourceAlias, NotNullLong),
 	}
 	for _, resultValue := range results {
 		resultValue := resultValue
 		t.Run(resultValue.Name(), func(t *testing.T) {
-			pulled := PullUpValue(resultValue, resultValue, candidateAlias)
-			qov, ok := pulled.(*QuantifiedObjectValue)
+			pulled := mustPullUpValue(t, resultValue, resultValue, candidateAlias)
+			qov, ok := pulled.(*quantifiedObjectValue)
 			if !ok {
-				t.Fatalf("whole-result pull-up = %T, want *QuantifiedObjectValue", pulled)
+				t.Fatalf("whole-result pull-up = %T, want *quantifiedObjectValue", pulled)
 			}
-			if qov.Correlation != candidateAlias {
+			if qov.Correlation() != candidateAlias {
 				t.Fatalf(
 					"whole-result correlation = %v, want %v",
-					qov.Correlation,
+					qov.Correlation(),
 					candidateAlias,
 				)
 			}
@@ -463,13 +543,33 @@ func TestPullUpValue_WholeResultStillMapsToCandidateQOV(t *testing.T) {
 	}
 }
 
+func TestPullUpValue_WholeResultMapsToOwnerScopedCurrentQOV(t *testing.T) {
+	t.Parallel()
+
+	resultType := NewRecordType("Row", false, []Field{
+		{Name: "ID", FieldType: NotNullLong, Ordinal: 0},
+	})
+	resultValue := mustQOV(t, NamedCorrelationIdentifier("source"), resultType)
+	pulled := mustPullUpValue(t, resultValue, resultValue, CurrentCorrelation())
+	qov, ok := AsQuantifiedObjectValue(pulled)
+	if !ok {
+		t.Fatalf("current whole-result pull-up = %T, want exact QuantifiedObjectValue", pulled)
+	}
+	if qov.Correlation() != CurrentCorrelation() {
+		t.Fatalf("whole-result correlation = %v, want reserved current", qov.Correlation())
+	}
+	if !qov.FlowedType().Equals(resultType) {
+		t.Fatalf("whole-result type = %s, want %s", qov.FlowedType(), resultType)
+	}
+}
+
 func TestPullUpValue_Nil(t *testing.T) {
 	t.Parallel()
 	alias := NamedCorrelationIdentifier("q1")
-	if PullUpValue(nil, &FieldValue{Field: "x"}, alias) != nil {
+	if mustPullUpValue(t, nil, &fieldValue{Field: "x"}, alias) != nil {
 		t.Fatal("expected nil for nil v")
 	}
-	if PullUpValue(&FieldValue{Field: "x"}, nil, alias) != nil {
+	if mustPullUpValue(t, &fieldValue{Field: "x"}, nil, alias) != nil {
 		t.Fatal("expected nil for nil resultValue")
 	}
 }
@@ -480,19 +580,19 @@ func TestPushDownValue_ThroughRecordConstructor(t *testing.T) {
 
 	// resultValue = RecordConstructor(a=FV("x"), b=FV("y"))
 	resultValue := NewRecordConstructorValue(
-		RecordConstructorField{Name: "a", Value: &FieldValue{Field: "x", Typ: NullableLong}},
-		RecordConstructorField{Name: "b", Value: &FieldValue{Field: "y", Typ: NullableString}},
+		RecordConstructorField{Name: "a", Value: &fieldValue{Field: "x", Typ: NullableLong}},
+		RecordConstructorField{Name: "b", Value: &fieldValue{Field: "y", Typ: NullableString}},
 	)
 
 	// The pushed-down references address the constructor's OUTPUT SLOTS, which
 	// is what a resolved reference to a projection output carries. The display
 	// names are deliberately WRONG here — slot 0 is rendered "b" and slot 1 "a" —
 	// so the test cannot pass by matching a name: only the ordinal selects.
-	pushed := PushDownValue(NewFieldValueWithResolvedOrdinal("b", 0, NullableLong), resultValue, alias)
+	pushed := PushDownValue(newFieldValueWithResolvedOrdinal("b", 0, NullableLong), resultValue, alias)
 	if pushed == nil {
 		t.Fatal("expected non-nil result for output slot 0")
 	}
-	fv, ok := pushed.(*FieldValue)
+	fv, ok := pushed.(*fieldValue)
 	if !ok {
 		t.Fatalf("expected FieldValue, got %T", pushed)
 	}
@@ -500,11 +600,11 @@ func TestPushDownValue_ThroughRecordConstructor(t *testing.T) {
 		t.Fatalf("output slot 0 pushed to %q, want the constructor's first input 'x'", fv.Field)
 	}
 
-	pushed = PushDownValue(NewFieldValueWithResolvedOrdinal("a", 1, NullableString), resultValue, alias)
+	pushed = PushDownValue(newFieldValueWithResolvedOrdinal("a", 1, NullableString), resultValue, alias)
 	if pushed == nil {
 		t.Fatal("expected non-nil result for output slot 1")
 	}
-	fv, ok = pushed.(*FieldValue)
+	fv, ok = pushed.(*fieldValue)
 	if !ok {
 		t.Fatalf("expected FieldValue, got %T", pushed)
 	}
@@ -516,7 +616,7 @@ func TestPushDownValue_ThroughRecordConstructor(t *testing.T) {
 	// resolution belongs upstream, at the one place a name is legitimate. This
 	// is the arm RFC-197 item 3 removed; without this case the conversion is
 	// unfalsifiable, since every other case here is baked.
-	if got := PushDownValue(&FieldValue{Field: "a", Typ: NullableLong}, resultValue, alias); got != nil {
+	if got := PushDownValue(&fieldValue{Field: "a", Typ: NullableLong}, resultValue, alias); got != nil {
 		t.Fatalf("a lazy reference matched a constructor member by NAME = %v, want DECLINE", got)
 	}
 }
@@ -526,11 +626,11 @@ func TestPushDownValue_QOVReplacedByResultValue(t *testing.T) {
 	alias := NamedCorrelationIdentifier("q1")
 
 	resultValue := NewRecordConstructorValue(
-		RecordConstructorField{Name: "a", Value: &FieldValue{Field: "x", Typ: NullableLong}},
+		RecordConstructorField{Name: "a", Value: &fieldValue{Field: "x", Typ: NullableLong}},
 	)
 
 	// PushDown QOV(q1) → resultValue itself
-	v := &QuantifiedObjectValue{Correlation: alias, Typ: UnknownType}
+	v := mustQOV(t, alias)
 	pushed := PushDownValue(v, resultValue, alias)
 	if pushed == nil {
 		t.Fatal("expected non-nil result")
@@ -549,11 +649,11 @@ func TestPushDownValue_ThroughRecordConstructor_NotFound(t *testing.T) {
 	alias := NamedCorrelationIdentifier("q1")
 
 	resultValue := NewRecordConstructorValue(
-		RecordConstructorField{Name: "a", Value: &FieldValue{Field: "x", Typ: NullableLong}},
+		RecordConstructorField{Name: "a", Value: &fieldValue{Field: "x", Typ: NullableLong}},
 	)
 
 	// FV("z") not in constructor.
-	pushed := PushDownValue(&FieldValue{Field: "z"}, resultValue, alias)
+	pushed := PushDownValue(&fieldValue{Field: "z"}, resultValue, alias)
 	if pushed != nil {
 		t.Fatalf("expected nil for unmapped field, got %v", pushed)
 	}
@@ -565,14 +665,14 @@ func TestPushDownValue_ThroughQOV(t *testing.T) {
 	innerAlias := NamedCorrelationIdentifier("q_in")
 
 	// Passthrough result
-	resultValue := &QuantifiedObjectValue{Correlation: innerAlias, Typ: UnknownType}
+	resultValue := mustQOV(t, innerAlias)
 
 	// PushDown FV("col") through passthrough → FV("col")
-	pushed := PushDownValue(&FieldValue{Field: "col", Typ: NullableLong}, resultValue, alias)
+	pushed := PushDownValue(&fieldValue{Field: "col", Typ: NullableLong}, resultValue, alias)
 	if pushed == nil {
 		t.Fatal("expected non-nil result")
 	}
-	fv, ok := pushed.(*FieldValue)
+	fv, ok := pushed.(*fieldValue)
 	if !ok {
 		t.Fatalf("expected FieldValue, got %T", pushed)
 	}
@@ -590,10 +690,10 @@ func TestPushDownValue_ThroughQOV(t *testing.T) {
 func TestPushDownValue_Nil(t *testing.T) {
 	t.Parallel()
 	alias := NamedCorrelationIdentifier("q1")
-	if PushDownValue(nil, &FieldValue{Field: "x"}, alias) != nil {
+	if PushDownValue(nil, &fieldValue{Field: "x"}, alias) != nil {
 		t.Fatal("expected nil for nil v")
 	}
-	if PushDownValue(&FieldValue{Field: "x"}, nil, alias) != nil {
+	if PushDownValue(&fieldValue{Field: "x"}, nil, alias) != nil {
 		t.Fatal("expected nil for nil resultValue")
 	}
 }
@@ -605,18 +705,18 @@ func TestPullUpPushDown_RoundTrip(t *testing.T) {
 	// The constructor's inputs are BAKED source-relative reads, which is what the
 	// translator produces. Pull-up bakes a baked input (pullUpThroughRecordConstructor),
 	// so the round trip closes on ORDINALS and never on a name.
-	original := NewFieldValueWithResolvedOrdinal("x", 0, NullableLong)
+	original := newFieldValueWithResolvedOrdinal("x", 0, NullableLong)
 	resultValue := NewRecordConstructorValue(
 		RecordConstructorField{Name: "a", Value: original},
-		RecordConstructorField{Name: "b", Value: NewFieldValueWithResolvedOrdinal("y", 1, NullableString)},
+		RecordConstructorField{Name: "b", Value: newFieldValueWithResolvedOrdinal("y", 1, NullableString)},
 	)
 
 	// PullUp: FV("x")#0 → FV(QOV(q1), "a")#0
-	pulled := PullUpValue(original, resultValue, alias)
+	pulled := mustPullUpValue(t, original, resultValue, alias)
 	if pulled == nil {
 		t.Fatal("pullUp failed")
 	}
-	if pfv, ok := pulled.(*FieldValue); !ok || pfv.Resolved == nil {
+	if pfv, ok := pulled.(*fieldValue); !ok || pfv.Resolved == nil {
 		t.Fatalf("pull-up through a record constructor must emit a BAKED reference to the "+
 			"output slot; the push-down back down resolves by ordinal and a lazy node would "+
 			"decline, got %v", pulled)
@@ -639,17 +739,17 @@ func TestPullUpValues_Batch(t *testing.T) {
 	alias := NamedCorrelationIdentifier("q1")
 
 	resultValue := NewRecordConstructorValue(
-		RecordConstructorField{Name: "a", Value: &FieldValue{Field: "x", Typ: NullableLong}},
-		RecordConstructorField{Name: "b", Value: &FieldValue{Field: "y", Typ: NullableString}},
+		RecordConstructorField{Name: "a", Value: &fieldValue{Field: "x", Typ: NullableLong}},
+		RecordConstructorField{Name: "b", Value: &fieldValue{Field: "y", Typ: NullableString}},
 	)
 
 	vs := []Value{
-		&FieldValue{Field: "x", Typ: NullableLong},
-		&FieldValue{Field: "y", Typ: NullableString},
-		&FieldValue{Field: "z", Typ: NullableLong}, // not in constructor
+		&fieldValue{Field: "x", Typ: NullableLong},
+		&fieldValue{Field: "y", Typ: NullableString},
+		&fieldValue{Field: "z", Typ: NullableLong}, // not in constructor
 	}
 
-	result := PullUpValues(vs, resultValue, alias)
+	result := mustPullUpValues(t, vs, resultValue, alias)
 	if len(result) != 2 {
 		t.Fatalf("expected 2 mapped values, got %d", len(result))
 	}
@@ -660,14 +760,14 @@ func TestPushDownValues_Batch(t *testing.T) {
 	alias := NamedCorrelationIdentifier("q1")
 
 	resultValue := NewRecordConstructorValue(
-		RecordConstructorField{Name: "a", Value: &FieldValue{Field: "x", Typ: NullableLong}},
-		RecordConstructorField{Name: "b", Value: &FieldValue{Field: "y", Typ: NullableString}},
+		RecordConstructorField{Name: "a", Value: &fieldValue{Field: "x", Typ: NullableLong}},
+		RecordConstructorField{Name: "b", Value: &fieldValue{Field: "y", Typ: NullableString}},
 	)
 
 	vs := []Value{
-		NewFieldValueWithResolvedOrdinal("a", 0, NullableLong),
-		NewFieldValueWithResolvedOrdinal("b", 1, NullableString),
-		NewFieldValueWithResolvedOrdinal("z", 7, NullableLong), // no such output slot
+		newFieldValueWithResolvedOrdinal("a", 0, NullableLong),
+		newFieldValueWithResolvedOrdinal("b", 1, NullableString),
+		newFieldValueWithResolvedOrdinal("z", 7, NullableLong), // no such output slot
 	}
 
 	result := PushDownValues(vs, resultValue, alias)
@@ -687,9 +787,9 @@ func TestPushDownValues_Batch(t *testing.T) {
 
 func TestSemanticEqual(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "x", Typ: NullableLong}
-	b := &FieldValue{Field: "x", Typ: NullableLong}
-	c := &FieldValue{Field: "y", Typ: NullableLong}
+	a := &fieldValue{Field: "x", Typ: NullableLong}
+	b := &fieldValue{Field: "x", Typ: NullableLong}
+	c := &fieldValue{Field: "y", Typ: NullableLong}
 
 	if !semanticEqual(a, b) {
 		t.Fatal("expected a == b")
@@ -702,5 +802,54 @@ func TestSemanticEqual(t *testing.T) {
 	}
 	if semanticEqual(a, nil) {
 		t.Fatal("expected a != nil")
+	}
+}
+
+// TestPushDownValue_ThroughRecordConstructor_NestedOrdinalPath pins the
+// two-domain translation used by UPDATE's exact {OLD,NEW} result: the root
+// ordinal selects the computation column, then the suffix is resolved against
+// that selected column's own exact row. Treating [0,0] as one flat constructor
+// ordinal either declines OLD.ID or reads the wrong computation slot.
+func TestPushDownValue_ThroughRecordConstructor_NestedOrdinalPath(t *testing.T) {
+	t.Parallel()
+
+	rowType := NewRecordType("update_row", false, []Field{
+		{Name: "ID", FieldType: NotNullLong},
+	})
+	inputAlias := NamedCorrelationIdentifier("update_input")
+	input := mustQOV(t, inputAlias, rowType)
+	inputID, err := ResolveFieldOrdinals(input, []int{0})
+	if err != nil {
+		t.Fatalf("resolve input ID: %v", err)
+	}
+	computation := NewRawRecordConstructorValue(
+		RecordConstructorField{Name: "OLD", Value: input},
+		RecordConstructorField{
+			Name:  "NEW",
+			Value: NewObjectValue(NamedCorrelationIdentifier("updated_record"), rowType),
+		},
+	)
+	// upperAlias is the correlation at which the computation row is visible;
+	// it is not a second source identity. The nested suffix changes domains
+	// after OLD is selected, while the root remains this upper boundary.
+	output := mustQOV(t, inputAlias, computation.Type())
+	oldID, err := ResolveFieldOrdinals(output, []int{0, 0})
+	if err != nil {
+		t.Fatalf("resolve OLD.ID: %v", err)
+	}
+
+	pushed := PushDownValue(oldID, computation, inputAlias)
+	if !ValuesStructurallyEqual(pushed, inputID) {
+		t.Fatalf("OLD.ID pushed to %q, want exact input ID %q",
+			ExplainValue(pushed), ExplainValue(inputID))
+	}
+
+	newID, err := ResolveFieldOrdinals(output, []int{1, 0})
+	if err != nil {
+		t.Fatalf("resolve NEW.ID: %v", err)
+	}
+	if pushedNew := PushDownValue(newID, computation, inputAlias); pushedNew != nil {
+		t.Fatalf("NEW.ID pushed to %q, want decline for post-mutation object",
+			ExplainValue(pushedNew))
 	}
 }

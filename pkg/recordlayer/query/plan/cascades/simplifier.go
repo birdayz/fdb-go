@@ -37,13 +37,16 @@ import (
 // Not safe against cyclic-rewrite rule sets — real Cascades uses a
 // memo to detect cycles. The rule sets this driver runs are
 // termination-proven per above so no cycle is possible.
-func Simplify(pred predicates.QueryPredicate, rules []CascadesRule) predicates.QueryPredicate {
+func Simplify(pred predicates.QueryPredicate, rules []CascadesRule) (predicates.QueryPredicate, error) {
 	if pred == nil || len(rules) == 0 {
-		return pred
+		return pred, nil
 	}
 	// Top-level fixpoint.
 	for {
-		next := applyRulesOnce(pred, rules)
+		next, err := applyRulesOnce(pred, rules)
+		if err != nil {
+			return nil, err
+		}
 		if next == pred {
 			break
 		}
@@ -57,7 +60,11 @@ func Simplify(pred predicates.QueryPredicate, rules []CascadesRule) predicates.Q
 		rewritten := false
 		simpler := make([]predicates.QueryPredicate, len(p.SubPredicates))
 		for i, sp := range p.SubPredicates {
-			simpler[i] = Simplify(sp, rules)
+			var err error
+			simpler[i], err = Simplify(sp, rules)
+			if err != nil {
+				return nil, err
+			}
 			if simpler[i] != sp {
 				rewritten = true
 			}
@@ -69,7 +76,11 @@ func Simplify(pred predicates.QueryPredicate, rules []CascadesRule) predicates.Q
 		rewritten := false
 		simpler := make([]predicates.QueryPredicate, len(p.SubPredicates))
 		for i, sp := range p.SubPredicates {
-			simpler[i] = Simplify(sp, rules)
+			var err error
+			simpler[i], err = Simplify(sp, rules)
+			if err != nil {
+				return nil, err
+			}
 			if simpler[i] != sp {
 				rewritten = true
 			}
@@ -78,31 +89,38 @@ func Simplify(pred predicates.QueryPredicate, rules []CascadesRule) predicates.Q
 			return Simplify(&predicates.OrPredicate{SubPredicates: simpler}, rules)
 		}
 	case *predicates.NotPredicate:
-		if inner := Simplify(p.Child, rules); inner != p.Child {
+		inner, err := Simplify(p.Child, rules)
+		if err != nil {
+			return nil, err
+		}
+		if inner != p.Child {
 			return Simplify(&predicates.NotPredicate{Child: inner}, rules)
 		}
 	}
-	return pred
+	return pred, nil
 }
 
 // applyRulesOnce fires each rule against pred exactly once, returning
 // the first yielded replacement. When no rule fires, returns pred
 // unchanged (the caller's fixpoint test uses pointer-equality).
-func applyRulesOnce(pred predicates.QueryPredicate, rules []CascadesRule) predicates.QueryPredicate {
+func applyRulesOnce(pred predicates.QueryPredicate, rules []CascadesRule) (predicates.QueryPredicate, error) {
 	for _, rule := range rules {
 		matches := rule.Matcher().BindMatches(matching.NewBindings(), pred)
 		for _, b := range matches {
 			call := &RuleCall{Bindings: b}
 			rule.OnMatch(call)
+			if err := call.Err(); err != nil {
+				return nil, err
+			}
 			if ys := call.Yielded(); len(ys) > 0 {
 				// First yield wins — rules are ordered by priority.
 				if qp, ok := ys[0].(predicates.QueryPredicate); ok {
-					return qp
+					return qp, nil
 				}
 			}
 		}
 	}
-	return pred
+	return pred, nil
 }
 
 // DefaultSimplifyRules returns the canonical simplification rule set.

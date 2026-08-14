@@ -30,21 +30,26 @@ type SortKey struct {
 // RequestedOrdering (with Distinctness) lives on the PLANNING
 // constraint path (requested_ordering.go).
 type LogicalSortExpression struct {
-	sortKeys []SortKey
-	inner    Quantifier
+	sortKeys    []SortKey
+	inner       Quantifier
+	resultValue values.QuantifiedObjectValue
 }
 
 // NewLogicalSortExpression constructs a sort. sortKeys is copied.
-func NewLogicalSortExpression(sortKeys []SortKey, inner Quantifier) *LogicalSortExpression {
+func NewLogicalSortExpression(sortKeys []SortKey, inner Quantifier) (*LogicalSortExpression, error) {
+	resultValue, err := requireFlowedResult("LogicalSortExpression", inner)
+	if err != nil {
+		return nil, err
+	}
 	copied := make([]SortKey, len(sortKeys))
 	copy(copied, sortKeys)
-	return &LogicalSortExpression{sortKeys: copied, inner: inner}
+	return &LogicalSortExpression{sortKeys: copied, inner: inner, resultValue: resultValue}, nil
 }
 
 // UnsortedLogicalSortExpression is the no-op sort — preserves the
 // inner's order. Used as a placeholder before any concrete ordering is
 // requested. Mirrors Java's `LogicalSortExpression.unsorted(inner)`.
-func UnsortedLogicalSortExpression(inner Quantifier) *LogicalSortExpression {
+func UnsortedLogicalSortExpression(inner Quantifier) (*LogicalSortExpression, error) {
 	return NewLogicalSortExpression(nil, inner)
 }
 
@@ -60,7 +65,7 @@ func (e *LogicalSortExpression) IsUnsorted() bool { return len(e.sortKeys) == 0 
 // GetResultValue is the inner's flowed object value (sort doesn't
 // change the row shape, only the order).
 func (e *LogicalSortExpression) GetResultValue() values.Value {
-	return e.inner.GetFlowedObjectValue()
+	return e.resultValue
 }
 
 // GetQuantifiers returns the single inner Quantifier.
@@ -159,10 +164,11 @@ func (e *LogicalSortExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-func (e *LogicalSortExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	cp := *e
-	cp.inner = quantifiers[0]
-	return &cp
+func (e *LogicalSortExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("LogicalSortExpression", len(quantifiers), 1); err != nil {
+		return nil, err
+	}
+	return NewLogicalSortExpression(e.sortKeys, quantifiers[0])
 }
 
 var _ RelationalExpression = (*LogicalSortExpression)(nil)

@@ -84,13 +84,17 @@ func TestDistinctForwardedInnerStaysNameable(t *testing.T) {
 	scratch.BeginPage()
 	props2 := recordlayer.DefaultExecuteProperties()
 	props2.State = state
-	resumed, err := ExecutePlan(ctx, plan, nil, evalCtx, c1, props2)
+	// This phase must replace the FlatMap's outer cursor to force the precise
+	// forwarded-name state. Bypass only the public output-layout adapter; the
+	// FlatMap operator, continuation decode, and scratch adoption are the real
+	// production path under test.
+	resumed, err := executePlanUnwrapped(ctx, plan, nil, evalCtx, c1, props2)
 	if err != nil {
 		t.Fatalf("page 2: %v", err)
 	}
 	fm, ok := resumed.(*flatMapCursor)
 	if !ok {
-		t.Fatalf("ExecutePlan returned %T, want *flatMapCursor", resumed)
+		t.Fatalf("executePlanUnwrapped returned %T, want *flatMapCursor", resumed)
 	}
 	if !fm.hasPendingInner {
 		t.Fatal("resumed FlatMap carries no pending inner; the shape no longer applies")

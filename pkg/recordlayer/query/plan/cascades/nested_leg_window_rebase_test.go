@@ -46,45 +46,37 @@ import (
 // N is at leg-local ordinal 1 and SK at struct-local ordinal 0, so the two
 // numbers are DISTINCT — a fused path that dropped or duplicated a step is
 // visible in the ordinals rather than hidden behind a coincidence.
-func nestedLegFixture(t *testing.T) (leg *values.RecordType, mergedQOV *values.QuantifiedObjectValue) {
-	return nestedLegFixtureOfKnownness(t, true)
-}
-
-// nestedLegFixtureOfKnownness builds the same fixture with the leg's struct
-// column either TYPED or UNKNOWN.
-//
-// Both are real. The unknown form is what the planner actually hands the rebase
-// today: neither the merged row's per-slot types nor the leg window's carry a
-// struct column's type — both state UNKNOWN — so a fixture that only ever states
-// a type exercises the arm the production path never takes. That gap is not
-// hypothetical: it hid a typed-nil dereference that crashed every real query on
-// this path while all four typed arms passed.
-func nestedLegFixtureOfKnownness(t *testing.T, known bool) (leg *values.RecordType, mergedQOV *values.QuantifiedObjectValue) {
+func nestedLegFixture(
+	t *testing.T,
+	kind values.LegKind,
+) (leg *values.RecordType, mergedQOV values.QuantifiedObjectValue) {
 	t.Helper()
 	nst := values.NewRecordType("NST", true, []values.Field{
 		{Name: "SK", FieldType: values.NullableInt, Ordinal: 0},
 		{Name: "CO", FieldType: values.NullableInt, Ordinal: 1},
 	})
-	var legColType values.Type = nst
-	if !known {
-		legColType = values.UnknownType
-	}
 	leg = values.NewRecordType("", false, []values.Field{
 		{Name: "A", FieldType: values.NullableInt, Ordinal: 0},
-		{Name: "N", FieldType: legColType, Ordinal: 1},
+		{Name: "N", FieldType: nst, Ordinal: 1},
 	})
 	mergedFields := make([]values.Field, 16)
 	for i := range mergedFields {
 		mergedFields[i] = values.Field{Name: fmt.Sprintf("M%d", i), FieldType: values.NullableInt, Ordinal: i}
 	}
-	// Slot 11 is the one a DROPPED suffix lands on, and slot 10 the one the
-	// nested kind's first step names. Give both the leg's own shape so the
-	// truncated address stays a *valid* read — the pre-fix bug was silent
-	// precisely because nothing downstream could reject it.
-	mergedFields[11] = values.Field{Name: "N", FieldType: nst, Ordinal: 11}
-	mergedFields[10] = values.Field{Name: "L", FieldType: leg, Ordinal: 10}
-	mergedQOV = values.NewQuantifiedObjectValueOfType(
+	// A flat-run seed exposes the leg's columns at 10..11; a nested seed exposes
+	// the entire leg in slot 10. Build the exact physical row for the requested
+	// kind so the resolver's result-type check proves the address as well as its
+	// ordinals.
+	if kind == values.LegKindNested {
+		mergedFields[10] = values.Field{Name: "L", FieldType: leg, Ordinal: 10}
+	} else {
+		mergedFields[10] = values.Field{Name: "A", FieldType: values.NullableInt, Ordinal: 10}
+		mergedFields[11] = values.Field{Name: "N", FieldType: nst, Ordinal: 11}
+	}
+	var err error
+	mergedQOV, err = values.NewQuantifiedObjectValue(
 		values.NamedCorrelationIdentifier("M"), values.NewRecordType("", false, mergedFields))
+	mergedQOV = mustConstruct(t, mergedQOV, err)
 	return leg, mergedQOV
 }
 
@@ -92,15 +84,6 @@ func nestedLegFixtureOfKnownness(t *testing.T, known bool) (leg *values.RecordTy
 // path is the full [N@1, SK@0], stated in the LEG's own layout — the shape the
 // resolver's fuseNestedAccessors emits and the shape the fold carries.
 //
-// Its Field is held at the struct ROOT, which the resolver no longer mints (it
-// names the leaf). Kept deliberately: the arm under test looks ONE segment up in
-// a flat leg type, and a fixture whose Field disagrees with its last accessor is
-// what makes a Field-read distinguishable from a path-read. A leaf-named fixture
-// would let the NAME arm look correct here for the wrong reason.
-func nestedLegRef(leg *values.RecordType, pinned bool) *values.FieldValue {
-	return nestedLegRefTo(leg, pinned, "SK", 0)
-}
-
 // nestedLegRefTo builds the same reference against a NAMED struct member.
 //
 // THE MEMBER IS A PARAMETER BECAUSE SK SITS AT STRUCT ORDINAL 0, and a fixture
@@ -109,20 +92,18 @@ func nestedLegRef(leg *values.RecordType, pinned bool) *values.FieldValue {
 // reference, so this file stayed green under a mutation the values-level pins
 // caught — this file's own stated rule, landing on its own fixture. The CO
 // variant sits at ordinal 1, so a forced-to-zero suffix is visible here too.
-func nestedLegRefTo(leg *values.RecordType, pinned bool, member string, memberOrdinal int) *values.FieldValue {
-	return &values.FieldValue{
-		Field: "N",
-		Typ:   values.NullableInt,
-		Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("L")),
-		Resolved: &values.FieldPath{
-			Accessors: []values.ResolvedAccessor{
-				{Field: "N", Ordinal: 1},
-				{Field: member, Ordinal: memberOrdinal},
-			},
-			FrontierPinned: pinned,
-			Domain:         values.OrdinalDomainOfType(leg),
-		},
+func nestedLegRefTo(t testing.TB, leg *values.RecordType, pinned bool, memberOrdinal int) values.Value {
+	t.Helper()
+	root, rootErr := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("L"), leg)
+	root = mustConstruct(t, root, rootErr)
+	if !pinned {
+		resolved, err := values.ResolveFieldOrdinals(root, []int{1, memberOrdinal})
+		return mustConstruct(t, resolved, err)
 	}
+	suffix, suffixErr := values.FieldByOrdinal(memberOrdinal)
+	suffix = mustConstruct(t, suffix, suffixErr)
+	resolved, err := values.ResolveOrdinalSeedAccess(root, 1, []values.FieldRequest{suffix})
+	return mustConstruct(t, resolved, err)
 }
 
 // TestNestedLegWindow_MultiAccessorRefRebasesOntoTheMergedRow drives
@@ -145,58 +126,46 @@ func TestNestedLegWindow_MultiAccessorRefRebasesOntoTheMergedRow(t *testing.T) {
 		name     string
 		kind     values.LegKind
 		pinned   bool
-		known    bool
 		wantPath []int
 	}{
-		{"flatRun/unpinned/typed — the NAME arm, which silently truncated", values.LegKindFlatRun, false, true, []int{11, 0}},
-		{"flatRun/pinned/typed — the baked arm, which declined", values.LegKindFlatRun, true, true, []int{11, 0}},
-		{"nested/unpinned/typed", values.LegKindNested, false, true, []int{10, 1, 0}},
-		{"nested/pinned/typed", values.LegKindNested, true, true, []int{10, 1, 0}},
-		// THE ARM THE PLANNER ACTUALLY TAKES. The leg states UNKNOWN for its
-		// struct column, so the suffix cannot be re-derived and is carried — which
-		// is correct, because a suffix ordinal indexes the struct's own declared
-		// field order and no merge can restate that.
-		{"flatRun/unpinned/UNKNOWN leg column type", values.LegKindFlatRun, false, false, []int{11, 0}},
-		{"flatRun/pinned/UNKNOWN leg column type", values.LegKindFlatRun, true, false, []int{11, 0}},
-		{"nested/unpinned/UNKNOWN leg column type", values.LegKindNested, false, false, []int{10, 1, 0}},
-		{"nested/pinned/UNKNOWN leg column type", values.LegKindNested, true, false, []int{10, 1, 0}},
+		{"flatRun/unpinned", values.LegKindFlatRun, false, []int{11, 0}},
+		{"flatRun/pinned", values.LegKindFlatRun, true, []int{11, 0}},
+		{"nested/unpinned", values.LegKindNested, false, []int{10, 1, 0}},
+		{"nested/pinned", values.LegKindNested, true, []int{10, 1, 0}},
 		// THE NON-ZERO STRUCT MEMBER. Every case above descends to SK at struct
 		// ordinal 0, so a fused suffix forced to zero is indistinguishable from a
 		// correct one here. CO sits at ordinal 1, which is what makes the last
 		// step of the path an assertion rather than a coincidence.
-		{"flatRun/unpinned/non-zero struct member", values.LegKindFlatRun, false, true, []int{11, 1}},
-		{"flatRun/pinned/non-zero struct member", values.LegKindFlatRun, true, true, []int{11, 1}},
-		{"nested/unpinned/non-zero struct member", values.LegKindNested, false, true, []int{10, 1, 1}},
-		{"nested/pinned/non-zero struct member/UNKNOWN type", values.LegKindNested, true, false, []int{10, 1, 1}},
+		{"flatRun/unpinned/non-zero struct member", values.LegKindFlatRun, false, []int{11, 1}},
+		{"flatRun/pinned/non-zero struct member", values.LegKindFlatRun, true, []int{11, 1}},
+		{"nested/unpinned/non-zero struct member", values.LegKindNested, false, []int{10, 1, 1}},
+		{"nested/pinned/non-zero struct member", values.LegKindNested, true, []int{10, 1, 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			leg, mergedQOV := nestedLegFixtureOfKnownness(t, tc.known)
+			leg, mergedQOV := nestedLegFixture(t, tc.kind)
 			windows := map[values.CorrelationIdentifier]ordinalLegWindow{
 				values.NamedCorrelationIdentifier("L"): {
 					Kind: tc.kind, Offset: 10, Typ: leg,
 					Alias: values.NamedCorrelationIdentifier("L"),
 				},
 			}
-			member, memberOrdinal := "SK", 0
+			memberOrdinal := 0
 			if strings.Contains(tc.name, "non-zero struct member") {
-				member, memberOrdinal = "CO", 1
+				memberOrdinal = 1
 			}
-			ref := nestedLegRefTo(leg, tc.pinned, member, memberOrdinal)
+			ref := nestedLegRefTo(t, leg, tc.pinned, memberOrdinal)
 			out, ok := rebaseOuterLegValueOrdinal(ref, windows, mergedQOV)
 			if !ok {
 				t.Fatalf("rebaseOuterLegValueOrdinal DECLINED a multi-accessor leg "+
 					"reference (kind=%v pinned=%t). A nested ORDER BY key over a JOIN "+
 					"cannot then be folded and the query is rejected 0AF00.", tc.kind, tc.pinned)
 			}
-			fv, isFV := out.(*values.FieldValue)
-			if !isFV || fv.Resolved == nil {
-				t.Fatalf("rebase produced %T (%v), want a baked *FieldValue", out, out)
+			fv, isFV := values.AsFieldValue(out)
+			if !isFV || fv.Path() == nil {
+				t.Fatalf("rebase produced %T (%v), want an exact resolved FieldValue", out, out)
 			}
-			got := make([]int, len(fv.Resolved.Accessors))
-			for i, a := range fv.Resolved.Accessors {
-				got[i] = a.Ordinal
-			}
+			got := fv.Path().Ordinals()
 			if fmt.Sprint(got) != fmt.Sprint(tc.wantPath) {
 				t.Fatalf("kind=%v pinned=%t produced path %v, want %v.\n"+
 					"  A path one step SHORT than wanted is the truncation bug: the root "+
@@ -209,11 +178,12 @@ func TestNestedLegWindow_MultiAccessorRefRebasesOntoTheMergedRow(t *testing.T) {
 			// fusion that inherits the first step's type reports the whole record
 			// as the type of a single-column read, and a sort built on it compares
 			// records.
-			if _, isRec := fv.Typ.(*values.RecordType); fv.Typ == nil || isRec {
+			resultType := fv.ResultType()
+			if _, isRec := resultType.(*values.RecordType); resultType == nil || isRec {
 				t.Fatalf("kind=%v pinned=%t produced result type %v — want the LEAF "+
 					"column's scalar type. A record type here means the fusion inherited "+
 					"the first step's type instead of recomputing from the fused path.",
-					tc.kind, tc.pinned, fv.Typ)
+					tc.kind, tc.pinned, resultType)
 			}
 		})
 	}
@@ -241,7 +211,7 @@ func TestNestedLegWindow_SingleAccessorControlsStillRebase(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			leg, mergedQOV := nestedLegFixture(t)
+			leg, mergedQOV := nestedLegFixture(t, tc.kind)
 			windows := map[values.CorrelationIdentifier]ordinalLegWindow{
 				values.NamedCorrelationIdentifier("L"): {
 					Kind: tc.kind, Offset: 10, Typ: leg,
@@ -249,23 +219,28 @@ func TestNestedLegWindow_SingleAccessorControlsStillRebase(t *testing.T) {
 				},
 			}
 			// `L.A` — leg-local ordinal 0, one accessor.
-			ref := &values.FieldValue{
-				Field:    "A",
-				Typ:      values.NullableInt,
-				Child:    values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("L")),
-				Resolved: values.NewFieldPathOfSingleInDomain("A", 0, tc.pinned, values.OrdinalDomainOfType(leg)),
+			root, rootErr := values.NewQuantifiedObjectValue(
+				values.NamedCorrelationIdentifier("L"), leg)
+			root = mustConstruct(t, root, rootErr)
+			var ref values.Value
+			var refErr error
+			if tc.pinned {
+				ref, refErr = values.ResolveOrdinalSeedField(root, 0)
+			} else {
+				ref, refErr = values.ResolveFieldOrdinals(root, []int{0})
 			}
+			ref = mustConstruct(t, ref, refErr)
 			out, ok := rebaseOuterLegValueOrdinal(ref, windows, mergedQOV)
 			if !ok {
 				t.Fatalf("CONTROL DECLINED (kind=%v pinned=%t): a single-accessor leg "+
 					"reference has always rebased. Every decline this file reports is "+
 					"void until this passes.", tc.kind, tc.pinned)
 			}
-			fv := out.(*values.FieldValue)
-			got := make([]int, len(fv.Resolved.Accessors))
-			for i, a := range fv.Resolved.Accessors {
-				got[i] = a.Ordinal
+			fv, isFV := values.AsFieldValue(out)
+			if !isFV || fv.Path() == nil {
+				t.Fatalf("CONTROL produced %T, want exact resolved FieldValue", out)
 			}
+			got := fv.Path().Ordinals()
 			if fmt.Sprint(got) != fmt.Sprint(tc.wantPath) {
 				t.Fatalf("CONTROL path %v, want %v (kind=%v pinned=%t)", got, tc.wantPath, tc.kind, tc.pinned)
 			}

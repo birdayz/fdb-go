@@ -268,12 +268,27 @@ func TestBoundedSet_ChargesNewKeysOnly(t *testing.T) {
 // fresh fill-loop rows — a resume must not smuggle an arbitrarily large
 // buffer past the limit. The restored buffer here exceeds a tiny budget, so
 // the resume fails with MemoryLimitExceededError instead of materializing.
+func resumedSortFixture(t testing.TB) (*values.RecordType, *plans.RecordQueryInMemorySortPlan) {
+	t.Helper()
+	rowType := exactTestRowType(values.Field{Name: "A", FieldType: values.NotNullString})
+	inner := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+		Value: []any{},
+		Typ:   values.NewArrayType(false, rowType),
+	}))
+	plan := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(
+		inner,
+		[]plans.SortKey{{Field: "A", ValueExpr: mustTestFieldOrdinal(t, inner.GetResultValue(), 0)}},
+	))
+	return rowType, plan
+}
+
 func TestResumedSortBufferChargesMemory(t *testing.T) {
 	t.Parallel()
+	rowType, plan := resumedSortFixture(t)
 	buf := make([]QueryResult, 8)
 	for i := range buf {
 		buf[i] = QueryResult{Positional: &PositionalRow{
-			Type:  positionalTypeFromNames([]string{"A"}),
+			Type:  rowType,
 			Slots: []any{string(make([]byte, 64))},
 		}}
 	}
@@ -281,10 +296,6 @@ func TestResumedSortBufferChargesMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	plan := plans.NewRecordQueryInMemorySortPlan(
-		plans.NewRecordQueryValuesPlan(nil),
-		[]plans.SortKey{{Field: "A", ValueExpr: values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType)}},
-	)
 	props := recordlayer.ExecuteProperties{State: recordlayer.NewExecuteState(64)}
 	_, err = executeInMemorySort(context.Background(), plan, nil, &EvaluationContext{}, cont, props)
 	var mem *recordlayer.MemoryLimitExceededError
@@ -302,11 +313,12 @@ func TestResumedSortBufferChargesMemory(t *testing.T) {
 // MemoryLimitExceededError merely for crossing enough page boundaries.
 func TestResumedSortBufferReleasesOnPageTeardown(t *testing.T) {
 	t.Parallel()
+	rowType, plan := resumedSortFixture(t)
 	buf := make([]QueryResult, 8)
 	var bufBytes int64
 	for i := range buf {
 		buf[i] = QueryResult{Positional: &PositionalRow{
-			Type:  positionalTypeFromNames([]string{"A"}),
+			Type:  rowType,
 			Slots: []any{string(make([]byte, 64))},
 		}}
 		bufBytes += estimateQueryResultBytes(buf[i])
@@ -315,10 +327,6 @@ func TestResumedSortBufferReleasesOnPageTeardown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	plan := plans.NewRecordQueryInMemorySortPlan(
-		plans.NewRecordQueryValuesPlan(nil),
-		[]plans.SortKey{{Field: "A", ValueExpr: values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType)}},
-	)
 	// Budget fits the buffer once but NOT twice: any page-to-page charge leak
 	// trips the limit on the second resume.
 	state := recordlayer.NewExecuteState(bufBytes + bufBytes/2)
@@ -354,20 +362,20 @@ func TestNLJInnerReleasesOnPageTeardown(t *testing.T) {
 		inner[i] = dmap(map[string]any{"K": int64(i), "P": string(make([]byte, 64))})
 		innerBytes += estimateQueryResultBytes(inner[i])
 	}
+	joinType := exactTestRowType(
+		values.Field{Name: "K", FieldType: values.NullableLong},
+		values.Field{Name: "P", FieldType: values.TypeString},
+	)
+	outerKey := mustTestFieldOrdinal(t,
+		mustTestQOV(t, values.NamedCorrelationIdentifier("O"), joinType), 0)
+	innerKey := mustTestFieldOrdinal(t,
+		mustTestQOV(t, values.NamedCorrelationIdentifier("I"), joinType), 0)
 	preds := []predicates.QueryPredicate{
 		&predicates.ComparisonPredicate{
-			Operand: &values.FieldValue{
-				Child:    &values.QuantifiedObjectValue{Correlation: values.NamedCorrelationIdentifier("O")},
-				Field:    "K",
-				Resolved: values.NewFieldPathOfSingle("K", 0, false),
-			},
+			Operand: outerKey,
 			Comparison: predicates.Comparison{
-				Type: predicates.ComparisonEquals,
-				Operand: &values.FieldValue{
-					Child:    &values.QuantifiedObjectValue{Correlation: values.NamedCorrelationIdentifier("I")},
-					Field:    "K",
-					Resolved: values.NewFieldPathOfSingle("K", 0, false),
-				},
+				Type:    predicates.ComparisonEquals,
+				Operand: innerKey,
 			},
 		},
 	}
@@ -382,7 +390,8 @@ func TestNLJInnerReleasesOnPageTeardown(t *testing.T) {
 		}
 		cursor, err := newNLJCursor(
 			recordlayer.Empty[QueryResult](), buf.Items(),
-			plans.JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), preds, nil, EmptyEvaluationContext(), state,
+			plans.JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), preds, nil,
+			nil, nil, EmptyEvaluationContext(), state,
 		)
 		if err != nil {
 			t.Fatalf("page %d: %v", page, err)
@@ -409,9 +418,9 @@ func TestDistinctSeenSetReleasesOnPageTeardown(t *testing.T) {
 	t.Parallel()
 	state := recordlayer.NewExecuteState(1 << 20)
 	props := recordlayer.ExecuteProperties{State: state}
-	plan := plans.NewRecordQueryDistinctPlan(plans.NewRecordQueryValuesPlan([]values.Value{
-		&values.ConstantValue{Value: int64(42)},
-	}))
+	plan := mustExecutorConstruct(plans.NewRecordQueryDistinctPlan(mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(42), Typ: values.NotNullLong},
+	}))))
 	for page := 0; page < 3; page++ {
 		cursor, err := executeDistinct(context.Background(), plan, nil, EmptyEvaluationContext(), nil, props)
 		if err != nil {

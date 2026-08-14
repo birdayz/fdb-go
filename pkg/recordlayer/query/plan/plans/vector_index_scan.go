@@ -96,9 +96,10 @@ func NewRecordQueryVectorIndexPlan(
 	isReturningVectors *bool,
 	recordTypes []string,
 	flowedType values.Type,
-) *RecordQueryVectorIndexPlan {
-	if flowedType == nil {
-		flowedType = values.UnknownType
+) (*RecordQueryVectorIndexPlan, error) {
+	base, err := newPlanExprBaseForType("RecordQueryVectorIndexPlan", flowedType)
+	if err != nil {
+		return nil, err
 	}
 	// Default to <= (top-K) when unspecified — the common QUALIFY shape.
 	if rankType != predicates.ComparisonDistanceRankLessThan &&
@@ -108,6 +109,7 @@ func NewRecordQueryVectorIndexPlan(
 	comps := make([]*predicates.ComparisonRange, len(prefixComparisons))
 	copy(comps, prefixComparisons)
 	return &RecordQueryVectorIndexPlan{
+		PlanExprBase:               base,
 		indexName:                  indexName,
 		prefixComparisons:          comps,
 		partitionKeyComponentTypes: normalizeKeyComponentTypes(nil, len(comps)),
@@ -117,9 +119,9 @@ func NewRecordQueryVectorIndexPlan(
 		efSearch:                   efSearch,
 		isReturningVectors:         isReturningVectors,
 		recordTypes:                dedupSortedStrings(recordTypes),
-		flowedType:                 flowedType,
-		resultValue:                values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
-	}
+		flowedType:                 base.resultValue.Type(),
+		resultValue:                base.resultValue,
+	}, nil
 }
 
 // GetResultValue returns the vector scan's STABLE per-instance result value —
@@ -128,9 +130,6 @@ func NewRecordQueryVectorIndexPlan(
 // to PlanExprBase (a fresh QOV per call) for struct-literal test plans that
 // bypass the constructor (resultValue is nil).
 func (p *RecordQueryVectorIndexPlan) GetResultValue() values.Value {
-	if p.resultValue == nil {
-		return p.PlanExprBase.GetResultValue()
-	}
 	return p.resultValue
 }
 
@@ -324,8 +323,11 @@ func (p *RecordQueryVectorIndexPlan) EqualsWithoutChildren(other expressions.Rel
 
 // WithQuantifiers returns this plan unchanged — it has no quantifiers to
 // replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryVectorIndexPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+func (p *RecordQueryVectorIndexPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryVectorIndexPlan", len(qs), 0); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

@@ -9,6 +9,13 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustInMemorySortConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct in-memory-sort fixture: " + err.Error())
+	}
+	return value
+}
+
 // sortAltOverPlanYielded reports whether any yielded in-memory sort carries the
 // given plan as a FROZEN single-member edge — the alternative arm's signature.
 //
@@ -50,15 +57,51 @@ func sortAltOverPlanYielded(yielded []expressions.RelationalExpression, want pla
 func sortOverScanAndFetch(t *testing.T, fetch *plans.RecordQueryFetchFromPartialRecordPlan) []expressions.RelationalExpression {
 	t.Helper()
 
-	scan := plans.NewRecordQueryScanPlan([]string{"Orders"}, values.UnknownType, false)
+	rowType := inMemorySortRowType()
+	scan := mustInMemorySortConstruct(plans.NewRecordQueryScanPlan([]string{"Orders"}, rowType, false))
 	innerRef := expressions.InitialOf(scan)
 	innerRef.Insert(fetch)
+	innerQ := expressions.ForEachQuantifier(innerRef)
+	root := mustInMemorySortConstruct(innerQ.RequireFlowedObjectValue())
+	amount := mustInMemorySortConstruct(values.ResolveFieldOrdinals(root, []int{2}))
+	sortExpr := mustInMemorySortConstruct(expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: amount}}, innerQ))
+	result, err := FireImplementationRule(NewImplementInMemorySortRule(), expressions.InitialOf(sortExpr))
+	if err != nil {
+		t.Fatalf("FireImplementationRule: %v", err)
+	}
+	return result
+}
 
-	sortExpr := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "amount", Typ: values.UnknownType}}},
-		expressions.ForEachQuantifier(innerRef),
-	)
-	return FireImplementationRule(NewImplementInMemorySortRule(), expressions.InitialOf(sortExpr))
+func inMemorySortRowType() *values.RecordType {
+	return values.NewRecordType("Orders", false, []values.Field{
+		{Name: "id", FieldType: values.NotNullLong},
+		{Name: "customer_id", FieldType: values.NullableLong},
+		{Name: "amount", FieldType: values.NullableLong},
+	})
+}
+
+func inMemorySortGT(t testing.TB, value int64) *predicates.ComparisonRange {
+	t.Helper()
+	comparison := predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, value)
+	merged := predicates.EmptyComparisonRange().Merge(&comparison)
+	if !merged.Ok {
+		t.Fatalf("build comparison range for %d", value)
+	}
+	return merged.Range
+}
+
+func inMemorySortFetch(
+	indexName string, comparisons []*predicates.ComparisonRange,
+) *plans.RecordQueryFetchFromPartialRecordPlan {
+	rowType := inMemorySortRowType()
+	index := mustInMemorySortConstruct(plans.NewRecordQueryIndexPlan(
+		indexName, comparisons, []string{"Orders"}, rowType, false)).
+		WithIndexMetadata([]string{"customer_id", "amount"}, []string{"id"}, false)
+	covering := mustInMemorySortConstruct(plans.NewRecordQueryCoveringIndexPlan(index))
+	return mustInMemorySortConstruct(plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+		expressions.ForEachQuantifier(expressions.InitialOf(covering)),
+		nil, rowType, plans.FetchIndexRecordsPrimaryKey))
 }
 
 // TestImplementInMemorySort_RestrictedCoveringFetchAlternativeIsYielded pins
@@ -82,7 +125,7 @@ func TestImplementInMemorySort_RestrictedCoveringFetchAlternativeIsYielded(t *te
 	t.Run("restricted_fetch_yields_the_alternative", func(t *testing.T) {
 		t.Parallel()
 
-		fetch := coveringInnerFetch("idx_orders_cid", []*predicates.ComparisonRange{coveringInnerGT(t, int64(5))})
+		fetch := inMemorySortFetch("idx_orders_cid", []*predicates.ComparisonRange{inMemorySortGT(t, 5)})
 		yielded := sortOverScanAndFetch(t, fetch)
 		if len(yielded) == 0 {
 			t.Fatal("the in-memory sort rule should fire over a group with a physical member")
@@ -97,7 +140,7 @@ func TestImplementInMemorySort_RestrictedCoveringFetchAlternativeIsYielded(t *te
 	t.Run("unrestricted_fetch_does_not_yield_the_alternative", func(t *testing.T) {
 		t.Parallel()
 
-		fetch := coveringInnerFetch("idx_orders_cid", nil)
+		fetch := inMemorySortFetch("idx_orders_cid", nil)
 		yielded := sortOverScanAndFetch(t, fetch)
 		if len(yielded) == 0 {
 			t.Fatal("the in-memory sort rule should still yield its primary arm")
@@ -114,11 +157,11 @@ func TestImplementInMemorySort_RestrictedCoveringFetchAlternativeIsYielded(t *te
 func TestIsRestrictedFetch_SeesPastTheCoveringWrapper(t *testing.T) {
 	t.Parallel()
 
-	sargd := coveringInnerFetch("idx_a", []*predicates.ComparisonRange{coveringInnerGT(t, int64(5))})
+	sargd := inMemorySortFetch("idx_a", []*predicates.ComparisonRange{inMemorySortGT(t, 5)})
 	if !isRestrictedFetch(sargd) {
 		t.Fatal("a fetch over a SARG'd covering scan reads as unrestricted: the scan ranges live under the covering wrapper")
 	}
-	if isRestrictedFetch(coveringInnerFetch("idx_a", nil)) {
+	if isRestrictedFetch(inMemorySortFetch("idx_a", nil)) {
 		t.Fatal("a fetch over an unrestricted covering scan must not read as restricted")
 	}
 }

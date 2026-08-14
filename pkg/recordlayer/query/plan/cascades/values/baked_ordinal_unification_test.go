@@ -6,57 +6,57 @@ import (
 	"testing"
 )
 
-// Baked-ordinal UNIFICATION pins. The join-seed's Resolved *ResolvedAccessor
+// Baked-ordinal UNIFICATION pins. The join-seed's Resolved *resolvedAccessor
 // and the recursive-CTE wrap's ResolvedOrdinal/HasResolvedOrdinal twin fields
-// were unified onto a single ResolvedAccessor with a FrontierPinned contract
+// were unified onto a single resolvedAccessor with a FrontierPinned contract
 // bit: the loudness contract must be a property of the VALUE, invariant
 // under transformation, because passthrough copies may replace or strip Child
 // while sharing the accessor pointer. These tests pin the exact seams that
 // unification closed (a regression could silently reopen them).
 
-func singleAccessorOf(fv *FieldValue) (ResolvedAccessor, bool) {
+func singleAccessorOf(fv *fieldValue) (resolvedAccessor, bool) {
 	if fv.Resolved == nil {
-		return ResolvedAccessor{}, false
+		return resolvedAccessor{}, false
 	}
 	return fv.Resolved.Single()
 }
 
-func unifiedTestQOV(t *testing.T) (*QuantifiedObjectValue, *RecordType) {
+func unifiedTestQOV(t *testing.T) (*quantifiedObjectValue, *RecordType) {
 	t.Helper()
 	rt := NewRecordType("", false, []Field{
 		{Name: "ID", FieldType: NotNullLong, Ordinal: 0},
 		{Name: "V", FieldType: NotNullLong, Ordinal: 1},
 	})
-	return NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("q"), rt), rt
+	return mustQOV(t, NamedCorrelationIdentifier("q"), rt), rt
 }
 
 // TestWrapNodeSurvivesPassthroughCopies pins the silent-drop hole this
 // unification closed: before it, the passthrough copies rebuilt
-// &FieldValue{Field, Typ, Resolved} and DROPPED the wrap mechanism's twin
+// &fieldValue{Field, Typ, Resolved} and DROPPED the wrap mechanism's twin
 // scalar fields — a wrap node pulled or pushed through a QOV/ObjectValue
 // passthrough silently lost its ordinal and degraded to a first-match name
 // read (the conflation hazard). The wrap constructor now produces a
 // Resolved accessor, which the copies preserve by pointer.
 func TestWrapNodeSurvivesPassthroughCopies(t *testing.T) {
 	t.Parallel()
-	wrap := NewFieldValueWithResolvedOrdinal("X", 1, UnknownType)
-	passthrough := NewQuantifiedObjectValue(NamedCorrelationIdentifier("source"))
+	wrap := newFieldValueWithResolvedOrdinal("X", 1, UnknownType)
+	passthrough := mustQOV(t, NamedCorrelationIdentifier("source"))
 
 	for name, copied := range map[string]Value{
-		"pullUpThroughPassthrough": pullUpThroughPassthrough(
+		"pullUpThroughPassthrough": mustPullUpThroughPassthrough(t,
 			wrap,
 			passthrough,
-			NamedCorrelationIdentifier("up"),
-		),
+			NamedCorrelationIdentifier("up")),
+
 		"pushDownThroughPassthrough": pushDownThroughPassthrough(
 			wrap,
 			passthrough,
 			NamedCorrelationIdentifier("up"),
 		),
 	} {
-		fv, ok := copied.(*FieldValue)
+		fv, ok := copied.(*fieldValue)
 		if !ok {
-			t.Fatalf("%s returned %T, want *FieldValue", name, copied)
+			t.Fatalf("%s returned %T, want *fieldValue", name, copied)
 		}
 		if acc, single := singleAccessorOf(fv); !single || acc.Ordinal != 1 {
 			t.Fatalf("%s dropped the baked accessor (Resolved=%v) — the pre-unification silent-drop hole is back", name, fv.Resolved)
@@ -78,18 +78,18 @@ func TestWrapNodeSurvivesPassthroughCopies(t *testing.T) {
 func TestPinnedStaysLoudThroughPassthrough(t *testing.T) {
 	t.Parallel()
 	qov, _ := unifiedTestQOV(t)
-	seed, err := NewFieldValueOfOrdinal(qov, 0)
+	seed, err := newFieldValueOfOrdinal(qov, 0)
 	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+		t.Fatalf("newFieldValueOfOrdinal: %v", err)
 	}
 	up := NamedCorrelationIdentifier("up")
-	copied := pullUpThroughPassthrough(seed, qov, up)
-	fv, ok := copied.(*FieldValue)
+	copied := mustPullUpThroughPassthrough(t, seed, qov, up)
+	fv, ok := copied.(*fieldValue)
 	if !ok {
-		t.Fatalf("passthrough returned %T, want *FieldValue", copied)
+		t.Fatalf("passthrough returned %T, want *fieldValue", copied)
 	}
-	child, ok := fv.Child.(*QuantifiedObjectValue)
-	if !ok || child.Correlation != up {
+	child, ok := fv.Child.(*quantifiedObjectValue)
+	if !ok || child.Correlation() != up {
 		t.Fatalf(
 			"passthrough child = %#v, want QOV anchored on %v",
 			fv.Child,
@@ -120,9 +120,9 @@ func TestGuardDistinction(t *testing.T) {
 	qov, _ := unifiedTestQOV(t)
 	nameRow := map[string]any{"ID": int64(7), "X": int64(9)}
 
-	seed, err := NewFieldValueOfOrdinal(qov, 0)
+	seed, err := newFieldValueOfOrdinal(qov, 0)
 	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+		t.Fatalf("newFieldValueOfOrdinal: %v", err)
 	}
 	_, evalErr := seed.Evaluate(nameRow)
 	var bnce *BakedNameContextError
@@ -136,7 +136,7 @@ func TestGuardDistinction(t *testing.T) {
 	// *UnboundEvalContextError, never a quiet NULL. (Its MATCHED positive
 	// half — resolving positionally over an ordinal row — is covered by
 	// TestFieldValue_OrdinalEval.)
-	wrap := NewFieldValueWithResolvedOrdinal("X", 1, UnknownType)
+	wrap := newFieldValueWithResolvedOrdinal("X", 1, UnknownType)
 	_, evalErr = wrap.Evaluate(nameRow)
 	if !errors.As(evalErr, &bnce) && !errors.As(evalErr, &uce) {
 		t.Fatalf("unpinned wrap node on a non-positional context = %v, want loud *BakedNameContextError or *UnboundEvalContextError (no silent unpinned path)", evalErr)
@@ -153,13 +153,13 @@ func TestGuardDistinction(t *testing.T) {
 func TestSeedExplainRendersOrdinal(t *testing.T) {
 	t.Parallel()
 	qov, _ := unifiedTestQOV(t)
-	seed0, err := NewFieldValueOfOrdinal(qov, 0)
+	seed0, err := newFieldValueOfOrdinal(qov, 0)
 	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal(0): %v", err)
+		t.Fatalf("newFieldValueOfOrdinal(0): %v", err)
 	}
-	seed1, err := NewFieldValueOfOrdinal(qov, 1)
+	seed1, err := newFieldValueOfOrdinal(qov, 1)
 	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal(1): %v", err)
+		t.Fatalf("newFieldValueOfOrdinal(1): %v", err)
 	}
 	r0, r1 := ExplainValue(seed0), ExplainValue(seed1)
 	if !strings.HasSuffix(r0, "#0") || !strings.HasSuffix(r1, "#1") {
@@ -168,8 +168,8 @@ func TestSeedExplainRendersOrdinal(t *testing.T) {
 
 	// Same (field, ordinal), pin differing: identical render, identical
 	// identity, identical hash — the bit is contract, not identity.
-	pinned := &FieldValue{Field: "X", Typ: UnknownType, Resolved: NewFieldPathOfSingle("X", 3, true)}
-	unpinned := &FieldValue{Field: "X", Typ: UnknownType, Resolved: NewFieldPathOfSingle("X", 3, false)}
+	pinned := &fieldValue{Field: "X", Typ: UnknownType, Resolved: newFieldPathOfSingle("X", 3, true)}
+	unpinned := &fieldValue{Field: "X", Typ: UnknownType, Resolved: newFieldPathOfSingle("X", 3, false)}
 	if ExplainValue(pinned) != ExplainValue(unpinned) {
 		t.Fatalf("FrontierPinned leaked into ExplainValue: %q vs %q", ExplainValue(pinned), ExplainValue(unpinned))
 	}

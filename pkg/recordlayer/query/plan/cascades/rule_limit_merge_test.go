@@ -4,25 +4,24 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func TestLimitMergeRule_Fires(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := smallRewriteScan("T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	inner := expressions.NewLogicalLimitExpression(100, 0, scanQ)
+	inner := smallRewriteLimit(100, 0, scanQ)
 	innerRef := expressions.InitialOf(inner)
 	innerQ := expressions.ForEachQuantifier(innerRef)
 
-	outer := expressions.NewLogicalLimitExpression(10, 0, innerQ)
+	outer := smallRewriteLimit(10, 0, innerQ)
 	ref := expressions.InitialOf(outer)
 
 	rule := NewLimitMergeRule()
-	results := FireExpressionRule(rule, ref)
+	results := fireSmallRewriteRule(t, rule, ref)
 	if len(results) == 0 {
 		t.Fatal("rule did not fire")
 	}
@@ -41,12 +40,12 @@ func TestLimitMergeRule_Fires(t *testing.T) {
 func TestLimitMergeRule_WithOffsets(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := smallRewriteScan("T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
 	// Inner: skip 10, take 50 → rows 10..59 from source
-	inner := expressions.NewLogicalLimitExpression(50, 10, scanQ)
+	inner := smallRewriteLimit(50, 10, scanQ)
 	innerRef := expressions.InitialOf(inner)
 	innerQ := expressions.ForEachQuantifier(innerRef)
 
@@ -54,11 +53,11 @@ func TestLimitMergeRule_WithOffsets(t *testing.T) {
 	// Combined offset = 10 + 5 = 15
 	// Available from inner after outer's skip = 50 - 5 = 45
 	// Combined limit = min(20, 45) = 20
-	outer := expressions.NewLogicalLimitExpression(20, 5, innerQ)
+	outer := smallRewriteLimit(20, 5, innerQ)
 	ref := expressions.InitialOf(outer)
 
 	rule := NewLimitMergeRule()
-	results := FireExpressionRule(rule, ref)
+	results := fireSmallRewriteRule(t, rule, ref)
 	if len(results) == 0 {
 		t.Fatal("rule did not fire")
 	}
@@ -74,21 +73,21 @@ func TestLimitMergeRule_WithOffsets(t *testing.T) {
 func TestLimitMergeRule_OuterSkipsAll(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := smallRewriteScan("T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
 	// Inner takes 5 rows
-	inner := expressions.NewLogicalLimitExpression(5, 0, scanQ)
+	inner := smallRewriteLimit(5, 0, scanQ)
 	innerRef := expressions.InitialOf(inner)
 	innerQ := expressions.ForEachQuantifier(innerRef)
 
 	// Outer skips 10 (more than inner produces) → 0 rows
-	outer := expressions.NewLogicalLimitExpression(100, 10, innerQ)
+	outer := smallRewriteLimit(100, 10, innerQ)
 	ref := expressions.InitialOf(outer)
 
 	rule := NewLimitMergeRule()
-	results := FireExpressionRule(rule, ref)
+	results := fireSmallRewriteRule(t, rule, ref)
 	if len(results) == 0 {
 		t.Fatal("rule did not fire")
 	}
@@ -101,21 +100,21 @@ func TestLimitMergeRule_OuterSkipsAll(t *testing.T) {
 func TestLimitMergeRule_InnerUnlimited(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := smallRewriteScan("T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
 	// Inner: no limit (pure offset)
-	inner := expressions.NewLogicalLimitExpression(-1, 20, scanQ)
+	inner := smallRewriteLimit(-1, 20, scanQ)
 	innerRef := expressions.InitialOf(inner)
 	innerQ := expressions.ForEachQuantifier(innerRef)
 
 	// Outer: take 10, skip 5
-	outer := expressions.NewLogicalLimitExpression(10, 5, innerQ)
+	outer := smallRewriteLimit(10, 5, innerQ)
 	ref := expressions.InitialOf(outer)
 
 	rule := NewLimitMergeRule()
-	results := FireExpressionRule(rule, ref)
+	results := fireSmallRewriteRule(t, rule, ref)
 	if len(results) == 0 {
 		t.Fatal("rule did not fire")
 	}
@@ -131,16 +130,16 @@ func TestLimitMergeRule_InnerUnlimited(t *testing.T) {
 func TestLimitMergeRule_DoesNotFireOnNonLimit(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := smallRewriteScan("T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
 	// Limit over scan (not over another limit)
-	lim := expressions.NewLogicalLimitExpression(10, 0, scanQ)
+	lim := smallRewriteLimit(10, 0, scanQ)
 	ref := expressions.InitialOf(lim)
 
 	rule := NewLimitMergeRule()
-	results := FireExpressionRule(rule, ref)
+	results := fireSmallRewriteRule(t, rule, ref)
 	if len(results) != 0 {
 		t.Fatalf("rule should not fire when inner is not a limit, got %d results", len(results))
 	}

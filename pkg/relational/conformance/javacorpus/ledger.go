@@ -186,8 +186,6 @@ const (
 
 	// SkipGapTableValuedFunction is a table-valued function in FROM.
 	SkipGapTableValuedFunction SkipClass = "engine-gap:table-valued-function"
-	// SkipGapInlineValues is `FROM VALUES (…)` as a table source.
-	SkipGapInlineValues SkipClass = "engine-gap:inline-values-table"
 	// SkipGapCorrelatedExistsSetOp is a correlated EXISTS over a set operation.
 	SkipGapCorrelatedExistsSetOp SkipClass = "engine-gap:correlated-exists-setop"
 	// SkipGapNestedRecursiveWith is a WITH nested inside a recursive CTE body.
@@ -262,7 +260,6 @@ func AllSkipClasses() []SkipClass {
 		SkipGapCatalogTables,
 
 		SkipGapTableValuedFunction,
-		SkipGapInlineValues,
 		SkipGapCorrelatedExistsSetOp,
 		SkipGapNestedRecursiveWith,
 		SkipGapDerivedJoinOn,

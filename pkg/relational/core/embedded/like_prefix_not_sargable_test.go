@@ -86,7 +86,7 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 		{
 			name: "like_prefix_full_scans",
 			sql:  "SELECT id FROM t2 WHERE status LIKE 'act%'",
-			want: "Project([ID#0], PredicatesFilter(Scan(T2), [1 preds]))",
+			want: "Project([_current.ID#0], PredicatesFilter(Scan(T2), [1 preds]))",
 			why: "CQ-33's defect: a LIKE conjunct cannot bind an index placeholder. " +
 				"If this now plans an IndexScan, SOMETHING has given the LIKE an access " +
 				"path — but an IndexScan alone does not establish that a LIKE->range " +
@@ -103,7 +103,7 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 		{
 			name: "like_suffix_full_scans",
 			sql:  "SELECT id FROM t2 WHERE status LIKE '%act'",
-			want: "Project([ID#0], PredicatesFilter(Scan(T2), [1 preds]))",
+			want: "Project([_current.ID#0], PredicatesFilter(Scan(T2), [1 preds]))",
 			why: "A leading-% LIKE has an EMPTY constant prefix, so no LIKE-derived range " +
 				"exists for it in any design. If this plans an IndexScan, the question to " +
 				"answer is whether the scan carries a bound DERIVED FROM THE LIKE (which " +
@@ -114,7 +114,7 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 		{
 			name: "equality_control_uses_the_index",
 			sql:  "SELECT id FROM t2 WHERE status = 'active'",
-			want: "Project([ID#0], IndexScan(IDX_STATUS, [=] COVERING))",
+			want: "Project([_current.ID#0], IndexScan(IDX_STATUS, [=] COVERING))",
 			why: "The control that makes the two full scans above meaningful. If this " +
 				"stops using IDX_STATUS the schema no longer offers the access path the " +
 				"LIKE cases are being denied, and they prove nothing.",
@@ -122,7 +122,7 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 		{
 			name: "inequality_keeps_the_covering_stamp",
 			sql:  "SELECT id FROM t2 WHERE status > 'act'",
-			want: "Project([ID#0], IndexScan(IDX_STATUS, [<>] COVERING))",
+			want: "Project([_current.ID#0], IndexScan(IDX_STATUS, [<>] COVERING))",
 			why: "The covering control for PART 2: with no residual between the fetch and " +
 				"the scan, the direct stamping branches fire and the stamp survives. " +
 				"Also the subject of the PART 3 disabling experiment.",
@@ -130,7 +130,7 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 		{
 			name: "residual_below_the_fetch_keeps_the_covering_stamp",
 			sql:  "SELECT id FROM t2 WHERE status > 'act' AND status LIKE '%zz%'",
-			want: "Project([ID#0], PredicatesFilter(IndexScan(IDX_STATUS, [<>] COVERING), [1 preds]))",
+			want: "Project([_current.ID#0], PredicatesFilter(IndexScan(IDX_STATUS, [<>] COVERING), [1 preds]))",
 			why: "RFC-220's target. This shape used to LOSE the COVERING stamp: same " +
 				"index, same projected columns, same covering entry, but a residual sat " +
 				"between the fetch and the scan and the rules that STAMPED coveringness " +
@@ -200,14 +200,14 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 		// SCOPE: the direct, no-residual control ONLY, so the shape difference
 		// between configurations stays legible. The residual shape is pinned above.
 		const sql = "SELECT id FROM t2 WHERE status > 'act'"
-		const merged = "Project([ID#0], IndexScan(IDX_STATUS, [<>] COVERING))"
+		const merged = "Project([_current.ID#0], IndexScan(IDX_STATUS, [<>] COVERING))"
 		// With BOTH downstream rules off, NOTHING can elide the fetch — and
 		// MergeFetchIntoCoveringIndexRule then collapses Fetch(Covering(Index))
 		// into a bare fetching index scan, which is sound (a bare index plan
 		// resolves its own records by primary key) and one node cheaper. So the
 		// plan legitimately uses no covering scan: coveringness buys nothing when
 		// no ancestor can remove the fetch it exists to make removable.
-		const collapsedToFetchingScan = "Project([ID#0], IndexScan(IDX_STATUS, [<>]))"
+		const collapsedToFetchingScan = "Project([_current.ID#0], IndexScan(IDX_STATUS, [<>]))"
 
 		exps := []struct {
 			name     string

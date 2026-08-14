@@ -11,7 +11,6 @@ import (
 	"sort"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -21,7 +20,61 @@ func commit2RecType(name string, cols ...string) *values.RecordType {
 	for i, c := range cols {
 		fields[i] = values.Field{Name: c, FieldType: values.NotNullLong, Ordinal: i}
 	}
-	return &values.RecordType{RecordName: name, Fields: fields}
+	return values.NewRecordType(name, false, fields)
+}
+
+func commit2Scan(
+	t testing.TB,
+	recordTypes []string,
+	flowedType values.Type,
+) *plans.RecordQueryScanPlan {
+	t.Helper()
+	plan, err := plans.NewRecordQueryScanPlan(recordTypes, flowedType, false)
+	return mustConstruct(t, plan, err)
+}
+
+func commit2IndexScan(
+	t testing.TB,
+	indexName string,
+	recordTypes []string,
+	flowedType values.Type,
+) *plans.RecordQueryIndexPlan {
+	t.Helper()
+	plan, err := plans.NewRecordQueryIndexPlan(indexName, nil, recordTypes, flowedType, false)
+	return mustConstruct(t, plan, err)
+}
+
+func commit2Filter(
+	t testing.TB,
+	inner plans.RecordQueryPlan,
+) *plans.RecordQueryPredicatesFilterPlan {
+	t.Helper()
+	plan, err := plans.NewRecordQueryPredicatesFilterPlan(inner, nil)
+	return mustConstruct(t, plan, err)
+}
+
+func commit2QOV(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+	flowedType values.Type,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	qov, err := values.NewQuantifiedObjectValue(alias, flowedType)
+	return mustConstruct(t, qov, err)
+}
+
+func commit2NLJ(
+	t testing.TB,
+	outer, inner plans.RecordQueryPlan,
+	outerAlias, innerAlias values.CorrelationIdentifier,
+) *plans.RecordQueryNestedLoopJoinPlan {
+	t.Helper()
+	// A bare exact QOV deliberately states a name-model/opaque join result, not
+	// an ordinal RecordConstructorValue. legOrdinalSafety must reject it.
+	resultValue := commit2QOV(t, values.NamedCorrelationIdentifier("JOIN_RESULT"), outer.GetResultType())
+	plan, err := plans.NewRecordQueryNestedLoopJoinPlan(
+		outer, inner, nil, plans.JoinInner, outerAlias, innerAlias, resultValue)
+	return mustConstruct(t, plan, err)
 }
 
 // A gated projected-EXISTS fold over two SCAN legs reconstructs the FULL
@@ -31,8 +84,8 @@ func commit2RecType(name string, cols ...string) *values.RecordType {
 // windows source; the seed is.
 func TestReconstructFoldStep1Seed(t *testing.T) {
 	t.Parallel()
-	t1 := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
-	t2 := plans.NewRecordQueryScanPlan([]string{"T2"}, commit2RecType("T2", "ID", "T1_ID"), false)
+	t1 := commit2Scan(t, []string{"T1"}, commit2RecType("T1", "ID", "V"))
+	t2 := commit2Scan(t, []string{"T2"}, commit2RecType("T2", "ID", "T1_ID"))
 
 	seed, decline := reconstructFoldStep1Seed(t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
 	if seed == nil {
@@ -53,8 +106,8 @@ func TestReconstructFoldStep1Seed(t *testing.T) {
 	// Every field is a FrontierPinned baked ordinal over its leg QOV — the shape
 	// OrdinalSeedLegWindows / ordinalJoinSpansOf require.
 	for i, f := range rc.Fields {
-		fv, isFV := f.Value.(*values.FieldValue)
-		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
+		field, isField := values.AsFieldValue(f.Value)
+		if !isField || field.Path() == nil || !field.Path().IsFrontierPinned() {
 			t.Fatalf("field[%d] must be a FrontierPinned baked FieldValue, got %T", i, f.Value)
 		}
 	}
@@ -81,7 +134,7 @@ func TestReconstructFoldStep1Seed(t *testing.T) {
 // mis-positioning a leg whose rows are a dotted-keyed merged row.
 func TestLegOrdinalSafety(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, commit2RecType("T", "ID"), false)
+	scan := commit2Scan(t, []string{"T"}, commit2RecType("T", "ID"))
 	if safe, _ := legOrdinalSafety(scan); !safe {
 		t.Fatal("a scan leg must be ordinal-safe")
 	}
@@ -90,7 +143,7 @@ func TestLegOrdinalSafety(t *testing.T) {
 	// type IS a record it ordinalizes consistently (seed typed by flowedType, the
 	// NLJ builds from the same seed); if it is NOT a record the reconstruction
 	// declines below and the leg stays name-model — never a silent-wrong path.
-	idxRec := plans.NewRecordQueryIndexPlan("idx", nil, []string{"T2"}, commit2RecType("T2", "ID"), false)
+	idxRec := commit2IndexScan(t, "idx", []string{"T2"}, commit2RecType("T2", "ID"))
 	if safe, _ := legOrdinalSafety(idxRec); !safe {
 		t.Fatal("an index-scan leg is a single source — ordinal-safe")
 	}
@@ -100,7 +153,7 @@ func TestLegOrdinalSafety(t *testing.T) {
 	// A covering index whose flowed type is NOT a record: ordinal-safe by shape,
 	// but the reconstruction DECLINES (leg type is not addressable positionally)
 	// — the leg keeps the name model, correct-or-conservative.
-	idxOpaque := plans.NewRecordQueryIndexPlan("idx", nil, []string{"T2"}, values.UnknownType, false)
+	idxOpaque := commit2IndexScan(t, "idx", []string{"T2"}, values.NotNullLong)
 	opaqueSeed, opaqueDecline := reconstructFoldStep1Seed(scan, idxOpaque, values.NamedCorrelationIdentifier("T"), values.NamedCorrelationIdentifier("T2"))
 	if opaqueSeed != nil {
 		t.Fatal("a non-record-typed index leg must decline the seed reconstruction (name model)")
@@ -117,12 +170,13 @@ func TestLegOrdinalSafety(t *testing.T) {
 			"not part of", opaqueDecline.Shape, foldStep1LegShapeNone)
 	}
 	// A filter over a scan (a leg with a pushed predicate) unwraps to the scan.
-	filtered := plans.NewRecordQueryPredicatesFilterPlan(scan, nil)
+	filtered := commit2Filter(t, scan)
 	if safe, _ := legOrdinalSafety(filtered); !safe {
 		t.Fatal("a filter over a scan unwraps to a single source — ordinal-safe")
 	}
 	// A join leg emits a name-model merged row — NOT ordinal-safe.
-	nlj := plans.NewRecordQueryNestedLoopJoinPlan(scan, scan, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), nil)
+	nlj := commit2NLJ(t, scan, scan,
+		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"))
 	if safe, _ := legOrdinalSafety(nlj); safe {
 		t.Fatal("a name-model join leg must NOT be ordinal-safe (it stays name-model)")
 	}
@@ -140,10 +194,10 @@ func TestLegOrdinalSafety(t *testing.T) {
 	if nljDecline.BothLegsUnsafe {
 		t.Fatal("only the join leg is ordinal-unsafe here, but the decline reports BOTH legs unsafe")
 	}
-	if nljDecline.Shape != foldStep1LegShapeOther {
-		t.Fatalf("a nil-result-value join leg classified as %v, want %v — this fixture's NLJ "+
-			"carries no result value at all, which is neither the bare-QOV residue nor the "+
-			"positional merge", nljDecline.Shape, foldStep1LegShapeOther)
+	if nljDecline.Shape != foldStep1LegShapeBareQOV {
+		t.Fatalf("an exact name-model join leg classified as %v, want %v — its bare QOV "+
+			"states one opaque row rather than an ordinal positional merge",
+			nljDecline.Shape, foldStep1LegShapeBareQOV)
 	}
 }
 
@@ -155,12 +209,17 @@ func TestLegOrdinalSafety(t *testing.T) {
 func TestFoldStep1SeedGate(t *testing.T) {
 	t.Parallel()
 	existAlias := values.NamedCorrelationIdentifier("Q_EXISTS")
-	t1 := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID"), false)
-	t2 := plans.NewRecordQueryScanPlan([]string{"T2"}, commit2RecType("T2", "ID"), false)
+	t1 := commit2Scan(t, []string{"T1"}, commit2RecType("T1", "ID"))
+	t2 := commit2Scan(t, []string{"T2"}, commit2RecType("T2", "ID"))
 	// A projected fold RV references the existential quantifier (the ExistsValue).
-	foldRV := values.NewRawRecordConstructorValue(
-		values.RecordConstructorField{Name: "ID", Value: &values.FieldValue{Field: "T1.ID", Typ: values.NotNullLong}},
-		values.RecordConstructorField{Name: "F", Value: values.NewExistsValue(existAlias)},
+	t1Root := commit2QOV(t, values.NamedCorrelationIdentifier("T1"), t1.GetResultType())
+	t1ID, err := values.ResolveFieldOrdinals(t1Root, []int{0})
+	t1ID = mustConstruct(t, t1ID, err)
+	existsValue, err := values.NewExistsValue(existAlias, t2.GetResultType())
+	existsValue = mustConstruct(t, existsValue, err)
+	foldRV := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "ID", Value: t1ID},
+		values.RecordConstructorField{Name: "F", Value: existsValue},
 	)
 
 	// GATED: independent scan legs + a projected fold → the reconstructed seed.
@@ -189,7 +248,7 @@ func TestFoldStep1SeedGate(t *testing.T) {
 
 	// DECLINE, not a projected fold (WHERE-EXISTS pass-through — RV is bare QOV,
 	// no existential reference): stays name-model, RV unchanged.
-	bareRV := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T1"))
+	bareRV := commit2QOV(t, values.NamedCorrelationIdentifier("T1"), t1.GetResultType())
 	if rv2, g, c := foldStep1Seed(bareRV, existAlias, false, t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2")); g || rv2 != bareRV || c.Step1 != foldStep1DeclineNoExistRef {
 		t.Fatalf("a non-fold RV must NOT ordinalize, must pass through unchanged, and must "+
 			"classify as rv-no-exist-ref (a correct pass-through, not a residue), got "+
@@ -197,7 +256,8 @@ func TestFoldStep1SeedGate(t *testing.T) {
 	}
 
 	// DECLINE, a non-scan (join) leg: stays name-model.
-	njoin := plans.NewRecordQueryNestedLoopJoinPlan(t1, t2, []predicates.QueryPredicate(nil), plans.JoinInner, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"), nil)
+	njoin := commit2NLJ(t, t1, t2,
+		values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
 	if _, g, c := foldStep1Seed(foldRV, existAlias, false, njoin, t2, values.NamedCorrelationIdentifier("J"), values.NamedCorrelationIdentifier("T2")); g || c.Step1 != foldStep1DeclineReconstructNil {
 		t.Fatalf("a name-model join leg must NOT ordinalize and must classify as "+
 			"reconstruct-nil, got gated=%t class=%v", g, c)
@@ -227,8 +287,8 @@ func TestReconstructFoldStep1Seed_CarriesTheThreadedIdentityVerbatim(t *testing.
 
 	minted := values.UniqueCorrelationIdentifier() // lowercase q$N, by construction
 	other := values.NamedCorrelationIdentifier("T2")
-	t1 := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
-	t2 := plans.NewRecordQueryScanPlan([]string{"T2"}, commit2RecType("T2", "ID", "T1_ID"), false)
+	t1 := commit2Scan(t, []string{"T1"}, commit2RecType("T1", "ID", "V"))
+	t2 := commit2Scan(t, []string{"T2"}, commit2RecType("T2", "ID", "T1_ID"))
 
 	seed, _ := reconstructFoldStep1Seed(t1, t2, minted, other)
 	if seed == nil {
@@ -241,15 +301,15 @@ func TestReconstructFoldStep1Seed_CarriesTheThreadedIdentityVerbatim(t *testing.
 
 	seen := map[values.CorrelationIdentifier]bool{}
 	for i, f := range rc.Fields {
-		fv, isFV := f.Value.(*values.FieldValue)
-		if !isFV {
+		field, isField := values.AsFieldValue(f.Value)
+		if !isField {
 			t.Fatalf("field[%d] is %T, want *values.FieldValue", i, f.Value)
 		}
-		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+		qov, isQOV := values.AsQuantifiedObjectValue(field.ChildValue())
 		if !isQOV {
-			t.Fatalf("field[%d] child is %T, want a QuantifiedObjectValue", i, fv.Child)
+			t.Fatalf("field[%d] child is %T, want a QuantifiedObjectValue", i, field.ChildValue())
 		}
-		seen[qov.Correlation] = true
+		seen[qov.Correlation()] = true
 	}
 	for _, want := range []values.CorrelationIdentifier{minted, other} {
 		if !seen[want] {

@@ -31,17 +31,23 @@ func TestParentConstructionEnumeratesEveryPhysicalChildMember(t *testing.T) {
 	t.Parallel()
 
 	mkIndex := func(name string) *plans.RecordQueryIndexPlan {
-		return plans.NewRecordQueryIndexPlan(
+		index, err := plans.NewRecordQueryIndexPlan(
 			name, []*predicates.ComparisonRange{predicates.EmptyComparisonRange()},
-			[]string{"T"}, values.UnknownType, false,
-		).WithIndexMetadata([]string{"A"}, []string{"ID"}, false)
+			[]string{"T"}, values.NewRecordType("T", false, []values.Field{
+				{Name: "A", FieldType: values.NullableLong, Ordinal: 0},
+				{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1},
+			}), false,
+		)
+		return mustConstruct(t, index, err).
+			WithIndexMetadata([]string{"A"}, []string{"ID"}, false)
 	}
 
 	// A child group with THREE distinct physical members. They are distinct
 	// plans, not copies: a group that deduped them would make the count below
 	// pass for the wrong reason.
 	a := mkIndex("IDX_A")
-	b := plans.NewRecordQueryCoveringIndexPlan(mkIndex("IDX_B"))
+	bValue, bErr := plans.NewRecordQueryCoveringIndexPlan(mkIndex("IDX_B"))
+	b := mustConstruct(t, bValue, bErr)
 	c := mkIndex("IDX_C")
 
 	childRef := expressions.InitialOf(a)
@@ -79,9 +85,10 @@ func TestParentConstructionEnumeratesEveryPhysicalChildMember(t *testing.T) {
 
 	// The empty case must be empty, not a nil-bearing single entry: callers
 	// range over the result and would otherwise build a parent over nil.
-	if got := physicalMembersForParentEnumeration(expressions.InitialOf(
-		expressions.NewLogicalFilterExpression(nil, expressions.ForEachQuantifier(
-			expressions.InitialOf(a))))); len(got) != 0 {
+	filterValue, filterErr := expressions.NewLogicalFilterExpression(
+		nil, expressions.ForEachQuantifier(expressions.InitialOf(a)))
+	filter := mustConstruct(t, filterValue, filterErr)
+	if got := physicalMembersForParentEnumeration(expressions.InitialOf(filter)); len(got) != 0 {
 		t.Fatalf("a group with no physical members enumerated %d entries, want 0", len(got))
 	}
 

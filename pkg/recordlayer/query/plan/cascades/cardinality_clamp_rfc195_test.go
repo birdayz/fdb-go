@@ -48,64 +48,68 @@ import (
 func TestRFC195_CorrectedShapes(t *testing.T) {
 	t.Parallel()
 
-	scan := func(name string) *plans.RecordQueryScanPlan {
-		return plans.NewRecordQueryScanPlan([]string{name}, values.UnknownType, false)
+	scan := func(t testing.TB, name string) *plans.RecordQueryScanPlan {
+		return mustCardinalityScan(t, name)
 	}
-	exactlyOneChild := func() *plans.RecordQueryFirstOrDefaultPlan {
-		return plans.NewRecordQueryFirstOrDefaultPlan(scan("SRC"), values.NewNullValue(values.UnknownType))
+	exactlyOneChild := func(t testing.TB) *plans.RecordQueryFirstOrDefaultPlan {
+		child := scan(t, "SRC")
+		return mustBuild(t, captureBuild(plans.NewRecordQueryFirstOrDefaultPlan(child, cardinalityNull(child))))
 	}
 
 	cases := []struct {
 		name   string
 		before float64 // the impossible estimate the RFC measured
 		want   float64 // the clamped estimate
-		build  func() plans.RecordQueryPlan
+		build  func(t testing.TB) plans.RecordQueryPlan
 	}{{
 		name:   "streamingAggregation/ungrouped",
 		before: 700000,
 		want:   1, // capped at the proven max: an ungrouped aggregate emits one row
-		build: func() plans.RecordQueryPlan {
-			return plans.NewRecordQueryStreamingAggregationPlan(scan("SAGG"), nil, nil)
+		build: func(t testing.TB) plans.RecordQueryPlan {
+			return mustBuild(t, captureBuild(plans.NewRecordQueryStreamingAggregationPlan(scan(t, "SAGG"), nil, nil)))
 		},
 	}, {
 		name:   "recursiveLevelUnion/recursiveLegCollapsesTowardZero",
 		before: 0,
 		want:   1, // floored at seed.Min: UNION ALL always emits at least the seed
-		build: func() plans.RecordQueryPlan {
-			seed := plans.NewRecordQueryFirstOrDefaultPlan(scan("LU_SEED"), values.NewNullValue(values.UnknownType))
-			rec := plans.NewRecordQueryLimitPlan(scan("LU_REC_ZERO"), 0, 0)
-			return plans.NewRecordQueryRecursiveLevelUnionPlan(seed, rec,
-				values.NamedCorrelationIdentifier("lu_scan"), values.NamedCorrelationIdentifier("lu_insert"))
+		build: func(t testing.TB) plans.RecordQueryPlan {
+			seedInput := scan(t, "LU_SEED")
+			seed := mustBuild(t, captureBuild(plans.NewRecordQueryFirstOrDefaultPlan(seedInput, cardinalityNull(seedInput))))
+			rec := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(scan(t, "LU_REC_ZERO"), 0, 0)))
+			return mustBuild(t, captureBuild(plans.NewRecordQueryRecursiveLevelUnionPlan(seed, rec,
+				values.NamedCorrelationIdentifier("lu_scan"), values.NamedCorrelationIdentifier("lu_insert"))))
 		},
 	}, {
 		name:   "defaultOnEmpty/overZeroCostChild",
 		before: 0,
 		want:   1, // floored: DefaultOnEmpty yields real-or-default, never nothing
-		build: func() plans.RecordQueryPlan {
-			return plans.NewRecordQueryDefaultOnEmptyPlan(
-				plans.NewRecordQueryLimitPlan(scan("DOE_ZERO"), 0, 0), values.NewNullValue(values.UnknownType))
+		build: func(t testing.TB) plans.RecordQueryPlan {
+			child := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(scan(t, "DOE_ZERO"), 0, 0)))
+			return mustBuild(t, captureBuild(plans.NewRecordQueryDefaultOnEmptyPlan(child, cardinalityNull(child))))
 		},
 	}, {
 		name:   "distinct/overExactlyOneChild",
 		before: 0.7,
 		want:   1, // floored: an exactly-one-row input cannot dedup to fewer
-		build: func() plans.RecordQueryPlan {
-			return plans.NewRecordQueryDistinctPlan(exactlyOneChild())
+		build: func(t testing.TB) plans.RecordQueryPlan {
+			return mustBuild(t, captureBuild(plans.NewRecordQueryDistinctPlan(exactlyOneChild(t))))
 		},
 	}, {
 		name:   "unorderedPrimaryKeyDistinct/overExactlyOneChild",
 		before: 0.7,
 		want:   1,
-		build: func() plans.RecordQueryPlan {
-			return plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(exactlyOneChild())
+		build: func(t testing.TB) plans.RecordQueryPlan {
+			return mustBuild(t, captureBuild(plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(exactlyOneChild(t))))
 		},
 	}, {
 		name:   "typeFilter/overExactlyOneChild",
 		before: 0.5,
 		want:   1, // floored: RecordQueryValuesPlan proves ExactlyOne
-		build: func() plans.RecordQueryPlan {
-			return plans.NewRecordQueryTypeFilterPlan([]string{"T1"},
-				plans.NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))}))
+		build: func(t testing.TB) plans.RecordQueryPlan {
+			child := mustBuild(t, captureBuild(plans.NewRecordQueryValuesPlan(
+				[]values.Value{cardinalityLong(1)})))
+
+			return mustBuild(t, captureBuild(plans.NewRecordQueryTypeFilterPlan([]string{"T1"}, child)))
 		},
 	}, {
 		// The SEVENTH shape. The RFC's table had six because the DFS join
@@ -116,11 +120,12 @@ func TestRFC195_CorrectedShapes(t *testing.T) {
 		name:   "recursiveDfsJoin/recursiveLegCollapsesTowardZero",
 		before: 0,
 		want:   1,
-		build: func() plans.RecordQueryPlan {
-			seed := plans.NewRecordQueryFirstOrDefaultPlan(scan("DFS_SEED"), values.NewNullValue(values.UnknownType))
-			rec := plans.NewRecordQueryLimitPlan(scan("DFS_REC_ZERO"), 0, 0)
-			return plans.NewRecordQueryRecursiveDfsJoinPlan(seed, rec,
-				values.NamedCorrelationIdentifier("dfs_prior"), plans.DfsPreorder)
+		build: func(t testing.TB) plans.RecordQueryPlan {
+			seedInput := scan(t, "DFS_SEED")
+			seed := mustBuild(t, captureBuild(plans.NewRecordQueryFirstOrDefaultPlan(seedInput, cardinalityNull(seedInput))))
+			rec := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(scan(t, "DFS_REC_ZERO"), 0, 0)))
+			return mustBuild(t, captureBuild(plans.NewRecordQueryRecursiveDfsJoinPlan(seed, rec,
+				values.NamedCorrelationIdentifier("dfs_prior"), plans.DfsPreorder)))
 		},
 	}}
 
@@ -128,7 +133,7 @@ func TestRFC195_CorrectedShapes(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			plan := tc.build()
+			plan := tc.build(t)
 			got := properties.EstimateCost(plan).Cardinality
 			if got != tc.want {
 				t.Fatalf("cost estimate = %v, want %v (RFC-195 measured %v before the clamp; "+
@@ -224,37 +229,45 @@ func TestRFC195_BoundsCompositionIsMemberOrderIndependent(t *testing.T) {
 	// DIFFERENT proven bounds, and the harness asserts the equal-cost premise
 	// before drawing any conclusion. Whatever differs across orders can then
 	// only have come through the bounds.
-	oneRowLiteral := func() plans.RecordQueryPlan {
-		return plans.NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))})
+	oneRowLiteral := func(t testing.TB) plans.RecordQueryPlan {
+		return mustBuild(t, captureBuild(plans.NewRecordQueryValuesPlan(
+			[]values.Value{cardinalityLong(1)})))
 	}
 	// Explodes a ONE-element literal collection: cost cardinality 1, exactly
 	// like the values plan, but structurally it proves nothing at all.
-	oneRowExplode := func() plans.RecordQueryPlan {
-		return plans.NewRecordQueryExplodePlan(
-			&values.ConstantValue{Value: []any{1}, Typ: values.UnknownType})
+	oneRowExplode := func(t testing.TB) plans.RecordQueryPlan {
+		row := oneRowLiteral(t)
+		return mustBuild(t, captureBuild(plans.NewRecordQueryExplodePlan(
+			&values.ConstantValue{
+				Value: []any{[]any{int64(1)}},
+				Typ:   values.NewArrayType(false, row.GetResultType()),
+			})))
 	}
 	// Proves ExactlyOne, same as the values plan, at the same cost.
-	oneRowProven := func() plans.RecordQueryPlan {
-		return plans.NewRecordQueryFirstOrDefaultPlan(oneRowLiteral(), values.NewNullValue(values.UnknownType))
+	oneRowProven := func(t testing.TB) plans.RecordQueryPlan {
+		child := oneRowLiteral(t)
+		return mustBuild(t, captureBuild(plans.NewRecordQueryFirstOrDefaultPlan(child, cardinalityNull(child))))
 	}
 
 	// costOverGroup wires a Distinct over a child group holding both members in
 	// the given order. Distinct is the operator whose estimate the clamp moves,
 	// so any order-dependence in the child's bound surfaces as a cost delta.
-	costOverGroup := func(first, second plans.RecordQueryPlan) properties.Cost {
+	costOverGroup := func(t testing.TB, first, second plans.RecordQueryPlan) properties.Cost {
+		t.Helper()
 		ref := expressions.InitialOf(first)
 		if !ref.Insert(second) {
 			t.Fatalf("the two members deduplicated into one -- the group never held both, "+
 				"so this permutation tests nothing (first=%T second=%T)", first, second)
 		}
-		parent := plans.NewRecordQueryDistinctPlanFromQuantifier(
-			expressions.NewPhysicalQuantifier(ref), false)
+		parent := mustBuild(t, captureBuild(plans.NewRecordQueryDistinctPlanFromQuantifier(
+			expressions.NewPhysicalQuantifier(ref), false)))
+
 		return properties.EstimateCost(parent)
 	}
 
 	cases := []struct {
 		name string
-		a, b func() plans.RecordQueryPlan
+		a, b func(t testing.TB) plans.RecordQueryPlan
 		want float64
 		why  string
 	}{{
@@ -289,18 +302,18 @@ func TestRFC195_BoundsCompositionIsMemberOrderIndependent(t *testing.T) {
 			// The equal-cost premise, asserted rather than assumed. If it ever
 			// stops holding, this test silently reverts to measuring the cost
 			// walk's first-member arbitrariness instead of the bounds.
-			costA := properties.EstimateCost(tc.a())
-			costB := properties.EstimateCost(tc.b())
+			costA := properties.EstimateCost(tc.a(t))
+			costB := properties.EstimateCost(tc.b(t))
 			if costA != costB {
 				t.Fatalf("PREMISE BROKEN: the two members must cost identically for this "+
 					"permutation to isolate the BOUNDS channel, but %T costs %+v and %T costs %+v. "+
 					"With unequal costs a difference across orders would come from the cost walk's "+
 					"accepted first-member resolution, not from bounds composition.",
-					tc.a(), costA, tc.b(), costB)
+					tc.a(t), costA, tc.b(t), costB)
 			}
 
-			abFirst := costOverGroup(tc.a(), tc.b())
-			baFirst := costOverGroup(tc.b(), tc.a())
+			abFirst := costOverGroup(t, tc.a(t), tc.b(t))
+			baFirst := costOverGroup(t, tc.b(t), tc.a(t))
 
 			if abFirst != baFirst {
 				t.Fatalf("member INSERTION ORDER changed the derived cost: a-first=%+v b-first=%+v.\n"+
@@ -334,8 +347,11 @@ func TestRFC195_BoundsCompositionIsMemberOrderIndependent(t *testing.T) {
 func TestRFC195_MultiMemberWeakeningDropsTheFloor(t *testing.T) {
 	t.Parallel()
 
-	exactlyOne := plans.NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))})
-	unbounded := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	exactlyOne := mustBuild(t, captureBuild(plans.NewRecordQueryValuesPlan(
+		[]values.Value{cardinalityLong(1)})))
+
+	unbounded := mustBuild(t, captureBuild(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, exactlyOne.GetResultType(), false)))
 
 	single := expressions.InitialOf(plans.RecordQueryPlan(exactlyOne))
 	mixed := expressions.InitialOf(plans.RecordQueryPlan(exactlyOne))
@@ -346,8 +362,9 @@ func TestRFC195_MultiMemberWeakeningDropsTheFloor(t *testing.T) {
 	}
 
 	costOver := func(ref *expressions.Reference) float64 {
-		p := plans.NewRecordQueryDistinctPlanFromQuantifier(
-			expressions.NewPhysicalQuantifier(ref), false)
+		p := mustBuild(t, captureBuild(plans.NewRecordQueryDistinctPlanFromQuantifier(
+			expressions.NewPhysicalQuantifier(ref), false)))
+
 		return properties.EstimateCost(p).Cardinality
 	}
 
@@ -417,11 +434,13 @@ func TestRFC195_CostIsInvariantUnderPriming(t *testing.T) {
 func TestRFC195_CostSurvivesMemberGrowth(t *testing.T) {
 	t.Parallel()
 
-	exactlyOne := plans.NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))})
+	exactlyOne := mustBuild(t, captureBuild(plans.NewRecordQueryValuesPlan(
+		[]values.Value{cardinalityLong(1)})))
+
 	ref := expressions.InitialOf(plans.RecordQueryPlan(exactlyOne))
 
-	parent := plans.NewRecordQueryDistinctPlanFromQuantifier(
-		expressions.NewPhysicalQuantifier(ref), false)
+	parent := mustBuild(t, captureBuild(plans.NewRecordQueryDistinctPlanFromQuantifier(
+		expressions.NewPhysicalQuantifier(ref), false)))
 
 	atExtraction := properties.EstimateCost(parent)
 	if atExtraction.Cardinality != 1 {
@@ -430,7 +449,10 @@ func TestRFC195_CostSurvivesMemberGrowth(t *testing.T) {
 
 	// Exploration inserts an unbounded alternative: the group's proven floor
 	// legitimately relaxes and the clamp stops firing.
-	if !ref.Insert(plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)) {
+	growth := mustBuild(t, captureBuild(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, exactlyOne.GetResultType(), false)))
+
+	if !ref.Insert(growth) {
 		t.Fatal("the growth member deduplicated away -- the group did not actually grow")
 	}
 	afterGrowth := properties.EstimateCost(parent)
@@ -498,6 +520,13 @@ func TestRFC195_ClampIsSymmetricAcrossLogicalPhysicalPair(t *testing.T) {
 	exactlyOne := []properties.Cardinalities{properties.ExactlyOne()}
 	atMostOne := []properties.Cardinalities{properties.AtMostOne()}
 	unbounded := []properties.Cardinalities{properties.UnknownMaxCardinality()}
+	physicalDistinct := func(name string) plans.RecordQueryPlan {
+		return mustBuild(t, captureBuild(plans.NewRecordQueryDistinctPlan(mustCardinalityScan(t, name))))
+	}
+	physicalTypeFilter := func(name string) plans.RecordQueryPlan {
+		return mustBuild(t, captureBuild(plans.NewRecordQueryTypeFilterPlan(
+			[]string{"T1"}, mustCardinalityScan(t, name))))
+	}
 
 	cases := []struct {
 		name     string
@@ -508,23 +537,23 @@ func TestRFC195_ClampIsSymmetricAcrossLogicalPhysicalPair(t *testing.T) {
 		// The RFC's distinct/overExactlyOneChild row.
 		name:     "distinct/overExactlyOneChild",
 		logical:  &expressions.LogicalDistinctExpression{},
-		physical: plans.NewRecordQueryDistinctPlan(nil),
+		physical: physicalDistinct("PAIR_DISTINCT_ONE"),
 		child:    exactlyOne,
 	}, {
 		// The RFC's typeFilter/overExactlyOneChild row.
 		name:     "typeFilter/overExactlyOneChild",
 		logical:  &expressions.LogicalTypeFilterExpression{},
-		physical: plans.NewRecordQueryTypeFilterPlan(nil, nil),
+		physical: physicalTypeFilter("PAIR_TYPE_ONE"),
 		child:    exactlyOne,
 	}, {
 		name:     "distinct/overAtMostOneChild",
 		logical:  &expressions.LogicalDistinctExpression{},
-		physical: plans.NewRecordQueryDistinctPlan(nil),
+		physical: physicalDistinct("PAIR_DISTINCT_MAYBE"),
 		child:    atMostOne,
 	}, {
 		name:     "typeFilter/overUnboundedChild",
 		logical:  &expressions.LogicalTypeFilterExpression{},
-		physical: plans.NewRecordQueryTypeFilterPlan(nil, nil),
+		physical: physicalTypeFilter("PAIR_TYPE_UNBOUNDED"),
 		child:    unbounded,
 	}}
 
@@ -567,32 +596,36 @@ func TestRFC195_ExtractionPreferenceSurvivesTheClamp(t *testing.T) {
 
 	// An exactly-one-row child -- the shape that makes the floor fire, and the
 	// shape both of the RFC's distinct/typeFilter rows are built on.
-	sharedChild := func() expressions.Quantifier {
-		return expressions.NewPhysicalQuantifier(expressions.InitialOf(
-			plans.RecordQueryPlan(plans.NewRecordQueryValuesPlan(
-				[]values.Value{values.LiteralValue(int64(1))}))))
+	sharedChild := func(t testing.TB) expressions.Quantifier {
+		t.Helper()
+		child := mustBuild(t, captureBuild(plans.NewRecordQueryValuesPlan(
+			[]values.Value{cardinalityLong(1)})))
+
+		return expressions.NewPhysicalQuantifier(expressions.InitialOf(plans.RecordQueryPlan(child)))
 	}
 
 	cases := []struct {
 		name     string
-		logical  func() expressions.RelationalExpression
-		physical func() plans.RecordQueryPlan
+		logical  func(t testing.TB) expressions.RelationalExpression
+		physical func(t testing.TB) plans.RecordQueryPlan
 	}{{
 		name: "distinct",
-		logical: func() expressions.RelationalExpression {
-			return expressions.NewLogicalDistinctExpression(sharedChild())
+		logical: func(t testing.TB) expressions.RelationalExpression {
+			return mustBuild(t, captureBuild(expressions.NewLogicalDistinctExpression(sharedChild(t))))
 		},
-		physical: func() plans.RecordQueryPlan {
-			return plans.NewRecordQueryDistinctPlanFromQuantifier(sharedChild(), false)
+		physical: func(t testing.TB) plans.RecordQueryPlan {
+			return mustBuild(t, captureBuild(plans.NewRecordQueryDistinctPlanFromQuantifier(sharedChild(t), false)))
 		},
 	}, {
 		name: "typeFilter",
-		logical: func() expressions.RelationalExpression {
-			return expressions.NewLogicalTypeFilterExpression([]string{"T1"}, sharedChild())
+		logical: func(t testing.TB) expressions.RelationalExpression {
+			return mustBuild(t, captureBuild(expressions.NewLogicalTypeFilterExpression([]string{"T1"}, sharedChild(t))))
 		},
-		physical: func() plans.RecordQueryPlan {
-			return plans.NewRecordQueryTypeFilterPlan([]string{"T1"},
-				plans.NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))}))
+		physical: func(t testing.TB) plans.RecordQueryPlan {
+			child := mustBuild(t, captureBuild(plans.NewRecordQueryValuesPlan(
+				[]values.Value{cardinalityLong(1)})))
+
+			return mustBuild(t, captureBuild(plans.NewRecordQueryTypeFilterPlan([]string{"T1"}, child)))
 		},
 	}}
 
@@ -600,8 +633,8 @@ func TestRFC195_ExtractionPreferenceSurvivesTheClamp(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			logicalCost := properties.EstimateCost(tc.logical())
-			physicalCost := properties.EstimateCost(tc.physical())
+			logicalCost := properties.EstimateCost(tc.logical(t))
+			physicalCost := properties.EstimateCost(tc.physical(t))
 
 			if physicalCost.Cardinality > logicalCost.Cardinality {
 				t.Fatalf("EXTRACTION PREFERENCE INVERTED: physical cardinality %v > logical %v.\n"+
@@ -657,6 +690,13 @@ func fmtBound(c properties.Cardinality) string {
 // relation cost-driven extraction depends on.
 func TestRFC195_LogicalPhysicalArmsArePaired(t *testing.T) {
 	t.Parallel()
+	probe := func(name string) *plans.RecordQueryScanPlan {
+		return mustCardinalityScan(t, name)
+	}
+	probeValues := func() *plans.RecordQueryValuesPlan {
+		return mustBuild(t, captureBuild(plans.NewRecordQueryValuesPlan(
+			[]values.Value{cardinalityLong(1)})))
+	}
 
 	// The child intervals every pair is probed with. Covering exactly-one is
 	// what exercises the floor; unknown is what exercises abstention.
@@ -684,43 +724,55 @@ func TestRFC195_LogicalPhysicalArmsArePaired(t *testing.T) {
 	pairs := map[string]pair{
 		"*expressions.FullUnorderedScanExpression": {
 			logical:  &expressions.FullUnorderedScanExpression{},
-			physical: plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+			physical: probe("PAIR_SCAN"),
 			probes:   probes,
 		},
 		"*expressions.LogicalFilterExpression": {
 			logical:  &expressions.LogicalFilterExpression{},
-			physical: plans.NewRecordQueryFilterPlan(nil, nil),
+			physical: mustBuild(t, captureBuild(plans.NewRecordQueryFilterPlan(nil, probe("PAIR_FILTER")))),
 			probes:   probes,
 		},
 		"*expressions.LogicalProjectionExpression": {
-			logical:  &expressions.LogicalProjectionExpression{},
-			physical: plans.NewRecordQueryProjectionPlan(nil, nil),
-			probes:   probes,
+			logical: &expressions.LogicalProjectionExpression{},
+			physical: func() plans.RecordQueryPlan {
+				child := probe("PAIR_PROJECTION")
+				return mustBuild(t, captureBuild(plans.NewRecordQueryProjectionPlan(
+					[]values.Value{mustCardinalityField(t, child, "ID")}, child)))
+			}(),
+			probes: probes,
 		},
 		"*expressions.LogicalSortExpression": {
 			logical:  &expressions.LogicalSortExpression{},
-			physical: plans.NewRecordQueryInMemorySortPlan(nil, nil),
+			physical: mustBuild(t, captureBuild(plans.NewRecordQueryInMemorySortPlan(probe("PAIR_SORT"), nil))),
 			probes:   probes,
 		},
 		"*expressions.LogicalDistinctExpression": {
 			logical:  &expressions.LogicalDistinctExpression{},
-			physical: plans.NewRecordQueryDistinctPlan(nil),
+			physical: mustBuild(t, captureBuild(plans.NewRecordQueryDistinctPlan(probe("PAIR_DISTINCT")))),
 			probes:   probes,
 		},
 		"*expressions.LogicalTypeFilterExpression": {
-			logical:  &expressions.LogicalTypeFilterExpression{},
-			physical: plans.NewRecordQueryTypeFilterPlan(nil, nil),
-			probes:   probes,
+			logical: &expressions.LogicalTypeFilterExpression{},
+			physical: mustBuild(t, captureBuild(plans.NewRecordQueryTypeFilterPlan(
+				[]string{"T"}, probe("PAIR_TYPE_FILTER")))),
+
+			probes: probes,
 		},
 		"*expressions.LogicalUnionExpression": {
-			logical:  &expressions.LogicalUnionExpression{},
-			physical: plans.NewRecordQueryUnionPlan(nil),
-			probes:   pairProbes,
+			logical: &expressions.LogicalUnionExpression{},
+			physical: mustBuild(t, captureBuild(plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{
+				probe("PAIR_UNION_A"), probe("PAIR_UNION_B"),
+			}))),
+
+			probes: pairProbes,
 		},
 		"*expressions.LogicalIntersectionExpression": {
-			logical:  &expressions.LogicalIntersectionExpression{},
-			physical: plans.NewRecordQueryIntersectionPlan(nil, nil),
-			probes:   pairProbes,
+			logical: &expressions.LogicalIntersectionExpression{},
+			physical: mustBuild(t, captureBuild(plans.NewRecordQueryIntersectionPlan([]plans.RecordQueryPlan{
+				probe("PAIR_INTERSECTION_A"), probe("PAIR_INTERSECTION_B"),
+			}, nil))),
+
+			probes: pairProbes,
 		},
 		"*expressions.SelectExpression": {
 			// The join shape: a multi-quantifier SELECT is realized as a
@@ -730,47 +782,63 @@ func TestRFC195_LogicalPhysicalArmsArePaired(t *testing.T) {
 			// the minimum to 0, which is the WEAKER side, so the clamp can only
 			// floor the logical side higher and the physical <= logical
 			// preference is preserved rather than inverted.
-			logical:  &expressions.SelectExpression{},
-			physical: plans.NewRecordQueryFlatMapPlan(nil, nil, values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil, false),
-			probes:   pairProbes,
+			logical: &expressions.SelectExpression{},
+			physical: func() plans.RecordQueryPlan {
+				outer, inner := probe("PAIR_FLATMAP_OUTER"), probe("PAIR_FLATMAP_INNER")
+				return mustBuild(t, captureBuild(plans.NewRecordQueryFlatMapPlan(
+					outer, inner,
+					values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"),
+					cardinalityJoinResult(outer, inner), false)))
+			}(),
+			probes: pairProbes,
 		},
 		"*expressions.GroupByExpression": {
-			logical:  &expressions.GroupByExpression{},
-			physical: plans.NewRecordQueryStreamingAggregationPlan(nil, nil, nil),
-			probes:   probes,
+			logical: &expressions.GroupByExpression{},
+			physical: mustBuild(t, captureBuild(plans.NewRecordQueryStreamingAggregationPlan(
+				probe("PAIR_AGGREGATE"), nil, nil))),
+
+			probes: probes,
 		},
 		"*expressions.InsertExpression": {
-			logical:  &expressions.InsertExpression{},
-			physical: plans.NewRecordQueryInsertPlan(nil, "T", nil),
-			probes:   probes,
+			logical: &expressions.InsertExpression{},
+			physical: mustBuild(t, captureBuild(plans.NewRecordQueryInsertPlan(
+				probe("PAIR_INSERT"), "T", cardinalityRowType()))),
+
+			probes: probes,
 		},
 		"*expressions.UpdateExpression": {
-			logical:  &expressions.UpdateExpression{},
-			physical: plans.NewRecordQueryUpdatePlan(nil, "T", nil),
-			probes:   probes,
+			logical: &expressions.UpdateExpression{},
+			physical: mustBuild(t, captureBuild(plans.NewRecordQueryUpdatePlan(
+				probe("PAIR_UPDATE"), "T", nil))),
+
+			probes: probes,
 		},
 		"*expressions.DeleteExpression": {
 			logical:  &expressions.DeleteExpression{},
-			physical: plans.NewRecordQueryDeletePlan(nil, "T"),
+			physical: mustBuild(t, captureBuild(plans.NewRecordQueryDeletePlan(probe("PAIR_DELETE"), "T"))),
 			probes:   probes,
 		},
 		"*expressions.LogicalValuesExpression": {
 			logical:  &expressions.LogicalValuesExpression{},
-			physical: plans.NewRecordQueryValuesPlan(nil),
+			physical: probeValues(),
 			probes:   probes,
 		},
 		"*expressions.LogicalLimitExpression": {
 			// A plan-time LIMIT 0 on both sides: the shape where the pair
 			// disagreed measurably before this arm existed (logical proved
 			// nothing, physical proved exactly zero).
-			logical:  expressions.NewLogicalLimitExpression(0, 0, expressions.Quantifier{}),
-			physical: plans.NewRecordQueryLimitPlan(nil, 0, 0),
+			logical: mustBuild(t, captureBuild(expressions.NewLogicalLimitExpression(
+				0, 0, expressions.ForEachQuantifier(expressions.InitialOf(probe("PAIR_LOGICAL_LIMIT")))))),
+
+			physical: mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(probe("PAIR_LIMIT"), 0, 0))),
 			probes:   probes,
 		},
 		"*expressions.LogicalUniqueExpression": {
-			logical:  &expressions.LogicalUniqueExpression{},
-			physical: plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(nil),
-			probes:   probes,
+			logical: &expressions.LogicalUniqueExpression{},
+			physical: mustBuild(t, captureBuild(plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(
+				probe("PAIR_UNIQUE")))),
+
+			probes: probes,
 		},
 		"*expressions.RecursiveUnionExpression": {
 			// ONE logical recursion, TWO physical realizations. Java has a
@@ -778,9 +846,12 @@ func TestRFC195_LogicalPhysicalArmsArePaired(t *testing.T) {
 			// the DFS twin is checked as its own prototype below — both must
 			// prove this same interval or the cost model prices one recursion
 			// two ways.
-			logical:  &expressions.RecursiveUnionExpression{},
-			physical: plans.NewRecordQueryRecursiveLevelUnionPlan(nil, nil, values.NamedCorrelationIdentifier("a"), values.NamedCorrelationIdentifier("b")),
-			probes:   pairProbes,
+			logical: &expressions.RecursiveUnionExpression{},
+			physical: mustBuild(t, captureBuild(plans.NewRecordQueryRecursiveLevelUnionPlan(
+				probe("PAIR_RECURSIVE_SEED"), probe("PAIR_RECURSIVE_STEP"),
+				values.NamedCorrelationIdentifier("a"), values.NamedCorrelationIdentifier("b")))),
+
+			probes: pairProbes,
 		},
 	}
 
@@ -925,7 +996,8 @@ func TestRFC195_UnpairedReasonIsExercised(t *testing.T) {
 	if missingReasonIsRejected(nil, "a stated reason") {
 		t.Fatal("an arm with no twin but a STATED reason must be accepted")
 	}
-	if missingReasonIsRejected(plans.NewRecordQueryDistinctPlan(nil), "") {
+	validTwin := mustBuild(t, captureBuild(plans.NewRecordQueryDistinctPlan(mustCardinalityScan(t, "UNPAIRED_REASON"))))
+	if missingReasonIsRejected(validTwin, "") {
 		t.Fatal("an arm WITH a twin needs no reason")
 	}
 }
@@ -942,10 +1014,8 @@ func TestRFC195_UnpairedReasonIsExercised(t *testing.T) {
 func TestRFC195_RecursiveTwinsProveOneBound(t *testing.T) {
 	t.Parallel()
 
-	dfs := plans.NewRecordQueryRecursiveDfsJoinPlan(nil, nil,
-		values.NamedCorrelationIdentifier("prior"), plans.DfsPreorder)
-	level := plans.NewRecordQueryRecursiveLevelUnionPlan(nil, nil,
-		values.NamedCorrelationIdentifier("scan"), values.NamedCorrelationIdentifier("insert"))
+	var dfs *plans.RecordQueryRecursiveDfsJoinPlan
+	var level *plans.RecordQueryRecursiveLevelUnionPlan
 	logical := &expressions.RecursiveUnionExpression{}
 
 	for _, child := range [][]properties.Cardinalities{
@@ -1289,17 +1359,20 @@ func TestRFC195_ZeroIsPreserved(t *testing.T) {
 	t.Parallel()
 
 	scan := func(n string) *plans.RecordQueryScanPlan {
-		return plans.NewRecordQueryScanPlan([]string{n}, values.UnknownType, false)
+		return mustCardinalityScan(t, n)
 	}
-	zeroLeg := plans.NewRecordQueryLimitPlan(scan("EMPTY"), 0, 0)
+	zeroLeg := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(scan("EMPTY"), 0, 0)))
 
 	if got := properties.EstimateCost(zeroLeg).Cardinality; got != 0 {
 		t.Fatalf("LIMIT 0 costs %v, want exactly 0 -- a proven-zero leg must keep its zero", got)
 	}
 
-	join := plans.NewRecordQueryFlatMapPlan(
-		scan("T1"), zeroLeg,
-		values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil, false)
+	outer := scan("T1")
+	join := mustBuild(t, captureBuild(plans.NewRecordQueryFlatMapPlan(
+		outer, zeroLeg,
+		values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"),
+		cardinalityJoinResult(outer, zeroLeg), false)))
+
 	if got := properties.EstimateCost(join).Cardinality; got != 0 {
 		t.Fatalf("FlatMap over a LIMIT-0 inner costs %v, want exactly 0.\n"+
 			"The clamp floors ONLY on a proven min >= 1. Flooring a guaranteed-empty leg would "+
@@ -1329,12 +1402,13 @@ func TestRFC195_WholeCostConsistency_LevelUnionBuffer(t *testing.T) {
 	t.Parallel()
 
 	scan := func(n string) *plans.RecordQueryScanPlan {
-		return plans.NewRecordQueryScanPlan([]string{n}, values.UnknownType, false)
+		return mustCardinalityScan(t, n)
 	}
-	seed := plans.NewRecordQueryFirstOrDefaultPlan(scan("SEED"), values.NewNullValue(values.UnknownType))
-	rec := plans.NewRecordQueryLimitPlan(scan("REC_ZERO"), 0, 0)
-	levelUnion := plans.NewRecordQueryRecursiveLevelUnionPlan(seed, rec,
-		values.NamedCorrelationIdentifier("lu_scan"), values.NamedCorrelationIdentifier("lu_insert"))
+	seedInput := scan("SEED")
+	seed := mustBuild(t, captureBuild(plans.NewRecordQueryFirstOrDefaultPlan(seedInput, cardinalityNull(seedInput))))
+	rec := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(scan("REC_ZERO"), 0, 0)))
+	levelUnion := mustBuild(t, captureBuild(plans.NewRecordQueryRecursiveLevelUnionPlan(seed, rec,
+		values.NamedCorrelationIdentifier("lu_scan"), values.NamedCorrelationIdentifier("lu_insert"))))
 
 	cost := properties.EstimateCost(levelUnion)
 	if cost.Cardinality != 1 {
@@ -1352,8 +1426,9 @@ func TestRFC195_WholeCostConsistency_LevelUnionBuffer(t *testing.T) {
 	// exactly the level union's buffer term and nothing else. That makes the
 	// expectation independently constructed rather than a restatement of the
 	// implementation.
-	dfs := plans.NewRecordQueryRecursiveDfsJoinPlan(seed, rec,
-		values.NamedCorrelationIdentifier("dfs_prior"), plans.DfsPreorder)
+	dfs := mustBuild(t, captureBuild(plans.NewRecordQueryRecursiveDfsJoinPlan(seed, rec,
+		values.NamedCorrelationIdentifier("dfs_prior"), plans.DfsPreorder)))
+
 	dfsCost := properties.EstimateCost(dfs)
 
 	if dfsCost.Cardinality != cost.Cardinality {
@@ -1402,9 +1477,9 @@ func TestRFC195_StampedPKZeroFloatIsNotAtMostOne(t *testing.T) {
 	t.Parallel()
 
 	mk := func(lit any) *plans.RecordQueryScanPlan {
-		return plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
-			WithPrimaryKey([]values.Value{&values.FieldValue{Field: "V", Typ: values.NullableDouble}}).
-			WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, lit)}).
+		base := mustCardinalityScan(t, "T")
+		return base.WithPrimaryKey([]values.Value{mustCardinalityField(t, base, "V")}).
+			WithScanComparisons([]*predicates.ComparisonRange{cardinalityEqualityRange(t, lit)}).
 			WithKeyComponentTypes([]values.Type{values.NullableDouble})
 	}
 
@@ -1446,13 +1521,15 @@ func TestRFC195_CardinalityTimesDoesNotOverflow(t *testing.T) {
 	// Reached through the operator that actually multiplies: a join of two
 	// large plan-time LIMITs.
 	scan := func(n string) *plans.RecordQueryScanPlan {
-		return plans.NewRecordQueryScanPlan([]string{n}, values.UnknownType, false)
+		return mustCardinalityScan(t, n)
 	}
 	bigLimit := func(n string) plans.RecordQueryPlan {
-		return plans.NewRecordQueryLimitPlan(scan(n), math.MaxInt64/2, 0)
+		return mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(scan(n), math.MaxInt64/2, 0)))
 	}
-	join := plans.NewRecordQueryFlatMapPlan(bigLimit("A"), bigLimit("B"),
-		values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), nil, false)
+	outer, inner := bigLimit("A"), bigLimit("B")
+	join := mustBuild(t, captureBuild(plans.NewRecordQueryFlatMapPlan(outer, inner,
+		values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"),
+		cardinalityJoinResult(outer, inner), false)))
 
 	// The assertion is that this does not panic; the bound weakening to unknown
 	// is the sound outcome.

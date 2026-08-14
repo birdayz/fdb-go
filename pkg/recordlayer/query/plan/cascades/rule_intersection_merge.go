@@ -52,7 +52,12 @@ func (r *IntersectionMergeRule) OnMatch(call *ExpressionRuleCall) {
 	if !sawNested {
 		return
 	}
-	call.Yield(expressions.NewLogicalIntersectionExpression(flat, outerKeys))
+	merged, err := expressions.NewLogicalIntersectionExpression(flat, outerKeys)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(merged)
 }
 
 // flattenIntersectionChildren walks `qs` once. For each Quantifier

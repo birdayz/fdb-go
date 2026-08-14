@@ -819,14 +819,23 @@ func (t *cascadesTranslator) translateChainedUnnestOrdinal(
 		return nil
 	}
 
-	explode := expressions.NewExplodeExpressionWithOrdinality(collection, u.AtAlias != "")
+	explode, err := expressions.NewExplodeExpressionWithOrdinality(collection, u.AtAlias != "")
+	if err != nil {
+		t.setTranslateErr(err)
+		return nil
+	}
 	innerQ := expressions.NamedForEachQuantifier(innerCorr, expressions.InitialOf(explode))
 	outerQ := expressions.NamedForEachQuantifier(outerCorr, outerRef)
-	return expressions.NewSelectExpressionWithJoinType(
+	selectExpr, err := expressions.NewSelectExpressionWithJoinType(
 		resultValue,
 		[]expressions.Quantifier{outerQ, innerQ},
 		nil,
 		[]string{outerAlias, innerCorr.Name()},
 		expressions.JoinInner,
 	)
+	if err != nil {
+		t.setTranslateErr(err)
+		return nil
+	}
+	return selectExpr
 }

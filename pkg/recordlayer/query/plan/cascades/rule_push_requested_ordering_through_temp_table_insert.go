@@ -49,7 +49,13 @@ func (r *PushRequestedOrderingThroughTempTableInsertRule) OnMatch(call *Implemen
 		return
 	}
 
-	call.PushConstraint(innerRef, orderings)
+	flowed, err := tti.GetInner().RequireFlowedObjectValue()
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.PushConstraint(innerRef, pushDMLRequestedOrderingsThroughValue(
+		orderings, flowed, tti.GetInner().GetAlias()))
 }
 
 var _ ImplementationRule = (*PushRequestedOrderingThroughTempTableInsertRule)(nil)

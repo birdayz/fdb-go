@@ -134,19 +134,25 @@ func TestAliasMap_ForwardMap(t *testing.T) {
 	b := values.UniqueCorrelationIdentifier()
 	m := AliasMapOfAliases(a, b)
 
-	fwd := m.ForwardMap()
-	if got, ok := fwd[a]; !ok || got != b {
+	fwd, err := m.ForwardMap()
+	if err != nil {
+		t.Fatalf("ForwardMap() error = %v", err)
+	}
+	if got, ok := fwd.Target(a); !ok || got != b {
 		t.Fatalf("ForwardMap[a] = %v, %v; want %v, true", got, ok, b)
 	}
 
-	qov := &values.QuantifiedObjectValue{Correlation: a, Typ: values.UnknownType}
-	rebased := values.RebaseValue(qov, fwd)
-	rebasedQOV, ok := rebased.(*values.QuantifiedObjectValue)
-	if !ok {
-		t.Fatalf("rebased = %T, want *QuantifiedObjectValue", rebased)
+	qov, err := values.NewQuantifiedObjectValue(a, &values.PrimitiveType{TypeCode: values.TypeCodeLong})
+	if err != nil {
+		t.Fatalf("NewQuantifiedObjectValue() error = %v", err)
 	}
-	if rebasedQOV.Correlation != b {
-		t.Fatalf("rebased.Correlation = %v, want %v", rebasedQOV.Correlation, b)
+	rebased := values.RebaseValue(qov, fwd)
+	rebasedQOV, ok := values.AsQuantifiedObjectValue(rebased)
+	if !ok {
+		t.Fatalf("rebased = %T, want QuantifiedObjectValue", rebased)
+	}
+	if rebasedQOV.Correlation() != b {
+		t.Fatalf("rebased.Correlation = %v, want %v", rebasedQOV.Correlation(), b)
 	}
 }
 

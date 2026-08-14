@@ -10,26 +10,28 @@ import (
 func TestRichOrderingPullUpTranslatesFixedComparisonRangeOperand(t *testing.T) {
 	t.Parallel()
 
-	key := bindingTranslationField("key")
-	comparand := bindingTranslationField("cutoff")
+	key := bindingTranslationField(t, "key")
+	comparand := bindingTranslationField(t, "cutoff")
 	ordering := bindingTranslationOrdering(t, key, comparand, true)
 	upperAlias := values.NamedCorrelationIdentifier("binding_pullup")
 	resultValue := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "renamed_key", Value: key},
 		values.RecordConstructorField{Name: "renamed_cutoff", Value: comparand},
 	)
+	upperQOV := mustQOV(t, upperAlias, exactRecord(
+		values.Field{Name: "renamed_key", FieldType: values.NullableLong, Ordinal: 0},
+		values.Field{Name: "renamed_cutoff", FieldType: values.NullableLong, Ordinal: 1},
+	))
 
-	pulled := ordering.PullUpThroughValue(resultValue, upperAlias)
-	pulledKey := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(upperAlias),
-		"renamed_key",
-		values.NullableLong,
-	)
-	pulledComparand := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(upperAlias),
-		"renamed_cutoff",
-		values.NullableLong,
-	)
+	pulled := mustPullUpThroughValue(t, ordering, resultValue, upperAlias)
+	pulledKey := propertyFieldFrom(t,
+		upperQOV,
+		"renamed_key")
+
+	pulledComparand := propertyFieldFrom(t,
+		upperQOV,
+		"renamed_cutoff")
+
 	bindingTranslationAssertSingleFixedRange(
 		t, pulled, pulledKey, pulledComparand, true)
 }
@@ -37,20 +39,24 @@ func TestRichOrderingPullUpTranslatesFixedComparisonRangeOperand(t *testing.T) {
 func TestRichOrderingPushDownTranslatesFixedComparisonRangeOperand(t *testing.T) {
 	t.Parallel()
 
-	lowerKey := bindingTranslationField("key")
-	lowerComparand := bindingTranslationField("cutoff")
+	lowerKey := bindingTranslationField(t, "key")
+	lowerComparand := bindingTranslationField(t, "cutoff")
 	upperAlias := values.NamedCorrelationIdentifier("binding_pushdown")
+	upperQOV := mustQOV(t, upperAlias, exactRecord(
+		values.Field{Name: "renamed_key", FieldType: values.NullableLong, Ordinal: 0},
+		values.Field{Name: "renamed_cutoff", FieldType: values.NullableLong, Ordinal: 1},
+	))
 	// The upper references address the constructor's OUTPUT SLOTS: a resolved
 	// reference to a projection output carries the ordinal, and push-down selects
 	// the member by it (RFC-197 item 3). A lazy carrier here would push down to
 	// nothing, which is what the pull-up direction above deliberately still
 	// produces and this direction must not depend on.
-	upperKey := values.NewCorrelatedFieldValueWithResolvedOrdinal(
-		values.NewQuantifiedObjectValue(upperAlias), "renamed_key", 0, values.NullableLong,
-	)
-	upperComparand := values.NewCorrelatedFieldValueWithResolvedOrdinal(
-		values.NewQuantifiedObjectValue(upperAlias), "renamed_cutoff", 1, values.NullableLong,
-	)
+	upperKey := propertyFieldFromOrdinal(t,
+		upperQOV, 0)
+
+	upperComparand := propertyFieldFromOrdinal(t,
+		upperQOV, 1)
+
 	ordering := bindingTranslationOrdering(t, upperKey, upperComparand, false)
 	resultValue := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "renamed_key", Value: lowerKey},
@@ -65,8 +71,8 @@ func TestRichOrderingPushDownTranslatesFixedComparisonRangeOperand(t *testing.T)
 func TestRichOrderingPullUpTranslatesFixedDirectComparisonOperand(t *testing.T) {
 	t.Parallel()
 
-	key := bindingTranslationField("key")
-	comparand := bindingTranslationField("cutoff")
+	key := bindingTranslationField(t, "key")
+	comparand := bindingTranslationField(t, "cutoff")
 	comparison := &predicates.Comparison{
 		Type:    predicates.ComparisonEquals,
 		Operand: comparand,
@@ -82,8 +88,12 @@ func TestRichOrderingPullUpTranslatesFixedDirectComparisonOperand(t *testing.T) 
 		values.RecordConstructorField{Name: "renamed_key", Value: key},
 		values.RecordConstructorField{Name: "renamed_cutoff", Value: comparand},
 	)
+	upperQOV := mustQOV(t, upperAlias, exactRecord(
+		values.Field{Name: "renamed_key", FieldType: values.NullableLong, Ordinal: 0},
+		values.Field{Name: "renamed_cutoff", FieldType: values.NullableLong, Ordinal: 1},
+	))
 
-	pulled := ordering.PullUpThroughValue(resultValue, upperAlias)
+	pulled := mustPullUpThroughValue(t, ordering, resultValue, upperAlias)
 	if pulled == nil || len(pulled.GetKeys()) != 1 {
 		t.Fatal("expected one translated ordering key")
 	}
@@ -96,11 +106,10 @@ func TestRichOrderingPullUpTranslatesFixedDirectComparisonOperand(t *testing.T) 
 		t.Fatalf("translated comparison = %T, want *predicates.Comparison",
 			bindings[0].GetComparison())
 	}
-	wantComparand := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(upperAlias),
-		"renamed_cutoff",
-		values.NullableLong,
-	)
+	wantComparand := propertyFieldFrom(t,
+		upperQOV,
+		"renamed_cutoff")
+
 	if !values.ValuesStructurallyEqual(translated.Operand, wantComparand) {
 		t.Fatalf("translated fixed comparand = %s, want %s",
 			values.ExplainValue(translated.Operand),
@@ -111,15 +120,15 @@ func TestRichOrderingPullUpTranslatesFixedDirectComparisonOperand(t *testing.T) 
 func TestRichOrderingPullUpDropsUntranslatableDynamicFixedBinding(t *testing.T) {
 	t.Parallel()
 
-	key := bindingTranslationField("key")
-	unprojectedComparand := bindingTranslationField("not_projected")
+	key := bindingTranslationField(t, "key")
+	unprojectedComparand := bindingTranslationField(t, "not_projected")
 	ordering := bindingTranslationOrdering(t, key, unprojectedComparand, true)
 	upperAlias := values.NamedCorrelationIdentifier("binding_drop")
 	resultValue := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "renamed_key", Value: key},
 	)
 
-	pulled := ordering.PullUpThroughValue(resultValue, upperAlias)
+	pulled := mustPullUpThroughValue(t, ordering, resultValue, upperAlias)
 	if pulled == nil {
 		t.Fatal("PullUpThroughValue returned nil")
 	}
@@ -151,9 +160,9 @@ func TestRichOrderingPullUpDropsUntranslatableDynamicFixedBinding(t *testing.T) 
 func TestRichOrderingPrefixDoesNotInheritDistinctness(t *testing.T) {
 	t.Parallel()
 
-	a := bindingTranslationField("a")
-	b := bindingTranslationField("b")
-	c := bindingTranslationField("c")
+	a := bindingTranslationField(t, "a")
+	b := bindingTranslationField(t, "b")
+	c := bindingTranslationField(t, "c")
 	full := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {SortedBinding(ProvidedSortOrderAscending)},
@@ -169,7 +178,7 @@ func TestRichOrderingPrefixDoesNotInheritDistinctness(t *testing.T) {
 	upperAlias := values.NamedCorrelationIdentifier("prefix_pullup")
 	// A projection that carries only (a, b) forward. The uniqueness-making
 	// coordinate c has no output slot, so it cannot survive the pull-up.
-	prefix := full.PullUpThroughValue(
+	prefix := mustPullUpThroughValue(t, full,
 		values.NewRecordConstructorValue(
 			values.RecordConstructorField{Name: "a", Value: a},
 			values.RecordConstructorField{Name: "b", Value: b},
@@ -197,8 +206,8 @@ func TestRichOrderingPrefixDoesNotInheritDistinctness(t *testing.T) {
 func TestRichOrderingCarriedClaimFailsUnderKeyRemoval(t *testing.T) {
 	t.Parallel()
 
-	a := bindingTranslationField("a")
-	b := bindingTranslationField("b")
+	a := bindingTranslationField(t, "a")
+	b := bindingTranslationField(t, "b")
 	bindings := map[values.Value][]OrderingBinding{
 		a: {SortedBinding(ProvidedSortOrderAscending)},
 		b: {SortedBinding(ProvidedSortOrderAscending)},
@@ -245,19 +254,20 @@ func TestRichOrderingPullUpPreservesNonValueFixedComparands(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			key := bindingTranslationField("key_" + test.name)
+			key := bindingTranslationField(t, "key_"+test.name)
 			ordering := bindingTranslationOrdering(t, key, test.operand, false)
 			upperAlias := values.NamedCorrelationIdentifier("binding_static_" + test.name)
 			resultValue := values.NewRecordConstructorValue(
 				values.RecordConstructorField{Name: "renamed_key", Value: key},
 			)
-			pulledKey := values.NewFieldValue(
-				values.NewQuantifiedObjectValue(upperAlias),
-				"renamed_key",
-				values.NullableLong,
-			)
+			upperQOV := mustQOV(t, upperAlias, exactRecord(
+				values.Field{Name: "renamed_key", FieldType: values.NullableLong, Ordinal: 0},
+			))
+			pulledKey := propertyFieldFrom(t,
+				upperQOV,
+				"renamed_key")
 
-			pulled := ordering.PullUpThroughValue(resultValue, upperAlias)
+			pulled := mustPullUpThroughValue(t, ordering, resultValue, upperAlias)
 			bindingTranslationAssertSingleFixedRange(
 				t, pulled, pulledKey, test.expected, false)
 		})
@@ -267,8 +277,8 @@ func TestRichOrderingPullUpPreservesNonValueFixedComparands(t *testing.T) {
 func TestRichOrderingPullUpCollapsesDirectionalBindings(t *testing.T) {
 	t.Parallel()
 
-	key := bindingTranslationField("key")
-	comparand := bindingTranslationField("cutoff")
+	key := bindingTranslationField(t, "key")
+	comparand := bindingTranslationField(t, "cutoff")
 	comparison := predicates.Comparison{
 		Type:    predicates.ComparisonEquals,
 		Operand: comparand,
@@ -292,7 +302,7 @@ func TestRichOrderingPullUpCollapsesDirectionalBindings(t *testing.T) {
 		values.RecordConstructorField{Name: "renamed_cutoff", Value: comparand},
 	)
 
-	pulled := ordering.PullUpThroughValue(resultValue, upperAlias)
+	pulled := mustPullUpThroughValue(t, ordering, resultValue, upperAlias)
 	if pulled == nil {
 		t.Fatal("PullUpThroughValue returned nil")
 	}
@@ -311,7 +321,7 @@ func TestRichOrderingPullUpCollapsesDirectionalBindings(t *testing.T) {
 func TestRichOrderingPullUpPreservesCounterflowDirectionalBinding(t *testing.T) {
 	t.Parallel()
 
-	key := bindingTranslationField("key")
+	key := bindingTranslationField(t, "key")
 	upperAlias := values.NamedCorrelationIdentifier("binding_counterflow")
 	ordering := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
@@ -323,7 +333,7 @@ func TestRichOrderingPullUpPreservesCounterflowDirectionalBinding(t *testing.T) 
 		values.RecordConstructorField{Name: "renamed_key", Value: key},
 	)
 
-	pulled := ordering.PullUpThroughValue(resultValue, upperAlias)
+	pulled := mustPullUpThroughValue(t, ordering, resultValue, upperAlias)
 	if pulled == nil || len(pulled.GetKeys()) != 1 {
 		t.Fatal("expected one translated ordering key")
 	}
@@ -337,8 +347,8 @@ func TestRichOrderingPullUpPreservesCounterflowDirectionalBinding(t *testing.T) 
 func TestRichOrderingPullUpDeclinesKeyCollision(t *testing.T) {
 	t.Parallel()
 
-	first := &values.FieldValue{Field: "first", Typ: values.UnknownType}
-	second := &values.FieldValue{Field: "second", Typ: values.UnknownType}
+	first := propertyField(t, "first", values.NullableLong)
+	second := propertyField(t, "second", values.NullableLong)
 	ordering := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			first:  {SortedBinding(ProvidedSortOrderAscending)},
@@ -346,7 +356,7 @@ func TestRichOrderingPullUpDeclinesKeyCollision(t *testing.T) {
 		},
 		[]values.Value{first, second},
 		NotDistinct())
-	collapsed := &values.FieldValue{Field: "collapsed", Typ: values.UnknownType}
+	collapsed := propertyField(t, "collapsed", values.NullableLong)
 
 	pulled := ordering.PullUp(map[string]values.Value{
 		values.ExplainValue(first):  collapsed,
@@ -357,8 +367,9 @@ func TestRichOrderingPullUpDeclinesKeyCollision(t *testing.T) {
 	}
 }
 
-func bindingTranslationField(name string) values.Value {
-	return &values.FieldValue{Field: name, Typ: values.NullableLong}
+func bindingTranslationField(t testing.TB, name string) values.Value {
+	t.Helper()
+	return propertyField(t, name, values.NullableLong)
 }
 
 func bindingTranslationOrdering(

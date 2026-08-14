@@ -108,24 +108,17 @@ func bestSatisfyingMember(ref *expressions.Reference, ordering *properties.Reque
 // has. Neither substitutes for the other: the condition holding is what makes
 // the pin unnecessary, and the measurement is the only way to know it holds.
 //
-// THE CONDITION — constraint propagation. The pin stays until
-// MemoizeFinalExpressionsFromOther (implementation_rule.go:124-151) PROPAGATES
-// the constraint entry to the reference it mints. Today it copies the source's
-// plan properties and registers no constraint, so OptimizeGroupTask's
-// per-ordering retention (unified_tasks.go:663-666) looks up the new reference,
-// finds nothing, and resolves the group by COST ALONE. That is the
-// ordering-blind edge this pin exists to survive: without the pin a rule that
-// dropped a sort can have its spine resolved to a cheaper unordered sibling.
+// THE CONDITION — constraint propagation. MemoizeFinalExpressionsFromOther
+// now propagates the requested-ordering entry to the reference it mints, so
+// OptimizeGroup's per-ordering retention can see it. The pin remains as the
+// rule-time equivalent of Java baking the selected child: it also protects the
+// interval before that fresh reference is optimized and any relink that would
+// otherwise consult a different compatible member.
 //
 // THE VERIFICATION — the StoredRecordProperty fetch arm in plan_properties.go
-// computeStoredRecord. That arm is not a second condition; it is the
-// EXPERIMENT that reads whether the condition above now holds. Turn it on, and
-// the six ordered InUnions that currently collapse into
-// InMemorySort(Fetch(InJoin(...))) must hold their ordering. Until that has
-// been OBSERVED, the pin stays: "roll-up makes the partition
-// ordering-homogeneous so the pin is redundant" is exactly the argument that
-// was tried and measured wrong — it yielded an InUnion claiming ASC over a
-// filtered full scan. Removable on measurement, never on argument.
+// is enabled and the ordered InUnion sentinels remain sort-free. That closes
+// the previously booked propagation blocker; it does not make this explicit
+// baked-spine guarantee redundant.
 func pinOrderedSpine(expr expressions.RelationalExpression, ordering *properties.RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
 	return pinOrderedSpineDepth(expr, ordering, less, 0)
 }
@@ -146,6 +139,16 @@ func pinOrderedSpineDepth(expr expressions.RelationalExpression, ordering *prope
 	if m == nil {
 		return nil
 	}
+	requirements, err := ordinalInputRequirementsOf(expr)
+	if err != nil {
+		return nil
+	}
+	if len(requirements) != 0 {
+		compatible, compatibilityErr := memberSatisfiesOrdinalRequirement(m, requirements[0])
+		if compatibilityErr != nil || !compatible {
+			return nil
+		}
+	}
 	inner := pinOrderedSpineDepth(m, ordering, less, depth+1)
 	if inner == nil {
 		return nil
@@ -157,11 +160,11 @@ func pinOrderedSpineDepth(expr expressions.RelationalExpression, ordering *prope
 	if len(expr.GetQuantifiers()) != 1 {
 		return nil
 	}
-	// FinalOf, not InitialOf: the pinned singleton lives in the memo for
-	// the rest of PLANNING — held as a FINAL at StagePlanned (Java's
-	// memoizePlan / Reference.ofFinalExpressions shape), no exploration
-	// task can grow it past the pin.
-	pinnedQ := expressions.ForEachQuantifier(expressions.FinalOf(inner))
+	// PinnedFinalOf, not an ordinary FinalOf: this is a private physical
+	// selection, not a one-member equivalence group that physical rewrite rules
+	// may expand. ExploreGroup recognizes the explicit marker and preserves the
+	// exact ordered member whose property licensed dropping the enforcer sort.
+	pinnedQ := expressions.ForEachQuantifier(expressions.PinnedFinalOf(inner))
 	pinned, err := rebuilder.WithChildren([]expressions.Quantifier{pinnedQ})
 	if err != nil || pinned == nil {
 		return nil

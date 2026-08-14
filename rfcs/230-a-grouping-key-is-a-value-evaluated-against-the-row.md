@@ -1,19 +1,20 @@
 # RFC-230 — A grouping key is a value evaluated against the row, not a slot in it
 
-**Status:** IMPLEMENTED (rev 8), on `origin/master` @ `9222f968c`. **The scope
-shrank for the sixth time, and in the same direction as the previous five.**
-Phase 0 is discharged in full by #714/#716; §0.0's four `[PROBED]` refutations
-are all FALSE against `9222f968c` and are re-probed live in §0.2. §7.4's three
-`(b)` blockers are **refuted by measurement** — nested-path GROUP BY landed with
-`cascades_translator.go` **byte-identical** to its parent, so the post-aggregate
-rebind §7.1 ruled to be "the decisive site" and "the only edit the aggregate
-layer needs" was **not needed at all**. §0.3 records what the work actually was.
-**§7.6's single `(?)` is also settled, and it settled to `(d)`** — so the census
-now reads **13 (a), 0 (b), 22 (c), 1 (d), 0 (?)** over the same 36 symbols. The
-"0 live defects" this document used to assert is **retired** — where the phrase
-still appears below it is inside a revision's own superseded status line, kept as
-the record of what that revision claimed and marked as such (§7.6, §0.5).
-Previously: REVISED (rev 7) — *its census line is superseded by the rev-8 figures above and is kept only as the record of what rev 7 claimed*. The arity census is **classified, bounded and committed as a guard** (§7.3-§7.7, PR #715): 47 arity expressions across 36 symbols — 11 correct declines, **3 blockers**, 21 already-correct, **0 live defects**, 1 uncertain. Those 3 blockers are Phase 0/1's real scope (§7.4). Gate 7's ruling is independently corroborated. **§7.5 states the census's own limit** — it is complete for one predicate, and the discard class it cannot see provably has a member. Previously: REVISED (rev 6). Gate 7 is RULED correct and permanent (§7.1) and the depth-N ambiguity rule is ACK'd; two further gates (8, 9) and a failure of the provenance instrument itself (§12.3) are folded. **Rev 6 stops claiming a complete gate census** and publishes a classified population instead (§7.3) — the count has been wrong five times and the method, not the arithmetic, was the defect. Previously: REVISED after NAK (rev 5). Rev 4 was NAK'd on five findings; all five were
+**Status:** IMPLEMENTED. **Post-RFC-232 current state (2026-08-13):** the
+sealed exact FieldValue/FieldPath views reduced the Accessors sweep to **45
+non-test lines = 8 generated + 7 comment + 30 code**, carrying **34 arity
+expressions across 27 symbols**. The classified symbols are **8 (a), 0 (b), 19
+(c), 0 (d), 0 (?)**. All production `SourceRelativeBaked()` callers are gone;
+`TestSourceRelativeBakedSitesAreVisibleToTheCensus` is now a zero ratchet for
+that retired compatibility predicate. The exact current inventory lives in
+`pkg/docscheck/accessor_arity_census_test.go`; the revision measurements below
+are retained as historical evidence, not current census claims.
+
+Previously: IMPLEMENTED (rev 8), on `origin/master` @ `9222f968c`. The scope
+shrank for the sixth time, and in the same direction as the previous five.
+Phase 0 was discharged in full by #714/#716; §0.0's four `[PROBED]` refutations
+were all false against that base. §7.4's three `(b)` blockers were refuted by
+measurement, and §7.6's single `(?)` settled to a measured `(d)`, later fixed.
 re-probed here and all five hold. The most serious is self-inflicted: **rev 4 deleted a
 wrong-rows deliverable on an unprobed claim that it had already landed. It had not.** §4.2
 restores it. §0.0 is the refutation that lapsed the rev-2 ACKs and still stands; §0.1 is what

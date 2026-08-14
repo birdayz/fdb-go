@@ -18,6 +18,25 @@ func TestComparisonRowCorrelated(t *testing.T) {
 
 	outer := values.NamedCorrelationIdentifier("c")
 	constAlias := values.NamedCorrelationIdentifier("__const0")
+	rowType := values.NewRecordType("correlated_intersection_row", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "X", FieldType: values.NullableString, Ordinal: 1},
+	})
+	outerValue, err := values.NewQuantifiedObjectValue(outer, rowType)
+	if err != nil {
+		t.Fatalf("construct exact outer value: %v", err)
+	}
+	outerField, err := values.ResolveFieldOrdinals(outerValue, []int{0})
+	if err != nil {
+		t.Fatalf("resolve outer field: %v", err)
+	}
+	constantComposite := values.NewCastValue(
+		values.NewConstantObjectValue(constAlias, "const0", values.NotNullString),
+		values.NullableString,
+	)
+	if _, correlated := values.GetCorrelatedToOfValue(constantComposite)[constAlias]; !correlated {
+		t.Fatal("fixture: composite operand does not expose its nested constant-pool alias")
+	}
 
 	cases := []struct {
 		name    string
@@ -26,31 +45,28 @@ func TestComparisonRowCorrelated(t *testing.T) {
 	}{
 		{
 			name:    "literal_constant_not_correlated",
-			operand: &values.ConstantValue{Value: "cancelled", Typ: values.UnknownType},
+			operand: &values.ConstantValue{Value: "cancelled", Typ: values.NotNullString},
 			want:    false,
 		},
 		{
 			name:    "constant_pool_object_not_correlated",
-			operand: values.NewConstantObjectValue(constAlias, "const0", values.UnknownType),
+			operand: values.NewConstantObjectValue(constAlias, "const0", values.NotNullString),
 			want:    false,
 		},
 		{
 			name:    "outer_quantifier_is_correlated",
-			operand: values.NewQuantifiedObjectValue(outer),
+			operand: outerValue,
 			want:    true,
 		},
 		{
 			name:    "field_over_outer_quantifier_is_correlated",
-			operand: &values.FieldValue{Field: "ID", Typ: values.UnknownType, Child: values.NewQuantifiedObjectValue(outer)},
+			operand: outerField,
 			want:    true,
 		},
 		{
-			name: "field_over_constant_object_not_correlated",
-			operand: &values.FieldValue{
-				Field: "X", Typ: values.UnknownType,
-				Child: values.NewConstantObjectValue(constAlias, "const0", values.UnknownType),
-			},
-			want: false,
+			name:    "composite_over_constant_object_not_correlated",
+			operand: constantComposite,
+			want:    false,
 		},
 	}
 

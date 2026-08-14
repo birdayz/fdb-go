@@ -17,11 +17,8 @@ func avgTestCursor(t *testing.T, fieldType values.Type) *aggregateCursor {
 	rowType := values.NewRecordType("", false, []values.Field{
 		{Name: "V", FieldType: fieldType, Ordinal: 0},
 	})
-	qov := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("T"), rowType)
-	operand, err := values.NewFieldValueOfOrdinal(qov, 0)
-	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
-	}
+	qov := mustTestQOV(t, values.NamedCorrelationIdentifier("T"), rowType)
+	operand := mustTestFieldOrdinal(t, qov, 0)
 	c := &aggregateCursor{
 		aggregates: []expressions.AggregateSpec{{Function: expressions.AggAvg, Operand: operand}},
 		scalarMode: true,

@@ -44,6 +44,32 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// OrdinalLayoutAvailabilityCode classifies why a plan cannot provide a
+// concrete ordinal layout. The dynamic-carrier case is a valid plan that must
+// be refined before ordinal evaluation; malformed-base means construction was
+// bypassed and is never a compatible physical alternative.
+type OrdinalLayoutAvailabilityCode uint8
+
+const (
+	OrdinalLayoutAvailabilityInvalid OrdinalLayoutAvailabilityCode = iota
+	OrdinalLayoutDynamicCarrier
+	OrdinalLayoutMalformedPlan
+)
+
+// OrdinalLayoutUnavailableError is the typed, stable failure returned by
+// ProvidedOutputLayout when no concrete layout can be published. It follows
+// the repository's error-type contract rather than a message-only sentinel.
+type OrdinalLayoutUnavailableError struct {
+	Code OrdinalLayoutAvailabilityCode
+}
+
+func (e *OrdinalLayoutUnavailableError) Error() string {
+	if e != nil && e.Code == OrdinalLayoutDynamicCarrier {
+		return "provided ordinal layout unavailable: exact carrier is dynamic"
+	}
+	return "provided ordinal layout unavailable: plan base is malformed"
+}
+
 // RecordQueryPlan is the root interface for every physical plan
 // node. Mirrors Java's `RecordQueryPlan` interface — implementations
 // produce a record stream when executed against an FDBRecordStore.
@@ -68,6 +94,20 @@ type RecordQueryPlan interface {
 	// GetResultType returns the rich Type of rows this plan emits.
 	// Always a RelationType.
 	GetResultType() values.Type
+
+	// ProvidedOutputLayout returns the immutable physical ordinal layout of
+	// every row this plan emits. A concrete layout returns (layout, nil). A
+	// valid dynamic carrier returns a typed OrdinalLayoutUnavailableError with
+	// OrdinalLayoutDynamicCarrier; every other nil layout returns the
+	// OrdinalLayoutMalformedPlan code. There is no nil,nil or unknown-layout
+	// state.
+	ProvidedOutputLayout() (values.OrdinalLayout, error)
+
+	// OrdinalPhysicalProperties returns this plan's immutable required input,
+	// evaluation-program, and provided output layout view. It fails with the
+	// same typed availability error as ProvidedOutputLayout when an exact
+	// physical carrier has not yet been selected or construction was bypassed.
+	OrdinalPhysicalProperties() (OrdinalPhysicalProperties, error)
 
 	// GetChildren returns this plan's input plans, in stable order.
 	// Read-only; callers must not mutate.

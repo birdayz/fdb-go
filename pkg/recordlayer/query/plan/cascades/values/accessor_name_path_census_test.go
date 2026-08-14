@@ -32,7 +32,7 @@ func accessorCensusOn(t *testing.T) {
 }
 
 func TestAccessorPathCensus_ClassifiesEveryArm(t *testing.T) {
-	root := NewQuantifiedObjectValue(NamedCorrelationIdentifier("q1"))
+	root := mustQOV(t, NamedCorrelationIdentifier("q1"))
 
 	for _, tc := range []struct {
 		name  string
@@ -42,19 +42,19 @@ func TestAccessorPathCensus_ClassifiesEveryArm(t *testing.T) {
 	}{
 		{
 			"lazy plain name",
-			func() Value { return &FieldValue{Field: "AID", Child: root} },
+			func() Value { return &fieldValue{Field: "AID", Child: root} },
 			AccessorPathOKHasLazy,
 			"a lazy accessor's name is the only identity it has",
 		},
 		{
 			"lazy flat-dotted name",
-			func() Value { return &FieldValue{Field: "q$1.AID#0", Child: root} },
+			func() Value { return &fieldValue{Field: "q$1.AID#0", Child: root} },
 			AccessorPathDeclineDotted,
 			"THE RATCHET ARM: refused rather than split",
 		},
 		{
 			"lazy empty name",
-			func() Value { return &FieldValue{Field: "", Child: root} },
+			func() Value { return &fieldValue{Field: "", Child: root} },
 			AccessorPathDeclineEmptyName,
 			"no name and no resolution is no identity at all",
 		},
@@ -91,10 +91,10 @@ func TestAccessorPathCensus_ClassifiesEveryArm(t *testing.T) {
 // the ordinal suffix would have made the corpus finding unreadable.
 func TestAccessorPathCensus_DottedWitnessNamesTheString(t *testing.T) {
 	accessorCensusOn(t)
-	root := NewQuantifiedObjectValue(NamedCorrelationIdentifier("q1"))
-	AccessorNamePath(&FieldValue{Field: "q$50765.AID#0", Child: root})
-	AccessorNamePath(&FieldValue{Field: "ADDR.CITY", Child: root})
-	AccessorNamePath(&FieldValue{Field: "q$50765.AID#0", Child: root})
+	root := mustQOV(t, NamedCorrelationIdentifier("q1"))
+	AccessorNamePath(&fieldValue{Field: "q$50765.AID#0", Child: root})
+	AccessorNamePath(&fieldValue{Field: "ADDR.CITY", Child: root})
+	AccessorNamePath(&fieldValue{Field: "q$50765.AID#0", Child: root})
 
 	ws := AccessorPathDottedWitnesses()
 	if ws["q$50765.AID#0"] != 2 || ws["ADDR.CITY"] != 1 {
@@ -120,11 +120,11 @@ func TestAccessorPathCensus_DottedWitnessNamesTheString(t *testing.T) {
 // lazy, that number would collapse and the conversion would look unnecessary.
 func TestAccessorPathCensus_BakedPathIsNotADecline(t *testing.T) {
 	accessorCensusOn(t)
-	root := NewQuantifiedObjectValue(NamedCorrelationIdentifier("q1"))
-	baked := &FieldValue{
+	root := mustQOV(t, NamedCorrelationIdentifier("q1"))
+	baked := &fieldValue{
 		Field:    "AID",
 		Child:    root,
-		Resolved: &FieldPath{Accessors: []ResolvedAccessor{{Field: "AID", Ordinal: 0}}},
+		Resolved: &fieldPath{Accessors: []resolvedAccessor{{Field: "AID", Ordinal: 0}}},
 	}
 	path, ok := AccessorNamePath(baked)
 	if !ok || len(path) != 1 || path[0] != "AID" {
@@ -150,8 +150,8 @@ func TestAccessorPathCensus_DisabledRecordsNothing(t *testing.T) {
 		ResetAccessorPathCensus()
 		SetLegIdentityCensusEnabled(prev)
 	})
-	root := NewQuantifiedObjectValue(NamedCorrelationIdentifier("q1"))
-	AccessorNamePath(&FieldValue{Field: "q$1.AID#0", Child: root})
+	root := mustQOV(t, NamedCorrelationIdentifier("q1"))
+	AccessorNamePath(&fieldValue{Field: "q$1.AID#0", Child: root})
 	if got := AccessorPathCensus(); got != [accessorPathClassCount]int{} {
 		t.Fatalf("the census recorded %v while DISABLED. Production pays one atomic "+
 			"load per call and nothing else; counting here would tax every plan-time "+

@@ -17,19 +17,57 @@ type matchInfoConstantPullUpFixture struct {
 }
 
 func newMatchInfoConstantPullUpFixture(
+	t testing.TB,
 	name string,
 	queryResult values.Value,
 	candidateResult values.Value,
 	groupByMappings *GroupByMappings,
 ) matchInfoConstantPullUpFixture {
-	queryExpression := expressions.NewSelectExpression(queryResult, nil, nil)
-	candidateExpression := expressions.NewSelectExpression(candidateResult, nil, nil)
+	t.Helper()
+	queryExpression := matchInfoConstantPullUpSelect(t, queryResult, nil)
+	candidateExpression := matchInfoConstantPullUpSelect(t, candidateResult, nil)
 	return newMatchInfoConstantPullUpExpressionFixture(
 		name,
 		queryExpression,
 		candidateExpression,
 		groupByMappings,
 	)
+}
+
+func matchInfoConstantPullUpSelect(
+	t testing.TB,
+	result values.Value,
+	quantifiers []expressions.Quantifier,
+) *expressions.SelectExpression {
+	t.Helper()
+	selectExpression, err := expressions.NewSelectExpression(result, quantifiers, nil)
+	return mustConstruct(t, selectExpression, err)
+}
+
+func matchInfoConstantPullUpQOV(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+	typ values.Type,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	qov, err := values.NewQuantifiedObjectValue(alias, typ)
+	return mustConstruct(t, qov, err)
+}
+
+func matchInfoConstantPullUpField(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+	rowType values.Type,
+	ordinals ...int,
+) values.Value {
+	t.Helper()
+	root := matchInfoConstantPullUpQOV(t, alias, rowType)
+	field, err := values.ResolveFieldOrdinals(root, ordinals)
+	return mustConstruct(t, field, err)
+}
+
+func matchInfoConstantPullUpLong(value int64) values.Value {
+	return &values.ConstantValue{Value: value, Typ: values.NotNullLong}
 }
 
 func newMatchInfoConstantPullUpExpressionFixture(
@@ -134,17 +172,6 @@ func matchInfoConstantPullUpOnlyMatchedGrouping(
 	return queryValue, candidateValue
 }
 
-func matchInfoConstantPullUpField(
-	alias values.CorrelationIdentifier,
-	field string,
-) *values.FieldValue {
-	return values.NewFieldValue(
-		values.NewQuantifiedObjectValue(alias),
-		field,
-		values.NullableLong,
-	)
-}
-
 // A query value rooted at an alias that is both projected by the lower result
 // and external to the lower expression is constant during pull-up. The exact
 // access path does not have to occur in the result: outer.y remains outer.y
@@ -154,8 +181,12 @@ func TestMatchInfoGroupPullUp_PreservesMatchedQueryConstantAlias(t *testing.T) {
 	t.Parallel()
 
 	outerAlias := values.NamedCorrelationIdentifier("matched_query_outer")
-	outerX := matchInfoConstantPullUpField(outerAlias, "x")
-	outerY := matchInfoConstantPullUpField(outerAlias, "y")
+	outerType := values.NewRecordType("Outer", false, []values.Field{
+		{Name: "x", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "y", FieldType: values.NullableLong, Ordinal: 1},
+	})
+	outerX := matchInfoConstantPullUpField(t, outerAlias, outerType, 0)
+	outerY := matchInfoConstantPullUpField(t, outerAlias, outerType, 1)
 	queryResult := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "projected_x", Value: outerX},
 	)
@@ -163,9 +194,14 @@ func TestMatchInfoGroupPullUp_PreservesMatchedQueryConstantAlias(t *testing.T) {
 	candidateLowerAlias := values.NamedCorrelationIdentifier(
 		"matched_query_candidate_lower",
 	)
+	candidateLowerType := values.NewRecordType("CandidateLower", false, []values.Field{
+		{Name: "candidate_input", FieldType: values.NullableLong, Ordinal: 0},
+	})
 	candidateInput := matchInfoConstantPullUpField(
+		t,
 		candidateLowerAlias,
-		"candidate_input",
+		candidateLowerType,
+		0,
 	)
 	candidateResult := values.NewRecordConstructorValue(
 		values.RecordConstructorField{
@@ -174,6 +210,7 @@ func TestMatchInfoGroupPullUp_PreservesMatchedQueryConstantAlias(t *testing.T) {
 		},
 	)
 	fixture := newMatchInfoConstantPullUpFixture(
+		t,
 		"matched_query_constant",
 		queryResult,
 		candidateResult,
@@ -197,8 +234,8 @@ func TestMatchInfoGroupPullUp_PreservesMatchedQueryConstantAlias(t *testing.T) {
 			values.ExplainValue(outerY),
 		)
 	}
-	candidateField, ok := pulledCandidate.(*values.FieldValue)
-	if !ok || candidateField.Field != "candidate_projected" {
+	candidateField, ok := values.AsFieldValue(pulledCandidate)
+	if !ok || candidateField.DisplayName() != "candidate_projected" {
 		t.Fatalf(
 			"ordinarily pulled candidate = %s, want candidate_projected field",
 			values.ExplainValue(pulledCandidate),
@@ -213,7 +250,7 @@ func TestMatchInfoGroupPullUp_PreservesMatchedQueryConstantAlias(t *testing.T) {
 func TestMatchInfoGroupPullUp_PreservesMatchedCandidateRootConstant(t *testing.T) {
 	t.Parallel()
 
-	queryInput := values.LiteralValue(int64(202))
+	queryInput := matchInfoConstantPullUpLong(202)
 	queryResult := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "query_projected", Value: queryInput},
 	)
@@ -221,9 +258,10 @@ func TestMatchInfoGroupPullUp_PreservesMatchedCandidateRootConstant(t *testing.T
 	candidateConstantAlias := values.NamedCorrelationIdentifier(
 		"matched_candidate_constant",
 	)
-	candidateConstant := values.NewQuantifiedObjectValue(candidateConstantAlias)
-	candidateResult := values.LiteralValue(int64(303))
+	candidateConstant := matchInfoConstantPullUpQOV(t, candidateConstantAlias, values.NotNullLong)
+	candidateResult := matchInfoConstantPullUpLong(303)
 	fixture := newMatchInfoConstantPullUpFixture(
+		t,
 		"matched_candidate_root_constant",
 		queryResult,
 		candidateResult,
@@ -271,15 +309,16 @@ func TestMatchInfoGroupPullUp_PreservesUnmatchedQueryRootConstant(t *testing.T) 
 	unmatchedRootAlias := values.NamedCorrelationIdentifier(
 		"unmatched_constant_root",
 	)
-	queryResult := values.NewQuantifiedObjectValue(resultAlias)
-	unmatchedValue := values.NewQuantifiedObjectValue(unmatchedRootAlias)
+	queryResult := matchInfoConstantPullUpQOV(t, resultAlias, values.NotNullLong)
+	unmatchedValue := matchInfoConstantPullUpQOV(t, unmatchedRootAlias, values.NotNullLong)
 	unmatchedAggregateAlias := values.NamedCorrelationIdentifier(
 		"unmatched_aggregate",
 	)
 	fixture := newMatchInfoConstantPullUpFixture(
+		t,
 		"unmatched_query_root_constant",
 		queryResult,
-		values.LiteralValue(int64(404)),
+		matchInfoConstantPullUpLong(404),
 		matchInfoConstantPullUpUnmatchedAggregate(
 			unmatchedAggregateAlias,
 			unmatchedValue,
@@ -323,7 +362,7 @@ func TestMatchInfoGroupPullUp_PreservesUnmatchedQueryRootConstant(t *testing.T) 
 func TestMatchInfoGroupPullUp_RejectsAmbiguousRecordConstructor(t *testing.T) {
 	t.Parallel()
 
-	queryInput := values.LiteralValue(int64(505))
+	queryInput := matchInfoConstantPullUpLong(505)
 	queryResult := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "query", Value: queryInput},
 	)
@@ -331,7 +370,10 @@ func TestMatchInfoGroupPullUp_RejectsAmbiguousRecordConstructor(t *testing.T) {
 	candidateLowerAlias := values.NamedCorrelationIdentifier(
 		"ambiguous_candidate_lower",
 	)
-	candidateInput := matchInfoConstantPullUpField(candidateLowerAlias, "input")
+	candidateLowerType := values.NewRecordType("AmbiguousLower", false, []values.Field{
+		{Name: "input", FieldType: values.NullableLong, Ordinal: 0},
+	})
+	candidateInput := matchInfoConstantPullUpField(t, candidateLowerAlias, candidateLowerType, 0)
 	candidateResult := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "first", Value: candidateInput},
 		values.RecordConstructorField{Name: "second", Value: candidateInput},
@@ -340,6 +382,7 @@ func TestMatchInfoGroupPullUp_RejectsAmbiguousRecordConstructor(t *testing.T) {
 		t.Fatalf("ambiguous result fixture has %d fields, want 2", got)
 	}
 	fixture := newMatchInfoConstantPullUpFixture(
+		t,
 		"ambiguous_record_constructor",
 		queryResult,
 		candidateResult,
@@ -360,35 +403,33 @@ func TestMatchInfoGroupPullUp_PassthroughFieldAnchoredOrRejected(t *testing.T) {
 	t.Parallel()
 
 	queryLowerAlias := values.NamedCorrelationIdentifier("passthrough_query_lower")
+	queryLowerType := values.NewRecordType("PassthroughLower", false, []values.Field{
+		{Name: "input", FieldType: values.NullableLong, Ordinal: 0},
+	})
 	queryLowerRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression(
-			[]string{"T"},
-			values.UnknownType,
-		),
+		mustFullUnorderedScan(t, []string{"T"}, queryLowerType),
 	)
 	queryLowerQ := expressions.NamedForEachQuantifier(
 		queryLowerAlias,
 		queryLowerRef,
 	)
-	queryResult := queryLowerQ.GetFlowedObjectValue()
-	queryInput := values.NewFieldValue(
-		queryResult,
-		"input",
-		values.NullableLong,
-	)
-	queryExpression := expressions.NewSelectExpression(
+	queryResult, queryResultErr := queryLowerQ.RequireFlowedObjectValue()
+	queryResult = mustConstruct(t, queryResult, queryResultErr)
+	queryInput, queryInputErr := values.ResolveFieldOrdinals(queryResult, []int{0})
+	queryInput = mustConstruct(t, queryInput, queryInputErr)
+	queryExpression := matchInfoConstantPullUpSelect(
+		t,
 		queryResult,
 		[]expressions.Quantifier{queryLowerQ},
-		nil,
 	)
 
-	candidateInput := values.LiteralValue(int64(606))
+	candidateInput := matchInfoConstantPullUpLong(606)
 	candidateResult := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "candidate", Value: candidateInput},
 	)
-	candidateExpression := expressions.NewSelectExpression(
+	candidateExpression := matchInfoConstantPullUpSelect(
+		t,
 		candidateResult,
-		nil,
 		nil,
 	)
 	fixture := newMatchInfoConstantPullUpExpressionFixture(
@@ -413,15 +454,15 @@ func TestMatchInfoGroupPullUp_PassthroughFieldAnchoredOrRejected(t *testing.T) {
 		return // safely rejected at the individual group-mapping boundary
 	}
 	pulledQuery, _ := matchInfoConstantPullUpOnlyMatchedGrouping(t, merged)
-	pulledField, isField := pulledQuery.(*values.FieldValue)
+	pulledField, isField := values.AsFieldValue(pulledQuery)
 	if !isField {
 		t.Fatalf(
 			"passthrough pull-up returned %T, want anchored FieldValue or rejection",
 			pulledQuery,
 		)
 	}
-	root, anchored := pulledField.Child.(*values.QuantifiedObjectValue)
-	if !anchored || root.Correlation != fixture.queryAlias {
+	root, anchored := values.AsQuantifiedObjectValue(pulledField.ChildValue())
+	if !anchored || root.Correlation() != fixture.queryAlias {
 		t.Fatalf(
 			"passthrough field = %s, want root alias %s or rejection",
 			values.ExplainValue(pulledField),
@@ -436,19 +477,22 @@ func TestAdjustGroupByMappings_ConstantAndOrdinaryCandidateValues(t *testing.T) 
 	lowerAlias := values.NamedCorrelationIdentifier("adjust_lower")
 	upperAlias := values.NamedCorrelationIdentifier("adjust_upper")
 	constantAlias := values.NamedCorrelationIdentifier("adjust_constant")
-	candidateInput := matchInfoConstantPullUpField(lowerAlias, "input")
-	candidateConstant := values.NewQuantifiedObjectValue(constantAlias)
+	lowerType := values.NewRecordType("AdjustLower", false, []values.Field{
+		{Name: "input", FieldType: values.NullableLong, Ordinal: 0},
+	})
+	candidateInput := matchInfoConstantPullUpField(t, lowerAlias, lowerType, 0)
+	candidateConstant := matchInfoConstantPullUpQOV(t, constantAlias, values.NotNullLong)
 	candidateResult := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "projected", Value: candidateInput},
 	)
-	candidateExpression := expressions.NewSelectExpression(
+	candidateExpression := matchInfoConstantPullUpSelect(
+		t,
 		candidateResult,
-		nil,
 		nil,
 	)
 
-	ordinaryQueryKey := values.LiteralValue(int64(1))
-	constantQueryKey := values.LiteralValue(int64(2))
+	ordinaryQueryKey := matchInfoConstantPullUpLong(1)
+	constantQueryKey := matchInfoConstantPullUpLong(2)
 	matched := NewValueBiMap()
 	matched.Put(ordinaryQueryKey, candidateInput)
 	matched.Put(constantQueryKey, candidateConstant)
@@ -469,16 +513,16 @@ func TestAdjustGroupByMappings_ConstantAndOrdinaryCandidateValues(t *testing.T) 
 	if !present {
 		t.Fatal("ordinary adjusted mapping is missing")
 	}
-	ordinaryField, isField := ordinary.(*values.FieldValue)
-	if !isField || ordinaryField.Resolved == nil {
+	ordinaryField, isField := values.AsFieldValue(ordinary)
+	if !isField || ordinaryField.Path() == nil {
 		t.Fatalf("ordinary adjusted value = %T, want ordinal-resolved FieldValue", ordinary)
 	}
-	accessor, single := ordinaryField.Resolved.Single()
-	if !single || accessor.Ordinal != 0 {
-		t.Fatalf("ordinary adjusted path = %+v, want output ordinal 0", ordinaryField.Resolved)
+	ordinals := ordinaryField.Path().Ordinals()
+	if len(ordinals) != 1 || ordinals[0] != 0 {
+		t.Fatalf("ordinary adjusted path = %+v, want output ordinal 0", ordinaryField.Path())
 	}
-	ordinaryBase, anchored := ordinaryField.Child.(*values.QuantifiedObjectValue)
-	if !anchored || ordinaryBase.Correlation != upperAlias {
+	ordinaryBase, anchored := values.AsQuantifiedObjectValue(ordinaryField.ChildValue())
+	if !anchored || ordinaryBase.Correlation() != upperAlias {
 		t.Fatalf(
 			"ordinary adjusted field is not anchored to upper alias %s",
 			upperAlias,
@@ -509,48 +553,18 @@ func TestAdjustGroupByMappings_QuantifiedRecordPassthrough(t *testing.T) {
 		[]values.Field{{Name: "x", FieldType: values.NullableLong}},
 	)
 	lowerRecord := values.NewQuantifiedRecordValue(lowerAlias, recordType)
-	candidateValue := values.NewFieldValue(
-		lowerRecord,
-		"x",
-		values.NullableLong,
-	)
-	queryKey := values.LiteralValue(int64(1))
-	matched := NewValueBiMap()
-	matched.Put(queryKey, candidateValue)
-
-	adjusted, ok := AdjustGroupByMappings(
-		NewGroupByMappings(
-			matched,
-			NewValueBiMap(),
-			NewCorrValueBiMap(),
-		),
-		upperAlias,
-		expressions.NewSelectExpression(lowerRecord, nil, nil),
-	)
-	if !ok || adjusted == nil {
-		t.Fatal("quantified-record passthrough was rejected")
-	}
-	pulled, present := adjusted.MatchedGroupingsMap().Get(queryKey)
-	if !present {
-		t.Fatal("quantified-record passthrough mapping is missing")
-	}
-	field, isField := pulled.(*values.FieldValue)
-	if !isField {
-		t.Fatalf("pulled value = %T, want FieldValue", pulled)
-	}
-	base, isRecord := field.Child.(*values.QuantifiedRecordValue)
-	if !isRecord || base.Alias != upperAlias {
-		t.Fatalf(
-			"pulled field base = %T/%s, want QuantifiedRecordValue(%s)",
-			field.Child,
-			values.ExplainValue(field.Child),
-			upperAlias,
-		)
+	// RFC-232 admits field access only over an exact QOV (or an already
+	// admitted FieldValue/record constructor). The old FieldValue(QRV, "x")
+	// fixture cannot be published, so pin that boundary before exercising the
+	// still-supported whole queried-record passthrough below.
+	if invalid, err := values.ResolveFieldOrdinals(lowerRecord, []int{0}); err == nil || invalid != nil {
+		t.Fatalf("QuantifiedRecordValue unexpectedly published a FieldValue: (%v, %v)", invalid, err)
 	}
 
 	wholeRecordMap := NewValueBiMap()
-	wholeRecordKey := values.LiteralValue(int64(2))
+	wholeRecordKey := matchInfoConstantPullUpLong(2)
 	wholeRecordMap.Put(wholeRecordKey, lowerRecord)
+	candidateExpression := matchInfoConstantPullUpSelect(t, lowerRecord, nil)
 	wholeRecordAdjusted, ok := AdjustGroupByMappings(
 		NewGroupByMappings(
 			wholeRecordMap,
@@ -558,7 +572,7 @@ func TestAdjustGroupByMappings_QuantifiedRecordPassthrough(t *testing.T) {
 			NewCorrValueBiMap(),
 		),
 		upperAlias,
-		expressions.NewSelectExpression(lowerRecord, nil, nil),
+		candidateExpression,
 	)
 	if !ok {
 		t.Fatal("whole quantified-record passthrough was rejected")
@@ -587,7 +601,7 @@ func TestMatchInfoGroupPullUp_ComposesNestedRecordConstructors(t *testing.T) {
 	candidateLowerAlias := values.NamedCorrelationIdentifier(
 		"nested_candidate_lower",
 	)
-	candidateInput := values.NewQuantifiedObjectValue(candidateLowerAlias)
+	candidateInput := matchInfoConstantPullUpQOV(t, candidateLowerAlias, values.NotNullLong)
 	candidateResult := values.NewRecordConstructorValue(
 		values.RecordConstructorField{
 			Name: "outer",
@@ -599,8 +613,9 @@ func TestMatchInfoGroupPullUp_ComposesNestedRecordConstructors(t *testing.T) {
 			),
 		},
 	)
-	queryConstant := values.LiteralValue(int64(1904))
+	queryConstant := matchInfoConstantPullUpLong(1904)
 	fixture := newMatchInfoConstantPullUpFixture(
+		t,
 		"nested_constructor",
 		queryConstant,
 		candidateResult,
@@ -615,29 +630,29 @@ func TestMatchInfoGroupPullUp_ComposesNestedRecordConstructors(t *testing.T) {
 		t.Fatal("nested constructor group mapping was rejected")
 	}
 	_, pulledCandidate := matchInfoConstantPullUpOnlyMatchedGrouping(t, merged)
-	field, isField := pulledCandidate.(*values.FieldValue)
-	if !isField || field.Resolved == nil {
+	field, isField := values.AsFieldValue(pulledCandidate)
+	if !isField || field.Path() == nil {
 		t.Fatalf(
 			"nested constructor pull-up = %T/%s, want resolved FieldValue",
 			pulledCandidate,
 			values.ExplainValue(pulledCandidate),
 		)
 	}
-	if got := len(field.Resolved.Accessors); got != 2 {
+	ordinals := field.Path().Ordinals()
+	if got := len(ordinals); got != 2 {
 		t.Fatalf(
 			"nested constructor path = %+v, want two accessors",
-			field.Resolved,
+			field.Path(),
 		)
 	}
-	if field.Resolved.Accessors[0].Ordinal != 0 ||
-		field.Resolved.Accessors[1].Ordinal != 0 {
+	if ordinals[0] != 0 || ordinals[1] != 0 {
 		t.Fatalf(
 			"nested constructor path = %+v, want ordinals [0 0]",
-			field.Resolved,
+			field.Path(),
 		)
 	}
-	base, anchored := field.Child.(*values.QuantifiedObjectValue)
-	if !anchored || base.Correlation != fixture.candidateAlias {
+	base, anchored := values.AsQuantifiedObjectValue(field.ChildValue())
+	if !anchored || base.Correlation() != fixture.candidateAlias {
 		t.Fatalf(
 			"nested constructor field is not anchored to upper alias %s",
 			fixture.candidateAlias,
@@ -653,30 +668,22 @@ func TestAdjustGroupByMappings_ComposesProjectedFieldSuffix(t *testing.T) {
 
 	lowerAlias := values.NamedCorrelationIdentifier("suffix_lower")
 	upperAlias := values.NamedCorrelationIdentifier("suffix_upper")
-	lowerBase := values.NewQuantifiedObjectValue(lowerAlias)
-	projectedPrefix := &values.FieldValue{
-		Field:    "x",
-		Typ:      values.UnknownType,
-		Child:    lowerBase,
-		Resolved: values.NewFieldPathOfSingle("x", 0, false),
-	}
-	requested := &values.FieldValue{
-		Field: "y",
-		Typ:   values.NullableLong,
-		Child: lowerBase,
-		Resolved: values.NewFieldPathOfSingle(
-			"x",
-			0,
-			false,
-		).WithSuffix(values.NewFieldPathOfSingle("y", 1, false)),
-	}
+	xType := values.NewRecordType("X", false, []values.Field{
+		{Name: "padding", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "y", FieldType: values.NullableLong, Ordinal: 1},
+	})
+	lowerType := values.NewRecordType("SuffixLower", false, []values.Field{
+		{Name: "x", FieldType: xType, Ordinal: 0},
+	})
+	projectedPrefix := matchInfoConstantPullUpField(t, lowerAlias, lowerType, 0)
+	requested := matchInfoConstantPullUpField(t, lowerAlias, lowerType, 0, 1)
 	candidateResult := values.NewRecordConstructorValue(
 		values.RecordConstructorField{
 			Name:  "projected",
 			Value: projectedPrefix,
 		},
 	)
-	queryKey := values.LiteralValue(int64(1))
+	queryKey := matchInfoConstantPullUpLong(1)
 	matched := NewValueBiMap()
 	matched.Put(queryKey, requested)
 
@@ -687,7 +694,7 @@ func TestAdjustGroupByMappings_ComposesProjectedFieldSuffix(t *testing.T) {
 			NewCorrValueBiMap(),
 		),
 		upperAlias,
-		expressions.NewSelectExpression(candidateResult, nil, nil),
+		matchInfoConstantPullUpSelect(t, candidateResult, nil),
 	)
 	if !ok || adjusted == nil {
 		t.Fatal("projected field suffix group mapping was rejected")
@@ -696,29 +703,29 @@ func TestAdjustGroupByMappings_ComposesProjectedFieldSuffix(t *testing.T) {
 	if !present {
 		t.Fatal("projected field suffix mapping was dropped")
 	}
-	field, isField := pulled.(*values.FieldValue)
-	if !isField || field.Resolved == nil {
+	field, isField := values.AsFieldValue(pulled)
+	if !isField || field.Path() == nil {
 		t.Fatalf(
 			"projected field suffix = %T/%s, want resolved FieldValue",
 			pulled,
 			values.ExplainValue(pulled),
 		)
 	}
-	if got := len(field.Resolved.Accessors); got != 2 {
+	ordinals := field.Path().Ordinals()
+	if got := len(ordinals); got != 2 {
 		t.Fatalf(
 			"projected field suffix path = %+v, want two accessors",
-			field.Resolved,
+			field.Path(),
 		)
 	}
-	if field.Resolved.Accessors[0].Ordinal != 0 ||
-		field.Resolved.Accessors[1].Ordinal != 1 {
+	if ordinals[0] != 0 || ordinals[1] != 1 {
 		t.Fatalf(
 			"projected field suffix path = %+v, want ordinals [0 1]",
-			field.Resolved,
+			field.Path(),
 		)
 	}
-	base, anchored := field.Child.(*values.QuantifiedObjectValue)
-	if !anchored || base.Correlation != upperAlias {
+	base, anchored := values.AsQuantifiedObjectValue(field.ChildValue())
+	if !anchored || base.Correlation() != upperAlias {
 		t.Fatalf(
 			"projected field suffix is not anchored to upper alias %s",
 			upperAlias,
@@ -731,7 +738,7 @@ func TestMatchInfoGroupPullUp_RejectsAmbiguousNestedConstructorPaths(t *testing.
 
 	lowerAlias := values.NamedCorrelationIdentifier("ambiguous_nested_lower")
 	upperAlias := values.NamedCorrelationIdentifier("ambiguous_nested_upper")
-	input := values.NewQuantifiedObjectValue(lowerAlias)
+	input := matchInfoConstantPullUpQOV(t, lowerAlias, values.NotNullLong)
 	nested := func(name string) values.RecordConstructorField {
 		return values.RecordConstructorField{
 			Name: name,
@@ -772,24 +779,25 @@ func TestMatchInfoGroupPullUp_CancelsProjectedConstructorField(t *testing.T) {
 	upperAlias := values.NamedCorrelationIdentifier(
 		"constructor_field_upper",
 	)
-	lowerBase := values.NewQuantifiedObjectValue(lowerAlias)
-	requested := &values.FieldValue{
-		Field:    "y",
-		Typ:      values.NullableLong,
-		Child:    lowerBase,
-		Resolved: values.NewFieldPathOfSingle("y", 1, false),
-	}
+	lowerType := values.NewRecordType("ConstructorFieldLower", false, []values.Field{
+		{Name: "x", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "y", FieldType: values.NullableLong, Ordinal: 1},
+	})
+	lowerBase := matchInfoConstantPullUpQOV(t, lowerAlias, lowerType)
+	requested := matchInfoConstantPullUpField(t, lowerAlias, lowerType, 1)
 	constructor := values.NewRecordConstructorValue(
 		values.RecordConstructorField{
 			Name:  "x",
 			Value: lowerBase,
 		},
 	)
-	result := &values.FieldValue{
-		Field:    "x",
-		Typ:      lowerBase.Type(),
-		Child:    constructor,
-		Resolved: values.NewFieldPathOfSingle("x", 0, false),
+	// Resolving a constructor field is atomic: selecting the field collapses
+	// directly to its exact child rather than publishing a FieldValue rooted at
+	// a record constructor.
+	result, resultErr := values.ResolveFieldOrdinals(constructor, []int{0})
+	result = mustConstruct(t, result, resultErr)
+	if result != lowerBase {
+		t.Fatalf("constructor-field resolution returned %T, want the selected QOV", result)
 	}
 
 	pulled, ok := pullUpGroupByValue(
@@ -801,23 +809,23 @@ func TestMatchInfoGroupPullUp_CancelsProjectedConstructorField(t *testing.T) {
 	if !ok || pulled == nil {
 		t.Fatal("constructor-field compensation cancellation was dropped")
 	}
-	field, isField := pulled.(*values.FieldValue)
-	if !isField || field.Resolved == nil {
+	field, isField := values.AsFieldValue(pulled)
+	if !isField || field.Path() == nil {
 		t.Fatalf(
 			"constructor-field pull-up = %T/%s, want resolved FieldValue",
 			pulled,
 			values.ExplainValue(pulled),
 		)
 	}
-	accessor, single := field.Resolved.Single()
-	if !single || accessor.Ordinal != 1 {
+	ordinals := field.Path().Ordinals()
+	if len(ordinals) != 1 || ordinals[0] != 1 {
 		t.Fatalf(
 			"constructor-field path = %+v, want downstream ordinal [1]",
-			field.Resolved,
+			field.Path(),
 		)
 	}
-	base, anchored := field.Child.(*values.QuantifiedObjectValue)
-	if !anchored || base.Correlation != upperAlias {
+	base, anchored := values.AsQuantifiedObjectValue(field.ChildValue())
+	if !anchored || base.Correlation() != upperAlias {
 		t.Fatalf(
 			"constructor-field pull-up is not anchored to upper alias %s",
 			upperAlias,

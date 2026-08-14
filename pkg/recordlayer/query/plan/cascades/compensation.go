@@ -142,7 +142,7 @@ func ComputeResultCompensation(pm PartialMatch, rootOfMatchPullUp *PullUp) *Comp
 	}
 
 	var rcf *ResultCompensationFunction
-	if qov, ok := pulledUp.(*values.QuantifiedObjectValue); ok && qov.Correlation == rootOfMatchPullUp.GetCandidateAlias() {
+	if qov, ok := values.AsQuantifiedObjectValue(pulledUp); ok && qov.Correlation() == rootOfMatchPullUp.GetCandidateAlias() {
 		rcf = NoResultCompensation()
 	} else {
 		rcf = ResultCompensationOfValue(pulledUp)
@@ -907,7 +907,11 @@ func (c *ForMatchCompensation) Apply(
 
 		if len(toBePulledUp) == 0 {
 			// Then-branch: simple filter, no join needed.
-			expr = expressions.NewLogicalFilterExpression(compensatedPreds, newBaseQ)
+			filtered, err := expressions.NewLogicalFilterExpression(compensatedPreds, newBaseQ)
+			if err != nil {
+				return nil, false
+			}
+			expr = filtered
 		} else {
 			// Else-branch: build a SelectExpression that joins the base scan
 			// with the pulled-up quantifiers and applies compensation predicates.
@@ -921,16 +925,28 @@ func (c *ForMatchCompensation) Apply(
 			}
 			expansion := builder.Build()
 			sealed := expansion.Seal()
-			expr = sealed.BuildSelectWithResultValue(newBaseQ.GetFlowedObjectValue())
+			flowed, err := newBaseQ.RequireFlowedObjectValue()
+			if err != nil {
+				return nil, false
+			}
+			selected, err := sealed.BuildSelectWithResultValue(flowed)
+			if err != nil {
+				return nil, false
+			}
+			expr = selected
 		}
 	}
 
 	if c.requiresPrimaryKeyDistinct {
 		// Distinct belongs after every child and local residual filter, but
 		// before ApplyFinal reshapes the row and can hide its primary key.
-		expr = expressions.NewRequiredLogicalUniqueExpression(
+		unique, err := expressions.NewRequiredLogicalUniqueExpression(
 			newCompensationBaseQuantifier(matchedForEachAlias, expr),
 		)
+		if err != nil {
+			return nil, false
+		}
+		expr = unique
 	}
 
 	return expr, true
@@ -973,7 +989,11 @@ func (c *ForMatchCompensation) ApplyFinal(
 	builder.AddQuantifier(newBaseQ)
 	expansion := builder.Build()
 	sealed := expansion.Seal()
-	return sealed.BuildSelectWithResultValue(resultVal), true
+	selected, err := sealed.BuildSelectWithResultValue(resultVal)
+	if err != nil {
+		return nil, false
+	}
+	return selected, true
 }
 
 // ApplyAllNeeded applies both filter compensation (Apply) and result

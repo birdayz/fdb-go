@@ -73,7 +73,12 @@ func (r *ImplementUnionRule) OnMatch(call *ExpressionRuleCall) {
 
 	// The union is its own cascades expression carrying those live leg edges
 	// (RFC-184 W2) — no wrapper storing a second snapshot of the legs.
-	call.Yield(plans.NewRecordQueryUnionPlanFromQuantifiers(childQs))
+	unionPlan, err := plans.NewRecordQueryUnionPlanFromQuantifiers(childQs)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(unionPlan)
 }
 
 var _ ExpressionRule = (*ImplementUnionRule)(nil)

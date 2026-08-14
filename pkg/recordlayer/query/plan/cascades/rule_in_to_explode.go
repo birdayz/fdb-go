@@ -134,7 +134,18 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 		newPreds = append(newPreds, eqPred)
 		newPreds = append(newPreds, otherPreds...)
 		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerRef.Get()))
-		call.Yield(expressions.NewLogicalFilterExpression(newPreds, innerQ))
+		newPreds, err = rebaseInExplodePredicates(
+			newPreds, f.GetInner().GetAlias(), innerQ.GetAlias())
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		filter, err := expressions.NewLogicalFilterExpression(newPreds, innerQ)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		call.Yield(filter)
 		return
 	}
 
@@ -143,11 +154,22 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 	// 1. Create ExplodeExpression wrapping the IN-list as a
 	//    ConstantValue with ArrayType so ExplodeExpression.GetResultValue
 	//    infers the correct element type.
+	elementType, ok := exactInExplodeElementType(inPred, list)
+	if !ok {
+		// This is an optional normalization. If semantic analysis has not
+		// established an exact scalar type for the LHS yet, retain the original
+		// IN predicate instead of publishing an Unknown-typed explode/QOV pair.
+		return
+	}
 	explodeValue := &values.ConstantValue{
 		Value: list,
-		Typ:   values.NewArrayType(false, values.UnknownType),
+		Typ:   values.NewArrayType(false, elementType),
 	}
-	explodeExpr := expressions.NewExplodeExpression(explodeValue)
+	explodeExpr, err := expressions.NewExplodeExpression(explodeValue)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	explodeRef := call.MemoizeExpression(explodeExpr)
 	explodeQ := expressions.ForEachQuantifier(explodeRef)
 
@@ -156,7 +178,11 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 	//    The equality RHS is a QuantifiedObjectValue referencing the
 	//    explode quantifier — this correlation flows through the
 	//    SelectExpression's CanCorrelate=true into the inner expression.
-	explodedQOV := values.NewQuantifiedObjectValue(explodeQ.GetAlias())
+	explodedQOV, err := explodeQ.RequireFlowedObjectValue()
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	eqCmp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: explodedQOV}
 	eqPred := predicates.NewComparisonPredicate(inPred.Operand, eqCmp)
 
@@ -165,20 +191,107 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 	innerPreds = append(innerPreds, otherPreds...)
 
 	innerScanQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerRef.Get()))
-	innerFilter := expressions.NewLogicalFilterExpression(innerPreds, innerScanQ)
+	innerPreds, err = rebaseInExplodePredicates(
+		innerPreds, f.GetInner().GetAlias(), innerScanQ.GetAlias())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	innerFilter, err := expressions.NewLogicalFilterExpression(innerPreds, innerScanQ)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	innerFilterRef := call.MemoizeExpression(innerFilter)
 	innerFilterQ := expressions.ForEachQuantifier(innerFilterRef)
 
 	// 3. Build a predicate-free SelectExpression with the inner and
 	//    explode quantifiers. The resultValue is QOV(innerAlias) — the
 	//    shape ImplementInJoinRule expects.
-	resultValue := values.NewQuantifiedObjectValue(innerFilterQ.GetAlias())
-	selectExpr := expressions.NewSelectExpression(
+	resultValue, err := innerFilterQ.RequireFlowedObjectValue()
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	selectExpr, err := expressions.NewSelectExpression(
 		resultValue,
 		[]expressions.Quantifier{innerFilterQ, explodeQ},
 		nil, // no predicates — ImplementInJoinRule requires this
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	call.Yield(selectExpr)
+}
+
+func rebaseInExplodePredicates(
+	input []predicates.QueryPredicate,
+	source, target values.CorrelationIdentifier,
+) ([]predicates.QueryPredicate, error) {
+	if source == target {
+		return append([]predicates.QueryPredicate(nil), input...), nil
+	}
+	aliases, err := values.NewAliasMap([]values.AliasPair{{Source: source, Target: target}})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]predicates.QueryPredicate, len(input))
+	for i, predicate := range input {
+		result[i], err = predicates.TransformEmbeddedValuesChecked(
+			predicate,
+			func(value values.Value) (values.Value, error) {
+				return values.RebaseValueChecked(value, aliases)
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+// exactInExplodeElementType chooses the exact type carried by each explode
+// row. Prefer an exact array element type on the IN comparand when one is
+// available. ResolveIn currently stores the evaluated list with an unstated
+// type, so the exactly-resolved LHS is the compatibility-checked authority in
+// that shape. A NULL list member makes the element carrier nullable.
+func exactInExplodeElementType(
+	inPred *predicates.ComparisonPredicate,
+	list []any,
+) (values.Type, bool) {
+	if inPred == nil {
+		return nil, false
+	}
+
+	var elementType values.Type
+	if inPred.Comparison.Operand != nil {
+		if arrayType, ok := inPred.Comparison.Operand.Type().(*values.ArrayType); ok && arrayType != nil {
+			elementType = arrayType.ElementType
+		}
+	}
+	if elementType == nil && inPred.Operand != nil {
+		elementType = inPred.Operand.Type()
+	}
+	if elementType == nil {
+		return nil, false
+	}
+	if _, err := values.SnapshotExactType(elementType); err != nil {
+		return nil, false
+	}
+
+	nullable := elementType.IsNullable()
+	for _, item := range list {
+		if item == nil {
+			nullable = true
+			break
+		}
+	}
+	elementType = values.WithNullability(elementType, nullable)
+	if _, err := values.SnapshotExactType(elementType); err != nil {
+		return nil, false
+	}
+	return elementType, true
 }
 
 // distinctInListValues returns in with duplicate elements removed,

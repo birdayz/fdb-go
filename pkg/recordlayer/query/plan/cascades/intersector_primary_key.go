@@ -2,7 +2,6 @@ package cascades
 
 import (
 	"slices"
-	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -254,7 +253,10 @@ func compensatedSingleAccessExpression(
 	if access == nil || scan == nil {
 		return nil, false
 	}
-	var expr expressions.RelationalExpression = wrapAccessScan(access, scan)
+	expr, err := wrapAccessScan(access, scan)
+	if err != nil {
+		return nil, false
+	}
 	compensation := access.GetCompensation()
 	if compensation == nil || compensation.IsImpossible() {
 		return nil, false
@@ -508,6 +510,7 @@ type primaryKeyIntersectionBuild struct {
 
 type primaryKeyComparisonAlternative struct {
 	parts   []properties.ProvidedOrderingPart
+	source  values.QuantifiedObjectValue
 	reverse bool
 }
 
@@ -607,14 +610,30 @@ func createPrimaryKeyIntersection(
 	if len(pkValues) == 0 {
 		return primaryKeyIntersectionBuild{}
 	}
+	comparisonKeyLayout := intersectionKeyLayout(partition)
+	if comparisonKeyLayout == nil {
+		return primaryKeyIntersectionBuild{}
+	}
 	implicitFixedValues := implicitFixedPrimaryKeyValues(partition, pkValues)
 
 	var commonOrdering *properties.RichOrdering
 	var equalityBoundValues []values.Value
+	admittedComparisonKeySources := make(map[values.QuantifiedObjectValue]struct{})
+	var canonicalComparisonKeySource values.QuantifiedObjectValue
 	for _, access := range accesses {
 		ordering := adjustedIntersectionOrdering(access, implicitFixedValues)
 		if ordering == nil {
 			return primaryKeyIntersectionBuild{}
+		}
+		orderingSources := intersectionOrderingSources(ordering, comparisonKeyLayout)
+		if len(orderingSources) == 0 {
+			return primaryKeyIntersectionBuild{}
+		}
+		for _, source := range orderingSources {
+			admittedComparisonKeySources[source] = struct{}{}
+			if canonicalComparisonKeySource == nil {
+				canonicalComparisonKeySource = source
+			}
 		}
 		if commonOrdering == nil {
 			commonOrdering = ordering
@@ -647,8 +666,8 @@ func createPrimaryKeyIntersection(
 		if requested == nil {
 			continue
 		}
-		for _, comparisonValues := range commonOrdering.
-			EnumerateSatisfyingIntersectionComparisonKeyValues(requested) {
+		enumerated := commonOrdering.EnumerateSatisfyingIntersectionComparisonKeyValues(requested)
+		for _, comparisonValues := range enumerated {
 			// An empty physical merge key cannot establish cursor progress.
 			// Java can represent more Value shapes than Go's executor today;
 			// declining here is the bounded, safe optimization miss.
@@ -677,11 +696,21 @@ func createPrimaryKeyIntersection(
 			if bakedParts == nil {
 				continue
 			}
+			bakedParts, comparisonSource, sourceOK := canonicalizeIntersectionOrderingParts(
+				bakedParts,
+				comparisonKeyLayout,
+				canonicalComparisonKeySource,
+				admittedComparisonKeySources,
+			)
+			if !sourceOK {
+				continue
+			}
 			if containsComparisonAlternative(alternatives, bakedParts, reverse) {
 				continue
 			}
 			alternatives = append(alternatives, primaryKeyComparisonAlternative{
 				parts:   bakedParts,
+				source:  comparisonSource,
 				reverse: reverse,
 			})
 		}
@@ -692,10 +721,13 @@ func createPrimaryKeyIntersection(
 
 	childQs := make([]expressions.Quantifier, 0, len(partition))
 	for i, access := range accesses {
-		var expr expressions.RelationalExpression = wrapAccessScan(
+		expr, err := wrapAccessScan(
 			access,
 			scans[i],
 		)
+		if err != nil {
+			return primaryKeyIntersectionBuild{}
+		}
 		if candidateCreatesDuplicates(
 			access.GetPartialMatch().GetMatchCandidate(),
 		) {
@@ -704,7 +736,8 @@ func createPrimaryKeyIntersection(
 			// intersection. The merge executor has set semantics and the
 			// intersection property advertises distinct records; allowing
 			// duplicate PKs into a leg would violate both contracts.
-			expr = plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(
+			var distinctErr error
+			expr, distinctErr = plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(
 				expressions.NewPhysicalQuantifier(
 					expressions.FinalOfAtStage(
 						expr,
@@ -712,6 +745,9 @@ func createPrimaryKeyIntersection(
 					),
 				),
 			)
+			if distinctErr != nil {
+				return primaryKeyIntersectionBuild{}
+			}
 		}
 		childQs = append(childQs, expressions.NewPhysicalQuantifier(
 			expressions.FinalOfAtStage(expr, expressions.StageCanonical),
@@ -725,12 +761,13 @@ func createPrimaryKeyIntersection(
 		structurallyCompatible: true,
 	}
 	for _, alternative := range alternatives {
-		intersectionPlan := plans.NewRecordQueryIntersectionPlanFromQuantifiersWithOrdering(
+		intersectionPlan, planErr := plans.NewRecordQueryIntersectionPlanFromQuantifiersWithOrderingAndSource(
 			childQs,
 			alternative.parts,
 			alternative.reverse,
+			alternative.source,
 		)
-		if intersectionPlan == nil {
+		if planErr != nil || intersectionPlan == nil {
 			continue
 		}
 		expr, viable := compensateIntersection(accesses, intersectionPlan)
@@ -867,7 +904,7 @@ func comparisonKeyContainsFreePrimaryKey(
 
 func containsIntersectionValue(haystack []values.Value, needle values.Value) bool {
 	for _, value := range haystack {
-		if intersectionValuesEqualIn(haystack, value, needle) {
+		if intersectionValuesEqualIn(value, needle) {
 			return true
 		}
 	}
@@ -896,16 +933,10 @@ func containsIntersectionValue(haystack []values.Value, needle values.Value) boo
 // every such pair now returns from the arm above. Keeping a call that cannot
 // fire would read as a live fallback for the very class the identity arm was
 // made final over.
-// The `context` parameter is the LIST the caller is scanning — the `seen` dedup's
-// accepted keys, the partition's comparison-key or equality-bound list. Only the
-// census reads it, and only for the root-wildcard ambiguity, which is a property
-// of a whole list rather than of a pair: an intransitive triple costs a
-// nondeterministic comparison key exactly when all three of its members sit in ONE
-// of these lists.
-func intersectionValuesEqualIn(context []values.Value, left, right values.Value) bool {
+func intersectionValuesEqualIn(left, right values.Value) bool {
 	recordOrderingComparison(
 		OrderingSiteIntersectionKeys, left, right,
-		values.CanBridgeOrderingFieldValues, context,
+		values.CanBridgeOrderingFieldValues,
 	)
 	if values.OrderingFieldPair(left, right) {
 		return values.SameOrderingColumn(left, right)
@@ -915,12 +946,134 @@ func intersectionValuesEqualIn(context []values.Value, left, right values.Value)
 
 func plainFieldComparisonParts(parts []properties.ProvidedOrderingPart) bool {
 	for _, part := range parts {
-		field, ok := part.Value.(*values.FieldValue)
-		if !ok || field.Child != nil {
+		field, ok := values.AsFieldValue(part.Value)
+		if !ok || field.ChildValue() == nil || field.Path() == nil || field.Path().Len() != 1 {
 			return false
 		}
 	}
 	return true
+}
+
+func intersectionComparisonKeySource(
+	parts []properties.ProvidedOrderingPart,
+) (values.QuantifiedObjectValue, bool) {
+	var source values.QuantifiedObjectValue
+	for _, part := range parts {
+		field, isField := values.AsFieldValue(part.Value)
+		if !isField || field.Path() == nil || field.Path().Len() != 1 {
+			return nil, false
+		}
+		root, isRoot := values.AsQuantifiedObjectValue(field.ChildValue())
+		if !isRoot || root.Correlation() != values.CurrentCorrelation() {
+			return nil, false
+		}
+		if source == nil {
+			source = root
+			continue
+		}
+		if root != source {
+			return nil, false
+		}
+	}
+	return source, source != nil
+}
+
+// intersectionOrderingSources returns the exact current-row carriers that an
+// access candidate itself used for top-level ordering fields in layout. The
+// result is pointer-authoritative: an independently minted current QOV with the
+// same flowed type is deliberately absent. The intersector uses this census to
+// distinguish candidate-owned ordering metadata from a foreign phase root
+// before it canonicalizes a cross-candidate comparison key.
+func intersectionOrderingSources(
+	ordering *properties.RichOrdering,
+	layout *values.RecordType,
+) []values.QuantifiedObjectValue {
+	if ordering == nil || layout == nil {
+		return nil
+	}
+	domain := values.OrdinalDomainOfType(layout)
+	if !domain.IsKnown() {
+		return nil
+	}
+	seen := make(map[values.QuantifiedObjectValue]struct{})
+	var sources []values.QuantifiedObjectValue
+	for _, key := range ordering.GetKeys() {
+		field, isField := values.AsFieldValue(key)
+		if !isField || field.Path() == nil || field.Path().Len() != 1 ||
+			field.Path().RootDomain() != domain {
+			continue
+		}
+		root, isRoot := values.AsQuantifiedObjectValue(field.ChildValue())
+		if !isRoot || root.Correlation() != values.CurrentCorrelation() ||
+			!sameExactType(root.FlowedType(), layout) {
+			continue
+		}
+		if _, duplicate := seen[root]; duplicate {
+			continue
+		}
+		seen[root] = struct{}{}
+		sources = append(sources, root)
+	}
+	return sources
+}
+
+// canonicalizeIntersectionOrderingParts moves candidate-owned, top-level
+// comparison fields onto one candidate carrier before the strict physical-plan
+// constructor moves them to the intersection's output carrier. A common rich
+// ordering can legitimately select TENANT from one index candidate and SEQ
+// from another; those sources are different QOV pointers even though both
+// index the same admitted record layout. Keeping the alternating roots makes a
+// composite primary-key intersection unconstructible.
+//
+// The bridge is intentionally local to the intersector's candidate proof. It
+// requires the unanimous row layout and admits only QOV pointers observed in
+// those candidates' own orderings. Foreign named roots, independently minted
+// current roots, different exact types/domains, and nested paths all decline.
+// Parts are rebuilt copy-on-write from their proven ordinal, so neither a
+// candidate ordering nor the caller's slice is mutated.
+func canonicalizeIntersectionOrderingParts(
+	parts []properties.ProvidedOrderingPart,
+	layout *values.RecordType,
+	canonical values.QuantifiedObjectValue,
+	admitted map[values.QuantifiedObjectValue]struct{},
+) ([]properties.ProvidedOrderingPart, values.QuantifiedObjectValue, bool) {
+	if len(parts) == 0 || layout == nil || canonical == nil ||
+		canonical.Correlation() != values.CurrentCorrelation() ||
+		!sameExactType(canonical.FlowedType(), layout) {
+		return nil, nil, false
+	}
+	if _, ok := admitted[canonical]; !ok {
+		return nil, nil, false
+	}
+	domain := values.OrdinalDomainOfType(layout)
+	if !domain.IsKnown() {
+		return nil, nil, false
+	}
+	normalized := make([]properties.ProvidedOrderingPart, len(parts))
+	for i, part := range parts {
+		field, isField := values.AsFieldValue(part.Value)
+		if !isField || field.Path() == nil || field.Path().Len() != 1 ||
+			field.Path().RootDomain() != domain {
+			return nil, nil, false
+		}
+		root, isRoot := values.AsQuantifiedObjectValue(field.ChildValue())
+		if !isRoot || root.Correlation() != values.CurrentCorrelation() ||
+			!sameExactType(root.FlowedType(), layout) {
+			return nil, nil, false
+		}
+		if _, ok := admitted[root]; !ok {
+			return nil, nil, false
+		}
+		resolved, err := values.ResolveFieldOrdinals(canonical, field.Path().Ordinals())
+		if err != nil || !sameExactType(resolved.Type(), field.ResultType()) {
+			return nil, nil, false
+		}
+		normalized[i] = properties.ProvidedOrderingPart{
+			Value:     resolved,
+			SortOrder: part.SortOrder,
+		}
+	}
+	return normalized, canonical, true
 }
 
 func bakeIntersectionOrderingParts(
@@ -1112,11 +1265,35 @@ func bakeIntersectionPrimaryKeyValues(
 	out := make([]values.Value, len(pk))
 	for i, v := range pk {
 		out[i] = v
-		field, isField := v.(*values.FieldValue)
-		if !isField || field == nil || field.Resolved != nil || field.Child != nil {
+		field, isField := values.AsFieldValue(v)
+		if !isField {
 			continue
 		}
-		out[i] = bakeOrderingColumnIn(layout, field.Field)
+		if qov, ok := values.AsQuantifiedObjectValue(field.ChildValue()); ok &&
+			sameExactType(qov.FlowedType(), layout) {
+			// Structural PK metadata is rooted at the synthetic
+			// __primary_key_metadata correlation. The intersection ordering is
+			// rooted at the stable owner-current carrier minted for this exact row
+			// layout. Equal type/domain is not enough: SameOrderingColumn correctly
+			// rejects two distinct named roots, so preserving the metadata root
+			// makes ID#0 fail to match the legs' _current.ID#0 and eliminates every
+			// intersection. Re-resolve the already-admitted ordinal path on the
+			// canonical carrier; this preserves nested PK structure without a
+			// display-name lookup.
+			carrier, carrierOK := orderingKeyCarrier(layout)
+			if !carrierOK || field.Path() == nil || field.Path().Len() == 0 {
+				out[i] = nil
+				continue
+			}
+			resolved, err := values.ResolveFieldOrdinals(carrier, field.Path().Ordinals())
+			if err != nil {
+				out[i] = nil
+				continue
+			}
+			out[i] = resolved
+			continue
+		}
+		out[i] = bakeOrderingColumnIn(layout, field.DisplayName())
 	}
 	return out
 }
@@ -1194,14 +1371,11 @@ func commonPrimaryKeyValues(accesses []Vectored[*SingleMatchedAccess], ctx PlanC
 		return nil
 	}
 
-	result := make([]values.Value, len(pkCols))
-	for i, col := range pkCols {
-		result[i] = &values.FieldValue{
-			Field: strings.ToUpper(col),
-			Typ:   values.UnknownType,
-		}
+	layout := intersectionKeyLayout(accesses)
+	if layout == nil {
+		return nil
 	}
-	return result
+	return resolvedColumnsInRow(layout, pkCols)
 }
 
 // bakedIntersectionKeys resolves the name-only pk comparison keys against
@@ -1231,13 +1405,12 @@ func bakedIntersectionKeys(pkValues []values.Value, legs []plans.RecordQueryPlan
 	}
 	baked := bakeMergeComparisonKeys(pkValues, nil, rowType)
 	for _, k := range baked {
-		fv, isFV := k.(*values.FieldValue)
-		if !isFV || fv.Child != nil || fv.Resolved == nil ||
-			len(fv.Resolved.Accessors) != 1 {
+		fv, isFV := values.AsFieldValue(k)
+		if !isFV || fv.ChildValue() == nil || fv.Path() == nil || fv.Path().Len() != 1 {
 			return nil
 		}
-		ordinal, unique := uniqueUpperFieldIndex(rowType, fv.Field)
-		if !unique || fv.Resolved.Root().Ordinal != ordinal {
+		ordinal, unique := uniqueUpperFieldIndex(rowType, fv.DisplayName())
+		if !unique || fv.Path().Ordinals()[0] != ordinal {
 			return nil
 		}
 	}

@@ -9,6 +9,38 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustImplementUniqueConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct implement-unique fixture: " + err.Error())
+	}
+	return value
+}
+
+func implementUniqueRowType() *values.RecordType {
+	return values.NewRecordType("", false, []values.Field{{
+		Name: "ID", FieldType: values.NotNullLong,
+	}})
+}
+
+func implementUniquePrimaryKey() []values.Value {
+	root := mustImplementUniqueConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("implement_unique_primary_key"),
+		implementUniqueRowType()))
+	return []values.Value{
+		mustImplementUniqueConstruct(values.ResolveFieldOrdinals(root, []int{0})),
+	}
+}
+
+func implementUniqueScan(recordType string, withPrimaryKey bool) *plans.RecordQueryScanPlan {
+	scan := mustImplementUniqueConstruct(plans.NewRecordQueryScanPlan(
+		[]string{recordType}, implementUniqueRowType(), false))
+	if !withPrimaryKey {
+		return scan
+	}
+	return scan.WithPrimaryKey(implementUniquePrimaryKey()).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong})
+}
+
 // ---------------------------------------------------------------------------
 // ImplementUniqueRule
 // ---------------------------------------------------------------------------
@@ -16,8 +48,9 @@ import (
 func TestImplementUniqueRule_MatchesLogicalUniqueExpression(t *testing.T) {
 	t.Parallel()
 	rule := NewImplementUniqueRule()
-	scanRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil))
-	unique := expressions.NewLogicalUniqueExpression(expressions.ForEachQuantifier(scanRef))
+	scanRef := expressions.InitialOf(mustImplementUniqueConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, implementUniqueRowType())))
+	unique := mustImplementUniqueConstruct(expressions.NewLogicalUniqueExpression(expressions.ForEachQuantifier(scanRef)))
 
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), unique)
 	if len(bindings) == 0 {
@@ -29,8 +62,9 @@ func TestImplementUniqueRule_SkipsNonMatching(t *testing.T) {
 	t.Parallel()
 	rule := NewImplementUniqueRule()
 	// A filter expression should not match.
-	scanRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil))
-	filter := expressions.NewLogicalFilterExpression(nil, expressions.ForEachQuantifier(scanRef))
+	scanRef := expressions.InitialOf(mustImplementUniqueConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, implementUniqueRowType())))
+	filter := mustImplementUniqueConstruct(expressions.NewLogicalFilterExpression(nil, expressions.ForEachQuantifier(scanRef)))
 
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), filter)
 	if len(bindings) != 0 {
@@ -42,13 +76,7 @@ func TestImplementUniqueRule_AbsorbsWhenInnerIsDistinct(t *testing.T) {
 	t.Parallel()
 	// Build: Unique(innerRef) where innerRef holds a bare scan plan
 	// with distinct=true and a proven primary key.
-	scan := plans.NewRecordQueryScanPlan(
-		[]string{"T"},
-		values.UnknownType,
-		false,
-	).WithPrimaryKey([]values.Value{
-		&values.FieldValue{Field: "ID", Typ: values.UnknownType},
-	})
+	scan := implementUniqueScan("T", true)
 	scanWrapper := scan
 
 	// Create inner reference with physical wrapper as final member.
@@ -60,11 +88,11 @@ func TestImplementUniqueRule_AbsorbsWhenInnerIsDistinct(t *testing.T) {
 	innerRef.SetPlanProperties(pm)
 
 	// Build the LogicalUniqueExpression.
-	unique := expressions.NewLogicalUniqueExpression(expressions.ForEachQuantifier(innerRef))
+	unique := mustImplementUniqueConstruct(expressions.NewLogicalUniqueExpression(expressions.ForEachQuantifier(innerRef)))
 	outerRef := expressions.InitialOf(unique)
 
 	// Fire the rule.
-	results := FireImplementationRule(NewImplementUniqueRule(), outerRef)
+	results := mustFireImplementationRule(t, NewImplementUniqueRule(), outerRef)
 	if len(results) == 0 {
 		t.Fatal("ImplementUniqueRule should yield expressions when inner is distinct")
 	}
@@ -88,23 +116,11 @@ func TestImplementUniqueRule_OrdinaryRequiresDistinctAndPrimaryKeyOnSameMember(
 ) {
 	t.Parallel()
 
-	pk := []values.Value{
-		&values.FieldValue{Field: "ID", Typ: values.UnknownType},
-	}
-	distinctWithPK := plans.NewRecordQueryScanPlan(
-		[]string{"DISTINCT_WITH_PK"},
-		values.UnknownType,
-		false,
-	).WithPrimaryKey(pk)
-	distinctWithoutPK := plans.NewRecordQueryScanPlan(
-		[]string{"DISTINCT_WITHOUT_PK"},
-		values.UnknownType,
-		false,
-	)
-	notDistinctWithPK := plans.NewRecordQueryProjectionPlan(
-		[]values.Value{&values.ConstantValue{Value: int64(1)}},
-		distinctWithPK,
-	)
+	distinctWithPK := implementUniqueScan("DISTINCT_WITH_PK", true)
+	distinctWithoutPK := implementUniqueScan("DISTINCT_WITHOUT_PK", false)
+	notDistinctWithPK := mustImplementUniqueConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}},
+		[]string{"ID"}, distinctWithPK))
 
 	innerRef := expressions.InitialOf(distinctWithPK)
 	innerRef.Insert(distinctWithoutPK)
@@ -115,10 +131,10 @@ func TestImplementUniqueRule_OrdinaryRequiresDistinctAndPrimaryKeyOnSameMember(
 	pm.Add(notDistinctWithPK)
 	innerRef.SetPlanProperties(pm)
 
-	unique := expressions.NewLogicalUniqueExpression(
+	unique := mustImplementUniqueConstruct(expressions.NewLogicalUniqueExpression(
 		expressions.ForEachQuantifier(innerRef),
-	)
-	results := FireImplementationRule(
+	))
+	results := mustFireImplementationRule(t,
 		NewImplementUniqueRule(),
 		expressions.InitialOf(unique),
 	)
@@ -135,23 +151,11 @@ func TestImplementUniqueRule_RequiredWrapsEveryPKMemberAndFreezesExactInput(
 ) {
 	t.Parallel()
 
-	pk := []values.Value{
-		&values.FieldValue{Field: "ID", Typ: values.UnknownType},
-	}
-	distinctWithPK := plans.NewRecordQueryScanPlan(
-		[]string{"DISTINCT_WITH_PK"},
-		values.UnknownType,
-		false,
-	).WithPrimaryKey(pk)
-	distinctWithoutPK := plans.NewRecordQueryScanPlan(
-		[]string{"DISTINCT_WITHOUT_PK"},
-		values.UnknownType,
-		false,
-	)
-	notDistinctWithPK := plans.NewRecordQueryProjectionPlan(
-		[]values.Value{&values.ConstantValue{Value: int64(1)}},
-		distinctWithPK,
-	)
+	distinctWithPK := implementUniqueScan("DISTINCT_WITH_PK", true)
+	distinctWithoutPK := implementUniqueScan("DISTINCT_WITHOUT_PK", false)
+	notDistinctWithPK := mustImplementUniqueConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}},
+		[]string{"ID"}, distinctWithPK))
 
 	innerRef := expressions.InitialOf(distinctWithPK)
 	innerRef.Insert(distinctWithoutPK)
@@ -162,10 +166,10 @@ func TestImplementUniqueRule_RequiredWrapsEveryPKMemberAndFreezesExactInput(
 	pm.Add(notDistinctWithPK)
 	innerRef.SetPlanProperties(pm)
 
-	unique := expressions.NewRequiredLogicalUniqueExpression(
+	unique := mustImplementUniqueConstruct(expressions.NewRequiredLogicalUniqueExpression(
 		expressions.ForEachQuantifier(innerRef),
-	)
-	results := FireImplementationRule(
+	))
+	results := mustFireImplementationRule(t,
 		NewImplementUniqueRule(),
 		expressions.InitialOf(unique),
 	)
@@ -215,7 +219,8 @@ func TestImplementUniqueRule_NoYieldWhenInnerNotDistinct(t *testing.T) {
 	t.Parallel()
 	// Streaming agg has distinct=false. Since RFC-184 W2 the memo holds the bare
 	// *plans.RecordQueryStreamingAggregationPlan (no physicalStreamingAggWrapper).
-	aggPlan := plans.NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
+	scan := implementUniqueScan("T", false)
+	aggPlan := mustImplementUniqueConstruct(plans.NewRecordQueryStreamingAggregationPlan(scan, nil, nil))
 	aggWrapper := aggPlan
 
 	innerRef := expressions.InitialOf(aggWrapper)
@@ -223,24 +228,21 @@ func TestImplementUniqueRule_NoYieldWhenInnerNotDistinct(t *testing.T) {
 	pm.Add(aggWrapper)
 	innerRef.SetPlanProperties(pm)
 
-	unique := expressions.NewLogicalUniqueExpression(expressions.ForEachQuantifier(innerRef))
+	unique := mustImplementUniqueConstruct(expressions.NewLogicalUniqueExpression(expressions.ForEachQuantifier(innerRef)))
 	outerRef := expressions.InitialOf(unique)
 
-	results := FireImplementationRule(NewImplementUniqueRule(), outerRef)
+	results := mustFireImplementationRule(t, NewImplementUniqueRule(), outerRef)
 	if len(results) != 0 {
 		t.Fatalf("ImplementUniqueRule should NOT yield when inner is not distinct, got %d results", len(results))
 	}
 }
 
-func TestImplementUniqueRule_NilInnerRef(t *testing.T) {
+func TestImplementUniqueRule_RejectsNilInnerRef(t *testing.T) {
 	t.Parallel()
-	// LogicalUniqueExpression with a quantifier whose reference is nil.
-	// The rule should bail without panicking.
-	unique := expressions.NewLogicalUniqueExpression(expressions.ForEachQuantifier(nil))
-	outerRef := expressions.InitialOf(unique)
-
-	results := FireImplementationRule(NewImplementUniqueRule(), outerRef)
-	if len(results) != 0 {
-		t.Fatalf("ImplementUniqueRule with nil inner ref should yield nothing, got %d", len(results))
+	// RFC-232 moves this malformed boundary ahead of rule matching: an exact
+	// Unique cannot be published without a ranged-over result type.
+	unique, err := expressions.NewLogicalUniqueExpression(expressions.ForEachQuantifier(nil))
+	if err == nil || unique != nil {
+		t.Fatalf("nil-inner Unique = (%#v, %v), want constructor rejection", unique, err)
 	}
 }

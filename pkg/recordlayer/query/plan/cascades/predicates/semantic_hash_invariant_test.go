@@ -10,8 +10,9 @@ import (
 // literal comparand, parameter binding, LIKE escape, text-search comparand
 // fields, and unary operand representation. The final entry duplicates the
 // first so the property test is never vacuously true.
-func comparisonPredicatePool() []*ComparisonPredicate {
-	x := values.NewFlatFieldValue("X", values.UnknownType)
+func comparisonPredicatePool(t testing.TB) []*ComparisonPredicate {
+	t.Helper()
+	x := predicateTestField(t, "X", values.UnknownType)
 	lit := func(n int64) values.Value { return &values.ConstantValue{Value: n, Typ: values.NotNullLong} }
 	return []*ComparisonPredicate{
 		{Operand: x, Comparison: Comparison{Type: ComparisonEquals, Operand: lit(5)}},
@@ -46,7 +47,7 @@ func boolPtr(b bool) *bool { return &b }
 //     compared equal but hashed apart.
 func TestComparisonPredicate_EqualImpliesSameHash(t *testing.T) {
 	t.Parallel()
-	pool := comparisonPredicatePool()
+	pool := comparisonPredicatePool(t)
 	for i, a := range pool {
 		for j, b := range pool {
 			ha, hb := SemanticHashCode(a), SemanticHashCode(b)
@@ -69,7 +70,7 @@ func TestComparisonPredicate_EqualImpliesSameHash(t *testing.T) {
 // dimensions the fix added.
 func TestComparisonPredicate_Discriminators(t *testing.T) {
 	t.Parallel()
-	pool := comparisonPredicatePool()
+	pool := comparisonPredicatePool(t)
 	pa, pb := pool[2], pool[3] // x = $a vs x = $b
 	if PredicateEquals(pa, pb) {
 		t.Error("x = $a and x = $b read different runtime bindings — must NOT compare equal")

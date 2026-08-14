@@ -16,21 +16,21 @@ import (
 func TestAggregateNaming_StableUnderOrdinalBind(t *testing.T) {
 	t.Parallel()
 
-	lazyOp := values.NewFlatFieldValue("AMOUNT", values.UnknownType)
-	bakedOp := values.NewFieldValueWithResolvedOrdinal("AMOUNT", 2, values.UnknownType)
+	lazyOp := testField("AMOUNT", values.NotNullLong)
+	bakedOp := testFieldAt("AMOUNT", 2, values.NotNullLong)
 
 	lazyName := AggregateResultColumnName(AggregateSpec{Function: AggSum, Operand: lazyOp})
 	bakedName := AggregateResultColumnName(AggregateSpec{Function: AggSum, Operand: bakedOp})
 	if lazyName != bakedName {
 		t.Fatalf("aggregate name drift: lazy %q vs baked %q", lazyName, bakedName)
 	}
-	if lazyName != "SUM(AMOUNT)" {
-		t.Fatalf("canonical name = %q, want SUM(AMOUNT)", lazyName)
+	if lazyName != "SUM(TEST_FIELD.AMOUNT)" {
+		t.Fatalf("canonical name = %q, want SUM(TEST_FIELD.AMOUNT)", lazyName)
 	}
 
 	// COMPUTED operand (no FieldValue shortcut — the ColumnNameValue arm).
-	lazyExpr := &values.ArithmeticValue{Op: values.OpMul, Left: lazyOp, Right: values.NewFlatFieldValue("QTY", values.UnknownType)}
-	bakedExpr := &values.ArithmeticValue{Op: values.OpMul, Left: bakedOp, Right: values.NewFieldValueWithResolvedOrdinal("QTY", 3, values.UnknownType)}
+	lazyExpr := &values.ArithmeticValue{Op: values.OpMul, Left: lazyOp, Right: testField("QTY", values.NotNullLong)}
+	bakedExpr := &values.ArithmeticValue{Op: values.OpMul, Left: bakedOp, Right: testFieldAt("QTY", 3, values.NotNullLong)}
 	if l, b := AggregateResultColumnName(AggregateSpec{Function: AggSum, Operand: lazyExpr}),
 		AggregateResultColumnName(AggregateSpec{Function: AggSum, Operand: bakedExpr}); l != b {
 		t.Fatalf("computed-operand aggregate name drift: lazy %q vs baked %q", l, b)
@@ -62,12 +62,10 @@ func TestAggregateNaming_StableUnderOrdinalBind(t *testing.T) {
 func TestAggregateKeyColumnName_NestedKeyTakesTheResolvedPath(t *testing.T) {
 	t.Parallel()
 
-	nestedSK := &values.FieldValue{Field: "N", Resolved: &values.FieldPath{
-		Accessors: []values.ResolvedAccessor{{Field: "N", Ordinal: 0}, {Field: "SK", Ordinal: 1}},
-	}}
-	nestedCO := &values.FieldValue{Field: "N", Resolved: &values.FieldPath{
-		Accessors: []values.ResolvedAccessor{{Field: "N", Ordinal: 0}, {Field: "CO", Ordinal: 2}},
-	}}
+	nestedType := rowOfTypes("N", rowOfTypes("SK", values.NotNullLong, "CO", values.NotNullLong))
+	base := mustExpression(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("BASE"), nestedType))
+	nestedSK := mustResolvedField(base, "N", "SK")
+	nestedCO := mustResolvedField(base, "N", "CO")
 
 	sk, co := AggregateKeyColumnName(nestedSK), AggregateKeyColumnName(nestedCO)
 	if sk == co {
@@ -76,11 +74,11 @@ func TestAggregateKeyColumnName_NestedKeyTakesTheResolvedPath(t *testing.T) {
 			"grouping columns now share one map key and the later overwrites the "+
 			"earlier: `GROUP BY n.sk, n.co` returns 2 groups where the data has 4.", sk)
 	}
-	if sk != "N.SK" || co != "N.CO" {
+	if sk != "BASE.N.SK" || co != "BASE.N.CO" {
 		t.Fatalf("nested group-key names are %q and %q, want %q and %q — merely "+
 			"being distinct is satisfiable by a positional fallback, which is a "+
 			"different contract and would not survive the round trip through the "+
-			"translator's name-keyed registry", sk, co, "N.SK", "N.CO")
+			"translator's name-keyed registry", sk, co, "BASE.N.SK", "BASE.N.CO")
 	}
 
 	// The whole-row name vector is what the plan and the executor actually
@@ -88,20 +86,24 @@ func TestAggregateKeyColumnName_NestedKeyTakesTheResolvedPath(t *testing.T) {
 	// through GroupByOutputColumnNames would leave the collapse in place where
 	// it bites.
 	names := GroupByOutputColumnNames([]values.Value{nestedSK, nestedCO}, nil)
-	if len(names) != 2 || names[0] != "N.SK" || names[1] != "N.CO" {
-		t.Fatalf("GroupByOutputColumnNames over two nested keys = %v, want [N.SK N.CO]", names)
+	if len(names) != 2 || names[0] != "BASE.N.SK" || names[1] != "BASE.N.CO" {
+		t.Fatalf("GroupByOutputColumnNames over two nested keys = %v, want [BASE.N.SK BASE.N.CO]", names)
 	}
 
 	// CONTROL — a FLAT key must keep its bare Field. Without this the assertions
 	// above pass for an implementation that routed EVERY key through the path
 	// renderer, which would qualify a lateral-unnest shadowing key as `V.V` and
 	// break the RFC-142 lockstep the flat arm exists for.
-	flat := values.NewFlatFieldValue("STATUS", values.UnknownType)
+	flat := testField("STATUS", values.NotNullLong)
 	if got := AggregateKeyColumnName(flat); got != "STATUS" {
 		t.Fatalf("a FLAT group key now names its column %q, want STATUS — the "+
 			"nested arm has widened past the multi-accessor predicate", got)
 	}
-	qualified := values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("Q$DUP1")), "QID", values.UnknownType)
+	qualifiedBase := mustExpression(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("Q$DUP1"),
+		rowOfTypes("QID", values.NotNullLong),
+	))
+	qualified := mustResolvedField(qualifiedBase, "QID")
 	if got := AggregateKeyColumnName(qualified); got != "QID" {
 		t.Fatalf("a CORRELATION-qualified group key now names its column %q, want "+
 			"QID — the executor keys that row by the bare field (RFC-142), so a "+
@@ -121,12 +123,10 @@ func TestAggregateKeyColumnName_NestedKeyTakesTheResolvedPath(t *testing.T) {
 	// last-wins maps the nested arm exists to protect. Asserting the exact
 	// spelling, not merely "distinct": distinct is satisfiable by a positional
 	// fallback.
-	qualifiedNested := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T1")),
-		"N", values.UnknownType)
-	qualifiedNested.Resolved = &values.FieldPath{Accessors: []values.ResolvedAccessor{
-		{Field: "N", Ordinal: 1}, {Field: "SK", Ordinal: 0},
-	}}
+	qualifiedNested := mustResolvedField(
+		mustExpression(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T1"), nestedType)),
+		"N", "SK",
+	)
 	if got := AggregateKeyColumnName(qualifiedNested); got != "T1.N.SK" {
 		t.Fatalf("a QUALIFIED nested group key names its column %q, want T1.N.SK — "+
 			"the path is rendered THROUGH the child by design, so that two sources "+
@@ -137,10 +137,10 @@ func TestAggregateKeyColumnName_NestedKeyTakesTheResolvedPath(t *testing.T) {
 	}
 	// The cross-source distinctness the qualifier buys, asserted directly rather
 	// than left as an argument in a comment.
-	other := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T2")),
-		"N", values.UnknownType)
-	other.Resolved = qualifiedNested.Resolved
+	other := mustResolvedField(
+		mustExpression(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T2"), nestedType)),
+		"N", "SK",
+	)
 	if a, b := AggregateKeyColumnName(qualifiedNested), AggregateKeyColumnName(other); a == b {
 		t.Fatalf("the same nested path off TWO different sources both name %q — "+
 			"`t1.n.sk` and `t2.n.sk` are different columns and this is the map key "+

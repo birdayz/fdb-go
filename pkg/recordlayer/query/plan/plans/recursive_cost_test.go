@@ -18,11 +18,15 @@ import (
 func TestRecursiveCost_DfsStrictlyCheaperThanLevelUnion(t *testing.T) {
 	t.Parallel()
 
-	dfs := NewRecordQueryRecursiveDfsJoinPlan(nil, nil,
-		values.NamedCorrelationIdentifier("prior"), DfsPreorder)
-	level := NewRecordQueryRecursiveLevelUnionPlan(nil, nil,
-		values.NamedCorrelationIdentifier("scan"),
-		values.NamedCorrelationIdentifier("insert"))
+	dfs := mustChecked(t, func() (*RecordQueryRecursiveDfsJoinPlan, error) {
+		return NewRecordQueryRecursiveDfsJoinPlan(stub("Root"), stub("Child"),
+			values.NamedCorrelationIdentifier("prior"), DfsPreorder)
+	})
+	level := mustChecked(t, func() (*RecordQueryRecursiveLevelUnionPlan, error) {
+		return NewRecordQueryRecursiveLevelUnionPlan(stub("Initial"), stub("Recursive"),
+			values.NamedCorrelationIdentifier("scan"),
+			values.NamedCorrelationIdentifier("insert"))
+	})
 
 	// A spread of NON-degenerate seed/recursive child-cost shapes: tiny,
 	// wide-CPU, asymmetric. A genuinely zero-cardinality pair (e.g. a LIMIT 0
@@ -99,11 +103,15 @@ func TestRecursiveCost_DfsStrictlyCheaperThanLevelUnion(t *testing.T) {
 func TestRecursiveCost_DfsAndLevelUnionTieOnGenuinelyEmptyChildren(t *testing.T) {
 	t.Parallel()
 
-	dfs := NewRecordQueryRecursiveDfsJoinPlan(nil, nil,
-		values.NamedCorrelationIdentifier("prior"), DfsPreorder)
-	level := NewRecordQueryRecursiveLevelUnionPlan(nil, nil,
-		values.NamedCorrelationIdentifier("scan"),
-		values.NamedCorrelationIdentifier("insert"))
+	dfs := mustChecked(t, func() (*RecordQueryRecursiveDfsJoinPlan, error) {
+		return NewRecordQueryRecursiveDfsJoinPlan(stub("Root"), stub("Child"),
+			values.NamedCorrelationIdentifier("prior"), DfsPreorder)
+	})
+	level := mustChecked(t, func() (*RecordQueryRecursiveLevelUnionPlan, error) {
+		return NewRecordQueryRecursiveLevelUnionPlan(stub("Initial"), stub("Recursive"),
+			values.NamedCorrelationIdentifier("scan"),
+			values.NamedCorrelationIdentifier("insert"))
+	})
 
 	child := []properties.Cost{{Cardinality: 0, CPU: 0}, {Cardinality: 0, CPU: 0}}
 	dfsCost := dfs.HintCost(child, properties.DefaultStatistics{})
@@ -122,8 +130,10 @@ func TestRecursiveCost_DfsAndLevelUnionTieOnGenuinelyEmptyChildren(t *testing.T)
 // recursiveCost (no accidental echo term on the streaming operator).
 func TestRecursiveCost_DfsMatchesBaseRecursion(t *testing.T) {
 	t.Parallel()
-	dfs := NewRecordQueryRecursiveDfsJoinPlan(nil, nil,
-		values.NamedCorrelationIdentifier("prior"), DfsPreorder)
+	dfs := mustChecked(t, func() (*RecordQueryRecursiveDfsJoinPlan, error) {
+		return NewRecordQueryRecursiveDfsJoinPlan(stub("Root"), stub("Child"),
+			values.NamedCorrelationIdentifier("prior"), DfsPreorder)
+	})
 	child := []properties.Cost{{Cardinality: 42, CPU: 7}, {Cardinality: 9, CPU: 3}}
 
 	got := dfs.HintCost(child, properties.DefaultStatistics{})
@@ -146,9 +156,11 @@ func TestRecursiveCost_DfsMatchesBaseRecursion(t *testing.T) {
 // future re-split cannot restore the split without failing here.
 func TestRecursiveCost_LevelUnionHintCostIsTheLivePath(t *testing.T) {
 	t.Parallel()
-	level := NewRecordQueryRecursiveLevelUnionPlan(nil, nil,
-		values.NamedCorrelationIdentifier("scan"),
-		values.NamedCorrelationIdentifier("insert"))
+	level := mustChecked(t, func() (*RecordQueryRecursiveLevelUnionPlan, error) {
+		return NewRecordQueryRecursiveLevelUnionPlan(stub("Initial"), stub("Recursive"),
+			values.NamedCorrelationIdentifier("scan"),
+			values.NamedCorrelationIdentifier("insert"))
+	})
 
 	for _, child := range [][]properties.Cost{
 		{{Cardinality: 42, CPU: 7}, {Cardinality: 9, CPU: 3}},

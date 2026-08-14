@@ -102,7 +102,7 @@ func RecordSelectResultMint(site SelectResultMintSite, rv Value) {
 		return
 	}
 	shape := fmt.Sprintf("%T", rv)
-	qov, isQOV := rv.(*QuantifiedObjectValue)
+	qov, isQOV := rv.(*quantifiedObjectValue)
 	if isQOV {
 		shape = fmt.Sprintf("QOV(typed=%t %s)", quantifiedObjectValueCarriesAType(qov), describeMintedQOVType(qov))
 	}
@@ -140,21 +140,21 @@ func RecordSelectResultMint(site SelectResultMintSite, rv Value) {
 // UnknownType singleton: an equivalent unknown built elsewhere is just as
 // untyped, and keying on the shared variable would call it typed. `Typ != nil`
 // would be a tautology — every constructible QOV has a non-nil Typ.
-func quantifiedObjectValueCarriesAType(qov *QuantifiedObjectValue) bool {
-	return qov.Typ != nil && qov.Typ.Code() != TypeCodeUnknown
+func quantifiedObjectValueCarriesAType(qov *quantifiedObjectValue) bool {
+	return qov.FlowedType() != nil && qov.FlowedType().Code() != TypeCodeUnknown
 }
 
 // describeMintedQOVType spells the flowed type, with a record's ARITY, because
 // the boolean above and the spelling answer different questions: a mint counted
 // as typed-but-not-a-row is a different fact from one carrying a real row.
-func describeMintedQOVType(qov *QuantifiedObjectValue) string {
-	if qov.Typ == nil {
+func describeMintedQOVType(qov *quantifiedObjectValue) string {
+	if qov.FlowedType() == nil {
 		return "<nil>"
 	}
-	if rt, ok := qov.Typ.(*RecordType); ok {
+	if rt, ok := qov.FlowedType().(*RecordType); ok {
 		return fmt.Sprintf("RecordType(%d)", len(rt.Fields))
 	}
-	return qov.Typ.Code().String()
+	return qov.FlowedType().Code().String()
 }
 
 // SelectResultMintOriginOf reports the site that MINTED rv, and whether any did.

@@ -61,15 +61,23 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 	projectedValues := projW.GetProjections()
 
 	oldInnerAlias := projW.GetInnerQuantifier().GetAlias()
-	newInnerAlias := values.UniqueCorrelationIdentifier()
+	fetchInnerRef := fetchW.GetInnerQuantifier().GetRangesOver()
+	if fetchInnerRef == nil {
+		return
+	}
+	newInnerQ := expressions.ForEachQuantifier(fetchInnerRef)
+	newInnerAlias := newInnerQ.GetAlias()
 
 	// Check if ALL projected values can be pushed through the fetch.
 	allPushable := true
-	for _, v := range projectedValues {
-		if _, ok := fetchPlan.PushValue(v, oldInnerAlias, newInnerAlias); !ok {
+	pushedValues := make([]values.Value, len(projectedValues))
+	for i, v := range projectedValues {
+		pushed, ok := fetchPlan.PushValue(v, oldInnerAlias, newInnerAlias)
+		if !ok || pushed == nil {
 			allPushable = false
 			break
 		}
+		pushedValues[i] = pushed
 	}
 
 	if !allPushable {
@@ -79,10 +87,6 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 	// All fields in the projection are already available underneath
 	// the fetch. We don't need the projection nor the fetch — yield
 	// the fetch's inner child directly, marked as covering.
-	fetchInnerRef := fetchW.GetInnerQuantifier().GetRangesOver()
-	if fetchInnerRef == nil {
-		return
-	}
 	fetchInnerExpr := findPhysicalExpr(fetchInnerRef)
 	if fetchInnerExpr == nil {
 		return
@@ -116,8 +120,18 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 	// the projection sit over the fetch's index-scan inner (the merge that
 	// strips the fetch), and DAG-aware extraction resolves that shared inner
 	// group to its winner instead of the retired snapshot.
-	call.Yield(plans.NewRecordQueryProjectionPlanFromQuantifierWithProvenance(
-		projectedValues, projW.GetAliases(), projW.GetAliasMinted(), expressions.ForEachQuantifier(fetchInnerRef)))
+	projection, err := plans.NewRecordQueryProjectionPlanFromQuantifierWithOutputSchema(
+		pushedValues, projW.GetAliases(), projW.GetAliasMinted(), projW.GetOutputNames(), newInnerQ)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	projection, err = projection.WithAliasSources(projW.GetAliasSources())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(projection)
 }
 
 var _ ImplementationRule = (*MergeProjectionAndFetchRule)(nil)

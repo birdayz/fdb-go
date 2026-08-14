@@ -58,13 +58,17 @@ func (r *QueryPredicateSimplificationRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	newSel := expressions.NewSelectExpressionWithJoinType(
+	newSel, err := expressions.NewSelectExpressionWithJoinType(
 		sel.GetResultValue(),
 		sel.GetQuantifiers(),
 		simplified,
 		sel.GetSourceAliases(),
 		sel.GetJoinType(),
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	call.Yield(newSel)
 }
 

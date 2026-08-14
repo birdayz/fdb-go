@@ -50,7 +50,11 @@ func (r *ImplementInsertRule) OnMatch(call *ExpressionRuleCall) {
 	// The INSERT plan is its own cascades expression now (RFC-184 W2) — it carries
 	// the live child edge directly, no physicalInsertWrapper.
 	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
-	insPlan := plans.NewRecordQueryInsertPlanFromQuantifier(innerQ, ins.GetTargetRecordType(), ins.GetTargetType())
+	insPlan, err := plans.NewRecordQueryInsertPlanFromQuantifier(innerQ, ins.GetTargetRecordType(), ins.GetTargetType())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	call.Yield(insPlan)
 }
 

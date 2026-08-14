@@ -1,6 +1,8 @@
 # limit_join.yaml — LIMIT with JOIN (Go extension combo test)
 #
 # Exercises LIMIT/OFFSET applied to FlatMap correlated join results.
+# RFC-232's exact physical edge exposes the join projection below LIMIT; the
+# `_current` ordinals are the checked merged-row layout, not display aliases.
 name: limit_join
 schema_template: |
   CREATE TABLE customers (id BIGINT, name STRING, PRIMARY KEY (id))
@@ -10,7 +12,7 @@ setup:
   - INSERT INTO orders VALUES (10, 1, 100), (20, 1, 200), (30, 2, 300), (40, 3, 50), (50, 3, 75)
 tests:
   - query: SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id ORDER BY o.id LIMIT 3
-    plan_contains: "Limit(3, FlatMap("
+    plan_contains: "Limit(3, Project([_current.ID#0, _current.NAME#4], FlatMap("
     plan_not_contains: "NestedLoopJoin"
     rows:
       - [10, "Alice"]

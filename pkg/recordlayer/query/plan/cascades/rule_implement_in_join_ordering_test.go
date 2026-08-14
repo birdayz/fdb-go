@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"context"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -17,16 +18,16 @@ func TestInJoinRule_OrderingAware_MatchesExplodeAlias(t *testing.T) {
 
 	eqComp := predicates.Comparison{
 		Type:    predicates.ComparisonEquals,
-		Operand: &values.QuantifiedObjectValue{Correlation: explodeAlias},
+		Operand: inRuleQOV(explodeAlias, values.NotNullLong),
 	}
 	result := predicates.EmptyComparisonRange().Merge(&eqComp)
-	if !result.Ok {
+	if !result.Ok || result.Range == nil {
 		t.Fatal("merge should succeed")
 	}
 
-	indexPlan := plans.NewRecordQueryIndexPlan(
+	indexPlan := mustInRuleConstruct(plans.NewRecordQueryIndexPlan(
 		"idx_a", []*predicates.ComparisonRange{result.Range},
-		[]string{"T"}, values.UnknownType, false).
+		[]string{"T"}, inRuleRowType(), false)).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong})
 	iw := indexPlan.WithIndexMetadata([]string{"a"}, nil, false)
 
@@ -37,19 +38,18 @@ func TestInJoinRule_OrderingAware_MatchesExplodeAlias(t *testing.T) {
 
 	innerQ := expressions.ForEachQuantifier(innerRef)
 
-	explodeRef := expressions.InitialOf(
-		expressions.NewExplodeExpression(&values.ConstantValue{Value: []any{1, 2, 3}}),
-	)
+	explodeRef := expressions.InitialOf(inRuleExplode(
+		inRuleArray(values.NotNullLong, int64(1), int64(2), int64(3))))
 	explodeQ := expressions.NamedForEachQuantifier(explodeAlias, explodeRef)
 
-	sel := expressions.NewSelectExpression(
-		values.NewQuantifiedObjectValue(innerQ.GetAlias()),
+	sel := inRuleSelect(
+		inRuleFlowedObject(innerQ),
 		[]expressions.Quantifier{explodeQ, innerQ},
 		nil,
 	)
 
 	outerRef := expressions.InitialOf(sel)
-	results := FireImplementationRule(NewImplementInJoinRule(), outerRef)
+	results := mustInRuleFire(t, NewImplementInJoinRule(), outerRef)
 	if len(results) == 0 {
 		t.Fatal("should fire with ordering-aware explode matching")
 	}
@@ -81,16 +81,16 @@ func TestInJoinRule_SortedClaimIsBackedByActuallySortedValues(t *testing.T) {
 
 	eqComp := predicates.Comparison{
 		Type:    predicates.ComparisonEquals,
-		Operand: &values.QuantifiedObjectValue{Correlation: explodeAlias},
+		Operand: inRuleQOV(explodeAlias, values.NotNullLong),
 	}
 	result := predicates.EmptyComparisonRange().Merge(&eqComp)
-	if !result.Ok {
+	if !result.Ok || result.Range == nil {
 		t.Fatal("merge should succeed")
 	}
 
-	indexPlan := plans.NewRecordQueryIndexPlan(
+	indexPlan := mustInRuleConstruct(plans.NewRecordQueryIndexPlan(
 		"idx_a", []*predicates.ComparisonRange{result.Range},
-		[]string{"T"}, values.UnknownType, false).
+		[]string{"T"}, inRuleRowType(), false)).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong})
 	iw := indexPlan.WithIndexMetadata([]string{"a"}, nil, false)
 
@@ -102,19 +102,18 @@ func TestInJoinRule_SortedClaimIsBackedByActuallySortedValues(t *testing.T) {
 	innerQ := expressions.ForEachQuantifier(innerRef)
 
 	// Deliberately NOT in sorted order.
-	explodeRef := expressions.InitialOf(
-		expressions.NewExplodeExpression(&values.ConstantValue{Value: []any{int64(3), int64(1), int64(2)}}),
-	)
+	explodeRef := expressions.InitialOf(inRuleExplode(
+		inRuleArray(values.NotNullLong, int64(3), int64(1), int64(2))))
 	explodeQ := expressions.NamedForEachQuantifier(explodeAlias, explodeRef)
 
-	sel := expressions.NewSelectExpression(
-		values.NewQuantifiedObjectValue(innerQ.GetAlias()),
+	sel := inRuleSelect(
+		inRuleFlowedObject(innerQ),
 		[]expressions.Quantifier{explodeQ, innerQ},
 		nil,
 	)
 
 	outerRef := expressions.InitialOf(sel)
-	results := FireImplementationRule(NewImplementInJoinRule(), outerRef)
+	results := mustInRuleFire(t, NewImplementInJoinRule(), outerRef)
 	if len(results) == 0 {
 		t.Fatal("should fire")
 	}
@@ -151,7 +150,7 @@ func TestInJoinRule_OrderingAware_DefaultSources(t *testing.T) {
 	rule := &ImplementInJoinRule{}
 	q1 := expressions.ForEachQuantifier(nil)
 	q2 := expressions.ForEachQuantifier(nil)
-	orderings := rule.enumerateDefaultSources(plannerTestContext(), []expressions.Quantifier{q1, q2})
+	orderings := rule.enumerateDefaultSources(context.Background(), []expressions.Quantifier{q1, q2})
 	if len(orderings) != 2 {
 		t.Fatalf("expected 2 permutations of 2 sources, got %d", len(orderings))
 	}
@@ -170,12 +169,15 @@ func TestInJoinRule_OrderingAware_DefaultSources(t *testing.T) {
 func TestInJoinRule_OrderingAware_RichOrderingFromIndexScan(t *testing.T) {
 	t.Parallel()
 
-	eqComp := predicates.NewLiteralComparison(predicates.ComparisonEquals, 42)
-	eqRange := predicates.EmptyComparisonRange().Merge(&eqComp).Range
+	eqComp := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42))
+	eqResult := predicates.EmptyComparisonRange().Merge(&eqComp)
+	if !eqResult.Ok || eqResult.Range == nil {
+		t.Fatal("equality range merge should succeed")
+	}
 
-	indexPlan := plans.NewRecordQueryIndexPlan(
-		"idx_ab", []*predicates.ComparisonRange{eqRange, predicates.EmptyComparisonRange()},
-		[]string{"T"}, values.UnknownType, false).
+	indexPlan := mustInRuleConstruct(plans.NewRecordQueryIndexPlan(
+		"idx_ab", []*predicates.ComparisonRange{eqResult.Range, predicates.EmptyComparisonRange()},
+		[]string{"T"}, inRuleRowTypeWithKeyTypes(values.NullableLong, values.NullableLong), false)).
 		WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
 	iw := indexPlan.WithIndexMetadata([]string{"a", "b"}, nil, false)
 

@@ -7,6 +7,18 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func partialMatchTestScan(
+	t testing.TB,
+	recordType string,
+) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	return mustFullUnorderedScan(t, []string{recordType}, values.NewRecordType(
+		recordType, false, []values.Field{
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		},
+	))
+}
+
 func makeTestPartialMatch(t *testing.T) (*PartialMatchImpl, *AliasMap, MatchCandidate, *expressions.Reference, expressions.RelationalExpression, *expressions.Reference, *RegularMatchInfo) {
 	t.Helper()
 
@@ -16,10 +28,10 @@ func makeTestPartialMatch(t *testing.T) (*PartialMatchImpl, *AliasMap, MatchCand
 	)
 	candidate := stubMatchCandidate{name: "idx_price"}
 
-	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanExpr := partialMatchTestScan(t, "Order")
 	queryRef := expressions.InitialOf(scanExpr)
 
-	candScanExpr := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	candScanExpr := partialMatchTestScan(t, "Order")
 	candidateRef := expressions.InitialOf(candScanExpr)
 
 	matchInfo := NewRegularMatchInfo(
@@ -95,7 +107,7 @@ func TestPartialMatch_GetRegularMatchInfo_ViaAdjusted(t *testing.T) {
 	regularInfo := NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil)
 	adjusted := NewAdjustedMatchInfo(regularInfo, nil, nil, nil)
 
-	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanExpr := partialMatchTestScan(t, "T")
 	pm := NewPartialMatch(
 		EmptyAliasMap(),
 		stubMatchCandidate{name: "idx"},
@@ -182,10 +194,8 @@ func TestPartialMatch_CompensateCompleteMatch_SimpleMatch(t *testing.T) {
 	// inner-scope values to the output scope.
 	outputAlias := values.NamedCorrelationIdentifier("output")
 
-	queryRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-	)
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryRef := expressions.InitialOf(partialMatchTestScan(t, "T"))
+	candidateScan := partialMatchTestScan(t, "T")
 	candidateRef := expressions.InitialOf(candidateScan)
 
 	// The match info must describe the expression the candidate reference

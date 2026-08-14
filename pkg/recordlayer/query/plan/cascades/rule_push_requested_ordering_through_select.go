@@ -101,10 +101,29 @@ func pushRequestedOrderingToSelectChild(
 	childAlias values.CorrelationIdentifier,
 	localAliases map[values.CorrelationIdentifier]struct{},
 ) *properties.RequestedOrdering {
+	return pushRequestedOrderingToSelectChildThroughOutput(
+		ordering, resultValue, childAlias, childAlias, localAliases)
+}
+
+// pushRequestedOrderingToSelectChildThroughOutput separates the alias that
+// owns the producer's OUTPUT row from the child whose retained fields may
+// satisfy the request. They are normally the same logical SELECT alias. A
+// physical FlatMap at an enclosing Sort is different: the Sort names the
+// FlatMap's exact current-row carrier, while the result program still names
+// the outer and inner runtime bindings. Push-down must therefore interpret
+// output ordinals in current-row space, then use childAlias only to reject
+// fields owned by the sibling leg.
+func pushRequestedOrderingToSelectChildThroughOutput(
+	ordering *properties.RequestedOrdering,
+	resultValue values.Value,
+	outputAlias values.CorrelationIdentifier,
+	childAlias values.CorrelationIdentifier,
+	localAliases map[values.CorrelationIdentifier]struct{},
+) *properties.RequestedOrdering {
 	if ordering == nil || ordering.IsPreserve() {
 		return properties.PreserveOrdering()
 	}
-	pushed := ordering.PushDownThroughValue(resultValue, childAlias)
+	pushed := ordering.PushDownThroughValue(resultValue, outputAlias)
 	if pushed.IsPreserve() {
 		return pushed
 	}
@@ -124,8 +143,8 @@ func pushRequestedOrderingToSelectChild(
 	// scan directions, and BOTH yields a forward scan only — so no descending
 	// access path below an IN was ever enumerated.
 	resultIsChildRow := false
-	if qov, isQOV := resultValue.(*values.QuantifiedObjectValue); isQOV {
-		resultIsChildRow = qov.Correlation == childAlias
+	if qov, isQOV := values.AsQuantifiedObjectValue(resultValue); isQOV {
+		resultIsChildRow = qov.Correlation() == childAlias
 	}
 
 	parts := make([]properties.RequestedOrderingPart, 0, len(pushed.GetParts()))

@@ -130,6 +130,14 @@ func NewAggregateIndexMatchCandidate(
 	}
 	if baseRowType == nil {
 		baseRowType = values.UnknownType
+	} else if exact, err := values.SnapshotExactType(baseRowType); err == nil {
+		baseRowType = exact.Type()
+	}
+	groupKeyTypes = normalizePhysicalKeyTypes(groupKeyTypes, len(groupCols))
+	for i, typ := range groupKeyTypes {
+		if exact, err := values.SnapshotExactType(typ); err == nil {
+			groupKeyTypes[i] = exact.Type()
+		}
 	}
 	if physicalGroupingPrefixCount < 0 {
 		physicalGroupingPrefixCount = 0
@@ -145,19 +153,40 @@ func NewAggregateIndexMatchCandidate(
 		aggColumn:                   aggColumn,
 		aliases:                     aliases,
 		baseRowType:                 baseRowType,
-		groupKeyTypes:               normalizePhysicalKeyTypes(groupKeyTypes, len(groupCols)),
+		groupKeyTypes:               groupKeyTypes,
 		physicalGroupingPrefixCount: physicalGroupingPrefixCount,
 	}
 }
 
 // GetBaseRowType returns the declared layout the grouping-column names resolve
 // against, or values.UnknownType when the index has no single one.
-func (c *AggregateIndexMatchCandidate) GetBaseRowType() values.Type { return c.baseRowType }
+func (c *AggregateIndexMatchCandidate) GetBaseRowType() values.Type {
+	if exact, err := values.SnapshotExactType(c.baseRowType); err == nil {
+		return exact.Type()
+	}
+	return c.baseRowType
+}
+
+// GetBaseType exposes the exact candidate row through the common
+// MatchCandidate contract consumed by index expansion. Aggregate candidates
+// historically used only the more specific GetBaseRowType spelling, which
+// made the exact-type gate silently exclude every aggregate traversal.
+func (c *AggregateIndexMatchCandidate) GetBaseType() values.Type {
+	return c.GetBaseRowType()
+}
 
 // GetKeyComponentTypes returns logical grouping-key types. The scan plan
 // aligns the leading entries to the comparisons it actually carries.
 func (c *AggregateIndexMatchCandidate) GetKeyComponentTypes() []values.Type {
-	return append([]values.Type(nil), c.groupKeyTypes...)
+	result := make([]values.Type, len(c.groupKeyTypes))
+	for i, typ := range c.groupKeyTypes {
+		if exact, err := values.SnapshotExactType(typ); err == nil {
+			result[i] = exact.Type()
+		} else {
+			result[i] = typ
+		}
+	}
+	return result
 }
 
 // GetPhysicalGroupingPrefixCount returns the number of grouping columns that
@@ -265,6 +294,12 @@ func (c *AggregateIndexMatchCandidate) ToScanPlan(
 	prefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 	reverse bool,
 ) plans.RecordQueryPlan {
+	if _, err := values.SnapshotExactType(c.baseRowType); err != nil {
+		// Match candidates are optional access paths. Without the declared row
+		// layout there is no exact result identity for the embedded scan, so this
+		// candidate is unavailable rather than represented by UnknownType.
+		return nil
+	}
 	comps := make([]*predicates.ComparisonRange, 0, c.physicalGroupingPrefixCount)
 	for _, alias := range c.aliases[:c.physicalGroupingPrefixCount] {
 		cr, ok := prefixMap[alias]
@@ -273,7 +308,11 @@ func (c *AggregateIndexMatchCandidate) ToScanPlan(
 		}
 		comps = append(comps, cr)
 	}
-	return stampIndexMetadata(c, plans.NewRecordQueryIndexPlan(c.indexName, comps, c.recordTypes, values.UnknownType, reverse)).
+	indexPlan, err := plans.NewRecordQueryIndexPlan(c.indexName, comps, c.recordTypes, c.baseRowType, reverse)
+	if err != nil {
+		return nil
+	}
+	return stampIndexMetadata(c, indexPlan).
 		WithPhysicalGroupingPrefixCount(c.physicalGroupingPrefixCount)
 }
 

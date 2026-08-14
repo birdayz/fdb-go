@@ -187,7 +187,7 @@ func (c *ConstantValue) Type() Type {
 // resolver (expr.ResolveIdentifier) receive the case-folded (upper-
 // case) form, matching Identifier.Name(). Downstream row producers
 // MUST normalise their map keys to the same form.
-type FieldValue struct {
+type fieldValue struct {
 	Field string
 	Typ   Type
 	Child Value // base value (nil = legacy flat field reference)
@@ -214,7 +214,7 @@ type FieldValue struct {
 	// Two bake KINDS (see FieldPath.FrontierPinned for why the distinction is
 	// load-bearing):
 	//   - MACHINERY-OWNED (FrontierPinned): built by the join/gather seed
-	//     machinery over a typed leg QOV (NewFieldValueOfOrdinal) or fused by
+	//     machinery over a typed leg QOV (newFieldValueOfOrdinal) or fused by
 	//     the rebase walks; the ordinal is FINAL for the executor's assembled
 	//     row / leg window.
 	//   - SOURCE-RELATIVE (unpinned single-accessor): the resolver's
@@ -228,7 +228,7 @@ type FieldValue struct {
 	// missed dedup, never a conflation); lazy vs lazy is name-only.
 	// FrontierPinned is EXCLUDED from identity/hash/Explain (an evaluation-
 	// contract marker, not a value distinction — like Java excluding name/type
-	// from ResolvedAccessor equality). Every FieldValue copy/rebuild site MUST
+	// from resolvedAccessor equality). Every FieldValue copy/rebuild site MUST
 	// preserve Resolved — dropping it silently degrades a baked node to lazy,
 	// which is loud at evaluation but conflates duplicate same-named columns
 	// in plan-time matching.
@@ -241,7 +241,7 @@ type FieldValue struct {
 	// gives it: the planner's rewrite machinery (compose, the rebase/withChildren
 	// fuse arms, select-merge, match-info merge, index expansion, unnest, the
 	// left-outer wrappers) and the SQL resolver's fuseNestedAccessors alike. A
-	// resolver-produced `n.sk` is FieldValue{Field:"SK", Accessors:[N,SK]}.
+	// resolver-produced `n.sk` is fieldValue{Field:"SK", Accessors:[N,SK]}.
 	//
 	// It was NOT always so. fuseNestedAccessors copied the root node whole and
 	// left Field naming the struct ROOT, so `Field` answered differently
@@ -252,11 +252,19 @@ type FieldValue struct {
 	// one struct root (RFC-227), and a value whose Field disagrees with its last
 	// accessor is still expressible — nothing validates it at construction, so
 	// the naming authorities stay path-based by design rather than by luck.
-	Resolved *FieldPath
+	Resolved *fieldPath
+
+	// rootType and resultType are exact immutable snapshots populated by the
+	// RFC-232 resolver.  They deliberately coexist with the legacy-private
+	// fields while the package's internal consumers are migrated; admission via
+	// AsFieldValue requires both snapshots and therefore cannot recognize an
+	// incompletely initialized node.
+	rootType   *exactType
+	resultType *exactType
 }
 
-// ResolvedAccessor is the construction-time-resolved accessor a BAKED
-// FieldValue carries — Java's FieldValue.ResolvedAccessor (FieldValue.java:~630),
+// resolvedAccessor is the construction-time-resolved accessor a BAKED
+// FieldValue carries — Java's FieldValue.resolvedAccessor (FieldValue.java:~630),
 // whose equals/hashCode are ordinal-only.
 //
 // IMMUTABLE after construction: FieldValue copy sites deliberately SHARE the
@@ -264,8 +272,8 @@ type FieldValue struct {
 // change to the accessor must REPLACE it
 // with a new value, never mutate in place, or every shared copy silently
 // changes identity.
-type ResolvedAccessor struct {
-	// Field is the PER-STEP display name (Java ResolvedAccessor.getField();
+type resolvedAccessor struct {
+	// Field is the PER-STEP display name (Java resolvedAccessor.getField();
 	// "" = pure ordinal access, Java's null name). NOT part of the path's
 	// identity — Java's element equality is ordinal-only
 	// (FieldValue.java:675-689); the name survives only for nested-record
@@ -273,6 +281,11 @@ type ResolvedAccessor struct {
 	// nested record map) and Explain rendering.
 	Field   string
 	Ordinal int
+
+	// fieldType is the exact type captured when this ordinal is resolved. It is
+	// intentionally absent from accessor identity, but makes the read view and
+	// runtime shape checks independent of mutable caller Type graphs.
+	fieldType *exactType
 }
 
 // FieldPath is the multi-accessor path — Java's FieldValue.FieldPath
@@ -286,7 +299,7 @@ type ResolvedAccessor struct {
 // INVARIANT: a FieldPath carried by a FieldValue is NON-EMPTY — a zero-step
 // path reads nothing and is not a meaningful accessor (Java's FieldPath.EMPTY
 // exists only for prefix arithmetic Go doesn't port). Both constructors
-// (NewFieldPathOfSingle, WithSuffix) uphold it; Root()/Last() panic on a
+// (newFieldPathOfSingle, WithSuffix) uphold it; Root()/Last() panic on a
 // hand-built violation rather than tolerating it.
 // OrdinalDomain names the LAYOUT an ordinal indexes — the third element of
 // column identity (RFC-197: identity is (correlation, domain, ordinal path)).
@@ -376,8 +389,8 @@ func OrdinalDomainOfType(t Type) OrdinalDomain {
 	return OrdinalDomainOfColumnNames(names)
 }
 
-type FieldPath struct {
-	Accessors []ResolvedAccessor
+type fieldPath struct {
+	Accessors []resolvedAccessor
 
 	// Domain is the layout the ROOT accessor's ordinal indexes (RFC-197
 	// step 0): for a FrontierPinned path the frontier the ordinal is FINAL
@@ -413,14 +426,14 @@ type FieldPath struct {
 	// today. That is the designed default, not debt: a site that cannot name
 	// the layout its ordinal indexes must say so, and OrdinalIn then declines
 	// for it. Teaching a producer its domain is an improvement to be made
-	// where the layout is genuinely in hand (NewFieldValueOfOrdinal derives it
+	// where the layout is genuinely in hand (newFieldValueOfOrdinal derives it
 	// from the typed child it is given, which is the model); inventing one to
 	// make the token non-zero would be the ordinal conflation this element
 	// exists to prevent, wearing a proof's clothes.
 	Domain OrdinalDomain
 
 	// FrontierPinned marks a MACHINERY-OWNED bake: the node was built by the
-	// join/gather seed machinery (NewFieldValueOfOrdinal over a typed
+	// join/gather seed machinery (newFieldValueOfOrdinal over a typed
 	// leg QOV, or a rebase-walk fusion), its ordinal FINAL for the executor's
 	// assembled row / leg window. Unpinned baked nodes are SOURCE-RELATIVE —
 	// the resolver's bind against the reference's own source's declared
@@ -451,28 +464,6 @@ type FieldPath struct {
 	FrontierPinned bool
 }
 
-// NewFieldPathOfSingle is Java's FieldPath.ofSingle (FieldValue.java:563) —
-// the constructor every single-accessor bake goes through. The path carries no
-// domain: a site that has not been taught which layout its ordinal indexes
-// fails closed at OrdinalIn. Use NewFieldPathOfSingleInDomain wherever the
-// producer knows the layout it resolved against.
-func NewFieldPathOfSingle(field string, ordinal int, frontierPinned bool) *FieldPath {
-	return NewFieldPathOfSingleInDomain(field, ordinal, frontierPinned, OrdinalDomain{})
-}
-
-// NewFieldPathOfSingleInDomain is NewFieldPathOfSingle plus the layout the
-// ordinal indexes (RFC-197 step 0). The domain must be the layout the caller
-// RESOLVED the ordinal against — stating a layout the ordinal does not index
-// is the ordinal-conflation failure this token exists to prevent, wearing a
-// proof's clothes.
-func NewFieldPathOfSingleInDomain(field string, ordinal int, frontierPinned bool, domain OrdinalDomain) *FieldPath {
-	return &FieldPath{
-		Accessors:      []ResolvedAccessor{{Field: field, Ordinal: ordinal}},
-		FrontierPinned: frontierPinned,
-		Domain:         domain,
-	}
-}
-
 // OrdinalIn is the fail-closed domain accessor (RFC-197 step 0): it reports the
 // ordinal this path reads IN the caller's stated layout, and answers ONLY when
 // the path provably indexes THAT layout.
@@ -493,7 +484,7 @@ func NewFieldPathOfSingleInDomain(field string, ordinal int, frontierPinned bool
 //   - a domain MISMATCH: the ordinal indexes a different layout. This is the
 //     element revision 1 of RFC-197 omitted, and it is the whole reason the
 //     domain is a parameter rather than a comment at the call site.
-//   - a NEGATIVE ordinal: Java's ResolvedAccessor asserts ordinal >= 0 at
+//   - a NEGATIVE ordinal: Java's resolvedAccessor asserts ordinal >= 0 at
 //     construction (FieldValue.java:651), which is what makes its ordinal-only
 //     equality safe. Go mints `Ordinal: -1` NAME-ONLY accessors at three
 //     producer sites — unnest_seed.go, unnest_gather.go, and index_expansion.go
@@ -504,7 +495,7 @@ func NewFieldPathOfSingleInDomain(field string, ordinal int, frontierPinned bool
 //     wrong-column bind pinned in aggregate_group_key_accessor_name_test.go.
 //
 // A declined answer is a declined optimization; a wrong answer is wrong rows.
-func (p *FieldPath) OrdinalIn(frontier OrdinalDomain) (int, bool) {
+func (p *fieldPath) OrdinalIn(frontier OrdinalDomain) (int, bool) {
 	if p == nil || len(p.Accessors) != 1 {
 		return 0, false
 	}
@@ -531,7 +522,7 @@ func (p *FieldPath) OrdinalIn(frontier OrdinalDomain) (int, bool) {
 // descend a nested record, where "which layout does this index" does not arise.
 // A caller re-stating a root must still DERIVE the new ordinal from the target
 // layout — this only says whether the carried one is comparable.
-func (p *FieldPath) RootOrdinalIn(frontier OrdinalDomain) (int, bool) {
+func (p *fieldPath) RootOrdinalIn(frontier OrdinalDomain) (int, bool) {
 	if p == nil || len(p.Accessors) == 0 {
 		return 0, false
 	}
@@ -544,67 +535,12 @@ func (p *FieldPath) RootOrdinalIn(frontier OrdinalDomain) (int, bool) {
 	return 0, false
 }
 
-// ReAnchorRootInto re-states a MULTI-ACCESSOR path's root ordinal in `flowed`,
-// preserving the nested suffix, and reports why it declined when it cannot.
-//
-// The derived ordinal is AUTHORITATIVE; the carried one is a tripwire, never a
-// source. A carried root ordinal is stated in the layout it was resolved
-// against — for a join, the PRE-MERGE row — so trusting it reads whatever column
-// happens to occupy that slot in the target layout. That failure is silent,
-// because an ordinal does not fail the way an unresolvable name does.
-//
-// Declines, rather than guessing, when the root name is absent or DUPLICATED in
-// `flowed`. A layout can legitimately hold two columns of the root's name — a
-// leg-concat merges A.K and B.K into one row — and a name cannot say which of
-// them the reference meant; answering with either is a guess that reads as a
-// fact, and the loser is a real column of the same type that nothing downstream
-// rejects. Declining is also the only behaviour this package still offers:
-// FieldIndexUnique / LookupFieldUnique resolve a name ONLY when it matches
-// exactly one field, and no first-matching form survives to be reached for by
-// mistake. Disambiguating a duplicate needs leg IDENTITY — which correlation the
-// root belongs to, against which leg each slot came from — not a name, and until
-// a caller supplies it the correct answer is to decline.
-func (p *FieldPath) ReAnchorRootInto(flowed *RecordType) (*FieldPath, string, bool) {
-	if p == nil || len(p.Accessors) < 2 {
-		return nil, "not a multi-accessor path", false
-	}
-	if flowed == nil {
-		return nil, "no flowed layout to derive against", false
-	}
-	root := p.Accessors[0]
-	if root.Field == "" {
-		return nil, "root accessor has no name to derive from", false
-	}
-	dupes, derived := 0, -1
-	for i, f := range flowed.Fields {
-		if f.Name == root.Field {
-			dupes++
-			if derived < 0 {
-				derived = i
-			}
-		}
-	}
-	switch {
-	case dupes == 0:
-		return nil, "root column absent from the flowed layout", false
-	case dupes > 1:
-		return nil, "root column name is ambiguous in the flowed layout", false
-	}
-	if carried, ok := p.RootOrdinalIn(OrdinalDomainOfType(flowed)); ok && carried != derived {
-		return nil, "carried ordinal disagrees with the flowed layout", false
-	}
-	acc := make([]ResolvedAccessor, 0, len(p.Accessors))
-	acc = append(acc, ResolvedAccessor{Field: root.Field, Ordinal: derived})
-	acc = append(acc, p.Accessors[1:]...)
-	return &FieldPath{Accessors: acc, Domain: OrdinalDomainOfType(flowed)}, "", true
-}
-
 // WithSuffix returns a NEW path with suffix's accessors appended — Java's
 // FieldPath.withSuffix (FieldValue.java:525-534); neither input is mutated.
 // The frontier pin comes from the RECEIVER: fusing inner.WithSuffix(outer)
 // keeps the INNER path's root read context (the compose rule's shape), and
 // the pin governs exactly that root.
-func (p *FieldPath) WithSuffix(suffix *FieldPath) *FieldPath {
+func (p *fieldPath) WithSuffix(suffix *fieldPath) *fieldPath {
 	if suffix == nil || len(suffix.Accessors) == 0 {
 		// A nil/empty SUFFIX argument is a degenerate "append nothing" —
 		// tolerated defensively. An empty RECEIVER violates the type's
@@ -616,7 +552,7 @@ func (p *FieldPath) WithSuffix(suffix *FieldPath) *FieldPath {
 		// the first Root()/Last().
 		return p
 	}
-	merged := make([]ResolvedAccessor, 0, len(p.Accessors)+len(suffix.Accessors))
+	merged := make([]resolvedAccessor, 0, len(p.Accessors)+len(suffix.Accessors))
 	merged = append(merged, p.Accessors...)
 	merged = append(merged, suffix.Accessors...)
 	// The domain, like the pin, comes from the RECEIVER: both govern the ROOT
@@ -628,28 +564,28 @@ func (p *FieldPath) WithSuffix(suffix *FieldPath) *FieldPath {
 
 // Root returns the first accessor — the one the ROOT read context resolves
 // (a positional row slot).
-func (p *FieldPath) Root() ResolvedAccessor { return p.Accessors[0] }
+func (p *fieldPath) Root() resolvedAccessor { return p.Accessors[0] }
 
 // Last returns the final accessor — the path's display leaf (Java
 // getLastFieldAccessor, FieldValue.java:459).
-func (p *FieldPath) Last() ResolvedAccessor { return p.Accessors[len(p.Accessors)-1] }
+func (p *fieldPath) Last() resolvedAccessor { return p.Accessors[len(p.Accessors)-1] }
 
 // Single returns the path's only accessor when the path is single-step —
 // the shape the plain join-seed probes expect; ok=false for multi-accessor
 // paths (those probes DECLINE fused shapes).
-func (p *FieldPath) Single() (ResolvedAccessor, bool) {
+func (p *fieldPath) Single() (resolvedAccessor, bool) {
 	if len(p.Accessors) != 1 {
-		return ResolvedAccessor{}, false
+		return resolvedAccessor{}, false
 	}
 	return p.Accessors[0], true
 }
 
 // Equals is Java FieldPath.equals (FieldValue.java:411-420): element-wise list
 // equality over the accessors' ORDINALS (Java's
-// ResolvedAccessor.equals is getOrdinal()-only, :675-689). The per-step Field
+// resolvedAccessor.equals is getOrdinal()-only, :675-689). The per-step Field
 // is NOT compared — display/rendering, not identity. FrontierPinned is
 // likewise excluded (evaluation contract, not identity).
-func (p *FieldPath) Equals(o *FieldPath) bool {
+func (p *fieldPath) Equals(o *fieldPath) bool {
 	if p == o {
 		return true
 	}
@@ -658,7 +594,7 @@ func (p *FieldPath) Equals(o *FieldPath) bool {
 	}
 	for i := range p.Accessors {
 		// ORDINAL-ONLY element identity: Java's
-		// ResolvedAccessor.equals compares getOrdinal() alone
+		// resolvedAccessor.equals compares getOrdinal() alone
 		// (FieldValue.java:675-689 — name and type excluded), and FieldPath
 		// equality is the accessor-list equality over it (:411-420). A
 		// (Field, Ordinal) pair identity would be a REFINEMENT that
@@ -725,7 +661,7 @@ func ContainsBakedOrdinal(v Value) bool {
 		if found {
 			return false
 		}
-		if fv, ok := n.(*FieldValue); ok && fv.Resolved != nil && fv.Resolved.FrontierPinned {
+		if fv, ok := n.(*fieldValue); ok && fv.Resolved != nil && fv.Resolved.FrontierPinned {
 			found = true
 			return false
 		}
@@ -755,14 +691,14 @@ func IsPositionalMergeRC(v Value) bool {
 		if f.Name != OrdinalFieldName(i) {
 			return false
 		}
-		qov, isQOV := f.Value.(*QuantifiedObjectValue)
+		qov, isQOV := f.Value.(*quantifiedObjectValue)
 		if !isQOV {
 			return false
 		}
-		if _, dup := seen[qov.Correlation]; dup {
+		if _, dup := seen[qov.correlation]; dup {
 			return false
 		}
-		seen[qov.Correlation] = struct{}{}
+		seen[qov.correlation] = struct{}{}
 	}
 	return true
 }
@@ -791,39 +727,42 @@ func IsOrdinalJoinRV(v Value) bool {
 		// hide in it), so it counts toward the roots. TYPED only: an untyped
 		// bare QOV carries no leg contract and keeps declining — the
 		// CTE-rename/lazy-field decline rationale is untouched.
-		if qov, isQOV := f.Value.(*QuantifiedObjectValue); isQOV {
+		if qov, isQOV := f.Value.(*quantifiedObjectValue); isQOV {
 			if qov.Type() == nil || qov.Type().Code() == TypeCodeUnknown {
 				return false
 			}
-			roots[qov.Correlation] = struct{}{}
+			roots[qov.correlation] = struct{}{}
 			continue
 		}
-		fv, isFV := f.Value.(*FieldValue)
+		fv, isFV := f.Value.(*fieldValue)
 		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
 			return false
 		}
-		qov, isQOV := fv.Child.(*QuantifiedObjectValue)
+		qov, isQOV := fv.Child.(*quantifiedObjectValue)
 		if !isQOV {
 			return false
 		}
-		roots[qov.Correlation] = struct{}{}
+		roots[qov.correlation] = struct{}{}
 	}
 	return len(roots) >= 2
 }
 
-func (f *FieldValue) Children() []Value {
+func (f *fieldValue) Children() []Value {
 	if f.Child == nil {
 		return []Value{}
 	}
 	return []Value{f.Child}
 }
 
-func (f *FieldValue) Name() string { return "field" }
+func (f *fieldValue) Name() string { return "field" }
 
 // Type returns the field's rich Type. FieldValue stores
 // the column type as-is; callers that know NOT NULL information
 // from the catalog set Typ to the non-nullable form.
-func (f *FieldValue) Type() Type {
+func (f *fieldValue) Type() Type {
+	if f != nil && f.resultType != nil {
+		return f.resultType.thaw()
+	}
 	if f.Typ == nil {
 		return UnknownType
 	}
@@ -886,7 +825,7 @@ func rowIsMultiLeg(row OrdinalRow) bool {
 // name resolution of any kind. A miss is loud. For a multi-accessor
 // baked path the root read yields the NESTED record, and the remaining
 // accessors descend into it (descendResolvedPath).
-func (f *FieldValue) evaluateOrdinal(row OrdinalRow) (any, error) {
+func (f *fieldValue) evaluateOrdinal(row OrdinalRow) (any, error) {
 	if ord, ok := f.resolveOrdinal(); ok {
 		if v, inRange := row.Get(ord); inRange {
 			return f.descendResolvedPath(v)
@@ -931,7 +870,7 @@ func (f *FieldValue) evaluateOrdinal(row OrdinalRow) (any, error) {
 // It is tempting to make that loud on the grounds that a node with no remainder
 // cannot say which member it wanted — but the whole-datum read is a LIVE and
 // CORRECT convention, not an oversight: the sort-key leg fallback mints an
-// unbaked `NewFieldValue(qov, col, …)` when a leg's layout is not derivable
+// unbaked `newFieldValue(qov, col, …)` when a leg's layout is not derivable
 // (cascades_translator.go), and for a leg bound to a datum the whole datum is
 // exactly the right answer. Going loud would break that read. What actually
 // keeps a MEMBER reference out of this arm is that a member reference is baked —
@@ -939,7 +878,7 @@ func (f *FieldValue) evaluateOrdinal(row OrdinalRow) (any, error) {
 // pinned/unpinned asymmetry is pinned by
 // TestFieldValue_UnpinnedNonOrdinalBinding_IsSilent, which exists so that a
 // change to this arm is a deliberate red->green edit rather than silent drift.
-func (f *FieldValue) evaluateDatumBinding(bound any) (any, error) {
+func (f *fieldValue) evaluateDatumBinding(bound any) (any, error) {
 	if bound == nil {
 		return nil, nil
 	}
@@ -958,7 +897,7 @@ func (f *FieldValue) evaluateDatumBinding(bound any) (any, error) {
 // violation). The pinned-node "never silently NULL off the positional
 // frontier" invariant lives here, at the non-positional tail of Evaluate /
 // evaluateCorrelated.
-func (f *FieldValue) frontierContractGuard() error {
+func (f *fieldValue) frontierContractGuard() error {
 	if f.Resolved == nil || !f.Resolved.FrontierPinned {
 		return nil
 	}
@@ -976,7 +915,7 @@ func (f *FieldValue) frontierContractGuard() error {
 // chained-lazy nil-context arm); an unreadable non-nil nested value is loud
 // for a pinned path (a quiet NULL would hide a frontier bug) and NULL for an
 // unpinned one (the lazy tail's historical behavior).
-func (f *FieldValue) descendResolvedPath(rootVal any) (any, error) {
+func (f *fieldValue) descendResolvedPath(rootVal any) (any, error) {
 	// <= 1 (not == 1): a hand-built zero-accessor path violates the type
 	// invariant, but a slice-bounds panic in the eval hot path is the wrong
 	// place to report it.
@@ -1017,7 +956,7 @@ func (f *FieldValue) descendResolvedPath(rootVal any) (any, error) {
 			// The NAME is consumed exactly ONCE, at construction: resolveFieldPath
 			// maps it through recordType.getFieldNameToOrdinalMap() and raises
 			// RECORD_DOES_NOT_CONTAIN_FIELD when it is absent, storing
-			// ResolvedAccessor.of(field, ordinal) (FieldValue.java:272-300 —
+			// resolvedAccessor.of(field, ordinal) (FieldValue.java:272-300 —
 			// the name branch is :283-290, the store :297). The
 			// name-taking overloads (getFieldOnMessage(msg, String)) exist in
 			// MessageHelpers but FieldValue.eval is not a caller.
@@ -1031,7 +970,7 @@ func (f *FieldValue) descendResolvedPath(rootVal any) (any, error) {
 			// unaudited maybe: on the producers that actually reach this arm the
 			// Ordinal is KNOWN NOT to be the descriptor's declaration index.
 			// unnest_seed.go and unnest_gather.go mint their struct-descent
-			// suffixes as `ResolvedAccessor{Field: ..., Ordinal: -1}` on the
+			// suffixes as `resolvedAccessor{Field: ..., Ordinal: -1}` on the
 			// stated grounds that the ordinal is never consulted here, so an
 			// ordinal descent would index at -1; and expr.fuseNestedAccessors
 			// copies a position in the SQL struct type's declared field list,
@@ -1227,9 +1166,12 @@ func uuidMessageToRowBytes(msg protoreflect.Message) [16]byte {
 	return b
 }
 
-func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
+func (f *fieldValue) Evaluate(evalCtx any) (any, error) {
+	if isAdmittedFieldValue(f) {
+		return f.evaluateResolved(evalCtx)
+	}
 	if f.Child != nil {
-		if qov, isQOV := f.Child.(*QuantifiedObjectValue); isQOV {
+		if qov, isQOV := f.Child.(*quantifiedObjectValue); isQOV {
 			return f.evaluateCorrelated(qov, evalCtx)
 		}
 		cv, err := f.Child.Evaluate(evalCtx)
@@ -1279,7 +1221,7 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 	return nil, &UnboundEvalContextError{Field: f.Field, CtxType: fmt.Sprintf("%T", evalCtx)}
 }
 
-func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any) (any, error) {
+func (f *fieldValue) evaluateCorrelated(qov *quantifiedObjectValue, evalCtx any) (any, error) {
 	// nil context = NULL for baked and lazy alike — the
 	// appendNullLeg / nil-binding NULL, mirroring
 	// Evaluate's own nil arm. The loud tail guard below is only for
@@ -1301,12 +1243,12 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		// accessor count, so a FUSED (multi-accessor) unpinned twin of the same
 		// reference goes loud too rather than reading+descending a foreign slot.
 		if f.RootIsLegRelativeUnpinned() && rowIsMultiLeg(ctx) {
-			return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.Correlation.Name(), CtxType: "OrdinalRow (multi-leg row cannot serve a source-relative ordinal)"}
+			return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.correlation.Name(), CtxType: "OrdinalRow (multi-leg row cannot serve a source-relative ordinal)"}
 		}
 		return f.evaluateOrdinal(ctx)
 	case *RowEvalContext:
 		if ctx.Correlations != nil {
-			if bound, ok := ctx.Correlations.GetCorrelationBinding(qov.Correlation); ok {
+			if bound, ok := ctx.Correlations.GetCorrelationBinding(qov.correlation); ok {
 				// A quantifier bound to an ordinal-model row resolves by
 				// ordinal; anything else is a DATUM binding (see
 				// evaluateDatumBinding).
@@ -1327,27 +1269,27 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		// (multi-accessor) unpinned twin goes loud too.
 		if ctx.Positional != nil {
 			if f.RootIsLegRelativeUnpinned() && rowIsMultiLeg(ctx.Positional) {
-				return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.Correlation.Name(), CtxType: "*RowEvalContext (multi-leg row cannot serve a source-relative ordinal)"}
+				return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.correlation.Name(), CtxType: "*RowEvalContext (multi-leg row cannot serve a source-relative ordinal)"}
 			}
 			return f.evaluateOrdinal(ctx.Positional)
 		}
 		// Nothing matched and no frontier row supplied: a dangling correlation.
 		// Loud for pinned and unpinned alike — never a silent NULL.
-		return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.Correlation.Name(), CtxType: "*RowEvalContext (correlation unbound, no positional)"}
+		return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.correlation.Name(), CtxType: "*RowEvalContext (correlation unbound, no positional)"}
 	case CorrelationBinder:
-		if bound, ok := ctx.GetCorrelationBinding(qov.Correlation); ok {
+		if bound, ok := ctx.GetCorrelationBinding(qov.correlation); ok {
 			if row, ok := bound.(OrdinalRow); ok {
 				return f.evaluateOrdinal(row)
 			}
 			return f.evaluateDatumBinding(bound)
 		}
 		// Correlation unbound in this binder: a dangling reference. Loud.
-		return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.Correlation.Name(), CtxType: fmt.Sprintf("%T (unbound)", ctx)}
+		return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.correlation.Name(), CtxType: fmt.Sprintf("%T (unbound)", ctx)}
 	}
 	// Unrecognized NON-NIL context (no ordinal row supplied): nothing resolved.
 	// Loud for pinned and unpinned alike, mirroring Evaluate's
 	// own tail; a silent NULL would hide a planner/executor bug.
-	return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.Correlation.Name(), CtxType: fmt.Sprintf("%T", evalCtx)}
+	return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.correlation.Name(), CtxType: fmt.Sprintf("%T", evalCtx)}
 }
 
 // resolveOrdinal returns the 0-based ordinal of f.Field within the record type
@@ -1362,9 +1304,9 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 // join-leg references alike (the Resolved fast path below). Side-effect-free,
 // so computing it can never perturb planning. A nil-Child leaf or non-record
 // child yields false and fails loud at evaluation.
-func (f *FieldValue) resolveOrdinal() (int, bool) {
+func (f *fieldValue) resolveOrdinal() (int, bool) {
 	// A BAKED node's position was resolved at construction
-	// (NewFieldValueOfOrdinal / NewFieldValueWithResolvedOrdinal) — it is
+	// (newFieldValueOfOrdinal / newFieldValueWithResolvedOrdinal) — it is
 	// authoritative and returned before any lazy child-type derivation:
 	// positional by construction, duplicate-name-proof. The display name is
 	// diagnostics-only. For a multi-accessor
@@ -1413,7 +1355,7 @@ func (f *FieldValue) resolveOrdinal() (int, bool) {
 // runtime it reads through its source's leg window (legWindowBinder). This is
 // the source-vs-machinery half of the Go two-level-lowering bridge Java has no
 // analog for (see FieldPath.FrontierPinned).
-func (f *FieldValue) SourceRelativeBaked() bool {
+func (f *fieldValue) SourceRelativeBaked() bool {
 	return f.Resolved != nil && !f.Resolved.FrontierPinned && len(f.Resolved.Accessors) == 1
 }
 
@@ -1446,209 +1388,14 @@ func (f *FieldValue) SourceRelativeBaked() bool {
 // Kept DISTINCT from SourceRelativeBaked so the OTHER plan-time single-accessor
 // sites (which legitimately want the narrower shape) are untouched; only the
 // two guards and the two proven-buggy leg-concat collapse sites use this.
-func (f *FieldValue) RootIsLegRelativeUnpinned() bool {
+func (f *fieldValue) RootIsLegRelativeUnpinned() bool {
 	return f.Resolved != nil && !f.Resolved.FrontierPinned
-}
-
-// NewFieldValue constructs a FieldValue with a child (base) value.
-// Mirrors Java's FieldValue(childValue, FieldPath).
-func NewFieldValue(child Value, field string, typ Type) *FieldValue {
-	NoteFieldValueMint(field, false)
-	return &FieldValue{Field: field, Typ: typ, Child: child}
-}
-
-// NewFlatFieldValue constructs a childless LAZY FieldValue (no baked ordinal).
-// PLAN-TIME ONLY: such a node fails loud if it ever reaches runtime evaluation
-// (the name-resolution fallback is deleted). Callers are match-candidate /
-// ordering-hint carriers (compared by name, never evaluated) and resolver/
-// translator trees the bake walks rewrite before the plan finalizes.
-func NewFlatFieldValue(field string, typ Type) *FieldValue {
-	NoteFieldValueMint(field, false)
-	return &FieldValue{Field: field, Typ: typ}
-}
-
-// NewFieldValueWithResolvedOrdinal constructs a flat FieldValue carrying a
-// plan-time-resolved ordinal accessor — Java's FieldValue.ofOrdinalNumber. The
-// read is row.Get(ordinal) (positional by construction, duplicate-name-proof).
-// The accessor is UNPINNED (a source-relative bake, not machinery-owned — the
-// caller resolves a column against a source's declared column order).
-// Distinct from NewOrdinalFieldValue, which bakes the anonymous `_<ordinal>`
-// WITH-ORDINALITY element/ordinal columns.
-// Carries no domain token; use NewFieldValueWithResolvedOrdinalInDomain where
-// the caller can state the layout it resolved against.
-func NewFieldValueWithResolvedOrdinal(field string, ordinal int, typ Type) *FieldValue {
-	return NewFieldValueWithResolvedOrdinalInDomain(field, ordinal, typ, OrdinalDomain{})
-}
-
-// NewFieldValueWithResolvedOrdinalInDomain is NewFieldValueWithResolvedOrdinal
-// plus the layout the ordinal indexes (RFC-197 step 0) — the source's declared
-// column order the caller resolved the name against.
-func NewFieldValueWithResolvedOrdinalInDomain(field string, ordinal int, typ Type, domain OrdinalDomain) *FieldValue {
-	NoteFieldValueMint(field, true)
-	return &FieldValue{Field: field, Typ: typ, Resolved: NewFieldPathOfSingleInDomain(field, ordinal, false, domain)}
-}
-
-// NewFieldValueWithPinnedOrdinalInDomain constructs a flat FieldValue whose
-// ordinal is FINAL against an executor-assembled row rather than relative to any
-// source's declared column order — the composition-recorded slot (Java's
-// loop-index pull-up, CompensateRecordConstructorRule.java:92, over
-// Column.unnamedOf columns) — TOGETHER WITH the layout that ordinal indexes
-// (RFC-197 step 0), the assembled row the composition numbered the slot against.
-//
-// Use it where the SLOT WAS DECIDED BY THE COMPOSITION doing the construction:
-// an aggregate's [keys..., calls...] output row, a join's assembled frontier.
-// The pin is what tells a downstream binder that the ordinal is a recorded fact,
-// not a bake to be re-derived from the display name — the difference between
-// reading the slot the composition chose and recovering a slot from a last-wins
-// name map.
-//
-// Distinct from NewFieldValueWithResolvedOrdinal, whose ordinal is
-// SOURCE-RELATIVE and therefore dead on any row the source's own layout does
-// not describe.
-//
-// THERE IS DELIBERATELY NO DOMAIN-LESS VARIANT OF THIS CONSTRUCTOR. A pinned
-// ordinal without a domain is the shape no consumer may act on: the pin says
-// "this slot is a recorded fact", and a missing domain says "against an unstated
-// row". Those two claims together are exactly the comparison FieldPath.Domain
-// exists to refuse — a group key's source-relative ordinal and an aggregate's
-// output-row ordinal matching because the integers coincided, which is a defect
-// this codebase has actually shipped (logical_predicate.go documents it from
-// production). The composition that pinned the ordinal is holding the layout by
-// definition, so a caller that cannot state one is a caller that has not in fact
-// decided the slot.
-//
-// A NewFieldValueWithPinnedOrdinal without the domain parameter used to exist
-// alongside this one and defaulted the token to unknown. Every one of its call
-// sites was migrated here, it was left with no callers, and it is now removed
-// rather than kept as a convenience — a convenience that mints an
-// unactionable identity is a loaded gun for the next caller.
-// TestPinnedOrdinalAlwaysStatesItsDomain keeps it from growing back.
-func NewFieldValueWithPinnedOrdinalInDomain(field string, ordinal int, typ Type, domain OrdinalDomain) *FieldValue {
-	NoteFieldValueMint(field, true)
-	return &FieldValue{Field: field, Typ: typ, Resolved: NewFieldPathOfSingleInDomain(field, ordinal, true, domain)}
-}
-
-// NewCorrelatedFieldValueWithResolvedOrdinal constructs a QOV-child FieldValue
-// carrying a plan-time-resolved SOURCE-RELATIVE ordinal accessor — the
-// construction bind for the CORRELATED resolver arm (Java's
-// FieldValue.ofFieldName over a QuantifiedObjectValue, FieldValue.java:273-299:
-// the FieldPath ordinal is fixed against the referent's result type at
-// construction). The accessor is UNPINNED and single-accessor, so the node is
-// SourceRelativeBaked: ordinal-bound against the reference's OWN source row
-// (the resolver's declared-column-order ordinal), but NOT rebased onto any
-// composed frontier — every translator/executor walk that rebinds lazy
-// references treats it identically (the SourceRelativeBaked widenings). At
-// runtime the correlation binds a source-shaped row (the source's own row or
-// its leg window — both flow the source's declared column order), so the
-// source-relative ordinal reads the right slot.
-// Carries no domain token; use the InDomain form where the caller can state
-// the source layout it resolved against.
-func NewCorrelatedFieldValueWithResolvedOrdinal(child Value, field string, ordinal int, typ Type) *FieldValue {
-	return NewCorrelatedFieldValueWithResolvedOrdinalInDomain(child, field, ordinal, typ, OrdinalDomain{})
-}
-
-// NewCorrelatedFieldValueWithResolvedOrdinalInDomain is the correlated bake
-// plus the layout the ordinal indexes (RFC-197 step 0): the SOURCE's declared
-// column order — the row the correlation binds — not the enclosing frontier.
-func NewCorrelatedFieldValueWithResolvedOrdinalInDomain(child Value, field string, ordinal int, typ Type, domain OrdinalDomain) *FieldValue {
-	NoteFieldValueMint(field, true)
-	return &FieldValue{Field: field, Typ: typ, Child: child, Resolved: NewFieldPathOfSingleInDomain(field, ordinal, false, domain)}
-}
-
-// NewOrdinalFieldValue accesses a record field by ORDINAL position,
-// mirroring Java's `FieldValue.ofOrdinalNumber(child, ordinal)`. The field
-// DISPLAY name is the ordinal name `_0`/`_1` (see OrdinalFieldName — the
-// WITH-ORDINALITY Explode's anonymous element/ordinal columns), and the
-// ordinal is BAKED at construction: the Explode's positional
-// row serves slot `ordinal` directly. Used by the lateral-unnest lowering to
-// bind the AS alias to field 0 (element) and the AT alias to field 1 (the INT
-// NOT NULL ordinal).
-func NewOrdinalFieldValue(child Value, ordinal int, typ Type) *FieldValue {
-	NoteFieldValueMint(OrdinalFieldName(ordinal), true)
-	return &FieldValue{Field: OrdinalFieldName(ordinal), Typ: typ, Child: child, Resolved: NewFieldPathOfSingle(OrdinalFieldName(ordinal), ordinal, false)}
-}
-
-// OrdinalBakeError is the loud construction-time error NewFieldValueOfOrdinal
-// returns when the requested ordinal cannot be resolved against the child's
-// flowed type — the Go analog of Java's resolveFieldPath raising
-// SemanticException(FIELD_ACCESS_INPUT_NON_RECORD_TYPE) for a non-record child
-// and IndexOutOfBoundsException for an out-of-range ordinal
-// (FieldValue.java:273-296). Never a silent fallback: a bake failure is a
-// planner bug, not a NULL.
-type OrdinalBakeError struct {
-	Ordinal   int
-	ChildType Type   // the child's flowed type (nil for a nil child)
-	Reason    string // which precondition failed: nil child / non-record child / out of range
-}
-
-func (e *OrdinalBakeError) Error() string {
-	return fmt.Sprintf("ordinal bake: cannot resolve ordinal %d: %s (child type %v)", e.Ordinal, e.Reason, e.ChildType)
-}
-
-// NewFieldValueOfOrdinal constructs a BAKED FieldValue accessing the child's
-// record field by ORDINAL position — Java's
-// `FieldValue.ofOrdinalNumber(childValue, ordinalNumber)` (FieldValue.java:335):
-// the position is resolved ONCE, here, and carried on the node (Resolved);
-// resolveOrdinal returns it without re-deriving from the child type. The
-// DISPLAY name (Field) and Typ are read from the child's RecordType at
-// `ordinal` — the name serves diagnostics/Explain; the ordinal is
-// authoritative (it survives even when a runtime row's type names disagree
-// with the display name). The bake is MACHINERY-OWNED (FrontierPinned): this
-// is the join / gather seed constructor.
-//
-// Errors loudly (Java raises; no silent fallback) when the child does not
-// flow a *RecordType or the ordinal is out of range.
-func NewFieldValueOfOrdinal(child Value, ordinal int) (*FieldValue, error) {
-	if child == nil {
-		return nil, &OrdinalBakeError{Ordinal: ordinal, Reason: "nil child value"}
-	}
-	rt, ok := child.Type().(*RecordType)
-	if !ok {
-		return nil, &OrdinalBakeError{Ordinal: ordinal, ChildType: child.Type(), Reason: "child does not flow a record type"}
-	}
-	if ordinal < 0 || ordinal >= len(rt.Fields) {
-		return nil, &OrdinalBakeError{Ordinal: ordinal, ChildType: rt, Reason: fmt.Sprintf("ordinal out of range for a %d-field record type", len(rt.Fields))}
-	}
-	fld := rt.Fields[ordinal]
-	typ := fld.FieldType
-	// Java FieldValue.computeResultType: the accessed field's type is
-	// overridden NULLABLE when the child's record type is nullable — the
-	// LEFT-outer null-supplying leg's record-level wrap
-	// makes every column read through it nullable, because the padded row
-	// serves NULL in every slot (how Java reports LEFT JOIN metadata
-	// nullable without a per-column seed wrap). Keyed on the STORED Typ for
-	// a QOV child: QOV.Type() blanket-wraps nullable (the pre-existing
-	// pass-through rule), so the record-level marker is only observable on
-	// q.Typ — the same authority every seed consumer reads.
-	childNullable := rt.Nullable
-	if qov, isQOV := child.(*QuantifiedObjectValue); isQOV {
-		if srt, isRT := qov.Typ.(*RecordType); isRT {
-			childNullable = srt.Nullable
-		}
-	}
-	if childNullable && typ != nil && !typ.IsNullable() {
-		typ = WithNullability(typ, true)
-	}
-	// FrontierPinned: this constructor is the join seed's — the executor
-	// supplies positional rows for every context these nodes evaluate in, so
-	// these nodes only ever resolve by ordinal.
-	// The domain is stamped, not passed: this constructor RESOLVES the ordinal
-	// against rt itself, so rt IS the layout the ordinal indexes — the one
-	// place a derived domain is a proof rather than a claim. A caller that
-	// resolved elsewhere must state its own domain explicitly.
-	NoteFieldValueMint(fld.Name, true)
-	return &FieldValue{
-		Field:    fld.Name,
-		Typ:      typ,
-		Child:    child,
-		Resolved: NewFieldPathOfSingleInDomain(fld.Name, ordinal, true, OrdinalDomainOfType(rt)),
-	}, nil
 }
 
 // OrdinalIn is the FieldValue-level fail-closed domain accessor — see
 // FieldPath.OrdinalIn. A LAZY node (Resolved == nil) has no ordinal and fails
 // closed here; it never falls back to the display name.
-func (f *FieldValue) OrdinalIn(frontier OrdinalDomain) (int, bool) {
+func (f *fieldValue) OrdinalIn(frontier OrdinalDomain) (int, bool) {
 	if f == nil {
 		return 0, false
 	}
@@ -1706,7 +1453,7 @@ func IsConstantValue(v Value) bool {
 	switch v.(type) {
 	case *ConstantValue, *NullValue, *BooleanValue:
 		return true
-	case *FieldValue, *QuantifiedObjectValue, *AggregateValue, *ParameterValue,
+	case *fieldValue, *quantifiedObjectValue, *AggregateValue, *ParameterValue,
 		*QuantifiedRecordValue, *ExistsValue, *ScalarSubqueryValue,
 		*ObjectValue, *UnmatchedAggregateValue, *ConstantObjectValue,
 		*IndexEntryObjectValue, *ParameterObjectValue:
@@ -1824,7 +1571,7 @@ func ContainsAggregate(v Value) bool {
 // anything else ("field name \"a#1\": a#1 it not a valid protobuf identifier",
 // measured). See the escape's own note in explainValueOrdinals.
 func NestedResolvedPath(v Value) (string, bool) {
-	fv, ok := v.(*FieldValue)
+	fv, ok := v.(*fieldValue)
 	if !ok || fv.Resolved == nil || len(fv.Resolved.Accessors) <= 1 {
 		return "", false
 	}
@@ -1854,7 +1601,7 @@ func ProjectionColumnName(v Value) string {
 	if path, nested := NestedResolvedPath(v); nested {
 		return path
 	}
-	if fv, ok := v.(*FieldValue); ok {
+	if fv, ok := v.(*fieldValue); ok {
 		return fv.Field
 	}
 	return strings.ToUpper(ExplainValue(v))
@@ -1887,7 +1634,7 @@ func OutputColumnName(v Value, alias string) string {
 // semantic identity; the missing discriminator is every FieldValue's rendered
 // display path. In particular, baked FieldValues compare by ordinal path alone,
 // while ProjectionColumnName and ExplainValue still render their Field text
-// (and a multi-accessor Explain renders every ResolvedAccessor.Field). Walking
+// (and a multi-accessor Explain renders every resolvedAccessor.Field). Walking
 // all nested FieldValues therefore distinguishes both A#0 from B#0 and
 // arithmetic expressions containing those reads.
 //
@@ -1905,7 +1652,7 @@ func ProjectionOutputIdentityKey(v Value, alias string) string {
 		names = append(names, OutputColumnName(v, alias))
 	} else {
 		WalkValue(v, func(node Value) bool {
-			if field, ok := node.(*FieldValue); ok {
+			if field, ok := node.(*fieldValue); ok {
 				if field.Resolved != nil && len(field.Resolved.Accessors) > 1 {
 					for _, accessor := range field.Resolved.Accessors {
 						names = append(names, accessor.Field)
@@ -1946,6 +1693,68 @@ func ProjectionOutputIdentityKey(v Value, alias string) string {
 //	NullValue         → NULL
 func ExplainValue(v Value) string { return explainValueOrdinals(v, true) }
 
+// ExplainPlanValues renders one plan node's retained Value program in a stable
+// local correlation namespace. Unique correlations are allocation identities,
+// so their process-global numeric suffixes must not leak into plan text: doing
+// so makes two structurally identical plans explain differently solely because
+// another query happened to allocate aliases first.
+//
+// A program with one unique correlation and no bare QOV omits that root, which
+// preserves the familiar `ID#0` spelling for a projection over one input. With
+// multiple unique roots (or a bare scalar QOV) the roots are numbered q$0,
+// q$1, ... by first structural occurrence. Named correlations — including a
+// quoted user alias whose text looks like q$7 — are never rewritten.
+func ExplainPlanValues(vs []Value) []string {
+	unique := make([]CorrelationIdentifier, 0, 2)
+	seen := make(map[CorrelationIdentifier]struct{})
+	hasBareUniqueQOV := false
+	add := func(correlation CorrelationIdentifier) {
+		if correlation.kind != correlationKindUnique {
+			return
+		}
+		if _, ok := seen[correlation]; ok {
+			return
+		}
+		seen[correlation] = struct{}{}
+		unique = append(unique, correlation)
+	}
+	for _, v := range vs {
+		if qov, ok := v.(*quantifiedObjectValue); ok && qov != nil && qov.correlation.kind == correlationKindUnique {
+			hasBareUniqueQOV = true
+		}
+		WalkValue(v, func(node Value) bool {
+			switch value := node.(type) {
+			case *quantifiedObjectValue:
+				if value != nil {
+					add(value.correlation)
+				}
+			case *ScalarSubqueryValue:
+				if value != nil {
+					add(value.Alias)
+				}
+			case *UnmatchedAggregateValue:
+				if value != nil {
+					add(value.UnmatchedID)
+				}
+			}
+			return true
+		})
+	}
+	aliases := make(map[CorrelationIdentifier]string, len(unique))
+	if len(unique) == 1 && !hasBareUniqueQOV {
+		aliases[unique[0]] = ""
+	} else {
+		for i, correlation := range unique {
+			aliases[correlation] = "q$" + intToDec(int64(i))
+		}
+	}
+	result := make([]string, len(vs))
+	for i, v := range vs {
+		result[i] = explainValueOrdinalsWithAliases(v, true, aliases)
+	}
+	return result
+}
+
 // ColumnNameValue renders v exactly like ExplainValue but WITHOUT the baked
 // `#<ordinal>` accessor discriminators — the NAME-derivation rendering. Every
 // place that derives an OUTPUT COLUMN NAME from a Value (aggregate result
@@ -1956,7 +1765,20 @@ func ExplainValue(v Value) string { return explainValueOrdinals(v, true) }
 // name from DIFFERENT instances of the same reference (one baked, one lazy)
 // silently breaks. ExplainValue keeps the ordinal discriminators for
 // EXPLAIN/debug output, where collapsing two different reads is itself a bug.
-func ColumnNameValue(v Value) string { return explainValueOrdinals(v, false) }
+func ColumnNameValue(v Value) string {
+	// The tagged current correlation is the private owner of a physical row,
+	// not a user-visible qualifier. Exact ordinal integration roots provider
+	// keys on that carrier so they remain evaluable, but carrying `_current`
+	// into a derived column name would turn SORT_KEY into
+	// `_current.SORT_KEY`. Suppress only the tagged identifier here; an ordinary
+	// user alias whose text is `_current` has a different correlation kind and
+	// remains visible.
+	return explainValueOrdinalsWithAliases(
+		v,
+		false,
+		map[CorrelationIdentifier]string{CurrentCorrelation(): ""},
+	)
+}
 
 // CanBridgeOrderingFieldValues reports whether two non-structurally-equal
 // ordering Values may safely be reconciled by their ordinal-free column name.
@@ -1972,8 +1794,8 @@ func ColumnNameValue(v Value) string { return explainValueOrdinals(v, false) }
 // representation bridge, including the harmless case-only difference between
 // two lazy flat field names.
 func CanBridgeOrderingFieldValues(left, right Value) bool {
-	leftField, leftOK := left.(*FieldValue)
-	rightField, rightOK := right.(*FieldValue)
+	leftField, leftOK := left.(*fieldValue)
+	rightField, rightOK := right.(*fieldValue)
 	if !leftOK || !rightOK ||
 		leftField.Child != nil || rightField.Child != nil {
 		return false
@@ -1996,6 +1818,10 @@ func CanBridgeOrderingFieldValues(left, right Value) bool {
 }
 
 func explainValueOrdinals(v Value, withOrdinals bool) string {
+	return explainValueOrdinalsWithAliases(v, withOrdinals, nil)
+}
+
+func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[CorrelationIdentifier]string) string {
 	if v == nil {
 		return ""
 	}
@@ -2008,7 +1834,7 @@ func explainValueOrdinals(v Value, withOrdinals bool) string {
 			return "'" + s + "'"
 		}
 		return valueLiteralString(cv.Value)
-	case *FieldValue:
+	case *fieldValue:
 		// The raw field text has '#' DOUBLED so the '#<ordinal>' suffix below is
 		// unambiguous BY CONSTRUCTION: a quoted identifier may legally contain
 		// '#' (the lexer's DOUBLE_QUOTE_ID accepts any non-quote character), so
@@ -2054,12 +1880,16 @@ func explainValueOrdinals(v Value, withOrdinals bool) string {
 			}
 			path := strings.Join(steps, ".")
 			if cv.Child != nil {
-				return explainValueOrdinals(cv.Child, withOrdinals) + "." + path
+				if child := explainValueOrdinalsWithAliases(cv.Child, withOrdinals, aliases); child != "" {
+					return child + "." + path
+				}
 			}
 			return path
 		}
 		if cv.Child != nil {
-			name = explainValueOrdinals(cv.Child, withOrdinals) + "." + name
+			if child := explainValueOrdinalsWithAliases(cv.Child, withOrdinals, aliases); child != "" {
+				name = child + "." + name
+			}
 		}
 		// A baked ordinal accessor renders its ordinal (Java's FieldPath
 		// `#ordinal` syntax) alongside the name: two reads of DUPLICATE-named
@@ -2074,11 +1904,11 @@ func explainValueOrdinals(v Value, withOrdinals bool) string {
 		}
 		return name
 	case *ArithmeticValue:
-		return "(" + explainValueOrdinals(cv.Left, withOrdinals) + " " + cv.Op.symbol() + " " + explainValueOrdinals(cv.Right, withOrdinals) + ")"
+		return "(" + explainValueOrdinalsWithAliases(cv.Left, withOrdinals, aliases) + " " + cv.Op.symbol() + " " + explainValueOrdinalsWithAliases(cv.Right, withOrdinals, aliases) + ")"
 	case *StrictRankLimitValue:
 		// Renders as the strict adjustment it computes (max(0, K-1)); matches the
 		// prior ArithmeticValue "(K - 1)" form so plan output is unchanged.
-		return "(" + explainValueOrdinals(cv.K, withOrdinals) + " - 1)"
+		return "(" + explainValueOrdinalsWithAliases(cv.K, withOrdinals, aliases) + " - 1)"
 	case *BooleanValue:
 		if cv.Value == nil {
 			return "NULL"
@@ -2088,13 +1918,13 @@ func explainValueOrdinals(v Value, withOrdinals bool) string {
 		}
 		return "FALSE"
 	case *CastValue:
-		return "CAST(" + explainValueOrdinals(cv.Child, withOrdinals) + " AS " + explainTypeName(cv.Target) + ")"
+		return "CAST(" + explainValueOrdinalsWithAliases(cv.Child, withOrdinals, aliases) + " AS " + explainTypeName(cv.Target) + ")"
 	case *PromoteValue:
-		return "PROMOTE(" + explainValueOrdinals(cv.Child, withOrdinals) + " TO " + explainTypeName(cv.Target) + ")"
+		return "PROMOTE(" + explainValueOrdinalsWithAliases(cv.Child, withOrdinals, aliases) + " TO " + explainTypeName(cv.Target) + ")"
 	case *RecordConstructorValue:
 		parts := make([]string, 0, len(cv.Fields))
 		for _, f := range cv.Fields {
-			parts = append(parts, f.Name+": "+explainValueOrdinals(f.Value, withOrdinals))
+			parts = append(parts, f.Name+": "+explainValueOrdinalsWithAliases(f.Value, withOrdinals, aliases))
 		}
 		return "{" + strings.Join(parts, ", ") + "}"
 	case *NullValue:
@@ -2103,13 +1933,16 @@ func explainValueOrdinals(v Value, withOrdinals bool) string {
 		if cv.Op == AggCountStar {
 			return "COUNT(*)"
 		}
-		return cv.Op.Symbol() + "(" + explainValueOrdinals(cv.Operand, withOrdinals) + ")"
-	case *QuantifiedObjectValue:
-		return cv.Correlation.Name()
+		return cv.Op.Symbol() + "(" + explainValueOrdinalsWithAliases(cv.Operand, withOrdinals, aliases) + ")"
+	case *quantifiedObjectValue:
+		if alias, ok := aliases[cv.correlation]; ok {
+			return alias
+		}
+		return cv.correlation.Name()
 	case *ScalarFunctionValue:
 		parts := make([]string, len(cv.Args))
 		for i, a := range cv.Args {
-			parts[i] = explainValueOrdinals(a, withOrdinals)
+			parts[i] = explainValueOrdinalsWithAliases(a, withOrdinals, aliases)
 		}
 		return cv.FuncName + "(" + strings.Join(parts, ", ") + ")"
 	case *ParameterValue:
@@ -2130,24 +1963,32 @@ func explainValueOrdinals(v Value, withOrdinals bool) string {
 	case *PickValue:
 		parts := make([]string, len(cv.Alternatives))
 		for i, a := range cv.Alternatives {
-			parts[i] = explainValueOrdinals(a, withOrdinals)
+			parts[i] = explainValueOrdinalsWithAliases(a, withOrdinals, aliases)
 		}
-		sel := explainValueOrdinals(cv.Selector, withOrdinals)
+		sel := explainValueOrdinalsWithAliases(cv.Selector, withOrdinals, aliases)
 		return "CASE(" + sel + ", [" + strings.Join(parts, ", ") + "])"
 	case *ConditionSelectorValue:
 		conds := make([]string, len(cv.Implications))
 		for i, c := range cv.Implications {
-			conds[i] = explainValueOrdinals(c, withOrdinals)
+			conds[i] = explainValueOrdinalsWithAliases(c, withOrdinals, aliases)
 		}
 		return "WHEN(" + strings.Join(conds, ", ") + ")"
 	case *CardinalityValue:
 		// Java: ExplainTokens.addFunctionCall(FunctionNames.CARDINALITY, ...).
 		// Renders `cardinality(<child>)`, e.g. `cardinality(_.int_arr)`.
-		return "cardinality(" + explainValueOrdinals(cv.Child, withOrdinals) + ")"
+		return "cardinality(" + explainValueOrdinalsWithAliases(cv.Child, withOrdinals, aliases) + ")"
 	case *ScalarSubqueryValue:
-		return "(SCALAR_SUBQUERY " + cv.Alias.Name() + ")"
+		alias := cv.Alias.Name()
+		if mapped, ok := aliases[cv.Alias]; ok {
+			alias = mapped
+		}
+		return "(SCALAR_SUBQUERY " + alias + ")"
 	case *UnmatchedAggregateValue:
-		return "unmatched(" + cv.UnmatchedID.Name() + ")"
+		alias := cv.UnmatchedID.Name()
+		if mapped, ok := aliases[cv.UnmatchedID]; ok {
+			alias = mapped
+		}
+		return "unmatched(" + alias + ")"
 	case *ParameterObjectValue:
 		return "$" + cv.ParameterName
 	}
@@ -2404,7 +2245,11 @@ type RowEvalContext struct {
 	// single frontier quantifier's row: an outer correlation still resolves via
 	// Correlations first, and only an unbound (frontier) quantifier reference
 	// falls through to this row.
-	Positional       OrdinalRow
+	Positional OrdinalRow
+	// Objects is the exact-QOV binding authority for an admitted physical
+	// evaluation layout. When present, QOV evaluation never falls through to
+	// Positional or the alias-only legacy correlation binder.
+	Objects          QuantifiedObjectBinder
 	Binder           ParameterBinder
 	Correlations     CorrelationBinder
 	ScalarSubqueries map[CorrelationIdentifier]any // pre-evaluated scalar subquery results
@@ -4719,16 +4564,16 @@ func NewRecordConstructorValue(fields ...RecordConstructorField) *RecordConstruc
 	return &RecordConstructorValue{Fields: out}
 }
 
-// NewRawRecordConstructorValue constructs a RecordConstructorValue keeping
-// every field name VERBATIM — duplicate names allowed. It exists for
-// ordinal-join seeds:
+// NewRawRecordConstructorValue constructs a machinery-owned positional
+// RecordConstructorValue keeping every field name VERBATIM — duplicate names
+// allowed. It exists for ordinal-join seeds and private aggregate output rows:
 // a join's ordinal RC concatenates the legs' columns, each field a
 // BAKED FieldValue over its leg's QOV, and duplicate names across legs
 // (`SELECT * FROM a JOIN b` with same-named columns) MUST survive verbatim —
 // positional access is by ordinal, so duplicates are unambiguous, and the
 // duplicate-name identity pins are unconstructible without them.
 //
-// NEVER use this for a projection RC: NewRecordConstructorValue (above)
+// NEVER use this for a user-facing projection RC: NewRecordConstructorValue (above)
 // appends _2/_3 suffixes, which is correct there (SQL projection column
 // naming) — a raw duplicate is not addressable by name at all: the plan-time
 // lookup declines on the ambiguity, so a projection built this way would lose the
@@ -4740,8 +4585,9 @@ func NewRawRecordConstructorValue(fields ...RecordConstructorField) *RecordConst
 }
 
 // ErrWholeRowProjection is returned by ProjectionResultValue when the
-// projection list is a single bare QuantifiedObjectValue — a "one-slot
-// whole-row projection".
+// projection list is a single bare RECORD-typed QuantifiedObjectValue — a
+// "one-slot whole-row projection". A scalar QOV is an ordinary scalar slot
+// (not a wrapped row) and is admitted.
 //
 // THIS IS A DERIVATION REFUSING TO SYNTHESISE A ROW. It is NOT a constructor
 // guard and the shape is NOT unbuildable — say so here, in the file that owns
@@ -4786,8 +4632,93 @@ var ErrWholeRowProjection = errors.New(
 // raw constructor: a raw duplicate under name-keyed lookup resolves to the
 // first match, the exact conflation ordinal identity exists to prevent.
 func ProjectionResultValue(projections []Value, aliases []string) (*RecordConstructorValue, error) {
+	return ProjectionResultValueForOutputSchema(projections, aliases, nil)
+}
+
+// ProjectionOutputSchemaIdentityOverrides returns only the externally frozen
+// portion of a projection schema: each slot whose authoritative output name
+// differs from the name the Value program and aliases naturally derive. The
+// resulting sparse vector is suitable for memo identity.
+//
+// This distinction is load-bearing. Internal Value names can contain
+// alpha-renamable correlation identifiers (a scalar-subquery QOV is the
+// canonical example), so folding every derived result field name into a hash
+// breaks alias invariance. Conversely, an SQL boundary may deliberately freeze
+// a different positional key (`S.ID` over a Value naturally named `ID`); that
+// difference is executable schema and must keep the projections apart. nil is
+// returned when no frozen name adds information beyond the natural schema.
+func ProjectionOutputSchemaIdentityOverrides(
+	projections []Value,
+	aliases []string,
+	outputNames []string,
+) ([]string, error) {
+	if outputNames == nil {
+		return nil, nil
+	}
+	natural, err := ProjectionResultValue(projections, aliases)
+	if err != nil {
+		return nil, err
+	}
+	frozen, err := ProjectionResultValueForOutputSchema(projections, aliases, outputNames)
+	if err != nil {
+		return nil, err
+	}
+	if len(natural.Fields) != len(frozen.Fields) {
+		return nil, fmt.Errorf("projection natural schema has %d slots, frozen schema has %d", len(natural.Fields), len(frozen.Fields))
+	}
+	overrides := make([]string, len(frozen.Fields))
+	anyOverride := false
+	for i := range frozen.Fields {
+		if natural.Fields[i].Name == frozen.Fields[i].Name {
+			continue
+		}
+		overrides[i] = frozen.Fields[i].Name
+		anyOverride = true
+	}
+	if !anyOverride {
+		return nil, nil
+	}
+	return overrides, nil
+}
+
+// ProjectionResultValueForOutputSchema builds the exact row a projection
+// produces while optionally preserving a schema that was already established
+// by the logical SQL boundary. A nil outputNames derives names from the Value
+// program and aliases exactly like ProjectionResultValue. A non-nil slice is
+// authoritative: alpha-rebasing a Value onto a physical child must not rename
+// the SQL column it computes.
+//
+// A one-slot whole-record QOV is still rejected even with an explicit name:
+// the executor emits one slot per projection, so naming that slot does not make
+// it equivalent to the inner record's N top-level fields.
+func ProjectionResultValueForOutputSchema(
+	projections []Value,
+	aliases []string,
+	outputNames []string,
+) (*RecordConstructorValue, error) {
+	if outputNames != nil {
+		if len(outputNames) != len(projections) {
+			return nil, fmt.Errorf("projection output schema has %d names for %d slots", len(outputNames), len(projections))
+		}
+		if len(projections) == 1 {
+			if qov, bare := projections[0].(*quantifiedObjectValue); bare &&
+				qov.flowed != nil && qov.flowed.code == TypeCodeRecord {
+				return nil, ErrWholeRowProjection
+			}
+		}
+		fields := make([]RecordConstructorField, len(projections))
+		for i := range projections {
+			if outputNames[i] == "" {
+				return nil, fmt.Errorf("projection output schema slot %d has an empty name", i)
+			}
+			fields[i] = RecordConstructorField{Name: outputNames[i], Value: projections[i]}
+		}
+		return NewRecordConstructorValue(fields...), nil
+	}
+
 	if len(projections) == 1 {
-		if _, bare := projections[0].(*QuantifiedObjectValue); bare {
+		if qov, bare := projections[0].(*quantifiedObjectValue); bare &&
+			qov.flowed != nil && qov.flowed.code == TypeCodeRecord {
 			return nil, ErrWholeRowProjection
 		}
 	}
@@ -4852,7 +4783,12 @@ func (r *RecordConstructorValue) Type() Type {
 	// A named struct literal carries its declared name into the result type,
 	// exactly as Java's ofColumnsAndName resolves the type through
 	// Type.Record.withName (RecordConstructorValue.java:485-487).
-	return &RecordType{RecordName: r.typeName, Nullable: true, Fields: fields}
+	// A successful record constructor always produces a record object. Its
+	// fields may independently be nullable, but the container itself is not.
+	// This is Java's computeResultType(columns, false) contract; nullable record
+	// results require an explicit nullable owner/boundary rather than an
+	// accidental default on every RC.
+	return &RecordType{RecordName: r.typeName, Nullable: false, Fields: fields}
 }
 
 // Name returns the debug-print kind.
@@ -4980,68 +4916,86 @@ func (p *PromoteValue) Evaluate(evalCtx any) (any, error) {
 
 // --- QuantifiedObjectValue -----------------------------------------
 
-// QuantifiedObjectValue represents "the current row of the
-// quantifier identified by Correlation". Emitted by the analyzer
-// for references like `t` in `SELECT t.col FROM tbl AS t` — the
-// parent expression (`t.col`) then projects a FieldValue with
-// operand = QuantifiedObjectValue{Correlation: t}.
-//
-// Mirrors Java's `QuantifiedObjectValue`. Evaluate resolves this quantifier's
-// row from the eval context: a correlation binding for Correlation (an outer
-// quantifier), else the frontier Positional row (the sole runtime row), else
-// nil. Downstream FieldValue lookups then read a column off that row by ordinal.
-type QuantifiedObjectValue struct {
-	Correlation CorrelationIdentifier
-	// Typ is the row type (struct shape) this quantifier produces —
-	// a *RecordType on the typed frontier (the translator
-	// stamps it from the inner expression's result type), or
-	// UnknownType where inference hasn't reached.
-	Typ Type
+// QuantifiedObjectValue is the sealed read view of one correlation-bearing
+// whole object. Its flowed type is an immutable exact snapshot, not a mutable
+// ordinary Type graph retained from the caller.
+type QuantifiedObjectValue interface {
+	Value
+	Correlation() CorrelationIdentifier
+	FlowedType() Type
+	isQuantifiedObjectValueView()
 }
 
-// NewQuantifiedObjectValue constructs a QuantifiedObjectValue. Zero
-// correlation is rejected — a quantifier without an identifier is a
-// design error, not something the analyzer should allow.
-func NewQuantifiedObjectValue(corr CorrelationIdentifier) *QuantifiedObjectValue {
-	if corr.IsZero() {
-		panic("NewQuantifiedObjectValue: correlation is zero-value; use NamedCorrelationIdentifier or UniqueCorrelationIdentifier")
-	}
-	return &QuantifiedObjectValue{Correlation: corr, Typ: UnknownType}
+type quantifiedObjectValue struct {
+	correlation CorrelationIdentifier
+	flowed      *exactType
+	// sourceLayout is physical provenance captured defensively from the
+	// constructor input. It is excluded from semantic equality/hash and from
+	// FlowedType; OrdinalLayout factories are its only execution consumer.
+	sourceLayout *qovRecordLayout
 }
 
-// NewQuantifiedObjectValueOfType constructs a QuantifiedObjectValue whose
-// flowed value carries a known type. Used where the quantifier flows a SCALAR
-// of a known type — e.g. a lateral array unnest's element quantifier, whose
-// flowed value is one array element (the array's elementType), not an
-// UnknownType row. Carrying the real type lets result-set column metadata
-// report it (a STRING array's element is STRING, not the UnknownType→BIGINT
-// fallback). A nil typ degrades to UnknownType, matching NewQuantifiedObjectValue.
-func NewQuantifiedObjectValueOfType(corr CorrelationIdentifier, typ Type) *QuantifiedObjectValue {
-	if corr.IsZero() {
-		panic("NewQuantifiedObjectValueOfType: correlation is zero-value; use NamedCorrelationIdentifier or UniqueCorrelationIdentifier")
+// NewQuantifiedObjectValue snapshots flowed and returns an exact QOV. The
+// ordinary constructor cannot mint the reserved current correlation; current
+// handles belong to the checked owner-value builder.
+func NewQuantifiedObjectValue(
+	correlation CorrelationIdentifier,
+	flowed Type,
+) (QuantifiedObjectValue, error) {
+	if correlation.IsZero() {
+		return nil, resolutionError(CorrelationZero, "qov.correlation", "correlation is zero")
 	}
-	if typ == nil {
-		typ = UnknownType
+	if correlation.isCurrent() {
+		return nil, resolutionError(CorrelationKindMismatch, "qov.correlation", "current is owner-scoped")
 	}
-	return &QuantifiedObjectValue{Correlation: corr, Typ: typ}
+	handle, err := SnapshotExactType(flowed)
+	if err != nil {
+		return nil, err
+	}
+	exact := handle.(*exactType)
+	if exact.code == TypeCodeNull || exact.code == TypeCodeRelation {
+		return nil, resolutionError(TypeMalformedCode, "qov.flowed", "QOV root must be an object or scalar exact type")
+	}
+	return &quantifiedObjectValue{
+		correlation:  correlation,
+		flowed:       exact,
+		sourceLayout: snapshotQOVRecordLayout(flowed),
+	}, nil
+}
+
+// AsQuantifiedObjectValue exact-recognizes the package-owned concrete node.
+func AsQuantifiedObjectValue(value Value) (QuantifiedObjectValue, bool) {
+	qov, ok := value.(*quantifiedObjectValue)
+	if !ok || qov == nil || qov.flowed == nil || qov.correlation.IsZero() {
+		return nil, false
+	}
+	return qov, true
+}
+
+func (*quantifiedObjectValue) isQuantifiedObjectValueView() {}
+
+func (q *quantifiedObjectValue) Correlation() CorrelationIdentifier {
+	return q.correlation
+}
+
+func (q *quantifiedObjectValue) FlowedType() Type {
+	if q == nil || q.flowed == nil {
+		return nil
+	}
+	return q.flowed.thaw()
 }
 
 // Children returns an empty slice — the quantifier is a leaf in
 // the Value tree, with its correlation link being external metadata
 // (not a child Value).
-func (*QuantifiedObjectValue) Children() []Value { return []Value{} }
+func (*quantifiedObjectValue) Children() []Value { return []Value{} }
 
-// Type returns the row reference Type. Always nullable — rows pass
-// through as nullable (e.g. LEFT JOIN's right side).
-func (q *QuantifiedObjectValue) Type() Type {
-	if q.Typ == nil {
-		return UnknownType
-	}
-	return WithNullability(q.Typ, true)
-}
+// Type returns a fresh copy of the exact flowed type. Nullability widening is
+// performed once at the quantifier edge, not unconditionally here.
+func (q *quantifiedObjectValue) Type() Type { return q.FlowedType() }
 
 // Name returns the debug-print kind.
-func (*QuantifiedObjectValue) Name() string { return "quantifier" }
+func (*quantifiedObjectValue) Name() string { return "quantifier" }
 
 // Evaluate extracts the row bound to this quantifier's correlation. The
 // ordinal row is the sole runtime row; the eval-context shapes this handles:
@@ -5054,14 +5008,25 @@ func (*QuantifiedObjectValue) Name() string { return "quantifier" }
 //
 // Downstream FieldValue / nested-field resolvers then read a specific column off
 // the returned row by ordinal.
-func (q *QuantifiedObjectValue) Evaluate(evalCtx any) (any, error) {
+func (q *quantifiedObjectValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil
 	}
 	switch ctx := evalCtx.(type) {
 	case *RowEvalContext:
+		if ctx.Objects != nil {
+			value, present, err := ctx.Objects.GetQuantifiedBinding(q)
+			if err != nil {
+				return nil, err
+			}
+			if !present {
+				return nil, resolutionError(UnboundCorrelation, "qov.binding",
+					fmt.Sprintf("exact QOV %q (%s) has no declared runtime binding", q.correlation.Name(), q.FlowedType()))
+			}
+			return value, nil
+		}
 		if ctx.Correlations != nil {
-			if val, ok := ctx.Correlations.GetCorrelationBinding(q.Correlation); ok {
+			if val, ok := ctx.Correlations.GetCorrelationBinding(q.correlation); ok {
 				return val, nil
 			}
 		}
@@ -5079,8 +5044,18 @@ func (q *QuantifiedObjectValue) Evaluate(evalCtx any) (any, error) {
 		// *RowEvalContext Positional fallback gives, so a QOV-child FieldValue
 		// (`c2.name`) reads its column by ordinal against it.
 		return ctx, nil
+	case QuantifiedObjectBinder:
+		value, present, err := ctx.GetQuantifiedBinding(q)
+		if err != nil {
+			return nil, err
+		}
+		if !present {
+			return nil, resolutionError(UnboundCorrelation, "qov.binding",
+				fmt.Sprintf("exact QOV %q (%s) has no declared runtime binding", q.correlation.Name(), q.FlowedType()))
+		}
+		return value, nil
 	case CorrelationBinder:
-		val, ok := ctx.GetCorrelationBinding(q.Correlation)
+		val, ok := ctx.GetCorrelationBinding(q.correlation)
 		if !ok {
 			return nil, nil
 		}
@@ -5091,8 +5066,8 @@ func (q *QuantifiedObjectValue) Evaluate(evalCtx any) (any, error) {
 
 // GetCorrelatedTo implements the Correlated interface — returns
 // a set containing this quantifier's correlation.
-func (q *QuantifiedObjectValue) GetCorrelatedTo() map[CorrelationIdentifier]struct{} {
-	return map[CorrelationIdentifier]struct{}{q.Correlation: {}}
+func (q *quantifiedObjectValue) GetCorrelatedTo() map[CorrelationIdentifier]struct{} {
+	return map[CorrelationIdentifier]struct{}{q.correlation: {}}
 }
 
 // --- AggregateValue -----------------------------------------------
@@ -5174,7 +5149,10 @@ func (a *AggregateValue) Children() []Value {
 
 // Type returns the rich Type the aggregate produces, matching Java's
 // per-operator resultTypeCode (NumericAggregationValue.PhysicalOperator):
-//   - COUNT / COUNT(*): NotNullLong (zero on empty groups).
+//   - COUNT / COUNT(*): NullableLong. COUNT is non-null inside its own group,
+//     but a GroupBy row can itself be null-supplied by an outer relational
+//     edge; the exact flowed aggregate-row contract therefore carries the
+//     widened nullable type.
 //   - AVG: NullableDouble — AVG is real division, always DOUBLE
 //     regardless of operand type (Java AVG_{I,L,F,D} → DOUBLE). NOT
 //     operand-derived: AVG(BIGINT) is DOUBLE, not LONG.
@@ -5183,7 +5161,7 @@ func (a *AggregateValue) Children() []Value {
 func (a *AggregateValue) Type() Type {
 	switch a.Op {
 	case AggCount, AggCountStar:
-		return NotNullLong
+		return NullableLong
 	case AggAvg:
 		return NullableDouble
 	case AggSum, AggMin, AggMax:
@@ -5333,273 +5311,4 @@ func IsIndexOnly(v Value) bool {
 		return io.IsIndexOnly()
 	}
 	return false
-}
-
-// NewFusedFieldValueOfNestedOrdinal builds the FUSED TWO-STEP address into a
-// NESTED merged-leg window: "slot slotOrdinal of child, then legOrdinal within
-// the leg row that slot holds".
-//
-// This is Java's `ofOrdinalNumberAndFuseIfPossible`, reached the same way.
-// PartitionSelectRule rewrites a reference to a collapsed sibling as
-// `FieldValue.ofOrdinalNumber(QOV(newUpper), index)`; when translateCorrelations
-// rebuilds the enclosing `FieldValue(QOV(lower), [f])`, the leaf swap produces
-// `FieldValue(FieldValue(QOV(upper),[i]), [f])` and `FieldValue.withNewChild` →
-// `ofFieldsAndFuseIfPossible` merges the two accessor lists via
-// `FieldPath.withSuffix` into the single two-step path
-// `FieldValue(QOV(upper), [i, f])`. Composition is a path FUSION, never a
-// flattening: nothing is materialized and nothing is re-offset.
-//
-// IT IS ONE FUNCTION BECAUSE THE RESULT TYPE IS THE EASY PART TO GET WRONG, and
-// it was gotten wrong. Both rebase sites built the fused node by copying the
-// SLOT's baked node and overwriting its path and display name — which leaves the
-// node reporting the LEG'S WHOLE RECORD TYPE as the type of a single column
-// read. Java does not have that bug because `ofFieldsAndFuseIfPossible`
-// RECOMPUTES the result type from the fused path rather than inheriting the
-// first step's. Two hand-written copies of a fusion is exactly the shape that
-// lets one of them keep a stale type.
-//
-// THE NULLABILITY RULE IS THE SECOND HALF, and it is why the leaf's own type is
-// not simply returned. `NewFieldValueOfOrdinal` implements Java's
-// `FieldValue.computeResultType`: a column read through a NULLABLE record is
-// nullable, because a null-supplied row serves NULL in every slot. Descending
-// two steps means that rule applies TWICE — once for the leg row (handled by the
-// leaf bake below) and once for the merged row whose slot may itself be
-// nullable. Taking the leaf's type verbatim would report a LEFT-outer-supplied
-// column as NOT NULL.
-func NewFusedFieldValueOfNestedOrdinal(child Value, slotOrdinal int, legType *RecordType, legOrdinal int) (*FieldValue, error) {
-	slot, err := NewFieldValueOfOrdinal(child, slotOrdinal)
-	if err != nil {
-		return nil, err
-	}
-	if legType == nil {
-		return nil, &OrdinalBakeError{
-			Ordinal: legOrdinal,
-			Reason:  "nested leg window states no record type to descend into",
-		}
-	}
-	// The leaf is baked against the LEG's own row, which is what makes its
-	// ordinal a proof rather than a claim: the domain stamped on it is the layout
-	// the ordinal indexes.
-	leaf, err := NewFieldValueOfOrdinal(NewQuantifiedObjectValueOfType(legAliasOf(child), legType), legOrdinal)
-	if err != nil {
-		return nil, err
-	}
-	typ := leaf.Typ
-	// The SLOT's own nullability, applied on top of the leaf bake's. See the doc.
-	if slot.Typ != nil && slot.Typ.IsNullable() && typ != nil && !typ.IsNullable() {
-		typ = WithNullability(typ, true)
-	}
-	NoteFieldValueMint(leaf.Field, true)
-	return &FieldValue{
-		// The DISPLAY name is the LEAF's, matching what a one-step bake would
-		// have rendered. It is rendering only — a baked node's identity is its
-		// ordinal PATH alone (Java's ResolvedAccessor equality compares
-		// getOrdinal() only).
-		Field: leaf.Field,
-		Typ:   typ,
-		Child: slot.Child,
-		// The fused path. The frontier pin and the domain come from the RECEIVER,
-		// which is the SLOT step — both govern the ROOT read context, and the root
-		// of this path is the read against the merged row.
-		Resolved: slot.Resolved.WithSuffix(leaf.Resolved),
-	}, nil
-}
-
-// FuseNestedSuffix extends an already-baked address by the accessors a NESTED
-// reference still has to travel INSIDE the column that address reads, returning
-// the single fused FieldValue for the whole descent.
-//
-// This is Java's FieldPath.withSuffix (FieldValue.java:525-534) reached the same
-// way as NewFusedFieldValueOfNestedOrdinal: composition is a path FUSION, never
-// a flattening — nothing is materialized and nothing is re-offset.
-//
-// WHY THE SUFFIX IS CARRIED RATHER THAN RE-DERIVED, and it is the opposite
-// disposition from the ROOT deliberately. A root ordinal is stated in the layout
-// the reference was resolved against, and a merge RESTATES that layout — which
-// is why the root must be derived from the target and the carried one used only
-// as a tripwire. A suffix ordinal indexes a STRUCT's own declared field order,
-// which the schema fixes and which no merge, projection or re-ordering can
-// touch: the same struct value has the same internal layout wherever the column
-// happens to sit. Re-deriving it would be re-deriving a constant.
-//
-// `into` is that constant when it is knowable, and it is a TRIPWIRE, not a
-// source. Neither the merged row's per-slot types nor the leg window's carry a
-// struct column's type today — both state UNKNOWN, measured — so a design that
-// REQUIRED the type would decline every real nested reference while looking like
-// it was being careful. When a record type IS available every step is asserted
-// against it and a disagreement declines; when it is not, the carried accessors
-// stand on their own and the reference's own leaf type answers.
-//
-// THE LEAF TYPE COMES FROM THE REFERENCE, promoted nullable if the merged slot
-// is. The reference's Typ was computed by the resolver against the real schema,
-// which is strictly better information than either layout holds. Taking the
-// root SLOT's type instead is the bug NewFusedFieldValueOfNestedOrdinal's doc
-// records: it reports the whole STRUCT as the type of a single-column read, and
-// a sort built on that compares records.
-func FuseNestedSuffix(root *FieldValue, into *RecordType, suffix []ResolvedAccessor, leafTyp Type) (*FieldValue, error) {
-	if root == nil || root.Resolved == nil {
-		return nil, &OrdinalBakeError{Reason: "no baked root address to fuse a nested suffix onto"}
-	}
-	if len(suffix) == 0 {
-		return root, nil
-	}
-	// A column read through a nullable record is nullable, because a
-	// null-supplied row serves NULL in every slot. An UNKNOWN slot type reads as
-	// nullable, which over-promotes rather than under-promotes — the safe
-	// direction, since a wrongly-NOT-NULL leaf is what silently drops a
-	// LEFT-outer NULL.
-	nullable := root.Typ != nil && root.Typ.IsNullable()
-	acc := make([]ResolvedAccessor, 0, len(suffix))
-	leafName := root.Field
-	typ := leafTyp
-	// NOT `var walk Type = into`: a nil *RecordType stored in a Type interface is
-	// a non-nil interface, so the type assertion below would SUCCEED with a nil
-	// receiver and the assert arm would dereference it. The typed-nil trap is
-	// exactly the shape that makes "no layout available" — the common case here —
-	// crash instead of taking the carry arm.
-	var walk Type
-	if into != nil {
-		walk = into
-	}
-	for _, want := range suffix {
-		step := want
-		if walk == terminalLeafMarker {
-			return nil, &OrdinalBakeError{
-				Ordinal: want.Ordinal,
-				Reason:  "nested suffix step " + want.Field + " descends into a stated non-record (leaf) type",
-			}
-		}
-		if rt, isRec := walk.(*RecordType); isRec && rt != nil {
-			ord, err := assertSuffixStep(rt, want)
-			if err != nil {
-				return nil, err
-			}
-			fld := rt.Fields[ord]
-			step = ResolvedAccessor{Field: fld.Name, Ordinal: ord}
-			if rt.Nullable {
-				nullable = true
-			}
-			if nested, isRec := fld.FieldType.(*RecordType); isRec && nested != nil {
-				walk = nested
-			} else if isDescendableUnknown(fld.FieldType) {
-				// The type is not stated, so a further step is carried (see the doc).
-				walk = nil
-			} else {
-				// The type IS stated and it is a LEAF. A further step would descend
-				// into a scalar, which no row can answer — and carrying it would
-				// produce an address that looks like a valid deeper path. Mark the
-				// walk as terminal so the next iteration declines instead.
-				walk = terminalLeafMarker
-			}
-			typ = fld.FieldType
-		} else {
-			// No type to descend: the carried accessor stands alone and the
-			// reference's own leaf type answers for the whole descent.
-			walk = nil
-		}
-		if step.Ordinal < 0 {
-			return nil, &OrdinalBakeError{
-				Ordinal: step.Ordinal,
-				Reason:  "nested suffix step " + want.Field + " states no ordinal and no layout to derive one from",
-			}
-		}
-		acc = append(acc, step)
-		if step.Field != "" {
-			leafName = step.Field
-		}
-	}
-	if nullable && typ != nil && !typ.IsNullable() {
-		typ = WithNullability(typ, true)
-	}
-	NoteFieldValueMint(leafName, true)
-	return &FieldValue{
-		// The DISPLAY name is the LEAF's, matching what a one-step bake would
-		// have rendered. Rendering only: a baked node's identity is its ordinal
-		// path (Java's ResolvedAccessor equality compares getOrdinal() alone).
-		Field: leafName,
-		Typ:   typ,
-		Child: root.Child,
-		// The frontier pin and the domain come from the RECEIVER — the root
-		// step — because both govern the ROOT read context, and the root of
-		// this path is still the read against the merged row.
-		Resolved: root.Resolved.WithSuffix(&FieldPath{Accessors: acc}),
-	}, nil
-}
-
-// terminalLeafMarker stands for "the walk reached a type that is STATED and is
-// not a record". It is distinct from a nil walk, which means "no type is stated
-// here" — and the two must not collapse, because they license opposite answers:
-// an unstated type carries the next accessor, a stated leaf declines it.
-var terminalLeafMarker Type = &RecordType{}
-
-// isDescendableUnknown reports whether a field type is the "not yet inferred"
-// placeholder rather than a real leaf.
-//
-// This is the case that makes the carry arm necessary at all: the positional
-// merge does not model a struct-typed column, so the leg window states
-// UnknownType for exactly the fields a nested reference descends into.
-func isDescendableUnknown(t Type) bool {
-	if t == nil {
-		return true
-	}
-	p, isPrim := t.(*PrimitiveType)
-	return isPrim && p.TypeCode == TypeCodeUnknown
-}
-
-// assertSuffixStep resolves ONE suffix accessor against the record type actually
-// reached, deriving the ordinal from the name where there is one and declining
-// when the carried ordinal contradicts it.
-//
-// A duplicate name declines rather than first-matching: a first match is
-// indistinguishable from a correct answer, and disambiguating needs an identity
-// no caller on this path carries.
-func assertSuffixStep(rt *RecordType, want ResolvedAccessor) (int, error) {
-	if want.Field == "" {
-		if want.Ordinal < 0 || want.Ordinal >= len(rt.Fields) {
-			return 0, &OrdinalBakeError{
-				Ordinal: want.Ordinal, ChildType: rt,
-				Reason: fmt.Sprintf("unnamed nested suffix step out of range for a %d-field record type", len(rt.Fields)),
-			}
-		}
-		return want.Ordinal, nil
-	}
-	dupes, derived := 0, -1
-	for i, f := range rt.Fields {
-		if f.Name == want.Field {
-			dupes++
-			if derived < 0 {
-				derived = i
-			}
-		}
-	}
-	switch {
-	case dupes == 0:
-		return 0, &OrdinalBakeError{
-			Ordinal: want.Ordinal, ChildType: rt,
-			Reason: "nested suffix step " + want.Field + " is absent from the record it descends into",
-		}
-	case dupes > 1:
-		return 0, &OrdinalBakeError{
-			Ordinal: want.Ordinal, ChildType: rt,
-			Reason: "nested suffix step " + want.Field + " is ambiguous in the record it descends into",
-		}
-	}
-	if want.Ordinal >= 0 && want.Ordinal != derived {
-		return 0, &OrdinalBakeError{
-			Ordinal: want.Ordinal, ChildType: rt,
-			Reason: "nested suffix step " + want.Field + " carries an ordinal that disagrees with the record it descends into",
-		}
-	}
-	return derived, nil
-}
-
-// legAliasOf names the quantifier the leaf bake resolves against. It is
-// cosmetic — the leaf's correlation never survives into the fused node, whose
-// child is the MERGED quantifier — but a stated identifier keeps the
-// intermediate node from carrying the zero correlation into any future reader.
-func legAliasOf(child Value) CorrelationIdentifier {
-	if qov, isQOV := child.(*QuantifiedObjectValue); isQOV {
-		return qov.Correlation
-	}
-	return CorrelationIdentifier{}
 }

@@ -5,21 +5,49 @@ package executor
 // for the NLJ build's behavior when it has no legRVs to derive windows from.
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// TestMixedElementSpanSynthesis pins the terminal synthesis: a
-// SINGLE-accessor pinned ref over a merge quantifier whose referenced slot is
-// a bare NON-RECORD QOV (the gathered unnest's mixed element after the
-// partition collapsed {source, Explode}) resolves to a synthesized 1-field
-// element leg — alias = the SLOT QOV's correlation (the AS alias, never the
-// merge alias), the sole column named from the enclosing RC field. Without
-// legRVs the shape must DECLINE (fail-safe, never mis-windowed); with a
-// RECORD slot the merge-leg run resolution is UNCHANGED (the load-bearing
-// non-record guard).
+func spanMustQOV(t testing.TB, alias string, typ values.Type) values.QuantifiedObjectValue {
+	t.Helper()
+	qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(alias), typ)
+	if err != nil {
+		t.Fatalf("NewQuantifiedObjectValue(%s): %v", alias, err)
+	}
+	return qov
+}
+
+func spanMustSeedValue(t testing.TB, child values.Value, ordinal int) values.Value {
+	t.Helper()
+	field, err := values.ResolveOrdinalSeedField(child, ordinal)
+	if err != nil {
+		t.Fatalf("ResolveOrdinalSeedField(%d): %v", ordinal, err)
+	}
+	return field
+}
+
+func spanFusedRef(t testing.TB, mergeQOV values.QuantifiedObjectValue, slot, legOrd int) values.FieldValue {
+	t.Helper()
+	resolved, err := values.ResolveFieldOrdinals(mergeQOV, []int{slot, legOrd})
+	if err != nil {
+		t.Fatalf("ResolveFieldOrdinals([%d,%d]): %v", slot, legOrd, err)
+	}
+	field, ok := values.AsFieldValue(resolved)
+	if !ok || field.Path() == nil || field.Path().Len() != 2 || field.Path().IsFrontierPinned() {
+		t.Fatalf("fused reference = %T path %v, want exact unpinned two-accessor FieldValue", resolved, field)
+	}
+	return field
+}
+
+// TestMixedElementSpanSynthesis pins the RFC-232 replacement for inferred
+// mixed-element spans. The phase's explicit OrdinalLayout retains the source
+// record field-by-field and the scalar UNNEST element by object path. Omitting
+// the element window is loud even though a same-typed carrier slot exists, and
+// claiming that scalar slot for a record source is rejected at construction.
 func TestMixedElementSpanSynthesis(t *testing.T) {
 	t.Parallel()
 
@@ -27,68 +55,78 @@ func TestMixedElementSpanSynthesis(t *testing.T) {
 		{Name: "SID", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: "ARR", FieldType: values.NotNullLong, Ordinal: 1},
 	})
-	qovS := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("S"), legS)
-	elemQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("EL"), values.NotNullLong)
-
-	mergedType := values.NewRecordType("", false, []values.Field{
-		{Name: values.OrdinalFieldName(0), FieldType: legS, Ordinal: 0},
-		{Name: values.OrdinalFieldName(1), FieldType: values.NotNullLong, Ordinal: 1},
+	qovS := spanMustQOV(t, "S", legS)
+	elemQOV := spanMustQOV(t, "EL", values.NotNullLong)
+	carrierType := values.NewRecordType("", false, []values.Field{
+		{Name: "SID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "ARR", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "EL", FieldType: values.NotNullLong, Ordinal: 2},
 	})
-	mergeQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("m"), mergedType)
+	tiles := []values.OrdinalTileSpec{{Start: 0, Width: 3, Kind: values.OrdinalTileFlat}}
+	sourceWindow := values.OrdinalWindowSpec{Source: qovS, FieldPaths: [][]int{{0}, {1}}}
+	elementWindow := values.OrdinalWindowSpec{Source: elemQOV, ObjectPath: []int{2}}
+	newLayout := func(windows []values.OrdinalWindowSpec) values.OrdinalLayout {
+		t.Helper()
+		layout, err := values.NewOrdinalLayoutForCarrierType(carrierType, tiles, windows)
+		if err != nil {
+			t.Fatalf("NewOrdinalLayoutForCarrierType: %v", err)
+		}
+		return layout
+	}
+	rowFor := func(layout values.OrdinalLayout) *PositionalRow {
+		t.Helper()
+		row, err := NewLayoutPositionalRow(carrierType, layout)
+		if err != nil {
+			t.Fatalf("NewLayoutPositionalRow: %v", err)
+		}
+		copy(row.Slots, []any{int64(7), int64(70), int64(99)})
+		return row
+	}
 
-	elemRef, err := values.NewFieldValueOfOrdinal(mergeQOV, 1)
+	full := newLayout([]values.OrdinalWindowSpec{sourceWindow, elementWindow})
+	ctx, err := ordinalLayoutRowContext(full, rowFor(full), nil, nil)
 	if err != nil {
-		t.Fatalf("bake element slot: %v", err)
+		t.Fatalf("ordinalLayoutRowContext: %v", err)
 	}
-	top := values.NewRawRecordConstructorValue(
-		values.RecordConstructorField{Name: "SID", Value: s3FusedRef(t, mergeQOV, 0, 0)},
-		values.RecordConstructorField{Name: "ARR", Value: s3FusedRef(t, mergeQOV, 0, 1)},
-		values.RecordConstructorField{Name: "EL", Value: elemRef},
-	)
-	legRVs := map[values.CorrelationIdentifier]values.Value{
-		values.NamedCorrelationIdentifier("m"): values.NewRawRecordConstructorValue(
-			values.RecordConstructorField{Name: values.OrdinalFieldName(0), Value: qovS},
-			values.RecordConstructorField{Name: values.OrdinalFieldName(1), Value: elemQOV},
-		),
+	arr := mustTestFieldOrdinal(t, qovS, 1)
+	if got, evalErr := arr.Evaluate(ctx); evalErr != nil || got != int64(70) {
+		t.Fatalf("S.ARR = (%v, %v), want (70, nil)", got, evalErr)
+	}
+	if got, evalErr := elemQOV.Evaluate(ctx); evalErr != nil || got != int64(99) {
+		t.Fatalf("EL object = (%v, %v), want (99, nil)", got, evalErr)
 	}
 
-	spans, _, ok := ordinalJoinSpansOf(top, legRVs)
-	if !ok {
-		t.Fatal("the mixed-element translated top must derive windows")
-	}
-	if len(spans) != 2 {
-		t.Fatalf("got %d spans, want 2 (the S run + the synthesized element leg)", len(spans))
-	}
-	if spans[0].Alias.Name() != "S" || spans[0].Width != 2 {
-		t.Fatalf("span 0 = %s width %d, want the full S run (width 2)", spans[0].Alias, spans[0].Width)
-	}
-	el := spans[1]
-	if el.Alias.Name() != "EL" {
-		t.Fatalf("element span alias = %s, want the SLOT QOV's correlation EL (never the merge alias)", el.Alias)
-	}
-	if el.Width != 1 || len(el.LegType.Fields) != 1 || el.LegType.Fields[0].Name != "EL" {
-		t.Fatalf("element leg = %+v, want the 1-field synthesis named from the enclosing RC field", el.LegType)
-	}
-
-	// Fail-safe: no legRVs → the fused outer refs cannot resolve → decline.
-	if _, _, ok := ordinalJoinSpansOf(top, nil); ok {
-		t.Fatal("the translated top must DECLINE without legRVs")
-	}
-
-	// The non-record guard: a RECORD slot referenced single-accessor is a
-	// merge-leg run, NOT an element — the pristine positional-merge RC's own
-	// consumers keep resolving unchanged (partial coverage here, so the probe
-	// declines rather than synthesizing a bogus leg).
-	recRef, err := values.NewFieldValueOfOrdinal(mergeQOV, 0)
+	// Mutation control: with no EL window, the exact object binder must not
+	// fall back to carrier slot 2 (or another same-typed slot).
+	sourceOnly := newLayout([]values.OrdinalWindowSpec{sourceWindow})
+	sourceOnlyCtx, err := ordinalLayoutRowContext(sourceOnly, rowFor(sourceOnly), nil, nil)
 	if err != nil {
-		t.Fatalf("bake record slot: %v", err)
+		t.Fatalf("source-only ordinalLayoutRowContext: %v", err)
 	}
-	topRec := values.NewRawRecordConstructorValue(
-		values.RecordConstructorField{Name: "R", Value: recRef},
-		values.RecordConstructorField{Name: "EL", Value: elemRef},
-	)
-	if _, _, ok := ordinalJoinSpansOf(topRec, legRVs); ok {
-		t.Fatal("a RECORD slot must not synthesize an element leg (partial merge-run coverage declines)")
+	got, evalErr := elemQOV.Evaluate(sourceOnlyCtx)
+	var coded interface {
+		Code() values.ResolutionErrorCode
+	}
+	if got != nil || !errors.As(evalErr, &coded) || coded.Code() != values.UnboundCorrelation {
+		t.Fatalf("EL without an explicit window = (%v, %v), want UnboundCorrelation", got, evalErr)
+	}
+
+	// Exact-shape control: the scalar EL slot cannot be declared as a whole
+	// record object merely because an old span synthesizer would have guessed a
+	// one-field wrapper.
+	recordElem := spanMustQOV(t, "REC_EL", legS)
+	invalid, invalidErr := values.NewOrdinalLayoutForCarrierType(carrierType, tiles, []values.OrdinalWindowSpec{
+		sourceWindow,
+		{Source: recordElem, ObjectPath: []int{2}},
+	})
+	if invalid != nil || invalidErr == nil {
+		t.Fatalf("record source over scalar EL slot = (%v, %v), want exact layout rejection", invalid, invalidErr)
+	}
+	var invalidCode interface {
+		Code() values.ResolutionErrorCode
+	}
+	if !errors.As(invalidErr, &invalidCode) || invalidCode.Code() != values.LayoutTypeMismatch {
+		t.Fatalf("record-over-scalar error = %v, want LayoutTypeMismatch", invalidErr)
 	}
 }
 
@@ -109,17 +147,14 @@ func TestNLJBuildNilLegRVsWindows(t *testing.T) {
 	mergedType := values.NewRecordType("", false, []values.Field{
 		{Name: values.OrdinalFieldName(0), FieldType: legS, Ordinal: 0},
 	})
-	mergeQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("m"), mergedType)
+	mergeQOV := spanMustQOV(t, "m", mergedType)
 	legB := values.NewRecordType("", false, []values.Field{
 		{Name: "BID", FieldType: values.NotNullLong, Ordinal: 0},
 	})
-	qovB := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("B"), legB)
-	b0, err := values.NewFieldValueOfOrdinal(qovB, 0)
-	if err != nil {
-		t.Fatalf("bake B#0: %v", err)
-	}
+	qovB := spanMustQOV(t, "B", legB)
+	b0 := spanMustSeedValue(t, qovB, 0)
 	top := values.NewRawRecordConstructorValue(
-		values.RecordConstructorField{Name: "SID", Value: s3FusedRef(t, mergeQOV, 0, 0)},
+		values.RecordConstructorField{Name: "SID", Value: spanFusedRef(t, mergeQOV, 0, 0)},
 		values.RecordConstructorField{Name: "BID", Value: b0},
 	)
 
@@ -144,21 +179,15 @@ func TestNLJBuildNilLegRVsWindows(t *testing.T) {
 // same contract; if they drift, one of them reads the wrong slot.
 func TestSpanWindowCrossAgreement_PlainSeed(t *testing.T) {
 	t.Parallel()
-	mk := func(alias string, cols ...string) *values.QuantifiedObjectValue {
+	mk := func(alias string, cols ...string) values.QuantifiedObjectValue {
 		fields := make([]values.Field, len(cols))
 		for i, c := range cols {
 			fields[i] = values.Field{Name: c, FieldType: values.NotNullLong, Ordinal: i}
 		}
-		return values.NewQuantifiedObjectValueOfType(
-			values.NamedCorrelationIdentifier(alias),
-			values.NewRecordType("", false, fields))
+		return spanMustQOV(t, alias, values.NewRecordType("", false, fields))
 	}
-	bake := func(qov *values.QuantifiedObjectValue, i int) values.RecordConstructorField {
-		fv, err := values.NewFieldValueOfOrdinal(qov, i)
-		if err != nil {
-			t.Fatalf("bake: %v", err)
-		}
-		return values.RecordConstructorField{Name: fv.Field, Value: fv}
+	bake := func(qov values.QuantifiedObjectValue, i int) values.RecordConstructorField {
+		return bakeOrdinal(t, qov, i)
 	}
 	a := mk("A", "AID", "AV")
 	b := mk("B", "BID")
@@ -201,12 +230,12 @@ func TestSpanWindowCrossAgreement_PlainSeed(t *testing.T) {
 	// Both must DECLINE the same non-pristine shape (a translated top whose
 	// ref FUSED to a multi-accessor path through a merge quantifier).
 	mergedType := values.NewRecordType("", false, []values.Field{
-		{Name: values.OrdinalFieldName(0), FieldType: a.Typ, Ordinal: 0},
+		{Name: values.OrdinalFieldName(0), FieldType: a.FlowedType(), Ordinal: 0},
 	})
-	mergeQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("m"), mergedType)
+	mergeQOV := spanMustQOV(t, "m", mergedType)
 	nonPristine := values.NewRawRecordConstructorValue(
-		values.RecordConstructorField{Name: "AID", Value: s3FusedRef(t, mergeQOV, 0, 0)},
-		values.RecordConstructorField{Name: "AV", Value: s3FusedRef(t, mergeQOV, 0, 1)},
+		values.RecordConstructorField{Name: "AID", Value: spanFusedRef(t, mergeQOV, 0, 0)},
+		values.RecordConstructorField{Name: "AV", Value: spanFusedRef(t, mergeQOV, 0, 1)},
 	)
 	_, _, spansOK := ordinalJoinSpans(nonPristine)
 	winDeclined, _ := values.OrdinalSeedLegWindows(nonPristine)
@@ -216,23 +245,23 @@ func TestSpanWindowCrossAgreement_PlainSeed(t *testing.T) {
 }
 
 // mixedSeedOuter builds a 2-column baked outer leg QOV keyed by the given alias.
-func mixedSeedOuter(alias string) *values.QuantifiedObjectValue {
-	return values.NewQuantifiedObjectValueOfType(
-		values.NamedCorrelationIdentifier(alias),
-		values.NewRecordType("", false, []values.Field{
-			{Name: alias + "ID", FieldType: values.NotNullLong, Ordinal: 0},
-			{Name: alias + "V", FieldType: values.NotNullLong, Ordinal: 1},
-		}))
+func mixedSeedOuter(t testing.TB, alias string) values.QuantifiedObjectValue {
+	t.Helper()
+	return spanMustQOV(t, alias, values.NewRecordType("", false, []values.Field{
+		{Name: alias + "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: alias + "V", FieldType: values.NotNullLong, Ordinal: 1},
+	}))
 }
 
 // bakeOrdinal bakes a frontier-pinned ofOrdinal field over a leg QOV.
-func bakeOrdinal(t *testing.T, qov *values.QuantifiedObjectValue, i int) values.RecordConstructorField {
+func bakeOrdinal(t testing.TB, qov values.QuantifiedObjectValue, i int) values.RecordConstructorField {
 	t.Helper()
-	fv, err := values.NewFieldValueOfOrdinal(qov, i)
-	if err != nil {
-		t.Fatalf("bake: %v", err)
+	value := spanMustSeedValue(t, qov, i)
+	fv, ok := values.AsFieldValue(value)
+	if !ok {
+		t.Fatalf("ResolveOrdinalSeedField(%s,%d) = %T, want exact FieldValue", qov.Correlation(), i, value)
 	}
-	return values.RecordConstructorField{Name: fv.Field, Value: fv}
+	return values.RecordConstructorField{Name: fv.DisplayName(), Value: fv}
 }
 
 // assertSpanWindowAgreement asserts the executor's ordinalJoinSpans and the
@@ -418,19 +447,19 @@ func assertSpanWindowAgreementVia(t *testing.T, label string, rc *values.RecordC
 // in lockstep.
 func TestSpanWindowCrossAgreement_MixedSeed(t *testing.T) {
 	t.Parallel()
-	tLeg := mixedSeedOuter("T")
+	tLeg := mixedSeedOuter(t, "T")
 
 	// ACCEPT: multi-col outer + a bare-QOV scalar element (the whole-object element
 	// the seed cannot ofOrdinal-bake), keyed by the AS alias X.
-	scalarElem := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("X"), values.NotNullLong)
+	scalarElem := spanMustQOV(t, "X", values.NotNullLong)
 	assertSpanWindowAgreement(t, "mixed/scalar-element", values.NewRawRecordConstructorValue(
 		bakeOrdinal(t, tLeg, 0), bakeOrdinal(t, tLeg, 1),
 		values.RecordConstructorField{Name: "X", Value: scalarElem},
 	), true)
 
-	// ACCEPT: a STRUCT array element maps to UnknownType (NOT a *RecordType), so it
-	// flows the same mixed path as a scalar (unnestArrayElementType / isMixedSeedElement).
-	structElem := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("W"), values.UnknownType)
+	// ACCEPT: an exact opaque collection element is still NON-record, so it flows
+	// the same mixed path as a scalar (isMixedSeedElement).
+	structElem := spanMustQOV(t, "W", values.NewArrayType(false, values.NotNullLong))
 	assertSpanWindowAgreement(t, "mixed/struct-element", values.NewRawRecordConstructorValue(
 		bakeOrdinal(t, tLeg, 0), bakeOrdinal(t, tLeg, 1),
 		values.RecordConstructorField{Name: "W", Value: structElem},
@@ -446,7 +475,7 @@ func TestSpanWindowCrossAgreement_MixedSeed(t *testing.T) {
 	// worth guarding: the un-collapse groups over exactly this seed and
 	// positionally bakes its group keys via these windows. A DUPLICATE alias in the
 	// prefix (a split run) still declines — the pristine-run discipline is unchanged.
-	bLeg := mixedSeedOuter("B")
+	bLeg := mixedSeedOuter(t, "B")
 	assertSpanWindowAgreement(t, "accept/multi-leg-prefix", values.NewRawRecordConstructorValue(
 		bakeOrdinal(t, tLeg, 0), bakeOrdinal(t, tLeg, 1),
 		bakeOrdinal(t, bLeg, 0), bakeOrdinal(t, bLeg, 1),
@@ -486,9 +515,9 @@ func TestSpanWindowCrossAgreement_MixedSeed(t *testing.T) {
 	// dup-alias check. This pins the truly-bit-for-bit reject (the last drift
 	// residual): BOTH decline now. Unreachable from SQL (a seed is a concat of
 	// DISTINCT contiguous legs) but the invariant is that the two walks agree.
-	a1 := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"),
+	a1 := spanMustQOV(t, "A",
 		values.NewRecordType("", false, []values.Field{{Name: "AID", FieldType: values.NotNullLong, Ordinal: 0}}))
-	b1 := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("B"),
+	b1 := spanMustQOV(t, "B",
 		values.NewRecordType("", false, []values.Field{{Name: "BID", FieldType: values.NotNullLong, Ordinal: 0}}))
 	assertSpanWindowAgreement(t, "decline/split-run", values.NewRawRecordConstructorValue(
 		bakeOrdinal(t, a1, 0), bakeOrdinal(t, b1, 0), bakeOrdinal(t, a1, 0),
@@ -496,7 +525,7 @@ func TestSpanWindowCrossAgreement_MixedSeed(t *testing.T) {
 
 	// A RECORD-typed trailing bare QOV (a positional-merge RC's shape): the
 	// non-record guard (isMixedSeedElement / unnestMixedSeedSpans) excludes it. BOTH decline.
-	recElem := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("R"),
+	recElem := spanMustQOV(t, "R",
 		values.NewRecordType("", false, []values.Field{{Name: "RC0", FieldType: values.NotNullLong, Ordinal: 0}}))
 	assertSpanWindowAgreement(t, "decline/record-element", values.NewRawRecordConstructorValue(
 		bakeOrdinal(t, tLeg, 0), bakeOrdinal(t, tLeg, 1),
@@ -509,75 +538,84 @@ func TestSpanWindowCrossAgreement_MixedSeed(t *testing.T) {
 	), false)
 }
 
-// TestSpanWindowCrossAgreement_BoxLeg pins the cross-agreement
-// invariant for a seed whose leg is a CLUSTERED BOX (RecordType.Legs carries
-// the buried-leaf boundaries): the executor's run-level spans emit EVERY sub
-// of the box run into the merged type's Legs, and the values twin must land
-// on the identical boundary list — including the RIGHTMOST leaf's entry
-// under the box's own name (the box is NAMED by that leaf, so the
-// alias-keyed window must be the LEAF's narrow slice, never the whole
-// concat: a run-wide window FieldIndexes across the concat and first-matches
-// an earlier buried leg's duplicate name). This shape once caught a real bug:
-// values.OrdinalSeedLegWindows skipped a boundary whenever `leg.Name ==
-// alias`, silently dropping the rightmost leaf's window in exactly this case.
+// TestSpanWindowCrossAgreement_BoxLeg pins agreement between the explicit
+// retained-result layout factory and an independently stated executor layout
+// for the old clustered-box shape. A, buried B, and rightmost E are separate
+// exact sources; no RecordType.Legs table participates. E's field window must
+// name carrier slot 4, never B's earlier duplicate at slot 3.
 func TestSpanWindowCrossAgreement_BoxLeg(t *testing.T) {
 	t.Parallel()
-	// Plain preserved leg A (2 cols) + a clustered box leg named E whose
-	// concat buries B (2 cols, one name DUPLICATING an A column) before its
-	// rightmost leaf E (1 col).
-	aLeg := mixedSeedOuter("A")
-	boxTyp := values.NewRecordType("", false, []values.Field{
-		{Name: "BID", FieldType: values.NotNullLong, Ordinal: 0},
-		{Name: "AID", FieldType: values.NotNullLong, Ordinal: 1}, // dup of A's column name
-		{Name: "EID", FieldType: values.NotNullLong, Ordinal: 2},
+	aType := values.NewRecordType("", false, []values.Field{
+		{Name: "AID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "AV", FieldType: values.NotNullLong, Ordinal: 1},
 	})
-	// A leg STATES its identity (Alias), not merely its text: identity is what the
-	// window derivations compare, so a fixture that supplies only Name models a
-	// pre-identity producer and would make this agreement check vacuous.
-	boxTyp.Legs = []values.RecordTypeLeg{
-		{Kind: values.LegKindFlatRun, Alias: values.NamedCorrelationIdentifier("B"), Name: "B", Start: 0, Width: 2},
-		{Kind: values.LegKindFlatRun, Alias: values.NamedCorrelationIdentifier("E"), Name: "E", Start: 2, Width: 1},
-	}
-	eBox := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("E"), boxTyp)
+	bType := values.NewRecordType("", false, []values.Field{
+		{Name: "BID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1},
+	})
+	eType := values.NewRecordType("", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	a := spanMustQOV(t, "A", aType)
+	b := spanMustQOV(t, "B", bType)
+	e := spanMustQOV(t, "E", eType)
 	seed := values.NewRawRecordConstructorValue(
-		bakeOrdinal(t, aLeg, 0), bakeOrdinal(t, aLeg, 1),
-		bakeOrdinal(t, eBox, 0), bakeOrdinal(t, eBox, 1), bakeOrdinal(t, eBox, 2),
+		values.RecordConstructorField{Name: "AID", Value: mustTestFieldOrdinal(t, a, 0)},
+		values.RecordConstructorField{Name: "AV", Value: mustTestFieldOrdinal(t, a, 1)},
+		values.RecordConstructorField{Name: "BID", Value: mustTestFieldOrdinal(t, b, 0)},
+		values.RecordConstructorField{Name: "ID", Value: mustTestFieldOrdinal(t, b, 1)},
+		values.RecordConstructorField{Name: "ID", Value: mustTestFieldOrdinal(t, e, 0)},
 	)
-	assertSpanWindowAgreement(t, "box-leg", seed, true)
+	derived, err := values.NewFlatOrdinalLayoutForRetainedResult(seed, nil)
+	if err != nil {
+		t.Fatalf("NewFlatOrdinalLayoutForRetainedResult: %v", err)
+	}
+	carrierType := seed.Type().(*values.RecordType)
+	explicit, err := values.NewOrdinalLayoutForCarrierType(
+		carrierType,
+		[]values.OrdinalTileSpec{{Start: 0, Width: 5, Kind: values.OrdinalTileFlat}},
+		[]values.OrdinalWindowSpec{
+			{Source: a, FieldPaths: [][]int{{0}, {1}}},
+			{Source: b, FieldPaths: [][]int{{2}, {3}}},
+			{Source: e, FieldPaths: [][]int{{4}}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("explicit box replacement layout: %v", err)
+	}
+	if !derived.RawEqual(explicit) {
+		t.Fatal("retained-result and explicit executor layouts disagree on the A/B/E field windows")
+	}
+	if len(carrierType.Legs) != 0 {
+		t.Fatalf("fixture accidentally restored legacy RecordType.Legs authority: %v", carrierType.Legs)
+	}
 
-	// The alias-keyed window is the rightmost LEAF's slice.
-	windows, merged := values.OrdinalSeedLegWindows(seed)
-	if w := windows[values.NamedCorrelationIdentifier("E")]; w.Offset != 4 || len(w.Typ.Fields) != 1 || w.Typ.Fields[0].Name != "EID" {
-		t.Fatalf("windows[E] = (offset %d, %v) — want the rightmost LEAF window (offset 4, [EID])", w.Offset, w.Typ.Fields)
+	row, err := NewLayoutPositionalRow(carrierType, explicit)
+	if err != nil {
+		t.Fatalf("NewLayoutPositionalRow: %v", err)
 	}
-	if w := windows[values.NamedCorrelationIdentifier("B")]; w.Offset != 2 || len(w.Typ.Fields) != 2 {
-		t.Fatalf("windows[B] = (offset %d, width %d) — want the buried sub-window (offset 2, width 2)", w.Offset, len(w.Typ.Fields))
+	copy(row.Slots, []any{int64(10), int64(11), int64(20), int64(21), int64(30)})
+	ctx, err := ordinalLayoutRowContext(explicit, row, nil, nil)
+	if err != nil {
+		t.Fatalf("ordinalLayoutRowContext: %v", err)
 	}
-	wantLegs := []values.RecordTypeLeg{
-		{Kind: values.LegKindFlatRun, Alias: values.NamedCorrelationIdentifier("A"), Name: "A", Start: 0, Width: 2},
-		{Kind: values.LegKindFlatRun, Alias: values.NamedCorrelationIdentifier("B"), Name: "B", Start: 2, Width: 2},
-		{Kind: values.LegKindFlatRun, Alias: values.NamedCorrelationIdentifier("E"), Name: "E", Start: 4, Width: 1},
+	if got, evalErr := mustTestFieldOrdinal(t, e, 0).Evaluate(ctx); evalErr != nil || got != int64(30) {
+		t.Fatalf("E.ID = (%v, %v), want rightmost slot 4 value 30, never buried B.ID=21", got, evalErr)
 	}
-	if len(merged.Legs) != len(wantLegs) {
-		t.Fatalf("merged Legs = %v, want %v", merged.Legs, wantLegs)
-	}
-	for i, want := range wantLegs {
-		if merged.Legs[i] != want {
-			t.Fatalf("merged Legs[%d] = %+v, want %+v", i, merged.Legs[i], want)
-		}
+	if got, evalErr := mustTestFieldOrdinal(t, b, 1).Evaluate(ctx); evalErr != nil || got != int64(21) {
+		t.Fatalf("B.ID = (%v, %v), want buried source slot 3 value 21", got, evalErr)
 	}
 }
 
 // mergeSlotQOV is one collapsed lower quantifier of a positional merge: a bare
 // QuantifiedObjectValue holding that quantifier's WHOLE row.
-func mergeSlotQOV(alias string, cols ...string) *values.QuantifiedObjectValue {
+func mergeSlotQOV(t testing.TB, alias string, cols ...string) values.QuantifiedObjectValue {
+	t.Helper()
 	fields := make([]values.Field, len(cols))
 	for i, c := range cols {
 		fields[i] = values.Field{Name: c, FieldType: values.NotNullLong, Ordinal: i}
 	}
-	return values.NewQuantifiedObjectValueOfType(
-		values.NamedCorrelationIdentifier(alias),
-		values.NewRecordType("", false, fields))
+	return spanMustQOV(t, alias, values.NewRecordType("", false, fields))
 }
 
 // positionalMergeOf builds the merge row exactly as positionalMergeCase does:
@@ -601,16 +639,12 @@ func positionalMergeOf(slots ...values.Value) *values.RecordConstructorValue {
 func TestSpanWindowCrossAgreement_NestedMerge(t *testing.T) {
 	t.Parallel()
 
-	a := mergeSlotQOV("A", "AID", "AV")
-	b := mergeSlotQOV("B", "BID")
-	// A merge slot that states NO type at all. The corpus has 750 of these, every
-	// distinct witness an unnest ELEMENT alias whose array element type Go does
-	// not infer that far. It keeps the ELEMENT treatment — a synthesized 1-field
-	// flat window — and the reason this fixture exists is the trap it guards:
-	// routing the per-slot test through IsMixedSeedElementType would classify a
-	// nil-typed slot as NESTED (that predicate answers false for nil), yielding a
-	// window with a nil Typ that panics at the first FieldIndexUnique.
-	untyped := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("U"))
+	a := mergeSlotQOV(t, "A", "AID", "AV")
+	b := mergeSlotQOV(t, "B", "BID")
+	// An exact non-record slot keeps the ELEMENT treatment — a synthesized
+	// one-field flat window — while RFC-232 prevents an unresolved QOV from being
+	// published into this machinery in the first place.
+	element := spanMustQOV(t, "U", values.NotNullLong)
 
 	for _, tc := range []struct {
 		name       string
@@ -623,8 +657,8 @@ func TestSpanWindowCrossAgreement_NestedMerge(t *testing.T) {
 			wantAccept: true,
 		},
 		{
-			name:       "a MIXED merge: two record slots and one untyped element slot",
-			rc:         positionalMergeOf(a, untyped, b),
+			name:       "a MIXED merge: two record slots and one scalar element slot",
+			rc:         positionalMergeOf(a, element, b),
 			wantAccept: true,
 		},
 		{
@@ -674,8 +708,8 @@ func TestSpanWindowCrossAgreement_NestedMerge(t *testing.T) {
 func TestNestedMergeWindows_OffsetIsTheSlotAndTypIsTheLegsOwnRow(t *testing.T) {
 	t.Parallel()
 
-	a := mergeSlotQOV("A", "AID", "AV")
-	b := mergeSlotQOV("B", "BID")
+	a := mergeSlotQOV(t, "A", "AID", "AV")
+	b := mergeSlotQOV(t, "B", "BID")
 	rc := positionalMergeOf(a, b)
 
 	windows, merged := values.OrdinalSeedLegWindowsAcceptingNested(rc)
@@ -719,175 +753,171 @@ func TestNestedMergeWindows_OffsetIsTheSlotAndTypIsTheLegsOwnRow(t *testing.T) {
 	}
 }
 
-// nestedSubLegSeed builds the shape the OPT-IN SITES ACTUALLY RECEIVE: a
-// pristine flat seed whose leg RUN carries a LegKindNested boundary in its
-// Typ.Legs.
-//
-// This is RFC-200 §1(b), and it is the live path. §1(a) — the whole-RC
-// positional merge handed to the derivation directly — is what the head
-// recognizer accepts, but no opt-in site ever passes one: all three read
-// `step1RV`, which reconstructFoldStep1Seed builds as a FLAT concat of
-// `ofOrdinal(QOV(leg, rt), j)` per slot. The merge only appears as `rt` — the
-// leg's own row type — and therefore only ever reaches the layout authority as a
-// nested boundary inside a carrying run's leg table.
-//
-// The distinction matters because the two enter the derivation at completely
-// different places: §1(a) at positionalMergeWindows, §1(b) at
-// finalizeSeedWindows' sub-window loop. A matrix that only covered §1(a) tested
-// the branch the corpus does not take.
-//
-// Leg A is a plain 2-column run. Leg M is a 3-slot run whose slot 1 holds a
-// whole 2-column sub-leg row, declared nested in M's leg table.
-func nestedSubLegSeed(t *testing.T) (*values.RecordConstructorValue, *values.RecordType) {
-	t.Helper()
+// TestSpanWindowCrossAgreement_NestedSubLeg pins the RFC-232 nested layout
+// directly. The carrier contains A's two flat fields and M's three fields, one
+// of which is a nested S row. Tiles describe the physical nesting; source
+// windows independently retain A, M, and S. No boundary is inferred from a
+// logical RecordType side table.
+func TestSpanWindowCrossAgreement_NestedSubLeg(t *testing.T) {
+	t.Parallel()
 	subRow := values.NewRecordType("", false, []values.Field{
 		{Name: "SID", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: "SV", FieldType: values.NotNullLong, Ordinal: 1},
 	})
-	mRow := values.NewRecordType("", false, []values.Field{
+	aType := values.NewRecordType("", false, []values.Field{
+		{Name: "AID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "AV", FieldType: values.NotNullLong, Ordinal: 1},
+	})
+	mType := values.NewRecordType("", false, []values.Field{
 		{Name: "M0", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: values.OrdinalFieldName(1), FieldType: subRow, Ordinal: 1},
 		{Name: "M2", FieldType: values.NotNullLong, Ordinal: 2},
 	})
-	mRow.Legs = []values.RecordTypeLeg{
-		values.NewRecordTypeLeg(values.LegKindNested,
-			values.NamedCorrelationIdentifier("S"), "S", 1, 1),
+	carrierType := values.NewRecordType("", false, []values.Field{
+		{Name: "AID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "AV", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "M0", FieldType: values.NotNullLong, Ordinal: 2},
+		{Name: values.OrdinalFieldName(1), FieldType: subRow, Ordinal: 3},
+		{Name: "M2", FieldType: values.NotNullLong, Ordinal: 4},
+	})
+	a := spanMustQOV(t, "A", aType)
+	m := spanMustQOV(t, "M", mType)
+	s := spanMustQOV(t, "S", subRow)
+	tiles := []values.OrdinalTileSpec{
+		{Start: 0, Width: 3, Kind: values.OrdinalTileFlat},
+		{Start: 3, Width: 1, Kind: values.OrdinalTileNested},
+		{Start: 4, Width: 1, Kind: values.OrdinalTileFlat},
+		{Parent: []int{3}, Start: 0, Width: 2, Kind: values.OrdinalTileFlat},
 	}
-	a := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"),
-		values.NewRecordType("", false, []values.Field{
-			{Name: "AID", FieldType: values.NotNullLong, Ordinal: 0},
-			{Name: "AV", FieldType: values.NotNullLong, Ordinal: 1},
-		}))
-	m := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("M"), mRow)
-	return values.NewRawRecordConstructorValue(
-		bakeOrdinal(t, a, 0), bakeOrdinal(t, a, 1),
-		bakeOrdinal(t, m, 0), bakeOrdinal(t, m, 1), bakeOrdinal(t, m, 2),
-	), subRow
+	windows := []values.OrdinalWindowSpec{
+		{Source: a, FieldPaths: [][]int{{0}, {1}}},
+		{Source: m, FieldPaths: [][]int{{2}, {3}, {4}}},
+		{Source: s, ObjectPath: []int{3}},
+	}
+	layout, err := values.NewOrdinalLayoutForCarrierType(carrierType, tiles, windows)
+	if err != nil {
+		t.Fatalf("nested NewOrdinalLayoutForCarrierType: %v", err)
+	}
+	if len(carrierType.Legs) != 0 || len(mType.Legs) != 0 || len(subRow.Legs) != 0 {
+		t.Fatal("fixture restored legacy RecordType.Legs instead of declaring an OrdinalLayout")
+	}
+
+	nested := NewPositionalRow(subRow)
+	copy(nested.Slots, []any{int64(30), int64(31)})
+	row, err := NewLayoutPositionalRow(carrierType, layout)
+	if err != nil {
+		t.Fatalf("NewLayoutPositionalRow: %v", err)
+	}
+	copy(row.Slots, []any{int64(1), int64(2), int64(20), nested, int64(22)})
+	ctx, err := ordinalLayoutRowContext(layout, row, nil, nil)
+	if err != nil {
+		t.Fatalf("ordinalLayoutRowContext: %v", err)
+	}
+	if got, evalErr := mustTestFieldOrdinal(t, s, 1).Evaluate(ctx); evalErr != nil || got != int64(31) {
+		t.Fatalf("S.SV = (%v, %v), want nested slot [3,1] value 31", got, evalErr)
+	}
+	mNestedSID, err := values.ResolveFieldOrdinals(m, []int{1, 0})
+	if err != nil {
+		t.Fatalf("resolve M._1.SID: %v", err)
+	}
+	if got, evalErr := mNestedSID.Evaluate(ctx); evalErr != nil || got != int64(30) {
+		t.Fatalf("M._1.SID = (%v, %v), want nested field retained through M window", got, evalErr)
+	}
+
+	// Mutation control: retaining M's nested value does not implicitly bind S.
+	// Source identity comes only from the explicit S window.
+	withoutS, err := values.NewOrdinalLayoutForCarrierType(carrierType, tiles, windows[:2])
+	if err != nil {
+		t.Fatalf("layout without S: %v", err)
+	}
+	withoutSRow, err := NewLayoutPositionalRow(carrierType, withoutS)
+	if err != nil {
+		t.Fatalf("row without S: %v", err)
+	}
+	copy(withoutSRow.Slots, row.Slots)
+	withoutSCtx, err := ordinalLayoutRowContext(withoutS, withoutSRow, nil, nil)
+	if err != nil {
+		t.Fatalf("context without S: %v", err)
+	}
+	got, evalErr := mustTestFieldOrdinal(t, s, 1).Evaluate(withoutSCtx)
+	var coded interface {
+		Code() values.ResolutionErrorCode
+	}
+	if got != nil || !errors.As(evalErr, &coded) || coded.Code() != values.UnboundCorrelation {
+		t.Fatalf("S without its explicit window = (%v, %v), want UnboundCorrelation", got, evalErr)
+	}
 }
 
-// TestSpanWindowCrossAgreement_NestedSubLeg is RFC-200 §1(b)'s matrix — the
-// shape the three opt-in sites actually receive.
-func TestSpanWindowCrossAgreement_NestedSubLeg(t *testing.T) {
-	t.Parallel()
-	seed, subRow := nestedSubLegSeed(t)
-
-	// Both nested-accepting walks agree, and both narrow walks DECLINE — the
-	// narrow entry's fail-closed refusal of a seed carrying a nested leg.
-	assertSpanWindowAgreementNested(t, "nested sub-leg", seed, true)
-	assertSpanWindowAgreement(t, "nested sub-leg [narrow]", seed, false)
-
-	windows, merged, runs := values.OrdinalSeedLegLayout(seed)
-	if windows == nil {
-		t.Fatal("the nested entry must accept a seed whose leg run carries a nested boundary")
-	}
-	// TWO tiles: leg A at 0, the carrying run M at 2. The nested sub-window is
-	// ADDED beside them, not a tile.
-	if len(runs) != 2 {
-		t.Fatalf("the seed reports %d tiles, want 2 — a nested SUB-window is addressable "+
-			"but does not tile the row", len(runs))
-	}
-
-	// THE SUB-WINDOW, by value. Offset is the carrying run's offset plus the
-	// leg's slot — 2 + 1 — and Typ is the sub-leg's OWN row by EXTRACTION.
-	ws := windows[values.NamedCorrelationIdentifier("S")]
-	if ws.Kind != values.LegKindNested || ws.Offset != 3 {
-		t.Fatalf("sub-window S = (kind %v, offset %d), want (nested, 3) = run offset 2 + "+
-			"slot 1", ws.Kind, ws.Offset)
-	}
-	if len(ws.Typ.Fields) != 2 || ws.Typ.Fields[1].Name != "SV" {
-		t.Fatalf("sub-window S Typ = %v, want the SUB-LEG's own 2-column row. An "+
-			"EXTRACTION, not a one-field wrapper describing the slot: a wrapper declines "+
-			"every leg-local ordinal >= 1 at the readers' bound check and resolves "+
-			"ordinal 0 against itself.", ws.Typ.Fields)
-	}
-	if ws.Typ != subRow {
-		t.Fatalf("sub-window S Typ is not the declared sub-row — it was rebuilt rather " +
-			"than extracted, which is how a slice-shaped copy creeps back in")
-	}
-
-	// THE MERGED LEG TABLE, which the executor's runtime binders read. The nested
-	// leg's Width is 1: a SLOT count, because every consumer computes Start+Width
-	// as a slot range into the carrying type's Fields.
-	var found bool
-	for _, leg := range merged.Legs {
-		if leg.Alias != values.NamedCorrelationIdentifier("S") {
-			continue
-		}
-		found = true
-		if leg.Kind != values.LegKindNested || leg.Start != 3 || leg.Width != 1 {
-			t.Fatalf("merged leg S = (kind %v, start %d, width %d), want (nested, 3, 1)",
-				leg.Kind, leg.Start, leg.Width)
-		}
-	}
-	if !found {
-		t.Fatal("the merged leg table has no entry for the nested sub-leg S — the " +
-			"executor's runtime binders read this table, so a missing entry is a leg " +
-			"that cannot be bound at all")
-	}
-}
-
-// The NONDETERMINISM guard (RFC-200 G-F4): a sub-leg whose own row carries leg
-// boundaries must decline DETERMINISTICALLY.
-//
-// finalizeSeedWindows RANGES the map it inserts into, and Go's spec leaves it
-// unspecified whether an entry added during iteration is visited. Without the
-// check at the INSERTION, the head-of-loop guard would decline this seed on runs
-// where the range happens to reach the inserted sub-window and accept it on runs
-// where it does not — accept/decline decided by map iteration order.
-//
-// Run repeatedly on purpose: one iteration cannot observe an order-dependent
-// answer, and this is the one defect class where a single green run is not
-// evidence.
+// TestNestedSubLeg_ALegsCarryingSubRowDeclinesDeterministically retains the
+// legacy regression name while pinning its RFC-232 disposition. Two-level
+// nesting is representable when every physical partition and source window is
+// explicit. An incomplete layout is rejected deterministically at construction;
+// there is no RecordType.Legs map walk whose iteration order can alter the
+// answer.
 func TestNestedSubLeg_ALegsCarryingSubRowDeclinesDeterministically(t *testing.T) {
 	t.Parallel()
 
+	deepRow := values.NewRecordType("", false, []values.Field{
+		{Name: "D", FieldType: values.NotNullLong, Ordinal: 0},
+	})
 	subRow := values.NewRecordType("", false, []values.Field{
 		{Name: "SID", FieldType: values.NotNullLong, Ordinal: 0},
-		{Name: "SV", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "DEEP", FieldType: deepRow, Ordinal: 1},
 	})
-	// The sub-leg's OWN row carries a leg table — two steps from the merged row,
-	// which neither walk can express.
-	subRow.Legs = []values.RecordTypeLeg{
-		values.NewRecordTypeLeg(values.LegKindFlatRun,
-			values.NamedCorrelationIdentifier("DEEP"), "DEEP", 0, 2),
-	}
-	mRow := values.NewRecordType("", false, []values.Field{
-		{Name: "M0", FieldType: values.NotNullLong, Ordinal: 0},
-		{Name: values.OrdinalFieldName(1), FieldType: subRow, Ordinal: 1},
-		{Name: "M2", FieldType: values.NotNullLong, Ordinal: 2},
+	carrierType := values.NewRecordType("", false, []values.Field{
+		{Name: "SUB", FieldType: subRow, Ordinal: 0},
 	})
-	mRow.Legs = []values.RecordTypeLeg{
-		values.NewRecordTypeLeg(values.LegKindNested,
-			values.NamedCorrelationIdentifier("S"), "S", 1, 1),
+	deep := spanMustQOV(t, "DEEP", deepRow)
+	deepWindow := []values.OrdinalWindowSpec{
+		{Source: deep, ObjectPath: []int{0, 1}},
 	}
-	a := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"),
-		values.NewRecordType("", false, []values.Field{
-			{Name: "AID", FieldType: values.NotNullLong, Ordinal: 0},
-			{Name: "AV", FieldType: values.NotNullLong, Ordinal: 1},
-		}))
-	m := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("M"), mRow)
-	seed := values.NewRawRecordConstructorValue(
-		bakeOrdinal(t, a, 0), bakeOrdinal(t, a, 1),
-		bakeOrdinal(t, m, 0), bakeOrdinal(t, m, 1), bakeOrdinal(t, m, 2),
-	)
 
+	// Mutation control: declaring the outer nested tile without the required
+	// child partitions is never repaired or inferred from logical type metadata.
+	incomplete := []values.OrdinalTileSpec{
+		{Start: 0, Width: 1, Kind: values.OrdinalTileNested},
+	}
 	for i := 0; i < 200; i++ {
-		if w, _ := values.OrdinalSeedLegWindowsAcceptingNested(seed); w != nil {
-			t.Fatalf("iteration %d ACCEPTED a seed whose nested sub-leg carries its own "+
-				"leg table.\n"+
-				"  Those boundaries are TWO steps from the merged row and this authority "+
-				"has no two-step window for them, so the honest answer is no ordinal "+
-				"layout at all.\n"+
-				"  If this fails on SOME iterations and not others, the decline has moved "+
-				"back to the head of finalizeSeedWindows' loop — which ranges the map it "+
-				"inserts into, so whether the inserted sub-window is visited is "+
-				"unspecified and ACCEPT/DECLINE becomes map-iteration-order dependent. "+
-				"That is nondeterministic PLANNING: the same query gets different plans "+
-				"on different runs.", i)
+		layout, layoutErr := values.NewOrdinalLayoutForCarrierType(carrierType, incomplete, deepWindow)
+		var coded interface {
+			Code() values.ResolutionErrorCode
 		}
-		// The executor twin must refuse it too, on every iteration.
-		if _, _, ok := ordinalJoinSpansAcceptingNested(seed); ok {
-			t.Fatalf("iteration %d: the executor twin ACCEPTED what the planner declined", i)
+		if layout != nil || !errors.As(layoutErr, &coded) || coded.Code() != values.LayoutTileGap {
+			t.Fatalf("iteration %d incomplete nested layout = (%v, %v), want nil LayoutTileGap", i, layout, layoutErr)
 		}
+	}
+
+	complete := []values.OrdinalTileSpec{
+		{Start: 0, Width: 1, Kind: values.OrdinalTileNested},
+		{Parent: []int{0}, Start: 0, Width: 1, Kind: values.OrdinalTileFlat},
+		{Parent: []int{0}, Start: 1, Width: 1, Kind: values.OrdinalTileNested},
+		{Parent: []int{0, 1}, Start: 0, Width: 1, Kind: values.OrdinalTileFlat},
+	}
+	layout, err := values.NewOrdinalLayoutForCarrierType(carrierType, complete, deepWindow)
+	if err != nil {
+		t.Fatalf("complete two-level nested layout: %v", err)
+	}
+	if len(carrierType.Legs) != 0 || len(subRow.Legs) != 0 || len(deepRow.Legs) != 0 {
+		t.Fatal("fixture restored legacy RecordType.Legs authority")
+	}
+	deepValue := NewPositionalRow(deepRow)
+	deepValue.Set(0, int64(42))
+	subValue := NewPositionalRow(subRow)
+	subValue.Set(0, int64(7))
+	subValue.Set(1, deepValue)
+	carrier, err := NewLayoutPositionalRow(carrierType, layout)
+	if err != nil {
+		t.Fatalf("NewLayoutPositionalRow: %v", err)
+	}
+	carrier.Set(0, subValue)
+	ctx, err := ordinalLayoutRowContext(layout, carrier, nil, nil)
+	if err != nil {
+		t.Fatalf("ordinalLayoutRowContext: %v", err)
+	}
+	if got, evalErr := deep.Evaluate(ctx); evalErr != nil || got != deepValue {
+		t.Fatalf("DEEP object = (%v, %v), want exact row at path [0,1]", got, evalErr)
+	}
+	if got, evalErr := mustTestFieldOrdinal(t, deep, 0).Evaluate(ctx); evalErr != nil || got != int64(42) {
+		t.Fatalf("DEEP.D = (%v, %v), want two-level nested value 42", got, evalErr)
 	}
 }

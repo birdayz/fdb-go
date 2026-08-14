@@ -138,15 +138,11 @@ func nullRejectedOrdinals(
 		if !nullRejectingComparison(cmp.Comparison.Type) {
 			continue
 		}
-		fv, isField := cmp.Operand.(*values.FieldValue)
-		if !isField {
-			continue
-		}
-		ord, stated := fv.OrdinalIn(layout)
+		identity, stated := values.CorrelatedFieldIdentityIn(cmp.Operand, layout)
 		if !stated {
 			continue
 		}
-		ords[ord] = struct{}{}
+		ords[identity.Ordinal] = struct{}{}
 	}
 	return ords
 }

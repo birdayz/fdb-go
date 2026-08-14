@@ -13,11 +13,12 @@ func TestInsert_Construction(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	ins := NewInsertExpression(q, "Order", values.UnknownType)
+	target := testRecordType()
+	ins := mustExpression(NewInsertExpression(q, "Order", target))
 	if ins.GetTargetRecordType() != "Order" {
 		t.Fatalf("targetRecordType=%q, want Order", ins.GetTargetRecordType())
 	}
-	if ins.GetTargetType() != values.UnknownType {
+	if !ins.GetTargetType().Equals(target) {
 		t.Fatal("targetType not preserved")
 	}
 	if ins.CanCorrelate() {
@@ -29,9 +30,9 @@ func TestInsert_NilTargetType(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	ins := NewInsertExpression(q, "Order", nil)
-	if ins.GetTargetType() != values.UnknownType {
-		t.Fatal("nil targetType not normalised to UnknownType")
+	ins, err := NewInsertExpression(q, "Order", nil)
+	if err == nil || ins != nil {
+		t.Fatalf("nil target type returned (%v, %v), want nil object and error", ins, err)
 	}
 }
 
@@ -39,9 +40,9 @@ func TestInsert_EqualsWithoutChildren(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	a := NewInsertExpression(q, "Order", values.UnknownType)
-	b := NewInsertExpression(q, "Order", values.UnknownType)
-	c := NewInsertExpression(q, "Customer", values.UnknownType)
+	a := mustExpression(NewInsertExpression(q, "Order", testRecordType()))
+	b := mustExpression(NewInsertExpression(q, "Order", testRecordType()))
+	c := mustExpression(NewInsertExpression(q, "Customer", testRecordType()))
 	if !a.EqualsWithoutChildren(b, EmptyAliasMap()) {
 		t.Fatal("identical INSERTs reported unequal")
 	}
@@ -59,7 +60,7 @@ func TestDelete_Construction(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	del := NewDeleteExpression(q, "Order")
+	del := mustExpression(NewDeleteExpression(q, "Order"))
 	if del.GetTargetRecordType() != "Order" {
 		t.Fatalf("targetRecordType=%q, want Order", del.GetTargetRecordType())
 	}
@@ -72,9 +73,9 @@ func TestDelete_EqualsWithoutChildren(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	a := NewDeleteExpression(q, "Order")
-	b := NewDeleteExpression(q, "Order")
-	c := NewDeleteExpression(q, "Customer")
+	a := mustExpression(NewDeleteExpression(q, "Order"))
+	b := mustExpression(NewDeleteExpression(q, "Order"))
+	c := mustExpression(NewDeleteExpression(q, "Customer"))
 	if !a.EqualsWithoutChildren(b, EmptyAliasMap()) {
 		t.Fatal("identical DELETEs reported unequal")
 	}
@@ -90,8 +91,8 @@ func TestDelete_DistinctHashFromInsert(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	ins := NewInsertExpression(q, "Order", values.UnknownType)
-	del := NewDeleteExpression(q, "Order")
+	ins := mustExpression(NewInsertExpression(q, "Order", testRecordType()))
+	del := mustExpression(NewDeleteExpression(q, "Order"))
 	if ins.HashCodeWithoutChildren() == del.HashCodeWithoutChildren() {
 		t.Fatal("INSERT and DELETE on same target produced identical class-discriminating hashes")
 	}
@@ -107,7 +108,7 @@ func TestUpdate_CanonicalisesTransforms(t *testing.T) {
 		{FieldPath: "name", NewValue: values.NewBooleanValue(true)},
 		{FieldPath: "active", NewValue: values.NewBooleanValue(false)},
 	}
-	upd := NewUpdateExpression(q, "Order", ts1)
+	upd := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), ts1))
 	got := upd.GetTransforms()
 	want := []string{"active", "name"} // sorted
 	if !reflect.DeepEqual([]string{got[0].FieldPath, got[1].FieldPath}, want) {
@@ -120,7 +121,7 @@ func TestUpdate_DefensiveCopy(t *testing.T) {
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
 	src := []UpdateTransform{{FieldPath: "name", NewValue: values.NewBooleanValue(true)}}
-	upd := NewUpdateExpression(q, "Order", src)
+	upd := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), src))
 	src[0].FieldPath = "MUTATED"
 	if upd.GetTransforms()[0].FieldPath != "name" {
 		t.Fatal("constructor failed to defensively copy transforms")
@@ -131,14 +132,16 @@ func TestUpdate_EqualsWithoutChildren_TextualOrderIndependent(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	a := NewUpdateExpression(q, "Order", []UpdateTransform{
+	a := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), []UpdateTransform{
 		{FieldPath: "name", NewValue: values.NewBooleanValue(true)},
 		{FieldPath: "active", NewValue: values.NewBooleanValue(false)},
-	})
-	b := NewUpdateExpression(q, "Order", []UpdateTransform{
+	}))
+
+	b := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), []UpdateTransform{
 		{FieldPath: "active", NewValue: values.NewBooleanValue(false)},
 		{FieldPath: "name", NewValue: values.NewBooleanValue(true)},
-	})
+	}))
+
 	if !a.EqualsWithoutChildren(b, EmptyAliasMap()) {
 		t.Fatal("UPDATEs with same SET-list in different order reported unequal")
 	}
@@ -148,12 +151,14 @@ func TestUpdate_EqualsWithoutChildren_DifferentValue(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	a := NewUpdateExpression(q, "Order", []UpdateTransform{
+	a := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), []UpdateTransform{
 		{FieldPath: "name", NewValue: values.NewBooleanValue(true)},
-	})
-	b := NewUpdateExpression(q, "Order", []UpdateTransform{
+	}))
+
+	b := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), []UpdateTransform{
 		{FieldPath: "name", NewValue: values.NewBooleanValue(false)},
-	})
+	}))
+
 	if a.EqualsWithoutChildren(b, EmptyAliasMap()) {
 		t.Fatal("UPDATEs with different replacement Values reported equal")
 	}
@@ -163,12 +168,14 @@ func TestUpdate_HashCodeStable(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	a := NewUpdateExpression(q, "Order", []UpdateTransform{
+	a := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), []UpdateTransform{
 		{FieldPath: "name", NewValue: values.NewBooleanValue(true)},
-	})
-	b := NewUpdateExpression(q, "Order", []UpdateTransform{
+	}))
+
+	b := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), []UpdateTransform{
 		{FieldPath: "name", NewValue: values.NewBooleanValue(true)},
-	})
+	}))
+
 	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
 		t.Fatal("structurally identical UPDATEs produced different hashes")
 	}
@@ -178,9 +185,9 @@ func TestUpdate_NotEqualToInsertOrDelete(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	upd := NewUpdateExpression(q, "Order", nil)
-	ins := NewInsertExpression(q, "Order", values.UnknownType)
-	del := NewDeleteExpression(q, "Order")
+	upd := mustExpression(NewUpdateExpression(q, "Order", testRecordType(), nil))
+	ins := mustExpression(NewInsertExpression(q, "Order", testRecordType()))
+	del := mustExpression(NewDeleteExpression(q, "Order"))
 	if upd.HashCodeWithoutChildren() == ins.HashCodeWithoutChildren() {
 		t.Fatal("UPDATE and INSERT collide on class-discriminating hash")
 	}

@@ -29,7 +29,7 @@ import (
 // which this hooks, and through bare struct literals, which nothing can hook
 // centrally. Enumerated at the time of writing with
 //
-//	grep -rn '&FieldValue{\|values\.FieldValue{' pkg/ | grep -v '_test\.go' | wc -l
+//	grep -rn '&fieldValue{\|values\.fieldValue{' pkg/ | grep -v '_test\.go' | wc -l
 //
 // there are 57 such literals in non-test code. SIX of them are the constructor
 // bodies themselves and are already counted through the constructor hook;
@@ -412,7 +412,7 @@ func DumpOrderingBridgeDottedCensus(w io.Writer, label string) {
 // the code — and it makes every number above it unreadable. It is exact under
 // any filter, so it needs no floor to be honest.
 //
-// A nil *FieldValueMintGates is a no-op, the shape a narrowed run needs for
+// A nil *fieldValueMintGates is a no-op, the shape a narrowed run needs for
 // MinTotal. The ceiling and the partition survive narrowing (a subset cannot
 // exceed the whole, and a sum of non-negative counters is exact under any
 // filter), so both are checked whenever gates is non-nil.

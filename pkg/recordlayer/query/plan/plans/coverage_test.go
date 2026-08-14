@@ -17,8 +17,12 @@ import (
 
 func TestRecordQueryDistinctPlan_WrapsInner(t *testing.T) {
 	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
-	d := NewRecordQueryDistinctPlan(scan)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
+	})
+	d := mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
+		return NewRecordQueryDistinctPlan(scan)
+	})
 	if cs := d.GetChildren(); len(cs) != 1 || cs[0] != scan {
 		t.Fatalf("distinct children = %v, want [scan]", cs)
 	}
@@ -33,8 +37,12 @@ func TestRecordQueryDistinctPlan_WrapsInner(t *testing.T) {
 
 func TestRecordQueryTypeFilterPlan_RecordTypesPreserved(t *testing.T) {
 	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"T", "U"}, values.UnknownType, false)
-	tf := NewRecordQueryTypeFilterPlan([]string{"T"}, scan)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T", "U"}, exactTestRecordType(), false)
+	})
+	tf := mustChecked(t, func() (*RecordQueryTypeFilterPlan, error) {
+		return NewRecordQueryTypeFilterPlan([]string{"T"}, scan)
+	})
 	rts := tf.GetRecordTypes()
 	if len(rts) != 1 || rts[0] != "T" {
 		t.Fatalf("record types = %v, want [T]", rts)
@@ -46,9 +54,15 @@ func TestRecordQueryTypeFilterPlan_RecordTypesPreserved(t *testing.T) {
 
 func TestRecordQueryUnionPlan_ConcatenatesInners(t *testing.T) {
 	t.Parallel()
-	scanA := NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	u := NewRecordQueryUnionPlan([]RecordQueryPlan{scanA, scanB})
+	scanA := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"A"}, exactTestRecordType(), false)
+	})
+	scanB := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"B"}, exactTestRecordType(), false)
+	})
+	u := mustChecked(t, func() (*RecordQueryUnionPlan, error) {
+		return NewRecordQueryUnionPlan([]RecordQueryPlan{scanA, scanB})
+	})
 	if got := u.GetInners(); len(got) != 2 {
 		t.Fatalf("union inners = %d, want 2", len(got))
 	}
@@ -61,22 +75,28 @@ func TestRecordQueryUnionPlan_ConcatenatesInners(t *testing.T) {
 	}
 }
 
-func TestRecordQueryUnionPlan_EmptyResultTypeIsUnknown(t *testing.T) {
+func TestSetPlans_RejectEmptyChildren(t *testing.T) {
 	t.Parallel()
-	u := NewRecordQueryUnionPlan(nil)
-	if !values.UnknownType.Equals(u.GetResultType()) {
-		t.Fatalf("empty union result type = %v, want UnknownType", u.GetResultType())
+	if _, err := NewRecordQueryUnionPlan(nil); err == nil {
+		t.Fatal("expected empty union children to be rejected")
+	}
+	if _, err := NewRecordQueryIntersectionPlan(nil, nil); err == nil {
+		t.Fatal("expected empty intersection children to be rejected")
 	}
 }
 
 func TestRecordQueryIntersectionPlan_CarriesComparisonKeys(t *testing.T) {
 	t.Parallel()
-	scanA := NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	keys := []values.Value{
-		&values.FieldValue{Field: "id", Typ: values.NotNullLong},
-	}
-	i := NewRecordQueryIntersectionPlan([]RecordQueryPlan{scanA, scanB}, keys)
+	scanA := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"A"}, exactTestRecordType(), false)
+	})
+	scanB := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"B"}, exactTestRecordType(), false)
+	})
+	keys := []values.Value{testField(t, "id", values.NotNullLong)}
+	i := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlan([]RecordQueryPlan{scanA, scanB}, keys)
+	})
 	if got := i.GetInners(); len(got) != 2 {
 		t.Fatalf("intersection inners = %d, want 2", len(got))
 	}
@@ -87,10 +107,15 @@ func TestRecordQueryIntersectionPlan_CarriesComparisonKeys(t *testing.T) {
 
 func TestRecordQueryIntersectionPlan_DistinctHashFromUnion(t *testing.T) {
 	t.Parallel()
-	// Both empty inners + same shape — Intersection's hash MUST
-	// differ from Union's, otherwise plan-cache keys collide.
-	u := NewRecordQueryUnionPlan(nil)
-	i := NewRecordQueryIntersectionPlan(nil, nil)
+	// Same valid child shape — Intersection's hash MUST differ from Union's,
+	// otherwise plan-cache keys collide.
+	inner := stub("inner")
+	u := mustChecked(t, func() (*RecordQueryUnionPlan, error) {
+		return NewRecordQueryUnionPlan([]RecordQueryPlan{inner})
+	})
+	i := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlan([]RecordQueryPlan{inner}, nil)
+	})
 	if u.HashCodeWithoutChildren() == i.HashCodeWithoutChildren() {
 		t.Fatalf("Union and Intersection plans should hash differently")
 	}
@@ -98,30 +123,30 @@ func TestRecordQueryIntersectionPlan_DistinctHashFromUnion(t *testing.T) {
 
 func TestRecordQueryIntersectionPlan_EqualsWithoutChildrenSameKeyCount(t *testing.T) {
 	t.Parallel()
-	keys1 := []values.Value{
-		&values.FieldValue{Field: "id", Typ: values.NotNullLong},
-	}
-	keys2 := []values.Value{
-		&values.FieldValue{Field: "name", Typ: values.NotNullString},
-	}
-	i1 := NewRecordQueryIntersectionPlan(nil, keys1)
-	i2 := NewRecordQueryIntersectionPlan(nil, keys2)
+	keys1 := []values.Value{testField(t, "id", values.NotNullLong)}
+	keys2 := []values.Value{testField(t, "name", values.NotNullString)}
+	inners := []RecordQueryPlan{stub("left"), stub("right")}
+	i1 := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlan(inners, keys1)
+	})
+	i2 := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlan(inners, keys2)
+	})
 	// Same key COUNT but different key Values → NOT equal (RFC-180 B2:
 	// count-only identity collapsed different-key intersections in the memo).
 	if i1.EqualsPlanWithoutChildren(i2) {
 		t.Fatal("Intersections with different comparison keys should NOT be equal")
 	}
-	i1b := NewRecordQueryIntersectionPlan(nil, []values.Value{
-		&values.FieldValue{Field: "id", Typ: values.NotNullLong},
+	i1b := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlan(inners, []values.Value{testField(t, "id", values.NotNullLong)})
 	})
 	if !i1.EqualsPlanWithoutChildren(i1b) {
 		t.Fatal("Intersections with identical comparison keys should be equal")
 	}
 
 	// Different key count → not equal.
-	i3 := NewRecordQueryIntersectionPlan(nil, []values.Value{
-		&values.FieldValue{Field: "a", Typ: values.UnknownType},
-		&values.FieldValue{Field: "b", Typ: values.UnknownType},
+	i3 := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlan(inners, []values.Value{testField(t, "a", values.NullableLong), testField(t, "b", values.NullableLong)})
 	})
 	if i1.EqualsPlanWithoutChildren(i3) {
 		t.Fatal("Intersections with different key counts should NOT be equal")
@@ -130,8 +155,12 @@ func TestRecordQueryIntersectionPlan_EqualsWithoutChildrenSameKeyCount(t *testin
 
 func TestRecordQueryInsertPlan_WrapsInner(t *testing.T) {
 	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"Source"}, values.UnknownType, false)
-	ins := NewRecordQueryInsertPlan(scan, "Target", values.UnknownType)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"Source"}, exactTestRecordType(), false)
+	})
+	ins := mustChecked(t, func() (*RecordQueryInsertPlan, error) {
+		return NewRecordQueryInsertPlan(scan, "Target", exactTestRecordType())
+	})
 	if cs := ins.GetChildren(); len(cs) != 1 || cs[0] != scan {
 		t.Fatalf("insert children = %v, want [scan]", cs)
 	}
@@ -145,8 +174,12 @@ func TestRecordQueryInsertPlan_WrapsInner(t *testing.T) {
 
 func TestRecordQueryDeletePlan_WrapsInner(t *testing.T) {
 	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false)
-	d := NewRecordQueryDeletePlan(scan, "Order")
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"Order"}, exactTestRecordType(), false)
+	})
+	d := mustChecked(t, func() (*RecordQueryDeletePlan, error) {
+		return NewRecordQueryDeletePlan(scan, "Order")
+	})
 	if cs := d.GetChildren(); len(cs) != 1 || cs[0] != scan {
 		t.Fatalf("delete children = %v, want [scan]", cs)
 	}
@@ -157,11 +190,15 @@ func TestRecordQueryDeletePlan_WrapsInner(t *testing.T) {
 
 func TestRecordQueryUpdatePlan_TransformsCarried(t *testing.T) {
 	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"Order"}, exactTestRecordType(), false)
+	})
 	transforms := []expressions.UpdateTransform{
 		{FieldPath: "qty", NewValue: values.LiteralValue(int64(0))},
 	}
-	u := NewRecordQueryUpdatePlan(scan, "Order", transforms)
+	u := mustChecked(t, func() (*RecordQueryUpdatePlan, error) {
+		return NewRecordQueryUpdatePlan(scan, "Order", transforms)
+	})
 	if got := len(u.GetTransforms()); got != 1 {
 		t.Fatalf("transforms = %d, want 1", got)
 	}
@@ -174,10 +211,18 @@ func TestDMLPlans_DistinctHashesByType(t *testing.T) {
 	t.Parallel()
 	// Insert / Delete / Update over the same target+inner must hash
 	// differently — type discriminator matters for plan cache.
-	scan := NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false)
-	ins := NewRecordQueryInsertPlan(scan, "Order", values.UnknownType)
-	del := NewRecordQueryDeletePlan(scan, "Order")
-	upd := NewRecordQueryUpdatePlan(scan, "Order", nil)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"Order"}, exactTestRecordType(), false)
+	})
+	ins := mustChecked(t, func() (*RecordQueryInsertPlan, error) {
+		return NewRecordQueryInsertPlan(scan, "Order", exactTestRecordType())
+	})
+	del := mustChecked(t, func() (*RecordQueryDeletePlan, error) {
+		return NewRecordQueryDeletePlan(scan, "Order")
+	})
+	upd := mustChecked(t, func() (*RecordQueryUpdatePlan, error) {
+		return NewRecordQueryUpdatePlan(scan, "Order", nil)
+	})
 
 	insH := ins.HashCodeWithoutChildren()
 	delH := del.HashCodeWithoutChildren()
@@ -189,7 +234,9 @@ func TestDMLPlans_DistinctHashesByType(t *testing.T) {
 
 func TestRecordQueryUnionPlan_HashIsConsistent(t *testing.T) {
 	t.Parallel()
-	u := NewRecordQueryUnionPlan(nil)
+	u := mustChecked(t, func() (*RecordQueryUnionPlan, error) {
+		return NewRecordQueryUnionPlan([]RecordQueryPlan{stub("inner")})
+	})
 	h1 := u.HashCodeWithoutChildren()
 	h2 := u.HashCodeWithoutChildren()
 	if h1 != h2 {
@@ -199,8 +246,12 @@ func TestRecordQueryUnionPlan_HashIsConsistent(t *testing.T) {
 
 func TestRecordQueryDistinctPlan_HashIsConsistent(t *testing.T) {
 	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	d := NewRecordQueryDistinctPlan(scan)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	d := mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
+		return NewRecordQueryDistinctPlan(scan)
+	})
 	h1 := d.HashCodeWithoutChildren()
 	h2 := d.HashCodeWithoutChildren()
 	if h1 != h2 {

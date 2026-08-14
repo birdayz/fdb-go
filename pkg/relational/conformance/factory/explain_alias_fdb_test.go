@@ -10,14 +10,16 @@ import (
 )
 
 // TestFDB_SecondPlanPreconditionIgnoresGeneratedAliases pins the second-plan
-// oracle's precondition against a process-global counter.
+// oracle's precondition against a process-global counter and against Explain
+// changing where that counter is hidden.
 //
 // The precondition is `altPlan == basePlan`, a STRING equality over EXPLAIN
-// text — and that text carries planner-generated correlation identifiers whose
-// numeric suffix comes from a process-global counter. The query below is the
-// measured reproducer: with no indexable predicate, MatchLeafRule has nothing
-// to do, so the two connections produce the SAME PLAN — and the raw text came
-// back as `Project([(SCALAR_SUBQUERY q$11)], Scan(T))` against
+// text. Historically that text carried planner-generated correlation
+// identifiers whose numeric suffix comes from a process-global counter. The
+// query below was the measured reproducer: with no indexable predicate,
+// MatchLeafRule has nothing to do, so the two connections produce the SAME
+// PLAN — and the raw text came back as
+// `Project([(SCALAR_SUBQUERY q$11)], Scan(T))` against
 // `Project([(SCALAR_SUBQUERY q$38)], Scan(T))`.
 //
 // Compared raw, that is a failure with no visible symptom. The oracle would
@@ -26,6 +28,13 @@ import (
 // not. Worse, it would bank that as evidence: the run-level went-dark floor
 // fires only when kept == 0, so a harness whose precondition was satisfied by
 // nothing but counter drift would report a healthy, well-exercised oracle.
+//
+// Exact result-owner display may instead suppress an ownership-only scalar
+// alias, rendering `(SCALAR_SUBQUERY )`. That is also safe, but only when the
+// two raw plans are then identical. This test accepts those two safety
+// mechanisms and no middle state: either both raw plans expose different
+// generated aliases which normalization removes, or neither exposes one and
+// the raw plans already compare equal.
 //
 // A scalar subquery is not an exotic shape here. rowdiff draws one on roughly a
 // fifth of its plain queries, so this reaches the factory on its own.
@@ -59,10 +68,19 @@ func TestFDB_SecondPlanPreconditionIgnoresGeneratedAliases(t *testing.T) {
 
 	rawBase := explainVia(t, ctx, defaultConn, query)
 	rawAlt := explainVia(t, ctx, altConn, query)
-	if !strings.Contains(rawBase, "$") {
-		t.Fatalf("the plan %q carries no generated alias, so this test cannot exercise what it claims. "+
-			"Find a shape that does (a scalar subquery in the projection did) rather than deleting the test — "+
-			"the hazard is in the comparison, not in this query.", rawBase)
+	if !strings.Contains(rawBase, "SCALAR_SUBQUERY") || !strings.Contains(rawAlt, "SCALAR_SUBQUERY") {
+		t.Fatalf("query stopped producing the scalar-subquery shape whose second-plan precondition this test pins:\n  baseline: %s\n  second:   %s", rawBase, rawAlt)
+	}
+	baseHasGeneratedAlias := strings.Contains(rawBase, "$")
+	altHasGeneratedAlias := strings.Contains(rawAlt, "$")
+	if baseHasGeneratedAlias != altHasGeneratedAlias {
+		t.Fatalf("Explain exposed a generated alias on only one planning of the same scalar-subquery shape:\n  baseline: %s\n  second:   %s", rawBase, rawAlt)
+	}
+	if baseHasGeneratedAlias && rawBase == rawAlt {
+		t.Fatalf("both plans expose a generated alias but the independent plannings rendered identically, so this run cannot prove normalization removes process-global counter drift: %s", rawBase)
+	}
+	if !baseHasGeneratedAlias && rawBase != rawAlt {
+		t.Fatalf("Explain suppressed generated aliases but the otherwise identical plans still drifted:\n  baseline: %s\n  second:   %s", rawBase, rawAlt)
 	}
 	t.Logf("raw baseline: %s", rawBase)
 	t.Logf("raw second:   %s", rawAlt)

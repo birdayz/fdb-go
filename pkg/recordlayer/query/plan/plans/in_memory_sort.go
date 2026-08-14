@@ -7,6 +7,7 @@ package plans
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -44,10 +45,8 @@ type RecordQueryInMemorySortPlan struct {
 	sortKeys []SortKey
 }
 
-func NewRecordQueryInMemorySortPlan(inner RecordQueryPlan, sortKeys []SortKey) *RecordQueryInMemorySortPlan {
-	keys := make([]SortKey, len(sortKeys))
-	copy(keys, sortKeys)
-	return &RecordQueryInMemorySortPlan{innerQ: QuantifierOverPlan(inner), sortKeys: keys}
+func NewRecordQueryInMemorySortPlan(inner RecordQueryPlan, sortKeys []SortKey) (*RecordQueryInMemorySortPlan, error) {
+	return NewRecordQueryInMemorySortPlanFromQuantifier(QuantifierOverPlan(inner), sortKeys)
 }
 
 // NewRecordQueryInMemorySortPlanFromQuantifier builds an in-memory sort whose
@@ -66,10 +65,135 @@ func NewRecordQueryInMemorySortPlan(inner RecordQueryPlan, sortKeys []SortKey) *
 // closing the cost-over-first / extract-over-best gap the wrapper carried
 // (plan_expression.go's planFromQuantifier note). The sort keys are copied so the
 // provided ordering (HintOrdering) stays stable across relinks.
-func NewRecordQueryInMemorySortPlanFromQuantifier(innerQ expressions.Quantifier, sortKeys []SortKey) *RecordQueryInMemorySortPlan {
-	keys := make([]SortKey, len(sortKeys))
-	copy(keys, sortKeys)
-	return &RecordQueryInMemorySortPlan{innerQ: innerQ, sortKeys: keys}
+func NewRecordQueryInMemorySortPlanFromQuantifier(innerQ expressions.Quantifier, sortKeys []SortKey) (*RecordQueryInMemorySortPlan, error) {
+	keys, err := reanchorSortKeysForInput(sortKeys, innerQ)
+	if err != nil {
+		return nil, err
+	}
+	base, err := newInMemorySortPlanExprBase(innerQ)
+	if err != nil {
+		return nil, err
+	}
+	return &RecordQueryInMemorySortPlan{PlanExprBase: base, innerQ: innerQ, sortKeys: keys}, nil
+}
+
+func reanchorSortKeysForInput(
+	sortKeys []SortKey,
+	innerQ expressions.Quantifier,
+) ([]SortKey, error) {
+	keys := slices.Clone(sortKeys)
+	for i := range keys {
+		if keys[i].ValueExpr == nil {
+			return nil, fmt.Errorf("RecordQueryInMemorySortPlan key %d has nil ValueExpr", i)
+		}
+		var err error
+		keys[i].ValueExpr, err = reanchorCurrentValueForInput(keys[i].ValueExpr, innerQ)
+		if err != nil {
+			return nil, fmt.Errorf("RecordQueryInMemorySortPlan key %d input carrier: %w", i, err)
+		}
+	}
+	return keys, nil
+}
+
+// reanchorInputValueToOutput carries an input-bound Value across the sort's
+// runtime output. reanchorCurrentValueForInput performs the complete checked
+// source/producer/layout normalization onto the selected child's exact carrier;
+// this method then moves that current-rooted program to the sort's fresh output
+// carrier (same exact row type, distinct owner handle).
+func (p *RecordQueryInMemorySortPlan) reanchorInputValueToOutput(value values.Value) (values.Value, error) {
+	outputLayout, err := p.ProvidedOutputLayout()
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryInMemorySortPlan output layout: %w", err)
+	}
+	// A current-rooted program has already crossed the child's producer
+	// boundary. This includes both the selected child's exact carrier and this
+	// sort's own carrier on a second extraction/relink pass; a sort preserves
+	// column ordinals across those two same-shaped phases. Re-running source
+	// normalization would reinterpret current ordinal 4 through the FlatMap RC
+	// by the leaf name NAME and collapse it onto the first NAME at ordinal 1.
+	// ReanchorValueForLayout still checks the exact row shape and moves the
+	// immutable handle onto this output phase, so a foreign current type fails.
+	if _, currentRooted := values.GetCorrelatedToOfValue(value)[values.CurrentCorrelation()]; currentRooted {
+		reanchored, reanchorErr := values.ReanchorValueForLayout(
+			value, outputLayout.Carrier(), outputLayout)
+		if reanchorErr != nil {
+			return nil, fmt.Errorf("RecordQueryInMemorySortPlan output program: %w", reanchorErr)
+		}
+		return reanchored, nil
+	}
+	// A sort can sit directly above a materializing NLJ. The parent projection
+	// still names a retained logical source (T1.N.SK), while the sort input edge
+	// names the complete joined row. Crossing the child's materializer is the
+	// only checked authority that maps that source-relative nested path onto the
+	// joined carrier; generic edge normalization cannot, because T1 is not the
+	// whole sort-input edge.
+	normalized := value
+	if child := selectedPlanFromQuantifier(p.innerQ); child != nil {
+		if materializer, ok := childValueMaterializer(child); ok {
+			normalized, err = materializer.reanchorInputValueToOutput(normalized)
+			if err != nil {
+				return nil, fmt.Errorf("RecordQueryInMemorySortPlan input materializer: %w", err)
+			}
+		}
+	}
+	if _, nowCurrent := values.GetCorrelatedToOfValue(normalized)[values.CurrentCorrelation()]; !nowCurrent {
+		normalized, err = reanchorCurrentValueForInput(normalized, p.innerQ)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryInMemorySortPlan input program: %w", err)
+	}
+	// Do not run producer matching a second time here. At this point a buried
+	// S.NAME has already become input-current ordinal 4. Matching that resolved
+	// field against the FlatMap RC by accessor names again sees R.NAME as the
+	// sole one-step NAME and collapses it to ordinal 1. The exact input carrier
+	// is the proof that producer normalization is complete.
+	reanchored, err := values.ReanchorValueForLayout(
+		normalized, outputLayout.Carrier(), outputLayout)
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryInMemorySortPlan output program: %w", err)
+	}
+	return reanchored, nil
+}
+
+// newInMemorySortPlanExprBase states the materialization boundary explicitly.
+// The sort consumes its selected child in that child's exact physical layout,
+// but its buffer emits a newly materialized row and therefore publishes a fresh
+// current-only identity layout for the same exact logical type. Forwarding a
+// join's source windows through the buffer would claim that the new carrier
+// still owns the child's address space and makes continuation restoration
+// dependent on stale window identities.
+//
+// A live exploratory edge has no selected child yet, so it can publish only the
+// fresh output layout. Extraction relinks the sort over the selected singleton
+// and this helper then installs the exact input requirement atomically.
+func newInMemorySortPlanExprBase(innerQ expressions.Quantifier) (PlanExprBase, error) {
+	const owner = "RecordQueryInMemorySortPlan"
+	input, err := innerQ.RequireFlowedObjectValue()
+	if err != nil {
+		return PlanExprBase{}, fmt.Errorf("%s input: %w", owner, err)
+	}
+	provided, err := newIdentityOutputLayout(input.FlowedType())
+	if err != nil {
+		return PlanExprBase{}, fmt.Errorf("%s provided output layout: %w", owner, err)
+	}
+	var required []OrdinalLayoutRequirement
+	if child := selectedPlanFromQuantifier(innerQ); child != nil {
+		childLayout, layoutErr := child.ProvidedOutputLayout()
+		if layoutErr != nil {
+			return PlanExprBase{}, fmt.Errorf("%s required input layout: %w", owner, layoutErr)
+		}
+		if !childLayout.Carrier().FlowedType().Equals(input.FlowedType()) {
+			return PlanExprBase{}, fmt.Errorf(
+				"%s required input layout: child carrier type %s disagrees with edge type %s",
+				owner, childLayout.Carrier().FlowedType(), input.FlowedType())
+		}
+		requirement, requirementErr := RequireExactLayout(childLayout)
+		if requirementErr != nil {
+			return PlanExprBase{}, fmt.Errorf("%s required input layout: %w", owner, requirementErr)
+		}
+		required = []OrdinalLayoutRequirement{requirement}
+	}
+	return newPlanExprBaseWithProperties(owner, provided.Carrier(), required, provided)
 }
 
 func (p *RecordQueryInMemorySortPlan) GetInner() RecordQueryPlan {
@@ -99,13 +223,7 @@ func (p *RecordQueryInMemorySortPlan) GetQuantifiers() []expressions.Quantifier 
 // reorders rows but preserves the inner's row shape, so it flows the inner's
 // type through (matching pass-through plans like Filter / Fetch). Nil inner
 // degrades to UnknownType.
-func (p *RecordQueryInMemorySortPlan) GetResultType() values.Type {
-	inner := p.GetInner()
-	if inner == nil {
-		return values.UnknownType
-	}
-	return inner.GetResultType()
-}
+func (p *RecordQueryInMemorySortPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 func (p *RecordQueryInMemorySortPlan) GetChildren() []RecordQueryPlan {
 	inner := p.GetInner()
@@ -185,13 +303,124 @@ func (p *RecordQueryInMemorySortPlan) EqualsWithoutChildren(other expressions.Re
 
 // WithQuantifiers returns a copy ranging over the given child quantifier —
 // Java's copy-on-write withChild(Reference).
-func (p *RecordQueryInMemorySortPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 1 {
-		return p
+func (p *RecordQueryInMemorySortPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryInMemorySortPlan", len(qs), 1); err != nil {
+		return nil, err
+	}
+	oldInput, err := p.innerQ.RequireFlowedObjectValue()
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryInMemorySortPlan.WithQuantifiers old input: %w", err)
+	}
+	newInput, err := qs[0].RequireFlowedObjectValue()
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryInMemorySortPlan.WithQuantifiers new input: %w", err)
+	}
+	if !oldInput.FlowedType().Equals(newInput.FlowedType()) {
+		return nil, fmt.Errorf(
+			"RecordQueryInMemorySortPlan.WithQuantifiers input type changed from %s to %s",
+			oldInput.FlowedType(), newInput.FlowedType())
+	}
+	oldLayout, oldSelected, err := selectedInputOrdinalLayout(p.innerQ)
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryInMemorySortPlan.WithQuantifiers old layout: %w", err)
+	}
+	newLayout, newSelected, err := selectedInputOrdinalLayout(qs[0])
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryInMemorySortPlan.WithQuantifiers new layout: %w", err)
+	}
+	exactSelectedRelink := oldSelected && newSelected
+	keys := slices.Clone(p.sortKeys)
+	oldAlias := oldInput.Correlation()
+	newAlias := newInput.Correlation()
+	var aliasMap values.AliasMap
+	if oldAlias != newAlias {
+		aliasMap, err = values.NewAliasMap([]values.AliasPair{{Source: oldAlias, Target: newAlias}})
+		if err != nil {
+			return nil, fmt.Errorf("RecordQueryInMemorySortPlan.WithQuantifiers alias map: %w", err)
+		}
+	}
+	for i := range keys {
+		if keys[i].ValueExpr == nil {
+			return nil, fmt.Errorf("RecordQueryInMemorySortPlan.WithQuantifiers key %d has nil ValueExpr", i)
+		}
+		key := keys[i].ValueExpr
+		exactOutput := false
+		if exactSelectedRelink {
+			key, exactOutput, err = translateSortKeyAcrossSelectedOutput(
+				key, oldInput, oldLayout, newLayout)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"RecordQueryInMemorySortPlan.WithQuantifiers key %d selected output: %w", i, err)
+			}
+		}
+		if exactOutput {
+			keys[i].ValueExpr = key
+			continue
+		}
+		if aliasMap != nil {
+			key, err = values.RebaseValueChecked(key, aliasMap)
+			if err != nil {
+				return nil, fmt.Errorf("RecordQueryInMemorySortPlan.WithQuantifiers key %d: %w", i, err)
+			}
+		}
+		key, err = reanchorCurrentValueForInput(key, qs[0])
+		if err != nil {
+			return nil, fmt.Errorf(
+				"RecordQueryInMemorySortPlan.WithQuantifiers key %d input carrier: %w", i, err)
+		}
+		keys[i].ValueExpr = key
+	}
+	base, err := newInMemorySortPlanExprBase(qs[0])
+	if err != nil {
+		return nil, err
 	}
 	cp := *p
+	cp.PlanExprBase = base
 	cp.innerQ = qs[0]
-	return &cp
+	cp.sortKeys = keys
+	return &cp, nil
+}
+
+// translateSortKeyAcrossSelectedOutput carries a key that is already expressed
+// at one selected child's OUTPUT boundary to the replacement selected child's
+// exact output carrier. A sort key can retain either the old quantifier edge or
+// the old selected layout carrier, so both checked representations are
+// translated. Once every QOV leaf is the replacement carrier, its ordinals are
+// final and must not be fed through the child's input-to-output materializer a
+// second time. Doing so can reinterpret output ID#0 through a FlatMap result
+// program and rematch it to a different same-named source at X#1.
+//
+// Pointer identity is load-bearing for the phase-carrier arm. An independently
+// minted same-shaped current row, a foreign source, or a mixed program does not
+// take this bypass and remains on the ordinary checked producer path.
+func translateSortKeyAcrossSelectedOutput(
+	key values.Value,
+	oldInput values.QuantifiedObjectValue,
+	oldLayout values.OrdinalLayout,
+	newLayout values.OrdinalLayout,
+) (values.Value, bool, error) {
+	if key == nil || oldInput == nil || oldLayout == nil || newLayout == nil ||
+		oldLayout.Carrier() == nil || newLayout.Carrier() == nil {
+		return key, false, fmt.Errorf("selected sort-key relink requires exact key, edge, and layouts")
+	}
+	translated, err := values.TranslateDeclaredEdgeRoot(key, oldInput, newLayout.Carrier())
+	if err != nil {
+		return nil, false, err
+	}
+	translated, err = values.TranslatePhaseRoot(
+		translated, oldLayout.Carrier(), newLayout.Carrier())
+	if err != nil {
+		return nil, false, err
+	}
+	if !valueReferencesOnlyExactQOV(translated, newLayout.Carrier()) {
+		return translated, false, nil
+	}
+	translated, err = values.ReanchorValueForLayout(
+		translated, newLayout.Carrier(), newLayout)
+	if err != nil {
+		return nil, false, err
+	}
+	return translated, true, nil
 }
 
 // WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
@@ -207,7 +436,7 @@ func (p *RecordQueryInMemorySortPlan) WithChildren(qs []expressions.Quantifier) 
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("RecordQueryInMemorySortPlan.WithChildren: expected 1 child, got %d", len(qs))
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

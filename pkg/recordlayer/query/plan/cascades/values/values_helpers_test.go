@@ -14,7 +14,8 @@ func TestDeconstructRecord_FromRecordConstructor(t *testing.T) {
 		RecordConstructorField{Name: "a", Value: a},
 		RecordConstructorField{Name: "b", Value: b},
 	)
-	got := DeconstructRecord(rc)
+	got, err := DeconstructRecord(rc)
+	require.NoError(t, err)
 	if len(got) != 2 || got[0] != a || got[1] != b {
 		t.Fatalf("DeconstructRecord(rc) = %v, want [a, b]", got)
 	}
@@ -32,22 +33,23 @@ func TestDeconstructRecord_FromRecordTypedValue(t *testing.T) {
 			{Name: "y", FieldType: NotNullString, Ordinal: 1},
 		},
 	}
-	parent := &FieldValue{Field: "row", Typ: rec}
-	got := DeconstructRecord(parent)
+	parent := mustQOV(t, NamedCorrelationIdentifier("row"), rec)
+	got, err := DeconstructRecord(parent)
+	require.NoError(t, err)
 	if len(got) != 2 {
 		t.Fatalf("DeconstructRecord len = %d, want 2", len(got))
 	}
-	if fv, ok := got[0].(*FieldValue); !ok || fv.Field != "x" {
+	if fv, ok := got[0].(*fieldValue); !ok || fv.Field != "x" {
 		t.Fatalf("got[0] = %v, want FieldValue(x)", got[0])
 	}
-	if fv, ok := got[1].(*FieldValue); !ok || fv.Field != "y" {
+	if fv, ok := got[1].(*fieldValue); !ok || fv.Field != "y" {
 		t.Fatalf("got[1] = %v, want FieldValue(y)", got[1])
 	}
 }
 
 func TestDeconstructRecord_NilReturnsNil(t *testing.T) {
 	t.Parallel()
-	if got := DeconstructRecord(nil); got != nil {
+	if got, err := DeconstructRecord(nil); err != nil || got != nil {
 		t.Fatalf("DeconstructRecord(nil) = %v, want nil", got)
 	}
 }
@@ -56,7 +58,7 @@ func TestDeconstructRecord_NonRecordTypedReturnsNil(t *testing.T) {
 	t.Parallel()
 	// LiteralValue(int64) — non-record typed → returns nil.
 	v := LiteralValue(int64(7))
-	if got := DeconstructRecord(v); got != nil {
+	if got, err := DeconstructRecord(v); err != nil || got != nil {
 		t.Fatalf("DeconstructRecord(int) = %v, want nil", got)
 	}
 }

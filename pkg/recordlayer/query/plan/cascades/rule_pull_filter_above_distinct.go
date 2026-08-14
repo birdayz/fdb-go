@@ -48,9 +48,18 @@ func (r *PullFilterAboveDistinctRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 	// Build Distinct(f.GetInner-source) — REUSE f's inner Quantifier.
-	pulled := expressions.NewLogicalDistinctExpression(f.GetInner())
+	pulled, err := expressions.NewLogicalDistinctExpression(f.GetInner())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	pulledQ := expressions.ForEachQuantifier(call.MemoizeExpression(pulled))
-	call.Yield(expressions.NewLogicalFilterExpression(f.GetPredicates(), pulledQ))
+	outer, err := expressions.NewLogicalFilterExpression(f.GetPredicates(), pulledQ)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(outer)
 }
 
 var _ ExpressionRule = (*PullFilterAboveDistinctRule)(nil)

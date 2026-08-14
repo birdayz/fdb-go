@@ -67,7 +67,7 @@ func TestFireRule_AddConstantFold(t *testing.T) {
 		Left:  &values.ConstantValue{Value: int64(3), Typ: values.NullableLong},
 		Right: &values.ConstantValue{Value: int64(4), Typ: values.NullableLong},
 	}
-	replacements := FireRule(rule, expr)
+	replacements := firePredicateRule(t, rule, expr)
 	if len(replacements) != 1 {
 		t.Fatalf("expected 1 replacement, got %d", len(replacements))
 	}
@@ -83,9 +83,9 @@ func TestFireRule_AddConstantFold(t *testing.T) {
 	nonMatch := &values.ArithmeticValue{
 		Op:    values.OpAdd,
 		Left:  &values.ConstantValue{Value: int64(3), Typ: values.NullableLong},
-		Right: &values.FieldValue{Field: "x", Typ: values.NullableLong},
+		Right: simplifyField("x", values.NullableLong),
 	}
-	if got := FireRule(rule, nonMatch); len(got) != 0 {
+	if got := firePredicateRule(t, rule, nonMatch); len(got) != 0 {
 		t.Fatalf("non-matching shape: expected 0 replacements, got %d", len(got))
 	}
 
@@ -95,7 +95,7 @@ func TestFireRule_AddConstantFold(t *testing.T) {
 		Left:  &values.ConstantValue{Value: int64(3), Typ: values.NullableLong},
 		Right: &values.ConstantValue{Value: int64(4), Typ: values.NullableLong},
 	}
-	if got := FireRule(rule, wrongOp); len(got) != 0 {
+	if got := firePredicateRule(t, rule, wrongOp); len(got) != 0 {
 		t.Fatalf("wrong op: expected 0 replacements, got %d", len(got))
 	}
 }
@@ -127,7 +127,7 @@ func TestFireRule_MultipleYieldsPerMatch(t *testing.T) {
 	rule := &multiYieldRule{matcher: target, target: target}
 	cv := &values.ConstantValue{Value: int64(10), Typ: values.NullableLong}
 
-	replacements := FireRule(rule, cv)
+	replacements := firePredicateRule(t, rule, cv)
 	if len(replacements) != 2 {
 		t.Fatalf("expected 2 yields, got %d", len(replacements))
 	}
@@ -166,7 +166,7 @@ func (r *declineRule) OnMatch(*RuleCall)                { /* deliberately empty 
 func TestFireRule_DeclineToYield(t *testing.T) {
 	t.Parallel()
 	rule := &declineRule{matcher: matching.NewAnyValue()}
-	got := FireRule(rule, &values.ConstantValue{Value: int64(1), Typ: values.NullableLong})
+	got := firePredicateRule(t, rule, &values.ConstantValue{Value: int64(1), Typ: values.NullableLong})
 	if len(got) != 0 {
 		t.Fatalf("expected 0 (decline), got %d", len(got))
 	}

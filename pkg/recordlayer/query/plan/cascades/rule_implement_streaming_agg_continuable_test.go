@@ -34,13 +34,13 @@ func TestImplementStreamingAgg_AdmitsDistinctInner(t *testing.T) {
 		{
 			name: "unordered by-row distinct",
 			wrap: func(p plans.RecordQueryPlan) plans.RecordQueryPlan {
-				return plans.NewRecordQueryDistinctPlan(p)
+				return mustStreamingAggConstruct(plans.NewRecordQueryDistinctPlan(p))
 			},
 		},
 		{
 			name: "unordered primary-key distinct",
 			wrap: func(p plans.RecordQueryPlan) plans.RecordQueryPlan {
-				return plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(p)
+				return mustStreamingAggConstruct(plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(p))
 			},
 		},
 	} {
@@ -49,19 +49,19 @@ func TestImplementStreamingAgg_AdmitsDistinctInner(t *testing.T) {
 
 			// A physical DISTINCT over a physical scan, memoized as the inner's
 			// only physical alternative.
-			scan := plans.NewRecordQueryScanPlan([]string{"Orders"}, values.UnknownType, false)
+			scan := streamingAggPhysicalScan("Orders")
 			innerRef := expressions.FinalOf(tc.wrap(scan))
 			innerQ := expressions.ForEachQuantifier(innerRef)
 
-			gb := expressions.NewGroupByExpression(
-				[]values.Value{&values.FieldValue{Field: "customer_id", Typ: values.UnknownType}},
+			gb := mustStreamingAggConstruct(expressions.NewGroupByExpression(
+				[]values.Value{streamingAggQuantifierField(innerQ, "customer_id")},
 				[]expressions.AggregateSpec{
-					{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+					{Function: expressions.AggCount, Operand: streamingAggQuantifierField(innerQ, "id")},
 				},
 				innerQ,
-			)
+			))
 
-			results := FireExpressionRule(NewImplementStreamingAggregationRule(), expressions.InitialOf(gb))
+			results := mustFireExpressionRule(t, NewImplementStreamingAggregationRule(), expressions.InitialOf(gb))
 			if len(results) == 0 {
 				t.Fatalf("GROUP BY over a %s produced NO plan. Go's DISTINCT plans carry their "+
 					"dedup set across a continuation through the ExecutionScratch (#621), so they "+
@@ -93,7 +93,7 @@ func TestImplementStreamingAgg_AdmissionRejectsNonPlans(t *testing.T) {
 		t.Fatal("admissibleStreamingAggInner(nil) = true, want false — a missing member is not " +
 			"an admissible streaming-aggregation inner")
 	}
-	logical := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
+	logical := streamingAggLogicalScan("Orders")
 	if admissibleStreamingAggInner(logical) {
 		t.Fatal("admissibleStreamingAggInner admitted a LOGICAL expression — streaming " +
 			"aggregation runs over a physical plan, and admitting a logical member would let " +

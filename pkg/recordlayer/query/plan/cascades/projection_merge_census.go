@@ -199,10 +199,9 @@ func AssertProjectionMergeCensus(w io.Writer, floors *ProjectionMergeFloors) boo
 // would cost a load. The ordering census is gated because it builds a comparison
 // CONTEXT it would otherwise allocate per comparison; there is nothing to build
 // here.
-func recordProjectionMergeFiring()   { atomic.AddInt64(&projectionMergeCensus.RuleFirings, 1) }
-func recordProjectionMergeSlot()     { atomic.AddInt64(&projectionMergeCensus.SlotCompositions, 1) }
-func recordProjectionMergeBaked()    { atomic.AddInt64(&projectionMergeCensus.BakedSingleAccessor, 1) }
-func recordProjectionMergeLazyRead() { atomic.AddInt64(&projectionMergeCensus.LazyOuterReads, 1) }
+func recordProjectionMergeFiring() { atomic.AddInt64(&projectionMergeCensus.RuleFirings, 1) }
+func recordProjectionMergeSlot()   { atomic.AddInt64(&projectionMergeCensus.SlotCompositions, 1) }
+func recordProjectionMergeBaked()  { atomic.AddInt64(&projectionMergeCensus.BakedSingleAccessor, 1) }
 func recordProjectionMergeNotComposable() {
 	atomic.AddInt64(&projectionMergeCensus.DeclinedNotComposable, 1)
 }

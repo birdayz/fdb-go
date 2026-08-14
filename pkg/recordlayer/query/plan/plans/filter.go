@@ -26,11 +26,20 @@ type RecordQueryFilterPlan struct {
 
 // NewRecordQueryFilterPlan constructs a filter over the given
 // predicates and inner plan.
-func NewRecordQueryFilterPlan(preds []predicates.QueryPredicate, inner RecordQueryPlan) *RecordQueryFilterPlan {
-	return &RecordQueryFilterPlan{
-		predicates: append([]predicates.QueryPredicate(nil), preds...),
-		innerQ:     QuantifierOverPlan(inner),
+func NewRecordQueryFilterPlan(preds []predicates.QueryPredicate, inner RecordQueryPlan) (*RecordQueryFilterPlan, error) {
+	return NewRecordQueryFilterPlanFromQuantifier(preds, QuantifierOverPlan(inner))
+}
+
+func NewRecordQueryFilterPlanFromQuantifier(preds []predicates.QueryPredicate, innerQ expressions.Quantifier) (*RecordQueryFilterPlan, error) {
+	base, err := newPlanExprBaseForQuantifier("RecordQueryFilterPlan", innerQ)
+	if err != nil {
+		return nil, err
 	}
+	return &RecordQueryFilterPlan{
+		PlanExprBase: base,
+		predicates:   append([]predicates.QueryPredicate(nil), preds...),
+		innerQ:       innerQ,
+	}, nil
 }
 
 // GetPredicates returns the predicate list (read-only).
@@ -50,13 +59,7 @@ func (p *RecordQueryFilterPlan) GetQuantifiers() []expressions.Quantifier {
 
 // GetResultType returns the inner's result type (filter doesn't
 // reshape rows).
-func (p *RecordQueryFilterPlan) GetResultType() values.Type {
-	inner := p.GetInner()
-	if inner == nil {
-		return values.UnknownType
-	}
-	return inner.GetResultType()
-}
+func (p *RecordQueryFilterPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryFilterPlan) GetChildren() []RecordQueryPlan {
@@ -111,15 +114,44 @@ func (p *RecordQueryFilterPlan) EqualsWithoutChildren(other expressions.Relation
 	return planEqualsAsExpression(p, other)
 }
 
-// WithQuantifiers returns a copy ranging over the given child quantifier —
-// Java's copy-on-write withChild(Reference).
-func (p *RecordQueryFilterPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 1 {
-		return p
+// WithQuantifiers atomically rebuilds the filter over the replacement child.
+// Its predicates are executable programs over the child edge, so every
+// embedded Value must move to the replacement alias before the new pass-through
+// base is admitted.
+func (p *RecordQueryFilterPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryFilterPlan", len(qs), 1); err != nil {
+		return nil, err
 	}
-	cp := *p
-	cp.innerQ = qs[0]
-	return &cp
+	oldInput, err := p.innerQ.RequireFlowedObjectValue()
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryFilterPlan.WithQuantifiers old input: %w", err)
+	}
+	newInput, err := qs[0].RequireFlowedObjectValue()
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryFilterPlan.WithQuantifiers new input: %w", err)
+	}
+	if !oldInput.FlowedType().Equals(newInput.FlowedType()) {
+		return nil, fmt.Errorf(
+			"RecordQueryFilterPlan.WithQuantifiers input type changed from %s to %s",
+			oldInput.FlowedType(), newInput.FlowedType())
+	}
+
+	rebased := append([]predicates.QueryPredicate(nil), p.predicates...)
+	if oldInput.Correlation() != newInput.Correlation() {
+		aliasMap, mapErr := values.NewAliasMap([]values.AliasPair{{
+			Source: oldInput.Correlation(), Target: newInput.Correlation(),
+		}})
+		if mapErr != nil {
+			return nil, fmt.Errorf("RecordQueryFilterPlan.WithQuantifiers alias map: %w", mapErr)
+		}
+		for i, predicate := range rebased {
+			rebased[i], err = predicates.RebasePredicateChecked(predicate, aliasMap)
+			if err != nil {
+				return nil, fmt.Errorf("RecordQueryFilterPlan.WithQuantifiers predicate %d: %w", i, err)
+			}
+		}
+	}
+	return NewRecordQueryFilterPlanFromQuantifier(rebased, qs[0])
 }
 
 // GetRecordQueryPlan returns the plan itself.

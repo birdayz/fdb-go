@@ -552,15 +552,20 @@ func firstScalarFunctionArgumentType(args []Value, nullable bool) Type {
 // unknown type keeps the result unknown.
 func CommonValueType(branches []Value) Type {
 	types := make([]Type, 0, len(branches))
+	sawNull := false
 	for _, branch := range branches {
 		if branch == nil {
 			continue
 		}
 		if _, isNull := branch.(*NullValue); isNull {
+			sawNull = true
 			continue
 		}
 		typ := branch.Type()
 		if typ == nil || typ.Code() == TypeCodeNull {
+			if typ != nil {
+				sawNull = true
+			}
 			continue
 		}
 		if typ.Code() == TypeCodeUnknown {
@@ -569,6 +574,15 @@ func CommonValueType(branches []Value) Type {
 		types = append(types, typ)
 	}
 	if len(types) == 0 {
+		// SQL NULL is a real scalar type, distinct from the UNKNOWN
+		// inference placeholder.  An all-NULL polymorphic expression has no
+		// non-NULL branch to refine it, but its result is still known exactly:
+		// it is NULL.  Returning UNKNOWN here made otherwise valid
+		// GREATEST(NULL), LEAST(NULL), COALESCE(NULL, NULL), and all-NULL CASE
+		// projections fail exact result-row admission.
+		if sawNull {
+			return NullType
+		}
 		return UnknownType
 	}
 	typ := MaximumTypeOfMany(types...)

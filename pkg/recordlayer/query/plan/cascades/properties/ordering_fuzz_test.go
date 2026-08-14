@@ -1,11 +1,10 @@
-package properties_test
+package properties
 
 import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -30,25 +29,25 @@ func FuzzEstimateOrdering_NoPanic(f *testing.F) {
 	f.Add(false, false) // scan only
 
 	f.Fuzz(func(t *testing.T, hasSort, hasFilter bool) {
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
 
 		var inner expressions.RelationalExpression = scan
 		if hasSort {
 			keys := []expressions.SortKey{
-				{Value: &values.FieldValue{Field: "id", Typ: values.NotNullLong}},
+				{Value: propertyField(t, "id", values.NotNullLong)},
 			}
-			inner = expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(expressions.InitialOf(inner)))
+			inner = mustLogicalSortExpression(t, keys, expressions.ForEachQuantifier(expressions.InitialOf(inner)))
 		}
 		if hasFilter {
 			pred := predicates.NewConstantPredicate(predicates.TriTrue)
-			inner = expressions.NewLogicalFilterExpression(
+			inner = mustLogicalFilterExpression(t,
 				[]predicates.QueryPredicate{pred},
-				expressions.ForEachQuantifier(expressions.InitialOf(inner)),
-			)
+				expressions.ForEachQuantifier(expressions.InitialOf(inner)))
+
 		}
 
 		// Property 1: no panic.
-		o := properties.EstimateOrdering(inner)
+		o := EstimateOrdering(inner)
 
 		// Property 2-5: filter inherits ordering from inner; no-sort
 		// stack is unknown, sort stack is known.

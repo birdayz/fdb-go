@@ -8,14 +8,44 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func mustConstraintConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct planner-constraint fixture: " + err.Error())
+	}
+	return value
+}
+
+func constraintRowType() values.Type {
+	return values.NewRecordType("ConstraintRow", false, []values.Field{
+		{Name: "a", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "x", FieldType: values.NullableLong, Ordinal: 1},
+		{Name: "X", FieldType: values.NullableLong, Ordinal: 2},
+		{Name: "Y", FieldType: values.NullableLong, Ordinal: 3},
+	})
+}
+
+func constraintRef(recordType string) *expressions.Reference {
+	scan := mustConstraintConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{recordType}, constraintRowType()))
+	return expressions.InitialOf(scan)
+}
+
+func constraintField(name string) values.Value {
+	root := mustConstraintConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("constraint_key"), constraintRowType()))
+	request := mustConstraintConstruct(values.FieldByName(name))
+	return mustConstraintConstruct(values.ResolveFieldAccess(
+		root, []values.FieldRequest{request}))
+}
+
 func TestConstraintMap_SetAndGet(t *testing.T) {
 	t.Parallel()
 	cm := NewConstraintMap()
-	ref := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil))
+	ref := constraintRef("T")
 
 	orderings := []*properties.RequestedOrdering{
 		properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+			{Value: constraintField("a"), SortOrder: properties.RequestedSortOrderAscending},
 		}, properties.DistinctnessNotDistinct, false),
 	}
 	Set(cm, ref, RequestedOrderingConstraintKey, orderings)
@@ -32,7 +62,7 @@ func TestConstraintMap_SetAndGet(t *testing.T) {
 func TestConstraintMap_GetMissing(t *testing.T) {
 	t.Parallel()
 	cm := NewConstraintMap()
-	ref := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil))
+	ref := constraintRef("T")
 
 	got, ok := Get(cm, ref, RequestedOrderingConstraintKey)
 	if ok {
@@ -45,7 +75,7 @@ func TestConstraintMap_GetMissing(t *testing.T) {
 
 func TestConstraintMap_NilMap(t *testing.T) {
 	t.Parallel()
-	ref := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil))
+	ref := constraintRef("T")
 
 	got, ok := Get[*ConstraintMap](nil, ref, &PlannerConstraint[*ConstraintMap]{})
 	if ok {
@@ -61,13 +91,13 @@ func TestConstraintMap_NilMap(t *testing.T) {
 func TestConstraintMap_DifferentRefs(t *testing.T) {
 	t.Parallel()
 	cm := NewConstraintMap()
-	ref1 := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"A"}, nil))
-	ref2 := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"B"}, nil))
+	ref1 := constraintRef("A")
+	ref2 := constraintRef("B")
 
 	orderings1 := []*properties.RequestedOrdering{properties.PreserveOrdering()}
 	orderings2 := []*properties.RequestedOrdering{
 		properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "x", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderDescending},
+			{Value: constraintField("x"), SortOrder: properties.RequestedSortOrderDescending},
 		}, properties.DistinctnessDistinct, true),
 	}
 
@@ -97,7 +127,7 @@ func TestImplementationRuleCall_GetRequestedOrderings_NoConstraints(t *testing.T
 
 func TestImplementationRuleCall_GetRequestedOrderings_WithConstraints(t *testing.T) {
 	t.Parallel()
-	ref := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil))
+	ref := constraintRef("T")
 	cm := NewConstraintMap()
 	orderings := []*properties.RequestedOrdering{properties.PreserveOrdering()}
 	Set(cm, ref, RequestedOrderingConstraintKey, orderings)
@@ -116,8 +146,8 @@ func TestImplementationRuleCall_GetRequestedOrderings_WithConstraints(t *testing
 // RequestedOrderingConstraint.combine: union with subsumption.
 func TestCombineRequestedOrderings(t *testing.T) {
 	t.Parallel()
-	partX := properties.RequestedOrderingPart{Value: values.NewFlatFieldValue("X", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}
-	partY := properties.RequestedOrderingPart{Value: values.NewFlatFieldValue("Y", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}
+	partX := properties.RequestedOrderingPart{Value: constraintField("X"), SortOrder: properties.RequestedSortOrderAscending}
+	partY := properties.RequestedOrderingPart{Value: constraintField("Y"), SortOrder: properties.RequestedSortOrderAscending}
 	roX := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{partX}, properties.DistinctnessNotDistinct, false)
 	roXdup := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{partX}, properties.DistinctnessNotDistinct, false)
 	roY := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{partY}, properties.DistinctnessNotDistinct, false)
@@ -159,15 +189,16 @@ func TestCombineRequestedOrderings(t *testing.T) {
 // requested-ordering winner retention.
 func TestPushConstraint_CombinesAcrossParents(t *testing.T) {
 	t.Parallel()
-	childRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	childRef := constraintRef("T")
 	cm := NewConstraintMap()
 	call := &ImplementationRuleCall{Constraints: cm}
 
-	roX := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("X", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}}, properties.DistinctnessNotDistinct, false)
-	roY := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("Y", values.UnknownType), SortOrder: properties.RequestedSortOrderDescending}}, properties.DistinctnessNotDistinct, false)
+	roX := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{{Value: constraintField("X"), SortOrder: properties.RequestedSortOrderAscending}}, properties.DistinctnessNotDistinct, false)
+	roY := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{{Value: constraintField("Y"), SortOrder: properties.RequestedSortOrderDescending}}, properties.DistinctnessNotDistinct, false)
 
 	call.PushConstraint(childRef, []*properties.RequestedOrdering{roX})
 	call.PushConstraint(childRef, []*properties.RequestedOrdering{roY})
+	call.applyPendingConstraints()
 
 	got, ok := Get(cm, childRef, RequestedOrderingConstraintKey)
 	if !ok || len(got) != 2 {
@@ -181,12 +212,12 @@ func TestPushConstraint_CombinesAcrossParents(t *testing.T) {
 // canonical root while push rules may hold pre-merge aliases.
 func TestConstraintMap_CanonicalKeys(t *testing.T) {
 	t.Parallel()
-	survivor := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType))
-	loser := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType))
+	survivor := constraintRef("A")
+	loser := constraintRef("B")
 	survivor.Absorb(loser)
 
 	cm := NewConstraintMap()
-	roX := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("X", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}}, properties.DistinctnessNotDistinct, false)
+	roX := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{{Value: constraintField("X"), SortOrder: properties.RequestedSortOrderAscending}}, properties.DistinctnessNotDistinct, false)
 	Set(cm, loser, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{roX})
 	if got, ok := Get(cm, survivor, RequestedOrderingConstraintKey); !ok || len(got) != 1 {
 		t.Fatalf("constraint set via the forwarded alias must be visible via the canonical ref (ok=%v)", ok)
@@ -201,7 +232,7 @@ func TestConstraintMap_CanonicalKeys(t *testing.T) {
 func TestSet_PushPropertySemantics(t *testing.T) {
 	t.Parallel()
 	cm := NewConstraintMap()
-	ref := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil))
+	ref := constraintRef("T")
 
 	a := NewReferencedFields(map[string]struct{}{"A": {}})
 	b := NewReferencedFields(map[string]struct{}{"B": {}})

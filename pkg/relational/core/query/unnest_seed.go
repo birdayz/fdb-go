@@ -62,13 +62,20 @@ func (t *cascadesTranslator) unnestOrdinalSeed(
 	var fields []values.RecordConstructorField
 
 	// OUTER leg: ofOrdinal(QOV(outer, outerType), i), full leg run 0..n-1.
-	outerQOV := values.NewQuantifiedObjectValueOfType(outerCorr, outerType)
+	outerQOV, err := values.NewQuantifiedObjectValue(outerCorr, outerType)
+	if err != nil {
+		return nil
+	}
 	for i := range outerType.Fields {
-		fv, err := values.NewFieldValueOfOrdinal(outerQOV, i)
+		resolved, err := values.ResolveOrdinalSeedField(outerQOV, i)
 		if err != nil {
 			return nil // decline
 		}
-		fields = append(fields, values.RecordConstructorField{Name: fv.Field, Value: fv})
+		fv, ok := values.AsFieldValue(resolved)
+		if !ok {
+			return nil
+		}
+		fields = append(fields, values.RecordConstructorField{Name: fv.DisplayName(), Value: fv})
 	}
 
 	innerFields, fullBakedSeed, ok := unnestSeedInnerFields(innerCorr, u, elementType)
@@ -164,28 +171,27 @@ func (t *cascadesTranslator) unnestBakedRootCollection(
 		}
 		arrIdx = idx
 	}
-	outerQOV := values.NewQuantifiedObjectValueOfType(outerCorr, outerType)
-	collection, err := values.NewFieldValueOfOrdinal(outerQOV, arrIdx)
+	outerQOV, err := values.NewQuantifiedObjectValue(outerCorr, outerType)
 	if err != nil {
 		return nil
 	}
-	suffix := make([]values.ResolvedAccessor, 0, len(u.Segments)-rootSegmentIndex-1)
+	suffix := make([]values.FieldRequest, 0, len(u.Segments)-rootSegmentIndex-1)
 	for _, seg := range u.Segments[rootSegmentIndex+1:] {
-		// NAME-addressed struct descent (FieldValue's proto-message arm); ordinal
-		// is the LOUD sentinel -1 — a struct materializes as a proto message, not
-		// a positional row, so the ordinal is never consulted.
-		suffix = append(suffix, values.ResolvedAccessor{Field: strings.ToUpper(seg), Ordinal: -1})
+		request, requestErr := values.FieldByName(strings.ToUpper(seg))
+		if requestErr != nil {
+			return nil
+		}
+		suffix = append(suffix, request)
 	}
-	fused := collection.Resolved.WithSuffix(&values.FieldPath{Accessors: suffix})
-	// The fused node advertises the ARRAY type for the Explode (the classifier's
-	// proto-derived element type is authoritative); set it directly in the rebuild
-	// rather than carry the root ofOrdinal's struct type and overwrite.
-	return &values.FieldValue{
-		Field:    strings.ToUpper(fieldName),
-		Typ:      values.NewArrayType(true, elementType),
-		Child:    collection.Child,
-		Resolved: fused,
+	collection, err := values.ResolveOrdinalSeedAccess(outerQOV, arrIdx, suffix)
+	if err != nil {
+		return nil
 	}
+	wantArray := values.NewArrayType(collection.Type().IsNullable(), elementType)
+	if !collection.Type().Equals(wantArray) {
+		return nil
+	}
+	return collection
 }
 
 // unnestSeedInnerFields builds the unnest INNER leg's seed fields — the
@@ -218,29 +224,29 @@ func unnestSeedInnerFields(
 		if elemName == "" {
 			elemName = values.OrdinalFieldName(0)
 		}
-		// NOT record-level nullable: the unnest inner leg always produces a
-		// row per element (this is not an outer join's null-supplying side),
-		// and ofOrdinal inherits the record's nullability into its column
-		// types per Java's FieldValue.computeResultType — a nullable marker
-		// here would flip the AT ordinal column (INT NOT NULL, the 1-based
-		// position) to nullable in the flowed metadata.
+		// Match the physical Explode WITH ORDINALITY carrier exactly. Each
+		// emitted element/ordinal pair is a present row; an empty or NULL array
+		// emits no row rather than a null-supplying row.
 		innerType := values.NewRecordType("", false, []values.Field{
 			{Name: elemName, FieldType: elementType, Ordinal: 0},
 			{Name: strings.ToUpper(u.AtAlias), FieldType: values.NotNullInt, Ordinal: 1},
 		})
-		innerQOV := values.NewQuantifiedObjectValueOfType(innerCorr, innerType)
+		innerQOV, err := values.NewQuantifiedObjectValue(innerCorr, innerType)
+		if err != nil {
+			return nil, false, false
+		}
 		if u.Alias != "" {
 			// AS binds the element to ordinal 0; naming the RC field by the AS
 			// alias makes both the full inner leg run (0,1) and the result-set
 			// column name correct.
-			elemFV, err := values.NewFieldValueOfOrdinal(innerQOV, 0)
+			elemFV, err := values.ResolveOrdinalSeedField(innerQOV, 0)
 			if err != nil {
 				return nil, false, false
 			}
 			fields = append(fields, values.RecordConstructorField{Name: strings.ToUpper(u.Alias), Value: elemFV})
 			fullBaked = true // element+ordinal cover the whole inner leg
 		}
-		ordFV, err := values.NewFieldValueOfOrdinal(innerQOV, 1)
+		ordFV, err := values.ResolveOrdinalSeedField(innerQOV, 1)
 		if err != nil {
 			return nil, false, false
 		}
@@ -251,7 +257,10 @@ func unnestSeedInnerFields(
 	if u.Alias == "" {
 		return nil, false, false // neither AS nor AT: no bindable unnest column
 	}
-	elementValue := values.NewQuantifiedObjectValueOfType(innerCorr, elementType)
+	elementValue, err := values.NewQuantifiedObjectValue(innerCorr, elementType)
+	if err != nil {
+		return nil, false, false
+	}
 	fields = append(fields, values.RecordConstructorField{Name: strings.ToUpper(u.Alias), Value: elementValue})
 	return fields, false, true
 }

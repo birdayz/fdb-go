@@ -12,21 +12,33 @@ import (
 func truePred() predicates.QueryPredicate { return predicates.NewConstantPredicate(predicates.TriTrue) }
 
 // filterOver builds Filter(TRUE, →inner) as a single-member Reference.
-func filterOver(inner *expressions.Reference) *expressions.Reference {
-	f := expressions.NewLogicalFilterExpression(
+func filterOver(t testing.TB, inner *expressions.Reference) *expressions.Reference {
+	t.Helper()
+	f, err := expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{truePred()},
 		expressions.ForEachQuantifier(inner),
 	)
-	return expressions.InitialOf(f)
+	return expressions.InitialOf(mustConstruct(t, f, err))
 }
 
 // freshFilterMember builds a standalone Filter(TRUE, →inner) expression
 // (not wrapped in a Reference) — a stand-in for a rule's yielded output.
-func freshFilterMember(inner *expressions.Reference) expressions.RelationalExpression {
-	return expressions.NewLogicalFilterExpression(
+func freshFilterMember(t testing.TB, inner *expressions.Reference) expressions.RelationalExpression {
+	t.Helper()
+	filter, err := expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{truePred()},
 		expressions.ForEachQuantifier(inner),
 	)
+	return mustConstruct(t, filter, err)
+}
+
+func memoMergeDistinct(
+	t testing.TB,
+	inner *expressions.Reference,
+) *expressions.LogicalDistinctExpression {
+	t.Helper()
+	distinct, err := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(inner))
+	return mustConstruct(t, distinct, err)
 }
 
 // TestMemoMerge_SiblingEquivalentGroupsMerge proves the core optimization:
@@ -37,8 +49,8 @@ func freshFilterMember(inner *expressions.Reference) expressions.RelationalExpre
 func TestMemoMerge_SiblingEquivalentGroupsMerge(t *testing.T) {
 	t.Parallel()
 	scanRef := expressions.InitialOf(fixtureScan("T"))
-	l := filterOver(scanRef) // Filter(TRUE, scanT)
-	r := filterOver(scanRef) // structurally identical, distinct Reference
+	l := filterOver(t, scanRef) // Filter(TRUE, scanT)
+	r := filterOver(t, scanRef) // structurally identical, distinct Reference
 
 	m := NewMemo(nil)
 	m.RegisterReference(l) // lower id ⇒ survivor
@@ -49,7 +61,7 @@ func TestMemoMerge_SiblingEquivalentGroupsMerge(t *testing.T) {
 	}
 
 	// A rule yields, into r, an expression equal to l's member.
-	m.Integrate(r, freshFilterMember(scanRef))
+	m.Integrate(r, freshFilterMember(t, scanRef))
 
 	if m.MergeCount() != 1 {
 		t.Fatalf("expected exactly 1 merge, got %d", m.MergeCount())
@@ -70,16 +82,17 @@ func TestMemoMerge_SiblingEquivalentGroupsMerge(t *testing.T) {
 func TestMemoMerge_InFlightTaskNotStranded(t *testing.T) {
 	t.Parallel()
 	scanRef := expressions.InitialOf(fixtureScan("T"))
-	l := filterOver(scanRef)
-	r := filterOver(scanRef)
+	l := filterOver(t, scanRef)
+	r := filterOver(t, scanRef)
 	// Give r a distinct extra member that l does not have.
-	extra := expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(scanRef))
+	extra, extraErr := expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(scanRef))
+	extra = mustConstruct(t, extra, extraErr)
 	r.Insert(extra)
 
 	m := NewMemo(nil)
 	m.RegisterReference(l)
 	m.RegisterReference(r)
-	m.Integrate(r, freshFilterMember(scanRef)) // merges r into l
+	m.Integrate(r, freshFilterMember(t, scanRef)) // merges r into l
 
 	if m.MergeCount() != 1 {
 		t.Fatalf("expected 1 merge, got %d", m.MergeCount())
@@ -99,16 +112,16 @@ func TestMemoMerge_InFlightTaskNotStranded(t *testing.T) {
 func TestMemoMerge_RecursiveUpwardReMerge(t *testing.T) {
 	t.Parallel()
 	scanRef := expressions.InitialOf(fixtureScan("T"))
-	l := filterOver(scanRef)
-	r := filterOver(scanRef)
-	p1 := filterOver(l) // Filter(TRUE, →L)
-	p2 := filterOver(r) // Filter(TRUE, →R) — equal to p1 once L≡R
+	l := filterOver(t, scanRef)
+	r := filterOver(t, scanRef)
+	p1 := filterOver(t, l) // Filter(TRUE, →L)
+	p2 := filterOver(t, r) // Filter(TRUE, →R) — equal to p1 once L≡R
 
 	m := NewMemo(nil)
 	m.RegisterReference(p1) // indexes p1, l, scanRef
 	m.RegisterReference(p2) // indexes p2, r
 
-	m.Integrate(r, freshFilterMember(scanRef)) // L≡R merge → cascades to P1≡P2
+	m.Integrate(r, freshFilterMember(t, scanRef)) // L≡R merge → cascades to P1≡P2
 
 	if m.MergeCount() != 2 {
 		t.Fatalf("expected 2 merges (L/R then P1/P2), got %d", m.MergeCount())
@@ -128,9 +141,9 @@ func TestMemoMerge_RecursiveUpwardReMerge(t *testing.T) {
 func TestMemoMerge_SkipsCyclicMerge(t *testing.T) {
 	t.Parallel()
 	scanRef := expressions.InitialOf(fixtureScan("T"))
-	inner := expressions.InitialOf(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(scanRef)))
+	inner := expressions.InitialOf(memoMergeDistinct(t, scanRef))
 	// outer ranges over inner: outer is an ANCESTOR of inner.
-	outer := expressions.InitialOf(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(inner)))
+	outer := expressions.InitialOf(memoMergeDistinct(t, inner))
 
 	m := NewMemo(nil)
 	m.RegisterReference(outer) // indexes outer, inner, scanRef
@@ -138,7 +151,7 @@ func TestMemoMerge_SkipsCyclicMerge(t *testing.T) {
 	// Simulate DistinctMerge yielding into outer an expr equal to inner's
 	// member: Distinct(→scanRef). findEquivalentRef would match inner, but
 	// inner is outer's descendant — merging would create a cycle.
-	yielded := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(scanRef))
+	yielded := memoMergeDistinct(t, scanRef)
 	m.Integrate(outer, yielded)
 
 	if m.MergeCount() != 0 {
@@ -161,11 +174,11 @@ func TestMemoMerge_SkipsCyclicMerge(t *testing.T) {
 func TestMemoMerge_SkipsCyclicMergeThroughFinal(t *testing.T) {
 	t.Parallel()
 	scanRef := expressions.InitialOf(fixtureScan("T"))
-	inner := expressions.InitialOf(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(scanRef)))
+	inner := expressions.InitialOf(memoMergeDistinct(t, scanRef))
 
 	// outer's exploratory member is Filter(→scanRef): reachable(outer, inner)
 	// over Members() alone walks scanRef and never reaches inner.
-	outer := filterOver(scanRef)
+	outer := filterOver(t, scanRef)
 
 	m := NewMemo(nil)
 	m.RegisterReference(outer) // indexes outer, scanRef
@@ -174,12 +187,12 @@ func TestMemoMerge_SkipsCyclicMergeThroughFinal(t *testing.T) {
 	// A FINAL member of outer ranges over inner — outer is inner's ancestor
 	// ONLY through this final edge (a final that is not also an exploratory
 	// member). AllMembers() sees it; Members() does not.
-	outer.InsertFinal(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(inner)))
+	outer.InsertFinal(memoMergeDistinct(t, inner))
 
 	// Integrate into outer an expr equal to inner's member (Distinct(→scanRef)):
 	// findEquivalentRef matches inner. Merging outer≡inner would make outer's
 	// final member range over the merged group (itself) — a cycle.
-	yielded := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(scanRef))
+	yielded := memoMergeDistinct(t, scanRef)
 	m.Integrate(outer, yielded)
 
 	if m.MergeCount() != 0 {
@@ -196,14 +209,14 @@ func TestMemoMerge_SkipsCyclicMergeThroughFinal(t *testing.T) {
 func TestMemoMerge_SkipsWhenWinnersPresent(t *testing.T) {
 	t.Parallel()
 	scanRef := expressions.InitialOf(fixtureScan("T"))
-	l := filterOver(scanRef)
-	r := filterOver(scanRef)
+	l := filterOver(t, scanRef)
+	r := filterOver(t, scanRef)
 	r.SetWinner(fixtureScan("W")) // r is "optimized"
 
 	m := NewMemo(nil)
 	m.RegisterReference(l)
 	m.RegisterReference(r)
-	m.Integrate(r, freshFilterMember(scanRef))
+	m.Integrate(r, freshFilterMember(t, scanRef))
 
 	if m.MergeCount() != 0 {
 		t.Fatalf("merge must be skipped when a group carries a winner, got %d", m.MergeCount())
@@ -217,12 +230,12 @@ func TestMemoMerge_Deterministic(t *testing.T) {
 	t.Parallel()
 	for i := 0; i < 50; i++ {
 		scanRef := expressions.InitialOf(fixtureScan("T"))
-		l := filterOver(scanRef)
-		r := filterOver(scanRef)
+		l := filterOver(t, scanRef)
+		r := filterOver(t, scanRef)
 		m := NewMemo(nil)
 		m.RegisterReference(l) // registered first ⇒ lower id ⇒ survivor
 		m.RegisterReference(r)
-		m.Integrate(r, freshFilterMember(scanRef))
+		m.Integrate(r, freshFilterMember(t, scanRef))
 		if m.MergeCount() != 1 {
 			t.Fatalf("run %d: expected 1 merge, got %d", i, m.MergeCount())
 		}
@@ -241,29 +254,39 @@ func TestMemoMerge_Deterministic(t *testing.T) {
 // sibling union branches merge.
 func TestMemoMerge_FiresThroughRealPlanner(t *testing.T) {
 	t.Parallel()
-	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
-
-	scanRef := expressions.InitialOf(fixtureScan("T"))
+	rowType := values.NewRecordType("T", false, []values.Field{
+		{Name: "active", FieldType: values.TypeBool, Ordinal: 0},
+	})
+	scan := mustFullUnorderedScan(t, []string{"T"}, rowType)
+	scanRef := expressions.InitialOf(scan)
 
 	// Branch A: Filter(P, Distinct(scan))
-	distinctRef := expressions.InitialOf(
-		expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(scanRef)))
-	aRef := expressions.InitialOf(
-		expressions.NewLogicalFilterExpression(
-			[]predicates.QueryPredicate{pred}, expressions.ForEachQuantifier(distinctRef)))
+	distinctRef := expressions.InitialOf(memoMergeDistinct(t, scanRef))
+	aDistinctQ := expressions.ForEachQuantifier(distinctRef)
+	aRootValue, aRootErr := aDistinctQ.RequireFlowedObjectValue()
+	aRoot := mustConstruct(t, aRootValue, aRootErr)
+	aActiveValue, aActiveErr := values.ResolveFieldOrdinals(aRoot, []int{0})
+	aActive := mustConstruct(t, aActiveValue, aActiveErr)
+	aFilter, aFilterErr := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{predicates.NewValuePredicate(aActive)}, aDistinctQ)
+	aRef := expressions.InitialOf(mustConstruct(t, aFilter, aFilterErr))
 
 	// Branch B: Distinct(Filter(P, scan))
-	innerFilterRef := expressions.InitialOf(
-		expressions.NewLogicalFilterExpression(
-			[]predicates.QueryPredicate{pred}, expressions.ForEachQuantifier(scanRef)))
-	bRef := expressions.InitialOf(
-		expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(innerFilterRef)))
+	bScanQ := expressions.ForEachQuantifier(scanRef)
+	bRootValue, bRootErr := bScanQ.RequireFlowedObjectValue()
+	bRoot := mustConstruct(t, bRootValue, bRootErr)
+	bActiveValue, bActiveErr := values.ResolveFieldOrdinals(bRoot, []int{0})
+	bActive := mustConstruct(t, bActiveValue, bActiveErr)
+	innerFilter, innerFilterErr := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{predicates.NewValuePredicate(bActive)}, bScanQ)
+	innerFilterRef := expressions.InitialOf(mustConstruct(t, innerFilter, innerFilterErr))
+	bRef := expressions.InitialOf(memoMergeDistinct(t, innerFilterRef))
 
-	union := expressions.InitialOf(
-		expressions.NewLogicalUnionExpression([]expressions.Quantifier{
-			expressions.ForEachQuantifier(aRef),
-			expressions.ForEachQuantifier(bRef),
-		}))
+	unionExpr, unionErr := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+		expressions.ForEachQuantifier(aRef),
+		expressions.ForEachQuantifier(bRef),
+	})
+	union := expressions.InitialOf(mustConstruct(t, unionExpr, unionErr))
 
 	p := NewPlanner(DefaultExpressionRules(), nil)
 	_, conv := exploreRewriting(p, union)
@@ -314,14 +337,14 @@ func TestMemoMerge_MemoizeExpressionCanonicalAfterMerge(t *testing.T) {
 func TestMemoMerge_CorrelatedToInvariant(t *testing.T) {
 	t.Parallel()
 	scanRef := expressions.InitialOf(fixtureScan("T"))
-	l := filterOver(scanRef)
-	r := filterOver(scanRef)
+	l := filterOver(t, scanRef)
+	r := filterOver(t, scanRef)
 	before := len(l.GetCorrelatedTo()) // populate the survivor cache
 
 	m := NewMemo(nil)
 	m.RegisterReference(l)
 	m.RegisterReference(r)
-	m.Integrate(r, freshFilterMember(scanRef))
+	m.Integrate(r, freshFilterMember(t, scanRef))
 
 	if got := len(l.GetCorrelatedTo()); got != before {
 		t.Fatalf("survivor correlation set changed across a valid merge: before=%d after=%d", before, got)
@@ -375,10 +398,16 @@ func TestMemoMerge_AliasRenamedSelectsMustNotMergeUngated(t *testing.T) {
 	child := expressions.InitialOf(fixtureScan("T"))
 	aliasA := values.NamedCorrelationIdentifier("QA")
 	aliasB := values.NamedCorrelationIdentifier("QB")
-	selA := expressions.NewSelectExpression(values.NewQuantifiedObjectValue(aliasA),
+	qovA, qovAErr := values.NewQuantifiedObjectValue(aliasA, values.NotNullLong)
+	qovA = mustConstruct(t, qovA, qovAErr)
+	qovB, qovBErr := values.NewQuantifiedObjectValue(aliasB, values.NotNullLong)
+	qovB = mustConstruct(t, qovB, qovBErr)
+	selA, selAErr := expressions.NewSelectExpression(qovA,
 		[]expressions.Quantifier{expressions.NamedForEachQuantifier(aliasA, child)}, nil)
-	selB := expressions.NewSelectExpression(values.NewQuantifiedObjectValue(aliasB),
+	selA = mustConstruct(t, selA, selAErr)
+	selB, selBErr := expressions.NewSelectExpression(qovB,
 		[]expressions.Quantifier{expressions.NamedForEachQuantifier(aliasB, child)}, nil)
+	selB = mustConstruct(t, selB, selBErr)
 
 	refA := expressions.InitialOf(selA)
 	refB := expressions.InitialOf(selB)

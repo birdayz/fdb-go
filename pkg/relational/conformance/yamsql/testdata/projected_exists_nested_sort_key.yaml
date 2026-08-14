@@ -47,7 +47,7 @@ tests:
   - query: |
       SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h
       FROM t1 ORDER BY n.sk
-    plan_contains: "InMemorySort([N.SK ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault("
+    plan_contains: "T1.N.SK#2 ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault("
     rows:
       - [3, true]
       - [2, false]
@@ -58,7 +58,7 @@ tests:
   - query: |
       SELECT id, n, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h
       FROM t1 ORDER BY n.sk
-    plan_contains: "InMemorySort([N.SK ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault("
+    plan_contains: "T1.N.SK#3 ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault("
     rows:
       - [3, [30, 3], true]
       - [2, [40, 2], false]
@@ -69,7 +69,7 @@ tests:
   - query: |
       SELECT id, n AS nn, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h
       FROM t1 ORDER BY n.sk
-    plan_contains: "InMemorySort([N.SK ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault("
+    plan_contains: "T1.N.SK#3 ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault("
     rows:
       - [3, [30, 3], true]
       - [2, [40, 2], false]

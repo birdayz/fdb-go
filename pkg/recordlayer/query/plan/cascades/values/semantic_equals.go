@@ -23,28 +23,34 @@ func SemanticEqualsUnderAliasMap(a, b Value, aliases AliasMap) bool {
 	}
 	// Correlation-bearing leaves: compare the alias THROUGH the map.
 	switch av := a.(type) {
-	case *QuantifiedObjectValue:
-		bv, ok := b.(*QuantifiedObjectValue)
-		return ok && mapAlias(aliases, av.Correlation) == bv.Correlation
+	case *quantifiedObjectValue:
+		bv, ok := b.(*quantifiedObjectValue)
+		mapped, valid := mapAlias(aliases, av.correlation)
+		return ok && valid && mapped == bv.correlation && exactTypesEqual(av.flowed, bv.flowed)
 	case *QuantifiedRecordValue:
 		bv, ok := b.(*QuantifiedRecordValue)
-		return ok && mapAlias(aliases, av.Alias) == bv.Alias
+		mapped, valid := mapAlias(aliases, av.Alias)
+		return ok && valid && mapped == bv.Alias
 	case *ObjectValue:
 		bv, ok := b.(*ObjectValue)
-		return ok && mapAlias(aliases, av.Alias) == bv.Alias
+		mapped, valid := mapAlias(aliases, av.Alias)
+		return ok && valid && mapped == bv.Alias
 	case *ConstantObjectValue:
 		bv, ok := b.(*ConstantObjectValue)
-		return ok && mapAlias(aliases, av.Alias) == bv.Alias && av.ConstantID == bv.ConstantID
+		mapped, valid := mapAlias(aliases, av.Alias)
+		return ok && valid && mapped == bv.Alias && av.ConstantID == bv.ConstantID
 	// ExistsValue is a transparent composite (RFC-141): the structural
 	// path below compares EqualsWithoutChildren (both *ExistsValue) and
 	// recurses into the child QuantifiedObjectValue, whose own case maps
 	// the alias. No dedicated alias case here.
 	case *ScalarSubqueryValue:
 		bv, ok := b.(*ScalarSubqueryValue)
-		return ok && mapAlias(aliases, av.Alias) == bv.Alias
+		mapped, valid := mapAlias(aliases, av.Alias)
+		return ok && valid && mapped == bv.Alias
 	case *UnmatchedAggregateValue:
 		bv, ok := b.(*UnmatchedAggregateValue)
-		return ok && mapAlias(aliases, av.UnmatchedID) == bv.UnmatchedID
+		mapped, valid := mapAlias(aliases, av.UnmatchedID)
+		return ok && valid && mapped == bv.UnmatchedID
 		// NOTE: IndexEntryObjectValue is deliberately NOT intercepted here. Its
 		// canonical EqualsWithoutChildren compares Source + OrdinalPath and IGNORES
 		// the alias, so it falls through to the structural path below (Source +
@@ -72,9 +78,13 @@ func SemanticEqualsUnderAliasMap(a, b Value, aliases AliasMap) bool {
 
 // mapAlias returns the target `x` maps to under `aliases`, or `x` itself if
 // unmapped (identity), so two identical aliases compare equal under an empty map.
-func mapAlias(aliases AliasMap, x CorrelationIdentifier) CorrelationIdentifier {
-	if y, ok := aliases[x]; ok {
-		return y
+func mapAlias(aliases AliasMap, x CorrelationIdentifier) (CorrelationIdentifier, bool) {
+	validated, ok := asAliasMap(aliases)
+	if !ok {
+		return CorrelationIdentifier{}, false
 	}
-	return x
+	if y, found := validated.Target(x); found {
+		return y, true
+	}
+	return x, true
 }

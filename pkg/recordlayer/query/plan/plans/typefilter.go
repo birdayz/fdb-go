@@ -23,11 +23,8 @@ type RecordQueryTypeFilterPlan struct {
 
 // NewRecordQueryTypeFilterPlan constructs a type-filter over the
 // given record-type set + inner plan.
-func NewRecordQueryTypeFilterPlan(recordTypes []string, inner RecordQueryPlan) *RecordQueryTypeFilterPlan {
-	return &RecordQueryTypeFilterPlan{
-		recordTypes: dedupSortedStrings(recordTypes),
-		innerQ:      QuantifierOverPlan(inner),
-	}
+func NewRecordQueryTypeFilterPlan(recordTypes []string, inner RecordQueryPlan) (*RecordQueryTypeFilterPlan, error) {
+	return NewRecordQueryTypeFilterPlanFromQuantifier(recordTypes, QuantifierOverPlan(inner))
 }
 
 // NewRecordQueryTypeFilterPlanFromQuantifier builds a type filter whose child is
@@ -37,11 +34,16 @@ func NewRecordQueryTypeFilterPlan(recordTypes []string, inner RecordQueryPlan) *
 // edge directly: the memo holds it without a physical wrapper, and GetInner /
 // GetQuantifiers / OrderingSourceRef / GetResultValue all resolve through the one
 // live edge (RFC-184 W2). recordTypes is normalised (sorted + deduped).
-func NewRecordQueryTypeFilterPlanFromQuantifier(recordTypes []string, innerQ expressions.Quantifier) *RecordQueryTypeFilterPlan {
-	return &RecordQueryTypeFilterPlan{
-		recordTypes: dedupSortedStrings(recordTypes),
-		innerQ:      innerQ,
+func NewRecordQueryTypeFilterPlanFromQuantifier(recordTypes []string, innerQ expressions.Quantifier) (*RecordQueryTypeFilterPlan, error) {
+	base, err := newPlanExprBaseForQuantifier("RecordQueryTypeFilterPlan", innerQ)
+	if err != nil {
+		return nil, err
 	}
+	return &RecordQueryTypeFilterPlan{
+		PlanExprBase: base,
+		recordTypes:  dedupSortedStrings(recordTypes),
+		innerQ:       innerQ,
+	}, nil
 }
 
 // GetRecordTypes returns the canonical record-type-name list.
@@ -54,7 +56,7 @@ func (p *RecordQueryTypeFilterPlan) GetInner() RecordQueryPlan { return planFrom
 // a type filter passes its inner's rows through, so the result identity is the
 // inner's, the value physicalTypeFilterWrapper.GetResultValue supplied (RFC-184 W2).
 func (p *RecordQueryTypeFilterPlan) GetResultValue() values.Value {
-	return p.innerQ.GetFlowedObjectValue()
+	return p.PlanExprBase.GetResultValue()
 }
 
 // GetQuantifiers reports the real child quantifier, overriding
@@ -67,13 +69,7 @@ func (p *RecordQueryTypeFilterPlan) GetQuantifiers() []expressions.Quantifier {
 }
 
 // GetResultType returns the inner's result type.
-func (p *RecordQueryTypeFilterPlan) GetResultType() values.Type {
-	inner := p.GetInner()
-	if inner == nil {
-		return values.UnknownType
-	}
-	return inner.GetResultType()
-}
+func (p *RecordQueryTypeFilterPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryTypeFilterPlan) GetChildren() []RecordQueryPlan {
@@ -122,13 +118,18 @@ func (p *RecordQueryTypeFilterPlan) EqualsWithoutChildren(other expressions.Rela
 
 // WithQuantifiers returns a copy ranging over the given child quantifier —
 // Java's copy-on-write withChild(Reference).
-func (p *RecordQueryTypeFilterPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 1 {
-		return p
+func (p *RecordQueryTypeFilterPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryTypeFilterPlan", len(qs), 1); err != nil {
+		return nil, err
 	}
 	cp := *p
+	base, err := newPlanExprBaseForQuantifier("RecordQueryTypeFilterPlan", qs[0])
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
 	cp.innerQ = qs[0]
-	return &cp
+	return &cp, nil
 }
 
 // WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
@@ -140,7 +141,7 @@ func (p *RecordQueryTypeFilterPlan) WithChildren(qs []expressions.Quantifier) (e
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("RecordQueryTypeFilterPlan.WithChildren: expected 1 child, got %d", len(qs))
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

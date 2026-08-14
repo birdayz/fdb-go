@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"context"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -22,21 +23,24 @@ func FuzzPlanner_RecursiveDfsJoin_NoPanic(f *testing.F) {
 
 		scanAlias := values.UniqueCorrelationIdentifier()
 		insertAlias := values.UniqueCorrelationIdentifier()
+		rowType := values.NewRecordType("RecursiveRow", false, []values.Field{
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		})
 
-		initialScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		initialScan := mustFullUnorderedScan(t, []string{"T"}, rowType)
 		initialRef := expressions.InitialOf(initialScan)
 		initialQ := expressions.ForEachQuantifier(initialRef)
-		initialInsert := expressions.NewTempTableInsertExpression(initialQ, insertAlias, true)
+		initialInsert := mustTempTableInsert(t, initialQ, insertAlias, true)
 
-		recursiveScan := expressions.NewTempTableScanExpression(scanAlias)
+		recursiveScan := mustTempTableScan(t, scanAlias, rowType)
 		recursiveRef := expressions.InitialOf(recursiveScan)
 		recursiveQ := expressions.ForEachQuantifier(recursiveRef)
-		recursiveInsert := expressions.NewTempTableInsertExpression(recursiveQ, insertAlias, false)
+		recursiveInsert := mustTempTableInsert(t, recursiveQ, insertAlias, false)
 
 		initialInsertQ := expressions.ForEachQuantifier(expressions.InitialOf(initialInsert))
 		recursiveInsertQ := expressions.ForEachQuantifier(expressions.InitialOf(recursiveInsert))
 
-		recUnion := expressions.NewRecursiveUnionExpression(
+		recUnion := mustRecursiveUnion(t,
 			initialInsertQ, recursiveInsertQ,
 			scanAlias, insertAlias,
 			strategy,
@@ -47,7 +51,7 @@ func FuzzPlanner_RecursiveDfsJoin_NoPanic(f *testing.F) {
 		rules := DefaultExpressionRules()
 		p := NewPlanner(rules, EmptyPlanContext()).
 			WithPlanningExpressionRules(BatchAExpressionRules())
-		_, _, _ = p.Plan(rootRef)
+		_, _, _ = p.PlanWithContext(context.Background(), rootRef)
 	})
 }
 

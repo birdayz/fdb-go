@@ -28,13 +28,13 @@ import "testing"
 func TestSourceRelativeBaked(t *testing.T) {
 	t.Parallel()
 
-	if (&FieldValue{Field: "A"}).SourceRelativeBaked() {
+	if (&fieldValue{Field: "A"}).SourceRelativeBaked() {
 		t.Fatal("lazy node must NOT be source-relative baked (it is not baked at all)")
 	}
-	if !NewFieldValueWithResolvedOrdinal("A", 1, UnknownType).SourceRelativeBaked() {
+	if !newFieldValueWithResolvedOrdinal("A", 1, UnknownType).SourceRelativeBaked() {
 		t.Fatal("unpinned single-accessor bake IS source-relative")
 	}
-	pinned := &FieldValue{Field: "A", Resolved: NewFieldPathOfSingle("A", 1, true)}
+	pinned := &fieldValue{Field: "A", Resolved: newFieldPathOfSingle("A", 1, true)}
 	if pinned.SourceRelativeBaked() {
 		t.Fatal("FrontierPinned node is machinery-owned, never source-relative")
 	}
@@ -45,7 +45,7 @@ func TestSourceRelativeBaked(t *testing.T) {
 	}
 
 	// An UNPINNED multi-accessor path: a user-written nested descent.
-	multi := &FieldValue{Field: "B", Resolved: &FieldPath{Accessors: []ResolvedAccessor{
+	multi := &fieldValue{Field: "B", Resolved: &fieldPath{Accessors: []resolvedAccessor{
 		{Field: "A", Ordinal: 0}, {Field: "B", Ordinal: 1},
 	}}}
 	if multi.SourceRelativeBaked() {

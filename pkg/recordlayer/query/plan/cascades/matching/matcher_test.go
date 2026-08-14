@@ -25,7 +25,7 @@ func TestCascades_ConstPlusField(t *testing.T) {
 	expr := &values.ArithmeticValue{
 		Op:    values.OpAdd,
 		Left:  &values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
-		Right: &values.FieldValue{Field: "name", Typ: values.TypeString},
+		Right: mustMatchingField(t, "name", values.TypeString),
 	}
 
 	bindings := matcher.BindMatches(NewBindings(), expr)
@@ -40,21 +40,21 @@ func TestCascades_ConstPlusField(t *testing.T) {
 	if !ok {
 		t.Fatalf("lhs binding not *ConstantValue: %T", b.Get(lhs))
 	}
-	fv, ok := b.Get(rhs).(*values.FieldValue)
+	fv, ok := b.Get(rhs).(values.FieldValue)
 	if !ok {
-		t.Fatalf("rhs binding not *FieldValue: %T", b.Get(rhs))
+		t.Fatalf("rhs binding not admitted FieldValue: %T", b.Get(rhs))
 	}
 	if cv.Value != int64(5) {
 		t.Fatalf("expected constant=5, got %v", cv.Value)
 	}
-	if fv.Field != "name" {
-		t.Fatalf("expected field=name, got %q", fv.Field)
+	if fv.DisplayName() != "name" {
+		t.Fatalf("expected field=name, got %q", fv.DisplayName())
 	}
 
 	// Option 2: generic Get[T] helper (RFC-023 §Changes item 5). Same
 	// compile-time safety envelope, less ceremony at every call site.
 	cv2 := Get[*values.ConstantValue](b, lhs)
-	fv2 := Get[*values.FieldValue](b, rhs)
+	fv2 := Get[values.FieldValue](b, rhs)
 	if cv2 != cv || fv2 != fv {
 		t.Fatalf("Get[T] returned different values than untyped Get")
 	}
@@ -74,7 +74,7 @@ func TestCascades_GetTypeMismatchPanics(t *testing.T) {
 	lhs := NewConstantMatcher()
 	b := NewBindings().Bind(lhs, &values.ConstantValue{Value: int64(1), Typ: values.NullableLong})
 	// Ask for the wrong type — should panic.
-	_ = Get[*values.FieldValue](b, lhs)
+	_ = Get[values.FieldValue](b, lhs)
 }
 
 // Mismatch on input type: matcher returns empty, no panic.
@@ -103,8 +103,8 @@ func TestCascades_SubShapeMismatch(t *testing.T) {
 	}
 	expr := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  &values.FieldValue{Field: "x", Typ: values.NullableLong}, // not a Constant
-		Right: &values.FieldValue{Field: "y", Typ: values.TypeString},
+		Left:  mustMatchingField(t, "x", values.NullableLong), // not a Constant
+		Right: mustMatchingField(t, "y", values.TypeString),
 	}
 	if got := matcher.BindMatches(NewBindings(), expr); len(got) != 0 {
 		t.Fatalf("expected 0 matches on sub-shape mismatch, got %d", len(got))
@@ -150,7 +150,7 @@ func TestCascades_AnyDownstream(t *testing.T) {
 	expr := &values.ArithmeticValue{
 		Op:    values.OpSub,
 		Left:  &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
-		Right: &values.FieldValue{Field: "x", Typ: values.NullableLong},
+		Right: mustMatchingField(t, "x", values.NullableLong),
 	}
 	got := matcher.BindMatches(NewBindings(), expr)
 	if len(got) != 1 {

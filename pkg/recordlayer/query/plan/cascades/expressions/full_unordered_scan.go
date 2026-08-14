@@ -19,21 +19,22 @@ import (
 // Go carries the record-types set + flowed Type only.
 type FullUnorderedScanExpression struct {
 	recordTypes []string // sorted, deduped — canonical form for equality + hash
-	flowedType  values.Type
+	flowedType  values.ExactTypeHandle
 }
 
 // NewFullUnorderedScanExpression builds a scan over the given record-
 // type names with the given flowed Type. recordTypes is normalised
 // (sorted + deduped); empty slice → scan over all types (caller's
 // responsibility to attach the right type metadata for that case).
-func NewFullUnorderedScanExpression(recordTypes []string, flowedType values.Type) *FullUnorderedScanExpression {
-	if flowedType == nil {
-		flowedType = values.UnknownType
+func NewFullUnorderedScanExpression(recordTypes []string, flowedType values.Type) (*FullUnorderedScanExpression, error) {
+	exactType, err := snapshotExpressionResultType("FullUnorderedScanExpression", flowedType)
+	if err != nil {
+		return nil, err
 	}
 	return &FullUnorderedScanExpression{
 		recordTypes: dedupSortedStrings(recordTypes),
-		flowedType:  flowedType,
-	}
+		flowedType:  exactType,
+	}, nil
 }
 
 // GetRecordTypes returns the canonical record-type-name list.
@@ -43,7 +44,7 @@ func (e *FullUnorderedScanExpression) GetRecordTypes() []string {
 
 // GetFlowedType returns the rich Type of rows flowing out of the scan.
 func (e *FullUnorderedScanExpression) GetFlowedType() values.Type {
-	return e.flowedType
+	return e.flowedType.Type()
 }
 
 // GetResultValue is a QueriedValue carrying the scan's flowed record Type,
@@ -74,7 +75,7 @@ func (e *FullUnorderedScanExpression) GetFlowedType() values.Type {
 // nil/UnknownType flowedType still degrades cleanly (NewQueriedValue falls
 // back to UnknownType) rather than panicking.
 func (e *FullUnorderedScanExpression) GetResultValue() values.Value {
-	return values.NewQueriedValue(e.recordTypes, e.flowedType)
+	return values.NewQueriedValue(e.recordTypes, e.flowedType.Type())
 }
 
 // GetQuantifiers returns the empty list — leaf.
@@ -116,8 +117,7 @@ func (e *FullUnorderedScanExpression) EqualsWithoutChildren(other RelationalExpr
 	if !ok {
 		return false
 	}
-	if e.flowedType != values.UnknownType && o.flowedType != values.UnknownType &&
-		!typeEquals(e.flowedType, o.flowedType) {
+	if !typeEquals(e.flowedType.Type(), o.flowedType.Type()) {
 		return false
 	}
 	if len(e.recordTypes) != len(o.recordTypes) {
@@ -147,8 +147,11 @@ func (e *FullUnorderedScanExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-func (e *FullUnorderedScanExpression) WithQuantifiers(_ []Quantifier) RelationalExpression {
-	return e
+func (e *FullUnorderedScanExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("FullUnorderedScanExpression", len(quantifiers), 0); err != nil {
+		return nil, err
+	}
+	return e, nil
 }
 
 var _ RelationalExpression = (*FullUnorderedScanExpression)(nil)

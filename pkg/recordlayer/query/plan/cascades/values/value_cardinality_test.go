@@ -68,8 +68,8 @@ func TestCardinalityValue_TypeIsNullableInt(t *testing.T) {
 // EXPLAIN strings (`cardinality(_.int_arr)`), not a bare `cardinality`.
 func TestCardinalityValue_ExplainRendersChild(t *testing.T) {
 	t.Parallel()
-	qov := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("_"), UnknownType)
-	v := NewCardinalityValue(NewFieldValue(qov, "int_arr", NullableInt))
+	qov := mustQOV(t, NamedCorrelationIdentifier("_"))
+	v := NewCardinalityValue(newFieldValue(qov, "int_arr", NullableInt))
 	got := ExplainValue(v)
 	const want = "cardinality(_.int_arr)"
 	if got != want {

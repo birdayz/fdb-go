@@ -34,18 +34,26 @@ func priceProbeIndexPlan(t *testing.T, bindingID values.CorrelationIdentifier) p
 	t.Helper()
 	res := predicates.EmptyComparisonRange().Merge(&predicates.Comparison{
 		Type:    predicates.ComparisonEquals,
-		Operand: values.NewQuantifiedObjectValue(bindingID),
+		Operand: mustTestQOV(t, bindingID, values.NullableInt),
 	})
 	if !res.Ok {
 		t.Fatal("building the binding equality comparison range failed")
 	}
-	return plans.NewRecordQueryIndexPlan(
+	return mustExecutorConstruct(plans.NewRecordQueryIndexPlan(
 		"order_price_idx",
 		[]*predicates.ComparisonRange{res.Range},
 		[]string{"Order"},
-		nil,
+		PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false),
 		false,
-	).WithKeyComponentTypes([]values.Type{values.NullableInt})
+	)).WithKeyComponentTypes([]values.Type{values.NullableInt})
+}
+
+func orderMergeKeys(t testing.TB, row values.Value) []values.Value {
+	t.Helper()
+	return []values.Value{
+		mustTestFieldOrdinal(t, row, 2),
+		mustTestFieldOrdinal(t, row, 0),
+	}
 }
 
 // renderOrderID renders a fetched Order row by its ORDER_ID slot (ordinal 0).
@@ -84,7 +92,7 @@ func TestIntegration_InJoinRowContinuation_OneRowPerTx(t *testing.T) {
 	bindingName := "in_q_a3join"
 	bindingID := values.NamedCorrelationIdentifier(bindingName)
 	makePlan := func() plans.RecordQueryPlan {
-		p := plans.NewRecordQueryInJoinPlan(priceProbeIndexPlan(t, bindingID), bindingName, false, false)
+		p := mustExecutorConstruct(plans.NewRecordQueryInJoinPlan(priceProbeIndexPlan(t, bindingID), bindingName, false, false))
 		p.SetInValues([]any{int64(150), int64(50), int64(250)})
 		return p
 	}
@@ -110,12 +118,9 @@ func TestIntegration_InUnionRowContinuation_OneRowPerTx(t *testing.T) {
 	bindingID := values.NamedCorrelationIdentifier(bindingName)
 	// Comparison keys: (PRICE, ORDER_ID) — the fetched Order row's ordinals
 	// (order_id@0, price@2), the index's own (price, pk) entry order.
-	compKeys := []values.Value{
-		values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
-		values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.NullableLong),
-	}
 	makePlan := func() plans.RecordQueryPlan {
-		p := plans.NewRecordQueryInUnionPlan(priceProbeIndexPlan(t, bindingID), []string{bindingName}, compKeys, false)
+		inner := priceProbeIndexPlan(t, bindingID)
+		p := mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(inner, []string{bindingName}, orderMergeKeys(t, inner.GetResultValue()), false))
 		p.SetInSources([][]any{{int64(250), int64(50), int64(150)}})
 		return p
 	}
@@ -139,12 +144,9 @@ func TestIntegration_InUnionDuplicateValues_DedupAcrossResumes(t *testing.T) {
 
 	bindingName := "in_q_a5dup"
 	bindingID := values.NamedCorrelationIdentifier(bindingName)
-	compKeys := []values.Value{
-		values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
-		values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.NullableLong),
-	}
 	makePlan := func() plans.RecordQueryPlan {
-		p := plans.NewRecordQueryInUnionPlan(priceProbeIndexPlan(t, bindingID), []string{bindingName}, compKeys, false)
+		inner := priceProbeIndexPlan(t, bindingID)
+		p := mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(inner, []string{bindingName}, orderMergeKeys(t, inner.GetResultValue()), false))
 		p.SetInSources([][]any{{int64(50), int64(150), int64(50)}}) // 50 twice: legs 0 and 2 are identical scans
 		return p
 	}

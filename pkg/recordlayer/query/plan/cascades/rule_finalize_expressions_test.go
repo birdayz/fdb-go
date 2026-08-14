@@ -4,16 +4,16 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func TestFinalizeExpressionsRule_PromotesMatchedExpression(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustDirectCoverageConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, directCoverageRowType()))
 	ref := expressions.InitialOf(scan)
 
-	yielded := FireImplementationRule(NewFinalizeExpressionsRule(), ref)
+	yielded := fireDirectImplementationRule(t, NewFinalizeExpressionsRule(), ref)
 	if len(yielded) != 1 {
 		t.Fatalf("expected one promoted expression, got %d", len(yielded))
 	}

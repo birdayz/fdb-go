@@ -32,18 +32,22 @@ type RecordQueryUnionPlan struct {
 
 // NewRecordQueryUnionPlan constructs a UNION ALL over the given
 // inner plans.
-func NewRecordQueryUnionPlan(inners []RecordQueryPlan) *RecordQueryUnionPlan {
-	return &RecordQueryUnionPlan{childQs: QuantifiersOverPlans(inners)}
+func NewRecordQueryUnionPlan(inners []RecordQueryPlan) (*RecordQueryUnionPlan, error) {
+	return NewRecordQueryUnionPlanFromQuantifiers(QuantifiersOverPlans(inners))
 }
 
 // NewRecordQueryUnionPlanFromQuantifiers builds the union directly over the
 // LIVE leg quantifiers the implement rule already memoized, rather than
 // snapshotting bare plans. The plan is then its own cascades expression
 // carrying the leg edges once — no wrapper storing a second copy (RFC-184 W2).
-func NewRecordQueryUnionPlanFromQuantifiers(childQs []expressions.Quantifier) *RecordQueryUnionPlan {
+func NewRecordQueryUnionPlanFromQuantifiers(childQs []expressions.Quantifier) (*RecordQueryUnionPlan, error) {
+	base, err := newPlanExprBaseForFirstQuantifier("RecordQueryUnionPlan", childQs)
+	if err != nil {
+		return nil, err
+	}
 	cp := make([]expressions.Quantifier, len(childQs))
 	copy(cp, childQs)
-	return &RecordQueryUnionPlan{childQs: cp}
+	return &RecordQueryUnionPlan{PlanExprBase: base, childQs: cp}, nil
 }
 
 // GetInners returns the union's inner plans, dereferenced through the
@@ -54,12 +58,7 @@ func (p *RecordQueryUnionPlan) GetInners() []RecordQueryPlan {
 
 // GetResultType returns the first inner's result type, or
 // UnknownType if there are no inners.
-func (p *RecordQueryUnionPlan) GetResultType() values.Type {
-	if len(p.childQs) == 0 {
-		return values.UnknownType
-	}
-	return planFromQuantifier(p.childQs[0]).GetResultType()
-}
+func (p *RecordQueryUnionPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 // GetChildren returns the inner plans.
 func (p *RecordQueryUnionPlan) GetChildren() []RecordQueryPlan { return p.GetInners() }
@@ -121,13 +120,18 @@ func (p *RecordQueryUnionPlan) GetQuantifiers() []expressions.Quantifier {
 // Java's copy-on-write withChildrenReferences. The receiver is never mutated,
 // which is what keeps a memoized plan safe to share; the incoming slice is
 // copied so the caller cannot alias the copy's storage either.
-func (p *RecordQueryUnionPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != len(p.childQs) {
-		return p
+func (p *RecordQueryUnionPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryUnionPlan", len(qs), len(p.childQs)); err != nil {
+		return nil, err
 	}
 	cp := *p
+	base, err := newPlanExprBaseForFirstQuantifier("RecordQueryUnionPlan", qs)
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
 	cp.childQs = append([]expressions.Quantifier(nil), qs...)
-	return &cp
+	return &cp, nil
 }
 
 // ChildrenAsSet reports that the legs of this set operation are commutative —
@@ -138,10 +142,7 @@ func (p *RecordQueryUnionPlan) ChildrenAsSet() bool { return true }
 // column-aligned by construction, so any leg's row shape stands in). Falls back
 // to a fresh quantified object value when there are no legs.
 func (p *RecordQueryUnionPlan) GetResultValue() values.Value {
-	if len(p.childQs) == 0 {
-		return p.PlanExprBase.GetResultValue()
-	}
-	return p.childQs[0].GetFlowedObjectValue()
+	return p.PlanExprBase.GetResultValue()
 }
 
 // WithChildren rebuilds over fresh leg quantifiers — the optional interface
@@ -151,7 +152,7 @@ func (p *RecordQueryUnionPlan) WithChildren(qs []expressions.Quantifier) (expres
 	if len(qs) != len(p.childQs) {
 		return nil, fmt.Errorf("RecordQueryUnionPlan.WithChildren: expected %d legs, got %d", len(p.childQs), len(qs))
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

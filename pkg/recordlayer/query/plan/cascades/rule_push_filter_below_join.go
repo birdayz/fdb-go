@@ -114,7 +114,11 @@ func (r *PushFilterBelowJoinRule) OnMatch(call *ExpressionRuleCall) {
 		innerRef0 := quantifiers[0].GetRangesOver()
 		filterInnerQ0 := expressions.NamedForEachQuantifier(
 			values.NamedCorrelationIdentifier(aliases[0]), innerRef0)
-		pushed0 := expressions.NewLogicalFilterExpression(pushTo0, filterInnerQ0)
+		pushed0, err := expressions.NewLogicalFilterExpression(pushTo0, filterInnerQ0)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		newQ0 = expressions.ForEachQuantifier(call.MemoizeExpression(pushed0))
 	}
 
@@ -123,18 +127,26 @@ func (r *PushFilterBelowJoinRule) OnMatch(call *ExpressionRuleCall) {
 		innerRef1 := quantifiers[1].GetRangesOver()
 		filterInnerQ1 := expressions.NamedForEachQuantifier(
 			values.NamedCorrelationIdentifier(aliases[1]), innerRef1)
-		pushed1 := expressions.NewLogicalFilterExpression(pushTo1, filterInnerQ1)
+		pushed1, err := expressions.NewLogicalFilterExpression(pushTo1, filterInnerQ1)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		newQ1 = expressions.ForEachQuantifier(call.MemoizeExpression(pushed1))
 	}
 
 	// Build the new SelectExpression with the modified quantifiers.
-	newSel := expressions.NewSelectExpressionWithJoinType(
+	newSel, err := expressions.NewSelectExpressionWithJoinType(
 		sel.GetResultValue(),
 		[]expressions.Quantifier{newQ0, newQ1},
 		sel.GetPredicates(),
 		aliases,
 		sel.GetJoinType(),
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	// If all filter predicates were pushed, the filter wrapper is
 	// unnecessary — yield the Select directly. Otherwise wrap in a
@@ -143,7 +155,12 @@ func (r *PushFilterBelowJoinRule) OnMatch(call *ExpressionRuleCall) {
 		call.Yield(newSel)
 	} else {
 		selQ := expressions.ForEachQuantifier(call.MemoizeExpression(newSel))
-		call.Yield(expressions.NewLogicalFilterExpression(keep, selQ))
+		remaining, err := expressions.NewLogicalFilterExpression(keep, selQ)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		call.Yield(remaining)
 	}
 }
 
@@ -161,12 +178,13 @@ func predicateSingleSide(pred predicates.QueryPredicate, alias0, alias1 string) 
 
 	// Which SIDE a reference belongs to is a question about its CORRELATION —
 	// the quantifier whose row it reads — not about the column it names.
-	walkPredicateFieldValues(pred, func(fv *values.FieldValue) {
+	walkPredicateFieldValues(pred, func(fv values.FieldValue) {
 		foundAnyField = true
-		leg, ok := legCorrelationOf(fv)
-		if !ok {
+		root, ok := values.AsQuantifiedObjectValue(fv.ChildValue())
+		if !ok || fv.Path().Len() != 1 {
 			return
 		}
+		leg := root.Correlation()
 		if values.SameLeg(leg, corr0) {
 			refs0 = true
 		}
@@ -189,7 +207,7 @@ func predicateSingleSide(pred predicates.QueryPredicate, alias0, alias1 string) 
 
 // walkPredicateFieldValues walks all Value trees reachable from a
 // predicate, calling visit for each FieldValue found.
-func walkPredicateFieldValues(pred predicates.QueryPredicate, visit func(*values.FieldValue)) {
+func walkPredicateFieldValues(pred predicates.QueryPredicate, visit func(values.FieldValue)) {
 	predicates.WalkPredicate(pred, func(node predicates.QueryPredicate) bool {
 		switch np := node.(type) {
 		case *predicates.ValuePredicate:
@@ -204,9 +222,9 @@ func walkPredicateFieldValues(pred predicates.QueryPredicate, visit func(*values
 
 // walkValueForFieldValues walks a Value tree, calling visit for each
 // FieldValue found.
-func walkValueForFieldValues(v values.Value, visit func(*values.FieldValue)) {
+func walkValueForFieldValues(v values.Value, visit func(values.FieldValue)) {
 	values.WalkValue(v, func(node values.Value) bool {
-		if fv, ok := node.(*values.FieldValue); ok {
+		if fv, ok := values.AsFieldValue(node); ok {
 			visit(fv)
 		}
 		return true

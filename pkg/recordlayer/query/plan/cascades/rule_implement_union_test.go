@@ -8,6 +8,60 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func unionRuleRowType() *values.RecordType {
+	return values.NewRecordType("UnionRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "V", FieldType: values.NullableLong},
+	})
+}
+
+func mustUnionRuleConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct union-rule fixture: " + err.Error())
+	}
+	return value
+}
+
+func mustUnionRuleQOV(value values.Value) values.QuantifiedObjectValue {
+	qov, ok := values.AsQuantifiedObjectValue(value)
+	if !ok {
+		panic("union-rule fixture result is not an exact QOV")
+	}
+	return qov
+}
+
+func unionRuleFullScan(name string) *expressions.FullUnorderedScanExpression {
+	return mustUnionRuleConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{name}, unionRuleRowType()))
+}
+
+func unionRulePlanScan(name string) *plans.RecordQueryScanPlan {
+	return mustUnionRuleConstruct(plans.NewRecordQueryScanPlan(
+		[]string{name}, unionRuleRowType(), false))
+}
+
+func fireUnionExpressionRule(
+	t testing.TB, rule ExpressionRule, ref *expressions.Reference,
+) []expressions.RelationalExpression {
+	t.Helper()
+	result, err := FireExpressionRule(rule, ref)
+	if err != nil {
+		t.Fatalf("FireExpressionRule: %v", err)
+	}
+	return result
+}
+
+func fireUnionImplementationRule(
+	t testing.TB, rule ImplementationRule, ref *expressions.Reference,
+) []expressions.RelationalExpression {
+	t.Helper()
+	result, err := FireImplementationRule(rule, ref)
+	if err != nil {
+		t.Fatalf("FireImplementationRule: %v", err)
+	}
+	return result
+}
+
 // TestImplementUnionRule_FiresAfterAllChildrenImplemented pins the
 // per-child gating contract: ImplementUnionRule yields the physical
 // UnionPlan only when EVERY child Reference has a physical-plan
@@ -16,22 +70,22 @@ import (
 // physical-ready.
 func TestImplementUnionRule_FiresAfterAllChildrenImplemented(t *testing.T) {
 	t.Parallel()
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	scanA := unionRuleFullScan("A")
+	scanB := unionRuleFullScan("B")
 	refA := expressions.InitialOf(scanA)
 	refB := expressions.InitialOf(scanB)
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	union := mustUnionRuleConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
 		expressions.ForEachQuantifier(refA),
 		expressions.ForEachQuantifier(refB),
-	})
+	}))
 	topRef := expressions.InitialOf(union)
 
 	// Step 1: implement BOTH child scans.
-	FireExpressionRule(NewPrimaryScanRule(), refA)
-	FireExpressionRule(NewPrimaryScanRule(), refB)
+	fireUnionExpressionRule(t, NewPrimaryScanRule(), refA)
+	fireUnionExpressionRule(t, NewPrimaryScanRule(), refB)
 
 	// Step 2: fire the union rule.
-	yielded := FireExpressionRule(NewImplementUnionRule(), topRef)
+	yielded := fireUnionExpressionRule(t, NewImplementUnionRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementUnionRule yielded %d, want 1", len(yielded))
 	}
@@ -57,20 +111,20 @@ func TestImplementUnionRule_FiresAfterAllChildrenImplemented(t *testing.T) {
 // leave the union un-implemented.
 func TestImplementUnionRule_NoFireWhenAnyChildIsLogical(t *testing.T) {
 	t.Parallel()
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	scanA := unionRuleFullScan("A")
+	scanB := unionRuleFullScan("B")
 	refA := expressions.InitialOf(scanA)
 	refB := expressions.InitialOf(scanB)
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	union := mustUnionRuleConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
 		expressions.ForEachQuantifier(refA),
 		expressions.ForEachQuantifier(refB),
-	})
+	}))
 	topRef := expressions.InitialOf(union)
 
 	// Implement only the FIRST child; second remains logical.
-	FireExpressionRule(NewPrimaryScanRule(), refA)
+	fireUnionExpressionRule(t, NewPrimaryScanRule(), refA)
 
-	yielded := FireExpressionRule(NewImplementUnionRule(), topRef)
+	yielded := fireUnionExpressionRule(t, NewImplementUnionRule(), topRef)
 	if len(yielded) != 0 {
 		t.Fatalf("ImplementUnionRule fired with one logical child; yielded %d, want 0", len(yielded))
 	}
@@ -81,12 +135,8 @@ func TestImplementUnionRule_NoFireWhenAnyChildIsLogical(t *testing.T) {
 // degenerate UnionPlan with zero inners.
 func TestImplementUnionRule_NoFireOnEmptyUnion(t *testing.T) {
 	t.Parallel()
-	union := expressions.NewLogicalUnionExpression(nil)
-	topRef := expressions.InitialOf(union)
-
-	yielded := FireExpressionRule(NewImplementUnionRule(), topRef)
-	if len(yielded) != 0 {
-		t.Fatalf("ImplementUnionRule fired on empty union; yielded %d, want 0", len(yielded))
+	if union, err := expressions.NewLogicalUnionExpression(nil); err == nil || union != nil {
+		t.Fatalf("empty logical union = %T, %v; want atomic constructor rejection", union, err)
 	}
 }
 
@@ -98,18 +148,18 @@ func TestImplementUnionRule_ThreeChildren(t *testing.T) {
 	refs := make([]*expressions.Reference, 3)
 	qs := make([]expressions.Quantifier, 3)
 	for i, name := range []string{"A", "B", "C"} {
-		scan := expressions.NewFullUnorderedScanExpression([]string{name}, values.UnknownType)
+		scan := unionRuleFullScan(name)
 		refs[i] = expressions.InitialOf(scan)
 		qs[i] = expressions.ForEachQuantifier(refs[i])
 	}
-	union := expressions.NewLogicalUnionExpression(qs)
+	union := mustUnionRuleConstruct(expressions.NewLogicalUnionExpression(qs))
 	topRef := expressions.InitialOf(union)
 
 	for _, r := range refs {
-		FireExpressionRule(NewPrimaryScanRule(), r)
+		fireUnionExpressionRule(t, NewPrimaryScanRule(), r)
 	}
 
-	yielded := FireExpressionRule(NewImplementUnionRule(), topRef)
+	yielded := fireUnionExpressionRule(t, NewImplementUnionRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementUnionRule yielded %d, want 1", len(yielded))
 	}

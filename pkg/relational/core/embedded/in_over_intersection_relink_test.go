@@ -62,11 +62,17 @@ func TestInOverIntersection_RelinksResidual(t *testing.T) {
 			// same toothless shape already corrected further down this file.
 			//
 			// Nesting is the entire claim: the residual must sit ABOVE the
-			// fetch, because only the fetched record has the columns it reads.
+			// record read, because only a fetched record has the residual
+			// columns. PushIntersectionThroughFetch performs the PK intersection
+			// over covering index entries, then fetches each surviving record
+			// exactly once. Pin both that ordered topology and the child scans'
+			// covering disposition.
 			const wantShape = "PredicatesFilter(Fetch(Intersection("
 			if !strings.Contains(plan, wantShape) {
-				t.Errorf("want residual ABOVE the fetch (%s), got: %s", wantShape, plan)
+				t.Errorf("want residual ABOVE the post-intersection fetch (%s), got: %s", wantShape, plan)
 			}
+			assertScanAnswersFromIndexEntry(t, plan, "IndexScan(IDX_B")
+			assertScanAnswersFromIndexEntry(t, plan, "IndexScan(IDX_C")
 			if !strings.Contains(plan, tc.preds) {
 				t.Errorf("want the residual reapplied as %s, got: %s", tc.preds, plan)
 			}

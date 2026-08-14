@@ -35,8 +35,17 @@ type flatMapCursor struct {
 	evalCtx     *EvaluationContext
 	outerAlias  values.CorrelationIdentifier
 	innerAlias  values.CorrelationIdentifier
-	resultValue values.Value
-	props       recordlayer.ExecuteProperties
+	// outerPlanObject is the exact whole object emitted by the selected outer
+	// plan, expressed at the FlatMap's runtime binding alias. It is constructed
+	// once from ProvidedOutputLayout; retained source windows can then add other
+	// exact objects (including a scalar UNNEST element) under the same alias
+	// without replacing this whole-row declaration.
+	outerPlanObject      values.QuantifiedObjectValue
+	outerPlanCarrierKind values.OrdinalCarrierKind
+	innerPlanObject      values.QuantifiedObjectValue
+	innerPlanCarrierKind values.OrdinalCarrierKind
+	resultValue          values.Value
+	props                recordlayer.ExecuteProperties
 	// inheritOuterRecordProperties keeps the outer stored-record and primary-key
 	// identity when the FlatMap computes a reshaped positional payload.
 	inheritOuterRecordProperties bool
@@ -133,6 +142,11 @@ func newFlatMapCursorWithOuterProperties(
 	if build != nil {
 		build.Clock = evalCtx
 	}
+	if build.enabled() && planContainsDefaultOnEmpty(innerPlan) {
+		if err := build.configureNullSupplying(innerAlias); err != nil {
+			return nil, err
+		}
+	}
 	// A TRANSLATED top RV (fused merge references) yields no spans from the RV
 	// alone — recover them through the leg subplans' result values (the merge
 	// RC is where the merged-away leg aliases survive), so the build's leg
@@ -211,6 +225,34 @@ func newFlatMapCursorWithOuterProperties(
 		outerIdentityPassthrough = outerBakedType == nil && outerMergedType == nil &&
 			isIdentityOuterRV(resultValue, outerAlias)
 	}
+	var outerPlanObject values.QuantifiedObjectValue
+	var outerPlanCarrierKind values.OrdinalCarrierKind
+	if outerPlan != nil {
+		outerLayout, layoutErr := outerPlan.ProvidedOutputLayout()
+		if layoutErr != nil {
+			return nil, layoutErr
+		}
+		outerPlanObject, layoutErr = values.NewQuantifiedObjectValue(
+			outerAlias, outerLayout.Carrier().FlowedType())
+		if layoutErr != nil {
+			return nil, layoutErr
+		}
+		outerPlanCarrierKind = outerLayout.CarrierKind()
+	}
+	var innerPlanObject values.QuantifiedObjectValue
+	var innerPlanCarrierKind values.OrdinalCarrierKind
+	if innerPlan != nil {
+		innerLayout, layoutErr := innerPlan.ProvidedOutputLayout()
+		if layoutErr != nil {
+			return nil, layoutErr
+		}
+		innerPlanObject, layoutErr = values.NewQuantifiedObjectValue(
+			innerAlias, innerLayout.Carrier().FlowedType())
+		if layoutErr != nil {
+			return nil, layoutErr
+		}
+		innerPlanCarrierKind = innerLayout.CarrierKind()
+	}
 	return &flatMapCursor{
 		outerCursor:                  outerCursor,
 		innerPlan:                    innerPlan,
@@ -218,6 +260,10 @@ func newFlatMapCursorWithOuterProperties(
 		evalCtx:                      evalCtx,
 		outerAlias:                   outerAlias,
 		innerAlias:                   innerAlias,
+		outerPlanObject:              outerPlanObject,
+		outerPlanCarrierKind:         outerPlanCarrierKind,
+		innerPlanObject:              innerPlanObject,
+		innerPlanCarrierKind:         innerPlanCarrierKind,
 		resultValue:                  resultValue,
 		props:                        props,
 		inheritOuterRecordProperties: inheritOuterRecordProperties,
@@ -228,6 +274,35 @@ func newFlatMapCursorWithOuterProperties(
 		outerMergedType:              outerMergedType,
 		outerIdentityPassthrough:     outerIdentityPassthrough,
 	}, nil
+}
+
+// planContainsDefaultOnEmpty follows only row-preserving unary wrappers. A
+// DefaultOnEmpty below one of them is the FlatMap inner edge's null-extension
+// authority; a DefaultOnEmpty hidden in an unrelated branch is not.
+func planContainsDefaultOnEmpty(plan plans.RecordQueryPlan) bool {
+	for plan != nil {
+		switch typed := plan.(type) {
+		case *plans.RecordQueryDefaultOnEmptyPlan:
+			return true
+		case *plans.RecordQueryPredicatesFilterPlan:
+			plan = typed.GetInner()
+		case *plans.RecordQueryFilterPlan:
+			plan = typed.GetInner()
+		case *plans.RecordQueryLimitPlan:
+			plan = typed.GetInner()
+		case *plans.RecordQueryInMemorySortPlan:
+			plan = typed.GetInner()
+		case *plans.RecordQueryDistinctPlan:
+			plan = typed.GetInner()
+		case *plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
+			plan = typed.GetInner()
+		case *plans.RecordQueryTypeFilterPlan:
+			plan = typed.GetInner()
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -330,8 +405,30 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		default:
 			outerBinding = qualifyOuterPositional(outerRow.Positional, c.outerAlias)
 		}
-		correlatedCtx := bindMergedOuterLegs(
-			c.evalCtx.WithBinding(c.outerAlias, outerBinding), outerBinding, c.outerAlias)
+		correlatedCtx := c.evalCtx.WithBinding(c.outerAlias, outerBinding)
+		var bindErr error
+		if c.outerPlanObject != nil {
+			wholeBinding, explicitAbsent, wholeErr := exactPlanObjectBinding(
+				c.outerPlanObject, c.outerPlanCarrierKind, outerRow.Positional, false)
+			if wholeErr != nil {
+				return recordlayer.RecordCursorResult[QueryResult]{}, wholeErr
+			}
+			if explicitAbsent {
+				outerBinding = nil
+				correlatedCtx = c.evalCtx.WithBinding(c.outerAlias, nil)
+			}
+			correlatedCtx, bindErr = correlatedCtx.withQuantifiedBinding(
+				c.outerPlanObject, wholeBinding, explicitAbsent)
+			if bindErr != nil {
+				return recordlayer.RecordCursorResult[QueryResult]{}, bindErr
+			}
+		}
+		correlatedCtx, bindErr = bindOuterLayoutSources(correlatedCtx, outerRow.Positional)
+		if bindErr != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, bindErr
+		}
+		correlatedCtx = bindMergedOuterLegs(
+			correlatedCtx, outerBinding, c.outerAlias)
 		// Java FlatMapPipelinedCursor (:210-220): the initial inner
 		// continuation stays ARMED across outer rows until the row whose
 		// check value matches (or either check value is absent) CONSUMES it
@@ -364,6 +461,85 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 	}
 }
 
+// bindOuterLayoutSources carries every exact source window retained by the
+// selected outer plan into the correlated inner evaluation context. A FlatMap
+// result can retain a bare scalar QOV as one output slot (lateral UNNEST's AS
+// element); binding only the FlatMap's whole outer alias turns that scalar read
+// into the complete PositionalRow. The selected OrdinalLayout is the authority
+// that separates those two same-phase objects and materializes the scalar slot
+// (or record window) without a name lookup.
+func bindOuterLayoutSources(ec *EvaluationContext, row *PositionalRow) (*EvaluationContext, error) {
+	if ec == nil || row == nil || row.Layout == nil {
+		return ec, nil
+	}
+	binder, err := values.NewOrdinalObjectBinder(row.Layout, row, row.LayoutPresence, nil)
+	if err != nil {
+		return nil, err
+	}
+	result := ec
+	for _, source := range row.Layout.WindowSources() {
+		value, present, bindingErr := binder.GetQuantifiedBinding(source)
+		if bindingErr != nil {
+			return nil, bindingErr
+		}
+		if !present {
+			return nil, fmt.Errorf("outer layout omitted declared source %q", source.Correlation().Name())
+		}
+		explicitAbsent := false
+		if proof, ok := binder.(values.ExplicitNullQuantifiedObjectBinder); ok {
+			explicitAbsent, bindingErr = proof.IsExplicitNullQuantifiedBinding(source)
+			if bindingErr != nil {
+				return nil, bindingErr
+			}
+		}
+		result, bindingErr = result.withQuantifiedBinding(source, value, explicitAbsent)
+		if bindingErr != nil {
+			return nil, bindingErr
+		}
+	}
+	return result, nil
+}
+
+// exactPlanObjectBinding unwraps the executor's positional transport according
+// to the selected plan's ProvidedOutputLayout. Record carriers preserve the
+// exact whole-object absence marker; scalar carriers unwrap their sole slot.
+// missing is the explicit null-inner FlatMap arm, never an inference from nil
+// slot contents. A matched all-NULL record therefore remains present.
+func exactPlanObjectBinding(
+	object values.QuantifiedObjectValue,
+	kind values.OrdinalCarrierKind,
+	row *PositionalRow,
+	missing bool,
+) (any, bool, error) {
+	if object == nil {
+		return nil, false, nil
+	}
+	if missing {
+		return nil, true, nil
+	}
+	if row == nil || row.Type == nil {
+		return nil, false, layoutBindingError(values.LayoutRuntimeShape, "exact plan object has no typed positional transport")
+	}
+	switch kind {
+	case values.OrdinalCarrierRecord:
+		if !row.Type.Equals(object.FlowedType()) {
+			return nil, false, layoutBindingError(values.LayoutTypeMismatch, "record plan object disagrees with its positional transport")
+		}
+		return row.wholeObjectBinding()
+	case values.OrdinalCarrierScalar:
+		if len(row.Slots) != 1 || len(row.Type.Fields) != 1 ||
+			!row.Type.Fields[0].FieldType.Equals(object.FlowedType()) {
+			return nil, false, layoutBindingError(values.LayoutTypeMismatch, "scalar plan object disagrees with its positional transport")
+		}
+		if row.Slots[0] == nil && !object.FlowedType().IsNullable() {
+			return nil, false, layoutBindingError(values.LayoutNullabilityMismatch, "non-nullable scalar plan object is SQL NULL")
+		}
+		return row.Slots[0], false, nil
+	default:
+		return nil, false, layoutBindingError(values.LayoutCarrierMismatch, "plan object has no exact carrier kind")
+	}
+}
+
 // computeResult evaluates the resultValue with both outer and inner
 // bound as correlations. Mirrors Java's FlatMapPipelinedCursor:
 //
@@ -384,8 +560,8 @@ func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) (QueryResu
 // identity branch read, so the exclusion can never drift from the branch it
 // mirrors.
 func isIdentityOuterRV(rv values.Value, outerAlias values.CorrelationIdentifier) bool {
-	qov, ok := rv.(*values.QuantifiedObjectValue)
-	return ok && qov.Correlation == outerAlias
+	qov, ok := values.AsQuantifiedObjectValue(rv)
+	return ok && qov.Correlation() == outerAlias
 }
 
 // isIdentityInnerRV is isIdentityOuterRV's mirror: the FlatMap's result value
@@ -404,8 +580,8 @@ func isIdentityOuterRV(rv values.Value, outerAlias values.CorrelationIdentifier)
 // then failed a downstream ordinal read (or an FDB tuple pack) the moment
 // anything tried to read a field out of it positionally.
 func isIdentityInnerRV(rv values.Value, innerAlias values.CorrelationIdentifier) bool {
-	qov, ok := rv.(*values.QuantifiedObjectValue)
-	return ok && qov.Correlation == innerAlias
+	qov, ok := values.AsQuantifiedObjectValue(rv)
+	return ok && qov.Correlation() == innerAlias
 }
 
 // bindMergedOuterLegs is Java's one-binding-per-quantifier namespace, restored
@@ -629,7 +805,7 @@ func qualifyOuterPositional(row *PositionalRow, alias values.CorrelationIdentifi
 			values.NewRecordTypeLeg(values.LegKindFlatRun, alias, alias.Name(), 0, len(row.Type.Fields)),
 		},
 	}
-	return &PositionalRow{Type: qualified, Slots: row.Slots}
+	return &PositionalRow{Type: qualified, Slots: row.Slots, transportKind: row.transportKind}
 }
 
 // computeResultLegs is computeResult with the inner leg as a pointer: nil is
@@ -642,7 +818,7 @@ func qualifyOuterPositional(row *PositionalRow, alias values.CorrelationIdentifi
 // null-inner emission.
 func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResult) (QueryResult, error) {
 	if c.build.enabled() {
-		pos, err := c.build.evaluate(c.outerAlias.Name(), c.innerAlias.Name(), &outerRow, inner, correlationBase(c.evalCtx))
+		pos, err := c.build.evaluate(c.outerAlias, c.innerAlias, &outerRow, inner, correlationBase(c.evalCtx))
 		if err != nil {
 			return QueryResult{}, err
 		}
@@ -660,16 +836,55 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 	// element. A row-shaped inner binds its positional row unchanged.
 	var innerBinding any
 	if innerRow.Positional != nil {
-		if isBareScalarRow(innerRow.Positional) {
+		whole, explicitAbsent, bindingErr := innerRow.Positional.wholeObjectBinding()
+		if bindingErr != nil {
+			return QueryResult{}, bindingErr
+		}
+		if explicitAbsent {
+			innerBinding = nil
+		} else if isBareScalarRow(innerRow.Positional) {
 			innerBinding = innerRow.Positional.Slots[0]
 		} else {
-			innerBinding = innerRow.Positional
+			innerBinding = whole
 		}
 	}
 	outerBinding := qualifyOuterPositional(outerRow.Positional, c.outerAlias)
 	nestedCtx := c.evalCtx.
 		WithBinding(c.outerAlias, outerBinding).
 		WithBinding(c.innerAlias, innerBinding)
+	if c.outerPlanObject != nil {
+		exactOuter, explicitAbsent, bindingErr := exactPlanObjectBinding(
+			c.outerPlanObject, c.outerPlanCarrierKind, outerRow.Positional, false)
+		if bindingErr != nil {
+			return QueryResult{}, bindingErr
+		}
+		nestedCtx, bindingErr = nestedCtx.withQuantifiedBinding(
+			c.outerPlanObject, exactOuter, explicitAbsent)
+		if bindingErr != nil {
+			return QueryResult{}, bindingErr
+		}
+	}
+	if c.innerPlanObject != nil {
+		exactInner, explicitAbsent, bindingErr := exactPlanObjectBinding(
+			c.innerPlanObject, c.innerPlanCarrierKind, innerRow.Positional, inner == nil)
+		if bindingErr != nil {
+			return QueryResult{}, bindingErr
+		}
+		nestedCtx, bindingErr = nestedCtx.withQuantifiedBinding(
+			c.innerPlanObject, exactInner, explicitAbsent)
+		if bindingErr != nil {
+			return QueryResult{}, bindingErr
+		}
+	}
+	var bindingErr error
+	nestedCtx, bindingErr = bindOuterLayoutSources(nestedCtx, outerRow.Positional)
+	if bindingErr != nil {
+		return QueryResult{}, bindingErr
+	}
+	nestedCtx, bindingErr = bindOuterLayoutSources(nestedCtx, innerRow.Positional)
+	if bindingErr != nil {
+		return QueryResult{}, bindingErr
+	}
 
 	// Evaluate against a RowEvalContext whose row is the outer positional, so a
 	// BARE outer FieldValue (e.g. a projected `ID` with no QOV qualifier — RFC-141
@@ -694,19 +909,26 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 		// name map, so a duplicate output name keeps both slots) — is the row's
 		// ordinal output, what a projected-EXISTS SELECT list (`SELECT id,
 		// EXISTS(...) AS has_t2 FROM t`) materializes from.
-		posNames := make([]string, len(rc.Fields))
+		outputType, typeOK := rc.Type().(*values.RecordType)
+		if !typeOK || outputType == nil || len(outputType.Fields) != len(rc.Fields) {
+			return QueryResult{}, fmt.Errorf("flat map result constructor has no exact record type matching its slots")
+		}
+		if _, exactErr := values.SnapshotExactType(outputType); exactErr != nil {
+			return QueryResult{}, fmt.Errorf("flat map result constructor type is unresolved: %w", exactErr)
+		}
 		posSlots := make([]any, len(rc.Fields))
 		for i, f := range rc.Fields {
-			posNames[i] = f.Name
 			fv, ferr := f.Value.Evaluate(rowCtx)
 			if ferr != nil {
 				return QueryResult{}, ferr
 			}
 			posSlots[i] = fv
 		}
-		foldPos = &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots}
+		foldPos = &PositionalRow{Type: outputType, Slots: posSlots}
 	} else {
-		// A non-RC, non-identity result value: evaluate it to a scalar output row.
+		// A non-RC, non-identity result value: evaluate its one flowed value. A
+		// record-valued field is already the complete output row and flows through
+		// unchanged; a scalar uses the standard one-slot transport.
 		// Neither identity form (outer OR inner) reaches this wrap: both flow
 		// their source row through verbatim in the dedicated branches below —
 		// wrapping a full row's evaluation in scalarPositionalRow here would
@@ -716,7 +938,16 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 			return QueryResult{}, err
 		}
 		if !isIdentityOuterRV(c.resultValue, c.outerAlias) && !isIdentityInnerRV(c.resultValue, c.innerAlias) {
-			foldPos = scalarPositionalRow(computed)
+			if computedRow, isRow := computed.(*PositionalRow); isRow {
+				resultType, isRecord := c.resultValue.Type().(*values.RecordType)
+				if !isRecord || resultType == nil || computedRow.Type == nil || !computedRow.Type.Equals(resultType) {
+					return QueryResult{}, layoutBindingError(values.LayoutTypeMismatch,
+						"flat map computed record disagrees with its exact result program type")
+				}
+				foldPos = computedRow
+			} else {
+				foldPos = scalarPositionalRowOfType(computed, c.resultValue.Type())
+			}
 		}
 	}
 	// Identity-over-outer FlatMap (the result value is exactly the outer

@@ -14,8 +14,12 @@ import (
 
 func TestAggregateIndexPlan_Construction(t *testing.T) {
 	t.Parallel()
-	idx := NewRecordQueryIndexPlan("sum_idx", nil, []string{"Sale"}, values.UnknownType, false)
-	p := NewRecordQueryAggregateIndexPlan(idx, "Sale", values.NotNullLong, "SUM")
+	idx := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("sum_idx", nil, []string{"Sale"}, exactTestRecordType(), false)
+	})
+	p := mustChecked(t, func() (*RecordQueryAggregateIndexPlan, error) {
+		return NewRecordQueryAggregateIndexPlan(idx, "Sale", values.NotNullLong, "SUM")
+	})
 
 	if p.GetIndexPlan() != idx {
 		t.Fatal("index plan mismatch")
@@ -42,10 +46,12 @@ func TestAggregateIndexPlan_OutputColumnNames(t *testing.T) {
 	t.Parallel()
 
 	// Grouped COUNT(*): [G, COUNT(*)].
-	cnt := NewRecordQueryAggregateIndexPlan(
-		NewRecordQueryIndexPlan("cnt_by_g", nil, []string{"GA"}, values.UnknownType, false),
-		"GA", values.UnknownType, "COUNT",
-	).WithGroupColumns([]string{"G"}, "")
+	cnt := mustChecked(t, func() (*RecordQueryAggregateIndexPlan, error) {
+		return NewRecordQueryAggregateIndexPlan(mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+			return NewRecordQueryIndexPlan("cnt_by_g", nil, []string{"GA"}, exactTestRecordType(), false)
+		}), "GA", exactTestRecordType(), "COUNT",
+		)
+	}).WithGroupColumns([]string{"G"}, "")
 	if got := cnt.CanonicalAggColumnName(); got != "COUNT(*)" {
 		t.Fatalf("canonical = %q, want COUNT(*)", got)
 	}
@@ -54,10 +60,12 @@ func TestAggregateIndexPlan_OutputColumnNames(t *testing.T) {
 	}
 
 	// Grouped SUM(V): [G, SUM(V)].
-	sum := NewRecordQueryAggregateIndexPlan(
-		NewRecordQueryIndexPlan("sum_by_g", nil, []string{"GA"}, values.UnknownType, false),
-		"GA", values.UnknownType, "SUM",
-	).WithGroupColumns([]string{"G"}, "V")
+	sum := mustChecked(t, func() (*RecordQueryAggregateIndexPlan, error) {
+		return NewRecordQueryAggregateIndexPlan(mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+			return NewRecordQueryIndexPlan("sum_by_g", nil, []string{"GA"}, exactTestRecordType(), false)
+		}), "GA", exactTestRecordType(), "SUM",
+		)
+	}).WithGroupColumns([]string{"G"}, "V")
 	if got := sum.CanonicalAggColumnName(); got != "SUM(V)" {
 		t.Fatalf("canonical = %q, want SUM(V)", got)
 	}
@@ -68,24 +76,35 @@ func TestAggregateIndexPlan_OutputColumnNames(t *testing.T) {
 
 func TestAggregateIndexPlan_LeafPlan(t *testing.T) {
 	t.Parallel()
-	idx := NewRecordQueryIndexPlan("idx", nil, []string{"T"}, values.UnknownType, false)
-	p := NewRecordQueryAggregateIndexPlan(idx, "T", nil, "COUNT")
+	idx := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("idx", nil, []string{"T"}, exactTestRecordType(), false)
+	})
+	p := mustChecked(t, func() (*RecordQueryAggregateIndexPlan, error) {
+		return NewRecordQueryAggregateIndexPlan(idx, "T", exactTestRecordType(), "COUNT")
+	})
 
 	if len(p.GetChildren()) != 0 {
 		t.Fatal("aggregate index plan should be a leaf (no children)")
 	}
-	// nil resultType falls back to UnknownType.
-	if p.GetResultType() != values.UnknownType {
-		t.Fatal("nil resultType should become UnknownType")
+	if !exactTestRecordType().Equals(p.GetResultType()) {
+		t.Fatalf("result type = %v, want exact fixture type", p.GetResultType())
 	}
 }
 
 func TestAggregateIndexPlan_EqualityAndHash(t *testing.T) {
 	t.Parallel()
-	idx := NewRecordQueryIndexPlan("idx_a", nil, []string{"T"}, values.UnknownType, false)
-	a := NewRecordQueryAggregateIndexPlan(idx, "T", values.UnknownType, "SUM")
-	b := NewRecordQueryAggregateIndexPlan(idx, "T", values.UnknownType, "SUM")
-	c := NewRecordQueryAggregateIndexPlan(idx, "T", values.UnknownType, "COUNT")
+	idx := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("idx_a", nil, []string{"T"}, exactTestRecordType(), false)
+	})
+	a := mustChecked(t, func() (*RecordQueryAggregateIndexPlan, error) {
+		return NewRecordQueryAggregateIndexPlan(idx, "T", exactTestRecordType(), "SUM")
+	})
+	b := mustChecked(t, func() (*RecordQueryAggregateIndexPlan, error) {
+		return NewRecordQueryAggregateIndexPlan(idx, "T", exactTestRecordType(), "SUM")
+	})
+	c := mustChecked(t, func() (*RecordQueryAggregateIndexPlan, error) {
+		return NewRecordQueryAggregateIndexPlan(idx, "T", exactTestRecordType(), "COUNT")
+	})
 
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("identical aggregate plans should be equal")
@@ -100,8 +119,12 @@ func TestAggregateIndexPlan_EqualityAndHash(t *testing.T) {
 
 func TestAggregateIndexPlan_Explain(t *testing.T) {
 	t.Parallel()
-	idx := NewRecordQueryIndexPlan("sum_idx", nil, []string{"Sale"}, values.UnknownType, false)
-	p := NewRecordQueryAggregateIndexPlan(idx, "Sale", values.UnknownType, "SUM")
+	idx := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("sum_idx", nil, []string{"Sale"}, exactTestRecordType(), false)
+	})
+	p := mustChecked(t, func() (*RecordQueryAggregateIndexPlan, error) {
+		return NewRecordQueryAggregateIndexPlan(idx, "Sale", exactTestRecordType(), "SUM")
+	})
 	want := "AggregateIndex(SUM, sum_idx, Sale)"
 	if got := p.Explain(); got != want {
 		t.Fatalf("Explain = %q, want %q", got, want)
@@ -114,10 +137,16 @@ func TestAggregateIndexPlan_Explain(t *testing.T) {
 
 func TestComparatorPlan_Construction(t *testing.T) {
 	t.Parallel()
-	c1 := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	c2 := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	keys := []values.Value{&values.FieldValue{Field: "id", Typ: values.NullableLong}}
-	p := NewRecordQueryComparatorPlan([]RecordQueryPlan{c1, c2}, keys, 0, false, true)
+	c1 := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	c2 := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	keys := []values.Value{testField(t, "id", values.NullableLong)}
+	p := mustChecked(t, func() (*RecordQueryComparatorPlan, error) {
+		return NewRecordQueryComparatorPlan([]RecordQueryPlan{c1, c2}, keys, 0, false, true)
+	})
 
 	if len(p.GetChildren()) != 2 {
 		t.Fatalf("children count = %d, want 2", len(p.GetChildren()))
@@ -136,36 +165,42 @@ func TestComparatorPlan_Construction(t *testing.T) {
 	}
 }
 
-func TestComparatorPlan_PanicsOnEmpty(t *testing.T) {
+func TestComparatorPlan_RejectsEmpty(t *testing.T) {
 	t.Parallel()
-	defer func() {
-		if recover() == nil {
-			t.Fatal("expected panic on empty children")
-		}
-	}()
-	NewRecordQueryComparatorPlan(nil, nil, 0, false, false)
+	if _, err := NewRecordQueryComparatorPlan(nil, nil, 0, false, false); err == nil {
+		t.Fatal("expected empty comparator children to be rejected")
+	}
 }
 
-func TestComparatorPlan_PanicsOnBadRefIndex(t *testing.T) {
+func TestComparatorPlan_RejectsBadRefIndex(t *testing.T) {
 	t.Parallel()
-	defer func() {
-		if recover() == nil {
-			t.Fatal("expected panic on out-of-range reference index")
-		}
-	}()
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	NewRecordQueryComparatorPlan([]RecordQueryPlan{scan}, nil, 5, false, false)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	if _, err := NewRecordQueryComparatorPlan([]RecordQueryPlan{scan}, nil, 5, false, false); err == nil {
+		t.Fatal("expected out-of-range comparator reference index to be rejected")
+	}
 }
 
 func TestComparatorPlan_EqualityAndExplain(t *testing.T) {
 	t.Parallel()
-	c1 := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	c2 := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	keys := []values.Value{&values.FieldValue{Field: "id", Typ: values.NullableLong}}
+	c1 := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	c2 := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	keys := []values.Value{testField(t, "id", values.NullableLong)}
 
-	a := NewRecordQueryComparatorPlan([]RecordQueryPlan{c1, c2}, keys, 0, true, false)
-	b := NewRecordQueryComparatorPlan([]RecordQueryPlan{c1, c2}, keys, 0, true, false)
-	c := NewRecordQueryComparatorPlan([]RecordQueryPlan{c1, c2}, keys, 1, true, false)
+	a := mustChecked(t, func() (*RecordQueryComparatorPlan, error) {
+		return NewRecordQueryComparatorPlan([]RecordQueryPlan{c1, c2}, keys, 0, true, false)
+	})
+	b := mustChecked(t, func() (*RecordQueryComparatorPlan, error) {
+		return NewRecordQueryComparatorPlan([]RecordQueryPlan{c1, c2}, keys, 0, true, false)
+	})
+	c := mustChecked(t, func() (*RecordQueryComparatorPlan, error) {
+		return NewRecordQueryComparatorPlan([]RecordQueryPlan{c1, c2}, keys, 1, true, false)
+	})
 
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("identical comparator plans should be equal")
@@ -186,10 +221,16 @@ func TestComparatorPlan_EqualityAndExplain(t *testing.T) {
 
 func TestSelectorPlan_Construction(t *testing.T) {
 	t.Parallel()
-	c1 := NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
-	c2 := NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
-	p := NewRecordQuerySelectorPlanWithProbabilities(
-		[]RecordQueryPlan{c1, c2}, []int{70, 30}, false)
+	c1 := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
+	})
+	c2 := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
+	})
+	p := mustChecked(t, func() (*RecordQuerySelectorPlan, error) {
+		return NewRecordQuerySelectorPlanWithProbabilities(
+			[]RecordQueryPlan{c1, c2}, []int{70, 30}, false)
+	})
 
 	if len(p.GetChildren()) != 2 {
 		t.Fatalf("children count = %d", len(p.GetChildren()))
@@ -203,26 +244,31 @@ func TestSelectorPlan_Construction(t *testing.T) {
 	}
 }
 
-func TestSelectorPlan_PanicsOnEmpty(t *testing.T) {
+func TestSelectorPlan_RejectsEmpty(t *testing.T) {
 	t.Parallel()
-	defer func() {
-		if recover() == nil {
-			t.Fatal("expected panic on empty children")
-		}
-	}()
-	NewRecordQuerySelectorPlan(nil, nil, false)
+	if _, err := NewRecordQuerySelectorPlan(nil, nil, false); err == nil {
+		t.Fatal("expected empty selector children to be rejected")
+	}
 }
 
 func TestSelectorPlan_EqualityAndExplain(t *testing.T) {
 	t.Parallel()
-	c1 := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	c1 := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	sel1 := NewRelativeProbabilityPlanSelector([]int{50, 50})
 	sel2 := NewRelativeProbabilityPlanSelector([]int{50, 50})
 	sel3 := NewRelativeProbabilityPlanSelector([]int{70, 30})
 
-	a := NewRecordQuerySelectorPlan([]RecordQueryPlan{c1, c1}, sel1, false)
-	b := NewRecordQuerySelectorPlan([]RecordQueryPlan{c1, c1}, sel2, false)
-	c := NewRecordQuerySelectorPlan([]RecordQueryPlan{c1, c1}, sel3, false)
+	a := mustChecked(t, func() (*RecordQuerySelectorPlan, error) {
+		return NewRecordQuerySelectorPlan([]RecordQueryPlan{c1, c1}, sel1, false)
+	})
+	b := mustChecked(t, func() (*RecordQuerySelectorPlan, error) {
+		return NewRecordQuerySelectorPlan([]RecordQueryPlan{c1, c1}, sel2, false)
+	})
+	c := mustChecked(t, func() (*RecordQuerySelectorPlan, error) {
+		return NewRecordQuerySelectorPlan([]RecordQueryPlan{c1, c1}, sel3, false)
+	})
 
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same probability selectors should be equal")
@@ -260,10 +306,12 @@ func TestRelativeProbabilityPlanSelector_Equality(t *testing.T) {
 func TestLoadByKeysPlan_FromKeys(t *testing.T) {
 	t.Parallel()
 	keys := []tuple.Tuple{{int64(1)}, {int64(2)}, {int64(3)}}
-	p := NewRecordQueryLoadByKeysPlanFromKeys(keys)
+	p := mustChecked(t, func() (*RecordQueryLoadByKeysPlan, error) {
+		return NewRecordQueryLoadByKeysPlanFromKeys(keys, exactTestRecordType())
+	})
 
-	if p.GetResultType() != values.UnknownType {
-		t.Fatal("result type should be UnknownType")
+	if !exactTestRecordType().Equals(p.GetResultType()) {
+		t.Fatalf("result type = %v, want exact fixture type", p.GetResultType())
 	}
 	if len(p.GetChildren()) != 0 {
 		t.Fatal("should be a leaf plan")
@@ -276,7 +324,9 @@ func TestLoadByKeysPlan_FromKeys(t *testing.T) {
 
 func TestLoadByKeysPlan_FromParameter(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryLoadByKeysPlanFromParameter("pk_list")
+	p := mustChecked(t, func() (*RecordQueryLoadByKeysPlan, error) {
+		return NewRecordQueryLoadByKeysPlanFromParameter("pk_list", exactTestRecordType())
+	})
 
 	src := p.GetKeysSource().(*ParameterKeySource)
 	if src.GetParameter() != "pk_list" {
@@ -292,10 +342,18 @@ func TestLoadByKeysPlan_FromParameter(t *testing.T) {
 
 func TestLoadByKeysPlan_Equality(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryLoadByKeysPlanFromKeys([]tuple.Tuple{{int64(1)}})
-	b := NewRecordQueryLoadByKeysPlanFromKeys([]tuple.Tuple{{int64(1)}})
-	c := NewRecordQueryLoadByKeysPlanFromKeys([]tuple.Tuple{{int64(2)}})
-	d := NewRecordQueryLoadByKeysPlanFromParameter("p")
+	a := mustChecked(t, func() (*RecordQueryLoadByKeysPlan, error) {
+		return NewRecordQueryLoadByKeysPlanFromKeys([]tuple.Tuple{{int64(1)}}, exactTestRecordType())
+	})
+	b := mustChecked(t, func() (*RecordQueryLoadByKeysPlan, error) {
+		return NewRecordQueryLoadByKeysPlanFromKeys([]tuple.Tuple{{int64(1)}}, exactTestRecordType())
+	})
+	c := mustChecked(t, func() (*RecordQueryLoadByKeysPlan, error) {
+		return NewRecordQueryLoadByKeysPlanFromKeys([]tuple.Tuple{{int64(2)}}, exactTestRecordType())
+	})
+	d := mustChecked(t, func() (*RecordQueryLoadByKeysPlan, error) {
+		return NewRecordQueryLoadByKeysPlanFromParameter("p", exactTestRecordType())
+	})
 
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same keys should be equal")
@@ -310,7 +368,9 @@ func TestLoadByKeysPlan_Equality(t *testing.T) {
 
 func TestLoadByKeysPlan_Explain(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryLoadByKeysPlanFromParameter("pk_list")
+	p := mustChecked(t, func() (*RecordQueryLoadByKeysPlan, error) {
+		return NewRecordQueryLoadByKeysPlanFromParameter("pk_list", exactTestRecordType())
+	})
 	got := p.Explain()
 	if !strings.Contains(got, "LoadByKeys") || !strings.Contains(got, "$pk_list") {
 		t.Fatalf("Explain = %q", got)
@@ -340,11 +400,15 @@ func TestKeysSource_PrimaryKeysEquality(t *testing.T) {
 
 func TestScoreForRankPlan_Construction(t *testing.T) {
 	t.Parallel()
-	inner := NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
+	inner := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
+	})
 	ranks := []ScoreForRank{
 		{BindingName: "score", FunctionName: "rank", IndexName: "rank_idx", Comparisons: []string{"= 5"}},
 	}
-	p := NewRecordQueryScoreForRankPlan(inner, ranks)
+	p := mustChecked(t, func() (*RecordQueryScoreForRankPlan, error) {
+		return NewRecordQueryScoreForRankPlan(inner, ranks)
+	})
 
 	if p.GetInner() != inner {
 		t.Fatal("inner plan mismatch")
@@ -363,14 +427,22 @@ func TestScoreForRankPlan_Construction(t *testing.T) {
 
 func TestScoreForRankPlan_Equality(t *testing.T) {
 	t.Parallel()
-	inner := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	inner := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	r1 := ScoreForRank{BindingName: "s", FunctionName: "rank", IndexName: "idx", Comparisons: []string{"= 1"}}
 	r2 := ScoreForRank{BindingName: "s", FunctionName: "rank", IndexName: "idx", Comparisons: []string{"= 1"}}
 	r3 := ScoreForRank{BindingName: "s", FunctionName: "rank", IndexName: "other", Comparisons: []string{"= 1"}}
 
-	a := NewRecordQueryScoreForRankPlan(inner, []ScoreForRank{r1})
-	b := NewRecordQueryScoreForRankPlan(inner, []ScoreForRank{r2})
-	c := NewRecordQueryScoreForRankPlan(inner, []ScoreForRank{r3})
+	a := mustChecked(t, func() (*RecordQueryScoreForRankPlan, error) {
+		return NewRecordQueryScoreForRankPlan(inner, []ScoreForRank{r1})
+	})
+	b := mustChecked(t, func() (*RecordQueryScoreForRankPlan, error) {
+		return NewRecordQueryScoreForRankPlan(inner, []ScoreForRank{r2})
+	})
+	c := mustChecked(t, func() (*RecordQueryScoreForRankPlan, error) {
+		return NewRecordQueryScoreForRankPlan(inner, []ScoreForRank{r3})
+	})
 
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same ranks should be equal")
@@ -382,11 +454,15 @@ func TestScoreForRankPlan_Equality(t *testing.T) {
 
 func TestScoreForRankPlan_Explain(t *testing.T) {
 	t.Parallel()
-	inner := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	inner := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	ranks := []ScoreForRank{
 		{BindingName: "s", FunctionName: "rank", IndexName: "idx_a", Comparisons: []string{"= 5", "> 0"}},
 	}
-	p := NewRecordQueryScoreForRankPlan(inner, ranks)
+	p := mustChecked(t, func() (*RecordQueryScoreForRankPlan, error) {
+		return NewRecordQueryScoreForRankPlan(inner, ranks)
+	})
 	got := p.Explain()
 	if !strings.Contains(got, "ScoreForRank(") {
 		t.Fatalf("Explain = %q", got)
@@ -408,7 +484,9 @@ func TestTextIndexPlan_Construction(t *testing.T) {
 		TextComparison:      "TEXT_CONTAINS_ALL 'hello world'",
 		SuffixComparisons:   "",
 	}
-	p := NewRecordQueryTextIndexPlan("text_idx", scan, false)
+	p := mustChecked(t, func() (*RecordQueryTextIndexPlan, error) {
+		return NewRecordQueryTextIndexPlan("text_idx", scan, exactTestRecordType(), false)
+	})
 
 	if p.GetIndexName() != "text_idx" {
 		t.Fatalf("index = %q", p.GetIndexName())
@@ -416,8 +494,8 @@ func TestTextIndexPlan_Construction(t *testing.T) {
 	if p.IsReverse() {
 		t.Fatal("should not be reverse")
 	}
-	if p.GetResultType() != values.UnknownType {
-		t.Fatal("text plan result type should be UnknownType")
+	if !exactTestRecordType().Equals(p.GetResultType()) {
+		t.Fatalf("text plan result type = %v, want exact fixture type", p.GetResultType())
 	}
 	if len(p.GetChildren()) != 0 {
 		t.Fatal("text index plan should be a leaf")
@@ -430,10 +508,18 @@ func TestTextIndexPlan_Construction(t *testing.T) {
 func TestTextIndexPlan_EqualityAndHash(t *testing.T) {
 	t.Parallel()
 	scan := TextScan{TextComparison: "CONTAINS 'x'"}
-	a := NewRecordQueryTextIndexPlan("idx", scan, false)
-	b := NewRecordQueryTextIndexPlan("idx", scan, false)
-	c := NewRecordQueryTextIndexPlan("idx", scan, true)
-	d := NewRecordQueryTextIndexPlan("other", scan, false)
+	a := mustChecked(t, func() (*RecordQueryTextIndexPlan, error) {
+		return NewRecordQueryTextIndexPlan("idx", scan, exactTestRecordType(), false)
+	})
+	b := mustChecked(t, func() (*RecordQueryTextIndexPlan, error) {
+		return NewRecordQueryTextIndexPlan("idx", scan, exactTestRecordType(), false)
+	})
+	c := mustChecked(t, func() (*RecordQueryTextIndexPlan, error) {
+		return NewRecordQueryTextIndexPlan("idx", scan, exactTestRecordType(), true)
+	})
+	d := mustChecked(t, func() (*RecordQueryTextIndexPlan, error) {
+		return NewRecordQueryTextIndexPlan("other", scan, exactTestRecordType(), false)
+	})
 
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("identical text plans should be equal")
@@ -455,7 +541,9 @@ func TestTextIndexPlan_EqualityAndHash(t *testing.T) {
 func TestTextIndexPlan_Explain(t *testing.T) {
 	t.Parallel()
 	scan := TextScan{TextComparison: "TEXT_CONTAINS_ALL 'hello'"}
-	p := NewRecordQueryTextIndexPlan("my_text_idx", scan, true)
+	p := mustChecked(t, func() (*RecordQueryTextIndexPlan, error) {
+		return NewRecordQueryTextIndexPlan("my_text_idx", scan, exactTestRecordType(), true)
+	})
 	got := p.Explain()
 	want := "TextIndexScan(my_text_idx, TEXT_CONTAINS_ALL 'hello' REVERSE)"
 	if got != want {

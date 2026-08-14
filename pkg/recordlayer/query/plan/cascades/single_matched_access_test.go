@@ -9,6 +9,30 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func mustSingleMatchedAccessConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct single-matched-access fixture: " + err.Error())
+	}
+	return value
+}
+
+func singleMatchedAccessRowType() *values.RecordType {
+	return values.NewRecordType("single_matched_access_row", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+	})
+}
+
+func singleMatchedAccessScan() *expressions.FullUnorderedScanExpression {
+	return mustSingleMatchedAccessConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, singleMatchedAccessRowType()))
+}
+
+func singleMatchedAccessID(alias string) values.Value {
+	root := mustSingleMatchedAccessConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier(alias), singleMatchedAccessRowType()))
+	return mustSingleMatchedAccessConstruct(values.ResolveFieldOrdinals(root, []int{0}))
+}
+
 func makeSingleMatchedAccess(t *testing.T) (*SingleMatchedAccess, *PartialMatchImpl) {
 	t.Helper()
 
@@ -19,7 +43,7 @@ func makeSingleMatchedAccess(t *testing.T) (*SingleMatchedAccess, *PartialMatchI
 
 	orderings := []*properties.RequestedOrdering{
 		properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
-			{Value: values.NewQueriedValue([]string{"T"}, values.UnknownType), SortOrder: properties.RequestedSortOrderAscending},
+			{Value: singleMatchedAccessID("ordering"), SortOrder: properties.RequestedSortOrderAscending},
 		}, properties.DistinctnessNotDistinct, false),
 	}
 
@@ -75,7 +99,7 @@ func TestSingleMatchedAccess_LazyGroupByMappings(t *testing.T) {
 	gbm := EmptyGroupByMappings()
 	matchInfo := NewRegularMatchInfo(nil, nil, nil, nil, nil, gbm, nil, nil)
 
-	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanExpr := singleMatchedAccessScan()
 	pm := NewPartialMatch(
 		EmptyAliasMap(),
 		stubMatchCandidate{name: "idx"},
@@ -179,14 +203,13 @@ func TestSingleMatchedAccess_MultiMemberCandidateRefFailsGroupMetadataClosed(
 ) {
 	t.Parallel()
 
-	lowerAlias := values.NamedCorrelationIdentifier("multi_member_lower")
-	firstResult := values.NewQuantifiedObjectValue(lowerAlias)
-	firstCandidate := expressions.NewSelectExpression(firstResult, nil, nil)
-	secondCandidate := expressions.NewSelectExpression(
-		values.LiteralValue(int64(2)),
+	firstResult := &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}
+	firstCandidate := mustSingleMatchedAccessConstruct(expressions.NewSelectExpression(firstResult, nil, nil))
+	secondCandidate := mustSingleMatchedAccessConstruct(expressions.NewSelectExpression(
+		&values.ConstantValue{Value: int64(2), Typ: values.NotNullLong},
 		nil,
 		nil,
-	)
+	))
 	candidateRef := expressions.InitialOf(firstCandidate)
 	if !candidateRef.Insert(secondCandidate) {
 		t.Fatal("test candidate alternatives unexpectedly deduplicated")
@@ -195,7 +218,7 @@ func TestSingleMatchedAccess_MultiMemberCandidateRefFailsGroupMetadataClosed(
 		t.Fatalf("candidate member count = %d, want 2", got)
 	}
 
-	queryKey := values.LiteralValue(int64(1))
+	queryKey := &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}
 	matched := NewValueBiMap()
 	matched.Put(queryKey, firstResult)
 	matchInfo := NewRegularMatchInfo(
@@ -212,7 +235,7 @@ func TestSingleMatchedAccess_MultiMemberCandidateRefFailsGroupMetadataClosed(
 		nil,
 		nil,
 	)
-	queryExpression := expressions.NewSelectExpression(queryKey, nil, nil)
+	queryExpression := mustSingleMatchedAccessConstruct(expressions.NewSelectExpression(queryKey, nil, nil))
 	partialMatch := NewPartialMatch(
 		EmptyAliasMap(),
 		stubMatchCandidate{name: "multi_member_group_metadata"},

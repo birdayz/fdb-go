@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -29,12 +30,22 @@ import (
 // contract) — the type the planner's seed-constructed QOV over a Customer
 // quantifier carries.
 func existsCustomerType() *values.RecordType {
-	return values.NewRecordType("", false, []values.Field{
-		{Name: "CUSTOMER_ID", FieldType: values.NotNullLong, Ordinal: 0},
-		{Name: "NAME", FieldType: values.NotNullString, Ordinal: 1},
-		{Name: "EMAIL", FieldType: values.NotNullString, Ordinal: 2},
-		{Name: "PRICE", FieldType: values.NotNullInt, Ordinal: 3},
-	})
+	return PositionalTypeForRecordLayout((&gen.Customer{}).ProtoReflect().Descriptor(), false)
+}
+
+func existsOrderType() *values.RecordType {
+	return PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false)
+}
+
+// ojProbeInnerType is the concrete inner-row carrier for the probe-only plan
+// fixtures below. Those tests do not execute the scan, but the scan still owns
+// an exact physical output layout; the familiar B(ID,W) shape also makes an
+// accidental use of the outer A layout observable.
+func ojProbeInnerType() *values.RecordType {
+	return exactTestRowType(
+		values.Field{Name: "ID", FieldType: values.NotNullLong},
+		values.Field{Name: "W", FieldType: values.NotNullLong},
+	)
 }
 
 // buildCorrelatedExistsShape builds a WHERE-EXISTS shape: an identity-RV
@@ -48,29 +59,26 @@ func existsCustomerType() *values.RecordType {
 func buildCorrelatedExistsShape(t *testing.T, baked bool) (plans.RecordQueryPlan, values.CorrelationIdentifier) {
 	t.Helper()
 	custCorr := values.NamedCorrelationIdentifier("CUST")
-	qovCust := values.NewQuantifiedObjectValueOfType(custCorr, existsCustomerType())
+	qovCust := mustTestQOV(t, custCorr, existsCustomerType())
 
 	var outerRef values.Value
 	if baked {
-		b, err := values.NewFieldValueOfOrdinal(qovCust, 3)
-		if err != nil {
-			t.Fatalf("NewFieldValueOfOrdinal: %v", err)
-		}
-		outerRef = b
+		outerRef = mustExecutorConstruct(values.ResolveOrdinalSeedField(qovCust, 3))
 	} else {
-		outerRef = values.NewCorrelatedFieldValueWithResolvedOrdinal(qovCust, "PRICE", 3, values.NotNullInt)
+		outerRef = mustTestFieldOrdinal(t, qovCust, 3)
 	}
 
-	innerPlan := plans.NewRecordQueryPredicatesFilterPlan(
-		plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false),
-		[]predicates.QueryPredicate{ojEqPred(values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.NotNullInt), outerRef)},
-	)
-	outerScan := plans.NewRecordQueryScanPlan([]string{"Customer"}, nil, false)
-	fm := plans.NewRecordQueryFlatMapPlan(
+	orderScan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, existsOrderType(), false))
+	innerPlan := mustExecutorConstruct(plans.NewRecordQueryPredicatesFilterPlan(
+		orderScan,
+		[]predicates.QueryPredicate{ojEqPred(mustTestFieldOrdinal(t, orderScan.GetResultValue(), 2), outerRef)},
+	))
+	outerScan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Customer"}, existsCustomerType(), false))
+	fm := mustExecutorConstruct(plans.NewRecordQueryFlatMapPlan(
 		outerScan, innerPlan,
 		custCorr, values.NamedCorrelationIdentifier("ORD"),
 		qovCust, false,
-	)
+	))
 	return fm, custCorr
 }
 
@@ -169,13 +177,10 @@ func TestIntegration_DisabledBuildBinder_BakedInner(t *testing.T) {
 // (non-FrontierPinned) outer reference in the inner plan leaves the baked
 // probe cold (outerBakedType nil), so the outer is bound POSITIONALLY as the
 // plain-scan correlated-EXISTS shape (outerIdentityPassthrough) rather than by
-// the baked-probe path. The identity output PROPAGATES the outer's positional
-// row, stamped with the outer alias as a leg window (qualifyOuterPositional).
-// That row resolves both a bare column (by unique name) and an alias-qualified
-// reference (the Legs path), so a downstream projection reading "CUST.NAME"
-// no longer loud-misses a bare-named row (the former
-// TestFDB_CorrelatedExistsCrossJoin catch that once forced this edge to stay
-// Datum-only).
+// the baked-probe path. The identity output propagates the outer's exact
+// current-row layout. It does not fabricate a CUST source window: a source QOV
+// omitted by that layout must stay loudly unbound instead of falling through
+// to the same-shaped current row.
 func TestIntegration_ProbeNegative_LazyInner(t *testing.T) {
 	t.Parallel()
 	store := setupStore(t)
@@ -185,7 +190,7 @@ func TestIntegration_ProbeNegative_LazyInner(t *testing.T) {
 	)
 	insertOrders(t, store, &gen.Order{OrderId: proto.Int64(9001), Price: proto.Int32(10)})
 
-	fm, _ := buildCorrelatedExistsShape(t, false)
+	fm, custCorr := buildCorrelatedExistsShape(t, false)
 	results := runCorrelatedExistsShape(t, store, fm)
 
 	if len(results) != 1 {
@@ -195,11 +200,27 @@ func TestIntegration_ProbeNegative_LazyInner(t *testing.T) {
 	if !isMap || datum["CUSTOMER_ID"] != int64(1) {
 		t.Fatalf("row = %v, want the outer row for customer 1", results[0].Positional)
 	}
-	// The outer's positional row survives, and its outer-alias leg window
-	// resolves the alias-qualified read the same as the bare column.
 	assertCustomerPositional(t, results[0], int64(1), "Alice")
-	if v, ok := legRead(results[0].Positional, "CUST", "NAME"); !ok || v != "Alice" {
-		t.Fatalf("legRead(CUST.NAME) = (%v, %v), want (Alice, true) — the outer-alias leg window", v, ok)
+	layout, err := fm.ProvidedOutputLayout()
+	if err != nil {
+		t.Fatalf("FlatMap ProvidedOutputLayout: %v", err)
+	}
+	if results[0].Positional.Layout != layout {
+		t.Fatal("identity FlatMap output did not retain its exact plan layout")
+	}
+	rowCtx, err := frontierRowContext(results[0].Positional, nil, false)
+	if err != nil {
+		t.Fatalf("frontier row context: %v", err)
+	}
+	currentName := mustTestFieldOrdinal(t, layout.Carrier(), 1)
+	if got, evalErr := currentName.Evaluate(rowCtx); evalErr != nil || got != "Alice" {
+		t.Fatalf("current NAME = (%v, %v), want (Alice, nil)", got, evalErr)
+	}
+	missingSource := mustTestFieldOrdinal(t, mustTestQOV(t, custCorr, existsCustomerType()), 1)
+	got, evalErr := missingSource.Evaluate(rowCtx)
+	var resolutionErr *values.ResolutionError
+	if got != nil || !errors.As(evalErr, &resolutionErr) || resolutionErr.Code() != values.UnboundCorrelation {
+		t.Fatalf("omitted CUST.NAME = (%v, %v), want UnboundCorrelation without positional fallback", got, evalErr)
 	}
 }
 
@@ -210,24 +231,21 @@ func TestIntegration_ProbeNegative_LazyInner(t *testing.T) {
 // baked references a name-keyed context.
 func TestLoudAdaptationFailure(t *testing.T) {
 	t.Parallel()
-	legA, _, qovA, _, _ := ojWiringLegs(t)
+	legA, legB, qovA, _, _ := ojWiringLegs(t)
 
-	bakedAID, err := values.NewFieldValueOfOrdinal(qovA, 0)
-	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
-	}
-	innerPlan := plans.NewRecordQueryPredicatesFilterPlan(
-		plans.NewRecordQueryScanPlan(nil, values.UnknownType, false),
+	bakedAID := mustExecutorConstruct(values.ResolveOrdinalSeedField(qovA, 0))
+	innerPlan := mustExecutorConstruct(plans.NewRecordQueryPredicatesFilterPlan(
+		mustExecutorConstruct(plans.NewRecordQueryScanPlan(nil, legB, false)),
 		[]predicates.QueryPredicate{ojEqPred(bakedAID, &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong})},
-	)
+	))
 	// The outer row is merge-shaped: dotted keys only, no positional row —
 	// none of leg A's bare column names match.
 	outer := recordlayer.FromList([]QueryResult{
 		dmap(map[string]any{"A.ID": int64(1), "A.V": int64(10)}),
 	})
 	c, err := newFlatMapCursorWithOuterProperties(outer, nil, innerPlan, nil, EmptyEvaluationContext(),
-		qovA.Correlation, values.NamedCorrelationIdentifier("B"),
-		values.NewQuantifiedObjectValue(qovA.Correlation), recordlayer.ExecuteProperties{}, false)
+		qovA.Correlation(), values.NamedCorrelationIdentifier("B"),
+		qovA, recordlayer.ExecuteProperties{}, false)
 	if err != nil {
 		t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)
 	}
@@ -252,20 +270,17 @@ func TestLoudAdaptationFailure(t *testing.T) {
 // (planner bug) and must fail the query — an error, never a process panic.
 func TestProbeOuterBakedType(t *testing.T) {
 	t.Parallel()
-	legA, _, qovA, qovB, _ := ojWiringLegs(t)
+	legA, legB, qovA, qovB, _ := ojWiringLegs(t)
 
-	bakedAID, err := values.NewFieldValueOfOrdinal(qovA, 0)
-	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
-	}
-	inner := plans.NewRecordQueryPredicatesFilterPlan(
-		plans.NewRecordQueryScanPlan(nil, values.UnknownType, false),
+	bakedAID := mustExecutorConstruct(values.ResolveOrdinalSeedField(qovA, 0))
+	inner := mustExecutorConstruct(plans.NewRecordQueryPredicatesFilterPlan(
+		mustExecutorConstruct(plans.NewRecordQueryScanPlan(nil, legB, false)),
 		[]predicates.QueryPredicate{ojEqPred(bakedAID, &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong})},
-	)
+	))
 
 	t.Run("positive over the outer alias", func(t *testing.T) {
 		t.Parallel()
-		rt, perr := probeOuterBakedType(inner, qovA.Correlation)
+		rt, perr := probeOuterBakedType(inner, qovA.Correlation())
 		if perr != nil {
 			t.Fatalf("probe error: %v", perr)
 		}
@@ -275,48 +290,45 @@ func TestProbeOuterBakedType(t *testing.T) {
 	})
 	t.Run("negative for another alias", func(t *testing.T) {
 		t.Parallel()
-		if rt, perr := probeOuterBakedType(inner, qovB.Correlation); perr != nil || rt != nil {
+		if rt, perr := probeOuterBakedType(inner, qovB.Correlation()); perr != nil || rt != nil {
 			t.Fatalf("probe over B = %v (err %v), want nil (the baked reference is over A)", rt, perr)
 		}
 	})
 	t.Run("negative for lazy references", func(t *testing.T) {
 		t.Parallel()
-		lazyInner := plans.NewRecordQueryPredicatesFilterPlan(
-			plans.NewRecordQueryScanPlan(nil, values.UnknownType, false),
+		lazyInner := mustExecutorConstruct(plans.NewRecordQueryPredicatesFilterPlan(
+			mustExecutorConstruct(plans.NewRecordQueryScanPlan(nil, legB, false)),
 			[]predicates.QueryPredicate{ojEqPred(
-				values.NewFieldValue(qovA, "ID", values.NotNullLong),
+				mustTestFieldOrdinal(t, qovA, 0),
 				&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
 			)},
-		)
-		if rt, perr := probeOuterBakedType(lazyInner, qovA.Correlation); perr != nil || rt != nil {
+		))
+		if rt, perr := probeOuterBakedType(lazyInner, qovA.Correlation()); perr != nil || rt != nil {
 			t.Fatalf("probe over lazy references = %v (err %v), want nil (FrontierPinned only)", rt, perr)
 		}
 	})
 	t.Run("negative for a nil plan", func(t *testing.T) {
 		t.Parallel()
-		if rt, perr := probeOuterBakedType(nil, qovA.Correlation); perr != nil || rt != nil {
+		if rt, perr := probeOuterBakedType(nil, qovA.Correlation()); perr != nil || rt != nil {
 			t.Fatalf("probe over nil plan = %v (err %v), want nil", rt, perr)
 		}
 	})
 	t.Run("width divergence errors", func(t *testing.T) {
 		t.Parallel()
-		wideA := values.NewQuantifiedObjectValueOfType(qovA.Correlation, values.NewRecordType("", false, []values.Field{
+		wideA := mustTestQOV(t, qovA.Correlation(), values.NewRecordType("", false, []values.Field{
 			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 			{Name: "V", FieldType: values.NotNullLong, Ordinal: 1},
 			{Name: "X", FieldType: values.NotNullLong, Ordinal: 2},
 		}))
-		bakedWide, werr := values.NewFieldValueOfOrdinal(wideA, 0)
-		if werr != nil {
-			t.Fatalf("NewFieldValueOfOrdinal: %v", werr)
-		}
-		divergent := plans.NewRecordQueryPredicatesFilterPlan(
-			plans.NewRecordQueryScanPlan(nil, values.UnknownType, false),
+		bakedWide := mustExecutorConstruct(values.ResolveOrdinalSeedField(wideA, 0))
+		divergent := mustExecutorConstruct(plans.NewRecordQueryPredicatesFilterPlan(
+			mustExecutorConstruct(plans.NewRecordQueryScanPlan(nil, legB, false)),
 			[]predicates.QueryPredicate{
 				ojEqPred(bakedAID, &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}),
 				ojEqPred(bakedWide, &values.ConstantValue{Value: int64(2), Typ: values.NotNullLong}),
 			},
-		)
-		_, perr := probeOuterBakedType(divergent, qovA.Correlation)
+		))
+		_, perr := probeOuterBakedType(divergent, qovA.Correlation())
 		if perr == nil {
 			t.Fatal("divergent baked widths over one alias must return an error (planner bug — one seed-constructed QOV; fail the query, not the process)")
 		}
@@ -340,19 +352,16 @@ func TestComputeResult_PassThrough(t *testing.T) {
 	legA, legB, qovA, qovB, _ := ojWiringLegs(t)
 	// The probe-POSITIVE inner plan: a baked FrontierPinned reference over
 	// the outer alias inside a residual filter.
-	bakedAID, err := values.NewFieldValueOfOrdinal(qovA, 0)
-	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
-	}
-	bakedInner := plans.NewRecordQueryPredicatesFilterPlan(
-		plans.NewRecordQueryScanPlan(nil, values.UnknownType, false),
+	bakedAID := mustExecutorConstruct(values.ResolveOrdinalSeedField(qovA, 0))
+	bakedInner := mustExecutorConstruct(plans.NewRecordQueryPredicatesFilterPlan(
+		mustExecutorConstruct(plans.NewRecordQueryScanPlan(nil, legB, false)),
 		[]predicates.QueryPredicate{ojEqPred(bakedAID, &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong})},
-	)
+	))
 	newIdentityCursor := func(t *testing.T, innerPlan plans.RecordQueryPlan) *flatMapCursor {
 		t.Helper()
 		c, err := newFlatMapCursorWithOuterProperties(nil, nil, innerPlan, nil, EmptyEvaluationContext(),
-			qovA.Correlation, qovB.Correlation,
-			values.NewQuantifiedObjectValue(qovA.Correlation), recordlayer.ExecuteProperties{}, false)
+			qovA.Correlation(), qovB.Correlation(),
+			qovA, recordlayer.ExecuteProperties{}, false)
 		if err != nil {
 			t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)
 		}
@@ -465,13 +474,13 @@ func TestComputeResult_PassThrough(t *testing.T) {
 func TestUnwrapIdentityFlatMap(t *testing.T) {
 	t.Parallel()
 	_, _, qovA, qovB, seed := ojWiringLegs(t)
-	nlj := plans.NewRecordQueryNestedLoopJoinPlan(nil, nil, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), seed)
+	nlj := mustExecutorConstruct(plans.NewRecordQueryNestedLoopJoinPlan(nil, nil, nil, plans.JoinInner, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), seed))
 	corrM := values.NamedCorrelationIdentifier("M")
 	corrX := values.NamedCorrelationIdentifier("X")
 
 	t.Run("identity FlatMap unwraps to the outer join", func(t *testing.T) {
 		t.Parallel()
-		fm := plans.NewRecordQueryFlatMapPlan(nlj, nil, corrM, corrX, values.NewQuantifiedObjectValue(corrM), false)
+		fm := mustExecutorConstruct(plans.NewRecordQueryFlatMapPlan(nlj, nil, corrM, corrX, mustTestQOV(t, corrM, nlj.GetResultType()), false))
 		spans, ok := downstreamLegWindows(fm)
 		if !ok {
 			t.Fatal("identity FlatMap over a seed NLJ must unwrap to the join's windows")
@@ -482,30 +491,31 @@ func TestUnwrapIdentityFlatMap(t *testing.T) {
 	})
 	t.Run("wrapped identity FlatMap unwraps transitively", func(t *testing.T) {
 		t.Parallel()
-		fm := plans.NewRecordQueryFlatMapPlan(nlj, nil, corrM, corrX, values.NewQuantifiedObjectValue(corrM), false)
-		if _, ok := downstreamLegWindows(plans.NewRecordQueryLimitPlan(fm, 5, 0)); !ok {
+		fm := mustExecutorConstruct(plans.NewRecordQueryFlatMapPlan(nlj, nil, corrM, corrX, mustTestQOV(t, corrM, nlj.GetResultType()), false))
+		if _, ok := downstreamLegWindows(mustExecutorConstruct(plans.NewRecordQueryLimitPlan(fm, 5, 0))); !ok {
 			t.Fatal("limit(identityFlatMap(nlj)) must unwrap to the join's windows")
 		}
 	})
 	t.Run("inner-identity RV is not a passthrough", func(t *testing.T) {
 		t.Parallel()
-		fm := plans.NewRecordQueryFlatMapPlan(nlj, nil, corrM, corrX, values.NewQuantifiedObjectValue(corrX), false)
+		fm := mustExecutorConstruct(plans.NewRecordQueryFlatMapPlan(nlj, nil, corrM, corrX, mustTestQOV(t, corrX, nlj.GetResultType()), false))
 		if _, ok := downstreamLegWindows(fm); ok {
 			t.Fatal("an INNER-identity FlatMap re-emits inner rows — it must not unwrap to the outer's windows")
 		}
 	})
 	t.Run("identity FlatMap over a non-join declines", func(t *testing.T) {
 		t.Parallel()
-		fm := plans.NewRecordQueryFlatMapPlan(
-			plans.NewRecordQueryScanPlan(nil, values.UnknownType, false), nil,
-			corrM, corrX, values.NewQuantifiedObjectValue(corrM), false)
+		plainType := exactTestRowType(values.Field{Name: "X", FieldType: values.NotNullLong})
+		fm := mustExecutorConstruct(plans.NewRecordQueryFlatMapPlan(
+			mustExecutorConstruct(plans.NewRecordQueryScanPlan(nil, plainType, false)), nil,
+			corrM, corrX, mustTestQOV(t, corrM, plainType), false))
 		if _, ok := downstreamLegWindows(fm); ok {
 			t.Fatal("identity FlatMap over a scan has no join below — must decline")
 		}
 	})
 	t.Run("seed-RV FlatMap stays its own authority", func(t *testing.T) {
 		t.Parallel()
-		fm := plans.NewRecordQueryFlatMapPlan(nil, nil, qovA.Correlation, qovB.Correlation, seed, false)
+		fm := mustExecutorConstruct(plans.NewRecordQueryFlatMapPlan(nil, nil, qovA.Correlation(), qovB.Correlation(), seed, false))
 		spans, ok := downstreamLegWindows(fm)
 		if !ok || len(spans) != 2 {
 			t.Fatalf("seed-RV FlatMap = (%+v, %v), want its own 2 spans (unchanged by the unwrap arm)", spans, ok)
@@ -525,12 +535,12 @@ func ojBakedCoveringScan(t *testing.T, baked values.Value) *plans.RecordQueryCov
 	if !merged.Ok {
 		t.Fatalf("Merge(=) into the universe range failed: %+v", merged)
 	}
-	idx := plans.NewRecordQueryIndexPlan(
+	idx := mustExecutorConstruct(plans.NewRecordQueryIndexPlan(
 		"IDX_B_W",
 		[]*predicates.ComparisonRange{merged.Range},
-		nil, values.UnknownType, false,
-	)
-	return plans.NewRecordQueryCoveringIndexPlan(idx)
+		nil, ojProbeInnerType(), false,
+	))
+	return mustExecutorConstruct(plans.NewRecordQueryCoveringIndexPlan(idx))
 }
 
 // TestProbeOuterBakedType_CoveringScan pins the probe over the COVERING shape.
@@ -546,14 +556,11 @@ func TestProbeOuterBakedType_CoveringScan(t *testing.T) {
 	t.Parallel()
 	legA, _, qovA, qovB, _ := ojWiringLegs(t)
 
-	bakedAID, err := values.NewFieldValueOfOrdinal(qovA, 0)
-	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
-	}
+	bakedAID := mustExecutorConstruct(values.ResolveOrdinalSeedField(qovA, 0))
 
 	t.Run("bare covering scan", func(t *testing.T) {
 		t.Parallel()
-		rt, perr := probeOuterBakedType(ojBakedCoveringScan(t, bakedAID), qovA.Correlation)
+		rt, perr := probeOuterBakedType(ojBakedCoveringScan(t, bakedAID), qovA.Correlation())
 		if perr != nil {
 			t.Fatalf("probe error: %v", perr)
 		}
@@ -570,16 +577,16 @@ func TestProbeOuterBakedType_CoveringScan(t *testing.T) {
 		// Fetch(Covering(IndexScan)) under a residual filter — the full shape
 		// the access path emits. The wrappers ARE children, so the walk must
 		// reach the covering leaf through them and then into its field.
-		wrapped := plans.NewRecordQueryPredicatesFilterPlan(
-			plans.NewRecordQueryFetchFromPartialRecordPlan(
-				ojBakedCoveringScan(t, bakedAID), nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
-			),
+		wrapped := mustExecutorConstruct(plans.NewRecordQueryPredicatesFilterPlan(
+			mustExecutorConstruct(plans.NewRecordQueryFetchFromPartialRecordPlan(
+				ojBakedCoveringScan(t, bakedAID), nil, ojProbeInnerType(), plans.FetchIndexRecordsPrimaryKey,
+			)),
 			[]predicates.QueryPredicate{ojEqPred(
 				&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
 				&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
 			)},
-		)
-		rt, perr := probeOuterBakedType(wrapped, qovA.Correlation)
+		))
+		rt, perr := probeOuterBakedType(wrapped, qovA.Correlation())
 		if perr != nil {
 			t.Fatalf("probe error: %v", perr)
 		}
@@ -590,7 +597,7 @@ func TestProbeOuterBakedType_CoveringScan(t *testing.T) {
 
 	t.Run("negative for another alias", func(t *testing.T) {
 		t.Parallel()
-		if rt, perr := probeOuterBakedType(ojBakedCoveringScan(t, bakedAID), qovB.Correlation); perr != nil || rt != nil {
+		if rt, perr := probeOuterBakedType(ojBakedCoveringScan(t, bakedAID), qovB.Correlation()); perr != nil || rt != nil {
 			t.Fatalf("probe over B = %v (err %v), want nil (the baked reference is over A)", rt, perr)
 		}
 	})
@@ -604,8 +611,8 @@ func TestProbeOuterBakedType_CoveringScan(t *testing.T) {
 		outer := recordlayer.FromList([]QueryResult{ojLegQR(t, legA, int64(1), int64(10))})
 		c, cerr := newFlatMapCursorWithOuterProperties(
 			outer, nil, ojBakedCoveringScan(t, bakedAID), nil, EmptyEvaluationContext(),
-			qovA.Correlation, qovB.Correlation,
-			values.NewQuantifiedObjectValue(qovA.Correlation),
+			qovA.Correlation(), qovB.Correlation(),
+			qovA,
 			recordlayer.ExecuteProperties{}, false,
 		)
 		if cerr != nil {

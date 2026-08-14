@@ -22,15 +22,20 @@ import (
 // See GetResultValue.
 type LogicalUnionExpression struct {
 	quantifiers []Quantifier
+	resultValue values.QuantifiedObjectValue
 }
 
 // NewLogicalUnionExpression builds a union of N children. Children
 // list is copied. Empty children list is allowed but pathological —
 // callers should use a no-op scan instead.
-func NewLogicalUnionExpression(quantifiers []Quantifier) *LogicalUnionExpression {
+func NewLogicalUnionExpression(quantifiers []Quantifier) (*LogicalUnionExpression, error) {
+	resultValue, err := requireSetOperationResult("LogicalUnionExpression", quantifiers)
+	if err != nil {
+		return nil, err
+	}
 	copied := make([]Quantifier, len(quantifiers))
 	copy(copied, quantifiers)
-	return &LogicalUnionExpression{quantifiers: copied}
+	return &LogicalUnionExpression{quantifiers: copied, resultValue: resultValue}, nil
 }
 
 // GetResultValue returns the first non-existential child's flowed object value,
@@ -54,36 +59,7 @@ func NewLogicalUnionExpression(quantifiers []Quantifier) *LogicalUnionExpression
 //
 // Pinned by TestSetOperationResultValueStatesChildZerosRow.
 func (e *LogicalUnionExpression) GetResultValue() values.Value {
-	return setOperationResultValue(e.quantifiers)
-}
-
-// setOperationResultValue is Java's `RecordQuerySetPlan.mergeValues` result-type
-// selection (RecordQuerySetPlan.java:252-261), shared by the two set operations
-// that call it: the FIRST NON-EXISTENTIAL quantifier's flowed object.
-//
-// The filter is what makes "child 0" correct rather than incidental. An
-// Existential quantifier flows no row — it is consulted for a boolean — so its
-// flowed object cannot be a set operation's output row, and Java skips it before
-// picking. Today no construction site puts one under a union or an intersection
-// (all children are ForEach, and the property is closed under the rewrites that
-// re-parent them), so this is a no-op; it is here because the alternative is a
-// site whose correctness rests on a whole-graph invariant nobody restates, and
-// which now STATES a row type where before it stated nothing — a wrong row that
-// is believed is worse than a wrong shape that is inert.
-//
-// Java throws `RecordCoreException("cannot resolve result type")` when no
-// non-existential quantifier exists. Go states an untyped NULL instead: this
-// accessor has no error return and library code must not panic, and an unstated
-// type is the honest answer for an operator with no child row to state. That is
-// the same answer already given for the empty-children case, which this subsumes.
-func setOperationResultValue(quantifiers []Quantifier) values.Value {
-	for _, q := range quantifiers {
-		if q.Kind() == QuantifierExistential {
-			continue
-		}
-		return q.GetFlowedObjectValue()
-	}
-	return values.NewNullValue(values.UnknownType)
+	return e.resultValue
 }
 
 // GetQuantifiers returns the children. Read-only.
@@ -115,12 +91,11 @@ func (e *LogicalUnionExpression) EqualsWithoutChildren(other RelationalExpressio
 // HashCodeWithoutChildren is a class-discriminating constant.
 func (e *LogicalUnionExpression) HashCodeWithoutChildren() uint64 { return 37 }
 
-func (e *LogicalUnionExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	copied := make([]Quantifier, len(quantifiers))
-	copy(copied, quantifiers)
-	cp := *e
-	cp.quantifiers = copied
-	return &cp
+func (e *LogicalUnionExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("LogicalUnionExpression", len(quantifiers), len(e.quantifiers)); err != nil {
+		return nil, err
+	}
+	return NewLogicalUnionExpression(quantifiers)
 }
 
 var _ RelationalExpression = (*LogicalUnionExpression)(nil)

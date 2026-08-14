@@ -299,8 +299,12 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 
 		// The merge carries its leg edges directly — one live quantifier per
 		// pinned winner, no separate physical wrapper (RFC-184 W2).
-		mergePlan := plans.NewRecordQueryMergeSortUnionPlanFromQuantifiers(
+		mergePlan, err := plans.NewRecordQueryMergeSortUnionPlanFromQuantifiers(
 			newQuantifiers, comparisonKeys, isReverse, true)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		call.YieldFinalExpression(mergePlan)
 	}
 }

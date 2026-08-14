@@ -41,7 +41,7 @@ import (
 func TestPlanningCostModel_CorrelatedPointProbeRanksAsUnbounded(t *testing.T) {
 	t.Parallel()
 
-	ctx := &pkGateTestCtx{pk: []string{"ID"}}
+	ctx := &pointProbePKCtx{pk: []string{"ID"}}
 	ordersAlias := values.NamedCorrelationIdentifier("O")
 	productsAlias := values.NamedCorrelationIdentifier("P")
 
@@ -59,8 +59,10 @@ func TestPlanningCostModel_CorrelatedPointProbeRanksAsUnbounded(t *testing.T) {
 	corrByLeg, _ := pointProbeEqFilter(t, "ORDERS", ordersAlias,
 		pointProbeRef(t, "ORDERS", productsAlias, "ID"))
 
-	opponent := plans.NewRecordQueryFirstOrDefaultPlan(
-		plans.NewRecordQueryScanPlan([]string{"PRODUCTS"}, pointProbeIdentityLayouts["PRODUCTS"], false), nil)
+	opponentScan := mustPointProbeConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"PRODUCTS"}, pointProbeIdentityLayouts["PRODUCTS"], false))
+	opponent := mustPointProbeConstruct(plans.NewRecordQueryFirstOrDefaultPlan(
+		opponentScan, values.NewNullValue(pointProbeIdentityLayouts["PRODUCTS"])))
 
 	// --- the criterion is actually reachable, stated as assertions rather than
 	// assumed by the comparisons below.

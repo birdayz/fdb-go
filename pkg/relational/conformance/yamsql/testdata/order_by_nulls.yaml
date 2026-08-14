@@ -33,7 +33,7 @@ tests:
   # Explicit NULLS LAST on ASC — Go extension: in-memory sort handles
   # NULL placement that index scans can't provide.
   - query: SELECT v FROM t ORDER BY v ASC NULLS LAST
-    plan_contains: "InMemorySort([V ASC]"
+    plan_contains: "InMemorySort([T.V#1 ASC]"
     plan_not_contains: "IndexScan"
     rows:
       - [5]
@@ -43,7 +43,7 @@ tests:
       - [~]
   # Explicit NULLS FIRST on DESC — Go extension: in-memory sort.
   - query: SELECT v FROM t ORDER BY v DESC NULLS FIRST
-    plan_contains: "InMemorySort([V DESC]"
+    plan_contains: "InMemorySort([T.V#1 DESC]"
     plan_not_contains: "IndexScan"
     rows:
       - [~]

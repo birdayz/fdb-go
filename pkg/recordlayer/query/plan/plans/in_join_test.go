@@ -17,9 +17,15 @@ import (
 // on the field for EXECUTION (GetBindingName), which is unaffected.
 func TestRecordQueryInJoinPlan_BindingAliasInvariant(t *testing.T) {
 	t.Parallel()
-	inner := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	a := NewRecordQueryInJoinPlan(inner, "q$836", true, false)
-	b := NewRecordQueryInJoinPlan(inner, "q$2673", true, false) // same shape, different alias
+	inner := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	a := mustChecked(t, func() (*RecordQueryInJoinPlan, error) {
+		return NewRecordQueryInJoinPlan(inner, "q$836", true, false)
+	})
+	b := mustChecked(t, func() (*RecordQueryInJoinPlan, error) {
+		return NewRecordQueryInJoinPlan(inner, "q$2673", true, false)
+	}) // same shape, different alias
 
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Error("InJoins differing only in the binding alias must be EqualsWithoutChildren-equal")
@@ -38,12 +44,34 @@ func TestRecordQueryInJoinPlan_BindingAliasInvariant(t *testing.T) {
 
 	// A GENUINE structural difference (scan direction) must still distinguish them —
 	// alias-invariance must not collapse real differences.
-	rev := NewRecordQueryInJoinPlan(inner, "q$836", true, true)
+	rev := mustChecked(t, func() (*RecordQueryInJoinPlan, error) {
+		return NewRecordQueryInJoinPlan(inner, "q$836", true, true)
+	})
 	if a.EqualsPlanWithoutChildren(rev) {
 		t.Error("InJoins differing in reverse must NOT be equal")
 	}
 	if a.HashCodeWithoutChildren() == rev.HashCodeWithoutChildren() {
 		t.Error("InJoins differing in reverse should hash differently")
+	}
+}
+
+func TestRecordQueryInJoinPlan_PreservesExactUniqueBindingAlias(t *testing.T) {
+	t.Parallel()
+	inner := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	unique := values.UniqueCorrelationIdentifier()
+	plan := mustChecked(t, func() (*RecordQueryInJoinPlan, error) {
+		return NewRecordQueryInJoinPlanWithBindingAlias(inner, unique, false, false)
+	})
+	if plan.GetBindingAlias() != unique {
+		t.Fatalf("exact binding alias = %v, want original Unique handle %v", plan.GetBindingAlias(), unique)
+	}
+	if plan.GetBindingAlias() == values.NamedCorrelationIdentifier(unique.Name()) {
+		t.Fatal("Unique binding was reconstructed as a rendered-equal Named identifier")
+	}
+	if plan.GetBindingName() != unique.Name() {
+		t.Fatalf("display binding name = %q, want %q", plan.GetBindingName(), unique.Name())
 	}
 }
 
@@ -54,10 +82,16 @@ func TestRecordQueryInJoinPlan_BindingAliasInvariant(t *testing.T) {
 // plan-cache churn. Only the binding COUNT (number of IN columns) is structural.
 func TestRecordQueryInUnionPlan_BindingAliasInvariant(t *testing.T) {
 	t.Parallel()
-	inner := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	ck := []values.Value{&values.FieldValue{Field: "ID"}}
-	a := NewRecordQueryInUnionPlan(inner, []string{"q$5"}, ck, false)
-	b := NewRecordQueryInUnionPlan(inner, []string{"q$99"}, ck, false) // same shape, different alias
+	inner := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	ck := []values.Value{testField(t, "ID", values.NullableLong)}
+	a := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
+		return NewRecordQueryInUnionPlan(inner, []string{"q$5"}, ck, false)
+	})
+	b := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
+		return NewRecordQueryInUnionPlan(inner, []string{"q$99"}, ck, false)
+	}) // same shape, different alias
 
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Error("InUnions differing only in binding aliases must be EqualsWithoutChildren-equal")
@@ -73,7 +107,9 @@ func TestRecordQueryInUnionPlan_BindingAliasInvariant(t *testing.T) {
 	}
 
 	// The binding COUNT is structural — a different number of IN columns must NOT be equal.
-	two := NewRecordQueryInUnionPlan(inner, []string{"q$5", "q$6"}, ck, false)
+	two := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
+		return NewRecordQueryInUnionPlan(inner, []string{"q$5", "q$6"}, ck, false)
+	})
 	if a.EqualsPlanWithoutChildren(two) {
 		t.Error("InUnions with a different number of bindings must NOT be equal")
 	}

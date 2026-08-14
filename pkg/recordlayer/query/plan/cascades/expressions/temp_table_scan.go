@@ -1,6 +1,7 @@
 package expressions
 
 import (
+	"fmt"
 	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -10,10 +11,18 @@ import (
 // identified by a correlation. No quantifiers (leaf node).
 type TempTableScanExpression struct {
 	tempTableAlias values.CorrelationIdentifier
+	resultType     values.ExactTypeHandle
 }
 
-func NewTempTableScanExpression(alias values.CorrelationIdentifier) *TempTableScanExpression {
-	return &TempTableScanExpression{tempTableAlias: alias}
+func NewTempTableScanExpression(alias values.CorrelationIdentifier, flowedType values.Type) (*TempTableScanExpression, error) {
+	if alias.IsZero() || alias == values.CurrentCorrelation() {
+		return nil, fmt.Errorf("TempTableScanExpression alias: expected an ordinary non-zero correlation")
+	}
+	resultType, err := snapshotExpressionResultType("TempTableScanExpression", flowedType)
+	if err != nil {
+		return nil, err
+	}
+	return &TempTableScanExpression{tempTableAlias: alias, resultType: resultType}, nil
 }
 
 func (e *TempTableScanExpression) GetTempTableAlias() values.CorrelationIdentifier {
@@ -21,7 +30,7 @@ func (e *TempTableScanExpression) GetTempTableAlias() values.CorrelationIdentifi
 }
 
 func (e *TempTableScanExpression) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+	return values.NewQueriedValue(nil, e.resultType.Type())
 }
 
 func (e *TempTableScanExpression) GetQuantifiers() []Quantifier { return nil }
@@ -39,18 +48,24 @@ func (e *TempTableScanExpression) EqualsWithoutChildren(other RelationalExpressi
 	if !ok {
 		return false
 	}
-	return e.tempTableAlias == o.tempTableAlias
+	return e.tempTableAlias == o.tempTableAlias &&
+		typeEquals(e.resultType.Type(), o.resultType.Type())
 }
 
 func (e *TempTableScanExpression) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("temptablescan|"))
 	h.Write([]byte(e.tempTableAlias.Name()))
+	h.Write([]byte{0})
+	h.Write(e.resultType.CanonicalBytes())
 	return h.Sum64()
 }
 
-func (e *TempTableScanExpression) WithQuantifiers(_ []Quantifier) RelationalExpression {
-	return e
+func (e *TempTableScanExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("TempTableScanExpression", len(quantifiers), 0); err != nil {
+		return nil, err
+	}
+	return e, nil
 }
 
 var _ RelationalExpression = (*TempTableScanExpression)(nil)

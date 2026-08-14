@@ -32,13 +32,24 @@ import (
 // requested-ordering enumeration).
 func TestToPlanPartitions_SeparatesFixedBoundScanFromSortedUnboundScan(t *testing.T) {
 	t.Parallel()
-	id := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
-	k := &values.FieldValue{Field: "K", Typ: values.NotNullLong}
+	rowType := values.NewRecordType("TBL", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "K", FieldType: values.NotNullLong, Ordinal: 1},
+	})
+	rootValue, rootErr := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("pk_partition"), rowType)
+	root := mustConstruct(t, rootValue, rootErr)
+	idValue, idErr := values.ResolveFieldOrdinals(root, []int{0})
+	id := mustConstruct(t, idValue, idErr)
+	kValue, kErr := values.ResolveFieldOrdinals(root, []int{1})
+	k := mustConstruct(t, kValue, kErr)
 
-	unbound := plans.NewRecordQueryScanPlan([]string{"TBL"}, values.UnknownType, false).
+	unboundValue, unboundErr := plans.NewRecordQueryScanPlan([]string{"TBL"}, rowType, false)
+	unbound := mustConstruct(t, unboundValue, unboundErr).
 		WithPrimaryKey([]values.Value{id, k}).
 		WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
-	bound := plans.NewRecordQueryScanPlan([]string{"TBL"}, values.UnknownType, false).
+	boundValue, boundErr := plans.NewRecordQueryScanPlan([]string{"TBL"}, rowType, false)
+	bound := mustConstruct(t, boundValue, boundErr).
 		WithPrimaryKey([]values.Value{id, k}).
 		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))}).
 		WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})

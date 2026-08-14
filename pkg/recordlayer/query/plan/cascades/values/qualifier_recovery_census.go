@@ -132,9 +132,10 @@ const (
 	// isPlainQualifiedColumnReference — which rejects on `()` because
 	// "parentheses identify the rendered aggregate/function label at issue".
 	// That is a heuristic over a RENDERING, not a parse, and it is the reason
-	// this site is counted despite its own comment stating the provenance is
-	// carried: the provenance BOOLEAN (AliasMinted) is carried, the QUALIFIER
-	// still is not.
+	// this site is counted even though both provenance and structured alias
+	// source are now carried: it still splits the rendered internal datum key to
+	// obtain the leaf, and the census verifies that rendering agrees with the
+	// frozen source rather than whichever physical carrier now owns the Value.
 	QualRecSiteDisplayLabelStrip
 
 	qualRecSiteCount

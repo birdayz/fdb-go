@@ -45,9 +45,9 @@ import "testing"
 func TestProjectionResultValueNeverHoldsOneNameTwice(t *testing.T) {
 	t.Parallel()
 
-	nested := func(leaf string, ordinal int) *FieldValue {
-		return &FieldValue{Field: "N", Typ: UnknownType, Resolved: &FieldPath{
-			Accessors: []ResolvedAccessor{{Field: "N", Ordinal: 0}, {Field: leaf, Ordinal: ordinal}},
+	nested := func(leaf string, ordinal int) *fieldValue {
+		return &fieldValue{Field: "N", Typ: UnknownType, Resolved: &fieldPath{
+			Accessors: []resolvedAccessor{{Field: "N", Ordinal: 0}, {Field: leaf, Ordinal: ordinal}},
 		}}
 	}
 
@@ -58,16 +58,16 @@ func TestProjectionResultValueNeverHoldsOneNameTwice(t *testing.T) {
 		want        []string
 	}{{
 		name:        "two references of one bare name",
-		projections: []Value{NewFlatFieldValue("K", UnknownType), NewFlatFieldValue("K", UnknownType)},
+		projections: []Value{newFlatFieldValue("K", UnknownType), newFlatFieldValue("K", UnknownType)},
 		want:        []string{"K", "K_2"},
 	}, {
 		name:        "two aliases of one spelling",
-		projections: []Value{NewFlatFieldValue("A", UnknownType), NewFlatFieldValue("B", UnknownType)},
+		projections: []Value{newFlatFieldValue("A", UnknownType), newFlatFieldValue("B", UnknownType)},
 		aliases:     []string{"X", "X"},
 		want:        []string{"X", "X_2"},
 	}, {
 		name:        "three of a kind, so the suffix counter is driven past two",
-		projections: []Value{NewFlatFieldValue("K", UnknownType), NewFlatFieldValue("K", UnknownType), NewFlatFieldValue("K", UnknownType)},
+		projections: []Value{newFlatFieldValue("K", UnknownType), newFlatFieldValue("K", UnknownType), newFlatFieldValue("K", UnknownType)},
 		want:        []string{"K", "K_2", "K_3"},
 	}, {
 		name: "TWO MEMBERS OF ONE STRUCT ROOT — the collision RFC-229 §2.3 removed",
@@ -80,7 +80,7 @@ func TestProjectionResultValueNeverHoldsOneNameTwice(t *testing.T) {
 		want:        []string{"N.SK", "N.CO"},
 	}, {
 		name:        "distinct names are left alone",
-		projections: []Value{NewFlatFieldValue("A", UnknownType), NewFlatFieldValue("B", UnknownType)},
+		projections: []Value{newFlatFieldValue("A", UnknownType), newFlatFieldValue("B", UnknownType)},
 		want:        []string{"A", "B"},
 	}} {
 		t.Run(tc.name, func(t *testing.T) {

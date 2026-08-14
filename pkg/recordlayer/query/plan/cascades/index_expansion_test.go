@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"slices"
 	"testing"
 
 	"fdb.dev/gen"
@@ -10,17 +11,53 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+func indexExpansionRowType(name string, columns ...string) *values.RecordType {
+	fields := make([]values.Field, len(columns))
+	for i, column := range columns {
+		fields[i] = values.Field{Name: column, FieldType: values.NullableLong, Ordinal: i}
+	}
+	return values.NewRecordType(name, false, fields)
+}
+
+func indexExpansionKnownCandidate(
+	indexName string,
+	recordTypes []string,
+	columnNames []string,
+	sargableAliases []values.CorrelationIdentifier,
+	flowedType values.Type,
+	unique bool,
+	pkColumnNames []string,
+) *ValueIndexScanMatchCandidate {
+	createsDuplicates := false
+	return NewValueIndexScanMatchCandidateWithFunctions(
+		indexName, recordTypes, columnNames, nil, sargableAliases,
+		flowedType, unique, pkColumnNames, &createsDuplicates)
+}
+
+func indexExpansionField(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+	rowType values.Type,
+	ordinals ...int,
+) values.Value {
+	t.Helper()
+	root, err := values.NewQuantifiedObjectValue(alias, rowType)
+	root = mustConstruct(t, root, err)
+	field, err := values.ResolveFieldOrdinals(root, ordinals)
+	return mustConstruct(t, field, err)
+}
+
 func TestExpandValueIndex_TwoColumns(t *testing.T) {
 	t.Parallel()
 
 	alias0 := values.UniqueCorrelationIdentifier()
 	alias1 := values.UniqueCorrelationIdentifier()
-	cand := newKnownDistinctValueIndexCandidate(
+	cand := indexExpansionKnownCandidate(
 		"idx_order_region_amount",
 		[]string{"Order"},
 		[]string{"region", "amount"},
 		[]values.CorrelationIdentifier{alias0, alias1},
-		values.UnknownType,
+		indexExpansionRowType("Order", "region", "amount"),
 		false,
 		nil,
 	)
@@ -79,13 +116,13 @@ func TestExpandValueIndex_TwoColumns(t *testing.T) {
 		if !ok {
 			t.Fatalf("predicate[%d]: got %T, want *Placeholder", i, pred)
 		}
-		fv, ok := ph.Value.(*values.FieldValue)
+		field, ok := values.AsFieldValue(ph.Value)
 		if !ok {
 			t.Fatalf("placeholder[%d] value: got %T, want *FieldValue", i, ph.Value)
 		}
 		expectedCol := []string{"region", "amount"}[i]
-		if fv.Field != expectedCol {
-			t.Fatalf("placeholder[%d] field: got %q, want %q", i, fv.Field, expectedCol)
+		if field.DisplayName() != expectedCol {
+			t.Fatalf("placeholder[%d] field: got %q, want %q", i, field.DisplayName(), expectedCol)
 		}
 		expectedAlias := []values.CorrelationIdentifier{alias0, alias1}[i]
 		if ph.ParameterAlias != expectedAlias {
@@ -117,12 +154,12 @@ func TestExpandValueIndex_TwoColumns(t *testing.T) {
 func TestExpandValueIndex_ZeroColumns(t *testing.T) {
 	t.Parallel()
 
-	cand := newKnownDistinctValueIndexCandidate(
+	cand := indexExpansionKnownCandidate(
 		"idx_empty",
 		[]string{"Customer"},
 		[]string{},
 		[]values.CorrelationIdentifier{},
-		values.UnknownType,
+		indexExpansionRowType("Customer", "ID"),
 		false,
 		nil,
 	)
@@ -160,12 +197,12 @@ func TestExpandValueIndex_ZeroColumns(t *testing.T) {
 func TestValueIndexScanMatchCandidate_GetTraversal_NonNil(t *testing.T) {
 	t.Parallel()
 
-	cand := newKnownDistinctValueIndexCandidate(
+	cand := indexExpansionKnownCandidate(
 		"idx_name",
 		[]string{"Person"},
 		[]string{"name"},
 		[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
-		values.UnknownType,
+		indexExpansionRowType("Person", "name"),
 		false,
 		nil,
 	)
@@ -182,7 +219,7 @@ func TestValueIndexScanMatchCandidate_GetTraversal_NonNil(t *testing.T) {
 func TestValueIndexScanMatchCandidate_GetTraversal_SyncOnce(t *testing.T) {
 	t.Parallel()
 
-	cand := newKnownDistinctValueIndexCandidate(
+	cand := indexExpansionKnownCandidate(
 		"idx_city",
 		[]string{"Address"},
 		[]string{"city", "zip"},
@@ -190,7 +227,7 @@ func TestValueIndexScanMatchCandidate_GetTraversal_SyncOnce(t *testing.T) {
 			values.UniqueCorrelationIdentifier(),
 			values.UniqueCorrelationIdentifier(),
 		},
-		values.UnknownType,
+		indexExpansionRowType("Address", "city", "zip"),
 		true,
 		nil,
 	)
@@ -238,24 +275,26 @@ func TestValueIndexScanMatchCandidate_UnknownMetadataFailsClosed(t *testing.T) {
 	}
 	source := values.UniqueCorrelationIdentifier()
 	target := values.UniqueCorrelationIdentifier()
+	coverageRow := values.NewRecordType("CoverageRow", false, []values.Field{
+		{Name: "TAGS", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 0},
+	})
 	if translated, ok := unknown.PushValueThroughFetch(
-		values.NewFieldValue(
-			values.NewQuantifiedObjectValue(source),
-			"TAGS",
-			values.UnknownType,
-		),
+		indexExpansionField(t, source, coverageRow, 0),
 		source,
 		target,
 	); ok || translated != nil {
 		t.Fatalf("unknown candidate translated coverage value: %v, %t", translated, ok)
 	}
 
-	knownScalar := newKnownDistinctValueIndexCandidate(
+	knownScalar := indexExpansionKnownCandidate(
 		"idx_scalar",
 		[]string{"Item"},
 		[]string{"STATUS"},
 		[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
-		values.UnknownType,
+		values.NewRecordType("Item", false, []values.Field{
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+			{Name: "STATUS", FieldType: values.NullableString, Ordinal: 1},
+		}),
 		false,
 		[]string{"ID"},
 	)
@@ -266,6 +305,13 @@ func TestValueIndexScanMatchCandidate_UnknownMetadataFailsClosed(t *testing.T) {
 
 func TestExpandValueIndex_PreBuiltScalarNestingFailsClosed(t *testing.T) {
 	t.Parallel()
+	addressType := values.NewRecordType("Address", false, []values.Field{
+		{Name: "CITY", FieldType: values.NullableString, Ordinal: 0},
+	})
+	itemType := values.NewRecordType("Item", false, []values.Field{
+		{Name: "ADDR", FieldType: addressType, Ordinal: 0},
+		{Name: "TAGS", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 1},
+	})
 
 	scalar := gen.Field_SCALAR
 	nestedScalar := &gen.KeyExpression{Nesting: &gen.Nesting{
@@ -273,11 +319,11 @@ func TestExpandValueIndex_PreBuiltScalarNestingFailsClosed(t *testing.T) {
 			FieldName: proto.String("ADDR"),
 			FanType:   &scalar,
 		},
-		Child: candidateTestKeyField("CITY", gen.Field_SCALAR),
+		Child: keyExpressionField("CITY", gen.Field_SCALAR),
 	}}
 	mixed := &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{
 		nestedScalar,
-		candidateTestKeyField("TAGS", gen.Field_FAN_OUT),
+		keyExpressionField("TAGS", gen.Field_FAN_OUT),
 	}}}
 
 	for _, tc := range []struct {
@@ -306,7 +352,7 @@ func TestExpandValueIndex_PreBuiltScalarNestingFailsClosed(t *testing.T) {
 				tc.columns,
 				nil,
 				aliases,
-				values.UnknownType,
+				itemType,
 				false,
 				nil,
 				&createsDuplicates,
@@ -322,13 +368,16 @@ func TestExpandValueIndex_KnownDuplicatesWithoutFanOutRootFailsClosed(t *testing
 	t.Parallel()
 
 	duplicates := true
+	itemType := values.NewRecordType("Item", false, []values.Field{
+		{Name: "TAGS", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 0},
+	})
 	candidate := NewValueIndexScanMatchCandidateWithFunctions(
 		"idx_hidden_fanout",
 		[]string{"Item"},
 		[]string{"TAGS"},
 		nil,
 		[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
-		values.UnknownType,
+		itemType,
 		false,
 		nil,
 		&duplicates,
@@ -340,18 +389,21 @@ func TestExpandValueIndex_KnownDuplicatesWithoutFanOutRootFailsClosed(t *testing
 
 func TestExpandValueIndex_InconsistentFlatRootFailsClosed(t *testing.T) {
 	t.Parallel()
+	itemType := values.NewRecordType("Item", false, []values.Field{
+		{Name: "TAGS", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 0},
+	})
 
 	noDuplicates := false
 	cardinalityRoot := &gen.KeyExpression{Function: &gen.Function{
 		Name: proto.String(FunctionKindCardinality),
-		Arguments: candidateTestKeyField(
+		Arguments: keyExpressionField(
 			"TAGS",
 			gen.Field_CONCATENATE,
 		),
 	}}
 	customRoot := &gen.KeyExpression{Function: &gen.Function{
 		Name: proto.String("custom"),
-		Arguments: candidateTestKeyField(
+		Arguments: keyExpressionField(
 			"TAGS",
 			gen.Field_SCALAR,
 		),
@@ -369,7 +421,7 @@ func TestExpandValueIndex_InconsistentFlatRootFailsClosed(t *testing.T) {
 		{
 			name:      "scalar_root_with_cardinality_tag",
 			functions: []string{FunctionKindCardinality},
-			root:      candidateTestKeyField("TAGS", gen.Field_SCALAR),
+			root:      keyExpressionField("TAGS", gen.Field_SCALAR),
 		},
 		{
 			name: "unsupported_custom_function",
@@ -387,7 +439,7 @@ func TestExpandValueIndex_InconsistentFlatRootFailsClosed(t *testing.T) {
 				[]values.CorrelationIdentifier{
 					values.UniqueCorrelationIdentifier(),
 				},
-				values.UnknownType,
+				itemType,
 				false,
 				nil,
 				&noDuplicates,
@@ -405,12 +457,12 @@ func TestExpandValueIndex_InconsistentFlatRootFailsClosed(t *testing.T) {
 func TestExpandValueIndex_LeafReferences(t *testing.T) {
 	t.Parallel()
 
-	cand := newKnownDistinctValueIndexCandidate(
+	cand := indexExpansionKnownCandidate(
 		"idx_leaf",
 		[]string{"Item"},
 		[]string{"price"},
 		[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
-		values.UnknownType,
+		indexExpansionRowType("Item", "price"),
 		false,
 		nil,
 	)
@@ -495,12 +547,12 @@ func TestExpandValueIndex_DirectFanOutUsesJavaGraphShape(t *testing.T) {
 	if !ok {
 		t.Fatalf("inner leaf = %T, want *ExplodeExpression", inner.GetQuantifiers()[0].GetRangesOver().Get())
 	}
-	collection, ok := explode.GetCollectionValue().(*values.FieldValue)
-	if !ok {
+	collection, ok := values.AsFieldValue(explode.GetCollectionValue())
+	if !ok || collection.Path() == nil {
 		t.Fatalf("explode collection = %T, want *FieldValue", explode.GetCollectionValue())
 	}
-	if collection.Resolved == nil || collection.Resolved.Root().Ordinal != 1 {
-		t.Fatalf("explode collection path = %#v, want TAGS at ordinal 1", collection.Resolved)
+	if got := collection.Path().Ordinals(); !slices.Equal(got, []int{1}) {
+		t.Fatalf("explode collection path = %v, want TAGS at ordinal 1", got)
 	}
 	innerPredicates := inner.GetPredicates()
 	if len(innerPredicates) != 1 {
@@ -513,8 +565,8 @@ func TestExpandValueIndex_DirectFanOutUsesJavaGraphShape(t *testing.T) {
 	if placeholder.ParameterAlias != alias {
 		t.Fatalf("inner placeholder alias = %s, want %s", placeholder.ParameterAlias, alias)
 	}
-	if qov, ok := placeholder.Value.(*values.QuantifiedObjectValue); !ok ||
-		qov.Correlation != inner.GetQuantifiers()[0].GetAlias() {
+	qov, ok := values.AsQuantifiedObjectValue(placeholder.Value)
+	if !ok || qov.Correlation() != inner.GetQuantifiers()[0].GetAlias() {
 		t.Fatalf("inner placeholder value = %#v, want the exploded element QOV", placeholder.Value)
 	}
 }
@@ -634,8 +686,9 @@ func TestExpandValueIndex_NestedFanOutSharesOneExplodeAcrossThenChildren(t *test
 		if placeholder.ParameterAlias != wantAliases[i] {
 			t.Fatalf("inner placeholder[%d] alias = %s, want %s", i, placeholder.ParameterAlias, wantAliases[i])
 		}
-		field, ok := placeholder.Value.(*values.FieldValue)
-		if !ok || field.Resolved == nil || field.Resolved.Root().Ordinal != wantOrdinals[i] {
+		field, ok := values.AsFieldValue(placeholder.Value)
+		if !ok || field.Path() == nil ||
+			!slices.Equal(field.Path().Ordinals(), []int{wantOrdinals[i]}) {
 			t.Fatalf("inner placeholder[%d] value = %#v, want child ordinal %d", i, placeholder.Value, wantOrdinals[i])
 		}
 	}
@@ -650,13 +703,16 @@ func TestExpandValueIndex_UnsupportedFanOutFailsClosed(t *testing.T) {
 		Arguments: keyExpressionField("TAGS", gen.Field_FAN_OUT),
 	}}
 	duplicates := true
+	itemType := values.NewRecordType("Item", false, []values.Field{
+		{Name: "TAGS", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 0},
+	})
 	cand := NewValueIndexScanMatchCandidateWithFunctions(
 		"unsupported",
 		[]string{"Item"},
 		[]string{"TAGS"},
 		nil,
 		[]values.CorrelationIdentifier{alias},
-		values.UnknownType,
+		itemType,
 		false,
 		nil,
 		&duplicates,
@@ -672,13 +728,17 @@ func TestExpandValueIndex_FanOutASTColumnMismatchFailsClosed(t *testing.T) {
 
 	alias := values.UniqueCorrelationIdentifier()
 	duplicates := true
+	itemType := values.NewRecordType("Item", false, []values.Field{
+		{Name: "OTHER", FieldType: values.NullableString, Ordinal: 0},
+		{Name: "TAGS", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 1},
+	})
 	cand := NewValueIndexScanMatchCandidateWithFunctions(
 		"mismatched",
 		[]string{"Item"},
 		[]string{"OTHER"},
 		nil,
 		[]values.CorrelationIdentifier{alias},
-		values.UnknownType,
+		itemType,
 		false,
 		nil,
 		&duplicates,
@@ -699,6 +759,13 @@ func TestExpandValueIndex_NullableArrayWrapperFailsClosed(t *testing.T) {
 		childFanType := childFanType
 		t.Run(childFanType.String(), func(t *testing.T) {
 			t.Parallel()
+			wrapperType := values.NewRecordType("TagsWrapper", true, []values.Field{
+				{Name: "values", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 0},
+			})
+			itemType := values.NewRecordType("Item", false, []values.Field{
+				{Name: "TAGS", FieldType: wrapperType, Ordinal: 0},
+				{Name: "OTHER", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 1},
+			})
 
 			parentFanType := gen.Field_SCALAR
 			root := &gen.KeyExpression{Nesting: &gen.Nesting{
@@ -729,7 +796,7 @@ func TestExpandValueIndex_NullableArrayWrapperFailsClosed(t *testing.T) {
 				columns,
 				nil,
 				aliases,
-				values.UnknownType,
+				itemType,
 				false,
 				nil,
 				&duplicates,
@@ -774,7 +841,10 @@ func TestAggregateIndexMatchCandidate_GetTraversal_NonNil(t *testing.T) {
 		[]string{"region"},
 		expressions.AggSum,
 		"amount",
-		values.UnknownType,
+		values.NewRecordType("Order", false, []values.Field{
+			{Name: "region", FieldType: values.NullableString, Ordinal: 0},
+			{Name: "amount", FieldType: values.NullableLong, Ordinal: 1},
+		}),
 		[]values.Type{values.NullableString},
 		1,
 	)
@@ -806,7 +876,10 @@ func TestAggregateIndexMatchCandidate_GetTraversal_SyncOnce(t *testing.T) {
 		[]string{"category"},
 		expressions.AggCount,
 		"id",
-		values.UnknownType,
+		values.NewRecordType("Event", false, []values.Field{
+			{Name: "category", FieldType: values.NullableString, Ordinal: 0},
+			{Name: "id", FieldType: values.NullableLong, Ordinal: 1},
+		}),
 		[]values.Type{values.NullableString},
 		1,
 	)
@@ -846,14 +919,21 @@ func TestCandidateBoundaryClassifiesTautologyAsNoPredicate(t *testing.T) {
 	t.Parallel()
 
 	newCandidate := func(root *gen.KeyExpression, duplicates bool) *ValueIndexScanMatchCandidate {
+		fieldType := values.Type(values.NullableString)
+		if keyExpressionContainsFanOut(root) {
+			fieldType = values.NewArrayType(true, values.NotNullString)
+		}
+		rowType := values.NewRecordType("Item", false, []values.Field{
+			{Name: "TAGS", FieldType: fieldType, Ordinal: 0},
+		})
 		return NewValueIndexScanMatchCandidateWithFunctions(
 			"idx_taut", []string{"Item"}, []string{"TAGS"}, nil,
 			[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
-			values.UnknownType, false, nil, &duplicates,
+			rowType, false, nil, &duplicates,
 		).WithRootKeyExpression(root)
 	}
 
-	fanOutRoot := candidateTestKeyField("TAGS", gen.Field_FAN_OUT)
+	fanOutRoot := keyExpressionField("TAGS", gen.Field_FAN_OUT)
 
 	t.Run("presence gates see no predicate", func(t *testing.T) {
 		t.Parallel()
@@ -877,7 +957,7 @@ func TestCandidateBoundaryClassifiesTautologyAsNoPredicate(t *testing.T) {
 
 	t.Run("cardinality shortcut admits it", func(t *testing.T) {
 		t.Parallel()
-		scalarRoot := candidateTestKeyField("TAGS", gen.Field_SCALAR)
+		scalarRoot := keyExpressionField("TAGS", gen.Field_SCALAR)
 		cand := newCandidate(scalarRoot, false).WithPredicateProto(tautologyPredicateProto())
 		if !candidatePreservesBaseRecordCardinality(cand) {
 			t.Fatal("a WHERE TRUE scalar index was refused as cardinality-preserving — " +
@@ -897,7 +977,7 @@ func TestCandidateBoundaryClassifiesTautologyAsNoPredicate(t *testing.T) {
 		if cand.GetTraversal() != nil {
 			t.Fatal("a genuinely sparse fan-out candidate must still fail closed")
 		}
-		scalarCand := newCandidate(candidateTestKeyField("TAGS", gen.Field_SCALAR), false).
+		scalarCand := newCandidate(keyExpressionField("TAGS", gen.Field_SCALAR), false).
 			WithPredicateProto(filtering)
 		if candidatePreservesBaseRecordCardinality(scalarCand) {
 			t.Fatal("a sparse index omits records and cannot preserve base-record cardinality")

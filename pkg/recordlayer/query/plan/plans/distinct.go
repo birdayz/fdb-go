@@ -55,8 +55,8 @@ type RecordQueryDistinctPlan struct {
 
 // NewRecordQueryDistinctPlan constructs a distinct plan over the
 // given inner plan.
-func NewRecordQueryDistinctPlan(inner RecordQueryPlan) *RecordQueryDistinctPlan {
-	return &RecordQueryDistinctPlan{innerQ: QuantifierOverPlan(inner)}
+func NewRecordQueryDistinctPlan(inner RecordQueryPlan) (*RecordQueryDistinctPlan, error) {
+	return NewRecordQueryDistinctPlanFromQuantifier(QuantifierOverPlan(inner), false)
 }
 
 // NewRecordQueryDistinctPlanFromQuantifier builds a distinct whose child is a
@@ -73,8 +73,12 @@ func NewRecordQueryDistinctPlan(inner RecordQueryPlan) *RecordQueryDistinctPlan 
 // in a DETACHED single-member final reference so planFromQuantifier resolves
 // that exact member and the streaming executor never runs over an unordered
 // float. See newPhysicalDistinctFor.
-func NewRecordQueryDistinctPlanFromQuantifier(innerQ expressions.Quantifier, streaming bool) *RecordQueryDistinctPlan {
-	return &RecordQueryDistinctPlan{innerQ: innerQ, Streaming: streaming}
+func NewRecordQueryDistinctPlanFromQuantifier(innerQ expressions.Quantifier, streaming bool) (*RecordQueryDistinctPlan, error) {
+	base, err := newPlanExprBaseForQuantifier("RecordQueryDistinctPlan", innerQ)
+	if err != nil {
+		return nil, err
+	}
+	return &RecordQueryDistinctPlan{PlanExprBase: base, innerQ: innerQ, Streaming: streaming}, nil
 }
 
 // GetInner returns the inner plan, dereferenced through the quantifier.
@@ -95,17 +99,11 @@ func (p *RecordQueryDistinctPlan) GetInnerQuantifier() expressions.Quantifier {
 // inner's. This is the identity physicalDistinctWrapper.GetResultValue supplied
 // (RFC-184 W2).
 func (p *RecordQueryDistinctPlan) GetResultValue() values.Value {
-	return p.innerQ.GetFlowedObjectValue()
+	return p.PlanExprBase.GetResultValue()
 }
 
 // GetResultType returns the inner's result type.
-func (p *RecordQueryDistinctPlan) GetResultType() values.Type {
-	inner := p.GetInner()
-	if inner == nil {
-		return values.UnknownType
-	}
-	return inner.GetResultType()
-}
+func (p *RecordQueryDistinctPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryDistinctPlan) GetChildren() []RecordQueryPlan {
@@ -269,13 +267,18 @@ func (p *RecordQueryDistinctPlan) EqualsWithoutChildren(other expressions.Relati
 // WithQuantifiers returns a copy ranging over the given child quantifier —
 // Java's copy-on-write withChild(Reference). The receiver is never mutated,
 // which is what keeps a memoized plan safe to share.
-func (p *RecordQueryDistinctPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 1 {
-		return p
+func (p *RecordQueryDistinctPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryDistinctPlan", len(qs), 1); err != nil {
+		return nil, err
 	}
 	cp := *p
+	base, err := newPlanExprBaseForQuantifier("RecordQueryDistinctPlan", qs[0])
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
 	cp.innerQ = qs[0]
-	return &cp
+	return &cp, nil
 }
 
 var (
@@ -302,17 +305,22 @@ func (p *RecordQueryDistinctPlan) WithChildren(qs []expressions.Quantifier) (exp
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("RecordQueryDistinctPlan.WithChildren: expected 1 child, got %d", len(qs))
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // WithInner returns a copy with the inner replaced and every other field
 // preserved — the extraction-relink rebuild path (see findPhysicalPlan's
 // shell completion). A constructor rebuild would drop fields the setters
 // carry, so identity-preserving copy is the only safe form.
-func (p *RecordQueryDistinctPlan) WithInner(inner RecordQueryPlan) *RecordQueryDistinctPlan {
+func (p *RecordQueryDistinctPlan) WithInner(inner RecordQueryPlan) (*RecordQueryDistinctPlan, error) {
 	cp := *p
 	cp.innerQ = QuantifierOverPlan(inner)
-	return &cp
+	base, err := newPlanExprBaseForQuantifier("RecordQueryDistinctPlan", cp.innerQ)
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
+	return &cp, nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

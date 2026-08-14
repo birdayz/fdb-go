@@ -74,8 +74,8 @@ func (r *PushRequestedOrderingThroughInLikeSelectRule) OnMatch(call *Implementat
 	// Verify: result value is a QuantifiedObjectValue referencing the
 	// inner quantifier's alias (SELECT * only referring to innerQ).
 	resultValue := sel.GetResultValue()
-	qov, isQOV := resultValue.(*values.QuantifiedObjectValue)
-	if !isQOV || qov.Correlation != innerQ.GetAlias() {
+	qov, isQOV := values.AsQuantifiedObjectValue(resultValue)
+	if !isQOV || qov.Correlation() != innerQ.GetAlias() {
 		return
 	}
 

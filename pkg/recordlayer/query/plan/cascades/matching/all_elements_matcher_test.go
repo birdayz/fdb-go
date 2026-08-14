@@ -95,7 +95,7 @@ func TestAllElementsMatcher_AnyMissDeclines(t *testing.T) {
 	m := NewAllElementsMatcher(NewConstantMatcher())
 	in := []any{
 		&values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
-		&values.FieldValue{Field: "x", Typ: values.NullableLong}, // not a Constant
+		mustMatchingField(t, "x", values.NullableLong), // not a Constant
 		&values.ConstantValue{Value: int64(3), Typ: values.NullableLong},
 	}
 	if got := m.BindMatches(NewBindings(), in); got != nil {
@@ -144,7 +144,7 @@ func TestAllElementsMatcher_BindsHostNode(t *testing.T) {
 	m := NewAllElementsMatcher(NewAnyValue())
 	in := []any{
 		&values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
-		&values.FieldValue{Field: "x", Typ: values.NullableLong},
+		mustMatchingField(t, "x", values.NullableLong),
 	}
 	got := m.BindMatches(NewBindings(), in)
 	if len(got) != 1 {
@@ -180,7 +180,7 @@ func TestAllElementsMatcher_CartesianProduct(t *testing.T) {
 func TestAllElementsMatcher_ThreadsOuterBindings(t *testing.T) {
 	t.Parallel()
 	outerMatcher := NewAnyValue()
-	preset := &values.FieldValue{Field: "preset", Typ: values.NullableLong}
+	preset := mustMatchingField(t, "preset", values.NullableLong)
 	outer := NewBindings().Bind(outerMatcher, preset)
 
 	m := NewAllElementsMatcher(NewAnyValue())

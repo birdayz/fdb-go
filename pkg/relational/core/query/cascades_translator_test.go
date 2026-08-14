@@ -18,11 +18,7 @@ func TestPartitionCorrelatedScalarWherePredicate_OnlyTopLevelAndMoves(t *testing
 	t.Parallel()
 
 	outer := predicates.NewComparisonPredicate(
-		values.NewFieldValue(
-			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("P")),
-			"ID",
-			values.NotNullLong,
-		),
+		exactTestNamedField(t, "P", "ID", values.NotNullLong),
 		predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: int64(2)},
@@ -64,10 +60,9 @@ func TestPartitionCorrelatedScalarWherePredicate_OnlyTopLevelAndMoves(t *testing
 }
 
 // TestTableColumns_FromMetadata pins the md→columns derivation (tableColumns +
-// FieldTypeForFD) that 7.6 uses to source source-anchored join-leg columns. It
-// does NOT type the scan leaf (that was NAK'd — the scan stays AnyRecord; see
-// RFC-077 v3). Columns are upper-cased; proto Kind maps to values.Type; repeated
-// and message (non-UUID) fields collapse to UnknownType.
+// FieldTypeForFD) that sources both exact scan rows and source-anchored join-leg
+// columns. Columns are upper-cased and nested/repeated fields retain their exact
+// proto-derived types.
 func TestTableColumns_FromMetadata(t *testing.T) {
 	t.Parallel()
 
@@ -108,12 +103,16 @@ func TestTableColumns_FromMetadata(t *testing.T) {
 	primitive("ORDER_ID", values.TypeCodeLong)
 	primitive("PRICE", values.TypeCodeInt)
 	primitive("VECTOR_DATA", values.TypeCodeBytes)
-	// Message (non-UUID) field FLOWER and repeated field TAGS collapse to Unknown.
-	if byName["FLOWER"] != values.UnknownType {
-		t.Errorf("FLOWER (message): got %v, want UnknownType", byName["FLOWER"])
+	flower, flowerOK := byName["FLOWER"].(*values.RecordType)
+	if !flowerOK || !flower.IsNullable() || len(flower.Fields) != 2 ||
+		flower.Fields[0].Name != "TYPE" || flower.Fields[0].FieldType.Code() != values.TypeCodeString ||
+		flower.Fields[1].Name != "COLOR" || flower.Fields[1].FieldType.Code() != values.TypeCodeEnum {
+		t.Errorf("FLOWER (message): got %v, want exact nullable TYPE/COLOR record", byName["FLOWER"])
 	}
-	if byName["TAGS"] != values.UnknownType {
-		t.Errorf("TAGS (repeated): got %v, want UnknownType", byName["TAGS"])
+	tags, tagsOK := byName["TAGS"].(*values.ArrayType)
+	if !tagsOK || tags.IsNullable() || tags.ElementType == nil ||
+		!tags.ElementType.Equals(values.NotNullString) {
+		t.Errorf("TAGS (repeated): got %v, want ARRAY<STRING NOT NULL> NOT NULL", byName["TAGS"])
 	}
 
 	// nil md and unknown table fall back to nil (no typing source).
@@ -139,6 +138,21 @@ func demoMetaData(t *testing.T) *recordlayer.RecordMetaData {
 		t.Fatalf("build metadata: %v", err)
 	}
 	return md
+}
+
+// demoTableQOV mirrors the exact row authority translateScan obtains from the
+// same demo metadata. Direct logical-tree fixtures use it when they must state
+// a sort/group/aggregate Value before the translator has minted its quantifier.
+func demoTableQOV(t *testing.T, table, alias string) values.QuantifiedObjectValue {
+	t.Helper()
+	cols := (&cascadesTranslator{md: demoMetaData(t)}).tableColumns(table)
+	if len(cols) == 0 {
+		t.Fatalf("demo table %q has no exact columns", table)
+	}
+	if alias == "" {
+		alias = table
+	}
+	return exactTestQOV(t, alias, values.NewRecordType("", false, cols))
 }
 
 // TestLegColumns_NamingConsistentWithAnchoredRecord pins, IN ISOLATION (RFC-077
@@ -298,10 +312,42 @@ func TestLegColumns_NestedNoSpuriousKeys(t *testing.T) {
 	}
 }
 
+// Positional machinery projections intentionally carry nil ProjectedValues:
+// AggregateOutputOrdinals is their exact source-layout contract.  legColumns
+// feeds executable ordinal seeds, so it must preserve the projected aggregate
+// type rather than reinterpret the nil Value as UNKNOWN.
+func TestLegColumns_PositionalProjectionPreservesExactType(t *testing.T) {
+	t.Parallel()
+	md := demoMetaData(t)
+	tr := &cascadesTranslator{md: md}
+	scan := logical.NewScan("Order", "O")
+	orderRow := demoTableQOV(t, "Order", "O")
+	price := exactTestField(t, orderRow, 2)
+	agg := logical.NewAggregate(
+		scan,
+		nil,
+		[]logical.AggregateCall{{Func: "SUM", Operand: "PRICE", BareColumn: true}},
+		[]string{"SUM(O.PRICE)"},
+		false,
+	)
+	agg.AggregateOperands = []values.Value{price}
+	project := logical.NewProject(agg, []string{"SUM(O.PRICE)"}, nil)
+	project.ProjectedValues = []values.Value{nil}
+	project.AggregateOutputOrdinals = []int{0}
+
+	cols := tr.legColumns(project)
+	if len(cols) != 1 {
+		t.Fatalf("positional projection columns = %v, want one exact aggregate slot", cols)
+	}
+	if cols[0].FieldType == nil || cols[0].FieldType.Code() != price.Type().Code() || !cols[0].FieldType.IsNullable() {
+		t.Fatalf("positional projection type = %v, want nullable %v", cols[0].FieldType, price.Type().Code())
+	}
+}
+
 func TestTranslateScan(t *testing.T) {
 	t.Parallel()
-	scan := logical.NewScan("orders", "")
-	ref := TranslateToCascades(scan)
+	scan := logical.NewScan("Order", "")
+	ref, _ := TranslateToCascadesWithSubqueries(scan, demoMetaData(t))
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
@@ -330,9 +376,9 @@ func TestTranslateLimit(t *testing.T) {
 	// (→ RecordQueryLimitPlan), applied at its pipeline position — NOT skipped
 	// and post-execution-hoisted. The top member is the limit expression; its
 	// inner ranges over the scan.
-	scan := logical.NewScan("orders", "")
+	scan := logical.NewScan("Order", "")
 	limit := logical.NewLimit(scan, 10, 5)
-	ref := TranslateToCascades(limit)
+	ref, _ := TranslateToCascadesWithSubqueries(limit, demoMetaData(t))
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
@@ -355,10 +401,10 @@ func TestTranslateLimit(t *testing.T) {
 
 func TestTranslateUnion(t *testing.T) {
 	t.Parallel()
-	scanA := logical.NewScan("A", "")
-	scanB := logical.NewScan("B", "")
+	scanA := logical.NewScan("Order", "A")
+	scanB := logical.NewScan("Order", "B")
 	union := logical.NewUnion([]logical.LogicalOperator{scanA, scanB}, false)
-	ref := TranslateToCascades(union)
+	ref, _ := TranslateToCascadesWithSubqueries(union, demoMetaData(t))
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
@@ -461,12 +507,13 @@ func TestTranslateDistinctUnion(t *testing.T) {
 
 func TestTranslateSort(t *testing.T) {
 	t.Parallel()
-	scan := logical.NewScan("orders", "")
+	scan := logical.NewScan("Order", "O")
+	row := demoTableQOV(t, "Order", "O")
 	sort := logical.NewSort(scan, []logical.SortKey{
-		{Expr: "price", Dir: logical.SortAsc},
-		{Expr: "id", Dir: logical.SortDesc},
+		{Expr: "PRICE", Dir: logical.SortAsc, Value: exactTestField(t, row, 2)},
+		{Expr: "ORDER_ID", Dir: logical.SortDesc, Value: exactTestField(t, row, 0)},
 	})
-	ref := TranslateToCascades(sort)
+	ref, _ := TranslateToCascadesWithSubqueries(sort, demoMetaData(t))
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
@@ -475,17 +522,181 @@ func TestTranslateSort(t *testing.T) {
 	}
 }
 
+func TestTranslateDerivedSortKeyToPhysicalInputOnlyNormalizesTopLevelNames(t *testing.T) {
+	t.Parallel()
+	alias := values.NamedCorrelationIdentifier("S")
+	logicalType := values.NewRecordType("", false, []values.Field{
+		{Name: "a.b", Ordinal: 0, FieldType: values.NullableLong},
+	})
+	physicalType := values.NewRecordType("", false, []values.Field{
+		{Name: "A.B", Ordinal: 0, FieldType: values.NullableLong},
+	})
+	logicalOwner := exactTestQOV(t, alias.Name(), logicalType)
+	physicalOwner := exactTestQOV(t, alias.Name(), physicalType)
+	logicalField := exactTestField(t, logicalOwner, 0)
+
+	normalized, err := translateDerivedSortKeyToPhysicalInput(logicalField, physicalOwner)
+	if err != nil {
+		t.Fatalf("normalize derived sort key: %v", err)
+	}
+	normalizedField, ok := values.AsFieldValue(normalized)
+	if !ok || normalizedField.ChildValue() != physicalOwner {
+		t.Fatalf("normalized key = %T/%v, want exact physical owner %p",
+			normalized, normalizedField, physicalOwner)
+	}
+	if got := normalizedField.Path().Ordinals(); len(got) != 1 || got[0] != 0 {
+		t.Fatalf("normalized key path = %v, want [0]", got)
+	}
+	if !normalizedField.ResultType().Equals(values.NullableLong) {
+		t.Fatalf("normalized key type = %s, want nullable LONG", normalizedField.ResultType())
+	}
+	if field, fieldOK := values.AsFieldValue(logicalField); !fieldOK || field.ChildValue() != logicalOwner {
+		t.Fatal("normalization mutated the authored derived key")
+	}
+
+	// An ordinary derived output whose logical and physical declarations already
+	// agree is outside the names-only bridge. Keep its Value pointer stable; the
+	// later declared-edge translation owns that phase change.
+	samePhysical := exactTestQOV(t, alias.Name(), logicalType)
+	unchanged, err := translateDerivedSortKeyToPhysicalInput(logicalField, samePhysical)
+	if err != nil || unchanged != logicalField {
+		t.Fatalf("same-name key = (%v, %v), want unchanged", unchanged, err)
+	}
+
+	foreignOwner := exactTestQOV(t, "FOREIGN", logicalType)
+	foreignField := exactTestField(t, foreignOwner, 0)
+	unchanged, err = translateDerivedSortKeyToPhysicalInput(foreignField, physicalOwner)
+	if err != nil || unchanged != foreignField {
+		t.Fatalf("foreign key = (%v, %v), want unchanged", unchanged, err)
+	}
+
+	computed := &values.ArithmeticValue{
+		Op:    values.OpAdd,
+		Left:  logicalField,
+		Right: values.LiteralValue(int64(1)),
+	}
+	unchanged, err = translateDerivedSortKeyToPhysicalInput(computed, physicalOwner)
+	if err != nil || unchanged != computed {
+		t.Fatalf("computed key = (%v, %v), want unchanged", unchanged, err)
+	}
+
+	for _, test := range []struct {
+		name string
+		typ  values.Type
+	}{
+		{
+			name: "width",
+			typ: values.NewRecordType("", false, []values.Field{
+				{Name: "A.B", Ordinal: 0, FieldType: values.NullableLong},
+				{Name: "EXTRA", Ordinal: 1, FieldType: values.NullableLong},
+			}),
+		},
+		{
+			name: "leaf type",
+			typ: values.NewRecordType("", false, []values.Field{
+				{Name: "A.B", Ordinal: 0, FieldType: values.NullableString},
+			}),
+		},
+		{
+			name: "leaf nullability",
+			typ: values.NewRecordType("", false, []values.Field{
+				{Name: "A.B", Ordinal: 0, FieldType: values.NotNullLong},
+			}),
+		},
+		{
+			name: "record nullability",
+			typ: values.NewRecordType("", true, []values.Field{
+				{Name: "A.B", Ordinal: 0, FieldType: values.NullableLong},
+			}),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			target := exactTestQOV(t, alias.Name(), test.typ)
+			if rewritten, rewriteErr := translateDerivedSortKeyToPhysicalInput(logicalField, target); rewriteErr == nil || rewritten != nil {
+				t.Fatalf("structural drift = (%v, %v), want nil,error", rewritten, rewriteErr)
+			}
+		})
+	}
+}
+
 func TestTranslateProject(t *testing.T) {
 	t.Parallel()
-	scan := logical.NewScan("orders", "")
-	proj := logical.NewProject(scan, []string{"id", "price"}, []string{"", "cost"})
-	ref := TranslateToCascades(proj)
+	scan := logical.NewScan("Order", "O")
+	proj := logical.NewProject(scan, []string{"ORDER_ID", "PRICE"}, []string{"", "cost"})
+	proj.InputOrdinals = []int{0, 2}
+	ref, _ := TranslateToCascadesWithSubqueries(proj, demoMetaData(t))
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
 	if _, ok := ref.Members()[0].(*expressions.LogicalProjectionExpression); !ok {
 		t.Fatalf("expected LogicalProjectionExpression, got %T", ref.Members()[0])
 	}
+}
+
+func TestExactLogicalProjectionOutputNamesPreserveQuotedScalarReferenceCase(t *testing.T) {
+	t.Parallel()
+	scalar := exactTestQOV(t, "VAL", values.NotNullInt)
+	project := logical.NewProject(logical.NewScan("Order", "O"), []string{"val"}, nil)
+	project.ProjectionRefs = []logical.ColumnRef{{Present: true, Bare: "val"}}
+
+	names, err := exactLogicalProjectionOutputNames(project, []values.Value{scalar})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "val" {
+		t.Fatalf("quoted scalar output names = %v, want [val]", names)
+	}
+
+	// splitColumnRef folds an unquoted spelling before it reaches this helper.
+	// The output authority therefore preserves that already-folded form too.
+	project.ProjectionRefs[0].Bare = "VAL"
+	names, err = exactLogicalProjectionOutputNames(project, []values.Value{scalar})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "VAL" {
+		t.Fatalf("unquoted scalar output names = %v, want [VAL]", names)
+	}
+}
+
+func TestExactProjectionForLogicalProjectDoesNotLeakActiveCTEQualifier(t *testing.T) {
+	t.Parallel()
+
+	rowType := values.NewRecordType("", false, []values.Field{{
+		Name: "ID", Ordinal: 0, FieldType: values.NotNullLong,
+	}})
+	row := exactTestQOV(t, "S", rowType)
+	id, err := values.ResolveFieldOrdinals(row, []int{0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanExpr, err := expressions.NewFullUnorderedScanExpression([]string{"S"}, rowType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := expressions.ForEachQuantifier(expressions.InitialOf(scanExpr))
+
+	project := logical.NewProject(logical.NewScan("S", ""), []string{"S.ID"}, nil)
+	project.ProjectionRefs = []logical.ColumnRef{{
+		Present: true, Bare: "ID", Qualifier: "S", Qualified: true,
+	}}
+	translator := &cascadesTranslator{cteScope: map[string]logical.LogicalOperator{
+		"S": logical.NewScan("T", ""),
+	}}
+	expr := translator.exactProjectionForLogicalProject([]values.Value{id}, project, inner)
+	proj, ok := expr.(*expressions.LogicalProjectionExpression)
+	if !ok {
+		t.Fatalf("projection = %T, want LogicalProjectionExpression", expr)
+	}
+	if got := proj.GetOutputNames(); len(got) != 1 || got[0] != "ID" {
+		t.Fatalf("SQL-boundary output names = %v, want [ID]", got)
+	}
+	if got := proj.GetAliases(); len(got) != 0 {
+		t.Fatalf("projection aliases = %v, want none", got)
+	}
+	// cteScope controls resolution of the child source, not the result label.
+	// Re-introducing a source-qualified output override here leaks the internal
+	// CTE key into SELECT metadata and into the final positional row.
 }
 
 func TestTranslateJoin(t *testing.T) {
@@ -515,8 +726,8 @@ func TestTranslateJoin(t *testing.T) {
 	// assert below is the sole shape authority.
 	values.AssertOrdinalJoinSeed(rc) // panics on a malformed seed
 	for i, f := range rc.Fields {
-		fv, isFV := f.Value.(*values.FieldValue)
-		if !isFV || fv.Resolved == nil {
+		fv, isFV := values.AsFieldValue(f.Value)
+		if !isFV || fv.Path() == nil || fv.Path().Len() == 0 {
 			t.Fatalf("ordinal seed field %d (%q) is not a baked leg reference: %T", i, f.Name, f.Value)
 		}
 	}
@@ -610,12 +821,14 @@ func TestTranslateNil(t *testing.T) {
 
 func TestTranslateAggregate(t *testing.T) {
 	t.Parallel()
-	scan := logical.NewScan("orders", "")
-	agg := logical.NewAggregate(scan, []logical.GroupKey{{Display: "CATEGORY", Bare: "CATEGORY"}}, []logical.AggregateCall{
-		{Func: "SUM", Operand: "PRICE", BareColumn: true},
+	scan := logical.NewScan("Order", "O")
+	row := demoTableQOV(t, "Order", "O")
+	agg := logical.NewAggregate(scan, []logical.GroupKey{{Display: "ORDER_ID", Bare: "ORDER_ID", Value: exactTestField(t, row, 0)}}, []logical.AggregateCall{
+		{Func: "SUM", Operand: "PRICE", BareColumn: true, Bare: "PRICE"},
 		{Func: "COUNT", Operand: "*", Star: true},
 	}, []string{"total", "cnt"}, false)
-	ref := TranslateToCascades(agg)
+	agg.AggregateOperands = []values.Value{exactTestField(t, row, 2), nil}
+	ref, _ := TranslateToCascadesWithSubqueries(agg, demoMetaData(t))
 	if ref == nil {
 		t.Fatal("expected non-nil reference for aggregate")
 	}
@@ -639,9 +852,9 @@ func TestTranslateAggregate(t *testing.T) {
 
 func TestTranslateAggregateNoGroup(t *testing.T) {
 	t.Parallel()
-	scan := logical.NewScan("orders", "")
+	scan := logical.NewScan("Order", "")
 	agg := logical.NewAggregate(scan, nil, []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, []string{"cnt"}, false)
-	ref := TranslateToCascades(agg)
+	ref, _ := TranslateToCascadesWithSubqueries(agg, demoMetaData(t))
 	if ref == nil {
 		t.Fatal("expected non-nil reference for scalar aggregate")
 	}
@@ -684,13 +897,23 @@ func TestTranslateAggregate_StructuredCallsOnly(t *testing.T) {
 	t.Parallel()
 
 	build := func(calls []logical.AggregateCall) *logical.LogicalAggregate {
-		scan := logical.NewScan("orders", "")
-		return logical.NewAggregate(scan, []logical.GroupKey{{Display: "STATUS", Bare: "STATUS"}}, calls, make([]string, len(calls)), false)
+		scan := logical.NewScan("Order", "O")
+		row := demoTableQOV(t, "Order", "O")
+		agg := logical.NewAggregate(scan,
+			[]logical.GroupKey{{Display: "ORDER_ID", Bare: "ORDER_ID", Value: exactTestField(t, row, 0)}},
+			calls, make([]string, len(calls)), false)
+		agg.AggregateOperands = make([]values.Value, len(calls))
+		for i, call := range calls {
+			if call.BareColumn && strings.EqualFold(call.Operand, "PRICE") {
+				agg.AggregateOperands[i] = exactTestField(t, row, 2)
+			}
+		}
+		return agg
 	}
 
-	// Bare-column operand without a resolved Value: lazy FieldValue survives.
+	// A parse-tree-classified bare column carries its exact resolved Value.
 	ref, _, err := TranslateToCascadesWithError(build(
-		[]logical.AggregateCall{{Func: "SUM", Operand: "PRICE", BareColumn: true}}), nil)
+		[]logical.AggregateCall{{Func: "SUM", Operand: "PRICE", BareColumn: true, Bare: "PRICE"}}), demoMetaData(t))
 	if err != nil || ref == nil {
 		t.Fatalf("bare-column aggregate must translate: ref=%v err=%v", ref, err)
 	}
@@ -701,7 +924,7 @@ func TestTranslateAggregate_StructuredCallsOnly(t *testing.T) {
 
 	// Computed operand with no resolved Value: typed decline.
 	ref, _, err = TranslateToCascadesWithError(build(
-		[]logical.AggregateCall{{Func: "SUM", Operand: "(AMOUNT+10)*2"}}), nil)
+		[]logical.AggregateCall{{Func: "SUM", Operand: "(AMOUNT+10)*2"}}), demoMetaData(t))
 	if ref != nil || err == nil {
 		t.Fatalf("unresolved computed operand must decline typed: ref=%v err=%v", ref, err)
 	}
@@ -709,9 +932,9 @@ func TestTranslateAggregate_StructuredCallsOnly(t *testing.T) {
 
 func TestTranslateDistinct(t *testing.T) {
 	t.Parallel()
-	scan := logical.NewScan("orders", "")
+	scan := logical.NewScan("Order", "")
 	dist := logical.NewDistinct(scan)
-	ref := TranslateToCascades(dist)
+	ref, _ := TranslateToCascadesWithSubqueries(dist, demoMetaData(t))
 	if ref == nil {
 		t.Fatal("expected non-nil reference for DISTINCT")
 	}
@@ -734,11 +957,11 @@ func TestTranslateNestedSortFilterScan(t *testing.T) {
 
 func TestTranslateCTEInlines(t *testing.T) {
 	t.Parallel()
-	body := logical.NewScan("Product", "")
+	body := logical.NewScan("Order", "")
 	main := logical.NewScan("expensive", "")
 	cte := logical.NewCTE("expensive", body, main, false)
 
-	ref := TranslateToCascades(cte)
+	ref, _ := TranslateToCascadesWithSubqueries(cte, demoMetaData(t))
 	if ref == nil {
 		t.Fatal("expected non-nil reference for non-recursive CTE")
 	}
@@ -746,8 +969,8 @@ func TestTranslateCTEInlines(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected inlined FullUnorderedScanExpression, got %T", ref.Members()[0])
 	}
-	if scan.GetRecordTypes()[0] != "Product" {
-		t.Fatalf("expected scan of Product, got %s", scan.GetRecordTypes()[0])
+	if scan.GetRecordTypes()[0] != "Order" {
+		t.Fatalf("expected scan of Order, got %s", scan.GetRecordTypes()[0])
 	}
 }
 
@@ -768,13 +991,13 @@ func TestTranslateCTEWithFilter(t *testing.T) {
 
 func TestTranslateCTEChained(t *testing.T) {
 	t.Parallel()
-	bodyA := logical.NewScan("Product", "")
+	bodyA := logical.NewScan("Order", "")
 	mainA := logical.NewScan("B", "")
 	bodyB := logical.NewScan("A", "")
 	cteA := logical.NewCTE("A", bodyA, mainA, false)
 	cteB := logical.NewCTE("B", bodyB, cteA, false)
 
-	ref := TranslateToCascades(cteB)
+	ref, _ := TranslateToCascadesWithSubqueries(cteB, demoMetaData(t))
 	if ref == nil {
 		t.Fatal("expected non-nil reference for chained CTEs")
 	}
@@ -782,8 +1005,8 @@ func TestTranslateCTEChained(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected FullUnorderedScanExpression, got %T", ref.Members()[0])
 	}
-	if scan.GetRecordTypes()[0] != "Product" {
-		t.Fatalf("expected scan of Product (A inlined into B's body), got %s", scan.GetRecordTypes()[0])
+	if scan.GetRecordTypes()[0] != "Order" {
+		t.Fatalf("expected scan of Order (A inlined into B's body), got %s", scan.GetRecordTypes()[0])
 	}
 }
 
@@ -805,11 +1028,13 @@ func TestTranslateCTEOuterTextFilterBailsToNaive(t *testing.T) {
 func TestTranslateCTEShadowsTableName(t *testing.T) {
 	t.Parallel()
 	// CTE name = table name in body — must not infinite-recurse.
-	body := logical.NewProject(logical.NewScan("T", ""), []string{"id"}, []string{""})
-	main := logical.NewProject(logical.NewScan("T", ""), []string{"id"}, []string{""})
-	cte := logical.NewCTE("T", body, main, false)
+	body := logical.NewProject(logical.NewScan("Order", ""), []string{"ORDER_ID"}, []string{""})
+	body.InputOrdinals = []int{0}
+	main := logical.NewProject(logical.NewScan("Order", ""), []string{"ORDER_ID"}, []string{""})
+	main.InputOrdinals = []int{0}
+	cte := logical.NewCTE("Order", body, main, false)
 
-	ref := TranslateToCascades(cte)
+	ref, _ := TranslateToCascadesWithSubqueries(cte, demoMetaData(t))
 	if ref == nil {
 		t.Fatal("expected non-nil reference when CTE name shadows table name")
 	}
@@ -876,7 +1101,8 @@ func TestTranslateAggregateWithHavingReturnsNil(t *testing.T) {
 
 func TestTranslateAggregateOutputContractFailsClosedWhenMalformed(t *testing.T) {
 	t.Parallel()
-	scan := logical.NewScan("orders", "")
+	scan := logical.NewScan("Order", "O")
+	row := demoTableQOV(t, "Order", "O")
 	build := func(
 		slots []logical.AggregateOutputSlot,
 		projectOrdinals []int,
@@ -884,9 +1110,10 @@ func TestTranslateAggregateOutputContractFailsClosedWhenMalformed(t *testing.T) 
 		projected []values.Value,
 	) logical.LogicalOperator {
 		agg := logical.NewAggregate(scan,
-			[]logical.GroupKey{{Display: "REGION", Bare: "REGION"}},
-			[]logical.AggregateCall{{Func: "SUM", Operand: "PRICE", BareColumn: true}},
+			[]logical.GroupKey{{Display: "ORDER_ID", Bare: "ORDER_ID", Value: exactTestField(t, row, 0)}},
+			[]logical.AggregateCall{{Func: "SUM", Operand: "PRICE", BareColumn: true, Bare: "PRICE"}},
 			[]string{""}, false)
+		agg.AggregateOperands = []values.Value{exactTestField(t, row, 2)}
 		agg.OutputSlots = slots
 		if projectOrdinals == nil {
 			return agg
@@ -933,7 +1160,7 @@ func TestTranslateAggregateOutputContractFailsClosedWhenMalformed(t *testing.T) 
 				{SelectOrdinal: 1, NativeOrdinal: -1},
 				{SelectOrdinal: 2, NativeOrdinal: 0},
 			}, []int{-1, 0}, []bool{true, false}, []values.Value{
-				&values.FieldValue{Field: "PRICE", Typ: values.NullableLong},
+				exactTestNamedField(t, "SOURCE", "PRICE", values.NullableLong),
 				nil,
 			}),
 		},
@@ -951,7 +1178,7 @@ func TestTranslateAggregateOutputContractFailsClosedWhenMalformed(t *testing.T) 
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			ref, _, err := TranslateToCascadesWithError(tc.op, nil)
+			ref, _, err := TranslateToCascadesWithError(tc.op, demoMetaData(t))
 			if ref != nil {
 				t.Fatalf("malformed aggregate output layout translated: %T", ref.Get())
 			}
@@ -963,66 +1190,40 @@ func TestTranslateAggregateOutputContractFailsClosedWhenMalformed(t *testing.T) 
 	}
 }
 
-func TestCanonicalizeAggregateOutputValueRejectsNonNativeFieldPaths(t *testing.T) {
+func TestBindPostAggregateValueRejectsForeignExactField(t *testing.T) {
 	t.Parallel()
-	single := func(ordinal int) *values.FieldPath {
-		return &values.FieldPath{Accessors: []values.ResolvedAccessor{{Field: "OLD", Ordinal: ordinal}}}
+
+	sourceType := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong},
+		{Name: "PRICE", Ordinal: 1, FieldType: values.NullableLong},
+	}}
+	source := exactTestQOV(t, "SOURCE", sourceType)
+	key := exactTestField(t, source, 0)
+	foreign := exactTestField(t, source, 1)
+	agg := &logical.LogicalAggregate{GroupKeys: []logical.GroupKey{{Display: "ID", Value: key}}}
+	output := exactTestQOV(t, "AGG_OUT", &values.RecordType{Fields: []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong},
+	}})
+
+	bound, err := bindPostAggregateValue(key, agg, output)
+	if err != nil {
+		t.Fatalf("bind exact group key: %v", err)
 	}
-	tests := []struct {
-		name  string
-		value values.Value
-	}{
-		{
-			name:  "lazy field",
-			value: &values.FieldValue{Field: "A", Typ: values.NotNullLong},
-		},
-		{
-			name: "child bearing field",
-			value: &values.FieldValue{
-				Field:    "A",
-				Typ:      values.NotNullLong,
-				Child:    values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("source")),
-				Resolved: single(0),
-			},
-		},
-		{
-			name: "multi accessor field",
-			value: &values.FieldValue{
-				Field: "A",
-				Typ:   values.NotNullLong,
-				Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{
-					{Field: "ROW", Ordinal: 0},
-					{Field: "A", Ordinal: 0},
-				}},
-			},
-		},
-		{
-			name: "out of range field",
-			value: &values.FieldValue{
-				Field:    "A",
-				Typ:      values.NotNullLong,
-				Resolved: single(2),
-			},
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, valid := canonicalizeAggregateOutputValue(tc.value, []string{"NATIVE"}); valid {
-				t.Fatal("unsafe FieldValue was accepted as an exact aggregate output reference")
-			}
-		})
+	field := exactTestFieldView(t, bound)
+	owner, ok := values.AsQuantifiedObjectValue(field.ChildValue())
+	if !ok || owner.Correlation() != values.NamedCorrelationIdentifier("AGG_OUT") ||
+		len(field.Path().Ordinals()) != 1 || field.Path().Ordinals()[0] != 0 {
+		t.Fatalf("bound group key does not address AGG_OUT[0]: %T %v", bound, field.Path().Ordinals())
 	}
 
-	got, valid := canonicalizeAggregateOutputValue(
-		values.NewFieldValueWithResolvedOrdinal("OLD", 0, values.NotNullLong),
-		[]string{"NATIVE"})
-	if !valid {
-		t.Fatal("single childless producer-native FieldValue was rejected")
+	if _, err := bindPostAggregateValue(foreign, agg, output); err == nil {
+		t.Fatal("foreign exact field bypassed the aggregate output contract")
 	}
-	fv, ok := got.(*values.FieldValue)
-	if !ok || fv.Field != "NATIVE" || fv.Child != nil || fv.Resolved == nil ||
-		len(fv.Resolved.Accessors) != 1 || fv.Resolved.Accessors[0].Ordinal != 0 {
-		t.Fatalf("canonical native field = %#v", got)
+	wrongOutput := exactTestQOV(t, "AGG_OUT_BAD", &values.RecordType{Fields: []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NullableString},
+	}})
+	if _, err := bindPostAggregateValue(key, agg, wrongOutput); err == nil {
+		t.Fatal("aggregate binding accepted a native slot whose exact type changed")
 	}
 }
 
@@ -1081,16 +1282,16 @@ func TestFindUnsupportedFunction(t *testing.T) {
 		{"projection with SIN in Value tree", func() logical.LogicalOperator {
 			p := logical.NewProject(logical.NewScan("T", ""), []string{"x"}, nil)
 			p.ProjectedValues = []values.Value{
-				values.NewScalarFunctionValue("SIN", values.UnknownType,
-					&values.FieldValue{Field: "x", Typ: values.UnknownType}),
+				values.NewScalarFunctionValue("SIN", values.NotNullLong,
+					exactTestNamedField(t, "T", "x", values.NotNullLong)),
 			}
 			return p
 		}(), "SIN"},
 		{"projection with TAN in Value tree", func() logical.LogicalOperator {
 			p := logical.NewProject(logical.NewScan("T", ""), []string{"x"}, nil)
 			p.ProjectedValues = []values.Value{
-				values.NewScalarFunctionValue("TAN", values.UnknownType,
-					&values.FieldValue{Field: "x", Typ: values.UnknownType}),
+				values.NewScalarFunctionValue("TAN", values.NotNullLong,
+					exactTestNamedField(t, "T", "x", values.NotNullLong)),
 			}
 			return p
 		}(), "TAN"},
@@ -1134,16 +1335,16 @@ func TestFindUnsupportedFunction_ValueTree(t *testing.T) {
 		{"safe func in value", func() logical.LogicalOperator {
 			p := logical.NewProject(logical.NewScan("T", ""), []string{"x"}, nil)
 			p.ProjectedValues = []values.Value{
-				values.NewScalarFunctionValue("COALESCE", values.UnknownType,
-					&values.FieldValue{Field: "a", Typ: values.UnknownType}),
+				values.NewScalarFunctionValue("COALESCE", values.NotNullLong,
+					exactTestNamedField(t, "T", "a", values.NotNullLong)),
 			}
 			return p
 		}(), ""},
 		{"unsafe func in value", func() logical.LogicalOperator {
 			p := logical.NewProject(logical.NewScan("T", ""), []string{"x"}, nil)
 			p.ProjectedValues = []values.Value{
-				values.NewScalarFunctionValue("SIN", values.UnknownType,
-					&values.FieldValue{Field: "a", Typ: values.UnknownType}),
+				values.NewScalarFunctionValue("SIN", values.NotNullLong,
+					exactTestNamedField(t, "T", "a", values.NotNullLong)),
 			}
 			return p
 		}(), "SIN"},
@@ -1213,6 +1414,26 @@ func FuzzTranslateToCascades(f *testing.F) {
 
 func TestSourceAlias(t *testing.T) {
 	t.Parallel()
+	assertCTESourceQOV := func(t *testing.T, cte *logical.LogicalCTE, want values.CorrelationIdentifier) {
+		t.Helper()
+		ref, _, err := TranslateToCascadesWithError(cte, demoMetaData(t))
+		if err != nil || ref == nil {
+			t.Fatalf("translate CTE: ref=%v err=%v", ref, err)
+		}
+		q := expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier(sourceAlias(cte)), ref)
+		qov, err := q.RequireFlowedObjectValue()
+		if err != nil {
+			t.Fatalf("exact CTE source QOV: %v", err)
+		}
+		if qov.Correlation() != want {
+			t.Fatalf("CTE source correlation = %#v, want exact %#v", qov.Correlation(), want)
+		}
+		wantType := demoTableQOV(t, "Order", "EXPECTED").FlowedType()
+		if !qov.FlowedType().Equals(wantType) {
+			t.Fatalf("CTE source flowed type = %s, want exact %s", qov.FlowedType(), wantType)
+		}
+	}
 	t.Run("scan_with_alias", func(t *testing.T) {
 		t.Parallel()
 		got := sourceAlias(logical.NewScan("orders", "o"))
@@ -1229,13 +1450,25 @@ func TestSourceAlias(t *testing.T) {
 	})
 	t.Run("cte_returns_cte_name", func(t *testing.T) {
 		t.Parallel()
-		inner := logical.NewScan("real_table", "")
-		body := logical.NewScan("real_table", "")
+		inner := logical.NewScan("my_cte", "")
+		body := logical.NewScan("Order", "")
 		cte := logical.NewCTE("my_cte", body, inner, false)
 		got := sourceAlias(cte)
 		if got != "MY_CTE" {
 			t.Errorf("want MY_CTE, got %s", got)
 		}
+		assertCTESourceQOV(t, cte, values.NamedCorrelationIdentifier("MY_CTE"))
+	})
+	t.Run("scope_only_cte_preserves_main_alias", func(t *testing.T) {
+		t.Parallel()
+		body := logical.NewScan("Order", "")
+		main := logical.NewScan("my_cte", "visible_alias")
+		cte := logical.NewCTE("my_cte", body, main, false)
+		cte.PreserveMainSource = true
+		if got := sourceAlias(cte); got != "VISIBLE_ALIAS" {
+			t.Errorf("want VISIBLE_ALIAS, got %s", got)
+		}
+		assertCTESourceQOV(t, cte, values.NamedCorrelationIdentifier("VISIBLE_ALIAS"))
 	})
 	t.Run("filter_wrapping_scan", func(t *testing.T) {
 		t.Parallel()
@@ -1318,9 +1551,11 @@ func TestPullUpToOutputField_PointerIdentityPreferred(t *testing.T) {
 	t.Parallel()
 
 	// Two distinct FieldValue pointers that are SEMANTICALLY EQUAL (same field).
-	valA := &values.FieldValue{Field: "ID", Typ: values.UnknownType}
-	valB := &values.FieldValue{Field: "ID", Typ: values.UnknownType}
-	if !values.SemanticEqualsUnderAliasMap(valA, valB, values.AliasMap{}) {
+	sourceType := &values.RecordType{Fields: []values.Field{{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong}}}
+	source := exactTestQOV(t, "SOURCE", sourceType)
+	valA := exactTestField(t, source, 0)
+	valB := exactTestField(t, source, 0)
+	if !values.SemanticEqualsUnderAliasMap(valA, valB, values.EmptyAliasMap()) {
 		t.Fatalf("test setup: valA and valB must be semantically equal")
 	}
 	if valA == valB {
@@ -1331,25 +1566,28 @@ func TestPullUpToOutputField_PointerIdentityPreferred(t *testing.T) {
 		{Name: "A", Value: valA},
 		{Name: "B", Value: valB},
 	}
+	outputType := &values.RecordType{Fields: []values.Field{
+		{Name: "A", Ordinal: 0, FieldType: values.NotNullLong},
+		{Name: "B", Ordinal: 1, FieldType: values.NotNullLong},
+	}}
+	output := exactTestQOV(t, "OUTPUT", outputType)
 
 	// Sort key Value is the EXACT pointer of output field B. The pull-up must
 	// resolve to B (pointer identity), NOT A (earlier semantic match).
-	got, ok := pullUpToOutputField(valB, fields)
+	got, ok := pullUpToOutputField(valB, fields, output)
 	if !ok {
 		t.Fatalf("pullUpToOutputField returned no match for a pointer-identical key")
 	}
-	fv, isField := got.(*values.FieldValue)
-	if !isField {
-		t.Fatalf("pull-up returned %T, want *FieldValue", got)
-	}
-	if fv.Field != "B" {
-		t.Errorf("pull-up resolved to output field %q, want %q — pointer-identical field must win over an earlier semantic match", fv.Field, "B")
+	fv := exactTestFieldView(t, got)
+	if fv.DisplayName() != "B" || len(fv.Path().Ordinals()) != 1 || fv.Path().Ordinals()[0] != 1 {
+		t.Errorf("pull-up resolved to output field %q at %v, want B at [1]", fv.DisplayName(), fv.Path().Ordinals())
 	}
 
 	// Symmetric: keying on valA must resolve to A.
-	if got, ok := pullUpToOutputField(valA, fields); ok {
-		if fv, isField := got.(*values.FieldValue); isField && fv.Field != "A" {
-			t.Errorf("pull-up on valA resolved to %q, want %q", fv.Field, "A")
+	if got, ok := pullUpToOutputField(valA, fields, output); ok {
+		fv := exactTestFieldView(t, got)
+		if fv.DisplayName() != "A" || fv.Path().Ordinals()[0] != 0 {
+			t.Errorf("pull-up on valA resolved to %q at %v, want A at [0]", fv.DisplayName(), fv.Path().Ordinals())
 		}
 	} else {
 		t.Errorf("pullUpToOutputField returned no match for valA")
@@ -1358,13 +1596,19 @@ func TestPullUpToOutputField_PointerIdentityPreferred(t *testing.T) {
 	// A key that is only SEMANTICALLY equal (a third distinct pointer) falls to
 	// pass 2 and resolves to the FIRST semantically-equal field (A) — the
 	// documented fallback for rebuilt (non-pointer-copied) keys.
-	valC := &values.FieldValue{Field: "ID", Typ: values.UnknownType}
-	if got, ok := pullUpToOutputField(valC, fields); ok {
-		if fv, isField := got.(*values.FieldValue); isField && fv.Field != "A" {
-			t.Errorf("semantic-only pull-up resolved to %q, want first equal field %q", fv.Field, "A")
+	valC := exactTestField(t, source, 0)
+	if got, ok := pullUpToOutputField(valC, fields, output); ok {
+		fv := exactTestFieldView(t, got)
+		if fv.DisplayName() != "A" || fv.Path().Ordinals()[0] != 0 {
+			t.Errorf("semantic-only pull-up resolved to %q at %v, want first equal field A at [0]", fv.DisplayName(), fv.Path().Ordinals())
 		}
 	} else {
 		t.Errorf("pullUpToOutputField returned no match for a semantically-equal key")
+	}
+
+	narrowOutput := exactTestQOV(t, "NARROW_OUTPUT", &values.RecordType{Fields: outputType.Fields[:1]})
+	if got, ok := pullUpToOutputField(valB, fields, narrowOutput); ok || got != nil {
+		t.Fatalf("pull-up accepted output owner without ordinal 1: %T", got)
 	}
 }
 
@@ -1415,6 +1659,74 @@ func TestTranslateUnnest_NilMetadataAtOrdinalityIsCleanError(t *testing.T) {
 	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedQuery {
 		t.Fatalf("nil-md AT unnest: err = %v (%T), want code %v", err, err, api.ErrCodeUnsupportedQuery)
 	}
+}
+
+// TestExactLogicalResultType_LateralRightUnnest pins the only context in which
+// a syntax-only LogicalUnnest has enough information to state an exact type:
+// the right child of its lateral join. The owner is selected structurally from
+// the exact left input, and its stored array slot supplies the element type.
+// A standalone unnest and every malformed owner/path remain loud; this must
+// never become an Unknown-producing text fallback.
+func TestExactLogicalResultType_LateralRightUnnest(t *testing.T) {
+	t.Parallel()
+	md := demoMetaData(t)
+	left := logical.NewScan("Order", "O")
+
+	t.Run("scalar AS", func(t *testing.T) {
+		unnest := &logical.LogicalUnnest{Segments: []string{"O", "TAGS"}, Alias: "TAG"}
+		joined, err := ExactLogicalResultType(logical.NewJoin(left, unnest, logical.JoinInner, ""), md)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, ok := joined.(*values.RecordType)
+		if !ok || len(record.Fields) == 0 {
+			t.Fatalf("joined type = %T %v, want a non-empty exact record", joined, joined)
+		}
+		last := record.Fields[len(record.Fields)-1]
+		if last.Name != "TAG" || last.Ordinal != len(record.Fields)-1 || !last.FieldType.Equals(values.NotNullString) {
+			t.Fatalf("scalar unnest field = %+v, want TAG STRING NOT NULL at final ordinal", last)
+		}
+	})
+
+	t.Run("AS plus AT", func(t *testing.T) {
+		unnest := &logical.LogicalUnnest{Segments: []string{"O", "TAGS"}, Alias: "TAG", AtAlias: "POS"}
+		right, err := exactLateralUnnestResultType(left, unnest, md)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, ok := right.(*values.RecordType)
+		if !ok || len(record.Fields) != 2 {
+			t.Fatalf("ordinal unnest type = %T %v, want exact two-field record", right, right)
+		}
+		if record.Fields[0].Name != "TAG" || record.Fields[0].Ordinal != 0 || !record.Fields[0].FieldType.Equals(values.NotNullString) {
+			t.Fatalf("AS field = %+v, want TAG STRING NOT NULL at ordinal 0", record.Fields[0])
+		}
+		if record.Fields[1].Name != "POS" || record.Fields[1].Ordinal != 1 || !record.Fields[1].FieldType.Equals(values.NotNullInt) {
+			t.Fatalf("AT field = %+v, want POS INT NOT NULL at ordinal 1", record.Fields[1])
+		}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		unnest *logical.LogicalUnnest
+	}{
+		{"foreign owner", &logical.LogicalUnnest{Segments: []string{"X", "TAGS"}, Alias: "TAG"}},
+		{"non-array field", &logical.LogicalUnnest{Segments: []string{"O", "PRICE"}, Alias: "TAG"}},
+		{"missing field", &logical.LogicalUnnest{Segments: []string{"O", "NO_SUCH_FIELD"}, Alias: "TAG"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if typ, err := ExactLogicalResultType(logical.NewJoin(left, tc.unnest, logical.JoinInner, ""), md); err == nil || typ != nil {
+				t.Fatalf("malformed lateral unnest typed as (%v, %v), want nil,error", typ, err)
+			}
+		})
+	}
+
+	t.Run("standalone remains loud", func(t *testing.T) {
+		unnest := &logical.LogicalUnnest{Segments: []string{"O", "TAGS"}, Alias: "TAG"}
+		if typ, err := ExactLogicalResultType(unnest, md); err == nil || typ != nil {
+			t.Fatalf("standalone syntax-only unnest typed as (%v, %v), want nil,error", typ, err)
+		}
+	})
 }
 
 // TestAggregateOutputColumns_DupNameConflictingTypes pins the typeOf

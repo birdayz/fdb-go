@@ -66,7 +66,7 @@ func TestWalk_RowNumberOverDistance(t *testing.T) {
 	if len(rn.PartitioningValues) != 1 {
 		t.Fatalf("partitioning values = %d, want 1", len(rn.PartitioningValues))
 	}
-	if _, ok := rn.PartitioningValues[0].(*values.FieldValue); !ok {
+	if _, ok := values.AsFieldValue(rn.PartitioningValues[0]); !ok {
 		t.Errorf("partition[0] = %T, want *FieldValue", rn.PartitioningValues[0])
 	}
 	if len(rn.ArgumentValues) != 1 {

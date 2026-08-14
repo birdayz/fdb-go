@@ -64,6 +64,41 @@ func TestPositionalRow_Basics(t *testing.T) {
 	}
 }
 
+func TestPositionalRowKindSeparatesScalarTransportFromOneFieldRecord(t *testing.T) {
+	t.Parallel()
+
+	oneField := values.NewRecordType("", false, []values.Field{{
+		Name: values.OrdinalFieldName(0), FieldType: values.NotNullLong, Ordinal: 0,
+	}})
+	record := &PositionalRow{Type: oneField, Slots: []any{int64(7)}}
+	scalar := scalarPositionalRowOfType(int64(7), values.NotNullLong)
+	if record.OrdinalRowKind() != values.OrdinalCarrierRecord {
+		t.Fatalf("genuine one-field row kind = %v, want record", record.OrdinalRowKind())
+	}
+	if scalar.OrdinalRowKind() != values.OrdinalCarrierScalar {
+		t.Fatalf("purpose-built scalar row kind = %v, want scalar", scalar.OrdinalRowKind())
+	}
+	if scalar.Type == nil || !scalar.Type.Equals(oneField) {
+		t.Fatalf("mutation premise lost: scalar type = %v, want exact same shape as record %v", scalar.Type, oneField)
+	}
+
+	// Layout attachment is copy-on-write and must preserve transport provenance.
+	layout, err := values.NewScalarOrdinalLayoutForCarrierType(values.NotNullLong)
+	if err != nil {
+		t.Fatalf("scalar layout: %v", err)
+	}
+	// Scalar layouts cannot attach to record-shaped transport, but an ordinary
+	// struct copy preserves the private kind; pin the copy site used by
+	// qualification directly without mutating the source.
+	copyRow := *scalar
+	copyRow.Slots = append([]any(nil), scalar.Slots...)
+	if copyRow.OrdinalRowKind() != values.OrdinalCarrierScalar ||
+		scalar.OrdinalRowKind() != values.OrdinalCarrierScalar {
+		t.Fatalf("scalar provenance lost across copy: source=%v copy=%v layout=%v",
+			scalar.OrdinalRowKind(), copyRow.OrdinalRowKind(), layout.CarrierKind())
+	}
+}
+
 // TestPositionalRow_ShadowAssert pins the test oracle (shadowMismatch): a
 // positional row that matches the expectation map agrees field-for-field
 // (including list values and absent=NULL fields), and a divergent slot is
@@ -73,7 +108,7 @@ func TestPositionalRow_ShadowAssert(t *testing.T) {
 	typ := values.NewRecordType("R", false, []values.Field{
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: "NAME", FieldType: values.NullableString, Ordinal: 1},
-		{Name: "TAGS", FieldType: values.UnknownType, Ordinal: 2},
+		{Name: "TAGS", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 2},
 	})
 	m := map[string]any{"ID": int64(7), "NAME": "alice", "TAGS": []any{"a", "b"}}
 

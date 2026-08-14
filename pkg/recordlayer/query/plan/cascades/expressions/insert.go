@@ -1,6 +1,7 @@
 package expressions
 
 import (
+	"fmt"
 	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -20,21 +21,27 @@ import (
 type InsertExpression struct {
 	inner            Quantifier
 	targetRecordType string
-	targetType       values.Type
+	targetType       values.ExactTypeHandle
+	resultValue      values.Value
 }
 
 // NewInsertExpression builds an INSERT for `targetRecordType` over
 // `inner`. `targetType` is the row Type the planner expects; pass
 // values.UnknownType if it isn't yet resolved.
-func NewInsertExpression(inner Quantifier, targetRecordType string, targetType values.Type) *InsertExpression {
-	if targetType == nil {
-		targetType = values.UnknownType
+func NewInsertExpression(inner Quantifier, targetRecordType string, targetType values.Type) (*InsertExpression, error) {
+	if _, ok := targetType.(*values.RecordType); !ok {
+		return nil, fmt.Errorf("InsertExpression target type: expected a record, got %v", targetType)
+	}
+	exactTarget, err := snapshotExpressionResultType("InsertExpression target", targetType)
+	if err != nil {
+		return nil, err
 	}
 	return &InsertExpression{
 		inner:            inner,
 		targetRecordType: targetRecordType,
-		targetType:       targetType,
-	}
+		targetType:       exactTarget,
+		resultValue:      values.NewQueriedValue([]string{targetRecordType}, exactTarget.Type()),
+	}, nil
 }
 
 // GetInner returns the inner Quantifier.
@@ -44,7 +51,7 @@ func (e *InsertExpression) GetInner() Quantifier { return e.inner }
 func (e *InsertExpression) GetTargetRecordType() string { return e.targetRecordType }
 
 // GetTargetType returns the target row Type.
-func (e *InsertExpression) GetTargetType() values.Type { return e.targetType }
+func (e *InsertExpression) GetTargetType() values.Type { return e.targetType.Type() }
 
 // GetResultValue passes the inner's flowed object through with the TYPE
 // DELIBERATELY STRIPPED, and both halves need saying.
@@ -72,7 +79,7 @@ func (e *InsertExpression) GetTargetType() values.Type { return e.targetType }
 // the DML result value and the physical lowering move with it. Booked in TODO.md.
 // Until it lands this site must not be "cleaned up" back onto the typed accessor.
 func (e *InsertExpression) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValue(e.inner.GetAlias())
+	return e.resultValue
 }
 
 // GetQuantifiers returns the single inner Quantifier.
@@ -100,7 +107,7 @@ func (e *InsertExpression) EqualsWithoutChildren(other RelationalExpression, _ *
 	if e.targetRecordType != o.targetRecordType {
 		return false
 	}
-	return typeEquals(e.targetType, o.targetType)
+	return typeEquals(e.targetType.Type(), o.targetType.Type())
 }
 
 // HashCodeWithoutChildren mixes a class-discriminating constant with
@@ -112,10 +119,11 @@ func (e *InsertExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-func (e *InsertExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	cp := *e
-	cp.inner = quantifiers[0]
-	return &cp
+func (e *InsertExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("InsertExpression", len(quantifiers), 1); err != nil {
+		return nil, err
+	}
+	return NewInsertExpression(quantifiers[0], e.targetRecordType, e.targetType.Type())
 }
 
 var _ RelationalExpression = (*InsertExpression)(nil)

@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"fmt"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -27,10 +29,10 @@ func (r *PushUnionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	pushSetOpThroughFetch(call, setOpPush{
 		quants:     unionW.GetQuantifiers(),
 		resultType: unionW.GetResultType(),
-		rebuildPlan: func(inners []plans.RecordQueryPlan) plans.RecordQueryPlan {
+		rebuildPlan: func(inners []plans.RecordQueryPlan) (plans.RecordQueryPlan, error) {
 			return plans.NewRecordQueryUnionPlan(inners)
 		},
-		buildWrapper: func(_ plans.RecordQueryPlan, qs []expressions.Quantifier) expressions.RelationalExpression {
+		buildWrapper: func(_ plans.RecordQueryPlan, qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
 			// Collapsed: the union is its own cascades expression over the live
 			// pushed-down quantifiers (RFC-184 W2); the snapshot plan is unused.
 			return plans.NewRecordQueryUnionPlanFromQuantifiers(qs)
@@ -56,24 +58,45 @@ func (r *PushIntersectionThroughFetchRule) Matcher() matching.BindingMatcher { r
 
 func (r *PushIntersectionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	intW := matching.Get[*plans.RecordQueryIntersectionPlan](call.Bindings, r.matcher)
+	intersectionLayout, err := intW.ProvidedOutputLayout()
+	if err != nil {
+		call.Fail(fmt.Errorf("push intersection through fetch: output layout: %w", err))
+		return
+	}
 	compKeys := intW.GetComparisonKeyValues()
 	compParts := intW.GetComparisonKeyOrderingParts()
 	reverse := intW.IsReverse()
+	comparisonSource, sourceOK := intersectionComparisonKeySource(compParts)
+	keysUseOutputCarrier := sourceOK && comparisonSource == intersectionLayout.Carrier()
+	rebuildIntersection := func(
+		qs []expressions.Quantifier,
+	) (*plans.RecordQueryIntersectionPlan, error) {
+		if keysUseOutputCarrier {
+			return plans.NewRecordQueryIntersectionPlanFromQuantifiersWithOrderingAndSource(
+				qs, compParts, reverse, intersectionLayout.Carrier())
+		}
+		return plans.NewRecordQueryIntersectionPlanFromQuantifiersWithOrdering(qs, compParts, reverse)
+	}
+	var requiredValuesCarrier values.QuantifiedObjectValue
+	if keysUseOutputCarrier {
+		requiredValuesCarrier = intersectionLayout.Carrier()
+	}
 	pushSetOpThroughFetch(call, setOpPush{
-		quants:     intW.GetQuantifiers(),
-		resultType: intW.GetResultType(),
+		quants:                intW.GetQuantifiers(),
+		resultType:            intW.GetResultType(),
+		requiredValuesCarrier: requiredValuesCarrier,
 		// The merge evaluates the comparison keys against child rows, so
 		// the pushed children (partial records) must be able to answer
 		// them — Java's getRequiredValues/tryPushValues gate.
 		requiredValues: compKeys,
-		rebuildPlan: func(inners []plans.RecordQueryPlan) plans.RecordQueryPlan {
+		rebuildPlan: func(inners []plans.RecordQueryPlan) (plans.RecordQueryPlan, error) {
 			// Java's withChildrenReferences mirrors every attribute except
 			// the children — semantic comparison parts and direction carry
 			// over, and the physical keys are deterministically re-derived.
-			return plans.NewRecordQueryIntersectionPlanWithOrdering(inners, compParts, reverse)
+			return rebuildIntersection(plans.QuantifiersOverPlans(inners))
 		},
-		buildWrapper: func(_ plans.RecordQueryPlan, qs []expressions.Quantifier) expressions.RelationalExpression {
-			return plans.NewRecordQueryIntersectionPlanFromQuantifiersWithOrdering(qs, compParts, reverse)
+		buildWrapper: func(_ plans.RecordQueryPlan, qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+			return rebuildIntersection(qs)
 		},
 	})
 }
@@ -99,10 +122,10 @@ func (r *PushUnorderedUnionThroughFetchRule) OnMatch(call *ImplementationRuleCal
 	pushSetOpThroughFetch(call, setOpPush{
 		quants:     w.GetQuantifiers(),
 		resultType: w.GetResultType(),
-		rebuildPlan: func(inners []plans.RecordQueryPlan) plans.RecordQueryPlan {
+		rebuildPlan: func(inners []plans.RecordQueryPlan) (plans.RecordQueryPlan, error) {
 			return plans.NewRecordQueryUnorderedUnionPlan(inners)
 		},
-		buildWrapper: func(_ plans.RecordQueryPlan, qs []expressions.Quantifier) expressions.RelationalExpression {
+		buildWrapper: func(_ plans.RecordQueryPlan, qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
 			// Collapsed: the union is its own cascades expression over the live
 			// pushed-down quantifiers (RFC-184 W2); the snapshot plan is unused.
 			return plans.NewRecordQueryUnorderedUnionPlanFromQuantifiers(qs)
@@ -138,12 +161,12 @@ func (r *PushMergeSortUnionThroughFetchRule) OnMatch(call *ImplementationRuleCal
 		// keys below it is value-identical to doing it above.
 		requiredValues: old.GetComparisonKeys(),
 		resultType:     old.GetResultType(),
-		rebuildPlan: func(inners []plans.RecordQueryPlan) plans.RecordQueryPlan {
+		rebuildPlan: func(inners []plans.RecordQueryPlan) (plans.RecordQueryPlan, error) {
 			return plans.NewRecordQueryMergeSortUnionPlan(
 				inners, old.GetComparisonKeys(), old.IsReverse(), old.RemovesDuplicates(),
 			)
 		},
-		buildWrapper: func(_ plans.RecordQueryPlan, qs []expressions.Quantifier) expressions.RelationalExpression {
+		buildWrapper: func(_ plans.RecordQueryPlan, qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
 			return plans.NewRecordQueryMergeSortUnionPlanFromQuantifiers(
 				qs, old.GetComparisonKeys(), old.IsReverse(), old.RemovesDuplicates(),
 			)
@@ -179,29 +202,35 @@ func (r *PushInUnionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		dynamic:        true,
 		requiredValues: old.GetComparisonKeys(),
 		resultType:     old.GetResultType(),
-		rebuildPlan: func(inners []plans.RecordQueryPlan) plans.RecordQueryPlan {
+		rebuildPlan: func(inners []plans.RecordQueryPlan) (plans.RecordQueryPlan, error) {
 			if len(inners) != 1 {
-				return nil
+				return nil, fmt.Errorf("InUnion rebuild: expected 1 inner, got %d", len(inners))
 			}
-			np := plans.NewRecordQueryInUnionPlanWithMaxSize(
-				inners[0], old.GetBindingNames(), old.GetComparisonKeys(),
+			np, err := plans.NewRecordQueryInUnionPlanWithBindingAliasesAndMaxSize(
+				inners[0], old.GetBindingAliases(), old.GetComparisonKeys(),
 				old.IsReverse(), old.GetMaxSize(),
 			)
+			if err != nil {
+				return nil, err
+			}
 			np.SetInSources(old.GetInSources())
-			return np
+			return np, nil
 		},
-		buildWrapper: func(_ plans.RecordQueryPlan, qs []expressions.Quantifier) expressions.RelationalExpression {
+		buildWrapper: func(_ plans.RecordQueryPlan, qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
 			if len(qs) != 1 {
-				return nil
+				return nil, fmt.Errorf("InUnion wrapper: expected 1 quantifier, got %d", len(qs))
 			}
 			// Collapsed: the InUnion is its own cascades expression over the live
 			// pushed-down inner edge (RFC-184 W2); the snapshot plan is unused.
-			np := plans.NewRecordQueryInUnionPlanFromQuantifier(
-				qs[0], old.GetBindingNames(), old.GetComparisonKeys(),
+			np, err := plans.NewRecordQueryInUnionPlanFromQuantifierWithBindingAliases(
+				qs[0], old.GetBindingAliases(), old.GetComparisonKeys(),
 				old.IsReverse(), old.GetMaxSize(),
 			)
+			if err != nil {
+				return nil, err
+			}
 			np.SetInSources(old.GetInSources())
-			return np
+			return np, nil
 		},
 	})
 }
@@ -215,17 +244,18 @@ var _ ImplementationRule = (*PushInUnionThroughFetchRule)(nil)
 // values the merge evaluates against child rows (comparison keys);
 // empty for concat-style unions.
 type setOpPush struct {
-	quants         []expressions.Quantifier
-	dynamic        bool
-	requiredValues []values.Value
+	quants                []expressions.Quantifier
+	dynamic               bool
+	requiredValues        []values.Value
+	requiredValuesCarrier values.QuantifiedObjectValue
 	// resultType is the ORIGINAL set-op plan's result type when it
 	// carries one (Java caps the new fetch with
 	// scalarOf(setOperationPlan.getResultType()) — the matched plan's
 	// output, not a leg's). Unknown → the first pushable leg's fetch
 	// type stands in (identical for homogeneous legs).
 	resultType   values.Type
-	rebuildPlan  func([]plans.RecordQueryPlan) plans.RecordQueryPlan
-	buildWrapper func(plans.RecordQueryPlan, []expressions.Quantifier) expressions.RelationalExpression
+	rebuildPlan  func([]plans.RecordQueryPlan) (plans.RecordQueryPlan, error)
+	buildWrapper func(plans.RecordQueryPlan, []expressions.Quantifier) (expressions.RelationalExpression, error)
 }
 
 // pushSetOpThroughFetch pushes a set operation below its children's
@@ -239,10 +269,12 @@ type setOpPush struct {
 // "Case 2").
 func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	type fetchLeg struct {
-		idx       int
-		fw        *plans.RecordQueryFetchFromPartialRecordPlan
-		innerExpr expressions.RelationalExpression
-		innerPlan plans.RecordQueryPlan
+		idx           int
+		fw            *plans.RecordQueryFetchFromPartialRecordPlan
+		innerExpr     expressions.RelationalExpression
+		innerPlan     plans.RecordQueryPlan
+		sourceQOV     values.QuantifiedObjectValue
+		outputCarrier values.QuantifiedObjectValue
 	}
 	var legs []fetchLeg
 	for i, q := range p.quants {
@@ -272,7 +304,27 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 		if !ok || ph.GetRecordQueryPlan() == nil {
 			continue
 		}
-		legs = append(legs, fetchLeg{idx: i, fw: fw, innerExpr: innerExpr, innerPlan: ph.GetRecordQueryPlan()})
+		var sourceQOV values.QuantifiedObjectValue
+		var outputCarrier values.QuantifiedObjectValue
+		if p.requiredValuesCarrier != nil {
+			var err error
+			sourceQOV, err = q.RequireFlowedObjectValue()
+			if err != nil {
+				call.Fail(fmt.Errorf("push intersection through fetch: leg %d source QOV: %w", i, err))
+				return
+			}
+			layout, layoutErr := fw.ProvidedOutputLayout()
+			if layoutErr != nil {
+				call.Fail(fmt.Errorf("push intersection through fetch: leg %d output layout: %w", i, layoutErr))
+				return
+			}
+			outputCarrier = layout.Carrier()
+		}
+		legs = append(legs, fetchLeg{
+			idx: i, fw: fw, innerExpr: innerExpr,
+			innerPlan: ph.GetRecordQueryPlan(), sourceQOV: sourceQOV,
+			outputCarrier: outputCarrier,
+		})
 	}
 
 	// Java's viability gates: a dynamic set op pushes all legs or none;
@@ -301,13 +353,31 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	for _, leg := range legs {
 		alive[leg.idx] = true
 	}
+	requiredValuesCarriers := []values.QuantifiedObjectValue{p.requiredValuesCarrier}
+	if p.requiredValuesCarrier != nil {
+		for _, leg := range legs {
+			requiredValuesCarriers = append(requiredValuesCarriers, leg.outputCarrier)
+		}
+	}
 	for _, rv := range p.requiredValues {
 		var prev values.Value
 		for _, leg := range legs {
 			if !alive[leg.idx] {
 				continue
 			}
-			tv, ok := leg.fw.GetTranslateValueFunction()(rv, sourceAlias, targetAlias)
+			candidateValue := rv
+			candidateSource := sourceAlias
+			if p.requiredValuesCarrier != nil {
+				var err error
+				candidateValue, _, err = translateIntersectionOutputCarrierToLegEdge(
+					rv, requiredValuesCarriers, leg.sourceQOV)
+				if err != nil {
+					call.Fail(fmt.Errorf("push intersection through fetch: comparison key for leg %d: %w", leg.idx, err))
+					return
+				}
+				candidateSource = leg.sourceQOV.Correlation()
+			}
+			tv, ok := leg.fw.GetTranslateValueFunction()(candidateValue, candidateSource, targetAlias)
 			if !ok {
 				delete(alive, leg.idx)
 				continue
@@ -316,7 +386,7 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 				prev = tv
 				continue
 			}
-			if !values.SemanticEqualsUnderAliasMap(prev, tv, values.AliasMap{}) {
+			if !values.SemanticEqualsUnderAliasMap(prev, tv, values.EmptyAliasMap()) {
 				return
 			}
 		}
@@ -347,14 +417,32 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	// Combined translation function: Java RecordQuerySetPlan
 	// .pushValueFunction — a value translates through the merged fetch
 	// iff EVERY leg translates it, and to semantically equal values.
-	legFns := make([]plans.TranslateValueFunction, len(pushable))
-	for i, leg := range pushable {
-		legFns[i] = leg.fw.GetTranslateValueFunction()
-	}
+	var mergedFetchOutputCarrier values.QuantifiedObjectValue
 	combined := func(v values.Value, sa, ta values.CorrelationIdentifier) (values.Value, bool) {
 		var prev values.Value
-		for _, fn := range legFns {
-			tv, ok := fn(v, sa, ta)
+		for _, leg := range pushable {
+			candidateValue := v
+			candidateSource := sa
+			if p.requiredValuesCarrier != nil {
+				moved := false
+				carriers := requiredValuesCarriers
+				if mergedFetchOutputCarrier != nil {
+					carriers = append(
+						append([]values.QuantifiedObjectValue(nil), carriers...),
+						mergedFetchOutputCarrier,
+					)
+				}
+				var err error
+				candidateValue, moved, err = translateIntersectionOutputCarrierToLegEdge(
+					candidateValue, carriers, leg.sourceQOV)
+				if err != nil {
+					return nil, false
+				}
+				if moved {
+					candidateSource = leg.sourceQOV.Correlation()
+				}
+			}
+			tv, ok := leg.fw.GetTranslateValueFunction()(candidateValue, candidateSource, ta)
 			if !ok {
 				return nil, false
 			}
@@ -362,7 +450,7 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 				prev = tv
 				continue
 			}
-			if !values.SemanticEqualsUnderAliasMap(prev, tv, values.AliasMap{}) {
+			if !values.SemanticEqualsUnderAliasMap(prev, tv, values.EmptyAliasMap()) {
 				return nil, false
 			}
 		}
@@ -385,11 +473,19 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 		innerPlans[i] = leg.innerPlan
 		newQuants[i] = expressions.ForEachQuantifier(expressions.FinalOf(leg.innerExpr))
 	}
-	newSetOpPlan := p.rebuildPlan(innerPlans)
+	newSetOpPlan, err := p.rebuildPlan(innerPlans)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	if newSetOpPlan == nil {
 		return
 	}
-	setOpWrapper := p.buildWrapper(newSetOpPlan, newQuants)
+	setOpWrapper, err := p.buildWrapper(newSetOpPlan, newQuants)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	if setOpWrapper == nil {
 		return
 	}
@@ -419,9 +515,21 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	}
 	// The merged fetch is its own cascades expression carrying the live setOpRef
 	// edge (RFC-184 W2).
-	newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+	newFetchPlan, err := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 		expressions.ForEachQuantifier(setOpRef), combined, resultType, fetchIndexRecords,
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	if p.requiredValuesCarrier != nil {
+		layout, layoutErr := newFetchPlan.ProvidedOutputLayout()
+		if layoutErr != nil {
+			call.Fail(fmt.Errorf("push intersection through fetch: merged fetch output layout: %w", layoutErr))
+			return
+		}
+		mergedFetchOutputCarrier = layout.Carrier()
+	}
 
 	if len(pushable) == len(p.quants) {
 		call.Yield(newFetchPlan)
@@ -454,11 +562,60 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 		outerPlans = append(outerPlans, ph.GetRecordQueryPlan())
 		outerQuants = append(outerQuants, expressions.ForEachQuantifier(expressions.FinalOf(resExpr)))
 	}
-	outerPlan := p.rebuildPlan(outerPlans)
+	outerPlan, err := p.rebuildPlan(outerPlans)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	if outerPlan == nil {
 		return
 	}
-	if outer := p.buildWrapper(outerPlan, outerQuants); outer != nil {
+	outer, err := p.buildWrapper(outerPlan, outerQuants)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	if outer != nil {
 		call.Yield(outer)
 	}
+}
+
+// translateIntersectionOutputCarrierToLegEdge crosses the one phase boundary
+// introduced by an Intersection over fetched rows. Comparison keys can be
+// rooted at the Intersection's exact pass-through carrier, while each fetch
+// candidate deliberately translates only values rooted at that leg's declared
+// edge. TranslatePhaseRoot admits only the pointer-exact carrier and preserves
+// the resolved path and exact type; same-shaped current or named rows remain
+// foreign and are left for the candidate's strict alias gate to decline.
+func translateIntersectionOutputCarrierToLegEdge(
+	value values.Value,
+	intersectionOutputCarriers []values.QuantifiedObjectValue,
+	legEdge values.QuantifiedObjectValue,
+) (values.Value, bool, error) {
+	translated := value
+	var movedFrom values.QuantifiedObjectValue
+	seen := make(map[values.QuantifiedObjectValue]struct{}, len(intersectionOutputCarriers))
+	for _, carrier := range intersectionOutputCarriers {
+		if carrier == nil {
+			continue
+		}
+		if _, duplicate := seen[carrier]; duplicate {
+			continue
+		}
+		seen[carrier] = struct{}{}
+		candidate, err := values.TranslatePhaseRoot(translated, carrier, legEdge)
+		if err != nil {
+			return nil, false, err
+		}
+		if candidate == translated {
+			continue
+		}
+		if movedFrom != nil {
+			return nil, false, fmt.Errorf(
+				"comparison key spans distinct intersection output carriers")
+		}
+		movedFrom = carrier
+		translated = candidate
+	}
+	return translated, movedFrom != nil, nil
 }

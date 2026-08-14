@@ -21,33 +21,49 @@ package values
 //
 //   - v = resultValue → QOV(alias)
 //   - v = FV("x"), resultValue = QOV(q) → FV(QOV(alias), "x")
-func PullUpValue(v Value, resultValue Value, alias CorrelationIdentifier) Value {
+func PullUpValue(v Value, resultValue Value, alias CorrelationIdentifier) (Value, error) {
 	if v == nil || resultValue == nil {
-		return nil
+		return nil, nil
 	}
 
 	// Case 1: v semantically equals the entire result value.
 	if semanticEqual(v, resultValue) {
-		return &QuantifiedObjectValue{Correlation: alias, Typ: resultValue.Type()}
+		return newPullUpOutputQOV(alias, resultValue.Type())
 	}
 
 	// Case 2: resultValue is a RecordConstructorValue — check whether
 	// v matches one of its fields' values.
 	if rc, ok := resultValue.(*RecordConstructorValue); ok {
-		return pullUpThroughRecordConstructor(v, rc, alias)
+		// The logical result program can retain a nominal source declaration
+		// (T RECORD<...>) while a selected scan publishes the same exact row
+		// anonymously.  The runtime alias and complete path still identify the
+		// same source, but structural equality alone cannot see across that one
+		// permitted declaration seam.  Reuse the result program's own QOV as
+		// authority before matching its slots; conflicting/narrow/foreign roots
+		// are deliberately left unchanged by the normalizer.
+		normalized := v
+		if !alias.isCurrent() {
+			var err error
+			normalized, err = TranslateLogicalSourceNameNormalizationInValue(
+				v, alias, rc)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return pullUpThroughRecordConstructor(normalized, rc, alias)
 	}
 
 	// Case 3: resultValue is a QuantifiedObjectValue or ObjectValue —
 	// a passthrough. If v is a FieldValue, field access passes
 	// through with its base rebound to the output alias.
-	if _, ok := resultValue.(*QuantifiedObjectValue); ok {
+	if _, ok := resultValue.(*quantifiedObjectValue); ok {
 		return pullUpThroughPassthrough(v, resultValue, alias)
 	}
 	if _, ok := resultValue.(*ObjectValue); ok {
 		return pullUpThroughPassthrough(v, resultValue, alias)
 	}
 
-	return nil
+	return nil, nil
 }
 
 // pullUpThroughRecordConstructor handles the case where the result
@@ -60,12 +76,13 @@ func PullUpValue(v Value, resultValue Value, alias CorrelationIdentifier) Value 
 // ordinal matters it is BAKED — a lazy name node over a duplicate-named RC
 // output would later resolve to the FIRST same-named column regardless of
 // which column matched (the duplicate-name conflation hazard). Baking is
-// gated: only a baked input (bakedness must survive pull-up) or a dup-named
-// RC (only ordinal seeds build them — projection RCs suffix duplicates)
-// bakes; a lazy input over a clean-named RC emits a lazy node.
-func pullUpThroughRecordConstructor(v Value, rc *RecordConstructorValue, alias CorrelationIdentifier) Value {
+// gated: a resolved input (whose positional identity must survive pull-up) or
+// a duplicate-named RC resolves by ordinal. A non-field input over a clean-name
+// RC resolves by its unique semantic name. Both paths publish only admitted,
+// exact FieldValues.
+func pullUpThroughRecordConstructor(v Value, rc *RecordConstructorValue, alias CorrelationIdentifier) (Value, error) {
 	inBaked, inPinned := false, false
-	if fv, ok := v.(*FieldValue); ok && fv.Resolved != nil {
+	if fv, ok := v.(*fieldValue); ok && fv.Resolved != nil {
 		inBaked = true
 		inPinned = fv.Resolved.FrontierPinned
 	}
@@ -73,32 +90,36 @@ func pullUpThroughRecordConstructor(v Value, rc *RecordConstructorValue, alias C
 		_, fieldOwnedByAlias := GetCorrelatedToOfValue(field.Value)[alias]
 		if semanticEqual(v, field.Value) ||
 			(fieldOwnedByAlias && CanBridgeOrderingValueRoots(v, field.Value)) {
-			NoteFieldValueMint(field.Name, false)
-			out := &FieldValue{
-				Field: field.Name,
-				Typ:   field.Value.Type(),
-				Child: &QuantifiedObjectValue{
-					Correlation: alias,
-					Typ:         rc.Type(),
-				},
+			child, err := newPullUpOutputQOV(alias, rc.Type())
+			if err != nil {
+				return nil, err
 			}
-			if inBaked || rcHasDuplicateNames(rc) {
-				// The frontier-contract bit INHERITS from the input: a pinned
-				// seed ref pulled through the join's RC still reads a
-				// positional row (the gated join builds them), so the loud
-				// guard must survive the pull-up. A dup-name disambiguation
-				// bake over a LAZY input establishes no frontier contract —
-				// unpinned.
-				// The domain is the RC's OUTPUT layout — the row the emitted
-				// reference's correlation binds, and the layout ordinal i
-				// indexes (RFC-197 step 0). It is the same type the child QOV
-				// above flows, so the claim is checkable, not asserted.
-				out.Resolved = NewFieldPathOfSingleInDomain(field.Name, i, inPinned, OrdinalDomainOfType(rc.Type()))
+			if !inBaked && !rcHasDuplicateNames(rc) {
+				// Clean names still resolve immediately against the exact output
+				// row. RFC-232 does not admit a lazy name node, even when the
+				// name is unique at this constructor boundary.
+				var request FieldRequest
+				if field.Name == "" {
+					request, err = FieldByOrdinal(i)
+				} else {
+					request, err = FieldByName(field.Name)
+				}
+				if err != nil {
+					return nil, err
+				}
+				return ResolveFieldAccess(child, []FieldRequest{request})
 			}
-			return out
+			resolved, err := resolveFieldOrdinalInDomain(child, i, OrdinalDomainOfType(rc.Type()))
+			if err != nil {
+				return nil, err
+			}
+			if admitted, ok := resolved.(*fieldValue); ok {
+				admitted.Resolved.FrontierPinned = inPinned
+			}
+			return resolved, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // rcHasDuplicateNames reports whether two RC columns share a name — the
@@ -122,10 +143,10 @@ func pullUpThroughPassthrough(
 	v Value,
 	resultValue Value,
 	alias CorrelationIdentifier,
-) Value {
-	fv, ok := v.(*FieldValue)
+) (Value, error) {
+	fv, ok := v.(*fieldValue)
 	if !ok || fv == nil || !nonNilPassthroughValue(resultValue) {
-		return nil
+		return nil, nil
 	}
 	// A correlated field can pass through only the value it is rooted on.
 	// Re-anchoring a field over a different QOV/ObjectValue silently changes
@@ -135,20 +156,34 @@ func pullUpThroughPassthrough(
 	// the passthrough root and their complete path lives in Resolved.
 	if fv.Child != nil &&
 		!ValuesStructurallyEqual(fv.Child, resultValue) {
-		return nil
+		return nil, nil
+	}
+	child, err := newPullUpOutputQOV(alias, resultValue.Type())
+	if err != nil {
+		return nil, err
 	}
 
-	// Preserve the baked-ordinal marker through the copy: the passthrough is an
-	// identity result value (same record flows), so the baked position stays
-	// valid; dropping it would silently degrade a BAKED node to lazy (the
-	// conflation hazard).
-	NoteFieldValueMint(fv.Field, fv.Resolved != nil)
-	return &FieldValue{
-		Field:    fv.Field,
-		Typ:      fv.Typ,
-		Child:    &QuantifiedObjectValue{Correlation: alias, Typ: resultValue.Type()},
-		Resolved: fv.Resolved,
+	if isAdmittedFieldValue(fv) {
+		return RebuildFieldValue(fv, child)
 	}
+	// Legacy-private package fixture path. It is not externally constructible
+	// and cannot pass AsFieldValue admission.
+	NoteFieldValueMint(fv.Field, fv.Resolved != nil)
+	return &fieldValue{Field: fv.Field, Typ: fv.Typ, Child: child, Resolved: fv.Resolved}, nil
+}
+
+// newPullUpOutputQOV mints the output root introduced by pull-up. Most callers
+// provide an ordinary candidate alias. MaxMatchMap deliberately pulls values
+// into Quantifier.current(), however: that reserved correlation denotes the
+// newly produced row and may only be minted inside an owner-scoped builder.
+// PullUpValue is that builder, so it uses the same exact private current handle
+// as ordinal-layout owners instead of routing current through the public QOV
+// constructor (which correctly rejects it as a foreign source correlation).
+func newPullUpOutputQOV(alias CorrelationIdentifier, typ Type) (QuantifiedObjectValue, error) {
+	if alias.isCurrent() {
+		return newCurrentQOVForLayout(typ)
+	}
+	return NewQuantifiedObjectValue(alias, typ)
 }
 
 // PushDownValue rewrites v (which references the output of resultValue)
@@ -169,8 +204,8 @@ func PushDownValue(v Value, resultValue Value, upperAlias CorrelationIdentifier)
 
 	// Case 1: v is a QuantifiedObjectValue referencing the upper alias
 	// → replace with the entire resultValue.
-	if qov, ok := v.(*QuantifiedObjectValue); ok {
-		if qov.Correlation == upperAlias {
+	if qov, ok := v.(*quantifiedObjectValue); ok {
+		if qov.correlation == upperAlias {
 			return resultValue
 		}
 	}
@@ -178,7 +213,20 @@ func PushDownValue(v Value, resultValue Value, upperAlias CorrelationIdentifier)
 	// Case 2: resultValue is a RecordConstructorValue and v is a
 	// FieldValue → resolve the field to its input expression.
 	if rc, ok := resultValue.(*RecordConstructorValue); ok {
-		if fv, ok := v.(*FieldValue); ok {
+		// This is the inverse of PullUpValue's nominal-source bridge above.
+		// An ORDER BY key can be rooted at a selected scan's anonymous row even
+		// though the retained result program names the same source row.  Match
+		// against the exact QOV already present in the result program; never mint
+		// or infer a target from the requested field alone.
+		if !upperAlias.isCurrent() {
+			normalized, err := TranslateLogicalSourceNameNormalizationInValue(
+				v, upperAlias, rc)
+			if err != nil {
+				return nil
+			}
+			v = normalized
+		}
+		if fv, ok := v.(*fieldValue); ok {
 			// A select/join sort key can already be expressed in one of the
 			// constructor's input scopes (for example C.NAME#1 rooted at
 			// QOV(C)). Match that exact value before interpreting its baked
@@ -192,29 +240,52 @@ func PushDownValue(v Value, resultValue Value, upperAlias CorrelationIdentifier)
 				}
 			}
 
+			// Interpreting the first ordinal as an OUTPUT slot is legal only
+			// when the field is rooted in this exact constructor row.  The
+			// ordinal by itself is not an identity: another projection can have
+			// slot 0 too, and a same-width foreign row can put an unrelated field
+			// there.  Validate both the frozen root layout and the upper alias
+			// before crossing coordinate systems. Nested requests such as
+			// UPDATE's OLD.ID follow the same rule; only the suffix changes row
+			// domains after the root slot selects OLD.
+			if isAdmittedFieldValue(fv) {
+				constructorRoot, err := SnapshotExactType(rc.Type())
+				if err != nil || !exactTypesEqual(fv.rootType, constructorRoot.(*exactType)) {
+					return nil
+				}
+				root, rootOK := fv.Child.(*quantifiedObjectValue)
+				if !rootOK || root == nil || root.correlation != upperAlias {
+					return nil
+				}
+			}
+
 			// A BAKED node resolves by ORDINAL — same rationale
 			// as composeFieldOverConstructor: a name lookup would pick the FIRST
 			// of two duplicate same-named output columns regardless of which the
 			// ordinal denotes (the conflation hazard). Out-of-range = malformed;
-			// decline rather than guess. A MULTI-accessor path declines too:
-			// the root ordinal selects the column but the remaining steps would
-			// need re-anchoring over it; nil is the
-			// generic can't-push-down answer.
+			// decline rather than guess. For a nested path the first ordinal is in
+			// the constructor's output domain and the suffix is in the selected
+			// child's exact domain. Re-resolve that suffix atomically; copying the
+			// original path would retain the wrong root type/domain.
 			if fv.Resolved != nil {
-				if acc, single := fv.Resolved.Single(); single {
-					if o := acc.Ordinal; o >= 0 && o < len(rc.Fields) {
-						return rc.Fields[o].Value
-					}
+				ordinals := fv.Resolved.Ordinals()
+				if len(ordinals) == 0 {
+					return nil
 				}
-				return nil
+				rootOrdinal := ordinals[0]
+				if rootOrdinal < 0 || rootOrdinal >= len(rc.Fields) {
+					return nil
+				}
+				selected := rc.Fields[rootOrdinal].Value
+				if len(ordinals) == 1 {
+					return selected
+				}
+				resolved, err := ResolveFieldOrdinals(selected, ordinals[1:])
+				if err != nil {
+					return nil
+				}
+				return resolved
 			}
-			// A LAZY node has no ordinal, so it selects no member and declines —
-			// the same answer composeFieldOverConstructor gives, for the same
-			// reason. The name arm this replaces was Go-only (Java's FieldValue
-			// carries a resolved path by construction) and it MATCHED zero times
-			// across the explaindiff corpus, the //pkg/relational/sqldriver FDB
-			// suite and every conformance harness; only hand-built unit fixtures
-			// reached it.
 			return nil
 		}
 	}
@@ -222,7 +293,7 @@ func PushDownValue(v Value, resultValue Value, upperAlias CorrelationIdentifier)
 	// Case 3: resultValue is a passthrough (QOV/ObjectValue) — a legacy flat
 	// field stays flat, while an upper-anchored field is restored to this
 	// passthrough source.
-	if _, ok := resultValue.(*QuantifiedObjectValue); ok {
+	if _, ok := resultValue.(*quantifiedObjectValue); ok {
 		return pushDownThroughPassthrough(v, resultValue, upperAlias)
 	}
 	if _, ok := resultValue.(*ObjectValue); ok {
@@ -241,35 +312,32 @@ func pushDownThroughPassthrough(
 	resultValue Value,
 	upperAlias CorrelationIdentifier,
 ) Value {
-	fv, ok := v.(*FieldValue)
+	fv, ok := v.(*fieldValue)
 	if !ok || fv == nil || !nonNilPassthroughValue(resultValue) {
 		return nil
 	}
 	if fv.Child == nil {
-		// Preserve the baked-ordinal marker — see pullUpThroughPassthrough.
 		NoteFieldValueMint(fv.Field, fv.Resolved != nil)
-		return &FieldValue{
-			Field:    fv.Field,
-			Typ:      fv.Typ,
-			Resolved: fv.Resolved,
-		}
+		return &fieldValue{Field: fv.Field, Typ: fv.Typ, Resolved: fv.Resolved}
 	}
-	qov, ok := fv.Child.(*QuantifiedObjectValue)
-	if !ok || qov == nil || qov.Correlation != upperAlias {
+	qov, ok := fv.Child.(*quantifiedObjectValue)
+	if !ok || qov == nil || qov.correlation != upperAlias {
 		return nil
 	}
-	NoteFieldValueMint(fv.Field, fv.Resolved != nil)
-	return &FieldValue{
-		Field:    fv.Field,
-		Typ:      fv.Typ,
-		Child:    resultValue,
-		Resolved: fv.Resolved,
+	if isAdmittedFieldValue(fv) {
+		rebuilt, err := RebuildFieldValue(fv, resultValue)
+		if err != nil {
+			return nil
+		}
+		return rebuilt
 	}
+	NoteFieldValueMint(fv.Field, fv.Resolved != nil)
+	return &fieldValue{Field: fv.Field, Typ: fv.Typ, Child: resultValue, Resolved: fv.Resolved}
 }
 
 func nonNilPassthroughValue(value Value) bool {
 	switch value := value.(type) {
-	case *QuantifiedObjectValue:
+	case *quantifiedObjectValue:
 		return value != nil
 	case *ObjectValue:
 		return value != nil
@@ -283,14 +351,18 @@ func nonNilPassthroughValue(value Value) bool {
 // cannot be pulled up are omitted from the map.
 //
 // This is the batch form used by Ordering.PullUpThroughValue.
-func PullUpValues(toBePulledUp []Value, resultValue Value, alias CorrelationIdentifier) map[Value]Value {
+func PullUpValues(toBePulledUp []Value, resultValue Value, alias CorrelationIdentifier) (map[Value]Value, error) {
 	result := make(map[Value]Value)
 	for _, v := range toBePulledUp {
-		if pulled := PullUpValue(v, resultValue, alias); pulled != nil {
+		pulled, err := PullUpValue(v, resultValue, alias)
+		if err != nil {
+			return nil, err
+		}
+		if pulled != nil {
 			result[v] = pulled
 		}
 	}
-	return result
+	return result, nil
 }
 
 // PushDownValues translates a list of values through a result value,

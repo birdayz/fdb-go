@@ -6,7 +6,176 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+// matchRuleRowType is the exact row shared by the match-rule fixtures.  The
+// pre-RFC tests used UNKNOWN plus childless/name-only FieldValues; that made the
+// matcher tests depend on states which admission now rejects.  One explicit
+// descriptor keeps the tests about matching while every QOV and field access
+// names an executable slot.
+func matchRuleRowType() *values.RecordType {
+	addressType := values.NewRecordType("MATCH_ADDRESS", false, []values.Field{{
+		Name:      "CITY",
+		FieldType: values.NullableString,
+		Ordinal:   0,
+	}})
+	return values.NewRecordType("MATCH_ROW", false, []values.Field{
+		{Name: "col0", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "col1", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "col2", FieldType: values.NotNullLong, Ordinal: 2},
+		{Name: "col_x", FieldType: values.NotNullLong, Ordinal: 3},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 4},
+		{Name: "CITY", FieldType: values.NullableString, Ordinal: 5},
+		{Name: "ADDR", FieldType: addressType, Ordinal: 6},
+		{Name: "TAGS", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 7},
+		{Name: "CATEGORIES", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 8},
+		{Name: "X", FieldType: values.NullableLong, Ordinal: 9},
+		{Name: "key", FieldType: values.NotNullLong, Ordinal: 10},
+		{Name: "projected", FieldType: values.NotNullLong, Ordinal: 11},
+		{Name: "filtered", FieldType: values.NotNullLong, Ordinal: 12},
+		{Name: "join_key", FieldType: values.NotNullLong, Ordinal: 13},
+		{Name: "probe_key", FieldType: values.NotNullLong, Ordinal: 14},
+		{Name: "payload", FieldType: values.NotNullLong, Ordinal: 15},
+	})
+}
+
+func mustMatchScan(
+	t testing.TB,
+	recordTypes []string,
+	flowedType values.Type,
+) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	value, err := expressions.NewFullUnorderedScanExpression(recordTypes, flowedType)
+	return mustConstruct(t, value, err)
+}
+
+func mustMatchInitial(
+	t testing.TB,
+	expression expressions.RelationalExpression,
+) *expressions.Reference {
+	t.Helper()
+	value, err := InitialOf(expression)
+	return mustConstruct(t, value, err)
+}
+
+func mustMatchInsert(
+	t testing.TB,
+	reference *expressions.Reference,
+	expression expressions.RelationalExpression,
+) bool {
+	t.Helper()
+	prepared, err := prepareReferenceMemberBatch(reference, []referenceMemberIntent{{
+		set:        expressions.ReferenceExploratoryMembers,
+		expression: expression,
+	}})
+	if err != nil {
+		t.Fatalf("prepare match-rule Reference insertion: %v", err)
+	}
+	if err := prepared.commit(); err != nil {
+		t.Fatalf("commit match-rule Reference insertion: %v", err)
+	}
+	return prepared.inserted[0]
+}
+
+func mustMatchFilter(
+	t testing.TB,
+	queryPredicates []predicates.QueryPredicate,
+	inner expressions.Quantifier,
+) *expressions.LogicalFilterExpression {
+	t.Helper()
+	value, err := expressions.NewLogicalFilterExpression(queryPredicates, inner)
+	return mustConstruct(t, value, err)
+}
+
+func mustMatchSelect(
+	t testing.TB,
+	resultValue values.Value,
+	quantifiers []expressions.Quantifier,
+	queryPredicates []predicates.QueryPredicate,
+) *expressions.SelectExpression {
+	t.Helper()
+	value, err := expressions.NewSelectExpression(resultValue, quantifiers, queryPredicates)
+	return mustConstruct(t, value, err)
+}
+
+func mustMatchSelectWithJoinType(
+	t testing.TB,
+	resultValue values.Value,
+	quantifiers []expressions.Quantifier,
+	queryPredicates []predicates.QueryPredicate,
+	sourceAliases []string,
+	joinType expressions.JoinType,
+) *expressions.SelectExpression {
+	t.Helper()
+	value, err := expressions.NewSelectExpressionWithJoinType(
+		resultValue, quantifiers, queryPredicates, sourceAliases, joinType)
+	return mustConstruct(t, value, err)
+}
+
+func mustMatchUnion(
+	t testing.TB,
+	quantifiers []expressions.Quantifier,
+) *expressions.LogicalUnionExpression {
+	t.Helper()
+	value, err := expressions.NewLogicalUnionExpression(quantifiers)
+	return mustConstruct(t, value, err)
+}
+
+func mustMatchExplode(t testing.TB, collectionValue values.Value) *expressions.ExplodeExpression {
+	t.Helper()
+	value, err := expressions.NewExplodeExpression(collectionValue)
+	return mustConstruct(t, value, err)
+}
+
+func mustMatchFlowed(t testing.TB, quantifier expressions.Quantifier) values.QuantifiedObjectValue {
+	t.Helper()
+	value, err := quantifier.RequireFlowedObjectValue()
+	return mustConstruct(t, value, err)
+}
+
+func mustMatchQOV(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+	flowedType values.Type,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	value, err := values.NewQuantifiedObjectValue(alias, flowedType)
+	return mustConstruct(t, value, err)
+}
+
+func mustMatchField(
+	t testing.TB,
+	child values.Value,
+	name string,
+) values.Value {
+	t.Helper()
+	request, err := values.FieldByName(name)
+	request = mustConstruct(t, request, err)
+	value, err := values.ResolveFieldAccess(child, []values.FieldRequest{request})
+	return mustConstruct(t, value, err)
+}
+
+func mustMatchOrdinalField(
+	t testing.TB,
+	child values.Value,
+	ordinal int,
+) values.Value {
+	t.Helper()
+	value, err := values.ResolveFieldOrdinals(child, []int{ordinal})
+	return mustConstruct(t, value, err)
+}
+
+func mustMatchScanPlan(
+	t testing.TB,
+	recordTypes []string,
+	flowedType values.Type,
+	reverse bool,
+) *plans.RecordQueryScanPlan {
+	t.Helper()
+	value, err := plans.NewRecordQueryScanPlan(recordTypes, flowedType, reverse)
+	return mustConstruct(t, value, err)
+}
 
 // TestMatchIntermediateRule_FilterOverScan builds a two-level tree:
 // Filter(scan) on both the query and candidate side. Seeds a
@@ -17,24 +186,24 @@ func TestMatchIntermediateRule_FilterOverScan(t *testing.T) {
 	t.Parallel()
 
 	// --- Query side: Filter(scan) ---
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	queryScanRef := expressions.InitialOf(queryScan)
+	queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	queryScanRef := mustMatchInitial(t, queryScan)
 	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
-	queryFilter := expressions.NewLogicalFilterExpression(
+	queryFilter := mustMatchFilter(t,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		queryScanQ,
 	)
-	queryFilterRef := expressions.InitialOf(queryFilter)
+	queryFilterRef := mustMatchInitial(t, queryFilter)
 
 	// --- Candidate side: Filter(scan) with same structure ---
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	candidateScanRef := mustMatchInitial(t, candidateScan)
 	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
-	candidateFilter := expressions.NewLogicalFilterExpression(
+	candidateFilter := mustMatchFilter(t,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		candidateScanQ,
 	)
-	candidateFilterRef := expressions.InitialOf(candidateFilter)
+	candidateFilterRef := mustMatchInitial(t, candidateFilter)
 	traversal := NewTraversal(candidateFilterRef)
 
 	mc := &testMatchCandidate{name: "idx_t", traversal: traversal}
@@ -42,7 +211,7 @@ func TestMatchIntermediateRule_FilterOverScan(t *testing.T) {
 
 	// Step 1: Seed the leaf match on queryScanRef.
 	leafRule := NewMatchLeafRule()
-	FireExpressionRuleWithMemo(leafRule, queryScanRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, leafRule, queryScanRef, ctx, nil)
 
 	// Verify the leaf match was seeded.
 	leafPMs := GetPartialMatchesForCandidate(queryScanRef, mc)
@@ -52,7 +221,7 @@ func TestMatchIntermediateRule_FilterOverScan(t *testing.T) {
 
 	// Step 2: Run MatchIntermediateRule on the filter.
 	intermediateRule := NewMatchIntermediateRule()
-	FireExpressionRuleWithMemo(intermediateRule, queryFilterRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, intermediateRule, queryFilterRef, ctx, nil)
 
 	// Verify: a PartialMatch should be stored on queryFilterRef.
 	filterPMs := GetPartialMatchesForCandidate(queryFilterRef, mc)
@@ -94,23 +263,23 @@ func TestMatchIntermediateRule_MismatchedType(t *testing.T) {
 	t.Parallel()
 
 	// Query side: Filter(scan)
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	queryScanRef := expressions.InitialOf(queryScan)
+	queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	queryScanRef := mustMatchInitial(t, queryScan)
 	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
-	queryFilter := expressions.NewLogicalFilterExpression(
+	queryFilter := mustMatchFilter(t,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		queryScanQ,
 	)
-	queryFilterRef := expressions.InitialOf(queryFilter)
+	queryFilterRef := mustMatchInitial(t, queryFilter)
 
 	// Candidate side: Union(scan) — different intermediate type.
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	candidateScanRef := mustMatchInitial(t, candidateScan)
 	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
-	candidateUnion := expressions.NewLogicalUnionExpression(
+	candidateUnion := mustMatchUnion(t,
 		[]expressions.Quantifier{candidateScanQ},
 	)
-	candidateUnionRef := expressions.InitialOf(candidateUnion)
+	candidateUnionRef := mustMatchInitial(t, candidateUnion)
 	traversal := NewTraversal(candidateUnionRef)
 
 	mc := &testMatchCandidate{name: "idx_t", traversal: traversal}
@@ -118,11 +287,11 @@ func TestMatchIntermediateRule_MismatchedType(t *testing.T) {
 
 	// Seed leaf match.
 	leafRule := NewMatchLeafRule()
-	FireExpressionRuleWithMemo(leafRule, queryScanRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, leafRule, queryScanRef, ctx, nil)
 
 	// Run intermediate rule.
 	intermediateRule := NewMatchIntermediateRule()
-	FireExpressionRuleWithMemo(intermediateRule, queryFilterRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, intermediateRule, queryFilterRef, ctx, nil)
 
 	// Should NOT match: Filter != Union at the intermediate level.
 	filterPMs := GetPartialMatchesForCandidate(queryFilterRef, mc)
@@ -137,24 +306,24 @@ func TestMatchIntermediateRule_NoChildMatches(t *testing.T) {
 	t.Parallel()
 
 	// Query side: Filter(scan)
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	queryScanRef := expressions.InitialOf(queryScan)
+	queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	queryScanRef := mustMatchInitial(t, queryScan)
 	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
-	queryFilter := expressions.NewLogicalFilterExpression(
+	queryFilter := mustMatchFilter(t,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		queryScanQ,
 	)
-	queryFilterRef := expressions.InitialOf(queryFilter)
+	queryFilterRef := mustMatchInitial(t, queryFilter)
 
 	// Candidate side: matching structure but NO leaf match seeded.
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	candidateScanRef := mustMatchInitial(t, candidateScan)
 	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
-	candidateFilter := expressions.NewLogicalFilterExpression(
+	candidateFilter := mustMatchFilter(t,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		candidateScanQ,
 	)
-	candidateFilterRef := expressions.InitialOf(candidateFilter)
+	candidateFilterRef := mustMatchInitial(t, candidateFilter)
 	traversal := NewTraversal(candidateFilterRef)
 
 	mc := &testMatchCandidate{name: "idx_t", traversal: traversal}
@@ -164,7 +333,7 @@ func TestMatchIntermediateRule_NoChildMatches(t *testing.T) {
 
 	// Run intermediate rule directly.
 	intermediateRule := NewMatchIntermediateRule()
-	FireExpressionRuleWithMemo(intermediateRule, queryFilterRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, intermediateRule, queryFilterRef, ctx, nil)
 
 	// Without child matches, the intermediate rule should produce nothing.
 	filterPMs := GetPartialMatchesForCandidate(queryFilterRef, mc)
@@ -181,36 +350,36 @@ func TestMatchIntermediateRule_MultipleQuantifiers(t *testing.T) {
 	t.Parallel()
 
 	// --- Query side: Select(scanA, scanB) ---
-	queryScanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	queryScanRefA := expressions.InitialOf(queryScanA)
+	queryScanA := mustMatchScan(t, []string{"A"}, matchRuleRowType())
+	queryScanRefA := mustMatchInitial(t, queryScanA)
 	queryQA := expressions.ForEachQuantifier(queryScanRefA)
 
-	queryScanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
-	queryScanRefB := expressions.InitialOf(queryScanB)
+	queryScanB := mustMatchScan(t, []string{"B"}, matchRuleRowType())
+	queryScanRefB := mustMatchInitial(t, queryScanB)
 	queryQB := expressions.ForEachQuantifier(queryScanRefB)
 
-	querySelect := expressions.NewSelectExpression(
+	querySelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{queryQA, queryQB},
 		nil, // no predicates
 	)
-	querySelectRef := expressions.InitialOf(querySelect)
+	querySelectRef := mustMatchInitial(t, querySelect)
 
 	// --- Candidate side: Select(scanA, scanB) with same structure ---
-	candidateScanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	candidateScanRefA := expressions.InitialOf(candidateScanA)
+	candidateScanA := mustMatchScan(t, []string{"A"}, matchRuleRowType())
+	candidateScanRefA := mustMatchInitial(t, candidateScanA)
 	candidateQA := expressions.ForEachQuantifier(candidateScanRefA)
 
-	candidateScanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
-	candidateScanRefB := expressions.InitialOf(candidateScanB)
+	candidateScanB := mustMatchScan(t, []string{"B"}, matchRuleRowType())
+	candidateScanRefB := mustMatchInitial(t, candidateScanB)
 	candidateQB := expressions.ForEachQuantifier(candidateScanRefB)
 
-	candidateSelect := expressions.NewSelectExpression(
+	candidateSelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{candidateQA, candidateQB},
 		nil,
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 	traversal := NewTraversal(candidateSelectRef)
 
 	mc := &testMatchCandidate{name: "idx_join", traversal: traversal}
@@ -218,8 +387,8 @@ func TestMatchIntermediateRule_MultipleQuantifiers(t *testing.T) {
 
 	// Seed leaf matches on both child references.
 	leafRule := NewMatchLeafRule()
-	FireExpressionRuleWithMemo(leafRule, queryScanRefA, ctx, nil)
-	FireExpressionRuleWithMemo(leafRule, queryScanRefB, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, leafRule, queryScanRefA, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, leafRule, queryScanRefB, ctx, nil)
 
 	// Verify both leaf matches are seeded.
 	if len(GetPartialMatchesForCandidate(queryScanRefA, mc)) == 0 {
@@ -231,7 +400,7 @@ func TestMatchIntermediateRule_MultipleQuantifiers(t *testing.T) {
 
 	// Run intermediate rule on the select.
 	intermediateRule := NewMatchIntermediateRule()
-	FireExpressionRuleWithMemo(intermediateRule, querySelectRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, intermediateRule, querySelectRef, ctx, nil)
 
 	// Verify: a PartialMatch should be stored on querySelectRef.
 	selectPMs := GetPartialMatchesForCandidate(querySelectRef, mc)
@@ -288,9 +457,7 @@ func TestMatchIntermediateRule_RetainsDistinctExactBijections(t *testing.T) {
 	t.Parallel()
 
 	newScanRef := func() *expressions.Reference {
-		return expressions.InitialOf(
-			expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-		)
+		return mustMatchInitial(t, mustMatchScan(t, []string{"T"}, matchRuleRowType()))
 	}
 
 	queryScanRefs := []*expressions.Reference{newScanRef(), newScanRef()}
@@ -298,24 +465,24 @@ func TestMatchIntermediateRule_RetainsDistinctExactBijections(t *testing.T) {
 		expressions.ForEachQuantifier(queryScanRefs[0]),
 		expressions.ForEachQuantifier(queryScanRefs[1]),
 	}
-	querySelect := expressions.NewSelectExpression(
+	querySelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		queryQs,
 		nil,
 	)
-	querySelectRef := expressions.InitialOf(querySelect)
+	querySelectRef := mustMatchInitial(t, querySelect)
 
 	candidateScanRefs := []*expressions.Reference{newScanRef(), newScanRef()}
 	candidateQs := []expressions.Quantifier{
 		expressions.ForEachQuantifier(candidateScanRefs[0]),
 		expressions.ForEachQuantifier(candidateScanRefs[1]),
 	}
-	candidateSelect := expressions.NewSelectExpression(
+	candidateSelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		candidateQs,
 		nil,
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 
 	mc := &testMatchCandidate{
 		name:      "idx_symmetric_join",
@@ -325,14 +492,14 @@ func TestMatchIntermediateRule_RetainsDistinctExactBijections(t *testing.T) {
 
 	leafRule := NewMatchLeafRule()
 	for _, queryScanRef := range queryScanRefs {
-		FireExpressionRuleWithMemo(leafRule, queryScanRef, ctx, nil)
+		mustFireExpressionRuleWithMemo(t, leafRule, queryScanRef, ctx, nil)
 		if got := len(GetPartialMatchesForCandidate(queryScanRef, mc)); got != 2 {
 			t.Fatalf("symmetric query child has %d leaf matches, want 2", got)
 		}
 	}
 
 	rule := NewMatchIntermediateRule()
-	FireExpressionRuleWithMemo(rule, querySelectRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, rule, querySelectRef, ctx, nil)
 
 	pms := GetPartialMatchesForExpression(querySelectRef, querySelect)
 	if len(pms) != 2 {
@@ -355,7 +522,7 @@ func TestMatchIntermediateRule_RetainsDistinctExactBijections(t *testing.T) {
 		t.Fatalf("first query alias targets = %v, want both candidate aliases", seenFirstTargets)
 	}
 
-	FireExpressionRuleWithMemo(rule, querySelectRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, rule, querySelectRef, ctx, nil)
 	if got := len(GetPartialMatchesForExpression(querySelectRef, querySelect)); got != 2 {
 		t.Fatalf("exact refire grew matches to %d, want stable count 2", got)
 	}
@@ -451,26 +618,25 @@ func TestMatchIntermediateRule_SelectSubsetSubsumesMultiQuantifierCandidate(t *t
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			// Query: SELECT q FROM T q WHERE q.col0 = 5.
-			queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-			queryScanRef := expressions.InitialOf(queryScan)
+			queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+			queryScanRef := mustMatchInitial(t, queryScan)
 			queryQ := expressions.ForEachQuantifier(queryScanRef)
 			queryPred := predicates.NewComparisonPredicate(
-				values.NewFieldValue(queryQ.GetFlowedObjectValue(), "col0", values.UnknownType),
+				mustMatchField(t, mustMatchFlowed(t, queryQ), "col0"),
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5)),
 			)
-			querySelect := expressions.NewSelectExpressionWithJoinType(
-				queryQ.GetFlowedObjectValue(),
+			querySelect := mustMatchSelectWithJoinType(t,
+				mustMatchFlowed(t, queryQ),
 				[]expressions.Quantifier{queryQ},
 				[]predicates.QueryPredicate{queryPred},
 				nil,
 				test.queryJoinType,
 			)
-			querySelectRef := expressions.InitialOf(querySelect)
+			querySelectRef := mustMatchInitial(t, querySelect)
 
 			// Candidate: SELECT c FROM T c, <extra U> WHERE c.col0 = $p.
-			extraRef := expressions.InitialOf(
-				expressions.NewFullUnorderedScanExpression([]string{"U"}, values.UnknownType),
-			)
+			extraRef := mustMatchInitial(t,
+				mustMatchScan(t, []string{"U"}, matchRuleRowType()))
 			var extraQ expressions.Quantifier
 			switch test.extraKind {
 			case expressions.QuantifierExistential:
@@ -482,46 +648,45 @@ func TestMatchIntermediateRule_SelectSubsetSubsumesMultiQuantifierCandidate(t *t
 			default:
 				t.Fatalf("unsupported test quantifier kind %v", test.extraKind)
 			}
-			candidateScanRef := expressions.InitialOf(
-				expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-			)
+			candidateScanRef := mustMatchInitial(t,
+				mustMatchScan(t, []string{"T"}, matchRuleRowType()))
 			if test.selectedDependsOnExtra {
-				dependentFilter := expressions.NewLogicalFilterExpression(
-					[]predicates.QueryPredicate{predicates.NewExistentialAlias(extraQ.GetAlias())},
+				dependentFilter := mustMatchFilter(t,
+					[]predicates.QueryPredicate{mustExistentialAlias(t, extraQ.GetAlias())},
 					expressions.ForEachQuantifier(candidateScanRef),
 				)
-				candidateScanRef = expressions.InitialOf(dependentFilter)
+				candidateScanRef = mustMatchInitial(t, dependentFilter)
 			}
 			candidateQ := expressions.ForEachQuantifier(candidateScanRef)
 
 			parameterAlias := values.UniqueCorrelationIdentifier()
 			placeholder := predicates.NewPlaceholder(
 				parameterAlias,
-				values.NewFieldValue(candidateQ.GetFlowedObjectValue(), "col0", values.UnknownType),
+				mustMatchField(t, mustMatchFlowed(t, candidateQ), "col0"),
 			)
 			candidatePreds := []predicates.QueryPredicate{placeholder}
 			if test.extraPredicate {
-				candidatePreds = append(candidatePreds, predicates.NewExistentialAlias(extraQ.GetAlias()))
+				candidatePreds = append(candidatePreds, mustExistentialAlias(t, extraQ.GetAlias()))
 			}
 			if test.candidateFalsePredicate {
 				candidatePreds = append(candidatePreds, predicates.NewConstantPredicate(predicates.TriFalse))
 			}
-			candidateResult := candidateQ.GetFlowedObjectValue()
+			candidateResult := mustMatchFlowed(t, candidateQ)
 			if test.resultUsesExtra {
-				candidateResult = extraQ.GetFlowedObjectValue()
+				candidateResult = mustMatchFlowed(t, extraQ)
 			}
 			candidateQs := []expressions.Quantifier{candidateQ, extraQ}
 			if test.extraFirst {
 				candidateQs[0], candidateQs[1] = candidateQs[1], candidateQs[0]
 			}
-			candidateSelect := expressions.NewSelectExpressionWithJoinType(
+			candidateSelect := mustMatchSelectWithJoinType(t,
 				candidateResult,
 				candidateQs,
 				candidatePreds,
 				nil,
 				test.candidateJoinType,
 			)
-			candidateSelectRef := expressions.InitialOf(candidateSelect)
+			candidateSelectRef := mustMatchInitial(t, candidateSelect)
 
 			mc := &testMatchCandidate{
 				name:      "idx_col0_with_extra_leg",
@@ -541,13 +706,13 @@ func TestMatchIntermediateRule_SelectSubsetSubsumesMultiQuantifierCandidate(t *t
 				)
 				AddPartialMatchForCandidate(queryScanRef, mc, childPM)
 			} else {
-				FireExpressionRuleWithMemo(NewMatchLeafRule(), queryScanRef, ctx, nil)
+				mustFireExpressionRuleWithMemo(t, NewMatchLeafRule(), queryScanRef, ctx, nil)
 			}
 			if got := len(GetPartialMatchesForCandidate(queryScanRef, mc)); got == 0 {
 				t.Fatal("leaf PartialMatch not seeded on query scan")
 			}
 
-			FireExpressionRuleWithMemo(NewMatchIntermediateRule(), querySelectRef, ctx, nil)
+			mustFireExpressionRuleWithMemo(t, NewMatchIntermediateRule(), querySelectRef, ctx, nil)
 
 			pms := GetPartialMatchesForCandidate(querySelectRef, mc)
 			if !test.expectPartialMatch {
@@ -602,12 +767,12 @@ func TestMatchIntermediateRule_CyclicQuantifierPermutation(t *testing.T) {
 	t.Parallel()
 
 	newScanRef := func(rt string) *expressions.Reference {
-		return expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{rt}, values.UnknownType))
+		return mustMatchInitial(t, mustMatchScan(t, []string{rt}, matchRuleRowType()))
 	}
 
 	// Query: Select(A, B, C).
 	qA, qB, qC := newScanRef("A"), newScanRef("B"), newScanRef("C")
-	querySelect := expressions.NewSelectExpression(
+	querySelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{
 			expressions.ForEachQuantifier(qA),
@@ -615,11 +780,11 @@ func TestMatchIntermediateRule_CyclicQuantifierPermutation(t *testing.T) {
 			expressions.ForEachQuantifier(qC),
 		}, nil,
 	)
-	querySelectRef := expressions.InitialOf(querySelect)
+	querySelectRef := mustMatchInitial(t, querySelect)
 
 	// Candidate: Select(B, C, A) — a cyclic permutation of the query order.
 	cB, cC, cA := newScanRef("B"), newScanRef("C"), newScanRef("A")
-	candidateSelect := expressions.NewSelectExpression(
+	candidateSelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{
 			expressions.ForEachQuantifier(cB),
@@ -627,17 +792,17 @@ func TestMatchIntermediateRule_CyclicQuantifierPermutation(t *testing.T) {
 			expressions.ForEachQuantifier(cA),
 		}, nil,
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 
 	mc := &testMatchCandidate{name: "idx_join3", traversal: NewTraversal(candidateSelectRef)}
 	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
 
 	leafRule := NewMatchLeafRule()
-	FireExpressionRuleWithMemo(leafRule, qA, ctx, nil)
-	FireExpressionRuleWithMemo(leafRule, qB, ctx, nil)
-	FireExpressionRuleWithMemo(leafRule, qC, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, leafRule, qA, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, leafRule, qB, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, leafRule, qC, ctx, nil)
 
-	FireExpressionRuleWithMemo(NewMatchIntermediateRule(), querySelectRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, NewMatchIntermediateRule(), querySelectRef, ctx, nil)
 
 	if len(GetPartialMatchesForCandidate(querySelectRef, mc)) == 0 {
 		t.Fatal("expected a PartialMatch via the cyclic bijection [2,0,1]; positional + first-two-swap both miss it")
@@ -660,43 +825,43 @@ func TestMatchIntermediateRule_NodeReCheckUnderBijectionMap(t *testing.T) {
 	t.Parallel()
 
 	// Query: Select(scanA, scanB) with result record{f: qA.qov, g: qB.qov}.
-	qARef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType))
-	qBRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType))
+	qARef := mustMatchInitial(t, mustMatchScan(t, []string{"A"}, matchRuleRowType()))
+	qBRef := mustMatchInitial(t, mustMatchScan(t, []string{"B"}, matchRuleRowType()))
 	qA := expressions.ForEachQuantifier(qARef)
 	qB := expressions.ForEachQuantifier(qBRef)
-	querySelect := expressions.NewSelectExpression(
+	querySelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(
-			values.RecordConstructorField{Name: "f", Value: qA.GetFlowedObjectValue()},
-			values.RecordConstructorField{Name: "g", Value: qB.GetFlowedObjectValue()},
+			values.RecordConstructorField{Name: "f", Value: mustMatchFlowed(t, qA)},
+			values.RecordConstructorField{Name: "g", Value: mustMatchFlowed(t, qB)},
 		),
 		[]expressions.Quantifier{qA, qB}, nil,
 	)
-	querySelectRef := expressions.InitialOf(querySelect)
+	querySelectRef := mustMatchInitial(t, querySelect)
 
 	// Candidate: Select(scanB, scanA) — SWAPPED positional order — with result
 	// record{f: cA.qov, g: cB.qov}. The only same-type child bijection is
 	// qA↔cA, qB↔cB, i.e. query positions [0,1] → candidate positions [1,0].
-	cBRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType))
-	cARef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType))
+	cBRef := mustMatchInitial(t, mustMatchScan(t, []string{"B"}, matchRuleRowType()))
+	cARef := mustMatchInitial(t, mustMatchScan(t, []string{"A"}, matchRuleRowType()))
 	cB := expressions.ForEachQuantifier(cBRef)
 	cA := expressions.ForEachQuantifier(cARef)
-	candidateSelect := expressions.NewSelectExpression(
+	candidateSelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(
-			values.RecordConstructorField{Name: "f", Value: cA.GetFlowedObjectValue()},
-			values.RecordConstructorField{Name: "g", Value: cB.GetFlowedObjectValue()},
+			values.RecordConstructorField{Name: "f", Value: mustMatchFlowed(t, cA)},
+			values.RecordConstructorField{Name: "g", Value: mustMatchFlowed(t, cB)},
 		),
 		[]expressions.Quantifier{cB, cA}, nil,
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 
 	mc := &testMatchCandidate{name: "idx_join_qov", traversal: NewTraversal(candidateSelectRef)}
 	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
 
 	leafRule := NewMatchLeafRule()
-	FireExpressionRuleWithMemo(leafRule, qARef, ctx, nil)
-	FireExpressionRuleWithMemo(leafRule, qBRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, leafRule, qARef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, leafRule, qBRef, ctx, nil)
 
-	FireExpressionRuleWithMemo(NewMatchIntermediateRule(), querySelectRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, NewMatchIntermediateRule(), querySelectRef, ctx, nil)
 
 	if len(GetPartialMatchesForCandidate(querySelectRef, mc)) == 0 {
 		t.Fatal("expected a PartialMatch: the QOV-referencing result values are equal only under the bijection {qA→cA, qB→cB}; an empty-map node check rejects this valid match")
@@ -714,26 +879,26 @@ func TestMatchIntermediateRule_NodeReCheckUnderBijectionMap(t *testing.T) {
 func TestMatchIntermediateRule_QuantifierAttributesMustMatch(t *testing.T) {
 	t.Parallel()
 
-	queryScanRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
-	querySelect := expressions.NewSelectExpression(
+	queryScanRef := mustMatchInitial(t, mustMatchScan(t, []string{"T"}, matchRuleRowType()))
+	querySelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{expressions.ForEachQuantifier(queryScanRef)}, nil,
 	)
-	querySelectRef := expressions.InitialOf(querySelect)
+	querySelectRef := mustMatchInitial(t, querySelect)
 
 	// Candidate Select ranges over the SAME scan via a NULL-ON-EMPTY quantifier.
-	candScanRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
-	candidateSelect := expressions.NewSelectExpression(
+	candScanRef := mustMatchInitial(t, mustMatchScan(t, []string{"T"}, matchRuleRowType()))
+	candidateSelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{expressions.ForEachNullOnEmptyQuantifier(candScanRef)}, nil,
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 
 	mc := &testMatchCandidate{name: "idx_noe", traversal: NewTraversal(candidateSelectRef)}
 	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
 
-	FireExpressionRuleWithMemo(NewMatchLeafRule(), queryScanRef, ctx, nil)
-	FireExpressionRuleWithMemo(NewMatchIntermediateRule(), querySelectRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, NewMatchLeafRule(), queryScanRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, NewMatchIntermediateRule(), querySelectRef, ctx, nil)
 
 	if n := len(GetPartialMatchesForCandidate(querySelectRef, mc)); n != 0 {
 		t.Fatalf("a plain-ForEach Select must NOT match a NULL-ON-EMPTY Select (edge mismatch), got %d matches", n)
@@ -745,11 +910,11 @@ func TestMatchIntermediateRule_QuantifierAttributesMustMatch(t *testing.T) {
 func TestMatchIntermediateRule_LeafSkipped(t *testing.T) {
 	t.Parallel()
 
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	queryRef := expressions.InitialOf(queryScan)
+	queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	queryRef := mustMatchInitial(t, queryScan)
 
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	candidateRef := expressions.InitialOf(candidateScan)
+	candidateScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	candidateRef := mustMatchInitial(t, candidateScan)
 	traversal := NewTraversal(candidateRef)
 
 	mc := &testMatchCandidate{name: "idx_t", traversal: traversal}
@@ -757,7 +922,7 @@ func TestMatchIntermediateRule_LeafSkipped(t *testing.T) {
 
 	// Only run intermediate rule (not leaf rule).
 	intermediateRule := NewMatchIntermediateRule()
-	FireExpressionRuleWithMemo(intermediateRule, queryRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, intermediateRule, queryRef, ctx, nil)
 
 	// Should not match — leaf expression, no quantifiers.
 	pms := GetPartialMatchesForCandidate(queryRef, mc)
@@ -779,35 +944,36 @@ func TestMatchIntermediate_FilterSubsumedBySelect_SinglePredicate(t *testing.T) 
 	t.Parallel()
 
 	// --- Query side: Filter([col0 = 5], Scan("T")) ---
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	queryScanRef := expressions.InitialOf(queryScan)
+	queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	queryScanRef := mustMatchInitial(t, queryScan)
 	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
 
-	queryFilter := expressions.NewLogicalFilterExpression(
+	queryFilter := mustMatchFilter(t,
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "col0"},
+				mustMatchField(t, mustMatchFlowed(t, queryScanQ), "col0"),
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5)),
 			),
 		},
 		queryScanQ,
 	)
-	queryFilterRef := expressions.InitialOf(queryFilter)
+	queryFilterRef := mustMatchInitial(t, queryFilter)
 
 	// --- Candidate side: Select(qov, [ForEach(Scan("T"))], [Placeholder(a0, col0)]) ---
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	candidateScanRef := mustMatchInitial(t, candidateScan)
 	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
 
 	alias0 := values.UniqueCorrelationIdentifier()
-	ph0 := predicates.NewPlaceholder(alias0, &values.FieldValue{Field: "col0"})
+	ph0 := predicates.NewPlaceholder(alias0,
+		mustMatchField(t, mustMatchFlowed(t, candidateScanQ), "col0"))
 
-	candidateSelect := expressions.NewSelectExpression(
+	candidateSelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{candidateScanQ},
 		[]predicates.QueryPredicate{ph0},
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 	traversal := NewTraversal(candidateSelectRef)
 
 	mc := &testMatchCandidate{name: "idx_col0", traversal: traversal}
@@ -815,14 +981,14 @@ func TestMatchIntermediate_FilterSubsumedBySelect_SinglePredicate(t *testing.T) 
 
 	// Seed leaf match on scan.
 	leafRule := NewMatchLeafRule()
-	FireExpressionRuleWithMemo(leafRule, queryScanRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, leafRule, queryScanRef, ctx, nil)
 	if len(GetPartialMatchesForCandidate(queryScanRef, mc)) == 0 {
 		t.Fatal("leaf PartialMatch not seeded on queryScanRef")
 	}
 
 	// Run intermediate rule on the filter.
 	intermediateRule := NewMatchIntermediateRule()
-	FireExpressionRuleWithMemo(intermediateRule, queryFilterRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, intermediateRule, queryFilterRef, ctx, nil)
 
 	// Verify a PartialMatch was created on the filter ref.
 	pms := GetPartialMatchesForCandidate(queryFilterRef, mc)
@@ -868,39 +1034,40 @@ func TestMatchIntermediate_FilterSubsumedBySelect_SinglePredicate(t *testing.T) 
 func TestMatchIntermediate_FilterSubsumedBySelect_EdgeMismatchRejected(t *testing.T) {
 	t.Parallel()
 
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	queryScanRef := expressions.InitialOf(queryScan)
+	queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	queryScanRef := mustMatchInitial(t, queryScan)
 	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
-	queryFilter := expressions.NewLogicalFilterExpression(
+	queryFilter := mustMatchFilter(t,
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "col0"},
+				mustMatchField(t, mustMatchFlowed(t, queryScanQ), "col0"),
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5)),
 			),
 		},
 		queryScanQ,
 	)
-	queryFilterRef := expressions.InitialOf(queryFilter)
+	queryFilterRef := mustMatchInitial(t, queryFilter)
 
 	// Candidate Select ranges over the scan via a NULL-ON-EMPTY quantifier — the
 	// ONLY difference from the passing SinglePredicate case.
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	candidateScanRef := mustMatchInitial(t, candidateScan)
 	candidateScanQ := expressions.ForEachNullOnEmptyQuantifier(candidateScanRef)
 	alias0 := values.UniqueCorrelationIdentifier()
-	ph0 := predicates.NewPlaceholder(alias0, &values.FieldValue{Field: "col0"})
-	candidateSelect := expressions.NewSelectExpression(
+	ph0 := predicates.NewPlaceholder(alias0,
+		mustMatchField(t, mustMatchFlowed(t, candidateScanQ), "col0"))
+	candidateSelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{candidateScanQ},
 		[]predicates.QueryPredicate{ph0},
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 
 	mc := &testMatchCandidate{name: "idx_col0_noe", traversal: NewTraversal(candidateSelectRef)}
 	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
 
-	FireExpressionRuleWithMemo(NewMatchLeafRule(), queryScanRef, ctx, nil)
-	FireExpressionRuleWithMemo(NewMatchIntermediateRule(), queryFilterRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, NewMatchLeafRule(), queryScanRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, NewMatchIntermediateRule(), queryFilterRef, ctx, nil)
 
 	if n := len(GetPartialMatchesForCandidate(queryFilterRef, mc)); n != 0 {
 		t.Fatalf("a plain-ForEach filter must NOT subsume a NULL-ON-EMPTY index candidate via the subsumption path, got %d matches", n)
@@ -918,31 +1085,32 @@ func TestMatchIntermediate_FilterSubsumedBySelect_EdgeMismatchRejected(t *testin
 func TestMatchIntermediate_SubsumptionChildMatchOrderIndependent(t *testing.T) {
 	t.Parallel()
 
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	queryScanRef := expressions.InitialOf(queryScan)
+	queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	queryScanRef := mustMatchInitial(t, queryScan)
 	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
-	queryFilter := expressions.NewLogicalFilterExpression(
+	queryFilter := mustMatchFilter(t,
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "col0"},
+				mustMatchField(t, mustMatchFlowed(t, queryScanQ), "col0"),
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5)),
 			),
 		},
 		queryScanQ,
 	)
-	queryFilterRef := expressions.InitialOf(queryFilter)
+	queryFilterRef := mustMatchInitial(t, queryFilter)
 
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	candidateScanRef := mustMatchInitial(t, candidateScan)
 	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
 	alias0 := values.UniqueCorrelationIdentifier()
-	ph0 := predicates.NewPlaceholder(alias0, &values.FieldValue{Field: "col0"})
-	candidateSelect := expressions.NewSelectExpression(
+	ph0 := predicates.NewPlaceholder(alias0,
+		mustMatchField(t, mustMatchFlowed(t, candidateScanQ), "col0"))
+	candidateSelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{candidateScanQ},
 		[]predicates.QueryPredicate{ph0},
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 
 	mc := &testMatchCandidate{name: "idx_col0_order", traversal: NewTraversal(candidateSelectRef)}
 	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
@@ -966,7 +1134,7 @@ func TestMatchIntermediate_SubsumptionChildMatchOrderIndependent(t *testing.T) {
 		t.Fatal("failed to seed the second (compatible) child match")
 	}
 
-	FireExpressionRuleWithMemo(NewMatchIntermediateRule(), queryFilterRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, NewMatchIntermediateRule(), queryFilterRef, ctx, nil)
 
 	if n := len(GetPartialMatchesForCandidate(queryFilterRef, mc)); n == 0 {
 		t.Fatal("expected a match via the compatible (second) child match; committing to the conflicting first suppresses it")
@@ -987,37 +1155,39 @@ type matchIntermediateSingleSourceBranchFixture struct {
 }
 
 func newMatchIntermediateSingleSourceBranchFixture(
+	t testing.TB,
 	candidateName string,
 	localValue int64,
 ) *matchIntermediateSingleSourceBranchFixture {
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	queryScanRef := expressions.InitialOf(queryScan)
+	t.Helper()
+	queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	queryScanRef := mustMatchInitial(t, queryScan)
 	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
-	queryFilter := expressions.NewLogicalFilterExpression(
+	queryFilter := mustMatchFilter(t,
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "col0"},
+				mustMatchField(t, mustMatchFlowed(t, queryScanQ), "col0"),
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, localValue),
 			),
 		},
 		queryScanQ,
 	)
-	queryFilterRef := expressions.InitialOf(queryFilter)
+	queryFilterRef := mustMatchInitial(t, queryFilter)
 
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	candidateScanRef := mustMatchInitial(t, candidateScan)
 	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
 	localParameter := values.UniqueCorrelationIdentifier()
 	placeholder := predicates.NewPlaceholder(
 		localParameter,
-		&values.FieldValue{Field: "col0"},
+		mustMatchField(t, mustMatchFlowed(t, candidateScanQ), "col0"),
 	)
-	candidateSelect := expressions.NewSelectExpression(
+	candidateSelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{candidateScanQ},
 		[]predicates.QueryPredicate{placeholder},
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 	candidate := &testMatchCandidate{
 		name:      candidateName,
 		traversal: NewTraversal(candidateSelectRef),
@@ -1091,7 +1261,7 @@ func (f *matchIntermediateSingleSourceBranchFixture) seedChild(
 func TestMatchIntermediate_SingleSourceRejectsOnlyConflictingChildBranch(t *testing.T) {
 	t.Parallel()
 
-	fixture := newMatchIntermediateSingleSourceBranchFixture(
+	fixture := newMatchIntermediateSingleSourceBranchFixture(t,
 		"idx_single_source_conflicting_child",
 		int64(9),
 	)
@@ -1109,7 +1279,7 @@ func TestMatchIntermediate_SingleSourceRejectsOnlyConflictingChildBranch(t *test
 		},
 	)
 
-	FireExpressionRuleWithMemo(
+	mustFireExpressionRuleWithMemo(t,
 		NewMatchIntermediateRule(),
 		fixture.queryFilterRef,
 		fixture.context,
@@ -1145,7 +1315,7 @@ func TestMatchIntermediate_SingleSourceRejectsOnlyConflictingChildBranch(t *test
 func TestMatchIntermediate_SingleSourceRetainsDistinctChildMetadata(t *testing.T) {
 	t.Parallel()
 
-	fixture := newMatchIntermediateSingleSourceBranchFixture(
+	fixture := newMatchIntermediateSingleSourceBranchFixture(t,
 		"idx_single_source_distinct_child_metadata",
 		int64(9),
 	)
@@ -1166,7 +1336,7 @@ func TestMatchIntermediate_SingleSourceRetainsDistinctChildMetadata(t *testing.T
 	)
 
 	rule := NewMatchIntermediateRule()
-	FireExpressionRuleWithMemo(
+	mustFireExpressionRuleWithMemo(t,
 		rule,
 		fixture.queryFilterRef,
 		fixture.context,
@@ -1206,7 +1376,7 @@ func TestMatchIntermediate_SingleSourceRetainsDistinctChildMetadata(t *testing.T
 		t.Fatalf("retained distinct child branches = %d, want 2", len(seenChildren))
 	}
 
-	FireExpressionRuleWithMemo(
+	mustFireExpressionRuleWithMemo(t,
 		rule,
 		fixture.queryFilterRef,
 		fixture.context,
@@ -1224,41 +1394,43 @@ func TestMatchIntermediate_FilterSubsumedBySelect_MultiplePredicates(t *testing.
 	t.Parallel()
 
 	// --- Query: Filter([col0 = 5, col1 > 10], Scan("T")) ---
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	queryScanRef := expressions.InitialOf(queryScan)
+	queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	queryScanRef := mustMatchInitial(t, queryScan)
 	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
 
-	queryFilter := expressions.NewLogicalFilterExpression(
+	queryFilter := mustMatchFilter(t,
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "col0"},
+				mustMatchField(t, mustMatchFlowed(t, queryScanQ), "col0"),
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5)),
 			),
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "col1"},
+				mustMatchField(t, mustMatchFlowed(t, queryScanQ), "col1"),
 				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(10)),
 			),
 		},
 		queryScanQ,
 	)
-	queryFilterRef := expressions.InitialOf(queryFilter)
+	queryFilterRef := mustMatchInitial(t, queryFilter)
 
 	// --- Candidate: Select(qov, [ForEach(Scan("T"))], [Placeholder(a0, col0), Placeholder(a1, col1)]) ---
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	candidateScanRef := mustMatchInitial(t, candidateScan)
 	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
 
 	alias0 := values.UniqueCorrelationIdentifier()
 	alias1 := values.UniqueCorrelationIdentifier()
-	ph0 := predicates.NewPlaceholder(alias0, &values.FieldValue{Field: "col0"})
-	ph1 := predicates.NewPlaceholder(alias1, &values.FieldValue{Field: "col1"})
+	ph0 := predicates.NewPlaceholder(alias0,
+		mustMatchField(t, mustMatchFlowed(t, candidateScanQ), "col0"))
+	ph1 := predicates.NewPlaceholder(alias1,
+		mustMatchField(t, mustMatchFlowed(t, candidateScanQ), "col1"))
 
-	candidateSelect := expressions.NewSelectExpression(
+	candidateSelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{candidateScanQ},
 		[]predicates.QueryPredicate{ph0, ph1},
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 	traversal := NewTraversal(candidateSelectRef)
 
 	mc := &testMatchCandidate{name: "idx_col0_col1", traversal: traversal}
@@ -1266,11 +1438,11 @@ func TestMatchIntermediate_FilterSubsumedBySelect_MultiplePredicates(t *testing.
 
 	// Seed leaf match.
 	leafRule := NewMatchLeafRule()
-	FireExpressionRuleWithMemo(leafRule, queryScanRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, leafRule, queryScanRef, ctx, nil)
 
 	// Run intermediate rule.
 	intermediateRule := NewMatchIntermediateRule()
-	FireExpressionRuleWithMemo(intermediateRule, queryFilterRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, intermediateRule, queryFilterRef, ctx, nil)
 
 	pms := GetPartialMatchesForCandidate(queryFilterRef, mc)
 	if len(pms) == 0 {
@@ -1306,48 +1478,50 @@ func TestMatchIntermediate_FilterSubsumedBySelect_UnmatchedPlaceholder(t *testin
 	t.Parallel()
 
 	// Query: Filter([col0 = 5], Scan("T"))
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	queryScanRef := expressions.InitialOf(queryScan)
+	queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	queryScanRef := mustMatchInitial(t, queryScan)
 	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
 
-	queryFilter := expressions.NewLogicalFilterExpression(
+	queryFilter := mustMatchFilter(t,
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "col0"},
+				mustMatchField(t, mustMatchFlowed(t, queryScanQ), "col0"),
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5)),
 			),
 		},
 		queryScanQ,
 	)
-	queryFilterRef := expressions.InitialOf(queryFilter)
+	queryFilterRef := mustMatchInitial(t, queryFilter)
 
 	// Candidate: Select(..., [Placeholder(a0, col0), Placeholder(a2, col2)])
 	// col2 is NOT in the query predicates.
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	candidateScanRef := mustMatchInitial(t, candidateScan)
 	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
 
 	alias0 := values.UniqueCorrelationIdentifier()
 	alias2 := values.UniqueCorrelationIdentifier()
-	ph0 := predicates.NewPlaceholder(alias0, &values.FieldValue{Field: "col0"})
-	ph2 := predicates.NewPlaceholder(alias2, &values.FieldValue{Field: "col2"})
+	ph0 := predicates.NewPlaceholder(alias0,
+		mustMatchField(t, mustMatchFlowed(t, candidateScanQ), "col0"))
+	ph2 := predicates.NewPlaceholder(alias2,
+		mustMatchField(t, mustMatchFlowed(t, candidateScanQ), "col2"))
 
-	candidateSelect := expressions.NewSelectExpression(
+	candidateSelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{candidateScanQ},
 		[]predicates.QueryPredicate{ph0, ph2},
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 	traversal := NewTraversal(candidateSelectRef)
 
 	mc := &testMatchCandidate{name: "idx_col0_col2", traversal: traversal}
 	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
 
 	leafRule := NewMatchLeafRule()
-	FireExpressionRuleWithMemo(leafRule, queryScanRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, leafRule, queryScanRef, ctx, nil)
 
 	intermediateRule := NewMatchIntermediateRule()
-	FireExpressionRuleWithMemo(intermediateRule, queryFilterRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, intermediateRule, queryFilterRef, ctx, nil)
 
 	pms := GetPartialMatchesForCandidate(queryFilterRef, mc)
 	if len(pms) == 0 {
@@ -1385,45 +1559,46 @@ func TestMatchIntermediate_FilterSubsumedBySelect_NoColumnMatch(t *testing.T) {
 	t.Parallel()
 
 	// Query: Filter([col_x = 42], Scan("T"))
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	queryScanRef := expressions.InitialOf(queryScan)
+	queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	queryScanRef := mustMatchInitial(t, queryScan)
 	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
 
-	queryFilter := expressions.NewLogicalFilterExpression(
+	queryFilter := mustMatchFilter(t,
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "col_x"},
+				mustMatchField(t, mustMatchFlowed(t, queryScanQ), "col_x"),
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)),
 			),
 		},
 		queryScanQ,
 	)
-	queryFilterRef := expressions.InitialOf(queryFilter)
+	queryFilterRef := mustMatchInitial(t, queryFilter)
 
 	// Candidate: Select(..., [Placeholder(a0, col0)])
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	candidateScanRef := mustMatchInitial(t, candidateScan)
 	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
 
 	alias0 := values.UniqueCorrelationIdentifier()
-	ph0 := predicates.NewPlaceholder(alias0, &values.FieldValue{Field: "col0"})
+	ph0 := predicates.NewPlaceholder(alias0,
+		mustMatchField(t, mustMatchFlowed(t, candidateScanQ), "col0"))
 
-	candidateSelect := expressions.NewSelectExpression(
+	candidateSelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{candidateScanQ},
 		[]predicates.QueryPredicate{ph0},
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 	traversal := NewTraversal(candidateSelectRef)
 
 	mc := &testMatchCandidate{name: "idx_col0", traversal: traversal}
 	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
 
 	leafRule := NewMatchLeafRule()
-	FireExpressionRuleWithMemo(leafRule, queryScanRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, leafRule, queryScanRef, ctx, nil)
 
 	intermediateRule := NewMatchIntermediateRule()
-	FireExpressionRuleWithMemo(intermediateRule, queryFilterRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, intermediateRule, queryFilterRef, ctx, nil)
 
 	pms := GetPartialMatchesForCandidate(queryFilterRef, mc)
 	if len(pms) == 0 {
@@ -1451,35 +1626,36 @@ func TestMatchIntermediate_FilterSubsumedBySelect_NoChildMatch(t *testing.T) {
 	t.Parallel()
 
 	// Query: Filter([col0 = 5], Scan("T"))
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	queryScanRef := expressions.InitialOf(queryScan)
+	queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	queryScanRef := mustMatchInitial(t, queryScan)
 	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
 
-	queryFilter := expressions.NewLogicalFilterExpression(
+	queryFilter := mustMatchFilter(t,
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "col0"},
+				mustMatchField(t, mustMatchFlowed(t, queryScanQ), "col0"),
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5)),
 			),
 		},
 		queryScanQ,
 	)
-	queryFilterRef := expressions.InitialOf(queryFilter)
+	queryFilterRef := mustMatchInitial(t, queryFilter)
 
 	// Candidate: Select(..., [Placeholder(a0, col0)])
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	candidateScanRef := mustMatchInitial(t, candidateScan)
 	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
 
 	alias0 := values.UniqueCorrelationIdentifier()
-	ph0 := predicates.NewPlaceholder(alias0, &values.FieldValue{Field: "col0"})
+	ph0 := predicates.NewPlaceholder(alias0,
+		mustMatchField(t, mustMatchFlowed(t, candidateScanQ), "col0"))
 
-	candidateSelect := expressions.NewSelectExpression(
+	candidateSelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{candidateScanQ},
 		[]predicates.QueryPredicate{ph0},
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 	traversal := NewTraversal(candidateSelectRef)
 
 	mc := &testMatchCandidate{name: "idx_col0", traversal: traversal}
@@ -1488,7 +1664,7 @@ func TestMatchIntermediate_FilterSubsumedBySelect_NoChildMatch(t *testing.T) {
 	// Do NOT seed the leaf match.
 
 	intermediateRule := NewMatchIntermediateRule()
-	FireExpressionRuleWithMemo(intermediateRule, queryFilterRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, intermediateRule, queryFilterRef, ctx, nil)
 
 	pms := GetPartialMatchesForCandidate(queryFilterRef, mc)
 	if len(pms) != 0 {
@@ -1502,23 +1678,23 @@ func TestMatchIntermediateRule_PartialMatchFields(t *testing.T) {
 	t.Parallel()
 
 	// Same setup as FilterOverScan.
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	queryScanRef := expressions.InitialOf(queryScan)
+	queryScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	queryScanRef := mustMatchInitial(t, queryScan)
 	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
-	queryFilter := expressions.NewLogicalFilterExpression(
+	queryFilter := mustMatchFilter(t,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		queryScanQ,
 	)
-	queryFilterRef := expressions.InitialOf(queryFilter)
+	queryFilterRef := mustMatchInitial(t, queryFilter)
 
-	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScan := mustMatchScan(t, []string{"T"}, matchRuleRowType())
+	candidateScanRef := mustMatchInitial(t, candidateScan)
 	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
-	candidateFilter := expressions.NewLogicalFilterExpression(
+	candidateFilter := mustMatchFilter(t,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		candidateScanQ,
 	)
-	candidateFilterRef := expressions.InitialOf(candidateFilter)
+	candidateFilterRef := mustMatchInitial(t, candidateFilter)
 	traversal := NewTraversal(candidateFilterRef)
 
 	mc := &testMatchCandidate{name: "primary", traversal: traversal}
@@ -1526,11 +1702,11 @@ func TestMatchIntermediateRule_PartialMatchFields(t *testing.T) {
 
 	// Seed leaf match.
 	leafRule := NewMatchLeafRule()
-	FireExpressionRuleWithMemo(leafRule, queryScanRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, leafRule, queryScanRef, ctx, nil)
 
 	// Run intermediate rule.
 	intermediateRule := NewMatchIntermediateRule()
-	FireExpressionRuleWithMemo(intermediateRule, queryFilterRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, intermediateRule, queryFilterRef, ctx, nil)
 
 	pms := GetPartialMatchesForCandidate(queryFilterRef, mc)
 	if len(pms) != 1 {
