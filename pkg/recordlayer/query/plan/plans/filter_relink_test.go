@@ -424,6 +424,13 @@ func TestPredicatesFilterPlan_SelectedNestedFlatMapNormalizesBuriedSource(t *tes
 	})
 
 	upperLayout := requireProvidedLayout(t, upper)
+	if provided, provideErr := values.LayoutProvides(upperLayout, lowerRoot); provideErr != nil || !provided {
+		t.Fatalf("upper direct whole-row X = (%t, %v), want direct result authority", provided, provideErr)
+	}
+	if provided, provideErr := values.LayoutProvides(upperLayout, xRoot); provideErr == nil || provided {
+		t.Fatalf("buried same-correlation X = (%t, %v), want exact-type conflict behind direct whole row",
+			provided, provideErr)
+	}
 	assertPredicateHasExactRoot(
 		t, filter.GetPredicates()[0], values.CurrentCorrelation(), upperLayout.Carrier().FlowedType())
 	assertPredicateLacksRoot(t, filter.GetPredicates()[0], baseAlias, baseType)
@@ -438,6 +445,115 @@ func TestPredicatesFilterPlan_SelectedNestedFlatMapNormalizesBuriedSource(t *tes
 	}
 	if original, ok := values.AsFieldValue(buriedID); !ok || original.ChildValue() != baseRoot {
 		t.Fatal("filter construction mutated the buried source field")
+	}
+}
+
+// TestFlatMapRetainedSources_DirectFieldModeShadowsBuriedSameCorrelationWithoutRecordInner
+// pins the direct-source precedence independently of the direct-record trigger.
+// The upper FlatMap retains its selected lower row under X field-by-field, while
+// that lower producer also carries an older record-valued X window. Its inner is
+// deliberately scalar, so no bare direct record can make retained-source
+// discovery happen accidentally. The direct row is the nearest X declaration;
+// the buried X_ROW must not conflict with it or replace it.
+func TestFlatMapRetainedSources_DirectFieldModeShadowsBuriedSameCorrelationWithoutRecordInner(t *testing.T) {
+	t.Parallel()
+	baseType := values.NewRecordType("DIRECT_BASE", false, []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NullableLong},
+		{Name: "K", Ordinal: 1, FieldType: values.NotNullLong},
+	})
+	buriedType := values.NewRecordType("X_ROW", false, []values.Field{
+		{Name: "XV", Ordinal: 0, FieldType: values.NullableInt},
+	})
+	baseAlias := values.NamedCorrelationIdentifier("DIRECT_BASE")
+	xAlias := values.NamedCorrelationIdentifier("X")
+	scalarAlias := values.NamedCorrelationIdentifier("SCALAR_INNER")
+	newRecordLeg := func(alias values.CorrelationIdentifier, typ values.Type) expressions.Quantifier {
+		t.Helper()
+		scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+			return NewRecordQueryScanPlan([]string{alias.Name()}, typ, false)
+		})
+		return expressions.NamedPhysicalQuantifier(
+			alias, expressions.FinalOfAtStage(scan, expressions.StageCanonical))
+	}
+	baseQ := newRecordLeg(baseAlias, baseType)
+	buriedQ := newRecordLeg(xAlias, buriedType)
+	baseRoot, err := baseQ.RequireFlowedObjectValue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	buriedRoot, err := buriedQ.RequireFlowedObjectValue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolve := func(root values.Value, path ...int) values.Value {
+		t.Helper()
+		field, resolveErr := values.ResolveFieldOrdinals(root, path)
+		if resolveErr != nil {
+			t.Fatal(resolveErr)
+		}
+		return field
+	}
+	lowerResult := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "ID", Value: resolve(baseRoot, 0)},
+		values.RecordConstructorField{Name: "K", Value: resolve(baseRoot, 1)},
+		values.RecordConstructorField{Name: "X", Value: buriedRoot})
+	lower := mustChecked(t, func() (*RecordQueryFlatMapPlan, error) {
+		return NewRecordQueryFlatMapPlanFromQuantifiers(
+			baseQ, buriedQ, baseAlias, xAlias, lowerResult, false)
+	})
+	lowerLayout := requireProvidedLayout(t, lower)
+	if provided, provideErr := values.LayoutProvides(lowerLayout, buriedRoot); provideErr != nil || !provided {
+		t.Fatalf("lower buried X = (%t, %v), want exact child source authority", provided, provideErr)
+	}
+
+	lowerQ := expressions.NamedPhysicalQuantifier(
+		xAlias, expressions.FinalOfAtStage(lower, expressions.StageCanonical))
+	directRoot, err := lowerQ.RequireFlowedObjectValue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	scalarArray := values.NewArrayConstructorValue(
+		values.NotNullLong, []values.Value{values.LiteralValue(int64(1))})
+	scalarPlan := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlan(scalarArray)
+	})
+	scalarQ := expressions.NamedPhysicalQuantifier(
+		scalarAlias, expressions.FinalOfAtStage(scalarPlan, expressions.StageCanonical))
+	scalarRoot, err := scalarQ.RequireFlowedObjectValue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scalarRoot.FlowedType().Code() == values.TypeCodeRecord {
+		t.Fatalf("inner control is %s, want non-record", scalarRoot.FlowedType())
+	}
+	upperResult := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "ID", Value: resolve(directRoot, 0)},
+		values.RecordConstructorField{Name: "K", Value: resolve(directRoot, 1)},
+		values.RecordConstructorField{Name: "X", Value: resolve(directRoot, 2)},
+		values.RecordConstructorField{Name: "S", Value: scalarRoot})
+	for _, field := range upperResult.Fields {
+		if root, isRoot := values.AsQuantifiedObjectValue(field.Value); isRoot &&
+			root.FlowedType().Code() == values.TypeCodeRecord {
+			t.Fatalf("fixture contains a bare direct record %s; it no longer pins field-mode discovery", root.FlowedType())
+		}
+	}
+	upper := mustChecked(t, func() (*RecordQueryFlatMapPlan, error) {
+		return NewRecordQueryFlatMapPlanFromQuantifiers(
+			lowerQ, scalarQ, xAlias, scalarAlias, upperResult, false)
+	})
+	upperLayout := requireProvidedLayout(t, upper)
+	if provided, provideErr := values.LayoutProvides(upperLayout, directRoot); provideErr != nil || !provided {
+		t.Fatalf("upper direct field-mode X = (%t, %v), want nearest result authority", provided, provideErr)
+	}
+	if provided, provideErr := values.LayoutProvides(upperLayout, buriedRoot); provideErr == nil || provided {
+		t.Fatalf("upper buried same-correlation X = (%t, %v), want exact-type conflict behind direct X",
+			provided, provideErr)
+	}
+	if got := upper.GetResultValue(); got != upperResult {
+		t.Fatal("FlatMap construction replaced or mutated the direct result program")
+	}
+	if got := lower.GetResultValue(); got != lowerResult || buriedRoot.Correlation() != xAlias {
+		t.Fatal("FlatMap construction mutated the selected child or buried source declaration")
 	}
 }
 

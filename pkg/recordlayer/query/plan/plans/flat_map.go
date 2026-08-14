@@ -281,7 +281,48 @@ func flatMapBaseWithRetainedSources(
 			})
 		}
 	}
+	var directResultLayout values.OrdinalLayout
+	if _, identityResult := values.AsQuantifiedObjectValue(resultValue); !identityResult &&
+		(len(additional) != 0 || directSelectedRecord) {
+		// Direct result-program windows are the nearest producer authority. An
+		// optional child-proven source with the same correlation cannot be added
+		// to the same OrdinalLayout: layouts deliberately identify windows by
+		// exact correlation and reject two different object types under one name.
+		// Keep the direct window in that case. Existential lowering can still
+		// separate a whole-row/retained-source collision before constructing its
+		// identity FlatMap; a materializing RC cannot publish both objects itself.
+		//
+		// Discover direct windows through the values-owned factory after candidate
+		// collection. The ordinary base may be an identity layout when the RC has
+		// no baked ordinal, and a top-level field-mode source would otherwise be
+		// invisible until the final factory call where it conflicts too late.
+		directLayout, directErr := values.NewFlatOrdinalLayoutForRetainedResult(
+			resultValue, nullSupplying)
+		if directErr != nil {
+			return PlanExprBase{}, fmt.Errorf(
+				"RecordQueryFlatMapPlan direct retained-source layout: %w", directErr)
+		}
+		directResultLayout = directLayout
+		directResultCorrelations := make(map[values.CorrelationIdentifier]struct{})
+		for _, source := range directLayout.WindowSources() {
+			if source != nil && !source.Correlation().IsZero() {
+				directResultCorrelations[source.Correlation()] = struct{}{}
+			}
+		}
+		filtered := additional[:0]
+		for _, candidate := range additional {
+			if _, direct := directResultCorrelations[candidate.Source.Correlation()]; direct {
+				continue
+			}
+			filtered = append(filtered, candidate)
+		}
+		additional = filtered
+	}
 	if len(additional) == 0 && !directSelectedRecord {
+		if directResultLayout != nil && len(directResultLayout.WindowSources()) != 0 {
+			return newPlanExprBaseForProvidedLayout(
+				"RecordQueryFlatMapPlan", resultValue, directResultLayout)
+		}
 		return base, nil
 	}
 	var layout values.OrdinalLayout
