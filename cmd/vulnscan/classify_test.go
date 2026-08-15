@@ -14,9 +14,16 @@ func fresh() string { return "2026-07-27T20:14:16Z" }
 // configMsg is the message every successful govulncheck run emits, reproduced
 // from a real v1.6.0 `-format json` stream.
 func configMsg(dbLastModified string) string {
+	return configMsgGo(dbLastModified, "go1.26.6")
+}
+
+// configMsgGo varies the toolchain the scanner reported running under, which
+// decides whether stdlib advisories were considered at all.
+func configMsgGo(dbLastModified, goVersion string) string {
 	return `{"config":{"protocol_version":"v1.0.0","scanner_name":"govulncheck",` +
 		`"scanner_version":"v1.6.0","db":"file:///mnt/ci-data/vulndb-mirror/db",` +
-		`"db_last_modified":"` + dbLastModified + `","scan_level":"symbol","scan_mode":"source"}}`
+		`"db_last_modified":"` + dbLastModified + `","go_version":"` + goVersion + `",` +
+		`"scan_level":"symbol","scan_mode":"source"}}`
 }
 
 // symbolFinding is a CALLED vulnerability: trace[0] names a function. This is
@@ -141,6 +148,9 @@ func TestNoInputCanMakeAFailureLookClean(t *testing.T) {
 		{"ancient db", 0, configMsg("2025-01-01T00:00:00Z")},
 		{"unparseable db stamp", 0, configMsg("not-a-timestamp")},
 		{"finding text imitating a fetch error", 0, configMsg("0001-01-01T00:00:00Z") + importedFinding("403 Forbidden")},
+		{"locally rebuilt toolchain skips stdlib", 0, configMsgGo(fresh(), "go1.26.5-X:nodwarf5")},
+		{"devel toolchain skips stdlib", 0, configMsgGo(fresh(), "devel go1.27-abc123")},
+		{"scanner reported no toolchain at all", 0, configMsgGo(fresh(), "")},
 	}
 
 	for _, tc := range notEvidence {
@@ -224,6 +234,67 @@ func TestCalledVulnerabilityFailsRegardlessOfSurroundingNoise(t *testing.T) {
 				t.Fatalf("report() returned nil for a called vulnerability, so the process would exit 0")
 			}
 		})
+	}
+}
+
+// TestStdlibCoverageIsPartOfACleanVerdict drives every arm of the toolchain
+// guard, in both directions.
+//
+// The bug it pins was measured, not hypothesised: on a `go1.26.5-X:nodwarf5`
+// toolchain the gate reported "no called vulnerabilities" against the same
+// database on which stock go1.26.5 reports four called stdlib vulnerabilities.
+// Nothing in the stream distinguishes the two but this field, so a scan whose
+// stdlib half never ran renders exactly like a scan that ran and found nothing.
+//
+// Both directions are driven because a guard that only rejects is as broken as
+// one that only accepts: reject every real toolchain and the gate is a
+// permanent red nobody can clear, which gets it deleted.
+func TestStdlibCoverageIsPartOfACleanVerdict(t *testing.T) {
+	t.Parallel()
+
+	// Released toolchains: stdlib advisories were considered, so a zero-finding
+	// stream is real evidence and must be allowed to go green.
+	for _, v := range []string{"go1.26.6", "go1.27", "go1.27rc1", "go1.28beta2"} {
+		t.Run("released/"+v, func(t *testing.T) {
+			t.Parallel()
+			got := Classify(0, strings.NewReader(configMsgGo(fresh(), v)), now)
+			if got.Verdict != VerdictClean {
+				t.Fatalf("Classify(go_version=%q) = %s, want VerdictClean (detail: %s).\n"+
+					"%q is a released toolchain, so govulncheck did consult stdlib advisories and a "+
+					"zero-finding scan is genuine evidence. Rejecting it makes the gate unclearable.",
+					v, got.Verdict, got.Detail, v)
+			}
+		})
+	}
+
+	// Toolchains govulncheck cannot resolve stdlib advisories against.
+	for _, v := range []string{"go1.26.5-X:nodwarf5", "devel go1.27-abc123", "", "gccgo-15", "1.26.6"} {
+		t.Run("unresolvable/"+v, func(t *testing.T) {
+			t.Parallel()
+			got := Classify(0, strings.NewReader(configMsgGo(fresh(), v)), now)
+			if got.Verdict != VerdictNotConsulted {
+				t.Fatalf("Classify(go_version=%q) = %s, want VerdictNotConsulted.\n"+
+					"govulncheck skips every stdlib advisory under a toolchain it cannot parse, so this "+
+					"zero-finding stream covers only the module graph. Reporting it as clean is the "+
+					"silent pass this gate exists to prevent.", v, got.Verdict)
+			}
+			if !strings.Contains(got.Detail, "standard-library") {
+				t.Errorf("Classify(go_version=%q) was diagnosed as %q; it must name the standard library "+
+					"as the uncovered half, or triage looks for a broken mirror instead of a toolchain.", v, got.Detail)
+			}
+		})
+	}
+
+	// A called finding under a blind toolchain still reports the finding: that
+	// half of the scan DID establish something, and naming the vulnerability is
+	// more actionable than calling the whole run inconclusive. Both fail the
+	// build, so this is about the message, not the exit code.
+	blindWithFinding := Classify(0, strings.NewReader(
+		configMsgGo(fresh(), "go1.26.5-X:nodwarf5")+symbolFinding("GO-2021-0113")), now)
+	if blindWithFinding.Verdict != VerdictVulnerable {
+		t.Fatalf("a called finding under an unresolvable toolchain = %s, want VerdictVulnerable; "+
+			"the toolchain guard must not mask a vulnerability the scan actually found",
+			blindWithFinding.Verdict)
 	}
 }
 

@@ -106,8 +106,8 @@ locals {
     # GO_BIN="go", and the Bazel-SDK resolver falls back to it), so a box without Go on
     # PATH fails those jobs with `go: command not found` — exit 127, not a test failure.
     # Nothing installed it before: the old boxes were provisioned by hand.
-    go_version = "1.26.5"
-    go_sha256  = "5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053"
+    go_version = "1.26.6"
+    go_sha256  = "708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89"
     # bazelisk launcher (reads .bazelversion → Bazel 9.0.1; this is just the launcher).
     bazelisk_version = "1.28.1"
     bazelisk_sha256  = "22e7d3a188699982f661cf4687137ee52d1f24fec1ec893d91a6c4d791a75de8"

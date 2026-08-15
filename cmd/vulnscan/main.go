@@ -26,6 +26,15 @@
 //     own machine-readable output (classify.go), which is why this runs with
 //     `-format json` rather than parsing prose.
 //
+//  4. Its coverage of the STANDARD LIBRARY is silently conditional on the
+//     toolchain's version string, and a run whose stdlib half never happened is
+//     byte-for-byte indistinguishable from a clean one. Measured: under a
+//     locally rebuilt `go1.26.5-X:nodwarf5` toolchain the scan reported no
+//     called vulnerabilities against the same database on which stock go1.26.5
+//     reports four. Fixed by making a clean verdict require a released
+//     toolchain (classify.go), so the gate is only quiet when it actually
+//     looked everywhere it claims to.
+//
 // The two halves are held apart deliberately. A fetch failure is retried and,
 // with a mirror inside the staleness bound, tolerated — that is defect 1. A
 // scan that ran and found a called vulnerability fails the build, and a scan
