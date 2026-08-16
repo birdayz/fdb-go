@@ -429,6 +429,9 @@ func (t *TransformExprTask) Run(ctx context.Context, p *Planner) {
 				p.capErr = err
 				return
 			}
+			// The rule succeeded, so its staged child inserts are publishable.
+			// Before the yields, so a parent lands over complete children.
+			call.CommitStagedInserts()
 
 			yielded := call.Yielded()
 			inserted := make([]bool, len(yielded))
@@ -585,6 +588,8 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 				return
 			}
 		}
+		// The batch preflighted, so held child inserts are publishable.
+		call.CommitStagedInserts()
 		if len(call.yielded) > 0 {
 			intents := make([]referenceMemberIntent, len(call.yielded))
 			for i, y := range call.yielded {
@@ -699,6 +704,8 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 							return
 						}
 					}
+					// The batch preflighted, so held child inserts are publishable.
+					call.CommitStagedInserts()
 					if len(call.yielded) > 0 {
 						intents := make([]referenceMemberIntent, len(call.yielded))
 						for i, y := range call.yielded {

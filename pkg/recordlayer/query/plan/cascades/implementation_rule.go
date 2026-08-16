@@ -38,7 +38,13 @@ type ImplementationRuleCall struct {
 	constraintPushedRefs []*expressions.Reference
 	pendingConstraints   []pendingRequestedOrderingConstraint
 	indexYieldedInMemo   bool
-	err                  error
+	// stagedInserts are InsertReExploring effects held for the same commit
+	// boundary as the yields. An ExpressionRule running under this driver
+	// through expressionRuleAdapter hands its own staged inserts here, so the
+	// atomicity boundary is the OUTER call's — the one whose preflight can
+	// still fail after the rule body returned.
+	stagedInserts []stagedReExploringInsert
+	err           error
 }
 
 type pendingRequestedOrderingConstraint struct {
@@ -53,6 +59,33 @@ func (c *ImplementationRuleCall) Fail(err error) {
 		return
 	}
 	c.err = err
+}
+
+// AdoptStagedInserts takes over another call's held InsertReExploring effects,
+// so a rule running under an adapter commits at the OUTER driver's boundary
+// rather than at the inner one, which cannot see the outer preflight.
+func (c *ImplementationRuleCall) AdoptStagedInserts(staged []stagedReExploringInsert) {
+	if c == nil || len(staged) == 0 {
+		return
+	}
+	c.stagedInserts = append(c.stagedInserts, staged...)
+}
+
+// CommitStagedInserts applies the held InsertReExploring effects. Drivers call
+// it only after Err is clear and the whole batch has preflighted, and BEFORE
+// publishing the yields, so a parent lands over complete children.
+func (c *ImplementationRuleCall) CommitStagedInserts() {
+	if c == nil {
+		return
+	}
+	for _, s := range c.stagedInserts {
+		if c.memo != nil {
+			c.memo.InsertReExploring(s.ref, s.expr)
+			continue
+		}
+		s.ref.Insert(s.expr)
+	}
+	c.stagedInserts = nil
 }
 
 // Err returns the first error reported by the rule body.
@@ -268,6 +301,8 @@ func fireImplRuleOnMember(
 		if err := call.Err(); err != nil {
 			return nil, err
 		}
+		// The rule body succeeded, so held child inserts are publishable.
+		call.CommitStagedInserts()
 		if len(call.yielded) > 0 {
 			intents := make([]referenceMemberIntent, len(call.yielded))
 			for i, y := range call.yielded {

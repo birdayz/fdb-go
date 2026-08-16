@@ -42,6 +42,13 @@ func (a *expressionRuleAdapter) OnMatch(implCall *ImplementationRuleCall) {
 		implCall.Fail(err)
 		return
 	}
+	// Hand the inner call's staged child inserts to the OUTER call rather than
+	// committing them here. This driver's preflight can still reject the batch
+	// after the rule body returned, and an insert committed at the inner
+	// boundary would survive that rejection — which is the exact leak staging
+	// exists to close, reintroduced one level down.
+	implCall.AdoptStagedInserts(call.stagedInserts)
+	call.stagedInserts = nil
 	for _, y := range call.Yielded() {
 		implCall.Yield(y)
 	}

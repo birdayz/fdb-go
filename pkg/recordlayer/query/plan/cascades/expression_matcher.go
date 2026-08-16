@@ -147,6 +147,9 @@ func fireExprRuleOnMember(
 		if err := call.Err(); err != nil {
 			return nil, err
 		}
+		// Same commit boundary as the task driver: staged child inserts publish
+		// only after the rule body has succeeded, and before the yields.
+		call.CommitStagedInserts()
 		yielded := call.Yielded()
 		if len(yielded) > 0 {
 			intents := make([]referenceMemberIntent, len(yielded))

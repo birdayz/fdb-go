@@ -427,6 +427,7 @@ go_test(
         "rfc232_test_helpers_test.go",
         "rule_adjust_match_test.go",
         "rule_aggregate_data_access_test.go",
+        "rule_call_insert_atomicity_test.go",
         "rule_decorrelate_values_test.go",
         "rule_demorgan_test.go",
         "rule_distinct_merge_test.go",
@@ -1118,6 +1119,7 @@ go_test(
         "rfc232_test_helpers_test.go",
         "translate_correlations_fail_closed_test.go",
         "union_rule_fixtures_test.go",
+        "rule_call_insert_atomicity_test.go",
     ],
     deps = [
         "//gen",

@@ -58,7 +58,16 @@ type ExpressionRuleCall struct {
 	Stats       properties.StatisticsProvider
 	memo        *Memo
 	yieldedExps []expressions.RelationalExpression
-	err         error
+	// stagedInserts holds the rule body's InsertReExploring calls until the
+	// driver publishes them, for the reason given on that method.
+	stagedInserts []stagedReExploringInsert
+	err           error
+}
+
+// stagedReExploringInsert is one held InsertReExploring call.
+type stagedReExploringInsert struct {
+	ref  *expressions.Reference
+	expr expressions.RelationalExpression
 }
 
 // Fail records the first rule-body failure. Drivers must check Err before
@@ -157,15 +166,61 @@ func (c *ExpressionRuleCall) Yield(expr expressions.RelationalExpression) {
 // Rules should use this instead of expressions.InitialOf when creating
 // child References for yielded expressions. This is how the Cascades
 // planner avoids redundant exploration of shared sub-trees.
-// InsertReExploring inserts expr into ref through the memo's scheduled
-// insert (epoch re-arm + re-round when ref's exploration already began).
-// Rule code adding members to a reference it did not just create must use
-// this instead of Reference.Insert.
-func (c *ExpressionRuleCall) InsertReExploring(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
-	if c.memo != nil {
-		return c.memo.InsertReExploring(ref, expr)
+// InsertReExploring STAGES an insert of expr into ref, to be applied through
+// the memo's scheduled insert (epoch re-arm + re-round when ref's exploration
+// already began) once the driver has checked Err. Rule code adding members to a
+// reference it did not just create must use this instead of Reference.Insert.
+//
+// It is staged for the same reason Yield is, and the reason is not symmetry:
+// MemoizeExpression can resolve to an EXISTING, already-explored reference (see
+// the note at its call site in DecorrelateValuesRule), so the ref inserted into
+// here may be reachable from the root. A rule that adds a member there and then
+// Fails has published a member it went on to reject — the one effect the staged
+// protocol exists to prevent, escaping through the one call that did not use it.
+//
+// MemoizeExpression deliberately stays IMMEDIATE. A rule needs the *Reference
+// back to build the parent expression it is about to yield, so deferring it
+// would take a memo journal with rollback; and its residue on failure is an
+// ORPHAN group — created, referenced by no published expression, discarded with
+// the planner. That the planner IS discarded is pinned rather than assumed:
+// Fail sets capErr, the run loop returns on it, and no caller reuses a planner
+// (see TestRuleFailureLeavesNoMemberInALiveGroup).
+//
+// It returns nothing. The old bool reported the memo's dedup answer, which is
+// not knowable before the commit — the single production caller discarded it,
+// and fabricating one at stage time would be a lie rather than a simplification.
+func (c *ExpressionRuleCall) InsertReExploring(ref *expressions.Reference, expr expressions.RelationalExpression) {
+	if ref == nil || expr == nil {
+		return
 	}
-	return ref.Insert(expr)
+	if c.Err() != nil || c.CancellationErr() != nil {
+		return
+	}
+	c.stagedInserts = append(c.stagedInserts, stagedReExploringInsert{ref: ref, expr: expr})
+}
+
+// CommitStagedInserts applies the InsertReExploring calls the rule body staged.
+// Drivers call it only after OnMatch has returned and Err is clear, and BEFORE
+// publishing the yields, so a parent lands over children that are complete.
+func (c *ExpressionRuleCall) CommitStagedInserts() {
+	for _, s := range c.stagedInserts {
+		if c.memo != nil {
+			c.memo.InsertReExploring(s.ref, s.expr)
+			continue
+		}
+		s.ref.Insert(s.expr)
+	}
+	c.stagedInserts = nil
+}
+
+// StagedInsertCount reports how many inserts are held unpublished. Tests use it
+// to prove staging happened rather than inferring it from the memo being
+// unchanged, which is also what a rule that never inserted would look like.
+func (c *ExpressionRuleCall) StagedInsertCount() int {
+	if c == nil {
+		return 0
+	}
+	return len(c.stagedInserts)
 }
 
 func (c *ExpressionRuleCall) MemoizeExpression(expr expressions.RelationalExpression) *expressions.Reference {
