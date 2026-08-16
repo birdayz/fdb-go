@@ -6841,8 +6841,8 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 		// definition: when the sort input is the SELECT-list projection, bake
 		// slot n-1 of its output directly — no text-rendering
 		// round-trip, which diverges for computed items whose canonical source
-		// text differs from the baked output spelling (`col1 + 10` vs
-		// `(COL1#0 + 10)`). A key whose ordinal was already resolved into
+		// text differs from the derived output spelling (`col1 + 10` vs
+		// `(COL1 + 10)`). A key whose ordinal was already resolved into
 		// the select list's typed item Value (upgradeSortKeyValues) keeps
 		// that Value — the input projection here can be a DERIVED source's
 		// layout, whose slots are not this select's ordinals.

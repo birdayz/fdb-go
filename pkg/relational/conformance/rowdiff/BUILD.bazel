@@ -48,9 +48,17 @@ go_test(
     #     ordering   112.42s   176.64s   1.57
     #     cost       111.83s   175.93s   1.57
     #
-    # That is the task growth and essentially nothing else, which is the point
-    # of recording it: a later ratio meaningfully above 1.57 on this same
-    # measurement is a regression, not more coverage. Projected onto the CI
+    # THE TASK GROWTH DOES NOT ACCOUNT FOR ALL OF IT, and the residue is the
+    # part worth naming rather than rounding away: the star sentinel moved
+    # 9481→13226 tasks, which is 1.39, against a measured 1.57. The missing
+    # ~13% is per-task constant factor — the re-derivation work each task now
+    # pays (memo re-admission, per-intent member hashing, structural-key
+    # growth, exact-type snapshot bookkeeping) — and it is the half a later
+    # change can actually move. Both numbers are the baseline: a ratio above
+    # 1.57 at an UNCHANGED task count is a constant-factor regression, and one
+    # above 1.39 in tasks is a search-size regression. They have different
+    # causes and different fixes, so a single blended number would hide
+    # whichever one moved. Projected onto the CI
     # runner it is 659s × 1.57 ≈ 1035s — past `long`, and bazel's next tier up
     # is eternal (3600s). There is no intermediate increment to reach for.
     #

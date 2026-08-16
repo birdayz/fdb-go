@@ -55,14 +55,21 @@ func TestProjectionColumnNameCopyRebuildAndRebase(t *testing.T) {
 			wantRebased: "FIRST",
 		},
 		{
+			// ORDINAL-FREE, like the nested cases above it. This case used to
+			// expect `(TEST_FIELD.N#0 + 1)`, which made the composite arm the
+			// only naming authority whose answer moved when its operands were
+			// bound to ordinals — the nested arm has always named `Q0.N.SK`
+			// rather than `Q0.N#0.SK#1`. Its operand here is fully resolved, so
+			// the two spellings are exactly the pre- and post-bake forms of one
+			// name, and the ordinal-bearing one is the one this row was pinning.
 			name: "computed exact field",
 			value: &values.ArithmeticValue{
 				Left:  testField("N", values.NotNullLong),
 				Right: &values.ConstantValue{Value: int64(1)},
 				Op:    values.OpAdd,
 			},
-			want:        "(TEST_FIELD.N#0 + 1)",
-			wantRebased: "(TEST_FIELD.N#0 + 1)",
+			want:        "(TEST_FIELD.N + 1)",
+			wantRebased: "(TEST_FIELD.N + 1)",
 		},
 	} {
 		testCase := testCase

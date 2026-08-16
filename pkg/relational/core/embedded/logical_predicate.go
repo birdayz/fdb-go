@@ -7847,7 +7847,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	// translator's pull-up bake the key to its OUTPUT ordinal: the key
 	// must carry a plan-time ordinal, since a runtime name read silently
 	// no-op-sorts when the rendered text and the output column spelling
-	// diverge, e.g. a baked computed column `(COL1#0 + 10)` vs the source text
+	// diverge, e.g. a computed column named `(COL1 + 10)` vs the source text
 	// `col1 + 10`. First-match on duplicate renderings — the duplicates are the
 	// same expression, so the sort order is identical either way.
 	colToIdx := make(map[string]int, len(sq.projCols))

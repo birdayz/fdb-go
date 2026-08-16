@@ -1569,7 +1569,9 @@ func ContainsAggregate(v Value) bool {
 // A path step can never contain the `#` that explainValueOrdinals escapes: a
 // struct member name must be a valid protobuf identifier and DDL refuses
 // anything else ("field name \"a#1\": a#1 it not a valid protobuf identifier",
-// measured). See the escape's own note in explainValueOrdinals.
+// measured). That is now belt AND braces rather than the only argument — the
+// escape no longer fires on an ordinal-free rendering at all. See the escape's
+// own note in explainValueOrdinals.
 func NestedResolvedPath(v Value) (string, bool) {
 	fv, ok := v.(*fieldValue)
 	if !ok || fv.Resolved == nil || len(fv.Resolved.Accessors) <= 1 {
@@ -1583,12 +1585,24 @@ func NestedResolvedPath(v Value) (string, bool) {
 // emitted positional row's type (executeProjection's posNames). A NESTED
 // FieldValue projects under its resolved PATH ("N.SK"); any other FieldValue
 // under its (possibly dotted)
-// Field; any other Value under its upper-cased explain rendering (a computed
-// expression like `n + 1` is keyed "(N + 1)"). Shared here so the
+// Field; any other Value under its upper-cased ORDINAL-FREE rendering (a
+// computed expression like `n + 1` is keyed "(N + 1)"). Shared here so the
 // planner/translator side can READ a projection's output by the exact key the
 // executor WRITES — reading by any other rendering (e.g. the logical layer's
 // un-parenthesized "N + 1") is a loud
 // OrdinalResolutionError on valid SQL.
+//
+// ORDINAL-FREE IS THE WHOLE POINT OF THE THIRD ARM, and it was ExplainValue
+// until the corpus showed what that costs. An ordinal is a PLAN-TIME BINDING of
+// a reference; a column's name is not, so a name carrying one changes when the
+// same reference is baked — the lockstep ColumnNameValue exists to hold. The
+// composite arm was the one route that could mint such a name (the other two
+// return schema text), and it did: `SELECT id + 1` inside a CTE keyed its output
+// `(C1.ID#0 + 1)`, which the enclosing projection then re-read as a FIELD whose
+// text contains a `#`, so the explain escape doubled it and the slot key read
+// `(C1.ID##0 + 1)`. One line of the corpus carried it (cte.yaml#25) — the escape
+// mechanism is in explainValueOrdinals' fieldValue arm, which now doubles only
+// when it is rendering ordinals to disambiguate from.
 //
 // The nested arm is NOT a special case bolted on: it is the same rule the sort
 // side already applies (sortKeyExtraColumnName) and the same rule Java applies
@@ -1604,7 +1618,7 @@ func ProjectionColumnName(v Value) string {
 	if fv, ok := v.(*fieldValue); ok {
 		return fv.Field
 	}
-	return strings.ToUpper(ExplainValue(v))
+	return strings.ToUpper(ColumnNameValue(v))
 }
 
 // OutputColumnName is the projection OUTPUT-name authority: the name that keys
@@ -1878,24 +1892,33 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 		// 3) but is semantic since RFC-176 P2 — the escape stays because
 		// debugging output that collapses two DIFFERENT reads is still a bug
 		// (writeSemanticHash's FieldValue arm keeps the same injective
-		// discriminator). ProjectionColumnName's plain-field arm
-		// returns Field verbatim, so plain-field Datum keys and positional
-		// slot names never change (a COMPUTED composite over a #-named field
-		// shifts its derived key spelling consistently on writer and reader,
-		// both sides of the shared contract).
+		// discriminator).
 		//
-		// "DISPLAY ONLY" IS NO LONGER THE WHOLE TRUTH, and the correction is
-		// worth stating because the escape's safety argument used to rest on it:
-		// NestedResolvedPath mints an output NAME from this renderer, so a `#`
-		// in a nested path STEP would reach a slot key doubled. It cannot: a
-		// struct member name must be a valid protobuf identifier and DDL refuses
-		// anything else — `CREATE TYPE AS STRUCT hst ("a#1" BIGINT, ...)` is
+		// THE ESCAPE IS SCOPED TO THE ORDINAL RENDERING, because that is the
+		// only thing it disambiguates FROM. Without ordinals there is no
+		// `#<ordinal>` suffix for a literal `#` to be confused with, so doubling
+		// would corrupt the text while separating nothing — and this renderer's
+		// ordinal-free form is the NAME form (ColumnNameValue), where the text
+		// IS the contract: it keys a positional slot and a Datum map. Doubling
+		// there disagreed with ProjectionColumnName's plain-field arm, which
+		// returns Field verbatim, so one name-derivation route escaped a `#`
+		// and its sibling did not.
+		//
+		// THE NAME PATH IS THEREFORE SAFE BY CONSTRUCTION, not by the schema.
+		// It used to rest on DDL: a struct member name must be a valid protobuf
+		// identifier, so `CREATE TYPE AS STRUCT hst ("a#1" BIGINT, ...)` is
 		// rejected 42F59 `field name "a#1": a#1 it not a valid protobuf
-		// identifier` (measured, pinned in the sqldriver suite). The name path
-		// is therefore safe by the SCHEMA's constraint, not by this renderer's;
-		// if DDL ever admits a `#` in a field name, mint the path from the
-		// accessors directly instead of from explainValueOrdinals.
-		name := strings.ReplaceAll(cv.Field, "#", "##")
+		// identifier` (measured, pinned in the sqldriver suite). That argument
+		// was load-bearing for NestedResolvedPath and it was ALSO INCOMPLETE:
+		// a derived name is minted from this renderer too, and a derived name
+		// is not a schema field, so DDL never constrained it. It carried an
+		// ordinal — the very `#` the escape then doubled — and reached a slot
+		// key as `(C1.ID##0 + 1)`. Ordinal-free name derivation removed the
+		// source; the gate removes the mechanism.
+		name := cv.Field
+		if withOrdinals {
+			name = strings.ReplaceAll(name, "#", "##")
+		}
 		// A multi-accessor baked path renders EVERY step as name#ordinal,
 		// dot-joined (Java FieldPath.toString, FieldValue.java:428-433) — the
 		// single-accessor rendering below is its one-step special case (the
@@ -1903,9 +1926,10 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 		if cv.Resolved != nil && len(cv.Resolved.Accessors) > 1 {
 			steps := make([]string, len(cv.Resolved.Accessors))
 			for i, acc := range cv.Resolved.Accessors {
-				steps[i] = strings.ReplaceAll(acc.Field, "#", "##")
+				steps[i] = acc.Field
 				if withOrdinals {
-					steps[i] += "#" + strconv.Itoa(acc.Ordinal)
+					steps[i] = strings.ReplaceAll(steps[i], "#", "##") +
+						"#" + strconv.Itoa(acc.Ordinal)
 				}
 			}
 			path := strings.Join(steps, ".")
@@ -2011,6 +2035,14 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 		alias := cv.Alias.Name()
 		if mapped, ok := aliases[cv.Alias]; ok {
 			alias = mapped
+		}
+		// The separator belongs to the alias, not to the keyword: a program
+		// whose SOLE unique root is this subquery has that root mapped to the
+		// empty string by ExplainPlanValues' collapse, and the alias is then
+		// absent rather than blank. `(SCALAR_SUBQUERY )` renders the collapse
+		// as a missing operand.
+		if alias == "" {
+			return "(SCALAR_SUBQUERY)"
 		}
 		return "(SCALAR_SUBQUERY " + alias + ")"
 	case *UnmatchedAggregateValue:

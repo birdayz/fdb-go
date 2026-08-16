@@ -30,7 +30,7 @@ import (
 // nothing but counter drift would report a healthy, well-exercised oracle.
 //
 // Exact result-owner display may instead suppress an ownership-only scalar
-// alias, rendering `(SCALAR_SUBQUERY )`. That is also safe, but only when the
+// alias, rendering `(SCALAR_SUBQUERY)`. That is also safe, but only when the
 // two raw plans are then identical. This test accepts those two safety
 // mechanisms and no middle state: either both raw plans expose different
 // generated aliases which normalization removes, or neither exposes one and

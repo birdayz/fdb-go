@@ -896,7 +896,7 @@ shape:           RecordQueryScanPlan
 shape:           RecordQueryScanPlan
 === aggregate_order_by_java.yaml#12
 sql:   SELECT (SELECT id AS score FROM scores ORDER BY 1 DESC LIMIT 1) AS picked FROM scores LIMIT 1
-plan:  Limit(1, Project([(SCALAR_SUBQUERY )], Scan(SCORES)))
+plan:  Limit(1, Project([(SCALAR_SUBQUERY)], Scan(SCORES)))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
@@ -908,7 +908,7 @@ shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
 === aggregate_order_by_java.yaml#14
 sql:   SELECT (SELECT score FROM (SELECT id, score FROM scores) d ORDER BY 1 DESC LIMIT 1) AS top FROM scores LIMIT 1
-plan:  Limit(1, Project([(SCALAR_SUBQUERY )], Scan(SCORES)))
+plan:  Limit(1, Project([(SCALAR_SUBQUERY)], Scan(SCORES)))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
@@ -922,7 +922,7 @@ shape:       RecordQueryProjectionPlan
 shape:         RecordQueryScanPlan
 === aggregate_order_by_java.yaml#16
 sql:   SELECT (SELECT y FROM (SELECT id AS x, SUM(score) AS x, id AS y FROM scores GROUP BY id ORDER BY 2 DESC LIMIT 1) d) AS picked FROM scores LIMIT 1
-plan:  Limit(1, Project([(SCALAR_SUBQUERY )], Scan(SCORES)))
+plan:  Limit(1, Project([(SCALAR_SUBQUERY)], Scan(SCORES)))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
@@ -3745,7 +3745,7 @@ shape:               RecordQueryScanPlan
 shape:               RecordQueryScanPlan
 === cte.yaml#25
 sql:   WITH c1(w) AS (SELECT id FROM t), c2(a) AS (WITH c1 AS (SELECT x.id AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id + 1 FROM c1) SELECT w, a FROM c1, c2 WHERE w = a ORDER BY w
-plan:  Project([_current.W#0, _current.A#1], InMemorySort([_current.W#0 ASC], NestedLoopJoin(INNER, [1 preds], Project([_current.ID#0], Scan(T)), Project([_current.(C1.ID##0 + 1)#0], Project([(_current.ID#0 + 1)], Project([_current.ID#0], FlatMap(outer=Scan(T), inner=Scan(T, [=]))))))))
+plan:  Project([_current.W#0, _current.A#1], InMemorySort([_current.W#0 ASC], NestedLoopJoin(INNER, [1 preds], Project([_current.ID#0], Scan(T)), Project([_current.(C1.ID + 1)#0], Project([(_current.ID#0 + 1)], Project([_current.ID#0], FlatMap(outer=Scan(T), inner=Scan(T, [=]))))))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryNestedLoopJoinPlan
@@ -14389,12 +14389,12 @@ shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
 === scalar_subquery.yaml#0
 sql:   SELECT (SELECT MAX(v) FROM t) FROM t WHERE id = 1
-plan:  Project([(SCALAR_SUBQUERY )], Scan(T, [=]))
+plan:  Project([(SCALAR_SUBQUERY)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery.yaml#1
 sql:   SELECT id, (SELECT MAX(v) FROM t) FROM t ORDER BY id
-plan:  Project([_current.ID#0, (SCALAR_SUBQUERY )], Scan(T))
+plan:  Project([_current.ID#0, (SCALAR_SUBQUERY)], Scan(T))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery.yaml#2
@@ -14405,17 +14405,17 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === scalar_subquery.yaml#3
 sql:   SELECT v - (SELECT MIN(v) FROM t) FROM t WHERE id = 4
-plan:  Project([(_current.V#1 - (SCALAR_SUBQUERY ))], Scan(T, [=]))
+plan:  Project([(_current.V#1 - (SCALAR_SUBQUERY))], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery.yaml#4
 sql:   SELECT (SELECT v FROM t WHERE id = 999) FROM t WHERE id = 1
-plan:  Project([(SCALAR_SUBQUERY )], Scan(T, [=]))
+plan:  Project([(SCALAR_SUBQUERY)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery.yaml#5 expect-error=21000
 sql:   SELECT (SELECT v FROM t) FROM t WHERE id = 1
-plan:  Project([(SCALAR_SUBQUERY )], Scan(T, [=]))
+plan:  Project([(SCALAR_SUBQUERY)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery.yaml#6 expect-error=42601
@@ -14423,7 +14423,7 @@ sql:   SELECT (SELECT id, v FROM t WHERE id = 1) FROM t WHERE id = 1
 plan:  <PLAN-ERROR: 42601: scalar subquery must return exactly one column, got 2>
 === scalar_subquery.yaml#7
 sql:   SELECT id, v, (SELECT SUM(v) FROM t WHERE id > 2) AS total FROM t WHERE id = 1
-plan:  Project([_current.ID#0, _current.V#1, (SCALAR_SUBQUERY )], Scan(T, [=]))
+plan:  Project([_current.ID#0, _current.V#1, (SCALAR_SUBQUERY)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_advanced.yaml#0
@@ -14439,7 +14439,7 @@ sql:   SELECT id FROM t WHERE v IS NOT NULL ORDER BY v - (SELECT MIN(v) FROM t)
 plan:  <PLAN-ERROR: 0AF01: ORDER BY with scalar subquery is not supported>
 === scalar_subquery_advanced.yaml#2
 sql:   SELECT (SELECT g FROM t WHERE id = 1) FROM t WHERE id = 1
-plan:  Project([(SCALAR_SUBQUERY )], Scan(T, [=]))
+plan:  Project([(SCALAR_SUBQUERY)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_advanced.yaml#3
@@ -14456,12 +14456,12 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === scalar_subquery_advanced.yaml#5
 sql:   SELECT (SELECT MAX(x) FROM (SELECT v AS x FROM t) AS s) FROM t WHERE id = 1
-plan:  Project([(SCALAR_SUBQUERY )], Scan(T, [=]))
+plan:  Project([(SCALAR_SUBQUERY)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_advanced.yaml#6
 sql:   WITH high AS (SELECT v FROM t WHERE v > 25) SELECT id, (SELECT MIN(v) FROM high) FROM t WHERE id = 1
-plan:  Project([_current.ID#0, (SCALAR_SUBQUERY )], Scan(T, [=]))
+plan:  Project([_current.ID#0, (SCALAR_SUBQUERY)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_advanced.yaml#7
@@ -14471,12 +14471,12 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_advanced.yaml#8
 sql:   SELECT COALESCE((SELECT v FROM t WHERE id = 999), 0) FROM t WHERE id = 1
-plan:  Project([COALESCE((SCALAR_SUBQUERY ), 0)], Scan(T, [=]))
+plan:  Project([COALESCE((SCALAR_SUBQUERY), 0)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_advanced.yaml#9
 sql:   SELECT CASE WHEN id = 1 THEN (SELECT MAX(v) FROM t) ELSE 0 END FROM t WHERE id = 1
-plan:  Project([CASE(WHEN(predicate, TRUE), [(SCALAR_SUBQUERY ), 0])], Scan(T, [=]))
+plan:  Project([CASE(WHEN(predicate, TRUE), [(SCALAR_SUBQUERY), 0])], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_dml.yaml#0 expect-error=0AF00
@@ -14550,23 +14550,23 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === scalar_subquery_java.yaml#4
 sql:   SELECT name, salary - (SELECT MIN(salary) FROM employees) AS above_min FROM employees ORDER BY name
-plan:  Project([_current.NAME#1, (_current.SALARY#3 - (SCALAR_SUBQUERY ))], InMemorySort([_current.NAME#1 ASC], Scan(EMPLOYEES)))
+plan:  Project([_current.NAME#1, (_current.SALARY#3 - (SCALAR_SUBQUERY))], InMemorySort([_current.NAME#1 ASC], Scan(EMPLOYEES)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryScanPlan
 === scalar_subquery_projection.yaml#0
 sql:   SELECT id, val, (SELECT max_val FROM settings WHERE id = 1) FROM data ORDER BY id
-plan:  Project([_current.ID#0, _current.VAL#1, (SCALAR_SUBQUERY )], Scan(DATA))
+plan:  Project([_current.ID#0, _current.VAL#1, (SCALAR_SUBQUERY)], Scan(DATA))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_projection.yaml#1
 sql:   SELECT id, val, (SELECT COUNT(*) FROM data) FROM data ORDER BY id
-plan:  Project([_current.ID#0, _current.VAL#1, (SCALAR_SUBQUERY )], Scan(DATA))
+plan:  Project([_current.ID#0, _current.VAL#1, (SCALAR_SUBQUERY)], Scan(DATA))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_projection.yaml#2
 sql:   SELECT id, val - (SELECT MIN(val) FROM data) FROM data ORDER BY id
-plan:  Project([_current.ID#0, (_current.VAL#1 - (SCALAR_SUBQUERY ))], Scan(DATA))
+plan:  Project([_current.ID#0, (_current.VAL#1 - (SCALAR_SUBQUERY))], Scan(DATA))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_typed_gates.yaml#0 expect-error=22F3H
@@ -14574,7 +14574,7 @@ sql:   SELECT CAST((SELECT big FROM gt WHERE id = 1) AS BOOLEAN) FROM gt
 plan:  <PLAN-ERROR: 22F3H: No cast defined from LONG to BOOLEAN>
 === scalar_subquery_typed_gates.yaml#1
 sql:   SELECT CAST((SELECT small FROM gt WHERE id = 1) AS BOOLEAN) FROM gt
-plan:  Project([CAST((SCALAR_SUBQUERY ) AS BOOL)], Scan(GT))
+plan:  Project([CAST((SCALAR_SUBQUERY) AS BOOL)], Scan(GT))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_typed_gates.yaml#2 expect-error=42804
@@ -14606,22 +14606,22 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === scalar_subquery_types.yaml#0
 sql:   SELECT (SELECT name FROM t WHERE id = 1) FROM t WHERE id = 2
-plan:  Project([(SCALAR_SUBQUERY )], Scan(T, [=]))
+plan:  Project([(SCALAR_SUBQUERY)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_types.yaml#1
 sql:   SELECT (SELECT active FROM t WHERE id = 2) FROM t WHERE id = 1
-plan:  Project([(SCALAR_SUBQUERY )], Scan(T, [=]))
+plan:  Project([(SCALAR_SUBQUERY)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_types.yaml#2
 sql:   SELECT (SELECT score FROM t WHERE id = 1) FROM t WHERE id = 2
-plan:  Project([(SCALAR_SUBQUERY )], Scan(T, [=]))
+plan:  Project([(SCALAR_SUBQUERY)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_types.yaml#3
 sql:   SELECT (SELECT score FROM t WHERE id = 3) FROM t WHERE id = 1
-plan:  Project([(SCALAR_SUBQUERY )], Scan(T, [=]))
+plan:  Project([(SCALAR_SUBQUERY)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_types.yaml#4
@@ -14638,7 +14638,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === scalar_subquery_types.yaml#6
 sql:   SELECT (SELECT score FROM t WHERE id = 1) + 0.5 FROM t WHERE id = 1
-plan:  Project([((SCALAR_SUBQUERY ) + 0.5)], Scan(T, [=]))
+plan:  Project([((SCALAR_SUBQUERY) + 0.5)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_types.yaml#7 expect-error=0A000
@@ -14646,7 +14646,7 @@ sql:   SELECT (SELECT MIN(name) FROM t) FROM t WHERE id = 1
 plan:  <PLAN-ERROR: 0A000: unable to encapsulate aggregate operation due to type mismatch(es)>
 === scalar_subquery_types.yaml#8
 sql:   SELECT (SELECT name FROM t ORDER BY score DESC LIMIT 1) FROM t WHERE id = 1
-plan:  Project([(SCALAR_SUBQUERY )], Scan(T, [=]))
+plan:  Project([(SCALAR_SUBQUERY)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === secondary_index_join.yaml#0
