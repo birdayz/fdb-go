@@ -107,7 +107,7 @@ func TestProjectionColumnNameCopyRebuildAndRebase(t *testing.T) {
 
 			aliasMap := mustExpression(values.NewAliasMap([]values.AliasPair{{Source: corr, Target: renamed}}))
 			rebased := mustExpression(NewLogicalProjectionExpressionWithAliasProvenance(
-				[]values.Value{values.RebaseValue(testCase.value, aliasMap)},
+				[]values.Value{mustRebaseValue(t, testCase.value, aliasMap)},
 				projection.GetAliases(), projection.GetAliasMinted(), inner))
 			if got := nameOf(rebased); got != testCase.wantRebased {
 				t.Fatalf("name after rebase = %q, want %q", got, testCase.wantRebased)

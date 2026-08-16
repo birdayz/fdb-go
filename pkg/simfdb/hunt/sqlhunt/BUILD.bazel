@@ -23,6 +23,7 @@ go_test(
     name = "sqlhunt_test",
     srcs = [
         "indexhunt_test.go",
+        "inlist_plan_probe_test.go",
         "nullhunt_test.go",
         "querycorrectness_test.go",
         "scan_bench_test.go",

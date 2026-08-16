@@ -43,7 +43,12 @@ func buildMatchMaxMatchMap(
 	if err != nil {
 		return nil
 	}
-	translated := values.RebaseValue(queryResultValue, rebase)
+	// A failed rebase returns the same nil this function already uses for "no
+	// match map", so it must not reach ComputeMaxMatchMap with a nil tree.
+	translated, err := values.RebaseValueChecked(queryResultValue, rebase)
+	if err != nil {
+		return nil
+	}
 	return ComputeMaxMatchMapWithEquivalence(
 		translated,
 		candidateResultValue,

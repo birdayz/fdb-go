@@ -358,7 +358,11 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 	// Rebase the parent's result value and predicates.
 	newResultValue := sel.GetResultValue()
 	if !aliasMap.IsEmpty() {
-		newResultValue = values.RebaseValue(newResultValue, valueAliasMap)
+		newResultValue, err = values.RebaseValueChecked(newResultValue, valueAliasMap)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 	}
 	// Apply TranslationMap for non-seed multi-quantifier children, and the
 	// surgical baked-collapse callback for positional-seed children (lazy
@@ -579,7 +583,10 @@ func translateQuantifierCorrelations(
 			if err != nil {
 				return q, false, err
 			}
-			col := values.RebaseValue(me.GetCollectionValue(), valueAliasMap)
+			col, err := values.RebaseValueChecked(me.GetCollectionValue(), valueAliasMap)
+			if err != nil {
+				return q, false, err
+			}
 			col = values.Replace(col, cb)
 			if col != me.GetCollectionValue() {
 				newMember, err = expressions.NewExplodeExpressionWithOrdinality(col, me.GetWithOrdinality())
@@ -687,7 +694,11 @@ func translateSelectCorrelations(
 	}
 	rv := sel.GetResultValue()
 	if !effAliasMap.IsEmpty() {
-		rv = values.RebaseValue(rv, valueAliasMap)
+		var rebaseErr error
+		rv, rebaseErr = values.RebaseValueChecked(rv, valueAliasMap)
+		if rebaseErr != nil {
+			return nil, rebaseErr
+		}
 	}
 	rv = values.Replace(rv, cb)
 	if rv != sel.GetResultValue() {

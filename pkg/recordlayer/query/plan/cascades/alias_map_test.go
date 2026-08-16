@@ -146,7 +146,7 @@ func TestAliasMap_ForwardMap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewQuantifiedObjectValue() error = %v", err)
 	}
-	rebased := values.RebaseValue(qov, fwd)
+	rebased := mustRebaseValue(t, qov, fwd)
 	rebasedQOV, ok := values.AsQuantifiedObjectValue(rebased)
 	if !ok {
 		t.Fatalf("rebased = %T, want QuantifiedObjectValue", rebased)

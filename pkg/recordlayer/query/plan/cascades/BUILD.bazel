@@ -549,6 +549,7 @@ go_test(
         "sort_key_nil_value_contract_test.go",
         "sparse_candidate_expansion_test.go",
         "temp_table_test.go",
+        "test_helpers_shared_test.go",
         "transform_expr_task_admission_test.go",
         "translate_correlations_fail_closed_test.go",
         "translate_value_function_ordinal_test.go",
@@ -1122,6 +1123,7 @@ go_test(
         "union_rule_fixtures_test.go",
         "rule_call_insert_atomicity_test.go",
         "memo_admission_wiring_test.go",
+        "test_helpers_shared_test.go",
     ],
     deps = [
         "//gen",

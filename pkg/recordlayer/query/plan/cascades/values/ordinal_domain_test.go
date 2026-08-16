@@ -281,7 +281,7 @@ func TestOrdinalDomain_PreservedAcrossCopyAndRebuild(t *testing.T) {
 
 	t.Run("rebase", func(t *testing.T) {
 		t.Parallel()
-		rebased := RebaseValue(base, mustAliasMap(t, AliasPair{Source: src, Target: tgt}))
+		rebased := mustRebaseValue(t, base, mustAliasMap(t, AliasPair{Source: src, Target: tgt}))
 		if _, ok := rebased.(*fieldValue).OrdinalIn(domain); !ok {
 			t.Fatal("Rebase dropped the domain token")
 		}

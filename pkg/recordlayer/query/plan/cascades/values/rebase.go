@@ -1,26 +1,25 @@
 package values
 
-// RebaseValue replaces correlation references in a value tree
-// according to the alias map. Returns the original value if no
-// references match.
+// RebaseValue IS DELIBERATELY ABSENT, for the same reason RebasePredicate is
+// (predicates/rebase.go): it was the error-less spelling of
+// RebaseValueChecked and returned nil on failure, which is not failing closed.
 //
-// Leaf values with correlation aliases (QuantifiedObjectValue,
-// QuantifiedRecordValue, ScalarSubqueryValue, ObjectValue) have their
-// alias remapped directly. All other non-leaf values (including
-// ExistsValue, a transparent composite over a QuantifiedObjectValue)
-// recursively rebase children and reconstruct via WithChildren — no
-// per-type wiring needed.
+// Nil is a legitimate value at most of the eleven production call sites this
+// had, and at three of them it was actively dangerous. In match_info_merge.go
+// the enclosing function answers (Value, bool) where `nil, true` is the LAWFUL
+// "this cannot be pulled up" reply — so a failed rebase was indistinguishable
+// from a legal decline and silently dropped an index-match subsumption. In
+// match_max_match_map.go nil is already the "no match map" sentinel. The
+// remaining sites had an error channel available and simply were not using it.
 //
-// Ports Java's Value.rebase(AliasMap): leaf values override
-// rebaseLeaf(); non-leaf values use the default rebase() which
-// recurses children and calls withChildren().
-func RebaseValue(v Value, aliases AliasMap) Value {
-	rebased, err := RebaseValueChecked(v, aliases)
-	if err != nil {
-		return nil
-	}
-	return rebased
-}
+// RFC-232 is what took the failure from theoretical to reachable: it originates
+// in reconstruction, and exact types are precisely what gave reconstruction
+// something to reject. Deleting the wrapper is the fix rather than fixing its
+// callers one at a time, because the next caller wanting "the one without the
+// error return" would otherwise find it.
+//
+// Use RebaseValueChecked and route the error. Tests that expect success have
+// mustRebaseValue helpers in their own packages.
 
 // RebaseValueChecked performs the alias-only rebase through the same checked
 // reconstruction authority used by TranslationMap. It preserves exact QOV

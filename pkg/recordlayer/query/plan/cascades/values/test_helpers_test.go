@@ -92,3 +92,16 @@ func mustPullUpThroughPassthrough(
 	}
 	return pulled
 }
+
+// mustRebaseValue is the test spelling of a rebase that is EXPECTED to succeed.
+// RebaseValue — the error-less wrapper that returned nil on failure — is gone
+// (see rebase.go); a test that wants the failure calls RebaseValueChecked and
+// asserts on the error, and one that does not wants this.
+func mustRebaseValue(t testing.TB, v Value, aliases AliasMap) Value {
+	t.Helper()
+	rebased, err := RebaseValueChecked(v, aliases)
+	if err != nil {
+		t.Fatalf("RebaseValueChecked: %v", err)
+	}
+	return rebased
+}

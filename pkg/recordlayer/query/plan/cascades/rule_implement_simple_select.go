@@ -177,7 +177,11 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 					call.Fail(err)
 					return
 				}
-				mapResultValue = values.RebaseValue(resultValue, aliases)
+				mapResultValue, err = values.RebaseValueChecked(resultValue, aliases)
+				if err != nil {
+					call.Fail(err)
+					return
+				}
 			}
 			// The projection (Map) is its own cascades expression carrying the
 			// live currentQuant edge (RFC-184 W2).

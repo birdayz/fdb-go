@@ -463,7 +463,14 @@ func pullUpGroupByValue(
 			if err != nil {
 				return nil, false
 			}
-			return values.RebaseValue(quantifiedRecord, aliases), true
+			// Checked, because `nil, true` in this function is the LEGITIMATE
+			// "no pull-up available" answer: a rebase that failed would return
+			// exactly that and be read as a lawful decline by the caller.
+			rebased, rebaseErr := values.RebaseValueChecked(quantifiedRecord, aliases)
+			if rebaseErr != nil {
+				return nil, false
+			}
+			return rebased, true
 		}
 		qov, err := values.NewQuantifiedObjectValue(
 			upperAlias,
@@ -491,7 +498,11 @@ func pullUpGroupByValue(
 		if err != nil {
 			return nil, false
 		}
-		return values.RebaseValue(value, aliases), true
+		rebased, rebaseErr := values.RebaseValueChecked(value, aliases)
+		if rebaseErr != nil {
+			return nil, false
+		}
+		return rebased, true
 	}
 
 	switch result := resultValue.(type) {
@@ -514,7 +525,11 @@ func pullUpGroupByValue(
 		if err != nil {
 			return nil, false
 		}
-		return values.RebaseValue(value, aliases), true
+		rebased, rebaseErr := values.RebaseValueChecked(value, aliases)
+		if rebaseErr != nil {
+			return nil, false
+		}
+		return rebased, true
 	case *values.ObjectValue:
 		// Java ObjectValue is a plain LeafValue, not a QuantifiedValue.
 		// It has neither the quantified passthrough shortcut nor a

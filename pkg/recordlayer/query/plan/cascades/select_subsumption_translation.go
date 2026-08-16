@@ -178,7 +178,13 @@ func buildSelectSubsumptionTranslationMapMaybe(
 				_ values.CorrelationIdentifier,
 				leaf values.Value,
 			) values.Value {
-				return values.RebaseValue(leaf, aliasRebase)
+				// nil on failure is LOUD here, not a silent decline: the applier
+				// rejects a nil replacement with RewriteNilReplacement.
+				rebased, rebaseErr := values.RebaseValueChecked(leaf, aliasRebase)
+				if rebaseErr != nil {
+					return nil
+				}
+				return rebased
 			}
 
 		default:

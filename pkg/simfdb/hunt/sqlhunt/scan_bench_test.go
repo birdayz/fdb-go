@@ -138,3 +138,28 @@ func BenchmarkPlanInList(b *testing.B) {
 		drain(b, db, q)
 	}
 }
+
+// BenchmarkInListExecution isolates PER-EXECUTION cost from planning and from
+// per-row cost. The stress suite's IN-list query returns 46 rows out of 1M and
+// regressed 4.4x, which 46 rows cannot pay for — and the plan is byte-identical
+// between the trees (InUnion over an index probe), so it is neither planning
+// choice nor row volume. What an InUnion does is re-execute its inner plan ONCE
+// PER BINDING, so any fixed per-execution setup is multiplied by the IN-list
+// length. This query has 5 bindings and returns few rows, so what it measures
+// is that setup.
+func BenchmarkInListExecution(b *testing.B) {
+	db := benchHarness(b, scanBenchRows)
+	// val is i*3 and idx_val exists, so five bindings return FIVE rows out of
+	// 20000 — the stress shape (46 of 1M), where setup dominates row work.
+	const query = "SELECT id, val FROM t WHERE val IN (0, 3, 6, 9, 12) ORDER BY id"
+	warm := drain(b, db, query)
+	if warm == 0 {
+		b.Fatal("IN-list returned no rows; the benchmark would measure an empty plan")
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := drain(b, db, query); got != warm {
+			b.Fatalf("iteration %d returned %d rows, want %d", i, got, warm)
+		}
+	}
+}

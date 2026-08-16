@@ -94,7 +94,7 @@ func FuzzValueSemanticHashConsistency(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, b []byte) {
 		v, _ := genHashFuzzValue(t, b, 0, 0)
-		rebased := values.RebaseValue(v, swap)
+		rebased := mustRebaseValue(t, v, swap)
 		if rebased == nil {
 			t.Fatal("checked alias rebase returned nil")
 		}
@@ -139,7 +139,7 @@ func FuzzPredicateSemanticHashConsistency(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, b []byte) {
 		v, _ := genHashFuzzValue(t, b, 0, 0)
-		rebased := values.RebaseValue(v, swap)
+		rebased := mustRebaseValue(t, v, swap)
 		if rebased == nil {
 			t.Fatal("checked alias rebase returned nil")
 		}

@@ -3386,7 +3386,7 @@ func remapExistentialResultValue(
 	if err != nil {
 		return nil, err
 	}
-	return values.RebaseValue(rv, am), nil
+	return values.RebaseValueChecked(rv, am)
 }
 
 // resultValueReferencesAlias reports whether a SelectExpression result value's
@@ -5989,7 +5989,11 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 				call.Fail(err)
 				return
 			}
-			projected = values.RebaseValue(projected, aliases)
+			projected, err = values.RebaseValueChecked(projected, aliases)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
 		}
 		flatMapResult = projected
 	}

@@ -61,9 +61,12 @@ func FuzzRebaseValue_NoPanic(f *testing.F) {
 			v = NewAggregateValue(AggCountStar, nil)
 		}
 
-		result := RebaseValue(v, aliases)
+		result, err := RebaseValueChecked(v, aliases)
+		if err != nil {
+			t.Fatalf("RebaseValueChecked failed on a well-formed tree: %v", err)
+		}
 		if result == nil && v != nil {
-			t.Fatal("RebaseValue returned nil for non-nil input")
+			t.Fatal("RebaseValueChecked returned nil for non-nil input without an error")
 		}
 	})
 }
