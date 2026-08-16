@@ -141,6 +141,7 @@ go_test(
         "column_name_value_test.go",
         "constant_signed_zero_test.go",
         "correlation_test.go",
+        "current_forgery_case_test.go",
         "datum_binding_descent_test.go",
         "dotted_leg_qualifier_census_test.go",
         "dotted_row_type_producer_census_test.go",

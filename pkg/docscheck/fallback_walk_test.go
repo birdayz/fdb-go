@@ -254,11 +254,26 @@ func TestTrackedEnumerationReportsWhichBranchIsLive(t *testing.T) {
 // new source file is part of the build before it is staged, so it must already
 // be part of every docs census. The fixture also proves ignored scratch stays
 // out and the union cannot report one path twice.
+//
+// A FAILING `git init` IS A HARD FAILURE HERE, not a skip, and the distinction
+// is the whole reason this test exists. gitGoFiles IS the subject; without git
+// there is nothing left to exercise, so a skip would report the seam as covered
+// while covering nothing — the same green-from-an-empty-set the sibling probe
+// above guards against, only quieter, because a skipped test still leaves the
+// target green. Measured under bazel on this tree: the test RUNS (`--- PASS`,
+// not `--- SKIP`), so git is reachable from the sandbox and the skip arm was
+// dead weight that would only ever have fired by hiding a real breakage.
+//
+// This does NOT contradict TestTrackedEnumerationReportsWhichBranchIsLive
+// declining to require git. That test asks which enumeration branch is live and
+// must stay honest on a minimal image, because the fallback walk exists for
+// exactly that image. This one tests the git branch itself.
 func TestGitGoFilesIncludesTheWholeDeliverable(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	if out, err := exec.Command("git", "-C", root, "init", "--quiet").CombinedOutput(); err != nil {
-		t.Skipf("git init unavailable: %v (%s)", err, strings.TrimSpace(string(out)))
+		t.Fatalf("git init unavailable: %v (%s); gitGoFiles is the subject of this test, "+
+			"so no git means the tracked+untracked union ships unexercised", err, strings.TrimSpace(string(out)))
 	}
 	write := func(rel, contents string) {
 		t.Helper()

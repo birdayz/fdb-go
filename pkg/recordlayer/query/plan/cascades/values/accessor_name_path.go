@@ -221,9 +221,20 @@ func orderingValueTypesEqual(left, right Value) bool {
 	return leftType != nil && rightType != nil && leftType.Equals(rightType)
 }
 
+// isNamedCurrentForgery reports whether root is an ORDINARY named correlation
+// whose text copies the reserved current spelling. Such a root must not acquire
+// current's phase privilege through the bridge above.
+//
+// The comparison FOLDS CASE. The reserved handle is spelled `_current` in
+// lowercase, but a user correlation reaches here through the SQL path, which
+// upper-folds every alias — so `FROM t AS _current` arrives as `_CURRENT` and an
+// exact-match guard waves it straight through, which is precisely the input the
+// guard exists to catch. Nothing else distinguishes the two: correlationKind is
+// private and cannot be forged, so the KIND check below is what proves this is
+// not the real handle, and this one is what recognises the impostor.
 func isNamedCurrentForgery(root *quantifiedObjectValue) bool {
 	return root != nil && !root.correlation.isCurrent() &&
-		root.correlation.Name() == CurrentCorrelation().Name()
+		strings.EqualFold(root.correlation.Name(), CurrentCorrelation().Name())
 }
 
 func orderingValueResolvedPath(value Value) *fieldPath {
