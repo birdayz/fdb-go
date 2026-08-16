@@ -85,31 +85,88 @@ func ScalarTypeForProtoKind(fd protoreflect.FieldDescriptor) Type {
 	return scalarTypeForProtoField(fd, make(map[protoreflect.FullName]struct{}))
 }
 
+// ScalarCodeForProtoKind is the ALLOCATION-FREE half of the scalar mapping: the
+// TypeCode a descriptor's kind carries, without building the Type that names it.
+// ok=false for a kind with no scalar answer (a record, or one this engine does
+// not map), which the caller must then handle structurally.
+//
+// It exists because two callers want different halves of one decision, and
+// splitting the decision is the only way to keep it a single authority.
+// ScalarTypeForProtoKind needs the Type. The exact-type compatibility check
+// needs only the code, and it runs per FIELD READ per ROW — building a Type
+// there (and, for an enum, its value slice and number set) allocated
+// O(rows × accesses × width) of garbage to answer a question about an int.
+//
+// The enum arm is the reason this is not a plain switch on Kind: a
+// number-ALIASING enum maps to LONG rather than to an enum type, and that is
+// only knowable by scanning the descriptor's values. The scan allocates
+// nothing, unlike constructing the EnumType it is deciding against.
+func ScalarCodeForProtoKind(fd protoreflect.FieldDescriptor) (TypeCode, bool) {
+	if fd == nil {
+		return TypeCodeUnknown, false
+	}
+	switch fd.Kind() {
+	case protoreflect.BoolKind:
+		return TypeCodeBoolean, true
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		return TypeCodeInt, true
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return TypeCodeLong, true
+	case protoreflect.FloatKind:
+		return TypeCodeFloat, true
+	case protoreflect.DoubleKind:
+		return TypeCodeDouble, true
+	case protoreflect.StringKind:
+		// DATE and TIMESTAMP columns also store as STRING proto fields; the
+		// SQL-level type is not recoverable from the descriptor alone, and the
+		// slot genuinely holds a Go string either way.
+		return TypeCodeString, true
+	case protoreflect.BytesKind:
+		return TypeCodeBytes, true
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return TypeCodeLong, true
+	case protoreflect.EnumKind:
+		if protoEnumHasNumberAlias(fd.Enum()) {
+			return TypeCodeLong, true
+		}
+		if fd.Enum() == nil {
+			return TypeCodeUnknown, false
+		}
+		return TypeCodeEnum, true
+	case protoreflect.MessageKind, protoreflect.GroupKind:
+		if msg := fd.Message(); msg != nil && string(msg.FullName()) == uuidProtoMessageName {
+			return TypeCodeUuid, true
+		}
+		return TypeCodeRecord, true
+	}
+	return TypeCodeUnknown, false
+}
+
+// protoEnumHasNumberAlias reports the condition that forces an enum onto the
+// LONG carrier: the engine's EnumType rejects number aliases while the runtime
+// carrier is the number itself.
+func protoEnumHasNumberAlias(ed protoreflect.EnumDescriptor) bool {
+	if ed == nil {
+		return false
+	}
+	declared := ed.Values()
+	for i := 0; i < declared.Len(); i++ {
+		number := declared.Get(i).Number()
+		for j := 0; j < i; j++ {
+			if declared.Get(j).Number() == number {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func scalarTypeForProtoField(fd protoreflect.FieldDescriptor, active map[protoreflect.FullName]struct{}) Type {
 	if fd == nil {
 		return UnknownType
 	}
 	switch fd.Kind() {
-	case protoreflect.BoolKind:
-		return NewPrimitiveType(TypeCodeBoolean, true)
-	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
-		return NewPrimitiveType(TypeCodeInt, true)
-	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
-		return NewPrimitiveType(TypeCodeLong, true)
-	case protoreflect.FloatKind:
-		return NewPrimitiveType(TypeCodeFloat, true)
-	case protoreflect.DoubleKind:
-		return NewPrimitiveType(TypeCodeDouble, true)
-	case protoreflect.StringKind:
-		// DATE and TIMESTAMP columns also store as STRING proto fields; the
-		// SQL-level type is not recoverable from the descriptor alone, and the
-		// slot genuinely holds a Go string either way.
-		return NewPrimitiveType(TypeCodeString, true)
-	case protoreflect.BytesKind:
-		return NewPrimitiveType(TypeCodeBytes, true)
-	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
-		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-		return NewPrimitiveType(TypeCodeLong, true)
 	case protoreflect.EnumKind:
 		return enumTypeForProto(fd.Enum())
 	case protoreflect.MessageKind, protoreflect.GroupKind:
@@ -118,7 +175,14 @@ func scalarTypeForProtoField(fd protoreflect.FieldDescriptor, active map[protore
 		}
 		return recordTypeForProtoMessage(fd.Message(), active)
 	}
-	return UnknownType
+	// Every remaining kind is a plain scalar whose Type is exactly its code.
+	// Taken from the shared authority so the two cannot drift — which is the
+	// whole reason the compatibility check stopped restating this switch.
+	code, ok := ScalarCodeForProtoKind(fd)
+	if !ok {
+		return UnknownType
+	}
+	return NewPrimitiveType(code, true)
 }
 
 func protoFieldNullable(fd protoreflect.FieldDescriptor) bool {

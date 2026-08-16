@@ -6,6 +6,21 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// mustRebase is the checked rebase with the error asserted away, which is what
+// these tests always meant. They used to call an error-less wrapper that
+// returned nil on failure; every one of them would then have reported its own
+// type assertion rather than the rebase failure, so the wrapper bought nothing
+// here and cost a fail-open at its production call sites. It is gone; this is
+// the replacement.
+func mustRebase(t *testing.T, p QueryPredicate, aliases values.AliasMap) QueryPredicate {
+	t.Helper()
+	rebased, err := RebasePredicateChecked(p, aliases)
+	if err != nil {
+		t.Fatalf("RebasePredicateChecked: %v", err)
+	}
+	return rebased
+}
+
 func TestRebasePredicate_Comparison(t *testing.T) {
 	t.Parallel()
 	old := values.NamedCorrelationIdentifier("old")
@@ -17,7 +32,7 @@ func TestRebasePredicate_Comparison(t *testing.T) {
 			Operand: &values.ConstantValue{Value: int64(5)},
 		},
 	}
-	result := RebasePredicate(p, mustAliasMap(t, values.AliasPair{Source: old, Target: newAlias}))
+	result := mustRebase(t, p, mustAliasMap(t, values.AliasPair{Source: old, Target: newAlias}))
 	cp, ok := result.(*ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate, got %T", result)
@@ -40,7 +55,7 @@ func TestRebasePredicate_ComparisonNoChange(t *testing.T) {
 			Operand: &values.ConstantValue{Value: int64(2)},
 		},
 	}
-	result := RebasePredicate(p, mustAliasMap(t, values.AliasPair{
+	result := mustRebase(t, p, mustAliasMap(t, values.AliasPair{
 		Source: values.NamedCorrelationIdentifier("x"),
 		Target: values.NamedCorrelationIdentifier("y"),
 	}))
@@ -57,7 +72,7 @@ func TestRebasePredicate_And(t *testing.T) {
 		NewValuePredicate(mustQOV(t, old)),
 		NewConstantPredicate(TriTrue),
 	)
-	result := RebasePredicate(p, mustAliasMap(t, values.AliasPair{Source: old, Target: newAlias}))
+	result := mustRebase(t, p, mustAliasMap(t, values.AliasPair{Source: old, Target: newAlias}))
 	and, ok := result.(*AndPredicate)
 	if !ok {
 		t.Fatalf("expected *AndPredicate, got %T", result)
@@ -80,7 +95,7 @@ func TestRebasePredicate_Not(t *testing.T) {
 	old := values.NamedCorrelationIdentifier("old")
 	newAlias := values.NamedCorrelationIdentifier("new")
 	p := NewNot(NewValuePredicate(mustQOV(t, old)))
-	result := RebasePredicate(p, mustAliasMap(t, values.AliasPair{Source: old, Target: newAlias}))
+	result := mustRebase(t, p, mustAliasMap(t, values.AliasPair{Source: old, Target: newAlias}))
 	not, ok := result.(*NotPredicate)
 	if !ok {
 		t.Fatalf("expected *NotPredicate, got %T", result)
@@ -101,7 +116,7 @@ func TestRebasePredicate_Not(t *testing.T) {
 func TestRebasePredicate_Constant(t *testing.T) {
 	t.Parallel()
 	p := NewConstantPredicate(TriTrue)
-	result := RebasePredicate(p, mustAliasMap(t, values.AliasPair{
+	result := mustRebase(t, p, mustAliasMap(t, values.AliasPair{
 		Source: values.NamedCorrelationIdentifier("x"),
 		Target: values.NamedCorrelationIdentifier("y"),
 	}))
@@ -118,7 +133,7 @@ func TestRebasePredicate_Or(t *testing.T) {
 		NewValuePredicate(mustQOV(t, oldAlias)),
 		NewConstantPredicate(TriFalse),
 	)
-	result := RebasePredicate(p, mustAliasMap(t, values.AliasPair{Source: oldAlias, Target: newAlias}))
+	result := mustRebase(t, p, mustAliasMap(t, values.AliasPair{Source: oldAlias, Target: newAlias}))
 	or, ok := result.(*OrPredicate)
 	if !ok {
 		t.Fatalf("expected *OrPredicate, got %T", result)
@@ -141,7 +156,7 @@ func TestRebasePredicate_Exists(t *testing.T) {
 	oldAlias := values.NamedCorrelationIdentifier("old")
 	newAlias := values.NamedCorrelationIdentifier("new")
 	p := mustExistentialAlias(t, oldAlias)
-	result := RebasePredicate(p, mustAliasMap(t, values.AliasPair{Source: oldAlias, Target: newAlias}))
+	result := mustRebase(t, p, mustAliasMap(t, values.AliasPair{Source: oldAlias, Target: newAlias}))
 	ep, ok := result.(*ExistentialValuePredicate)
 	if !ok {
 		t.Fatalf("expected *ExistentialValuePredicate, got %T", result)
@@ -154,7 +169,7 @@ func TestRebasePredicate_Exists(t *testing.T) {
 func TestRebasePredicate_ExistsNoChange(t *testing.T) {
 	t.Parallel()
 	p := mustExistentialAlias(t, values.NamedCorrelationIdentifier("other"))
-	result := RebasePredicate(p, mustAliasMap(t, values.AliasPair{
+	result := mustRebase(t, p, mustAliasMap(t, values.AliasPair{
 		Source: values.NamedCorrelationIdentifier("x"),
 		Target: values.NamedCorrelationIdentifier("y"),
 	}))
@@ -165,7 +180,7 @@ func TestRebasePredicate_ExistsNoChange(t *testing.T) {
 
 func TestRebasePredicate_Nil(t *testing.T) {
 	t.Parallel()
-	result := RebasePredicate(nil, nil)
+	result := mustRebase(t, nil, nil)
 	if result != nil {
 		t.Fatal("nil predicate should return nil")
 	}
@@ -182,7 +197,7 @@ func TestRebasePredicate_Placeholder(t *testing.T) {
 		Value:          mustQOV(t, oldValAlias),
 		CompRange:      EmptyComparisonRange(),
 	}
-	result := RebasePredicate(p, mustAliasMap(t,
+	result := mustRebase(t, p, mustAliasMap(t,
 		values.AliasPair{Source: oldAlias, Target: newAlias},
 		values.AliasPair{Source: oldValAlias, Target: newValAlias},
 	))
@@ -209,7 +224,7 @@ func TestRebasePredicate_PlaceholderNoChange(t *testing.T) {
 		Value:          predicateTestField(t, "X", values.NullableLong),
 		CompRange:      EmptyComparisonRange(),
 	}
-	result := RebasePredicate(p, mustAliasMap(t, values.AliasPair{
+	result := mustRebase(t, p, mustAliasMap(t, values.AliasPair{
 		Source: values.NamedCorrelationIdentifier("other"),
 		Target: values.NamedCorrelationIdentifier("new"),
 	}))

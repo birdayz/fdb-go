@@ -272,7 +272,15 @@ func pushIntoLogicalFilter(
 	newPredicates := make([]predicates.QueryPredicate, 0, len(filter.GetPredicates())+len(originalPredicates))
 	newPredicates = append(newPredicates, filter.GetPredicates()...)
 	for _, p := range originalPredicates {
-		newPredicates = append(newPredicates, predicates.RebasePredicate(p, aliasMap))
+		// CHECKED. The error-less spelling returns nil on a failed rebase, and a
+		// nil appended here is not a dropped rebase — it is a nil element in a
+		// predicate list, which downstream reads as a predicate that is not
+		// there. Losing a pushed-down predicate returns rows the query excluded.
+		rebased, rerr := predicates.RebasePredicateChecked(p, aliasMap)
+		if rerr != nil {
+			return nil, rerr
+		}
+		newPredicates = append(newPredicates, rebased)
 	}
 
 	flowed, err := inner.RequireFlowedObjectValue()
@@ -405,7 +413,13 @@ func pushOverChild(
 
 	newPredicates := make([]predicates.QueryPredicate, len(originalPredicates))
 	for i, p := range originalPredicates {
-		newPredicates[i] = predicates.RebasePredicate(p, aliasMap)
+		// CHECKED — see the sibling loop above for why a nil element here is a
+		// silently dropped predicate rather than a reported failure.
+		rebased, rerr := predicates.RebasePredicateChecked(p, aliasMap)
+		if rerr != nil {
+			return expressions.Quantifier{}, rerr
+		}
+		newPredicates[i] = rebased
 	}
 
 	flowed, err := child.RequireFlowedObjectValue()

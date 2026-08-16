@@ -895,20 +895,25 @@ func protoScalarShapeCompatible(field protoreflect.FieldDescriptor, expected *ex
 		}
 		return expected.code == TypeCodeRecord && protoRecordShapeCompatible(field.Message(), expected)
 	}
-	mapped := ScalarTypeForProtoKind(field)
-	if IsUnresolved(mapped) {
+	// The CODE, not the Type. This runs per field read per row, and building the
+	// Type here allocated one per scalar — plus a value slice and a number set
+	// for every enum — to answer a question about an int. ScalarCodeForProtoKind
+	// is the same authority with the construction left out, so delegation is
+	// preserved and the allocation is not.
+	mapped, ok := ScalarCodeForProtoKind(field)
+	if !ok || mapped == TypeCodeUnknown {
 		return false
 	}
-	if mapped.Code() == expected.code {
+	if mapped == expected.code {
 		return true
 	}
 	// The two STORAGE ALIASES, kept explicitly: a SQL type whose stored carrier
 	// is a different code. Everything else must match the mapper exactly.
 	switch expected.code {
 	case TypeCodeVersion:
-		return mapped.Code() == TypeCodeLong
+		return mapped == TypeCodeLong
 	case TypeCodeDate, TypeCodeTimestamp:
-		return mapped.Code() == TypeCodeString
+		return mapped == TypeCodeString
 	}
 	return false
 }

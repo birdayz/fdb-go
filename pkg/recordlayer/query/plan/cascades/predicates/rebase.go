@@ -2,16 +2,24 @@ package predicates
 
 import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
-// RebasePredicate is the compatibility, error-less spelling of
-// RebasePredicateChecked. It fails closed with nil when exact Value
-// reconstruction fails.
-func RebasePredicate(p QueryPredicate, aliases values.AliasMap) QueryPredicate {
-	rebased, err := RebasePredicateChecked(p, aliases)
-	if err != nil {
-		return nil
-	}
-	return rebased
-}
+// RebasePredicate IS DELIBERATELY ABSENT. It was the "compatibility, error-less
+// spelling" of RebasePredicateChecked and it returned nil on failure, which its
+// own doc called failing closed.
+//
+// Nil is not closed. At every one of its six production call sites nil was
+// indistinguishable from a legitimate absence: five appended it into a
+// predicate LIST, where a nil element is a predicate that is simply not there,
+// and the sixth returned it as the NO-JOIN-PREDICATE sentinel of a correlated
+// EXISTS — so a failed rebase turned the subquery into one matching every outer
+// row, with no error and a plausible row count.
+//
+// RFC-232 is what took that from theoretical to reachable: the failure
+// originates in values.RebaseValueChecked, and exact types are precisely what
+// gave value reconstruction something to reject. Deleting the wrapper is the
+// fix rather than avoiding it, because the next caller who wants "the one
+// without the error return" will otherwise find it.
+//
+// Use RebasePredicateChecked and route the error.
 
 // RebasePredicateChecked replaces correlation references in every embedded
 // Value tree through the checked rewrite authority, then rebases the one

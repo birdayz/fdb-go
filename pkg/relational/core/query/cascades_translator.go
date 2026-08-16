@@ -9256,7 +9256,25 @@ func (t *cascadesTranslator) existsInnerCorrelation(esq logical.ExistsSubquery) 
 				"invalid EXISTS correlation rebase from %s to %s: %v", srcAlias.Name(), uniqueAlias.Name(), err))
 			return "", nil
 		}
-		joinPred = predicates.RebasePredicate(joinPred, aliasMap)
+		// CHECKED, and this is the site where the error-less spelling is most
+		// dangerous. It "fails closed with nil" — but nil is not closed HERE: it
+		// is the NO-JOIN-PREDICATE sentinel this function's own caller tests
+		// (`if joinPred != nil { preds = append(...) }`). A failed rebase would
+		// therefore drop the correlation entirely and turn a correlated EXISTS
+		// into one that matches EVERY outer row, silently and with the right
+		// row count for the uncorrelated reading. The arm just above already
+		// routes its error this way; this one has to match it.
+		//
+		// RFC-232 is what makes this reachable rather than theoretical: the
+		// failure originates in values.RebaseValueChecked, and exact types are
+		// precisely what gave value reconstruction something to reject.
+		rebased, rerr := predicates.RebasePredicateChecked(joinPred, aliasMap)
+		if rerr != nil {
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeInternalError,
+				"EXISTS correlation rebase from %s to %s: %v", srcAlias.Name(), uniqueAlias.Name(), rerr))
+			return "", nil
+		}
+		joinPred = rebased
 	}
 	return uniqueAlias.Name(), joinPred
 }

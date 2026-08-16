@@ -424,7 +424,15 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 	for _, p := range sel.GetPredicates() {
 		rp := p
 		if !aliasMap.IsEmpty() {
-			rp = predicates.RebasePredicate(rp, valueAliasMap)
+			// CHECKED: the error-less spelling returns nil on failure, and this
+			// merged select would then carry a predicate that silently is not
+			// there — the merge widens the result rather than declining.
+			rebased, rerr := predicates.RebasePredicateChecked(rp, valueAliasMap)
+			if rerr != nil {
+				call.Fail(rerr)
+				return
+			}
+			rp = rebased
 		}
 		if !tm.DefinesOnlyIdentities() {
 			translated, ok := translatePredicateCorrelations(rp, tm)
@@ -663,7 +671,13 @@ func translateSelectCorrelations(
 	for i, p := range sel.GetPredicates() {
 		np := p
 		if !effAliasMap.IsEmpty() {
-			np = predicates.RebasePredicate(np, valueAliasMap)
+			// CHECKED — see the sibling loop in OnMatch: a nil here is a
+			// predicate that silently is not there.
+			rebased, rerr := predicates.RebasePredicateChecked(np, valueAliasMap)
+			if rerr != nil {
+				return nil, rerr
+			}
+			np = rebased
 		}
 		np = predicates.ReplaceValues(np, cb)
 		if np != p {

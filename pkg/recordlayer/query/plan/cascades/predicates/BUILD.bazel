@@ -51,6 +51,7 @@ go_test(
         "predicates_equivalence_test.go",
         "predicates_test.go",
         "predrow_test.go",
+        "rebase_fail_closed_test.go",
         "rebase_test.go",
         "semantic_equals_test.go",
         "semantic_hash_invariant_test.go",

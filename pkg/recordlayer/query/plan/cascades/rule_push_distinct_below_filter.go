@@ -143,7 +143,13 @@ func rebasePredicates(preds []predicates.QueryPredicate, oldAlias, newAlias valu
 	}
 	result := make([]predicates.QueryPredicate, len(preds))
 	for i, p := range preds {
-		result[i] = predicates.RebasePredicate(p, am)
+		// CHECKED: the error-less spelling yields nil on failure, and a nil
+		// element in a predicate list is a predicate that silently is not there.
+		rebased, rerr := predicates.RebasePredicateChecked(p, am)
+		if rerr != nil {
+			return nil, rerr
+		}
+		result[i] = rebased
 	}
 	return result, nil
 }
