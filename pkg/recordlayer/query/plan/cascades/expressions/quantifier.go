@@ -282,6 +282,13 @@ func (q Quantifier) GetFlowedObjectType() (values.Type, error) {
 	if ref == nil {
 		return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "quantifier has no Reference"}
 	}
+	// The answer depends only on the Reference's members, and deriving it
+	// snapshots every one of them through ExactRelationOf. Rule bodies call
+	// this per match, so without the memo the same unchanged member set is
+	// re-snapshotted continuously; see Reference.flowedType.
+	if cached, ok := ref.cachedFlowedType(); ok {
+		return q.widenFlowedTypeForNullOnEmpty(cached)
+	}
 	// Java's getAllMemberExpressions() — exploratory AND final. A final member is
 	// the one a physical plan is built from, so excluding it would verify the
 	// agreement over exactly the members that do not end up in the plan.
@@ -375,13 +382,26 @@ func (q Quantifier) GetFlowedObjectType() (values.Type, error) {
 	if found == nil {
 		return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "Reference has no usable members"}
 	}
-	if q.nullOnEmpty {
-		found = values.WithNullability(found, true)
-		if _, err := values.SnapshotExactType(found); err != nil {
-			return nil, fmt.Errorf("quantifier %s NullOnEmpty flowed type: %w", q.alias.Name(), err)
-		}
+	// Cached BEFORE the NullOnEmpty widening, which is the quantifier's
+	// property and not the Reference's: two quantifiers can range over one
+	// Reference with different NullOnEmpty, so caching the widened row would
+	// hand the second one the first one's nullability.
+	ref.setCachedFlowedType(found)
+	return q.widenFlowedTypeForNullOnEmpty(found)
+}
+
+// widenFlowedTypeForNullOnEmpty applies this quantifier's NullOnEmpty to a
+// Reference-derived row. Kept separate from the derivation so the memo can hold
+// the part that belongs to the Reference and this part stays per-quantifier.
+func (q Quantifier) widenFlowedTypeForNullOnEmpty(found values.Type) (values.Type, error) {
+	if !q.nullOnEmpty {
+		return found, nil
 	}
-	return found, nil
+	widened := values.WithNullability(found, true)
+	if _, err := values.SnapshotExactType(widened); err != nil {
+		return nil, fmt.Errorf("quantifier %s NullOnEmpty flowed type: %w", q.alias.Name(), err)
+	}
+	return widened, nil
 }
 
 // NOT ON THE LIVE PATH. GetFlowedObjectType compares member rows with strict

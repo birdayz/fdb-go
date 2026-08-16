@@ -148,6 +148,7 @@ go_test(
         "equals_without_children_test.go",
         "eval_must_test.go",
         "exact_type_name_identity_test.go",
+        "exact_type_path_test.go",
         "field_value_mint_census_test.go",
         "field_value_ordinal_resolution_test.go",
         "field_value_reanchor_test.go",

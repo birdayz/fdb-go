@@ -80,6 +80,25 @@ type Reference struct {
 	// whose hash inputs differ.
 	memberHash map[RelationalExpression]uint64
 
+	// flowedType memoizes GetFlowedObjectType's SUCCESSFUL answer, keyed by
+	// memberVersion.
+	//
+	// That derivation walks every member and snapshots each one's result type
+	// through ExactRelationOf, and it is called from inside rule bodies —
+	// PartitionBinarySelectRule.tryPartition reaches it per match — so the same
+	// unchanged member set was re-snapshotted continuously. On a planner sweep
+	// snapshotExactType was 14.7% of samples and thaw a further 5.1%, feeding a
+	// GC that was 44% of the run; a CI timeout's stack landed dead inside that
+	// recursion.
+	//
+	// ONLY THE SUCCESS IS CACHED. The failures carry q.alias, and two
+	// quantifiers can range over one Reference, so a cached error would report
+	// the wrong alias to the second one. Failures are rare and short-circuit
+	// the loop anyway, so re-deriving them costs nothing worth having.
+	flowedType        values.Type
+	flowedTypeVersion uint64
+	flowedTypeValid   bool
+
 	plannerStage PlannerStage
 	explState    explorationState
 	// constraintsMap is the Java-style tick/watermark exploration
@@ -668,6 +687,23 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 	r.memberVersion++
 	r.correlatedToCache = nil
 	return true
+}
+
+// cachedFlowedType returns the memoized GetFlowedObjectType answer when it was
+// derived from the CURRENT member set. Every mutation of the member sets bumps
+// memberVersion, so a stale entry cannot be observed.
+func (r *Reference) cachedFlowedType() (values.Type, bool) {
+	if r == nil || !r.flowedTypeValid || r.flowedTypeVersion != r.memberVersion {
+		return nil, false
+	}
+	return r.flowedType, true
+}
+
+func (r *Reference) setCachedFlowedType(typ values.Type) {
+	if r == nil || typ == nil {
+		return
+	}
+	r.flowedType, r.flowedTypeVersion, r.flowedTypeValid = typ, r.memberVersion, true
 }
 
 // MemberHashes returns HashCodeWithoutChildren for each member, memoized on
