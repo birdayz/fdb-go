@@ -1762,7 +1762,7 @@ func newOrdinalJoinBuildWithOutputLayout(
 	for source, origin := range sourceOrigins {
 		retainedOrigins[source] = origin
 	}
-	return &ordinalJoinBuild{
+	build := &ordinalJoinBuild{
 		Enabled:              true,
 		RC:                   rc,
 		OutputType:           outputType,
@@ -1773,7 +1773,15 @@ func newOrdinalJoinBuildWithOutputLayout(
 		WindowsOK:            windowsOK,
 		LegTypes:             legTypes,
 		RawLegs:              rawLegs,
-	}, nil
+	}
+	// Both leg-type sources are now populated (legTypesFromResultValue, the bare
+	// QOV pass and widenLegTypesFromPredicates have all run), so this is the
+	// first point at which they can be compared. widenLegTypesFromPlan runs the
+	// same assertion again after it adds plan-discovered legs.
+	if err := build.assertLegTypeSourcesAgree(); err != nil {
+		return nil, err
+	}
+	return build, nil
 }
 
 // recordConstructorReadsNestedLegPath reports the one selected-layout RC shape
@@ -1965,7 +1973,14 @@ func (b *ordinalJoinBuild) widenLegTypesFromPlan(plan plans.RecordQueryPlan) err
 		}
 		return v
 	})
-	return divergence
+	if divergence != nil {
+		return divergence
+	}
+	// A leg this walk ADDED can newly collide with the seed leg window, so the
+	// two-source agreement is re-asserted here rather than only at construction.
+	// The walk never overwrites an existing entry (the arm above reports instead),
+	// so a leg that agreed before still agrees.
+	return b.assertLegTypeSourcesAgree()
 }
 
 // walkBakedRefs walks a physical plan tree's predicate surfaces —
@@ -2079,10 +2094,24 @@ func probeOuterBakedType(plan plans.RecordQueryPlan, outerAlias values.Correlati
 	return found, divergence
 }
 
-// legType resolves the adapter's leg type for a leg alias: from the spans when
-// the RV is the pristine seed (WindowsOK), else from the RV's baked references
-// (LegTypes), else nil (no baked reference names this leg — the adapter then
-// only passes a positional row through or yields a zero-width row).
+// legType resolves the adapter's leg type for a leg alias.
+//
+// THE BAKED REFERENCES ARE THE AUTHORITY. LegTypes carries the types recovered
+// from the RV's own baked leg references, widened from the join predicates and
+// from the plan walk, so it is the type the expressions that will actually be
+// EVALUATED were constructed against. Spans are the pristine-seed leg-window
+// walk — a positional description of the seed RC, available only when
+// WindowsOK, and invisible for a folded RV whose output is a plain projection
+// row. So a span types a leg only when no baked reference names it.
+//
+// WHEN BOTH NAME A LEG THEY DESCRIBE ONE FLOWED ROW, so agreement is an
+// invariant rather than a coincidence — which means the order below decides
+// nothing on a well-formed plan. A disagreement is a malformed plan, not a
+// preference to resolve, and it is rejected by assertLegTypeSourcesAgree at
+// BUILD time rather than here: the two sources are fixed for the cursor's
+// lifetime, so re-deciding per row would pay for the check on every row of
+// every join and still have nowhere to report it from (pairBinder has no error
+// return). Checked once at the boundary, this stays a plain accessor.
 func (b *ordinalJoinBuild) legType(id values.CorrelationIdentifier) *values.RecordType {
 	if exact := b.LegTypes[id]; exact != nil {
 		return exact
@@ -2092,6 +2121,35 @@ func (b *ordinalJoinBuild) legType(id values.CorrelationIdentifier) *values.Reco
 			if s.Alias == id {
 				return s.LegType
 			}
+		}
+	}
+	return nil
+}
+
+// assertLegTypeSourcesAgree rejects a build whose two leg-type sources describe
+// one leg with different widths. It runs after every widening has been applied,
+// so LegTypes is final.
+//
+// Without it, legType's precedence silently picks a winner and the leg is
+// adapted to a width the other half of the plan does not expect — the failure
+// then surfaces far downstream as an ordinal that resolves into the wrong
+// column, or not at all. This is the same class as the two DIVERGENT reports
+// legTypesFromResultValue and widenLegTypesFromPlan already make, and it is
+// worded the same way so all three read as one rule.
+func (b *ordinalJoinBuild) assertLegTypeSourcesAgree() error {
+	if !b.WindowsOK {
+		// Spans describe the pristine seed only; a folded RV has no second
+		// source to disagree with.
+		return nil
+	}
+	for _, s := range b.Spans {
+		exact := b.LegTypes[s.Alias]
+		if exact == nil || s.LegType == nil {
+			continue
+		}
+		if len(exact.Fields) != len(s.LegType.Fields) {
+			return fmt.Errorf("leg %s carries DIVERGENT types (%d vs %d fields) between the RV's baked references and the seed leg window — both describe the same flowed row (planner bug; malformed plan)",
+				s.Alias, len(exact.Fields), len(s.LegType.Fields))
 		}
 	}
 	return nil

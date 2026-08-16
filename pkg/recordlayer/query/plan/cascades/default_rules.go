@@ -117,6 +117,30 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewIntersectionSingletonElimRule(),
 		NewInComparisonToExplodeRule(),
 		NewLimitMergeRule(),
+		// PushLimitThroughProjectionRule REMOVED (Go-only, no Java equivalent).
+		// Java expresses a row limit as ExecuteProperties.setReturnedRowLimit()
+		// at EXECUTION and has no limit-pushing planner rule at all — 0 of the
+		// 70 .java files under query/plan/cascades/rules name limit or vector.
+		//
+		// It rewrote Limit(Project(X)) into Project(Limit(X)) during REWRITING,
+		// where OptimizeGroupTask's partition-retention block does not run. So
+		// REWRITING pruned to the single pushed survivor and the un-pushed
+		// shape — whose inner group holds the covering winner — never reached
+		// the phase that offers the covering rewrite. A FETCHING index scan won
+		// where a covering one existed, and the cost model was never consulted:
+		// the better member was ABSENT, not outranked. Pinned by
+		// embedded.TestLimitOverProjectionKeepsTheCoveringRewrite.
+		//
+		// Nothing downstream needed the push, which is the part worth stating
+		// because it is not obvious. The one rule that wants a Limit DIRECTLY
+		// above its scan is SinkLimitIntoVectorScanRule (registered in
+		// DefaultImplementationRules), and the Limit it folds is the QUALIFY
+		// rank cap's — synthesized UNDER the projection already, so the fold
+		// fires with a projection present. Pinned by
+		// embedded.TestVectorPlan_NoResidualFoldsToSelfLimiting and, for an
+		// explicit LIMIT equal to that cap (the only shape where an OUTER limit
+		// passes the fold's equality gate), by
+		// embedded.TestVectorPlan_ExplicitLimitEqualToRankStillFolds.
 		NewPushLimitThroughUnionRule(),
 		NewNoOpLimitElimRule(),
 		NewSelectMergeRule(),

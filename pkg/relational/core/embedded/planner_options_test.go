@@ -131,7 +131,34 @@ func TestPlannerOptions_PlanRightDeep(t *testing.T) {
 	if rdTasks >= embeddedRightDeepPlannerMaxTasks {
 		t.Fatalf("PLAN_RIGHT_DEEP tasks=%d is not under the %d cap", rdTasks, embeddedRightDeepPlannerMaxTasks)
 	}
-	t.Logf("hub+5 star: default CAPS; PLAN_RIGHT_DEEP converges in %d tasks", rdTasks)
+	// THE CAP IS A CLIFF, NOT A GAUGE. The check above still passes at 249,999
+	// — one commit before this mode stops converging at all — so it cannot warn
+	// while there is still room to act. The band below watches the CONSUMPTION.
+	//
+	// Population: the hub+5 all-live star above (fiveSpokeStarSQL over
+	// starJoinDDL), PLAN_RIGHT_DEEP on, default rule set, measured at 173542 —
+	// 69% of the 250k ceiling, i.e. 1.44x headroom. That is the number to
+	// re-measure when this fails; do not widen the band to make it pass.
+	//
+	// Both directions are alarms, for different reasons. GROWTH means the search
+	// is eating the remaining 30% and the tier needs a decision before it is
+	// gone. COLLAPSE means either a genuine win worth re-baselining or that this
+	// star stopped being all-live — a spoke that can be pruned makes the whole
+	// test a much weaker statement while still reporting green.
+	const rightDeepObservedTasks = 173542
+	rdTol := rightDeepObservedTasks / 50 // +/-2%, matching the Cascades-level star sentinel
+	if rdTasks < rightDeepObservedTasks-rdTol || rdTasks > rightDeepObservedTasks+rdTol {
+		t.Errorf("PLAN_RIGHT_DEEP tasks=%d, want %d +/-2%% ([%d,%d]) over the hub+5 all-live star. "+
+			"Above the band: consumption is climbing toward the %d ceiling (%.0f%% used at the "+
+			"baseline, %.0f%% now) — re-measure and decide the tier, do not widen this. Below it: "+
+			"re-baseline if the search genuinely shrank, but first check the star is still all-live.",
+			rdTasks, rightDeepObservedTasks, rightDeepObservedTasks-rdTol, rightDeepObservedTasks+rdTol,
+			embeddedRightDeepPlannerMaxTasks,
+			100*float64(rightDeepObservedTasks)/float64(embeddedRightDeepPlannerMaxTasks),
+			100*float64(rdTasks)/float64(embeddedRightDeepPlannerMaxTasks))
+	}
+	t.Logf("hub+5 star: default CAPS; PLAN_RIGHT_DEEP converges in %d tasks (%.0f%% of the %d ceiling)",
+		rdTasks, 100*float64(rdTasks)/float64(embeddedRightDeepPlannerMaxTasks), embeddedRightDeepPlannerMaxTasks)
 
 	// Explicit false must behave exactly like unset — the default is
 	// Java-identical and setting it must not be a way to change it.

@@ -225,6 +225,7 @@ go_test(
         "utilities_test.go",
         "value_compare_test.go",
         "vector_ddl_test.go",
+        "vector_limit_projection_test.go",
         "vector_plan_test.go",
     ],
     data = glob(["testdata/**"]),
@@ -398,6 +399,7 @@ go_test(
         "same_shaped_join_legs_test.go",
         "rfc232_planning_gaps_test.go",
         "merged_rv_order_test.go",
+        "vector_limit_projection_test.go",
     ],
     deps = [
         "//gen",
