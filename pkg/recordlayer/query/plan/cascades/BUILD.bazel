@@ -391,6 +391,7 @@ go_test(
         "predicate_count_by_level_test.go",
         "predicate_matchers_test.go",
         "predicate_multi_map_test.go",
+        "predicate_push_decline_test.go",
         "predicate_semantic_hash_test.go",
         "predicate_simplify_fuzz_test.go",
         "primary_point_lookup_cardinality_test.go",
@@ -1124,6 +1125,7 @@ go_test(
         "rule_call_insert_atomicity_test.go",
         "memo_admission_wiring_test.go",
         "test_helpers_shared_test.go",
+        "predicate_push_decline_test.go",
     ],
     deps = [
         "//gen",

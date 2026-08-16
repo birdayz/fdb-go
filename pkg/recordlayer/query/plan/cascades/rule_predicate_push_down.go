@@ -396,11 +396,19 @@ func pushOverChild(
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	child expressions.Quantifier,
-) (expressions.Quantifier, error) {
+) (expressions.Quantifier, bool, error) {
 	// Same precondition as pushIntoLogicalFilter's rebase: ordinals survive the
 	// alias change untouched, so the two aliases must name the same row.
+	//
+	// THE DECLINE IS ITS OWN RESULT, not a zero Quantifier. Returning
+	// (Quantifier{}, nil) made "do not push this predicate" -- a lawful,
+	// expected answer -- indistinguishable from success at every caller, since
+	// they all tested only the error. The zero value then reached an expression
+	// constructor, RequireFlowedObjectValue rejected a quantifier with no
+	// Reference, and the rule call FAILED THE WHOLE PLANNING RUN over a
+	// predicate it merely should not have pushed.
 	if !rebasedAliasesDenoteOneRow(pushQuantifier, child) {
-		return expressions.Quantifier{}, nil
+		return expressions.Quantifier{}, false, nil
 	}
 	// Rebase: pushQuantifier.alias -> child.alias
 	aliasMap, err := values.NewAliasMap([]values.AliasPair{{
@@ -408,7 +416,7 @@ func pushOverChild(
 		Target: child.GetAlias(),
 	}})
 	if err != nil {
-		return expressions.Quantifier{}, err
+		return expressions.Quantifier{}, false, err
 	}
 
 	newPredicates := make([]predicates.QueryPredicate, len(originalPredicates))
@@ -417,14 +425,14 @@ func pushOverChild(
 		// silently dropped predicate rather than a reported failure.
 		rebased, rerr := predicates.RebasePredicateChecked(p, aliasMap)
 		if rerr != nil {
-			return expressions.Quantifier{}, rerr
+			return expressions.Quantifier{}, false, rerr
 		}
 		newPredicates[i] = rebased
 	}
 
 	flowed, err := child.RequireFlowedObjectValue()
 	if err != nil {
-		return expressions.Quantifier{}, err
+		return expressions.Quantifier{}, false, err
 	}
 	newSelect, err := expressions.NewSelectExpression(
 		flowed,
@@ -432,9 +440,9 @@ func pushOverChild(
 		newPredicates,
 	)
 	if err != nil {
-		return expressions.Quantifier{}, err
+		return expressions.Quantifier{}, false, err
 	}
-	return expressions.ForEachQuantifier(call.MemoizeExpression(newSelect)), nil
+	return expressions.ForEachQuantifier(call.MemoizeExpression(newSelect)), true, nil
 }
 
 // pushThroughUnion pushes predicates through a LogicalUnionExpression by
@@ -452,9 +460,14 @@ func pushThroughUnion(
 		if q.Kind() != expressions.QuantifierForEach {
 			return nil, nil
 		}
-		newChild, err := pushOverChild(call, originalPredicates, pushQuantifier, q)
+		newChild, pushed, err := pushOverChild(call, originalPredicates, pushQuantifier, q)
 		if err != nil {
 			return nil, err
+		}
+		if !pushed {
+			// One leg that cannot take the predicate means the union cannot:
+			// pushing into the others only would change what the union returns.
+			return nil, nil
 		}
 		newChildren[i] = newChild
 	}
@@ -474,9 +487,12 @@ func pushThroughSort(
 	if inner.Kind() != expressions.QuantifierForEach {
 		return nil, nil
 	}
-	newChild, err := pushOverChild(call, originalPredicates, pushQuantifier, inner)
+	newChild, pushed, err := pushOverChild(call, originalPredicates, pushQuantifier, inner)
 	if err != nil {
 		return nil, err
+	}
+	if !pushed {
+		return nil, nil
 	}
 	return expressions.NewLogicalSortExpression(sort.GetSortKeys(), newChild)
 }
@@ -494,9 +510,12 @@ func pushThroughDistinct(
 	if inner.Kind() != expressions.QuantifierForEach {
 		return nil, nil
 	}
-	newChild, err := pushOverChild(call, originalPredicates, pushQuantifier, inner)
+	newChild, pushed, err := pushOverChild(call, originalPredicates, pushQuantifier, inner)
 	if err != nil {
 		return nil, err
+	}
+	if !pushed {
+		return nil, nil
 	}
 	return expressions.NewLogicalDistinctExpression(newChild)
 }
@@ -514,9 +533,12 @@ func pushThroughUnique(
 	if inner.Kind() != expressions.QuantifierForEach {
 		return nil, nil
 	}
-	newChild, err := pushOverChild(call, originalPredicates, pushQuantifier, inner)
+	newChild, pushed, err := pushOverChild(call, originalPredicates, pushQuantifier, inner)
 	if err != nil {
 		return nil, err
+	}
+	if !pushed {
+		return nil, nil
 	}
 	return unique.WithQuantifiers([]expressions.Quantifier{newChild})
 }
