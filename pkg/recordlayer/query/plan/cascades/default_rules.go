@@ -218,12 +218,21 @@ func PlanningExplorationRules() []ExpressionRule {
 // Java. Go also had ImplementUnionRule, emitting a second concat plan for the
 // SAME logical shape at the SAME cost — the two are both operator-neutral — so
 // which one won was decided by exploration order rather than by cost, and it
-// flipped on unrelated changes. The two plans are not interchangeable:
-// RecordQueryUnionPlan is an eager concat that DECLINES a continuation, so the
-// arbitrary winner decided whether a paginated `UNION ALL` could resume at all.
-// Java has no such rule (its RecordQueryUnionPlan variants require compatible
-// comparison keys and arise from ordered/distinct-union planning), and the Go
-// rule produced a keyless concat every time.
+// flipped on unrelated changes. Java has no such rule (its RecordQueryUnionPlan
+// variants require compatible comparison keys and arise from ordered/
+// distinct-union planning), and the Go rule produced a keyless concat every
+// time. THAT is the reason for the deletion, and it stands on its own.
+//
+// AN EARLIER VERSION OF THIS NOTE ALSO CLAIMED RecordQueryUnionPlan "is an
+// eager concat that DECLINES a continuation", and the executor says otherwise.
+// executeUnion routes to executeUnionStreaming whenever every branch's column
+// names are statically known — lazy, per-branch CursorFactory, resuming off a
+// branch-tagged ConcatContinuation. Only executeUnionBuffered declines, and only
+// on the fallback where the names are not statically known. On the eagerness
+// axis the deletion in fact moved the OTHER way: the surviving
+// executeUnorderedUnion opens every child cursor up front. Keeping the wrong
+// reason next to a right conclusion is how a later reader talks themselves into
+// reverting the conclusion.
 //
 // It did serve one shape alone, and only because of a second Go-only
 // divergence: ImplementUnorderedUnionRule carried a two-leg floor Java's rule

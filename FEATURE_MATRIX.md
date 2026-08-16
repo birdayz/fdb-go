@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**353 scenarios · 2799 query/assertion cases** across 18 feature areas — 2462 supported, 111 unsupported-feature pins, 226 error-path pins.
+**353 scenarios · 2801 query/assertion cases** across 18 feature areas — 2464 supported, 111 unsupported-feature pins, 226 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -33,7 +33,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | CTEs | 13 | 108 | 77 | 7 | 24 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 | 52 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 210 | 192 | 1 | 17 |
-| Ordering & pagination | 16 | 120 | 116 | 0 | 4 |
+| Ordering & pagination | 16 | 122 | 118 | 0 | 4 |
 | Scalar functions & expressions | 34 | 381 | 328 | 21 | 32 |
 | Predicates & WHERE | 12 | 104 | 102 | 0 | 2 |
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 32 | 249 | 216 | 10 | 23 |
-| **Total** | **353** | **2799** | **2462** | **111** | **226** |
+| **Total** | **353** | **2801** | **2464** | **111** | **226** |
 
 ## Aggregates & GROUP BY
 
@@ -298,7 +298,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `offset` | 8 | 7 | 0 | 1 | LIMIT / OFFSET (Go extension) |
 | `order_by_complex` | 3 | 3 | 0 | 0 | Complex ORDER BY patterns |
 | `order_by_dupe_col` | 4 | 2 | 0 | 2 | Java's orderby.yamsql: `ORDER BY b, b` (same column repeated) errors |
-| `order_by_elimination` | 43 | 43 | 0 | 0 | ORDER BY elimination: when the chosen scan cursor emits rows in a |
+| `order_by_elimination` | 45 | 45 | 0 | 0 | ORDER BY elimination: when the chosen scan cursor emits rows in a |
 | `order_by_expression` | 4 | 4 | 0 | 0 | ORDER BY <non-aggregate expression> — `ORDER BY a + b`, `ORDER BY |
 | `order_by_index` | 4 | 4 | 0 | 0 | ORDER BY on indexed columns. |
 | `order_by_limit` | 13 | 12 | 0 | 1 | ORDER BY with LIMIT — common query pattern. |

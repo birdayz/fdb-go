@@ -246,12 +246,29 @@ func TestJoinResultValueWithBakedOrdinalsIsRCOrWholeValueReference(t *testing.T)
 	if joins == 0 {
 		t.Fatal("the battery produced no join result values")
 	}
-	if bares == 0 {
-		// RFC-232's exact result/layout construction currently canonicalizes every
-		// reachable baked join result into an RC. Executor layout tests pin the Bare
-		// arm directly; absence here is allowed, while the checks above remain armed
-		// if a bare planner shape becomes reachable again.
-		t.Log("no bare baked join result was selected; reachable join results are exact RC/whole values")
+	// THE DIRECTION OF THIS GUARD INVERTED, so the guard inverted with it rather
+	// than being relaxed to a log.
+	//
+	// It was a COLLAPSE floor: bares==0 meant the battery had stopped producing
+	// the shape the checks above interrogate, and those checks were then passing
+	// vacuously. RFC-232's exact result/layout construction canonicalizes every
+	// reachable baked join result into an RC, so zero is now the STEADY STATE and
+	// that floor is unsatisfiable — which is exactly the point at which a floor
+	// gets deleted or logged away and stops watching anything in either
+	// direction.
+	//
+	// The alarm now points the other way. A NON-zero count means a bare planner
+	// shape became reachable again: the arms above are suddenly live over a
+	// population nobody has reviewed since it disappeared, and that is a finding
+	// to look at rather than a silent resumption. It is not a failure of the
+	// engine — it is a failure of this test's stated scope, which is why the
+	// message says what to do rather than what broke.
+	if bares != 0 {
+		t.Errorf("%d bare baked join result(s) were selected; this battery has recorded zero since "+
+			"exact result/layout construction began canonicalizing every reachable baked join "+
+			"result into an RC. The bare arms above just went live over a population that has not "+
+			"been reviewed since. Confirm the shape is intended, re-read those assertions against "+
+			"it, and re-baseline this guard to the new count.", bares)
 	}
 }
 

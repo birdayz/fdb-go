@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=353 queries=2538 dml=157 non_query=104 plan_errors=264 unexpected_errors=4
+# files=353 queries=2540 dml=157 non_query=104 plan_errors=264 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -12460,126 +12460,138 @@ shape: RecordQueryLimitPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
 === order_by_elimination.yaml#20
+sql:   SELECT id FROM t ORDER BY id DESC LIMIT 2
+plan:  Limit(2, Project([_current.ID#0], Scan(T) REVERSE))
+shape: RecordQueryLimitPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
+=== order_by_elimination.yaml#21
 sql:   SELECT DISTINCT v FROM t WHERE v > 0 ORDER BY v LIMIT 3
 plan:  Limit(3, Distinct(Project([_current.V#1], IndexScan(IDX_V, [<>] COVERING))))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryDistinctPlan
 shape:     RecordQueryProjectionPlan
 shape:       RecordQueryCoveringIndexPlan
-=== order_by_elimination.yaml#21
+=== order_by_elimination.yaml#22
 sql:   SELECT id AS pk FROM t ORDER BY pk
 plan:  Project([_current.ID#0], Scan(T))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== order_by_elimination.yaml#22
+=== order_by_elimination.yaml#23
 sql:   SELECT id AS pk FROM t ORDER BY pk LIMIT 2
 plan:  Limit(2, Project([_current.ID#0], Scan(T)))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
-=== order_by_elimination.yaml#23
+=== order_by_elimination.yaml#24
 sql:   SELECT v AS id FROM t ORDER BY id
 plan:  Project([_current.V#1], IndexScan(IDX_V, [*]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryIndexPlan
-=== order_by_elimination.yaml#24
+=== order_by_elimination.yaml#25
 sql:   SELECT id FROM t ORDER BY id DESC
 plan:  Project([_current.ID#0], Scan(T) REVERSE)
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== order_by_elimination.yaml#25
+=== order_by_elimination.yaml#26
 sql:   SELECT id FROM t WHERE id > 1 AND id < 5 ORDER BY id DESC
 plan:  Project([_current.ID#0], PredicatesFilter(Scan(T, [<>]) REVERSE, [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
-=== order_by_elimination.yaml#26
+=== order_by_elimination.yaml#27
 sql:   SELECT a, b FROM ab WHERE a = 1 AND b > 10 ORDER BY a DESC, b DESC
 plan:  Project([_current.A#0, _current.B#1], Scan(AB, [=, <>]) REVERSE)
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== order_by_elimination.yaml#27
+=== order_by_elimination.yaml#28
 sql:   SELECT a, b FROM ab WHERE a = 1 ORDER BY a DESC, b DESC
 plan:  Project([_current.A#0, _current.B#1], Scan(AB, [=]) REVERSE)
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== order_by_elimination.yaml#28
+=== order_by_elimination.yaml#29
 sql:   SELECT id FROM t ORDER BY id DESC LIMIT 2
 plan:  Limit(2, Project([_current.ID#0], Scan(T) REVERSE))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
-=== order_by_elimination.yaml#29
+=== order_by_elimination.yaml#30
+sql:   SELECT id FROM t ORDER BY id DESC LIMIT 2
+plan:  Limit(2, Project([_current.ID#0], Scan(T) REVERSE))
+shape: RecordQueryLimitPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
+=== order_by_elimination.yaml#31
 sql:   SELECT id, v FROM t WHERE id = 3 ORDER BY id DESC
 plan:  Project([_current.ID#0, _current.V#1], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== order_by_elimination.yaml#30
+=== order_by_elimination.yaml#32
 sql:   SELECT a, b FROM ab WHERE a > 0 ORDER BY a ASC, b DESC
 plan:  Project([_current.A#0, _current.B#1], InMemorySort([_current.A#0 ASC, _current.B#1 DESC], Scan(AB, [<>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryScanPlan
-=== order_by_elimination.yaml#31
+=== order_by_elimination.yaml#33
 sql:   SELECT id AS pk FROM t ORDER BY pk DESC LIMIT 3
 plan:  Limit(3, Project([_current.ID#0], Scan(T) REVERSE))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
-=== order_by_elimination.yaml#32
+=== order_by_elimination.yaml#34
 sql:   SELECT a, b FROM ab WHERE a = 1 ORDER BY b DESC
 plan:  Project([_current.A#0, _current.B#1], Scan(AB, [=]) REVERSE)
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== order_by_elimination.yaml#33
+=== order_by_elimination.yaml#35
 sql:   SELECT a, b FROM ab WHERE a = 2 ORDER BY b ASC
 plan:  Project([_current.A#0, _current.B#1], Scan(AB, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== order_by_elimination.yaml#34
+=== order_by_elimination.yaml#36
 sql:   SELECT a, b FROM ab WHERE a = 2 ORDER BY b ASC LIMIT 1
 plan:  Limit(1, Project([_current.A#0, _current.B#1], Scan(AB, [=])))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
-=== order_by_elimination.yaml#35
+=== order_by_elimination.yaml#37
 sql:   SELECT a, b FROM ab WHERE a = 1 ORDER BY a DESC, b DESC
 plan:  Project([_current.A#0, _current.B#1], Scan(AB, [=]) REVERSE)
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== order_by_elimination.yaml#36
+=== order_by_elimination.yaml#38
 sql:   SELECT a, b FROM ab WHERE a = 1 ORDER BY a DESC
 plan:  Project([_current.A#0, _current.B#1], Scan(AB, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== order_by_elimination.yaml#37
+=== order_by_elimination.yaml#39
 sql:   SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan
 plan:  Project([_current.ID#0, _current.REGION#1, _current.PLAN#2], IndexScan(IDX_REGION_PLAN, [=, *] COVERING))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
-=== order_by_elimination.yaml#38
+=== order_by_elimination.yaml#40
 sql:   SELECT a, b, c FROM ab WHERE a = 1 ORDER BY c
 plan:  Project([_current.A#0, _current.B#1, _current.C#2], InMemorySort([_current.C#2 ASC], Scan(AB, [=])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryScanPlan
-=== order_by_elimination.yaml#39
+=== order_by_elimination.yaml#41
 sql:   SELECT id, v FROM t WHERE v > 0 ORDER BY v DESC
 plan:  Project([_current.ID#0, _current.V#1], IndexScan(IDX_V, [<>] COVERING) REVERSE)
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
-=== order_by_elimination.yaml#40
+=== order_by_elimination.yaml#42
 sql:   SELECT id, v FROM t WHERE v > 0 ORDER BY v DESC LIMIT 2
 plan:  Limit(2, Project([_current.ID#0, _current.V#1], IndexScan(IDX_V, [<>] COVERING) REVERSE))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryCoveringIndexPlan
-=== order_by_elimination.yaml#41
+=== order_by_elimination.yaml#43
 sql:   SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan DESC
 plan:  Project([_current.ID#0, _current.REGION#1, _current.PLAN#2], IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE)
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
-=== order_by_elimination.yaml#42
+=== order_by_elimination.yaml#44
 sql:   SELECT id FROM rp WHERE region = 'eu' ORDER BY plan DESC LIMIT 1
 plan:  Limit(1, Project([_current.ID#0], IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE))
 shape: RecordQueryLimitPlan

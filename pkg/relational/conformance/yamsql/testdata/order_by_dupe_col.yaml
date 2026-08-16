@@ -43,7 +43,12 @@ tests:
   # Multi-column ORDER BY with expression — Go extension: in-memory sort.
   - query: SELECT b FROM t ORDER BY b + 1, b + 1
     plan_contains: "InMemorySort([(_current.B#1 + 1) ASC], Scan(T))"
-    plan_not_contains: "(T.B#1 + 1) ASC, (T.B#1 + 1) ASC"
+    # The duplicate sort key must be deduplicated to ONE. Spelled with the
+    # renderer's CURRENT qualifier: this asserted `T.B#1` and the printer emits
+    # `_current.B#1`, so it could not match whatever the plan did — a
+    # plan_not_contains that cannot match is satisfied by every plan, including
+    # the undeduplicated one it was written to forbid.
+    plan_not_contains: "(_current.B#1 + 1) ASC, (_current.B#1 + 1) ASC"
     rows:
       - [10]
       - [20]

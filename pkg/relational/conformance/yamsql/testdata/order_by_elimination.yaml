@@ -296,6 +296,20 @@ tests:
       - [5]
       - [4]
 
+  # ...and the cap itself, as a SIBLING entry rather than a tighter substring on
+  # the one above. plan_contains takes a single string, so asserting both the
+  # reverse scan and the LIMIT in one entry would have to spell their NESTING —
+  # which is the tie this scenario deliberately declines to pin. Two entries pin
+  # two independent properties instead. Without this the cap was not pinned at
+  # all: a plan that dropped the LIMIT outright still satisfies "Scan(T) REVERSE"
+  # and the rows below, since the table has exactly 5 rows in that order.
+  - query: SELECT id FROM t ORDER BY id DESC LIMIT 2
+    plan_contains: "Limit(2, "
+    plan_not_contains: "InMemorySort"
+    rows:
+      - [5]
+      - [4]
+
   - query: SELECT DISTINCT v FROM t WHERE v > 0 ORDER BY v LIMIT 3
     plan_contains: "Distinct(Project([_current.V#1], IndexScan(IDX_V, [<>] COVERING)))"
     plan_not_contains: "InMemorySort"
@@ -403,6 +417,16 @@ tests:
   # LIMIT 3 entry above; REVERSE + no sort is what this pins.
   - query: SELECT id FROM t ORDER BY id DESC LIMIT 2
     plan_contains: "Scan(T) REVERSE"
+    plan_not_contains: "InMemorySort"
+    rows:
+      - [5]
+      - [4]
+
+  # ...and the cap, for the same reason as its twin above: dropping the LIMIT
+  # from plan_contains left it asserted by nothing, and the five-row fixture
+  # makes the row list agree with an uncapped reverse scan's first two rows.
+  - query: SELECT id FROM t ORDER BY id DESC LIMIT 2
+    plan_contains: "Limit(2, "
     plan_not_contains: "InMemorySort"
     rows:
       - [5]
