@@ -17903,3 +17903,32 @@ a runner-level resource limit. Both are checkable; neither was checked.
   with, and a nested read on an outer join's null-supplying leg now reanchors
   onto the joined carrier. The second was a live BUG the drift concealed — see
   `TestReanchorCrossesANullabilityWidenedLegRootIntoANestedPath`.
+
+- [ ] **`refineRowTypes` / `refineFieldTypes` are dead, and the tests that
+  document them now pin unreachable code.** RFC-232 replaced the member-agreement
+  reduction in `Quantifier.GetFlowedObjectType` with strict `Equals` plus an
+  explicit leg-table rule, so `expressions/refineRowTypes` and `refineFieldTypes`
+  have no production caller — the only callers in `pkg/` are in
+  `leg_table_population_blast_radius_test.go`. (Positive control for that sweep:
+  the same grep for `legTablesAgree` returns its definition plus its live call
+  site, so the zero is a real absence.)
+
+  A test on dead code is worse than no test: those four cases report green while
+  exercising nothing the planner runs, and their stated ruling — that a populated
+  leg table against an empty one is a CONFLICT — is now the OPPOSITE of the live
+  one, which adopts the stated boundaries (see the call site in `quantifier.go`
+  for why). A reader who finds that file first will take away a rule the engine
+  does not follow.
+
+  DONE when the two functions are deleted, `leg_table_population_blast_radius_test.go`
+  drives `GetFlowedObjectType` instead (keeping its argument, which is still
+  correct and load-bearing: populating `Legs` is NOT behaviour-neutral even
+  though `Equals`/`Hash` ignore it), and the prose sites that describe
+  `refineRowTypes` as the tree's protection are re-pointed — `values/values.go`,
+  `values/dotted_row_type_producer_census.go`, `executor/leg_column_provenance_census.go`,
+  `core/query/clustered_outer_seed_contract_test.go` and
+  `sqldriver/embedded_fdb_test.go` each assert it.
+
+  Also drop the now-unused UNKNOWN/stated refinement with them, and PIN the
+  assumption that replaced it: every member of a Reference is exactly typed, which
+  is what makes strict `Equals` safe where master refined.

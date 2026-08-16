@@ -319,6 +319,53 @@ func (q Quantifier) GetFlowedObjectType() (values.Type, error) {
 			found = rt
 			continue
 		}
+		// LEG TABLES ARE COMPARED SEPARATELY, AND BEFORE Equals, because
+		// RecordType.Equals deliberately IGNORES Legs — boundaries are physical
+		// information, not type identity. So equality cannot see this
+		// disagreement, and two members stating the same fields under different
+		// leg tables would otherwise resolve by whichever the memo scan reached
+		// first. Measured, before this check existed: the same pair of members
+		// flowed a 2-leg row in one insertion order and a 0-leg row in the other
+		// (TestGetFlowedObjectTypeRefusesDisagreeingLegTables drives both).
+		//
+		// AN EMPTY TABLE IS AN UNSTATED GAP, NOT A STATEMENT — so a POPULATED
+		// table wins over an empty one, and only two DIFFERENT populated tables
+		// conflict. That ruling is deliberate and it is the opposite of the one
+		// `legTablesAgree` alone implements; both are defensible, so here is why
+		// this is the one.
+		//
+		// The defect being fixed is that the answer DEPENDED ON INSERTION ORDER:
+		// the same two members flowed a 2-leg row when the tiling one was
+		// reached first and a 0-leg row when it was not. Either ruling removes
+		// that, because both are order-independent. What separates them is the
+		// cost of being wrong. Treating empty as a STATEMENT declines the
+		// quantifier outright, and measured over this tree that rejected real,
+		// previously-planning shapes — every correlated-EXISTS-over-a-derived-
+		// source plan among them — because in practice the empty side is a
+		// producer that never DERIVED boundaries, not one asserting it has none.
+		// Trading a wrong row for a lost plan is not an improvement.
+		//
+		// Taking the populated table is also strictly more information rather
+		// than a guess: SeedTilingLegs only yields a table that tiles the row
+		// EXACTLY, so the boundaries it states are consistent with the field
+		// list both members already agree on. And it is the safe direction —
+		// a row with no boundaries does not read downstream as "no legs", it
+		// reads as ONE run spanning the whole concat keyed by the box's
+		// rightmost leaf, so an alias-qualified column resolves at
+		// runOffset+ordinal, inside the FIRST leg. Empty is the shape that
+		// produces the wrong slot; adopting the stated boundaries removes it.
+		foundLegs, rtLegs := rowTypeLegsOf(found), rowTypeLegsOf(rt)
+		switch {
+		case len(foundLegs) == 0:
+			// Adopt rt's boundaries (possibly also empty) — see above.
+			found = values.WithRecordTypeLegs(found, rtLegs)
+		case len(rtLegs) == 0:
+			// Keep what `found` already states.
+		case !legTablesAgree(foundLegs, rtLegs):
+			return nil, &MemberResultTypeDisagreementError{
+				Alias: q.alias, Left: found, Right: rt,
+			}
+		}
 		if !found.Equals(rt) {
 			return nil, &MemberResultTypeDisagreementError{
 				Alias: q.alias, Left: found, Right: rt,
@@ -337,6 +384,22 @@ func (q Quantifier) GetFlowedObjectType() (values.Type, error) {
 	return found, nil
 }
 
+// NOT ON THE LIVE PATH. GetFlowedObjectType compares member rows with strict
+// Equals plus the leg-table rule above; nothing in production calls this, and
+// its only callers are in leg_table_population_blast_radius_test.go. Two things
+// follow and both matter to anyone reading it as protection:
+//
+//   - its populated-vs-empty ruling is the OPPOSITE of the live one. This
+//     declines that pair; the live scan adopts the stated boundaries. The
+//     reasoning for the live choice is at the call site.
+//   - the UNSTATED/stated refinement below (UNKNOWN cannot contradict a stated
+//     type) is not applied by the live scan either, which requires members to
+//     be exactly typed.
+//
+// It is kept only because the blast-radius tests still document why populating
+// a leg table is not behaviour-neutral. Deleting it, and repointing those tests
+// at the live path, is tracked in TODO.md.
+//
 // refineRowTypes reduces two members' row types to the single row the quantifier
 // flows — Java's `Verify.verify(left.equals(right))` reduction
 // (Reference.java:504-513), corrected for the one thing Go has that Java does
@@ -433,6 +496,17 @@ func refineRecordNames(a, b string) (string, bool) {
 		return a, true
 	}
 	return "", false
+}
+
+// rowTypeLegsOf returns the leg table a flowed row states, or nil for any type
+// that is not a record. A non-record row has no boundaries to disagree about,
+// so two of them agree trivially.
+func rowTypeLegsOf(t values.Type) []values.RecordTypeLeg {
+	rt, ok := t.(*values.RecordType)
+	if !ok || rt == nil {
+		return nil
+	}
+	return rt.Legs
 }
 
 // legTablesAgree reports whether two members state the SAME buried-leg boundary

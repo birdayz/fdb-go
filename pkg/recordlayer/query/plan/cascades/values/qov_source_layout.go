@@ -321,6 +321,25 @@ func WithSeedTilingLegs(typ Type, rv Value) Type {
 	return &withLegs
 }
 
+// WithRecordTypeLegs returns typ carrying legs, copy-on-write, or typ unchanged
+// when there is nothing to attach or typ is not a record.
+//
+// It is the "adopt the boundaries another producer already stated" half of the
+// member-agreement scan: WithSeedTilingLegs derives a table from a seed VALUE,
+// this one carries an already-derived table across to a row that states none.
+// Legs are not part of exact-type identity (RecordType.Equals ignores them), so
+// this adds physical information without moving any interning key, memo dedup
+// or plan equality.
+func WithRecordTypeLegs(typ Type, legs []RecordTypeLeg) Type {
+	record, isRecord := typ.(*RecordType)
+	if !isRecord || record == nil || len(legs) == 0 {
+		return typ
+	}
+	withLegs := *record
+	withLegs.Legs = append([]RecordTypeLeg(nil), legs...)
+	return &withLegs
+}
+
 func sortRecordTypeLegsByStart(legs []RecordTypeLeg) {
 	for i := 1; i < len(legs); i++ {
 		for j := i; j > 0 && legs[j].Start < legs[j-1].Start; j-- {
