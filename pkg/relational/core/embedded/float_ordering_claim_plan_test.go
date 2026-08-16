@@ -424,24 +424,24 @@ func TestFloatPrimaryKeyScanClaimsNoOrder(t *testing.T) {
 		name:     "float is the whole primary key",
 		schema:   floatPKSchema,
 		sql:      "SELECT v FROM p ORDER BY e",
-		wantSort: "InMemorySort([P.E#0 ASC]",
+		wantSort: "InMemorySort([_current.E#0 ASC]",
 	}, {
 		name:     "float primary key, descending",
 		schema:   floatPKSchema,
 		sql:      "SELECT v FROM p ORDER BY e DESC",
-		wantSort: "InMemorySort([P.E#0 DESC]",
+		wantSort: "InMemorySort([_current.E#0 DESC]",
 	}, {
 		name:     "float in the primary key suffix",
 		schema:   floatPKSuffixSchema,
 		sql:      "SELECT v FROM q ORDER BY g, e",
-		wantSort: "InMemorySort([Q.G#0 ASC, Q.E#1 ASC]",
+		wantSort: "InMemorySort([_current.G#0 ASC, _current.E#1 ASC]",
 	}, {
 		// The float is the leading SORTED coordinate once g is equality-bound,
 		// so the claim terminates immediately and the sort survives.
 		name:     "float behind an equality-bound primary key column",
 		schema:   floatPKSuffixSchema,
 		sql:      "SELECT v FROM q WHERE g = 1 ORDER BY e",
-		wantSort: "InMemorySort([Q.E#1 ASC]",
+		wantSort: "InMemorySort([_current.E#1 ASC]",
 	}, {
 		// THE CONTROL, and it is what makes the four above mean something. The
 		// termination is at the FLOAT, not at the table: the integer prefix

@@ -54,6 +54,14 @@ type OrdinalLayout interface {
 	// carrier. The returned slice is an immutable-view copy; each QOV remains
 	// values-owned and can be passed back to exact binding APIs.
 	WindowSources() []QuantifiedObjectValue
+	// NullSupplyingWindowSources returns, IN WINDOW ORDER, the sources whose
+	// match state a binder requires and cannot infer. It exists so a component
+	// that must CARRY that state across a boundary — a continuation, a spill —
+	// can enumerate exactly the sources it has to carry, in an order both sides
+	// agree on without naming anything. Row contents cannot substitute: a
+	// matched row of all-NULL columns and an unmatched row are identical in the
+	// slots and different in meaning.
+	NullSupplyingWindowSources() []QuantifiedObjectValue
 	RawEqual(OrdinalLayout) bool
 	EqualUnderAliases(OrdinalLayout, AliasMap) bool
 	AliasFreeHash() uint64
@@ -110,6 +118,19 @@ func (l *ordinalLayout) WindowSources() []QuantifiedObjectValue {
 	return result
 }
 
+func (l *ordinalLayout) NullSupplyingWindowSources() []QuantifiedObjectValue {
+	if l == nil || len(l.windows) == 0 {
+		return nil
+	}
+	var result []QuantifiedObjectValue
+	for i := range l.windows {
+		if l.windows[i].nullSupplying {
+			result = append(result, l.windows[i].source)
+		}
+	}
+	return result
+}
+
 func (l *ordinalLayout) AliasFreeHash() uint64 {
 	if l == nil {
 		return 0
@@ -142,6 +163,22 @@ func NewOrdinalLayout(
 	if err != nil {
 		return nil, err
 	}
+	// The layout knows where every source's columns sit; the carrier — the value
+	// everything downstream RE-MINTS from — did not say so. Express the
+	// boundaries on the carrier so they survive that re-mint.
+	//
+	// NewQuantifiedObjectValue snapshots its source layout from the type it is
+	// handed, and building one QOV from another's FlowedType is the normal way
+	// rows are carried across a plan. Without boundaries here, the merged row
+	// arrives downstream having forgotten them — and a forgotten boundary does
+	// not read as "no legs", it reads as ONE run spanning the whole concat keyed
+	// by the box's correlation (its rightmost leaf, per sourceBinding). A
+	// qualified read then resolves at runOffset+ordinal, inside the FIRST leg.
+	// Measured on `FOA FULL OUTER FOB`: `FOB.K` read FOA's K.
+	//
+	// Identity is untouched: legs are not recorded by SnapshotExactType and not
+	// compared by RecordType.Equals, so this adds physical information only.
+	exactCarrier = carrierWithWindowLegs(exactCarrier, exactWindows)
 	layout := &ordinalLayout{
 		carrier:     exactCarrier,
 		carrierKind: OrdinalCarrierRecord,
@@ -400,7 +437,9 @@ func validateOrdinalWindows(
 			return nil, nil, resolutionError(CorrelationTypeConflict, path+".source", "one correlation has conflicting source types")
 		}
 		if spec.NullSupplying && !source.flowed.nullable {
-			return nil, nil, resolutionError(LayoutNullabilityMismatch, path+".source", "null-supplying source must be nullable")
+			return nil, nil, resolutionError(LayoutNullabilityMismatch, path+".source",
+				"null-supplying source "+source.correlation.Name()+" must be nullable, but flows "+
+					describeExactType(source.flowed))
 		}
 
 		objectMode := spec.ObjectPath != nil

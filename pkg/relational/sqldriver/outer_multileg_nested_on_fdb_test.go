@@ -122,12 +122,37 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 	// EXPLAIN assertions, in two flavours, because the two claims are different.
 	//
 	// planIs is EXACT and it is the NO-REGRESSION half: A/B/C/E answered
-	// correctly before the gate widened, so their plans must be byte-identical
-	// after — rows alone cannot say that, since a shape can keep its rows while
-	// silently acquiring a worse plan. All four were measured on both sides of
-	// the edit-1 mutation and are unchanged. Exact match rather than a substring
-	// is deliberate: the whole claim is "nothing moved", so any movement at all
-	// should fire, and the brittleness IS the instrument.
+	// correctly before the gate widened, so their plans must not silently acquire
+	// a worse shape — rows alone cannot say that. Exact match rather than a
+	// substring is deliberate: the claim is "nothing moved", so any movement at
+	// all should fire, and the brittleness IS the instrument.
+	//
+	// THE STRINGS BELOW WERE RESTATED WHEN THE ORDINAL MODEL LANDED, and the two
+	// kinds of movement are separated here rather than blessed together:
+	//
+	//   - A, B, E moved ONLY in the projection's rendered root, `L.ID#0` to
+	//     `_current.ID#0`. The operator tree is byte-identical. A projection over
+	//     a physical carrier addresses the merged row by ORDINAL, and the root it
+	//     renders is that carrier — the same convention every other plan pin in
+	//     this suite reads (`Project([_current.ID#4], …)` in the multiway-join
+	//     probe, `Project([_current.ID#0], IndexScan(C_VW, …))` in the composite
+	//     zero-widen pin). The instrument fired on a display convention, which is
+	//     what an exact-match pin is supposed to do; the answer is to restate it,
+	//     not to loosen it.
+	//
+	//   - C ALSO EXCHANGED ITS TWO INNER-JOIN OPERANDS, and that is a real plan
+	//     movement, recorded as one. Same operator, same residual predicate, same
+	//     two legs — the l⋈m FlatMap and the full scan of r — with outer and
+	//     inner swapped. Both orientations are N² nested loops over the same legs,
+	//     so the cost model rates them EQUAL, and an equal pair is resolved by
+	//     memo member ORDER (findBestValidPhysicalExpr keeps the first member on a
+	//     tie). Member order moved with the ordinal model. That same shift is what
+	//     put an unbounded scan ahead of an equality-bound index probe in the
+	//     IN-join rule's partition, where it was NOT harmless — so a tie flipping
+	//     is worth writing down even when the two sides are equivalent.
+	//
+	// The row assertions below did not move for any of the four, which is what
+	// says the nested descent still works.
 	//
 	// planHas / planLacks are substrings, for the one arm whose plan is SUPPOSED
 	// to move (I) and its control (D). The standing plan-shape golden cannot
@@ -145,19 +170,19 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 			name:   "A_two-way-inner-nested",
 			query:  "SELECT l.id FROM nt AS l JOIN nt AS r ON l.n.sk = r.n.sk ORDER BY l.id",
 			want:   []string{"1", "1", "2", "2", "3"},
-			planIs: "Project([L.ID#0], FlatMap(outer=Scan(NT), inner=PredicatesFilter(Scan(NT), [1 preds])))",
+			planIs: "Project([_current.ID#0], FlatMap(outer=Scan(NT), inner=PredicatesFilter(Scan(NT), [1 preds])))",
 		},
 		{
 			name:   "B_two-way-outer-nested",
 			query:  "SELECT l.id FROM nt AS l LEFT JOIN nt AS r ON l.n.sk = r.n.sk ORDER BY l.id",
 			want:   []string{"1", "1", "2", "2", "3"},
-			planIs: "Project([L.ID#0], FlatMap(outer=Scan(NT), inner=DefaultOnEmpty(PredicatesFilter(Scan(NT), [1 preds]))))",
+			planIs: "Project([_current.ID#0], FlatMap(outer=Scan(NT), inner=DefaultOnEmpty(PredicatesFilter(Scan(NT), [1 preds]))))",
 		},
 		{
 			name:   "C_three-way-inner-nested",
 			query:  "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id JOIN nt AS r ON m.n.sk = r.n.sk ORDER BY l.id",
 			want:   []string{"1", "1", "2", "2", "3"},
-			planIs: "Project([L.ID#0], InMemorySort([L.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], FlatMap(outer=Scan(NT), inner=Scan(NT, [=])), Scan(NT))))",
+			planIs: "Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], Scan(NT), FlatMap(outer=Scan(NT), inner=Scan(NT, [=])))))",
 		},
 		{
 			// The flat twin of F. Same three legs, same outer third leg, ONE
@@ -181,7 +206,7 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 			name:   "E_three-way-outer-nested-preserved-only",
 			query:  "SELECT l.id FROM nt AS l JOIN nt AS m ON l.id = m.id LEFT JOIN nt AS r ON m.sk = r.n.sk ORDER BY l.id",
 			want:   []string{"1", "2", "3"},
-			planIs: "Project([L.ID#0], InMemorySort([L.ID#0 ASC], NestedLoopJoin(LEFT OUTER, [1 preds], FlatMap(outer=Scan(NT), inner=Scan(NT, [=])), Scan(NT))))",
+			planIs: "Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(LEFT OUTER, [1 preds], FlatMap(outer=Scan(NT), inner=Scan(NT, [=])), Scan(NT))))",
 		},
 
 		// ---- F–H: the three arms that failed loud. m.n.sk is 1,1,2 over

@@ -314,14 +314,16 @@ func TestFDB_NestedProjectionColumnNameIsThePath(t *testing.T) {
 					"divergence here means the qualified spelling built its own read.",
 					tc.qualified, qPlan, tc.bare, bPlan)
 			}
-			// The INTERNAL slot name, asserted rather than described: it is
-			// qualified by the quantifier under a multi-source FROM, which is what
-			// distinguishes this arm from the single-source shape.
-			if !strings.Contains(qPlan, "T1.N#2.SK#0") {
-				t.Errorf("%s\n  EXPLAIN = %s\n  want the qualified nested slot T1.N#2.SK#0 "+
-					"(N is t1's third declared column, SK the struct's first member). "+
-					"With >=2 FROM sources the resolver emits every reference through its "+
-					"quantifier; a bare N#1.SK#0 here means the correlation was dropped.",
+			// The INTERNAL slot, asserted rather than described. Under a
+			// multi-source FROM the read addresses the MERGED row, and the
+			// ordinals are what say which source's column it is: the merged row
+			// is [T1.ID, T1.SK, T1.N, T2.ID2, T2.V], so t1's struct root is #2
+			// and SK is that struct's member #0. A different leading ordinal
+			// here is a read of a different source's slot.
+			if !strings.Contains(qPlan, "_current.N#2.SK#0") {
+				t.Errorf("%s\n  EXPLAIN = %s\n  want the merged-row nested slot "+
+					"_current.N#2.SK#0 (N is t1's third declared column and lands at "+
+					"merged ordinal 2, SK the struct's first member).",
 					tc.qualified, qPlan)
 			}
 		}

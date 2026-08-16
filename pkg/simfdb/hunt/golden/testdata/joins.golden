@@ -4,7 +4,7 @@
 #   CREATE INDEX ord_cid ON ord(cid)
 
 === SELECT c.cid, o.oid, o.amt FROM cust c JOIN ord o ON c.cid = o.cid ORDER BY c.cid, o.oid
-PLAN: Project([_current.CID#0, _current.OID#2, _current.AMT#4], InMemorySort([C.CID#0 ASC, O.OID#0 ASC], FlatMap(outer=Scan(CUST), inner=IndexScan(ORD_CID, [=]))))
+PLAN: Project([_current.CID#0, _current.OID#2, _current.AMT#4], InMemorySort([_current.CID#0 ASC, _current.OID#2 ASC], FlatMap(outer=Scan(CUST), inner=IndexScan(ORD_CID, [=]))))
 ROWS(4) cols=[CID, OID, AMT]:
   [1, 100, 50]
   [1, 101, 70]
@@ -12,7 +12,7 @@ ROWS(4) cols=[CID, OID, AMT]:
   [3, 103, 90]
 
 === SELECT c.region, SUM(o.amt) FROM cust c JOIN ord o ON c.cid = o.cid GROUP BY c.region ORDER BY c.region
-PLAN: Project([_current.REGION#0, _current.SUM(O.AMT)#1], StreamingAgg(keys=[_current.REGION#1], InMemorySort([C.REGION#1 ASC], FlatMap(outer=Scan(ORD), inner=Scan(CUST, [=])))))
+PLAN: Project([_current.REGION#0, _current.SUM(O.AMT)#1], StreamingAgg(keys=[_current.REGION#1], InMemorySort([_current.REGION#1 ASC], FlatMap(outer=Scan(ORD), inner=Scan(CUST, [=])))))
 ROWS(2) cols=[REGION, SUM(O.AMT)]:
   [10, 210]
   [20, 30]

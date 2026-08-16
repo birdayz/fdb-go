@@ -110,7 +110,7 @@ func newEdgeObjectBinder(
 			}
 		}
 		if previous, exists := binder.bindings[exact.Correlation()]; exists {
-			if !previous.qov.FlowedType().Equals(flowed) {
+			if !values.QuantifiedRowShapesAgree(previous.qov.FlowedType(), flowed) {
 				return nil, layoutBindingError(values.CorrelationTypeConflict, fmt.Sprintf("edge %d reuses one correlation with another exact type", edgeIndex))
 			}
 			continue
@@ -133,8 +133,11 @@ func (b *edgeObjectBinder) IsExplicitNullQuantifiedBinding(view values.Quantifie
 		return false, layoutBindingError(values.CorrelationForeignValue, "edge null-presence lookup QOV is not exact")
 	}
 	if binding, exists := b.bindings[exact.Correlation()]; exists {
-		if !binding.qov.FlowedType().Equals(exact.FlowedType()) {
-			return false, layoutBindingError(values.CorrelationTypeConflict, "edge null-presence lookup type disagrees with declared binding")
+		if !values.QuantifiedRowShapesAgree(binding.qov.FlowedType(), exact.FlowedType()) {
+			return false, layoutBindingError(values.CorrelationTypeConflict,
+				fmt.Sprintf("edge null-presence lookup %s: read as %s, declared %s",
+					exact.Correlation().Name(), values.DescribeType(exact.FlowedType()),
+					values.DescribeType(binding.qov.FlowedType())))
 		}
 		return binding.explicitAbsent, nil
 	}
@@ -150,8 +153,11 @@ func (b *edgeObjectBinder) GetQuantifiedBinding(view values.QuantifiedObjectValu
 		return nil, false, layoutBindingError(values.CorrelationForeignValue, "edge lookup QOV is not exact")
 	}
 	if binding, exists := b.bindings[exact.Correlation()]; exists {
-		if !binding.qov.FlowedType().Equals(exact.FlowedType()) {
-			return nil, false, layoutBindingError(values.CorrelationTypeConflict, "edge lookup type disagrees with declared binding")
+		if !values.QuantifiedRowShapesAgree(binding.qov.FlowedType(), exact.FlowedType()) {
+			return nil, false, layoutBindingError(values.CorrelationTypeConflict,
+				fmt.Sprintf("edge lookup %s: read as %s, declared %s",
+					exact.Correlation().Name(), values.DescribeType(exact.FlowedType()),
+					values.DescribeType(binding.qov.FlowedType())))
 		}
 		return binding.value, true, nil
 	}

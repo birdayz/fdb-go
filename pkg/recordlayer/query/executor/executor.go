@@ -4578,7 +4578,7 @@ func executeTempTableScan(
 		return nil, fmt.Errorf("executor: temp-table scan provided output layout: %w", err)
 	}
 	if layout.CarrierKind() == values.OrdinalCarrierRecord {
-		expected, ok := layout.Carrier().FlowedType().(*values.RecordType)
+		expected, ok := values.PhysicalCarrierType(layout).(*values.RecordType)
 		if !ok || expected == nil {
 			return nil, layoutBindingError(values.LayoutTypeMismatch,
 				"temp-table scan record layout has no exact record carrier")
@@ -5683,7 +5683,7 @@ func executeInMemorySort(
 	if inputLayout == nil || inputLayout.CarrierKind() != values.OrdinalCarrierRecord {
 		return nil, layoutBindingError(values.LayoutCarrierMismatch, "in-memory sort requires a concrete record input layout")
 	}
-	if !inputLayout.Carrier().FlowedType().Equals(expectedLayout.Carrier().FlowedType()) {
+	if !values.PhysicalCarrierType(inputLayout).Equals(values.PhysicalCarrierType(expectedLayout)) {
 		return nil, layoutBindingError(values.LayoutTypeMismatch, "in-memory sort input and output carrier types disagree")
 	}
 	var innerContinuation []byte

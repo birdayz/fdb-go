@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -339,6 +340,12 @@ func TestStarMetadataTwinLayoutTypesTheUnnestedLeg(t *testing.T) {
 // RC names, dropping the alias-qualified duplicate-name keys
 // (`TA.K`/`TB.K`/`TC.K`) by-name reads rely on. The arm must ALSO require
 // the gathered-unnest signature (an Explode-bearing FlatMap leg).
+//
+// The 4-way sibling below is the same question at one more level of grouping,
+// where the legs genuinely INTERLEAVE and no leg-block ordering can express the
+// answer. Both are here because the grouping is an arbitrary cost tie: three
+// equal-cost scans plan `TA ⋈ (TB ⋈ TC)` or `TB ⋈ (TA ⋈ TC)` on a coin flip, so
+// a derivation that reads the physical order is right only by luck.
 func TestStarMetadataPlainThreeWayKeepsQualifiedNames(t *testing.T) {
 	t.Parallel()
 	b := metadata.NewSchemaTemplateBuilder().SetName("w5star3way")
@@ -371,5 +378,98 @@ func TestStarMetadataPlainThreeWayKeepsQualifiedNames(t *testing.T) {
 	}
 	if qualifiedK < 2 {
 		t.Fatalf("only %d alias-qualified K columns in %+v — the ordinal-top arm misfired on a plain 3-way join (positional-merge leg without any unnest) and dropped the qualified duplicate-name keys", qualifiedK, defs)
+	}
+	// The full SEQUENCE, not just a count of survivors. Counting qualified
+	// columns cannot see the failure this shape actually produces: the three
+	// legs cost the same, so which grouping wins (`TA ⋈ (TB ⋈ TC)` vs
+	// `TB ⋈ (TA ⋈ TC)`) is an arbitrary tie, and a derivation that reads the
+	// PHYSICAL leg order emits every qualified name — in the planner's order
+	// rather than the query's. The count stays at 3 through that, so the
+	// sequence is the axis that discriminates.
+	names := make([]string, 0, len(defs))
+	for _, d := range defs {
+		names = append(names, strings.ToUpper(d.Name))
+	}
+	want := []string{"TA.TAID", "TA.K", "TB.TBID", "TB.K", "TC.TCID", "TC.K"}
+	if fmt.Sprintf("%v", names) != fmt.Sprintf("%v", want) {
+		t.Fatalf("column sequence = %v, want %v (FROM order) — the metadata followed the "+
+			"physical join grouping instead of the query's own column order.\nplan: %s",
+			names, want, plan.Explain())
+	}
+	// The user-visible LABELS stay bare, which is what
+	// RecordLayerResultSet.positionalAligned compares each slot against; the
+	// qualifier lives only in the datum key. Re-sequencing must not smuggle a
+	// qualifier into the label.
+	labels := make([]string, 0, len(defs))
+	for _, d := range defs {
+		labels = append(labels, strings.ToUpper(d.Label))
+	}
+	wantLabels := []string{"TAID", "K", "TBID", "K", "TCID", "K"}
+	if fmt.Sprintf("%v", labels) != fmt.Sprintf("%v", wantLabels) {
+		t.Fatalf("column labels = %v, want %v (bare, Java's star layout)", labels, wantLabels)
+	}
+}
+
+// TestStarMetadataFourWayInterleavedLegsKeepFromOrder is the 3-way pin's harder
+// sibling: a FOUR-way star with a repeated table plans as a join OF joins
+// (`(TA ⋈ TC) ⋈ (TA ⋈ TB)`), so the query's column order interleaves the two
+// sub-products and no ordering of leg BLOCKS can produce it. The plan's emitted
+// row is in FROM order; metadata that followed the physical grouping instead
+// would describe a different row than the one served, and the positional read
+// refuses that outright rather than serving shifted values — so this shape fails
+// LOUD at runtime, which is why the derivation has to state the permutation.
+func TestStarMetadataFourWayInterleavedLegsKeepFromOrder(t *testing.T) {
+	t.Parallel()
+	b := metadata.NewSchemaTemplateBuilder().SetName("w5star4way")
+	for _, tbl := range []string{"TA", "TB", "TC"} {
+		b.AddTable(tbl, []metadata.ColumnSpec{
+			metadata.NewColumnSpec(tbl+"ID", api.NewLongType(false), 1),
+			metadata.NewColumnSpec("K", api.NewLongType(true), 2),
+		}, []string{tbl + "ID"})
+	}
+	tmpl, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := tmpl.Underlying()
+	plan, perr := embedded.PlanRecordQueryWithMetadata(`SELECT * FROM TA, TB, TC, TA`, md, nil)
+	if perr != nil {
+		t.Fatalf("plan: %v", perr)
+	}
+	defs := embedded.ResultColumnDefsForPlan(plan, md)
+	labels := make([]string, 0, len(defs))
+	for _, d := range defs {
+		labels = append(labels, strings.ToUpper(d.Label))
+	}
+	want := []string{"TAID", "K", "TBID", "K", "TCID", "K", "TAID", "K"}
+	if fmt.Sprintf("%v", labels) != fmt.Sprintf("%v", want) {
+		t.Fatalf("column labels = %v, want %v (FROM order)\nplan: %s", labels, want, plan.Explain())
+	}
+	// The metadata must describe the row the plan actually emits, which is the
+	// property the runtime read enforces. Comparing the two here is what makes
+	// the label list above more than a preference.
+	row, isRow := plan.GetResultType().(*values.RecordType)
+	if !isRow {
+		t.Fatalf("plan result type = %s, want a record row", plan.GetResultType())
+	}
+	emitted := make([]string, 0, len(row.Fields))
+	for _, f := range row.Fields {
+		emitted = append(emitted, strings.ToUpper(f.Name))
+	}
+	if fmt.Sprintf("%v", emitted) != fmt.Sprintf("%v", labels) {
+		t.Fatalf("metadata labels %v describe a different row than the plan emits %v — "+
+			"every read of this result set goes loud", labels, emitted)
+	}
+	// Duplicate labels are legal and expected here (TA appears twice); the
+	// qualified datum keys are what keep the two apart.
+	qualified := 0
+	for _, d := range defs {
+		if strings.Contains(strings.ToUpper(d.Name), ".") {
+			qualified++
+		}
+	}
+	if qualified != len(defs) {
+		t.Fatalf("only %d of %d columns carry an alias-qualified datum key: %+v",
+			qualified, len(defs), defs)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -494,5 +495,122 @@ func TestImplementInJoinRule_WithIndexScanInner(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("should yield *RecordQueryInJoinPlan with index scan inner")
+	}
+}
+
+// A MIXED PARTITION MUST NOT ANSWER THE `sorted` QUESTION, and this is the
+// InJoin twin of the IN-union rule's separation test — the same defect, on the
+// rule next door, found the same way.
+//
+// The raw partition key carries only the REDUCED Ordering. An equality-bound
+// index access and a residual filter over a full scan therefore collide in it:
+// the index's bound prefix is dropped from the plain key sequence, leaving the
+// primary-key suffix, which is exactly what the scan advertises. Their RICH
+// orderings differ materially — A fixed to the IN binding versus A absent — and
+// the rich binding is the ONLY thing that makes an explode alias a SORTED
+// in-source.
+//
+// So reading the first member's rich ordering out of a mixed partition answers
+// with whichever member the memo happened to list first. That is not merely a
+// lost optimization in the unlucky direction: the InJoin's inner edge is the
+// whole group, so a `sorted` claim derived from the bound member can be
+// extracted over the unbounded one — a plan that promises an order it does not
+// execute.
+//
+// The fixture below is deliberately built so the FIRST member is the one
+// WITHOUT the fixed binding. Without the roll-up the rule reads that member,
+// finds no fixed binding correlated to the explode alias, and emits an
+// unsorted InJoin — which is exactly the shape that shipped.
+func TestImplementInJoinRule_SortedClaimComesFromAHomogeneousPartition(t *testing.T) {
+	t.Parallel()
+
+	explodeAlias := values.UniqueCorrelationIdentifier()
+	equality := predicates.EmptyComparisonRange().Merge(&predicates.Comparison{
+		Type:    predicates.ComparisonEquals,
+		Operand: inRuleQOV(explodeAlias, values.NotNullLong),
+	})
+	if !equality.Ok || equality.Range == nil {
+		t.Fatal("fixture: construct the exact IN-binding equality range")
+	}
+	index := func(ranges []*predicates.ComparisonRange) *plans.RecordQueryIndexPlan {
+		return mustInRuleConstruct(plans.NewRecordQueryIndexPlan(
+			"IDX_A", ranges, []string{"T"}, inRuleRowType(), false)).
+			WithKeyComponentTypes([]values.Type{values.NotNullLong}).
+			WithIndexMetadata([]string{"a"}, nil, false)
+	}
+	unbound := index(nil)
+	bound := index([]*predicates.ComparisonRange{equality.Range})
+
+	unboundProps := computeWrapperProperties(unbound)
+	boundProps := computeWrapperProperties(bound)
+	unboundRich := unboundProps[properties.PropRichOrdering].(*properties.RichOrdering)
+	boundRich := boundProps[properties.PropRichOrdering].(*properties.RichOrdering)
+	unboundBindings, unboundOK := bindingsForStructuralKey(unboundRich, unboundRich.GetKeys()[0])
+	boundBindings, boundOK := bindingsForStructuralKey(boundRich, boundRich.GetKeys()[0])
+	if !unboundOK || !boundOK ||
+		properties.AreAllBindingsFixed(unboundBindings) ||
+		!properties.AreAllBindingsFixed(boundBindings) {
+		t.Fatal("fixture must differ exactly in directional-versus-FIXED rich binding for A — " +
+			"the fixed binding is the only thing that can make an explode alias sorted")
+	}
+
+	// Force the reduced-ordering collision explicitly rather than relying on the
+	// plain Ordering property continuing to drop the bound prefix. The rich
+	// values stay production-derived.
+	sharedPlain := properties.Ordering{IsKnown: true, Keys: unboundRich.GetKeys()}
+	unboundProps[properties.PropOrdering] = sharedPlain
+	boundProps[properties.PropOrdering] = sharedPlain
+
+	// UNBOUND FIRST: the member the rule would read without the roll-up.
+	innerRef := expressions.InitialOf(unbound)
+	innerRef.Insert(bound)
+	pm := NewPlanPropertiesMap()
+	pm.Set(unbound, unboundProps)
+	pm.Set(bound, boundProps)
+	innerRef.SetPlanProperties(pm)
+
+	if raw := ToPlanPartitions(innerRef); len(raw) != 1 {
+		t.Fatalf("fixture raw partitions = %d, want ONE reduced-ordering collision — "+
+			"with the two members already separated there is nothing to read wrongly", len(raw))
+	}
+	if rich := RollUpPlanPartitions(ToPlanPartitions(innerRef), properties.PropRichOrdering); len(rich) != 2 {
+		t.Fatalf("rich-ordering roll-up = %d partition(s), want 2 (fixed and directional)", len(rich))
+	}
+
+	innerQ := expressions.ForEachQuantifier(innerRef)
+	explodeQ := expressions.NamedForEachQuantifier(
+		explodeAlias,
+		expressions.InitialOf(inRuleExplode(
+			inRuleArray(values.NotNullLong, int64(3), int64(1), int64(2)))),
+	)
+	sel := inRuleSelect(
+		inRuleFlowedObject(innerQ),
+		[]expressions.Quantifier{explodeQ, innerQ},
+		nil,
+	)
+
+	results := mustInRuleFire(t, NewImplementInJoinRule(), expressions.InitialOf(sel))
+	sawInJoin, sawSorted := false, false
+	for _, r := range results {
+		inJoin, ok := r.(*plans.RecordQueryInJoinPlan)
+		if !ok {
+			continue
+		}
+		sawInJoin = true
+		if inJoin.IsSorted() {
+			sawSorted = true
+		}
+	}
+	if !sawInJoin {
+		t.Fatal("the rule yielded no InJoin at all, so nothing below is being tested")
+	}
+	if !sawSorted {
+		t.Fatal("no yielded InJoin claims a SORTED in-source.\n" +
+			"  The fixed-bound member is in the group and its binding is correlated to\n" +
+			"  the explode alias, so the fixed partition must produce a sorted InJoin.\n" +
+			"  Reading the first member's rich ordering out of the mixed partition\n" +
+			"  finds the DIRECTIONAL member instead, and the sorted alternative is\n" +
+			"  never enumerated — the InJoin then iterates the IN-list in SQL text\n" +
+			"  order while the index it probes is ordered.")
 	}
 }

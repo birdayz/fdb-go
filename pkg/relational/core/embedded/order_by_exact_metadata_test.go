@@ -327,13 +327,56 @@ func TestExactCTEProjection_QualifiedDirectJoinLegUsesBuiltResultType(t *testing
 	}
 }
 
-func TestOrderByExactMetadata_UnderivableCTEComputedKeyStaysLoud(t *testing.T) {
+// underivableCTE is a CTE body that BUILDS but cannot be PUBLISHED: its row
+// carries the name `dup` twice, which is ambiguous by construction, so
+// complete-schema-or-decline withholds the whole source — including the
+// unambiguous column `a` a reference actually reads.
+//
+// The specimen used to be a nested-WITH comma-join body, which was underivable
+// only because a join-bodied CTE's schema was guessed from its FROM legs by
+// name. That guess is retired (the row now comes from the built body), so the
+// shape publishes and resolves — a duplicate output name is what is left that
+// genuinely cannot be advertised.
+const underivableCTE = `WITH c2 AS (
+		SELECT x.v AS dup, y.v AS dup, x.id AS a FROM t AS x, t AS y WHERE x.id = y.id
+	) `
+
+// TestOrderByExactMetadata_ComputedKeyOverDerivableCTEResolves is the other
+// half of the pair below, and the half that MOVED. A computed ORDER BY key is
+// not inherently unresolvable — it is unresolvable when its SOURCE row is not
+// known. The nested-WITH comma-join specimen used to be exactly that, and now
+// publishes its built row, so `a + 1` over it computes a real Value.
+//
+// Without this arm, the retirement is only pinned from the "still declines"
+// side, and a regression that stopped resolving computed keys altogether would
+// keep every StaysLoud pin green.
+func TestOrderByExactMetadata_ComputedKeyOverDerivableCTEResolves(t *testing.T) {
 	t.Parallel()
 	_, md := newLoggingGenerator(t, orderByExactMetadataDDL, &captureLogger{})
 	op, err := NewPlanVisitor(md).VisitQuery(parseQuery(t, `WITH c2(a) AS (
 		WITH t AS (SELECT x.v AS id FROM t AS x, t AS y WHERE x.id = y.id)
 		SELECT id FROM t WHERE id <= 2
 	) SELECT a FROM c2 ORDER BY a + 1`))
+	if err != nil {
+		t.Fatalf("VisitQuery: %v", err)
+	}
+	for _, sort := range logicalSorts(op) {
+		if len(sort.Keys) == 1 && sort.Keys[0].Expr == "a + 1" {
+			if sort.Keys[0].Value == nil {
+				t.Fatal("computed key over a derivable CTE has no resolved Value; " +
+					"the body's built row is what makes it computable")
+			}
+			return
+		}
+	}
+	t.Fatal("computed ORDER BY key not found")
+}
+
+func TestOrderByExactMetadata_UnderivableCTEComputedKeyStaysLoud(t *testing.T) {
+	t.Parallel()
+	_, md := newLoggingGenerator(t, orderByExactMetadataDDL, &captureLogger{})
+	op, err := NewPlanVisitor(md).VisitQuery(parseQuery(t,
+		underivableCTE+`SELECT a FROM c2 ORDER BY a + 1`))
 	if err != nil {
 		t.Fatalf("VisitQuery: %v", err)
 	}
@@ -351,10 +394,8 @@ func TestOrderByExactMetadata_UnderivableCTEComputedKeyStaysLoud(t *testing.T) {
 func TestOrderByExactMetadata_UnderivableCTEComputedProjectionStaysLoud(t *testing.T) {
 	t.Parallel()
 	_, md := newLoggingGenerator(t, orderByExactMetadataDDL, &captureLogger{})
-	op, err := NewPlanVisitor(md).VisitQuery(parseQuery(t, `WITH c2(a) AS (
-		WITH t AS (SELECT x.v AS id FROM t AS x, t AS y WHERE x.id = y.id)
-		SELECT id FROM t WHERE id <= 2
-	) SELECT a + 1 AS b FROM c2 ORDER BY a`))
+	op, err := NewPlanVisitor(md).VisitQuery(parseQuery(t,
+		underivableCTE+`SELECT a + 1 AS b FROM c2 ORDER BY a`))
 	if err != nil {
 		t.Fatalf("VisitQuery: %v", err)
 	}

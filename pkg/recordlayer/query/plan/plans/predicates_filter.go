@@ -123,7 +123,7 @@ func translateOrdinalityBindingNames(
 		predicate,
 		func(value values.Value) (values.Value, error) {
 			return values.TranslateProjectionInputNameNormalizationToCorrelation(
-				value, bindingAlias, layout.Carrier().FlowedType())
+				value, bindingAlias, values.PhysicalCarrierType(layout))
 		},
 	)
 }

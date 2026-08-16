@@ -510,32 +510,54 @@ func (t *cascadesTranslator) gatedJoinLegTypes(j *logical.LogicalJoin) map[strin
 	legs := t.legsOfGatedJoin(j)
 	legTypes := make(map[string]bakeLegType, len(legs))
 	for _, leg := range legs {
-		if leg.binding == "" {
-			continue
-		}
-		typ := t.ordinalLegType(leg.op)
-		if typ == nil {
-			continue
-		}
-		leafOffset, leafTyp := t.legBakeWindow(leg.op)
-		if leafTyp == nil {
+		entry, ok := t.legBakeEntry(leg)
+		if !ok {
 			continue
 		}
 		// Keyed by the BINDING correlation name (== UPPER alias for every
 		// non-duplicate leg; the parser-minted id for a later duplicate —
 		// using the alias directly here would let two duplicate legs collide
 		// on the same map key).
-		legTypes[leg.binding] = bakeLegType{typ: typ, leafOffset: leafOffset, leafTyp: leafTyp}
+		legTypes[leg.binding] = entry
 		// A CLUSTERED box leg buries sources whose references bake onto the
 		// BOX quantifier at each buried leaf's offset within the concat —
 		// the same registration the seed's own legTypes get in
 		// ordinalJoinSeedFields. Without it a WHERE conjunct naming a
 		// buried source stays lazy at the box select and grandchild-binds.
 		if bj, isJoin := leg.op.(*logical.LogicalJoin); isJoin {
-			t.addBuriedBakeWindows(bj, leg.binding, typ, 0, legTypes)
+			t.addBuriedBakeWindows(bj, leg.binding, entry.typ, 0, legTypes)
 		}
 	}
 	return legTypes
+}
+
+// legBakeEntry is the ONE derivation of a leg's predicate-bake entry, shared by
+// the seed builder and by gatedJoinLegTypes, which used to derive it separately.
+//
+// The type here is the leg's OWN row, NOT null-extended, even when the leg is
+// null-supplying. That is deliberate and it is the half of the outer-join
+// nullability story that is easy to get backwards: a baked predicate is
+// evaluated INSIDE the join's loop, against a row of that leg that is present by
+// construction, and it binds through the executor's edge channel, which declares
+// the child plan's own (non-nullable) row. The null-extension belongs to the
+// join's OUTPUT, where the seed's quantifier carries it — see the caller.
+//
+// ok=false when the leg has no binding or its columns are underivable; the
+// caller then omits the entry and its references stay lazy, which is sound by
+// the load-bearing lazy invariant.
+func (t *cascadesTranslator) legBakeEntry(leg clusterLeg) (bakeLegType, bool) {
+	if leg.binding == "" {
+		return bakeLegType{}, false
+	}
+	typ := t.ordinalLegType(leg.op)
+	if typ == nil {
+		return bakeLegType{}, false
+	}
+	leafOffset, leafTyp := t.legBakeWindow(leg.op)
+	if leafTyp == nil {
+		return bakeLegType{}, false
+	}
+	return bakeLegType{typ: typ, leafOffset: leafOffset, leafTyp: leafTyp}, true
 }
 
 // gatherInnerClusterPreds collects every nested inner join's ON predicate in
@@ -662,42 +684,38 @@ func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.
 	var fields []values.RecordConstructorField
 	legTypes := make(map[string]bakeLegType, len(legs))
 	for _, leg := range legs {
-		if leg.binding == "" {
+		entry, ok := t.legBakeEntry(leg)
+		if !ok {
 			return nil, nil
 		}
-		typ := t.ordinalLegType(leg.op)
-		if typ == nil {
-			return nil, nil
-		}
-		leafOffset, leafTyp := t.legBakeWindow(leg.op)
-		if leafTyp == nil {
-			return nil, nil
-		}
+		typ := entry.typ
 		// BINDING-keyed: == UPPER alias for every non-duplicate leg; the
 		// parser-minted id for later duplicates keeps the map and the QOV
-		// correlations collision-free.
-		legTypes[leg.binding] = bakeLegType{typ: typ, leafOffset: leafOffset, leafTyp: leafTyp}
+		// correlations collision-free. The BAKE type stays the leg's own row
+		// (see legBakeEntry); only the seed's own quantifier below carries the
+		// outer-join null-extension.
+		legTypes[leg.binding] = entry
 		// A CLUSTERED box leg buries sources whose references must bake onto
 		// the BOX's quantifier at each buried leg's offset within the box
 		// concat — Java's collapseLeftSideOperators + rewireQov-by-ordinal
 		// analog. Without these entries predicateLegAliases counts a
 		// cross-leg conjunct spanning a buried source (`c.a_id = a.id` over
 		// `(A⋈B) LEFT C`) as single-leg and leaves a grandchild-correlated
-		// lazy reference on the box select.
+		// lazy reference on the box select. Registered from the same
+		// not-null-extended row as the leg's own entry, for the same reason.
 		if bj, isJoin := leg.op.(*logical.LogicalJoin); isJoin {
 			t.addBuriedBakeWindows(bj, leg.binding, typ, 0, legTypes)
 		}
 		if leg.nullSupplying {
-			// The LEFT-outer null side: the QOV's RECORD TYPE goes nullable
+			// The outer-join null side: the QOV's RECORD TYPE goes nullable
 			// (Java's type.withNullability(true) at the pull-up; the verify
-			// keys on the QOV's result type). Column types stay their own;
-			// the record-level bit is what the executor's null-leg build and
-			// the metadata nullability read. WithNullability, NOT
-			// NewRecordType: a CLUSTERED null-supplying leg concatenates its
-			// buried legs' columns positionally and duplicate bare names
-			// legitimately survive (the same rule as ordinalLegType's own
-			// construction); the constructor's duplicate check is for
-			// name-addressed types.
+			// keys on the QOV's result type). Column types stay their own; the
+			// record-level bit is what the executor's null-leg build and the
+			// metadata nullability read. WithNullability, NOT NewRecordType: a
+			// CLUSTERED null-supplying leg concatenates its buried legs'
+			// columns positionally and duplicate bare names legitimately
+			// survive (the same rule as ordinalLegType's own construction); the
+			// constructor's duplicate check is for name-addressed types.
 			typ = values.WithNullability(typ, true).(*values.RecordType)
 		}
 		qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(leg.binding), typ)

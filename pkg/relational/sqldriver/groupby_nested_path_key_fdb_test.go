@@ -191,8 +191,8 @@ func TestFDB_GroupByNestedPathKey(t *testing.T) {
 			Scan(&plan); err != nil {
 			t.Fatalf("EXPLAIN: %v", err)
 		}
-		want := "Project([MAX(Q.S)#1], StreamingAgg(keys=[R#2.V#1.Z#1], " +
-			"InMemorySort([R#2.V#1.Z#1 ASC], Scan(NESTED))))"
+		want := "Project([_current.MAX(Q.S)#1], StreamingAgg(keys=[_current.R#2.V#1.Z#1], " +
+			"InMemorySort([_current.R#2.V#1.Z#1 ASC], Scan(NESTED))))"
 		if plan != want {
 			t.Fatalf("plan shape moved.\n  got:  %s\n  want: %s\n"+
 				"  A SECOND sort above the aggregation means the ordering the "+

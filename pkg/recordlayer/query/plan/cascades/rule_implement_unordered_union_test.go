@@ -146,10 +146,55 @@ func TestImplementUnorderedUnionRule_NoYieldForSingleChildWithNoPhysicalPlans(t 
 	outerRef := expressions.InitialOf(union)
 
 	results := fireUnionImplementationRule(t, NewImplementUnorderedUnionRule(), outerRef)
-	// With no physical plans in the inner reference, ToPlanPartitions
-	// may return empty and the rule bails.
-	// This is fine — verify no panic.
-	_ = results
+	// The inner reference holds no physical plan, so ToPlanPartitions rolls up
+	// to nothing and the rule declines. Assert the DECLINE rather than merely
+	// surviving the call: a rule that yielded a union over an unimplemented leg
+	// would produce a plan tree with a logical node inside it.
+	for _, r := range results {
+		if uup, ok := r.(*plans.RecordQueryUnorderedUnionPlan); ok {
+			t.Fatalf("rule yielded %T over a leg with no physical plan", uup)
+		}
+	}
+}
+
+// TestImplementUnorderedUnionRule_SingleLegImplementsAsOneLegConcat pins the
+// ARITY of the rule against Java's: RecordQueryUnorderedUnionPlan.fromQuantifiers
+// imposes no minimum leg count, so a one-leg logical union implements.
+//
+// A Go-only two-leg floor used to live here, and it was invisible only because
+// UnionSingletonElimRule normally rewrites a singleton union away in REWRITING
+// — leaving ImplementUnionRule, since deleted, as the sole implementer of the
+// shape that survives when that rewrite does not fire. With the floor and that
+// rule both gone the union would have had NO implementer, and the planner
+// returned no plan AND no error.
+func TestImplementUnorderedUnionRule_SingleLegImplementsAsOneLegConcat(t *testing.T) {
+	t.Parallel()
+	scan := unionRulePlanScan("A")
+	ref := expressions.InitialOf(scan)
+	pm := NewPlanPropertiesMap()
+	pm.Add(scan)
+	ref.SetPlanProperties(pm)
+
+	union := mustUnionRuleConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+		expressions.ForEachQuantifier(ref),
+	}))
+	outerRef := expressions.InitialOf(union)
+
+	results := fireUnionImplementationRule(t, NewImplementUnorderedUnionRule(), outerRef)
+	found := 0
+	for _, r := range results {
+		uup, ok := r.(*plans.RecordQueryUnorderedUnionPlan)
+		if !ok {
+			continue
+		}
+		found++
+		if got := len(uup.GetInners()); got != 1 {
+			t.Fatalf("one-leg union implemented with %d inners, want 1", got)
+		}
+	}
+	if found != 1 {
+		t.Fatalf("one-leg logical union yielded %d unordered union plans, want 1", found)
+	}
 }
 
 // ---------------------------------------------------------------------------

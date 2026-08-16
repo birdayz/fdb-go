@@ -56,7 +56,9 @@ import (
 // So the suite's greenness on this shape is NOT evidence the bindings are
 // correct. It is evidence nothing consults them here, and that where something
 // does consult them, it has a second route to the same answer
-// (TestFDB_MergedLegBinding_ReaderShapeIsRedundant proves that directly). That
+// (proven directly by running the shape down both resolution routes; under the
+// ordinal model there is no second route to need, because there is no read —
+// TestFDB_MergedLegBinding_NothingReadsTheBinder pins that). That
 // distinction is the whole finding: a correct-looking mechanism whose
 // correctness no test can currently observe, sitting on a per-outer-row path.
 //

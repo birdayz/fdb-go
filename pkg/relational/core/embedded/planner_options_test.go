@@ -264,7 +264,16 @@ func TestPlannerOptions_DisablePlannerRewriting(t *testing.T) {
 
 		base := explainWithOptions(t, sql, indexedTableDDL, nil)
 		// See the note above: the inner index scan fetches its own records now.
-		const wantBase = "Project([_current.ID#0], FlatMap(outer=Scan(T), inner=DefaultOnEmpty(IndexScan(IDX_AB, [=, *]))))"
+		//
+		// IDX_A, not IDX_AB: the ON predicate binds `a` and nothing else, so the
+		// single-column index leaves NO unmatched index field while IDX_AB leaves
+		// one — which is the cost model's own unmatchedFieldCount rung, decided in
+		// IDX_A's favour. IDX_AB used to win only because the IDX_A candidate was
+		// refused at memo admission for carrying a differently-NAMED row, a
+		// rejection that went away when record names left exact-type identity.
+		// The fixture's point is the SHAPE (a rewritten outer join: FlatMap over a
+		// DefaultOnEmpty index probe), which is unchanged.
+		const wantBase = "Project([_current.ID#0], FlatMap(outer=Scan(T), inner=DefaultOnEmpty(IndexScan(IDX_A, [=]))))"
 		if base != wantBase {
 			t.Fatalf("default plan = %q, want %q — the fixture must start from the REWRITTEN "+
 				"outer join for the contrast to mean anything", base, wantBase)

@@ -203,6 +203,26 @@ func TestFDB_AggregateOutputTypeCrossesTheDerivedBoundary(t *testing.T) {
 		wantType: "INTEGER",
 		wantRows: "[8]",
 		why:      "the key's type is the SOURCE column's, not a uniform integer width.",
+	}, {
+		name:     "a COMPUTED aggregate ARGUMENT types through the boundary",
+		sql:      "SELECT G + 1 FROM (SELECT MIN(col2 + 1) AS G FROM t1) AS Y",
+		wantType: "BIGINT",
+		wantRows: "[3]",
+		why: "THE ARM THAT NEEDS THE BODY'S OWN SCOPE. Every arm above types its " +
+			"aggregate from one source COLUMN, which a manual output schema can " +
+			"read off the catalog; `MIN(col2 + 1)` types from an EXPRESSION, and " +
+			"nothing short of the body's exact result row can evaluate that. It " +
+			"was a measured negative here — INTEGER, the same demotion the arms " +
+			"above fix, one level deeper — until the derived-table scope started " +
+			"taking its types from the body it will actually translate.",
+	}, {
+		name:     "the inner read of that computed argument",
+		sql:      "SELECT G FROM (SELECT MIN(col2 + 1) AS G FROM t1) AS Y",
+		wantType: "BIGINT",
+		wantRows: "[2]",
+		why: "the half that says the type is derivable AT ALL. It reported BIGINT " +
+			"even while the arm above reported INTEGER, which is what localised " +
+			"the gap to the SCOPE derivation rather than to the type system.",
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -217,53 +237,4 @@ func TestFDB_AggregateOutputTypeCrossesTheDerivedBoundary(t *testing.T) {
 			}
 		})
 	}
-
-	// A COMPUTED AGGREGATE ARGUMENT IS STILL UNTYPED, and this is a MEASURED
-	// NEGATIVE pinned so nobody reads the arms above as covering it.
-	//
-	// `MIN(col2 + 1)` over a BIGINT column is LONG in Java — the argument
-	// expression types LONG and MIN_L returns LONG — so `G + 1` should be
-	// BIGINT. It is INTEGER: the SAME demotion the arms above fix, one level
-	// deeper. aggregateOutputColumn answers UNKNOWN whenever ac.aggExpr is set,
-	// because typing an arbitrary argument expression needs the body's semantic
-	// scope, and aggOutputCols runs before that scope exists — the same
-	// ordering wall buildDerivedTableSourceFromTerm names where it declines a
-	// computed projection outright.
-	//
-	// It is NOT a missing capability: the innermost projection already reports
-	// BIGINT for the same expression (asserted below), so the type is derivable
-	// at plan time; only the SCOPE-level derivation is absent. Closing it means
-	// building the aggregate body's scope before its output columns are typed,
-	// which is a change to when the scope is built and belongs to its own
-	// review.
-	//
-	// OWNER: CQ-102, which carries the ordering change and states why it did not
-	// ride along with the typing fix. A residual pin with no owner is an orphan —
-	// it records that something is wrong and hands the work to nobody.
-	//
-	// IF THIS SUBTEST GOES GREEN because the outer arithmetic starts reporting
-	// BIGINT, the deeper gap has been closed and this pin should become an
-	// ordinary arm of the table above.
-	t.Run("a computed aggregate argument is still untyped, and demotes", func(t *testing.T) {
-		t.Parallel()
-		innerType, innerRows := typeAndRows(t, "SELECT G FROM (SELECT MIN(col2 + 1) AS G FROM t1) AS Y")
-		if innerType != "BIGINT" || fmt.Sprint(innerRows) != "[2]" {
-			t.Errorf("the INNER read of a computed-argument aggregate = %q %v, want BIGINT [2]\n"+
-				"  This half is what says the type is derivable at all. If it moved, the "+
-				"claim that only the scope-level derivation is missing needs re-measuring.",
-				innerType, innerRows)
-		}
-		outerType, outerRows := typeAndRows(t, "SELECT G + 1 FROM (SELECT MIN(col2 + 1) AS G FROM t1) AS Y")
-		if fmt.Sprint(outerRows) != "[3]" {
-			t.Errorf("computed-argument aggregate + 1 = %v, want [3] — the VALUE must be "+
-				"right whatever the declared type says", outerRows)
-		}
-		if outerType != "INTEGER" {
-			t.Errorf("computed-argument aggregate + 1 now reports %q, not INTEGER.\n"+
-				"  If it reports BIGINT, the scope-level typing of a computed aggregate "+
-				"argument has landed — fold this shape into the table above as an "+
-				"ordinary arm and delete this pin. Any OTHER value is a third state and "+
-				"needs measuring before it is described.", outerType)
-		}
-	})
 }

@@ -49,28 +49,45 @@ import (
 // vacuity guard. A corpus reading exercises only the arms the corpus reaches, so
 // it is not a substitute for that.
 func assertUnresolvedResultTypeCensus(w io.Writer) bool {
-	// MinReads is floored an order of magnitude below the measurement (15,909
-	// classified reads originally; 15,074 and 15,589 on later whole-corpus runs).
+	// MinSites is an EXACT count, not a floor with headroom: each site is a
+	// distinct consumer RFC-213 is denominated against, and losing one is the
+	// event this arm exists for. It reads FOUR, and the fifth was RETIRED rather
+	// than lost — this is the reconciliation that retirement requires, not the
+	// floor being lowered to match a run.
 	//
-	// MinSites is an EXACT count, not a floor with headroom, because the whole
-	// corpus reports exactly five deciding sites and each one is a distinct
-	// consumer RFC-213 is denominated against — losing any of them is the event
-	// this arm exists for. The same run shows why a read floor cannot do this job:
-	// predicatesFilterIsFullPKPointProbe alone contributes 14,166 of the 15,589
-	// reads (91%), so the other four consumers could go silent together and
-	// MinReads would still be clear by an order of magnitude.
+	// The retired consumer is predicatesFilterIsFullPKPointProbe, and it was by
+	// far the hottest: 14,166 of 15,589 classified reads (91%). It no longer
+	// reads a plan RESULT TYPE at all. Its cardinality proof now goes through
+	// scan.ProvidedOutputLayout()/Carrier() — the scanned row's exact physical
+	// layout — because a result type could not tell this scan's own primary key
+	// from a correlated outer reference that happens to share a leaf name, and
+	// `ID` is the primary key of nearly every table in this corpus. That is a
+	// consumer converted off the unresolved-type channel, which is what RFC-213
+	// wanted, so its disappearance from this census is the conversion landing and
+	// not a site going dark.
 	//
-	// This is the run that first exercised both floors rather than merely
-	// supplying numbers for them — whole corpus, floors NOT withheld, 1487 tests
-	// passed. Note the four low-traffic sites are stable across runs while the hot
-	// one moves; the site count is the part that does not drift.
+	// MinReads moves WITH it. The floor sat an order of magnitude below a
+	// measurement the retired consumer supplied 91% of; leaving it at 1000
+	// against a 1564-read corpus would leave the collapse guard a factor of 1.6
+	// from the measurement, which fails on churn instead of on a defect. It is
+	// re-derived the same way it was originally: an order of magnitude below what
+	// the four remaining consumers actually report.
+	//
+	// The four remaining sites, whole corpus, floors NOT withheld:
 	//
 	//	bakedIntersectionKeys                 resolved 412    UNRESOLVED 0
-	//	distinctKeyColumns                    resolved 4      UNRESOLVED 31
-	//	planBuriedLegConcat                   resolved 252    UNRESOLVED 0
-	//	planRowRecordType                     resolved 620    UNRESOLVED 104
-	//	predicatesFilterIsFullPKPointProbe    resolved 14166  UNRESOLVED 0
-	floors := &cascades.UnresolvedResultTypeFloors{MinReads: 1000, MinSites: 5}
+	//	distinctKeyColumns                    resolved 70     UNRESOLVED 0
+	//	planBuriedLegConcat                   resolved 298    UNRESOLVED 0
+	//	planRowRecordType                     resolved 784    UNRESOLVED 0
+	//
+	// EVERY ONE OF THEM NOW READS RESOLVED, where the same four previously
+	// reported 135 unresolved reads between them (distinctKeyColumns 31,
+	// planRowRecordType 104). That zero is the RFC's payoff arriving, and it is
+	// deliberately NOT asserted here: this census has no hard zero, because the
+	// unresolved reads ARE the defect and their count is a measurement rather
+	// than a contract. What is asserted is that the consumers are still reached,
+	// so a future zero cannot be confused with the instrument going dark.
+	floors := &cascades.UnresolvedResultTypeFloors{MinReads: 150, MinSites: 4}
 	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
 		fmt.Fprintf(w, "unresolved-result-type census: reached-consumers floors NOT checked "+
 			"(-test.run=%q narrowed the corpus; they describe the whole suite). "+

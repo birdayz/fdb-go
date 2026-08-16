@@ -102,7 +102,29 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 		explodeAliases[alias] = struct{}{}
 	}
 
-	partitions := ToPlanPartitions(innerRef)
+	// ROLLED UP TO PropRichOrdering, and the roll-up is not tidiness — it is
+	// what makes the partition-level read below TOTAL.
+	//
+	// The raw partition key carries only the REDUCED Ordering, so an
+	// equality-bound index access and a residual filter over a full scan share
+	// one partition: both advertise the same plain key sequence (the index's
+	// bound prefix is dropped from it, leaving the primary-key suffix, which is
+	// exactly what the scan advertises), while their RICH orderings differ
+	// materially — A fixed-to-the-IN-binding versus A absent entirely.
+	//
+	// The rich binding is every property this rule reads: an explode alias
+	// becomes a SORTED in-source only because it is correlated to a FIXED
+	// binding. Reading the first member's rich ordering out of a mixed
+	// partition therefore answers with whichever member the memo happened to
+	// list first, and the claim it produces belongs to a plan that may not be
+	// the one extraction picks — a `sorted` InJoin whose inner turns out to be
+	// the unbounded scan is a false ordering claim, not just a lost
+	// optimization. The sibling IN-union rule rolls up for the identical
+	// reason; this one read the rich form while partitioning on the plain one.
+	partitions := RollUpPlanPartitions(
+		ToPlanPartitions(innerRef),
+		properties.PropRichOrdering,
+	)
 	if len(partitions) == 0 {
 		return
 	}
@@ -247,6 +269,10 @@ func (r *ImplementInJoinRule) enumerateSourceOrderingsForRequestedOrdering(
 	if runCtx != nil && runCtx.Err() != nil {
 		return nil
 	}
+	// The FIRST physical member answers for the whole partition, and that is
+	// only sound because the caller rolled its partitions up to
+	// PropRichOrdering — see the roll-up in OnMatch. Members of such a
+	// partition agree on every binding this function reads.
 	var richOrdering *properties.RichOrdering
 	for _, expr := range innerExprs {
 		if runCtx != nil && runCtx.Err() != nil {

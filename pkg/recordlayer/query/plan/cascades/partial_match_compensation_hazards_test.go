@@ -973,7 +973,10 @@ func TestCompensate_PrefersTopLevelPredicateMappingBeforeLegacyFlatten(
 			predicateCompensation.Get(right) != nil {
 			t.Fatal("top-level mapping must win before the legacy conjunct fallback")
 		}
-		residuals := predicateCompensation.ApplyCompensations(nil)
+		residuals, compensable := predicateCompensation.ApplyCompensations(nil)
+		if !compensable {
+			t.Fatal("compensation reported it could not be expressed")
+		}
 		if len(residuals) != 1 || residuals[0] != topLevelAnd {
 			t.Fatalf("residuals = %v, want the one original top-level AND", residuals)
 		}
@@ -1012,7 +1015,10 @@ func TestCompensate_PrefersTopLevelPredicateMappingBeforeLegacyFlatten(
 			predicateCompensation.Get(right) == nil {
 			t.Fatal("legacy fallback must compensate each mapped leaf exactly once")
 		}
-		residuals := predicateCompensation.ApplyCompensations(nil)
+		residuals, compensable := predicateCompensation.ApplyCompensations(nil)
+		if !compensable {
+			t.Fatal("compensation reported it could not be expressed")
+		}
 		if len(residuals) != 2 || residuals[0] != left || residuals[1] != right {
 			t.Fatalf("residuals = %v, want left and right once in order", residuals)
 		}

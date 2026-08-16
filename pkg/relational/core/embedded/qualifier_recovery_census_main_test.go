@@ -90,7 +90,10 @@ func TestMain(m *testing.M) {
 //
 // recursiveRemap is intentionally zero: recursiveRemapValues is a retired
 // compatibility no-op, and the query-package wiring pin proves it records no
-// traffic.
+// traffic. It, and projScopeClassify's splitting arm, are declared in
+// embeddedQualifierRecoveryRetiredSplit below rather than as Split zeros here,
+// because both are facts about the TREE and must survive a -test.run filter that
+// drops every floor on this struct.
 var embeddedQualifierRecoveryFloors = values.QualifierRecoveryFloors{
 	Calls: [6]int{
 		values.QualRecSiteExistsSortSplit:     3,
@@ -106,6 +109,25 @@ var embeddedQualifierRecoveryFloors = values.QualifierRecoveryFloors{
 		values.QualRecSiteDisplayLabelStrip:   4,
 	},
 }
+
+// embeddedQualifierRecoveryRetiredSplit names the sites whose splitting arm is
+// gone from the tree rather than merely unreached here. Their alarm is inverted:
+// any split is the arm coming back.
+//
+//   - recursiveRemap: values.RecordQualifierRecovery is not called with this site
+//     anywhere in non-test sources.
+//   - projScopeClassify: projScopeAlias's last-dot fallback is unreachable —
+//     values.AsFieldValue admits a *fieldValue only when its Child is a
+//     *quantifiedObjectValue, so the CARRIED branch always answers.
+//     TestQualRecWiring_ProjScopeClassifyCarriesExactOwner drives both an
+//     ordinary and a DOTTED semantic field name through it and gets CARRIED for
+//     each, which is the pin that says the fallback is unreachable by input and
+//     not merely unvisited.
+var embeddedQualifierRecoveryRetiredSplit = func() (r [6]bool) {
+	r[values.QualRecSiteRecursiveRemap] = true
+	r[values.QualRecSiteProjScopeClassify] = true
+	return r
+}()
 
 // qualifierRecoveryNegativeControls is every DIVERGED witness this package's
 // test FIXTURES deliberately drive.
@@ -151,5 +173,6 @@ func assertEmbeddedQualifierRecoveryCensus(w io.Writer) bool {
 	return values.AssertQualifierRecoveryCensus(w, &values.QualifierRecoveryExpectations{
 		Floors:          floors,
 		AllowedDiverged: qualifierRecoveryNegativeControls,
+		RetiredSplit:    embeddedQualifierRecoveryRetiredSplit,
 	}, "embedded corpus")
 }

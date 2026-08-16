@@ -244,7 +244,7 @@ tests:
     # RFC-232 renders the exact source-owned ordinal carried by the enforced
     # sort key; it is the same intentional remaining RFC-191 sort described
     # above, not a different access path.
-    plan_contains: "InMemorySort([TBL.ID#0 DESC], InJoin(Scan(TBL, [=]), binding ASC))"
+    plan_contains: "InMemorySort([_current.ID#0 DESC], InJoin(Scan(TBL, [=]), binding ASC))"
     unordered: true
     rows:
       - [1, 1, 10, 100]

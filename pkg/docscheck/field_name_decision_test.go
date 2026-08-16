@@ -163,6 +163,11 @@ var allowedFieldDecisions = []fieldDecisionSite{
 		n:    1,
 		why:  "DisplayName is the sealed read-only display-metadata accessor itself; Resolved supplies identity/path, but cannot supply the user-facing label this method explicitly returns. Decisions made by callers remain separately visible and are not exempted by this per-site entry.",
 	},
+	{
+		site: "pkg/recordlayer/query/plan/cascades/values/values.go # DisplayColumnName # the name escaping as a bare string (return) via local leaf derived from the name # 1",
+		n:    1,
+		why:  "DisplayColumnName IS the user-visible projection label and decides nothing: its answer is a string a result set prints, never a lookup key or a comparison. It reaches the name THROUGH Resolved — the leaf is the last resolved accessor's Field, not a last-dot split of a rendered name — which is what lets a column legally named with a dot in it survive. Resolved cannot supply the label itself; supplying identity is what it already does here.",
+	},
 }
 
 func fieldDecisionAllowed(sites []fieldDecisionSite, site string) (fieldDecisionSite, bool) {

@@ -1185,6 +1185,11 @@ func (p *RecordQueryStreamingAggregationPlan) HintOrdering() properties.Ordering
 	}
 	keys := make([]values.Value, len(groupKeys))
 	for i, k := range groupKeys {
+		// NAME AND ORDINAL together, and the pairing is load-bearing on a row
+		// that carries two same-named group keys — `GROUP BY ot.k, it.k` emits
+		// [K, K, COUNT(*)]. The ordinal selects the slot and the name verifies
+		// it, so the canonical output name stays the authority it is documented
+		// to be without the duplicate making the request unanswerable.
 		request, err := values.FieldByNameAndOrdinal(expressions.AggregateKeyColumnName(k), i)
 		if err != nil {
 			return properties.Ordering{IsKnown: false}

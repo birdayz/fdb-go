@@ -65,13 +65,15 @@ func TestFDB_ExplainUnplannableQueryFailsLoudly(t *testing.T) {
 		sql  string
 	}{
 		{
-			// The CTE spelling of the flattening-evasion shape: a CTE leg's
-			// output row is derived by the WITH scope, which still cannot
-			// enumerate a join body.
-			name: "cte_over_two_derived_joins",
-			sql: "WITH t1 AS (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id), " +
-				"t2 AS (SELECT c.id AS cid, d.dw AS dw FROM c JOIN d ON d.c_id = c.id) " +
-				"SELECT t1.aid, t1.bv, t2.cid, t2.dw FROM t1, t2 WHERE t1.aid = t2.cid",
+			// A NON-CONSTANT IN-list in an ON clause. Go's expr.ResolveIn takes
+			// constants only, in WHERE and ON alike, so the shape is attempted
+			// and declined — which is all this test needs of a specimen, and it
+			// needs one that will not be closed by unrelated work: the CTE
+			// spelling of the flattening-evasion shape used to sit here and now
+			// plans (its leg's row is the CTE body's own exact result type), so
+			// it moved to the agreement arm below.
+			name: "non_constant_in_list_in_on",
+			sql:  "SELECT a.id, c.id FROM a JOIN c ON a.av IN (c.id, c.cv)",
 		},
 	}
 
@@ -117,6 +119,15 @@ func TestFDB_ExplainUnplannableQueryFailsLoudly(t *testing.T) {
 			{
 				sql:  "SELECT t1.aid, t1.bv FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) t1 WHERE t1.aid = 1",
 				want: []string{"1|111"},
+			},
+			{
+				// The CTE spelling, which used to be this test's unplannable
+				// specimen. It answers the same single row as the derived
+				// spelling above, and EXPLAIN must have followed it across.
+				sql: "WITH t1 AS (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id), " +
+					"t2 AS (SELECT c.id AS cid, d.dw AS dw FROM c JOIN d ON d.c_id = c.id) " +
+					"SELECT t1.aid, t1.bv, t2.cid, t2.dw FROM t1, t2 WHERE t1.aid = t2.cid",
+				want: []string{"1|111|1|41"},
 			},
 		} {
 			got := pinRows(t, db, ctx, tc.sql)

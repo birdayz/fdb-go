@@ -11,7 +11,7 @@ ROWS(3) cols=[CID, COUNT(*)]:
   [3, 1]
 
 === SELECT c.cid FROM cust c WHERE EXISTS (SELECT 1 FROM ord o WHERE o.cid = c.cid) ORDER BY c.cid
-PLAN: Project([_current.CID#0], InMemorySort([C.CID#0 ASC], FlatMap(outer=Scan(CUST), inner=PredicatesFilter(FirstOrDefault(IndexScan(ORD_CID, [=])), [1 preds]))))
+PLAN: Project([_current.CID#0], FlatMap(outer=Scan(CUST), inner=PredicatesFilter(FirstOrDefault(IndexScan(ORD_CID, [=])), [1 preds])))
 ROWS(3) cols=[CID]:
   [1]
   [2]
@@ -25,7 +25,7 @@ ROWS(3) cols=[OID]:
   [103]
 
 === SELECT c.region, COUNT(*) FROM cust c JOIN ord o ON c.cid = o.cid GROUP BY c.region HAVING COUNT(*) > 1 ORDER BY c.region
-PLAN: Project([_current.REGION#0, _current.COUNT(*)#1], PredicatesFilter(StreamingAgg(keys=[_current.REGION#1], InMemorySort([C.REGION#1 ASC], FlatMap(outer=Scan(ORD), inner=Scan(CUST, [=])))), [1 preds]))
+PLAN: Project([_current.REGION#0, _current.COUNT(*)#1], PredicatesFilter(StreamingAgg(keys=[_current.REGION#1], InMemorySort([_current.REGION#1 ASC], FlatMap(outer=Scan(ORD), inner=Scan(CUST, [=])))), [1 preds]))
 ROWS(1) cols=[REGION, COUNT(*)]:
   [10, 3]
 

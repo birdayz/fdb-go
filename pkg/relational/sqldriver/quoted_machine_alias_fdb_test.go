@@ -83,9 +83,17 @@ func TestFDB_QuotedMachineShapedAliases(t *testing.T) {
 		}
 	})
 	t.Run("join_legs", func(t *testing.T) {
+		// SORTED, because the query does not say. A cross join with no ORDER BY
+		// determines the row MULTISET and nothing else: p outer emits
+		// 5,7,5,7 and q outer emits 5,5,7,7, and both are correct answers to
+		// this SQL. What the arm is actually about is that the quoted
+		// machine-shaped alias resolves to its own leg — a missed leg shows up
+		// as a NULL (rejected in `ints`) or as p's column, neither of which any
+		// ordering can hide.
 		got := ints(t, `SELECT "q$2".qid FROM p AS "q$1", q AS "q$2"`)
+		sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
 		if !reflect.DeepEqual(got, []int64{5, 5, 7, 7}) {
-			t.Errorf("= %v, want [5 5 7 7]", got)
+			t.Errorf("sorted = %v, want [5 5 7 7]", got)
 		}
 	})
 	t.Run("correlated_exists", func(t *testing.T) {

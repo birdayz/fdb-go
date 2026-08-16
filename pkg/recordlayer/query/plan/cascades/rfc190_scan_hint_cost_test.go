@@ -60,7 +60,7 @@ func TestScanPlanExpressionHintCost_StampedPartialPKPrefixNotPointProbe(t *testi
 		},
 		false,
 	)
-	partialScan := pkScanFromDataAccessPlan(partialPlan)
+	partialScan, _ := orderingSourceOfDataAccessPlan(partialPlan).(*plans.RecordQueryScanPlan)
 	if partialScan == nil {
 		t.Fatalf("candidate plan = %T, want a primary scan under at most a type filter", partialPlan)
 	}
@@ -90,7 +90,7 @@ func TestScanPlanExpressionHintCost_StampedPartialPKPrefixNotPointProbe(t *testi
 		},
 		false,
 	)
-	fullScan := pkScanFromDataAccessPlan(fullPlan)
+	fullScan, _ := orderingSourceOfDataAccessPlan(fullPlan).(*plans.RecordQueryScanPlan)
 	if fullScan == nil {
 		t.Fatalf("full candidate plan = %T, want a primary scan under at most a type filter", fullPlan)
 	}

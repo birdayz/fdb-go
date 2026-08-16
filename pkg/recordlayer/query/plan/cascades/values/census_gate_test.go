@@ -260,6 +260,75 @@ func TestFieldValueMintGates_SteadyStatePasses(t *testing.T) {
 	}
 }
 
+// TestFieldValueMintGates_RetirementCeilingInvertsTheFloor drives the arm a
+// corpus reaches once the lazy mint is gone from the tree rather than merely
+// quiet, and it exists because BOTH obvious alternatives fail silently.
+//
+// Lowering MinTotal to 0 disarms the guard: a floor of zero is satisfied by
+// every state, including a revival. Deleting MinTotal leaves the retirement
+// unwatched. MaxTotal says the same population is now expected EMPTY, with the
+// alarm pointing the other way — and being a ceiling it survives a -test.run
+// filter, which a claim about the tree must.
+//
+// The two are opposite claims about one population, so a corpus sets one or the
+// other; the last arm pins that both together is an incoherent configuration
+// that reports BOTH failures rather than silently preferring one.
+func TestFieldValueMintGates_RetirementCeilingInvertsTheFloor(t *testing.T) {
+	t.Parallel()
+
+	t.Run("an empty census passes the retirement ceiling", func(t *testing.T) {
+		t.Parallel()
+		var w strings.Builder
+		gates := &FieldValueMintGates{MaxTotal: intp(0), MaxExplainRendered: intp(0)}
+		if assertFieldValueMintCensusState(&w, 0, mintCounts(0, 0), nil, gates) {
+			t.Fatalf("the retired steady state — zero mints — FAILED: %q", w.String())
+		}
+	})
+
+	t.Run("a revival fires it", func(t *testing.T) {
+		t.Parallel()
+		var w strings.Builder
+		gates := &FieldValueMintGates{MaxTotal: intp(0), MaxExplainRendered: intp(0)}
+		if !assertFieldValueMintCensusState(&w, 1, mintCounts(0, 1), nil, gates) {
+			t.Fatal("ONE lazy mint passed a retirement ceiling of 0. The hooks are reachable " +
+				"only from a package-private fixture arm, so a count here is a producer coming " +
+				"back, which is exactly what this ceiling is for")
+		}
+		got := w.String()
+		if !strings.Contains(got, "RETIRED") || !strings.Contains(got, "ALARM DIRECTION: growth") {
+			t.Fatalf("the retirement failure does not say it is a retirement, or does not name "+
+				"its direction — the text is the whole value of an inverted guard: %q", got)
+		}
+	})
+
+	t.Run("a floor of zero would NOT have caught it", func(t *testing.T) {
+		t.Parallel()
+		// The negative control for the whole mechanism. This is what "just lower
+		// MinTotal" produces, and it passes the revival.
+		var w strings.Builder
+		gates := &FieldValueMintGates{MinTotal: 0, MaxExplainRendered: intp(0)}
+		if assertFieldValueMintCensusState(&w, 1, mintCounts(0, 1), nil, gates) {
+			t.Fatalf("a floor of zero caught the revival, which would mean MaxTotal is "+
+				"unnecessary — check the assertion, not the expectation: %q", w.String())
+		}
+	})
+
+	t.Run("floor and ceiling together are incoherent and both report", func(t *testing.T) {
+		t.Parallel()
+		var w strings.Builder
+		gates := &FieldValueMintGates{MinTotal: 5000, MaxTotal: intp(0), MaxExplainRendered: intp(0)}
+		if !assertFieldValueMintCensusState(&w, 1, mintCounts(0, 1), nil, gates) {
+			t.Fatal("a configuration asserting both a floor of 5000 and a ceiling of 0 passed")
+		}
+		got := w.String()
+		if !strings.Contains(got, "ALARM DIRECTION: vacuity") ||
+			!strings.Contains(got, "ALARM DIRECTION: growth") {
+			t.Fatalf("only one of the two contradictory gates reported. A caller that set both "+
+				"has to see both, or it will fix one and re-run into the other: %q", got)
+		}
+	})
+}
+
 func TestFieldValueMintGates_PartitionBreakFires(t *testing.T) {
 	t.Parallel()
 	var w strings.Builder

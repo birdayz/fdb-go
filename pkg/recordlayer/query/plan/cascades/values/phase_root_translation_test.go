@@ -195,8 +195,12 @@ func TestTranslateLogicalSourceRootKeepsForeignWindowAndFailsClosedOnSlotDrift(t
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A FOREIGN window is one whose exact SHAPE differs — a differing
+	// RecordName is provenance and compares equal (Java's Type.Record.equals),
+	// so naming it apart while keeping the fields identical would make it the
+	// declaration's own window and the assertion below vacuous.
 	foreignType := NewRecordType("retained-window", false, []Field{{
-		Name: "V", Ordinal: 0, FieldType: NullableLong,
+		Name: "V", Ordinal: 0, FieldType: NullableString,
 	}})
 	foreign, err := NewQuantifiedObjectValue(alias, foreignType)
 	if err != nil {

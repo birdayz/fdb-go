@@ -136,8 +136,13 @@ func TestFDB_TwoWayJoinUnderThreeWayClusterStaysNameModel(t *testing.T) {
 		if !strings.Contains(plan, "FlatMap(outer=FlatMap(") {
 			t.Errorf("plan lost the nested name-model FlatMap merge chain:\n%s", plan)
 		}
-		if !strings.Contains(plan, "Project([A.ID#0, B.ID#0, C.ID#0]") {
-			t.Errorf("plan lost the 3-column projection:\n%s", plan)
+		// The three output columns read the MERGED row by ordinal:
+		// [A.ID, A.AV, B.ID, B.A_ID, B.BV, C.ID, C.B_ID] puts a.id at 0,
+		// b.id at 2 and c.id at 5. Pinning the ordinals (not the leg names)
+		// is what makes this an answer about WHICH SLOT each column reads —
+		// three same-named ID columns are told apart by nothing else.
+		if !strings.Contains(plan, "Project([_current.ID#0, _current.ID#2, _current.ID#5]") {
+			t.Errorf("plan lost the 3-column merged-row projection:\n%s", plan)
 		}
 		return plan
 	}
@@ -258,15 +263,22 @@ func TestFDB_FourWayFlatteningEvasionStaysNameModel(t *testing.T) {
 			t.Errorf("EXPLAIN lost the cross-derived join:\n%s", plan)
 		}
 	})
-	t.Run("cte_form_fails_cleanly", func(t *testing.T) {
-		// STILL declines: a CTE leg's output row comes from the WITH scope, a
-		// different derivation than the FROM-derived one this test's other arms
-		// now exercise. Pinned so the remaining gap is visible rather than
-		// assumed closed along with its neighbours.
-		assertUnsupported(t, db, ctx,
+	t.Run("cte_form_answers_like_its_derived_twin", func(t *testing.T) {
+		// The CTE leg's output row is derived by the WITH scope, a different
+		// derivation than the FROM-derived one the other arms exercise — it
+		// used to have no exact row at all and declined. Now the WITH scope
+		// publishes the body's EXACT result type, so the two spellings of the
+		// same query must agree: the one row where t1.aid = t2.cid. The row
+		// COUNT is the discriminator — a dropped cross-derived predicate
+		// returns all FOUR, which is what the old decline was hiding.
+		got := pinRows(t, db, ctx,
 			"WITH t1 AS (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id), "+
 				"t2 AS (SELECT c.id AS cid, d.dw AS dw FROM c JOIN d ON d.c_id = c.id) "+
 				"SELECT t1.aid, t1.bv, t2.cid, t2.dw FROM t1, t2 WHERE t1.aid = t2.cid")
+		sort.Strings(got)
+		if !eqStrSlices(got, wantEvasion) {
+			t.Errorf("cte-form rows = %v, want %v (the derived spelling of the same query)", got, wantEvasion)
+		}
 	})
 	t.Run("explicit_join_form_keeps_its_ON", func(t *testing.T) {
 		// The ON-predicate-drop hazard, now reachable and asserted rather than
@@ -344,7 +356,7 @@ func TestFDB_GroupByHavingOverOrdinalJoin(t *testing.T) {
 		// The aggregate sits over the ordinal join: StreamingAgg on the
 		// group key, directly over the SINGLE FlatMap (the gated 2-way);
 		// HAVING is the PredicatesFilter above the agg.
-		for _, frag := range []string{"StreamingAgg(keys=[A.ID#0]", "FlatMap(outer=", "PredicatesFilter("} {
+		for _, frag := range []string{"StreamingAgg(keys=[_current.ID#0]", "FlatMap(outer=", "PredicatesFilter("} {
 			if !strings.Contains(plan, frag) {
 				t.Errorf("plan lost %q:\n%s", frag, plan)
 			}
@@ -367,7 +379,7 @@ func TestFDB_GroupByHavingOverOrdinalJoin(t *testing.T) {
 			t.Errorf("rows = %v, want %v", got, want)
 		}
 		plan := pinExplain(t, db, ctx, q)
-		for _, frag := range []string{"StreamingAgg(keys=[A.ID#0]", "FlatMap(outer="} {
+		for _, frag := range []string{"StreamingAgg(keys=[_current.ID#0]", "FlatMap(outer="} {
 			if !strings.Contains(plan, frag) {
 				t.Errorf("plan lost %q:\n%s", frag, plan)
 			}
@@ -382,24 +394,27 @@ func TestFDB_GroupByHavingOverOrdinalJoin(t *testing.T) {
 			t.Errorf("rows = %v, want %v", got, want)
 		}
 		plan := pinExplain(t, db, ctx, q)
-		for _, frag := range []string{"InMemorySort([COUNT(C.ID) DESC", "StreamingAgg(keys=[A.ID#0]"} {
+		for _, frag := range []string{"InMemorySort([_current.COUNT(C.ID)#1 DESC", "StreamingAgg(keys=[_current.ID#0]"} {
 			if !strings.Contains(plan, frag) {
 				t.Errorf("plan lost %q:\n%s", frag, plan)
 			}
 		}
 	})
 	t.Run("order_by_limit_over_gated_join", func(t *testing.T) {
-		// The sort-key-over-ordinal-join axis (datumFromSpans qualified
-		// keys): QUALIFIED sort keys from BOTH legs (a.id, c.id) over the
-		// gated join's merged row, plus LIMIT. Row ORDER is asserted (not
-		// sorted away).
+		// The sort-key-over-ordinal-join axis: sort keys from BOTH legs
+		// (a.id, c.id) over the gated join's merged row, plus LIMIT. The two
+		// keys share the bare name ID and are told apart by their ORDINALS
+		// (#0 and #2) — the qualifier is not what separates them, which is
+		// the whole point of the ordinal identity. Two keys collapsing onto
+		// one ordinal is the defect this fragment catches. Row ORDER is
+		// asserted (not sorted away).
 		q := "SELECT a.id, c.id, c.cw FROM a JOIN c ON c.a_id = a.id ORDER BY a.id DESC, c.id DESC LIMIT 3"
 		got := pinRows(t, db, ctx, q)
 		if want := []string{"3|103|10", "2|102|9", "1|101|8"}; !eqStrSlices(got, want) {
 			t.Errorf("rows = %v, want %v (in order)", got, want)
 		}
 		plan := pinExplain(t, db, ctx, q)
-		for _, frag := range []string{"Limit(3", "InMemorySort([A.ID#0 DESC, C.ID#0 DESC]", "FlatMap(outer="} {
+		for _, frag := range []string{"Limit(3", "InMemorySort([_current.ID#0 DESC, _current.ID#2 DESC]", "FlatMap(outer="} {
 			if !strings.Contains(plan, frag) {
 				t.Errorf("plan lost %q:\n%s", frag, plan)
 			}

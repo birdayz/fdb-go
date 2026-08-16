@@ -178,16 +178,20 @@ func TestFlatMapProducerCensus_AssertionArmsGoRed(t *testing.T) {
 		// PARTITIONS. An earlier copy of these figures had calls that did not equal
 		// the sum of the arms at any site, which made "the measured state passes"
 		// an assertion about a state the planner has never been in.
-		c.Calls = [flatMapProducerSiteCount]int{25406, 1754, 431, 449}
-		c.TypedQOV = [flatMapProducerSiteCount]int{476, 0, 0, 130}
-		c.UntypedQOV = [flatMapProducerSiteCount]int{0, 1609, 249, 269}
-		c.MergeRC = [flatMapProducerSiteCount]int{6732, 0, 0, 0}
-		c.OtherRV = [flatMapProducerSiteCount]int{18198, 145, 182, 50}
+		//
+		// UNTYPED IS NOW ZERO EVERYWHERE, and that is the whole reconciliation:
+		// the untyped population this state used to carry at three sites (1609,
+		// 249, 269) cannot be constructed since NewQuantifiedObjectValue began
+		// requiring an exact type, so it moved into TypedQOV.
+		c.Calls = [flatMapProducerSiteCount]int{46223, 1589, 568, 398}
+		c.TypedQOV = [flatMapProducerSiteCount]int{466, 1417, 278, 347}
+		c.UntypedQOV = [flatMapProducerSiteCount]int{0, 0, 0, 0}
+		c.MergeRC = [flatMapProducerSiteCount]int{6592, 0, 0, 0}
+		c.OtherRV = [flatMapProducerSiteCount]int{39165, 172, 290, 51}
 		return c
 	}
 	floors := &FlatMapProducerFloors{
-		Calls:           [flatMapProducerSiteCount]int{2000, 150, 40, 40},
-		UntypedQOVFloor: [flatMapProducerSiteCount]int{0, 150, 20, 20},
+		Calls: [flatMapProducerSiteCount]int{2000, 150, 40, 40},
 	}
 
 	t.Run("the measured state PASSES", func(t *testing.T) {
@@ -215,29 +219,38 @@ func TestFlatMapProducerCensus_AssertionArmsGoRed(t *testing.T) {
 		}
 	})
 
-	t.Run("the untyped population DISAPPEARING is RED", func(t *testing.T) {
+	t.Run("the untyped population REVIVING is RED at every site", func(t *testing.T) {
 		t.Parallel()
-		c := base()
-		c.UntypedQOV[flatMapSiteExistentialSelect] = 0
-		var b strings.Builder
-		if !assertFlatMapProducerCounters(&b, c, floors) {
-			t.Fatal("the untyped population at implementExistentialSelect going to zero must " +
-				"fail. It is a floor on a DIVERGENCE: Java cannot build an untyped QOV at " +
-				"all, so this population is a real gap, and a silent drop is either the gap " +
-				"closing or the site going dark — indistinguishable from a smaller number.")
+		// The direction that used to be watched here was the population
+		// DISAPPEARING, because while it existed a silent drop was
+		// indistinguishable from the site going dark. It has since been retired at
+		// the constructor, so zero is the steady state and GROWTH is the alarm —
+		// and the alarm has to cover every site, not just the residue producer's,
+		// or three of the four could revive unwatched.
+		for s := flatMapProducerSite(0); s < flatMapProducerSiteCount; s++ {
+			c := base()
+			c.UntypedQOV[s] = 1
+			c.TypedQOV[s]--
+			var b strings.Builder
+			if !assertFlatMapProducerCounters(&b, c, floors) {
+				t.Fatalf("a single untyped QOV at %s must fail. NewQuantifiedObjectValue "+
+					"requires an exact type, so one here means a construction path has "+
+					"appeared that reaches around it.", s)
+			}
+			if !strings.Contains(b.String(), "want 0") {
+				t.Fatalf("failure message for %s does not state the expectation: %s", s, b.String())
+			}
 		}
 	})
 
 	t.Run("a site going DARK is RED", func(t *testing.T) {
 		t.Parallel()
-		// The untyped count is held ABOVE its floor (20) while the call count is
-		// dropped BELOW its own (40), so the CALL floor is the only arm that can
-		// fire. Zeroing both — which this subtest did on first writing — trips the
-		// untyped floor first and passes without ever reaching the call floor: the
-		// test would stay green with the dark-site arm deleted outright.
+		// The CALL floor is now the only floor on this census, so dropping the call
+		// count below it is the whole perturbation. It used to need care — the
+		// untyped floor fired first and made this subtest vacuous — and that hazard
+		// went with the floor.
 		c := base()
 		c.Calls[flatMapSiteJoinWithExistential] = 30
-		c.UntypedQOV[flatMapSiteJoinWithExistential] = 25
 		var b strings.Builder
 		if !assertFlatMapProducerCounters(&b, c, floors) {
 			t.Fatal("a producer site making too few constructions must fail — otherwise every " +

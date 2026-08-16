@@ -51,13 +51,19 @@ func (r *ImplementUnorderedUnionRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	for _, partitions := range crossProductPartitions(childPartitions) {
-		var childPlans []plans.RecordQueryPlan
-		var newQuantifiers []expressions.Quantifier
+		childPlans := make([]plans.RecordQueryPlan, 0, len(partitions))
+		newQuantifiers := make([]expressions.Quantifier, 0, len(partitions))
 
+		// A union carries EVERY leg or it is not this union. A leg whose
+		// partition holds no expression cannot be represented, and skipping it
+		// would emit a narrower union that silently drops that leg's rows —
+		// so the whole combination is declined instead.
+		legMissing := false
 		for i, partition := range partitions {
 			planExprs := partition.GetExpressions()
 			if len(planExprs) == 0 {
-				continue
+				legMissing = true
+				break
 			}
 
 			newRef := call.MemoizeFinalExpressionsFromOther(
@@ -72,7 +78,14 @@ func (r *ImplementUnorderedUnionRule) OnMatch(call *ImplementationRuleCall) {
 			}
 		}
 
-		if len(childPlans) < 2 {
+		// Arity follows Java: RecordQueryUnorderedUnionPlan.fromQuantifiers
+		// imposes no minimum, so a ONE-leg logical union implements as a
+		// one-leg concat. UnionSingletonElimRule normally rewrites that shape
+		// away first, but the implementation rule must not depend on another
+		// rule having fired — with a Go-only two-leg floor here, a surviving
+		// singleton union had no implementer at all and planning returned no
+		// plan and no error.
+		if legMissing || len(newQuantifiers) == 0 {
 			continue
 		}
 

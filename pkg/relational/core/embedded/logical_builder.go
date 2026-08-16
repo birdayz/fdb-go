@@ -423,12 +423,18 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			return nil
 		}
 	} else if sq.derivedQuery != nil {
-		var innerOp logical.LogicalOperator
-		body := sq.derivedQuery.QueryExpressionBody()
-		if termDefault, ok := body.(*antlrgen.QueryTermDefaultContext); ok {
-			if simpleTable, ok := termDefault.QueryTerm().(*antlrgen.SimpleTableContext); ok {
-				if inner, err := extractFromSimpleTable(simpleTable); err == nil {
-					innerOp = buildLogicalPlanForSelect(inner)
+		// The catalog-aware inner plan when one was pre-built, exactly as the
+		// join legs below do. The recursive text-only build is the fallback for
+		// a caller that never went through the catalog path; taking it while a
+		// resolved plan exists loses every ProjectedValue in the body.
+		innerOp := sq.catalogAwareInnerPlan
+		if innerOp == nil {
+			body := sq.derivedQuery.QueryExpressionBody()
+			if termDefault, ok := body.(*antlrgen.QueryTermDefaultContext); ok {
+				if simpleTable, ok := termDefault.QueryTerm().(*antlrgen.SimpleTableContext); ok {
+					if inner, err := extractFromSimpleTable(simpleTable); err == nil {
+						innerOp = buildLogicalPlanForSelect(inner)
+					}
 				}
 			}
 		}

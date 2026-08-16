@@ -136,6 +136,9 @@ type selectQuery struct {
 	// from a schema-qualified table without re-splitting display text.
 	sourceSegments []string
 	whereExpr      antlrgen.IWhereExprContext
+	// catalogAwareInnerPlan carries the PRIMARY derived source's catalog-aware
+	// inner plan across the fromSource bridge — see fromSource's field.
+	catalogAwareInnerPlan logical.LogicalOperator
 	// limit < 0 means no limit.
 	limit int64
 	// offset >= 0 means skip that many rows after sort/group (OFFSET n).
@@ -829,6 +832,7 @@ func selectQueryFromClassification(cls *selectClassification, fs *fromSource) *s
 		sq.derivedQuery = fs.derivedQuery
 		sq.inlineValues = fs.inlineValues
 		sq.whereExpr = fs.whereExpr
+		sq.catalogAwareInnerPlan = fs.catalogAwareInnerPlan
 	}
 	return sq
 }
@@ -2131,6 +2135,13 @@ type fromSource struct {
 	inlineValues   *antlrgen.InlineTableItemContext
 	joins          []joinClause
 	whereExpr      antlrgen.IWhereExprContext
+	// catalogAwareInnerPlan is the PRIMARY derived source's inner plan, built
+	// through the catalog-aware path — the exact twin of
+	// joinClause.catalogAwareInnerPlan, which has carried the same thing for
+	// derived JOIN legs all along. Without it a rebuild (qualified/hidden star
+	// expansion) re-entered the text-only builder for the primary source alone,
+	// and the body came back with resolved Values on none of its projections.
+	catalogAwareInnerPlan logical.LogicalOperator
 }
 
 // inlineValuesCarrierAlias returns the authored inline-table alias, or a

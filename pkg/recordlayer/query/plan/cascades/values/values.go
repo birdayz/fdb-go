@@ -1624,6 +1624,36 @@ func OutputColumnName(v Value, alias string) string {
 	return ProjectionColumnName(v)
 }
 
+// DisplayColumnName is the USER-VISIBLE label for a projected column: the
+// alias when the column carries one, else its own name with the QUALIFIER
+// removed — Java's Identifier.withoutQualifier, applied by the top-level
+// clearQualifier (Identifier.java:101-106). `SELECT n.sk` is column SK.
+//
+// This is deliberately NOT OutputColumnName. The qualifier belongs in the
+// internal slot key, where it is what keeps two legs' same-named columns
+// apart; it does not belong in anything a user names the column by. Wherever a
+// projection's name CROSSES into SQL — a result-set label, a CTE's column list
+// — the display form is the authority, and disagreeing about that is how one
+// recursive CTE came to declare its column N.SK while every reference to it
+// resolved SK.
+//
+// The leaf is taken from the RESOLVED ACCESSORS, never by splitting the
+// rendered name: a column may legally be named with a dot in it (`"A.ID"`), and
+// a last-dot split would tear that name in half.
+func DisplayColumnName(v Value, alias string) string {
+	if alias != "" {
+		return strings.ToUpper(alias)
+	}
+	if field, ok := v.(*fieldValue); ok && field.Resolved != nil &&
+		len(field.Resolved.Accessors) > 0 {
+		leaf := field.Resolved.Accessors[len(field.Resolved.Accessors)-1].Field
+		if leaf != "" {
+			return strings.ToUpper(leaf)
+		}
+	}
+	return ProjectionColumnName(v)
+}
+
 // ProjectionOutputIdentityKey returns an opaque, boundary-safe discriminator
 // for the parts of a projection's executor-visible output name that semantic
 // Value identity does not already preserve.
@@ -4618,6 +4648,32 @@ var ErrWholeRowProjection = errors.New(
 		"the executor emits one slot per projection, so this wraps the inner row instead of " +
 		"passing it through; project the inner's columns per-field instead")
 
+// projectionWrapsItsInputRow reports the one shape ErrWholeRowProjection names:
+// a lone projected value that is a MACHINERY row, so the emitted one-slot row
+// wraps it and has no name for its single field.
+//
+// The discriminator is the correlation's KIND, not the value's type. A
+// record-typed bare QOV over a NAMED correlation is a column of that source —
+// `SELECT x FROM t, t.items AS x` projects the whole struct element, and x is
+// its name — while a `_current` carrier or a machinery-minted `q$N` names a
+// row the SQL never gave a name to, which is the wrap with nothing to call its
+// field.
+//
+// Deciding it on the TYPE instead split one shape in half: the same SQL planned
+// for a scalar element and was refused for a STRUCT one, because only the
+// struct made the projected QOV record-typed. The type never was the question.
+func projectionWrapsItsInputRow(projections []Value) bool {
+	if len(projections) != 1 {
+		return false
+	}
+	qov, bare := projections[0].(*quantifiedObjectValue)
+	if !bare || qov == nil || qov.flowed == nil || qov.flowed.code != TypeCodeRecord {
+		return false
+	}
+	return qov.correlation.kind == correlationKindCurrent ||
+		qov.correlation.kind == correlationKindUnique
+}
+
 // ProjectionResultValue builds the row a projection PRODUCES, as a record
 // constructor over its projected values and output aliases. It is the single
 // authority for that derivation, shared by the logical projection expression
@@ -4700,11 +4756,8 @@ func ProjectionResultValueForOutputSchema(
 		if len(outputNames) != len(projections) {
 			return nil, fmt.Errorf("projection output schema has %d names for %d slots", len(outputNames), len(projections))
 		}
-		if len(projections) == 1 {
-			if qov, bare := projections[0].(*quantifiedObjectValue); bare &&
-				qov.flowed != nil && qov.flowed.code == TypeCodeRecord {
-				return nil, ErrWholeRowProjection
-			}
+		if projectionWrapsItsInputRow(projections) {
+			return nil, ErrWholeRowProjection
 		}
 		fields := make([]RecordConstructorField, len(projections))
 		for i := range projections {
@@ -4716,11 +4769,8 @@ func ProjectionResultValueForOutputSchema(
 		return NewRecordConstructorValue(fields...), nil
 	}
 
-	if len(projections) == 1 {
-		if qov, bare := projections[0].(*quantifiedObjectValue); bare &&
-			qov.flowed != nil && qov.flowed.code == TypeCodeRecord {
-			return nil, ErrWholeRowProjection
-		}
+	if projectionWrapsItsInputRow(projections) {
+		return nil, ErrWholeRowProjection
 	}
 	fields := make([]RecordConstructorField, len(projections))
 	for i, v := range projections {

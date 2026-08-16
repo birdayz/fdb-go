@@ -320,6 +320,23 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 	// scope-ambiguity decline converts that silent-wrong to a loud 0A000.
 	// When mint-per-leg lands, this pin flips to the Java rows and the
 	// conformance gap closes.
+	// wantDeclineWithout pins the decline CLASS and an arm it must NOT be. Use
+	// it where the exact message belongs to a gap whose internal wording is
+	// free to move; wantDecline is for a message that IS the subject.
+	wantDeclineWithout := func(name, q, wantSub, forbiddenSub string) {
+		t.Helper()
+		_, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
+		if perr == nil {
+			t.Fatalf("%s: must decline loud (want %q), planned OK instead\n  sql: %s", name, wantSub, q)
+		}
+		if !strings.Contains(perr.Error(), wantSub) {
+			t.Fatalf("%s: decline = %v, want substring %q\n  sql: %s", name, perr, wantSub, q)
+		}
+		if strings.Contains(perr.Error(), forbiddenSub) {
+			t.Fatalf("%s: decline = %v, and it must NOT be the %q arm\n  sql: %s",
+				name, perr, forbiddenSub, q)
+		}
+	}
 	wantDecline := func(name, q, wantSub string) {
 		t.Helper()
 		_, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
@@ -378,12 +395,18 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 	// declined 0A000 "scope-ambiguous" (a FALSE decline — the innermost's
 	// local MID cannot collide with the middle's never-bound display
 	// alias); with the bound-name set it correctly passes the ambiguity
-	// arm and lands in the PRE-EXISTING multi-EXISTS composition gap
-	// (loud best-expression). Flips to rows when
-	// that composition gap closes.
-	wantDecline("minted_middle_correlated_reachgap",
+	// arm and lands in the PRE-EXISTING multi-EXISTS composition gap.
+	// Flips to rows when that composition gap closes.
+	//
+	// The gap's WORDING is not the discriminator and must not be pinned as
+	// one: it used to read "best expression is not a physical plan", because
+	// extraction handed back the surviving LOGICAL member; physical-only
+	// extraction returns nothing at all for the same shape and it now reads
+	// "no plan found". Both are the same composition gap. What the pin has to
+	// separate is the gap from the AMBIGUITY arm, so it asserts that directly.
+	wantDeclineWithout("minted_middle_correlated_reachgap",
 		`SELECT OT."K" FROM OT WHERE EXISTS (SELECT 1 FROM MA AS "MID" WHERE "MID"."C" < OT."K" AND EXISTS (SELECT 1 FROM MA AS "MID", ST WHERE "MID"."C" < OT."K"))`,
-		"best expression")
+		"0AF00", "scope-ambiguous")
 
 	// Case-1 POLARITY pins: a multi-source middle with an outer-only
 	// conjunct AND a nested EXISTS, under NOT EXISTS. Case 1 used to route

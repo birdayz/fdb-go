@@ -957,24 +957,40 @@ func (s *scanPlanExpression) GetRecordQueryPlan() plans.RecordQueryPlan {
 }
 
 // pkScanFromDataAccessPlan unwraps the plan shapes scanPlanExpression
-// carries down to a primary-key scan, looking through the TypeFilter the
-// primary candidate adds when available and queried record types differ
-// (a type filter preserves the scan's order). Returns nil when the leaf
-// is not a PK scan.
-func pkScanFromDataAccessPlan(plan plans.RecordQueryPlan) *plans.RecordQueryScanPlan {
+// carries down to the ACCESS PLAN, looking through the TypeFilter the primary
+// candidate adds when available and queried record types differ (a type filter
+// preserves its inner's order).
+//
+// It used to narrow to a *RecordQueryScanPlan and return nil for anything else,
+// which made this adapter report every INDEX access as unordered. That is the
+// same gap the primary-scan arm was written to close, one plan type over: a
+// data-access-memoized `IndexScan(IDX, [=, =])` read as orderless, so a sort it
+// satisfies could not be elided and — worse — the ordered REVERSE alternative
+// beside it could not be told apart from the forward one at the sort boundary,
+// since both answered "no ordering". `ORDER BY <equality-bound float> DESC` over
+// a correlated range set lost its reverse composite probe to an InMemorySort
+// that way.
+//
+// Nothing here re-derives an ordering: the wrapped plan owns that, and the two
+// hints below simply ask it. A second hand-coded copy of a derivation is
+// precisely the shape that let the plain and rich forms in plans/ordering.go
+// disagree once already.
+func orderingSourceOfDataAccessPlan(plan plans.RecordQueryPlan) plans.RecordQueryPlan {
 	if tf, ok := plan.(*plans.RecordQueryTypeFilterPlan); ok {
-		plan = tf.GetInner()
+		return tf.GetInner()
 	}
-	sp, _ := plan.(*plans.RecordQueryScanPlan)
-	return sp
+	return plan
 }
 
-// HintOrdering: a data-access PK scan produces rows in PK order, exactly
-// like the bare RecordQueryScanPlan expression. Without this the SARGed
-// primary scan the data-access path memoizes (as this plan-backed leaf)
-// reads as unordered and ImplementSortRule cannot elide a sort it satisfies.
+// HintOrdering: a data-access scan produces rows in its access path's order,
+// exactly like the bare plan expression would. Without this the SARGed scan the
+// data-access path memoizes (as this plan-backed leaf) reads as unordered and
+// ImplementSortRule cannot elide a sort it satisfies.
 func (s *scanPlanExpression) HintOrdering() properties.Ordering {
-	return plans.PKScanOrdering(pkScanFromDataAccessPlan(s.plan))
+	if hinter, ok := orderingSourceOfDataAccessPlan(s.plan).(properties.OrderingHinter); ok {
+		return hinter.HintOrdering()
+	}
+	return properties.Ordering{}
 }
 
 // HintCost delegates the wrapped data-access plan's REAL cost (via
@@ -990,15 +1006,21 @@ func (s *scanPlanExpression) HintCost(child []properties.Cost, stats properties.
 	return concretePlanCost(s.plan, stats, nil)
 }
 
-// HintRichOrdering delegates to the unwrapped PK scan's own derivation
-// (RecordQueryScanPlan.HintRichOrdering, plans/ordering.go) rather than
-// re-deriving the FIXED-equality-prefix PK ordering here. A second hand-coded
-// copy of that derivation is exactly the shape that let plans/ordering.go's
-// plain and rich forms disagree on a resumed-equality-after-gap comparison
-// array; delegating means there is nothing here to drift out of sync with the
-// helper the plan itself uses.
+// HintRichOrdering delegates to the unwrapped access plan's own derivation
+// (plans/ordering.go) rather than re-deriving a FIXED-equality prefix here. A
+// second hand-coded copy of that derivation is exactly the shape that let
+// plans/ordering.go's plain and rich forms disagree on a resumed-equality-after-
+// gap comparison array; delegating means there is nothing here to drift out of
+// sync with the helper the plan itself uses.
+//
+// The rich form is where the delegation matters most: it is the only one that
+// carries the FIXED bindings, and those are what tell an equality-bound index
+// probe apart from an unbounded scan of the same index.
 func (s *scanPlanExpression) HintRichOrdering() *properties.RichOrdering {
-	return pkScanFromDataAccessPlan(s.plan).HintRichOrdering()
+	if hinter, ok := orderingSourceOfDataAccessPlan(s.plan).(properties.RichOrderingHinter); ok {
+		return hinter.HintRichOrdering()
+	}
+	return properties.EmptyOrdering()
 }
 
 // compile-time check

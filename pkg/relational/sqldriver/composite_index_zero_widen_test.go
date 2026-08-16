@@ -109,7 +109,7 @@ func TestFDB_CompositeIndexZeroWidening(t *testing.T) {
 	// two physical signed-zero ranges. Pin the exact plan as well as results for
 	// both element orders; the unindexed twin additionally guards against the
 	// rejected bit-identity-dedup fix, which duplicated every matching row.
-	const wantCompositeINPlan = "Project([ID#0], IndexScan(C_VW, [=, *] COVERING))"
+	const wantCompositeINPlan = "Project([_current.ID#0], IndexScan(C_VW, [=, *] COVERING))"
 	for _, tc := range []struct {
 		name   string
 		inList string

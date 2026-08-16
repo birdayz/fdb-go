@@ -239,7 +239,7 @@ func nestedLoopJoinBaseWithRetainedScalarSources(
 				continue
 			}
 			legBinding, bindingErr := values.NewQuantifiedObjectValue(
-				leg.alias, childLayout.Carrier().FlowedType())
+				leg.alias, values.PhysicalCarrierType(childLayout))
 			if bindingErr != nil {
 				return PlanExprBase{}, bindingErr
 			}

@@ -103,6 +103,18 @@ func newRecordQueryFlatMapPlanFromQuantifiers(
 			return nil, fmt.Errorf("RecordQueryFlatMapPlan null-supplying inner: %w", err)
 		}
 		if innerSource != nil {
+			// Java's Quantifier.pullUpResultColumnsWithNullability(true):
+			// QuantifiedObjectValue.of(alias, type.withNullability(true)). A leg
+			// this FlatMap null-extends flows a row that can BE null, and the
+			// layout refuses to publish a null-supplying window over a row typed
+			// NOT NULL — correctly, since that pair states two different facts
+			// about the same leg. The result program is rewritten in the same
+			// step so the program and the window never disagree about which
+			// exact row the alias names.
+			resultValue, innerSource, err = pullUpNullSupplyingSource(resultValue, innerSource)
+			if err != nil {
+				return nil, fmt.Errorf("RecordQueryFlatMapPlan null-supplying inner: %w", err)
+			}
 			nullSupplying = []values.QuantifiedObjectValue{innerSource}
 		}
 	}
@@ -127,6 +139,31 @@ func newRecordQueryFlatMapPlanFromQuantifiers(
 		inheritOuterRecordProperties: inheritOuterRecordProperties,
 		nullSupplyingInner:           nullSupplyingInner,
 	}, nil
+}
+
+// pullUpNullSupplyingSource retypes one leg source as nullable and rewrites
+// resultValue onto it, returning both so the caller cannot install one without
+// the other.
+//
+// An already-nullable source is returned untouched, by pointer, so this is a
+// no-op on every leg whose producer already stated the fact.
+func pullUpNullSupplyingSource(
+	resultValue values.Value,
+	source values.QuantifiedObjectValue,
+) (values.Value, values.QuantifiedObjectValue, error) {
+	if source == nil || source.FlowedType() == nil || source.FlowedType().IsNullable() {
+		return resultValue, source, nil
+	}
+	nullable, err := values.NewQuantifiedObjectValue(
+		source.Correlation(), values.WithNullability(source.FlowedType(), true))
+	if err != nil {
+		return nil, nil, err
+	}
+	rewritten, err := values.TranslateLogicalSourceRoot(resultValue, source, nullable)
+	if err != nil {
+		return nil, nil, err
+	}
+	return rewritten, nullable, nil
 }
 
 // flatMapBaseWithRetainedSources preserves an exact source which
@@ -240,7 +277,7 @@ func flatMapBaseWithRetainedSources(
 				continue
 			}
 			legBinding, bindingErr := values.NewQuantifiedObjectValue(
-				leg.alias, childLayout.Carrier().FlowedType())
+				leg.alias, values.PhysicalCarrierType(childLayout))
 			if bindingErr != nil {
 				return PlanExprBase{}, bindingErr
 			}
@@ -338,7 +375,7 @@ func flatMapBaseWithRetainedSources(
 			return PlanExprBase{}, fmt.Errorf(
 				"RecordQueryFlatMapPlan retained identity layout already publishes source windows")
 		}
-		recordType, isRecord := baseLayout.Carrier().FlowedType().(*values.RecordType)
+		recordType, isRecord := values.PhysicalCarrierType(baseLayout).(*values.RecordType)
 		if !isRecord || recordType == nil {
 			return PlanExprBase{}, fmt.Errorf(
 				"RecordQueryFlatMapPlan retained identity result is not an exact record")
@@ -430,12 +467,18 @@ func (p *RecordQueryFlatMapPlan) WithQuantifiers(qs []expressions.Quantifier) (e
 			oldInner.FlowedType(), newInner.FlowedType())
 	}
 
+	// The PHYSICAL type of each new input, not the public one. The relink builds
+	// a fresh QOV, and NewQuantifiedObjectValue snapshots its layout from the
+	// type it is handed — so relinking through FlowedType (which withholds leg
+	// boundaries by design) rebinds the result value to a row that has forgotten
+	// where its legs start. The type-equality checks above are unaffected: legs
+	// are not part of exact-type identity.
 	relinked := p.resultValue
-	relinked, err = relinkFlatMapResultSource(relinked, p.outerAlias, newOuter.FlowedType())
+	relinked, err = relinkFlatMapResultSource(relinked, p.outerAlias, physicalSourceType(newOuter))
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryFlatMapPlan.WithQuantifiers outer result source: %w", err)
 	}
-	relinked, err = relinkFlatMapResultSource(relinked, p.innerAlias, newInner.FlowedType())
+	relinked, err = relinkFlatMapResultSource(relinked, p.innerAlias, physicalSourceType(newInner))
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryFlatMapPlan.WithQuantifiers inner result source: %w", err)
 	}
@@ -514,7 +557,7 @@ func (p *RecordQueryFlatMapPlan) reanchorInputValueToOutput(value values.Value) 
 			return nil, fmt.Errorf("RecordQueryFlatMapPlan outer layout: %w", layoutErr)
 		}
 		reanchored, err = values.TranslateLogicalSourceNameNormalizationToCorrelation(
-			reanchored, p.outerAlias, outerLayout.Carrier().FlowedType())
+			reanchored, p.outerAlias, values.PhysicalCarrierType(outerLayout))
 		if err != nil {
 			return nil, fmt.Errorf("RecordQueryFlatMapPlan outer source normalization: %w", err)
 		}
@@ -525,7 +568,7 @@ func (p *RecordQueryFlatMapPlan) reanchorInputValueToOutput(value values.Value) 
 			return nil, fmt.Errorf("RecordQueryFlatMapPlan inner layout: %w", layoutErr)
 		}
 		reanchored, err = values.TranslateLogicalSourceNameNormalizationToCorrelation(
-			reanchored, p.innerAlias, innerLayout.Carrier().FlowedType())
+			reanchored, p.innerAlias, values.PhysicalCarrierType(innerLayout))
 		if err != nil {
 			return nil, fmt.Errorf("RecordQueryFlatMapPlan inner source normalization: %w", err)
 		}
@@ -608,9 +651,48 @@ func (p *RecordQueryFlatMapPlan) reanchorInputValueToOutput(value values.Value) 
 				}
 				reanchored, err = values.ReanchorValueForLayout(
 					reanchored, outerLayout.Carrier(), outerLayout)
+				// Both lineage branches end on the CHILD's private current
+				// carrier, so both owe the same crossing back to the binding the
+				// result program addresses that row through. Only the
+				// materializer branch used to pay it, and the omission is
+				// invisible until the two legs have the SAME exact row: the
+				// child-current field then name-matches BOTH legs' slots in the
+				// result RC, the producer bridge declines rather than guess, and
+				// the value arrives at the output layout still rooted on a
+				// one-leg row it cannot address. Measured on
+				// `SELECT x.id FROM (SELECT id FROM t) x JOIN (SELECT id FROM t) y
+				// ON x.id = y.id`: root RECORD(ID) against target RECORD(ID,ID).
+				if _, materializesResult := p.resultValue.(*values.RecordConstructorValue); err == nil && materializesResult {
+					reanchored, err = translateFlatMapChildOutputToBinding(
+						reanchored, outer, p.outerAlias)
+				}
 			}
 			if err != nil {
 				return nil, fmt.Errorf("RecordQueryFlatMapPlan outer lineage: %w", err)
+			}
+			// traverseInner was decided BEFORE this crossing, against the value
+			// as it arrived. The crossing can re-root it onto the outer leg's
+			// own row, and a value that now names only that row has been
+			// ANSWERED — handing it to the inner leg's lineage asks that
+			// materializer to map a foreign current row, which is a hard error
+			// rather than a decline:
+			//
+			//   RecordQueryFlatMapPlan inner lineage: ... reanchor.field:
+			//   current root and target have different exact types:
+			//   root RECORD(ID,COL1,ID,COL1), target RECORD(ID,T1_ID,ID,T2_ID)
+			//
+			// on `SELECT t1.id FROM t1 JOIN t1 AS x ON x.id = t1.id
+			//     WHERE EXISTS (SELECT 1 FROM t2, t3 WHERE t2.t1_id = t1.id)`,
+			// where the outer join's row was offered to the EXISTS leg's join.
+			// Re-ask the question the value can now answer. A value that names
+			// the inner leg too still traverses both, and one the outer leg
+			// could not claim is untouched here and still traverses the inner.
+			if traverseInner && inner != nil && valueAnsweredByChild(reanchored, outer, p.outerAlias) {
+				answeredByInner, innerErr := valueNamesChild(reanchored, inner, p.innerAlias)
+				if innerErr != nil {
+					return nil, fmt.Errorf("RecordQueryFlatMapPlan inner layout: %w", innerErr)
+				}
+				traverseInner = answeredByInner
 			}
 		}
 	}
@@ -661,7 +743,7 @@ func (p *RecordQueryFlatMapPlan) reanchorInputValueToOutput(value values.Value) 
 			return nil, fmt.Errorf("RecordQueryFlatMapPlan inner layout: %w", layoutErr)
 		}
 		reanchored, err = values.TranslateProjectionInputNameNormalizationToCorrelation(
-			reanchored, p.innerAlias, innerLayout.Carrier().FlowedType())
+			reanchored, p.innerAlias, values.PhysicalCarrierType(innerLayout))
 		if err != nil {
 			return nil, fmt.Errorf("RecordQueryFlatMapPlan inner ordinality lineage: %w", err)
 		}
@@ -698,11 +780,48 @@ func translateFlatMapChildOutputToBinding(
 		return nil, err
 	}
 	binding, err := values.NewQuantifiedObjectValue(
-		bindingAlias, layout.Carrier().FlowedType())
+		bindingAlias, values.PhysicalCarrierType(layout))
 	if err != nil {
 		return nil, err
 	}
 	return values.TranslatePhaseRoot(value, layout.Carrier(), binding)
+}
+
+// valueNamesChild reports whether value addresses child's row at all — either
+// through the alias the FlatMap binds that leg under, or through the exact
+// carrier the child publishes. Both spellings occur: a value arrives on the
+// binding alias and leaves a lineage crossing on the carrier.
+func valueNamesChild(
+	value values.Value,
+	child RecordQueryPlan,
+	bindingAlias values.CorrelationIdentifier,
+) (bool, error) {
+	if value == nil || child == nil {
+		return false, nil
+	}
+	if !bindingAlias.IsZero() {
+		if _, named := values.GetCorrelatedToOfValue(value)[bindingAlias]; named {
+			return true, nil
+		}
+	}
+	layout, err := child.ProvidedOutputLayout()
+	if err != nil {
+		return false, err
+	}
+	return valueReferencesExactQOV(value, layout.Carrier()), nil
+}
+
+// valueAnsweredByChild reports whether value is now expressed on child's own
+// row. A layout error is answered as "no": this is a narrowing question asked
+// after a crossing already succeeded, and a child that cannot state a layout
+// simply did not claim the value.
+func valueAnsweredByChild(
+	value values.Value,
+	child RecordQueryPlan,
+	bindingAlias values.CorrelationIdentifier,
+) bool {
+	named, err := valueNamesChild(value, child, bindingAlias)
+	return err == nil && named
 }
 
 // selectedOrdinalityExplode recognizes the exact physical producer whose SQL
@@ -840,3 +959,21 @@ func (p *RecordQueryFlatMapPlan) WithChildren(qs []expressions.Quantifier) (expr
 
 // GetRecordQueryPlan returns the plan itself.
 func (p *RecordQueryFlatMapPlan) GetRecordQueryPlan() RecordQueryPlan { return p }
+
+// physicalSourceType is a quantifier's flowed row WITH its leg boundaries — the
+// type to hand any construction that re-mints a QOV from it.
+//
+// FlowedType withholds boundaries so physical layout cannot reach the semantic
+// surface. That is right for comparison and wrong for carriage: a re-mint
+// snapshots its layout from the type it is given, so the public spelling
+// launders the boundaries out and the rebound value flows a row that no longer
+// says which source owns which slots.
+func physicalSourceType(qov values.QuantifiedObjectValue) values.Type {
+	if qov == nil {
+		return nil
+	}
+	if record := values.PhysicalFlowedRecordTypeOf(qov); record != nil {
+		return record
+	}
+	return qov.FlowedType()
+}

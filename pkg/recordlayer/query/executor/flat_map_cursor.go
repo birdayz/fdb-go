@@ -233,7 +233,7 @@ func newFlatMapCursorWithOuterProperties(
 			return nil, layoutErr
 		}
 		outerPlanObject, layoutErr = values.NewQuantifiedObjectValue(
-			outerAlias, outerLayout.Carrier().FlowedType())
+			outerAlias, values.PhysicalCarrierType(outerLayout))
 		if layoutErr != nil {
 			return nil, layoutErr
 		}
@@ -247,7 +247,7 @@ func newFlatMapCursorWithOuterProperties(
 			return nil, layoutErr
 		}
 		innerPlanObject, layoutErr = values.NewQuantifiedObjectValue(
-			innerAlias, innerLayout.Carrier().FlowedType())
+			innerAlias, values.PhysicalCarrierType(innerLayout))
 		if layoutErr != nil {
 			return nil, layoutErr
 		}

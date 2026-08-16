@@ -195,7 +195,9 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 					"found '%s' more than once", name)
 			}
 			declaredHere[upper] = struct{}{}
-			if src, ok := buildCTEColumnSource(v.md, name, nq.Query(), v.cteScopes); ok {
+			if src, ok, cteBodyErr := buildCTEColumnSource(v.md, name, nq.Query(), v.cteScopes); cteBodyErr != nil {
+				return nil, cteBodyErr
+			} else if ok {
 				// Apply CTE column aliases: WITH c1(x, y) AS (...)
 				if colAliases := nq.GetColumnAliases(); colAliases != nil {
 					if aliasList, ok := colAliases.(*antlrgen.FullIdListContext); ok && aliasList != nil {
@@ -1290,6 +1292,13 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 		// DOES fire for derived-no-joins and re-enters the plain builder —
 		// every derived arm (this one, the plain builder, the catalog
 		// rebuild's buildOuterPlanOnDerived) must carry the same wrapper.
+		// Recorded for the same reason the join legs below are: a rebuild
+		// (qualified or USING-hidden star expansion) re-enters
+		// buildLogicalPlanForSelect, and without this the PRIMARY source alone
+		// would be rebuilt by the text-only builder — its body's projections
+		// then carry no resolved Values and the translator refuses the whole
+		// query with "projection slot 0 has no resolved Value".
+		fs.catalogAwareInnerPlan = innerOp
 		op = logical.NewCTE(fs.tableName, innerOp,
 			logical.NewScan(fs.tableName, ""), false)
 	} else {

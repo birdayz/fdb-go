@@ -11951,11 +11951,15 @@ None is speculative: each was re-verified against the tree before booking.
 
     That reader is NOT load-bearing: neutering the binder entirely, and
     separately binding every leg to the WRONG window, both leave the whole
-    suite green, and `TestFDB_MergedLegBinding_ReaderShapeIsRedundant` runs
-    that exact query down BOTH resolution routes in one process
-    (`EvaluationContext.WithMergedLegReadBypass`) and asserts the rows agree.
-    So the suite's greenness is "the reads are redundant", not "the bindings
-    are correct". The box-gather half is pinned by
+    suite green, and the redundancy pin ran that exact query down BOTH
+    resolution routes in one process
+    (`EvaluationContext.WithMergedLegReadBypass`), asserting the rows agree.
+    So the suite's greenness was "the reads are redundant", not "the bindings
+    are correct". THE ORDINAL MODEL THEN REMOVED THE READS: a leg reference
+    resolves by baked slot, so the binder's windows are built and consulted by
+    nobody, the redundancy license is retired, and the standing pin is
+    `TestFDB_MergedLegBinding_NothingReadsTheBinder` — which asserts the shape
+    still BINDS and is still not read, so the zero is over a shape that ran. The box-gather half is pinned by
     `TestFDB_MergedLegBinding_LiveBoxGatherShape`; the standing numbers are
     reported by `executor.FormatMergedLegBindingCensus` from the sqldriver
     `TestMain`.
@@ -12001,13 +12005,17 @@ None is speculative: each was re-verified against the tree before booking.
     **The gap that matters is elsewhere, and it has no instrument at all.** The
     load-bearing claim on this path is "the bindings are not load-bearing" — and
     what supports it is a HAND-RUN mutation: bind every leg to the wrong window,
-    observe the suite stays green. Nothing in CI does that. The redundancy pin
-    (`TestFDB_MergedLegBinding_ReaderShapeIsRedundant`) runs the reader shape
-    down both routes via `EvaluationContext.WithMergedLegReadBypass` and compares
-    rows, which proves the two ROUTES agree; it does not bind a wrong window, so
-    it cannot notice the day a binding starts to matter. Until a wrong-window arm
-    is standing, "not load-bearing" is a claim whose evidence expired the moment
-    it was measured. NOT BUILT HERE — see the phase-3 status list.
+    observe the suite stays green. Nothing in CI did that. The redundancy pin ran
+    the reader shape down both routes via
+    `EvaluationContext.WithMergedLegReadBypass` and compared rows, which proves
+    the two ROUTES agree; it did not bind a wrong window, so it could not notice
+    the day a binding started to matter. THAT GAP IS CLOSED:
+    `TestFDB_MergedLegBinding_WrongWindowsAreUnobservable` stands the wrong-window
+    mutation as a test — every window rotated onto a SIBLING leg's span, rows
+    asserted unchanged, with an engagement floor so it cannot go green by ceasing
+    to reach the binder. The redundancy pin beside it is now
+    `TestFDB_MergedLegBinding_NothingReadsTheBinder`, since under the ordinal
+    model there is no read to route twice.
 
     Consequence for CQ-53's remainder: the shadowing and first-claim-wins
     semantics are, on the shapes that run, UNOBSERVABLE — and the
@@ -16420,33 +16428,32 @@ None is speculative: each was re-verified against the tree before booking.
   source, query root) exactly as RFC-226 §5 now prescribes, not a rider on a
   change whose own §1 was refuted once already.
 
-- [ ] **CQ-102 (SMALL, query surface): a COMPUTED aggregate argument types its
+- [x] **CQ-102 (SMALL, query surface): a COMPUTED aggregate argument types its
   output UNKNOWN, so arithmetic over it across a derived-table boundary demotes
-  to Integer.** The flat-argument half is CLOSED — `aggregateOutputColumn` types
-  COUNT/AVG/SUM/MIN/MAX from Java's PhysicalOperator table, and
-  `TestFDB_AggregateOutputTypeCrossesTheDerivedBoundary` pins each rule
-  separately. `MIN(col2 + 1)` is the residue.
+  to Integer.** CLOSED. `SELECT G + 1 FROM (SELECT MIN(col2 + 1) AS G FROM t1)
+  AS Y` now reports BIGINT, matching Java's LONG, and the residual pin that
+  asserted the wrong answer has been folded into
+  `TestFDB_AggregateOutputTypeCrossesTheDerivedBoundary`'s table as two ordinary
+  arms (the outer arithmetic and the inner read).
 
-  MEASURED, and the residual is pinned by that same test's last subtest, which
-  asserts today's wrong answer with a three-state message so it fails toward
-  noticing when it flips:
+  The fix was the ordering change this item prescribed, arrived at from the
+  other end: `buildDerivedTableSourceFromTerm`'s aggregate arm now takes its
+  types from the body's own exact result row — `ExactLogicalResultType`, the
+  same derivation the translator runs — instead of from `aggOutputCols`, which
+  runs before any scope exists and therefore had no resolver to walk the
+  argument expression with. `aggOutputCols` remains the output-NAME authority;
+  the manual schema stays only as the fallback for a body that cannot prove a
+  complete representable row.
 
-  ```
-  SELECT G     FROM (SELECT MIN(col2 + 1) AS G FROM t1) AS Y  -> BIGINT
-  SELECT G + 1 FROM (SELECT MIN(col2 + 1) AS G FROM t1) AS Y  -> INTEGER  (Java: LONG)
-  ```
-
-  NOT A MISSING CAPABILITY, which is what makes it small: the inner read already
-  reports BIGINT, so the type IS derivable at plan time. What is absent is the
-  SCOPE-level derivation — `aggOutputCols` runs before the aggregate body's
-  semantic scope exists, so it has no resolver to walk the argument expression
-  with. That is the same ordering wall `buildDerivedTableSourceFromTerm` names
-  where it declines a computed projection outright.
-
-  THE FIX IS AN ORDERING CHANGE, not a typing table: build the body's scope
-  before typing its outputs, the way `buildFromOnlySelectScope` already does for
-  star expansion. Its blast radius is when the scope is constructed, which is why
-  it did not ride along with the typing fix.
+  Two restrictions came off with it, both of which were dropping exactly-
+  derivable rows: the exact path used to be attempted only for a post-aggregate
+  EXPRESSION (`SUM(v)*2`), never for an aggregate over a computed ARGUMENT, and
+  never for a JOINED body at all. One UNKNOWN column makes the WHOLE derived row
+  inexact, so a perfectly-known grouping key beside it stopped resolving too —
+  which is why this also closed `ORDER BY key "TOTAL_VALUE" has no resolved
+  Value` on `SELECT sub.category, sub.total_value FROM (... SUM(price * qty) AS
+  total_value ... GROUP BY category) sub ORDER BY sub.total_value`, and the same
+  shape over a joined body.
 
 - [x] **A member predicate over a correlated UNNEST binding returns ZERO ROWS**
   · M · found while auditing name-keyed reads of a fused nested reference
@@ -17830,3 +17837,69 @@ the corpus is **8150** (roughly doubled on 2026-08-11 by #720).
 Open question, and the reason this is booked rather than fixed: whether the
 contention is `--local_test_jobs=4` interacting with per-scenario parallelism, or
 a runner-level resource limit. Both are checkable; neither was checked.
+
+- [x] **A pushed LIMIT hid the covering-index rewrite.** `SELECT id FROM rp
+  WHERE region = 'eu' ORDER BY plan DESC LIMIT 1` planned a FETCHING index scan
+  where a covering one was available. Not a cost bug and not an index-matching
+  bug — an EXPLORATION gap. FIXED by deleting the Go-only
+  `PushLimitThroughProjectionRule` (rule + tests + rule-set entry), which is
+  what Java's structure already implies: Java carries a row limit in
+  `ExecuteProperties.setReturnedRowLimit()` at execution and has no
+  limit-pushing planner rule at all, so there is nothing to push and nothing to
+  prune against.
+
+  ```
+  before: Project([_current.ID#0], Limit(1, IndexScan(IDX_REGION_PLAN, [=, *]) REVERSE))
+  after:  Limit(1, Project([_current.ID#0], IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE))
+  ```
+
+  The mechanism, because it generalises: the rule ran in REWRITING, and
+  `OptimizeGroupTask`'s partition-retention block is gated to PLANNING, so
+  REWRITING pruned to the single pushed survivor and the un-pushed
+  `LogicalLimit(Projection)` — whose inner group holds the covering winner —
+  never reached the phase where the covering rewrite runs. Instrumented at
+  `ImplementLimitRule`: with the push enabled it ran exactly ONCE, over the
+  pushed `Limit(IndexScan)`, and never over the original. The cost model was
+  never consulted; the better member was ABSENT, not outranked. Any REWRITING
+  rule that rebuilds a node above a prunable group can do this again.
+
+  Pinned in `embedded.TestLimitOverProjectionKeepsTheCoveringRewrite` (the
+  reachability half, no FDB needed) and in `order_by_elimination.yaml`, whose
+  COVERING expectation is restored. Blast radius was four items: that entry,
+  `limit_join.yaml` test[2] (now pins `Limit(1, ` — its intent is the
+  `plan_not_contains: NestedLoopJoin` beside it, and the `FlatMap` it named was
+  a nesting detail the push happened to expose), the rule-type census, and the
+  probe test above, converted from a measured-negative to a positive pin.
+
+  LATENT, NOT NEW: record NAMES leaving exact-type identity (Java's
+  `Type.Record.equals` compares typeCode, nullability and fields only) changed
+  which members the memo ADMITS and therefore the order rules fire in — the
+  traversal walked into a hole that was already there. Three other
+  `order_by_elimination` entries moved at the same time and were pure
+  LIMIT/PROJECT nesting ties; two of them pinned OPPOSITE nestings for the same
+  query modulo `DESC`, which is what a pinned tie looks like. Those are now
+  pinned on what the query determines (no `InMemorySort`, the reverse scan).
+
+- [x] **The RFC-201 factory corpus plan-shape re-bless — DONE, and the tool's
+  generator lookup is fixed.** `cmd/factory-rebless-plan-shapes` matched every
+  committed scenario against `factory.Candidates(seed)`, the DEFAULT generator,
+  while the corpus records a generator NAME per file — so every file from a
+  non-default generator was compared against an unrelated candidate and the tool
+  refused on the first one with a "feature vector moved" report of a family
+  change that never happened. It now buckets by (generator, seed) and resolves
+  through `factory.CandidatesForGenerator`, the same lookup
+  `determinism_test.go` uses; `recipe_lookup_test.go` pins both halves.
+
+  With the correct lookup the drift is **245 of 8150 scenarios across 38 family
+  files**, and the whole corpus diff is **490 lines: 245 `# plan-shape:` and 245
+  `# dedup-key:` headers, nothing else** — no query, schema, setup or frozen
+  row moved, which is what says this was a rendering change and not a rows
+  regression. `TestFDB_FactoryCorpusFull` re-executes the re-blessed corpus
+  against a real cluster.
+
+  Authorized by `retirements/2026-08-16-rfc232-exact-ordinal-resolution.json`
+  (base commit 2e4c5ebec). Two causes are recorded there: sort keys now render
+  from the Value the plan evaluates rather than the spelling it was constructed
+  with, and a nested read on an outer join's null-supplying leg now reanchors
+  onto the joined carrier. The second was a live BUG the drift concealed — see
+  `TestReanchorCrossesANullabilityWidenedLegRootIntoANestedPath`.

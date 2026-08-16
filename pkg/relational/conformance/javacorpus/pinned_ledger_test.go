@@ -60,7 +60,9 @@ package javacorpus_test
 // changed carrier rather than size; and join-tests runs 11 more queries before
 // resting on that same class, at a JOIN … USING over a derived table whose body
 // projects a COMPUTED expression. That body still has no derivable output type,
-// which is the older gap the file was never reaching.
+// which is the older gap the file was never reaching. (SUPERSEDED as of the
+// exact-ordinal revision noted further down: that computed body now derives, the
+// class is retired and its constant deleted.)
 //
 // `polarity:negative-execution` appears in BOTH groups on purpose: the file
 // entry says the negative failed, and the inner entry carries the failure text
@@ -134,15 +136,31 @@ package javacorpus_test
 // `plan-assertion` grows 828 → 839. Neither file passes yet: the former is now
 // booked to multiple lateral unnests and the latter to a table-valued function
 // in FROM. The removed inline-values class therefore has no zero-count residue.
-const pinnedLedger = "pass=70 fail=0 skip=168 queries=1970 file_skips{conformance:go-accepts-what-java-rejects=4," +
+//
+// EXACT-ORDINAL RESOLUTION THEN CLOSES `engine-gap:derived-table-join-on`
+// ENTIRELY (1970 → 1976, plan-assertion 839 → 843) and the class is DELETED
+// rather than left at zero. join-tests.yamsql is the sole file that moves — a
+// per-file diff of all 168 skip lines and of every file's skip-class histogram
+// is otherwise byte-identical — and it moves forward: the JOIN … USING over a
+// computed-body derived table now asserts, taking the file from 17 asserted
+// queries to 23 before it stops at the parenthesised star it re-books to.
+//
+// Do NOT reason about that from the two statements' line numbers. The block
+// does not execute in file order, so the file's stopping point can move
+// EARLIER in the text while the run gets FURTHER; `queries` is the only one of
+// the two that measures progress. `struct-query` 1 → 2 is join-tests joining
+// star-expression-metadata.yamsql under the identical `0AF00: projection slot
+// 0 has no resolved Value`, which that file already produced at the previous
+// revision — a pre-existing gap gaining a second carrier, not a new one.
+const pinnedLedger = "pass=70 fail=0 skip=168 queries=1976 file_skips{conformance:go-accepts-what-java-rejects=4," +
 	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
-	"engine-gap:correlated-exists-setop=1,engine-gap:derived-table-join-on=1," +
+	"engine-gap:correlated-exists-setop=1," +
 	"engine-gap:dml-returning-result-set=2,engine-gap:error-class=2," +
 	"engine-gap:multiple-lateral-unnests=2," +
 	"engine-gap:nested-recursive-with=2," +
 	"engine-gap:planner-declines=5,engine-gap:result-metadata=3," +
 	"engine-gap:returning-dry-run=1,engine-gap:serialization-options=1," +
-	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=1,engine-gap:table-valued-function=1,fragment=2," +
+	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=2,engine-gap:table-valued-function=1,fragment=2," +
 	"no-checks=1,plan-assertion=8,polarity:fixed-version-meta=9," +
 	"polarity:negative-execution=26,polarity:negative-parse=25," +
 	"unsupported-DDL:function=11,unsupported-DDL:other=11," +
@@ -151,14 +169,14 @@ const pinnedLedger = "pass=70 fail=0 skip=168 queries=1970 file_skips{conformanc
 	"unsupported:schema-command=8,unsupported:temporary-function=17," +
 	"vacuous:all-assertions-skipped=5} inner_skips{conformance:go-accepts-what-java-rejects=4," +
 	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
-	"engine-gap:correlated-exists-setop=1,engine-gap:derived-table-join-on=1," +
+	"engine-gap:correlated-exists-setop=1," +
 	"engine-gap:dml-returning-result-set=2,engine-gap:error-class=2," +
 	"engine-gap:multiple-lateral-unnests=2," +
 	"engine-gap:nested-recursive-with=2," +
 	"engine-gap:planner-declines=5,engine-gap:result-metadata=3," +
 	"engine-gap:returning-dry-run=1,engine-gap:serialization-options=1," +
-	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=1,engine-gap:table-valued-function=1," +
-	"no-checks=8,plan-assertion=839,polarity:negative-execution=26," +
+	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=2,engine-gap:table-valued-function=1," +
+	"no-checks=8,plan-assertion=843,polarity:negative-execution=26," +
 	"unsupported-DDL:function=11,unsupported-DDL:other=11," +
 	"unsupported-DDL:struct-index=4,unsupported:check-cache=145," +
 	"unsupported:continuation=36,unsupported:debugger=3," +
@@ -179,15 +197,20 @@ const pinnedFileTotal = 238
 // on mismatch the test dumps the full assignment, which is the artefact worth
 // diffing.
 //
-// THIS REVISION MOVED EXACTLY TWO LINES, and they were diffed rather than
-// re-blessed on the hash. Both files now execute every inline-VALUES statement
-// that previously blocked them and reach their next explicit engine boundary:
+// THE EXACT-ORDINAL REVISION MOVED EXACTLY ONE LINE, and it was diffed rather
+// than re-blessed on the hash:
 //
-//	-array-join-at.yamsql  skip engine-gap:planner-declines
-//	+array-join-at.yamsql  skip engine-gap:multiple-lateral-unnests
-//	-table-functions.yamsql  skip engine-gap:inline-values-table
-//	+table-functions.yamsql  skip engine-gap:table-valued-function
+//	-join-tests.yamsql  skip engine-gap:derived-table-join-on
+//	+join-tests.yamsql  skip engine-gap:struct-query
 //
-// Nothing else moved or swapped; the full 238-line assignment emitted by the
-// mismatch gate was inspected before this digest was updated.
-const pinnedAssignmentDigest = "62b4b60c68a71a5a12a134a8818a90e62c960e4640367ef09fb235f2e3c04969"
+// Nothing else moved or swapped, and that is measured rather than assumed. Two
+// independent per-file diffs against the previous revision were taken over the
+// SAME 168-file skip set — the `SKIP <path> <class> queries=N` lines, and each
+// file's own skip-class histogram — and both are byte-identical apart from the
+// join-tests line. The skip set has the same membership on both sides (no file
+// added or removed), and `pass` is unchanged at 70, so the pass rows of the
+// assignment are identical too.
+//
+// The previous revision's two lines are still described below it in this file's
+// history; they were the inline-VALUES pair.
+const pinnedAssignmentDigest = "804af2dceb53c12f538acccbc66ceff7c54a5baa8f2be0ba868cf3ac557947d7"

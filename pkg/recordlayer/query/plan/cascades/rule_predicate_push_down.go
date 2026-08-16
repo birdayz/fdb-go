@@ -172,6 +172,41 @@ func (r *PredicatePushDownRule) OnMatch(call *ExpressionRuleCall) {
 	}
 }
 
+// pushedAliasDenotesSelectRow reports whether the row produced by a Select is
+// the same exact row the pushed quantifier's alias names.
+//
+// It is the precondition for substituting the alias by that Select's result
+// value, and it is a TYPE question rather than a naming one: two rows that
+// agree on shape agree on what every ordinal in a pushed predicate addresses,
+// and two that do not cannot both be what the alias means. An edge that cannot
+// state its flowed row answers no — the substitution has nothing to check
+// against, and an unchecked one is the silent wrong-column read.
+func pushedAliasDenotesSelectRow(
+	pushQuantifier expressions.Quantifier,
+	resultValue values.Value,
+) bool {
+	if resultValue == nil {
+		return false
+	}
+	flowed, err := pushQuantifier.RequireFlowedObjectValue()
+	if err != nil || flowed == nil || flowed.FlowedType() == nil {
+		return false
+	}
+	return values.QuantifiedRowShapesAgree(flowed.FlowedType(), resultValue.Type())
+}
+
+// rebasedAliasesDenoteOneRow reports whether two quantifiers flow the same
+// exact row, which is what an alias-only predicate rebase between them assumes.
+// A quantifier that cannot state its flowed row answers no.
+func rebasedAliasesDenoteOneRow(from, to expressions.Quantifier) bool {
+	fromFlowed, fromErr := from.RequireFlowedObjectValue()
+	toFlowed, toErr := to.RequireFlowedObjectValue()
+	if fromErr != nil || toErr != nil || fromFlowed == nil || toFlowed == nil {
+		return false
+	}
+	return values.QuantifiedRowShapesAgree(fromFlowed.FlowedType(), toFlowed.FlowedType())
+}
+
 // pushPredicateToExpression is the Go equivalent of Java's PushToVisitor.
 // It visits the child expression and returns a new expression with the
 // predicates pushed in, or nil if the expression type doesn't support
@@ -212,6 +247,15 @@ func pushIntoLogicalFilter(
 ) (expressions.RelationalExpression, error) {
 	inner := filter.GetInner()
 	if inner.Kind() != expressions.QuantifierForEach {
+		return nil, nil
+	}
+	// An alias-only rebase keeps every ORDINAL and changes only which row they
+	// are read from, so the two rows have to be the same row. Reached on
+	// `… LEFT JOIN emp e ON … WHERE e.id IS NULL AND NOT EXISTS (…)`, where
+	// `E.ID#0 IS NULL` was rebased onto a preserved leg aliased D and became
+	// `D.ID#0 IS NULL` — a predicate on a DIFFERENT column, which the access
+	// path then turned into a scan range on DEPT's primary key.
+	if !rebasedAliasesDenoteOneRow(pushQuantifier, inner) {
 		return nil, nil
 	}
 
@@ -290,6 +334,19 @@ func pushIntoSelect(
 
 	// Build a TranslationMap: pushQuantifier.alias -> selectExpr.resultValue.
 	resultValue := selectExpr.GetResultValue()
+	// The substitution replaces the alias's whole ROW, so the row this Select
+	// produces has to BE the row the alias denotes. When it is not, the
+	// ordinals travel unchanged into a different layout and the predicate
+	// silently reads a different column: pushing `E.ID#0 IS NULL` into a Select
+	// whose result is a join box `{D.ID, D.DNAME, E.ID, …}` rewrites it to
+	// `D.ID#0 IS NULL`, which then matched DEPT's primary key and became a scan
+	// range on the PRESERVED leg. `SELECT d.dname FROM dept d LEFT JOIN emp e ON
+	// e.dept_id = d.id WHERE e.id IS NULL AND NOT EXISTS (…)` returned no rows
+	// instead of the one department with no employees, and the plan showed no
+	// trace of the conjunct at all.
+	if !pushedAliasDenotesSelectRow(pushQuantifier, resultValue) {
+		return nil, nil
+	}
 	tmBuilder := NewTranslationMapBuilder()
 	tmBuilder.When(pushQuantifier.GetAlias()).Then(func(_ values.CorrelationIdentifier, _ values.LeafValue) values.Value {
 		return resultValue
@@ -300,7 +357,16 @@ func pushIntoSelect(
 	newPredicates := make([]predicates.QueryPredicate, 0, len(selectExpr.GetPredicates())+len(originalPredicates))
 	newPredicates = append(newPredicates, selectExpr.GetPredicates()...)
 	for _, p := range originalPredicates {
-		newPredicates = append(newPredicates, translatePredicateCorrelations(p, tm))
+		// A predicate that cannot be re-expressed against the child Select's
+		// result value simply does not push. Declining leaves it where it is,
+		// above this Select, where it is still correct — the alternative is a
+		// predicate rebuilt around a nil operand, which is not a worse plan but
+		// an impossible one.
+		translated, ok := translatePredicateCorrelations(p, tm)
+		if !ok {
+			return nil, nil
+		}
+		newPredicates = append(newPredicates, translated)
 	}
 
 	return expressions.NewSelectExpressionWithJoinType(
@@ -323,6 +389,11 @@ func pushOverChild(
 	pushQuantifier expressions.Quantifier,
 	child expressions.Quantifier,
 ) (expressions.Quantifier, error) {
+	// Same precondition as pushIntoLogicalFilter's rebase: ordinals survive the
+	// alias change untouched, so the two aliases must name the same row.
+	if !rebasedAliasesDenoteOneRow(pushQuantifier, child) {
+		return expressions.Quantifier{}, nil
+	}
 	// Rebase: pushQuantifier.alias -> child.alias
 	aliasMap, err := values.NewAliasMap([]values.AliasPair{{
 		Source: pushQuantifier.GetAlias(),

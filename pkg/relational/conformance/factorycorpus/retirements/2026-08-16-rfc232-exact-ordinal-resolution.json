@@ -1,0 +1,241 @@
+{
+  "format_version": 2,
+  "rfc": "232",
+  "date": "2026-08-16",
+  "reason": "RFC-232 exact-ordinal FieldValue/QOV resolution changes plan RENDERING, so the plan-shape hash and the dedup key derived from it move for 245 of 8150 scenarios across 38 family files. Two causes, both measured. (1) A sort key is now rendered from the Value the plan evaluates rather than from the spelling it was constructed with, so it prints as _current.NAME#ordinal; the old text carried a MINTED correlation name off a global counter and was not even reproducible between runs. (2) A nested field read on an outer joins null-supplying leg now reanchors onto the joined carrier instead of staying rooted on the leg. ROWS ARE UNCHANGED and that is checked twice: the re-bless tool recomputes the candidate, all four renderings, the schema, the setup and the frozen rows and errors on any difference in them, and TestFDB_FactoryCorpusFull executes the whole re-blessed corpus against a real cluster. The drift also concealed a real defect this change fixes: cause (2) did not happen at all before it, so a nested read on a null-supplying leg under an ORDER BY spanning both join sides failed at runtime with `exact QOV \"L\" ... has no declared runtime binding` - the producer bridges nested-prefix arm demanded byte-equal root types while a null-supplying leg is spelled NULLABLE by its producer and NOT NULL by a consumer that inherited the legs own row. Six committed scenarios reported it; TestFDB_OuterJoinNestedFieldBinding and TestReanchorCrossesANullabilityWidenedLegRootIntoANestedPath pin it.",
+  "base_commit": "2e4c5ebecb5aed68dc4b212ee039bb5f3b0a23bf",
+  "before_census_sha256": "f76f2334cc6316460424e02ea75ba379aaef038f4dd5de2c68b5b9733a0e05ac",
+  "after_census_sha256": "8145e3ff6b19f86b48148b78c16547a08924fd9fff2ffa558a260f660201e39e",
+  "before_tree_sha256": "30c3a1318249bb852493b30bf1563d36eef4f306e6f0fe859143725f7edb78e8",
+  "after_tree_sha256": "5ed5876a0ce70b0a343a4dbe8fb7eb54fa23dc5c4d67100b1c1a6b12faca2ead",
+  "changes": [
+    {
+      "name": "join2_comma__and_arith-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "1d578ae9d783bd8326f7eea3dfb2711c42032ceaefb9762db313c6bd012b704d",
+      "new_sha256": "e057eacf1a84282eddcc8730f2a0ada69c015cce32548c786288249932d09ab4"
+    },
+    {
+      "name": "join2_comma__and_between-cmp-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "dabe4600dd650250478644d5d439de69398f9f80d8cfada1de74f15efe81082f",
+      "new_sha256": "1f12a45fd17b36c358672f0dcdd0dff5110e87f0b5fd97a93c65789de12ba8b1"
+    },
+    {
+      "name": "join2_comma__and_between-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "30192543caeb4c100c7f073984d7e2df07d592b4d49a452054302b3543964e4b",
+      "new_sha256": "0340c5d4435b76b682d7588616b82d8a70f21f7db0f70d90a6280766f49c3673"
+    },
+    {
+      "name": "join2_comma__and_between-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "0d4d60ccf355542226f31f56db0bccd804c6a81e6157191e423f4a4f79f54014",
+      "new_sha256": "7f70fb2e63a858295c554f576770e5220602ac29d8c8af5942ef8247ee4fa4c2"
+    },
+    {
+      "name": "join2_comma__and_between-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "ace26f468ecca0c1430382179a0751ea7f44bbc7031f72ac7b3af92fc484841d",
+      "new_sha256": "1d4a07e8bd4b749502506c46955f27b317e9d3edd3b791dc4ec348bfdfbd824f"
+    },
+    {
+      "name": "join2_comma__and_bit-cmp-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "3bf44ed7a1c978c765c91f824fd546b90b96602b2d29818a54ac6060ec4e73aa",
+      "new_sha256": "0b5a025f5143e1ca102d474a1a131e0d1451cfb2c4cbb83512190f79a30d8832"
+    },
+    {
+      "name": "join2_comma__and_cmp-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "48b13325009f32e98b4fe43bc8af15d62043c7fce22a8c19f9b5dbf25fa21c67",
+      "new_sha256": "68823d55ea3ef5062684e45d63dcbf7693e73470e712804d31f3074afdf0172d"
+    },
+    {
+      "name": "join2_comma__and_cmp-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "9c08bdb7284d49b5ac5004d6220ace9eef7ee2c88542d67040f724ca1af1000a",
+      "new_sha256": "4ff884bc53d75a9e6790e74b24a0511f3edb8b40361334fd325ced3164ea11dd"
+    },
+    {
+      "name": "join2_comma__and_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "6fafebadb3773f4a0fbf0570cc271116866389a0a9d353d16433ef1b89307b53",
+      "new_sha256": "e94b7e2db1985cf6285d33c4594f8e26b28e1deb463618d6ea1db62a733a8685"
+    },
+    {
+      "name": "join2_comma__between__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "76b3ce60068bc0285b9cec812fef21d6fd3d99930acc139e49145ab3acc3bf9e",
+      "new_sha256": "b740848793efa53233aedbdc9cdf2c9ac7ece357e7b872f3ac2436e9cdd24eef"
+    },
+    {
+      "name": "join2_inner__and_arith-between-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "fe2497e1ea1782fe59d8ada4e719bd2fcd08b18c5f47d66fb67a339104e6381d",
+      "new_sha256": "e75d79bd98ee66a92f87ee2df74f690608fb9d424dc823ebf15822f8ef23c9f6"
+    },
+    {
+      "name": "join2_inner__and_arith-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "5f16968cedf44c45651bf5e4b92eeea5027caf3d0ee16ca5c26c32eda6987205",
+      "new_sha256": "448c9bf319d6c94f0b65a483319a4f1e34da1e2199da11613d1c4b5080e52955"
+    },
+    {
+      "name": "join2_inner__and_between-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "91ea3c38a113926a0153eb8b5a8fb791a97f024ee2f5b0381583bb041a4053ad",
+      "new_sha256": "8c49420c47a534088a541e8075121288c579a55923a1f1dc7c6ff672b055f95d"
+    },
+    {
+      "name": "join2_inner__and_between-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "7c4f464c4580efadd9a5e65d0f094eb3be2743c6e3aba0043f74b8ad9703e891",
+      "new_sha256": "5df4d4cf5bb759262274aa505e4c1e4c9817cafa5573b68b409e9fe47b18da4a"
+    },
+    {
+      "name": "join2_inner__and_between__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "96386f63915914d99478ec74e96b329c8e88e4f784c0964cac7e85802b63cda6",
+      "new_sha256": "74b0beaf384b8b344a9c701822c57b5490e40a3058d0c91dd292f0bd1ae280f7"
+    },
+    {
+      "name": "join2_inner__and_cmp-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "98bbc7a2c26b2e61402f7d59cf6e5b1ce93b1b2ba575c8d8eca4cabc6ce32157",
+      "new_sha256": "66d94b040bc48d844f7774bf7a583f0fdb25d4e8160113aed4915c47d7993dd1"
+    },
+    {
+      "name": "join2_inner__and_cmp-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "bd756a502b0ba8e268d4a49c7d2c3ecf4e8b0957db370492ce5c4d426f03d69d",
+      "new_sha256": "26a99b5bb531e539aa8729a4c216ebf27e6158a8cc0be1123c523eceeca1fa6a"
+    },
+    {
+      "name": "join2_inner__and_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "db9d67a4ac5d6bfd9b538945ee67ba8a67de9b1956685cdc8ff435caa3c5c380",
+      "new_sha256": "dde449225fad577b5f22c497fc219f0adb2295c9c0f7c74bdd97a45936cb6d66"
+    },
+    {
+      "name": "join2_inner__between__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "a50254e28f2b608cb549780ec7dd2e76b5aab499bd6b5c33a528345f3fa0604a",
+      "new_sha256": "32d91533b942ff34c8fcee921eabebf0de59171af9bb2deec1a2b6ebfcab91c1"
+    },
+    {
+      "name": "join3_comma__and_arith-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "89865df33ffccfe8290240acf776c7c0460b46d0e3bf60ace606f665f4edac1e",
+      "new_sha256": "4616ee7bb4ba9139b17b982fcfe599f2101d1e10ad0284bde1a8d0126f684af7"
+    },
+    {
+      "name": "join3_comma__and_between-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "4230390030b8bd6375cb271e14aaa1c90305050843d7f8f3673dae6c6d031b8b",
+      "new_sha256": "b744f250208fade6609cc08e6ba449b0a32f01a542788b5065aa5987e882094a"
+    },
+    {
+      "name": "join3_comma__and_bit-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "fe242696a40cc9cccb19c6910a054ea1c06fa5c2fa83be31c948e0e1cea78e61",
+      "new_sha256": "16927f2c4fd1e06cab0d5af2f25ff511eaad2e8a9152d3234f9c5b6cb064b18f"
+    },
+    {
+      "name": "join3_comma__and_cmp-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "f0f8352d4ef3c795fd96e627b07c0d344c085ba360c5b94292e0078f71abd4dd",
+      "new_sha256": "471ea243c5243ba9b2f14783572b353c429990e1d5d4d441405e6a7d53ef4bea"
+    },
+    {
+      "name": "join3_comma__and_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "064e1ae3436a3fea128a34a470f0f7edf62c82d8704c85dc18f71b1222428421",
+      "new_sha256": "01c1a0bb25f688ea59140a9b1be2a25120331d364ac6526d83c817219be24d16"
+    },
+    {
+      "name": "join3_comma__between__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "90ec20308c6e1c6b51a297ee7960b685f5d2ba31ace15e88118b4854b11532e8",
+      "new_sha256": "58389eb3b5b362a6312d5d2643059d8b8901d2671b437301163f6426203391bd"
+    },
+    {
+      "name": "join3_comma__cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "5ede74c4c877ee08a6bacaa1154176949072b7add7060b9f0b2065f703409355",
+      "new_sha256": "2a0b295a0fa7710507c601ebcb3868471861ef311f8c4ba325b01e06efc9f8fe"
+    },
+    {
+      "name": "join3_inner__and_arith-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "f323c89e4ebaf9efd836cca2037db0bb1e6d93a92a134fdf92bd40f8df21501f",
+      "new_sha256": "3461c4114112d2129fb4c68eed890b1f84387d411946f8331b66ac9fba6dc074"
+    },
+    {
+      "name": "join3_inner__and_between-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "69feffcdc8536c6cd7f77eed104a9f5037127f0187b123f2e957749a39987c8c",
+      "new_sha256": "67b43b884fd4ba8a89c880cc1e3db4cc5d7bf565cc3b212466915f245f6addd1"
+    },
+    {
+      "name": "join3_inner__and_cmp-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "8a1b31659b0644d5d4a1223ce72f6ba570a96bed4161feb8a824ae95fdc73d68",
+      "new_sha256": "84fb12ca98a65db43f37a16682977931483a8bbaff52d1cd8497b0b278a866b6"
+    },
+    {
+      "name": "join3_inner__and_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "26ef5e452ab4dcc6559df04ad524eb74d734873ab6c15e9d5272bb812526f2a8",
+      "new_sha256": "40b8c5ed90750a426524740c3aeb4213cb89bda123b60eb3a9a045c8a727b99f"
+    },
+    {
+      "name": "join3_inner__and_in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "fa8c02ee06d2109bf4399979a04618b83f8fae9811d8e571439dc9995e3ac3cf",
+      "new_sha256": "45e44133676902a32c3dd81161a9f31681c0eb6e65602f89553bf5510be80ea9"
+    },
+    {
+      "name": "join3_inner__arith__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "64d2f43bd0cee9a5331033a188c9c45f97c29eec5b57135ebfb2b214def0113f",
+      "new_sha256": "a25a2df295b668c6f6ceda1712fbe62ebf1d4c8efd90a3db78aaaf89c0b20467"
+    },
+    {
+      "name": "join3_inner__between__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "1d8be4746380b8afc74dfca8d442ce87d707f61174e0081c143bb08312f3dd8a",
+      "new_sha256": "5d3cef2c1aa11be2489eb66e22e629a2752fcd7d5d49088a33a4ea5544c0b748"
+    },
+    {
+      "name": "join3_inner__cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "6cc137a72f68fddb616f65edcc14f15e2150f31b9fbf9defc7173884a7ca191b",
+      "new_sha256": "c63adf1dc624a4165bac591980070082b0b895987b5044dbb372e941ecee3ecc"
+    },
+    {
+      "name": "nested_join3_comma__and_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "783f014da8f3ad40a9a09712234e6629acbad92b3f91fa4df795f975fe222070",
+      "new_sha256": "bdb869acd70e89461c88bc4764d0bb887f2149df80baa771d2e85bf110b6b402"
+    },
+    {
+      "name": "single__and_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "33e05873c1e998e95c04d7cf419e9e12f021febaa53751d8c06e66c514efafe2",
+      "new_sha256": "4eb5dd97ca32d41b9b295571b64d2513d409e664cdbfebe078d14396dba70771"
+    },
+    {
+      "name": "single__and_not_cmp-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "743db2cfc6bd3c0e558e25d387ddc407f9f1b09118d372e12be089a7019933ad",
+      "new_sha256": "2b50ba1f42477eea0b7de7a042527b8d7f189f57e6743f5819d3f7c74aa59e32"
+    },
+    {
+      "name": "single__in__scalarsub.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "c89105630c8fb809fac7a6a90bb2c1c57a303ad81364cc4b2814fb1b66624c93",
+      "new_sha256": "0bdea7f04c9ebc0c9aa3b2d8b1d41fce1cbb2abb4586933c00f5a370c3fd7c4c"
+    }
+  ]
+}

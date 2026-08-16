@@ -696,7 +696,10 @@ func TestPredicateCompensationFunc_NoCompensation(t *testing.T) {
 	if amended.IsNeeded() {
 		t.Fatal("amended should not be needed")
 	}
-	preds := f.ApplyCompensationForPredicate(nil)
+	preds, compensable := f.ApplyCompensationForPredicate(nil)
+	if !compensable {
+		t.Fatal("compensation reported it could not be expressed")
+	}
 	if len(preds) != 0 {
 		t.Fatalf("expected 0 predicates, got %d", len(preds))
 	}
@@ -715,7 +718,10 @@ func TestPredicateCompensationFunc_Impossible(t *testing.T) {
 	if !amended.IsImpossible() {
 		t.Fatal("amended should still be impossible")
 	}
-	preds := f.ApplyCompensationForPredicate(nil)
+	preds, compensable := f.ApplyCompensationForPredicate(nil)
+	if !compensable {
+		t.Fatal("compensation reported it could not be expressed")
+	}
 	if len(preds) != 0 {
 		t.Fatalf("expected 0 predicates from impossible, got %d", len(preds))
 	}
@@ -739,7 +745,10 @@ func TestOfPredicateCompensation_Identity(t *testing.T) {
 	}
 
 	// Apply with nil translation → returns original predicate.
-	preds := f.ApplyCompensationForPredicate(nil)
+	preds, compensable := f.ApplyCompensationForPredicate(nil)
+	if !compensable {
+		t.Fatal("compensation reported it could not be expressed")
+	}
 	if len(preds) != 1 {
 		t.Fatalf("expected 1 predicate, got %d", len(preds))
 	}
@@ -764,7 +773,10 @@ func TestOfPredicateCompensation_WithAliasRebase(t *testing.T) {
 	f := OfPredicateCompensation(pred, false)
 
 	tm := TranslationMapOfAliases(srcAlias, tgtAlias)
-	preds := f.ApplyCompensationForPredicate(tm)
+	preds, compensable := f.ApplyCompensationForPredicate(tm)
+	if !compensable {
+		t.Fatal("compensation reported it could not be expressed")
+	}
 	if len(preds) != 1 {
 		t.Fatalf("expected 1 predicate, got %d", len(preds))
 	}
@@ -841,7 +853,10 @@ func TestPredicateCompensationMap_ApplyCompensations(t *testing.T) {
 		[]PredicateCompensationFunc{OfPredicateCompensation(pred, false)},
 	)
 
-	results := m.ApplyCompensations(nil)
+	results, compensable := m.ApplyCompensations(nil)
+	if !compensable {
+		t.Fatal("compensation reported it could not be expressed")
+	}
 	if len(results) != 1 {
 		t.Fatalf("expected 1 compensation predicate, got %d", len(results))
 	}
@@ -869,7 +884,10 @@ func TestPredicateCompensationMap_NilSafe(t *testing.T) {
 	if m.Len() != 0 {
 		t.Fatal("nil map Len should be 0")
 	}
-	results := m.ApplyCompensations(nil)
+	results, compensable := m.ApplyCompensations(nil)
+	if !compensable {
+		t.Fatal("compensation reported it could not be expressed")
+	}
 	if len(results) != 0 {
 		t.Fatalf("nil map should return 0 compensations, got %d", len(results))
 	}

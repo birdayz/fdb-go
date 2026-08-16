@@ -117,17 +117,17 @@ func TestLegColumnProvenanceClassification(t *testing.T) {
 func TestLegColumnProvenanceGate(t *testing.T) {
 	t.Parallel()
 
-	// The DottedHitIdentityAvailable FLOOR is gone: RFC-212 §11.3 retitled the
-	// producer and the dotted arm now answers ZERO times over the corpus, so a
-	// floor on that population is unsatisfiable. It is replaced by a HARD ZERO —
-	// the direction flipped, and growth is the alarm now.
-	floors := &LegColumnProvenanceFloors{Calls: 1}
+	// EVERY floor is gone, and each went for its own reason. The
+	// DottedHitIdentityAvailable floor went when RFC-212 §11.3 retitled the
+	// producer and drove the dotted arm to zero; the Calls floor went when the
+	// exact-ordinal seed removed adaptLegPositional's permutation gather — the
+	// reader's only driver — from the live path. Both are replaced by HARD ZEROS
+	// with the direction flipped: growth is the alarm now.
+	floors := &LegColumnProvenanceFloors{}
 
-	// A state that HOLDS: the seven outcomes partition Calls, nothing diverged,
-	// and the dotted arm answers NOTHING — the post-retitling steady state.
-	ok := legColumnProvenanceCounters{
-		Calls: 52, FlatHit: 44, NotDotted: 8,
-	}
+	// A state that HOLDS: the reader is not entered at all, which is the retired
+	// steady state, and the partition holds trivially over it.
+	ok := legColumnProvenanceCounters{}
 	var b strings.Builder
 	if assertLegColumnProvenanceCounters(&b, ok, floors) {
 		t.Fatalf("a partitioning, divergence-free census FAILED the gate:\n%s", b.String())
@@ -141,8 +141,7 @@ func TestLegColumnProvenanceGate(t *testing.T) {
 	// after the retitling, so any answer means a producer is again naming a leg
 	// type's only column with a dot-containing title.
 	b.Reset()
-	revived := ok
-	revived.FlatHit = 40
+	revived := legColumnProvenanceCounters{Calls: 52, FlatHit: 40, NotDotted: 8}
 	revived.DottedHitIdentityAvailable = 4
 	revived.DottedHitOwnerNamesNoLeg = 4
 	if !assertLegColumnProvenanceCounters(&b, revived, floors) {
@@ -223,57 +222,52 @@ func TestLegColumnProvenanceGate(t *testing.T) {
 	}
 }
 
-// The census's whole finding is a pair of SMALL numbers — the dotted arm answers
-// four times in the corpus, and all four have an identity available — so a
-// population that disappears reports the identical shape as one that is healthy:
-// the partition holds as 0 == 0, the divergence zero holds vacuously, and "0 of
-// 0 are identity-available" reads on a report exactly like "4 of 4".
+// The reader is RETIRED: adaptLegPositional's layout-permutation gather is its
+// only driver, and the exact-ordinal seed — which bakes against the chosen
+// physical leg layout, as Java's translateCorrelations does — makes every leg
+// row pass positionalMatchesLegType, so the gather is skipped.
 //
-// The floors are the only thing that separates those, and they are dropped on a
-// narrowed run, so both directions get asserted: the floors must fire on an
-// empty population, and dropping them must not drop the partition or the zero.
-func TestLegColumnProvenanceGateFloors(t *testing.T) {
+// The guard that watched this population for COLLAPSE therefore inverts. There
+// is nothing left to floor, and the zero must hold on a narrowed run too: a
+// revival alarm that only fires on full runs stops watching exactly when someone
+// is iterating on the seed that would revive it.
+func TestLegColumnProvenanceGateRetirement(t *testing.T) {
 	t.Parallel()
 
-	floors := &LegColumnProvenanceFloors{Calls: 1, DottedHitIdentityAvailable: 1}
-
 	var b strings.Builder
-	if !assertLegColumnProvenanceCounters(&b, legColumnProvenanceCounters{}, floors) {
-		t.Fatal("an EMPTY census passed the gate. Every assertion above it holds " +
-			"vacuously at zero population, so a reader that stopped being reached " +
-			"reports as a reader with nothing wrong.")
-	}
-	if !strings.Contains(b.String(), "Calls = 0, want >= 1") {
-		t.Errorf("the empty-population failure does not name Calls:\n%s", b.String())
+	if assertLegColumnProvenanceCounters(&b, legColumnProvenanceCounters{}, &LegColumnProvenanceFloors{}) {
+		t.Fatalf("the RETIRED steady state (nothing reaches the reader) failed the gate:\n%s",
+			b.String())
 	}
 
-	// Calls alone does not cover it: the FLAT arm carries most of the traffic, so
-	// the denominator can stay healthy while the arm the census exists for goes
-	// silent. That is the state a Calls-only floor would pass.
 	b.Reset()
-	flatOnly := legColumnProvenanceCounters{Calls: 52, FlatHit: 44, NotDotted: 8}
-	if !assertLegColumnProvenanceCounters(&b, flatOnly, floors) {
-		t.Fatal("a census whose DOTTED arm answered zero times passed the gate on the " +
-			"strength of its flat-hit traffic. The dotted arm is the only thing this " +
-			"census measures; its disappearance is the failure, not the flat arm's health.")
+	if !assertLegColumnProvenanceCounters(&b,
+		legColumnProvenanceCounters{Calls: 1, FlatHit: 1}, &LegColumnProvenanceFloors{}) {
+		t.Fatal("a single call to the retired reader PASSED the gate.\n" +
+			"  The permutation gather is entered only when a leg's seeded type and the row\n" +
+			"  its physical leg emits are permutations of each other, which the exact\n" +
+			"  ordinal seed is supposed to make impossible. One call says a seed stopped\n" +
+			"  baking against the chosen physical layout — a finding about the PRODUCER.")
 	}
-	if !strings.Contains(b.String(), "DottedHitIdentityAvailable = 0, want >= 1") {
-		t.Errorf("the silent-dotted-arm failure does not name the counter:\n%s", b.String())
+	if !strings.Contains(b.String(), "want 0") {
+		t.Errorf("the revival failure does not state the expectation:\n%s", b.String())
+	}
+	if !strings.Contains(b.String(), "revival") {
+		t.Errorf("the revival failure does not state which DIRECTION is the alarm. A guard "+
+			"whose expected value is zero reads as dead-instrument news unless it says "+
+			"growth is the danger:\n%s", b.String())
 	}
 
-	// Floors dropped (a narrowed run): an empty census must PASS, and a real
-	// contradiction must still FAIL.
+	// Floors dropped (a narrowed run): the retirement zero must still hold, and a
+	// real contradiction must still fail.
 	b.Reset()
 	if assertLegColumnProvenanceCounters(&b, legColumnProvenanceCounters{}, nil) {
-		t.Errorf("with floors dropped, an EMPTY census failed:\n%s\n"+
-			"  A narrowed -test.run reaches this reader zero times; failing there would "+
-			"make every focused run red.", b.String())
+		t.Errorf("with floors dropped, the retired steady state failed:\n%s", b.String())
 	}
 	b.Reset()
 	if !assertLegColumnProvenanceCounters(&b,
 		legColumnProvenanceCounters{Calls: 1, DottedHitIdentityDiverged: 1}, nil) {
-		t.Error("with floors dropped, a DIVERGED dotted hit passed. The floors describe " +
-			"a whole-suite population; the zero describes a contradiction, and dropping " +
-			"the first must not drop the second.")
+		t.Error("with floors dropped, a DIVERGED dotted hit passed. Dropping the " +
+			"whole-suite calibrations must not drop the contradictions.")
 	}
 }

@@ -363,8 +363,11 @@ func TestEvaluationObjectBinderCarriesExplicitAbsenceThroughChildLayout(t *testi
 		t.Fatalf("absent outer Evaluate = (%v, %v), want bound SQL NULL", evaluated, evalErr)
 	}
 
+	// FOREIGN is a different row SHAPE under the same alias — a RecordName does
+	// not separate two types (Java's Type.Record.equals), so renaming alone
+	// would hand the lookup the outer's own row and prove nothing.
 	foreignType := values.NewRecordType("FOREIGN", false, []values.Field{{
-		Name: "V", Ordinal: 0, FieldType: values.NullableLong,
+		Name: "FOREIGN_V", Ordinal: 0, FieldType: values.NullableLong,
 	}})
 	foreign := mustTestQOV(t, outerAlias, foreignType)
 	if got, present, lookupErr := binder.GetQuantifiedBinding(foreign); got != nil || present || lookupErr == nil {

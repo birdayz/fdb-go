@@ -65,6 +65,13 @@ func newPlanExprBaseWithProperties(
 	if err := values.ValidateOrdinalLayoutAdmission(provided); err != nil {
 		return PlanExprBase{}, fmt.Errorf("%s ordinal physical properties: %w", owner, err)
 	}
+	// This is the one place holding BOTH halves of a row's description, so it is
+	// where they get joined. The layout states the row's physical shape; the
+	// result value states which source owns which slots. A layout that publishes
+	// a merged box as ONE window has no way to know the second, and a carrier
+	// without it flows a row whose qualified reads resolve into the FIRST leg —
+	// silently, because the type is the right width either way.
+	provided = values.LayoutWithSeedLegs(provided, resultValue)
 	carrier := provided.Carrier()
 	if !resultType.Type().Equals(carrier.FlowedType()) {
 		return PlanExprBase{}, fmt.Errorf(
@@ -147,10 +154,10 @@ func newPlanExprBaseForQuantifier(owner string, quantifier expressions.Quantifie
 			// layout owner. Publishing the child-edge QOV here would claim a
 			// source binding the preserved layout does not provide; evaluating it
 			// against the emitted row would then fail UnboundCorrelation.
-			if !resultValue.Type().Equals(layout.Carrier().FlowedType()) {
+			if !resultValue.Type().Equals(values.PhysicalCarrierType(layout)) {
 				return PlanExprBase{}, fmt.Errorf(
 					"%s provided output layout: carrier type %s disagrees with child-edge type %s",
-					owner, layout.Carrier().FlowedType(), resultValue.Type())
+					owner, values.PhysicalCarrierType(layout), resultValue.Type())
 			}
 			if selectedChild != nil {
 				return newPassThroughPlanExprBase(owner, layout.Carrier(), layout)
@@ -249,10 +256,10 @@ func newPlanExprBaseForProvidedLayout(
 	if err != nil {
 		return PlanExprBase{}, fmt.Errorf("%s result Value: %w", owner, err)
 	}
-	if !resultType.Type().Equals(layout.Carrier().FlowedType()) {
+	if !resultType.Type().Equals(values.PhysicalCarrierType(layout)) {
 		return PlanExprBase{}, fmt.Errorf(
 			"%s provided output layout: carrier type %s disagrees with result type %s",
-			owner, layout.Carrier().FlowedType(), resultType.Type())
+			owner, values.PhysicalCarrierType(layout), resultType.Type())
 	}
 	return newPlanExprBaseWithProvidedLayout(owner, resultValue, layout)
 }

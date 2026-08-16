@@ -304,12 +304,18 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := func(t *testing.T, sql string) ([]string, error) {
+	// runPlanned returns the emitted rows AND the plan that produced them. An
+	// order assertion whose failure shows only the rows makes every
+	// re-derivation of "which plan emitted this" a fresh investigation, and the
+	// answer is the one fact that decides whether the order changed because the
+	// SORT changed or because the JOIN did.
+	runPlanned := func(t *testing.T, sql string) ([]string, string, error) {
 		t.Helper()
 		plan, subs, perr := embedded.PlanRecordQueryWithSubqueries(sql, md, nil)
 		if perr != nil {
-			return nil, perr
+			return nil, "", perr
 		}
+		planText := plan.Explain()
 		var out []string
 		_, eerr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, sErr := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
@@ -339,9 +345,14 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 			return nil, nil
 		})
 		if eerr != nil {
-			return nil, eerr
+			return nil, planText, eerr
 		}
-		return out, nil
+		return out, planText, nil
+	}
+	run := func(t *testing.T, sql string) ([]string, error) {
+		t.Helper()
+		out, _, err := runPlanned(t, sql)
+		return out, err
 	}
 	check := func(t *testing.T, sql string, expect ...string) {
 		t.Helper()
@@ -360,12 +371,51 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// no-op sort, so the order itself is the discriminating assertion.
 	checkOrdered := func(t *testing.T, sql string, expect ...string) {
 		t.Helper()
-		got, err := run(t, sql)
+		got, planText, err := runPlanned(t, sql)
 		if err != nil {
 			t.Fatalf("%q: %v", sql, err)
 		}
 		if strings.Join(got, ",") != strings.Join(expect, ",") {
-			t.Fatalf("ordered rows = %v, want %v\n  %s", got, expect, sql)
+			t.Fatalf("ordered rows = %v, want %v\n  %s\n  plan: %s", got, expect, sql, planText)
+		}
+	}
+	// checkOrderedSlot is checkOrdered for a query whose ORDER BY determines
+	// only ONE column: it asserts that column's EMISSION SEQUENCE exactly (the
+	// ordering assertion) plus the row MULTISET (nothing lost, nothing
+	// duplicated), and says nothing about the order of rows the query itself
+	// leaves free.
+	//
+	// The distinction is load-bearing, not a relaxation. `ORDER BY K` over a
+	// join fixes the K sequence and nothing else; the order WITHIN a K group is
+	// decided by the join orientation the planner picks and by the sort's
+	// tie-break. Pinning the whole rendered row therefore pins a planner
+	// decision the SQL never asked for, and it fails the day a correct new
+	// alternative wins the cost race — which reads as an ordering regression
+	// and is not one. Assert the sequence that IS determined.
+	checkOrderedSlot := func(t *testing.T, sql string, slot int, wantSeq []string, wantRows ...string) {
+		t.Helper()
+		got, planText, err := runPlanned(t, sql)
+		if err != nil {
+			t.Fatalf("%q: %v", sql, err)
+		}
+		gotSeq := make([]string, 0, len(got))
+		for _, row := range got {
+			parts := strings.Split(row, "|")
+			if slot >= len(parts) {
+				t.Fatalf("row %q has no slot %d\n  %s\n  plan: %s", row, slot, sql, planText)
+			}
+			gotSeq = append(gotSeq, parts[slot])
+		}
+		if strings.Join(gotSeq, ",") != strings.Join(wantSeq, ",") {
+			t.Fatalf("slot %d sequence = %v, want %v (rows %v)\n  %s\n  plan: %s",
+				slot, gotSeq, wantSeq, got, sql, planText)
+		}
+		gotSorted := append([]string(nil), got...)
+		wantSorted := append([]string(nil), wantRows...)
+		sort.Strings(gotSorted)
+		sort.Strings(wantSorted)
+		if strings.Join(gotSorted, ",") != strings.Join(wantSorted, ",") {
+			t.Fatalf("rows = %v, want %v\n  %s\n  plan: %s", got, wantRows, sql, planText)
 		}
 	}
 
@@ -456,14 +506,20 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		check(t, `WITH "J" AS (SELECT LA."K" AS "AK", LB."K" AS "BK" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "J"."AK", "CC2"."CV" FROM "J" LEFT JOIN CC AS "CC2" ON "J"."AK" = "CC2"."CID"`,
 			"100|<nil>", "110|<nil>")
 	})
-	// The derived-table twin keeps its pre-existing LOUD 0AF00 (its schema
-	// derivation is not yet implemented); the message names the exact hazard
-	// the CTE class silently hit before the fix.
-	t.Run("Q9e_derived_twin_stays_loud", func(t *testing.T) {
-		_, err := run(t, `SELECT "C"."AK", "CC2"."CV" FROM (`+cteBodyNoWhere+`) AS "C" LEFT JOIN CC AS "CC2" ON "C"."AK" = "CC2"."CID"`)
-		if err == nil || !strings.Contains(err.Error(), "0AF00") {
-			t.Fatalf("derived-table twin must stay LOUD 0AF00 (schema derivation not yet implemented), got %v", err)
-		}
+	// The derived-table twin ANSWERS, and answers the same rows as its CTE
+	// sibling Q9a. It used to decline 0AF00 because the derived-table schema
+	// derivation could not describe a body whose FROM list carries a lateral
+	// unnest leg; that body now derives its exact row from the same place the
+	// translator does, so the ON resolves and the LEFT JOIN pads exactly as the
+	// CTE spelling of the identical query does.
+	//
+	// Pinned as ROWS against Q9a rather than as "it plans": the hazard this whole
+	// battery exists for is a SILENTLY DROPPED ON producing cross-product rows,
+	// and only the rows can tell a resolved ON from a dropped one. Three rows
+	// with a NULL CV is the padded answer; a cross product would be nine.
+	t.Run("Q9e_derived_twin_answers_like_its_CTE_sibling", func(t *testing.T) {
+		check(t, `SELECT "C"."AK", "CC2"."CV" FROM (`+cteBodyNoWhere+`) AS "C" LEFT JOIN CC AS "CC2" ON "C"."AK" = "CC2"."CID"`,
+			"100|<nil>", "100|<nil>", "110|<nil>")
 	})
 	// Q10: the SCALAR-SUBQUERY build path — a threading hole. The subquery's
 	// inner plan builds through the CTECatalog chain, which
@@ -478,27 +534,30 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT LA."K", (SELECT COUNT(*) FROM "C" JOIN CC AS "C2" ON "C"."AK" = "C2"."CID") FROM LA WHERE LA."K" = 110`,
 			"110|0")
 	})
-	// Q11: an UNALIASED QUALIFIED projection in a multi-leg CTE body — the
-	// runtime row keys that slot by its qualified source name ("LA.K", no bare
-	// key), so no ON-only schema is derivable that matches execution; the
-	// declared-CTE drop-risk arm keeps the enclosing ON LOUD (0AF00) instead
-	// of resolving a name the merged row never carries (a silent runtime miss).
-	// A real post-CTE output schema would resolve this too, same as the
-	// derived-table twin — neither is implemented yet.
-	t.Run("Q11_unaliased_qualified_body_stays_loud", func(t *testing.T) {
-		_, err := run(t, `WITH "UQ" AS (SELECT LA."K" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "UQ"."K" FROM "UQ" JOIN CC AS "C2" ON "UQ"."K" = "C2"."CID"`)
-		if err == nil || !strings.Contains(err.Error(), "0AF00") {
-			t.Fatalf("unaliased-qualified multi-leg CTE ON must stay LOUD 0AF00, got %v", err)
-		}
+	// Q11: an UNALIASED QUALIFIED projection in a multi-leg CTE body. This used
+	// to be loud: the schema was guessed from the body's FROM legs by NAME, and
+	// no name it could offer matched the runtime row's "LA.K" key. The CTE's row
+	// is now the body's own exact result type, so the slot is addressable by its
+	// leaf name and binds the ordinal the body really emits.
+	//
+	// The INNER join keeps no row (K ∈ {100,110}, CID = 1), so the VALUES are
+	// pinned by the comma companion — the discriminating half: a slot bound to
+	// the wrong ordinal answers AID {1,2} here, not K {100,110}.
+	t.Run("Q11_unaliased_qualified_body_resolves", func(t *testing.T) {
+		check(t, `WITH "UQ" AS (SELECT LA."K" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "UQ"."K" FROM "UQ" JOIN CC AS "C2" ON "UQ"."K" = "C2"."CID"`)
+		check(t, `WITH "UQ" AS (SELECT LA."K" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "UQ"."K" FROM "UQ", CC`,
+			"100", "110")
 	})
-	// Q12: WITH c(x) COLUMN ALIASES over a multi-leg body — the renames exist
-	// in the scope view only, never on the runtime row, so deriving them here
-	// would turn today's loud failure into a silent runtime miss. Loud.
-	t.Run("Q12_column_aliased_multileg_body_stays_loud", func(t *testing.T) {
-		_, err := run(t, `WITH "CA" ("X") AS (SELECT LA."K" AS "AK" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "CA"."X" FROM "CA" JOIN CC AS "C2" ON "CA"."X" = "C2"."CID"`)
-		if err == nil {
-			t.Fatal("column-aliased multi-leg CTE ON must fail LOUD, got rows")
-		}
+	// Q12: WITH c(x) COLUMN ALIASES over a multi-leg body. The renames are a
+	// SCOPE-level view and never appear on the runtime row — which is exactly
+	// why they used to be undeliverable and the shape stayed loud. A rename is
+	// now just a different name for the same ordinal, so it carries. Same
+	// two-query shape as Q11: the INNER join keeps nothing, the comma companion
+	// pins the values a mis-bound rename would move.
+	t.Run("Q12_column_aliased_multileg_body_resolves", func(t *testing.T) {
+		check(t, `WITH "CA" ("X") AS (SELECT LA."K" AS "AK" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "CA"."X" FROM "CA" JOIN CC AS "C2" ON "CA"."X" = "C2"."CID"`)
+		check(t, `WITH "CA" ("X") AS (SELECT LA."K" AS "AK" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "CA"."X" FROM "CA", CC`,
+			"100", "110")
 	})
 	t.Run("Q8_pad_row_preserved_cte_leg", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT "C"."AK", "C"."XV", "CC2"."CV" FROM "C" LEFT JOIN CC AS "CC2" ON "C"."AK" = "CC2"."CID"`,
@@ -562,40 +621,59 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 			t.Fatalf("%s: must fail LOUD 0AF00, got %v\n  %s", why, err, sql)
 		}
 	}
-	// Q18: an AMBIGUOUS bare ref in a multi-leg body with a DERIVED leg. The
-	// bare-ref admission rests on the body build's 42702 ambiguity backstop,
-	// which only sees ENUMERABLE (base-table) legs — a derived leg hides its
-	// columns, the check never fires, and the bare ref used to silently
-	// resolve against the OTHER leg (rows came back where an error was due).
-	// The derivation now declines any multi-leg body with a derived leg.
-	// (The standalone body's missing 42702 is a separate pre-existing
-	// resolver gap.)
+	// loudCode is the same fail-closed contract for a shape whose diagnosis is
+	// SPECIFIC rather than the reader's generic drop-risk. A mistake INSIDE a
+	// CTE body (an ambiguous ref, an absent column) is now reported by the body
+	// itself, because the body is built to derive the CTE's exact row instead of
+	// being guessed at from its FROM legs' names. Pinning the precise SQLSTATE
+	// is what keeps the diagnosis from silently degrading back to 0AF00 — which
+	// would still be "loud" and would still pass a code-blind check.
+	loudCode := func(t *testing.T, sql, code, why string) {
+		t.Helper()
+		rows, err := run(t, sql)
+		if err == nil {
+			t.Fatalf("%s: must fail LOUD %s, got rows=%v\n  %s", why, code, rows, sql)
+		}
+		if !strings.Contains(err.Error(), code) {
+			t.Fatalf("%s: must fail LOUD %s, got %v\n  %s", why, code, err, sql)
+		}
+	}
+	// Q18: an AMBIGUOUS bare ref in a multi-leg body with a DERIVED leg. The bare
+	// ref used to resolve SILENTLY against one leg (rows came back where an error
+	// was due); then the derivation declined any multi-leg body with a derived
+	// leg, which made it loud but anonymous (0AF00 about the READER's join).
+	// Building the body to derive the CTE's row runs the body's own resolver, so
+	// the ambiguity is now reported where it lives: 42702, naming AID.
 	t.Run("Q18_derived_leg_ambiguous_bare_loud", func(t *testing.T) {
-		loud0AF00(t, `WITH "U" AS (SELECT "AID" FROM (SELECT LA."AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") "D", LA "L2") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
-			"ambiguous bare ref over a derived leg")
+		loudCode(t, `WITH "U" AS (SELECT "AID" FROM (SELECT LA."AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") "D", LA "L2") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
+			"42702", "ambiguous bare ref over a derived leg")
 	})
-	// Q19: derived-source body whose INNER projection is QUALIFIED-spelled —
-	// the derived row keys "LA.AID", so the outer D.AID read can never
-	// resolve at runtime; admitting this shape would turn the base's clean
-	// plan-time 0AF00 into a runtime malformed-plan error. The read-authority
-	// recursion (derivedEmittedBareNames) declines it back to plan time.
-	t.Run("Q19_derived_inner_qualified_loud", func(t *testing.T) {
-		loud0AF00(t, `WITH "U" AS (SELECT "D"."AID" AS "A" FROM (SELECT LA."AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") "D") SELECT "U"."A", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."A" = "C2"."CID"`,
-			"aliased read over a qualified-keyed derived row")
+	// Q19: derived-source body whose INNER projection is QUALIFIED-spelled. The
+	// derived row keys "LA.AID", so a NAME-keyed outer read of D.AID could never
+	// resolve at runtime and the shape was declined at plan time to keep it from
+	// becoming a runtime malformed-plan error. Reads bind ordinals now, so the
+	// runtime KEY is not what the read has to match: the same rows the
+	// bare-spelled twin (Q16) answers.
+	t.Run("Q19_derived_inner_qualified_resolves", func(t *testing.T) {
+		check(t, `WITH "U" AS (SELECT "D"."AID" AS "A" FROM (SELECT LA."AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") "D") SELECT "U"."A", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."A" = "C2"."CID"`,
+			"1|900", "2|<nil>")
 	})
-	// Q20: the AGGREGATE-arm instance of Q19 — MAX(D.AID) over a
-	// qualified-keyed derived row read NOTHING and returned a SILENT NULL —
-	// the worst variant of the class (no error at all). cteBodyReadsResolvable
-	// validates agg args/group cols against the emitted set.
-	t.Run("Q20_agg_over_derived_qualified_loud", func(t *testing.T) {
-		loud0AF00(t, `WITH "U" AS (SELECT MAX("D"."AID") AS "M" FROM (SELECT LA."AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") "D") SELECT "U"."M", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."M" = "C2"."CID"`,
-			"aggregate arg over a qualified-keyed derived row")
+	// Q20: the AGGREGATE-arm instance of Q19. MAX(D.AID) over a qualified-keyed
+	// derived row once read NOTHING and returned a SILENT NULL — the worst
+	// variant of the class — and was then declined. It now answers, and the
+	// value is the discriminator the silent-NULL era lacked: MAX over {1,2} is
+	// 2, and 2 matches no CID, so the pad is the second half of the proof.
+	t.Run("Q20_agg_over_derived_qualified_resolves", func(t *testing.T) {
+		check(t, `WITH "U" AS (SELECT MAX("D"."AID") AS "M" FROM (SELECT LA."AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") "D") SELECT "U"."M", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."M" = "C2"."CID"`,
+			"2|<nil>")
 	})
 	// Q21: a derived JOIN LEG (joinClause.derivedQuery — the non-first-source
-	// twin of Q18). Was a runtime leg-adapter breach; now a plan-time decline.
-	t.Run("Q21_derived_join_leg_loud", func(t *testing.T) {
-		loud0AF00(t, `WITH "U" AS (SELECT "AID" FROM LA "L2" JOIN (SELECT LB."BID" FROM LB) "D" ON "L2"."AID" = "D"."BID") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
-			"derived join leg")
+	// twin of Q18). Was a runtime leg-adapter breach, then a plan-time decline,
+	// and now answers: L2.AID ∈ {1,2} INNER-joined to D.BID ∈ {1,3} keeps AID=1,
+	// which is the one value CC matches.
+	t.Run("Q21_derived_join_leg_resolves", func(t *testing.T) {
+		check(t, `WITH "U" AS (SELECT "AID" FROM LA "L2" JOIN (SELECT LB."BID" FROM LB) "D" ON "L2"."AID" = "D"."BID") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
+			"1|900")
 	})
 	// Q22: ANTI-OVER-DECLINE — aggregate over a derived-inner-BARE body stays
 	// derivable and answers correctly (M = MAX(1,2) = 2, no CC match → pad).
@@ -626,12 +704,13 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		check(t, `WITH "U" AS (SELECT "AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID" UNION ALL SELECT LB."BID" FROM LB) SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
 			"1|900", "2|<nil>", "1|900", "3|<nil>")
 	})
-	// Q25: computed item over a qualified-keyed derived row — the reads fail
-	// validation, decline (was already loud at translation; the decline moves
-	// it to the uniform 0AF00).
-	t.Run("Q25_computed_over_derived_qualified_loud", func(t *testing.T) {
-		loud0AF00(t, `WITH "U" AS (SELECT "D"."AID" + 0 AS "Z" FROM (SELECT LA."AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") "D") SELECT "U"."Z", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."Z" = "C2"."CID"`,
-			"computed reads over a qualified-keyed derived row")
+	// Q25: computed item over a qualified-keyed derived row — the Q19 shape with
+	// an expression on top. Same retirement, same answer as the bare-keyed twin
+	// (Q23): the computed slot is typed and addressed by the built body, not by
+	// whether its read spelling matches a runtime key.
+	t.Run("Q25_computed_over_derived_qualified_resolves", func(t *testing.T) {
+		check(t, `WITH "U" AS (SELECT "D"."AID" + 0 AS "Z" FROM (SELECT LA."AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") "D") SELECT "U"."Z", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."Z" = "C2"."CID"`,
+			"1|900", "2|<nil>")
 	})
 	// Q26: the bare UNNEST-ELEMENT ref — the one admitted derivation shape
 	// whose write path goes through the RFC-142 QOV value (shadowing rewrite)
@@ -650,20 +729,26 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// The enumerability walk (cteBodyLegsEnumerable) declines such bodies.
 	// V is join-bodied (ON-only); its alias AID collides with LA's column.
 	const onOnlyV = `"V" AS (SELECT LA."K" AS "AID", LB."K" AS "Q" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID")`
+	//
+	// V is no longer opaque — its row is published from its built body — so the
+	// two gates the nil resolver used to kill are back on their own terms: the
+	// ambiguity 42702s and the unknown column 42703s, each naming the offending
+	// identifier. That specificity is the pin: a regression to the anonymous
+	// 0AF00 would still be "loud" and would still pass an err != nil check.
 	t.Run("Q27_on_only_cte_leg_ambiguous_loud", func(t *testing.T) {
-		loud0AF00(t, `WITH `+onOnlyV+`, "U" AS (SELECT "AID" FROM "V", LA "L2") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
-			"ambiguous bare ref over an ON-only CTE leg")
+		loudCode(t, `WITH `+onOnlyV+`, "U" AS (SELECT "AID" FROM "V", LA "L2") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
+			"42702", "ambiguous bare ref over an ON-only CTE leg")
 		// both leg orders — the walk must not depend on leg position
-		loud0AF00(t, `WITH `+onOnlyV+`, "U" AS (SELECT "AID" FROM LA "L2", "V") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
-			"ambiguous bare ref, ON-only CTE as second leg")
+		loudCode(t, `WITH `+onOnlyV+`, "U" AS (SELECT "AID" FROM LA "L2", "V") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
+			"42702", "ambiguous bare ref, ON-only CTE as second leg")
 	})
 	t.Run("Q28_on_only_cte_leg_nonexistent_col_loud", func(t *testing.T) {
-		loud0AF00(t, `WITH `+onOnlyV+`, "U" AS (SELECT "NOPE" FROM "V", LA "L2") SELECT "U"."NOPE", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."NOPE" = "C2"."CID"`,
-			"nonexistent column over an ON-only CTE leg (nil resolver kills 42703)")
+		loudCode(t, `WITH `+onOnlyV+`, "U" AS (SELECT "NOPE" FROM "V", LA "L2") SELECT "U"."NOPE", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."NOPE" = "C2"."CID"`,
+			"42703", "nonexistent column over an ON-only CTE leg")
 	})
 	t.Run("Q29_on_only_cte_leg_in_derived_source_loud", func(t *testing.T) {
-		loud0AF00(t, `WITH `+onOnlyV+`, "U" AS (SELECT "AID" FROM (SELECT "AID" FROM "V", LA "L2") "D") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
-			"ON-only CTE leg one level down (recursion inherits the enumerability walk)")
+		loudCode(t, `WITH `+onOnlyV+`, "U" AS (SELECT "AID" FROM (SELECT "AID" FROM "V", LA "L2") "D") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
+			"42702", "ON-only CTE leg one level down")
 	})
 	// Q30: ANTI-OVER-DECLINE — a DERIVABLE CTE leg is enumerable (addSource
 	// resolves it via cteScopes; the backstop lives) and the bare ref
@@ -685,8 +770,10 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// Q33: the POSITIONAL-FRONTIER class (an over-decline this pins against): a
 	// single-BASE-TABLE derived source keeps its projection row positional,
 	// so a QUALIFIED-spelled inner item is readable by ordinal under its
-	// last segment — this shape must ADMIT and ANSWER (contrast Q19, whose
-	// JOIN-shaped inner row is name-keyed and stays declined).
+	// last segment — this shape must ADMIT and ANSWER. It used to be the only
+	// half of that pair that did; the JOIN-shaped twin (Q19) was declined for
+	// having a name-keyed inner row and now answers the same way, so what this
+	// pins is the single-table frontier itself, not a contrast with Q19.
 	t.Run("Q33_single_table_qualified_inner_resolves", func(t *testing.T) {
 		check(t, `WITH "U" AS (SELECT "D"."AID" AS "A" FROM (SELECT LA."AID" FROM LA) "D") SELECT "U"."A", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."A" = "C2"."CID"`,
 			"1|900", "2|<nil>")
@@ -707,13 +794,15 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		loud0AF00(t, `WITH "U" AS (SELECT (SELECT MAX("K") FROM LB WHERE LB."BID" = "D"."AID") AS "Z" FROM (SELECT LA."AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") "D") SELECT "U"."Z", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."Z" = "C2"."CID"`,
 			"correlated subquery into a name-keyed derived source")
 	})
-	// Q32: mixed-star derived source — the star-EXPANDED columns are not in
-	// the emitted set (no catalog access at derivation), so an outer read of
-	// one declines fail-closed (also exercises the empty-sentinel guard: the
-	// star slot must not deposit a "" claim).
-	t.Run("Q32_mixed_star_inner_fail_closed", func(t *testing.T) {
-		loud0AF00(t, `WITH "U" AS (SELECT "D"."K" AS "KK" FROM (SELECT LA.*, "AID" FROM LA) "D") SELECT "U"."KK", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."KK" = "C2"."CID"`,
-			"star-expanded column read over a mixed-star derived source")
+	// Q32: mixed-star derived source. The star-EXPANDED columns were invisible
+	// to a name-list derivation that never touched the catalog, so a read of one
+	// declined fail-closed. Building the body expands the star against the
+	// catalog like execution does, so D genuinely carries K and the read
+	// answers. K ∈ {100,110} matches no CID, so both rows pad — and the K values
+	// are what a star expanded to the wrong width would move.
+	t.Run("Q32_mixed_star_inner_resolves", func(t *testing.T) {
+		check(t, `WITH "U" AS (SELECT "D"."K" AS "KK" FROM (SELECT LA.*, "AID" FROM LA) "D") SELECT "U"."KK", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."KK" = "C2"."CID"`,
+			"100|<nil>", "110|<nil>")
 	})
 	// Q36: CTE SHADOWING a catalog table. The leg classifier must mirror
 	// EXECUTION's resolution order — a declared CTE
@@ -725,12 +814,17 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// is opaque → all three variants decline at plan time.
 	t.Run("Q36_cte_shadows_table_loud", func(t *testing.T) {
 		const shadowLA = `"LA" AS (SELECT LB."K" AS "Z" FROM LB LEFT JOIN CC ON LB."BID" = CC."CID")`
-		loud0AF00(t, `WITH `+shadowLA+`, "U" AS (SELECT "D"."AID" AS "A" FROM (SELECT LA."AID" FROM LA) "D") SELECT "U"."A", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."A" = "C2"."CID"`,
-			"derived source over a table-shadowing ON-only CTE")
-		loud0AF00(t, `WITH `+shadowLA+`, "U" AS (SELECT MAX("D"."AID") AS "M" FROM (SELECT LA."AID" FROM LA) "D") SELECT "U"."M", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."M" = "C2"."CID"`,
-			"aggregate arm over a table-shadowing ON-only CTE")
-		loud0AF00(t, `WITH `+shadowLA+`, "U" AS (SELECT "AID" FROM "LA", CC "C9") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
-			"shadowed CTE as a multi-leg body leg")
+		// The shadowing CTE exposes only Z, so LA."AID" and a bare AID are reads
+		// of a column that does not exist ON THE SHADOWING GENERATION — which is
+		// the whole point of the pin, and is now said in those words (42703)
+		// rather than as the reader's anonymous 0AF00. A regression that
+		// resolved these against the TABLE's schema would answer rows.
+		loudCode(t, `WITH `+shadowLA+`, "U" AS (SELECT "D"."AID" AS "A" FROM (SELECT LA."AID" FROM LA) "D") SELECT "U"."A", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."A" = "C2"."CID"`,
+			"42703", "derived source over a table-shadowing CTE")
+		loudCode(t, `WITH `+shadowLA+`, "U" AS (SELECT MAX("D"."AID") AS "M" FROM (SELECT LA."AID" FROM LA) "D") SELECT "U"."M", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."M" = "C2"."CID"`,
+			"42703", "aggregate arm over a table-shadowing CTE")
+		loudCode(t, `WITH `+shadowLA+`, "U" AS (SELECT "AID" FROM "LA", CC "C9") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
+			"42703", "shadowed CTE as a multi-leg body leg")
 	})
 	// Q37: SCHEMA-QUALIFIED legs. Three stacked
 	// fixes pin here: (1) the ON-only derivation ran BEFORE
@@ -807,14 +901,23 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// over FROM-scope ambiguity: both legs carry a
 	// column K, but the sort executes over the projected row where alias K
 	// is unambiguous — the validation's ambiguity arm now defers to the
-	// alias exactly like its ColumnNotFound arm always did. checkOrdered:
-	// K DESC = 2,2,1,1 in the K slot (the ordering itself is the assertion).
+	// alias exactly like its ColumnNotFound arm always did. The assertion is
+	// K DESC = 2,2,1,1 in the K slot, plus the full row multiset.
 	// (Rows render POSITIONALLY, in SELECT order: the K alias then LB.BID. The
 	// earlier name-keyed rendering sorted them BID-first under the ordinal model
 	// and K-first under the name model, for the same values -- an artifact of the
 	// rendering, not of the plan.)
+	//
+	// checkOrderedSlot, not checkOrdered: `ORDER BY "K"` over this cross join
+	// determines the K sequence and NOTHING about the BID order within a K
+	// group — that follows the join orientation the planner picks and the
+	// sort's PK tie-break. This pin asserted the whole rendered row and so
+	// silently pinned `NestedLoopJoin(Scan(LA), Scan(LB))`; it reddened the day
+	// the memo correctly began admitting the mirror orientation as a cost
+	// alternative, which is not an ordering regression.
 	t.Run("Q42_orderby_alias_precedes_scope_ambiguity", func(t *testing.T) {
-		checkOrdered(t, `SELECT LA."AID" AS "K", LB."BID" FROM "s"."LA", LB ORDER BY "K" DESC`,
+		checkOrderedSlot(t, `SELECT LA."AID" AS "K", LB."BID" FROM "s"."LA", LB ORDER BY "K" DESC`,
+			0, []string{"2", "2", "1", "1"},
 			"2|1", "2|3", "1|1", "1|3")
 	})
 	// Q43: the live resolver's strictness dividend, pinned against a
@@ -914,31 +1017,32 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		check(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CV" AS "Y" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("Y") FROM "V") FROM LB LIMIT 1`,
 			"900")
 	})
-	// Q51: the ON-only READ class — MAX-scalar-subquery variants that
-	// resolve through buildSelectScope's nil-resolver LENIENCY + the
-	// executor merge fabrication (the same path that is load-bearing for the
-	// enclosed comma-FROM reads Q1-Q5). Reading a column ABSENT from the
-	// derived source is a LOUD ordinal-resolution error, never a silent
-	// NULL — both the no-shadow case and the shadowed different-schema case
-	// (inner exposes Y, read X; the evict removed the stale outer so the
-	// read finds no X on the inner row) must fail loud. Contrast Q53: the
-	// WHERE-based reads at the main-query level are already LOUD (0AF00), so
-	// only these leniency-path scalar reads needed the fix.
+	// Q51: MAX-scalar-subquery reads of a column ABSENT from the CTE's row —
+	// both the no-shadow case and the shadowed different-schema case (inner
+	// exposes Y, read X; the evict removed the stale outer, so the read finds no
+	// X on the inner row). Neither may be the name model's silent NULL.
+	//
+	// The second one carries a second lesson. An undefined column inside a
+	// scalar subquery is SPECULATIVELY retried as a correlated reference to the
+	// enclosing row, and that retry then failed with its own complaint — a
+	// missing WHERE clause, describing a correlated query the user never wrote.
+	// A speculation that disproves itself must not replace the diagnosis that
+	// prompted it, so both arms land on the same honest 42703.
 	t.Run("Q51_ononly_invalid_read_class", func(t *testing.T) {
 		// Reading a column ABSENT from the derived source (`NOPE`/`X` are not
-		// columns of W=[Y] / inner V=[Y]) must be a LOUD ordinal-resolution
-		// error, never the name model's silent NULL. (The error is a runtime
-		// ordinal-resolution miss today; a clean plan-time 42703
-		// column-not-found message would be a nice refinement, but
-		// loud-not-silent is the contract.)
+		// columns of W=[Y] / inner V=[Y]) must be LOUD, never the name model's
+		// silent NULL. It is now the clean PLAN-TIME 42703 the earlier runtime
+		// ordinal-resolution miss was only an approximation of: the source
+		// publishes its real row, so the resolver can say which column is
+		// missing instead of failing when the read misses a slot.
 		mustLoudRead := func(t *testing.T, sql string) {
 			t.Helper()
 			rows, err := run(t, sql)
 			if err == nil {
 				t.Fatalf("expected a LOUD absent-column read error, got rows=%v\n  %s", rows, sql)
 			}
-			if !strings.Contains(err.Error(), "not resolvable") {
-				t.Fatalf("expected an ordinal-resolution (absent column) error, got: %v\n  %s", err, sql)
+			if !strings.Contains(err.Error(), "42703") {
+				t.Fatalf("expected a 42703 column-not-found error, got: %v\n  %s", err, sql)
 			}
 		}
 		mustLoudRead(t, `WITH "W" AS (SELECT CC."CV" AS "Y" FROM LB LEFT JOIN CC ON LB."BID" = CC."CID") SELECT MAX("NOPE") FROM "W"`)
@@ -956,44 +1060,65 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		check(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CID" AS "X" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("X") FROM "V") FROM LB LIMIT 1`,
 			"1")
 	})
-	// Q53: the LOSSY-INSTALL regression pins. A previous approach installed
-	// the inner shadow CTE's ON-only DERIVED schema into the global
-	// cteScopes to make an exotic coinciding read answer —
-	// but buildCTEOnOnlySource's schema is ON-resolution-only and LOSSY
-	// (NewUnquoted; permits duplicate output names), so promoting it to
-	// general reads SILENTLY MIS-RESOLVED quoted-alias and duplicate-name
-	// bodies. The install is reverted (plain evict, matching the derivable
-	// arm's shadow delete); these WHERE-based reads now FAIL CLOSED (0AF00),
-	// the correct-or-loud state — an install would silently accept them.
-	t.Run("Q53_lossy_shadow_reads_fail_closed", func(t *testing.T) {
-		// quoted lowercase "x" inner alias; WHERE "X"=1 uppercase must not
-		// resolve through a case-folded install.
-		loud0AF00(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CID" AS "x" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT COUNT(*) FROM "V" WHERE "X" = 1) FROM LB LIMIT 1`,
-			"quoted-alias shadow read")
+	// Q53: the shadow-CTE read class, and what separates a SOUND install of the
+	// inner generation from the LOSSY one this used to guard against. An
+	// ON-resolution-only schema permitted duplicate output names and could not
+	// state a quoted alias truthfully, so promoting it to general reads
+	// SILENTLY MIS-RESOLVED both — and the answer was to install nothing and
+	// fail closed. The published row is now the body's own exact result type,
+	// which cannot be lossy about the two things that mattered: a duplicate
+	// output name declines the whole source, and a quoted alias is folded by the
+	// same rule execution folds it. So the reads that had to fail closed now
+	// answer, and each arm below says which of the two it is exercising.
+	t.Run("Q53_shadow_reads_resolve_against_the_inner_generation", func(t *testing.T) {
+		// quoted lowercase "x" inner alias. The read used to fail closed because
+		// a LOSSY install could only have resolved it by accident; the exact
+		// install resolves it on purpose, against the INNER generation. The
+		// discriminator is which X the WHERE sees: the inner x is CC.CID over
+		// (outer X ∈ {1,3} LEFT JOIN CC ON X = CID) → {1, NULL}, while the outer
+		// X is BID ∈ {1,3}. `= 1` counts one either way, so the `= 3` companion
+		// is the arm that separates them — inner 0, stale-outer 1.
+		if rows, err := run(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CID" AS "x" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT COUNT(*) FROM "V" WHERE "X" = 1) FROM LB LIMIT 1`); err != nil ||
+			strings.Join(rows, ",") != "1" {
+			t.Fatalf("quoted-alias shadow read: rows=%v err=%v, want [1]", rows, err)
+		}
+		if rows, err := run(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CID" AS "x" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT COUNT(*) FROM "V" WHERE "X" = 3) FROM LB LIMIT 1`); err != nil ||
+			strings.Join(rows, ",") != "0" {
+			t.Fatalf("quoted-alias shadow read at X=3 must see the INNER x ({1,NULL}), not the outer BID: rows=%v err=%v, want [0]", rows, err)
+		}
 		// duplicate output name X; WHERE X=1 must not pick one column.
 		loud0AF00(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT LB."BID" AS "X", LB."K" AS "X" FROM "V" LEFT JOIN LB ON "V"."X" = LB."BID") SELECT COUNT(*) FROM "V" WHERE "X" = 1) FROM LB LIMIT 1`,
 			"duplicate-name shadow read")
-		// the comma-multi-leg shadow: a join-bodied inner installed into
-		// cteScopes would reopen the flatten-evasion silent class; the evict
-		// keeps it loud.
-		loud0AF00(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT LA."K" AS "X", LB."K" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "V"."X", "V"."Y" FROM "V", CC WHERE "V"."X" = CC."CID") FROM LB LIMIT 1`,
-			"comma-multi-leg shadow read")
+		// The comma-multi-leg shadow. Declining the join-bodied inner used to be
+		// the only thing standing between this shape and the flatten-evasion
+		// silent class, so it was pinned loud whatever the reason. The inner IS
+		// installed now, which moves the diagnosis onto the thing that is
+		// actually wrong with THIS query: a scalar subquery selecting two
+		// columns is 42601, and it would be 42601 over a base table too.
+		loudCode(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT LA."K" AS "X", LB."K" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "V"."X", "V"."Y" FROM "V", CC WHERE "V"."X" = CC."CID") FROM LB LIMIT 1`,
+			"42601", "two-column scalar subquery over a comma-multi-leg shadow")
+		// The one-column spelling of the same shadow ANSWERS, which is what
+		// makes the arm above an arity pin rather than a decline in disguise.
+		// The inner V is LA JOIN LB on AID=BID → the single row (K=100, K=5), so
+		// X is 100; the OUTER V's X is BID ∈ {1,3}, so the value says which
+		// generation the read landed on.
+		if rows, err := run(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT LA."K" AS "X", LB."K" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "V"."X" FROM "V", CC) FROM LB LIMIT 1`); err != nil ||
+			strings.Join(rows, ",") != "100" {
+			t.Fatalf("one-column comma-multi-leg shadow read: rows=%v err=%v, want [100]", rows, err)
+		}
 	})
-	// Q54: the SHADOW-CTE read-reach boundary — two install approaches were
-	// tried and abandoned (a lossy install silently mis-resolved quoted/dup
-	// bodies; a read-sound install reopened flatten-evasion with an
-	// EXECUTION PANIC on a comma-multi-leg shape, and its case-preserving
-	// Ids mismatched execution's uppercase row keys). The stable state is the
-	// plain evict: an inner shadow ON-only CTE joins the ON-only READ class
-	// covered by Q51. Boundary:
-	//   - BARE read over the coinciding shadow answers via leniency +
-	//     fabrication (Q52, install-independent);
-	//   - QUALIFIED read (V."X") now RESOLVES too (see below) rather than
-	//     staying a silent NULL;
-	//   - a comma-multi-leg / 2+-extra-leg shadow read is LOUD (the evict
-	//     keeps it out of cteScopes; an install PANICKED here — regression pin);
-	//   - a DUPLICATE-name body with a UNIQUE column read still PLANS (the
-	//     unique column resolves; a blanket dup-decline wrongly rejected it).
+	// Q54: the SHADOW-CTE read-reach boundary. Two hand-derived installs were
+	// tried and abandoned here (a lossy one silently mis-resolved quoted/dup
+	// bodies; a read-sound one reopened flatten-evasion with an EXECUTION PANIC
+	// on a comma-multi-leg shape, and its case-preserving Ids mismatched
+	// execution's uppercase row keys) — both failures of a schema DERIVED beside
+	// the body rather than FROM it. Boundary as it stands:
+	//   - BARE read over the coinciding shadow answers (Q52);
+	//   - QUALIFIED read (V."X") resolves too, rather than a silent NULL;
+	//   - a 2+-extra-leg shadow read whose correlation cannot ordinalize is
+	//     still LOUD — the arm below is the pin against the panic returning;
+	//   - a DUPLICATE-name body declines the WHOLE source, so even a read of a
+	//     unique column in it is loud (complete-schema-or-decline; see Q55 (d)).
 	t.Run("Q54_shadow_read_reach_boundary", func(t *testing.T) {
 		// The QUALIFIED read `V.X` over the inner V=[X] RESOLVES (a
 		// single-namespace derived source, unique leaf `X` — GetByName
@@ -1043,10 +1168,27 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 				t.Fatalf("expected 0AF00, got: %v", err)
 			}
 		}
-		// (a) quoted-lowercase alias `AS "x"` — every reference (wrong-case "X"
-		//     or correct-case "x") declines the source, never a silent join.
-		mustLoud(t, `WITH "C" AS (SELECT LA."AID" AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`)
-		mustLoud(t, `WITH "C" AS (SELECT LA."AID" AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."x" = "C2"."CID"`)
+		// (a) quoted-lowercase alias `AS "x"`. This obstruction is RETIRED, and
+		//     the two arms below are what replaced it. The name-derived schema
+		//     could not describe the row here — execution keys output columns
+		//     UPPERCASE, so `AS "x"` emits "X" and no truthful advertisement of
+		//     a column called "x" was possible — and declining both spellings
+		//     was the correct-or-loud answer to that. The published row is now
+		//     the body's own result type, whose field names are folded by the
+		//     SAME rule execution uses, so the two spellings separate cleanly:
+		//     "X" is the column and resolves; "x" is not and 42703s by name.
+		//     (That the engine folds a QUOTED alias at all is a standing
+		//     divergence from Java's case-sensitive quoted identifiers — a
+		//     property of the projection's own naming, not of this scope, and
+		//     pinned here so closing it shows up as a change in BOTH arms.)
+		if rows, err := run(t, `WITH "C" AS (SELECT LA."AID" AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`); err != nil ||
+			strings.Join(rows, ",") != "900" {
+			t.Fatalf("folded-name read must join on the body's AID column: rows=%v err=%v", rows, err)
+		}
+		if _, err := run(t, `WITH "C" AS (SELECT LA."AID" AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."x" = "C2"."CID"`); err == nil ||
+			!strings.Contains(err.Error(), "42703") {
+			t.Fatalf("a spelling the published row does not carry must 42703, got %v", err)
+		}
 		// (b) DUPLICATE output name X — a `C."X"` ref declines, never a silent
 		//     pick of the first of the two X columns.
 		mustLoud(t, `WITH "C" AS (SELECT LA."AID" AS "X", LB."BID" AS "X", LA."K" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`)
@@ -1086,8 +1228,19 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 				t.Fatalf("expected 0AF00, got: %v", err)
 			}
 		}
-		// wrong-case ref over a quoted-lowercase aggregate alias → decline.
-		mustLoud(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`)
+		// The quoted-lowercase alias obstruction is retired here for the same
+		// reason as its projection twin (Q55 (a)): the published row's names are
+		// folded by execution's own rule, so the folded spelling IS the column
+		// and the unfolded one is honestly absent. MIN over AID ∈ {1,2} is 1,
+		// which is the CID that matches — so the value, not merely the absence
+		// of an error, is what this pins.
+		if rows, err := run(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`); err != nil ||
+			strings.Join(rows, ",") != "900" {
+			t.Fatalf("folded aggregate alias must join on MIN(AID)=1: rows=%v err=%v", rows, err)
+		}
+		if _, err := run(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."x" = "C2"."CID"`); err == nil {
+			t.Fatal("a spelling the published aggregate row does not carry must not resolve")
+		}
 		// duplicate aggregate output name → decline.
 		mustLoud(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "X", MAX(LB."BID") AS "X" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`)
 		// POSITIVE control: a clean aggregate alias still installs and resolves.

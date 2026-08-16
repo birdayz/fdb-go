@@ -182,10 +182,10 @@ func newInMemorySortPlanExprBase(innerQ expressions.Quantifier) (PlanExprBase, e
 		if layoutErr != nil {
 			return PlanExprBase{}, fmt.Errorf("%s required input layout: %w", owner, layoutErr)
 		}
-		if !childLayout.Carrier().FlowedType().Equals(input.FlowedType()) {
+		if !values.PhysicalCarrierType(childLayout).Equals(input.FlowedType()) {
 			return PlanExprBase{}, fmt.Errorf(
 				"%s required input layout: child carrier type %s disagrees with edge type %s",
-				owner, childLayout.Carrier().FlowedType(), input.FlowedType())
+				owner, values.PhysicalCarrierType(childLayout), input.FlowedType())
 		}
 		requirement, requirementErr := RequireExactLayout(childLayout)
 		if requirementErr != nil {
@@ -275,13 +275,32 @@ func (p *RecordQueryInMemorySortPlan) HashCodeWithoutChildren() uint64 {
 }
 
 func (p *RecordQueryInMemorySortPlan) Explain() string {
+	// RENDERED FROM ValueExpr, never from the stored Field text. Field is the
+	// spelling the key was CONSTRUCTED with, and after the key is re-anchored
+	// onto the selected input it no longer describes the read: it kept a
+	// MINTED correlation name (`q$367447.T1.N.CO#2`), which is a global
+	// counter — so EXPLAIN output was not reproducible from one run to the
+	// next, and a golden over it compares a number, not a plan. Rendering the
+	// value the sort actually evaluates also keeps the text in lockstep with
+	// it, through the same alias normalization StreamingAgg and Project use.
+	programs := make([]values.Value, len(p.sortKeys))
+	for i, k := range p.sortKeys {
+		programs[i] = k.ValueExpr
+	}
+	rendered := values.ExplainPlanValues(programs)
 	keys := make([]string, len(p.sortKeys))
 	for i, k := range p.sortKeys {
 		dir := "ASC"
 		if k.Desc {
 			dir = "DESC"
 		}
-		keys[i] = k.Field + " " + dir
+		text := rendered[i]
+		if text == "" {
+			// A key with no program to render falls back to its construction
+			// spelling rather than printing an empty slot.
+			text = k.Field
+		}
+		keys[i] = text + " " + dir
 	}
 	innerLabel := "<nil>"
 	if inner := p.GetInner(); inner != nil {

@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 go_library(
     name = "factory-rebless-plan-shapes_lib",
@@ -17,4 +17,14 @@ go_binary(
     name = "factory-rebless-plan-shapes",
     embed = [":factory-rebless-plan-shapes_lib"],
     visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "factory-rebless-plan-shapes_test",
+    srcs = ["recipe_lookup_test.go"],
+    embed = [":factory-rebless-plan-shapes_lib"],
+    deps = [
+        "//pkg/relational/conformance/factory",
+        "//pkg/relational/conformance/factorycorpus",
+    ],
 )

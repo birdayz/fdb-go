@@ -31,7 +31,7 @@ ROWS(1) cols=[MIN(VAL), MAX(VAL), SUM(VAL)]:
   [50, 300, 1200]
 
 === SELECT cat, COUNT(*), SUM(val) FROM t GROUP BY cat ORDER BY cat
-PLAN: Project([_current.CAT#0, _current.COUNT(*)#1, _current.SUM(VAL)#2], StreamingAgg(keys=[_current.CAT#1], InMemorySort([T.CAT#1 ASC], Scan(T))))
+PLAN: Project([_current.CAT#0, _current.COUNT(*)#1, _current.SUM(VAL)#2], StreamingAgg(keys=[_current.CAT#1], InMemorySort([_current.CAT#1 ASC], Scan(T))))
 ROWS(3) cols=[CAT, COUNT(*), SUM(VAL)]:
   [1, 3, 350]
   [2, 3, 550]
@@ -45,7 +45,7 @@ ROWS(3) cols=[ID]:
   [8]
 
 === SELECT id, val FROM t WHERE val > 150 ORDER BY id
-PLAN: Project([_current.ID#0, _current.VAL#2], InMemorySort([T.ID#0 ASC], IndexScan(IDX_VAL, [<>])))
+PLAN: Project([_current.ID#0, _current.VAL#2], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_VAL, [<>])))
 ROWS(3) cols=[ID, VAL]:
   [2, 200]
   [6, 300]
@@ -57,7 +57,7 @@ ROWS(1) cols=[ID]:
   [5]
 
 === SELECT id FROM t WHERE val IS NOT NULL AND val <= 150 ORDER BY id
-PLAN: Project([_current.ID#0], InMemorySort([T.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(IDX_VAL, [<>] COVERING), [1 preds]))))
+PLAN: Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(IDX_VAL, [<>] COVERING), [1 preds]))))
 ROWS(4) cols=[ID]:
   [1]
   [3]
@@ -74,7 +74,7 @@ ROWS(5) cols=[ID]:
   [7]
 
 === SELECT id, val FROM t ORDER BY val, id LIMIT 4
-PLAN: Limit(4, Project([_current.ID#0, _current.VAL#2], InMemorySort([T.VAL#2 ASC, T.ID#0 ASC], Scan(T))))
+PLAN: Limit(4, Project([_current.ID#0, _current.VAL#2], InMemorySort([_current.VAL#2 ASC, _current.ID#0 ASC], Scan(T))))
 ROWS(4) cols=[ID, VAL]:
   [5, NULL]
   [7, 50]

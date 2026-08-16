@@ -10,8 +10,6 @@
 package ddl
 
 import (
-	"strings"
-
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/gen"
@@ -509,7 +507,7 @@ func starValues(scan *logical.LogicalScan, md *recordlayer.RecordMetaData) ([]va
 	for i := 0; i < fields.Len(); i++ {
 		field := fields.Get(i)
 		rowFields[i] = values.Field{
-			Name:      strings.ToUpper(string(field.Name())),
+			Name:      values.FieldNameForProtoField(field),
 			Ordinal:   i,
 			FieldType: querycore.TargetTypeForFD(field),
 		}
@@ -523,7 +521,7 @@ func starValues(scan *logical.LogicalScan, md *recordlayer.RecordMetaData) ([]va
 	}
 	qov, err := values.NewQuantifiedObjectValue(
 		values.NamedCorrelationIdentifier(corrName),
-		&values.RecordType{RecordName: string(rt.Descriptor.Name()), Fields: rowFields},
+		&values.RecordType{RecordName: values.RecordNameForDescriptor(rt.Descriptor), Fields: rowFields},
 	)
 	if err != nil {
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,

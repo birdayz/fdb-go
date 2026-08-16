@@ -46,39 +46,61 @@ func TestDottedLegQualifier_ExactAliasTest(t *testing.T) {
 	}
 }
 
-// TestDottedLegQualifier_GateFailsOnDisagreeingSpellings pins that the hard zero
-// is wired, and that a table-name route does NOT trip it.
+// TestDottedLegQualifier_GateFailsOnDisagreeingSpellings pins that the
+// MATCH-ALIAS-DIFFERS zero is wired and names its site.
+//
+// It no longer pairs with "and a table-name route does NOT trip it". Every class
+// trips the gate now: the channel is retired and ANY call is the alarm, so the
+// per-class distinction survives in the classifier (pinned above) and in the
+// failure text, not in which counts are tolerated. The classifier pins are what
+// keep that distinction from rotting while nothing drives it.
 func TestDottedLegQualifier_GateFailsOnDisagreeingSpellings(t *testing.T) {
 	t.Parallel()
 	var counts [dottedLegSiteCount][dottedLegClassCount]int
-	counts[DottedLegSiteLegQOVBake][DottedLegMatchViaTableName] = 7
-	var b strings.Builder
-	if assertDottedLegQualifierCounts(&b, counts, nil) {
-		t.Fatalf("the table-name route must not fail the gate; got %q", b.String())
-	}
 	counts[DottedLegSiteLegQOVBake][DottedLegMatchAliasDiffers] = 1
-	var b2 strings.Builder
-	if !assertDottedLegQualifierCounts(&b2, counts, nil) {
+	var b strings.Builder
+	if !assertDottedLegQualifierCounts(&b, counts, nil) {
 		t.Fatal("a leg matched on its own binding while stating another identity must fail the gate")
 	}
-	if !strings.Contains(b2.String(), "legQOVBake") {
-		t.Fatalf("the failure must name the site; got %q", b2.String())
+	if !strings.Contains(b.String(), "legQOVBake") {
+		t.Fatalf("the failure must name the site; got %q", b.String())
+	}
+	if !strings.Contains(b.String(), "MATCH-ALIAS-DIFFERS") {
+		t.Fatalf("the failure must name the CLASS — the retirement alarm fires on any "+
+			"call, so the class is the only thing telling the two apart; got %q", b.String())
 	}
 }
 
-// TestDottedLegQualifier_FloorsCatchAnUnreachedSite: the MATCH-ALIAS-DIFFERS zero
-// is the whole finding, and over an empty population it costs nothing.
-func TestDottedLegQualifier_FloorsCatchAnUnreachedSite(t *testing.T) {
+// TestDottedLegQualifier_RetirementIsWatched replaces the floors that used to
+// catch an unreached site.
+//
+// Both sites were arms of the name-model bake, and the ordinal model deleted
+// them: RecordDottedLegQualifier has no caller, so the population is
+// structurally zero and a floor on it is unsatisfiable. The direction inverts —
+// an unreached site is the steady state and a REACHED one is the alarm.
+func TestDottedLegQualifier_RetirementIsWatched(t *testing.T) {
 	t.Parallel()
-	var counts [dottedLegSiteCount][dottedLegClassCount]int
-	floors := &DottedLegQualifierFloors{}
-	floors.Calls[DottedLegSiteFlatColumnBake] = 10
+	var empty [dottedLegSiteCount][dottedLegClassCount]int
 	var b strings.Builder
-	if !assertDottedLegQualifierCounts(&b, counts, floors) {
-		t.Fatal("an unreached floored site must fail the gate")
+	if assertDottedLegQualifierCounts(&b, empty, &DottedLegQualifierFloors{}) {
+		t.Fatalf("the RETIRED steady state (nothing reaches either site) failed the gate; got %q",
+			b.String())
 	}
-	if !strings.Contains(b.String(), "flatColumnBake") {
-		t.Fatalf("the failure must name the dark site; got %q", b.String())
+	// Every site, and a class that used to be tolerated: the alarm has to cover
+	// the whole channel or an arm can revive under a class nobody watched.
+	for site := DottedLegSite(0); site < dottedLegSiteCount; site++ {
+		var counts [dottedLegSiteCount][dottedLegClassCount]int
+		counts[site][DottedLegMatchViaTableName] = 1
+		var b2 strings.Builder
+		if !assertDottedLegQualifierCounts(&b2, counts, &DottedLegQualifierFloors{}) {
+			t.Fatalf("%s reached once and the gate PASSED. The dotted-qualifier match "+
+				"channel is retired; a call means a name-splitting resolution path is back.",
+				site)
+		}
+		if !strings.Contains(b2.String(), "revival") {
+			t.Fatalf("%s: the failure does not state which DIRECTION is the alarm; got %q",
+				site, b2.String())
+		}
 	}
 }
 
@@ -127,12 +149,15 @@ func TestDottedLegQualifier_NoAliasTripsTheGate(t *testing.T) {
 	if !strings.Contains(b.String(), "MATCH-NO-ALIAS") || !strings.Contains(b.String(), "legQOVBake") {
 		t.Fatalf("the failure must name the class and the site; got %q", b.String())
 	}
-	// The ambiguous class is NOT a hard zero — it is a fact about the corpus, and
-	// poisoning is the reader behaving correctly.
-	var okCounts [dottedLegSiteCount][dottedLegClassCount]int
-	okCounts[DottedLegSiteLegQOVBake][DottedLegAmbiguousQualifier] = 9
+	// The ambiguous class used to be tolerated by the gate — it is a fact about
+	// the corpus, and poisoning is the reader behaving correctly. It is no longer
+	// tolerated, because nothing may reach this channel at all; what survives is
+	// that it is still its OWN class, which the classifier pin above holds.
+	var ambiguous [dottedLegSiteCount][dottedLegClassCount]int
+	ambiguous[DottedLegSiteLegQOVBake][DottedLegAmbiguousQualifier] = 9
 	var b2 strings.Builder
-	if assertDottedLegQualifierCounts(&b2, okCounts, nil) {
-		t.Fatalf("an ambiguous qualifier is a refused bake, not a contradiction; got %q", b2.String())
+	if !assertDottedLegQualifierCounts(&b2, ambiguous, nil) {
+		t.Fatalf("an ambiguous qualifier still reaches the retired channel and must "+
+			"trip its revival alarm; got %q", b2.String())
 	}
 }

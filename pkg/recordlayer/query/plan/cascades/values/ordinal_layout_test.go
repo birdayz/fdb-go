@@ -759,10 +759,14 @@ func TestOrdinalLayoutIdentityAndAliasFreeHashLaws(t *testing.T) {
 		{
 			name: "source exact type",
 			mutate: func(f *layoutFixture) {
+				// A differing RecordName is NOT a differing exact type — it is
+				// provenance and Java's Type.Record.equals ignores it — so this
+				// mutation has to move a FIELD or it mutates nothing and the
+				// arm asserts against an unchanged layout.
 				changedType := &RecordType{
 					RecordName: "DifferentSourceName",
 					Fields: []Field{
-						{Name: "A", Ordinal: 0, FieldType: NotNullLong},
+						{Name: "DIFFERENT_A", Ordinal: 0, FieldType: NotNullLong},
 						{Name: "B", Ordinal: 1, FieldType: NewPrimitiveType(TypeCodeString, true)},
 					},
 				}

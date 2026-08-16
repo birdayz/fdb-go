@@ -59,13 +59,18 @@ func TestFilterMergeRule_TranslatesOnlyExactOuterEdge(t *testing.T) {
 	foreignPredicate := qFieldPred(t, foreignQ, "b", predicates.Comparison{Type: predicates.ComparisonIsNotNull})
 
 	// A retained source window may conventionally reuse the removed edge's
-	// alias. Its different exact record identity is authoritative even though
-	// width, field names, leaf types, and nullability otherwise coincide.
+	// alias. Its different exact record identity is authoritative — and that
+	// identity is the row's SHAPE: the RecordName is provenance and compares
+	// equal (Java's Type.Record.equals), so the window carries an extra column
+	// the edge's row does not. The predicate below still reads `c`, which is
+	// byte-identical on both, so the alias and the accessor coincide exactly as
+	// the case intends and only the row shape tells them apart.
 	retainedType := values.NewRecordType("RetainedFilterWindow", false, []values.Field{
 		{Name: "a", FieldType: values.NullableLong},
 		{Name: "b", FieldType: values.NullableLong},
 		{Name: "c", FieldType: values.NullableLong},
 		{Name: "x", FieldType: values.NullableLong},
+		{Name: "retained_only", FieldType: values.NullableLong},
 	})
 	retainedScan := mustFilterConstruct(expressions.NewFullUnorderedScanExpression(
 		[]string{"RETAINED"}, retainedType))

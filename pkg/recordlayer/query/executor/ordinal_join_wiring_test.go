@@ -596,9 +596,13 @@ func TestJoinPredicateContexts_PreserveLocalExactLegOwnership(t *testing.T) {
 	}
 	assertForeignTypeRejected := func(t *testing.T, ctx *values.RowEvalContext) {
 		t.Helper()
+		// A FOREIGN exact type is a different row SHAPE under leg A's alias.
+		// A RecordName is provenance and compares equal (Java's
+		// Type.Record.equals), so "FOREIGN_A" over leg A's fields IS leg A and
+		// both call sites below would assert against a legitimate local bind.
 		foreignType := values.NewRecordType("FOREIGN_A", false, []values.Field{
 			{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong},
-			{Name: "V", Ordinal: 1, FieldType: values.NotNullLong},
+			{Name: "FOREIGN_V", Ordinal: 1, FieldType: values.NotNullLong},
 		})
 		foreign := ojWiringMustQOV(t, qovA.Correlation(), foreignType)
 		got, evalErr := foreign.Evaluate(ctx)

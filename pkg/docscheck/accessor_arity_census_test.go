@@ -171,18 +171,31 @@ var accessorAritySites = map[string]accessorAritySite{
 		class: arityNestingOK, exprs: 1,
 		why: "reads the root ordinal deliberately; its caller rebases that root and retains the complete suffix.",
 	},
+	"pkg/recordlayer/query/plan/cascades/values/values.go#DisplayColumnName": {
+		class: arityNestingOK, exprs: 2,
+		why: "takes the LAST accessor of a path of any depth as the display leaf; it refuses only an EMPTY path, and the leaf is read from the resolved accessors rather than by splitting a rendered name, so a column legally named with a dot in it is not torn in half.",
+	},
 }
 
 // Population facts measured after RFC-232 made the public FieldValue/FieldPath
 // representation private and introduced sealed exact views. These are exact
 // census pins, not budgets; a move requires reclassification and an RFC-230
 // current-state note.
+//
+// THE +2 OVER RFC-230 rev 6 §7.3's PUBLISHED 45 IS DisplayColumnName, and it is
+// classified rather than absorbed. The projection label authority stopped
+// splitting a rendered name at its last dot and now reads the LEAF out of the
+// resolved accessors — which needs the path's length twice, once to reject an
+// empty path and once to index its last step. Both expressions are class (c):
+// the site traverses a path of any depth. A name-splitting label authority is
+// what the ordinal model retires, so the population growing here is the
+// conversion arriving, not new debt.
 const (
-	rfcPublishedPopulation = 45
+	rfcPublishedPopulation = 47
 	arityGeneratedLines    = 8  // protobuf loops over PFieldPath.FieldAccessors
 	arityCommentLines      = 7  // historical SourceRelativeBaked legibility prose
-	arityCodeLines         = 30 // the live production population
-	arityExpressions       = 34 // four code lines contain multiple expressions
+	arityCodeLines         = 32 // the live production population
+	arityExpressions       = 36 // four code lines contain multiple expressions
 )
 
 // accessorArityLine is the RFC's own sweep, as a regexp.
@@ -372,12 +385,18 @@ func TestAccessorArityClassCounts(t *testing.T) {
 	t.Parallel()
 
 	// RFC-232's exact views leave eight legitimate single-slot declines and
-	// nineteen arity-tolerant path operations. Nested-path GROUP BY is shipped,
+	// twenty arity-tolerant path operations. Nested-path GROUP BY is shipped,
 	// so blocker/live-defect/uncertain are zero-ratchet classes.
+	//
+	// The twentieth (c) is values.DisplayColumnName, added when the projection
+	// label authority stopped splitting a rendered name at its last dot and
+	// started reading the leaf out of the resolved accessors. The DECLINE count
+	// did not move with it, which is the reading that matters: the conversion
+	// added an arity-TOLERANT site, not another single-slot requirement.
 	pinned := map[accessorArityClass]int{
 		arityCorrectDecline: 8,
 		arityBlocker:        0,
-		arityNestingOK:      19,
+		arityNestingOK:      20,
 		arityLiveDefect:     0,
 		arityUncertain:      0,
 	}

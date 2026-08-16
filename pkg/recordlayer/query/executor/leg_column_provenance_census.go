@@ -484,36 +484,31 @@ func FormatLegColumnProvenanceCensus() string {
 	return b.String()
 }
 
-// LegColumnProvenanceFloors is the minimum population this census must report
-// over a whole suite run.
+// LegColumnProvenanceFloors is the population this census must report over a
+// whole suite run — and it is now EMPTY, which is the reconciliation rather than
+// an omission.
 //
-// It exists for the reason its two siblings' floors exist, and the reason is
-// sharper here than for either of them. This census's entire finding is a pair
-// of small numbers — the dotted arm answers FOUR times in the whole corpus, and
-// all four have an identity available — and the retirement decision rests on
-// BOTH halves: on the four being all there is, and on all four being
-// identity-available. A zero population satisfies the second half vacuously. It
-// also satisfies the DottedHitIdentityDiverged zero vacuously, and the partition
-// as 0 == 0.
+// It used to floor two numbers, because the census's finding was a pair of small
+// ones: the dotted arm answered four times in the whole corpus, all four with an
+// identity available. A zero population satisfied that second half vacuously,
+// satisfied the DottedHitIdentityDiverged zero vacuously, and satisfied the
+// partition as 0 == 0 — so a census that stopped being driven reported exactly
+// the shape of a census reporting good news, and at that scale "4" and "0" do
+// not look different at a glance.
 //
-// So a census that stopped being driven at all reports exactly the shape of a
-// census reporting good news, and the numbers are small enough that "4" and "0"
-// do not look different at a glance. The floors are what make them different.
+// The reader has since been RETIRED, and the retirement is what inverts the
+// guard. adaptLegPositional's permutation gather is its only driver, and that
+// gather's own note said what would end it: "retiring this gather requires Go's
+// seed to bake against the chosen physical leg layout the same way [Java does]".
+// The exact-ordinal seed does that, so every leg row now passes
+// positionalMatchesLegType and the gather — and this reader with it — is never
+// entered. A floor on that population is unsatisfiable; the danger is REVIVAL,
+// and that is asserted unconditionally in assertLegColumnProvenanceCounters.
 //
-// Set at 1 rather than an order of magnitude below the measurement, because
-// there is no order of magnitude here: the measured DottedHitIdentityAvailable
-// is 4. What a floor detects at this scale is DISAPPEARANCE, which is the whole
-// failure mode — the shapes that drive the dotted arm ceasing to be planned, or
-// the reader ceasing to be reached.
-type LegColumnProvenanceFloors struct {
-	// Calls floors the denominator every share is taken against.
-	Calls int
-	// DottedHitIdentityAvailable floors the population the retirement decision
-	// is ABOUT. Calls alone does not cover it: the flat-hit arm carries 40 of
-	// the 52 calls, so Calls can stay healthy while the dotted arm — the only
-	// arm this census exists for — goes to zero.
-	DottedHitIdentityAvailable int
-}
+// The type stays so the gate keeps its narrowed-run shape (a nil floors pointer
+// still means "the corpus was filtered"), and so a future population has
+// somewhere to be floored.
+type LegColumnProvenanceFloors struct{}
 
 // AssertLegColumnProvenanceCensus checks the census's partition, its one zero
 // and its population floors, and reports whether it failed.
@@ -599,35 +594,30 @@ func assertLegColumnProvenanceCounters(w io.Writer, c legColumnProvenanceCounter
 			"  not a residue to shrink but a contradiction to find. Look at the PRODUCER\n"+
 			"  that built the leg, not at this reader.\n", c.DottedHitIdentityDiverged)
 	}
-	if floors != nil {
-		for _, f := range []struct {
-			name  string
-			got   int
-			floor int
-			why   string
-		}{
-			{
-				"Calls", c.Calls, floors.Calls,
-				"Nothing reached the reader at all, so the partition held as 0 == 0 and\n" +
-					"  the DottedHitIdentityDiverged zero held vacuously. Either leg rows stopped\n" +
-					"  being adapted or the census stopped being enabled.",
-			},
-			{
-				"DottedHitIdentityAvailable", c.DottedHitIdentityAvailable,
-				floors.DottedHitIdentityAvailable,
-				"The DOTTED arm — the only arm this census exists to measure — answered\n" +
-					"  zero times. The retirement decision rests on the claim that every dotted\n" +
-					"  hit has an identity available; over an empty population that claim costs\n" +
-					"  nothing and proves nothing, and it reads on the report exactly like the\n" +
-					"  measured four-of-four that licensed it.",
-			},
-		} {
-			if f.got < f.floor {
-				failed = true
-				fmt.Fprintf(w, "LEG-COLUMN PROVENANCE CENSUS FAIL: %s = %d, want >= %d.\n  %s\n",
-					f.name, f.got, f.floor, f.why)
-			}
-		}
+	// THE READER IS RETIRED AND THIS IS ITS REVIVAL ALARM. Calls used to be
+	// FLOORED, at 100, because a reader nothing reaches makes every zero beside
+	// it vacuous. Its only driver is adaptLegPositional's permutation gather,
+	// which the exact-ordinal seed removed from the live path: the seed now bakes
+	// against the chosen physical leg layout, so every leg row passes
+	// positionalMatchesLegType and the gather is never entered.
+	//
+	// The floor is therefore unsatisfiable and the direction inverts. Zero is the
+	// steady state; a non-zero says the two-layout residue is back — a leg seeded
+	// with one layout meeting a physical leg that emits another — and that is a
+	// finding about the SEED, not about this reader. It is unconditional (no
+	// floors pointer) because it holds over any population, narrowed run included.
+	if c.Calls != 0 {
+		failed = true
+		fmt.Fprintf(w, "LEG-COLUMN PROVENANCE CENSUS FAIL: Calls = %d, want 0 — the leg-column\n"+
+			"  name reader was RETIRED and this is its revival alarm.\n"+
+			"  Its only driver is adaptLegPositional's layout-PERMUTATION gather, which runs\n"+
+			"  when a leg's seeded type and the row its physical leg emits are permutations\n"+
+			"  of each other. The exact-ordinal seed bakes against the chosen physical leg\n"+
+			"  layout, exactly as Java's translateCorrelations does, so the two layouts\n"+
+			"  agree and the gather is skipped. A non-zero here means some seed stopped\n"+
+			"  doing that — find the PRODUCER, do not re-floor this reader.\n"+
+			"  Calls is the ONLY number here; every other counter is a share of it.\n", c.Calls)
 	}
+	_ = floors
 	return failed
 }

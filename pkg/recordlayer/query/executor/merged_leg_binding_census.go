@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -93,10 +94,12 @@ var (
 	//
 	// What the measurement actually establishes is that "shadowed nothing" does not
 	// imply "load-bearing": the corpus's reads are the binder's alone AND declining
-	// them changes no row (TestFDB_MergedLegBinding_ReaderShapeIsRedundant). So the
-	// gate keys its exclusion on a PROOF per reader shape, not on this structural
-	// property, and this tally stays as what it is — the number that shows the
-	// structural property is not the one to key on.
+	// them changed no row. So the gate keys its exclusion on a PROOF per reader
+	// shape, not on this structural property, and this tally stays as what it is —
+	// the number that shows the structural property is not the one to key on.
+	// Under the ordinal model the reads are gone outright
+	// (TestFDB_MergedLegBinding_NothingReadsTheBinder), so this tally is zero and
+	// the exclusion path below has nothing to excuse.
 	mergedLegUnshadowedMergedRowReads = map[MergedRowRead]int{}
 	// mergedLegRedundantReaders names the (alias, merged-row shape) reads a live
 	// test has DEMONSTRATED, in this run, to leave the rows unchanged when the
@@ -122,12 +125,16 @@ var (
 // perturbation of the binder's window — by the named proof. Call it ONLY from the
 // passing path of that proof.
 //
-// The perturbation is the proof's own choice and the two live ones differ:
-// declining the window entirely so the alias resolves to nothing
-// (TestFDB_MergedLegBinding_ReaderShapeIsRedundant), and aiming every window at a
-// sibling leg's span (TestFDB_MergedLegBinding_WrongWindowsAreUnobservable). Both
-// establish the same thing about the same reads — the value behind the binding
-// does not reach an answer — so both excuse them, and both are named.
+// The perturbation is the proof's own choice. Two forms exist: declining the
+// window entirely so the alias resolves to nothing
+// (EvaluationContext.WithMergedLegReadBypass), and aiming every window at a
+// sibling leg's span (TestFDB_MergedLegBinding_WrongWindowsAreUnobservable, which
+// still runs). Both establish the same thing about the same reads — the value
+// behind the binding does not reach an answer — so either may excuse them.
+//
+// NOTHING REGISTERS TODAY. The ordinal model resolves a leg reference by baked
+// slot, so the binder's windows are read by nobody and there is no read to
+// excuse; this function is the response path for a revival, not a live one.
 //
 // It takes the read's full identity, not its alias, so the excusal covers exactly
 // the shape the proof ran. A proof of `ST` out of an `ST[0,3)|OT[3,5)` merged row
@@ -243,8 +250,30 @@ func misaimMergedLegWindows(bindings map[values.CorrelationIdentifier]any, claim
 		}
 		w.offset, w.width = s.offset, s.width
 		w.misaimed = true
+		misaimedMergedLegBinds.Add(1)
 	}
 }
+
+// misaimedMergedLegBinds counts windows misaimMergedLegWindows actually MOVED.
+//
+// It exists because the wrong-window instrument lost its old engagement floor.
+// That floor was "the read resolved through a misaimed window", which is the
+// right thing to require while reads exist — a merged row whose legs nothing
+// looks up can be misaimed all day and prove nothing. Leg references resolve by
+// baked slot now, so there is no read to reach, and the perturbation reaching
+// the BIND is what is left to establish. Without it the instrument compares two
+// runs in which nothing was perturbed and reports the standing mutation as
+// passing while performing none.
+//
+// Process-global rather than sink-scoped, because the misaim happens while the
+// bindings map is being built and no per-execution sink is in hand there. Only
+// the instrument's own execution sets WithMergedLegWrongWindows, so a non-zero
+// is attributable to it even under a parallel suite.
+var misaimedMergedLegBinds atomic.Int64
+
+// MisaimedMergedLegBinds reports how many leg windows the wrong-window hook has
+// moved over this process.
+func MisaimedMergedLegBinds() int { return int(misaimedMergedLegBinds.Load()) }
 
 // recordMergedLegRead counts one LOOKUP that resolved to a window
 // bindMergedOuterLegs produced. This is the number the "nothing reads it" claim

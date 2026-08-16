@@ -753,9 +753,10 @@ func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren 
 		}
 		// The alias vector AND its provenance: this is the extraction rebuild,
 		// so dropping the names here loses the output column names of every
-		// rebuilt projection — the same defect PushLimitThroughProjectionRule
-		// had — and dropping the provenance re-labels every machinery datum key
-		// as a user alias, which is the same defect one layer up.
+		// rebuilt projection — `SELECT l.id AS l_id, r.id AS r_id …` reports two
+		// columns both named ID, rows unchanged — and dropping the provenance
+		// re-labels every machinery datum key as a user alias, which is the same
+		// defect one layer up.
 		rebuilt, err := expressions.NewLogicalProjectionExpressionWithOutputSchema(
 			ex.GetProjectedValues(), ex.GetAliases(), ex.GetAliasMinted(), ex.GetOutputNames(), freshChildren[0],
 		)

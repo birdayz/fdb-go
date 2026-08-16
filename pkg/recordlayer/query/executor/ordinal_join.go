@@ -762,11 +762,14 @@ type legWindowRow struct {
 	// premise this marker was added under, and the census refuted it: over a full
 	// sqldriver run ZERO of the binder's reads shadow, all of them are unshadowed,
 	// and declining them entirely still changes no row
-	// (TestFDB_MergedLegBinding_ReaderShapeIsRedundant). "The only binding" and
-	// "load-bearing" are therefore different properties: the corpus's reads are the
-	// first without being the second, because the value they resolve never reaches
-	// an answer. Load-bearing is settled per reader shape by running both routes,
-	// not by reading this flag.
+	// (measured by running the shape down both resolution routes). "The only
+	// binding" and "load-bearing" are therefore different properties: those reads
+	// were the first without being the second, because the value they resolved
+	// never reached an answer. The ordinal model has since removed the reads
+	// entirely — TestFDB_MergedLegBinding_NothingReadsTheBinder pins that the shape
+	// still binds and is still not read — so the flag now describes a channel with
+	// no consumer at all. Load-bearing is settled per reader shape by running both
+	// routes, never by reading this flag.
 	//
 	// Recorded only while the leg-identity census gate is on; the map probe is not
 	// something the per-outer-row path should pay for in production.
@@ -884,7 +887,7 @@ func (b *legWindowBinder) GetQuantifiedBinding(view values.QuantifiedObjectValue
 		return nil, false, err
 	}
 	if claimed {
-		if declared == nil || !declared.Equals(exact.FlowedType()) {
+		if declared == nil || !values.QuantifiedRowShapesAgree(declared, exact.FlowedType()) {
 			return nil, false, layoutBindingError(values.CorrelationTypeConflict,
 				"leg-window lookup type disagrees with the local exact leg")
 		}
@@ -903,7 +906,7 @@ func (b *legWindowBinder) IsExplicitNullQuantifiedBinding(view values.Quantified
 		return false, err
 	}
 	if claimed {
-		if declared == nil || !declared.Equals(exact.FlowedType()) {
+		if declared == nil || !values.QuantifiedRowShapesAgree(declared, exact.FlowedType()) {
 			return false, layoutBindingError(values.CorrelationTypeConflict,
 				"leg-window absence type disagrees with the local exact leg")
 		}
@@ -1731,7 +1734,7 @@ func newOrdinalJoinBuildWithOutputLayout(
 		}
 		if outputLayout.CarrierKind() != values.OrdinalCarrierRecord ||
 			outputLayout.Carrier() == nil ||
-			!outputLayout.Carrier().FlowedType().Equals(outputType) {
+			!values.PhysicalCarrierType(outputLayout).Equals(outputType) {
 			return nil, layoutBindingError(values.LayoutCarrierMismatch,
 				"selected nested-loop join layout disagrees with the result program")
 		}
@@ -2366,15 +2369,19 @@ func (b *twoLegBinder) GetQuantifiedBinding(view values.QuantifiedObjectValue) (
 	}
 	switch exact.Correlation() {
 	case b.outerID:
-		if b.outerType == nil || !b.outerType.Equals(exact.FlowedType()) {
+		if b.outerType == nil || !values.QuantifiedRowShapesAgree(b.outerType, exact.FlowedType()) {
 			return nil, false, layoutBindingError(values.CorrelationTypeConflict,
-				"outer join-pair lookup type disagrees with the local exact leg")
+				fmt.Sprintf("outer join-pair lookup %s: read as %s, local leg %s",
+					exact.Correlation().Name(), values.DescribeType(exact.FlowedType()),
+					values.DescribeType(b.outerType)))
 		}
 		return b.outer, true, nil
 	case b.innerID:
-		if b.innerType == nil || !b.innerType.Equals(exact.FlowedType()) {
+		if b.innerType == nil || !values.QuantifiedRowShapesAgree(b.innerType, exact.FlowedType()) {
 			return nil, false, layoutBindingError(values.CorrelationTypeConflict,
-				"inner join-pair lookup type disagrees with the local exact leg")
+				fmt.Sprintf("inner join-pair lookup %s: read as %s, local leg %s",
+					exact.Correlation().Name(), values.DescribeType(exact.FlowedType()),
+					values.DescribeType(b.innerType)))
 		}
 		return b.inner, true, nil
 	}
@@ -2388,13 +2395,13 @@ func (b *twoLegBinder) IsExplicitNullQuantifiedBinding(view values.QuantifiedObj
 	}
 	switch exact.Correlation() {
 	case b.outerID:
-		if b.outerType == nil || !b.outerType.Equals(exact.FlowedType()) {
+		if b.outerType == nil || !values.QuantifiedRowShapesAgree(b.outerType, exact.FlowedType()) {
 			return false, layoutBindingError(values.CorrelationTypeConflict,
 				"outer join-pair absence type disagrees with the local exact leg")
 		}
 		return b.outer == nil, nil
 	case b.innerID:
-		if b.innerType == nil || !b.innerType.Equals(exact.FlowedType()) {
+		if b.innerType == nil || !values.QuantifiedRowShapesAgree(b.innerType, exact.FlowedType()) {
 			return false, layoutBindingError(values.CorrelationTypeConflict,
 				"inner join-pair absence type disagrees with the local exact leg")
 		}

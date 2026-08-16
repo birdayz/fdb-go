@@ -117,36 +117,21 @@ func TestFDB_StructOrderingGate(t *testing.T) {
 	// error, and the cause is a layer BELOW the decline above: the ORDER BY key
 	// never reaches the semantic scope at all. translateSort mints the carrier
 	// as `&values.FieldValue{Field: k.Expr, Typ: values.UnknownType}` and then
-	// bakes it by NAME against the input column list
-	// (bakeFlatRefsAgainstColumns takes `cols []string` — names only, no
-	// types), so the key arrives at ImplementInMemorySortRule typed UNKNOWN.
-	// The rule admits UNKNOWN on purpose (a bound parameter is not evidence of
-	// an unorderable key), so the record slips through.
+	// A DERIVED-TABLE ORDER BY over a struct column. It used to LEAK the raw
+	// comparator error ("no ordering defined between …") because the two paths
+	// that type a column disagreed: the comparison operand was typed by the
+	// semantic resolver while the sort key was baked by NAME against the input
+	// column list (names only, no types), so the key reached
+	// ImplementInMemorySortRule typed UNKNOWN — which the rule admits on
+	// purpose, since a bound parameter is not evidence of an unorderable key.
 	//
-	// Carrying semantic.Column.StructFields — the fix that closed the
-	// comparison gate — does NOT reach this: the comparison operand is typed by
-	// the semantic resolver, the sort key is typed by the name-based bake. They
-	// are different paths, and only the first was fixed.
-	//
-	// This test asserts the CURRENT behaviour so the gap cannot drift
-	// unnoticed. It is NOT an endorsement: the right end state is the same
-	// 0AF00 the base-table case now produces, reached by resolving the ORDER BY
-	// key through the scope so it carries its real type. When that lands, this
-	// test FAILS and should be replaced by a mustRejectCleanly call.
-	t.Run("order_by_struct_through_derived_STILL_LEAKS", func(t *testing.T) {
+	// Resolving the key through the scope closed that: it now carries its real
+	// RECORD type and is refused at planning, the same 0AF00 the base-table
+	// case produces. The characterization test that recorded the leak has been
+	// replaced by this pin, exactly as its own note instructed.
+	t.Run("order_by_struct_through_derived_rejects_cleanly", func(t *testing.T) {
 		t.Parallel()
-		err := drain("SELECT x.id FROM (SELECT id, home AS h FROM T_S) x ORDER BY x.h")
-		if err == nil {
-			t.Fatal("derived-table ORDER BY over a struct now ANSWERS. Either the sort key " +
-				"started resolving through the scope (good — replace this test with " +
-				"mustRejectCleanly) or the comparator grew a record arm (investigate: " +
-				"whole-struct ordering has no defined semantics here).")
-		}
-		if !strings.Contains(err.Error(), "no ordering defined between") {
-			t.Fatalf("derived-table ORDER BY over a struct no longer leaks the raw comparator "+
-				"error — got %v.\nIf this is now 0AF00, the sort key is being typed properly "+
-				"and this characterization test should become mustRejectCleanly.", err)
-		}
+		mustRejectCleanly(t, "SELECT x.id FROM (SELECT id, home AS h FROM T_S) x ORDER BY x.h")
 	})
 
 	// A RECURSIVE CTE reaches the decline too — but only because BOTH fixes are

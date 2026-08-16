@@ -150,8 +150,11 @@ func TestExactPlanObjectBindingRejectsWrongRecordTransport(t *testing.T) {
 	t.Parallel()
 
 	declared := exactTestRowType(values.Field{Name: "ID", FieldType: values.NotNullLong})
+	// WRONG means a different row SHAPE. A RecordName is provenance and
+	// compares equal (Java's Type.Record.equals), so "FOREIGN" over the
+	// declared fields IS the declared row and there would be nothing to reject.
 	wrong := values.NewRecordType("FOREIGN", false, []values.Field{{
-		Name: "ID", Ordinal: 0, FieldType: values.NotNullLong,
+		Name: "FOREIGN_ID", Ordinal: 0, FieldType: values.NotNullLong,
 	}})
 	object := mustTestQOV(t, values.NamedCorrelationIdentifier("ROW"), declared)
 	if got, absent, err := exactPlanObjectBinding(

@@ -261,8 +261,18 @@ func TestImplementFilterRule_FiresOverPhysicalUnion(t *testing.T) {
 	// Step 1: Implement both scans.
 	mustFireExpressionRule(t, NewPrimaryScanRule(), refA)
 	mustFireExpressionRule(t, NewPrimaryScanRule(), refB)
-	// Step 2: Implement the union.
-	mustFireExpressionRule(t, NewImplementUnionRule(), unionRef)
+	// Step 2: put a PHYSICAL union in the inner reference, built directly.
+	// No rule implements a bare UNION ALL as RecordQueryUnionPlan any more
+	// (see BatchAExpressionRules), and this test is about the FILTER's
+	// wrapper coverage, not about how the union got there.
+	physicalUnion := mustImplementFilterConstruct(plans.NewRecordQueryUnionPlanFromQuantifiers(
+		[]expressions.Quantifier{
+			expressions.NewPhysicalQuantifier(refA),
+			expressions.NewPhysicalQuantifier(refB),
+		}))
+	if !unionRef.InsertFinal(physicalUnion) {
+		t.Fatal("inserting the physical union into its reference did not take")
+	}
 	// Step 3: Now Filter's inner Reference has a bare RecordQueryUnionPlan.
 	yielded := mustFireExpressionRule(t, NewImplementFilterRule(), topRef)
 	if len(yielded) != 1 {

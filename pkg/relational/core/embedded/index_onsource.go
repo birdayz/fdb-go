@@ -151,7 +151,7 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 	for i := 0; i < fields.Len(); i++ {
 		field := fields.Get(i)
 		rowFields = append(rowFields, values.Field{
-			Name:      strings.ToUpper(string(field.Name())),
+			Name:      values.FieldNameForProtoField(field),
 			Ordinal:   i,
 			FieldType: query.TargetTypeForFD(field),
 		})
@@ -165,7 +165,7 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 	}
 	rowQOV, err := values.NewQuantifiedObjectValue(
 		values.NamedCorrelationIdentifier(tableName),
-		&values.RecordType{RecordName: string(rt.Descriptor.Name()), Fields: rowFields},
+		&values.RecordType{RecordName: values.RecordNameForDescriptor(rt.Descriptor), Fields: rowFields},
 	)
 	if err != nil {
 		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,

@@ -17,7 +17,9 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/core/rowstruct"
 )
 
 // buildStructArrayMetadata constructs a RecordMetaData for a record type TS that
@@ -107,26 +109,52 @@ func buildStructArrayMetadata(t *testing.T) *recordlayer.RecordMetaData {
 	return md
 }
 
-// structPair renders a struct-array element datum (a *dynamicpb.Message SItem)
-// as "SKU:QTY" — proving the WHOLE struct flowed (both fields), not a flattened
-// scalar. A non-message datum renders with its Go type so a regression that
-// changes the element representation is visible in the failure.
+// structPair renders a struct-array element's SKU:QTY through the SAME
+// conversion the SQL client sees (materializeDriverValue → api.Struct), so the
+// assertion is about the VALUES and not about which internal carrier holds them.
+//
+// Two carriers legitimately reach here. A protobuf-backed record arrives as a
+// proto.Message; a record the ordinal model keeps positional — so that a
+// further FieldValue can address it by baked ordinal — arrives as a typed
+// ordinal row. Both are records, both convert to api.Struct at the boundary,
+// and a test that admitted only the first reported a representation change as
+// a data loss.
 func structPair(v any) string {
-	m, ok := v.(proto.Message)
-	if !ok {
+	var st api.Struct
+	switch u := v.(type) {
+	case rowstruct.TypedOrdinalRow:
+		ordinal, err := rowstruct.NewOrdinal(u)
+		if err != nil {
+			return fmt.Sprintf("<ordinal-row not a struct %T: %v>", v, err)
+		}
+		st = ordinal
+	case proto.Message:
+		message, err := rowstruct.New(u.ProtoReflect())
+		if err != nil {
+			return fmt.Sprintf("<message not a struct %T: %v>", v, err)
+		}
+		st = message
+	default:
 		return fmt.Sprintf("<not-a-struct %T:%v>", v, v)
 	}
-	refl := m.ProtoReflect()
-	desc := refl.Descriptor()
-	sku := ""
-	if fd := desc.Fields().ByName("SKU"); fd != nil && refl.Has(fd) {
-		sku = refl.Get(fd).String()
+	sku, skuErr := st.AttributeByName("SKU")
+	qty, qtyErr := st.AttributeByName("QTY")
+	if skuErr != nil || qtyErr != nil {
+		return fmt.Sprintf("<struct missing SKU/QTY: %v / %v>", skuErr, qtyErr)
 	}
-	var qty int64
-	if fd := desc.Fields().ByName("QTY"); fd != nil && refl.Has(fd) {
-		qty = refl.Get(fd).Int()
+	skuText := ""
+	if sku != nil {
+		skuText = fmt.Sprintf("%v", sku)
 	}
-	return fmt.Sprintf("%s:%d", sku, qty)
+	var qtyValue int64
+	if qty != nil {
+		if n, isInt := qty.(int64); isInt {
+			qtyValue = n
+		} else {
+			return fmt.Sprintf("<QTY is %T, want int64>", qty)
+		}
+	}
+	return fmt.Sprintf("%s:%d", skuText, qtyValue)
 }
 
 // TestFDB_ArrayUnnestStruct is the STRUCT-ARRAY (array-of-rows)

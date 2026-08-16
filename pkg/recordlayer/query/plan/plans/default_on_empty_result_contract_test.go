@@ -1,14 +1,24 @@
 package plans
 
 import (
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// defaultOnEmptyContractRow builds a row whose SHAPE is keyed by name: two
+// different names give two genuinely different exact rows, one name always
+// gives the same one.
+//
+// The name must reach a FIELD. A record's RecordName is provenance and does not
+// participate in type identity (Java's Type.Record.equals compares typeCode,
+// nullability and fields only), so a helper that varied only the RecordName
+// handed every "incompatible child" / "different exact row" case a row that was
+// in fact IDENTICAL — those rejections then had nothing to reject.
 func defaultOnEmptyContractRow(name string) *values.RecordType {
 	return values.NewRecordType(name, false, []values.Field{{
-		Name:      "ID",
+		Name:      "ID_" + strings.ToUpper(name),
 		FieldType: values.NotNullLong,
 		Ordinal:   0,
 	}})

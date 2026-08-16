@@ -366,7 +366,14 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 	// the multi-quantifier arm above).
 	tm := tmBuilder.Build()
 	if !tm.DefinesOnlyIdentities() {
-		newResultValue = translateValueCorrelations(newResultValue, tm)
+		// A merge that cannot re-express the result value against the child's
+		// program does not happen at all. Publishing the untranslated value
+		// would leave references to an alias this rewrite is about to dissolve.
+		translatedResult, ok := translateValueCorrelations(newResultValue, tm)
+		if !ok {
+			return
+		}
+		newResultValue = translatedResult
 	}
 	cb := bakedBoxRefCallback(rcByAlias)
 	if len(rcByAlias) > 0 {
@@ -420,7 +427,11 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			rp = predicates.RebasePredicate(rp, valueAliasMap)
 		}
 		if !tm.DefinesOnlyIdentities() {
-			rp = translatePredicateCorrelations(rp, tm)
+			translated, ok := translatePredicateCorrelations(rp, tm)
+			if !ok {
+				return
+			}
+			rp = translated
 		}
 		if len(rcByAlias) > 0 {
 			rp = predicates.ReplaceValues(rp, cb)

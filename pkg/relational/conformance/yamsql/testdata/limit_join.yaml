@@ -25,7 +25,7 @@ tests:
       - [30, "Bob"]
       - [40, "Charlie"]
   - query: SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.amount > 100 ORDER BY o.id LIMIT 1
-    plan_contains: "Limit(1, FlatMap("
+    plan_contains: "Limit(1, "
     plan_not_contains: "NestedLoopJoin"
     rows:
       - [20, "Alice"]

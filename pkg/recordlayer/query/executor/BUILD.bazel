@@ -146,6 +146,7 @@ go_test(
         "scan_range_set_cursor_test.go",
         "signed_zero_scan_helpers_test.go",
         "single_result_continuation_test.go",
+        "sort_continuation_presence_test.go",
         "span_window_cross_agreement_test.go",
         "streaming_cursors_test_helpers_test.go",
         "streaming_row_continuation_integration_test.go",
@@ -284,6 +285,7 @@ go_test(
         "ordinal_layout_binding_test.go",
         "rfc232_exact_value_views_test.go",
         "streaming_cursors_test_helpers_test.go",
+        "sort_continuation_presence_test.go",
     ],
     tags = ["resources:memory:400"],
     deps = [

@@ -748,7 +748,10 @@ func TestPredicateCompensation_Amend_ReplacesUnmatched(t *testing.T) {
 	}
 
 	// Apply and verify the operand was replaced.
-	preds := amended.ApplyCompensationForPredicate(nil)
+	preds, compensable := amended.ApplyCompensationForPredicate(nil)
+	if !compensable {
+		t.Fatal("compensation reported it could not be expressed")
+	}
 	if len(preds) != 1 {
 		t.Fatalf("expected 1 predicate, got %d", len(preds))
 	}

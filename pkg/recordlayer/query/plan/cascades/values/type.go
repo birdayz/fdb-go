@@ -793,8 +793,22 @@ func (*RecordType) Code() TypeCode { return TypeCodeRecord }
 // IsNullable implements Type.
 func (r *RecordType) IsNullable() bool { return r.Nullable }
 
-// Equals implements Type. Structural — name + nullable + element-
-// wise field equality.
+// Equals implements Type. Structural — nullable + element-wise field equality.
+//
+// RecordName is deliberately NOT compared, matching Java's
+// Type.Record.equals/computeHashCode, which hash and compare
+// (typeCode, isNullable, fields) and never the name. A record type's name is
+// PROVENANCE — which descriptor or alias the shape was derived from — not
+// identity: the same row reached by two routes legitimately carries two names
+// (a leg typed from its table descriptor vs the same leg re-derived through a
+// projection), and Java lets those compare equal because nothing downstream
+// reads rows by record name.
+//
+// Making the name identity is not a stricter version of the same check, it is a
+// DIFFERENT one, and it fails in the direction that rejects correct plans: an
+// exact QOV minted from the descriptor and the one minted from the derived row
+// then denote "different" types for one alias and the binder refuses a lookup
+// it must serve.
 func (r *RecordType) Equals(other Type) bool {
 	if other == nil {
 		return false
@@ -803,7 +817,7 @@ func (r *RecordType) Equals(other Type) bool {
 	if !ok {
 		return false
 	}
-	if r.RecordName != or.RecordName || r.Nullable != or.Nullable {
+	if r.Nullable != or.Nullable {
 		return false
 	}
 	if len(r.Fields) != len(or.Fields) {
@@ -1133,7 +1147,10 @@ func (e *EnumType) Equals(other Type) bool {
 	if !ok {
 		return false
 	}
-	if e.EnumName != oe.EnumName || e.Nullable != oe.Nullable {
+	// EnumName is provenance, not identity — same rule and same reason as
+	// RecordType.Equals; Java's Type.Enum.equals compares (typeCode, isNullable,
+	// enumValues) only.
+	if e.Nullable != oe.Nullable {
 		return false
 	}
 	if len(e.Values) != len(oe.Values) {

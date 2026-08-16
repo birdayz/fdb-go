@@ -3813,7 +3813,7 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 			nullable = api.ColumnNoNulls
 		}
 		cols[i] = executor.ColumnDef{
-			Name: strings.ToUpper(string(fd.Name())),
+			Name: values.FieldNameForProtoField(fd),
 			// Route through protoFieldTypeName (descriptor-aware) so a bare
 			// SELECT * reports a UUID column as "OTHER" — the same JDBC name the
 			// projection path (valueTypeName) and Java (Types.OTHER) use — rather
@@ -4418,6 +4418,23 @@ func (r legRead) nullExtended(fv values.FieldValue) bool {
 	return ok && ic.Nullable == api.ColumnNullable
 }
 
+// projectionLabelAlreadyUsed reports whether an earlier projected slot already
+// publishes this display label. A repeated label is legal and expected
+// (`SELECT c.id, o.id`); it is also the signal that the output SCHEMA — which
+// must stay name-addressable — carries a deduplicating suffix the user never
+// wrote.
+func projectionLabelAlreadyUsed(earlier []executor.ColumnDef, label string) bool {
+	if label == "" {
+		return false
+	}
+	for _, c := range earlier {
+		if strings.EqualFold(columnDefDisplayName(c), label) {
+			return true
+		}
+	}
+	return false
+}
+
 func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
 	// A projection over a join references columns from MULTIPLE record types,
 	// so resolve each column's type against every join leaf, not just the
@@ -4514,6 +4531,33 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 				if qov, isQOV := values.AsQuantifiedObjectValue(v); isQOV &&
 					qov.FlowedType() != nil && qov.FlowedType().Code() != values.TypeCodeRecord {
 					cd.Label = outputNames[i]
+				} else if _, isReference := values.AsFieldValue(v); isReference &&
+					!projectionLabelAlreadyUsed(cols[:i], cd.Label) {
+					// A plain column REFERENCE can be RENAMED by the projection's
+					// frozen output schema with no SELECT alias attached: a CTE
+					// column list (`WITH r(n) AS …`) renames the leg's output and
+					// never appears as an alias on a projected item, and a
+					// rebuild that preserves the output schema does not always
+					// carry the alias vector with it. The executor names the
+					// emitted slot from that schema, so a label left on the read's
+					// own field name (`ID`) describes a slot the row calls `N` and
+					// the positional read refuses to align — every column of the
+					// result then goes loud.
+					//
+					// NOT when the derived label already occurs at an earlier
+					// slot. The output schema is name-addressable, so a repeated
+					// label is DEDUPLICATED there (`X`, `X_2`) while the
+					// user-visible labels stay `[X X]` — Java's layout, and what
+					// the alignment check already tolerates by ordinal. Following
+					// the schema there would publish the machinery's suffix as a
+					// column name.
+					//
+					// Bare leaf and upper-cased, to stay in the derivation's own
+					// spelling: an output name over a gated ordinal join is
+					// qualified (`C.NAME`) while the label is bare, and a quoted
+					// inner alias reaches the schema in its written case (`did`)
+					// where the column list reports `DID`.
+					cd.Label = strings.ToUpper(parseColRef(outputNames[i]).bare())
 				}
 			} else if !aliasMinted {
 				cd.Label = outputNames[i]
@@ -5075,6 +5119,149 @@ func mergedRVSequenceDiverges(rc *values.RecordConstructorValue, merged []execut
 	return false
 }
 
+// mergedInRVOrder re-sequences the name-model leg-merge into the ordinal RC's
+// authoritative output order, keeping each column's qualified datum key.
+//
+// A divergence between the two sequences is a statement about ORDER, never
+// about the names. The merge walks the PHYSICAL leg tree, and which grouping
+// the planner picks for equal-cost legs is arbitrary — a plain three-way
+// `SELECT *` plans `TA ⋈ (TB ⋈ TC)` or `TB ⋈ (TA ⋈ TC)` on a tie — while the RC
+// always carries FROM order. Answering the divergence by falling back to the
+// RC's own bare labels fixes the order and throws the qualifiers away with it,
+// dropping the `TA.K`/`TB.K` datum keys that by-name reads use. The permutation
+// is what was actually needed, and the RC states it.
+//
+// Each RC field names its LEG by root correlation and its position by baked
+// ordinal path; slotIndex resolves that pair to the leg's derived-column index
+// (legSlotIndex in production, which walks the path down the leg's own join
+// tree). Nothing here re-derives a column: the merge already carries the
+// qualification, the outer-join null extension and the per-leg recursion, and
+// this only says WHERE each of its entries belongs.
+//
+// The resolver is a parameter so the permutation assembly and its refusals can
+// be driven directly, without standing up a plan tree for each one.
+//
+// Reports false unless the RC accounts for every merged column exactly once,
+// under exactly the two leg roots. Anything else means the merge is not simply
+// misordered, and the caller keeps its existing RC-derived answer rather than
+// guessing at an alignment.
+func mergedInRVOrder(
+	rc *values.RecordConstructorValue,
+	merged []executor.ColumnDef,
+	firstAlias, secondAlias string,
+	firstWidth int,
+	slotIndex func(alias string, path []int) (int, bool),
+) ([]executor.ColumnDef, bool) {
+	if len(rc.Fields) != len(merged) ||
+		firstWidth < 0 || firstWidth > len(merged) ||
+		firstAlias == "" || secondAlias == "" || firstAlias == secondAlias {
+		return nil, false
+	}
+	out := make([]executor.ColumnDef, len(merged))
+	taken := make([]bool, len(merged))
+	for i, f := range rc.Fields {
+		field, isField := values.AsFieldValue(f.Value)
+		if !isField {
+			return nil, false
+		}
+		root, isRoot := values.AsQuantifiedObjectValue(field.ChildValue())
+		if !isRoot {
+			return nil, false
+		}
+		var position int
+		var resolved bool
+		switch name := strings.ToUpper(root.Correlation().Name()); name {
+		case firstAlias:
+			position, resolved = slotIndex(name, field.Path().Ordinals())
+		case secondAlias:
+			position, resolved = slotIndex(name, field.Path().Ordinals())
+			position += firstWidth
+		}
+		if !resolved || position < 0 || position >= len(merged) || taken[position] {
+			return nil, false
+		}
+		taken[position] = true
+		out[i] = merged[position]
+	}
+	return out, true
+}
+
+// legSlotIndex resolves one ordinal path within a leg's emitted row to that
+// leg's DERIVED-COLUMN index.
+//
+// The two orders are not the same and cannot be assumed to be. A join leg emits
+// a nested positional-merge row whose slot order is its PHYSICAL leg order,
+// while its derived columns come back flat in SQL order — deriveColumnsFromJoin
+// may already have reversed them. `SELECT * FROM p, q, p` planned `(P ⋈ Q) ⋈ P`
+// is the shape where they part company: the sub-join's row is `<_0 Q, _1 P>`
+// and its columns are `[P.ID P.V Q.QID]`. So the path is followed through the
+// join's OWN result value, which names the leg at each slot, and the leg order
+// is re-derived exactly as the merge derived it.
+//
+// A leg that is not a join emits a flat row: slot i is column i.
+func legSlotIndex(
+	leg plans.RecordQueryPlan, md *recordlayer.RecordMetaData, path []int,
+) (int, bool) {
+	if leg == nil || len(path) == 0 {
+		return 0, false
+	}
+	// Pass-through wrappers (Fetch, Limit, DefaultOnEmpty) keep their input's
+	// row, so descend to the node that shapes it. definesOutputSchema is the
+	// same stop set deriveColumnsFromPlan's descent uses.
+	for !definesOutputSchema(leg) {
+		inner, wrapped := leg.(innerPlan)
+		if !wrapped || inner.GetInner() == nil {
+			break
+		}
+		leg = inner.GetInner()
+	}
+	nlj, isJoin := leg.(*plans.RecordQueryNestedLoopJoinPlan)
+	if !isJoin {
+		if len(path) != 1 {
+			return 0, false
+		}
+		if path[0] < 0 || path[0] >= len(deriveColumnsFromPlan(leg, md)) {
+			return 0, false
+		}
+		return path[0], true
+	}
+	rc, isRC := nlj.GetResultValue().(*values.RecordConstructorValue)
+	if !isRC || path[0] < 0 || path[0] >= len(rc.Fields) {
+		return 0, false
+	}
+	slotLeg, isSlotLeg := values.AsQuantifiedObjectValue(rc.Fields[path[0]].Value)
+	if !isSlotLeg {
+		return 0, false
+	}
+	firstLeg, secondLeg, firstAlias, secondAlias := joinLegDerivationOrder(nlj)
+	switch strings.ToUpper(slotLeg.Correlation().Name()) {
+	case firstAlias:
+		return legSlotIndex(firstLeg, md, path[1:])
+	case secondAlias:
+		index, ok := legSlotIndex(secondLeg, md, path[1:])
+		if !ok {
+			return 0, false
+		}
+		return len(deriveColumnsFromPlan(firstLeg, md)) + index, true
+	}
+	return 0, false
+}
+
+// joinLegDerivationOrder returns the join's legs in the order
+// deriveColumnsFromJoin merges their columns, with their aliases uppercased.
+// Both sites must make the same first/second decision or an index computed
+// against one describes the other.
+func joinLegDerivationOrder(
+	nlj *plans.RecordQueryNestedLoopJoinPlan,
+) (firstLeg, secondLeg plans.RecordQueryPlan, firstAlias, secondAlias string) {
+	outerAlias := strings.ToUpper(nlj.GetOuterAlias().Name())
+	innerAlias := strings.ToUpper(nlj.GetInnerAlias().Name())
+	if joinResultValueIsReversed(nlj.GetResultValue(), outerAlias, innerAlias) {
+		return nlj.GetInner(), nlj.GetOuter(), innerAlias, outerAlias
+	}
+	return nlj.GetOuter(), nlj.GetInner(), outerAlias, innerAlias
+}
+
 func ordinalUnnestColumnDef(f values.RecordConstructorField, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
 	name := strings.ToUpper(f.Name)
 	label := strings.ToUpper(parseColRef(f.Name).bare())
@@ -5184,13 +5371,11 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 	}
 
 	outerAlias := strings.ToUpper(nlj.GetOuterAlias().Name())
-	innerAlias := strings.ToUpper(nlj.GetInnerAlias().Name())
 
 	firstCols, secondCols := outerCols, innerCols
-	firstAlias, secondAlias := outerAlias, innerAlias
-	if joinResultValueIsReversed(nlj.GetResultValue(), outerAlias, innerAlias) {
+	firstLeg, secondLeg, firstAlias, secondAlias := joinLegDerivationOrder(nlj)
+	if firstAlias != outerAlias {
 		firstCols, secondCols = innerCols, outerCols
-		firstAlias, secondAlias = innerAlias, outerAlias
 	}
 
 	merged := qualifyAndMergeColumns(firstCols, secondCols, firstAlias, secondAlias)
@@ -5233,6 +5418,31 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 	rc, isOrdinalRC := nlj.GetResultValue().(*values.RecordConstructorValue)
 	mergedDivergesFromRV := isOrdinalRC && mergedRVSequenceDiverges(rc, merged)
 	elemAlias, elemTypeName, elemValue := gatheredExplodeElement(nlj, md)
+	// A merge that is merely MISORDERED is re-sequenced, not discarded: the RC's
+	// baked ordinals name each slot's position in the merged physical row, so
+	// the permutation is stated rather than guessed, and the qualified datum
+	// keys survive. Only when the two cannot be aligned that way does the
+	// RC-derived (bare-label) answer below take over. The gathered-unnest arm is
+	// NOT re-sequenced — its merge is missing the element column outright, so
+	// there is no permutation to find.
+	// No baked-ordinal requirement: the mapping is by RESOLVED PATH through the
+	// leg tree, which a resolved read carries whether or not the RC also wears
+	// the baked marker. Requiring the marker left a four-way `SELECT *` (whose
+	// top RC resolves but is not marked) reporting its columns in physical leg
+	// order while the row it describes was in FROM order — metadata and row
+	// disagreeing, which the positional read refuses outright.
+	if mergedDivergesFromRV && elemAlias == "" {
+		resolveSlot := func(alias string, path []int) (int, bool) {
+			if alias == firstAlias {
+				return legSlotIndex(firstLeg, md, path)
+			}
+			return legSlotIndex(secondLeg, md, path)
+		}
+		if resequenced, ok := mergedInRVOrder(
+			rc, merged, firstAlias, secondAlias, len(firstCols), resolveSlot); ok {
+			return resequenced
+		}
+	}
 	if isOrdinalRC && len(rc.Fields) > 0 && values.ContainsBakedOrdinal(rc) &&
 		((hasPositionalMergeLeg(nlj) && elemAlias != "") || mergedDivergesFromRV) {
 		descs := allLeafDescriptors(nlj.GetOuter(), md)

@@ -148,7 +148,7 @@ func TestLegKind_TheDerivationStampsEveryWindowAndEveryLeg(t *testing.T) {
 	t2Plan, err := plans.NewRecordQueryScanPlan([]string{"T2"}, commit2RecType("T2", "ID", "T1_ID"), false)
 	t2 := mustConstruct(t, t2Plan, err)
 	seed, _ := reconstructFoldStep1Seed(t1, t2,
-		values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
+		values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"), plans.JoinInner)
 	if seed == nil {
 		t.Fatal("two scan legs must reconstruct an ordinal step-1 seed")
 	}

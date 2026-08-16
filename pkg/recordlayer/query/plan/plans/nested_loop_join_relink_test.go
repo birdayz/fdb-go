@@ -473,9 +473,13 @@ func TestFlatMapPlan_PropagatesRetainedRecordFromSelectedOuterMaterializer(t *te
 		t.Fatalf("identity FlatMap windows = %v, want pointer-exact record X beside whole-row X",
 			identityLayout.WindowSources())
 	}
+	// The WRONG record must differ in SHAPE. A RecordName is provenance and does
+	// not participate in exact-type identity (Java's Type.Record.equals), so
+	// `OTHER_ELEM` with ELEM's exact fields IS the element row, and the
+	// rejection below would have nothing to reject.
 	wrongType := values.NewRecordType("OTHER_ELEM", false, []values.Field{
 		{Name: "EK", FieldType: values.NullableLong},
-		{Name: "PAYLOAD", FieldType: values.NullableString},
+		{Name: "OTHER_PAYLOAD", FieldType: values.NullableString},
 	})
 	wrongX, err := values.NewQuantifiedObjectValue(elementAlias, wrongType)
 	if err != nil {

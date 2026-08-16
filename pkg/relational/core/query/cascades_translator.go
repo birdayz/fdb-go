@@ -507,7 +507,7 @@ func (t *cascadesTranslator) tableColumns(table string) []values.Field {
 	for i := 0; i < protoFields.Len(); i++ {
 		fd := protoFields.Get(i)
 		fields = append(fields, values.Field{
-			Name:      strings.ToUpper(string(fd.Name())),
+			Name:      values.FieldNameForProtoField(fd),
 			FieldType: FieldTypeForFD(fd),
 			Ordinal:   i,
 		})
@@ -830,9 +830,27 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 			return nil
 		}
 		if len(o.ColumnAliases) > 0 {
+			// A column-alias list RENAMES the body's output; it does not erase
+			// what those columns ARE. Carry the body's own field types under the
+			// new names when the widths agree — an UnknownType here makes the
+			// leg inexact, which is enough for the ordinalization gate to
+			// decline the whole join.
 			fields := make([]values.Field, len(o.ColumnAliases))
 			for i, name := range o.ColumnAliases {
 				fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: values.UnknownType, Ordinal: i}
+			}
+			bodyFields := t.derivedOutputColumns(o.Body)
+			if len(bodyFields) == 0 {
+				if starCols, star := t.derivedBodyStarOrdinalLeg(o.Body); star {
+					bodyFields = starCols
+				}
+			}
+			if len(bodyFields) == len(fields) {
+				for i := range fields {
+					if bodyFields[i].FieldType != nil {
+						fields[i].FieldType = bodyFields[i].FieldType
+					}
+				}
 			}
 			return fields
 		}
@@ -8861,9 +8879,17 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	var resultValue values.Value
 	if gatedFlatten {
 		var legTypes map[string]bakeLegType
+		// The null-supplying side is the JOIN KIND's, exactly as the plain
+		// gated binary arm derives it. Seeding both legs as preserved dropped
+		// the outer-join null-extension from this shape alone: the seed's leg
+		// QOV then flowed a NON-nullable record, and the physical join —
+		// which computes its null-supplying aliases from the same join kind —
+		// refused its own output layout ("null-supplying source Q must be
+		// nullable"). A projected EXISTS over a LEFT JOIN could not plan at
+		// all, which is a query Java answers.
 		resultValue, legTypes = t.buildOrdinalJoinResultValue([]clusterLeg{
-			clusterLegOf(j.Left, false),
-			clusterLegOf(j.Right, false),
+			clusterLegOf(j.Left, j.Kind == logical.JoinRight || j.Kind == logical.JoinFull),
+			clusterLegOf(j.Right, j.Kind == logical.JoinLeft || j.Kind == logical.JoinFull),
 		})
 		allPreds = bakeGatedJoinPredicates(allPreds, legTypes)
 	}
@@ -9623,6 +9649,17 @@ func extractOutputColumns(op logical.LogicalOperator) []string {
 		// spelling — a later `SELECT a FROM c2` died at runtime with an
 		// ordinal-resolution error on the aliased name.
 		return extractOutputColumns(o.Main)
+	case *logical.LogicalUnion:
+		// SQL exposes a set operation's FIRST branch's output names, so that is
+		// the list a column-alias rename replaces. Without this arm a
+		// union-bodied `WITH u(k,n) AS (… UNION ALL …)` found no columns to
+		// rename, silently kept the branch's own labels, and the renamed
+		// reference then disagreed with the row the CTE declares — a hard exact
+		// type conflict at evaluation, not a cosmetic label.
+		if len(o.Inputs) == 0 {
+			return nil
+		}
+		return extractOutputColumns(o.Inputs[0])
 	}
 	return nil
 }
@@ -10265,9 +10302,26 @@ func extractOutputProjectionNames(op logical.LogicalOperator) []string {
 	for i := range p.Projections {
 		if i < len(p.Aliases) && p.Aliases[i] != "" {
 			out[i] = p.Aliases[i]
-		} else {
-			out[i] = p.Projections[i]
+			continue
 		}
+		// A COLUMN REFERENCE takes the DISPLAY name — the same one the result
+		// set reports. Its projection TEXT is not that name: a nested read
+		// writes `n.sk`, and keying the temp table by N.SK left every
+		// reference to the CTE — which resolves the SQL column SK — reading a
+		// column the row does not have (`edge lookup R: read as
+		// RECORD(SK:LONG?), declared RECORD(N.SK:LONG?)`). The qualifier is an
+		// internal slot key; it does not cross into a name a user writes.
+		//
+		// Only a reference. A COMPUTED slot's text is its own name here (a
+		// caller may have put the output name in it), and rendering the value
+		// instead would name `0 AS level` the column "0".
+		if i < len(p.ProjectedValues) && p.ProjectedValues[i] != nil {
+			if _, isReference := values.AsFieldValue(p.ProjectedValues[i]); isReference {
+				out[i] = values.DisplayColumnName(p.ProjectedValues[i], "")
+				continue
+			}
+		}
+		out[i] = p.Projections[i]
 	}
 	return out
 }

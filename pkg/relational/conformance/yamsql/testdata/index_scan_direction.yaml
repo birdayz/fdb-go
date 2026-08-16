@@ -98,7 +98,7 @@ tests:
 
   # Multi-value aggregate with indexed filter
   - query: SELECT category, COUNT(*), MIN(ts), MAX(ts) FROM events GROUP BY category ORDER BY category
-    plan_contains: "Project([_current.CATEGORY#0, _current.COUNT(*)#1, _current.MIN(TS)#2, _current.MAX(TS)#3], StreamingAgg(keys=[_current.CATEGORY#2], InMemorySort([EVENTS.CATEGORY#2 ASC], Scan(EVENTS))))"
+    plan_contains: "Project([_current.CATEGORY#0, _current.COUNT(*)#1, _current.MIN(TS)#2, _current.MAX(TS)#3], StreamingAgg(keys=[_current.CATEGORY#2], InMemorySort([_current.CATEGORY#2 ASC], Scan(EVENTS))))"
     rows:
       - ['error', 2, 50, 300]
       - ['login', 3, 100, 250]

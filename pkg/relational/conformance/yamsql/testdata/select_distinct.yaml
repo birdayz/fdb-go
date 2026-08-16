@@ -48,7 +48,7 @@ tests:
   # the extraSortField path, kept as a regression guard. ASC default
   # is NULLS FIRST.
   - query: SELECT DISTINCT v FROM t ORDER BY v
-    plan_contains: "Distinct(Project([_current.V#2], InMemorySort([T.V#2 ASC], Scan(T)))"
+    plan_contains: "Distinct(Project([_current.V#2], InMemorySort([_current.V#2 ASC], Scan(T)))"
     rows:
       - [~]
       - [1]
@@ -61,7 +61,7 @@ tests:
   - query: |-
       WITH s AS (SELECT v FROM t)
       SELECT DISTINCT v FROM s ORDER BY v
-    plan_contains: "Distinct(Project([_current.V#0], InMemorySort([S.V#0 ASC]"
+    plan_contains: "Distinct(Project([_current.V#0], InMemorySort([_current.V#0 ASC]"
     rows:
       - [~]
       - [1]
@@ -74,7 +74,7 @@ tests:
   # v values: 1, 1, 2, 3, 3, NULL, NULL → v/2: 0, 0, 1, 1, 1, NULL, NULL
   # distinct → 0, 1, NULL.
   - query: SELECT DISTINCT v / 2 AS bucket FROM t ORDER BY bucket
-    plan_contains: "Distinct(Project([(_current.V#2 / 2)], InMemorySort([(T.V#2 / 2) ASC]"
+    plan_contains: "Distinct(Project([(_current.V#2 / 2)], InMemorySort([(_current.V#2 / 2) ASC]"
     rows:
       - [~]
       - [0]
@@ -87,7 +87,7 @@ tests:
   # `SELECT DISTINCT v FROM t ORDER BY v` stanza above, which already
   # pins NULLS FIRST.
   - query: SELECT DISTINCT v / 2 FROM t ORDER BY 1
-    plan_contains: "Distinct(Project([(_current.V#2 / 2)], InMemorySort([(T.V#2 / 2) ASC]"
+    plan_contains: "Distinct(Project([(_current.V#2 / 2)], InMemorySort([(_current.V#2 / 2) ASC]"
     rows:
       - [~]
       - [0]

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -493,17 +494,51 @@ func TestFDB_NestedSortKeyExplainRendersTheMember(t *testing.T) {
 	}
 	t.Logf("plan: %s", plan)
 
-	if !strings.Contains(plan, "InMemorySort([N.CO ASC]") {
-		t.Errorf("the nested sort-key RENDERING changed.\nplan: %s\n"+
-			"want a sort key naming the MEMBER: InMemorySort([N.CO ASC]\n"+
-			"If this reverted to the struct ROOT (`InMemorySort([N ASC]`), the hidden "+
-			"column is being named by its root again — check the rows test in this "+
+	// The sort key list, isolated so the assertions below cannot be satisfied
+	// by an `N.CO` occurring anywhere ELSE in the plan (the projection, an
+	// inner scan) while the sort key itself reverted to the root.
+	keys := sortKeyListOf(t, plan)
+	if !nestedSortKeyMember.MatchString(keys) {
+		t.Errorf("the nested sort-key RENDERING changed.\nsort keys: %s\nplan: %s\n"+
+			"want a key naming the MEMBER — a path ending `.N.CO#<ordinal> ASC`.\n"+
+			"If this reverted to the struct ROOT (a key ending `.N#<ordinal> ASC`), the "+
+			"hidden column is being named by its root again — check the rows test in this "+
 			"file, because that spelling is what let two members of one struct root "+
-			"collapse into a single appended column.", plan)
+			"collapse into a single appended column.", keys, plan)
 	}
-	if strings.Contains(plan, "InMemorySort([N ASC]") {
-		t.Errorf("the sort key renders the struct ROOT again.\nplan: %s\n"+
-			"This is the exact spelling the collapse defect wore — see "+
-			"TestFDB_TwoNestedSortKeysOfTheSameStructRootDoNotCollapse.", plan)
+	if nestedSortKeyRoot.MatchString(keys) {
+		t.Errorf("the sort key renders the struct ROOT again.\nsort keys: %s\nplan: %s\n"+
+			"This is the exact shape the collapse defect wore — see "+
+			"TestFDB_TwoNestedSortKeysOfTheSameStructRootDoNotCollapse.", keys, plan)
 	}
+}
+
+// The sort key names a struct MEMBER (`…N.CO#2`) or, in the shape the collapse
+// defect wore, the struct ROOT alone (`…N#2`). Both are matched against the
+// EXTRACTED key list, never the whole plan text: the projection above the sort
+// carries its own `N.CO` spellings, so a whole-plan Contains would stay green
+// with the sort key itself reverted.
+var (
+	nestedSortKeyMember = regexp.MustCompile(`\.N\.CO#\d+ (ASC|DESC)`)
+	nestedSortKeyRoot   = regexp.MustCompile(`\.N#\d+ (ASC|DESC)`)
+)
+
+// sortKeyListOf returns the text between `InMemorySort([` and its matching
+// `]`, i.e. the comma-separated sort keys. It fails the test when the plan has
+// no InMemorySort at all — an absent sort would otherwise hand every assertion
+// over it an empty string, which is the reading that cannot tell "the key is
+// right" from "there is no key".
+func sortKeyListOf(t *testing.T, plan string) string {
+	t.Helper()
+	const marker = "InMemorySort(["
+	start := strings.Index(plan, marker)
+	if start < 0 {
+		t.Fatalf("plan has no InMemorySort to read a sort key from:\n%s", plan)
+	}
+	rest := plan[start+len(marker):]
+	end := strings.Index(rest, "]")
+	if end < 0 {
+		t.Fatalf("InMemorySort key list is unterminated:\n%s", plan)
+	}
+	return rest[:end]
 }

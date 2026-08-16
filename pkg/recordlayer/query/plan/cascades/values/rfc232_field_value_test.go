@@ -484,9 +484,12 @@ func TestRFC232FieldValueIdentityIncludesRootAndIsAliasInvariant(t *testing.T) {
 		t.Fatal("alias-mapped equal FieldValues have different hashes")
 	}
 
+	// The root must differ in SHAPE, not merely in RecordName: a record's name
+	// is provenance and Java's Type.Record.equals ignores it, so a rename is not
+	// a different exact root and would make both assertions below vacuous.
 	differentRoot := mustResolvedField(t, mustRFC232QOV(t, leftAlias, &values.RecordType{
 		RecordName: "Other",
-		Fields:     []values.Field{{Name: "A", Ordinal: 0, FieldType: values.NotNullLong}},
+		Fields:     []values.Field{{Name: "A", Ordinal: 0, FieldType: values.NullableLong}},
 	}), byOrdinal(t, 0))
 	if values.EqualsWithoutChildren(left, differentRoot) {
 		t.Fatal("same ordinal path over different exact roots compared equal")
@@ -839,4 +842,64 @@ func TestRFC232TryResolveFieldAccessDeclinesOnlyDocumentedMisses(t *testing.T) {
 	if !errors.As(err, &coded) || coded.Code() != values.FieldNilChild {
 		t.Fatalf("nil child error = %v, want fatal FieldNilChild", err)
 	}
+}
+
+// A NAME+ORDINAL REQUEST OVER A ROW WITH TWO SAME-NAMED FIELDS RESOLVES.
+//
+// The two request kinds ask different questions and only one of them can be
+// ambiguous. FieldByName has the name as its sole authority, so a duplicate
+// leaves it with nothing to choose by — AMBIGUOUS is the right answer and stays
+// the right answer. FieldByNameAndOrdinal states both, so the ORDINAL selects
+// and the name VERIFIES; a duplicate is exactly the situation that kind exists
+// for, and "the D at slot 1" names one field.
+//
+// Answering AMBIGUOUS there is not a cosmetic error-code question. It is what
+// made a streaming aggregate unable to state its own provided ordering: the
+// canonical group-key output name is the same for every same-leaf key, so
+// `GROUP BY ot.k, it.k` emits [K, K, COUNT(*)], HintOrdering's name+ordinal
+// request came back ambiguous, the ordering went UNKNOWN, and the ORDER BY the
+// aggregate already satisfies stopped matching — a second InMemorySort above
+// the aggregate, with the rows still correct.
+func TestRFC232FieldByNameAndOrdinalSelectsByOrdinalAcrossDuplicateNames(t *testing.T) {
+	t.Parallel()
+
+	duplicate := mustRFC232QOV(t, values.NamedCorrelationIdentifier("dup"), &values.RecordType{
+		Fields: []values.Field{
+			{Name: "K", Ordinal: 0, FieldType: values.NotNullLong},
+			{Name: "K", Ordinal: 1, FieldType: values.NotNullString},
+			{Name: "C", Ordinal: 2, FieldType: values.NotNullLong},
+		},
+	})
+
+	// The CONTROL, first: name alone over the same row is still ambiguous. Both
+	// arms below are meaningless if this ever stops being true, because the
+	// whole claim is that the two kinds diverge here.
+	ambiguous, err := values.ResolveFieldAccess(duplicate, []values.FieldRequest{byName(t, "K")})
+	requireFieldErrorCode(t, ambiguous, err, values.FieldAmbiguousName)
+
+	for _, tc := range []struct {
+		ordinal  int
+		wantType values.Type
+	}{
+		{0, values.NotNullLong},
+		{1, values.NotNullString},
+	} {
+		field := mustResolvedField(t, duplicate, byNameAndOrdinal(t, "K", tc.ordinal))
+		got := field.Path().Ordinals()
+		if len(got) != 1 || got[0] != tc.ordinal {
+			t.Fatalf("byNameAndOrdinal(K, %d) resolved ordinals %v, want [%d] — the ORDINAL "+
+				"is the selector on this request kind", tc.ordinal, got, tc.ordinal)
+		}
+		if field.ResultType().Code() != tc.wantType.Code() {
+			t.Fatalf("byNameAndOrdinal(K, %d) resolved type %v, want %v — the ordinal picked "+
+				"the wrong one of the two same-named slots",
+				tc.ordinal, field.ResultType(), tc.wantType)
+		}
+	}
+
+	// The name still VERIFIES: a slot the ordinal reaches whose name is
+	// something else is a disagreement between the two stated authorities, and
+	// it must not silently resolve on the ordinal alone.
+	mismatch, err := values.ResolveFieldAccess(duplicate, []values.FieldRequest{byNameAndOrdinal(t, "K", 2)})
+	requireFieldErrorCode(t, mismatch, err, values.FieldNameOrdinalMismatch)
 }

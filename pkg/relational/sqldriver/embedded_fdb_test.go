@@ -313,7 +313,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 //
 // THE DEVIATION IS EXPLAINED, not absorbed. It is corpus growth, and the growth
 // is identified rather than assumed: the merged-leg reader-shape fixture became
-// shared between TestFDB_MergedLegBinding_ReaderShapeIsRedundant and the
+// shared between TestFDB_MergedLegBinding_NothingReadsTheBinder and the
 // wrong-window mutation pin, so its `SELECT OT."K" FROM ST, OT WHERE EXISTS (…)`
 // is now planned twice where it was planned once. Isolated, that one test
 // contributes exactly 2 firings, both rv-no-exist-ref — the class the RFC calls
@@ -505,10 +505,60 @@ var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 		// projected arms above would have declined there instead of accepting. That
 		// bucket is 0 and ACCEPT absorbed all six, which is the census stating the
 		// fix from the other side.
-		Denominator:     n(614),
+		// RESTATED FOR THE ORDINAL MODEL, and the restatement is a measurement
+		// rather than a re-bless. Three unfiltered runs, --nocache_test_results:
+		//
+		//	                        base   HEAD   this tree
+		//	ACCEPT                   188    175    188
+		//	DECLINE correlatedStep1  108     82    138
+		//	DECLINE rv-no-exist-ref  216    184    212
+		//	DECLINE reconstruct-nil  102    114    102
+		//	  of which no-unsafe-leg   0     12      0
+		//	  of which bare-QOV      102    102    102
+		//	denominator              614    555    640
+		//
+		// "base" is 2e4c5ebec, the commit these values were written against,
+		// measured by running this same suite in a worktree at that commit: it
+		// reads 614/188/108/216/102 EXACTLY. That control is what makes every
+		// column beside it attributable.
+		//
+		// THE CORPUS DID NOT MOVE THIS. Every sqldriver test this branch adds or
+		// grows was measured in isolation and contributes ZERO firings —
+		// TestFDB_InlineValuesExactExecution (the one new file),
+		// TestStarMetadataFourWayInterleavedLegsKeepFromOrder and
+		// TestFDB_LateralUnnestChain each report a TOTAL of 0. The deviation is
+		// entirely code.
+		//
+		// THE "HEAD" COLUMN IS A DEFECT THIS TREE FIXES, recorded because
+		// restating the gate at 555 would have blessed it. At that commit
+		// planBuriedLegConcat handed each leaf leg's OWN field numbering through
+		// unchanged, so a two-leg concat's ordinals read 0,1,0,1 — not an exact
+		// type at all — and NewQuantifiedObjectValue over it failed with "record
+		// field ordinal does not equal its position". Twelve firings went to the
+		// no-unsafe-leg bucket carrying that error as their witness and THIRTEEN
+		// ACCEPTs were lost. Rebasing the leaf arms onto the `base` offset the
+		// walk already threads restores ACCEPT to 188 and reconstruct-nil to
+		// 102-all-bare-QOV, both EXACTLY the base values.
+		//
+		// WHAT REMAINS IS +26 FIRINGS AND 4 RECLASSIFICATIONS, ALL ON THE DECLINE
+		// SIDE. ACCEPT and the whole reconstruct-nil shape sub-partition are
+		// exactly the base values, so no fold was lost and no leg shape changed.
+		// The movement is correlatedStep1 108 -> 138 with rv-no-exist-ref
+		// 216 -> 212: four firings that used to reach the no-exist-ref test now
+		// short-circuit at the correlated wall, and twenty-six are new.
+		//
+		// correlatedStep1 is decided BEFORE any seed work, purely from leg
+		// dependency topology (legReferencesAny over the other leg's provided
+		// aliases, plus null-on-empty). Exact-type identity dropping record NAMES
+		// changes which members the memo ADMITS, so more (plan, orientation) pairs
+		// reach this rule and more of them read as correlated. That is the same
+		// mechanism the order_by_elimination entry in TODO.md records for its own
+		// movement, and it is why the wall grows while the accepted population
+		// does not.
+		Denominator:     n(640),
 		Accept:          n(188),
-		CorrelatedStep1: n(108),
-		NoExistRef:      n(216),
+		CorrelatedStep1: n(138),
+		NoExistRef:      n(212),
 		ReconstructNil:  n(102),
 		// The residue is now ENTIRELY bare-QOV, and the two entries below say so
 		// separately on purpose. A single "reconstruct-nil == 94" would be
@@ -520,19 +570,27 @@ var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
 		// reachability measurement — the wall any conversion of the reconstruct-nil
 		// residue contacts.
 		//
-		// MEASURED, three consecutive real-FDB corpus runs, verbatim:
+		// MEASURED, verbatim, at the three points the equality table above
+		// records — base 2e4c5ebec, this branch's HEAD commit, this tree:
 		//   correlatedStep1 firings WITH a merged layout     108 of 108
-		// The conjunction is UNIVERSAL on that arm, not occasional. An earlier
-		// version of this comment called the numerator "a measured zero"; that
-		// number was drafted before the counter had ever run and was wrong.
+		//   correlatedStep1 firings WITH a merged layout      82 of  82
+		//   correlatedStep1 firings WITH a merged layout     138 of 138
+		// The conjunction is UNIVERSAL on that arm at every one of them, not
+		// occasional, and it stayed universal across a change that moved the
+		// denominator by a third in both directions — which is a stronger reading
+		// of "universal" than any single run gives. An earlier version of this
+		// comment called the numerator "a measured zero"; that number was drafted
+		// before the counter had ever run and was wrong.
 		//
 		// The NUMERATOR stays ungated: at 100% the only movement available is a
 		// DROP, and a drop is a finding to read (the corpus moved, or the layout
 		// stopped being derived) rather than a regression to block. The denominator
 		// going to zero is the thing that must not happen silently, because then
 		// the numerator measures an absence of traffic while reading as an absence
-		// of the shape. Floored ~5x below the measurement, in family with the other
-		// per-site floors here (2000 vs 25406, 150 vs 1754).
+		// of the shape. Floored ~7x below the measurement, in family with the other
+		// per-site floors here (2000 vs 25406, 150 vs 1754). The floor is NOT
+		// re-tightened as the denominator moves: it detects the arm going dark,
+		// and a floor that tracks the measurement fails on churn instead.
 		CorrelatedStep1FiringsFloor: n(20),
 	}
 }()
@@ -557,18 +615,27 @@ func assertFoldStep1SeedCensus(w io.Writer) bool {
 	return cascades.AssertFoldStep1SeedCensus(w, gates)
 }
 
-// mergedLegReadFloor is the merged-leg binding census's whole-suite READ floor.
+// The merged-leg binding census's READ population is RETIRED, and its guard has
+// inverted with it.
 //
-// It is the positive control for a census whose headline numbers include a zero.
-// The corpus does produce reads — three over a full run, all on the alias the
-// correlated-EXISTS inner-shadow shape correlates to — so a run that reports NONE
-// is reporting a broken read counter, not a quiet corpus, and every zero asserted
-// against that counter is vacuous.
+// It used to carry a FLOOR of one, as the positive control for a census whose
+// headline number is a zero: the corpus produced three reads over a full run,
+// all on the alias the correlated-EXISTS inner-shadow shape correlates to, so a
+// run reporting NONE was reporting a broken read counter rather than a quiet
+// corpus — and every zero asserted against a dead counter is vacuous.
 //
-// One, not three, for the reason the sibling floors state at length: what a floor
-// detects is the site going DARK, not drift. The reader population churns with
-// unrelated work.
-const mergedLegReadFloor = 1
+// Those reads are gone. The ordinal model resolves a leg reference by baked
+// slot, so nothing consults a binder-produced window at all: the census now
+// reports fifteen thousand windows bound and zero read. A floor of one is
+// unsatisfiable against that, and lowering it to zero would leave the retirement
+// unwatched — so the direction flips and a READ is the alarm.
+//
+// The binder still runs, and the windows it builds are still correct as far as
+// anything can tell; what changed is that no consumer is left. That is why the
+// alarm is worth having: a read reappearing means the binder has acquired a
+// load-bearing consumer, and its shadowing and first-claim-wins semantics —
+// justified today only by being unobservable — would need justifying against a
+// real one.
 
 // assertMergedLegBindingCensus checks the merged-leg binding census: the read
 // floor, and the coupled criterion that decides whether a merged-shape read is
@@ -597,19 +664,22 @@ func assertMergedLegBindingCensus(w io.Writer) bool {
 			"it hold VACUOUSLY, as does one that drops the redundancy pin while "+
 			"keeping its reader.\n",
 			f.Value.String(), totalReads)
-	} else if totalReads < mergedLegReadFloor {
+	} else if totalReads != 0 {
 		failed = true
-		fmt.Fprintf(w, "MERGED-LEG BINDING CENSUS FAIL: %d binder-produced windows were READ "+
-			"over the whole suite, want at least %d.\n"+
-			"  This is the census's positive control, and it is failing. The corpus\n"+
-			"  DOES read binder-produced windows — on the correlated-EXISTS\n"+
-			"  inner-shadow shape — so zero means the READ COUNTER is dead, not that\n"+
-			"  the corpus went quiet. A dead read counter reports \"0 READ\" beside a\n"+
-			"  full bind tally, which is exactly the shape of the claim DIVERGENCES.md\n"+
-			"  quotes; every zero asserted against this counter is vacuous until it is\n"+
-			"  fixed. Check GetCorrelationBinding still calls recordMergedLegRead, and\n"+
-			"  that the windows it sees still carry fromMergedBinder.\n  census: %s\n",
-			totalReads, mergedLegReadFloor, executor.FormatMergedLegBindingCensus())
+		fmt.Fprintf(w, "MERGED-LEG BINDING CENSUS FAIL: %d binder-produced window(s) were READ "+
+			"over the whole suite, want 0 — the read channel was RETIRED and this is its\n"+
+			"  revival alarm.\n"+
+			"  This population used to be FLOORED at one, as a positive control: the\n"+
+			"  corpus produced three reads a run, so a zero meant a dead counter rather\n"+
+			"  than a quiet corpus. The ordinal model resolves a leg reference by baked\n"+
+			"  SLOT, so nothing consults a binder window any more and the floor became\n"+
+			"  unsatisfiable.\n"+
+			"  WHAT A NON-ZERO MEANS: the binder has acquired a consumer again. That is\n"+
+			"  not automatically a bug, but it is a CHANGE OF FINDING — see the\n"+
+			"  activation criterion below, which says what each way of getting here\n"+
+			"  needs. Establish which reader it is before touching this check.\n"+
+			"  census: %s\n",
+			totalReads, executor.FormatMergedLegBindingCensus())
 	}
 
 	// THE ACTIVATION CRITERION.
@@ -631,13 +701,21 @@ func assertMergedLegBindingCensus(w io.Writer) bool {
 	// outer name `X` — so an alias-keyed reconstruction attributes one query's
 	// merged shape to another query's read. Measured: it did.
 	//
-	// THE EXCLUSION IS A REGISTRATION, NOT A LIST. The corpus has one such reader
-	// today (the correlated-EXISTS inner-shadow shape), and it is excused only
-	// because TestFDB_MergedLegBinding_ReaderShapeIsRedundant ran the same query
-	// down BOTH resolution routes in this process and got the same rows. That test
-	// registers on its passing path only, so a divergence fails it, leaves the
-	// registry empty, and turns these same reads into a red gate. There is no
-	// wording here that can keep the exclusion once the proof stops holding.
+	// THE EXCLUSION IS A REGISTRATION, NOT A LIST — and TODAY IT IS EMPTY.
+	//
+	// The corpus used to have one such reader (the correlated-EXISTS inner-shadow
+	// shape), excused because a pin ran the same query down BOTH resolution routes
+	// in this process and got the same rows. The ordinal model removed the READS,
+	// so nothing registers and nothing needs excusing: the read alarm above is now
+	// an outright zero. TestFDB_MergedLegBinding_NothingReadsTheBinder asserts
+	// that shape still binds and is still not read, so the zero is over a shape
+	// that ran rather than one the suite stopped planning.
+	//
+	// The registration path stays because it is the RESPONSE to a revival, not
+	// because anything uses it: a returning reader has to be proven redundant per
+	// (alias, merged-row layout) before it may be excused, and a proof that stops
+	// holding leaves the registry empty and turns its reads red. There is no
+	// wording here that can keep an exclusion once its proof stops holding.
 	mergedReads, mergedNames, excusedReads, excusedNames := partitionMergedRowReads(executor.MergedRowLegReads(), executor.RedundantMergedLegReaders())
 	if excusedReads > 0 {
 		fmt.Fprintf(w, "merged-leg binding census: %d merged-row read(s) excused as "+
@@ -665,10 +743,10 @@ func assertMergedLegBindingCensus(w io.Writer) bool {
 				"  anyway arrived by some OTHER route.\n\n"+
 				"  THREE WAYS TO GET HERE, and they need different responses:\n"+
 				"    - a NEW reader shape. Establish whether its two resolution routes\n"+
-				"      agree, the way TestFDB_MergedLegBinding_ReaderShapeIsRedundant\n"+
-				"      does for the shape already known. If they agree, extend that\n"+
-				"      proof to the new shape; if they do not, the binder has become\n"+
-				"      load-bearing — see below.\n"+
+				"      agree — run the query with the window serving the read and again\n"+
+				"      with EvaluationContext.WithMergedLegReadBypass declining it, and\n"+
+				"      compare rows — then register the proof. If they do not agree, the\n"+
+				"      binder has become load-bearing — see below.\n"+
 				"    - an ALREADY-EXCUSED alias read out of a DIFFERENT merged row.\n"+
 				"      The listed shape will share its alias with an excused one and\n"+
 				"      differ in the layout. This is a new reader wearing a familiar\n"+
@@ -886,29 +964,19 @@ var legLocalBakeFloors = cascades.LegLocalBakeFloors{
 // holds that at a hard zero; only the Calls floor remains, because the reader
 // itself is still live on its FLAT arm and a census reaching it zero times would
 // make that zero vacuous.
-var legColumnProvenanceFloors = executor.LegColumnProvenanceFloors{
-	// A MAGNITUDE, not a liveness check. Calls is the floor that forecloses
-	// "the producers register and the reader is dark" — the state in which the
-	// hard zero above reads clean over an evaporated population. At 1 the reader
-	// could run three times and the retirement would still report as measured.
-	//
-	// 100 — AND THE FIRST NUMBER TRIED HERE WAS 1000, WHICH A RUN REFUTED WITHIN
-	// ONE REBASE. The reasoning for 1000 was that it sat "comfortably under" the
-	// ≈2.4–2.7k band and the 1174 low outlier; the very next full run reported
-	// 574 and the floor fired spuriously. Observed across every full run this
-	// path has recorded: 574, 1174, 1914, 2394, 2474, 2534, 2554, 2554, 2674 — a range
-	// of nearly 5x, on an unchanged corpus.
-	//
-	// So this population is far less stable than the band above suggests, and a
-	// floor set just under the observed minimum is a floor set to fire. 100 is an
-	// order of magnitude below the lowest reading and still ~30x above what an
-	// evaporated population looks like (a handful of calls), which is the only
-	// state it exists to catch. The lesson is the one the enumeration note two
-	// paragraphs up already states, re-learned on the guard rather than on the
-	// quote: a bounded-looking number for an unbounded quantity decays into a
-	// wrong one.
-	Calls: 100,
-}
+// legColumnProvenanceFloors is EMPTY, and the emptiness is the reconciliation.
+//
+// It used to floor Calls at 100 (measured between 300 and 1500 across runs, an
+// unstable population that a tight floor would have red-flagged on churn alone),
+// so that a reader nothing reaches could not report the same shape as a reader
+// with nothing wrong. The reader is now retired: adaptLegPositional's
+// layout-permutation gather is its only driver, and the exact-ordinal seed bakes
+// against the chosen physical leg layout — Java's translateCorrelations
+// behaviour, which that gather's own note named as the thing that would end it —
+// so every leg row passes positionalMatchesLegType and the gather is skipped.
+//
+// The census asserts Calls == 0 unconditionally now, with revival as the alarm.
+var legColumnProvenanceFloors = executor.LegColumnProvenanceFloors{}
 
 // assertLegColumnProvenanceCensus checks the provenance census, dropping the
 // population floors when -test.run narrows the corpus — the same split its two
@@ -927,21 +995,20 @@ func assertLegColumnProvenanceCensus(w io.Writer) bool {
 	return executor.AssertLegColumnProvenanceCensus(w, floors)
 }
 
-// dottedLegQualifierFloors is the minimum match-attempt count each translator
-// dotted leg reader must report over the whole suite.
-var dottedLegQualifierFloors = func() values.DottedLegQualifierFloors {
-	var f values.DottedLegQualifierFloors
-	f.Calls[values.DottedLegSiteFlatColumnBake] = 10 // measured 106
-	// measured 4 — no order of magnitude to drop to
-	f.Calls[values.DottedLegSiteLegQOVBake] = 1
-	// There is no third floor to write. singleForEachBake was the UNFLOORED
-	// site here — measured 0 and unreached rather than quiet — and its ARM is
-	// now deleted, after the panic probe came back empty at the full reach
-	// (./pkg/relational/... and ./pkg/recordlayer/query/...). The census site
-	// retired with the arm, so the entry that used to explain a permanent zero
-	// is gone rather than left describing a reader nothing can drive.
-	return f
-}()
+// dottedLegQualifierFloors is EMPTY: the whole channel is retired.
+//
+// It used to floor the match attempts each translator dotted-leg reader made
+// over the suite — 10 for flatColumnBake (measured 106) and 1 for legQOVBake
+// (measured 4, with no order of magnitude to drop to) — because that census's
+// two hard zeros hold vacuously over an empty population.
+//
+// Both readers were arms of the NAME-model bake (query.bakeFlatRefsAgainstColumns
+// and query.bakeDottedRefsToLegQOV), which resolved a reference by splitting a
+// column name at a dot. The ordinal model resolves by baked slot and those bakes
+// are gone, so values.RecordDottedLegQualifier has no caller at all and the
+// floors are unsatisfiable. The census asserts zero attempts unconditionally
+// now, with revival as the alarm.
+var dottedLegQualifierFloors = values.DottedLegQualifierFloors{}
 
 // seedWindowReaderFloors is the minimum keyed-read count each seed-window reader
 // must report over the whole suite.
@@ -998,146 +1065,155 @@ func assertSeedWindowReaderCensus(w io.Writer) bool {
 	return values.AssertSeedWindowReaderCensus(w, floors)
 }
 
-// nameSplitFloors is the minimum population each splitting arm must report over
-// the whole suite.
+// nameSplitFloors is EMPTY: the whole channel is retired.
 //
-// MEASURED 2026-08-06 over this corpus: legQOVSegmentsOf 9 calls (segmented 9,
-// SPLIT-QUALIFIED 0, splitBare 0); flatColumnBake 2 calls (segmented 0,
-// SPLIT-QUALIFIED 0, splitBare 2).
+// It used to floor the population each splitting arm reported over the suite
+// (legQOVSegmentsOf calls 1, measured 9; flatColumnBake calls 1 and splits 1,
+// measured 2), because this census's content was a HARD ZERO on SPLIT-QUALIFIED
+// and a hard zero over an empty population is the fake-green shape every
+// instrument on this path was rebuilt to end.
 //
-// The floors exist for ONE reason and it is not drift: this census's whole
-// content is a HARD ZERO on SPLIT-QUALIFIED, and a hard zero over an empty
-// population is the fake-green shape every instrument on this path was rebuilt
-// to end. If the shapes that drive these arms stop being planned, or the
-// recorder is dropped from an arm, SPLIT-QUALIFIED stays 0 and the gate stays
-// green while measuring nothing. The floors are what make that red.
-//
-// Both CALL floors are 1, because neither measurement has an order of magnitude
-// below it to drop to — 9 and 2. That is the honest reading of a nearly-dark
-// pair of arms, and it is deliberately NOT dressed up as a healthy population:
-// what these floors detect is DISAPPEARANCE, the arms ceasing to be reached at
-// all.
-//
-// THE CALL FLOOR IS NOT THE FLOOR THAT MATTERS, and an earlier revision of this
-// block said it was. This census's hard zero is a zero over the SPLIT
-// population, and at legQOVSegmentsOf the two numbers do not move together at
-// all: 9 calls, 0 of them splits. A Calls floor there is measuring the SEGMENTED
-// channel — the converted one — and would sit green through the splitting arm
-// losing its recorder entirely. So the split population is floored SEPARATELY,
-// per site, and the two sites get different dispositions because they measured
-// differently:
-//
-//   - flatColumnBake: split floor 1 (measured 2, and both of its calls are
-//     splits). A real floor.
-//   - legQOVSegmentsOf: split floor 0. A DECLARATION, not an absent floor —
-//     "measured empty over this corpus, covered by a unit wiring pin instead" —
-//     and the assertion checks it in the stale direction: if this arm ever
-//     acquires a split population, the declaration REDS so somebody raises it to
-//     a real number instead of leaving a permanent exemption.
-//
-// THE SPLIT-QUALIFIED ZERO IS NOW STRUCTURAL, NOT A CORPUS FACT, and the
-// direction of the alarm has inverted with it.
-//
-// This block used to say the zero was "a corpus fact, NOT a dead arm", and
-// backed that with a measurement: a panic at the arm's entry was reached with a
-// DOTTED name by TestRecursiveBodyGatesOrdinal ("C.ORDER_ID"), so the arm could
-// not be deleted the way singleForEachBake's was. THAT CLAIM IS NOW FALSE and
-// is replaced rather than annotated. CQ-52 deleted the first-dot re-split at
-// both sites: qualification is decided by the parser's segment count alone, so
-// a carrier with no segments is UNQUALIFIED and no name is ever sliced. Nothing
-// can reach the SPLIT-QUALIFIED bucket at either site by any input.
-//
-// What that changes for these floors: the CALL floors below still measure a
-// live population (both sites are still reached, and a zero there still means
-// the recorder or the traffic died — COLLAPSE is the alarm). The SPLIT-
-// QUALIFIED class is different: zero is now the steady state and GROWTH is the
-// alarm, since a count there means the re-split was reintroduced. That
-// inversion is asserted as a hard zero by
-// core/query/name_split_recorder_wiring_test.go's
-// TestNameSplitRecorder_SplitQualifiedIsUnreachable, which drives both sites
-// explicitly and carries a control proving the instrument is still live — the
-// corpus cannot prove a zero it reaches vacuously.
-var nameSplitFloors = func() values.NameSplitFloors {
-	var f values.NameSplitFloors
-	f.Calls[values.NameSplitSiteLegQOVSegmentsOf] = 1 // measured 9
-	f.Calls[values.NameSplitSiteFlatColumnBake] = 1   // measured 2
-	f.Split[values.NameSplitSiteFlatColumnBake] = 1   // measured 2 (both splitBare)
-	// measured 0 — WATCHED, NOT PROVEN. See the block above; this is a
-	// declaration the assertion checks, not a floor that was left off.
-	f.Split[values.NameSplitSiteLegQOVSegmentsOf] = 0
-	return f
-}()
+// Both arms lived inside the NAME-model bake — query.legQOVSegmentsOf and
+// query.bakeFlatRefsAgainstColumns, which decided qualification by counting a
+// reference's name segments. The ordinal model decides by baked slot, both bakes
+// are gone, and values.RecordNameSplit has no caller at all. So the CALL floors
+// are unsatisfiable, and the SPLIT-QUALIFIED zero they protected is now trivially
+// structural rather than a corpus fact worth guarding. The census asserts zero
+// calls at every site unconditionally, with revival as the alarm.
+var nameSplitFloors = values.NameSplitFloors{}
 
-// assertNameSplitCensus checks the translator name-split census, dropping the
-// population floors when -test.run narrows the corpus — the same split its
-// siblings make, for the same reason.
+// assertNameSplitCensus checks the translator name-split census.
+//
+// There is NO -test.run exemption here, unlike its still-live siblings. Those
+// drop their floors under a filter because a population floor describes the
+// unfiltered suite. This channel is retired and its assertion is a REVIVAL
+// alarm — "no site was reached at all" — which is exactly as true over a
+// narrowed corpus as over the whole one. Skipping it under a filter would be
+// the one direction that fails open.
 func assertNameSplitCensus(w io.Writer) bool {
-	floors := &nameSplitFloors
-	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
-		fmt.Fprintf(w, "translator name split census: population floors NOT checked "+
-			"(-test.run=%q narrowed the corpus). The SPLIT-QUALIFIED hard zero still "+
-			"runs, over whatever population this filter reached — at zero it holds "+
-			"VACUOUSLY.\n", f.Value.String())
-		floors = nil
-	}
-	return values.AssertNameSplitCensus(w, floors)
+	return values.AssertNameSplitCensus(w, &nameSplitFloors)
 }
 
 // qualifierRecoveryFloors is the minimum population each DARK SPLITTER must
 // report over the whole real-FDB corpus. Filled from the measurement, an order
 // of magnitude below it where the population allows, so the floor detects a site
 // going DARK rather than drift.
-// Measured over this corpus:
 //
-//	recursiveRemap      calls 101 | carried   0 | AGREED   0 | MANUFACTURED 0 | leafOnly 2 | bare 99
-//	existsSortSplit     calls  44 | carried   0 | AGREED  44 | MANUFACTURED 0 | bare 0
-//	derivedUnnestSource calls  13 | carried   0 | AGREED   0 | MANUFACTURED 0 | bare 13
-//	projScopeClassify   calls  71 | carried  11 | AGREED   0 | MANUFACTURED 0 | bare 60
-//	projQualVsScan      calls   4 | carried   0 | AGREED   0 | MANUFACTURED 0 | bare 4
-//	displayLabelStrip   calls 750 | carried   0 | AGREED 722 | MANUFACTURED 6 | bare 22
+// Measured over this corpus (ordinal model):
+//
+//	recursiveRemap      calls   0 | carried   0 | AGREED   0 | MANUFACTURED 0 | leafOnly 0 | bare 0
+//	existsSortSplit     calls  22 | carried   0 | AGREED  22 | MANUFACTURED 0 | bare 0
+//	derivedUnnestSource calls  15 | carried   0 | AGREED   0 | MANUFACTURED 0 | bare 15
+//	projScopeClassify   calls  73 | carried  73 | AGREED   0 | MANUFACTURED 0 | bare 0
+//	projQualVsScan      calls   0 | carried   0 | AGREED   0 | MANUFACTURED 0 | bare 0
+//	displayLabelStrip   calls 583 | carried   0 | AGREED 561 | MANUFACTURED 6 | bare 16
+//
+// THREE FLOORS WENT TO ZERO AND EACH ZERO IS A DIFFERENT FACT. The rule for a
+// watched population whose expected value changes is to RECONCILE the guard with
+// the new value and say which direction is now the alarm — not to lower it
+// quietly, and not to delete it, which leaves a revival unwatched. Split[s] == 0
+// is exactly that reconciliation: the census reads a zero entry as a DECLARATION
+// and checks it in the STALE direction, so a site declared 0 whose split
+// population comes back RED at the next run.
+//
+//   - recursiveRemap: the site has NO PRODUCTION CALLER AT ALL.
+//     query.recursiveRemapValues is a retired compatibility no-op, and this was
+//     already recorded on the translator harness's own floors
+//     (core/query/leg_identity_census_main_test.go) and pinned by
+//     TestQualRecWiring_RetiredRecursiveRemapIsInert. These floors simply had not
+//     been reconciled with it; 10/10 was unsatisfiable, not merely generous.
+//
+//   - projScopeClassify: STILL LIVE, and its call floor stays. What went to zero
+//     is its SPLIT arm, structurally. projScopeAlias reads fv.ChildValue(), and
+//     values.AsFieldValue admits a *fieldValue only when its Child is a
+//     *quantifiedObjectValue (isAdmittedFieldValue), so every admitted FieldValue
+//     answers on the CARRIED channel and the last-dot fallback beneath it cannot
+//     be reached by any input. That is the conversion this census was built to
+//     watch for, arriving: 73 calls, 73 of them carried, no name sliced.
+//
+//   - projQualVsScan: the recorder still stands at its site, and the SITE is what
+//     stopped being reached. Its caller is validateTablesAndColumnsInner's
+//     per-column loop, which skips any projection carrying a ProjectedValue —
+//     under the ordinal model that is every one of them, so the loop body did not
+//     execute once across this corpus. The 42703 it used to raise by comparing a
+//     manufactured qualifier against the scan's alias is now raised by resolution
+//     instead, which is the point of the model change. Its unit wiring pin
+//     (embedded/qualifier_recovery_wiring_test.go) drives the recorder directly
+//     and keeps the instrument itself proven live.
 //
 // DIVERGED is 0 at every site, and unlike the population zeros that is a zero
-// over a REAL population. How real is a smaller number than the total, and the
-// total — 766 — is what an earlier revision of this comment quoted. Of those:
+// over a REAL population — but a SMALLER one than the total, and smaller than it
+// used to be. Of the 620 calls above:
 //
-//   - 44 are existsSortSplit, and they CANNOT disagree. sortKeyFieldRef RENDERS
+//   - 22 are existsSortSplit, and they CANNOT disagree. sortKeyFieldRef RENDERS
 //     `LEG.COL` out of the very FieldValue{Field, Child:QOV} that
 //     sortKeyQualifierIdentity reads the identity back out of one call later, so
 //     the split is re-parsing a string joined from its own counterparty. That
 //     AGREED is a TAUTOLOGY. It is worth counting — it is what makes the round
-//     trip visible rather than arguable, and it is this site's conversion answer
-//     — but it is not evidence that anything survived a lossy rendering, because
-//     nothing at that site was ever at risk of not surviving one.
-//   - 722 are displayLabelStrip, and those are the result. A machinery-minted
+//     trip visible rather than arguable — but it is not evidence that anything
+//     survived a lossy rendering, because nothing at that site was ever at risk
+//     of not surviving one.
+//   - 561 are displayLabelStrip, and those are the result. A machinery-minted
 //     display label sliced at its dot, checked against the correlation the alias
-//     was actually minted from, 722 times, no disagreement.
+//     was actually minted from, 561 times, no disagreement.
 //
-// So the zero over a population that could have been non-zero is ~723 — the 722
-// here plus the embedded corpus's single production `TD.ARR` at
-// derivedUnnestSource — and displayLabelStrip carries essentially all of it.
+// So the zero over a population that could have been non-zero is ~562, and
+// displayLabelStrip carries essentially all of it.
 var qualifierRecoveryFloors = values.QualifierRecoveryFloors{
 	Calls: [6]int{
-		values.QualRecSiteRecursiveRemap:      10,
+		// recursiveRemap: no entry. The site is retired and has no caller; its
+		// revival is watched by the Split declaration below, which fires on any
+		// class but CARRIED — and a retired recorder cannot report CARRIED
+		// either, because it cannot report at all.
 		values.QualRecSiteExistsSortSplit:     4,
 		values.QualRecSiteDerivedUnnestSource: 2,
 		values.QualRecSiteProjScopeClassify:   8,
-		values.QualRecSiteProjQualVsScan:      1,
-		values.QualRecSiteDisplayLabelStrip:   70,
+		// projQualVsScan: no entry. The site is unreached over this corpus and
+		// the Split DECLARATION is what watches it. It never records CARRIED
+		// (recordProjQualVsScan classifies bare/AGREED/DIVERGED/MANUFACTURED
+		// only), so its Split floor and its Calls floor cover the identical
+		// population and one of the two would be redundant.
+		values.QualRecSiteDisplayLabelStrip: 70,
 	},
-	// The SPLIT floors, which are the ones that carry the weight: five of the six
-	// sites do all their work in a splitting arm, so their Calls and Split floors
-	// coincide. projScopeClassify is the one site where they diverge (11 of its
-	// 71 calls are carried by a correlation), and its split floor is what says
-	// the arm this census measures is still reached.
+	// The SPLIT floors, which are the ones that carry the weight: the sites that
+	// do all their work in a splitting arm have Calls and Split floors that
+	// coincide. projScopeClassify is the site where they diverge, and it now
+	// diverges completely — 73 calls, 0 splits — which is why its split floor is
+	// a 0 DECLARATION rather than the 6 it used to be.
 	Split: [6]int{
-		values.QualRecSiteRecursiveRemap:      10,
+		// recursiveRemap and projScopeClassify carry no entry here. Their
+		// splitting arms are STRUCTURALLY gone rather than "measured empty over
+		// this corpus", so they are declared in qualifierRecoveryRetiredSplit
+		// below, where the alarm is REVIVAL and survives a -test.run filter that
+		// drops every floor on this struct.
+		//
+		// projQualVsScan IS here, at 0, and the difference is the point: its
+		// recorder and its call site both still stand, and what stopped is the
+		// corpus REACHING them. That is a claim about this suite, so it is a
+		// declaration that a filter may drop — not a tree fact.
+		values.QualRecSiteProjQualVsScan:      0,
 		values.QualRecSiteExistsSortSplit:     4,
 		values.QualRecSiteDerivedUnnestSource: 2,
-		values.QualRecSiteProjScopeClassify:   6,
-		values.QualRecSiteProjQualVsScan:      1,
 		values.QualRecSiteDisplayLabelStrip:   70,
 	},
 }
+
+// qualifierRecoveryRetiredSplit names the sites whose splitting arm is gone from
+// the TREE, not merely unreached by this corpus. Their alarm is inverted — any
+// split is the arm coming back — and unlike a floor it is checked under a
+// narrowed run too, because a tree fact holds over any population.
+//
+//   - recursiveRemap: values.RecordQualifierRecovery is not called with this site
+//     anywhere in non-test sources; query.recursiveRemapValues is a retired
+//     compatibility no-op.
+//   - projScopeClassify: projScopeAlias's last-dot fallback cannot be reached,
+//     because values.AsFieldValue admits a *fieldValue only when its Child is a
+//     *quantifiedObjectValue, so the CARRIED branch above it always answers.
+var qualifierRecoveryRetiredSplit = func() (r [6]bool) {
+	r[values.QualRecSiteRecursiveRemap] = true
+	r[values.QualRecSiteProjScopeClassify] = true
+	return r
+}()
 
 // assertQualifierRecoveryCensus checks the dark-splitter census, dropping the
 // population floors when -test.run narrows the corpus. The DIVERGED hard zero
@@ -1158,22 +1234,20 @@ func assertQualifierRecoveryCensus(w io.Writer) bool {
 	// the zero is a BARE zero. The translator harness needs an allowlist; this
 	// one must never grow one.
 	return values.AssertQualifierRecoveryCensus(w,
-		&values.QualifierRecoveryExpectations{Floors: floors},
+		&values.QualifierRecoveryExpectations{
+			Floors:       floors,
+			RetiredSplit: qualifierRecoveryRetiredSplit,
+		},
 		"sqldriver real-FDB corpus")
 }
 
-// assertDottedLegQualifierCensus checks the translator dotted-leg census,
-// dropping the population floors when -test.run narrows the corpus.
+// assertDottedLegQualifierCensus checks the translator dotted-leg census.
+//
+// No -test.run exemption, for the same reason as assertNameSplitCensus above:
+// the channel is retired and this is its revival alarm, which holds over any
+// population.
 func assertDottedLegQualifierCensus(w io.Writer) bool {
-	floors := &dottedLegQualifierFloors
-	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
-		fmt.Fprintf(w, "translator dotted leg qualifier census: population floors NOT "+
-			"checked (-test.run=%q narrowed the corpus). The MATCH-ALIAS-DIFFERS zero "+
-			"still runs, over whatever population this filter reached — at zero it "+
-			"holds VACUOUSLY.\n", f.Value.String())
-		floors = nil
-	}
-	return values.AssertDottedLegQualifierCensus(w, floors)
+	return values.AssertDottedLegQualifierCensus(w, &dottedLegQualifierFloors)
 }
 
 // assertLegLocalBakeCensus checks the bakeability census, dropping the
@@ -1214,27 +1288,66 @@ func assertLegLocalBakeCensus(w io.Writer) bool {
 // so a floor at the measured value would fail on churn rather than on a site
 // going dark — and the populations themselves are NOT stable run to run.
 // Successive full-suite measurements of the same tree gave text-vs-identity
-// 3115 / 3270 / 3320 and hoist ~1000-1030; only rowLegsBinder (285) and
-// buriedLegWindow (567) repeated exactly. The variance is planning-side: the
-// memo may explore a rule once or many times for one query depending on
-// exploration order, and several sites sit inside rules. What the floor detects
-// is COLLAPSE — a producer stopping, a reader being routed around, a rule that
-// no longer fires — not drift, and it is set loosely enough that the observed
-// variance cannot reach it.
+// 3115 / 3270 / 3320; only rowLegsBinder (285) and buriedLegWindow (567)
+// repeated exactly. The variance is planning-side: the memo may explore a rule
+// once or many times for one query depending on exploration order, and several
+// sites sit inside rules. What the floor detects is COLLAPSE — a producer
+// stopping, a reader being routed around, a rule that no longer fires — not
+// drift, and it is set loosely enough that the observed variance cannot reach
+// it.
 //
-// The hoist site's total counts Cascades rule FIRINGS rather than queries, so it
-// is the most refire-sensitive of the eight; its floor is the loosest for that
-// reason. All eight sites are floored — a site left out of this map is a site
-// whose zeros are unprotected against going vacuous.
+// FOUR OF THE EIGHT SITES ARE NO LONGER FLOORED, and the reason splits in two.
+// A floor watches for collapse; once zero is the steady state a floor is
+// unsatisfiable and the danger inverts to GROWTH, so each of the four moves to
+// the guard that matches what it now is rather than being lowered or dropped:
+//
+//   - RETIRED (legIdentityRetired, a fact about the TREE):
+//     hoistLegRefsOntoMergedRow and expressionOutputLegs. Neither site appears in
+//     any non-test source — values.RecordLegIdentity{Leg,Comparison,Conversion}
+//     is never called with either constant — so their floors of 64 and 256 were
+//     unsatisfiable rather than merely generous.
+//
+//   - DISPLACED (legIdentityDeclaredEmpty, a fact about this CORPUS):
+//     rowLegsBinder.GetCorrelationBinding and buriedLegWindow. Both readers still
+//     stand and both are still reachable. What changed is the route:
+//     frontierRowContext dispatches on pr.Layout FIRST and only falls through to
+//     the leg-name binder for a row that carries none, and under the ordinal
+//     model an admitted physical row always carries its exact layout. Their
+//     declarations are checked in the stale direction, so the day a Layout-less
+//     row reaches them again the gate says so instead of quietly re-arming a
+//     path nothing measures.
+//
+// The remaining four are floored as before. The NLJ site's total counts Cascades
+// rule FIRINGS rather than queries, so it is the most refire-sensitive; its
+// floor is the loosest for that reason.
 var legIdentityFloors = map[values.LegIdentitySite]int64{
-	values.LegSiteRowLegsBinder:          32,
-	values.LegSiteBuriedLegWindow:        64,
 	values.LegSiteTextVsIdentity:         256,
-	values.LegSiteLeftOuterExistential:   64,
 	values.LegSiteFinalizeSeedWindows:    128,
-	values.LegSiteSelectOutputLegs:       256,
 	values.LegSiteNLJPlanAlias:           4096,
 	values.LegSiteOrdinalSlotInLegWindow: 8,
+}
+
+// legIdentityRetired names the two sites with no production caller anywhere in
+// the tree. Any traffic at either is a revival, and the check runs under a
+// -test.run filter too — a tree fact holds over the empty population a filter
+// leaves behind, and skipping it there is the one direction that fails open.
+var legIdentityRetired = map[values.LegIdentitySite]string{
+	values.LegSiteLeftOuterExistential: "hoistLegRefsOntoMergedRow's drift check was removed with the " +
+		"name-model hoist; no non-test source records at this site.",
+	values.LegSiteSelectOutputLegs: "expressionOutputLegs compared a quantifier against sourceAliases " +
+		"text; the producer is gone and no non-test source records at this site.",
+}
+
+// legIdentityDeclaredEmpty names the two readers the ordinal layout DISPLACED
+// rather than deleted. They are declarations about this corpus, not the tree —
+// the code is still reachable by a positional row carrying no exact layout —
+// and they are checked in the stale direction so the declaration cannot outlive
+// its condition.
+var legIdentityDeclaredEmpty = map[values.LegIdentitySite]string{
+	values.LegSiteRowLegsBinder: "frontierRowContext binds through pr.Layout before it reaches the " +
+		"leg-name binder, and an admitted physical row always carries one.",
+	values.LegSiteBuriedLegWindow: "the buried-window walk sits under the same layout dispatch, so a " +
+		"row with an exact layout never descends into it.",
 }
 
 // assertLegIdentityCensus checks the whole-suite census and reports whether it
@@ -1267,7 +1380,11 @@ func assertLegIdentityCensus(w io.Writer) bool {
 			f.Value.String())
 		floors = nil
 	}
-	return values.AssertLegIdentityCensus(w, floors)
+	return values.AssertLegIdentityCensusWith(w, values.LegIdentityExpectations{
+		Floors:        floors,
+		Retired:       legIdentityRetired,
+		DeclaredEmpty: legIdentityDeclaredEmpty,
+	})
 }
 
 // expectRejectionOrCascadesError asserts that err is an *api.Error whose
@@ -10645,31 +10762,36 @@ func assertOrientationGateCensus(w io.Writer) bool {
 var flatMapProducerFloors = func() cascades.FlatMapProducerFloors {
 	var f cascades.FlatMapProducerFloors
 	// Measured over the whole real-FDB corpus, one run:
-	//   buildCorrelatedFlatMapPlan          calls 25406 | typedQOV 476 | UNTYPED 0
-	//   implementExistentialSelect          calls  1754 | typedQOV   0 | UNTYPED 1609
-	//   implementJoinWithExistential(MINT)  calls   431 | typedQOV   0 | UNTYPED  249
-	//   yieldExistsFlatMap                  calls   449 | typedQOV 130 | UNTYPED  269
+	//   buildCorrelatedFlatMapPlan          calls 46223 | typedQOV  466 | UNTYPED 0
+	//   implementExistentialSelect          calls  1589 | typedQOV 1417 | UNTYPED 0
+	//   implementJoinWithExistential(MINT)  calls   568 | typedQOV  278 | UNTYPED 0
+	//   yieldExistsFlatMap                  calls   398 | typedQOV  347 | UNTYPED 0
 	// Floored an order of magnitude below, like every other per-site floor here:
 	// these catch a site going dark, not corpus churn — and "churn" here includes
-	// RUN-TO-RUN variance, not only added tests: a second consecutive full-suite
-	// run measured buildCorrelatedFlatMapPlan at 25048 rather than 25406. These
-	// are rule FIRINGS and the memo explores a rule a different number of times
-	// per query. The outcome census's equalities did not move across the same two
-	// runs; only the firing totals did.
+	// RUN-TO-RUN variance, not only added tests: consecutive full-suite runs have
+	// measured buildCorrelatedFlatMapPlan at 25406, 25048 and 46223. These are
+	// rule FIRINGS and the memo explores a rule a different number of times per
+	// query. The outcome census's equalities did not move across those runs; only
+	// the firing totals did.
+	//
+	// THE UNTYPED FLOORS ARE GONE. They floored a divergence — an untyped QOV,
+	// which Java cannot build — at 150/20/20 to keep it counted while it stood.
+	// The exact-QOV constructor closed it: untyped is now 0 at every site, which
+	// makes those floors unsatisfiable, and the census asserts the zero
+	// unconditionally with the alarm pointing at revival.
 	f.Calls = [4]int{2000, 150, 40, 40}
-	f.UntypedQOVFloor = [4]int{0, 150, 20, 20}
 	return f
 }()
 
 // selectResultMintFloors gates the select result-value MINT census.
 //
-// This is the site that actually BUILDS the untyped QuantifiedObjectValue Java
-// cannot express. The producer census beside it reported that population at
+// This is the site that BUILT the untyped QuantifiedObjectValue Java cannot
+// express. The producer census beside it reported that population at
 // implementExistentialSelect and yieldExistsFlatMap — both of which flow
 // sel.GetResultValue() verbatim and build nothing, exactly as Java's three
 // RecordQueryFlatMapPlan constructions do
 // (ImplementNestedLoopJoinRule.java:187,201,214). Booking the divergence against
-// a courier is what this census corrects.
+// a courier is what this census corrected.
 //
 // Java's own guarantee is structural: a simple select's result value is
 // overQuantifier.getFlowedObjectValue() (GraphExpansion.java:401),
@@ -10677,42 +10799,26 @@ var flatMapProducerFloors = func() cascades.FlatMapProducerFloors {
 // (QuantifiedObjectValue.java:187), and Quantifier.getFlowedObjectType is a
 // Verify.verify plus requireNonNull (Quantifier.java:801-810).
 //
-// FLOORED an order of magnitude below the measurement, like every per-site floor
-// here — including the UNTYPED one, whose drop direction is the failing one. See
-// values.SelectResultMintFloors for why a floor on a divergence is not backwards.
+// GO NOW HAS THE SAME GUARANTEE, and the floor that kept the gap counted is
+// therefore gone. Measured over the whole real-FDB corpus:
+//
+//	translator buildExistsSelect(MINT)  calls 1006 | typedQOV 1006 | UNTYPED 0
+//
+// Every mint is TYPED, where every mint used to be untyped. The untyped floor
+// (100, an order of magnitude below a measured 1086) is unsatisfiable against a
+// population the constructor makes unrepresentable, so the census asserts the
+// zero unconditionally instead, with the alarm pointing at revival.
+//
+// THE TOTAL IS NOT DETERMINISTIC AND THE RATIO IS. Consecutive full-suite runs
+// measured 1086, 1004 and 1006 — these are RULE FIRINGS, and the memo explores a
+// rule a different number of times per query run to run, exactly as the FlatMap
+// producer census's own totals move. What did not move is the ratio: 100%
+// untyped before, 100% typed after. So the call floor is calibrated an order of
+// magnitude below the smallest observation, and anyone re-measuring should
+// expect a different digit and check the RATIO.
 var selectResultMintFloors = func() values.SelectResultMintFloors {
 	var f values.SelectResultMintFloors
-	// Measured over the whole real-FDB corpus (see the mint census in the
-	// TestMain report):
-	//   translator buildExistsSelect(MINT)  calls 1086 | typedQOV 0 | UNTYPED 1086
-	// Every mint is untyped: this site has no typed arm at all, which is the
-	// divergence stated as a measurement rather than as a reading.
-	//
-	// THE TOTAL IS NOT DETERMINISTIC AND THE RATIO IS. Two consecutive full-suite
-	// runs measured 1086 and 1004 — these are RULE FIRINGS, and the memo explores
-	// a rule a different number of times per query run to run, exactly as the
-	// FlatMap producer census's own totals move (25406 / 25048 across the same two
-	// runs). What did NOT move either time is 100% untyped, nor did any outcome
-	// census equality (572/160/108/202/102) or the leg-local bake total (190).
-	// So the floor is calibrated an order of magnitude below the SMALLER
-	// observation, and anyone re-measuring should expect a different digit and
-	// check the RATIO.
-	//
-	// Calls IS DELIBERATELY LEFT UNSET, and that is a decision rather than an
-	// omission. The partition (typed + untyped + other == calls) is asserted
-	// unconditionally, so calls >= untyped >= UntypedQOVFloor: with the untyped
-	// floor at 100, a call floor of 100 cannot fire under ANY admissible state —
-	// the untyped floor gets there first, every time, including on the dark-site
-	// path where calls goes to zero and drags untyped down with it. A floor that
-	// cannot fail is not coverage; it is a line that reads like a guard while
-	// something else does the work.
-	//
-	// It comes back the moment a mint site is added whose untyped floor is 0 or
-	// below its call floor — a TYPED mint site, which is what CQ-96 is trying to
-	// produce. Both halves are pinned in the census's own tests: the call floor
-	// firing alone where no untyped floor covers it, and the exhaustive
-	// subsumption over every admissible (calls, untyped) pair below the floors.
-	f.UntypedQOVFloor = [values.SelectResultMintSiteCount]int{100}
+	f.Calls = [values.SelectResultMintSiteCount]int{100}
 	return f
 }()
 

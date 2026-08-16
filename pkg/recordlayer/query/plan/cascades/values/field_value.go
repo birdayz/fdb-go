@@ -519,7 +519,37 @@ func resolveRequestStep(
 	switch request.kind {
 	case fieldRequestByOrdinal:
 		ordinal = request.ordinal
-	case fieldRequestByName, fieldRequestByNameAndOrdinal:
+	case fieldRequestByNameAndOrdinal:
+		// BOTH authorities are stated, so the ORDINAL SELECTS and the NAME
+		// VERIFIES.
+		//
+		// Name AMBIGUITY is therefore not an error on this kind; it is the
+		// situation the kind exists for. A row may legitimately carry two
+		// same-named columns — `GROUP BY ot.k, it.k` produces an aggregate whose
+		// output row is [K, K, COUNT(*)] — and "the K at slot 1" is a complete
+		// question. Routing it through the by-name scan answered AMBIGUOUS for a
+		// request that names exactly one field, which left the aggregate unable
+		// to state its own provided ordering: HintOrdering declined, the ORDER BY
+		// it already satisfies stopped matching, and the planner stacked a SECOND
+		// InMemorySort above it. Rows stay correct, so only a plan assertion can
+		// see that.
+		ordinal = request.ordinal
+		if ordinal >= 0 && ordinal < len(current.fields) {
+			if current.fields[ordinal].name != request.name {
+				return resolvedAccessor{}, nil, false, resolutionError(FieldNameOrdinalMismatch, location, "field name and ordinal select different fields")
+			}
+			break
+		}
+		// The ordinal cannot address this record. When the NAME can, the two
+		// authorities disagree and that is the sharper diagnosis — the same one
+		// this kind reported before the ordinal became the selector. Otherwise
+		// fall through to the ordinal range errors below.
+		for i := range current.fields {
+			if current.fields[i].name == request.name {
+				return resolvedAccessor{}, nil, false, resolutionError(FieldNameOrdinalMismatch, location, "field name and ordinal select different fields")
+			}
+		}
+	case fieldRequestByName:
 		matches := 0
 		for i := range current.fields {
 			if current.fields[i].name == request.name {
@@ -532,9 +562,6 @@ func resolveRequestStep(
 		}
 		if matches > 1 {
 			return resolvedAccessor{}, nil, false, resolutionError(FieldAmbiguousName, location, "record contains multiple fields with the requested semantic name")
-		}
-		if request.kind == fieldRequestByNameAndOrdinal && request.ordinal != ordinal {
-			return resolvedAccessor{}, nil, false, resolutionError(FieldNameOrdinalMismatch, location, "field name and ordinal select different fields")
 		}
 	default:
 		return resolvedAccessor{}, nil, false, resolutionError(FieldInvalidRequest, location, "malformed field request kind")

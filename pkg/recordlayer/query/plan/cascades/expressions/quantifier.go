@@ -306,7 +306,15 @@ func (q Quantifier) GetFlowedObjectType() (values.Type, error) {
 		if !ok {
 			return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "member result is missing its relation wrapper"}
 		}
-		rt := inner.Type()
+		// The member's result VALUE states the leg boundaries; the row TYPE
+		// derived from it does not. Carry them, or the quantifier flows a row
+		// that has forgotten where each source's columns start — which does not
+		// read downstream as "no legs" but as ONE run spanning the whole concat
+		// keyed by the box's rightmost leaf, so a qualified column resolves into
+		// the first leg's slots. Legs are not part of exact-type identity, so
+		// this adds physical information without touching the agreement check
+		// below.
+		rt := values.WithSeedTilingLegs(inner.Type(), rv)
 		if found == nil {
 			found = rt
 			continue

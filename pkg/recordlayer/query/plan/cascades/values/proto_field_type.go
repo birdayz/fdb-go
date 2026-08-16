@@ -4,6 +4,8 @@ import (
 	"strings"
 
 	"google.golang.org/protobuf/reflect/protoreflect"
+
+	"fdb.dev/pkg/recordlayer/protoname"
 )
 
 // FieldTypeForProtoField maps a proto field descriptor to the logical column
@@ -139,7 +141,7 @@ func recordTypeForProtoMessage(md protoreflect.MessageDescriptor, active map[pro
 	for i := 0; i < fields.Len(); i++ {
 		field := fields.Get(i)
 		recordFields[i] = Field{
-			Name:      strings.ToUpper(string(field.Name())),
+			Name:      FieldNameForProtoField(field),
 			FieldType: fieldTypeForProtoField(field, active),
 			Ordinal:   i,
 		}
@@ -166,4 +168,32 @@ func enumTypeForProto(ed protoreflect.EnumDescriptor) Type {
 		values = append(values, EnumValue{Name: string(value.Name()), Number: int32(value.Number())})
 	}
 	return NewEnumType(string(ed.FullName()), true, values)
+}
+
+// FieldNameForProtoField is THE single authority for the NAME a stored
+// column's slot carries in a values.Type: the user identifier, upper-folded.
+//
+// A protobuf field name is the STORAGE spelling — `$`, `.` and `__` are escaped
+// (`a$b` is stored as `A__1B`). Java keeps the two apart on the type itself:
+// `Type.Record.fromDescriptorPreservingName` records
+// `ProtoUtils.toUserIdentifier(descriptor.getName())` as the name and the raw
+// descriptor name as the storage name, and `Type.Record.Field` does the same
+// per column — the wire keeps the escaped spelling, the SQL surface sees the
+// user's.
+//
+// Go's SQL catalog already un-escapes (rlcatalog), so a Value-tier type built
+// straight off the descriptor states a DIFFERENT name for the same column than
+// the reference that reads it. Under RFC-232 those two are compared as exact
+// types, so the disagreement is not cosmetic: it is a hard
+// "type disagrees with declared binding" at evaluation, and every query over a
+// table with an escaped identifier fails.
+func FieldNameForProtoField(field protoreflect.FieldDescriptor) string {
+	return strings.ToUpper(protoname.ToUserIdentifier(string(field.Name())))
+}
+
+// RecordNameForDescriptor is FieldNameForProtoField's twin for the record's own
+// name, un-escaped for the same reason. It is NOT upper-folded: a record name is
+// compared against catalog-cased type names, not against SQL identifiers.
+func RecordNameForDescriptor(descriptor protoreflect.MessageDescriptor) string {
+	return protoname.ToUserIdentifier(string(descriptor.Name()))
 }

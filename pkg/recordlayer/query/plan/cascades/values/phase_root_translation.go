@@ -176,19 +176,24 @@ func TranslateLogicalSourceRoot(
 	return visit(value)
 }
 
-// TranslateLogicalSourceNameNormalization moves every QOV rooted at source
-// onto target when the two exact row declarations differ only by their
-// top-level record name. Logical table sources commonly retain a nominal name
-// (EMP RECORD<...>) while their physical scan publishes the same executor row
-// as an anonymous RECORD<...>. Keeping the nominal type after an edge-alias
-// rebase creates a QOV for which no runtime binding can exist.
+// TranslateLogicalSourceNameNormalization RE-ROOTS every QOV at source onto the
+// target INSTANCE when the two denote the same exact row. Logical table sources
+// commonly retain a nominal record name (EMP RECORD<...>) while their physical
+// scan publishes the same executor row anonymously; both are the same row, and
+// the physical carrier is the instance the producer's layout and its retained
+// windows are keyed by.
 //
-// The compatibility decision lives here beside the other phase-root bridges:
-// both rows must be concrete records with identical nullability, field names,
-// ordinals, and exact field types. A narrower retained window that shares the
-// source correlation, a foreign correlation, or any structural drift remains
-// untouched. Eligible FieldValues are rebuilt by their complete ordinal path,
-// and the rewrite is atomic on error.
+// It is a re-rooting, NOT a type conversion. It once was a conversion — record
+// names were part of Go's Type identity, so a nominal row and its anonymous
+// carrier were two "different" types and this bridge existed to cross them.
+// Names are provenance in Java (Type.Record.equals compares typeCode,
+// nullability and fields only) and now in Go, so the two sides are simply
+// equal and what remains to move is which QOV instance the program hangs from.
+//
+// A narrower retained window that shares the source correlation, a foreign
+// correlation, or any structural drift remains untouched. Eligible FieldValues
+// are rebuilt by their complete ordinal path, and the rewrite is atomic on
+// error.
 func TranslateLogicalSourceNameNormalization(
 	value Value,
 	source CorrelationIdentifier,
@@ -213,7 +218,7 @@ func TranslateLogicalSourceNameNormalization(
 		if field, isField := node.(*fieldValue); isField && isAdmittedFieldValue(field) {
 			root := field.Child.(*quantifiedObjectValue)
 			if root.correlation != source ||
-				!logicalSourceNameOnlyCompatible(root.flowed, exactTarget.flowed) {
+				!logicalSourceSameExactRow(root.flowed, exactTarget.flowed) {
 				return node, nil
 			}
 			resolved, resolveErr := RebuildFieldValue(field, exactTarget)
@@ -231,7 +236,7 @@ func TranslateLogicalSourceNameNormalization(
 		}
 		if root, isQOV := node.(*quantifiedObjectValue); isQOV &&
 			root.correlation == source &&
-			logicalSourceNameOnlyCompatible(root.flowed, exactTarget.flowed) {
+			logicalSourceSameExactRow(root.flowed, exactTarget.flowed) {
 			return exactTarget, nil
 		}
 
@@ -330,24 +335,23 @@ func TranslateLogicalSourceNameNormalizationInValue(
 	return TranslateLogicalSourceNameNormalization(value, source, target)
 }
 
-func logicalSourceNameOnlyCompatible(declaration, target *exactType) bool {
+// logicalSourceSameExactRow reports whether a logical source declaration and a
+// physical target denote the SAME concrete row, which is the only case the
+// re-rooting bridge above may cross.
+//
+// It is exact-type equality with a concrete-record guard, and it is written
+// that way on purpose rather than as its own field-by-field walk: the walk it
+// replaced compared arity, per-field name, ordinal and type but skipped the
+// RECORD NAME, because a nominal row and its anonymous carrier were then two
+// different types. Record names are no longer identity, so that walk had become
+// a hand-rolled copy of exactTypesEqual that could only drift away from it.
+func logicalSourceSameExactRow(declaration, target *exactType) bool {
 	if declaration == nil || target == nil ||
 		declaration.code != TypeCodeRecord || target.code != TypeCodeRecord ||
-		declaration.anyRecord || target.anyRecord ||
-		declaration.nullable != target.nullable ||
-		len(declaration.fields) != len(target.fields) {
+		declaration.anyRecord || target.anyRecord {
 		return false
 	}
-	for i := range declaration.fields {
-		declaredField := declaration.fields[i]
-		targetField := target.fields[i]
-		if declaredField.name != targetField.name ||
-			declaredField.ordinal != i || targetField.ordinal != i ||
-			!exactTypesEqual(declaredField.typ, targetField.typ) {
-			return false
-		}
-	}
-	return true
+	return exactTypesEqual(declaration, target)
 }
 
 // TranslateProjectionInputNameNormalization moves a projection program from
@@ -385,7 +389,13 @@ func TranslateProjectionInputNameNormalization(
 		return nil, resolutionError(CorrelationTypeConflict, "projection-input.target", "projection declaration and target correlations disagree")
 	}
 	if !projectionInputNamesOnlyCompatible(exactDeclaration.flowed, exactTarget.flowed) {
-		return nil, resolutionError(LayoutTypeMismatch, "projection-input.target", "projection declaration and target differ beyond top-level field names")
+		// Both rows are in the message because the difference is the whole
+		// finding, and every caller reports this failure as a query-level
+		// 0AF00 where nothing downstream can say WHICH of record name, width,
+		// ordinal or leaf type moved.
+		return nil, resolutionError(LayoutTypeMismatch, "projection-input.target",
+			"projection declaration and target differ beyond top-level field names: declared "+
+				describeExactType(exactDeclaration.flowed)+", target "+describeExactType(exactTarget.flowed))
 	}
 
 	return replaceLeavesOnceMaybeChecked(value, func(leaf Value) (Value, error) {

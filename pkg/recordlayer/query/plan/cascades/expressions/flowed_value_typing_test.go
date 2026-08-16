@@ -23,16 +23,36 @@ func TestExactQOVTypeParticipatesInIdentity(t *testing.T) {
 	}
 }
 
+// TestLogicalProjectionRejectsWholeRowShapeWithoutPublishingObject drives the
+// refusal through the EXPRESSION constructor, over a MACHINERY quantifier —
+// the shape whose one emitted slot has no name to take.
+//
+// The named twin below is the other half, and the pair is the whole point: the
+// refusal is about WHOSE row is being wrapped, not about the row being a row.
+// A `SELECT x` over a struct-valued source is one named column and must build.
 func TestLogicalProjectionRejectsWholeRowShapeWithoutPublishingObject(t *testing.T) {
 	t.Parallel()
-	inner := NamedForEachQuantifier(
-		values.NamedCorrelationIdentifier("IN"),
+	inner := ForEachQuantifier(
 		InitialOf(&typedStubExpr{name: "source", typ: rowOfTypes("A", values.NotNullLong)}),
 	)
 	wholeRow := mustExpression(inner.RequireFlowedObjectValue())
 	projection, err := NewLogicalProjectionExpression([]values.Value{wholeRow}, inner)
 	if projection != nil || !errors.Is(err, values.ErrWholeRowProjection) {
 		t.Fatalf("whole-row projection returned (%v, %v), want nil and ErrWholeRowProjection", projection, err)
+	}
+}
+
+func TestLogicalProjectionOverANamedSourceIsAColumnNotAWholeRowWrap(t *testing.T) {
+	t.Parallel()
+	inner := NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("X"),
+		InitialOf(&typedStubExpr{name: "source", typ: rowOfTypes("A", values.NotNullLong)}),
+	)
+	element := mustExpression(inner.RequireFlowedObjectValue())
+	projection, err := NewLogicalProjectionExpression([]values.Value{element}, inner)
+	if err != nil || projection == nil {
+		t.Fatalf("projecting a NAMED source whole = (%v, %v), want a projection: it is "+
+			"`SELECT x`, one column named x, whatever the element's type", projection, err)
 	}
 }
 

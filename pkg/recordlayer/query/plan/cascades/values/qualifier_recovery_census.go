@@ -374,6 +374,29 @@ type QualifierRecoveryExpectations struct {
 	// these is absorbed, because the witness set dedups by spelling — which is
 	// why the entries are listed individually with the fixture that drives each.
 	AllowedDiverged map[QualifierRecoverySite]map[string]struct{}
+
+	// RetiredSplit names the sites whose SPLITTING ARM IS GONE — not measured
+	// empty over this corpus, but structurally unreachable — so the alarm at them
+	// has INVERTED from collapse to REVIVAL: any split call is the arm coming
+	// back, and it fails.
+	//
+	// This is deliberately NOT the Floors.Split zero declaration, which says
+	// "measured empty here, covered by a unit pin instead". Two differences, and
+	// both matter:
+	//
+	//   - A declaration is a statement about THIS CORPUS. A retirement is a
+	//     statement about the TREE, so it holds over any population — including
+	//     the empty one a -test.run filter leaves behind. Floors are dropped under
+	//     a filter because a population floor describes the unfiltered suite; a
+	//     retirement must not be, because skipping it is the one direction that
+	//     fails open.
+	//   - The failure text differs, and the text is the whole value of a stale
+	//     guard: a declaration says "raise this floor", a retirement says "the arm
+	//     you deleted is back".
+	//
+	// A site listed here is exempt from the Floors.Split zero-declaration check,
+	// so the two guards report the same event once, with the right words.
+	RetiredSplit [qualRecSiteCount]bool
 }
 
 // assertQualifierRecoveryCounts is the decision, split from the process-global
@@ -389,8 +412,9 @@ func assertQualifierRecoveryCounts(
 	failed := false
 	var floors *QualifierRecoveryFloors
 	var allowedDiverged map[QualifierRecoverySite]map[string]struct{}
+	var retiredSplit [qualRecSiteCount]bool
 	if exp != nil {
-		floors, allowedDiverged = exp.Floors, exp.AllowedDiverged
+		floors, allowedDiverged, retiredSplit = exp.Floors, exp.AllowedDiverged, exp.RetiredSplit
 	}
 
 	fmt.Fprintf(w, "[%s] qualifier recovery census — the DARK SPLITTERS (per resolution decision):\n", corpus)
@@ -499,6 +523,26 @@ func assertQualifierRecoveryCounts(
 		}
 	}
 
+	// RETIREMENT. Checked before — and independently of — the floors, because a
+	// retired arm is a fact about the TREE and stays true over the empty
+	// population a -test.run filter leaves behind, where every floor is dropped.
+	for s := QualifierRecoverySite(0); s < qualRecSiteCount; s++ {
+		if !retiredSplit[s] {
+			continue
+		}
+		split := splitPopulation(counts, s)
+		if split == 0 {
+			continue
+		}
+		failed = true
+		fmt.Fprintf(w, "FAIL: %s entered a SPLITTING arm %d time(s), and that arm is RETIRED.\n"+
+			"  This site's alarm is inverted: zero is the steady state and GROWTH is the\n"+
+			"  finding, because a split here means the rendered-name recovery this census\n"+
+			"  was built to watch has come BACK. Do not raise a floor to match — find what\n"+
+			"  reintroduced the slice and route it through the structured identity.\n",
+			s, split)
+	}
+
 	if floors == nil {
 		return failed
 	}
@@ -515,13 +559,14 @@ func assertQualifierRecoveryCounts(
 				"  population. Either the shapes that drive it stopped being planned, or the\n"+
 				"  recorder was dropped from the site.\n", s, total, floors.Calls[s])
 		}
-		split := 0
-		for _, c := range []QualifierRecoveryClass{
-			QualRecAgreed, QualRecDiverged, QualRecManufactured,
-			QualRecLeafOnly, QualRecBare, QualRecHeuristicDecline,
-		} {
-			split += counts[s][c]
+		if retiredSplit[s] {
+			// The retirement check above already owns this site, with the words
+			// that fit it. Running the declaration check too would report one
+			// event twice and tell the reader to raise a floor on an arm that is
+			// supposed to be gone.
+			continue
 		}
+		split := splitPopulation(counts, s)
 		switch f := floors.Split[s]; {
 		case f > 0 && split < f:
 			failed = true
@@ -567,4 +612,18 @@ func ClassifyQualifierRecovery(name, identity string, identityPresent bool) (Qua
 		return QualRecAgreed, manufactured
 	}
 	return QualRecDiverged, manufactured
+}
+
+// splitPopulation is the calls at a site that entered a SPLITTING arm — every
+// class but CARRIED, which is the one that decides from a structured identity
+// without slicing a name.
+func splitPopulation(counts [qualRecSiteCount][qualRecClassCount]int, s QualifierRecoverySite) int {
+	split := 0
+	for _, c := range []QualifierRecoveryClass{
+		QualRecAgreed, QualRecDiverged, QualRecManufactured,
+		QualRecLeafOnly, QualRecBare, QualRecHeuristicDecline,
+	} {
+		split += counts[s][c]
+	}
+	return split
 }

@@ -428,6 +428,13 @@ func (e *UnresolvableOrdinalError) Error() string {
 //
 // nil when the source declares no column order, which is exactly the condition
 // sourceColumnOrdinal declines on, so the two answers cannot disagree.
+// SourceRowType is the exported view of sourceRowType, for callers outside this
+// package that hold a resolved ScopeSource and need the row it flows — the
+// enclosing-WITH bindings a derived body must be typed against, in particular.
+func SourceRowType(src semantic.ScopeSource) *values.RecordType {
+	return sourceRowType(src)
+}
+
 func sourceRowType(src semantic.ScopeSource) *values.RecordType {
 	if src.Table == nil {
 		return nil

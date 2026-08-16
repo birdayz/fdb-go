@@ -439,27 +439,37 @@ func assertDottedLegQualifierCounts(w io.Writer, counts [dottedLegSiteCount][dot
 				"  identity came from neither.\n", s, counts[s][DottedLegMatchNoAlias])
 		}
 	}
-	if floors == nil {
-		return failed
-	}
+	// THE CHANNEL IS RETIRED AND THIS IS ITS REVIVAL ALARM.
+	//
+	// Both sites were arms of the NAME-model bake — query.bakeFlatRefsAgainstColumns
+	// and query.bakeDottedRefsToLegQOV — which resolved a reference by splitting a
+	// column name at a dot and matching the qualifier against a leg's text. The
+	// ordinal model resolves by baked slot and those bakes are gone, so
+	// RecordDottedLegQualifier has no caller and every count is zero.
+	//
+	// The counts used to be FLOORED (10 and 1), because both hard zeros above hold
+	// vacuously over an empty population and a reader nothing drives reports
+	// exactly like a reader with nothing wrong. Those floors are unsatisfiable
+	// now. The direction inverts: any call means a name-splitting resolution path
+	// has come back, which is the model this whole channel was retired from.
 	for s := DottedLegSite(0); s < dottedLegSiteCount; s++ {
-		if floors.Calls[s] == 0 {
-			continue
-		}
 		total := 0
 		for c := 0; c < int(dottedLegClassCount); c++ {
 			total += counts[s][c]
 		}
-		if total < floors.Calls[s] {
-			failed = true
-			fmt.Fprintf(w, "DOTTED LEG QUALIFIER CENSUS FAIL: %s reached %d match attempts, want >= %d.\n"+
-				"  Nothing drove this reader, so BOTH its hard zeros held vacuously —\n"+
-				"  MATCH-ALIAS-DIFFERS and MATCH-NO-ALIAS. Between them they are the whole\n"+
-				"  claim that the leg table's two spellings still agree, and that every leg\n"+
-				"  this channel matches states an identity to agree WITH, on the one channel\n"+
-				"  that cannot be re-keyed by identity.\n",
-				s, total, floors.Calls[s])
+		if total == 0 {
+			continue
 		}
+		failed = true
+		fmt.Fprintf(w, "DOTTED LEG QUALIFIER CENSUS FAIL: %s reached %d match attempt(s), want 0 —\n"+
+			"  the dotted-qualifier match channel was RETIRED and this is its revival alarm.\n"+
+			"  This reader resolved a reference by splitting a column NAME at a dot and\n"+
+			"  matching the qualifier against a leg's text — the one channel that cannot be\n"+
+			"  re-keyed by identity. Its producers were the name-model bakes, which the\n"+
+			"  ordinal model replaced with resolution by baked slot.\n"+
+			"  A non-zero means a name-splitting resolution path is back. Find it; do not\n"+
+			"  re-floor this reader.\n", s, total)
 	}
+	_ = floors
 	return failed
 }

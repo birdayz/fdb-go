@@ -253,8 +253,15 @@ func TestReanchorValueThroughProducerUsesOwnedOrUniqueLineageOnly(t *testing.T) 
 	// Merely being current and exposing CID is not enough. A third exact row
 	// shape matches both producer fields by accessor name and neither by owner,
 	// so it must remain unchanged instead of guessing C or O.
+	//
+	// The third shape differs in its FIELD LIST, not merely in its RecordName:
+	// a rename compares equal (provenance, not identity — Java's
+	// Type.Record.equals), so `RECORD@OTHER(CID)` IS CUST's row and would be
+	// reanchored correctly, leaving this assertion asserting nothing. CID stays
+	// byte-identical so the accessor-name match it is testing still holds.
 	foreignCurrentType := NewRecordType("OTHER", false, []Field{
 		{Name: "CID", Ordinal: 0, FieldType: NotNullLong},
+		{Name: "XID", Ordinal: 1, FieldType: NotNullLong},
 	})
 	foreignCurrent := mustLayoutCurrentQOV(t, foreignCurrentType)
 	foreignCurrentCID, err := ResolveFieldOrdinals(foreignCurrent, []int{0})

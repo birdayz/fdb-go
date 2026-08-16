@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -166,7 +165,7 @@ func PositionalTypeForDescriptor(desc protoreflect.MessageDescriptor) *values.Re
 		rtFields := make([]values.Field, n)
 		for i := 0; i < n; i++ {
 			fd := fields.Get(i)
-			rtFields[i] = values.Field{Name: strings.ToUpper(string(fd.Name())), FieldType: values.FieldTypeForProtoField(fd), Ordinal: i}
+			rtFields[i] = values.Field{Name: values.FieldNameForProtoField(fd), FieldType: values.FieldTypeForProtoField(fd), Ordinal: i}
 		}
 		return values.NewRecordType("", false, rtFields)
 	})

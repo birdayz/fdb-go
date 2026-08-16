@@ -218,8 +218,12 @@ func TestRetainedResultRejectsDuplicateAndConflictingNullSourcesInEitherOrder(t 
 		t.Fatal(err)
 	}
 	result := NewRawRecordConstructorValue(RecordConstructorField{Name: "ID", Value: id})
+	// The CONFLICT must be one of shape. A differing RecordName alone compares
+	// equal (provenance, not identity — Java's Type.Record.equals), so renaming
+	// while keeping the fields identical would make this a second copy of the
+	// duplicate case and the two conflict arms would never fire.
 	conflictingType := NewRecordType("OTHER", true, []Field{
-		{Name: "ID", Ordinal: 0, FieldType: NullableLong},
+		{Name: "ID", Ordinal: 0, FieldType: NullableString},
 	})
 	conflicting, err := NewQuantifiedObjectValue(alias, conflictingType)
 	if err != nil {

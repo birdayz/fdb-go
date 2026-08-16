@@ -58,7 +58,7 @@ func TestProjectionLegSeedsStep1(t *testing.T) {
 	scan := mustProjectionLegConstruct(plans.NewRecordQueryScanPlan(
 		[]string{"T3"}, commit2RecType("T3", "ID", "T1_ID"), false))
 	seed, decline := reconstructFoldStep1Seed(proj, scan,
-		values.NamedCorrelationIdentifier("D"), values.NamedCorrelationIdentifier("T3"))
+		values.NamedCorrelationIdentifier("D"), values.NamedCorrelationIdentifier("T3"), plans.JoinInner)
 	if seed == nil {
 		t.Fatalf("projection + scan legs must reconstruct a seed; declined shape=%v witness=%q",
 			decline.Shape, decline.Witness)
@@ -100,7 +100,7 @@ func TestProjectionLegWithNoStatableRowIsRefused(t *testing.T) {
 			"ordinals off a row nothing describes addresses slots by guess")
 	}
 	if seed, _ := reconstructFoldStep1Seed(empty, scan,
-		values.NamedCorrelationIdentifier("D"), values.NamedCorrelationIdentifier("T1")); seed != nil {
+		values.NamedCorrelationIdentifier("D"), values.NamedCorrelationIdentifier("T1"), plans.JoinInner); seed != nil {
 		t.Fatal("an unstatable projection leg must decline the seed reconstruction")
 	}
 }

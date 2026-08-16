@@ -145,7 +145,7 @@ func OrdinalWindowMatchState(
 	}
 	window := &exactLayout.windows[index]
 	if !exactTypesEqual(window.source.flowed, exactSource.flowed) {
-		return false, resolutionError(CorrelationTypeConflict, "layout.source", "provided correlation has a different exact type")
+		return false, exactTypeConflict("layout.source", "provided correlation", exactSource.correlation, window.source.flowed, exactSource.flowed)
 	}
 	if !window.nullSupplying {
 		return false, resolutionError(LayoutInvalidWindow, "layout.source", "match state requested for a non-null-supplying window")
@@ -162,7 +162,7 @@ func OrdinalWindowMatchState(
 		return false, resolutionError(LayoutPresenceMissing, "layout.presence", "null-supplying window match state is unknown")
 	}
 	if !exactTypesEqual(state.source.flowed, exactSource.flowed) {
-		return false, resolutionError(CorrelationTypeConflict, "layout.presence", "window match state has a different exact type")
+		return false, exactTypeConflict("layout.presence", "window match state", exactSource.correlation, state.source.flowed, exactSource.flowed)
 	}
 	return state.matched, nil
 }
@@ -439,8 +439,8 @@ func (b *requiredEdgeBinder) GetQuantifiedBinding(view QuantifiedObjectValue) (a
 		return nil, false, err
 	}
 	if binding, exists := b.bindings[exact.correlation]; exists {
-		if !exactTypesEqual(binding.source.flowed, exact.flowed) {
-			return nil, false, resolutionError(CorrelationTypeConflict, "binding.edge.qov", "edge lookup has a different exact type")
+		if !exactRowShapesAgree(binding.source.flowed, exact.flowed) {
+			return nil, false, exactTypeConflict("binding.edge.qov", "edge lookup", exact.correlation, binding.source.flowed, exact.flowed)
 		}
 		return binding.value, true, nil
 	}
@@ -468,8 +468,8 @@ func (b *ordinalObjectBinder) IsExplicitNullQuantifiedBinding(view QuantifiedObj
 		return b.currentExplicitAbsent, nil
 	}
 	if binding, exists := b.bindings[qov.correlation]; exists {
-		if !exactTypesEqual(binding.source.flowed, qov.flowed) {
-			return false, resolutionError(CorrelationTypeConflict, "binding.qov", "source absence lookup has a different exact type")
+		if !exactRowShapesAgree(binding.source.flowed, qov.flowed) {
+			return false, exactTypeConflict("binding.qov", "source absence lookup", qov.correlation, binding.source.flowed, qov.flowed)
 		}
 		return binding.explicitAbsent, nil
 	}
@@ -491,8 +491,8 @@ func (b *ordinalObjectBinder) GetQuantifiedBinding(view QuantifiedObjectValue) (
 		return b.current, true, nil
 	}
 	if binding, exists := b.bindings[qov.correlation]; exists {
-		if !exactTypesEqual(binding.source.flowed, qov.flowed) {
-			return nil, false, resolutionError(CorrelationTypeConflict, "binding.qov", "source binding has a different exact type")
+		if !exactRowShapesAgree(binding.source.flowed, qov.flowed) {
+			return nil, false, exactTypeConflict("binding.qov", "source binding", qov.correlation, binding.source.flowed, qov.flowed)
 		}
 		return binding.value, true, nil
 	}

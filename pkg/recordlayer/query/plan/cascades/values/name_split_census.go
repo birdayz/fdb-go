@@ -399,58 +399,35 @@ func assertNameSplitCounts(w io.Writer, counts [nameSplitSiteCount][nameSplitCla
 		}
 	}
 
-	if floors != nil {
-		for s := NameSplitSite(0); s < nameSplitSiteCount; s++ {
-			total := 0
-			for c := NameSplitClass(0); c < nameSplitClassCount; c++ {
-				total += counts[s][c]
-			}
-			if total < floors.Calls[s] {
-				failed = true
-				fmt.Fprintf(w, "FAIL: %s reported %d call(s), below its floor of %d — the arm has gone\n"+
-					"  DARK. A splitting arm at zero reads exactly like a splitting arm measured\n"+
-					"  clean, and this census's SPLIT-QUALIFIED zero is worthless over an empty\n"+
-					"  population. Either the shapes that drive it stopped being planned, or the\n"+
-					"  recorder was dropped from the arm.\n", s, total, floors.Calls[s])
-			}
-			// NO-SEGMENTS decisions: the site decided without a parse-tree
-			// triple in hand. WORDING CORRECTED, METRIC KEPT — and the choice
-			// between those two is worth recording, because both were available.
-			//
-			// This was called "entered a SPLITTING arm". There is no splitting
-			// arm at either site any more: CQ-52 deleted the first-dot
-			// re-split, so qualification is the parser's segment count alone
-			// and NameSplitQualified has no producer left. Describing a live
-			// metric in terms of a deleted branch is the same failure the
-			// guard-shelf-life rule names — the number keeps moving, the story
-			// around it does not, and the next reader trusts the story.
-			//
-			// The METRIC is deliberately unchanged, including the now-dead
-			// NameSplitQualified term. It still answers the question this floor
-			// exists to ask — "is the no-segments path still being REACHED, or
-			// is the hard zero a zero over nothing?" — because a total call
-			// count stays healthy on SEGMENTED traffic alone. Dropping the
-			// Qualified term would make the sum unable to see the very
-			// regression the hard zero watches for, so the term stays and the
-			// separate zero assertion below is what actually alarms on it.
-			noSegments := counts[s][NameSplitBare] + counts[s][NameSplitQualified]
-			switch f := floors.Split[s]; {
-			case f > 0 && noSegments < f:
-				failed = true
-				fmt.Fprintf(w, "FAIL: %s made %d NO-SEGMENTS decision(s), below its floor of\n"+
-					"  %d. Its total call count can stay healthy on SEGMENTED traffic alone, so\n"+
-					"  this is the floor — and the only floor — that says the path this census's\n"+
-					"  hard zero is a zero OVER is still being reached.\n", s, noSegments, f)
-			case f == 0 && noSegments > 0:
-				failed = true
-				fmt.Fprintf(w, "FAIL: %s declares a no-segments floor of 0 — WATCHED, NOT PROVEN,\n"+
-					"  meaning that path was measured empty over this corpus and is covered by a\n"+
-					"  unit wiring pin instead. It is no longer empty: %d call(s) now arrive\n"+
-					"  without a parse-tree triple. This is not a defect, it is the declaration\n"+
-					"  going stale. Re-read the site, then raise this floor to a real number so\n"+
-					"  the corpus starts carrying the guarantee the unit pin was standing in for.\n", s, noSegments)
-			}
+	// THE SITES ARE RETIRED AND THIS IS THEIR REVIVAL ALARM.
+	//
+	// Both were arms of the NAME-model bake — query.bakeDottedRefsToLegQOVWithRef's
+	// segmentsOf and query.bakeFlatRefsAgainstColumns' dotted arm — and the
+	// ordinal model replaced them with resolution by baked slot, so RecordNameSplit
+	// has no caller and every count is zero.
+	//
+	// The calls used to be FLOORED (at 1 each), together with a separate floor on
+	// the NO-SEGMENTS decisions: the SPLIT-QUALIFIED zero above holds vacuously
+	// over an empty population, and a splitting arm at zero reads exactly like a
+	// splitting arm measured clean. Both floors are unsatisfiable now, and the
+	// direction inverts — a call means a resolution path that decides from a
+	// rendered NAME has come back, which is the model the ordinal work retired.
+	for s := NameSplitSite(0); s < nameSplitSiteCount; s++ {
+		total := 0
+		for c := NameSplitClass(0); c < nameSplitClassCount; c++ {
+			total += counts[s][c]
 		}
+		if total == 0 {
+			continue
+		}
+		failed = true
+		fmt.Fprintf(w, "FAIL: %s reported %d call(s), want 0 — the name-split channel was\n"+
+			"  RETIRED and this is its revival alarm.\n"+
+			"  Its producers were the name-model bakes, which resolved a reference from a\n"+
+			"  rendered column name; the ordinal model resolves by baked slot and deleted\n"+
+			"  them. A non-zero means such a path is back — find it, and do not re-floor\n"+
+			"  this arm.\n", s, total)
 	}
+	_ = floors
 	return failed
 }

@@ -81,6 +81,9 @@ func TestMain(m *testing.M) {
 //
 //   - recursiveRemap is intentionally zero: recursiveRemapValues is a retired
 //     compatibility no-op, pinned by TestQualRecWiring_RetiredRecursiveRemapIsInert.
+//     It is declared in translatorQualifierRecoveryRetiredSplit rather than as a
+//     Split zero, because a retirement is a fact about the tree and must survive
+//     a -test.run filter that drops every floor.
 //   - existsSortSplit's and derivedUnnestSource's populations here are FIXTURE
 //     traffic, driven entirely by qualifier_recovery_wiring_test.go. Their
 //     floors say THE PINS STILL RUN — nothing more. Production coverage of
@@ -129,8 +132,18 @@ func assertTranslatorQualifierRecoveryCensus(w io.Writer) bool {
 	return values.AssertQualifierRecoveryCensus(w, &values.QualifierRecoveryExpectations{
 		Floors:          floors,
 		AllowedDiverged: qualifierRecoveryNegativeControls,
+		RetiredSplit:    translatorQualifierRecoveryRetiredSplit,
 	}, "translator corpus")
 }
+
+// translatorQualifierRecoveryRetiredSplit declares the one site in this package
+// whose splitting arm is gone from the tree. Any split there is the retired
+// recursive remap coming back, and the check survives a narrowed run because a
+// tree fact holds over any population — including the empty one.
+var translatorQualifierRecoveryRetiredSplit = func() (r [6]bool) {
+	r[values.QualRecSiteRecursiveRemap] = true
+	return r
+}()
 
 // qualifierRecoveryNegativeControls is every DIVERGED witness this package's
 // test FIXTURES deliberately drive, and it is complete: any witness outside it

@@ -442,3 +442,91 @@ func TestSortElim_EqPrefixIndexScanSatisfiesOrderByPK(t *testing.T) {
 		t.Fatalf("expected an index-scan-shaped plan, got %T", plan)
 	}
 }
+
+// THE SAME GAP, ONE PLAN TYPE OVER: an INDEX access memoized as the plan-backed
+// leaf must state its ordering too.
+//
+// The test above closed the primary-scan half — the data-access path memoizes a
+// SARGed scan as scanPlanExpression, not as the bare plan expression, so the
+// ordering hints have to be present there. The adapter's hints then narrowed to
+// *RecordQueryScanPlan and answered "no ordering" for every index access.
+//
+// The rich form is where that hurts, because it is the only one carrying FIXED
+// bindings. Two members of the same group — a forward index probe and its
+// REVERSE twin — both answered EMPTY, so nothing at the sort boundary could
+// tell them apart and the reverse alternative was never selected:
+// `ORDER BY <equality-bound float> DESC` over a correlated range set lost its
+// reverse composite probe to an InMemorySort.
+//
+// Driven in BOTH directions, because an empty ordering trivially "differs" from
+// nothing: the forward member must NOT satisfy the DESC request and the reverse
+// member must.
+func TestScanPlanExpressionRichOrdering_IndexAccessStatesItsOrder(t *testing.T) {
+	t.Parallel()
+
+	rowType := abRowType()
+	index := func(reverse bool) *plans.RecordQueryIndexPlan {
+		value, err := plans.NewRecordQueryIndexPlan(
+			"IDX_A", []*predicates.ComparisonRange{equalityRange(t, int64(1))},
+			[]string{"AB"}, rowType, reverse)
+		return mustConstruct(t, value, err).
+			WithKeyComponentTypes([]values.Type{values.NullableLong}).
+			WithIndexMetadata([]string{"A"}, []string{"B"}, false)
+	}
+	forward, reverse := index(false), index(true)
+
+	reqBDesc := properties.NewRequestedOrdering(
+		requestedParts(t, rowType,
+			map[string]properties.RequestedSortOrder{"B": properties.RequestedSortOrderDescending},
+			[]string{"B"}),
+		properties.DistinctnessPreserveDistinctness, false)
+	reqBAsc := properties.NewRequestedOrdering(
+		requestedParts(t, rowType,
+			map[string]properties.RequestedSortOrder{"B": properties.RequestedSortOrderAscending},
+			[]string{"B"}),
+		properties.DistinctnessPreserveDistinctness, false)
+
+	// CONTROL: the bare plan expression has always stated this. If it stops,
+	// the adapter assertions below prove nothing about the adapter.
+	if ord := computeWrapperRichOrdering(forward); ord == nil || len(ord.GetKeys()) == 0 {
+		t.Fatal("the bare index plan expression states no ordering — the control for " +
+			"this test is gone, so nothing below is about the adapter")
+	}
+
+	for _, tc := range []struct {
+		name    string
+		plan    plans.RecordQueryPlan
+		wantAsc bool
+	}{
+		{"forward", forward, true},
+		{"reverse", reverse, false},
+		// Through the order-preserving TypeFilter wrapper the primary candidate
+		// adds, which is the shape the adapter's unwrap exists for.
+		{"forward under a type filter", typeFilterOver(t, forward), true},
+		{"reverse under a type filter", typeFilterOver(t, reverse), false},
+	} {
+		adapter := &scanPlanExpression{plan: tc.plan}
+		ord := computeWrapperRichOrdering(adapter)
+		if ord == nil || len(ord.GetKeys()) == 0 {
+			t.Fatalf("%s: the adapter reports NO ordering for an index access.\n"+
+				"  The data-access path memoizes the access through this adapter, so an\n"+
+				"  empty answer here is what the sort boundary sees — and it is the same\n"+
+				"  answer the REVERSE twin gives, which is why neither can be selected.",
+				tc.name)
+		}
+		if got := ord.Satisfies(reqBAsc); got != tc.wantAsc {
+			t.Fatalf("%s: satisfies(ORDER BY B ASC) = %v, want %v", tc.name, got, tc.wantAsc)
+		}
+		if got := ord.Satisfies(reqBDesc); got == tc.wantAsc {
+			t.Fatalf("%s: satisfies(ORDER BY B DESC) = %v, want %v — the two directions must "+
+				"NOT answer the same, or the scan direction is not being reported at all",
+				tc.name, got, !tc.wantAsc)
+		}
+	}
+}
+
+func typeFilterOver(t *testing.T, inner plans.RecordQueryPlan) plans.RecordQueryPlan {
+	t.Helper()
+	value, err := plans.NewRecordQueryTypeFilterPlan([]string{"AB"}, inner)
+	return mustConstruct(t, value, err)
+}

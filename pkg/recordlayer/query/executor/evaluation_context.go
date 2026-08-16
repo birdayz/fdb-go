@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -525,12 +526,15 @@ func (ec *EvaluationContext) GetQuantifiedBinding(view values.QuantifiedObjectVa
 	}
 	entries := ec.quantifiedBindings[exact.Correlation()]
 	for _, entry := range entries {
-		if entry.qov.FlowedType().Equals(exact.FlowedType()) {
+		if values.QuantifiedRowShapesAgree(entry.qov.FlowedType(), exact.FlowedType()) {
 			return entry.value, true, nil
 		}
 	}
 	if len(entries) > 0 {
-		return nil, false, layoutBindingError(values.CorrelationTypeConflict, "quantified lookup type disagrees with declared bindings")
+		return nil, false, layoutBindingError(values.CorrelationTypeConflict,
+			fmt.Sprintf("quantified lookup %s: read as %s, declared %s",
+				exact.Correlation().Name(), values.DescribeType(exact.FlowedType()),
+				describeDeclaredBindings(entries)))
 	}
 	value, present := ec.bindings[exact.Correlation()]
 	return value, present, nil
@@ -547,12 +551,15 @@ func (ec *EvaluationContext) IsExplicitNullQuantifiedBinding(view values.Quantif
 	}
 	entries := ec.quantifiedBindings[exact.Correlation()]
 	for _, entry := range entries {
-		if entry.qov.FlowedType().Equals(exact.FlowedType()) {
+		if values.QuantifiedRowShapesAgree(entry.qov.FlowedType(), exact.FlowedType()) {
 			return entry.explicitAbsent, nil
 		}
 	}
 	if len(entries) > 0 {
-		return false, layoutBindingError(values.CorrelationTypeConflict, "quantified absence lookup type disagrees with declared bindings")
+		return false, layoutBindingError(values.CorrelationTypeConflict,
+			fmt.Sprintf("quantified absence lookup %s: read as %s, declared %s",
+				exact.Correlation().Name(), values.DescribeType(exact.FlowedType()),
+				describeDeclaredBindings(entries)))
 	}
 	return false, nil
 }
@@ -726,4 +733,22 @@ func (tt *TempTable) ReplaceList(rows []QueryResult) {
 	tt.mu.Lock()
 	defer tt.mu.Unlock()
 	tt.list = append([]QueryResult(nil), rows...)
+}
+
+// describeDeclaredBindings renders the exact shapes a correlation IS bound to,
+// so a type conflict reports both sides. A conflict whose message names neither
+// the correlation nor the two shapes forces every occurrence to be
+// re-investigated from scratch, and these arrive in clusters.
+func describeDeclaredBindings(entries []quantifiedRuntimeBinding) string {
+	if len(entries) == 0 {
+		return "nothing"
+	}
+	out := ""
+	for i, entry := range entries {
+		if i > 0 {
+			out += " | "
+		}
+		out += values.DescribeType(entry.qov.FlowedType())
+	}
+	return out
 }

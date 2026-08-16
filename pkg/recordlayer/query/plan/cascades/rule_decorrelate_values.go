@@ -132,14 +132,24 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 	}
 	tm := tmBuilder.Build()
 
-	// Translate result value and predicates.
+	// Translate result value and predicates. A failed translation abandons the
+	// whole inlining: this rule rewrites a Select in place, so a half-translated
+	// program would be published as that Select's own.
 	newResultValue := sel.GetResultValue()
 	if newResultValue != nil {
-		newResultValue = translateValueCorrelations(newResultValue, tm)
+		translatedResult, ok := translateValueCorrelations(newResultValue, tm)
+		if !ok {
+			return
+		}
+		newResultValue = translatedResult
 	}
 	newPredicates := make([]predicates.QueryPredicate, len(sel.GetPredicates()))
 	for i, p := range sel.GetPredicates() {
-		newPredicates[i] = translatePredicateCorrelations(p, tm)
+		translated, ok := translatePredicateCorrelations(p, tm)
+		if !ok {
+			return
+		}
+		newPredicates[i] = translated
 	}
 
 	// Push values boxes into child quantifiers and build the new
@@ -421,9 +431,12 @@ func quantifierCorrelationSetLocal(q expressions.Quantifier) map[values.Correlat
 // translateValueCorrelations applies the TranslationMap to a Value
 // tree by replacing QuantifiedObjectValue leaves whose correlation is
 // mapped in the TranslationMap.
-func translateValueCorrelations(v values.Value, tm TranslationMap) values.Value {
+// It reports FALSE when the rebuild around a substituted leaf fails — see
+// translatePredicateCorrelations for why that answer may never be softened
+// into "unchanged".
+func translateValueCorrelations(v values.Value, tm TranslationMap) (values.Value, bool) {
 	if v == nil {
-		return nil
+		return nil, true
 	}
 	// Replace all correlation-bearing LEAF values whose alias is in the
 	// translation map. Ports Java's Value.translateCorrelations, which uses
@@ -433,7 +446,7 @@ func translateValueCorrelations(v values.Value, tm TranslationMap) values.Value 
 	// columns to QOV(B) while the parent quantifier over the join is also aliased
 	// B; re-descending the substituted RC would re-match B forever). Use
 	// ReplaceLeavesOnceMaybe so substituted leaves are skipped on the re-descent.
-	return values.ReplaceLeavesOnceMaybe(v, func(val values.Value) values.Value {
+	translated := values.ReplaceLeavesOnceMaybe(v, func(val values.Value) values.Value {
 		var alias values.CorrelationIdentifier
 		if qov, ok := values.AsQuantifiedObjectValue(val); ok {
 			alias = qov.Correlation()
@@ -459,22 +472,61 @@ func translateValueCorrelations(v values.Value, tm TranslationMap) values.Value 
 		if !ok {
 			return val
 		}
-		return tm.ApplyTranslationFunction(alias, lv)
+		replacement := tm.ApplyTranslationFunction(alias, lv)
+		// A correlation substitution replaces a value denoting a ROW with
+		// another value denoting THE SAME row, so the two must agree on shape.
+		// Nothing else in this walk checks that, and the ordinals in the
+		// surrounding expression are carried across untouched: substituting a
+		// 3-column leg row by the 5-column join box it sits inside leaves every
+		// `#0` addressing a different column, silently and without an error.
+		// Measured on `… LEFT JOIN emp e ON … WHERE e.id IS NULL AND NOT EXISTS
+		// (…)`, where one alias named both the leg and the box: `E.ID#0 IS NULL`
+		// became the box's ordinal 0, which is D.ID, and the query answered no
+		// rows. Returning nil declines the whole translation (see
+		// translateValueCorrelations' contract) rather than publishing a
+		// rewrite whose ordinals moved.
+		if replacement != nil && !values.QuantifiedRowShapesAgree(val.Type(), replacement.Type()) {
+			return nil
+		}
+		return replacement
 	})
+	// ReplaceLeavesOnceMaybe signals a failed rebuild by returning nil, which
+	// is why the ok flag exists at all: the pointer-identity contract above
+	// ("unchanged means unchanged") makes nil indistinguishable from a
+	// legitimate result to a caller that only compares against the input.
+	return translated, translated != nil
 }
 
 // translatePredicateCorrelations applies the TranslationMap to a
 // predicate by walking its Value trees and replacing mapped aliases.
-func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationMap) predicates.QueryPredicate {
+//
+// It reports FALSE when any embedded Value could not be rebuilt around its
+// substituted leaf, and every caller must abandon its whole rewrite on that
+// answer. The alternative is not "a slightly worse predicate": a Value walk
+// that cannot rebuild returns NIL, and a predicate assembled around a nil
+// operand is structurally impossible — `<nil> = 'alice'`. It survives every
+// later rewrite (each spine copies the nil forward) and first surfaces as an
+// unclassified planner failure at physical construction, arbitrarily far from
+// the rule that minted it. A translation that cannot be performed is a rewrite
+// that must not happen.
+//
+// Reachable whenever a substituted root changes the ordinal domain the
+// reference was resolved in — e.g. PredicatePushDownRule pushing an already
+// resolved `E.FNAME#2` into a Select whose result value is not a
+// quantified object.
+func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationMap) (predicates.QueryPredicate, bool) {
 	if p == nil {
-		return nil
+		return nil, true
 	}
 	switch pred := p.(type) {
 	case *predicates.ComparisonPredicate:
-		newOperand := translateValueCorrelations(pred.Operand, tm)
-		newCompOperand := translateValueCorrelations(pred.Comparison.Operand, tm)
+		newOperand, operandOK := translateValueCorrelations(pred.Operand, tm)
+		newCompOperand, compOK := translateValueCorrelations(pred.Comparison.Operand, tm)
+		if !operandOK || !compOK {
+			return nil, false
+		}
 		if newOperand == pred.Operand && newCompOperand == pred.Comparison.Operand {
-			return p
+			return p, true
 		}
 		// Copy the whole Comparison and replace ONLY the translated RHS operand,
 		// preserving Escape AND every other Comparison subclass field
@@ -486,74 +538,101 @@ func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationM
 		return &predicates.ComparisonPredicate{
 			Operand:    newOperand,
 			Comparison: cmp,
-		}
+		}, true
 	case *predicates.ValuePredicate:
-		newVal := translateValueCorrelations(pred.Value, tm)
-		if newVal == pred.Value {
-			return p
+		newVal, ok := translateValueCorrelations(pred.Value, tm)
+		if !ok {
+			return nil, false
 		}
-		return predicates.NewValuePredicate(newVal)
+		if newVal == pred.Value {
+			return p, true
+		}
+		return predicates.NewValuePredicate(newVal), true
 	case *predicates.AndPredicate:
 		changed := false
 		newSubs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
 		for i, s := range pred.SubPredicates {
-			newSubs[i] = translatePredicateCorrelations(s, tm)
+			translated, ok := translatePredicateCorrelations(s, tm)
+			if !ok {
+				return nil, false
+			}
+			newSubs[i] = translated
 			if newSubs[i] != s {
 				changed = true
 			}
 		}
 		if !changed {
-			return p
+			return p, true
 		}
-		return predicates.NewAnd(newSubs...)
+		return predicates.NewAnd(newSubs...), true
 	case *predicates.OrPredicate:
 		changed := false
 		newSubs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
 		for i, s := range pred.SubPredicates {
-			newSubs[i] = translatePredicateCorrelations(s, tm)
+			translated, ok := translatePredicateCorrelations(s, tm)
+			if !ok {
+				return nil, false
+			}
+			newSubs[i] = translated
 			if newSubs[i] != s {
 				changed = true
 			}
 		}
 		if !changed {
-			return p
+			return p, true
 		}
-		return predicates.NewOr(newSubs...)
+		return predicates.NewOr(newSubs...), true
 	case *predicates.NotPredicate:
-		newChild := translatePredicateCorrelations(pred.Child, tm)
-		if newChild == pred.Child {
-			return p
+		newChild, ok := translatePredicateCorrelations(pred.Child, tm)
+		if !ok {
+			return nil, false
 		}
-		return predicates.NewNot(newChild)
+		if newChild == pred.Child {
+			return p, true
+		}
+		return predicates.NewNot(newChild), true
 	case *predicates.ExistentialValuePredicate:
 		// RFC-141: translate the QuantifiedObjectValue operand's correlation
 		// via the shared value path (which remaps the QOV alias). The
 		// comparison (NOT_NULL) is carried unchanged.
-		newVal := translateValueCorrelations(pred.Value, tm)
-		if newVal == pred.Value {
-			return p
+		newVal, ok := translateValueCorrelations(pred.Value, tm)
+		if !ok {
+			return nil, false
 		}
-		return predicates.MustNewExistentialValuePredicate(newVal, pred.Comparison)
+		if newVal == pred.Value {
+			return p, true
+		}
+		// MustNew PANICS on a non-QOV operand. Decline first: a substitution
+		// that replaced the existential's quantified object with something else
+		// is the same failed translation as a nil rebuild, and a rule that
+		// merely cannot rewrite must not take the process down.
+		if _, isQOV := values.AsQuantifiedObjectValue(newVal); !isQOV {
+			return nil, false
+		}
+		return predicates.MustNewExistentialValuePredicate(newVal, pred.Comparison), true
 	case *predicates.Placeholder:
-		newVal := translateValueCorrelations(pred.Value, tm)
+		newVal, ok := translateValueCorrelations(pred.Value, tm)
+		if !ok {
+			return nil, false
+		}
 		newAlias := pred.ParameterAlias
 		if tm.ContainsSourceAlias(newAlias) {
-			if target, ok := tm.GetTargetAlias(newAlias); ok {
+			if target, targetOK := tm.GetTargetAlias(newAlias); targetOK {
 				newAlias = target
 			}
 		}
 		if newVal == pred.Value && newAlias == pred.ParameterAlias {
-			return p
+			return p, true
 		}
 		return &predicates.Placeholder{
 			ParameterAlias: newAlias,
 			Value:          newVal,
 			CompRange:      pred.CompRange,
-		}
+		}, true
 	case *predicates.ConstantPredicate:
-		return p
+		return p, true
 	default:
-		return p
+		return p, true
 	}
 }
 

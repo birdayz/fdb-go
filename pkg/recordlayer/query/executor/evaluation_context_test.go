@@ -247,16 +247,19 @@ func TestWithQuantifiedBindingSeparatesSameCorrelationExactTypes(t *testing.T) {
 	if got, present, lookupErr := context.GetQuantifiedBinding(sameWhole); lookupErr != nil || !present || got != wholeValue {
 		t.Fatalf("equivalent declaration lookup = (%v, %t, %v), want exact whole row", got, present, lookupErr)
 	}
+	// The foreign record differs in row SHAPE, not merely in RecordName: a name
+	// is provenance and compares equal (Java's Type.Record.equals), so a rename
+	// over the declared fields is the SAME declaration and would bind happily.
 	foreignRecordType := values.NewRecordType("FOREIGN_OUTER", false, []values.Field{
 		{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong},
-		{Name: "ELEMENT", Ordinal: 1, FieldType: values.NotNullLong},
+		{Name: "FOREIGN_ELEMENT", Ordinal: 1, FieldType: values.NotNullLong},
 	})
 	foreignRecord, err := values.NewQuantifiedObjectValue(alias, foreignRecordType)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, present, lookupErr := context.GetQuantifiedBinding(foreignRecord); got != nil || present || lookupErr == nil {
-		t.Fatalf("foreign-record lookup = (%v, %t, %v), want loud exact-name rejection", got, present, lookupErr)
+		t.Fatalf("foreign-record lookup = (%v, %t, %v), want loud exact-type rejection", got, present, lookupErr)
 	}
 	foreignType, err := values.NewQuantifiedObjectValue(alias, values.NotNullString)
 	if err != nil {

@@ -87,7 +87,7 @@ func TestReconstructFoldStep1Seed(t *testing.T) {
 	t1 := commit2Scan(t, []string{"T1"}, commit2RecType("T1", "ID", "V"))
 	t2 := commit2Scan(t, []string{"T2"}, commit2RecType("T2", "ID", "T1_ID"))
 
-	seed, decline := reconstructFoldStep1Seed(t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
+	seed, decline := reconstructFoldStep1Seed(t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"), plans.JoinInner)
 	if seed == nil {
 		t.Fatal("two scan legs must reconstruct an ordinal step-1 seed")
 	}
@@ -127,6 +127,77 @@ func TestReconstructFoldStep1Seed(t *testing.T) {
 	}
 }
 
+// TestReconstructFoldStep1SeedNullExtendsTheOuterJoinSide drives the
+// null-supplying arm of the step-1 seed for EVERY join kind, because the corpus
+// reaches only some of them and the arm that ships untested is the one whose
+// first real firing gets read as a finding.
+//
+// The seed's leg QOV must be null-extended on exactly the side the join kind
+// pads. RecordQueryNestedLoopJoinPlan derives its own null-supplying aliases
+// from the SAME kind and then looks the source up IN THIS SEED, refusing to
+// build when the record it finds is not nullable — so a disagreement here is
+// not a cosmetic type difference, it is a query that cannot be planned at all.
+//
+// Both directions are asserted per kind: the padded side nullable AND the
+// preserved side not. Asserting only the padded side passes against a seed that
+// null-extends everything, which would silently make every preserved leg
+// look absent to the layout's presence proof.
+func TestReconstructFoldStep1SeedNullExtendsTheOuterJoinSide(t *testing.T) {
+	t.Parallel()
+	left := values.NamedCorrelationIdentifier("L")
+	right := values.NamedCorrelationIdentifier("R")
+
+	for _, testCase := range []struct {
+		name          string
+		joinType      plans.JoinType
+		leftNullable  bool
+		rightNullable bool
+	}{
+		{name: "inner pads neither side", joinType: plans.JoinInner},
+		{name: "left outer pads the RIGHT side", joinType: plans.JoinLeftOuter, rightNullable: true},
+		{name: "full outer pads BOTH sides", joinType: plans.JoinFullOuter, leftNullable: true, rightNullable: true},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			l := commit2Scan(t, []string{"L"}, commit2RecType("L", "ID", "V"))
+			r := commit2Scan(t, []string{"R"}, commit2RecType("R", "ID", "L_ID"))
+			seed, decline := reconstructFoldStep1Seed(l, r, left, right, testCase.joinType)
+			if seed == nil {
+				t.Fatalf("two scan legs must reconstruct a seed, declined %+v", decline)
+			}
+			want := map[values.CorrelationIdentifier]bool{
+				left: testCase.leftNullable, right: testCase.rightNullable,
+			}
+			seen := map[values.CorrelationIdentifier]bool{}
+			values.WalkValue(seed, func(node values.Value) bool {
+				qov, isQOV := values.AsQuantifiedObjectValue(node)
+				if !isQOV {
+					return true
+				}
+				alias := qov.Correlation()
+				wantNullable, tracked := want[alias]
+				if !tracked {
+					t.Errorf("seed carries an unexpected leg %s", alias.Name())
+					return true
+				}
+				seen[alias] = true
+				if got := qov.FlowedType().IsNullable(); got != wantNullable {
+					t.Errorf("%s leg row nullable = %t, want %t under %v — the physical join "+
+						"reads its null-supplying source out of THIS seed and refuses to build "+
+						"when the record it finds is not nullable",
+						alias.Name(), got, wantNullable, testCase.joinType)
+				}
+				return true
+			})
+			if len(seen) != 2 {
+				t.Fatalf("walked %d leg QOVs, want both legs — an assertion over an empty "+
+					"population proves nothing", len(seen))
+			}
+		})
+	}
+}
+
 // legOrdinalSafety admits a single-source scan leg (its rows are one namespace,
 // ordinal-positionable) and REJECTS a name-model merged-row leg (a join), which
 // stays name-model — the executor twin of the translator gate's ordinalEligible
@@ -147,14 +218,14 @@ func TestLegOrdinalSafety(t *testing.T) {
 	if safe, _ := legOrdinalSafety(idxRec); !safe {
 		t.Fatal("an index-scan leg is a single source — ordinal-safe")
 	}
-	if s, _ := reconstructFoldStep1Seed(scan, idxRec, values.NamedCorrelationIdentifier("T"), values.NamedCorrelationIdentifier("T2")); s == nil {
+	if s, _ := reconstructFoldStep1Seed(scan, idxRec, values.NamedCorrelationIdentifier("T"), values.NamedCorrelationIdentifier("T2"), plans.JoinInner); s == nil {
 		t.Fatal("two single-source legs (scan + record-typed index) must reconstruct a seed")
 	}
 	// A covering index whose flowed type is NOT a record: ordinal-safe by shape,
 	// but the reconstruction DECLINES (leg type is not addressable positionally)
 	// — the leg keeps the name model, correct-or-conservative.
 	idxOpaque := commit2IndexScan(t, "idx", []string{"T2"}, values.NotNullLong)
-	opaqueSeed, opaqueDecline := reconstructFoldStep1Seed(scan, idxOpaque, values.NamedCorrelationIdentifier("T"), values.NamedCorrelationIdentifier("T2"))
+	opaqueSeed, opaqueDecline := reconstructFoldStep1Seed(scan, idxOpaque, values.NamedCorrelationIdentifier("T"), values.NamedCorrelationIdentifier("T2"), plans.JoinInner)
 	if opaqueSeed != nil {
 		t.Fatal("a non-record-typed index leg must decline the seed reconstruction (name model)")
 	}
@@ -182,7 +253,7 @@ func TestLegOrdinalSafety(t *testing.T) {
 	}
 	// A reconstruction over a join leg must therefore DECLINE (nil), keeping the
 	// name model for that shape.
-	nljSeed, nljDecline := reconstructFoldStep1Seed(nlj, scan, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("T"))
+	nljSeed, nljDecline := reconstructFoldStep1Seed(nlj, scan, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("T"), plans.JoinInner)
 	if nljSeed != nil {
 		t.Fatal("a join leg must decline the seed reconstruction")
 	}
@@ -223,7 +294,7 @@ func TestFoldStep1SeedGate(t *testing.T) {
 	)
 
 	// GATED: independent scan legs + a projected fold → the reconstructed seed.
-	rv, gated, class := foldStep1Seed(foldRV, existAlias, false, t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
+	rv, gated, class := foldStep1Seed(foldRV, existAlias, false, t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"), plans.JoinInner)
 	if !gated {
 		t.Fatal("a projected-EXISTS fold over independent scan legs must ordinalize (gated=true)")
 	}
@@ -241,7 +312,7 @@ func TestFoldStep1SeedGate(t *testing.T) {
 
 	// DECLINE, correlated step 1: stays name-model. A correlated FlatMap binds
 	// legs by NAME, so a baked seed would hit a loud BakedNameContextError.
-	if _, g, c := foldStep1Seed(foldRV, existAlias, true, t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2")); g || c.Step1 != foldStep1DeclineCorrelatedStep1 {
+	if _, g, c := foldStep1Seed(foldRV, existAlias, true, t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"), plans.JoinInner); g || c.Step1 != foldStep1DeclineCorrelatedStep1 {
 		t.Fatalf("a correlated step-1 must NOT ordinalize and must classify as the "+
 			"correlatedStep1 wall, got gated=%t class=%v", g, c)
 	}
@@ -249,7 +320,7 @@ func TestFoldStep1SeedGate(t *testing.T) {
 	// DECLINE, not a projected fold (WHERE-EXISTS pass-through — RV is bare QOV,
 	// no existential reference): stays name-model, RV unchanged.
 	bareRV := commit2QOV(t, values.NamedCorrelationIdentifier("T1"), t1.GetResultType())
-	if rv2, g, c := foldStep1Seed(bareRV, existAlias, false, t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2")); g || rv2 != bareRV || c.Step1 != foldStep1DeclineNoExistRef {
+	if rv2, g, c := foldStep1Seed(bareRV, existAlias, false, t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"), plans.JoinInner); g || rv2 != bareRV || c.Step1 != foldStep1DeclineNoExistRef {
 		t.Fatalf("a non-fold RV must NOT ordinalize, must pass through unchanged, and must "+
 			"classify as rv-no-exist-ref (a correct pass-through, not a residue), got "+
 			"gated=%t class=%v", g, c)
@@ -258,7 +329,7 @@ func TestFoldStep1SeedGate(t *testing.T) {
 	// DECLINE, a non-scan (join) leg: stays name-model.
 	njoin := commit2NLJ(t, t1, t2,
 		values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
-	if _, g, c := foldStep1Seed(foldRV, existAlias, false, njoin, t2, values.NamedCorrelationIdentifier("J"), values.NamedCorrelationIdentifier("T2")); g || c.Step1 != foldStep1DeclineReconstructNil {
+	if _, g, c := foldStep1Seed(foldRV, existAlias, false, njoin, t2, values.NamedCorrelationIdentifier("J"), values.NamedCorrelationIdentifier("T2"), plans.JoinInner); g || c.Step1 != foldStep1DeclineReconstructNil {
 		t.Fatalf("a name-model join leg must NOT ordinalize and must classify as "+
 			"reconstruct-nil, got gated=%t class=%v", g, c)
 	}
@@ -290,7 +361,7 @@ func TestReconstructFoldStep1Seed_CarriesTheThreadedIdentityVerbatim(t *testing.
 	t1 := commit2Scan(t, []string{"T1"}, commit2RecType("T1", "ID", "V"))
 	t2 := commit2Scan(t, []string{"T2"}, commit2RecType("T2", "ID", "T1_ID"))
 
-	seed, _ := reconstructFoldStep1Seed(t1, t2, minted, other)
+	seed, _ := reconstructFoldStep1Seed(t1, t2, minted, other, plans.JoinInner)
 	if seed == nil {
 		t.Fatal("two scan legs must reconstruct an ordinal step-1 seed")
 	}

@@ -596,11 +596,16 @@ func TestInMemorySortPlan_Explain(t *testing.T) {
 	if !strings.Contains(got, "InMemorySort") {
 		t.Fatalf("Explain = %q, missing 'InMemorySort'", got)
 	}
-	if !strings.Contains(got, "id ASC") {
-		t.Fatalf("Explain = %q, missing 'id ASC'", got)
+	// The key is RENDERED FROM ValueExpr, so what appears is the read —
+	// source and ordinal included — rather than the Field text the key was
+	// constructed with. Field is the spelling BEFORE re-anchoring and stops
+	// describing the read once the key is bound to its input, which is how
+	// EXPLAIN came to print a minted correlation counter.
+	if !strings.Contains(got, "id#0 ASC") {
+		t.Fatalf("Explain = %q, missing 'id#0 ASC'", got)
 	}
-	if !strings.Contains(got, "name DESC") {
-		t.Fatalf("Explain = %q, missing 'name DESC'", got)
+	if !strings.Contains(got, "name#0 DESC") {
+		t.Fatalf("Explain = %q, missing 'name#0 DESC'", got)
 	}
 }
 
@@ -1391,32 +1396,39 @@ func TestProjectionPlan_ResultTypeMatchesLogicalTwin(t *testing.T) {
 // SCOPE, stated precisely because an earlier revision of this comment
 // overstated it as an "unbuildability pin". It is not one. This drives
 // values.ProjectionResultValue, a derivation; the LogicalProjectionExpression
-// constructors validate nothing and build the shape happily
-// (expressions/flowed_value_typing_test.go's TestLogicalProjectionFallsBackTo-
-// UntypedQOV builds it and reaches the fallback). So the shape IS constructible
-// and the arm below IS live. What this pins is narrower and still worth having:
-// the derivation must keep refusing, because the executor emits one positional
-// slot per projection, so that shape WRAPS its inner's row rather than passing
-// it through and has no name to give its single field.
+// constructors do not otherwise validate the projection list. What this pins is
+// narrower and still worth having: the derivation must keep refusing, because
+// the executor emits one positional slot per projection, so that shape WRAPS
+// its inner's row rather than passing it through and has no name to give its
+// single field.
 //
-// The alarm direction is REVIVAL: a success here means the derivation started
-// synthesising a row for a shape that cannot name one, and every consumer keyed
-// on "unstated" would begin trusting it.
+// WHAT "WHOLE-ROW" MEANS HERE IS AN IDENTITY, NOT A TYPE, and the two arms
+// below are what separate them. A machinery correlation — `_current`, or a
+// minted `q$N` — names a row the SQL never named, so a one-slot wrap of it has
+// nothing to call its field. A NAMED correlation is a source the user wrote,
+// and projecting it whole is `SELECT x`, whose column is x. Deciding this on
+// the QOV's TYPE instead split one shape in half: `SELECT x FROM t, t.arr AS x`
+// planned for a scalar element and was refused for a STRUCT one.
+//
+// The alarm direction is REVIVAL: a success on the first arm means the
+// derivation started synthesising a row for a shape that cannot name one, and
+// every consumer keyed on "unstated" would begin trusting it.
 func TestProjectionResultValue_RejectsWholeRowProjection(t *testing.T) {
 	t.Parallel()
 
-	_, err := values.ProjectionResultValue(
-		[]values.Value{mustTestQOV(t, "Q", exactTestRecordType())}, nil)
-	if err == nil {
+	machineryRow, err := values.NewQuantifiedObjectValue(
+		values.UniqueCorrelationIdentifier(), exactTestRecordType())
+	if err != nil {
+		t.Fatalf("machinery-row QOV: %v", err)
+	}
+	if _, err := values.ProjectionResultValue([]values.Value{machineryRow}, nil); err == nil {
 		t.Fatal("the derivation SYNTHESISED a row for a one-slot whole-row projection. " +
 			"The alarm is REVIVAL: this shape must keep declining, because the executor " +
-			"emits one positional slot per projection, so it wraps the inner row instead " +
-			"of passing it through and has no name for its single field. (This does not " +
-			"assert the shape is unconstructible — it is; the expression constructors " +
-			"validate nothing and the untyped-QOV fallback that handles it is live.)")
+			"emits one positional slot per projection, so it wraps a row the SQL never " +
+			"named and has no name for its single field.")
 	}
 
-	// Precision: the guard must reject only the BARE whole-row shape. A
+	// Precision: the guard must reject only the machinery whole-row shape. A
 	// one-slot projection of an actual column is ordinary and must build.
 	if _, err := values.ProjectionResultValue(
 		[]values.Value{testField(t, "A", values.NullableLong)}, nil); err != nil {
@@ -1425,11 +1437,16 @@ func TestProjectionResultValue_RejectsWholeRowProjection(t *testing.T) {
 
 	// A scalar quantified object is the value of one scalar input (not a
 	// whole record wrapped into one slot), as produced by UNNEST/Explode.
-	// Rejecting it with the record-only guard makes `SELECT x FROM ... AS x`
-	// unrepresentable once QOVs carry their exact scalar type.
 	scalarQOV := mustTestQOV(t, "X", values.NotNullLong)
 	if _, err := values.ProjectionResultValue([]values.Value{scalarQOV}, []string{"X"}); err != nil {
 		t.Errorf("a one-slot projection of an exact scalar QOV must build, got: %v", err)
+	}
+
+	// And its STRUCT twin, which is the same SQL. A record-typed QOV over a
+	// NAMED source is one projected column whose value happens to be a row.
+	if _, err := values.ProjectionResultValue(
+		[]values.Value{mustTestQOV(t, "X", exactTestRecordType())}, []string{"X"}); err != nil {
+		t.Errorf("a one-slot projection of a STRUCT element must build, got: %v", err)
 	}
 }
 

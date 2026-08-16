@@ -272,10 +272,13 @@ func TestRecordType_Shape(t *testing.T) {
 		t.Errorf("Equals: same-shape records should be equal")
 	}
 
-	// Not equal: different name.
+	// EQUAL: different name. The record name is provenance, not identity —
+	// Java's Type.Record.equals compares (typeCode, isNullable, fields) and
+	// never the name. See TestRecordTypeEqualsIgnoresRecordName for the full
+	// per-attribute pin.
 	rDiffName := NewRecordType("OtherRec", false, fields)
-	if r.Equals(rDiffName) {
-		t.Errorf("Equals: different name should not be equal")
+	if !r.Equals(rDiffName) {
+		t.Errorf("Equals: the record name must not separate two identical shapes")
 	}
 	// Not equal: different nullability.
 	rNullable := NewRecordType("MyRec", true, fields)
@@ -546,9 +549,10 @@ func TestEnumType_Shape(t *testing.T) {
 	if !e.Equals(e2) {
 		t.Errorf("Equals: identical enums should be equal")
 	}
-	// Not equal: different name.
-	if e.Equals(NewEnumType("Other", false, e.Values)) {
-		t.Errorf("Equals: different name should differ")
+	// EQUAL: different name — Java's Type.Enum.equals compares (typeCode,
+	// isNullable, enumValues) and never the name, same rule as Type.Record.
+	if !e.Equals(NewEnumType("Other", false, e.Values)) {
+		t.Errorf("Equals: the enum name must not separate two identical value sets")
 	}
 	// Not equal: different ordering of values.
 	eReorder := NewEnumType("Suit", false, []EnumValue{

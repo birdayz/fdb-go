@@ -306,7 +306,7 @@ func TestSelectSubsumptionExistentialCompensation_SemanticEqualityChildStates(
 			if compensationFunction.IsImpossible() {
 				t.Fatal("EVP reapply must remain a possible predicate compensation")
 			}
-			applied := compensationFunction.ApplyCompensationForPredicate(
+			applied, _ := compensationFunction.ApplyCompensationForPredicate(
 				NewTranslationMapBuilder().
 					When(queryAlias).
 					Then(func(

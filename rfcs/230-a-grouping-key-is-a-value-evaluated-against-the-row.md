@@ -1,10 +1,16 @@
 # RFC-230 — A grouping key is a value evaluated against the row, not a slot in it
 
-**Status:** IMPLEMENTED. **Post-RFC-232 current state (2026-08-13):** the
-sealed exact FieldValue/FieldPath views reduced the Accessors sweep to **45
-non-test lines = 8 generated + 7 comment + 30 code**, carrying **34 arity
-expressions across 27 symbols**. The classified symbols are **8 (a), 0 (b), 19
-(c), 0 (d), 0 (?)**. All production `SourceRelativeBaked()` callers are gone;
+**Status:** IMPLEMENTED. **Post-RFC-232 current state (2026-08-16):** the
+sealed exact FieldValue/FieldPath views reduced the Accessors sweep to **47
+non-test lines = 8 generated + 7 comment + 32 code**, carrying **36 arity
+expressions across 28 symbols**. The classified symbols are **8 (a), 0 (b), 20
+(c), 0 (d), 0 (?)**. The +2 over the 2026-08-13 reading is
+`values.DisplayColumnName`, both expressions class (c): the projection label
+authority stopped splitting a rendered name at its last dot and now takes the
+LEAF out of the resolved accessors, which asks the path's length once to reject
+an empty path and once to index its last step. A name-splitting label authority
+is what the ordinal model retires, so this growth is the conversion arriving
+rather than new debt. All production `SourceRelativeBaked()` callers are gone;
 `TestSourceRelativeBakedSitesAreVisibleToTheCensus` is now a zero ratchet for
 that retired compatibility predicate. The exact current inventory lives in
 `pkg/docscheck/accessor_arity_census_test.go`; the revision measurements below

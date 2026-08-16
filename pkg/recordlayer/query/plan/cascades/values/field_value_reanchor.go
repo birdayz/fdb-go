@@ -38,7 +38,9 @@ func ReanchorFieldValue(
 		// structurally re-resolved onto this layout's exact handle. It is never a
 		// pointer-preserving no-op.
 		if !exactTypesEqual(root.flowed, exactTarget.flowed) {
-			return nil, resolutionError(ReanchorTargetMismatch, "reanchor.field", "current root and target have different exact types")
+			return nil, resolutionError(ReanchorTargetMismatch, "reanchor.field",
+				"current root and target have different exact types: root "+
+					describeExactType(root.flowed)+", target "+describeExactType(exactTarget.flowed))
 		}
 		mapped = append([]int(nil), sourcePath...)
 	} else {
@@ -53,12 +55,16 @@ func ReanchorFieldValue(
 			if original.Resolved.FrontierPinned && exactTypesEqual(root.flowed, exactTarget.flowed) {
 				mapped = append([]int(nil), sourcePath...)
 			} else {
-				return nil, resolutionError(ReanchorUnmappedSource, "reanchor.field", "layout does not provide the field's exact source")
+				return nil, resolutionError(ReanchorUnmappedSource, "reanchor.field",
+					"layout does not provide the field's exact source "+root.correlation.Name()+
+						" ("+describeExactType(root.flowed)+"; pinned="+boolText(original.Resolved.FrontierPinned)+")")
 			}
 		} else {
 			window := &exactLayout.windows[windowIndex]
 			if !exactTypesEqual(window.source.flowed, root.flowed) {
-				return nil, resolutionError(ReanchorUnmappedSource, "reanchor.field", "layout source correlation has a different exact type")
+				return nil, resolutionError(ReanchorUnmappedSource, "reanchor.field",
+					"layout source "+root.correlation.Name()+" has a different exact type: window "+
+						describeExactType(window.source.flowed)+", read "+describeExactType(root.flowed))
 			}
 			if window.objectPath != nil {
 				mapped = make([]int, 0, len(window.objectPath)+len(sourcePath))
@@ -282,6 +288,23 @@ func reanchorValueThroughProducer(
 		}
 		if requested, isField := node.(*fieldValue); isField && isAdmittedFieldValue(requested) {
 			requestedRoot := requested.Child.(*quantifiedObjectValue)
+			// Already expressed on this producer's OUTPUT row: its ordinal IS
+			// the answer, and there is nothing to map. This function's job is to
+			// carry a value from the producer's INPUTS to its output, and
+			// sending an output-domain value through it asks the name fallback
+			// to re-derive an address that is already resolved.
+			//
+			// The fallback then answers by NAME, which is how a cleanup
+			// projection reading output slot 0 came back reading slot 2:
+			// `SELECT col1 AS id, EXISTS (…) AS e FROM t1 ORDER BY t1.id`
+			// appends the sort key as a third output column, and the producer
+			// program's only slot whose accessor is named ID is that appended
+			// `T1.ID#0` — slot 0 is `T1.COL1#1` and does not match the name.
+			// The query returned t1.id under the label the user aliased onto
+			// col1.
+			if requestedRoot == exactTarget {
+				return node, nil
+			}
 			if owned != nil {
 				if _, isOwned := owned[requestedRoot.correlation]; !isOwned {
 					return node, nil
@@ -307,8 +330,32 @@ func reanchorValueThroughProducer(
 						candidatePath := candidate.Resolved.Ordinals()
 						rootOwned := candidateRoot.correlation == requestedRoot.correlation
 						currentPhase := requestedRoot.correlation.isCurrent()
-						if (rootOwned || currentPhase) &&
-							exactTypesEqual(candidateRoot.flowed, requestedRoot.flowed) &&
+						// An OUTER JOIN's null-supplying leg is spelled NULLABLE
+						// by the producer that may have to null-pad it, and NOT
+						// NULL by a consumer that inherited the leg's own row
+						// type. Same correlation, same ordinal path, one bit of
+						// nullability apart — which is the widening the leg
+						// edge performs, not a different row.
+						//
+						// Requiring raw exact equality here made this branch
+						// reject exactly that pair, and the nested read stayed
+						// rooted on a leg the materializer had already dropped:
+						// `SELECT l.n.b … l LEFT JOIN r … ORDER BY l.id, r.id`
+						// failed at runtime with `exact QOV "L" … has no
+						// declared runtime binding`. The TOP-LEVEL name branch
+						// below already tolerates it through
+						// quantifiedRootsDenoteTheSameRow, which is why
+						// `l.id` resolved while `l.n.b` did not — the two
+						// branches disagreed about what "the same row" means.
+						//
+						// Only an OWNED root is widened: the predicate requires
+						// equal correlations, so this never crosses legs. The
+						// leaf result type is still compared exactly after the
+						// match, so a genuine type change is a hard error, not
+						// a silent remap.
+						rootsAgree := exactTypesEqual(candidateRoot.flowed, requestedRoot.flowed) ||
+							(rootOwned && quantifiedRootsDenoteTheSameRow(candidateRoot, requestedRoot))
+						if (rootOwned || currentPhase) && rootsAgree &&
 							len(requestedPath) > len(candidatePath) &&
 							ordinalPathHasPrefix(requestedPath, candidatePath) {
 							path := make([]int, 1, 1+len(requestedPath)-len(candidatePath))
@@ -325,8 +372,52 @@ func reanchorValueThroughProducer(
 						continue
 					}
 					candidateRoot := candidate.Child.(*quantifiedObjectValue)
+					sameRead := quantifiedRootsDenoteTheSameRow(candidateRoot, requestedRoot) &&
+						ordinalPathsEqual(candidate.Resolved.Ordinals(), requestedPath)
 					path := []int{i}
-					allMatches = append(allMatches, path)
+					// A name+type match belonging to ANOTHER source is admissible
+					// only while this producer does not produce the requested
+					// source at all.
+					//
+					// This set is the compatibility fallback for a logical source
+					// whose storage record differs only in NOMINAL naming, and there
+					// the candidate legitimately carries a different correlation —
+					// so a blanket cross-source ban is wrong and breaks it. What is
+					// never legitimate is preferring another leg's slot while the
+					// requested leg IS one of this producer's own sources: then the
+					// right slot exists here, ownership is the proof that finds it,
+					// and failing to find it means the answer is unknown, not that
+					// the same-named column next door will do.
+					//
+					// Without that distinction the owned sets can be EMPTY while
+					// this one holds exactly one entry — the other leg's slot — so
+					// the single-match guard below passes and publishes it.
+					// Measured on `SELECT A.VAL, B.VAL FROM LEFTT A LEFT JOIN
+					// RIGHTT B`: B.VAL reanchored to A's slot 1 of
+					// [LID VAL RID VAL] (owner=0, all=1), so both output columns
+					// read A.VAL — wrong VALUES, with the null-supplying leg's
+					// nullability lost along with them.
+					// AND, for a CROSS-SOURCE match, only while the producer
+					// offers no OTHER slot with the same leaf column and type.
+					// The fallback's whole claim is that the one same-named slot
+					// must be the requested column; a row holding several is not
+					// evidence of anything, and which one this loop admits then
+					// turns on an incidental difference in PATH LENGTH — a leg
+					// retained as a nested object reads `$m._0.ID` and fails the
+					// one-step name-path compare, while an unmerged sibling leg
+					// reads `A2.ID` and passes. Measured on `… WHERE EXISTS
+					// (SELECT 1 FROM b, c, a a2 WHERE b.id = 10 + a.id - 1)`,
+					// whose three legs are all RECORD(ID): B.ID mapped to A2's
+					// slot, the EXISTS answered on the wrong column, and the query
+					// returned no rows. Latent until record NAMES left type
+					// identity, which is what made three legs one shape.
+					if !producesSource(rc, requestedRoot.correlation) ||
+						candidateRoot.correlation == requestedRoot.correlation {
+						if candidateRoot.correlation == requestedRoot.correlation ||
+							!leafColumnAppearsMoreThanOnce(rc, requested) {
+							allMatches = append(allMatches, path)
+						}
+					}
 					nonCurrentOwner := !requestedRoot.correlation.isCurrent() &&
 						candidateRoot.correlation == requestedRoot.correlation
 					currentOwner := requestedRoot.correlation.isCurrent() &&
@@ -341,8 +432,7 @@ func reanchorValueThroughProducer(
 						// keep owner/name matching below as the compatibility fallback
 						// for a logical source whose storage record differs only in
 						// nominal naming.
-						if exactTypesEqual(candidateRoot.flowed, requestedRoot.flowed) &&
-							ordinalPathsEqual(candidate.Resolved.Ordinals(), requestedPath) {
+						if sameRead {
 							ownerOrdinalMatches = append(ownerOrdinalMatches, path)
 						}
 					}
@@ -381,9 +471,14 @@ func reanchorValueThroughProducer(
 				return nil, resolutionError(ReanchorInvalidMappedPath, "producer.value", resolveErr.Error())
 			}
 			mapped, mappedOK := reanchored.(*fieldValue)
-			if !mappedOK || !isAdmittedFieldValue(mapped) ||
-				!exactTypesEqual(requested.resultType, mapped.resultType) {
-				return nil, resolutionError(ReanchorResultTypeMismatch, "producer.value", "producer output slot changes the exact result type")
+			if !mappedOK || !isAdmittedFieldValue(mapped) {
+				return nil, resolutionError(ReanchorResultTypeMismatch, "producer.value",
+					"producer output slot did not resolve to an exact FieldValue")
+			}
+			if !exactTypesEqual(requested.resultType, mapped.resultType) {
+				return nil, resolutionError(ReanchorResultTypeMismatch, "producer.value",
+					"producer output slot changes the exact result type: read "+
+						describeExactType(requested.resultType)+", slot "+describeExactType(mapped.resultType))
 			}
 			return mapped, nil
 		}
@@ -438,4 +533,118 @@ func ordinalPathHasPrefix(path, prefix []int) bool {
 		}
 	}
 	return true
+}
+
+// quantifiedRootsDenoteTheSameRow reports whether two QOV roots address the
+// SAME BOUND ROW, which is what makes an already-resolved ordinal path a
+// binding proof rather than a coincidence.
+//
+// For a NAMED root, correlation identity is the caller's precondition and the
+// remaining question is only whether the two spellings describe one row —
+// exactly the question QuantifiedRowShapesAgree answers, so the top-level
+// nullable bit does not participate. It cannot: an outer join pulls its
+// output columns up through Java's
+// Quantifier.pullUpResultColumnsWithNullability(true), so the producer's leg
+// root is nullable while a lineage crossing mints the same leg from the
+// child's own non-nullable carrier. Requiring byte equality there discarded
+// the ordinal proof and left ownership-by-name as the only evidence — which is
+// ambiguous the moment the leg carries two same-named columns, and a
+// `FULL OUTER JOIN` of two tables that both have a `K` is that shape. The
+// value then survived the crossing still rooted on an intermediate box that
+// nothing binds at runtime:
+//
+//	exact QOV "LB$BOX" (…) has no declared runtime binding
+//
+// For a CURRENT root the correlation says nothing (every phase spells it
+// `_current`), so the exact type is the only thing that can distinguish two
+// row phases and the strict comparison stays.
+func quantifiedRootsDenoteTheSameRow(candidate, requested *quantifiedObjectValue) bool {
+	if candidate == nil || requested == nil ||
+		candidate.correlation != requested.correlation {
+		return false
+	}
+	if exactTypesEqual(candidate.flowed, requested.flowed) {
+		return true
+	}
+	if requested.correlation.isCurrent() {
+		return false
+	}
+	return QuantifiedRowShapesAgree(candidate.flowed.Type(), requested.flowed.Type())
+}
+
+// leafColumnAppearsMoreThanOnce reports whether more than one of rc's output
+// slots reads a column with the same LEAF name and the same exact result type
+// as requested.
+//
+// It counts leaves rather than whole name PATHS on purpose. The cross-source
+// fallback matches on the full path, so a leg the producer retained as a nested
+// object (`$m._0.ID`) is invisible to it while a sibling leg carried flat
+// (`A2.ID`) is not — and the fallback then reads "exactly one candidate" off a
+// row that actually holds three copies of the same column. What makes the
+// fallback safe is that the requested column is UNAMBIGUOUS in this row, and
+// that question has to be asked at the leaf.
+func leafColumnAppearsMoreThanOnce(rc *RecordConstructorValue, requested *fieldValue) bool {
+	requestedLeaf, ok := leafAccessorName(requested)
+	if !ok {
+		return false
+	}
+	seen := 0
+	for _, output := range rc.Fields {
+		candidate, isField := output.Value.(*fieldValue)
+		if !isField || !isAdmittedFieldValue(candidate) ||
+			!exactTypesEqual(requested.resultType, candidate.resultType) {
+			continue
+		}
+		candidateLeaf, candidateOK := leafAccessorName(candidate)
+		if !candidateOK || candidateLeaf != requestedLeaf {
+			continue
+		}
+		seen++
+		if seen > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// leafAccessorName returns the last accessor name in v's column-name path.
+func leafAccessorName(v Value) (string, bool) {
+	path, ok := AccessorNamePath(v)
+	if !ok || len(path) == 0 {
+		return "", false
+	}
+	return path[len(path)-1], true
+}
+
+// producesSource reports whether rc has any output rooted at correlation — i.e.
+// whether this producer carries that source itself.
+//
+// It is the discriminator between "this producer has no opinion about the
+// requested source, so a nominally-renamed candidate is the best available
+// evidence" and "this producer owns that source, so the correct slot is here
+// and ownership is what finds it". In the second case a same-named slot from a
+// DIFFERENT source is not weaker evidence, it is the wrong column.
+func producesSource(rc *RecordConstructorValue, correlation CorrelationIdentifier) bool {
+	for _, output := range rc.Fields {
+		switch candidate := output.Value.(type) {
+		case *fieldValue:
+			if root, isRoot := candidate.Child.(*quantifiedObjectValue); isRoot &&
+				root.correlation == correlation {
+				return true
+			}
+		case *quantifiedObjectValue:
+			if candidate.correlation == correlation {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// boolText renders a bool for a diagnostic without pulling fmt into this file.
+func boolText(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }

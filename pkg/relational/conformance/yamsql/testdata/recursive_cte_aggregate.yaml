@@ -45,7 +45,7 @@ tests:
         SELECT c.id FROM tree c, all_nodes a WHERE c.parent_id = a.id
       )
       SELECT id FROM all_nodes ORDER BY id
-    plan_contains: "InMemorySort([ALL_NODES.ID#0 ASC], RecursiveDfsJoin(PREORDER,"
+    plan_contains: "InMemorySort([_current.ID#0 ASC], RecursiveDfsJoin(PREORDER,"
     plan_not_contains: "RecursiveLevelUnion"
     rows:
       - [1]

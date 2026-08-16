@@ -1461,7 +1461,10 @@ func TestComputedVirtualScopesUseExactProjectedValues(t *testing.T) {
 		if len(named) != 1 {
 			t.Fatalf("named CTE count = %d, want 1", len(named))
 		}
-		src, ok := buildCTEColumnSource(md, "D", named[0].Query(), nil)
+		src, ok, err := buildCTEColumnSource(md, "D", named[0].Query(), nil)
+		if err != nil {
+			t.Fatalf("computed CTE body did not build: %v", err)
+		}
 		if !ok || src.Table == nil {
 			t.Fatal("computed CTE did not publish an exact virtual source")
 		}

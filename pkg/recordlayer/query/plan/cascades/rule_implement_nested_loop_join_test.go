@@ -1943,7 +1943,7 @@ func TestTranslatePredicateLogicalSourceUsesTheSelectedPhysicalCarrier(t *testin
 	)
 
 	translated, err := translatePredicateLogicalSource(
-		[]predicates.QueryPredicate{predicate}, logicalAlias, physicalRoot)
+		[]predicates.QueryPredicate{predicate}, logicalAlias, physicalRoot, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1968,9 +1968,14 @@ func TestTranslatePredicateLogicalSourceUsesTheSelectedPhysicalCarrier(t *testin
 		t.Fatalf("translated roots = %v, want the exact selected physical root", roots)
 	}
 
+	// The CONFLICT is a different row SHAPE under the same alias. A RecordName
+	// is provenance and compares equal (Java's Type.Record.equals), so
+	// "other-B" over B's exact fields IS B and the rejection below would have
+	// nothing to reject.
 	conflictingType := values.NewRecordType("other-B", false, []values.Field{
 		{Name: "ID", Ordinal: 0, FieldType: values.NullableLong},
 		{Name: "V", Ordinal: 1, FieldType: values.NullableLong},
+		{Name: "CONFLICTING_ONLY", Ordinal: 2, FieldType: values.NullableLong},
 	})
 	conflictingRoot := mustNLJConstruct(values.NewQuantifiedObjectValue(logicalAlias, conflictingType))
 	conflictingField := mustNLJConstruct(values.ResolveFieldOrdinals(conflictingRoot, []int{1}))
@@ -1979,17 +1984,65 @@ func TestTranslatePredicateLogicalSourceUsesTheSelectedPhysicalCarrier(t *testin
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: conflictingField},
 	)
 	if result, conflictErr := translatePredicateLogicalSource(
-		[]predicates.QueryPredicate{conflictingPredicate}, logicalAlias, physicalRoot,
+		[]predicates.QueryPredicate{conflictingPredicate}, logicalAlias, physicalRoot, nil,
 	); result != nil || conflictErr == nil {
 		t.Fatalf("conflicting logical source translation = (%v,%v), want nil,error", result, conflictErr)
 	}
+
+	// The SAME two-shapes-one-alias input, with the second shape declared as a
+	// source the selected row RETAINS. It is then not a second declaration of
+	// the row at all, so the retarget proceeds and touches only the row. This
+	// is the chained-unnest shape (`FROM t, t.arr AS x, x.sub AS y` binds the
+	// merged row as Y and keeps Y's own element inside it); the arm above and
+	// this one differ ONLY in whether the layout admits the second reading,
+	// which is exactly what decides real-vs-apparent conflict.
+	retained, retainedErr := translatePredicateLogicalSource(
+		[]predicates.QueryPredicate{conflictingPredicate}, logicalAlias, physicalRoot,
+		[]values.Type{conflictingType})
+	if retainedErr != nil {
+		t.Fatalf("retained-window logical source translation: %v", retainedErr)
+	}
+	if len(retained) != 1 {
+		t.Fatalf("retained-window translation produced %d predicates, want 1", len(retained))
+	}
+	var retainedRoots []values.QuantifiedObjectValue
+	if _, walkErr := predicates.TransformEmbeddedValuesChecked(
+		retained[0], func(value values.Value) (values.Value, error) {
+			values.WalkValue(value, func(node values.Value) bool {
+				if root, ok := values.AsQuantifiedObjectValue(node); ok {
+					retainedRoots = append(retainedRoots, root)
+				}
+				return true
+			})
+			return value, nil
+		}); walkErr != nil {
+		t.Fatal(walkErr)
+	}
+	// Both sides survive and they are DIFFERENT objects: the row moved to the
+	// selected physical carrier, the retained window kept its authored
+	// correlation and its own exact type. A translation that rewrote both would
+	// leave two identical roots here and silently make the predicate compare a
+	// row against itself.
+	if len(retainedRoots) != 2 {
+		t.Fatalf("retained-window translation left %d roots, want 2", len(retainedRoots))
+	}
+	if retainedRoots[0] != physicalRoot {
+		t.Fatalf("row root = %v, want the selected physical carrier", retainedRoots[0])
+	}
+	if retainedRoots[1] != conflictingRoot {
+		t.Fatalf("retained window root = %v, want the authored window untouched", retainedRoots[1])
+	}
 }
 
-func TestNormalizeMaterializedJoinProgramsUsesBothSelectedCarriers(t *testing.T) {
+func TestNormalizeMaterializedJoinProgramsPreservesProgramsAndChecksLegs(t *testing.T) {
 	t.Parallel()
 	leftAlias := values.NamedCorrelationIdentifier("L")
 	rightAlias := values.NamedCorrelationIdentifier("R")
 	foreignAlias := values.NamedCorrelationIdentifier("FOREIGN")
+	// The logical rows carry the table's nominal record name; the physical
+	// carrier below is anonymous. That is NOT a type difference — a RecordName
+	// is provenance and Java's Type.Record.equals ignores it — so the programs
+	// already name the carrier's own row and there is nothing to re-root.
 	logicalType := func(name string) values.Type {
 		return values.NewRecordType(name, false, []values.Field{
 			{Name: "ID", Ordinal: 0, FieldType: values.NullableLong},
@@ -2009,15 +2062,13 @@ func TestNormalizeMaterializedJoinProgramsUsesBothSelectedCarriers(t *testing.T)
 	leftID := mustNLJConstruct(values.ResolveFieldOrdinals(leftLogicalRoot, []int{0}))
 	rightID := mustNLJConstruct(values.ResolveFieldOrdinals(rightLogicalRoot, []int{0}))
 	foreignID := mustNLJConstruct(values.ResolveFieldOrdinals(foreignRoot, []int{0}))
-	leftPhysicalRoot := mustNLJConstruct(values.NewQuantifiedObjectValue(leftAlias, physicalType))
-	leftPhysicalID := mustNLJConstruct(values.ResolveFieldOrdinals(leftPhysicalRoot, []int{0}))
 	predicate := predicates.NewValuePredicate(values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "L", Value: leftID},
-		values.RecordConstructorField{Name: "LP", Value: leftPhysicalID},
 		values.RecordConstructorField{Name: "R", Value: rightID},
 		values.RecordConstructorField{Name: "F", Value: foreignID},
 	))
-	originalPredicateValue := predicate.Value
+	// A NARROWER same-alias retained window. It is the shape the removed
+	// rewrite most had to avoid touching, and the pin that it still survives.
 	narrowLeftType := values.NewRecordType("LEFT_WINDOW", false, []values.Field{{
 		Name: "ID", Ordinal: 0, FieldType: values.NullableLong,
 	}})
@@ -2028,7 +2079,6 @@ func TestNormalizeMaterializedJoinProgramsUsesBothSelectedCarriers(t *testing.T)
 		values.RecordConstructorField{Name: "LW", Value: narrowLeftRoot},
 		values.RecordConstructorField{Name: "F", Value: foreignID},
 	)
-	originalResultValue := resultValue
 	leftPlan := mustNLJConstruct(plans.NewRecordQueryScanPlan(
 		[]string{"LEFT"}, physicalType, false))
 	rightPlan := mustNLJConstruct(plans.NewRecordQueryScanPlan(
@@ -2041,111 +2091,57 @@ func TestNormalizeMaterializedJoinProgramsUsesBothSelectedCarriers(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(translated) != 1 || translated[0] == predicate {
-		t.Fatal("both-leg materialized predicate was not rebuilt copy-on-write")
+	if len(translated) != 1 || translated[0] != predicate {
+		t.Fatalf("predicate program = %v, want the input program preserved", translated)
 	}
-	leftLayout := mustNLJConstruct(leftPlan.ProvidedOutputLayout())
-	rightLayout := mustNLJConstruct(rightPlan.ProvidedOutputLayout())
-	want := map[values.CorrelationIdentifier]values.QuantifiedObjectValue{
-		leftAlias:    mustNLJConstruct(values.NewQuantifiedObjectValue(leftAlias, leftLayout.Carrier().FlowedType())),
-		rightAlias:   mustNLJConstruct(values.NewQuantifiedObjectValue(rightAlias, rightLayout.Carrier().FlowedType())),
-		foreignAlias: foreignRoot,
+	if normalizedResult != resultValue {
+		t.Fatal("result program was rebuilt; a program already on the carrier's own row must be left alone")
 	}
-	seen := map[values.CorrelationIdentifier]values.QuantifiedObjectValue{}
-	_, err = predicates.TransformEmbeddedValuesChecked(
-		translated[0], func(value values.Value) (values.Value, error) {
-			values.WalkValue(value, func(node values.Value) bool {
-				if root, ok := values.AsQuantifiedObjectValue(node); ok {
-					seen[root.Correlation()] = root
-				}
-				return true
-			})
-			return value, nil
-		})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for alias, root := range want {
-		got := seen[alias]
-		if got == nil || !got.FlowedType().Equals(root.FlowedType()) {
-			t.Fatalf("translated %s root = %v, want exact type %s", alias.Name(), got, root.FlowedType())
-		}
-		if alias == foreignAlias && got != foreignRoot {
-			t.Fatal("foreign root was rewritten")
-		}
-	}
-	if predicate.Value != originalPredicateValue {
-		t.Fatal("materialized normalization mutated the source predicate")
-	}
-	if resultValue != originalResultValue {
-		t.Fatal("materialized normalization mutated the source result program")
-	}
-	resultRoots := map[values.CorrelationIdentifier][]values.QuantifiedObjectValue{}
-	values.WalkValue(normalizedResult, func(node values.Value) bool {
-		if root, ok := values.AsQuantifiedObjectValue(node); ok {
-			resultRoots[root.Correlation()] = append(resultRoots[root.Correlation()], root)
-		}
-		return true
-	})
-	for _, alias := range []values.CorrelationIdentifier{leftAlias, rightAlias} {
-		foundTarget := false
-		for _, root := range resultRoots[alias] {
-			if root.FlowedType().Equals(want[alias].FlowedType()) {
-				foundTarget = true
-			}
-		}
-		if !foundTarget {
-			t.Fatalf("normalized result has no exact selected %s root", alias.Name())
-		}
-	}
-	foundNarrow := false
-	for _, root := range resultRoots[leftAlias] {
-		if root == narrowLeftRoot {
-			foundNarrow = true
-		}
-	}
-	if !foundNarrow {
-		t.Fatal("same-correlation retained narrow window was rewritten")
+	// The returned slice is a COPY: a caller that mutates it must not reach the
+	// input. Checked here because the rewrite that used to guarantee it is gone.
+	translated[0] = nil
+	if preserved := []predicates.QueryPredicate{predicate}; preserved[0] != predicate {
+		t.Fatal("returned predicate slice aliases the caller's")
 	}
 
-	// ChildrenAsSet can fire the equivalent orientation with the right leg
-	// physically first. Aliases travel with their selected plans; the same
-	// programs must normalize under that orientation without mutating the seed.
-	if _, _, swapErr := normalizeMaterializedJoinPrograms(
-		[]predicates.QueryPredicate{predicate}, resultValue,
-		rightPlan, rightAlias, leftPlan, leftAlias,
-	); swapErr != nil {
-		t.Fatalf("equivalent swapped orientation: %v", swapErr)
+	// Every leg root the programs carry is already the selected carrier's own
+	// exact row, which is what makes the re-rooting unnecessary rather than
+	// merely skipped. The narrow window is deliberately NOT — it is a different
+	// object and stays one.
+	for alias, plan := range map[values.CorrelationIdentifier]plans.RecordQueryPlan{
+		leftAlias: leftPlan, rightAlias: rightPlan,
+	} {
+		carrier := values.PhysicalCarrierType(mustNLJConstruct(plan.ProvidedOutputLayout()))
+		root := leftLogicalRoot
+		if alias == rightAlias {
+			root = rightLogicalRoot
+		}
+		if !root.FlowedType().Equals(carrier) {
+			t.Fatalf("%s logical root %s is not the selected carrier row %s",
+				alias.Name(), root.FlowedType(), carrier)
+		}
+	}
+	if narrowLeftRoot.FlowedType().Equals(leftLogicalRoot.FlowedType()) {
+		t.Fatal("the narrow retained window must be a different exact row, or it pins nothing")
 	}
 
-	driftedRightType := values.NewRecordType("", false, []values.Field{
-		{Name: "ID", Ordinal: 0, FieldType: values.NullableString},
-		{Name: "V", Ordinal: 1, FieldType: values.NullableLong},
-	})
-	driftedRight := mustNLJConstruct(plans.NewRecordQueryScanPlan(
-		[]string{"RIGHT"}, driftedRightType, false))
-	driftedPredicates, driftedResult, driftErr := normalizeMaterializedJoinPrograms(
-		[]predicates.QueryPredicate{predicate}, resultValue,
-		leftPlan, leftAlias, driftedRight, rightAlias,
-	)
-	if driftErr != nil || driftedPredicates[0] == nil || driftedResult == nil {
-		t.Fatalf("right exact-type drift should remain unclaimed: preds=%v result=%v err=%v",
-			driftedPredicates, driftedResult, driftErr)
-	}
-
-	conflictingRightRoot := mustNLJConstruct(values.NewQuantifiedObjectValue(
-		rightAlias, logicalType("OTHER_RIGHT")))
-	conflictingPredicate := predicates.NewValuePredicate(values.NewRecordConstructorValue(
-		values.RecordConstructorField{Name: "R", Value: rightID},
-		values.RecordConstructorField{Name: "OTHER", Value: mustNLJConstruct(
-			values.ResolveFieldOrdinals(conflictingRightRoot, []int{0}))},
-	))
-	if conflictPredicates, conflictResult, conflictErr := normalizeMaterializedJoinPrograms(
-		[]predicates.QueryPredicate{conflictingPredicate}, resultValue,
-		leftPlan, leftAlias, rightPlan, rightAlias,
-	); conflictPredicates != nil || conflictResult != nil || conflictErr == nil {
-		t.Fatalf("conflicting right declarations = (%v,%v,%v), want nil,nil,error",
-			conflictPredicates, conflictResult, conflictErr)
+	// A leg that cannot state its selected plan or alias is still a malformed
+	// plan and still fails closed — the one check that survived.
+	for name, call := range map[string]func() ([]predicates.QueryPredicate, values.Value, error){
+		"missing left plan": func() ([]predicates.QueryPredicate, values.Value, error) {
+			return normalizeMaterializedJoinPrograms(
+				[]predicates.QueryPredicate{predicate}, resultValue,
+				nil, leftAlias, rightPlan, rightAlias)
+		},
+		"missing right alias": func() ([]predicates.QueryPredicate, values.Value, error) {
+			return normalizeMaterializedJoinPrograms(
+				[]predicates.QueryPredicate{predicate}, resultValue,
+				leftPlan, leftAlias, rightPlan, values.CorrelationIdentifier{})
+		},
+	} {
+		if gotPreds, gotResult, gotErr := call(); gotPreds != nil || gotResult != nil || gotErr == nil {
+			t.Fatalf("%s = (%v,%v,%v), want nil,nil,error", name, gotPreds, gotResult, gotErr)
+		}
 	}
 }
 
@@ -2479,7 +2475,7 @@ func TestMaterializedNLJOrdinalLayoutMatches(t *testing.T) {
 	t2Type := nljTestLayout("T2", "ID", "T1_ID")
 	t1 := mustNLJConstruct(plans.NewRecordQueryScanPlan([]string{"T1"}, t1Type, false))
 	t2 := mustNLJConstruct(plans.NewRecordQueryScanPlan([]string{"T2"}, t2Type, false))
-	seed, _ := reconstructFoldStep1Seed(t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
+	seed, _ := reconstructFoldStep1Seed(t1, t2, values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"), plans.JoinInner)
 	if seed == nil {
 		t.Fatal("setup: expected reconstructFoldStep1Seed to build a seed for two scan legs")
 	}
@@ -2522,7 +2518,7 @@ func TestMaterializedNLJOrdinalLayoutMatches(t *testing.T) {
 		// check never looks at a name.
 		q1 := mustNLJConstruct(plans.NewRecordQueryScanPlan([]string{"T1"}, t1Type, false))
 		q2 := mustNLJConstruct(plans.NewRecordQueryScanPlan([]string{"T2"}, t2Type, false))
-		adversarialSeed, _ := reconstructFoldStep1Seed(q1, q2, values.NamedCorrelationIdentifier("Q$1"), values.NamedCorrelationIdentifier("Q$2"))
+		adversarialSeed, _ := reconstructFoldStep1Seed(q1, q2, values.NamedCorrelationIdentifier("Q$1"), values.NamedCorrelationIdentifier("Q$2"), plans.JoinInner)
 		if adversarialSeed == nil {
 			t.Fatal("setup: expected a seed for the adversarially-named legs")
 		}
@@ -2549,7 +2545,7 @@ func TestMaterializedNLJOrdinalLayoutMatches(t *testing.T) {
 		t.Parallel()
 		s1 := mustNLJConstruct(plans.NewRecordQueryScanPlan([]string{"T1"}, t1Type, false))
 		s2 := mustNLJConstruct(plans.NewRecordQueryScanPlan([]string{"T1"}, t1Type, false))
-		selfSeed, _ := reconstructFoldStep1Seed(s1, s2, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"))
+		selfSeed, _ := reconstructFoldStep1Seed(s1, s2, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), plans.JoinInner)
 		if selfSeed == nil {
 			t.Fatal("setup: expected a seed for two same-shaped legs")
 		}
