@@ -65,6 +65,55 @@ func TestMemoAdmissionIsWiredIntoTheMemo(t *testing.T) {
 		}
 	})
 
+	t.Run("a foreign expression ends the RUN rather than producing a plan", func(t *testing.T) {
+		t.Parallel()
+
+		// THE ARM THAT COVERS THE DRAIN, and the root has to be CLEAN for it to
+		// cover anything. The registry arm above proves the memo RECORDS a
+		// violation; nothing proved the planner ACTS on it.
+		//
+		// A foreign ROOT does not test this. The task drivers call
+		// prepareReferenceMemberBatch themselves (unified_tasks.go:458/603/725,
+		// expression_matcher.go:157, implementation_rule.go:310), so a foreign
+		// root fails the run through a rule-call failure whether or not the drain
+		// exists — a test written that way passes with the drain deleted, which
+		// is how this one was first written and what deleting the drain proved.
+		//
+		// The uncovered path is a memo that recorded a violation while the run
+		// would otherwise SUCCEED: MemoizeExpression refuses at the registry gate,
+		// hands back a deliberately garbage wrapper, and nothing else fails. Then
+		// the drain is the only thing standing between that memo and a returned
+		// plan. So: clean root, violation recorded out of band, run it.
+		memo := NewMemo(expressions.InitialOf(fixtureScan("admission-drain-clean-root")))
+		memo.MemoizeExpression(&foreignRelationalExpression{
+			RelationalExpression: fixtureScan("admission-drain-foreign"),
+		})
+		if memo.AdmissionErr() == nil {
+			t.Fatal("precondition failed: memoizing a foreign expression recorded no admission " +
+				"error, so this arm would be asserting against a memo with nothing to drain")
+		}
+		planner := NewPlanner(nil, nil)
+		planner.memo = memo
+		plan, _, err := planner.PlanWithContext(context.Background(), memo.root)
+		if err == nil {
+			t.Fatal("a planning run over an expression outside the repository manifest SUCCEEDED. " +
+				"The memo records the violation; the run loop must drain it into capErr so the " +
+				"run ends, or admission reports a problem nobody acts on")
+		}
+		if plan != nil {
+			t.Fatalf("the failed run still returned a plan (%T). A plan built over a memo that "+
+				"refused one of its own expressions is exactly the silent wrong answer this guards", plan)
+		}
+		var resolution *values.ResolutionError
+		if !errors.As(err, &resolution) {
+			t.Fatalf("run error is %T (%v), want the admission *values.ResolutionError to survive "+
+				"the trip through capErr rather than being flattened into a generic failure", err, err)
+		}
+		if !strings.Contains(err.Error(), "manifest") {
+			t.Errorf("run error %q does not name the closed manifest", err)
+		}
+	})
+
 	t.Run("an ordinary planning run admits cleanly", func(t *testing.T) {
 		t.Parallel()
 		root := expressions.InitialOf(fixtureScan("admission-wiring-clean"))

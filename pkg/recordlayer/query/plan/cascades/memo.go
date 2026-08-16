@@ -1,7 +1,6 @@
 package cascades
 
 import (
-	"fmt"
 	"strconv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -167,26 +166,24 @@ func (m *Memo) track(ref *expressions.Reference) {
 }
 
 // admitTrackedReference runs the checked admission over a Reference the memo is
-// adopting for the first time. It routes through the same batch preparation the
-// checked root constructors use, so that machinery stops being reachable only
-// from tests.
+// adopting for the first time.
+//
+// IT IS THE BATCH PREPARATION ITSELF, called with no intents, rather than a
+// hand-copy of the parts of it that looked relevant. The first version was the
+// hand-copy, and it silently dropped the half that does the actual RFC-232 work:
+// prepareReferenceMemberBatch admits each member, seeds the Reference type from
+// the first admitted member when the Reference does not state one, and then
+// compares EVERY admitted member's CanonicalBytes against it. The copy admitted
+// members and discarded the handles, so members of one Reference were never
+// checked for agreement with each other — vacuous on a fresh singleton, and not
+// vacuous at all for indexReference, which tracks multi-member References.
+//
+// Zero intents is the whole call: with nothing to insert, prepare admits,
+// agrees, and returns a batch that is never committed. It works on scratch
+// copies, so nothing is mutated by asking.
 func (m *Memo) admitTrackedReference(ref *expressions.Reference) error {
-	view := ref.AdmissionView()
-	if view == nil {
-		return memoAdmissionError(values.MemoInvalidHandle, "memo.reference", "Reference cannot produce an admission view")
-	}
-	if _, err := checkedStoredRelationType(view.ResultType()); err != nil {
+	if _, err := prepareReferenceMemberBatch(ref, nil); err != nil {
 		return err
-	}
-	for _, set := range []expressions.ReferenceMemberSet{
-		expressions.ReferenceExploratoryMembers,
-		expressions.ReferenceFinalMembers,
-	} {
-		for i, member := range view.Members(set) {
-			if _, err := admitMemoExpression(member); err != nil {
-				return fmt.Errorf("memo reference member %d: %w", i, err)
-			}
-		}
 	}
 	return nil
 }
