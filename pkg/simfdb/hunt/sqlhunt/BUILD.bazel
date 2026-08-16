@@ -25,6 +25,7 @@ go_test(
         "indexhunt_test.go",
         "nullhunt_test.go",
         "querycorrectness_test.go",
+        "scan_bench_test.go",
         "sqlhunt_test.go",
     ],
     embed = [":sqlhunt"],

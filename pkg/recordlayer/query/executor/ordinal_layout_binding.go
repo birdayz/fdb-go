@@ -40,7 +40,7 @@ func (b *evaluationObjectBinder) GetQuantifiedBinding(qov values.QuantifiedObjec
 		}
 	}
 	value, present := b.base.GetCorrelationBinding(exact.Correlation())
-	if present && value == nil && !exact.FlowedType().IsNullable() {
+	if present && value == nil && !values.SharedFlowedType(exact).IsNullable() {
 		return nil, false, layoutBindingError(values.LayoutNullabilityMismatch, "non-nullable external QOV is SQL NULL")
 	}
 	return value, present, nil
@@ -88,7 +88,9 @@ func newEdgeObjectBinder(
 		if exact.Correlation() == values.CurrentCorrelation() {
 			return nil, layoutBindingError(values.CorrelationKindMismatch, fmt.Sprintf("edge %d cannot use current correlation", edgeIndex))
 		}
-		flowed := exact.FlowedType()
+		// Read-only: flowed is compared against the runtime row shape and never
+		// retained, and this runs once per ROW.
+		flowed := values.SharedFlowedType(exact)
 		var whole any
 		switch flowed.Code() {
 		case values.TypeCodeRecord:
@@ -110,7 +112,7 @@ func newEdgeObjectBinder(
 			}
 		}
 		if previous, exists := binder.bindings[exact.Correlation()]; exists {
-			if !values.QuantifiedRowShapesAgree(previous.qov.FlowedType(), flowed) {
+			if !values.QuantifiedRowShapesAgree(values.SharedFlowedType(previous.qov), flowed) {
 				return nil, layoutBindingError(values.CorrelationTypeConflict, fmt.Sprintf("edge %d reuses one correlation with another exact type", edgeIndex))
 			}
 			continue
@@ -133,7 +135,7 @@ func (b *edgeObjectBinder) IsExplicitNullQuantifiedBinding(view values.Quantifie
 		return false, layoutBindingError(values.CorrelationForeignValue, "edge null-presence lookup QOV is not exact")
 	}
 	if binding, exists := b.bindings[exact.Correlation()]; exists {
-		if !values.QuantifiedRowShapesAgree(binding.qov.FlowedType(), exact.FlowedType()) {
+		if !values.QuantifiedRowShapesAgree(values.SharedFlowedType(binding.qov), values.SharedFlowedType(exact)) {
 			return false, layoutBindingError(values.CorrelationTypeConflict,
 				fmt.Sprintf("edge null-presence lookup %s: read as %s, declared %s",
 					exact.Correlation().Name(), values.DescribeType(exact.FlowedType()),
@@ -153,7 +155,7 @@ func (b *edgeObjectBinder) GetQuantifiedBinding(view values.QuantifiedObjectValu
 		return nil, false, layoutBindingError(values.CorrelationForeignValue, "edge lookup QOV is not exact")
 	}
 	if binding, exists := b.bindings[exact.Correlation()]; exists {
-		if !values.QuantifiedRowShapesAgree(binding.qov.FlowedType(), exact.FlowedType()) {
+		if !values.QuantifiedRowShapesAgree(values.SharedFlowedType(binding.qov), values.SharedFlowedType(exact)) {
 			return nil, false, layoutBindingError(values.CorrelationTypeConflict,
 				fmt.Sprintf("edge lookup %s: read as %s, declared %s",
 					exact.Correlation().Name(), values.DescribeType(exact.FlowedType()),
@@ -291,11 +293,21 @@ func attachProvidedOutputLayout(
 		// the owning evaluation phase rather than attached to a record wrapper.
 		return cursor, nil
 	}
+	carrier := layout.Carrier()
+	if carrier == nil {
+		return nil, layoutBindingError(values.LayoutCarrierMismatch, "record layout has no carrier")
+	}
+	// HOISTED, because it is a property of the LAYOUT and not of a row: this
+	// thaws a fresh Type graph out of the carrier's exact handle, and the
+	// carrier is the same object for every row this cursor will ever emit.
+	// Deriving it inside the closure made a 1M-row scan thaw 1M Type graphs to
+	// compare each against a row shape that had not changed.
+	carrierType := carrier.FlowedType()
 	return recordlayer.MapErrCursor(cursor, func(result QueryResult) (QueryResult, error) {
 		if result.Positional == nil {
 			return QueryResult{}, layoutBindingError(values.LayoutRuntimeShape, "record plan emitted no positional row")
 		}
-		row, attachErr := result.Positional.AttachOrdinalLayout(layout)
+		row, attachErr := result.Positional.AttachOrdinalLayout(layout, carrierType)
 		if attachErr != nil {
 			return QueryResult{}, fmt.Errorf("executor: %T emitted row type %s outside provided layout carrier %T: %w",
 				plan, result.Positional.Type, layout.Carrier(), attachErr)

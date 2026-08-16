@@ -1,9 +1,11 @@
 package values
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"hash/fnv"
+	"sync/atomic"
 )
 
 // ExactTypeHandle is an immutable read view of a checked type snapshot.
@@ -32,6 +34,64 @@ type exactType struct {
 	enumValues []EnumValue
 	canonical  []byte
 	hash       uint64
+
+	// protoShape memoizes "can this protobuf descriptor read the shape I
+	// captured" — see protoRecordShapeCompatible, which is the answer being
+	// cached and is a pure function of (descriptor identity, this handle).
+	//
+	// IT IS A MEMO, NOT STATE, and the distinction is what keeps this off the
+	// immutability contract in the type doc above: every field below the line
+	// is fixed at construction, and this one holds a derivation of them that
+	// cannot come out differently. Clearing it would cost time and change
+	// nothing.
+	//
+	// A SINGLE ENTRY IS THE RIGHT SIZE because of who asks. The reader is
+	// readProtoOrdinal, once per column read per ROW, and every row of one scan
+	// presents the same descriptor — so a one-entry cache is at ~100% after the
+	// first row, while the walk it replaces is O(fields) per column and
+	// therefore O(fields²) per row. That is what it cost: on the 1M-row stress
+	// suite the widest scan ran 1.97× master, and every query in that suite
+	// regressed in proportion to the rows it touched while the point lookups
+	// got faster.
+	//
+	// Lock-free rather than mutex-guarded because a stale read is harmless: two
+	// goroutines racing on different descriptors recompute and overwrite, and
+	// each stores a verdict that is correct for the descriptor it names. The
+	// pointer is swapped whole, so a reader never sees a descriptor paired with
+	// another descriptor's answer.
+	protoShape atomic.Pointer[protoShapeVerdict]
+
+	// thawCache holds the thawed ordinary Type graph for SHARED readers.
+	//
+	// thaw() builds a fresh graph on every call, and that is the right default
+	// for the public handle: ExactTypeHandle.Type promises a graph no caller can
+	// use to mutate the identity a QOV or memo boundary holds. But the row path
+	// does not want a private graph — it wants to ANSWER A QUESTION about the
+	// type (does this row's shape equal the carrier's, is this scalar nullable),
+	// and it asked once per row. On a 20k-row scan that was ~4M allocations
+	// spent rebuilding a graph that is a pure function of an immutable handle.
+	//
+	// Shared readers go through thawShared and must treat the result as
+	// READ-ONLY; the fresh-graph promise stays intact for Type().
+	thawCache atomic.Pointer[thawedExactType]
+}
+
+// thawedExactType boxes a thawed graph so it can be published atomically.
+type thawedExactType struct{ typ Type }
+
+// thawShared returns the thawed graph WITHOUT copying it. Callers must not
+// mutate the result — see exactType.thawCache for the split between this and
+// the defensive Type().
+func (e *exactType) thawShared() Type {
+	if e == nil {
+		return nil
+	}
+	if cached := e.thawCache.Load(); cached != nil {
+		return cached.typ
+	}
+	thawed := e.thaw()
+	e.thawCache.Store(&thawedExactType{typ: thawed})
+	return thawed
 }
 
 func (*exactType) isExactTypeHandleView() {}
@@ -329,15 +389,18 @@ func exactTypesEqual(left, right *exactType) bool {
 	if left == nil || right == nil {
 		return left == right
 	}
-	if left.hash != right.hash || len(left.canonical) != len(right.canonical) {
+	// One handle compared against itself is the DOMINANT case on the row path,
+	// not a lucky one: isAdmittedFieldValue runs this on every Evaluate, and a
+	// baked reference's rootType and its owner's flowed type are the same
+	// captured snapshot. Equal pointers are equal values whether or not the two
+	// are the same allocation, so this only ever skips work.
+	if left == right {
+		return true
+	}
+	if left.hash != right.hash {
 		return false
 	}
-	for i := range left.canonical {
-		if left.canonical[i] != right.canonical[i] {
-			return false
-		}
-	}
-	return true
+	return bytes.Equal(left.canonical, right.canonical)
 }
 
 // exactRowShapesAgree is the exact-handle twin of QuantifiedRowShapesAgree —

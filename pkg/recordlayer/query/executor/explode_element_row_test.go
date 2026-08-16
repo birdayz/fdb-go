@@ -72,7 +72,7 @@ func TestExplodeElementRow_ProtoMessageRequiresExactDeclaredRecord(t *testing.T)
 	if _, ok := row.Slots[2].(proto.Message); !ok {
 		t.Fatalf("nested CHILD slot = %T, want raw proto.Message", row.Slots[2])
 	}
-	if _, err := row.AttachOrdinalLayout(explodeRecordLayout(t, declared)); err != nil {
+	if _, err := row.AttachOrdinalLayout(explodeRecordLayout(t, declared), explodeRecordLayout(t, declared).Carrier().FlowedType()); err != nil {
 		t.Fatalf("exact declared proto row rejected its layout: %v", err)
 	}
 
@@ -106,7 +106,7 @@ func TestExplodeElementRow_ProtoMessageRequiresExactDeclaredRecord(t *testing.T)
 			if mutated == nil || mutated.Type == drift || mutated.Type.Equals(drift) {
 				t.Fatalf("structurally foreign declaration %s was stamped onto runtime row: %v", drift, mutated)
 			}
-			if _, err := mutated.AttachOrdinalLayout(explodeRecordLayout(t, drift)); err == nil {
+			if _, err := mutated.AttachOrdinalLayout(explodeRecordLayout(t, drift), explodeRecordLayout(t, drift).Carrier().FlowedType()); err == nil {
 				t.Fatalf("structurally foreign declaration %s attached silently", drift)
 			}
 		})
@@ -154,7 +154,7 @@ func TestExplodePlanElementRow_TrustsOnlyItsFinalizedElementConstructor(t *testi
 		if err != nil {
 			t.Fatalf("explode layout: %v", err)
 		}
-		if _, err := row.AttachOrdinalLayout(layout); err == nil {
+		if _, err := row.AttachOrdinalLayout(layout, layout.Carrier().FlowedType()); err == nil {
 			t.Fatalf("foreign or mutated constructed row attached to exact explode layout")
 		}
 	}

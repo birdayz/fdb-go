@@ -684,12 +684,23 @@ func exactWithNullability(source *exactType, nullable bool) *exactType {
 	if source == nil || source.nullable == nullable || source.code == TypeCodeRelation {
 		return source
 	}
-	copy := *source
-	copy.nullable = nullable
-	copy.canonical = nil
-	copy.hash = 0
-	copy.finishCanonical()
-	return &copy
+	// Field-by-field rather than `*source`: the struct carries a memo whose key
+	// is a descriptor and whose answer belongs to the handle that derived it.
+	// Copying it wholesale would hand the derived handle an answer it never
+	// computed — and this function exists precisely to produce a handle that
+	// DIFFERS from its source, so the two are not interchangeable by
+	// construction. Leaving the memo zero costs one recomputation.
+	derived := &exactType{
+		code:       source.code,
+		nullable:   nullable,
+		anyRecord:  source.anyRecord,
+		name:       source.name,
+		fields:     source.fields,
+		element:    source.element,
+		enumValues: source.enumValues,
+	}
+	derived.finishCanonical()
+	return derived
 }
 
 // RebuildFieldValue resolves an admitted FieldValue's complete ordinal path on
@@ -810,8 +821,34 @@ func (f *fieldValue) evaluateResolved(evalCtx any) (any, error) {
 	return current, nil
 }
 
+// protoShapeVerdict is one memoized answer from protoRecordShapeCompatible,
+// stored whole so a reader can never see a descriptor paired with a different
+// descriptor's verdict. See exactType.protoShape for why it is a single entry.
+type protoShapeVerdict struct {
+	descriptor protoreflect.MessageDescriptor
+	compatible bool
+}
+
+// protoShapeCompatibleCached is protoRecordShapeCompatible with its answer
+// remembered per (descriptor, expected). The underlying question is a pure
+// function of two immutable things — a descriptor and a captured exact type —
+// but it was being re-answered on every column read of every row, which made a
+// full scan pay O(fields²) per row for a verdict that cannot change within one
+// scan.
+func protoShapeCompatibleCached(descriptor protoreflect.MessageDescriptor, expected *exactType) bool {
+	if descriptor == nil || expected == nil {
+		return false
+	}
+	if cached := expected.protoShape.Load(); cached != nil && cached.descriptor == descriptor {
+		return cached.compatible
+	}
+	compatible := protoRecordShapeCompatible(descriptor, expected)
+	expected.protoShape.Store(&protoShapeVerdict{descriptor: descriptor, compatible: compatible})
+	return compatible
+}
+
 func readProtoOrdinal(message protoreflect.Message, expected *exactType, ordinal, depth int) (any, error) {
-	if !protoRecordShapeCompatible(message.Descriptor(), expected) {
+	if !protoShapeCompatibleCached(message.Descriptor(), expected) {
 		return nil, resolutionError(LayoutRuntimeShape, fmt.Sprintf("field.path[%d]", depth), "protobuf descriptor disagrees with the captured exact record shape")
 	}
 	fields := message.Descriptor().Fields()

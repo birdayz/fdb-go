@@ -102,21 +102,16 @@ func NewLayoutPositionalRow(typ *values.RecordType, layout values.OrdinalLayout)
 // The selected layout must describe exactly the row's logical record type.
 // Dynamic/erased carriers therefore fail at the plan boundary instead of
 // falling back to the legacy ambient positional interpretation.
-func (r *PositionalRow) AttachOrdinalLayout(layout values.OrdinalLayout) (*PositionalRow, error) {
-	if r == nil || r.Type == nil || layout == nil || layout.CarrierKind() != values.OrdinalCarrierRecord {
-		return nil, &values.ResolutionError{
-			ErrorCode: values.LayoutCarrierMismatch,
-			Path:      "positional.layout",
-			Detail:    "record row requires a concrete record OrdinalLayout",
-		}
-	}
-	carrier := layout.Carrier()
-	if carrier == nil || !r.Type.Equals(carrier.FlowedType()) {
-		return nil, &values.ResolutionError{
-			ErrorCode: values.LayoutCarrierMismatch,
-			Path:      "positional.layout",
-			Detail:    "row type and layout carrier type disagree",
-		}
+func (r *PositionalRow) AttachOrdinalLayout(layout values.OrdinalLayout, carrierType values.Type) (*PositionalRow, error) {
+	// carrierType is supplied by the caller rather than re-derived from
+	// layout.Carrier() here, because deriving it is NOT free and NOT per-row
+	// work: FlowedType thaws a whole fresh Type graph out of the carrier's
+	// exact handle, and the carrier is fixed for an entire cursor. Deriving it
+	// here made a scan allocate one Type graph per row and then deep-compare
+	// against it — measured as the largest single item this method contributed
+	// to the row path.
+	if err := r.checkLayoutAttachable(layout, carrierType); err != nil {
+		return nil, err
 	}
 	if r.Layout == layout {
 		return r, nil
@@ -124,16 +119,49 @@ func (r *PositionalRow) AttachOrdinalLayout(layout values.OrdinalLayout) (*Posit
 	copyRow := *r
 	copyRow.Slots = append([]any(nil), r.Slots...)
 	copyRow.Layout = layout
+	return r.finishAttach(&copyRow, layout), nil
+}
+
+// finishAttach applies the layout to target and settles presence. r is the row
+// the layout is being attached FROM, which is target itself for the in-place
+// caller and target's source for the copying one.
+func (r *PositionalRow) finishAttach(target *PositionalRow, layout values.OrdinalLayout) *PositionalRow {
+	priorLayout := r.Layout
+	target.Layout = layout
 	// Presence is meaningful only for the exact same physical window
 	// structure. Independently constructed but RawEqual plan/executor layouts
 	// may use different owner-current handles; switching to the published plan
 	// handle preserves the source-window match facts. A genuinely different
 	// layout discards them rather than misapplying another address space's
 	// unmatched/matched bits.
-	if r.Layout == nil || !r.Layout.RawEqual(layout) {
-		copyRow.LayoutPresence = nil
+	//
+	// priorLayout is read BEFORE the assignment above, because the in-place
+	// caller passes target == r: comparing r.Layout here would compare the
+	// layout being attached against itself and preserve presence bits from
+	// another address space.
+	if priorLayout == nil || !priorLayout.RawEqual(layout) {
+		target.LayoutPresence = nil
 	}
-	return &copyRow, nil
+	return target
+}
+
+// checkLayoutAttachable is the shared guard for both attach forms.
+func (r *PositionalRow) checkLayoutAttachable(layout values.OrdinalLayout, carrierType values.Type) error {
+	if r == nil || r.Type == nil || layout == nil || layout.CarrierKind() != values.OrdinalCarrierRecord {
+		return &values.ResolutionError{
+			ErrorCode: values.LayoutCarrierMismatch,
+			Path:      "positional.layout",
+			Detail:    "record row requires a concrete record OrdinalLayout",
+		}
+	}
+	if carrierType == nil || !r.Type.Equals(carrierType) {
+		return &values.ResolutionError{
+			ErrorCode: values.LayoutCarrierMismatch,
+			Path:      "positional.layout",
+			Detail:    "row type and layout carrier type disagree",
+		}
+	}
+	return nil
 }
 
 // OrdinalLayout returns the exact immutable physical layout attached to this

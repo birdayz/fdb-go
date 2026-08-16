@@ -5069,6 +5069,27 @@ func (q *quantifiedObjectValue) FlowedType() Type {
 	return q.flowed.thaw()
 }
 
+// SharedFlowedType is FlowedType WITHOUT the defensive copy, for readers that
+// only ask the graph a question and never retain or mutate it.
+//
+// THE DEFENSIVE COPY IS DELIBERATE AND PINNED (a getter that leaks a mutable
+// graph lets a caller rename the carrier's own fields under it), so it stays
+// the default and this is the deliberate opt-out — named so a reader has to
+// mean it. The opt-out exists because the executor asks the same question once
+// per ROW: does this row's shape equal the carrier's. Answering it by
+// rebuilding the whole graph made a 20k-row scan allocate ~4M objects
+// reconstructing a value that is a pure function of an immutable handle.
+//
+// Callers must treat the result as READ-ONLY. Use FlowedType anywhere the graph
+// is stored, handed onward, or modified.
+func SharedFlowedType(value QuantifiedObjectValue) Type {
+	exact, ok := value.(*quantifiedObjectValue)
+	if !ok || exact == nil || exact.flowed == nil {
+		return nil
+	}
+	return exact.flowed.thawShared()
+}
+
 // Children returns an empty slice — the quantifier is a leaf in
 // the Value tree, with its correlation link being external metadata
 // (not a child Value).

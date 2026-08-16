@@ -34,7 +34,7 @@ func TestMergeRows_LegWindowedQualifiedReads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("outer-only NewOrdinalLayoutForCarrierType: %v", err)
 	}
-	outerOnlyRow, err := merged.Positional.AttachOrdinalLayout(outerOnly)
+	outerOnlyRow, err := merged.Positional.AttachOrdinalLayout(outerOnly, outerOnly.Carrier().FlowedType())
 	if err != nil {
 		t.Fatalf("outer-only AttachOrdinalLayout: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestMergeRows_LegWindowedQualifiedReads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewOrdinalLayoutForCarrierType: %v", err)
 	}
-	merged.Positional, err = merged.Positional.AttachOrdinalLayout(layout)
+	merged.Positional, err = merged.Positional.AttachOrdinalLayout(layout, layout.Carrier().FlowedType())
 	if err != nil {
 		t.Fatalf("AttachOrdinalLayout: %v", err)
 	}
