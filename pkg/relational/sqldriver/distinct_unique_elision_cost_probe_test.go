@@ -1390,12 +1390,57 @@ func duecRunInTx(
 	return finish(n, nulls, false)
 }
 
+// duecWindowAttempts bounds every lost-window retry in this file. It is a real
+// bound: if the drain stops fitting FDB's window altogether, the last attempt
+// must FAIL saying so rather than spin.
+const duecWindowAttempts = 8
+
+// duecWithHeldWindow runs try until it reports that the MVCC window HELD, and
+// is the single place this file's retry semantics are stated.
+//
+// THE ASYMMETRY WITH duecRunInTx IS THE POINT. duecRunInTx is TIMING: resampling
+// there until the window happens to hold turns a broken regime into a green
+// measurement, which is why it returns its truncated sample as evidence
+// instead. Everything routed through here reads ROWS or observes a MEMORY-BUDGET
+// breach, and neither has that hazard — the data is committed, so a fresh
+// transaction sees the same rows and the same budget behaviour, and a retry buys
+// nothing except a window that held.
+//
+// It is needed because the fixture is 100k rows against FDB's 5s MVCC window
+// (the driver pre-empts at 4s). Unloaded that drains in 215-554 ms; under the
+// race detector it measured 4.16-4.29s — MARGINALLY over, which is also why
+// retrying works at all. duecRetained's db.Run already leaned on exactly this,
+// retrying the same shape until an attempt fit.
+//
+// try receives `fatal` on the final attempt so it can report the window loss as
+// the failure it then is.
+func duecWithHeldWindow[T any](t *testing.T, what string, try func(fatal bool) (T, bool)) T {
+	t.Helper()
+	for attempt := 1; ; attempt++ {
+		out, lost := try(attempt == duecWindowAttempts)
+		if !lost {
+			return out
+		}
+		t.Logf("%s: measurement window lost on attempt %d/%d — retrying against "+
+			"committed data in a fresh transaction", what, attempt, duecWindowAttempts)
+	}
+}
+
 // duecBudgetRun executes q inside an explicit transaction and returns the error
 // the statement memory budget produced, or nil if it completed. The
 // transaction is required: outside one the proof is withheld and every row
 // below would be measuring the full operator. The driver may surface a breach
 // at query time or on the first scan, so both are drained before deciding.
 func duecBudgetRun(t *testing.T, ctx context.Context, c *sql.Conn, q string) error {
+	t.Helper()
+	return duecWithHeldWindow(t, "BUDGET "+q, func(fatal bool) (error, bool) {
+		return duecTryBudgetRun(t, ctx, c, q, fatal)
+	})
+}
+
+func duecTryBudgetRun(
+	t *testing.T, ctx context.Context, c *sql.Conn, q string, fatal bool,
+) (breach error, windowLost bool) {
 	t.Helper()
 	tx, berr := c.BeginTx(ctx, nil)
 	if berr != nil {
@@ -1410,7 +1455,17 @@ func duecBudgetRun(t *testing.T, ctx context.Context, c *sql.Conn, q string) err
 		rows.Close()
 	}
 	if err == nil {
-		return nil
+		return nil, false
+	}
+	// A LOST WINDOW IS NOT EVIDENCE EITHER WAY, so it is neither a breach nor a
+	// failure — it is a run that did not get to observe the budget at all. This
+	// arm asks whether the statement memory budget was breached; a transaction
+	// that ran past FDB's MVCC horizon answers no part of that question, and
+	// reading it as "not breached" would silently disarm the discriminator.
+	// Tested before the budget recogniser below because the read-budget message
+	// says neither "limit" nor "memory" and would otherwise reach the Fatalf.
+	if duecMeasurementWindowLost(err) && !fatal {
+		return nil, true
 	}
 	// A breach must be the BUDGET, never some unrelated failure quietly read as
 	// evidence for the claim.
@@ -1419,43 +1474,23 @@ func duecBudgetRun(t *testing.T, ctx context.Context, c *sql.Conn, q string) err
 		!strings.Contains(msg, string(api.ErrCodeExecutionLimitReached)) {
 		t.Fatalf("query %q failed for a reason that is not the memory budget: %v", q, err)
 	}
-	return err
+	return err, false
 }
 
 // duecCollectInTx is duecCollect inside an explicit transaction, where the
 // rows are produced by the PROVEN plan rather than by the fallback.
-// duecCollectInTx RETRIES a lost measurement window, and that is the exact
-// opposite of what duecRunInTx must do — the asymmetry is the point, so state
-// it rather than let the two look inconsistent.
 //
-// duecRunInTx is TIMING. Resampling there until the window happens to hold
-// turns a broken regime into a green measurement, which is why it returns the
-// truncated sample as evidence instead. This function reads ROWS, and a row
-// read has no such hazard: the data is committed, so a fresh transaction
-// returns the same multiset, and a retry buys nothing except a window that
-// held. Retrying a measurement launders the regime; retrying a read does not.
-//
-// It is needed because the fixture is 100k rows against FDB's 5s MVCC window
-// (the driver pre-empts at 4s). Unloaded that drains in 215-554 ms, but under
-// the race detector it measured 4.287s — MARGINALLY over, which is also why a
-// retry works at all: duecRetained's db.Run already leans on exactly this,
-// retrying the same shape until an attempt fits. Without it the race lane
-// reported `40001: transaction read budget exhausted` here and took the whole
-// non-temporal sweep down with it.
-//
-// The attempt cap is a real bound, not decoration: if the drain stops fitting
-// altogether, this must FAIL saying so, not spin.
+// It retries a lost window (duecWithHeldWindow states why that is legitimate
+// here and forbidden for duecRunInTx). Without it the race lane reported
+// `40001: transaction read budget exhausted` and took the whole non-temporal
+// sweep down with it — which withholding could not have covered for, since the
+// anti-silence tally demands all six row-identity arms and says withholding
+// must cost the three timing bounds and nothing else.
 func duecCollectInTx(t *testing.T, ctx context.Context, c *sql.Conn, q string) []string {
 	t.Helper()
-	const attempts = 8
-	for attempt := 1; ; attempt++ {
-		out, lost := duecTryCollectInTx(t, ctx, c, q, attempt == attempts)
-		if !lost {
-			return out
-		}
-		t.Logf("COLLECT in-tx %q: measurement window lost on attempt %d/%d — "+
-			"re-reading committed data in a fresh transaction", q, attempt, attempts)
-	}
+	return duecWithHeldWindow(t, "COLLECT in-tx "+q, func(fatal bool) ([]string, bool) {
+		return duecTryCollectInTx(t, ctx, c, q, fatal)
+	})
 }
 
 // duecTryCollectInTx is one attempt. fatal makes the last attempt report the

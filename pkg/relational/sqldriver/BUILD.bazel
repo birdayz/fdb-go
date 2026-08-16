@@ -221,6 +221,7 @@ go_test(
         "drop_schema_ifexists_conformance_probe_test.go",
         "dsn_ddl_scope_option_test.go",
         "dsn_tags_test.go",
+        "duec_held_window_test.go",
         "duec_race_off_test.go",
         "duec_race_on_test.go",
         "duec_regime_detector_test.go",
