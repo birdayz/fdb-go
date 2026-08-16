@@ -471,6 +471,18 @@ func (p *Planner) plan(ctx context.Context, rootRef *expressions.Reference) (exp
 		task := p.pop()
 		task.Run(ctx, p)
 		p.tasksRun++
+		// A memo admission failure is an invariant violation, so it ends the run
+		// exactly as a rule failure does. It is drained here rather than reported
+		// at its origin because memoization is the RULE-FACING api: no rule can
+		// act on "this expression is outside the repository manifest", so making
+		// MemoizeExpression fallible would push a decision no caller can make
+		// onto every caller. This is the Go spelling of Java's Verify.verify,
+		// which throws out of the same situation.
+		if p.capErr == nil && p.memo != nil {
+			if err := p.memo.AdmissionErr(); err != nil {
+				p.capErr = err
+			}
+		}
 		if p.capErr != nil {
 			return nil, p.tasksRun, p.capErr
 		}

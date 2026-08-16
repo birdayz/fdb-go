@@ -61,8 +61,19 @@ func buildOrdinalStar(t testing.TB, n int) *expressions.SelectExpression {
 	return mustConstruct(t, selectExpression, selectErr)
 }
 
-// starWallClockCeiling is a DELIBERATELY GENEROUS bound (observed ~90ms; ~55×
-// headroom) — it is a catastrophe detector, not a micro-benchmark. Its job is
+// starWallClockCeiling is a DELIBERATELY GENEROUS bound — a catastrophe
+// detector, not a micro-benchmark.
+//
+// Observed ~265ms at 13226 tasks on a 24-thread box, i.e. ~19x headroom. The
+// figure this comment used to carry, ~90ms at ~55x, was measured before RFC-232
+// took the sentinel from 9481 tasks to 13226 and was never re-taken; it is
+// recorded here with the task count it belongs to so the next change can see it
+// go stale rather than inherit a number from a search that no longer exists.
+// (Checked against this specific change: the memo's exact admission moved the
+// figure from 263/270ms to 261ms — inside the noise, because admission runs
+// once per NEW group rather than per memoize call.)
+//
+// Its job is
 // to catch a per-Insert bijection-enumeration blowup (e.g. a MemoEqual that
 // regresses to trying all N! alias permutations per comparison) that leaves the
 // task COUNT flat but explodes wall-clock into seconds. A tight bound would

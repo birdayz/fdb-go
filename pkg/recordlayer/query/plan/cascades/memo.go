@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"fmt"
 	"strconv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -28,6 +29,25 @@ import (
 // Thread safety: single-threaded (same as Java's planner).
 type Memo struct {
 	root *expressions.Reference
+
+	// admissionErr is the FIRST admission failure this memo saw, held stickily
+	// for the planner's run loop to surface through capErr.
+	//
+	// It is an INVARIANT ASSERTION, not a recoverable error, and the storage
+	// shape says so: no rule can act on "this expression's concrete type is
+	// outside the repository manifest" or "its result type is not RELATION<T>",
+	// so nothing is gained by making memoization fallible at the call site —
+	// and MemoizeExpression is the rule-facing API, so making it return an error
+	// would push a decision no caller can make onto every caller.
+	//
+	// Java asserts the same property the same way and never returns it either:
+	// Reference.insertUnchecked's type-agreement check sits inside
+	// Debugger.sanityCheck (absent in production) and the always-on one is
+	// Reference.getResultType's Verify.verify, which THROWS. Go's principle 4
+	// forbids panicking in library code, so a sticky field drained by the run
+	// loop is the port of a thrown Verify — same "stop the run, report loudly",
+	// without the panic.
+	admissionErr error
 
 	// reExplore, when set, schedules a re-exploration round for a
 	// Reference whose member set changed OUTSIDE the task-driven yield
@@ -123,9 +143,62 @@ func NewMemo(root *expressions.Reference) *Memo {
 func (m *Memo) track(ref *expressions.Reference) {
 	m.refs[ref] = struct{}{}
 	if ref.ID() == 0 {
+		// EXACT ADMISSION HAPPENS HERE, and only on this arm.
+		//
+		// track is the one funnel every memo-created Reference crosses, and it is
+		// reached only on a dedup MISS — memoizeLeaf and memoizeNonLeaf call it
+		// after their lookup loops fail, and indexReference early-returns for a
+		// Reference it already knows. So this is one admission per NEW group, not
+		// one per memoize call, and on a fresh singleton the batch admits exactly
+		// one member: the same derivation the Reference is about to need anyway.
+		//
+		// The ID==0 guard is load-bearing rather than incidental. Cross-group
+		// merge re-tracks References that already carry an ID, and admitting
+		// those would re-derive a type the Reference already agreed with — which
+		// is precisely the O(N²) re-derivation removed from
+		// prepareReferenceMemberBatch's firstAdmitted skip. Widening this guard
+		// gives that regression straight back.
+		if err := m.admitTrackedReference(ref); err != nil && m.admissionErr == nil {
+			m.admissionErr = err
+		}
 		ref.AssignMemoID(m.nextID)
 		m.nextID++
 	}
+}
+
+// admitTrackedReference runs the checked admission over a Reference the memo is
+// adopting for the first time. It routes through the same batch preparation the
+// checked root constructors use, so that machinery stops being reachable only
+// from tests.
+func (m *Memo) admitTrackedReference(ref *expressions.Reference) error {
+	view := ref.AdmissionView()
+	if view == nil {
+		return memoAdmissionError(values.MemoInvalidHandle, "memo.reference", "Reference cannot produce an admission view")
+	}
+	if _, err := checkedStoredRelationType(view.ResultType()); err != nil {
+		return err
+	}
+	for _, set := range []expressions.ReferenceMemberSet{
+		expressions.ReferenceExploratoryMembers,
+		expressions.ReferenceFinalMembers,
+	} {
+		for i, member := range view.Members(set) {
+			if _, err := admitMemoExpression(member); err != nil {
+				return fmt.Errorf("memo reference member %d: %w", i, err)
+			}
+		}
+	}
+	return nil
+}
+
+// AdmissionErr returns the first admission failure, if any. The planner's run
+// loop drains it into capErr so a violated invariant ends the run rather than
+// producing a plan over a memo that never agreed on its own types.
+func (m *Memo) AdmissionErr() error {
+	if m == nil {
+		return nil
+	}
+	return m.admissionErr
 }
 
 // MergeCount returns the number of cross-group merges performed so far
@@ -257,6 +330,31 @@ func (m *Memo) ScheduleFreshReference(ref *expressions.Reference) {
 func (m *Memo) MemoizeExpression(expr expressions.RelationalExpression) *expressions.Reference {
 	if expr == nil {
 		panic("Memo.MemoizeExpression: nil expression")
+	}
+
+	// THE REGISTRY CHECK COMES BEFORE ANY HASH, because the lookup loops below
+	// call HashCodeWithoutChildren and EqualsWithoutChildren — OPEN interface
+	// methods — on a candidate that has cleared nothing yet. A foreign
+	// implementation or a typed nil reaches those first, and this switch is what
+	// stands between them. It is a pure type switch and allocates nothing, so
+	// hoisting it costs the memo effectively nothing while the expensive half
+	// (result-type derivation) stays where a duplicate candidate never pays it.
+	// It RETURNS on failure rather than only recording. Recording alone would be
+	// theatre: the very next statement calls GetQuantifiers, which is one of the
+	// open methods this check exists to stand in front of, so a foreign or
+	// typed-nil implementation would reach it anyway and the guard would report
+	// the violation from inside the crash it was meant to prevent.
+	//
+	// The Reference handed back is a bare wrapper, minted without touching a
+	// single method on expr. It is deliberately garbage: the run is over, and
+	// the planner's loop drains admissionErr into capErr at the next task
+	// boundary. Returning nil instead would trade a loud stop for a nil
+	// dereference in whichever rule happened to be memoizing.
+	if err := admitMemoRegistry(expr); err != nil {
+		if m.admissionErr == nil {
+			m.admissionErr = err
+		}
+		return expressions.InitialOf(expr)
 	}
 
 	qs := expr.GetQuantifiers()

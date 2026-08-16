@@ -189,273 +189,301 @@ func checkedStoredRelationType(handle values.ExactTypeHandle) (values.ExactTypeH
 // RelationalExpression method may be invoked. Each case checks typed nil before
 // the common GetResultValue path. Embedded or foreign implementations hit the
 // default and have no method called at all.
-func admitMemoExpression(expression expressions.RelationalExpression) (values.ExactTypeHandle, error) {
+// admitMemoRegistry answers ONLY the closed-manifest question: is this a
+// concrete expression type the repository knows, and is it non-nil as that type?
+//
+// It is split from the result-type derivation below because the two are needed
+// at DIFFERENT MOMENTS. The memo calls HashCodeWithoutChildren and
+// EqualsWithoutChildren on a candidate before it has any Reference — those are
+// OPEN interface methods, so a foreign implementation or a typed nil reaches
+// them first and this switch is what stands in the way. The derivation cannot
+// move that early (it is the expensive half and the memo may be about to
+// discard the candidate as a duplicate), and this half does not need to be
+// late: it is a pure type switch and allocates nothing.
+//
+// Java's shape is the same split by a different route. Reference.insertUnchecked
+// wraps its type-agreement check in Debugger.sanityCheck, which does not run in
+// production at all; the check that always runs is Reference.getResultType's
+// Verify.verify, taken LAZILY when the type is demanded. So: cheap structural
+// guard early, expensive type agreement late.
+func admitMemoRegistry(expression expressions.RelationalExpression) error {
 	if expression == nil {
-		return nil, memoAdmissionError(values.MemoUnsupportedExpression, "memo.member", "expression is nil")
+		return memoAdmissionError(values.MemoUnsupportedExpression, "memo.member", "expression is nil")
 	}
 	switch typed := expression.(type) {
 	case *expressions.DeleteExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.ExplodeExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.FullUnorderedScanExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.GroupByExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.InsertExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.LogicalDistinctExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.LogicalFilterExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.LogicalIntersectionExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.LogicalLimitExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.LogicalProjectionExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.LogicalSortExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.LogicalTypeFilterExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.LogicalUnionExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.LogicalUniqueExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.LogicalValuesExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.MatchableSortExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.RecursiveUnionExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.SelectExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.TableFunctionExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.TempTableInsertExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.TempTableScanExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *expressions.UpdateExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *scanPlanExpression:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryAggregateIndexPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryComparatorPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryCoveringIndexPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryDefaultOnEmptyPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryDeletePlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryDistinctPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryExplodePlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryFilterPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryFirstOrDefaultPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryFlatMapPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryInJoinPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryInMemorySortPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryInUnionPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryIndexPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryInsertPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryIntersectionPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryLimitPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryLoadByKeysPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryMapPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryMergeSortUnionPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryMultiIntersectionOnValuesPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryNestedLoopJoinPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryPredicatesFilterPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryProjectionPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryRecursiveDfsJoinPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryRecursiveLevelUnionPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryScanPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryScoreForRankPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQuerySelectorPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryStreamingAggregationPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryTableFunctionPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryTempTableInsertPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryTempTableScanPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryTextIndexPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryTypeFilterPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryUnionPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryUnorderedUnionPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryUpdatePlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryValuesPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryVectorIndexPlan:
 		if typed == nil {
-			return nil, unsupportedTypedNilExpression()
+			return unsupportedTypedNilExpression()
 		}
 	default:
-		return nil, memoAdmissionError(values.MemoUnsupportedExpression, "memo.member", "expression concrete type is outside the repository manifest")
+		return memoAdmissionError(values.MemoUnsupportedExpression, "memo.member", "expression concrete type is outside the repository manifest")
+	}
+	return nil
+}
+
+// admitMemoExpression is the registry check followed by the exact result-type
+// derivation. Callers that need only the first half — because they are about to
+// call an OPEN method on the expression and must know it is a manifest member
+// first — call admitMemoRegistry directly.
+func admitMemoExpression(expression expressions.RelationalExpression) (values.ExactTypeHandle, error) {
+	if err := admitMemoRegistry(expression); err != nil {
+		return nil, err
 	}
 
 	result := expression.GetResultValue()

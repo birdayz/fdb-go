@@ -311,6 +311,7 @@ go_test(
         "max_match_map_test.go",
         "memo_activation_test.go",
         "memo_admission_test.go",
+        "memo_admission_wiring_test.go",
         "memo_fuzz_test.go",
         "memo_merge_multiway_test.go",
         "memo_merge_test.go",
@@ -1120,6 +1121,7 @@ go_test(
         "translate_correlations_fail_closed_test.go",
         "union_rule_fixtures_test.go",
         "rule_call_insert_atomicity_test.go",
+        "memo_admission_wiring_test.go",
     ],
     deps = [
         "//gen",
