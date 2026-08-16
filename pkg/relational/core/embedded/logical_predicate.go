@@ -326,11 +326,29 @@ func exactVirtualScopeSource(
 	if len(preferredNames) > 0 && len(preferredNames) != len(record.Fields) {
 		return semantic.ScopeSource{}, false
 	}
+	// With no parsed projection to take names from — `SELECT *` has none — the
+	// labels come from the derivation's own label authority, NOT from the exact
+	// row's field names. A join row qualifies every leg column with its source
+	// alias so the executor's row map can tell A.K from B.K; those are datum
+	// keys. Publishing them here made `WITH d AS (SELECT * FROM a, b) SELECT
+	// d.aid FROM d` fail with 42703, because the scope had registered a column
+	// named A.AID under source D.
+	//
+	// A width disagreement declines rather than pairing a label with the wrong
+	// slot, the same rule preferredNames follows.
+	labels := preferredNames
+	if len(labels) == 0 {
+		derived, labelErr := query.ExactLogicalOutputLabels(op, md, cteRowTypes(cteScopes))
+		if labelErr != nil || len(derived) != len(record.Fields) {
+			return semantic.ScopeSource{}, false
+		}
+		labels = derived
+	}
 	columns := make([]semantic.Column, len(record.Fields))
 	for i, field := range record.Fields {
 		name := field.Name
-		if len(preferredNames) > 0 {
-			name = preferredNames[i]
+		if len(labels) > 0 {
+			name = labels[i]
 		}
 		column, exact := semanticColumnFromExactType(name, field.FieldType)
 		if !exact {
@@ -8159,13 +8177,37 @@ func exactCTEDefinitionRecordType(
 		return nil, false
 	}
 	fields := append([]values.Field(nil), record.Fields...)
-	if len(cte.ColumnAliases) > 0 {
+	switch {
+	case len(cte.ColumnAliases) > 0:
 		if len(cte.ColumnAliases) != len(fields) {
 			return nil, false
 		}
 		for i, alias := range cte.ColumnAliases {
 			fields[i].Name = strings.ToUpper(alias)
 			fields[i].Ordinal = i
+		}
+	default:
+		// Without a column list the CTE's columns are named by its BODY's SQL
+		// output labels. That is not the same as the exact row's field names: a
+		// join row qualifies every leg column with its source alias so the
+		// executor's row map can keep A.K and B.K apart, and those datum keys
+		// are what this map published. Every consumer of it — the projection
+		// binder just below, the sort-key binder, the qualified-join lookup —
+		// then matched a user's `D.AID` against a field called `A.AID`, found
+		// nothing, and left the slot with no Value; the query died later as
+		// `projection slot 0 has no resolved Value`, naming neither the column
+		// nor the CTE.
+		//
+		// A body whose labels cannot be derived keeps the exact row's names
+		// rather than declining: that is the pre-existing behaviour for every
+		// shape whose labels and field names already agree, which is all of
+		// them except a multi-leg star.
+		if labels, labelErr := query.ExactLogicalOutputLabels(cte.Body, md, nil); labelErr == nil &&
+			len(labels) == len(fields) {
+			for i := range fields {
+				fields[i].Name = labels[i]
+				fields[i].Ordinal = i
+			}
 		}
 	}
 	return &values.RecordType{

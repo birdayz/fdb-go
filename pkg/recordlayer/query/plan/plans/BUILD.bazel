@@ -126,6 +126,7 @@ go_test(
         "streaming_aggregation_ordering_key_name_test.go",
         "streaming_aggregation_relink_test.go",
         "table_function_test.go",
+        "temp_table_scan_identity_test.go",
         "unordered_union_test.go",
         "with_quantifiers_arity_test.go",
     ],
@@ -241,6 +242,7 @@ go_test(
         "with_quantifiers_arity_test.go",
         "in_memory_sort_relink_test.go",
         "nested_loop_join_relink_test.go",
+        "temp_table_scan_identity_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",

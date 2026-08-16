@@ -230,30 +230,219 @@ func exactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMe
 		// statement's. Handing it back reported a scalar `SELECT COUNT(*) FROM v`
 		// as returning two columns, the two being v's, and Main's real failure
 		// never reached the user.
+		//
+		// A CTE's column list renames the BODY (`WITH c(x) AS ...` — the field
+		// on LogicalCTE says so, exactCTEDefinitionRecordType applies it that
+		// way, and the translator builds a Project over the body from it), so
+		// the rename belongs to the row bound under the CTE's NAME. Applying it
+		// to the statement's row instead overwrote the main query's own `AS`
+		// labels — `WITH c(x) AS (…) SELECT x AS y FROM c` reported X — and
+		// checked the alias arity against a row the aliases do not describe, so
+		// a main query projecting fewer columns than the CTE declares was
+		// rejected as an arity error.
 		main := env
 		if bodyRow, bodyErr := exactLogicalResultType(typed.Body, md, env); bodyErr == nil {
+			bound, bindErr := cteBoundRowType(bodyRow, typed)
+			if bindErr != nil {
+				return nil, bindErr
+			}
 			main = make(cteRows, len(env)+1)
 			for name, row := range env {
 				main[name] = row
 			}
-			main[strings.ToUpper(typed.Name)] = bodyRow
+			main[strings.ToUpper(typed.Name)] = bound
 		}
-		result, err := exactLogicalResultType(typed.Main, md, main)
-		if err != nil || len(typed.ColumnAliases) == 0 {
-			return result, err
-		}
-		record, ok := result.(*values.RecordType)
-		if !ok || len(record.Fields) != len(typed.ColumnAliases) {
-			return nil, fmt.Errorf("CTE %q alias arity disagrees with its result type", typed.Name)
-		}
-		fields := append([]values.Field(nil), record.Fields...)
-		for i := range fields {
-			fields[i].Name = strings.ToUpper(typed.ColumnAliases[i])
-		}
-		return &values.RecordType{RecordName: record.RecordName, Nullable: record.Nullable, Fields: fields}, nil
+		return exactLogicalResultType(typed.Main, md, main)
 	default:
 		return nil, fmt.Errorf("logical operator %T has no exact result-type derivation", op)
 	}
+}
+
+// ExactLogicalOutputLabels returns the SQL OUTPUT LABELS of op's row — one per
+// column of ExactLogicalResultType(op), in the same order.
+//
+// The exact row's field NAMES are not those labels. A join row qualifies every
+// leg column with its source alias (logicalLegFields) because the executor keys
+// its row map by name and `A.K`/`B.K` must stay distinguishable; that spelling
+// is a DATUM KEY. `SELECT * FROM A, B` returns columns named AID, K, ARR, BID,
+// K — a duplicate among them is ordinary SQL, and a bare reference to it is
+// 42702, not a reason to invent distinct names.
+//
+// Publishing the datum keys where labels were wanted is not a cosmetic error:
+// the semantic scope resolves `D.AID` against them, so a CTE over a two-table
+// star registered A.AID and the reference failed with 42703 on a column the
+// parser had seen perfectly well.
+//
+// This walks the same structure as exactLogicalResultType and must stay the
+// same width — every arm that changes the row's shape appears in both. The
+// qualifier is REMOVED STRUCTURALLY, by not adding it, never by slicing at a
+// dot: a column can genuinely be named "A.B" (quoted), and a consumer that
+// recovers the qualifier from the rendered name cannot tell the two apart.
+func ExactLogicalOutputLabels(
+	op logical.LogicalOperator,
+	md *recordlayer.RecordMetaData,
+	enclosing map[string]values.Type,
+) ([]string, error) {
+	var env cteRows
+	if len(enclosing) > 0 {
+		env = make(cteRows, len(enclosing))
+		for name, row := range enclosing {
+			if row == nil {
+				continue
+			}
+			env[strings.ToUpper(name)] = row
+		}
+	}
+	return exactLogicalOutputLabels(op, md, env)
+}
+
+func exactLogicalOutputLabels(
+	op logical.LogicalOperator,
+	md *recordlayer.RecordMetaData,
+	env cteRows,
+) ([]string, error) {
+	if op == nil {
+		return nil, fmt.Errorf("cannot label a nil logical operator")
+	}
+	switch typed := op.(type) {
+	case *logical.LogicalFilter:
+		return exactLogicalOutputLabels(typed.Input, md, env)
+	case *logical.LogicalSort:
+		return exactLogicalOutputLabels(typed.Input, md, env)
+	case *logical.LogicalLimit:
+		return exactLogicalOutputLabels(typed.Input, md, env)
+	case *logical.LogicalDistinct:
+		return exactLogicalOutputLabels(typed.Input, md, env)
+	case *logical.LogicalJoin:
+		left, err := exactLogicalLegLabels(typed.Left, md, env)
+		if err != nil {
+			return nil, err
+		}
+		var right []string
+		if unnest, isLateralUnnest := typed.Right.(*logical.LogicalUnnest); isLateralUnnest &&
+			unnest.CorrelatedCollection == nil {
+			// The syntax-only lateral leg is typed by the enclosing join, the
+			// same seam exactLogicalResultType carries.
+			elementType, elementErr := exactLateralUnnestResultType(typed.Left, unnest, md)
+			if elementErr != nil {
+				return nil, elementErr
+			}
+			right, err = legLabelsForType(typed.Right, elementType)
+		} else {
+			right, err = exactLogicalLegLabels(typed.Right, md, env)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return append(append(make([]string, 0, len(left)+len(right)), left...), right...), nil
+	case *logical.LogicalCTE:
+		main := env
+		if bodyRow, bodyErr := exactLogicalResultType(typed.Body, md, env); bodyErr == nil {
+			bound, bindErr := cteBoundRowType(bodyRow, typed)
+			if bindErr != nil {
+				return nil, bindErr
+			}
+			main = make(cteRows, len(env)+1)
+			for name, row := range env {
+				main[name] = row
+			}
+			main[strings.ToUpper(typed.Name)] = bound
+		}
+		return exactLogicalOutputLabels(typed.Main, md, main)
+	}
+	// Every other node's exact row already carries its own labels: a
+	// projection's are its aliases, a scan's are its stored column names, an
+	// aggregate's are its key and call names. Only a join qualifies, and only
+	// the arms above reach one.
+	typ, err := exactLogicalResultType(op, md, env)
+	if err != nil {
+		return nil, err
+	}
+	return rowLabels(typ, op)
+}
+
+// exactLogicalLegLabels labels one join leg: the leg's own row, unqualified.
+func exactLogicalLegLabels(
+	op logical.LogicalOperator,
+	md *recordlayer.RecordMetaData,
+	env cteRows,
+) ([]string, error) {
+	// A nested join leg recurses so its own legs stay unqualified too.
+	if _, nested := op.(*logical.LogicalJoin); nested {
+		return exactLogicalOutputLabels(op, md, env)
+	}
+	typ, err := exactLogicalResultType(op, md, env)
+	if err != nil {
+		return nil, err
+	}
+	return legLabelsForType(op, typ)
+}
+
+// legLabelsForType is logicalLegFields' naming rule with the qualifier left
+// off. A scalar leg still contributes exactly one column named for its source,
+// which is the label SQL gives it.
+func legLabelsForType(op logical.LogicalOperator, typ values.Type) ([]string, error) {
+	if record, ok := typ.(*values.RecordType); ok {
+		labels := make([]string, len(record.Fields))
+		for i, field := range record.Fields {
+			labels[i] = strings.ToUpper(field.Name)
+		}
+		return labels, nil
+	}
+	alias := strings.ToUpper(sourceAlias(op))
+	if alias == "" {
+		return nil, fmt.Errorf("scalar logical leg %T has no source alias", op)
+	}
+	return []string{alias}, nil
+}
+
+func rowLabels(typ values.Type, op logical.LogicalOperator) ([]string, error) {
+	record, ok := typ.(*values.RecordType)
+	if !ok {
+		alias := strings.ToUpper(sourceAlias(op))
+		if alias == "" {
+			return nil, fmt.Errorf("scalar logical row %T has no source alias", op)
+		}
+		return []string{alias}, nil
+	}
+	labels := make([]string, len(record.Fields))
+	for i, field := range record.Fields {
+		labels[i] = strings.ToUpper(field.Name)
+	}
+	return labels, nil
+}
+
+// cteBoundRowType applies a CTE's column list to the row its body flows,
+// producing the row a scan of the CTE's name resolves against.
+//
+// This is the same rename exactCTEDefinitionRecordType performs and the same
+// one the translator materializes as a Project over the body, so the three
+// agree by construction. Ordinal is restamped and the leg layout carried:
+// the binding has to be the row the physical CTE actually produces, and an
+// exact consumer reads position and leg windows from it, not just names.
+func cteBoundRowType(bodyRow values.Type, cte *logical.LogicalCTE) (values.Type, error) {
+	if len(cte.ColumnAliases) == 0 {
+		return bodyRow, nil
+	}
+	record, ok := bodyRow.(*values.RecordType)
+	if !ok {
+		return nil, fmt.Errorf("CTE %q has a column list but its body flows %v, not a record", cte.Name, bodyRow)
+	}
+	if len(record.Fields) != len(cte.ColumnAliases) {
+		return nil, fmt.Errorf("CTE %q column list has %d names but its body flows %d columns",
+			cte.Name, len(cte.ColumnAliases), len(record.Fields))
+	}
+	fields := append([]values.Field(nil), record.Fields...)
+	for i := range fields {
+		fields[i].Name = strings.ToUpper(cte.ColumnAliases[i])
+		fields[i].Ordinal = i
+	}
+	return &values.RecordType{
+		RecordName: record.RecordName,
+		Nullable:   record.Nullable,
+		Fields:     fields,
+		Legs:       append([]values.RecordTypeLeg(nil), record.Legs...),
+	}, nil
 }
 
 // exactLateralUnnestResultType derives the exact row contributed by a
@@ -346,9 +535,26 @@ func exactScanResultType(scan *logical.LogicalScan, md *recordlayer.RecordMetaDa
 	for i := 0; i < descriptor.Fields().Len(); i++ {
 		field := descriptor.Fields().Get(i)
 		fields = append(fields, values.Field{
-			Name:      values.FieldNameForProtoField(field),
-			Ordinal:   i,
-			FieldType: TargetTypeForFD(field),
+			Name:    values.FieldNameForProtoField(field),
+			Ordinal: i,
+			// The STORED-row mapper, not the DML target mapper. A scan flows
+			// materialized records, so this row has to be the one the physical
+			// scan and the executor build (executor.queryResult uses
+			// FieldNameForProtoField + FieldTypeForProtoField, and FieldTypeForFD
+			// is that same function) — FieldTypeForFD's own contract says the two
+			// describe the same stored columns and must not be able to disagree.
+			//
+			// TargetTypeForFD describes what an INSERT target ACCEPTS, and it
+			// disagreed on four axes at once: scalar nullability (it reports
+			// presence-tracking rather than the stored shape, so a proto2
+			// `required` column came back NULL and a proto3 implicit-presence
+			// column came back NOT NULL), array ELEMENT nullability, nested
+			// field names and record identity (raw descriptor spellings and the
+			// short message name, where the stored row carries user identifiers
+			// and the full name) — and, worst, it has no cycle guard, so a
+			// self-referencing message descriptor blew the stack instead of
+			// producing a type at all.
+			FieldType: FieldTypeForFD(field),
 		})
 	}
 	if md.IsStoreRecordVersions() && descriptor.Fields().ByName(protoreflect.Name(values.PseudoFieldRowVersion)) == nil {

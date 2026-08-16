@@ -51,11 +51,18 @@ func (p *RecordQueryTempTableScanPlan) GetResultValue() values.Value {
 
 func (p *RecordQueryTempTableScanPlan) GetChildren() []RecordQueryPlan { return nil }
 
-// structuralKey lists the field that distinguishes this scan in the memo: the
-// temp-table alias. The same key drives both EqualsPlanWithoutChildren and
-// HashCodeWithoutChildren.
+// structuralKey lists the fields that distinguish this scan in the memo: the
+// temp-table alias and the row it flows. The same key drives both
+// EqualsPlanWithoutChildren and HashCodeWithoutChildren.
+//
+// The alias alone was the key back when the constructor derived the flowed row
+// from nothing else, so two scans of one alias could not differ. Once the
+// constructor started taking an exact flowedType, that stopped holding: two
+// scans sharing an alias but flowing different rows compared and hashed equal,
+// so MemoizeExpression interned the second into the first and handed back a
+// reference whose result QOV carries the OTHER expression's type.
 func (p *RecordQueryTempTableScanPlan) structuralKey() *structuralKey {
-	return newStructuralKey().Alias(p.tempTableAlias)
+	return newStructuralKey().Alias(p.tempTableAlias).Type(p.flowedType)
 }
 
 func (p *RecordQueryTempTableScanPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {

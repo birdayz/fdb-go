@@ -176,6 +176,8 @@ go_test(
         "crosstype_const_sarg_fdb_test.go",
         "cte_alias_propagation_probe_test.go",
         "cte_box_unnest_on_resolution_probe_fdb_test.go",
+        "cte_column_list_label_fdb_test.go",
+        "cte_star_output_label_test.go",
         "current_timestamp_crosspage_test.go",
         "current_timestamp_join_shapes_test.go",
         "current_timestamp_stability_test.go",

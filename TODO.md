@@ -17932,3 +17932,40 @@ a runner-level resource limit. Both are checkable; neither was checked.
   Also drop the now-unused UNKNOWN/stated refinement with them, and PIN the
   assumption that replaced it: every member of a Reference is exactly typed, which
   is what makes strict `Equals` safe where master refined.
+
+## CTE main queries skip the 42702/42703 projection gates
+
+- [ ] A main query whose FROM is a CTE gets a **nil resolver**, so every
+  projection column gate is skipped and an invalid reference dies downstream as
+  an opaque `0AF00: projection slot 0 has no resolved Value` — naming neither
+  the column nor the CTE.
+
+  Measured, not inferred. Instrumenting the guard in
+  `PlanVisitor.visitSimpleTableBody` (`plan_visitor.go`, the block introduced by
+  `if resolver != nil && sq.projCols != nil && …`) over
+  `TestCTEStarBodyPublishesSQLLabels` prints `cteScopes=0` for every arm whose
+  FROM is the CTE `D`, and `resolver=false` for each. With the map empty,
+  `buildSelectScope`'s `addSource` falls through the CTE branch to
+  `analyzer.ResolveTable("D")`, which misses because D is not a catalog table,
+  `addSource` returns false and the whole resolver is nil. `logical_predicate.go`
+  has a parallel scope build that DOES populate the map; the visitor path does
+  not.
+
+  Two concrete wrong codes, both pinned as arms of
+  `pkg/relational/sqldriver/cte_star_output_label_test.go` — read the gap note
+  above that test's function, which points back here:
+  - `WITH D AS (SELECT * FROM A, B, …) SELECT D."K" FROM D` — `K` is declared by
+    both legs, so this is 42702 Ambiguous, and reports 0AF00.
+  - `… SELECT A."AID" FROM D` — `A` is not a source at this level, so this is a
+    source-not-found "cannot be resolved", and reports 0AF00.
+
+  Those two arms assert **0AF00 today**. That assertion is the gap, not the
+  contract: fixing this makes them fail, and they must be re-armed to the real
+  codes in the same change.
+
+  Pre-existing and independent of the exact-resolution work — the same queries
+  fail the same way on master. Not a wrong ANSWER (both queries are invalid and
+  both are rejected); a wrong DIAGNOSIS, and a whole class of column gates not
+  running. Expect populating the map to newly ENABLE gates on a broad class of
+  CTE queries, so budget a full-suite lap for shapes that currently pass only
+  because the gate is silent.
