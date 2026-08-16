@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"time"
 )
 
@@ -89,6 +90,12 @@ type Result struct {
 // verdict is meaningless.
 const maxDBPublicationAge = 30 * 24 * time.Hour
 
+// releaseToolchain matches the version strings govulncheck can resolve stdlib
+// advisories against: a released Go toolchain, optionally a release candidate
+// or beta. Anything else — `devel`, or the `-X:` suffix a locally rebuilt
+// toolchain carries — is what the guard below exists to reject.
+var releaseToolchain = regexp.MustCompile(`^go1\.\d+(\.\d+)?((rc|beta)\d+)?$`)
+
 // govulnMessage is one object in govulncheck's `-format json` stream. The
 // stream is a concatenation of top-level objects, not an array, so it is read
 // with a streaming decoder.
@@ -97,6 +104,7 @@ type govulnMessage struct {
 		DB             string `json:"db"`
 		DBLastModified string `json:"db_last_modified"`
 		ScannerVersion string `json:"scanner_version"`
+		GoVersion      string `json:"go_version"`
 	} `json:"config"`
 	Finding *struct {
 		OSV   string `json:"osv"`
@@ -133,11 +141,12 @@ func Classify(exitCode int, stdout io.Reader, now time.Time) Result {
 	}
 
 	var (
-		cfgSeen  bool
-		modified time.Time
-		called   []string
-		imported []string
-		seen     = map[string]bool{}
+		cfgSeen   bool
+		modified  time.Time
+		goVersion string
+		called    []string
+		imported  []string
+		seen      = map[string]bool{}
 	)
 
 	dec := json.NewDecoder(stdout)
@@ -169,6 +178,7 @@ func Classify(exitCode int, stdout io.Reader, now time.Time) Result {
 				}
 			}
 			modified = t
+			goVersion = c.GoVersion
 		}
 
 		if f := msg.Finding; f != nil {
@@ -241,6 +251,31 @@ func Classify(exitCode int, stdout io.Reader, now time.Time) Result {
 			DBLastModified: modified,
 			CalledOSVs:     called,
 			ImportedOSVs:   onlyImported,
+		}
+	}
+
+	// A clean verdict also asserts that the STANDARD LIBRARY was covered, and
+	// that half of the scan is silently conditional on the toolchain's version
+	// string. govulncheck resolves stdlib advisories by comparing that string
+	// against each advisory's fixed-version ranges; when it does not parse as a
+	// released toolchain, every stdlib advisory is skipped and the run reports
+	// no findings — the same well-formed, zero-finding stream a genuinely clean
+	// scan produces. Measured: a `go1.26.5-X:nodwarf5` toolchain reported clean
+	// against the very database on which stock go1.26.5 reports four called
+	// stdlib vulnerabilities (GO-2026-6218, GO-2026-6090, GO-2026-5972,
+	// GO-2026-5026).
+	//
+	// This sits after the vulnerable branch on purpose: a run that did surface a
+	// called vulnerability already fails the build, and saying so names the
+	// actual finding, which is more actionable than reporting the scan as
+	// inconclusive. Only the CLEAN verdict needs the coverage it implies.
+	if !releaseToolchain.MatchString(goVersion) {
+		return Result{
+			Verdict:        VerdictNotConsulted,
+			DBLastModified: modified,
+			Detail: fmt.Sprintf("the scan ran under toolchain %q, which is not a released Go version; "+
+				"govulncheck skips every standard-library advisory in that case, so a zero-finding result "+
+				"says nothing about stdlib. Re-run with a released toolchain (GOTOOLCHAIN=go1.x.y)", goVersion),
 		}
 	}
 

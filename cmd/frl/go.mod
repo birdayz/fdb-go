@@ -1,6 +1,6 @@
 module fdb.dev/cmd/frl
 
-go 1.26.5
+go 1.26.6
 
 require (
 	buf.build/go/protoyaml v0.6.0
