@@ -301,17 +301,23 @@ func fireImplRuleOnMember(
 		if err := call.Err(); err != nil {
 			return nil, err
 		}
-		// The rule body succeeded, so held child inserts are publishable.
-		call.CommitStagedInserts()
+		var batch *preparedReferenceBatch
 		if len(call.yielded) > 0 {
 			intents := make([]referenceMemberIntent, len(call.yielded))
 			for i, y := range call.yielded {
 				intents[i] = referenceMemberIntent{set: expressions.ReferenceFinalMembers, expression: y}
 			}
-			batch, err := prepareReferenceMemberBatch(ref, intents)
+			prepared, err := prepareReferenceMemberBatch(ref, intents)
 			if err != nil {
 				return nil, err
 			}
+			batch = prepared
+		}
+		// After EVERY fallible step, and before the parent members land. A clear
+		// Err only says the rule BODY succeeded; prepare can still reject the
+		// batch, and an insert published above it survives that rejection.
+		call.CommitStagedInserts()
+		if batch != nil {
 			if err := batch.commit(); err != nil {
 				return nil, err
 			}

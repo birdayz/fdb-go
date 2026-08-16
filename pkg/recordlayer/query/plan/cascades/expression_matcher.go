@@ -147,19 +147,26 @@ func fireExprRuleOnMember(
 		if err := call.Err(); err != nil {
 			return nil, err
 		}
-		// Same commit boundary as the task driver: staged child inserts publish
-		// only after the rule body has succeeded, and before the yields.
-		call.CommitStagedInserts()
 		yielded := call.Yielded()
+		var batch *preparedReferenceBatch
 		if len(yielded) > 0 {
 			intents := make([]referenceMemberIntent, len(yielded))
 			for i, y := range yielded {
 				intents[i] = referenceMemberIntent{set: expressions.ReferenceExploratoryMembers, expression: y}
 			}
-			batch, err := prepareReferenceMemberBatch(ref, intents)
+			prepared, err := prepareReferenceMemberBatch(ref, intents)
 			if err != nil {
 				return nil, err
 			}
+			batch = prepared
+		}
+		// Same boundary as the task driver: after EVERY fallible step, and
+		// before the parent members land, so a parent still lands over complete
+		// children. A clear Err only says the rule BODY succeeded — prepare can
+		// still reject the batch, and an insert published above it survives
+		// that rejection, which is the leak staging exists to close.
+		call.CommitStagedInserts()
+		if batch != nil {
 			if err := batch.commit(); err != nil {
 				return nil, err
 			}

@@ -429,10 +429,6 @@ func (t *TransformExprTask) Run(ctx context.Context, p *Planner) {
 				p.capErr = err
 				return
 			}
-			// The rule succeeded, so its staged child inserts are publishable.
-			// Before the yields, so a parent lands over complete children.
-			call.CommitStagedInserts()
-
 			yielded := call.Yielded()
 			inserted := make([]bool, len(yielded))
 			// Validate the complete invocation-local batch before publishing
@@ -446,10 +442,10 @@ func (t *TransformExprTask) Run(ctx context.Context, p *Planner) {
 					}
 				}
 			}
-
 			// Exact-result admission and memo equality are prepared for the WHOLE
 			// batch; apply is method-free and has no fallible operation after its
 			// first write.
+			var batch *preparedReferenceBatch
 			if len(yielded) > 0 {
 				set := expressions.ReferenceExploratoryMembers
 				if t.Phase == PhasePlanning {
@@ -459,11 +455,21 @@ func (t *TransformExprTask) Run(ctx context.Context, p *Planner) {
 				for i, newExpr := range yielded {
 					intents[i] = referenceMemberIntent{set: set, expression: newExpr}
 				}
-				batch, err := prepareReferenceMemberBatch(t.Ref, intents)
+				prepared, err := prepareReferenceMemberBatch(t.Ref, intents)
 				if err != nil {
 					p.capErr = err
 					return
 				}
+				batch = prepared
+			}
+			// AFTER every fallible step — the verify above AND the prepare — not
+			// merely after Err. A clear Err says only that the rule BODY
+			// succeeded; the batch can still be rejected here, and an insert
+			// committed earlier survives that rejection, which is the same leak
+			// staging exists to close, moved one step later. Still before the
+			// parent members land, so a parent lands over complete children.
+			call.CommitStagedInserts()
+			if batch != nil {
 				if err := batch.commit(); err != nil {
 					p.capErr = err
 					return
@@ -588,18 +594,24 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 				return
 			}
 		}
-		// The batch preflighted, so held child inserts are publishable.
-		call.CommitStagedInserts()
+		var batch *preparedReferenceBatch
 		if len(call.yielded) > 0 {
 			intents := make([]referenceMemberIntent, len(call.yielded))
 			for i, y := range call.yielded {
 				intents[i] = referenceMemberIntent{set: expressions.ReferenceFinalMembers, expression: y}
 			}
-			batch, err := prepareReferenceMemberBatch(t.Ref, intents)
+			prepared, err := prepareReferenceMemberBatch(t.Ref, intents)
 			if err != nil {
 				p.capErr = err
 				return
 			}
+			batch = prepared
+		}
+		// After EVERY fallible step — the preflight above AND the batch prepare
+		// — and before the parent members land, so a parent still lands over
+		// complete children.
+		call.CommitStagedInserts()
+		if batch != nil {
 			if err := batch.commit(); err != nil {
 				p.capErr = err
 				return
@@ -704,18 +716,23 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 							return
 						}
 					}
-					// The batch preflighted, so held child inserts are publishable.
-					call.CommitStagedInserts()
+					var batch *preparedReferenceBatch
 					if len(call.yielded) > 0 {
 						intents := make([]referenceMemberIntent, len(call.yielded))
 						for i, y := range call.yielded {
 							intents[i] = referenceMemberIntent{set: expressions.ReferenceFinalMembers, expression: y}
 						}
-						batch, err := prepareReferenceMemberBatch(t.Ref, intents)
+						prepared, err := prepareReferenceMemberBatch(t.Ref, intents)
 						if err != nil {
 							p.capErr = err
 							return
 						}
+						batch = prepared
+					}
+					// After EVERY fallible step — the preflight above AND the
+					// batch prepare — and before the parent members land.
+					call.CommitStagedInserts()
+					if batch != nil {
 						if err := batch.commit(); err != nil {
 							p.capErr = err
 							return

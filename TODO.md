@@ -11530,6 +11530,15 @@ None is speculative: each was re-verified against the tree before booking.
   (Both budget baselines are ±2% pins; `plan_shape.golden` does not move, so
   this is purely a planning-effort regression, not a plan-quality one.)
 
+  THOSE ARE HISTORICAL DELTAS, TAKEN AGAINST A BASELINE THAT HAS SINCE MOVED —
+  do not compare them to a measurement of the current tree. The 3-spoke star's
+  sentinel was 9481 when this was measured and is 13226 today (RFC-232's exact
+  resolution; the whole chain is in `ordinal_star_planning_budget_test.go`'s
+  `wantTasks` comment). What survives the move is the SHAPE of the finding — a
+  value-keyed set grows wherever two quantifiers share a leaf name, and the
+  hub+5 arm stops planning outright — not the absolute numbers. Re-measure
+  against the sentinel of the day before quoting a percentage.
+
   So the conversion is correct and cannot land until the coupling changes. Fix
   the coupling FIRST, then land the value-keyed referenced-fields set and drop
   the `referenced_fields.go:125` entry from `pkg/docscheck`'s

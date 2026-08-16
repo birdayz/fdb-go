@@ -20,6 +20,12 @@ type insertThenMaybeFailRule struct {
 	extra   expressions.RelationalExpression
 	yield   expressions.RelationalExpression
 	fail    bool
+	// yieldInvalid makes the rule SUCCEED and then yield an expression the
+	// driver's own preflight rejects. This is the second way a rule call can
+	// end without publishing, and it is a different code path from Fail: Err is
+	// clear when the body returns, so anything committed on the strength of
+	// "the body succeeded" is already published when the preflight refuses.
+	yieldInvalid bool
 
 	// stagedAtBodyEnd records what the call was holding when the body returned,
 	// so the test can prove the insert was STAGED rather than infer it from the
@@ -38,7 +44,33 @@ func (r *insertThenMaybeFailRule) OnMatch(call *ExpressionRuleCall) {
 		call.Fail(errRuleProbe)
 		return
 	}
+	if r.yieldInvalid {
+		call.Yield(unmemoizedChildExpression(nil))
+		return
+	}
 	call.Yield(r.yield)
+}
+
+// unmemoizedChildExpression builds an expression whose one quantifier ranges
+// over an EMPTY reference — the state verifyChildrenMemoized exists to refuse.
+//
+// It has to be built populated and then drained, because every public
+// constructor derives the parent's flowed type from its child's members and so
+// refuses an empty one outright. That is not a trick to defeat the API: it is
+// the shape of the real defect family, where a reference a rule captured is
+// emptied by a later stage advance before the rule's yield is published.
+func unmemoizedChildExpression(t interface{ Fatalf(string, ...any) }) expressions.RelationalExpression {
+	childRef := expressions.InitialOf(fixtureScan("insert-atomicity-unmemoized-child"))
+	expr, err := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(childRef))
+	if err != nil {
+		if t != nil {
+			t.Fatalf("building the invalid-yield fixture: %v", err)
+		}
+		panic(err)
+	}
+	// Drain it: members := finalMembers, which is empty.
+	childRef.AdvancePlannerStage(expressions.StageCanonical)
+	return expr
 }
 
 // TestRuleFailureLeavesNoMemberInALiveGroup pins the half of rule-call
@@ -71,12 +103,28 @@ func TestRuleFailureLeavesNoMemberInALiveGroup(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		name        string
-		fail        bool
-		wantMembers int
+		name         string
+		fail         bool
+		yieldInvalid bool
+		wantMembers  int
 	}{
 		{name: "rule fails: the staged insert is discarded", fail: true, wantMembers: 1},
 		{name: "rule succeeds: the staged insert is published", fail: false, wantMembers: 2},
+		// A clear Err is NOT the commit condition. The rule body returns
+		// successfully here and the driver's own preflight then refuses the
+		// batch, so a commit taken on "the body succeeded" is already published
+		// when the refusal happens — the same leak, one step later, and the one
+		// the first version of this change actually had.
+		//
+		// It runs through AsImplementationRule deliberately, for two reasons.
+		// The ExpressionRule driver gates its preflight to PhasePlanning, so a
+		// rule registered there also fires in REWRITING, publishes legitimately,
+		// and the member count stops being a statement about the commit
+		// boundary. And the adapter path is where the change is most intricate:
+		// an ExpressionRuleCall running underneath an ImplementationRuleCall
+		// must hand its holdings to the OUTER call, or the leak reappears one
+		// level down.
+		{name: "yield fails the driver preflight: the staged insert is discarded", yieldInvalid: true, wantMembers: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -90,13 +138,20 @@ func TestRuleFailureLeavesNoMemberInALiveGroup(t *testing.T) {
 			}
 
 			rule := &insertThenMaybeFailRule{
-				matcher: NewExpressionMatcher[*expressions.FullUnorderedScanExpression]("insert-atomicity"),
-				live:    live,
-				extra:   fixtureScan("insert-atomicity-extra-member"),
-				yield:   fixtureScan("insert-atomicity-yield"),
-				fail:    tc.fail,
+				matcher:      NewExpressionMatcher[*expressions.FullUnorderedScanExpression]("insert-atomicity"),
+				live:         live,
+				extra:        fixtureScan("insert-atomicity-extra-member"),
+				yield:        fixtureScan("insert-atomicity-yield"),
+				fail:         tc.fail,
+				yieldInvalid: tc.yieldInvalid,
 			}
-			planner := NewPlanner([]ExpressionRule{rule}, nil)
+			var planner *Planner
+			if tc.yieldInvalid {
+				planner = NewPlanner(nil, nil).
+					WithImplementationRules([]ImplementationRule{AsImplementationRule(rule)})
+			} else {
+				planner = NewPlanner([]ExpressionRule{rule}, nil)
+			}
 			_, tasks, err := planner.PlanWithContext(context.Background(), root)
 
 			if tasks == 0 {
@@ -109,9 +164,21 @@ func TestRuleFailureLeavesNoMemberInALiveGroup(t *testing.T) {
 					"assertion below would then be measuring the wrong mechanism", rule.stagedAtBodyEnd)
 			}
 
-			if tc.fail {
+			switch {
+			case tc.fail:
 				if !errors.Is(err, errRuleProbe) {
 					t.Fatalf("PlanWithContext error = %v, want %v", err, errRuleProbe)
+				}
+			case tc.yieldInvalid:
+				// The arm is only meaningful if the preflight actually refused.
+				// Without this it would pass identically on a build where the
+				// invalid yield was quietly accepted, and then it would be
+				// asserting nothing about the commit boundary.
+				var invariant *PlannerInvariantViolationError
+				if !errors.As(err, &invariant) {
+					t.Fatalf("PlanWithContext error = %v, want a yield-invariant refusal; the "+
+						"invalid-yield fixture was accepted, so this arm never reached the "+
+						"preflight it exists to test", err)
 				}
 			}
 

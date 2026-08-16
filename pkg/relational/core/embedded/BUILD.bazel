@@ -219,6 +219,7 @@ go_test(
         "tx_store_cache_test.go",
         "tx_time_limit_marker_test.go",
         "union_exact_output_contract_test.go",
+        "union_limit_covering_test.go",
         "unnest_element_later_from_item_test.go",
         "unnest_element_stays_untyped_test.go",
         "unnest_element_struct_fields_nested_test.go",
@@ -400,6 +401,7 @@ go_test(
         "rfc232_planning_gaps_test.go",
         "merged_rv_order_test.go",
         "vector_limit_projection_test.go",
+        "union_limit_covering_test.go",
     ],
     deps = [
         "//gen",
