@@ -76,6 +76,29 @@ import (
 
 const duecRows = 100000
 
+// duecSmallRows is the population for the ROW-IDENTITY arm run inside an
+// explicit transaction, and it is small on purpose.
+//
+// That arm's whole result has to be read under ONE read version — that is what
+// licenses the elision, so it is not negotiable — and an explicit
+// transaction's reads are bounded by the driver's 4s budget ahead of FDB's 5s
+// MVCC window. At duecRows the read does not fit under `-race`: the race lane
+// lost the window on all eight permitted attempts and then reported
+// `40001: transaction read budget exhausted ... read version 4.15s old`. The
+// retry was working; the measurement had no margin.
+//
+// Scale is NOT what that arm establishes. It compares the narrowed operator's
+// rows against the full operator's, value for value, and asserts the NULL
+// collapse — properties of the dedup, provable at any size that carries the
+// same density. Scale is what the BUDGET arms establish, and they keep
+// duecRows.
+//
+// So the fix is the population rather than the ceiling. Raising the retry count
+// would buy attempts at a window that is already too small, and the 4s budget
+// is a real FDB constraint rather than a knob — a probe that needed it moved
+// would be measuring something it cannot measure.
+const duecSmallRows = 2000
+
 // duecReps is the pair count RFC-209 §7 settled on: a single pair on this
 // harness drifts enough to fail a clean run, and every ratio below is the
 // MEDIAN of the per-rep ratios rather than a ratio of medians.
@@ -450,7 +473,15 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 			"CREATE TABLE users1 (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email1 ON users1 (email) "+
 			"CREATE TABLE users50 (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
-			"CREATE UNIQUE INDEX by_email50 ON users50 (email)")
+			"CREATE UNIQUE INDEX by_email50 ON users50 (email) "+
+			// The same three densities at duecSmallRows, for the arm that has to
+			// read its whole result inside ONE read version. See duecSmallRows.
+			"CREATE TABLE users_s (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
+			"CREATE UNIQUE INDEX by_email_s ON users_s (email) "+
+			"CREATE TABLE users1_s (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
+			"CREATE UNIQUE INDEX by_email1_s ON users1_s (email) "+
+			"CREATE TABLE users50_s (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
+			"CREATE UNIQUE INDEX by_email50_s ON users50_s (email)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_duec/s WITH TEMPLATE duec")
 	dsn := fmt.Sprintf("fdbsql:///testdb_duec?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -463,6 +494,9 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	duecLoad(t, ctx, db, "users", 0)
 	duecLoad(t, ctx, db, "users1", 100)
 	duecLoad(t, ctx, db, "users50", 2)
+	duecLoadN(t, ctx, db, "users_s", 0, duecSmallRows)
+	duecLoadN(t, ctx, db, "users1_s", 100, duecSmallRows)
+	duecLoadN(t, ctx, db, "users50_s", 2, duecSmallRows)
 
 	// ---- plan shapes ---------------------------------------------------
 	// Every measurement below is interpretable only against the plan it was
@@ -1090,25 +1124,35 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// paged auto-commit the proof is withheld and the FALLBACK produces them,
 	// so this is the gate's correctness — a gate that withheld the proof but
 	// left the query mis-deduplicated would pass every in-transaction row here.
+	// The two regimes read DIFFERENT-SIZED tables, and the asymmetry is the
+	// point rather than an oversight.
+	//
+	// In-transaction the whole result must come from one read version, which is
+	// what licenses the elision — so the read is bounded by the driver's 4s
+	// budget and at duecRows it does not fit under `-race` (see duecSmallRows).
+	// Auto-commit pages, so each page takes its own read version and no single
+	// read is bounded that way; that regime keeps the full population.
+	//
+	// Both still cover all three NULL densities, which is what these arms
+	// actually interrogate. The small tables are the same generator at a
+	// smaller count, so `users50_s` is half NULL exactly as `users50` is.
 	for _, regime := range []struct {
 		name    string
+		tables  []duecIdentityTable
 		collect func(*testing.T, context.Context, string) []string
 	}{
-		{"in-tx", func(t *testing.T, ctx context.Context, q string) []string {
+		{"in-tx", duecSmallIdentityTables(), func(t *testing.T, ctx context.Context, q string) []string {
 			return duecCollectInTx(t, ctx, tconn, q)
 		}},
-		{"auto-commit", func(t *testing.T, ctx context.Context, q string) []string {
+		{"auto-commit", []duecIdentityTable{
+			{table: "users", wantRows: duecRows, wantNulls: 0},
+			{table: "users1", wantRows: duecRows - duecRows/100 + 1, wantNulls: 1},
+			{table: "users50", wantRows: duecRows/2 + 1, wantNulls: 1},
+		}, func(t *testing.T, ctx context.Context, q string) []string {
 			return duecCollect(t, ctx, acconn, q)
 		}},
 	} {
-		for _, c := range []struct {
-			table    string
-			wantRows int
-		}{
-			{"users", 100000},
-			{"users1", 99001},
-			{"users50", 50001},
-		} {
+		for _, c := range regime.tables {
 			r3 := regime.collect(t, ctx, "SELECT DISTINCT email FROM "+c.table)
 			full := regime.collect(t, ctx, "SELECT DISTINCT email_plain FROM "+c.table)
 			if len(r3) != c.wantRows {
@@ -1129,10 +1173,7 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 					nulls++
 				}
 			}
-			wantNulls := 0
-			if c.table != "users" {
-				wantNulls = 1
-			}
+			wantNulls := c.wantNulls
 			if nulls != wantNulls {
 				t.Fatalf("%s/%s: narrowed DISTINCT returned %d NULL rows, want %d — a NULL "+
 					"key component is EXEMPT, which is exactly why it still has to be "+
@@ -1255,16 +1296,24 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	}
 }
 
-// duecLoad fills one table; every nullEvery-th row gets a NULL email (and the
-// same NULL in the unindexed mirror column). nullEvery <= 0 means none.
+// duecLoad fills one table with duecRows rows; every nullEvery-th row gets a
+// NULL email (and the same NULL in the unindexed mirror column). nullEvery <= 0
+// means none.
 func duecLoad(t *testing.T, ctx context.Context, db *sql.DB, table string, nullEvery int) {
+	t.Helper()
+	duecLoadN(t, ctx, db, table, nullEvery, duecRows)
+}
+
+// duecLoadN is duecLoad at an explicit row count, for the tables whose arm has
+// to fit inside a read version rather than exercise scale. See duecSmallRows.
+func duecLoadN(t *testing.T, ctx context.Context, db *sql.DB, table string, nullEvery, rows int) {
 	t.Helper()
 	const batch = 250
 	const workers = 8
 	start := time.Now()
 	var wg sync.WaitGroup
 	errCh := make(chan error, workers)
-	per := duecRows / workers
+	per := rows / workers
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func(w int) {
@@ -1306,12 +1355,12 @@ func duecLoad(t *testing.T, ctx context.Context, db *sql.DB, table string, nullE
 		"SELECT COUNT(*) FROM "+table+" WHERE email IS NULL").Scan(&nulls); err != nil {
 		t.Fatalf("null count %s: %v", table, err)
 	}
-	if n != duecRows {
-		t.Fatalf("%s loaded %d rows, want %d", table, n, duecRows)
+	if n != int64(rows) {
+		t.Fatalf("%s loaded %d rows, want %d", table, n, rows)
 	}
 	wantNulls := int64(0)
 	if nullEvery > 0 {
-		wantNulls = int64(duecRows / nullEvery)
+		wantNulls = int64(rows / nullEvery)
 	}
 	if nulls != wantNulls {
 		t.Fatalf("%s holds %d NULL emails, want %d — the NULL density IS the sweep's "+
@@ -2025,4 +2074,37 @@ func duecExplainInTx(t *testing.T, ctx context.Context, db *sql.DB, query string
 		t.Fatalf("EXPLAIN %q in a transaction: %v", query, err)
 	}
 	return plan
+}
+
+// duecIdentityTable is one row-identity arm: the table, the number of rows a
+// correct DISTINCT returns over it, and how many of those are the NULL row.
+//
+// The counts are DATA rather than derived from the table's name. They used to
+// be `if c.table != "users" { wantNulls = 1 }`, which is a decision keyed on a
+// string — it silently gives the wrong answer for any table added later whose
+// name is not "users" but whose density is zero, which is exactly what
+// duecSmallRows' no-NULL fixture is.
+type duecIdentityTable struct {
+	table     string
+	wantRows  int
+	wantNulls int
+}
+
+// duecSmallIdentityTables is the three NULL densities at duecSmallRows, for the
+// in-transaction arm whose whole result has to fit inside one read version.
+//
+// The expected counts are COMPUTED from the density rather than written down,
+// so changing duecSmallRows cannot leave a stale literal behind that the arm
+// would then report as a dedup failure:
+//
+//   - density 0:   every email distinct          -> N rows, no NULL row
+//   - density 100: N/100 rows collapse to ONE    -> N - N/100 + 1, one NULL
+//   - density 2:   N/2 rows collapse to ONE      -> N/2 + 1, one NULL
+func duecSmallIdentityTables() []duecIdentityTable {
+	const n = duecSmallRows
+	return []duecIdentityTable{
+		{table: "users_s", wantRows: n, wantNulls: 0},
+		{table: "users1_s", wantRows: n - n/100 + 1, wantNulls: 1},
+		{table: "users50_s", wantRows: n/2 + 1, wantNulls: 1},
+	}
 }
