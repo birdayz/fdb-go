@@ -202,8 +202,9 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// The DOTTED ROW-TYPE PRODUCER census: whether the GENERIC
 	// RecordConstructorValue.Type path derives a LEG.COL-shaped row, i.e. whether
 	// it is a second producer of the row a leg-table population would target.
-	// refineRowTypes declines a populated table against an empty one, so the
-	// producer SET is what decides where that population may be attached.
+	// The live guard adopts a populated leg table over an empty one and refuses
+	// only two that DISAGREE, so the producer SET is what decides whether a
+	// second derivation could state different boundaries for the same row.
 	// RFC-212 §10.3 DELIVERABLE 1, gate-before-conversion: which producer named
 	// the leg-type column each dotted-arm answer comes from. Decided BY IDENTITY
 	// (owner correlation), not by name match.

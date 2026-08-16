@@ -145,10 +145,10 @@ import (
 //   - "Restoring it is additive — RecordType.Legs is layout metadata that Equals
 //     and Hash IGNORE, so populating it moves no name, no label and no type
 //     identity." Refuted twice over. Equals/Hash ignoring Legs establishes TYPE
-//     IDENTITY only, never behaviour: `expressions.refineRowTypes` checks
-//     `legTablesAgree` BEFORE the Equals fast path and treats a populated table
-//     against an empty one as a CONFLICT, declining the refinement (RFC-212 §3.4,
-//     pinned in expressions.TestLegTablePopulation_*). And four of the readers
+//     IDENTITY only, never behaviour: `expressions.GetFlowedObjectType` compares
+//     `legTablesAgree` SEPARATELY from Equals, precisely because Equals cannot
+//     see a leg table, and refuses two members whose populated tables disagree
+//     (an empty table is adopted, not refused). And four of the readers
 //     that branch on `len(Legs) > 0` DECLINE their layout outright when it
 //     becomes non-empty (ordinal_join.go:234 and :187, ordinal_seed_layout.go:391
 //     and :528).
