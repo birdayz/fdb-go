@@ -463,3 +463,78 @@ func TestSortKeyIdentityIgnoresDisplayName(t *testing.T) {
 		return NewRecordQueryInMemorySortPlan(scan, []SortKey{{Field: "A", ValueExpr: other}})
 	}))
 }
+
+// The inline part array is an allocation decision, so the dimension it puts at
+// risk is the SPILL BOUNDARY, and every key in the invariant test above is
+// short enough to live entirely inside the array. This drives lengths across
+// the boundary in both directions: a key must behave identically whether its
+// parts sit in the inline array, exactly fill it, or have spilled onto the
+// heap — and, critically, a key that spilled must not have kept comparing the
+// stale inline prefix.
+func TestStructuralKey_SpillsPastTheInlineArrayWithoutChangingIdentity(t *testing.T) {
+	t.Parallel()
+	build := func(n int, mutate int) *structuralKey {
+		k := newStructuralKey()
+		for i := range n {
+			if i == mutate {
+				k = k.Int(i + 1000)
+				continue
+			}
+			k = k.Int(i)
+		}
+		return k
+	}
+	// Straddle the boundary from well inside it to well past it.
+	for n := 1; n <= 2*structuralKeyInlineParts+3; n++ {
+		if !build(n, -1).Equal(build(n, -1)) {
+			t.Errorf("length %d: identical keys reported unequal", n)
+		}
+		if h1, h2 := build(n, -1).Hash("d|"), build(n, -1).Hash("d|"); h1 != h2 {
+			t.Errorf("length %d: equal keys hashed differently (%d vs %d)", n, h1, h2)
+		}
+		if build(n, -1).Equal(build(n+1, -1)) {
+			t.Errorf("length %d: a key compared equal to a longer one", n)
+		}
+		// EVERY position stays load-bearing, including positions past the
+		// inline array — a spill that dropped or truncated the tail would show
+		// up here and nowhere else.
+		for pos := range n {
+			if build(n, -1).Equal(build(n, pos)) {
+				t.Errorf("length %d: part %d is not load-bearing after the spill", n, pos)
+			}
+			if build(n, -1).Hash("d|") == build(n, pos).Hash("d|") {
+				t.Errorf("length %d: part %d does not affect the hash after the spill", n, pos)
+			}
+		}
+	}
+}
+
+// Two keys built side by side must be independent. The inline array makes this
+// worth pinning: `parts` points into the key's own struct, so any future value
+// copy of a structuralKey would leave the copy's slice aliasing the ORIGINAL's
+// array, and appends through one would silently rewrite the other's parts.
+// That failure is invisible to the length-based checks above — both keys keep
+// the right LENGTH — and would surface only as two unrelated plans colliding
+// in the memo.
+func TestStructuralKey_BuildersDoNotShareInlineStorage(t *testing.T) {
+	t.Parallel()
+	a, b := newStructuralKey(), newStructuralKey()
+	for i := range structuralKeyInlineParts + 2 {
+		a = a.Int(i)
+		b = b.Int(1000 + i)
+	}
+	wantA, wantB := newStructuralKey(), newStructuralKey()
+	for i := range structuralKeyInlineParts + 2 {
+		wantA = wantA.Int(i)
+		wantB = wantB.Int(1000 + i)
+	}
+	if !a.Equal(wantA) {
+		t.Error("interleaved building corrupted the first key")
+	}
+	if !b.Equal(wantB) {
+		t.Error("interleaved building corrupted the second key")
+	}
+	if a.Equal(b) {
+		t.Error("two independently built keys compared equal")
+	}
+}

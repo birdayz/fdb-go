@@ -66,13 +66,33 @@ func prepareReferenceMemberBatch(
 
 	// Admission is deliberately a separate complete pass from dedup. An invalid
 	// later expression therefore prevents hashing an earlier valid expression.
-	admittedTypes := make([]values.ExactTypeHandle, len(all))
-	for i, expression := range all {
-		relationType, err := admitMemoExpression(expression)
+	//
+	// ONLY THE MEMBERS THIS BATCH HAS NOT ALREADY ADMITTED ARE ADMITTED, and the
+	// reduction is what keeps this off an O(N²) curve. An admitted member is
+	// immutable and its Reference already stores the RELATION type it agreed
+	// with, so re-admitting it re-derives a value that cannot have changed —
+	// and re-deriving it is not cheap: admitMemoExpression calls
+	// GetResultValue().Type(), which THAWS a fresh Type graph out of the exact
+	// handle, then ExactRelationOf re-walks, re-canonicalizes and re-hashes it.
+	// Doing that for every existing member on every batch made a six-way star
+	// spend most of its planning time in GC.
+	//
+	// The full pass survives where it is load-bearing: every member of THIS
+	// batch is admitted before any of them is hashed, and each is still
+	// compared against the Reference's type, so a batch that would install a
+	// disagreeing member is refused exactly as before. What is skipped is
+	// re-proving a proof the Reference already holds.
+	firstAdmitted := 0
+	if relationType != nil {
+		firstAdmitted = len(existingExploratory) + len(existingFinal)
+	}
+	admittedTypes := make([]values.ExactTypeHandle, 0, len(all)-firstAdmitted)
+	for i := firstAdmitted; i < len(all); i++ {
+		admitted, err := admitMemoExpression(all[i])
 		if err != nil {
 			return nil, fmt.Errorf("memo member %d: %w", i, err)
 		}
-		admittedTypes[i] = relationType
+		admittedTypes = append(admittedTypes, admitted)
 	}
 
 	if relationType == nil {
@@ -83,7 +103,7 @@ func prepareReferenceMemberBatch(
 		if !bytes.Equal(want, admittedType.CanonicalBytes()) {
 			return nil, memoAdmissionError(
 				values.MemoResultTypeMismatch,
-				fmt.Sprintf("memo.member[%d].resultType", i),
+				fmt.Sprintf("memo.member[%d].resultType", firstAdmitted+i),
 				fmt.Sprintf("member RELATION result type %v disagrees with its Reference type %v",
 					admittedType.Type(), relationType.Type()),
 			)
@@ -98,15 +118,24 @@ func prepareReferenceMemberBatch(
 	}
 	exploratoryScratch := append([]expressions.RelationalExpression(nil), existingExploratory...)
 	finalScratch := append([]expressions.RelationalExpression(nil), existingFinal...)
+	// Member hashes are derived ONCE per batch and grown as intents are
+	// admitted, rather than re-derived for every intent. HashCodeWithoutChildren
+	// walks a member's whole result Value through FNV, and a memo member is
+	// immutable, so the per-intent form spent O(intents × members) walks
+	// re-deriving values that could not have changed.
+	exploratoryHashes := reference.MemberHashes(exploratoryScratch)
+	finalHashes := reference.MemberHashes(finalScratch)
 	for i, intent := range intents {
 		var scratch *[]expressions.RelationalExpression
+		var hashes *[]uint64
 		switch intent.set {
 		case expressions.ReferenceExploratoryMembers:
-			scratch = &exploratoryScratch
+			scratch, hashes = &exploratoryScratch, &exploratoryHashes
 		case expressions.ReferenceFinalMembers:
-			scratch = &finalScratch
+			scratch, hashes = &finalScratch, &finalHashes
 		}
-		duplicate, aliasAware := expressions.PreparedMemberDuplicate(*scratch, intent.expression)
+		duplicate, aliasAware := expressions.PreparedMemberDuplicateWithHashes(
+			*scratch, *hashes, intent.expression)
 		if duplicate {
 			if aliasAware {
 				prepared.aliasAwareDedups++
@@ -115,6 +144,7 @@ func prepareReferenceMemberBatch(
 		}
 		prepared.inserted[i] = true
 		*scratch = append(*scratch, intent.expression)
+		*hashes = append(*hashes, intent.expression.HashCodeWithoutChildren())
 		if intent.set == expressions.ReferenceExploratoryMembers {
 			prepared.exploratory = append(prepared.exploratory, intent.expression)
 		} else {

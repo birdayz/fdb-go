@@ -72,9 +72,30 @@ type part struct {
 }
 
 // structuralKey is an ordered list of a plan's identifying fields.
-type structuralKey struct{ parts []part }
+// structuralKey carries its first few parts INLINE, which is a pure allocation
+// decision and changes no key, hash or comparison.
+//
+// A key is rebuilt on every dedup comparison — memo admission tests each intent
+// against each existing member, and both EqualsWithoutChildren and
+// HashCodeWithoutChildren build one — so the builder is one of the hottest
+// allocators in planning. Growing `parts` from nil costs four reallocations for
+// the six-to-eight parts a typical plan folds, on top of the struct itself.
+// Backing it with an inline array makes the common key exactly ONE allocation.
+// A key with more parts than the array holds simply appends onto the heap as
+// before, so nothing is capped; measured on a six-way star, this path was
+// allocating 9GB of the run's 27GB.
+const structuralKeyInlineParts = 8
 
-func newStructuralKey() *structuralKey { return &structuralKey{} }
+type structuralKey struct {
+	parts  []part
+	inline [structuralKeyInlineParts]part
+}
+
+func newStructuralKey() *structuralKey {
+	k := &structuralKey{}
+	k.parts = k.inline[:0]
+	return k
+}
 
 func (k *structuralKey) Bool(b bool) *structuralKey {
 	k.parts = append(k.parts, part{kind: partBool, b: b})

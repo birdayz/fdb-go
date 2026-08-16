@@ -41,25 +41,20 @@ go_test(
     # a starving runner behind a bigger number.
     #
     # IT IS A BUDGET DEFECT NOW, and the difference from that earlier case is
-    # that this was measured SOLO — no co-scheduling to blame — at 944s against
-    # the large budget's 900s. What moved is the PLANNER-CAP tests, which is
-    # this change's own cost rather than the box's: RFC-232's ordering-safe
-    # child-stage handoff turns formerly skipped work into counted planner
-    # tasks, so the budget rose (embeddedPlannerMaxTasks 100k -> 150k, 250k for
-    # PLAN_RIGHT_DEEP) and every test that deliberately drives the planner to
-    # its cap now does ~1.75x the work. Per-test, under -race, solo:
+    # that it was measured SOLO — no co-scheduling to blame. Solo under -race it
+    # MEASURED 944s against the large budget's 900s, and CI did worse still:
+    # co-scheduled it exceeded even a 3600s budget, so this runner is far more
+    # contention-sensitive than the dev box and a local number cannot be
+    # translated into a CI one by a constant.
     #
-    #   TestFDB_MultiwayJoinOrder_Nway              917s
-    #   TestFDB_RowDiff_Paging                      886s
-    #   TestFDB_PlannerOptions_PlanRightDeep        811s
-    #   TestFDB_PlannerCapHit_SelectPathSQLSTATE    622s
-    #   TestFDB_DistinctUniqueElisionCostProbe      490s
-    #
-    # (They run concurrently, so the wall clock is 944s, not their sum.)
-    # Eternal (3600s via .bazelrc) puts the suite at ~26% and keeps
-    # cmd/test-budget's 70% warning meaningful — `long` would be 105% and not a
-    # budget at all. The warning above still stands for the NEXT raise: measure
-    # solo before touching this number, or a starving runner hides behind it.
+    # The planner work since then took the solo figure to 603s — the cost was
+    # memo admission re-admitting every existing member per batch, re-deriving
+    # every member's hash per intent, and rebuilding a structural key per
+    # comparison — and the heaviest tests here are the planner-cap ones that pay
+    # it. 603s is 67% of large, which passes but sits on the warning line, and
+    # CI's contention factor is what makes that unsafe rather than tight.
+    # Eternal keeps it quiet; the figure to watch is 603s, and it should FALL if
+    # the remaining allocation work lands, not rise.
     timeout = "eternal",
     srcs = [
         "agg_continuation_straddle_fdb_test.go",

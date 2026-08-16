@@ -65,6 +65,21 @@ type Reference struct {
 	admittedResultType values.ExactTypeHandle
 	memberVersion      uint64
 
+	// memberHash memoizes HashCodeWithoutChildren per member.
+	//
+	// A memo member is IMMUTABLE once admitted, so its hash cannot change — but
+	// preparing an admission batch tests every intent against every existing
+	// member, so without this the hash of each member is re-derived on every
+	// batch, and deriving it walks that member's whole result Value and every
+	// predicate through FNV. On a six-way star that walk, plus the garbage it
+	// produced, dominated planning time.
+	//
+	// The memo lives on the Reference rather than on the expression so its
+	// lifetime is the memo's: nothing survives the query, and no expression type
+	// grows a mutable field that a shallow copy could carry across to a value
+	// whose hash inputs differ.
+	memberHash map[RelationalExpression]uint64
+
 	plannerStage PlannerStage
 	explState    explorationState
 	// constraintsMap is the Java-style tick/watermark exploration
@@ -655,6 +670,29 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 	return true
 }
 
+// MemberHashes returns HashCodeWithoutChildren for each member, memoized on
+// this Reference. See the memberHash field for why the memo is safe and why it
+// lives here rather than on the expressions.
+func (r *Reference) MemberHashes(members []RelationalExpression) []uint64 {
+	if r == nil || len(members) == 0 {
+		return nil
+	}
+	if r.memberHash == nil {
+		r.memberHash = make(map[RelationalExpression]uint64, len(members))
+	}
+	hashes := make([]uint64, len(members))
+	for i, m := range members {
+		if cached, ok := r.memberHash[m]; ok {
+			hashes[i] = cached
+			continue
+		}
+		h := m.HashCodeWithoutChildren()
+		r.memberHash[m] = h
+		hashes[i] = h
+	}
+	return hashes
+}
+
 // PreparedMemberDuplicate runs Reference's three memo-equality tiers without
 // mutating a Reference. The root cascades admission boundary calls it only
 // after every expression in the complete batch has been exact-recognized and
@@ -666,13 +704,37 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 // aliasAwareOnly reports that only the third tier found the duplicate, so the
 // later method-free apply can preserve Reference's diagnostic counter.
 func PreparedMemberDuplicate(members []RelationalExpression, e RelationalExpression) (duplicate bool, aliasAwareOnly bool) {
+	return PreparedMemberDuplicateWithHashes(members, nil, e)
+}
+
+// PreparedMemberDuplicateWithHashes is PreparedMemberDuplicate with the
+// members' HashCodeWithoutChildren already computed by the caller. A nil or
+// short hashes slice falls back to computing the missing ones, so the two entry
+// points cannot disagree about the answer — only about how often the hash is
+// derived.
+//
+// WHY THE CALLER GETS TO HOIST IT. A batch tests every INTENT against every
+// existing MEMBER, so computing each member's hash inside this function makes
+// it O(intents × members) derivations of a value that cannot change: a memo
+// member is immutable, and HashCodeWithoutChildren walks its whole result Value
+// through FNV. Precomputing per batch makes it O(members). Measured on a
+// six-way star, that walk and the garbage it made were a double-digit
+// percentage of planning time.
+func PreparedMemberDuplicateWithHashes(
+	members []RelationalExpression, hashes []uint64, e RelationalExpression,
+) (duplicate bool, aliasAwareOnly bool) {
 	eHash := e.HashCodeWithoutChildren()
 	aliasAware := InternsAliasAware(e)
-	for _, m := range members {
+	for i, m := range members {
 		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && preparedSameChildReferences(m, e) {
 			return true, false
 		}
-		mHash := m.HashCodeWithoutChildren()
+		mHash := uint64(0)
+		if i < len(hashes) {
+			mHash = hashes[i]
+		} else {
+			mHash = m.HashCodeWithoutChildren()
+		}
 		if mHash == eHash && preparedSemanticEquals(m, e, EmptyAliasMap()) {
 			return true, false
 		}

@@ -24,15 +24,34 @@ var memoAdmissionSourceFS embed.FS
 
 type memoAdmissionHashSpyPlan struct {
 	plans.RecordQueryPlan
-	result    values.Value
-	hashCalls atomic.Int32
+	result      values.Value
+	hashCalls   atomic.Int32
+	resultCalls atomic.Int32
 }
 
-func (p *memoAdmissionHashSpyPlan) GetResultValue() values.Value { return p.result }
+// GetResultValue counts its calls because it is the observable edge of
+// ADMISSION: admitMemoExpression reaches an expression only through here, so a
+// zero count is the proof that a member was not re-admitted.
+func (p *memoAdmissionHashSpyPlan) GetResultValue() values.Value {
+	p.resultCalls.Add(1)
+	return p.result
+}
+
 func (p *memoAdmissionHashSpyPlan) HashCodeWithoutChildren() uint64 {
 	p.hashCalls.Add(1)
 	return 1
 }
+
+// EqualsPlanWithoutChildren and GetChildren are spelled out rather than left to
+// the embedded nil RecordQueryPlan, which panics when promoted. The admission
+// tests above never reach plan equality — they are refused during admission —
+// but a test that admits a spy successfully does reach it.
+func (p *memoAdmissionHashSpyPlan) EqualsPlanWithoutChildren(other plans.RecordQueryPlan) bool {
+	o, ok := other.(*memoAdmissionHashSpyPlan)
+	return ok && o == p
+}
+
+func (p *memoAdmissionHashSpyPlan) GetChildren() []plans.RecordQueryPlan { return nil }
 
 type hostileMemoExpression struct {
 	methodCalls atomic.Int32
@@ -572,9 +591,16 @@ func TestMemoAdmissionPreparedBatchConflictsWithStageTransition(t *testing.T) {
 func TestMemoAdmissionApplyAdapterHasOneRootCaller(t *testing.T) {
 	t.Parallel()
 	fset := token.NewFileSet()
+	// PreparedMemberDuplicateWithHashes is watched INSTEAD OF, not alongside,
+	// PreparedMemberDuplicate: the admission boundary calls the hash-hoisting
+	// form, and the plain one now forwards to it for callers that have no
+	// precomputed hashes. Watching both would demand a root call to a function
+	// this package deliberately does not call, so the gate would fail on a
+	// correct tree. What the gate protects is unchanged — exactly one dedup
+	// entry point into the memo, in memo_admission.go.
 	counts := map[string][]string{
-		"ApplyPreparedMemberBatch": nil,
-		"PreparedMemberDuplicate":  nil,
+		"ApplyPreparedMemberBatch":          nil,
+		"PreparedMemberDuplicateWithHashes": nil,
 	}
 	entries, err := memoAdmissionSourceFS.ReadDir(".")
 	if err != nil {
@@ -616,5 +642,194 @@ func TestMemoAdmissionApplyAdapterHasOneRootCaller(t *testing.T) {
 		if len(sites) != 1 || !strings.HasPrefix(sites[0], "memo_admission.go:") {
 			t.Fatalf("%s call sites = %v, want exactly one root call in memo_admission.go", name, sites)
 		}
+	}
+}
+
+// A member the Reference has ALREADY admitted is not re-admitted and its hash
+// is not re-derived when a later batch prepares against the same Reference.
+//
+// This is the dimension the three "rejects late invalid yield" tests above
+// cannot see: every disagreeing member there arrives as an INTENT, so they
+// stay green whether existing members are re-proved or skipped. The skip is
+// what keeps preparation off an O(N²) curve — a six-way star prepares
+// thousands of batches against References that accumulate members, and
+// re-admitting each existing member re-thaws its Type graph out of the exact
+// handle and re-walks its result Value through FNV.
+//
+// WHAT RE-ARMS THE FULL PASS. Skipping is sound only because an existing
+// member was admitted and type-checked by THIS boundary when it was inserted,
+// so its proof is one the Reference already holds. That rests on the boundary
+// being the only door into a Reference's member sets, which
+// TestMemoAdmissionApplyAdapterHasOneRootCaller pins. If a second caller ever
+// appears, members can enter unproved and this skip stops being safe.
+func TestMemoAdmissionDoesNotReproveAlreadyAdmittedMembers(t *testing.T) {
+	t.Parallel()
+	reference, err := InitialOf(fixtureScan("REPROVE_BASE"))
+	if err != nil {
+		t.Fatalf("InitialOf: %v", err)
+	}
+
+	firstSpy := &memoAdmissionHashSpyPlan{result: values.NewQueriedValue(nil, values.NotNullLong)}
+	first := &scanPlanExpression{plan: firstSpy}
+	batch, err := prepareReferenceMemberBatch(reference, []referenceMemberIntent{
+		{set: expressions.ReferenceExploratoryMembers, expression: first},
+	})
+	if err != nil {
+		t.Fatalf("prepare first batch: %v", err)
+	}
+	if err := batch.commit(); err != nil {
+		t.Fatalf("commit first batch: %v", err)
+	}
+	if got := firstSpy.resultCalls.Load(); got == 0 {
+		t.Fatalf("first batch admitted its own intent %d times, want a non-zero count"+
+			" — a zero here means the spy never reached admission and the"+
+			" post-commit zero below would prove nothing", got)
+	}
+
+	firstSpy.resultCalls.Store(0)
+	firstSpy.hashCalls.Store(0)
+
+	secondSpy := &memoAdmissionHashSpyPlan{result: values.NewQueriedValue(nil, values.NotNullLong)}
+	second := &scanPlanExpression{plan: secondSpy}
+	batch, err = prepareReferenceMemberBatch(reference, []referenceMemberIntent{
+		{set: expressions.ReferenceExploratoryMembers, expression: second},
+	})
+	if err != nil {
+		t.Fatalf("prepare second batch: %v", err)
+	}
+	if err := batch.commit(); err != nil {
+		t.Fatalf("commit second batch: %v", err)
+	}
+
+	if got := firstSpy.resultCalls.Load(); got != 0 {
+		t.Errorf("already-admitted member re-admitted %d times by the second batch, want 0", got)
+	}
+	// The hash memo caches on first READ, and the batch that inserts a member
+	// hashes it into its own local slice without seeding the memo — so the
+	// FIRST batch after an insertion derives that member's hash once more, and
+	// every batch after that reads it from the memo. Deliberately not made
+	// zero: seeding the memo at insertion would mean writing to the Reference
+	// during preparation, and preparation is required to leave the Reference
+	// untouched until commit. One derivation per member is already the
+	// property that matters, which is why the third batch below is the real
+	// assertion — it is the one that distinguishes constant-per-member from
+	// once-per-batch.
+	if got := firstSpy.hashCalls.Load(); got > 1 {
+		t.Errorf("already-admitted member's hash derived %d times by the second batch, want at most 1", got)
+	}
+	if got := secondSpy.resultCalls.Load(); got == 0 {
+		t.Error("the second batch's own intent was never admitted")
+	}
+
+	// A third batch settles `second` into the memo the same way, and a FOURTH
+	// then has every prior member cached — so every earlier spy must be flat at
+	// zero across it. That is the assertion that separates constant-per-member
+	// from once-per-batch: with per-intent hashing, these counts would keep
+	// rising for as long as batches keep arriving.
+	thirdSpy := &memoAdmissionHashSpyPlan{result: values.NewQueriedValue(nil, values.NotNullLong)}
+	batch, err = prepareReferenceMemberBatch(reference, []referenceMemberIntent{
+		{set: expressions.ReferenceExploratoryMembers, expression: &scanPlanExpression{plan: thirdSpy}},
+	})
+	if err != nil {
+		t.Fatalf("prepare third batch: %v", err)
+	}
+	if err := batch.commit(); err != nil {
+		t.Fatalf("commit third batch: %v", err)
+	}
+
+	// `third` is deliberately NOT in this list: it was inserted by the batch
+	// immediately before the one under test, so it is the member still owed its
+	// single memo-seeding derivation, and it is asserted separately below. Every
+	// member older than that must be flat.
+	settled := []struct {
+		name string
+		spy  *memoAdmissionHashSpyPlan
+	}{{"first", firstSpy}, {"second", secondSpy}}
+	for _, probe := range append(settled, struct {
+		name string
+		spy  *memoAdmissionHashSpyPlan
+	}{"third", thirdSpy}) {
+		probe.spy.resultCalls.Store(0)
+		probe.spy.hashCalls.Store(0)
+	}
+
+	fourthSpy := &memoAdmissionHashSpyPlan{result: values.NewQueriedValue(nil, values.NotNullLong)}
+	batch, err = prepareReferenceMemberBatch(reference, []referenceMemberIntent{
+		{set: expressions.ReferenceExploratoryMembers, expression: &scanPlanExpression{plan: fourthSpy}},
+	})
+	if err != nil {
+		t.Fatalf("prepare fourth batch: %v", err)
+	}
+	if err := batch.commit(); err != nil {
+		t.Fatalf("commit fourth batch: %v", err)
+	}
+	for _, probe := range settled {
+		if got := probe.spy.resultCalls.Load(); got != 0 {
+			t.Errorf("%s member re-admitted %d times by the fourth batch, want 0", probe.name, got)
+		}
+		if got := probe.spy.hashCalls.Load(); got != 0 {
+			t.Errorf("%s member's hash re-derived %d times by the fourth batch, want 0"+
+				" — a non-zero here means the per-member cost is paid per BATCH,"+
+				" which is the O(intents × members) curve this exists to remove", probe.name, got)
+		}
+	}
+	if got := thirdSpy.resultCalls.Load(); got != 0 {
+		t.Errorf("the previous batch's member was re-admitted %d times, want 0", got)
+	}
+	if got := thirdSpy.hashCalls.Load(); got > 1 {
+		t.Errorf("the previous batch's member had its hash derived %d times, want at most 1"+
+			" (the one-time memo seeding described above)", got)
+	}
+	if got := fourthSpy.resultCalls.Load(); got == 0 {
+		t.Error("the fourth batch's own intent was never admitted")
+	}
+	if got := len(reference.Members()); got != 5 {
+		t.Errorf("Reference has %d members, want 5 (seed + four admitted intents)", got)
+	}
+}
+
+// The hash the boundary hoists must be the hash the dedup tiers would have
+// derived themselves. A hoisted value that disagrees with
+// HashCodeWithoutChildren silently disables tier 2 (mHash == eHash gates the
+// semantic comparison), which shows up not as an error but as a DUPLICATE
+// member admitted into the memo — so this asserts the memo answer, not just
+// the arithmetic.
+func TestMemoAdmissionHoistedHashesDoNotWeakenDedup(t *testing.T) {
+	t.Parallel()
+	reference, err := InitialOf(fixtureScan("HOIST_BASE"))
+	if err != nil {
+		t.Fatalf("InitialOf: %v", err)
+	}
+	// Two distinct expression objects over an identical plan: not pointer-equal,
+	// so only the hash-gated semantic tier can recognize the second as a
+	// duplicate of the first.
+	plan := &memoAdmissionHashSpyPlan{result: values.NewQueriedValue(nil, values.NotNullLong)}
+	batch, err := prepareReferenceMemberBatch(reference, []referenceMemberIntent{
+		{set: expressions.ReferenceExploratoryMembers, expression: &scanPlanExpression{plan: plan}},
+	})
+	if err != nil {
+		t.Fatalf("prepare seeding batch: %v", err)
+	}
+	if err := batch.commit(); err != nil {
+		t.Fatalf("commit seeding batch: %v", err)
+	}
+	seeded := len(reference.Members())
+
+	batch, err = prepareReferenceMemberBatch(reference, []referenceMemberIntent{
+		{set: expressions.ReferenceExploratoryMembers, expression: &scanPlanExpression{plan: plan}},
+	})
+	if err != nil {
+		t.Fatalf("prepare duplicate batch: %v", err)
+	}
+	if batch.inserted[0] {
+		t.Error("a semantically equal member was admitted as new — the hoisted" +
+			" member hash disagreed with HashCodeWithoutChildren, so the" +
+			" hash-gated semantic dedup tier never ran")
+	}
+	if err := batch.commit(); err != nil {
+		t.Fatalf("commit duplicate batch: %v", err)
+	}
+	if got := len(reference.Members()); got != seeded {
+		t.Errorf("Reference grew from %d to %d members on a duplicate", seeded, got)
 	}
 }

@@ -81,19 +81,17 @@ go_library(
 go_test(
     name = "embedded_test",
     # keep: this target is in the CI race lane's REL_SCOPE, and under -race it
-    # MEASURED 790s — against a default medium budget of 300s, so the lane
-    # reported TIMEOUT rather than a failure. Most of it is one test:
-    # TestPlannerOptions_PlanRightDeep alone measured 639s under -race, because
-    # RFC-232's ordering-safe child-stage handoff turns formerly skipped work
-    # into counted planner tasks and its six-way star now converges at ~176k of
-    # them (see embeddedRightDeepPlannerMaxTasks). That work is correctness, not
-    # waste, so the budget follows the measurement.
+    # MEASURED 224s here against a default medium budget of 300s. 224/300 is 75%,
+    # past cmd/test-budget's 70% warning line, and the CI runner is a smaller box
+    # that also co-schedules — so medium is a budget this would keep tripping.
+    # `long` puts it at 25% and leaves the warning line able to mean something.
     #
-    # `long` (900s) is deliberately NOT the answer: 790/900 is 88%, which trips
-    # cmd/test-budget's 70% warning and sits a hair under its 90% failure line,
-    # so ordinary box variance would turn this into a red PR that changed
-    # nothing. Eternal (3600s via .bazelrc) leaves the target at ~22% and quiet.
-    timeout = "eternal",
+    # It was 790s before the memo-admission work (re-admitting every existing
+    # member per batch, re-deriving every member's hash per intent, and rebuilding
+    # a structural key per comparison), of which one test — the six-way star in
+    # TestPlannerOptions_PlanRightDeep — was 639s. That test is now 30s. The
+    # number to re-measure if this starts warning is the star, not the box.
+    timeout = "long",
     srcs = [
         "agg_output_cols_nullability_test.go",
         "aggregate_group_key_accessor_name_test.go",
