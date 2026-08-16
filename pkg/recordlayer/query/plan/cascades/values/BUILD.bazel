@@ -176,6 +176,7 @@ go_test(
         "proto_descent_test.go",
         "proto_field_escaped_name_test.go",
         "proto_field_exact_type_test.go",
+        "proto_scalar_shape_test.go",
         "proto_type_test.go",
         "pullup_test.go",
         "qualifier_recovery_census_test.go",

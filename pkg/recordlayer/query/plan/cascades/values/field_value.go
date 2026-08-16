@@ -855,25 +855,38 @@ func protoFieldShapeCompatible(field protoreflect.FieldDescriptor, expected *exa
 	return protoScalarShapeCompatible(field, expected)
 }
 
+// protoScalarShapeCompatible answers whether a captured exact type can read the
+// value a descriptor stores. The scalar answer is DELEGATED to
+// ScalarTypeForProtoKind — the one authority that types stored columns — rather
+// than restated as a switch here.
+//
+// It was restated, and the two copies had drifted. The mapper carries every
+// unsigned and fixed integer kind as LONG (the runtime materializer emits
+// int64 for them) and carries an alias-bearing enum as LONG too, because the
+// engine's EnumType refuses number aliases. This switch had no case for either,
+// so both fell to `default: return false` — and the caller reads false as "this
+// descriptor disagrees with the captured shape", which rejects the WHOLE
+// protobuf row before any ordinal can be read. A table with a `uint64` column
+// was unreadable through this path, which matters most for exactly the records
+// this port exists to share: Java writes them.
+//
+// NULLABILITY IS DELIBERATELY NOT COMPARED, and that is not an oversight to fix
+// later. The DDL emitter never emits proto2 `required`
+// (metadata.TestDDLEmitterNeverEmitsRequired pins it), so every column this
+// engine creates is `optional` and protoFieldNullable reports true for it —
+// NOT NULL columns and primary keys included. Requiring the captured
+// nullability to equal the descriptor's presence would therefore reject every
+// primary key in every table. The captured type is the authority on
+// nullability; the descriptor is the authority on the value's SHAPE, and this
+// function answers only the second question.
 func protoScalarShapeCompatible(field protoreflect.FieldDescriptor, expected *exactType) bool {
+	if field == nil || expected == nil {
+		return false
+	}
 	switch field.Kind() {
-	case protoreflect.BoolKind:
-		return expected.code == TypeCodeBoolean
-	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
-		return expected.code == TypeCodeInt
-	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
-		return expected.code == TypeCodeLong || expected.code == TypeCodeVersion
-	case protoreflect.FloatKind:
-		return expected.code == TypeCodeFloat
-	case protoreflect.DoubleKind:
-		return expected.code == TypeCodeDouble
-	case protoreflect.StringKind:
-		return expected.code == TypeCodeString || expected.code == TypeCodeDate || expected.code == TypeCodeTimestamp
-	case protoreflect.BytesKind:
-		return expected.code == TypeCodeBytes
-	case protoreflect.EnumKind:
-		return expected.code == TypeCodeEnum
 	case protoreflect.MessageKind, protoreflect.GroupKind:
+		// A record's compatibility is STRUCTURAL and stays here: comparing type
+		// codes alone would accept any record for any other.
 		if string(field.Message().FullName()) == uuidProtoMessageName {
 			return expected.code == TypeCodeUuid
 		}
@@ -881,7 +894,21 @@ func protoScalarShapeCompatible(field protoreflect.FieldDescriptor, expected *ex
 			return true
 		}
 		return expected.code == TypeCodeRecord && protoRecordShapeCompatible(field.Message(), expected)
-	default:
+	}
+	mapped := ScalarTypeForProtoKind(field)
+	if IsUnresolved(mapped) {
 		return false
 	}
+	if mapped.Code() == expected.code {
+		return true
+	}
+	// The two STORAGE ALIASES, kept explicitly: a SQL type whose stored carrier
+	// is a different code. Everything else must match the mapper exactly.
+	switch expected.code {
+	case TypeCodeVersion:
+		return mapped.Code() == TypeCodeLong
+	case TypeCodeDate, TypeCodeTimestamp:
+		return mapped.Code() == TypeCodeString
+	}
+	return false
 }
