@@ -80,6 +80,20 @@ go_library(
 
 go_test(
     name = "embedded_test",
+    # keep: this target is in the CI race lane's REL_SCOPE, and under -race it
+    # MEASURED 790s — against a default medium budget of 300s, so the lane
+    # reported TIMEOUT rather than a failure. Most of it is one test:
+    # TestPlannerOptions_PlanRightDeep alone measured 639s under -race, because
+    # RFC-232's ordering-safe child-stage handoff turns formerly skipped work
+    # into counted planner tasks and its six-way star now converges at ~176k of
+    # them (see embeddedRightDeepPlannerMaxTasks). That work is correctness, not
+    # waste, so the budget follows the measurement.
+    #
+    # `long` (900s) is deliberately NOT the answer: 790/900 is 88%, which trips
+    # cmd/test-budget's 70% warning and sits a hair under its 90% failure line,
+    # so ordinary box variance would turn this into a red PR that changed
+    # nothing. Eternal (3600s via .bazelrc) leaves the target at ~22% and quiet.
+    timeout = "eternal",
     srcs = [
         "agg_output_cols_nullability_test.go",
         "aggregate_group_key_accessor_name_test.go",

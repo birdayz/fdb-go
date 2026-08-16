@@ -1424,7 +1424,46 @@ func duecBudgetRun(t *testing.T, ctx context.Context, c *sql.Conn, q string) err
 
 // duecCollectInTx is duecCollect inside an explicit transaction, where the
 // rows are produced by the PROVEN plan rather than by the fallback.
+// duecCollectInTx RETRIES a lost measurement window, and that is the exact
+// opposite of what duecRunInTx must do — the asymmetry is the point, so state
+// it rather than let the two look inconsistent.
+//
+// duecRunInTx is TIMING. Resampling there until the window happens to hold
+// turns a broken regime into a green measurement, which is why it returns the
+// truncated sample as evidence instead. This function reads ROWS, and a row
+// read has no such hazard: the data is committed, so a fresh transaction
+// returns the same multiset, and a retry buys nothing except a window that
+// held. Retrying a measurement launders the regime; retrying a read does not.
+//
+// It is needed because the fixture is 100k rows against FDB's 5s MVCC window
+// (the driver pre-empts at 4s). Unloaded that drains in 215-554 ms, but under
+// the race detector it measured 4.287s — MARGINALLY over, which is also why a
+// retry works at all: duecRetained's db.Run already leans on exactly this,
+// retrying the same shape until an attempt fits. Without it the race lane
+// reported `40001: transaction read budget exhausted` here and took the whole
+// non-temporal sweep down with it.
+//
+// The attempt cap is a real bound, not decoration: if the drain stops fitting
+// altogether, this must FAIL saying so, not spin.
 func duecCollectInTx(t *testing.T, ctx context.Context, c *sql.Conn, q string) []string {
+	t.Helper()
+	const attempts = 8
+	for attempt := 1; ; attempt++ {
+		out, lost := duecTryCollectInTx(t, ctx, c, q, attempt == attempts)
+		if !lost {
+			return out
+		}
+		t.Logf("COLLECT in-tx %q: measurement window lost on attempt %d/%d — "+
+			"re-reading committed data in a fresh transaction", q, attempt, attempts)
+	}
+}
+
+// duecTryCollectInTx is one attempt. fatal makes the last attempt report the
+// window loss as the failure it then is, so the retry above cannot become an
+// unbounded spin that reports nothing.
+func duecTryCollectInTx(
+	t *testing.T, ctx context.Context, c *sql.Conn, q string, fatal bool,
+) (out []string, windowLost bool) {
 	t.Helper()
 	tx, err := c.BeginTx(ctx, nil)
 	if err != nil {
@@ -1432,7 +1471,39 @@ func duecCollectInTx(t *testing.T, ctx context.Context, c *sql.Conn, q string) [
 	}
 	defer func() { _ = tx.Rollback() }()
 	rows, qerr := tx.QueryContext(ctx, q)
-	return duecDrain(t, rows, qerr)
+	if qerr != nil {
+		if duecMeasurementWindowLost(qerr) && !fatal {
+			return nil, true
+		}
+		t.Fatalf("collect %q: %v", q, qerr)
+	}
+	defer rows.Close()
+	var s sql.NullString
+	for rows.Next() {
+		if scanErr := rows.Scan(&s); scanErr != nil {
+			if duecMeasurementWindowLost(scanErr) && !fatal {
+				return nil, true
+			}
+			t.Fatalf("scan %q: %v", q, scanErr)
+		}
+		// The "v:" prefix is duecDrain's encoding and must match it exactly:
+		// without it a row whose email is the literal string "NULL" and a row
+		// whose email IS SQL NULL collapse to one value, and the sweep's
+		// null-count assertion is then counting the wrong thing.
+		if s.Valid {
+			out = append(out, "v:"+s.String)
+		} else {
+			out = append(out, "NULL")
+		}
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		if duecMeasurementWindowLost(rowsErr) && !fatal {
+			return nil, true
+		}
+		t.Fatalf("rows.Err %q: %v", q, rowsErr)
+	}
+	sort.Strings(out)
+	return out, false
 }
 
 // duecCollect returns the query's values sorted, with SQL NULL as "NULL", so
@@ -1764,6 +1835,19 @@ func duecRetained(
 		return true
 	})
 	_, rerr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		// RESET PER ATTEMPT. db.Run RETRIES its closure, and `out` lives in the
+		// enclosing scope, so a counter incremented here without this reset
+		// reports the SUM OVER ATTEMPTS rather than the surviving attempt. The
+		// fixture normally finishes inside FDB's 5s MVCC window and retries
+		// never happen, which is why the sum equalled the truth — until the
+		// race detector taxed every memory access and the 100k-row drain
+		// started tripping the read budget. It then reported
+		// `full=384256 … want 100000`, an impossible count off a table with
+		// 100000 rows: ~3.84 attempts added together.
+		//
+		// `narrowed` is deliberately NOT reset: it is derived from the PLAN
+		// above, before any transaction, and is retry-independent.
+		out.rows, out.keys = 0, 0
 		store, sErr := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 		if sErr != nil {
