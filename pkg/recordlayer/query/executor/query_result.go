@@ -70,6 +70,32 @@ func FromStoredRecord(rec *recordlayer.FDBStoredRecord[proto.Message]) QueryResu
 	}
 }
 
+// storedRecordToQueryResult is FromStoredRecord for a scan that already knows
+// the physical layout its output boundary will hold every row to. The row is
+// built here and has not escaped, so stamping the handle is free and spares the
+// boundary the defensive copy it owes a possibly-shared row — see
+// mintedRowLayout. A nil layout means the boundary publishes none, and the row
+// is returned exactly as FromStoredRecord builds it.
+func storedRecordToQueryResult(
+	layout values.OrdinalLayout,
+) func(*recordlayer.FDBStoredRecord[proto.Message]) QueryResult {
+	if layout == nil {
+		return FromStoredRecord
+	}
+	return func(rec *recordlayer.FDBStoredRecord[proto.Message]) QueryResult {
+		return stampRowLayout(FromStoredRecord(rec), layout)
+	}
+}
+
+// stampRowLayout records layout on a row that was just built and has not
+// escaped. A nil layout, or a result with no row, is returned untouched.
+func stampRowLayout(result QueryResult, layout values.OrdinalLayout) QueryResult {
+	if layout != nil && result.Positional != nil {
+		result.Positional.Layout = layout
+	}
+	return result
+}
+
 // positionalTypeCache caches the row-invariant PositionalRow.Type per message
 // descriptor. The RecordType depends only on the descriptor (field names in
 // declaration order), never the row, and rebuilding it per scanned row made

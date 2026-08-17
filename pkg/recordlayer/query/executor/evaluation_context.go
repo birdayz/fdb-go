@@ -260,13 +260,14 @@ func frontierRowContext(
 	// an omitted source therefore remains loudly unbound instead of reading a
 	// same-shaped slot from another quantifier.
 	if pr, isPR := pos.(*PositionalRow); isPR && pr != nil && pr.Layout != nil {
-		base := rowEvalContextForPositional(pr, ec)
-		objects, err := newEdgeObjectBinder(pr, base.Objects, edges...)
+		binding := &frontierRowBinding{}
+		base := binding.initContext(pr, ec)
+		objects, err := initEdgeObjectBinder(&binding.edges, pr, base.Objects, edges...)
 		if err != nil {
 			return nil, err
 		}
 		base.Objects = objects
-		return ordinalLayoutRowContext(pr.Layout, pr, pr.LayoutPresence, base)
+		return ordinalLayoutRowContext(&binding.windows, pr.Layout, pr, pr.LayoutPresence, base)
 	}
 	// A row whose TYPE carries leg boundaries (a merged concat /
 	// clustered box row) serves its legs as correlation-bound windows, so a
@@ -305,20 +306,79 @@ func frontierRowContext(
 	return pos, nil
 }
 
+// positionalRowContext holds a row context together with the QOV adapter that
+// context points at, so building one costs ONE allocation instead of two.
+//
+// The adapter is an 8-byte wrapper whose whole content is the context it adapts,
+// and this is built once per ROW: separately allocated, it was 1.1 allocations
+// per row on a wide scan. It cannot instead be memoized on the EvaluationContext
+// because every With* derivation is a struct copy — a cached adapter would ride
+// that copy still pointing at the ORIGINAL context, and serve bindings that the
+// derivation replaced. Co-allocating needs no such invariant: the adapter is
+// reachable only from the context it was built for, and dies with it.
+type positionalRowContext struct {
+	ctx    values.RowEvalContext
+	binder evaluationObjectBinder
+}
+
+// frontierRowBinding is the whole per-row chain of an admitted physical row's
+// evaluation context in ONE allocation: the context itself, the outer-correlation
+// adapter it starts from, the edge binder layered on that, and room for the
+// layout binder values materializes on top.
+//
+// The chain is four objects that are born together, point only at each other,
+// and die together at the end of the row — so allocating them separately bought
+// nothing and cost three allocations per row where one does. Together with the
+// layout stamp at mint time and the unboxed cursor results, this is what brought
+// a 20k-row wide scan's allocation count back to master's.
+//
+// It is deliberately NOT reused across rows. Reuse would be measurably cheaper
+// still and would rest on nothing enforcing that no Value retains the context it
+// was evaluated against; the failure mode of that invariant breaking is a row
+// silently evaluated against its successor's data, which no test shape reliably
+// catches. One allocation per row is the version that needs no such promise.
+type frontierRowBinding struct {
+	ctx     values.RowEvalContext
+	outer   evaluationObjectBinder
+	edges   edgeObjectBinder
+	windows values.OrdinalBinderStorage
+}
+
+// initContext fills the binding's context and outer adapter for pos, returning
+// the context the rest of the chain layers onto. It is rowEvalContextForPositional
+// against storage the caller already owns.
+func (b *frontierRowBinding) initContext(
+	pos values.OrdinalRow,
+	ec *EvaluationContext,
+) *values.RowEvalContext {
+	b.ctx.Positional = pos
+	if ec == nil {
+		return &b.ctx
+	}
+	b.outer.base = ec
+	b.ctx.Binder = ec
+	b.ctx.Correlations = ec
+	b.ctx.Objects = &b.outer
+	b.ctx.ScalarSubqueries = ec.scalarSubqueries
+	b.ctx.Clock = ec
+	return &b.ctx
+}
+
 // rowEvalContextForPositional preserves every evaluation capability while
 // adapting legacy correlation bindings into the exact-QOV namespace used as
 // the base of an OrdinalLayout binder.
 func rowEvalContextForPositional(pos values.OrdinalRow, ec *EvaluationContext) *values.RowEvalContext {
-	result := &values.RowEvalContext{Positional: pos}
+	holder := &positionalRowContext{ctx: values.RowEvalContext{Positional: pos}}
 	if ec == nil {
-		return result
+		return &holder.ctx
 	}
-	result.Binder = ec
-	result.Correlations = ec
-	result.Objects = &evaluationObjectBinder{base: ec}
-	result.ScalarSubqueries = ec.scalarSubqueries
-	result.Clock = ec
-	return result
+	holder.binder.base = ec
+	holder.ctx.Binder = ec
+	holder.ctx.Correlations = ec
+	holder.ctx.Objects = &holder.binder
+	holder.ctx.ScalarSubqueries = ec.scalarSubqueries
+	holder.ctx.Clock = ec
+	return &holder.ctx
 }
 
 // valuesDependOnStatementClock reports whether ANY of the value trees

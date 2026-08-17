@@ -448,7 +448,7 @@ func TestLegWindow_WrongSlotHazard(t *testing.T) {
 	// installed, so exact QOV evaluation cannot use the ambient positional
 	// fallback and must report the absent binding.
 	aOnly := newLayout([]values.OrdinalWindowSpec{aWindow})
-	aOnlyCtx, err := ordinalLayoutRowContext(aOnly, rowFor(aOnly), nil, nil)
+	aOnlyCtx, err := ordinalLayoutRowContext(&values.OrdinalBinderStorage{}, aOnly, rowFor(aOnly), nil, nil)
 	if err != nil {
 		t.Fatalf("A-only ordinalLayoutRowContext: %v", err)
 	}
@@ -463,7 +463,7 @@ func TestLegWindow_WrongSlotHazard(t *testing.T) {
 
 	// (ii) GREEN: the full layout maps B's source slot 1 to carrier slot 3.
 	full := newLayout([]values.OrdinalWindowSpec{aWindow, bWindow})
-	fullCtx, err := ordinalLayoutRowContext(full, rowFor(full), nil, nil)
+	fullCtx, err := ordinalLayoutRowContext(&values.OrdinalBinderStorage{}, full, rowFor(full), nil, nil)
 	if err != nil {
 		t.Fatalf("full ordinalLayoutRowContext: %v", err)
 	}

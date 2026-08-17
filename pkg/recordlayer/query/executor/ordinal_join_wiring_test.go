@@ -1276,7 +1276,7 @@ func TestLegWindowBinder_BoxAliasReadsLeaf(t *testing.T) {
 	if len(carrierType.Legs) != 0 || len(aType.Legs) != 0 || len(bType.Legs) != 0 || len(eType.Legs) != 0 {
 		t.Fatal("fixture restored legacy RecordType.Legs authority")
 	}
-	ctx, err := ordinalLayoutRowContext(full, rowFor(full), nil, nil)
+	ctx, err := ordinalLayoutRowContext(&values.OrdinalBinderStorage{}, full, rowFor(full), nil, nil)
 	if err != nil {
 		t.Fatalf("ordinalLayoutRowContext: %v", err)
 	}
@@ -1295,7 +1295,7 @@ func TestLegWindowBinder_BoxAliasReadsLeaf(t *testing.T) {
 	// Mutation control: the same-shaped rightmost slot does not bind E without
 	// E's exact window.
 	withoutE := newLayout(windows[:2])
-	withoutECtx, err := ordinalLayoutRowContext(withoutE, rowFor(withoutE), nil, nil)
+	withoutECtx, err := ordinalLayoutRowContext(&values.OrdinalBinderStorage{}, withoutE, rowFor(withoutE), nil, nil)
 	if err != nil {
 		t.Fatalf("context without E: %v", err)
 	}

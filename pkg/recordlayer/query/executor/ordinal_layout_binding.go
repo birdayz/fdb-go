@@ -85,6 +85,18 @@ func newEdgeObjectBinder(
 	base values.QuantifiedObjectBinder,
 	edges ...values.QuantifiedObjectValue,
 ) (values.QuantifiedObjectBinder, error) {
+	return initEdgeObjectBinder(&edgeObjectBinder{}, row, base, edges...)
+}
+
+// initEdgeObjectBinder is newEdgeObjectBinder writing into storage the caller
+// owns, so a per-row holder can carry the edge binder in its own allocation.
+// storage must be zero and must not be reused while the binder is live.
+func initEdgeObjectBinder(
+	binder *edgeObjectBinder,
+	row *PositionalRow,
+	base values.QuantifiedObjectBinder,
+	edges ...values.QuantifiedObjectValue,
+) (values.QuantifiedObjectBinder, error) {
 	if len(edges) == 0 {
 		return base, nil
 	}
@@ -95,7 +107,7 @@ func newEdgeObjectBinder(
 	if err != nil {
 		return nil, err
 	}
-	binder := &edgeObjectBinder{base: base}
+	binder.base = base
 	binder.bindings = binder.inline[:0]
 	for edgeIndex, edge := range edges {
 		exact, ok := values.AsQuantifiedObjectValue(edge)
@@ -191,7 +203,18 @@ func (b *edgeObjectBinder) GetQuantifiedBinding(view values.QuantifiedObjectValu
 // context preserves all base evaluation capabilities and installs the exact
 // QOV binder; QOV evaluation therefore cannot use the ambient positional-row
 // fallback.
+//
+// It ADOPTS base rather than copying it, and therefore takes ownership: base is
+// the context this call returns, with the layout binder installed. Every caller
+// mints the base immediately beforehand for exactly this call and never reads it
+// again, so copying only bought a second RowEvalContext allocation per ROW — 1.1
+// per row on a wide scan, for a value the caller had just finished building. A
+// future caller that needs to keep its base must hand over a copy.
+// The layout binder is written into storage the caller owns, for the same reason
+// base is adopted: the caller has a per-row holder already and the binder is one
+// more member of it.
 func ordinalLayoutRowContext(
+	storage *values.OrdinalBinderStorage,
 	layout values.OrdinalLayout,
 	carrier any,
 	presence values.WindowMatchPresence,
@@ -212,13 +235,13 @@ func ordinalLayoutRowContext(
 	if base != nil {
 		baseObjects = base.Objects
 	}
-	binder, err := values.NewOrdinalObjectBinder(layout, datum, presence, baseObjects)
+	binder, err := values.InitOrdinalObjectBinder(storage, layout, datum, presence, baseObjects)
 	if err != nil {
 		return nil, err
 	}
-	var result values.RowEvalContext
-	if base != nil {
-		result = *base
+	result := base
+	if result == nil {
+		result = &values.RowEvalContext{}
 	}
 	result.Objects = binder
 	if row, ok := datum.(values.OrdinalRow); ok {
@@ -226,7 +249,7 @@ func ordinalLayoutRowContext(
 	} else {
 		result.Positional = nil
 	}
-	return &result, nil
+	return result, nil
 }
 
 // scalarLayoutRowContext binds the executor's one-slot wrapper for a scalar
@@ -278,14 +301,74 @@ func requireSoleInputQOV(plan plans.RecordQueryPlan) (values.QuantifiedObjectVal
 	return qov, nil
 }
 
+// providedRecordOutputLayout resolves the record layout a plan's output boundary
+// publishes on every emitted row, together with the carrier type that boundary
+// checks each row against. ok=false means the boundary publishes nothing: a
+// dynamic AnyRecord plan has no concrete layout yet and keeps its existing row
+// carrier until a physical refinement chooses one, and a scalar carrier is bound
+// by the owning evaluation phase rather than attached to a record wrapper. Every
+// other unavailable layout is malformed and is reported.
+func providedRecordOutputLayout(
+	plan plans.RecordQueryPlan,
+) (values.OrdinalLayout, values.Type, bool, error) {
+	layout, err := plan.ProvidedOutputLayout()
+	if err != nil {
+		if unavailable, ok := err.(*plans.OrdinalLayoutUnavailableError); ok &&
+			unavailable.Code == plans.OrdinalLayoutDynamicCarrier {
+			return nil, nil, false, nil
+		}
+		return nil, nil, false, fmt.Errorf("executor: %T provided output layout: %w", plan, err)
+	}
+	if layout == nil {
+		return nil, nil, false, layoutBindingError(values.LayoutCarrierMismatch, "plan returned nil provided layout")
+	}
+	if layout.CarrierKind() != values.OrdinalCarrierRecord {
+		return nil, nil, false, nil
+	}
+	carrier := layout.Carrier()
+	if carrier == nil {
+		return nil, nil, false, layoutBindingError(values.LayoutCarrierMismatch, "record layout has no carrier")
+	}
+	// The carrier type is derived ONCE per cursor, because it is a property of
+	// the LAYOUT and not of a row: this thaws a fresh Type graph out of the
+	// carrier's exact handle, and the carrier is the same object for every row
+	// the cursor will ever emit. Deriving it per row made a 1M-row scan thaw 1M
+	// Type graphs to compare each against a row shape that had not changed.
+	return layout, carrier.FlowedType(), true, nil
+}
+
+// mintedRowLayout is providedRecordOutputLayout for a plan that is about to MINT
+// its own rows, and it exists to make the output boundary below a pointer check
+// instead of a per-row row copy.
+//
+// AttachOrdinalLayout must copy a row whose layout differs, because a row
+// arriving at a boundary may still be held by whoever produced it — a join
+// re-emitting one outer row, a sort keeping its buffer. A row the plan is
+// building right now has exactly one owner, so stamping the handle it is about
+// to be held to costs nothing and the boundary then takes its identity fast
+// path. Measured on a 20k-row wide scan, whose plan is a projection over a scan
+// and therefore crosses two boundaries, the copies were 4.4 allocations per row
+// — the largest single item in the row path.
+//
+// A resolution failure returns nil rather than propagating: the boundary re-runs
+// the identical resolution and is the ONE place that reports it, so a producer
+// that swallowed it would only hide the report behind an unstamped row.
+func mintedRowLayout(plan plans.RecordQueryPlan) values.OrdinalLayout {
+	layout, _, ok, err := providedRecordOutputLayout(plan)
+	if err != nil || !ok {
+		return nil
+	}
+	return layout
+}
+
 // attachProvidedOutputLayout publishes a concrete plan's selected physical
 // output property on each emitted row. It is intentionally a cursor adapter:
 // continuations remain the child's bytes, while every resumed value is checked
 // against the same plan-authoritative layout before it reaches a parent.
 //
-// A dynamic AnyRecord plan has no concrete layout yet and keeps its existing
-// row carrier until a physical refinement chooses one. Every other unavailable
-// layout is malformed and fails before a row is exposed.
+// It stays the authority even for a producer that stamped the handle itself at
+// mint time (see mintedRowLayout): the row-type-against-carrier check runs
+// before the identity fast path, so a stamped row is still verified here.
 func attachProvidedOutputLayout(
 	plan plans.RecordQueryPlan,
 	cursor recordlayer.RecordCursor[QueryResult],
@@ -293,33 +376,13 @@ func attachProvidedOutputLayout(
 	if plan == nil || cursor == nil {
 		return nil, layoutBindingError(values.LayoutCarrierMismatch, "plan and cursor must be non-nil")
 	}
-	layout, err := plan.ProvidedOutputLayout()
+	layout, carrierType, ok, err := providedRecordOutputLayout(plan)
 	if err != nil {
-		if unavailable, ok := err.(*plans.OrdinalLayoutUnavailableError); ok &&
-			unavailable.Code == plans.OrdinalLayoutDynamicCarrier {
-			return cursor, nil
-		}
-		return nil, fmt.Errorf("executor: %T provided output layout: %w", plan, err)
+		return nil, err
 	}
-	if layout == nil {
-		return nil, layoutBindingError(values.LayoutCarrierMismatch, "plan returned nil provided layout")
-	}
-	if layout.CarrierKind() != values.OrdinalCarrierRecord {
-		// Scalar plans currently materialize their result as a one-column
-		// QueryResult at the executor boundary. Their scalar carrier is bound in
-		// the owning evaluation phase rather than attached to a record wrapper.
+	if !ok {
 		return cursor, nil
 	}
-	carrier := layout.Carrier()
-	if carrier == nil {
-		return nil, layoutBindingError(values.LayoutCarrierMismatch, "record layout has no carrier")
-	}
-	// HOISTED, because it is a property of the LAYOUT and not of a row: this
-	// thaws a fresh Type graph out of the carrier's exact handle, and the
-	// carrier is the same object for every row this cursor will ever emit.
-	// Deriving it inside the closure made a 1M-row scan thaw 1M Type graphs to
-	// compare each against a row shape that had not changed.
-	carrierType := carrier.FlowedType()
 	return recordlayer.MapErrCursor(cursor, func(result QueryResult) (QueryResult, error) {
 		if result.Positional == nil {
 			return QueryResult{}, layoutBindingError(values.LayoutRuntimeShape, "record plan emitted no positional row")

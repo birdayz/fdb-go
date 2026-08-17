@@ -84,7 +84,7 @@ func TestMixedElementSpanSynthesis(t *testing.T) {
 	}
 
 	full := newLayout([]values.OrdinalWindowSpec{sourceWindow, elementWindow})
-	ctx, err := ordinalLayoutRowContext(full, rowFor(full), nil, nil)
+	ctx, err := ordinalLayoutRowContext(&values.OrdinalBinderStorage{}, full, rowFor(full), nil, nil)
 	if err != nil {
 		t.Fatalf("ordinalLayoutRowContext: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestMixedElementSpanSynthesis(t *testing.T) {
 	// Mutation control: with no EL window, the exact object binder must not
 	// fall back to carrier slot 2 (or another same-typed slot).
 	sourceOnly := newLayout([]values.OrdinalWindowSpec{sourceWindow})
-	sourceOnlyCtx, err := ordinalLayoutRowContext(sourceOnly, rowFor(sourceOnly), nil, nil)
+	sourceOnlyCtx, err := ordinalLayoutRowContext(&values.OrdinalBinderStorage{}, sourceOnly, rowFor(sourceOnly), nil, nil)
 	if err != nil {
 		t.Fatalf("source-only ordinalLayoutRowContext: %v", err)
 	}
@@ -595,7 +595,7 @@ func TestSpanWindowCrossAgreement_BoxLeg(t *testing.T) {
 		t.Fatalf("NewLayoutPositionalRow: %v", err)
 	}
 	copy(row.Slots, []any{int64(10), int64(11), int64(20), int64(21), int64(30)})
-	ctx, err := ordinalLayoutRowContext(explicit, row, nil, nil)
+	ctx, err := ordinalLayoutRowContext(&values.OrdinalBinderStorage{}, explicit, row, nil, nil)
 	if err != nil {
 		t.Fatalf("ordinalLayoutRowContext: %v", err)
 	}
@@ -809,7 +809,7 @@ func TestSpanWindowCrossAgreement_NestedSubLeg(t *testing.T) {
 		t.Fatalf("NewLayoutPositionalRow: %v", err)
 	}
 	copy(row.Slots, []any{int64(1), int64(2), int64(20), nested, int64(22)})
-	ctx, err := ordinalLayoutRowContext(layout, row, nil, nil)
+	ctx, err := ordinalLayoutRowContext(&values.OrdinalBinderStorage{}, layout, row, nil, nil)
 	if err != nil {
 		t.Fatalf("ordinalLayoutRowContext: %v", err)
 	}
@@ -835,7 +835,7 @@ func TestSpanWindowCrossAgreement_NestedSubLeg(t *testing.T) {
 		t.Fatalf("row without S: %v", err)
 	}
 	copy(withoutSRow.Slots, row.Slots)
-	withoutSCtx, err := ordinalLayoutRowContext(withoutS, withoutSRow, nil, nil)
+	withoutSCtx, err := ordinalLayoutRowContext(&values.OrdinalBinderStorage{}, withoutS, withoutSRow, nil, nil)
 	if err != nil {
 		t.Fatalf("context without S: %v", err)
 	}
@@ -910,7 +910,7 @@ func TestNestedSubLeg_ALegsCarryingSubRowDeclinesDeterministically(t *testing.T)
 		t.Fatalf("NewLayoutPositionalRow: %v", err)
 	}
 	carrier.Set(0, subValue)
-	ctx, err := ordinalLayoutRowContext(layout, carrier, nil, nil)
+	ctx, err := ordinalLayoutRowContext(&values.OrdinalBinderStorage{}, layout, carrier, nil, nil)
 	if err != nil {
 		t.Fatalf("ordinalLayoutRowContext: %v", err)
 	}

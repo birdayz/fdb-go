@@ -38,7 +38,7 @@ func TestMergeRows_LegWindowedQualifiedReads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("outer-only AttachOrdinalLayout: %v", err)
 	}
-	outerOnlyCtx, err := ordinalLayoutRowContext(outerOnly, outerOnlyRow, nil, nil)
+	outerOnlyCtx, err := ordinalLayoutRowContext(&values.OrdinalBinderStorage{}, outerOnly, outerOnlyRow, nil, nil)
 	if err != nil {
 		t.Fatalf("outer-only ordinalLayoutRowContext: %v", err)
 	}

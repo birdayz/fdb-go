@@ -128,7 +128,7 @@ func TestOrdinalLayoutRowContextBindsExactCurrentAndSourceWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	row.Slots[0], row.Slots[1] = int64(7), nil
-	context, err := ordinalLayoutRowContext(layout, row, nil, &values.RowEvalContext{})
+	context, err := ordinalLayoutRowContext(&values.OrdinalBinderStorage{}, layout, row, nil, &values.RowEvalContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestOrdinalLayoutRowContextRejectsForeignAndEqualButDistinctLayouts(t *test
 			if name == "distinct equal layout" {
 				layout = second
 			}
-			context, err := ordinalLayoutRowContext(layout, carrier, nil, nil)
+			context, err := ordinalLayoutRowContext(&values.OrdinalBinderStorage{}, layout, carrier, nil, nil)
 			if context != nil {
 				t.Fatalf("failure returned context %T", context)
 			}

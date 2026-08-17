@@ -216,13 +216,38 @@ func exactWindowMatchPresence(view WindowMatchPresence) (*windowMatchPresence, b
 
 // ordinalObjectBinder is a row-local materialization of one immutable layout.
 // All source windows are resolved once at construction; lookup is then exact
-// QOV validation plus an O(1) map read.
+// QOV validation plus a scan of the resolved windows.
+//
+// The bindings are a LIST holding one entry per LAYOUT WINDOW — NONE for a plain
+// scan, one per retained source for a join — and validateOrdinalWindows rejects a
+// repeated correlation, so the list is a bijection exactly as a map keyed by
+// correlation was. It was that map, and a binder is built once per ROW: a plain
+// 20k-row scan allocated one map per row to hold NOTHING, and a join paid a
+// bucket allocation plus hashing per row to hold a pair. If an operator ever
+// flows enough windows for the linear scan to matter, that is the signal to
+// reconsider, not the window count of any operator that exists today.
+//
+// The list is left NIL for a windowless layout rather than backed by an inline
+// array, because the windowless case is the per-row common one: a scan pays no
+// allocation AND carries no dead array, and a join pays one right-sized slice.
 type ordinalObjectBinder struct {
 	layout                *ordinalLayout
 	current               any
 	currentExplicitAbsent bool
-	bindings              map[CorrelationIdentifier]ordinalObjectBinding
+	bindings              []ordinalObjectBinding
 	base                  QuantifiedObjectBinder
+}
+
+// binding resolves one correlation against the row's materialized windows.
+func (b *ordinalObjectBinder) binding(
+	correlation CorrelationIdentifier,
+) (ordinalObjectBinding, bool) {
+	for i := range b.bindings {
+		if b.bindings[i].source.correlation == correlation {
+			return b.bindings[i], true
+		}
+	}
+	return ordinalObjectBinding{}, false
 }
 
 type ordinalObjectBinding struct {
@@ -231,11 +256,34 @@ type ordinalObjectBinding struct {
 	explicitAbsent bool
 }
 
+// OrdinalBinderStorage is uninitialized room for the row binder
+// InitOrdinalObjectBinder builds. A caller that already allocates a per-row
+// holder — the executor allocates one for the row's evaluation context and its
+// outer/edge binders — embeds this and pays for the layout binder in the SAME
+// allocation instead of a second one. The binder itself stays unexported: the
+// storage is opaque and only the returned interface is usable.
+type OrdinalBinderStorage struct {
+	binder ordinalObjectBinder
+}
+
 // NewOrdinalObjectBinder materializes the current carrier and every local
 // source window for one row. A record carrier is an OrdinalRow (or nil only for
 // a nullable current record); a scalar carrier is the scalar datum itself.
 // External/edge bindings may be delegated to base.
 func NewOrdinalObjectBinder(
+	layout OrdinalLayout,
+	carrier any,
+	presence WindowMatchPresence,
+	base QuantifiedObjectBinder,
+) (QuantifiedObjectBinder, error) {
+	return InitOrdinalObjectBinder(&OrdinalBinderStorage{}, layout, carrier, presence, base)
+}
+
+// InitOrdinalObjectBinder is NewOrdinalObjectBinder writing into storage the
+// caller owns. storage must be zero and must not be reused while the returned
+// binder is live.
+func InitOrdinalObjectBinder(
+	storage *OrdinalBinderStorage,
 	layout OrdinalLayout,
 	carrier any,
 	presence WindowMatchPresence,
@@ -293,12 +341,13 @@ func NewOrdinalObjectBinder(
 		currentExplicitAbsent = true
 	}
 
-	binder := &ordinalObjectBinder{
-		layout:                exactLayout,
-		current:               current,
-		currentExplicitAbsent: currentExplicitAbsent,
-		bindings:              make(map[CorrelationIdentifier]ordinalObjectBinding, len(exactLayout.windows)),
-		base:                  base,
+	binder := &storage.binder
+	binder.layout = exactLayout
+	binder.current = current
+	binder.currentExplicitAbsent = currentExplicitAbsent
+	binder.base = base
+	if len(exactLayout.windows) > 0 {
+		binder.bindings = make([]ordinalObjectBinding, 0, len(exactLayout.windows))
 	}
 	for i := range exactLayout.windows {
 		window := &exactLayout.windows[i]
@@ -308,9 +357,9 @@ func NewOrdinalObjectBinder(
 			// carrier marker is stronger than each individual window marker and
 			// lets a fabricated default stay current-only in meaning even when it
 			// reuses a pass-through child's richer physical layout.
-			binder.bindings[window.source.correlation] = ordinalObjectBinding{
+			binder.bindings = append(binder.bindings, ordinalObjectBinding{
 				source: window.source, explicitAbsent: true,
-			}
+			})
 			continue
 		}
 		if window.nullSupplying {
@@ -322,9 +371,9 @@ func NewOrdinalObjectBinder(
 				return nil, resolutionError(LayoutPresenceMissing, path, "null-supplying window match state is unknown")
 			}
 			if !state.matched {
-				binder.bindings[window.source.correlation] = ordinalObjectBinding{
+				binder.bindings = append(binder.bindings, ordinalObjectBinding{
 					source: window.source, explicitAbsent: true,
-				}
+				})
 				continue
 			}
 		}
@@ -344,7 +393,7 @@ func NewOrdinalObjectBinder(
 		if value == nil && !window.source.flowed.nullable {
 			return nil, resolutionError(LayoutNullabilityMismatch, path, "non-nullable source window resolved to SQL NULL")
 		}
-		binder.bindings[window.source.correlation] = ordinalObjectBinding{source: window.source, value: value}
+		binder.bindings = append(binder.bindings, ordinalObjectBinding{source: window.source, value: value})
 	}
 	if exactPresence != nil {
 		for correlation := range exactPresence.bySource {
@@ -467,7 +516,7 @@ func (b *ordinalObjectBinder) IsExplicitNullQuantifiedBinding(view QuantifiedObj
 		}
 		return b.currentExplicitAbsent, nil
 	}
-	if binding, exists := b.bindings[qov.correlation]; exists {
+	if binding, exists := b.binding(qov.correlation); exists {
 		if !exactRowShapesAgree(binding.source.flowed, qov.flowed) {
 			return false, exactTypeConflict("binding.qov", "source absence lookup", qov.correlation, binding.source.flowed, qov.flowed)
 		}
@@ -490,7 +539,7 @@ func (b *ordinalObjectBinder) GetQuantifiedBinding(view QuantifiedObjectValue) (
 		}
 		return b.current, true, nil
 	}
-	if binding, exists := b.bindings[qov.correlation]; exists {
+	if binding, exists := b.binding(qov.correlation); exists {
 		if !exactRowShapesAgree(binding.source.flowed, qov.flowed) {
 			return nil, false, exactTypeConflict("binding.qov", "source binding", qov.correlation, binding.source.flowed, qov.flowed)
 		}

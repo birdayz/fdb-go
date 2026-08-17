@@ -363,7 +363,7 @@ func executeScan(
 		if err != nil {
 			return nil, err
 		}
-		mapped := recordlayer.MapCursor(stored, FromStoredRecord)
+		mapped := recordlayer.MapCursor(stored, storedRecordToQueryResult(mintedRowLayout(p)))
 		return applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), nil
 	}
 
@@ -375,7 +375,7 @@ func executeScan(
 		inner = store.ScanRecords(continuation, scanProps)
 	}
 
-	return recordlayer.MapCursor(inner, FromStoredRecord), nil
+	return recordlayer.MapCursor(inner, storedRecordToQueryResult(mintedRowLayout(p))), nil
 }
 
 // openIndexEntryCursor opens the physical index-entry cursor for an index scan:
@@ -2637,6 +2637,10 @@ func executeProjection(
 	// positional row, projections evaluate under the LEG WINDOWS — computed
 	// once, from the input plan's result value.
 	legSpans, windowsOK := downstreamLegWindows(p.GetInner())
+	// The projection's rows are minted below and have exactly one owner, so they
+	// carry the boundary's handle from birth rather than being copied to acquire
+	// it — see mintedRowLayout.
+	mintLayout := mintedRowLayout(p)
 	var evalErr error
 	mapped := recordlayer.MapCursor(innerCursor, func(qr QueryResult) QueryResult {
 		if evalErr != nil {
@@ -2674,7 +2678,7 @@ func executeProjection(
 		// parallel construction from the projected values, named by the output
 		// schema (projType).
 		return QueryResult{
-			Positional: &PositionalRow{Type: projType, Slots: slots},
+			Positional: &PositionalRow{Type: projType, Slots: slots, Layout: mintLayout},
 			Record:     qr.Record,
 			PrimaryKey: qr.PrimaryKey,
 		}
