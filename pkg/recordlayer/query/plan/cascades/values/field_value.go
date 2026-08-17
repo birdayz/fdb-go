@@ -491,7 +491,11 @@ func resolveAgainstQOV(
 	// source-relative (unpinned).
 	path := &fieldPath{
 		Accessors: accessors,
-		Domain:    OrdinalDomainOfType(root.thaw()),
+		// thawShared, not thaw: the graph is read for its column names and
+		// discarded on the next line. A defensive copy here allocated a whole
+		// Type graph per resolution to answer a question about an immutable
+		// handle, and field resolution is on the planner's inner loop.
+		Domain: OrdinalDomainOfType(root.thawShared()),
 	}
 	return &fieldValue{
 		Field:      accessors[len(accessors)-1].Field,

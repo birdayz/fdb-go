@@ -5097,6 +5097,18 @@ func (*quantifiedObjectValue) Children() []Value { return []Value{} }
 
 // Type returns a fresh copy of the exact flowed type. Nullability widening is
 // performed once at the quantifier edge, not unconditionally here.
+//
+// The fresh copy is DELIBERATE and is pinned by
+// TestRFC232QOVSnapshotsAndDefensivelyThawsItsType, which mutates one Type()
+// result and requires the next to be unaffected. It was tried as a shared
+// read-only graph — Type() is the generic accessor the planner calls while
+// hashing and comparing, and it accounted for 78% of the allocations under
+// FlowedType — and the pin correctly rejected it: unlike the constant-valued
+// implementations that return package singletons, this graph is derived per
+// call from a handle whose identity a QOV and every memo boundary depend on.
+//
+// SharedFlowedType is the named opt-out for readers that only ask the graph a
+// question, and it is where that saving belongs.
 func (q *quantifiedObjectValue) Type() Type { return q.FlowedType() }
 
 // Name returns the debug-print kind.
