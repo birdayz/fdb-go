@@ -50,15 +50,34 @@ func (b *evaluationObjectBinder) GetQuantifiedBinding(qov values.QuantifiedObjec
 // edge. A record edge receives the complete positional row; a scalar edge
 // receives the sole slot of its executor carrier. It is deliberately keyed by
 // exact QOV (correlation plus exact type), not by an ambient alias lookup.
+// The bindings are a LIST, scanned linearly. A binder is built once per ROW and
+// holds one entry per physical edge — one for a scan, two for a join — so a map
+// paid its bucket allocation and its hashing on every row to hold a pair. On a
+// 20k-row wide scan that was 410MB, the largest single allocator in the whole
+// benchmark. Keep it a list; if an operator ever flows enough edges for the
+// linear scan to matter, that is the signal to reconsider, not the entry count
+// of any operator that exists today.
 type edgeObjectBinder struct {
 	base     values.QuantifiedObjectBinder
-	bindings map[values.CorrelationIdentifier]edgeObjectBinding
+	bindings []edgeObjectBinding
+	inline   [2]edgeObjectBinding
 }
 
 type edgeObjectBinding struct {
 	qov            values.QuantifiedObjectValue
 	value          any
 	explicitAbsent bool
+}
+
+func (b *edgeObjectBinder) binding(
+	correlation values.CorrelationIdentifier,
+) (edgeObjectBinding, bool) {
+	for i := range b.bindings {
+		if b.bindings[i].qov.Correlation() == correlation {
+			return b.bindings[i], true
+		}
+	}
+	return edgeObjectBinding{}, false
 }
 
 func newEdgeObjectBinder(
@@ -76,10 +95,8 @@ func newEdgeObjectBinder(
 	if err != nil {
 		return nil, err
 	}
-	binder := &edgeObjectBinder{
-		base:     base,
-		bindings: make(map[values.CorrelationIdentifier]edgeObjectBinding, len(edges)),
-	}
+	binder := &edgeObjectBinder{base: base}
+	binder.bindings = binder.inline[:0]
 	for edgeIndex, edge := range edges {
 		exact, ok := values.AsQuantifiedObjectValue(edge)
 		if !ok || exact == nil {
@@ -111,15 +128,15 @@ func newEdgeObjectBinder(
 				return nil, layoutBindingError(values.LayoutNullabilityMismatch, fmt.Sprintf("edge %d non-nullable scalar is SQL NULL", edgeIndex))
 			}
 		}
-		if previous, exists := binder.bindings[exact.Correlation()]; exists {
+		if previous, exists := binder.binding(exact.Correlation()); exists {
 			if !values.QuantifiedRowShapesAgree(values.SharedFlowedType(previous.qov), flowed) {
 				return nil, layoutBindingError(values.CorrelationTypeConflict, fmt.Sprintf("edge %d reuses one correlation with another exact type", edgeIndex))
 			}
 			continue
 		}
-		binder.bindings[exact.Correlation()] = edgeObjectBinding{
+		binder.bindings = append(binder.bindings, edgeObjectBinding{
 			qov: exact, value: whole, explicitAbsent: explicitAbsent,
-		}
+		})
 	}
 	return binder, nil
 }
@@ -134,7 +151,7 @@ func (b *edgeObjectBinder) IsExplicitNullQuantifiedBinding(view values.Quantifie
 	if !ok || exact == nil {
 		return false, layoutBindingError(values.CorrelationForeignValue, "edge null-presence lookup QOV is not exact")
 	}
-	if binding, exists := b.bindings[exact.Correlation()]; exists {
+	if binding, exists := b.binding(exact.Correlation()); exists {
 		if !values.QuantifiedRowShapesAgree(values.SharedFlowedType(binding.qov), values.SharedFlowedType(exact)) {
 			return false, layoutBindingError(values.CorrelationTypeConflict,
 				fmt.Sprintf("edge null-presence lookup %s: read as %s, declared %s",
@@ -154,7 +171,7 @@ func (b *edgeObjectBinder) GetQuantifiedBinding(view values.QuantifiedObjectValu
 	if !ok || exact == nil {
 		return nil, false, layoutBindingError(values.CorrelationForeignValue, "edge lookup QOV is not exact")
 	}
-	if binding, exists := b.bindings[exact.Correlation()]; exists {
+	if binding, exists := b.binding(exact.Correlation()); exists {
 		if !values.QuantifiedRowShapesAgree(values.SharedFlowedType(binding.qov), values.SharedFlowedType(exact)) {
 			return nil, false, layoutBindingError(values.CorrelationTypeConflict,
 				fmt.Sprintf("edge lookup %s: read as %s, declared %s",
