@@ -79,23 +79,46 @@ func (b *PlanExprBase) cachedStructuralHash(owner any) (uint64, bool) {
 // storeStructuralHash records hash for owner, but only when the cell is unclaimed or
 // already claimed by owner — see the type doc for why an unconditional store makes two
 // sharers evict each other.
-func (b *PlanExprBase) storeStructuralHash(owner any, hash uint64) {
+// It reports whether the value was actually recorded. Every production caller
+// ignores that, and should: failing to memoize is the fail-safe outcome, not an
+// error. It is returned so the CAS below can be PINNED — a plain Store passes every
+// answer-correctness test ever written against this cell, because both forms give
+// each caller its own plan's hash and differ only in how many stores survive. That
+// left the CAS a real fix with no regression sentinel, which is the same shape as
+// the defects this file's tests exist to catch.
+func (b *PlanExprBase) storeStructuralHash(owner any, hash uint64) bool {
 	if b.hashMemo == nil {
-		return
+		return false
 	}
 	state := b.hashMemo.state.Load()
 	if state != nil && state.owner != owner {
-		return
+		return false
 	}
-	// CompareAndSwap rather than Store, because load-then-store is check-then-act:
-	// two goroutines sharing a cell can both observe the same state and both write,
-	// and the second silently discards the first. Nothing is CORRUPTED by that — the
-	// read validates the owner and the state is swapped whole — so it costs a wasted
-	// recompute rather than a wrong answer. But the type doc claims the conditional
-	// store prevents a live race on the cell, and under a plain Store that claim held
-	// only per-observation. The CAS makes it hold globally: a store that was overtaken
-	// loses, and losing is the fail-safe direction (recompute, do not memoize).
-	b.hashMemo.state.CompareAndSwap(state, &hashMemoState{owner: owner, hash: hash})
+	return b.hashMemo.commit(state, owner, hash)
+}
+
+// commit publishes owner's hash, but only if the cell still holds the state the
+// caller based its decision on.
+//
+// CompareAndSwap rather than Store, because the sequence above is check-then-act:
+// two goroutines sharing a cell can both observe the same state and both write, and
+// the second silently discards the first. Nothing is CORRUPTED by that — reads
+// validate the owner and the state is swapped whole — so it costs a wasted recompute
+// rather than a wrong answer. But the type doc claims the conditional store prevents
+// a live race on the cell, and under a plain Store that claim held only
+// per-observation. The CAS makes it hold globally: a store that was overtaken loses,
+// and losing is the fail-safe direction (recompute, do not memoize).
+//
+// It is a separate method taking `prev` EXPLICITLY so the guarantee can be tested
+// without racing for it. Driven through storeStructuralHash the contended
+// interleaving is rare — whichever goroutine arrives first claims the cell and the
+// rest decline as foreign — so a concurrent test passes under a plain Store almost
+// every time, which is a sentinel that does not sentinel. Handing `prev` in makes the
+// empty→first-store transition reproducible: N callers committing against the same
+// observed `prev` must yield exactly one winner, and under a plain Store they all
+// win.
+func (c *hashMemoCell) commit(prev *hashMemoState, owner any, hash uint64) bool {
+	return c.state.CompareAndSwap(prev, &hashMemoState{owner: owner, hash: hash})
 }
 
 // newHashMemoCell allocates the cell a plan's base carries for its whole life.

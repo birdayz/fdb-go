@@ -52,7 +52,18 @@ import (
 //
 // TestAMemoizedReadIsServedFromTheCell below is the half that actually witnesses the
 // read. It plants a value in the cell that a recompute CANNOT produce and requires
-// that value to come back. Everything else in this file is about the write side.
+// that value to come back.
+//
+// The division of labour across this file, since no single test covers the cell:
+//
+//   - the census above pins the write-side CONTRACT (classification total, store
+//     decision determined by it);
+//   - TestAMemoizedReadIsServedFromTheCell pins that the cache is READ at all;
+//   - TestMemoIsCorrectUnderConcurrentSharers pins that concurrent sharers each get
+//     their OWN plan's hash — answer correctness, which stays green against a dark
+//     memo and is not a liveness test;
+//   - TestOnlyOneSharerWinsAnEmptyCell pins the CompareAndSwap, which every
+//     answer-correctness test here is structurally unable to see.
 
 // memoReadOutcome is what a single HashCodeWithoutChildren call did to the cell.
 type memoReadOutcome int
@@ -384,6 +395,79 @@ func TestMemoIsCorrectUnderConcurrentSharers(t *testing.T) {
 		}
 	default:
 		t.Errorf("cell is owned by neither sharer: %v", state.owner)
+	}
+}
+
+// TestOnlyOneSharerWinsAnEmptyCell pins the CompareAndSwap, which every
+// answer-correctness test in this file is structurally unable to see.
+//
+// Under a plain Store the memo still returns the right hash to every caller — reads
+// validate the owner either way — so the two forms differ ONLY in how many stores
+// survive a race on an empty cell. Reverting the CAS to a Store therefore leaves the
+// whole package green, including the concurrency test, which accepts either sharer
+// as the eventual owner. That made the CAS a real fix with no sentinel.
+//
+// The observable that separates them is the number of stores that report success.
+// N sharers of one empty cell all pass the owner check (the cell is nil, so nobody
+// is foreign), so all N attempt a write. A CAS lets exactly one land: every loser
+// compares against a `nil` that is no longer current. A plain Store lets each of
+// them overwrite the last, so more than one reports success whenever the race lands
+// — and the loser's owner then holds a cell the winner will keep evicting.
+func TestOnlyOneSharerWinsAnEmptyCell(t *testing.T) {
+	t.Parallel()
+
+	original := memoTestIndexPlan(t)
+
+	// Sharers with DISTINCT owners, all reaching the same still-empty cell.
+	sharers := []*RecordQueryIndexPlan{original}
+	for i := 0; i < 3; i++ {
+		variant := original.WithScanComparisons([]*predicates.ComparisonRange{
+			scanCostRange(t, predicates.ComparisonEquals, int64(500+i)),
+		})
+		if variant.hashMemo != original.hashMemo {
+			t.Fatal("the copy got its own cell; this test needs sharers")
+		}
+		sharers = append(sharers, variant)
+	}
+
+	cell := original.hashMemo
+	observed := cell.state.Load()
+	if observed != nil {
+		t.Fatal("the cell is already populated, so there is no empty-cell transition to test")
+	}
+
+	// Every sharer commits against the state it observed — all of them nil, which is
+	// exactly what happens when their loads interleave ahead of the first store. This
+	// is driven directly rather than raced for: through storeStructuralHash the
+	// overlap is rare, because whichever goroutine arrives first claims the cell and
+	// the rest decline as foreign, so a concurrent version of this test passes under a
+	// plain Store nearly every time. Committing against a fixed `prev` makes the
+	// contended transition reproducible.
+	won := 0
+	for _, plan := range sharers {
+		if cell.commit(observed, plan, plan.structuralKey().Hash("indexplan|")) {
+			won++
+		}
+	}
+
+	if won != 1 {
+		t.Fatalf("%d of %d sharers committed successfully against the same observed empty "+
+			"cell, want exactly 1. More than one means a store overwrote a live entry, so "+
+			"the evicted owner misses its own memo and stores back — the ping-pong the "+
+			"conditional store is documented to prevent", won, len(sharers))
+	}
+
+	// The single winner's entry must be intact and self-consistent.
+	state := cell.state.Load()
+	if state == nil {
+		t.Fatal("no entry survived")
+	}
+	winner, ok := state.owner.(*RecordQueryIndexPlan)
+	if !ok {
+		t.Fatalf("cell owner is %T, not a plan", state.owner)
+	}
+	if want := winner.structuralKey().Hash("indexplan|"); state.hash != want {
+		t.Errorf("cell holds hash %d under an owner whose hash is %d", state.hash, want)
 	}
 }
 

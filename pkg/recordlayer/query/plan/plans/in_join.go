@@ -182,6 +182,13 @@ func (p *RecordQueryInJoinPlan) WithInValues(vals []any) *RecordQueryInJoinPlan 
 // "unknown". Three arms of TestInUnionHintCost_UsesValueCombinationCount caught
 // exactly that, including the nested case `[][]any{nil, {}}` where one dimension is
 // unknown and its sibling is known-empty.
+//
+// The copy is deep to the SLICE level, not the element level. IN values are `any`,
+// and `[]byte` is a supported IN value type, so two plans still share any `[]byte`
+// payload passed to both. Nothing writes through one today — the same was true of
+// the slice level this closes — so it is the identical class one layer down rather
+// than a live defect. Copying every element would mean type-switching on `any` in a
+// planner path, which is not worth paying for a hazard with no writer.
 func copyPreservingNil(src []any) []any {
 	if src == nil {
 		return nil

@@ -72,6 +72,15 @@ import (
 // construction is what those methods are for. The condition to preserve is
 // publication, not immutability.
 //
+// FREE FUNCTIONS are outside the gate for the same reason and are worth naming
+// separately, because the shape is easy to reach for. This scan walks METHODS on
+// keyed types, so a plain function in the plans package that assigns to a plan's
+// field is invisible to it. One existed — a constructor variant writing `p.maxSize`
+// after building `p` — and it was deleted rather than gated, because it had zero
+// callers. A free function cannot be distinguished statically from legitimate
+// construction-completion (both write a local), so the class stays unguarded and
+// benign only while such writes target unpublished plans.
+//
 //	cp := *p
 //	cp.field = v
 //	return &cp

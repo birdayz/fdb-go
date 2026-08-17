@@ -208,9 +208,16 @@ func (p *RecordQueryInUnionPlan) GetInSources() [][]any { return p.inSources }
 //
 // Scope of that claim, because an unscoped count is the thing this repo keeps
 // getting wrong: across WithInValues, WithSourceKind and WithInSources together,
-// 8 invocations in non-test sources, spread over 4 rule files and 4 enclosing
-// functions (40 invocations including tests). An earlier draft said "five call
-// sites", which is not the count under any definition.
+// 8 invocations in NON-TEST sources, spread over 4 rule files and 4 enclosing
+// functions. An earlier draft said "five call sites", which is not the count under
+// any definition.
+//
+// Deliberately no test-inclusive total here. A first correction added one, and it
+// was false on arrival: the very commit that wrote "40 invocations including tests"
+// went on to add five more test arms, so the number was stale before it was pushed.
+// A figure that moves whenever anyone writes a test cannot stay true in a comment.
+// The non-test count is the one that means something — it is the set that has to be
+// audited when this rule changes — and it is stable.
 func (p *RecordQueryInUnionPlan) WithInSources(sources [][]any) *RecordQueryInUnionPlan {
 	cp := *p
 	// Deep enough to break sharing at both levels: the outer slice AND each inner
