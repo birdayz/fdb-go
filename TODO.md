@@ -18454,3 +18454,33 @@ can give a local action cache to.** GitHub's runners are not ours to configure.
       distinguishable from a job whose tests failed. Right now both render as a red
       check, and the only way to tell them apart is a 21-line log — which is how this
       spent a while looking like a code regression.
+
+### Measured and REJECTED: the group_by_customer_having residual is not one term
+
+Profiled the 1.54x query's proxy (`BenchmarkAggregateGroupsHaving`, plan+execute, 3s,
+CPU + alloc profiles both sides at the merge-base) to find the lever before building
+anything. There isn't one. `go tool pprof -diff_base` over a 10.92s sample shows NO
+node above ~2% of total: the largest positive flat deltas are `RecordType.Equals`
+(+0.14s, 1.28%), `initEdgeObjectBinder` (+0.10s), `mapResultCursor.OnNext` (+0.05s),
+against a per-op gap of ~4.1ms. **The regression is diffuse across the row path, not
+concentrated**, which is why the campaign's wins came from removing whole allocations
+rather than from speeding any one function.
+
+Two things tried and rejected, recorded so they are not retried:
+
+- **A pointer-identity fast path on `RecordType.Equals`.** The reasoning was good and
+  the measurement killed it: the comparison is structural and recursive and runs per row
+  per edge in `initEdgeObjectBinder`, and the branch's operands are interned
+  (`SharedFlowedType`) where master's are not, so it looked like a differential win.
+  Measured: `AggregateGroupsHaving` 16.098ms -> 16.179ms, i.e. noise, and no benchmark
+  moved. Reverted. `RecordType.Equals` at 1.28% of samples cannot pay for a 34% gap.
+- **Instrumenting that comparison to count pointer coincidence** returned
+  `sameObject=0 different=0` across the whole executor package — the record arm never
+  fired in those tests, so the profiled `Equals` cost comes from elsewhere. Anyone
+  re-opening this should find the real caller first rather than assuming the edge binder.
+
+What this means for the milestone above: structural-key memoization is still the right
+next lever for the PLANNING-dominated benchmarks (`ScanFilterSparse` 1.53x,
+`InListExecution` 1.56x, whose allocation counts are ABOVE master), but it should not be
+expected to close `group_by_customer_having`, which is execution-dominated and diffuse.
+Those are two different problems and this entry exists so they are not conflated.
