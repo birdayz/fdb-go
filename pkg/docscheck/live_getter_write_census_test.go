@@ -59,6 +59,14 @@ import (
 // The element WRITE, by contrast, is now detected even though the element COPY is
 // not closed — those are two different halves and only the copy is open.
 //
+// Note this is NOT the same as passing the slice to a call that mutates it in place.
+// `sort.SliceStable(p.GetInValues(), less)` and `copy(p.GetInValues(), src)` reorder
+// or overwrite the plan's own array with no assignment anywhere, and those ARE
+// covered, by a closed four-name list checked on the first argument only. The closed
+// list is what separates them: it cannot flag a shape by accident, whereas descending
+// any call could. An in-place mutator outside that list — a helper of our own, a
+// third-party sorter — is not covered.
+//
 // ALIASING ACROSS A FUNCTION BOUNDARY. The taint is per-function, so handing the
 // slice to a helper that writes it — `mutate(p.GetSortKeys())` — is invisible. Closing
 // that needs interprocedural analysis, which is far past what a docscheck gate should
@@ -142,6 +150,33 @@ func rootGetterCall(e ast.Expr) string {
 			return ""
 		}
 	}
+}
+
+// mutatingCallName reports whether fun names a call that mutates its FIRST argument
+// in place.
+//
+// A closed list, deliberately. These four are the idioms that reorder or overwrite a
+// slice with no assignment anywhere, and keeping the list closed is exactly what
+// makes this arm safe where descending arbitrary calls would not be: there is no
+// shape it can flag by accident. Reachability is not hypothetical — `sort.` appears
+// across the query subtree, and `in_source.go` sorts a DEFENSIVE COPY one function
+// away from `WithInValues`, so deleting that copy as redundant writes the unguarded
+// form directly.
+func mutatingCallName(fun ast.Expr) bool {
+	switch t := fun.(type) {
+	case *ast.Ident:
+		return t.Name == "copy"
+	case *ast.SelectorExpr:
+		pkg, ok := t.X.(*ast.Ident)
+		if !ok || pkg.Name != "sort" {
+			return false
+		}
+		switch t.Sel.Name {
+		case "Slice", "SliceStable", "Sort":
+			return true
+		}
+	}
+	return false
 }
 
 // rootLocalIdent walks an assignment target down to the identifier it is rooted at,
@@ -256,6 +291,29 @@ func scanLiveGetterWrites(f *ast.File, report func(pos token.Pos, getter string)
 				targets, rhs, assignTok = s.Lhs, s.Rhs, s.Tok
 			case *ast.IncDecStmt:
 				targets = []ast.Expr{s.X}
+			case *ast.CallExpr:
+				// In-place mutation through a CALL, not an assignment:
+				// `sort.SliceStable(p.GetInValues(), less)` reorders the plan's own
+				// backing array and rewrites its structural key with the pointer
+				// unchanged. Structurally invisible to everything above, which only
+				// looks at assignment targets.
+				//
+				// A CLOSED list of four names, first argument only. That is what keeps
+				// it free of the over-approximation that rules out descending arbitrary
+				// calls: `copy(dst, p.GetInValues())` reads the getter and is correctly
+				// silent, as is `len(p.GetInValues())`. This is deliberately not the
+				// same shape as the method-call-in-chain case the header declines.
+				if !mutatingCallName(s.Fun) || len(s.Args) == 0 {
+					return true
+				}
+				if getter := rootGetterCall(s.Args[0]); getter != "" {
+					report(s.Args[0].Pos(), getter)
+				} else if id, ok := s.Args[0].(*ast.Ident); ok {
+					if getter, found := tainted[id.Name]; found {
+						report(s.Args[0].Pos(), getter)
+					}
+				}
+				return true
 			case *ast.RangeStmt:
 				// Ranging over a watched getter copies each element. The copy shares
 				// whatever the element points at, so the value variable is tainted as a
@@ -333,6 +391,16 @@ func scanLiveGetterWrites(f *ast.File, report func(pos token.Pos, getter string)
 				if !ok || i >= len(rhs) {
 					continue
 				}
+				// The two maps want OPPOSITE rebinding behaviour, which is why this is
+				// not one delete. For `tainted`, a `:=` on an already-tainted name is an
+				// inner shadow and the outer alias is still live, so the taint must
+				// survive. For `copyTainted`, the range variable's scope has ALREADY
+				// ENDED by the time any later statement rebinds its name, so every
+				// rebinding — `:=` or `=` — refers to a different variable and the taint
+				// must go. Leaving it made the gate report a later `v := other(); v[0] = 1`
+				// as a plan-identity rewrite: a false positive, which on a ratchet at zero
+				// blocks a legitimate change and is worse than a miss.
+				delete(copyTainted, id.Name)
 				if getter, ok := taint(id.Name, rhs[i]); ok {
 					tainted[id.Name] = getter
 				} else if assignTok != token.DEFINE {
@@ -495,6 +563,10 @@ func TestLiveGetterDetectorFiresOnEveryWriteShape(t *testing.T) {
 		{"range over a tainted alias", "vals := plan.GetInValues()\nfor _, v := range vals { v.([]byte)[0] = 1 }"},
 		// An outer range copy shares the inner slice, so its elements are shared too.
 		{"inner range over an outer range copy", "for _, src := range plan.GetInSources() { for _, v := range src { v.([]byte)[0] = 1 } }"},
+		// In-place mutation through a call argument: no assignment at all.
+		{"sort.SliceStable over the live slice", "sort.SliceStable(plan.GetInValues(), less)"},
+		{"sort.Slice over a tainted alias", "vals := plan.GetInValues()\nsort.Slice(vals, less)"},
+		{"copy into the live slice", "copy(plan.GetInValues(), src)"},
 		// Not in first position of a multi-assign.
 		{"multi-assign", `a, plan.GetInValues()[0] = 1, 2`},
 		// The ONLY spelling of an element write, since IN values are `any`. Verified
@@ -532,6 +604,14 @@ func TestLiveGetterDetectorStaysSilentOnReads(t *testing.T) {
 		{"read through an alias", "keys := plan.GetSortKeys()\n_ = keys[0].Desc"},
 		{"alias rebound before the write", "keys := plan.GetSortKeys()\nkeys = other\nkeys[0].Desc = true"},
 		{"local from an unwatched source", "keys := thing.Whatever()\nkeys[0] = 1"},
+		// A range variable's scope ends with the loop, so a later local reusing the
+		// name is a DIFFERENT variable. Reporting it is a false positive, and on a
+		// ratchet at zero a false positive blocks legitimate work.
+		{"name reused after a range loop", "for _, v := range plan.GetInValues() { _ = v }\nv := other()\nv[0] = 1"},
+		{"name reassigned after a range loop", "var v []int\nfor _, v := range plan.GetInValues() { _ = v }\nv = other()\nv[0] = 1"},
+		// Reading the getter as a non-first argument is not a mutation.
+		{"getter as copy source", "copy(dst, plan.GetInValues())"},
+		{"getter inside len", "n := len(plan.GetInValues())\n_ = n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
