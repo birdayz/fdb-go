@@ -270,14 +270,22 @@ func TestPullUpOutputRootMatchesTheRoundTrip(t *testing.T) {
 //
 // The shortcut is only equivalent to the round trip because a QOV's handle is
 // the SAME OBJECT the round trip would land on, and that is true only while every
-// path that builds an exact node routes through the intern table. Two paths did
-// not — the record-constructor type and the nullability-widened copy — and the
-// consequence was invisible: an un-interned node is a correct TYPE, so nothing
-// answers wrongly; it just compares unequal (children compare by pointer) to an
-// identical interned one, silently defeating the sharing of everything above it,
-// and folds a zero intern hash into one hot bucket.
+// path that builds an exact node yields the object its OWNING TABLE holds. There are
+// two such tables — the intern shards for composites, the static
+// sharedPrimitiveExactTypes for primitives — and three paths have failed this at
+// different times: the record-constructor type and the nullability-widened copy
+// bypassed interning altogether, and exactWithNullability later probed the SHARDS for
+// primitives, minting duplicates of nodes the static table already owned.
 //
-// internHashValue is the witness: internedExactType stamps it, and only it does.
+// The consequence is invisible in every case: a duplicate is a correct TYPE, so
+// nothing answers wrongly; it just compares unequal (children compare by POINTER) to
+// the identical node from the owning table, silently defeating the sharing of
+// everything above it.
+//
+// THE WITNESS IS POINTER IDENTITY against the owning table — see assertInterned.
+// internHashValue is NOT a witness, and believing it was is what let the primitive
+// duplication ship: both tables stamp that field, so a duplicate carries a perfectly
+// good hash.
 func TestEveryExactNodeIsInterned(t *testing.T) {
 	t.Parallel()
 

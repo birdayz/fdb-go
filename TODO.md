@@ -18207,16 +18207,28 @@ rather than assumed. Caveat on the statistics: at n=3 benchstat reports `~` for
 every row because p=0.100 is the floor for a 3+3 Mann-Whitney, so the evidence
 here is the tight spread (time ±1-3%, alloc/op ±0%), not a significance test.
 
-**That re-measurement covers the nine `Benchmark*` rows ONLY.** The two 1M stress
-figures — the `group_by_customer_having` row and the whole-suite wall clock — are
-still from the OLD `9a39b5006` baseline and therefore still carry the Go
-1.26.5-vs-1.26.6 confound described above. They are quoted here because the
-conclusion survives it: a 0.04 shift of the kind the nine micro-benchmarks showed
-would move 1.026x into roughly 0.99-1.07x, which is parity either way. But the
-NUMBERS are not merge-base numbers, and this paragraph exists so nobody reads the
-population sentence above as covering them. Re-run both sides at `7d0435536` on an
-otherwise-idle machine — the stress test spins Docker containers, so a run that
-contends with another suite measures the contention.
+**The 1M stress figures were re-measured at the merge-base too, and one of them was
+REFUTED — the only claim in this campaign whose conclusion the confound actually
+changed.** `group_by_customer_having` was booked at **0.98x** (parity with master).
+At the true merge-base it is **1.54x**. Two samples per side, very tight: baseline
+0.49s / 0.51s, branch 0.78s / 0.76s.
+
+The reason is the part the earlier caveat got wrong. It assumed the confound could
+only shift a ratio by the ~0.04 the micro-benchmarks showed. But the stale baseline
+was missing #750 and #751, which changed `cascades_generator.go` by 266 lines — and
+master got materially FASTER on this particular query as a result. So 0.98x was not a
+noisy version of the truth; it was measured against a slower master. **A confound is
+not a bounded error term.** It moved one row by 0.56x while leaving the other nine
+within 0.04, and there was no way to know which from the size of the others.
+
+The whole-suite figure did survive: **baseline 174.58s, branch 178.00s = 1.020x**
+(samples 173.99/175.17 vs 177.86/178.14), against the 1.026x booked earlier.
+
+Conditions, so this can be seen to go stale: baseline `7d0435536` + the `pkg/simfdb`
+equalisation patch, both sides Go 1.26.6, built and run SEQUENTIALLY, load average
+2.1-3.6 throughout on 24 cores, `--nocache_test_results`, 24 `=== RUN` lines confirmed
+on every run. Sequential execution is what makes the ratio valid under non-zero
+background load: both sides see the same machine.
 
 Ratios are branch / master. "Before" is the head at the start of this campaign,
 which is where the superseded block's numbers were taken.
@@ -18232,10 +18244,10 @@ which is where the superseded block's numbers were taken.
 | `BenchmarkAggregateGroupsHaving` | 2.03x | **1.35x** | 176k vs 177k — below |
 | `BenchmarkScanFilterSparse` | 1.63x | **1.53x** | 14.3k vs 9.3k — **ABOVE** |
 | `BenchmarkInListExecution` | 1.70x | **1.56x** | 82.9k vs 57.3k — **ABOVE** |
-| `group_by_customer_having` (1M stress) | 1.88x | **0.98x** (old baseline) | — |
+| `group_by_customer_having` (1M stress) | 1.88x | **1.54x** | — |
 
-Whole-suite wall clock on the 1M stress test: **master 175.52s, branch 180.14s =
-1.026x** — also against the old `9a39b5006` baseline, not the merge-base.
+Whole-suite wall clock on the 1M stress test, at the merge-base and n=2: **master
+174.58s, branch 178.00s = 1.020x**.
 
 Allocation COUNTS are below master on **7 of the 9** sqlhunt benchmarks — which is
 what the table above shows, row by row. Read the count off the table, not off this
@@ -18294,17 +18306,14 @@ flight on the campaign above.
       `Value.translateCorrelations` and `TranslationMap` first; the Go seed sites
       are the gated-join leg constructors. Gated on a Graefe ACK of the design.
 
-- [ ] Re-measure the two 1M stress figures in "RFC-232 overhead after the row-path
-      and merge campaign" against the true merge-base `7d0435536`. The nine
-      micro-benchmark rows were re-measured there; these two were not and still
-      carry the Go 1.26.5-vs-1.26.6 confound. The conclusion (parity on the full
-      suite) survives either way, so this is about the NUMBERS being what the entry
-      says they are. Must run on an otherwise-idle machine: the stress test spins
-      Docker containers and `.bazelrc` caps `--local_test_jobs=4`, so a contended
-      run measures the contention. Baseline rig: worktree at
-      `/home/birdy/projects/fdb-baseline`, detached at the merge-base with the two
-      `pkg/simfdb` allocation commits applied as a patch and the sqlhunt bench files
-      gazelle-wired.
+- [x] Re-measure the two 1M stress figures at the true merge-base `7d0435536` —
+      DONE, n=2 per side, and it REFUTED one of them. `group_by_customer_having` is
+      1.54x, not the 0.98x parity booked from the stale baseline; the suite total held
+      at 1.020x. The entry above carries the numbers and the reason. Note for next
+      time: the prediction in this item — "the conclusion survives either way, so this
+      is about the NUMBERS" — was WRONG, and wrong in the direction that matters. A
+      confound is not a bounded error term just because it was small on nine other
+      rows.
 
 ### Two more milestones the review surfaced, both port-faithful
 
