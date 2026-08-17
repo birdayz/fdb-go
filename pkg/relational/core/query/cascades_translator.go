@@ -389,6 +389,30 @@ func exactLogicalProjectionOutputNames(p *logical.LogicalProject, projected []va
 		}
 		name := values.OutputColumnName(projectedValue, alias)
 		if alias == "" {
+			// A COLUMN REFERENCE takes the DISPLAY name. The dotted rendering
+			// (`A.W.X`) is an internal slot key that disambiguates two members of
+			// one struct root inside a projection; it is not a name any scope
+			// outside this projection knows. A derived table's columns ARE such a
+			// scope: `(SELECT A.B, C AS Q, W.X FROM …) AS u` registers U(B, Q, X),
+			// because that is what `u.x` and `WHERE b < 8` resolve against, and
+			// Java agrees — its plan for this query reads
+			// `MAP (_.B AS B, _.C AS Q, _.W.X AS X)`.
+			//
+			// Publishing the dotted key here made the two authorities disagree
+			// about the SAME row: the scope minted U as RECORD(B,Q,X) while the
+			// plan flowed RECORD(B,Q,A.W.X). Nothing compared them as long as
+			// every U-rooted value happened to be rewritten away before execution,
+			// so the disagreement sat latent and surfaced only once the producer
+			// bridge stopped resolving unowned roots by name — as a runtime
+			// `edge lookup U: read as RECORD(B:INT,Q:DOUBLE,X:INT), declared
+			// RECORD(B:INT,Q:DOUBLE,A.W.X:INT)` on valid SQL.
+			//
+			// This is the same rule extractOutputProjectionNames applies to a
+			// recursive CTE's output columns, for the same reason and after the
+			// same symptom.
+			if _, isReference := values.AsFieldValue(projectedValue); isReference {
+				name = values.DisplayColumnName(projectedValue, "")
+			}
 			// An exact scalar leg is represented by its whole QOV. Its Value
 			// display name identifies the leg (VAL/ARR1), not necessarily the
 			// SQL item projected from it (UNNEST AT "AT"). Only the captured

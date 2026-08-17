@@ -22,6 +22,7 @@ go_library(
 go_test(
     name = "sqlhunt_test",
     srcs = [
+        "derived_table_nested_column_name_test.go",
         "indexhunt_test.go",
         "inlist_plan_probe_test.go",
         "nullhunt_test.go",
