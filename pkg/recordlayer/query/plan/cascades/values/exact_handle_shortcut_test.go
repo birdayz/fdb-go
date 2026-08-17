@@ -61,8 +61,27 @@ func TestExactTypeForValueIsTheRoundTripItReplaces(t *testing.T) {
 				"would start deduping two spellings of one type apart",
 				DescribeType(typ))
 		}
-		if !SharedExactType(shortcut).Equals(SharedExactType(roundTrip)) {
-			t.Errorf("over %s the two handles describe different types", DescribeType(typ))
+		// A VALUE, not a second relationship. Comparing the two handles to each
+		// other adds nothing once the pointer check above has passed — they are
+		// the same object, so Equals is x.Equals(x) — and it reads like an
+		// independent check. What is independent is whether the handle describes
+		// the type it was ASKED about: a shortcut that consistently answered some
+		// OTHER interned node would satisfy both relationships and fail here.
+		if got := SharedExactType(shortcut); !got.Equals(typ) {
+			t.Errorf("over %s the handle describes %s", DescribeType(typ), DescribeType(got))
+		}
+		// And for a record the NAME has to survive, which is the axis Equals
+		// deliberately ignores: canonical identity excludes the record name, so
+		// only thawing it back can catch a handle that carries the wrong one.
+		if want, ok := typ.(*RecordType); ok {
+			got, isRecord := SharedExactType(shortcut).(*RecordType)
+			if !isRecord {
+				t.Errorf("over %s the handle thawed to a non-record %s",
+					DescribeType(typ), DescribeType(SharedExactType(shortcut)))
+			} else if got.RecordName != want.RecordName {
+				t.Errorf("over %s the handle reports record name %q, want %q",
+					DescribeType(typ), got.RecordName, want.RecordName)
+			}
 		}
 	}
 
