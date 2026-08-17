@@ -83,10 +83,19 @@ func (b *PlanExprBase) storeStructuralHash(owner any, hash uint64) {
 	if b.hashMemo == nil {
 		return
 	}
-	if state := b.hashMemo.state.Load(); state != nil && state.owner != owner {
+	state := b.hashMemo.state.Load()
+	if state != nil && state.owner != owner {
 		return
 	}
-	b.hashMemo.state.Store(&hashMemoState{owner: owner, hash: hash})
+	// CompareAndSwap rather than Store, because load-then-store is check-then-act:
+	// two goroutines sharing a cell can both observe the same state and both write,
+	// and the second silently discards the first. Nothing is CORRUPTED by that — the
+	// read validates the owner and the state is swapped whole — so it costs a wasted
+	// recompute rather than a wrong answer. But the type doc claims the conditional
+	// store prevents a live race on the cell, and under a plain Store that claim held
+	// only per-observation. The CAS makes it hold globally: a store that was overtaken
+	// loses, and losing is the fail-safe direction (recompute, do not memoize).
+	b.hashMemo.state.CompareAndSwap(state, &hashMemoState{owner: owner, hash: hash})
 }
 
 // newHashMemoCell allocates the cell a plan's base carries for its whole life.
@@ -105,8 +114,9 @@ func (b *PlanExprBase) storeStructuralHash(owner any, hash uint64) {
 // That hook is real and it is deliberately not taken: giving every copy its own cell
 // was measured at ~0.25% of planner time, against loosening the one field whose
 // write-once discipline is the entire reason no atomic sits on the plan struct, across
-// ~57 copy sites. The measurement and its derivation are in TODO.md under the
-// structural-hash memo item; do not re-derive it.
+// ~57 copy sites. The measurement and its derivation are in TODO.md under the item
+// titled "Next lever for the planner sweep — the copies" — NOT under the memo item
+// itself, which carries only the 2.8% figure. Do not re-derive it.
 //
 // The cell starts EMPTY. It must never be populated during construction: several plans
 // finish initialising themselves after their constructor returns — the
@@ -114,6 +124,14 @@ func (b *PlanExprBase) storeStructuralHash(owner any, hash uint64) {
 // distinctProofIndexName onto a freshly built plan, and those fields are in the key —
 // so a hash computed inside the constructor would describe a plan that does not exist
 // yet. Laziness is a correctness requirement here, not an optimisation.
+//
+// Those writes go through a fresh LOCAL rather than through a receiver, which is why
+// pkg/docscheck's receiver-write ratchet does not report them and must not: finishing
+// construction is what those methods are for. Laziness and that ratchet are two guards
+// on ONE failure mode — a structural-key field changing while the plan's pointer stays
+// the same, which the owner check compares identity and so cannot detect. The ratchet
+// forbids it on a plan that may already be SHARED; laziness is what makes it safe on a
+// plan that is not yet PUBLISHED. Remove either and the other stops being sufficient.
 func newHashMemoCell() *hashMemoCell {
 	return &hashMemoCell{}
 }

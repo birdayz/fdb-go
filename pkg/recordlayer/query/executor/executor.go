@@ -2143,7 +2143,7 @@ func executeDistinct(
 	// (gen.DedupContinuation). This is the fix for the fresh-per-page hash-set's
 	// cross-page re-admission (TODO.md C5) — a Go-internal continuation, since
 	// SELECT DISTINCT is a Go-only extension.
-	if p.Streaming {
+	if p.IsStreaming() {
 		var innerCont []byte
 		var lastKey string
 		var hasLast bool

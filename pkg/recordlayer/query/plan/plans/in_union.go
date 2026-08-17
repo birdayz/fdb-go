@@ -90,21 +90,6 @@ func newRecordQueryInUnionPlanFromQuantifier(
 	}, nil
 }
 
-func NewRecordQueryInUnionPlanWithMaxSize(
-	inner RecordQueryPlan,
-	bindingNames []string,
-	comparisonKeys []values.Value,
-	reverse bool,
-	maxSize int,
-) (*RecordQueryInUnionPlan, error) {
-	p, err := NewRecordQueryInUnionPlan(inner, bindingNames, comparisonKeys, reverse)
-	if err != nil {
-		return nil, err
-	}
-	p.maxSize = maxSize
-	return p, nil
-}
-
 func NewRecordQueryInUnionPlanWithBindingAliasesAndMaxSize(
 	inner RecordQueryPlan,
 	bindingAliases []values.CorrelationIdentifier,
@@ -204,7 +189,12 @@ func (p *RecordQueryInUnionPlan) GetBindingAliases() []values.CorrelationIdentif
 func (p *RecordQueryInUnionPlan) GetComparisonKeys() []values.Value { return p.comparisonKeys }
 func (p *RecordQueryInUnionPlan) IsReverse() bool                   { return p.reverse }
 func (p *RecordQueryInUnionPlan) GetMaxSize() int                   { return p.maxSize }
-func (p *RecordQueryInUnionPlan) GetInSources() [][]any             { return p.inSources }
+
+// GetInSources returns the LIVE slice; callers must not write through it. See
+// WithInSources for why sharing is broken at the write end rather than here: cost.go
+// reads these per costing call, so a defensive copy would sit in the planner's hot
+// loop.
+func (p *RecordQueryInUnionPlan) GetInSources() [][]any { return p.inSources }
 
 // WithInSources returns a COPY carrying the materialized IN sources, because a plan
 // method must never write through its receiver.
@@ -214,10 +204,36 @@ func (p *RecordQueryInUnionPlan) GetInSources() [][]any             { return p.i
 // memo landed, under an UNCHANGED owner, which is the one staleness the memo's owner
 // check cannot see: it compares identity, not content. Every caller happened to set
 // before yielding, so nothing was ever wrong; that is exactly the "guarded by
-// accident" shape, at five call sites, with no rule keeping it true.
+// accident" shape, with no rule keeping it true.
+//
+// Scope of that claim, because an unscoped count is the thing this repo keeps
+// getting wrong: across WithInValues, WithSourceKind and WithInSources together,
+// 8 invocations in non-test sources, spread over 4 rule files and 4 enclosing
+// functions (40 invocations including tests). An earlier draft said "five call
+// sites", which is not the count under any definition.
 func (p *RecordQueryInUnionPlan) WithInSources(sources [][]any) *RecordQueryInUnionPlan {
 	cp := *p
-	cp.inSources = sources
+	// Deep enough to break sharing at both levels: the outer slice AND each inner
+	// list. The push-set-operation-through-fetch rule passes one plan's
+	// GetInSources() directly into another plan's builder, so without this two
+	// memoized plans own one array and an element write rewrites both structural
+	// keys under unchanged pointers — invisible to the memo's owner check, which
+	// compares identity rather than content.
+	//
+	// NIL-NESS IS LOAD-BEARING AND MUST SURVIVE THE COPY. The cost model reads a nil
+	// source list as "in-list size unknown at plan time" and an EMPTY one as "known
+	// to be empty" — different costs, different plans. `make([][]any, 0)` is non-nil,
+	// so copying unconditionally silently converts the first into the second; that
+	// broke three TestInUnionHintCost_UsesValueCombinationCount arms. The inner
+	// `append([]any(nil), …)` already preserves nil for a nil element.
+	if sources != nil {
+		cp.inSources = make([][]any, len(sources))
+		for i, src := range sources {
+			cp.inSources[i] = copyPreservingNil(src)
+		}
+	} else {
+		cp.inSources = nil
+	}
 	return &cp
 }
 

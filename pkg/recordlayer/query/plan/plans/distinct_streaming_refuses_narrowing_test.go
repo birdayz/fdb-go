@@ -29,9 +29,8 @@ func TestStreamingDistinctRefusesNarrowedDedup(t *testing.T) {
 	t.Parallel()
 
 	streaming := mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
-		return NewRecordQueryDistinctPlan(narrowingRefusalInner(t))
+		return NewRecordQueryStreamingDistinctPlan(narrowingRefusalInner(t))
 	})
-	streaming.Streaming = true
 
 	narrowed := streaming.WithNarrowedDedup("IDX_EMAIL", []int{0})
 	if narrowed.IsNarrowedDedup() {
@@ -59,7 +58,7 @@ func TestHashDistinctAcceptsNarrowedDedup(t *testing.T) {
 	hash := mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
 		return NewRecordQueryDistinctPlan(narrowingRefusalInner(t))
 	})
-	if hash.Streaming {
+	if hash.IsStreaming() {
 		t.Fatal("precondition: the default distinct is the hash executor")
 	}
 

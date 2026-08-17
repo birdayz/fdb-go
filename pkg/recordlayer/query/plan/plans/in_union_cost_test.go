@@ -225,3 +225,86 @@ func TestDefaultOnEmptyHintCost_TransparentWithFinalOnlyChild(t *testing.T) {
 		t.Fatalf("EstimateCost(DefaultOnEmpty(scan)) = %+v, want transparent child cost %+v", got, want)
 	}
 }
+
+// TestInListBuildersPreserveNilVersusEmpty pins the distinction the copying
+// builders must not erase.
+//
+// The builders copy their argument so two plans never share one identity-bearing
+// array. The obvious way to write that copy — `append([]any(nil), src...)` — is
+// wrong in one direction only: appending zero elements to a nil slice yields nil,
+// so an EMPTY non-nil list silently becomes nil.
+//
+// That is a cost bug, not a cosmetic one. nil means "in-list size unknown at plan
+// time" and empty means "known to be empty"; they produce different fanouts and so
+// different plans. TestInUnionHintCost_UsesValueCombinationCount caught it through
+// the cost, which is the right end-to-end signal but names the symptom. This names
+// the invariant, and covers the nested case the cost test exercises only indirectly:
+// an outer list holding one nil dimension beside one known-empty dimension.
+func TestInListBuildersPreserveNilVersusEmpty(t *testing.T) {
+	t.Parallel()
+
+	t.Run("in-union sources", func(t *testing.T) {
+		t.Parallel()
+		plan := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
+			return NewRecordQueryInUnionPlan(mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+				return NewRecordQueryValuesPlan(nil)
+			}), []string{"a", "b"}, nil, false)
+		})
+
+		if got := plan.WithInSources(nil).GetInSources(); got != nil {
+			t.Errorf("nil sources became %#v; the cost model would read a plan whose in-list "+
+				"size is UNKNOWN as one known to have zero combinations", got)
+		}
+
+		mixed := plan.WithInSources([][]any{nil, {}}).GetInSources()
+		if len(mixed) != 2 {
+			t.Fatalf("got %d dimensions, want 2", len(mixed))
+		}
+		if mixed[0] != nil {
+			t.Errorf("the unknown dimension became %#v", mixed[0])
+		}
+		if mixed[1] == nil {
+			t.Error("the known-empty dimension became nil, turning a known-zero fanout into " +
+				"an unknown one")
+		}
+		if len(mixed[1]) != 0 {
+			t.Errorf("the known-empty dimension gained %d values", len(mixed[1]))
+		}
+	})
+
+	t.Run("in-join values", func(t *testing.T) {
+		t.Parallel()
+		inner := mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+			return NewRecordQueryValuesPlan(nil)
+		})
+		plan := mustChecked(t, func() (*RecordQueryInJoinPlan, error) {
+			return NewRecordQueryInJoinPlan(inner, "x", false, false)
+		})
+
+		if got := plan.WithInValues(nil).GetInValues(); got != nil {
+			t.Errorf("nil values became %#v", got)
+		}
+		if got := plan.WithInValues([]any{}).GetInValues(); got == nil {
+			t.Error("an empty non-nil value list became nil")
+		}
+	})
+
+	t.Run("the copy does not alias its argument", func(t *testing.T) {
+		t.Parallel()
+		plan := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
+			return NewRecordQueryInUnionPlan(mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+				return NewRecordQueryValuesPlan(nil)
+			}), []string{"a", "b"}, nil, false)
+		})
+
+		src := [][]any{{int64(1), int64(2)}}
+		built := plan.WithInSources(src)
+		src[0][0] = int64(99) // a caller mutating what it handed in
+
+		if got := built.GetInSources()[0][0]; got != int64(1) {
+			t.Errorf("the plan saw %v after its caller mutated the slice it passed; the two "+
+				"share a backing array, so the plan's structural key changed with its "+
+				"pointer unchanged — invisible to the memo's owner check", got)
+		}
+	})
+}

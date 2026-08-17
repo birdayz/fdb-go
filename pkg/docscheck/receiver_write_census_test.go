@@ -39,16 +39,38 @@ import (
 //
 // # Why a gate and not a convention
 //
-// The tree reached zero here by conversion, not by design: three in-place
-// setters (`SetInValues`, `SetSourceKind`, `SetInSources`) survived because
-// every one of their call sites happened to construct, set, then yield. That
-// ordering was never stated anywhere and nothing tested it. It was correct by
-// accident at five call sites, and the accident held right up until the memo
-// turned the shape from latent into live.
+// The tree reached zero here by conversion, not by design: three in-place setters
+// survived because every one of their call sites happened to construct, set, then
+// yield. That ordering was never stated anywhere and nothing tested it, and the
+// accident held right up until the memo turned the shape from latent into live.
+// (They are `WithInValues`, `WithSourceKind` and `WithInSources` now; the `SetXxx`
+// spellings no longer exist, so grepping for them finds nothing. 8 invocations in
+// non-test sources across 4 rule files at the time of conversion.)
 //
 // A convention that is true by accident is indistinguishable from one that is
-// enforced, until it isn't. So the rule is structural: on a memo-identity type,
-// a method returns a copy or it returns nothing.
+// enforced, until it isn't. So the rule is structural: on a memo-identity type, a
+// method does not write THROUGH ITS RECEIVER.
+//
+// # What this gate does NOT close, stated because the difference is easy to misread
+//
+// It closes the receiver-rooted half of the class. Writes rooted at a LOCAL of the
+// receiver's own type are outside it by design, and three live sites do exactly
+// that: `projection.go` finishes a rebuilt plan's `outputNameOverrides` and
+// `distinctProofIndexName`, and `multi_intersection.go` its `drivingAlias` — all
+// folded into their structural keys.
+//
+// Those are legal, and not by the same unwritten luck the setters had. They write a
+// plan that has just been constructed and not yet published, whose memo cell is
+// therefore still EMPTY — which is exactly why the cell must start empty, and why
+// `newHashMemoCell` calls its laziness a correctness requirement rather than an
+// optimisation. Take that laziness away and these three sites become the same stale
+// hit under an unchanged owner that this gate exists to prevent. So the two guards
+// are halves of one thing: the ratchet stops the write on a SHARED plan, laziness
+// makes the write on an UNPUBLISHED plan safe.
+//
+// A gate flagging them would have no legal form to offer, since finishing
+// construction is what those methods are for. The condition to preserve is
+// publication, not immutability.
 //
 //	cp := *p
 //	cp.field = v
@@ -62,13 +84,18 @@ import (
 //
 // # Scope
 //
-// Non-test, non-generated, git-tracked sources. Test files are excluded for the
-// same reason the sibling gate excludes them: an unexported field is
-// unreachable from outside the package, and an in-package test that mutates a
-// fixture it just built is not the shipped defect. `.claude/worktrees/` is
-// excluded by `trackedGoFiles` being git-scoped — an early draft of this census
-// walked the filesystem instead and reported 286 findings out of stale agent
-// worktrees carrying pre-conversion code.
+// Non-test, non-generated, git-tracked sources. Test files are excluded because a
+// test mutating a fixture it just built is not the shipped defect — NOT because
+// tests cannot reach these fields. Some identity fields are exported and writable
+// from any package, so the reachability argument would be wrong; the exclusion
+// rests on the writes being to unpublished fixtures, which is the same publication
+// condition as above.
+//
+// `.claude/worktrees/` is excluded twice over, and it is worth naming both because
+// only one is obvious: `trackedGoFiles` is git-scoped, and its git-unavailable
+// fallback skips those trees explicitly (`fallbackWalkSkippedTrees`). An early
+// draft of this census walked the filesystem with neither and reported 286 findings
+// out of stale agent worktrees carrying pre-conversion code.
 
 // identityMethodNames are the methods whose presence means "this type's fields
 // are memo identity". Membership is derived from the tree rather than listed,
@@ -93,6 +120,76 @@ func scanIdentityTypes(f *ast.File, add func(typeName string)) {
 		}
 		if recv := receiverTypeName(fn.Recv.List[0].Type); recv != "" {
 			add(recv)
+		}
+	}
+}
+
+// scanEmbeddedFields reports, for each struct type in f, the types it EMBEDS.
+//
+// This exists because enrolment by declared method is not sufficient. The fields
+// that are memo identity do not all live on the types that declare the contract
+// methods: `PlanExprBase` declares none of the three, is embedded in every plan
+// type, and carries `hashMemo` — the one field whose write-once discipline is the
+// entire reason no atomic sits on the plan struct.
+//
+// A method on the base writing `b.hashMemo = …` is therefore a receiver write on
+// memo identity that a declared-method census cannot see. That is not a
+// hypothetical: injecting exactly such a method left the ratchet reporting zero.
+// The comment at `newHashMemoCell` openly describes re-pointing the cell as a hook
+// that exists and is deliberately not taken, so the next engineer to reach for it
+// is being invited toward the one shape the gate would have missed.
+func scanEmbeddedFields(f *ast.File, add func(outer, embedded string)) {
+	for _, decl := range f.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok || st.Fields == nil {
+				continue
+			}
+			for _, field := range st.Fields.List {
+				// An embedded field has no names.
+				if len(field.Names) != 0 {
+					continue
+				}
+				if embedded := baseTypeName(field.Type); embedded != "" {
+					add(ts.Name.Name, embedded)
+				}
+			}
+		}
+	}
+}
+
+// expandKeyedThroughEmbedding grows keyed to a fixpoint: anything embedded in a
+// keyed type is itself keyed, because its fields are reachable as fields of the
+// keyed type and participate in the same identity.
+//
+// The fixpoint matters rather than a single pass — a base embedded in a base
+// embedded in a plan is the same exposure one level deeper — and the loop
+// terminates because keyed only grows and is bounded by the number of type names
+// in the tree.
+func expandKeyedThroughEmbedding(keyed map[string]bool, embeds map[string][]string) {
+	for {
+		grew := false
+		for outer, inners := range embeds {
+			if !keyed[outer] {
+				continue
+			}
+			for _, inner := range inners {
+				if !keyed[inner] {
+					keyed[inner] = true
+					grew = true
+				}
+			}
+		}
+		if !grew {
+			return
 		}
 	}
 }
@@ -135,9 +232,16 @@ func rootReceiverIdent(e ast.Expr) string {
 // receiver, for methods on a type in keyed.
 //
 // A method CALL through the receiver (`b.hashMemo.state.Store(h)`) is not an
-// assignment and does not report — correctly: the memo cell is reached through
-// a pointer that is itself written exactly once, in the constructor, so the
-// plan's own fields never change. Only assignment rewrites identity.
+// assignment and does not report. That is correct for THIS call and not a general
+// rule about calls: the memo cell is reached through a pointer written exactly once
+// at construction, so the plan's own fields do not change.
+//
+// Calls in general absolutely can rewrite identity without any assignment —
+// `sort.Ints(p.vals)` and `copy(p.vals, x)` both do, through a slice the plan owns,
+// and neither is an AssignStmt. There are zero such instances in non-test sources
+// today (measured, with a positive control), so this is a known gap rather than a
+// live defect; do not read the silence here as a guarantee that calls are safe by
+// construction.
 func scanReceiverWrites(f *ast.File, keyed map[string]bool, report func(pos token.Pos, recvType, method string)) {
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
@@ -175,14 +279,18 @@ func scanReceiverWrites(f *ast.File, keyed map[string]bool, report func(pos toke
 }
 
 // identityTypeFloor guards the population, and its DIRECTION is the opposite of
-// the findings check below.
+// the findings check below: findings are watched for GROWTH (one is a defect),
+// the type count for COLLAPSE.
 //
-// The findings count is watched for GROWTH: one is a defect. The type count is
-// watched for COLLAPSE: if `structuralKey` is renamed, or the plans package is
-// restructured so the identity methods move behind an embedded helper, `keyed`
-// empties out and this gate reports zero findings over zero types — passing
-// loudly while checking nothing. That is the failure mode a green cannot
-// distinguish from success, so it gets its own assertion.
+// It is a TOTAL-collapse detector, and it is worth being exact about that because
+// the obvious example does not trip it. All 67 types define
+// `HashCodeWithoutChildren`, so renaming `structuralKey` alone leaves the
+// population at 67, renaming `EqualsWithoutChildren` alone also leaves 67, and
+// renaming `HashCodeWithoutChildren` alone leaves 65. Only losing all three
+// reaches zero. So this floor catches the instrument dying outright; the case of
+// ONE contract method silently dropping out is caught by
+// TestIdentityTypeCollectorFindsEachContractMethod, which drives each name
+// independently. Neither test covers the other's case.
 //
 // 67 types satisfy the predicate at the time of writing; the floor sits below
 // that with room for ordinary churn, because its job is to catch the instrument
@@ -218,9 +326,16 @@ func collectIdentityCensus(t *testing.T) (keyed map[string]bool, findings []stri
 	}
 
 	keyed = map[string]bool{}
+	embeds := map[string][]string{}
 	for _, pf := range parsed {
 		scanIdentityTypes(pf.ast, func(name string) { keyed[name] = true })
+		scanEmbeddedFields(pf.ast, func(outer, embedded string) {
+			embeds[outer] = append(embeds[outer], embedded)
+		})
 	}
+	// Bases carry identity fields without declaring the contract methods; see
+	// scanEmbeddedFields for the injection that proved this gap live.
+	expandKeyedThroughEmbedding(keyed, embeds)
 	for _, pf := range parsed {
 		scanReceiverWrites(pf.ast, keyed, func(pos token.Pos, recvType, method string) {
 			findings = append(findings, fmt.Sprintf("%s:%d: %s.%s writes its own receiver",

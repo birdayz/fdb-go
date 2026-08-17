@@ -1366,7 +1366,7 @@ closed rather than silently alter rows or output schema.
   through would have meant a parallel representation, not a fix.
   `in_source.go` now holds `sortInJoinValues(vals, reverse) (sorted []any,
   ok bool)`, the actual Java port, called from `OnMatch` right before
-  `SetInValues` — sorts a copy with `sort.SliceStable` (Java's `List.sort`
+  `WithInValues` — sorts a copy with `sort.SliceStable` (Java's `List.sort`
   is stable too) over `values.CompareOrdered` (new,
   `values/compare_ordered.go` — moved out of the executor's
   `compareValues`, which is now a one-line delegate, so the sort and the
@@ -18387,8 +18387,8 @@ flight on the campaign above.
       — onto an already-constructed plan.
 
       **The immutability precondition is now TRUE AND ENFORCED, which it was not when
-      this item was written.** Three further in-place setters (`SetInValues`,
-      `SetSourceKind`, `SetInSources`) turned up beyond the two aggregate-index ones and
+      this item was written.** Three further in-place setters (then named `SetInValues`,
+      `SetSourceKind`, `SetInSources`; now `WithXxx`) turned up beyond the two aggregate-index ones and
       were converted to copying builders, and `pkg/docscheck`'s
       `TestMemoIdentityTypesNeverWriteTheirReceiver` now ratchets it at zero over the 67
       types whose fields ARE memo identity. So the precondition the older text asserted
@@ -18568,9 +18568,16 @@ construction for plans that are compared once, and that is not memoizable; it is
       per-call cost and negligible lookup cost, so: an estimate, not a proof). Converting
       every foreign miss to a hit is therefore worth `0.065 x 3.9% ~= 0.25%`.
 
-      A quarter of one percent, against loosening the field whose write-once discipline
-      is the entire reason no atomic sits on the plan struct, across ~57 copy sites.
-      Rejected by measurement rather than by taste.
+      **Read 0.25% as a GROSS benefit, not a net one, in both directions.** The 2.8% it
+      is derived from is itself a NET measurement — hits saved a hash, but every read
+      now pays a lookup and every miss pays a store plus an allocation — so `2.8/0.724`
+      UNDERSTATES gross hash cost. And the lever's own cost is unpriced: one extra cell
+      plus a state allocation at each of ~57 copy sites. The true net is below 0.25% and
+      could plausibly be negative. That does not weaken the rejection, it strengthens it.
+
+      A quarter of one percent at best, against loosening the field whose write-once
+      discipline is the entire reason no atomic sits on the plan struct, across ~57 copy
+      sites. Rejected by measurement rather than by taste.
 
       **Corrected invariant wording, since the strict phrasing would misdirect whoever
       revisits this:** the requirement on `PlanExprBase.hashMemo` is NOT "written only in
@@ -18585,8 +18592,28 @@ construction for plans that are compared once, and that is not memoizable; it is
       `TestMemoStoreDecisionIsDeterminedByReadClassification` (plans) asserts the read
       classification is TOTAL and the store decision fully determined by it — the pairing
       `storeOK == MISS_EMPTY` and `storeDeclined == MISS_FOREIGN` that held to the unit
-      over three million operations — and fixes the hit count, so a memo going DARK is
-      distinguishable from one merely being asked more. Those two regressions have
-      opposite responses, and the counts are the only thing that separates them. Verified
-      by mutation: with the memo read removed from one plan type, all four
-      single-invariant memo tests still pass and only the census pair fails.
+      over three million operations.
+
+      **A first draft of that test also claimed to detect the memo going DARK, and it
+      did not. The claim was wrong and is recorded here because it is the instructive
+      part.** Remove the memo read AND make `storeStructuralHash` decline whenever the
+      cell is populated — the second half is behaviour-preserving on its own — and every
+      census assertion still passed against a fully dark memo. The observer inferred
+      "hit" from `before.owner == plan`, the same state the memo itself consults, so it
+      could never disagree with the code it audited; and its value check was vacuous
+      because a recompute is deterministic and returns the identical hash. Textbook
+      paired-assertion vacuity, in a test written to prevent exactly that.
+
+      What actually witnesses the read is `TestAMemoizedReadIsServedFromTheCell`: it
+      plants a hash the recompute CANNOT produce, under the plan's own ownership, and
+      requires that value back. Under the same dark-memo mutation all six other memo
+      tests pass and only this one fails. Separately,
+      `TestMemoIsCorrectUnderConcurrentSharers` exercises the dimension the atomic
+      exists for and nothing covered — several goroutines hashing plans that share one
+      cell — and `storeStructuralHash` now uses CompareAndSwap so the no-live-race claim
+      holds globally rather than per-observation.
+
+      The ROUTING is a separate failure mode and has its own gate:
+      `TestEveryPlanRoutesItsStructuralHashThroughTheMemo` (docscheck) ratchets 42 of 42
+      plan types, because the wiring was hand-applied at 42 sites and an unrouted type
+      returns a CORRECT hash — a pure performance regression a green suite cannot see.

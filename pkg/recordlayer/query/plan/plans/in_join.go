@@ -137,8 +137,14 @@ func (p *RecordQueryInJoinPlan) GetBindingName() string { return p.bindingAlias.
 func (p *RecordQueryInJoinPlan) GetBindingAlias() values.CorrelationIdentifier {
 	return p.bindingAlias
 }
-func (p *RecordQueryInJoinPlan) IsSorted() bool              { return p.sorted }
-func (p *RecordQueryInJoinPlan) IsReverse() bool             { return p.reverse }
+func (p *RecordQueryInJoinPlan) IsSorted() bool  { return p.sorted }
+func (p *RecordQueryInJoinPlan) IsReverse() bool { return p.reverse }
+
+// GetInValues returns the LIVE slice; callers must not write through it. inValues is
+// in this plan's structuralKey, so an element write rewrites its identity with the
+// pointer unchanged, which the memo's owner check cannot see. It is not copied here
+// because cost.go reads it per costing call in the planner's hot loop; sharing is
+// broken at the write end instead (see WithInValues).
 func (p *RecordQueryInJoinPlan) GetInValues() []any          { return p.inValues }
 func (p *RecordQueryInJoinPlan) GetSourceKind() InSourceKind { return p.sourceKind }
 
@@ -153,8 +159,36 @@ func (p *RecordQueryInJoinPlan) GetSourceKind() InSourceKind { return p.sourceKi
 // exception a reader has to look up.
 func (p *RecordQueryInJoinPlan) WithInValues(vals []any) *RecordQueryInJoinPlan {
 	cp := *p
-	cp.inValues = vals
+	// Copy the slice, not just the header. Returning a fresh plan that shares its
+	// caller's backing array leaves two owners of one identity-bearing array — and
+	// the rule paths really do hand the SAME array to two plans (the push-through-
+	// fetch rules pass one plan's GetInValues straight into another's builder). A
+	// later element write through either would rewrite both plans' structural keys
+	// with their pointers unchanged, which is the one staleness the memo's owner
+	// check cannot see. The sibling constructors already copy; this closes the
+	// builder to match.
+	cp.inValues = copyPreservingNil(vals)
 	return &cp
+}
+
+// copyPreservingNil duplicates an IN-list, keeping a nil slice nil and an EMPTY
+// non-nil slice empty and non-nil.
+//
+// That distinction is not pedantry, it is a cost input: the cost model reads nil as
+// "in-list size UNKNOWN at plan time" and empty-non-nil as "known to be EMPTY",
+// which produce different fanouts and therefore different plans. The idiomatic
+// `append([]any(nil), src...)` gets this wrong in the empty case — appending zero
+// elements to nil yields nil — so it silently converts "known empty" into
+// "unknown". Three arms of TestInUnionHintCost_UsesValueCombinationCount caught
+// exactly that, including the nested case `[][]any{nil, {}}` where one dimension is
+// unknown and its sibling is known-empty.
+func copyPreservingNil(src []any) []any {
+	if src == nil {
+		return nil
+	}
+	dup := make([]any, len(src))
+	copy(dup, src)
+	return dup
 }
 
 func (p *RecordQueryInJoinPlan) WithSourceKind(k InSourceKind) *RecordQueryInJoinPlan {

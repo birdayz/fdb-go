@@ -2,6 +2,7 @@ package plans
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -29,14 +30,29 @@ import (
 // is neither hit nor miss, a store on a hit) is invisible to a suite of
 // single-path tests and visible here as an arithmetic mismatch.
 //
-// # And why the hit RATE is pinned, not just the pairing
+// # What the hit COUNT can and cannot tell you
 //
-// A memo can regress in two directions with opposite responses, and the counts are
-// the only thing that separates them: going DARK (hits collapse, the cache stopped
-// working) versus simply being asked more (more plans constructed). A pairing check
-// alone stays perfectly green on a memo that never hits at all — every read would
-// be an empty miss, every store would succeed, and the arithmetic would balance.
-// So the workload below fixes the exact hit count it must produce.
+// It pins the WORKLOAD's shape. It does not, on its own, prove the memo was
+// consulted, and an earlier version of this file claimed that it did.
+//
+// The claim was disproved by mutation: remove the memo read from
+// `HashCodeWithoutChildren` AND make `storeStructuralHash` decline whenever the cell
+// is already populated, and every test here still passes against a fully dark memo.
+// The second half of that mutation is behaviour-preserving on its own — with the read
+// intact, a hit returns before the store is reached and a foreign miss declines
+// anyway — so it is one real refactor plus one dropped read, not a rigged pair.
+//
+// The reason is that `observe` infers "this was a hit" from `before.owner == plan`,
+// which is the same cell state, compared the same way, that the memo itself consults.
+// Observer and subject share a derivation route, so the classification can never
+// disagree with the code it audits — CLAUDE.md's paired-assertion vacuity, exactly.
+// Worse, the hit arm's `got == before.hash` check is vacuous by construction: a
+// recompute is deterministic and returns the byte-identical hash, so the assertion
+// holds whether or not the cached value was ever read.
+//
+// TestAMemoizedReadIsServedFromTheCell below is the half that actually witnesses the
+// read. It plants a value in the cell that a recompute CANNOT produce and requires
+// that value to come back. Everything else in this file is about the write side.
 
 // memoReadOutcome is what a single HashCodeWithoutChildren call did to the cell.
 type memoReadOutcome int
@@ -120,6 +136,17 @@ func (c *memoCensus) observe(t *testing.T, plan *RecordQueryIndexPlan) uint64 {
 		if after != before {
 			t.Errorf("a miss on a foreign-owned cell rewrote it; the two sharers would now " +
 				"evict each other on every comparison")
+		}
+		// Check the VALUE, not just that the cell was left alone. Asserting only
+		// `after == before` holds no matter what was returned, so deleting the
+		// read-side owner check — which makes a copy answer with the ORIGINAL's
+		// hash, a wrong identity — left this arm green. Callers arrange for the
+		// sharers to differ structurally, so borrowing the cell's hash is
+		// detectable here.
+		if got == before.hash {
+			t.Errorf("a plan that does not own the cell returned the cell's hash (%d); the "+
+				"read-side owner check did not fire and these two plans now intern as one",
+				got)
 		}
 		c.declined++
 	}
@@ -229,6 +256,134 @@ func TestMemoStoreDecisionIsDeterminedByReadClassification(t *testing.T) {
 		t.Errorf("write-side decisions (%d) do not account for every miss (%d) (%s)",
 			census.stored+census.declined,
 			census.reads[memoMissEmpty]+census.reads[memoMissForeign], census)
+	}
+}
+
+// TestAMemoizedReadIsServedFromTheCell is the only test here that witnesses the READ.
+//
+// Every other assertion in this file observes the cell after the call and therefore
+// reports on the write side. That leaves the memo's entire reason for existing
+// unpinned: a `HashCodeWithoutChildren` that ignored the cache and recomputed every
+// time would satisfy all of them, because a recompute returns the same bytes the cache
+// held.
+//
+// The witness is a value the recompute cannot produce. Plant a hash under the plan's
+// OWN ownership — so the read must classify it as a hit — and require it back. The
+// planted value is deliberately not a real structural hash; if it is returned, the
+// answer came from the cell, and if the real hash is returned instead, the read never
+// happened.
+//
+// This costs nothing in production and is the difference between "the memo is
+// consistent" and "the memo is used".
+func TestAMemoizedReadIsServedFromTheCell(t *testing.T) {
+	t.Parallel()
+
+	plan := memoTestIndexPlan(t)
+
+	// Establish what an honest recompute yields, so the poison can be chosen to
+	// differ from it and the final comparison cannot pass by coincidence.
+	real := plan.HashCodeWithoutChildren()
+	const poison = uint64(0xD15EA5E0D15EA5E0)
+	if real == poison {
+		t.Fatalf("the poison value collides with the genuine hash %d; pick another", real)
+	}
+
+	plan.hashMemo.state.Store(&hashMemoState{owner: any(plan), hash: poison})
+
+	got := plan.HashCodeWithoutChildren()
+	if got == real {
+		t.Error("HashCodeWithoutChildren recomputed instead of reading the cell it owns: " +
+			"the memo is DARK. Every other test in this file passes in that state, because " +
+			"they observe the cell after the call and a recompute agrees with the cache on " +
+			"every value it could be checked against.")
+	}
+	if got != poison {
+		t.Errorf("read returned %d, planted %d", got, poison)
+	}
+
+	// And the read must not have disturbed what it read.
+	if state := plan.hashMemo.state.Load(); state == nil || state.hash != poison {
+		t.Error("serving a hit rewrote the cell")
+	}
+}
+
+// TestMemoIsCorrectUnderConcurrentSharers exercises the dimension the atomic exists
+// for, and which nothing else here touched: several goroutines hashing plans that
+// SHARE one cell, at once.
+//
+// The cell is `atomic.Pointer` rather than two plain fields precisely because a
+// reader must never see one plan's hash paired with another plan's identity — that
+// pairing is a wrong ANSWER, not a wasted recompute. Every other test in this file
+// runs single-threaded, so the guarantee was argued and never observed. Under
+// `-race` this is also the only test that can surface a torn read of the cell.
+//
+// What must hold no matter the interleaving: every caller gets the hash of the plan
+// it asked about, and the original never has its entry replaced by a sharer's.
+func TestMemoIsCorrectUnderConcurrentSharers(t *testing.T) {
+	t.Parallel()
+
+	original := memoTestIndexPlan(t)
+	want := original.structuralKey().Hash("indexplan|")
+
+	variant := original.WithScanComparisons([]*predicates.ComparisonRange{
+		scanCostRange(t, predicates.ComparisonEquals, int64(77)),
+	})
+	if variant.hashMemo != original.hashMemo {
+		t.Fatal("the copy got its own cell, so this test is not exercising sharing")
+	}
+	variantWant := variant.structuralKey().Hash("indexplan|")
+	if variantWant == want {
+		t.Fatal("the two plans hash equal, so a swapped answer would be undetectable")
+	}
+
+	const goroutines, iterations = 8, 200
+	var wg sync.WaitGroup
+	errs := make(chan string, goroutines*2)
+	for g := 0; g < goroutines; g++ {
+		for _, tc := range []struct {
+			plan *RecordQueryIndexPlan
+			want uint64
+			name string
+		}{{original, want, "original"}, {variant, variantWant, "copy"}} {
+			wg.Add(1)
+			go func(plan *RecordQueryIndexPlan, want uint64, name string) {
+				defer wg.Done()
+				for i := 0; i < iterations; i++ {
+					if got := plan.HashCodeWithoutChildren(); got != want {
+						select {
+						case errs <- fmt.Sprintf("%s got %d, want %d — a sharer was served "+
+							"another plan's hash", name, got, want):
+						default:
+						}
+						return
+					}
+				}
+			}(tc.plan, tc.want, tc.name)
+		}
+	}
+	wg.Wait()
+	close(errs)
+	for msg := range errs {
+		t.Error(msg)
+	}
+
+	// Whoever won the initial race, the cell must belong to exactly one of them and
+	// hold that one's hash — never a mismatched pair.
+	state := original.hashMemo.state.Load()
+	if state == nil {
+		t.Fatal("the cell is empty after 3200 reads")
+	}
+	switch state.owner {
+	case any(original):
+		if state.hash != want {
+			t.Errorf("cell is owned by the original but holds %d, not %d", state.hash, want)
+		}
+	case any(variant):
+		if state.hash != variantWant {
+			t.Errorf("cell is owned by the copy but holds %d, not %d", state.hash, variantWant)
+		}
+	default:
+		t.Errorf("cell is owned by neither sharer: %v", state.owner)
 	}
 }
 

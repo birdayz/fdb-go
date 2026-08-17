@@ -208,6 +208,17 @@ func (p *RecordQueryInMemorySortPlan) GetInnerQuantifier() expressions.Quantifie
 	return p.innerQ
 }
 
+// GetSortKeys returns the LIVE key slice, and the caller must not write through it.
+// `sortKeys` is folded into structuralKey and `SortKey`'s fields are exported, so
+// `GetSortKeys()[0].Desc = true` rewrites this plan's identity with its pointer
+// unchanged — the one staleness the structural-hash memo's owner check cannot
+// detect, because it compares identity and not content.
+//
+// It returns the live slice rather than a copy because the readers are the planner's
+// hot loop: the cost model iterates these keys per candidate
+// (planning_cost_model.go), as do the ordering rules, and a per-call allocation
+// there taxes the exact path the memo was added to relieve. Sharing is instead
+// broken at the WRITE end — constructors copy — so no two plans own one array.
 func (p *RecordQueryInMemorySortPlan) GetSortKeys() []SortKey { return p.sortKeys }
 
 // GetQuantifiers reports the real child quantifier, overriding
