@@ -18,7 +18,12 @@ import (
 func TestEmptyAliasMapIsAnUncorruptedSingleton(t *testing.T) {
 	t.Parallel()
 
-	if EmptyAliasMap() != EmptyAliasMap() {
+	// Two separate calls, held in variables: staticcheck's SA4000 rejects
+	// `EmptyAliasMap() != EmptyAliasMap()` as identical expressions around the
+	// operator, and nogo runs it as a build error.
+	firstCall := EmptyAliasMap()
+	secondCall := EmptyAliasMap()
+	if firstCall != secondCall {
 		t.Error("EmptyAliasMap returns a fresh value per call; it is allocated on " +
 			"every plan-level equality, so it must be shared")
 	}
