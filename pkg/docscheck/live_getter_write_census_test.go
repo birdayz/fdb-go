@@ -192,9 +192,37 @@ func rootLocalIdent(e ast.Expr) (string, bool) {
 // bare rebinding does not, because it replaces the alias rather than mutating what it
 // points at. A `range` variable is a copy in Go and is never tainted, so mutating it
 // is correctly silent.
+//
+// Exactly which spellings it follows, because "assigned to a local" turned out to
+// cover less than it sounded like:
+//
+//   - `:=` and `=`, via AssignStmt.
+//   - `var keys = p.GetSortKeys()`, via DeclStmt → GenDecl → ValueSpec. This is
+//     ordinary Go and was silent until it was named: the earlier pass switched on
+//     AssignStmt alone, so the most common alternative spelling never reached the
+//     taint map.
+//   - alias OF an alias, transitively — `k2 := k1` propagates whatever `k1` aliases,
+//     to any depth. Before that, a bare identifier on the right-hand side matched no
+//     getter and took the untaint branch, so chaining actively CLEARED the taint
+//     rather than merely failing to extend it.
 func scanLiveGetterWrites(f *ast.File, report func(pos token.Pos, getter string)) {
 	scan := func(body *ast.BlockStmt) {
 		tainted := map[string]string{} // local ident -> the getter it aliases
+
+		// taint records name as aliasing whatever src aliases: either src is rooted at
+		// a watched getter, or src is itself an already-tainted identifier. The second
+		// case is what makes `k2 := k1` propagate rather than silently untaint.
+		taint := func(name string, src ast.Expr) (string, bool) {
+			if getter := rootGetterCall(src); getter != "" {
+				return getter, true
+			}
+			if id, ok := src.(*ast.Ident); ok {
+				if getter, ok := tainted[id.Name]; ok {
+					return getter, true
+				}
+			}
+			return "", false
+		}
 
 		ast.Inspect(body, func(n ast.Node) bool {
 			var targets []ast.Expr
@@ -204,6 +232,29 @@ func scanLiveGetterWrites(f *ast.File, report func(pos token.Pos, getter string)
 				targets, rhs = s.Lhs, s.Rhs
 			case *ast.IncDecStmt:
 				targets = []ast.Expr{s.X}
+			case *ast.DeclStmt:
+				// `var keys = p.GetSortKeys()` is a ValueSpec, not an AssignStmt, so
+				// without this arm the most ordinary alternative spelling of `:=` never
+				// reaches the taint map at all.
+				gen, ok := s.Decl.(*ast.GenDecl)
+				if !ok || gen.Tok != token.VAR {
+					return true
+				}
+				for _, spec := range gen.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for i, name := range vs.Names {
+						if i >= len(vs.Values) {
+							continue
+						}
+						if getter, ok := taint(name.Name, vs.Values[i]); ok {
+							tainted[name.Name] = getter
+						}
+					}
+				}
+				return true
 			default:
 				return true
 			}
@@ -226,7 +277,7 @@ func scanLiveGetterWrites(f *ast.File, report func(pos token.Pos, getter string)
 				if !ok || i >= len(rhs) {
 					continue
 				}
-				if getter := rootGetterCall(rhs[i]); getter != "" {
+				if getter, ok := taint(id.Name, rhs[i]); ok {
 					tainted[id.Name] = getter
 				} else {
 					delete(tainted, id.Name)
@@ -357,6 +408,10 @@ func TestLiveGetterDetectorFiresOnEveryWriteShape(t *testing.T) {
 		{"aliased nested index", "src := plan.GetInSources()\nsrc[0][0] = 1"},
 		{"aliased element via type assertion", "b := plan.GetInValues()[0].([]byte)\nb[0] = 1"},
 		{"aliased then incremented", "v := plan.GetInValues()\nv[0]++"},
+		// `var x = …` is a ValueSpec, not an AssignStmt, and was never taint-tracked.
+		{"aliased via var declaration", "var keys = plan.GetSortKeys()\nkeys[0].Desc = true"},
+		// Alias of an alias: the RHS is a bare ident, which previously UNTAINTED.
+		{"alias of an alias", "k1 := plan.GetSortKeys()\nk2 := k1\nk2[0].NullsFirst = true"},
 		// Not in first position of a multi-assign.
 		{"multi-assign", `a, plan.GetInValues()[0] = 1, 2`},
 		// The ONLY spelling of an element write, since IN values are `any`. Verified
