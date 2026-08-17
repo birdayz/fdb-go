@@ -18128,3 +18128,53 @@ nothing" conclusion in this area was wrong for that reason. Always run probes
 with `-count=1 -v`, and verify the probe is present in the file it is supposed
 to be in — a `perl -0pi` substitution matching a common pattern lands in the
 FIRST function that matches, which is not always the intended one.
+
+## RFC-232 still costs 1.26-1.7x master on three benchmarks, and what is left is measured
+
+The branch's planning and per-row overhead was ground down from up to 7.5x to
+the numbers below. Each side was measured with the SIMULATOR EQUALISED (master
+carrying this branch's two `pkg/simfdb` allocation commits), so the comparison
+is of the engine.
+
+| workload | at branch start | now | master | ratio |
+|---|---|---|---|---|
+| `TestStatsInvariant_PurePlannerSweep` (pure planner) | 253s | 194s | 151s | 1.28x |
+| `BenchmarkInListExecution` (plan + execute one query) | 39.5ms | 8.9ms | 5.25ms | 1.70x |
+| `BenchmarkScanAllWide` (20k rows, 30 iterations) | 89.5ms | 82.5ms | 64.8ms | 1.27x |
+| allocated bytes, planner sweep | 238GB | ~124GB | 102GB | 1.22x |
+
+The wall clock tracks allocated bytes almost exactly on this workload (GC mark
+is ~44% of samples on BOTH trees), so allocation is the lever and the remaining
+gap is the remaining allocation delta. What closed: interning the exact types
+(primitives statically, composites through a probe that runs before the node is
+built), shrinking `part` from 312 to 96 bytes, a real singleton for the empty
+alias map, a list instead of a hash map for per-row edge bindings, and moving
+the read-only type readers onto the shared thawed graph.
+
+What is left, in order, all of it branch-only unless noted:
+
+- `exactType.thaw` — 13.8GB, of which 90% arrives through the PUBLIC
+  `QuantifiedObjectValue.Type()`. That accessor is pinned to return a fresh
+  graph by `TestRFC232QOVSnapshotsAndDefensivelyThawsItsType` and the pin is
+  right, so the saving has to come from the CALLERS. The three biggest are
+  `values.PullUpValue` (1.75GB), `plans.newPlanExprBaseWithProperties` (1.24GB)
+  and `cascades.admitMemoExpression` (0.94GB), and all three are
+  thaw-then-re-snapshot round trips: they want the exact handle the value
+  already carries. An `ExactTypeOfValue(Value) (ExactTypeHandle, bool)` that
+  returns `qov.flowed` directly removes both halves at once, and is now exactly
+  equivalent because interning makes the round trip return the same object.
+- [ ] `newStructuralKey` — 8.9GB plus ~12GB in the builder methods past the
+      inline array. Both halves are one term: a key is built and thrown away on
+      every dedup comparison, twice per equality. The structural fix is to stop
+      returning a heap pointer — fold into a caller-provided stack local so
+      escape analysis can keep it there — which is a signature change across all
+      44 plan types and worth measuring on two of them first.
+- [ ] `GetCorrelatedToOfValue` — 8.1GB in the map the walk fills (master pays
+      4.1GB, so this is 2x a SHARED cost, not branch-only). Correlation sets are
+      almost always 0-2 entries; a small-slice representation would remove the
+      bucket allocation for both trees. The return type is
+      `map[CorrelationIdentifier]struct{}` across the whole planner, so this is
+      an API change, not a local one.
+- `physicalFlowedRecordType` (1.65GB) and `LayoutWithSeedLegs` (1.32GB) MUTATE
+  the graph they thaw, so they are correctly excluded from the shared-graph
+  treatment. Do not "fix" them.
