@@ -20,8 +20,23 @@ type RecordQueryInUnionPlan struct {
 	bindingAliases []values.CorrelationIdentifier
 	comparisonKeys []values.Value
 	reverse        bool
-	maxSize        int
-	inSources      [][]any
+	// maxSize is DELIBERATELY EXCLUDED from structuralKey, and the reason is not
+	// self-evident — it changes whether the rule produces this plan at all, which is
+	// exactly the shape of thing identity normally has to carry (compare
+	// liveGroupsOnly on the aggregate-index plan, which IS in its key for precisely
+	// that reason).
+	//
+	// It is safe to exclude only because it is a per-RUN constant: every value comes
+	// from GetPlannerConfiguration().AttemptFailedInJoinAsUnionMaxSize
+	// (rule_implement_in_union.go), so no two InUnion plans within one planner run can
+	// differ in it, and the memo therefore never has two candidates to confuse.
+	//
+	// THAT ARGUMENT EXPIRES the moment maxSize becomes per-plan — a per-call override,
+	// a hint, a rule that derives it from the IN-list — at which point two plans
+	// differing only in maxSize would intern as one and whichever arrived first would
+	// be served. Add it to structuralKey in the same change that makes it vary.
+	maxSize   int
+	inSources [][]any
 }
 
 func NewRecordQueryInUnionPlan(
